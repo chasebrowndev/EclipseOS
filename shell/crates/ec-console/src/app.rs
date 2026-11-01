@@ -33,6 +33,8 @@ pub enum Message {
     HoleAt(Point),
     Resized(Size),
     CloseRequested,
+    /// abyss reloaded its config: re-read the glass and the surface values.
+    Config,
 
     Select(String),
     NewTask,
@@ -127,6 +129,7 @@ pub struct App {
 impl App {
     fn new() -> Self {
         let (radius, blur) = ec_ui::ipc::fetch_glass();
+        ec_ui::ipc::sync_surface_now();
         Self {
             m: Model::default(),
             shield: Shield::default(),
@@ -423,6 +426,16 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::HoleAt(p) => {
             app.shield.hole = Some((p.x.round() as i32, p.y.round() as i32));
         }
+        Message::Config => {
+            let (radius, blur) = ec_ui::ipc::fetch_glass();
+            if let Some(r) = radius {
+                app.radius = r;
+            }
+            if let Some(b) = blur {
+                app.blur = b;
+            }
+            ec_ui::ipc::sync_surface_now();
+        }
         Message::Resized(s) => {
             let was = app.narrow();
             app.width = s.width;
@@ -565,6 +578,47 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     view::view(app)
 }
 
+/// abyss's live reloads (`EventKind::Config`), so the window re-reads its glass
+/// and surface values when Settings changes them. A control-socket feed of its
+/// own: the agent worker in `net` never sees these events.
+fn config_feed() -> Subscription<Message> {
+    Subscription::run(|| {
+        iced::stream::channel(8, async move |mut sender| {
+            std::thread::spawn(move || {
+                let mut client = None;
+                loop {
+                    if client.is_none() {
+                        if let Ok(mut c) = ec_ipc::Client::connect() {
+                            if c.subscribe(&[ec_ipc::EventKind::Config]).is_ok() {
+                                client = Some(c);
+                            }
+                        }
+                    }
+                    if let Some(c) = client.as_mut() {
+                        loop {
+                            match c.poll_event() {
+                                Ok(Some(ev)) => {
+                                    if matches!(ev.kind, ec_ipc::EventKind::Config)
+                                        && sender.try_send(Message::Config).is_err()
+                                    {
+                                        return;
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(_) => {
+                                    client = None;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                }
+            });
+        })
+    })
+}
+
 pub fn subscription(app: &App) -> Subscription<Message> {
     let mut subs = vec![
         window::close_requests().map(|_| Message::CloseRequested),
@@ -579,6 +633,7 @@ pub fn subscription(app: &App) -> Subscription<Message> {
     };
     if live {
         subs.push(net::feed());
+        subs.push(config_feed());
         // The account list is read only while the composer is on screen.
         if app.want() == Want::Commit {
             subs.push(accounts::feed());

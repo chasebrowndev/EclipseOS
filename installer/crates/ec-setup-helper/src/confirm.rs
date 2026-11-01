@@ -77,9 +77,10 @@ impl Confirm for SocketConfirm {
             "model": disk.model,
             "size_bytes": disk.size_bytes,
         });
+        // No write half-close: the compositor reads the request to its newline
+        // and treats EOF on an open prompt as abandonment, which denies it at
+        // once. It shuts the socket down after replying, ending the read.
         writeln!(s, "{req}").map_err(io("send request"))?;
-        s.shutdown(std::net::Shutdown::Write)
-            .map_err(io("send request"))?;
         let mut buf = Vec::new();
         s.take(MAX_REPLY + 1)
             .read_to_end(&mut buf)
@@ -129,6 +130,7 @@ impl Confirm for AllowConfirm {
 mod tests {
     use super::*;
     use crate::testutil::TempDir;
+    use std::io::BufRead;
     use std::os::unix::net::UnixListener;
 
     fn disk() -> Disk {
@@ -140,16 +142,31 @@ mod tests {
         }
     }
 
-    /// A listener that answers with `reply`; returns what it was sent.
+    /// A listener that behaves like abyss's trusted socket: reads the request
+    /// to its newline, fails if the client has already hung up (EOF on an open
+    /// prompt is abandonment there), answers with `reply` and shuts down.
+    /// Returns what it was sent.
     fn serve(reply: &'static [u8]) -> (TempDir, SocketConfirm, std::thread::JoinHandle<String>) {
         let t = TempDir::new();
         let socket = t.path().join("trusted.sock");
         let l = UnixListener::bind(&socket).unwrap();
         let h = std::thread::spawn(move || {
-            let (mut c, _) = l.accept().unwrap();
+            let (c, _) = l.accept().unwrap();
+            let mut r = std::io::BufReader::new(&c);
             let mut got = String::new();
-            c.read_to_string(&mut got).unwrap();
-            let _ = c.write_all(reply);
+            r.read_line(&mut got).unwrap();
+            if got.is_empty() {
+                return got;
+            }
+            c.set_nonblocking(true).unwrap();
+            let mut probe = [0u8; 1];
+            match (&c).read(&mut probe) {
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+                other => panic!("client hung up or sent more before the reply: {other:?}"),
+            }
+            c.set_nonblocking(false).unwrap();
+            let _ = (&c).write_all(reply);
+            let _ = c.shutdown(std::net::Shutdown::Both);
             got
         });
         let c = SocketConfirm {

@@ -53,11 +53,13 @@ pub fn fake_paths(t: &TempDir) -> Paths {
         locale_gen: r.join("etc/locale.gen"),
         passwd: r.join("etc/passwd"),
         target: r.join("mnt"),
-        repo: r.join("root/eclipseos-repo"),
+        repo: r.join("opt/eclipseos-repo"),
         pkg_list: r.join("root/eclipseos-packages.txt"),
         packaging_key: r.join("root/eclipseos-packaging.asc"),
         live_pacman_conf: r.join("etc/pacman.conf"),
         install_pacman_conf: r.join("root/eclipseos-install-pacman.conf"),
+        mirrorlist: r.join("etc/pacman.d/mirrorlist"),
+        retry_backoff: std::time::Duration::ZERO,
         uid_min: 1,
         proc_cpuinfo: r.join("proc/cpuinfo"),
         proc_meminfo: r.join("proc/meminfo"),
@@ -67,8 +69,10 @@ pub fn fake_paths(t: &TempDir) -> Paths {
         keymaps: r.join("usr/share/kbd/keymaps"),
         ntp_synced: r.join("run/systemd/timesync/synchronized"),
         clock_wait: std::time::Duration::ZERO,
+        umount_backoff: std::time::Duration::ZERO,
         nm_connections: r.join("etc/NetworkManager/system-connections"),
         install_log: r.join("run/eclipseos-install.log"),
+        proc: r.join("proc"),
     }
 }
 
@@ -79,9 +83,11 @@ pub struct Logged {
 }
 
 type Behaviour = Box<dyn Fn(&Cmd) -> Result<Vec<u8>>>;
+type StderrOf = Box<dyn Fn(&Cmd) -> Vec<u8>>;
 
 pub struct FakeRunner {
     f: Behaviour,
+    stderr: StderrOf,
     pub log: RefCell<Vec<Logged>>,
 }
 
@@ -89,8 +95,15 @@ impl FakeRunner {
     pub fn new(f: impl Fn(&Cmd) -> Result<Vec<u8>> + 'static) -> Self {
         FakeRunner {
             f: Box::new(f),
+            stderr: Box::new(|_| Vec::new()),
             log: RefCell::new(Vec::new()),
         }
+    }
+
+    /// What a failing command says on stderr, for `run_diag`.
+    pub fn with_stderr(mut self, f: impl Fn(&Cmd) -> Vec<u8> + 'static) -> Self {
+        self.stderr = Box::new(f);
+        self
     }
 
     fn record(&self, c: &Cmd) {
@@ -111,6 +124,13 @@ impl FakeRunner {
 }
 
 impl Runner for FakeRunner {
+    fn run_diag(&self, cmd: &Cmd) -> (Result<()>, Vec<u8>) {
+        self.record(cmd);
+        match (self.f)(cmd) {
+            Ok(_) => (Ok(()), Vec::new()),
+            Err(e) => (Err(e), (self.stderr)(cmd)),
+        }
+    }
     fn run(&self, cmd: &Cmd) -> Result<()> {
         self.record(cmd);
         (self.f)(cmd).map(|_| ())

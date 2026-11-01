@@ -130,7 +130,9 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `bar.rounding` | int 0..64 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop, and the width of the curved fillets where a shaped layer's boxes meet. |
 | `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
 | `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
-| `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |
+| `bar.clock.week-start` | auto \| monday \| sunday | `"auto"` | live | First weekday of the calendar that opens from the taskbar clock; auto follows the locale. |
+| `bar.clock.week-numbers` | bool | `#false` | live | Show ISO week numbers beside the calendar's weeks. |
+| `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups (tray menus, the tray overflow) open: under the cell that was clicked, or at the pointer. The wifi and bluetooth drawers are not popups: they unroll from the bar under their own cell, like the start menu. |
 | `bar.eye` | bool | `#true` | live | Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The compositor only stores this; the taskbar reads Oracle-Eyes' own status socket (ADR 0055). |
 | `bar.widgets.order` | list of strings | `"now-playing" "volume" "network" "bluetooth" "battery" "tray" "clock"` | live | Widgets drawn after the task strip, left to right (ADR 0065). Built-in ids: now-playing, system-usage, volume, network, bluetooth, battery, tray (the StatusNotifierItems and their overflow drawer) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left out is not drawn. An unknown id, a repeated one, or a `custom:` naming no `widget` block is refused. |
 | `bar.widgets.important` | list of strings | `"clock" "battery"` | live | Widgets that never compress: when the bar runs short of room they keep their full size and everything else gives way first. Same ids as `bar.widgets.order`. |
@@ -164,6 +166,9 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `decoration.blur.glass.dispersion` | float 0..1 | `0` | live | `glass`: colour fringing in the bevel; 0 (the default) is none. |
 | `decoration.blur.glass.rim` | float 0..1 | `0.5` | live | `glass`: strength of the neutral hairline rim, brightest along the top-left edges with a weaker lobe at the bottom-right. |
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
+| `decoration.surface.tint` | float 0..1 | `0.7` | live | Window tint opacity over the glass. sRGB-intent; clients convert. |
+| `decoration.surface.card-fill` | float 0..0.3 | `0.035` | live | Alpha of a hairline card's white fill. sRGB-intent; clients convert. |
+| `decoration.surface.inset-fill` | float 0..0.3 | `0.03` | live | Alpha of an inset group's white fill. sRGB-intent; clients convert. |
 | `decoration.shadow.enabled` | bool | `#true` | live | Drop shadow behind windows. |
 | `decoration.shadow.range` | int 0..128 | `16` | live | Shadow falloff distance, logical px. |
 | `decoration.glow.enabled` | bool | `#false` | live | Glow around windows in their border colour. |
@@ -258,7 +263,7 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `xwayland.enable` | bool | `#true` | restart | Run an X server. Off is the strongest isolation available (ADR 0026). |
-| `xwayland.scaling` | compositor \| client | `"compositor"` | restart | `compositor` upscales X11 clients — blurry but always correct. `client` hands them DPI hints and lets them render natively. |
+| `xwayland.scaling` | compositor \| client | `"client"` | restart | `client` maps X11 pixels 1:1 to physical pixels: games and DPI-aware apps render sharp; old non-DPI-aware X apps render small. `compositor` upscales X11 clients: blurry but always the right size. Default changed by ADR 0078. In `client` mode X cursors are `XCURSOR_SIZE` (24 if unset) times the scale, published as XSETTINGS `Gtk/CursorThemeSize` and root `RESOURCE_MANAGER` `Xcursor.size`. |
 
 ### `idle`
 
@@ -339,6 +344,7 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `spawn <command>` / `exec <command>` | `spawn "foot"` | Run a command. |
 | `close-window` / `killactive` | `close-window` | Ask the focused window to close. |
 | `toggle-floating` | `toggle-floating` | Float or tile the focused window. |
+| `toggle-fullscreen` / `fullscreen` | `toggle-fullscreen` | Fullscreen the focused window, or end its fullscreen. |
 | `minimize` | `minimize` | Send the focused window away. |
 | `unminimize` / `restore` | `unminimize` | Bring back the last window sent away on the active workspace. |
 | `toggle-layout` | `toggle-layout` | Cycle the workspace layout: radiant, dwindle, master. |
@@ -416,7 +422,7 @@ A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget "<name>" {
 
 ### `windowrule`
 
-A rule matched against windows at map time. Its *action* decides the owning file.
+A rule matched against windows at map time. Placement actions apply once, at map; property actions re-apply on every commit and on a float toggle (COMP-05 §4, C-22). Its *action* decides the owning file.
 
 Matchers, all of which must match. A rule with none is refused.
 
@@ -426,6 +432,7 @@ Matchers, all of which must match. A rule with none is refused.
 | `title "<regex>"` | `title "^Picture-in-Picture$"` | Regex against the window title. |
 | `pid <int>` | `pid 4242` | The client's process id, positive. |
 | `xwayland [<bool>]` | `xwayland`<br>`xwayland #false` | Whether the window is an X11 client. Bare means `#true`. |
+| `floating [<bool>]` | `floating`<br>`floating #false` | Whether the window is floating right now. Write `#true` or `#false` (bare means `#true`; the quoted strings `"true"`/`"false"` are accepted too, bare `true` is a KDL syntax error). Re-read on every evaluation, so it follows tile/float toggles; a fullscreen window (held floating) counts as floating. Only property actions (`opacity`, `blur`, `translucent-region`, …) follow a toggle; `float`, `tile`, `size` and the other placement actions apply once, at map. |
 | `output "<glob>"` | `output "DP-*"` | Glob (`*` only) against the connector or persistent identity of the output the window is on. |
 | `cgroup "<regex>"` | `cgroup "app-firefox"` | Regex against the client's cgroup path from `/proc/<pid>/cgroup`. |
 | `workspace <1..10>` | `workspace 3` | The active workspace number of the window's output. |
@@ -443,6 +450,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `position <X>,<Y>` | `abyss.kdl` | `position 100,-40` | Floating position in logical px. Implies `float`. |
 | `output <glob>` | `abyss.kdl` | `output HDMI-A-1` | Map on the output whose connector or identity matches. |
 | `opacity <0.0..1.0>` | `abyss.kdl` | `opacity 0.85` | Alpha for this window, replacing `decoration.active-opacity`/`inactive-opacity`. |
+| `translucent-region top=<px> opacity=<0.0..1.0> [key=#rrggbb]` | `abyss.kdl` | `translucent-region top=84 opacity=0.6`<br>`translucent-region top=84 opacity=0.35 key=#1b1b1f` | Draw only the top `top` logical px of the window at `opacity`, with the window's blur mode behind that strip; the rest stays as the client drew it. Multiplies with `opacity`. For clients that submit an opaque buffer. With `key=#rrggbb` only pixels of exactly that colour (within 1/255 per channel) turn translucent; text and images in the strip stay opaque. |
 | `blur off \| blur \| frost \| glass \| true \| false` | `abyss.kdl` | `blur glass`<br>`blur off`<br>`blur true` | This window's blur mode, overriding `decoration.blur.mode`. `true` is the global mode (plain `blur` if that is `off`), `false` is `off`. An opaque window never blurs. |
 | `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
 | `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |

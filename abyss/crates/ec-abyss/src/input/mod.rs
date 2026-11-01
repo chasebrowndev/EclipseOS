@@ -12,11 +12,11 @@ use smithay::{
         TouchSlot,
     },
     input::{
-        keyboard::{FilterResult, Keycode, ModifiersState},
+        keyboard::{FilterResult, Keycode, Keysym, ModifiersState},
         pointer::{
             AxisFrame, ButtonEvent, GestureHoldBeginEvent, GestureHoldEndEvent, GesturePinchBeginEvent,
             GesturePinchEndEvent, GesturePinchUpdateEvent, GestureSwipeBeginEvent, GestureSwipeEndEvent,
-            GestureSwipeUpdateEvent, MotionEvent,
+            GestureSwipeUpdateEvent, MotionEvent, RelativeMotionEvent,
         },
     },
     reexports::wayland_server::protocol::wl_surface::WlSurface,
@@ -50,6 +50,18 @@ pub fn held_mods(state: &ModifiersState) -> Mods {
         ctrl: state.ctrl,
         alt: state.alt,
     }
+}
+
+/// The keysym a binding sees: Caps Lock upper-cases letters, but a bind
+/// is written for the key, so case follows Shift alone. ASCII letters only
+/// (their keysyms are their codepoints).
+pub fn bind_sym(sym: Keysym, state: &ModifiersState) -> Keysym {
+    let raw = sym.raw();
+    if !state.caps_lock || !matches!(raw, 0x41..=0x5a | 0x61..=0x7a) {
+        return sym;
+    }
+    let lower = raw | 0x20;
+    Keysym::new(if state.shift { lower & !0x20 } else { lower })
 }
 
 /// A swipe the compositor has claimed at begin. Only the deltas are kept, so
@@ -157,7 +169,7 @@ impl AbyssState {
                 if key_state != KeyState::Pressed {
                     return FilterResult::Forward;
                 }
-                let sym = handle.modified_sym();
+                let sym = bind_sym(handle.modified_sym(), mods);
                 let held = held_mods(mods);
                 let raw = sym.raw();
                 if (VT_SWITCH_FIRST..=VT_SWITCH_LAST).contains(&raw) {
@@ -232,6 +244,7 @@ impl AbyssState {
             Action::Spawn(cmd) => shell::spawn(&cmd),
             Action::Close => shell::close_focused(self),
             Action::ToggleFloating => shell::toggle_floating(self),
+            Action::ToggleFullscreen => shell::toggle_fullscreen(self),
             Action::Minimize => shell::minimize_focused(self),
             Action::Unminimize => shell::unminimize_last(self),
             Action::ToggleLayout => shell::toggle_layout(self),
@@ -594,8 +607,48 @@ impl AbyssState {
     }
 
     fn on_pointer_motion<B: InputBackend>(&mut self, event: B::PointerMotionEvent) {
+        // The raw delta goes out on `zwp_relative_pointer_v1` before the
+        // absolute motion, as libinput reports it. A locked pointer
+        // never moves, so mouse-look in games (and Xwayland's warp
+        // emulation and XI2 raw motion) lives entirely on this event (COMP-06 §1).
+        self.relative_motion(event.delta(), event.delta_unaccel(), event.time());
         let pos = self.pointer_location + event.delta();
         self.pointer_moved(pos, event.time_msec());
+    }
+
+    /// Send one `zwp_relative_pointer_v1` motion to the surface under the
+    /// pointer. Shared by device and injected motion. Nothing is sent while
+    /// the session lock, a trusted prompt or a region selection holds the
+    /// seat, because the focused client must not hear motion it isn't shown.
+    pub(crate) fn relative_motion(
+        &mut self,
+        delta: Point<f64, Logical>,
+        delta_unaccel: Point<f64, Logical>,
+        utime: u64,
+    ) {
+        if self.lock.locked || self.seat_held() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        // A protected surface hears no relative motion from an origin that
+        // may not reach it (COMP-19 §3).
+        let here = self.pointer_location;
+        let under = self.surface_under(here);
+        let under = crate::protocols::protected::gate::filter_under(
+            self,
+            under,
+            here,
+            crate::protocols::protected::gate::Mode::Event,
+        );
+        pointer.relative_motion(
+            self,
+            under,
+            &RelativeMotionEvent {
+                delta,
+                delta_unaccel,
+                utime,
+            },
+        );
     }
 
     pub(crate) fn surface_under(&self, pos: Point<f64, Logical>) -> Option<(WlSurface, Point<f64, Logical>)> {
@@ -1037,6 +1090,21 @@ impl AbyssState {
         if pressed {
             grabs::start_mouse_bind(self, button);
         }
+        // An X11 client decides what to do with a press from whether it holds
+        // the X input focus when the press arrives; Qt drops the click that
+        // activates its window. So an X11 window under the pointer takes
+        // focus *before* the press is delivered, and the press lands on a
+        // focused window. Wayland clients keep the press-then-focus order.
+        let mut focused_first = false;
+        if pressed && self.popup_grabs.is_empty() {
+            let pos = self.pointer_location;
+            let action =
+                crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(self, pos));
+            if matches!(&action, crate::shell::focus::FocusAction::Window(w) if w.x11_surface().is_some()) {
+                crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::Click);
+                focused_first = true;
+            }
+        }
         let pointer = self.seat.get_pointer().unwrap();
         pointer.button(
             self,
@@ -1054,7 +1122,7 @@ impl AbyssState {
         // surface that held the keyboard — and then no motion event is coming
         // to fix it. A press says which window the human means. Not while a
         // popup grab is up: there the press is the dismissal, handled below.
-        if pressed && self.popup_grabs.is_empty() {
+        if pressed && self.popup_grabs.is_empty() && !focused_first {
             let pos = self.pointer_location;
             let action =
                 crate::shell::focus::decide_pointer_focus(&crate::shell::focus::click_focus_ctx(self, pos));
@@ -1710,5 +1778,26 @@ mod gesture_tests {
         // Motion after the lock reaches nothing: no grab, and focus is `None`.
         s.inject_touch_motion(0, at, 1);
         assert!(!touch.is_grabbed());
+    }
+}
+
+#[cfg(test)]
+mod bind_sym_tests {
+    use super::*;
+
+    fn mods(caps_lock: bool, shift: bool) -> ModifiersState {
+        ModifiersState {
+            caps_lock,
+            shift,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn caps_lock_folds_letters_to_shift_case() {
+        assert_eq!(bind_sym(Keysym::R, &mods(true, false)), Keysym::r);
+        assert_eq!(bind_sym(Keysym::r, &mods(true, true)), Keysym::R);
+        assert_eq!(bind_sym(Keysym::r, &mods(false, false)), Keysym::r);
+        assert_eq!(bind_sym(Keysym::Return, &mods(true, false)), Keysym::Return);
     }
 }

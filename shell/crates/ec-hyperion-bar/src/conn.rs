@@ -43,6 +43,10 @@ pub struct BarConfig {
     pub hour_12: bool,
     /// `bar.clock.date-mdy`: `9/12/26` rather than ISO `2026-09-12`.
     pub date_mdy: bool,
+    /// `bar.clock.week-start`: the calendar grid's first column.
+    pub week_start: crate::calendar::WeekStart,
+    /// `bar.clock.week-numbers`: ISO week numbers beside the grid.
+    pub week_numbers: bool,
     /// `bar.popup-anchor`: where every popup the bar owns grows from — the
     /// context menu and the tray drawers alike, one setting for all of them.
     pub popup_anchor: Anchor,
@@ -143,6 +147,8 @@ impl Default for BarConfig {
             position: BarPosition::Top,
             hour_12: ec_ui::tokens::clock::HOUR_12,
             date_mdy: ec_ui::tokens::clock::DATE_MDY,
+            week_start: crate::calendar::WeekStart::Auto,
+            week_numbers: false,
             popup_anchor: ec_ui::tokens::popup::ANCHOR,
             eye: true,
             launcher: LauncherStyle::Centered,
@@ -454,6 +460,17 @@ impl Conn {
                 Some("bar.clock.date-mdy") => {
                     if let Some(b) = value.and_then(Value::as_bool) {
                         cfg.date_mdy = b;
+                    }
+                }
+                Some("bar.clock.week-start") => match value.and_then(Value::as_str) {
+                    Some("auto") => cfg.week_start = crate::calendar::WeekStart::Auto,
+                    Some("monday") => cfg.week_start = crate::calendar::WeekStart::Monday,
+                    Some("sunday") => cfg.week_start = crate::calendar::WeekStart::Sunday,
+                    _ => {}
+                },
+                Some("bar.clock.week-numbers") => {
+                    if let Some(b) = value.and_then(Value::as_bool) {
+                        cfg.week_numbers = b;
                     }
                 }
                 Some("bar.eye") => {

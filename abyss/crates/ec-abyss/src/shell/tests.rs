@@ -430,6 +430,47 @@ mod initial_commit_placement {
         );
     }
 
+    /// Abyss has no maximized state: `set_maximized` is answered with a
+    /// configure that does not carry it, and the window stays tiled.
+    #[test]
+    fn set_maximized_is_declined_and_the_window_stays_tiled() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, tile) = neighbour(&mut h, &mut c);
+        let window = window_of(&h, &n).expect("placed");
+        let before = c.configured_sizes(&n.toplevel).len();
+
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        assert!(
+            c.configured_sizes(&n.toplevel).len() > before,
+            "the request is answered"
+        );
+        assert_eq!(c.maximized_configures(&n.toplevel), 0);
+        assert_eq!(c.configured_sizes(&n.toplevel).last(), Some(&tile));
+        assert!(!floats(&h, &window), "still tiled");
+
+        n.toplevel.unset_maximized();
+        c.pump(&mut h);
+        assert_eq!(c.maximized_configures(&n.toplevel), 0);
+        assert!(!floats(&h, &window));
+    }
+
+    /// Before the initial configure the request is just dropped from the
+    /// pending state, so the first configure does not carry it either.
+    #[test]
+    fn set_maximized_before_the_initial_commit_is_dropped() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let t = c.create_toplevel(&mut h);
+        t.toplevel.set_maximized();
+        c.pump(&mut h);
+        c.commit(&mut h, &t.surface);
+        let window = window_of(&h, &t).expect("placed at the initial commit");
+        assert_eq!(c.maximized_configures(&t.toplevel), 0);
+        assert!(!floats(&h, &window));
+    }
+
     #[test]
     fn a_toplevel_destroyed_before_its_initial_commit_never_touches_the_layout() {
         let mut h = harness();
@@ -457,5 +498,128 @@ mod initial_commit_placement {
             .filter(|(kind, _)| kind == "window")
             .collect();
         assert!(window_events.is_empty(), "{window_events:?}");
+    }
+
+    // ---- fullscreen owns its workspace (COMP-05 §4, amendment C-19)
+
+    /// A mapped toplevel that went fullscreen after its first buffer.
+    fn fullscreen(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
+        let t = c.create_toplevel(h);
+        c.commit(h, &t.surface);
+        c.attach(h, &t.surface);
+        t.toplevel.set_fullscreen(None);
+        c.pump(h);
+        let w = window_of(h, &t).expect("placed");
+        assert!(h.state.fullscreen.contains_key(&w), "went fullscreen");
+        (t, w)
+    }
+
+    /// The topmost window in the space.
+    fn top(h: &Harness) -> Window {
+        h.state
+            .space
+            .elements()
+            .last()
+            .cloned()
+            .expect("something mapped")
+    }
+
+    fn focus(h: &mut Harness, w: &Window, raise: bool) {
+        h.state.with_origin(crate::input::Origin::Physical, |s| {
+            crate::shell::focus::focus_window_raising(s, w, raise)
+        });
+    }
+
+    #[test]
+    fn a_background_window_is_detached_from_its_own_workspace() {
+        // The X11 fullscreen path reaches windows on unviewed workspaces
+        // (`owned_windows`); acting on the viewed one left the window on its
+        // own and copied it onto the viewed one, so it followed the human.
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let t = c.create_toplevel(&mut h);
+        c.commit(&mut h, &t.surface);
+        c.attach(&mut h, &t.surface);
+        let w = window_of(&h, &t).expect("placed");
+        let id = crate::shell::output_of_window(&h.state, &w).expect("on an output");
+
+        crate::shell::switch_workspace(&mut h.state, 2);
+        assert_eq!(crate::shell::home_workspace(&h.state, id, &w), 0);
+        crate::shell::detach_from_layout(&mut h.state, id, &w);
+
+        let ws = &h.state.outputs.get(id).expect("output").workspaces;
+        assert!(!ws[0].holds_live(&w), "detached from its own workspace");
+    }
+
+    #[test]
+    fn fullscreen_survives_switching_workspaces_away_and_back() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let n = c.create_toplevel(&mut h);
+        c.commit(&mut h, &n.surface);
+        c.attach(&mut h, &n.surface);
+        let (_f, full) = fullscreen(&mut h, &mut c);
+
+        crate::shell::switch_workspace(&mut h.state, 2);
+        c.pump(&mut h);
+        assert!(h.state.fullscreen.contains_key(&full), "kept while away");
+        crate::shell::switch_workspace(&mut h.state, 1);
+        c.pump(&mut h);
+        assert!(h.state.fullscreen.contains_key(&full), "kept on return");
+        assert_eq!(top(&h), full, "still on top on return");
+    }
+
+    #[test]
+    fn a_new_window_takes_fullscreen_away() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_f, full) = fullscreen(&mut h, &mut c);
+
+        let n = c.create_toplevel(&mut h);
+        c.commit(&mut h, &n.surface);
+        c.attach(&mut h, &n.surface);
+        let new = window_of(&h, &n).expect("placed");
+
+        assert!(!h.state.fullscreen.contains_key(&full), "fullscreen ended");
+        assert_eq!(h.state.focus.as_ref(), Some(&new), "the new window has focus");
+    }
+
+    #[test]
+    fn a_dialog_of_the_fullscreen_window_opens_above_it_and_keeps_it_fullscreen() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (f, full) = fullscreen(&mut h, &mut c);
+
+        let d = c.create_toplevel(&mut h);
+        d.toplevel.set_parent(Some(&f.toplevel));
+        c.commit(&mut h, &d.surface);
+        c.attach(&mut h, &d.surface);
+        let dialog = window_of(&h, &d).expect("placed");
+
+        assert!(h.state.fullscreen.contains_key(&full), "still fullscreen");
+        assert_eq!(top(&h), dialog, "the dialog is above its fullscreen parent");
+
+        // Clicking back into the fullscreen window must not bury its dialog.
+        focus(&mut h, &full, true);
+        assert!(h.state.fullscreen.contains_key(&full));
+        assert_eq!(top(&h), dialog, "the dialog stays above after refocus");
+    }
+
+    #[test]
+    fn focusing_another_window_ends_fullscreen_but_passive_focus_does_not() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (other_t, _) = neighbour(&mut h, &mut c);
+        let other = window_of(&h, &other_t).expect("placed");
+        let (_f, full) = fullscreen(&mut h, &mut c);
+
+        // Focus-follows-mouse or a scene refresh: no restack, no change.
+        focus(&mut h, &other, false);
+        assert!(h.state.fullscreen.contains_key(&full), "passive focus keeps it");
+        assert_eq!(top(&h), full, "and it stays on top");
+
+        // A bind, a click on the taskbar, IPC: the human wants the other one.
+        focus(&mut h, &other, true);
+        assert!(!h.state.fullscreen.contains_key(&full), "fullscreen ended");
     }
 }

@@ -57,7 +57,7 @@ The installer installs `eclipseos-base`: the compositor, `policyd`, the greeter
 set, the D-Bus services D-01 §1 names, `foot`, **every D-05 component** and
 `ec-setup`. This is the setup floor: it is what D-03 §2.1 already says,
 "what you booted is what you install". Today `build-iso.sh` bakes the signed
-`[eclipseos]` packages into the medium (`/root/eclipseos-repo`) and
+`[eclipseos]` packages into the medium (`/opt/eclipseos-repo`) and
 `install-eclipseos.sh` pacstraps from that copy, so **the EclipseOS packages
 install offline**. Their dependencies from the Arch repositories (mesa, fonts,
 `networkmanager`, …) still come from a mirror, so the floor as a whole does
@@ -195,8 +195,11 @@ Step 12 has two independent parts.
 `policyd`, `agentd`, `brokerd`, the egress proxy, `registryd`, the inference
 router and `cataclysm`. Nothing agent-only is in the floor. Default on for
 Agentic, off otherwise. Installing it later is `pacman -S eclipseos-agents`
-until a Settings button can use COMP-10's trusted admin prompt. Until Phase 2 delivers them (COMP-16 M11–M25) the
-Agentic card is marked **preview** and the row lists only what exists.
+until a Settings button can use COMP-10's trusted admin prompt. Agentic is
+selectable (owner decision, 2026-10-18): its payload is Standard plus
+`eclipseos-agents` as the package ships it today; components Phase 2 has not
+delivered (COMP-16 M11–M25) are simply absent. Until step 12 exists in the
+wizard, the profile alone sets the flag.
 
 **Policy starting point.** Two options, both offered:
 

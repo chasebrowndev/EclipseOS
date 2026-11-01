@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["bench", "crates/ec-abyss", "crates/ec-abyss-config", "crates/ec-abyss-render", "crates/ec-abyss-wire", "crates/ec-agentd", "crates/ec-audit", "crates/ec-brokerd", "crates/ec-cataclysm-pub", "crates/ec-ctl", "crates/ec-ipc", "crates/ec-policyd", "crates/ec-policy-eval", "crates/ec-protocols", "crates/ec-abyss-wlcs", "crates/ec-ref-agent", "crates/ec-inference-wire", "crates/ec-inferenced", "crates/ec-secret", "crates/ec-claude-agent"]
+exclude = ["vendor"]
 # `cargo run -- --backend winit` is the documented dev loop (CLAUDE.md, and
 # docs/BUILDING.md). Once the workspace held more than one binary that line
 # became ambiguous; this keeps a bare `cargo run` meaning the compositor.
@@ -46,3 +47,8 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# ADR 0079: smithay 0.7.0 plus one change (32-bit frame windows for ARGB X11
+# clients). Same version as the pin; drop when upstream has it.
+[patch.crates-io]
+smithay = { path = "vendor/smithay" }

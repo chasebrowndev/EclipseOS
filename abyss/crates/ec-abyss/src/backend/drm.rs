@@ -801,6 +801,9 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     libinput
         .udev_assign_seat(&seat_name)
         .map_err(|_| anyhow!("libinput could not assign seat '{seat_name}'"))?;
+    // libseat revokes the evdev fds on a VT switch away; the session handler
+    // below suspends and resumes this context so the devices come back.
+    let mut libinput_session = libinput.clone();
     handle
         .insert_source(LibinputInputBackend::new(libinput), |event, _, state| {
             // Devices are configured as they appear, and remembered so a config
@@ -854,12 +857,16 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         .insert_source(session_notifier, move |event, &mut (), state| match event {
             SessionEvent::PauseSession => {
                 tracing::info!("session paused (VT switch away)");
+                libinput_session.suspend();
                 if let Some(drm) = state.drm.as_mut() {
                     drm.drm.pause();
                 }
             }
             SessionEvent::ActivateSession => {
                 tracing::info!("session activated");
+                if libinput_session.resume().is_err() {
+                    tracing::error!("resuming libinput after VT switch");
+                }
                 if let Some(drm) = state.drm.as_mut() {
                     if let Err(err) = drm.drm.activate(false) {
                         tracing::error!(?err, "reactivating DRM device");

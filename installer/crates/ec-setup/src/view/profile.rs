@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Step 6: profile.
 //!
-//! Hero: one card, Standard, which is the only profile that exists in this
-//! version. The other three profiles and the list of what Standard sets are
-//! under "More options".
-//! The accented value: the Standard card.
+//! Hero: the selectable cards (Standard and Agentic). The other two profiles
+//! and the list of what Standard sets are under "More options".
+//! The accented value: the selected card.
 
 use super::Body;
-use crate::data::{self, CARDS, STANDARD_SEEDS};
+use crate::data::{self, seeds, CARDS};
 use crate::model::{Message, Model};
 use crate::parts::{self, El};
+use ec_setup_plan::Profile;
 use ec_ui::tokens::{color, font, size, space};
 use ec_ui::widget::{inset_list, list_row, value};
 use iced::widget::{column, row, text, Column, Space};
@@ -48,8 +48,12 @@ pub fn body(m: &Model) -> Body<'_> {
     let mut blocks: Vec<El<'_, Message>> = vec![cards.into()];
     if m.more {
         blocks.push(inset_list(
-            "Standard sets",
-            STANDARD_SEEDS
+            if m.profile == Profile::Agentic {
+                "Agentic sets"
+            } else {
+                "Standard sets"
+            },
+            seeds(m.profile)
                 .iter()
                 .map(|(k, v)| list_row(k, value(v)))
                 .collect(),
@@ -61,7 +65,11 @@ pub fn body(m: &Model) -> Body<'_> {
 
     Body {
         title: "Your desktop".to_owned(),
-        lead: "You can change every part of it afterwards.".to_owned(),
+        lead: if m.more {
+            "You can change every part of it afterwards.".to_owned()
+        } else {
+            "Agentic adds the agent stack. Everything can change afterwards.".to_owned()
+        },
         blocks,
         scroll: true,
     }

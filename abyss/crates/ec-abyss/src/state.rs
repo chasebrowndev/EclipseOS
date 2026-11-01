@@ -64,16 +64,9 @@ pub struct AbyssState {
     pub space: Space<Window>,
     pub popups: PopupManager,
 
-    /// Windows currently maximized (COMP-05 §4), with the placement to restore
-    /// on unmaximize: `Some(rect)` for a floating window's prior rectangle,
-    /// `None` for a window that was tiled.
-    pub maximized: std::collections::HashMap<Window, Option<smithay::utils::Rectangle<i32, Logical>>>,
-
     /// Windows currently fullscreen (COMP-05 §4), with the placement to restore
-    /// on unfullscreen, same semantics as [`Self::maximized`]. A window may be in
-    /// both maps: fullscreening a maximized toplevel keeps its maximized entry, so
-    /// unfullscreen drops it back to the usable area rather than its pre-maximize
-    /// rectangle, which is what xdg-shell asks for.
+    /// on unfullscreen: `Some(rect)` for a floating window's prior rectangle,
+    /// `None` for a window that was tiled. Abyss has no maximized state.
     pub fullscreen: std::collections::HashMap<Window, Option<smithay::utils::Rectangle<i32, Logical>>>,
 
     /// Last-seen `Window::geometry().loc` per space element (COMP-05 §3).
@@ -509,7 +502,6 @@ impl AbyssState {
             socket_name: socket.socket_name().to_string_lossy().into_owned(),
             space: Space::default(),
             popups: PopupManager::default(),
-            maximized: std::collections::HashMap::new(),
             fullscreen: std::collections::HashMap::new(),
             geo_loc: std::collections::HashMap::new(),
             compositor_state,
@@ -630,7 +622,6 @@ impl AbyssState {
     }
 }
 
-#[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
     /// Set when the client connected through a `wp_security_context` socket:
@@ -639,6 +630,28 @@ pub struct ClientState {
     /// Connected through the privileged agent socket (COMP-08 preamble). The
     /// agent globals' `can_view` admits only these clients.
     pub agent: bool,
+    /// Order of creation in this process ([`client_seq`] at the time). The
+    /// agent seat globals tell clients that existed before them from those
+    /// that came after (`protocols::agent::seat_global`).
+    pub seq: u64,
+}
+
+static NEXT_CLIENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The `seq` the next [`ClientState`] made will get.
+pub fn client_seq() -> u64 {
+    NEXT_CLIENT_SEQ.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Default for ClientState {
+    fn default() -> Self {
+        Self {
+            compositor_state: CompositorClientState::default(),
+            security_context: None,
+            agent: false,
+            seq: NEXT_CLIENT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
 }
 
 impl ClientData for ClientState {

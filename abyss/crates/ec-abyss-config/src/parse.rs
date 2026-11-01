@@ -280,6 +280,7 @@ pub(crate) fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "spawn" | "exec" => Action::Spawn(text().ok_or("spawn needs a command string")?),
         "close-window" | "killactive" => Action::Close,
         "toggle-floating" => Action::ToggleFloating,
+        "toggle-fullscreen" | "fullscreen" => Action::ToggleFullscreen,
         "minimize" => Action::Minimize,
         "unminimize" | "restore" => Action::Unminimize,
         "toggle-layout" => Action::ToggleLayout,

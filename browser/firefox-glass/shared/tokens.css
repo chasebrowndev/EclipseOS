@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/*
+ * Mirror of shell/crates/ec-ui/src/tokens.rs (docs/STYLE.md). These are the
+ * dark defaults; glass.js overrides them live from the user's settings.
+ * Glass fills are white at the spec's alphas over an opaque warm ground:
+ * these pages sit inside Firefox's opaque area, so they only get the look.
+ */
+:root {
+  --base: #0b0906;
+  --surface-0: #12100b;
+  --surface-1: #1a1712;
+  --surface-2: #1c1913;
+  --accent: #f2c33c;
+  --accent-text: #f5cf5c;
+  --text: #ffffff;
+  --text-2: rgba(255, 255, 255, 0.64);
+  --text-3: rgba(255, 255, 255, 0.4);
+  --glass: rgba(255, 255, 255, 0.045);
+  --glass-strong: rgba(255, 255, 255, 0.06);
+  --glass-hover: rgba(255, 255, 255, 0.09);
+  --glass-press: rgba(255, 255, 255, 0.12);
+  --rim: rgba(255, 255, 255, 0.1);
+  --rim-hover: rgba(255, 255, 255, 0.16);
+  --rim-focus: rgba(255, 255, 255, 0.3);
+  --hairline: rgba(255, 255, 255, 0.055);
+  --highlight: rgba(255, 255, 255, 0.07);
+  --control-off: rgba(255, 255, 255, 0.13);
+  --danger: #e0553f;
+  --radius-card: 13px;
+  --radius-inset: 10px;
+  --radius-pill: 99px;
+  --font-ui: "Instrument Sans", "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "DejaVu Sans Mono", monospace;
+  color-scheme: dark;
+}
+:root[data-scheme="light"] {
+  --base: #f3efe6;
+  --surface-0: #ebe6da;
+  --surface-1: #e4dfd2;
+  --surface-2: #ddd7c9;
+  --text: #1a1712;
+  --text-2: rgba(26, 23, 18, 0.66);
+  --text-3: rgba(26, 23, 18, 0.42);
+  --glass: rgba(255, 255, 255, 0.5);
+  --glass-strong: rgba(255, 255, 255, 0.64);
+  --glass-hover: rgba(255, 255, 255, 0.8);
+  --glass-press: rgba(255, 255, 255, 0.95);
+  --rim: rgba(26, 23, 18, 0.12);
+  --rim-hover: rgba(26, 23, 18, 0.2);
+  --rim-focus: rgba(26, 23, 18, 0.45);
+  --hairline: rgba(26, 23, 18, 0.08);
+  --highlight: rgba(255, 255, 255, 0.8);
+  --control-off: rgba(26, 23, 18, 0.14);
+  color-scheme: light;
+}

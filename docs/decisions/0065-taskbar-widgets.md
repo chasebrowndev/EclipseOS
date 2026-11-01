@@ -170,3 +170,17 @@ squeezed), proportional crowding of unpinned widgets and chips instead of
 widgets-first, a collapse allowance on release, and a one-step tap ladder.
 The Settings Taskbar pane edits `order` and the tray lanes by drag and drop on
 its bar picture (D-05 §2); the writes are unchanged.
+
+## Amendment (2026-10-22): the Volume widget opens an audio picker
+
+Clicking the Volume widget used to toggle mute. It now opens a drawer that
+unrolls from the bar under the cell, the same reveal the wifi and bluetooth
+drawers use. Mute moved into the drawer, and wheel scrolling still steps the
+level. The drawer has two sections, output and input. Each has a level row
+(mute, rail, percent), the default device as the top row, and the other
+devices below it. Picking a device makes it the default and moves the
+streams that are playing or recording to it. The only exception is
+recordings of a monitor source, such as visualizers and loopbacks.
+`ec-services::audio` gains the sink and source lists, with `.monitor`
+sources left out, the default switch, and input volume and mute. It still
+speaks the native protocol, so nothing shells out.

@@ -187,6 +187,9 @@ const MAX_LINE: usize = 64 * 1024;
 /// The default socket path. `$XDG_RUNTIME_DIR` is per-user and mode 0700,
 /// which is what makes an unauthenticated socket acceptable here.
 pub fn default_socket() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("ECLIPSE_SOCKET_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir).join("abyss.sock"));
+    }
     std::env::var_os("XDG_RUNTIME_DIR").map(|d| PathBuf::from(d).join("eclipse/abyss.sock"))
 }
 

@@ -32,6 +32,11 @@ pub struct Paths {
     pub live_pacman_conf: PathBuf,
     /// The live-side pacman.conf handed to `pacstrap -C`. Not part of the target.
     pub install_pacman_conf: PathBuf,
+    /// The live medium's mirror list; rotated between pacstrap attempts so a
+    /// retry starts on a different mirror.
+    pub mirrorlist: PathBuf,
+    /// Base pause before a pacstrap retry (times the attempt number).
+    pub retry_backoff: Duration,
     /// Lowest uid accepted as "a real user" for the seed.
     pub uid_min: u32,
     pub proc_cpuinfo: PathBuf,
@@ -45,6 +50,11 @@ pub struct Paths {
     pub ntp_synced: PathBuf,
     /// How long `Preflight` waits for the clock before refusing.
     pub clock_wait: Duration,
+    /// Pause between `umount -R` attempts at the end of an install.
+    pub umount_backoff: Duration,
+    /// Where processes are listed; the unmount stage looks for leftover key
+    /// daemons here.
+    pub proc: PathBuf,
     /// The live medium's saved connections (D-07 §4.3).
     pub nm_connections: PathBuf,
     /// Progress log; not secret by construction, so world-readable for the GUI.
@@ -65,11 +75,13 @@ impl Paths {
             locale_gen: "/etc/locale.gen".into(),
             passwd: "/etc/passwd".into(),
             target: "/mnt".into(),
-            repo: "/root/eclipseos-repo".into(),
+            repo: "/opt/eclipseos-repo".into(),
             pkg_list: "/root/eclipseos-packages.txt".into(),
             packaging_key: "/root/eclipseos-packaging.asc".into(),
             live_pacman_conf: "/etc/pacman.conf".into(),
             install_pacman_conf: "/root/eclipseos-install-pacman.conf".into(),
+            mirrorlist: "/etc/pacman.d/mirrorlist".into(),
+            retry_backoff: Duration::from_secs(5),
             uid_min: 1000,
             proc_cpuinfo: "/proc/cpuinfo".into(),
             proc_meminfo: "/proc/meminfo".into(),
@@ -79,6 +91,8 @@ impl Paths {
             keymaps: "/usr/share/kbd/keymaps".into(),
             ntp_synced: "/run/systemd/timesync/synchronized".into(),
             clock_wait: Duration::from_secs(30),
+            umount_backoff: Duration::from_secs(1),
+            proc: "/proc".into(),
             nm_connections: "/etc/NetworkManager/system-connections".into(),
             install_log: "/run/eclipseos-install.log".into(),
         }
