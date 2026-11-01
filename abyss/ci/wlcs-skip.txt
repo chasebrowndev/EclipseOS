@@ -250,3 +250,15 @@ BadBufferTest.test_truncated_shm_file
 # Removed by: never, unless wlcs adds the initial commit to these tests.
 XdgSurfaceStableTest.gets_configure_event
 XdgToplevelStableTest.wm_capabilities_are_sent
+
+# ---------------------------------------------------------------------------
+# 20. A client can maximize / unmaximize itself.
+#
+# abyss has three window states and no maximize (8af2b00); the xdg_toplevel
+# maximize and unmaximize requests are declined on purpose
+# (`shell::decline_maximize_toplevel`), so the configure these tests wait for
+# never arrives.
+#
+# Removed by: never, unless maximize comes back.
+XdgToplevelStableConfigurationTest.window_can_maximize_itself
+XdgToplevelStableConfigurationTest.window_can_unmaximize_itself
