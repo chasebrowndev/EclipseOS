@@ -2214,11 +2214,16 @@ pub const RULE_ACTION_FORMS: &[Form] = &[
     ),
     form(
         &["translucent-region"],
-        "top=<px> opacity=<0.0..1.0>",
-        &["translucent-region top=84 opacity=0.6"],
+        "top=<px> opacity=<0.0..1.0> [key=#rrggbb]",
+        &[
+            "translucent-region top=84 opacity=0.6",
+            "translucent-region top=84 opacity=0.35 key=#1b1b1f",
+        ],
         "Draw only the top `top` logical px of the window at `opacity`, with the \
        window's blur mode behind that strip; the rest stays as the client drew \
-       it. Multiplies with `opacity`. For clients that submit an opaque buffer.",
+       it. Multiplies with `opacity`. For clients that submit an opaque buffer. \
+       With `key=#rrggbb` only pixels of exactly that colour (within 1/255 per \
+       channel) turn translucent; text and images in the strip stay opaque.",
     ),
     form(
         &["blur"],

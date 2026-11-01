@@ -2680,7 +2680,12 @@ as fully opaque. Content is never faded to obtain glass, *(C-21)* except
 within a user-written `translucent-region` rule's strip (COMP-05 §4): for a
 client that submits opaque buffers, the top `top` logical px draw at the rule's
 alpha with the window's blur mode behind them, overriding the client's opaque
-region and an empty `ext_background_effect_v1` area for that strip only. A `blur`
+region and an empty `ext_background_effect_v1` area for that strip only. *(C-23)*
+A keyed strip (a rule with `key=`, or a client strip over `set_client_strips`)
+fades no content: only pixels exactly equal to a declared key colour take that
+key's alpha, so text and icons stay opaque. Keys apply inside the declared region
+(the strip, the whole window while the client reports a browser-owned page, or
+everywhere for a key flagged so) and over the client's popups. A `blur`
 rule (COMP-05 §4) overrides the global switch for that window but never blurs an
 opaque one. Layer-shell surfaces get a backdrop wherever their opaque region
 leaves glass. Rounding applies to that backdrop: `decoration.rounding` by
@@ -5277,7 +5282,7 @@ above gains:
 | `calibrate_output` | overscan calibration (COMP-03 §1.1) |
 | `annotation_create` / `annotation_update` / `annotation_destroy` / `annotation_clear` | untrusted overlay pass (COMP-18 §3); a Command, not Privileged |
 | `set_idle_inhibit` | idle inhibit on behalf of a D-Bus client, lapses with the connection (ADR 0051) |
-| `set_client_strips` | `{opacity, windows:[{width,height,content}]}`: pins a `translucent-region` strip on the caller's parent process's toplevels whose surface size matches; replaces the connection's previous set and lapses with it. Command, owner uid, refused while hook `client-strips` is off; a user rule wins (ADR 0079) |
+| `set_client_strips` | `{keys:[{color,opacity,everywhere?}] (1–4), windows:[{width,height,content,body?}]}`: keys the caller's parent process's toplevels whose surface size matches, and their popups (C-23); re-matched when such a window commits a new size; replaces the connection's previous request and lapses with it. Command, owner uid, refused while hook `client-strips` is off; a user rule wins (ADR 0079, 0080) |
 | `get_config` / `validate_config` / `set_config_value` | the §1.4 write API; which file a write may touch is decided by the file, not the method kind |
 | `unsubscribe` | ends a `subscribe` stream |
 
@@ -7401,6 +7406,7 @@ against source before it was written. Nothing was renumbered.
 | C-20 | COMP-05 §4; COMP-07 §1 | *(2026-10-13, owner ruling)* Three window states: minimized, in the layout, fullscreen. Maximize is removed. xdg `set_maximized` is answered without `Maximized`; X11 maximize requests are declined and `_NET_WM_STATE` is cleared. The `maximized` state bit in the scene and agent protocol is always false, and `set_state(maximized)` is refused. Supersedes C-04's maximize semantics | yes |
 | C-21 | COMP-02 §9; COMP-05 §4 | *(2026-10-30, owner ruling)* Content is never faded to obtain glass, with one opt-in exception: a user `translucent-region top=<px> opacity=<0..1>` window rule fades and blurs behind only that top strip, for clients that submit opaque buffers (Firefox on Wayland, ADR 0079) | yes |
 | C-22 | COMP-05 §4 | *(2026-10-30, owner ruling)* The spec follows the code on rule timing: placement actions once at map, property actions on every commit and on a float toggle. New `floating` matcher. Supersedes "re-evaluated on title change" | yes |
+| C-23 | COMP-02 §9; COMP-13 §2 | *(2026-10-31, owner ruling)* Keyed translucency: a strip with keys makes only pixels exactly equal to a declared key colour translucent (that key's alpha, blur behind) and fades nothing else. Keys apply only in declared regions: the strip, the whole window while the client reports a browser-owned page (`body`), the whole window for a key flagged `everywhere`, and the client's popups. `set_client_strips` takes up to four keys and is re-matched on resize (ADR 0080) | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

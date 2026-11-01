@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //
-// Shared by the background script, the options page and the new-tab page.
+// Shared by the background script and the options page.
 // Classic script (no modules) so the manifest can list it ahead of
 // background.js. Everything lives on the single global `Glass`.
 //
 // Colour values below mirror shell/crates/ec-ui/src/tokens.rs. The theme is
-// opaque on purpose: Firefox on Wayland submits an opaque toplevel, so the
-// compositor (abyss) applies alpha + blur to the top strip of the window, and
-// these colours are what that alpha is applied to.
+// opaque on purpose: Firefox on Wayland submits an opaque toplevel. Glass
+// surfaces are painted in reserved KEY colours (see keyColors) and abyss makes
+// exactly the pixels of those colours translucent, with blur behind; text and
+// icons are other colours and stay opaque.
 
 "use strict";
 
@@ -24,35 +25,23 @@ var Glass = (function () {
   ];
 
   const REGIONS = [
-    { id: "tabstrip", name: "Tab strip", hint: "frame, tabs" },
-    { id: "toolbar", name: "Toolbar", hint: "URL bar, buttons" },
-    { id: "sidebar", name: "Sidebar", hint: "bookmarks, history" },
+    { id: "tabstrip", name: "Base glass", hint: "frame, tab strip, toolbar, Home ground" },
+    { id: "toolbar", name: "URL field and tab", hint: "URL bar, selected tab" },
+    { id: "sidebar", name: "Sidebar and cards", hint: "bookmarks, history, Home cards" },
     { id: "popups", name: "Popups and menus", hint: "context menu, URL dropdown" },
-    { id: "newtab", name: "New tab", hint: "ground of the new-tab page" },
   ];
 
   const DEFAULTS = {
     mode: "auto", // auto | dark | light
     tint: "#12100b", // SURFACE_0
-    strength: 60, // 0..100, how far surfaces lift off the tint
+    strength: 35, // 0..100, glass opacity; 35 gives about 35% on the base glass
     accent: "#f2c33c",
-    newtab: true,
-    // A WebExtension without the "search" permission cannot use the user's
-    // default engine, so the new-tab box searches this template.
-    searchUrl: "https://duckduckgo.com/?q=",
     regions: {
       tabstrip: { lift: 20, accent: true },
       toolbar: { lift: 45, accent: true },
       sidebar: { lift: 30, accent: true },
       popups: { lift: 55, accent: true },
-      newtab: { lift: 20, accent: true },
     },
-    pinned: [
-      { title: "Docs", url: "https://developer.mozilla.org/" },
-      { title: "Mail", url: "https://mail.example.org/" },
-      { title: "Maps", url: "https://www.openstreetmap.org/" },
-      { title: "Notes", url: "https://notes.example.org/" },
-    ],
   };
 
   const LIGHT_BASE = "#efeadf";
@@ -95,10 +84,12 @@ var Glass = (function () {
     for (const r of REGIONS) {
       regions[r.id] = Object.assign({}, DEFAULTS.regions[r.id], (s.regions || {})[r.id]);
     }
-    return Object.assign({}, DEFAULTS, s, {
-      regions,
-      pinned: Array.isArray(s.pinned) ? s.pinned : DEFAULTS.pinned,
-    });
+    const out = Object.assign({}, DEFAULTS, s, { regions });
+    // Leftovers from v1 (the new-tab override is gone).
+    delete out.newtab;
+    delete out.searchUrl;
+    delete out.pinned;
+    return out;
   }
 
   // ---- palette -----------------------------------------------------------
@@ -113,6 +104,62 @@ var Glass = (function () {
     return systemIsDark();
   }
 
+  // ---- key colours -------------------------------------------------------
+
+  const KEY_IDS = ["base", "field", "popup", "panel"];
+  // Region whose lift/opacity drives each key.
+  const KEY_REGION = { base: "tabstrip", field: "toolbar", popup: "popups", panel: "sidebar" };
+  // Each key nudges a different channel so equal intended colours still differ.
+  const KEY_CHANNEL = { base: 0, field: 1, popup: 2, panel: 0 };
+
+  function nudge(rgb, ch, dir) {
+    const out = rgb.slice();
+    out[ch] = clamp(out[ch] + (out[ch] >= 255 ? -1 : dir), 0, 255);
+    return out;
+  }
+
+  function dist(a, b) {
+    return Math.max(...a.map((v, i) => Math.abs(v - b[i])));
+  }
+
+  /**
+   * The 4 reserved key colours, in KEY_IDS order, each `{id, color, opacity}`.
+   *
+   * abyss keys on exact pixel colour (+-1/255 for rounding), so a glass
+   * surface must be a colour nothing else on a page is likely to be. Each key
+   * is the intended colour moved by exactly one unit in one channel: invisible
+   * to the eye, yet not the plain tint a page may paint. Intended colours are
+   * first pushed apart (lighter on dark, darker on light) until every key and
+   * the plain tint are at least 2 units apart, so the +-1 tolerance cannot
+   * confuse one key with another. The base key stays a pure +1 nudge of the
+   * tint. Opacity is Strength scaled by the key's region lift.
+   */
+  function keyColors(settings, dark) {
+    const s = merge(settings);
+    const tint = parseHex(dark ? s.tint : LIGHT_BASE);
+    const strength = clamp(s.strength, 0, 100) / 100;
+    const span = dark ? LIFT_SPAN : LIFT_SPAN * 2.5;
+    const white = [255, 255, 255];
+    const placed = [tint]; // plain tint is reserved too
+    const keys = [];
+    for (const id of KEY_IDS) {
+      const lift = clamp(s.regions[KEY_REGION[id]].lift, 0, 100) / 100;
+      let want = id === "base" ? tint.slice() : tint.map((v, i) => v + (white[i] - v) * lift * span);
+      want = want.map(Math.round);
+      const sign = dark ? 1 : -1;
+      let nudged = nudge(want, KEY_CHANNEL[id], 1);
+      for (let n = 0; n < 40 && id !== "base" && placed.some((p) => dist(p, nudged) < 2); n++) {
+        want = want.map((v) => clamp(v + 2 * sign, 0, 255));
+        nudged = nudge(want, KEY_CHANNEL[id], 1);
+      }
+      if (id === "base" && dist(tint, nudged) < 1) nudged = nudge(tint, 0, -1);
+      placed.push(nudged);
+      const opacity = clamp(strength * (0.8 + lift), 0.05, 1);
+      keys.push({ id, color: toHex(nudged), opacity: Math.round(opacity * 100) / 100 });
+    }
+    return keys;
+  }
+
   /**
    * Every colour the extension paints, opaque `#rrggbb`, for one scheme.
    * `k` scales the ink-over-ground steps: a light ground needs lighter steps
@@ -122,20 +169,17 @@ var Glass = (function () {
     const s = merge(settings);
     const fg = dark ? "#ffffff" : INK;
     const k = dark ? 1 : 0.7;
-    const baseTint = dark ? s.tint : LIGHT_BASE;
-    const strength = clamp(s.strength, 0, 100) / 100;
-
-    const ground = (id) => {
-      const amount = (clamp(s.regions[id].lift, 0, 100) / 100) * strength * LIFT_SPAN;
-      // Dark lifts toward white; light lifts toward white too (brighter glass).
-      return mix(baseTint, "#ffffff", dark ? amount : amount * 2.5);
-    };
+    const keys = keyColors(s, dark);
+    const col = (id) => keys.find((x) => x.id === id).color;
+    // Glass surfaces are exactly their key colour.
     const g = {
-      tabstrip: ground("tabstrip"),
-      toolbar: ground("toolbar"),
-      sidebar: ground("sidebar"),
-      popups: ground("popups"),
-      newtab: ground("newtab"),
+      tabstrip: col("base"),
+      toolbar: col("base"),
+      field: col("field"),
+      popups: col("popup"),
+      sidebar: col("panel"),
+      newtab: col("base"),
+      cards: col("panel"),
     };
     const accent = s.accent;
     // ACCENT_TEXT is the accent lifted a step; on light it is darkened.
@@ -148,9 +192,11 @@ var Glass = (function () {
       accent,
       accentText,
       text: fg,
+      // Contrast is against the tint (the glass over a dark blur), not the wallpaper.
       text2: step(g.toolbar, 0.64 / k),
       text3: step(g.toolbar, 0.4 / k),
       ground: g,
+      keys,
       on,
       step,
       base: dark ? "#0b0906" : LIGHT_BASE,
@@ -168,12 +214,15 @@ var Glass = (function () {
     const pop = g.popups;
     const side = g.sidebar;
 
+    const f = g.field;
+
     return {
       colors: {
         frame: strip,
-        frame_inactive: mix(strip, dark ? "#000000" : "#ffffff", 0.25),
+        frame_inactive: strip,
+        frame_incognito: strip,
         tab_background_text: p.text2,
-        tab_selected: step(strip, 0.12),
+        tab_selected: f,
         tab_text: p.text,
         // Selection is a crisp neutral rim, never gold; the accent lives on the
         // loading throbber only.
@@ -182,14 +231,15 @@ var Glass = (function () {
 
         toolbar: t,
         toolbar_text: p.text,
-        toolbar_field: step(t, 0.06),
+        toolbar_field: f,
         toolbar_field_text: p.text,
-        toolbar_field_border: step(t, 0.1),
-        toolbar_field_focus: step(t, 0.12),
+        toolbar_field_border: step(f, 0.1),
+        // The focused field and its results dropdown (drawn over the page) are the popup key.
+        toolbar_field_focus: pop,
         toolbar_field_text_focus: p.text,
         // Focus = brighter fill + crisp rim. Never the accent.
-        toolbar_field_border_focus: step(t, 0.5),
-        toolbar_field_highlight: step(t, 0.22),
+        toolbar_field_border_focus: step(pop, 0.5),
+        toolbar_field_highlight: step(pop, 0.22),
         toolbar_field_highlight_text: p.text,
         toolbar_top_separator: step(t, 0.07),
         toolbar_bottom_separator: step(t, 0.055),
@@ -212,9 +262,10 @@ var Glass = (function () {
         sidebar_highlight: step(side, 0.1),
         sidebar_highlight_text: on("sidebar") ? p.accentText : p.text,
 
+        // Firefox Home: ground and cards are glass keys too.
         ntp_background: g.newtab,
         ntp_text: p.text,
-        ntp_card_background: step(g.newtab, 0.05),
+        ntp_card_background: g.cards,
       },
       properties: {
         color_scheme: s.mode === "auto" ? "system" : dark ? "dark" : "light",
@@ -269,6 +320,7 @@ var Glass = (function () {
     mix,
     palette,
     buildTheme,
+    keyColors,
     applyPageVars,
     resolveDark,
     load,

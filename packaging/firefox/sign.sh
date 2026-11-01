@@ -5,7 +5,14 @@
 # AMO_JWT_ISSUER and AMO_JWT_SECRET from addons.mozilla.org's API keys page.
 set -euo pipefail
 root=$(git rev-parse --show-toplevel)
-: "${AMO_JWT_ISSUER:?set AMO_JWT_ISSUER}" "${AMO_JWT_SECRET:?set AMO_JWT_SECRET}"
+# Keys from the environment, else from a 0600 file holding them in any layout:
+# the issuer is the `user:N:N` token, the secret the 64-hex one.
+keys=${AMO_KEYS:-$HOME/.config/eclipse/amo-keys}
+if [ -z "${AMO_JWT_ISSUER:-}" ] && [ -r "$keys" ]; then
+  AMO_JWT_ISSUER=$(grep -oE 'user:[0-9]+:[0-9]+' "$keys" | head -1)
+  AMO_JWT_SECRET=$(grep -oE '\b[0-9a-f]{64}\b' "$keys" | head -1)
+fi
+: "${AMO_JWT_ISSUER:?set AMO_JWT_ISSUER or put the keys in $keys}" "${AMO_JWT_SECRET:?set AMO_JWT_SECRET or put the keys in $keys}"
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 # Keys go through the environment: npx echoes its argv.

@@ -138,9 +138,10 @@ fn strips_params(msg: &Value) -> Option<Value> {
     if msg.get("type")?.as_str()? != "strips" {
         return None;
     }
-    let opacity = msg.get("opacity")?.as_f64()?;
+    // Forwarded as the extension sent them; abyss validates keys and windows.
+    let keys = msg.get("keys")?.as_array()?;
     let windows = msg.get("windows")?.as_array()?;
-    Some(json!({"opacity": opacity, "windows": windows}))
+    Some(json!({"keys": keys, "windows": windows}))
 }
 
 #[cfg(test)]
@@ -184,7 +185,7 @@ mod tests {
 
     #[test]
     fn framing_round_trips_and_uses_a_native_endian_length() {
-        let msg = json!({"type": "strips", "opacity": 0.6, "windows": []});
+        let msg = json!({"type": "strips", "keys": [{"color": "#112233", "opacity": 0.6}], "windows": []});
         let bytes = frame(&msg);
         let body = msg.to_string();
         assert_eq!(bytes[..4], (body.len() as u32).to_ne_bytes());
@@ -208,9 +209,8 @@ mod tests {
 
     #[test]
     fn strips_are_forwarded_and_each_call_is_answered() {
-        let m1 =
-            json!({"type": "strips", "opacity": 0.6, "windows": [{"width": 1, "height": 2, "content": 1}]});
-        let m2 = json!({"type": "strips", "opacity": 0.5, "windows": []});
+        let m1 = json!({"type": "strips", "keys": [{"color": "#112233", "opacity": 0.6}], "windows": [{"width": 1, "height": 2, "content": 1}]});
+        let m2 = json!({"type": "strips", "keys": [{"color": "#112233", "opacity": 0.5}], "windows": []});
         let mut input = frame(&m1);
         input.extend(frame(&m2));
         let mut out = Vec::new();
@@ -221,7 +221,7 @@ mod tests {
         host.run(&mut &input[..], &mut out).unwrap();
         assert_eq!(host.abyss.calls.len(), 2);
         assert_eq!(host.abyss.calls[0]["windows"], m1["windows"]);
-        assert_eq!(host.abyss.calls[1]["opacity"], 0.5);
+        assert_eq!(host.abyss.calls[1]["keys"][0]["opacity"], 0.5);
         let connected = json!({"type": "status", "connected": true});
         assert_eq!(
             replies(&out),
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn an_absent_abyss_reports_disconnected_and_recovers_on_the_next_message() {
-        let m = json!({"type": "strips", "opacity": 0.6, "windows": []});
+        let m = json!({"type": "strips", "keys": [{"color": "#112233", "opacity": 0.6}], "windows": []});
         let mut out = Vec::new();
         let mut host = Host::new(Fake::default());
         let first = host_connect(&mut host);

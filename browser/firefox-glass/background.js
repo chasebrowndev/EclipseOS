@@ -20,10 +20,19 @@ Glass.api.runtime.onInstalled.addListener(async () => {
 
 // ---- live strip reporting ---------------------------------------------------
 //
-// abyss sets the translucent strip itself. We report, per normal window, the
-// window size and the active tab's page-area height; abyss computes
-// top = window height - content. Only those three numbers leave the browser:
-// no URLs, no titles. A native-messaging helper (os.eclipse.glass) relays them.
+// abyss makes the glass translucent itself. We report the reserved key colours
+// with their opacities, and per normal window the window size, the active
+// tab's page-area height, and `body`: whether the active tab is a
+// browser-owned page (Home, new tab, blank, private-browsing start), so abyss
+// keys the whole window. The "tabs" permission is needed to read the URL for
+// that test, but ONLY THE BOOLEAN leaves the browser: no URL, no title.
+// A native-messaging helper (os.eclipse.glass) relays the message.
+const BODY_PAGES = ["about:home", "about:newtab", "about:blank", "about:privatebrowsing"];
+
+function isBodyPage(url) {
+  const u = String(url || "");
+  return BODY_PAGES.some((p) => u === p || u.startsWith(p + "?") || u.startsWith(p + "#"));
+}
 
 const HOST = "os.eclipse.glass";
 const POLL_MS = 1000;
@@ -97,11 +106,17 @@ async function report() {
     if (w.type !== "normal" || w.state === "minimized") continue;
     const tab = (w.tabs || []).find((t) => t.active);
     if (!tab || !(tab.height > 0) || !(w.width > 0) || !(w.height > 0)) continue;
-    windows.push({ width: w.width, height: w.height, content: tab.height });
+    windows.push({ width: w.width, height: w.height, content: tab.height, body: isBodyPage(tab.url) });
   }
-  windows.sort((a, b) => a.width - b.width || a.height - b.height || a.content - b.content);
-  const opacity = Math.max(0, Math.min(100, settings.strength)) / 100;
-  const payload = JSON.stringify({ type: "strips", opacity, windows });
+  windows.sort((a, b) => a.width - b.width || a.height - b.height || a.content - b.content || Number(a.body) - Number(b.body));
+  // `everywhere`: the popup key is also keyed over the whole window on websites
+  // (the URL-bar results dropdown is drawn inside the window, over the page).
+  const keys = Glass.keyColors(settings, Glass.resolveDark(settings)).map((k) => {
+    const o = { color: k.color, opacity: k.opacity };
+    if (k.id === "popup") o.everywhere = true;
+    return o;
+  });
+  const payload = JSON.stringify({ type: "strips", keys, windows });
   if (payload === lastSent || !port) return;
   lastSent = payload;
   try {
@@ -121,7 +136,11 @@ for (const ev of [
   ev.addListener(report);
 }
 // Page loads and zoom settle through status changes; filter the noisy rest.
-Glass.api.tabs.onUpdated.addListener(report, { properties: ["status"] });
+// Navigation (URL) changes flip the body flag, so watch those too.
+Glass.api.tabs.onUpdated.addListener(report, { properties: ["status", "url"] });
+if (window.matchMedia) {
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", report);
+}
 Glass.api.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.settings) report();
 });

@@ -74,9 +74,14 @@ pub enum RuleAction {
     /// logical px of the window at `opacity` (and its blur behind it), the
     /// rest as the client submitted it. For a client that cannot make its own
     /// chrome translucent (Firefox on Wayland submits an XRGB buffer).
+    ///
+    /// With `key=#rrggbb` only pixels of exactly that colour (within 1/255 per
+    /// channel) are drawn at `opacity`; everything else stays opaque. Without
+    /// a key the whole strip fades.
     TranslucentRegion {
         top: i32,
         opacity: f32,
+        key: Option<[u8; 3]>,
     },
     /// Pick this window's blur mode, overriding `decoration.blur.mode`.
     /// Still gated by translucency at render time — an opaque window never

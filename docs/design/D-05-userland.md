@@ -263,8 +263,10 @@ the base image, and holds to these limits:
 - **Translucency is the compositor's.** An app that submits opaque buffers gets
   glass only through generic compositor mechanisms: a `translucent-region`
   window rule, or a client strip its add-on reports live over a hook-gated
-  control-socket method (`client-strips`). The add-on carries no compositor code.
+  control-socket method (`client-strips`), keyed so that only the add-on's
+  reserved surface colours turn to glass (ADR 0080). The add-on carries no
+  compositor code.
 - **Signed by whoever the app requires**, with the signed artifact checked
   against its source in CI.
 
-Shipped: Glass for Firefox (`eclipseos-firefox-glass`, ADR 0079).
+Shipped: Glass for Firefox (`eclipseos-firefox-glass`, ADR 0079, 0080).

@@ -14,7 +14,7 @@
         <div>
           <h1>Glass for Firefox</h1>
           <p class="sub">
-            The theme is opaque and tuned for the compositor to make it
+            Surfaces use reserved colours the compositor makes
             <span class="plain">translucent</span>. Changes apply as you make them.
           </p>
         </div>
@@ -48,11 +48,11 @@
       <section class="card">
         <div class="rows">
           <div class="row">
-            <div class="what"><b>Tint</b><span>Base colour of the chrome strip</span></div>
+            <div class="what"><b>Tint</b><span>Base colour of the glass</span></div>
             <input type="color" id="tint" aria-label="Tint" />
           </div>
           <div class="row">
-            <div class="what"><b>Strength</b><span>How far surfaces lift off the tint</span></div>
+            <div class="what"><b>Strength</b><span>Glass opacity; lower is clearer</span></div>
             <div class="slide"><input type="range" id="strength" min="0" max="100" /><output id="strength-v"></output></div>
           </div>
           <div class="row">
@@ -65,26 +65,6 @@
       <section class="card">
         <header class="card-head"><span class="label">Regions</span></header>
         <div class="rows" id="regions"></div>
-      </section>
-
-      <section class="card">
-        <header class="card-head"><span class="label">New tab</span></header>
-        <div class="rows">
-          <div class="row">
-            <div class="what"><b>Glass new-tab page</b><span>Replaces Firefox's own new tab</span></div>
-            <button type="button" class="toggle" id="newtab" role="switch" aria-label="Glass new-tab page"></button>
-          </div>
-          <div class="row">
-            <div class="what"><b>Search address</b><span>Query is appended to this</span></div>
-            <input type="text" id="searchUrl" class="field" spellcheck="false" />
-          </div>
-        </div>
-        <p class="note pad">
-          API limit: the override is fixed in the manifest and an extension cannot embed or hand back
-          Firefox's own page. Off sends each new tab to the home page (about:home) instead; if
-          Firefox refuses that, the tab shows a plain notice. To fully restore Firefox's page,
-          disable the extension's override in about:addons.
-        </p>
       </section>
     </main>
     <script src="../shared/glass.js"></script>

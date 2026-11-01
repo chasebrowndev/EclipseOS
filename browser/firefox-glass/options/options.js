@@ -42,8 +42,6 @@ function buildStatic() {
   $("strength").addEventListener("input", (e) =>
     change((s) => (s.strength = Number(e.target.value)))
   );
-  $("newtab").addEventListener("click", () => change((s) => (s.newtab = !s.newtab)));
-  $("searchUrl").addEventListener("input", (e) => change((s) => (s.searchUrl = e.target.value)));
 
   for (const a of Glass.ACCENTS) {
     const b = document.createElement("button");
@@ -65,13 +63,13 @@ function buildStatic() {
     row.innerHTML =
       '<div class="what"><b></b><span></span></div>' +
       '<div class="mini">' +
-      '<div class="slide"><input type="range" min="0" max="100" aria-label="Lift"><output></output></div>' +
+      '<div class="slide"><input type="range" min="0" max="100" aria-label="Opacity"><output></output></div>' +
       '<span class="tag">Accent</span>' +
       '<button type="button" class="toggle" role="switch"></button>' +
       "</div>";
     row.querySelector("b").textContent = r.name;
     row.querySelector(".what span").textContent = r.hint;
-    row.querySelector("input").setAttribute("aria-label", r.name + " lift");
+    row.querySelector("input").setAttribute("aria-label", r.name + " opacity");
     row.querySelector(".toggle").setAttribute("aria-label", r.name + " accent detail");
     row.querySelector("input").addEventListener("input", (e) =>
       change((s) => (s.regions[r.id].lift = Number(e.target.value)))
@@ -90,7 +88,7 @@ function paintStatus() {
   $("status").dataset.state = st.connected ? "on" : "off";
   $("status-text").textContent = st.connected ? "Connected to abyss" : "Not connected";
   $("status-detail").textContent = st.connected
-    ? "Chrome height is reported live; nothing to set up."
+    ? "Glass keys and chrome height are reported live; nothing to set up."
     : st.error || "Waiting for the abyss helper.";
 }
 
@@ -110,8 +108,6 @@ function paint() {
     setRange(row.querySelector("input"), row.querySelector("output"), r.lift);
     setToggle(row.querySelector(".toggle"), r.accent);
   }
-  setToggle($("newtab"), s.newtab);
-  if (document.activeElement !== $("searchUrl")) $("searchUrl").value = s.searchUrl;
 
   // Preview band uses the exact theme colours.
   const c = Glass.buildTheme(s).colors;
