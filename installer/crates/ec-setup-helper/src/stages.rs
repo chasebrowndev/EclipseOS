@@ -16,8 +16,10 @@ use ec_setup_plan::{Plan, Request};
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use zeroize::Zeroizing;
 
 /// Everything the pre-disk stages worked out for the later ones.
@@ -28,6 +30,11 @@ pub struct Prepared {
     pub keyid: String,
     /// What this machine's CPU needs loaded ahead of the initramfs.
     pub ucode: Option<Ucode>,
+    /// Turing-or-newer NVIDIA present: DKMS module, cmdline and initramfs setup.
+    pub nvidia: bool,
+    /// An earlier attempt left mounts at or under the target; they are
+    /// unmounted once the erase is confirmed.
+    pub stale_mounts: bool,
     /// Non-fatal findings, reported to the user before the erase.
     pub warnings: Vec<&'static str>,
 }
@@ -180,12 +187,22 @@ pub fn locale_packages(locale: &str) -> &'static [&'static str] {
     }
 }
 
-pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>) -> String {
+/// Kernel parameters for the proprietary open module (D-01 §2.3): set
+/// explicitly rather than inherited from a default upstream may flip.
+pub const NVIDIA_CMDLINE: &str = " nvidia-drm.modeset=1 nvidia-drm.fbdev=1";
+
+/// Drop-in for `mkinitcpio` on the NVIDIA path (D-01 §2.3): the modules load
+/// in early userspace. `+=`, so the stock hooks (`kms` included) stay: the
+/// `modconf` hook carries `nvidia-utils`' nouveau blacklist into the initramfs.
+pub const MKINITCPIO_NVIDIA: &str = "MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n";
+
+pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>, nvidia: bool) -> String {
     let pstate = if ucode == Some(Ucode::Amd) {
         " amd_pstate=active"
     } else {
         ""
     };
+    let nv = if nvidia { NVIDIA_CMDLINE } else { "" };
     let ucode = ucode
         .map(|u| format!("    module_path: boot():/{}\n", u.image()))
         .unwrap_or_default();
@@ -194,15 +211,59 @@ pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>) -> String {
          /EclipseOS\n\
          \x20   protocol: linux\n\
          \x20   path: boot():/vmlinuz-linux\n\
-         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}\n\
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}{nv}\n\
          {ucode}\
          \x20   module_path: boot():/initramfs-linux.img\n\n\
          /EclipseOS (fallback initramfs)\n\
          \x20   protocol: linux\n\
          \x20   path: boot():/vmlinuz-linux\n\
-         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0\n\
-         \x20   module_path: boot():/initramfs-linux-fallback.img\n"
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{nv}\n\
+         \x20   module_path: boot():/initramfs-linux-fallback.img\n\n\
+         /EclipseOS (LTS kernel)\n\
+         \x20   protocol: linux\n\
+         \x20   path: boot():/vmlinuz-linux-lts\n\
+         \x20   cmdline: root=UUID={root_uuid} rootfstype=ext4 rw zswap.enabled=0{pstate}{nv}\n\
+         {ucode}\
+         \x20   module_path: boot():/initramfs-linux-lts.img\n"
     )
+}
+
+/// True when every installed kernel (a directory under `usr/lib/modules` that
+/// holds a `vmlinuz`) has the NVIDIA module DKMS built for it. Reads the target
+/// tree only; runs nothing.
+pub fn nvidia_modules_built(modules_dir: &std::path::Path) -> bool {
+    let Ok(rd) = fs::read_dir(modules_dir) else {
+        return false;
+    };
+    let mut kernels = 0;
+    for k in rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.join("vmlinuz").is_file())
+    {
+        kernels += 1;
+        let dkms = k.join("updates/dkms");
+        let built = ["nvidia.ko", "nvidia.ko.zst", "nvidia.ko.xz", "nvidia.ko.gz"]
+            .iter()
+            .any(|n| dkms.join(n).is_file());
+        if !built {
+            return false;
+        }
+    }
+    kernels > 0
+}
+
+/// After pacstrap: the DKMS pacman hook has run in the target, so a missing
+/// module means the install would boot to a black screen. Fail now, loudly.
+pub fn verify_nvidia(env: &Env) -> Result<()> {
+    if nvidia_modules_built(&env.paths.target.join("usr/lib/modules")) {
+        Ok(())
+    } else {
+        Err(Error::Refused(
+            "the NVIDIA kernel module did not build for every installed kernel; \
+             this machine cannot be installed with the NVIDIA driver",
+        ))
+    }
 }
 
 fn chroot(env: &Env) -> Cmd {
@@ -285,17 +346,276 @@ pub fn mount(env: &Env, l: &Layout) -> Result<()> {
     )
 }
 
-/// Best effort; also run after a failure so the disk is not left busy.
+/// Attempts at `umount -R` before giving up (about 5 s with the 1 s backoff).
+const UMOUNT_TRIES: u32 = 5;
+
+/// The daemons gpg starts on demand for a keyring.
+const GPG_DAEMONS: [&str; 4] = ["gpg-agent", "dirmngr", "keyboxd", "scdaemon"];
+
+/// Pids under `proc` of gpg daemons that belong to the target: chrooted into
+/// it, or given a `--homedir` inside it under any spelling. pacstrap spells it
+/// `<root>//etc/pacman.d/gnupg`, and with no `/run/user/0` gpg keeps its socket
+/// in the homedir, so two spellings share one socket and the agent that lost it
+/// cannot be reached by `gpgconf --kill`. Hence finding them by process.
+pub fn target_gpg_pids(proc: &Path, target: &Path) -> Vec<i32> {
+    let Ok(dir) = fs::read_dir(proc) else {
+        return Vec::new();
+    };
+    let mut pids = Vec::new();
+    for e in dir.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|s| s.parse::<i32>().ok()) else {
+            continue;
+        };
+        let p = e.path();
+        let comm = fs::read_to_string(p.join("comm")).unwrap_or_default();
+        if !GPG_DAEMONS.contains(&comm.trim_end()) {
+            continue;
+        }
+        let rooted =
+            fs::read_link(p.join("root")).is_ok_and(|r| r != Path::new("/") && r.starts_with(target));
+        let cmdline = fs::read(p.join("cmdline")).unwrap_or_default();
+        let mut args = cmdline.split(|b| *b == 0);
+        let homed = std::iter::from_fn(|| args.next())
+            .skip_while(|a| *a != b"--homedir")
+            .nth(1)
+            .is_some_and(|h| Path::new(std::ffi::OsStr::from_bytes(h)).starts_with(target));
+        if rooted || homed {
+            pids.push(pid);
+        }
+    }
+    pids
+}
+
+/// Stop the daemons the keyring stages left running against the target's
+/// gnupg home (pacstrap -K, and the host-side `--gpgdir` calls). They hold the
+/// mount busy until they exit on their own. TERM, a short wait, then KILL.
+fn stop_target_daemons(env: &Env) {
+    use rustix::process::{kill_process, Pid, Signal};
+    let p = &env.paths;
+    for sig in [Signal::TERM, Signal::KILL] {
+        let pids = target_gpg_pids(&p.proc, &p.target);
+        if pids.is_empty() {
+            return;
+        }
+        for pid in pids.iter().filter_map(|&n| Pid::from_raw(n)) {
+            let _ = kill_process(pid, sig);
+        }
+        for _ in 0..20 {
+            if target_gpg_pids(&p.proc, &p.target).is_empty() {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// Append what is still mounted under the target to the install log, so a busy
+/// mount is diagnosable. Mount paths and device names only.
+fn log_busy_mounts(env: &Env) {
+    let Ok(out) = env
+        .runner
+        .capture(&Cmd::new(Tool::Findmnt).arg("-R").arg(&env.paths.target))
+    else {
+        return;
+    };
+    if let Ok(mut f) = fs::OpenOptions::new().append(true).open(&env.paths.install_log) {
+        let _ = writeln!(f, "umount of the target failed; still mounted:");
+        let _ = f.write_all(&out);
+    }
+}
+
+/// Stop the target's key daemons, flush, then `umount -R`, retrying briefly:
+/// a process that is on its way out can hold a mount for a moment. Never a lazy
+/// unmount. Also run after a failure so the disk is not left busy.
 pub fn unmount(env: &Env) -> Result<()> {
-    env.runner
-        .run(&Cmd::new(Tool::Umount).arg("-R").arg(&env.paths.target))
+    stop_target_daemons(env);
+    let _ = env.runner.run(&Cmd::new(Tool::Sync));
+    let mut res = Ok(());
+    for i in 0..UMOUNT_TRIES {
+        if i > 0 {
+            std::thread::sleep(env.paths.umount_backoff);
+        }
+        res = env
+            .runner
+            .run(&Cmd::new(Tool::Umount).arg("-R").arg(&env.paths.target));
+        if res.is_ok() {
+            return res;
+        }
+    }
+    log_busy_mounts(env);
+    res
 }
 
 // ---- Pacstrap ----------------------------------------------------------------
 
+/// Download settings for the install-time pacman.conf: no low-speed abort (a
+/// slow or filtered link must not kill a transaction) and few parallel
+/// downloads (many streams over a bad link starve each other). Replaces any
+/// existing or commented-out setting, then puts ours right under `[options]`.
+pub fn with_download_options(text: &str) -> String {
+    const OURS: &str = "DisableDownloadTimeout\nParallelDownloads = 3\n";
+    let mut out = String::with_capacity(text.len() + OURS.len() + 16);
+    let mut placed = false;
+    for l in text.lines() {
+        let key = l.trim().trim_start_matches('#').trim();
+        let key = key.split(['=', ' ']).next().unwrap_or("");
+        if key == "DisableDownloadTimeout" || key == "ParallelDownloads" {
+            continue;
+        }
+        out.push_str(l);
+        out.push('\n');
+        if !placed && l.trim() == "[options]" {
+            out.push_str(OURS);
+            placed = true;
+        }
+    }
+    if placed {
+        out
+    } else {
+        format!("[options]\n{OURS}\n{out}")
+    }
+}
+
+/// Why a pacstrap run failed, from the tail of its stderr.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FailClass {
+    Network,
+    DiskFull,
+    Signature,
+    Other,
+}
+
+impl FailClass {
+    /// Only a download failure can plausibly go away by trying again. A bad
+    /// signature, a full disk or anything unrecognised must not be retried
+    /// into success.
+    pub fn retryable(self) -> bool {
+        self == FailClass::Network
+    }
+
+    /// The one line the user sees: what happened and what to do next.
+    pub fn message(self) -> &'static str {
+        match self {
+            FailClass::Network => {
+                "Downloads stalled on every mirror — check the connection (a filtered network or \
+                 captive portal can do this), then Try again."
+            }
+            FailClass::DiskFull => "The target disk ran out of space — pick a larger disk, then Try again.",
+            FailClass::Signature => {
+                "Package signature check failed — check that the clock is right and the network is \
+                 not altering downloads (captive portal, proxy), then Try again."
+            }
+            FailClass::Other => {
+                "Installing packages failed — see the install log for the reason, then Try again."
+            }
+        }
+    }
+}
+
+/// Classify pacstrap's stderr. Disk and signature win over network: a "failed
+/// retrieving ... .sig" line is a download problem, but "invalid or corrupted
+/// package (PGP signature)" is a verification one, and a full disk surfaces as
+/// a failed transaction that would otherwise look like a download. The text
+/// is only matched against fixed phrases; none of it is kept or shown.
+pub fn classify_pacstrap(stderr: &[u8]) -> FailClass {
+    let t = String::from_utf8_lossy(stderr).to_ascii_lowercase();
+    let any = |needles: &[&str]| needles.iter().any(|n| t.contains(n));
+    if any(&[
+        "no space left on device",
+        "not enough free disk space",
+        "too full",
+    ]) {
+        FailClass::DiskFull
+    } else if any(&[
+        "pgp signature",
+        "signature from",
+        "is unknown trust",
+        "is marginal trust",
+        "key is disabled",
+        "required key missing",
+        "keyring is not writable",
+        "could not be looked up remotely",
+        "invalid or corrupted database",
+    ]) {
+        FailClass::Signature
+    } else if any(&[
+        "failed retrieving file",
+        "operation too slow",
+        "operation timed out",
+        "connection timed out",
+        "could not resolve",
+        "failed to connect",
+        "connection reset",
+        "connection refused",
+        "ssl connect error",
+        "failed to synchronize",
+        "invalid or corrupted package (checksum)",
+        "unexpected error",
+    ]) {
+        FailClass::Network
+    } else {
+        FailClass::Other
+    }
+}
+
+/// Move the first `Server` line to the end of the list, so the mirror that just
+/// failed is tried last. `None` when there are fewer than two servers.
+pub fn rotate_mirrorlist(text: &str) -> Option<String> {
+    let is_server = |l: &&str| l.trim_start().starts_with("Server");
+    let servers = text.lines().filter(is_server).count();
+    if servers < 2 {
+        return None;
+    }
+    let first = text.lines().position(|l| is_server(&l))?;
+    let mut out = String::with_capacity(text.len() + 1);
+    let mut moved = "";
+    for (i, l) in text.lines().enumerate() {
+        if i == first {
+            moved = l;
+        } else {
+            out.push_str(l);
+            out.push('\n');
+        }
+    }
+    out.push_str(moved);
+    out.push('\n');
+    Some(out)
+}
+
+/// Best effort: a mirror list that cannot be rotated just means the retry
+/// starts where the last attempt did. Written beside the list and renamed over
+/// it, so a link at the path is replaced, never written through.
+fn rotate_live_mirrorlist(env: &Env) {
+    let path = &env.paths.mirrorlist;
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let Some(rotated) = rotate_mirrorlist(&text) else {
+        return;
+    };
+    let mut tmp = path.clone().into_os_string();
+    tmp.push(".new");
+    let tmp = PathBuf::from(tmp);
+    let _ = fs::remove_file(&tmp);
+    let written = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(rotated.as_bytes()));
+    if written.is_ok() && fs::rename(&tmp, path).is_ok() {
+        return;
+    }
+    let _ = fs::remove_file(&tmp);
+}
+
+/// Attempts at pacstrap before giving up on a download failure.
+pub const PACSTRAP_TRIES: u32 = 3;
+
 pub fn install_pacman_conf(env: &Env) -> Result<()> {
     let p = &env.paths;
-    let mut conf = fs::read_to_string(&p.live_pacman_conf).map_err(io("read pacman.conf"))?;
+    let conf = fs::read_to_string(&p.live_pacman_conf).map_err(io("read pacman.conf"))?;
+    let mut conf = with_download_options(&conf);
     // Baked into the medium by packaging/iso/build-iso.sh (D-03): the database is
     // unsigned, the packages in it are signed.
     conf.push_str(&format!(
@@ -313,7 +633,9 @@ pub fn install_pacman_conf(env: &Env) -> Result<()> {
         .map_err(io("write install pacman.conf"))
 }
 
-pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
+/// `note` receives a progress line for each retry. Downloaded packages stay in
+/// the target's cache (pacstrap's default), so a retry fetches only what is left.
+pub fn pacstrap(env: &Env, prep: &Prepared, note: &mut dyn FnMut(&str)) -> Result<()> {
     let p = &env.paths;
     let r = env.runner;
     // Trust the packaging key on the live side (to verify the baked repo) and in
@@ -321,13 +643,31 @@ pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
     r.run(&Cmd::new(Tool::PacmanKey).arg("--add").arg(&p.packaging_key))?;
     r.run(&Cmd::new(Tool::PacmanKey).arg("--lsign-key").arg(&prep.keyid))?;
     install_pacman_conf(env)?;
-    r.run(
-        &Cmd::new(Tool::Pacstrap)
-            .args(["-K", "-C"])
-            .arg(&p.install_pacman_conf)
-            .arg(&p.target)
-            .args(&prep.pkgs),
-    )?;
+    let strap = Cmd::new(Tool::Pacstrap)
+        .args(["-K", "-C"])
+        .arg(&p.install_pacman_conf)
+        .arg(&p.target)
+        .args(&prep.pkgs);
+    let mut attempt = 1;
+    loop {
+        let (res, stderr) = r.run_diag(&strap);
+        if res.is_ok() {
+            break;
+        }
+        let class = classify_pacstrap(&stderr);
+        if !class.retryable() || attempt >= PACSTRAP_TRIES {
+            return Err(Error::Failed(class.message()));
+        }
+        note(match attempt {
+            1 => "downloads failed; retrying on a different mirror (attempt 2 of 3)",
+            _ => "downloads failed; retrying on a different mirror (attempt 3 of 3)",
+        });
+        // The failed run's key daemons would hold the target's keyring.
+        stop_target_daemons(env);
+        rotate_live_mirrorlist(env);
+        std::thread::sleep(p.retry_backoff * attempt);
+        attempt += 1;
+    }
     let ring = p.target.join("etc/pacman.d/gnupg");
     r.run(
         &Cmd::new(Tool::PacmanKey)
@@ -343,6 +683,13 @@ pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
             .arg("--lsign-key")
             .arg(&prep.keyid),
     )?;
+    // pacstrap synced `[eclipseos]` from the medium's baked repo, whose
+    // database build-iso.sh re-signs, so it differs from the published one but
+    // is newer. The target's first `pacman -Sy` would keep that db (the server
+    // answers 304) and fetch the published signature: a bad signature until a
+    // later sync. Drop the pair so the first sync fetches both.
+    target::remove(&p.target, TargetFile::SyncDb)?;
+    target::remove(&p.target, TargetFile::SyncDbSig)?;
     let fstab = r.capture(&Cmd::new(Tool::Genfstab).arg("-U").arg(&p.target))?;
     let mut all = target::read(&p.target, TargetFile::Fstab)?;
     all.extend_from_slice(&fstab);
@@ -351,7 +698,7 @@ pub fn pacstrap(env: &Env, prep: &Prepared) -> Result<()> {
 
 // ---- Configure ---------------------------------------------------------------
 
-pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
+pub fn configure(env: &Env, plan: &Plan, nvidia: bool) -> Result<()> {
     let t = &env.paths.target;
     target::write(t, TargetFile::Hostname, format!("{}\n", plan.hostname).as_bytes())?;
     target::link_localtime(t, &plan.timezone)?;
@@ -382,6 +729,9 @@ pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
         format!("KEYMAP={}\n", plan.keymap).as_bytes(),
     )?;
     target::write(t, TargetFile::ZramGenerator, ZRAM_CONF.as_bytes())?;
+    if nvidia {
+        target::write(t, TargetFile::MkinitcpioNvidia, MKINITCPIO_NVIDIA.as_bytes())?;
+    }
     target::write(t, TargetFile::SudoersWheel, SUDOERS_WHEEL.as_bytes())?;
 
     env.runner.run(&chroot(env).arg("locale-gen"))?;
@@ -393,7 +743,7 @@ pub fn configure(env: &Env, plan: &Plan) -> Result<()> {
 
 // ---- Bootloader --------------------------------------------------------------
 
-pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>) -> Result<()> {
+pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>, nvidia: bool) -> Result<()> {
     let t = &env.paths.target;
     // Limine's UEFI install is two files: the stub at the removable fallback
     // path, which needs no NVRAM entry, and a config that says what it does.
@@ -412,7 +762,11 @@ pub fn bootloader(env: &Env, l: &Layout, ucode: Option<Ucode>) -> Result<()> {
         return Err(Error::Refused("root uuid"));
     }
     let ucode = ucode.filter(|u| t.join("boot").join(u.image()).is_file());
-    target::write(t, TargetFile::LimineConf, limine_conf(uuid, ucode).as_bytes())?;
+    target::write(
+        t,
+        TargetFile::LimineConf,
+        limine_conf(uuid, ucode, nvidia).as_bytes(),
+    )?;
     // A firmware entry as well as the removable path, so machines that prefer
     // NVRAM entries boot it. Best effort: the fallback path is what must work.
     let _ = env.runner.run(
@@ -484,6 +838,35 @@ pub fn units(env: &Env, entries: &[&Entry]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_gpg_daemons_are_found_under_any_spelling_or_chroot() {
+        let t = crate::testutil::TempDir::new();
+        let proc = t.path().join("proc");
+        let fake = |pid: &str, comm: &str, cmdline: &[&str], root: &str| {
+            let d = proc.join(pid);
+            fs::create_dir_all(&d).unwrap();
+            fs::write(d.join("comm"), format!("{comm}\n")).unwrap();
+            fs::write(d.join("cmdline"), cmdline.join("\0") + "\0").unwrap();
+            std::os::unix::fs::symlink(root, d.join("root")).unwrap();
+        };
+        let agent = |h: &'static str| ["gpg-agent", "--homedir", h, "--daemon"];
+        fake("10", "gpg-agent", &agent("/mnt//etc/pacman.d/gnupg"), "/");
+        fake("11", "gpg-agent", &agent("/mnt/etc/pacman.d/gnupg"), "/");
+        fake(
+            "12",
+            "keyboxd",
+            &["keyboxd", "--homedir", "/etc/pacman.d/gnupg"],
+            "/mnt",
+        );
+        fake("20", "gpg-agent", &agent("/etc/pacman.d/gnupg"), "/");
+        fake("21", "zsh", &["zsh", "--homedir", "/mnt/x"], "/");
+        fake("22", "gpg-agent", &agent("/mntx/etc/pacman.d/gnupg"), "/");
+        fs::create_dir_all(proc.join("self")).unwrap();
+        let mut got = target_gpg_pids(&proc, Path::new("/mnt"));
+        got.sort();
+        assert_eq!(got, vec![10, 11, 12]);
+    }
     use crate::catalog::Catalog;
 
     #[test]
@@ -562,14 +945,56 @@ mod tests {
 
     #[test]
     fn limine_config_matches_the_reference() {
-        let c = limine_conf("abcd-1234", Some(Ucode::Amd));
+        let c = limine_conf("abcd-1234", Some(Ucode::Amd), false);
         assert!(c.starts_with("timeout: 2\n\n/EclipseOS\n    protocol: linux\n"));
         assert!(c.contains("    cmdline: root=UUID=abcd-1234 rootfstype=ext4 rw zswap.enabled=0 amd_pstate=active\n    module_path: boot():/amd-ucode.img\n    module_path: boot():/initramfs-linux.img\n"));
         assert!(c.contains("/EclipseOS (fallback initramfs)"));
-        assert!(!limine_conf("u", None).contains("ucode"));
-        let i = limine_conf("u", Some(Ucode::Intel));
+        assert!(!limine_conf("u", None, false).contains("ucode"));
+        let i = limine_conf("u", Some(Ucode::Intel), false);
         assert!(i.contains("module_path: boot():/intel-ucode.img") && !i.contains("amd_pstate"));
         assert!(valid_uuid("1b2c-3D4e") && !valid_uuid("a b") && !valid_uuid("x\ny") && !valid_uuid(""));
+    }
+
+    #[test]
+    fn nvidia_cmdline_is_on_every_entry_only_for_turing_plus() {
+        let on = limine_conf("u", Some(Ucode::Amd), true);
+        assert_eq!(on.matches("nvidia-drm.modeset=1 nvidia-drm.fbdev=1").count(), 3);
+        assert_eq!(on.matches("cmdline:").count(), 3);
+        assert!(on.contains("path: boot():/vmlinuz-linux-lts") && on.contains("initramfs-linux-lts.img"));
+        assert!(!limine_conf("u", Some(Ucode::Amd), false).contains("nvidia"));
+    }
+
+    #[test]
+    fn nvidia_initramfs_appends_modules_and_leaves_hooks_alone() {
+        assert_eq!(
+            MKINITCPIO_NVIDIA,
+            "MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n"
+        );
+        assert!(!MKINITCPIO_NVIDIA.contains("HOOKS"));
+    }
+
+    #[test]
+    fn nvidia_build_is_checked_for_every_kernel() {
+        let t = crate::testutil::TempDir::new();
+        let m = t.path().join("usr/lib/modules");
+        assert!(!nvidia_modules_built(&m), "no modules dir");
+        let kernel = |name: &str, built: bool| {
+            let d = m.join(name);
+            fs::create_dir_all(d.join("updates/dkms")).unwrap();
+            fs::write(d.join("vmlinuz"), b"k").unwrap();
+            if built {
+                fs::write(d.join("updates/dkms/nvidia.ko.zst"), b"m").unwrap();
+            }
+        };
+        kernel("6.1-arch1-1", true);
+        assert!(nvidia_modules_built(&m));
+        kernel("6.2-lts", false);
+        assert!(!nvidia_modules_built(&m), "one kernel missing the module");
+        kernel("6.2-lts", true);
+        assert!(nvidia_modules_built(&m));
+        // A leftover dir with no kernel image is not a kernel.
+        fs::create_dir_all(m.join("extramodules-old")).unwrap();
+        assert!(nvidia_modules_built(&m));
     }
 
     #[test]
@@ -594,5 +1019,67 @@ mod tests {
     fn units_are_floor_plus_catalog_and_nothing_else() {
         let es = Catalog::builtin().resolve(&["ec-hyperion-bar".into()]).unwrap();
         assert_eq!(unit_list(&es), FLOOR_UNITS);
+    }
+
+    #[test]
+    fn pacstrap_failures_are_classified() {
+        use FailClass::*;
+        let c = |t: &str| classify_pacstrap(t.as_bytes());
+        assert_eq!(
+            c(
+                "error: failed retrieving file 'x.sig' from m : Operation too slow. Less than 1 bytes/sec\n\
+               error: failed to commit transaction (unexpected error)"
+            ),
+            Network
+        );
+        assert_eq!(
+            c("curl: (6) Could not resolve host: geo.mirror.pkgbuild.com"),
+            Network
+        );
+        assert_eq!(
+            c("error: failed retrieving file 'a' : Connection timed out after 10001"),
+            Network
+        );
+        assert_eq!(c("error: x: signature from \"A\" is unknown trust"), Signature);
+        assert_eq!(
+            c("error: x: invalid or corrupted package (PGP signature)"),
+            Signature
+        );
+        assert_eq!(
+            c("error: failed to commit transaction (No space left on device)"),
+            DiskFull
+        );
+        assert_eq!(c("error: Partition / too full: 10 blocks needed"), DiskFull);
+        assert_eq!(c("error: target not found: nope"), Other);
+        assert_eq!(c(""), Other);
+        assert!(Network.retryable());
+        assert!(![DiskFull, Signature, Other].iter().any(|k| k.retryable()));
+        for k in [Network, DiskFull, Signature, Other] {
+            assert!(k.message().ends_with("Try again."));
+        }
+    }
+
+    #[test]
+    fn mirrorlist_rotation_puts_the_failed_mirror_last() {
+        let t = "# c\nServer = https://a\n#Server = https://off\nServer = https://b\n";
+        let r = rotate_mirrorlist(t).unwrap();
+        assert_eq!(
+            r,
+            "# c\n#Server = https://off\nServer = https://b\nServer = https://a\n"
+        );
+        assert_eq!(rotate_mirrorlist("Server = https://a\n"), None);
+        assert_eq!(rotate_mirrorlist(""), None);
+    }
+
+    #[test]
+    fn download_options_replace_existing_settings_under_options() {
+        let t = "[options]\nHoldPkg = pacman\n#ParallelDownloads = 5\nParallelDownloads = 8\n\n[core]\nInclude = x\n";
+        let r = with_download_options(t);
+        assert_eq!(
+            r,
+            "[options]\nDisableDownloadTimeout\nParallelDownloads = 3\nHoldPkg = pacman\n\n[core]\nInclude = x\n"
+        );
+        assert_eq!(with_download_options(&r), r);
+        assert!(with_download_options("[core]\n").starts_with("[options]\nDisableDownloadTimeout"));
     }
 }

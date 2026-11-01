@@ -45,6 +45,36 @@ pub fn fetch_blur(client: &mut ec_ipc::Client) -> Option<bool> {
         .or_else(|| value.as_bool())
 }
 
+/// The three `decoration.surface.*` values over `client`. `None` when any of
+/// them is missing or not a number, so the caller keeps the values it has.
+pub fn fetch_surface(client: &mut ec_ipc::Client) -> Option<crate::surface::Values> {
+    Some(crate::surface::Values {
+        tint: fetch_config_radius(client, "decoration.surface.tint")?,
+        card_fill: fetch_config_radius(client, "decoration.surface.card-fill")?,
+        inset_fill: fetch_config_radius(client, "decoration.surface.inset-fill")?,
+    })
+}
+
+/// Read the surface values into [`crate::surface`]. `false`, with the last
+/// values kept, when they cannot be read. Called on start-up and on every
+/// Config reload, so a change in Settings reaches every window.
+pub fn sync_surface(client: &mut ec_ipc::Client) -> bool {
+    match fetch_surface(client) {
+        Some(v) => {
+            crate::surface::set(v);
+            true
+        }
+        None => false,
+    }
+}
+
+/// [`sync_surface`] over a short-lived connection of its own.
+pub fn sync_surface_now() -> bool {
+    ec_ipc::Client::connect()
+        .ok()
+        .is_some_and(|mut c| sync_surface(&mut c))
+}
+
 /// The live glass of a pane with no control-socket client of its own:
 /// `decoration.rounding` and [`fetch_blur`] over one short-lived connection.
 /// Each half is `None` when the socket or the key is not there.

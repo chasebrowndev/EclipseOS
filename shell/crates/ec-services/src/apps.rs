@@ -563,6 +563,13 @@ pub fn launch(entry: &Entry, term: Option<&str>) -> std::io::Result<()> {
         cmd.args(args);
         cmd
     };
+    // A long-lived caller (the taskbar) starts with the session target, before
+    // XWayland is up; abyss imports `DISPLAY` into the user manager later, and
+    // a running process never sees that. Without it X11-only apps (Steam) die
+    // with "unable to open a connection to X".
+    if std::env::var_os("DISPLAY").is_none() {
+        cmd.envs(session_display());
+    }
     use std::os::unix::process::CommandExt;
     // The child must not inherit our controlling terminal or process group,
     // so the launcher exiting doesn't take the application with it.
@@ -580,6 +587,29 @@ pub fn launch(entry: &Entry, term: Option<&str>) -> std::io::Result<()> {
         })
 }
 
+/// `DISPLAY` and `XAUTHORITY` as the user manager has them now. Empty when
+/// `systemctl` is missing or fails: the launch goes ahead without them.
+fn session_display() -> Vec<(String, String)> {
+    std::process::Command::new("systemctl")
+        .args(["--user", "show-environment"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|out| out.status.success())
+        .map(|out| x_vars(&String::from_utf8_lossy(&out.stdout)))
+        .unwrap_or_default()
+}
+
+/// Picks the X11 variables out of `systemctl --user show-environment` text.
+fn x_vars(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| line.split_once('='))
+        .filter(|(key, value)| matches!(*key, "DISPLAY" | "XAUTHORITY") && !value.is_empty())
+        .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -590,6 +620,19 @@ mod tests {
 
     fn entry_with_term(text: &str, term: &str) -> Option<Entry> {
         parse("test.desktop", text, Some(term))
+    }
+
+    #[test]
+    fn x_vars_takes_only_display_and_xauthority() {
+        let text = "HOME=/home/h\nDISPLAY=:0\nWAYLAND_DISPLAY=wayland-1\nXAUTHORITY=/run/user/1000/xauth\nXAUTHLOCAL=\n";
+        assert_eq!(
+            x_vars(text),
+            [
+                ("DISPLAY".to_owned(), ":0".to_owned()),
+                ("XAUTHORITY".to_owned(), "/run/user/1000/xauth".to_owned())
+            ]
+        );
+        assert!(x_vars("DISPLAY=\nPATH=/usr/bin\n").is_empty());
     }
 
     #[test]

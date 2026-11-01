@@ -21,7 +21,7 @@
 //! Snapshot for close (taken in `compositor.rs commit()` before
 //! `on_commit_buffer_handler` on `BufferAssignment::Removed`, in
 //! `toplevel_destroyed` and the xwm unmap paths) and for the old frame of a
-//! fullscreen or maximize toggle. A built-in ghost is drawn with the border and
+//! fullscreen toggle. A built-in ghost is drawn with the border and
 //! shadow its window had, in the focus state it left in; a ghost an add-on
 //! shader draws has no decoration at all (a rim would show the whole window).
 //!

@@ -11,10 +11,11 @@
 //!   protocol error `seat_exists` (one seat per agent is the model, so a
 //!   second request is a client bug, not something to paper over).
 //! - **The seat.** A smithay `Seat` named `agent-<id>` with its own
-//!   keyboard, pointer and touch, registered on the *main* display so the
+//!   keyboard, pointer and touch, announced on the *main* display so the
 //!   clients it acts on receive its events through their own `wl_seat`
-//!   binding. It lives in `AbyssState::agent_seats`, keyed by the agent's
-//!   `u64` handle; nothing here is shared or locked.
+//!   binding, and announced only to them ([`super::seat_global`], SEAT-01).
+//!   It lives in `AbyssState::agent_seats`, keyed by the agent's `u64`
+//!   handle; nothing here is shared or locked.
 //! - **Isolation.** Nothing in `input/` touches an agent seat and nothing
 //!   here touches `AbyssState::seat`. The agent seat carries no compositor
 //!   bindings (COMP-04 §5): keys go through a filter that always forwards.
@@ -34,6 +35,7 @@
 
 use std::io::Write;
 use std::os::fd::{AsFd, FromRawFd};
+use std::sync::Arc;
 use std::time::Instant;
 
 use ec_protocols::agent::server::eclipse_agent_seat_v1::{self, EclipseAgentSeatV1};
@@ -45,12 +47,17 @@ use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, PointerHandle
 use smithay::input::touch::{DownEvent, MotionEvent as TouchMotionEvent, TouchHandle, UpEvent};
 use smithay::input::Seat;
 use smithay::reexports::wayland_server::{
-    backend::ClientId, protocol::wl_surface::WlSurface, Client, DataInit, Dispatch, DisplayHandle, New,
-    Resource,
+    backend::{ClientId, GlobalHandler, GlobalId},
+    protocol::{
+        wl_seat::{self, WlSeat},
+        wl_surface::WlSurface,
+    },
+    Client, DataInit, Dispatch, Display, DisplayHandle, New, Resource,
 };
 use smithay::utils::{IsAlive, Logical, Point, SERIAL_COUNTER};
 use smithay::wayland::text_input::TextInputSeat;
 
+use super::seat_global::{self, SeatGlobal};
 use super::{atomic, generation, lock, AgentId};
 use crate::input::Origin;
 use crate::policy::enforce::{self, Act, Request, Submitted};
@@ -82,6 +89,22 @@ pub struct AgentSeat {
     pointer_pos: Point<f64, Logical>,
     /// Buttons held, so teardown can release them.
     buttons: Vec<u32>,
+    /// smithay's global handler for `seat`. Its own global lives on a display
+    /// nobody connects to; clients only ever see `globals`.
+    handler: Arc<dyn GlobalHandler<AbyssState>>,
+    /// The handler of a nameless smithay seat with no devices, made the same
+    /// way: what a client that is not admitted but was told of a global
+    /// binds (`seat_global`, "decoys"). A real smithay seat, so every
+    /// protocol that takes a `wl_seat` accepts it.
+    decoy: Arc<dyn GlobalHandler<AbyssState>>,
+    /// The filtered globals announced on the main display.
+    globals: Vec<(GlobalId, Arc<SeatGlobal>)>,
+    /// The clients the seat may reach, as of the last [`refresh`].
+    allowed: Vec<ClientId>,
+    /// Spare buffer for the next [`refresh`], so it does not allocate.
+    scratch: Vec<ClientId>,
+    /// Every `wl_seat` bound to this seat, with its client.
+    bound: Vec<(ClientId, WlSeat)>,
 }
 
 impl AgentSeat {
@@ -449,11 +472,11 @@ pub(super) fn remove(state: &mut AbyssState, agent: u64) {
     s.pointer.frame(state);
     s.touch.cancel(state);
     s.keyboard.set_focus(state, None, SERIAL_COUNTER.next_serial());
-    // Clients are told the seat has no capabilities, then the global goes.
+    // Clients are told the seat has no capabilities, then the globals go.
     s.seat.remove_keyboard();
     s.seat.remove_pointer();
     s.seat.remove_touch();
-    if let Some(g) = s.seat.global() {
+    for (g, _) in s.globals.drain(..) {
         state.display_handle.remove_global::<AbyssState>(g);
     }
     tracing::info!(agent, "agent seat removed");
@@ -852,9 +875,14 @@ pub(super) fn get_seat(
         return;
     }
     let resource = data_init.init(id, AgentId(aid));
-    let name = format!("agent-{aid}");
-    let dh = state.display_handle.clone();
-    let mut seat = state.seat_state.new_wl_seat(&dh, name);
+    let (Some((mut seat, handler)), Some((_, decoy))) = (
+        hidden_seat(state, format!("agent-{aid}")),
+        hidden_seat(state, String::new()),
+    ) else {
+        // The seat object stays, and every request on it is `client_gone`.
+        tracing::error!(agent = aid, "agent seat: no global handler");
+        return;
+    };
     let xkb = crate::input::xkb_config(&state.config.input);
     let (delay, rate) = (state.config.input.repeat_delay, state.config.input.repeat_rate);
     let keyboard = match seat.add_keyboard(xkb, delay, rate) {
@@ -880,9 +908,126 @@ pub(super) fn get_seat(
             pointer_window: None,
             pointer_pos: (0.0, 0.0).into(),
             buttons: Vec::new(),
+            handler,
+            decoy,
+            globals: Vec::new(),
+            allowed: Vec::new(),
+            scratch: Vec::new(),
+            bound: Vec::new(),
         },
     ));
+    // Announced to the clients it can reach, now that it has its devices.
+    refresh(state, aid);
     tracing::info!(agent = aid, "agent seat created");
+}
+
+thread_local! {
+    /// The display agent seats' own globals live on. No client ever connects
+    /// to it and it is never dispatched; it lives as long as the thread.
+    ///
+    /// Leaked, never dropped, and its globals never removed, on purpose:
+    /// wayland-backend 0.3.17's libwayland `get_global_handler` frees the
+    /// global's user data while the `wl_global` still points at it, so
+    /// destroying that global, or the display holding it, would free it a
+    /// second time. Untouched, the dangling pointer is never read: libwayland
+    /// reads a global's user data only to bind it or to filter a registry,
+    /// and nothing connects here. The cost is one `wl_global` per agent seat
+    /// ever made, and one display per thread.
+    static HIDDEN: Option<smithay::reexports::wayland_server::DisplayHandle> =
+        Display::<AbyssState>::new().ok().map(|d| Box::leak(Box::new(d)).handle());
+}
+
+/// A smithay seat whose own, unfiltered `wl_seat` global is made on
+/// [`HIDDEN`], and that global's handler, which [`SeatGlobal`] forwards binds
+/// on the main display to (SEAT-01).
+fn hidden_seat(
+    state: &mut AbyssState,
+    name: String,
+) -> Option<(Seat<AbyssState>, Arc<dyn GlobalHandler<AbyssState>>)> {
+    let dh = HIDDEN.with(Clone::clone)?;
+    let seat = state.seat_state.new_wl_seat(&dh, name);
+    let handler = dh
+        .backend_handle()
+        .get_global_handler::<AbyssState>(seat.global()?)
+        .ok()?;
+    Some((seat, handler))
+}
+
+/// Every capability an agent seat has while it lives.
+fn all_caps() -> wl_seat::Capability {
+    wl_seat::Capability::Keyboard | wl_seat::Capability::Pointer | wl_seat::Capability::Touch
+}
+
+/// Re-decide which clients agent `aid`'s seat is visible to
+/// ([`seat_global`]): announce it to clients newly in reach, strip the
+/// capabilities of bindings whose client left it, restore them for those
+/// back in it, and drop globals whose clients are all gone. Returns whether
+/// any client was sent anything.
+pub(super) fn refresh(state: &mut AbyssState, aid: u64) -> bool {
+    let Some(s) = entry_mut(state, aid) else {
+        return false;
+    };
+    let mut now = std::mem::take(&mut s.scratch);
+    seat_global::reachable(state, aid, &mut now);
+    let dh = state.display_handle.clone();
+    let Some(s) = entry_mut(state, aid) else {
+        return false;
+    };
+    let mut changed = false;
+    s.bound.retain(|(_, r)| r.is_alive());
+    for (client, r) in &s.bound {
+        let is = now.contains(client);
+        if s.allowed.contains(client) != is {
+            r.capabilities(if is {
+                all_caps()
+            } else {
+                wl_seat::Capability::empty()
+            });
+            changed = true;
+        }
+    }
+    let fresh: Vec<ClientId> = now
+        .iter()
+        .filter(|c| !s.globals.iter().any(|(_, g)| g.admits(c)))
+        .cloned()
+        .collect();
+    if !fresh.is_empty() {
+        let g = Arc::new(SeatGlobal::new(
+            aid,
+            Arc::clone(&s.handler),
+            Arc::clone(&s.decoy),
+            fresh,
+        ));
+        let id = dh.backend_handle().create_global::<AbyssState>(
+            WlSeat::interface(),
+            seat_global::VERSION,
+            Arc::clone(&g) as Arc<dyn GlobalHandler<AbyssState>>,
+        );
+        s.globals.push((id, g));
+        changed = true;
+    }
+    s.globals.retain(|(id, g)| {
+        let gone = g.all_gone(&dh);
+        if gone {
+            dh.remove_global::<AbyssState>(id.clone());
+        }
+        !gone
+    });
+    s.scratch = std::mem::replace(&mut s.allowed, now);
+    changed
+}
+
+/// A client bound agent `aid`'s seat through a [`SeatGlobal`]. Out of reach
+/// (it raced a scope change), it is told the seat has nothing.
+pub(super) fn bound(state: &mut AbyssState, aid: u64, client: ClientId, seat: WlSeat) {
+    let Some(s) = entry_mut(state, aid) else {
+        seat.capabilities(wl_seat::Capability::empty());
+        return;
+    };
+    if !s.allowed.contains(&client) {
+        seat.capabilities(wl_seat::Capability::empty());
+    }
+    s.bound.push((client, seat));
 }
 
 /// The seat's active keymap, as an xkb v1 text file in a memfd.

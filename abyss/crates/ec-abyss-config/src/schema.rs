@@ -18,7 +18,9 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{AnnotationColors, BarPopupAnchor, BarPosition, Config, FloatingPlacement, LayoutKind};
+use super::{
+    AnnotationColors, BarPopupAnchor, BarPosition, BarWeekStart, Config, FloatingPlacement, LayoutKind,
+};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -688,13 +690,32 @@ pub const TABLE: &[Key] = &[
        (2026-09-23).",
     ),
     k(
+        "bar.clock.week-start",
+        Ty::Enum(&["auto", "monday", "sunday"]),
+        Str("auto"),
+        Abyss,
+        Live,
+        "First weekday of the calendar that opens from the taskbar clock; \
+       auto follows the locale.",
+    ),
+    k(
+        "bar.clock.week-numbers",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Show ISO week numbers beside the calendar's weeks.",
+    ),
+    k(
         "bar.popup-anchor",
         Ty::Enum(&["cell", "pointer"]),
         Str("cell"),
         Abyss,
         Live,
-        "Where taskbar popups open: under the cell that was clicked, or at \
-       the pointer.",
+        "Where taskbar popups (tray menus, the tray overflow) open: under the \
+       cell that was clicked, or at the pointer. The wifi and bluetooth \
+       drawers are not popups: they unroll from the bar under their own \
+       cell, like the start menu.",
     ),
     k(
         "bar.eye",
@@ -953,6 +974,30 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "`frost`: colour mixed over the blurred backdrop; its alpha is how much.",
+    ),
+    k(
+        "decoration.surface.tint",
+        PCT,
+        Float(0.70),
+        Abyss,
+        Live,
+        "Window tint opacity over the glass. sRGB-intent; clients convert.",
+    ),
+    k(
+        "decoration.surface.card-fill",
+        Ty::Float { min: 0.0, max: 0.30 },
+        Float(0.035),
+        Abyss,
+        Live,
+        "Alpha of a hairline card's white fill. sRGB-intent; clients convert.",
+    ),
+    k(
+        "decoration.surface.inset-fill",
+        Ty::Float { min: 0.0, max: 0.30 },
+        Float(0.03),
+        Abyss,
+        Live,
+        "Alpha of an inset group's white fill. sRGB-intent; clients convert.",
     ),
     k(
         "decoration.shadow.enabled",
@@ -1435,11 +1480,15 @@ pub const TABLE: &[Key] = &[
     k(
         "xwayland.scaling",
         Ty::Enum(&["compositor", "client"]),
-        Str("compositor"),
+        Str("client"),
         Abyss,
         NeedsRestart,
-        "`compositor` upscales X11 clients — blurry but always correct. \
-       `client` hands them DPI hints and lets them render natively.",
+        "`client` maps X11 pixels 1:1 to physical pixels: games and DPI-aware \
+       apps render sharp; old non-DPI-aware X apps render small. `compositor` \
+       upscales X11 clients: blurry but always the right size. Default changed \
+       by ADR 0078. In `client` mode X cursors are `XCURSOR_SIZE` (24 if \
+       unset) times the scale, published as XSETTINGS `Gtk/CursorThemeSize` \
+       and root `RESOURCE_MANAGER` `Xcursor.size`.",
     ),
     // idle
     k(
@@ -1864,7 +1913,7 @@ pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "output", owner: Abyss, doc: "Per-output settings: `output \"<glob>\" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key." },
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "widget", owner: Abyss, doc: "A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget \"<name>\" { exec \"<argv0>\" \"<arg>\"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source \"<source>\"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{\"name\", \"kind\": \"exec\" | \"stream\" | \"source\", \"exec\": [argv] | null, \"interval-ms\": int | null, \"source\": string | null, \"format\": string | null, \"icon\": string | null, \"on-click\": [argv] | null, \"on-scroll-up\": [argv] | null, \"on-scroll-down\": [argv] | null, \"approval\": \"approved\", \"premade\": bool}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only; `premade` is true when the block is identical to the catalog block of the same name. Widgets are an add-on hook (ADR 0066): unless an installed add-on (the taskbar) turns on `taskbar-widgets`, `widget` blocks are ignored rather than refused, their `custom:` ids are dropped from `bar.widgets.*`, `collections.widget` is empty and `set_config_collection` for `widget` is refused. With the hook on, the premade catalog (`/usr/share/eclipse/widgets/*.kdl`, each file only `bar { widget … }`) is the lowest config layer, below `/etc/eclipse/abyss.kdl`, so `custom:<premade>` works with no block of your own and a block of the same name replaces it. Command widgets need your approval (ADR 0067): an `exec` or `stream` widget runs only if it is an unedited catalog block or you approved exactly this definition (name, argv, interval or stream, and actions) in the compositor-drawn prompt. Anything else, an edited premade or a new command, is withheld: it does not run, its `custom:` id stays and draws nothing, and `collections.widget` lists it as `{\"name\", \"approval\": \"pending\", \"premade\": false, \"altered\": bool}` with no command fields (`altered` is true for an edited premade). Any later edit withholds it again. Not now lasts for the session; the control-socket method `review_widget {\"name\"}` (owner only) brings the prompt back, returns `{\"name\", \"queued\": bool}`, never shows two prompts for one widget, and cannot approve anything itself. `approval`, `premade` and `altered` are ignored on write." },
-    Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file." },
+    Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Placement actions apply once, at map; property actions re-apply on every commit and on a float toggle (COMP-05 §4, C-22). Its *action* decides the owning file." },
     Collection { node: "input.device", owner: Abyss, doc: "Per-device pointer settings, written inside `input { }`: `device \"<name>\" { accel-profile \"flat\"; accel-speed -0.3; scroll-method \"on-button-down\"; touchpad { tap-to-click #true; scroll-method \"edge\"; } calibration 1 0 0 0 1 0; }`. `<name>` is the libinput device name, matched exactly (`libinput list-devices` prints it); every device of that name gets the block. Any subset of `accel-profile`, `accel-speed`, `scroll-method` and a `touchpad { }` with any of the `input.touchpad.*` keys, each validated as its global key is; a key left out inherits the global one, and a key set here wins over it. `touchpad` keys reach only a touchpad, `scroll-method` only a device that is not one. `calibration a b c d e f` is libinput's 2x3 calibration matrix for a touchscreen or tablet, row-major, six numbers; it is only allowed in a device block, and a device without one keeps its default matrix. A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket, and not listed by `get_config`." },
     Collection { node: "wallpaper.output", owner: Abyss, doc: "A per-output wallpaper override, written inside `wallpaper { }`: `output \"<name>\" { path \"…\"; mode \"fit\"; color \"#rrggbb\"; }`, any subset of the three keys, each validated as its `wallpaper.*` key is; a key left out inherits the global one. `<name>` is the connector name (`DP-1`). A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket. `get_config` lists them, in file order, under `collections.\"wallpaper.output\"` as `{\"output\", \"path\": string | null, \"mode\": string | null, \"color\": \"#rrggbbaa\" | null}`, every field always present; `null` means inherited." },
 ];
@@ -1886,6 +1935,7 @@ pub const RULE_ACTIONS: &[(&str, Owner)] = &[
     ("position", Abyss),
     ("output", Abyss),
     ("opacity", Abyss),
+    ("translucent-region", Abyss),
     ("blur", Abyss),
     ("workspace", Abyss),
     ("no-focus-steal", Abyss),
@@ -2130,6 +2180,17 @@ pub const RULE_MATCHERS: &[Form] = &[
         "Whether the window is an X11 client. Bare means `#true`.",
     ),
     form(
+        &["floating"],
+        "[<bool>]",
+        &["floating", "floating #false"],
+        "Whether the window is floating right now. Write `#true` or `#false` \
+       (bare means `#true`; the quoted strings `\"true\"`/`\"false\"` are accepted too, bare `true` is a KDL syntax error). Re-read \
+       on every evaluation, so it follows tile/float toggles; a fullscreen \
+       window (held floating) counts as floating. Only property actions \
+       (`opacity`, `blur`, `translucent-region`, …) follow a toggle; `float`, \
+       `tile`, `size` and the other placement actions apply once, at map.",
+    ),
+    form(
         &["output"],
         "\"<glob>\"",
         &[r#"output "DP-*""#],
@@ -2195,6 +2256,19 @@ pub const RULE_ACTION_FORMS: &[Form] = &[
         "<0.0..1.0>",
         &["opacity 0.85"],
         "Alpha for this window, replacing `decoration.active-opacity`/`inactive-opacity`.",
+    ),
+    form(
+        &["translucent-region"],
+        "top=<px> opacity=<0.0..1.0> [key=#rrggbb]",
+        &[
+            "translucent-region top=84 opacity=0.6",
+            "translucent-region top=84 opacity=0.35 key=#1b1b1f",
+        ],
+        "Draw only the top `top` logical px of the window at `opacity`, with the \
+       window's blur mode behind that strip; the rest stays as the client drew \
+       it. Multiplies with `opacity`. For clients that submit an opaque buffer. \
+       With `key=#rrggbb` only pixels of exactly that colour (within 1/255 per \
+       channel) turn translucent; text and images in the strip stay opaque.",
     ),
     form(
         &["blur"],
@@ -2301,6 +2375,12 @@ pub const BIND_ACTIONS: &[Form] = &[
         "",
         &["toggle-floating"],
         "Float or tile the focused window.",
+    ),
+    form(
+        &["toggle-fullscreen", "fullscreen"],
+        "",
+        &["toggle-fullscreen"],
+        "Fullscreen the focused window, or end its fullscreen.",
     ),
     form(&["minimize"], "", &["minimize"], "Send the focused window away."),
     form(
@@ -2512,6 +2592,15 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.rounding" => V::Int(c.bar.rounding as i64),
         "bar.clock.hour-12" => V::Bool(c.bar.clock.hour_12),
         "bar.clock.date-mdy" => V::Bool(c.bar.clock.date_mdy),
+        "bar.clock.week-start" => V::Str(
+            match c.bar.clock.week_start {
+                BarWeekStart::Auto => "auto",
+                BarWeekStart::Monday => "monday",
+                BarWeekStart::Sunday => "sunday",
+            }
+            .into(),
+        ),
+        "bar.clock.week-numbers" => V::Bool(c.bar.clock.week_numbers),
         "bar.eye" => V::Bool(c.bar.eye),
         "bar.widgets.order" => list(&c.bar.widgets.order),
         "bar.widgets.important" => list(&c.bar.widgets.important),
@@ -2564,6 +2653,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "decoration.blur.frost.tint" => V::Color(c.decoration.blur.frost.tint),
         "decoration.blur.size" => V::Int(c.decoration.blur.size as i64),
         "decoration.blur.passes" => V::Int(c.decoration.blur.passes as i64),
+        "decoration.surface.tint" => V::Float(widen(c.decoration.surface.tint)),
+        "decoration.surface.card-fill" => V::Float(widen(c.decoration.surface.card_fill)),
+        "decoration.surface.inset-fill" => V::Float(widen(c.decoration.surface.inset_fill)),
         "decoration.shadow.enabled" => V::Bool(c.decoration.shadow.enabled),
         "decoration.shadow.range" => V::Int(c.decoration.shadow.range as i64),
         "decoration.glow.enabled" => V::Bool(c.decoration.glow.enabled),

@@ -11,7 +11,8 @@
 
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
-         eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack eclipseos-meta)
+         eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack
+         eclipseos-firefox-glass eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -249,6 +250,26 @@ package_eclipseos-anim-pack() {
     "$srcdir/$_src"/packaging/transitions/anim-pack/presets/*.kdl
 }
 
+package_eclipseos-firefox-glass() {
+  pkgdesc="EclipseOS add-on: Glass for Firefox, a DE-matching Firefox theme"
+  # ADR 0079: the AMO-signed XPI and a policy that force-installs it from disk;
+  # ec-glass-host, the native-messaging helper that passes each window's page
+  # height to abyss (set_client_strips); and the manifest turning on the
+  # client-strips hook. No setup step: abyss sets the glass strip itself.
+  depends=(eclipseos-abyss firefox)
+
+  install -Dm0755 "$srcdir/target/release/ec-glass-host" \
+    "$pkgdir/usr/lib/eclipse/ec-glass-host"
+  install -Dm0644 "$srcdir/$_src/packaging/firefox/os.eclipse.glass.json" \
+    "$pkgdir/usr/lib/mozilla/native-messaging-hosts/os.eclipse.glass.json"
+  install -Dm0644 "$srcdir/$_src/packaging/addons/firefox-glass.kdl" \
+    "$pkgdir/usr/share/eclipse/addons/firefox-glass.kdl"
+  install -Dm0644 "$srcdir/$_src/packaging/firefox/glass.xpi" \
+    "$pkgdir/usr/share/eclipse/firefox/glass.xpi"
+  install -Dm0644 "$srcdir/$_src/packaging/firefox/policies.json" \
+    "$pkgdir/etc/firefox/policies/policies.json"
+}
+
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
   arch=(any)  # config and dependencies only, no ELF
@@ -260,7 +281,8 @@ package_eclipseos-meta() {
   # Add-ons (ADR 0066): suggested, not required. The session starts without
   # them; Super+E/R/N reach the launcher and center through built-in binds.
   optdepends=('eclipseos-hyperion: the taskbar add-on (workspaces, window chips, widgets, tray)'
-              'eclipseos-agents: the agent stack add-on (ADR 0069)')
+              'eclipseos-agents: the agent stack add-on (ADR 0069)'
+              'eclipseos-firefox-glass: Glass for Firefox theme add-on (ADR 0079)')
   # /etc/eclipse is image-owned (D-01 §4.1): deliberately NOT in backup(), so
   # pacman overwrites rather than leaving .pacnew, and the later atomic scheme
   # is a no-op migration.

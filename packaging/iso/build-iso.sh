@@ -7,7 +7,7 @@
 #
 # The profile's [eclipseos] repo is a file:// path on THIS machine, so mkarchiso
 # only runs here. The ISO it produces is self-contained and installs anywhere:
-# airootfs/root/eclipseos-repo is the copy the installer pacstraps from.
+# airootfs/opt/eclipseos-repo is the copy the installer pacstraps from.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -25,7 +25,7 @@ OUT="${ECLIPSEOS_ISO_OUT:-/var/tmp/eclipseos-out}"
 }
 
 echo "==> baking $REPO_ROOT/x86_64 into the medium"
-baked="$here/airootfs/root/eclipseos-repo"
+baked="$here/airootfs/opt/eclipseos-repo"
 rm -rf "$baked"
 mkdir -p "$baked"
 # Everything but the debug package: it is 440M of split symbols against 49M of

@@ -64,12 +64,39 @@ the design:
 | Context | Source | `SigLevel` | Why |
 |---|---|---|---|
 | ISO build (`packaging/iso/pacman.conf`) | `file:///…/repo/x86_64` | `Optional TrustAll` | At build time the packages are local files this machine produced seconds earlier. The filesystem *is* the trust boundary. Requiring signatures here would mean seeding the packaging key into `mkarchiso`'s keyring, which is the usual fragile step, to verify a claim already established. |
-| Installed system (`/etc/pacman.d/eclipseos.conf`, shipped by `eclipseos-meta`) | `http://chase-pc:8088/x86_64` | `Required DatabaseRequired` | Here the packages cross a network. Both the database and every package must be signed by the packaging key. |
+| Installed system (`/etc/pacman.d/eclipseos.conf`, shipped by `eclipseos-meta`) | `https://github.com/chasebrowndev/EclipseOS/releases/download/repo-x86_64` | `Required DatabaseRequired` | Here the packages cross a network. Both the database and every package must be signed by the packaging key. |
 
-Plain HTTP is sufficient for the served repo because the transport is WireGuard:
-tailscale authenticates and encrypts the link, and signatures cover integrity on
-top. A machine that is not on the tailnet fails to sync this one repository and
-still updates normally from Arch.
+Installed systems fetch from the assets of the rolling `repo-x86_64` GitHub
+release, which `packaging/repo/publish-github.sh` mirrors from the local repo
+(owner decision, 2026-10-18: clients off the tailnet must still sync, or the
+unreachable repository fails every `pacman -Syu`). The transport is public; the
+packaging key's signatures on the database and every package are the trust.
+pacman only upgrades on a version change, so updates for clients are published
+from a tagged build (`build-repo.sh vX.Y.Z`), not `local`.
+
+### Release flow
+
+fix -> merge to `main` -> tag `vX.Y.Z` and push it -> CI publishes ->
+clients run `pacman -Syu`.
+
+`.github/workflows/release-repo.yml` runs on every pushed `v*` tag (or by hand
+via `workflow_dispatch` with an existing tag). In an `archlinux:base-devel`
+container it builds with the Rust toolchain pinned in `rust-toolchain.toml`,
+signs every package and the database with the packaging key (secret
+`PACKAGING_KEY`; the job refuses a key whose fingerprint is not
+`D9D44958A6BEFBAE5962F11272915A6EA2689111`), and runs `publish-github.sh`. The
+version comes from the tag: `v0.1.2` is pkgver 0.1.2 pkgrel 1; `v0.1.2-3` is
+pkgver 0.1.2 pkgrel 3, for rebuilding a version that clients already have.
+The PKGBUILD in the tree is not edited; `build-repo.sh ci` builds the tagged
+commit. `publish-github.sh` uploads packages, then the database, and only
+then prunes superseded assets, so a client never reads a database that names a
+missing file. Concurrent tag pushes queue.
+
+The ISO is first-install only. It needs rebuilding only when the installer or
+live medium changes, not for package fixes.
+
+The tailnet server (`serve.sh`, `http://chase-pc:8088/x86_64`) stays for the
+owner's own iteration; nothing shipped points at it any more.
 
 `serve.sh` binds to the tailnet address from `tailscale ip -4`, not `0.0.0.0`.
 That binding is the whole privacy story; do not "fix" it to listen everywhere.

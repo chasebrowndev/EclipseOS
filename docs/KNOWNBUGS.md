@@ -51,11 +51,15 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
   layout), then everything the installed `/etc/fstab` names, under `/mnt`
   (2026-10-06). Nobody has walked a btrfs install through it yet; only ext4
   has been. This entry leaves when one has.
-- **Remote access is opt-in at install time.** Both installers now ask
-  whether to enable sshd, taking one public key and refusing password logins
-  (2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
+- **Remote access is opt-in at install time.** Both script installers
+  (`install-eclipseos.sh`, `eclipseos-postinstall.sh`) ask whether to enable sshd. They run on a tty, where nothing pastes, so they
+  take no key: password login is allowed from private, link-local and tailnet
+  (CGNAT) addresses only, keys from anywhere, never root (2026-10-20; was one
+  pasted key, 2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
   made the Framework install debuggable, but sshd on the LAN covers the same
-  need without a third-party account.
+  need without a third-party account. The graphical installer (`ec-setup`)
+  deliberately has no remote-access step: whoever installs is at the machine
+  (owner decision, 2026-10-18).
 
 ---
 
@@ -124,17 +128,49 @@ of a dead control in this crate.
 
 # Agent seats — found landing M13, 2026-10-06
 
-## SEAT-01: an agent's wl_seat is advertised to every client
+## XWL-01: X11 gaps left after the 2026-10 game audit
 
-`abyss/crates/ec-abyss/src/protocols/agent/seat.rs` creates each agent seat
-with smithay's `SeatState::new_wl_seat`, whose global has no per-client
-filter. Every client on the main display can bind `agent-<id>`, see its
-capabilities, and bind text-input or input-method objects on it. Input is
-still only *delivered* by the agent through `policy::enforce`; what leaks is
-that the seat exists and its focus events. **Repro:** start an agent, call
-`get_seat`, run `wayland-info` on the main socket; `agent-1` is listed.
-**Proposed:** none committed. Either a filtered seat global hand-written like
-`output_power.rs`, or bind visibility to clients the agent has focused.
+Fixed in that pass: physical motion reaches `zwp_relative_pointer`
+(Proton mouse-look), and the pre-map fullscreen request is honoured, from a
+pre-map `_NET_WM_STATE` message, from an undecorated screen-sized window
+(KWin's "legacy fullscreen") or from a tiled window resizing to the screen
+(`abyss/crates/ec-abyss/src/xwayland/xwm.rs`). Still open:
+- **Pre-map `_NET_WM_STATE` property alone.** Smithay 0.7.0 never reads the
+  property a client writes on a withdrawn window (it tracks only states the
+  WM set). A *decorated* window that asks for fullscreen this way maps tiled.
+  Wine's fullscreen windows are undecorated and screen-sized, so they are
+  caught by the legacy rule. **Proposed:** a Smithay bump, or read the property in a patched
+  `update_properties`.
+- **`zwp_xwayland_keyboard_grab_v1` is not advertised: decided 2026-10-12,
+  by design.** Smithay's grab only pins keyboard focus to the X surface.
+  abyss's binding filter still runs first, so shortcut pass-through would
+  also need the filter bypassed. X is one untrusted domain (ADR 0026), so
+  any X client could take that grab. Nothing in use needs it. If an app
+  ever does, the design is a per-app opt-in, default off, with the session
+  lock, trusted prompts and a reserved escape chord always exempt.
+- **X restack requests are dropped** (`configure_request` ignores `Reorder`).
+- **`scaling "client"` takes one scale at Xwayland start**, so outputs with
+  mixed scales are wrong until restart (documented in `xwayland/mod.rs`).
+
+## SEAT-01: a new agent seat is announced to every connected client
+
+Narrowed 2026-10-11: `protocols/agent/seat_global.rs` now admits an agent's
+`wl_seat` only to clients owning a window its seat capabilities can act on.
+Two residues remain, both upstream-blocked on wayland-backend 0.3.17:
+
+- **Timing leak.** The libwayland backend does not filter the announcement
+  made while a global is created, so every client connected at that moment
+  is told a `wl_seat` appeared. It binds a nameless, device-less decoy and
+  learns nothing of the agent, but it learns *that* a seat was made, and
+  when. **Repro:** keep a client connected that lists globals as they appear,
+  start an agent, call `get_seat`; the client receives a `wl_seat` global.
+- **Leaked display.** `get_global_handler` frees a global's user data while
+  the `wl_global` still points at it, so agent seat globals live on a hidden
+  display (`seat::HIDDEN`) that is leaked and never torn down: one
+  `wl_global` per agent seat ever made, one display per thread.
+
+**Proposed:** fix upstream (filter the creation-time announcement; keep the
+user data alive in `get_global_handler`), then drop the decoy and the leak.
 
 ## SEAT-02: xdg_activation from agent-launched clients is not checked
 
@@ -446,4 +482,3 @@ surface is only input-protected.
 - **`cost_usd` is passed through as Claude Code reports it**, which may be a
   per-session running total rather than per turn. It is logged, not audited:
   I-02 `Model` provenance records are not written yet (AGENTD-01).
-

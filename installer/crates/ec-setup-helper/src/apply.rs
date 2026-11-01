@@ -25,8 +25,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Smaller than this cannot hold the package set plus a usable home.
-pub const MIN_DISK_BYTES: u64 = 16 * 1024 * 1024 * 1024;
+pub use ec_setup_plan::MIN_DISK_BYTES;
 
 /// Sized for the Abyss desktop plus the installer running from RAM. `MemTotal`
 /// reads a little under the fitted amount, so this is roughly a 2 GB machine.
@@ -48,7 +47,7 @@ struct Reporter<'a> {
 fn open_log(p: &Paths) -> Option<fs::File> {
     let _ = fs::remove_file(&p.install_log);
     fs::OpenOptions::new()
-        .write(true)
+        .append(true)
         .create_new(true)
         .custom_flags(rustix::fs::OFlags::NOFOLLOW.bits() as i32)
         .mode(0o644)
@@ -108,6 +107,17 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
             pkgs.push(extra.to_owned());
         }
     }
+    // D-01 §2: a second kernel to fall back to. DKMS builds only for kernels
+    // with headers, so the NVIDIA path carries the LTS pair too.
+    let mut kernels = vec!["linux-lts"];
+    if machine.nvidia_open() {
+        kernels.push("linux-lts-headers");
+    }
+    for extra in kernels {
+        if !pkgs.iter().any(|q| q == extra) {
+            pkgs.push(extra.to_owned());
+        }
+    }
     for extra in stages::locale_packages(&plan.locale) {
         if !pkgs.iter().any(|q| q == extra) {
             pkgs.push((*extra).to_owned());
@@ -128,13 +138,16 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
     let colons = String::from_utf8(env.runner.capture(&gpg)?).map_err(|_| Error::Refused("packaging key"))?;
     let keyid = stages::parse_fpr(&colons).ok_or(Error::Refused("packaging key"))?;
 
-    // Nothing may already be mounted at the target or from the chosen disk.
+    // Nothing may already be mounted from the chosen disk, except what an
+    // earlier attempt left at or under the target: those are ours, and are
+    // unmounted after the erase is confirmed (a retry must not need a manual
+    // `umount`).
     let mounts = disks::read_mounts(p)?;
     let target = p.target.to_string_lossy();
-    if mounts.iter().any(|m| m.point == target) {
-        return Err(Error::Refused("target already mounted"));
-    }
-    if disks::in_use(&mounts, &v.disk) {
+    let under = |pt: &str| pt == target || pt.strip_prefix(&*target).is_some_and(|r| r.starts_with('/'));
+    let stale_mounts = mounts.iter().any(|m| under(&m.point));
+    let others: Vec<_> = mounts.into_iter().filter(|m| !under(&m.point)).collect();
+    if disks::in_use(&others, &v.disk) {
         return Err(Error::Refused("disk has mounted partitions"));
     }
     if let Some(why) = disks::busy_reason(p, &v.disk) {
@@ -173,7 +186,7 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
         .map_err(|_| Error::Refused("could not trust the packaging key"))?;
     env.runner
         .run(&pacman(&["-Sy", "--noconfirm", "archlinux-keyring"]))
-        .map_err(|_| Error::Refused("could not refresh the package keyring"))?;
+        .map_err(|_| Error::Refused("could not sync the package databases"))?;
     env.runner
         .run(&Cmd::new(Tool::PacmanKey).args(["--populate", "archlinux"]))
         .map_err(|_| Error::Refused("could not refresh the package keyring"))?;
@@ -185,6 +198,8 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
         pkgs,
         keyid,
         ucode: machine.ucode(),
+        nvidia: machine.nvidia_open(),
+        stale_mounts,
         warnings,
     })
 }
@@ -261,20 +276,31 @@ impl Run<'_, '_> {
         )?;
 
         let layout = self.stage(Stage::Partition, 20, "partitioning the disk", |s| {
+            if prep.stale_mounts {
+                // A previous attempt left the target mounted. Set first so a
+                // half-done unmount is still unwound.
+                s.mounted = true;
+                stages::unmount(env)?;
+                s.mounted = false;
+            }
             let l = stages::partition(env, &v.disk)?;
             // Set before the mount so a half-done mount is still unwound.
             s.mounted = true;
             stages::mount(env, &l)?;
             Ok(l)
         })?;
-        self.stage(Stage::Pacstrap, 30, "installing packages", |_| {
-            stages::pacstrap(env, &prep)
+        self.stage(Stage::Pacstrap, 30, "installing packages", |s| {
+            stages::pacstrap(env, &prep, &mut |m| s.rep.line(Stage::Pacstrap, 30, m, false))?;
+            if prep.nvidia {
+                stages::verify_nvidia(env)?;
+            }
+            Ok(())
         })?;
         self.stage(Stage::Configure, 75, "configuring the system", |_| {
-            stages::configure(env, &req.plan)
+            stages::configure(env, &req.plan, prep.nvidia)
         })?;
         self.stage(Stage::Bootloader, 85, "installing the bootloader", |_| {
-            stages::bootloader(env, &layout, prep.ucode)
+            stages::bootloader(env, &layout, prep.ucode, prep.nvidia)
         })?;
         self.stage(Stage::User, 90, "creating the user", |_| stages::user(env, req))?;
         let outcome = self.stage(Stage::Seed, 94, "carrying over settings", |_| {
@@ -582,6 +608,28 @@ mod tests {
     }
 
     #[test]
+    fn the_baked_repo_db_is_not_left_in_the_target() {
+        let (_t, p) = live();
+        let sync = p.target.join("var/lib/pacman/sync");
+        let inner = machine_runner(&p);
+        let s = sync.clone();
+        let r = FakeRunner::new(move |c| {
+            if c.tool == Tool::Pacstrap {
+                fs::create_dir_all(&s).unwrap();
+                fs::write(s.join("eclipseos.db"), b"baked").unwrap();
+                fs::write(s.join("eclipseos.db.sig"), b"baked").unwrap();
+                fs::write(s.join("core.db"), b"core").unwrap();
+            }
+            inner.capture(c)
+        });
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert!(!sync.join("eclipseos.db").exists());
+        assert!(!sync.join("eclipseos.db.sig").exists());
+        assert!(sync.join("core.db").exists());
+    }
+
+    #[test]
     fn stale_signatures_are_wiped_after_confirm_and_before_partitioning() {
         let (_t, p) = live();
         let r = machine_runner(&p);
@@ -615,28 +663,16 @@ mod tests {
     }
 
     #[test]
-    fn a_mounted_target_or_disk_is_a_preflight_refusal() {
-        for extra in ["/mnt", "nvme"] {
-            let (_t, p) = live();
-            let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
-            if extra == "/mnt" {
-                mi.push_str(&format!(
-                    "40 25 8:1 / {} rw - ext4 /dev/x rw\n",
-                    p.target.display()
-                ));
-            } else {
-                mi.push_str("40 25 259:1 / /somewhere rw - ext4 /dev/nvme0n1 rw\n");
-            }
-            fs::write(&p.mountinfo, mi).unwrap();
-            let r = machine_runner(&p);
-            let mut out = Vec::new();
-            assert!(
-                !apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out),
-                "{extra}"
-            );
-            assert_eq!(progress(&out).last().unwrap().stage, Stage::Preflight, "{extra}");
-            assert!(r.tools().iter().all(|t| !t.touches_disk()), "{extra}");
-        }
+    fn a_mount_of_the_disk_outside_the_target_is_a_preflight_refusal() {
+        let (_t, p) = live();
+        let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
+        mi.push_str("40 25 259:1 / /somewhere rw - ext4 /dev/nvme0n1 rw\n");
+        fs::write(&p.mountinfo, mi).unwrap();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert_eq!(progress(&out).last().unwrap().stage, Stage::Preflight);
+        assert!(r.tools().iter().all(|t| !t.touches_disk()));
     }
 
     #[test]
@@ -832,6 +868,75 @@ mod tests {
         }
     }
 
+    /// A Turing+ display controller in the fake sysfs.
+    fn add_turing(p: &Paths) {
+        let d = p.sys_pci.join("0000:01:00.0");
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("class"), "0x030000\n").unwrap();
+        fs::write(d.join("vendor"), "0x10de\n").unwrap();
+        fs::write(d.join("device"), "0x2684\n").unwrap();
+    }
+
+    /// A runner that also lets pacstrap's DKMS hook leave the module behind.
+    fn dkms_runner(p: &Paths, build: bool) -> FakeRunner {
+        let inner = machine_runner(p);
+        let k = p.target.join("usr/lib/modules/6.1-arch1-1");
+        FakeRunner::new(move |c| {
+            let out = inner.capture(c);
+            if c.tool == Tool::Pacstrap && build {
+                fs::create_dir_all(k.join("updates/dkms")).unwrap();
+                fs::write(k.join("vmlinuz"), b"k").unwrap();
+                fs::write(k.join("updates/dkms/nvidia.ko.zst"), b"m").unwrap();
+            }
+            out
+        })
+    }
+
+    #[test]
+    fn the_nvidia_module_check_runs_after_pacstrap_and_before_the_initramfs() {
+        // Turing+, module built: the run completes, drop-in and cmdline in place.
+        let (_t, p) = live();
+        add_turing(&p);
+        let target = p.target.clone();
+        let r = dkms_runner(&p, true);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let dropin = fs::read_to_string(target.join("etc/mkinitcpio.conf.d/eclipseos-nvidia.conf")).unwrap();
+        assert!(dropin.starts_with("MODULES+=("));
+        let conf = fs::read_to_string(target.join("boot/limine.conf")).unwrap();
+        assert!(conf.contains("nvidia-drm.modeset=1"));
+        let tools = r.tools();
+        let strap = tools.iter().position(|t| *t == Tool::Pacstrap).unwrap();
+        let chroot = tools.iter().position(|t| *t == Tool::ArchChroot).unwrap();
+        assert!(strap < chroot);
+
+        // Turing+, module missing: refused at the Pacstrap stage, before any
+        // chroot command (mkinitcpio) or boot entry.
+        let (_t, p) = live();
+        add_turing(&p);
+        let target = p.target.clone();
+        let r = dkms_runner(&p, false);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let last = progress(&out).last().cloned().unwrap();
+        assert_eq!((last.stage, last.failed), (Stage::Pacstrap, true));
+        assert!(last.msg.contains("NVIDIA"), "{}", last.msg);
+        assert!(!r.issued(Tool::ArchChroot) && !r.issued(Tool::Efibootmgr));
+        assert!(!target.join("boot/limine.conf").exists());
+
+        // No Turing+ GPU: no module needed, no drop-in, no NVIDIA parameters.
+        let (_t, p) = live();
+        let target = p.target.clone();
+        let r = dkms_runner(&p, false);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert!(!target
+            .join("etc/mkinitcpio.conf.d/eclipseos-nvidia.conf")
+            .exists());
+        let conf = fs::read_to_string(target.join("boot/limine.conf")).unwrap();
+        assert!(!conf.contains("nvidia"));
+    }
+
     #[test]
     fn a_failing_stage_stops_the_run_and_unmounts() {
         let (_t, p) = live();
@@ -897,5 +1002,211 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.stage == Stage::Seed && l.msg == "seed absent"));
+    }
+
+    /// A runner whose first `fails` umounts report busy.
+    fn busy_umount(inner: FakeRunner, fails: u32) -> FakeRunner {
+        let n = std::cell::Cell::new(0u32);
+        FakeRunner::new(move |c| {
+            if c.tool == Tool::Umount {
+                n.set(n.get() + 1);
+                if n.get() <= fails {
+                    return Err(Error::Command {
+                        tool: "umount",
+                        code: Some(32),
+                    });
+                }
+            }
+            inner.capture(c)
+        })
+    }
+
+    #[test]
+    fn unmount_retries_and_succeeds_on_a_later_attempt() {
+        let (_t, p) = live();
+        let r = busy_umount(machine_runner(&p), 2);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let n = r.tools().iter().filter(|t| **t == Tool::Umount).count();
+        assert_eq!(n, 3);
+        assert!(!r.issued(Tool::Findmnt));
+        assert_eq!(progress(&out).last().unwrap().stage, Stage::Done);
+    }
+
+    #[test]
+    fn the_target_is_synced_after_the_last_chroot_and_before_unmount() {
+        let (_t, p) = live();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let t = r.tools();
+        let last_chroot = t.iter().rposition(|t| *t == Tool::ArchChroot).unwrap();
+        let sync = t.iter().position(|t| *t == Tool::Sync).unwrap();
+        let um = t.iter().position(|t| *t == Tool::Umount).unwrap();
+        assert!(last_chroot < sync && sync < um);
+    }
+
+    #[test]
+    fn a_persistent_busy_mount_fails_the_install_and_is_diagnosed() {
+        let (_t, p) = live();
+        let log_path = p.install_log.clone();
+        let r = busy_umount(machine_runner(&p), u32::MAX);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let n = r.tools().iter().filter(|t| **t == Tool::Umount).count();
+        assert_eq!(n, 5);
+        assert!(r.issued(Tool::Findmnt));
+        let last = progress(&out).last().cloned().unwrap();
+        assert!(last.failed && last.msg == "could not unmount the target");
+        let log = fs::read_to_string(log_path).unwrap();
+        assert!(log.contains("still mounted"));
+    }
+
+    /// A pacstrap that fails `fails` times with `stderr`, then succeeds.
+    fn flaky_pacstrap(p: &Paths, fails: u32, stderr: &'static str) -> FakeRunner {
+        let inner = machine_runner(p);
+        let n = std::cell::Cell::new(0u32);
+        FakeRunner::new(move |c| {
+            if c.tool == Tool::Pacstrap {
+                n.set(n.get() + 1);
+                if n.get() <= fails {
+                    return Err(Error::Command {
+                        tool: "pacstrap",
+                        code: Some(1),
+                    });
+                }
+            }
+            inner.capture(c)
+        })
+        .with_stderr(move |_| stderr.as_bytes().to_vec())
+    }
+
+    const STALLED: &str = "error: failed retrieving file 'linux-7.2.11.arch1-1-x86_64.pkg.tar.zst.sig' \
+        from fastly.mirror.pkgbuild.com : Operation too slow. Less than 1 bytes/sec transferred the last 10 seconds\n\
+        error: failed to commit transaction (unexpected error)\n";
+
+    fn count(r: &FakeRunner, t: Tool) -> usize {
+        r.tools().iter().filter(|x| **x == t).count()
+    }
+
+    #[test]
+    fn a_stalled_download_is_retried_on_a_rotated_mirror_and_then_succeeds() {
+        let (_t, p) = live();
+        fs::create_dir_all(p.mirrorlist.parent().unwrap()).unwrap();
+        fs::write(
+            &p.mirrorlist,
+            "# mirrors\nServer = https://a/$repo\nServer = https://b/$repo\nServer = https://c/$repo\n",
+        )
+        .unwrap();
+        let ml = p.mirrorlist.clone();
+        let conf = p.install_pacman_conf.clone();
+        let r = flaky_pacstrap(&p, 2, STALLED);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert_eq!(count(&r, Tool::Pacstrap), 3);
+        // Two rotations: a, b, c -> b, c, a -> c, a, b.
+        assert_eq!(
+            fs::read_to_string(ml).unwrap(),
+            "# mirrors\nServer = https://c/$repo\nServer = https://a/$repo\nServer = https://b/$repo\n"
+        );
+        // Same conf (so the same cache) for every attempt, with the download options.
+        let c = fs::read_to_string(conf).unwrap();
+        assert!(c.contains("DisableDownloadTimeout") && c.contains("ParallelDownloads = 3"));
+        let lines = progress(&out);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.msg.starts_with("downloads failed"))
+                .count(),
+            2
+        );
+        assert!(lines.iter().all(|l| !l.failed));
+        assert_eq!(lines.last().unwrap().stage, Stage::Done);
+    }
+
+    #[test]
+    fn download_retries_are_bounded_and_the_failure_says_what_to_do() {
+        let (_t, p) = live();
+        let r = flaky_pacstrap(&p, u32::MAX, STALLED);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert_eq!(count(&r, Tool::Pacstrap), 3);
+        let last = progress(&out).last().cloned().unwrap();
+        assert_eq!((last.stage, last.failed), (Stage::Pacstrap, true));
+        assert!(
+            last.msg.starts_with("Downloads stalled on every mirror"),
+            "{}",
+            last.msg
+        );
+        assert!(last.msg.ends_with("Try again."));
+        // The disk is released for the next try.
+        assert_eq!(r.tools().last(), Some(&Tool::Umount));
+    }
+
+    #[test]
+    fn signature_disk_and_unknown_failures_are_not_retried() {
+        let cases: [(&'static str, &str); 3] = [
+            (
+                "error: linux: signature from \"X\" is unknown trust\n:: File is corrupted (invalid or corrupted package (PGP signature)).\n",
+                "Package signature check failed",
+            ),
+            (
+                "error: failed to commit transaction (No space left on device)\n",
+                "The target disk ran out of space",
+            ),
+            ("error: something unforeseen\n", "Installing packages failed"),
+        ];
+        for (stderr, want) in cases {
+            let (_t, p) = live();
+            let r = flaky_pacstrap(&p, u32::MAX, stderr);
+            let mut out = Vec::new();
+            assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+            assert_eq!(count(&r, Tool::Pacstrap), 1, "{want}");
+            let last = progress(&out).last().cloned().unwrap();
+            assert!(last.failed && last.msg.starts_with(want), "{}", last.msg);
+        }
+    }
+
+    #[test]
+    fn a_retry_after_a_failed_attempt_reclaims_leftover_mounts() {
+        let (_t, p) = live();
+        let t = p.target.display().to_string();
+        let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
+        mi.push_str(&format!(
+            "40 25 259:1 / {t} rw - ext4 /dev/nvme0n1p2 rw\n41 40 259:2 / {t}/boot rw - vfat /dev/nvme0n1p1 rw\n"
+        ));
+        fs::write(&p.mountinfo, mi).unwrap();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let tools = r.tools();
+        let first_um = tools.iter().position(|t| *t == Tool::Umount).unwrap();
+        let first_sg = tools.iter().position(|t| *t == Tool::Sgdisk).unwrap();
+        assert!(first_um < first_sg, "unmounted before repartitioning");
+        // Nothing disk-changing ran before the erase was confirmed.
+        assert_eq!(progress(&out).last().unwrap().stage, Stage::Done);
+
+        // Declined: the leftover mounts are not touched without a yes.
+        let (_t, p) = live();
+        let t = p.target.display().to_string();
+        let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
+        mi.push_str(&format!("40 25 259:1 / {t} rw - ext4 /dev/nvme0n1p2 rw\n"));
+        fs::write(&p.mountinfo, mi).unwrap();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &DenyConfirm, None), &req(), &mut out));
+        assert!(!r.issued(Tool::Umount));
+    }
+
+    #[test]
+    fn mounts_of_the_disk_elsewhere_still_refuse() {
+        let (_t, p) = live();
+        let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
+        mi.push_str("40 25 259:1 / /media/data rw - ext4 /dev/nvme0n1 rw\n");
+        fs::write(&p.mountinfo, mi).unwrap();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert!(!r.issued(Tool::Sgdisk) && !r.issued(Tool::Umount));
     }
 }

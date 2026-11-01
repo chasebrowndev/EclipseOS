@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The widgets' services (ADR 0065): media, audio, usage and the custom
-//! widget runner, one of each per process.
+//! widget runner, plus the calendar drawer's provider client (ADR 0079), one of each per process.
 //!
 //! Same shape as `radio`: the handles live in a process-wide cell, because
 //! iced's `update` and the compositor thread that polls them are different
@@ -16,7 +16,7 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use ec_services::custom::Kind;
-use ec_services::{audio, custom, media, usage};
+use ec_services::{audio, calendar, custom, media, usage};
 
 use crate::app::Message;
 use crate::widgets::{self, now_playing, system_usage, volume, Action, Feed, WidgetId};
@@ -26,6 +26,7 @@ struct Handles {
     media: Option<media::Handle>,
     audio: Option<audio::Handle>,
     usage: Option<usage::Handle>,
+    calendar: Option<calendar::Handle>,
     custom: Option<custom::Handle>,
     /// What the monitor tap was last asked to be.
     tap: bool,
@@ -108,6 +109,9 @@ pub fn configure(cfg: &widgets::Config) {
     if h.audio.is_none() {
         h.audio = Some(audio::spawn());
     }
+    if h.calendar.is_none() {
+        h.calendar = Some(calendar::spawn());
+    }
     if wants_usage(cfg) {
         match h.usage.as_ref() {
             Some(u) => u.reconfigure(usage_cfg(cfg)),
@@ -148,7 +152,19 @@ pub fn drain() -> Vec<Message> {
                 audio::Update::Sink(s) => Message::Widget(Feed::Volume(volume::Feed::Sink(s))),
                 audio::Update::Streams(s) => Message::Streams(s),
                 audio::Update::Levels(b) => Message::Widget(Feed::NowPlaying(now_playing::Feed::Levels(b.0))),
+                audio::Update::Outputs { devices, default } => Message::Outputs(devices, default),
+                audio::Update::Inputs { devices, default } => Message::Inputs(devices, default),
             });
+        }
+    }
+    if let Some(c) = h.calendar.as_ref() {
+        while let Some(u) = c.try_recv() {
+            out.push(Message::CalendarFeed(match u {
+                calendar::Update::Provider(on) => crate::calendar::Feed::Provider(on),
+                calendar::Update::Events { start, end, events } => {
+                    crate::calendar::Feed::Events { start, end, events }
+                }
+            }));
         }
     }
     if let Some(u) = h.usage.as_ref() {
@@ -208,6 +224,17 @@ pub fn act(action: Action) {
             }
         }
     }
+}
+
+/// The audio service's actions, if it is running.
+pub fn audio_actions() -> Option<audio::Actions> {
+    counted(Call::Act);
+    handles().audio.as_ref().map(audio::Handle::actions)
+}
+
+/// The calendar service's actions, if it is running.
+pub fn calendar_actions() -> Option<calendar::Actions> {
+    handles().calendar.as_ref().map(calendar::Handle::actions)
 }
 
 /// Mute or unmute every stream `pid` owns.

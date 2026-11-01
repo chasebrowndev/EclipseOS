@@ -33,17 +33,27 @@ impl Ucode {
 pub enum Gpu {
     Amd,
     Intel,
+    /// Pre-Turing: nouveau/NVK, nothing out-of-tree.
     Nvidia,
+    /// Turing or newer (device id >= [`NVIDIA_OPEN_MIN_DEVICE`]): the GSP
+    /// generation `nvidia-open-dkms` supports (D-01 §2.3).
+    NvidiaOpen,
 }
 
+/// First PCI device id of the Turing generation (TU102 is 0x1e02).
+pub const NVIDIA_OPEN_MIN_DEVICE: u32 = 0x1e00;
+
 impl Gpu {
-    /// Open-source Mesa stack only: nothing out-of-tree, so no DKMS and no
-    /// kernel-upgrade step that can fail after reboot (D-03 §2).
+    /// AMD and Intel use the in-kernel drivers with Mesa; pre-Turing NVIDIA uses
+    /// nouveau/NVK. Turing+ NVIDIA is the one out-of-tree module (DKMS), so it
+    /// needs headers; `linux-lts-headers` is added by the caller, which always
+    /// installs `linux-lts` too (D-01 §2.3, D-03 §2).
     pub const fn packages(self) -> &'static [&'static str] {
         match self {
             Gpu::Amd => &["mesa", "vulkan-radeon"],
             Gpu::Intel => &["mesa", "vulkan-intel", "intel-media-driver"],
             Gpu::Nvidia => &["mesa", "vulkan-nouveau"],
+            Gpu::NvidiaOpen => &["mesa", "nvidia-open-dkms", "nvidia-utils", "linux-headers"],
         }
     }
 }
@@ -105,6 +115,9 @@ fn gpus(p: &Paths) -> Vec<Gpu> {
         let g = match hex(&d.join("vendor")) {
             Some(0x1002) => Gpu::Amd,
             Some(0x8086) => Gpu::Intel,
+            Some(0x10de) if hex(&d.join("device")).is_some_and(|id| id >= NVIDIA_OPEN_MIN_DEVICE) => {
+                Gpu::NvidiaOpen
+            }
             Some(0x10de) => Gpu::Nvidia,
             _ => continue,
         };
@@ -151,6 +164,11 @@ impl Hardware {
         }
     }
 
+    /// Turing-or-newer NVIDIA present: the proprietary open module is installed.
+    pub fn nvidia_open(&self) -> bool {
+        self.gpus.contains(&Gpu::NvidiaOpen)
+    }
+
     /// Packages this machine needs beyond the medium's list, in a stable order.
     pub fn packages(&self) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = Vec::new();
@@ -177,8 +195,15 @@ mod tests {
     use crate::testutil::{fake_paths, TempDir};
 
     fn pci(p: &Paths, slot: &str, class: &str, vendor: &str) {
+        pci_dev(p, slot, class, vendor, None);
+    }
+
+    fn pci_dev(p: &Paths, slot: &str, class: &str, vendor: &str, device: Option<&str>) {
         let d = p.sys_pci.join(slot);
         fs::create_dir_all(&d).unwrap();
+        if let Some(id) = device {
+            fs::write(d.join("device"), format!("{id}\n")).unwrap();
+        }
         fs::write(d.join("class"), format!("{class}\n")).unwrap();
         fs::write(d.join("vendor"), format!("{vendor}\n")).unwrap();
     }
@@ -227,30 +252,80 @@ mod tests {
         assert_eq!(got, [Gpu::Amd, Gpu::Intel, Gpu::Nvidia]);
     }
 
-    #[test]
-    fn packages_are_deduplicated_and_open_source() {
-        let h = Hardware {
-            cpu: Some(Ucode::Intel),
-            vm: false,
-            gpus: vec![Gpu::Intel, Gpu::Nvidia, Gpu::Amd],
+    fn machine(vm: bool, gpus: &[Gpu]) -> Hardware {
+        Hardware {
+            cpu: Some(Ucode::Amd),
+            vm,
+            gpus: gpus.to_vec(),
             mem_kib: 0,
             on_battery: false,
-        };
-        assert_eq!(
-            h.packages(),
-            [
-                "intel-ucode",
-                "mesa",
-                "vulkan-intel",
-                "intel-media-driver",
-                "vulkan-nouveau",
-                "vulkan-radeon"
-            ]
-        );
-        assert!(h
-            .packages()
-            .iter()
-            .all(|p| !p.contains("nvidia") && !p.contains("dkms")));
+        }
+    }
+
+    #[test]
+    fn nvidia_generation_follows_the_device_id() {
+        for (id, want) in [
+            ("0x1e07", Gpu::NvidiaOpen), // TU102
+            ("0x1f82", Gpu::NvidiaOpen), // TU117
+            ("0x2684", Gpu::NvidiaOpen), // AD102
+            ("0x1d81", Gpu::Nvidia),     // GV100
+            ("0x1b80", Gpu::Nvidia),     // GP104
+            ("0x1dff", Gpu::Nvidia),
+        ] {
+            let t = TempDir::new();
+            let p = fake_paths(&t);
+            pci_dev(&p, "0000:01:00.0", "0x030000", "0x10de", Some(id));
+            assert_eq!(gpus(&p), [want], "{id}");
+        }
+        // No readable device id: stay on nouveau rather than build a module.
+        let t = TempDir::new();
+        let p = fake_paths(&t);
+        pci(&p, "0000:01:00.0", "0x030000", "0x10de");
+        assert_eq!(gpus(&p), [Gpu::Nvidia]);
+    }
+
+    #[test]
+    fn package_set_per_gpu_combination() {
+        let nv = ["mesa", "nvidia-open-dkms", "nvidia-utils", "linux-headers"];
+        let cases: [(bool, &[Gpu], Vec<&str>); 6] = [
+            (false, &[Gpu::Amd], vec!["amd-ucode", "mesa", "vulkan-radeon"]),
+            (
+                false,
+                &[Gpu::Intel],
+                vec!["amd-ucode", "mesa", "vulkan-intel", "intel-media-driver"],
+            ),
+            (false, &[Gpu::Nvidia], vec!["amd-ucode", "mesa", "vulkan-nouveau"]),
+            (false, &[Gpu::NvidiaOpen], [&["amd-ucode"][..], &nv].concat()),
+            (
+                false,
+                &[Gpu::Intel, Gpu::NvidiaOpen],
+                [
+                    &["amd-ucode", "mesa", "vulkan-intel", "intel-media-driver"][..],
+                    &nv[1..],
+                ]
+                .concat(),
+            ),
+            (true, &[], vec![]),
+        ];
+        for (vm, gpus, want) in cases {
+            assert_eq!(machine(vm, gpus).packages(), want, "{gpus:?} vm={vm}");
+        }
+    }
+
+    #[test]
+    fn only_turing_plus_gets_the_proprietary_module() {
+        for g in [Gpu::Amd, Gpu::Intel, Gpu::Nvidia] {
+            let h = machine(false, &[g]);
+            assert!(!h.nvidia_open());
+            assert!(h
+                .packages()
+                .iter()
+                .all(|p| !p.contains("nvidia") && !p.contains("dkms")));
+        }
+        let h = machine(false, &[Gpu::Intel, Gpu::Nvidia, Gpu::Amd]);
+        assert!(!h.nvidia_open());
+        assert!(machine(false, &[Gpu::Amd, Gpu::NvidiaOpen]).nvidia_open());
+        assert!(!machine(true, &[]).nvidia_open());
     }
 
     #[test]
