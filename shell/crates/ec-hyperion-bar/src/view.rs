@@ -378,14 +378,17 @@ fn search_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Theme
     .align_y(Alignment::Center)
     .height(Length::Fill);
 
-    button(content)
-        .width(Length::Fixed(width))
-        .height(Length::Fixed(bar::TASK_H))
-        .padding(0)
-        .clip(true)
-        .style(launcher_style)
-        .on_press(Message::Launch)
-        .into()
+    parts::glass_ground(
+        button(content)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(bar::TASK_H))
+            .padding(0)
+            .clip(true)
+            .style(launcher_style)
+            .on_press(Message::Launch),
+        false,
+        bar::RADIUS_CELL,
+    )
 }
 
 /// The bar with its start menu out: one sheet in the shape of the pill and
@@ -574,13 +577,13 @@ fn start_row(
     } else {
         CellTone::Latent
     };
-    button(container(line).height(Length::Fill).align_y(Alignment::Center))
+    let cell = button(container(line).height(Length::Fill).align_y(Alignment::Center))
         .width(Length::Fill)
         .height(Length::Fixed(bar::MENU_ROW_H))
         .padding([0.0, space::CARD])
-        .style(theme::glass_cell(tone, radius::INSET))
-        .on_press(Message::MenuLaunch(index))
-        .into()
+        .style(move |t, st| theme::bare_if_glass(theme::glass_cell(tone, radius::INSET)(t, st)))
+        .on_press(Message::MenuLaunch(index));
+    parts::glass_ground(cell, tone, radius::INSET)
 }
 
 /// A refusal, verbatim, or the keys; how much of the list is off the panel

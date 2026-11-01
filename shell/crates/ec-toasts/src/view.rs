@@ -10,6 +10,7 @@ use iced::widget::{container, mouse_area, text, Column, Row, Space};
 use iced::{Alignment, Color, Element, Length, Theme};
 
 use ec_services::notifications::{Notification, Urgency};
+use ec_ui::theme::CellTone;
 use ec_ui::tokens::{color, font, size, space};
 
 use crate::app::{Message, Style, Toast};
@@ -56,7 +57,7 @@ pub fn height(drawn: &[Toast]) -> u32 {
     (cards + gaps).ceil() as u32
 }
 
-pub fn view(app: &crate::app::App, _id: iced::window::Id) -> Element<'_, Message, Theme> {
+pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, Theme> {
     let mut stack = Column::new().spacing(GAP);
     for toast in app.drawn() {
         let pose = toast.pose(app.now, &app.anim);
@@ -86,7 +87,7 @@ pub fn view(app: &crate::app::App, _id: iced::window::Id) -> Element<'_, Message
             face
         });
     }
-    container(stack).width(Length::Fixed(WIDTH as f32)).into()
+    ec_ui::glass::root(id, container(stack).width(Length::Fixed(WIDTH as f32))).into()
 }
 
 /// `style` with every colour at `alpha` of its own: iced has no layer
@@ -162,18 +163,35 @@ fn card(notification: &Notification, radius: f32, blur: bool, alpha: f32) -> Ele
     // Clicking anywhere that is not a button dismisses it — the same gesture
     // the rest of the desktop uses, and the only one available without a
     // close glyph to click.
-    mouse_area(
-        container(body)
-            .width(Length::Fixed(WIDTH as f32))
-            .height(Length::Fixed(card_height(notification)))
-            .padding(space::CARD)
-            .style(move |t: &Theme| faded(ec_ui::theme::surface(radius, blur)(t), alpha)),
-    )
-    .on_press(Message::Dismiss(notification.id))
-    .into()
+    //
+    // With glass the compositor draws the card's ground as a pane. A pane has
+    // no per-frame opacity from here, so a card mid-fade (alpha < 1) keeps its
+    // own faded client ground until it is fully in, then hands over.
+    let paned = ec_ui::glass::available() && alpha >= 1.0;
+    let card = container(body)
+        .width(Length::Fixed(WIDTH as f32))
+        .height(Length::Fixed(card_height(notification)))
+        .padding(space::CARD)
+        .style(move |t: &Theme| {
+            let s = faded(ec_ui::theme::surface(radius, blur)(t), alpha);
+            if paned {
+                ec_ui::theme::bare_container_if_glass(s)
+            } else {
+                s
+            }
+        });
+    let card: Element<'_, Message, Theme> = if paned {
+        ec_ui::widget::glass_card(card, CellTone::Plain, radius)
+    } else {
+        card.into()
+    };
+    mouse_area(card)
+        .on_press(Message::Dismiss(notification.id))
+        .into()
 }
 
 fn button<'a>(id: u32, key: &str, label: &str, alpha: f32) -> Element<'a, Message, Theme> {
+    let paned = ec_ui::glass::available() && alpha >= 1.0;
     let cell = container(
         text(label.to_owned())
             .size(size::BODY_SMALL)
@@ -183,10 +201,20 @@ fn button<'a>(id: u32, key: &str, label: &str, alpha: f32) -> Element<'a, Messag
     .padding([0, space::CARD as u16])
     .height(Length::Fill)
     .align_y(Alignment::Center)
-    .style(move |t: &Theme| faded(ec_ui::theme::inset(t), alpha));
-    mouse_area(cell)
-        .on_press(Message::Invoke(id, key.to_owned()))
-        .into()
+    .style(move |t: &Theme| {
+        let s = faded(ec_ui::theme::inset(t), alpha);
+        if paned {
+            ec_ui::theme::bare_container_if_glass(s)
+        } else {
+            s
+        }
+    });
+    let cell = mouse_area(cell).on_press(Message::Invoke(id, key.to_owned()));
+    if paned {
+        ec_ui::widget::glass_ground(cell, CellTone::Plain, ec_ui::tokens::radius::INSET)
+    } else {
+        cell.into()
+    }
 }
 
 /// The stack draws itself; the surface behind it is nothing at all, so the

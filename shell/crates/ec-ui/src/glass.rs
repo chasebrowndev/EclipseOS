@@ -46,7 +46,7 @@ use iced::widget::button;
 use iced::{mouse, window, Element, Event, Length, Rectangle, Size, Theme, Vector};
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::{wl_registry, wl_surface::WlSurface};
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
 
 use crate::theme::CellTone;
 
@@ -234,6 +234,9 @@ struct Entry {
 }
 
 struct Shared {
+    /// Keeps a foreign (winit) display's wrapper alive for the queue below.
+    #[allow(dead_code)]
+    conn: Option<Connection>,
     queue: EventQueue<Dispatcher>,
     manager: Option<EclipseGlassManagerV1>,
     surfaces: HashMap<window::Id, Entry>,
@@ -262,12 +265,22 @@ pub fn bootstrap() -> Option<Connection> {
     }
     SHARED.with(|s| {
         *s.borrow_mut() = Some(Shared {
+            conn: None,
             queue,
             manager,
             surfaces: HashMap::new(),
         });
     });
     Some(conn)
+}
+
+/// One-line layer-shell setup: [`bootstrap`] plus the surface hook.
+/// Pass `iced_layershell::set_surface_hook`; hand the result to
+/// `Settings { with_connection: conn.map(Into::into), .. }`. Fail-soft.
+pub fn setup(set_hook: fn(fn(window::Id, &WlSurface))) -> Option<Connection> {
+    let conn = bootstrap();
+    set_hook(surface_created);
+    conn
 }
 
 /// The `iced_layershell::set_surface_hook` callback: a window's layer surface
@@ -305,13 +318,19 @@ fn begin() {
 /// Send the frame's panes for `id` if they changed. Runs in draw, ahead of
 /// the present that commits the surface, so the compositor latches panes and
 /// buffer together.
-fn finish(id: window::Id) {
+fn finish(id: Option<window::Id>) {
     SHARED.with(|s| {
         let mut s = s.borrow_mut();
         let Some(sh) = s.as_mut() else { return };
         // Pick up capability changes the shared connection delivered.
         let _ = sh.queue.dispatch_pending(&mut Dispatcher);
-        let Some(entry) = sh.surfaces.get_mut(&id) else {
+        // `None`: a single-window app, whose view is not told its id.
+        let key = match id {
+            Some(id) => id,
+            None if sh.surfaces.len() == 1 => *sh.surfaces.keys().next().unwrap(),
+            None => return,
+        };
+        let Some(entry) = sh.surfaces.get_mut(&key) else {
             return;
         };
         FRAME.with(|f| {
@@ -323,7 +342,96 @@ fn finish(id: window::Id) {
             entry.last.extend_from_slice(f.as_bytes());
             entry.glass.set_panes(f.as_bytes().to_vec());
         });
+        // A foreign (xdg) display is flushed by winit at present; the
+        // layer-shell runtime flushes its own. This is belt and braces.
+        if let Some(c) = sh.conn.as_ref() {
+            let _ = c.flush();
+        }
     });
+}
+
+// ---- xdg windows (plain iced, no iced_layershell) -------------------------
+
+static XDG_DONE: AtomicBool = AtomicBool::new(false);
+
+/// For a plain iced window (`ec-settings`): a subscription that yields the
+/// window id until [`attach_window`] has run once. Map it to a message and
+/// answer that message with `attach_window(id)`:
+///
+/// ```ignore
+/// subs.push(ec_ui::glass::xdg_window().map(Message::GlassWindow));
+/// Message::GlassWindow(id) => ec_ui::glass::attach_window(id).map(|_| Message::GlassReady),
+/// Message::GlassReady => Task::none(), // any update makes iced redraw
+/// ```
+pub fn xdg_window() -> iced::Subscription<window::Id> {
+    iced::event::listen_with(|_event, _status, id| (!XDG_DONE.load(Ordering::Relaxed)).then_some(id))
+}
+
+/// Bind the glass manager for window `id` through its raw `wl_display` and
+/// `wl_surface`, on a private queue of winit's own connection. Fail-soft:
+/// any failure (not Wayland, no global, not allowlisted) leaves
+/// [`available`] false. The result is `true` once glass is on. The first
+/// frame is drawn before this runs, so panes land one frame late: the task's
+/// answer message makes iced redraw, and that frame carries them.
+pub fn attach_window(id: window::Id) -> iced::Task<bool> {
+    if XDG_DONE.swap(true, Ordering::Relaxed) {
+        return iced::Task::none();
+    }
+    iced::window::run(id, move |w| attach_raw(id, w))
+}
+
+fn attach_raw(id: window::Id, w: &dyn window::Window) -> bool {
+    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+    let (Ok(d), Ok(s)) = (w.display_handle(), w.window_handle()) else {
+        return false;
+    };
+    let (RawDisplayHandle::Wayland(d), RawWindowHandle::Wayland(s)) = (d.as_raw(), s.as_raw()) else {
+        return false;
+    };
+    // SAFETY: both pointers come from winit through raw-window-handle for this
+    // process's own window and are live while `run`'s closure executes; the
+    // display outlives the window. The interface check in `from_ptr` rejects
+    // a pointer that is not a wl_surface.
+    let (conn, surface) = unsafe {
+        let backend = wayland_backend::client::Backend::from_foreign_display(d.display.as_ptr().cast());
+        let conn = Connection::from_backend(backend);
+        let Ok(oid) =
+            wayland_backend::client::ObjectId::from_ptr(WlSurface::interface(), s.surface.as_ptr().cast())
+        else {
+            return false;
+        };
+        let Ok(surface) = WlSurface::from_id(&conn, oid) else {
+            return false;
+        };
+        (conn, surface)
+    };
+    let Ok((globals, queue)) = registry_queue_init::<Dispatcher>(&conn) else {
+        return false;
+    };
+    let qh = queue.handle();
+    let Ok(manager) = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=1, ()) else {
+        return false;
+    };
+    let mut queue = queue;
+    let _ = queue.roundtrip(&mut Dispatcher);
+    let glass = manager.get_glass(&surface, &qh, ());
+    let mut surfaces = HashMap::new();
+    surfaces.insert(
+        id,
+        Entry {
+            glass,
+            last: Vec::new(),
+        },
+    );
+    SHARED.with(|sh| {
+        *sh.borrow_mut() = Some(Shared {
+            conn: Some(conn),
+            queue,
+            manager: Some(manager),
+            surfaces,
+        });
+    });
+    available()
 }
 
 // ---- the root widget -----------------------------------------------------
@@ -335,14 +443,24 @@ pub fn root<'a, Message>(
     content: impl Into<Element<'a, Message, Theme>>,
 ) -> Root<'a, Message> {
     Root {
-        id,
+        id: Some(id),
+        content: content.into(),
+    }
+}
+
+/// [`root`] for a single-window app whose `view` is not given its window id
+/// (`iced::application`, `iced_layershell` `application`): the app's only
+/// glass surface is the one meant.
+pub fn root_sole<'a, Message>(content: impl Into<Element<'a, Message, Theme>>) -> Root<'a, Message> {
+    Root {
+        id: None,
         content: content.into(),
     }
 }
 
 /// See [`root`].
 pub struct Root<'a, Message> {
-    id: window::Id,
+    id: Option<window::Id>,
     content: Element<'a, Message, Theme>,
 }
 

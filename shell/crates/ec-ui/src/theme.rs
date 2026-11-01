@@ -456,6 +456,16 @@ pub fn bare_if_glass(mut style: button::Style) -> button::Style {
     style
 }
 
+/// [`bare_if_glass`] for a static card's container style.
+pub fn bare_container_if_glass(mut style: container::Style) -> container::Style {
+    if crate::glass::available() {
+        style.background = None;
+        style.border.color = Color::TRANSPARENT;
+        style.shadow = Shadow::default();
+    }
+    style
+}
+
 /// A destructive action. Never accented — see the note on [`color::DANGER`].
 pub fn danger(_t: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);

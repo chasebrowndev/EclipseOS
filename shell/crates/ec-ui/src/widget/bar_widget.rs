@@ -684,6 +684,24 @@ struct Ground<'a, Message> {
     content: Element<'a, Message, Theme>,
     tone: crate::theme::CellTone,
     radius: f32,
+    /// A static card: always drawn at rest, whatever the pointer does.
+    rest: bool,
+}
+
+/// Wrap a static card (not pressable) so the compositor draws its ground at
+/// rest, never hovered. Pair its container style with
+/// [`crate::theme::bare_container_if_glass`]. See [`Ground`].
+pub fn glass_card<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    tone: impl Into<crate::theme::CellTone>,
+    radius: f32,
+) -> Element<'a, Message, Theme> {
+    Element::new(Ground {
+        content: content.into(),
+        tone: tone.into(),
+        radius,
+        rest: true,
+    })
 }
 
 /// Wrap a button so the compositor draws its ground. See [`Ground`].
@@ -696,6 +714,7 @@ pub fn glass_ground<'a, Message: 'a>(
         content: content.into(),
         tone: tone.into(),
         radius,
+        rest: false,
     })
 }
 
@@ -829,9 +848,12 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Ground<'_, Message> {
         if crate::glass::available() && bounds.intersects(viewport) {
             let st = tree.state.downcast_ref::<CellState>();
             let r = self.radius.min(bounds.width / 2.0).min(bounds.height / 2.0);
-            crate::glass::push(
-                crate::glass::Pane::new(bounds, r, self.tone).status(st.status(cursor.is_over(bounds))),
-            );
+            let pane = crate::glass::Pane::new(bounds, r, self.tone);
+            crate::glass::push(if self.rest {
+                pane
+            } else {
+                pane.status(st.status(cursor.is_over(bounds)))
+            });
         }
         self.content.as_widget().draw(
             &tree.children[0],

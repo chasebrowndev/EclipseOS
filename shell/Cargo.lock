@@ -1100,7 +1100,9 @@ dependencies = [
  "ec-ipc",
  "ec-protocols",
  "iced",
+ "raw-window-handle",
  "serde_json",
+ "wayland-backend",
  "wayland-client",
 ]
 

@@ -7,7 +7,7 @@
 //! anything the compositor has to vouch for it draws itself.
 
 use ec_toasts::{app, view};
-use iced_layershell::settings::{LayerShellSettings, StartMode};
+use iced_layershell::settings::{LayerShellSettings, Settings, StartMode};
 
 fn namespace() -> String {
     "ec-toasts".to_owned()
@@ -18,9 +18,15 @@ fn main() -> iced_layershell::Result {
     // reason to hold a selection, and not holding one is the cheapest way to
     // keep the no-logging-human-input rule true here.
     iced_layershell::disable_clipboard();
+    // eclipse_glass_v1: fail-soft, nothing changes under a non-abyss host.
+    let connection = ec_ui::glass::setup(iced_layershell::set_surface_hook);
 
     let mut builder =
         iced_layershell::build_pattern::daemon(app::App::new, namespace, app::update, view::view)
+            .settings(Settings {
+                with_connection: connection.map(Into::into),
+                ..Default::default()
+            })
             .layer_settings(LayerShellSettings {
                 // No surface until there is something to show: `app::update`
                 // opens the stack with the first card and closes it with the

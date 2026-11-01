@@ -112,6 +112,10 @@ pub enum Message {
     /// at the application level instead.
     NumberBlur,
     Wire(EventKind, Value),
+    /// eclipse_glass_v1: the window exists; bind its glass object.
+    GlassWindow(iced::window::Id),
+    /// Glass is attached. Only makes iced redraw, with the panes this time.
+    GlassReady(bool),
     /// The Network pane's feed connected; its action handle.
     NetReady(network::Handle),
     NetDown(String),
@@ -1008,6 +1012,8 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             }
         }
 
+        Message::GlassWindow(id) => return ec_ui::glass::attach_window(id).map(Message::GlassReady),
+        Message::GlassReady(_) => {}
         Message::Wire(kind, data) => match kind {
             // Hot-plug: the output list is the compositor's, never cached
             // across an event.
@@ -1156,6 +1162,7 @@ impl iced::advanced::widget::Operation<Option<f32>> for Measure {
 /// so the wait lives in a thread rather than in a futures timer.
 pub fn subscription(app: &App) -> Subscription<Message> {
     let mut subs = vec![blur(), events(), crate::search_ui::keys(&app.search)];
+    subs.push(ec_ui::glass::xdg_window().map(Message::GlassWindow));
     if app.nav_moving() {
         subs.push(iced::window::frames().map(Message::NavFrame));
     }
@@ -1263,7 +1270,10 @@ fn events() -> Subscription<Message> {
 pub fn view(app: &App) -> Element<'_, Message, Theme> {
     // The frame is the only thing that reads the window's width; every row
     // below folds on its own.
-    iced::widget::responsive(move |size| frame(app, Density::for_width(size.width))).into()
+    ec_ui::glass::root_sole(iced::widget::responsive(move |size| {
+        frame(app, Density::for_width(size.width))
+    }))
+    .into()
 }
 
 /// The sidebar's section tree: what the rail shows when nothing is searched.
