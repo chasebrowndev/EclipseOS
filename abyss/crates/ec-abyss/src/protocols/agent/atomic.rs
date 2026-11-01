@@ -16,6 +16,12 @@
 //!   `expected_generation`. Any failure answers **every** queued request and
 //!   the commit with that cause (`focus_lost`, `stale_generation`,
 //!   `paused`) and runs nothing: no partial application.
+//! - Then `policy::enforce::dry_run` decides every step (steps 1 and 3 to 8
+//!   of COMP-08 §10, `seat.atomic` on each target included) without running
+//!   any. A refusal answers every queued request and the commit with that
+//!   step's cause, and nothing runs. A step the table would prompt for, with
+//!   no batch token covering it, or would defer, is such a refusal
+//!   (`policy_denied` `needs_prompt:<i>` / `needs_defer:<i>`).
 //! - Then the steps run in order, in this one dispatch, so no human input and
 //!   no focus change can come between them (COMP-04 §4 "no human input
 //!   interleaved"; "within `max_frames`" is trivially met by running at 0).
@@ -28,14 +34,9 @@
 //!
 //! # What this module cannot do
 //!
-//! The policy decision for each step is made by `policy::enforce` (TCB) at
-//! the moment the step runs, and that module has no "decide without
-//! executing" entry. So a step the policy refuses *after* earlier steps ran
-//! leaves those applied: the commit answers that step's status with detail
-//! `partial:<n>`. `TCB-HOOK` in [`commit`] marks where an all-steps dry run
-//! (steps 1 to 8 for every request, nothing executed) goes. The same gap
-//! means a step that parks behind a prompt ends the batch: later steps are
-//! answered `invalid_argument` `batch_interrupted`.
+//! A step can still fail as it runs, after the dry run passed (a `keysym`
+//! the keymap cannot type, the client gone). Steps before it stay applied:
+//! the commit answers that step's status with detail `partial:<n>`.
 
 use std::time::{Duration, Instant};
 
@@ -45,7 +46,7 @@ use smithay::desktop::Window;
 use smithay::utils::IsAlive;
 
 use super::{generation, seat};
-use crate::policy::enforce::{Act, Aim, Request, Submitted};
+use crate::policy::enforce::{self, Act, Aim, Request, Submitted};
 use crate::policy::scene;
 use crate::state::AbyssState;
 
@@ -65,7 +66,6 @@ pub const OPEN_TTL: Duration = Duration::from_secs(5);
 #[derive(Debug)]
 pub struct Queued {
     pub req: Request,
-    pub expected: u32,
     /// The window `req`'s handle named when it arrived, if it was visible.
     pub window: Option<Window>,
 }
@@ -141,10 +141,8 @@ pub(super) fn begin(state: &mut AbyssState, agent: u64, max_frames: u32) -> (Sta
     if paused(state, agent) {
         return (Status::Paused, String::new());
     }
-    // TCB-HOOK: run `check()` for capability `seat.atomic` here (step 7), and
-    // add `seat.atomic` to `policy::SEAT_CAPS` so its scope is compiled. Until
-    // then only the capability being held is tested, which is enough because
-    // every queued step is still decided on its own at commit.
+    // A batch has no target yet: `seat.atomic`'s scope and the table are
+    // judged per step target by the dry run at commit.
     if !held(state, agent, "seat.atomic") {
         return (Status::NoCapability, "seat.atomic".to_owned());
     }
@@ -172,7 +170,7 @@ pub(super) fn begin(state: &mut AbyssState, agent: u64, max_frames: u32) -> (Sta
 
 /// Queue `req` on the open batch. Answers now only if the batch is (or just
 /// became) aborted.
-pub(super) fn queue(state: &mut AbyssState, agent: u64, req: Request, expected: u32) {
+pub(super) fn queue(state: &mut AbyssState, agent: u64, req: Request) {
     let req_id = req.req_id;
     let window = match req.act.aim() {
         Aim::Handle(h) if h != 0 => visible_window(state, agent, req.act.capability(), h).ok(),
@@ -188,11 +186,7 @@ pub(super) fn queue(state: &mut AbyssState, agent: u64, req: Request, expected: 
         seat::reply(state, agent, req_id, s, &d);
         return;
     }
-    b.queued.push(Queued {
-        req,
-        expected,
-        window,
-    });
+    b.queued.push(Queued { req, window });
     if b.queued.len() > MAX_STEPS {
         abort(state, agent, Status::QuotaExceeded, "batch");
         return;
@@ -259,10 +253,10 @@ fn check_batch(state: &mut AbyssState, b: &Batch) -> Result<(), (Status, String)
         if q.req.act.aim() == Aim::SeatFocus && !matches!(focus, Some(w) if mapped(state, w)) {
             return Err((Status::FocusLost, String::new()));
         }
-        if q.expected != 0 {
+        if q.req.expected_generation != 0 {
             if let Some(w) = &q.window {
                 let cur = generation::of(state, w);
-                if cur != q.expected {
+                if cur != q.req.expected_generation {
                     return Err((Status::StaleGeneration, cur.to_string()));
                 }
             }
@@ -298,20 +292,20 @@ pub(super) fn commit(state: &mut AbyssState, agent: u64) -> (Status, String) {
     }
     let _ = batch.max_frames; // delivery below is synchronous: 0 frames.
 
-    // TCB-HOOK: `policy::enforce::dry_run(state, &[Request]) -> Result<(), (usize, Status, String)>`
-    // — COMP-08 §10 steps 1 to 8 for every request in order (including the
-    // 8b class re-check and the batch-token consumption), executing nothing,
-    // mutating nothing. Call it here; on `Err((i, s, d))` answer every queued
-    // request and the commit with `(s, d)` exactly as the `check` failure
-    // above does. Without it a policy refusal of step N > 0 is only seen once
-    // steps before N have run, and is reported as `partial:<N>`.
+    let reqs: Vec<Request> = batch.queued.iter().map(|q| q.req.clone()).collect();
+    if let Err((_, s, d)) = enforce::dry_run(state, agent, &reqs) {
+        for id in ids {
+            seat::reply(state, agent, id, s, &d);
+        }
+        return (s, d);
+    }
     let total = batch.queued.len();
     let mut steps = batch.queued.into_iter();
     let mut ran = 0usize;
     let mut failure: Option<(Status, String)> = None;
     for q in steps.by_ref() {
         let id = q.req.req_id;
-        match seat::submit_act(state, q.req, q.expected) {
+        match enforce::submit(state, q.req) {
             Submitted::Answered(s, d) => {
                 seat::reply(state, agent, id, s, &d);
                 if s == Status::Ok {
