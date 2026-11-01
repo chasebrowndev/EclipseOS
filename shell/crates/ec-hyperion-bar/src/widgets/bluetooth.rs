@@ -71,8 +71,13 @@ fn device_mark(kind: crate::radio::BtKind, side: f32, tint: Color) -> Element<'s
 /// The bluetooth drawer. See `view::drawer_view` for its anatomy and ledger.
 pub(crate) fn sheet(app: &App) -> Sheet {
     let on = app.bluetooth.powered;
+    let phase = app.spin_phase();
     let mut s = Sheet::new(
-        parts::drawer_switch_head("bluetooth", parts::Toggle::new(on, Message::BtPower)),
+        parts::drawer_switch_head(
+            "bluetooth",
+            (on && app.radios.scanning).then_some(phase),
+            parts::Toggle::new(on, Message::BtPower),
+        ),
         drawer::HEAD_SWITCH_H,
     );
     if !on {

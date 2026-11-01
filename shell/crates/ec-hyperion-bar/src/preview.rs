@@ -259,6 +259,7 @@ fn plan(name: &str) -> Vec<(u32, Duration)> {
         "drag-half" => (1..=DRAG_HALF_STEPS + 2).map(|n| (n, ms(40))).collect(),
         // Press, push into the detent and hold, then push past it and hold.
         "drag-hold" => vec![(1, ms(0)), (2, ms(40)), (3, ms(4000))],
+        "open-wifi" | "open-bt" => vec![(1, ms(0)), (2, ms(9000))],
         "np-out" => vec![(1, ms(0))],
         "np-back" => vec![(1, ms(0)), (2, ms(1600))],
         "interrupt" => vec![(1, ms(0)), (2, ms(350))],

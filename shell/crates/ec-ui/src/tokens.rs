@@ -1023,6 +1023,21 @@ pub mod drawer {
     pub const MAX_ROWS: usize = 8;
     /// Air between the two lines of the hero row.
     pub const LINE_GAP: f32 = 2.0;
+    /// The glass lozenge a row draws is its slot inset this much on the
+    /// vertical, so neighbours keep a 2px channel of the sheet between them
+    /// without the row's slot (and the arithmetic that sizes the sheet)
+    /// growing a gap.
+    pub const ROW_INSET: f32 = 1.0;
+    /// The hero row's lozenge: a step rounder than a list row.
+    pub const RADIUS_HERO: f32 = 11.0;
+    /// A spinner's box, its ring and the arc that travels round it.
+    pub const SPIN: f32 = 14.0;
+    pub const SPIN_W: f32 = 1.75;
+    pub const SPIN_SWEEP: f32 = 1.2;
+    /// How much of the arc's ink the ring it travels on keeps.
+    pub const SPIN_TRACK: f32 = 0.18;
+    /// Revolutions per second of the spinner.
+    pub const SPIN_HZ: f32 = 0.9;
 }
 
 /// The secret prompt: one field in a fixed-size toplevel. Fixed because

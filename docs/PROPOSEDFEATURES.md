@@ -63,7 +63,11 @@ defaults.
 - **Wifi and bluetooth pickers — decided and built (ADR 0053).** The drawers
   scan, join, disconnect, pair and connect through the `ec-services::status`
   action path. Passphrases and PINs go through `ec-secret-prompt`, a separate
-  toplevel whose whole surface is `secret`. What is left:
+  toplevel whose whole surface is `secret`. The drawers are no longer
+  popups: they unroll from the bar's own surface under their cell, the way the
+  start menu does (`ec-hyperion-bar/src/drawer.rs`). A list that changes
+  height animates to the new height instead of reopening, and scan and join
+  results wake the bar as they arrive rather than on a 500 ms poll. What is left:
   - **`Pairing.Answer` is not authenticated.** Any process running as the same
     user can answer a pairing request on the session bus while its prompt is
     open (answers sent early are refused). That is the same trust level as the

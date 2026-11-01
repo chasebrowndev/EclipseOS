@@ -251,6 +251,9 @@ fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a
     if bar.menu.showing() {
         return start_sheet(app, bar, bar_row.into());
     }
+    if bar.drawer.showing() {
+        return drawer_sheet(app, bar, bar_row.into());
+    }
     glass(
         app,
         container(bar_row)
@@ -402,6 +405,7 @@ fn start_sheet<'a>(
     let top = app.edge == crate::conn::BarPosition::Top;
     let shape = SheetShape {
         pill_h: bar::PILL_H,
+        panel_x: 0.0,
         panel_w: bar::PANEL_W,
         radius: app.bar_radius,
         fillet: app.bar_radius,
@@ -1383,7 +1387,7 @@ impl Sheet {
     }
 
     pub(crate) fn rule(&mut self) {
-        self.rows.push(parts::menu_separator());
+        self.rows.push(parts::drawer_rule());
         self.height += menu::SEP_H;
     }
 }
@@ -1401,6 +1405,69 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
         crate::app::Drawer::Bluetooth => crate::widgets::bluetooth::sheet(app),
         crate::app::Drawer::Overflow => crate::widgets::tray::sheet(app),
     }
+}
+
+/// The bar with a radio drawer out: the start menu's mechanism with the panel
+/// hung under its own cell instead of the bar's left end.
+///
+/// One sheet in the shape of the pill and the panel together
+/// ([`parts::shaped_sheet`] with `panel_x` at the cell's anchor, a fillet on
+/// both sides), the pill's row on it and the panel cut to however much of it
+/// the surface holds. It rolls out from the pill's edge — down from a top
+/// bar, up from a bottom bar — so the drawer reads as the bar's own pill
+/// growing, not a popup beside it. The ground is the bar's tint, so there is
+/// one material; the rows lay light lozenges on it.
+fn drawer_sheet<'a>(
+    app: &'a crate::app::App,
+    on: &'a crate::app::Bar,
+    pill_row: Element<'a, Message, Theme>,
+) -> Element<'a, Message, Theme> {
+    let top = app.edge == crate::conn::BarPosition::Top;
+    let which = match on.drawer.which() {
+        Some(crate::drawer::DrawerKind::Bluetooth) => crate::app::Drawer::Bluetooth,
+        _ => crate::app::Drawer::Network,
+    };
+    let anchor = on.drawer.anchor_x();
+    let Sheet { head, rows, height } = sheet(app, which);
+    let extent = on.drawer.extent(height.ceil() as u32) as f32;
+    let shape = SheetShape {
+        pill_h: bar::PILL_H,
+        panel_x: anchor,
+        panel_w: drawer::W,
+        radius: app.bar_radius,
+        fillet: app.bar_radius,
+        edge: if top { SheetEdge::Top } else { SheetEdge::Bottom },
+    };
+    let pill = container(pill_row)
+        .width(Length::Fill)
+        .height(Length::Fixed(bar::PILL_H));
+    // The panel's body is always laid out at full height and cut by the
+    // container, so the rows never reflow while the sheet opens: they are
+    // uncovered, from the pill's side outward.
+    let body = container(parts::drawer_body(head, rows))
+        .width(Length::Fixed(drawer::W))
+        .height(Length::Fixed(height));
+    let panel = container(body)
+        .width(Length::Fixed(drawer::W))
+        .height(Length::Fixed(extent))
+        .align_y(if top { Alignment::Start } else { Alignment::End })
+        .clip(true);
+    let panel = Row::new()
+        .push(Space::new().width(Length::Fixed(anchor)))
+        .push(panel);
+    let col = if top {
+        Column::new().push(pill).push(panel)
+    } else {
+        Column::new().push(panel).push(pill)
+    };
+    let col = container(col)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(if top { Alignment::Start } else { Alignment::End });
+    stack![parts::shaped_sheet(shape, app.blur), col]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 /// A tray drawer.
@@ -1438,15 +1505,6 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
 fn drawer_view(app: &crate::app::App, which: crate::app::Drawer) -> Element<'static, Message, Theme> {
     let Sheet { head, rows, .. } = sheet(app, which);
     parts::drawer_frame(app.menu_radius, head, rows)
-}
-
-/// The empty square a list row keeps where its mark would be, so its name
-/// sits on the same gridline as the rows that do have one.
-pub(crate) fn blank_mark() -> Element<'static, Message, Theme> {
-    Space::new()
-        .width(Length::Fixed(drawer::MARK))
-        .height(Length::Fixed(drawer::MARK))
-        .into()
 }
 
 /// A tray item's own menu: its entries, in its order, on the context menu's
@@ -1559,6 +1617,8 @@ pub fn tray_menu_height(entries: &[crate::radio::MenuEntry]) -> u32 {
 
 /// How much of a network's name a drawer row will show.
 pub(crate) const DRAWER_CHARS: usize = 14;
+/// The longest failure reason an inline drawer error shows before it elides.
+pub(crate) const DRAWER_ERR_CHARS: usize = 34;
 
 /// The bar draws on nothing: the layer surface itself is transparent, and the
 /// opaque ground is the container in [`view`].
