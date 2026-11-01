@@ -67,3 +67,4 @@ We take **3**.
   pixels.
 - **Spec.** COMP-02 §9 and COMP-06 §1 need an Appendix A row recording client
   panes.
+- **Open items** at landing are tracked as GLASS-01..09 in `docs/KNOWNBUGS.md`.
