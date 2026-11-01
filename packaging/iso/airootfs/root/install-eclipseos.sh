@@ -140,6 +140,10 @@ fi
 PKGS+=(linux-lts)
 
 pacstrap -K -C "$PACCONF" /mnt "${PKGS[@]}"
+# The baked db is re-signed at bake time, so it differs from the published one
+# but looks newer; left in place, the first `pacman -Sy` keeps it and fetches the
+# published signature (a bad signature). Let the first sync fetch both.
+rm -f /mnt/var/lib/pacman/sync/eclipseos.db /mnt/var/lib/pacman/sync/eclipseos.db.sig
 genfstab -U /mnt >>/mnt/etc/fstab
 
 # --- configure ---------------------------------------------------------------
