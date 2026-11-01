@@ -28,6 +28,7 @@ use crate::xwayland::security::{AppTrust, SeatCompat};
 
 // Read by the renderer, written by `apply`; defined in `ec-abyss-render::userdata`.
 pub use ec_abyss_render::userdata::{blur_of, opacity_of, RuleBlur, RuleOpacity, RuleStrip};
+use ec_abyss_render::userdata::{Keys, Strip, StripFill};
 
 /// Trust class pinned by an `app-trust` rule (COMP-05 §4). Consumed once
 /// COMP-08 gates agent actions on it.
@@ -385,8 +386,12 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
                     window.user_data().insert_if_missing(|| RuleOpacity(Cell::new(v)));
                 }
             }
-            RuleAction::TranslucentRegion { top, opacity } => {
-                set_strip(window, Some((top, opacity)));
+            RuleAction::TranslucentRegion { top, opacity, key } => {
+                let fill = match key {
+                    Some(rgb) => StripFill::Keyed(Keys::one(rgb, opacity)),
+                    None => StripFill::Fade(opacity),
+                };
+                set_strip(window, Some(Strip { top, fill }));
             }
             RuleAction::Blur(v) => {
                 if let Some(b) = window.user_data().get::<RuleBlur>() {
@@ -418,7 +423,7 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
 
 /// Pin (or clear) the window's `translucent-region` strip. Clearing a window
 /// that never had one allocates nothing.
-fn set_strip(window: &Window, strip: Option<(i32, f32)>) {
+fn set_strip(window: &Window, strip: Option<Strip>) {
     match window.user_data().get::<RuleStrip>() {
         Some(slot) => slot.0.set(strip),
         None if strip.is_some() => {
@@ -823,7 +828,11 @@ mod tests {
     #[test]
     fn toggling_floating_flips_which_translucent_region_applies() {
         let mk = |top, floating| WindowRule {
-            action: RuleAction::TranslucentRegion { top, opacity: 0.6 },
+            action: RuleAction::TranslucentRegion {
+                top,
+                opacity: 0.6,
+                key: None,
+            },
             matchers: Matchers {
                 app_id: Pattern::parse("firefox"),
                 floating: Some(floating),

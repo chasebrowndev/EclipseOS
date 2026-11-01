@@ -445,7 +445,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `position <X>,<Y>` | `abyss.kdl` | `position 100,-40` | Floating position in logical px. Implies `float`. |
 | `output <glob>` | `abyss.kdl` | `output HDMI-A-1` | Map on the output whose connector or identity matches. |
 | `opacity <0.0..1.0>` | `abyss.kdl` | `opacity 0.85` | Alpha for this window, replacing `decoration.active-opacity`/`inactive-opacity`. |
-| `translucent-region top=<px> opacity=<0.0..1.0>` | `abyss.kdl` | `translucent-region top=84 opacity=0.6` | Draw only the top `top` logical px of the window at `opacity`, with the window's blur mode behind that strip; the rest stays as the client drew it. Multiplies with `opacity`. For clients that submit an opaque buffer. |
+| `translucent-region top=<px> opacity=<0.0..1.0> [key=#rrggbb]` | `abyss.kdl` | `translucent-region top=84 opacity=0.6`<br>`translucent-region top=84 opacity=0.35 key=#1b1b1f` | Draw only the top `top` logical px of the window at `opacity`, with the window's blur mode behind that strip; the rest stays as the client drew it. Multiplies with `opacity`. For clients that submit an opaque buffer. With `key=#rrggbb` only pixels of exactly that colour (within 1/255 per channel) turn translucent; text and images in the strip stay opaque. |
 | `blur off \| blur \| frost \| glass \| true \| false` | `abyss.kdl` | `blur glass`<br>`blur off`<br>`blur true` | This window's blur mode, overriding `decoration.blur.mode`. `true` is the global mode (plain `blur` if that is `off`), `false` is `off`. An opaque window never blurs. |
 | `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
 | `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |

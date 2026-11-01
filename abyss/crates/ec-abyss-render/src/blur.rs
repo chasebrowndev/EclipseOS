@@ -611,6 +611,9 @@ pub enum BlurKey {
     /// An annotation panel (ADR 0071), by its handle. Annotations keep their
     /// own [`BlurStore`], so this never shares a table with a surface.
     Annotation(u64),
+    /// The `n`th popup of a window with a keyed strip (ADR 0079), glassed
+    /// over its whole surface.
+    Popup(Window, usize),
 }
 
 /// Per-surface blur bookkeeping, kept alive between frames.

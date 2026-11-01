@@ -1505,6 +1505,12 @@ pub(crate) mod state_tests {
                 self.commit(h, surface);
             }
 
+            /// Attach a `w`x`h` buffer, commit and deliver: a resize.
+            pub fn attach_sized(&mut self, h: &mut Harness, surface: &WlSurface, w: i32, ht: i32) {
+                surface.attach(Some(&self.buffer(w, ht)), 0, 0);
+                self.commit(h, surface);
+            }
+
             /// Every size `toplevel` has been configured with, oldest first.
             pub fn configured_sizes(&self, toplevel: &XdgToplevel) -> Vec<(i32, i32)> {
                 let id = toplevel.id().protocol_id();

@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `set_client_strips` (ADR 0079): a browser's add-on helper reports where each
-//! of its windows' page area starts, and abyss pins a `translucent-region`
-//! strip over the chrome above it.
+//! `set_client_strips` (ADR 0079): a browser's add-on helper reports its
+//! windows and the key colours its glass surfaces are painted in, and abyss
+//! pins a tint-keyed `translucent-region` strip over the chrome above the page
+//! (or over the whole window while `body` is set). Only key-coloured pixels
+//! turn translucent.
+//!
+//! The helper reports a resize before the browser commits the resized buffer,
+//! so each connection's latest request is kept and re-matched whenever a window
+//! of that client commits a new size ([`on_window_commit`]).
 //!
 //! Authority is narrower than the gate's owner-uid check. The caller's parent
 //! process (read from `/proc/<pid>/stat`) names the only client whose windows
@@ -16,21 +22,15 @@ use smithay::desktop::Window;
 
 use super::RpcError;
 use crate::state::AbyssState;
-use ec_abyss_render::userdata::ClientStrip;
+use ec_abyss_render::userdata::{ClientStrip, Keys, Strip, StripFill};
 
 /// Most entries one call may carry: one per browser window, with room to spare.
 const MAX_WINDOWS: usize = 64;
+/// Most key colours one call may declare.
+const MAX_KEYS: usize = 4;
 /// The outer size a browser reports and the surface size abyss sees agree to
 /// within a pixel (fractional scale rounding).
 const SIZE_SLACK: i32 = 1;
-
-/// One window the helper described.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Entry {
-    width: i32,
-    height: i32,
-    content: i32,
-}
 
 /// The parent of `pid`, from its `/proc/<pid>/stat`.
 pub(crate) fn parent_pid(pid: i32) -> Option<i32> {
@@ -58,20 +58,69 @@ fn size_matches(have: (i32, i32), want: (i32, i32)) -> bool {
     (have.0 - want.0).abs() <= SIZE_SLACK && (have.1 - want.1).abs() <= SIZE_SLACK
 }
 
-fn parse(params: &Value) -> Result<(f32, Vec<Entry>), RpcError> {
+/// One window the helper described.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Entry {
+    width: i32,
+    height: i32,
+    content: i32,
+    /// Key the whole window, not just the strip.
+    body: bool,
+}
+
+/// A connection's `set_client_strips` request.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Request {
+    keys: Keys,
+    entries: Vec<Entry>,
+}
+
+/// The last `(bbox w, bbox h, geometry h)` a window's commit was matched at.
+struct SeenSize(Cell<(i32, i32, i32)>);
+
+/// `#rrggbb`, exactly.
+fn parse_color(v: &str) -> Option<[u8; 3]> {
+    let h = v.strip_prefix('#')?;
+    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let n = u32::from_str_radix(h, 16).ok()?;
+    Some([(n >> 16) as u8, (n >> 8) as u8, n as u8])
+}
+
+fn parse(params: &Value) -> Result<Request, RpcError> {
     let bad = |m: &str| RpcError::invalid_params(m);
     let obj = params
         .as_object()
         .ok_or_else(|| bad("params must be an object"))?;
-    if obj.keys().any(|k| k != "opacity" && k != "windows") {
+    if obj.keys().any(|k| k != "keys" && k != "windows") {
         return Err(bad("unknown parameter"));
     }
-    let opacity = obj
-        .get("opacity")
-        .and_then(Value::as_f64)
-        .filter(|o| o.is_finite())
-        .ok_or_else(|| bad("opacity must be a number"))?
-        .clamp(0.0, 1.0) as f32;
+    let key_list = obj
+        .get("keys")
+        .and_then(Value::as_array)
+        .filter(|k| (1..=MAX_KEYS).contains(&k.len()))
+        .ok_or_else(|| bad("keys must be an array of 1 to 4 entries"))?;
+    let mut keys = Keys::one([0; 3], 1.0);
+    keys.n = key_list.len() as u8;
+    for (i, k) in key_list.iter().enumerate() {
+        keys.rgb[i] = k
+            .get("color")
+            .and_then(Value::as_str)
+            .and_then(parse_color)
+            .ok_or_else(|| bad("key color must be \"#rrggbb\""))?;
+        keys.opacity[i] = k
+            .get("opacity")
+            .and_then(Value::as_f64)
+            .filter(|o| (0.0..=1.0).contains(o))
+            .ok_or_else(|| bad("key opacity must be a number in 0..=1"))? as f32;
+        keys.everywhere[i] = match k.get("everywhere") {
+            None => false,
+            Some(b) => b
+                .as_bool()
+                .ok_or_else(|| bad("key everywhere must be a boolean"))?,
+        };
+    }
     let list = obj
         .get("windows")
         .and_then(Value::as_array)
@@ -85,15 +134,20 @@ fn parse(params: &Value) -> Result<(f32, Vec<Entry>), RpcError> {
             .and_then(|n| i32::try_from(n).ok())
             .ok_or_else(|| bad("width, height and content must be non-negative integers"))
     };
-    let mut out = Vec::with_capacity(list.len());
+    let mut entries = Vec::with_capacity(list.len());
     for w in list {
-        out.push(Entry {
+        let body = match w.get("body") {
+            None => false,
+            Some(b) => b.as_bool().ok_or_else(|| bad("body must be a boolean"))?,
+        };
+        entries.push(Entry {
             width: dim(w, "width")?,
             height: dim(w, "height")?,
             content: dim(w, "content")?,
+            body,
         });
     }
-    Ok((opacity, out))
+    Ok(Request { keys, entries })
 }
 
 /// The method. `parent` is the caller's parent pid; `None` (unreadable stat)
@@ -111,47 +165,124 @@ pub(crate) fn set_client_strips(
     apply(state, conn, parent, params)
 }
 
+/// The strip the latest request that matches a window of client `pid` gives
+/// it, with the connection that asked. Allocation-free.
+fn wanted(
+    requests: &[(u64, i32, Request)],
+    pid: i32,
+    bbox: (i32, i32),
+    geometry_h: i32,
+) -> Option<(u64, Strip)> {
+    requests
+        .iter()
+        .rev()
+        .filter(|(_, p, _)| *p == pid)
+        .find_map(|(conn, _, req)| {
+            let e = req
+                .entries
+                .iter()
+                .find(|e| size_matches(bbox, (e.width, e.height)))?;
+            let top = if e.body {
+                Strip::WHOLE
+            } else {
+                strip_top(geometry_h, e.content)
+            };
+            Some((
+                *conn,
+                Strip {
+                    top,
+                    fill: StripFill::Keyed(req.keys),
+                },
+            ))
+        })
+}
+
+/// Bring one window's strip in line with the stored requests. Returns whether
+/// anything changed. Allocates only when it does.
+fn settle(state: &mut AbyssState, window: &Window, pid: i32) -> bool {
+    let bbox = window.bbox().size;
+    let want = wanted(
+        &state.ipc.client_requests,
+        pid,
+        (bbox.w, bbox.h),
+        window.geometry().size.h,
+    );
+    let have = state
+        .ipc
+        .client_strips
+        .iter()
+        .find(|(_, w)| w == window)
+        .map(|(c, _)| *c)
+        .zip(window.user_data().get::<ClientStrip>().and_then(|s| s.0.get()));
+    if want == have {
+        return false;
+    }
+    state.ipc.client_strips.retain(|(_, w)| w != window);
+    stamp(window, want.map(|(_, s)| s));
+    if let Some((conn, _)) = want {
+        state.ipc.client_strips.push((conn, window.clone()));
+    }
+    true
+}
+
+/// A toplevel committed. If its client has a stored request and the window's
+/// size changed since last looked at, match it again.
+pub(crate) fn on_window_commit(state: &mut AbyssState, window: &Window) {
+    if state.ipc.client_requests.is_empty() || window.toplevel().is_none() {
+        return;
+    }
+    let (bbox, geo) = (window.bbox().size, window.geometry().size);
+    let size = (bbox.w, bbox.h, geo.h);
+    match window.user_data().get::<SeenSize>() {
+        Some(seen) if seen.0.get() == size => return,
+        Some(seen) => seen.0.set(size),
+        None => {
+            window.user_data().insert_if_missing(|| SeenSize(Cell::new(size)));
+        }
+    }
+    let Some(pid) = super::methods::pid_of(state, window) else {
+        return;
+    };
+    if state.ipc.client_requests.iter().all(|(_, p, _)| *p != pid) {
+        return;
+    }
+    if settle(state, window, pid) {
+        crate::backend::damage_all(state);
+    }
+}
+
 /// [`set_client_strips`] with the target client pid already resolved.
 fn apply(state: &mut AbyssState, conn: u64, parent: i32, params: &Value) -> Result<Value, RpcError> {
-    let (opacity, entries) = parse(params)?;
-    // A new call replaces the connection's old set.
+    let request = parse(params)?;
+    // A new call replaces the connection's old request.
     clear_for(state, conn);
-    let mut applied = 0usize;
-    let mut stamped: Vec<Window> = Vec::new();
-    for window in state
+    state.ipc.client_requests.push((conn, parent, request));
+    let windows: Vec<Window> = state
         .outputs
         .iter()
         .flat_map(|e| e.workspaces.iter())
         .flat_map(|ws| ws.all_windows())
-    {
-        if window.toplevel().is_none() || super::methods::pid_of(state, &window) != Some(parent) {
-            continue;
-        }
-        let bbox = window.bbox().size;
-        let Some(entry) = entries
+        .filter(|w| w.toplevel().is_some() && super::methods::pid_of(state, w) == Some(parent))
+        .collect();
+    let mut applied = 0usize;
+    for window in &windows {
+        settle(state, window, parent);
+        if state
+            .ipc
+            .client_strips
             .iter()
-            .find(|e| size_matches((bbox.w, bbox.h), (e.width, e.height)))
-        else {
-            continue;
-        };
-        let top = strip_top(window.geometry().size.h, entry.content);
-        stamp(&window, Some((top, opacity)));
-        stamped.push(window);
-        applied += 1;
+            .any(|(c, w)| *c == conn && w == window)
+        {
+            applied += 1;
+        }
     }
-    // A window another connection had claimed now answers to this one.
-    state.ipc.client_strips.retain(|(_, w)| !stamped.contains(w));
-    state
-        .ipc
-        .client_strips
-        .extend(stamped.into_iter().map(|w| (conn, w)));
     if applied > 0 {
         crate::backend::damage_all(state);
     }
     Ok(json!({"ok": true, "applied": applied}))
 }
 
-fn stamp(window: &Window, strip: Option<(i32, f32)>) {
+fn stamp(window: &Window, strip: Option<Strip>) {
     match window.user_data().get::<ClientStrip>() {
         Some(slot) => slot.0.set(strip),
         None if strip.is_some() => {
@@ -163,16 +294,28 @@ fn stamp(window: &Window, strip: Option<(i32, f32)>) {
     }
 }
 
-/// Take every strip `conn` set off again. Damages only if one was showing.
+/// Drop `conn`'s request and take every strip it set off again, handing a
+/// window to another connection's matching request if there is one. Damages
+/// only if something was showing.
 pub(crate) fn clear_for(state: &mut AbyssState, conn: u64) {
-    let mine = state.ipc.client_strips.iter().filter(|(c, _)| *c == conn).count();
-    if mine == 0 {
+    state.ipc.client_requests.retain(|(c, ..)| *c != conn);
+    let mine: Vec<Window> = state
+        .ipc
+        .client_strips
+        .iter()
+        .filter(|(c, _)| *c == conn)
+        .map(|(_, w)| w.clone())
+        .collect();
+    if mine.is_empty() {
         return;
     }
-    for (_, w) in state.ipc.client_strips.iter().filter(|(c, _)| *c == conn) {
-        stamp(w, None);
-    }
     state.ipc.client_strips.retain(|(c, _)| *c != conn);
+    for w in &mine {
+        stamp(w, None);
+        if let Some(pid) = super::methods::pid_of(state, w) {
+            settle(state, w, pid);
+        }
+    }
     crate::backend::damage_all(state);
 }
 
@@ -190,6 +333,15 @@ mod tests {
     use super::*;
     use crate::shell::focus::state_tests::{client::Client, harness, Harness};
     use ec_abyss_render::userdata::{strip_of, RuleStrip};
+
+    const KEY: [u8; 3] = [0x11, 0x22, 0x33];
+
+    fn keyed(top: i32) -> Option<Strip> {
+        Some(Strip {
+            top,
+            fill: StripFill::Keyed(Keys::one(KEY, 0.6)),
+        })
+    }
 
     #[test]
     fn ppid_parses_past_a_hostile_comm() {
@@ -222,16 +374,48 @@ mod tests {
 
     #[test]
     fn parameters_are_checked() {
-        let (o, e) = parse(&json!({"opacity": 7.0, "windows": [{"width": 1, "height": 2, "content": 1}]}))
-            .ok()
-            .unwrap();
-        assert_eq!((o, e.len()), (1.0, 1));
+        let ok = parse(&json!({
+            "keys": [{"color": "#1B2c3D", "opacity": 0.35}, {"color": "#000000", "opacity": 0}],
+            "windows": [{"width": 1, "height": 2, "content": 1}, {"width": 3, "height": 4, "content": 0, "body": true}]
+        }))
+        .ok()
+        .unwrap();
+        assert_eq!(ok.keys.n, 2);
+        assert_eq!(ok.keys.rgb[0], [0x1b, 0x2c, 0x3d]);
+        assert_eq!(ok.keys.opacity[1], 0.0);
+        assert_eq!(ok.keys.everywhere, [false; 4]);
+        let ev = parse(
+            &json!({"keys": [{"color": "#000001", "opacity": 0.5, "everywhere": true}], "windows": []}),
+        )
+        .ok()
+        .unwrap();
+        assert!(ev.keys.everywhere[0] && ev.keys.any_everywhere());
+        assert_eq!(ok.entries.len(), 2);
+        assert!(!ok.entries[0].body && ok.entries[1].body);
+        let k = json!([{"color": "#112233", "opacity": 0.5}]);
+        let w = json!([{"width": 1, "height": 2, "content": 1}]);
+        let five = json!((0..5)
+            .map(|_| json!({"color": "#112233", "opacity": 0.5}))
+            .collect::<Vec<_>>());
         for bad in [
-            json!({"opacity": 0.5}),
-            json!({"windows": []}),
-            json!({"opacity": 0.5, "windows": [{"width": -1, "height": 2, "content": 1}]}),
-            json!({"opacity": 0.5, "windows": [{"width": 1, "height": 2}]}),
-            json!({"opacity": 0.5, "windows": [], "extra": 1}),
+            // The old v1 shape.
+            json!({"opacity": 0.5, "windows": w}),
+            json!({"windows": w}),
+            json!({"keys": k}),
+            json!({"keys": [], "windows": w}),
+            json!({"keys": five, "windows": w}),
+            json!({"keys": [{"color": "112233", "opacity": 0.5}], "windows": w}),
+            json!({"keys": [{"color": "#11223", "opacity": 0.5}], "windows": w}),
+            json!({"keys": [{"color": "#11223g", "opacity": 0.5}], "windows": w}),
+            json!({"keys": [{"color": "#112233"}], "windows": w}),
+            json!({"keys": [{"color": "#112233", "opacity": 1.5}], "windows": w}),
+            json!({"keys": [{"color": "#112233", "opacity": -0.1}], "windows": w}),
+            json!({"keys": [{"color": "#112233", "opacity": "x"}], "windows": w}),
+            json!({"keys": k, "windows": [{"width": -1, "height": 2, "content": 1}]}),
+            json!({"keys": k, "windows": [{"width": 1, "height": 2}]}),
+            json!({"keys": k, "windows": [{"width": 1, "height": 2, "content": 1, "body": 1}]}),
+            json!({"keys": [{"color": "#112233", "opacity": 0.5, "everywhere": 1}], "windows": w}),
+            json!({"keys": k, "windows": w, "extra": 1}),
             json!(null),
         ] {
             assert!(parse(&bad).is_err(), "{bad} accepted");
@@ -249,7 +433,14 @@ mod tests {
     }
 
     fn call(h: &mut Harness, conn: u64, parent: i32, size: i64, content: i64) -> Value {
-        let p = json!({"opacity": 0.6, "windows": [{"width": size, "height": size, "content": content}]});
+        call_body(h, conn, parent, size, content, false)
+    }
+
+    fn call_body(h: &mut Harness, conn: u64, parent: i32, size: i64, content: i64, body: bool) -> Value {
+        let p = json!({
+            "keys": [{"color": "#112233", "opacity": 0.6}],
+            "windows": [{"width": size, "height": size, "content": content, "body": body}]
+        });
         apply(&mut h.state, conn, parent, &p).ok().expect("accepted")
     }
 
@@ -265,7 +456,7 @@ mod tests {
         assert_eq!(strip_of(&w), None);
         // Off by one is; the 100 px geometry less 70 px of page is a 30 px strip.
         assert_eq!(call(&mut h, 1, me, 101, 70)["applied"], 1);
-        assert_eq!(strip_of(&w), Some((30, 0.6)));
+        assert_eq!(strip_of(&w), keyed(30));
         // A new call replaces the old set: this one matches nothing.
         assert_eq!(call(&mut h, 1, me, 300, 70)["applied"], 0);
         assert_eq!(strip_of(&w), None);
@@ -276,7 +467,7 @@ mod tests {
         let mut h = harness();
         let (_c, w, me) = mapped(&mut h);
         call(&mut h, 1, me, 100, 0);
-        assert_eq!(strip_of(&w), Some((50, 0.6)));
+        assert_eq!(strip_of(&w), keyed(50));
         // A page taller than the window leaves no strip.
         call(&mut h, 1, me, 100, 500);
         assert_eq!(strip_of(&w), None);
@@ -287,13 +478,13 @@ mod tests {
         let mut h = harness();
         let (_c, w, me) = mapped(&mut h);
         call(&mut h, 1, me, 100, 70);
-        assert_eq!(strip_of(&w), Some((30, 0.6)));
+        assert_eq!(strip_of(&w), keyed(30));
         w.user_data()
-            .insert_if_missing(|| RuleStrip(Cell::new(Some((12, 0.3)))));
-        assert_eq!(strip_of(&w), Some((12, 0.3)));
+            .insert_if_missing(|| RuleStrip(Cell::new(Some(Strip::fade(12, 0.3)))));
+        assert_eq!(strip_of(&w), Some(Strip::fade(12, 0.3)));
         // The rule going away hands the strip back to the client's.
         w.user_data().get::<RuleStrip>().unwrap().0.set(None);
-        assert_eq!(strip_of(&w), Some((30, 0.6)));
+        assert_eq!(strip_of(&w), keyed(30));
     }
 
     #[test]
@@ -320,9 +511,58 @@ mod tests {
         let (_c, w, me) = mapped(&mut h);
         call(&mut h, 1, me, 100, 70);
         call(&mut h, 2, me, 100, 60);
-        assert_eq!(strip_of(&w), Some((40, 0.6)));
+        assert_eq!(strip_of(&w), keyed(40));
         clear_for(&mut h.state, 1);
-        assert_eq!(strip_of(&w), Some((40, 0.6)));
+        assert_eq!(strip_of(&w), keyed(40));
+    }
+
+    #[test]
+    fn body_keys_the_whole_window() {
+        let mut h = harness();
+        let (_c, w, me) = mapped(&mut h);
+        assert_eq!(call_body(&mut h, 1, me, 100, 70, true)["applied"], 1);
+        assert_eq!(strip_of(&w).map(|s| s.top), Some(Strip::WHOLE));
+        call_body(&mut h, 1, me, 100, 70, false);
+        assert_eq!(strip_of(&w).map(|s| s.top), Some(30));
+    }
+
+    #[test]
+    fn a_request_before_the_resize_commit_is_matched_when_the_buffer_arrives() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let t = c.create_toplevel(&mut h);
+        c.commit(&mut h, &t.surface);
+        c.attach(&mut h, &t.surface);
+        let w = h.state.space.elements().next().cloned().expect("mapped");
+        let me = std::process::id() as i32;
+        // The helper reports the new 160 px size before the browser commits it:
+        // nothing matches the 100 px buffer yet.
+        assert_eq!(call(&mut h, 1, me, 160, 120)["applied"], 0);
+        assert_eq!(strip_of(&w), None);
+        // The resized buffer lands: the stored request matches, no resend.
+        c.attach_sized(&mut h, &t.surface, 160, 160);
+        assert_eq!(strip_of(&w), keyed(40));
+        // Resized away from every reported size: the strip comes off again.
+        c.attach_sized(&mut h, &t.surface, 100, 100);
+        assert_eq!(strip_of(&w), None);
+        // And back.
+        c.attach_sized(&mut h, &t.surface, 160, 160);
+        assert_eq!(strip_of(&w), keyed(40));
+        // The connection leaving drops the request with its strips.
+        clear_for(&mut h.state, 1);
+        assert!(h.state.ipc.client_requests.is_empty());
+        c.attach_sized(&mut h, &t.surface, 100, 100);
+        c.attach_sized(&mut h, &t.surface, 160, 160);
+        assert_eq!(strip_of(&w), None);
+    }
+
+    #[test]
+    fn commits_without_a_request_or_a_size_change_do_nothing() {
+        let mut h = harness();
+        let (_c, w, _me) = mapped(&mut h);
+        // No requests: the commit path exits before touching the window.
+        on_window_commit(&mut h.state, &w);
+        assert!(w.user_data().get::<SeenSize>().is_none());
     }
 
     #[test]

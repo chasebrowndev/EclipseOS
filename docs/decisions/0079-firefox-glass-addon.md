@@ -1,5 +1,5 @@
 # 0079 — Glass for Firefox: a theme add-on with compositor-side translucency
-Status: accepted
+Status: accepted; strip rendering and the new-tab page amended by 0080
 Date: 2026-10-30
 Deciders: chase (owner), Claude (advisory)
 

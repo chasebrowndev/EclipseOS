@@ -1391,10 +1391,22 @@ fn windowrule_translucent_region_takes_top_and_opacity() {
             cfg.window_rules[0].action,
             RuleAction::TranslucentRegion {
                 top: want.0,
-                opacity: want.1
+                opacity: want.1,
+                key: None
             }
         );
     }
+    let cfg =
+        blur_cfg("windowrule \"translucent-region top=40 key=#1B1b1f opacity=0.35\" { app-id \"a\"; }\n");
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(
+        cfg.window_rules[0].action,
+        RuleAction::TranslucentRegion {
+            top: 40,
+            opacity: 0.35,
+            key: Some([0x1b, 0x1b, 0x1f])
+        }
+    );
     for bad in [
         "",
         " top=40",
@@ -1406,6 +1418,11 @@ fn windowrule_translucent_region_takes_top_and_opacity() {
         " top=40 opacity=0.5 extra=1",
         " top=40 top=41 opacity=0.5",
         " 40 0.5",
+        " top=40 opacity=0.5 key=1b1b1f",
+        " top=40 opacity=0.5 key=#1b1b1",
+        " top=40 opacity=0.5 key=#1b1b1fff",
+        " top=40 opacity=0.5 key=#zzzzzz",
+        " top=40 opacity=0.5 key=#1b1b1f key=#1b1b1f",
     ] {
         let cfg = blur_cfg(&format!(
             "windowrule \"translucent-region{bad}\" {{ app-id \"a\"; }}\n"

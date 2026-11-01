@@ -149,6 +149,11 @@ pub struct IpcState {
     /// Windows carrying a client-set translucent strip, with the connection
     /// that owns it (`set_client_strips`, ADR 0079).
     client_strips: Vec<(u64, Window)>,
+    /// Each connection's latest `set_client_strips` request with the client
+    /// pid it targets, oldest first. Re-matched whenever a window of that
+    /// client commits a new size, because a browser reports a resize before
+    /// it commits the resized buffer.
+    client_requests: Vec<(u64, i32, client_strips::Request)>,
     /// The connection currently inside its own read callback, if any. Its
     /// calloop source must not be removed from underneath it.
     current: Option<u64>,
@@ -649,7 +654,13 @@ fn disown_annotations(state: &mut AbyssState, id: u64) {
 
 /// Take every client-set strip off (the `client-strips` hook went off).
 pub(crate) fn clear_all_client_strips(state: &mut AbyssState) {
-    let owners: Vec<u64> = state.ipc.client_strips.iter().map(|(c, _)| *c).collect();
+    let owners: Vec<u64> = state
+        .ipc
+        .client_strips
+        .iter()
+        .map(|(c, _)| *c)
+        .chain(state.ipc.client_requests.iter().map(|(c, ..)| *c))
+        .collect();
     for c in owners {
         client_strips::clear_for(state, c);
     }

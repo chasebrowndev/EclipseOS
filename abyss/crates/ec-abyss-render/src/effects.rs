@@ -54,13 +54,54 @@ uniform float tint;
 uniform vec4 win_rect;
 uniform float radius;
 
+#ifdef KEYED
+// Tint-keyed translucency (ADR 0079): inside `key_rect` (gl_FragCoord space)
+// a texel whose colour is within 1/255 per channel of key `i` is drawn at
+// that key's opacity (`key{i}.w`); every other texel is untouched.
+uniform vec4 key_rect;
+uniform float keys;
+uniform vec4 key0;
+uniform vec4 key1;
+uniform vec4 key2;
+uniform vec4 key3;
+uniform vec4 key_all; // 1.0 per key matched over the whole window
+
+bool near_key(vec3 c, vec3 k) {
+    return all(lessThanEqual(abs(c - k) * 255.0, vec3(1.5)));
+}
+
+float key_opacity(vec4 texel) {
+    vec2 f = gl_FragCoord.xy;
+    bool inside = !(f.x < key_rect.x || f.y < key_rect.y || f.x >= key_rect.x + key_rect.z || f.y >= key_rect.y + key_rect.w);
+#if !defined(NO_ALPHA)
+    if (texel.a < 0.99)
+        return 1.0;
+#endif
+    if (keys > 0.5 && (inside || key_all.x > 0.5) && near_key(texel.rgb, key0.rgb))
+        return key0.w;
+    if (keys > 1.5 && (inside || key_all.y > 0.5) && near_key(texel.rgb, key1.rgb))
+        return key1.w;
+    if (keys > 2.5 && (inside || key_all.z > 0.5) && near_key(texel.rgb, key2.rgb))
+        return key2.w;
+    if (keys > 3.5 && (inside || key_all.w > 0.5) && near_key(texel.rgb, key3.rgb))
+        return key3.w;
+    return 1.0;
+}
+#endif
+
 void main() {
     vec4 color = texture2D(tex, v_coords);
+#ifdef KEYED
+    float key_k = key_opacity(color);
+#endif
 
 #if defined(NO_ALPHA)
     color = vec4(color.rgb, 1.0) * alpha;
 #else
     color = color * alpha;
+#endif
+#ifdef KEYED
+    color *= key_k;
 #endif
 
 #if defined(DEBUG_FLAGS)
@@ -81,6 +122,88 @@ void main() {
     gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
 }
 "#;
+
+/// The keyed program: the rounded-corner program with tint keying switched on
+/// (`KEYED`). Surfaces of a window with a keyed strip, and of its popups, draw
+/// through it; it is always handed every uniform, so nothing leaks from one
+/// draw to the next. Cached by the caller.
+pub fn compile_keyed(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        ROUNDED_TEX_SRC.replacen("//_DEFINES_", "//_DEFINES_\n#define KEYED 1", 1),
+        &[
+            UniformName::new("win_rect", UniformType::_4f),
+            UniformName::new("radius", UniformType::_1f),
+            UniformName::new("key_rect", UniformType::_4f),
+            UniformName::new("keys", UniformType::_1f),
+            UniformName::new("key0", UniformType::_4f),
+            UniformName::new("key1", UniformType::_4f),
+            UniformName::new("key2", UniformType::_4f),
+            UniformName::new("key3", UniformType::_4f),
+            UniformName::new("key_all", UniformType::_4f),
+        ],
+    )
+}
+
+/// A rectangle covering any framebuffer: "no mask" / "everywhere".
+const EVERYWHERE: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
+
+fn fb_rect(rect: Rectangle<i32, Physical>, fb_height: i32, mirrored: bool) -> [f32; 4] {
+    let y = if mirrored {
+        fb_height - rect.loc.y - rect.size.h
+    } else {
+        rect.loc.y
+    };
+    [
+        rect.loc.x as f32,
+        y as f32,
+        rect.size.w as f32,
+        rect.size.h as f32,
+    ]
+}
+
+/// Uniforms for [`compile_keyed`]. `mask` is the window rectangle and corner
+/// radius (physical, `rounding_uniforms`' convention), or `None` for no
+/// rounding. `region` is where the keys apply, `None` for the whole surface.
+pub fn keyed_uniforms(
+    mask: Option<(Rectangle<i32, Physical>, f32)>,
+    region: Option<Rectangle<i32, Physical>>,
+    fb_height: i32,
+    mirrored: bool,
+    keys: &crate::userdata::Keys,
+) -> Vec<Uniform<'static>> {
+    let (win, radius) = match mask {
+        Some((rect, radius)) => (fb_rect(rect, fb_height, mirrored), radius),
+        None => (EVERYWHERE, 0.0),
+    };
+    let key_rect = region.map_or(EVERYWHERE, |r| fb_rect(r, fb_height, mirrored));
+    let key = |i: usize| -> [f32; 4] {
+        if i < keys.n as usize {
+            let [r, g, b] = keys.rgb[i];
+            [
+                r as f32 / 255.0,
+                g as f32 / 255.0,
+                b as f32 / 255.0,
+                keys.opacity[i],
+            ]
+        } else {
+            [0.0; 4]
+        }
+    };
+    vec![
+        Uniform::new("win_rect", win),
+        Uniform::new("radius", radius),
+        Uniform::new("key_rect", key_rect),
+        Uniform::new("keys", keys.n as f32),
+        Uniform::new("key0", key(0)),
+        Uniform::new("key1", key(1)),
+        Uniform::new("key2", key(2)),
+        Uniform::new("key3", key(3)),
+        Uniform::new("key_all", {
+            let a = |i: usize| (i < keys.n as usize && keys.everywhere[i]) as u8 as f32;
+            [a(0), a(1), a(2), a(3)]
+        }),
+    ]
+}
 
 /// The line every mask program declares its corner radius on; the shape
 /// functions are spliced in right after it (see [`shaped_source`]).

@@ -378,6 +378,9 @@ pub struct BorderStore {
     dims: HashMap<(Output, Window), SolidColorBuffer>,
     /// Rounded-corner texture program, compiled on the first frame that rounds.
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    /// Tint-keyed texture program (ADR 0079), compiled on the first frame a
+    /// keyed strip draws; `Err` once it failed, so it is not retried per frame.
+    keyed: Option<Result<smithay::backend::renderer::gles::GlesTexProgram, ()>>,
     /// Frost and glass backdrop programs, compiled on the first frame that
     /// draws a backdrop in that mode.
     frost: Option<smithay::backend::renderer::gles::GlesTexProgram>,
@@ -417,6 +420,30 @@ impl BorderStore {
         self.glows.retain(|(_, w), _| w != window);
         self.dims.retain(|(_, w), _| w != window);
     }
+}
+
+/// One popup of a keyed window: its index, its physical rect (output-local)
+/// and its surface elements.
+type PopupGroup = (
+    usize,
+    Rectangle<i32, Physical>,
+    Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+);
+
+/// The keyed program and the output's framebuffer axis, if keying can draw on
+/// `output` (a rotated output cannot place the key region and keeps the strip
+/// opaque). Compiles on first use.
+fn keyed_target(
+    renderer: &mut GlesRenderer,
+    store: &mut BorderStore,
+    output: &Output,
+) -> Option<(smithay::backend::renderer::gles::GlesTexProgram, i32, bool)> {
+    let (mirrored, mode) = effects::fb_y_mirrored(output.current_transform()).zip(output.current_mode())?;
+    let program = store.keyed.get_or_insert_with(|| {
+        effects::compile_keyed(renderer)
+            .map_err(|err| tracing::warn!(?err, "compiling the keyed-glass shader; strip stays opaque"))
+    });
+    Some((program.clone().ok()?, mode.size.h, mirrored))
 }
 
 fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
@@ -1452,16 +1479,40 @@ fn window_elements(
         // `windowrule "translucent-region …"`: the strip's physical rect, the
         // window's, and the strip's own alpha (times the window's). Only a
         // toplevel at rest has one; an animating window draws whole.
-        let strip = userdata::strip_of(&window)
+        let strip_def = userdata::strip_of(&window)
             .filter(|_| !t.scaled() && window.toplevel().is_some())
-            .zip(geo)
-            .map(|((top, strip_alpha), geo)| {
-                let rect = Rectangle::new(
-                    phys(geo.loc - output_geo.loc, scale),
-                    geo.size.to_f64().to_physical(scale).to_i32_round(),
-                );
-                (strip_rect(rect, top, scale), rect, alpha * strip_alpha)
-            });
+            .zip(geo);
+        // A keyed strip needs the keyed program and a framebuffer axis; where
+        // either is missing the window stays opaque rather than fading whole.
+        let keyed = match strip_def.as_ref().and_then(|(s, _)| s.keyed().copied()) {
+            Some(keys) => keyed_target(renderer, store, output)
+                .map(|(program, h, mirrored)| (program, h, mirrored, keys)),
+            None => None,
+        };
+        let strip_def = strip_def.filter(|(s, _)| s.keyed().is_none() || keyed.is_some());
+        let strip = strip_def.map(|(s, geo)| {
+            let rect = Rectangle::new(
+                phys(geo.loc - output_geo.loc, scale),
+                geo.size.to_f64().to_physical(scale).to_i32_round(),
+            );
+            let fade = match s.fill {
+                userdata::StripFill::Fade(a) => alpha * a,
+                userdata::StripFill::Keyed(_) => alpha,
+            };
+            // Blur goes behind the whole window when any key matches everywhere.
+            let blur_rect = match s.keyed() {
+                Some(k) if k.any_everywhere() => rect,
+                _ => strip_rect(rect, s.top, scale),
+            };
+            (blur_rect, rect, fade)
+        });
+        let key_region = strip_def.map(|(s, geo)| {
+            let rect = Rectangle::new(
+                phys(geo.loc - output_geo.loc, scale),
+                geo.size.to_f64().to_physical(scale).to_i32_round(),
+            );
+            strip_rect(rect, s.top, scale)
+        });
 
         // The dim overlay belongs above this window but below the ones in
         // front of it, so it is pushed just before the window's own surfaces.
@@ -1485,23 +1536,34 @@ fn window_elements(
         let render_loc = loc + t.loc() - window.geometry().loc - output_geo.loc;
         // Popups are split off a cropped window so a menu that opens past the
         // tile edge is not cut; smithay's `render_elements` puts them first.
+        let mut popup_groups: Vec<PopupGroup> = Vec::new();
         let (popups, surfaces) = match (clip, window.toplevel()) {
             (clip, Some(toplevel)) if clip.is_some() || strip.is_some() => {
                 let surface = toplevel.wl_surface();
-                let popups = PopupManager::popups_for_surface(surface)
-                    .flat_map(|(popup, popup_offset)| {
-                        let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
-                            .to_physical_precise_round(scale);
-                        render_elements_from_surface_tree(
-                            renderer,
-                            popup.wl_surface(),
-                            phys(render_loc, scale) + offset,
-                            scale,
-                            alpha,
-                            Kind::Unspecified,
-                        )
-                    })
-                    .collect();
+                let mut popups = Vec::new();
+                for (n, (popup, popup_offset)) in PopupManager::popups_for_surface(surface).enumerate() {
+                    let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
+                        .to_physical_precise_round(scale);
+                    let els = render_elements_from_surface_tree(
+                        renderer,
+                        popup.wl_surface(),
+                        phys(render_loc, scale) + offset,
+                        scale,
+                        alpha,
+                        Kind::Unspecified,
+                    );
+                    if keyed.is_some() {
+                        // Keyed over the whole surface, glass behind it.
+                        let at = render_loc + window.geometry().loc + popup_offset;
+                        let rect = Rectangle::new(
+                            phys(at, scale),
+                            popup.geometry().size.to_f64().to_physical(scale).to_i32_round(),
+                        );
+                        popup_groups.push((n, rect, els));
+                    } else {
+                        popups.extend(els);
+                    }
+                }
                 let own = render_elements_from_surface_tree(
                     renderer,
                     surface,
@@ -1522,17 +1584,20 @@ fn window_elements(
                 ),
             ),
         };
-        // The strip's copy of the surface tree, at the strip's alpha.
+        // The strip's copy of the surface tree, at the strip's alpha. A keyed
+        // strip is one draw through the keyed program instead.
         let strip_surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match (strip, window.toplevel())
         {
-            (Some((_, _, strip_alpha)), Some(toplevel)) => render_elements_from_surface_tree(
-                renderer,
-                toplevel.wl_surface(),
-                phys(render_loc, scale),
-                scale,
-                strip_alpha,
-                Kind::Unspecified,
-            ),
+            (Some((_, _, strip_alpha)), Some(toplevel)) if keyed.is_none() => {
+                render_elements_from_surface_tree(
+                    renderer,
+                    toplevel.wl_surface(),
+                    phys(render_loc, scale),
+                    scale,
+                    strip_alpha,
+                    Kind::Unspecified,
+                )
+            }
             _ => Vec::new(),
         };
         let tile_crop = clip.map(|c| {
@@ -1729,13 +1794,82 @@ fn window_elements(
         // above the strip's bottom edge, the plain one below it. They are
         // disjoint, so the rounded mask (the whole window's) is shared.
         let bands = match strip {
-            Some((strip, _, _)) if !shaded => {
+            Some((strip, _, _)) if !shaded && keyed.is_none() => {
                 let [above, below] = strip_crops(strip, out_rect, crop);
                 vec![(strip_surfaces, Some(above)), (surfaces, Some(below))]
             }
             _ => vec![(surfaces, crop)],
         };
+        // Keyed glass draws only when no transition shader reshapes the window;
+        // a keyed window's popups otherwise draw plain.
+        let keyed_on = keyed.filter(|_| !shaded);
+        let mut popups = popups;
+        if keyed_on.is_none() {
+            for (_, _, els) in popup_groups.drain(..) {
+                popups.extend(els);
+            }
+        }
         match (scaled, &rounding, geo) {
+            // Tint-keyed strip (ADR 0079): the popups, then the whole surface
+            // tree, each through the keyed program; only key-coloured pixels
+            // inside the region turn translucent. Idle windows only.
+            (None, _, Some(geo)) if keyed_on.is_some() => {
+                let Some((program, fb_h, mirrored, keys)) = keyed_on.clone() else {
+                    continue;
+                };
+                let rect = Rectangle::new(
+                    phys(geo.loc - output_geo.loc, scale),
+                    geo.size.to_f64().to_physical(scale).to_i32_round(),
+                );
+                let radius = deco.rounding as f64 * scale.x.max(scale.y);
+                let mask = rounding.as_ref().map(|_| (rect, radius as f32));
+                let region = key_region;
+                let popup_crop = overhangs.then_some(out_rect);
+                let push_keyed = |out: &mut Vec<AbyssRenderElement>,
+                                  els: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+                                  uniforms: Vec<smithay::backend::renderer::gles::Uniform<'static>>,
+                                  crop: Option<Rectangle<i32, Physical>>| {
+                    for s in els {
+                        let el = effects::RoundedElement::new(s, program.clone(), uniforms.clone());
+                        match crop {
+                            Some(crop) => out.extend(
+                                CropRenderElement::from_element(el, scale, crop)
+                                    .map(AbyssRenderElement::CroppedRounded),
+                            ),
+                            None => out.push(AbyssRenderElement::Rounded(el)),
+                        }
+                    }
+                };
+                for (n, prect, els) in popup_groups.drain(..) {
+                    push_keyed(
+                        out,
+                        els,
+                        effects::keyed_uniforms(None, None, fb_h, mirrored, &keys),
+                        popup_crop,
+                    );
+                    if mode != BlurMode::Off {
+                        blurred.push((
+                            blur::BlurKey::Popup(window.clone(), n),
+                            out.len(),
+                            prect,
+                            mode,
+                            0,
+                            None,
+                            None,
+                            popup_crop,
+                        ));
+                    }
+                }
+                push_popups(out, popups, scale, popup_crop);
+                for (surfaces, crop) in bands {
+                    push_keyed(
+                        out,
+                        surfaces,
+                        effects::keyed_uniforms(mask, region, fb_h, mirrored, &keys),
+                        crop,
+                    );
+                }
+            }
             // Animating at a scale: the same arms through `ScaledElement`,
             // which carries the mask itself. Idle windows never get here.
             (Some((origin, by)), rounding, _) => {
