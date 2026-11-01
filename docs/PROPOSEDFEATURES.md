@@ -197,30 +197,25 @@ Needs `eclipse-backend` to reproduce and fix.
 
 ## Code still to write — the Phase 1 exit and Phase 2 backlog
 
-Owner-requested 2026-09-23: every piece of specified code the tree does not
-have yet, in one list, so nothing lives only in `docs/STATUS.md` prose. Spec
-first, then where the code goes, then the COMP-16 milestone.
+Owner-requested 2026-09-23, re-verified against the tree 2026-10-11 (`de7e0eb`):
+every piece of specified code the tree does not have yet, in one list, so
+nothing lives only in `docs/STATUS.md` prose. Spec first, then where the code
+goes, then the COMP-16 milestone. Landed since the last revision and removed:
+9e's `class_source`/`irreversible_capable` (#62), per-device input (#61),
+`ec-wallpaper`, the COMP-17 `mode` key, the override/attention chords and the
+trusted-UI prompt grab (`trusted_ui::holds_seat`, #104).
 
 ### Phase 1 exit
 
 - **Cursor capture for `ext-image-copy-capture`.** COMP-06 §1, ADR
-  0029/0030. `CreatePointerCursorSession` is answered with a session that
-  never produces a frame (`protocols/standard/image_copy_capture.rs:329`,
-  `:344`). Behind the same fail-closed gate and the `capture.cursor` policy.
-  *Phase 1, M8.*
-- **The `mode` key.** COMP-17 §2: `mode "wm" | "de"` selects defaults
-  (autostart set, default binds, panel) that explicit config overrides. Does
-  not exist; was out of scope by DE plan B7. `config/mod.rs`, `config/schema.rs`.
-  *Phase 1, DE userland.*
-- **`ec-wallpaper` v1.** ADR 0068, D-05 §5. New crate
-  `shell/crates/ec-wallpaper/`: layer-shell on `Background`, one surface per
-  output, image (`fill`/`fit`/`center`) or solid colour, reload on `config`,
-  reconcile on `output`. Schema keys `wallpaper.path`/`mode`/`color` and the
-  KDL-only `output` child in `config/schema.rs`; Appearance-pane rows in
-  ec-settings; `packaging/` unit `ec-wallpaper.service` and split package
-  `eclipseos-wallpaper` under `eclipseos-meta`. *Phase 1, DE userland.*
-- **Taskbar clock: calendar drawer.** See Taskbar above;
-  `shell/crates/ec-hyperion-bar/src/view.rs`. *Phase 1, DE userland.*
+  0029/0030. `CreatePointerCursorSession` is answered with a session that is
+  stopped from the start (`protocols/standard/image_copy_capture.rs:332`).
+  Behind the same fail-closed gate and the `capture.cursor` policy. *M8.*
+- **Taskbar clock: calendar drawer.** See Taskbar above; the `TODO` in
+  `shell/crates/ec-hyperion-bar/src/widgets/clock.rs:35`. *DE userland.*
+- **M9f benchmark subjects.** COMP-14 §4.1. `check()`, audit encode and the
+  semantic tree now exist (M16, M12, M22), so three of the five subjects can
+  be pointed at; the §5 baseline/regression machinery is still owed. *M9f.*
 - **Re-verify, don't write:** the ghost-window entry above (against
   `8f76207`). BLUR-02 was fixed again at `227c678` (#47).
 - **Manual gates** (COMP-16 table; `docs/STATUS.md` "Deferred hardware
@@ -229,18 +224,35 @@ first, then where the code goes, then the COMP-16 milestone.
   harness budgets; M6 with lock/idle/DPMS/lid across a real logind
   suspend/resume cycle; then **14 consecutive days as the only compositor**.
 
-### Phase 2 — starts with M11 (privileged socket, `agentd`, `protocols/agent/`)
+### Phase 2 — closing M13–M15 (next)
 
-- **Override and attention chords do something.** COMP-04 §6. Super+Escape
-  and Super+Space dispatch `Action::AgentOverride`/`AgentAttention`, which only
-  log (`abyss/crates/ec-abyss/src/input/mod.rs`). Stubs until agent seats exist.
-  *M11 / M13; the attention queue at M15.*
-- **Trusted-UI prompt grab.** COMP-10. `abyss/crates/ec-abyss/src/shell/focus.rs:188`
-  (`TODO(step 6: trusted UI)`): `prompt_grab_active` is always false. Lands in
-  `abyss/crates/ec-abyss/src/trusted_ui/`. *M15.*
-- **Virtual outputs.** COMP-03 §6. `outputs/` handles physical outputs only
-  plus the COMP-03 §5 fallback (`OutputKind::Virtual` is that fallback, not
-  an agent-workspace output). *M24.*
+The `TCB-HOOK` markers in `protocols/agent/` name each call site.
+
+- **All-steps dry run for batches.** COMP-08 §4.2, §10; KNOWNBUGS BATCH-01.
+  `policy::enforce::dry_run`, called from `atomic::commit`. *M14, TCB.*
+- **Dedupe (step 2) and the generation check (step 8) inside
+  `policy::enforce`.** COMP-08 §10; GEN-01. Today in `seat.rs`. *M14, TCB.*
+- **`seat.atomic` and `seat.compat_lock` capabilities.** COMP-08 §10 step 7:
+  in `SEAT_CAPS` and checked at `atomic.rs`/`lock.rs`. *M14, TCB.*
+- **Compat-lock indicator** (COMP-10 §3.4) and **the emergency panel from
+  the capture indicator** (§3.3, §3.6). *M15, TCB.*
+- **Agent seat visible only where it acts.** COMP-04 §7; SEAT-01. A filtered
+  `wl_seat` global in `protocols/agent/seat.rs`. *M13.*
+- **compat_lock: touch/tablet queueing and the human-seat fallback.** COMP-04
+  §8; LOCK-01. *M14.*
+- **`wait_for` woken by change, not polled.** COMP-08 §4; WAIT-01 (the
+  semantic predicates wait on SEM-01). *M14.*
+
+### Phase 2 — later
+
+- **SEM-01 consumers**: `render/capture.rs::semantics_for`, agent `get_tree`,
+  `eclipse_agent_seat_v1.action` forwarding; then WAIT-01's semantic
+  predicates and tree-based generations. *M22, partly TCB.*
+- **Agent `launch` and SEAT-02** (xdg_activation from agent-launched clients),
+  **virtual outputs** (COMP-03 §6; `OutputKind::Virtual` is the §5 fallback,
+  not an agent-workspace output). *M24.*
+- **Provenance and the irreversible matcher** (blocked on F-03 defect 13),
+  **per-agent egress proxy**, **`cataclysm`**. *M18, M20, M23.*
 - **COMP-15 §2 security suites** (redaction, seat isolation, trusted UI,
   enforcement, scope leakage, audit completeness, X11 posture, classification
   races, irreversible matching, provenance, secrets, egress). Each lands with
