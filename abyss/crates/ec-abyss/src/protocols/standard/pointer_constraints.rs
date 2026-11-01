@@ -46,8 +46,17 @@ impl PointerConstraintsHandler for AbyssState {
         // Honour the hint only while the lock is actually active, so a background
         // client cannot warp the human's pointer.
         let active = with_pointer_constraint(surface, pointer, |c| c.is_some_and(|c| c.is_active()));
-        if active {
-            self.pointer_location = location;
+        if !active {
+            return;
+        }
+        // The hint is surface-local. Translate it by where that surface sits
+        // under the (locked, so stationary) pointer. Taken as global, it would put
+        // the cursor near the output's top-left when the lock lifts.
+        let origin = crate::shell::surface_under(self, self.pointer_location)
+            .filter(|(s, _)| s == surface)
+            .map(|(_, origin)| origin);
+        if let Some(origin) = origin {
+            self.pointer_location = origin + location;
         }
     }
 }

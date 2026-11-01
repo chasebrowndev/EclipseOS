@@ -1745,7 +1745,7 @@ a session) exposed to agents. Associated metadata:
 ```
 handle, app_id, title, pid, cgroup, launching_principal,
 workspace, output, geometry (global logical px), scale,
-state {focused_by: [seats], minimized, maximized, fullscreen, floating},
+state {focused_by: [seats], minimized, maximized, fullscreen, floating},  // maximized: always false (C-20)
 sensitivity: {public | private | secret},
 semantic: {none | atspi | native}, parent (for dialogs), children (popups)
 ```
@@ -1818,8 +1818,9 @@ Clipboard: agents read/write the clipboard through `eclipse_agent_v1`, not
 - Rootless XWayland via Smithay `X11Wm`, started lazily.
 - X11 windows get surface handles like native toplevels. Semantic layer is
   weaker (AT-SPI via the X11 app if it supports it; otherwise vision).
-- Scaling: XWayland scaled by compositor; optional per-app "let X11 handle
-  DPI" mode.
+- Scaling: ~~XWayland scaled by compositor; optional per-app "let X11 handle
+  DPI" mode.~~ *(ADR 0078)* X11 clients handle DPI by default; compositor
+  upscaling is the opt-out (COMP-07 §4).
 - X11 clients cannot participate in `eclipse_semantic_v1`; they are always
   `semantic: atspi|none`.
 - Security: X11 clients can snoop each other. Policy default: X11 windows
@@ -2675,8 +2676,17 @@ A toplevel is translucent when its alpha (`active-opacity` /
 `inactive-opacity`, or an `opacity` rule) is below 1.0 *(C-14)* **or** its
 surfaces' opaque region leaves part of its geometry uncovered (ignoring the
 corners the rounding mask hides); a buffer without an alpha channel counts
-as fully opaque. Content is never faded to obtain glass. A `blur` rule
-(COMP-05 §4) overrides the global switch for that window but never blurs an
+as fully opaque. Content is never faded to obtain glass, *(C-21)* except
+within a user-written `translucent-region` rule's strip (COMP-05 §4): for a
+client that submits opaque buffers, the top `top` logical px draw at the rule's
+alpha with the window's blur mode behind them, overriding the client's opaque
+region and an empty `ext_background_effect_v1` area for that strip only. *(C-23)*
+A keyed strip (a rule with `key=`, or a client strip over `set_client_strips`)
+fades no content: only pixels exactly equal to a declared key colour take that
+key's alpha, so text and icons stay opaque. Keys apply inside the declared region
+(the strip, the whole window while the client reports a browser-owned page, or
+everywhere for a key flagged so) and over the client's popups. A `blur`
+rule (COMP-05 §4) overrides the global switch for that window but never blurs an
 opaque one. Layer-shell surfaces get a backdrop wherever their opaque region
 leaves glass. Rounding applies to that backdrop: `decoration.rounding` by
 default; a layer anchored to three edges or to an opposite pair stays square,
@@ -3253,7 +3263,7 @@ Toplevel {
   launching_principal,               // §6
   workspace, output, geometry, scale,
   states: {focused_by[], minimized, maximized, fullscreen, floating,
-           urgent, sticky},
+           urgent, sticky},           // maximized: always false (C-20)
   sensitivity: public|private|secret,     // S-05, default private
   app_trust: trusted|standard|untrusted,  // S-05
   semantic: none|atspi|native,
@@ -3341,6 +3351,25 @@ Layout is a trait; two implementations plus floating in v1.
   configured without `Maximized`. Fullscreen takes the full output and wins
   over maximized; leaving fullscreen returns to maximized. There is no
   maximize or fullscreen bind action yet (code owed).
+  *(superseded C-20, 2026-10-13)* There is no maximize. A window is
+  minimized (out of the layout, restorable from the taskbar), in the layout
+  (tiled, or floating by placement), or fullscreen. A client's
+  `xdg_toplevel.set_maximized` is answered with a configure that does not
+  carry `Maximized` and leaves the window where it was. An X11
+  `_NET_WM_STATE_MAXIMIZED_*` request is declined, and the property is cleared
+  so the client sees it. A window alone on a workspace already fills it as a
+  tile, so maximize only added a second, floating "almost fullscreen" that
+  kept rounded corners and hid nothing. Fullscreen windows are drawn square.
+  *(added C-19, 2026-10-13)* A fullscreen window is the top of its
+  workspace's stack. Only its own dialogs (an xdg parent or an X11
+  `WM_TRANSIENT_FOR`, transitively) are drawn above it. Focus that restacks
+  (a click, a bind, IPC, activation, or a newly mapped window taking focus)
+  moving to any other window on that workspace ends the fullscreen, and the
+  client is told. Passive focus (focus-follows-mouse, the scene refresh)
+  never does. A new window blocked from taking focus (§5) maps behind it and
+  is marked urgent instead. An X11 window still gets fullscreen from a
+  pre-map `_NET_WM_STATE` message, or from the undecorated, origin-anchored,
+  output-covering "legacy fullscreen" rule (COMP-07 §5).
 - *(added C-04, 2026-09-23)* Default placement floats dialogs (an xdg parent,
   an X11 transient, or a dialog/utility/toolbar/splash window type) and
   fixed-size toplevels (min == max, both non-zero, judged once a buffer
@@ -3361,7 +3390,13 @@ Layout is a trait; two implementations plus floating in v1.
 
 ## 4. Rules Engine
 
-Matched at map time, re-evaluated on title change.
+~~Matched at map time, re-evaluated on title change.~~ *(C-22)* Matched at map
+time. Placement actions (`float`, `tile`, `size`, `position`, `output`,
+`workspace`, `fullscreen`) apply once, at map. Property actions (`opacity`,
+`blur`, `translucent-region`, …) re-apply on every surface commit and when the
+window is floated or tiled, so a matcher on live state follows it. Matchers add
+`floating #true|#false` (on a workspace's floating list now; a fullscreen window
+counts as floating).
 
 ```kdl
 windowrule "float" {
@@ -3565,7 +3600,7 @@ ships with `wl_compositor` (one Smithay global pair) and `xdg_output` with
 | `wlr_screencopy` / `ext_image_copy_capture` | 3 / 1 | screen sharing via portal — **capability- and sensitivity-gated** (§3) |
 | `wlr_gamma_control` | 1 | night light |
 | `content_type`, `wp_alpha_modifier`, `cursor_shape` | 1 | small, expected by modern toolkits |
-| `ext_background_effect` *(added BLUR-03, 2026-10-06)* | 1 | client-specified blur region; `blur` advertised only while `decoration.blur.mode` is not `off`; a committed region replaces the compositor's whole-surface backdrop (COMP-02 §9), in captures too |
+| `ext_background_effect` *(added BLUR-03, 2026-10-06)* | 1 | client-specified blur region; `blur` advertised only while `decoration.blur.mode` is not `off`; a committed region replaces the compositor's whole-surface backdrop (COMP-02 §9), in captures too; a region that is one box covering the whole window geometry is drawn as the compositor's own backdrop, so in `glass` mode it gets the bezel (C-15) like any other window |
 
 ## 2. Deliberately Not Implemented
 
@@ -3668,10 +3703,16 @@ Consequences, all enforced:
 
 ## 4. Scaling
 
-- XWayland is scaled by the compositor by default: X11 clients render at
-  scale 1 and are upscaled, which is blurry but always correct.
+- ~~XWayland is scaled by the compositor by default: X11 clients render at
+  scale 1 and are upscaled, which is blurry but always correct.~~
+  *(ADR 0078)* XWayland defaults to client scaling: X11 clients get
+  `Xft.dpi`-style hints for the output's scale and render natively, so
+  games and DPI-aware apps are sharp. `xwayland { scaling "compositor" }`
+  restores upscaling (blurry, but DPI-unaware apps keep their size).
 - Per-app rule `xwayland-scaling "client"` sets `Xft.dpi`/`GDK_SCALE`-style
   hints and lets the client render natively for apps that handle DPI well.
+  *(ADR 0078: implemented as the global `xwayland.scaling` key; a per-app
+  rule is not implemented.)*
 - Mixed-DPI multi-output with X11 clients is a known-imperfect area; the
   compositor picks the scale of the output the window is mostly on.
 
@@ -4008,7 +4049,7 @@ request create_workspace(req_id, output, layout: uint)   event workspace_created
 request destroy_workspace(req_id, id)
 request move_toplevel(req_id, handle, workspace, expected_generation)
 request set_geometry(req_id, handle, x, y, w, h, expected_generation)
-request set_state(req_id, handle, state: uint, value: uint)   -- minimized|maximized|fullscreen|floating
+request set_state(req_id, handle, state: uint, value: uint)   -- minimized|maximized|fullscreen|floating; maximized is refused (C-20)
 request close(req_id, handle)                                 -- xdg_toplevel.close (graceful)
 request create_virtual_output(req_id, w, h, scale)   event virtual_output_created(req_id, id)
 request resize_virtual_output(req_id, id, w, h)
@@ -5241,6 +5282,7 @@ above gains:
 | `calibrate_output` | overscan calibration (COMP-03 §1.1) |
 | `annotation_create` / `annotation_update` / `annotation_destroy` / `annotation_clear` | untrusted overlay pass (COMP-18 §3); a Command, not Privileged |
 | `set_idle_inhibit` | idle inhibit on behalf of a D-Bus client, lapses with the connection (ADR 0051) |
+| `set_client_strips` | `{keys:[{color,opacity,everywhere?}] (1–4), windows:[{width,height,content,body?}]}`: keys the caller's parent process's toplevels whose surface size matches, and their popups (C-23); re-matched when such a window commits a new size, keeping its current stamp until a request matches the new size; replaces the connection's previous request and lapses with it. Command, owner uid, refused while hook `client-strips` is off; a user rule wins (ADR 0079, 0080) |
 | `get_config` / `validate_config` / `set_config_value` | the §1.4 write API; which file a write may touch is decided by the file, not the method kind |
 | `unsubscribe` | ends a `subscribe` stream |
 
@@ -7360,6 +7402,11 @@ against source before it was written. Nothing was renumbered.
 | C-16 | COMP-02 §9 | *(2026-09-29, owner ruling)* Glass is the shipped look: `decoration.blur.mode` defaults to `glass`, the shadow ships on (`range` 16), `rounding` 9, `border-size` 1, the active border a translucent gold `#f2c33c73` and the inactive one a faint white hairline `#ffffff1a` (the bezel's rim, C-15). Gaps ship as `gaps-in` 5, `gaps-out` 3, `gaps-in-vertical` 3, `gaps-out-vertical` 7; the vertical keys are set rather than mirroring, and still mirror when unset | yes |
 | C-17 | COMP-02 §9 | *(2026-09-30, owner ruling)* A layer surface anchored to all four edges and spanning its output gets no backdrop: it is a scrim or a selection overlay (slurp), not a sheet, and glass behind it smears the whole output it asks the human to read | yes |
 | C-18 | COMP-02 §9, §11; COMP-13 §1.1; COMP-14 §6 | *(2026-10-04, owner ruling)* Animations ship on: `animations { preset "smooth" }`, with per-event styles and presets `off`/`subtle`/`smooth`/`lively` (ADR 0073). Animations are render-only rather than geometry-only (offset, scale, alpha, add-on transition shaders); closing and leaving windows are drawn as ghosts that are never listed, hit-tested or captured. Amends C-01's "animations off" | yes |
+| C-19 | COMP-05 §4 | *(2026-10-13, owner ruling)* A fullscreen window owns its workspace: it tops the stack under only its own dialogs, and focus that restacks to another window on that workspace ends it. A new window that may not take focus maps behind it and is marked urgent | yes |
+| C-20 | COMP-05 §4; COMP-07 §1 | *(2026-10-13, owner ruling)* Three window states: minimized, in the layout, fullscreen. Maximize is removed. xdg `set_maximized` is answered without `Maximized`; X11 maximize requests are declined and `_NET_WM_STATE` is cleared. The `maximized` state bit in the scene and agent protocol is always false, and `set_state(maximized)` is refused. Supersedes C-04's maximize semantics | yes |
+| C-21 | COMP-02 §9; COMP-05 §4 | *(2026-10-30, owner ruling)* Content is never faded to obtain glass, with one opt-in exception: a user `translucent-region top=<px> opacity=<0..1>` window rule fades and blurs behind only that top strip, for clients that submit opaque buffers (Firefox on Wayland, ADR 0079) | yes |
+| C-22 | COMP-05 §4 | *(2026-10-30, owner ruling)* The spec follows the code on rule timing: placement actions once at map, property actions on every commit and on a float toggle. New `floating` matcher. Supersedes "re-evaluated on title change" | yes |
+| C-23 | COMP-02 §9; COMP-13 §2 | *(2026-10-31, owner ruling)* Keyed translucency: a strip with keys makes only pixels exactly equal to a declared key colour translucent (that key's alpha, blur behind) and fades nothing else. Keys apply only in declared regions: the strip, the whole window while the client reports a browser-owned page (`body`), the whole window for a key flagged `everywhere`, and the client's popups. `set_client_strips` takes up to four keys and is re-matched on resize; a resize commit no request matches keeps the window's stamp. A partly transparent texel matches on its un-premultiplied colour; popup blur follows the popup's own corner radius (ADR 0080) | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

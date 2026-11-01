@@ -24,8 +24,12 @@ shot = ["iced/tiny-skia"]
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 ec-ui = { path = "../ec-ui" }
-# The only way this crate reaches agentd (console.sock) or the compositor
-# (eclipse_protected_surface_v1). There is no other IPC path here.
+# Control-socket client: only to re-read the decoration.surface tint on a
+# Config event (ec_ui::ipc::sync_surface_now); nothing else goes over it.
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
+# The only way this crate reaches agentd (console.sock) or the compositor's
+# protected surface (eclipse_protected_surface_v1); the control socket above
+# is read-only config.
 ec-console-client = { path = "../ec-console-client" }
 # The window's wl_display and wl_surface, as winit hands them out: the
 # protected-surface glue attaches to those by pointer.

@@ -250,3 +250,11 @@ BadBufferTest.test_truncated_shm_file
 # Removed by: never, unless wlcs adds the initial commit to these tests.
 XdgSurfaceStableTest.gets_configure_event
 XdgToplevelStableTest.wm_capabilities_are_sent
+
+# Maximize is not a window state: a window is minimized, in the layout, or
+# fullscreen (C-20, COMP-05 §4). abyss never sets `maximized`, so these
+# tests' preconditions cannot hold.
+#
+# Removed by: never, unless maximize returns as a state.
+XdgToplevelStableConfigurationTest.window_can_maximize_itself
+XdgToplevelStableConfigurationTest.window_can_unmaximize_itself

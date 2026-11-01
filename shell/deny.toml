@@ -46,6 +46,15 @@ ignore = [
     # attacker-supplied documents. Unmaintained, not vulnerable. Revisit when
     # resvg moves to harfrust.
     "RUSTSEC-2026-0206",
+
+    # RUSTSEC-2026-0370/0371/0372 — `zvariant`, `zbus_names` and
+    # `zvariant_derive` are flagged unmaintained. Not vulnerabilities, and
+    # there is no safe upgrade; they come in through zbus, which the D-Bus
+    # services and iced_layershell (via mundy) depend on. Revisit when zbus
+    # ships a release that moves off them.
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
 ]
 
 # ---------------------------------------------------------------------------

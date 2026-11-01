@@ -198,6 +198,11 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::v,
             action: Action::ToggleFloating,
         },
+        Bind {
+            mods: sup,
+            key: Keysym::f,
+            action: Action::ToggleFullscreen,
+        },
         // Minimize is a pair, not a toggle: a window that has been sent away
         // holds no focus, so there is nothing for the same chord to act on.
         Bind {

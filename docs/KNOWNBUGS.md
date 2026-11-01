@@ -51,11 +51,15 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
   layout), then everything the installed `/etc/fstab` names, under `/mnt`
   (2026-10-06). Nobody has walked a btrfs install through it yet; only ext4
   has been. This entry leaves when one has.
-- **Remote access is opt-in at install time.** Both installers now ask
-  whether to enable sshd, taking one public key and refusing password logins
-  (2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
+- **Remote access is opt-in at install time.** Both script installers
+  (`install-eclipseos.sh`, `eclipseos-postinstall.sh`) ask whether to enable sshd. They run on a tty, where nothing pastes, so they
+  take no key: password login is allowed from private, link-local and tailnet
+  (CGNAT) addresses only, keys from anywhere, never root (2026-10-20; was one
+  pasted key, 2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
   made the Framework install debuggable, but sshd on the LAN covers the same
-  need without a third-party account.
+  need without a third-party account. The graphical installer (`ec-setup`)
+  deliberately has no remote-access step: whoever installs is at the machine
+  (owner decision, 2026-10-18).
 
 ---
 
@@ -123,6 +127,30 @@ of a dead control in this crate.
 ---
 
 # Agent seats — found landing M13, 2026-10-06
+
+## XWL-01: X11 gaps left after the 2026-10 game audit
+
+Fixed in that pass: physical motion reaches `zwp_relative_pointer`
+(Proton mouse-look), and the pre-map fullscreen request is honoured, from a
+pre-map `_NET_WM_STATE` message, from an undecorated screen-sized window
+(KWin's "legacy fullscreen") or from a tiled window resizing to the screen
+(`abyss/crates/ec-abyss/src/xwayland/xwm.rs`). Still open:
+- **Pre-map `_NET_WM_STATE` property alone.** Smithay 0.7.0 never reads the
+  property a client writes on a withdrawn window (it tracks only states the
+  WM set). A *decorated* window that asks for fullscreen this way maps tiled.
+  Wine's fullscreen windows are undecorated and screen-sized, so they are
+  caught by the legacy rule. **Proposed:** a Smithay bump, or read the property in a patched
+  `update_properties`.
+- **`zwp_xwayland_keyboard_grab_v1` is not advertised: decided 2026-10-12,
+  by design.** Smithay's grab only pins keyboard focus to the X surface.
+  abyss's binding filter still runs first, so shortcut pass-through would
+  also need the filter bypassed. X is one untrusted domain (ADR 0026), so
+  any X client could take that grab. Nothing in use needs it. If an app
+  ever does, the design is a per-app opt-in, default off, with the session
+  lock, trusted prompts and a reserved escape chord always exempt.
+- **X restack requests are dropped** (`configure_request` ignores `Reorder`).
+- **`scaling "client"` takes one scale at Xwayland start**, so outputs with
+  mixed scales are wrong until restart (documented in `xwayland/mod.rs`).
 
 ## SEAT-01: a new agent seat is announced to every connected client
 
@@ -441,4 +469,3 @@ surface is only input-protected.
 - **`cost_usd` is passed through as Claude Code reports it**, which may be a
   per-session running total rather than per turn. It is logged, not audited:
   I-02 `Model` provenance records are not written yet (AGENTD-01).
-

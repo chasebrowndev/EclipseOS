@@ -137,11 +137,11 @@ fn unmap_toplevel(state: &mut AbyssState, surface: &WlSurface) {
     unmap_window(state, &window);
 }
 
-/// Where `window` floats, if it does. A maximized or fullscreen window's
+/// Where `window` floats, if it does. A fullscreen window's
 /// rectangle is derived from its output on every arrange, not placed, so it
 /// has nothing to remember.
 fn floating_placement(state: &AbyssState, window: &Window) -> Option<Remembered> {
-    if state.maximized.contains_key(window) || state.fullscreen.contains_key(window) {
+    if state.fullscreen.contains_key(window) {
         return None;
     }
     state.outputs.iter().find_map(|entry| {
@@ -205,17 +205,14 @@ fn map_toplevel(state: &mut AbyssState, surface: &WlSurface, placement: Option<R
     tracing::debug!(restored = placement.is_some(), "xdg_toplevel mapping");
     // A new toplevel breaks an active popup grab (COMP-06 §4).
     popup_grab_dismiss(state);
-    // Fullscreen/maximize asked for before this commit had no window to act
-    // on and were parked in the pending state (see `maximize_toplevel`).
-    // Take them out so the placement configure does not carry them
-    // unapplied, and replay them once the window exists.
-    let (fullscreen, fullscreen_output, maximized) = toplevel.with_pending_state(|s| {
+    // Fullscreen asked for before this commit had no window to act on and was
+    // parked in the pending state. Take it out so the placement configure does
+    // not carry it unapplied, and replay it once the window exists. A parked
+    // maximize is dropped: abyss has no maximized state.
+    let (fullscreen, fullscreen_output) = toplevel.with_pending_state(|s| {
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
-        let requested = (
-            s.states.unset(State::Fullscreen),
-            s.fullscreen_output.take(),
-            s.states.unset(State::Maximized),
-        );
+        let requested = (s.states.unset(State::Fullscreen), s.fullscreen_output.take());
+        s.states.unset(State::Maximized);
         s.states.set(State::Activated);
         requested
     });
@@ -228,9 +225,6 @@ fn map_toplevel(state: &mut AbyssState, surface: &WlSurface, placement: Option<R
     match placement {
         Some(p) if restore_floating(state, &window, p) => {}
         _ => place_new_window(state, window),
-    }
-    if maximized {
-        maximize_toplevel(state, &toplevel);
     }
     if fullscreen {
         fullscreen_toplevel(state, &toplevel, fullscreen_output.as_ref());
@@ -309,8 +303,14 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
             );
         }
         // Title-matching rules are re-evaluated on title change (COMP-05 §4).
-        if let Some(placement) = rules::reevaluate(state, &window) {
-            replace_window(state, &window, &placement);
+        // Not for an X11 window that places itself (override-redirect menu,
+        // tooltip): it was never placed by a rule, so the pass would read its
+        // transient/popup hints as a dialog and re-install it as a floating
+        // window centred on the output, away from where X put it.
+        if !is_unmanaged_x11(state, &window) {
+            if let Some(placement) = rules::reevaluate(state, &window) {
+                replace_window(state, &window, &placement);
+            }
         }
         if window.toplevel().is_none() {
             // X11: no configure handshake to complete on this side.

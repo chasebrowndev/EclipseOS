@@ -450,7 +450,7 @@ pub fn unminimize(state: &mut AbyssState, window: &Window) {
         .arrive(&state.space, window, Track::arrive(leg, from));
 }
 
-/// Run a fullscreen or maximize change on `window` (`None`: it has no
+/// Run a fullscreen change on `window` (`None`: it has no
 /// `Window` yet, so nothing to animate) and play `fullscreen` over it.
 ///
 /// `morph`: the old frame, scaled and moved onto the new rectangle, crossfades

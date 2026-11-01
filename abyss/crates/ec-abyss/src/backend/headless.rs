@@ -227,6 +227,19 @@ fn boot(
     let mut event_loop: EventLoop<'static, AbyssState> = EventLoop::try_new().context("calloop")?;
     let display: Display<AbyssState> = Display::new().context("wayland display")?;
     let socket = ListeningSocketSource::new_auto().context("bind wayland socket")?;
+    // A headless instance is a scratch session beside whatever the host runs:
+    // its control/trusted/agent sockets live in a directory of their own, named
+    // for its Wayland socket, unless the caller chose one. Otherwise "already in
+    // use; not binding" leaves `ec-ctl` talking to the host. Not under wlcs,
+    // which runs one compositor per test in one process.
+    if wlcs.is_none() && std::env::var_os("ECLIPSE_SOCKET_DIR").is_none() {
+        if let Some(run) = std::env::var_os("XDG_RUNTIME_DIR") {
+            let name = socket.socket_name().to_string_lossy();
+            let dir = std::path::PathBuf::from(run).join(format!("eclipse-headless-{name}"));
+            std::env::set_var("ECLIPSE_SOCKET_DIR", &dir);
+            tracing::info!(dir = %dir.display(), "headless sockets isolated; point ec-ctl at it with ECLIPSE_SOCKET_DIR");
+        }
+    }
     let mut state = AbyssState::new(
         &display,
         event_loop.get_signal(),
@@ -235,6 +248,7 @@ fn boot(
         config,
         stats,
     );
+    state.outputs.disable_persistence();
     // Not under wlcs: the suite advertises no X11 global, so an Xwayland per
     // compositor tests nothing. It also leaks — wlcs builds one compositor per
     // test in a single process, and each Xwayland child keeps its listening

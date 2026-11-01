@@ -243,9 +243,9 @@ pub(crate) fn drop_candidates<W: Clone + PartialEq>(
 
 /// Start a Radiant drag for `window` if it qualifies: tiled (or floating with
 /// Super held) on the active workspace of a Radiant output, and neither
-/// maximized nor fullscreen.
+/// fullscreen.
 fn start_tile_drag(state: &mut AbyssState, window: &Window) {
-    if state.lock.locked || state.maximized.contains_key(window) || state.fullscreen.contains_key(window) {
+    if state.lock.locked || state.fullscreen.contains_key(window) {
         return;
     }
     let Some(id) = output_of_window(state, window) else {

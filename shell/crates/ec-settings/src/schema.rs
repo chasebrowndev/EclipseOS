@@ -326,6 +326,11 @@ impl Row {
             "decoration.blur.glass.dispersion" => "Glass dispersion",
             "decoration.blur.glass.rim" => "Glass rim light",
             "decoration.blur.frost.tint" => "Frost tint",
+            // The window's own material (`ec_ui::surface`): the rail and column
+            // tint, a card's fill, an inset group's fill.
+            "decoration.surface.tint" => "Window tint",
+            "decoration.surface.card-fill" => "Card fill",
+            "decoration.surface.inset-fill" => "Inset fill",
             // Tokens abbreviated for a config file, or named for a mechanism
             // rather than for what a person sees change.
             "general.col-active-border" => "Active border colour",

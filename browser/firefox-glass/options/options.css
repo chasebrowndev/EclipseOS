@@ -1,0 +1,385 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/*
+ * Options page. Accent ledger: the chrome-height number is the page's one
+ * live yellow. Selection elsewhere is a brighter fill + crisp rim, never gold
+ * and never a glow. No gradients; every control has a hover state.
+ */
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  background: var(--base);
+  color: var(--text);
+  font: 400 13px/1.45 var(--font-ui);
+}
+.page {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 34px 30px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+h1 {
+  margin: 0;
+  font: 600 24px/1.2 var(--font-ui);
+  letter-spacing: -0.01em;
+}
+.sub {
+  margin: 6px 0 0;
+  color: var(--text-2);
+  max-width: 480px;
+}
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 24px;
+}
+code,
+.code {
+  font-family: var(--font-mono);
+}
+.label {
+  font: 400 10px/1 var(--font-mono);
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+
+/* Cards: glass fill + hairline, one level of inset, no drop shadow. */
+.card {
+  background: var(--glass);
+  border: 1px solid var(--rim);
+  border-radius: var(--radius-card);
+  box-shadow: inset 0 1px 0 var(--highlight);
+}
+.card-head {
+  padding: 16px 20px 12px;
+}
+.rows .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 13px 20px;
+  border-top: 1px solid var(--hairline);
+  transition: background 0.15s;
+}
+.rows .row:first-child {
+  border-top: 0;
+}
+.card-head + .rows .row:first-child {
+  border-top: 1px solid var(--hairline);
+}
+.rows .row:hover {
+  background: var(--glass);
+}
+.what {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.what b {
+  font-weight: 500;
+}
+.what span {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.note code {
+  color: var(--text-2);
+}
+.pad {
+  padding: 14px 20px 18px;
+  border-top: 1px solid var(--hairline);
+}
+
+/* Preview: a thin band, not another panel. */
+.preview {
+  border-radius: var(--radius-card);
+  border: 1px solid var(--rim);
+  overflow: hidden;
+  font-size: 12px;
+}
+.pv-strip {
+  display: flex;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+.pv-tab {
+  padding: 7px 16px;
+  border-radius: 9px 9px 0 0;
+  color: var(--pv-text2);
+}
+.pv-on {
+  background: var(--pv-tab);
+  color: var(--pv-text);
+  border: 1px solid var(--pv-rim);
+  border-bottom: 0;
+}
+.pv-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--pv-toolbar);
+  border-top: 1px solid var(--pv-rim);
+}
+.pv-btn {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  background: var(--pv-field);
+}
+.pv-url {
+  flex: 1;
+  margin-left: 6px;
+  padding: 5px 14px;
+  border-radius: var(--radius-pill);
+  background: var(--pv-field);
+  border: 1px solid var(--pv-rim);
+  color: var(--pv-text2);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+/* Controls */
+.chip,
+.seg button {
+  font: 500 12px var(--font-ui);
+  color: var(--text-2);
+  height: 28px;
+  padding: 0 14px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--rim);
+  background: var(--glass);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.chip:hover,
+.seg button:hover {
+  background: var(--glass-hover);
+  border-color: var(--rim-hover);
+  color: var(--text);
+}
+.chip:active,
+.seg button:active {
+  background: var(--glass-press);
+}
+.seg {
+  display: flex;
+  gap: 4px;
+  padding: 3px;
+  border-radius: var(--radius-pill);
+  background: var(--glass);
+  border: 1px solid var(--hairline);
+}
+.seg button {
+  border-color: transparent;
+  background: none;
+}
+.seg button[aria-checked="true"] {
+  background: var(--glass-press);
+  border-color: var(--rim-focus);
+  color: var(--text);
+}
+.chip:focus-visible,
+.seg button:focus-visible,
+.toggle:focus-visible,
+.sw:focus-visible,
+.field:focus,
+input[type="range"]:focus-visible {
+  outline: 1px solid var(--rim-focus);
+  outline-offset: 2px;
+}
+
+.toggle {
+  position: relative;
+  flex: none;
+  width: 44px;
+  height: 25px;
+  border-radius: var(--radius-pill);
+  border: 0;
+  background: var(--control-off);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: var(--text-2);
+  transition: transform 0.15s, background 0.15s;
+}
+.toggle:hover {
+  background: var(--rim-hover);
+}
+.toggle[aria-checked="true"] {
+  background: var(--text-2);
+}
+.toggle[aria-checked="true"]:hover {
+  background: var(--text);
+}
+.toggle[aria-checked="true"]::after {
+  transform: translateX(19px);
+  background: var(--base);
+}
+
+.slide {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.slide output {
+  width: 34px;
+  text-align: right;
+  font: 400 11.5px var(--font-mono);
+  color: var(--text-2);
+}
+input[type="range"] {
+  -moz-appearance: none;
+  appearance: none;
+  width: 200px;
+  height: 18px;
+  background: none;
+  cursor: pointer;
+}
+input[type="range"]::-moz-range-track {
+  height: 5px;
+  border-radius: 99px;
+  background: var(--control-off);
+}
+input[type="range"]::-moz-range-progress {
+  height: 5px;
+  border-radius: 99px;
+  background: var(--text-2);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 1px solid var(--rim-focus);
+  background: var(--text);
+  transition: transform 0.15s;
+}
+input[type="range"]:hover::-moz-range-thumb {
+  transform: scale(1.12);
+}
+
+input[type="color"] {
+  width: 44px;
+  height: 28px;
+  padding: 2px;
+  border-radius: 9px;
+  border: 1px solid var(--rim);
+  background: var(--glass);
+  cursor: pointer;
+}
+input[type="color"]:hover {
+  border-color: var(--rim-hover);
+  background: var(--glass-hover);
+}
+.field {
+  width: 270px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 9px;
+  border: 1px solid var(--rim);
+  background: var(--glass);
+  color: var(--text);
+  font: 400 12px var(--font-mono);
+  transition: background 0.15s, border-color 0.15s;
+}
+.field:hover {
+  background: var(--glass-strong);
+  border-color: var(--rim-hover);
+}
+.field:focus {
+  background: var(--glass-hover);
+  border-color: var(--rim-focus);
+  outline: 0;
+}
+
+.swatches {
+  display: flex;
+  gap: 8px;
+}
+.sw {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  border: 1px solid var(--rim);
+  padding: 0;
+  cursor: pointer;
+  transition: transform 0.15s, border-color 0.15s;
+}
+.sw:hover {
+  transform: scale(1.1);
+  border-color: var(--rim-hover);
+}
+.sw[aria-checked="true"] {
+  border-color: var(--text);
+  box-shadow: 0 0 0 2px var(--base), 0 0 0 3px var(--rim-focus);
+}
+
+.mini {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.mini .slide input[type="range"] {
+  width: 150px;
+}
+.mini .tag {
+  font: 400 10px var(--font-mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.field.num {
+  width: 80px;
+  text-align: right;
+}
+
+/* Helper status: one row, hairline dot. */
+.status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 1px solid var(--rim);
+  background: none;
+  flex: none;
+}
+.status[data-state="on"] .dot {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.chip:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.chip:disabled:hover {
+  background: var(--glass);
+  border-color: var(--rim);
+  color: var(--text-2);
+}

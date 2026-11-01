@@ -72,6 +72,56 @@ part() { [[ $DISK == *nvme* || $DISK == *mmcblk* ]] && echo "${DISK}p$1" || echo
 ESP="$(part 1)"
 ROOT="$(part 2)"
 
+# --- leftovers from an earlier attempt --------------------------------------
+# A failed run leaves the target mounted, and gpg daemons started by pacstrap -K
+# keep it busy. Release both, so running this script again just works instead of
+# failing on "target is busy" until someone unmounts by hand. No lazy unmount.
+stop_target_daemons() {
+  local sig p comm
+  for sig in TERM KILL; do
+    local found=0
+    for p in /proc/[0-9]*; do
+      comm="$(cat "$p/comm" 2>/dev/null)" || continue
+      case $comm in gpg-agent|dirmngr|keyboxd|scdaemon) ;; *) continue ;; esac
+      if [[ "$(readlink "$p/root" 2>/dev/null)" == /mnt* ]] ||
+         tr '\0' ' ' <"$p/cmdline" 2>/dev/null | grep -q -- '--homedir /mnt'; then
+        found=1
+        kill "-$sig" "${p#/proc/}" 2>/dev/null || true
+      fi
+    done
+    (( found )) || return 0
+    sleep 1
+  done
+}
+
+unmount_target() {
+  local i
+  stop_target_daemons
+  sync
+  for i in 1 2 3 4 5; do
+    mountpoint -q /mnt || return 0
+    umount -R /mnt 2>/dev/null && return 0
+    sleep 1
+  done
+  mountpoint -q /mnt && return 1
+  return 0
+}
+
+reclaim_leftovers() {
+  local mp
+  if mountpoint -q /mnt; then
+    say "/mnt is still mounted from an earlier attempt; unmounting it"
+    unmount_target || die "could not unmount /mnt (something is using it). See: findmnt -R /mnt ; fuser -vm /mnt"
+  fi
+  # Any other mount from the chosen disk would make the wipe below fail.
+  while read -r mp; do
+    [[ $mp == /* ]] || continue
+    say "unmounting $mp (on $DISK)"
+    umount -R "$mp" || die "could not unmount $mp; unmount it and run this script again"
+  done < <(lsblk -nrpo MOUNTPOINTS "$DISK" | tr ' ' '\n' | sort -r)
+}
+reclaim_leftovers
+
 # --- partition ---------------------------------------------------------------
 say "partitioning $DISK"
 sgdisk --zap-all "$DISK"
@@ -101,7 +151,12 @@ KEYID="$(gpg --show-keys --with-colons /root/eclipseos-packaging.asc 2>/dev/null
          awk -F: '/^fpr:/{print $10; exit}')"
 PACCONF=/root/eclipseos-install-pacman.conf
 cp /etc/pacman.conf "$PACCONF"
-if [[ -d /root/eclipseos-repo ]]; then
+# A slow or filtered link must not abort a transaction ("Operation too slow",
+# pacman's low-speed timeout), and many parallel streams over a bad link starve
+# each other. Applies to pacstrap and to the pacman calls below via this config.
+sed -i -E '/^[[:space:]]*#?[[:space:]]*(DisableDownloadTimeout|ParallelDownloads)([[:space:]=]|$)/d' "$PACCONF"
+sed -i '/^\[options\]/a DisableDownloadTimeout\nParallelDownloads = 3' "$PACCONF"
+if [[ -d /opt/eclipseos-repo ]]; then
   # The packages are signed by the EclipseOS packaging key. TrustAll is not
   # enough on its own -- pacman cannot verify against a key it does not hold,
   # so import it here and again into the installed system further down.
@@ -113,14 +168,107 @@ if [[ -d /root/eclipseos-repo ]]; then
 # here is unsigned (rebuilt at bake time); the packages in it are signed.
 [eclipseos]
 SigLevel = PackageRequired DatabaseOptional
-Server = file:///root/eclipseos-repo
+Server = file:///opt/eclipseos-repo
 REPO
 else
-  say "WARNING: /root/eclipseos-repo is missing -- this medium was built"
+  say "WARNING: /opt/eclipseos-repo is missing -- this medium was built"
   say "         without the EclipseOS packages. Falling back to the tailnet."
 fi
 
-pacstrap -K -C "$PACCONF" /mnt "${PKGS[@]}"
+# D-01 §2.3: NVIDIA Turing or newer (PCI device id >= 0x1e00) gets the open
+# kernel module via DKMS; older NVIDIA stays on nouveau. Sysfs only.
+NVIDIA_OPEN=0
+for d in /sys/bus/pci/devices/*; do
+  [[ -r $d/class && -r $d/vendor && -r $d/device ]] || continue
+  v="$(<"$d/vendor")"; dev="$(<"$d/device")"
+  [[ $v =~ ^0x[0-9a-fA-F]{4}$ && $dev =~ ^0x[0-9a-fA-F]{4}$ ]] || continue
+  [[ $(<"$d/class") == 0x03* && ${v,,} == 0x10de ]] || continue
+  if (( dev >= 0x1e00 )); then NVIDIA_OPEN=1; fi
+done
+if (( NVIDIA_OPEN )); then
+  say "NVIDIA Turing or newer detected: installing nvidia-open-dkms"
+  PKGS+=(nvidia-open-dkms nvidia-utils linux-headers)
+  PKGS+=(linux-lts-headers)
+fi
+
+# D-01 §2: a second kernel to fall back to (not on the live medium itself).
+PKGS+=(linux-lts)
+# The bar is an add-on package (ec-hyperion-bar is the `components.bar`
+# default), so the medium's list does not carry it; without it the first login
+# is the bare base-colour wallpaper and looks like a black screen. Same set as
+# ec-setup's Standard profile.
+PKGS+=(eclipseos-hyperion)
+
+# --- pacstrap, with retries --------------------------------------------------
+# Same classes and wording as the graphical installer (ec-setup-helper stages.rs).
+classify_pacstrap() {
+  local log="$1"
+  if grep -qiE 'no space left on device|not enough free disk space|too full' "$log"; then
+    echo disk
+  elif grep -qiE 'pgp signature|signature from|is unknown trust|is marginal trust|key is disabled|required key missing|keyring is not writable|could not be looked up remotely|invalid or corrupted database' "$log"; then
+    echo signature
+  elif grep -qiE 'failed retrieving file|operation too slow|operation timed out|connection timed out|could not resolve|failed to connect|connection reset|connection refused|ssl connect error|failed to synchronize|invalid or corrupted package \(checksum\)|unexpected error' "$log"; then
+    echo network
+  else
+    echo other
+  fi
+}
+
+# Move the first Server line to the end, so the mirror that just failed goes last.
+rotate_mirrorlist() {
+  local ml=/etc/pacman.d/mirrorlist
+  [[ $(grep -c '^[[:space:]]*Server' "$ml" 2>/dev/null) -ge 2 ]] || return 0
+  awk '/^[[:space:]]*Server/ && !done { first=$0; done=1; next } { print } END { if (done) print first }' \
+    "$ml" >"$ml.new" && cat "$ml.new" >"$ml"
+  rm -f "$ml.new"
+}
+
+pacstrap_failed() {
+  local class="$1" msg
+  case $class in
+    network)   msg="Downloads stalled on every mirror — check the connection (a filtered network or captive portal can do this), then run this script again." ;;
+    disk)      msg="The target disk ran out of space — pick a larger disk, then run this script again." ;;
+    signature) msg="Package signature check failed — check that the clock is right and the network is not altering downloads (captive portal, proxy), then run this script again." ;;
+    *)         msg="Installing packages failed — read the pacman errors above, then run this script again." ;;
+  esac
+  printf '\n!! %s\n' "$msg" >&2
+  unmount_target || true
+  cat >&2 <<'NEXT'
+
+   Nothing is left mounted. To try again:   /root/install-eclipseos.sh
+   (it will unmount /mnt first if anything is still there). Packages already
+   downloaded are kept for retries within one run, not across runs.
+NEXT
+  exit 1
+}
+
+# Downloaded packages stay in the target's pacman cache, so a retry fetches only
+# what is missing. Only a network-class failure is retried, three attempts in
+# all: a bad signature or a full disk would fail the same way every time.
+ERRLOG="$(mktemp)"
+attempt=1
+while :; do
+  : >"$ERRLOG"
+  rc=0
+  LC_ALL=C pacstrap -K -C "$PACCONF" /mnt "${PKGS[@]}" 2> >(tee "$ERRLOG" >&2) || rc=$?
+  wait "$!" 2>/dev/null || true   # let tee flush before the log is read
+  (( rc == 0 )) && break
+  class="$(classify_pacstrap "$ERRLOG")"
+  if [[ $class == network ]] && (( attempt < 3 )); then
+    attempt=$((attempt + 1))
+    say "downloads failed; retrying on a different mirror (attempt $attempt of 3)"
+    stop_target_daemons
+    rotate_mirrorlist
+    sleep $((5 * (attempt - 1)))
+    continue
+  fi
+  pacstrap_failed "$class"
+done
+rm -f "$ERRLOG"
+# The baked db is re-signed at bake time, so it differs from the published one
+# but looks newer; left in place, the first `pacman -Sy` keeps it and fetches the
+# published signature (a bad signature). Let the first sync fetch both.
+rm -f /mnt/var/lib/pacman/sync/eclipseos.db /mnt/var/lib/pacman/sync/eclipseos.db.sig
 genfstab -U /mnt >>/mnt/etc/fstab
 
 # --- configure ---------------------------------------------------------------
@@ -128,10 +276,14 @@ say "configuring the installed system"
 echo "$HOSTNAME" >/mnt/etc/hostname
 # Asked, not assumed. A wrong timezone is silent -- it looks like the clock is
 # just wrong -- and it is the sort of thing nobody goes back to fix.
-read -rp $'timezone [America/New_York]: ' TZ
-TZ="${TZ//[[:space:]]/}"
-TZ="${TZ:-America/New_York}"
-[[ -f /usr/share/zoneinfo/$TZ ]] || die "$TZ is not a timezone. See: timedatectl list-timezones"
+# A typo asks again: dying here would throw away a finished pacstrap.
+while :; do
+  read -rp $'timezone [America/New_York]: ' TZ
+  TZ="${TZ//[[:space:]]/}"
+  TZ="${TZ:-America/New_York}"
+  [[ $TZ != *..* && -f /usr/share/zoneinfo/$TZ ]] && break
+  say "$TZ is not a timezone; use Region/City, e.g. America/Chicago, Europe/London"
+done
 ln -sf "/usr/share/zoneinfo/$TZ" /mnt/etc/localtime
 
 # The live medium's wifi lives in iwd; the installed system runs NetworkManager
@@ -172,6 +324,23 @@ fi
 
 grep -q 'eclipseos.conf' /mnt/etc/pacman.conf ||
   printf '\n# EclipseOS packages (D-02)\nInclude = /etc/pacman.d/eclipseos.conf\n' >>/mnt/etc/pacman.conf
+
+NVCMD=""
+if (( NVIDIA_OPEN )); then
+  NVCMD=" nvidia-drm.modeset=1 nvidia-drm.fbdev=1"
+  # The DKMS hook ran during pacstrap. A kernel without the module boots to a
+  # black screen, so refuse here rather than after the reboot.
+  for k in /mnt/usr/lib/modules/*/; do
+    [[ -f ${k}vmlinuz ]] || continue
+    compgen -G "${k}updates/dkms/nvidia.ko*" >/dev/null ||
+      die "the NVIDIA kernel module did not build for $(basename "$k"); not continuing"
+  done
+  # D-01 §2.3: modules load in early userspace; the stock hooks (kms too) stay,
+  # since `modconf` carries nvidia-utils' nouveau blacklist into the initramfs.
+  install -Dm0644 /dev/stdin /mnt/etc/mkinitcpio.conf.d/eclipseos-nvidia.conf <<'MKINIT'
+MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
+MKINIT
+fi
 
 arch-chroot /mnt /bin/bash -euo pipefail <<CHROOT
 if [[ -f /root/eclipseos-packaging.asc ]]; then
@@ -216,15 +385,22 @@ timeout: 2
 /EclipseOS
     protocol: linux
     path: boot():/vmlinuz-linux
-    cmdline: root=UUID=$ROOT_UUID rw amd_pstate=active
+    cmdline: root=UUID=$ROOT_UUID rw amd_pstate=active$NVCMD
     $UCODE
     module_path: boot():/initramfs-linux.img
 
 /EclipseOS (fallback initramfs)
     protocol: linux
     path: boot():/vmlinuz-linux
-    cmdline: root=UUID=$ROOT_UUID rw
+    cmdline: root=UUID=$ROOT_UUID rw$NVCMD
     module_path: boot():/initramfs-linux-fallback.img
+
+/EclipseOS (LTS kernel)
+    protocol: linux
+    path: boot():/vmlinuz-linux-lts
+    cmdline: root=UUID=$ROOT_UUID rw amd_pstate=active$NVCMD
+    $UCODE
+    module_path: boot():/initramfs-linux-lts.img
 LIMINE
 
 # Nothing else refreshes the copy on the ESP, so a `limine` upgrade would leave
@@ -249,22 +425,20 @@ arch-chroot /mnt passwd "$USERNAME"
 
 # --- remote access --------------------------------------------------------------
 # Opt in, default no. openssh is in the package set; sshd stays off unless asked
-# for, and then takes keys only. A machine with no working screen can otherwise
-# only be debugged from a photograph of it.
-read -rp $'\nenable ssh for remote debugging? [y/N] ' SSH
+# for. This runs on a tty, where nothing can be pasted, so it does not ask for a
+# key: the user's password works from the LAN and the tailnet (private,
+# link-local and CGNAT ranges), keys work from anywhere, root never logs in.
+read -rp $'\nenable ssh (password login from your LAN/tailnet)? [y/N] ' SSH
 if [[ $SSH == [yY]* ]]; then
-  read -rp "paste one public key for $USERNAME (ssh-ed25519 AAAA...): " SSHKEY
-  [[ $SSHKEY == ssh-* || $SSHKEY == ecdsa-* || $SSHKEY == sk-* ]] || die "that does not look like a public key"
-  install -d -m0700 "/mnt/home/$USERNAME/.ssh"
-  printf '%s\n' "$SSHKEY" >"/mnt/home/$USERNAME/.ssh/authorized_keys"
-  chmod 0600 "/mnt/home/$USERNAME/.ssh/authorized_keys"
-  arch-chroot /mnt chown -R "$USERNAME:" "/home/$USERNAME/.ssh"
   install -Dm0644 /dev/stdin /mnt/etc/ssh/sshd_config.d/10-eclipseos.conf <<'SSHD'
+PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
-PermitRootLogin no
+Match Address 127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16,fc00::/7,fe80::/10
+    PasswordAuthentication yes
 SSHD
   arch-chroot /mnt systemctl enable sshd
+  say "ssh enabled: ssh $USERNAME@$HOSTNAME (or its LAN/tailnet address)"
 fi
 
 umount -R /mnt

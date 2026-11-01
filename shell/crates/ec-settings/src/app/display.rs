@@ -17,8 +17,8 @@ use serde_json::json;
 
 use ec_ui::tokens::space;
 use ec_ui::widget::{
-    arrangement, arrangement_tile, big_value, chip, hairline, list_row, micro_label, panel, pill, pill_group,
-    row_caption, value as mono, Tile, Toggle,
+    arrangement, arrangement_tile, big_value, chip, hairline, list_row, micro_label, panel_at, pill,
+    pill_group, row_caption, value as mono, Tile, Toggle,
 };
 
 use super::{scale_control, App, Message, Num, INSET_MAX, INSET_SPAN};
@@ -59,7 +59,7 @@ pub(super) fn status(app: &App) -> (String, String) {
 
 pub(super) fn blocks(app: &App) -> Vec<Element<'_, Message, Theme>> {
     let Some(sel) = app.selected_output() else {
-        return vec![panel(app.glass_radius, mono("no outputs")).into()];
+        return vec![panel_at(app.glass_radius, app.hairline_cards, mono("no outputs")).into()];
     };
     vec![canvas(app, sel.id), card(app, sel)]
 }
@@ -112,8 +112,9 @@ fn canvas(app: &App, selected: u64) -> Element<'_, Message, Theme> {
         "one output \u{b7} nothing to arrange"
     };
 
-    panel(
+    panel_at(
         app.glass_radius,
+        app.hairline_cards,
         Column::new()
             .spacing(space::ROW_Y)
             .push(row![
@@ -277,7 +278,7 @@ fn card<'a>(app: &'a App, o: &'a Output) -> Element<'a, Message, Theme> {
         .push(edges)
         .push(actions);
 
-    panel(app.glass_radius, col).into()
+    panel_at(app.glass_radius, app.hairline_cards, col).into()
 }
 
 impl App {
