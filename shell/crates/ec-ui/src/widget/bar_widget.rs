@@ -409,6 +409,8 @@ struct Clip<'a, Message> {
     /// short of the bounds, so a squeezed body ends in air rather than
     /// against the hairline.
     trail: f32,
+    /// The ground's corner radius (clamped to half the short side on draw).
+    radius: f32,
 }
 
 #[derive(Default)]
@@ -604,7 +606,7 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
             let look = crate::theme::bar_cell(tone)(theme, status);
             // A cell narrower than its corners is a capsule, not a pinched
             // square: the radius never exceeds half the short side.
-            let r = bar::RADIUS_CELL.min(bounds.width / 2.0).min(bounds.height / 2.0);
+            let r = self.radius.min(bounds.width / 2.0).min(bounds.height / 2.0);
             if crate::glass::available() {
                 // The compositor draws the ground; the cell is only content.
                 crate::glass::push(
@@ -1039,6 +1041,18 @@ pub fn widget_shell<'a, Message: 'a>(
     span: ShellSpan,
     frame: ShellFrame,
 ) -> Element<'a, Message, Theme> {
+    widget_shell_rounded(grip, core, revealed, span, frame, bar::RADIUS_WIDGET)
+}
+
+/// [`widget_shell`] with its corner `radius` set (`bar.widgets.rounding`).
+pub fn widget_shell_rounded<'a, Message: 'a>(
+    grip: impl Into<Element<'a, Message, Theme>>,
+    core: impl Into<Element<'a, Message, Theme>>,
+    revealed: Option<Element<'a, Message, Theme>>,
+    span: ShellSpan,
+    frame: ShellFrame,
+    radius: f32,
+) -> Element<'a, Message, Theme> {
     let closed = 1.0 - frame.open.clamp(0.0, 1.0);
     widget_shell_with(
         grip,
@@ -1051,6 +1065,7 @@ pub fn widget_shell<'a, Message: 'a>(
             closed,
             slide: 0.0,
             overlay: false,
+            radius,
         },
     )
 }
@@ -1073,6 +1088,9 @@ pub struct ShellLook {
     /// the body's own pad) instead of in a column of its own, so an open
     /// widget reserves no empty glass for a grip that shows only on hover.
     pub overlay: bool,
+    /// The shell's corner radius (`bar.widgets.rounding`); a capsule at
+    /// [`bar::RADIUS_WIDGET`].
+    pub radius: f32,
 }
 
 impl ShellLook {
@@ -1161,6 +1179,7 @@ pub fn widget_shell_with<'a, Message: 'a>(
         opacity: 1.0,
         anchor: Some(span.body_offset(body_w)),
         trail: span.squeeze_trail(body_w),
+        radius: look.radius,
     });
     let inner: Element<'a, Message, Theme> = if look.overlay {
         iced::widget::stack![row![Space::new().width(Length::Fixed(grip_w)), clip], grip.into()].into()
@@ -1173,7 +1192,15 @@ pub fn widget_shell_with<'a, Message: 'a>(
     let open = (1.0 - look.closed.clamp(0.0, 1.0)).max(frame.reveal.clamp(0.0, 1.0));
     let ground = (bar::GRIP_GROUND + (1.0 - bar::GRIP_GROUND) * open) * presence;
 
-    glass_cell_faded(inner, natural, visible, false, ClipEdge::Right, ground)
+    glass_cell_rounded(
+        inner,
+        natural,
+        visible,
+        false,
+        ClipEdge::Right,
+        ground,
+        look.radius,
+    )
 }
 
 /// A bare glass cell: `content` laid out at `natural` width, shown `visible`
@@ -1208,6 +1235,22 @@ pub fn glass_cell_faded<'a, Message: 'a>(
     edge: ClipEdge,
     opacity: f32,
 ) -> Element<'a, Message, Theme> {
+    glass_cell_rounded(content, natural, visible, tone, edge, opacity, bar::RADIUS_CELL)
+}
+
+/// [`glass_cell_faded`] with the ground's corner `radius` set by the caller:
+/// the widgets' cell (`bar.widgets.rounding`), where chips keep
+/// [`bar::RADIUS_CELL`]. A parameter and not a second widget because only the
+/// ground quad's corner differs.
+pub fn glass_cell_rounded<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    natural: f32,
+    visible: f32,
+    tone: impl Into<crate::theme::CellTone>,
+    edge: ClipEdge,
+    opacity: f32,
+    radius: f32,
+) -> Element<'a, Message, Theme> {
     let visible = visible.max(0.0);
     container(Element::new(Clip {
         content: content.into(),
@@ -1219,6 +1262,7 @@ pub fn glass_cell_faded<'a, Message: 'a>(
         opacity: opacity.clamp(0.0, 1.0),
         anchor: None,
         trail: 0.0,
+        radius,
     }))
     .width(Length::Fixed(visible))
     .height(Length::Fixed(bar::WIDGET_H))

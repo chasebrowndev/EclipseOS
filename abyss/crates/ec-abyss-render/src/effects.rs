@@ -66,24 +66,35 @@ uniform vec4 key2;
 uniform vec4 key3;
 uniform vec4 key_all; // 1.0 per key matched over the whole window
 
-bool near_key(vec3 c, vec3 k) {
-    return all(lessThanEqual(abs(c - k) * 255.0, vec3(1.5)));
+bool near_key(vec3 c, vec3 k, float tol) {
+    return all(lessThanEqual(abs(c - k) * 255.0, vec3(tol)));
 }
 
 float key_opacity(vec4 texel) {
     vec2 f = gl_FragCoord.xy;
     bool inside = !(f.x < key_rect.x || f.y < key_rect.y || f.x >= key_rect.x + key_rect.z || f.y >= key_rect.y + key_rect.w);
+    // The client's own anti-aliased edge (Firefox rounds its corners itself)
+    // is a key colour at partial alpha, premultiplied. Match it on the
+    // straight colour, with the tolerance widened by what 8-bit
+    // premultiplication loses, so the edge fades like the pixels beside it
+    // instead of staying opaque as a dark speck.
+    float tol = 1.5;
+    vec3 rgb = texel.rgb;
 #if !defined(NO_ALPHA)
-    if (texel.a < 0.99)
+    if (texel.a < 0.2)
         return 1.0;
+    if (texel.a < 0.99) {
+        rgb = texel.rgb / texel.a;
+        tol = 1.5 / texel.a;
+    }
 #endif
-    if (keys > 0.5 && (inside || key_all.x > 0.5) && near_key(texel.rgb, key0.rgb))
+    if (keys > 0.5 && (inside || key_all.x > 0.5) && near_key(rgb, key0.rgb, tol))
         return key0.w;
-    if (keys > 1.5 && (inside || key_all.y > 0.5) && near_key(texel.rgb, key1.rgb))
+    if (keys > 1.5 && (inside || key_all.y > 0.5) && near_key(rgb, key1.rgb, tol))
         return key1.w;
-    if (keys > 2.5 && (inside || key_all.z > 0.5) && near_key(texel.rgb, key2.rgb))
+    if (keys > 2.5 && (inside || key_all.z > 0.5) && near_key(rgb, key2.rgb, tol))
         return key2.w;
-    if (keys > 3.5 && (inside || key_all.w > 0.5) && near_key(texel.rgb, key3.rgb))
+    if (keys > 3.5 && (inside || key_all.w > 0.5) && near_key(rgb, key3.rgb, tol))
         return key3.w;
     return 1.0;
 }

@@ -178,6 +178,9 @@ pub fn locate(target: &str) -> Option<Locus> {
 /// The terminal, and the launcher switch it gates (`schema_page`).
 const TERMINAL: &str = "misc.terminal-command";
 const TERMINAL_APPS: &str = "launcher.search.terminal-apps";
+/// Card fill is drawn only with blur off or `blur`; with glass or frost on,
+/// its row is labelled "not in use", as a moded run's rows are.
+const CARD_FILL: &str = "decoration.surface.card-fill";
 
 /// How search names a place in a bespoke pane (`search::BESPOKE`).
 const BESPOKE: &str = "pane:";
@@ -293,6 +296,10 @@ pub struct App {
     /// window is transparent, so this decides whether the sidebar is
     /// translucent glass or its opaque backed fallback.
     pub(crate) blur: bool,
+    /// Whether a card is hairline-only (`decoration.blur.mode` is `off` or
+    /// `blur`) rather than the glass panel (`glass`/`frost`), synced with
+    /// `blur`. Unknown means glass, the spec's default card.
+    pub(crate) hairline_cards: bool,
     /// The Taskbar pane's picture, lane and editor.
     pub(crate) bar: crate::taskbar::Bar,
     /// Installed add-ons and the hooks they turn on (ADR 0066). `None` until
@@ -334,6 +341,8 @@ impl App {
         let mut conn = Conn::new();
         let glass_radius = conn.glass_radius().unwrap_or(ec_ui::tokens::radius::CARD);
         let blur = conn.blur().unwrap_or(false);
+        let hairline_cards = conn.hairline_cards().unwrap_or(false);
+        conn.sync_surface();
         let mut app = App {
             conn,
             rows: Vec::new(),
@@ -368,6 +377,7 @@ impl App {
             tray_seen: Vec::new(),
             glass_radius,
             blur,
+            hairline_cards,
             bar: crate::taskbar::Bar::default(),
             addons: None,
             search: crate::search_ui::Search::default(),
@@ -1028,6 +1038,10 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 if let Some(blur) = app.conn.blur() {
                     app.blur = blur;
                 }
+                if let Some(hairline) = app.conn.hairline_cards() {
+                    app.hairline_cards = hairline;
+                }
+                app.conn.sync_surface();
                 app.refresh();
                 crate::taskbar::follow_config(app);
             }
@@ -1355,11 +1369,11 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         controls,
     )];
     if let Some(problem) = &app.banner {
-        blocks.push(banner(problem, app.glass_radius));
+        blocks.push(banner(problem, app.glass_radius, app.hairline_cards));
     }
     match app.page {
         Page::Display => blocks.extend(display::blocks(app)),
-        Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
+        Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius, app.hairline_cards)),
         Page::Addons => blocks.extend(crate::addons::blocks(app)),
         // A status grid, then the rows: two silhouettes, not two panels of rows.
         Page::OeGeneral => {
@@ -1396,16 +1410,17 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::content_ground(app.blur)),
+        .style(theme::window_pane(app.blur)),
     ]
     .into()
 }
 
 /// The two error shapes every DE app renders identically: a denial and a
 /// config error. Neither is ever swallowed.
-fn banner(problem: &Problem, radius: f32) -> Element<'_, Message, Theme> {
+fn banner(problem: &Problem, radius: f32, hairline_cards: bool) -> Element<'_, Message, Theme> {
     panel(
         radius,
+        hairline_cards,
         column![
             row![
                 mono(&problem.headline()),
@@ -1497,9 +1512,13 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             }
             continue;
         }
-        rows.push(setting_row(app, &key.label(), key));
+        let unused = key.path == CARD_FILL && !matches!(current, "off" | "blur");
+        rows.push(setting_row_at(app, &key.label(), key, unused && app.blur));
         let blurb = match key.path.as_str() {
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
+            CARD_FILL => {
+                Some("Hairline cards, with blur off or blur. Glass and frost keep their glass panel.")
+            }
             p if p == mode_path => crate::schema::blur_blurb(current),
             "ui.show-key-hints" => Some("Keyboard hints in the launcher and start menu"),
             "launcher.search.frecency" => Some(FRECENCY_BLURB),
@@ -1594,7 +1613,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             col = col.push(r);
         }
     }
-    panel(app.glass_radius, col)
+    panel(app.glass_radius, app.hairline_cards, col)
 }
 
 const FRECENCY_BLURB: &str =

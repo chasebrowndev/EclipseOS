@@ -247,7 +247,7 @@ fn grid<'a>(cells: Vec<(&str, String)>, per: usize) -> Element<'a, Message, Them
     col.into()
 }
 
-fn hero(net: &Net, radius: f32) -> Element<'_, Message, Theme> {
+fn hero(net: &Net, radius: f32, hairline_cards: bool) -> Element<'_, Message, Theme> {
     let d = match &net.detail {
         Some(Some(d)) => d,
         other => {
@@ -258,6 +258,7 @@ fn hero(net: &Net, radius: f32) -> Element<'_, Message, Theme> {
             };
             return panel(
                 radius,
+                hairline_cards,
                 column![
                     micro_label("signal"),
                     big_value(number, unit, false),
@@ -321,6 +322,7 @@ fn hero(net: &Net, radius: f32) -> Element<'_, Message, Theme> {
 
     panel(
         radius,
+        hairline_cards,
         column![head, hairline(), readings, hairline(), addresses].spacing(space::ROW_Y),
     )
 }
@@ -361,9 +363,9 @@ fn device_list(net: &Net) -> Element<'_, Message, Theme> {
     inset_list("bluetooth devices", rows)
 }
 
-pub fn blocks(net: &Net, radius: f32) -> Vec<Element<'_, Message, Theme>> {
+pub fn blocks(net: &Net, radius: f32, hairline_cards: bool) -> Vec<Element<'_, Message, Theme>> {
     let mut out = vec![
-        hero(net, radius),
+        hero(net, radius, hairline_cards),
         row![saved_list(net), device_list(net)]
             .spacing(space::BLOCK)
             .align_y(Alignment::Start)

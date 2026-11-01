@@ -888,6 +888,7 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
     };
     panel(
         app.glass_radius,
+        app.hairline_cards,
         column![
             row![
                 micro_label("secret store"),
@@ -1143,6 +1144,7 @@ fn add(app: &App) -> Element<'_, Message, Theme> {
 
     panel(
         app.glass_radius,
+        app.hairline_cards,
         column![head, hairline(), name_row, hairline(), way].spacing(space::ROW_Y),
     )
 }

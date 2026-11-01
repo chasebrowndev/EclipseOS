@@ -24,4 +24,4 @@ pub use hole::Hole;
 pub use long_press::{long_press, LongPress, LongPressTracker};
 pub use parts::*;
 pub use toggle::Toggle;
-pub use veil::Veil;
+pub use veil::{Ground, Veil};

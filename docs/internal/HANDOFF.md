@@ -1,54 +1,40 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # Session handoff
 
-## State as of 2026-09-23
+## State as of 2026-10-11 (`main` at `de7e0eb`, PR #113)
 
-Earlier handoffs are archived under `docs/internal/handoff/` (`2026-09-11.md` is the
-long-running one this file used to be; `2026-09-19-greeter-to-abyss.md` is
-resolved). `docs/STATUS.md` is the progress record; this file is only "where
-are we, what next".
+Earlier handoffs are archived under `docs/internal/handoff/` (`2026-09-23.md`
+is the one this file replaced). `docs/STATUS.md` is the progress record; this
+file is only "where are we, what next".
 
-### Merged to `main` (through PR #31)
+### Merged to `main` since 2026-09-23 (PRs #58–#113)
 
-- **Phase 1 compositor**: milestones 1–9c done; 9d landed (tree source owed,
-  M22); 9e partial (`class_source`, `irreversible_capable` missing); 9f
-  harness exists with no subjects. M3/M4/M6 gates want hardware.
-- **Phase 2 start**: `policyd` + `policy-eval` (M10). No `protocols/agent/`,
-  `trusted_ui/`, `policy/` or `audit/` in `abyss` yet.
-- **DE userland**: `hyperion` (taskbar, split out in #28), toasts, center,
-  launcher, settings, policy viewer, `eclipse-secret-prompt`, and
-  `eclipse-services` (notifications, SNI tray, wifi/BT/battery status and
-  actions, session control, the `eclipse-screensaver` bridge).
-- **Look**: rounded glass with blur on by default, layer surfaces blurred, the
-  panes' radius synced from `decoration.rounding` (#29); shadow cache (#30).
-- **COMP-18 / Oracle-Eyes**: compositor-drawn annotations and region selector
-  in `render/`, multiple-choice picks with a pick marker (#31, ADR 0054).
-- **Distribution**: split PKGBUILD, signed tailnet repo, archiso medium;
-  EclipseOS installed on the Framework 13 on 2026-09-19 and logs in to Abyss
-  from greetd. The dev host now runs Abyss as its session.
-
-### Not merged
-
-- **PR #32, `bar-live-updates`** (open): touchpad swipe gestures, touch and
-  tablet input (`31785c3`); only floating windows honour
-  `set_maximized`, and a maximize from an unmapped tiled window is ignored
-  (`a006d2e`, `20d8e3a`); hyperion wakes on compositor events and follows
-  `title` changes (`429040a`).
-- Local `main` has `aa8a4f7` (keep a tiled window tiled on a client maximize
-  request) that is not on `origin/main`. Reconcile it with #32, which fixes
-  the same thing.
+- **Workspace split** (#73): per-product workspaces `abyss/`, `shell/`,
+  `fog/`, `installer/`, `oracle-eyes/`, `packaging/`; every crate renamed
+  `ec-*`; `ec-abyss` split into `-config`, `-render`, `-wire`, `-wlcs`.
+- **Phase 1**: 9e done (#62), per-device input (#61), explicit-sync and
+  per-output render fixes, the animation system (ADR 0073, C-18; #84–#98).
+- **Phase 2** (#72, #74, #76–#78, #104–#113): M11 agent socket and scene
+  queries with the leakage suite; M12 audit spine and `eclipse-audit`;
+  M13 agent seats; M14 batches, dedupe, generations, `wait_for`,
+  `compat_lock`; M15 consent prompt, batch prompt, emergency panel, phrase,
+  commit slot; M16 enforcement; M17 classification; M19 `brokerd` and
+  `ec-secret`; M21 `ec-cataclysm-pub`; M22 `eclipse_semantic_v1` server;
+  M25 `agentd`, the console, the inference router (ADR 0076) and
+  `ec-claude-agent`.
+- **DE**: wallpaper, Display page, settings tree and search, pinned taskbar
+  apps, launcher frecency.
 
 ### Where to look next
 
-1. **`docs/PROPOSEDFEATURES.md` → "Code still to write"** — the Phase 1 exit
-   and Phase 2 backlog, each item with spec, location and milestone. The
-   code-only Phase 1 items are 9e's two fields, ext-image-copy cursor capture,
-   per-device input settings, the COMP-17 `mode` key and the taskbar clock.
-2. **`docs/KNOWNBUGS.md`** — PKG-03 (`eclipse-secret-prompt` is not packaged
-   or installed, so wifi/BT secrets fail on an installed system) is the one
-   with user impact. BLUR-02 needs re-checking after #29 before anyone works
-   on it; so does the ghost-window entry in PROPOSEDFEATURES (after
-   `8f76207`).
-3. **Manual gates** — three monitors on a real TTY (M3), Firefox/mpv on KMS
-   with the bench budgets (M4), a logind suspend/lid cycle (M6), then 14 days
-   as the only compositor.
+1. **Close M13–M15.** `docs/PROPOSEDFEATURES.md` → "Phase 2 — closing
+   M13–M15": the TCB hooks in `policy::enforce` (BATCH-01, GEN-01, the
+   `seat.atomic`/`seat.compat_lock` caps), the compat-lock indicator, the
+   panel from the capture indicator, SEAT-01, and the non-semantic halves of
+   LOCK-01 and WAIT-01.
+2. **Then M22's consumers** (SEM-01): node-level redaction, agent
+   `get_tree`, `action` forwarding.
+3. **Phase 1 leftovers**: ext-image-copy cursor capture, the calendar
+   drawer, M9f subjects; the manual gates M3, M4, M6 and the 14-day run.
+4. **Spec still unwritten**: S-12, S-13, P-03, P-06, P-08, P-09, Tiers 5–7.
+   Code already runs ahead of I-01/I-02 (ADR 0076) and D-03/D-05/D-07.

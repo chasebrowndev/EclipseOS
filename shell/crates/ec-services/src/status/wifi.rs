@@ -49,9 +49,8 @@ const SEC_OWE: u32 = 0x800;
 const JOIN_TIMEOUT: Duration = Duration::from_secs(45);
 const JOIN_POLL: Duration = Duration::from_millis(250);
 
-/// One network in the picker. Strength decides the order and is then dropped:
-/// the drawer does not draw bars, and a field it would ignore is a field that
-/// changes on every read and defeats the equality check.
+/// One network in the picker. Strength decides the order and is carried for
+/// the row's signal mark.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WifiNetwork {
     pub ssid: String,
@@ -60,6 +59,8 @@ pub struct WifiNetwork {
     /// A saved profile exists, so joining needs no prompt.
     pub known: bool,
     pub active: bool,
+    /// Signal, 0 to 100, from the access point's `Strength`.
+    pub strength: u8,
 }
 
 /// What an access point asks for.
@@ -164,6 +165,7 @@ pub(super) fn networks(connection: &Connection) -> Vec<WifiNetwork> {
                 known: known.contains(&ap.ssid),
                 secured: ap.security.needs_secret(),
                 active: ap.active,
+                strength: ap.strength,
                 ssid: ap.ssid,
             };
             (row, ap.strength)

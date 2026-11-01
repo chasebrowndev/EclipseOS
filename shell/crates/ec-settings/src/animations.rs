@@ -756,6 +756,7 @@ fn hero<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
     }
     panel(
         app.glass_radius,
+        app.hairline_cards,
         column![micro_label("preset"), strip].spacing(space::ROW_Y),
     )
 }
@@ -824,7 +825,7 @@ fn events<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
             .padding([space::ROW_Y, space::CARD]),
         );
     }
-    panel(app.glass_radius, col)
+    panel(app.glass_radius, app.hairline_cards, col)
 }
 
 /// One event: its loop, its name and what it runs as, then its style,

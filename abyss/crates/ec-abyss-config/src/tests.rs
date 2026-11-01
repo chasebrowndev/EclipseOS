@@ -476,7 +476,9 @@ fn bar_clock_and_popup_anchor_parse() {
         d.bar.clock,
         BarClock {
             hour_12: true,
-            date_mdy: true
+            date_mdy: true,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(d.bar.popup_anchor, BarPopupAnchor::Cell);
@@ -487,7 +489,9 @@ fn bar_clock_and_popup_anchor_parse() {
         c.bar.clock,
         BarClock {
             hour_12: false,
-            date_mdy: false
+            date_mdy: false,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(c.bar.popup_anchor, BarPopupAnchor::Pointer);
@@ -710,8 +714,16 @@ fn bar_widgets_parse() {
     assert_eq!(d.widgets.order, schema::BAR_WIDGET_DEFAULT_ORDER);
     assert_eq!(d.widgets.important, ["clock", "battery"]);
     assert_eq!(d.motion.curve, "spring");
+    assert_eq!(d.widgets.rounding, 17);
+    assert_eq!(
+        widgets_cfg("bar { widgets { rounding 40; } }")
+            .bar
+            .widgets
+            .rounding,
+        17
+    );
     let cfg = widgets_cfg(
-            "bar {\n    widgets {\n        order \"clock\" \"custom:cpu\" \"tray\"\n        important \"custom:cpu\"\n        \
+            "bar {\n    widgets {\n        order \"clock\" \"custom:cpu\" \"tray\"\n        important \"custom:cpu\"\n        rounding 6\n        \
              now-playing { art #false; visualizer; remote-art #false; }\n        system-usage { interval-ms \"2s\"; gpu #false; disk-path \"/home\"; }\n        \
              volume { step 10; scroll #false; max-percent 150; }\n    }\n    motion { enabled #false; duration-ms 300; curve \"ease-out\"; }\n    \
              widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; }\n}\n",
@@ -720,6 +732,7 @@ fn bar_widgets_parse() {
     let w = &cfg.bar.widgets;
     assert_eq!(w.order, ["clock", "custom:cpu", "tray"]);
     assert_eq!(w.important, ["custom:cpu"]);
+    assert_eq!(w.rounding, 6);
     assert!(!w.now_playing.art && w.now_playing.visualizer && !w.now_playing.remote_art);
     assert!(Config::default().bar.widgets.now_playing.remote_art);
     assert_eq!(w.system_usage.interval_ms, 2000);
@@ -1155,6 +1168,49 @@ fn decoration_defaults_round_but_are_otherwise_no_effect() {
     // Animations ship on (the Smooth preset), with nothing overridden.
     assert_eq!(cfg.animations.preset, animations::Preset::Smooth);
     assert!(cfg.animations.any() && !cfg.animations.custom());
+}
+
+/// `surface` ships at its sRGB-intent defaults, and parses and range-checks
+/// like its `decoration` neighbours.
+#[test]
+fn surface_defaults_parse_and_reject_out_of_range() {
+    let s = &Config::default().decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+
+    let doc: KdlDocument = r#"
+            decoration {
+                surface { tint 0.5; card-fill 0.2; inset-fill 0 }
+            }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.5, 0.2, 0.0));
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+
+    // Every out-of-range or wrong-typed value keeps its default, and the
+    // fill maximum is 0.30 where the tint's is 1.0.
+    let doc: KdlDocument = r#"
+            decoration {
+                surface { tint 1.5; card-fill 0.31; inset-fill "half"; nope 1 }
+            }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+    assert_eq!(cfg.errors.len(), 4, "{:?}", cfg.errors);
+    let doc: KdlDocument = "decoration { surface { tint 1.0; card-fill 0.30; inset-fill 0.30 } }\n"
+        .parse()
+        .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (1.0, 0.30, 0.30));
 }
 
 /// Blur ships on, in glass mode (C-16): translucent surfaces get the

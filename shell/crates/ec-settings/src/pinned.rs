@@ -183,7 +183,7 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     })
     .placeholder("Add an app");
     body = body.push(hairline()).push(list_row("Add", add));
-    iced::widget::container(column![panel(app.glass_radius, body)])
+    iced::widget::container(column![panel(app.glass_radius, app.hairline_cards, body)])
         .id(row_id(PATH))
         .into()
 }

@@ -54,6 +54,7 @@ pub fn view(app: &App) -> El<'_> {
             container(pane(app))
                 .width(Length::Fill)
                 .height(Length::Fill)
+                .style(theme::window_pane(app.blur))
                 .into()
         } else {
             container(fleet(app, Length::Fill))
@@ -68,7 +69,7 @@ pub fn view(app: &App) -> El<'_> {
             container(pane(app))
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .style(theme::content_ground(app.blur)),
+                .style(theme::window_pane(app.blur)),
         ]
         .height(Length::Fill)
         .into()
@@ -224,7 +225,7 @@ fn fleet(app: &App, width: Length) -> El<'_> {
     .width(width)
     .height(Length::Fill)
     .padding([space::PANE_Y, space::SIDEBAR_X])
-    .style(theme::sidebar(app.blur))
+    .style(theme::window_pane(app.blur))
     .into()
 }
 
@@ -459,7 +460,7 @@ fn no_agents_pane(app: &App) -> El<'_> {
         .align_x(Alignment::Center),
     )
     .center(Length::Fill)
-    .style(theme::content_ground(app.blur))
+    .style(theme::window_pane(app.blur))
     .into()
 }
 

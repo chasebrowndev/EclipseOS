@@ -136,6 +136,7 @@ pub fn hero(app: &App) -> Element<'_, Message, Theme> {
     ];
     panel(
         app.glass_radius,
+        app.hairline_cards,
         column![
             row![
                 micro_label("permission"),

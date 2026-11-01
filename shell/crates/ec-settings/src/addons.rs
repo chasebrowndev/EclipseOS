@@ -178,6 +178,7 @@ fn hero<'a>(app: &App, a: &Addons) -> Element<'a, Message, Theme> {
     };
     panel(
         app.glass_radius,
+        app.hairline_cards,
         column![
             row![
                 micro_label("hooks"),

@@ -59,7 +59,7 @@ pub(super) fn status(app: &App) -> (String, String) {
 
 pub(super) fn blocks(app: &App) -> Vec<Element<'_, Message, Theme>> {
     let Some(sel) = app.selected_output() else {
-        return vec![panel(app.glass_radius, mono("no outputs"))];
+        return vec![panel(app.glass_radius, app.hairline_cards, mono("no outputs"))];
     };
     vec![canvas(app, sel.id), card(app, sel)]
 }
@@ -114,6 +114,7 @@ fn canvas(app: &App, selected: u64) -> Element<'_, Message, Theme> {
 
     panel(
         app.glass_radius,
+        app.hairline_cards,
         Column::new()
             .spacing(space::ROW_Y)
             .push(row![
@@ -276,7 +277,7 @@ fn card<'a>(app: &'a App, o: &'a Output) -> Element<'a, Message, Theme> {
         .push(edges)
         .push(actions);
 
-    panel(app.glass_radius, col)
+    panel(app.glass_radius, app.hairline_cards, col)
 }
 
 impl App {

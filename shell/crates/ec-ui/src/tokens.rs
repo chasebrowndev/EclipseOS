@@ -175,24 +175,17 @@ pub mod color {
     pub const LIFT_SOFT: Color = white(0.035);
     /// Laid over a settings row that does not apply right now
     /// ([`crate::widget::dimmed`]): a panel's own ground — [`BASE`], then
-    /// [`GLASS`] — repainted at [`VEIL_STRENGTH`], so the row fades toward the
-    /// card it sits on instead of greying into a slab of its own.
-    ///
-    /// The two layers and not one pre-mixed colour, because the renderer
-    /// blends in linear light: `GLASS` over `BASE` on screen is far lighter
-    /// than the same mix worked out in sRGB, and a pre-mixed veil showed as a
-    /// dark box. Repainting the same layers lands on the same ground however
-    /// the renderer blends.
-    pub const VEIL: [Color; 2] = [
-        Color {
-            a: VEIL_STRENGTH,
-            ..BASE
-        },
-        Color {
-            a: GLASS.a * VEIL_STRENGTH,
-            ..GLASS
-        },
-    ];
+    /// Laid over a settings row that does not apply right now
+    /// ([`crate::widget::dimmed`]), with blur off: [`BASE`] at
+    /// [`VEIL_STRENGTH`] fades the row's content toward the ground, and the
+    /// row's surface is then the inset fill (`decoration.surface.inset-fill`,
+    /// see [`crate::theme::veil`]). The fill is the same surface a
+    /// [`crate::theme::inset`] group has, so a dimmed run is still an inset,
+    /// reading quieter, not a lighter grey slab.
+    pub const VEIL: Color = Color {
+        a: VEIL_STRENGTH,
+        ..BASE
+    };
     /// [`VEIL`] on a translucent column ([`CONTENT`] over the compositor's
     /// blur). There the ground is the backdrop, which no client can repaint:
     /// `BASE` lands as a dark box and a repainted white tint as a light one
@@ -227,6 +220,8 @@ pub mod color {
     };
     /// [`CONTENT`] over [`BASE`], opaque: the column's ground with blur off.
     pub const CONTENT_BACKED: Color = super::over_opaque(CONTENT, BASE);
+    // The window tint, the card fill and the inset fill are live values, read
+    // from `decoration.surface.*` by `crate::surface`, not constants here.
 
     /// The single accent. See `accent discipline` in the spec: it marks state
     /// and one live value per screen, and is never decorative.
@@ -271,6 +266,13 @@ pub mod color {
     /// [`NEUTRAL`] off, [`ACCENT`] powered-but-idle, this connected.
     pub const CONNECTED: Color = rgb(0x4f9fe0);
     pub const OK: Color = rgb(0x7fae5e);
+
+    /// A colour that arrives as data — a calendar's own `0xRRGGBB` — rather
+    /// than a choice of ours. The only runtime door into `rgb`, so a provider's
+    /// palette is never mistaken for a token and nothing else needs one.
+    pub const fn data(hex: u32) -> Color {
+        rgb(hex)
+    }
 }
 
 pub mod radius {
@@ -1028,6 +1030,50 @@ pub mod drawer {
     pub const MAX_ROWS: usize = 8;
     /// Air between the two lines of the hero row.
     pub const LINE_GAP: f32 = 2.0;
+    /// The glass lozenge a row draws is its slot inset this much on the
+    /// vertical, so neighbours keep a 2px channel of the sheet between them
+    /// without the row's slot (and the arithmetic that sizes the sheet)
+    /// growing a gap.
+    pub const ROW_INSET: f32 = 1.0;
+    /// The hero row's lozenge: a step rounder than a list row.
+    pub const RADIUS_HERO: f32 = 11.0;
+    /// A spinner's box, its ring and the arc that travels round it.
+    pub const SPIN: f32 = 14.0;
+    pub const SPIN_W: f32 = 1.75;
+    pub const SPIN_SWEEP: f32 = 1.2;
+    /// How much of the arc's ink the ring it travels on keeps.
+    pub const SPIN_TRACK: f32 = 0.18;
+    /// Revolutions per second of the spinner.
+    pub const SPIN_HZ: f32 = 0.9;
+    /// A level row's rail, its round knob's radius, and the fixed box the
+    /// percent reading sits in so the rail never moves when `9` becomes `10`.
+    pub const LEVEL_RAIL: f32 = 4.0;
+    pub const LEVEL_KNOB_R: f32 = 6.0;
+    pub const LEVEL_READOUT_W: f32 = 32.0;
+
+    /// The calendar drawer's width: a month grid and a day's detail side by
+    /// side, so the one drawer wider than [`W`].
+    pub const CAL_W: f32 = 540.0;
+    /// A day cell. Seven of them are the grid's width.
+    pub const CAL_CELL_W: f32 = 40.0;
+    pub const CAL_CELL_H: f32 = 36.0;
+    /// The optional ISO-week column left of the grid.
+    pub const CAL_WEEK_W: f32 = 26.0;
+    /// The month header strip (month, year, Today, chevrons).
+    pub const CAL_HEAD_H: f32 = 36.0;
+    /// The weekday initials strip.
+    pub const CAL_WEEKDAY_H: f32 = 22.0;
+    /// Air between the grid and the day's detail, on both sides of the rule.
+    pub const CAL_GAP: f32 = 14.0;
+    /// An event dot under a day number, and the air between dots.
+    pub const CAL_DOT: f32 = 4.0;
+    pub const CAL_DOT_GAP: f32 = 3.0;
+    /// The colour bar that leads an event row.
+    pub const CAL_BAR_W: f32 = 3.0;
+    /// The square chevron buttons in the month header.
+    pub const CAL_NAV: f32 = 26.0;
+    /// The time column of an event row.
+    pub const CAL_TIME_W: f32 = 52.0;
 }
 
 /// The secret prompt: one field in a fixed-size toplevel. Fixed because
