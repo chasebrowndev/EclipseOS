@@ -209,8 +209,7 @@ mod tests {
 
     #[test]
     fn strips_are_forwarded_and_each_call_is_answered() {
-        let m1 =
-            json!({"type": "strips", "keys": [{"color": "#112233", "opacity": 0.6}], "windows": [{"width": 1, "height": 2, "content": 1}]});
+        let m1 = json!({"type": "strips", "keys": [{"color": "#112233", "opacity": 0.6}], "windows": [{"width": 1, "height": 2, "content": 1}]});
         let m2 = json!({"type": "strips", "keys": [{"color": "#112233", "opacity": 0.5}], "windows": []});
         let mut input = frame(&m1);
         input.extend(frame(&m2));
