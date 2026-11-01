@@ -152,17 +152,25 @@ pre-map `_NET_WM_STATE` message, from an undecorated screen-sized window
 - **`scaling "client"` takes one scale at Xwayland start**, so outputs with
   mixed scales are wrong until restart (documented in `xwayland/mod.rs`).
 
-## SEAT-01: an agent's wl_seat is advertised to every client
+## SEAT-01: a new agent seat is announced to every connected client
 
-`abyss/crates/ec-abyss/src/protocols/agent/seat.rs` creates each agent seat
-with smithay's `SeatState::new_wl_seat`, whose global has no per-client
-filter. Every client on the main display can bind `agent-<id>`, see its
-capabilities, and bind text-input or input-method objects on it. Input is
-still only *delivered* by the agent through `policy::enforce`; what leaks is
-that the seat exists and its focus events. **Repro:** start an agent, call
-`get_seat`, run `wayland-info` on the main socket; `agent-1` is listed.
-**Proposed:** none committed. Either a filtered seat global hand-written like
-`output_power.rs`, or bind visibility to clients the agent has focused.
+Narrowed 2026-10-11: `protocols/agent/seat_global.rs` now admits an agent's
+`wl_seat` only to clients owning a window its seat capabilities can act on.
+Two residues remain, both upstream-blocked on wayland-backend 0.3.17:
+
+- **Timing leak.** The libwayland backend does not filter the announcement
+  made while a global is created, so every client connected at that moment
+  is told a `wl_seat` appeared. It binds a nameless, device-less decoy and
+  learns nothing of the agent, but it learns *that* a seat was made, and
+  when. **Repro:** keep a client connected that lists globals as they appear,
+  start an agent, call `get_seat`; the client receives a `wl_seat` global.
+- **Leaked display.** `get_global_handler` frees a global's user data while
+  the `wl_global` still points at it, so agent seat globals live on a hidden
+  display (`seat::HIDDEN`) that is leaked and never torn down: one
+  `wl_global` per agent seat ever made, one display per thread.
+
+**Proposed:** fix upstream (filter the creation-time announcement; keep the
+user data alive in `get_global_handler`), then drop the decoy and the leak.
 
 ## SEAT-02: xdg_activation from agent-launched clients is not checked
 

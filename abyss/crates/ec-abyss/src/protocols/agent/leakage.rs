@@ -1203,3 +1203,355 @@ fn a_flickering_title_never_leaks_and_downgrades_only_after_the_grace() {
     let _ = read(&mut w, p, SEEABLE, "after the grace");
     assert_eq!(crate::policy::scene::class_of(&w.h.state, &unset), Class::Private);
 }
+
+/// KNOWNBUGS SEAT-01, COMP-04 §7, COMP-08 §10 step 4: an agent's `wl_seat`
+/// exists only for the clients its seat capabilities can act on. Over the
+/// wire, on the human display: an unrelated client never learns `agent-<id>`
+/// (one connected after the seat is not told of it and cannot bind it by
+/// name; one connected before binds only a dead decoy, see `seat_global`);
+/// the client owning a window in scope sees it; a client that maps an
+/// in-scope window later is told then; and a binding whose windows leave
+/// scope has no capabilities until they come back.
+mod seat_visibility {
+    use std::os::fd::{AsFd, FromRawFd};
+    use std::os::unix::net::UnixStream;
+    use std::sync::Arc;
+
+    use wayland_client::{
+        delegate_noop,
+        protocol::{
+            wl_buffer::WlBuffer,
+            wl_compositor::WlCompositor,
+            wl_registry::{self, WlRegistry},
+            wl_seat::{self, WlSeat},
+            wl_shm::{self, WlShm},
+            wl_shm_pool::WlShmPool,
+            wl_surface::WlSurface,
+        },
+        Connection, Dispatch, EventQueue, QueueHandle, WEnum,
+    };
+    use wayland_protocols::xdg::shell::client::{
+        xdg_surface::{self, XdgSurface},
+        xdg_toplevel::XdgToplevel,
+        xdg_wm_base::{self, XdgWmBase},
+    };
+
+    use super::{find, hooked, line, signed, sk, test_class, Class, Constraints, Grant, Harness, Peer, Ulid};
+    use crate::state::ClientState;
+
+    #[derive(Default)]
+    struct Seen {
+        /// `(name, interface)` of every global still advertised.
+        globals: Vec<(u32, String)>,
+        /// `(seat name, last capabilities)` per bound `wl_seat`, in bind
+        /// order; the seat's user data is its index.
+        seats: Vec<(String, u32)>,
+    }
+
+    impl Dispatch<WlRegistry, ()> for Seen {
+        fn event(
+            d: &mut Self,
+            registry: &WlRegistry,
+            e: wl_registry::Event,
+            _: &(),
+            _: &Connection,
+            qh: &QueueHandle<Self>,
+        ) {
+            match e {
+                wl_registry::Event::Global {
+                    name,
+                    interface,
+                    version,
+                } => {
+                    // Bind every seat as it appears, as toolkits do.
+                    if interface == "wl_seat" {
+                        let _: WlSeat = registry.bind(name, version.min(5), qh, d.seats.len());
+                        d.seats.push((String::new(), 0));
+                    }
+                    d.globals.push((name, interface));
+                }
+                wl_registry::Event::GlobalRemove { name } => d.globals.retain(|(n, _)| *n != name),
+                _ => {}
+            }
+        }
+    }
+
+    impl Dispatch<WlSeat, usize> for Seen {
+        fn event(
+            d: &mut Self,
+            _: &WlSeat,
+            e: wl_seat::Event,
+            i: &usize,
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            let Some(seat) = d.seats.get_mut(*i) else {
+                return;
+            };
+            match e {
+                wl_seat::Event::Name { name } => seat.0 = name,
+                wl_seat::Event::Capabilities {
+                    capabilities: WEnum::Value(c),
+                } => seat.1 = c.bits(),
+                _ => {}
+            }
+        }
+    }
+
+    impl Dispatch<XdgWmBase, ()> for Seen {
+        fn event(
+            _: &mut Self,
+            wm: &XdgWmBase,
+            e: xdg_wm_base::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let xdg_wm_base::Event::Ping { serial } = e {
+                wm.pong(serial);
+            }
+        }
+    }
+
+    impl Dispatch<XdgSurface, ()> for Seen {
+        fn event(
+            _: &mut Self,
+            xdg: &XdgSurface,
+            e: xdg_surface::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if let xdg_surface::Event::Configure { serial } = e {
+                xdg.ack_configure(serial);
+            }
+        }
+    }
+
+    delegate_noop!(Seen: WlCompositor);
+    delegate_noop!(Seen: WlShmPool);
+    delegate_noop!(Seen: ignore WlShm);
+    delegate_noop!(Seen: ignore WlBuffer);
+    delegate_noop!(Seen: ignore WlSurface);
+    delegate_noop!(Seen: ignore XdgToplevel);
+
+    /// A client on the human display that binds every `wl_seat` it is told
+    /// of and can map windows.
+    struct Spy {
+        conn: Connection,
+        queue: EventQueue<Seen>,
+        seen: Seen,
+        registry: WlRegistry,
+        toplevels: Vec<(WlSurface, XdgSurface, XdgToplevel)>,
+    }
+
+    impl Spy {
+        fn connect(h: &mut Harness) -> Self {
+            let (server, client) = UnixStream::pair().expect("pair");
+            h.state
+                .display_handle
+                .insert_client(server, Arc::new(ClientState::default()))
+                .expect("insert");
+            let conn = Connection::from_socket(client).expect("connect");
+            let queue = conn.new_event_queue();
+            let registry = conn.display().get_registry(&queue.handle(), ());
+            let mut s = Spy {
+                conn,
+                queue,
+                seen: Seen::default(),
+                registry,
+                toplevels: Vec::new(),
+            };
+            s.pump(h);
+            s
+        }
+
+        fn pump(&mut self, h: &mut Harness) {
+            for _ in 0..8 {
+                let _ = self.conn.flush();
+                h.dispatch();
+                if let Some(g) = self.conn.prepare_read() {
+                    let _ = g.read();
+                }
+                if self.queue.dispatch_pending(&mut self.seen).is_err() {
+                    return;
+                }
+            }
+        }
+
+        fn global(&self, interface: &str) -> u32 {
+            self.seen
+                .globals
+                .iter()
+                .find(|g| g.1 == interface)
+                .map(|g| g.0)
+                .unwrap_or_else(|| panic!("{interface}"))
+        }
+
+        /// Names of the seats bound, in bind order.
+        fn seats(&self) -> Vec<String> {
+            self.seen.seats.iter().map(|s| s.0.clone()).collect()
+        }
+
+        /// The last capabilities `seat` announced.
+        fn caps(&self, seat: &str) -> Option<u32> {
+            self.seen.seats.iter().find(|s| s.0 == seat).map(|s| s.1)
+        }
+
+        /// How many `wl_seat` globals are advertised to this client.
+        fn seat_globals(&self) -> usize {
+            self.seen.globals.iter().filter(|g| g.1 == "wl_seat").count()
+        }
+
+        /// Map a 100x100 toplevel with `app_id`.
+        fn map(&mut self, h: &mut Harness, app_id: &str) {
+            let qh = self.queue.handle();
+            let compositor: WlCompositor = self.registry.bind(self.global("wl_compositor"), 5, &qh, ());
+            let shm: WlShm = self.registry.bind(self.global("wl_shm"), 1, &qh, ());
+            let wm: XdgWmBase = self.registry.bind(self.global("xdg_wm_base"), 1, &qh, ());
+            let surface = compositor.create_surface(&qh, ());
+            let xdg = wm.get_xdg_surface(&surface, &qh, ());
+            let top = xdg.get_toplevel(&qh, ());
+            top.set_app_id(app_id.into());
+            surface.commit();
+            self.pump(h);
+            // SAFETY: a fresh anonymous memfd, wrapped once.
+            let file = unsafe {
+                let fd = libc::memfd_create(c"seat-visibility".as_ptr(), 0);
+                assert!(fd >= 0);
+                std::fs::File::from_raw_fd(fd)
+            };
+            file.set_len(100 * 100 * 4).expect("len");
+            let pool = shm.create_pool(file.as_fd(), 100 * 100 * 4, &qh, ());
+            let buf = pool.create_buffer(0, 100, 100, 400, wl_shm::Format::Argb8888, &qh, ());
+            pool.destroy();
+            surface.attach(Some(&buf), 0, 0);
+            surface.commit();
+            self.toplevels.push((surface, xdg, top));
+            self.pump(h);
+        }
+    }
+
+    fn pump_all(h: &mut Harness, spies: &mut [&mut Spy]) {
+        for _ in 0..2 {
+            for s in spies.iter_mut() {
+                s.pump(h);
+            }
+        }
+    }
+
+    #[test]
+    fn an_agent_seat_is_visible_only_to_clients_it_acts_on() {
+        let (mut h, _path) = hooked("seat-visibility.sock", true);
+        h.state.audit.sink = Some(Vec::new());
+        h.state.policy_key = Some(sk().verifying_key());
+        crate::policy::table::install_for_test(&mut h.state);
+        test_class::clear();
+
+        let mut owner = Spy::connect(&mut h);
+        owner.map(&mut h, "seatin-owner");
+        test_class::set(&find(&h, "seatin-owner"), Class::Public);
+        let mut bystander = Spy::connect(&mut h);
+        bystander.map(&mut h, "elsewhere");
+        test_class::set(&find(&h, "elsewhere"), Class::Public);
+        let mut late = Spy::connect(&mut h);
+
+        let scope: &[&str] = &["app_id:seatin*"];
+        let grant = signed(&Grant {
+            id: Ulid([9; 16]),
+            principal: "agent:leak".into(),
+            issued_ms: 0,
+            expires_ms: u64::MAX,
+            issuer: "policyd".into(),
+            task_id: Ulid([2; 16]),
+            capabilities: vec![line("seat.focus", scope), line("seat.key", scope)],
+            constraints: Constraints::default(),
+            unattended: false,
+        });
+        let mut p = Peer::inserted(&mut h, true);
+        let (agent, _scene) = p.admit(&mut h, grant);
+        let _seat = p.get_seat(&mut h, &agent);
+        assert!(p.error().is_none(), "seat created");
+        let name = format!("agent-{}", h.state.agent_seats[0].0);
+        // Connected after the seat: no window, and one that will probe.
+        let mut newcomer = Spy::connect(&mut h);
+        let mut prober = Spy::connect(&mut h);
+        pump_all(
+            &mut h,
+            &mut [&mut owner, &mut bystander, &mut late, &mut newcomer, &mut prober],
+        );
+
+        // In scope: told of the seat, with its devices.
+        assert_eq!(owner.seats(), vec!["seat0".to_owned(), name.clone()]);
+        assert_ne!(owner.caps(&name), Some(0));
+        // Out of scope and connected before it: the seat's name and devices
+        // never reach them; whatever extra seat they bound is a dead decoy.
+        for (who, s) in [("bystander", &bystander), ("late", &late)] {
+            assert!(!s.seats().contains(&name), "{who} never learns the seat");
+            assert!(
+                s.seen.seats[1..].iter().all(|x| x.0.is_empty() && x.1 == 0),
+                "{who}: a nameless decoy only"
+            );
+        }
+        // Connected after it: only the human seat exists.
+        for (who, s) in [("newcomer", &newcomer), ("prober", &prober)] {
+            assert_eq!(s.seats(), vec!["seat0".to_owned()], "{who}");
+            assert_eq!(s.seat_globals(), 1, "{who}");
+        }
+
+        // Binding the agent seat's global by name is binding a global that
+        // does not exist: a protocol error, and nothing bound.
+        let human = prober.global("wl_seat");
+        let agent_global = owner
+            .seen
+            .globals
+            .iter()
+            .find(|g| g.1 == "wl_seat" && g.0 != human)
+            .map(|g| g.0)
+            .expect("agent seat global");
+        let _: WlSeat = prober
+            .registry
+            .bind(agent_global, 5, &prober.queue.handle(), usize::MAX);
+        prober.pump(&mut h);
+        assert!(
+            prober.conn.protocol_error().is_some(),
+            "binding a hidden seat fails"
+        );
+
+        // A client that maps an in-scope window later is told then.
+        late.map(&mut h, "seatin-late");
+        let late_window = find(&h, "seatin-late");
+        test_class::set(&late_window, Class::Public);
+        pump_all(
+            &mut h,
+            &mut [&mut owner, &mut bystander, &mut late, &mut newcomer],
+        );
+        assert!(late.seats().contains(&name), "late is told");
+        assert_ne!(late.caps(&name), Some(0));
+        // Nobody else learns anything new.
+        let named = |s: &Spy| s.seats().iter().filter(|n| **n == name).count();
+        assert_eq!(named(&owner), 1, "owner holds the seat once");
+        for (who, s) in [("bystander", &bystander), ("newcomer", &newcomer)] {
+            assert_eq!(named(s), 0, "{who} never learns the seat");
+            assert!(s.seen.seats[1..].iter().all(|x| x.1 == 0), "{who}: decoys only");
+        }
+
+        // Its window leaves scope: the binding stays but has nothing.
+        test_class::set(&late_window, Class::Secret);
+        pump_all(&mut h, &mut [&mut owner, &mut late]);
+        assert_eq!(late.caps(&name), Some(0), "out of scope, no capabilities");
+        assert_ne!(owner.caps(&name), Some(0), "owner unaffected");
+        // And back.
+        test_class::set(&late_window, Class::Public);
+        pump_all(&mut h, &mut [&mut owner, &mut late]);
+        assert_ne!(late.caps(&name), Some(0), "back in scope, restored");
+        for (who, s) in [
+            ("late", &late),
+            ("owner", &owner),
+            ("bystander", &bystander),
+            ("newcomer", &newcomer),
+        ] {
+            assert!(s.conn.protocol_error().is_none(), "{who} intact");
+        }
+    }
+}
