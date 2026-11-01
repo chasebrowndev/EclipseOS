@@ -9,6 +9,8 @@
 //! Abyss ties the strips to this process's control-socket connection, so
 //! exiting on stdin EOF is what takes them off the windows.
 
+pub mod profile;
+
 use std::io::{self, Read, Write};
 
 use serde_json::{json, Value};
