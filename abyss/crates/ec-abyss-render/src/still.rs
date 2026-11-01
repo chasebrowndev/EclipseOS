@@ -175,7 +175,12 @@ impl Frame<'_> {
                             phys(at, scale),
                             popup.geometry().size.to_f64().to_physical(scale).to_i32_round(),
                         );
-                        popup_groups.push((n, prect, els));
+                        popup_groups.push((
+                            n,
+                            prect,
+                            crate::popup_blur_radius(renderer, &popup, deco.rounding),
+                            els,
+                        ));
                     } else {
                         popups.extend(els);
                     }
@@ -272,7 +277,7 @@ impl Frame<'_> {
 
         let mut popups = popups;
         if keyed.is_none() {
-            for (_, _, els) in popup_groups.drain(..) {
+            for (_, _, _, els) in popup_groups.drain(..) {
                 popups.extend(els);
             }
         }
@@ -293,7 +298,7 @@ impl Frame<'_> {
             }
         };
         if let Some((program, fb_h, mirrored, keys)) = &keyed {
-            for (n, prect, els) in popup_groups.drain(..) {
+            for (n, prect, pradius, els) in popup_groups.drain(..) {
                 push_keyed(
                     out,
                     program,
@@ -307,7 +312,7 @@ impl Frame<'_> {
                         out.len(),
                         prect,
                         mode,
-                        0,
+                        pradius,
                         None,
                         None,
                         None,
