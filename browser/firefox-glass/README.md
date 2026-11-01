@@ -16,19 +16,3 @@ Over native messaging (`os.eclipse.glass`, one long-lived port; reconnects with 
 Limit: the page area is what is measured, so a bottom findbar or docked devtools shortens it and the strip grows while they are open.
 
 A WebExtension can only set theme colours, so it cannot change geometry, radius or density, draw behind the page, or blur anything. Load it with `npx web-ext run -s browser/firefox-glass` (throwaway profile) and check it with `npx web-ext lint -s browser/firefox-glass`.
-
-## Host-managed CSS
-
-A theme cannot change a focus ring, a tab border or a Home button, so `ec-glass-host` also keeps two stylesheets in the Firefox profile it was started by. The CSS ships with the host (`shell/crates/ec-glass-host/css/`), so tweaking it is a package update and never an add-on re-sign.
-
-- It finds the profile from its parent (Firefox): the open `.parentlock` / `places.sqlite` file of `/proc/<ppid>/fd`, else `-profile` on the command line.
-- It writes `chrome/eclipse-glass.css` (browser UI) and `chrome/eclipse-glass-content.css` (about:home, about:newtab), only when their content differs.
-- It keeps one marked line, `@import url("eclipse-glass.css"); /* eclipse-glass:managed */`, at the top of `chrome/userChrome.css` (and the content one in `userContent.css`), creating the files when absent. Every rule you already have there is preserved.
-- The sheets use the theme's own CSS variables (`--toolbar-field-background-color`, `--tab-background-color-selected`, `--newtab-background-color-secondary`, ...), so the fills are the extension's key colours and a custom tint still works. Rims and shadows are not key colours and stay opaque.
-- `policies.json` sets `toolkit.legacyUserProfileCustomizations.stylesheets` so Firefox loads them. Firefox reads them at startup: after the first install, restart Firefox once.
-
-What it does: the URL bar and its suggestion dropdown lose the focus glow (a soft translucent shadow instead); the selected tab has a brighter glass fill and a crisp 1px rim instead of the coloured line; the Home customize (pencil) button is glass and still expands on hover.
-
-### When the add-on is gone
-
-An extension cannot run code on uninstall, so the sheets are built to be inert instead: every rule is scoped to `:root[lwtheme]` (browser) or `:root[lwt-newtab]` (Home), attributes Firefox sets only while a theme is applied. Without the Glass theme Firefox looks stock even though the files remain. To remove them entirely: `/usr/lib/eclipse/ec-glass-host --remove <profile-dir>` deletes the two sheets and the import lines and leaves your own rules.
