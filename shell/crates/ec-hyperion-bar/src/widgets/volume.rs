@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Volume: the speaker mark as the core (click mutes), the level slider as
-//! the revealed section, and the wheel anywhere on the widget steps the level
-//! ([`wheel`]).
+//! Volume: the speaker mark as the core (click opens the audio picker,
+//! [`sheet`]), the level slider as the revealed section, and the wheel
+//! anywhere on the widget steps the level ([`wheel`]).
 //!
 //! Neutral throughout: a sink level is state, not the bar's live value.
 
 use iced::mouse::ScrollDelta;
 use iced::widget::mouse_area;
 
-use ec_services::audio::Sink;
-use ec_ui::tokens::{bar, color};
+use ec_services::audio::{Device, DeviceKind, Sink};
+use ec_ui::tokens::{bar, color, drawer};
 use ec_ui::widget::{self as parts, ShellFrame, VOLUME_SLIDER_W};
 
 use super::{Action, Feed as Routed, Parts, Spans};
-use crate::app::Message;
+use crate::app::{App, Drawer, Message};
+use crate::view::{elide, Sheet};
 
 /// `bar.widgets.volume.*`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +146,178 @@ pub fn wheel<'a>(
         .into()
 }
 
+/// Room for a device's name: audio names are the whole row, with no lock or
+/// hero verb beside them, so they take more than a network's.
+const DEVICE_CHARS: usize = 26;
+
+/// The theme's glyph for a device's kind.
+fn kind_glyph(kind: DeviceKind) -> &'static str {
+    match kind {
+        DeviceKind::Speakers => "audio-speakers",
+        DeviceKind::Headphones => "audio-headphones",
+        DeviceKind::Headset => "audio-headset",
+        DeviceKind::Hdmi => "video-display",
+        DeviceKind::Bluetooth => "bluetooth",
+        DeviceKind::Mic => "audio-input-microphone",
+        DeviceKind::Usb | DeviceKind::Other => "audio-card",
+    }
+}
+
+/// The hero row's second line: what the device is, in the mono ramp.
+fn kind_label(kind: DeviceKind) -> &'static str {
+    match kind {
+        DeviceKind::Speakers => "speakers",
+        DeviceKind::Headphones => "headphones",
+        DeviceKind::Headset => "headset",
+        DeviceKind::Hdmi => "hdmi",
+        DeviceKind::Usb => "usb",
+        DeviceKind::Bluetooth => "bluetooth",
+        DeviceKind::Mic => "microphone",
+        DeviceKind::Other => "default",
+    }
+}
+
+/// One half of the picker: a section label, the level row, then the devices
+/// with the default as the hero. `accent` lights the level's fill, so only
+/// one half ever does.
+#[allow(clippy::too_many_arguments)]
+fn section(
+    s: &mut Sheet,
+    label: Option<&str>,
+    devices: &[Device],
+    default: Option<&str>,
+    level: Option<(f32, bool)>,
+    accent: bool,
+    on_mute: Message,
+    on_level: impl Fn(f32) -> Message + 'static,
+    pick: impl Fn(String) -> Message,
+    empty: &str,
+    mic: bool,
+) {
+    if let Some(label) = label {
+        s.section(label);
+    }
+    let (volume, muted) = level.unwrap_or((0.0, false));
+    let lead = if mic {
+        if muted {
+            "microphone-sensitivity-muted"
+        } else {
+            "microphone-sensitivity-high"
+        }
+    } else if muted || volume <= 0.0 {
+        "audio-volume-muted"
+    } else if volume < 0.34 {
+        "audio-volume-low"
+    } else if volume < 0.67 {
+        "audio-volume-medium"
+    } else {
+        "audio-volume-high"
+    };
+    s.row(parts::drawer_level(
+        parts::mark(
+            crate::icons::symbolic(lead),
+            drawer::MARK,
+            if muted {
+                color::TEXT_TERTIARY
+            } else {
+                color::TEXT_SECONDARY
+            },
+        ),
+        on_mute,
+        volume,
+        muted,
+        accent,
+        on_level,
+    ));
+    let hero = devices.iter().find(|d| Some(d.name.as_str()) == default);
+    if let Some(d) = hero {
+        s.current(parts::drawer_current(
+            parts::mark(
+                crate::icons::symbolic(kind_glyph(d.kind)),
+                drawer::CURRENT_MARK,
+                color::TEXT,
+            ),
+            &elide(&d.description, DEVICE_CHARS),
+            kind_label(d.kind),
+            color::TEXT_TERTIARY,
+            None,
+        ));
+    }
+    for d in devices
+        .iter()
+        .filter(|d| Some(d.name.as_str()) != default)
+        .take(drawer::MAX_ROWS)
+    {
+        s.row(parts::drawer_choice(
+            parts::mark(
+                crate::icons::symbolic(kind_glyph(d.kind)),
+                drawer::MARK,
+                color::TEXT_SECONDARY,
+            ),
+            &elide(&d.description, DEVICE_CHARS),
+            None,
+            Some(pick(d.name.clone())),
+        ));
+    }
+    if devices.is_empty() {
+        s.row(parts::drawer_note(empty));
+    }
+}
+
+/// The audio picker: output, a rule, input. The one yellow is the output
+/// level's fill — the number the human came to change; the input's rail and
+/// both heroes stay on the ink ramp.
+pub(crate) fn sheet(app: &App) -> Sheet {
+    let a = &app.audio;
+    // The sink feed is the live level; before it answers, the device list's.
+    let out_default = a
+        .outputs
+        .iter()
+        .find(|d| Some(&d.name) == a.default_output.as_ref());
+    let out_level = app
+        .widgets
+        .volume
+        .sink
+        .as_ref()
+        .map(|k| (k.volume, k.muted))
+        .or_else(|| out_default.map(|d| (d.volume, d.muted)));
+    let in_level = a
+        .inputs
+        .iter()
+        .find(|d| Some(&d.name) == a.default_input.as_ref())
+        .map(|d| (d.volume, d.muted));
+    let mut s = Sheet::new(parts::drawer_sheet_head("output"), drawer::HEAD_H);
+    // The output label is the sheet's head; the input's is a mid-sheet strip.
+    section(
+        &mut s,
+        None,
+        &a.outputs,
+        a.default_output.as_deref(),
+        out_level,
+        true,
+        msg(Feed::Mute(!out_level.is_some_and(|l| l.1))),
+        |v| msg(Feed::Set(v)),
+        Message::AudioOutput,
+        "no output devices",
+        false,
+    );
+    s.rule();
+    section(
+        &mut s,
+        Some("input"),
+        &a.inputs,
+        a.default_input.as_deref(),
+        in_level,
+        false,
+        Message::InputMute(!in_level.is_some_and(|l| l.1)),
+        Message::InputVolume,
+        Message::AudioInput,
+        "no input devices",
+        true,
+    );
+    s
+}
+
 pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame) -> Parts<'a> {
     let ink = frame.core_alpha();
     let Some(sink) = state.sink.as_ref() else {
@@ -168,7 +341,7 @@ pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame) -> Parts<'a> {
         bar::MARK,
         tint.scale_alpha(ink),
     );
-    let core = super::press(mark, bar::MARK, msg(Feed::Mute(!sink.muted)));
+    let core = super::press(mark, bar::MARK, Message::Open(Drawer::Audio));
     let slider = parts::volume_slider_faded(
         sink.volume,
         cfg.max(),

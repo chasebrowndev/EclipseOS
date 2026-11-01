@@ -60,9 +60,9 @@ Framework 13 AMD choices and why:
 |---|---|
 | `amd-ucode` | Installed when `/proc/cpuinfo` says AMD; `intel-ucode` when Intel; neither in a VM. The Limine entry adds it as a `module_path` ahead of the initramfs. Intel is **untested** until the second machine is run. |
 | `linux-firmware-amdgpu` | Split out of `linux-firmware` upstream; without it amdgpu does not come up on this generation. Named explicitly rather than relied on as a transitive pull. |
-| `vulkan-radeon` + `mesa` + `libva-mesa-driver` | The RADV path. `amdvlk` is not installed — two Vulkan ICDs on one system is a loader-ordering problem, not a choice worth offering. |
-| Detected GPUs (sysfs) | AMD as above; Intel adds `vulkan-intel` and `intel-media-driver`; NVIDIA uses the open-source nouveau/NVK stack (`vulkan-nouveau`), no proprietary or DKMS module. Intel and NVIDIA are detected and installed but **untested**. |
-| *(no DKMS anything)* | amdgpu is in-tree. There is no out-of-tree module, so there is no `dkms`, no headers package, and **no kernel-upgrade step that can fail after reboot**. This is the single biggest reason the target hardware is AMD; it is a property of the install, not a preference. |
+| `vulkan-radeon` + `mesa` + `libva-mesa-driver` | The RADV path. The live medium also carries `vulkan-intel`, `vulkan-nouveau` and `vulkan-swrast`: the live session's panels render through wgpu, and on a GPU with no Vulkan driver it falls back to GL, which drew blank panels on an NVIDIA desktop (2026-10-20). All three are Mesa ICDs that only bind to their own hardware, lavapipe last. `amdvlk` is not installed — two Vulkan ICDs on one system is a loader-ordering problem, not a choice worth offering. |
+| Detected GPUs (sysfs) | AMD as above; Intel adds `vulkan-intel` and `intel-media-driver`; NVIDIA Turing or newer (PCI vendor `0x10de`, device id >= `0x1e00`) gets `nvidia-open-dkms`, `nvidia-utils` and `linux-headers` and `linux-lts-headers` (the installer always adds `linux-lts` as a second kernel, D-01 §2), the §2.3 cmdline and `mkinitcpio` arrangement, and an install-time check that the module built for every installed kernel; older NVIDIA uses nouveau/NVK (`vulkan-nouveau`). Owner decision 2026-10-18; see D-01 §2.3. Intel and NVIDIA are detected and installed but **untested**. |
+| *(no DKMS on AMD/Intel)* | amdgpu is in-tree. On AMD and Intel there is no out-of-tree module, so there is no `dkms`, no headers package, and **no kernel-upgrade step that can fail after reboot** (the NVIDIA Turing+ path above is the one exception). This is the single biggest reason the target hardware is AMD; it is a property of the install, not a preference. |
 
 Beyond that: disk tooling the installer calls (`gptfdisk`, `dosfstools`,
 `e2fsprogs`, `arch-install-scripts`), the D-Bus services the bar consumes
@@ -102,7 +102,7 @@ disagreement with the installed system is the design, not an oversight:
   Requiring signatures would mean seeding the packaging key into `mkarchiso`'s
   throwaway keyring to verify a claim the path already establishes.
 - **On the installed system**, `/etc/pacman.d/eclipseos.conf` (shipped by
-  `eclipseos-meta`) points at `http://chase-pc:8088/x86_64` with
+  `eclipseos-meta`) points at the `repo-x86_64` GitHub release (D-02) with
   `Required DatabaseRequired`, because there the packages cross a network.
 
 `TrustAll` is therefore scoped to a local path on the build machine and never
@@ -170,6 +170,49 @@ install time, to a user who might not be the one sitting at the machine. The
 absence of those lines is load-bearing; do not "fix" it when a device looks
 inaccessible.
 
+### 4.3 Flaky networks and failed attempts
+
+*(amended 2026-10: a pacstrap on a filtered network died with "Operation too
+slow" and left a mounted, empty target.)* Both installers (the script and the
+D-07 §6 helper) share one behaviour, kept in step by hand:
+
+- **Download settings.** The pacman.conf handed to `pacstrap -C` (and to the
+  helper's preflight `pacman` calls) gets `DisableDownloadTimeout` and
+  `ParallelDownloads = 3` under `[options]`; any existing setting is replaced.
+  The live medium's own `/etc/pacman.conf` is untouched.
+- **Mirror order.** The medium ships `airootfs/etc/pacman.d/eclipseos-mirrors`
+  (`geo.mirror.pkgbuild.com` first, then a few tier-1 HTTPS mirrors), and the
+  build-time `uncomment-mirrors.hook` puts it on top of the uncommented stock
+  list. It is staged under its own name because `pacman-mirrorlist` owns
+  `mirrorlist`. `reflector`
+  is deliberately not on the medium: it fetches the mirror status from
+  archlinux.org, which is itself what a filtered network breaks, and rate
+  sorting takes minutes.
+- **Retries.** A failed pacstrap is classified from its stderr: network/mirror
+  (`failed retrieving`, `too slow`, `timed out`, `could not resolve`, a
+  checksum mismatch, an "unexpected error" commit), disk full, signature or
+  keyring, other. Only the network class is retried, three attempts in all,
+  after a 5 s then 10 s backoff. Before each retry the live mirrorlist is
+  rotated (first `Server` line moved last) and the target's stray gpg daemons
+  are stopped. Packages stay in the target's pacman cache (pacstrap's default)
+  so a retry fetches only what is missing. A bad signature, a full disk or an
+  unrecognised error is never retried into success; neither is the NVIDIA
+  module check, which runs after pacstrap.
+- **Messages.** Each class has one actionable line, shown as the failed
+  stage's progress message (helper) or printed before a non-zero exit with the
+  exact command to run next (script). Only fixed text is shown; pacman's output
+  is matched, never echoed into a progress line.
+- **Rerun after failure.** The script, once the disk is chosen, unmounts `/mnt`
+  (stopping stale gpg daemons first, no lazy unmount) and any other mount from
+  that disk. The helper tolerates mounts at or under `/mnt` left by an earlier
+  attempt in preflight, and unmounts them after the erase is confirmed and
+  before repartitioning; a mount of the disk anywhere else still refuses. A
+  failed run unmounts on the way out in both.
+
+Out of scope: checkpoint/resume across reboots, and keeping the package cache
+across a fresh run (the disk is repartitioned, the live medium's RAM overlay is
+too small to hold the cache).
+
 ## 5. greetd on the live medium
 
 *(rewritten with D-07 §2.1, 2026-09-24. Before this, the medium had only a root
@@ -189,7 +232,9 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
   `abyss-session.target` and conditioned on `/run/archiso`. It starts the
   installer. It is the medium's own unit, not a key in any `abyss.kdl`.
 - **`/etc/polkit-1/rules.d/50-eclipse-live-install.rules`**, allowing
-  `org.eclipse.install.apply` for a local, active `liveuser` only.
+  `org.eclipse.install.apply` and NetworkManager's
+  `settings.modify.system` (the Wi-Fi join in D-07 §4.3) for a local, active
+  `liveuser` only.
 - **`kernel.yama.ptrace_scope = 1`**, so a same-uid client cannot trace the
   compositor that draws the erase confirmation (D-07 §6).
 - **No sshd, no mDNS listener.** `sshd` is not enabled and its `PermitRootLogin`

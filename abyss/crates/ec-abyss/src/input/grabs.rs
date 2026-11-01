@@ -787,7 +787,7 @@ fn root_surface(surface: &WlSurface) -> WlSurface {
 /// matching release. Declines (returns `false`, press proceeds normally) when a
 /// drag is already in flight, the session is locked, nothing bound matches, the
 /// surface under the pointer is not a toplevel (layer surfaces, popups,
-/// override-redirect X11 windows) or the window is maximized/fullscreen.
+/// override-redirect X11 windows) or the window is fullscreen.
 ///
 /// The lookup allocates nothing (a refcount bump per subsurface hop at most);
 /// focusing an X11 window on a hit is the press path's, not the motion path's.
@@ -815,15 +815,11 @@ pub fn start_mouse_bind(state: &mut AbyssState, button: u32) -> bool {
 }
 
 /// The managed toplevel under the pointer, if the human may drag it: not a
-/// layer surface, popup or override-redirect X11 window, not maximized or
-/// fullscreen, and on an output.
+/// layer surface, popup or override-redirect X11 window, not fullscreen, and on an output.
 fn grabbable_window_under_pointer(state: &AbyssState) -> Option<Window> {
     let (surface, _) = state.surface_under(state.pointer_location)?;
     let window = crate::shell::window_for_surface(state, &root_surface(&surface))?;
-    if state.maximized.contains_key(&window)
-        || state.fullscreen.contains_key(&window)
-        || crate::shell::output_of_window(state, &window).is_none()
-    {
+    if state.fullscreen.contains_key(&window) || crate::shell::output_of_window(state, &window).is_none() {
         return None;
     }
     Some(window)

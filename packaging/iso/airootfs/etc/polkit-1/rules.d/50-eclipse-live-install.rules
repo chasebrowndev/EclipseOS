@@ -9,4 +9,11 @@ polkit.addRule(function(action, subject) {
         subject.user == "liveuser" && subject.local && subject.active) {
         return polkit.Result.YES;
     }
+    // Step 3 joins Wi-Fi through nmcli, which saves a system connection.
+    // NetworkManager's own rule allows that for local `wheel` users only, and
+    // liveuser has no polkit agent to answer the auth_admin_keep default.
+    if (action.id == "org.freedesktop.NetworkManager.settings.modify.system" &&
+        subject.user == "liveuser" && subject.local && subject.active) {
+        return polkit.Result.YES;
+    }
 });

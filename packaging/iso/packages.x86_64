@@ -8,7 +8,9 @@
 linux
 linux-firmware
 linux-firmware-amdgpu
+linux-firmware-nvidia
 amd-ucode
+intel-ucode
 mkinitcpio
 mkinitcpio-archiso
 mkinitcpio-nfs-utils
@@ -53,6 +55,12 @@ zsh
 ## graphics stack (D-01 §1) — amdgpu is in-kernel, no DKMS
 mesa
 vulkan-radeon
+# The live session's panels render through wgpu, which wants Vulkan. Without
+# a driver for the GPU it falls back to GL, which draws blank panels on
+# nouveau; swrast (lavapipe) is the last resort for anything else.
+vulkan-intel
+vulkan-nouveau
+vulkan-swrast
 libva-mesa-driver
 libdrm
 libdisplay-info

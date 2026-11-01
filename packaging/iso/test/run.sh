@@ -8,6 +8,7 @@
 #   run.sh unit
 #   run.sh assert-no-keystroke /path/to/eclipseos.iso [--ref ref.png]
 #   run.sh compare A.png B.png [--tolerance N]
+#   run.sh scenario --iso /path/to/eclipseos.iso [--work DIR] [--profile P] ...   (see README.md)
 #   run.sh [--work DIR] <any vm.py subcommand> ...      (see README.md)
 #
 # Work dir: --work, else $ECLIPSEOS_VM_WORK, else $TMPDIR/eclipseos-vm-UID (never in the repo).
@@ -17,6 +18,7 @@ command -v python3 >/dev/null || { echo "run.sh: python3 not found" >&2; exit 2;
 
 case "${1:-}" in
   unit)    shift; exec python3 "$here/test_unit.py" "$@" ;;
+  scenario) shift; exec python3 "$here/scenario.py" "$@" ;;
   compare) shift; exec python3 "$here/compare.py" "$@" ;;
   ""|-h|--help) exec python3 "$here/vm.py" --help ;;
   *)       exec python3 "$here/vm.py" "$@" ;;

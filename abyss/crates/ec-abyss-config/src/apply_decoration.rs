@@ -29,6 +29,7 @@ impl Config {
                 "blur" => self.apply_blur(n),
                 "shadow" => self.apply_shadow(n),
                 "glow" => self.apply_glow(n),
+                "surface" => self.apply_surface(n),
                 _ => self.unknown_key(n, "decoration", "decoration key"),
             }
         }
@@ -104,6 +105,32 @@ impl Config {
                     None => self.reject(n, "bad color for \"frost tint\""),
                 },
                 _ => self.unknown_key(n, "decoration.blur.frost", "frost key"),
+            }
+        }
+    }
+
+    /// `surface { tint 0.70; card-fill 0.035; inset-fill 0.03 }`. Out-of-range
+    /// values are rejected and keep their default, as `decoration` does.
+    pub(crate) fn apply_surface(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let name = n.name().value();
+            match name {
+                "tint" | "card-fill" | "inset-fill" => {
+                    let max = if name == "tint" { 1.0 } else { 0.30 };
+                    match arg(n).and_then(as_f64) {
+                        Some(v) if (0.0..=max).contains(&v) => {
+                            let v = v as f32;
+                            match name {
+                                "tint" => self.decoration.surface.tint = v,
+                                "card-fill" => self.decoration.surface.card_fill = v,
+                                _ => self.decoration.surface.inset_fill = v,
+                            }
+                        }
+                        _ => self.reject(n, format!("surface {name} must be 0.0..={max}")),
+                    }
+                }
+                _ => self.unknown_key(n, "decoration.surface", "surface key"),
             }
         }
     }

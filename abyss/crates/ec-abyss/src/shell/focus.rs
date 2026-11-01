@@ -263,7 +263,7 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
             .space
             .element_under(pos)
             .filter(|_| layer_under.is_none())
-            .filter(|(w, _)| !w.x11_surface().is_some_and(|x| x.is_override_redirect()))
+            .filter(|(w, _)| !crate::shell::is_unmanaged_x11(state, w))
             .map(|(w, _)| w.clone()),
         layer_under,
         click: false,
@@ -321,7 +321,7 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
         return;
     }
     // Override-redirect menus/tooltips never take focus or activation; the owning client keeps it.
-    if window.x11_surface().is_some_and(|x| x.is_override_redirect()) {
+    if crate::shell::is_unmanaged_x11(state, window) {
         return;
     }
     let Some(surface) = window_surface(window) else {
@@ -332,21 +332,25 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
     if !crate::protocols::protected::gate::focus_allowed(state, &surface) {
         return;
     }
-    // X11 focus is compositor-driven: activate, raise in the X stack, then
-    // let the keyboard follow (COMP-07 §1).
+    // X11 focus is compositor-driven: activate, then let the keyboard follow (COMP-07 §1).
     if let Some(x11) = window.x11_surface() {
         x11.set_activated(true).ok();
-        if raise {
-            if let Some(wm) = state.xwayland.wm.as_mut() {
-                let _ = wm.raise_window(x11);
-            }
-        }
+        // The X stack follows the compositor's, not the other way round:
+        // `arrange` below ends in `xwayland::sync_stacking`. Raising the
+        // focused window here put a tiled window above the floating dialogs
+        // the compositor draws over it.
         let others: Vec<Window> = state.space.elements().filter(|w| *w != window).cloned().collect();
         for w in others {
             if let Some(other) = w.x11_surface() {
                 other.set_activated(false).ok();
             }
         }
+    }
+    // Focus that restacks is the human asking for this window; a fullscreen
+    // window that would hide it steps aside (COMP-05 §4, amendment C-19).
+    // Passive focus (focus-follows-mouse, the scene refresh) never does.
+    if raise {
+        crate::shell::yield_fullscreen(state, window);
     }
     state.focus = Some(window.clone());
     state.urgent.retain(|w| w != window);
@@ -1198,6 +1202,8 @@ pub(crate) mod state_tests {
             layer_configures: usize,
             /// Every `xdg_toplevel.configure` size, as (toplevel id, w, h).
             configures: Vec<(u32, i32, i32)>,
+            /// Configures that carried the `maximized` state, per toplevel id.
+            maximized_configures: Vec<u32>,
         }
 
         /// A toplevel's three client objects, for tests that drive its
@@ -1309,8 +1315,17 @@ pub(crate) mod state_tests {
                 _: &Connection,
                 _: &QueueHandle<Self>,
             ) {
-                if let xdg_toplevel::Event::Configure { width, height, .. } = event {
+                if let xdg_toplevel::Event::Configure {
+                    width,
+                    height,
+                    states,
+                } = event
+                {
                     g.configures.push((toplevel.id().protocol_id(), width, height));
+                    // `states` is an array of native-endian u32; maximized = 1.
+                    if states.chunks_exact(4).any(|c| c == 1u32.to_ne_bytes()) {
+                        g.maximized_configures.push(toplevel.id().protocol_id());
+                    }
                 }
             }
         }
@@ -1490,6 +1505,12 @@ pub(crate) mod state_tests {
                 self.commit(h, surface);
             }
 
+            /// Attach a `w`x`h` buffer, commit and deliver: a resize.
+            pub fn attach_sized(&mut self, h: &mut Harness, surface: &WlSurface, w: i32, ht: i32) {
+                surface.attach(Some(&self.buffer(w, ht)), 0, 0);
+                self.commit(h, surface);
+            }
+
             /// Every size `toplevel` has been configured with, oldest first.
             pub fn configured_sizes(&self, toplevel: &XdgToplevel) -> Vec<(i32, i32)> {
                 let id = toplevel.id().protocol_id();
@@ -1499,6 +1520,16 @@ pub(crate) mod state_tests {
                     .filter(|(t, _, _)| *t == id)
                     .map(|&(_, w, h)| (w, h))
                     .collect()
+            }
+
+            /// How many configures `toplevel` has received carrying `maximized`.
+            pub fn maximized_configures(&self, toplevel: &XdgToplevel) -> usize {
+                let id = toplevel.id().protocol_id();
+                self.data
+                    .maximized_configures
+                    .iter()
+                    .filter(|&&t| t == id)
+                    .count()
             }
 
             /// An input method on the seat, with the keyboard grabbed.

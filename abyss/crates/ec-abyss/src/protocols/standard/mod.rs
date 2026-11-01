@@ -22,6 +22,8 @@ mod layer_shell;
 pub mod output_management;
 pub mod output_power;
 pub(crate) mod pointer_constraints;
+#[cfg(test)]
+mod pointer_constraints_tests;
 mod pointer_extra;
 mod presentation;
 mod primary_selection;

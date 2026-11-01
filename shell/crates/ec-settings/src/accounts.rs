@@ -37,7 +37,7 @@ use serde_json::{json, Value};
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, size, space};
 use ec_ui::widget::{
-    badge, edge_note, hairline, inset, micro_label, panel, pick_pill, pill, prompt_cell, status_cell,
+    badge, edge_note, hairline, inset, micro_label, panel_at, pick_pill, pill, prompt_cell, status_cell,
     status_grid, value as mono,
 };
 
@@ -886,8 +886,9 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
             .style(theme::text_tertiary)
             .into(),
     };
-    panel(
+    panel_at(
         app.glass_radius,
+        app.hairline_cards,
         column![
             row![
                 micro_label("secret store"),
@@ -1142,8 +1143,9 @@ fn add(app: &App) -> Element<'_, Message, Theme> {
         Kind::ClaudeCode => login_way(a, ready, gate),
     };
 
-    panel(
+    panel_at(
         app.glass_radius,
+        app.hairline_cards,
         column![head, hairline(), name_row, hairline(), way].spacing(space::ROW_Y),
     )
     .into()

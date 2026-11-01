@@ -476,7 +476,9 @@ fn bar_clock_and_popup_anchor_parse() {
         d.bar.clock,
         BarClock {
             hour_12: true,
-            date_mdy: true
+            date_mdy: true,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(d.bar.popup_anchor, BarPopupAnchor::Cell);
@@ -487,7 +489,9 @@ fn bar_clock_and_popup_anchor_parse() {
         c.bar.clock,
         BarClock {
             hour_12: false,
-            date_mdy: false
+            date_mdy: false,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(c.bar.popup_anchor, BarPopupAnchor::Pointer);
@@ -1157,6 +1161,49 @@ fn decoration_defaults_round_but_are_otherwise_no_effect() {
     assert!(cfg.animations.any() && !cfg.animations.custom());
 }
 
+/// `surface` ships at its sRGB-intent defaults, and parses and range-checks
+/// like its `decoration` neighbours.
+#[test]
+fn surface_defaults_parse_and_reject_out_of_range() {
+    let s = &Config::default().decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+
+    let doc: KdlDocument = r#"
+            decoration {
+                surface { tint 0.5; card-fill 0.2; inset-fill 0 }
+            }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.5, 0.2, 0.0));
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+
+    // Every out-of-range or wrong-typed value keeps its default, and the
+    // fill maximum is 0.30 where the tint's is 1.0.
+    let doc: KdlDocument = r#"
+            decoration {
+                surface { tint 1.5; card-fill 0.31; inset-fill "half"; nope 1 }
+            }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+    assert_eq!(cfg.errors.len(), 4, "{:?}", cfg.errors);
+    let doc: KdlDocument = "decoration { surface { tint 1.0; card-fill 0.30; inset-fill 0.30 } }\n"
+        .parse()
+        .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (1.0, 0.30, 0.30));
+}
+
 /// Blur ships on, in glass mode (C-16): translucent surfaces get the
 /// Liquid Glass pass without being asked. It costs a render pass, so it
 /// is called out here rather than folded into the no-effect test above
@@ -1378,6 +1425,82 @@ fn annotation_and_oracle_eyes_edits_round_trip() {
     let mut cfg = cfg;
     cfg.oracle_eyes.model_command = None;
     assert_eq!(schema::get(&cfg, "oracle-eyes.model-command"), Some(V::Null));
+}
+
+#[test]
+fn windowrule_translucent_region_takes_top_and_opacity() {
+    for (value, want) in [("top=84 opacity=0.6", (84, 0.6)), ("opacity=1 top=0", (0, 1.0))] {
+        let cfg = blur_cfg(&format!(
+            "windowrule \"translucent-region {value}\" {{ app-id \"a\"; }}\n"
+        ));
+        assert!(cfg.errors.is_empty(), "{value}: {:?}", cfg.errors);
+        assert_eq!(
+            cfg.window_rules[0].action,
+            RuleAction::TranslucentRegion {
+                top: want.0,
+                opacity: want.1,
+                key: None
+            }
+        );
+    }
+    let cfg =
+        blur_cfg("windowrule \"translucent-region top=40 key=#1B1b1f opacity=0.35\" { app-id \"a\"; }\n");
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(
+        cfg.window_rules[0].action,
+        RuleAction::TranslucentRegion {
+            top: 40,
+            opacity: 0.35,
+            key: Some([0x1b, 0x1b, 0x1f])
+        }
+    );
+    for bad in [
+        "",
+        " top=40",
+        " opacity=0.5",
+        " top=-1 opacity=0.5",
+        " top=40 opacity=1.5",
+        " top=40 opacity=-0.1",
+        " top=4.5 opacity=0.5",
+        " top=40 opacity=0.5 extra=1",
+        " top=40 top=41 opacity=0.5",
+        " 40 0.5",
+        " top=40 opacity=0.5 key=1b1b1f",
+        " top=40 opacity=0.5 key=#1b1b1",
+        " top=40 opacity=0.5 key=#1b1b1fff",
+        " top=40 opacity=0.5 key=#zzzzzz",
+        " top=40 opacity=0.5 key=#1b1b1f key=#1b1b1f",
+    ] {
+        let cfg = blur_cfg(&format!(
+            "windowrule \"translucent-region{bad}\" {{ app-id \"a\"; }}\n"
+        ));
+        assert!(cfg.window_rules.is_empty(), "{bad:?} must be rejected");
+    }
+}
+
+#[test]
+fn windowrule_floating_matcher_takes_a_bool() {
+    for (spelling, want) in [
+        ("floating", true),
+        ("floating #true", true),
+        ("floating #false", false),
+        // Bare `true` is a KDL v2 syntax error; the quoted words are accepted.
+        ("floating \"true\"", true),
+        ("floating \"false\"", false),
+    ] {
+        let cfg = blur_cfg(&format!(
+            "windowrule \"translucent-region top=74 opacity=0.6\" {{ app-id \"firefox\"; {spelling}; }}\n"
+        ));
+        assert!(cfg.errors.is_empty(), "{spelling}: {:?}", cfg.errors);
+        assert_eq!(cfg.window_rules[0].matchers.floating, Some(want), "{spelling}");
+    }
+    // A floating matcher alone is a matcher, so the rule is not match-all.
+    let cfg = blur_cfg("windowrule \"opacity 0.9\" { floating #false; }\n");
+    assert_eq!(cfg.window_rules.len(), 1);
+    let cfg = blur_cfg("windowrule \"opacity 0.9\" { floating \"maybe\"; }\n");
+    assert!(cfg.window_rules.is_empty());
+    let cfg = blur_cfg("windowrule \"opacity 0.9\" { floating 3; }\n");
+    assert!(cfg.window_rules.is_empty());
 }
 
 #[test]

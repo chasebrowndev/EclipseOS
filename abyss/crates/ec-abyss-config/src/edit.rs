@@ -831,6 +831,29 @@ misc {
         out.parse::<KdlDocument>().expect("still parses");
     }
 
+    /// The surface keys round-trip through the splice writer and re-parse to
+    /// the value written, and a second identical write is a no-op.
+    #[test]
+    fn surface_keys_round_trip() {
+        for (path, v) in [
+            ("decoration.surface.tint", 0.5),
+            ("decoration.surface.card-fill", 0.2),
+            ("decoration.surface.inset-fill", 0.0),
+        ] {
+            let once = set_value("", path, &KdlValue::Float(v)).unwrap();
+            assert_eq!(set_value(&once, path, &KdlValue::Float(v)).unwrap(), once);
+            let mut cfg = crate::Config::default();
+            let doc: KdlDocument = once.parse().unwrap();
+            cfg.apply(&doc, &mut Vec::new());
+            assert!(cfg.errors.is_empty(), "{path}: {:?}", cfg.errors);
+            assert_eq!(
+                crate::schema::get(&cfg, path),
+                Some(crate::schema::Value::Float(v)),
+                "{path}"
+            );
+        }
+    }
+
     /// Writing `decoration.blur.mode` removes the legacy `enabled` it
     /// replaces, on its own line or inline, leaving the rest untouched.
     #[test]

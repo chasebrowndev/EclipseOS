@@ -57,6 +57,7 @@ pub mod dedupe;
 pub mod generation;
 pub mod lock;
 pub mod seat;
+mod seat_global;
 pub mod wait;
 
 #[cfg(test)]
@@ -319,6 +320,17 @@ fn agent_display(state: &mut AbyssState) -> Option<DisplayHandle> {
 /// hook, beside the main display's flush: `wl_display_flush_clients` may
 /// destroy a client, which is only safe outside request dispatch.
 pub fn flush(state: &mut AbyssState) {
+    // Who may see each agent seat follows the scene, so it is re-decided
+    // once per loop iteration, before clients next read (SEAT-01).
+    let mut changed = false;
+    let mut i = 0;
+    while let Some(&(aid, _)) = state.agent_seats.get(i) {
+        changed |= seat::refresh(state, aid);
+        i += 1;
+    }
+    if changed {
+        let _ = state.display_handle.flush_clients();
+    }
     if let Some(dh) = state.agents.display.as_mut() {
         let _ = dh.flush_clients();
     }

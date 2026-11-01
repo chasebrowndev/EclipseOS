@@ -61,18 +61,22 @@ pub fn body(m: &Model) -> Body<'_> {
         1 => "1 app".to_owned(),
         n => format!("{n} apps"),
     };
-    let grid = parts::stat_grid(
-        vec![
-            ("Language", format!("{} ({keyboard})", lang.english)),
-            ("User", m.username.clone()),
-            (
-                "Desktop",
-                format!("{} / {}", profile_name(m), m.choices.mode.id()),
-            ),
-            ("Parts", format!("{parts_on} parts, {apps}")),
-        ],
-        4,
-    );
+    let agents = m.profile.agents_default();
+    let mut stats = vec![
+        ("Language", format!("{} ({keyboard})", lang.english)),
+        ("User", m.username.clone()),
+        (
+            "Desktop",
+            format!("{} / {}", profile_name(m), m.choices.mode.id()),
+        ),
+        ("Parts", format!("{parts_on} parts, {apps}")),
+    ];
+    if agents {
+        stats.push(("Agents", "installed".to_owned()));
+    }
+    // Five stats at four columns would wrap the language; three wrap the row, not the text.
+    let cols = if agents { 3 } else { 4 };
+    let grid = parts::stat_grid(stats, cols);
 
     // --- the arming field
     let matches = m.confirmed();

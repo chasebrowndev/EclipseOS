@@ -167,19 +167,31 @@ pub fn bar_folded(radius: f32, blur: bool, rim: f32) -> impl Fn(&Theme) -> conta
 }
 
 /// One level of inset inside a panel. The spec's limit — there is no
-/// `inset_inside_inset`, on purpose.
+/// `inset_inside_inset`, on purpose. Its white fill is
+/// `decoration.surface.inset-fill`, its rim [`crate::surface::RIM_PER_FILL`]
+/// times that.
 pub fn inset(_t: &Theme) -> container::Style {
+    let fill = crate::surface::current().inset_fill;
     container::Style {
-        background: Some(Background::Color(Color {
-            a: 0.03,
-            ..Color::WHITE
-        })),
+        background: Some(Background::Color(crate::surface::white_fill(fill))),
         border: Border {
-            color: color::HAIRLINE,
+            color: crate::surface::white_fill(fill * crate::surface::RIM_PER_FILL),
             width: 1.0,
             radius: radius::INSET.into(),
         },
         ..container::Style::default()
+    }
+}
+
+/// The ground a dimmed run is veiled with, blur off: the same inset fill and
+/// rim as [`inset`], with the content faded by [`color::VEIL`]. Live with
+/// `decoration.surface.inset-fill`, like [`inset`].
+pub fn veil() -> crate::widget::Ground {
+    let fill = crate::surface::current().inset_fill;
+    crate::widget::Ground {
+        base: color::VEIL,
+        fill: crate::surface::white_fill(fill),
+        rim: crate::surface::white_fill(fill * crate::surface::RIM_PER_FILL),
     }
 }
 
@@ -224,6 +236,45 @@ pub fn content_ground(blur: bool) -> impl Fn(&Theme) -> container::Style {
             color::CONTENT_BACKED
         })),
         ..container::Style::default()
+    }
+}
+
+/// One window's material: the rail, the column, or a whole window body. Its
+/// ground is [`color::BASE`] at `decoration.surface.tint` with blur on, and
+/// opaque [`color::BASE`] with blur off, so the window is one material and the
+/// 1px rule between halves does the parting. Square: the compositor's corner
+/// mask rounds it.
+pub fn window_pane(blur: bool) -> impl Fn(&Theme) -> container::Style {
+    move |_t: &Theme| container::Style {
+        background: Some(Background::Color(if blur {
+            crate::surface::tint(crate::surface::current().tint)
+        } else {
+            color::BASE
+        })),
+        ..container::Style::default()
+    }
+}
+
+/// A Settings card. `hairline` is set with blur off or `blur`: the same radius
+/// as [`panel`], a white fill of `decoration.surface.card-fill` and a rim at
+/// [`crate::surface::RIM_PER_FILL`] times that fill, and no shadow, so the edge
+/// is the card and nothing lifts it off the ground. Clear of it, the card is
+/// [`panel`]'s glass.
+pub fn card(radius: f32, hairline: bool) -> impl Fn(&Theme) -> container::Style {
+    move |t: &Theme| {
+        if !hairline {
+            return panel(radius)(t);
+        }
+        let fill = crate::surface::current().card_fill;
+        container::Style {
+            background: Some(Background::Color(crate::surface::white_fill(fill))),
+            border: Border {
+                color: crate::surface::white_fill(fill * crate::surface::RIM_PER_FILL),
+                width: space::HAIRLINE,
+                radius: radius.into(),
+            },
+            ..container::Style::default()
+        }
     }
 }
 

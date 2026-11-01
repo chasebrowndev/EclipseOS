@@ -20,6 +20,10 @@ pub struct Matchers {
     pub title: Option<Pattern>,
     pub pid: Option<i32>,
     pub xwayland: Option<bool>,
+    /// Whether the window is floating right now (on a workspace's floating
+    /// list; a fullscreen window abyss holds floating counts as floating).
+    /// Re-read on every evaluation, so it follows tile/float toggles.
+    pub floating: Option<bool>,
     /// Glob against the output connector or its persistent identity.
     pub output: Option<String>,
     pub workspace: Option<i32>,
@@ -36,6 +40,7 @@ impl Matchers {
             && self.title.is_none()
             && self.pid.is_none()
             && self.xwayland.is_none()
+            && self.floating.is_none()
             && self.output.is_none()
             && self.workspace.is_none()
             && self.cgroup.is_none()
@@ -65,6 +70,19 @@ pub enum RuleAction {
     /// does not speak `zwp_idle_inhibit_manager_v1` itself.
     IdleInhibit,
     Opacity(f32),
+    /// `translucent-region top=<px> opacity=<0..1>`: draw only the top `px`
+    /// logical px of the window at `opacity` (and its blur behind it), the
+    /// rest as the client submitted it. For a client that cannot make its own
+    /// chrome translucent (Firefox on Wayland submits an XRGB buffer).
+    ///
+    /// With `key=#rrggbb` only pixels of exactly that colour (within 1/255 per
+    /// channel) are drawn at `opacity`; everything else stays opaque. Without
+    /// a key the whole strip fades.
+    TranslucentRegion {
+        top: i32,
+        opacity: f32,
+        key: Option<[u8; 3]>,
+    },
     /// Pick this window's blur mode, overriding `decoration.blur.mode`.
     /// Still gated by translucency at render time — an opaque window never
     /// blurs whatever the rule says.

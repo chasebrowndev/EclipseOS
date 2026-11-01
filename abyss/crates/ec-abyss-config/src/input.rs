@@ -45,6 +45,8 @@ pub enum Action {
     Spawn(String),
     Close,
     ToggleFloating,
+    /// Fullscreen the focused window, or end its fullscreen (COMP-05 §4).
+    ToggleFullscreen,
     /// Send the focused window away (COMP-05 §4 `minimized`).
     Minimize,
     /// Bring back the last window sent away on the active workspace.

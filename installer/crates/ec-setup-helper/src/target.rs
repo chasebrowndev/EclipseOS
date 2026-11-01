@@ -29,10 +29,13 @@ pub enum TargetFile {
     LimineHook,
     Vconsole,
     ZramGenerator,
+    MkinitcpioNvidia,
     InstallLog,
+    SyncDb,
+    SyncDbSig,
 }
 
-pub const ALL: [TargetFile; 13] = [
+pub const ALL: [TargetFile; 16] = [
     TargetFile::Hostname,
     TargetFile::LocaleGen,
     TargetFile::LocaleConf,
@@ -45,7 +48,10 @@ pub const ALL: [TargetFile; 13] = [
     TargetFile::LimineHook,
     TargetFile::Vconsole,
     TargetFile::ZramGenerator,
+    TargetFile::MkinitcpioNvidia,
     TargetFile::InstallLog,
+    TargetFile::SyncDb,
+    TargetFile::SyncDbSig,
 ];
 
 impl TargetFile {
@@ -64,7 +70,10 @@ impl TargetFile {
             TargetFile::LimineHook => "etc/pacman.d/hooks/95-limine-esp.hook",
             TargetFile::Vconsole => "etc/vconsole.conf",
             TargetFile::ZramGenerator => "etc/systemd/zram-generator.conf",
+            TargetFile::MkinitcpioNvidia => "etc/mkinitcpio.conf.d/eclipseos-nvidia.conf",
             TargetFile::InstallLog => "var/log/eclipseos-install/install.log",
+            TargetFile::SyncDb => "var/lib/pacman/sync/eclipseos.db",
+            TargetFile::SyncDbSig => "var/lib/pacman/sync/eclipseos.db.sig",
         }
     }
 
@@ -126,6 +135,17 @@ pub fn write(target: &Path, f: TargetFile, bytes: &[u8]) -> Result<()> {
     }
     let (parent, name) = split(f);
     place(target, parent, name, f.mode(), bytes)
+}
+
+/// Remove `f` if it is there. The parents are walked like a write, so nothing
+/// is removed through a link; a link at the name itself is removed, not followed.
+pub fn remove(target: &Path, f: TargetFile) -> Result<()> {
+    let (parent, name) = split(f);
+    let dir = ensure_dirs(target, parent)?;
+    match fs::remove_file(dir.join(name)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(Error::Io("remove target file")),
+        _ => Ok(()),
+    }
 }
 
 fn place(target: &Path, parent: &Path, name: &std::ffi::OsStr, mode: u32, bytes: &[u8]) -> Result<()> {
@@ -238,10 +258,30 @@ mod tests {
                 .components()
                 .all(|c| matches!(c, std::path::Component::Normal(_))));
             assert!(
-                r.starts_with("etc") || r.starts_with("boot") || r.starts_with("var/log/eclipseos-install")
+                r.starts_with("etc")
+                    || r.starts_with("boot")
+                    || r.starts_with("var/log/eclipseos-install")
+                    || r.starts_with("var/lib/pacman/sync")
             );
             assert!(seen.insert(f.rel()));
         }
+    }
+
+    #[test]
+    fn remove_tolerates_absence_and_never_follows_a_parent_link() {
+        let t = TempDir::new();
+        remove(t.path(), TargetFile::SyncDb).unwrap();
+        write(t.path(), TargetFile::SyncDb, b"db").unwrap();
+        remove(t.path(), TargetFile::SyncDb).unwrap();
+        assert!(!t.path().join(TargetFile::SyncDb.rel()).exists());
+
+        let t = TempDir::new();
+        let elsewhere = TempDir::new();
+        fs::write(elsewhere.path().join("eclipseos.db"), b"keep").unwrap();
+        fs::create_dir_all(t.path().join("var/lib/pacman")).unwrap();
+        symlink(elsewhere.path(), t.path().join("var/lib/pacman/sync")).unwrap();
+        assert!(remove(t.path(), TargetFile::SyncDb).is_err());
+        assert!(elsewhere.path().join("eclipseos.db").exists());
     }
 
     #[test]

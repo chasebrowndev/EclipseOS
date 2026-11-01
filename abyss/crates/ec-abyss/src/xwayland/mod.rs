@@ -10,6 +10,7 @@ pub mod xwm;
 
 use smithay::{
     reexports::wayland_server::Client,
+    utils::{Logical, Rectangle},
     wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState},
     xwayland::{xwm::XwmId, X11Surface, X11Wm, XWayland, XWaylandEvent},
 };
@@ -29,8 +30,139 @@ pub struct XWaylandState {
     /// the human to see, excluded from the managed window set and (later)
     /// from the agent scene (COMP-07 §1).
     pub unmanaged: Vec<X11Surface>,
+    /// A managed window being mapped whose fullscreen state is
+    /// already known: placement must not configure it (the first configure the
+    /// client sees has to be the final rect). Set only across `place_new_window`.
+    pub mapping: Option<smithay::desktop::Window>,
+    /// The size an X11 window asked to be mapped at, logical pixels. Set only
+    /// across `place_new_window`, so a floating X11 window opens at its
+    /// requested size (a dialog is not squashed to half the output).
+    pub requested: Option<smithay::utils::Rectangle<i32, Logical>>,
+    /// Override-redirect windows whose geometry is still the creation-time
+    /// one (no `ConfigureNotify` yet); see [`creation_geometry`].
+    pub unrefreshed: Vec<X11Surface>,
+    /// Managed windows that asked for fullscreen before they
+    /// were mapped. There is no `Window` to act on yet, so the request is
+    /// parked here and applied at map, the way `map_toplevel` replays the xdg
+    /// pending state.
+    pub wants_fullscreen: Vec<X11Surface>,
+    /// The managed-window order (bottom to top) last pushed to the X server by
+    /// [`sync_stacking`], so an unchanged stack costs no X round trip.
+    pub stacking: Vec<u32>,
     /// Client-side scale currently advertised through XSETTINGS.
     pub advertised_scale: Option<i32>,
+    /// The `client_scale` handed to smithay for the XWayland client: X pixels
+    /// per logical pixel. `None` (read as 1.0) in compositor mode. Set once
+    /// when the X server comes up; reload semantics are `restart`, so live
+    /// windows never see it change under them.
+    pub client_scale: Option<f64>,
+}
+
+/// X pixels per logical pixel for the X11 domain; 1.0 unless `scaling "client"`.
+pub fn client_scale(state: &AbyssState) -> f64 {
+    state.xwayland.client_scale.unwrap_or(1.0)
+}
+
+/// A rectangle in X space (physical pixels at `scale`) as abyss logical space.
+///
+/// smithay's `X11Surface` already converts at every boundary it owns
+/// (`configure`, `configure_request`, `configure_notify`, `geometry`, size
+/// hints), so abyss works in logical space throughout. The one place it does
+/// not is a window's geometry at creation, which smithay divides by the
+/// *truncated* scale; [`creation_geometry`] undoes that.
+pub fn from_x11(rect: Rectangle<i32, Logical>, scale: f64) -> Rectangle<i32, Logical> {
+    if scale == 1.0 {
+        return rect;
+    }
+    Rectangle::new(
+        (
+            (rect.loc.x as f64 / scale).round() as i32,
+            (rect.loc.y as f64 / scale).round() as i32,
+        )
+            .into(),
+        (
+            ((rect.size.w as f64 / scale).round() as i32).max(1),
+            ((rect.size.h as f64 / scale).round() as i32).max(1),
+        )
+            .into(),
+    )
+}
+
+/// The inverse of [`from_x11`].
+#[cfg(test)]
+pub fn to_x11(rect: Rectangle<i32, Logical>, scale: f64) -> Rectangle<i32, Logical> {
+    if scale == 1.0 {
+        return rect;
+    }
+    Rectangle::new(
+        (
+            (rect.loc.x as f64 * scale).round() as i32,
+            (rect.loc.y as f64 * scale).round() as i32,
+        )
+            .into(),
+        (
+            ((rect.size.w as f64 * scale).round() as i32).max(1),
+            ((rect.size.h as f64 * scale).round() as i32).max(1),
+        )
+            .into(),
+    )
+}
+
+/// A window's geometry as smithay stored it at creation, before any
+/// `ConfigureNotify` refreshed it: X pixels divided by `scale as i32`
+/// (smithay `xwm/mod.rs:1455`), so only correct when `scale` is integral.
+/// Redo the division with the real scale.
+pub fn creation_geometry(raw: Rectangle<i32, Logical>, scale: f64) -> Rectangle<i32, Logical> {
+    let truncated = (scale as i32).max(1) as f64;
+    if scale == truncated {
+        return raw;
+    }
+    let x = Rectangle::new(
+        (
+            (raw.loc.x as f64 * truncated).round() as i32,
+            (raw.loc.y as f64 * truncated).round() as i32,
+        )
+            .into(),
+        (
+            (raw.size.w as f64 * truncated).round() as i32,
+            (raw.size.h as f64 * truncated).round() as i32,
+        )
+            .into(),
+    );
+    from_x11(x, scale)
+}
+
+/// Mirror the compositor's stacking of managed X11 windows into the X stack
+/// (`_NET_CLIENT_LIST_STACKING`, `XQueryTree`). Without it the two diverge: the
+/// compositor raises a window on focus or relayout, X keeps its old order, and
+/// clients that read the X stack (or XTEST-driven tools) act on the wrong one.
+pub fn sync_stacking(state: &mut AbyssState) {
+    if state.xwayland.wm.is_none() {
+        return;
+    }
+    let order: Vec<X11Surface> = state
+        .space
+        .elements()
+        .filter(|w| !crate::shell::is_unmanaged_x11(state, w))
+        .filter_map(|w| w.x11_surface().cloned())
+        .collect();
+    let ids: Vec<u32> = order.iter().map(|s| s.window_id()).collect();
+    if ids == state.xwayland.stacking {
+        return;
+    }
+    state.xwayland.stacking = ids;
+    // Raise each in turn, bottom first: the last one raised ends on top, so
+    // the X stack ends up exactly the compositor's. (smithay's
+    // `update_stacking_order_*` only moves windows it finds out of order
+    // relative to each other and left this one reversed.)
+    if let Some(wm) = state.xwayland.wm.as_mut() {
+        for surface in &order {
+            if let Err(e) = wm.raise_window(surface) {
+                tracing::debug!(error = %e, "could not sync the X stacking order");
+                break;
+            }
+        }
+    }
 }
 
 /// Spawn the X server and arm the event source (COMP-07 §1).
@@ -118,10 +250,10 @@ fn ready(state: &mut AbyssState, socket: std::os::unix::net::UnixStream, dpy: u3
 
 /// Cursor scale / DPI hints for X11 clients (COMP-07 §4).
 ///
-/// Default is compositor scaling: clients are told the world is 96 dpi at
-/// scale 1 and the compositor upscales the result — blurry but always
-/// correct. `xwayland { scaling "client" }` instead hands out the focused
-/// output's scale and lets the client render natively.
+/// Default is client scaling (ADR 0078): the focused output's scale is handed
+/// out and the client renders natively. `xwayland { scaling "compositor" }`
+/// instead tells clients the world is 96 dpi at scale 1 and the compositor
+/// upscales the result, which is blurry but sizes DPI-unaware apps correctly.
 pub fn apply_scale(state: &mut AbyssState) {
     use smithay::xwayland::xwm::settings::Value;
 
@@ -136,9 +268,28 @@ pub fn apply_scale(state: &mut AbyssState) {
     if state.xwayland.advertised_scale == Some(dpi) {
         return;
     }
+    if state.xwayland.wm.is_none() {
+        return;
+    }
+    if state.config.xwayland.scaling_client && state.xwayland.client_scale.is_none() {
+        // Map X pixels 1:1 to physical pixels: smithay then reads X sizes and
+        // positions as `x / scale` logical, and X buffers as that logical size.
+        if let Some(client) = state.xwayland.client.clone() {
+            use smithay::wayland::compositor::CompositorHandler;
+            state.client_compositor_state(&client).set_client_scale(scale);
+            state.xwayland.client_scale = Some(scale);
+            // Outputs the X server already bound only see the new scale on
+            // the next state change; without this its root stays logical-sized.
+            let outputs: Vec<_> = state.space.outputs().cloned().collect();
+            for output in outputs {
+                output.change_current_state(None, None, None, None);
+            }
+        }
+    }
     let Some(wm) = state.xwayland.wm.as_mut() else {
         return;
     };
+    let cursor = cursor_size(std::env::var("XCURSOR_SIZE").ok().as_deref(), scale);
     let settings = [
         // XSETTINGS carries Xft.dpi multiplied by 1024.
         ("Xft/DPI".to_string(), Value::Integer(dpi * 1024)),
@@ -147,13 +298,61 @@ pub fn apply_scale(state: &mut AbyssState) {
             Value::Integer(scale.round().max(1.0) as i32),
         ),
         ("Gdk/UnscaledDPI".to_string(), Value::Integer(96 * 1024)),
+        ("Gtk/CursorThemeSize".to_string(), Value::Integer(cursor)),
     ];
     if let Err(e) = wm.set_xsettings(settings.into_iter()) {
         tracing::warn!(error = %e, "could not publish XSETTINGS");
         return;
     }
     state.xwayland.advertised_scale = Some(dpi);
-    tracing::debug!(dpi, scale, "xwayland scaling updated");
+    tracing::debug!(dpi, cursor, scale, "xwayland scaling updated");
+    if let Some(dpy) = state.xwayland.display {
+        publish_resource_manager(dpy, dpi, cursor);
+    }
+}
+
+/// X cursor size in pixels: the session's `XCURSOR_SIZE` (24 if unset or
+/// unparsable) times the client scale.
+fn cursor_size(base: Option<&str>, scale: f64) -> i32 {
+    let base = base
+        .and_then(|v| v.trim().parse::<i32>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(24);
+    (f64::from(base) * scale).round().max(1.0) as i32
+}
+
+/// The `RESOURCE_MANAGER` text libXcursor and Chromium/CEF read.
+fn resource_manager(dpi: i32, cursor: i32) -> String {
+    format!("Xft.dpi:\t{dpi}\nXcursor.size:\t{cursor}\n")
+}
+
+/// Write `RESOURCE_MANAGER` on the X root. smithay keeps its X connection
+/// private, so this opens a short-lived one, off the loop thread.
+fn publish_resource_manager(dpy: u32, dpi: i32, cursor: i32) {
+    let text = resource_manager(dpi, cursor);
+    std::thread::spawn(move || {
+        use x11rb::{
+            connection::Connection,
+            protocol::xproto::{AtomEnum, PropMode},
+            wrapper::ConnectionExt,
+        };
+        let run = || -> Result<(), Box<dyn std::error::Error>> {
+            let (conn, screen) = x11rb::connect(Some(&format!(":{dpy}")))?;
+            let root = conn.setup().roots[screen].root;
+            conn.change_property8(
+                PropMode::REPLACE,
+                root,
+                AtomEnum::RESOURCE_MANAGER,
+                AtomEnum::STRING,
+                text.as_bytes(),
+            )?
+            .check()?;
+            Ok(())
+        };
+        if let Err(e) = run() {
+            tracing::warn!(error = %e, "could not set RESOURCE_MANAGER on the X root");
+        }
+    });
 }
 
 impl XWaylandShellHandler for AbyssState {
@@ -191,4 +390,22 @@ fn xwayland_on_path() -> bool {
         return false;
     };
     std::env::split_paths(&path).any(|dir| std::fs::metadata(dir.join("Xwayland")).is_ok_and(|m| m.is_file()))
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    #[test]
+    fn cursor_size_scales_the_session_base() {
+        assert_eq!(cursor_size(None, 1.9), 46);
+        assert_eq!(cursor_size(Some("32"), 2.0), 64);
+        assert_eq!(cursor_size(Some("junk"), 1.0), 24);
+        assert_eq!(cursor_size(Some("0"), 1.0), 24);
+    }
+
+    #[test]
+    fn resource_manager_text() {
+        assert_eq!(resource_manager(182, 46), "Xft.dpi:\t182\nXcursor.size:\t46\n");
+    }
 }
