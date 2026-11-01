@@ -101,7 +101,12 @@ fn widget_keys(id: &str) -> &'static [&'static str] {
             "bar.widgets.volume.scroll",
             "bar.widgets.volume.max-percent",
         ],
-        "clock" => &["bar.clock.hour-12", "bar.clock.date-mdy"],
+        "clock" => &[
+            "bar.clock.hour-12",
+            "bar.clock.date-mdy",
+            "bar.clock.week-start",
+            "bar.clock.week-numbers",
+        ],
         _ => &[],
     }
 }
@@ -143,6 +148,8 @@ fn label(key: &Key) -> std::borrow::Cow<'_, str> {
         "bar.widgets.volume.max-percent" => "Loudest, %",
         "bar.clock.hour-12" => "12-hour time",
         "bar.clock.date-mdy" => "Month / day / year",
+        "bar.clock.week-start" => "Week starts on",
+        "bar.clock.week-numbers" => "Week numbers",
         MOTION_ENABLED => "Animate",
         MOTION_DURATION => "Duration, ms",
         MOTION_CURVE => "Curve",
@@ -195,6 +202,8 @@ pub fn stand_in(rows: &mut Vec<Key>) {
         i("bar.rounding", 20, 0, 64),
         b("bar.clock.hour-12", true),
         b("bar.clock.date-mdy", true),
+        e("bar.clock.week-start", "auto", &["auto", "monday", "sunday"]),
+        b("bar.clock.week-numbers", false),
         e("bar.popup-anchor", "cell", &["cell", "pointer"]),
         b("bar.eye", true),
         l(ORDER, json!(DEFAULT_ORDER)),

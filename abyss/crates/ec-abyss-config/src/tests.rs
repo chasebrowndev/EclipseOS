@@ -476,7 +476,9 @@ fn bar_clock_and_popup_anchor_parse() {
         d.bar.clock,
         BarClock {
             hour_12: true,
-            date_mdy: true
+            date_mdy: true,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(d.bar.popup_anchor, BarPopupAnchor::Cell);
@@ -487,7 +489,9 @@ fn bar_clock_and_popup_anchor_parse() {
         c.bar.clock,
         BarClock {
             hour_12: false,
-            date_mdy: false
+            date_mdy: false,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(c.bar.popup_anchor, BarPopupAnchor::Pointer);

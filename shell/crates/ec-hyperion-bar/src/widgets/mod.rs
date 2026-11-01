@@ -217,7 +217,7 @@ pub enum Action {
 /// delta is dropped; a pixel delta that trails a discrete one is its twin and
 /// dropped too; and a pixel stream with no discrete steps at all — a
 /// touchpad — counts a notch per [`PX_PER_NOTCH`] of travel.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Notches {
     /// When the last discrete step arrived.
     lines_at: Option<std::time::Instant>,

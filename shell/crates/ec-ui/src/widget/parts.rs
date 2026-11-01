@@ -1051,6 +1051,347 @@ pub fn drawer_rule<'a, Message: 'a>() -> Element<'a, Message, Theme> {
     .into()
 }
 
+/// What a calendar day cell is, besides its number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DayCell {
+    /// Belongs to the month on show; the grid's lead-in and tail are dimmed.
+    pub in_month: bool,
+    /// Is today. The grid's one yellow, on the numeral.
+    pub today: bool,
+    /// Is the day whose detail is open: the clearer glass and a crisp rim.
+    pub selected: bool,
+}
+
+/// One day of a month grid: its number, up to three event dots, and a ground
+/// that lifts under the pointer.
+///
+/// A widget because the grid is forty-two of them and each is a *button*
+/// with three independent looks (today, selected, out of month) that must
+/// compose — today's numeral is the drawer's one yellow whether or not it is
+/// also the selected cell. Inline in a view that logic would be copied into
+/// every grid. The cell is a fixed [`drawer::CAL_CELL_W`] by
+/// [`drawer::CAL_CELL_H`] slot with its lozenge inset by
+/// [`drawer::ROW_INSET`], so the sheet arithmetic can read the size. `dots`
+/// are event colours, data from the provider; the row of dots keeps its
+/// height when empty so a number never shifts when an event arrives.
+pub fn cal_day<'a, Message: Clone + 'a>(
+    number: u32,
+    cell: DayCell,
+    dots: &[Color],
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let ink = if cell.today {
+        color::ACCENT_TEXT
+    } else if cell.in_month {
+        color::TEXT
+    } else {
+        color::TEXT_TERTIARY
+    };
+    let numeral = text(number.to_string())
+        .font(if cell.today { font::DATA_MEDIUM } else { font::DATA })
+        .size(size::BODY_SMALL)
+        .color(ink);
+    let fade = if cell.in_month { 1.0 } else { 0.45 };
+    let mut marks = Row::new().spacing(drawer::CAL_DOT_GAP).align_y(Alignment::Center);
+    for c in dots.iter().take(3) {
+        marks = marks.push(quad(
+            Length::Fixed(drawer::CAL_DOT),
+            Length::Fixed(drawer::CAL_DOT),
+            c.scale_alpha(fade),
+            radius::PILL,
+        ));
+    }
+    let face = column![numeral, container(marks).height(Length::Fixed(drawer::CAL_DOT)),]
+        .spacing(drawer::CAL_DOT_GAP)
+        .align_x(Alignment::Center);
+    let face = container(face)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center);
+    container(
+        button(face)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(0)
+            .style(cal_cell_style(cell.selected))
+            .on_press(on_press),
+    )
+    .width(Length::Fixed(drawer::CAL_CELL_W))
+    .height(Length::Fixed(drawer::CAL_CELL_H))
+    .padding(drawer::ROW_INSET)
+    .into()
+}
+
+/// A day cell's ground: bare at rest (forty-two lozenges would be a grid of
+/// boxes, not a month), the row lift under the pointer, and the hero glass
+/// for the selected day. Never the accent: a selection is not a live value.
+fn cal_cell_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |t, status| {
+        if selected {
+            let (fill, rim) = match status {
+                button::Status::Hovered => (color::CELL_FOCUS_HOVER, color::CELL_FOCUS_RIM_HOVER),
+                button::Status::Pressed => (color::CELL_FOCUS_PRESS, color::CELL_FOCUS_RIM_HOVER),
+                _ => (color::CELL_FOCUS, color::CELL_FOCUS_RIM),
+            };
+            glass_button(fill, rim, drawer::RADIUS_ROW)
+        } else {
+            drawer_quiet(t, status)
+        }
+    }
+}
+
+/// The weekday initials over a month grid, with a gutter for the week column
+/// when it is on.
+///
+/// A widget so its columns are the day cells' own width and cannot drift
+/// from them. Mono, tertiary, uppercase: a label of the grid, not a value.
+pub fn cal_weekdays<'a, Message: 'a>(initials: [&str; 7], week_gutter: bool) -> Element<'a, Message, Theme> {
+    let mut r = Row::new().align_y(Alignment::Center);
+    if week_gutter {
+        r = r.push(Space::new().width(Length::Fixed(drawer::CAL_WEEK_W)));
+    }
+    for i in initials {
+        r = r.push(
+            container(
+                text(i.to_string())
+                    .font(font::DATA_MEDIUM)
+                    .size(size::MICRO)
+                    .style(theme::text_tertiary),
+            )
+            .width(Length::Fixed(drawer::CAL_CELL_W))
+            .align_x(Alignment::Center),
+        );
+    }
+    container(r)
+        .height(Length::Fixed(drawer::CAL_WEEKDAY_H))
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// An ISO week number at the start of a grid row, in the week column.
+///
+/// Tertiary mono, not pressable: it names the row and does nothing.
+pub fn cal_week_no<'a, Message: 'a>(week: &str) -> Element<'a, Message, Theme> {
+    container(
+        text(week.to_string())
+            .font(font::DATA)
+            .size(size::MICRO)
+            .style(theme::text_tertiary),
+    )
+    .width(Length::Fixed(drawer::CAL_WEEK_W))
+    .height(Length::Fixed(drawer::CAL_CELL_H))
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// The calendar's month strip: the month as the pane's one big reading, the
+/// year beside it in mono, then an optional Today pill and the two chevrons.
+///
+/// A widget because the strip is a fixed [`drawer::CAL_HEAD_H`] whether or
+/// not the pill shows, and the sheet's height reads that. `today` is `None`
+/// when the view already is on the current month, so the pill is absent and
+/// not a dead button.
+pub fn cal_header<'a, Message: Clone + 'a>(
+    month: &str,
+    year: &str,
+    today: Option<Message>,
+    prev: Message,
+    next: Message,
+) -> Element<'a, Message, Theme> {
+    let nav = |glyph: &str, m: Message| {
+        button(
+            container(
+                text(glyph.to_string())
+                    .font(font::UI_MEDIUM)
+                    .size(size::BODY)
+                    .color(color::TEXT_SECONDARY),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+        )
+        .width(Length::Fixed(drawer::CAL_NAV))
+        .height(Length::Fixed(drawer::CAL_NAV))
+        .padding(0)
+        .style(drawer_quiet)
+        .on_press(m)
+    };
+    let mut r = row![
+        text(month.to_string())
+            .font(font::UI_SEMIBOLD)
+            .size(size::PROMPT)
+            .color(color::TEXT),
+        text(year.to_string())
+            .font(font::DATA)
+            .size(size::MONO)
+            .style(theme::text_tertiary),
+        Space::new().width(Length::Fill),
+    ]
+    .spacing(drawer::MARK_GAP)
+    .align_y(Alignment::Center);
+    if let Some(m) = today {
+        r = r.push(
+            button(
+                text("Today")
+                    .font(font::UI_MEDIUM)
+                    .size(size::BODY_SMALL)
+                    .color(color::TEXT_SECONDARY),
+            )
+            .padding([space::ROW_Y / 2.0 - 1.0, drawer::ROW_X])
+            .style(cal_pill)
+            .on_press(m),
+        );
+    }
+    r = r.push(nav("\u{2039}", prev)).push(nav("\u{203a}", next));
+    container(r)
+        .width(Length::Fill)
+        .height(Length::Fixed(drawer::CAL_HEAD_H))
+        .align_y(Alignment::Center)
+        .padding([0.0, drawer::ROW_INSET])
+        .into()
+}
+
+/// The Today pill: a pill of the row glass, lifting under the pointer.
+fn cal_pill(_t: &Theme, status: button::Status) -> button::Style {
+    let (fill, rim) = match status {
+        button::Status::Hovered => (color::CELL_HOVER, color::CELL_RIM_HOVER),
+        button::Status::Pressed => (color::CELL_PRESS, color::CELL_RIM_HOVER),
+        _ => (color::CELL, color::CELL_RIM),
+    };
+    glass_button(fill, rim, radius::PILL)
+}
+
+/// The vertical hairline between the calendar's two columns.
+pub fn cal_divider<'a, Message: 'a>() -> Element<'a, Message, Theme> {
+    edge_quad(
+        Length::Fixed(space::HAIRLINE),
+        Length::Fill,
+        color::CELL_RIM_HOVER,
+    )
+}
+
+/// A timed event in a day's detail: a colour bar, the start (and end) in
+/// mono, the title, and the place when there is one.
+///
+/// A widget because it is a pressable row of variable height (a location adds
+/// a line) in a scrolling list, which `drawer_choice`'s fixed
+/// [`drawer::ROW_H`] slot cannot be. The colour bar is the calendar's own
+/// colour, data and not accent. `times` is `(start, end)`, already formatted.
+pub fn cal_event_row<'a, Message: Clone + 'a>(
+    colour: Color,
+    times: (&str, &str),
+    title: &str,
+    location: Option<&str>,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let mut lines = Column::new().spacing(drawer::LINE_GAP).push(
+        text(title.to_string())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL)
+            .color(color::TEXT),
+    );
+    if let Some(place) = location {
+        lines = lines.push(
+            text(place.to_string())
+                .font(font::DATA)
+                .size(size::MICRO)
+                .style(theme::text_tertiary),
+        );
+    }
+    let when = column![
+        text(times.0.to_string())
+            .font(font::DATA_MEDIUM)
+            .size(size::MICRO)
+            .color(color::TEXT_SECONDARY),
+        text(times.1.to_string())
+            .font(font::DATA)
+            .size(size::MICRO)
+            .style(theme::text_tertiary),
+    ]
+    .spacing(drawer::LINE_GAP);
+    let face = row![
+        quad(
+            Length::Fixed(drawer::CAL_BAR_W),
+            Length::Fill,
+            colour,
+            radius::PILL
+        ),
+        container(when).width(Length::Fixed(drawer::CAL_TIME_W)),
+        lines,
+    ]
+    .spacing(drawer::MARK_GAP - 3.0)
+    .align_y(Alignment::Center);
+    button(
+        container(face)
+            .width(Length::Fill)
+            .padding([drawer::ROW_X - 2.0, drawer::ROW_X - 2.0]),
+    )
+    .width(Length::Fill)
+    .padding(0)
+    .style(drawer_lift)
+    .on_press(on_press)
+    .into()
+}
+
+/// An all-day (or multi-day) event in a day's detail: a chip with the
+/// calendar's dot and the title. Squarer than a row ([`radius::CHIP`]) so it
+/// reads as a tag on the day, not an entry in the schedule beneath it.
+pub fn cal_event_chip<'a, Message: Clone + 'a>(
+    colour: Color,
+    title: &str,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let face = row![
+        quad(
+            Length::Fixed(drawer::CAL_DOT * 2.0),
+            Length::Fixed(drawer::CAL_DOT * 2.0),
+            colour,
+            radius::PILL
+        ),
+        text(title.to_string())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL)
+            .color(color::TEXT),
+    ]
+    .spacing(drawer::MARK_GAP - 3.0)
+    .align_y(Alignment::Center);
+    button(container(face).padding([drawer::CAL_DOT, drawer::ROW_X - 2.0]))
+        .width(Length::Fill)
+        .padding(0)
+        .style(move |t: &Theme, s| {
+            let mut st = drawer_lift(t, s);
+            st.border.radius = radius::CHIP.into();
+            st
+        })
+        .on_press(on_press)
+        .into()
+}
+
+/// A calendar's quiet statement in the space a list would fill — "Nothing
+/// scheduled", "No calendar connected". Mono, tertiary, wrapping, centred in
+/// what is left: a state, not an item, and nothing to press.
+///
+/// A widget beside [`drawer_note`] because that is one fixed row with a mark
+/// gutter and cannot wrap into a half-width column.
+pub fn cal_note<'a, Message: 'a>(note: &str) -> Element<'a, Message, Theme> {
+    container(
+        text(note.to_string())
+            .font(font::DATA)
+            .size(size::MICRO)
+            .style(theme::text_tertiary)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_x(Alignment::Center)
+    .align_y(Alignment::Center)
+    .padding(drawer::ROW_X)
+    .into()
+}
+
 fn glass_button(fill: Color, rim: Color, corner: f32) -> button::Style {
     button::Style {
         background: Some(iced::Background::Color(fill)),

@@ -38,10 +38,13 @@ defaults.
   identity — tint strength, edge highlight intensity, maybe a settings-exposed
   frost amount — rather than reusing the same translucent constant every
   `surface` uses.
-- **Clock → calendar drawer.** Clicking the time/date opens a full calendar
-  panel, the way Windows does. Not built: `shell/crates/ec-hyperion-bar/src/view.rs` carries
-  the `TODO`. The clock formats shipped as `bar.clock.hour-12` and
-  `bar.clock.date-mdy` (2026-09-23).
+- **Clock → calendar drawer — built (ADR 0079).** Clicking the clock unrolls a
+  month grid with a day detail beside it. Events come from whatever owns
+  `org.eclipse.Calendar1` on the session bus (`ec-services::calendar`). Until a
+  provider exists the drawer shows dates only. What is left:
+  - **Ethereal**, the calendar add-on that will own the interface and sync
+    external calendars. Creating and editing events belong there, not in the
+    drawer.
 - **Sustained hover shows the full detail.** Resting the pointer on a chip pops
   the detail the ladder dropped — full title and path, whatever the chip itself
   had to shed. It goes away as soon as the pointer moves again. This is the
@@ -227,8 +230,6 @@ trusted-UI prompt grab (`trusted_ui::holds_seat`, #104).
   0029/0030. `CreatePointerCursorSession` is answered with a session that is
   stopped from the start (`protocols/standard/image_copy_capture.rs:332`).
   Behind the same fail-closed gate and the `capture.cursor` policy. *M8.*
-- **Taskbar clock: calendar drawer.** See Taskbar above; the `TODO` in
-  `shell/crates/ec-hyperion-bar/src/widgets/clock.rs:35`. *DE userland.*
 - **M9f benchmark subjects.** COMP-14 §4.1. `check()`, audit encode and the
   semantic tree now exist (M16, M12, M22), so three of the five subjects can
   be pointed at; the §5 baseline/regression machinery is still owed. *M9f.*

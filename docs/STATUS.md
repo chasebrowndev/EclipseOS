@@ -368,10 +368,9 @@ macros anywhere in the workspace.
 18. **Trusted-UI prompt grab** (`shell/focus.rs:188`, `TODO(step 6: trusted
     UI)`) — `prompt_grab_active` is always false, so nothing yet holds focus
     for a compositor-drawn prompt. *Unblocked by:* milestone 15.
-19. **Clock calendar drawer** (`hyperion/src/view.rs:1761`, `TODO`) — the
-    taskbar clock opens nothing on click; clock format is compile-time
-    (`ec_ui::tokens::clock::{HOUR_12, DATE_MDY}`). See
-    `PROPOSEDFEATURES.md`.
+19. ~~**Clock calendar drawer**~~ — built (ADR 0079): the clock opens a month
+    calendar drawer whose events come from an `org.eclipse.Calendar1`
+    provider. The planned provider is the Ethereal add-on.
 
 ---
 
