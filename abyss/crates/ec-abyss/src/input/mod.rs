@@ -1054,6 +1054,11 @@ impl AbyssState {
             }
             return;
         }
+        // A press on a trusted indicator is the compositor's, never a
+        // client's; the left button opens the emergency panel (COMP-10 §3.3).
+        if crate::trusted_ui::indicator::button(self, button, pressed) {
+            return;
+        }
         // A protected surface takes physical buttons only, and a press inside
         // a commit slot is the slot's, never the client's (COMP-19 §3, §6).
         match crate::protocols::protected::gate::button(self, button, pressed) {

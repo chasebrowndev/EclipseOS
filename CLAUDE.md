@@ -173,7 +173,7 @@ abyss/crates/ec-abyss/src/shell/       COMP-05  layouts, workspaces, rules, focu
 abyss/crates/ec-abyss/src/protocols/standard/  COMP-06
 abyss/crates/ec-abyss/src/protocols/agent/     COMP-08  ec-agent.sock, eclipse_agent_v1 (M11: admission, scene queries)
 abyss/crates/ec-abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1    (not yet)
-abyss/crates/ec-abyss/src/trusted_ui/  COMP-10  prompts (modal primitive; §3.10 erase, §3.11 command approval); indicator, emergency panel not yet
+abyss/crates/ec-abyss/src/trusted_ui/  COMP-10  prompts (modal primitive; §3.10 erase, §3.11 command approval), emergency panel, compat-lock indicator
 abyss/crates/ec-abyss/src/policy/      COMP-11  grant admission, agent scene filter; enforcement table, check() not yet
 abyss/crates/ec-abyss/src/audit/       COMP-12  provenance emission to policyd (M12: scene requests, focus, lifecycle)
 abyss/crates/ec-abyss/src/ipc/         COMP-13  human JSON-RPC socket, methods, config RPC (gate.rs is a re-export shim)

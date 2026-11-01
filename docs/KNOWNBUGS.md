@@ -254,6 +254,16 @@ indicator (TCB), queueing of touch and tablet input, and the compat fallback tha
 seat for a `seat-compat lock` app (COMP-04 §8). Queued input is discarded, not
 delivered, if the human's focus has left the window by release.
 
+## IND-01: a touch or tablet contact on a trusted indicator reaches the client under it
+
+`trusted_ui/indicator.rs` takes pointer buttons pressed on the capture marker
+or a compat-lock pill (COMP-10 §3.3, §4): the press and its release reach no
+client, and the left button opens the emergency panel. Touch-down and tablet
+tip/button events are not checked against the indicator, so a finger or pen
+on it goes to the window beneath. Fix: test `indicator::at` in the touch-down
+and tablet tip/button paths in `input/mod.rs`, the same way, and open the
+panel on a tap.
+
 ## WAIT-01: wait_for has no semantic or terminal predicates
 
 `node`, `text_contains`, `node_gone` (COMP-09) and `command_finished` are
