@@ -138,13 +138,16 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
     let colons = String::from_utf8(env.runner.capture(&gpg)?).map_err(|_| Error::Refused("packaging key"))?;
     let keyid = stages::parse_fpr(&colons).ok_or(Error::Refused("packaging key"))?;
 
-    // Nothing may already be mounted at the target or from the chosen disk.
+    // Nothing may already be mounted from the chosen disk, except what an
+    // earlier attempt left at or under the target: those are ours, and are
+    // unmounted after the erase is confirmed (a retry must not need a manual
+    // `umount`).
     let mounts = disks::read_mounts(p)?;
     let target = p.target.to_string_lossy();
-    if mounts.iter().any(|m| m.point == target) {
-        return Err(Error::Refused("target already mounted"));
-    }
-    if disks::in_use(&mounts, &v.disk) {
+    let under = |pt: &str| pt == target || pt.strip_prefix(&*target).is_some_and(|r| r.starts_with('/'));
+    let stale_mounts = mounts.iter().any(|m| under(&m.point));
+    let others: Vec<_> = mounts.into_iter().filter(|m| !under(&m.point)).collect();
+    if disks::in_use(&others, &v.disk) {
         return Err(Error::Refused("disk has mounted partitions"));
     }
     if let Some(why) = disks::busy_reason(p, &v.disk) {
@@ -196,6 +199,7 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
         keyid,
         ucode: machine.ucode(),
         nvidia: machine.nvidia_open(),
+        stale_mounts,
         warnings,
     })
 }
@@ -272,14 +276,21 @@ impl Run<'_, '_> {
         )?;
 
         let layout = self.stage(Stage::Partition, 20, "partitioning the disk", |s| {
+            if prep.stale_mounts {
+                // A previous attempt left the target mounted. Set first so a
+                // half-done unmount is still unwound.
+                s.mounted = true;
+                stages::unmount(env)?;
+                s.mounted = false;
+            }
             let l = stages::partition(env, &v.disk)?;
             // Set before the mount so a half-done mount is still unwound.
             s.mounted = true;
             stages::mount(env, &l)?;
             Ok(l)
         })?;
-        self.stage(Stage::Pacstrap, 30, "installing packages", |_| {
-            stages::pacstrap(env, &prep)?;
+        self.stage(Stage::Pacstrap, 30, "installing packages", |s| {
+            stages::pacstrap(env, &prep, &mut |m| s.rep.line(Stage::Pacstrap, 30, m, false))?;
             if prep.nvidia {
                 stages::verify_nvidia(env)?;
             }
@@ -652,28 +663,16 @@ mod tests {
     }
 
     #[test]
-    fn a_mounted_target_or_disk_is_a_preflight_refusal() {
-        for extra in ["/mnt", "nvme"] {
-            let (_t, p) = live();
-            let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
-            if extra == "/mnt" {
-                mi.push_str(&format!(
-                    "40 25 8:1 / {} rw - ext4 /dev/x rw\n",
-                    p.target.display()
-                ));
-            } else {
-                mi.push_str("40 25 259:1 / /somewhere rw - ext4 /dev/nvme0n1 rw\n");
-            }
-            fs::write(&p.mountinfo, mi).unwrap();
-            let r = machine_runner(&p);
-            let mut out = Vec::new();
-            assert!(
-                !apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out),
-                "{extra}"
-            );
-            assert_eq!(progress(&out).last().unwrap().stage, Stage::Preflight, "{extra}");
-            assert!(r.tools().iter().all(|t| !t.touches_disk()), "{extra}");
-        }
+    fn a_mount_of_the_disk_outside_the_target_is_a_preflight_refusal() {
+        let (_t, p) = live();
+        let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
+        mi.push_str("40 25 259:1 / /somewhere rw - ext4 /dev/nvme0n1 rw\n");
+        fs::write(&p.mountinfo, mi).unwrap();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert_eq!(progress(&out).last().unwrap().stage, Stage::Preflight);
+        assert!(r.tools().iter().all(|t| !t.touches_disk()));
     }
 
     #[test]
@@ -1061,5 +1060,153 @@ mod tests {
         assert!(last.failed && last.msg == "could not unmount the target");
         let log = fs::read_to_string(log_path).unwrap();
         assert!(log.contains("still mounted"));
+    }
+
+    /// A pacstrap that fails `fails` times with `stderr`, then succeeds.
+    fn flaky_pacstrap(p: &Paths, fails: u32, stderr: &'static str) -> FakeRunner {
+        let inner = machine_runner(p);
+        let n = std::cell::Cell::new(0u32);
+        FakeRunner::new(move |c| {
+            if c.tool == Tool::Pacstrap {
+                n.set(n.get() + 1);
+                if n.get() <= fails {
+                    return Err(Error::Command {
+                        tool: "pacstrap",
+                        code: Some(1),
+                    });
+                }
+            }
+            inner.capture(c)
+        })
+        .with_stderr(move |_| stderr.as_bytes().to_vec())
+    }
+
+    const STALLED: &str = "error: failed retrieving file 'linux-7.2.11.arch1-1-x86_64.pkg.tar.zst.sig' \
+        from fastly.mirror.pkgbuild.com : Operation too slow. Less than 1 bytes/sec transferred the last 10 seconds\n\
+        error: failed to commit transaction (unexpected error)\n";
+
+    fn count(r: &FakeRunner, t: Tool) -> usize {
+        r.tools().iter().filter(|x| **x == t).count()
+    }
+
+    #[test]
+    fn a_stalled_download_is_retried_on_a_rotated_mirror_and_then_succeeds() {
+        let (_t, p) = live();
+        fs::create_dir_all(p.mirrorlist.parent().unwrap()).unwrap();
+        fs::write(
+            &p.mirrorlist,
+            "# mirrors\nServer = https://a/$repo\nServer = https://b/$repo\nServer = https://c/$repo\n",
+        )
+        .unwrap();
+        let ml = p.mirrorlist.clone();
+        let conf = p.install_pacman_conf.clone();
+        let r = flaky_pacstrap(&p, 2, STALLED);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert_eq!(count(&r, Tool::Pacstrap), 3);
+        // Two rotations: a, b, c -> b, c, a -> c, a, b.
+        assert_eq!(
+            fs::read_to_string(ml).unwrap(),
+            "# mirrors\nServer = https://c/$repo\nServer = https://a/$repo\nServer = https://b/$repo\n"
+        );
+        // Same conf (so the same cache) for every attempt, with the download options.
+        let c = fs::read_to_string(conf).unwrap();
+        assert!(c.contains("DisableDownloadTimeout") && c.contains("ParallelDownloads = 3"));
+        let lines = progress(&out);
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|l| l.msg.starts_with("downloads failed"))
+                .count(),
+            2
+        );
+        assert!(lines.iter().all(|l| !l.failed));
+        assert_eq!(lines.last().unwrap().stage, Stage::Done);
+    }
+
+    #[test]
+    fn download_retries_are_bounded_and_the_failure_says_what_to_do() {
+        let (_t, p) = live();
+        let r = flaky_pacstrap(&p, u32::MAX, STALLED);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert_eq!(count(&r, Tool::Pacstrap), 3);
+        let last = progress(&out).last().cloned().unwrap();
+        assert_eq!((last.stage, last.failed), (Stage::Pacstrap, true));
+        assert!(
+            last.msg.starts_with("Downloads stalled on every mirror"),
+            "{}",
+            last.msg
+        );
+        assert!(last.msg.ends_with("Try again."));
+        // The disk is released for the next try.
+        assert_eq!(r.tools().last(), Some(&Tool::Umount));
+    }
+
+    #[test]
+    fn signature_disk_and_unknown_failures_are_not_retried() {
+        let cases: [(&'static str, &str); 3] = [
+            (
+                "error: linux: signature from \"X\" is unknown trust\n:: File is corrupted (invalid or corrupted package (PGP signature)).\n",
+                "Package signature check failed",
+            ),
+            (
+                "error: failed to commit transaction (No space left on device)\n",
+                "The target disk ran out of space",
+            ),
+            ("error: something unforeseen\n", "Installing packages failed"),
+        ];
+        for (stderr, want) in cases {
+            let (_t, p) = live();
+            let r = flaky_pacstrap(&p, u32::MAX, stderr);
+            let mut out = Vec::new();
+            assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+            assert_eq!(count(&r, Tool::Pacstrap), 1, "{want}");
+            let last = progress(&out).last().cloned().unwrap();
+            assert!(last.failed && last.msg.starts_with(want), "{}", last.msg);
+        }
+    }
+
+    #[test]
+    fn a_retry_after_a_failed_attempt_reclaims_leftover_mounts() {
+        let (_t, p) = live();
+        let t = p.target.display().to_string();
+        let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
+        mi.push_str(&format!(
+            "40 25 259:1 / {t} rw - ext4 /dev/nvme0n1p2 rw\n41 40 259:2 / {t}/boot rw - vfat /dev/nvme0n1p1 rw\n"
+        ));
+        fs::write(&p.mountinfo, mi).unwrap();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        let tools = r.tools();
+        let first_um = tools.iter().position(|t| *t == Tool::Umount).unwrap();
+        let first_sg = tools.iter().position(|t| *t == Tool::Sgdisk).unwrap();
+        assert!(first_um < first_sg, "unmounted before repartitioning");
+        // Nothing disk-changing ran before the erase was confirmed.
+        assert_eq!(progress(&out).last().unwrap().stage, Stage::Done);
+
+        // Declined: the leftover mounts are not touched without a yes.
+        let (_t, p) = live();
+        let t = p.target.display().to_string();
+        let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
+        mi.push_str(&format!("40 25 259:1 / {t} rw - ext4 /dev/nvme0n1p2 rw\n"));
+        fs::write(&p.mountinfo, mi).unwrap();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &DenyConfirm, None), &req(), &mut out));
+        assert!(!r.issued(Tool::Umount));
+    }
+
+    #[test]
+    fn mounts_of_the_disk_elsewhere_still_refuse() {
+        let (_t, p) = live();
+        let mut mi = fs::read_to_string(&p.mountinfo).unwrap();
+        mi.push_str("40 25 259:1 / /media/data rw - ext4 /dev/nvme0n1 rw\n");
+        fs::write(&p.mountinfo, mi).unwrap();
+        let r = machine_runner(&p);
+        let mut out = Vec::new();
+        assert!(!apply(&env(p, &r, &AllowConfirm, None), &req(), &mut out));
+        assert!(!r.issued(Tool::Sgdisk) && !r.issued(Tool::Umount));
     }
 }

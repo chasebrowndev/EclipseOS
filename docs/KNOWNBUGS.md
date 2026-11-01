@@ -52,8 +52,10 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
   (2026-10-06). Nobody has walked a btrfs install through it yet; only ext4
   has been. This entry leaves when one has.
 - **Remote access is opt-in at install time.** Both script installers
-  (`install-eclipseos.sh`, `eclipseos-postinstall.sh`) ask whether to enable sshd, taking one public key and refusing password logins
-  (2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
+  (`install-eclipseos.sh`, `eclipseos-postinstall.sh`) ask whether to enable sshd. They run on a tty, where nothing pastes, so they
+  take no key: password login is allowed from private, link-local and tailnet
+  (CGNAT) addresses only, keys from anywhere, never root (2026-10-20; was one
+  pasted key, 2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
   made the Framework install debuggable, but sshd on the LAN covers the same
   need without a third-party account. The graphical installer (`ec-setup`)
   deliberately has no remote-access step: whoever installs is at the machine
