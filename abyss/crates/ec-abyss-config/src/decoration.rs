@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `decoration` block: rounding, opacity, blur, shadow and glow (COMP-02 §9).
+//! `decoration` block: rounding, opacity, blur, shadow, glow and surface (COMP-02 §9).
 
 /// `decoration { ... }` (COMP-13 §1.1, COMP-02 §9). Every effect here is off by
 /// default: the defaults below are the "no effect" values, so a config without a
@@ -24,6 +24,7 @@ pub struct Decoration {
     pub blur: Blur,
     pub shadow: Shadow,
     pub glow: Glow,
+    pub surface: Surface,
 }
 
 impl Default for Decoration {
@@ -36,6 +37,7 @@ impl Default for Decoration {
             blur: Blur::default(),
             shadow: Shadow::default(),
             glow: Glow::default(),
+            surface: Surface::default(),
         }
     }
 }
@@ -156,6 +158,29 @@ pub struct FrostBlur {
 impl Default for FrostBlur {
     fn default() -> Self {
         Self { tint: FROST_TINT }
+    }
+}
+
+/// `surface { tint 0.70; card-fill 0.035; inset-fill 0.03 }`. The white and
+/// tint layers the client-drawn glass sits on (COMP-02 §9). Values are
+/// sRGB-intent; clients convert.
+#[derive(Debug, Clone)]
+pub struct Surface {
+    /// Window tint opacity over the glass, 0.0..=1.0.
+    pub tint: f32,
+    /// Alpha of a hairline card's white fill, 0.0..=0.30.
+    pub card_fill: f32,
+    /// Alpha of an inset group's white fill, 0.0..=0.30.
+    pub inset_fill: f32,
+}
+
+impl Default for Surface {
+    fn default() -> Self {
+        Self {
+            tint: 0.70,
+            card_fill: 0.035,
+            inset_fill: 0.03,
+        }
     }
 }
 

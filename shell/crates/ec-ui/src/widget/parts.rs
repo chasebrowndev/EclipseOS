@@ -29,6 +29,22 @@ pub fn panel<'a, Message: 'a>(
         .width(Length::Fill)
 }
 
+/// [`panel`] with the Settings card style picked by `hairline`. `hairline` is
+/// set when the compositor's blur is off or `blur` (not `glass`/`frost`): the
+/// card is then only a faint fill and a hairline, with no glass to lift it.
+/// A widget rather than a branch in each pane, so every Settings card switches
+/// together off one value.
+pub fn panel_at<'a, Message: 'a>(
+    radius: f32,
+    hairline: bool,
+    content: impl Into<Element<'a, Message, Theme>>,
+) -> container::Container<'a, Message, Theme> {
+    container(content)
+        .padding(space::CARD)
+        .style(theme::card(radius, hairline))
+        .width(Length::Fill)
+}
+
 /// One level of inset inside a panel — and the only level. There is no
 /// `inset(inset(..))` guard in code, so this is the honour system the style
 /// spec asks for.
@@ -928,8 +944,7 @@ pub fn dimmed_at<'a, Message: 'a>(
     dim: bool,
     blur: bool,
 ) -> Element<'a, Message, Theme> {
-    let veil: &'static [iced::Color] = &color::VEIL;
-    crate::widget::Veil::new(content, (dim && !blur).then_some(veil), radius::INSET).into()
+    crate::widget::Veil::new(content, (dim && !blur).then(theme::veil), radius::INSET).into()
 }
 
 /// A caption over a run of rows inside one panel — "Frost" above the rows
@@ -1623,10 +1638,10 @@ pub fn sidebar_at<'a, Message: 'a>(
     .width(width)
     .height(Length::Fill)
     .padding([space::PANE_Y, pad_x])
-    .style(theme::sidebar(blur));
+    .style(theme::window_pane(blur));
     // The one line between the rail and the content: both are the same
-    // glass a step apart in density, so the edge is a hairline, not a slab
-    // meeting a slab.
+    // window material ([`theme::window_pane`]), so the edge is a hairline,
+    // not a slab meeting a slab.
     row![rail, rule::vertical(space::HAIRLINE).style(theme::hairline)]
         .height(Length::Fill)
         .into()

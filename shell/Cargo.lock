@@ -964,6 +964,7 @@ name = "ec-console"
 version = "0.1.0"
 dependencies = [
  "ec-console-client",
+ "ec-ipc",
  "ec-ui",
  "iced",
  "libc",

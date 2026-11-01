@@ -32,7 +32,7 @@ use ec_ui::motion::{Animated, Curve, Motion};
 use ec_ui::theme::{self, CellTone};
 use ec_ui::tokens::{canvas, color, font, motion as tmotion, radius, size, space};
 use ec_ui::widget::{
-    badge, big_value, hairline, micro_label, motion_stage, panel, pill, value as mono, StageFrame,
+    badge, big_value, hairline, micro_label, motion_stage, panel_at, pill, value as mono, StageFrame,
 };
 
 use crate::app::{App, Message};
@@ -751,8 +751,9 @@ fn hero<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
                 )),
         );
     }
-    panel(
+    panel_at(
         app.glass_radius,
+        app.hairline_cards,
         column![micro_label("preset"), strip].spacing(space::ROW_Y),
     )
     .into()
@@ -822,7 +823,7 @@ fn events<'a>(app: &'a App, m: &Animations) -> Element<'a, Message, Theme> {
             .padding([space::ROW_Y, space::CARD]),
         );
     }
-    panel(app.glass_radius, col).into()
+    panel_at(app.glass_radius, app.hairline_cards, col).into()
 }
 
 /// One event: its loop, its name and what it runs as, then its style,

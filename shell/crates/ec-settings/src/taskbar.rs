@@ -30,8 +30,8 @@ use ec_ui::tokens::{bar, canvas, color, font, radius, size, space};
 use ec_ui::widget::{
     arg_chip, art_thumb, badge, bar_cell_frame, bar_sheet, battery_gauge, big_value, chip, config_error,
     drag_bar, drag_ghost, draggable, drop_well, drop_zone, edge_note, edge_quad, elide, glide_track,
-    hairline, inset, key_hints, list_row, mark, micro_label, mini_meter, outline, panel, pill, pin, placed,
-    ring, track_label, viz_bars, widget_shell, Grip, NumericSlider, Toggle, Well,
+    hairline, inset, key_hints, list_row, mark, micro_label, mini_meter, outline, panel_at, pill, pin,
+    placed, ring, track_label, viz_bars, widget_shell, Grip, NumericSlider, Toggle, Well,
 };
 
 use crate::app::{App, Message};
@@ -1991,7 +1991,7 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
         picker(app),
     ]
     .spacing(space::ROW_Y);
-    panel(app.glass_radius, col).into()
+    panel_at(app.glass_radius, app.hairline_cards, col).into()
 }
 
 fn padded<'a>(e: impl Into<Element<'a, Message, Theme>>) -> Element<'a, Message, Theme> {
@@ -2530,7 +2530,7 @@ fn keys_panel<'a>(app: &'a App, paths: Vec<&str>) -> Element<'a, Message, Theme>
             c = c.push(r);
         }
     }
-    panel(app.glass_radius, c.width(Length::Fill)).into()
+    panel_at(app.glass_radius, app.hairline_cards, c.width(Length::Fill)).into()
 }
 
 /// How the bar looks — and, under a hairline, any key the compositor puts on
@@ -2556,7 +2556,7 @@ fn appearance(app: &App) -> Element<'_, Message, Theme> {
             }
         }
     }
-    panel(app.glass_radius, body.width(Length::Fill)).into()
+    panel_at(app.glass_radius, app.hairline_cards, body.width(Length::Fill)).into()
 }
 
 #[cfg(test)]

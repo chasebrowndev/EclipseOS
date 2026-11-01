@@ -164,6 +164,9 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `decoration.blur.glass.dispersion` | float 0..1 | `0` | live | `glass`: colour fringing in the bevel; 0 (the default) is none. |
 | `decoration.blur.glass.rim` | float 0..1 | `0.5` | live | `glass`: strength of the neutral hairline rim, brightest along the top-left edges with a weaker lobe at the bottom-right. |
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
+| `decoration.surface.tint` | float 0..1 | `0.7` | live | Window tint opacity over the glass. sRGB-intent; clients convert. |
+| `decoration.surface.card-fill` | float 0..0.3 | `0.035` | live | Alpha of a hairline card's white fill. sRGB-intent; clients convert. |
+| `decoration.surface.inset-fill` | float 0..0.3 | `0.03` | live | Alpha of an inset group's white fill. sRGB-intent; clients convert. |
 | `decoration.shadow.enabled` | bool | `#true` | live | Drop shadow behind windows. |
 | `decoration.shadow.range` | int 0..128 | `16` | live | Shadow falloff distance, logical px. |
 | `decoration.glow.enabled` | bool | `#false` | live | Glow around windows in their border colour. |
