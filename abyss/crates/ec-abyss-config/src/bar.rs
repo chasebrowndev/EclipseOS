@@ -317,6 +317,9 @@ pub struct BarWidgets {
     pub order: Vec<String>,
     /// Widgets that never compress.
     pub important: Vec<String>,
+    /// Corner radius in logical px for each widget's glass cell. Separate
+    /// from [`Bar::rounding`], which rounds the bar's own sheet.
+    pub rounding: u32,
     pub now_playing: NowPlayingWidget,
     pub system_usage: SystemUsageWidget,
     pub volume: VolumeWidget,
@@ -328,6 +331,7 @@ impl Default for BarWidgets {
         Self {
             order: own(schema::BAR_WIDGET_DEFAULT_ORDER),
             important: own(schema::BAR_WIDGET_DEFAULT_IMPORTANT),
+            rounding: 17,
             now_playing: NowPlayingWidget::default(),
             system_usage: SystemUsageWidget::default(),
             volume: VolumeWidget::default(),

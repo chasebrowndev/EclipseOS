@@ -714,8 +714,16 @@ fn bar_widgets_parse() {
     assert_eq!(d.widgets.order, schema::BAR_WIDGET_DEFAULT_ORDER);
     assert_eq!(d.widgets.important, ["clock", "battery"]);
     assert_eq!(d.motion.curve, "spring");
+    assert_eq!(d.widgets.rounding, 17);
+    assert_eq!(
+        widgets_cfg("bar { widgets { rounding 40; } }")
+            .bar
+            .widgets
+            .rounding,
+        17
+    );
     let cfg = widgets_cfg(
-            "bar {\n    widgets {\n        order \"clock\" \"custom:cpu\" \"tray\"\n        important \"custom:cpu\"\n        \
+            "bar {\n    widgets {\n        order \"clock\" \"custom:cpu\" \"tray\"\n        important \"custom:cpu\"\n        rounding 6\n        \
              now-playing { art #false; visualizer; remote-art #false; }\n        system-usage { interval-ms \"2s\"; gpu #false; disk-path \"/home\"; }\n        \
              volume { step 10; scroll #false; max-percent 150; }\n    }\n    motion { enabled #false; duration-ms 300; curve \"ease-out\"; }\n    \
              widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; }\n}\n",
@@ -724,6 +732,7 @@ fn bar_widgets_parse() {
     let w = &cfg.bar.widgets;
     assert_eq!(w.order, ["clock", "custom:cpu", "tray"]);
     assert_eq!(w.important, ["custom:cpu"]);
+    assert_eq!(w.rounding, 6);
     assert!(!w.now_playing.art && w.now_playing.visualizer && !w.now_playing.remote_art);
     assert!(Config::default().bar.widgets.now_playing.remote_art);
     assert_eq!(w.system_usage.interval_ms, 2000);

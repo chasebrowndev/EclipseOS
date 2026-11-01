@@ -751,6 +751,16 @@ pub const TABLE: &[Key] = &[
        as `bar.widgets.order`.",
     ),
     k(
+        "bar.widgets.rounding",
+        int(0, 17),
+        Int(17),
+        Abyss,
+        Live,
+        "Corner radius in logical px for each taskbar widget's glass cell. \
+       17 is a full capsule; 0 is square. Window chips and the bar's own \
+       sheet (`bar.rounding`) are unaffected.",
+    ),
+    k(
         "bar.widgets.now-playing.art",
         Ty::Bool,
         Bool(true),
@@ -2614,6 +2624,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.widgets.volume.step" => V::Int(c.bar.widgets.volume.step as i64),
         "bar.widgets.volume.scroll" => V::Bool(c.bar.widgets.volume.scroll),
         "bar.widgets.volume.max-percent" => V::Int(c.bar.widgets.volume.max_percent as i64),
+        "bar.widgets.rounding" => V::Int(c.bar.widgets.rounding as i64),
         "bar.motion.enabled" => V::Bool(c.bar.motion.enabled),
         "bar.motion.duration-ms" => V::Int(c.bar.motion.duration_ms as i64),
         "bar.motion.curve" => V::Str(c.bar.motion.curve.clone()),

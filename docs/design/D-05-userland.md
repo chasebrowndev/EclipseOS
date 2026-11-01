@@ -145,6 +145,7 @@ component keeps a config file of its own.
 | `bar.pinned-apps` | hyperion (read); hyperion chip menu and ec-settings Taskbar pane (read/write) | live |
 | `bar.tray.pinned`, `bar.tray.hidden` | hyperion (read); ec-settings Taskbar pane (read/write) | live |
 | `bar.rounding` | hyperion, re-read on `config` | live |
+| `bar.widgets.rounding` | hyperion, re-read on `config`; ec-settings Taskbar pane (read/write) | live |
 | `decoration.rounding` | hyperion and ec-settings, re-read on `config` | live |
 | `decoration.rounding` | toasts, center, launcher, policy viewer, once at startup | next start |
 | `misc.terminal-command` | ec-launcher, at startup | next launch |

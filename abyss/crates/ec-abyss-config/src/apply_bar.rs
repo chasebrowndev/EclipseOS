@@ -210,6 +210,10 @@ impl Config {
                     seen_important = true;
                     self.bar.widgets.important = self.widget_ids(n);
                 }
+                "rounding" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) => self.bar.widgets.rounding = v.clamp(0, 17) as u32,
+                    None => self.reject(n, "rounding expects an integer"),
+                },
                 "now-playing" => self.apply_bar_widget_now_playing(n),
                 "system-usage" => self.apply_bar_widget_system_usage(n),
                 "volume" => self.apply_bar_widget_volume(n),
