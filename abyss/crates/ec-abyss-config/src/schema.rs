@@ -18,7 +18,9 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{AnnotationColors, BarPopupAnchor, BarPosition, Config, FloatingPlacement, LayoutKind};
+use super::{
+    AnnotationColors, BarPopupAnchor, BarPosition, BarWeekStart, Config, FloatingPlacement, LayoutKind,
+};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -688,13 +690,32 @@ pub const TABLE: &[Key] = &[
        (2026-09-23).",
     ),
     k(
+        "bar.clock.week-start",
+        Ty::Enum(&["auto", "monday", "sunday"]),
+        Str("auto"),
+        Abyss,
+        Live,
+        "First weekday of the calendar that opens from the taskbar clock; \
+       auto follows the locale.",
+    ),
+    k(
+        "bar.clock.week-numbers",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Show ISO week numbers beside the calendar's weeks.",
+    ),
+    k(
         "bar.popup-anchor",
         Ty::Enum(&["cell", "pointer"]),
         Str("cell"),
         Abyss,
         Live,
-        "Where taskbar popups open: under the cell that was clicked, or at \
-       the pointer.",
+        "Where taskbar popups (tray menus, the tray overflow) open: under the \
+       cell that was clicked, or at the pointer. The wifi and bluetooth \
+       drawers are not popups: they unroll from the bar under their own \
+       cell, like the start menu.",
     ),
     k(
         "bar.eye",
@@ -953,6 +974,30 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "`frost`: colour mixed over the blurred backdrop; its alpha is how much.",
+    ),
+    k(
+        "decoration.surface.tint",
+        PCT,
+        Float(0.70),
+        Abyss,
+        Live,
+        "Window tint opacity over the glass. sRGB-intent; clients convert.",
+    ),
+    k(
+        "decoration.surface.card-fill",
+        Ty::Float { min: 0.0, max: 0.30 },
+        Float(0.035),
+        Abyss,
+        Live,
+        "Alpha of a hairline card's white fill. sRGB-intent; clients convert.",
+    ),
+    k(
+        "decoration.surface.inset-fill",
+        Ty::Float { min: 0.0, max: 0.30 },
+        Float(0.03),
+        Abyss,
+        Live,
+        "Alpha of an inset group's white fill. sRGB-intent; clients convert.",
     ),
     k(
         "decoration.shadow.enabled",
@@ -2547,6 +2592,15 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.rounding" => V::Int(c.bar.rounding as i64),
         "bar.clock.hour-12" => V::Bool(c.bar.clock.hour_12),
         "bar.clock.date-mdy" => V::Bool(c.bar.clock.date_mdy),
+        "bar.clock.week-start" => V::Str(
+            match c.bar.clock.week_start {
+                BarWeekStart::Auto => "auto",
+                BarWeekStart::Monday => "monday",
+                BarWeekStart::Sunday => "sunday",
+            }
+            .into(),
+        ),
+        "bar.clock.week-numbers" => V::Bool(c.bar.clock.week_numbers),
         "bar.eye" => V::Bool(c.bar.eye),
         "bar.widgets.order" => list(&c.bar.widgets.order),
         "bar.widgets.important" => list(&c.bar.widgets.important),
@@ -2599,6 +2653,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "decoration.blur.frost.tint" => V::Color(c.decoration.blur.frost.tint),
         "decoration.blur.size" => V::Int(c.decoration.blur.size as i64),
         "decoration.blur.passes" => V::Int(c.decoration.blur.passes as i64),
+        "decoration.surface.tint" => V::Float(widen(c.decoration.surface.tint)),
+        "decoration.surface.card-fill" => V::Float(widen(c.decoration.surface.card_fill)),
+        "decoration.surface.inset-fill" => V::Float(widen(c.decoration.surface.inset_fill)),
         "decoration.shadow.enabled" => V::Bool(c.decoration.shadow.enabled),
         "decoration.shadow.range" => V::Int(c.decoration.shadow.range as i64),
         "decoration.glow.enabled" => V::Bool(c.decoration.glow.enabled),

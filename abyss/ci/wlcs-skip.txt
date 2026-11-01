@@ -251,14 +251,10 @@ BadBufferTest.test_truncated_shm_file
 XdgSurfaceStableTest.gets_configure_event
 XdgToplevelStableTest.wm_capabilities_are_sent
 
-# ---------------------------------------------------------------------------
-# 20. A client can maximize / unmaximize itself.
+# Maximize is not a window state: a window is minimized, in the layout, or
+# fullscreen (C-20, COMP-05 §4). abyss never sets `maximized`, so these
+# tests' preconditions cannot hold.
 #
-# abyss has three window states and no maximize (8af2b00); the xdg_toplevel
-# maximize and unmaximize requests are declined on purpose
-# (`shell::decline_maximize_toplevel`), so the configure these tests wait for
-# never arrives.
-#
-# Removed by: never, unless maximize comes back.
+# Removed by: never, unless maximize returns as a state.
 XdgToplevelStableConfigurationTest.window_can_maximize_itself
 XdgToplevelStableConfigurationTest.window_can_unmaximize_itself

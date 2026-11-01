@@ -130,7 +130,9 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `bar.rounding` | int 0..64 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop, and the width of the curved fillets where a shaped layer's boxes meet. |
 | `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
 | `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
-| `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |
+| `bar.clock.week-start` | auto \| monday \| sunday | `"auto"` | live | First weekday of the calendar that opens from the taskbar clock; auto follows the locale. |
+| `bar.clock.week-numbers` | bool | `#false` | live | Show ISO week numbers beside the calendar's weeks. |
+| `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups (tray menus, the tray overflow) open: under the cell that was clicked, or at the pointer. The wifi and bluetooth drawers are not popups: they unroll from the bar under their own cell, like the start menu. |
 | `bar.eye` | bool | `#true` | live | Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The compositor only stores this; the taskbar reads Oracle-Eyes' own status socket (ADR 0055). |
 | `bar.widgets.order` | list of strings | `"now-playing" "volume" "network" "bluetooth" "battery" "tray" "clock"` | live | Widgets drawn after the task strip, left to right (ADR 0065). Built-in ids: now-playing, system-usage, volume, network, bluetooth, battery, tray (the StatusNotifierItems and their overflow drawer) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left out is not drawn. An unknown id, a repeated one, or a `custom:` naming no `widget` block is refused. |
 | `bar.widgets.important` | list of strings | `"clock" "battery"` | live | Widgets that never compress: when the bar runs short of room they keep their full size and everything else gives way first. Same ids as `bar.widgets.order`. |
@@ -164,6 +166,9 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `decoration.blur.glass.dispersion` | float 0..1 | `0` | live | `glass`: colour fringing in the bevel; 0 (the default) is none. |
 | `decoration.blur.glass.rim` | float 0..1 | `0.5` | live | `glass`: strength of the neutral hairline rim, brightest along the top-left edges with a weaker lobe at the bottom-right. |
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
+| `decoration.surface.tint` | float 0..1 | `0.7` | live | Window tint opacity over the glass. sRGB-intent; clients convert. |
+| `decoration.surface.card-fill` | float 0..0.3 | `0.035` | live | Alpha of a hairline card's white fill. sRGB-intent; clients convert. |
+| `decoration.surface.inset-fill` | float 0..0.3 | `0.03` | live | Alpha of an inset group's white fill. sRGB-intent; clients convert. |
 | `decoration.shadow.enabled` | bool | `#true` | live | Drop shadow behind windows. |
 | `decoration.shadow.range` | int 0..128 | `16` | live | Shadow falloff distance, logical px. |
 | `decoration.glow.enabled` | bool | `#false` | live | Glow around windows in their border colour. |

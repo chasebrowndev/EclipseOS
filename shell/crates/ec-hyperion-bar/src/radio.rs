@@ -107,8 +107,23 @@ pub struct Radios {
     pub wifi_enabled: bool,
     pub networks: Vec<WifiNetwork>,
     pub devices: Vec<BtDevice>,
-    /// Discovery is running, so unpaired devices in range are listed.
+    /// Bluetooth discovery is running, so unpaired devices in range are listed.
     pub scanning: bool,
+    /// A wifi scan is in flight: the cached `networks` stay clickable, and
+    /// fresh results stream in as they land. Set the moment the scan is
+    /// asked for; cleared when the scan's last list arrives.
+    pub wifi_scanning: bool,
+    /// Lists still to come before the scan in flight is over (see
+    /// [`Radios::start_wifi_scan`]).
+    scan_lists: u8,
+    /// The SSID being joined, from the click until the feed confirms it
+    /// (`active` in the list) or fails. The row draws "connecting".
+    pub connecting: Option<String>,
+    /// The service said the join went through; the next list settles it.
+    join_done: bool,
+    /// The last join that failed, with the service's reason verbatim, for
+    /// that SSID's row. Cleared by the next attempt at any network.
+    pub join_error: Option<(String, String)>,
     pub tray: Vec<TrayItem>,
 }
 
@@ -122,6 +137,11 @@ impl Default for Radios {
             networks: Vec::new(),
             devices: Vec::new(),
             scanning: false,
+            wifi_scanning: false,
+            scan_lists: 0,
+            connecting: None,
+            join_done: false,
+            join_error: None,
             tray: Vec::new(),
         }
     }
@@ -136,6 +156,89 @@ impl Radios {
         self.networks.iter().find(|n| n.ssid == ssid)
     }
 
+    /// Whether `ssid` is the join in flight.
+    pub fn is_joining(&self, ssid: &str) -> bool {
+        self.connecting.as_deref() == Some(ssid)
+    }
+
+    /// Why the last join of `ssid` failed, if that is the one that did.
+    pub fn failure(&self, ssid: &str) -> Option<&str> {
+        self.join_error
+            .as_ref()
+            .filter(|(s, _)| s == ssid)
+            .map(|(_, reason)| reason.as_str())
+    }
+
+    /// The wifi switch, flipped at once. The radio's own report corrects it
+    /// if it disagrees. Turning wifi off ends whatever was in flight.
+    pub fn set_wifi_enabled(&mut self, on: bool) {
+        self.wifi_enabled = on;
+        if !on {
+            self.connecting = None;
+            self.wifi_scanning = false;
+            self.scan_lists = 0;
+        }
+    }
+
+    /// A join was asked for: `ssid` reads as connecting until the feed says
+    /// otherwise, and any earlier failure is stale.
+    pub fn begin_join(&mut self, ssid: &str) {
+        self.connecting = Some(ssid.to_owned());
+        self.join_done = false;
+        self.join_error = None;
+    }
+
+    /// A scan was asked for. The service answers with two lists — the one it
+    /// has, then the one the scan found — and the scan is over after the
+    /// second.
+    pub fn start_wifi_scan(&mut self) {
+        self.wifi_scanning = true;
+        self.scan_lists = 2;
+    }
+
+    /// Fold one wifi report into the optimistic state. The lists and flags the
+    /// feed itself carries are applied by `app::radio`.
+    pub fn note(&mut self, feed: &Feed) {
+        match feed {
+            Feed::WifiEnabled(on) => {
+                self.wifi_enabled = *on;
+                if !on {
+                    self.connecting = None;
+                    self.wifi_scanning = false;
+                    self.scan_lists = 0;
+                }
+            }
+            Feed::Networks(networks) => {
+                if self.scan_lists > 0 {
+                    self.scan_lists -= 1;
+                    self.wifi_scanning = self.scan_lists > 0;
+                }
+                // The join landed: the list says it is the active one, or the
+                // service said it was done and this is the list after it.
+                if self
+                    .connecting
+                    .as_deref()
+                    .is_some_and(|j| self.join_done || networks.iter().any(|n| n.active && n.ssid == j))
+                {
+                    self.connecting = None;
+                    self.join_done = false;
+                }
+            }
+            // The list that follows settles it; until then the row keeps its
+            // spinner.
+            Feed::Joined(ssid) => self.join_done = self.is_joining(ssid),
+            Feed::JoinFailed { ssid, reason } => {
+                if self.is_joining(ssid) {
+                    self.connecting = None;
+                }
+                self.join_error = Some((ssid.clone(), reason.clone()));
+            }
+            // The prompt takes over from here.
+            Feed::NeedsSecret(ssid) if self.is_joining(ssid) => self.connecting = None,
+            _ => {}
+        }
+    }
+
     /// The fixture `HYPERION_PREVIEW` draws: a plausible room, so a drawer can
     /// be screenshotted on a machine with no service behind it.
     #[cfg(debug_assertions)]
@@ -145,6 +248,7 @@ impl Radios {
             secured,
             known,
             active,
+            strength: 80u8.saturating_sub(ssid.len() as u8 * 3),
         };
         let dev = |addr: &str, name: &str, paired, connected, kind| BtDevice {
             addr: addr.to_owned(),
@@ -169,6 +273,14 @@ impl Radios {
                 dev("AA:03", "JBL Flip 6", false, false, BtKind::Audio),
             ],
             scanning: true,
+            wifi_scanning: true,
+            scan_lists: 0,
+            connecting: Some("guest".to_owned()),
+            join_done: false,
+            join_error: Some((
+                "NETGEAR-2F".to_owned(),
+                "no response from the access point".to_owned(),
+            )),
             tray: vec![
                 TrayItem {
                     id: "org.syncthing".to_owned(),
@@ -248,6 +360,14 @@ pub enum Feed {
     Networks(Vec<WifiNetwork>),
     Devices(Vec<BtDevice>),
     Scanning(bool),
+    /// A join went through; the list that follows confirms it.
+    Joined(String),
+    /// A join failed for a reason other than a missing secret. The reason is
+    /// the service's, verbatim, for that SSID's row.
+    JoinFailed {
+        ssid: String,
+        reason: String,
+    },
     /// A join needs a passphrase the service does not have, or the saved one
     /// was refused: the prompt's job.
     NeedsSecret(String),
@@ -331,20 +451,45 @@ pub fn take_feeds() -> Option<Feeds> {
 }
 
 impl Feeds {
-    /// Everything waiting, converted. Never blocks.
-    pub fn drain(&self) -> Vec<Feed> {
-        let mut out = Vec::new();
-        if let Some(events) = self.events.as_ref() {
-            while let Some(event) = events.try_recv() {
-                out.extend(from_event(event));
-            }
+    /// Hand every report to `emit` the moment it arrives: one thread per
+    /// service channel, each blocked on its receiver, so a result reaches the
+    /// bar within a frame rather than at the next poll. `emit` returns false
+    /// when nobody is listening any more, which ends the thread.
+    pub fn pump(self, emit: impl Fn(Feed) -> bool + Clone + Send + 'static) {
+        const SLICE: std::time::Duration = std::time::Duration::from_secs(1);
+        if let Some(events) = self.events {
+            let emit = emit.clone();
+            std::thread::spawn(move || loop {
+                let began = std::time::Instant::now();
+                match events.recv_timeout(SLICE) {
+                    Some(event) => {
+                        if let Some(feed) = from_event(event) {
+                            if !emit(feed) {
+                                return;
+                            }
+                        }
+                    }
+                    // A timeout takes the whole slice; an instant `None` is a
+                    // channel with no sender left.
+                    None if began.elapsed() < SLICE / 2 => return,
+                    None => {}
+                }
+            });
         }
-        if let Some(tray) = self.tray.as_ref() {
-            while let Some(update) = tray.try_recv() {
-                out.push(from_tray(update));
-            }
+        if let Some(tray) = self.tray {
+            std::thread::spawn(move || loop {
+                let began = std::time::Instant::now();
+                match tray.recv_timeout(SLICE) {
+                    Some(update) => {
+                        if !emit(from_tray(update)) {
+                            return;
+                        }
+                    }
+                    None if began.elapsed() < SLICE / 2 => return,
+                    None => {}
+                }
+            });
         }
-        out
     }
 }
 
@@ -355,13 +500,13 @@ fn from_event(event: Event) -> Option<Feed> {
         Event::BtDevices(devices) => Some(Feed::Devices(devices)),
         Event::BtDiscovering(on) => Some(Feed::Scanning(on)),
         Event::WifiConnect { ssid, result } => match result {
-            Ok(()) => None,
+            Ok(()) => Some(Feed::Joined(ssid)),
             Err(ConnectError::NeedsSecret | ConnectError::WrongSecret) => Some(Feed::NeedsSecret(ssid)),
-            // The SSID is not named: stderr is a journal, and which networks
-            // the user tried is theirs.
+            // The SSID is not named in the journal: stderr is a journal, and
+            // which networks the user tried is theirs. The row gets it.
             Err(ConnectError::Failed(reason)) => {
                 eprintln!("ec-hyperion-bar: wifi join failed: {reason}");
-                None
+                Some(Feed::JoinFailed { ssid, reason })
             }
         },
         Event::BtPair {
@@ -445,6 +590,13 @@ pub mod actions {
         }
     }
 
+    /// Whether a radio service is behind the actions. Without one a call does
+    /// nothing, so the optimistic states (scanning, connecting) must not be
+    /// entered: nothing would ever clear them.
+    pub fn available() -> bool {
+        services().actions.is_some()
+    }
+
     pub fn set_wifi_enabled(on: bool) {
         radio(|a| a.set_wifi_enabled(on));
     }
@@ -518,6 +670,79 @@ mod tests {
         assert_eq!(kinds, [Header, Item, Separator, Item]);
         assert!(!got[0].enabled);
         assert!(got[1].enabled);
+    }
+
+    fn net(ssid: &str, active: bool) -> WifiNetwork {
+        WifiNetwork {
+            ssid: ssid.to_owned(),
+            secured: false,
+            known: true,
+            active,
+            strength: 50,
+        }
+    }
+
+    /// The switch flips at once, and off ends a join and a scan in flight.
+    #[test]
+    fn the_wifi_switch_is_optimistic_and_off_ends_what_was_pending() {
+        let mut r = Radios::default();
+        r.begin_join("home");
+        r.start_wifi_scan();
+        r.set_wifi_enabled(false);
+        assert!(!r.wifi_enabled);
+        assert!(r.connecting.is_none());
+        assert!(!r.wifi_scanning);
+    }
+
+    /// A join reads as connecting until the list says it is active.
+    #[test]
+    fn a_join_is_connecting_until_the_list_confirms_it() {
+        let mut r = Radios::default();
+        r.begin_join("home");
+        assert!(r.is_joining("home"));
+        r.note(&Feed::Networks(vec![net("home", false)]));
+        assert!(r.is_joining("home"), "not active yet");
+        r.note(&Feed::Networks(vec![net("home", true)]));
+        assert!(r.connecting.is_none());
+    }
+
+    /// The service's word that the join is done settles it on the next list.
+    #[test]
+    fn a_finished_join_settles_on_the_next_list() {
+        let mut r = Radios::default();
+        r.begin_join("home");
+        r.note(&Feed::Joined("home".to_owned()));
+        assert!(r.is_joining("home"));
+        r.note(&Feed::Networks(vec![net("home", false)]));
+        assert!(r.connecting.is_none());
+    }
+
+    /// A failure keeps its reason for that row, and the next attempt clears it.
+    #[test]
+    fn a_failed_join_keeps_its_reason_for_the_row() {
+        let mut r = Radios::default();
+        r.begin_join("home");
+        r.note(&Feed::JoinFailed {
+            ssid: "home".to_owned(),
+            reason: "timed out".to_owned(),
+        });
+        assert!(r.connecting.is_none());
+        assert_eq!(r.failure("home"), Some("timed out"));
+        assert_eq!(r.failure("other"), None);
+        r.begin_join("other");
+        assert_eq!(r.failure("home"), None);
+    }
+
+    /// A scan is over after the service's second list, not the first.
+    #[test]
+    fn a_scan_lasts_until_its_second_list() {
+        let mut r = Radios::default();
+        r.start_wifi_scan();
+        assert!(r.wifi_scanning);
+        r.note(&Feed::Networks(Vec::new()));
+        assert!(r.wifi_scanning, "that was the cached list");
+        r.note(&Feed::Networks(Vec::new()));
+        assert!(!r.wifi_scanning);
     }
 
     /// The silhouette keeps the art's alpha and drops its colour.

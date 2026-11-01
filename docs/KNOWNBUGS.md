@@ -52,8 +52,10 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
   (2026-10-06). Nobody has walked a btrfs install through it yet; only ext4
   has been. This entry leaves when one has.
 - **Remote access is opt-in at install time.** Both script installers
-  (`install-eclipseos.sh`, `eclipseos-postinstall.sh`) ask whether to enable sshd, taking one public key and refusing password logins
-  (2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
+  (`install-eclipseos.sh`, `eclipseos-postinstall.sh`) ask whether to enable sshd. They run on a tty, where nothing pastes, so they
+  take no key: password login is allowed from private, link-local and tailnet
+  (CGNAT) addresses only, keys from anywhere, never root (2026-10-20; was one
+  pasted key, 2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
   made the Framework install debuggable, but sshd on the LAN covers the same
   need without a third-party account. The graphical installer (`ec-setup`)
   deliberately has no remote-access step: whoever installs is at the machine
@@ -459,13 +461,3 @@ surface is only input-protected.
 - **`cost_usd` is passed through as Claude Code reports it**, which may be a
   per-session running total rather than per turn. It is logged, not audited:
   I-02 `Model` provenance records are not written yet (AGENTD-01).
-
-
-## WLCS-01: `XdgToplevelStableConfigurationTest.window_can_maximize_itself` fails
-
-Found 2026-10-31 on PR #161. The `wlcs (headless)` gate job fails on this test
-on every recent run that executes it (`comp02-*`, `fix-wine-minimize-wm-state`,
-`comp07-xwayland-argb-frame`), so it predates the ARGB frame patch (ADR 0079);
-the job is skipped on PRs that do not touch the compositor, which hid it. Cause
-not diagnosed (the log shows `state.maximized` false after the client requests
-maximize, "precondition failed"). PR #161 was admin-merged over it.

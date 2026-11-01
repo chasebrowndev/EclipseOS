@@ -21,6 +21,7 @@ pub mod hud_font;
 pub mod output_overscan;
 pub mod overscan;
 pub mod palette;
+pub mod popup_shape;
 pub mod sanitize;
 pub mod select;
 pub mod stats;
@@ -423,12 +424,20 @@ impl BorderStore {
 }
 
 /// One popup of a keyed window: its index, its physical rect (output-local)
-/// and its surface elements.
+/// its backdrop's logical corner radius and its surface elements.
 type PopupGroup = (
     usize,
     Rectangle<i32, Physical>,
+    i32,
     Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
 );
+
+/// The logical corner radius for the glass behind a keyed popup: read off the
+/// popup's own texture alpha ([`popup_shape`]), else the window's `fallback`
+/// rounding for a texture that cannot be read back (an external-OES import).
+fn popup_blur_radius(renderer: &mut GlesRenderer, popup: &smithay::desktop::PopupKind, fallback: i32) -> i32 {
+    popup_shape::popup_radius(renderer, popup.wl_surface()).map_or(fallback, |r| r.round() as i32)
+}
 
 /// The keyed program and the output's framebuffer axis, if keying can draw on
 /// `output` (a rotated output cannot place the key region and keeps the strip
@@ -1559,7 +1568,7 @@ fn window_elements(
                             phys(at, scale),
                             popup.geometry().size.to_f64().to_physical(scale).to_i32_round(),
                         );
-                        popup_groups.push((n, rect, els));
+                        popup_groups.push((n, rect, popup_blur_radius(renderer, &popup, deco.rounding), els));
                     } else {
                         popups.extend(els);
                     }
@@ -1805,7 +1814,7 @@ fn window_elements(
         let keyed_on = keyed.filter(|_| !shaded);
         let mut popups = popups;
         if keyed_on.is_none() {
-            for (_, _, els) in popup_groups.drain(..) {
+            for (_, _, _, els) in popup_groups.drain(..) {
                 popups.extend(els);
             }
         }
@@ -1840,7 +1849,7 @@ fn window_elements(
                         }
                     }
                 };
-                for (n, prect, els) in popup_groups.drain(..) {
+                for (n, prect, pradius, els) in popup_groups.drain(..) {
                     push_keyed(
                         out,
                         els,
@@ -1853,7 +1862,7 @@ fn window_elements(
                             out.len(),
                             prect,
                             mode,
-                            0,
+                            pradius,
                             None,
                             None,
                             popup_crop,

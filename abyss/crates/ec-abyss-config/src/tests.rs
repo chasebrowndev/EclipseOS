@@ -476,7 +476,9 @@ fn bar_clock_and_popup_anchor_parse() {
         d.bar.clock,
         BarClock {
             hour_12: true,
-            date_mdy: true
+            date_mdy: true,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(d.bar.popup_anchor, BarPopupAnchor::Cell);
@@ -487,7 +489,9 @@ fn bar_clock_and_popup_anchor_parse() {
         c.bar.clock,
         BarClock {
             hour_12: false,
-            date_mdy: false
+            date_mdy: false,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(c.bar.popup_anchor, BarPopupAnchor::Pointer);
@@ -1155,6 +1159,49 @@ fn decoration_defaults_round_but_are_otherwise_no_effect() {
     // Animations ship on (the Smooth preset), with nothing overridden.
     assert_eq!(cfg.animations.preset, animations::Preset::Smooth);
     assert!(cfg.animations.any() && !cfg.animations.custom());
+}
+
+/// `surface` ships at its sRGB-intent defaults, and parses and range-checks
+/// like its `decoration` neighbours.
+#[test]
+fn surface_defaults_parse_and_reject_out_of_range() {
+    let s = &Config::default().decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+
+    let doc: KdlDocument = r#"
+            decoration {
+                surface { tint 0.5; card-fill 0.2; inset-fill 0 }
+            }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.5, 0.2, 0.0));
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+
+    // Every out-of-range or wrong-typed value keeps its default, and the
+    // fill maximum is 0.30 where the tint's is 1.0.
+    let doc: KdlDocument = r#"
+            decoration {
+                surface { tint 1.5; card-fill 0.31; inset-fill "half"; nope 1 }
+            }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+    assert_eq!(cfg.errors.len(), 4, "{:?}", cfg.errors);
+    let doc: KdlDocument = "decoration { surface { tint 1.0; card-fill 0.30; inset-fill 0.30 } }\n"
+        .parse()
+        .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (1.0, 0.30, 0.30));
 }
 
 /// Blur ships on, in glass mode (C-16): translucent surfaces get the
