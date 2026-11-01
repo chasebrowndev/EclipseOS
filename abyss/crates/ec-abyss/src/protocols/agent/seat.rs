@@ -30,7 +30,8 @@
 //!
 //! X11 windows are refused as agent focus targets: the X input focus is one
 //! global thing, so focusing one from an agent seat would move the human's.
-//! That is the COMP-07 X11 posture work (M13 `seat_compat=lock`), not here.
+//! They are acted on only under a compat lock, through the human seat
+//! (`lock::route`, COMP-04 §8).
 
 use std::io::Write;
 use std::os::fd::{AsFd, FromRawFd};
@@ -164,7 +165,7 @@ fn handles(state: &AbyssState, agent: u64) -> Option<Handles> {
     })
 }
 
-fn now_ms(state: &AbyssState) -> u32 {
+pub(super) fn now_ms(state: &AbyssState) -> u32 {
     state.start_time.elapsed().as_millis() as u32
 }
 
@@ -172,11 +173,19 @@ fn now_ms(state: &AbyssState) -> u32 {
 
 /// The window agent `agent`'s seat has focus on: its keyboard focus, or, with
 /// none, the window its pointer last landed on. A window that has since gone
-/// is no focus at all.
+/// is no focus at all. A window the agent holds a compat lock on comes first:
+/// its acts go there, through the human seat (COMP-04 §8), and an X11 window,
+/// which no agent seat can focus, is reachable only that way.
 pub fn focused_window(state: &AbyssState, agent: u64) -> Option<Window> {
     let s = entry(state, agent)?;
-    s.focus
-        .iter()
+    state
+        .agents
+        .locks
+        .active()
+        .find(|(a, _)| *a == agent)
+        .map(|(_, w)| w)
+        .into_iter()
+        .chain(s.focus.iter())
         .chain(s.pointer_window.iter())
         .find(|w| w.alive())
         .cloned()
@@ -199,6 +208,11 @@ pub fn execute(
     // No surface behind the lock screen sees agent input either.
     if state.lock.locked {
         return Err((Status::FocusLost, "locked".into()));
+    }
+    // A window this agent holds a compat lock on is acted on through the
+    // human seat (COMP-04 §8).
+    if let Some(done) = super::lock::route(state, agent, act, window) {
+        return done;
     }
     match *act {
         Act::Focus { .. } => {
@@ -474,14 +488,14 @@ fn invalid(detail: &str) -> (Status, String) {
     (Status::InvalidArgument, detail.to_owned())
 }
 
-fn evdev(code: u32) -> Result<Keycode, (Status, String)> {
+pub(super) fn evdev(code: u32) -> Result<Keycode, (Status, String)> {
     if code > KEY_MAX {
         return Err(invalid("keycode"));
     }
     Ok(Keycode::new(code + EVDEV_OFFSET))
 }
 
-fn slot(id: i32) -> Result<TouchSlot, (Status, String)> {
+pub(super) fn slot(id: i32) -> Result<TouchSlot, (Status, String)> {
     u32::try_from(id)
         .map(|id| TouchSlot::from(Some(id)))
         .map_err(|_| invalid("touch_id"))
@@ -597,7 +611,7 @@ fn refuse_surface(state: &mut AbyssState, surface: &WlSurface) -> bool {
 
 /// `pos` pulled inside `window`'s geometry: relative motion cannot walk the
 /// agent's pointer out of the window it was allowed to act on.
-fn clamp_to(state: &AbyssState, window: &Window, pos: Point<f64, Logical>) -> Point<f64, Logical> {
+pub(super) fn clamp_to(state: &AbyssState, window: &Window, pos: Point<f64, Logical>) -> Point<f64, Logical> {
     let Some(g) = state.space.element_geometry(window) else {
         return pos;
     };
@@ -690,13 +704,13 @@ fn button_event(
 /// The keycodes that produce one keysym: the key, and Shift if the symbol
 /// sits on the second level.
 #[derive(Debug, Clone, Copy, PartialEq)]
-struct KeySeq {
-    shift: Option<Keycode>,
-    key: Keycode,
+pub(super) struct KeySeq {
+    pub(super) shift: Option<Keycode>,
+    pub(super) key: Keycode,
 }
 
 impl KeySeq {
-    fn press(self, state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>) {
+    pub(super) fn press(self, state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>) {
         for (code, pressed) in self
             .shift
             .map(|s| (s, true))
@@ -707,7 +721,7 @@ impl KeySeq {
         }
     }
 
-    fn release(self, state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>) {
+    pub(super) fn release(self, state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>) {
         for (code, pressed) in [(self.key, false)]
             .into_iter()
             .chain(self.shift.map(|s| (s, false)))
@@ -738,7 +752,7 @@ fn send_key(state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>, code: Keyc
 
 /// Find the key that types `sym` in the seat's active layout, at level one
 /// (bare) or two (Shift).
-fn find_key(state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>, sym: u32) -> Option<KeySeq> {
+pub(super) fn find_key(state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>, sym: u32) -> Option<KeySeq> {
     kbd.with_xkb_state(state, |ctx| {
         let xkb = ctx.xkb().lock().ok()?;
         // SAFETY: the keymap reference does not outlive the guard.
@@ -777,7 +791,7 @@ fn find_key(state: &mut AbyssState, kbd: &KeyboardHandle<AbyssState>, sym: u32) 
 }
 
 /// The keysym a character types, if it has one the seat can produce.
-fn keysym_of(c: char) -> Option<u32> {
+pub(super) fn keysym_of(c: char) -> Option<u32> {
     match c {
         '\n' => Some(RETURN),
         '\t' => Some(TAB),

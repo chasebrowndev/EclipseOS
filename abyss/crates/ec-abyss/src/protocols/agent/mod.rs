@@ -320,6 +320,9 @@ fn agent_display(state: &mut AbyssState) -> Option<DisplayHandle> {
 /// hook, beside the main display's flush: `wl_display_flush_clients` may
 /// destroy a client, which is only safe outside request dispatch.
 pub fn flush(state: &mut AbyssState) {
+    // Waits are woken by the dispatch round that changed the scene, then the
+    // `waited` events go out with the flush below (COMP-08 §3).
+    wait::wake(state);
     // Who may see each agent seat follows the scene, so it is re-decided
     // once per loop iteration, before clients next read (SEAT-01).
     let mut changed = false;

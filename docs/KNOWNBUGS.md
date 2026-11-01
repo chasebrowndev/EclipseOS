@@ -246,13 +246,20 @@ maximized/fullscreen/floating/minimized bits (`generation.rs`). A change
 inside the client's content that moves none of those is not seen. Needs the
 COMP-09 tree (M22).
 
-## LOCK-01: compat_lock holds human input, but does not yet route agent acts through the human seat
+## LOCK-01: a compat lock's routing is human-seat focus only, and queued input can be discarded
 
-`protocols/agent/lock.rs` queues the human's keys, buttons and scrolls for the
-locked window and replays them on release. Not done: the COMP-10 §3.4
-indicator (TCB), queueing of touch and tablet input, and the compat fallback that sends an agent's acts through the human
-seat for a `seat-compat lock` app (COMP-04 §8). Queued input is discarded, not
-delivered, if the human's focus has left the window by release.
+`protocols/agent/lock.rs` queues the human's keys, buttons, scrolls, touch
+points and tablet tip/button events for the locked window and replays them on
+release, and routes the lock holder's acts on that window through the human
+seat (`Origin::AgentCompat`, COMP-04 §8). Open: the routed act needs the
+human's keyboard focus already on the window (an agent seat may not steal it),
+so an agent cannot give an X11 window keys on its own; a `seat-compat lock`
+window with no lock held is still acted on through the agent seat; a routed
+touch counts as human activity for the idle timer (`inject_touch_*`); and a
+tablet tip held while the cursor was on the window but released after it left
+is delivered unpaired; an agent button pressed on a code the human already
+holds is released with the lock. Queued input is discarded, not delivered, if the
+human's focus has left the window by release.
 
 ## IND-01: a touch or tablet contact on a trusted indicator reaches the client under it
 
@@ -267,8 +274,11 @@ panel on a tap.
 ## WAIT-01: wait_for has no semantic or terminal predicates
 
 `node`, `text_contains`, `node_gone` (COMP-09) and `command_finished` are
-refused `invalid_argument` "unsupported". A wait is polled every 25 ms, not
-woken by the change; `waited` is not audited beyond the request's own record.
+refused `invalid_argument` "unsupported"; `waited` is not audited beyond the
+request's own record. A wait is woken after every loop dispatch round
+(`wait::wake` from `agent::flush`) plus one deadline timer, not polled, but
+each round with a wait pending evaluates it in full: there is no dirty flag
+for scene changes yet.
 
 ---
 
