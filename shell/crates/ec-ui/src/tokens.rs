@@ -175,24 +175,17 @@ pub mod color {
     pub const LIFT_SOFT: Color = white(0.035);
     /// Laid over a settings row that does not apply right now
     /// ([`crate::widget::dimmed`]): a panel's own ground — [`BASE`], then
-    /// [`GLASS`] — repainted at [`VEIL_STRENGTH`], so the row fades toward the
-    /// card it sits on instead of greying into a slab of its own.
-    ///
-    /// The two layers and not one pre-mixed colour, because the renderer
-    /// blends in linear light: `GLASS` over `BASE` on screen is far lighter
-    /// than the same mix worked out in sRGB, and a pre-mixed veil showed as a
-    /// dark box. Repainting the same layers lands on the same ground however
-    /// the renderer blends.
-    pub const VEIL: [Color; 2] = [
-        Color {
-            a: VEIL_STRENGTH,
-            ..BASE
-        },
-        Color {
-            a: GLASS.a * VEIL_STRENGTH,
-            ..GLASS
-        },
-    ];
+    /// Laid over a settings row that does not apply right now
+    /// ([`crate::widget::dimmed`]), with blur off: [`BASE`] at
+    /// [`VEIL_STRENGTH`] fades the row's content toward the ground, and the
+    /// row's surface is then the inset fill (`decoration.surface.inset-fill`,
+    /// see [`crate::theme::veil`]). The fill is the same surface a
+    /// [`crate::theme::inset`] group has, so a dimmed run is still an inset,
+    /// reading quieter, not a lighter grey slab.
+    pub const VEIL: Color = Color {
+        a: VEIL_STRENGTH,
+        ..BASE
+    };
     /// [`VEIL`] on a translucent column ([`CONTENT`] over the compositor's
     /// blur). There the ground is the backdrop, which no client can repaint:
     /// `BASE` lands as a dark box and a repainted white tint as a light one
@@ -227,6 +220,8 @@ pub mod color {
     };
     /// [`CONTENT`] over [`BASE`], opaque: the column's ground with blur off.
     pub const CONTENT_BACKED: Color = super::over_opaque(CONTENT, BASE);
+    // The window tint, the card fill and the inset fill are live values, read
+    // from `decoration.surface.*` by `crate::surface`, not constants here.
 
     /// The single accent. See `accent discipline` in the spec: it marks state
     /// and one live value per screen, and is never decorative.

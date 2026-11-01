@@ -13,7 +13,7 @@ use iced::{Alignment, Element, Length, Theme};
 use ec_ipc::Addons;
 use ec_ui::theme;
 use ec_ui::tokens::{font, size, space};
-use ec_ui::widget::{hairline, inset, micro_label, panel, status_cell, status_grid, value as mono};
+use ec_ui::widget::{hairline, inset, micro_label, panel_at, status_cell, status_grid, value as mono};
 
 use crate::app::{App, Message};
 
@@ -173,8 +173,9 @@ fn hero<'a>(app: &App, a: &Addons) -> Element<'a, Message, Theme> {
     } else {
         "off unless an installed add-on names it".to_owned()
     };
-    panel(
+    panel_at(
         app.glass_radius,
+        app.hairline_cards,
         column![
             row![
                 micro_label("hooks"),
