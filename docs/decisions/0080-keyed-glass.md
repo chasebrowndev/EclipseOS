@@ -35,6 +35,9 @@ We take **2**.
 - **Shader.** abyss gains a keyed variant of the rounded-texture shader, used in
   both the live and the capture path. A texel within ±1/255 per channel of a key
   takes that key's alpha. Any other texel is drawn unchanged.
+  A partly transparent texel (a client's own anti-aliased edge) is compared on
+  its un-premultiplied colour, with tolerance 1.5/alpha; below alpha 0.2 it is
+  drawn as is.
 - **Keys and regions.**
   - Up to four keys, each with its own alpha.
   - Keys apply only where the client declares: the top strip; the whole window
@@ -51,6 +54,9 @@ We take **2**.
   connection's latest request and re-matches it whenever one of the client's
   toplevels commits a new size, which fixes the resize race. The commit path does
   no work when no request exists.
+  A resize commit that no stored request matches keeps the window's current
+  stamp, so the window does not flash opaque before the client's new report
+  arrives.
 - **Rules.** `translucent-region` gains an optional `key=#rrggbb`. Without it, a
   rule keeps the uniform fade of ADR 0079.
 - **The extension**
@@ -71,8 +77,22 @@ We take **2**.
 - With a custom tint, context menus no longer match a key, so they stay opaque:
   `ui.menu` is a static policy value.
 - A stamped window disables direct scanout, as in ADR 0079.
-- Popups are keyed by the shader path. They were verified headlessly with
-  Firefox's app menu and its context menu.
+- Popups are keyed by the shader path. Their blur follows the popup's own corner
+  radius, measured from its texture alpha when the buffer size changes, with
+  `decoration.rounding` as the fallback. Verified headlessly with Firefox's app
+  menu, its context menu, the search-engine popup and the extensions panel.
+- **Host-managed CSS** (amended 2026-11-01). The theme API cannot reach the
+  URL-bar focus glow, the selected-tab border or Home's customize button.
+  - ec-glass-host finds its Firefox profile from the parent's open profile
+    files (or `-profile`).
+  - It keeps `chrome/eclipse-glass.css` and `eclipse-glass-content.css` there,
+    plus one `@import` line marked `eclipse-glass:managed` at the top of
+    userChrome.css / userContent.css.
+  - The rules are scoped to `:root[lwtheme]` / `[lwt-newtab]`, so they are inert
+    without the Glass theme; `ec-glass-host --remove <profile>` deletes them.
+  - policies.json turns on `toolkit.legacyUserProfileCustomizations.stylesheets`.
+  - The CSS ships with the host, so it changes without an AMO re-sign. A first
+    install needs one Firefox restart.
 
 ## Revisit when
 - Firefox ships alpha toplevels on Wayland.

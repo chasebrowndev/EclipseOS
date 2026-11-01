@@ -257,7 +257,9 @@ the base image, and holds to these limits:
 
 - **Installed through the app's own mechanism**: its policy file, extension
   directory or theme path. It never writes `/etc/eclipse` (D-01 §6.3) or a user's
-  `abyss.kdl`.
+  `abyss.kdl`. Its user-side helper may keep its own stylesheet in the app's
+  profile, behind one marked import line that keeps the user's own rules; the
+  sheet must be inert without the add-on's theme (ADR 0080).
 - **Tokens from `ec-ui`**, rules from `docs/STYLE.md`: same palette, accent and
   "glassy, not glowy" selection as the DE's own panes.
 - **Translucency is the compositor's.** An app that submits opaque buffers gets

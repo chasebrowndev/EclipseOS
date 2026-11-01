@@ -198,8 +198,9 @@ fn wanted(
 }
 
 /// Bring one window's strip in line with the stored requests. Returns whether
-/// anything changed. Allocates only when it does.
-fn settle(state: &mut AbyssState, window: &Window, pid: i32) -> bool {
+/// anything changed. Allocates only when it does. With `keep_stale`, a window no
+/// stored request matches keeps its current stamp instead of losing it.
+fn settle(state: &mut AbyssState, window: &Window, pid: i32, keep_stale: bool) -> bool {
     let bbox = window.bbox().size;
     let want = wanted(
         &state.ipc.client_requests,
@@ -214,7 +215,7 @@ fn settle(state: &mut AbyssState, window: &Window, pid: i32) -> bool {
         .find(|(_, w)| w == window)
         .map(|(c, _)| *c)
         .zip(window.user_data().get::<ClientStrip>().and_then(|s| s.0.get()));
-    if want == have {
+    if want == have || (keep_stale && want.is_none()) {
         return false;
     }
     state.ipc.client_strips.retain(|(_, w)| w != window);
@@ -226,7 +227,12 @@ fn settle(state: &mut AbyssState, window: &Window, pid: i32) -> bool {
 }
 
 /// A toplevel committed. If its client has a stored request and the window's
-/// size changed since last looked at, match it again.
+/// size changed since last looked at, match it again. A commit that matches
+/// nothing keeps the stamp it has: a browser commits its resized buffer before
+/// the helper's report of the new size arrives, and clearing then would flash
+/// the window opaque. The strip height and keys do not depend on the size, so
+/// a stale stamp is invisible. It goes when a request matches, when a request
+/// no longer includes the window, or when the connection leaves.
 pub(crate) fn on_window_commit(state: &mut AbyssState, window: &Window) {
     if state.ipc.client_requests.is_empty() || window.toplevel().is_none() {
         return;
@@ -246,7 +252,7 @@ pub(crate) fn on_window_commit(state: &mut AbyssState, window: &Window) {
     if state.ipc.client_requests.iter().all(|(_, p, _)| *p != pid) {
         return;
     }
-    if settle(state, window, pid) {
+    if settle(state, window, pid, true) {
         crate::backend::damage_all(state);
     }
 }
@@ -266,7 +272,7 @@ fn apply(state: &mut AbyssState, conn: u64, parent: i32, params: &Value) -> Resu
         .collect();
     let mut applied = 0usize;
     for window in &windows {
-        settle(state, window, parent);
+        settle(state, window, parent, false);
         if state
             .ipc
             .client_strips
@@ -313,7 +319,7 @@ pub(crate) fn clear_for(state: &mut AbyssState, conn: u64) {
     for w in &mine {
         stamp(w, None);
         if let Some(pid) = super::methods::pid_of(state, w) {
-            settle(state, w, pid);
+            settle(state, w, pid, false);
         }
     }
     crate::backend::damage_all(state);
@@ -527,7 +533,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_before_the_resize_commit_is_matched_when_the_buffer_arrives() {
+    fn a_request_before_the_resize_commit_is_matched_and_a_stale_stamp_survives_a_commit() {
         let mut h = harness();
         let mut c = Client::connect(&mut h);
         let t = c.create_toplevel(&mut h);
@@ -542,12 +548,23 @@ mod tests {
         // The resized buffer lands: the stored request matches, no resend.
         c.attach_sized(&mut h, &t.surface, 160, 160);
         assert_eq!(strip_of(&w), keyed(40));
-        // Resized away from every reported size: the strip comes off again.
+        // Resized away from every reported size: the stamp stays, so the
+        // window does not flash opaque while the next report is in flight.
         c.attach_sized(&mut h, &t.surface, 100, 100);
-        assert_eq!(strip_of(&w), None);
+        assert_eq!(strip_of(&w), keyed(40));
         // And back.
         c.attach_sized(&mut h, &t.surface, 160, 160);
         assert_eq!(strip_of(&w), keyed(40));
+        // A commit that matches nothing, then the matching report: the stamp
+        // persists, then updates to the new request's strip.
+        c.attach_sized(&mut h, &t.surface, 200, 200);
+        assert_eq!(strip_of(&w), keyed(40));
+        assert_eq!(call(&mut h, 1, me, 200, 150)["applied"], 1);
+        assert_eq!(strip_of(&w), keyed(50));
+        // A request that no longer includes the window clears it.
+        assert_eq!(call(&mut h, 1, me, 300, 150)["applied"], 0);
+        assert_eq!(strip_of(&w), None);
+        assert_eq!(call(&mut h, 1, me, 200, 150)["applied"], 1);
         // The connection leaving drops the request with its strips.
         clear_for(&mut h.state, 1);
         assert!(h.state.ipc.client_requests.is_empty());
