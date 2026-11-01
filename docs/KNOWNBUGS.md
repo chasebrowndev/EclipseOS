@@ -459,13 +459,3 @@ surface is only input-protected.
 - **`cost_usd` is passed through as Claude Code reports it**, which may be a
   per-session running total rather than per turn. It is logged, not audited:
   I-02 `Model` provenance records are not written yet (AGENTD-01).
-
-
-## WLCS-01: `XdgToplevelStableConfigurationTest.window_can_maximize_itself` fails
-
-Found 2026-10-31 on PR #161. The `wlcs (headless)` gate job fails on this test
-on every recent run that executes it (`comp02-*`, `fix-wine-minimize-wm-state`,
-`comp07-xwayland-argb-frame`), so it predates the ARGB frame patch (ADR 0079);
-the job is skipped on PRs that do not touch the compositor, which hid it. Cause
-not diagnosed (the log shows `state.maximized` false after the client requests
-maximize, "precondition failed"). PR #161 was admin-merged over it.
