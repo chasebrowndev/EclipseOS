@@ -15,7 +15,7 @@ use serde_json::{json, Value};
 use ec_services::apps::Entry;
 use ec_ui::theme;
 use ec_ui::tokens::{font, size, space};
-use ec_ui::widget::{hairline, list_row, list_row_at, micro_label, panel, pill};
+use ec_ui::widget::{glass_panel as panel, hairline, list_row, list_row_at, micro_label, pill};
 
 use crate::app::{row_id, App, Message};
 

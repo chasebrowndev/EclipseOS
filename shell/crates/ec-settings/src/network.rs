@@ -25,7 +25,8 @@ use ec_services::status::{self, Actions, BtDevice, Event, PairingAgent, Security
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, size, space};
 use ec_ui::widget::{
-    big_value, hairline, inset_list, list_row, meter_bar, micro_label, panel, pill, value as mono,
+    big_value, glass_panel as panel, hairline, inset_list, list_row, meter_bar, micro_label, pill,
+    value as mono,
 };
 
 use crate::app::Message;
@@ -264,8 +265,7 @@ fn hero(net: &Net, radius: f32) -> Element<'_, Message, Theme> {
                     tertiary(why),
                 ]
                 .spacing(space::ROW_Y),
-            )
-            .into();
+            );
         }
     };
 
@@ -323,7 +323,6 @@ fn hero(net: &Net, radius: f32) -> Element<'_, Message, Theme> {
         radius,
         column![head, hairline(), readings, hairline(), addresses].spacing(space::ROW_Y),
     )
-    .into()
 }
 
 fn saved_list(net: &Net) -> Element<'_, Message, Theme> {

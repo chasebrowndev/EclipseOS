@@ -614,6 +614,9 @@ pub enum BlurKey {
     /// The `n`th popup of a window with a keyed strip (ADR 0079), glassed
     /// over its whole surface.
     Popup(Window, usize),
+    /// A window's `eclipse_glass_v1` panes: one backdrop blurred over their
+    /// union, kept apart from the window's own whole-window backdrop.
+    Panes(Window),
 }
 
 /// Per-surface blur bookkeeping, kept alive between frames.
@@ -769,7 +772,8 @@ impl BlurStore {
     /// every pane), then push one element per pane into `out`, each cut from
     /// that one texture and drawn with its own `program` uniforms. The cache
     /// is keyed on `union`, not on the panes, so a pane that resizes inside
-    /// the same bounds only changes its own uniforms. `pane(i)` gives pane
+    /// the same bounds only changes its own uniforms. `alpha` fades every pane
+    /// (1.0 but for a window animating). `pane(i)` gives pane
     /// `i`'s output-local rect and uniforms, or `None` to skip it.
     /// Returns `None` when the backdrop could not be built (nothing pushed).
     #[allow(clippy::too_many_arguments)]
@@ -785,6 +789,7 @@ impl BlurStore {
         reach: i32,
         program: &GlesTexProgram,
         count: usize,
+        alpha: f32,
         mut pane: impl FnMut(usize) -> Option<(Rectangle<i32, Physical>, Vec<Uniform<'static>>)>,
         out: &mut Vec<BlurElement>,
     ) -> Option<()>
@@ -825,7 +830,7 @@ impl BlurStore {
                 crop,
                 rect,
                 scale,
-                1.0,
+                alpha,
             );
             element.commit = slot.commit;
             element.program = Some(program.clone());

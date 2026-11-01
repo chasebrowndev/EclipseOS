@@ -122,11 +122,19 @@ fn tone_code(tone: CellTone) -> u32 {
 #[derive(Debug, Default)]
 pub struct GlassPanes {
     bytes: Vec<u8>,
+    /// Panes refused for want of room this frame.
+    dropped: usize,
 }
 
 impl GlassPanes {
     pub fn clear(&mut self) {
         self.bytes.clear();
+        self.dropped = 0;
+    }
+
+    /// Panes past [`MAX_PANES`] that this frame could not carry.
+    pub fn dropped(&self) -> usize {
+        self.dropped
     }
 
     pub fn len(&self) -> usize {
@@ -146,6 +154,7 @@ impl GlassPanes {
     /// dropped; the compositor would reject it as a protocol error.
     pub fn push(&mut self, pane: &Pane) {
         if self.len() >= MAX_PANES {
+            self.dropped += 1;
             return;
         }
         let r = pane.rect;
@@ -246,6 +255,39 @@ thread_local! {
     // The event loop, the hook and every draw run on one thread.
     static SHARED: RefCell<Option<Shared>> = const { RefCell::new(None) };
     static FRAME: RefCell<GlassPanes> = RefCell::new(GlassPanes::default());
+    // Visible bounds (surface-local) of the scroll region being drawn, if any.
+    static CLIP: std::cell::Cell<Option<Rectangle>> = const { std::cell::Cell::new(None) };
+}
+
+/// Where a pane drawn inside a scroll region lands on the surface.
+///
+/// iced's scrollable draws its content translated by the scroll offset and
+/// hands the content a viewport of `visible + offset`, so
+/// `viewport.position - clip.position` is the offset. The pane moves by it
+/// and is cut to `clip` (the scrollable's visible bounds); `None` when
+/// nothing of it shows. A cut edge keeps its corner radius, so a half-shown
+/// card has a rounded cut: accepted.
+pub fn scrolled(rect: Rectangle, viewport: &Rectangle, clip: &Rectangle) -> Option<Rectangle> {
+    let off = Vector::new(viewport.x - clip.x, viewport.y - clip.y);
+    let moved = Rectangle {
+        x: rect.x - off.x,
+        y: rect.y - off.y,
+        ..rect
+    };
+    moved.intersection(clip)
+}
+
+/// [`push`] for a pane whose `rect` is in the coordinates its widget was laid
+/// out in, drawn with `viewport`. Outside a [`scroll_region`] that is
+/// surface-local already and the pane is pushed as is.
+pub fn push_in(mut pane: Pane, viewport: &Rectangle) {
+    if let Some(clip) = CLIP.with(|c| c.get()) {
+        match scrolled(pane.rect, viewport, &clip) {
+            Some(r) => pane.rect = r,
+            None => return,
+        }
+    }
+    push(pane);
 }
 
 /// Connect to the compositor, bind `eclipse_glass_manager_v1` if it is
@@ -337,6 +379,12 @@ fn finish(id: Option<window::Id>) {
             let f = f.borrow();
             if entry.last == f.as_bytes() {
                 return;
+            }
+            if f.dropped() > 0 {
+                eprintln!(
+                    "ec-ui glass: {} pane(s) past the {MAX_PANES} cap dropped (the last drawn)",
+                    f.dropped()
+                );
             }
             entry.last.clear();
             entry.last.extend_from_slice(f.as_bytes());
@@ -570,6 +618,128 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Root<'_, Message> {
     }
 }
 
+/// Wrap a `scrollable` so panes drawn inside it are placed by its scroll
+/// offset and cut to its visible bounds ([`push_in`]). One level: a scroll
+/// region inside another is not supported.
+pub fn scroll_region<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    Element::new(ScrollRegion {
+        content: content.into(),
+    })
+}
+
+struct ScrollRegion<'a, Message> {
+    content: Element<'a, Message, Theme>,
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for ScrollRegion<'_, Message> {
+    fn tag(&self) -> tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        // The scrollable's own visible bounds (its draw does the same).
+        let prev = CLIP.with(|c| c.replace(layout.bounds().intersection(viewport)));
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        CLIP.with(|c| c.set(prev));
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
 impl<'a, Message: 'a> From<Root<'a, Message>> for Element<'a, Message, Theme> {
     fn from(root: Root<'a, Message>) -> Self {
         Element::new(root)
@@ -645,6 +815,7 @@ mod tests {
         }
         assert_eq!(p.len(), MAX_PANES);
         assert_eq!(p.as_bytes().len(), MAX_PANES * RECORD_BYTES);
+        assert_eq!(p.dropped(), 80 - MAX_PANES);
         let mut q = GlassPanes::default();
         q.push(&Pane {
             rect: Rectangle::new(iced::Point::ORIGIN, Size::new(0.0, 10.0)),
@@ -659,6 +830,41 @@ mod tests {
             ..ok
         });
         assert!(q.is_empty());
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rectangle {
+        Rectangle::new(iced::Point::new(x, y), Size::new(w, h))
+    }
+
+    #[test]
+    fn scrolling_moves_a_pane_up_by_the_offset() {
+        let clip = rect(200.0, 50.0, 400.0, 300.0);
+        // 120 px scrolled: the content viewport starts 120 below the clip.
+        let vp = rect(200.0, 170.0, 400.0, 300.0);
+        let got = scrolled(rect(210.0, 250.0, 100.0, 40.0), &vp, &clip).unwrap();
+        assert_eq!(got, rect(210.0, 130.0, 100.0, 40.0));
+    }
+
+    #[test]
+    fn unscrolled_is_identity_inside_the_clip() {
+        let clip = rect(200.0, 50.0, 400.0, 300.0);
+        let r = rect(210.0, 60.0, 100.0, 40.0);
+        assert_eq!(scrolled(r, &clip, &clip), Some(r));
+    }
+
+    #[test]
+    fn a_pane_is_cut_to_the_visible_bounds_and_dropped_outside() {
+        let clip = rect(200.0, 50.0, 400.0, 300.0);
+        let vp = rect(200.0, 170.0, 400.0, 300.0);
+        // Straddles the top edge: on screen y = 30..70, visible 50..70.
+        let top = scrolled(rect(210.0, 150.0, 100.0, 40.0), &vp, &clip).unwrap();
+        assert_eq!(top, rect(210.0, 50.0, 100.0, 20.0));
+        // Straddles the bottom edge: on screen y = 330..370, visible 330..350.
+        let bot = scrolled(rect(210.0, 450.0, 100.0, 40.0), &vp, &clip).unwrap();
+        assert_eq!(bot, rect(210.0, 330.0, 100.0, 20.0));
+        // Wholly above and wholly below.
+        assert_eq!(scrolled(rect(210.0, 100.0, 100.0, 40.0), &vp, &clip), None);
+        assert_eq!(scrolled(rect(210.0, 600.0, 100.0, 40.0), &vp, &clip), None);
     }
 
     #[test]

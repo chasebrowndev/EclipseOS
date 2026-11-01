@@ -849,11 +849,14 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Ground<'_, Message> {
             let st = tree.state.downcast_ref::<CellState>();
             let r = self.radius.min(bounds.width / 2.0).min(bounds.height / 2.0);
             let pane = crate::glass::Pane::new(bounds, r, self.tone);
-            crate::glass::push(if self.rest {
-                pane
-            } else {
-                pane.status(st.status(cursor.is_over(bounds)))
-            });
+            crate::glass::push_in(
+                if self.rest {
+                    pane
+                } else {
+                    pane.status(st.status(cursor.is_over(bounds)))
+                },
+                viewport,
+            );
         }
         self.content.as_widget().draw(
             &tree.children[0],

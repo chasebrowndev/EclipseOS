@@ -190,6 +190,47 @@ struct PaneRequest {
     size: Size<i32, Logical>,
     loc: Point<i32, Physical>,
     crop: Option<Rectangle<i32, Physical>>,
+    /// A window's panes go directly above that window's own backdrop and bezel
+    /// (same splice index, inserted after them); a layer's replace its glass.
+    over: bool,
+    /// The window's animation scale about its pivot (output-local physical),
+    /// applied to every pane box; `None` at rest and for layers.
+    scaled: Option<(Point<i32, Physical>, Scale<f64>)>,
+    /// The window's animation alpha; 1.0 at rest and for layers.
+    alpha: f32,
+}
+
+impl PaneRequest {
+    /// Pane `pane`'s output-local physical box: placed against the surface
+    /// origin, carried through the window's animation scale, then cut to the
+    /// crop. `None` when it lies wholly outside the surface or the crop.
+    fn rect(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
+        let r = glass::pane_rect(pane, self.size, self.loc, scale)?;
+        let r = match self.scaled {
+            Some((origin, by)) => anim::track::scale_about(r, origin, by),
+            None => r,
+        };
+        match self.crop {
+            Some(crop) => r.intersection(crop),
+            None => Some(r),
+        }
+    }
+
+    /// Whether this set is spliced in before a backdrop request at `index`
+    /// is. Both lists are consumed back to front; a set at or below the
+    /// request's index goes first, except a window's, which at exactly the
+    /// request's index must land above the backdrop it just got.
+    fn before(&self, index: usize) -> bool {
+        self.index > index || (self.index == index && !self.over)
+    }
+}
+
+/// Whether a window with a backdrop draws its `eclipse_glass_v1` panes: only
+/// in glass mode, on an output the glass program can draw to, and not when the
+/// window is keyed-glass (ADR 0080), carries a translucent strip, or is
+/// fullscreen — those keep their behaviour as it was.
+fn window_takes_panes(mode: BlurMode, keyed: bool, strip: bool, fullscreen: bool, drawable: bool) -> bool {
+    mode == BlurMode::Glass && !keyed && !strip && !fullscreen && drawable
 }
 
 /// The non-empty pane list `surface` has committed, if it has one.
@@ -722,6 +763,9 @@ pub fn collect_elements(
                         size: geo.size,
                         loc,
                         crop,
+                        over: false,
+                        scaled: None,
+                        alpha: 1.0,
                     });
                     elements.extend(els);
                     continue;
@@ -828,6 +872,7 @@ pub fn collect_elements(
         focus,
         &mut elements,
         &mut blur_requests,
+        &mut pane_requests,
     );
 
     layers(
@@ -898,7 +943,7 @@ fn insert_blur(
     // set goes in before any request whose index is not above its own.
     let mut panes = panes.into_iter().rev().peekable();
     for (key, index, region, mode, radius, bezel, shape, crop) in requests.into_iter().rev() {
-        while let Some(req) = panes.next_if(|p| p.index >= index) {
+        while let Some(req) = panes.next_if(|p| p.before(index)) {
             insert_panes(renderer, output, store, config, req, elements);
         }
         // The final draw's program: plain `blur` only needs one to round
@@ -1079,12 +1124,9 @@ fn insert_panes(
         return;
     };
     let panes = req.set.as_slice();
-    let rect_of = |p: &glass::Pane| {
-        glass::pane_rect(p, req.size, req.loc, scale).and_then(|r| match req.crop {
-            Some(crop) => r.intersection(crop),
-            None => Some(r),
-        })
-    };
+    let rect_of = |p: &glass::Pane| req.rect(p, scale);
+    // A scaled window's corner radii scale with it.
+    let grown = req.scaled.map_or(1.0, |(_, by)| by.x.max(by.y));
     // Every pane's box, drawn or not: a hover must not move the cache key.
     let Some(union) = panes.iter().filter_map(rect_of).reduce(|a, b| a.merge(b)) else {
         return;
@@ -1093,7 +1135,9 @@ fn insert_panes(
     let reach = effects::glass_reach(cfg.glass.refraction.min(BEZEL_REFRACTION as i32), upscale);
     let mut blurs = std::mem::take(&mut store.pane_scratch);
     blurs.clear();
-    let behind = &elements[req.index..];
+    // A window's own backdrop sits at `req.index`; panes sample what is
+    // behind it, not the already-smoked glass, or they re-smoke to a slab.
+    let behind = &elements[req.index + usize::from(req.over)..];
     store.blur.entry(output.clone()).or_default().pane_elements(
         renderer,
         output,
@@ -1105,6 +1149,7 @@ fn insert_panes(
         reach,
         &program,
         panes.len(),
+        req.alpha,
         |i| {
             let pane = &panes[i];
             let look = glass::look(pane)?;
@@ -1118,10 +1163,10 @@ fn insert_panes(
                     rect,
                     fb_height,
                     mirrored,
-                    (pane.radius as f64 * upscale) as f32,
+                    (pane.radius as f64 * upscale * grown) as f32,
                     fb_size,
                     strength,
-                    glass::band(pane, rect, upscale),
+                    glass::band(pane, rect, upscale * grown),
                     &tuned,
                     None,
                     look.lift,
@@ -1550,6 +1595,7 @@ fn window_elements(
     focus: Option<&Window>,
     out: &mut Vec<AbyssRenderElement>,
     blurred: &mut Vec<BlurRequest>,
+    pane_requests: &mut Vec<PaneRequest>,
 ) {
     let Some(output_geo) = space.output_geometry(output) else {
         return;
@@ -2227,6 +2273,49 @@ fn window_elements(
         // covers the window rect only, which the ring does not overlap — or,
         // for a bezel, the bordered rect, which the shadow does not overlap.
         if let Some((region, radius, bezel, shape)) = backdrop {
+            // `eclipse_glass_v1` on a window: glass under each pane, directly
+            // above the backdrop and bezel just below. Only where the window
+            // is glass already (it has a backdrop, in glass mode); a keyed,
+            // strip or fullscreen window is left as it was. The panes ride the
+            // window's animation: its scale about the pivot and its alpha.
+            let panes = window_takes_panes(
+                mode,
+                keyed_on.is_some(),
+                strip.is_some(),
+                is_fullscreen(&window),
+                effects::fb_y_mirrored(output.current_transform()).is_some(),
+            )
+            .then(|| smithay::wayland::seat::WaylandFocus::wl_surface(&window))
+            .flatten()
+            .and_then(|surface| {
+                let set = committed_panes(&surface)?;
+                ensure_glass(renderer, store).then_some(())?;
+                Some((surface, set))
+            });
+            if let Some((surface, set)) = panes {
+                use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
+                let size = with_states(&surface, |states| {
+                    states
+                        .data_map
+                        .get::<RendererSurfaceStateUserData>()
+                        .and_then(|d| d.lock().unwrap().surface_size())
+                })
+                .unwrap_or_else(|| window.bbox().size);
+                pane_requests.push(PaneRequest {
+                    key: blur::BlurKey::Panes(window.clone()),
+                    index: out.len(),
+                    set,
+                    size,
+                    // The root surface's origin: `render_loc` already carries
+                    // the window position, its animation offset and the xdg
+                    // window-geometry offset.
+                    loc: phys(render_loc, scale),
+                    crop: deco_crop,
+                    over: true,
+                    scaled,
+                    alpha: t.alpha,
+                });
+            }
             blurred.push((
                 blur::BlurKey::Window(window.clone()),
                 out.len(),
@@ -2806,6 +2895,96 @@ pub fn send_dmabuf_feedback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pane_set(boxes: &[(i32, i32, i32, i32)]) -> glass::PaneSet {
+        let bytes: Vec<u8> = boxes
+            .iter()
+            .flat_map(|&(x, y, w, h)| {
+                [x as u32, y as u32, w as u32, h as u32, 8, 0, 0, 0, 255]
+                    .into_iter()
+                    .flat_map(|v| v.to_ne_bytes())
+            })
+            .collect();
+        glass::parse_panes(&bytes).unwrap()
+    }
+
+    fn window_request(
+        index: usize,
+        over: bool,
+        loc: Point<i32, Physical>,
+        scaled: Option<(Point<i32, Physical>, Scale<f64>)>,
+    ) -> PaneRequest {
+        PaneRequest {
+            key: blur::BlurKey::Annotation(0),
+            index,
+            set: pane_set(&[(10, 20, 100, 30)]),
+            size: (400, 300).into(),
+            loc,
+            crop: None,
+            over,
+            scaled,
+            alpha: 1.0,
+        }
+    }
+
+    /// Panes are surface-local to the root surface, whose origin is the window
+    /// position minus the xdg geometry offset: a cell at (10, 20) under a
+    /// client with a (12, 8) shadow margin sits 12 and 8 px left and up of
+    /// where it would on the window rect, at the output scale.
+    #[test]
+    fn window_panes_follow_the_geometry_offset() {
+        let scale = Scale::from(2.0);
+        let window_at = Point::<i32, Logical>::from((100, 50));
+        let geometry = Point::<i32, Logical>::from((12, 8));
+        let origin = phys(window_at - geometry, scale);
+        let req = window_request(5, true, origin, None);
+        let pane = &req.set.as_slice()[0];
+        let r = req.rect(pane, scale).unwrap();
+        assert_eq!(
+            (r.loc.x, r.loc.y, r.size.w, r.size.h),
+            ((88 + 10) * 2, (42 + 20) * 2, 200, 60)
+        );
+        // Without the offset the same pane lands elsewhere.
+        let flat = window_request(5, true, phys(window_at, scale), None);
+        assert_ne!(flat.rect(pane, scale).unwrap().loc, r.loc);
+    }
+
+    /// An animating window carries its panes with it: scaled about the pivot.
+    #[test]
+    fn window_panes_ride_the_animation_scale() {
+        let scale = Scale::from(1.0);
+        let pivot = Point::<i32, Physical>::from((200, 150));
+        let req = window_request(0, true, (0, 0).into(), Some((pivot, Scale::from(0.5))));
+        let r = req.rect(&req.set.as_slice()[0], scale).unwrap();
+        // (10, 20) is (-190, -130) from the pivot, halved to (-95, -65).
+        assert_eq!((r.loc.x, r.loc.y, r.size.w, r.size.h), (105, 85, 50, 15));
+    }
+
+    /// At one splice index a layer's panes go in before its backdrop (they
+    /// replace it), a window's after (they sit above the window's backdrop and
+    /// bezel); anything lower in the list always goes in first.
+    #[test]
+    fn window_panes_land_above_their_backdrop() {
+        let at = |index, over| window_request(index, over, (0, 0).into(), None);
+        assert!(at(7, false).before(7));
+        assert!(!at(7, true).before(7));
+        assert!(at(8, true).before(7));
+        assert!(!at(6, true).before(7));
+        assert!(!at(6, false).before(7));
+    }
+
+    /// Panes change only a glass-mode window that nothing else claims.
+    #[test]
+    fn only_plain_glass_windows_take_panes() {
+        assert!(window_takes_panes(BlurMode::Glass, false, false, false, true));
+        for mode in [BlurMode::Off, BlurMode::Frost] {
+            assert!(!window_takes_panes(mode, false, false, false, true));
+        }
+        assert!(!window_takes_panes(BlurMode::Glass, true, false, false, true));
+        assert!(!window_takes_panes(BlurMode::Glass, false, true, false, true));
+        assert!(!window_takes_panes(BlurMode::Glass, false, false, true, true));
+        assert!(!window_takes_panes(BlurMode::Glass, false, false, false, false));
+    }
 
     fn config(rounding: i32, border: i32, range: i32) -> Config {
         let mut cfg = Config::default();

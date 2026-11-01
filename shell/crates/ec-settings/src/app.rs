@@ -22,9 +22,9 @@ use ec_ui::motion::{Animated, Motion};
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, radius, size, space};
 use ec_ui::widget::{
-    color_picker, content_at, dimmed_at, edge_note, hairline, header, list_row, list_row_at, micro_label,
-    nav_item_at, nav_page_at, nav_section_at, panel, pill, pill_group, row_caption, sidebar_at, status_chip,
-    subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
+    color_picker, content_at, dimmed_at, edge_note, glass_panel as panel, hairline, header, list_row,
+    list_row_at, micro_label, nav_item_at, nav_page_at, nav_section_at, pill, pill_group, row_caption,
+    sidebar_at, status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
 };
 
 mod display;
@@ -1381,13 +1381,16 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             // A thin rail, inset top and bottom so it reads as a hint, not a
             // full-height bar.
             iced::widget::container(
-                scrollable(content_at(density, blocks))
-                    .id(SCROLL)
-                    .direction(scrollable::Direction::Vertical(
-                        scrollable::Scrollbar::new().width(4).scroller_width(4).margin(3),
-                    ))
-                    .style(theme::eclipse_scrollable)
-                    .height(Length::Fill),
+                // Panes inside follow the scroll offset and are cut to its bounds.
+                ec_ui::glass::scroll_region(
+                    scrollable(content_at(density, blocks))
+                        .id(SCROLL)
+                        .direction(scrollable::Direction::Vertical(
+                            scrollable::Scrollbar::new().width(4).scroller_width(4).margin(3),
+                        ))
+                        .style(theme::eclipse_scrollable)
+                        .height(Length::Fill),
+                ),
             )
             .padding([space::BLOCK, 0.0]),
         )
@@ -1418,7 +1421,6 @@ fn banner(problem: &Problem, radius: f32) -> Element<'_, Message, Theme> {
         ]
         .spacing(space::ROW_Y),
     )
-    .into()
 }
 
 /// Every schema key this page claims, in one panel: grouped by
@@ -1592,7 +1594,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             col = col.push(r);
         }
     }
-    panel(app.glass_radius, col).into()
+    panel(app.glass_radius, col)
 }
 
 const FRECENCY_BLURB: &str =

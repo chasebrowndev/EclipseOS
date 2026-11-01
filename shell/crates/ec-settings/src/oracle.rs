@@ -14,7 +14,7 @@ use iced::{Alignment, Element, Length, Theme};
 
 use ec_ui::theme;
 use ec_ui::tokens::{font, size, space};
-use ec_ui::widget::{micro_label, panel, pill, status_cell, status_grid};
+use ec_ui::widget::{glass_panel as panel, micro_label, pill, status_cell, status_grid};
 
 use crate::app::{App, Message};
 
@@ -154,7 +154,6 @@ pub fn hero(app: &App) -> Element<'_, Message, Theme> {
         ]
         .spacing(space::ROW_Y),
     )
-    .into()
 }
 
 #[cfg(test)]
