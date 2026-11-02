@@ -23,3 +23,6 @@ OCR is unchanged: `ocr-lang` stays `eng`. A trial with `eng+ell` on the owner's 
 - The trusted UI still cannot be spoofed with lookalike letters.
 - The trusted `sanitize` still maps C1 and bidi to `?`, not strips them; a follow-up if the rule should be uniform.
 - Greek-labelled options (`α)`) are body text, not pick targets.
+
+## Amendment: composed cells
+The format stays HUD2; the repertoire grows from 419 to 430 cells. Eleven private-use cells, U+E000..U+E00A, are composed glyphs: a base letter with a combining mark over it. p̂ x̂ β̂ σ̂ θ̂ μ̂ λ̂ ρ̂ take U+0302; x̄ p̄ μ̄ take U+0304. `gen_atlas.c` rasterises the base, then the mark from the same face, centred on the advance box and lifted clear of tall bases. `text::sanitize_annotation` folds a listed base followed by its mark into one glyph, which counts as one character for wrap and width. It replaces every caller-supplied private-use codepoint with `?`, so no caller can name a composed cell. Other combining marks are still stripped. y with circumflex or macron is not composed: U+0177 is already a cell, and U+0233 is absent from the atlas (adding it needs a sorted insert and a format bump). The trusted `sanitize` is unchanged.

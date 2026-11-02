@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: AGPL-3.0-only
  *
  * Offline generator for the annotation HUD's JetBrains Mono atlases
- * (ADR 0071). The compositor has no font engine and must not grow one at
- * runtime (ADR 0009), so the face is rasterised here, once, and the 8-bit
- * coverage is checked in beside this file and compiled into
+ * (ADR 0071, amended by ADR 0083). The compositor has no font engine and must
+ * not grow one at runtime (ADR 0009), so the face is rasterised here, once,
+ * and the 8-bit coverage is checked in beside this file and compiled into
  * ec-abyss-render with `include_bytes!` (src/hud_font.rs).
  *
  * Build and run from this directory:
  *
- *     cc -O2 -o gen_atlas gen_atlas.c $(pkg-config --cflags --libs freetype2)
+ *     cc -O2 -o gen_atlas gen_atlas.c $(pkg-config --cflags --libs freetype2) -lm
  *     ./gen_atlas ..
  *
  * The argument is the directory holding the JetBrains Mono TTFs. Output is
@@ -20,15 +20,17 @@
  *   5      cell height  (pixels)
  *   6      advance      (pixels; cell width minus a margin on each side)
  *   7      margin       (pixels of overhang room left of the advance box)
- *   8..    419 cells, in this order:
+ *   8..    430 cells, in this order:
  *          a. printable ASCII 0x20..=0x7e in order (95 cells, indices 0..94)
  *          b. U+00D7 (multiplication sign, the selector's `412 × 128`) and
  *             U+00B7 (middle dot, the selector hint's separator)
  *             (indices 95, 96)
  *          c. the EXTENDED table below, ascending by codepoint (indices
- *             97..418). The annotation HUD draws these; the trusted UI never
- *             does. `hud_font.rs` carries the same list and maps a codepoint
- *             to its cell by binary search, so the two must stay in step.
+ *             97..429). The annotation HUD draws these; the trusted UI never
+ *             does. The last eleven are the private-use composed cells of
+ *             COMPOSED below. `hud_font.rs` carries the same lists and maps a
+ *             codepoint to its cell by binary search, so the two must stay in
+ *             step.
  *   Each cell is cell_w * cell_h coverage bytes, row-major, top row first.
  *   Any codepoint missing from a face is a hard error here: nothing is
  *   substituted from another font.
@@ -37,6 +39,14 @@
  * pixel so a line is a plain blit loop, and each outline is shifted by half
  * the rounding so the ink stays centred in its box. Light hinting (vertical
  * only) keeps baselines and x-height crisp without distorting the shapes.
+ *
+ * Composed cells (COMPOSED): a base letter with a combining mark over it,
+ * rasterised as one cell. The base is drawn as any cell is. The mark comes
+ * from the same face: JetBrains Mono's marks are zero-advance overlays with
+ * their ink to the left of the pen, so the mark is moved to centre on the
+ * advance box, then lifted if it would sit on a tall base (ascender or
+ * Greek top). It is composited with max() so the two inks never cancel. A
+ * mark that would leave the cell is a hard error, not a silent clip.
  */
 #include <ft2build.h>
 #include FT_FREETYPE_H
@@ -65,6 +75,7 @@ static const struct face FACES[] = {
 
 #define FIRST 0x20
 #define LAST 0x7e
+#define PUA_FIRST 0xe000
 /* Non-ASCII cells after the 97 base cells, ascending. Latin-1 Supplement
  * U+00A0..U+00FF (less U+00AD soft hyphen, an invisible format character,
  * and the two base cells U+00B7 and U+00D7), Latin Extended-A (less
@@ -72,7 +83,8 @@ static const struct face FACES[] = {
  * is inside the lowercase run), selected superscripts and subscripts (less
  * the unassigned U+2072/U+2073 and U+2071, which the face lacks), arrows,
  * the mathematical operators the HUD's maths needs, and general punctuation.
- * Every entry was checked against both faces' cmap. */
+ * Every entry was checked against both faces' cmap. The private-use tail
+ * (U+E000..) is the composed cells; its order is COMPOSED's order. */
 static const FT_ULong EXTENDED[] = {
     0x00a0, 0x00a1, 0x00a2, 0x00a3, 0x00a4, 0x00a5, 0x00a6, 0x00a7,
     0x00a8, 0x00a9, 0x00aa, 0x00ab, 0x00ac, 0x00ae, 0x00af, 0x00b0,
@@ -115,10 +127,132 @@ static const FT_ULong EXTENDED[] = {
     0x2207, 0x2208, 0x2211, 0x2212, 0x221a, 0x221e, 0x2227, 0x2228,
     0x2229, 0x222a, 0x222b, 0x2248, 0x2260, 0x2261, 0x2264, 0x2265,
     0x2282, 0x2283,
+    /* Composed cells, one per COMPOSED entry, in its order. */
+    0xe000, 0xe001, 0xe002, 0xe003, 0xe004, 0xe005, 0xe006, 0xe007,
+    0xe008, 0xe009, 0xe00a,
 };
 #define NEXTRA (sizeof EXTENDED / sizeof EXTENDED[0])
 #define BASE (LAST - FIRST + 1 + 2)
 #define COUNT (BASE + NEXTRA)
+
+/* A base letter and a combining mark, drawn as one cell at `pua`. text.rs
+ * folds the two-codepoint sequence into `pua`; hud_font.rs carries the same
+ * triples as COMPOSED. y with circumflex (U+0177) and y with macron (U+0233)
+ * are not generated: U+0177 is already a precomposed cell and U+0233 is not
+ * in the atlas, so a y mark is stripped (ADR 0083 amendment). */
+struct composed {
+    FT_ULong base, mark, pua;
+};
+static const struct composed COMPOSED[] = {
+    {0x70, 0x302, 0xe000},  /* p with circumflex */
+    {0x78, 0x302, 0xe001},  /* x with circumflex */
+    {0x3b2, 0x302, 0xe002}, /* beta with circumflex */
+    {0x3c3, 0x302, 0xe003}, /* sigma with circumflex */
+    {0x3b8, 0x302, 0xe004}, /* theta with circumflex */
+    {0x3bc, 0x302, 0xe005}, /* mu with circumflex */
+    {0x3bb, 0x302, 0xe006}, /* lambda with circumflex */
+    {0x3c1, 0x302, 0xe007}, /* rho with circumflex */
+    {0x78, 0x304, 0xe008},  /* x with macron */
+    {0x70, 0x304, 0xe009},  /* p with macron */
+    {0x3bc, 0x304, 0xe00a}, /* mu with macron */
+};
+#define NCOMPOSED (sizeof COMPOSED / sizeof COMPOSED[0])
+
+/* Per-atlas geometry, shared by every cell of one file. */
+struct geom {
+    int cw, ch, asc, margin, scale, adv;
+    FT_Pos shift;     /* centring shift, 26.6 */
+    FT_Pos embolden;  /* stem emboldening, 26.6; 0 = none */
+};
+
+static const struct composed *composed_for(FT_ULong pua) {
+    for (size_t k = 0; k < NCOMPOSED; k++) {
+        if (COMPOSED[k].pua == pua) {
+            return &COMPOSED[k];
+        }
+    }
+    return NULL;
+}
+
+/* Load glyph `c` and style it as the face's cells are: emboldening, then the
+ * centring shift. Leaves the outline in face->glyph. */
+static int load_styled(FT_Face face, const char *ttf, FT_ULong c, const struct face *f,
+                       const struct geom *g) {
+    if (!FT_Get_Char_Index(face, c)) {
+        fprintf(stderr, "%s has no glyph for U+%04lX\n", ttf, c);
+        return 1;
+    }
+    if (FT_Load_Char(face, c, FT_LOAD_NO_BITMAP | FT_LOAD_TARGET_LIGHT)) {
+        fprintf(stderr, "no glyph %04lx\n", c);
+        return 1;
+    }
+    FT_Outline *o = &face->glyph->outline;
+    if (f->embolden > 0.0) {
+        FT_Outline_EmboldenXY(o, g->embolden, 0);
+        FT_Outline_Translate(o, -g->embolden / 2, 0);
+    }
+    FT_Outline_Translate(o, g->shift, 0);
+    return 0;
+}
+
+/* Rasterise the loaded outline onto the cell at its baseline. A mark is
+ * composited with max(); anything it would leave the cell is an error. */
+static int blit(FT_Face face, const struct geom *g, unsigned char *cell, int mark,
+                FT_ULong c) {
+    if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_LIGHT)) {
+        fprintf(stderr, "render %04lx failed\n", c);
+        return 1;
+    }
+    FT_Bitmap *b = &face->glyph->bitmap;
+    int ox = g->margin + face->glyph->bitmap_left;
+    int oy = g->asc - face->glyph->bitmap_top;
+    for (unsigned y = 0; y < b->rows; y++) {
+        for (unsigned x = 0; x < b->width; x++) {
+            unsigned char v = b->buffer[y * b->pitch + x];
+            int tx = ox + (int)x, ty = oy + (int)y;
+            if (tx < 0 || ty < 0 || tx >= g->cw || ty >= g->ch) {
+                if (mark && v) {
+                    fprintf(stderr, "mark U+%04lX clipped by its cell\n", c);
+                    return 1;
+                }
+                continue; /* clipped overhang; never hit for plain glyphs */
+            }
+            unsigned char *p = &cell[ty * g->cw + tx];
+            if (!mark || v > *p) {
+                *p = v;
+            }
+        }
+    }
+    return 0;
+}
+
+/* A composed cell: the base as any cell, then the mark moved onto the
+ * advance box's centre line and lifted clear of a tall base. */
+static int draw_composed(FT_Face face, const char *ttf, const struct face *f,
+                         const struct geom *g, const struct composed *k, unsigned char *cell) {
+    if (load_styled(face, ttf, k->base, f, g) || blit(face, g, cell, 0, k->base)) {
+        return 1;
+    }
+    FT_BBox base_box;
+    FT_Outline_Get_CBox(&face->glyph->outline, &base_box);
+    if (load_styled(face, ttf, k->mark, f, g)) {
+        return 1;
+    }
+    FT_Outline *o = &face->glyph->outline;
+    FT_BBox mark_box;
+    FT_Outline_Get_CBox(o, &mark_box);
+    /* The mark has zero advance and its ink sits left of the pen, so its own
+     * position says nothing about the cell. Centre it on the advance box,
+     * whose centre is adv / 2 px from the pen: adv * 32 in 26.6. */
+    FT_Pos dx = (FT_Pos)g->adv * 32 - (mark_box.xMin + mark_box.xMax) / 2;
+    FT_Pos gap = (FT_Pos)g->scale * 64; /* one pixel at this scale */
+    FT_Pos dy = 0;
+    if (mark_box.yMin < base_box.yMax + gap) {
+        dy = base_box.yMax + gap - mark_box.yMin;
+    }
+    FT_Outline_Translate(o, dx, dy);
+    return blit(face, g, cell, 1, k->mark);
+}
 
 static int gen(FT_Library lib, const char *dir, const struct face *f, int scale) {
     char path[1024];
@@ -145,44 +279,36 @@ static int gen(FT_Library lib, const char *dir, const struct face *f, int scale)
         return 1;
     }
     /* Shift the outline so the rounding is split evenly either side. */
-    FT_Pos shift = (FT_Pos)lround((adv - true_adv) / 2.0 * 64.0);
+    struct geom g = {
+        .cw = cw,
+        .ch = ch,
+        .asc = asc,
+        .margin = margin,
+        .scale = scale,
+        .adv = adv,
+        .shift = (FT_Pos)lround((adv - true_adv) / 2.0 * 64.0),
+        .embolden = f->embolden > 0.0 ? (FT_Pos)lround(f->embolden * scale * 64.0) : 0,
+    };
 
     unsigned char *cells = calloc((size_t)COUNT * cw * ch, 1);
     for (size_t i = 0; i < COUNT; i++) {
         FT_ULong c = i <= LAST - FIRST ? FIRST + i
                    : i < BASE          ? (i == LAST - FIRST + 1 ? 0x00d7 : 0x00b7)
                                        : EXTENDED[i - BASE];
-        if (!FT_Get_Char_Index(face, c)) {
-            fprintf(stderr, "%s has no glyph for U+%04lX\n", f->ttf, c);
-            return 1;
-        }
-        if (FT_Load_Char(face, c, FT_LOAD_NO_BITMAP | FT_LOAD_TARGET_LIGHT)) {
-            fprintf(stderr, "no glyph %04lx\n", c);
-            return 1;
-        }
-        FT_Outline *o = &face->glyph->outline;
-        if (f->embolden > 0.0) {
-            FT_Pos e = (FT_Pos)lround(f->embolden * scale * 64.0);
-            FT_Outline_EmboldenXY(o, e, 0);
-            FT_Outline_Translate(o, -e / 2, 0);
-        }
-        FT_Outline_Translate(o, shift, 0);
-        if (FT_Render_Glyph(face->glyph, FT_RENDER_MODE_LIGHT)) {
-            fprintf(stderr, "render %04lx failed\n", c);
-            return 1;
-        }
-        FT_Bitmap *b = &face->glyph->bitmap;
-        int ox = margin + face->glyph->bitmap_left;
-        int oy = asc - face->glyph->bitmap_top;
         unsigned char *cell = cells + i * cw * ch;
-        for (unsigned y = 0; y < b->rows; y++) {
-            for (unsigned x = 0; x < b->width; x++) {
-                int tx = ox + (int)x, ty = oy + (int)y;
-                if (tx < 0 || ty < 0 || tx >= cw || ty >= ch) {
-                    continue; /* clipped overhang; never hit for these glyphs */
-                }
-                cell[ty * cw + tx] = b->buffer[y * b->pitch + x];
+        int bad;
+        if (c >= PUA_FIRST) {
+            const struct composed *k = composed_for(c);
+            if (!k) {
+                fprintf(stderr, "no composition for U+%04lX\n", c);
+                return 1;
             }
+            bad = draw_composed(face, f->ttf, f, &g, k, cell);
+        } else {
+            bad = load_styled(face, f->ttf, c, f, &g) || blit(face, &g, cell, 0, c);
+        }
+        if (bad) {
+            return 1;
         }
     }
 

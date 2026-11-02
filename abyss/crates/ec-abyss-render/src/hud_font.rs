@@ -13,6 +13,12 @@
 //! so model replies in those scripts can be drawn. The extended set is
 //! annotation-only; see [`crate::text::sanitize_annotation`].
 //!
+//! The tail of [`EXTENDED`] is the composed cells (ADR 0083 amendment): a
+//! base letter with a combining mark over it, drawn as one glyph at a
+//! private-use codepoint. [`COMPOSED`] lists them; a caller cannot name one,
+//! because `sanitize_annotation` turns any private-use input into `?` and
+//! folds base-plus-mark pairs itself.
+//!
 //! This is a separate set from [`crate::glyphs`], the trusted UI's, which
 //! keeps an exact integer grid at every scale and stays ASCII-only.
 //!
@@ -44,7 +50,8 @@ const HEADER: usize = 8;
 
 /// Codepoints of cells [`BASE`].. in file order, ascending. Must match the
 /// `EXTENDED` table in `assets/fonts/hud/gen_atlas.c` exactly; the atlas
-/// length assert below catches a count mismatch at build time.
+/// length assert below catches a count mismatch at build time. The last
+/// eleven are the composed cells of [`COMPOSED`].
 pub const EXTENDED: &[u32] = &[
     0x00a0, 0x00a1, 0x00a2, 0x00a3, 0x00a4, 0x00a5, 0x00a6, 0x00a7, 0x00a8, 0x00a9, 0x00aa, 0x00ab, 0x00ac,
     0x00ae, 0x00af, 0x00b0, 0x00b1, 0x00b2, 0x00b3, 0x00b4, 0x00b5, 0x00b6, 0x00b8, 0x00b9, 0x00ba, 0x00bb,
@@ -70,8 +77,36 @@ pub const EXTENDED: &[u32] = &[
     0x201d, 0x2022, 0x2026, 0x2070, 0x2074, 0x2075, 0x2076, 0x2077, 0x2078, 0x2079, 0x2080, 0x2081, 0x2082,
     0x2083, 0x2084, 0x2085, 0x2086, 0x2087, 0x2088, 0x2089, 0x20ac, 0x2190, 0x2191, 0x2192, 0x2193, 0x2194,
     0x2195, 0x2200, 0x2202, 0x2203, 0x2206, 0x2207, 0x2208, 0x2211, 0x2212, 0x221a, 0x221e, 0x2227, 0x2228,
-    0x2229, 0x222a, 0x222b, 0x2248, 0x2260, 0x2261, 0x2264, 0x2265, 0x2282, 0x2283,
+    0x2229, 0x222a, 0x222b, 0x2248, 0x2260, 0x2261, 0x2264, 0x2265, 0x2282, 0x2283, 0xe000, 0xe001, 0xe002,
+    0xe003, 0xe004, 0xe005, 0xe006, 0xe007, 0xe008, 0xe009, 0xe00a,
 ];
+
+/// Composed cells: a base letter, the combining mark it takes, and the
+/// private-use codepoint drawn for the pair. The triples mirror the
+/// `COMPOSED` table in `assets/fonts/hud/gen_atlas.c` in the same order; the
+/// test below checks each one against that file. Only `text.rs` folds a
+/// sequence into one of these; no caller can name one.
+pub const COMPOSED: &[(char, char, char)] = &[
+    ('p', '\u{302}', '\u{e000}'),
+    ('x', '\u{302}', '\u{e001}'),
+    ('\u{3b2}', '\u{302}', '\u{e002}'),
+    ('\u{3c3}', '\u{302}', '\u{e003}'),
+    ('\u{3b8}', '\u{302}', '\u{e004}'),
+    ('\u{3bc}', '\u{302}', '\u{e005}'),
+    ('\u{3bb}', '\u{302}', '\u{e006}'),
+    ('\u{3c1}', '\u{302}', '\u{e007}'),
+    ('x', '\u{304}', '\u{e008}'),
+    ('p', '\u{304}', '\u{e009}'),
+    ('\u{3bc}', '\u{304}', '\u{e00a}'),
+];
+
+/// The composed cell for `base` followed by `mark`, if the atlas has one.
+pub fn compose(base: char, mark: char) -> Option<char> {
+    COMPOSED
+        .iter()
+        .find(|&&(b, m, _)| b == base && m == mark)
+        .map(|&(_, _, p)| p)
+}
 
 impl Atlas {
     /// Read the header at compile time; a malformed file fails the build.
@@ -250,6 +285,33 @@ mod tests {
         }
         assert!(covers('\u{3a3}') && covers('\u{3c0}') && covers('\u{2264}') && covers('\u{e9}'));
         assert!(!covers('\u{1f480}'));
+    }
+
+    #[test]
+    fn composed_cells_are_listed_sorted_and_drawn_apart_from_their_base() {
+        let src = include_str!("../../../../assets/fonts/hud/gen_atlas.c");
+        // Every triple is in the generator's table, and the table has no more.
+        assert_eq!(src.matches("{0x").count(), COMPOSED.len());
+        for &(b, m, p) in COMPOSED {
+            let line = format!("{{0x{:x}, 0x{:x}, 0x{:x}}}", b as u32, m as u32, p as u32);
+            assert!(src.contains(&line), "{line} missing from gen_atlas.c");
+            assert!(covers(p), "{p:?}");
+            assert_eq!(compose(b, m), Some(p));
+        }
+        // Private-use codepoints ascend from U+E000, one per pair.
+        assert!(COMPOSED.windows(2).all(|w| w[0].2 < w[1].2));
+        assert_eq!(COMPOSED.first().map(|t| t.2), Some('\u{e000}'));
+        assert!(EXTENDED.ends_with(&(0xe000..0xe000 + COMPOSED.len() as u32).collect::<Vec<u32>>()));
+        assert_eq!(compose('q', '\u{302}'), None);
+        // The composed glyph is its own ink, not the base's.
+        for face in [Face::Title, Face::Body, Face::Readout] {
+            for dev in [1, 2] {
+                let a = face.atlas(dev);
+                for &(b, _, p) in COMPOSED {
+                    assert_ne!(a.cell(p), a.cell(b), "{face:?} {dev}x {p:?}");
+                }
+            }
+        }
     }
 
     #[test]
