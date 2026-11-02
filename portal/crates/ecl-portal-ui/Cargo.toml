@@ -8,6 +8,22 @@ repository.workspace = true
 description = "Eclipse-styled portal dialog panes (iced)."
 publish = false
 
+[lib]
+name = "ecl_portal_ui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ecl-portal-ui"
+path = "src/main.rs"
+
 [dependencies]
 ecl-portal-proto.workspace = true
 postcard.workspace = true
+# Pinned to match ec-ui exactly (ADR 0039). A plain xdg_toplevel, so no
+# iced_layershell: window rules only match toplevels (same as ec-secret-prompt).
+# `image` is for a tile's thumbnail handle once the daemon sends frames.
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "image-without-codecs", "svg"] }
+# Paths are from this crate to the repository root: portal/crates/ecl-portal-ui.
+ec-ui = { path = "../../../shell/crates/ec-ui" }
+# Fail-soft config reads (blur, rounding, window-open animation), as ec-toasts does.
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }

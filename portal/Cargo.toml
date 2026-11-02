@@ -23,7 +23,7 @@ ecl-portal-core = { path = "crates/ecl-portal-core" }
 ecl-portal-store = { path = "crates/ecl-portal-store" }
 ecl-portal-screencast = { path = "crates/ecl-portal-screencast" }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "process", "signal"] }
-zbus = { version = "6", default-features = false, features = ["tokio", "service"] }
+zbus = { version = "6", default-features = false, features = ["tokio", "service", "proxy"] }
 serde = { version = "1", features = ["derive"] }
 postcard = { version = "1", default-features = false, features = ["use-std"] }
 thiserror = "2"

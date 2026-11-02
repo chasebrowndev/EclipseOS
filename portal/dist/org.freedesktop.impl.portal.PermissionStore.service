@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=org.freedesktop.impl.portal.PermissionStore
+Exec=/usr/bin/ecl-desktop-portal
+SystemdService=ecl-desktop-portal.service

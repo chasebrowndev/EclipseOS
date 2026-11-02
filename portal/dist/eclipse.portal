@@ -1,0 +1,5 @@
+# Installed to /usr/share/xdg-desktop-portal/portals/eclipse.portal
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.eclipse
+Interfaces=org.freedesktop.impl.portal.FileChooser;
+UseIn=abyss;eclipse
