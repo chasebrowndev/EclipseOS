@@ -192,7 +192,8 @@ struct PaneRequest {
     loc: Point<i32, Physical>,
     crop: Option<Rectangle<i32, Physical>>,
     /// A window's panes go directly above that window's own backdrop and bezel
-    /// (same splice index, inserted after them); a layer's replace its glass.
+    /// (same splice index, inserted after them), as do a shaped layer's above
+    /// its sheet; an unshaped layer's replace its glass.
     over: bool,
     /// The window's animation scale about its pivot (output-local physical),
     /// applied to every pane box; `None` at rest and for layers.
@@ -765,14 +766,36 @@ pub fn collect_elements(
                     .and_then(|_| committed_panes(surface.wl_surface()));
                 if let Some(set) = panes {
                     let els = pushed(els);
+                    let index = elements.len() + els.len();
+                    // A layer that shapes itself by its input region (the
+                    // bar: the pill, and a drawer while one is out) is a sheet
+                    // with cells on it. The sheet keeps its own glass, and the
+                    // panes go above it, sampling what is behind the layer.
+                    // An unshaped layer (toasts, launcher) is only its panes.
+                    let sheet = (blur_layers && explicit.is_none())
+                        .then(|| layer_shape(surface, geo.size, loc, scale, config))
+                        .flatten();
+                    let over = sheet.is_some();
+                    if let Some(shape) = sheet {
+                        requests.push((
+                            blur::BlurKey::Layer(surface.clone()),
+                            index,
+                            shape.bounds().unwrap_or(layer_rect),
+                            layer_mode,
+                            layer_radius(surface, config),
+                            None,
+                            Some(shape),
+                            crop,
+                        ));
+                    }
                     pane_requests.push(PaneRequest {
-                        key: blur::BlurKey::Layer(surface.clone()),
-                        index: elements.len() + els.len(),
+                        key: blur::BlurKey::LayerPanes(surface.clone()),
+                        index,
                         set,
                         size: geo.size,
                         loc,
                         crop,
-                        over: false,
+                        over,
                         scaled: None,
                         alpha: 1.0,
                     });

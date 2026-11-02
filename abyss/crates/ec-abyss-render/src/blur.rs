@@ -617,6 +617,9 @@ pub enum BlurKey {
     /// A window's `eclipse_glass_v1` panes: one backdrop blurred over their
     /// union, kept apart from the window's own whole-window backdrop.
     Panes(Window),
+    /// A layer surface's `eclipse_glass_v1` panes, kept apart from the
+    /// layer's own shaped backdrop when it keeps one (the bar's sheet).
+    LayerPanes(LayerSurface),
 }
 
 /// Per-surface blur bookkeeping, kept alive between frames.
