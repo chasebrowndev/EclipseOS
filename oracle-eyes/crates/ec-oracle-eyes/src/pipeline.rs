@@ -309,9 +309,22 @@ impl Pipeline {
 
     fn ocr(&mut self) -> Result<&mut Box<dyn Ocr>, String> {
         if self.ocr.is_none() {
-            self.ocr = Some(Box::new(
-                Tesseract::new(&self.cfg.tesseract_bin)?.with_lang(&self.cfg.ocr_lang),
-            ));
+            let tess = Tesseract::new(&self.cfg.tesseract_bin)?;
+            // Probed once, here, because the engine is built once. Logs the
+            // fallback only; the language string is a property of the machine.
+            let lang = match &self.cfg.ocr_lang {
+                Some(l) => l.clone(),
+                None => {
+                    let lang = ocr::auto_lang(&ocr::tessdata_dirs());
+                    if lang == "eng" {
+                        tracing::info!(
+                            "ocr: no ell language data; using eng (set ocr-lang to pin)"
+                        );
+                    }
+                    lang
+                }
+            };
+            self.ocr = Some(Box::new(tess.with_lang(&lang)));
         }
         Ok(self.ocr.as_mut().expect("just built"))
     }

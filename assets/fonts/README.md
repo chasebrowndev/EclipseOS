@@ -17,9 +17,12 @@ shipped here; the table header says how to regenerate it from upstream's BDF.
 `hud/{title,body,readout}-{1x,2x}.a8` are the annotation HUD's face: JetBrains
 Mono pre-rasterised into 8-bit coverage atlases by `hud/gen_atlas.c`, compiled
 into `abyss/crates/ec-abyss-render/src/hud_font.rs` (ADR 0071). Each file is an
-8-byte header (`HUD1`, cell width, cell height, advance, left margin) and 97
-cells: printable ASCII, then U+00D7 and U+00B7. Regenerate with the command at
-the top of `gen_atlas.c`; it reads the two JetBrains Mono statics above.
+8-byte header (`HUD2`, cell width, cell height, advance, left margin) and 419
+cells: printable ASCII, then U+00D7 and U+00B7, then 322 codepoints ascending
+(Latin-1, Latin Extended-A, Greek, math and punctuation; the `EXTENDED` table
+in `gen_atlas.c`). The annotation HUD only; the trusted face stays ASCII.
+Regenerate with the command at the top of `gen_atlas.c`; it reads the two
+JetBrains Mono statics above and fails on any codepoint a face lacks.
 
 `trusted/jbm-{1,2,3}x.bin` are the trusted UI's face (prompts, the emergency
 panel, the commit slot card): JetBrains Mono Regular then Medium, printable

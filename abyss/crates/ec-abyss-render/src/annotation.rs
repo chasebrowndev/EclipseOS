@@ -323,7 +323,7 @@ impl AnnotationStore {
                 anchor,
                 kind,
                 title: title_for(title),
-                text: text::sanitize(text),
+                text: text::sanitize_annotation(text),
                 picks,
                 born: Instant::now(),
                 changed: None,
@@ -339,7 +339,7 @@ impl AnnotationStore {
     pub fn update(&mut self, owner: u64, id: AnnotationId, title: &str, text: &str) -> bool {
         match self.live.get_mut(&id).filter(|a| a.owner == owner) {
             Some(a) => {
-                let (title, text) = (title_for(title), text::sanitize(text));
+                let (title, text) = (title_for(title), text::sanitize_annotation(text));
                 if a.title != title || a.text != text {
                     a.title = title;
                     a.text = text;
@@ -416,7 +416,10 @@ impl AnnotationStore {
 
 /// A title is one line of text, capped hard.
 fn title_for(s: &str) -> String {
-    text::sanitize_line(s).chars().take(MAX_TITLE).collect()
+    text::sanitize_annotation_line(s)
+        .chars()
+        .take(MAX_TITLE)
+        .collect()
 }
 
 /// Progress `0.0..=1.0` of a transition that started at `since`.

@@ -7200,8 +7200,11 @@ one.
 Rendering is the compositor's own minimal monospace glyph path (ADR 0009: no
 toolkit). *(G-02)* The face is JetBrains Mono, drawn from an 8-bit alpha atlas
 pre-rasterised offline and checked in (ADR 0071); trusted UI keeps its own
-fixed face (COMP-10 §2), so the two never share a typeface. Before any string
-is rasterised:
+fixed face (COMP-10 §2), so the two never share a typeface. *(G-06)* The
+atlas carries printable ASCII plus a fixed extended repertoire (Latin-1,
+Latin Extended-A, Greek, selected math, punctuation and super/subscripts;
+ADR 0083); a character outside it draws as `?`, one glyph per character. Before
+any string is rasterised:
 
 - C0/C1 control characters and bidi overrides are stripped, not escaped.
 - Length is clamped to a configured maximum, truncated hard.
@@ -7519,6 +7522,8 @@ same day (ADR 0071, ADR 0072).
 | G-03 | COMP-18 §3 | The rectangle on `annotation_create` is optional; without one the overlay is unanchored, placed by the compositor, and cannot carry a pick | yes |
 | G-04 | COMP-18 §3.1 | The pick marker is a rimmed wash and a label pill; the left bar is gone. The ≤35 px furniture bound of ADR 0054 still holds | yes |
 | G-05 | COMP-17 §3 | Settings edits Oracle Eyes through an `oracle-eyes` block in `abyss.kdl`, keeping Settings a client of the COMP-13 §1.4 write API and nothing else. A changed model command is withheld until approved in the COMP-10 §3.11 prompt (ADR 0072) | yes |
+| G-06 | COMP-18 §2 | The overlay atlas carries an extended repertoire (Latin-1, Latin Extended-A, Greek, selected math/punctuation) beside ASCII. C0/C1 controls, bidi, zero-width and combining characters are stripped, not shown as `?`. Trusted UI is unchanged (ADR 0083) | yes |
+| G-07 | COMP-18 §3.1 | `annotation_create` takes a bounded `picks` array (max 16) as well as the single `pick`; the two together are refused (ADR 0082) | yes |
 
 ---
 

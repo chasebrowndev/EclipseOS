@@ -94,9 +94,10 @@ pub struct Config {
     /// the whole screen, so it is opt-in.
     pub auto: bool,
     pub tesseract_bin: String,
-    /// Tesseract language pack. Config rather than a constant because the
-    /// answer is only as good as the OCR, and the right pack is the user's.
-    pub ocr_lang: String,
+    /// Tesseract language packs (`eng+ell`). `None` is automatic: `eng+ell`
+    /// when both packs are installed, otherwise `eng` (see `ocr::auto_lang`).
+    /// Set it to pin the choice; the right packs are the user's to decide.
+    pub ocr_lang: Option<String>,
     pub claude_bin: String,
     /// `--model` for the CLI. `None` leaves the CLI's own default alone
     /// rather than pinning a name that may stop existing.
@@ -151,7 +152,7 @@ impl Default for Config {
             char_cap: 220,
             auto: false,
             tesseract_bin: "tesseract".to_string(),
-            ocr_lang: "eng".to_string(),
+            ocr_lang: None,
             claude_bin: "claude".to_string(),
             model: None,
             model_command: None,
@@ -365,7 +366,7 @@ pub fn apply_text(cfg: &mut Config, path: &Path, text: &str, errors: &mut Vec<Co
             }
             "ocr-lang" => {
                 if let Some(v) = w.string(node) {
-                    cfg.ocr_lang = v;
+                    cfg.ocr_lang = Some(v);
                 }
             }
             "model" => {
@@ -650,7 +651,14 @@ mod tests {
         // Untouched keys keep their defaults.
         assert_eq!(c.min_display_ms, 4000);
         assert_eq!(c.tesseract_bin, "tesseract");
-        assert_eq!(c.ocr_lang, "eng");
+        assert_eq!(c.ocr_lang, None);
+    }
+
+    #[test]
+    fn an_explicit_ocr_lang_is_kept_verbatim() {
+        let (c, errs) = parse(r#"ocr-lang "eng""#);
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(c.ocr_lang.as_deref(), Some("eng"));
     }
 
     #[test]
