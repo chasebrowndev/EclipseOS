@@ -32,7 +32,7 @@ root=$(CDPATH= cd -- "$here/.." && pwd)
 
 BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher
       ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt
-      ec-pairing'
+      ec-pairing ec-portal'
 UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service'
 # The agent stack add-on, as the PKGBUILD's eclipseos-agents ships it.
 AGENT_BINS='ec-policyd ec-brokerd ec-agentd ec-audit ec-secret ec-inferenced'
@@ -175,7 +175,13 @@ sudo install -Dm 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.de
 #    shipped pointing at /usr/bin, which is where step 1 put the binaries.
 sudo install -Dm 0644 -t /usr/lib/systemd/user \
     "$here/abyss-session.target" "$here/ec-hyperion-bar.service" "$here/ec-toasts.service" \
-    "$here/ec-wallpaper.service" "$here/ec-screensaver.service" "$here/ec-pairing.service"
+    "$here/ec-wallpaper.service" "$here/ec-screensaver.service" "$here/ec-pairing.service" \
+    "$here/ec-portal.service"
+
+# 4a. The colour-scheme portal backend (ADR 0084). Bus-activated, not enabled.
+sudo install -Dm 0644 -t /usr/share/dbus-1/services "$here/dbus/org.freedesktop.impl.portal.desktop.abyss.service"
+sudo install -Dm 0644 "$here/portal/abyss.portal" /usr/share/xdg-desktop-portal/portals/abyss.portal
+sudo install -Dm 0644 "$here/portal/abyss-portals.conf" /usr/share/xdg-desktop-portal/abyss-portals.conf
 
 # 4b. The taskbar's add-on manifest (ADR 0066). Without it abyss keeps its
 #     taskbar-widgets hook off; hosts read manifests only from this directory.

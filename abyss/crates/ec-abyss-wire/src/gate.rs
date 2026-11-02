@@ -96,6 +96,9 @@ pub const TABLE: &[Entry] = &[
     // protects `policy.kdl`; it is not.
     e("get_config", Kind::Query, true),
     e("validate_config", Kind::Query, true),
+    // ADR 0084: the effective scheme, active theme and its seeds. Same tier as
+    // `get_config`: panes read it to colour themselves.
+    e("get_theme", Kind::Query, true),
     e("set_config_value", Kind::Command, true),
     e("set_config_values", Kind::Command, true),
     // Collection entries (`bar { widget … }`, ADR 0065): the same authority as

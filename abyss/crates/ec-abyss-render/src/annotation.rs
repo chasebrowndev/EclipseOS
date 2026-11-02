@@ -480,7 +480,7 @@ pub fn annotation_elements(
     let scale = Scale::from(fractional);
     let logical: Size<i32, Logical> = mode.size.to_f64().to_logical(scale).to_i32_round();
     let dev = hud_font::raster_scale(fractional);
-    let palette = HudPalette::new(&config.annotations);
+    let palette = HudPalette::themed(&config.annotations, &config.appearance);
 
     // Glass needs a blur to be configured at all, something to blur, and an
     // upright output (the mask works in `gl_FragCoord`, which a rotation

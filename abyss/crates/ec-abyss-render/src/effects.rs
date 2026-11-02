@@ -980,6 +980,7 @@ uniform float range;
 uniform float radius;
 uniform float drop;
 uniform float focus; // 0 unfocused .. 1 focused, crossfading with the border
+uniform vec3 shadow_rgb; // black on dark; a warm brown on light (ADR 0084)
 
 float rounded_box(vec2 p, vec2 half_size, float r) {
     vec2 q = abs(p) - half_size + r;
@@ -1024,7 +1025,7 @@ void main() {
     // edge antialiased. The wide ambient sigma, not a fade, is what keeps the
     // shadow from reading as a dark band hugging each rounded corner.
     a *= smoothstep(0.0, 2.0, d_in);
-    gl_FragColor = vec4(0.0, 0.0, 0.0, a * alpha);
+    gl_FragColor = vec4(shadow_rgb * (a * alpha), a * alpha);
 }
 "#;
 
@@ -1037,18 +1038,21 @@ pub fn compile_shadow(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, G
             UniformName::new("radius", UniformType::_1f),
             UniformName::new("drop", UniformType::_1f),
             UniformName::new("focus", UniformType::_1f),
+            UniformName::new("shadow_rgb", UniformType::_3f),
         ],
     )
 }
 
 /// Uniforms for one drop shadow: `[range, radius, drop]` from
-/// `shadow_geometry` (logical px) and the 0..1 `focus` weight.
-pub fn shadow_uniforms([range, radius, drop]: [f32; 3], focus: f32) -> Vec<Uniform<'static>> {
+/// `shadow_geometry` (logical px), the 0..1 `focus` weight and the shadow's
+/// straight colour (`Appearance::shadow_rgb`; black on dark).
+pub fn shadow_uniforms([range, radius, drop]: [f32; 3], focus: f32, rgb: [f32; 3]) -> Vec<Uniform<'static>> {
     vec![
         Uniform::new("range", range),
         Uniform::new("radius", radius),
         Uniform::new("drop", drop),
         Uniform::new("focus", focus),
+        Uniform::new("shadow_rgb", (rgb[0], rgb[1], rgb[2])),
     ]
 }
 

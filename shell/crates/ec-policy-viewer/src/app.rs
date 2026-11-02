@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! State and update. There is one action: re-read the files.
 
-use iced::{Element, Task, Theme};
+use iced::{Element, Subscription, Task, Theme};
 
 use crate::read::{self, Policy};
 use crate::view;
@@ -10,6 +10,9 @@ use crate::view;
 pub enum Message {
     /// Re-read every file on the search path.
     Reload,
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// nothing to do but let the view rebuild.
+    ThemeChanged,
 }
 
 pub struct App {
@@ -38,8 +41,14 @@ impl Default for App {
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::Reload => app.policy = read::load(),
+        Message::ThemeChanged => {}
     }
     Task::none()
+}
+
+/// Keep the palette on the compositor's theme (ADR 0084).
+pub fn subscription(_app: &App) -> Subscription<Message> {
+    ec_ui::ipc::theme_subscription(|| Message::ThemeChanged)
 }
 
 pub fn view(app: &App) -> Element<'_, Message, Theme> {

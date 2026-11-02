@@ -88,7 +88,10 @@ impl Config {
                     _ => self.reject(n, "glass dispersion must be 0.0..=1.0"),
                 },
                 "rim" => match arg(n).and_then(as_f64) {
-                    Some(v) if (0.0..=1.0).contains(&v) => glass.rim = v as f32,
+                    Some(v) if (0.0..=1.0).contains(&v) => {
+                        glass.rim = v as f32;
+                        self.look_set.glass_rim = true;
+                    }
                     _ => self.reject(n, "glass rim must be 0.0..=1.0"),
                 },
                 _ => self.unknown_key(n, "decoration.blur.glass", "glass key"),
@@ -101,7 +104,10 @@ impl Config {
         for n in children.nodes() {
             match n.name().value() {
                 "tint" => match arg(n).and_then(KdlValue::as_string).and_then(parse_color) {
-                    Some(c) => self.decoration.blur.frost.tint = c,
+                    Some(c) => {
+                        self.decoration.blur.frost.tint = c;
+                        self.look_set.frost_tint = true;
+                    }
                     None => self.reject(n, "bad color for \"frost tint\""),
                 },
                 _ => self.unknown_key(n, "decoration.blur.frost", "frost key"),

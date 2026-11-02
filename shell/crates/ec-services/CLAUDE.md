@@ -8,12 +8,14 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   hold no capability and enforce no policy; a compromised service can annoy
   the human, not escalate. Anything that would need to be trusted belongs in
   `abyss/src/trusted_ui/` instead.
-- Lib plus two bins. The lib is linked by the panes (`notifications`, `tray`,
+- Lib plus three bins. The lib is linked by the panes (`notifications`, `tray`,
   `status`, `session`, `apps`); `src/bin/ec-screensaver.rs` owns
   `org.freedesktop.ScreenSaver` and forwards inhibits to the compositor
   (`packaging/ec-screensaver.service`); `src/bin/ec-pairing.rs` is the
   session's one BlueZ pairing agent and serves `org.eclipse.Services.Pairing`
-  (`packaging/ec-pairing.service`, ADR 0066).
+  (`packaging/ec-pairing.service`, ADR 0066); `src/bin/ec-portal.rs` is the
+  xdg-desktop-portal Settings backend (`org.freedesktop.appearance` from the
+  compositor's `get_theme`/`theme`, ADR 0084; `packaging/ec-portal.service`).
 - Deps stay at `zbus` (already in the tree via iced_layershell → mundy, so no
   new supply chain), `ec-ipc` and `serde_json`, plus what ADR 0065
   admits for the taskbar widgets: `pulseaudio` (pure-Rust PulseAudio

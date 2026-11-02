@@ -22,6 +22,8 @@ fn namespace() -> String {
 }
 
 fn main() -> iced_layershell::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     let mut args = std::env::args().skip(1);
     let pin = match args.next().as_deref() {
         Some("--output") => match args.next() {

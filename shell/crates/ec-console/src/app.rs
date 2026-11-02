@@ -22,6 +22,9 @@ const HANDLES_RETRY_MS: u64 = 1500;
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// nothing to do but let the views rebuild.
+    ThemeChanged,
     /// The worker thread started; here is its command channel.
     Ready(Handle),
     /// A heartbeat from the worker, a few times a second.
@@ -409,6 +412,7 @@ pub fn boot() -> (App, Task<Message>) {
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
+        Message::ThemeChanged => return Task::none(),
         Message::Ready(h) => app.net = Some(h),
         Message::Tick => {
             let beat = app.heartbeat();
@@ -620,6 +624,14 @@ fn config_feed() -> Subscription<Message> {
 }
 
 pub fn subscription(app: &App) -> Subscription<Message> {
+    // Keep the palette on the compositor's theme (ADR 0084).
+    Subscription::batch([
+        subscription_inner(app),
+        ec_ui::ipc::theme_subscription(|| Message::ThemeChanged),
+    ])
+}
+
+fn subscription_inner(app: &App) -> Subscription<Message> {
     let mut subs = vec![
         window::close_requests().map(|_| Message::CloseRequested),
         window::resize_events().map(|(_, s)| Message::Resized(s)),

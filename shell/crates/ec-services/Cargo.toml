@@ -19,6 +19,10 @@ name = "ec-screensaver"
 path = "src/bin/ec-screensaver.rs"
 
 [[bin]]
+name = "ec-portal"
+path = "src/bin/ec-portal.rs"
+
+[[bin]]
 name = "ec-pairing"
 path = "src/bin/ec-pairing.rs"
 

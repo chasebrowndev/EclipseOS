@@ -189,7 +189,7 @@ abyss/crates/ec-audit/              ec-audit: verify, trace, query the audit sto
 abyss/crates/ec-ipc/           control-socket client + types
 abyss/crates/ec-ctl/           CLI over the control socket, config migrate
 abyss/crates/ec-abyss-wlcs/            WLCS conformance shim
-shell/crates/ec-services/      D-Bus services: notifications, tray, status, screensaver
+shell/crates/ec-services/      D-Bus services: notifications, tray, status, screensaver, portal settings
 shell/crates/ec-ui/            shared iced theme/tokens/widgets
 shell/crates/{ec-hyperion-bar,ec-toasts,ec-center,ec-launcher,
         ec-settings,ec-policy-viewer,ec-secret-prompt}/  DE panes

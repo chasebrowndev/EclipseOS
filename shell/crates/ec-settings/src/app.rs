@@ -60,6 +60,9 @@ struct LiveWrite {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// nothing to do but let the views rebuild.
+    ThemeChanged,
     /// A section's head in the sidebar: fold it if it is the open one,
     /// otherwise open it on its first page.
     Section(Section),
@@ -797,6 +800,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 
 fn update_inner(app: &mut App, message: Message) -> Task<Message> {
     match message {
+        Message::ThemeChanged => return Task::none(),
         Message::Section(s) => {
             if app.open == Some(s) && s.expands() {
                 // Folding leaves the page where it is: closing a list is
@@ -1175,6 +1179,14 @@ impl iced::advanced::widget::Operation<Option<f32>> for Measure {
 /// iced's `time::every` needs a tokio or smol backend and we enable neither,
 /// so the wait lives in a thread rather than in a futures timer.
 pub fn subscription(app: &App) -> Subscription<Message> {
+    // Keep the palette on the compositor's theme (ADR 0084).
+    Subscription::batch([
+        subscription_inner(app),
+        ec_ui::ipc::theme_subscription(|| Message::ThemeChanged),
+    ])
+}
+
+fn subscription_inner(app: &App) -> Subscription<Message> {
     let mut subs = vec![blur(), events(), crate::search_ui::keys(&app.search)];
     subs.push(ec_ui::glass::xdg_window().map(Message::GlassWindow));
     if app.nav_moving() {

@@ -62,6 +62,14 @@ pub struct General {
     /// Width, logical px, of the screen-edge band that adds a full-height
     /// column or full-width row on drop.
     pub drop_edge_band: i32,
+    /// `color-scheme` (ADR 0084).
+    pub color_scheme: ColorSetting,
+    /// Theme used while the scheme is dark / light.
+    pub theme_dark: String,
+    pub theme_light: String,
+    /// `auto` schedule, minutes since local midnight.
+    pub light_from: u16,
+    pub dark_from: u16,
 }
 
 impl General {
@@ -103,6 +111,11 @@ impl Default for General {
             drop_guides: true,
             drop_guide_color: [0.91, 0.64, 0.24, 1.0],
             drop_edge_band: 40,
+            color_scheme: ColorSetting::Dark,
+            theme_dark: "dark".into(),
+            theme_light: "light".into(),
+            light_from: DEFAULT_LIGHT_FROM,
+            dark_from: DEFAULT_DARK_FROM,
         }
     }
 }
@@ -380,6 +393,24 @@ impl AnnotationColors {
             "leader" => &mut self.leader,
             "selection-dim" => &mut self.selection_dim,
             "danger" => &mut self.danger,
+            _ => return None,
+        })
+    }
+}
+
+impl AnnotationColors {
+    pub(crate) fn slot(&self, key: &str) -> Option<&[f32; 4]> {
+        Some(match key {
+            "accent" => &self.accent,
+            "accent-text" => &self.accent_text,
+            "text" => &self.text,
+            "panel-tint" => &self.panel_tint,
+            "panel-rim" => &self.panel_rim,
+            "hairline" => &self.hairline,
+            "region-outline" => &self.region_outline,
+            "leader" => &self.leader,
+            "selection-dim" => &self.selection_dim,
+            "danger" => &self.danger,
             _ => return None,
         })
     }

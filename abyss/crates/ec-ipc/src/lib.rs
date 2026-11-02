@@ -58,6 +58,9 @@ pub enum EventKind {
     /// How many consent prompts are parked: `{"count": N}`. A count, never
     /// content (A-08 §7, COMP-10 §3.13).
     DecisionsPending,
+    /// The effective scheme or active theme's seeds changed; the payload is the
+    /// `get_theme` reply (ADR 0084).
+    Theme,
 }
 
 impl EventKind {
@@ -73,6 +76,7 @@ impl EventKind {
         EventKind::Launcher,
         EventKind::Phrase,
         EventKind::DecisionsPending,
+        EventKind::Theme,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -88,6 +92,7 @@ impl EventKind {
             EventKind::Launcher => "launcher",
             EventKind::Phrase => "phrase",
             EventKind::DecisionsPending => "decisions_pending",
+            EventKind::Theme => "theme",
         }
     }
 

@@ -72,6 +72,14 @@ built-in dark or light palette, compile-time constants in the TCB, matching
 the active theme's brightness. User config never reaches the TCB as a
 colour.
 
+**Details as built.** Seeds are opaque `#rrggbb`; a theme may inherit only a
+built-in or an earlier theme, so cycles cannot form. Theme blocks are KDL-only,
+not settable over the socket. An explicit `blur { frost { tint } }`,
+`blur { glass { rim } }` or `annotations { }` key still wins over the theme.
+`ec-portal` (`ec-services`) is the bus-activated portal Settings backend,
+selected by `abyss.portal` and `abyss-portals.conf` under
+`XDG_CURRENT_DESKTOP=Abyss`. It serves dark until the compositor answers.
+
 ## Consequences
 - COMP-10 §5 ("no theming") is amended in the same PR to allow exactly
   this, and nothing more: two compiled-in palettes chosen by the scheme.

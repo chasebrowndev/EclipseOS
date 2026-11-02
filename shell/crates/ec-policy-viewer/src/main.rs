@@ -5,8 +5,11 @@
 use ec_policy_viewer::app::{self, App};
 
 fn main() -> iced::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     let mut builder = iced::application(App::new, app::update, app::view)
         .title("Eclipse Policy")
+        .subscription(app::subscription)
         .theme(|_: &App| ec_ui::theme::theme())
         .window_size((820.0, 720.0))
         .antialiasing(true);

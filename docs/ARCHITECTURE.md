@@ -29,8 +29,8 @@ crates/
   ec-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
   ec-secret-prompt/  one-shot wifi passphrase / Bluetooth PIN prompt (ADR 0053)
   ec-services/   D-Bus services: notifications, tray, status, session (ADR 0038);
-                      lib plus the ec-screensaver (ADR 0051) and
-                      ec-pairing (ADR 0066) bins
+                      lib plus the ec-screensaver (ADR 0051),
+                      ec-pairing (ADR 0066) and ec-portal (ADR 0084) bins
   ec-abyss-wlcs/         wlcs conformance cdylib, drives the headless backend
   policyd/            policy + audit daemon            [TCB]
   ec-policy-eval/        shared evaluator, linked by both [TCB]

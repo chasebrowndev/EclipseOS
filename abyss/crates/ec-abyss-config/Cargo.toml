@@ -6,6 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Never published; keeps cargo-deny's `allow-wildcard-paths` applicable to ec-theme.
+publish = false
 
 [lib]
 name = "ec_abyss_config"
@@ -20,6 +22,7 @@ path = "src/lib.rs"
 test-hooks = []
 
 [dependencies]
+ec-theme = { path = "../ec-theme" }
 tracing.workspace = true
 xkbcommon.workspace = true
 kdl.workspace = true
