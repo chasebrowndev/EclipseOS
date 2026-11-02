@@ -43,6 +43,8 @@ yellow accent. Use this as art direction; do not copy any specific screen.
 - Accent: #f2c33c. Tints: rgba(242,195,60,.09) fill, .24-.32 border, #f5cf5c for text
 - Text: #fff primary, rgba(255,255,255,.64) secondary, rgba(255,255,255,.4) tertiary
 - Neutral swatch grey: #96918a (warm, not #8f8f96)
+- These values are the built-in dark seeds run through `derive` in `abyss/crates/ec-theme`
+  (bit-exact, `dark_golden` test); the light alpha table lives beside them
 
 ## Light (ADR 0084)
 Same material and same structure, inverted ink. Light glass is a bright frosted

@@ -306,7 +306,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for Arrangement<'_, 
                         Size::new(w as f32, h as f32),
                     ),
                     border: border::rounded(radius::INSET)
-                        .color(color::BORDER)
+                        .color(color::border())
                         .width(canvas::ARRANGE_RIM),
                     ..renderer::Quad::default()
                 },
@@ -334,7 +334,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for Arrangement<'_, 
                         border: border::rounded(radius::INSET),
                         ..renderer::Quad::default()
                     },
-                    color::LIFT_SOFT,
+                    color::lift_soft(),
                 );
             }
         }

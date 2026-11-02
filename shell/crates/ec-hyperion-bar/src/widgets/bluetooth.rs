@@ -50,8 +50,8 @@ pub(crate) fn glyph(bt: Bluetooth) -> &'static str {
 /// `alpha` fades it with its cell.
 pub(crate) fn bluetooth_mark(bt: Bluetooth, side: f32, alpha: f32) -> Element<'static, Message, Theme> {
     let tint = match (bt.powered, bt.connected) {
-        (true, n) if n > 0 => color::TEXT_SECONDARY,
-        _ => color::TEXT_TERTIARY,
+        (true, n) if n > 0 => color::text_secondary(),
+        _ => color::text_tertiary(),
     };
     parts::mark(crate::icons::symbolic(glyph(bt)), side, tint.scale_alpha(alpha))
 }
@@ -92,10 +92,10 @@ pub(crate) fn sheet(app: &App) -> Sheet {
             .collect();
         for d in &connected {
             s.current(parts::drawer_current(
-                device_mark(d.kind, drawer::CURRENT_MARK, color::CONNECTED),
+                device_mark(d.kind, drawer::CURRENT_MARK, color::connected()),
                 &elide(&d.name, DRAWER_CHARS),
                 "connected",
-                color::CONNECTED,
+                color::connected(),
                 Some(("Disconnect", Message::BtDisconnect(d.addr.clone()))),
             ));
         }
@@ -104,7 +104,7 @@ pub(crate) fn sheet(app: &App) -> Sheet {
         }
         for d in &paired {
             s.row(parts::drawer_choice(
-                device_mark(d.kind, drawer::MARK, color::TEXT_SECONDARY),
+                device_mark(d.kind, drawer::MARK, color::text_secondary()),
                 &elide(&d.name, DRAWER_CHARS),
                 None,
                 Some(Message::BtConnect(d.addr.clone())),
@@ -122,7 +122,7 @@ pub(crate) fn sheet(app: &App) -> Sheet {
             parts::mark(
                 crate::icons::symbolic("view-refresh"),
                 drawer::MARK,
-                color::TEXT_SECONDARY,
+                color::text_secondary(),
             ),
             if scanning {
                 "Stop scanning"
@@ -140,7 +140,7 @@ pub(crate) fn sheet(app: &App) -> Sheet {
                 .collect();
             for d in &nearby {
                 s.row(parts::drawer_choice(
-                    device_mark(d.kind, drawer::MARK, color::TEXT_TERTIARY),
+                    device_mark(d.kind, drawer::MARK, color::text_tertiary()),
                     &elide(&d.name, DRAWER_CHARS),
                     None,
                     Some(Message::BtConnect(d.addr.clone())),

@@ -18,7 +18,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 
 use iced::Color;
 
-use crate::tokens::color::BASE;
+use crate::tokens::color::base;
 
 /// The three surface values, sRGB intent.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,7 +64,7 @@ pub fn set(v: Values) {
 }
 
 /// White at the linear-light alpha that reads on screen as sRGB `intent` over
-/// [`BASE`]. Solved per channel and averaged, since BASE is not neutral.
+/// [`base`]. Solved per channel and averaged, since BASE is not neutral.
 pub fn white_fill(intent: f32) -> Color {
     Color {
         r: 1.0,
@@ -77,14 +77,14 @@ pub fn white_fill(intent: f32) -> Color {
 /// The reference backdrop the tint is solved against: sRGB 128, mid-grey.
 pub const MID: f32 = 128.0 / 255.0;
 
-/// The linear-light alpha of [`BASE`] over the backdrop that reads on screen as
+/// The linear-light alpha of [`base`] over the backdrop that reads on screen as
 /// sRGB `intent` over [`MID`]. Per channel, `a = (L(mid) - L(out)) / (L(mid) -
 /// L(base))` with `out = intent*base + (1-intent)*mid` in sRGB and `L` the
 /// sRGB-to-linear transfer, then averaged since BASE is not neutral. At `.70`
 /// this is about `.89`, not `.70`. The tint is then exact over mid-grey and
 /// close over other backdrops, where a single alpha cannot be exact.
 pub fn tint_alpha(intent: f32) -> f32 {
-    let channels = [BASE.r, BASE.g, BASE.b];
+    let channels = [base().r, base().g, base().b];
     let lin_mid = to_linear(MID);
     let sum: f32 = channels
         .iter()
@@ -96,16 +96,16 @@ pub fn tint_alpha(intent: f32) -> f32 {
     (sum / 3.0).clamp(0.0, 1.0)
 }
 
-/// [`BASE`] at the linear alpha that reads as the tint `intent` over mid-grey.
+/// [`base`] at the linear alpha that reads as the tint `intent` over mid-grey.
 pub fn tint(intent: f32) -> Color {
     Color {
         a: tint_alpha(intent),
-        ..BASE
+        ..base()
     }
 }
 
 fn linear_alpha(intent: f32) -> f32 {
-    let channels = [BASE.r, BASE.g, BASE.b];
+    let channels = [base().r, base().g, base().b];
     let sum: f32 = channels
         .iter()
         .map(|&b| {
@@ -173,7 +173,7 @@ mod tests {
                 1.055 * l.powf(1.0 / 2.4) - 0.055
             }
         };
-        for b in [BASE.r, BASE.g, BASE.b] {
+        for b in [base().r, base().g, base().b] {
             let lin = a * to_linear(b) + (1.0 - a) * to_linear(MID);
             let got = to_srgb(lin) * 255.0;
             let want = (intent * b + (1.0 - intent) * MID) * 255.0;

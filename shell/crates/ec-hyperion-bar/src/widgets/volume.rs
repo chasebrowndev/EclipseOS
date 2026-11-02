@@ -218,9 +218,9 @@ fn section(
             crate::icons::symbolic(lead),
             drawer::MARK,
             if muted {
-                color::TEXT_TERTIARY
+                color::text_tertiary()
             } else {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             },
         ),
         on_mute,
@@ -235,11 +235,11 @@ fn section(
             parts::mark(
                 crate::icons::symbolic(kind_glyph(d.kind)),
                 drawer::CURRENT_MARK,
-                color::TEXT,
+                color::text(),
             ),
             &elide(&d.description, DEVICE_CHARS),
             kind_label(d.kind),
-            color::TEXT_TERTIARY,
+            color::text_tertiary(),
             None,
         ));
     }
@@ -252,7 +252,7 @@ fn section(
             parts::mark(
                 crate::icons::symbolic(kind_glyph(d.kind)),
                 drawer::MARK,
-                color::TEXT_SECONDARY,
+                color::text_secondary(),
             ),
             &elide(&d.description, DEVICE_CHARS),
             None,
@@ -324,7 +324,7 @@ pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame) -> Parts<'a> {
         let mark = parts::mark(
             crate::icons::symbolic("audio-volume-muted"),
             bar::MARK,
-            color::TEXT_TERTIARY.scale_alpha(ink),
+            color::text_tertiary().scale_alpha(ink),
         );
         return Parts {
             core: super::fixed(mark, bar::MARK),
@@ -332,9 +332,9 @@ pub fn view<'a>(state: &'a State, cfg: &Cfg, frame: ShellFrame) -> Parts<'a> {
         };
     };
     let tint = if sink.muted {
-        color::TEXT_TERTIARY
+        color::text_tertiary()
     } else {
-        color::TEXT_SECONDARY
+        color::text_secondary()
     };
     let mark = parts::mark(
         crate::icons::symbolic(glyph(sink)),

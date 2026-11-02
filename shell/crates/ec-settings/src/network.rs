@@ -262,7 +262,7 @@ fn hero(net: &Net, radius: f32, hairline_cards: bool) -> Element<'_, Message, Th
                 column![
                     micro_label("signal"),
                     big_value(number, unit, false),
-                    meter_bar(space::HERO_METER_W, 0.0, color::TRACK),
+                    meter_bar(space::HERO_METER_W, 0.0, color::track()),
                     tertiary(why),
                 ]
                 .spacing(space::ROW_Y),
@@ -291,7 +291,7 @@ fn hero(net: &Net, radius: f32, hairline_cards: bool) -> Element<'_, Message, Th
         .align_y(Alignment::Center),
         micro_label("signal"),
         big_value(&d.signal.to_string(), "%", true),
-        meter_bar(space::HERO_METER_W, f32::from(d.signal) / 100.0, color::ACCENT),
+        meter_bar(space::HERO_METER_W, f32::from(d.signal) / 100.0, color::accent()),
     ]
     .spacing(space::ROW_Y);
 

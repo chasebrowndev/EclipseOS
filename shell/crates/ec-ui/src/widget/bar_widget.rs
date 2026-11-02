@@ -47,9 +47,9 @@ pub enum Grip {
 impl Grip {
     fn ink(self) -> Color {
         match self {
-            Grip::Rest => color::TEXT_TERTIARY,
-            Grip::Hover => color::TEXT_SECONDARY,
-            Grip::Active => color::TEXT,
+            Grip::Rest => color::text_tertiary(),
+            Grip::Hover => color::text_secondary(),
+            Grip::Active => color::text(),
         }
     }
 
@@ -1296,7 +1296,11 @@ pub fn viz_bars_faded<'a, Message: 'a>(
     live: bool,
     alpha: f32,
 ) -> Element<'a, Message, Theme> {
-    let ink = if live { color::ACCENT } else { color::TEXT_TERTIARY };
+    let ink = if live {
+        color::accent()
+    } else {
+        color::text_tertiary()
+    };
     Element::new(VizBars {
         levels: *levels,
         ink: ink.scale_alpha(alpha.clamp(0.0, 1.0)),
@@ -1389,9 +1393,9 @@ pub fn mini_meter_faded<'a, Message: 'a>(
         0.0
     };
     let (fill, reading) = if accent {
-        (color::ACCENT, color::ACCENT_TEXT)
+        (color::accent(), color::accent_text())
     } else {
-        (color::TEXT_SECONDARY, color::TEXT)
+        (color::text_secondary(), color::text())
     };
     let (fill, reading) = (fill.scale_alpha(a), reading.scale_alpha(a));
     let lit = (bar::METER_W * f).round();
@@ -1399,7 +1403,7 @@ pub fn mini_meter_faded<'a, Message: 'a>(
         text(label.to_uppercase())
             .font(font::DATA_MEDIUM)
             .size(size::MICRO)
-            .color(color::TEXT_TERTIARY.scale_alpha(a))
+            .color(color::text_tertiary().scale_alpha(a))
             .wrapping(text::Wrapping::None),
         Space::new().width(Length::Fill),
         text(format!("{}%", (f * 100.0).round() as u32))
@@ -1414,7 +1418,7 @@ pub fn mini_meter_faded<'a, Message: 'a>(
         quad(
             Length::Fixed(bar::METER_W - lit),
             Length::Fixed(bar::METER_H),
-            color::TRACK.scale_alpha(a),
+            color::track().scale_alpha(a),
             0.0
         ),
     ];
@@ -1492,13 +1496,13 @@ fn transport_lift(alpha: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
 
 fn transport_lift_at(status: button::Status, alpha: f32) -> button::Style {
     let background = match status {
-        button::Status::Hovered => color::LIFT_SOFT,
-        button::Status::Pressed => color::LIFT,
+        button::Status::Hovered => color::lift_soft(),
+        button::Status::Pressed => color::lift(),
         _ => Color::TRANSPARENT,
     };
     button::Style {
         background: Some(iced::Background::Color(background.scale_alpha(alpha))),
-        text_color: color::TEXT,
+        text_color: color::text(),
         border: iced::border::rounded(bar::RADIUS_TRANSPORT),
         ..button::Style::default()
     }
@@ -1511,9 +1515,9 @@ fn transport_button<'a, Message: Clone + 'a>(
     alpha: f32,
 ) -> Element<'a, Message, Theme> {
     let (ink, hover_ink) = match (on_press.is_some(), primary) {
-        (false, _) => (color::TEXT_TERTIARY, color::TEXT_TERTIARY),
-        (true, true) => (color::TEXT, color::TEXT),
-        (true, false) => (color::TEXT_SECONDARY, color::TEXT),
+        (false, _) => (color::text_tertiary(), color::text_tertiary()),
+        (true, true) => (color::text(), color::text()),
+        (true, false) => (color::text_secondary(), color::text()),
     };
     let mark = canvas(GlyphMark {
         glyph,
@@ -1617,9 +1621,9 @@ pub fn volume_slider_faded<'a, Message: Clone + 'a>(
         0.0
     };
     let (fill, reading) = match (muted, accent) {
-        (true, _) => (color::TEXT_TERTIARY, color::TEXT_TERTIARY),
-        (false, true) => (color::ACCENT, color::ACCENT_TEXT),
-        (false, false) => (color::TEXT_SECONDARY, color::TEXT),
+        (true, _) => (color::text_tertiary(), color::text_tertiary()),
+        (false, true) => (color::accent(), color::accent_text()),
+        (false, false) => (color::text_secondary(), color::text()),
     };
     let (fill, reading) = (fill.scale_alpha(a), reading.scale_alpha(a));
     let mut track = slider(0.0..=max, v, on_change)
@@ -1629,14 +1633,14 @@ pub fn volume_slider_faded<'a, Message: Clone + 'a>(
         .style(move |_t: &Theme, status: slider::Status| {
             let knob = match status {
                 slider::Status::Active => fill,
-                _ if muted => color::TEXT_SECONDARY.scale_alpha(a),
-                _ => color::TEXT.scale_alpha(a),
+                _ if muted => color::text_secondary().scale_alpha(a),
+                _ => color::text().scale_alpha(a),
             };
             slider::Style {
                 rail: slider::Rail {
                     backgrounds: (
                         iced::Background::Color(fill),
-                        iced::Background::Color(color::TRACK.scale_alpha(a)),
+                        iced::Background::Color(color::track().scale_alpha(a)),
                     ),
                     width: bar::VOLUME_RAIL,
                     border: Border::default(),
@@ -1704,7 +1708,12 @@ pub fn art_thumb<'a, Message: 'a>(art: Option<&image::Handle>, hard: bool) -> El
             .content_fit(iced::ContentFit::Cover)
             .border_radius(r)
             .into(),
-        None => quad(Length::Fixed(bar::ART), Length::Fixed(bar::ART), color::TRACK, r),
+        None => quad(
+            Length::Fixed(bar::ART),
+            Length::Fixed(bar::ART),
+            color::track(),
+            r,
+        ),
     }
 }
 
@@ -1729,7 +1738,7 @@ pub fn art_slot<'a, Message: 'a>(
     let under = |ink: Color| quad(Length::Fixed(bar::ART), Length::Fixed(bar::ART), ink, r);
     match art {
         Some(h) if arrival > 0.0 => iced::widget::stack![
-            under(color::TRACK.scale_alpha(a * (1.0 - arrival))),
+            under(color::track().scale_alpha(a * (1.0 - arrival))),
             image(h.clone())
                 .width(Length::Fixed(bar::ART))
                 .height(Length::Fixed(bar::ART))
@@ -1738,7 +1747,7 @@ pub fn art_slot<'a, Message: 'a>(
                 .opacity(a * arrival),
         ]
         .into(),
-        _ => under(color::TRACK.scale_alpha(a)),
+        _ => under(color::track().scale_alpha(a)),
     }
 }
 
@@ -1783,12 +1792,12 @@ pub fn track_label_faded<'a, Message: 'a>(
             text(elide(title, budget))
                 .font(font::UI_MEDIUM)
                 .size(size::BODY_SMALL)
-                .color(color::TEXT.scale_alpha(a))
+                .color(color::text().scale_alpha(a))
                 .wrapping(text::Wrapping::None),
             text(elide(subtitle, mono_budget))
                 .font(font::DATA)
                 .size(size::MICRO)
-                .color(color::TEXT_SECONDARY.scale_alpha(a))
+                .color(color::text_secondary().scale_alpha(a))
                 .wrapping(text::Wrapping::None),
         ]
         .spacing(bar::LABEL_LINE_GAP),

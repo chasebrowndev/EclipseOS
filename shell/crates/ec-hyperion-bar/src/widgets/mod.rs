@@ -524,7 +524,7 @@ pub(crate) fn press<'a>(
 pub(crate) fn bare(_t: &Theme, _s: button::Status) -> button::Style {
     button::Style {
         background: None,
-        text_color: color::TEXT,
+        text_color: color::text(),
         ..button::Style::default()
     }
 }
@@ -533,13 +533,13 @@ pub(crate) fn bare(_t: &Theme, _s: button::Status) -> button::Style {
 /// of its own under the pointer, so it is clear *which* of them answers.
 pub(crate) fn inner(_t: &Theme, status: button::Status) -> button::Style {
     let background = match status {
-        button::Status::Hovered => Some(iced::Background::Color(color::LIFT_SOFT)),
-        button::Status::Pressed => Some(iced::Background::Color(color::LIFT)),
+        button::Status::Hovered => Some(iced::Background::Color(color::lift_soft())),
+        button::Status::Pressed => Some(iced::Background::Color(color::lift())),
         _ => None,
     };
     button::Style {
         background,
-        text_color: color::TEXT,
+        text_color: color::text(),
         border: iced::border::rounded(bar::RADIUS_ICON),
         ..button::Style::default()
     }

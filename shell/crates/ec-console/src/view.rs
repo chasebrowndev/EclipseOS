@@ -312,7 +312,7 @@ fn fleet_row<'a>(app: &'a App, t: &'a Task, depth: usize) -> El<'a> {
         r = r.push(edge_quad(
             Length::Fixed(space::HAIRLINE),
             Length::Fill,
-            color::BORDER_STRONG,
+            color::border_strong(),
         ));
     }
     r = r.push(
@@ -430,7 +430,7 @@ fn service(app: &App) -> Option<El<'_>> {
     let retry = matches!(m.link, Link::Offline(_));
     Some(
         row![
-            edge_note(head, text_, color::NEUTRAL),
+            edge_note(head, text_, color::neutral()),
             if retry {
                 act("Retry", Some(Message::Retry))
             } else {
@@ -748,7 +748,7 @@ fn live_hero<'a>(app: &'a App, s: &Subject<'a>) -> El<'a> {
 
     panel(
         app.radius,
-        column![top, progress_bar(frac, color::TEXT_SECONDARY)].spacing(space::ROW_Y),
+        column![top, progress_bar(frac, color::text_secondary())].spacing(space::ROW_Y),
     )
     .into()
 }
@@ -836,7 +836,7 @@ fn event_line<'a>(l: &model::Line) -> El<'a> {
         .padding([space::BADGE_Y * 2.0, space::ROW_Y])
         .style(|_t: &Theme| container::Style {
             border: iced::Border {
-                color: color::HAIRLINE,
+                color: color::hairline(),
                 width: space::HAIRLINE,
                 radius: radius::PILL.into(),
             },
@@ -907,7 +907,7 @@ fn agent_post<'a>(app: &App, s: &Subject<'_>, m: &Post, question: bool, context:
     let card: El<'a> = if question {
         container(
             row![
-                edge_quad(Length::Fixed(space::BAR_W), Length::Fill, color::TEXT_SECONDARY),
+                edge_quad(Length::Fixed(space::BAR_W), Length::Fill, color::text_secondary()),
                 card,
             ]
             .height(Length::Shrink),
@@ -1454,7 +1454,7 @@ fn slot_area(app: &App) -> El<'_> {
         Guard::Off(why) => edge_note(
             "Dispatch needs the compositor's card",
             &format!("This window is not protected, so there is nowhere to commit a task. {why}."),
-            color::NEUTRAL,
+            color::neutral(),
         ),
         _ => {
             let mut col = Column::new()

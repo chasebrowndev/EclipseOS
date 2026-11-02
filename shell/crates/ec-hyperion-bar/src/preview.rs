@@ -109,7 +109,7 @@ fn cover() -> image::Handle {
     for y in 0..side {
         for x in 0..side {
             let t = (x + y) as f32 / (2 * side) as f32;
-            for c in mix(color::ACCENT, color::SURFACE_0, t) {
+            for c in mix(color::accent(), color::surface_0(), t) {
                 rgba.push((c * 255.0).round() as u8);
             }
             rgba.push(u8::MAX);

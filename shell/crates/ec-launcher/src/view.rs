@@ -139,7 +139,7 @@ fn prompt(app: &App) -> Element<'_, Message, Theme> {
     let position = text(position)
         .size(size::MONO)
         .font(font::DATA)
-        .color(color::TEXT_TERTIARY);
+        .color(color::text_tertiary());
 
     // Same material as `prompt_cell`'s own ground (a glass cell at rest), but
     // with glass the compositor draws it and the cell keeps only its content.
@@ -218,11 +218,11 @@ fn entry_row(
     // not read as a selected row that can.
     let live = selected && !entry.terminal;
     let name_tint = if entry.terminal {
-        color::TEXT_TERTIARY
+        color::text_tertiary()
     } else if live {
-        color::ACCENT_TEXT
+        color::accent_text()
     } else {
-        color::TEXT
+        color::text()
     };
     let name = text(entry.name.clone())
         .size(size::BODY)
@@ -251,11 +251,11 @@ fn entry_row(
             Wrapping::None
         })
         .color(if refusal.is_some() {
-            color::DANGER
+            color::danger()
         } else if entry.terminal {
-            color::TEXT_TERTIARY
+            color::text_tertiary()
         } else {
-            color::TEXT_SECONDARY
+            color::text_secondary()
         });
 
     // The identifier is on the selected row only. It is what will actually be
@@ -269,7 +269,7 @@ fn entry_row(
             .size(size::MONO)
             .font(font::DATA)
             .wrapping(Wrapping::None)
-            .color(color::TEXT_TERTIARY)
+            .color(color::text_tertiary())
             .into()
     } else {
         Space::new().into()
@@ -338,7 +338,7 @@ fn footer(app: &App) -> Element<'_, Message, Theme> {
         Some(problem) => text(problem.clone())
             .size(size::BODY_SMALL)
             .font(font::DATA)
-            .color(color::DANGER)
+            .color(color::danger())
             .into(),
         None => parts::key_hints(&[("\u{2191}\u{2193}", "select"), ("enter", "run"), ("esc", "close")]),
     };
@@ -350,7 +350,7 @@ fn footer(app: &App) -> Element<'_, Message, Theme> {
         text(tally)
             .size(size::MONO)
             .font(font::DATA)
-            .color(color::TEXT_TERTIARY)
+            .color(color::text_tertiary())
             .into()
     };
 

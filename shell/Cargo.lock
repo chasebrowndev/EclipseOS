@@ -1084,6 +1084,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-theme"
+version = "0.1.0"
+
+[[package]]
 name = "ec-toasts"
 version = "0.1.0"
 dependencies = [
@@ -1100,6 +1104,7 @@ version = "0.1.0"
 dependencies = [
  "ec-ipc",
  "ec-protocols",
+ "ec-theme",
  "iced",
  "raw-window-handle",
  "serde_json",

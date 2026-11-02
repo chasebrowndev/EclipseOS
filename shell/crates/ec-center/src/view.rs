@@ -101,15 +101,15 @@ fn reading(label: &str, value: String, warn: bool) -> Element<'static, Message, 
     // for the same reason it is on the bar: it is a state the human must act
     // on before the machine acts for them.
     let tint = if warn {
-        color::DANGER
+        color::danger()
     } else {
-        color::TEXT_SECONDARY
+        color::text_secondary()
     };
     cell(
         text(label.to_owned())
             .size(size::BODY)
             .font(font::UI)
-            .color(color::TEXT),
+            .color(color::text()),
         text(value).size(size::MONO).font(font::DATA).color(tint),
     )
 }
@@ -136,14 +136,14 @@ fn action_row(action: Action, availability: Availability) -> Element<'static, Me
         .size(size::BODY)
         .font(font::UI)
         .color(if offered {
-            color::TEXT
+            color::text()
         } else {
-            color::TEXT_TERTIARY
+            color::text_tertiary()
         });
     let note = text(note(availability))
         .size(size::MONO)
         .font(font::DATA)
-        .color(color::TEXT_TERTIARY);
+        .color(color::text_tertiary());
     let row = cell(label, note);
     if offered {
         mouse_area(row).on_press(Message::Perform(action)).into()
@@ -219,7 +219,7 @@ fn problem(app: &App) -> Element<'_, Message, Theme> {
         Some(problem) => text(problem.clone())
             .size(size::BODY_SMALL)
             .font(font::DATA)
-            .color(color::DANGER)
+            .color(color::danger())
             .into(),
         None => Space::new().into(),
     };
@@ -232,7 +232,7 @@ fn problem(app: &App) -> Element<'_, Message, Theme> {
                     text("Close")
                         .size(size::BODY_SMALL)
                         .font(font::UI_MEDIUM)
-                        .color(color::TEXT_SECONDARY)
+                        .color(color::text_secondary())
                 )
                 .padding([0, space::CARD as u16])
                 .height(Length::Fill)

@@ -23,12 +23,12 @@ pub fn theme() -> Theme {
     Theme::custom(
         "Eclipse",
         iced::theme::Palette {
-            background: color::BASE,
-            text: color::TEXT,
-            primary: color::ACCENT,
-            success: color::OK,
-            warning: color::ACCENT,
-            danger: color::DANGER,
+            background: color::base(),
+            text: color::text(),
+            primary: color::accent(),
+            success: color::ok(),
+            warning: color::accent(),
+            danger: color::danger(),
         },
     )
 }
@@ -52,9 +52,9 @@ pub fn theme() -> Theme {
 /// fallback stays visible at the call site instead of hiding in here.
 pub fn panel(radius: f32) -> impl Fn(&Theme) -> container::Style {
     move |_t: &Theme| container::Style {
-        background: Some(Background::Color(color::GLASS)),
+        background: Some(Background::Color(color::glass())),
         border: Border {
-            color: color::BORDER,
+            color: color::border(),
             width: space::HAIRLINE,
             radius: radius.into(),
         },
@@ -70,25 +70,25 @@ pub fn panel(radius: f32) -> impl Fn(&Theme) -> container::Style {
 /// ([`crate::ipc::fetch_blur`]). With it on, the compositor draws the whole
 /// material *under* this surface — blur, vibrancy, a near-white hairline rim
 /// and a soft offset shadow — so the client lays only a light tint
-/// ([`color::SHEET_TINT`]) and no border or shadow of its own: a second rim
+/// ([`color::sheet_tint()`]) and no border or shadow of its own: a second rim
 /// or a second shadow on top of the compositor's is exactly the doubled edge
 /// this avoids.
 ///
 /// With it off there is nothing behind the tint, so the ground is the opaque
-/// [`color::GLASS_DEEP_BACKED`] (BLUR-01) and the client draws its own
+/// [`color::glass_deep_backed()`] (BLUR-01) and the client draws its own
 /// hairline to hold an edge against an arbitrary photograph.
 pub fn surface(radius: f32, blur: bool) -> impl Fn(&Theme) -> container::Style {
     move |_t: &Theme| container::Style {
         background: Some(Background::Color(if blur {
-            color::SHEET_TINT
+            color::sheet_tint()
         } else {
-            color::GLASS_DEEP_BACKED
+            color::glass_deep_backed()
         })),
         border: Border {
             color: if blur {
                 Color::TRANSPARENT
             } else {
-                color::BORDER_STRONG
+                color::border_strong()
             },
             width: space::HAIRLINE,
             radius: radius.into(),
@@ -107,7 +107,7 @@ pub fn surface(radius: f32, blur: bool) -> impl Fn(&Theme) -> container::Style {
 /// hairline as its own edge.
 pub fn menu_surface(radius: f32) -> impl Fn(&Theme) -> container::Style {
     move |t: &Theme| container::Style {
-        background: Some(Background::Color(color::MENU_GROUND)),
+        background: Some(Background::Color(color::menu_ground())),
         ..surface(radius, false)(t)
     }
 }
@@ -116,20 +116,24 @@ pub fn menu_surface(radius: f32) -> impl Fn(&Theme) -> container::Style {
 /// kept apart from [`panel`]/[`surface`]'s `decoration.rounding` because the
 /// bar sheet's corner is its own setting (COMP-13 §1.2).
 ///
-/// With `blur` on it is the thinnest glass on screen — [`color::BAR_TINT`]
+/// With `blur` on it is the thinnest glass on screen — [`color::bar_tint()`]
 /// and no border, the compositor's rim and shadow being the whole of its
-/// edge. With it off it falls back to the opaque [`color::GLASS_DEEP_BACKED`]
+/// edge. With it off it falls back to the opaque [`color::glass_deep_backed()`]
 /// and a faint hairline (BLUR-01): the bar's silhouette should be read from
 /// its shape, not announced by its outline.
 pub fn bar_ground(radius: f32, blur: bool) -> impl Fn(&Theme) -> container::Style {
     move |_t: &Theme| container::Style {
         background: Some(Background::Color(if blur {
-            color::BAR_TINT
+            color::bar_tint()
         } else {
-            color::GLASS_DEEP_BACKED
+            color::glass_deep_backed()
         })),
         border: Border {
-            color: if blur { Color::TRANSPARENT } else { color::HAIRLINE },
+            color: if blur {
+                Color::TRANSPARENT
+            } else {
+                color::hairline()
+            },
             width: space::HAIRLINE,
             radius: radius.into(),
         },
@@ -139,7 +143,7 @@ pub fn bar_ground(radius: f32, blur: bool) -> impl Fn(&Theme) -> container::Styl
 
 /// The folded bar's ground: [`bar_ground`]'s sheet seen edge-on, as a
 /// dormant bar cell — the same tint, ringed by the ghost rim a minimized
-/// chip wears ([`color::CELL_RIM_AWAY`]), with blur on as well as off.
+/// chip wears ([`color::cell_rim_away()`]), with blur on as well as off.
 ///
 /// The one place a glass surface carries its own rim, because at 2–16 px the
 /// compositor's rim and shadow do not read: the strip was a flat band with
@@ -155,9 +159,9 @@ pub fn bar_folded(radius: f32, blur: bool, rim: f32) -> impl Fn(&Theme) -> conta
             // Blur off, the pill already wears a hairline of the same weight,
             // so there is nothing to fade in.
             color: if blur {
-                color::CELL_RIM_AWAY.scale_alpha(rim)
+                color::cell_rim_away().scale_alpha(rim)
             } else {
-                color::CELL_RIM_AWAY
+                color::cell_rim_away()
             },
             width: space::HAIRLINE,
             radius: radius.into(),
@@ -184,12 +188,12 @@ pub fn inset(_t: &Theme) -> container::Style {
 }
 
 /// The ground a dimmed run is veiled with, blur off: the same inset fill and
-/// rim as [`inset`], with the content faded by [`color::VEIL`]. Live with
+/// rim as [`inset`], with the content faded by [`color::veil()`]. Live with
 /// `decoration.surface.inset-fill`, like [`inset`].
 pub fn veil() -> crate::widget::Ground {
     let fill = crate::surface::current().inset_fill;
     crate::widget::Ground {
-        base: color::VEIL,
+        base: color::veil(),
         fill: crate::surface::white_fill(fill),
         rim: crate::surface::white_fill(fill * crate::surface::RIM_PER_FILL),
     }
@@ -200,48 +204,48 @@ pub fn veil() -> crate::widget::Ground {
 /// abyss cuts the window to.
 pub fn window(radius: f32) -> impl Fn(&Theme) -> container::Style {
     move |_t: &Theme| container::Style {
-        background: Some(Background::Color(color::BASE)),
+        background: Some(Background::Color(color::base())),
         border: border::rounded(radius),
         ..container::Style::default()
     }
 }
 
 /// The left sidebar: darker than anything beside it. With `blur` on it is
-/// the translucent [`color::SIDEBAR`] over the compositor's blur — the one
+/// the translucent [`color::sidebar()`] over the compositor's blur — the one
 /// part of a settings window that lets the desktop through — and with it off
 /// the same colour pre-composited over the window base.
 pub fn sidebar(blur: bool) -> impl Fn(&Theme) -> container::Style {
     move |_t: &Theme| container::Style {
         background: Some(Background::Color(if blur {
-            color::SIDEBAR
+            color::sidebar()
         } else {
-            color::SIDEBAR_BACKED
+            color::sidebar_backed()
         })),
         ..container::Style::default()
     }
 }
 
 /// The content column beside a [`sidebar`], in a window that is itself
-/// transparent. With `blur` on it is [`color::CONTENT`] — the same smoked
+/// transparent. With `blur` on it is [`color::content()`] — the same smoked
 /// glass as the sidebar, a step lighter — so the window reads as one pane of
 /// glass with a hairline down it, not a glass rail beside an opaque slab.
 /// With it off there is nothing behind the window, and the ground is the
-/// opaque [`color::CONTENT_BACKED`]. Square: the compositor's corner mask
+/// opaque [`color::content_backed()`]. Square: the compositor's corner mask
 /// rounds it.
 pub fn content_ground(blur: bool) -> impl Fn(&Theme) -> container::Style {
     move |_t: &Theme| container::Style {
         background: Some(Background::Color(if blur {
-            color::CONTENT
+            color::content()
         } else {
-            color::CONTENT_BACKED
+            color::content_backed()
         })),
         ..container::Style::default()
     }
 }
 
 /// One window's material: the rail, the column, or a whole window body. Its
-/// ground is [`color::BASE`] at `decoration.surface.tint` with blur on, and
-/// opaque [`color::BASE`] with blur off, so the window is one material and the
+/// ground is [`color::base()`] at `decoration.surface.tint` with blur on, and
+/// opaque [`color::base()`] with blur off, so the window is one material and the
 /// 1px rule between halves does the parting. Square: the compositor's corner
 /// mask rounds it.
 pub fn window_pane(blur: bool) -> impl Fn(&Theme) -> container::Style {
@@ -249,7 +253,7 @@ pub fn window_pane(blur: bool) -> impl Fn(&Theme) -> container::Style {
         background: Some(Background::Color(if blur {
             crate::surface::tint(crate::surface::current().tint)
         } else {
-            color::BASE
+            color::base()
         })),
         ..container::Style::default()
     }
@@ -306,9 +310,9 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
                 (false, false) => Color::TRANSPARENT,
             })),
             text_color: if active {
-                color::TEXT
+                color::text()
             } else {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             },
             border: border::rounded(radius::INSET),
             ..button::Style::default()
@@ -324,7 +328,7 @@ pub fn pill(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
             background: Some(Background::Color(if selected {
-                color::ACCENT_FILL
+                color::accent_fill()
             } else if hovered {
                 Color {
                     a: 0.07,
@@ -337,15 +341,15 @@ pub fn pill(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
                 }
             })),
             text_color: if selected {
-                color::ACCENT_TEXT
+                color::accent_text()
             } else {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             },
             border: Border {
                 color: if selected {
-                    color::ACCENT_BORDER
+                    color::accent_border()
                 } else {
-                    color::BORDER
+                    color::border()
                 },
                 width: 1.0,
                 radius: radius::PILL.into(),
@@ -362,16 +366,20 @@ pub fn chip(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
             background: Some(Background::Color(match (selected, hovered) {
-                (true, _) => color::ACCENT_FILL,
-                (false, true) => color::LIFT,
-                (false, false) => color::LIFT_SOFT,
+                (true, _) => color::accent_fill(),
+                (false, true) => color::lift(),
+                (false, false) => color::lift_soft(),
             })),
-            text_color: if selected { color::ACCENT_TEXT } else { color::TEXT },
+            text_color: if selected {
+                color::accent_text()
+            } else {
+                color::text()
+            },
             border: Border {
                 color: if selected {
-                    color::ACCENT_BORDER
+                    color::accent_border()
                 } else {
-                    color::BORDER
+                    color::border()
                 },
                 width: 1.0,
                 radius: radius::CHIP.into(),
@@ -418,11 +426,11 @@ impl From<bool> for CellTone {
 /// by side on the bar read as one family (ADR 0065).
 ///
 /// Each is a small glass lozenge on the bar's glass: a faint white fill
-/// ([`color::CELL`]), a hairline just inside the edge ([`color::CELL_RIM`])
-/// and a soft drop under it ([`color::CELL_SHADOW`]). The pointer brightens
+/// ([`color::cell()`]), a hairline just inside the edge ([`color::cell_rim()`])
+/// and a soft drop under it ([`color::cell_shadow()`]). The pointer brightens
 /// the fill and the rim together; a press brightens the fill again. A
 /// [`CellTone::Focused`] cell is the same glass a step clearer: a brighter
-/// white fill ([`color::CELL_FOCUS`]) and rim ([`color::CELL_FOCUS_RIM`]),
+/// white fill ([`color::cell_focus()`]) and rim ([`color::cell_focus_rim()`]),
 /// the same neutral drop, and a gold label — the bar's one resting yellow
 /// besides the current workspace tile. The accent is never a ground, an
 /// outline or a glow. A
@@ -449,21 +457,21 @@ pub fn glass_cell(
         let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let pressed = matches!(status, button::Status::Pressed);
         let background = match (tone, status) {
-            (CellTone::Focused, button::Status::Pressed) => color::CELL_FOCUS_PRESS,
-            (CellTone::Focused, button::Status::Hovered) => color::CELL_FOCUS_HOVER,
-            (CellTone::Focused, _) => color::CELL_FOCUS,
-            (_, button::Status::Pressed) => color::CELL_PRESS,
-            (_, button::Status::Hovered) => color::CELL_HOVER,
+            (CellTone::Focused, button::Status::Pressed) => color::cell_focus_press(),
+            (CellTone::Focused, button::Status::Hovered) => color::cell_focus_hover(),
+            (CellTone::Focused, _) => color::cell_focus(),
+            (_, button::Status::Pressed) => color::cell_press(),
+            (_, button::Status::Hovered) => color::cell_hover(),
             (CellTone::Away | CellTone::Latent, _) => Color::TRANSPARENT,
-            (CellTone::Plain, _) => color::CELL,
+            (CellTone::Plain, _) => color::cell(),
         };
         let rim = match (tone, lit) {
-            (CellTone::Focused, true) => color::CELL_FOCUS_RIM_HOVER,
-            (CellTone::Focused, false) => color::CELL_FOCUS_RIM,
-            (_, true) => color::CELL_RIM_HOVER,
-            (CellTone::Away, false) => color::CELL_RIM_AWAY,
+            (CellTone::Focused, true) => color::cell_focus_rim_hover(),
+            (CellTone::Focused, false) => color::cell_focus_rim(),
+            (_, true) => color::cell_rim_hover(),
+            (CellTone::Away, false) => color::cell_rim_away(),
             (CellTone::Latent, false) => Color::TRANSPARENT,
-            (_, false) => color::CELL_RIM,
+            (_, false) => color::cell_rim(),
         };
         // A pressed cell is pushed into the glass, and a minimized or latent
         // one at rest is not lifted off it at all: neither casts a drop.
@@ -472,7 +480,7 @@ pub fn glass_cell(
             Shadow::default()
         } else {
             Shadow {
-                color: color::CELL_SHADOW,
+                color: color::cell_shadow(),
                 offset: Vector::new(0.0, bar::CELL_SHADOW_Y),
                 blur_radius: bar::CELL_SHADOW_BLUR,
             }
@@ -480,9 +488,9 @@ pub fn glass_cell(
         button::Style {
             background: Some(Background::Color(background)),
             text_color: if tone == CellTone::Focused {
-                color::ACCENT_TEXT
+                color::accent_text()
             } else {
-                color::TEXT
+                color::text()
             },
             border: Border {
                 color: rim,
@@ -517,19 +525,19 @@ pub fn bare_container_if_glass(mut style: container::Style) -> container::Style 
     style
 }
 
-/// A destructive action. Never accented — see the note on [`color::DANGER`].
+/// A destructive action. Never accented — see the note on [`color::danger()`].
 pub fn danger(_t: &Theme, status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
         background: Some(Background::Color(Color {
             a: if hovered { 0.18 } else { 0.10 },
-            ..color::DANGER
+            ..color::danger()
         })),
-        text_color: color::DANGER,
+        text_color: color::danger(),
         border: Border {
             color: Color {
                 a: 0.32,
-                ..color::DANGER
+                ..color::danger()
             },
             width: 1.0,
             radius: radius::PILL.into(),
@@ -540,39 +548,39 @@ pub fn danger(_t: &Theme, status: button::Status) -> button::Style {
 
 pub fn text_primary(_t: &Theme) -> text::Style {
     text::Style {
-        color: Some(color::TEXT),
+        color: Some(color::text()),
     }
 }
 
 pub fn text_secondary(_t: &Theme) -> text::Style {
     text::Style {
-        color: Some(color::TEXT_SECONDARY),
+        color: Some(color::text_secondary()),
     }
 }
 
 pub fn text_tertiary(_t: &Theme) -> text::Style {
     text::Style {
-        color: Some(color::TEXT_TERTIARY),
+        color: Some(color::text_tertiary()),
     }
 }
 
 /// The one live value on a pane.
 pub fn text_accent(_t: &Theme) -> text::Style {
     text::Style {
-        color: Some(color::ACCENT_TEXT),
+        color: Some(color::accent_text()),
     }
 }
 
 pub fn text_danger(_t: &Theme) -> text::Style {
     text::Style {
-        color: Some(color::DANGER),
+        color: Some(color::danger()),
     }
 }
 
 /// Hairline between rows. Thickness is the `Rule`'s own, not the style's.
 pub fn hairline(_t: &Theme) -> rule::Style {
     rule::Style {
-        color: color::HAIRLINE,
+        color: color::hairline(),
         radius: 0.0.into(),
         fill_mode: rule::FillMode::Full,
         snap: true,
@@ -587,13 +595,16 @@ pub fn eclipse_slider(_t: &Theme, status: slider::Status) -> slider::Style {
     };
     slider::Style {
         rail: slider::Rail {
-            backgrounds: (Background::Color(color::ACCENT), Background::Color(color::TRACK)),
+            backgrounds: (
+                Background::Color(color::accent()),
+                Background::Color(color::track()),
+            ),
             width: 5.0,
             border: border::rounded(radius::PILL),
         },
         handle: slider::Handle {
             shape: slider::HandleShape::Circle { radius: knob },
-            background: Background::Color(color::ACCENT),
+            background: Background::Color(color::accent()),
             border_color: Color::TRANSPARENT,
             border_width: 0.0,
         },
@@ -606,12 +617,12 @@ pub fn eclipse_radio(_t: &Theme, status: radio::Status) -> radio::Style {
     };
     radio::Style {
         background: Background::Color(Color::TRANSPARENT),
-        dot_color: color::ACCENT,
+        dot_color: color::accent(),
         border_width: 1.0,
         border_color: if selected {
-            color::ACCENT
+            color::accent()
         } else {
-            color::BORDER_STRONG
+            color::border_strong()
         },
         text_color: None,
     }
@@ -626,19 +637,19 @@ pub fn eclipse_input(_t: &Theme, status: text_input::Status) -> text_input::Styl
         }),
         border: Border {
             color: if focused {
-                color::ACCENT_BORDER
+                color::accent_border()
             } else {
-                color::BORDER
+                color::border()
             },
             width: 1.0,
             radius: radius::INSET.into(),
         },
-        icon: color::TEXT_TERTIARY,
-        placeholder: color::TEXT_TERTIARY,
-        value: color::TEXT,
+        icon: color::text_tertiary(),
+        placeholder: color::text_tertiary(),
+        value: color::text(),
         selection: Color {
             a: 0.28,
-            ..color::ACCENT
+            ..color::accent()
         },
     }
 }
@@ -649,7 +660,7 @@ pub fn eclipse_input(_t: &Theme, status: text_input::Status) -> text_input::Styl
 pub fn eclipse_input_invalid(t: &Theme, status: text_input::Status) -> text_input::Style {
     text_input::Style {
         border: Border {
-            color: color::DANGER,
+            color: color::danger(),
             ..eclipse_input(t, status).border
         },
         ..eclipse_input(t, status)
@@ -664,12 +675,12 @@ pub fn prompt_input(_t: &Theme, _status: text_input::Status) -> text_input::Styl
     text_input::Style {
         background: Background::Color(Color::TRANSPARENT),
         border: Border::default(),
-        icon: color::TEXT_TERTIARY,
-        placeholder: color::TEXT_TERTIARY,
-        value: color::TEXT,
+        icon: color::text_tertiary(),
+        placeholder: color::text_tertiary(),
+        value: color::text(),
         selection: Color {
             a: 0.28,
-            ..color::ACCENT
+            ..color::accent()
         },
     }
 }
@@ -695,14 +706,14 @@ pub fn eclipse_scrollable(_t: &Theme, status: scrollable::Status) -> scrollable:
         horizontal_rail: rail,
         gap: None,
         auto_scroll: scrollable::AutoScroll {
-            background: Background::Color(color::SURFACE_2),
+            background: Background::Color(color::surface_2()),
             border: Border {
-                color: color::BORDER,
+                color: color::border(),
                 width: 1.0,
                 radius: radius::PILL.into(),
             },
             shadow: Shadow::default(),
-            icon: color::TEXT_SECONDARY,
+            icon: color::text_secondary(),
         },
     }
 }
@@ -716,15 +727,15 @@ pub fn fleet_row(selected: bool) -> impl Fn(&Theme, button::Status) -> button::S
         let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
             background: Some(Background::Color(match (selected, lit) {
-                (true, _) => color::CELL_FOCUS,
-                (false, true) => color::CELL_HOVER,
+                (true, _) => color::cell_focus(),
+                (false, true) => color::cell_hover(),
                 (false, false) => Color::TRANSPARENT,
             })),
-            text_color: color::TEXT,
+            text_color: color::text(),
             border: Border {
                 color: match (selected, lit) {
-                    (true, _) => color::CELL_FOCUS_RIM,
-                    (false, true) => color::CELL_RIM_HOVER,
+                    (true, _) => color::cell_focus_rim(),
+                    (false, true) => color::cell_rim_hover(),
                     (false, false) => Color::TRANSPARENT,
                 },
                 width: space::HAIRLINE,
@@ -742,20 +753,20 @@ pub fn pick(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
         let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
             background: Some(Background::Color(match (selected, lit) {
-                (true, _) => color::HIGHLIGHT,
-                (false, true) => color::LIFT,
-                (false, false) => color::LIFT_SOFT,
+                (true, _) => color::highlight(),
+                (false, true) => color::lift(),
+                (false, false) => color::lift_soft(),
             })),
             text_color: if selected {
-                color::TEXT
+                color::text()
             } else {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             },
             border: Border {
                 color: if selected {
-                    color::HIGHLIGHT_STRONG
+                    color::highlight_strong()
                 } else {
-                    color::BORDER
+                    color::border()
                 },
                 width: space::HAIRLINE,
                 radius: radius::PILL.into(),
@@ -772,7 +783,11 @@ pub fn link(_t: &Theme, status: button::Status) -> button::Style {
     let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
     button::Style {
         background: None,
-        text_color: if lit { color::TEXT } else { color::TEXT_SECONDARY },
+        text_color: if lit {
+            color::text()
+        } else {
+            color::text_secondary()
+        },
         border: Border::default(),
         ..button::Style::default()
     }
@@ -782,10 +797,10 @@ pub fn link(_t: &Theme, status: button::Status) -> button::Style {
 /// control that exists but cannot act right now (the agent service is away).
 pub fn pill_disabled(_t: &Theme, _status: button::Status) -> button::Style {
     button::Style {
-        background: Some(Background::Color(color::LIFT_SOFT)),
-        text_color: color::TEXT_TERTIARY,
+        background: Some(Background::Color(color::lift_soft())),
+        text_color: color::text_tertiary(),
         border: Border {
-            color: color::HAIRLINE,
+            color: color::hairline(),
             width: space::HAIRLINE,
             radius: radius::PILL.into(),
         },
@@ -796,7 +811,7 @@ pub fn pill_disabled(_t: &Theme, _status: button::Status) -> button::Style {
 /// A post of yours in a thread: a clear lift of white, no rim.
 pub fn bubble_human(_t: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(color::LIFT)),
+        background: Some(Background::Color(color::lift())),
         border: border::rounded(radius::CARD),
         ..container::Style::default()
     }
@@ -806,9 +821,9 @@ pub fn bubble_human(_t: &Theme) -> container::Style {
 /// is how the thread tells agent text from yours before any label is read.
 pub fn bubble_agent(_t: &Theme) -> container::Style {
     container::Style {
-        background: Some(Background::Color(color::SIDEBAR)),
+        background: Some(Background::Color(color::sidebar())),
         border: Border {
-            color: color::BORDER,
+            color: color::border(),
             width: space::HAIRLINE,
             radius: radius::CARD.into(),
         },
@@ -821,12 +836,12 @@ pub fn bubble_agent(_t: &Theme) -> container::Style {
 /// waiting on you; it is white, never the accent.
 pub fn editor_ground(lit: bool) -> impl Fn(&Theme) -> container::Style {
     move |_t: &Theme| container::Style {
-        background: Some(Background::Color(color::LIFT_SOFT)),
+        background: Some(Background::Color(color::lift_soft())),
         border: Border {
             color: if lit {
-                color::HIGHLIGHT_STRONG
+                color::highlight_strong()
             } else {
-                color::BORDER
+                color::border()
             },
             width: space::HAIRLINE,
             radius: radius::CARD.into(),
@@ -840,15 +855,15 @@ pub fn bare_editor(_t: &Theme, status: text_editor::Status) -> text_editor::Styl
     text_editor::Style {
         background: Background::Color(Color::TRANSPARENT),
         border: Border::default(),
-        placeholder: color::TEXT_TERTIARY,
+        placeholder: color::text_tertiary(),
         value: if matches!(status, text_editor::Status::Disabled) {
-            color::TEXT_TERTIARY
+            color::text_tertiary()
         } else {
-            color::TEXT
+            color::text()
         },
         selection: Color {
             a: 0.28,
-            ..color::ACCENT
+            ..color::accent()
         },
     }
 }
@@ -860,11 +875,15 @@ pub fn send(ready: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
         let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
             background: Some(Background::Color(match (ready, lit) {
-                (true, true) => color::HIGHLIGHT_STRONG,
-                (true, false) => color::HIGHLIGHT,
-                (false, _) => color::LIFT_SOFT,
+                (true, true) => color::highlight_strong(),
+                (true, false) => color::highlight(),
+                (false, _) => color::lift_soft(),
             })),
-            text_color: if ready { color::TEXT } else { color::TEXT_TERTIARY },
+            text_color: if ready {
+                color::text()
+            } else {
+                color::text_tertiary()
+            },
             border: border::rounded(radius::PILL),
             ..button::Style::default()
         }
@@ -913,7 +932,7 @@ mod tests {
             assert!(white(fill(&s)) && white(s.border.color));
             let drop = s.shadow.color;
             assert_eq!((drop.r, drop.g, drop.b), (0.0, 0.0, 0.0));
-            assert_eq!(s.text_color, color::ACCENT_TEXT);
+            assert_eq!(s.text_color, color::accent_text());
         }
     }
 

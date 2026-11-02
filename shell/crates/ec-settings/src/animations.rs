@@ -660,7 +660,7 @@ fn dead_pill<'a>(label: &str) -> Element<'a, Message, Theme> {
         text(label.to_owned())
             .font(font::UI_MEDIUM)
             .size(size::BODY_SMALL)
-            .color(color::TEXT_TERTIARY),
+            .color(color::text_tertiary()),
     )
     .padding([space::PILL_Y, space::PILL_X])
     .style(theme::pill(false))
@@ -942,9 +942,9 @@ fn event_row<'a>(
     .padding([space::LINE_GAP * 2.0, space::CARD])
     .width(Length::Fill)
     .style(move |_t: &Theme| container::Style {
-        background: Some(iced::Background::Color(color::HIGHLIGHT.scale_alpha(lit))),
+        background: Some(iced::Background::Color(color::highlight().scale_alpha(lit))),
         border: iced::Border {
-            color: color::BORDER_STRONG.scale_alpha(lit),
+            color: color::border_strong().scale_alpha(lit),
             width: space::HAIRLINE,
             radius: radius::INSET.into(),
         },

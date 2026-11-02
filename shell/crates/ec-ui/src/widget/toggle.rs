@@ -136,7 +136,7 @@ where
         let track = if self.is_on {
             Color {
                 a: alpha,
-                ..color::ACCENT
+                ..color::accent()
             }
         } else {
             Color {
@@ -175,7 +175,7 @@ where
             if self.is_on {
                 Color {
                     a: alpha,
-                    ..color::BASE
+                    ..color::base()
                 }
             } else {
                 Color {
