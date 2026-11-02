@@ -79,3 +79,7 @@ pub const MAX_ADDRESS: usize = 64;
 pub const MAX_ADDRESSES: usize = 4;
 /// Longest window title or output name in a tile caption.
 pub const MAX_CAPTION: usize = 26;
+
+/// Below this window width the requester's identity hint sits under the
+/// subtitle instead of folding beside the title.
+pub const SHEET_FOLD_W: f32 = 520.0;
