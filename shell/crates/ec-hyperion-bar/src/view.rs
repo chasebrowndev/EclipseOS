@@ -1326,11 +1326,7 @@ fn icon_view(icon: Icon, alpha: f32) -> Element<'static, Message, Theme> {
             .height(square)
             .opacity(alpha)
             .into(),
-        Icon::Raster(path) => image(image::Handle::from_path(path))
-            .width(square)
-            .height(square)
-            .opacity(alpha)
-            .into(),
+        Icon::Raster(handle) => image(handle).width(square).height(square).opacity(alpha).into(),
         // A rounded square on the reference panes' 6px-on-18px placeholder
         // scale, so a missing icon still reads as a member of this row.
         Icon::Placeholder => container(Space::new())
