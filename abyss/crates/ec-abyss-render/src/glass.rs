@@ -183,10 +183,13 @@ const RIM_FOCUS_HOVER: f32 = 3.4375;
 
 /// What the glass program is told for one pane: the rim multiplier and the
 /// fill lift (a small mix toward white). No colour: gold never enters glass.
+/// `shade` is the light scheme's twin of `lift`: on near-white glass a pointer
+/// darkens instead (toward ink), and a focused pane at rest takes none.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Look {
     pub rim: f32,
     pub lift: f32,
+    pub shade: f32,
 }
 
 /// The look of `pane`, or `None` when it draws nothing (latent at rest, or
@@ -206,10 +209,18 @@ pub fn look(pane: &Pane) -> Option<Look> {
     if pane.alpha == 0 {
         return None;
     }
+    let shade = match (pane.tone, hot, pressed) {
+        (_, false, _) => 0.0,
+        (Tone::Focused, _, false) => 0.025,
+        (Tone::Focused, _, true) => 0.045,
+        (_, _, false) => 0.035,
+        (_, _, true) => 0.06,
+    };
     let a = pane.alpha as f32 / 255.0;
     Some(Look {
         rim: rim * a,
         lift: lift * a,
+        shade: shade * a,
     })
 }
 
@@ -359,6 +370,8 @@ mod tests {
         assert_eq!(away.lift, 0.0);
         assert_eq!(plain.lift, 0.0);
         assert!(press.lift > hover.lift && hover.lift > 0.0);
+        assert!(press.shade > hover.shade && hover.shade > 0.0);
+        assert_eq!(plain.shade, 0.0);
         assert!((focus.rim / plain.rim - 2.5).abs() < 1e-6);
         assert!(look(&pane(Tone::Latent, 0, 255)).is_none());
         assert_eq!(look(&pane(Tone::Latent, HOVERED, 255)), Some(hover));

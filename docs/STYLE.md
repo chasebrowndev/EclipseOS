@@ -57,8 +57,9 @@ the same rules (ADR 0084).
 - Ink: rgba(26,22,16,α) replaces rgba(255,255,255,α) for hairlines, borders and
   tracks, at roughly the same α (.06-.14). The rim stays white: on light glass it reads as
   a bright edge, not a highlight
-- Bar cells: rgba(255,255,255,.40) fill, rgba(26,22,16,.08) hairline. Hover .55 / .12;
-  press .65, no shadow. Focused / selected: .70 white and a crisp rgba(26,22,16,.18) hairline,
+- Bar cells: rgba(255,255,255,.40) fill, rgba(26,22,16,.08) hairline. Hover darkens: rgba(26,22,16,.05) / .12;
+  press rgba(26,22,16,.09), no shadow. A focused cell thins to .58 white on hover and .46 on press.
+  Compositor glass does the same: `Look::shade` mixes toward ink. Focused / selected: .70 white and a crisp rgba(26,22,16,.18) hairline,
   gold on the label only. The same rules as dark: glassy, not glowy
 - Shadow: warm and soft, rgba(60,45,20,.18-.28). A light window must not sit in a black halo
 - Accent: #f2c33c for fills, toggles, slider fill and marks; knob and glyph ink on it #1a1610.

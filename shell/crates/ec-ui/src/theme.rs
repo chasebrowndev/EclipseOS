@@ -415,8 +415,9 @@ impl From<bool> for CellTone {
 ///
 /// Each is a small glass lozenge on the bar's glass: a faint white fill
 /// ([`color::cell()`]), a hairline just inside the edge ([`color::cell_rim()`])
-/// and a soft drop under it ([`color::cell_shadow()`]). The pointer brightens
-/// the fill and the rim together; a press brightens the fill again. A
+/// and a soft drop under it ([`color::cell_shadow()`]). In dark the pointer brightens
+/// the fill and the rim together and a press brightens the fill again; in light
+/// the pointer darkens them (ink) and a press darkens the fill again. A
 /// [`CellTone::Focused`] cell is the same glass a step clearer: a brighter
 /// white fill ([`color::cell_focus()`]) and rim ([`color::cell_focus_rim()`]),
 /// the same neutral drop, and a gold label — the bar's one resting yellow

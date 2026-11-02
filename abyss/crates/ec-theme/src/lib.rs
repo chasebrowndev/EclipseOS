@@ -413,10 +413,10 @@ const LIGHT: Table = Table {
     glass_deep: 0.62,
     sheet_tint: 0.55,
     bar_tint: 0.45,
-    cell: [0.40, 0.55, 0.65],
+    cell: [0.40, 0.05, 0.09], // rest is white; hover and press are ink
     cell_rim: [0.08, 0.12],
     cell_rim_away: 0.04,
-    cell_focus: [0.70, 0.78, 0.85],
+    cell_focus: [0.70, 0.58, 0.46], // less white under the pointer
     cell_focus_rim: [0.18, 0.24],
     shadow: Rgba::rgb(0x3c2d14),
     cell_shadow: 0.22,
@@ -486,6 +486,11 @@ pub fn derive(seeds: &Seeds) -> Palette {
     let sidebar = t.sidebar_colour.with_alpha(ia(t.sidebar_colour, t.sidebar));
     let content = t.content_colour.with_alpha(ia(t.content_colour, t.content));
     let cell_focus = fill.with_alpha(ia(fill, t.cell_focus[0]));
+    // A pointer brightens a dark cell and darkens a light one.
+    let pointer = match seeds.scheme() {
+        Scheme::Dark => fill,
+        Scheme::Light => ink,
+    };
 
     Palette {
         base,
@@ -499,8 +504,8 @@ pub fn derive(seeds: &Seeds) -> Palette {
         sheet_tint: frost.with_alpha(t.sheet_tint),
         bar_tint: frost.with_alpha(t.bar_tint),
         cell: fill.with_alpha(ia(fill, t.cell[0])),
-        cell_hover: fill.with_alpha(ia(fill, t.cell[1])),
-        cell_press: fill.with_alpha(ia(fill, t.cell[2])),
+        cell_hover: pointer.with_alpha(ia(pointer, t.cell[1])),
+        cell_press: pointer.with_alpha(ia(pointer, t.cell[2])),
         cell_rim: ink.with_alpha(ia(ink, t.cell_rim[0])),
         cell_rim_hover: ink.with_alpha(ia(ink, t.cell_rim[1])),
         cell_rim_away: ink.with_alpha(ia(ink, t.cell_rim_away)),
