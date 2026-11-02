@@ -8,6 +8,26 @@ repository.workspace = true
 description = "PipeWire producer fed by abyss capture protocols."
 publish = false
 
+[features]
+default = ["wayland"]
+# wlr-screencopy client against abyss (wl_shm only).
+wayland = ["dep:wayland-client", "dep:wayland-protocols-wlr"]
+# PipeWire producer node. Needs libpipewire + clang; the `pipewire` crate is
+# not in the offline registry of the dev host, so this is opt-in until vetted
+# with `cargo deny` (ADR 0084).
+pipewire = ["dep:pipewire"]
+
 [dependencies]
 ecl-portal-proto.workspace = true
 thiserror.workspace = true
+postcard.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+rustix = { workspace = true, features = ["event"] }
+png = "0.17"
+wayland-client = { version = "0.31", optional = true }
+wayland-protocols-wlr = { version = "0.3", features = ["client"], optional = true }
+pipewire = { version = "0.9", optional = true, features = ["v0_3_41"] }
+
+[dev-dependencies]
+tempfile.workspace = true

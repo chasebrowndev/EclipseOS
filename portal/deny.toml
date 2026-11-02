@@ -30,6 +30,13 @@ ignore = [
     # Revisit when cosmic-text moves to a maintained parser, or if an advisory
     # upgrades this to a vulnerability.
     "RUSTSEC-2026-0192",
+
+    # RUSTSEC-2026-0206 — `rustybuzz` is unmaintained (harfrust is the named
+    # successor). It is resvg's text shaper, and resvg is iced's `svg` feature,
+    # which the panes use for freedesktop icon themes. The SVGs come from icon
+    # themes on the local system, not attacker-supplied documents. Mirrored from
+    # abyss/deny.toml; revisit when resvg moves to harfrust.
+    "RUSTSEC-2026-0206",
 ]
 
 # Must be compatible with AGPL-3.0-only distribution. GPLv2-only is
@@ -58,6 +65,10 @@ allow = [
 exceptions = [
     { crate = "clipboard-win", allow = ["BSL-1.0"] },
     { crate = "error-code", allow = ["BSL-1.0"] },
+    # NCSA (permissive, OSI approved, AGPL-compatible) for this one crate, as in
+    # abyss/deny.toml. libfuzzer-sys reaches us only as rav1e's AVIF-encoder
+    # dependency under ec-ui's iced `image` feature; the panes never encode AVIF.
+    { crate = "libfuzzer-sys", allow = ["NCSA"] },
 ]
 
 [bans]

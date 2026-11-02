@@ -12,3 +12,6 @@ publish = false
 ecl-portal-proto.workspace = true
 ecl-portal-store.workspace = true
 anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
