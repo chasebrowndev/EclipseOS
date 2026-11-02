@@ -258,25 +258,27 @@ pub fn ring<'a, Message: 'a>(diameter: f32, thickness: f32, stroke: Color) -> El
 ///
 /// A widget, not a styled [`ring`], because the ring sits inside a button
 /// and iced hands a button's hover status to the button's own style only —
-/// its content never sees it. A canvas does see the cursor, so laid over the
+/// its content never sees it. This one sees the cursor, so laid over the
 /// button's whole box it knows the pointer is on the button and strokes
 /// `hover` instead of `rest`. It captures nothing, so the press still lands
 /// on the button.
+///
+/// It draws a bordered quad, not a canvas path: a quad's rounded border is
+/// anti-aliased analytically in the quad shader, like every other rim in
+/// the bar, whereas canvas geometry is tessellated and left to MSAA, which
+/// reads as a stair-stepped ring at scale 1.
 pub fn hover_ring<'a, Message: 'a>(
     diameter: f32,
     thickness: f32,
     rest: Color,
     hover: Color,
 ) -> Element<'a, Message, Theme> {
-    iced::widget::canvas(HoverRing {
+    Element::new(HoverRing {
         diameter,
         thickness,
         rest,
         hover,
     })
-    .width(Length::Fill)
-    .height(Length::Fill)
-    .into()
 }
 
 struct HoverRing {
@@ -286,39 +288,55 @@ struct HoverRing {
     hover: Color,
 }
 
-impl<Message> iced::widget::canvas::Program<Message> for HoverRing {
-    type State = ();
+impl<Message> iced::advanced::Widget<Message, Theme, iced::Renderer> for HoverRing {
+    fn size(&self) -> iced::Size<Length> {
+        iced::Size::new(Length::Fill, Length::Fill)
+    }
+
+    fn layout(
+        &mut self,
+        _tree: &mut iced::advanced::widget::Tree,
+        _renderer: &iced::Renderer,
+        limits: &iced::advanced::layout::Limits,
+    ) -> iced::advanced::layout::Node {
+        iced::advanced::layout::atomic(limits, Length::Fill, Length::Fill)
+    }
 
     fn draw(
         &self,
-        _state: &(),
-        renderer: &iced::Renderer,
+        _tree: &iced::advanced::widget::Tree,
+        renderer: &mut iced::Renderer,
         _theme: &Theme,
-        bounds: iced::Rectangle,
+        _style: &iced::advanced::renderer::Style,
+        layout: iced::advanced::Layout<'_>,
         cursor: iced::mouse::Cursor,
-    ) -> Vec<iced::widget::canvas::Geometry> {
-        use iced::widget::canvas;
-        let mut frame = canvas::Frame::new(renderer, bounds.size());
-        // The ring's band, between its outer edge and the hole: the same
-        // circle `ring` draws as a container border.
-        let outer = self.diameter / 2.0;
-        let path = canvas::Path::new(|b| {
-            b.circle(frame.center(), outer);
-            b.circle(frame.center(), (outer - self.thickness).max(0.0));
-        });
+        _viewport: &iced::Rectangle,
+    ) {
+        use iced::advanced::Renderer as _;
+        let bounds = layout.bounds();
         let stroke = if cursor.is_over(bounds) {
             self.hover
         } else {
             self.rest
         };
-        frame.fill(
-            &path,
-            canvas::Fill {
-                style: canvas::Style::Solid(stroke),
-                rule: canvas::fill::Rule::EvenOdd,
+        let disc = iced::Rectangle {
+            x: bounds.x + (bounds.width - self.diameter) / 2.0,
+            y: bounds.y + (bounds.height - self.diameter) / 2.0,
+            width: self.diameter,
+            height: self.diameter,
+        };
+        renderer.fill_quad(
+            iced::advanced::renderer::Quad {
+                bounds: disc,
+                border: iced::Border {
+                    color: stroke,
+                    width: self.thickness,
+                    radius: radius::PILL.into(),
+                },
+                ..iced::advanced::renderer::Quad::default()
             },
+            Color::TRANSPARENT,
         );
-        vec![frame.into_geometry()]
     }
 }
 
