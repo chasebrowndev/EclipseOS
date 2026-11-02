@@ -79,6 +79,11 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
             Ok(json!({}))
         }
         "agent_install" => agent_install(state, params),
+        // ADR 0084: the effective scheme, theme name and seeds.
+        "get_theme" => {
+            only_keys(params, &[])?;
+            Ok(crate::theme::payload(state))
+        }
         // Config read/write (COMP-13 §1.4). The outer gate already returned
         // `Allow` to reach this line; `config_rpc` tightens onto it per file.
         "get_config"

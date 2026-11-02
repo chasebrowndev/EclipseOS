@@ -140,6 +140,9 @@ pub struct Popup {
 #[to_layer_message(multi)]
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// nothing to do but let the views rebuild.
+    ThemeChanged,
     /// Something changed; re-read the compositor.
     Refresh,
     /// A workspace pill was clicked. 1-based wire index.
@@ -1276,6 +1279,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 /// One message. `at` is the bar it came from, when a view produced it.
 fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
     match message {
+        Message::ThemeChanged => return Task::none(),
         Message::On(id, inner) => {
             let at = owner(app, id);
             return step(app, *inner, at);
@@ -3279,6 +3283,14 @@ fn new_instance(app_id: Option<String>) {
 /// anyway: the same thread that blocks on the socket is the one that has to
 /// notice the minute roll over.
 pub fn subscription(app: &App) -> Subscription<Message> {
+    // Keep the palette on the compositor's theme (ADR 0084).
+    Subscription::batch([
+        subscription_inner(app),
+        ec_ui::ipc::theme_subscription(|| Message::ThemeChanged),
+    ])
+}
+
+fn subscription_inner(app: &App) -> Subscription<Message> {
     let mut subs = vec![pointer(), surfaces(), compositor()];
     // Only while something is actually moving: a settled bar has no ticker at
     // all, so the idle cost of the animation is zero.

@@ -471,7 +471,7 @@ pub struct BorderStore {
     /// One drop shadow per window when shadows are on, kept alive between
     /// frames for the same reason; the last-applied range, radius, drop and
     /// focus weight are kept to skip no-op uniform updates.
-    shadows: HashMap<(Output, Window), (PixelShaderElement, [f32; 4])>,
+    shadows: HashMap<(Output, Window), (PixelShaderElement, [f32; 7])>,
     /// One border glow per window when glow is on, drawn by the ring
     /// program; the last-applied colour, range and radius are kept to skip
     /// no-op uniform updates.
@@ -1599,7 +1599,11 @@ fn ghost_decor(
             area,
             None,
             alpha,
-            effects::shadow_uniforms(geometry, if active { 1.0 } else { 0.0 }),
+            effects::shadow_uniforms(
+                geometry,
+                if active { 1.0 } else { 0.0 },
+                config.appearance.shadow_rgb(),
+            ),
             Kind::Unspecified,
         )));
     }
@@ -2567,8 +2571,17 @@ fn push_shadow(
 ) {
     let range = config.decoration.shadow.range;
     let (area, geometry) = shadow_geometry(geo, output_loc, range, shadow_drop(range), config);
-    let params = [geometry[0], geometry[1], geometry[2], focus];
-    let uniforms = || effects::shadow_uniforms(geometry, focus);
+    let rgb = config.appearance.shadow_rgb();
+    let params = [
+        geometry[0],
+        geometry[1],
+        geometry[2],
+        focus,
+        rgb[0],
+        rgb[1],
+        rgb[2],
+    ];
+    let uniforms = || effects::shadow_uniforms(geometry, focus, rgb);
     let (element, applied) = store
         .shadows
         .entry((output.clone(), window.clone()))

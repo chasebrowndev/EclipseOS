@@ -322,7 +322,7 @@ pub fn selector_elements(
     let dev = hud_font::raster_scale(fractional);
     let logical: Size<i32, Logical> = mode.size.to_f64().to_logical(scale).to_i32_round();
     let bounds = Rectangle::new(Point::from((0, 0)), logical);
-    let pal = HudPalette::new(&config.annotations);
+    let pal = HudPalette::themed(&config.annotations, &config.appearance);
     let motion = select.motion;
     let fade_in = if motion { eased(now, started, DIM_IN) } else { 1.0 };
     let hint_alpha = match pressed {

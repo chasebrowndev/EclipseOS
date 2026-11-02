@@ -3019,3 +3019,172 @@ mod startup_tests {
         assert!(r.contains("change not applied"), "{r}");
     }
 }
+
+// ---- themes (ADR 0084) ----
+
+fn theme_errs(text: &str) -> Vec<String> {
+    parse_single_for_tests(text)
+        .errors
+        .into_iter()
+        .map(|e| e.message)
+        .collect()
+}
+
+#[test]
+fn theme_defaults_and_general_keys() {
+    let cfg = parse_single_for_tests("");
+    assert_eq!(cfg.general.color_scheme, ColorSetting::Dark);
+    assert_eq!(
+        (cfg.general.theme_dark.as_str(), cfg.general.theme_light.as_str()),
+        ("dark", "light")
+    );
+    assert_eq!(fmt_hhmm(cfg.general.light_from), "07:00");
+    assert_eq!(fmt_hhmm(cfg.general.dark_from), "19:00");
+    assert_eq!(cfg.appearance, Appearance::default());
+    let cfg = parse_single_for_tests(
+        "general { color-scheme \"auto\"; light-from \"06:30\"; dark-from \"20:15\" }\n",
+    );
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(cfg.general.color_scheme, ColorSetting::Auto);
+    assert_eq!(cfg.scheme_at(6 * 60 + 29), ec_theme::Scheme::Dark);
+    assert_eq!(cfg.scheme_at(6 * 60 + 30), ec_theme::Scheme::Light);
+    assert_eq!(cfg.scheme_at(20 * 60 + 14), ec_theme::Scheme::Light);
+    assert_eq!(cfg.scheme_at(20 * 60 + 15), ec_theme::Scheme::Dark);
+    // light-from after dark-from wraps midnight.
+    let cfg = parse_single_for_tests(
+        "general { color-scheme \"auto\"; light-from \"22:00\"; dark-from \"05:00\" }\n",
+    );
+    assert_eq!(cfg.scheme_at(23 * 60), ec_theme::Scheme::Light);
+    assert_eq!(cfg.scheme_at(3 * 60), ec_theme::Scheme::Light);
+    assert_eq!(cfg.scheme_at(12 * 60), ec_theme::Scheme::Dark);
+}
+
+#[test]
+fn theme_general_rejections() {
+    for bad in [
+        "general { color-scheme \"sepia\" }",
+        "general { color-scheme 3 }",
+        "general { light-from \"7:00\" }",
+        "general { light-from \"24:00\" }",
+        "general { dark-from \"19:60\" }",
+        "general { dark-from \"evening\" }",
+        "general { light-from \"07:00\"; dark-from \"07:00\" }",
+        "general { theme-dark \"nope\" }",
+        "general { theme-dark \"light\" }",
+        "general { theme-light \"dark\" }",
+    ] {
+        assert_eq!(theme_errs(bad).len(), 1, "{bad}: {:?}", theme_errs(bad));
+    }
+}
+
+#[test]
+fn theme_blocks_resolve_inherit_and_select() {
+    let cfg = parse_single_for_tests(
+        "theme \"ember\" { accent \"#e8873a\"; accent-text \"#f0a060\" }\n\
+         theme \"ember2\" { inherit \"ember\"; rim 0.4 }\n\
+         theme \"paper\" { inherit \"light\"; accent \"#c06010\"; accent-text \"#7a3a00\" }\n\
+         general { theme-dark \"ember2\"; theme-light \"paper\"; color-scheme \"light\" }\n",
+    );
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    let e = cfg.theme_seeds("ember").unwrap();
+    assert_eq!(e.base, ec_theme::DARK_SEEDS.base);
+    assert_eq!(e.accent, ec_theme::Rgba::rgb(0xe8873a));
+    let e2 = cfg.theme_seeds("ember2").unwrap();
+    assert_eq!(e2.accent, e.accent);
+    assert_eq!(e2.rim, 0.4);
+    let p = cfg.theme_seeds("paper").unwrap();
+    assert_eq!(p.base, ec_theme::LIGHT_SEEDS.base);
+    let a = cfg.appearance_for(cfg.scheme_at(0));
+    assert_eq!((a.scheme, a.name.as_str()), (ec_theme::Scheme::Light, "paper"));
+    assert_eq!(cfg.appearance_for(ec_theme::Scheme::Dark).name, "ember2");
+}
+
+#[test]
+fn theme_block_rejections() {
+    let cases = [
+        ("theme \"dark\" { accent \"#ff0000\" }", "built in"),
+        ("theme \"light\" { }", "built in"),
+        ("theme \"a\" { }\ntheme \"a\" { }", "twice"),
+        ("theme \"a\" { inherit \"a\" }", "cycle"),
+        (
+            "theme \"a\" { inherit \"b\" }\ntheme \"b\" { inherit \"a\" }",
+            "unknown theme",
+        ),
+        ("theme \"a\" { inherit \"zzz\" }", "unknown theme"),
+        ("theme \"a\" { accent \"red\" }", "bad color"),
+        ("theme \"a\" { rim 1.5 }", "rim"),
+        ("theme \"a\" { frost-tint \"#17140f80\" }", "refused"),
+        ("theme \"a\" { base \"#101010\"; ink \"#303030\" }", "contrast"),
+        (
+            "theme \"a\" { accent \"#222222\"; accent-text \"#222222\" }",
+            "contrast",
+        ),
+        ("theme \"a\" { colour \"#ffffff\" }", ""),
+        ("theme { }", "name"),
+    ];
+    for (text, needle) in cases {
+        let errs = theme_errs(text);
+        assert!(
+            !errs.is_empty() && errs.iter().any(|m| m.contains(needle)),
+            "{text}: {errs:?}"
+        );
+        let cfg = parse_single_for_tests(text);
+        assert!(!cfg
+            .themes
+            .iter()
+            .any(|t| t.name == "a" && text.starts_with("theme \"a\" { inherit \"a\"")));
+    }
+}
+
+#[test]
+fn theme_scheme_must_match_selection() {
+    // A dark-brightness theme cannot be the light theme, and vice versa.
+    let cfg = parse_single_for_tests("theme \"night\" { }\ngeneral { theme-light \"night\" }\n");
+    assert!(
+        cfg.errors.iter().any(|e| e.message.contains("theme-light")),
+        "{:?}",
+        cfg.errors
+    );
+    let cfg = parse_single_for_tests("theme \"day\" { inherit \"light\" }\ngeneral { theme-dark \"day\" }\n");
+    assert!(
+        cfg.errors.iter().any(|e| e.message.contains("theme-dark")),
+        "{:?}",
+        cfg.errors
+    );
+    // A theme defined after the selection still resolves.
+    let cfg = parse_single_for_tests("general { theme-dark \"late\" }\ntheme \"late\" { }\n");
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+}
+
+#[test]
+fn appearance_fills_only_what_the_config_left_unset() {
+    // Built-in dark changes nothing.
+    let mut cfg = parse_single_for_tests("");
+    let before = (
+        cfg.decoration.blur.clone().frost,
+        cfg.decoration.blur.glass.rim,
+        cfg.annotations,
+    );
+    cfg.apply_appearance(cfg.appearance_for(ec_theme::Scheme::Dark));
+    assert_eq!(
+        before,
+        (
+            cfg.decoration.blur.frost.clone(),
+            cfg.decoration.blur.glass.rim,
+            cfg.annotations
+        )
+    );
+    // Light supplies frost tint, rim and annotation colours.
+    cfg.apply_appearance(cfg.appearance_for(ec_theme::Scheme::Light));
+    assert_ne!(cfg.decoration.blur.frost.tint, FROST_TINT);
+    assert_ne!(cfg.annotations, AnnotationColors::DEFAULT);
+    // An explicit key wins over the theme.
+    let mut cfg = parse_single_for_tests(
+        "decoration {\n blur {\n frost { tint \"#112233aa\"; }\n glass { rim 0.9; }\n }\n}\nannotations { accent \"#445566\" }\n",
+    );
+    cfg.apply_appearance(cfg.appearance_for(ec_theme::Scheme::Light));
+    assert_eq!(cfg.decoration.blur.frost.tint, parse_color("#112233aa").unwrap());
+    assert_eq!(cfg.decoration.blur.glass.rim, 0.9);
+    assert_eq!(cfg.annotations.accent, parse_color("#445566").unwrap());
+    assert_ne!(cfg.annotations.text, AnnotationColors::DEFAULT.text);
+}

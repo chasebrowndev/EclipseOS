@@ -92,6 +92,21 @@ impl Config {
                     Some(c) => self.general.drop_guide_color = c,
                     None => self.reject(n, "bad color for \"drop-guide-color\""),
                 },
+                "color-scheme" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("dark") => self.general.color_scheme = ColorSetting::Dark,
+                    Some("light") => self.general.color_scheme = ColorSetting::Light,
+                    Some("auto") => self.general.color_scheme = ColorSetting::Auto,
+                    other => self.reject(
+                        n,
+                        format!(
+                            "color-scheme: unknown value {other:?}; expected \"dark\", \"light\" or \"auto\""
+                        ),
+                    ),
+                },
+                "theme-dark" => self.apply_theme_ref(n, false),
+                "theme-light" => self.apply_theme_ref(n, true),
+                "light-from" => self.apply_schedule(n, true),
+                "dark-from" => self.apply_schedule(n, false),
                 "drop-edge-band" => {
                     if !set_i32(&mut self.general.drop_edge_band, n) {
                         self.reject(n, "drop-edge-band expects an integer");
@@ -480,6 +495,9 @@ impl Config {
                 Some(c) => {
                     if let Some(slot) = self.annotations.slot_mut(name) {
                         *slot = c;
+                    }
+                    if let Some(i) = ANNOTATION_KEYS.iter().position(|k| *k == name) {
+                        self.look_set.annotations |= 1 << i;
                     }
                 }
                 None => self.reject(

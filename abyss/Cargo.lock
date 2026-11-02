@@ -613,6 +613,7 @@ dependencies = [
  "ec-cataclysm-pub",
  "ec-policy-eval",
  "ec-protocols",
+ "ec-theme",
  "ed25519-dalek",
  "kdl",
  "libc",
@@ -646,6 +647,7 @@ name = "ec-abyss-config"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ec-theme",
  "kdl",
  "regex",
  "serde_json",
@@ -658,6 +660,7 @@ name = "ec-abyss-render"
 version = "0.1.0"
 dependencies = [
  "ec-abyss-config",
+ "ec-theme",
  "serde_json",
  "smithay",
  "tracing",

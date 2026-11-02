@@ -357,6 +357,8 @@ pub struct AbyssState {
     /// Withheld command widgets, the prompt queue and the session's Not now
     /// set (ADR 0067). Plain data; see `config::withhold`.
     pub widget_approvals: crate::config::withhold::WidgetApprovals,
+    /// The theme in force and its `auto` timer (ADR 0084).
+    pub theme: crate::theme::ThemeState,
 }
 
 impl AbyssState {
@@ -621,6 +623,7 @@ impl AbyssState {
             catalog_pending: false,
             transitions_pending: false,
             widget_approvals: Default::default(),
+            theme: Default::default(),
         }
     }
 

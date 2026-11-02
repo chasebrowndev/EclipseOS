@@ -183,9 +183,166 @@ pub fn parse_hex(value: &str) -> Option<iced::Color> {
     ))
 }
 
+/// What `get_theme` answers (ADR 0084): the scheme in force, the theme's name
+/// and the seeds every pane derives its palette from.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThemeInfo {
+    pub scheme: ec_theme::Scheme,
+    /// `general.color-scheme` as configured: `dark`, `light` or `auto`.
+    pub setting: String,
+    pub name: String,
+    pub seeds: ec_theme::Seeds,
+}
+
+fn parse_seed_hex(s: &str) -> Option<ec_theme::Rgba> {
+    let h = s.strip_prefix('#')?;
+    if !(h.len() == 6 || h.len() == 8) || !h.is_ascii() {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    let (rgb, a) = if h.len() == 6 {
+        (v, 255)
+    } else {
+        (v >> 8, v & 0xff)
+    };
+    Some(ec_theme::Rgba::rgb(rgb).with_alpha(a as f32 / 255.0))
+}
+
+/// A `get_theme` reply (or `theme` event payload). `None` when it is missing a
+/// field or the seeds fail [`ec_theme::validate`], so the caller keeps the
+/// palette it has: a pane never paints from a theme it could not check.
+pub fn parse_theme(v: &serde_json::Value) -> Option<ThemeInfo> {
+    let color = |k: &str| parse_seed_hex(v.get("seeds")?.get(k)?.as_str()?);
+    let seeds = ec_theme::Seeds {
+        base: color("base")?,
+        ink: color("ink")?,
+        accent: color("accent")?,
+        accent_text: match v.get("seeds")?.get("accent_text")? {
+            serde_json::Value::Null => None,
+            t => Some(parse_seed_hex(t.as_str()?)?),
+        },
+        frost_tint: color("frost_tint")?,
+        rim: v.get("seeds")?.get("rim")?.as_f64()? as f32,
+    };
+    ec_theme::validate(&seeds).ok()?;
+    let scheme = match v.get("scheme")?.as_str()? {
+        "dark" => ec_theme::Scheme::Dark,
+        "light" => ec_theme::Scheme::Light,
+        _ => return None,
+    };
+    Some(ThemeInfo {
+        scheme,
+        setting: v.get("setting")?.as_str()?.to_owned(),
+        name: v.get("theme")?.as_str()?.to_owned(),
+        seeds,
+    })
+}
+
+/// `get_theme` over `client`. `None` on any failure (an older compositor, no
+/// socket, a reply that does not validate).
+pub fn fetch_theme(client: &mut ec_ipc::Client) -> Option<ThemeInfo> {
+    parse_theme(&client.call("get_theme", json!({})).ok()?)
+}
+
+/// Make `info` the process-wide palette ([`crate::tokens::color::set_seeds`]).
+pub fn apply_theme(info: &ThemeInfo) {
+    crate::tokens::color::set_seeds(&info.seeds);
+}
+
+/// [`fetch_theme`] and apply it; `false`, palette untouched, on failure.
+pub fn sync_theme(client: &mut ec_ipc::Client) -> bool {
+    match fetch_theme(client) {
+        Some(info) => {
+            apply_theme(&info);
+            true
+        }
+        None => false,
+    }
+}
+
+/// [`sync_theme`] over a short-lived connection of its own. Call it before
+/// the first view is built.
+pub fn sync_theme_now() -> bool {
+    ec_ipc::Client::connect()
+        .ok()
+        .is_some_and(|mut c| sync_theme(&mut c))
+}
+
+const THEME_RETRY: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn theme_stream<M: Send + 'static>(on_change: &fn() -> M) -> impl iced::futures::Stream<Item = M> {
+    let on_change = *on_change;
+    iced::stream::channel(4, async move |sender| {
+        std::thread::spawn(move || {
+            use iced::futures::{executor::block_on, SinkExt};
+            let mut sender = sender;
+            let mut send = |m: M| block_on(sender.send(m)).is_ok();
+            loop {
+                let Some(mut client) = ec_ipc::Client::connect()
+                    .ok()
+                    .and_then(|mut c| c.subscribe(&[ec_ipc::EventKind::Theme]).ok().map(|()| c))
+                else {
+                    std::thread::sleep(THEME_RETRY);
+                    continue;
+                };
+                // A fresh connection is a full re-read: the compositor may
+                // have been restarted, or started after this pane.
+                if sync_theme(&mut client) && !send(on_change()) {
+                    return;
+                }
+                while let Ok(event) = client.wait_event() {
+                    if event.kind != ec_ipc::EventKind::Theme {
+                        continue;
+                    }
+                    if let Some(info) = parse_theme(&event.data) {
+                        apply_theme(&info);
+                        if !send(on_change()) {
+                            return;
+                        }
+                    }
+                }
+                std::thread::sleep(THEME_RETRY);
+            }
+        });
+    })
+}
+
+/// Keep this process's palette on the compositor's theme (ADR 0084): reads it
+/// when the subscription starts and on every `theme` event, applies the seeds
+/// with [`crate::tokens::color::set_seeds`], then yields `on_change()` so the
+/// pane's `update` runs and its views rebuild. Batch it into a pane's
+/// `subscription()`; `on_change` is typically a message `update` ignores.
+pub fn theme_subscription<M: Send + 'static>(on_change: fn() -> M) -> iced::Subscription<M> {
+    iced::Subscription::run_with(on_change, theme_stream::<M>)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+    #[test]
+    fn a_get_theme_reply_parses_and_a_bad_one_is_refused() {
+        let ok = json!({
+            "scheme": "dark", "setting": "auto", "theme": "dark",
+            "seeds": {"base": "#0b0906", "ink": "#ffffff", "accent": "#f2c33c",
+                      "accent_text": "#f5cf5c", "frost_tint": "#17140fff", "rim": 0.2}
+        });
+        let info = parse_theme(&ok).unwrap();
+        assert_eq!(info.seeds, ec_theme::DARK_SEEDS);
+        assert_eq!(info.setting, "auto");
+        // accent_text may be null.
+        let mut nul = ok.clone();
+        nul["seeds"]["accent_text"] = serde_json::Value::Null;
+        assert_eq!(parse_theme(&nul).unwrap().seeds.accent_text, None);
+        // Unreadable contrast is refused, not applied.
+        let mut low = ok.clone();
+        low["seeds"]["ink"] = json!("#0c0a07");
+        assert!(parse_theme(&low).is_none());
+        let mut bad = ok;
+        bad["seeds"]["base"] = json!("0b0906");
+        assert!(parse_theme(&bad).is_none());
+    }
+
     use crate::motion::Curve;
 
     #[test]

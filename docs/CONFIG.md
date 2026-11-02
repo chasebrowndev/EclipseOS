@@ -111,6 +111,11 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `general.drop-guides` | bool | `#true` | live | Draw the drop zones and a ghost of where a dragged window will land (radiant layout). |
 | `general.drop-guide-color` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Colour of the drop guides. |
 | `general.drop-edge-band` | int 0..512 | `40` | live | Width of the edge strip a dragged window's centre aims at to drop it as a full-height column or full-width row, logical px. 0 disables edge drops. |
+| `general.color-scheme` | dark \| light \| auto | `"dark"` | live | Colour scheme of the whole desktop (ADR 0084): `dark`, `light`, or `auto`, which follows the `light-from` / `dark-from` schedule in local time. Compositor-drawn material, every shell pane and client apps (the `org.freedesktop.appearance` hint) follow it, live. |
+| `general.theme-dark` | string | `"dark"` | live | Name of the theme used while the scheme is dark: the built-in `dark` or a `theme` block. It must be a dark theme (its `base` is dark); a light theme is refused. |
+| `general.theme-light` | string | `"light"` | live | Name of the theme used while the scheme is light: the built-in `light` or a `theme` block. It must be a light theme; a dark theme is refused. |
+| `general.light-from` | string | `"07:00"` | live | With `color-scheme "auto"`: the local time of day, `HH:MM`, the light scheme starts. A fixed schedule, not sunrise: no location is used. |
+| `general.dark-from` | string | `"19:00"` | live | With `color-scheme "auto"`: the local time of day, `HH:MM`, the dark scheme starts. Must differ from `light-from`. |
 
 ### `render`
 
@@ -468,6 +473,10 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |
 | `irreversible-capable true \| false` | `policy.kdl` | `irreversible-capable true`<br>`irreversible-capable false` | Pin whether the window counts as able to take irreversible actions (S-06 §3.3): coordinate-only or low-confidence agent input to it then prompts. Without a rule it is true for apps whose desktop entry lists `WebBrowser`, `Email`, `TerminalEmulator` or `FileManager`, false otherwise. |
+
+### `theme`
+
+A user theme (ADR 0084): `theme "<name>" { inherit "dark"; base "#0b0906"; ink "#ffffff"; accent "#f2c33c"; accent-text "#f5cf5c"; frost-tint "#17140f"; rim 0.2; }`. Any subset of the keys; an unset seed is inherited from `inherit`, a built-in (`dark`, `light`) or an earlier theme, and `inherit` defaults to `dark`. Colours are `#rrggbb`, opaque; `rim` is 0.0 to 1.0. A theme is selected with `general.theme-dark` / `general.theme-light`; whether it counts as dark or light follows its `base` luminance. It is refused, and the last good config kept, if text or accent text on its `base` is under 4.5:1, secondary text under 3:1, a seed does not parse, `inherit` names no earlier theme (so no cycles), or the name is `dark` or `light` (built in) or already defined. An explicit `blur { frost { tint } }`, `blur { glass { rim } }` or `annotations { }` key still wins over the theme. KDL-only: not settable over the socket and not listed by `get_config`; `get_theme` returns the active one.
 
 ### `input.device`
 

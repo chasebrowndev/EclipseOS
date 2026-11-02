@@ -941,6 +941,7 @@ name = "ec-abyss-config"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ec-theme",
  "kdl",
  "regex",
  "serde_json",

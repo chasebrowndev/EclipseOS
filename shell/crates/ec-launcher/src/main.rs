@@ -18,6 +18,8 @@ fn namespace() -> String {
 }
 
 fn main() -> iced_layershell::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     // `launcher.style "menu"`: the bar's start menu is the launcher, and
     // this keybind only asks for it. A bar that took the request is the whole
     // answer; with no bar listening, draw the centred launcher as always.

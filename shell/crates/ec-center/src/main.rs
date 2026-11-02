@@ -23,6 +23,8 @@ const TOP_MARGIN: i32 = ec_ui::tokens::bar::SHEET_MARGIN_TOP;
 const RIGHT_MARGIN: i32 = ec_ui::tokens::bar::SHEET_MARGIN_X;
 
 fn main() -> iced_layershell::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     // A menu has no business holding the selection.
     iced_layershell::disable_clipboard();
     // eclipse_glass_v1: fail-soft, nothing changes under a non-abyss host.

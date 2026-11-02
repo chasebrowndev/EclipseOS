@@ -14,6 +14,8 @@ fn namespace() -> String {
 }
 
 fn main() -> iced_layershell::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     // The stack renders client-supplied text and nothing else. It has no
     // reason to hold a selection, and not holding one is the cheapest way to
     // keep the no-logging-human-input rule true here.

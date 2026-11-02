@@ -134,6 +134,9 @@ impl Toast {
 #[to_layer_message(multi)]
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// nothing to do but let the views rebuild.
+    ThemeChanged,
     /// Drain the bus and retire anything out of time.
     Tick,
     /// One frame of a card's entrance or exit. Sent only while one plays.
@@ -272,6 +275,7 @@ fn post(toasts: &mut Vec<Toast>, notification: Notification) {
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
+        Message::ThemeChanged => return Task::none(),
         Message::Frame => {
             app.now = Instant::now();
             let anim = app.anim.clone();
@@ -394,6 +398,14 @@ fn sync_surface(app: &mut App) -> Task<Message> {
 /// One thread, one tick. The bus handle lives on `App` because the human's
 /// clicks have to reach it, so the thread here carries nothing but the beat.
 pub fn subscription(app: &App) -> Subscription<Message> {
+    // Keep the palette on the compositor's theme (ADR 0084).
+    Subscription::batch([
+        subscription_inner(app),
+        ec_ui::ipc::theme_subscription(|| Message::ThemeChanged),
+    ])
+}
+
+fn subscription_inner(app: &App) -> Subscription<Message> {
     let tick = Subscription::run(|| {
         iced::stream::channel(32, async move |mut sender| {
             std::thread::spawn(move || loop {

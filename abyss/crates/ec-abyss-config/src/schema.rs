@@ -591,6 +591,47 @@ pub const TABLE: &[Key] = &[
         Live,
         "Width of the edge strip a dragged window's centre aims at to drop it as a full-height column or full-width row, logical px. 0 disables edge drops.",
     ),
+    // themes (ADR 0084)
+    k(
+        "general.color-scheme",
+        Ty::Enum(crate::COLOR_SCHEMES),
+        Str("dark"),
+        Abyss,
+        Live,
+        "Colour scheme of the whole desktop (ADR 0084): `dark`, `light`, or `auto`, which follows the `light-from` / `dark-from` schedule in local time. Compositor-drawn material, every shell pane and client apps (the `org.freedesktop.appearance` hint) follow it, live.",
+    ),
+    k(
+        "general.theme-dark",
+        Ty::Str,
+        Str("dark"),
+        Abyss,
+        Live,
+        "Name of the theme used while the scheme is dark: the built-in `dark` or a `theme` block. It must be a dark theme (its `base` is dark); a light theme is refused.",
+    ),
+    k(
+        "general.theme-light",
+        Ty::Str,
+        Str("light"),
+        Abyss,
+        Live,
+        "Name of the theme used while the scheme is light: the built-in `light` or a `theme` block. It must be a light theme; a dark theme is refused.",
+    ),
+    k(
+        "general.light-from",
+        Ty::Str,
+        Str("07:00"),
+        Abyss,
+        Live,
+        "With `color-scheme \"auto\"`: the local time of day, `HH:MM`, the light scheme starts. A fixed schedule, not sunrise: no location is used.",
+    ),
+    k(
+        "general.dark-from",
+        Ty::Str,
+        Str("19:00"),
+        Abyss,
+        Live,
+        "With `color-scheme \"auto\"`: the local time of day, `HH:MM`, the dark scheme starts. Must differ from `light-from`.",
+    ),
     // render
     k(
         "render.direct-scanout",
@@ -1960,6 +2001,7 @@ pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "widget", owner: Abyss, doc: "A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget \"<name>\" { exec \"<argv0>\" \"<arg>\"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source \"<source>\"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{\"name\", \"kind\": \"exec\" | \"stream\" | \"source\", \"exec\": [argv] | null, \"interval-ms\": int | null, \"source\": string | null, \"format\": string | null, \"icon\": string | null, \"on-click\": [argv] | null, \"on-scroll-up\": [argv] | null, \"on-scroll-down\": [argv] | null, \"approval\": \"approved\", \"premade\": bool}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only; `premade` is true when the block is identical to the catalog block of the same name. Widgets are an add-on hook (ADR 0066): unless an installed add-on (the taskbar) turns on `taskbar-widgets`, `widget` blocks are ignored rather than refused, their `custom:` ids are dropped from `bar.widgets.*`, `collections.widget` is empty and `set_config_collection` for `widget` is refused. With the hook on, the premade catalog (`/usr/share/eclipse/widgets/*.kdl`, each file only `bar { widget … }`) is the lowest config layer, below `/etc/eclipse/abyss.kdl`, so `custom:<premade>` works with no block of your own and a block of the same name replaces it. Command widgets need your approval (ADR 0067): an `exec` or `stream` widget runs only if it is an unedited catalog block or you approved exactly this definition (name, argv, interval or stream, and actions) in the compositor-drawn prompt. Anything else, an edited premade or a new command, is withheld: it does not run, its `custom:` id stays and draws nothing, and `collections.widget` lists it as `{\"name\", \"approval\": \"pending\", \"premade\": false, \"altered\": bool}` with no command fields (`altered` is true for an edited premade). Any later edit withholds it again. Not now lasts for the session; the control-socket method `review_widget {\"name\"}` (owner only) brings the prompt back, returns `{\"name\", \"queued\": bool}`, never shows two prompts for one widget, and cannot approve anything itself. `approval`, `premade` and `altered` are ignored on write." },
     Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Placement actions apply once, at map; property actions re-apply on every commit and on a float toggle (COMP-05 §4, C-22). Its *action* decides the owning file." },
+    Collection { node: "theme", owner: Abyss, doc: "A user theme (ADR 0084): `theme \"<name>\" { inherit \"dark\"; base \"#0b0906\"; ink \"#ffffff\"; accent \"#f2c33c\"; accent-text \"#f5cf5c\"; frost-tint \"#17140f\"; rim 0.2; }`. Any subset of the keys; an unset seed is inherited from `inherit`, a built-in (`dark`, `light`) or an earlier theme, and `inherit` defaults to `dark`. Colours are `#rrggbb`, opaque; `rim` is 0.0 to 1.0. A theme is selected with `general.theme-dark` / `general.theme-light`; whether it counts as dark or light follows its `base` luminance. It is refused, and the last good config kept, if text or accent text on its `base` is under 4.5:1, secondary text under 3:1, a seed does not parse, `inherit` names no earlier theme (so no cycles), or the name is `dark` or `light` (built in) or already defined. An explicit `blur { frost { tint } }`, `blur { glass { rim } }` or `annotations { }` key still wins over the theme. KDL-only: not settable over the socket and not listed by `get_config`; `get_theme` returns the active one." },
     Collection { node: "input.device", owner: Abyss, doc: "Per-device pointer settings, written inside `input { }`: `device \"<name>\" { accel-profile \"flat\"; accel-speed -0.3; scroll-method \"on-button-down\"; touchpad { tap-to-click #true; scroll-method \"edge\"; } calibration 1 0 0 0 1 0; }`. `<name>` is the libinput device name, matched exactly (`libinput list-devices` prints it); every device of that name gets the block. Any subset of `accel-profile`, `accel-speed`, `scroll-method` and a `touchpad { }` with any of the `input.touchpad.*` keys, each validated as its global key is; a key left out inherits the global one, and a key set here wins over it. `touchpad` keys reach only a touchpad, `scroll-method` only a device that is not one. `calibration a b c d e f` is libinput's 2x3 calibration matrix for a touchscreen or tablet, row-major, six numbers; it is only allowed in a device block, and a device without one keeps its default matrix. A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket, and not listed by `get_config`." },
     Collection { node: "wallpaper.output", owner: Abyss, doc: "A per-output wallpaper override, written inside `wallpaper { }`: `output \"<name>\" { path \"…\"; mode \"fit\"; color \"#rrggbb\"; }`, any subset of the three keys, each validated as its `wallpaper.*` key is; a key left out inherits the global one. `<name>` is the connector name (`DP-1`). A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket. `get_config` lists them, in file order, under `collections.\"wallpaper.output\"` as `{\"output\", \"path\": string | null, \"mode\": string | null, \"color\": \"#rrggbbaa\" | null}`, every field always present; `null` means inherited." },
 ];
@@ -2639,6 +2681,11 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.drop-guides" => V::Bool(c.general.drop_guides),
         "general.drop-guide-color" => V::Color(c.general.drop_guide_color),
         "general.drop-edge-band" => V::Int(c.general.drop_edge_band as i64),
+        "general.color-scheme" => V::Str(c.general.color_scheme.name().into()),
+        "general.theme-dark" => V::Str(c.general.theme_dark.clone()),
+        "general.theme-light" => V::Str(c.general.theme_light.clone()),
+        "general.light-from" => V::Str(crate::fmt_hhmm(c.general.light_from)),
+        "general.dark-from" => V::Str(crate::fmt_hhmm(c.general.dark_from)),
         "render.direct-scanout" => V::Bool(c.render.direct_scanout),
         "bar.fold-when-inactive" => V::Bool(c.bar.fold_when_inactive),
         "bar.fold-height" => V::Int(c.bar.fold_height as i64),
@@ -2886,6 +2933,11 @@ mod tests {
                 // "ask smithay", which is the unset state, not a value.
                 "misc.render-device" => "/dev/dri/card1".into(),
                 "input.kb-layout" => "de".into(),
+                // Times and theme names: validated on their own terms.
+                "general.light-from" => "06:30".into(),
+                "general.dark-from" => "20:15".into(),
+                "general.theme-dark" => "dark".into(),
+                "general.theme-light" => "light".into(),
                 "bar.widgets.system-usage.disk-path" => "/home".into(),
                 // A chord, not free text.
                 "launcher.bind.open" => "Super+o".into(),
