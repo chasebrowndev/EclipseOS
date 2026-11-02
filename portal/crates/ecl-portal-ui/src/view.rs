@@ -143,22 +143,32 @@ fn avatar<'a>(app: &App, side: f32) -> El<'a> {
 /// the subtle reading of how the name was derived. A claim, shown as one.
 fn header<'a>(app: &App, sub: El<'a>) -> El<'a> {
     let req = &app.requester;
-    let titles = column![
-        text(who(req))
-            .font(font::UI_SEMIBOLD)
-            .size(size::PANE_TITLE)
-            .style(theme::text_primary)
-            .wrapping(text::Wrapping::None),
-        sub,
-    ]
-    .spacing(space::TITLE_GAP);
+    let id = clean(&req.app_id, metrics::MAX_ID);
+    let name = text(who(req))
+        .font(font::UI_SEMIBOLD)
+        .size(size::PANE_TITLE)
+        .style(theme::text_primary)
+        .wrapping(text::Wrapping::None);
+    // A narrow sheet has no room beside the title for the identity hint, and
+    // the shared chip right-aligns its lines, which reads ragged once folded
+    // under the title. There it is one left-aligned line in the title block.
+    if app.pane.window().0 < metrics::SHEET_FOLD_W {
+        let hint = text(format!("{} · {id}", how(req.source)))
+            .font(font::DATA)
+            .size(size::MICRO)
+            .style(theme::text_tertiary)
+            .wrapping(text::Wrapping::None);
+        let titles = column![name, sub, hint].spacing(space::TITLE_GAP);
+        return row![avatar(app, metrics::AVATAR), titles]
+            .spacing(metrics::AVATAR_GAP)
+            .align_y(Alignment::Center)
+            .into();
+    }
+    let titles = column![name, sub].spacing(space::TITLE_GAP);
     let lead = row![avatar(app, metrics::AVATAR), titles]
         .spacing(metrics::AVATAR_GAP)
         .align_y(Alignment::Center);
-    ec_ui::widget::fold(
-        lead,
-        status_chip(how(req.source), &clean(&req.app_id, metrics::MAX_ID)),
-    )
+    ec_ui::widget::fold(lead, status_chip(how(req.source), &id))
 }
 
 /// A button. `strong` is the lifted-white state; with no message it is inert.
@@ -312,8 +322,15 @@ fn source<'a>(app: &App, c: &Chooser) -> El<'a> {
             .iter()
             .map(|i| source_tile_for(c, *i, at == Some(*i)))
             .collect();
+        // A short list hugs its tiles; only a long one takes the scrolling
+        // viewport, so a few displays do not sit in an empty well.
+        let h = if visible.len() > metrics::GRID_COLS * 2 {
+            Length::Fixed(metrics::GRID_H)
+        } else {
+            Length::Shrink
+        };
         scrollable(status_grid(tiles, metrics::GRID_COLS))
-            .height(Length::Fixed(metrics::GRID_H))
+            .height(h)
             .style(theme::eclipse_scrollable)
             .into()
     };
@@ -375,8 +392,13 @@ fn permission<'a>(
     let sub = subtitle("asks for ", &subject, "");
     let banner = edge_note("Details", detail, color::NEUTRAL);
 
-    let mut line =
-        row![badge(interface), Space::new().width(Length::Fill)].align_y(Alignment::Center);
+    // The shared prefix is noise; the tail names the portal interface.
+    let short = interface
+        .strip_prefix("org.freedesktop.impl.portal.")
+        .unwrap_or(interface);
+    let mut line = row![badge(short), Space::new().width(Length::Fill)]
+        .spacing(space::BLOCK)
+        .align_y(Alignment::Center);
     if confirm.allow_remember() {
         line = line.push(switch(
             "Remember my answer",
@@ -432,7 +454,7 @@ fn email<'a>(app: &App, addresses: &[String], confirm: &Confirm) -> El<'a> {
     };
 
     let bottom = footer(
-        note("Nothing is sent until you send it from your mail app."),
+        note("Nothing is sent until you send it."),
         confirm_buttons(confirm, "Cancel", "Open mail app"),
     );
     column![header(app, sub), list, fill_gap(), bottom]
@@ -496,7 +518,7 @@ fn colour<'a>(app: &App, p: &crate::model::ColorPick) -> El<'a> {
     let [r, g, b, _] = p.rgba();
     let picked = iced::Color::from_rgb8(r, g, b);
     let swatch = container(Space::new())
-        .width(Length::Fixed(metrics::SWATCH_W))
+        .width(Length::Fill)
         .height(Length::Fixed(metrics::SWATCH_H))
         .style(move |_t: &Theme| container::Style {
             background: Some(Background::Color(picked)),
@@ -512,13 +534,15 @@ fn colour<'a>(app: &App, p: &crate::model::ColorPick) -> El<'a> {
         .on_submit(Message::Key(Nav::Enter))
         .font(font::DATA)
         .size(size::BODY)
-        .width(Length::Fixed(metrics::HEX_W))
+        .width(Length::Fill)
         .style(if p.draft_valid() {
             theme::eclipse_input
         } else {
             theme::eclipse_input_invalid
         });
-    let reading = column![swatch, big_value(&p.hex(), "", false), hex].spacing(space::ROW_Y);
+    let reading = column![swatch, big_value(&p.hex(), "", false), hex]
+        .spacing(space::ROW_Y)
+        .width(Length::Fill);
     let hero = inset(
         row![
             color_picker(p.rgba(), false, Message::Rgba, Message::Released),
@@ -577,7 +601,7 @@ fn account<'a>(app: &App, reason: &str, form: &crate::model::AccountForm) -> El<
 
     let go = form.can_share().then_some(Message::Key(Nav::Enter));
     let bottom = footer(
-        note("Shared as shown. Edit anything you would rather not share."),
+        note("Shared as shown. Edit anything first."),
         vec![
             action("Cancel", false, Some(Message::Key(Nav::Escape))),
             action("Share", true, go),
