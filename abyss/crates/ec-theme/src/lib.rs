@@ -164,7 +164,7 @@ pub const LIGHT_SEEDS: Seeds = Seeds {
     base: Rgba::rgb(0xf4f1ea),
     ink: Rgba::rgb(0x1a1610),
     accent: Rgba::rgb(0xf2c33c),
-    accent_text: Some(Rgba::rgb(0x8a6400)),
+    accent_text: Some(Rgba::rgb(0x856000)),
     frost_tint: Rgba::rgb(0xf4f1ea),
     rim: 0.60,
 };

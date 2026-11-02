@@ -1046,6 +1046,7 @@ fn insert_blur(
                         bevel,
                         &cfg.glass,
                         bezel.map(|b| (b.inner, b.opaque, b.rim)),
+                        config.appearance.glass_light(),
                     )
                 }
                 _ => effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius),
@@ -1202,6 +1203,7 @@ fn insert_panes(
                     &tuned,
                     None,
                     look.lift,
+                    config.appearance.glass_light(),
                 ),
             ))
         },

@@ -188,6 +188,9 @@ fn light_text_reads_on_the_base() {
     assert!(contrast(p.text_secondary, p.base) >= MIN_TEXT_CONTRAST);
     assert!(contrast(p.text_tertiary, p.base) >= 2.5);
     assert!(contrast(p.accent_text, p.base) >= MIN_TEXT_CONTRAST);
+    // Accent text on a selected (`accent_fill`) pill, over the base.
+    let pill = p.accent_fill.over_opaque(p.base);
+    assert!(contrast(p.accent_text, pill) >= MIN_TEXT_CONTRAST);
     assert!(contrast(p.danger, p.base) >= MIN_TEXT_CONTRAST);
     assert!(contrast(p.neutral, p.base) >= MIN_TEXT_CONTRAST);
 }
