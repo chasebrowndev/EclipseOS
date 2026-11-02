@@ -245,6 +245,21 @@ pub fn apply_compositor(cfg: &mut Config, reply: &Value) -> (usize, Vec<String>)
             // §2.2 reading-time formula. Select answers stay until dismissed.
             "hold-ms" => ms(&mut cfg.max_display_ms),
             "debug" => v.as_bool().map(|b| cfg.debug = b).is_some(),
+            // The model-switch chord's list, in cycling order. Blank names
+            // are dropped; anything but a list of strings is the wrong type.
+            "models" => match v.as_array().map(|a| {
+                a.iter()
+                    .map(|m| m.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+            }) {
+                Some(Some(list)) => {
+                    cfg.models = list.into_iter().filter(|m| !m.is_empty()).collect();
+                    true
+                }
+                _ => false,
+            },
+            "image-mode" => v.as_bool().map(|b| cfg.image_mode = b).is_some(),
+            "image-auto-escalate" => v.as_bool().map(|b| cfg.image_auto_escalate = b).is_some(),
             // A key this daemon does not know yet is the compositor being
             // newer, not an error.
             _ => continue,
@@ -819,5 +834,31 @@ mod tests {
         assert!(errs.is_empty(), "{errs:?}");
         assert_eq!(cfg.settle_ms, 100);
         assert_eq!(cfg.min_display_ms, 1000);
+    }
+
+    #[test]
+    fn compositor_serves_the_model_list_and_image_flags() {
+        let mut cfg = Config::default();
+        let reply = serde_json::json!({"keys": [
+            {"path": "oracle-eyes.models", "value": ["haiku", "", "sonnet", "opus"]},
+            {"path": "oracle-eyes.image-mode", "value": true},
+            {"path": "oracle-eyes.image-auto-escalate", "value": true},
+        ]});
+        let (applied, errs) = apply_compositor(&mut cfg, &reply);
+        assert_eq!((applied, errs.len()), (3, 0), "{errs:?}");
+        assert_eq!(cfg.models, ["haiku", "sonnet", "opus"]);
+        assert!(cfg.image_mode && cfg.image_auto_escalate);
+
+        let bad = serde_json::json!({"keys": [
+            {"path": "oracle-eyes.models", "value": ["haiku", 7]},
+            {"path": "oracle-eyes.image-mode", "value": "yes"},
+        ]});
+        let (applied, errs) = apply_compositor(&mut cfg, &bad);
+        assert_eq!((applied, errs.len()), (0, 2));
+        assert_eq!(
+            cfg.models,
+            ["haiku", "sonnet", "opus"],
+            "a bad value changes nothing"
+        );
     }
 }
