@@ -4645,8 +4645,13 @@ approves. Accept/Allow records the hash; a later change asks again.
 - Trusted UI must render correctly when the GPU is under load, when a
   fullscreen client holds direct scanout (scanout is dropped for that
   frame, COMP-02 §5), and during a session lock.
-- Fixed, non-configurable layout for prompts. No theming, no user CSS. A
-  themeable trusted surface is a spoofable one.
+- Fixed, non-configurable layout for prompts. No theming, no user CSS, no
+  user-supplied colour: a themeable trusted surface is a spoofable one. The
+  one exception is the colour scheme (ADR 0084): exactly two palettes, dark
+  and light, compiled into the compositor and chosen by the owner's
+  desktop-wide `general.color-scheme`. The scheme switches every surface at
+  once, so a prompt always matches the desktop around it. No client can set
+  or request it, and layout, text and controls are identical in both.
 - Scales with output scale; readable at 1.0 and 2.0.
 - Renders in the compositor process only; no IPC in the render path, so a
   hung `policyd` cannot blank the prompt that is waiting on it.
