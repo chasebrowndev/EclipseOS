@@ -281,7 +281,7 @@ impl Tesseract {
 impl Ocr for Tesseract {
     fn recognise(&mut self, frame: &Frame) -> Result<Vec<Word>, String> {
         let started = Instant::now();
-        let ppm = encode_ppm(frame);
+        let (ppm, scale) = prepare(frame);
 
         // Image in on stdin, TSV out on stdout: screen pixels never touch the
         // filesystem, so there is no window in which a temp file under
@@ -329,7 +329,7 @@ impl Ocr for Tesseract {
         }
 
         let tsv = String::from_utf8_lossy(&out.stdout);
-        let words = parse_tsv(&tsv, frame);
+        let words = parse_tsv_scaled(&tsv, frame, scale);
         tracing::debug!(
             words = words.len(),
             ms = started.elapsed().as_millis() as u64,
@@ -354,26 +354,76 @@ impl Ocr for Tesseract {
     }
 }
 
+/// Mean luma (0–255) under which a region reads as dark-theme: light text on
+/// a dark ground, which Tesseract reads poorly as it stands.
+const DARK_LUMA: u32 = 110;
+
+/// The image Tesseract is given, and the factor it was scaled by. A dark
+/// region is inverted (light text becomes dark on light, the way Tesseract
+/// was trained) and doubled in each dimension, because small screen text
+/// is most of what it misses. Anything else goes through as it is.
+fn prepare(frame: &Frame) -> (Vec<u8>, u32) {
+    let dark = mean_luma(frame) < DARK_LUMA;
+    let scale = if dark { 2 } else { 1 };
+    (encode_ppm(frame, dark, scale), scale as u32)
+}
+
+/// Mean luma of the frame, sampled on a coarse grid so a full-screen grab
+/// costs microseconds, not a pass over every pixel.
+fn mean_luma(frame: &Frame) -> u32 {
+    let (w, h, stride) = (
+        frame.width as usize,
+        frame.height as usize,
+        frame.stride as usize,
+    );
+    let (mut sum, mut n) = (0u64, 0u64);
+    for y in (0..h).step_by(8) {
+        for x in (0..w).step_by(8) {
+            let p = y * stride + x * 4;
+            if let Some(px) = frame.pixels.get(p..p + 3) {
+                // Rec. 601 weights in integer tenths, enough for a threshold.
+                sum += (299 * u64::from(px[0]) + 587 * u64::from(px[1]) + 114 * u64::from(px[2]))
+                    / 1000;
+                n += 1;
+            }
+        }
+    }
+    sum.checked_div(n).map_or(255, |mean| mean as u32)
+}
+
 /// PPM "P6": a three-line ASCII header then raw RGB. Chosen because it is the
 /// only lossless format we can emit correctly in ten lines with no image crate
 /// in the dependency list, and leptonica reads it natively.
 ///
 /// Alpha is dropped rather than composited: a capture of the composited output
-/// is already opaque, so there is nothing to blend against.
-fn encode_ppm(frame: &Frame) -> Vec<u8> {
+/// is already opaque, so there is nothing to blend against. `invert` and
+/// `scale` are the dark-theme preprocessing of [`prepare`]; `scale` repeats
+/// each pixel, which is nearest-neighbour and keeps every glyph edge exact.
+fn encode_ppm(frame: &Frame, invert: bool, scale: usize) -> Vec<u8> {
     let w = frame.width as usize;
     let h = frame.height as usize;
-    let header = format!("P6\n{w} {h}\n255\n");
-    let mut out = Vec::with_capacity(header.len() + w * h * 3);
+    let (ow, oh) = (w * scale, h * scale);
+    let header = format!("P6\n{ow} {oh}\n255\n");
+    let mut out = Vec::with_capacity(header.len() + ow * oh * 3);
     out.extend_from_slice(header.as_bytes());
     for row in 0..h {
         let start = row * frame.stride as usize;
+        let mut line = Vec::with_capacity(ow * 3);
         for col in 0..w {
             let p = start + col * 4;
             // A short buffer is a bug upstream, but emitting black beats
             // panicking in the middle of the user's hotkey.
             let px = frame.pixels.get(p..p + 3).unwrap_or(&[0, 0, 0]);
-            out.extend_from_slice(px);
+            for _ in 0..scale {
+                if invert {
+                    line.extend(px.iter().map(|c| 255 - c));
+                } else {
+                    line.extend_from_slice(px);
+                }
+            }
+        }
+        for _ in 0..scale {
+            out.extend_from_slice(&line);
         }
     }
     out
@@ -387,12 +437,21 @@ fn encode_ppm(frame: &Frame) -> Vec<u8> {
 ///
 /// Rows that do not parse are skipped rather than failing the whole capture:
 /// the alternative is one malformed line costing the user an answer.
+#[cfg(test)]
 fn parse_tsv(tsv: &str, frame: &Frame) -> Vec<Word> {
+    parse_tsv_scaled(tsv, frame, 1)
+}
+
+/// [`parse_tsv`] for an image `scale` times the frame's pixels in each
+/// dimension (the dark-theme upscale of [`prepare`]).
+fn parse_tsv_scaled(tsv: &str, frame: &Frame, scale: u32) -> Vec<Word> {
     // The buffer-to-logical ratio, from the frame itself: `origin` is the
     // logical rect the pixels cover and `width`/`height` are the pixels. This
     // is the same ratio `capture` cropped with, fractional scales included.
-    let sx = f64::from(frame.origin.w.max(1)) / f64::from(frame.width.max(1));
-    let sy = f64::from(frame.origin.h.max(1)) / f64::from(frame.height.max(1));
+    // The OCR image may be scaled up, so its pixels are `scale` times the
+    // frame's.
+    let sx = f64::from(frame.origin.w.max(1)) / f64::from((frame.width * scale).max(1));
+    let sy = f64::from(frame.origin.h.max(1)) / f64::from((frame.height * scale).max(1));
     let mut words = Vec::new();
     for line in tsv.lines() {
         // `splitn(12)` so a recognised word containing a tab — Tesseract does
@@ -466,12 +525,16 @@ mod tests {
 
     #[test]
     fn ppm_header_and_body_drop_alpha() {
-        let out = encode_ppm(&frame(Region {
-            x: 0,
-            y: 0,
-            w: 2,
-            h: 2,
-        }));
+        let out = encode_ppm(
+            &frame(Region {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 2,
+            }),
+            false,
+            1,
+        );
         assert_eq!(&out[..11], b"P6\n2 2\n255\n");
         assert_eq!(&out[11..], &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
     }
@@ -490,8 +553,75 @@ mod tests {
                 h: 2,
             },
         };
-        let out = encode_ppm(&f);
+        let out = encode_ppm(&f, false, 1);
         assert_eq!(&out[out.len() - 6..], &[1, 1, 1, 2, 2, 2]);
+    }
+
+    #[test]
+    fn a_dark_region_is_inverted_and_doubled() {
+        // Two pixels: a dark grey and white. Mean luma is well under the
+        // threshold, so the region is treated as dark-theme.
+        let f = Frame {
+            width: 2,
+            height: 1,
+            stride: 8,
+            pixels: vec![20, 20, 20, 255, 0, 0, 0, 255],
+            origin: Region {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 1,
+            },
+        };
+        let (ppm, scale) = prepare(&f);
+        assert_eq!(scale, 2);
+        assert!(ppm.starts_with(b"P6\n4 2\n255\n"));
+        let body = &ppm[b"P6\n4 2\n255\n".len()..];
+        assert_eq!(
+            &body[..6],
+            &[235, 235, 235, 235, 235, 235],
+            "inverted, doubled"
+        );
+        assert_eq!(body.len(), 4 * 2 * 3);
+    }
+
+    #[test]
+    fn a_light_region_goes_through_unchanged() {
+        let f = Frame {
+            width: 2,
+            height: 1,
+            stride: 8,
+            pixels: vec![250, 250, 250, 255, 255, 255, 255, 255],
+            origin: Region {
+                x: 0,
+                y: 0,
+                w: 2,
+                h: 1,
+            },
+        };
+        let (_, scale) = prepare(&f);
+        assert_eq!(scale, 1);
+    }
+
+    #[test]
+    fn scaled_boxes_map_back_to_the_logical_screen() {
+        // A 2x upscale of a 100x50 logical frame: a word at (40,20) in the
+        // scaled image is (20,10) in the frame, and its 60x24 box is 30x12.
+        let tsv = format!("{HEADER}\n5\t1\t1\t1\t1\t1\t40\t20\t60\t24\t90\thi\n");
+        let f = Frame {
+            width: 100,
+            height: 50,
+            stride: 400,
+            pixels: Vec::new(),
+            origin: Region {
+                x: 0,
+                y: 0,
+                w: 100,
+                h: 50,
+            },
+        };
+        let got = parse_tsv_scaled(&tsv, &f, 2);
+        assert_eq!(got[0], at("hi", 20, 10, 30, 12));
     }
 
     #[test]

@@ -103,6 +103,10 @@ pub enum Action {
     AnnotationDismiss,
     AnnotationExpand,
     AnnotationAutoToggle,
+    /// Step to the next model in `oracle-eyes.models` (forwarded on `keybind`).
+    AnnotationModelSwitch,
+    /// Toggle image mode for this session (forwarded on `keybind`).
+    AnnotationImageToggle,
 }
 
 /// A configured key binding.

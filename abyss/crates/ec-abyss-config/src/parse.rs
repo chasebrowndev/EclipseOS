@@ -306,6 +306,8 @@ pub(crate) fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "annotation-dismiss" => Action::AnnotationDismiss,
         "annotation-expand" => Action::AnnotationExpand,
         "annotation-auto-toggle" => Action::AnnotationAutoToggle,
+        "annotation-model-switch" => Action::AnnotationModelSwitch,
+        "annotation-image-toggle" => Action::AnnotationImageToggle,
         "quit" | "exit" => Action::Quit,
         other => return Err(format!("unknown action '{other}'")),
     })

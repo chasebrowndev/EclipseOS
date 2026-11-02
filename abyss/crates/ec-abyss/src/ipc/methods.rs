@@ -941,14 +941,12 @@ fn title_param(params: &Value) -> Result<&str, RpcError> {
     }
 }
 
-/// Optional pick `{x, y, w, h, label}`; absent or `null` means none. Unknown
-/// keys inside it are refused, same as at the top level.
-fn pick_param(params: &Value) -> Result<Option<crate::render::annotation::Pick>, RpcError> {
-    let pick = match params_obj(params).get("pick") {
-        None | Some(Value::Null) => return Ok(None),
-        Some(p @ Value::Object(_)) => p,
-        Some(_) => return Err(RpcError::invalid_params("pick must be an object")),
-    };
+/// Most picks one `annotation_create` may carry (ADR 0054, `picks`).
+const MAX_PICKS: usize = crate::render::annotation::MAX_PICKS;
+
+/// One pick `{x, y, w, h, label}`. Unknown keys inside it are refused, same as
+/// at the top level. Used for both `pick` and each entry of `picks`.
+fn pick_value(pick: &Value) -> Result<crate::render::annotation::Pick, RpcError> {
     only_keys(pick, &["x", "y", "w", "h", "label"])
         .map_err(|_| RpcError::invalid_params("pick takes only x, y, w, h and label"))?;
     let rect = rect_param(pick)
@@ -958,7 +956,33 @@ fn pick_param(params: &Value) -> Result<Option<crate::render::annotation::Pick>,
         .and_then(Value::as_str)
         .and_then(crate::render::annotation::pick_label)
         .ok_or_else(|| RpcError::invalid_params("pick.label must be 1-2 ASCII letters or digits"))?;
-    Ok(Some(crate::render::annotation::Pick { rect, label }))
+    Ok(crate::render::annotation::Pick { rect, label })
+}
+
+/// Optional picks: the legacy single `pick {…}`, or `picks [{…}, …]` of at
+/// most [`MAX_PICKS`]. `null` counts as absent; both present is refused.
+fn picks_param(params: &Value) -> Result<Vec<crate::render::annotation::Pick>, RpcError> {
+    let obj = params_obj(params);
+    let present = |k: &str| obj.get(k).filter(|v| !v.is_null());
+    match (present("pick"), present("picks")) {
+        (Some(_), Some(_)) => Err(RpcError::invalid_params("give pick or picks, not both")),
+        (Some(p @ Value::Object(_)), None) => Ok(vec![pick_value(p)?]),
+        (Some(_), None) => Err(RpcError::invalid_params("pick must be an object")),
+        (None, Some(Value::Array(items))) => {
+            if items.len() > MAX_PICKS {
+                return Err(RpcError::invalid_params("picks takes at most 16 entries"));
+            }
+            items
+                .iter()
+                .map(|p| match p {
+                    Value::Object(_) => pick_value(p),
+                    _ => Err(RpcError::invalid_params("each picks entry must be an object")),
+                })
+                .collect()
+        }
+        (None, Some(_)) => Err(RpcError::invalid_params("picks must be an array")),
+        (None, None) => Ok(Vec::new()),
+    }
 }
 
 /// Optional anchor: none of `x/y/w/h` present means unanchored (drawn
@@ -991,22 +1015,25 @@ type CreateParams<'a> = (
     crate::render::annotation::AnnotationKind,
     &'a str,
     &'a str,
-    Option<crate::render::annotation::Pick>,
+    Vec<crate::render::annotation::Pick>,
 );
 
 fn create_params(params: &Value) -> Result<CreateParams<'_>, RpcError> {
-    only_keys(params, &["x", "y", "w", "h", "kind", "text", "title", "pick"])?;
+    only_keys(
+        params,
+        &["x", "y", "w", "h", "kind", "text", "title", "pick", "picks"],
+    )?;
     let anchor = anchor_param(params)?;
     let kind = kind_param(params)?;
     let title = title_param(params)?;
     let text = text_param(params)?;
-    let pick = pick_param(params)?;
+    let picks = picks_param(params)?;
     // A pick marks a sub-rectangle of the anchor; with no anchor there is
     // nothing for it to be inside.
-    if pick.is_some() && anchor.is_none() {
+    if !picks.is_empty() && anchor.is_none() {
         return Err(RpcError::invalid_params("pick requires x, y, w and h"));
     }
-    Ok((anchor, kind, title, text, pick))
+    Ok((anchor, kind, title, text, picks))
 }
 
 fn update_params(params: &Value) -> Result<(u64, &str, &str), RpcError> {
@@ -1019,8 +1046,11 @@ fn update_params(params: &Value) -> Result<(u64, &str, &str), RpcError> {
 }
 
 fn annotation_create(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
-    let (anchor, kind, title, text, pick) = create_params(params)?;
-    let Some(id) = state.annotations.create(conn, anchor, kind, title, text, pick) else {
+    let (anchor, kind, title, text, picks) = create_params(params)?;
+    let Some(id) = state
+        .annotations
+        .create_picks(conn, anchor, kind, title, text, picks)
+    else {
         return Err(RpcError::invalid_params("too many live annotations"));
     };
     crate::backend::damage_all(state);
@@ -1502,7 +1532,7 @@ mod tests {
         let base = json!({"x": 0, "y": 0, "w": 100, "h": 50, "text": "body"});
         let (_, _, title, text, pick) = create_params(&base).unwrap_or_else(|_| panic!("no title: rejected"));
         assert_eq!((title, text), ("", "body"));
-        assert!(pick.is_none());
+        assert!(pick.is_empty());
 
         let mut p = base.clone();
         p["title"] = json!("Q3");
@@ -1520,16 +1550,16 @@ mod tests {
         let with_pick = |pick: Value| json!({"x": 0, "y": 0, "w": 100, "h": 50, "text": "t", "pick": pick});
         let ok = create_params(&with_pick(json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": "b2"})))
             .unwrap_or_else(|_| panic!("valid pick: rejected"))
-            .4
-            .expect("pick present");
-        assert_eq!(ok.label, "B2");
-        assert_eq!(ok.rect, Rectangle::new((1, 2).into(), (3, 4).into()));
+            .4;
+        assert_eq!(ok.len(), 1);
+        assert_eq!(ok[0].label, "B2");
+        assert_eq!(ok[0].rect, Rectangle::new((1, 2).into(), (3, 4).into()));
 
         // `null` is absent.
         assert!(create_params(&with_pick(Value::Null))
             .unwrap_or_else(|_| panic!("null pick: rejected"))
             .4
-            .is_none());
+            .is_empty());
 
         for bad in [
             json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": "ABC"}),
@@ -1592,11 +1622,128 @@ mod tests {
         });
         let (anchor, kind, title, text, pick) =
             create_params(&p).unwrap_or_else(|_| panic!("IPC accepts it: rejected"));
-        assert!(pick.is_some());
+        assert_eq!(pick.len(), 1);
         let mut store = crate::render::annotation::AnnotationStore::default();
-        let id = store.create(1, anchor, kind, title, text, pick).expect("created");
+        let id = store
+            .create_picks(1, anchor, kind, title, text, pick)
+            .expect("created");
         let (_, a) = store.iter().find(|(k, _)| **k == id).expect("live");
-        assert!(a.pick.is_none());
+        assert!(a.picks.is_empty());
+    }
+
+    #[test]
+    fn annotation_picks_array_is_accepted_in_order() {
+        let p = json!({
+            "x": 0, "y": 0, "w": 100, "h": 50, "text": "t",
+            "picks": [
+                {"x": 1, "y": 1, "w": 10, "h": 10, "label": "a"},
+                {"x": 20, "y": 1, "w": 10, "h": 10, "label": "c3"},
+                {"x": 40, "y": 1, "w": 10, "h": 10, "label": "d"},
+            ],
+        });
+        let picks = create_params(&p).unwrap_or_else(|_| panic!("picks: rejected")).4;
+        let labels: Vec<_> = picks.iter().map(|k| k.label.as_str()).collect();
+        assert_eq!(labels, ["A", "C3", "D"]);
+        assert_eq!(picks[1].rect, Rectangle::new((20, 1).into(), (10, 10).into()));
+
+        // An empty array is no picks; `picks: null` is absent.
+        for ok in [json!([]), Value::Null] {
+            let p = json!({"x": 0, "y": 0, "w": 100, "h": 50, "text": "t", "picks": ok});
+            assert!(create_params(&p)
+                .unwrap_or_else(|_| panic!("{ok}: rejected"))
+                .4
+                .is_empty());
+        }
+    }
+
+    #[test]
+    fn annotation_picks_is_capped_at_sixteen() {
+        let pick = |i: i32| json!({"x": i, "y": 0, "w": 1, "h": 1, "label": "A"});
+        let with = |n: i32| {
+            let items: Vec<Value> = (0..n).map(pick).collect();
+            json!({"x": 0, "y": 0, "w": 100, "h": 50, "text": "t", "picks": items})
+        };
+        assert_eq!(
+            create_params(&with(16))
+                .unwrap_or_else(|_| panic!("16: rejected"))
+                .4
+                .len(),
+            16
+        );
+        assert!(create_params(&with(17)).is_err(), "17 picks accepted");
+    }
+
+    #[test]
+    fn annotation_pick_and_picks_together_are_refused() {
+        let both = json!({
+            "x": 0, "y": 0, "w": 100, "h": 50, "text": "t",
+            "pick": {"x": 1, "y": 1, "w": 3, "h": 3, "label": "A"},
+            "picks": [{"x": 1, "y": 1, "w": 3, "h": 3, "label": "B"}],
+        });
+        assert!(create_params(&both).is_err(), "pick and picks accepted together");
+        // A null `pick` is absent, so `picks` alone is fine.
+        let null_single = json!({
+            "x": 0, "y": 0, "w": 100, "h": 50, "text": "t", "pick": null,
+            "picks": [{"x": 1, "y": 1, "w": 3, "h": 3, "label": "B"}],
+        });
+        assert_eq!(
+            create_params(&null_single)
+                .unwrap_or_else(|_| panic!("rejected"))
+                .4
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn annotation_picks_entries_are_validated_like_pick() {
+        let with = |picks: Value| json!({"x": 0, "y": 0, "w": 100, "h": 50, "text": "t", "picks": picks});
+        let good = json!({"x": 1, "y": 2, "w": 3, "h": 4, "label": "B"});
+        for bad in [
+            // Zero or negative size, a bad label, a missing or extra key, a wrong type.
+            json!([good.clone(), {"x": 1, "y": 2, "w": 0, "h": 4, "label": "A"}]),
+            json!([good.clone(), {"x": 1, "y": 2, "w": -3, "h": 4, "label": "A"}]),
+            json!([good.clone(), {"x": 1, "y": 2, "w": 3, "h": 4, "label": "ABC"}]),
+            json!([good.clone(), {"x": 1, "y": 2, "w": 3, "h": 4}]),
+            json!([good.clone(), {"x": 1, "y": 2, "w": 3, "h": 4, "label": "A", "colour": "red"}]),
+            json!([good.clone(), 7]),
+            json!([good.clone(), "A"]),
+            json!([good.clone(), null]),
+            // Not an array.
+            json!(good.clone()),
+            json!("B"),
+        ] {
+            assert!(create_params(&with(bad.clone())).is_err(), "{bad} accepted");
+        }
+    }
+
+    #[test]
+    fn annotation_picks_need_an_anchor() {
+        let p = json!({"text": "t", "picks": [{"x": 1, "y": 2, "w": 3, "h": 4, "label": "A"}]});
+        assert!(create_params(&p).is_err(), "picks without an anchor accepted");
+    }
+
+    #[test]
+    fn annotation_picks_outside_anchor_are_dropped_one_by_one() {
+        // The door admits the shape; the store keeps only the picks wholly
+        // inside the anchor (ADR 0054), and keeps the rest.
+        let p = json!({
+            "x": 0, "y": 0, "w": 100, "h": 50, "text": "t",
+            "picks": [
+                {"x": 1, "y": 1, "w": 10, "h": 10, "label": "A"},
+                {"x": 500, "y": 500, "w": 10, "h": 10, "label": "B"},
+                {"x": 20, "y": 20, "w": 10, "h": 10, "label": "C"},
+            ],
+        });
+        let (anchor, kind, title, text, picks) =
+            create_params(&p).unwrap_or_else(|_| panic!("IPC accepts it: rejected"));
+        let mut store = crate::render::annotation::AnnotationStore::default();
+        let id = store
+            .create_picks(1, anchor, kind, title, text, picks)
+            .expect("created");
+        let (_, a) = store.iter().find(|(k, _)| **k == id).expect("live");
+        let labels: Vec<_> = a.picks.iter().map(|k| k.label.as_str()).collect();
+        assert_eq!(labels, ["A", "C"]);
     }
 
     #[test]

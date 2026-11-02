@@ -415,29 +415,42 @@ pub struct OracleEyes {
     pub hold_ms: u32,
     /// Debug mode: the taskbar eye turns red and shows in captures.
     pub debug: bool,
+    /// Model names for the model-switch chord, cycled in order. Empty means
+    /// the model command runs with its own default model.
+    pub models: Vec<String>,
+    /// Image mode: send the frame to the model as a PNG, not only OCR text.
+    /// Off by default; the chord toggles it for the session.
+    pub image_mode: bool,
+    /// Allow one retry with the next model and/or image mode when an answer
+    /// is weak. Off by default.
+    pub image_auto_escalate: bool,
     /// `oracle-eyes { bind { … } }`: chords for the annotation actions.
     pub bind: OracleEyesBinds,
 }
 
-/// `oracle-eyes { bind { select "Super+A"; dismiss …; expand …; auto-toggle … } }`.
-/// Same grammar as `launcher.bind`; each one is a default bind for its
-/// `annotation-*` action, so a `bind` block on the same chord wins. None is
-/// bound unless set (`none`).
+/// `oracle-eyes { bind { select "Super+A"; dismiss …; expand …; auto-toggle …;
+/// model-switch …; image-toggle … } }`. Same grammar as `launcher.bind`; each
+/// one is a default bind for its `annotation-*` action, so a `bind` block on
+/// the same chord wins. None is bound unless set (`none`).
 #[derive(Debug, Clone, PartialEq)]
 pub struct OracleEyesBinds {
     pub select: LauncherChord,
     pub dismiss: LauncherChord,
     pub expand: LauncherChord,
     pub auto_toggle: LauncherChord,
+    pub model_switch: LauncherChord,
+    pub image_toggle: LauncherChord,
 }
 
 impl Default for OracleEyesBinds {
     fn default() -> Self {
         Self {
-            select: LauncherChord::new("none"),
-            dismiss: LauncherChord::new("none"),
-            expand: LauncherChord::new("none"),
-            auto_toggle: LauncherChord::new("none"),
+            select: LauncherChord::new("Super+grave"),
+            dismiss: LauncherChord::new("Super+Alt+Down"),
+            expand: LauncherChord::new("Super+Alt+Up"),
+            auto_toggle: LauncherChord::new("Super+a"),
+            model_switch: LauncherChord::new("Super+Alt+Right"),
+            image_toggle: LauncherChord::new("Super+Alt+Left"),
         }
     }
 }
@@ -450,6 +463,8 @@ pub fn oracle_eyes_binds(oe: &OracleEyes) -> Vec<Bind> {
         (&b.dismiss, Action::AnnotationDismiss),
         (&b.expand, Action::AnnotationExpand),
         (&b.auto_toggle, Action::AnnotationAutoToggle),
+        (&b.model_switch, Action::AnnotationModelSwitch),
+        (&b.image_toggle, Action::AnnotationImageToggle),
     ]
     .into_iter()
     .filter_map(|(c, action)| c.chord.map(|(mods, key)| Bind { mods, key, action }))
@@ -475,6 +490,9 @@ impl Default for OracleEyes {
             auto_interval_ms: 3000,
             hold_ms: 4000,
             debug: false,
+            models: Vec::new(),
+            image_mode: false,
+            image_auto_escalate: false,
             bind: OracleEyesBinds::default(),
         }
     }

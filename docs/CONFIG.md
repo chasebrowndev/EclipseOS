@@ -79,10 +79,15 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `oracle-eyes.auto-interval-ms` | int 1000..600000 | `3000` | live | Oracle Eyes: in automatic mode, the least time between two questions. |
 | `oracle-eyes.hold-ms` | int 500..60000 | `4000` | live | Oracle Eyes: the least time an answer stays on screen; longer answers stay longer. |
 | `oracle-eyes.debug` | bool | `#false` | live | Oracle Eyes debug mode: the taskbar eye turns red and is shown in screen captures, and the daemon writes a debug log. |
-| `oracle-eyes.bind.select` | string | `"none"` | live | Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
-| `oracle-eyes.bind.dismiss` | string | `"none"` | live | Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
-| `oracle-eyes.bind.expand` | string | `"none"` | live | Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
-| `oracle-eyes.bind.auto-toggle` | string | `"none"` | live | Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.models` | list of strings | _empty_ | live | Oracle Eyes: model names for the model-switch chord, in the order it cycles, e.g. `models "haiku" "sonnet" "opus"`. Empty (the default) runs the model command with its own default model. |
+| `oracle-eyes.image-mode` | bool | `#false` | live | Oracle Eyes: send the frame to the model as an image as well as OCR text. Off by default, since the pixels leave the redaction filter; the image-toggle chord changes it for the session. |
+| `oracle-eyes.image-auto-escalate` | bool | `#false` | live | Oracle Eyes: when an answer is weak (low confidence or poor OCR), retry once with the next model and/or image mode. Off by default. |
+| `oracle-eyes.bind.select` | string | `"Super+grave"` | live | Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.dismiss` | string | `"Super+Alt+Down"` | live | Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.expand` | string | `"Super+Alt+Up"` | live | Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.auto-toggle` | string | `"Super+a"` | live | Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.model-switch` | string | `"Super+Alt+Right"` | live | Chord for annotation-model-switch: move to the next model in `oracle-eyes.models`, like `Super+Shift+M`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.image-toggle` | string | `"Super+Alt+Left"` | live | Chord for annotation-image-toggle: turn image mode on or off for this session, like `Super+Shift+I`; `none` leaves it unbound. A `bind` block on the same chord wins. |
 
 ### `general`
 
@@ -371,6 +376,8 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `annotation-dismiss` | `annotation-dismiss` | Forwarded to the annotation addon on the `keybind` event stream. |
 | `annotation-expand` | `annotation-expand` | Forwarded to the annotation addon. |
 | `annotation-auto-toggle` | `annotation-auto-toggle` | Forwarded to the annotation addon. |
+| `annotation-model-switch` | `annotation-model-switch` | Forwarded to the annotation addon: the next model in `oracle-eyes.models`. |
+| `annotation-image-toggle` | `annotation-image-toggle` | Forwarded to the annotation addon: image mode on or off for this session. |
 | `quit` / `exit` | `quit` | Exit the compositor. |
 
 ### `gesture`

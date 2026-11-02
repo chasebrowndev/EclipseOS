@@ -38,7 +38,11 @@ fn traced(c: &mut impl Control, method: &str, params: Value) -> Result<Value, St
                 .unwrap_or_default()
         };
         let id = params.get("id").and_then(Value::as_u64);
-        let pick = params.get("pick").map(|p| log_safe(&p.to_string()));
+        // Counts only: the picks are option labels and rectangles, not text.
+        let picks = params
+            .get("picks")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
         tracing::debug!(
             method,
             id,
@@ -48,7 +52,7 @@ fn traced(c: &mut impl Control, method: &str, params: Value) -> Result<Value, St
             h = int("h"),
             title = %text("title"),
             text = %text("text"),
-            pick,
+            picks,
             "hud: send"
         );
     }
@@ -106,7 +110,10 @@ pub enum PanelKind {
 pub struct Panel {
     pub title: String,
     pub text: String,
+    /// The first option picked, if any. Sent as the first entry of `picks`.
     pub pick: Option<Pick>,
+    /// The rest of a multi-select's picks, in order after `pick`.
+    pub more: Vec<Pick>,
     pub kind: PanelKind,
 }
 
@@ -119,6 +126,7 @@ impl Panel {
             title: "Couldn't answer".to_string(),
             text: f.fault.sentence().to_string(),
             pick: None,
+            more: Vec::new(),
             kind: PanelKind::Error,
         }
     }
@@ -146,7 +154,10 @@ pub struct Hud {
     /// re-worded in place but never moved, re-marked or turned from an
     /// answer into a failure, so any of those has to be a new panel.
     /// `None` as the anchor is an unanchored panel.
-    live: Option<(u64, Option<Anchor>, Option<Pick>, PanelKind)>,
+    live: Option<(u64, Option<Anchor>, Panel)>,
+    /// Whether the panels on screen are several (one per question). Those are
+    /// replaced as a set, never updated in place.
+    several: bool,
 }
 
 impl Hud {
@@ -174,13 +185,11 @@ impl Hud {
         panel: &Panel,
     ) -> Result<u64, String> {
         match self.live.take() {
-            Some((id, at, pick, kind))
-                if at == anchor && pick == panel.pick && kind == panel.kind =>
-            {
+            Some((id, at, shown)) if !self.several && at == anchor && same_marks(&shown, panel) => {
                 let mut p = panel.params();
                 p["id"] = json!(id);
                 if traced(c, "annotation_update", p).is_ok() {
-                    self.live = Some((id, at, pick, kind));
+                    self.live = Some((id, at, panel.clone()));
                     return Ok(id);
                 }
                 // The compositor forgot it — we disconnected, or it
@@ -195,31 +204,84 @@ impl Hud {
             }
             None => {}
         }
-        let mut p = panel.params();
-        if let Some(a) = anchor {
-            p["x"] = json!(a.x);
-            p["y"] = json!(a.y);
-            p["w"] = json!(a.w);
-            p["h"] = json!(a.h);
+        if self.several {
+            // The set on screen is replaced as a whole: the previous set's
+            // panels go first, or they would sit beside the new ones.
+            let _ = traced(c, "annotation_clear", json!({}));
+            self.several = false;
         }
-        if let Some(k) = &panel.pick {
-            p["pick"] = json!({"x": k.x, "y": k.y, "w": k.w, "h": k.h, "label": k.label});
-        }
-        let reply = traced(c, "annotation_create", p)?;
-        let id = reply
-            .get("id")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| format!("annotation_create returned no handle: {reply}"))?;
-        self.live = Some((id, anchor, panel.pick.clone(), panel.kind));
+        let id = create(c, anchor, panel)?;
+        self.live = Some((id, anchor, panel.clone()));
         Ok(id)
+    }
+
+    /// Show one panel per question, each at its own anchor. One panel is the
+    /// ordinary [`Hud::show`], updated in place when it can be. Several replace
+    /// whatever was on screen, as a set.
+    pub fn show_all(
+        &mut self,
+        c: &mut impl Control,
+        items: &[(Option<Anchor>, Panel)],
+    ) -> Result<(), String> {
+        match items {
+            [] => Ok(()),
+            [(anchor, panel)] if !self.several => self.show(c, *anchor, panel).map(|_| ()),
+            _ => {
+                let _ = traced(c, "annotation_clear", json!({}));
+                self.live = None;
+                self.several = true;
+                for (anchor, panel) in items {
+                    create(c, *anchor, panel)?;
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Take everything down. Idempotent: dismissing nothing is not an error,
     /// because the chord is the user's and they may press it any time.
     pub fn dismiss(&mut self, c: &mut impl Control) -> Result<(), String> {
         self.live = None;
+        self.several = false;
         traced(c, "annotation_clear", json!({})).map(|_| ())
     }
+}
+
+/// Whether two panels carry the same marks, so an update in place keeps them.
+fn same_marks(a: &Panel, b: &Panel) -> bool {
+    a.pick == b.pick && a.more == b.more && a.kind == b.kind
+}
+
+/// The most picks one annotation may carry: the compositor's cap on `picks`.
+const MAX_PICKS: usize = 16;
+
+/// Send one `annotation_create`, and return its handle. Every pick, the first
+/// included, goes in the one `picks` list: the compositor refuses `pick` next
+/// to `picks`, and marks only the entries inside the anchor.
+fn create(c: &mut impl Control, anchor: Option<Anchor>, panel: &Panel) -> Result<u64, String> {
+    let mut p = panel.params();
+    if let Some(a) = anchor {
+        p["x"] = json!(a.x);
+        p["y"] = json!(a.y);
+        p["w"] = json!(a.w);
+        p["h"] = json!(a.h);
+    }
+    let mark = |k: &Pick| json!({"x": k.x, "y": k.y, "w": k.w, "h": k.h, "label": k.label});
+    let all: Vec<Value> = panel
+        .pick
+        .iter()
+        .chain(panel.more.iter())
+        .take(MAX_PICKS)
+        .map(mark)
+        .collect();
+    if !all.is_empty() {
+        p["picks"] = Value::Array(all);
+    }
+    let reply = traced(c, "annotation_create", p)?;
+    reply
+        .get("id")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("annotation_create returned no handle: {reply}"))
 }
 
 #[cfg(test)]
@@ -363,8 +425,33 @@ mod tests {
             ]
         );
         let sent = c.last.clone().unwrap();
-        assert_eq!(sent["pick"]["label"], "B");
+        assert_eq!(sent["picks"][0]["label"], "B");
+        assert!(sent.get("pick").is_none(), "the compositor refuses both");
         assert_eq!(sent["title"], "Jupiter");
+    }
+
+    #[test]
+    fn every_pick_goes_in_one_list_capped_at_the_compositor_limit() {
+        let mut c = Fake::default();
+        let mark = |label: &str, y: i32| Pick {
+            label: label.into(),
+            x: 12,
+            y,
+            w: 60,
+            h: 10,
+        };
+        let panel = Panel {
+            pick: Some(mark("A", 30)),
+            more: (0..20).map(|i| mark(&format!("L{i}"), 40 + i)).collect(),
+            ..Panel::default()
+        };
+        create(&mut c, Some(A), &panel).unwrap();
+        let sent = c.last.clone().unwrap();
+        let picks = sent["picks"].as_array().unwrap();
+        assert_eq!(picks.len(), MAX_PICKS);
+        assert_eq!(picks[0]["label"], "A", "the first pick leads the list");
+        assert_eq!(picks[1]["label"], "L0");
+        assert!(sent.get("pick").is_none());
     }
 
     #[test]

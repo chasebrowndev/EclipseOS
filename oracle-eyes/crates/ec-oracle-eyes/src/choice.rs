@@ -62,13 +62,86 @@ const BULLETS: &[&str] = &[
     "[", "(",
 ];
 
+/// How many alternatives a question asks for, from its own wording: a
+/// multiple-choice item that says `(Choose two.)` wants two options, and
+/// `Select all that apply.` wants any number. A single pick is the default
+/// when nothing says otherwise, so this is `None` for most questions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Multi {
+    /// Exactly this many (`Choose two` is `Count(2)`).
+    Count(usize),
+    /// Any number of the options, at least one (`Select all that apply`).
+    Any,
+}
+
+/// The multi-select wording in one line of text, if it has any.
+pub fn choose_of(text: &str) -> Option<Multi> {
+    let t = text.to_ascii_lowercase();
+    if [
+        "select all that apply",
+        "choose all that apply",
+        "check all that apply",
+    ]
+    .iter()
+    .any(|p| t.contains(p))
+    {
+        return Some(Multi::Any);
+    }
+    let at = ["choose ", "select ", "pick "]
+        .iter()
+        .find_map(|k| t.find(k))?;
+    let word = t[at..].split(|c: char| !c.is_alphanumeric()).nth(1)?;
+    let n = match word {
+        "one" | "1" => 1,
+        "two" | "2" => 2,
+        "three" | "3" => 3,
+        "four" | "4" => 4,
+        "five" | "5" => 5,
+        "six" | "6" => 6,
+        _ => return None,
+    };
+    Some(Multi::Count(n))
+}
+
+/// How many options `group` asks for, from the wording around its options.
+/// The question's own lines above the first option are searched nearest first
+/// (a passage can sit a few lines up), and a trailing hint below the last one;
+/// the search stops at the option lines of another list, so one question's
+/// wording never reads as another's.
+pub fn multi_of(lines: &[Line], options: &[Choice], group: usize) -> Option<Multi> {
+    let at: Vec<usize> = options
+        .iter()
+        .filter(|o| o.group == group)
+        .filter_map(|o| lines.iter().position(|l| l.id == o.line))
+        .collect();
+    let (first, last) = (*at.iter().min()?, *at.iter().max()?);
+    let is_option = |i: usize| options.iter().any(|o| o.line == lines[i].id);
+    for i in (first.saturating_sub(6)..first).rev() {
+        if is_option(i) {
+            break;
+        }
+        if let Some(m) = choose_of(&lines[i].text) {
+            return Some(m);
+        }
+    }
+    for line in lines.iter().skip(last + 1).take(2) {
+        if options.iter().any(|o| o.line == line.id) {
+            break;
+        }
+        if let Some(m) = choose_of(&line.text) {
+            return Some(m);
+        }
+    }
+    None
+}
+
 /// The label a line opens with, if any.
 fn key_of(text: &str) -> Option<Key> {
     let mut words = text.split_whitespace();
     let first = words.next()?;
     // Something has to follow the label, or it is a lone letter, not an option.
     let second = words.next()?;
-    if let Some(k) = label(first) {
+    if let Some(k) = label(first).or_else(|| boxed(first)) {
         return Some(k);
     }
     // A list bullet before the label (`• A) London`), which OCR also reads as
@@ -79,7 +152,58 @@ fn key_of(text: &str) -> Option<Key> {
             return Some(k);
         }
     }
+    // A checkbox read as its own token, the letter after it in the next:
+    // `[ JE`, `[ ] E`. The box is the bracket; the letter is the label.
+    if !first.is_empty()
+        && first.chars().count() <= 2
+        && first
+            .chars()
+            .all(|c| matches!(c, '[' | ']' | '(' | ')' | '|'))
+    {
+        if let Some(k) = label(second).or_else(|| bare_after_box(second)) {
+            return Some(k);
+        }
+    }
     BULLETS.contains(&first).then_some(Key::Bullet)
+}
+
+/// A checkbox or radio that OCR read as a bracket or a digit stuck to its
+/// label: `[TA` (box, A), `1B`, `[JE`. The leading run is box junk and the
+/// final character, uppercase, is the label. Tight on purpose: `OK` or `IT`
+/// are words, not boxes, so the lead has to open with a bracket or a `1`.
+fn boxed(tok: &str) -> Option<Key> {
+    let cs: Vec<char> = tok.chars().collect();
+    if !(2..=4).contains(&cs.len()) {
+        return None;
+    }
+    let (last, lead) = (*cs.last()?, &cs[..cs.len() - 1]);
+    if !last.is_ascii_uppercase() {
+        return None;
+    }
+    if !matches!(lead.first()?, '[' | '(' | '|' | '1' | '□' | '☐') {
+        return None;
+    }
+    lead.iter()
+        .all(|c| {
+            matches!(
+                c,
+                '[' | ']' | '(' | ')' | '|' | '1' | 'I' | 'J' | 'T' | '□' | '☐'
+            )
+        })
+        .then_some(Key::Letter(last as u8))
+}
+
+/// The label after a box that was read on its own: a single capital, or a
+/// capital that OCR read with a box glyph (`J`, `T`, `I`) in front of it.
+fn bare_after_box(tok: &str) -> Option<Key> {
+    let cs: Vec<char> = tok.chars().collect();
+    match cs.as_slice() {
+        [c] if c.is_ascii_uppercase() => Some(Key::Letter(*c as u8)),
+        [j, c] if matches!(j, 'J' | 'T' | 'I') && c.is_ascii_uppercase() => {
+            Some(Key::Letter(*c as u8))
+        }
+        _ => None,
+    }
 }
 
 /// A letter or number label on its own: `A)`, `(a)`, `b.`, `1:`.
@@ -238,52 +362,73 @@ const OPTION_WORDS: usize = 10;
 /// question mark is what keeps an ordinary bulleted list from reading as a
 /// quiz. An option that wraps breaks the even spacing, so such a list is not
 /// detected and the answer stays prose. Letters are ours, in reading order.
+///
+/// Every question on the screen gets its own list: each stem that is followed
+/// by a run is one group, and the scan resumes after that run, so two stacked
+/// questions are two groups and a stem inside a run is not a second question.
 fn unlabelled(lines: &[Line]) -> Vec<Choice> {
-    let mut best: Vec<Choice> = Vec::new();
-    for (i, stem) in lines.iter().enumerate() {
-        if !stem.text.trim_end().ends_with('?') {
+    let mut out: Vec<Choice> = Vec::new();
+    let mut group = 0;
+    let mut i = 0;
+    while i < lines.len() {
+        if !lines[i].text.trim_end().ends_with('?') {
+            i += 1;
             continue;
         }
-        let mut run: Vec<Choice> = Vec::new();
-        let mut step: Option<i32> = None;
-        for l in &lines[i + 1..] {
-            let words = l.text.split_whitespace().count();
-            if words == 0 || words > OPTION_WORDS || l.text.trim_end().ends_with('?') {
-                break;
+        let run = unlabelled_run(&lines[i], &lines[i + 1..]);
+        if !(MIN_UNLABELLED..=MAX_UNLABELLED).contains(&run.len()) {
+            i += 1;
+            continue;
+        }
+        // The run is the next lines in order, so the scan picks up after it.
+        i += 1 + run.len();
+        for (k, mut c) in run.into_iter().enumerate() {
+            c.group = group;
+            c.label = letter(k);
+            out.push(c);
+        }
+        group += 1;
+    }
+    out
+}
+
+/// The options that follow one stem: consecutive short, evenly spaced lines
+/// left-aligned with each other, up to [`MAX_UNLABELLED`] + 1 (more than that
+/// is not a question's answers, and the caller rejects it).
+fn unlabelled_run(stem: &Line, after: &[Line]) -> Vec<Choice> {
+    let mut run: Vec<Choice> = Vec::new();
+    let mut step: Option<i32> = None;
+    for l in after {
+        let words = l.text.split_whitespace().count();
+        if words == 0 || words > OPTION_WORDS || l.text.trim_end().ends_with('?') {
+            break;
+        }
+        let tol = l.h.max(12);
+        match run.last() {
+            None => {
+                if l.y - (stem.y + stem.h) > 3 * tol {
+                    break;
+                }
             }
-            let tol = l.h.max(12);
-            match run.last() {
-                None => {
-                    if l.y - (stem.y + stem.h) > 3 * tol {
+            Some(above) => {
+                let gap = l.y - above.y;
+                if (l.x - above.x).abs() > tol / 2 || gap <= 0 {
+                    break;
+                }
+                if let Some(s) = step {
+                    if (gap - s).abs() > (l.h / 3).max(4) {
                         break;
                     }
                 }
-                Some(above) => {
-                    let gap = l.y - above.y;
-                    if (l.x - above.x).abs() > tol / 2 || gap <= 0 {
-                        break;
-                    }
-                    if let Some(s) = step {
-                        if (gap - s).abs() > (l.h / 3).max(4) {
-                            break;
-                        }
-                    }
-                    step = Some(gap);
-                }
-            }
-            run.push(choice(l));
-            if run.len() > MAX_UNLABELLED {
-                break;
+                step = Some(gap);
             }
         }
-        if (MIN_UNLABELLED..=MAX_UNLABELLED).contains(&run.len()) && run.len() > best.len() {
-            best = run;
+        run.push(choice(l));
+        if run.len() > MAX_UNLABELLED {
+            break;
         }
     }
-    for (i, c) in best.iter_mut().enumerate() {
-        c.label = letter(i);
-    }
-    best
+    run
 }
 
 fn letter(i: usize) -> String {
@@ -561,5 +706,101 @@ mod tests {
         assert_eq!(labels(&c), ["A", "B", "A", "B"]);
         let groups: Vec<usize> = c.iter().map(|c| c.group).collect();
         assert_eq!(groups, [0, 0, 1, 1]);
+    }
+
+    #[test]
+    fn choose_wording_is_parsed_in_its_usual_spellings() {
+        assert_eq!(choose_of("(Choose two.)"), Some(Multi::Count(2)));
+        assert_eq!(choose_of("Select three.)"), Some(Multi::Count(3)));
+        assert_eq!(choose_of("Choose 4 answers"), Some(Multi::Count(4)));
+        assert_eq!(choose_of("Select all that apply."), Some(Multi::Any));
+        // Ordinary prose with the same verbs is not a count.
+        assert_eq!(choose_of("Choose the VLAN interface"), None);
+        assert_eq!(choose_of("Choose Your Own Device"), None);
+        assert_eq!(choose_of("choose esc back"), None);
+    }
+
+    #[test]
+    fn a_multi_select_question_says_how_many_it_wants() {
+        let l = [
+            line(1, "Which two are routing protocols? (Choose two.)", 0, 0),
+            line(2, "A) RIP", 0, 20),
+            line(3, "B) DNS", 0, 40),
+            line(4, "C) OSPF", 0, 60),
+        ];
+        let c = detect(&l);
+        assert_eq!(multi_of(&l, &c, 0), Some(Multi::Count(2)));
+    }
+
+    #[test]
+    fn a_trailing_select_all_hint_is_found_too() {
+        let l = [
+            line(1, "Which are primes?", 0, 0),
+            line(2, "[ ] 2", 0, 20),
+            line(3, "[ ] 4", 0, 40),
+            line(4, "Select all that apply.", 0, 60),
+        ];
+        let c = detect(&l);
+        assert_eq!(multi_of(&l, &c, 0), Some(Multi::Any));
+    }
+
+    #[test]
+    fn a_single_pick_question_has_no_multi() {
+        let l = [
+            line(1, "Largest planet?", 0, 0),
+            line(2, "A) Mars", 0, 20),
+            line(3, "B) Jupiter", 0, 40),
+        ];
+        assert_eq!(multi_of(&l, &detect(&l), 0), None);
+    }
+
+    #[test]
+    fn one_questions_wording_does_not_leak_into_the_next() {
+        let l = [
+            line(1, "1. Pick the planet (Choose one.)", 18, 25),
+            line(2, "A) Mars", 46, 50),
+            line(3, "B) Venus", 46, 75),
+            line(4, "2. Which two are gases?", 17, 125),
+            line(5, "A) Neon", 46, 150),
+            line(6, "B) Oxygen", 46, 175),
+        ];
+        let c = detect(&l);
+        assert_eq!(multi_of(&l, &c, 0), Some(Multi::Count(1)));
+        assert_eq!(multi_of(&l, &c, 1), None, "not the one above it");
+    }
+
+    #[test]
+    fn a_checkbox_read_as_brackets_and_a_letter_is_an_option() {
+        let l = [
+            line(1, "Select the correct answers.", 0, 0),
+            line(2, "[TA Ring topology", 0, 20),
+            line(3, "1B Star topology", 0, 40),
+            line(4, "[ JC Mesh topology", 0, 60),
+        ];
+        assert_eq!(labels(&detect(&l)), ["A", "B", "C"]);
+    }
+
+    #[test]
+    fn a_word_that_looks_like_a_box_and_letter_is_not_an_option() {
+        assert_eq!(key_of("OK then"), None);
+        assert_eq!(key_of("IT works"), None);
+    }
+
+    #[test]
+    fn two_stacked_unlabelled_questions_are_two_groups() {
+        let l = [
+            line(1, "What is the capital?", 0, 0),
+            line(2, "Paris", 24, 30),
+            line(3, "Rome", 24, 58),
+            line(4, "Madrid", 24, 86),
+            line(5, "Which is the largest?", 0, 150),
+            line(6, "Asia", 24, 180),
+            line(7, "Africa", 24, 208),
+            line(8, "Europe", 24, 236),
+        ];
+        let c = detect(&l);
+        let groups: Vec<usize> = c.iter().map(|c| c.group).collect();
+        assert_eq!(groups, [0, 0, 0, 1, 1, 1]);
+        assert_eq!(labels(&c), ["A", "B", "C", "A", "B", "C"]);
     }
 }

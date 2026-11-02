@@ -108,6 +108,28 @@ pub struct Config {
     pub model_command: Option<Vec<String>>,
     /// Debug mode from Settings. On if this, `--debug` or `OE_DEBUG=1` is.
     pub debug: bool,
+    /// Model list for the model-switch chord, cycled in order. Empty means
+    /// no switching: `model` (or the CLI default) is used.
+    pub models: Vec<String>,
+    /// Image mode at start (`image-mode`). Off by default: pixels leave the
+    /// machine, unredacted, when it is on.
+    pub image_mode: bool,
+    /// Auto-escalation (`answer { escalate }`): retry a poor answer once with
+    /// the next model in `models`.
+    pub escalate: bool,
+    /// Auto-escalation to image mode (`answer { image_auto_escalate }`).
+    pub image_auto_escalate: bool,
+    /// Longest side of a PNG sent in image mode, in pixels.
+    pub image_max_width: usize,
+    /// Rolling context bounds (`context { lines, bytes, ttl_ms }`).
+    pub context_lines: usize,
+    pub context_bytes: usize,
+    pub context_ttl_ms: u64,
+    /// Longest user prompt sent to the model, in bytes (`answer { prompt_bytes }`).
+    /// Earlier-screen context is trimmed first, then the screen text.
+    pub prompt_bytes: usize,
+    /// Most questions one screen may be answered for at once.
+    pub max_questions: usize,
 }
 
 impl Default for Config {
@@ -134,21 +156,48 @@ impl Default for Config {
             model: None,
             model_command: None,
             debug: false,
+            models: Vec::new(),
+            image_mode: false,
+            escalate: false,
+            image_auto_escalate: false,
+            image_max_width: 1024,
+            context_lines: 160,
+            context_bytes: 8192,
+            context_ttl_ms: 120_000,
+            prompt_bytes: 16_384,
+            max_questions: 4,
         }
     }
 }
 
 impl Config {
-    /// The configured model command, before the locked flags.
-    pub fn model_argv(&self) -> Vec<String> {
-        if let Some(argv) = self.model_command.as_ref().filter(|a| !a.is_empty()) {
-            return argv.clone();
-        }
-        let mut argv = vec![self.claude_bin.clone()];
-        if let Some(m) = &self.model {
-            argv.extend(["--model".to_string(), m.clone()]);
+    /// The configured model command, before the locked flags, with the
+    /// selected `--model` put in. `selected` is the model-switch choice; with
+    /// none, the file's `model` applies. The file's model applies to a
+    /// compositor-served command too: the command is the program, the model
+    /// is still the owner's choice.
+    pub fn model_argv_for(&self, selected: Option<&str>) -> Vec<String> {
+        let mut argv = match self.model_command.as_ref().filter(|a| !a.is_empty()) {
+            Some(a) => a.clone(),
+            None => vec![self.claude_bin.clone()],
+        };
+        if let Some(m) = selected.or(self.model.as_deref()) {
+            match argv.iter().position(|a| a == "--model") {
+                Some(i) if i + 1 < argv.len() => argv[i + 1] = m.to_string(),
+                Some(_) => argv.push(m.to_string()),
+                None => argv.extend(["--model".to_string(), m.to_string()]),
+            }
         }
         argv
+    }
+
+    /// The model the switch chord currently selects, if the list is in use.
+    pub fn selected_model(&self, index: usize) -> Option<&str> {
+        if self.models.is_empty() {
+            None
+        } else {
+            Some(self.models[index % self.models.len()].as_str())
+        }
     }
 }
 
@@ -324,6 +373,20 @@ pub fn apply_text(cfg: &mut Config, path: &Path, text: &str, errors: &mut Vec<Co
                     cfg.model = Some(v);
                 }
             }
+            "models" => {
+                cfg.models = node
+                    .entries()
+                    .iter()
+                    .filter_map(|e| e.value().as_string().map(str::to_string))
+                    .filter(|m| !m.is_empty())
+                    .collect();
+            }
+            "image-mode" => {
+                if let Some(v) = w.boolean(node) {
+                    cfg.image_mode = v;
+                }
+            }
+            "context" => w.section(node, cfg, context_key),
             other => w.reject(node, format!("unknown node {other:?}")),
         }
     }
@@ -363,6 +426,29 @@ fn answer_key(w: &mut Walk<'_>, node: &KdlNode, key: &str, cfg: &mut Config) -> 
     match key {
         "word_cap" => w.set_count(node, &mut cfg.word_cap),
         "char_cap" => w.set_count(node, &mut cfg.char_cap),
+        "prompt_bytes" => w.set_count(node, &mut cfg.prompt_bytes),
+        "max_questions" => w.set_count(node, &mut cfg.max_questions),
+        "image_max_width" => w.set_count(node, &mut cfg.image_max_width),
+        "escalate" => {
+            if let Some(v) = w.boolean(node) {
+                cfg.escalate = v;
+            }
+        }
+        "image_auto_escalate" => {
+            if let Some(v) = w.boolean(node) {
+                cfg.image_auto_escalate = v;
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn context_key(w: &mut Walk<'_>, node: &KdlNode, key: &str, cfg: &mut Config) -> bool {
+    match key {
+        "lines" => w.set_count(node, &mut cfg.context_lines),
+        "bytes" => w.set_count(node, &mut cfg.context_bytes),
+        "ttl_ms" => w.set_ms(node, &mut cfg.context_ttl_ms),
         _ => return false,
     }
     true
@@ -568,6 +654,39 @@ mod tests {
     }
 
     #[test]
+    fn the_model_context_and_answer_keys_parse() {
+        let (c, errs) = parse(
+            r#"
+            models "haiku" "sonnet"
+            image-mode #true
+            context { lines 40; bytes 2048; ttl_ms 30000 }
+            answer {
+                prompt_bytes 9000
+                max_questions 2
+                image_max_width 800
+                escalate #true
+                image_auto_escalate #true
+            }
+            "#,
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+        assert_eq!(c.models, ["haiku", "sonnet"]);
+        assert!(c.image_mode);
+        assert_eq!(c.context_lines, 40);
+        assert_eq!(c.context_bytes, 2048);
+        assert_eq!(c.context_ttl_ms, 30000);
+        assert_eq!(c.prompt_bytes, 9000);
+        assert_eq!(c.max_questions, 2);
+        assert_eq!(c.image_max_width, 800);
+        assert!(c.escalate);
+        assert!(c.image_auto_escalate);
+        // The defaults stand when none of the keys are written.
+        let (d, _) = parse("");
+        assert!(d.models.is_empty() && !d.image_mode && !d.escalate);
+        assert_eq!((d.context_lines, d.max_questions), (160, 4));
+    }
+
+    #[test]
     fn an_unknown_key_is_reported_not_ignored() {
         let (_, errs) = parse("timing {\n  settle_ms 100\n  setle_ms 200\n}\n");
         assert_eq!(errs.len(), 1);
@@ -620,7 +739,7 @@ mod tests {
         );
         assert!(errs.is_empty(), "{errs:?}");
         assert_eq!(n, 5);
-        assert_eq!(c.model_argv(), ["/opt/claude", "--model", "haiku"]);
+        assert_eq!(c.model_argv_for(None), ["/opt/claude", "--model", "haiku"]);
         assert_eq!(c.answer_timeout_ms, 45000);
         assert_eq!(c.settle_ms, 900);
         assert_eq!(c.max_display_ms, 12000);
@@ -641,8 +760,11 @@ mod tests {
                 {"path": "oracle-eyes.model-command", "value": null, "readable": true},
             ])),
         );
-        assert_eq!(c.model_argv(), ["/usr/bin/claude", "--model", "haiku"]);
-        assert_eq!(Config::default().model_argv(), ["claude"]);
+        assert_eq!(
+            c.model_argv_for(None),
+            ["/usr/bin/claude", "--model", "haiku"]
+        );
+        assert_eq!(Config::default().model_argv_for(None), ["claude"]);
     }
 
     #[test]
