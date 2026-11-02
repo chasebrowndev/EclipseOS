@@ -76,6 +76,7 @@ writing a new ADR that says so.
 | 0079 | [Depth-32 smithay frame windows for ARGB X11 clients](0079-xwayland-argb-frame.md) | accepted |
 | 0079 | [Glass for Firefox](0079-firefox-glass-addon.md) | accepted (two ADRs landed as 0079 the same day; numbers kept so citations stay valid) |
 | 0080 | [Keyed glass for opaque clients](0080-keyed-glass.md) | accepted |
+| 0084 | [Themes: derived palettes, dark and light as built-in presets](0084-themes.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

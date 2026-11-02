@@ -1,6 +1,6 @@
 # Eclipse OS — visual style spec
 
-A dark, warm-black desktop OS settings UI with balanced glassmorphism and a single
+A dark (by default; see Light), warm-black desktop OS settings UI with balanced glassmorphism and a single
 yellow accent. Use this as art direction; do not copy any specific screen.
 
 ## Colour
@@ -43,6 +43,29 @@ yellow accent. Use this as art direction; do not copy any specific screen.
 - Accent: #f2c33c. Tints: rgba(242,195,60,.09) fill, .24-.32 border, #f5cf5c for text
 - Text: #fff primary, rgba(255,255,255,.64) secondary, rgba(255,255,255,.4) tertiary
 - Neutral swatch grey: #96918a (warm, not #8f8f96)
+
+## Light (ADR 0084)
+Same material and same structure, inverted ink. Light glass is a bright frosted
+tint with dark ink on it. It is never the dark tokens flipped. Values below are
+starting points to tune in the per-pane visual pass. Every dark token has a
+light twin, derived from the built-in light seeds. User themes override seeds and obey
+the same rules (ADR 0084).
+- Base: #f4f1ea (warm off-white, never blue-white). Surfaces: #ebe6dc, #e3ddd1, #ddd6c9
+- Frost tint (compositor): #f4f1ea at .55. Glass fill on top: rgba(255,255,255,.35-.5)
+- Ink: rgba(26,22,16,α) replaces rgba(255,255,255,α) for hairlines, borders and
+  tracks, at roughly the same α (.06-.14). The rim stays white: on light glass it reads as
+  a bright edge, not a highlight
+- Bar cells: rgba(255,255,255,.40) fill, rgba(26,22,16,.08) hairline. Hover .55 / .12;
+  press .65, no shadow. Focused / selected: .70 white and a crisp rgba(26,22,16,.18) hairline,
+  gold on the label only. The same rules as dark: glassy, not glowy
+- Shadow: warm and soft, rgba(60,45,20,.18-.28). A light window must not sit in a black halo
+- Accent: #f2c33c for fills, toggles, slider fill and marks; knob and glyph ink on it #1a1610.
+  Accent *text* is #8a6400 (≥ 4.5:1 on the base). Tints: rgba(242,195,60,.18) fill, .45 border
+- Text: #1a1610 primary, rgba(26,22,16,.62) secondary, rgba(26,22,16,.42) tertiary
+- Settings content column: rgba(255,255,255,.30) tint on the shared blur (the light twin
+  of the dark .28 black)
+- Trusted-UI prompts use the built-in dark or light palette matching the theme's
+  brightness, never a user theme's colours (ADR 0084)
 
 ## Accent discipline
 Yellow marks state and one live value per screen: the active nav item, the selected
