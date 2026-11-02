@@ -66,6 +66,12 @@ the same rules (ADR 0084).
 - Text: #1a1610 primary, rgba(26,22,16,.62) secondary, rgba(26,22,16,.42) tertiary
 - Settings content column: rgba(255,255,255,.30) tint on the shared blur (the light twin
   of the dark .28 black)
+- Light ink and fill alphas are specified as sRGB intent and converted to linear-light alphas
+  over the base (`ec_theme::linear_alpha`), because iced blends in linear light. `danger` is
+  #bd3a26 and `neutral` is #6f6a62. Controls take their grounds from palette tokens
+  (`nav_active`, `pill`, `input_fill`, `scroller`, `control_off_hover`, `knob_off`,
+  `highlight_rim`, `on_accent`), never from `Color::WHITE`. Selection is a brighter fill plus a
+  `highlight_rim` border
 - Trusted-UI prompts use the built-in dark or light palette matching the theme's
   brightness, never a user theme's colours (ADR 0084)
 

@@ -432,7 +432,11 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "components" => (Page::Components, "components"),
         "wallpaper" => (Page::Wallpaper, "wallpaper"),
         "general" => {
-            if starts("gaps-") {
+            // The scheme decides the colour of every material the Blur &
+            // glass page tunes, so its controls live beside them.
+            if starts("color-scheme") || starts("light-from") || starts("dark-from") || starts("theme-") {
+                (Page::Blur, "colour scheme")
+            } else if starts("gaps-") {
                 (Page::Gaps, "gaps")
             } else if starts("border-") || starts("col-") {
                 (Page::Borders, "borders")
@@ -593,6 +597,9 @@ mod tests {
         assert_eq!(page_of("general.focus-follows-mouse"), Some(Page::Focus));
         assert_eq!(page_of("general.refocus-on-scene-change"), Some(Page::Focus));
         assert_eq!(page_of("general.drop-guides"), Some(Page::Focus));
+        assert_eq!(page_of("general.color-scheme"), Some(Page::Blur));
+        assert_eq!(page_of("general.light-from"), Some(Page::Blur));
+        assert_eq!(page_of("general.theme-dark"), Some(Page::Blur));
         assert_eq!(place_for("general.drop-edge-band").unwrap().group, "drag guides");
     }
 

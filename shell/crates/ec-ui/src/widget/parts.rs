@@ -2422,9 +2422,11 @@ pub fn sidebar_at<'a, Message: 'a>(
     // The one line between the rail and the content: both are the same
     // window material ([`theme::window_pane`]), so the edge is a hairline,
     // not a slab meeting a slab.
-    row![rail, rule::vertical(space::HAIRLINE).style(theme::hairline)]
+    let seam = container(rule::vertical(space::HAIRLINE).style(theme::hairline))
+        .width(space::HAIRLINE)
         .height(Length::Fill)
-        .into()
+        .style(theme::window_pane(blur));
+    row![rail, seam].height(Length::Fill).into()
 }
 
 /// The content column to the right of the sidebar: 26/30 padding, 18 between
@@ -3184,7 +3186,7 @@ pub fn motion_stage<'a, Message: 'a>(
         a: (a.a + (b.a - a.a) * lit) * alpha,
     };
     let fill = mix(color::lift_soft(), color::lift());
-    let rim = mix(color::border(), color::highlight_strong());
+    let rim = mix(color::border(), color::highlight_rim());
     let title = mix(color::highlight_soft(), color::highlight());
     let mark = container(column![
         quad(Length::Fill, Length::Fixed(h * canvas::STAGE_TITLE), title, 0.0),
@@ -3669,7 +3671,7 @@ pub fn arrangement_tile<'a, Message: 'a>(
             })),
             border: iced::Border {
                 color: if selected {
-                    color::highlight_strong()
+                    color::highlight_rim()
                 } else {
                     color::border()
                 },

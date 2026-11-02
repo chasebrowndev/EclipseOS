@@ -1486,7 +1486,14 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         keys.insert(to, gated);
     }
     let mut set_apart = false;
+    // The auto schedule and the theme names, set after the scheme row.
+    let mut schedule: Vec<&Key> = Vec::new();
+    let mut themes: Vec<&Key> = Vec::new();
+    let mut scheme = "dark";
     for key in keys {
+        if key.path == crate::schema::COLOR_SCHEME {
+            scheme = key.value.as_str().unwrap_or("dark");
+        }
         let group = place_for(&key.path).map_or("", |p| p.group);
         let rows = match groups.iter().position(|(g, _)| *g == group) {
             Some(i) => &mut groups[i].1,
@@ -1516,6 +1523,14 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             }
             continue;
         }
+        if crate::schema::SCHEDULE.contains(&key.path.as_str()) {
+            schedule.push(key);
+            continue;
+        }
+        if crate::schema::THEMES.contains(&key.path.as_str()) {
+            themes.push(key);
+            continue;
+        }
         if let Some(applies) = crate::schema::moded(crate::schema::BLUR, &key.path, modes) {
             runs_group.get_or_insert(group);
             match runs.iter_mut().find(|(a, _)| *a == applies) {
@@ -1527,6 +1542,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         let unused = key.path == CARD_FILL && !matches!(current, "off" | "blur");
         rows.push(setting_row_at(app, &key.label(), key, unused && app.blur));
         let blurb = match key.path.as_str() {
+            crate::schema::COLOR_SCHEME => Some(crate::schema::scheme_blurb(scheme)),
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
             CARD_FILL => {
                 Some("Hairline cards, with blur off or blur. Glass and frost keep their glass panel.")
@@ -1556,6 +1572,32 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         }
     }
 
+    // The schedule only governs `auto`: dimmed, never hidden, like a blur run
+    // that does not apply. The theme names follow under their own caption.
+    if let Some((_, rows)) = groups.iter_mut().find(|(g, _)| *g == "colour scheme") {
+        let divider = || iced::widget::container(hairline()).padding([0.0, space::CARD]);
+        for (caption, keys, dim) in [
+            ("Auto schedule".to_owned(), schedule, scheme != "auto"),
+            ("Themes".to_owned(), themes, false),
+        ] {
+            if keys.is_empty() {
+                continue;
+            }
+            let caption = if dim {
+                format!("{caption} \u{b7} not in use")
+            } else {
+                caption
+            };
+            let mut run = Column::new()
+                .push(divider())
+                .push(row_caption(&caption))
+                .spacing(space::ROW_Y);
+            for key in keys {
+                run = run.push(setting_row_at(app, &key.label(), key, dim && app.blur));
+            }
+            rows.push(dimmed_at(run, dim, app.blur));
+        }
+    }
     // In mode order: a run goes where the first mode it applies to is.
     let first = |applies: &[&str]| {
         applies
@@ -1798,7 +1840,11 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
                     .iter()
                     .map(|v| {
                         pill(
-                            crate::schema::value_label(v),
+                            if key.path == crate::schema::COLOR_SCHEME {
+                                crate::schema::scheme_label(v)
+                            } else {
+                                crate::schema::value_label(v)
+                            },
                             *v == current,
                             Message::Chose(path.clone(), v.clone()),
                         )

@@ -139,6 +139,35 @@ pub fn value_label(value: &str) -> &str {
     }
 }
 
+/// `general.color-scheme`, the one key whose values are sentence-cased on the
+/// pills: Dark, Light, Auto.
+pub const COLOR_SCHEME: &str = "general.color-scheme";
+
+/// The auto schedule's two times: they apply only while the scheme is `auto`.
+pub const SCHEDULE: [&str; 2] = ["general.light-from", "general.dark-from"];
+
+/// The `theme-dark` / `theme-light` names.
+pub const THEMES: [&str; 2] = ["general.theme-dark", "general.theme-light"];
+
+/// A scheme value as its pill reads.
+pub fn scheme_label(value: &str) -> &str {
+    match value {
+        "dark" => "Dark",
+        "light" => "Light",
+        "auto" => "Auto",
+        other => other,
+    }
+}
+
+/// What the scheme setting does, shown beneath it.
+pub fn scheme_blurb(value: &str) -> &'static str {
+    match value {
+        "dark" => "The warm-black desktop, always.",
+        "light" => "The bright frosted desktop, always.",
+        _ => "Dark and light by the times below, local time. No location is used.",
+    }
+}
+
 /// What an interaction mode gives you, in plain words, shown beneath the
 /// `mode` control. The pills stay short; the meaning lives here.
 pub fn mode_blurb(value: &str) -> Option<&'static str> {
@@ -336,6 +365,11 @@ impl Row {
             "decoration.surface.tint" => "Window tint",
             "decoration.surface.card-fill" => "Card fill",
             "decoration.surface.inset-fill" => "Inset fill",
+            // The desktop's scheme (ADR 0084): British spelling like the other
+            // colour labels, and the theme keys named for when they apply.
+            "general.color-scheme" => "Colour scheme",
+            "general.theme-dark" => "Theme while dark",
+            "general.theme-light" => "Theme while light",
             // Tokens abbreviated for a config file, or named for a mechanism
             // rather than for what a person sees change.
             "general.col-active-border" => "Active border colour",
