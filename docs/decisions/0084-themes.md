@@ -67,12 +67,14 @@ control socket, so shell panes run the same `derive` (shared crate, no
 smithay) and re-render. `ec-services` publishes `org.freedesktop.appearance
 color-scheme` (1 = prefer dark, 2 = prefer light) and `accent-color`.
 
-**Trusted UI.** Prompts follow the *scheme*, not the theme. They use the
+**Trusted UI (amends COMP-10 §5).** Prompts follow the *scheme*, not the theme. They use the
 built-in dark or light palette, compile-time constants in the TCB, matching
 the active theme's brightness. User config never reaches the TCB as a
 colour.
 
 ## Consequences
+- COMP-10 §5 ("no theming") is amended in the same PR to allow exactly
+  this, and nothing more: two compiled-in palettes chosen by the scheme.
 - **TCB change (line-by-line owner review):** trusted-UI prompt colours now
   depend on config, but only as a choice between two fixed palettes. Colour
   was never what proves a prompt is genuine: the prompt is still
