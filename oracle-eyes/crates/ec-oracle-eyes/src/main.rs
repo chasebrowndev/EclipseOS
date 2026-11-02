@@ -28,6 +28,8 @@ mod redact;
 #[cfg(test)]
 mod replay;
 #[cfg(test)]
+mod tests_live;
+#[cfg(test)]
 mod tests_loop;
 
 use std::process::ExitCode;
