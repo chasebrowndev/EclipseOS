@@ -74,33 +74,33 @@ pub enum Tone {
 impl Tone {
     fn rule(self) -> Color {
         match self {
-            Tone::Accent => color::ACCENT,
-            Tone::Danger => color::DANGER,
-            Tone::Quiet => color::TEXT_TERTIARY,
+            Tone::Accent => color::accent(),
+            Tone::Danger => color::danger(),
+            Tone::Quiet => color::text_tertiary(),
         }
     }
 
     fn ground(self) -> Color {
         match self {
-            Tone::Accent => color::ACCENT_FILL,
-            Tone::Danger => color::DANGER_FILL,
-            Tone::Quiet => color::GLASS,
+            Tone::Accent => color::accent_fill(),
+            Tone::Danger => color::danger_fill(),
+            Tone::Quiet => color::glass(),
         }
     }
 
     fn edge(self) -> Color {
         match self {
-            Tone::Accent => color::ACCENT_BORDER,
-            Tone::Danger => color::DANGER.scale_alpha(0.32),
-            Tone::Quiet => color::BORDER,
+            Tone::Accent => color::accent_border(),
+            Tone::Danger => color::danger().scale_alpha(0.32),
+            Tone::Quiet => color::border(),
         }
     }
 
     fn title_ink(self) -> Color {
         match self {
-            Tone::Accent => color::ACCENT_TEXT,
-            Tone::Danger => color::DANGER,
-            Tone::Quiet => color::TEXT,
+            Tone::Accent => color::accent_text(),
+            Tone::Danger => color::danger(),
+            Tone::Quiet => color::text(),
         }
     }
 }
@@ -199,8 +199,8 @@ pub fn pick<'a, M: Clone + 'a>(
 ) -> El<'a, M> {
     let bar = match (selected, accent) {
         (false, _) => Color::TRANSPARENT,
-        (true, true) => color::ACCENT,
-        (true, false) => color::TEXT_SECONDARY,
+        (true, true) => color::accent(),
+        (true, false) => color::text_secondary(),
     };
     let face = row![
         edge_quad(Length::Fixed(space::BAR_W), Length::Fill, bar),
@@ -217,14 +217,14 @@ pub fn pick<'a, M: Clone + 'a>(
         .style(move |_t: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             let ground = match (selected, accent, hovered) {
-                (true, true, _) => color::ACCENT_FILL,
-                (true, false, _) => color::LIFT,
-                (false, _, true) => color::LIFT_SOFT,
+                (true, true, _) => color::accent_fill(),
+                (true, false, _) => color::lift(),
+                (false, _, true) => color::lift_soft(),
                 (false, _, false) => Color::TRANSPARENT,
             };
             button::Style {
                 background: Some(iced::Background::Color(ground)),
-                text_color: color::TEXT,
+                text_color: color::text(),
                 border: iced::border::rounded(radius::CHIP),
                 ..button::Style::default()
             }
@@ -248,20 +248,20 @@ pub fn tab<'a, M: Clone + 'a>(label: &str, selected: bool, on_press: M) -> El<'a
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             button::Style {
                 background: Some(iced::Background::Color(match (selected, hovered) {
-                    (true, _) => color::LIFT_STRONG,
-                    (false, true) => color::LIFT,
-                    (false, false) => color::LIFT_SOFT,
+                    (true, _) => color::lift_strong(),
+                    (false, true) => color::lift(),
+                    (false, false) => color::lift_soft(),
                 })),
                 text_color: if selected {
-                    color::TEXT
+                    color::text()
                 } else {
-                    color::TEXT_SECONDARY
+                    color::text_secondary()
                 },
                 border: iced::Border {
                     color: if selected {
-                        color::HIGHLIGHT_STRONG
+                        color::highlight_strong()
                     } else {
-                        color::BORDER
+                        color::border()
                     },
                     width: space::HAIRLINE,
                     radius: radius::CHIP.into(),
@@ -281,10 +281,10 @@ fn pill_style(
 ) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_t, status| match status {
         button::Status::Disabled => button::Style {
-            background: Some(iced::Background::Color(color::LIFT_SOFT)),
-            text_color: color::TEXT_TERTIARY,
+            background: Some(iced::Background::Color(color::lift_soft())),
+            text_color: color::text_tertiary(),
             border: iced::Border {
-                color: color::BORDER,
+                color: color::border(),
                 width: space::HAIRLINE,
                 radius: radius::PILL.into(),
             },
@@ -329,7 +329,7 @@ pub fn primary<'a, M: Clone + 'a>(label: &str, on_press: Option<M>) -> El<'a, M>
     action(
         label,
         on_press,
-        pill_style(color::TEXT, color::BASE, color::TEXT.scale_alpha(0.86)),
+        pill_style(color::text(), color::base(), color::text().scale_alpha(0.86)),
     )
 }
 
@@ -340,7 +340,7 @@ pub fn commit<'a, M: Clone + 'a>(label: &str, on_press: Option<M>) -> El<'a, M> 
     action(
         label,
         on_press,
-        pill_style(color::ACCENT, color::BASE, color::ACCENT_TEXT),
+        pill_style(color::accent(), color::base(), color::accent_text()),
     )
 }
 
@@ -414,9 +414,9 @@ pub fn signal_bars<'a, M: 'a>(strength: u8) -> El<'a, M> {
             Length::Fixed(metrics::SIGNAL_BAR_W),
             Length::Fixed(*h),
             if i < lit {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             } else {
-                color::TRACK
+                color::track()
             },
             0.0,
         ));
@@ -443,8 +443,8 @@ pub enum Ink {
 pub fn disk_bar<'a, M: 'a>(sizes: &[u64], total: u64, ink: Ink) -> El<'a, M> {
     let total = total.max(1);
     let base = match ink {
-        Ink::Neutral => color::TEXT,
-        Ink::Erase => color::DANGER,
+        Ink::Neutral => color::text(),
+        Ink::Erase => color::danger(),
     };
     let shades = [0.70_f32, 0.46, 0.60, 0.34];
     let portion = |bytes: u64| -> u16 {
@@ -473,7 +473,7 @@ pub fn disk_bar<'a, M: 'a>(sizes: &[u64], total: u64, ink: Ink) -> El<'a, M> {
                 1
             })),
             Length::Fixed(metrics::DISK_BAR_H),
-            color::TRACK,
+            color::track(),
             radius::BAR,
         ));
     }
@@ -535,9 +535,9 @@ pub fn progress<'a, M: 'a>(here: usize, total: usize) -> El<'a, M> {
         .align_y(Alignment::Center);
     for n in 1..=total {
         let (w, ink) = match n.cmp(&here) {
-            std::cmp::Ordering::Less => (metrics::PROGRESS_W, color::TEXT_TERTIARY),
-            std::cmp::Ordering::Equal => (metrics::PROGRESS_W * 2.0, color::TEXT),
-            std::cmp::Ordering::Greater => (metrics::PROGRESS_W, color::TRACK),
+            std::cmp::Ordering::Less => (metrics::PROGRESS_W, color::text_tertiary()),
+            std::cmp::Ordering::Equal => (metrics::PROGRESS_W * 2.0, color::text()),
+            std::cmp::Ordering::Greater => (metrics::PROGRESS_W, color::track()),
         };
         bars = bars.push(quad(
             Length::Fixed(w),
@@ -570,9 +570,9 @@ pub fn link<'a, M: Clone + 'a>(label: &str, on_press: M) -> El<'a, M> {
         .style(|_t: &Theme, status: button::Status| button::Style {
             background: None,
             text_color: if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                color::TEXT
+                color::text()
             } else {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             },
             ..button::Style::default()
         })
@@ -619,13 +619,13 @@ pub fn card<'a, M: Clone + 'a>(
         .style(move |_t: &Theme, status: button::Status| {
             let hovered = enabled && matches!(status, button::Status::Hovered | button::Status::Pressed);
             let (ground, edge) = match (selected, hovered) {
-                (true, _) => (color::ACCENT_FILL, color::ACCENT_BORDER),
-                (false, true) => (color::LIFT_SOFT, color::BORDER_STRONG),
-                (false, false) => (color::GLASS, color::BORDER),
+                (true, _) => (color::accent_fill(), color::accent_border()),
+                (false, true) => (color::lift_soft(), color::border_strong()),
+                (false, false) => (color::glass(), color::border()),
             };
             button::Style {
                 background: Some(iced::Background::Color(ground)),
-                text_color: color::TEXT,
+                text_color: color::text(),
                 border: iced::Border {
                     color: edge,
                     width: space::HAIRLINE,
@@ -651,7 +651,7 @@ pub fn tag<'a, M: 'a>(label: &str) -> El<'a, M> {
     .padding([metrics::CARD_TAG_Y, metrics::CARD_TAG_X])
     .style(|_t: &Theme| container::Style {
         border: iced::Border {
-            color: color::BORDER,
+            color: color::border(),
             width: space::HAIRLINE,
             radius: radius::CHIP.into(),
         },
@@ -667,7 +667,7 @@ fn tile<'a, M: 'a>(w: u16, h: u16) -> El<'a, M> {
     quad(
         Length::FillPortion(w),
         Length::FillPortion(h),
-        color::TEXT_TERTIARY,
+        color::text_tertiary(),
         radius::BAR,
     )
 }
@@ -739,12 +739,12 @@ pub fn desk<'a, M: 'a>(rounded: bool, bottom: bool) -> El<'a, M> {
     let bar: El<'a, M> = quad(
         Length::Fill,
         Length::Fixed(metrics::DESK_BAR_H),
-        color::ACCENT,
+        color::accent(),
         radius::BAR,
     );
     let windows: El<'a, M> = Row::with_children(vec![
-        quad(Length::FillPortion(3), Length::Fill, color::TRACK, corner),
-        quad(Length::FillPortion(2), Length::Fill, color::TRACK, corner),
+        quad(Length::FillPortion(3), Length::Fill, color::track(), corner),
+        quad(Length::FillPortion(2), Length::Fill, color::track(), corner),
     ])
     .spacing(space::CHIP_GAP)
     .height(Length::Fill)
@@ -780,7 +780,7 @@ pub fn meter_fill<'a, M: 'a>(fraction: f32, fill: Color) -> El<'a, M> {
         r = r.push(quad(
             Length::FillPortion(100 - lit),
             Length::Fixed(metrics::METER_H),
-            color::TRACK,
+            color::track(),
             radius::BAR,
         ));
     }
