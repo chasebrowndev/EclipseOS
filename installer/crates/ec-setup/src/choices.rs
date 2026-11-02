@@ -91,6 +91,34 @@ impl BarPosition {
     }
 }
 
+/// `general.color-scheme` (ADR 0084). Auto keeps the shipped schedule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorScheme {
+    Dark,
+    Light,
+    Auto,
+}
+
+impl ColorScheme {
+    pub const ALL: [ColorScheme; 3] = [ColorScheme::Dark, ColorScheme::Light, ColorScheme::Auto];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            ColorScheme::Dark => "dark",
+            ColorScheme::Light => "light",
+            ColorScheme::Auto => "auto",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ColorScheme::Dark => "Dark",
+            ColorScheme::Light => "Light",
+            ColorScheme::Auto => "Auto",
+        }
+    }
+}
+
 /// `decoration.blur.mode`: what translucent surfaces show behind them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blur {
@@ -231,6 +259,7 @@ pub struct Choices {
     pub blur: Blur,
     pub animations: bool,
     pub bar_position: BarPosition,
+    pub color_scheme: ColorScheme,
     /// One flag per [`APPS`] row.
     pub apps: [bool; 9],
 }
@@ -260,6 +289,7 @@ impl Choices {
             blur: Blur::Blur,
             animations: true,
             bar_position: BarPosition::Top,
+            color_scheme: ColorScheme::Dark,
             apps,
         }
     }
@@ -286,6 +316,7 @@ impl Choices {
         v.push((BLUR, self.blur_value()));
         v.push((ANIMATIONS, self.animations_value()));
         v.push((BAR_POSITION, self.bar_position_value()));
+        v.push((COLOR_SCHEME, self.color_scheme_value()));
         v
     }
 
@@ -312,6 +343,10 @@ impl Choices {
         json!(self.bar_position.id())
     }
 
+    pub fn color_scheme_value(&self) -> Value {
+        json!(self.color_scheme.id())
+    }
+
     pub fn app_count(&self) -> usize {
         self.apps.iter().filter(|on| **on).count()
     }
@@ -323,9 +358,10 @@ pub const ROUNDING: &str = "decoration.rounding";
 pub const BLUR: &str = "decoration.blur.mode";
 pub const ANIMATIONS: &str = "animations.preset";
 pub const BAR_POSITION: &str = "bar.position";
+pub const COLOR_SCHEME: &str = "general.color-scheme";
 
 /// Every key the choice steps write, for the writer's allowlist.
-pub const SEED_KEYS: [&str; 10] = [
+pub const SEED_KEYS: [&str; 11] = [
     MODE,
     LAYOUT,
     "components.bar",
@@ -336,6 +372,7 @@ pub const SEED_KEYS: [&str; 10] = [
     BLUR,
     ANIMATIONS,
     BAR_POSITION,
+    COLOR_SCHEME,
 ];
 
 #[cfg(test)]

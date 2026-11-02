@@ -53,6 +53,9 @@ impl Default for Options {
 pub enum Msg {
     Welcome(ec_welcome::Message),
     Wizard(Message),
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// the step's live preview just rebuilds.
+    ThemeChanged,
 }
 
 struct Job {
@@ -133,6 +136,7 @@ impl App {
             Msg::Welcome(ec_welcome::Message::Begin) => self.wizard(Message::Begin),
             Msg::Welcome(m) => self.welcome.update(m).map(Msg::Welcome),
             Msg::Wizard(m) => self.wizard(m),
+            Msg::ThemeChanged => Task::none(),
         }
     }
 
@@ -222,10 +226,11 @@ impl App {
 
     pub fn subscription(&self) -> Subscription<Msg> {
         let keys = event::listen_with(key_message);
+        let theme = ec_ui::ipc::theme_subscription(|| Msg::ThemeChanged);
         if self.model.step == Step::Welcome {
-            Subscription::batch([self.welcome.subscription().map(Msg::Welcome), keys])
+            Subscription::batch([self.welcome.subscription().map(Msg::Welcome), keys, theme])
         } else {
-            keys
+            Subscription::batch([keys, theme])
         }
     }
 

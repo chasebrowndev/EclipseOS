@@ -33,7 +33,7 @@ pub fn tolerates_unknown(key: &str) -> bool {
 
 /// Whether this program may ask the compositor to write `key`.
 ///
-/// Exactly [`FIXED_KEYS`], the ten [`crate::choices::SEED_KEYS`], or `setup.` followed by one lowercase word (letters,
+/// Exactly [`FIXED_KEYS`], the [`crate::choices::SEED_KEYS`], or `setup.` followed by one lowercase word (letters,
 /// digits and `-`). No other dotted path is writable, and in particular nothing
 /// that could name a policy key: those are owned by `policy.kdl`, which this
 /// program cannot write (COMP-13 §1.3), and the compositor refuses them anyway.

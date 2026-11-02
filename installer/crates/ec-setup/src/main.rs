@@ -103,6 +103,10 @@ fn main() -> iced::Result {
             }
             Ok(())
         }
-        Mode::Install => app::run(args.options),
+        Mode::Install => {
+            // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+            ec_ui::ipc::sync_theme_now();
+            app::run(args.options)
+        }
     }
 }

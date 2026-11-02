@@ -673,6 +673,7 @@ version = "0.1.0"
 dependencies = [
  "ec-ipc",
  "ec-setup-plan",
+ "ec-theme",
  "ec-ui",
  "ec-welcome",
  "iced",

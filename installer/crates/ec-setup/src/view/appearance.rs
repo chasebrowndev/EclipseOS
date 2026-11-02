@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Step 11: appearance (`decoration.rounding`, `decoration.blur.mode`,
-//! `animations.preset`, `bar.position`).
+//! `animations.preset`, `bar.position`, `general.color-scheme`).
 //!
 //! Hero: a small desktop that redraws as you choose, a bar strip and two
 //! tiled windows, so rounding and the bar's edge are seen rather than read.
-//! Under it one inset list of the four choices, each a row of white chips —
+//! Under it one inset list of the five choices, each a row of white chips —
 //! a pair, except blur, whose four modes are still one decision.
-//! Scale, theme and pointer options are not here: `docs/CONFIG.md` has no
-//! global scale or theme key (scale is per output), and the input keys are not
+//! Scale and pointer options are not here: `docs/CONFIG.md` has no
+//! global scale key (scale is per output), and the input keys are not
 //! on the seed allowlist (D-07 §5), so offering them would be a choice that is
 //! dropped at Apply.
 //! The accented value: the bar's strip in the preview.
 
 use super::Body;
-use crate::choices::{BarPosition, Blur};
+use crate::choices::{BarPosition, Blur, ColorScheme};
 use crate::model::{Message, Model};
 use crate::parts::{self, El};
 use ec_ui::tokens::space;
@@ -45,6 +45,16 @@ pub fn body(m: &Model) -> Body<'_> {
             Message::SetBarPosition(BarPosition::Bottom),
         ))
         .into();
+    let scheme: El<'_, Message> = ColorScheme::ALL
+        .iter()
+        .fold(Row::new().spacing(space::PILL_GAP), |r, &s| {
+            r.push(parts::tab(
+                s.label(),
+                c.color_scheme == s,
+                Message::SetColorScheme(s),
+            ))
+        })
+        .into();
     let blur: El<'_, Message> = Blur::ALL
         .iter()
         .fold(Row::new().spacing(space::PILL_GAP), |r, &b| {
@@ -54,6 +64,7 @@ pub fn body(m: &Model) -> Body<'_> {
     let list = inset_list(
         "Look",
         vec![
+            list_row("Colour scheme", scheme),
             list_row(
                 "Rounded corners",
                 pair(c.rounded, "On", "Off", Message::SetRounded),
