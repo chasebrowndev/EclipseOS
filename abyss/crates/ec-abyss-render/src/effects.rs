@@ -481,7 +481,7 @@ uniform float rim;        // 0..1 hairline strength
 uniform vec4 rim_color;   // premultiplied hairline colour; opaque white off the bezel
 uniform float inner;      // bezel width, physical px; 0 off the bezel
 uniform float opaque;     // 1 when the window inside the bezel is opaque
-uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
+uniform float lift;       // 0..1 mix toward white (ink in light); 0 (unset) on windows
 uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
@@ -503,6 +503,7 @@ const float COMPRESS_L = 0.0;                       // no highlight knee
 const vec3 SMOKE_L = vec3(0.985, 0.975, 0.955);     // warm white
 const float SMOKE_MIX_L = 0.7;
 const float SEAM_L = 0.04;
+const vec3 LIFT_L = vec3(0.102, 0.086, 0.063);      // ink: a pointer darkens light glass
 
 vec4 blurred_at(vec2 uv) {
     return texture2D(tex, clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5));
@@ -570,7 +571,7 @@ void main() {
     c = max(mix(vec3(dot(c, LUMA)), c, mix(SATURATE, SATURATE_L, scheme_light)), 0.0);
     c = c / (1.0 + mix(COMPRESS, COMPRESS_L, scheme_light) * dot(c, LUMA));
     c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light));
-    c = mix(c, vec3(1.0), lift);
+    c = mix(c, mix(vec3(1.0), LIFT_L, scheme_light), lift);
 
     // Hairline: a 1.25 px band inside the mask edge.
     float band = 1.0 - smoothstep(0.0, 1.25, -d);

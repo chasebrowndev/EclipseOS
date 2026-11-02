@@ -1202,7 +1202,11 @@ fn insert_panes(
                     glass::band(pane, rect, upscale * grown),
                     &tuned,
                     None,
-                    look.lift,
+                    if config.appearance.glass_light() > 0.0 {
+                        look.shade
+                    } else {
+                        look.lift
+                    },
                     config.appearance.glass_light(),
                 ),
             ))
