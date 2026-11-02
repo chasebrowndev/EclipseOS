@@ -122,6 +122,7 @@ pub fn refresh(state: &mut AbyssState) {
     state.config.apply_appearance(next.clone());
     let changed = state.theme.appearance != next;
     state.theme.appearance = next;
+    crate::trusted_ui::set_scheme(&mut state.trusted_ui, state.theme.scheme());
     if changed {
         tracing::info!(scheme = scheme_name(scheme), theme = %state.theme.appearance.name, "theme changed");
         let p = payload(state);
