@@ -126,6 +126,13 @@ pub fn tick(state: &mut AbyssState) {
     schedule(state);
 }
 
+impl Marks {
+    /// Drop every uploaded pill: the colour scheme moved (ADR 0084).
+    pub(super) fn repaint(&mut self) {
+        self.art.clear();
+    }
+}
+
 fn schedule(state: &mut AbyssState) {
     let marks = &mut state.trusted_ui.marks;
     if marks.ticking || marks.shown.is_empty() {
@@ -169,10 +176,10 @@ fn pill_rect(s: &Shown, i: usize, logical: Size<i32, Logical>) -> Rectangle<i32,
     )
 }
 
-fn rasterize(s: &Shown, scale: usize) -> Raster {
+fn rasterize(s: &Shown, scale: usize, p: &modal::Colors) -> Raster {
     let (w, h) = (pill_w(s) as usize, PILL_H as usize);
     let mut c = Canvas::new(w, h);
-    c.round(0, 0, w, h, modal::PILL, modal::PANEL, Some((1, modal::EDGE)));
+    c.round(0, 0, w, h, modal::PILL, p.panel, Some((1, p.edge)));
     let tint = colour(s.agent);
     let (ix, iy) = (PAD as usize, (h - 15) / 2);
     // A padlock: shackle outline, then the body over its lower half.
@@ -181,11 +188,11 @@ fn rasterize(s: &Shown, scale: usize) -> Raster {
     let (name, rest, held) = label(s);
     let mut x = (PAD + ICON_W + ICON_GAP) as usize;
     let y = (h - GLYPH_H) / 2;
-    c.text(x, y, &name, modal::HEADING, true);
+    c.text(x, y, &name, p.heading, true);
     x += name.chars().count() * ADVANCE;
-    c.text(x, y, &rest, modal::BODY, false);
+    c.text(x, y, &rest, p.body, false);
     x += rest.len() * ADVANCE;
-    c.text(x, y, &held, modal::WARN, false);
+    c.text(x, y, &held, p.warn, false);
     c.into_raster(scale)
 }
 
@@ -193,6 +200,7 @@ fn rasterize(s: &Shown, scale: usize) -> Raster {
 pub(super) fn elements(
     renderer: &mut GlesRenderer,
     marks: &mut Marks,
+    colors: &modal::Colors,
     output: &Output,
     output_loc: Point<i32, Logical>,
     logical: Size<i32, Logical>,
@@ -208,7 +216,7 @@ pub(super) fn elements(
     for (i, s) in marks.shown.iter().enumerate() {
         let stale = marks.art.get(&(dev, s.agent)).is_none_or(|(was, _)| was != s);
         if stale {
-            match super::upload(renderer, &rasterize(s, dev), dev) {
+            match super::upload(renderer, &rasterize(s, dev, colors), dev) {
                 Some(b) => {
                     marks.art.insert((dev, s.agent), (s.clone(), b));
                 }
@@ -353,6 +361,7 @@ pub(super) fn dump_pill() -> Raster {
             held: 3,
         },
         2,
+        &modal::DARK,
     )
 }
 

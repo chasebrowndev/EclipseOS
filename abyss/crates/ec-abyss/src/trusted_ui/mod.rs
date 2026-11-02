@@ -145,9 +145,22 @@ pub struct TrustedUi {
     pub(crate) broker: broker::Broker,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
+    /// The light palette is in use. Off by default, so dark until told. Only
+    /// [`set_scheme`] writes it, from the compositor's own theme state: no
+    /// socket or client reaches it (§5, ADR 0084).
+    light: bool,
 }
 
 impl TrustedUi {
+    /// The compiled-in palette for the current colour scheme.
+    pub(crate) fn colors(&self) -> &'static modal::Colors {
+        if self.light {
+            &modal::LIGHT
+        } else {
+            &modal::DARK
+        }
+    }
+
     pub fn is_open(&self) -> bool {
         self.open.is_some()
     }
@@ -423,6 +436,20 @@ fn centre(geo: Rectangle<i32, Logical>, layout: &modal::Layout) -> Point<i32, Lo
         .into()
 }
 
+/// The colour scheme moved (ADR 0084): choose the other compiled-in palette and
+/// drop every uploaded surface so whatever is on screen repaints. The caller
+/// damages the outputs. Input, focus and timers are untouched, and so is an open
+/// prompt's answer: only its colours change.
+pub(crate) fn set_scheme(ui: &mut TrustedUi, scheme: ec_theme::Scheme) {
+    let light = scheme == ec_theme::Scheme::Light;
+    if ui.light != light {
+        ui.light = light;
+        ui.art.clear();
+        ui.marks.repaint();
+        ui.cards.repaint();
+    }
+}
+
 /// The prompt's elements for one output, front-to-back: the panel, then the
 /// dim over everything else. Empty with no prompt, or under the lock.
 pub fn elements(
@@ -441,9 +468,11 @@ pub fn elements(
     // Commit-slot cards: above every client, below any prompt and its dim.
     let mut cards = commit::elements(renderer, ui, output, output_loc, logical);
     // Compat-lock pills and outlines (§3.4): above every client, below cards.
+    let colors = ui.colors();
     cards.extend(indicator::elements(
         renderer,
         &mut ui.marks,
+        colors,
         output,
         output_loc,
         logical,
@@ -463,6 +492,7 @@ pub fn elements(
             o.focus,
             dev,
             ui.phrase.as_ref().map(phrase::Phrase::as_str),
+            colors,
         );
         match upload(renderer, &raster, dev) {
             Some(buffer) => {
@@ -663,7 +693,11 @@ fn dump_trusted_surfaces() {
         f.write_all(&r.px).unwrap();
     };
     let write = |name: &str, m: &modal::Modal, phrase: Option<&str>| {
-        raw(name, &modal::rasterize(m, m.safe(), 2, phrase));
+        raw(name, &modal::rasterize(m, m.safe(), 2, phrase, &modal::DARK));
+        raw(
+            &format!("{name}-light"),
+            &modal::rasterize(m, m.safe(), 2, phrase, &modal::LIGHT),
+        );
     };
     for (name, r) in commit::dump_cards() {
         raw(name, &r);
