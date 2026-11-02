@@ -16,15 +16,16 @@
 //! audit, and the process boundary means a segfault in a C++ OCR engine fed
 //! attacker-influenced pixels kills a child, not the daemon.
 //!
-//! Language data is probed once, when the engine is first built: `eng+ell`
-//! when both packs are installed (Greek replies need `ell`), otherwise `eng`.
-//! A pinned `ocr-lang` in config skips the probe. A missing pack is not
-//! papered over: tesseract fails the recognition, and that surfaces through
-//! the same "fail visibly" path as any other engine error.
-//! [`Tesseract::new`] deliberately does not probe for language data either.
+//! **State of this machine (checked 2026-09-15):** `tesseract` 5.5.3 with
+//! leptonica 1.87.0 is installed at `/usr/bin/tesseract`, but
+//! `/usr/share/tessdata` holds only `afr` and `osd` — **there is no `eng`
+//! language data**, so [`Tesseract::recognise`] fails at runtime until
+//! `tesseract-data-eng` is installed. [`Tesseract::new`] deliberately does not
+//! probe for language data; the error tesseract itself prints when a language
+//! is missing is clearer than anything we would synthesise, and it surfaces
+//! through the same "fail visibly" path as any other engine error.
 
 use std::io::Write;
-use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
@@ -239,36 +240,6 @@ pub fn text_of(words: &[Word]) -> String {
         out.push_str(&l.text);
     }
     out
-}
-
-/// The language string to ask for when the config does not pin one:
-/// `eng+ell` when both packs are in one of `dirs`, otherwise `eng`. A pack
-/// that is absent is never named, because tesseract fails the whole
-/// recognition on a missing one.
-pub fn auto_lang(dirs: &[PathBuf]) -> String {
-    let has = |lang: &str| {
-        dirs.iter()
-            .any(|d| d.join(format!("{lang}.traineddata")).is_file())
-    };
-    if has("eng") && has("ell") {
-        "eng+ell".to_string()
-    } else {
-        "eng".to_string()
-    }
-}
-
-/// Where tesseract looks for language packs, most specific first: the
-/// `TESSDATA_PREFIX` override (directly and as a `tessdata` subdirectory),
-/// then the packaged location.
-pub fn tessdata_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(p) = std::env::var_os("TESSDATA_PREFIX") {
-        let p = PathBuf::from(p);
-        dirs.push(p.join("tessdata"));
-        dirs.push(p);
-    }
-    dirs.push(PathBuf::from("/usr/share/tessdata"));
-    dirs
 }
 
 #[derive(Debug)]
@@ -523,25 +494,6 @@ fn parse_tsv_scaled(tsv: &str, frame: &Frame, scale: u32) -> Vec<Word> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn auto_lang_adds_greek_only_when_both_packs_are_installed() {
-        let base = std::env::temp_dir().join(format!("oe-lang-{}", std::process::id()));
-        let (eng, ell_only, both) = (base.join("eng"), base.join("ell"), base.join("both"));
-        for d in [&eng, &ell_only, &both] {
-            std::fs::create_dir_all(d).unwrap();
-        }
-        std::fs::write(eng.join("eng.traineddata"), b"").unwrap();
-        std::fs::write(ell_only.join("ell.traineddata"), b"").unwrap();
-        std::fs::write(both.join("eng.traineddata"), b"").unwrap();
-        std::fs::write(both.join("ell.traineddata"), b"").unwrap();
-        assert_eq!(auto_lang(&[]), "eng");
-        assert_eq!(auto_lang(std::slice::from_ref(&eng)), "eng");
-        assert_eq!(auto_lang(std::slice::from_ref(&ell_only)), "eng");
-        assert_eq!(auto_lang(&[eng.clone(), ell_only.clone()]), "eng+ell");
-        assert_eq!(auto_lang(std::slice::from_ref(&both)), "eng+ell");
-        let _ = std::fs::remove_dir_all(&base);
-    }
     use crate::frame::Region;
 
     fn frame(origin: Region) -> Frame {

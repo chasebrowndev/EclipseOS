@@ -16,7 +16,7 @@ Oracle Eyes answers quiz questions, which often carry accented Latin, Greek lett
 ## Decision
 Option 2. `assets/fonts/hud/gen_atlas.c` now emits format HUD2: 97 base cells plus 322 extended (Latin-1, Latin Extended-A, Greek, selected maths, punctuation, super/subscripts), 419 in all. The generator fails if a face lacks a codepoint; U+0132, U+0133, U+2071-2073 are absent from JetBrains Mono and U+00AD is excluded. Atlases grow from about 257 KB to about 1.1 MB.
 `text::sanitize_annotation` keeps exactly the atlas set. It strips controls, bidi, zero-width and combining characters (COMP-18 §2 says stripped, not `?`), and turns anything else into `?`, one per character. Pick labels stay ASCII (COMP-18 §3.1, ADR 0054). `text::sanitize` and the trusted UI face are unchanged.
-OCR: `ocr-lang` defaults to auto, `eng+ell` when both traineddata packs are installed, else `eng`.
+OCR is unchanged: `ocr-lang` stays `eng`. A trial with `eng+ell` on the owner's screenshots turned Latin letters into Greek lookalikes (`p1` read as `Ρ`) and put Greek accents on plain English words, so Greek OCR is not shipped; a user may still pin `ocr-lang` by hand.
 
 ## Consequences
 - No new dependency and no runtime font code.
