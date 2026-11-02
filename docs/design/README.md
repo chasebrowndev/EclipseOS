@@ -8,6 +8,7 @@ Tier 6 documents (Vol 1 planning index):
 | D-02 | [Package repository and signing](D-02-package-repository.md) | written 2026-09-18, reduced |
 | D-03 | [Installation media and installer](D-03-installation-media.md) | written 2026-09-18 |
 | D-05 | [Default userland](D-05-userland.md) | written 2026-09-23, partial (no terminal, no portal) |
+| D-08 | [Desktop portal (`ecl-desktop-portal`)](D-08-portal.md) | written 2026-11-02, specification only |
 | D-07 | [First boot: graphical installer and setup](D-07-first-run.md) | written 2026-09-24, specification only |
 
 ## Vendored design reference
