@@ -658,6 +658,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-protocols"
+version = "0.1.0"
+dependencies = [
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
+]
+
+[[package]]
 name = "ec-setup"
 version = "0.1.0"
 dependencies = [
@@ -693,12 +703,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-theme"
+version = "0.1.0"
+
+[[package]]
 name = "ec-ui"
 version = "0.1.0"
 dependencies = [
  "ec-ipc",
+ "ec-protocols",
+ "ec-theme",
  "iced",
+ "raw-window-handle",
  "serde_json",
+ "wayland-backend",
+ "wayland-client",
 ]
 
 [[package]]
