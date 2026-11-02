@@ -1,0 +1,13 @@
+[package]
+name = "ecl-portal-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+description = "Eclipse-styled portal dialog panes (iced)."
+publish = false
+
+[dependencies]
+ecl-portal-proto.workspace = true
+postcard.workspace = true

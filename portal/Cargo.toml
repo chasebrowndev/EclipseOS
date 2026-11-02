@@ -1,0 +1,45 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/ecl-portal-proto",
+  "crates/ecl-portal-core",
+  "crates/ecl-portal-store",
+  "crates/ecl-portal-screencast",
+  "crates/ecl-portal-ui",
+  "crates/ecl-portal-ctl",
+  "crates/ecl-desktop-portal",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "AGPL-3.0-only"
+repository = "https://github.com/chasebrowndev/eclipseos"
+
+[workspace.dependencies]
+ecl-portal-proto = { path = "crates/ecl-portal-proto" }
+ecl-portal-core = { path = "crates/ecl-portal-core" }
+ecl-portal-store = { path = "crates/ecl-portal-store" }
+ecl-portal-screencast = { path = "crates/ecl-portal-screencast" }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "macros", "time", "process", "signal"] }
+zbus = { version = "6", default-features = false, features = ["tokio", "service"] }
+serde = { version = "1", features = ["derive"] }
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+thiserror = "2"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rustix = { version = "1", features = ["fs", "net", "process"] }
+tempfile = "3"
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

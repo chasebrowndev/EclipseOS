@@ -1,0 +1,22 @@
+[package]
+name = "ecl-desktop-portal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+description = "Eclipse desktop portal daemon (frontend + backends)."
+publish = false
+
+[dependencies]
+ecl-portal-proto.workspace = true
+ecl-portal-core.workspace = true
+ecl-portal-store.workspace = true
+ecl-portal-screencast.workspace = true
+tokio.workspace = true
+zbus.workspace = true
+serde.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rustix.workspace = true
