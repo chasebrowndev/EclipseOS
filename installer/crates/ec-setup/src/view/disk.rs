@@ -145,7 +145,11 @@ fn disk_card(d: &Disk, selected: bool) -> El<'_, Message> {
         )
     };
     let fits = disk_fits(d);
-    let ink = if fits { color::TEXT } else { color::TEXT_TERTIARY };
+    let ink = if fits {
+        color::text()
+    } else {
+        color::text_tertiary()
+    };
     let note = if fits {
         summary
     } else {
@@ -168,9 +172,9 @@ fn disk_card(d: &Disk, selected: bool) -> El<'_, Message> {
         parts::mono(
             note,
             if fits {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             } else {
-                color::TEXT_TERTIARY
+                color::text_tertiary()
             }
         ),
     ]
@@ -208,7 +212,7 @@ fn partitions(d: &Disk) -> El<'_, Message> {
         rows = rows.push(hairline()).push(
             container(parts::mono(
                 format!("and {} more", d.partitions.len() - SHOWN),
-                color::TEXT_TERTIARY,
+                color::text_tertiary(),
             ))
             .padding([space::ROW_Y, space::CARD]),
         );

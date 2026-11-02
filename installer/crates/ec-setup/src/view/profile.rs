@@ -20,9 +20,9 @@ pub fn body(m: &Model) -> Body<'_> {
     for c in CARDS.iter().filter(|c| m.more || data::selectable(c.profile)) {
         let live = data::selectable(c.profile);
         let (name_ink, body_ink) = if live {
-            (color::TEXT, color::TEXT_SECONDARY)
+            (color::text(), color::text_secondary())
         } else {
-            (color::TEXT_TERTIARY, color::TEXT_TERTIARY)
+            (color::text_tertiary(), color::text_tertiary())
         };
         let mut top = row![
             text(c.name)
