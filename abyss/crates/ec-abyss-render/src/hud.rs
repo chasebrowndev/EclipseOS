@@ -11,8 +11,8 @@
 //! distance field with one device pixel of antialiasing, the same edge the
 //! rounded-window shader draws, so CPU and GPU curves match.
 //!
-//! The text drawn here is the caller's, already reduced by `text::sanitize`
-//! at the door; the colours are all [`HudPalette`]'s and none is the
+//! The text drawn here is the caller's, already reduced by
+//! `text::sanitize_annotation` at the door; the colours are all [`HudPalette`]'s and none is the
 //! caller's.
 
 use crate::hud_font::{Face, ADVANCE};
@@ -178,7 +178,7 @@ const SHADOW_SPREAD: f32 = -12.0;
 const SHADOW_BLUR: f32 = 32.0;
 
 /// What a panel says, wrapped and ready to draw. Everything in it has
-/// already been through `text::sanitize`.
+/// already been through `text::sanitize_annotation`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Card {
     /// The pick's letter, drawn before the title in the accent text colour.
@@ -246,7 +246,7 @@ impl Card {
         if self.is_empty() {
             return (0, 0);
         }
-        let widest = |l: &[String]| l.iter().map(|s| s.len()).max().unwrap_or(0) * ADVANCE;
+        let widest = |l: &[String]| l.iter().map(|s| s.chars().count()).max().unwrap_or(0) * ADVANCE;
         let head = if self.has_head() {
             prefix_w(&self.chip, self.error) + widest(&self.title)
         } else {
@@ -312,7 +312,14 @@ fn line(
     match meta_split(s).filter(|_| last) {
         Some(at) => {
             p.text(face, dev, x, top, &s[..at], c);
-            p.text(face, dev, x + at * face.advance(), top, &s[at..], meta);
+            p.text(
+                face,
+                dev,
+                x + s[..at].chars().count() * face.advance(),
+                top,
+                &s[at..],
+                meta,
+            );
         }
         None => p.text(face, dev, x, top, s, c),
     }

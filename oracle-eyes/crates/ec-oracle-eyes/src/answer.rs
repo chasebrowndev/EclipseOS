@@ -901,6 +901,13 @@ pub fn clamp(text: &str, word_cap: usize, char_cap: usize) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_greek_headline_is_the_title_intact() {
+        let (title, body) = title_prose("Σ = π/2 ≤ 4. The area under the curve is bounded by it.");
+        assert_eq!(title, "Σ = π/2 ≤ 4");
+        assert_eq!(body, "The area under the curve is bounded by it.");
+    }
+
     fn line(id: usize, text: &str) -> Line {
         Line {
             id,

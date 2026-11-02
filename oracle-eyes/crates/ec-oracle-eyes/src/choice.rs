@@ -459,6 +459,36 @@ fn grow(c: &mut Choice, l: &Line) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn greek_labels_are_text_not_pick_keys() {
+        // Pick letters are ASCII (COMP-18 §3.1, ADR 0054): a Greek label reads
+        // as body text, and nothing about it panics on a char boundary.
+        for t in ["α) London", "β) Paris", "Σ) 4", "(γ) Rome", "δ. Berlin"] {
+            assert!(key_of(t).is_none(), "{t}");
+        }
+        let l = [
+            line(1, "Ποιο είναι το σωστό;", 0, 0),
+            line(2, "α) 2", 24, 20),
+            line(3, "β) 4", 24, 40),
+        ];
+        let _ = detect(&l);
+    }
+
+    #[test]
+    fn choose_n_wording_beside_non_ascii_parses_or_declines() {
+        assert!(matches!(
+            choose_of("Choose two — α) β)"),
+            Some(Multi::Count(2))
+        ));
+        assert!(matches!(choose_of("Σ choose two"), Some(Multi::Count(2))));
+        assert!(matches!(
+            choose_of("ÉCHOOSE ÉÉÉ select all that apply"),
+            Some(Multi::Any)
+        ));
+        assert!(choose_of("Choose β two").is_none());
+        assert!(choose_of("Επιλέξτε δύο").is_none());
+    }
+
     fn line(id: usize, text: &str, x: i32, y: i32) -> Line {
         Line {
             id,
