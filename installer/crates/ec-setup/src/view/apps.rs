@@ -27,7 +27,7 @@ pub fn body(m: &Model) -> Body<'_> {
             let on = m.choices.apps[i];
             let mark = if on { "[x]" } else { "[ ]" };
             let content = row![
-                parts::mono(mark, if on { color::TEXT } else { color::TEXT_TERTIARY }),
+                parts::mono(mark, if on { color::text() } else { color::text_tertiary() }),
                 parts::strong(app.name),
             ]
             .spacing(space::CHIP_GAP)

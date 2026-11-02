@@ -307,11 +307,11 @@ pub fn render(name: &str, size: (f32, f32), scale: f32, path: &Path) -> Result<(
             .reduced_motion(false)
             .frozen(timeline::READY + 1.0, 0.0);
         welcome.paint(&mut renderer, logical, scale);
-        Headless::screenshot(&mut renderer, physical, scale, color::BASE)
+        Headless::screenshot(&mut renderer, physical, scale, color::base())
     } else {
         let mut ui = UserInterface::build(crate::view::view(&model), logical, Cache::new(), &mut renderer);
         let style = Style {
-            text_color: color::TEXT,
+            text_color: color::text(),
         };
         // Widgets learn their status (active, disabled) from the redraw event;
         // without one every button is drawn as if it could not be pressed.
@@ -327,7 +327,7 @@ pub fn render(name: &str, size: (f32, f32), scale: f32, path: &Path) -> Result<(
         ui.draw(&mut renderer, &theme::theme(), &style, mouse::Cursor::Unavailable);
         // Text is drawn from paragraphs the interface owns, and the renderer
         // holds them weakly: the interface has to outlive the screenshot.
-        let rgba = Headless::screenshot(&mut renderer, physical, scale, color::BASE);
+        let rgba = Headless::screenshot(&mut renderer, physical, scale, color::base());
         drop(ui);
         rgba
     };

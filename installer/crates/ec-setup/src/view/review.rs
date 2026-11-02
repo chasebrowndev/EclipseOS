@@ -91,13 +91,13 @@ pub fn body(m: &Model) -> Body<'_> {
     let reading = if matches {
         parts::mono("matches", ok_ink())
     } else {
-        parts::mono("type the name", color::TEXT_TERTIARY)
+        parts::mono("type the name", color::text_tertiary())
     };
     let confirm = column![
         row![
             micro_label("Type the disk name"),
             iced::widget::Space::new().width(Length::Fill),
-            parts::mono(disk.by_id.clone(), color::TEXT_SECONDARY),
+            parts::mono(disk.by_id.clone(), color::text_secondary()),
         ],
         prompt_band("type", field, Some(reading)),
     ]
@@ -107,7 +107,7 @@ pub fn body(m: &Model) -> Body<'_> {
     if m.wifi_to_carry() {
         let mark = if m.carry_network { "[x]" } else { "[ ]" };
         let content = row![
-            parts::mono(mark, color::TEXT_SECONDARY),
+            parts::mono(mark, color::text_secondary()),
             parts::strong("Carry Wi-Fi connections to the installed system"),
         ]
         .spacing(space::CHIP_GAP)
