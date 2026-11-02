@@ -100,8 +100,14 @@ fn parse_args() -> Result<Args> {
                 // prints the same ranking the compositor would use, so the
                 // pick can be checked without taking over the display.
                 let seat = std::env::var("XDG_SEAT").unwrap_or_else(|_| "seat0".to_string());
-                for (i, g) in backend::gpu::probe_seat(&seat)?.iter().enumerate() {
-                    println!("{}. {}", i + 1, g.describe());
+                // ADR 0084: with several GPUs the role column shows which one
+                // renders (primary) and which only scan out (secondary).
+                let ranked = backend::gpu::probe_seat(&seat)?;
+                let primary = backend::gpu::select_primary(&ranked);
+                let roles = primary.map(|p| backend::gpu::roles(&ranked, p));
+                for (i, g) in ranked.iter().enumerate() {
+                    let role = roles.as_ref().map_or("unused", |r| r[i].as_str());
+                    println!("{}. {:<9} {}", i + 1, role, g.describe());
                 }
                 std::process::exit(0);
             }

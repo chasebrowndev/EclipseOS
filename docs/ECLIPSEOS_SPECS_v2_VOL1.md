@@ -2235,17 +2235,23 @@ Override, highest precedence first:
 2. `ECLIPSE_RENDER_DEVICE` env var (one-off testing).
 3. Config: `render_device "pci:0000:01:00.0"` or a card path (COMP-13).
 
-**Multi-GPU: not supported in v1.** One render device drives everything;
-outputs on other GPUs are not lit.
+**Multi-GPU: primary renders, secondaries scan out a copy** (ADR 0084,
+2026-11-02, amends the original "not supported in v1"). One primary render
+device composites every output. In auto mode it is the GPU driving a
+connected internal panel, then `boot_vga`, then the ranking above. Each
+other GPU with connectors is a secondary: its outputs receive the primary's
+frame as a dmabuf (LINEAR in practice), with a CPU copy if the import fails.
+The overrides above pin the primary.
 
 **Laptops are a target** (decided 2026-09-05), scoped as:
 
 | Class | v1 status |
 |---|---|
 | Single-GPU laptops (integrated only) | **Fully supported.** Same path as desktop with a different device, plus §8.5 mobile concerns. |
-| Hybrid dGPU laptops (Optimus, AMD switchable) | **Not in v1.** Auto-selection picks the dGPU; outputs wired to the iGPU stay dark, so such machines are unusable. This is a known, documented limitation, not a silent failure — refuse to start with a clear message when connectors exist only on a non-selected device. |
+| Hybrid dGPU laptops (Optimus, AMD switchable) | **Supported (ADR 0084).** The iGPU that drives the built-in panel is primary. Outputs on the dGPU get a copied frame. Clients allocate on the iGPU, and `prime-run` offloads one to the dGPU. Runtime hot-add of a whole GPU is not handled. |
 
-Hybrid support ships later as an experimental feature. To keep that from
+*Original 2026-09-05 scoping, superseded by ADR 0084:* hybrid support was
+to ship later as an experimental feature. To keep that from
 being a rewrite, the render path is **abstracted over a device set from day
 one**: no global "the GPU" singleton, buffers carry their source device,
 and the renderer trait (COMP-02) takes a device handle. Implementing
@@ -2427,8 +2433,10 @@ is testable without a GPU (F-07 §3).
 - Single-GPU laptop: lid close/open with and without external display;
   suspend with external, resume without; battery vs AC idle timeouts;
   touchpad gestures.
-- Hybrid laptop: assert a clear refusal message rather than a black
-  screen when all connectors are on a non-selected device.
+- Hybrid laptop (ADR 0084): the panel's iGPU is chosen as primary unaided.
+  The built-in panel and the dGPU's external port both light. HDMI hotplug
+  on the dGPU, a window moved across the two, and a `prime-run` client all
+  render. VT switch and back restores both devices.
 - Degraded mode: start without `policyd`; assert human desktop works and
   `create_agent` fails; start `policyd`; assert agents connect.
 - `policyd` kill while agents live: assert seats pause, human unaffected,

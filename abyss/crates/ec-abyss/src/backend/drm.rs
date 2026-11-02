@@ -2,14 +2,22 @@
 //! Production backend (COMP-01 §3, F-04): KMS via libseat + udev + libinput,
 //! GLES rendering onto GBM buffers through EGL.
 //!
-//! M3 scope: single GPU, every connected connector driven as its own output,
-//! runtime connector hotplug through udev, and a headless fallback output so
-//! the compositor survives with nothing plugged in (COMP-03 §5). Everything
-//! that touches hardware logs and continues rather than panicking.
+//! M3 scope: every connected connector driven as its own output, runtime
+//! connector hotplug through udev, and a headless fallback output so the
+//! compositor survives with nothing plugged in (COMP-03 §5). Everything that
+//! touches hardware logs and continues rather than panicking.
+//!
+//! Hybrid graphics (ADR 0084): one *primary* GPU renders every frame and owns
+//! dmabuf feedback, explicit sync and capture. Every other GPU with a connector
+//! is a *secondary*: it only scans out. A secondary output is rendered by the
+//! primary into an offscreen dmabuf, which the secondary imports and blits into
+//! its own scanout buffer ("render then copy"). A secondary that fails to come
+//! up is skipped with a warning; it never stops the primary starting.
 
 use std::{
+    cell::RefCell,
     collections::HashSet,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 
@@ -17,26 +25,34 @@ use anyhow::{anyhow, Context, Result};
 use smithay::{
     backend::{
         allocator::{
-            gbm::{GbmAllocator, GbmBufferFlags, GbmDevice},
-            Fourcc,
+            dmabuf::AsDmabuf,
+            gbm::{GbmAllocator, GbmBuffer, GbmBufferFlags, GbmDevice},
+            Format, Fourcc, Modifier, Slot, Swapchain,
         },
         drm::{
             compositor::{DrmCompositor, FrameFlags},
             exporter::gbm::GbmFramebufferExporter,
-            DrmDevice, DrmDeviceFd, DrmEvent, DrmEventTime, DrmNode, NodeType, VrrSupport,
+            DrmDevice, DrmDeviceFd, DrmDeviceNotifier, DrmEvent, DrmEventMetadata, DrmEventTime, DrmNode,
+            NodeType, VrrSupport,
         },
         egl::{context::EGLContext, display::EGLDisplay},
         input::InputEvent,
         libinput::{LibinputInputBackend, LibinputSessionInterface},
-        renderer::{gles::GlesRenderer, ImportDma},
+        renderer::{
+            damage::OutputDamageTracker,
+            element::{texture::TextureRenderElement, Id, Kind, RenderElementStates},
+            gles::{GlesRenderer, GlesTexture},
+            utils::DamageBag,
+            Bind, ExportMem, ImportDma, ImportMem, Renderer, Texture, TextureMapping,
+        },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{UdevBackend, UdevEvent},
     },
-    output::{Mode as OutputMode, Output, PhysicalProperties, Subpixel},
+    output::{Mode as OutputMode, Output, OutputModeSource, PhysicalProperties, Subpixel},
     reexports::{
         calloop::{
             generic::Generic, timer::TimeoutAction, timer::Timer, EventLoop, Interest, LoopHandle,
-            Mode as CalloopMode, PostAction,
+            Mode as CalloopMode, PostAction, RegistrationToken,
         },
         drm::control::{connector, crtc, Device as _, Mode as DrmMode, ModeTypeFlags},
         input::Libinput,
@@ -44,7 +60,7 @@ use smithay::{
         wayland_protocols::wp::presentation_time::server::wp_presentation_feedback,
         wayland_server::Display,
     },
-    utils::{DeviceFd, Scale, Transform},
+    utils::{Buffer as BufferCoord, DeviceFd, Physical, Rectangle, Scale, Size, Transform},
     wayland::{
         dmabuf::{DmabufFeedbackBuilder, DmabufState},
         drm_syncobj::{supports_syncobj_eventfd, DrmSyncobjState},
@@ -79,6 +95,8 @@ pub type AbyssDrmCompositor =
 pub struct DrmOutput {
     /// Handle into [`crate::outputs::Outputs`].
     pub id: u64,
+    /// Index into [`DrmData::devices`] of the GPU this connector hangs off.
+    pub device: usize,
     pub crtc: crtc::Handle,
     pub connector: connector::Handle,
     pub output: Output,
@@ -98,16 +116,123 @@ pub struct DrmOutput {
     vrr_config: bool,
     /// The connector advertises adaptive sync.
     vrr_capable: bool,
+    /// Render-then-copy state (ADR 0084); `Some` only on a secondary device.
+    pass: Option<SecondaryPass>,
+}
+
+/// What a secondary output needs to be fed by the primary GPU (ADR 0084).
+struct SecondaryPass {
+    /// Offscreen dmabufs allocated on the primary's GBM, in a format and
+    /// modifier both GPUs understand ([`gpu::pick_transfer_format`]).
+    swapchain: Swapchain<GbmAllocator<DrmDeviceFd>>,
+    /// The primary pass: renders the output's elements into the swapchain.
+    tracker: OutputDamageTracker,
+    size: Size<i32, Physical>,
+    /// One element identity for the whole life of the output, so the secondary
+    /// compositor diffs frame against frame and copies only what changed.
+    element_id: Id,
+    /// Primary-pass damage, in the coordinates of the transfer texture.
+    damage: DamageBag<i32, BufferCoord>,
+    /// The next frame must redraw and re-copy everything (after a refused
+    /// frame, a resume or a mode change).
+    force_full: bool,
+    /// The transfer buffer the secondary GPU may still be reading; kept out of
+    /// the swapchain until that output's next VBlank.
+    held: Option<Slot<GbmBuffer>>,
+    /// Importing the dmabuf failed, so frames go through system memory.
+    cpu_copy: bool,
+}
+
+/// The secondary-side texture imported from one swapchain slot, kept in the
+/// slot's user data so a buffer is imported once for its whole life.
+struct SlotTexture(RefCell<Option<GlesTexture>>);
+
+impl SecondaryPass {
+    fn new(
+        primary_gbm: &GbmDevice<DrmDeviceFd>,
+        format: Fourcc,
+        modifiers: Vec<Modifier>,
+        size: Size<i32, Physical>,
+        output: &Output,
+    ) -> Self {
+        // A linear transfer buffer must actually be linear: with only the flags
+        // to go on, GBM may otherwise pick a tiled layout the other GPU cannot read.
+        let mut flags = GbmBufferFlags::RENDERING;
+        if modifiers == [Modifier::Linear] {
+            flags |= GbmBufferFlags::LINEAR;
+        }
+        Self {
+            swapchain: Swapchain::new(
+                GbmAllocator::new(primary_gbm.clone(), flags),
+                size.w.max(1) as u32,
+                size.h.max(1) as u32,
+                format,
+                modifiers,
+            ),
+            tracker: OutputDamageTracker::from_output(output),
+            size,
+            element_id: Id::new(),
+            damage: DamageBag::default(),
+            force_full: true,
+            held: None,
+            cpu_copy: false,
+        }
+    }
+
+    /// Follow a mode switch: new swapchain size, and the secondary compositor's
+    /// static mode source (the primary pass already applied scale and
+    /// transform, so the secondary sees a plain 1:1 texture).
+    fn fit(&mut self, size: Size<i32, Physical>, compositor: &mut AbyssDrmCompositor) {
+        if size == self.size {
+            return;
+        }
+        self.size = size;
+        self.swapchain.resize(size.w.max(1) as u32, size.h.max(1) as u32);
+        self.held = None;
+        self.force_full = true;
+        compositor.set_output_mode_source(static_source(size));
+    }
+}
+
+/// The mode source of a secondary output's compositor: the finished frame, 1:1.
+fn static_source(size: Size<i32, Physical>) -> OutputModeSource {
+    OutputModeSource::Static {
+        size,
+        scale: Scale::from(1.0),
+        transform: Transform::Normal,
+    }
+}
+
+/// One DRM device on the seat (ADR 0084).
+pub struct GpuDevice {
+    pub dev_id: libc::dev_t,
+    /// The device that renders. Its renderer is [`DrmData::renderer`].
+    pub primary: bool,
+    /// `cardN`, for logs and output-name disambiguation.
+    pub tag: String,
+    pub drm: DrmDevice,
+    pub gbm: GbmDevice<DrmDeviceFd>,
+    /// EGL/GLES on this device's GBM, used only for the final blit; `None` on
+    /// the primary, whose renderer is [`DrmData::renderer`].
+    pub renderer: Option<GlesRenderer>,
+    /// The device's DRM notifier in the event loop.
+    token: RegistrationToken,
 }
 
 /// Everything the DRM backend needs to keep alive between callbacks.
 pub struct DrmData {
     pub session: LibSeatSession,
     pub loop_handle: LoopHandle<'static, AbyssState>,
-    pub drm: DrmDevice,
+    /// Every DRM device we drive; index 0 is the primary.
+    pub devices: Vec<GpuDevice>,
+    /// The primary's GBM device (a clone of `devices[0].gbm`).
     pub gbm: GbmDevice<DrmDeviceFd>,
+    /// The primary's renderer: builds every element, renders every frame and
+    /// serves capture.
     pub renderer: GlesRenderer,
     pub outputs: Vec<DrmOutput>,
+    /// The primary GPU was removed; there is nothing left to render with.
+    primary_lost: bool,
     /// The headless stand-in, live only while no connector is.
     fallback: Option<u64>,
     cursor: crate::render::cursor::Fallback,
@@ -132,8 +257,17 @@ impl super::Backend for DrmData {
 }
 
 impl DrmData {
-    fn index_of_crtc(&self, crtc: crtc::Handle) -> Option<usize> {
-        self.outputs.iter().position(|o| o.crtc == crtc)
+    fn device_index(&self, dev_id: libc::dev_t) -> Option<usize> {
+        self.devices.iter().position(|d| d.dev_id == dev_id)
+    }
+
+    /// The output on `dev_id` driving `crtc`. CRTC handles are per device, so
+    /// the pair is the key.
+    fn index_of(&self, dev_id: libc::dev_t, crtc: crtc::Handle) -> Option<usize> {
+        let dev = self.device_index(dev_id)?;
+        self.outputs
+            .iter()
+            .position(|o| o.device == dev && o.crtc == crtc)
     }
 }
 
@@ -298,24 +432,68 @@ fn pick_crtc(
         .find(|crtc| !used.contains(crtc))
 }
 
-/// Diff the kernel's connector list against the outputs we are driving and
-/// bring the two back into agreement (COMP-03 §3). Called at startup and on
-/// every udev `Changed` event for our GPU.
+/// Rescan every device (COMP-03 §3). Called at startup and after a VT switch.
 pub fn scan_connectors(state: &mut AbyssState) {
+    let n = state.drm.as_ref().map_or(0, |d| d.devices.len());
+    for dev in 0..n {
+        scan_device(state, dev);
+    }
+    sync_fallback(state);
+}
+
+/// Disambiguate a connector name that another device already uses (ADR 0084).
+/// Kernel connector names count per card, so two GPUs can both own a `DP-1`.
+/// The device enumerated first (the primary, then secondaries in rank order)
+/// keeps the plain name; a later one gets `@cardN`, which is deterministic for
+/// a given set of devices whatever is plugged in.
+fn disambiguate(name: &str, taken: &[String], tag: &str) -> String {
+    if taken.iter().any(|t| t == name) {
+        format!("{name}@{tag}")
+    } else {
+        name.to_string()
+    }
+}
+
+/// Names of every connector (plugged or not) on the devices before `dev`.
+fn names_before(drm: &DrmData, dev: usize) -> Vec<String> {
+    let mut names = Vec::new();
+    for d in &drm.devices[..dev] {
+        let Ok(res) = d.drm.resource_handles() else {
+            continue;
+        };
+        for h in res.connectors() {
+            if let Ok(info) = d.drm.get_connector(*h, false) {
+                names.push(connector_name(&info));
+            }
+        }
+    }
+    names
+}
+
+/// Diff one device's connector list against the outputs we are driving on it
+/// and bring the two back into agreement (COMP-03 §3). Called at startup and on
+/// every udev `Changed` event for that GPU.
+fn scan_device(state: &mut AbyssState, dev: usize) {
     let Some(drm) = state.drm.as_ref() else { return };
-    let Ok(resources) = drm.drm.resource_handles() else {
-        tracing::warn!("reading DRM resources");
+    if drm.primary_lost {
+        return;
+    }
+    let Some(device) = drm.devices.get(dev) else {
+        return;
+    };
+    let Ok(resources) = device.drm.resource_handles() else {
+        tracing::warn!(device = %device.tag, "reading DRM resources");
         return;
     };
 
     let mut connected: Vec<(connector::Handle, connector::Info)> = Vec::new();
     for handle in resources.connectors() {
-        match drm.drm.get_connector(*handle, true) {
+        match device.drm.get_connector(*handle, true) {
             Ok(info) if info.state() == connector::State::Connected && !info.modes().is_empty() => {
                 connected.push((*handle, info))
             }
             Ok(_) => {}
-            Err(err) => tracing::warn!(?err, "reading connector"),
+            Err(err) => tracing::warn!(device = %device.tag, ?err, "reading connector"),
         }
     }
     let present: HashSet<connector::Handle> = connected.iter().map(|(h, _)| *h).collect();
@@ -325,7 +503,7 @@ pub fn scan_connectors(state: &mut AbyssState) {
         .outputs
         .iter()
         .enumerate()
-        .filter(|(_, o)| !present.contains(&o.connector))
+        .filter(|(_, o)| o.device == dev && !present.contains(&o.connector))
         .map(|(i, o)| (i, o.id))
         .collect();
     // Drop every departing DrmOutput first, then stand the fallback up *before*
@@ -349,11 +527,11 @@ pub fn scan_connectors(state: &mut AbyssState) {
         let known = state
             .drm
             .as_ref()
-            .is_some_and(|d| d.outputs.iter().any(|o| o.connector == handle));
+            .is_some_and(|d| d.outputs.iter().any(|o| o.device == dev && o.connector == handle));
         if known {
             continue;
         }
-        if let Err(err) = add_connector(state, &resources, handle, &info) {
+        if let Err(err) = add_connector(state, dev, &resources, handle, &info) {
             tracing::warn!(connector = %connector_name(&info), ?err, "could not bring up connector");
         }
     }
@@ -365,17 +543,24 @@ pub fn scan_connectors(state: &mut AbyssState) {
 /// [`DrmCompositor`] that scans it out.
 fn add_connector(
     state: &mut AbyssState,
+    dev: usize,
     resources: &smithay::reexports::drm::control::ResourceHandles,
     handle: connector::Handle,
     info: &connector::Info,
 ) -> Result<()> {
     let dh = state.display_handle.clone();
-    let name = connector_name(info);
     let drm = state.drm.as_ref().ok_or_else(|| anyhow!("no DRM backend"))?;
-    let identity = crate::outputs::identity(edid_blob(&drm.drm, handle).as_deref(), &name);
+    let device = &drm.devices[dev];
+    let name = disambiguate(&connector_name(info), &names_before(drm, dev), &device.tag);
+    let identity = crate::outputs::identity(edid_blob(&device.drm, handle).as_deref(), &name);
 
-    let used: HashSet<crtc::Handle> = drm.outputs.iter().map(|o| o.crtc).collect();
-    let crtc = pick_crtc(&drm.drm, resources, info, &used)
+    let used: HashSet<crtc::Handle> = drm
+        .outputs
+        .iter()
+        .filter(|o| o.device == dev)
+        .map(|o| o.crtc)
+        .collect();
+    let crtc = pick_crtc(&device.drm, resources, info, &used)
         .ok_or_else(|| anyhow!("no free CRTC for connector {name}"))?;
 
     // Config, then the remembered layout, then the connector's preferred mode.
@@ -406,7 +591,7 @@ fn add_connector(
         .unwrap_or(preferred);
 
     let (phys_w, phys_h) = info.size().unwrap_or((0, 0));
-    let edid = edid_blob(&drm.drm, handle).and_then(|b| crate::outputs::edid::parse(&b));
+    let edid = edid_blob(&device.drm, handle).and_then(|b| crate::outputs::edid::parse(&b));
     let output = Output::new(
         name.clone(),
         PhysicalProperties {
@@ -433,20 +618,75 @@ fn add_connector(
     output.set_preferred(wl_mode);
 
     let drm = state.drm.as_mut().ok_or_else(|| anyhow!("no DRM backend"))?;
-    let surface = drm
+    let secondary = !drm.devices[dev].primary;
+    let device = &mut drm.devices[dev];
+    let surface = device
         .drm
         .create_surface(crtc, mode, &[handle])
         .context("creating DRM surface")?;
     let allocator = GbmAllocator::new(
-        drm.gbm.clone(),
+        device.gbm.clone(),
         GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
     );
-    let exporter = GbmFramebufferExporter::new(drm.gbm.clone(), None);
-    let renderer_formats = drm.renderer.egl_context().dmabuf_render_formats().clone();
-    let cursor_size = drm.drm.cursor_size();
-    let gbm = drm.gbm.clone();
+    let exporter = GbmFramebufferExporter::new(device.gbm.clone(), None);
+    let cursor_size = device.drm.cursor_size();
+    let gbm = device.gbm.clone();
+    // The formats the compositor may render into: the device's own renderer.
+    // On a secondary that is the blit renderer, and the offscreen pass the
+    // primary renders into must be one both GPUs share (ADR 0084).
+    let (renderer_formats, mode_source, pass) = if secondary {
+        let sec = device
+            .renderer
+            .as_ref()
+            .ok_or_else(|| anyhow!("secondary {} has no renderer", device.tag))?;
+        let primary_render: Vec<Format> = drm
+            .renderer
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .copied()
+            .collect();
+        let secondary_texture: Vec<Format> = sec
+            .egl_context()
+            .dmabuf_texture_formats()
+            .iter()
+            .copied()
+            .collect();
+        let (fourcc, modifiers) =
+            gpu::pick_transfer_format(&primary_render, &secondary_texture).ok_or_else(|| {
+                anyhow!(
+                    "no dmabuf format shared between the primary GPU and {}",
+                    device.tag
+                )
+            })?;
+        tracing::info!(
+            output = %name,
+            device = %device.tag,
+            ?fourcc,
+            ?modifiers,
+            "secondary output: render on primary, copy to {}",
+            device.tag
+        );
+        (
+            sec.egl_context().dmabuf_render_formats().clone(),
+            static_source(wl_mode.size),
+            Some(SecondaryPass::new(
+                &drm.gbm,
+                fourcc,
+                modifiers,
+                wl_mode.size,
+                &output,
+            )),
+        )
+    } else {
+        (
+            drm.renderer.egl_context().dmabuf_render_formats().clone(),
+            OutputModeSource::from(&output),
+            None,
+        )
+    };
     let compositor = AbyssDrmCompositor::new(
-        &output,
+        mode_source,
         surface,
         None,
         allocator,
@@ -468,24 +708,29 @@ fn add_connector(
 
     // Scanout tranche: the formats this output's primary plane can actually
     // scan out, advertised above the render tranche so a full-screen client
-    // allocates something we can hand straight to KMS (COMP-02 §2).
-    let feedback = state.dmabuf_feedback.as_ref().and_then(|render| {
-        let plane_formats = compositor.surface().plane_info().formats.clone();
-        DmabufFeedbackBuilder::new(drm.render_node, renderer_formats.iter().copied())
-            .add_preference_tranche(
-                compositor.surface().device_fd().dev_id().ok()?,
-                Some(
-                    smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags::Scanout,
-                ),
-                plane_formats,
-            )
-            .build()
-            .ok()
-            .map(|scanout| SurfaceFeedback {
-                render: render.clone(),
-                scanout,
-            })
-    });
+    // allocates something we can hand straight to KMS (COMP-02 §2). A secondary
+    // output never scans a client buffer out directly (ADR 0084), so it has none.
+    let feedback = state
+        .dmabuf_feedback
+        .as_ref()
+        .filter(|_| !secondary)
+        .and_then(|render| {
+            let plane_formats = compositor.surface().plane_info().formats.clone();
+            DmabufFeedbackBuilder::new(drm.render_node, renderer_formats.iter().copied())
+                .add_preference_tranche(
+                    compositor.surface().device_fd().dev_id().ok()?,
+                    Some(
+                        smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags::Scanout,
+                    ),
+                    plane_formats,
+                )
+                .build()
+                .ok()
+                .map(|scanout| SurfaceFeedback {
+                    render: render.clone(),
+                    scanout,
+                })
+        });
 
     // COMP-03 §8: VRR is on/off/auto per output; "auto" only engages while a
     // fullscreen surface owns the output, handled in render_output.
@@ -507,6 +752,7 @@ fn add_connector(
     if let Some(drm) = state.drm.as_mut() {
         drm.outputs.push(DrmOutput {
             id,
+            device: dev,
             crtc,
             connector: handle,
             output,
@@ -518,6 +764,7 @@ fn add_connector(
             feedback,
             vrr_config,
             vrr_capable: matches!(vrr_support, VrrSupport::Supported),
+            pass,
         });
     }
     tracing::info!(
@@ -531,14 +778,34 @@ fn add_connector(
     Ok(())
 }
 
-/// Our render GPU disappeared (COMP-03 §3): its fd is dead, so tear every output
-/// it was driving down and land on the headless fallback rather than re-scanning
-/// a device that is no longer there.
-fn teardown_gpu(state: &mut AbyssState) {
-    let ids: Vec<u64> = match state.drm.as_mut() {
-        Some(drm) => drm.outputs.drain(..).map(|o| o.id).collect(),
-        None => return,
+/// A GPU disappeared (COMP-03 §3, ADR 0084). A secondary takes only its own
+/// outputs with it. The primary's fd is dead and nothing can render without it,
+/// so every output goes and we land on the headless fallback rather than
+/// re-scanning a device that is no longer there.
+fn teardown_gpu(state: &mut AbyssState, dev_id: libc::dev_t) {
+    let Some(drm) = state.drm.as_mut() else { return };
+    let Some(di) = drm.device_index(dev_id) else {
+        return;
     };
+    let primary = drm.devices[di].primary;
+    let mut ids = Vec::new();
+    for o in std::mem::take(&mut drm.outputs) {
+        if primary || o.device == di {
+            ids.push(o.id);
+        } else {
+            drm.outputs.push(o);
+        }
+    }
+    if primary {
+        drm.primary_lost = true;
+    } else {
+        let dev = drm.devices.remove(di);
+        drm.loop_handle.remove(dev.token);
+        for o in drm.outputs.iter_mut().filter(|o| o.device > di) {
+            o.device -= 1;
+        }
+        tracing::warn!(device = %dev.tag, outputs = ids.len(), "secondary GPU removed; its outputs torn down");
+    }
     if ids.is_empty() {
         return;
     }
@@ -546,7 +813,9 @@ fn teardown_gpu(state: &mut AbyssState) {
     for id in ids {
         crate::outputs::unregister(state, id);
     }
-    tracing::warn!("render GPU removed; outputs torn down");
+    if primary {
+        tracing::warn!("render GPU removed; outputs torn down");
+    }
 }
 
 /// Never leave the human with no output (COMP-03 §5): stand up a headless one
@@ -622,46 +891,162 @@ fn resolve_render_device(requested: Option<&str>, seat_name: &str) -> Result<Pat
     Ok(path)
 }
 
-/// The COMP-01 §4 automatic path: rank every DRM device on the seat and take
-/// the best. The whole ranked list is logged with the reason, as the spec
-/// requires — with one render device driving everything, a wrong pick is a
-/// black screen, and the log is the only way to see why it happened.
+/// The automatic path (COMP-01 §4, ADR 0084): rank every DRM device on the
+/// seat, then pick the primary. With several GPUs the one lighting a connected
+/// built-in panel wins, then `boot_vga`, then the ranking. The whole ranked list
+/// is logged with the reason, as the spec requires — a wrong pick is a black
+/// screen, and the log is the only way to see why it happened.
 fn auto_select_render_device(seat_name: &str) -> Result<PathBuf> {
     let ranked = gpu::probe_seat(seat_name).context("enumerating GPUs")?;
-    let best = ranked
-        .first()
-        .ok_or_else(|| anyhow!("no GPU found on seat '{seat_name}'"))?;
     for (i, g) in ranked.iter().enumerate() {
         tracing::info!(rank = i + 1, "GPU candidate: {}", g.describe());
     }
-    if best.render.is_none() {
-        anyhow::bail!(
-            "best GPU {} exposes no render node; abyss needs one to composite",
-            best.card.display()
-        );
-    }
-    // Multi-GPU is out of scope for v1: outputs on a device we did not select
-    // are never lit, so a machine whose connectors all hang off another GPU
-    // (a hybrid dGPU laptop) must refuse to start rather than come up blind.
-    if best.connectors == 0 {
-        if let Some(other) = ranked.iter().find(|g| g.connectors > 0) {
-            anyhow::bail!(
-                "selected {} has no connectors; the displays are on {} \
-                 (multi-GPU and hybrid graphics are not supported in v1 — \
-                 set render_device to pin one GPU that has both)",
-                best.card.display(),
-                other.card.display(),
-            );
-        }
+    let best = gpu::select_primary(&ranked).map(|i| &ranked[i]).ok_or_else(|| {
+        anyhow!("no GPU on seat '{seat_name}' exposes a render node; abyss needs one to composite")
+    })?;
+    if ranked.iter().all(|g| g.connectors_total == 0) {
         anyhow::bail!("no GPU on seat '{seat_name}' has any connector");
     }
     tracing::info!(
         path = %best.card.display(),
         driver = %best.driver,
-        "selected render device: best of {} by class/VRAM/PCI-address",
+        internal_panel = best.has_internal_panel(),
+        boot_vga = best.boot_vga,
+        "selected primary GPU: best of {} (connected built-in panel, then boot_vga, then class/VRAM/PCI-address)",
         ranked.len()
     );
     Ok(best.card.clone())
+}
+
+/// Everything opened for one DRM device.
+struct OpenedDevice {
+    node: DrmNode,
+    drm: DrmDevice,
+    notifier: DrmDeviceNotifier,
+    gbm: GbmDevice<DrmDeviceFd>,
+    /// Shared with the DRM and GBM devices; the primary also needs it for syncobj.
+    fd: DrmDeviceFd,
+}
+
+/// Open a card node through the session, and the DRM and GBM devices on it.
+fn open_device(session: &mut LibSeatSession, path: &Path) -> Result<OpenedDevice> {
+    let fd = session
+        .open(
+            path,
+            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
+        )
+        .map_err(|err| anyhow!("opening {}: {err}", path.display()))?;
+    let fd = DrmDeviceFd::new(DeviceFd::from(fd));
+    let node = DrmNode::from_file(&fd).context("resolving DRM node")?;
+    let (drm, notifier) = DrmDevice::new(fd.clone(), true).context("DrmDevice::new")?;
+    let gbm = GbmDevice::new(fd.clone()).context("GbmDevice::new")?;
+    Ok(OpenedDevice {
+        node,
+        drm,
+        notifier,
+        gbm,
+        fd,
+    })
+}
+
+/// EGL and GLES on a GBM device.
+fn gles_on(gbm: &GbmDevice<DrmDeviceFd>) -> Result<GlesRenderer> {
+    // SAFETY: the gbm device outlives the display (both live in DrmData /
+    // the caller's scope for the lifetime of the process).
+    let egl_display = unsafe { EGLDisplay::new(gbm.clone()) }.context("EGLDisplay::new")?;
+    let egl_context = EGLContext::new(&egl_display).context("EGLContext::new")?;
+    // SAFETY: the context is current on this (single) thread only.
+    unsafe { GlesRenderer::new(egl_context) }.context("GlesRenderer::new")
+}
+
+/// Bring up one secondary GPU: device, GBM, a blit renderer. Any failure is the
+/// caller's to log; a secondary never stops the primary starting (ADR 0084).
+fn open_secondary(session: &mut LibSeatSession, path: &Path) -> Result<(OpenedDevice, GlesRenderer)> {
+    let opened = open_device(session, path)?;
+    check_nvidia_modeset(&opened.node)?;
+    let renderer = gles_on(&opened.gbm)?;
+    Ok((opened, renderer))
+}
+
+/// Route one device's DRM events (page flips) into the loop; the device is
+/// named by id rather than index, because indices shift when a GPU goes away.
+fn insert_drm_source(
+    handle: &LoopHandle<'static, AbyssState>,
+    notifier: DrmDeviceNotifier,
+    dev_id: libc::dev_t,
+) -> Result<RegistrationToken> {
+    handle
+        .insert_source(notifier, move |event, meta, state| match event {
+            DrmEvent::VBlank(crtc) => on_vblank(state, dev_id, crtc, meta.as_ref()),
+            DrmEvent::Error(err) => tracing::error!(?err, "DRM event error"),
+        })
+        .map_err(|err| anyhow!("inserting drm source: {err}"))
+}
+
+/// A page flip completed on `crtc` of device `dev_id`.
+fn on_vblank(
+    state: &mut AbyssState,
+    dev_id: libc::dev_t,
+    crtc: crtc::Handle,
+    meta: Option<&DrmEventMetadata>,
+) {
+    let clock_now = state.clock.now();
+    let pending = if let Some(drm) = state.drm.as_mut() {
+        match drm.index_of(dev_id, crtc) {
+            Some(i) => {
+                let o = &mut drm.outputs[i];
+                let refresh = o
+                    .output
+                    .current_mode()
+                    .map(|m| frame_period(m.refresh))
+                    .unwrap_or_else(|| Duration::from_millis(16));
+                match o.compositor.frame_submitted() {
+                    // wp_presentation: report the real page-flip
+                    // timestamp and sequence the kernel gave us.
+                    Ok(Some(Some(mut feedback))) => {
+                        let (time, seq) = match meta {
+                            Some(m) => (
+                                match m.time {
+                                    DrmEventTime::Monotonic(t) => t,
+                                    DrmEventTime::Realtime(_) => clock_now.into(),
+                                },
+                                m.sequence as u64,
+                            ),
+                            None => (clock_now.into(), 0),
+                        };
+                        let vrr = o.compositor.vrr_enabled();
+                        feedback.presented::<_, smithay::utils::Monotonic>(
+                            time,
+                            if vrr {
+                                Refresh::Variable(refresh)
+                            } else {
+                                Refresh::fixed(refresh)
+                            },
+                            seq,
+                            wp_presentation_feedback::Kind::Vsync
+                                | wp_presentation_feedback::Kind::HwClock
+                                | wp_presentation_feedback::Kind::HwCompletion,
+                        );
+                    }
+                    Ok(_) => {}
+                    Err(err) => tracing::warn!(?err, "frame_submitted"),
+                }
+                o.frame_pending = false;
+                // The flip is done, so the secondary GPU has finished reading
+                // the transfer buffer it was fed from.
+                if let Some(pass) = o.pass.as_mut() {
+                    pass.held = None;
+                }
+                o.needs_render.then_some(i)
+            }
+            None => None,
+        }
+    } else {
+        None
+    };
+    if let Some(i) = pending {
+        render_output(state, i);
+    }
 }
 
 pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
@@ -700,28 +1085,16 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     let gpu_path: PathBuf = resolve_render_device(requested_device.as_deref(), &seat_name)?;
 
     let mut session_for_open = session.clone();
-    let fd = session_for_open
-        .open(
-            &gpu_path,
-            OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOCTTY | OFlags::NONBLOCK,
-        )
-        .map_err(|err| anyhow!("opening {}: {err}", gpu_path.display()))?;
-    let device_fd = DrmDeviceFd::new(DeviceFd::from(fd));
-
-    let node = DrmNode::from_file(&device_fd).context("resolving DRM node")?;
+    let OpenedDevice {
+        node,
+        drm: drm_device,
+        notifier: drm_notifier,
+        gbm,
+        fd: device_fd_for_syncobj,
+    } = open_device(&mut session_for_open, &gpu_path)?;
     check_nvidia_modeset(&node)?;
     let our_device = node.dev_id();
-
-    let (drm_device, drm_notifier) = DrmDevice::new(device_fd.clone(), true).context("DrmDevice::new")?;
-    let device_fd_for_syncobj = device_fd.clone();
-    let gbm = GbmDevice::new(device_fd).context("GbmDevice::new")?;
-
-    // SAFETY: the gbm device outlives the display (both live in DrmData /
-    // this function's scope for the lifetime of the process).
-    let egl_display = unsafe { EGLDisplay::new(gbm.clone()) }.context("EGLDisplay::new")?;
-    let egl_context = EGLContext::new(&egl_display).context("EGLContext::new")?;
-    // SAFETY: the context is current on this (single) thread only.
-    let renderer = unsafe { GlesRenderer::new(egl_context) }.context("GlesRenderer::new")?;
+    let renderer = gles_on(&gbm)?;
 
     // dmabuf is the expected client buffer path (F-04); shm still works.
     // v5 default feedback names the render node and its texture formats; the
@@ -771,12 +1144,76 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         tracing::warn!("driver has no syncobj eventfd support; no explicit sync global");
     }
 
+    let primary_token = insert_drm_source(&handle, drm_notifier, our_device)?;
+    let mut devices = vec![GpuDevice {
+        dev_id: our_device,
+        primary: true,
+        tag: format!("card{}", node.minor()),
+        drm: drm_device,
+        gbm: gbm.clone(),
+        renderer: None,
+        token: primary_token,
+    }];
+
+    // Secondary GPUs (ADR 0084): every other device on the seat with a
+    // connector. Each is optional; one that will not come up is logged and left
+    // dark, and the primary carries on.
+    let primary_id = node
+        .node_with_type(NodeType::Primary)
+        .and_then(|r| r.ok())
+        .unwrap_or(node)
+        .dev_id();
+    match gpu::probe_seat(&seat_name) {
+        Ok(ranked) => {
+            for g in ranked.iter().filter(|g| g.connectors_total > 0) {
+                let Ok(other) = DrmNode::from_path(&g.card) else {
+                    continue;
+                };
+                if other.dev_id() == primary_id || other.dev_id() == our_device {
+                    continue;
+                }
+                match open_secondary(&mut session_for_open, &g.card) {
+                    Ok((opened, sec_renderer)) => {
+                        let dev_id = opened.node.dev_id();
+                        match insert_drm_source(&handle, opened.notifier, dev_id) {
+                            Ok(token) => {
+                                tracing::info!(
+                                    path = %g.card.display(),
+                                    driver = %g.driver,
+                                    "secondary GPU: {}",
+                                    g.describe()
+                                );
+                                devices.push(GpuDevice {
+                                    dev_id,
+                                    primary: false,
+                                    tag: format!("card{}", opened.node.minor()),
+                                    drm: opened.drm,
+                                    gbm: opened.gbm,
+                                    renderer: Some(sec_renderer),
+                                    token,
+                                });
+                            }
+                            Err(err) => {
+                                tracing::warn!(path = %g.card.display(), ?err, "secondary GPU skipped");
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        tracing::warn!(path = %g.card.display(), ?err, "secondary GPU skipped");
+                    }
+                }
+            }
+        }
+        Err(err) => tracing::warn!(?err, "enumerating secondary GPUs"),
+    }
+
     state.drm = Some(Box::new(DrmData {
         session: session.clone(),
         loop_handle: handle.clone(),
-        drm: drm_device,
+        devices,
         gbm,
         renderer,
+        primary_lost: false,
         outputs: Vec::new(),
         fallback: None,
         cursor: crate::render::cursor::Fallback::default(),
@@ -859,7 +1296,10 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                 tracing::info!("session paused (VT switch away)");
                 libinput_session.suspend();
                 if let Some(drm) = state.drm.as_mut() {
-                    drm.drm.pause();
+                    // Every device loses master together (ADR 0084).
+                    for d in drm.devices.iter_mut() {
+                        d.drm.pause();
+                    }
                 }
             }
             SessionEvent::ActivateSession => {
@@ -868,8 +1308,10 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                     tracing::error!("resuming libinput after VT switch");
                 }
                 if let Some(drm) = state.drm.as_mut() {
-                    if let Err(err) = drm.drm.activate(false) {
-                        tracing::error!(?err, "reactivating DRM device");
+                    for d in drm.devices.iter_mut() {
+                        if let Err(err) = d.drm.activate(false) {
+                            tracing::error!(?err, device = %d.tag, "reactivating DRM device");
+                        }
                     }
                     for o in drm.outputs.iter_mut() {
                         if let Err(err) = o.compositor.reset_state() {
@@ -879,6 +1321,10 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                         o.commit_failures = 0;
                         o.frame_pending = false;
                         o.needs_render = true;
+                        if let Some(pass) = o.pass.as_mut() {
+                            pass.force_full = true;
+                            pass.held = None;
+                        }
                     }
                 }
                 // A connector may have changed while we were away.
@@ -889,85 +1335,35 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         .map_err(|err| anyhow!("inserting session source: {err}"))?;
 
     handle
-        .insert_source(drm_notifier, move |event, meta, state| match event {
-            DrmEvent::VBlank(crtc) => {
-                let clock_now = state.clock.now();
-                let pending = if let Some(drm) = state.drm.as_mut() {
-                    match drm.index_of_crtc(crtc) {
-                        Some(i) => {
-                            let o = &mut drm.outputs[i];
-                            let refresh = o
-                                .output
-                                .current_mode()
-                                .map(|m| frame_period(m.refresh))
-                                .unwrap_or_else(|| Duration::from_millis(16));
-                            match o.compositor.frame_submitted() {
-                                // wp_presentation: report the real page-flip
-                                // timestamp and sequence the kernel gave us.
-                                Ok(Some(Some(mut feedback))) => {
-                                    let (time, seq) = match meta.as_ref() {
-                                        Some(m) => (
-                                            match m.time {
-                                                DrmEventTime::Monotonic(t) => t,
-                                                DrmEventTime::Realtime(_) => clock_now.into(),
-                                            },
-                                            m.sequence as u64,
-                                        ),
-                                        None => (clock_now.into(), 0),
-                                    };
-                                    let vrr = o.compositor.vrr_enabled();
-                                    feedback.presented::<_, smithay::utils::Monotonic>(
-                                        time,
-                                        if vrr {
-                                            Refresh::Variable(refresh)
-                                        } else {
-                                            Refresh::fixed(refresh)
-                                        },
-                                        seq,
-                                        wp_presentation_feedback::Kind::Vsync
-                                            | wp_presentation_feedback::Kind::HwClock
-                                            | wp_presentation_feedback::Kind::HwCompletion,
-                                    );
-                                }
-                                Ok(_) => {}
-                                Err(err) => tracing::warn!(?err, "frame_submitted"),
-                            }
-                            o.frame_pending = false;
-                            o.needs_render.then_some(i)
-                        }
-                        None => None,
-                    }
-                } else {
-                    None
-                };
-                if let Some(i) = pending {
-                    render_output(state, i);
-                }
-            }
-            DrmEvent::Error(err) => tracing::error!(?err, "DRM event error"),
-        })
-        .map_err(|err| anyhow!("inserting drm source: {err}"))?;
-
-    handle
         .insert_source(udev, move |event, _, state| {
-            let changed = match event {
+            // Every known GPU is handled by id; an unknown one that shows up
+            // at runtime is ignored (ADR 0084: no runtime GPU hotplug).
+            let known =
+                |state: &AbyssState, id: libc::dev_t| state.drm.as_ref().and_then(|d| d.device_index(id));
+            let rescan = match event {
                 UdevEvent::Added { device_id, path } => {
                     tracing::info!(?device_id, path = %path.display(), "GPU added");
-                    device_id == our_device
+                    let dev = known(state, device_id);
+                    if dev.is_none() {
+                        tracing::info!(
+                            ?device_id,
+                            "GPU not in use at startup; ignoring (no runtime GPU hotplug)"
+                        );
+                    }
+                    dev
                 }
-                UdevEvent::Changed { device_id } => device_id == our_device,
+                UdevEvent::Changed { device_id } => known(state, device_id),
                 UdevEvent::Removed { device_id } => {
                     tracing::info!(?device_id, "GPU removed");
-                    if device_id == our_device {
-                        // The fd is dead; re-scanning it would only log errors.
-                        // Tear the outputs down and fall back to headless.
-                        teardown_gpu(state);
-                    }
-                    false
+                    // The fd is dead; re-scanning it would only log errors.
+                    // Tear its outputs down (all of them, if it was the
+                    // primary, falling back to headless).
+                    teardown_gpu(state, device_id);
+                    None
                 }
             };
-            if changed {
-                scan_connectors(state);
+            if let Some(dev) = rescan {
+                scan_device(state, dev);
                 schedule_render(state);
             }
         })
@@ -1156,6 +1552,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
     };
     let output = entry.output.clone();
     let crtc = entry.crtc;
+    let dev_id = drm.devices[entry.device].dev_id;
     let scale = Scale::from(output.current_scale().fractional_scale());
     let output_loc = state
         .space
@@ -1313,12 +1710,33 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let mut failed = false;
     let mut empty = false;
     let mut states = None;
-    match compositor.render_frame(&mut drm.renderer, &elements, CLEAR, flags) {
-        Ok(result) if result.is_empty => empty = true,
-        Ok(result) => states = Some(result.states.clone()),
-        Err(err) => {
-            tracing::warn!(?err, "rendering frame");
-            failed = true;
+    if drm.outputs[index].pass.is_none() {
+        let compositor = &mut drm.outputs[index].compositor;
+        match compositor.render_frame(&mut drm.renderer, &elements, CLEAR, flags) {
+            Ok(result) if result.is_empty => empty = true,
+            Ok(result) => states = Some(result.states.clone()),
+            Err(err) => {
+                tracing::warn!(?err, "rendering frame");
+                failed = true;
+            }
+        }
+    } else {
+        // ADR 0084: a secondary output is rendered by the primary and copied.
+        let dev = drm.outputs[index].device;
+        let secondary = drm.devices.get_mut(dev).and_then(|d| d.renderer.as_mut());
+        match secondary {
+            Some(secondary) => {
+                match render_secondary(&mut drm.renderer, secondary, &mut drm.outputs[index], &elements) {
+                    Ok(SecondaryFrame::Skipped) => {}
+                    Ok(SecondaryFrame::Empty) => empty = true,
+                    Ok(SecondaryFrame::Frame(s)) => states = Some(s),
+                    Err(err) => {
+                        tracing::warn!(?err, "rendering secondary frame");
+                        failed = true;
+                    }
+                }
+            }
+            None => failed = true,
         }
     }
     let render_time = render_start.elapsed();
@@ -1370,9 +1788,13 @@ fn render_output(state: &mut AbyssState, index: usize) {
     }
 
     let Some(drm) = state.drm.as_mut() else { return };
-    let compositor = &mut drm.outputs[index].compositor;
-
     if needs_full_redraw(empty, failed) {
+        if let Some(pass) = drm.outputs[index].pass.as_mut() {
+            // The transfer buffers and the secondary compositor's history now
+            // disagree; redraw and re-copy everything next time.
+            pass.force_full = true;
+        }
+        let compositor = &mut drm.outputs[index].compositor;
         // An empty frame is discarded rather than submitted, but the damage
         // tracker still recorded it. That desynchronises the damage history
         // from the swapchain slot ages, and every later frame then restores
@@ -1415,7 +1837,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
         let handle = drm.loop_handle.clone();
         if let Err(err) = handle.insert_source(Timer::from_duration(RETRY_DELAY), move |_, _, state| {
             let i = state.drm.as_mut().and_then(|drm| {
-                let i = drm.index_of_crtc(crtc)?;
+                let i = drm.index_of(dev_id, crtc)?;
                 drm.outputs[i].retry_armed = false;
                 Some(i)
             });
@@ -1426,7 +1848,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
         }) {
             tracing::warn!(?err, "arming re-render timer");
             if let Some(drm) = state.drm.as_mut() {
-                if let Some(i) = drm.index_of_crtc(crtc) {
+                if let Some(i) = drm.index_of(dev_id, crtc) {
                     drm.outputs[i].retry_armed = false;
                 }
             }
@@ -1448,6 +1870,170 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // returns, and the second destructor runs on a freed `ResourceUserData`.
     // The event loop flushes after every dispatch round, which is both safe
     // and soon enough; see the `run` callback above.
+}
+
+/// What a secondary-output frame came to.
+enum SecondaryFrame {
+    /// The primary pass had no damage; nothing to copy or queue.
+    Skipped,
+    /// The secondary compositor discarded the frame as empty.
+    Empty,
+    /// A frame is ready to queue; the states are the primary pass's, which are
+    /// what presentation feedback and frame callbacks are derived from.
+    Frame(RenderElementStates),
+}
+
+/// ADR 0084 "render then copy" for one secondary output. The primary renders
+/// `elements` into an offscreen dmabuf; the secondary imports that dmabuf and
+/// its own [`DrmCompositor`] draws it as one full-output texture carrying the
+/// primary pass's damage. The caller queues the frame.
+///
+/// Sync: the primary's render fence is waited on before the secondary touches
+/// the buffer (a blocking wait, but the frame was just submitted and this is
+/// one GPU hop; explicit cross-device fences are future work). Going the other
+/// way, the transfer buffer is held until the output's VBlank so the
+/// primary does not overwrite it under the secondary's blit.
+fn render_secondary(
+    primary: &mut GlesRenderer,
+    secondary: &mut GlesRenderer,
+    out: &mut DrmOutput,
+    elements: &[crate::render::overscan::OutputElement],
+) -> Result<SecondaryFrame> {
+    let size = crate::outputs::mode_size(&out.output);
+    let pass = out
+        .pass
+        .as_mut()
+        .ok_or_else(|| anyhow!("not a secondary output"))?;
+    pass.fit(size, &mut out.compositor);
+
+    let slot = pass
+        .swapchain
+        .acquire()
+        .map_err(|err| anyhow!("allocating a transfer buffer: {err}"))?
+        .ok_or_else(|| anyhow!("transfer swapchain exhausted"))?;
+    let age = if pass.force_full { 0 } else { slot.age() as usize };
+    // `Slot::export` keeps the dmabuf in the slot, so this is the same
+    // buffer (and the same EGL image) every time the slot comes round.
+    let dmabuf = slot
+        .export()
+        .map_err(|err| anyhow!("exporting the transfer buffer: {err}"))?;
+
+    // A clone shares the underlying buffer; `bind` wants it by `&mut`.
+    let mut bind_to = dmabuf.clone();
+    let mut target = primary
+        .bind(&mut bind_to)
+        .map_err(|err| anyhow!("binding the transfer buffer: {err}"))?;
+    let result = pass
+        .tracker
+        .render_output(primary, &mut target, age, elements, CLEAR)
+        .map_err(|err| anyhow!("primary pass: {err:?}"))?;
+    let sync = result.sync.clone();
+    let states = result.states.clone();
+    // The pass reports damage accumulated over the slot's age, a superset of
+    // what changed since the last frame the secondary saw, which is safe.
+    let damage: Vec<Rectangle<i32, BufferCoord>> = result
+        .damage
+        .map(|d| {
+            d.iter()
+                .map(|r| Rectangle::new((r.loc.x, r.loc.y).into(), (r.size.w, r.size.h).into()))
+                .collect()
+        })
+        .unwrap_or_default();
+    pass.swapchain.submitted(&slot);
+    if damage.is_empty() {
+        pass.force_full = false;
+        return Ok(SecondaryFrame::Skipped);
+    }
+    pass.damage.add(damage);
+
+    // The secondary-side texture: imported once per slot.
+    slot.userdata()
+        .insert_if_missing(|| SlotTexture(RefCell::new(None)));
+    let cached = slot
+        .userdata()
+        .get::<SlotTexture>()
+        .and_then(|c| c.0.borrow().clone());
+    let mut texture = None;
+    if !pass.cpu_copy {
+        texture = match cached {
+            Some(t) => Some(t),
+            None => match secondary.import_dmabuf(&dmabuf, None) {
+                Ok(t) => {
+                    if let Some(c) = slot.userdata().get::<SlotTexture>() {
+                        *c.0.borrow_mut() = Some(t.clone());
+                    }
+                    Some(t)
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        output = %out.output.name(),
+                        ?err,
+                        "secondary GPU cannot import the transfer buffer; copying through system memory"
+                    );
+                    pass.cpu_copy = true;
+                    None
+                }
+            },
+        };
+    }
+    let texture = match texture {
+        Some(t) => {
+            if sync.wait().is_err() {
+                tracing::debug!("waiting for the primary pass was interrupted");
+            }
+            t
+        }
+        None => {
+            // glReadPixels is synchronous, so no fence wait is needed here.
+            let region = Rectangle::from_size((size.w, size.h).into());
+            let mapping = primary
+                .copy_framebuffer(&target, region, Fourcc::Abgr8888)
+                .map_err(|err| anyhow!("reading back the transfer buffer: {err}"))?;
+            let flipped = mapping.flipped();
+            let bytes = primary
+                .map_texture(&mapping)
+                .map_err(|err| anyhow!("mapping the read-back: {err}"))?;
+            secondary
+                .import_memory(bytes, Fourcc::Abgr8888, (size.w, size.h).into(), flipped)
+                .map_err(|err| anyhow!("uploading to the secondary GPU: {err}"))?
+        }
+    };
+    drop(target);
+
+    let full = Rectangle::from_size(texture.size());
+    let element = TextureRenderElement::from_texture_with_damage(
+        pass.element_id.clone(),
+        secondary.context_id(),
+        (0.0, 0.0),
+        texture,
+        1,
+        Transform::Normal,
+        None,
+        None,
+        None,
+        // The pass clears to opaque black, so the whole frame is opaque.
+        Some(vec![full]),
+        pass.damage.snapshot(),
+        Kind::Unspecified,
+    );
+    // No direct scanout on a secondary output (ADR 0084): the one element is
+    // always composited into the compositor's own buffer.
+    let elements = [element];
+    let outcome = match out
+        .compositor
+        .render_frame(secondary, &elements, CLEAR, FrameFlags::empty())
+    {
+        Ok(r) if r.is_empty => Ok(SecondaryFrame::Empty),
+        Ok(_) => Ok(SecondaryFrame::Frame(states)),
+        Err(err) => Err(anyhow!("secondary compositor: {err:?}")),
+    };
+    // Only a queued frame is read at a VBlank; an empty or failed one never
+    // gets one, so holding its slot would starve the swapchain.
+    if matches!(outcome, Ok(SecondaryFrame::Frame(_))) {
+        pass.held = Some(slot);
+    }
+    pass.force_full = false;
+    outcome
 }
 
 /// Turn adaptive sync on or off for one output at runtime (COMP-13 §2.1).
@@ -1482,7 +2068,10 @@ pub fn set_mode(state: &mut AbyssState, id: u64, mode: OutputMode) -> bool {
         return true;
     };
     let connector = drm.outputs[index].connector;
-    let info = match drm.drm.get_connector(connector, false) {
+    let info = match drm.devices[drm.outputs[index].device]
+        .drm
+        .get_connector(connector, false)
+    {
         Ok(info) => info,
         Err(e) => {
             tracing::warn!(id, error = %e, "reading connector modes");
@@ -1524,7 +2113,7 @@ pub fn vrr(state: &AbyssState, id: u64) -> bool {
 pub fn gamma_size(state: &AbyssState, id: u64) -> Option<u32> {
     let drm = state.drm.as_ref()?;
     let output = drm.outputs.iter().find(|o| o.id == id)?;
-    let info = drm.drm.get_crtc(output.crtc).ok()?;
+    let info = drm.devices[output.device].drm.get_crtc(output.crtc).ok()?;
     let len = info.gamma_length();
     (len > 0).then_some(len)
 }
@@ -1545,7 +2134,7 @@ pub fn set_gamma(state: &mut AbyssState, id: u64, r: &[u16], g: &[u16], b: &[u16
     let Some(output) = drm.outputs.iter().find(|o| o.id == id) else {
         return false;
     };
-    match drm.drm.set_gamma(output.crtc, r, g, b) {
+    match drm.devices[output.device].drm.set_gamma(output.crtc, r, g, b) {
         Ok(()) => true,
         Err(err) => {
             tracing::warn!(?err, id, "setting gamma ramp");
@@ -1583,6 +2172,16 @@ mod tests {
     fn an_unresolvable_render_device_refuses() {
         assert!(resolve_render_device(Some("/nonexistent/dri/card9"), "seat0").is_err());
         assert!(resolve_render_device(Some("pci:ffff:ff:ff.7"), "seat0").is_err());
+    }
+
+    /// ADR 0084: a repeated connector name on a later device is tagged with its
+    /// card; the first owner and non-colliding names keep the plain name.
+    #[test]
+    fn a_colliding_connector_name_is_tagged_with_its_card() {
+        let taken = vec!["DP-1".to_string(), "eDP-1".to_string()];
+        assert_eq!(disambiguate("DP-1", &taken, "card0"), "DP-1@card0");
+        assert_eq!(disambiguate("HDMI-A-2", &taken, "card0"), "HDMI-A-2");
+        assert_eq!(disambiguate("DP-1", &[], "card0"), "DP-1");
     }
 
     #[test]

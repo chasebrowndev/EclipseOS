@@ -31,6 +31,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use smithay::backend::allocator::{Format, Fourcc, Modifier};
+
 /// Where a device sits in the machine. Ordered best-first, so it can go into
 /// the sort key directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -68,11 +70,85 @@ pub struct Gpu {
     pub dbdf: Option<(u16, u8, u8, u8)>,
     pub driver: String,
     pub boot_vga: bool,
-    /// Connectors on this device, from `/sys/class/drm/cardN-*`.
-    pub connectors: usize,
+    /// Every connector on this device, connected or not, from
+    /// `/sys/class/drm/cardN-*`. Decides whether the device is worth opening as
+    /// a secondary (a connector can be plugged in later).
+    pub connectors_total: usize,
+    /// Names of the connectors whose sysfs `status` is `connected`
+    /// (`eDP-1`, `HDMI-A-2`, ...).
+    pub connected: Vec<String>,
+}
+
+/// What a GPU does in the multi-GPU arrangement (ADR 0084).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// Renders every frame; owns dmabuf feedback, explicit sync and capture.
+    Primary,
+    /// Scans out its own connectors from frames the primary rendered.
+    Secondary,
+    /// No connectors, so nothing to drive.
+    Unused,
+}
+
+impl Role {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Role::Primary => "primary",
+            Role::Secondary => "secondary",
+            Role::Unused => "unused",
+        }
+    }
+}
+
+/// Whether a connector name is a built-in panel (eDP / LVDS / DSI).
+pub fn is_internal_panel(name: &str) -> bool {
+    ["eDP-", "LVDS-", "DSI-"].iter().any(|p| name.starts_with(p))
+}
+
+/// ADR 0084: pick the primary GPU from a best-first ranked list; the index is
+/// into `ranked`. Only render-capable devices qualify. A lone candidate is
+/// taken as is; with several, the one driving a connected built-in panel wins
+/// (so the laptop screen is never left dark), then the firmware's `boot_vga`
+/// device, then the COMP-01 §4 ranking.
+pub fn select_primary(ranked: &[Gpu]) -> Option<usize> {
+    let mut capable = ranked.iter().enumerate().filter(|(_, g)| g.render.is_some());
+    let first = capable.next()?.0;
+    let capable = ranked.iter().enumerate().filter(|(_, g)| g.render.is_some());
+    if capable.clone().nth(1).is_none() {
+        return Some(first);
+    }
+    capable
+        .clone()
+        .find(|(_, g)| g.has_internal_panel())
+        .or_else(|| capable.clone().find(|(_, g)| g.boot_vga))
+        .map(|(i, _)| i)
+        .or(Some(first))
+}
+
+/// Role of every GPU in `ranked` given the chosen primary. A secondary is any
+/// other device with at least one connector.
+pub fn roles(ranked: &[Gpu], primary: usize) -> Vec<Role> {
+    ranked
+        .iter()
+        .enumerate()
+        .map(|(i, g)| {
+            if i == primary {
+                Role::Primary
+            } else if g.connectors_total > 0 {
+                Role::Secondary
+            } else {
+                Role::Unused
+            }
+        })
+        .collect()
 }
 
 impl Gpu {
+    /// A built-in panel is lit on this device.
+    pub fn has_internal_panel(&self) -> bool {
+        self.connected.iter().any(|n| is_internal_panel(n))
+    }
+
     /// The COMP-01 §4 ordering, as a tuple that sorts ascending into it.
     fn key(&self) -> SortKey<'_> {
         (
@@ -94,12 +170,13 @@ impl Gpu {
             None => "no-pci".to_string(),
         };
         format!(
-            "{} [{} {} vram={}MiB connectors={} render={} boot_vga={}]",
+            "{} [{} {} vram={}MiB connected=[{}] of {} render={} boot_vga={}]",
             self.card.display(),
             addr,
             self.class.as_str(),
             self.vram / (1024 * 1024),
-            self.connectors,
+            self.connected.join(","),
+            self.connectors_total,
             if self.render.is_some() { "yes" } else { "no" },
             self.boot_vga,
         )
@@ -110,6 +187,38 @@ impl Gpu {
 /// second GPU in the machine.
 pub fn rank(gpus: &mut [Gpu]) {
     gpus.sort_by(|a, b| a.key().cmp(&b.key()));
+}
+
+/// Pixel formats tried, in order, for the offscreen buffer a secondary output's
+/// frame is rendered into: opaque first, because an output has no use for alpha.
+const TRANSFER_FORMATS: [Fourcc; 4] = [
+    Fourcc::Xrgb8888,
+    Fourcc::Argb8888,
+    Fourcc::Xbgr8888,
+    Fourcc::Abgr8888,
+];
+
+/// ADR 0084: the format and modifiers for the buffer the primary renders a
+/// secondary output into: one the primary can render to and the secondary can
+/// sample from. The first of [`TRANSFER_FORMATS`] with a common modifier wins.
+/// `LINEAR` is taken alone when it is common, since it is the one layout two
+/// different drivers reliably agree on; otherwise every common modifier is
+/// offered to the allocator.
+pub fn pick_transfer_format(
+    primary_render: &[Format],
+    secondary_texture: &[Format],
+) -> Option<(Fourcc, Vec<Modifier>)> {
+    TRANSFER_FORMATS.iter().find_map(|code| {
+        let mut mods: Vec<Modifier> = primary_render
+            .iter()
+            .filter(|f| f.code == *code && secondary_texture.contains(f))
+            .map(|f| f.modifier)
+            .collect();
+        if mods.contains(&Modifier::Linear) {
+            mods = vec![Modifier::Linear];
+        }
+        (!mods.is_empty()).then_some((*code, mods))
+    })
 }
 
 /// Parse a PCI address as sysfs writes it: `0000:01:00.0`.
@@ -194,12 +303,27 @@ fn describe_card(card: &Path) -> Gpu {
         }
     });
 
-    let connectors = std::fs::read_dir("/sys/class/drm")
+    // `cardN-<connector>` directories; the suffix is the kernel's connector
+    // name, and `status` says whether a display is attached.
+    let prefix = format!("{name}-");
+    let mut connectors_total = 0;
+    let mut connected = Vec::new();
+    for e in std::fs::read_dir("/sys/class/drm")
         .into_iter()
         .flatten()
         .flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with(&format!("{name}-")))
-        .count();
+    {
+        let fname = e.file_name().to_string_lossy().into_owned();
+        let Some(conn) = fname.strip_prefix(&prefix) else {
+            continue;
+        };
+        connectors_total += 1;
+        let status = std::fs::read_to_string(e.path().join("status")).unwrap_or_default();
+        if status.trim() == "connected" {
+            connected.push(conn.to_string());
+        }
+    }
+    connected.sort();
 
     Gpu {
         card: card.to_path_buf(),
@@ -209,7 +333,8 @@ fn describe_card(card: &Path) -> Gpu {
         dbdf,
         driver,
         boot_vga: read_u64(dev.join("boot_vga")) == Some(1),
-        connectors,
+        connectors_total,
+        connected,
     }
 }
 
@@ -238,8 +363,205 @@ mod tests {
             dbdf,
             driver: "test".into(),
             boot_vga: false,
-            connectors: 1,
+            connectors_total: 1,
+            connected: Vec::new(),
         }
+    }
+
+    fn with(mut g: Gpu, connected: &[&str], boot_vga: bool) -> Gpu {
+        g.connected = connected.iter().map(|s| s.to_string()).collect();
+        g.connectors_total = g.connectors_total.max(g.connected.len());
+        g.boot_vga = boot_vga;
+        g
+    }
+
+    /// The target laptop: NVIDIA (HDMI only) outranks the Intel iGPU that owns
+    /// the built-in panel and is boot_vga.
+    fn laptop() -> Vec<Gpu> {
+        let mut v = vec![
+            with(
+                gpu("/dev/dri/card0", Class::Discrete, 6144, Some((0, 1, 0, 0))),
+                &["HDMI-A-2"],
+                false,
+            ),
+            with(
+                gpu("/dev/dri/card1", Class::Integrated, 256, Some((0, 0, 2, 0))),
+                &["eDP-1"],
+                true,
+            ),
+        ];
+        rank(&mut v);
+        v
+    }
+
+    #[test]
+    fn connected_internal_panel_owner_beats_discrete() {
+        let v = laptop();
+        assert_eq!(
+            v[0].class,
+            Class::Discrete,
+            "ranking alone still prefers the dGPU"
+        );
+        let p = select_primary(&v).unwrap();
+        assert_eq!(v[p].card, PathBuf::from("/dev/dri/card1"));
+        assert_eq!(roles(&v, p), [Role::Secondary, Role::Primary]);
+    }
+
+    #[test]
+    fn boot_vga_breaks_the_tie_when_no_panel_is_connected() {
+        let mut v = vec![
+            with(
+                gpu("/dev/dri/card0", Class::Discrete, 6144, Some((0, 1, 0, 0))),
+                &["HDMI-A-1"],
+                false,
+            ),
+            with(
+                gpu("/dev/dri/card1", Class::Integrated, 256, Some((0, 0, 2, 0))),
+                &["HDMI-A-2"],
+                true,
+            ),
+        ];
+        rank(&mut v);
+        let p = select_primary(&v).unwrap();
+        assert_eq!(v[p].card, PathBuf::from("/dev/dri/card1"));
+    }
+
+    #[test]
+    fn ranking_decides_without_a_panel_or_boot_vga() {
+        let mut v = vec![
+            with(
+                gpu("/dev/dri/card0", Class::Integrated, 256, Some((0, 0, 2, 0))),
+                &["HDMI-A-1"],
+                false,
+            ),
+            with(
+                gpu("/dev/dri/card1", Class::Discrete, 6144, Some((0, 1, 0, 0))),
+                &["DP-1"],
+                false,
+            ),
+        ];
+        rank(&mut v);
+        let p = select_primary(&v).unwrap();
+        assert_eq!(v[p].card, PathBuf::from("/dev/dri/card1"));
+    }
+
+    #[test]
+    fn a_single_gpu_is_taken_as_is() {
+        let v = vec![with(
+            gpu("/dev/dri/card0", Class::Discrete, 6144, Some((0, 1, 0, 0))),
+            &["DP-1"],
+            false,
+        )];
+        assert_eq!(select_primary(&v), Some(0));
+        assert_eq!(roles(&v, 0), [Role::Primary]);
+    }
+
+    #[test]
+    fn a_display_only_panel_owner_cannot_be_primary() {
+        let mut igpu = with(
+            gpu("/dev/dri/card0", Class::Integrated, 256, Some((0, 0, 2, 0))),
+            &["eDP-1"],
+            true,
+        );
+        igpu.render = None;
+        let mut v = vec![
+            with(
+                gpu("/dev/dri/card1", Class::Discrete, 6144, Some((0, 1, 0, 0))),
+                &["HDMI-A-1"],
+                false,
+            ),
+            igpu,
+        ];
+        rank(&mut v);
+        let p = select_primary(&v).unwrap();
+        assert_eq!(v[p].card, PathBuf::from("/dev/dri/card1"));
+    }
+
+    #[test]
+    fn no_render_node_anywhere_selects_nothing() {
+        let mut g = gpu("/dev/dri/card0", Class::Discrete, 1, Some((0, 1, 0, 0)));
+        g.render = None;
+        assert_eq!(select_primary(&[g]), None);
+    }
+
+    #[test]
+    fn a_device_without_connectors_is_unused() {
+        let mut idle = gpu("/dev/dri/card2", Class::Virtual, 0, None);
+        idle.connectors_total = 0;
+        let v = vec![
+            with(
+                gpu("/dev/dri/card0", Class::Discrete, 6144, Some((0, 1, 0, 0))),
+                &["DP-1"],
+                false,
+            ),
+            idle,
+        ];
+        assert_eq!(roles(&v, 0), [Role::Primary, Role::Unused]);
+    }
+
+    fn fmt(code: Fourcc, modifier: Modifier) -> Format {
+        Format { code, modifier }
+    }
+
+    #[test]
+    fn transfer_format_prefers_opaque_linear() {
+        let primary = [
+            fmt(Fourcc::Argb8888, Modifier::Linear),
+            fmt(Fourcc::Xrgb8888, Modifier::Invalid),
+            fmt(Fourcc::Xrgb8888, Modifier::Linear),
+        ];
+        let secondary = [
+            fmt(Fourcc::Xrgb8888, Modifier::Linear),
+            fmt(Fourcc::Xrgb8888, Modifier::Invalid),
+            fmt(Fourcc::Argb8888, Modifier::Linear),
+        ];
+        assert_eq!(
+            pick_transfer_format(&primary, &secondary),
+            Some((Fourcc::Xrgb8888, vec![Modifier::Linear]))
+        );
+    }
+
+    #[test]
+    fn transfer_format_falls_back_to_alpha_and_to_non_linear() {
+        // Only the alpha variant is shared.
+        let p = [
+            fmt(Fourcc::Xrgb8888, Modifier::Linear),
+            fmt(Fourcc::Argb8888, Modifier::Linear),
+        ];
+        let s = [fmt(Fourcc::Argb8888, Modifier::Linear)];
+        assert_eq!(
+            pick_transfer_format(&p, &s),
+            Some((Fourcc::Argb8888, vec![Modifier::Linear]))
+        );
+        // Shared, but not linear: every common modifier is offered.
+        let m1 = Modifier::from(0x0100_0000_0000_0001);
+        let m2 = Modifier::from(0x0100_0000_0000_0002);
+        let p = [fmt(Fourcc::Xrgb8888, m1), fmt(Fourcc::Xrgb8888, m2)];
+        let s = [fmt(Fourcc::Xrgb8888, m2), fmt(Fourcc::Xrgb8888, m1)];
+        assert_eq!(
+            pick_transfer_format(&p, &s),
+            Some((Fourcc::Xrgb8888, vec![m1, m2]))
+        );
+    }
+
+    #[test]
+    fn transfer_format_is_none_without_an_intersection() {
+        let p = [fmt(Fourcc::Xrgb8888, Modifier::Linear)];
+        let s = [
+            fmt(Fourcc::Xrgb8888, Modifier::Invalid),
+            fmt(Fourcc::Rgb565, Modifier::Linear),
+        ];
+        assert_eq!(pick_transfer_format(&p, &s), None);
+        assert_eq!(pick_transfer_format(&[], &s), None);
+    }
+
+    #[test]
+    fn recognises_built_in_panels() {
+        assert!(is_internal_panel("eDP-1"));
+        assert!(is_internal_panel("LVDS-1"));
+        assert!(is_internal_panel("DSI-2"));
+        assert!(!is_internal_panel("HDMI-A-1"));
+        assert!(!is_internal_panel("DP-1"));
     }
 
     /// The hybrid-laptop shape: the iGPU is boot_vga and enumerates first, and

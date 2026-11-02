@@ -185,6 +185,11 @@ impl Hardware {
                 add(p);
             }
         }
+        // ADR 0084: a Turing+ NVIDIA next to an Intel or AMD GPU is a hybrid
+        // laptop; `nvidia-prime` provides the offload launcher.
+        if self.nvidia_open() && self.gpus.iter().any(|g| matches!(g, Gpu::Intel | Gpu::Amd)) {
+            add("nvidia-prime");
+        }
         out
     }
 }
@@ -287,7 +292,7 @@ mod tests {
     #[test]
     fn package_set_per_gpu_combination() {
         let nv = ["mesa", "nvidia-open-dkms", "nvidia-utils", "linux-headers"];
-        let cases: [(bool, &[Gpu], Vec<&str>); 6] = [
+        let cases: [(bool, &[Gpu], Vec<&str>); 8] = [
             (false, &[Gpu::Amd], vec!["amd-ucode", "mesa", "vulkan-radeon"]),
             (
                 false,
@@ -302,8 +307,31 @@ mod tests {
                 [
                     &["amd-ucode", "mesa", "vulkan-intel", "intel-media-driver"][..],
                     &nv[1..],
+                    &["nvidia-prime"],
                 ]
                 .concat(),
+            ),
+            (
+                false,
+                &[Gpu::Amd, Gpu::NvidiaOpen],
+                [
+                    &["amd-ucode", "mesa", "vulkan-radeon"][..],
+                    &nv[1..],
+                    &["nvidia-prime"],
+                ]
+                .concat(),
+            ),
+            // Pre-Turing NVIDIA is on nouveau; there is no offload launcher to add.
+            (
+                false,
+                &[Gpu::Intel, Gpu::Nvidia],
+                vec![
+                    "amd-ucode",
+                    "mesa",
+                    "vulkan-intel",
+                    "intel-media-driver",
+                    "vulkan-nouveau",
+                ],
             ),
             (true, &[], vec![]),
         ];

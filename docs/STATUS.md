@@ -559,9 +559,15 @@ fixed by editing either side.
      256 MiB on a 8 GiB card. It only ever orders two cards of the same class,
      and it is deterministic.
 
-   §4's hybrid-graphics paragraph is also enforced now: a selected GPU with no
-   connectors while another device has them refuses to start rather than
-   coming up blind.
+   §4's hybrid-graphics paragraph is superseded by ADR 0084 (2026-11-02).
+   Multi-GPU is pulled forward ahead of v1:
+   - With more than one GPU, auto mode picks a primary in this order: the
+     device driving a connected internal panel, then `boot_vga`, then the
+     ranking.
+   - Every other GPU with connectors is driven as a secondary. Its outputs
+     scan out a copy of the primary's frame.
+   - The old refusal never fired on a real Optimus laptop: the dGPU had an
+     HDMI connector, so abyss came up on it with the panel dark.
 
    The ordering is proven by unit tests over synthetic candidates (hybrid
    laptop, virtual device, VRAM tiebreak, PCI tiebreak, display-only card), so
@@ -577,9 +583,10 @@ fixed by editing either side.
    `vkms` cannot be unloaded while a session is running — logind and the
    running compositor both hold the card open — so it stays resident until the
    next logout; nothing autoloads it. **Still unverified on real multi-GPU
-   hardware** — that is COMP-01 §11's test plan and needs a machine with a
-   second card, where the discrete-vs-integrated and VRAM comparisons actually
-   fire.
+   hardware.** That is COMP-01 §11's test plan. The ADR 0084 primary-plus-copy
+   path is the same: it is built and unit-tested, but has not been run. The
+   reference hybrid box is an Acer laptop (Intel Raptor Lake eDP + RTX 4050
+   Mobile HDMI). It gets checked once EclipseOS is imaged onto it.
 3. **COMP-06 §1 protocol list vs. the implemented modules.** *Closed.* The
    fifteen missing protocols are implemented (milestone 9a). COMP-06 §1 also
    gained a note that
