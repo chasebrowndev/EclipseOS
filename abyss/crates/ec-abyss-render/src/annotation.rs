@@ -56,6 +56,7 @@ use super::{
     palette::HudPalette,
     text, AbyssRenderElement,
 };
+use crate::context::PerContext;
 
 /// Columns a panel wraps at: chosen per output from this range, never by the
 /// caller, so a caller cannot pick a width that shoulders other content off
@@ -169,6 +170,17 @@ pub struct AnnotationStore {
     /// exit is over, and never more than [`MAX_LIVE`].
     leaving: BTreeMap<AnnotationId, (Annotation, Instant)>,
     next: u64,
+    /// Artwork, backdrops and the glass program: GL objects, so one set per
+    /// renderer (ADR 0084).
+    gpu: PerContext<AnnotationGpu>,
+    /// `animations.enabled` as of the last frame drawn, so [`Self::animating`]
+    /// asks for frames only when there is motion to draw.
+    motion: bool,
+}
+
+/// What the annotation store keeps on one renderer.
+#[derive(Debug, Default)]
+struct AnnotationGpu {
     /// The uploaded artwork for each annotation, per output, kept across
     /// frames. `TextureBuffer::from_texture` mints a fresh element id and a
     /// zeroed commit counter, so rebuilding it every frame would leave the
@@ -184,9 +196,6 @@ pub struct AnnotationStore {
     /// a compile error so it is reported once and the fallback used after.
     glass: Option<GlesTexProgram>,
     glass_failed: bool,
-    /// `animations.enabled` as of the last frame drawn, so [`Self::animating`]
-    /// asks for frames only when there is motion to draw.
-    motion: bool,
 }
 
 /// Everything that decides what an annotation looks like and where each piece
@@ -274,6 +283,15 @@ fn picks_focus(picks: &[Pick]) -> Option<Rectangle<i32, Logical>> {
 pub const MAX_LIVE: usize = 32;
 
 impl AnnotationStore {
+    /// Drop the GPU objects of renderer contexts not in `keep` (a GPU went
+    /// away, ADR 0084).
+    pub fn retain_contexts(
+        &mut self,
+        keep: &[smithay::backend::renderer::ContextId<smithay::backend::renderer::gles::GlesTexture>],
+    ) {
+        self.gpu.retain_contexts(keep);
+    }
+
     /// One pick: the legacy `pick` argument. See [`Self::create_picks`].
     pub fn create(
         &mut self,
@@ -460,6 +478,9 @@ pub fn annotation_elements(
     behind: Option<&[AbyssRenderElement]>,
 ) -> Vec<AbyssRenderElement> {
     let now = Instant::now();
+    store
+        .gpu
+        .bind(&smithay::backend::renderer::Renderer::context_id(&*renderer));
     store.motion = config.animations.motion();
     if !store.motion {
         store.leaving.clear();
@@ -469,8 +490,10 @@ pub fn annotation_elements(
         .retain(|_, (_, gone)| now.duration_since(*gone) < EXIT);
     if store.live.is_empty() && store.leaving.is_empty() {
         // Nothing to draw: let the textures and blur chains go.
-        store.art.clear();
-        store.blur.clear();
+        store.gpu.each_mut(|g| {
+            g.art.clear();
+            g.blur.clear();
+        });
         return Vec::new();
     }
     let Some(mode) = output.current_mode() else {
@@ -488,16 +511,16 @@ pub fn annotation_elements(
     let transform = output.current_transform();
     let mirrored = effects::fb_y_mirrored(transform);
     let mut glass = config.decoration.blur.mode != BlurMode::Off && behind.is_some() && mirrored.is_some();
-    if glass && store.glass.is_none() && !store.glass_failed {
+    if glass && store.gpu.glass.is_none() && !store.gpu.glass_failed {
         match effects::compile_hud_glass(renderer) {
-            Ok(p) => store.glass = Some(p),
+            Ok(p) => store.gpu.glass = Some(p),
             Err(err) => {
                 tracing::warn!(?err, "compiling the annotation backdrop; panels drawn opaque");
-                store.glass_failed = true;
+                store.gpu.glass_failed = true;
             }
         }
     }
-    glass &= store.glass.is_some();
+    glass &= store.gpu.glass.is_some();
     let fb_height = transform.transform_size(mode.size).h;
     let blur_cfg = Blur {
         size: GLASS_BLUR_SIZE,
@@ -509,12 +532,16 @@ pub fn annotation_elements(
     let AnnotationStore {
         live,
         leaving,
-        art,
-        blur,
-        glass: program,
+        gpu,
         motion,
         ..
     } = store;
+    let AnnotationGpu {
+        art,
+        blur,
+        glass: program,
+        ..
+    } = &mut **gpu;
     let motion = *motion;
     if !art.contains_key(output) {
         art.insert(output.clone(), BTreeMap::new());

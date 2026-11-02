@@ -69,6 +69,8 @@ fn parse_args() -> Result<Args> {
     let mut stats = false;
     let mut session = false;
     let mut render_device = None;
+    #[cfg(feature = "drm")]
+    let mut list_gpus = false;
     #[cfg(feature = "headless")]
     let mut size = backend::headless::DEFAULT_SIZE;
     let mut args = std::env::args().skip(1);
@@ -95,22 +97,7 @@ fn parse_args() -> Result<Args> {
                 None => anyhow::bail!("--render-device requires a path or pci: address"),
             },
             #[cfg(feature = "drm")]
-            "--list-gpus" => {
-                // COMP-01 §4 is only observable from a TTY otherwise; this
-                // prints the same ranking the compositor would use, so the
-                // pick can be checked without taking over the display.
-                let seat = std::env::var("XDG_SEAT").unwrap_or_else(|_| "seat0".to_string());
-                // ADR 0084: with several GPUs the role column shows which one
-                // renders (primary) and which only scan out (secondary).
-                let ranked = backend::gpu::probe_seat(&seat)?;
-                let primary = backend::gpu::select_primary(&ranked);
-                let roles = primary.map(|p| backend::gpu::roles(&ranked, p));
-                for (i, g) in ranked.iter().enumerate() {
-                    let role = roles.as_ref().map_or("unused", |r| r[i].as_str());
-                    println!("{}. {:<9} {}", i + 1, role, g.describe());
-                }
-                std::process::exit(0);
-            }
+            "--list-gpus" => list_gpus = true,
             #[cfg(feature = "headless")]
             "--size" => match args.next().as_deref().and_then(parse_size) {
                 Some(v) => size = v,
@@ -124,6 +111,26 @@ fn parse_args() -> Result<Args> {
             }
             other => anyhow::bail!("unknown argument '{other}'"),
         }
+    }
+    // Handled once every flag is read, so `--config` may follow `--list-gpus`.
+    #[cfg(feature = "drm")]
+    if list_gpus {
+        // COMP-01 §4 is only observable from a TTY otherwise; this
+        // prints the same ranking the compositor would use, so the
+        // pick can be checked without taking over the display.
+        let seat = std::env::var("XDG_SEAT").unwrap_or_else(|_| "seat0".to_string());
+        // ADR 0084: with several GPUs the role column shows which one is
+        // primary and which composite their own outputs (secondary). The pick
+        // follows the configured `misc.gpu-mode` (hybrid if it can't be read).
+        let mode = config::Config::load_with(config.as_deref(), false).misc.gpu_mode;
+        let ranked = backend::gpu::probe_seat(&seat)?;
+        let primary = backend::gpu::select_primary(&ranked, mode);
+        let roles = primary.map(|p| backend::gpu::roles(&ranked, p));
+        for (i, g) in ranked.iter().enumerate() {
+            let role = roles.as_ref().map_or("unused", |r| r[i].as_str());
+            println!("{}. {:<9} {}", i + 1, role, g.describe());
+        }
+        std::process::exit(0);
     }
     Ok(Args {
         backend: kind,

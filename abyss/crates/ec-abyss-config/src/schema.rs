@@ -1793,6 +1793,28 @@ pub const TABLE: &[Key] = &[
        ECLIPSE_RENDER_DEVICE both override it.",
     ),
     k(
+        "misc.gpu-mode",
+        Ty::Enum(crate::GpuMode::NAMES),
+        Str("hybrid"),
+        Abyss,
+        NeedsRestart,
+        "Which GPUs are used on a hybrid-graphics machine. `integrated` never \
+       opens the discrete GPU (its outputs stay dark, it can power off); \
+       `hybrid` has each GPU composite its own outputs and runs opted-in \
+       apps on the discrete GPU; `dedicated` renders everything on the \
+       discrete GPU. `misc.render-device`, when set, still pins the primary.",
+    ),
+    k(
+        "misc.discrete-gpu-apps",
+        Ty::StrList,
+        EmptyList,
+        Abyss,
+        Live,
+        "Desktop-entry ids (the `.desktop` file's name without the suffix) \
+       always launched on the discrete GPU in `hybrid` mode, on top of the \
+       entries that ask for it themselves (`PrefersNonDefaultGPU`).",
+    ),
+    k(
         "misc.terminal-command",
         Ty::Str,
         Null,
@@ -2756,6 +2778,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "input.accel-speed" => V::Float(c.input.accel_speed),
         "input.scroll-method" => V::Str(c.input.scroll_method.clone()),
         "misc.render-device" => s(&c.misc.render_device),
+        "misc.gpu-mode" => V::Str(c.misc.gpu_mode.name().into()),
+        "misc.discrete-gpu-apps" => list(&c.misc.discrete_gpu_apps),
         "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),
         "setup.profile" => V::Str(c.setup.profile.clone()),

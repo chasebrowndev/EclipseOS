@@ -564,8 +564,11 @@ fixed by editing either side.
    - With more than one GPU, auto mode picks a primary in this order: the
      device driving a connected internal panel, then `boot_vga`, then the
      ranking.
-   - Every other GPU with connectors is driven as a secondary. Its outputs
-     scan out a copy of the primary's frame.
+   - Each GPU composites its own outputs. A frame that cannot be imported on
+     its output's GPU is rendered on the primary and copied across.
+   - `misc.gpu-mode` switches between `integrated`, `hybrid` and `dedicated`,
+     and apps reach the dGPU through their desktop entry,
+     `misc.discrete-gpu-apps` or the launcher.
    - The old refusal never fired on a real Optimus laptop: the dGPU had an
      HDMI connector, so abyss came up on it with the panel dark.
 
@@ -583,8 +586,8 @@ fixed by editing either side.
    `vkms` cannot be unloaded while a session is running — logind and the
    running compositor both hold the card open — so it stays resident until the
    next logout; nothing autoloads it. **Still unverified on real multi-GPU
-   hardware.** That is COMP-01 §11's test plan. The ADR 0084 primary-plus-copy
-   path is the same: it is built and unit-tested, but has not been run. The
+   hardware.** That is COMP-01 §11's test plan. ADR 0084's per-GPU compositing
+   is the same: it is built and unit-tested, but has not been run. The
    reference hybrid box is an Acer laptop (Intel Raptor Lake eDP + RTX 4050
    Mobile HDMI). It gets checked once EclipseOS is imaged onto it.
 3. **COMP-06 §1 protocol list vs. the implemented modules.** *Closed.* The

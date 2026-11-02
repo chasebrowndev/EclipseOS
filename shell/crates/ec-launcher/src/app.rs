@@ -29,6 +29,12 @@ pub enum Message {
     /// keys may have moved the selection off the row the pointer rests on,
     /// and a click runs what it lands on.
     Launch(usize),
+    /// Run the row at this match index on the discrete GPU, once.
+    RunDiscrete(usize),
+    /// Tab: `RunDiscrete` for whatever is selected.
+    RunDiscreteSelected,
+    /// Add or remove the row at this match index in `misc.discrete-gpu-apps`.
+    ToggleAlways(usize),
     /// Dismiss without running anything.
     Close,
 }
@@ -74,6 +80,17 @@ pub struct App {
     /// What the human has launched, read once at startup; empty with
     /// `launcher.search.frecency` off.
     pub usage: Store,
+    /// The discrete GPU's name, when there is one and `misc.gpu-mode` is
+    /// `hybrid`: the only case the per-app GPU actions are offered. Read once.
+    pub gpu: Option<String>,
+    /// `misc.discrete-gpu-apps`, as ids without `.desktop`. Kept in step with
+    /// what a toggle wrote.
+    pub gpu_apps: Vec<String>,
+}
+
+/// An entry's id as `misc.discrete-gpu-apps` spells it.
+pub fn app_id(entry: &Entry) -> &str {
+    entry.id.strip_suffix(".desktop").unwrap_or(&entry.id)
 }
 
 impl Default for App {
@@ -113,7 +130,12 @@ impl App {
             } else {
                 Store::default()
             },
+            gpu: crate::conn::fetch_discrete_gpu(),
+            gpu_apps: Vec::new(),
         };
+        if app.gpu.is_some() {
+            app.gpu_apps = crate::conn::fetch_discrete_apps();
+        }
         app.refilter();
         app
     }
@@ -136,6 +158,12 @@ impl App {
     /// The entry the human would run right now, if there is one.
     pub fn current(&self) -> Option<&Entry> {
         self.matched.get(self.selected).map(|&i| &self.entries[i])
+    }
+
+    /// Whether `entry` is in `misc.discrete-gpu-apps`.
+    pub fn always_discrete(&self, entry: &Entry) -> bool {
+        let id = app_id(entry);
+        self.gpu_apps.iter().any(|a| a.eq_ignore_ascii_case(id))
     }
 }
 
@@ -212,6 +240,57 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             }
             return update(app, Message::Activate);
         }
+        Message::RunDiscrete(index) => {
+            if app.gpu.is_none() {
+                return Task::none();
+            }
+            if index < app.matched.len() {
+                app.selected = index;
+            }
+            let Some(entry) = app.current() else {
+                return Task::none();
+            };
+            match apps::launch_with(entry, app.term.as_deref(), apps::GpuChoice::Discrete) {
+                Ok(()) => {
+                    if app.search.frecency {
+                        apps::record_launch(entry, &app.entries);
+                    }
+                    return quit();
+                }
+                Err(error) => app.problem = Some(error.to_string()),
+            }
+            return refocus();
+        }
+        Message::RunDiscreteSelected => {
+            let selected = app.selected;
+            return update(app, Message::RunDiscrete(selected));
+        }
+        Message::ToggleAlways(index) => {
+            if app.gpu.is_none() {
+                return Task::none();
+            }
+            if index < app.matched.len() {
+                app.selected = index;
+            }
+            let Some(entry) = app.current() else {
+                return Task::none();
+            };
+            let id = app_id(entry).to_owned();
+            let mut next = app.gpu_apps.clone();
+            if app.always_discrete(entry) {
+                next.retain(|a| !a.eq_ignore_ascii_case(&id));
+            } else {
+                next.push(id);
+            }
+            match crate::conn::set_discrete_apps(&next) {
+                Ok(()) => {
+                    app.gpu_apps = next;
+                    app.problem = None;
+                }
+                Err(error) => app.problem = Some(error),
+            }
+            return refocus();
+        }
         Message::Close => return quit(),
         // `to_layer_message` injects the layer-control variants. The surface
         // is a fixed size for its whole short life and sends none of them.
@@ -234,6 +313,8 @@ pub fn subscription(_app: &App) -> Subscription<Message> {
                 Key::Named(Named::Escape) => Some(Message::Close),
                 Key::Named(Named::ArrowUp) => Some(Message::Move(-1)),
                 Key::Named(Named::ArrowDown) => Some(Message::Move(1)),
+                // Ignored unless a discrete GPU is on offer (`RunDiscrete`).
+                Key::Named(Named::Tab) => Some(Message::RunDiscreteSelected),
                 _ => None,
             }
         }
@@ -261,6 +342,7 @@ mod tests {
             argv: vec!["/bin/true".to_owned()],
             terminal,
             keywords: Vec::new(),
+            prefers_discrete_gpu: false,
         }
     }
 
@@ -280,6 +362,8 @@ mod tests {
             anchor: crate::conn::Anchor::Center,
             search: apps::Search::default(),
             usage: Store::default(),
+            gpu: None,
+            gpu_apps: Vec::new(),
         };
         app.refilter();
         app
@@ -347,6 +431,26 @@ mod tests {
             .unwrap();
         let _ = update(&mut app, Message::Launch(files));
         assert_eq!(app.selected, files);
+    }
+
+    /// No discrete GPU on offer: the GPU actions do nothing, and Tab is inert.
+    #[test]
+    fn the_gpu_actions_need_a_discrete_gpu() {
+        let mut app = app(vec![entry("Files", false)]);
+        let _ = update(&mut app, Message::RunDiscrete(0));
+        let _ = update(&mut app, Message::ToggleAlways(0));
+        assert!(app.problem.is_none());
+        assert!(app.gpu_apps.is_empty());
+    }
+
+    #[test]
+    fn membership_follows_the_id_without_its_suffix() {
+        let mut app = app(vec![entry("Files", false)]);
+        app.entries[0].id = "org.x.Files.desktop".to_owned();
+        app.gpu_apps = vec!["org.x.files".to_owned()];
+        assert!(app.always_discrete(&app.entries[0]));
+        app.gpu_apps.clear();
+        assert!(!app.always_discrete(&app.entries[0]));
     }
 
     /// An injected layer variant must be a no-op, not a panic.

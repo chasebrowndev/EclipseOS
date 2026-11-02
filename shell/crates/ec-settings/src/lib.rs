@@ -17,6 +17,7 @@ pub mod app;
 pub mod bar_preview;
 pub mod conn;
 pub mod editor;
+pub mod gpu;
 pub mod network;
 pub mod oracle;
 pub mod output;

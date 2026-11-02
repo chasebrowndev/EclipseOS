@@ -51,6 +51,16 @@ pub struct Still {
     store: BorderStore,
 }
 
+impl Still {
+    /// See [`BorderStore::retain_contexts`].
+    pub fn retain_contexts(
+        &mut self,
+        keep: &[smithay::backend::renderer::ContextId<smithay::backend::renderer::gles::GlesTexture>],
+    ) {
+        self.store.retain_contexts(keep);
+    }
+}
+
 /// One capture's effect state for one output. Feed it windows and layers in
 /// the order they are pushed (front to back), then [`Frame::finish`].
 pub struct Frame<'a> {
@@ -78,6 +88,9 @@ impl Still {
         windows: &[Window],
     ) -> Frame<'a> {
         let store = &mut self.store;
+        // The capture pass draws with whichever renderer it is handed (ADR
+        // 0084); its programs follow that renderer.
+        store.bind(renderer);
         let deco = &config.decoration;
         if deco.dim_inactive > 0.0 {
             store.dims.retain(|(o, w), _| o != output || windows.contains(w));
@@ -88,13 +101,13 @@ impl Still {
             .zip(output.current_mode())
             .filter(|_| deco.rounding > 0)
             .map(|(mirrored, mode)| (mode.size.h, mirrored));
-        if fb_height.is_some() && store.rounded.is_none() {
+        if fb_height.is_some() && store.gpu.rounded.is_none() {
             match effects::compile_rounded(renderer) {
-                Ok(program) => store.rounded = Some(program),
+                Ok(program) => store.gpu.rounded = Some(program),
                 Err(err) => tracing::warn!(?err, "compiling the rounded-corner shader; capture unrounded"),
             }
         }
-        let rounding = fb_height.zip(store.rounded.clone());
+        let rounding = fb_height.zip(store.gpu.rounded.clone());
         let shadow = shadow_program(renderer, store, output, config, windows);
         let glow = glow_program(renderer, store, output, config, windows);
         Frame {

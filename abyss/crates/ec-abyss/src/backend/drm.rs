@@ -7,12 +7,19 @@
 //! compositor survives with nothing plugged in (COMP-03 §5). Everything that
 //! touches hardware logs and continues rather than panicking.
 //!
-//! Hybrid graphics (ADR 0084): one *primary* GPU renders every frame and owns
-//! dmabuf feedback, explicit sync and capture. Every other GPU with a connector
-//! is a *secondary*: it only scans out. A secondary output is rendered by the
-//! primary into an offscreen dmabuf, which the secondary imports and blits into
-//! its own scanout buffer ("render then copy"). A secondary that fails to come
-//! up is skipped with a warning; it never stops the primary starting.
+//! Hybrid graphics (ADR 0084): every GPU with a connector composites its own
+//! outputs with its own renderer and scans them out against its own planes. One
+//! *primary* GPU also owns explicit sync, capture and the default dmabuf
+//! feedback. Each output's dmabuf feedback leads with the GPU that renders it,
+//! so a window on that output allocates for that GPU.
+//!
+//! "Render then copy" is the fallback: the primary renders the output into an
+//! offscreen dmabuf, which the output's own GPU imports and blits into its
+//! scanout buffer. It carries a frame when a visible client buffer could not be
+//! imported by the output's GPU (native compositing resumes on the next frame
+//! the buffers import), and it carries every frame of a secondary's outputs in
+//! `dedicated` GPU mode. A secondary that fails to come up is skipped with a
+//! warning; it never stops the primary starting.
 
 use std::{
     cell::RefCell,
@@ -72,7 +79,7 @@ use smithay::{
 
 use crate::{
     backend::gpu,
-    config::Config,
+    config::{Config, GpuMode},
     outputs::OutputKind,
     render::{
         collect_elements, presentation_feedback, send_dmabuf_feedback, update_primary_scanout,
@@ -116,8 +123,20 @@ pub struct DrmOutput {
     vrr_config: bool,
     /// The connector advertises adaptive sync.
     vrr_capable: bool,
-    /// Render-then-copy state (ADR 0084); `Some` only on a secondary device.
+    /// Render-then-copy state (ADR 0084); `Some` once an output on a secondary
+    /// device has needed the copy path. Kept after a fallback frame so the
+    /// next one does not reallocate.
     pass: Option<SecondaryPass>,
+    /// Frames of this output are rendered on the primary and copied (the
+    /// compositor takes the finished frame as a static texture). Always so with
+    /// `always_copy`; otherwise only while a visible buffer is unimportable on
+    /// the output's own GPU.
+    copying: bool,
+    /// `dedicated` mode on a secondary device: the copy path is the only path.
+    always_copy: bool,
+    /// Format and modifiers of the transfer buffer both GPUs share, when
+    /// there are any; without them the fallback is unavailable.
+    copy_format: Option<(Fourcc, Vec<Modifier>)>,
 }
 
 /// What a secondary output needs to be fed by the primary GPU (ADR 0084).
@@ -210,10 +229,14 @@ pub struct GpuDevice {
     pub primary: bool,
     /// `cardN`, for logs and output-name disambiguation.
     pub tag: String,
+    /// The render node, the `main_device` of feedback for surfaces this GPU
+    /// composites.
+    pub render_node: libc::dev_t,
     pub drm: DrmDevice,
     pub gbm: GbmDevice<DrmDeviceFd>,
-    /// EGL/GLES on this device's GBM, used only for the final blit; `None` on
-    /// the primary, whose renderer is [`DrmData::renderer`].
+    /// EGL/GLES on this device's GBM: it composites this device's outputs and
+    /// blits fallback frames. `None` on the primary, whose renderer is
+    /// [`DrmData::renderer`].
     pub renderer: Option<GlesRenderer>,
     /// The device's DRM notifier in the event loop.
     token: RegistrationToken,
@@ -227,9 +250,11 @@ pub struct DrmData {
     pub devices: Vec<GpuDevice>,
     /// The primary's GBM device (a clone of `devices[0].gbm`).
     pub gbm: GbmDevice<DrmDeviceFd>,
-    /// The primary's renderer: builds every element, renders every frame and
-    /// serves capture.
+    /// The primary's renderer: composites the primary's outputs, renders the
+    /// copy path's frames and serves capture.
     pub renderer: GlesRenderer,
+    /// `misc.gpu-mode` as started (restart-only).
+    pub gpu_mode: GpuMode,
     pub outputs: Vec<DrmOutput>,
     /// The primary GPU was removed; there is nothing left to render with.
     primary_lost: bool,
@@ -238,15 +263,20 @@ pub struct DrmData {
     cursor: crate::render::cursor::Fallback,
     /// Open libinput devices, so a config reload can reconfigure them.
     pub input_devices: Vec<smithay::reexports::input::Device>,
-    /// Render node of the primary GPU, the `main_device` of every feedback.
-    render_node: libc::dev_t,
     /// Frame-budget watch that sheds animations (COMP-14 §6).
     shed: crate::render::anim::ShedMonitor,
 }
 
 impl super::Backend for DrmData {
+    /// Accepted when any GPU we composite with can import it: an output on
+    /// another GPU can still use a buffer the primary cannot (ADR 0084).
     fn import_dmabuf(&mut self, buf: &smithay::backend::allocator::dmabuf::Dmabuf) -> bool {
         self.renderer.import_dmabuf(buf, None).is_ok()
+            || self
+                .devices
+                .iter_mut()
+                .filter_map(|d| d.renderer.as_mut())
+                .any(|r| r.import_dmabuf(buf, None).is_ok())
     }
 
     fn change_vt(&mut self, vt: i32) {
@@ -619,6 +649,85 @@ fn add_connector(
 
     let drm = state.drm.as_mut().ok_or_else(|| anyhow!("no DRM backend"))?;
     let secondary = !drm.devices[dev].primary;
+    let always_copy = secondary && gpu::always_copies(drm.gpu_mode);
+    // The formats the compositor may render into: the renderer of the GPU that
+    // composites this output (ADR 0084) -- the device's own, in `hybrid`.
+    let renderer_formats = if secondary {
+        drm.devices[dev]
+            .renderer
+            .as_ref()
+            .ok_or_else(|| anyhow!("secondary {} has no renderer", drm.devices[dev].tag))?
+            .egl_context()
+            .dmabuf_render_formats()
+            .clone()
+    } else {
+        drm.renderer.egl_context().dmabuf_render_formats().clone()
+    };
+    // A buffer both GPUs understand, for the copy path: always for `dedicated`,
+    // the per-frame fallback otherwise (absent, there is no fallback).
+    let copy_format = if secondary {
+        let primary_render: Vec<Format> = drm
+            .renderer
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .copied()
+            .collect();
+        let secondary_texture: Vec<Format> = drm.devices[dev]
+            .renderer
+            .as_ref()
+            .map(|r| r.egl_context().dmabuf_texture_formats().iter().copied().collect())
+            .unwrap_or_default();
+        gpu::pick_transfer_format(&primary_render, &secondary_texture)
+    } else {
+        None
+    };
+    if always_copy && copy_format.is_none() {
+        anyhow::bail!(
+            "no dmabuf format shared between the primary GPU and {}",
+            drm.devices[dev].tag
+        );
+    }
+    if secondary {
+        match (&copy_format, always_copy) {
+            (Some((fourcc, modifiers)), true) => tracing::info!(
+                output = %name,
+                device = %drm.devices[dev].tag,
+                ?fourcc,
+                ?modifiers,
+                "secondary output (dedicated GPU mode): render on primary, copy to {}",
+                drm.devices[dev].tag
+            ),
+            (_, true) => {}
+            (Some(_), false) => tracing::info!(
+                output = %name,
+                device = %drm.devices[dev].tag,
+                "output composited on {}; render-on-primary copy kept as the fallback",
+                drm.devices[dev].tag
+            ),
+            (None, false) => tracing::warn!(
+                output = %name,
+                device = %drm.devices[dev].tag,
+                "no dmabuf format shared with the primary GPU: no fallback for buffers {} cannot import",
+                drm.devices[dev].tag
+            ),
+        }
+    }
+    let mode_source = if always_copy {
+        static_source(wl_mode.size)
+    } else {
+        OutputModeSource::from(&output)
+    };
+    let pass = match (&copy_format, always_copy) {
+        (Some((fourcc, modifiers)), true) => Some(SecondaryPass::new(
+            &drm.gbm,
+            *fourcc,
+            modifiers.clone(),
+            wl_mode.size,
+            &output,
+        )),
+        _ => None,
+    };
     let device = &mut drm.devices[dev];
     let surface = device
         .drm
@@ -631,60 +740,6 @@ fn add_connector(
     let exporter = GbmFramebufferExporter::new(device.gbm.clone(), None);
     let cursor_size = device.drm.cursor_size();
     let gbm = device.gbm.clone();
-    // The formats the compositor may render into: the device's own renderer.
-    // On a secondary that is the blit renderer, and the offscreen pass the
-    // primary renders into must be one both GPUs share (ADR 0084).
-    let (renderer_formats, mode_source, pass) = if secondary {
-        let sec = device
-            .renderer
-            .as_ref()
-            .ok_or_else(|| anyhow!("secondary {} has no renderer", device.tag))?;
-        let primary_render: Vec<Format> = drm
-            .renderer
-            .egl_context()
-            .dmabuf_render_formats()
-            .iter()
-            .copied()
-            .collect();
-        let secondary_texture: Vec<Format> = sec
-            .egl_context()
-            .dmabuf_texture_formats()
-            .iter()
-            .copied()
-            .collect();
-        let (fourcc, modifiers) =
-            gpu::pick_transfer_format(&primary_render, &secondary_texture).ok_or_else(|| {
-                anyhow!(
-                    "no dmabuf format shared between the primary GPU and {}",
-                    device.tag
-                )
-            })?;
-        tracing::info!(
-            output = %name,
-            device = %device.tag,
-            ?fourcc,
-            ?modifiers,
-            "secondary output: render on primary, copy to {}",
-            device.tag
-        );
-        (
-            sec.egl_context().dmabuf_render_formats().clone(),
-            static_source(wl_mode.size),
-            Some(SecondaryPass::new(
-                &drm.gbm,
-                fourcc,
-                modifiers,
-                wl_mode.size,
-                &output,
-            )),
-        )
-    } else {
-        (
-            drm.renderer.egl_context().dmabuf_render_formats().clone(),
-            OutputModeSource::from(&output),
-            None,
-        )
-    };
     let compositor = AbyssDrmCompositor::new(
         mode_source,
         surface,
@@ -706,31 +761,12 @@ fn add_connector(
     )
     .context("DrmCompositor::new")?;
 
-    // Scanout tranche: the formats this output's primary plane can actually
-    // scan out, advertised above the render tranche so a full-screen client
-    // allocates something we can hand straight to KMS (COMP-02 §2). A secondary
-    // output never scans a client buffer out directly (ADR 0084), so it has none.
+    // Dmabuf feedback for the surfaces this output mostly shows (COMP-02 §2,
+    // ADR 0084).
     let feedback = state
         .dmabuf_feedback
         .as_ref()
-        .filter(|_| !secondary)
-        .and_then(|render| {
-            let plane_formats = compositor.surface().plane_info().formats.clone();
-            DmabufFeedbackBuilder::new(drm.render_node, renderer_formats.iter().copied())
-                .add_preference_tranche(
-                    compositor.surface().device_fd().dev_id().ok()?,
-                    Some(
-                        smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags::Scanout,
-                    ),
-                    plane_formats,
-                )
-                .build()
-                .ok()
-                .map(|scanout| SurfaceFeedback {
-                    render: render.clone(),
-                    scanout,
-                })
-        });
+        .and_then(|default| output_feedback(drm, default, dev, always_copy, &compositor));
 
     // COMP-03 §8: VRR is on/off/auto per output; "auto" only engages while a
     // fullscreen surface owns the output, handled in render_output.
@@ -764,6 +800,9 @@ fn add_connector(
             feedback,
             vrr_config,
             vrr_capable: matches!(vrr_support, VrrSupport::Supported),
+            copying: always_copy,
+            always_copy,
+            copy_format,
             pass,
         });
     }
@@ -776,6 +815,120 @@ fn add_connector(
         "output configured"
     );
     Ok(())
+}
+
+/// What each GPU we composite with can sample, in device order.
+fn feedback_gpus(drm: &DrmData) -> Vec<gpu::FeedbackGpu> {
+    drm.devices
+        .iter()
+        .map(|d| gpu::FeedbackGpu {
+            render_node: d.render_node,
+            texture: d
+                .renderer
+                .as_ref()
+                .unwrap_or(&drm.renderer)
+                .egl_context()
+                .dmabuf_texture_formats()
+                .iter()
+                .copied()
+                .collect(),
+        })
+        .collect()
+}
+
+/// A `DmabufFeedback` from a tranche plan ([`gpu::plan_feedback`]).
+fn build_feedback(
+    main_device: libc::dev_t,
+    plan: &[gpu::Tranche],
+) -> Option<smithay::wayland::dmabuf::DmabufFeedback> {
+    use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
+    let mut builder = DmabufFeedbackBuilder::new(main_device, std::iter::empty());
+    for t in plan {
+        builder = builder.add_preference_tranche(
+            t.target,
+            t.scanout.then_some(TrancheFlags::Scanout),
+            t.formats.iter().copied(),
+        );
+    }
+    builder.build().ok()
+}
+
+/// The feedback for surfaces whose main output is composited by `drm.devices[device]`.
+///
+/// One GPU in play: exactly the pre-hybrid shape -- the default feedback, and
+/// for scanout a scanout tranche of the plane formats over the GPU's render
+/// formats. Several: that GPU's formats first, then the formats every GPU can
+/// import ([`gpu::plan_feedback`], ADR 0084), the scanout tranche omitted where
+/// frames are copied (a copied frame never scans a client buffer out). A
+/// surface is sent the render or the scanout variant per frame, and re-sent
+/// when its main output changes GPU.
+fn output_feedback(
+    drm: &DrmData,
+    default: &smithay::wayland::dmabuf::DmabufFeedback,
+    device: usize,
+    always_copy: bool,
+    compositor: &AbyssDrmCompositor,
+) -> Option<SurfaceFeedback> {
+    use smithay::reexports::wayland_protocols::wp::linux_dmabuf::zv1::server::zwp_linux_dmabuf_feedback_v1::TrancheFlags;
+    let scanout = (!always_copy)
+        .then(|| {
+            Some((
+                compositor.surface().device_fd().dev_id().ok()?,
+                compositor
+                    .surface()
+                    .plane_info()
+                    .formats
+                    .iter()
+                    .copied()
+                    .collect::<Vec<_>>(),
+            ))
+        })
+        .flatten();
+    let gpus = feedback_gpus(drm);
+    let home = if always_copy { 0 } else { device };
+    let main_device = gpus.get(home)?.render_node;
+    if gpus.len() == 1 {
+        let scanout = match scanout {
+            Some((target, formats)) => {
+                let render_formats = drm.renderer.egl_context().dmabuf_render_formats().clone();
+                DmabufFeedbackBuilder::new(main_device, render_formats.iter().copied())
+                    .add_preference_tranche(target, Some(TrancheFlags::Scanout), formats)
+                    .build()
+                    .ok()?
+            }
+            None => default.clone(),
+        };
+        return Some(SurfaceFeedback {
+            render: default.clone(),
+            scanout,
+        });
+    }
+    let render = build_feedback(main_device, &gpu::plan_feedback(home, &gpus, None))?;
+    let scanout = match scanout {
+        Some((target, formats)) => build_feedback(
+            main_device,
+            &gpu::plan_feedback(home, &gpus, Some((target, &formats))),
+        )?,
+        None => render.clone(),
+    };
+    Some(SurfaceFeedback { render, scanout })
+}
+
+/// Rebuild every output's feedback against the GPUs now present, after one
+/// went away: they must stop advertising a shared-format tranche for it.
+fn refresh_feedback(state: &mut AbyssState) {
+    let Some(default) = state.dmabuf_feedback.clone() else {
+        return;
+    };
+    let Some(drm) = state.drm.as_mut() else { return };
+    let fresh: Vec<_> = drm
+        .outputs
+        .iter()
+        .map(|o| output_feedback(drm, &default, o.device, o.always_copy, &o.compositor))
+        .collect();
+    for (o, f) in drm.outputs.iter_mut().zip(fresh) {
+        o.feedback = f;
+    }
 }
 
 /// A GPU disappeared (COMP-03 §3, ADR 0084). A secondary takes only its own
@@ -804,6 +957,20 @@ fn teardown_gpu(state: &mut AbyssState, dev_id: libc::dev_t) {
         for o in drm.outputs.iter_mut().filter(|o| o.device > di) {
             o.device -= 1;
         }
+        // The removed GPU's parked GL objects (programs, textures) go with it.
+        use smithay::backend::renderer::Renderer as _;
+        let keep: Vec<_> = std::iter::once(drm.renderer.context_id())
+            .chain(
+                drm.devices
+                    .iter()
+                    .filter_map(|d| d.renderer.as_ref().map(|r| r.context_id())),
+            )
+            .collect();
+        state.borders.retain_contexts(&keep);
+        state.capture_fx.retain_contexts(&keep);
+        state.annotations.retain_contexts(&keep);
+        state.region_select.retain_contexts(&keep);
+        refresh_feedback(state);
         tracing::warn!(device = %dev.tag, outputs = ids.len(), "secondary GPU removed; its outputs torn down");
     }
     if ids.is_empty() {
@@ -860,9 +1027,9 @@ fn sync_fallback(state: &mut AbyssState) {
 /// An explicit request that does not resolve is a hard error rather than a
 /// silent fallback (ADR 0033): a typo that quietly lands on the wrong GPU is
 /// worse than a refusal to start.
-fn resolve_render_device(requested: Option<&str>, seat_name: &str) -> Result<PathBuf> {
+fn resolve_render_device(requested: Option<&str>, seat_name: &str, mode: GpuMode) -> Result<PathBuf> {
     let Some(req) = requested else {
-        return auto_select_render_device(seat_name);
+        return auto_select_render_device(seat_name, mode);
     };
     let path = match req.strip_prefix("pci:") {
         Some(addr) => {
@@ -896,14 +1063,16 @@ fn resolve_render_device(requested: Option<&str>, seat_name: &str) -> Result<Pat
 /// built-in panel wins, then `boot_vga`, then the ranking. The whole ranked list
 /// is logged with the reason, as the spec requires — a wrong pick is a black
 /// screen, and the log is the only way to see why it happened.
-fn auto_select_render_device(seat_name: &str) -> Result<PathBuf> {
+fn auto_select_render_device(seat_name: &str, mode: GpuMode) -> Result<PathBuf> {
     let ranked = gpu::probe_seat(seat_name).context("enumerating GPUs")?;
     for (i, g) in ranked.iter().enumerate() {
         tracing::info!(rank = i + 1, "GPU candidate: {}", g.describe());
     }
-    let best = gpu::select_primary(&ranked).map(|i| &ranked[i]).ok_or_else(|| {
-        anyhow!("no GPU on seat '{seat_name}' exposes a render node; abyss needs one to composite")
-    })?;
+    let best = gpu::select_primary(&ranked, mode)
+        .map(|i| &ranked[i])
+        .ok_or_else(|| {
+            anyhow!("no GPU on seat '{seat_name}' exposes a render node; abyss needs one to composite")
+        })?;
     if ranked.iter().all(|g| g.connectors_total == 0) {
         anyhow::bail!("no GPU on seat '{seat_name}' has any connector");
     }
@@ -912,7 +1081,8 @@ fn auto_select_render_device(seat_name: &str) -> Result<PathBuf> {
         driver = %best.driver,
         internal_panel = best.has_internal_panel(),
         boot_vga = best.boot_vga,
-        "selected primary GPU: best of {} (connected built-in panel, then boot_vga, then class/VRAM/PCI-address)",
+        gpu_mode = mode.name(),
+        "selected primary GPU: best of {} (dedicated mode: the discrete GPU; else connected built-in panel, then boot_vga, then class/VRAM/PCI-address)",
         ranked.len()
     );
     Ok(best.card.clone())
@@ -1061,6 +1231,11 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     tracing::info!(seat = %seat_name, "libseat session acquired");
 
     let requested_device = config.misc.render_device.clone();
+    let gpu_mode = config.misc.gpu_mode;
+    tracing::info!(
+        gpu_mode = gpu_mode.name(),
+        "GPU mode (misc.gpu-mode, restart to change)"
+    );
     let socket = ListeningSocketSource::new_auto().context("wayland socket")?;
     let mut state = AbyssState::new(
         &display,
@@ -1082,7 +1257,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
 
     // --- GPU discovery -----------------------------------------------------
     let udev = UdevBackend::new(&seat_name).context("udev backend")?;
-    let gpu_path: PathBuf = resolve_render_device(requested_device.as_deref(), &seat_name)?;
+    let gpu_path: PathBuf = resolve_render_device(requested_device.as_deref(), &seat_name, gpu_mode)?;
 
     let mut session_for_open = session.clone();
     let OpenedDevice {
@@ -1149,6 +1324,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         dev_id: our_device,
         primary: true,
         tag: format!("card{}", node.minor()),
+        render_node,
         drm: drm_device,
         gbm: gbm.clone(),
         renderer: None,
@@ -1165,11 +1341,27 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         .dev_id();
     match gpu::probe_seat(&seat_name) {
         Ok(ranked) => {
-            for g in ranked.iter().filter(|g| g.connectors_total > 0) {
+            for g in ranked.iter() {
                 let Ok(other) = DrmNode::from_path(&g.card) else {
                     continue;
                 };
                 if other.dev_id() == primary_id || other.dev_id() == our_device {
+                    // `dedicated`: everything the compositor starts runs on the
+                    // discrete GPU (the launcher and bar do the same through
+                    // ec-services) -- but only when it is a second GPU to
+                    // offload to; a lone discrete GPU is already the default.
+                    if gpu_mode == GpuMode::Dedicated && g.class == gpu::Class::Discrete && !g.boot_vga {
+                        state.dedicated_env = gpu::offload_env(g);
+                    }
+                    continue;
+                }
+                if !gpu::opens_as_secondary(g, gpu_mode) {
+                    if g.connectors_total > 0 {
+                        tracing::info!(
+                            path = %g.card.display(),
+                            "GPU left closed by integrated mode; its outputs stay dark"
+                        );
+                    }
                     continue;
                 }
                 match open_secondary(&mut session_for_open, &g.card) {
@@ -1187,6 +1379,12 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                                     dev_id,
                                     primary: false,
                                     tag: format!("card{}", opened.node.minor()),
+                                    render_node: opened
+                                        .node
+                                        .node_with_type(NodeType::Render)
+                                        .and_then(|r| r.ok())
+                                        .unwrap_or(opened.node)
+                                        .dev_id(),
                                     drm: opened.drm,
                                     gbm: opened.gbm,
                                     renderer: Some(sec_renderer),
@@ -1213,12 +1411,12 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         devices,
         gbm,
         renderer,
+        gpu_mode,
         primary_lost: false,
         outputs: Vec::new(),
         fallback: None,
         cursor: crate::render::cursor::Fallback::default(),
         input_devices: Vec::new(),
-        render_node,
         shed: Default::default(),
     }));
 
@@ -1553,6 +1751,21 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let output = entry.output.clone();
     let crtc = entry.crtc;
     let dev_id = drm.devices[entry.device].dev_id;
+    let (home, always_copy, can_fall_back) = (entry.device, entry.always_copy, entry.copy_format.is_some());
+    // ADR 0084: an output composites on its own GPU. Only when a visible client
+    // buffer cannot be imported there does this frame go down the copy path (the
+    // primary renders, the output's GPU blits); the next frame tries natively
+    // again. `dedicated` mode copies every frame of a secondary's output.
+    let copy = if always_copy {
+        true
+    } else if home != 0 && can_fall_back && !state.lock.locked {
+        drm.devices[home]
+            .renderer
+            .as_mut()
+            .is_some_and(|r| crate::render::surfaces_missing_texture(&state.space, &output, r))
+    } else {
+        false
+    };
     let scale = Scale::from(output.current_scale().fractional_scale());
     let output_loc = state
         .space
@@ -1566,17 +1779,34 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // arrow above it: the client cursor surface is not drawn while a prompt
     // holds the seat, so nothing a client chose sits on top of the prompt.
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
+    // Every element is built with the renderer that will draw it: the output's
+    // own GPU, or the primary on a copy frame. A buffer imported on one GPU is
+    // no use on another, and the stores' GPU objects follow the renderer.
+    let DrmData {
+        renderer: primary_renderer,
+        devices,
+        cursor: drm_cursor,
+        ..
+    } = &mut **drm;
+    let renderer: &mut GlesRenderer = if copy || home == 0 {
+        primary_renderer
+    } else {
+        match devices[home].renderer.as_mut() {
+            Some(r) => r,
+            None => primary_renderer,
+        }
+    };
     if arrow {
         elements.extend(crate::render::cursor::elements(
-            &mut drm.renderer,
+            renderer,
             &smithay::input::pointer::CursorImageStatus::default_named(),
-            &mut drm.cursor,
+            drm_cursor,
             cursor_pos,
             scale,
         ));
     }
     elements.extend(crate::trusted_ui::elements(
-        &mut drm.renderer,
+        renderer,
         &mut state.trusted_ui,
         state.lock.locked,
         &output,
@@ -1587,7 +1817,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // The region selector (COMP-18 §1.3): untrusted too, but above the
     // annotation pass it is about to feed.
     elements.extend(crate::render::select::selector_elements(
-        &mut drm.renderer,
+        renderer,
         &mut state.region_select,
         &output,
         output_loc,
@@ -1600,9 +1830,9 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let annotations_at = elements.len();
     if !arrow {
         elements.extend(crate::render::cursor::elements(
-            &mut drm.renderer,
+            renderer,
             &state.cursor_status,
-            &mut drm.cursor,
+            drm_cursor,
             cursor_pos,
             scale,
         ));
@@ -1618,13 +1848,13 @@ fn render_output(state: &mut AbyssState, index: usize) {
     ));
     if state.lock.locked {
         elements.extend(crate::protocols::standard::session_lock::lock_elements(
-            &mut drm.renderer,
+            renderer,
             &mut state.lock,
             &output,
         ));
     } else {
         elements.extend(collect_elements(
-            &mut drm.renderer,
+            renderer,
             &state.space,
             &mut state.borders,
             &output,
@@ -1636,7 +1866,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
     }
     let behind = elements.split_off(annotations_at);
     elements.extend(crate::render::annotation::annotation_elements(
-        &mut drm.renderer,
+        renderer,
         &mut state.annotations,
         &output,
         output_loc,
@@ -1697,6 +1927,13 @@ fn render_output(state: &mut AbyssState, index: usize) {
         .filter(|failures| *failures > 0)
         .map(|_| describe_elements(&elements, scale));
 
+    // Moving between native and copy composition changes what the output's
+    // compositor is fed (the output's own scene, or one finished texture).
+    if copy != drm.outputs[index].copying {
+        set_route(drm, index, copy);
+    }
+    let flags = if copy { FrameFlags::empty() } else { flags };
+
     let compositor = &mut drm.outputs[index].compositor;
     // COMP-03 §8: adaptive sync only while a surface covers the whole output;
     // a windowed desktop on a variable-refresh panel flickers otherwise.
@@ -1710,9 +1947,26 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let mut failed = false;
     let mut empty = false;
     let mut states = None;
-    if drm.outputs[index].pass.is_none() {
-        let compositor = &mut drm.outputs[index].compositor;
-        match compositor.render_frame(&mut drm.renderer, &elements, CLEAR, flags) {
+    if !copy {
+        // The output's own GPU composites it and plans its own planes.
+        let DrmData {
+            renderer: primary_renderer,
+            devices,
+            outputs,
+            ..
+        } = &mut **drm;
+        let renderer: &mut GlesRenderer = if home == 0 {
+            primary_renderer
+        } else {
+            match devices[home].renderer.as_mut() {
+                Some(r) => r,
+                None => primary_renderer,
+            }
+        };
+        match outputs[index]
+            .compositor
+            .render_frame(renderer, &elements, CLEAR, flags)
+        {
             Ok(result) if result.is_empty => empty = true,
             Ok(result) => states = Some(result.states.clone()),
             Err(err) => {
@@ -1721,9 +1975,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
             }
         }
     } else {
-        // ADR 0084: a secondary output is rendered by the primary and copied.
-        let dev = drm.outputs[index].device;
-        let secondary = drm.devices.get_mut(dev).and_then(|d| d.renderer.as_mut());
+        // ADR 0084: the primary rendered the elements; the output's GPU blits.
+        let secondary = drm.devices.get_mut(home).and_then(|d| d.renderer.as_mut());
         match secondary {
             Some(secondary) => {
                 match render_secondary(&mut drm.renderer, secondary, &mut drm.outputs[index], &elements) {
@@ -1743,7 +1996,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
     drop(elements);
     let surface_feedback = drm.outputs[index].feedback.as_ref().map(|f| SurfaceFeedback {
         render: f.render.clone(),
-        scanout: f.scanout.clone(),
+        // A copied frame never scans a client buffer out (ADR 0084).
+        scanout: if copy { f.render.clone() } else { f.scanout.clone() },
     });
 
     // Feedback needs `&state.space`, so the frame data is built outside the
@@ -1870,6 +2124,39 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // returns, and the second destructor runs on a freed `ResourceUserData`.
     // The event loop flushes after every dispatch round, which is both safe
     // and soon enough; see the `run` callback above.
+}
+
+/// ADR 0084: switch output `index` between composing natively on its own GPU
+/// and the copy path. The output's compositor is told what it is being fed (its
+/// own scene, or one finished texture); changing that restarts its damage
+/// tracking, so the first frame after a switch is a full one.
+fn set_route(drm: &mut DrmData, index: usize, copy: bool) {
+    let out = &mut drm.outputs[index];
+    let size = crate::outputs::mode_size(&out.output);
+    if copy {
+        if out.pass.is_none() {
+            let Some((fourcc, modifiers)) = out.copy_format.clone() else {
+                return;
+            };
+            out.pass = Some(SecondaryPass::new(&drm.gbm, fourcc, modifiers, size, &out.output));
+        }
+        if let Some(pass) = out.pass.as_mut() {
+            pass.force_full = true;
+            pass.held = None;
+            pass.fit(size, &mut out.compositor);
+        }
+        out.compositor.set_output_mode_source(static_source(size));
+    } else {
+        out.compositor
+            .set_output_mode_source(OutputModeSource::from(&out.output));
+    }
+    out.compositor.reset_buffer_ages();
+    out.copying = copy;
+    tracing::debug!(
+        output = %out.output.name(),
+        copy,
+        "output composition route changed (copy = rendered on the primary GPU, blitted by the output's own)"
+    );
 }
 
 /// What a secondary-output frame came to.
@@ -2170,8 +2457,8 @@ mod tests {
     /// or `ECLIPSE_RENDER_DEVICE` (all three land in `misc.render_device`).
     #[test]
     fn an_unresolvable_render_device_refuses() {
-        assert!(resolve_render_device(Some("/nonexistent/dri/card9"), "seat0").is_err());
-        assert!(resolve_render_device(Some("pci:ffff:ff:ff.7"), "seat0").is_err());
+        assert!(resolve_render_device(Some("/nonexistent/dri/card9"), "seat0", GpuMode::Hybrid).is_err());
+        assert!(resolve_render_device(Some("pci:ffff:ff:ff.7"), "seat0", GpuMode::Hybrid).is_err());
     }
 
     /// ADR 0084: a repeated connector name on a later device is tagged with its

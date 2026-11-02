@@ -36,6 +36,6 @@ Multi-GPU is out of scope for v1 (COMP-01 §4), so the resolver deliberately
 does no ranking; it resolves one name or fails.
 
 *Amended by ADR 0084 (2026-11-02):* hybrid GPU is pulled forward. Auto mode
-now picks a primary among several GPUs, and every other GPU with connectors is
-driven as a secondary. Ranking lives in `backend/gpu.rs`. An explicit name
+now picks a primary among several GPUs, and every other GPU with connectors
+composites its own outputs. Ranking lives in `backend/gpu.rs`. An explicit name
 still pins the primary and still refuses on a miss.

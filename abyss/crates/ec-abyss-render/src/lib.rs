@@ -10,6 +10,7 @@
 pub mod anim;
 pub mod annotation;
 pub mod blur;
+pub mod context;
 pub mod cursor;
 pub mod curve;
 pub mod drop;
@@ -335,8 +336,8 @@ fn bezel_ready(
         return false;
     }
     let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match mode {
-        BlurMode::Frost => (&mut store.frost, effects::compile_frost, "frost"),
-        _ => (&mut store.glass, effects::compile_glass, "glass"),
+        BlurMode::Frost => (&mut store.gpu.frost, effects::compile_frost, "frost"),
+        _ => (&mut store.gpu.glass, effects::compile_glass, "glass"),
     };
     if slot.is_none() {
         match compile(renderer) {
@@ -432,15 +433,12 @@ fn layer_shows(
 /// Four solid quads (top, bottom, left, right) per window.
 type Border = [SolidColorBuffer; 4];
 
-/// Border quads kept alive between frames, keyed by output and window: one
-/// window can be drawn on several outputs, each at its own geometry.
+/// The GPU objects of a [`BorderStore`]: programs, and the elements and
+/// backdrop chains built on them. A program belongs to the renderer that
+/// compiled it, so there is one set per renderer ([`context::PerContext`],
+/// ADR 0084).
 #[derive(Default)]
-pub struct BorderStore {
-    borders: HashMap<(Output, Window), Border>,
-    /// In-flight window moves (COMP-02 §9).
-    pub anim: anim::AnimStore,
-    /// One dim-inactive overlay quad per window, kept alive between frames.
-    dims: HashMap<(Output, Window), SolidColorBuffer>,
+pub struct BorderGpu {
     /// Rounded-corner texture program, compiled on the first frame that rounds.
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     /// Tint-keyed texture program (ADR 0079), compiled on the first frame a
@@ -453,8 +451,6 @@ pub struct BorderStore {
     /// The glass program failed to compile; layers with panes keep the
     /// whole-surface glass instead (and it is not retried per frame).
     glass_failed: bool,
-    /// Glass pane elements built this frame, kept to reuse the allocation.
-    pane_scratch: Vec<blur::BlurElement>,
     /// The same three (blur, frost, glass) masked to a layer's input-region
     /// shape (Vol 1 §5.2), compiled on the first frame that draws one.
     shaped: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
@@ -482,13 +478,45 @@ pub struct BorderStore {
     blur: HashMap<Output, blur::BlurStore>,
 }
 
+/// Border quads kept alive between frames, keyed by output and window: one
+/// window can be drawn on several outputs, each at its own geometry.
+#[derive(Default)]
+pub struct BorderStore {
+    borders: HashMap<(Output, Window), Border>,
+    /// In-flight window moves (COMP-02 §9).
+    pub anim: anim::AnimStore,
+    /// One dim-inactive overlay quad per window, kept alive between frames.
+    dims: HashMap<(Output, Window), SolidColorBuffer>,
+    /// Programs and the elements built on them, per renderer (ADR 0084).
+    gpu: context::PerContext<BorderGpu>,
+    /// Glass pane elements built this frame, kept to reuse the allocation.
+    pane_scratch: Vec<blur::BlurElement>,
+}
+
 impl BorderStore {
+    /// Drop the GPU objects of renderer contexts not in `keep` (a GPU went
+    /// away, ADR 0084).
+    pub fn retain_contexts(&mut self, keep: &[ContextId<smithay::backend::renderer::gles::GlesTexture>]) {
+        self.gpu.retain_contexts(keep);
+        self.anim.retain_contexts(keep);
+    }
+
     pub fn remove(&mut self, window: &Window) {
         self.borders.retain(|(_, w), _| w != window);
-        self.rings.retain(|(_, w), _| w != window);
-        self.shadows.retain(|(_, w), _| w != window);
-        self.glows.retain(|(_, w), _| w != window);
+        self.gpu.each_mut(|g| {
+            g.rings.retain(|(_, w), _| w != window);
+            g.shadows.retain(|(_, w), _| w != window);
+            g.glows.retain(|(_, w), _| w != window);
+        });
         self.dims.retain(|(_, w), _| w != window);
+    }
+
+    /// Draw with `renderer` from here on: its programs and per-output
+    /// elements become the live ones (ADR 0084). Call before building a
+    /// frame's elements.
+    pub fn bind(&mut self, renderer: &GlesRenderer) {
+        self.gpu
+            .bind(&smithay::backend::renderer::Renderer::context_id(renderer));
     }
 }
 
@@ -517,7 +545,7 @@ fn keyed_target(
     output: &Output,
 ) -> Option<(smithay::backend::renderer::gles::GlesTexProgram, i32, bool)> {
     let (mirrored, mode) = effects::fb_y_mirrored(output.current_transform()).zip(output.current_mode())?;
-    let program = store.keyed.get_or_insert_with(|| {
+    let program = store.gpu.keyed.get_or_insert_with(|| {
         effects::compile_keyed(renderer)
             .map_err(|err| tracing::warn!(?err, "compiling the keyed-glass shader; strip stays opaque"))
     });
@@ -628,6 +656,9 @@ pub fn collect_elements(
     im_popup: Option<&smithay::wayland::input_method::PopupSurface>,
     fullscreen: bool,
 ) -> Vec<AbyssRenderElement> {
+    // ADR 0084: each output draws with its own GPU's renderer; the programs
+    // and per-output elements in the store follow it.
+    borders.bind(renderer);
     let scale = Scale::from(output.current_scale().fractional_scale());
     let output_geo = space.output_geometry(output).unwrap_or_default();
     let output_loc = output_geo.loc;
@@ -677,6 +708,7 @@ pub fn collect_elements(
                 let pivot = anim::track::pivot(&t, *geometry);
                 snapshot_elements(
                     elements,
+                    &smithay::backend::renderer::Renderer::context_id(&*renderer),
                     surfaces,
                     geometry.loc + t.loc(),
                     scale,
@@ -870,9 +902,7 @@ pub fn collect_elements(
     // The shell snapshots closing windows against this context; a renderer
     // rebuilt after a GPU reset hands out a new one.
     let context = smithay::backend::renderer::Renderer::context_id(renderer);
-    if borders.anim.context.as_ref() != Some(&context) {
-        borders.anim.context = Some(context);
-    }
+    borders.anim.note_context(context);
     borders.anim.sync(space, &config.animations, focus);
     // Compiles the add-on shaders this frame's runs need (once per style) so
     // every query below agrees on which windows a shader draws.
@@ -947,7 +977,7 @@ fn insert_blur(
     if requests.is_empty() && panes.is_empty() {
         // Nothing asked for a backdrop (blur `off`, or nothing translucent):
         // the chain must not sit in GPU memory for a frame that draws none.
-        store.blur.remove(output);
+        store.gpu.blur.remove(output);
         return;
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
@@ -956,7 +986,7 @@ fn insert_blur(
         .map(|(key, ..)| key.clone())
         .chain(panes.iter().map(|p| p.key.clone()))
         .collect();
-    store.blur.entry(output.clone()).or_default().retain(&live);
+    store.gpu.blur.entry(output.clone()).or_default().retain(&live);
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
     // height and the sense of its vertical axis (COMP-02 §9).
@@ -989,21 +1019,23 @@ fn insert_blur(
             let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match (mode, shape.is_some()) {
                 (BlurMode::Off, _) => return None,
                 (BlurMode::Blur, false) if radius <= 0 => return None,
-                (BlurMode::Blur, false) => (&mut store.rounded, effects::compile_rounded, "rounded-corner"),
-                (BlurMode::Frost, false) => (&mut store.frost, effects::compile_frost, "frost"),
-                (BlurMode::Glass, false) => (&mut store.glass, effects::compile_glass, "glass"),
+                (BlurMode::Blur, false) => {
+                    (&mut store.gpu.rounded, effects::compile_rounded, "rounded-corner")
+                }
+                (BlurMode::Frost, false) => (&mut store.gpu.frost, effects::compile_frost, "frost"),
+                (BlurMode::Glass, false) => (&mut store.gpu.glass, effects::compile_glass, "glass"),
                 (BlurMode::Blur, true) => (
-                    &mut store.shaped[0],
+                    &mut store.gpu.shaped[0],
                     effects::compile_rounded_shaped,
                     "shaped rounded-corner",
                 ),
                 (BlurMode::Frost, true) => (
-                    &mut store.shaped[1],
+                    &mut store.gpu.shaped[1],
                     effects::compile_frost_shaped,
                     "shaped frost",
                 ),
                 (BlurMode::Glass, true) => (
-                    &mut store.shaped[2],
+                    &mut store.gpu.shaped[2],
                     effects::compile_glass_shaped,
                     "shaped glass",
                 ),
@@ -1075,7 +1107,7 @@ fn insert_blur(
             )
         });
         let behind = &elements[index..];
-        if let Some(element) = store.blur.entry(output.clone()).or_default().element(
+        if let Some(element) = store.gpu.blur.entry(output.clone()).or_default().element(
             renderer,
             output,
             &key,
@@ -1107,11 +1139,11 @@ fn insert_blur(
 
 /// Make sure the glass program is compiled; false if it cannot be.
 fn ensure_glass(renderer: &mut GlesRenderer, store: &mut BorderStore) -> bool {
-    if store.glass.is_none() && !store.glass_failed {
+    if store.gpu.glass.is_none() && !store.gpu.glass_failed {
         match effects::compile_glass(renderer) {
-            Ok(program) => store.glass = Some(program),
+            Ok(program) => store.gpu.glass = Some(program),
             Err(err) => {
-                store.glass_failed = true;
+                store.gpu.glass_failed = true;
                 tracing::warn!(
                     ?err,
                     "compiling the glass shader; layers keep whole-surface glass"
@@ -1119,7 +1151,7 @@ fn ensure_glass(renderer: &mut GlesRenderer, store: &mut BorderStore) -> bool {
             }
         }
     }
-    store.glass.is_some()
+    store.gpu.glass.is_some()
 }
 
 /// Splice one layer surface's glass panes into the element list (`eclipse_glass_v1`).
@@ -1152,7 +1184,7 @@ fn insert_panes(
         .map(|mode| output.current_transform().transform_size(mode.size))
         .map(|size| (size.w, size.h))
         .unwrap_or((1, 1));
-    let Some(program) = store.glass.clone() else {
+    let Some(program) = store.gpu.glass.clone() else {
         return;
     };
     let panes = req.set.as_slice();
@@ -1170,7 +1202,7 @@ fn insert_panes(
     // A window's own backdrop sits at `req.index`; panes sample what is
     // behind it, not the already-smoked glass, or they re-smoke to a slab.
     let behind = &elements[req.index + usize::from(req.over)..];
-    store.blur.entry(output.clone()).or_default().pane_elements(
+    store.gpu.blur.entry(output.clone()).or_default().pane_elements(
         renderer,
         output,
         &req.key,
@@ -1257,12 +1289,16 @@ fn ghost_elements(
         .zip(output.current_mode())
         .filter(|_| config.decoration.rounding > 0)
         .map(|(mirrored, mode)| (mode.size.h, mirrored))
-        .zip(store.rounded.clone());
+        .zip(store.gpu.rounded.clone());
     let radius = (config.decoration.rounding as f64 * scale.x.max(scale.y)) as f32;
 
     let now = store.anim.now();
-    let context = store.anim.context.clone();
-    let rounded = store.rounded.clone().filter(|_| config.decoration.rounding > 0);
+    let context = Some(smithay::backend::renderer::Renderer::context_id(&*renderer));
+    let rounded = store
+        .gpu
+        .rounded
+        .clone()
+        .filter(|_| config.decoration.rounding > 0);
     for index in (0..store.anim.ghosts.len()).rev() {
         let ghost = &store.anim.ghosts[index];
         if ghost.output() != output {
@@ -1300,6 +1336,7 @@ fn ghost_elements(
                             let mut content = Vec::new();
                             snapshot_elements(
                                 &mut content,
+                                &smithay::backend::renderer::Renderer::context_id(&*renderer),
                                 surfaces,
                                 base,
                                 scale,
@@ -1371,6 +1408,7 @@ fn ghost_elements(
             anim::Ghost::Snapshot { surfaces, .. } => {
                 snapshot_elements(
                     out,
+                    &smithay::backend::renderer::Renderer::context_id(&*renderer),
                     surfaces,
                     at.loc + t.loc() - output_geo.loc,
                     scale,
@@ -1476,6 +1514,7 @@ fn transition_quad(
 #[allow(clippy::too_many_arguments)]
 fn snapshot_elements(
     out: &mut Vec<AbyssRenderElement>,
+    context: &smithay::backend::renderer::ContextId<smithay::backend::renderer::gles::GlesTexture>,
     surfaces: &[anim::SnapshotSurface],
     base: Point<i32, Logical>,
     scale: Scale<f64>,
@@ -1489,7 +1528,9 @@ fn snapshot_elements(
 ) {
     use smithay::backend::renderer::element::texture::TextureRenderElement;
 
-    out.extend(surfaces.iter().map(|s| {
+    // A snapshot's texture belongs to the renderer that drew the window; on
+    // another GPU's output it has nothing to show (ADR 0084).
+    out.extend(surfaces.iter().filter(|s| &s.context == context).map(|s| {
         let texture = TextureRenderElement::from_static_texture(
             s.id.clone(),
             s.context.clone(),
@@ -1546,7 +1587,7 @@ fn ghost_decor(
             (geo.loc.x - width - output_loc.x, geo.loc.y - width - output_loc.y).into(),
             (geo.size.w + 2 * width, geo.size.h + 2 * width).into(),
         );
-        match store.ring.as_ref().filter(|_| rounded) {
+        match store.gpu.ring.as_ref().filter(|_| rounded) {
             Some(program) => out.push(AbyssRenderElement::Shader(PixelShaderElement::new(
                 program.clone(),
                 outer,
@@ -1588,6 +1629,7 @@ fn ghost_decor(
     }
     let shadow = &config.decoration.shadow;
     if let Some(program) = store
+        .gpu
         .shadow
         .as_ref()
         .filter(|_| shadow.enabled && shadow.range > 0)
@@ -1663,13 +1705,13 @@ fn window_elements(
         .zip(output.current_mode())
         .filter(|_| deco.rounding > 0)
         .map(|(mirrored, mode)| (mode.size.h, mirrored));
-    if fb_height.is_some() && store.rounded.is_none() {
+    if fb_height.is_some() && store.gpu.rounded.is_none() {
         match effects::compile_rounded(renderer) {
-            Ok(program) => store.rounded = Some(program),
+            Ok(program) => store.gpu.rounded = Some(program),
             Err(err) => tracing::warn!(?err, "compiling the rounded-corner shader; rounding disabled"),
         }
     }
-    let rounding = fb_height.zip(store.rounded.clone());
+    let rounding = fb_height.zip(store.gpu.rounded.clone());
     let border = border_frame(renderer, store, output_geo.loc, scale, output, config, &live);
     let shadow = shadow_program(renderer, store, output, config, &live);
     let glow = glow_program(renderer, store, output, config, &live);
@@ -2242,7 +2284,7 @@ fn window_elements(
         // A shader open draws the window alone: no border, glow or shadow
         // around the rectangle it is reshaping.
         if shaded {
-            store.rings.remove(&(output.clone(), window.clone()));
+            store.gpu.rings.remove(&(output.clone(), window.clone()));
             store.borders.remove(&(output.clone(), window.clone()));
             continue;
         }
@@ -2260,7 +2302,7 @@ fn window_elements(
         let start = out.len();
         match &border {
             Some(_) if bezeled => {
-                store.rings.remove(&(output.clone(), window.clone()));
+                store.gpu.rings.remove(&(output.clone(), window.clone()));
                 store.borders.remove(&(output.clone(), window.clone()));
             }
             Some(frame) => push_border(store, frame, output, &window, geo, config, out),
@@ -2465,20 +2507,23 @@ fn shadow_program(
 ) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
     let shadow = &config.decoration.shadow;
     if !shadow.enabled || shadow.range <= 0 {
-        store.shadows.clear();
+        store.gpu.shadows.clear();
         return None;
     }
-    store.shadows.retain(|(o, w), _| o != output || live.contains(w));
-    if store.shadow.is_none() {
+    store
+        .gpu
+        .shadows
+        .retain(|(o, w), _| o != output || live.contains(w));
+    if store.gpu.shadow.is_none() {
         match effects::compile_shadow(renderer) {
-            Ok(program) => store.shadow = Some(program),
+            Ok(program) => store.gpu.shadow = Some(program),
             Err(err) => {
                 tracing::warn!(?err, "compiling the shadow shader; shadows disabled");
                 return None;
             }
         }
     }
-    store.shadow.clone()
+    store.gpu.shadow.clone()
 }
 
 /// The glow ring program when border glow is on, with the stored glows of
@@ -2491,20 +2536,23 @@ fn glow_program(
     live: &[Window],
 ) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
     if !config.decoration.glow.on() {
-        store.glows.clear();
+        store.gpu.glows.clear();
         return None;
     }
-    store.glows.retain(|(o, w), _| o != output || live.contains(w));
-    if store.glow.is_none() {
+    store
+        .gpu
+        .glows
+        .retain(|(o, w), _| o != output || live.contains(w));
+    if store.gpu.glow.is_none() {
         match effects::compile_ring(renderer) {
-            Ok(program) => store.glow = Some(program),
+            Ok(program) => store.gpu.glow = Some(program),
             Err(err) => {
                 tracing::warn!(?err, "compiling the glow shader; glow disabled");
                 return None;
             }
         }
     }
-    store.glow.clone()
+    store.gpu.glow.clone()
 }
 
 /// Where one window's drop shadow or glow goes and what it is shaded with: its
@@ -2570,6 +2618,7 @@ fn push_shadow(
     let params = [geometry[0], geometry[1], geometry[2], focus];
     let uniforms = || effects::shadow_uniforms(geometry, focus);
     let (element, applied) = store
+        .gpu
         .shadows
         .entry((output.clone(), window.clone()))
         .or_insert_with(|| {
@@ -2622,6 +2671,7 @@ fn push_glow(
     let params = [color[0], color[1], color[2], color[3], range, radius];
     let uniforms = || effects::ring_uniforms(color, range, radius);
     let (element, applied) = store
+        .gpu
         .glows
         .entry((output.clone(), window.clone()))
         .or_insert_with(|| {
@@ -2662,11 +2712,14 @@ fn border_frame(
     let width = config.general.border_size;
     if width <= 0 {
         store.borders.clear();
-        store.rings.clear();
+        store.gpu.rings.clear();
         return None;
     }
     store.borders.retain(|(o, w), _| o != output || live.contains(w));
-    store.rings.retain(|(o, w), _| o != output || live.contains(w));
+    store
+        .gpu
+        .rings
+        .retain(|(o, w), _| o != output || live.contains(w));
 
     // The ring only exists where `window_elements` actually rounds the window:
     // same radius, and the same fallback to square corners on an output whose
@@ -2676,17 +2729,17 @@ fn border_frame(
     let rounds = radius > 0
         && effects::fb_y_mirrored(output.current_transform()).is_some()
         && output.current_mode().is_some();
-    if rounds && store.ring.is_none() {
+    if rounds && store.gpu.ring.is_none() {
         match effects::compile_border(renderer) {
-            Ok(program) => store.ring = Some(program),
+            Ok(program) => store.gpu.ring = Some(program),
             Err(err) => tracing::warn!(?err, "compiling the border-ring shader; square borders"),
         }
     }
-    let ring = store.ring.clone().filter(|_| rounds);
+    let ring = store.gpu.ring.clone().filter(|_| rounds);
     if ring.is_some() {
         store.borders.retain(|(o, _), _| o != output);
     } else {
-        store.rings.retain(|(o, _), _| o != output);
+        store.gpu.rings.retain(|(o, _), _| o != output);
     }
     Some(BorderFrame {
         width,
@@ -2743,6 +2796,7 @@ fn push_border(
         ];
         let uniforms = || effects::border_uniforms(color, params[4], params[5], params[6]);
         let (element, applied) = store
+            .gpu
             .rings
             .entry((output.clone(), window.clone()))
             .or_insert_with(|| {
@@ -2898,6 +2952,104 @@ pub fn scanout_candidate(space: &Space<Window>, output: &Output, config: &Config
     }
     use smithay::wayland::seat::WaylandFocus;
     window.wl_surface().map(|s| s.into_owned())
+}
+
+/// ADR 0084: whether something visible on `output` cannot be drawn by
+/// `renderer` -- a client buffer (a window, a popup, a layer surface) that has
+/// no texture on this GPU, typically a dmabuf another GPU allocated in a layout
+/// this one cannot import. Surfaces are offered to the importer first, so what
+/// can be imported is by now cached for the frame's own element build.
+///
+/// A dmabuf whose format this renderer does not list is reported without being
+/// offered to the importer, which would log a warning for it on every frame.
+pub fn surfaces_missing_texture(space: &Space<Window>, output: &Output, renderer: &mut GlesRenderer) -> bool {
+    use smithay::wayland::seat::WaylandFocus;
+    for window in space.elements_for_output(output) {
+        let Some(root) = window.wl_surface() else {
+            continue;
+        };
+        if tree_missing_texture(renderer, &root) {
+            return true;
+        }
+        for (popup, _) in PopupManager::popups_for_surface(&root) {
+            if tree_missing_texture(renderer, popup.wl_surface()) {
+                return true;
+            }
+        }
+    }
+    let map = layer_map_for_output(output);
+    let missing = map
+        .layers()
+        .any(|layer| tree_missing_texture(renderer, layer.wl_surface()));
+    missing
+}
+
+/// [`surfaces_missing_texture`] for one surface tree.
+fn tree_missing_texture(renderer: &mut GlesRenderer, root: &WlSurface) -> bool {
+    use smithay::backend::allocator::Buffer;
+    use smithay::backend::renderer::{
+        buffer_type,
+        utils::{import_surface_tree, RendererSurfaceStateUserData},
+        BufferType, ImportDma, Renderer,
+    };
+    use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+    use smithay::wayland::dmabuf::get_dmabuf;
+
+    let context = Renderer::context_id(&*renderer);
+    // First: a dmabuf this GPU has no format for is missing, whatever else.
+    let mut unsupported = false;
+    with_surface_tree_downward(
+        root,
+        (),
+        |_, states, _| {
+            let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() else {
+                return TraversalAction::SkipChildren;
+            };
+            let data = data.lock().unwrap();
+            if data
+                .texture::<smithay::backend::renderer::gles::GlesTexture>(context.clone())
+                .is_none()
+            {
+                if let Some(dmabuf) = data.buffer().and_then(|b| get_dmabuf(b).ok()) {
+                    unsupported |= !renderer.has_dmabuf_format(Buffer::format(dmabuf));
+                }
+            }
+            TraversalAction::DoChildren(())
+        },
+        |_, _, _| {},
+        |_, _, _| true,
+    );
+    if unsupported {
+        return true;
+    }
+    let _ = import_surface_tree(renderer, root);
+    let mut missing = false;
+    with_surface_tree_downward(
+        root,
+        (),
+        |_, states, _| {
+            let Some(data) = states.data_map.get::<RendererSurfaceStateUserData>() else {
+                return TraversalAction::SkipChildren;
+            };
+            let data = data.lock().unwrap();
+            let Some(buffer) = data.buffer() else {
+                // Nothing attached: not drawn, nor its children.
+                return TraversalAction::SkipChildren;
+            };
+            if data
+                .texture::<smithay::backend::renderer::gles::GlesTexture>(context.clone())
+                .is_some()
+            {
+                return TraversalAction::DoChildren(());
+            }
+            // A single-pixel buffer has no texture by design.
+            missing |= !matches!(buffer_type(buffer), Some(BufferType::SinglePixel));
+            TraversalAction::SkipChildren
+        },
+        |_, _, _| {},
+        |_, _, _| true,
+    );
+    missing
 }
 
 /// Send dmabuf feedback for every surface on `output`, giving the scanout

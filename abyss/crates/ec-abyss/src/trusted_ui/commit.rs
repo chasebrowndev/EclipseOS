@@ -46,6 +46,7 @@ use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRen
 use smithay::backend::renderer::element::texture::TextureBuffer;
 use smithay::backend::renderer::element::{texture::TextureRenderElement, Kind as ElementKind};
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::{ContextId, Renderer};
 use smithay::output::Output;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
@@ -211,7 +212,9 @@ struct Card {
     /// Where to draw it this frame; `None` when it must not be drawn.
     draw: Option<Draw>,
     look: Look,
-    art: BTreeMap<usize, (Look, TextureBuffer<GlesTexture>)>,
+    /// Per renderer and device scale: each GPU draws its own outputs with its
+    /// own textures (ADR 0084).
+    art: BTreeMap<(ContextId<GlesTexture>, usize), (Look, TextureBuffer<GlesTexture>)>,
     /// When the card last started being drawn, for the fade-in.
     shown_at: Option<u64>,
 }
@@ -1047,6 +1050,7 @@ pub fn elements(
     let fractional = output.current_scale().fractional_scale();
     let scale = Scale::from(fractional);
     let dev = (fractional.round() as usize).max(1);
+    let key = (renderer.context_id(), dev);
     let phrase = ui.phrase.as_ref().map(|p| p.as_str().to_owned());
     let out_rect = Rectangle::new(output_loc, output_size);
     let mut out = Vec::new();
@@ -1056,21 +1060,21 @@ pub fn elements(
         if !out_rect.contains_rect(d.rect) {
             continue;
         }
-        let stale = c.art.get(&dev).is_none_or(|(l, _)| *l != c.look);
+        let stale = c.art.get(&key).is_none_or(|(l, _)| *l != c.look);
         if stale {
             let shown = c.preview.as_ref().map(|(_, s, _)| s);
             let raster = rasterize(&c.look, shown, c.kind, phrase.as_deref(), dev);
             match super::upload(renderer, &raster, dev) {
                 Some(b) => {
-                    c.art.insert(dev, (c.look.clone(), b));
+                    c.art.insert(key.clone(), (c.look.clone(), b));
                 }
                 None => {
-                    c.art.remove(&dev);
+                    c.art.remove(&key);
                     continue;
                 }
             }
         }
-        if let Some((_, buffer)) = c.art.get(&dev) {
+        if let Some((_, buffer)) = c.art.get(&key) {
             let local = d.rect.loc - output_loc;
             out.push(AbyssRenderElement::Texture(
                 TextureRenderElement::from_texture_buffer(

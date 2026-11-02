@@ -31,6 +31,9 @@ pub struct Entry {
     pub terminal: bool,
     /// `Keywords`, for search. Not shown.
     pub keywords: Vec<String>,
+    /// `PrefersNonDefaultGPU=true` or `X-KDE-RunOnDiscreteGpu=true`: the
+    /// entry asks to run on the discrete GPU of a hybrid machine (ADR 0084).
+    pub prefers_discrete_gpu: bool,
 }
 
 /// Where `.desktop` files live, in precedence order: the user's own first.
@@ -173,6 +176,7 @@ fn path_binaries(covered: &std::collections::BTreeSet<String>) -> Vec<Entry> {
                     argv: vec![full],
                     terminal: false,
                     keywords: Vec::new(),
+                    prefers_discrete_gpu: false,
                 },
             );
         }
@@ -277,6 +281,8 @@ pub fn parse(id: &str, text: &str, term: Option<&str>) -> Option<Entry> {
                     .collect()
             })
             .unwrap_or_default(),
+        prefers_discrete_gpu: truthy(keys.get("PrefersNonDefaultGPU"))
+            || truthy(keys.get("X-KDE-RunOnDiscreteGpu")),
     })
 }
 
@@ -544,6 +550,15 @@ pub fn record_launch(entry: &Entry, entries: &[Entry]) {
 /// human cannot see or reach. `parse` already drops such entries when no
 /// terminal is configured, so this is a defensive fallback, not the normal path.
 pub fn launch(entry: &Entry, term: Option<&str>) -> std::io::Result<()> {
+    launch_with(entry, term, GpuChoice::Auto)
+}
+
+/// [`launch`] with an explicit GPU choice (ADR 0084). `Auto` follows the
+/// entry's own `PrefersNonDefaultGPU`, `misc.discrete-gpu-apps` and
+/// `misc.gpu-mode`; `Discrete` is the launcher's "Run on NVIDIA GPU" and
+/// offloads whenever a discrete GPU is there and the mode is not
+/// `integrated`.
+pub fn launch_with(entry: &Entry, term: Option<&str>, choice: GpuChoice) -> std::io::Result<()> {
     let mut cmd = if entry.terminal {
         let Some(term) = term else {
             return Err(std::io::Error::new(
@@ -570,6 +585,9 @@ pub fn launch(entry: &Entry, term: Option<&str>) -> std::io::Result<()> {
     if std::env::var_os("DISPLAY").is_none() {
         cmd.envs(session_display());
     }
+    if let Some(env) = offload_env_for(entry, choice) {
+        cmd.envs(env);
+    }
     use std::os::unix::process::CommandExt;
     // The child must not inherit our controlling terminal or process group,
     // so the launcher exiting doesn't take the application with it.
@@ -585,6 +603,237 @@ pub fn launch(entry: &Entry, term: Option<&str>) -> std::io::Result<()> {
                 let _ = child.wait();
             });
         })
+}
+
+// --- Discrete GPU offload (ADR 0084) ---------------------------------------
+
+/// Which GPU a launch asks for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuChoice {
+    /// The entry's own key, the app list and the GPU mode decide.
+    Auto,
+    /// Run on the discrete GPU (the launcher's "Run on NVIDIA GPU").
+    Discrete,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GpuVendor {
+    Nvidia,
+    Amd,
+    Intel,
+}
+
+/// The machine's discrete GPU, when it has one next to an integrated one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscreteGpu {
+    /// Marketing name when `pci.ids` knows it, else the vendor name.
+    pub name: String,
+    pub vendor: GpuVendor,
+}
+
+/// One DRM card as sysfs shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Card {
+    vendor: u16,
+    device: u16,
+    boot_vga: bool,
+    /// `0000:01:00.0`.
+    pci: String,
+}
+
+impl Card {
+    fn vendor(&self) -> Option<GpuVendor> {
+        match self.vendor {
+            0x10de => Some(GpuVendor::Nvidia),
+            0x1002 => Some(GpuVendor::Amd),
+            0x8086 => Some(GpuVendor::Intel),
+            _ => None,
+        }
+    }
+}
+
+/// The discrete GPU among `cards`: a known-vendor card that is not the boot
+/// VGA device, on a machine that has a boot VGA device to be discrete from.
+/// An Intel card on PCI bus 00 is an iGPU, not a discrete one (a desktop
+/// whose boot device is the NVIDIA card must not call its iGPU discrete).
+fn pick_discrete(cards: &[Card]) -> Option<&Card> {
+    if !cards.iter().any(|c| c.boot_vga) {
+        return None;
+    }
+    cards.iter().find(|c| {
+        !c.boot_vga
+            && match c.vendor() {
+                Some(GpuVendor::Intel) => !c.pci.get(5..7).is_some_and(|bus| bus == "00"),
+                Some(_) => true,
+                None => false,
+            }
+    })
+}
+
+fn read_cards() -> Vec<Card> {
+    let Ok(dir) = std::fs::read_dir("/sys/class/drm") else {
+        return Vec::new();
+    };
+    let hex = |p: &Path| {
+        std::fs::read_to_string(p)
+            .ok()
+            .and_then(|t| u16::from_str_radix(t.trim().trim_start_matches("0x"), 16).ok())
+    };
+    let mut cards: Vec<Card> = dir
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name();
+            let n = n.to_string_lossy();
+            n.strip_prefix("card")
+                .is_some_and(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .filter_map(|e| {
+            let dev = e.path().join("device");
+            let pci = std::fs::canonicalize(&dev)
+                .ok()?
+                .file_name()?
+                .to_string_lossy()
+                .into_owned();
+            Some(Card {
+                vendor: hex(&dev.join("vendor"))?,
+                device: hex(&dev.join("device"))?,
+                boot_vga: std::fs::read_to_string(dev.join("boot_vga")).is_ok_and(|t| t.trim() == "1"),
+                pci,
+            })
+        })
+        .collect();
+    cards.sort_by(|a, b| a.pci.cmp(&b.pci));
+    cards
+}
+
+/// The product name for `vendor:device` out of `pci.ids` text: the
+/// `[bracketed]` part when there is one (`AD107M [GeForce RTX 4050 Max-Q /
+/// Mobile]` is `GeForce RTX 4050 Max-Q / Mobile`).
+fn pci_ids_name(text: &str, vendor: u16, device: u16) -> Option<String> {
+    let v = format!("{vendor:04x}  ");
+    let d = format!("\t{device:04x}  ");
+    let mut in_vendor = false;
+    for line in text.lines() {
+        if !line.starts_with('\t') && !line.starts_with('#') {
+            in_vendor = line.starts_with(&v);
+            continue;
+        }
+        if in_vendor {
+            if let Some(name) = line.strip_prefix(&d) {
+                let name = name.trim();
+                return Some(match (name.find('['), name.rfind(']')) {
+                    (Some(a), Some(b)) if a < b => name[a + 1..b].to_owned(),
+                    _ => name.to_owned(),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn probe_discrete() -> Option<(DiscreteGpu, String)> {
+    let cards = read_cards();
+    let card = pick_discrete(&cards)?;
+    let vendor = card.vendor()?;
+    let name = ["/usr/share/hwdata/pci.ids", "/usr/share/misc/pci.ids"]
+        .iter()
+        .find_map(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| pci_ids_name(&t, card.vendor, card.device))
+        .unwrap_or_else(|| {
+            match vendor {
+                GpuVendor::Nvidia => "NVIDIA GPU",
+                GpuVendor::Amd => "AMD GPU",
+                GpuVendor::Intel => "Intel GPU",
+            }
+            .to_owned()
+        });
+    Some((DiscreteGpu { name, vendor }, card.pci.clone()))
+}
+
+/// The discrete GPU of a hybrid machine, read from sysfs (no IPC). `None` on
+/// a single-GPU machine.
+pub fn discrete_gpu() -> Option<DiscreteGpu> {
+    probe_discrete().map(|(g, _)| g)
+}
+
+/// `misc.gpu-mode`, as far as launching cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Integrated,
+    Hybrid,
+    Dedicated,
+}
+
+/// Whether a launch gets the offload environment. Integrated never does; the
+/// rest need a discrete GPU to offload to.
+fn wants_offload(choice: GpuChoice, mode: Mode, entry_prefers: bool, in_list: bool, have_gpu: bool) -> bool {
+    if !have_gpu || mode == Mode::Integrated {
+        return false;
+    }
+    choice == GpuChoice::Discrete || mode == Mode::Dedicated || entry_prefers || in_list
+}
+
+/// The environment that sends a client to the discrete GPU.
+fn offload_env(vendor: GpuVendor, pci: &str) -> Vec<(&'static str, String)> {
+    match vendor {
+        GpuVendor::Nvidia => vec![
+            ("__NV_PRIME_RENDER_OFFLOAD", "1".to_owned()),
+            ("__VK_LAYER_NV_optimus", "NVIDIA_only".to_owned()),
+            ("__GLX_VENDOR_LIBRARY_NAME", "nvidia".to_owned()),
+        ],
+        GpuVendor::Amd | GpuVendor::Intel => {
+            vec![("DRI_PRIME", format!("pci-{}", pci.replace([':', '.'], "_")))]
+        }
+    }
+}
+
+/// `misc.gpu-mode` and `misc.discrete-gpu-apps` from the compositor. Any
+/// failure is the default (hybrid, no list): a launch is never blocked on it.
+fn read_gpu_config() -> (Mode, Vec<String>) {
+    let Ok(mut client) = ec_ipc::Client::connect() else {
+        return (Mode::Hybrid, Vec::new());
+    };
+    let mut value = |path: &str| {
+        client
+            .call("get_config", serde_json::json!({ "path": path }))
+            .ok()
+            .and_then(|r| r.get("keys")?.as_array()?.first()?.get("value").cloned())
+    };
+    let mode = match value("misc.gpu-mode").as_ref().and_then(|v| v.as_str()) {
+        Some("integrated") => Mode::Integrated,
+        Some("dedicated") => Mode::Dedicated,
+        _ => Mode::Hybrid,
+    };
+    let apps = value("misc.discrete-gpu-apps")
+        .and_then(|v| {
+            v.as_array()
+                .map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect())
+        })
+        .unwrap_or_default();
+    (mode, apps)
+}
+
+/// `entry.id` against a `discrete-gpu-apps` list, either side with or
+/// without the `.desktop` suffix.
+fn listed(id: &str, list: &[String]) -> bool {
+    let bare = |s: &str| s.strip_suffix(".desktop").unwrap_or(s).to_owned();
+    let id = bare(id);
+    list.iter().any(|l| bare(l) == id)
+}
+
+fn offload_env_for(entry: &Entry, choice: GpuChoice) -> Option<Vec<(&'static str, String)>> {
+    // The sysfs probe is cheap and decides whether the compositor needs
+    // asking at all.
+    let (gpu, pci) = probe_discrete()?;
+    let (mode, apps) = read_gpu_config();
+    wants_offload(
+        choice,
+        mode,
+        entry.prefers_discrete_gpu,
+        listed(&entry.id, &apps),
+        true,
+    )
+    .then(|| offload_env(gpu.vendor, &pci))
 }
 
 /// `DISPLAY` and `XAUTHORITY` as the user manager has them now. Empty when
@@ -633,6 +882,100 @@ mod tests {
             ]
         );
         assert!(x_vars("DISPLAY=\nPATH=/usr/bin\n").is_empty());
+    }
+
+    #[test]
+    fn desktop_keys_ask_for_the_discrete_gpu() {
+        let e = entry("[Desktop Entry]\nName=S\nExec=s\nPrefersNonDefaultGPU=true\n").unwrap();
+        assert!(e.prefers_discrete_gpu);
+        let e = entry("[Desktop Entry]\nName=S\nExec=s\nX-KDE-RunOnDiscreteGpu=true\n").unwrap();
+        assert!(e.prefers_discrete_gpu);
+        assert!(
+            !entry("[Desktop Entry]\nName=S\nExec=s\n")
+                .unwrap()
+                .prefers_discrete_gpu
+        );
+    }
+
+    #[test]
+    fn offload_decision() {
+        use GpuChoice::{Auto, Discrete};
+        use Mode::{Dedicated, Hybrid, Integrated};
+        // Plain app, hybrid: stays on the iGPU.
+        assert!(!wants_offload(Auto, Hybrid, false, false, true));
+        // Desktop key, list, explicit choice.
+        assert!(wants_offload(Auto, Hybrid, true, false, true));
+        assert!(wants_offload(Auto, Hybrid, false, true, true));
+        assert!(wants_offload(Discrete, Hybrid, false, false, true));
+        // Dedicated offloads everything.
+        assert!(wants_offload(Auto, Dedicated, false, false, true));
+        // Integrated never, whatever asks.
+        assert!(!wants_offload(Discrete, Integrated, true, true, true));
+        // No discrete GPU: nothing to offload to.
+        assert!(!wants_offload(Discrete, Dedicated, true, true, false));
+    }
+
+    #[test]
+    fn list_matches_with_or_without_suffix() {
+        let list = vec!["steam".to_owned(), "org.x.Y.desktop".to_owned()];
+        assert!(listed("steam.desktop", &list));
+        assert!(listed("org.x.Y", &list));
+        assert!(!listed("firefox.desktop", &list));
+    }
+
+    fn card(vendor: u16, device: u16, boot_vga: bool, pci: &str) -> Card {
+        Card {
+            vendor,
+            device,
+            boot_vga,
+            pci: pci.to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_discrete_gpu_is_the_non_boot_card() {
+        let hybrid = [
+            card(0x10de, 0x28a1, false, "0000:01:00.0"),
+            card(0x8086, 0xa7a0, true, "0000:00:02.0"),
+        ];
+        assert_eq!(pick_discrete(&hybrid).unwrap().pci, "0000:01:00.0");
+        // One card: nothing is discrete.
+        assert!(pick_discrete(&hybrid[..1]).is_none());
+        assert!(pick_discrete(&hybrid[1..]).is_none());
+        // NVIDIA boots, the iGPU on bus 00 is not "discrete".
+        let desktop = [
+            card(0x10de, 0x2684, true, "0000:01:00.0"),
+            card(0x8086, 0xa780, false, "0000:00:02.0"),
+        ];
+        assert!(pick_discrete(&desktop).is_none());
+        // AMD dGPU next to an Intel iGPU.
+        let amd = [
+            card(0x1002, 0x73ff, false, "0000:03:00.0"),
+            card(0x8086, 0x46a6, true, "0000:00:02.0"),
+        ];
+        assert_eq!(pick_discrete(&amd).unwrap().vendor(), Some(GpuVendor::Amd));
+    }
+
+    #[test]
+    fn offload_env_per_vendor() {
+        let nv = offload_env(GpuVendor::Nvidia, "0000:01:00.0");
+        assert!(nv.contains(&("__NV_PRIME_RENDER_OFFLOAD", "1".to_owned())));
+        assert!(nv.contains(&("__GLX_VENDOR_LIBRARY_NAME", "nvidia".to_owned())));
+        assert_eq!(
+            offload_env(GpuVendor::Amd, "0000:03:00.0"),
+            [("DRI_PRIME", "pci-0000_03_00_0".to_owned())]
+        );
+    }
+
+    #[test]
+    fn pci_ids_lookup_prefers_the_bracketed_name() {
+        let text = "# c\n8086  Intel Corporation\n\ta7a0  Raptor Lake-P [Iris Xe Graphics]\n10de  NVIDIA Corporation\n\t28a1  AD107M [GeForce RTX 4050 Max-Q / Mobile]\n\t28a2  Plain\n";
+        assert_eq!(
+            pci_ids_name(text, 0x10de, 0x28a1).as_deref(),
+            Some("GeForce RTX 4050 Max-Q / Mobile")
+        );
+        assert_eq!(pci_ids_name(text, 0x10de, 0x28a2).as_deref(), Some("Plain"));
+        assert_eq!(pci_ids_name(text, 0x10de, 0xa7a0), None);
     }
 
     #[test]
@@ -741,6 +1084,7 @@ mod tests {
             argv: vec![format!("/usr/bin/{name}")],
             terminal: false,
             keywords: Vec::new(),
+            prefers_discrete_gpu: false,
         }
     }
 
@@ -801,6 +1145,7 @@ mod tests {
             argv: vec!["x".to_owned()],
             terminal: false,
             keywords: Vec::new(),
+            prefers_discrete_gpu: false,
         }
     }
 

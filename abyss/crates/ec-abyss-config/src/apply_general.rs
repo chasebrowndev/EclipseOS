@@ -392,6 +392,7 @@ impl Config {
 
     pub(crate) fn apply_misc(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };
+        let mut seen_gpu_apps = false;
         for n in children.nodes() {
             match n.name().value() {
                 "scripted-input" => {
@@ -410,6 +411,19 @@ impl Config {
                     Some(c) => self.misc.terminal_command = Some(c.to_owned()),
                     None => self.reject(n, "terminal-command needs a string argument"),
                 },
+                "gpu-mode" => match arg(n).and_then(KdlValue::as_string).and_then(GpuMode::parse) {
+                    Some(m) => self.misc.gpu_mode = m,
+                    None => self.reject(n, "gpu-mode must be \"integrated\", \"hybrid\" or \"dedicated\""),
+                },
+                "discrete-gpu-apps" => {
+                    if seen_gpu_apps {
+                        self.reject(
+                            n,
+                            "repeated discrete-gpu-apps replaces the previous one; list every id on a single node",
+                        );
+                    }
+                    self.misc.discrete_gpu_apps = names(n, &mut seen_gpu_apps);
+                }
                 // COMP-13 §1.1 (amended C-05): X11 is its own top-level node.
                 // A refusal about X11 all the same: fail safe, as in
                 // `apply_xwayland` (ADR 0064).
