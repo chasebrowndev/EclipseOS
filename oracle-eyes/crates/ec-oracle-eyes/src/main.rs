@@ -13,6 +13,7 @@ mod capture;
 mod choice;
 mod classify;
 mod config;
+mod context;
 mod daemon;
 mod fault;
 mod focus;
@@ -22,7 +23,10 @@ mod logging;
 mod logsafe;
 mod ocr;
 mod pipeline;
+mod png;
 mod redact;
+#[cfg(test)]
+mod replay;
 #[cfg(test)]
 mod tests_loop;
 

@@ -21,7 +21,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-use crate::answer::Reply;
+use crate::answer::{Ask, Reply};
 use crate::beacon::{Beacon, Eye};
 use crate::config::Config;
 use crate::fault::{Failure, Fault};
@@ -53,6 +53,13 @@ struct Inflight {
     reply: Receiver<Result<Reply, Failure>>,
     /// Where a failure of this job is reported.
     near: Option<Region>,
+    /// The first reply of a job that was escalated: shown if the retry fails,
+    /// so a weak answer is never replaced by nothing.
+    prior: Option<Reply>,
+    /// Whether this call sends the picture.
+    image: bool,
+    /// 0 for the first call of a frame, 1 for its one escalated retry.
+    tries: u8,
 }
 
 pub struct Daemon {
@@ -78,6 +85,10 @@ pub struct Daemon {
     /// seconds for as long as automatic mode stayed on.
     auto_fault: Option<Failure>,
     backoff: u32,
+    /// Index into the model list the switch chord cycles (`oracle-eyes.models`).
+    model_idx: usize,
+    /// Image mode: whether the next call sends the picture. Starts from config.
+    image: bool,
 }
 
 impl Daemon {
@@ -90,6 +101,7 @@ impl Daemon {
         now: Instant,
     ) -> Daemon {
         let poll_every = Duration::from_millis(settle_ms.max(1));
+        let image = pipeline.image_mode();
         let mut d = Daemon {
             pipeline,
             hud: Hud::new(),
@@ -105,6 +117,8 @@ impl Daemon {
             inflight: None,
             auto_fault: None,
             backoff: 0,
+            model_idx: 0,
+            image,
         };
         d.rest();
         d
@@ -201,6 +215,35 @@ impl Daemon {
                 }
                 self.rest();
             }
+            Some("annotation-model-switch") => {
+                // Cycles the list in config order. With no list there is
+                // nothing to cycle, and saying so is better than silence.
+                let n = self.pipeline.models().len();
+                if n < 2 {
+                    tracing::info!("model switch: no model list in oracle-eyes.models");
+                    self.notice(c, "No models to switch between", now);
+                } else {
+                    self.model_idx = (self.model_idx + 1) % n;
+                    self.pipeline.set_selection(self.model_idx, self.image);
+                    let model = self.pipeline.selected_model().unwrap_or("default");
+                    tracing::info!(model, "model switched");
+                    let text = format!("Next answers use {model}");
+                    self.notice(c, &text, now);
+                }
+            }
+            Some("annotation-image-toggle") => {
+                // Pixels leave the machine when this is on, so the HUD says so
+                // at once and every answer made with them says so too.
+                self.image = !self.image;
+                self.pipeline.set_selection(self.model_idx, self.image);
+                tracing::info!(on = self.image, "image mode toggled");
+                let text = if self.image {
+                    "Image mode on: the screen picture goes to the model"
+                } else {
+                    "Image mode off: text only"
+                };
+                self.notice(c, text, now);
+            }
             _ => {}
         }
     }
@@ -291,38 +334,54 @@ impl Daemon {
 
     /// Hand `job` to a worker thread for its model reply.
     fn start(&mut self, job: Job, near: Option<Region>) {
+        let asker = self.pipeline.asker();
+        let image = self.image;
+        self.launch(job, near, asker, image, 0, None);
+    }
+
+    /// Start one model call for `job`: which `asker`, whether it sends the
+    /// picture, and how many tries this frame has had. The job's input is
+    /// copied out here, so the worker owns everything it reads.
+    fn launch(
+        &mut self,
+        job: Job,
+        near: Option<Region>,
+        asker: Arc<dyn Ask>,
+        image: bool,
+        tries: u8,
+        prior: Option<Reply>,
+    ) {
         let (tx, rx) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
-        let asker = self.pipeline.asker();
-        let (lines, options) = (job.lines().to_vec(), job.options().to_vec());
+        let input = job.input(image);
         let flag = Arc::clone(&cancel);
         let spawned = std::thread::Builder::new()
             .name("oe-ask".into())
             .spawn(move || {
-                let _ = tx.send(asker.ask(&lines, &options, &flag));
+                let _ = tx.send(asker.ask(&input, &flag));
             });
-        if let Err(e) = spawned {
-            // Without a worker there is no reply; say so through the normal
-            // path rather than dropping the request.
-            let (tx, rx2) = mpsc::channel();
-            let _ = tx.send(Err(Failure::new(
-                Fault::Command,
-                format!("could not start the model call: {e}"),
-            )));
-            self.inflight = Some(Inflight {
-                job,
-                cancel,
-                reply: rx2,
-                near,
-            });
-            return;
-        }
-        tracing::debug!(kind = ?job.kind, "daemon: model call started");
+        let reply = match spawned {
+            Ok(_) => rx,
+            Err(e) => {
+                // Without a worker there is no reply; say so through the normal
+                // path rather than dropping the request.
+                let (tx, rx2) = mpsc::channel();
+                let _ = tx.send(Err(Failure::new(
+                    Fault::Command,
+                    format!("could not start the model call: {e}"),
+                )));
+                rx2
+            }
+        };
+        tracing::debug!(kind = ?job.kind, tries, image, "daemon: model call started");
         self.inflight = Some(Inflight {
             job,
             cancel,
-            reply: rx,
+            reply,
             near,
+            prior,
+            image,
+            tries,
         });
     }
 
@@ -346,21 +405,62 @@ impl Daemon {
                 "the model call ended without a reply",
             )),
         };
-        let f = self.inflight.take().expect("checked above");
+        let mut f = self.inflight.take().expect("checked above");
         self.rest();
+        // A poor answer gets one more call, once per frame, if config allows
+        // it. The first reply is kept in case the retry fails.
+        let result = match result {
+            Ok(reply) if f.tries == 0 => match self.pipeline.retry_for(&f.job, &reply) {
+                Some(retry) => {
+                    self.set_eye(Eye::Think);
+                    self.launch(f.job, f.near, retry.asker, retry.image, 1, Some(reply));
+                    return;
+                }
+                None => Ok(reply),
+            },
+            other => other,
+        };
+        let result = match (result, f.prior.take()) {
+            (Err(e), Some(prior)) if e.fault != Fault::Cancelled => {
+                tracing::debug!(error = %e, "daemon: escalated call failed, showing the first answer");
+                Ok(prior)
+            }
+            (r, _) => r,
+        };
         match (f.job.kind, result) {
             (Kind::Select | Kind::Expand, Ok(reply)) => {
-                let a = self.pipeline.finish(&f.job, reply);
-                self.show(c, Some(a.anchor), &a.panel, None, now);
+                let items: Vec<(Option<Anchor>, Panel)> = self
+                    .pipeline
+                    .finish(&f.job, reply, f.image)
+                    .into_iter()
+                    .map(|d| (Some(d.anchor), d.panel))
+                    .collect();
+                self.show_many(c, &items, None, now);
             }
             (Kind::Auto, Ok(reply)) => {
                 self.auto_fault = None;
-                let a = self.pipeline.finish(&f.job, reply);
-                self.show(c, Some(a.anchor), &a.panel, Some(a.hold_ms), now);
+                let drawn = self.pipeline.finish(&f.job, reply, f.image);
+                let hold = drawn.iter().map(|d| d.hold_ms).max().unwrap_or(0);
+                let items: Vec<(Option<Anchor>, Panel)> = drawn
+                    .into_iter()
+                    .map(|d| (Some(d.anchor), d.panel))
+                    .collect();
+                self.show_many(c, &items, Some(hold), now);
             }
             (Kind::Select | Kind::Expand, Err(e)) => self.fail(c, &e, f.near, now),
             (Kind::Auto, Err(e)) => self.auto_failed(c, &e, now),
         }
+    }
+
+    /// A short unanchored note for a chord that changed a setting, held for the
+    /// failure time so it reads and goes.
+    fn notice(&mut self, c: &mut impl Control, text: &str, now: Instant) {
+        let panel = Panel {
+            title: "Oracle Eyes".to_string(),
+            text: text.to_string(),
+            ..Panel::default()
+        };
+        self.show(c, None, &panel, Some(self.fail_ms), now);
     }
 
     /// A failure the user asked for: shown beside what they pointed at.
@@ -392,13 +492,30 @@ impl Daemon {
         hold_ms: Option<u64>,
         now: Instant,
     ) {
-        match self.hud.show(c, at, panel) {
-            Ok(_) => {
+        self.show_many(c, &[(at, panel.clone())], hold_ms, now);
+    }
+
+    /// Draw one panel per question. `hold_ms` of `None` holds them until
+    /// dismissed.
+    fn show_many(
+        &mut self,
+        c: &mut impl Control,
+        items: &[(Option<Anchor>, Panel)],
+        hold_ms: Option<u64>,
+        now: Instant,
+    ) {
+        match self.hud.show_all(c, items) {
+            Ok(()) => {
                 self.shown = Some(match hold_ms {
                     Some(ms) => Shown::Until(now + Duration::from_millis(ms)),
                     None => Shown::Held,
                 });
-                tracing::debug!(held = hold_ms.is_none(), hold_ms, "daemon: shown");
+                tracing::debug!(
+                    held = hold_ms.is_none(),
+                    hold_ms,
+                    panels = items.len(),
+                    "daemon: shown"
+                );
             }
             // If the compositor will not draw for us there is nowhere left to
             // complain but the journal.
