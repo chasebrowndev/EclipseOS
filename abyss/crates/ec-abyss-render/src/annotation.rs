@@ -146,7 +146,9 @@ pub struct Annotation {
     /// width decides the column count.
     pub title: String,
     pub text: String,
-    pub pick: Option<Pick>,
+    /// Admitted picks, in the order the caller gave them. Empty when there is
+    /// no answer to mark. At most [`MAX_PICKS`].
+    pub picks: Vec<Pick>,
     /// When it was created, for the entrance.
     born: Instant,
     /// When its text last changed, for the cross-fade.
@@ -196,7 +198,7 @@ struct ArtKey {
     palette: HudPalette,
     glass: bool,
     region: Option<Rectangle<i32, Logical>>,
-    pick: Option<Rectangle<i32, Logical>>,
+    picks: Vec<Rectangle<i32, Logical>>,
     panel: Rectangle<i32, Logical>,
 }
 
@@ -251,11 +253,20 @@ pub fn pick_label(s: &str) -> Option<String> {
 /// (ADR 0054). The marker is on-screen geometry, and the anchor is the one
 /// region this caller was already allowed to mark; outside it, a pick would
 /// let the caller highlight anything at all.
-fn admit(anchor: Rectangle<i32, Logical>, pick: Option<Pick>) -> Option<Pick> {
-    let p = pick?;
+fn admit(anchor: Rectangle<i32, Logical>, p: &Pick) -> Option<Pick> {
     let rect = clamp_anchor(p.rect);
     let label = pick_label(&p.label)?;
     (rect.size.w > 0 && rect.size.h > 0 && anchor.contains_rect(rect)).then_some(Pick { rect, label })
+}
+
+/// The most picks one annotation may carry. The door refuses more; the store
+/// keeps this many whatever it is given.
+pub const MAX_PICKS: usize = 16;
+
+/// The one rectangle that covers every pick, which is where the leader points
+/// and where the panel keeps clear of. `None` with no picks.
+fn picks_focus(picks: &[Pick]) -> Option<Rectangle<i32, Logical>> {
+    picks.iter().map(|p| p.rect).reduce(|a, b| a.merge(b))
 }
 
 /// Hard cap on live annotations. A caller that leaks handles degrades its own
@@ -263,12 +274,7 @@ fn admit(anchor: Rectangle<i32, Logical>, pick: Option<Pick>) -> Option<Pick> {
 pub const MAX_LIVE: usize = 32;
 
 impl AnnotationStore {
-    /// Sanitise `title` and `text`, admit `pick`, and store it all against a
-    /// fresh handle owned by `owner`. Returns `None` once [`MAX_LIVE`]
-    /// annotations are live. A pick that fails [`admit`] is dropped and the
-    /// annotation is kept: the text is still worth showing. A pick needs an
-    /// anchor to lie inside and an answer to mark, so an unanchored or error
-    /// annotation never keeps one -- an error draws no gold.
+    /// One pick: the legacy `pick` argument. See [`Self::create_picks`].
     pub fn create(
         &mut self,
         owner: u64,
@@ -278,15 +284,37 @@ impl AnnotationStore {
         text: &str,
         pick: Option<Pick>,
     ) -> Option<AnnotationId> {
+        self.create_picks(owner, anchor, kind, title, text, pick.into_iter().collect())
+    }
+
+    /// Sanitise `title` and `text`, admit `picks`, and store it all against a
+    /// fresh handle owned by `owner`. Returns `None` once [`MAX_LIVE`]
+    /// annotations are live. A pick that fails [`admit`] is dropped and the
+    /// annotation is kept: the text is still worth showing. Picks need an
+    /// anchor to lie inside and an answer to mark, so an unanchored or error
+    /// annotation never keeps one -- an error draws no gold.
+    pub fn create_picks(
+        &mut self,
+        owner: u64,
+        anchor: Option<Rectangle<i32, Logical>>,
+        kind: AnnotationKind,
+        title: &str,
+        text: &str,
+        picks: Vec<Pick>,
+    ) -> Option<AnnotationId> {
         if self.live.len() >= MAX_LIVE {
             return None;
         }
         self.next += 1;
         let id = AnnotationId(self.next);
         let anchor = anchor.map(clamp_anchor);
-        let pick = match (anchor, kind) {
-            (Some(anchor), AnnotationKind::Answer) => admit(anchor, pick),
-            _ => None,
+        let picks = match (anchor, kind) {
+            (Some(anchor), AnnotationKind::Answer) => picks
+                .iter()
+                .take(MAX_PICKS)
+                .filter_map(|p| admit(anchor, p))
+                .collect(),
+            _ => Vec::new(),
         };
         self.live.insert(
             id,
@@ -296,7 +324,7 @@ impl AnnotationStore {
                 kind,
                 title: title_for(title),
                 text: text::sanitize(text),
-                pick,
+                picks,
                 born: Instant::now(),
                 changed: None,
             },
@@ -513,7 +541,7 @@ pub fn annotation_elements(
             palette,
             glass,
             region: layout.region,
-            pick: layout.pick.as_ref().map(|p| p.rect),
+            picks: layout.picks.iter().map(|p| p.rect).collect(),
             panel: layout.panel,
         };
         if arts.get(id).map(|a| a.key != key).unwrap_or(true) {
@@ -656,7 +684,7 @@ struct Layout {
     /// The part of the anchor that may be marked, `None` when there is no
     /// honest region to point at -- the panel is then drawn unmarked.
     region: Option<Rectangle<i32, Logical>>,
-    pick: Option<Pick>,
+    picks: Vec<Pick>,
     side: Side,
 }
 
@@ -674,37 +702,46 @@ fn lay_out(
     let region = drawable_region(local(anchor), output);
     // A pick is drawn only inside what is drawn of the anchor: one hanging off
     // the output goes unmarked rather than half-marked.
-    let pick = a.pick.as_ref().and_then(|p| {
-        let rect = local(p.rect);
-        region.filter(|r| r.contains_rect(rect)).map(|_| Pick {
-            rect,
-            label: p.label.clone(),
+    // Each pick is drawn only inside what is drawn of the anchor: one hanging
+    // off the output goes unmarked rather than half-marked.
+    let picks: Vec<Pick> = a
+        .picks
+        .iter()
+        .filter_map(|p| {
+            let rect = local(p.rect);
+            region.filter(|r| r.contains_rect(rect)).map(|_| Pick {
+                rect,
+                label: p.label.clone(),
+            })
         })
-    });
-    let chip = pick.as_ref().map(|p| p.label.as_str()).unwrap_or("");
-    let cols = columns(chip, &a.title, &a.text, output.w, error);
-    let mut card = Card::new(chip, &a.title, &a.text, cols, error);
+        .collect();
+    // The header chip names every pick, in the order the caller gave them.
+    let chip = picks
+        .iter()
+        .map(|p| p.label.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let cols = columns(&chip, &a.title, &a.text, output.w, error);
+    let mut card = Card::new(&chip, &a.title, &a.text, cols, error);
     if card.is_empty() {
         return None;
     }
-    // What the panel must not cover: the region, and the tab beside a pick.
+    // What the panel must not cover: the region, and the tab beside each pick.
     let target = region.unwrap_or_else(|| local(anchor));
-    let blocked = match &pick {
-        Some(p) => target.merge(tab_rect(p)),
-        None => target,
-    };
-    let focus = pick.as_ref().map(|p| p.rect).unwrap_or(target);
+    let blocked = picks.iter().fold(target, |b, p| b.merge(tab_rect(p)));
+    let focus = picks_focus(&picks).unwrap_or(target);
+    let marked = !picks.is_empty();
     let mut size = card_size(&card);
-    let (mut loc, mut side) = place(blocked, focus, pick.is_some(), size, output, taken);
+    let (mut loc, mut side) = place(blocked, focus, marked, size, output, taken);
     if side.stacked() && cols < STACK_MIN_COLS {
         // Stacked: widen to the stacked minimum (as far as the output
         // allows) and place again.
         let fit = (output.w.max(0) as usize).saturating_sub(hud::PAD_X * 2) / ADVANCE;
         let wide_cols = STACK_MIN_COLS.min(fit).max(cols);
-        let wide = Card::new(chip, &a.title, &a.text, wide_cols, error)
+        let wide = Card::new(&chip, &a.title, &a.text, wide_cols, error)
             .at_least(wide_cols * ADVANCE + hud::PAD_X * 2);
         let wide_size = card_size(&wide);
-        let (l, s) = place(blocked, focus, pick.is_some(), wide_size, output, taken);
+        let (l, s) = place(blocked, focus, marked, wide_size, output, taken);
         if s.stacked() {
             (card, size, loc, side) = (wide, wide_size, l, s);
         }
@@ -713,7 +750,7 @@ fn lay_out(
         card,
         panel: Rectangle::new(loc, size),
         region,
-        pick,
+        picks,
         side,
     })
 }
@@ -750,7 +787,7 @@ fn unanchored(
         card,
         panel,
         region: None,
-        pick: None,
+        picks: Vec::new(),
         side: Side::Top,
     })
 }
@@ -807,7 +844,7 @@ fn draw(l: &Layout, pal: &HudPalette, glass: bool, dev: usize) -> Vec<Piece> {
         raster,
         panel: false,
     };
-    if let Some(p) = &l.pick {
+    for p in &l.picks {
         // The pick is the only gold: a solid tab with the letter in ink, and
         // a faint wash with a rim over the option itself.
         let t = tab_rect(p);
@@ -836,7 +873,7 @@ fn draw(l: &Layout, pal: &HudPalette, glass: bool, dev: usize) -> Vec<Piece> {
             ),
         ));
     }
-    let focus = l.pick.as_ref().map(|p| p.rect).unwrap_or(region);
+    let focus = picks_focus(&l.picks).unwrap_or(region);
     if let Some(lead) = leader(region, focus, l.panel) {
         let r = LEADER_DOT / 2;
         out.push(mark(
@@ -1271,7 +1308,7 @@ mod tests {
         s.create(1, anchor, ANSWER, "", "x", pick(rect(110, 150, 291, 20), "B"));
         s.create(1, anchor, ANSWER, "", "x", pick(rect(5000, 5000, 20, 20), "B"));
         s.create(1, anchor, ANSWER, "", "x", pick(rect(110, 150, 0, 20), "B"));
-        let picks: Vec<_> = s.iter().map(|(_, a)| a.pick.clone()).collect();
+        let picks: Vec<_> = s.iter().map(|(_, a)| a.picks.first().cloned()).collect();
         assert_eq!(picks.len(), 4, "a dropped pick keeps its annotation");
         assert_eq!(
             picks[0],
@@ -1291,7 +1328,7 @@ mod tests {
         let p = pick(rect(110, 150, 200, 20), "B");
         s.create(1, Some(anchor), AnnotationKind::Error, "no", "x", p.clone());
         s.create(1, None, ANSWER, "t", "x", p);
-        assert!(s.iter().all(|(_, a)| a.pick.is_none()));
+        assert!(s.iter().all(|(_, a)| a.picks.is_empty()));
     }
 
     #[test]
@@ -1303,7 +1340,7 @@ mod tests {
         let mut taken = Vec::new();
         for (_, a) in s.iter() {
             let l = lay_out(a, out, (0, 0).into(), &taken).unwrap();
-            assert!(l.region.is_none() && l.pick.is_none());
+            assert!(l.region.is_none() && l.picks.is_empty());
             let centre = l.panel.loc.x + l.panel.size.w / 2;
             assert!((centre - out.w / 2).abs() <= 1, "{:?}", l.panel);
             assert!(taken
@@ -1333,7 +1370,58 @@ mod tests {
             "x",
             pick(rect(1, 1, 5, 5), "<>"),
         );
-        assert!(s.iter().next().unwrap().1.pick.is_none());
+        assert!(s.iter().next().unwrap().1.picks.is_empty());
+    }
+
+    #[test]
+    fn every_pick_in_the_array_is_marked() {
+        // ADR 0054, multi-pick: each admitted pick gets its own tab and wash,
+        // in the order given; the panel's chip names them all; the leader
+        // points at the group. One pick outside the anchor is dropped alone.
+        let anchor = rect(100, 100, 300, 200);
+        let mut s = AnnotationStore::default();
+        s.create_picks(
+            1,
+            Some(anchor),
+            ANSWER,
+            "",
+            "x",
+            vec![
+                pick(rect(110, 150, 20, 20), "a").unwrap(),
+                pick(rect(5000, 5000, 20, 20), "x").unwrap(),
+                pick(rect(150, 150, 20, 20), "c").unwrap(),
+            ],
+        )
+        .unwrap();
+        let a = s.iter().next().unwrap().1;
+        assert_eq!(a.picks.len(), 2, "the out-of-anchor pick is dropped alone");
+        let l = lay_out(a, OUT.into(), (0, 0).into(), &[]).unwrap();
+        let labels: Vec<_> = l.picks.iter().map(|p| p.label.as_str()).collect();
+        assert_eq!(labels, ["A", "C"]);
+        assert_eq!(l.card.chip, "A, C");
+
+        // Both get drawn: a tab and a wash each, on top of the panel, the
+        // leader and the rim that a single pick also gets.
+        let one = {
+            let mut s = AnnotationStore::default();
+            s.create(
+                1,
+                Some(anchor),
+                ANSWER,
+                "",
+                "x",
+                pick(rect(110, 150, 20, 20), "a"),
+            );
+            let a = s.iter().next().unwrap().1;
+            lay_out(a, OUT.into(), (0, 0).into(), &[]).unwrap()
+        };
+        let pal = HudPalette::default();
+        let many = draw(&l, &pal, true, 1).len();
+        let single = draw(&one, &pal, true, 1).len();
+        assert!(
+            many >= single + 2,
+            "{many} pieces for two picks, {single} for one"
+        );
     }
 
     #[test]
@@ -1350,7 +1438,7 @@ mod tests {
         let a = s.iter().next().unwrap().1;
         let l = lay_out(a, out, (0, 0).into(), &[]).unwrap();
         assert_eq!(l.region, Some(anchor));
-        assert_eq!(l.pick.map(|p| p.rect), Some(pick_r));
+        assert_eq!(l.picks.first().map(|p| p.rect), Some(pick_r));
     }
 
     #[test]
@@ -1440,7 +1528,7 @@ mod tests {
         assert_eq!(anchor.size.w, MAX_COORD);
         assert!(anchor.loc.x.checked_add(anchor.size.w).is_some());
         // Both clamp the same way, so the pick is still inside.
-        assert_eq!(a.pick.as_ref().map(|p| p.rect), Some(anchor));
+        assert_eq!(a.picks.first().map(|p| p.rect), Some(anchor));
     }
 
     const OUT: (i32, i32) = (1920, 1080);
@@ -1906,7 +1994,7 @@ mod tests {
                 if let Some(r) = l.region {
                     assert!(!l.panel.overlaps(r), "{}: panel covers its region", scene.name);
                 }
-                if let Some(p) = &l.pick {
+                if let Some(p) = l.picks.first() {
                     assert!(
                         !l.panel.overlaps(tab_rect(p)),
                         "{}: panel covers the tab",

@@ -765,7 +765,10 @@ impl Config {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
             let name = n.name().value();
-            if !matches!(name, "select" | "dismiss" | "expand" | "auto-toggle") {
+            if !matches!(
+                name,
+                "select" | "dismiss" | "expand" | "auto-toggle" | "model-switch" | "image-toggle"
+            ) {
                 self.unknown_key(n, "oracle-eyes.bind", "oracle-eyes bind key");
                 continue;
             }
@@ -787,6 +790,8 @@ impl Config {
                         "select" => b.select = parsed,
                         "dismiss" => b.dismiss = parsed,
                         "expand" => b.expand = parsed,
+                        "model-switch" => b.model_switch = parsed,
+                        "image-toggle" => b.image_toggle = parsed,
                         _ => b.auto_toggle = parsed,
                     }
                 }

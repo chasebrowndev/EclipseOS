@@ -975,6 +975,9 @@ fn an_unparseable_file_is_refused_not_defaulted() {
 /// A config that declares binds extends the defaults; it does not replace
 /// the table. The live regression this covers: a 3-bind user config left a
 /// 3-bind table, dropping the Super+Escape override chord.
+/// The six Oracle Eyes chords ship bound on top of `default_binds()`.
+const SHIPPED_OE_CHORDS: usize = 6;
+
 #[test]
 fn config_binds_extend_defaults() {
     let dir = std::env::temp_dir().join(format!("abyss-cfg-merge-{}", std::process::id()));
@@ -983,7 +986,7 @@ fn config_binds_extend_defaults() {
     std::fs::write(&f, "bind \"SUPER\" \"F1\" { quit; }\n").unwrap();
     let cfg = Config::load(Some(&f));
     assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
-    assert_eq!(cfg.binds.len(), default_binds().len() + 1);
+    assert_eq!(cfg.binds.len(), default_binds().len() + SHIPPED_OE_CHORDS + 1);
     assert!(cfg.binds.iter().any(|b| b.key == Keysym::F1));
 
     // The two reserved chords survive any config (COMP-04 §6, COMP-13 §1.1).
@@ -1008,7 +1011,11 @@ fn config_bind_overrides_default_chord() {
     std::fs::write(&f, "bind \"SUPER\" \"q\" { spawn \"alacritty\"; }\n").unwrap();
     let cfg = Config::load(Some(&f));
     assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
-    assert_eq!(cfg.binds.len(), default_binds().len(), "override, not addition");
+    assert_eq!(
+        cfg.binds.len(),
+        default_binds().len() + SHIPPED_OE_CHORDS,
+        "override, not addition"
+    );
     let mods = ModifiersState {
         logo: true,
         ..Default::default()
@@ -1341,6 +1348,9 @@ fn oracle_eyes_parses_and_bad_values_keep_defaults() {
             auto_interval_ms: 5000,
             hold_ms: 6000,
             debug: true,
+            models: Vec::new(),
+            image_mode: false,
+            image_auto_escalate: false,
             bind: OracleEyesBinds::default(),
         }
     );
@@ -1351,6 +1361,30 @@ fn oracle_eyes_parses_and_bad_values_keep_defaults() {
     );
     assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
     assert_eq!(cfg.oracle_eyes, OracleEyes::default());
+
+    // The image flags and the model list, and a list that could read as a flag.
+    let cfg = parse_single_for_tests(
+        "oracle-eyes {\n  models \"haiku\" \"sonnet\" \"opus\"\n  image-mode #true\n  \
+             image-auto-escalate #true\n}\n",
+    );
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(cfg.oracle_eyes.models, ["haiku", "sonnet", "opus"]);
+    assert!(cfg.oracle_eyes.image_mode);
+    assert!(cfg.oracle_eyes.image_auto_escalate);
+    let cfg = parse_single_for_tests("oracle-eyes { models; }");
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert!(cfg.oracle_eyes.models.is_empty());
+    for bad in [
+        "oracle-eyes { models \"haiku\" \"--dangerously-skip\"; }",
+        "oracle-eyes { models \"\"; }",
+        "oracle-eyes { models \"son net\"; }",
+        "oracle-eyes { models 3; }",
+        "oracle-eyes { image-mode \"yes\"; }",
+    ] {
+        let cfg = parse_single_for_tests(bad);
+        assert_eq!(cfg.errors.len(), 1, "{bad}: {:?}", cfg.errors);
+        assert_eq!(cfg.oracle_eyes, OracleEyes::default(), "{bad}");
+    }
 
     for bad in [
         "oracle-eyes { model-command \"\"; }",
@@ -1369,20 +1403,24 @@ fn oracle_eyes_parses_and_bad_values_keep_defaults() {
 #[test]
 fn oracle_eyes_binds_become_default_binds() {
     let c = Config::default();
-    assert!(
-        oracle_eyes_binds(&c.oracle_eyes).is_empty(),
-        "nothing bound by default"
-    );
+    let defaults = oracle_eyes_binds(&c.oracle_eyes);
+    assert_eq!(defaults.len(), 6, "all six chords ship bound");
+    assert_eq!(defaults[0].action, Action::AnnotationSelect);
+    assert_eq!(defaults[0].key, Keysym::grave);
     let c = parse_single_for_tests(
         "oracle-eyes { bind { select \"Super+Shift+A\"; dismiss \"Super+Shift+D\"; \
-             expand \"none\"; auto-toggle \"Super+Shift+T\"; } }",
+             expand \"none\"; auto-toggle \"Super+Shift+T\"; model-switch \"Super+Shift+M\"; \
+             image-toggle \"Super+Shift+I\"; } }",
     );
     assert!(c.errors.is_empty(), "{:?}", c.errors);
     let binds = oracle_eyes_binds(&c.oracle_eyes);
-    assert_eq!(binds.len(), 3);
+    assert_eq!(binds.len(), 5);
     assert_eq!(binds[0].action, Action::AnnotationSelect);
     assert_eq!(binds[0].key, Keysym::a);
     assert_eq!(binds[2].action, Action::AnnotationAutoToggle);
+    assert_eq!(binds[3].action, Action::AnnotationModelSwitch);
+    assert_eq!(binds[4].action, Action::AnnotationImageToggle);
+    assert_eq!(binds[4].key, Keysym::i);
     assert_eq!(c.oracle_eyes.bind.expand.text, "none");
 
     let c =
@@ -1984,6 +2022,8 @@ fn annotation_chords_parse_and_are_not_bound_by_default() {
         ("annotation-dismiss", Action::AnnotationDismiss),
         ("annotation-expand", Action::AnnotationExpand),
         ("annotation-auto-toggle", Action::AnnotationAutoToggle),
+        ("annotation-model-switch", Action::AnnotationModelSwitch),
+        ("annotation-image-toggle", Action::AnnotationImageToggle),
     ] {
         let doc: KdlDocument = format!("bind \"SUPER CTRL\" \"o\" {{ {name}; }}")
             .parse()
@@ -2000,6 +2040,8 @@ fn annotation_chords_parse_and_are_not_bound_by_default() {
             | Action::AnnotationDismiss
             | Action::AnnotationExpand
             | Action::AnnotationAutoToggle
+            | Action::AnnotationModelSwitch
+            | Action::AnnotationImageToggle
     )));
 }
 

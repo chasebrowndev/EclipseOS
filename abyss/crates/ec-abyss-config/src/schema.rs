@@ -373,40 +373,76 @@ pub const TABLE: &[Key] = &[
        screen captures, and the daemon writes a debug log.",
     ),
     k(
-        "oracle-eyes.bind.select",
-        Ty::Str,
-        Str("none"),
+        "oracle-eyes.models",
+        Ty::StrList,
+        EmptyList,
         Abyss,
         Live,
-        "Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` (the default) \
-       leaves it unbound. A `bind` block on the same chord wins.",
+        "Oracle Eyes: model names for the model-switch chord, in the order it cycles, e.g. `models \"haiku\" \"sonnet\" \"opus\"`. Empty (the default) runs the model command with its own default model.",
+    ),
+    k(
+        "oracle-eyes.image-mode",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Oracle Eyes: send the frame to the model as an image as well as OCR text. Off by default, since the pixels leave the redaction filter; the image-toggle chord changes it for the session.",
+    ),
+    k(
+        "oracle-eyes.image-auto-escalate",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Oracle Eyes: when an answer is weak (low confidence or poor OCR), retry once with the next model and/or image mode. Off by default.",
+    ),
+    k(
+        "oracle-eyes.bind.select",
+        Ty::Str,
+        Str("Super+grave"),
+        Abyss,
+        Live,
+        "Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins.",
     ),
     k(
         "oracle-eyes.bind.dismiss",
         Ty::Str,
-        Str("none"),
+        Str("Super+Alt+Down"),
         Abyss,
         Live,
-        "Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` (the default) \
-       leaves it unbound. A `bind` block on the same chord wins.",
+        "Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins.",
     ),
     k(
         "oracle-eyes.bind.expand",
         Ty::Str,
-        Str("none"),
+        Str("Super+Alt+Up"),
         Abyss,
         Live,
-        "Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` (the default) \
-       leaves it unbound. A `bind` block on the same chord wins.",
+        "Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins.",
     ),
     k(
         "oracle-eyes.bind.auto-toggle",
         Ty::Str,
-        Str("none"),
+        Str("Super+a"),
         Abyss,
         Live,
-        "Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` (the default) \
-       leaves it unbound. A `bind` block on the same chord wins.",
+        "Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins.",
+    ),
+    k(
+        "oracle-eyes.bind.model-switch",
+        Ty::Str,
+        Str("Super+Alt+Right"),
+        Abyss,
+        Live,
+        "Chord for annotation-model-switch: move to the next model in `oracle-eyes.models`, like `Super+Shift+M`; `none` leaves it unbound. A `bind` block on the same chord wins.",
+    ),
+    k(
+        "oracle-eyes.bind.image-toggle",
+        Ty::Str,
+        Str("Super+Alt+Left"),
+        Abyss,
+        Live,
+        "Chord for annotation-image-toggle: turn image mode on or off for this session, like `Super+Shift+I`; `none` leaves it unbound. A `bind` block on the same chord wins.",
     ),
     // general
     k(
@@ -2522,6 +2558,18 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["annotation-auto-toggle"],
         "Forwarded to the annotation addon.",
     ),
+    form(
+        &["annotation-model-switch"],
+        "",
+        &["annotation-model-switch"],
+        "Forwarded to the annotation addon: the next model in `oracle-eyes.models`.",
+    ),
+    form(
+        &["annotation-image-toggle"],
+        "",
+        &["annotation-image-toggle"],
+        "Forwarded to the annotation addon: image mode on or off for this session.",
+    ),
     form(&["quit", "exit"], "", &["quit"], "Exit the compositor."),
 ];
 
@@ -2570,6 +2618,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "oracle-eyes.auto-interval-ms" => V::Int(c.oracle_eyes.auto_interval_ms as i64),
         "oracle-eyes.hold-ms" => V::Int(c.oracle_eyes.hold_ms as i64),
         "oracle-eyes.debug" => V::Bool(c.oracle_eyes.debug),
+        "oracle-eyes.models" => V::List(c.oracle_eyes.models.clone()),
+        "oracle-eyes.image-mode" => V::Bool(c.oracle_eyes.image_mode),
+        "oracle-eyes.image-auto-escalate" => V::Bool(c.oracle_eyes.image_auto_escalate),
         "general.gaps-in" => V::Int(c.general.gaps_in as i64),
         "general.gaps-out" => V::Int(c.general.gaps_out as i64),
         "general.gaps-in-vertical" => c.general.gaps_in_vertical.map_or(V::Null, |v| V::Int(v as i64)),
@@ -2649,6 +2700,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "oracle-eyes.bind.dismiss" => V::Str(c.oracle_eyes.bind.dismiss.text.clone()),
         "oracle-eyes.bind.expand" => V::Str(c.oracle_eyes.bind.expand.text.clone()),
         "oracle-eyes.bind.auto-toggle" => V::Str(c.oracle_eyes.bind.auto_toggle.text.clone()),
+        "oracle-eyes.bind.model-switch" => V::Str(c.oracle_eyes.bind.model_switch.text.clone()),
+        "oracle-eyes.bind.image-toggle" => V::Str(c.oracle_eyes.bind.image_toggle.text.clone()),
         "launcher.bind.run" => V::Str(c.launcher.bind.run.text.clone()),
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
         "settings.search.frecency" => V::Bool(c.settings.search_frecency),
@@ -2841,6 +2894,8 @@ mod tests {
                 "oracle-eyes.bind.dismiss" => "Super+Shift+d".into(),
                 "oracle-eyes.bind.expand" => "Super+Shift+x".into(),
                 "oracle-eyes.bind.auto-toggle" => "Super+Shift+t".into(),
+                "oracle-eyes.bind.model-switch" => "Super+Shift+m".into(),
+                "oracle-eyes.bind.image-toggle" => "Super+Shift+i".into(),
                 // One of the event's own styles.
                 p if p.starts_with("animations.") && p.ends_with(".style") => {
                     let ev = p.split('.').nth(1).and_then(crate::animations::Event::parse)?;

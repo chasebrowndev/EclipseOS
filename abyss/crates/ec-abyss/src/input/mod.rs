@@ -214,6 +214,18 @@ impl AbyssState {
                     )));
                 }
                 match state.config.action_for(&held, sym) {
+                    // Shipped add-on chords only take the key while their hook
+                    // is on, so a stock install without the add-on loses nothing.
+                    Some(Action::AnnotationSelect) if !state.addons.hooks.is_on(Hook::RegionSelect) => {
+                        FilterResult::Forward
+                    }
+                    Some(
+                        Action::AnnotationDismiss
+                        | Action::AnnotationExpand
+                        | Action::AnnotationAutoToggle
+                        | Action::AnnotationModelSwitch
+                        | Action::AnnotationImageToggle,
+                    ) if !state.addons.hooks.is_on(Hook::Annotations) => FilterResult::Forward,
                     Some(a) => FilterResult::Intercept(a.clone()),
                     None => FilterResult::Forward,
                 }
@@ -272,11 +284,17 @@ impl AbyssState {
                 tracing::debug!("region-select hook is off; chord ignored");
             }
             Action::AnnotationSelect => self.region_select_start(),
-            Action::AnnotationDismiss | Action::AnnotationExpand | Action::AnnotationAutoToggle
+            Action::AnnotationDismiss
+            | Action::AnnotationExpand
+            | Action::AnnotationAutoToggle
+            | Action::AnnotationModelSwitch
+            | Action::AnnotationImageToggle
                 if !self.addons.hooks.is_on(Hook::Annotations) => {}
             Action::AnnotationDismiss => self.emit_keybind("annotation-dismiss"),
             Action::AnnotationExpand => self.emit_keybind("annotation-expand"),
             Action::AnnotationAutoToggle => self.emit_keybind("annotation-auto-toggle"),
+            Action::AnnotationModelSwitch => self.emit_keybind("annotation-model-switch"),
+            Action::AnnotationImageToggle => self.emit_keybind("annotation-image-toggle"),
         }
     }
 
