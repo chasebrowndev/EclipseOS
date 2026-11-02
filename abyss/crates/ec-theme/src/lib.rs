@@ -96,9 +96,12 @@ pub fn linear_to_srgb(c: f32) -> f32 {
 }
 
 /// WCAG contrast ratio (`1..=21`) of `fg` over the opaque `bg`. A translucent
-/// `fg` is first composited over `bg` in sRGB numbers.
+/// `fg` is first composited over `bg` the way iced draws it, in linear light
+/// (see [`linear_alpha`]), so the figure is what is on screen.
 pub fn contrast(fg: Rgba, bg: Rgba) -> f32 {
-    let l1 = fg.over_opaque(bg).luminance();
+    let a = fg.0[3];
+    let mix = |c: usize| a * srgb_to_linear(fg.0[c]) + (1.0 - a) * srgb_to_linear(bg.0[c]);
+    let l1 = 0.2126 * mix(0) + 0.7152 * mix(1) + 0.0722 * mix(2);
     let l2 = bg.luminance();
     let (hi, lo) = if l1 > l2 { (l1, l2) } else { (l2, l1) };
     (hi + 0.05) / (lo + 0.05)
@@ -161,10 +164,35 @@ pub const LIGHT_SEEDS: Seeds = Seeds {
     base: Rgba::rgb(0xf4f1ea),
     ink: Rgba::rgb(0x1a1610),
     accent: Rgba::rgb(0xf2c33c),
-    accent_text: Some(Rgba::rgb(0x8a6400)),
+    accent_text: Some(Rgba::rgb(0x856000)),
     frost_tint: Rgba::rgb(0xf4f1ea),
     rim: 0.60,
 };
+
+/// The linear-light alpha at which `src` over `ground` reads on screen as the
+/// sRGB figure `intent` (STYLE.md quotes sRGB; iced blends in linear light).
+///
+/// Per channel the sRGB-number mix `intent*src + (1-intent)*ground` is the
+/// target; the alpha that reaches it in linear light is
+/// `(L(out) - L(ground)) / (L(src) - L(ground))`, averaged over channels
+/// weighted by how far `src` is from `ground` there. Dark ink on a light
+/// ground needs far more alpha than the CSS number: `.62` of near-black over
+/// off-white is `.84` in linear light. Falls back to `intent` when `src` is
+/// indistinguishable from `ground`.
+pub fn linear_alpha(src: Rgba, ground: Rgba, intent: f32) -> f32 {
+    let (mut num, mut den) = (0.0, 0.0);
+    for c in 0..3 {
+        let (s, g) = (src.0[c], ground.0[c]);
+        let out = intent * s + (1.0 - intent) * g;
+        num += srgb_to_linear(out) - srgb_to_linear(g);
+        den += srgb_to_linear(s) - srgb_to_linear(g);
+    }
+    if den.abs() < 1e-4 {
+        intent
+    } else {
+        (num / den).clamp(0.0, 1.0)
+    }
+}
 
 /// How far a veil fades what it covers toward the ground.
 pub const VEIL_STRENGTH: f32 = 0.62;
@@ -228,11 +256,43 @@ pub struct Palette {
     pub danger_fill: Rgba,
     pub connected: Rgba,
     pub ok: Rgba,
+    /// Brightness class the palette was derived for.
+    pub scheme: Scheme,
+    /// Ink for a mark or label laid on an accent fill: a toggle's knob, a
+    /// glyph on a yellow disc. The base on dark, the ink on light, so it
+    /// always contrasts with the accent (STYLE.md "Light": `#1a1610`).
+    pub on_accent: Rgba,
+    /// A nav item's selected / hovered fill.
+    pub nav_active: Rgba,
+    pub nav_hover: Rgba,
+    /// A pill control at rest / hovered (selected is `accent_fill`).
+    pub pill: Rgba,
+    pub pill_hover: Rgba,
+    /// A text field's ground.
+    pub input_fill: Rgba,
+    /// A scrollbar's scroller at rest / hovered.
+    pub scroller: Rgba,
+    pub scroller_hover: Rgba,
+    /// A bar chart's history bars (the peak is the accent).
+    pub chart_history: Rgba,
+    /// An off toggle's track while hovered (`control_off` at rest).
+    pub control_off_hover: Rgba,
+    /// An off toggle's knob.
+    pub knob_off: Rgba,
+    /// The crisp rim of a selected neutral cell (`pick`, a lit editor, a
+    /// selected arrangement tile): `highlight_strong` on dark, where a white
+    /// rim is the highlight; the ink on light, where a white rim on a white
+    /// fill would vanish.
+    pub highlight_rim: Rgba,
 }
 
 /// Per-scheme numbers. Everything that is "colour at alpha" is an alpha here;
 /// the rest are fixed colours that do not come from seeds (documented below).
 struct Table {
+    /// The alphas below are sRGB intent, to be brought to linear-light alphas
+    /// over the base with [`linear_alpha`]. Dark's are already linear (and
+    /// bit-exact with the historical tokens), so it leaves them alone.
+    intent: bool,
     // Opaque surfaces behind glass, as built for the scheme's own base; moved
     // with the base by `shifted` when a theme brings a different base.
     builtin_base: Rgba,
@@ -276,6 +336,16 @@ struct Table {
     danger_fill: f32,
     connected: Rgba,
     ok: Rgba,
+    // Control grounds: ink-coloured except `input_fill` and `knob_off`, which
+    // use `fill`.
+    nav: [f32; 2],  // active, hover
+    pill: [f32; 2], // rest, hover
+    input_fill: f32,
+    scroller: [f32; 2], // rest, hover
+    chart_history: f32,
+    control_off_hover: f32,
+    knob_off: f32,
+    highlight_rim: f32,
 }
 
 const WHITE: Rgba = Rgba::new(1.0, 1.0, 1.0, 1.0);
@@ -283,6 +353,7 @@ const BLACK: Rgba = Rgba::new(0.0, 0.0, 0.0, 1.0);
 
 // Dark alphas are linear-light equivalents of the STYLE.md sRGB intent.
 const DARK: Table = Table {
+    intent: false,
     builtin_base: DARK_SEEDS.base,
     surfaces: [Rgba::rgb(0x12100b), Rgba::rgb(0x1a1712), Rgba::rgb(0x1c1913)],
     fill: WHITE,
@@ -318,11 +389,22 @@ const DARK: Table = Table {
     danger_fill: 0.14,
     connected: Rgba::rgb(0x4f9fe0),
     ok: Rgba::rgb(0x7fae5e),
+    nav: [0.07, 0.04],
+    pill: [0.035, 0.07],
+    input_fill: 0.04,
+    scroller: [0.13, 0.22],
+    chart_history: 0.13,
+    control_off_hover: 0.18,
+    knob_off: 0.62,
+    highlight_rim: 0.20,
 };
 
-// Light: STYLE.md "Light" figures, straight (sRGB-intent) alphas; starting
-// points for the per-pane visual pass. Surfaces from STYLE.md.
+// Light: STYLE.md "Light" figures as sRGB-intent alphas (`intent: true`),
+// brought to linear-light alphas over the base by `derive`. Tuned in the
+// per-pane visual pass; the status colours are darkened to clear 4.5:1 on the
+// base where they carry text. Surfaces from STYLE.md.
 const LIGHT: Table = Table {
+    intent: true,
     builtin_base: LIGHT_SEEDS.base,
     surfaces: [Rgba::rgb(0xebe6dc), Rgba::rgb(0xe3ddd1), Rgba::rgb(0xddd6c9)],
     fill: WHITE,
@@ -331,10 +413,10 @@ const LIGHT: Table = Table {
     glass_deep: 0.62,
     sheet_tint: 0.55,
     bar_tint: 0.45,
-    cell: [0.40, 0.55, 0.65],
+    cell: [0.40, 0.05, 0.09], // rest is white; hover and press are ink
     cell_rim: [0.08, 0.12],
     cell_rim_away: 0.04,
-    cell_focus: [0.70, 0.78, 0.85],
+    cell_focus: [0.70, 0.58, 0.46], // less white under the pointer
     cell_focus_rim: [0.18, 0.24],
     shadow: Rgba::rgb(0x3c2d14),
     cell_shadow: 0.22,
@@ -353,11 +435,19 @@ const LIGHT: Table = Table {
     text_tertiary: 0.42,
     control_off: 0.14,
     track: 0.12,
-    neutral: Rgba::rgb(0x7a756d),
-    danger: Rgba::rgb(0xc7402b),
+    neutral: Rgba::rgb(0x6f6a62),
+    danger: Rgba::rgb(0xbd3a26),
     danger_fill: 0.14,
     connected: Rgba::rgb(0x2f7fc0),
     ok: Rgba::rgb(0x5b8a3c),
+    nav: [0.09, 0.05],
+    pill: [0.06, 0.10],
+    input_fill: 0.55,
+    scroller: [0.28, 0.42],
+    chart_history: 0.16,
+    control_off_hover: 0.20,
+    knob_off: 0.95,
+    highlight_rim: 0.22,
 };
 
 /// A surface token for `base`: the table value as is when `base` is the
@@ -388,46 +478,53 @@ pub fn derive(seeds: &Seeds) -> Palette {
     let fill = t.fill;
     let frost = seeds.frost_tint;
     let acc = seeds.accent;
+    // sRGB intent to the alpha iced needs, over the base (identity on dark).
+    let ia = |src: Rgba, a: f32| if t.intent { linear_alpha(src, base, a) } else { a };
 
     let surface_1 = shifted(base, t, 1);
     let glass_deep = frost.with_alpha(t.glass_deep);
-    let sidebar = t.sidebar_colour.with_alpha(t.sidebar);
-    let content = t.content_colour.with_alpha(t.content);
-    let cell_focus = fill.with_alpha(t.cell_focus[0]);
+    let sidebar = t.sidebar_colour.with_alpha(ia(t.sidebar_colour, t.sidebar));
+    let content = t.content_colour.with_alpha(ia(t.content_colour, t.content));
+    let cell_focus = fill.with_alpha(ia(fill, t.cell_focus[0]));
+    // A pointer brightens a dark cell and darkens a light one.
+    let pointer = match seeds.scheme() {
+        Scheme::Dark => fill,
+        Scheme::Light => ink,
+    };
 
     Palette {
         base,
         surface_0: shifted(base, t, 0),
         surface_1,
         surface_2: shifted(base, t, 2),
-        glass: fill.with_alpha(t.glass),
-        glass_strong: fill.with_alpha(t.glass_strong),
+        glass: fill.with_alpha(ia(fill, t.glass)),
+        glass_strong: fill.with_alpha(ia(fill, t.glass_strong)),
         glass_deep,
         glass_deep_backed: glass_deep.over_opaque(surface_1),
         sheet_tint: frost.with_alpha(t.sheet_tint),
         bar_tint: frost.with_alpha(t.bar_tint),
-        cell: fill.with_alpha(t.cell[0]),
-        cell_hover: fill.with_alpha(t.cell[1]),
-        cell_press: fill.with_alpha(t.cell[2]),
-        cell_rim: ink.with_alpha(t.cell_rim[0]),
-        cell_rim_hover: ink.with_alpha(t.cell_rim[1]),
-        cell_rim_away: ink.with_alpha(t.cell_rim_away),
+        cell: fill.with_alpha(ia(fill, t.cell[0])),
+        cell_hover: pointer.with_alpha(ia(pointer, t.cell[1])),
+        cell_press: pointer.with_alpha(ia(pointer, t.cell[2])),
+        cell_rim: ink.with_alpha(ia(ink, t.cell_rim[0])),
+        cell_rim_hover: ink.with_alpha(ia(ink, t.cell_rim[1])),
+        cell_rim_away: ink.with_alpha(ia(ink, t.cell_rim_away)),
         cell_shadow: t.shadow.with_alpha(t.cell_shadow),
         cell_focus,
-        cell_focus_hover: fill.with_alpha(t.cell_focus[1]),
-        cell_focus_press: fill.with_alpha(t.cell_focus[2]),
-        cell_focus_rim: ink.with_alpha(t.cell_focus_rim[0]),
-        cell_focus_rim_hover: ink.with_alpha(t.cell_focus_rim[1]),
+        cell_focus_hover: fill.with_alpha(ia(fill, t.cell_focus[1])),
+        cell_focus_press: fill.with_alpha(ia(fill, t.cell_focus[2])),
+        cell_focus_rim: ink.with_alpha(ia(ink, t.cell_focus_rim[0])),
+        cell_focus_rim_hover: ink.with_alpha(ia(ink, t.cell_focus_rim[1])),
         menu_ground: frost,
-        border: ink.with_alpha(t.border[0]),
-        border_strong: ink.with_alpha(t.border[1]),
-        hairline: ink.with_alpha(t.hairline),
-        highlight: fill.with_alpha(t.highlight[1]),
-        highlight_soft: fill.with_alpha(t.highlight[0]),
-        highlight_strong: fill.with_alpha(t.highlight[2]),
-        lift: ink.with_alpha(t.lift[0]),
-        lift_strong: ink.with_alpha(t.lift[1]),
-        lift_soft: ink.with_alpha(t.lift[2]),
+        border: ink.with_alpha(ia(ink, t.border[0])),
+        border_strong: ink.with_alpha(ia(ink, t.border[1])),
+        hairline: ink.with_alpha(ia(ink, t.hairline)),
+        highlight: fill.with_alpha(ia(fill, t.highlight[1])),
+        highlight_soft: fill.with_alpha(ia(fill, t.highlight[0])),
+        highlight_strong: fill.with_alpha(ia(fill, t.highlight[2])),
+        lift: ink.with_alpha(ia(ink, t.lift[0])),
+        lift_strong: ink.with_alpha(ia(ink, t.lift[1])),
+        lift_soft: ink.with_alpha(ia(ink, t.lift[2])),
         veil: base.with_alpha(VEIL_STRENGTH),
         veil_glass: content.with_alpha(content.a() * VEIL_STRENGTH),
         sidebar,
@@ -436,20 +533,36 @@ pub fn derive(seeds: &Seeds) -> Palette {
         content_backed: content.over_opaque(base),
         accent: acc,
         accent_text: seeds.accent_text.unwrap_or(acc),
-        accent_fill: acc.with_alpha(t.accent_fill),
-        accent_border: acc.with_alpha(t.accent_border),
-        accent_wash: acc.with_alpha(t.accent_wash),
+        accent_fill: acc.with_alpha(ia(acc, t.accent_fill)),
+        accent_border: acc.with_alpha(ia(acc, t.accent_border)),
+        accent_wash: acc.with_alpha(ia(acc, t.accent_wash)),
         text: ink.with_alpha(1.0),
-        text_secondary: ink.with_alpha(t.text_secondary),
-        text_tertiary: ink.with_alpha(t.text_tertiary),
+        text_secondary: ink.with_alpha(ia(ink, t.text_secondary)),
+        text_tertiary: ink.with_alpha(ia(ink, t.text_tertiary)),
         neutral: t.neutral,
         eye_iris: cell_focus,
-        control_off: ink.with_alpha(t.control_off),
-        track: ink.with_alpha(t.track),
+        control_off: ink.with_alpha(ia(ink, t.control_off)),
+        track: ink.with_alpha(ia(ink, t.track)),
         danger: t.danger,
-        danger_fill: t.danger.with_alpha(t.danger_fill),
+        danger_fill: t.danger.with_alpha(ia(t.danger, t.danger_fill)),
         connected: t.connected,
         ok: t.ok,
+        scheme: seeds.scheme(),
+        on_accent: match seeds.scheme() {
+            Scheme::Dark => base,
+            Scheme::Light => ink.with_alpha(1.0),
+        },
+        nav_active: ink.with_alpha(ia(ink, t.nav[0])),
+        nav_hover: ink.with_alpha(ia(ink, t.nav[1])),
+        pill: ink.with_alpha(ia(ink, t.pill[0])),
+        pill_hover: ink.with_alpha(ia(ink, t.pill[1])),
+        input_fill: fill.with_alpha(ia(fill, t.input_fill)),
+        scroller: ink.with_alpha(ia(ink, t.scroller[0])),
+        scroller_hover: ink.with_alpha(ia(ink, t.scroller[1])),
+        chart_history: ink.with_alpha(ia(ink, t.chart_history)),
+        control_off_hover: ink.with_alpha(ia(ink, t.control_off_hover)),
+        knob_off: fill.with_alpha(ia(fill, t.knob_off)),
+        highlight_rim: ink.with_alpha(ia(ink, t.highlight_rim)),
     }
 }
 

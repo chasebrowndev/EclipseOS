@@ -74,6 +74,54 @@ pub fn white_fill(intent: f32) -> Color {
     }
 }
 
+/// How much more fill a light card or inset needs than a dark one for the same
+/// setting: `decoration.surface.card-fill` is white-on-dark intent, and white on
+/// an off-white ground needs about ten times the alpha to show (STYLE.md
+/// "Light": the glass fill is `.35`, the dark one `.035`).
+pub const LIGHT_FILL_GAIN: f32 = 10.0;
+
+fn is_light() -> bool {
+    crate::tokens::color::palette().scheme == ec_theme::Scheme::Light
+}
+
+/// A card's or inset's ground for the setting `intent`: white thin on dark
+/// ([`white_fill`]); a frosted white, [`LIGHT_FILL_GAIN`] stronger, on light.
+pub fn group_fill(intent: f32) -> Color {
+    if !is_light() {
+        return white_fill(intent);
+    }
+    let a = ec_theme::linear_alpha(
+        ec_theme::Rgba::new(1.0, 1.0, 1.0, 1.0),
+        crate::tokens::color::palette().base,
+        (intent * LIGHT_FILL_GAIN).clamp(0.0, 1.0),
+    );
+    Color {
+        r: 1.0,
+        g: 1.0,
+        b: 1.0,
+        a,
+    }
+}
+
+/// The 1px rim of a card or inset whose fill setting is `fill`: [`RIM_PER_FILL`]
+/// times it in white on dark. On light the rim is the ink, because a white edge
+/// on a white card is no edge (STYLE.md "Light": ink hairlines, white rim only
+/// from the compositor).
+pub fn group_rim(fill: f32) -> Color {
+    if !is_light() {
+        return white_fill(fill * RIM_PER_FILL);
+    }
+    let p = crate::tokens::color::palette();
+    // A light card's rim is its ink hairline: `border` at the setting's own
+    // proportion (the default `.035` is the token itself).
+    let k = (fill / DEFAULT.card_fill).clamp(0.0, 3.0);
+    let b = crate::tokens::color::to_iced(p.border);
+    Color {
+        a: (b.a * k).clamp(0.0, 1.0),
+        ..b
+    }
+}
+
 /// The reference backdrop the tint is solved against: sRGB 128, mid-grey.
 pub const MID: f32 = 128.0 / 255.0;
 

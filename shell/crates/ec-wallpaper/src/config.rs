@@ -146,6 +146,13 @@ pub fn from_reply(reply: &Value) -> Wallpaper {
             .and_then(Value::as_str)
             .and_then(|p| p.strip_prefix("wallpaper."));
         if let (Some(field), Some(value)) = (field, key.get("value")) {
+            // The compositor reports the dark built-in `#0b0906ff` for an
+            // unset colour. Left as a value it would pin the desktop dark in
+            // the light scheme; a colour still at its default is unset, so the
+            // ground follows the theme's base (ADR 0084).
+            if field == "color" && key.get("default") == Some(value) {
+                continue;
+            }
             w.base.set(field, value);
         }
     }
@@ -289,5 +296,17 @@ mod tests {
         assert_eq!(expand("~"), home);
         assert_eq!(expand("~other/x"), PathBuf::from("~other/x"));
         assert_eq!(expand("/abs/x.png"), PathBuf::from("/abs/x.png"));
+    }
+
+    #[test]
+    fn a_colour_at_its_default_is_unset_so_the_theme_base_shows() {
+        let w = from_reply(&json!({"keys": [
+            {"path": "wallpaper.color", "value": "#0b0906ff", "default": "#0b0906ff"},
+        ]}));
+        assert_eq!(w.for_output("DP-1").color, base_colour());
+        let w = from_reply(&json!({"keys": [
+            {"path": "wallpaper.color", "value": "#223344ff", "default": "#0b0906ff"},
+        ]}));
+        assert_eq!(w.for_output("DP-1").color, Color::from_rgb8(0x22, 0x33, 0x44));
     }
 }

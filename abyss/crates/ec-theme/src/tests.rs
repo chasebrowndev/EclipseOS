@@ -146,3 +146,60 @@ fn custom_base_shifts_surfaces() {
     assert_ne!(p.surface_1, derive(&DARK_SEEDS).surface_1);
     assert_eq!(p.surface_1.a(), 1.0);
 }
+
+/// The control grounds that used to be literal `Color::WHITE` alphas in
+/// `ec-ui`; dark must keep exactly those numbers.
+#[test]
+fn dark_control_grounds_match_the_old_literals() {
+    let p = derive(&DARK_SEEDS);
+    assert_eq!(p.scheme, Scheme::Dark);
+    assert_eq!(p.on_accent, hex(0x0b0906));
+    for (name, got, want) in [
+        ("nav_active", p.nav_active, white(0.07)),
+        ("nav_hover", p.nav_hover, white(0.04)),
+        ("pill", p.pill, white(0.035)),
+        ("pill_hover", p.pill_hover, white(0.07)),
+        ("input_fill", p.input_fill, white(0.04)),
+        ("scroller", p.scroller, white(0.13)),
+        ("scroller_hover", p.scroller_hover, white(0.22)),
+        ("chart_history", p.chart_history, white(0.13)),
+        ("control_off_hover", p.control_off_hover, white(0.18)),
+        ("knob_off", p.knob_off, white(0.62)),
+        ("highlight_rim", p.highlight_rim, p.highlight_strong),
+    ] {
+        assert_eq!(got, want, "{name}");
+    }
+}
+
+#[test]
+fn light_ink_on_accent_is_the_ink() {
+    let p = derive(&LIGHT_SEEDS);
+    assert_eq!(p.scheme, Scheme::Light);
+    assert_eq!(p.on_accent, hex(0x1a1610));
+    assert!(contrast(p.on_accent, p.accent) >= MIN_TEXT_CONTRAST);
+}
+
+/// What is on screen, not the CSS figure: the light ink alphas are brought to
+/// linear light, so secondary text keeps its contrast on the base.
+#[test]
+fn light_text_reads_on_the_base() {
+    let p = derive(&LIGHT_SEEDS);
+    assert!(contrast(p.text, p.base) >= 12.0);
+    assert!(contrast(p.text_secondary, p.base) >= MIN_TEXT_CONTRAST);
+    assert!(contrast(p.text_tertiary, p.base) >= 2.5);
+    assert!(contrast(p.accent_text, p.base) >= MIN_TEXT_CONTRAST);
+    // Accent text on a selected (`accent_fill`) pill, over the base.
+    let pill = p.accent_fill.over_opaque(p.base);
+    assert!(contrast(p.accent_text, pill) >= MIN_TEXT_CONTRAST);
+    assert!(contrast(p.danger, p.base) >= MIN_TEXT_CONTRAST);
+    assert!(contrast(p.neutral, p.base) >= MIN_TEXT_CONTRAST);
+}
+
+#[test]
+fn linear_alpha_is_the_identity_at_the_ends_and_stronger_for_dark_ink() {
+    let ink = LIGHT_SEEDS.ink;
+    let base = LIGHT_SEEDS.base;
+    assert_eq!(linear_alpha(ink, base, 0.0), 0.0);
+    assert!((linear_alpha(ink, base, 1.0) - 1.0).abs() < 1e-5);
+    assert!(linear_alpha(ink, base, 0.62) > 0.8);
+}

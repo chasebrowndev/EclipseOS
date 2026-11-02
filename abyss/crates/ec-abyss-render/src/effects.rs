@@ -481,7 +481,8 @@ uniform float rim;        // 0..1 hairline strength
 uniform vec4 rim_color;   // premultiplied hairline colour; opaque white off the bezel
 uniform float inner;      // bezel width, physical px; 0 off the bezel
 uniform float opaque;     // 1 when the window inside the bezel is opaque
-uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
+uniform float lift;       // 0..1 mix toward white (ink in light); 0 (unset) on windows
+uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);    // Rec.709
@@ -495,6 +496,14 @@ const float LINE_TL = 0.13;
 const float LINE_BR = 0.035;
 // Darkening of the 1 px seam where the bezel meets the window.
 const float SEAM = 0.1;
+// The light twins: bright frosted glass with the dark ink drawn on it. Each is
+// `mix(dark, light, scheme_light)`, which is the dark constant bit for bit at 0.
+const float SATURATE_L = 1.25;
+const float COMPRESS_L = 0.0;                       // no highlight knee
+const vec3 SMOKE_L = vec3(0.985, 0.975, 0.955);     // warm white
+const float SMOKE_MIX_L = 0.7;
+const float SEAM_L = 0.04;
+const vec3 LIFT_L = vec3(0.102, 0.086, 0.063);      // ink: a pointer darkens light glass
 
 vec4 blurred_at(vec2 uv) {
     return texture2D(tex, clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5));
@@ -559,10 +568,10 @@ void main() {
 
     // Vibrancy: saturate, compress the highlights, smoke toward neutral.
     vec3 c = color.rgb;
-    c = max(mix(vec3(dot(c, LUMA)), c, SATURATE), 0.0);
-    c = c / (1.0 + COMPRESS * dot(c, LUMA));
-    c = mix(c, SMOKE, SMOKE_MIX);
-    c = mix(c, vec3(1.0), lift);
+    c = max(mix(vec3(dot(c, LUMA)), c, mix(SATURATE, SATURATE_L, scheme_light)), 0.0);
+    c = c / (1.0 + mix(COMPRESS, COMPRESS_L, scheme_light) * dot(c, LUMA));
+    c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light));
+    c = mix(c, mix(vec3(1.0), LIFT_L, scheme_light), lift);
 
     // Hairline: a 1.25 px band inside the mask edge.
     float band = 1.0 - smoothstep(0.0, 1.25, -d);
@@ -574,7 +583,7 @@ void main() {
 
     // Seam: a faint dark line just outside the window's own edge.
     if (inner > 0.0) {
-        c *= 1.0 - SEAM * max(1.0 - abs(d + inner - 0.5), 0.0);
+        c *= 1.0 - mix(SEAM, SEAM_L, scheme_light) * max(1.0 - abs(d + inner - 0.5), 0.0);
     }
 
     c += (grain(floor(gl_FragCoord.xy)) - 0.5) / 255.0;
@@ -639,7 +648,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 12] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 13] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -652,6 +661,7 @@ const GLASS_UNIFORMS: [(&str, UniformType); 12] = [
     ("inner", UniformType::_1f),
     ("opaque", UniformType::_1f),
     ("lift", UniformType::_1f),
+    ("scheme_light", UniformType::_1f),
 ];
 
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
@@ -692,7 +702,8 @@ pub fn frost_uniforms(
 /// backdrop texture (the whole output, physical px); `strength` and `bevel`
 /// are physical px. `bezel` is a window bezel's width (physical px), whether
 /// the window inside it is opaque, and its premultiplied hairline colour;
-/// `None` is plain glass with the neutral white hairline.
+/// `None` is plain glass with the neutral white hairline. `light` is
+/// `Appearance::glass_light()`: 0.0 draws the original dark glass.
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms(
     rect: Rectangle<i32, Physical>,
@@ -704,9 +715,10 @@ pub fn glass_uniforms(
     bevel: f32,
     glass: &ec_abyss_config::GlassBlur,
     bezel: Option<(i32, bool, [f32; 4])>,
+    light: f32,
 ) -> Vec<Uniform<'static>> {
     glass_uniforms_lifted(
-        rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0,
+        rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, light,
     )
 }
 
@@ -724,6 +736,7 @@ pub fn glass_uniforms_lifted(
     glass: &ec_abyss_config::GlassBlur,
     bezel: Option<(i32, bool, [f32; 4])>,
     lift: f32,
+    light: f32,
 ) -> Vec<Uniform<'static>> {
     let (inner, opaque, rim_color) = bezel.map_or((0.0, 0.0, [1.0; 4]), |(inner, opaque, rim)| {
         (inner.max(0) as f32, if opaque { 1.0f32 } else { 0.0 }, rim)
@@ -743,6 +756,7 @@ pub fn glass_uniforms_lifted(
         Uniform::new("inner", inner),
         Uniform::new("opaque", opaque),
         Uniform::new("lift", lift),
+        Uniform::new("scheme_light", light),
     ]);
     u
 }
@@ -1158,6 +1172,7 @@ mod tests {
             16.0,
             &ec_abyss_config::GlassBlur::default(),
             None,
+            0.0,
         );
         let set: Vec<&str> = got.iter().map(|u| &*u.name).collect();
         let compiled: Vec<&str> = GLASS_UNIFORMS.iter().map(|&(name, _)| name).collect();
@@ -1173,6 +1188,7 @@ mod tests {
             6.0,
             &ec_abyss_config::GlassBlur::default(),
             Some((6, true, [0.43, 0.34, 0.11, 0.45])),
+            0.0,
         );
         let set: Vec<&str> = bezel.iter().map(|u| &*u.name).collect();
         assert_eq!(set, compiled);
@@ -1231,6 +1247,7 @@ mod tests {
             16.0,
             &ec_abyss_config::GlassBlur::default(),
             None,
+            0.0,
         );
         got.extend(shape_uniforms(&shape, 1080, true));
         let set: Vec<String> = got.iter().map(|u| u.name.to_string()).collect();
@@ -1276,6 +1293,7 @@ mod tests {
             16.0,
             &ec_abyss_config::GlassBlur::default(),
             None,
+            0.0,
         );
         let find = |name: &str| format!("{:?}", got.iter().find(|u| u.name == name).unwrap());
         assert_eq!(
