@@ -64,9 +64,10 @@ pub fn sanitize(input: &str) -> String {
 /// Reduce annotation text to the glyphs the annotation atlases draw, the
 /// same way [`sanitize`] reduces trusted text.
 ///
-/// The kept set is exactly [`hud_font::covers`]: printable ASCII, the
-/// compositor's two extras, Latin-1, Latin Extended-A, Greek and the math
-/// and punctuation set. Everything else is handled in this order:
+/// The kept set is [`hud_font::covers`] less private use: printable ASCII,
+/// the compositor's two extras, Latin-1, Latin Extended-A, Greek and the math
+/// and punctuation set, plus the composed glyphs a base-and-mark pair folds
+/// into. Everything else is handled in this order:
 ///
 /// * newlines survive as line breaks; no-break space becomes a space;
 /// * every other control character (C0, DEL, C1) is **stripped**, so a
@@ -76,6 +77,13 @@ pub fn sanitize(input: &str) -> String {
 ///   a reply read differently from the order its bytes arrive in;
 /// * combining marks are **stripped**, so a decomposed `e` + U+0301 draws as
 ///   `e` rather than as a stray mark over the next glyph;
+/// * a base letter followed by U+0302 (circumflex) or U+0304 (macron) and
+///   listed in [`hud_font::COMPOSED`] is **one** composed glyph, so `p` +
+///   U+0302 draws as a hatted p and counts as one character. Any other
+///   pair strips the mark, as above;
+/// * private-use codepoints are **replaced**, not drawn: the composed cells
+///   live there and a caller must not be able to pick one. A caller's
+///   U+E000 becomes `?`;
 /// * anything else the atlas lacks becomes [`REPLACEMENT`], one glyph per
 ///   character, so a dropped codepoint shows as a gap rather than closing up.
 ///
@@ -83,7 +91,8 @@ pub fn sanitize(input: &str) -> String {
 pub fn sanitize_annotation(input: &str) -> String {
     let mut out = String::with_capacity(input.len().min(MAX_CHARS));
     let mut chars = 0usize;
-    for c in input.chars() {
+    let mut rest = input.chars().peekable();
+    while let Some(c) = rest.next() {
         if chars >= MAX_CHARS {
             break;
         }
@@ -92,13 +101,36 @@ pub fn sanitize_annotation(input: &str) -> String {
             '\u{a0}' => ' ',
             c if c.is_control() => continue,
             c if is_invisible(c) || is_combining(c) => continue,
-            c if hud_font::covers(c) => c,
+            c if is_private_use(c) => REPLACEMENT,
+            c if hud_font::covers(c) => fold_mark(c, &mut rest),
             _ => REPLACEMENT,
         };
         out.push(keep);
         chars += 1;
     }
     out
+}
+
+/// `base`, or the composed glyph if the next character is the mark the atlas
+/// composes it with. The mark is consumed only on a match; otherwise the
+/// caller's loop strips it as any other combining mark.
+fn fold_mark(base: char, rest: &mut std::iter::Peekable<std::str::Chars<'_>>) -> char {
+    if let Some(&mark) = rest.peek() {
+        if let Some(composed) = hud_font::compose(base, mark) {
+            rest.next();
+            return composed;
+        }
+    }
+    base
+}
+
+/// Private use: the compositor's own composed cells (ADR 0083 amendment) and
+/// the rest of the planes a caller has no business naming.
+fn is_private_use(c: char) -> bool {
+    matches!(
+        c as u32,
+        0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd
+    )
 }
 
 /// Format and bidi characters a reader cannot see, which must not reach the
@@ -504,6 +536,51 @@ mod tests {
         );
         // A decomposed accent folds away instead of drawing over the next glyph.
         assert_eq!(sanitize_annotation("e\u{301}x"), "ex");
+    }
+
+    #[test]
+    fn a_base_and_its_mark_draw_one_composed_glyph() {
+        let hat_p = '\u{e000}';
+        let hat_x = '\u{e001}';
+        let bar_x = '\u{e008}';
+        let s = sanitize_annotation("p\u{302}1 > p\u{302}2");
+        assert_eq!(s, format!("{hat_p}1 > {hat_p}2"));
+        assert_eq!(sanitize_annotation("x\u{304}"), bar_x.to_string());
+        assert_eq!(sanitize_annotation("x\u{302}"), hat_x.to_string());
+        // Counted as one character, so a wrap and a width see one glyph.
+        assert_eq!(s.chars().count(), 7);
+        let three = sanitize_annotation("p\u{302}p\u{302}p\u{302}");
+        assert_eq!(wrap(&three, 3), [format!("{hat_p}{hat_p}{hat_p}")]);
+        assert_eq!(hud_font::Face::Body.width(&three), 3 * hud_font::ADVANCE);
+        // The clamp counts sequences, not the bytes they came in.
+        let long = sanitize_annotation(&"p\u{302}".repeat(MAX_CHARS * 2));
+        assert_eq!(long.chars().count(), MAX_CHARS);
+    }
+
+    #[test]
+    fn a_mark_without_a_composed_cell_is_still_stripped() {
+        // q has no hat in the atlas, and y's hat and macron are not generated.
+        assert_eq!(sanitize_annotation("q\u{302}"), "q");
+        assert_eq!(sanitize_annotation("y\u{302}y\u{304}"), "yy");
+        // Only the listed base takes the mark: a capital P does not fold.
+        assert_eq!(sanitize_annotation("P\u{302}"), "P");
+    }
+
+    #[test]
+    fn callers_cannot_name_a_composed_cell() {
+        // Private use is replaced whatever it is, so a raw U+E000 never draws
+        // as the hatted p and no caller can reach the atlas past the fold.
+        assert_eq!(sanitize_annotation("\u{e000}"), "?");
+        assert_eq!(sanitize_annotation("a\u{e008}b\u{f8ff}c"), "a?b?c");
+        assert_eq!(sanitize_annotation("\u{f0000}"), "?");
+        // A caller's PUA next to a real mark: the mark still folds nothing.
+        assert_eq!(sanitize_annotation("\u{e000}\u{302}"), "?");
+    }
+
+    #[test]
+    fn the_trusted_sanitiser_is_unchanged_by_composition() {
+        assert_eq!(sanitize("p\u{302}"), "p?");
+        assert_eq!(sanitize("x\u{304}"), "x?");
     }
 
     #[test]

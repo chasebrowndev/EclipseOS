@@ -17,10 +17,12 @@ shipped here; the table header says how to regenerate it from upstream's BDF.
 `hud/{title,body,readout}-{1x,2x}.a8` are the annotation HUD's face: JetBrains
 Mono pre-rasterised into 8-bit coverage atlases by `hud/gen_atlas.c`, compiled
 into `abyss/crates/ec-abyss-render/src/hud_font.rs` (ADR 0071). Each file is an
-8-byte header (`HUD2`, cell width, cell height, advance, left margin) and 419
-cells: printable ASCII, then U+00D7 and U+00B7, then 322 codepoints ascending
+8-byte header (`HUD2`, cell width, cell height, advance, left margin) and 430
+cells: printable ASCII, then U+00D7 and U+00B7, then 333 codepoints ascending
 (Latin-1, Latin Extended-A, Greek, math and punctuation; the `EXTENDED` table
-in `gen_atlas.c`). The annotation HUD only; the trusted face stays ASCII.
+in `gen_atlas.c`). The last 11 are composed cells in U+E000..U+E00A: a base
+letter with a combining circumflex or macron over it (the `COMPOSED` table, ADR
+0083 amendment). The annotation HUD only; the trusted face stays ASCII.
 Regenerate with the command at the top of `gen_atlas.c`; it reads the two
 JetBrains Mono statics above and fails on any codepoint a face lacks.
 
