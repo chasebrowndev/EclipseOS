@@ -112,7 +112,7 @@ pub fn body(m: &Model) -> Body<'_> {
                         .align_x(Alignment::End),
                     ]
                     .align_y(Alignment::End),
-                    parts::meter_fill(pct / 100.0, color::ACCENT),
+                    parts::meter_fill(pct / 100.0, color::accent()),
                 ]
                 .spacing(space::BLOCK),
             )
@@ -122,7 +122,7 @@ pub fn body(m: &Model) -> Body<'_> {
 
     let mut blocks: Vec<El<'_, Message>> = vec![hero];
     if ins.phase == Phase::Running && m.fake {
-        blocks.push(parts::mono("dry run: nothing is written", color::TEXT_TERTIARY));
+        blocks.push(parts::mono("dry run: nothing is written", color::text_tertiary()));
     }
     if let Some(e) = &ins.restart_error {
         blocks.push(parts::problem(e));

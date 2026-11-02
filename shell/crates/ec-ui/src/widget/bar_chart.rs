@@ -149,7 +149,7 @@ where
                     ..renderer::Quad::default()
                 },
                 if Some(i) == accented {
-                    color::ACCENT
+                    color::accent()
                 } else {
                     Color {
                         a: 0.13,

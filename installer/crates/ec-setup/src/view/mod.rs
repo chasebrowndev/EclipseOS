@@ -201,5 +201,5 @@ pub(crate) fn list_box_sized<'a>(
 
 /// Ink for a reading that is fine.
 pub(crate) fn ok_ink() -> iced::Color {
-    color::OK
+    color::ok()
 }

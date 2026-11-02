@@ -86,9 +86,9 @@ fn wifi(m: &Model) -> El<'_, Message> {
             .spacing(space::CARD)
             .align_y(Alignment::Center);
             if ap.in_use {
-                r = r.push(parts::mono("connected", color::TEXT_SECONDARY));
+                r = r.push(parts::mono("connected", color::text_secondary()));
             } else if !ap.secure {
-                r = r.push(parts::mono("open", color::TEXT_TERTIARY));
+                r = r.push(parts::mono("open", color::text_tertiary()));
             }
             rows = rows.push(parts::pick(
                 r,
@@ -118,7 +118,7 @@ fn wifi(m: &Model) -> El<'_, Message> {
 
     if let Some(ap) = m.ap_choice() {
         let status: Option<El<'_, Message>> = if m.joining {
-            Some(parts::mono("joining", color::TEXT_SECONDARY))
+            Some(parts::mono("joining", color::text_secondary()))
         } else if m.join_failed {
             Some(parts::problem("Could not join. Check the passphrase."))
         } else {

@@ -38,7 +38,7 @@ pub fn body(m: &Model) -> Body<'_> {
     if matches!(m.choices.slots[BAR], "waybar" | "quickshell") {
         blocks.push(parts::mono(
             "Hyperion's drawers, tray lanes and Settings links do not exist in this bar.",
-            color::TEXT_SECONDARY,
+            color::text_secondary(),
         ));
     }
 

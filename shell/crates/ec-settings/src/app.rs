@@ -1597,7 +1597,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             "Nothing to set here yet",
             "This compositor reports no settings for this page. A newer abyss adds them; until then \
              they are not in abyss.kdl either.",
-            color::NEUTRAL,
+            color::neutral(),
         );
     }
     let labelled = groups.len() > 1;
@@ -1677,9 +1677,9 @@ fn setting_row_at<'a>(app: &'a App, label: &str, key: &'a Key, dim: bool) -> Ele
     .id(row_id(&key.path))
     .width(Length::Fill)
     .style(move |_t: &Theme| iced::widget::container::Style {
-        background: Some(iced::Background::Color(color::HIGHLIGHT.scale_alpha(lit))),
+        background: Some(iced::Background::Color(color::highlight().scale_alpha(lit))),
         border: iced::Border {
-            color: color::BORDER_STRONG.scale_alpha(lit),
+            color: color::border_strong().scale_alpha(lit),
             width: space::HAIRLINE,
             radius: radius::INSET.into(),
         },

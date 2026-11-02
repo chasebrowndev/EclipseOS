@@ -71,8 +71,8 @@ fn signal_glyph(strength: u8) -> &'static str {
 /// its cell.
 pub(crate) fn network_mark(network: &Network, side: f32, alpha: f32) -> Element<'static, Message, Theme> {
     let tint = match network {
-        Network::Offline => color::TEXT_TERTIARY,
-        _ => color::TEXT_SECONDARY,
+        Network::Offline => color::text_tertiary(),
+        _ => color::text_secondary(),
     };
     parts::mark(
         crate::icons::symbolic(glyph(network)),
@@ -112,11 +112,11 @@ pub(crate) fn sheet(app: &App) -> Sheet {
                 parts::mark(
                     crate::icons::symbolic(glyph(&app.network)),
                     drawer::CURRENT_MARK,
-                    color::CONNECTED,
+                    color::connected(),
                 ),
                 &elide(ssid, DRAWER_CHARS),
                 "connected",
-                color::CONNECTED,
+                color::connected(),
                 Some(("Disconnect", Message::WifiDisconnect)),
             ));
         }
@@ -138,7 +138,7 @@ pub(crate) fn sheet(app: &App) -> Sheet {
                 parts::mark(
                     crate::icons::symbolic("network-wireless-encrypted"),
                     drawer::MARK,
-                    color::TEXT_TERTIARY,
+                    color::text_tertiary(),
                 )
             });
             let name = elide(&n.ssid, DRAWER_CHARS);
@@ -148,7 +148,7 @@ pub(crate) fn sheet(app: &App) -> Sheet {
                 parts::mark(
                     crate::icons::symbolic(signal_glyph(n.strength)),
                     drawer::MARK,
-                    color::TEXT_SECONDARY,
+                    color::text_secondary(),
                 )
             };
             // The list stays clickable while it scans; only the row being

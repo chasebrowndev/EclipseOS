@@ -239,7 +239,7 @@ fn strip<'a>(label: &str, cells: Vec<Element<'a, Msg, Theme>>) -> Element<'a, Ms
             .align_y(Alignment::Center)
             .style(theme::bar_ground(bar::RADIUS_SHEET, false)),
         bar::RADIUS_SHEET,
-        color::HIGHLIGHT_SOFT,
+        color::highlight_soft(),
     );
     row![
         container(micro_label(label)).width(Length::Fixed(space::SIDEBAR_W / 2.0)),

@@ -871,7 +871,7 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
         _ => Space::new().into(),
     };
     let foot: Element<'_, Message, Theme> = match &a.store {
-        Store::Unreachable(hint) => edge_note("Secret broker isn't running", hint, color::NEUTRAL),
+        Store::Unreachable(hint) => edge_note("Secret broker isn't running", hint, color::neutral()),
         Store::Locked => {
             small("Unlock to add or remove accounts. The compositor asks for the passphrase, not Settings.")
                 .style(theme::text_tertiary)
@@ -1281,7 +1281,7 @@ fn login_way<'a>(a: &'a Accounts, ready: bool, gate: &'static str) -> Element<'a
                 format!("{copy} ({detail})")
             };
             actions(
-                container(edge_note("Sign-in didn't finish", &body, color::DANGER))
+                container(edge_note("Sign-in didn't finish", &body, color::danger()))
                     .width(Length::Fill)
                     .into(),
                 vec![pill("Try again", false, msg(Msg::Again))],

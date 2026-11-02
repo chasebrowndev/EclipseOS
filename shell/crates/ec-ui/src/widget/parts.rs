@@ -431,7 +431,7 @@ pub fn meter_bar<'a, Message: 'a>(width: f32, fraction: f32, fill: Color) -> Ele
         .push(quad(
             Length::Fixed(width - lit_w),
             Length::Fixed(drawer::METER_H),
-            color::TRACK,
+            color::track(),
             drawer::RADIUS_METER,
         ));
     container(row)
@@ -509,7 +509,7 @@ pub fn drawer_frame<'a, Message: 'a>(
             .padding(drawer::PAD)
             .style(theme::menu_surface(radius)),
         radius,
-        color::HIGHLIGHT,
+        color::highlight(),
     )
 }
 
@@ -526,9 +526,9 @@ pub fn drawer_row<'a, Message: 'a>(
     accented: bool,
 ) -> Element<'a, Message, Theme> {
     let tint = if accented {
-        color::ACCENT_TEXT
+        color::accent_text()
     } else {
-        color::TEXT_SECONDARY
+        color::text_secondary()
     };
     container(
         row![
@@ -540,7 +540,7 @@ pub fn drawer_row<'a, Message: 'a>(
             text(label.to_string())
                 .font(font::UI_MEDIUM)
                 .size(size::BODY_SMALL)
-                .color(color::TEXT),
+                .color(color::text()),
             Space::new().width(Length::Fill),
             text(reading.to_string())
                 .font(font::DATA)
@@ -575,7 +575,7 @@ pub fn drawer_switch_head<'a, Message: 'a>(
         .spacing(drawer::MARK_GAP)
         .align_y(Alignment::Center);
     if let Some(phase) = busy {
-        r = r.push(spinner(phase, color::TEXT_TERTIARY));
+        r = r.push(spinner(phase, color::text_tertiary()));
     }
     container(
         r.push(Space::new().width(Length::Fill))
@@ -673,7 +673,7 @@ pub fn drawer_current<'a, Message: Clone + 'a>(
         text(name.to_string())
             .font(font::UI_SEMIBOLD)
             .size(size::BODY)
-            .color(color::TEXT),
+            .color(color::text()),
         text(state.to_string())
             .font(font::DATA)
             .size(size::MICRO)
@@ -702,7 +702,7 @@ pub fn drawer_current<'a, Message: Clone + 'a>(
                 text(label.to_string())
                     .font(font::UI_MEDIUM)
                     .size(size::BODY_SMALL)
-                    .color(color::TEXT_SECONDARY),
+                    .color(color::text_secondary()),
             )
             .padding([space::ROW_Y / 2.0, drawer::ROW_X])
             .style(drawer_pill)
@@ -748,7 +748,7 @@ pub fn drawer_choice<'a, Message: Clone + 'a>(
         text(label.to_string())
             .font(font::UI)
             .size(size::BODY_SMALL)
-            .color(color::TEXT),
+            .color(color::text()),
         Space::new().width(Length::Fill),
     ]
     .spacing(drawer::MARK_GAP)
@@ -805,13 +805,13 @@ pub fn drawer_pending<'a, Message: 'a>(
                 text(label.to_string())
                     .font(font::UI)
                     .size(size::BODY_SMALL)
-                    .color(color::TEXT),
+                    .color(color::text()),
                 Space::new().width(Length::Fill),
                 text(note.to_string())
                     .font(font::DATA)
                     .size(size::MICRO)
-                    .color(color::TEXT_TERTIARY),
-                spinner(phase, color::TEXT),
+                    .color(color::text_tertiary()),
+                spinner(phase, color::text()),
             ]
             .spacing(drawer::MARK_GAP)
             .align_y(Alignment::Center),
@@ -837,16 +837,16 @@ pub fn drawer_error<'a, Message: 'a>(reason: &str) -> Element<'a, Message, Theme
             text(reason.to_string())
                 .font(font::DATA)
                 .size(size::MICRO)
-                .color(color::DANGER),
+                .color(color::danger()),
         )
         .width(Length::Fill)
         .height(Length::Fill)
         .align_y(Alignment::Center)
         .padding([0.0, drawer::ROW_X])
         .style(|_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(color::CELL)),
+            background: Some(iced::Background::Color(color::cell())),
             border: iced::Border {
-                color: color::CELL_RIM,
+                color: color::cell_rim(),
                 width: space::HAIRLINE,
                 radius: drawer::RADIUS_ROW.into(),
             },
@@ -868,12 +868,12 @@ pub fn drawer_link<'a, Message: Clone + 'a>(label: &str, on_press: Message) -> E
             text(label.to_string())
                 .font(font::UI_MEDIUM)
                 .size(size::BODY_SMALL)
-                .color(color::TEXT_SECONDARY),
+                .color(color::text_secondary()),
             Space::new().width(Length::Fill),
             text("\u{2192}")
                 .font(font::DATA)
                 .size(size::MONO)
-                .color(color::TEXT_TERTIARY),
+                .color(color::text_tertiary()),
         ]
         .align_y(Alignment::Center),
     )
@@ -914,9 +914,9 @@ pub fn drawer_level<'a, Message: Clone + 'a>(
         0.0
     };
     let (fill, reading) = match (muted, accent) {
-        (true, _) => (color::TEXT_TERTIARY, color::TEXT_TERTIARY),
-        (false, true) => (color::ACCENT, color::ACCENT_TEXT),
-        (false, false) => (color::TEXT_SECONDARY, color::TEXT),
+        (true, _) => (color::text_tertiary(), color::text_tertiary()),
+        (false, true) => (color::accent(), color::accent_text()),
+        (false, false) => (color::text_secondary(), color::text()),
     };
     let track = slider(0.0..=1.0_f32, v, on_change)
         .step(0.01_f32)
@@ -924,13 +924,13 @@ pub fn drawer_level<'a, Message: Clone + 'a>(
         .style(move |_t: &Theme, status: slider::Status| {
             let knob = match status {
                 slider::Status::Active => fill,
-                _ => color::TEXT,
+                _ => color::text(),
             };
             slider::Style {
                 rail: slider::Rail {
                     backgrounds: (
                         iced::Background::Color(fill),
-                        iced::Background::Color(color::TRACK),
+                        iced::Background::Color(color::track()),
                     ),
                     width: drawer::LEVEL_RAIL,
                     border: iced::Border {
@@ -1003,7 +1003,7 @@ pub fn drawer_note<'a, Message: 'a>(note: &str) -> Element<'a, Message, Theme> {
         text(note.to_string())
             .font(font::DATA)
             .size(size::MONO)
-            .color(color::TEXT_TERTIARY),
+            .color(color::text_tertiary()),
     )
     .width(Length::Fill)
     .height(Length::Fixed(drawer::ROW_H))
@@ -1014,14 +1014,14 @@ pub fn drawer_note<'a, Message: 'a>(note: &str) -> Element<'a, Message, Theme> {
 
 /// A drawer row's ground at rest: the bar cell's own glass lozenge.
 ///
-/// The cell tokens and not [`color::LIFT`]: they are STYLE.md's figures
+/// The cell tokens and not [`color::lift()`]: they are STYLE.md's figures
 /// brought back to linear light, which is how iced blends, so a row reads as
 /// the same glass as the chips on the pill above it and not a grey slab.
 fn drawer_rest_ground(_t: &Theme) -> container::Style {
     container::Style {
-        background: Some(iced::Background::Color(color::CELL)),
+        background: Some(iced::Background::Color(color::cell())),
         border: iced::Border {
-            color: color::CELL_RIM,
+            color: color::cell_rim(),
             width: space::HAIRLINE,
             radius: drawer::RADIUS_ROW.into(),
         },
@@ -1033,9 +1033,9 @@ fn drawer_rest_ground(_t: &Theme) -> container::Style {
 /// crisp white rim, neutral. No accent and no glow.
 fn drawer_hero_ground(_t: &Theme) -> container::Style {
     container::Style {
-        background: Some(iced::Background::Color(color::CELL_FOCUS)),
+        background: Some(iced::Background::Color(color::cell_focus())),
         border: iced::Border {
-            color: color::CELL_FOCUS_RIM,
+            color: color::cell_focus_rim(),
             width: space::HAIRLINE,
             radius: drawer::RADIUS_HERO.into(),
         },
@@ -1048,9 +1048,9 @@ fn drawer_hero_ground(_t: &Theme) -> container::Style {
 /// state.
 fn drawer_lift(_t: &Theme, status: button::Status) -> button::Style {
     let (fill, rim) = match status {
-        button::Status::Hovered => (color::CELL_HOVER, color::CELL_RIM_HOVER),
-        button::Status::Pressed => (color::CELL_PRESS, color::CELL_RIM_HOVER),
-        _ => (color::CELL, color::CELL_RIM),
+        button::Status::Hovered => (color::cell_hover(), color::cell_rim_hover()),
+        button::Status::Pressed => (color::cell_press(), color::cell_rim_hover()),
+        _ => (color::cell(), color::cell_rim()),
     };
     glass_button(fill, rim, drawer::RADIUS_ROW)
 }
@@ -1066,9 +1066,9 @@ fn drawer_quiet(t: &Theme, status: button::Status) -> button::Style {
 /// A verb on the hero (Disconnect): a pill of glass on the hero's glass.
 fn drawer_pill(_t: &Theme, status: button::Status) -> button::Style {
     let (fill, rim) = match status {
-        button::Status::Hovered => (color::CELL_FOCUS_HOVER, color::CELL_FOCUS_RIM_HOVER),
-        button::Status::Pressed => (color::CELL_FOCUS_PRESS, color::CELL_FOCUS_RIM_HOVER),
-        _ => (color::CELL, color::CELL_FOCUS_RIM),
+        button::Status::Hovered => (color::cell_focus_hover(), color::cell_focus_rim_hover()),
+        button::Status::Pressed => (color::cell_focus_press(), color::cell_focus_rim_hover()),
+        _ => (color::cell(), color::cell_focus_rim()),
     };
     glass_button(fill, rim, radius::PILL)
 }
@@ -1077,12 +1077,12 @@ fn drawer_pill(_t: &Theme, status: button::Status) -> button::Style {
 /// quieter line, inset to the rows' edge.
 ///
 /// A widget because the sheet's arithmetic reads the height and the popup
-/// separator's [`color::BORDER`] is too bright on the bar's glass.
+/// separator's [`color::border()`] is too bright on the bar's glass.
 pub fn drawer_rule<'a, Message: 'a>() -> Element<'a, Message, Theme> {
     container(edge_quad(
         Length::Fill,
         Length::Fixed(space::HAIRLINE),
-        color::CELL_RIM_HOVER,
+        color::cell_rim_hover(),
     ))
     .height(Length::Fixed(menu::SEP_H))
     .align_y(iced::Alignment::Center)
@@ -1120,11 +1120,11 @@ pub fn cal_day<'a, Message: Clone + 'a>(
     on_press: Message,
 ) -> Element<'a, Message, Theme> {
     let ink = if cell.today {
-        color::ACCENT_TEXT
+        color::accent_text()
     } else if cell.in_month {
-        color::TEXT
+        color::text()
     } else {
-        color::TEXT_TERTIARY
+        color::text_tertiary()
     };
     let numeral = text(number.to_string())
         .font(if cell.today { font::DATA_MEDIUM } else { font::DATA })
@@ -1169,9 +1169,9 @@ fn cal_cell_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::
     move |t, status| {
         if selected {
             let (fill, rim) = match status {
-                button::Status::Hovered => (color::CELL_FOCUS_HOVER, color::CELL_FOCUS_RIM_HOVER),
-                button::Status::Pressed => (color::CELL_FOCUS_PRESS, color::CELL_FOCUS_RIM_HOVER),
-                _ => (color::CELL_FOCUS, color::CELL_FOCUS_RIM),
+                button::Status::Hovered => (color::cell_focus_hover(), color::cell_focus_rim_hover()),
+                button::Status::Pressed => (color::cell_focus_press(), color::cell_focus_rim_hover()),
+                _ => (color::cell_focus(), color::cell_focus_rim()),
             };
             glass_button(fill, rim, drawer::RADIUS_ROW)
         } else {
@@ -1245,7 +1245,7 @@ pub fn cal_header<'a, Message: Clone + 'a>(
                 text(glyph.to_string())
                     .font(font::UI_MEDIUM)
                     .size(size::BODY)
-                    .color(color::TEXT_SECONDARY),
+                    .color(color::text_secondary()),
             )
             .width(Length::Fill)
             .height(Length::Fill)
@@ -1262,7 +1262,7 @@ pub fn cal_header<'a, Message: Clone + 'a>(
         text(month.to_string())
             .font(font::UI_SEMIBOLD)
             .size(size::PROMPT)
-            .color(color::TEXT),
+            .color(color::text()),
         text(year.to_string())
             .font(font::DATA)
             .size(size::MONO)
@@ -1277,7 +1277,7 @@ pub fn cal_header<'a, Message: Clone + 'a>(
                 text("Today")
                     .font(font::UI_MEDIUM)
                     .size(size::BODY_SMALL)
-                    .color(color::TEXT_SECONDARY),
+                    .color(color::text_secondary()),
             )
             .padding([space::ROW_Y / 2.0 - 1.0, drawer::ROW_X])
             .style(cal_pill)
@@ -1296,9 +1296,9 @@ pub fn cal_header<'a, Message: Clone + 'a>(
 /// The Today pill: a pill of the row glass, lifting under the pointer.
 fn cal_pill(_t: &Theme, status: button::Status) -> button::Style {
     let (fill, rim) = match status {
-        button::Status::Hovered => (color::CELL_HOVER, color::CELL_RIM_HOVER),
-        button::Status::Pressed => (color::CELL_PRESS, color::CELL_RIM_HOVER),
-        _ => (color::CELL, color::CELL_RIM),
+        button::Status::Hovered => (color::cell_hover(), color::cell_rim_hover()),
+        button::Status::Pressed => (color::cell_press(), color::cell_rim_hover()),
+        _ => (color::cell(), color::cell_rim()),
     };
     glass_button(fill, rim, radius::PILL)
 }
@@ -1308,7 +1308,7 @@ pub fn cal_divider<'a, Message: 'a>() -> Element<'a, Message, Theme> {
     edge_quad(
         Length::Fixed(space::HAIRLINE),
         Length::Fill,
-        color::CELL_RIM_HOVER,
+        color::cell_rim_hover(),
     )
 }
 
@@ -1330,7 +1330,7 @@ pub fn cal_event_row<'a, Message: Clone + 'a>(
         text(title.to_string())
             .font(font::UI_MEDIUM)
             .size(size::BODY_SMALL)
-            .color(color::TEXT),
+            .color(color::text()),
     );
     if let Some(place) = location {
         lines = lines.push(
@@ -1344,7 +1344,7 @@ pub fn cal_event_row<'a, Message: Clone + 'a>(
         text(times.0.to_string())
             .font(font::DATA_MEDIUM)
             .size(size::MICRO)
-            .color(color::TEXT_SECONDARY),
+            .color(color::text_secondary()),
         text(times.1.to_string())
             .font(font::DATA)
             .size(size::MICRO)
@@ -1393,7 +1393,7 @@ pub fn cal_event_chip<'a, Message: Clone + 'a>(
         text(title.to_string())
             .font(font::UI_MEDIUM)
             .size(size::BODY_SMALL)
-            .color(color::TEXT),
+            .color(color::text()),
     ]
     .spacing(drawer::MARK_GAP - 3.0)
     .align_y(Alignment::Center);
@@ -1434,7 +1434,7 @@ pub fn cal_note<'a, Message: 'a>(note: &str) -> Element<'a, Message, Theme> {
 fn glass_button(fill: Color, rim: Color, corner: f32) -> button::Style {
     button::Style {
         background: Some(iced::Background::Color(fill)),
-        text_color: color::TEXT,
+        text_color: color::text(),
         border: iced::Border {
             color: rim,
             width: space::HAIRLINE,
@@ -1508,7 +1508,7 @@ pub fn menu_separator<'a, Message: 'a>() -> Element<'a, Message, Theme> {
     container(edge_quad(
         Length::Fill,
         Length::Fixed(space::HAIRLINE),
-        color::BORDER,
+        color::border(),
     ))
     .height(Length::Fixed(menu::SEP_H))
     .align_y(iced::Alignment::Center)
@@ -1575,7 +1575,7 @@ pub fn surface<'a, Message: 'a>(
     if blur {
         sheet.into()
     } else {
-        lit(sheet, radius, color::HIGHLIGHT)
+        lit(sheet, radius, color::highlight())
     }
 }
 
@@ -1598,7 +1598,7 @@ pub fn battery_gauge_faded<'a, Message: 'a>(
     alpha: f32,
 ) -> Element<'a, Message, Theme> {
     let a = alpha.clamp(0.0, 1.0);
-    let (fill, track) = (fill.scale_alpha(a), color::TRACK.scale_alpha(a));
+    let (fill, track) = (fill.scale_alpha(a), color::track().scale_alpha(a));
     let inner = space::MARK_CELL_W - 2.0 * space::MARK_BORDER;
     let filled = inner * (percent.min(100) as f32 / 100.0);
     let level = row![
@@ -1680,7 +1680,7 @@ pub fn dimmed<'a, Message: 'a>(
 
 /// [`dimmed`] on a column that may be translucent. With `blur` on, the
 /// ground under a row is the compositor's backdrop, which no client can
-/// repaint: any veil there ([`color::VEIL_GLASS`] included) lands as a
+/// repaint: any veil there ([`color::veil_glass()`] included) lands as a
 /// darker inset box that dims the ground about as much as the text. So on
 /// glass this paints nothing, and the caller dims what it can style — the
 /// labels ([`list_row_at`]) and the run's caption. The tree is the same
@@ -1718,12 +1718,12 @@ pub fn swatch<'a, Message: 'a>(fill: Color) -> Element<'a, Message, Theme> {
         .style(move |_t: &Theme| container::Style {
             background: Some(iced::Background::Color(fill)),
             border: iced::Border {
-                color: color::BORDER_STRONG,
+                color: color::border_strong(),
                 width: space::HAIRLINE,
                 radius: radius::PILL.into(),
             },
             shadow: iced::Shadow {
-                color: color::HIGHLIGHT_SOFT,
+                color: color::highlight_soft(),
                 offset: iced::Vector::new(0.0, -space::HAIRLINE),
                 blur_radius: 0.0,
             },
@@ -1746,9 +1746,9 @@ pub fn swatch_button<'a, Message: Clone + 'a>(
         .on_press(on_press)
         .style(move |_t: &Theme, status| {
             let rim = if open {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             } else if matches!(status, button::Status::Hovered | button::Status::Pressed) {
-                color::BORDER_STRONG
+                color::border_strong()
             } else {
                 Color::TRANSPARENT
             };
@@ -1845,7 +1845,7 @@ pub fn progress_bar<'a, Message: 'a>(fraction: f32, fill: Color) -> Element<'a, 
         row = row.push(quad(Length::FillPortion(lit), h, fill, r));
     }
     if lit < parts {
-        row = row.push(quad(Length::FillPortion(parts - lit), h, color::TRACK, r));
+        row = row.push(quad(Length::FillPortion(parts - lit), h, color::track(), r));
     }
     row.into()
 }
@@ -1960,7 +1960,7 @@ fn nav_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |t, status| theme::bare_if_glass(theme::nav(active)(t, status))
 }
 
-/// A nav item's 3px selected bar: [`color::ACCENT`] when `active`, and the
+/// A nav item's 3px selected bar: [`color::accent()`] when `active`, and the
 /// same room left empty when not, so a row does not shift as it is picked.
 fn nav_bar<'a, Message: 'a>(active: bool) -> Element<'a, Message, Theme> {
     container(Space::new())
@@ -1968,7 +1968,7 @@ fn nav_bar<'a, Message: 'a>(active: bool) -> Element<'a, Message, Theme> {
         .height(space::NAV_BAR_H)
         .style(move |_t: &Theme| container::Style {
             background: Some(iced::Background::Color(if active {
-                color::ACCENT
+                color::accent()
             } else {
                 Color::TRANSPARENT
             })),
@@ -1986,15 +1986,15 @@ fn nav_glyph<'a, Message: 'a>(active: bool) -> Element<'a, Message, Theme> {
         .height(space::NAV_GLYPH)
         .style(move |_t: &Theme| container::Style {
             background: Some(iced::Background::Color(if active {
-                color::ACCENT_FILL
+                color::accent_fill()
             } else {
-                color::HIGHLIGHT_SOFT
+                color::highlight_soft()
             })),
             border: iced::Border {
                 color: if active {
-                    color::ACCENT_BORDER
+                    color::accent_border()
                 } else {
-                    color::BORDER
+                    color::border()
                 },
                 width: space::HAIRLINE,
                 radius: radius::GLYPH.into(),
@@ -2048,9 +2048,9 @@ pub fn nav_section_at<'a, Message: Clone + 'a>(
     let t = space::NAV_CHEVRON_STROKE;
     let slot = 2.0 * s - t;
     let mark = if open {
-        chevron(s, t, color::TEXT_TERTIARY)
+        chevron(s, t, color::text_tertiary())
     } else {
-        chevron_right(s, t, color::TEXT_TERTIARY)
+        chevron_right(s, t, color::text_tertiary())
     };
     let mark = container(mark)
         .width(slot)
@@ -2319,19 +2319,23 @@ fn nav_page_style(active: bool) -> impl Fn(&Theme, button::Status) -> button::St
     move |_t, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let fill = match (active, hovered) {
-            (true, _) => color::HIGHLIGHT_SOFT,
-            (false, true) => color::LIFT_SOFT,
+            (true, _) => color::highlight_soft(),
+            (false, true) => color::lift_soft(),
             (false, false) => Color::TRANSPARENT,
         };
         theme::bare_if_glass(button::Style {
             background: Some(iced::Background::Color(fill)),
             text_color: if active || hovered {
-                color::TEXT
+                color::text()
             } else {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             },
             border: iced::Border {
-                color: if active { color::BORDER } else { Color::TRANSPARENT },
+                color: if active {
+                    color::border()
+                } else {
+                    Color::TRANSPARENT
+                },
                 width: space::HAIRLINE,
                 radius: radius::INSET.into(),
             },
@@ -2534,9 +2538,9 @@ pub fn prompt_band<'a, Message: 'a>(
         .padding([space::ROW_Y, space::CARD])
         .width(Length::Fill)
         .style(|_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(color::GLASS_STRONG)),
+            background: Some(iced::Background::Color(color::glass_strong())),
             border: iced::Border {
-                color: color::BORDER_STRONG,
+                color: color::border_strong(),
                 width: 1.0,
                 radius: radius::INSET.into(),
             },
@@ -2740,7 +2744,7 @@ pub fn choice_row<'a, Message: 'a>(
         .height(Length::Fill)
         .style(move |_t: &Theme| container::Style {
             background: Some(iced::Background::Color(if selected {
-                color::ACCENT
+                color::accent()
             } else {
                 Color::TRANSPARENT
             })),
@@ -2751,7 +2755,7 @@ pub fn choice_row<'a, Message: 'a>(
 
     if selected {
         body.style(|_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(color::ACCENT_FILL)),
+            background: Some(iced::Background::Color(color::accent_fill())),
             ..container::Style::default()
         })
         .into()
@@ -2918,7 +2922,7 @@ pub fn bar_sheet<'a, Message: 'a>(
             // opaque pane, with no compositor material behind it.
             .style(theme::bar_ground(bar::RADIUS_SHEET, false)),
         bar::RADIUS_SHEET,
-        color::HIGHLIGHT_SOFT,
+        color::highlight_soft(),
     )
 }
 
@@ -3022,12 +3026,16 @@ pub fn widget_tile<'a, Message: Clone + 'a>(
     use crate::tokens::{bar, canvas};
     let room = width - bar::GRIP_W - canvas::PIN_W - 2.0 * bar::WIDGET_X;
     let chars = (room / canvas::MONO_CHAR_W).floor().max(1.0) as usize;
-    let ink = if selected { color::ACCENT_TEXT } else { color::TEXT };
+    let ink = if selected {
+        color::accent_text()
+    } else {
+        color::text()
+    };
     let mark: Element<'a, Message, Theme> = if pinned {
         pin(if selected {
-            color::ACCENT_TEXT
+            color::accent_text()
         } else {
-            color::TEXT_SECONDARY
+            color::text_secondary()
         })
     } else {
         Space::new().width(Length::Fixed(canvas::PIN_W)).into()
@@ -3051,8 +3059,8 @@ pub fn widget_tile<'a, Message: Clone + 'a>(
     .on_press(on_select)
     .style(move |_t: &Theme, status: button::Status| button::Style {
         background: match status {
-            button::Status::Hovered => Some(iced::Background::Color(color::LIFT_SOFT)),
-            button::Status::Pressed => Some(iced::Background::Color(color::LIFT)),
+            button::Status::Hovered => Some(iced::Background::Color(color::lift_soft())),
+            button::Status::Pressed => Some(iced::Background::Color(color::lift())),
             _ => None,
         },
         text_color: ink,
@@ -3067,12 +3075,12 @@ pub fn widget_tile<'a, Message: Clone + 'a>(
     .width(Length::Fixed(width))
     .height(Length::Fixed(canvas::TILE_H))
     .style(move |_t: &Theme| container::Style {
-        background: selected.then_some(iced::Background::Color(color::ACCENT_WASH)),
+        background: selected.then_some(iced::Background::Color(color::accent_wash())),
         border: iced::Border {
             color: if selected {
-                color::ACCENT_BORDER
+                color::accent_border()
             } else {
-                color::BORDER
+                color::border()
             },
             width: crate::tokens::bar::HAIRLINE,
             radius: crate::tokens::bar::RADIUS_CELL.into(),
@@ -3095,7 +3103,7 @@ pub fn glide_track<'a, Message: 'a>(position: f32, label: &str) -> Element<'a, M
     let rail = container(edge_quad(
         Length::Fill,
         Length::Fixed(canvas::GLIDE_RAIL),
-        color::TRACK,
+        color::track(),
     ))
     .height(Length::Fill)
     .align_y(Alignment::Center);
@@ -3175,9 +3183,9 @@ pub fn motion_stage<'a, Message: 'a>(
         b: a.b + (b.b - a.b) * lit,
         a: (a.a + (b.a - a.a) * lit) * alpha,
     };
-    let fill = mix(color::LIFT_SOFT, color::LIFT);
-    let rim = mix(color::BORDER, color::HIGHLIGHT_STRONG);
-    let title = mix(color::HIGHLIGHT_SOFT, color::HIGHLIGHT);
+    let fill = mix(color::lift_soft(), color::lift());
+    let rim = mix(color::border(), color::highlight_strong());
+    let title = mix(color::highlight_soft(), color::highlight());
     let mark = container(column![
         quad(Length::Fill, Length::Fixed(h * canvas::STAGE_TITLE), title, 0.0),
         Space::new().height(Length::Fill),
@@ -3286,7 +3294,11 @@ pub fn config_error<'a, Message: 'a>(
                     .wrapping(text::Wrapping::None),
                 row![
                     Space::new().width(Length::Fixed(lead)),
-                    edge_quad(Length::Fixed(run), Length::Fixed(canvas::CARET_H), color::DANGER),
+                    edge_quad(
+                        Length::Fixed(run),
+                        Length::Fixed(canvas::CARET_H),
+                        color::danger()
+                    ),
                 ],
             ]
             .spacing(space::HAIRLINE),
@@ -3294,14 +3306,14 @@ pub fn config_error<'a, Message: 'a>(
     }
     container(
         row![
-            edge_quad(Length::Fixed(space::BAR_W), Length::Fill, color::DANGER),
+            edge_quad(Length::Fixed(space::BAR_W), Length::Fill, color::danger()),
             container(body).padding([space::ROW_Y / 2.0, space::CARD]),
         ]
         .height(Length::Shrink),
     )
     .width(Length::Fill)
     .style(|_t: &Theme| container::Style {
-        background: Some(iced::Background::Color(color::DANGER_FILL)),
+        background: Some(iced::Background::Color(color::danger_fill())),
         ..container::Style::default()
     })
     .into()
@@ -3324,7 +3336,7 @@ pub fn badge<'a, Message: 'a>(label: &str) -> Element<'a, Message, Theme> {
     .padding([space::BADGE_Y, space::BADGE_X])
     .style(|_t: &Theme| container::Style {
         border: iced::Border {
-            color: color::BORDER_STRONG,
+            color: color::border_strong(),
             width: space::HAIRLINE,
             radius: radius::BADGE.into(),
         },
@@ -3402,7 +3414,7 @@ pub fn status_grid<'a, Message: 'a>(
 /// A widget and not a styled column because the edge is a sibling quad (see
 /// [`edge_quad`]) and because the same notes recur: a caution before a
 /// command runs as the owner, a notice that part of a pane is switched off.
-/// `edge` is [`color::DANGER`] for a caution and [`color::NEUTRAL`] for a
+/// `edge` is [`color::danger()`] for a caution and [`color::neutral()`] for a
 /// notice — never the accent, which marks state and not warnings.
 pub fn edge_note<'a, Message: 'a>(headline: &str, body: &str, edge: Color) -> Element<'a, Message, Theme> {
     container(
@@ -3497,16 +3509,16 @@ impl<Message> iced::widget::canvas::Program<Message> for ShapedSheet {
         let mut frame = canvas::Frame::new(renderer, bounds.size());
         let path = sheet_outline(self.shape, bounds.width, bounds.height);
         let fill = if self.blur {
-            color::BAR_TINT
+            color::bar_tint()
         } else {
-            color::GLASS_DEEP_BACKED
+            color::glass_deep_backed()
         };
         frame.fill(&path, fill);
         if !self.blur {
             frame.stroke(
                 &path,
                 canvas::Stroke::default()
-                    .with_color(color::HAIRLINE)
+                    .with_color(color::hairline())
                     .with_width(space::HAIRLINE),
             );
         }
@@ -3621,7 +3633,7 @@ pub fn arrangement_tile<'a, Message: 'a>(
     on: bool,
 ) -> Element<'a, Message, Theme> {
     let ink = move |_t: &Theme| iced::widget::text::Style {
-        color: Some(if on { color::TEXT } else { color::TEXT_TERTIARY }),
+        color: Some(if on { color::text() } else { color::text_tertiary() }),
     };
     let mut col = Column::new().spacing(space::LINE_GAP).push(
         row![
@@ -3651,15 +3663,15 @@ pub fn arrangement_tile<'a, Message: 'a>(
         .clip(true)
         .style(move |_t: &Theme| container::Style {
             background: Some(iced::Background::Color(if selected {
-                color::HIGHLIGHT
+                color::highlight()
             } else {
-                color::GLASS
+                color::glass()
             })),
             border: iced::Border {
                 color: if selected {
-                    color::HIGHLIGHT_STRONG
+                    color::highlight_strong()
                 } else {
-                    color::BORDER
+                    color::border()
                 },
                 width: canvas::ARRANGE_RIM,
                 radius: radius::INSET.into(),

@@ -1518,7 +1518,7 @@ fn widgets(app: &App) -> Vec<Element<'_, Message, Theme>> {
             "Custom and premade widgets come with the taskbar add-on. Without it the compositor \
              ignores widget blocks, so there is nothing here to edit; the bar's own settings \
              still apply.",
-            color::NEUTRAL,
+            color::neutral(),
         ));
     }
     out.push(hero(app));
@@ -1666,7 +1666,7 @@ fn core_of<'a>(app: &App, id: &str) -> Element<'a, Message, Theme> {
         "network" => tag(bp::NETWORK_TAG, theme::text_primary),
         "bluetooth" => tag(bp::BLUETOOTH_TAG, theme::text_primary),
         "battery" => row![
-            battery_gauge(84, color::TEXT_SECONDARY),
+            battery_gauge(84, color::text_secondary()),
             tag(bp::BATTERY_READING, theme::text_primary)
         ]
         .spacing(bar::GAP)
@@ -1674,7 +1674,7 @@ fn core_of<'a>(app: &App, id: &str) -> Element<'a, Message, Theme> {
         .into(),
         "tray" => {
             let slot = || {
-                container(mark(None, bar::MARK, color::TEXT_TERTIARY))
+                container(mark(None, bar::MARK, color::text_tertiary()))
                     .width(Length::Fixed(bar::TRAY_MARK_W))
                     .align_x(Alignment::Center)
             };
@@ -1692,7 +1692,7 @@ fn core_of<'a>(app: &App, id: &str) -> Element<'a, Message, Theme> {
         .align_x(Alignment::Center)
         .into(),
         custom => row![
-            mark(None, bar::MARK, color::TEXT_SECONDARY),
+            mark(None, bar::MARK, color::text_secondary()),
             tag(&elide(&bp::title(custom), bp::CUSTOM_CHARS), theme::text_primary),
         ]
         .spacing(bar::GAP)
@@ -1723,7 +1723,7 @@ fn cell_w(c: &CellAnim) -> f32 {
 
 fn window_chip<'a>(i: usize, w: f32) -> Element<'a, Message, Theme> {
     let (app_name, title) = bp::WINDOWS[i % bp::WINDOWS.len()];
-    let glyph = || mark(None, bar::MARK, color::TEXT_SECONDARY);
+    let glyph = || mark(None, bar::MARK, color::text_secondary());
     let label = |t: &str| {
         text(t.to_owned())
             .font(font::UI)
@@ -1755,7 +1755,7 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
     let mut layers: Vec<Element<'_, Message, Theme>> = vec![placed(
         0.0,
         bar_cell_frame(
-            container(ring(bar::MARK, bar::RING, color::TEXT_SECONDARY))
+            container(ring(bar::MARK, bar::RING, color::text_secondary()))
                 .width(Length::Fill)
                 .align_x(Alignment::Center),
             bar::TASK_MIN,
@@ -1796,7 +1796,7 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
                 cell_w(c),
                 bar::WIDGET_H,
                 bar::HAIRLINE,
-                color::BORDER_STRONG,
+                color::border_strong(),
                 widget_radius(app),
             )
         } else if c.cell.grip() {
@@ -1850,7 +1850,7 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
                     cell_w(c),
                     bar::WIDGET_H,
                     bar::HAIRLINE,
-                    color::ACCENT,
+                    color::accent(),
                     widget_radius(app),
                 ),
             ));
@@ -1868,7 +1868,7 @@ fn picture(app: &App) -> Element<'_, Message, Theme> {
             edge_quad(
                 Length::Fixed(canvas::DROP_MARK_W),
                 Length::Fixed(bar::WIDGET_H),
-                color::TEXT,
+                color::text(),
             ),
         ));
     }
@@ -2088,7 +2088,7 @@ fn sheet(app: &App) -> Option<Element<'_, Message, Theme>> {
     if at.is_some() {
         col = col.push(padded(
             row![
-                pin(color::TEXT_SECONDARY),
+                pin(color::text_secondary()),
                 column![
                     text("Important")
                         .font(font::UI)
@@ -2219,7 +2219,7 @@ fn tray_rows(app: &App) -> Vec<Element<'_, Message, Theme>> {
         let gap = |k: usize| -> Element<'_, Message, Theme> {
             let lit = lane == Lane::Taskbar && mark == Some(k);
             let ink = if lit {
-                color::TEXT
+                color::text()
             } else {
                 iced::Color::TRANSPARENT
             };
@@ -2387,7 +2387,7 @@ fn editor_view<'a>(app: &App, ed: &'a Editor) -> Element<'a, Message, Theme> {
     let mut col = Column::new();
     match ed.kind {
         Kind::Exec | Kind::Stream if !is_premade => {
-            col = col.push(edge_note(DISCLAIMER, RISK, color::DANGER));
+            col = col.push(edge_note(DISCLAIMER, RISK, color::danger()));
         }
         Kind::Exec | Kind::Stream => {
             col = col.push(padded(caption_prose(

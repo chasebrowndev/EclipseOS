@@ -108,9 +108,9 @@ fn card(notification: &Notification, radius: f32, blur: bool, alpha: f32) -> Ele
     // Critical is the one thing allowed off the neutral palette here, for the
     // same reason a dying battery is: it is a state the human must act on.
     let summary_tint = if notification.urgency == Urgency::Critical {
-        color::DANGER
+        color::danger()
     } else {
-        color::TEXT
+        color::text()
     };
     body = body.push(
         container(
@@ -128,7 +128,7 @@ fn card(notification: &Notification, radius: f32, blur: bool, alpha: f32) -> Ele
             container(
                 text(notification.body.clone())
                     .size(size::BODY_SMALL)
-                    .color(color::TEXT_SECONDARY.scale_alpha(alpha)),
+                    .color(color::text_secondary().scale_alpha(alpha)),
             )
             .height(Length::Fixed(BODY_H))
             // The card's height is computed, so anything longer than its slot
@@ -142,7 +142,7 @@ fn card(notification: &Notification, radius: f32, blur: bool, alpha: f32) -> Ele
             text(notification.app_name.clone())
                 .size(size::MICRO)
                 .font(font::DATA)
-                .color(color::TEXT_TERTIARY.scale_alpha(alpha)),
+                .color(color::text_tertiary().scale_alpha(alpha)),
         )
         .height(Length::Fixed(SOURCE_H))
         .align_y(Alignment::Center),
@@ -196,7 +196,7 @@ fn button<'a>(id: u32, key: &str, label: &str, alpha: f32) -> Element<'a, Messag
         text(label.to_owned())
             .size(size::BODY_SMALL)
             .font(font::UI_MEDIUM)
-            .color(color::TEXT.scale_alpha(alpha)),
+            .color(color::text().scale_alpha(alpha)),
     )
     .padding([0, space::CARD as u16])
     .height(Length::Fill)

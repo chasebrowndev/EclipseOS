@@ -31,9 +31,9 @@ pub fn spans(_app: &App) -> Spans {
 pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
     let ink = frame.core_alpha();
     let tint = if app.snapshot.connected {
-        color::TEXT
+        color::text()
     } else {
-        color::TEXT_TERTIARY
+        color::text_tertiary()
     };
     let stack = column![
         text(crate::clock::time(app.bar.hour_12))
@@ -43,7 +43,7 @@ pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
         text(crate::clock::date(app.bar.date_mdy))
             .size(size::MICRO)
             .font(font::DATA)
-            .color(color::TEXT_TERTIARY.scale_alpha(ink)),
+            .color(color::text_tertiary().scale_alpha(ink)),
     ]
     .spacing(0)
     .align_x(Alignment::Center);
@@ -183,7 +183,7 @@ fn detail(app: &App, _grid: &[[Day; 7]; 6]) -> iced::Element<'static, Message, i
         text(title)
             .font(font::UI_SEMIBOLD)
             .size(size::BODY)
-            .color(color::TEXT),
+            .color(color::text()),
         parts::micro_label(&place),
     ]
     .spacing(drawer::LINE_GAP + 2.0);
@@ -250,5 +250,5 @@ fn detail(app: &App, _grid: &[[Day; 7]; 6]) -> iced::Element<'static, Message, i
 
 /// An event's dot or bar: its own colour, else the neutral swatch.
 fn event_colour(c: Option<u32>) -> iced::Color {
-    c.map_or(color::NEUTRAL, color::data)
+    c.map_or(color::neutral(), color::data)
 }

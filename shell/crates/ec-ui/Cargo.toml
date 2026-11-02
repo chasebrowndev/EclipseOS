@@ -14,6 +14,7 @@ publish = false
 [dependencies]
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image", "canvas"] }
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
+ec-theme = { path = "../../../abyss/crates/ec-theme" }
 serde_json.workspace = true
 # eclipse_glass_v1 (COMP-02 section 9): the compositor draws each cell's ground.
 ec-protocols = { path = "../../../abyss/crates/ec-protocols", features = ["client"] }

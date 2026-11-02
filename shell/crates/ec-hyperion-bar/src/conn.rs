@@ -628,7 +628,7 @@ impl Conn {
 
     /// `annotations.accent`: the gold Oracle-Eyes is drawn in, which the
     /// live eye wears too. `None` when nothing answers or the key is not
-    /// there, so the caller keeps [`color::ACCENT`](ec_ui::tokens::color::ACCENT).
+    /// there, so the caller keeps [`color::accent()`](ec_ui::tokens::color::accent()).
     pub fn eye_accent(&mut self) -> Option<iced::Color> {
         self.ensure();
         let client = self.client.as_mut()?;

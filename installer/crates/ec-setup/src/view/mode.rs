@@ -20,11 +20,11 @@ pub fn body(m: &Model) -> Body<'_> {
             text(mode.name())
                 .font(font::UI_SEMIBOLD)
                 .size(size::PROMPT)
-                .color(color::TEXT),
+                .color(color::text()),
             text(mode.blurb())
                 .font(font::UI)
                 .size(size::BODY)
-                .color(color::TEXT_SECONDARY),
+                .color(color::text_secondary()),
         ]
         .spacing(space::CHIP_GAP);
         cards = cards.push(parts::card(
