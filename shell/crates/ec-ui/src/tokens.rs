@@ -120,6 +120,18 @@ pub mod color {
         danger_fill,
         connected,
         ok,
+        on_accent,
+        nav_active,
+        nav_hover,
+        pill,
+        pill_hover,
+        input_fill,
+        scroller,
+        scroller_hover,
+        chart_history,
+        control_off_hover,
+        knob_off,
+        highlight_rim,
     }
 
     /// [`veil`] on a translucent column ([`content`] over the compositor's

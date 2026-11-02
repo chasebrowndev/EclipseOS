@@ -3174,10 +3174,13 @@ fn appearance_fills_only_what_the_config_left_unset() {
             cfg.annotations
         )
     );
+    // Dark glass is the original look (the shader's light mix is 0), light is 1.
+    assert_eq!(cfg.appearance.glass_light(), 0.0);
     // Light supplies frost tint, rim and annotation colours.
     cfg.apply_appearance(cfg.appearance_for(ec_theme::Scheme::Light));
     assert_ne!(cfg.decoration.blur.frost.tint, FROST_TINT);
     assert_ne!(cfg.annotations, AnnotationColors::DEFAULT);
+    assert_eq!(cfg.appearance.glass_light(), 1.0);
     // An explicit key wins over the theme.
     let mut cfg = parse_single_for_tests(
         "decoration {\n blur {\n frost { tint \"#112233aa\"; }\n glass { rim 0.9; }\n }\n}\nannotations { accent \"#445566\" }\n",

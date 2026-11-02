@@ -177,9 +177,9 @@ pub fn bar_folded(radius: f32, blur: bool, rim: f32) -> impl Fn(&Theme) -> conta
 pub fn inset(_t: &Theme) -> container::Style {
     let fill = crate::surface::current().inset_fill;
     container::Style {
-        background: Some(Background::Color(crate::surface::white_fill(fill))),
+        background: Some(Background::Color(crate::surface::group_fill(fill))),
         border: Border {
-            color: crate::surface::white_fill(fill * crate::surface::RIM_PER_FILL),
+            color: crate::surface::group_rim(fill),
             width: 1.0,
             radius: radius::INSET.into(),
         },
@@ -194,8 +194,8 @@ pub fn veil() -> crate::widget::Ground {
     let fill = crate::surface::current().inset_fill;
     crate::widget::Ground {
         base: color::veil(),
-        fill: crate::surface::white_fill(fill),
-        rim: crate::surface::white_fill(fill * crate::surface::RIM_PER_FILL),
+        fill: crate::surface::group_fill(fill),
+        rim: crate::surface::group_rim(fill),
     }
 }
 
@@ -271,9 +271,9 @@ pub fn card(radius: f32, hairline: bool) -> impl Fn(&Theme) -> container::Style 
         }
         let fill = crate::surface::current().card_fill;
         container::Style {
-            background: Some(Background::Color(crate::surface::white_fill(fill))),
+            background: Some(Background::Color(crate::surface::group_fill(fill))),
             border: Border {
-                color: crate::surface::white_fill(fill * crate::surface::RIM_PER_FILL),
+                color: crate::surface::group_rim(fill),
                 width: space::HAIRLINE,
                 radius: radius.into(),
             },
@@ -299,14 +299,8 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
             background: Some(Background::Color(match (active, hovered) {
-                (true, _) => Color {
-                    a: 0.07,
-                    ..Color::WHITE
-                },
-                (false, true) => Color {
-                    a: 0.04,
-                    ..Color::WHITE
-                },
+                (true, _) => color::nav_active(),
+                (false, true) => color::nav_hover(),
                 (false, false) => Color::TRANSPARENT,
             })),
             text_color: if active {
@@ -330,15 +324,9 @@ pub fn pill(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
             background: Some(Background::Color(if selected {
                 color::accent_fill()
             } else if hovered {
-                Color {
-                    a: 0.07,
-                    ..Color::WHITE
-                }
+                color::pill_hover()
             } else {
-                Color {
-                    a: 0.035,
-                    ..Color::WHITE
-                }
+                color::pill()
             })),
             text_color: if selected {
                 color::accent_text()
@@ -631,10 +619,7 @@ pub fn eclipse_radio(_t: &Theme, status: radio::Status) -> radio::Style {
 pub fn eclipse_input(_t: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused { .. });
     text_input::Style {
-        background: Background::Color(Color {
-            a: 0.04,
-            ..Color::WHITE
-        }),
+        background: Background::Color(color::input_fill()),
         border: Border {
             color: if focused {
                 color::accent_border()
@@ -693,9 +678,10 @@ pub fn eclipse_scrollable(_t: &Theme, status: scrollable::Status) -> scrollable:
         background: None,
         border: Border::default(),
         scroller: scrollable::Scroller {
-            background: Background::Color(Color {
-                a: if hovered { 0.22 } else { 0.13 },
-                ..Color::WHITE
+            background: Background::Color(if hovered {
+                color::scroller_hover()
+            } else {
+                color::scroller()
             }),
             border: border::rounded(radius::PILL),
         },
@@ -764,7 +750,7 @@ pub fn pick(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
             },
             border: Border {
                 color: if selected {
-                    color::highlight_strong()
+                    color::highlight_rim()
                 } else {
                     color::border()
                 },
@@ -839,7 +825,7 @@ pub fn editor_ground(lit: bool) -> impl Fn(&Theme) -> container::Style {
         background: Some(Background::Color(color::lift_soft())),
         border: Border {
             color: if lit {
-                color::highlight_strong()
+                color::highlight_rim()
             } else {
                 color::border()
             },

@@ -11,7 +11,7 @@ use iced::advanced::layout::{self, Layout};
 use iced::advanced::mouse;
 use iced::advanced::renderer;
 use iced::advanced::widget::{tree, Tree, Widget};
-use iced::{Border, Color, Element, Length, Rectangle, Size};
+use iced::{Border, Element, Length, Rectangle, Size};
 
 use crate::tokens::{color, radius};
 
@@ -151,10 +151,7 @@ where
                 if Some(i) == accented {
                     color::accent()
                 } else {
-                    Color {
-                        a: 0.13,
-                        ..Color::WHITE
-                    }
+                    color::chart_history()
                 },
             );
         }

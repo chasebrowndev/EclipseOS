@@ -65,6 +65,15 @@ impl Appearance {
         self.seeds == DARK_SEEDS
     }
 
+    /// How light the compositor's glass is drawn: 0.0 is the original dark
+    /// look bit for bit, 1.0 the bright frosted light twin (ADR 0084).
+    pub fn glass_light(&self) -> f32 {
+        match self.scheme {
+            Scheme::Dark => 0.0,
+            Scheme::Light => 1.0,
+        }
+    }
+
     /// Window-shadow colour, straight RGB: black on dark, STYLE.md's warm
     /// brown on light (no black halo on a light window).
     pub fn shadow_rgb(&self) -> [f32; 3] {

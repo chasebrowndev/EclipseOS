@@ -62,10 +62,20 @@ the same rules (ADR 0084).
   gold on the label only. The same rules as dark: glassy, not glowy
 - Shadow: warm and soft, rgba(60,45,20,.18-.28). A light window must not sit in a black halo
 - Accent: #f2c33c for fills, toggles, slider fill and marks; knob and glyph ink on it #1a1610.
-  Accent *text* is #8a6400 (≥ 4.5:1 on the base). Tints: rgba(242,195,60,.18) fill, .45 border
+  Accent *text* is #856000 (≥ 4.5:1 on the base and on a selected `accent_fill` pill). Tints: rgba(242,195,60,.18) fill, .45 border
 - Text: #1a1610 primary, rgba(26,22,16,.62) secondary, rgba(26,22,16,.42) tertiary
 - Settings content column: rgba(255,255,255,.30) tint on the shared blur (the light twin
   of the dark .28 black)
+- Light ink and fill alphas are specified as sRGB intent and converted to linear-light alphas
+  over the base (`ec_theme::linear_alpha`), because iced blends in linear light. `danger` is
+  #bd3a26 and `neutral` is #6f6a62. Controls take their grounds from palette tokens
+  (`nav_active`, `pill`, `input_fill`, `scroller`, `control_off_hover`, `knob_off`,
+  `highlight_rim`, `on_accent`), never from `Color::WHITE`. Selection is a brighter fill plus a
+  `highlight_rim` border
+- Compositor glass (`eclipse_glass_v1` panes, layer and window glass) in light has no dark smoke
+  and no highlight knee. The backdrop is saturated lightly (1.25) and mixed 70% toward warm white
+  (.985,.975,.955). The bezel seam is .04 and the rim stays white. `Appearance::glass_light()`
+  drives this
 - Trusted-UI prompts use the built-in dark or light palette matching the theme's
   brightness, never a user theme's colours (ADR 0084)
 
