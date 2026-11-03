@@ -214,6 +214,43 @@ mod tests {
         assert_eq!(h.state.theme.scheme(), Scheme::Light);
         assert_eq!(themes[0].1["seeds"]["base"], "#f4f1ea");
 
+        // The shared accent: one `theme` event carrying the effective accent
+        // and its derived text colour; unsetting it restores the theme's own.
+        let ok = crate::ipc::config_rpc::dispatch(
+            &mut h.state,
+            Decision::Allow,
+            "set_config_value",
+            &json!({"path": "general.accent", "value": "#1e90ff"}),
+        );
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.message));
+        let events = crate::ipc::capture::take();
+        let themes: Vec<_> = events.iter().filter(|(k, _)| k == "theme").collect();
+        assert_eq!(themes.len(), 1, "{events:?}");
+        assert_eq!(themes[0].1["seeds"]["accent"], "#1e90ff");
+        assert!(themes[0].1["seeds"]["accent_text"].is_string());
+        let g = crate::ipc::methods::dispatch(&mut h.state, 0, "get_theme", &json!({}))
+            .ok()
+            .unwrap();
+        assert_eq!(g["seeds"]["accent"], "#1e90ff");
+        let cfgv = crate::ipc::config_rpc::dispatch(
+            &mut h.state,
+            Decision::Allow,
+            "get_config",
+            &json!({"path": "general.accent"}),
+        );
+        assert!(cfgv.is_ok());
+        let ok = crate::ipc::config_rpc::dispatch(
+            &mut h.state,
+            Decision::Allow,
+            "set_config_value",
+            &json!({"path": "general.accent", "value": ""}),
+        );
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.message));
+        let events = crate::ipc::capture::take();
+        let themes: Vec<_> = events.iter().filter(|(k, _)| k == "theme").collect();
+        assert_eq!(themes.len(), 1, "{events:?}");
+        assert_eq!(themes[0].1["seeds"]["accent"], "#f2c33c");
+
         // Re-applying the same config is not a change.
         refresh(&mut h.state);
         assert!(crate::ipc::capture::take().iter().all(|(k, _)| k != "theme"));

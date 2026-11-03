@@ -103,6 +103,17 @@ impl Config {
                         ),
                     ),
                 },
+                "accent" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("") => self.general.accent = None,
+                    Some(s) => match parse_color(s) {
+                        Some(c) if s.starts_with('#') && s.len() == 7 => self.general.accent = Some(c),
+                        _ => self.reject(
+                            n,
+                            "bad color for \"accent\"; expected \"#rrggbb\" (opaque) or \"\"",
+                        ),
+                    },
+                    None => self.reject(n, "accent expects \"#rrggbb\" or \"\" (follow the theme)"),
+                },
                 "theme-dark" => self.apply_theme_ref(n, false),
                 "theme-light" => self.apply_theme_ref(n, true),
                 "light-from" => self.apply_schedule(n, true),

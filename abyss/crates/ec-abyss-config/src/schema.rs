@@ -601,6 +601,14 @@ pub const TABLE: &[Key] = &[
         "Colour scheme of the whole desktop (ADR 0084): `dark`, `light`, or `auto`, which follows the `light-from` / `dark-from` schedule in local time. Compositor-drawn material, every shell pane and client apps (the `org.freedesktop.appearance` hint) follow it, live.",
     ),
     k(
+        "general.accent",
+        Ty::Str,
+        Str(""),
+        Abyss,
+        Live,
+        "The one accent colour every Eclipse surface follows, `#rrggbb` (opaque), live. Empty (the default) keeps the active theme's own accent (gold `#f2c33c` in the built-in themes). When set it replaces the theme's `accent` seed and its accent text is re-derived from it (lighter on a dark theme, darker on a light one, always at least 4.5:1 on the base), so the override can never fail the theme contrast rule. `get_theme` returns the effective `accent` and `accent_text`; the `theme` event announces a change. `annotations { accent }` follows it unless set explicitly.",
+    ),
+    k(
         "general.theme-dark",
         Ty::Str,
         Str("dark"),
@@ -2752,6 +2760,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.drop-guide-color" => V::Color(c.general.drop_guide_color),
         "general.drop-edge-band" => V::Int(c.general.drop_edge_band as i64),
         "general.color-scheme" => V::Str(c.general.color_scheme.name().into()),
+        "general.accent" => V::Str(c.general.accent.map(crate::hex_rgb).unwrap_or_default()),
         "general.theme-dark" => V::Str(c.general.theme_dark.clone()),
         "general.theme-light" => V::Str(c.general.theme_light.clone()),
         "general.light-from" => V::Str(crate::fmt_hhmm(c.general.light_from)),
@@ -3008,6 +3017,7 @@ mod tests {
                 // Times and theme names: validated on their own terms.
                 "general.light-from" => "06:30".into(),
                 "general.dark-from" => "20:15".into(),
+                "general.accent" => "#1e90ff".into(),
                 "general.theme-dark" => "dark".into(),
                 "general.theme-light" => "light".into(),
                 "bar.widgets.system-usage.disk-path" => "/home".into(),

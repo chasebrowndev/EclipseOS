@@ -40,7 +40,11 @@ yellow accent. Use this as art direction; do not copy any specific screen.
   A widget that reveals reserves no grip column while open: the grip draws over its leading
   pad and the cell eases 8px wider under the pointer. Alphas above are sRGB intent; iced
   blends in linear light, so `tokens.rs` carries the linear equivalents
-- Accent: #f2c33c. Tints: rgba(242,195,60,.09) fill, .24-.32 border, #f5cf5c for text
+- Accent: the theme's `accent` seed (#f2c33c gold in the built-in themes), user-overridable with
+  `general.accent` (`#rrggbb`, live; Settings > Effects > Blur & glass > Colour scheme offers
+  Gold, Coral, Rose, Violet, Azure, Teal, Green, a hex field and a picker). The accent text is
+  re-derived from the override so contrast holds. Tints: rgba(242,195,60,.09) fill, .24-.32 border,
+  #f5cf5c for text, all as the gold defaults; every pane reads them from the palette, never a literal
 - Text: #fff primary, rgba(255,255,255,.64) secondary, rgba(255,255,255,.4) tertiary
 - Neutral swatch grey: #96918a (warm, not #8f8f96)
 - These values are the built-in dark seeds run through `derive` in `abyss/crates/ec-theme`
@@ -90,7 +94,7 @@ the same rules (ADR 0084).
   brightness, never a user theme's colours (ADR 0084)
 
 ## Accent discipline
-Yellow marks state and one live value per screen: the active nav item, the selected
+The accent (yellow by default) marks state and one live value per screen: the active nav item, the selected
 option, the current slider fill, an "in use" status. Never decorative, never two
 competing yellow areas in one pane, no gradients of it.
 

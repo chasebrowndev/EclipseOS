@@ -1561,6 +1561,9 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         }
         let unused = key.path == CARD_FILL && !matches!(current, "off" | "blur");
         rows.push(setting_row_at(app, &key.label(), key, unused && app.blur));
+        if key.path == crate::accent::KEY {
+            rows.push(crate::accent::strip(key.value.as_str().unwrap_or_default()));
+        }
         let blurb = match key.path.as_str() {
             crate::schema::COLOR_SCHEME => Some(crate::schema::scheme_blurb(scheme)),
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
@@ -1942,7 +1945,18 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             }
             // A colour key shows the colour it holds now — what was written,
             // not the draft — as a swatch that opens its picker under the row.
-            let Some([r, g, b, a]) = color.then(|| crate::schema::rgba(&key.display())).flatten() else {
+            // An unset accent shows the colour the theme is using.
+            let held = color
+                .then(|| crate::schema::rgba(&key.display()))
+                .flatten()
+                .or_else(|| {
+                    (*color && key.path == crate::accent::KEY).then(|| {
+                        let c = color::accent();
+                        let b = |v: f32| (v * 255.0).round() as u8;
+                        [b(c.r), b(c.g), b(c.b), 255]
+                    })
+                });
+            let Some([r, g, b, a]) = held else {
                 return field.into();
             };
             let open = app.picker.as_deref() == Some(key.path.as_str());

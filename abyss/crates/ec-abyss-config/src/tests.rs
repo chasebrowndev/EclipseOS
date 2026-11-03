@@ -3353,3 +3353,54 @@ fn action_key_examples_parse_in_a_valid_block() {
         }
     }
 }
+
+#[test]
+fn shared_accent_parse_default_and_apply() {
+    let cfg = parse_single_for_tests("");
+    assert_eq!(cfg.general.accent, None);
+    assert_eq!(
+        cfg.appearance_for(ec_theme::Scheme::Dark).seeds,
+        ec_theme::DARK_SEEDS
+    );
+
+    let cfg = parse_single_for_tests("general { accent \"#1e90ff\" }\n");
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    let a = cfg.appearance_for(ec_theme::Scheme::Dark);
+    assert_eq!(hex_rgb(a.seeds.accent.0), "#1e90ff");
+    assert!(ec_theme::validate(&a.seeds).is_ok());
+    // Light scheme: accent text is derived and readable there too.
+    let l = cfg.appearance_for(ec_theme::Scheme::Light);
+    assert!(ec_theme::validate(&l.seeds).is_ok());
+
+    // Empty string = follow the theme again.
+    let cfg = parse_single_for_tests("general { accent \"#1e90ff\"; accent \"\" }\n");
+    assert_eq!(cfg.general.accent, None);
+
+    // Bad values are refused and leave it unset.
+    for bad in [
+        "general { accent \"red\" }",
+        "general { accent \"#1e90ff80\" }",
+        "general { accent 5 }",
+    ] {
+        let cfg = parse_single_for_tests(bad);
+        assert!(!cfg.errors.is_empty(), "{bad}");
+        assert_eq!(cfg.general.accent, None, "{bad}");
+    }
+}
+
+#[test]
+fn shared_accent_overrides_theme_and_annotations_follow_unless_explicit() {
+    let mut cfg = parse_single_for_tests(
+        "theme \"ember\" { accent \"#e8873a\" }\ngeneral { theme-dark \"ember\"; accent \"#1e90ff\" }\n",
+    );
+    let a = cfg.appearance_for(ec_theme::Scheme::Dark);
+    assert_eq!(a.name, "ember");
+    assert_eq!(hex_rgb(a.seeds.accent.0), "#1e90ff");
+    cfg.apply_appearance(a);
+    assert_eq!(hex_rgb(cfg.annotations.accent), "#1e90ff");
+
+    let mut cfg =
+        parse_single_for_tests("general { accent \"#1e90ff\" }\nannotations { accent \"#ff0000\" }\n");
+    cfg.apply_appearance(cfg.appearance_for(ec_theme::Scheme::Dark));
+    assert_eq!(hex_rgb(cfg.annotations.accent), "#ff0000");
+}

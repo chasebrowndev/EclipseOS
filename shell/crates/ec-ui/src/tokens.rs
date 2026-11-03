@@ -8,6 +8,22 @@
 
 use iced::{Color, Font};
 
+/// The accent swatches Settings offers for `general.accent`: name and
+/// `#rrggbb`. Gold is the default and is what an empty value means. Each
+/// holds against the warm near-black glass; the theme derives readable text
+/// for whichever is chosen.
+pub mod accent_presets {
+    pub const ALL: [(&str, &str); 7] = [
+        ("Gold", "#f2c33c"),
+        ("Coral", "#e8735a"),
+        ("Rose", "#d9669a"),
+        ("Violet", "#9b7be0"),
+        ("Azure", "#4f9fe0"),
+        ("Teal", "#3fb5a3"),
+        ("Green", "#7fae5e"),
+    ];
+}
+
 pub mod color {
     //! The colour tokens, as a runtime palette (ADR 0084).
     //!
