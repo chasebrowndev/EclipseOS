@@ -653,6 +653,86 @@ impl<Message> iced::widget::canvas::Program<Message> for Spinner {
     }
 }
 
+/// A progress ring: how far one job has come, drawn as a determinate arc from
+/// the top, clockwise, or, when the amount of work is unknown (`None`), a
+/// partial arc travelling round at `phase` (revolutions, as [`spinner`]).
+///
+/// A widget because the bar's progress cell and its drawer's rows must show a
+/// job the same way, and because a ring that fills is a magnitude this design
+/// system draws in one place. Neutral ink, no glow: the caller passes the tint.
+pub fn progress_ring<'a, Message: 'a>(
+    fraction: Option<f32>,
+    phase: f32,
+    side: f32,
+    tint: Color,
+) -> Element<'a, Message, Theme> {
+    iced::widget::canvas(ProgressRing {
+        fraction,
+        phase,
+        tint,
+    })
+    .width(Length::Fixed(side))
+    .height(Length::Fixed(side))
+    .into()
+}
+
+struct ProgressRing {
+    fraction: Option<f32>,
+    phase: f32,
+    tint: Color,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for ProgressRing {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{self, path::Arc, Path, Stroke};
+        use iced::Radians;
+        use std::f32::consts::{FRAC_PI_2, TAU};
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let c = iced::Point::new(bounds.width / 2.0, bounds.height / 2.0);
+        let r = (bounds.width.min(bounds.height) - drawer::SPIN_W) / 2.0;
+        frame.stroke(
+            &Path::circle(c, r),
+            Stroke::default()
+                .with_color(self.tint.scale_alpha(drawer::SPIN_TRACK))
+                .with_width(drawer::SPIN_W),
+        );
+        let (start, sweep) = match self.fraction {
+            Some(f) => (-FRAC_PI_2, f.clamp(0.0, 1.0) * TAU),
+            None => (self.phase.fract() * TAU, drawer::SPIN_SWEEP),
+        };
+        if sweep <= 0.0 {
+            return vec![frame.into_geometry()];
+        }
+        let stroke = Stroke::default()
+            .with_color(self.tint)
+            .with_width(drawer::SPIN_W)
+            .with_line_cap(canvas::LineCap::Round);
+        if sweep >= TAU {
+            frame.stroke(&Path::circle(c, r), stroke);
+        } else {
+            let arc = Path::new(|b| {
+                b.arc(Arc {
+                    center: c,
+                    radius: r,
+                    start_angle: Radians(start),
+                    end_angle: Radians(start + sweep),
+                });
+            });
+            frame.stroke(&arc, stroke);
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
 /// The hero row of a radio drawer: the one network or device the radio is
 /// on, two lines tall, with the verb that ends it at the right.
 ///

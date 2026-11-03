@@ -142,6 +142,7 @@ expires. Alongside the feed, the service scans `/proc` for `cargo`, `rustc`,
 scanned copy gets a fraction from its bytes written against the source size;
 other tools are indeterminate. A scanned job whose label matches a feed job is
 hidden. The service runs inside whichever process calls
-`ec_services::progress::spawn`: the taskbar, once it hosts the widget. Nothing
-hosts it yet, so the feed is unreachable and `ec-ctl progress` says so. Scanning
-is off while the widget is hidden (`Handle::set_scanning`).
+`ec_services::progress::spawn`: the taskbar, which starts it at its first
+configure and keeps it for its whole life (ADR 0065, 2026-11-03 amendment). With
+no taskbar running the feed is unreachable and `ec-ctl progress` says so.
+Scanning stays on; `Handle::set_scanning` remains for a host that wants it off.

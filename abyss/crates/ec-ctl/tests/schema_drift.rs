@@ -35,6 +35,7 @@ const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
     "bluetooth",
     "battery",
     "tray",
+    "progress",
     "clock",
 ];
 

@@ -622,6 +622,13 @@ pub mod bar {
     /// direction (ADR 0065); the grip is what tells the two apart.
     pub const RADIUS_WIDGET: f32 = RADIUS_CELL;
 
+    /// The progress cell (ADR 0065 amendment): its ring's box, and the
+    /// widest its label may run before it is cut with an ellipsis. The label
+    /// is measured in [`CHAR_W`] like every other cell, so this is a width,
+    /// not a character count.
+    pub const PROGRESS_RING: f32 = 14.0;
+    pub const PROGRESS_LABEL_W: f32 = 96.0;
+
     /// The visualizer: sixteen bands, each a hard 2px column with 2px of air,
     /// mirrored about the row's midline.
     pub const VIZ_BANDS: usize = 16;
@@ -857,6 +864,9 @@ pub mod motion {
     pub const PREVIEW_HOLD_MS: u64 = 700;
     /// How long an animation preview waits, empty, before it starts over.
     pub const PREVIEW_REST_MS: u64 = 500;
+    /// One turn of an indeterminate progress ring. Slower than the radio
+    /// spinner: a copy in flight is not a scan in flight.
+    pub const PROGRESS_SPIN_MS: u64 = 1600;
 }
 
 /// A context menu: the mark rail that opens on a right-click.
@@ -957,6 +967,12 @@ pub mod drawer {
     /// A quick-action tile's height, and the air between tile rows.
     pub const TILE_H: f32 = 46.0;
     pub const TILE_GAP: f32 = 4.0;
+    /// One job in the progress drawer: its ring and label, its bar, and its
+    /// mono line, with [`JOB_PAD`] of air above and below. How many characters
+    /// of a job's label the drawer shows before it is cut.
+    pub const JOB_H: f32 = 46.0;
+    pub const JOB_PAD: f32 = 3.0;
+    pub const JOB_LABEL_CHARS: usize = 34;
 
     /// The calendar drawer's width: a month grid and a day's detail side by
     /// side, so the one drawer wider than [`W`].
