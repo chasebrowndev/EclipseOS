@@ -3213,3 +3213,143 @@ fn appearance_fills_only_what_the_config_left_unset() {
     assert_eq!(cfg.annotations.accent, parse_color("#445566").unwrap());
     assert_ne!(cfg.annotations.text, AnnotationColors::DEFAULT.text);
 }
+
+/// `bar { action … }` (quick actions): label, icon and exactly one of an argv
+/// `exec` or an `app` desktop id. Parsing never makes an `exec` runnable; that
+/// is [`QuickAction::runnable`]'s job (ADR 0067).
+#[test]
+fn quick_action_blocks_parse() {
+    let cfg = widgets_cfg(
+        "bar {\n action \"mute\" {\n label \"Mute\"\n icon \"audio-volume-muted\"\n exec \"pactl\" \"set-sink-mute\" \"@DEFAULT_SINK@\" \"toggle\"\n }\n action \"term\" { label \"Terminal\"; app \"foot\"; }\n}\n",
+    );
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    let acts = &cfg.bar.quick_actions;
+    assert_eq!(acts.len(), 2);
+    assert_eq!(acts[0].id, "mute");
+    assert_eq!(acts[0].label, "Mute");
+    assert_eq!(acts[0].icon.as_deref(), Some("audio-volume-muted"));
+    assert_eq!(
+        acts[0].target,
+        QuickActionTarget::Exec(vec![
+            "pactl".into(),
+            "set-sink-mute".into(),
+            "@DEFAULT_SINK@".into(),
+            "toggle".into()
+        ])
+    );
+    assert_eq!(acts[0].approval_name(), "action:mute");
+    assert_eq!(acts[1].icon, None);
+    assert_eq!(acts[1].target, QuickActionTarget::App("foot".into()));
+    assert!(Config::default().bar.quick_actions.is_empty());
+}
+
+/// Every malformed quick action is refused whole: no partial button, and no
+/// other button is disturbed.
+#[test]
+fn quick_action_blocks_are_validated_whole() {
+    let long_id = "a".repeat(schema::QUICK_ACTION_ID_MAX + 1);
+    let long_label = "x".repeat(schema::QUICK_ACTION_LABEL_MAX + 1);
+    let bad = [
+        "action \"a\" { exec \"x\"; }".to_owned(),
+        "action \"a\" { label \"A\"; }".to_owned(),
+        "action \"a\" { label \"A\"; exec \"x\"; app \"foot\"; }".to_owned(),
+        "action \"a\" { label \"A\"; exec \"x\"; exec \"y\"; }".to_owned(),
+        "action \"a\" { label \"A\"; exec; }".to_owned(),
+        "action \"a\" { label \"A\"; exec \"\"; }".to_owned(),
+        "action \"a\" { label \"A\"; exec \"x\" 1; }".to_owned(),
+        "action \"a\" { label \"\"; exec \"x\"; }".to_owned(),
+        "action \"a\" { label \"A\\u{7}\"; exec \"x\"; }".to_owned(),
+        format!("action \"a\" {{ label \"{long_label}\"; exec \"x\"; }}"),
+        "action \"a\" { label \"A\"; icon \"/usr/share/icons/x.png\"; exec \"x\"; }".to_owned(),
+        "action \"a\" { label \"A\"; icon \".hidden\"; exec \"x\"; }".to_owned(),
+        "action \"a\" { label \"A\"; app \"firefox.desktop\"; }".to_owned(),
+        "action \"a\" { label \"A\"; app \"a/b\"; }".to_owned(),
+        "action \"a\" { label \"A\"; app \"fire fox\"; }".to_owned(),
+        "action \"a\" { label \"A\"; colour \"red\"; exec \"x\"; }".to_owned(),
+        "action \"a:b\" { label \"A\"; exec \"x\"; }".to_owned(),
+        "action \"a b\" { label \"A\"; exec \"x\"; }".to_owned(),
+        "action \"\" { label \"A\"; exec \"x\"; }".to_owned(),
+        format!("action \"{long_id}\" {{ label \"A\"; exec \"x\"; }}"),
+        "action { label \"A\"; exec \"x\"; }".to_owned(),
+    ];
+    for text in bad {
+        let cfg = widgets_cfg(&format!("bar {{ {text} }}\n"));
+        assert!(!cfg.errors.is_empty(), "{text}");
+        assert!(cfg.bar.quick_actions.is_empty(), "{text}");
+    }
+    let cfg = widgets_cfg(
+        "bar { action \"a\" { label \"A\"; exec \"x\"; }; action \"b\" { label \"B\"; exec \"x\"; app \"foot\"; }; action \"c\" { label \"C\"; app \"foot\"; } }\n",
+    );
+    let ids: Vec<_> = cfg.bar.quick_actions.iter().map(|a| a.id.as_str()).collect();
+    assert_eq!(ids, ["a", "c"]);
+    assert_eq!(cfg.errors.len(), 1);
+}
+
+/// A later block with the same id replaces the earlier one in place, and the
+/// list is capped: one more than the cap is refused, the rest stay.
+#[test]
+fn quick_action_later_block_replaces_and_the_list_is_capped() {
+    let cfg = widgets_cfg(
+        "bar { action \"a\" { label \"One\"; exec \"x\"; }; action \"b\" { label \"Two\"; app \"foot\"; }; action \"a\" { label \"Three\"; app \"foot\"; } }\n",
+    );
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    let labels: Vec<_> = cfg.bar.quick_actions.iter().map(|a| a.label.as_str()).collect();
+    assert_eq!(labels, ["Three", "Two"]);
+
+    let many: String = (0..=schema::QUICK_ACTION_MAX)
+        .map(|i| format!("action \"q{i}\" {{ label \"Q\"; app \"foot\"; }}\n"))
+        .collect();
+    let cfg = widgets_cfg(&format!("bar {{\n{many}}}\n"));
+    assert_eq!(cfg.bar.quick_actions.len(), schema::QUICK_ACTION_MAX);
+    assert_eq!(cfg.errors.len(), 1);
+}
+
+/// An `exec` quick action runs only under an approval for exactly its own
+/// name and argv. An `app` needs none. Fail-closed on every other case.
+#[test]
+fn an_exec_quick_action_runs_only_with_its_own_approval() {
+    let cfg = widgets_cfg(
+        "bar { action \"mute\" { label \"Mute\"; exec \"pactl\" \"toggle\"; }; action \"term\" { label \"T\"; app \"foot\"; } }\n",
+    );
+    let [mute, term] = &cfg.bar.quick_actions[..] else {
+        panic!("two quick actions expected: {:?}", cfg.bar.quick_actions);
+    };
+    let argv: Vec<String> = vec!["pactl".into(), "toggle".into()];
+    let nothing = approvals::Approvals::default();
+    assert!(!mute.runnable(&nothing));
+    assert!(term.runnable(&nothing));
+
+    let approved = approvals::Approvals::with_one("action:mute", widget_hash::quick_action_hash(&argv));
+    assert!(mute.runnable(&approved));
+
+    // The same argv approved under a widget's name is not this action's.
+    let wrong_name = approvals::Approvals::with_one("mute", widget_hash::quick_action_hash(&argv));
+    assert!(!mute.runnable(&wrong_name));
+    // A different command under the right name is refused.
+    let wrong_argv = approvals::Approvals::with_one(
+        "action:mute",
+        widget_hash::quick_action_hash(&["pactl".into(), "mute".into()]),
+    );
+    assert!(!mute.runnable(&wrong_argv));
+    // Another context's hash of the same argv never matches (domain separation).
+    let wrong_context = approvals::Approvals::with_one("action:mute", widget_hash::model_command_hash(&argv));
+    assert!(!mute.runnable(&wrong_context));
+}
+
+/// Every example in `ACTION_KEYS` loads inside a block that is valid around it,
+/// so the documentation cannot show a form the parser refuses.
+#[test]
+fn action_key_examples_parse_in_a_valid_block() {
+    for f in schema::ACTION_KEYS {
+        let base = match f.names[0] {
+            "label" => "exec \"true\"; ",
+            "icon" => "label \"x\"; exec \"true\"; ",
+            _ => "label \"x\"; ",
+        };
+        for ex in f.examples {
+            let cfg = widgets_cfg(&format!("bar {{ action \"a\" {{ {base}{ex}; }} }}\n"));
+            assert!(cfg.errors.is_empty(), "{ex}: {:?}", cfg.errors);
+            assert_eq!(cfg.bar.quick_actions.len(), 1, "{ex}");
+        }
+    }
+}

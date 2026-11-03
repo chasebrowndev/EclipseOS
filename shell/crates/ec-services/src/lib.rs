@@ -18,6 +18,7 @@ pub mod fuzzy;
 pub mod media;
 pub mod notifications;
 pub mod portal;
+pub mod power_profiles;
 pub mod screensaver;
 pub mod session;
 pub mod status;
