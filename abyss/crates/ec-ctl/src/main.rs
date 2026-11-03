@@ -14,6 +14,7 @@ use std::{
 use serde_json::{json, Value};
 
 mod migrate;
+mod progress;
 
 const USAGE: &str = "\
 ec-ctl — control the abyss compositor
@@ -64,6 +65,11 @@ ec-ctl — control the abyss compositor
   ec-ctl config widget rename OLD NEW
                                       rename it, rewriting custom:OLD ids
   ec-ctl setup reset             clear setup.complete so ec-setup runs again
+  ec-ctl progress start ID [--label L] [--total BYTES]
+  ec-ctl progress set ID 0.4|40%|BYTES
+  ec-ctl progress done ID
+  ec-ctl progress list           work shown in the progress widget (its own
+                                      per-user feed socket, not the compositor's)
   ec-ctl call METHOD [JSON]      raw JSON-RPC, for anything not above
 
 Options:
@@ -122,6 +128,11 @@ fn main() -> ExitCode {
     if args.is_empty() || args[0] == "-h" || args[0] == "--help" || args[0] == "help" {
         print!("{USAGE}");
         return ExitCode::SUCCESS;
+    }
+
+    // `progress` talks to the per-user progress feed, not the compositor.
+    if args[0] == "progress" {
+        return progress::run(&args[1..]);
     }
 
     // `config migrate` never touches the socket: it edits the files in place,

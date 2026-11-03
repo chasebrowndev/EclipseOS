@@ -181,6 +181,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 pub mod addons;
 pub use addons::{Addon, Addons};
+pub mod progress;
 pub mod widgets;
 pub use widgets::{Approval, Widget, WidgetKind, WidgetOp, WidgetStatus, WriteResult};
 
