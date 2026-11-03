@@ -2329,11 +2329,21 @@ pub fn move_workspace_to_output(
     Ok(true)
 }
 
-pub fn spawn(command: &str) {
+/// Run `command` through `sh -c` on the human's behalf. In `dedicated` GPU
+/// mode it carries the discrete GPU's offload environment
+/// ([`AbyssState::dedicated_env`], ADR 0084), as every launch from the launcher
+/// and bar does through `ec-services`.
+pub fn spawn(state: &AbyssState, command: &str) {
+    spawn_with(&state.dedicated_env, command);
+}
+
+/// [`spawn`] with an explicit environment (none for compositor-internal commands).
+pub fn spawn_with(env: &[(&'static str, String)], command: &str) {
     tracing::info!(command, "spawning");
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.arg("-c").arg(command);
+    cmd.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
     // The child must not inherit our controlling terminal or process group.
     cmd.process_group(0);
     if let Err(e) = cmd.spawn() {
