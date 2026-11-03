@@ -90,6 +90,10 @@ pub enum Drawer {
     Audio,
     /// The month calendar, opened from the clock cell.
     Calendar,
+    /// The battery reading and its power profile, opened from the battery cell.
+    Battery,
+    /// The bar's quick actions, opened from their cell.
+    QuickActions,
 }
 
 /// The keys the calendar drawer answers to.
@@ -246,6 +250,12 @@ pub enum Message {
     /// A device row was clicked: connect a paired device, pair a new one.
     BtConnect(String),
     BtDisconnect(String),
+    /// The battery drawer's selector: ask the power-profiles daemon for one.
+    PowerSet(ec_services::power_profiles::Profile),
+    /// The power-profiles service said something.
+    Power(ec_services::power_profiles::Event),
+    /// A quick action's tile was pressed: its index in `quick_actions`.
+    QuickAction(usize),
     /// A drawer's way out: start Settings on the named pane.
     OpenSettings(&'static str),
     /// A tray item was left-clicked.
@@ -405,6 +415,11 @@ pub struct App {
     /// The calendar drawer: the month in view, the selected day, the
     /// provider's events.
     pub calendar: crate::calendar::Calendar,
+    /// The battery drawer's view of the power-profiles service.
+    pub power: crate::widgets::battery::Power,
+    /// `bar { action … }`: the configured quick actions, gated. Read at start
+    /// and on every reload, never from a draw.
+    pub quick_actions: Vec<crate::widgets::quick_actions::Slot>,
     /// Debug previews only: when a widget fixture started. A fixture bar
     /// neither refetches nor starts services — the fixture stands in for
     /// both.
@@ -826,6 +841,8 @@ impl App {
             streams: Vec::new(),
             audio: crate::audio::Devices::default(),
             calendar: crate::calendar::Calendar::default(),
+            power: crate::widgets::battery::Power::default(),
+            quick_actions: crate::widgets::quick_actions::load(),
             fixture: None,
             show_key_hints: true,
             launcher_menu,
@@ -915,6 +932,7 @@ fn preview(app: &mut App) {
         return;
     };
     app.radios = crate::radio::Radios::preview();
+    crate::widgets::battery::preview(&mut app.power);
     app.network = Network::Wifi {
         id: "abyss-5g".to_owned(),
         strength: 82,
@@ -929,6 +947,14 @@ fn preview(app: &mut App) {
         "overflow" => Some(Preview::Drawer(Drawer::Overflow)),
         "audio" => Some(Preview::Drawer(Drawer::Audio)),
         "calendar" => Some(Preview::Drawer(Drawer::Calendar)),
+        "battery" => {
+            app.battery = Some(crate::preview::preview_battery());
+            Some(Preview::Drawer(Drawer::Battery))
+        }
+        "quick-actions" => {
+            app.quick_actions = crate::widgets::quick_actions::preview_slots();
+            Some(Preview::Drawer(Drawer::QuickActions))
+        }
         "traymenu" => Some(Preview::TrayMenu(
             "org.syncthing".to_owned(),
             crate::radio::preview_menu(),
@@ -1661,6 +1687,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         // outranks a layer surface (a trusted prompt, the lock).
         Message::Unfocused(id) => {
             let now = Instant::now();
+            end_bt_scan(app);
             return with_bar(app, id, |_, bar| {
                 let start = if bar.menu.open {
                     close_start(bar, now)
@@ -1678,8 +1705,8 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         // The system bus is not the compositor: fold the reading in and stop,
         // rather than falling through to a refetch the socket never asked for.
-        // A fixture's readings are the thing being screenshotted.
-        Message::Status(_) if app.fixture.is_some() => return Task::none(),
+        // A fixture's or a preview's readings are the thing being screenshotted.
+        Message::Status(_) if app.fixture.is_some() || app.preview.is_some() => return Task::none(),
         Message::Status(update) => {
             match update {
                 Update::Network(network) => app.network = network,
@@ -1736,6 +1763,9 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         Message::Reconfigured => {
             app.bar = app.conn.bar_config();
+            if app.fixture.is_none() {
+                app.quick_actions = crate::widgets::quick_actions::load();
+            }
             if !app.bar.eye && !app.iris.debug {
                 app.iris.set(crate::eye::Eye::Off, std::time::Instant::now());
             }
@@ -1853,6 +1883,25 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             crate::radio::actions::set_bt_powered(on);
             return reflow(app);
         }
+        Message::PowerSet(profile) => {
+            app.power.ask(profile);
+            crate::services::set_profile(profile);
+            return Task::none();
+        }
+        // A fixture's or a preview's power reading is the thing being screenshotted.
+        Message::Power(_) if app.fixture.is_some() || app.preview.is_some() => return Task::none(),
+        Message::Power(event) => {
+            app.power.apply(event);
+            return reflow(app);
+        }
+        Message::QuickAction(index) => {
+            let closed = dismiss(app);
+            let term = app.conn.terminal_command();
+            if let Some(slot) = app.quick_actions.get(index) {
+                crate::widgets::quick_actions::run(slot, term);
+            }
+            return closed;
+        }
         Message::BtScan => {
             app.radios.scanning = !app.radios.scanning;
             crate::radio::actions::discover(app.radios.scanning);
@@ -1897,7 +1946,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         // A fixture's drawers are the thing being screenshotted; the live
         // service's lists must not replace them.
-        Message::Radio(_) if app.fixture.is_some() => return Task::none(),
+        Message::Radio(_) if app.fixture.is_some() || app.preview.is_some() => return Task::none(),
         Message::Radio(feed) => return radio(app, feed),
         // Shared state, so one action however many bars draw the widget.
         Message::Widget(feed) => {
@@ -2292,6 +2341,8 @@ fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
         Drawer::Bluetooth => Some(crate::drawer::DrawerKind::Bluetooth),
         Drawer::Audio => Some(crate::drawer::DrawerKind::Audio),
         Drawer::Calendar => Some(crate::drawer::DrawerKind::Calendar),
+        Drawer::Battery => Some(crate::drawer::DrawerKind::Battery),
+        Drawer::QuickActions => Some(crate::drawer::DrawerKind::QuickActions),
         Drawer::Overflow => None,
     }
 }
@@ -2304,6 +2355,8 @@ fn drawer_full(app: &App, kind: crate::drawer::DrawerKind) -> u32 {
         DrawerKind::Bluetooth => crate::view::drawer_height(app, Drawer::Bluetooth),
         DrawerKind::Audio => crate::view::drawer_height(app, Drawer::Audio),
         DrawerKind::Calendar => crate::view::drawer_height(app, Drawer::Calendar),
+        DrawerKind::Battery => crate::view::drawer_height(app, Drawer::Battery),
+        DrawerKind::QuickActions => crate::view::drawer_height(app, Drawer::QuickActions),
     }
 }
 
@@ -2336,11 +2389,13 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
 }
 
 /// The cells a drawer hangs from.
-const DRAWER_CELLS: [Drawer; 4] = [
+const DRAWER_CELLS: [Drawer; 6] = [
     Drawer::Network,
     Drawer::Bluetooth,
     Drawer::Audio,
     Drawer::Calendar,
+    Drawer::Battery,
+    Drawer::QuickActions,
 ];
 
 /// The pointer is over a cell a drawer hangs from. Its click is the toggle or
@@ -2371,6 +2426,20 @@ fn cal_step(app: &mut App, f: impl FnOnce(&mut crate::calendar::Calendar)) {
     }
 }
 
+/// A bluetooth drawer that goes away takes its discovery with it: a scan
+/// nobody can see must not keep the radio searching, nor leave a spinner for
+/// the next time the drawer opens.
+fn end_bt_scan(app: &mut App) {
+    let out = app
+        .bars
+        .values()
+        .any(|b| b.drawer.is_open(crate::drawer::DrawerKind::Bluetooth));
+    if out && app.radios.scanning {
+        app.radios.scanning = false;
+        crate::radio::actions::discover(false);
+    }
+}
+
 /// Start the drawer's slide back into the pill and give the keyboard back.
 fn close_drawer(bar: &mut Bar, now: Instant) -> Task<Message> {
     bar.drawer.close(now);
@@ -2386,6 +2455,7 @@ fn close_drawer(bar: &mut Bar, now: Instant) -> Task<Message> {
 fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::DrawerKind) -> Task<Message> {
     let now = Instant::now();
     if app.bars.get(&id).is_some_and(|b| b.drawer.is_open(kind)) {
+        end_bt_scan(app);
         return with_bar(app, id, |_, bar| close_drawer(bar, now)).unwrap_or_else(Task::none);
     }
     // Only a bar showing its pill has a cell to grow from.
@@ -2979,6 +3049,7 @@ fn launch_pin(_id: &str) {}
 /// The start menu and any drawer go with it: every path here is the human doing something
 /// else — Escape, a click on bare bar, a chip's action, a popup opening.
 fn dismiss(app: &mut App) -> Task<Message> {
+    end_bt_scan(app);
     let popup = dismiss_popup(app);
     let now = Instant::now();
     let menus = each_bar(app, |_, bar| {

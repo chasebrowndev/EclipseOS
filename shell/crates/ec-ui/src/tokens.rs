@@ -900,8 +900,9 @@ pub mod drawer {
     /// Padding inside a row.
     pub const ROW_X: f32 = 8.0;
     /// The square a row's leading mark occupies, and the gap after it. Smaller
-    /// than an icon's usual 16: the row's label is the thing read first.
-    pub const MARK: f32 = 14.0;
+    /// than an icon's usual 16: the row's label is the thing read first. The
+    /// same 13px as a context menu's mark, so every drawer's marks are one size.
+    pub const MARK: f32 = 13.0;
     pub const MARK_GAP: f32 = 9.0;
     /// Corner radius of a hovered row, on the inset-chip scale.
     pub const RADIUS_ROW: f32 = 8.0;
@@ -943,6 +944,19 @@ pub mod drawer {
     pub const LEVEL_RAIL: f32 = 4.0;
     pub const LEVEL_KNOB_R: f32 = 6.0;
     pub const LEVEL_READOUT_W: f32 = 32.0;
+
+    /// The battery and quick-action drawers' width. A three-way segment and a
+    /// two-column tile grid need more room than a list's [`W`].
+    pub const WIDE_W: f32 = 272.0;
+    /// The battery's magnitude hero: one big reading over a state line.
+    pub const MAGNITUDE_H: f32 = 72.0;
+    /// A segmented control's height inside its one [`ROW_H`] block.
+    pub const SEGMENT_H: f32 = 24.0;
+    /// The air between two segments of one control.
+    pub const SEGMENT_GAP: f32 = 2.0;
+    /// A quick-action tile's height, and the air between tile rows.
+    pub const TILE_H: f32 = 46.0;
+    pub const TILE_GAP: f32 = 4.0;
 
     /// The calendar drawer's width: a month grid and a day's detail side by
     /// side, so the one drawer wider than [`W`].

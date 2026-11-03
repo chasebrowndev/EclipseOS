@@ -923,6 +923,8 @@ pub fn drawer_span(
         crate::app::Drawer::Bluetooth => widget_span(app, on, &WidgetId::Bluetooth),
         crate::app::Drawer::Audio => widget_span(app, on, &WidgetId::Volume),
         crate::app::Drawer::Calendar => widget_span(app, on, &WidgetId::Clock),
+        crate::app::Drawer::Battery => widget_span(app, on, &WidgetId::Battery),
+        crate::app::Drawer::QuickActions => widget_span(app, on, &WidgetId::QuickActions),
         crate::app::Drawer::Overflow => {
             let (_, right) = widget_span(app, on, &WidgetId::Tray)?;
             let right = right - bar::WIDGET_X;
@@ -1429,6 +1431,8 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
         crate::app::Drawer::Overflow => crate::widgets::tray::sheet(app),
         crate::app::Drawer::Audio => crate::widgets::volume::sheet(app),
         crate::app::Drawer::Calendar => crate::widgets::clock::sheet(app),
+        crate::app::Drawer::Battery => crate::widgets::battery::sheet(app),
+        crate::app::Drawer::QuickActions => crate::widgets::quick_actions::sheet(app),
     }
 }
 
@@ -1452,6 +1456,8 @@ fn drawer_sheet<'a>(
         Some(crate::drawer::DrawerKind::Bluetooth) => crate::app::Drawer::Bluetooth,
         Some(crate::drawer::DrawerKind::Audio) => crate::app::Drawer::Audio,
         Some(crate::drawer::DrawerKind::Calendar) => crate::app::Drawer::Calendar,
+        Some(crate::drawer::DrawerKind::Battery) => crate::app::Drawer::Battery,
+        Some(crate::drawer::DrawerKind::QuickActions) => crate::app::Drawer::QuickActions,
         _ => crate::app::Drawer::Network,
     };
     let anchor = on.drawer.anchor_x();

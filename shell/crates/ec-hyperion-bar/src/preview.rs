@@ -33,17 +33,21 @@ use crate::widgets::{self, now_playing, system_usage, volume, GripEv, WidgetId};
 
 /// `HYPERION_PREVIEW_BATTERY=charging|full|low` picks the fixture's battery
 /// state, so a screenshot loop can show each one. Default: 76%, discharging.
-fn preview_battery() -> Battery {
-    let (percent, state) = match std::env::var("HYPERION_PREVIEW_BATTERY").as_deref() {
-        Ok("charging") => (58, Charge::Charging),
-        Ok("full") => (100, Charge::Full),
-        Ok("low") => (9, Charge::Discharging),
-        _ => (76, Charge::Discharging),
+pub(crate) fn preview_battery() -> Battery {
+    let (percent, state, remaining) = match std::env::var("HYPERION_PREVIEW_BATTERY").as_deref() {
+        Ok("charging") => (58, Charge::Charging, Some(Duration::from_secs(70 * 60))),
+        Ok("full") => (100, Charge::Full, None),
+        Ok("low") => (9, Charge::Discharging, Some(Duration::from_secs(18 * 60))),
+        _ => (
+            76,
+            Charge::Discharging,
+            Some(Duration::from_secs(2 * 3600 + 5 * 60)),
+        ),
     };
     Battery {
         percent,
         state,
-        remaining: None,
+        remaining,
     }
 }
 

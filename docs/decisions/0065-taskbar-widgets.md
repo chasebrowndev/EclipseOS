@@ -184,3 +184,33 @@ recordings of a monitor source, such as visualizers and loopbacks.
 `ec-services::audio` gains the sink and source lists, with `.monitor`
 sources left out, the default switch, and input volume and mute. It still
 speaks the native protocol, so nothing shells out.
+
+## Amendment (2026-11-03): the battery drawer, quick actions and Bluetooth battery
+
+Three things the bar gained on the widgets branch.
+
+**The battery drawer.** Clicking the battery cell opens a drawer: the reading
+as a magnitude hero (percentage, state, and the time left when UPower has
+one), then the power profile selector. The selector is `ec-services`'
+`power_profiles` (ADR 0038's bus pattern): one watcher, `set_profile` on its
+own thread, and the daemon's refusal shown in danger ink until the human
+asks again. The selector is hidden when the daemon is unavailable. Performance
+is greyed, with the reason as a line under the selector, when the machine does
+not offer it or the daemon reports it limited. The reading takes the accent
+only when the battery is full, as the cell does.
+
+**The `quick-actions` widget.** A new built-in id, default-ordered before the
+tray. Its cell is one understated glyph and is zero width while no `action`
+block is configured. The drawer is a grid of tiles, one per action. An `app`
+target launches its desktop entry as the launcher does. An `exec` target runs
+its argv with no shell, and only when the owner's approval for exactly that
+argv is recorded (ADR 0067); any other exec tile is disabled and reads "needs
+approval", and the bar checks the approval again at the press. The socket does
+not serve `bar.quick_actions`, so the bar reads the owner's config through
+`ec-abyss-config` at start and on reload, the way the compositor reads it.
+
+**Bluetooth.** A device's own battery (BlueZ `org.bluez.Battery1`
+`Percentage`) is read with the device list and shown as a figure on the
+device's row, and on the connected hero's state line when it is known. The
+drawer's marks are 13px tertiary, as the context menu's are. Closing the
+drawer stops discovery and clears the scanning state, so no scan runs unseen.
