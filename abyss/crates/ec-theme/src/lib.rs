@@ -147,6 +147,90 @@ impl Seeds {
     }
 }
 
+impl Seeds {
+    /// These seeds with `accent` replaced and `accent_text` re-derived from
+    /// it ([`accent_text_for`]), so the result always clears the 4.5:1 text
+    /// rule on its own base. The shared user accent (`general.accent`) is
+    /// applied this way over whichever theme is active.
+    pub fn with_accent(&self, accent: Rgba) -> Seeds {
+        let accent = accent.with_alpha(1.0);
+        Seeds {
+            accent,
+            accent_text: Some(accent_text_for(accent, self.base)),
+            ..*self
+        }
+    }
+}
+
+/// How far HSL lightness is lifted (dark) or dropped (light) for accent text
+/// before the contrast search starts: `#f2c33c` on the dark base gives
+/// `#f4cd5d`, within a step of the hand-picked `#f5cf5c`.
+const TEXT_LIGHTNESS_STEP: f32 = 0.0686;
+
+/// The text variant of `accent` on `base`: same hue and saturation; lighter on
+/// a dark base, darker on a light one, then nudged until it clears
+/// [`MIN_TEXT_CONTRAST`]. Pure and total; the one shared definition.
+pub fn accent_text_for(accent: Rgba, base: Rgba) -> Rgba {
+    let dark = base.luminance() < SCHEME_LUMINANCE;
+    let (h, s, l) = rgb_to_hsl(accent.0[0], accent.0[1], accent.0[2]);
+    let q = |v: f32| (v * 255.0).round().clamp(0.0, 255.0) / 255.0;
+    let make = |l: f32| {
+        let (r, g, b) = hsl_to_rgb(h, s, l.clamp(0.0, 1.0));
+        Rgba([q(r), q(g), q(b), 1.0])
+    };
+    let mut l = if dark {
+        (l + TEXT_LIGHTNESS_STEP).min(0.95).max(l)
+    } else {
+        (l - TEXT_LIGHTNESS_STEP).max(0.05).min(l)
+    };
+    let mut c = make(l);
+    for _ in 0..64 {
+        if contrast(c, base) >= MIN_TEXT_CONTRAST {
+            break;
+        }
+        l += if dark { 0.02 } else { -0.02 };
+        c = make(l);
+        if !(0.0..=1.0).contains(&l) {
+            break;
+        }
+    }
+    c
+}
+
+fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+    let max = r.max(g).max(b);
+    let min = r.min(g).min(b);
+    let l = (max + min) / 2.0;
+    let d = max - min;
+    if d < 1e-6 {
+        return (0.0, 0.0, l);
+    }
+    let s = d / (1.0 - (2.0 * l - 1.0).abs());
+    let h = if max == r {
+        ((g - b) / d).rem_euclid(6.0)
+    } else if max == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    };
+    (h * 60.0, s, l)
+}
+
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r, g, b) = match (h / 60.0) as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (r + m, g + m, b + m)
+}
+
 /// See [`Seeds::scheme`].
 pub const SCHEME_LUMINANCE: f32 = 0.179;
 

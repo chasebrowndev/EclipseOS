@@ -67,6 +67,9 @@ pub struct General {
     /// Theme used while the scheme is dark / light.
     pub theme_dark: String,
     pub theme_light: String,
+    /// `accent`: the one user accent every surface follows. `None` keeps the
+    /// active theme's own accent. Opaque `#rrggbb`.
+    pub accent: Option<[f32; 4]>,
     /// `auto` schedule, minutes since local midnight.
     pub light_from: u16,
     pub dark_from: u16,
@@ -114,6 +117,7 @@ impl Default for General {
             color_scheme: ColorSetting::Dark,
             theme_dark: "dark".into(),
             theme_light: "light".into(),
+            accent: None,
             light_from: DEFAULT_LIGHT_FROM,
             dark_from: DEFAULT_DARK_FROM,
         }

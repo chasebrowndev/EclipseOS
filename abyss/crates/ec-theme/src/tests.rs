@@ -203,3 +203,21 @@ fn linear_alpha_is_the_identity_at_the_ends_and_stronger_for_dark_ink() {
     assert!((linear_alpha(ink, base, 1.0) - 1.0).abs() < 1e-5);
     assert!(linear_alpha(ink, base, 0.62) > 0.8);
 }
+
+#[test]
+fn with_accent_derives_readable_accent_text() {
+    // Gold on the dark base: lifted, close to the hand-picked text tint.
+    let d = DARK_SEEDS.with_accent(hex(0xf2c33c));
+    assert_eq!(d.accent, hex(0xf2c33c));
+    assert_eq!(d.accent_text, Some(hex(0xf4cd5d)));
+    // Any accent, either scheme: always passes validate.
+    for acc in [0x000000, 0xffffff, 0x1e3a8a, 0xe8873a, 0x7c3aed, 0x808080] {
+        for seeds in [DARK_SEEDS, LIGHT_SEEDS] {
+            let s = seeds.with_accent(hex(acc));
+            assert_eq!(validate(&s), Ok(()), "accent {acc:06x}");
+        }
+    }
+    // Dark accent text goes lighter, light goes darker.
+    let l = LIGHT_SEEDS.with_accent(hex(0xf2c33c));
+    assert!(l.accent_text.unwrap().luminance() < hex(0xf2c33c).luminance());
+}

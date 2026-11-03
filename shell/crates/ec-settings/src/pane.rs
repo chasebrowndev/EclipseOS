@@ -435,7 +435,12 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "general" => {
             // The scheme decides the colour of every material the Blur &
             // glass page tunes, so its controls live beside them.
-            if starts("color-scheme") || starts("light-from") || starts("dark-from") || starts("theme-") {
+            if starts("color-scheme")
+                || starts("accent")
+                || starts("light-from")
+                || starts("dark-from")
+                || starts("theme-")
+            {
                 (Page::Blur, "colour scheme")
             } else if starts("gaps-") {
                 (Page::Gaps, "gaps")
@@ -601,6 +606,7 @@ mod tests {
         assert_eq!(page_of("general.color-scheme"), Some(Page::Blur));
         assert_eq!(page_of("general.light-from"), Some(Page::Blur));
         assert_eq!(page_of("general.theme-dark"), Some(Page::Blur));
+        assert_eq!(page_of("general.accent"), Some(Page::Blur));
         assert_eq!(place_for("general.drop-edge-band").unwrap().group, "drag guides");
     }
 

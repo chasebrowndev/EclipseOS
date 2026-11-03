@@ -293,8 +293,9 @@ impl Row {
     pub fn parse(v: &Value) -> Option<Self> {
         let ty = v.get("type")?.as_str()?;
         let constraints = v.get("constraints").unwrap_or(&Value::Null);
+        let path = v.get("path")?.as_str()?.to_owned();
         Some(Row {
-            path: v.get("path")?.as_str()?.to_owned(),
+            path: path.clone(),
             file: File::parse(v.get("file")?.as_str()?)?,
             value: v.get("value").cloned().unwrap_or(Value::Null),
             default: v.get("default").cloned().unwrap_or(Value::Null),
@@ -308,7 +309,13 @@ impl Row {
                 .to_owned(),
             needs_restart: v.get("reload").and_then(Value::as_str) == Some("restart"),
             approval: v.get("approval").and_then(Value::as_str).map(str::to_owned),
-            control: control_for(ty, constraints)?,
+            // The accent is a string on the wire but a colour to a person:
+            // swatch, picker, hex field.
+            control: if path == crate::accent::KEY {
+                Control::Text { color: true }
+            } else {
+                control_for(ty, constraints)?
+            },
         })
     }
 
