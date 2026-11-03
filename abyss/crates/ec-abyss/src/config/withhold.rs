@@ -28,7 +28,7 @@
 use std::collections::{HashSet, VecDeque};
 
 use super::widget_hash::{self, WidgetHash};
-use super::{approvals, Config, CustomWidget, CustomWidgetKind};
+use super::{approvals, Config, CustomWidget, CustomWidgetKind, QuickActionTarget};
 use crate::addons::Hook;
 use crate::state::AbyssState;
 
@@ -105,6 +105,50 @@ pub struct ModelCommandApproval {
     pub granted: HashSet<WidgetHash>,
 }
 
+/// One `exec` quick action without an approval for its exact argv, as the
+/// prompt needs it. Handle-free.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingQuickAction {
+    pub id: String,
+    /// Display text for the untrusted block: the argv as [`command_text`]
+    /// shows it, stripped and clamped the same way. One line.
+    pub command_text: String,
+    pub hash: WidgetHash,
+}
+
+impl PendingQuickAction {
+    fn key(&self) -> (String, WidgetHash) {
+        (self.id.clone(), self.hash)
+    }
+}
+
+/// Per-session state for `exec` quick actions (ADR 0067). Unlike a command
+/// widget, a quick action is never removed from the config: `get_config` does
+/// not serve it and the taskbar re-checks the recorded approval at every press
+/// (`QuickAction::runnable`), so an unapproved one simply cannot run.
+///
+/// This module decides and queues; the prompt (Trusted UI, TCB) pulls from
+/// [`next_pending_quick_action`], calls [`quick_action_prompt_closed`] on any
+/// answer, and on Allow inserts into `granted`, calls
+/// `approvals::persist("action:<id>", hash)` and [`reapply`]; on Not now
+/// inserts into `declined`.
+#[derive(Debug, Default)]
+pub struct QuickActionApprovals {
+    /// Every unapproved `exec` quick action of the last apply.
+    pub withheld: Vec<PendingQuickAction>,
+    /// Waiting for a prompt, oldest first. Never holds an (id, hash) twice,
+    /// nor the one on screen.
+    pub queue: VecDeque<PendingQuickAction>,
+    /// The (id, hash) the prompt is showing.
+    pub on_screen: Option<(String, WidgetHash)>,
+    /// Not now, for this session.
+    pub declined: HashSet<(String, WidgetHash)>,
+    /// Approvals given this session, live while the store is written off the
+    /// loop. **Inserted only by the Trusted UI approval surface**
+    /// (`trusted_ui/`, ADR 0067).
+    pub granted: HashSet<(String, WidgetHash)>,
+}
+
 /// Per-session approval state. Owned by `AbyssState`, plain data.
 #[derive(Debug, Default)]
 pub struct WidgetApprovals {
@@ -127,6 +171,8 @@ pub struct WidgetApprovals {
     pub granted: HashSet<(String, WidgetHash)>,
     /// The Oracle Eyes model command (owner decision 3).
     pub model_command: ModelCommandApproval,
+    /// `exec` quick actions (ADR 0067).
+    pub quick_actions: QuickActionApprovals,
 }
 
 /// A command widget's display text: `argv`, then one labelled line per
@@ -221,6 +267,7 @@ pub fn is_default_model_command(argv: &[String]) -> bool {
 pub(crate) fn settle(state: &mut AbyssState, next: &mut Config) {
     settle_model_command(state, next);
     settle_widgets(state, next);
+    settle_quick_actions(state, next);
 }
 
 /// The model command goes live only if it is the default, the owner's
@@ -282,6 +329,77 @@ pub fn next_pending_model_command(state: &mut AbyssState) -> Option<PendingModel
 /// The model-command prompt is gone (any answer). The surface calls this.
 pub fn model_command_prompt_closed(state: &mut AbyssState) {
     state.widget_approvals.model_command.on_screen = None;
+}
+
+/// Queue every `exec` quick action whose argv has no recorded or session
+/// approval. Nothing is removed from `next`: the bar gates each press on the
+/// store itself. Without the `taskbar-widgets` hook nothing runs the actions,
+/// so nobody is asked.
+fn settle_quick_actions(state: &mut AbyssState, next: &Config) {
+    let hooked = state.addons.hooks.is_on(Hook::TaskbarWidgets);
+    let qa = &mut state.widget_approvals.quick_actions;
+    if !hooked
+        || !next
+            .bar
+            .quick_actions
+            .iter()
+            .any(|a| matches!(a.target, QuickActionTarget::Exec(_)))
+    {
+        qa.withheld.clear();
+        qa.queue.clear();
+        return;
+    }
+    let approved = approvals::read();
+    let mut withheld = Vec::new();
+    for a in &next.bar.quick_actions {
+        let QuickActionTarget::Exec(argv) = &a.target else {
+            continue;
+        };
+        let hash = widget_hash::quick_action_hash(argv);
+        if approved.get(&a.approval_name()) == Some(hash) || qa.granted.contains(&(a.id.clone(), hash)) {
+            continue;
+        }
+        withheld.push(PendingQuickAction {
+            id: a.id.clone(),
+            command_text: clamp(join(argv)),
+            hash,
+        });
+    }
+    qa.queue.retain(|q| withheld.iter().any(|w| w.key() == q.key()));
+    for w in &withheld {
+        let key = w.key();
+        if qa.on_screen.as_ref() == Some(&key)
+            || qa.declined.contains(&key)
+            || qa.queue.iter().any(|q| q.key() == key)
+        {
+            continue;
+        }
+        tracing::info!(id = w.id, "exec quick action waits for the owner's approval");
+        qa.queue.push_back(w.clone());
+    }
+    qa.withheld = withheld;
+}
+
+/// The next quick-action prompt: the oldest queued, non-declined one, marked
+/// on screen. `None` while one is on screen or nothing is waiting.
+pub fn next_pending_quick_action(state: &mut AbyssState) -> Option<PendingQuickAction> {
+    let qa = &mut state.widget_approvals.quick_actions;
+    if qa.on_screen.is_some() {
+        return None;
+    }
+    while let Some(p) = qa.queue.pop_front() {
+        if qa.declined.contains(&p.key()) {
+            continue;
+        }
+        qa.on_screen = Some(p.key());
+        return Some(p);
+    }
+    None
+}
+
+/// The quick-action prompt is gone (any answer). The surface calls this.
+pub fn quick_action_prompt_closed(state: &mut AbyssState) {
+    state.widget_approvals.quick_actions.on_screen = None;
 }
 
 fn settle_widgets(state: &mut AbyssState, next: &mut Config) {
@@ -596,5 +714,82 @@ mod tests {
         assert_eq!(next.oracle_eyes.model_command, None);
         assert!(h.state.widget_approvals.model_command.withheld.is_some());
         assert!(next_pending_model_command(&mut h.state).is_none());
+    }
+
+    const QA: &str = "bar {\n action \"mute\" { label \"Mute\"; exec \"pactl\" \"mute\"; }\n action \"term\" { label \"Term\"; app \"foot\"; }\n}\n";
+
+    #[test]
+    fn an_unapproved_exec_quick_action_is_queued_and_an_app_one_is_not() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        h.state.addons.hooks.insert(Hook::TaskbarWidgets);
+        approvals::set_test_path(None);
+        let mut next = oe_cfg(QA);
+        settle(&mut h.state, &mut next);
+        let qa = &h.state.widget_approvals.quick_actions;
+        assert_eq!(qa.withheld.len(), 1);
+        assert_eq!(qa.withheld[0].id, "mute");
+        assert_eq!(qa.withheld[0].command_text, "pactl mute");
+        assert_eq!(next.bar.quick_actions.len(), 2, "never removed from the config");
+        let p = next_pending_quick_action(&mut h.state).expect("asked");
+        assert_eq!(p.id, "mute");
+        assert!(next_pending_quick_action(&mut h.state).is_none(), "one at a time");
+        // Settling again while it is on screen does not queue it twice.
+        let mut again = oe_cfg(QA);
+        settle(&mut h.state, &mut again);
+        assert!(h.state.widget_approvals.quick_actions.queue.is_empty());
+        quick_action_prompt_closed(&mut h.state);
+    }
+
+    #[test]
+    fn a_session_grant_or_a_recorded_approval_stops_the_asking_and_an_edit_restarts_it() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        h.state.addons.hooks.insert(Hook::TaskbarWidgets);
+        approvals::set_test_path(None);
+        let argv = vec!["pactl".to_owned(), "mute".to_owned()];
+        let hash = widget_hash::quick_action_hash(&argv);
+        h.state
+            .widget_approvals
+            .quick_actions
+            .granted
+            .insert(("mute".to_owned(), hash));
+        let mut next = oe_cfg(QA);
+        settle(&mut h.state, &mut next);
+        assert!(h.state.widget_approvals.quick_actions.withheld.is_empty());
+        assert!(next_pending_quick_action(&mut h.state).is_none());
+
+        // A different argv under the same id is a new question.
+        let mut edited = oe_cfg("bar {\n action \"mute\" { label \"Mute\"; exec \"sh\" \"-c\" \"x\"; }\n}\n");
+        settle(&mut h.state, &mut edited);
+        assert_eq!(h.state.widget_approvals.quick_actions.withheld.len(), 1);
+        assert!(next_pending_quick_action(&mut h.state).is_some());
+    }
+
+    #[test]
+    fn declined_stays_quiet_and_no_hook_means_no_prompt() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        approvals::set_test_path(None);
+        let mut next = oe_cfg(QA);
+        settle(&mut h.state, &mut next);
+        assert!(
+            h.state.widget_approvals.quick_actions.withheld.is_empty(),
+            "no hook, no asking"
+        );
+
+        h.state.addons.hooks.insert(Hook::TaskbarWidgets);
+        let mut next = oe_cfg(QA);
+        settle(&mut h.state, &mut next);
+        let p = next_pending_quick_action(&mut h.state).unwrap();
+        quick_action_prompt_closed(&mut h.state);
+        h.state
+            .widget_approvals
+            .quick_actions
+            .declined
+            .insert((p.id, p.hash));
+        let mut next = oe_cfg(QA);
+        settle(&mut h.state, &mut next);
+        assert!(
+            next_pending_quick_action(&mut h.state).is_none(),
+            "Not now holds for the session"
+        );
     }
 }
