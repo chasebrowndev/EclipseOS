@@ -1662,7 +1662,7 @@ pub fn volume_slider_faded<'a, Message: Clone + 'a>(
     let shown = if muted {
         "mute".to_string()
     } else {
-        format!("{}", (v * 100.0).round() as u32)
+        format!("{}%", (v * 100.0).round() as u32)
     };
     row![
         track,

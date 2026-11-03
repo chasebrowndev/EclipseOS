@@ -20,7 +20,7 @@ use iced_layershell::actions::IcedNewPopupSettings;
 use iced_layershell::reexport::PopupGravity;
 use iced_layershell::to_layer_message;
 
-use ec_services::status::{Battery, Bluetooth, Network, Update};
+use ec_services::status::{Battery, Bluetooth, Charge, Network, Update};
 use ec_ui::tokens::{self, bar};
 
 use crate::conn::{BarConfig, BarPosition, Conn, LauncherStyle};
@@ -490,6 +490,8 @@ pub enum Preview {
     Drawer(Drawer),
     /// A tray item's menu: the item's address and the fixture entries.
     TrayMenu(String, Vec<crate::radio::MenuEntry>),
+    /// The context menu of the fixture's first window.
+    ChipMenu,
 }
 
 /// What the bar should be right now.
@@ -749,6 +751,18 @@ impl App {
         (self.epoch.elapsed().as_secs_f32() / SPIN_PERIOD.as_secs_f32()).fract()
     }
 
+    /// The energy phase of a charging battery's fill, in revolutions of
+    /// `ENERGY_MS`, or `None` when nothing drifts: not charging, no battery,
+    /// or motion off (`animations.bar-layout`). The frame clock runs exactly
+    /// while this is `Some`, so a settled or discharging bar wakes nothing.
+    pub fn battery_flow(&self) -> Option<f32> {
+        let charging = self.battery.is_some_and(|b| b.state == Charge::Charging);
+        (charging && !self.widget_cfg.motion.snaps()).then(|| {
+            let period = std::time::Duration::from_millis(tokens::motion::ENERGY_MS);
+            (self.epoch.elapsed().as_secs_f32() / period.as_secs_f32()).fract()
+        })
+    }
+
     /// Something in an open drawer is waiting on the radio: a wifi scan, or a
     /// join. The frame clock stays alive for it.
     pub fn spinning(&self) -> bool {
@@ -886,10 +900,12 @@ pub const SETTINGS: &str = "ec-settings";
 /// (ADR 0053), so the passphrase never passes through the bar.
 pub const SECRET_PROMPT: &str = "ec-secret-prompt";
 
-/// `HYPERION_PREVIEW=network|bluetooth|overflow|traymenu|bar` fills the radios and the
-/// tray with a fixture and, for a drawer, opens it as soon as the bar has a
-/// surface — so a drawer can be screenshotted on a machine with no service
-/// behind it and no way to click. Debug builds only.
+/// `HYPERION_PREVIEW=network|bluetooth|overflow|audio|calendar|traymenu|widgets-menu|bar`
+/// fills the radios and the tray with a fixture and, for a drawer, opens it
+/// as soon as the bar has a surface — so a drawer can be screenshotted on a
+/// machine with no service behind it and no way to click. `widgets-menu` is
+/// the widget strip with the first window's context menu open. Debug builds
+/// only.
 #[cfg(debug_assertions)]
 fn preview(app: &mut App) {
     // `HYPERION_PREVIEW_MENU=<query>`: the start menu, open on that query
@@ -911,14 +927,16 @@ fn preview(app: &mut App) {
         "network" => Some(Preview::Drawer(Drawer::Network)),
         "bluetooth" => Some(Preview::Drawer(Drawer::Bluetooth)),
         "overflow" => Some(Preview::Drawer(Drawer::Overflow)),
+        "audio" => Some(Preview::Drawer(Drawer::Audio)),
+        "calendar" => Some(Preview::Drawer(Drawer::Calendar)),
         "traymenu" => Some(Preview::TrayMenu(
             "org.syncthing".to_owned(),
             crate::radio::preview_menu(),
         )),
-        "widgets" | "widgets-idle" => {
+        "widgets" | "widgets-idle" | "widgets-menu" => {
             let output = app.conn.outputs().0.first().map_or(0, |o| o.0);
             crate::preview::widgets(app, which == "widgets-idle", output);
-            None
+            (which == "widgets-menu").then_some(Preview::ChipMenu)
         }
         _ => None,
     };
@@ -1494,6 +1512,10 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 tasks.push(match which {
                     Preview::Drawer(drawer) => open_drawer(app, id, drawer, false),
                     Preview::TrayMenu(item, entries) => show_tray_menu(app, id, item, entries),
+                    Preview::ChipMenu => match app.snapshot.windows.first().map(|w| w.handle) {
+                        Some(handle) => open_menu(app, id, handle),
+                        None => Task::none(),
+                    },
                 });
             }
             tasks.extend(with_bar(app, id, fold_and_eye));
@@ -3305,6 +3327,7 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
         .values()
         .any(|b| b.motion.animating() || b.menu.reveal.animating() || b.drawer.reveal.animating())
         || app.spinning()
+        || app.battery_flow().is_some()
         || fixture_moves(app)
     {
         subs.push(frames());
@@ -3585,6 +3608,24 @@ pub(crate) mod tests {
         let mut a = App::new();
         a.pin = Some("test".to_owned());
         a
+    }
+
+    #[test]
+    fn battery_flow_runs_only_while_charging_with_motion_on() {
+        let mut a = app();
+        let battery = |state| Battery {
+            percent: 50,
+            state,
+            remaining: None,
+        };
+        a.battery = Some(battery(Charge::Discharging));
+        assert!(a.battery_flow().is_none());
+        a.battery = Some(battery(Charge::Full));
+        assert!(a.battery_flow().is_none());
+        a.battery = Some(battery(Charge::Charging));
+        assert!(a.battery_flow().is_some());
+        a.widget_cfg.motion = ec_ui::motion::Motion::SNAP;
+        assert!(a.battery_flow().is_none());
     }
 
     /// A bar on `name` as [`open_bar`] makes it, already configured at a

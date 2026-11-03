@@ -1299,15 +1299,16 @@ fn menu_row_style(destructive: bool) -> impl Fn(&Theme, button::Status) -> butto
 /// most once per right-click.
 fn menu_mark(item: crate::app::Item) -> Element<'static, Message, Theme> {
     use crate::app::Item;
+    // Tertiary ink: a verb's mark is a quiet hint beside its label, which is
+    // the one that carries the weight. Close alone is red, matching its label.
     let (name, tint) = match item {
-        Item::Minimize => ("window-minimize", color::text_secondary()),
-        Item::Unminimize => ("window-restore", color::text_secondary()),
-        Item::Mute => ("audio-volume-muted", color::text_secondary()),
-        Item::Unmute => ("audio-volume-high", color::text_secondary()),
-        Item::NewInstance => ("window-new", color::text_secondary()),
-        Item::Pin => ("view-pin", color::text_secondary()),
-        Item::Unpin => ("list-remove", color::text_secondary()),
-        // The one red mark on the menu, matching the one red label.
+        Item::Minimize => ("window-minimize", color::text_tertiary()),
+        Item::Unminimize => ("window-restore", color::text_tertiary()),
+        Item::Mute => ("audio-volume-muted", color::text_tertiary()),
+        Item::Unmute => ("audio-volume-high", color::text_tertiary()),
+        Item::NewInstance => ("window-new", color::text_tertiary()),
+        Item::Pin => ("view-pin", color::text_tertiary()),
+        Item::Unpin => ("list-remove", color::text_tertiary()),
         Item::Close => ("window-close", color::danger()),
     };
     let cell = Length::Fixed(menu::MARK);
