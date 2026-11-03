@@ -55,6 +55,7 @@ impl PointerConstraintsHandler for AbyssState {
         let origin = crate::shell::surface_under(self, self.pointer_location)
             .filter(|(s, _)| s == surface)
             .map(|(_, origin)| origin);
+        tracing::warn!(?location, ?origin, from = ?self.pointer_location, "DBG pointer hint");
         if let Some(origin) = origin {
             self.pointer_location = origin + location;
         }
@@ -109,6 +110,7 @@ pub(crate) fn apply_pointer_constraint(
                 let local = candidate - origin.to_f64();
                 let max_x = (bbox.loc.x + bbox.size.w - 1).max(bbox.loc.x) as f64;
                 let max_y = (bbox.loc.y + bbox.size.h - 1).max(bbox.loc.y) as f64;
+                tracing::warn!(?bbox, ?origin, ?candidate, "DBG confine");
                 let clamped: Point<f64, Logical> = (
                     local.x.clamp(bbox.loc.x as f64, max_x),
                     local.y.clamp(bbox.loc.y as f64, max_y),

@@ -9,6 +9,7 @@ members = [
   "crates/ec-policy-viewer",
   "crates/ec-secret-prompt",
   "crates/ec-services",
+  "crates/ec-steam-glass",
   "crates/ec-settings",
   "crates/ec-toasts",
   "crates/ec-ui",

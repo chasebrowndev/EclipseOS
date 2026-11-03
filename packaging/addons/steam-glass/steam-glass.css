@@ -1,0 +1,44 @@
+/* SPDX-License-Identifier: AGPL-3.0-only */
+/* steam-glass base layer: the parts of Steam's UI that are stable enough to
+   name. Everything keyed on a hashed class is done by value in steam-glass.js.
+   Tokens are docs/STYLE.md: smoked glass under a light tint, hairlines not
+   shadows, gold for state only, never a glow. */
+
+:root {
+  --ec-gold: #f2c33c;
+  --ec-gold-text: #f5cf5c;
+  --ec-hairline: rgba(255, 255, 255, .10);
+  --ec-hairline-strong: rgba(255, 255, 255, .16);
+  --ec-text: #fff;
+  --ec-text-2: rgba(255, 255, 255, .64);
+  --ec-text-3: rgba(255, 255, 255, .40);
+
+  --radius-sm: 6px !important;
+  --radius-md: 10px !important;
+  --radius-lg: 14px !important;
+}
+
+/* Thin glass scrollbars. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: transparent;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, .16);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, .28);
+  background-clip: padding-box;
+}
+
+::selection {
+  background: rgba(242, 195, 60, .28);
+}

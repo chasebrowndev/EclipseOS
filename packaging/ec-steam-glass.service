@@ -1,0 +1,19 @@
+# The steam-glass add-on's injector: styles Steam's UI with the Eclipse glass
+# theme while Steam runs, and waits quietly when it does not. Install to
+# ~/.config/systemd/user/ec-steam-glass.service (the package puts it in
+# /usr/lib/systemd/user/). It only talks to Steam's loopback DevTools port.
+[Unit]
+Description=Eclipse Steam glass
+PartOf=graphical-session.target
+After=abyss-session.target
+Requisite=abyss-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ec-steam-glass
+Restart=on-failure
+RestartSec=2
+Slice=session.slice
+
+[Install]
+WantedBy=abyss-session.target
