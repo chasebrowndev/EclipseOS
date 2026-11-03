@@ -31,6 +31,22 @@ use crate::app::{App, Message};
 use crate::model::{Snapshot, Trust, Window, Workspace};
 use crate::widgets::{self, now_playing, system_usage, volume, GripEv, WidgetId};
 
+/// `HYPERION_PREVIEW_BATTERY=charging|full|low` picks the fixture's battery
+/// state, so a screenshot loop can show each one. Default: 76%, discharging.
+fn preview_battery() -> Battery {
+    let (percent, state) = match std::env::var("HYPERION_PREVIEW_BATTERY").as_deref() {
+        Ok("charging") => (58, Charge::Charging),
+        Ok("full") => (100, Charge::Full),
+        Ok("low") => (9, Charge::Discharging),
+        _ => (76, Charge::Discharging),
+    };
+    Battery {
+        percent,
+        state,
+        remaining: None,
+    }
+}
+
 /// Fixture windows: common apps, titles of every length.
 const WINDOWS: [(&str, &str); 20] = [
     ("firefox", "Eclipse OS — design notes"),
@@ -142,11 +158,7 @@ pub fn widgets(app: &mut App, idle: bool, output: u64) {
         windows,
     };
     app.icons.warm(&app.snapshot.windows);
-    app.battery = Some(Battery {
-        percent: 76,
-        state: Charge::Discharging,
-        remaining: None,
-    });
+    app.battery = Some(preview_battery());
 
     let order = [
         "now-playing",

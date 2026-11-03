@@ -11,7 +11,7 @@ use iced::widget::{button, column, container, row, rule, stack, svg, text, Colum
 use iced::{Alignment, Color, Element, Font, Length, Theme};
 
 use crate::theme;
-use crate::tokens::{breakpoint, canvas, color, drawer, font, menu, radius, size, space};
+use crate::tokens::{breakpoint, canvas, color, drawer, font, menu, motion, radius, size, space};
 use crate::widget::Fold;
 
 /// A glass panel. The one container every block on a pane sits in.
@@ -1586,25 +1586,42 @@ pub fn surface<'a, Message: 'a>(
 /// system's job — a caller that drew it inline would be reinventing
 /// [`big_value`] at 10 pixels.
 pub fn battery_gauge<'a, Message: 'a>(percent: u8, fill: Color) -> Element<'a, Message, Theme> {
-    battery_gauge_faded(percent, fill, 1.0)
+    battery_gauge_faded(percent, fill, 1.0, None)
 }
 
 /// [`battery_gauge`] at `alpha` of its ink — frame and level together — for
 /// a bar cell in motion. A gauge whose frame stayed at full ink while its
 /// cell faded around it would be the last thing on screen.
+///
+/// `flow` is the energy phase in revolutions while the battery is charging
+/// (`None` otherwise, and when motion is off): energy particles drift along
+/// the filled part, clipped to its width. The caller owns the clock, so this
+/// stays a pure function of its arguments, like [`spinner`].
 pub fn battery_gauge_faded<'a, Message: 'a>(
     percent: u8,
     fill: Color,
     alpha: f32,
+    flow: Option<f32>,
 ) -> Element<'a, Message, Theme> {
     let a = alpha.clamp(0.0, 1.0);
     let (fill, track) = (fill.scale_alpha(a), color::track().scale_alpha(a));
     let inner = space::MARK_CELL_W - 2.0 * space::MARK_BORDER;
     let filled = inner * (percent.min(100) as f32 / 100.0);
-    let level = row![
-        edge_quad(Length::Fixed(filled), Length::Fill, fill),
-        Space::new().width(Length::Fill),
-    ];
+    let body = edge_quad(Length::Fixed(filled), Length::Fill, fill);
+    let body: Element<'a, Message, Theme> = match flow {
+        Some(phase) => stack![
+            body,
+            iced::widget::canvas(Energy {
+                phase,
+                spark: color::text().scale_alpha(a),
+            })
+            .width(Length::Fixed(filled))
+            .height(Length::Fill),
+        ]
+        .into(),
+        None => body,
+    };
+    let level = row![body, Space::new().width(Length::Fill)];
     let cell = container(level)
         .width(Length::Fixed(space::MARK_CELL_W))
         .height(Length::Fixed(space::MARK))
@@ -1627,6 +1644,58 @@ pub fn battery_gauge_faded<'a, Message: 'a>(
     ]
     .align_y(Alignment::Center)
     .into()
+}
+
+/// The energy particles riding a charging battery's fill. Pure in `phase`:
+/// each particle has a fixed lane, and its place along the fill is the phase
+/// advanced by its share of one pass, so the drift needs no state of its own.
+/// Light on the accent fill, not a second yellow: a spark, not a halo. Each
+/// particle fades in at the fill's left edge and out at its right.
+struct Energy {
+    phase: f32,
+    spark: Color,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for Energy {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{self, Path};
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let (w, h) = (bounds.width, bounds.height);
+        if w < 2.0 * space::ENERGY_HALO_R {
+            return vec![frame.into_geometry()];
+        }
+        for i in 0..motion::ENERGY_COUNT {
+            let share = i as f32 / motion::ENERGY_COUNT as f32;
+            let p = (self.phase + share).fract();
+            let env = (std::f32::consts::PI * p).sin();
+            let lane = 0.3 + 0.2 * (i % 3) as f32;
+            let c = iced::Point::new(p * w, lane * h);
+            frame.fill(
+                &Path::circle(c, space::ENERGY_HALO_R),
+                Color {
+                    a: self.spark.a * 0.2 * env,
+                    ..self.spark
+                },
+            );
+            frame.fill(
+                &Path::circle(c, space::ENERGY_R),
+                Color {
+                    a: self.spark.a * 0.9 * env,
+                    ..self.spark
+                },
+            );
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 /// A list row: label at the left, mono value at the right — or, when the row
