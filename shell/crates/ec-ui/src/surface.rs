@@ -2,10 +2,10 @@
 //! The live surface values: `decoration.surface.{tint, card-fill, inset-fill}`.
 //!
 //! Three knobs the compositor owns and every Settings-style window reads. The
-//! values are sRGB intent, as STYLE.md states them. All three are converted
+//! values are sRGB intent, as STYLE.md states them. The card and inset fills are converted
 //! here to the linear-light alpha iced blends with, so each one reads on screen
-//! as its sRGB figure. The tint's colour is the ground itself, so its conversion
-//! is solved against one reference backdrop, mid-grey ([`MID`]).
+//! as its sRGB figure. The tint's alpha is the one exception: the compositor
+//! blends it, in sRGB, so it is written as is ([`tint_alpha`]).
 //!
 //! The values are process-wide rather than fields of each app. The style
 //! functions that read them are plain `fn`s (`theme::inset` is handed to
@@ -117,29 +117,18 @@ pub fn group_rim(fill: f32) -> Color {
     }
 }
 
-/// The reference backdrop the tint is solved against: sRGB 128, mid-grey.
-pub const MID: f32 = 128.0 / 255.0;
-
-/// The linear-light alpha of [`base`] over the backdrop that reads on screen as
-/// sRGB `intent` over [`MID`]. Per channel, `a = (L(mid) - L(out)) / (L(mid) -
-/// L(base))` with `out = intent*base + (1-intent)*mid` in sRGB and `L` the
-/// sRGB-to-linear transfer, then averaged since BASE is not neutral. At `.70`
-/// this is about `.89`, not `.70`. The tint is then exact over mid-grey and
-/// close over other backdrops, where a single alpha cannot be exact.
+/// [`base`] at the window tint `intent`, as the alpha the buffer carries.
+/// The tint is the one fill iced does not blend itself: it lands on a
+/// transparent clear, and the compositor then blends the surface's alpha over
+/// the blurred backdrop in sRGB, exactly as it blends a terminal's `alpha=0.72`.
+/// So the alpha is the intent, unconverted. (Solving a linear-light alpha
+/// against mid-grey, as the card and inset fills below are, gave about `.89`
+/// for `.70` and made Settings visibly darker than a terminal.)
 pub fn tint_alpha(intent: f32) -> f32 {
-    let channels = [base().r, base().g, base().b];
-    let lin_mid = to_linear(MID);
-    let sum: f32 = channels
-        .iter()
-        .map(|&b| {
-            let out = intent * b + (1.0 - intent) * MID;
-            (lin_mid - to_linear(out)) / (lin_mid - to_linear(b))
-        })
-        .sum();
-    (sum / 3.0).clamp(0.0, 1.0)
+    intent.clamp(0.0, 1.0)
 }
 
-/// [`base`] at the linear alpha that reads as the tint `intent` over mid-grey.
+/// [`base`] at the alpha of the tint `intent`.
 pub fn tint(intent: f32) -> Color {
     Color {
         a: tint_alpha(intent),
@@ -202,26 +191,9 @@ mod tests {
     }
 
     #[test]
-    fn tint_over_mid_grey_matches_the_srgb_blend() {
-        // Linear blend of BASE at the solved alpha over mid-grey, back to sRGB,
-        // must land within 1.5 of the sRGB blend of the intent. One averaged
-        // alpha cannot match all three BASE channels exactly; the residual is
-        // about one code value.
-        let intent = 0.70_f32;
-        let a = tint_alpha(intent);
-        let to_srgb = |l: f32| {
-            if l <= 0.003_130_8 {
-                l * 12.92
-            } else {
-                1.055 * l.powf(1.0 / 2.4) - 0.055
-            }
-        };
-        for b in [base().r, base().g, base().b] {
-            let lin = a * to_linear(b) + (1.0 - a) * to_linear(MID);
-            let got = to_srgb(lin) * 255.0;
-            let want = (intent * b + (1.0 - intent) * MID) * 255.0;
-            assert!((got - want).abs() < 1.5, "got {got}, want {want}");
-        }
+    fn the_tint_alpha_is_the_intent_the_compositor_blends() {
+        assert_eq!(tint_alpha(0.70), 0.70);
+        assert_eq!(tint(0.72).a, 0.72);
     }
 
     #[test]
