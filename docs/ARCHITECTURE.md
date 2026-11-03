@@ -119,3 +119,30 @@ agent → agentd → privileged socket → protocols/agent
                          ──deny───→ error to agent
       → audit/ (every outcome, with provenance)
 ```
+
+## Progress feed (`ec-ctl progress`, `ec-services` progress widget)
+
+Not a compositor concept, so it is not on the abyss control socket and not in
+the gate table. `ec-services` serves a per-user feed at
+`$XDG_RUNTIME_DIR/eclipse/progress.sock` (0600 in a 0700 directory, peer uid
+checked; `ECLIPSE_SOCKET_DIR` overrides the directory). The wire contract is
+`ec_ipc::progress`; the commands are:
+
+```
+ec-ctl progress start ID [--label L] [--total BYTES]
+ec-ctl progress set ID 0.4|40%|BYTES    a decimal or % is a fraction; a whole number is bytes and needs --total
+ec-ctl progress done ID
+ec-ctl progress list
+```
+
+Ids are `[A-Za-z0-9._:-]`, up to 64 bytes. A feed job that is not updated for 60 s
+expires. Alongside the feed, the service scans `/proc` for `cargo`, `rustc`,
+`pacman`, `cp`, `mv`, `rsync`, `curl`, `wget` and `tar` owned by the session user
+(every second while something runs, every five seconds while nothing does). A
+scanned copy gets a fraction from its bytes written against the source size;
+other tools are indeterminate. A scanned job whose label matches a feed job is
+hidden. The service runs inside whichever process calls
+`ec_services::progress::spawn`: the taskbar, which starts it at its first
+configure and keeps it for its whole life (ADR 0065, 2026-11-03 amendment). With
+no taskbar running the feed is unreachable and `ec-ctl progress` says so.
+Scanning stays on; `Handle::set_scanning` remains for a host that wants it off.

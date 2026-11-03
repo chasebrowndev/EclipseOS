@@ -256,7 +256,7 @@ impl AbyssState {
         match action {
             Action::Quit => self.quit(),
             Action::SwitchVt(vt) => self.switch_vt(vt),
-            Action::Spawn(cmd) => shell::spawn(&cmd),
+            Action::Spawn(cmd) => shell::spawn(self, &cmd),
             Action::Close => shell::close_focused(self),
             Action::ToggleFloating => shell::toggle_floating(self),
             Action::ToggleFullscreen => shell::toggle_fullscreen(self),

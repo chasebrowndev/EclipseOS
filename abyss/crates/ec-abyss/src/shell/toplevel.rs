@@ -368,6 +368,9 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
                 // that first arrange is stale. Configuring from it hands the
                 // client a wrong size that it may well act on (COMP-06 §3).
                 arranged = map.arrange();
+                // A size change in flight must not move the surface until the
+                // client has drawn it; see `held_offset`.
+                arranged |= hold_layer_size(&map, &layer);
                 if send_initial {
                     layer.layer_surface().send_configure();
                 }

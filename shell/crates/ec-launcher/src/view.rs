@@ -64,6 +64,8 @@ const ROW_GAP: f32 = 2.0;
 /// different x on every row is not a list, so this is a layout metric and not
 /// a styling token.
 const NAME_W: f32 = 196.0;
+/// The widest the "Run on <GPU>" cell grows; a long adapter name is clipped.
+const GPU_CHIP_W: f32 = 212.0;
 /// The last line of the panel, where a refusal, the key hints and the match
 /// count go. It is reserved whether or not there is anything to say: a panel
 /// that grows a line when a launch fails moves every row under the pointer
@@ -192,7 +194,15 @@ fn results(app: &App) -> Element<'_, Message, Theme> {
                 // on the row it is about — the selected one, since a click
                 // selects before it runs and an arrow clears the refusal.
                 let refusal = app.problem.as_deref().filter(|_| selected && !app.show_key_hints);
-                col.push(entry_row(&app.entries[entry], index, selected, refusal))
+                let entry = &app.entries[entry];
+                // The GPU actions ride the selected row: it is the one Enter
+                // runs, and the fixed-height sheet has no room for a menu.
+                let gpu = app
+                    .gpu
+                    .as_deref()
+                    .filter(|_| selected && !entry.terminal && refusal.is_none())
+                    .map(|name| (name, app.always_discrete(entry)));
+                col.push(entry_row(entry, index, selected, refusal, gpu))
             }
             // An empty slot rather than a shorter list: the panel is a fixed
             // height, and rows that slide up as you type are rows you misclick.
@@ -211,6 +221,7 @@ fn entry_row(
     index: usize,
     selected: bool,
     refusal: Option<&str>,
+    gpu: Option<(&str, bool)>,
 ) -> Element<'static, Message, Theme> {
     // A terminal-only entry is listed and greyed: `apps::launch` will refuse
     // it, and a row that is simply missing teaches the human nothing. The
@@ -242,7 +253,7 @@ fn entry_row(
     } else {
         entry.comment.clone().unwrap_or_default()
     };
-    let note = text(note)
+    let note: iced::widget::Text<'_, Theme> = text(note)
         .size(size::BODY_SMALL)
         .font(if refusal.is_some() { font::DATA } else { font::UI })
         .wrapping(if refusal.is_some() {
@@ -264,7 +275,9 @@ fn entry_row(
     // Tertiary, not gold: the name already carries the row's one yellow.
     // A refusal takes the identifier's room too: it is the longer line, and
     // the one the human needs to read.
-    let tail: Element<'static, Message, Theme> = if live && refusal.is_none() {
+    let tail: Element<'static, Message, Theme> = if let Some((gpu, always)) = gpu {
+        gpu_actions(gpu, always, index)
+    } else if live && refusal.is_none() {
         text(entry.id.trim_end_matches(".desktop").to_owned())
             .size(size::MONO)
             .font(font::DATA)
@@ -296,9 +309,16 @@ fn entry_row(
         // container clips at its full width, which is the same edge the
         // identifier starts at, so an unwrapped text node overflows straight
         // through the padding before the clip ever stops it.
-        container(container(note).width(Length::Fill).clip(true))
-            .width(Length::Fill)
-            .padding(iced::Padding::ZERO.right(space::CARD)),
+        // With the GPU cells in the tail the comment has no room left (a
+        // clipped "P" reads as a bug), so the row gives it up for the cells.
+        if gpu.is_some() {
+            Element::<Message, Theme>::from(Space::new().width(Length::Fill))
+        } else {
+            container(container(note).width(Length::Fill).clip(true))
+                .width(Length::Fill)
+                .padding(iced::Padding::ZERO.right(space::CARD))
+                .into()
+        },
         tail,
     ]
     .align_y(Alignment::Center);
@@ -329,6 +349,39 @@ fn entry_row(
     parts::glass_ground(cell, tone, radius::INSET)
 }
 
+/// The selected row's secondary actions: run once on the discrete GPU, and
+/// the standing choice to always do so. Two small glass cells in the row's
+/// tail, in the identifier's place. "Always" is a toggle: when on it is the
+/// clearer glass (brighter fill, crisp rim) with plain ink, since the row's
+/// name already holds the pane's one yellow.
+fn gpu_actions(gpu: &str, always: bool, index: usize) -> Element<'static, Message, Theme> {
+    let cell = |label: String, on: bool, msg: Message| {
+        button(
+            text(label)
+                .size(size::BODY_SMALL)
+                .font(font::UI_MEDIUM)
+                .wrapping(Wrapping::None),
+        )
+        .padding([space::BADGE_Y + space::BADGE_Y, space::CHIP_X])
+        .on_press(msg)
+        .style(move |t, st| {
+            let tone = if on { CellTone::Focused } else { CellTone::Plain };
+            let mut style = theme::glass_cell(tone, radius::CHIP)(t, st);
+            style.text_color = if on { color::TEXT } else { color::TEXT_SECONDARY };
+            style
+        })
+    };
+    row![
+        container(cell(format!("Run on {gpu}"), false, Message::RunDiscrete(index)))
+            .max_width(GPU_CHIP_W)
+            .clip(true),
+        cell("Always".to_owned(), always, Message::ToggleAlways(index)),
+    ]
+    .spacing(space::CHIP_GAP)
+    .align_y(Alignment::Center)
+    .into()
+}
+
 /// The refusal or the key hints at the left, how much of the list is off the
 /// bottom at the right. Plain text on the glass; only the keys are capped.
 fn footer(app: &App) -> Element<'_, Message, Theme> {
@@ -340,6 +393,12 @@ fn footer(app: &App) -> Element<'_, Message, Theme> {
             .font(font::DATA)
             .color(color::danger())
             .into(),
+        None if app.gpu.is_some() => parts::key_hints(&[
+            ("\u{2191}\u{2193}", "select"),
+            ("enter", "run"),
+            ("tab", "run on GPU"),
+            ("esc", "close"),
+        ]),
         None => parts::key_hints(&[("\u{2191}\u{2193}", "select"), ("enter", "run"), ("esc", "close")]),
     };
 

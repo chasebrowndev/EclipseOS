@@ -20,7 +20,7 @@ use iced_layershell::actions::IcedNewPopupSettings;
 use iced_layershell::reexport::PopupGravity;
 use iced_layershell::to_layer_message;
 
-use ec_services::status::{Battery, Bluetooth, Network, Update};
+use ec_services::status::{Battery, Bluetooth, Charge, Network, Update};
 use ec_ui::tokens::{self, bar};
 
 use crate::conn::{BarConfig, BarPosition, Conn, LauncherStyle};
@@ -90,6 +90,12 @@ pub enum Drawer {
     Audio,
     /// The month calendar, opened from the clock cell.
     Calendar,
+    /// The battery reading and its power profile, opened from the battery cell.
+    Battery,
+    /// The bar's quick actions, opened from their cell.
+    QuickActions,
+    /// Every job in flight, opened from the progress cell (ADR 0065 amendment).
+    Progress,
 }
 
 /// The keys the calendar drawer answers to.
@@ -246,6 +252,14 @@ pub enum Message {
     /// A device row was clicked: connect a paired device, pair a new one.
     BtConnect(String),
     BtDisconnect(String),
+    /// The battery drawer's selector: ask the power-profiles daemon for one.
+    PowerSet(ec_services::power_profiles::Profile),
+    /// The power-profiles service said something.
+    Power(ec_services::power_profiles::Event),
+    /// The progress service's list changed: every job in flight, oldest first.
+    Progress(Vec<ec_services::progress::Job>),
+    /// A quick action's tile was pressed: its index in `quick_actions`.
+    QuickAction(usize),
     /// A drawer's way out: start Settings on the named pane.
     OpenSettings(&'static str),
     /// A tray item was left-clicked.
@@ -405,6 +419,14 @@ pub struct App {
     /// The calendar drawer: the month in view, the selected day, the
     /// provider's events.
     pub calendar: crate::calendar::Calendar,
+    /// The battery drawer's view of the power-profiles service.
+    pub power: crate::widgets::battery::Power,
+    /// `bar { action … }`: the configured quick actions, gated. Read at start
+    /// and on every reload, never from a draw.
+    pub quick_actions: Vec<crate::widgets::quick_actions::Slot>,
+    /// Every job the progress service reports, oldest first. Empty means the
+    /// progress cell is zero width and draws nothing.
+    pub progress: Vec<ec_services::progress::Job>,
     /// Debug previews only: when a widget fixture started. A fixture bar
     /// neither refetches nor starts services — the fixture stands in for
     /// both.
@@ -490,6 +512,8 @@ pub enum Preview {
     Drawer(Drawer),
     /// A tray item's menu: the item's address and the fixture entries.
     TrayMenu(String, Vec<crate::radio::MenuEntry>),
+    /// The context menu of the fixture's first window.
+    ChipMenu,
 }
 
 /// What the bar should be right now.
@@ -749,6 +773,34 @@ impl App {
         (self.epoch.elapsed().as_secs_f32() / SPIN_PERIOD.as_secs_f32()).fract()
     }
 
+    /// The energy phase of a charging battery's fill, in revolutions of
+    /// `ENERGY_MS`, or `None` when nothing drifts: not charging, no battery,
+    /// or motion off (`animations.bar-layout`). The frame clock runs exactly
+    /// while this is `Some`, so a settled or discharging bar wakes nothing.
+    pub fn battery_flow(&self) -> Option<f32> {
+        let charging = self.battery.is_some_and(|b| b.state == Charge::Charging);
+        (charging && !self.widget_cfg.motion.snaps()).then(|| {
+            let period = std::time::Duration::from_millis(tokens::motion::ENERGY_MS);
+            (self.epoch.elapsed().as_secs_f32() / period.as_secs_f32()).fract()
+        })
+    }
+
+    /// The progress ring's turn, in revolutions of `PROGRESS_SPIN_MS`. Read by
+    /// every ring on screen, so they agree, like [`App::spin_phase`].
+    pub fn progress_phase(&self) -> f32 {
+        let period = std::time::Duration::from_millis(tokens::motion::PROGRESS_SPIN_MS);
+        (self.epoch.elapsed().as_secs_f32() / period.as_secs_f32()).fract()
+    }
+
+    /// An indeterminate job is in flight, the progress cell is in the bar and
+    /// motion is on: the frame clock turns the ring. `false` otherwise, so a
+    /// bar with no progress, or only determinate jobs, wakes nothing.
+    pub fn progress_turning(&self) -> bool {
+        !self.widget_cfg.motion.snaps()
+            && self.widget_cfg.order.contains(&widgets::WidgetId::Progress)
+            && self.progress.iter().any(|job| job.fraction.is_none())
+    }
+
     /// Something in an open drawer is waiting on the radio: a wifi scan, or a
     /// join. The frame clock stays alive for it.
     pub fn spinning(&self) -> bool {
@@ -812,6 +864,9 @@ impl App {
             streams: Vec::new(),
             audio: crate::audio::Devices::default(),
             calendar: crate::calendar::Calendar::default(),
+            power: crate::widgets::battery::Power::default(),
+            quick_actions: crate::widgets::quick_actions::load(),
+            progress: Vec::new(),
             fixture: None,
             show_key_hints: true,
             launcher_menu,
@@ -886,10 +941,12 @@ pub const SETTINGS: &str = "ec-settings";
 /// (ADR 0053), so the passphrase never passes through the bar.
 pub const SECRET_PROMPT: &str = "ec-secret-prompt";
 
-/// `HYPERION_PREVIEW=network|bluetooth|overflow|traymenu|bar` fills the radios and the
-/// tray with a fixture and, for a drawer, opens it as soon as the bar has a
-/// surface — so a drawer can be screenshotted on a machine with no service
-/// behind it and no way to click. Debug builds only.
+/// `HYPERION_PREVIEW=network|bluetooth|overflow|audio|calendar|traymenu|widgets-menu|bar`
+/// fills the radios and the tray with a fixture and, for a drawer, opens it
+/// as soon as the bar has a surface — so a drawer can be screenshotted on a
+/// machine with no service behind it and no way to click. `widgets-menu` is
+/// the widget strip with the first window's context menu open. Debug builds
+/// only.
 #[cfg(debug_assertions)]
 fn preview(app: &mut App) {
     // `HYPERION_PREVIEW_MENU=<query>`: the start menu, open on that query
@@ -899,6 +956,7 @@ fn preview(app: &mut App) {
         return;
     };
     app.radios = crate::radio::Radios::preview();
+    crate::widgets::battery::preview(&mut app.power);
     app.network = Network::Wifi {
         id: "abyss-5g".to_owned(),
         strength: 82,
@@ -907,18 +965,30 @@ fn preview(app: &mut App) {
         powered: true,
         connected: 1,
     };
+    app.progress = crate::preview::preview_progress(if which == "progress" { "several" } else { "none" });
     app.preview = match which.as_str() {
         "network" => Some(Preview::Drawer(Drawer::Network)),
+        "progress" => Some(Preview::Drawer(Drawer::Progress)),
         "bluetooth" => Some(Preview::Drawer(Drawer::Bluetooth)),
         "overflow" => Some(Preview::Drawer(Drawer::Overflow)),
+        "audio" => Some(Preview::Drawer(Drawer::Audio)),
+        "calendar" => Some(Preview::Drawer(Drawer::Calendar)),
+        "battery" => {
+            app.battery = Some(crate::preview::preview_battery());
+            Some(Preview::Drawer(Drawer::Battery))
+        }
+        "quick-actions" => {
+            app.quick_actions = crate::widgets::quick_actions::preview_slots();
+            Some(Preview::Drawer(Drawer::QuickActions))
+        }
         "traymenu" => Some(Preview::TrayMenu(
             "org.syncthing".to_owned(),
             crate::radio::preview_menu(),
         )),
-        "widgets" | "widgets-idle" => {
+        "widgets" | "widgets-idle" | "widgets-menu" => {
             let output = app.conn.outputs().0.first().map_or(0, |o| o.0);
             crate::preview::widgets(app, which == "widgets-idle", output);
-            None
+            (which == "widgets-menu").then_some(Preview::ChipMenu)
         }
         _ => None,
     };
@@ -1494,6 +1564,10 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 tasks.push(match which {
                     Preview::Drawer(drawer) => open_drawer(app, id, drawer, false),
                     Preview::TrayMenu(item, entries) => show_tray_menu(app, id, item, entries),
+                    Preview::ChipMenu => match app.snapshot.windows.first().map(|w| w.handle) {
+                        Some(handle) => open_menu(app, id, handle),
+                        None => Task::none(),
+                    },
                 });
             }
             tasks.extend(with_bar(app, id, fold_and_eye));
@@ -1639,6 +1713,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         // outranks a layer surface (a trusted prompt, the lock).
         Message::Unfocused(id) => {
             let now = Instant::now();
+            end_bt_scan(app);
             return with_bar(app, id, |_, bar| {
                 let start = if bar.menu.open {
                     close_start(bar, now)
@@ -1656,8 +1731,8 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         // The system bus is not the compositor: fold the reading in and stop,
         // rather than falling through to a refetch the socket never asked for.
-        // A fixture's readings are the thing being screenshotted.
-        Message::Status(_) if app.fixture.is_some() => return Task::none(),
+        // A fixture's or a preview's readings are the thing being screenshotted.
+        Message::Status(_) if app.fixture.is_some() || app.preview.is_some() => return Task::none(),
         Message::Status(update) => {
             match update {
                 Update::Network(network) => app.network = network,
@@ -1714,6 +1789,9 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         Message::Reconfigured => {
             app.bar = app.conn.bar_config();
+            if app.fixture.is_none() {
+                app.quick_actions = crate::widgets::quick_actions::load();
+            }
             if !app.bar.eye && !app.iris.debug {
                 app.iris.set(crate::eye::Eye::Off, std::time::Instant::now());
             }
@@ -1831,6 +1909,46 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             crate::radio::actions::set_bt_powered(on);
             return reflow(app);
         }
+        Message::PowerSet(profile) => {
+            app.power.ask(profile);
+            crate::services::set_profile(profile);
+            return Task::none();
+        }
+        // A fixture's or a preview's power reading is the thing being screenshotted.
+        Message::Power(_) if app.fixture.is_some() || app.preview.is_some() => return Task::none(),
+        Message::Power(event) => {
+            app.power.apply(event);
+            return reflow(app);
+        }
+        // Debug fixtures own the list, as they own the readings above.
+        Message::Progress(_) if app.fixture.is_some() || app.preview.is_some() => return Task::none(),
+        Message::Progress(jobs) => {
+            let idle = jobs.is_empty();
+            app.progress = jobs;
+            // The drawer hangs from the cell, which is gone with the last job:
+            // it closes with it rather than hanging from nothing.
+            let closing = if idle {
+                let now = Instant::now();
+                each_bar(app, |_, bar| {
+                    if bar.drawer.is_open(crate::drawer::DrawerKind::Progress) {
+                        close_drawer(bar, now)
+                    } else {
+                        Task::none()
+                    }
+                })
+            } else {
+                Task::none()
+            };
+            return Task::batch([closing, reflow(app)]);
+        }
+        Message::QuickAction(index) => {
+            let closed = dismiss(app);
+            let term = app.conn.terminal_command();
+            if let Some(slot) = app.quick_actions.get(index) {
+                crate::widgets::quick_actions::run(slot, term);
+            }
+            return closed;
+        }
         Message::BtScan => {
             app.radios.scanning = !app.radios.scanning;
             crate::radio::actions::discover(app.radios.scanning);
@@ -1875,7 +1993,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         // A fixture's drawers are the thing being screenshotted; the live
         // service's lists must not replace them.
-        Message::Radio(_) if app.fixture.is_some() => return Task::none(),
+        Message::Radio(_) if app.fixture.is_some() || app.preview.is_some() => return Task::none(),
         Message::Radio(feed) => return radio(app, feed),
         // Shared state, so one action however many bars draw the widget.
         Message::Widget(feed) => {
@@ -2270,6 +2388,9 @@ fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
         Drawer::Bluetooth => Some(crate::drawer::DrawerKind::Bluetooth),
         Drawer::Audio => Some(crate::drawer::DrawerKind::Audio),
         Drawer::Calendar => Some(crate::drawer::DrawerKind::Calendar),
+        Drawer::Battery => Some(crate::drawer::DrawerKind::Battery),
+        Drawer::QuickActions => Some(crate::drawer::DrawerKind::QuickActions),
+        Drawer::Progress => Some(crate::drawer::DrawerKind::Progress),
         Drawer::Overflow => None,
     }
 }
@@ -2282,6 +2403,9 @@ fn drawer_full(app: &App, kind: crate::drawer::DrawerKind) -> u32 {
         DrawerKind::Bluetooth => crate::view::drawer_height(app, Drawer::Bluetooth),
         DrawerKind::Audio => crate::view::drawer_height(app, Drawer::Audio),
         DrawerKind::Calendar => crate::view::drawer_height(app, Drawer::Calendar),
+        DrawerKind::Battery => crate::view::drawer_height(app, Drawer::Battery),
+        DrawerKind::QuickActions => crate::view::drawer_height(app, Drawer::QuickActions),
+        DrawerKind::Progress => crate::view::drawer_height(app, Drawer::Progress),
     }
 }
 
@@ -2314,11 +2438,14 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
 }
 
 /// The cells a drawer hangs from.
-const DRAWER_CELLS: [Drawer; 4] = [
+const DRAWER_CELLS: [Drawer; 7] = [
     Drawer::Network,
     Drawer::Bluetooth,
     Drawer::Audio,
     Drawer::Calendar,
+    Drawer::Battery,
+    Drawer::QuickActions,
+    Drawer::Progress,
 ];
 
 /// The pointer is over a cell a drawer hangs from. Its click is the toggle or
@@ -2349,6 +2476,20 @@ fn cal_step(app: &mut App, f: impl FnOnce(&mut crate::calendar::Calendar)) {
     }
 }
 
+/// A bluetooth drawer that goes away takes its discovery with it: a scan
+/// nobody can see must not keep the radio searching, nor leave a spinner for
+/// the next time the drawer opens.
+fn end_bt_scan(app: &mut App) {
+    let out = app
+        .bars
+        .values()
+        .any(|b| b.drawer.is_open(crate::drawer::DrawerKind::Bluetooth));
+    if out && app.radios.scanning {
+        app.radios.scanning = false;
+        crate::radio::actions::discover(false);
+    }
+}
+
 /// Start the drawer's slide back into the pill and give the keyboard back.
 fn close_drawer(bar: &mut Bar, now: Instant) -> Task<Message> {
     bar.drawer.close(now);
@@ -2364,6 +2505,7 @@ fn close_drawer(bar: &mut Bar, now: Instant) -> Task<Message> {
 fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::DrawerKind) -> Task<Message> {
     let now = Instant::now();
     if app.bars.get(&id).is_some_and(|b| b.drawer.is_open(kind)) {
+        end_bt_scan(app);
         return with_bar(app, id, |_, bar| close_drawer(bar, now)).unwrap_or_else(Task::none);
     }
     // Only a bar showing its pill has a cell to grow from.
@@ -2957,6 +3099,7 @@ fn launch_pin(_id: &str) {}
 /// The start menu and any drawer go with it: every path here is the human doing something
 /// else — Escape, a click on bare bar, a chip's action, a popup opening.
 fn dismiss(app: &mut App) -> Task<Message> {
+    end_bt_scan(app);
     let popup = dismiss_popup(app);
     let now = Instant::now();
     let menus = each_bar(app, |_, bar| {
@@ -3305,6 +3448,8 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
         .values()
         .any(|b| b.motion.animating() || b.menu.reveal.animating() || b.drawer.reveal.animating())
         || app.spinning()
+        || app.battery_flow().is_some()
+        || app.progress_turning()
         || fixture_moves(app)
     {
         subs.push(frames());
@@ -3585,6 +3730,24 @@ pub(crate) mod tests {
         let mut a = App::new();
         a.pin = Some("test".to_owned());
         a
+    }
+
+    #[test]
+    fn battery_flow_runs_only_while_charging_with_motion_on() {
+        let mut a = app();
+        let battery = |state| Battery {
+            percent: 50,
+            state,
+            remaining: None,
+        };
+        a.battery = Some(battery(Charge::Discharging));
+        assert!(a.battery_flow().is_none());
+        a.battery = Some(battery(Charge::Full));
+        assert!(a.battery_flow().is_none());
+        a.battery = Some(battery(Charge::Charging));
+        assert!(a.battery_flow().is_some());
+        a.widget_cfg.motion = ec_ui::motion::Motion::SNAP;
+        assert!(a.battery_flow().is_none());
     }
 
     /// A bar on `name` as [`open_bar`] makes it, already configured at a

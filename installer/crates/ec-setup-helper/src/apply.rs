@@ -199,6 +199,7 @@ pub fn preflight(env: &Env, v: &Validated, plan: &Plan) -> Result<Prepared> {
         keyid,
         ucode: machine.ucode(),
         nvidia: machine.nvidia_open(),
+        nvidia_pm: machine.hybrid_nvidia(),
         stale_mounts,
         warnings,
     })
@@ -297,7 +298,7 @@ impl Run<'_, '_> {
             Ok(())
         })?;
         self.stage(Stage::Configure, 75, "configuring the system", |_| {
-            stages::configure(env, &req.plan, prep.nvidia)
+            stages::configure(env, &req.plan, prep.nvidia, prep.nvidia_pm)
         })?;
         self.stage(Stage::Bootloader, 85, "installing the bootloader", |_| {
             stages::bootloader(env, &layout, prep.ucode, prep.nvidia)

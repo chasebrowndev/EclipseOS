@@ -15,6 +15,8 @@ use super::{signal_rule, uncached, watch_system, Update};
 pub(super) const BLUEZ: &str = "org.bluez";
 const ADAPTER: &str = "org.bluez.Adapter1";
 const DEVICE: &str = "org.bluez.Device1";
+/// BlueZ's battery interface, on the same object as the device it belongs to.
+const BATTERY: &str = "org.bluez.Battery1";
 
 /// Enough for one bar cell: whether the radio is on, and how many things are
 /// actually talking to it.
@@ -33,6 +35,9 @@ pub struct BtDevice {
     pub paired: bool,
     pub connected: bool,
     pub kind: BtKind,
+    /// The device's own battery, from `org.bluez.Battery1` (a `y`, 0..=100),
+    /// when it reports one. Most headsets and mice do; many devices do not.
+    pub battery: Option<u8>,
 }
 
 /// Which glyph the picker draws, from BlueZ's `Icon` hint.
@@ -105,12 +110,16 @@ pub(super) fn devices(connection: &Connection) -> Vec<BtDevice> {
             let paired = flag(device, "Paired");
             let name =
                 string(device, "Name").or_else(|| (paired).then(|| string(device, "Alias")).flatten())?;
+            let battery = interfaces
+                .get(BATTERY)
+                .and_then(|properties| percentage(properties, "Percentage"));
             Some(BtDevice {
                 kind: BtKind::from_icon(&string(device, "Icon").unwrap_or_default()),
                 connected: flag(device, "Connected"),
                 paired,
                 name,
                 addr,
+                battery,
             })
         })
         .collect::<Vec<_>>();
@@ -247,6 +256,15 @@ fn flag(properties: &HashMap<String, OwnedValue>, name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// A byte property, such as BlueZ's `Percentage`. Any other type reads as
+/// absent: a battery figure is a number or nothing, never a guess.
+fn percentage(properties: &HashMap<String, OwnedValue>, name: &str) -> Option<u8> {
+    properties
+        .get(name)
+        .and_then(|value| value.downcast_ref::<u8>().ok())
+        .filter(|level| *level <= 100)
+}
+
 fn string(properties: &HashMap<String, OwnedValue>, name: &str) -> Option<String> {
     properties
         .get(name)
@@ -265,5 +283,31 @@ mod tests {
         assert_eq!(BtKind::from_icon("input-mouse"), BtKind::Input);
         assert_eq!(BtKind::from_icon("phone"), BtKind::Phone);
         assert_eq!(BtKind::from_icon(""), BtKind::Other);
+    }
+
+    #[test]
+    fn a_battery_percentage_is_a_byte_from_zero_to_a_hundred() {
+        let props = |value: zbus::zvariant::Value<'_>| {
+            let mut map = HashMap::new();
+            map.insert("Percentage".to_owned(), OwnedValue::try_from(value).unwrap());
+            map
+        };
+        assert_eq!(
+            percentage(&props(zbus::zvariant::Value::U8(84)), "Percentage"),
+            Some(84)
+        );
+        assert_eq!(
+            percentage(&props(zbus::zvariant::Value::U8(100)), "Percentage"),
+            Some(100)
+        );
+        assert_eq!(
+            percentage(&props(zbus::zvariant::Value::U8(101)), "Percentage"),
+            None
+        );
+        assert_eq!(
+            percentage(&props(zbus::zvariant::Value::U32(84)), "Percentage"),
+            None
+        );
+        assert_eq!(percentage(&HashMap::new(), "Percentage"), None);
     }
 }

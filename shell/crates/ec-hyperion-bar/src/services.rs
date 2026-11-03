@@ -16,6 +16,8 @@ use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::Duration;
 
 use ec_services::custom::Kind;
+use ec_services::power_profiles::{self, PowerActions, PowerEvents, Profile};
+use ec_services::progress::{self, Update as ProgressUpdate};
 use ec_services::{audio, calendar, custom, media, usage};
 
 use crate::app::Message;
@@ -28,6 +30,11 @@ struct Handles {
     usage: Option<usage::Handle>,
     calendar: Option<calendar::Handle>,
     custom: Option<custom::Handle>,
+    /// The power-profiles daemon's actions and reading (ADR 0065 amendment).
+    power: Option<(PowerActions, PowerEvents)>,
+    /// The progress feed and its `/proc` scan (ADR 0065 amendment). Started
+    /// once, scanning for the life of the bar.
+    progress: Option<progress::Handle>,
     /// What the monitor tap was last asked to be.
     tap: bool,
 }
@@ -112,6 +119,17 @@ pub fn configure(cfg: &widgets::Config) {
     if h.calendar.is_none() {
         h.calendar = Some(calendar::spawn());
     }
+    // The progress feed is served from here, so `ec-ctl progress` reaches
+    // this bar and the cell shows what the scan finds. It scans for as long as
+    // the bar runs; the scanner itself slow-polls while nothing is running.
+    if h.progress.is_none() {
+        h.progress = Some(progress::spawn());
+    }
+    // No system bus means no power reading, and the battery drawer's selector
+    // stays hidden; a later configure tries again.
+    if h.power.is_none() {
+        h.power = power_profiles::spawn().ok();
+    }
     if wants_usage(cfg) {
         match h.usage.as_ref() {
             Some(u) => u.reconfigure(usage_cfg(cfg)),
@@ -165,6 +183,16 @@ pub fn drain() -> Vec<Message> {
                     crate::calendar::Feed::Events { start, end, events }
                 }
             }));
+        }
+    }
+    if let Some((_, events)) = h.power.as_ref() {
+        while let Some(event) = events.try_recv() {
+            out.push(Message::Power(event));
+        }
+    }
+    if let Some(p) = h.progress.as_ref() {
+        while let Some(ProgressUpdate::Progress(jobs)) = p.try_recv() {
+            out.push(Message::Progress(jobs));
         }
     }
     if let Some(u) = h.usage.as_ref() {
@@ -235,6 +263,14 @@ pub fn audio_actions() -> Option<audio::Actions> {
 /// The calendar service's actions, if it is running.
 pub fn calendar_actions() -> Option<calendar::Actions> {
     handles().calendar.as_ref().map(calendar::Handle::actions)
+}
+
+/// Ask the power-profiles daemon for a profile. Returns at once; the answer
+/// (or the refusal) comes back through [`drain`].
+pub fn set_profile(profile: Profile) {
+    if let Some((actions, _)) = handles().power.as_ref() {
+        actions.set_profile(profile);
+    }
 }
 
 /// Mute or unmute every stream `pid` owns.

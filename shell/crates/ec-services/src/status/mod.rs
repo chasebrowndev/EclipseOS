@@ -84,7 +84,7 @@ pub fn spawn() -> zbus::Result<SystemStatus> {
 
 /// How often a watcher looks, whatever the daemon says.
 #[derive(Debug, Clone, Copy)]
-struct Cadence {
+pub(crate) struct Cadence {
     /// Re-read at least this often even with no signal at all. The backstop:
     /// a signal we never see (a daemon that only emits on some paths, a bus
     /// that dropped one) costs at most this much staleness, not forever.
@@ -99,7 +99,7 @@ struct Cadence {
     retry: Duration,
 }
 
-const CADENCE: Cadence = Cadence {
+pub(crate) const CADENCE: Cadence = Cadence {
     floor: Duration::from_secs(30),
     debounce: Duration::from_millis(100),
     retry: Duration::from_secs(5),
@@ -141,19 +141,20 @@ fn watch_system<T, Read, Wrap>(
 /// could wait forever on a reply stuck behind the signals it had not yet
 /// taken. The pump never makes a call, so it always drains; the reader never
 /// waits on a signal queue, so its replies always arrive.
-fn watch_service<T, Connect, Read, Wrap>(
+pub(crate) fn watch_service<T, U, Connect, Read, Wrap>(
     thread_name: &'static str,
     connect: Connect,
     rule: Option<MatchRule<'static>>,
     cadence: Cadence,
     read: Read,
     wrap: Wrap,
-    updates: mpsc::Sender<Update>,
+    updates: mpsc::Sender<U>,
 ) where
     T: Clone + PartialEq + Send + 'static,
+    U: Send + 'static,
     Connect: Fn() -> zbus::Result<Connection> + Send + 'static,
     Read: Fn(&Connection) -> T + Send + 'static,
-    Wrap: Fn(T) -> Update + Send + 'static,
+    Wrap: Fn(T) -> U + Send + 'static,
 {
     let spawned = std::thread::Builder::new()
         .name(thread_name.to_owned())
@@ -252,7 +253,7 @@ pub(crate) fn uncached<'a>(
 }
 
 /// A signal rule on one sender, optionally narrowed to a path and interface.
-fn signal_rule(
+pub(crate) fn signal_rule(
     sender: &'static str,
     path: Option<&'static str>,
     interface: Option<&'static str>,

@@ -256,6 +256,11 @@ impl Radios {
             paired,
             connected,
             kind,
+            battery: match name {
+                "WH-1000XM5" => Some(84),
+                "MX Master 3S" => Some(41),
+                _ => None,
+            },
         };
         Self {
             wifi_enabled: true,

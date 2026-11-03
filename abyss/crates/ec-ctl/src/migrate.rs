@@ -61,6 +61,7 @@ const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
     "bluetooth",
     "battery",
     "tray",
+    "progress",
     "clock",
 ];
 
@@ -770,7 +771,7 @@ mod tests {
         assert_eq!(
             out,
             "bar {\n    // my tray\n    tray {\n        pinned \"org.kde.x\"\n    }\n    widgets {\n        \
-             order \"now-playing\" \"battery\" \"volume\" \"network\" \"tray\" \"clock\"\n    }\n}\n"
+             order \"now-playing\" \"battery\" \"volume\" \"network\" \"tray\" \"progress\" \"clock\"\n    }\n}\n"
         );
     }
 
@@ -780,14 +781,16 @@ mod tests {
         assert!(out.contains("        pinned\n"), "{out}");
         assert!(
             out.contains(
-                "order \"now-playing\" \"network\" \"volume\" \"bluetooth\" \"battery\" \"tray\" \"clock\""
+                "order \"now-playing\" \"network\" \"volume\" \"bluetooth\" \"battery\" \"tray\" \"progress\" \"clock\""
             ),
             "{out}"
         );
         let (_, out) = widgets("bar {\n    tray {\n        hidden \"volume\"\n    }\n}\n");
         assert!(!out.contains("hidden"), "{out}");
         assert!(
-            out.contains("order \"now-playing\" \"network\" \"bluetooth\" \"battery\" \"tray\" \"clock\""),
+            out.contains(
+                "order \"now-playing\" \"network\" \"bluetooth\" \"battery\" \"tray\" \"progress\" \"clock\""
+            ),
             "{out}"
         );
     }

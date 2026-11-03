@@ -231,6 +231,10 @@ pub mod space {
     pub const MARK_GAP: f32 = 1.0;
     pub const MARK_CELL_W: f32 = 18.0;
     pub const MARK_BORDER: f32 = 1.0;
+    /// The energy particles a charging battery's fill carries: a bright
+    /// core and a faint halo, both small enough to read as dust in the cell.
+    pub const ENERGY_R: f32 = 1.1;
+    pub const ENERGY_HALO_R: f32 = 2.2;
     /// A sidebar nav item's selected bar, and the placeholder square that
     /// stands in for its icon.
     pub const NAV_BAR_H: f32 = 18.0;
@@ -618,6 +622,13 @@ pub mod bar {
     /// direction (ADR 0065); the grip is what tells the two apart.
     pub const RADIUS_WIDGET: f32 = RADIUS_CELL;
 
+    /// The progress cell (ADR 0065 amendment): its ring's box, and the
+    /// widest its label may run before it is cut with an ellipsis. The label
+    /// is measured in [`CHAR_W`] like every other cell, so this is a width,
+    /// not a character count.
+    pub const PROGRESS_RING: f32 = 14.0;
+    pub const PROGRESS_LABEL_W: f32 = 96.0;
+
     /// The visualizer: sixteen bands, each a hard 2px column with 2px of air,
     /// mirrored about the row's midline.
     pub const VIZ_BANDS: usize = 16;
@@ -652,9 +663,9 @@ pub mod bar {
     /// bead on a wire and reads as decoration.
     pub const VOLUME_KNOB_W: u16 = 2;
     pub const VOLUME_KNOB_H: f32 = 12.0;
-    /// Room for `100` in the mono face, so the track never shifts as the
+    /// Room for `100%` in the mono face, so the track never shifts as the
     /// reading changes width.
-    pub const VOLUME_READOUT_W: f32 = 22.0;
+    pub const VOLUME_READOUT_W: f32 = 28.0;
     /// Between the track and its reading.
     pub const VOLUME_GAP: f32 = 6.0;
 
@@ -839,6 +850,10 @@ pub mod motion {
     pub const FLING_LOOKAHEAD_S: f32 = 0.12;
     /// Weight of the newest sample in a drag's smoothed velocity.
     pub const VELOCITY_BLEND: f32 = 0.6;
+    /// One pass of a charging battery's energy particles across its fill,
+    /// and how many ride the fill at once (evenly spaced in the pass).
+    pub const ENERGY_MS: u64 = 1800;
+    pub const ENERGY_COUNT: usize = 3;
     /// The first fraction of a cell's travel over which its content stays
     /// fully transparent. Content fades *ahead of* its clip: closing, it is
     /// gone before the edge reaches a glyph; opening, it arrives once there
@@ -849,6 +864,9 @@ pub mod motion {
     pub const PREVIEW_HOLD_MS: u64 = 700;
     /// How long an animation preview waits, empty, before it starts over.
     pub const PREVIEW_REST_MS: u64 = 500;
+    /// One turn of an indeterminate progress ring. Slower than the radio
+    /// spinner: a copy in flight is not a scan in flight.
+    pub const PROGRESS_SPIN_MS: u64 = 1600;
 }
 
 /// A context menu: the mark rail that opens on a right-click.
@@ -859,11 +877,12 @@ pub mod menu {
     /// One verb row, and the padding inside it.
     pub const ROW_H: f32 = 30.0;
     pub const ROW_X: f32 = 8.0;
-    /// The square a row's leading mark occupies, and the gap after it.
-    pub const MARK: f32 = 16.0;
-    pub const MARK_GAP: f32 = 10.0;
+    /// The square a row's leading mark occupies, and the gap after it. Small
+    /// on purpose: a verb's mark is a hint at the verb, not a button face.
+    pub const MARK: f32 = 13.0;
+    pub const MARK_GAP: f32 = 12.0;
     /// The placeholder drawn when the host's icon theme has no such mark.
-    pub const MARK_INNER: f32 = 9.0;
+    pub const MARK_INNER: f32 = 7.0;
     pub const RADIUS_MARK: f32 = 3.0;
     /// A checkable entry's tick box: square, so on (filled) and off (a
     /// hairline frame) are one shape and never read as the rounded
@@ -890,8 +909,10 @@ pub mod drawer {
     pub const PAD: f32 = 8.0;
     /// Padding inside a row.
     pub const ROW_X: f32 = 8.0;
-    /// The square a row's leading mark occupies, and the gap after it.
-    pub const MARK: f32 = 16.0;
+    /// The square a row's leading mark occupies, and the gap after it. Smaller
+    /// than an icon's usual 16: the row's label is the thing read first. The
+    /// same 13px as a context menu's mark, so every drawer's marks are one size.
+    pub const MARK: f32 = 13.0;
     pub const MARK_GAP: f32 = 9.0;
     /// Corner radius of a hovered row, on the inset-chip scale.
     pub const RADIUS_ROW: f32 = 8.0;
@@ -933,6 +954,25 @@ pub mod drawer {
     pub const LEVEL_RAIL: f32 = 4.0;
     pub const LEVEL_KNOB_R: f32 = 6.0;
     pub const LEVEL_READOUT_W: f32 = 32.0;
+
+    /// The battery and quick-action drawers' width. A three-way segment and a
+    /// two-column tile grid need more room than a list's [`W`].
+    pub const WIDE_W: f32 = 272.0;
+    /// The battery's magnitude hero: one big reading over a state line.
+    pub const MAGNITUDE_H: f32 = 72.0;
+    /// A segmented control's height inside its one [`ROW_H`] block.
+    pub const SEGMENT_H: f32 = 24.0;
+    /// The air between two segments of one control.
+    pub const SEGMENT_GAP: f32 = 2.0;
+    /// A quick-action tile's height, and the air between tile rows.
+    pub const TILE_H: f32 = 46.0;
+    pub const TILE_GAP: f32 = 4.0;
+    /// One job in the progress drawer: its ring and label, its bar, and its
+    /// mono line, with [`JOB_PAD`] of air above and below. How many characters
+    /// of a job's label the drawer shows before it is cut.
+    pub const JOB_H: f32 = 46.0;
+    pub const JOB_PAD: f32 = 3.0;
+    pub const JOB_LABEL_CHARS: usize = 34;
 
     /// The calendar drawer's width: a month grid and a day's detail side by
     /// side, so the one drawer wider than [`W`].

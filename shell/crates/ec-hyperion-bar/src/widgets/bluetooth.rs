@@ -91,10 +91,15 @@ pub(crate) fn sheet(app: &App) -> Sheet {
             .take(drawer::MAX_ROWS)
             .collect();
         for d in &connected {
+            // The mark is quiet; the link's colour lives on the state line.
+            let state = match d.battery {
+                Some(level) => format!("connected \u{b7} {level}%"),
+                None => "connected".to_owned(),
+            };
             s.current(parts::drawer_current(
-                device_mark(d.kind, drawer::CURRENT_MARK, color::connected()),
+                device_mark(d.kind, drawer::CURRENT_MARK, color::text_secondary()),
                 &elide(&d.name, DRAWER_CHARS),
-                "connected",
+                &state,
                 color::connected(),
                 Some(("Disconnect", Message::BtDisconnect(d.addr.clone()))),
             ));
@@ -104,9 +109,9 @@ pub(crate) fn sheet(app: &App) -> Sheet {
         }
         for d in &paired {
             s.row(parts::drawer_choice(
-                device_mark(d.kind, drawer::MARK, color::text_secondary()),
+                device_mark(d.kind, drawer::MARK, color::text_tertiary()),
                 &elide(&d.name, DRAWER_CHARS),
-                None,
+                d.battery.map(|level| parts::drawer_figure(&format!("{level}%"))),
                 Some(Message::BtConnect(d.addr.clone())),
             ));
         }

@@ -29,6 +29,9 @@ ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 # The system-status watchers (ADR 0038), the wifi/bluetooth actions the drawers
 # send and the SNI tray host (ADR 0053). Secrets never pass through the bar.
 ec-services = { path = "../ec-services" }
+# The owner's own config and approvals, read directly: the quick-action
+# collection is not served over the control socket (ADR 0067).
+ec-abyss-config = { path = "../../../abyss/crates/ec-abyss-config" }
 serde_json.workspace = true
 # `clock.rs` formats wall-clock time through `localtime_r`, so that the bar
 # follows the user's zone and DST without carrying a time crate.

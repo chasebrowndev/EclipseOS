@@ -31,6 +31,54 @@ use crate::app::{App, Message};
 use crate::model::{Snapshot, Trust, Window, Workspace};
 use crate::widgets::{self, now_playing, system_usage, volume, GripEv, WidgetId};
 
+/// `HYPERION_PREVIEW_BATTERY=charging|full|low` picks the fixture's battery
+/// state, so a screenshot loop can show each one. Default: 76%, discharging.
+pub(crate) fn preview_battery() -> Battery {
+    let (percent, state, remaining) = match std::env::var("HYPERION_PREVIEW_BATTERY").as_deref() {
+        Ok("charging") => (58, Charge::Charging, Some(Duration::from_secs(70 * 60))),
+        Ok("full") => (100, Charge::Full, None),
+        Ok("low") => (9, Charge::Discharging, Some(Duration::from_secs(18 * 60))),
+        _ => (
+            76,
+            Charge::Discharging,
+            Some(Duration::from_secs(2 * 3600 + 5 * 60)),
+        ),
+    };
+    Battery {
+        percent,
+        state,
+        remaining,
+    }
+}
+
+/// `HYPERION_PREVIEW_PROGRESS=none|one|indeterminate|several` picks the
+/// progress fixture: no job, one determinate, one indeterminate, or three
+/// with the oldest determinate. Unset, it is `default`, which the preview
+/// passes (`several` for the progress drawer, `none` otherwise). Debug only.
+#[cfg(debug_assertions)]
+pub(crate) fn preview_progress(default: &str) -> Vec<ec_services::progress::Job> {
+    use ec_services::progress::{Job, Source};
+    let which = std::env::var("HYPERION_PREVIEW_PROGRESS").unwrap_or_else(|_| default.to_owned());
+    let now = Instant::now();
+    let job = |id: &str, label: &str, fraction: Option<f32>, secs: u64, source: Source| Job {
+        id: id.to_owned(),
+        label: label.to_owned(),
+        source,
+        fraction,
+        started: now.checked_sub(Duration::from_secs(secs)).unwrap_or(now),
+    };
+    match which.as_str() {
+        "one" => vec![job("demo", "Demo copy", Some(0.4), 72, Source::Feed)],
+        "indeterminate" => vec![job("make", "cargo build", None, 14, Source::Scan)],
+        "several" => vec![
+            job("demo", "Demo copy", Some(0.4), 300, Source::Feed),
+            job("cargo", "cargo build", None, 120, Source::Scan),
+            job("sync", "rsync backup", Some(0.12), 40, Source::Feed),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 /// Fixture windows: common apps, titles of every length.
 const WINDOWS: [(&str, &str); 20] = [
     ("firefox", "Eclipse OS — design notes"),
@@ -142,11 +190,7 @@ pub fn widgets(app: &mut App, idle: bool, output: u64) {
         windows,
     };
     app.icons.warm(&app.snapshot.windows);
-    app.battery = Some(Battery {
-        percent: 76,
-        state: Charge::Discharging,
-        remaining: None,
-    });
+    app.battery = Some(preview_battery());
 
     let order = [
         "now-playing",
@@ -155,6 +199,7 @@ pub fn widgets(app: &mut App, idle: bool, output: u64) {
         "network",
         "bluetooth",
         "battery",
+        "progress",
         "tray",
         "clock",
         "custom:weather",
