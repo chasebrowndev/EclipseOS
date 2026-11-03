@@ -3333,6 +3333,10 @@ Layout is a trait; two implementations plus floating in v1.
 - **master**: one master area plus a stack; master count and ratio
   adjustable.
 - **floating layer** above the tiled layer, per-window togglable.
+  *(added 2026-11-03)* A tiled window's configure carries `xdg_toplevel`
+  `TiledLeft/Right/Top/Bottom`; a floating or fullscreen window's does not.
+  Without them clients such as foot treat a tile as floating and snap its
+  size to whole cells, leaving it up to a cell short of its neighbour.
 - Gaps (inner/outer), border width, per-workspace layout override.
 - Resize by keyboard (adjust split ratio) and mouse (drag borders).
   *(amended C-10, 2026-09-24)* Under radiant a tiled window has a weight,
