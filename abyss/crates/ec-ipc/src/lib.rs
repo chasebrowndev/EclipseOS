@@ -184,10 +184,12 @@ pub use addons::{Addon, Addons};
 pub mod widgets;
 pub use widgets::{Approval, Widget, WidgetKind, WidgetOp, WidgetStatus, WriteResult};
 
-/// Longest line accepted from the compositor. Matches the server's own cap;
-/// anything longer is a bug on one side and we drop the connection rather
-/// than grow a buffer to meet it.
-const MAX_LINE: usize = 64 * 1024;
+/// Longest line accepted from the compositor. Matches the server's per-client
+/// write queue (`MAX_OUT` in `ec-abyss/src/ipc`), the most it can ever send in
+/// one reply; the `get_config {schema:true}` reply alone is past 64 KiB. Anything
+/// longer is a bug on one side and we drop the connection rather than grow a
+/// buffer to meet it.
+const MAX_LINE: usize = 256 * 1024;
 
 /// The default socket path. `$XDG_RUNTIME_DIR` is per-user and mode 0700,
 /// which is what makes an unauthenticated socket acceptable here.
@@ -490,6 +492,31 @@ mod tests {
             data: json!({"count": 4}),
         };
         assert_eq!(other.decisions_pending(), None);
+    }
+
+    #[test]
+    fn a_reply_past_64_kib_is_read_and_one_past_the_cap_is_refused() {
+        use std::io::Write;
+        let read = |len: usize| {
+            let (sock, mut peer) = UnixStream::pair().unwrap();
+            let writer = std::thread::spawn(move || {
+                let mut line = vec![b'x'; len];
+                line.push(b'\n');
+                let _ = peer.write_all(&line);
+            });
+            let mut client = Client {
+                sock,
+                inbuf: Vec::new(),
+                next_id: 1,
+                pending: Default::default(),
+            };
+            let got = client.read_line_blocking();
+            drop(client);
+            writer.join().unwrap();
+            got
+        };
+        assert_eq!(read(65_561).unwrap().len(), 65_561);
+        assert!(matches!(read(MAX_LINE + 4096), Err(Error::Protocol(_))));
     }
 
     #[test]
