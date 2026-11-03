@@ -133,6 +133,8 @@ pub enum Message {
     Bar(crate::taskbar::Msg),
     /// An edit to `bar.pinned-apps`.
     Pinned(crate::pinned::Msg),
+    /// An edit to `misc.discrete-gpu-apps`.
+    GpuApps(crate::pinned::Msg),
     /// The sidebar search's messages.
     Search(crate::search_ui::Msg),
     /// Launch the policy viewer, from the Oracle Eyes capture hero.
@@ -283,6 +285,9 @@ pub struct App {
     pub(crate) tray_sel: Option<String>,
     /// The apps `bar.pinned-apps` can take, scanned once at start.
     pub(crate) installed: Vec<crate::pinned::Choice>,
+    /// The discrete GPU's name, when the machine has one; the graphics
+    /// controls are drawn only then. Read once at start.
+    pub(crate) discrete_gpu: Option<String>,
     /// The running status-notifier items, while the Taskbar pane shows.
     /// `None` is not heard from yet; `Some(None)` is the feed failing.
     pub(crate) tray_live: Option<Option<Vec<String>>>,
@@ -376,6 +381,7 @@ impl App {
             net: Net::default(),
             tray_sel: None,
             installed: crate::pinned::installed(),
+            discrete_gpu: discrete_gpu(),
             tray_live: None,
             tray_seen: Vec::new(),
             glass_radius,
@@ -1064,6 +1070,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::TrayLive(live) => app.tray_live = Some(live),
         Message::Bar(m) => return crate::taskbar::update(app, m),
         Message::Pinned(m) => crate::pinned::update(app, m),
+        Message::GpuApps(m) => crate::gpu::update(app, m),
         Message::Search(m) => return crate::search_ui::update(app, m),
         Message::Anim(m) => return crate::animations::update(app, m),
         Message::Accounts(m) => return crate::accounts::update(app, m),
@@ -1392,6 +1399,10 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             blocks.push(crate::oracle::hero(app));
             blocks.push(schema_page(app));
         }
+        Page::Rendering => {
+            blocks.push(schema_page(app));
+            blocks.extend(crate::gpu::view(app));
+        }
         Page::Animations => blocks.extend(crate::animations::blocks(app)),
         Page::Accounts => blocks.extend(crate::accounts::blocks(app)),
         p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
@@ -1473,7 +1484,16 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
     let mut runs: Vec<(Vec<&str>, Vec<&Key>)> = Vec::new();
     let mut runs_group = None;
 
-    let shown = |k: &&Key| page_of(&k.path) == Some(app.page);
+    // The graphics controls mean nothing without a discrete GPU, so they are
+    // not drawn (the list has its own block, under hybrid only).
+    let shown = |k: &&Key| {
+        page_of(&k.path) == Some(app.page)
+            && match k.path.as_str() {
+                crate::gpu::MODE => app.discrete_gpu.is_some(),
+                crate::gpu::APPS => false,
+                _ => true,
+            }
+    };
     let mut keys: Vec<&Key> = app.rows.iter().filter(shown).collect();
     // The terminal command decides whether terminal apps are offered at
     // all: it goes directly above the switch it gates.
@@ -1548,6 +1568,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
                 Some("Hairline cards, with blur off or blur. Glass and frost keep their glass panel.")
             }
             p if p == mode_path => crate::schema::blur_blurb(current),
+            crate::gpu::MODE => crate::gpu::mode_blurb(key.value.as_str().unwrap_or("hybrid")),
             "ui.show-key-hints" => Some("Keyboard hints in the launcher and start menu"),
             "launcher.search.frecency" => Some(FRECENCY_BLURB),
             "settings.search.frecency" => Some(FRECENCY_BLURB),
@@ -1557,7 +1578,10 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             "oracle-eyes.debug" => Some("While on, the taskbar eye turns red and shows in screen captures."),
             _ => None,
         };
-        if let Some(blurb) = blurb {
+        let blurb = blurb
+            .into_iter()
+            .chain((key.path == crate::gpu::MODE).then_some(crate::gpu::LOGIN_NOTE));
+        for blurb in blurb {
             // Inset like `list_row`'s label, so it reads as that row's caption.
             rows.push(
                 iced::widget::container(
@@ -1768,6 +1792,20 @@ fn refusal<'a>(reason: &str) -> Element<'a, Message, Theme> {
         )
         .into()
     }
+}
+
+/// The discrete GPU's name, if the machine has one. Debug builds take
+/// `ECLIPSE_FAKE_DISCRETE_GPU` as a stand-in so the controls can be drawn on
+/// a single-GPU box; a release build has no such path.
+fn discrete_gpu() -> Option<String> {
+    #[cfg(debug_assertions)]
+    if let Ok(name) = std::env::var("ECLIPSE_FAKE_DISCRETE_GPU") {
+        return Some(name);
+    }
+    #[cfg(test)]
+    return None;
+    #[cfg(not(test))]
+    ec_services::apps::discrete_gpu().map(|g| g.name)
 }
 
 /// An unset key that mirrors another (`Key::mirror_of`) and can be written:

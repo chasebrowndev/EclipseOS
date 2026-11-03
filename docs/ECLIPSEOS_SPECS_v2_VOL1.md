@@ -2235,17 +2235,25 @@ Override, highest precedence first:
 2. `ECLIPSE_RENDER_DEVICE` env var (one-off testing).
 3. Config: `render_device "pci:0000:01:00.0"` or a card path (COMP-13).
 
-**Multi-GPU: not supported in v1.** One render device drives everything;
-outputs on other GPUs are not lit.
+**Multi-GPU: each GPU composites its own outputs** (ADR 0084, 2026-11-02,
+amends the original "not supported in v1"). `misc.gpu-mode` chooses
+`integrated`, `hybrid` (default) or `dedicated`. The primary GPU owns the
+default dmabuf feedback, explicit sync and capture. In `integrated` and
+`hybrid` it is the GPU driving a connected internal panel, then `boot_vga`,
+then the ranking above; in `dedicated` it is the discrete GPU. The overrides
+above pin the primary. A frame whose surface cannot be imported on its
+output's GPU is rendered on the primary and copied across, and `dedicated`
+copies to iGPU outputs the same way.
 
 **Laptops are a target** (decided 2026-09-05), scoped as:
 
 | Class | v1 status |
 |---|---|
 | Single-GPU laptops (integrated only) | **Fully supported.** Same path as desktop with a different device, plus §8.5 mobile concerns. |
-| Hybrid dGPU laptops (Optimus, AMD switchable) | **Not in v1.** Auto-selection picks the dGPU; outputs wired to the iGPU stay dark, so such machines are unusable. This is a known, documented limitation, not a silent failure — refuse to start with a clear message when connectors exist only on a non-selected device. |
+| Hybrid dGPU laptops (Optimus, AMD switchable) | **Supported (ADR 0084).** Each GPU composites its own screens. Apps run on the iGPU unless their desktop entry or `misc.discrete-gpu-apps` asks for the dGPU. Runtime hot-add of a whole GPU is not handled. |
 
-Hybrid support ships later as an experimental feature. To keep that from
+*Original 2026-09-05 scoping, superseded by ADR 0084:* hybrid support was
+to ship later as an experimental feature. To keep that from
 being a rewrite, the render path is **abstracted over a device set from day
 one**: no global "the GPU" singleton, buffers carry their source device,
 and the renderer trait (COMP-02) takes a device handle. Implementing
@@ -2427,8 +2435,12 @@ is testable without a GPU (F-07 §3).
 - Single-GPU laptop: lid close/open with and without external display;
   suspend with external, resume without; battery vs AC idle timeouts;
   touchpad gestures.
-- Hybrid laptop: assert a clear refusal message rather than a black
-  screen when all connectors are on a non-selected device.
+- Hybrid laptop (ADR 0084): the panel's iGPU is chosen as primary unaided.
+  The built-in panel and the dGPU's external port both light, each composited
+  by its own GPU. HDMI hotplug on the dGPU, a window moved across the two, and
+  an app launched on the dGPU all render. VT switch and back restores both
+  devices. `integrated` leaves the dGPU unopened and `dedicated` composites
+  everything on it.
 - Degraded mode: start without `policyd`; assert human desktop works and
   `create_agent` fails; start `policyd`; assert agents connect.
 - `policyd` kill while agents live: assert seats pause, human unaffected,
@@ -3333,6 +3345,10 @@ Layout is a trait; two implementations plus floating in v1.
 - **master**: one master area plus a stack; master count and ratio
   adjustable.
 - **floating layer** above the tiled layer, per-window togglable.
+  *(added 2026-11-03)* A tiled window's configure carries `xdg_toplevel`
+  `TiledLeft/Right/Top/Bottom`; a floating or fullscreen window's does not.
+  Without them clients such as foot treat a tile as floating and snap its
+  size to whole cells, leaving it up to a cell short of its neighbour.
 - Gaps (inner/outer), border width, per-workspace layout override.
 - Resize by keyboard (adjust split ratio) and mouse (drag borders).
   *(amended C-10, 2026-09-24)* Under radiant a tiled window has a weight,

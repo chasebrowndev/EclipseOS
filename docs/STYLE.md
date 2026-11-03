@@ -57,16 +57,25 @@ the same rules (ADR 0084).
 - Ink: rgba(26,22,16,α) replaces rgba(255,255,255,α) for hairlines, borders and
   tracks, at roughly the same α (.06-.14). The rim stays white: on light glass it reads as
   a bright edge, not a highlight
-- Bar cells: rgba(255,255,255,.40) fill, rgba(26,22,16,.08) hairline. Hover darkens: rgba(26,22,16,.05) / .12;
-  press rgba(26,22,16,.09), no shadow. A focused cell thins to .58 white on hover and .46 on press.
+- Bar cells: rgba(26,22,16,.07) fill (darker than the frost: stacked glass moves away from the backdrop), rgba(26,22,16,.12) hairline. Hover darkens: .11 fill / .18 hairline;
+  press .15, no shadow. A focused cell thins to .58 white on hover and .46 on press.
   Compositor glass does the same: `Look::shade` mixes toward ink. Focused / selected: .70 white and a crisp rgba(26,22,16,.18) hairline,
   gold on the label only. The same rules as dark: glassy, not glowy
-- Shadow: warm and soft, rgba(60,45,20,.18-.28). A light window must not sit in a black halo
+- Shadow: warm and soft, rgba(60,45,20,.18-.28). A light window must not sit in a black halo.
+  Compositor pane glass casts the cell's contact shadow (a pixel down, 6 px fall-off) at rest,
+  on hover and on focus; none pressed, none minimized or latent at rest
 - Accent: #f2c33c for fills, toggles, slider fill and marks; knob and glyph ink on it #1a1610.
   Accent *text* is #856000 (≥ 4.5:1 on the base and on a selected `accent_fill` pill). Tints: rgba(242,195,60,.18) fill, .45 border
 - Text: #1a1610 primary, rgba(26,22,16,.62) secondary, rgba(26,22,16,.42) tertiary
 - Settings content column: rgba(255,255,255,.30) tint on the shared blur (the light twin
   of the dark .28 black)
+- Depth runs toward the ink on light. A light card on the column is ink at the `lift_soft`
+  step (rgba(26,22,16,.04)); an inset on a card is the bar cell's rest step (`cell`,
+  rgba(26,22,16,.07)). Both scale with `card-fill` / `inset-fill` against their dark
+  defaults (.035 / .03), so an inset is always darker than its card. Never white over
+  frost: white lifts a card above the column it sits on. Toast buttons are insets and
+  follow the inset step. Selection is the one lift: the focused row is white .70 with its
+  crisp ink rim.
 - Light ink and fill alphas are specified as sRGB intent and converted to linear-light alphas
   over the base (`ec_theme::linear_alpha`), because iced blends in linear light. `danger` is
   #bd3a26 and `neutral` is #6f6a62. Controls take their grounds from palette tokens

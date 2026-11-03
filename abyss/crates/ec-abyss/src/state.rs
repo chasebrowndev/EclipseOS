@@ -223,6 +223,10 @@ pub struct AbyssState {
     pub headless: Option<Box<crate::backend::headless::HeadlessData>>,
     /// `None` when no render node exists, in which case there is no global.
     pub dmabuf_state: Option<smithay::wayland::dmabuf::DmabufState>,
+    /// The discrete GPU's PRIME offload environment for commands the compositor
+    /// spawns (keybinds, idle locker). Set at startup in `dedicated` GPU mode on
+    /// a machine with a non-boot-VGA discrete GPU only; empty otherwise (ADR 0084).
+    pub dedicated_env: Vec<(&'static str, String)>,
     /// Default (render) feedback, sent to every surface that cannot scan out.
     pub dmabuf_feedback: Option<smithay::wayland::dmabuf::DmabufFeedback>,
     /// Explicit sync (COMP-02 §3). `None` when the device has no syncobj eventfd.
@@ -583,6 +587,7 @@ impl AbyssState {
             #[cfg(feature = "headless")]
             headless: None,
             dmabuf_state: None,
+            dedicated_env: Vec::new(),
             dmabuf_feedback: None,
             #[cfg(feature = "drm")]
             syncobj_state: None,

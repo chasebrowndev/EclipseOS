@@ -156,6 +156,7 @@ mod tests {
             argv: vec![name.to_lowercase()],
             terminal: false,
             keywords: Vec::new(),
+            prefers_discrete_gpu: false,
         }
     }
 
