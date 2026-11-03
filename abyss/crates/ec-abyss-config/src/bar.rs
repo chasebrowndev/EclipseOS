@@ -53,6 +53,54 @@ pub struct Bar {
     /// `widget "<name>" { ... }` blocks, in file order; a later block with
     /// the same name replaces the earlier one in place.
     pub custom_widgets: Vec<CustomWidget>,
+    /// `action "<id>" { … }` blocks, in file order; a later block with the
+    /// same id replaces the earlier one in place. Read them through
+    /// [`QuickAction::runnable`], never by `target` alone: an `exec` is not
+    /// runnable without the owner's approval (ADR 0067).
+    pub quick_actions: Vec<QuickAction>,
+}
+
+/// `bar { action "<id>" { label "…"; icon "…"; exec "…" | app "…"; } }`: a
+/// one-tap button on the taskbar. The compositor does not run these; the bar
+/// does, as the human, through the same approval rule as command widgets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickAction {
+    /// `[A-Za-z0-9_-]`, at most [`schema::QUICK_ACTION_ID_MAX`] characters.
+    /// Also the approval name's suffix: `action:<id>`.
+    pub id: String,
+    pub label: String,
+    /// A freedesktop icon name, never a path. `None` draws the default glyph.
+    pub icon: Option<String>,
+    pub target: QuickActionTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickActionTarget {
+    /// Argv, run with no shell. Needs the owner's approval (ADR 0067).
+    Exec(Vec<String>),
+    /// A desktop-entry id, launched the way the launcher launches one. Not a
+    /// command in the config, so it needs no approval.
+    App(String),
+}
+
+impl QuickAction {
+    /// The approval name an `exec` quick action is recorded under.
+    pub fn approval_name(&self) -> String {
+        format!("action:{}", self.id)
+    }
+
+    /// Whether the bar may run this now. An `app` always may. An `exec` only
+    /// when the owner's recorded approval under [`Self::approval_name`] is the
+    /// hash of exactly this argv. Fail-closed: no entry, or a different
+    /// command, is `false`.
+    pub fn runnable(&self, approvals: &approvals::Approvals) -> bool {
+        match &self.target {
+            QuickActionTarget::App(_) => true,
+            QuickActionTarget::Exec(argv) => {
+                approvals.get(&self.approval_name()) == Some(widget_hash::quick_action_hash(argv))
+            }
+        }
+    }
 }
 
 /// `bar { clock { week-start "auto" | "monday" | "sunday" } }`: the first
@@ -468,6 +516,7 @@ impl Default for Bar {
             widgets: BarWidgets::default(),
             motion: BarMotion::default(),
             custom_widgets: Vec::new(),
+            quick_actions: Vec::new(),
         }
     }
 }

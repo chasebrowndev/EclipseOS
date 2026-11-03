@@ -2000,6 +2000,7 @@ pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "output", owner: Abyss, doc: "Per-output settings: `output \"<glob>\" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key." },
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "widget", owner: Abyss, doc: "A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget \"<name>\" { exec \"<argv0>\" \"<arg>\"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source \"<source>\"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{\"name\", \"kind\": \"exec\" | \"stream\" | \"source\", \"exec\": [argv] | null, \"interval-ms\": int | null, \"source\": string | null, \"format\": string | null, \"icon\": string | null, \"on-click\": [argv] | null, \"on-scroll-up\": [argv] | null, \"on-scroll-down\": [argv] | null, \"approval\": \"approved\", \"premade\": bool}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only; `premade` is true when the block is identical to the catalog block of the same name. Widgets are an add-on hook (ADR 0066): unless an installed add-on (the taskbar) turns on `taskbar-widgets`, `widget` blocks are ignored rather than refused, their `custom:` ids are dropped from `bar.widgets.*`, `collections.widget` is empty and `set_config_collection` for `widget` is refused. With the hook on, the premade catalog (`/usr/share/eclipse/widgets/*.kdl`, each file only `bar { widget … }`) is the lowest config layer, below `/etc/eclipse/abyss.kdl`, so `custom:<premade>` works with no block of your own and a block of the same name replaces it. Command widgets need your approval (ADR 0067): an `exec` or `stream` widget runs only if it is an unedited catalog block or you approved exactly this definition (name, argv, interval or stream, and actions) in the compositor-drawn prompt. Anything else, an edited premade or a new command, is withheld: it does not run, its `custom:` id stays and draws nothing, and `collections.widget` lists it as `{\"name\", \"approval\": \"pending\", \"premade\": false, \"altered\": bool}` with no command fields (`altered` is true for an edited premade). Any later edit withholds it again. Not now lasts for the session; the control-socket method `review_widget {\"name\"}` (owner only) brings the prompt back, returns `{\"name\", \"queued\": bool}`, never shows two prompts for one widget, and cannot approve anything itself. `approval`, `premade` and `altered` are ignored on write." },
+    Collection { node: "action", owner: Abyss, doc: "A one-tap quick action on the taskbar, written inside `bar { }`: `action \"<id>\" { label \"Mute\"; icon \"audio-volume-muted\"; exec \"pactl\" \"set-sink-mute\" \"@DEFAULT_SINK@\" \"toggle\"; }`, or `app \"<desktop-id>\"` instead of `exec`. Exactly one of `exec` and `app`, and `label` is required. A later block with the same id replaces an earlier one. At most 12. `exec` is argv-exec, never through a shell, and it runs only once you approve exactly this command (ADR 0067), the same approval a command widget needs: until then the button does nothing. `app` launches a desktop entry the way the launcher does and needs no approval. Ids are `[A-Za-z0-9_-]`, at most 32 characters. The control socket cannot write this collection and does not serve it through `get_config`." },
     Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Placement actions apply once, at map; property actions re-apply on every commit and on a float toggle (COMP-05 §4, C-22). Its *action* decides the owning file." },
     Collection { node: "theme", owner: Abyss, doc: "A user theme (ADR 0084): `theme \"<name>\" { inherit \"dark\"; base \"#0b0906\"; ink \"#ffffff\"; accent \"#f2c33c\"; accent-text \"#f5cf5c\"; frost-tint \"#17140f\"; rim 0.2; }`. Any subset of the keys; an unset seed is inherited from `inherit`, a built-in (`dark`, `light`) or an earlier theme, and `inherit` defaults to `dark`. Colours are `#rrggbb`, opaque; `rim` is 0.0 to 1.0. A theme is selected with `general.theme-dark` / `general.theme-light`; whether it counts as dark or light follows its `base` luminance. It is refused, and the last good config kept, if text or accent text on its `base` is under 4.5:1, secondary text under 3:1, a seed does not parse, `inherit` names no earlier theme (so no cycles), or the name is `dark` or `light` (built in) or already defined. An explicit `blur { frost { tint } }`, `blur { glass { rim } }` or `annotations { }` key still wins over the theme. KDL-only: not settable over the socket and not listed by `get_config`; `get_theme` returns the active one." },
     Collection { node: "input.device", owner: Abyss, doc: "Per-device pointer settings, written inside `input { }`: `device \"<name>\" { accel-profile \"flat\"; accel-speed -0.3; scroll-method \"on-button-down\"; touchpad { tap-to-click #true; scroll-method \"edge\"; } calibration 1 0 0 0 1 0; }`. `<name>` is the libinput device name, matched exactly (`libinput list-devices` prints it); every device of that name gets the block. Any subset of `accel-profile`, `accel-speed`, `scroll-method` and a `touchpad { }` with any of the `input.touchpad.*` keys, each validated as its global key is; a key left out inherits the global one, and a key set here wins over it. `touchpad` keys reach only a touchpad, `scroll-method` only a device that is not one. `calibration a b c d e f` is libinput's 2x3 calibration matrix for a touchscreen or tablet, row-major, six numbers; it is only allowed in a device block, and a device without one keeps its default matrix. A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket, and not listed by `get_config`." },
@@ -2198,6 +2199,42 @@ pub const WIDGET_KEYS: &[Form] = &[
         "\"<argv0>\" [\"<arg>\"…]",
         &[r#"on-scroll-down "brightnessctl" "set" "5%-""#],
         "Command run on a scroll down, argv-exec.",
+    ),
+];
+
+/// `bar { action "<id>" { … } }`: at most this many quick actions.
+pub const QUICK_ACTION_MAX: usize = 12;
+/// Longest quick-action id, in characters.
+pub const QUICK_ACTION_ID_MAX: usize = 32;
+/// Longest quick-action label, in characters.
+pub const QUICK_ACTION_LABEL_MAX: usize = 40;
+
+/// Sub-nodes of `bar { action "<id>" { … } }`. Exactly one of `exec` and
+/// `app`, and `label` always.
+pub const ACTION_KEYS: &[Form] = &[
+    form(
+        &["label"],
+        "\"<text>\"",
+        &[r#"label "Mute""#],
+        "The text on the button. Required; plain text, at most 40 characters.",
+    ),
+    form(
+        &["icon"],
+        "\"<icon name>\"",
+        &[r#"icon "audio-volume-muted""#],
+        "A freedesktop icon name, never a path. Optional.",
+    ),
+    form(
+        &["exec"],
+        "\"<argv0>\" [\"<arg>\"…]",
+        &[r#"exec "pactl" "set-sink-mute" "@DEFAULT_SINK@" "toggle""#],
+        "Run this command, argv-exec with no shell. Needs your approval (ADR 0067): until you approve exactly this command, the button does nothing.",
+    ),
+    form(
+        &["app"],
+        "\"<desktop-id>\"",
+        &[r#"app "firefox""#],
+        "Launch this desktop entry, the way the launcher does. A desktop-entry id without `.desktop`, never a path.",
     ),
 ];
 

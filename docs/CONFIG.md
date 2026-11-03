@@ -433,6 +433,19 @@ A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget "<name>" {
 
 `<source>` is one of `usage.cpu`, `usage.mem`, `usage.gpu`, `usage.disk`, `audio.volume`, `media.title`, `media.artist`.
 
+### `action`
+
+A one-tap quick action on the taskbar, written inside `bar { }`: `action "<id>" { label "Mute"; icon "audio-volume-muted"; exec "pactl" "set-sink-mute" "@DEFAULT_SINK@" "toggle"; }`, or `app "<desktop-id>"` instead of `exec`. Exactly one of `exec` and `app`, and `label` is required. A later block with the same id replaces an earlier one. At most 12. `exec` is argv-exec, never through a shell, and it runs only once you approve exactly this command (ADR 0067), the same approval a command widget needs: until then the button does nothing. `app` launches a desktop entry the way the launcher does and needs no approval. Ids are `[A-Za-z0-9_-]`, at most 32 characters. The control socket cannot write this collection and does not serve it through `get_config`.
+
+| key | example | what it does |
+| --- | --- | --- |
+| `label "<text>"` | `label "Mute"` | The text on the button. Required; plain text, at most 40 characters. |
+| `icon "<icon name>"` | `icon "audio-volume-muted"` | A freedesktop icon name, never a path. Optional. |
+| `exec "<argv0>" ["<arg>"…]` | `exec "pactl" "set-sink-mute" "@DEFAULT_SINK@" "toggle"` | Run this command, argv-exec with no shell. Needs your approval (ADR 0067): until you approve exactly this command, the button does nothing. |
+| `app "<desktop-id>"` | `app "firefox"` | Launch this desktop entry, the way the launcher does. A desktop-entry id without `.desktop`, never a path. |
+
+At most 12 quick actions. An `exec` is withheld until approved (ADR 0067); an `app` is not.
+
 ### `windowrule`
 
 A rule matched against windows at map time. Placement actions apply once, at map; property actions re-apply on every commit and on a float toggle (COMP-05 §4, C-22). Its *action* decides the owning file.
