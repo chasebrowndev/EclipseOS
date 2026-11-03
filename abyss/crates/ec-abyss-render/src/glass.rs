@@ -305,6 +305,43 @@ pub fn band(pane: &Pane, rect: Rectangle<i32, Physical>, upscale: f64) -> f32 {
     px.min(rect.size.w.min(rect.size.h) as f32 * 0.5).max(1.0)
 }
 
+/// A pane's contact shadow: the shell cell's drop (ec-ui `bar::CELL_SHADOW_Y`
+/// 1, `CELL_SHADOW_BLUR` 6), drawn by the window shadow program at its rest
+/// weight. Logical px.
+pub const SHADOW_DROP: i32 = 1;
+pub const SHADOW_RANGE: i32 = 6;
+
+/// Whether `pane` casts a contact shadow, by the shell cell's rule
+/// (`ec-ui` `CellTone`): none while pressed (pushed into the glass), none for
+/// a minimized or latent cell at rest, none at zero alpha. Everything else,
+/// focused included, casts the same rest shadow.
+pub fn casts_shadow(pane: &Pane) -> bool {
+    let pressed = pane.state & PRESSED != 0;
+    let hovered = pane.state & HOVERED != 0;
+    let resting = matches!(pane.tone, Tone::Away | Tone::Latent) && !hovered;
+    pane.alpha != 0 && !pressed && !resting
+}
+
+/// The shadow's area, logical: the cell's box grown by `SHADOW_RANGE` on the
+/// sides and top, and by `SHADOW_DROP` more at the bottom. The shader's
+/// `size` is this area, so its `range` and `drop` are in the same units.
+pub fn shadow_area(cell: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        (cell.loc.x - SHADOW_RANGE, cell.loc.y - SHADOW_RANGE).into(),
+        (
+            cell.size.w + 2 * SHADOW_RANGE,
+            cell.size.h + 2 * SHADOW_RANGE + SHADOW_DROP,
+        )
+            .into(),
+    )
+}
+
+/// The shadow shader's `[range, radius, drop]` for a cell of corner `radius`
+/// (logical px, already grown by any window animation scale).
+pub fn shadow_params(radius: f32) -> [f32; 3] {
+    [SHADOW_RANGE as f32, radius, SHADOW_DROP as f32]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -526,5 +563,57 @@ mod tests {
         .unwrap();
         assert_eq!((r.loc.x, r.loc.y, r.size.w, r.size.h), (1020, 8, 180, 40));
         assert_eq!(band(&p, r, 2.0), 12.0);
+    }
+
+    #[test]
+    fn cells_cast_the_shell_cell_shadow() {
+        // Plain and focused cells cast one at rest; minimized and latent ones
+        // only when lit, as the shell's cell does.
+        assert!(casts_shadow(&pane(Tone::Plain, 0, 255)));
+        assert!(casts_shadow(&pane(Tone::Focused, 0, 255)));
+        assert!(!casts_shadow(&pane(Tone::Away, 0, 255)));
+        assert!(!casts_shadow(&pane(Tone::Latent, 0, 255)));
+        assert!(casts_shadow(&pane(Tone::Away, HOVERED, 255)));
+        assert!(casts_shadow(&pane(Tone::Latent, HOVERED, 255)));
+        assert!(casts_shadow(&pane(Tone::Plain, HOVERED, 255)));
+        // Pressed casts none, whatever the tone; so does a transparent pane.
+        for tone in [Tone::Plain, Tone::Focused, Tone::Away, Tone::Latent] {
+            assert!(!casts_shadow(&pane(tone, PRESSED, 255)));
+            assert!(!casts_shadow(&pane(tone, HOVERED | PRESSED, 255)));
+        }
+        assert!(!casts_shadow(&pane(Tone::Plain, 0, 0)));
+    }
+
+    #[test]
+    fn the_shadow_hugs_the_cell_and_drops_a_pixel() {
+        let cell = Rectangle::<i32, Logical>::new((20, 10).into(), (80, 30).into());
+        let area = shadow_area(cell);
+        // Six px out on the left, right and top; seven at the bottom: one px down.
+        assert_eq!((area.loc.x, area.loc.y), (14, 4));
+        assert_eq!((area.size.w, area.size.h), (92, 43));
+        assert_eq!(area.loc.x + area.size.w, cell.loc.x + cell.size.w + SHADOW_RANGE);
+        assert_eq!(
+            area.loc.y + area.size.h,
+            cell.loc.y + cell.size.h + SHADOW_RANGE + SHADOW_DROP
+        );
+        // Nothing reaches further than the range and drop, whatever the cell.
+        let tiny = Rectangle::<i32, Logical>::new((0, 0).into(), (1, 1).into());
+        let a = shadow_area(tiny);
+        assert!(a.loc.x >= -SHADOW_RANGE && a.loc.y >= -SHADOW_RANGE);
+        assert_eq!(a.size.w - tiny.size.w, 2 * SHADOW_RANGE);
+        assert_eq!(a.size.h - tiny.size.h, 2 * SHADOW_RANGE + SHADOW_DROP);
+        assert_eq!(shadow_params(8.0), [6.0, 8.0, 1.0]);
+    }
+
+    #[test]
+    fn light_casts_warm_ink_and_dark_casts_black() {
+        // The colour is the window shadow's, passed in by the caller.
+        let light = ec_abyss_config::Appearance {
+            scheme: ec_theme::Scheme::Light,
+            ..Default::default()
+        };
+        let [r, g, b] = light.shadow_rgb();
+        assert!(r > g && g > b && r < 0.3, "{:?}", [r, g, b]);
+        assert_eq!(ec_abyss_config::Appearance::default().shadow_rgb(), [0.0; 3]);
     }
 }

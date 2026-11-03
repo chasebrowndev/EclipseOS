@@ -431,6 +431,9 @@ fn layer_shows(
 
 /// Four solid quads (top, bottom, left, right) per window.
 type Border = [SolidColorBuffer; 4];
+/// A pane's contact shadow kept between frames: its element, the uniforms it was
+/// last given (range, radius, drop, colour), and the alpha it was built with.
+type PaneShadow = (PixelShaderElement, [f32; 6], f32);
 
 /// Border quads kept alive between frames, keyed by output and window: one
 /// window can be drawn on several outputs, each at its own geometry.
@@ -472,6 +475,11 @@ pub struct BorderStore {
     /// frames for the same reason; the last-applied range, radius, drop and
     /// focus weight are kept to skip no-op uniform updates.
     shadows: HashMap<(Output, Window), (PixelShaderElement, [f32; 7])>,
+    /// One contact shadow per glass pane (`insert_panes`), keyed by output,
+    /// pane set and pane index; the last-applied shader uniforms (range,
+    /// radius, drop, colour) and element alpha. Alpha is fixed at element
+    /// creation, so a change rebuilds the element.
+    pane_shadows: HashMap<(Output, blur::BlurKey, usize), PaneShadow>,
     /// One border glow per window when glow is on, drawn by the ring
     /// program; the last-applied colour, range and radius are kept to skip
     /// no-op uniform updates.
@@ -948,6 +956,7 @@ fn insert_blur(
         // Nothing asked for a backdrop (blur `off`, or nothing translucent):
         // the chain must not sit in GPU memory for a frame that draws none.
         store.blur.remove(output);
+        store.pane_shadows.retain(|(o, _, _), _| o != output);
         return;
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
@@ -957,6 +966,9 @@ fn insert_blur(
         .chain(panes.iter().map(|p| p.key.clone()))
         .collect();
     store.blur.entry(output.clone()).or_default().retain(&live);
+    store
+        .pane_shadows
+        .retain(|(o, k, _), _| o != output || live.contains(k));
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
     // height and the sense of its vertical axis (COMP-02 §9).
@@ -1213,6 +1225,64 @@ fn insert_panes(
         },
         &mut blurs,
     );
+    // The contact shadows go in before the glass, at the same index, so they
+    // lie under every pane's glass (STYLE.md Light; the shell cell's drop).
+    // A pressed or resting cell casts none (`glass::casts_shadow`).
+    if let Some(shadow) = pane_shadow_program(renderer, store) {
+        let rgb = config.appearance.shadow_rgb();
+        for (i, pane) in panes.iter().enumerate() {
+            let Some(rect) = rect_of(pane).filter(|_| glass::casts_shadow(pane)) else {
+                continue;
+            };
+            let cell = rect.to_f64().to_logical(scale).to_i32_round();
+            let area = glass::shadow_area(cell);
+            let [range, radius, drop] = glass::shadow_params(pane.radius as f32 * grown as f32);
+            let alpha = pane.alpha as f32 / 255.0 * req.alpha;
+            let params = [range, radius, drop, rgb[0], rgb[1], rgb[2]];
+            let uniforms = || effects::shadow_uniforms([range, radius, drop], 0.0, rgb);
+            let (element, applied, applied_alpha) = store
+                .pane_shadows
+                .entry((output.clone(), req.key.clone(), i))
+                .or_insert_with(|| {
+                    (
+                        PixelShaderElement::new(
+                            shadow.clone(),
+                            area,
+                            None,
+                            alpha,
+                            uniforms(),
+                            Kind::Unspecified,
+                        ),
+                        params,
+                        alpha,
+                    )
+                });
+            if *applied_alpha != alpha {
+                *element =
+                    PixelShaderElement::new(shadow.clone(), area, None, alpha, uniforms(), Kind::Unspecified);
+                *applied = params;
+                *applied_alpha = alpha;
+            } else {
+                element.resize(area, None);
+                if *applied != params {
+                    element.update_uniforms(uniforms());
+                    *applied = params;
+                }
+            }
+            let element = match req.crop {
+                Some(crop) => CropRenderElement::from_element(element.clone(), scale, crop)
+                    .map(AbyssRenderElement::CroppedShader),
+                None => Some(AbyssRenderElement::Shader(element.clone())),
+            };
+            if let Some(element) = element {
+                elements.insert(req.index, element);
+            }
+        }
+    }
+    // A pane list that shrank drops its stale shadows.
+    store
+        .pane_shadows
+        .retain(|(o, k, i), _| o != output || k != &req.key || *i < panes.len());
     // Inserting each at the same index leaves the last pane in front.
     for element in blurs.drain(..) {
         let element = match req.crop {
@@ -1226,6 +1296,26 @@ fn insert_panes(
         }
     }
     store.pane_scratch = blurs;
+}
+
+/// The drop-shadow program for pane contact shadows, compiled on first use and
+/// shared with the window shadow (`store.shadow`). Not gated on
+/// `decoration.shadow`: a cell's shadow is part of its look, as the shell
+/// draws it, whether or not windows shadow.
+fn pane_shadow_program(
+    renderer: &mut GlesRenderer,
+    store: &mut BorderStore,
+) -> Option<smithay::backend::renderer::gles::GlesPixelProgram> {
+    if store.shadow.is_none() {
+        match effects::compile_shadow(renderer) {
+            Ok(program) => store.shadow = Some(program),
+            Err(err) => {
+                tracing::warn!(?err, "compiling the shadow shader; pane shadows disabled");
+                return None;
+            }
+        }
+    }
+    store.shadow.clone()
 }
 
 /// A bezel's largest refraction, logical px: felt at the window edge, never a
