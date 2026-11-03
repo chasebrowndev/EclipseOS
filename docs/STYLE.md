@@ -14,8 +14,10 @@ yellow accent. Use this as art direction; do not copy any specific screen.
   both the same tint, rgba(11,9,6,.70) by default, over the same blur (opaque #0b0906 with
   blur off), parted by a 1px hairline, not by a change of ground.
   The surface values are defaults, and users tune them live (the compositor's
-  `decoration.surface.tint` .70, `card-fill` .035, `inset-fill` .03; sRGB intent, converted
-  to linear alpha in the client, 0..1 and 0..0.30 respectively). Settings' Effects > Blur & glass page shows them as Window tint,
+  `decoration.surface.tint` .70, `card-fill` .035, `inset-fill` .03; sRGB intent, 0..1 and
+  0..0.30 respectively. The tint is written as the buffer's alpha as is, because the compositor
+  blends it in sRGB like a terminal's `alpha=`; card and inset fills are converted to linear alpha
+  because iced blends those itself). Settings' Effects > Blur & glass page shows them as Window tint,
   Card fill and Inset fill. Every window re-reads them on a config reload.
   Settings cards with blur off or `blur` are hairline-only: a white `card-fill` fill, a 1px
   rim at about 3.4x that fill (.12 by default), no drop shadow. `glass` and `frost` keep the
