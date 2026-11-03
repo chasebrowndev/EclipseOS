@@ -971,6 +971,218 @@ pub fn drawer_link<'a, Message: Clone + 'a>(label: &str, on_press: Message) -> E
     )
 }
 
+/// A power row: a mark, a label and, at the right, an optional mono note
+/// ("password", "not permitted").
+///
+/// A widget because a row the human can act on and a row the machine has
+/// greyed out for its own reasons must read as the same row in two states. A
+/// row with a press lifts under the pointer like [`drawer_choice`]; a row with
+/// none keeps no ground and no hover, so it cannot be taken for a button, and
+/// its label drops to the tertiary ink. The caller sets the mark's ink to match.
+/// Availability is shown by this grey, never by the accent.
+pub fn drawer_action<'a, Message: Clone + 'a>(
+    mark: Element<'a, Message, Theme>,
+    label: &str,
+    note: Option<&str>,
+    on_press: Option<Message>,
+) -> Element<'a, Message, Theme> {
+    let label_ink = if on_press.is_some() {
+        color::text()
+    } else {
+        color::text_tertiary()
+    };
+    let mut r = row![
+        container(mark)
+            .width(Length::Fixed(drawer::MARK))
+            .height(Length::Fixed(drawer::MARK))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+        text(label.to_string())
+            .font(font::UI)
+            .size(size::BODY_SMALL)
+            .color(label_ink),
+        Space::new().width(Length::Fill),
+    ]
+    .spacing(drawer::MARK_GAP)
+    .align_y(Alignment::Center);
+    if let Some(note) = note {
+        r = r.push(
+            text(note.to_string())
+                .font(font::DATA)
+                .size(size::MICRO)
+                .color(color::text_tertiary()),
+        );
+    }
+    let face = container(r)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .padding([0.0, drawer::ROW_X]);
+    let body: Element<'a, Message, Theme> = match on_press {
+        Some(m) => button(face)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(space::ZERO)
+            .style(drawer_lift)
+            .on_press(m)
+            .into(),
+        None => face.into(),
+    };
+    slot(body)
+}
+
+/// A row that asks for a second answer before a thing is done: its label is
+/// the action in full ("Confirm log out"), in danger ink when the action
+/// cannot be taken back, and a Cancel pill at the right on the hero's glass.
+///
+/// A widget because every confirmation in a drawer must look the same and put
+/// its way out in the same place. The confirm half is one press, the whole
+/// label; Cancel is the pill. Neither is the accent.
+pub fn drawer_confirm<'a, Message: Clone + 'a>(
+    label: &str,
+    danger: bool,
+    on_confirm: Message,
+    on_cancel: Message,
+) -> Element<'a, Message, Theme> {
+    let ink = if danger { color::danger() } else { color::text() };
+    let confirm = button(
+        container(
+            text(label.to_string())
+                .font(font::UI_MEDIUM)
+                .size(size::BODY_SMALL)
+                .color(ink),
+        )
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .padding([0.0, drawer::ROW_X]),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(space::ZERO)
+    .style(drawer_lift)
+    .on_press(on_confirm);
+    let cancel = button(
+        text("Cancel")
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL)
+            .color(color::text_secondary()),
+    )
+    .padding([space::ROW_Y / 2.0, drawer::ROW_X])
+    .style(drawer_pill)
+    .on_press(on_cancel);
+    slot(
+        row![confirm, cancel]
+            .spacing(drawer::MARK_GAP)
+            .align_y(Alignment::Center)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+    )
+}
+
+/// One option of a choice the human makes before something runs: a radio and
+/// its label, which may wrap onto a second line. [`drawer::OPTION_H`] tall.
+///
+/// A widget because a radio is the drawer's exclusive choice when the labels
+/// are too long for a segment. The one in force is the focused chip's glass
+/// with a crisp rim, and its label is the full ink. Selection is never the
+/// accent.
+pub fn drawer_option<'a, Message: Clone + 'a>(
+    selected: bool,
+    label: &str,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let ink = if selected {
+        color::text()
+    } else {
+        color::text_secondary()
+    };
+    let face = container(
+        row![
+            radio_mark(selected),
+            text(label.to_string())
+                .font(font::UI)
+                .size(size::BODY_SMALL)
+                .color(ink)
+                .width(Length::Fill),
+        ]
+        .spacing(drawer::MARK_GAP)
+        .align_y(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_y(Alignment::Center)
+    .padding([0.0, drawer::ROW_X]);
+    let b = button(face)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(space::ZERO)
+        .style(drawer_option_ground(selected))
+        .on_press(on_press);
+    container(b)
+        .width(Length::Fill)
+        .height(Length::Fixed(drawer::OPTION_H))
+        .padding([drawer::ROW_INSET, 0.0])
+        .into()
+}
+
+/// The ground of a [`drawer_option`]: a pickable row at rest, and the focused
+/// glass when it is the one in force.
+fn drawer_option_ground(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |t: &Theme, status: button::Status| {
+        if !selected {
+            return drawer_lift(t, status);
+        }
+        let (fill, rim) = match status {
+            button::Status::Hovered => (color::cell_focus_hover(), color::cell_focus_rim_hover()),
+            button::Status::Pressed => (color::cell_focus_press(), color::cell_focus_rim_hover()),
+            _ => (color::cell_focus(), color::cell_focus_rim()),
+        };
+        glass_button(fill, rim, drawer::RADIUS_ROW)
+    }
+}
+
+/// A radio's circle: a hairline ring in the ink ramp, with a solid dot inside
+/// it when it is the one in force. A widget so every radio in a drawer is the
+/// same size and the same ink; a dot is a state, so it is never the accent.
+pub fn radio_mark<'a, Message: 'a>(selected: bool) -> Element<'a, Message, Theme> {
+    let ink = if selected {
+        color::text()
+    } else {
+        color::text_secondary()
+    };
+    let inner: Element<'a, Message, Theme> = if selected {
+        container(Space::new())
+            .width(Length::Fixed(drawer::RADIO_DOT))
+            .height(Length::Fixed(drawer::RADIO_DOT))
+            .style(move |_t: &Theme| container::Style {
+                background: Some(iced::Background::Color(ink)),
+                border: iced::Border {
+                    radius: (drawer::RADIO_DOT / 2.0).into(),
+                    ..iced::Border::default()
+                },
+                ..container::Style::default()
+            })
+            .into()
+    } else {
+        Space::new().into()
+    };
+    container(inner)
+        .width(Length::Fixed(drawer::RADIO))
+        .height(Length::Fixed(drawer::RADIO))
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .style(move |_t: &Theme| container::Style {
+            border: iced::Border {
+                color: ink,
+                width: drawer::RADIO_RIM,
+                radius: (drawer::RADIO / 2.0).into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// A drawer's level row: a mute button wearing the device's glyph, a rail
 /// and the percent.
 ///

@@ -96,6 +96,9 @@ pub enum Drawer {
     QuickActions,
     /// Every job in flight, opened from the progress cell (ADR 0065 amendment).
     Progress,
+    /// The session actions and the pending Eclipse update, opened from the
+    /// power glyph (ADR 0065 amendment, ADR 0085).
+    Power,
 }
 
 /// The keys the calendar drawer answers to.
@@ -258,6 +261,22 @@ pub enum Message {
     Power(ec_services::power_profiles::Event),
     /// The progress service's list changed: every job in flight, oldest first.
     Progress(Vec<ec_services::progress::Job>),
+    /// A power row was pressed: a destructive one asks first, the rest run.
+    PowerRow(ec_services::session::Action),
+    /// The destructive row's Cancel.
+    PowerCancel,
+    /// An update row was pressed: open its scope prompt.
+    PowerUpdate(ec_services::updates::After),
+    /// The scope prompt's radio: the scope the human picked.
+    PowerScope(ec_services::updates::Scope),
+    /// The scope prompt's Confirm, and its Cancel.
+    PowerApply,
+    PowerScopeCancel,
+    /// logind's answer to the drawer's probe, or its refusal of an action.
+    PowerAnswer(Vec<(ec_services::session::Action, ec_services::session::Availability)>),
+    PowerRefused(String),
+    /// The Eclipse update service said something: a pending count or an event.
+    Updates(ec_services::updates::Update),
     /// A quick action's tile was pressed: its index in `quick_actions`.
     QuickAction(usize),
     /// A drawer's way out: start Settings on the named pane.
@@ -427,6 +446,9 @@ pub struct App {
     /// Every job the progress service reports, oldest first. Empty means the
     /// progress cell is zero width and draws nothing.
     pub progress: Vec<ec_services::progress::Job>,
+    /// The power drawer's view: logind's answers, the pending Eclipse update and
+    /// the apply in flight. Reset whenever the drawer closes.
+    pub power_menu: crate::widgets::power::Menu,
     /// Debug previews only: when a widget fixture started. A fixture bar
     /// neither refetches nor starts services — the fixture stands in for
     /// both.
@@ -867,6 +889,7 @@ impl App {
             power: crate::widgets::battery::Power::default(),
             quick_actions: crate::widgets::quick_actions::load(),
             progress: Vec::new(),
+            power_menu: crate::widgets::power::Menu::default(),
             fixture: None,
             show_key_hints: true,
             launcher_menu,
@@ -966,9 +989,13 @@ fn preview(app: &mut App) {
         connected: 1,
     };
     app.progress = crate::preview::preview_progress(if which == "progress" { "several" } else { "none" });
+    if which == "power" {
+        crate::widgets::power::preview(&mut app.power_menu);
+    }
     app.preview = match which.as_str() {
         "network" => Some(Preview::Drawer(Drawer::Network)),
         "progress" => Some(Preview::Drawer(Drawer::Progress)),
+        "power" => Some(Preview::Drawer(Drawer::Power)),
         "bluetooth" => Some(Preview::Drawer(Drawer::Bluetooth)),
         "overflow" => Some(Preview::Drawer(Drawer::Overflow)),
         "audio" => Some(Preview::Drawer(Drawer::Audio)),
@@ -1909,6 +1936,68 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             crate::radio::actions::set_bt_powered(on);
             return reflow(app);
         }
+        // The power drawer. A fixture or a preview is the thing on screen: it
+        // answers nothing and runs nothing, so no logind call, pkexec or pacman.
+        Message::PowerRow(action) => {
+            if !app.power_menu.press(action) {
+                return reflow(app);
+            }
+            let closed = dismiss(app);
+            if !fixture_or_preview(app) {
+                crate::services::session_perform(action);
+            }
+            return closed;
+        }
+        Message::PowerCancel => {
+            app.power_menu.confirm = None;
+            return reflow(app);
+        }
+        Message::PowerUpdate(then) => {
+            if app.power_menu.can_update(then) {
+                app.power_menu.confirm = None;
+                app.power_menu.scope_for = Some(then);
+            }
+            return reflow(app);
+        }
+        Message::PowerScope(scope) => {
+            app.power_menu.scope = scope;
+            return reflow(app);
+        }
+        Message::PowerScopeCancel => {
+            app.power_menu.scope_for = None;
+            return reflow(app);
+        }
+        Message::PowerApply => {
+            let Some(then) = app.power_menu.scope_for else {
+                return Task::none();
+            };
+            if !app.power_menu.can_update(then) {
+                return reflow(app);
+            }
+            let scope = app.power_menu.scope;
+            app.power_menu.begin_apply(then);
+            if !fixture_or_preview(app) {
+                crate::services::apply_update(scope, then);
+            }
+            return reflow(app);
+        }
+        Message::PowerAnswer(_) | Message::PowerRefused(_) | Message::Updates(_)
+            if fixture_or_preview(app) =>
+        {
+            return Task::none();
+        }
+        Message::PowerAnswer(answers) => {
+            app.power_menu.set_answers(answers);
+            return reflow(app);
+        }
+        Message::PowerRefused(reason) => {
+            app.power_menu.refused = Some(reason);
+            return reflow(app);
+        }
+        Message::Updates(update) => {
+            app.power_menu.fold_update(update);
+            return reflow(app);
+        }
         Message::PowerSet(profile) => {
             app.power.ask(profile);
             crate::services::set_profile(profile);
@@ -2380,6 +2469,12 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
     Task::batch([closed, open])
 }
 
+/// A debug fixture or preview is on screen: its state is the thing being
+/// shown, and no service may be asked to act.
+fn fixture_or_preview(app: &App) -> bool {
+    app.fixture.is_some() || app.preview.is_some()
+}
+
 /// The drawer a cell's `Message::Open` names, if it is one of the reveal
 /// drawers. The tray overflow is a popup.
 fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
@@ -2391,6 +2486,7 @@ fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
         Drawer::Battery => Some(crate::drawer::DrawerKind::Battery),
         Drawer::QuickActions => Some(crate::drawer::DrawerKind::QuickActions),
         Drawer::Progress => Some(crate::drawer::DrawerKind::Progress),
+        Drawer::Power => Some(crate::drawer::DrawerKind::Power),
         Drawer::Overflow => None,
     }
 }
@@ -2406,6 +2502,7 @@ fn drawer_full(app: &App, kind: crate::drawer::DrawerKind) -> u32 {
         DrawerKind::Battery => crate::view::drawer_height(app, Drawer::Battery),
         DrawerKind::QuickActions => crate::view::drawer_height(app, Drawer::QuickActions),
         DrawerKind::Progress => crate::view::drawer_height(app, Drawer::Progress),
+        DrawerKind::Power => crate::view::drawer_height(app, Drawer::Power),
     }
 }
 
@@ -2438,7 +2535,7 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
 }
 
 /// The cells a drawer hangs from.
-const DRAWER_CELLS: [Drawer; 7] = [
+const DRAWER_CELLS: [Drawer; 8] = [
     Drawer::Network,
     Drawer::Bluetooth,
     Drawer::Audio,
@@ -2446,6 +2543,7 @@ const DRAWER_CELLS: [Drawer; 7] = [
     Drawer::Battery,
     Drawer::QuickActions,
     Drawer::Progress,
+    Drawer::Power,
 ];
 
 /// The pointer is over a cell a drawer hangs from. Its click is the toggle or
@@ -2506,6 +2604,9 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
     let now = Instant::now();
     if app.bars.get(&id).is_some_and(|b| b.drawer.is_open(kind)) {
         end_bt_scan(app);
+        if kind == crate::drawer::DrawerKind::Power {
+            app.power_menu.reset();
+        }
         return with_bar(app, id, |_, bar| close_drawer(bar, now)).unwrap_or_else(Task::none);
     }
     // Only a bar showing its pill has a cell to grow from.
@@ -2522,6 +2623,10 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
         // Always opens on today's month with today selected.
         app.calendar.reset();
         cal_range(app);
+    }
+    if kind == crate::drawer::DrawerKind::Power {
+        // logind is asked what it will do as the drawer opens, never in a draw.
+        crate::services::probe_session();
     }
     let full = drawer_full(app, kind) as f32;
     let open = with_bar(app, id, |app, bar| {
@@ -3100,6 +3205,15 @@ fn launch_pin(_id: &str) {}
 /// else — Escape, a click on bare bar, a chip's action, a popup opening.
 fn dismiss(app: &mut App) -> Task<Message> {
     end_bt_scan(app);
+    // Only a power drawer that is out closes here; resetting unconditionally
+    // would wipe a menu state that is about to be drawn as it opens.
+    if app
+        .bars
+        .values()
+        .any(|b| b.drawer.is_open(crate::drawer::DrawerKind::Power))
+    {
+        app.power_menu.reset();
+    }
     let popup = dismiss_popup(app);
     let now = Instant::now();
     let menus = each_bar(app, |_, bar| {

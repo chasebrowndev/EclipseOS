@@ -12,16 +12,29 @@
 //! Nothing starts under `cfg(test)`, and nothing starts in a preview, whose
 //! fixture stands in for all of it.
 
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::thread;
 use std::time::Duration;
 
 use ec_services::custom::Kind;
 use ec_services::power_profiles::{self, PowerActions, PowerEvents, Profile};
 use ec_services::progress::{self, Update as ProgressUpdate};
+use ec_services::session::{Action as SessionAction, Availability, Session};
+use ec_services::updates::{self, After, Scope};
 use ec_services::{audio, calendar, custom, media, usage};
 
 use crate::app::Message;
 use crate::widgets::{self, now_playing, system_usage, volume, Action, Feed, WidgetId};
+
+/// What logind answered, or refused, for the power drawer.
+#[derive(Debug, Clone)]
+pub enum SessionFeed {
+    /// Every session action's answer, from one probe.
+    Answer(Vec<(SessionAction, Availability)>),
+    /// logind or polkit refused an action the human asked for.
+    Refused(String),
+}
 
 #[derive(Default)]
 struct Handles {
@@ -35,6 +48,11 @@ struct Handles {
     /// The progress feed and its `/proc` scan (ADR 0065 amendment). Started
     /// once, scanning for the life of the bar.
     progress: Option<progress::Handle>,
+    /// The pending Eclipse update and the apply it runs (ADR 0085). Started on
+    /// the first configure, never in a preview.
+    updates: Option<updates::Handle>,
+    /// logind's answers and refusals for the power drawer, on one channel.
+    session: Option<(Sender<SessionFeed>, Receiver<SessionFeed>)>,
     /// What the monitor tap was last asked to be.
     tap: bool,
 }
@@ -130,6 +148,11 @@ pub fn configure(cfg: &widgets::Config) {
     if h.power.is_none() {
         h.power = power_profiles::spawn().ok();
     }
+    // The update watcher runs `checkupdates` (a read-only sync of a temporary
+    // database) on start and every 30 minutes. A preview never starts it.
+    if h.updates.is_none() && !previewing() {
+        h.updates = Some(updates::spawn());
+    }
     if wants_usage(cfg) {
         match h.usage.as_ref() {
             Some(u) => u.reconfigure(usage_cfg(cfg)),
@@ -193,6 +216,19 @@ pub fn drain() -> Vec<Message> {
     if let Some(p) = h.progress.as_ref() {
         while let Some(ProgressUpdate::Progress(jobs)) = p.try_recv() {
             out.push(Message::Progress(jobs));
+        }
+    }
+    if let Some(u) = h.updates.as_ref() {
+        while let Some(update) = u.try_recv() {
+            out.push(Message::Updates(update));
+        }
+    }
+    if let Some((_, rx)) = h.session.as_ref() {
+        while let Ok(feed) = rx.try_recv() {
+            out.push(match feed {
+                SessionFeed::Answer(answers) => Message::PowerAnswer(answers),
+                SessionFeed::Refused(reason) => Message::PowerRefused(reason),
+            });
         }
     }
     if let Some(u) = h.usage.as_ref() {
@@ -263,6 +299,81 @@ pub fn audio_actions() -> Option<audio::Actions> {
 /// The calendar service's actions, if it is running.
 pub fn calendar_actions() -> Option<calendar::Actions> {
     handles().calendar.as_ref().map(calendar::Handle::actions)
+}
+
+/// A debug preview's fixture stands in for the services. Nothing that reaches
+/// logind, pkexec or pacman starts or acts while one is on screen.
+fn previewing() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("HYPERION_PREVIEW").is_some()
+}
+
+/// The power drawer's session channel's sender, created on first use.
+fn session_sender() -> Sender<SessionFeed> {
+    handles().session.get_or_insert_with(mpsc::channel).0.clone()
+}
+
+/// Ask logind what the power drawer may offer, on a thread: a `Can*` query can
+/// wait on polkit. The answers come back through [`drain`]. With no system bus
+/// every action is refused, which is the fail-closed reading.
+pub fn probe_session() {
+    if previewing() {
+        return;
+    }
+    let tx = session_sender();
+    let spawned = thread::Builder::new()
+        .name("eclipse-session-probe".into())
+        .spawn(move || {
+            let actions = [
+                SessionAction::Lock,
+                SessionAction::LogOut,
+                SessionAction::Suspend,
+                SessionAction::Reboot,
+                SessionAction::PowerOff,
+            ];
+            let answers = match Session::connect() {
+                Ok(session) => actions.map(|a| (a, session.availability(a))).to_vec(),
+                Err(_) => actions.map(|a| (a, Availability::No)).to_vec(),
+            };
+            let _ = tx.send(SessionFeed::Answer(answers));
+        });
+    if let Err(e) = spawned {
+        eprintln!("eclipse-session-probe: not started: {e}");
+    }
+}
+
+/// Ask logind to do a session action the human confirmed. Runs on a thread, since
+/// a polkit prompt can hold the call open; a refusal comes back through
+/// [`drain`] so the drawer can say so.
+pub fn session_perform(action: SessionAction) {
+    if previewing() {
+        return;
+    }
+    let tx = session_sender();
+    let spawned = thread::Builder::new()
+        .name("eclipse-session".into())
+        .spawn(move || {
+            let outcome = Session::connect()
+                .map_err(|e| e.to_string())
+                .and_then(|session| session.perform(action, true).map_err(|e| e.to_string()));
+            if let Err(reason) = outcome {
+                let _ = tx.send(SessionFeed::Refused(reason));
+            }
+        });
+    if let Err(e) = spawned {
+        eprintln!("eclipse-session: not started: {e}");
+    }
+}
+
+/// Start the Eclipse update the scope prompt confirmed. The answer, whether a
+/// refusal or the upgrade's own outcome, comes back through [`drain`]. Only the
+/// backend runs pacman, and it powers the machine off only on success (ADR 0085).
+pub fn apply_update(scope: Scope, then: After) {
+    if previewing() {
+        return;
+    }
+    if let Some(u) = handles().updates.as_ref() {
+        u.apply(scope, then);
+    }
 }
 
 /// Ask the power-profiles daemon for a profile. Returns at once; the answer

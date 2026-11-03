@@ -246,3 +246,49 @@ with no job, or only determinate jobs, wakes nothing for progress.
 rather than turning it off while the cell is hidden. The scanner already
 slow-polls at five seconds while nothing runs, and `ec-ctl progress` should find
 a live feed whether or not a job is in flight.
+
+## Amendment (2026-11-03): the power widget
+
+The bar gains a built-in widget, `power`, default-ordered between `progress` and
+`clock`, so it sits at the far right of the strip. Its cell is one understated
+glyph (the system-shutdown mark, in the secondary ink), always present, and
+clicking it opens `Drawer::Power`, a reveal drawer like the others.
+
+**The rows.** Lock, Log out, Suspend, Reboot and Power off, each greyed by what
+logind answers for it (`ec_services::session`'s `Availability`): an action it
+offers is live, a Challenge is live with a note that polkit asks first, and a No
+is greyed with "not permitted". Log out, Reboot and Power off are destructive and
+need a second click: the row becomes "Confirm …" with a Cancel beside it. A
+confirmation, and an open scope prompt, are forgotten when the drawer closes, so
+a reopened drawer starts from its rows. Lock and Suspend are one press.
+
+**The update rows.** Below a hairline, and only while `ec_services::updates`
+reports a pending Eclipse package, sit "Update & reboot" and "Update & power
+off" (ADR 0085). Each is offered only when its power action is offered too, since
+the power action follows a successful upgrade. Choosing one opens a scope prompt
+in the drawer: two radio options, "Eclipse and dependencies only (K packages)"
+and "All packages (N)", with the counts from the pending update, then Confirm and
+Cancel. Confirm hands the scope and the power action to `updates::apply`; the
+widget never runs pacman, and it never calls a power action except for a machine
+row the human confirmed.
+
+**The apply.** While it runs the power rows wait, and the chosen update row shows
+a spinner and "see progress", pointing at the progress cell, where the backend
+reports the job `eclipse-update`. A refusal or a failure is shown inline in danger
+ink and the rows come back. A success shows the restart the backend requested.
+
+**The accent.** None. Availability is grey, the pending update is plain ink, and
+the spinner is neutral. The strip's one yellow stays where it was.
+
+**The services.** The update watcher is hosted with the other widget services
+and started on the first configure. It runs `checkupdates` on start, every 30
+minutes and never in a loop. The logind probe runs on a thread when the drawer
+opens, and a session action runs on a thread when the human confirms it; a
+refusal comes back as a line in the drawer. Nothing is polled from the draw. A
+debug preview (`HYPERION_PREVIEW=power`, with `HYPERION_PREVIEW_POWER` and
+`HYPERION_PREVIEW_SESSION`) starts none of these and its messages reach no
+service, so no fixture can reach logind, pkexec or pacman.
+
+**The config.** `power` is a built-in id of `bar.widgets.order` and is accepted
+by the compositor's validator and by `ec-ctl config migrate`'s default order
+(`docs/CONFIG.md` regenerated from the schema).
