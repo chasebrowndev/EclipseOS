@@ -351,6 +351,9 @@ pub fn apply(state: &mut AbyssState, next: Addons) {
             crate::backend::damage_all(state);
         }
     }
+    if turned_off(Hook::ClientStrips) {
+        crate::ipc::clear_all_client_strips(state);
+    }
     if before.is_on(Hook::TransitionShaders) != now.is_on(Hook::TransitionShaders) {
         crate::config::transitions::sync(state);
     }
@@ -508,6 +511,10 @@ mod tests {
                     "eclipseos-transitions.kdl",
                     "id \"eclipseos-transitions\"\nname \"Transitions\"\nhooks \"transition-shaders\"\n",
                 ),
+                (
+                    "firefox-glass.kdl",
+                    "id \"firefox-glass\"\nname \"Glass\"\nhooks \"client-strips\"\n",
+                ),
             ],
         );
         let a = Addons::load_from(&d);
@@ -521,7 +528,8 @@ mod tests {
                 "region-select",
                 "taskbar-widgets",
                 "agents",
-                "transition-shaders"
+                "transition-shaders",
+                "client-strips"
             ]
         );
         // Sorted file order.

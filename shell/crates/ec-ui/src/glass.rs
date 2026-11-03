@@ -1,0 +1,884 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Compositor-drawn glass panes (`eclipse_glass_v1`, COMP-02 section 9).
+//!
+//! A cell's ground (the blurred, bent backdrop, the lit hairline, the seam)
+//! is drawn by the compositor, under the client's surface, in step with its
+//! commits. The client draws only the cell's content. This module is the
+//! client half: it binds the protocol, collects the panes a frame draws and
+//! sends them just before the frame is presented.
+//!
+//! Fail-soft by construction. With no `eclipse_glass_manager_v1` global (a
+//! non-abyss host, a client the compositor did not allowlist, a blur mode
+//! other than glass) [`available`] is `false`, [`push`] does nothing and the
+//! view draws its own ground exactly as it always has.
+//!
+//! Wiring, once per process, before the application runs:
+//!
+//! ```ignore
+//! let conn = ec_ui::glass::bootstrap();            // Option<wayland Connection>
+//! iced_layershell::set_surface_hook(ec_ui::glass::surface_created);
+//! // ... Settings { with_connection: conn.map(Into::into), .. }
+//! ```
+//!
+//! In a view, wrap the window's root once and have every cell push its pane
+//! while it draws:
+//!
+//! ```ignore
+//! ec_ui::glass::root(id, content)                  // root widget, per window id
+//! if ec_ui::glass::available() { ec_ui::glass::push(Pane::new(bounds, r, tone).status(s)); }
+//! ```
+//!
+//! `bounds` are in surface-local logical pixels, which is what a widget's
+//! `layout.bounds()` is for a root-level cell (no scroll offset).
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use ec_protocols::glass::client::eclipse_glass_manager_v1::{self, EclipseGlassManagerV1};
+use ec_protocols::glass::client::eclipse_glass_surface_v1::{self, EclipseGlassSurfaceV1};
+use iced::advanced::layout::{self, Layout};
+use iced::advanced::overlay;
+use iced::advanced::renderer;
+use iced::advanced::widget::{tree, Operation, Tree, Widget};
+use iced::advanced::{Clipboard, Shell};
+use iced::widget::button;
+use iced::{mouse, window, Element, Event, Length, Rectangle, Size, Theme, Vector};
+use wayland_client::globals::{registry_queue_init, GlobalListContents};
+use wayland_client::protocol::{wl_registry, wl_surface::WlSurface};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle};
+
+use crate::theme::CellTone;
+
+/// Bytes in one pane record: nine native-endian 32-bit fields.
+pub const RECORD_BYTES: usize = 36;
+/// Most panes one `set_panes` may carry.
+pub const MAX_PANES: usize = 64;
+
+/// State bit: the pointer is over the pane.
+pub const HOVERED: u32 = 1;
+/// State bit: the pane is being pressed.
+pub const PRESSED: u32 = 2;
+
+/// One glass pane: a rounded box in surface-local logical pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pane {
+    pub rect: Rectangle,
+    /// Corner radius, logical px.
+    pub radius: f32,
+    /// Bezel width, logical px; 0 is the compositor's default.
+    pub bezel: f32,
+    pub tone: CellTone,
+    /// [`HOVERED`] | [`PRESSED`].
+    pub state: u32,
+    /// Ground opacity, 0..=255.
+    pub alpha: u8,
+}
+
+impl Pane {
+    /// A pane at rest with the default bezel and a fully opaque ground.
+    pub fn new(rect: Rectangle, radius: f32, tone: CellTone) -> Self {
+        Self {
+            rect,
+            radius,
+            bezel: 0.0,
+            tone,
+            state: 0,
+            alpha: 255,
+        }
+    }
+
+    /// The state bits of a button's status.
+    pub fn status(mut self, status: button::Status) -> Self {
+        self.state = match status {
+            button::Status::Hovered => HOVERED,
+            button::Status::Pressed => HOVERED | PRESSED,
+            _ => 0,
+        };
+        self
+    }
+
+    pub fn bezel(mut self, bezel: f32) -> Self {
+        self.bezel = bezel;
+        self
+    }
+
+    pub fn alpha(mut self, alpha: u8) -> Self {
+        self.alpha = alpha;
+        self
+    }
+}
+
+fn tone_code(tone: CellTone) -> u32 {
+    match tone {
+        CellTone::Plain => 0,
+        CellTone::Focused => 1,
+        CellTone::Away => 2,
+        CellTone::Latent => 3,
+    }
+}
+
+/// The panes of one frame, already packed for `set_panes`.
+#[derive(Debug, Default)]
+pub struct GlassPanes {
+    bytes: Vec<u8>,
+    /// Panes refused for want of room this frame.
+    dropped: usize,
+}
+
+impl GlassPanes {
+    pub fn clear(&mut self) {
+        self.bytes.clear();
+        self.dropped = 0;
+    }
+
+    /// Panes past [`MAX_PANES`] that this frame could not carry.
+    pub fn dropped(&self) -> usize {
+        self.dropped
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes.len() / RECORD_BYTES
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+
+    /// The packed records.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// Append `pane`. An empty or non-finite box, or the 65th pane, is
+    /// dropped; the compositor would reject it as a protocol error.
+    pub fn push(&mut self, pane: &Pane) {
+        if self.len() >= MAX_PANES {
+            self.dropped += 1;
+            return;
+        }
+        let r = pane.rect;
+        if ![r.x, r.y, r.width, r.height, pane.radius, pane.bezel]
+            .iter()
+            .all(|v| v.is_finite())
+        {
+            return;
+        }
+        let (w, h) = (r.width.round() as i32, r.height.round() as i32);
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let fields: [[u8; 4]; 9] = [
+            (r.x.round() as i32).to_ne_bytes(),
+            (r.y.round() as i32).to_ne_bytes(),
+            w.to_ne_bytes(),
+            h.to_ne_bytes(),
+            (pane.radius.round().max(0.0) as u32).to_ne_bytes(),
+            (pane.bezel.round().max(0.0) as u32).to_ne_bytes(),
+            tone_code(pane.tone).to_ne_bytes(),
+            (pane.state & (HOVERED | PRESSED)).to_ne_bytes(),
+            u32::from(pane.alpha).to_ne_bytes(),
+        ];
+        for f in fields {
+            self.bytes.extend_from_slice(&f);
+        }
+    }
+}
+
+// ---- protocol state ------------------------------------------------------
+
+static AVAILABLE: AtomicBool = AtomicBool::new(false);
+
+/// Whether the compositor is drawing glass panes right now. Draw code reads
+/// this to decide whether to paint its own ground.
+pub fn available() -> bool {
+    AVAILABLE.load(Ordering::Relaxed)
+}
+
+struct Dispatcher;
+
+impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Dispatcher {
+    fn event(
+        _: &mut Self,
+        _: &wl_registry::WlRegistry,
+        _: wl_registry::Event,
+        _: &GlobalListContents,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<EclipseGlassManagerV1, ()> for Dispatcher {
+    fn event(
+        _: &mut Self,
+        _: &EclipseGlassManagerV1,
+        event: eclipse_glass_manager_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let eclipse_glass_manager_v1::Event::Capability { available } = event {
+            AVAILABLE.store(available != 0, Ordering::Relaxed);
+        }
+    }
+}
+
+impl Dispatch<EclipseGlassSurfaceV1, ()> for Dispatcher {
+    fn event(
+        _: &mut Self,
+        _: &EclipseGlassSurfaceV1,
+        _: eclipse_glass_surface_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+struct Entry {
+    glass: EclipseGlassSurfaceV1,
+    /// What was last sent, so an unchanged frame sends nothing.
+    last: Vec<u8>,
+}
+
+struct Shared {
+    /// Keeps a foreign (winit) display's wrapper alive for the queue below.
+    #[allow(dead_code)]
+    conn: Option<Connection>,
+    queue: EventQueue<Dispatcher>,
+    manager: Option<EclipseGlassManagerV1>,
+    surfaces: HashMap<window::Id, Entry>,
+}
+
+thread_local! {
+    // The event loop, the hook and every draw run on one thread.
+    static SHARED: RefCell<Option<Shared>> = const { RefCell::new(None) };
+    static FRAME: RefCell<GlassPanes> = RefCell::new(GlassPanes::default());
+    // Visible bounds (surface-local) of the scroll region being drawn, if any.
+    static CLIP: std::cell::Cell<Option<Rectangle>> = const { std::cell::Cell::new(None) };
+}
+
+/// Where a pane drawn inside a scroll region lands on the surface.
+///
+/// iced's scrollable draws its content translated by the scroll offset and
+/// hands the content a viewport of `visible + offset`, so
+/// `viewport.position - clip.position` is the offset. The pane moves by it
+/// and is cut to `clip` (the scrollable's visible bounds); `None` when
+/// nothing of it shows. A cut edge keeps its corner radius, so a half-shown
+/// card has a rounded cut: accepted.
+pub fn scrolled(rect: Rectangle, viewport: &Rectangle, clip: &Rectangle) -> Option<Rectangle> {
+    let off = Vector::new(viewport.x - clip.x, viewport.y - clip.y);
+    let moved = Rectangle {
+        x: rect.x - off.x,
+        y: rect.y - off.y,
+        ..rect
+    };
+    moved.intersection(clip)
+}
+
+/// [`push`] for a pane whose `rect` is in the coordinates its widget was laid
+/// out in, drawn with `viewport`. Outside a [`scroll_region`] that is
+/// surface-local already and the pane is pushed as is.
+pub fn push_in(mut pane: Pane, viewport: &Rectangle) {
+    if let Some(clip) = CLIP.with(|c| c.get()) {
+        match scrolled(pane.rect, viewport, &clip) {
+            Some(r) => pane.rect = r,
+            None => return,
+        }
+    }
+    push(pane);
+}
+
+/// Connect to the compositor, bind `eclipse_glass_manager_v1` if it is
+/// offered to this client, and return the connection for the layer-shell
+/// runtime to share (`Settings::with_connection`). `None` means no
+/// connection could be made; the caller then runs with its own, unchanged.
+///
+/// Call on the thread that runs the event loop, before it starts.
+pub fn bootstrap() -> Option<Connection> {
+    let conn = Connection::connect_to_env().ok()?;
+    let (globals, mut queue) = registry_queue_init::<Dispatcher>(&conn).ok()?;
+    let qh = queue.handle();
+    let manager = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=1, ()).ok();
+    if manager.is_some() {
+        // The capability event rides the bind: take it before the first frame.
+        let _ = queue.roundtrip(&mut Dispatcher);
+    }
+    SHARED.with(|s| {
+        *s.borrow_mut() = Some(Shared {
+            conn: None,
+            queue,
+            manager,
+            surfaces: HashMap::new(),
+        });
+    });
+    Some(conn)
+}
+
+/// One-line layer-shell setup: [`bootstrap`] plus the surface hook.
+/// Pass `iced_layershell::set_surface_hook`; hand the result to
+/// `Settings { with_connection: conn.map(Into::into), .. }`. Fail-soft.
+pub fn setup(set_hook: fn(fn(window::Id, &WlSurface))) -> Option<Connection> {
+    let conn = bootstrap();
+    set_hook(surface_created);
+    conn
+}
+
+/// The `iced_layershell::set_surface_hook` callback: a window's layer surface
+/// now exists, so it gets its glass object.
+pub fn surface_created(id: window::Id, surface: &WlSurface) {
+    SHARED.with(|s| {
+        let mut s = s.borrow_mut();
+        let Some(sh) = s.as_mut() else { return };
+        let Some(manager) = sh.manager.as_ref() else {
+            return;
+        };
+        let glass = manager.get_glass(surface, &sh.queue.handle(), ());
+        sh.surfaces.insert(
+            id,
+            Entry {
+                glass,
+                last: Vec::new(),
+            },
+        );
+    });
+}
+
+/// Add a pane to the frame being drawn. A no-op while glass is unavailable.
+pub fn push(pane: Pane) {
+    if !available() {
+        return;
+    }
+    FRAME.with(|f| f.borrow_mut().push(&pane));
+}
+
+fn begin() {
+    FRAME.with(|f| f.borrow_mut().clear());
+}
+
+/// Send the frame's panes for `id` if they changed. Runs in draw, ahead of
+/// the present that commits the surface, so the compositor latches panes and
+/// buffer together.
+fn finish(id: Option<window::Id>) {
+    SHARED.with(|s| {
+        let mut s = s.borrow_mut();
+        let Some(sh) = s.as_mut() else { return };
+        // Pick up capability changes the shared connection delivered.
+        let _ = sh.queue.dispatch_pending(&mut Dispatcher);
+        // `None`: a single-window app, whose view is not told its id.
+        let key = match id {
+            Some(id) => id,
+            None if sh.surfaces.len() == 1 => *sh.surfaces.keys().next().unwrap(),
+            None => return,
+        };
+        let Some(entry) = sh.surfaces.get_mut(&key) else {
+            return;
+        };
+        FRAME.with(|f| {
+            let f = f.borrow();
+            if entry.last == f.as_bytes() {
+                return;
+            }
+            if f.dropped() > 0 {
+                eprintln!(
+                    "ec-ui glass: {} pane(s) past the {MAX_PANES} cap dropped (the last drawn)",
+                    f.dropped()
+                );
+            }
+            entry.last.clear();
+            entry.last.extend_from_slice(f.as_bytes());
+            entry.glass.set_panes(f.as_bytes().to_vec());
+        });
+        // A foreign (xdg) display is flushed by winit at present; the
+        // layer-shell runtime flushes its own. This is belt and braces.
+        if let Some(c) = sh.conn.as_ref() {
+            let _ = c.flush();
+        }
+    });
+}
+
+// ---- xdg windows (plain iced, no iced_layershell) -------------------------
+
+static XDG_DONE: AtomicBool = AtomicBool::new(false);
+
+/// For a plain iced window (`ec-settings`): a subscription that yields the
+/// window id until [`attach_window`] has run once. Map it to a message and
+/// answer that message with `attach_window(id)`:
+///
+/// ```ignore
+/// subs.push(ec_ui::glass::xdg_window().map(Message::GlassWindow));
+/// Message::GlassWindow(id) => ec_ui::glass::attach_window(id).map(|_| Message::GlassReady),
+/// Message::GlassReady => Task::none(), // any update makes iced redraw
+/// ```
+pub fn xdg_window() -> iced::Subscription<window::Id> {
+    iced::event::listen_with(|_event, _status, id| (!XDG_DONE.load(Ordering::Relaxed)).then_some(id))
+}
+
+/// Bind the glass manager for window `id` through its raw `wl_display` and
+/// `wl_surface`, on a private queue of winit's own connection. Fail-soft:
+/// any failure (not Wayland, no global, not allowlisted) leaves
+/// [`available`] false. The result is `true` once glass is on. The first
+/// frame is drawn before this runs, so panes land one frame late: the task's
+/// answer message makes iced redraw, and that frame carries them.
+pub fn attach_window(id: window::Id) -> iced::Task<bool> {
+    if XDG_DONE.swap(true, Ordering::Relaxed) {
+        return iced::Task::none();
+    }
+    iced::window::run(id, move |w| attach_raw(id, w))
+}
+
+fn attach_raw(id: window::Id, w: &dyn window::Window) -> bool {
+    use raw_window_handle::{RawDisplayHandle, RawWindowHandle};
+    let (Ok(d), Ok(s)) = (w.display_handle(), w.window_handle()) else {
+        return false;
+    };
+    let (RawDisplayHandle::Wayland(d), RawWindowHandle::Wayland(s)) = (d.as_raw(), s.as_raw()) else {
+        return false;
+    };
+    // SAFETY: both pointers come from winit through raw-window-handle for this
+    // process's own window and are live while `run`'s closure executes; the
+    // display outlives the window. The interface check in `from_ptr` rejects
+    // a pointer that is not a wl_surface.
+    let (conn, surface) = unsafe {
+        let backend = wayland_backend::client::Backend::from_foreign_display(d.display.as_ptr().cast());
+        let conn = Connection::from_backend(backend);
+        let Ok(oid) =
+            wayland_backend::client::ObjectId::from_ptr(WlSurface::interface(), s.surface.as_ptr().cast())
+        else {
+            return false;
+        };
+        let Ok(surface) = WlSurface::from_id(&conn, oid) else {
+            return false;
+        };
+        (conn, surface)
+    };
+    let Ok((globals, queue)) = registry_queue_init::<Dispatcher>(&conn) else {
+        return false;
+    };
+    let qh = queue.handle();
+    let Ok(manager) = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=1, ()) else {
+        return false;
+    };
+    let mut queue = queue;
+    let _ = queue.roundtrip(&mut Dispatcher);
+    let glass = manager.get_glass(&surface, &qh, ());
+    let mut surfaces = HashMap::new();
+    surfaces.insert(
+        id,
+        Entry {
+            glass,
+            last: Vec::new(),
+        },
+    );
+    SHARED.with(|sh| {
+        *sh.borrow_mut() = Some(Shared {
+            conn: Some(conn),
+            queue,
+            manager: Some(manager),
+            surfaces,
+        });
+    });
+    available()
+}
+
+// ---- the root widget -----------------------------------------------------
+
+/// Wrap a window's root element: clears the frame before the content draws
+/// and sends what the content pushed once it has.
+pub fn root<'a, Message>(
+    id: window::Id,
+    content: impl Into<Element<'a, Message, Theme>>,
+) -> Root<'a, Message> {
+    Root {
+        id: Some(id),
+        content: content.into(),
+    }
+}
+
+/// [`root`] for a single-window app whose `view` is not given its window id
+/// (`iced::application`, `iced_layershell` `application`): the app's only
+/// glass surface is the one meant.
+pub fn root_sole<'a, Message>(content: impl Into<Element<'a, Message, Theme>>) -> Root<'a, Message> {
+    Root {
+        id: None,
+        content: content.into(),
+    }
+}
+
+/// See [`root`].
+pub struct Root<'a, Message> {
+    id: Option<window::Id>,
+    content: Element<'a, Message, Theme>,
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for Root<'_, Message> {
+    fn tag(&self) -> tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        begin();
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        finish(self.id);
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+/// Wrap a `scrollable` so panes drawn inside it are placed by its scroll
+/// offset and cut to its visible bounds ([`push_in`]). One level: a scroll
+/// region inside another is not supported.
+pub fn scroll_region<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    Element::new(ScrollRegion {
+        content: content.into(),
+    })
+}
+
+struct ScrollRegion<'a, Message> {
+    content: Element<'a, Message, Theme>,
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for ScrollRegion<'_, Message> {
+    fn tag(&self) -> tree::Tag {
+        self.content.as_widget().tag()
+    }
+
+    fn state(&self) -> tree::State {
+        self.content.as_widget().state()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        self.content.as_widget().children()
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        self.content.as_widget().diff(tree);
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn size_hint(&self) -> Size<Length> {
+        self.content.as_widget().size_hint()
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        self.content.as_widget_mut().layout(tree, renderer, limits)
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content
+            .as_widget_mut()
+            .operate(tree, layout, renderer, operation);
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        self.content
+            .as_widget_mut()
+            .update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content
+            .as_widget()
+            .mouse_interaction(tree, layout, cursor, viewport, renderer)
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        // The scrollable's own visible bounds (its draw does the same).
+        let prev = CLIP.with(|c| c.replace(layout.bounds().intersection(viewport)));
+        self.content
+            .as_widget()
+            .draw(tree, renderer, theme, style, layout, cursor, viewport);
+        CLIP.with(|c| c.set(prev));
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        self.content
+            .as_widget_mut()
+            .overlay(tree, layout, renderer, viewport, translation)
+    }
+}
+
+impl<'a, Message: 'a> From<Root<'a, Message>> for Element<'a, Message, Theme> {
+    fn from(root: Root<'a, Message>) -> Self {
+        Element::new(root)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn u32_at(b: &[u8], i: usize) -> u32 {
+        u32::from_ne_bytes(b[i * 4..i * 4 + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn a_record_is_nine_fields_in_protocol_order() {
+        let mut p = GlassPanes::default();
+        let pane = Pane::new(
+            Rectangle::new(iced::Point::new(-3.0, 4.4), Size::new(100.4, 28.0)),
+            14.0,
+            CellTone::Away,
+        )
+        .bezel(2.0)
+        .alpha(200)
+        .status(button::Status::Pressed);
+        p.push(&pane);
+        let b = p.as_bytes();
+        assert_eq!(b.len(), RECORD_BYTES);
+        assert_eq!(i32::from_ne_bytes(b[0..4].try_into().unwrap()), -3);
+        assert_eq!(u32_at(b, 1), 4);
+        assert_eq!(u32_at(b, 2), 100);
+        assert_eq!(u32_at(b, 3), 28);
+        assert_eq!(u32_at(b, 4), 14);
+        assert_eq!(u32_at(b, 5), 2);
+        assert_eq!(u32_at(b, 6), 2);
+        assert_eq!(u32_at(b, 7), HOVERED | PRESSED);
+        assert_eq!(u32_at(b, 8), 200);
+    }
+
+    #[test]
+    fn tones_follow_the_protocol_enum() {
+        assert_eq!(
+            [
+                CellTone::Plain,
+                CellTone::Focused,
+                CellTone::Away,
+                CellTone::Latent
+            ]
+            .map(tone_code),
+            [0, 1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn status_sets_state_bits() {
+        let r = Rectangle::new(iced::Point::ORIGIN, Size::new(1.0, 1.0));
+        let s = |st| Pane::new(r, 0.0, CellTone::Plain).status(st).state;
+        assert_eq!(s(button::Status::Active), 0);
+        assert_eq!(s(button::Status::Hovered), HOVERED);
+        assert_eq!(s(button::Status::Pressed), HOVERED | PRESSED);
+    }
+
+    #[test]
+    fn the_collector_caps_at_sixty_four_and_drops_empty_boxes() {
+        let mut p = GlassPanes::default();
+        let ok = Pane::new(
+            Rectangle::new(iced::Point::ORIGIN, Size::new(10.0, 10.0)),
+            4.0,
+            CellTone::Plain,
+        );
+        for _ in 0..80 {
+            p.push(&ok);
+        }
+        assert_eq!(p.len(), MAX_PANES);
+        assert_eq!(p.as_bytes().len(), MAX_PANES * RECORD_BYTES);
+        assert_eq!(p.dropped(), 80 - MAX_PANES);
+        let mut q = GlassPanes::default();
+        q.push(&Pane {
+            rect: Rectangle::new(iced::Point::ORIGIN, Size::new(0.0, 10.0)),
+            ..ok
+        });
+        q.push(&Pane {
+            rect: Rectangle::new(iced::Point::ORIGIN, Size::new(-5.0, 10.0)),
+            ..ok
+        });
+        q.push(&Pane {
+            radius: f32::NAN,
+            ..ok
+        });
+        assert!(q.is_empty());
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rectangle {
+        Rectangle::new(iced::Point::new(x, y), Size::new(w, h))
+    }
+
+    #[test]
+    fn scrolling_moves_a_pane_up_by_the_offset() {
+        let clip = rect(200.0, 50.0, 400.0, 300.0);
+        // 120 px scrolled: the content viewport starts 120 below the clip.
+        let vp = rect(200.0, 170.0, 400.0, 300.0);
+        let got = scrolled(rect(210.0, 250.0, 100.0, 40.0), &vp, &clip).unwrap();
+        assert_eq!(got, rect(210.0, 130.0, 100.0, 40.0));
+    }
+
+    #[test]
+    fn unscrolled_is_identity_inside_the_clip() {
+        let clip = rect(200.0, 50.0, 400.0, 300.0);
+        let r = rect(210.0, 60.0, 100.0, 40.0);
+        assert_eq!(scrolled(r, &clip, &clip), Some(r));
+    }
+
+    #[test]
+    fn a_pane_is_cut_to_the_visible_bounds_and_dropped_outside() {
+        let clip = rect(200.0, 50.0, 400.0, 300.0);
+        let vp = rect(200.0, 170.0, 400.0, 300.0);
+        // Straddles the top edge: on screen y = 30..70, visible 50..70.
+        let top = scrolled(rect(210.0, 150.0, 100.0, 40.0), &vp, &clip).unwrap();
+        assert_eq!(top, rect(210.0, 50.0, 100.0, 20.0));
+        // Straddles the bottom edge: on screen y = 330..370, visible 330..350.
+        let bot = scrolled(rect(210.0, 450.0, 100.0, 40.0), &vp, &clip).unwrap();
+        assert_eq!(bot, rect(210.0, 330.0, 100.0, 20.0));
+        // Wholly above and wholly below.
+        assert_eq!(scrolled(rect(210.0, 100.0, 100.0, 40.0), &vp, &clip), None);
+        assert_eq!(scrolled(rect(210.0, 600.0, 100.0, 40.0), &vp, &clip), None);
+    }
+
+    #[test]
+    fn clear_keeps_the_buffer() {
+        let mut p = GlassPanes::default();
+        let ok = Pane::new(
+            Rectangle::new(iced::Point::ORIGIN, Size::new(10.0, 10.0)),
+            4.0,
+            CellTone::Plain,
+        );
+        p.push(&ok);
+        let cap = p.bytes.capacity();
+        p.clear();
+        assert!(p.is_empty());
+        assert_eq!(p.bytes.capacity(), cap);
+    }
+}

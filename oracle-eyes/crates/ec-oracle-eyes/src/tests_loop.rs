@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::answer::{Ask, Confidence, Reply};
+use crate::answer::{Answer, Ask, Confidence, Input, Reply};
 use crate::beacon::{Beacon, Eye};
 use crate::choice::Choice;
 use crate::config::Config;
@@ -22,7 +22,7 @@ use crate::daemon::{Daemon, Shown};
 use crate::fault::{is_busy, Failure, Fault};
 use crate::frame::{Frame, Region};
 use crate::hud::Control;
-use crate::ocr::{Line, Ocr, Word};
+use crate::ocr::{Ocr, Word};
 use crate::pipeline::{Grab, Pipeline};
 
 const OUT: Region = Region {
@@ -100,33 +100,47 @@ struct Asked {
 #[derive(Clone, Default)]
 struct FakeAsk(Arc<Mutex<Asked>>);
 
+/// The option list a focus line belongs to: the first option at or below
+/// the focus line, else the last one above it. A question's stem sits just
+/// above its own list, so this is that question's list.
+fn group_near(options: &[Choice], focus: &[usize]) -> Option<usize> {
+    let first = focus.iter().copied().min();
+    let f = first?;
+    options
+        .iter()
+        .filter(|o| o.line >= f)
+        .min_by_key(|o| o.line)
+        .or_else(|| options.iter().filter(|o| o.line < f).max_by_key(|o| o.line))
+        .map(|o| o.group)
+}
+
 impl Ask for FakeAsk {
-    fn ask(
-        &self,
-        lines: &[Line],
-        options: &[Choice],
-        cancel: &AtomicBool,
-    ) -> Result<Reply, Failure> {
+    fn ask(&self, input: &Input, cancel: &AtomicBool) -> Result<Reply, Failure> {
         let says = {
             let mut a = self.0.lock().unwrap();
             a.prompts
-                .push(lines.iter().map(|l| l.text.clone()).collect());
+                .push(input.lines.iter().map(|l| l.text.clone()).collect());
             a.script.pop_front().unwrap_or(Says::Answer)
         };
-        let mut reply = Reply {
+        let lines = &input.lines;
+        let options = &input.options;
+        let answer = |focus: Vec<usize>, choice: Option<String>| Answer {
+            group: choice.as_ref().and_then(|_| group_near(options, &focus)),
             headline: "Jupiter".into(),
             detail: "The largest planet.".into(),
-            focus: lines.first().map(|l| vec![l.id]).unwrap_or_default(),
-            choice: options.get(1).map(|o| o.label.clone()),
+            focus,
+            choices: choice.into_iter().collect(),
             confidence: Some(Confidence::High),
         };
+        let default_focus = lines.first().map(|l| vec![l.id]).unwrap_or_default();
+        let default_choice = options.get(1).map(|o| o.label.clone());
         match says {
-            Says::Answer => Ok(reply),
-            Says::Picks(focus, choice) => {
-                reply.focus = focus.to_vec();
-                reply.choice = Some(choice.into());
-                Ok(reply)
-            }
+            Says::Answer => Ok(Reply {
+                answers: vec![answer(default_focus, default_choice)],
+            }),
+            Says::Picks(focus, choice) => Ok(Reply {
+                answers: vec![answer(focus.to_vec(), Some(choice.into()))],
+            }),
             Says::Fail(e) => {
                 let fault = if is_busy(e) {
                     Fault::Busy
@@ -144,7 +158,9 @@ impl Ask for FakeAsk {
                     }
                     std::thread::sleep(Duration::from_millis(2));
                 }
-                Ok(reply)
+                Ok(Reply {
+                    answers: vec![answer(default_focus, default_choice)],
+                })
             }
         }
     }
@@ -340,7 +356,7 @@ fn a_select_answer_brackets_the_question_and_marks_the_pick() {
     r.step(10);
     let c = r.ctl.creates()[0].clone();
     assert_eq!(c["title"], "Jupiter");
-    assert_eq!(c["pick"]["label"], "B");
+    assert_eq!(c["picks"][0]["label"], "B");
     // Stem through D), padded: inside the selection, not the whole of it.
     let (y, h) = (c["y"].as_i64().unwrap(), c["h"].as_i64().unwrap());
     assert!((90..100).contains(&y), "anchor top {y}");
@@ -649,7 +665,7 @@ fn bracket_of(screen: Vec<Word>, says: Says) -> (Edges, Option<(String, i64)>, R
     let c = r.ctl.creates()[0].clone();
     let n = |k: &str| c[k].as_i64().unwrap();
     let b = (n("x"), n("y"), n("x") + n("w"), n("y") + n("h"));
-    let pick = c.get("pick").map(|p| {
+    let pick = c["picks"].get(0).map(|p| {
         let (px, py, pw, ph) = (
             p["x"].as_i64().unwrap(),
             p["y"].as_i64().unwrap(),
@@ -848,7 +864,7 @@ fn options_that_wrap_to_the_margin_are_whole_options() {
     let (b, pick, r) = bracket_of(live(WRAPPED), Says::Picks(&[1], "C"));
     encloses(b, WRAPPED);
     assert_eq!(pick, Some(("C".into(), 175)));
-    let c = r.ctl.creates()[0]["pick"].clone();
+    let c = r.ctl.creates()[0]["picks"][0].clone();
     assert_eq!(
         c["h"],
         225 + 14 - 175,
@@ -1097,7 +1113,7 @@ fn a_selection_edge_through_a_line_drops_the_sliver() {
     let asked = r.ask.0.lock().unwrap().prompts[0].clone();
     assert_eq!(asked[0], "Which planet is the largest in our solar system?");
     let c = r.ctl.creates()[0].clone();
-    assert_eq!(c["pick"]["y"], 150);
+    assert_eq!(c["picks"][0]["y"], 150);
     assert!(
         c["y"].as_i64().unwrap() > 90,
         "the bracket starts at the question"

@@ -186,9 +186,9 @@ dependencies = [
 
 [[package]]
 name = "async-executor"
-version = "1.14.0"
+version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c96bf972d85afc50bf5ab8fe2d54d1586b4e0b46c97c50a0c9e71e2f7bcd812a"
+checksum = "f426a31126c735126297bc5ea7a521263c9faff4f63ca415267ee625651c4f37"
 dependencies = [
  "async-task",
  "concurrent-queue",
@@ -941,6 +941,7 @@ name = "ec-abyss-config"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "ec-theme",
  "kdl",
  "regex",
  "serde_json",
@@ -964,6 +965,7 @@ name = "ec-console"
 version = "0.1.0"
 dependencies = [
  "ec-console-client",
+ "ec-ipc",
  "ec-ui",
  "iced",
  "libc",
@@ -982,9 +984,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-glass-host"
+version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "serde_json",
+]
+
+[[package]]
 name = "ec-hyperion-bar"
 version = "0.1.0"
 dependencies = [
+ "ec-abyss-config",
  "ec-ipc",
  "ec-services",
  "ec-ui",
@@ -1024,6 +1035,16 @@ dependencies = [
  "ec-ui",
  "iced",
  "kdl",
+]
+
+[[package]]
+name = "ec-protocols"
+version = "0.1.0"
+dependencies = [
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
 ]
 
 [[package]]
@@ -1072,6 +1093,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-theme"
+version = "0.1.0"
+
+[[package]]
 name = "ec-toasts"
 version = "0.1.0"
 dependencies = [
@@ -1087,8 +1112,13 @@ name = "ec-ui"
 version = "0.1.0"
 dependencies = [
  "ec-ipc",
+ "ec-protocols",
+ "ec-theme",
  "iced",
+ "raw-window-handle",
  "serde_json",
+ "wayland-backend",
+ "wayland-client",
 ]
 
 [[package]]
@@ -1837,8 +1867,6 @@ dependencies = [
 [[package]]
 name = "iced_layershell"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51b59e8af02bf4c51db2ee5d130293e6e1e5ac4ae9f74a1e57990a19221aa0d5"
 dependencies = [
  "enumflags2",
  "futures",
@@ -2229,8 +2257,6 @@ dependencies = [
 [[package]]
 name = "layershellev"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "69fbd3ced50d91a5a118e3e00f49c72040ea6b48b78b159a3936104fc2632925"
 dependencies = [
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",

@@ -308,9 +308,9 @@ pub fn field(app: &App, density: Density) -> Element<'_, Message, Theme> {
 /// with the selected page's bar.
 fn field_style(t: &Theme, status: text_input::Status) -> text_input::Style {
     let (fill, rim) = match status {
-        text_input::Status::Focused { .. } => (color::HIGHLIGHT_SOFT, color::BORDER_STRONG),
-        text_input::Status::Hovered => (color::LIFT_SOFT, color::BORDER_STRONG),
-        _ => (color::LIFT_SOFT, color::BORDER),
+        text_input::Status::Focused { .. } => (color::highlight_soft(), color::border_strong()),
+        text_input::Status::Hovered => (color::lift_soft(), color::border_strong()),
+        _ => (color::lift_soft(), color::border()),
     };
     text_input::Style {
         background: iced::Background::Color(fill),
@@ -394,7 +394,7 @@ fn result(entry: &SearchEntry, selected: bool, n: usize) -> Element<'_, Message,
             .width(space::BAR_W)
             .height(space::NAV_BAR_H)
             .style(move |_t: &Theme| container::Style {
-                background: selected.then_some(iced::Background::Color(color::ACCENT)),
+                background: selected.then_some(iced::Background::Color(color::accent())),
                 border: iced::border::rounded(radius::BAR),
                 ..container::Style::default()
             }),
@@ -413,20 +413,20 @@ fn result_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::St
     move |_t, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         let fill = match (selected, hovered) {
-            (true, _) => Some(iced::Background::Color(color::HIGHLIGHT_SOFT)),
-            (false, true) => Some(iced::Background::Color(color::LIFT_SOFT)),
+            (true, _) => Some(iced::Background::Color(color::highlight_soft())),
+            (false, true) => Some(iced::Background::Color(color::lift_soft())),
             (false, false) => None,
         };
         button::Style {
             background: fill,
             text_color: if selected || hovered {
-                color::TEXT
+                color::text()
             } else {
-                color::TEXT_SECONDARY
+                color::text_secondary()
             },
             border: iced::Border {
                 color: if selected {
-                    color::BORDER
+                    color::border()
                 } else {
                     iced::Color::TRANSPARENT
                 },

@@ -186,12 +186,53 @@ def _inside_repo(path):
         p = parent
 
 
+def build_qemu_args(qemu, accel, code, vars_, qmp_path, serial_log, iso=None, mem=4096, smp=2,
+                    res=None, disk=None, disk_bus="virtio", disk2=None, net=True, hostfwd=(),
+                    bios=False):
+    """The QEMU command line. Pure, so tests can check it without starting anything.
+
+    Disks carry serial eclipse0 / eclipse1, which makes their /dev/disk/by-id names
+    predictable (virtio-eclipse0, nvme-QEMU_NVMe_Ctrl_eclipse0). `hostfwd` is a list of
+    (host_port, guest_port) pairs forwarded on 127.0.0.1 only. `bios` boots SeaBIOS."""
+    if disk_bus not in ("virtio", "nvme"):
+        raise HarnessError("disk bus must be virtio or nvme")
+    args = [qemu, "-name", "eclipseos-test", "-machine", "q35,accel=" + accel,
+            "-cpu", "host" if accel == "kvm" else "max", "-m", str(mem), "-smp", str(smp)]
+    if not bios:
+        args += ["-drive", "if=pflash,format=raw,readonly=on,file=" + code,
+                 "-drive", "if=pflash,format=raw,file=" + vars_]
+    args += ["-vga", "none",
+             "-device", "virtio-vga" + (",xres=%d,yres=%d" % res if res else ""),
+             "-device", "virtio-tablet-pci",
+             "-device", "virtio-rng-pci"]
+    if net:
+        nd = "user,id=n0" + "".join(",hostfwd=tcp:127.0.0.1:%d-:%d" % (h, g) for h, g in hostfwd)
+        args += ["-netdev", nd, "-device", "virtio-net-pci,netdev=n0"]
+    else:
+        args += ["-nic", "none"]
+    args += ["-display", "none",
+             "-serial", "file:" + serial_log,
+             "-qmp", "unix:%s,server=on,wait=off" % qmp_path,
+             "-boot", "menu=off"]
+    if iso:
+        args += ["-drive", "file=%s,media=cdrom,readonly=on,if=none,id=cd" % iso,
+                 "-device", "ide-cd,drive=cd,id=cdrom0,bootindex=1"]
+    for path, ident, serial, boot in ((disk, "hd", "eclipse0", ",bootindex=2"),
+                                      (disk2, "hd2", "eclipse1", "")):
+        if path:
+            args += ["-drive", "file=%s,format=qcow2,if=none,id=%s" % (path, ident),
+                     "-device", "%s,drive=%s,serial=%s%s" % (
+                         "nvme" if disk_bus == "nvme" else "virtio-blk-pci", ident, serial, boot)]
+    return args
+
+
 class VM:
     def __init__(self, work):
         self.work = os.path.abspath(work)
         self.proc = None
         self.input_locked = False  # --no-keystroke: refuse to send any input
         self.disk = os.path.join(self.work, "disk.qcow2")
+        self.disk2 = os.path.join(self.work, "disk2.qcow2")
         self.vars = os.path.join(self.work, "OVMF_VARS.fd")
         self.qmp_path = os.path.join(self.work, "qmp.sock")
         if len(self.qmp_path.encode()) > 100:  # sun_path limit is 108 bytes
@@ -251,7 +292,8 @@ class VM:
 
     # -- lifecycle
     def up(self, iso=None, mem=4096, smp=2, disk_size="20G", tcg=False, fresh=False,
-           no_disk=False, res=None):
+           no_disk=False, res=None, disk_bus="virtio", second_disk=None, net=True,
+           hostfwd=(), bios=False):
         if _inside_repo(self.work):
             raise HarnessError("work dir %s is inside a git checkout; pick one outside the repo" % self.work)
         if self.is_running():
@@ -263,7 +305,8 @@ class VM:
             raise HarnessError("ISO not found: %s" % iso)
         code, vars_src = find_ovmf()
         if fresh and os.path.isdir(self.work):
-            for n in ("disk.qcow2", "OVMF_VARS.fd", "serial.log", "qemu.log", "qmp.sock", "qemu.pid"):
+            for n in ("disk.qcow2", "disk2.qcow2", "OVMF_VARS.fd", "serial.log", "qemu.log",
+                      "qmp.sock", "qemu.pid"):
                 try:
                     os.unlink(os.path.join(self.work, n))
                 except FileNotFoundError:
@@ -271,11 +314,15 @@ class VM:
         os.makedirs(self.shots, exist_ok=True)
         if not os.path.exists(self.vars):
             shutil.copyfile(vars_src, self.vars)
-        if not no_disk and not os.path.exists(self.disk):
+        if (not no_disk and not os.path.exists(self.disk)) or (
+                second_disk and not os.path.exists(self.disk2)):
             qi = shutil.which("qemu-img")
             if not qi:
                 raise HarnessError("qemu-img not found")
-            subprocess.run([qi, "create", "-q", "-f", "qcow2", self.disk, disk_size], check=True)
+            if not no_disk and not os.path.exists(self.disk):
+                subprocess.run([qi, "create", "-q", "-f", "qcow2", self.disk, disk_size], check=True)
+            if second_disk and not os.path.exists(self.disk2):
+                subprocess.run([qi, "create", "-q", "-f", "qcow2", self.disk2, second_disk], check=True)
         for stale in (self.qmp_path, self.pidfile):
             try:
                 os.unlink(stale)
@@ -285,25 +332,10 @@ class VM:
 
         kvm = (not tcg) and os.access("/dev/kvm", os.R_OK | os.W_OK)
         accel = "kvm" if kvm else "tcg"
-        args = [qemu, "-name", "eclipseos-test", "-machine", "q35,accel=" + accel,
-                "-cpu", "host" if kvm else "max", "-m", str(mem), "-smp", str(smp),
-                "-drive", "if=pflash,format=raw,readonly=on,file=" + code,
-                "-drive", "if=pflash,format=raw,file=" + self.vars,
-                "-vga", "none",
-                "-device", "virtio-vga" + (",xres=%d,yres=%d" % res if res else ""),
-                "-device", "virtio-tablet-pci",
-                "-device", "virtio-rng-pci",
-                "-netdev", "user,id=n0", "-device", "virtio-net-pci,netdev=n0",
-                "-display", "none",
-                "-serial", "file:" + self.serial_log,
-                "-qmp", "unix:%s,server=on,wait=off" % self.qmp_path,
-                "-boot", "menu=off"]
-        if iso:
-            args += ["-drive", "file=%s,media=cdrom,readonly=on,if=none,id=cd" % iso,
-                     "-device", "ide-cd,drive=cd,bootindex=1"]
-        if not no_disk:
-            args += ["-drive", "file=%s,format=qcow2,if=none,id=hd" % self.disk,
-                     "-device", "virtio-blk-pci,drive=hd,bootindex=2,serial=eclipse0"]
+        args = build_qemu_args(qemu, accel, code, self.vars, self.qmp_path, self.serial_log,
+                               iso=iso, mem=mem, smp=smp, res=res, disk=None if no_disk else self.disk,
+                               disk_bus=disk_bus, disk2=self.disk2 if second_disk else None,
+                               net=net, hostfwd=hostfwd, bios=bios)
         with open(self.qemu_log, "wb") as lf:
             self.proc = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=lf, stderr=lf,
                                          start_new_session=True)
@@ -371,6 +403,15 @@ class VM:
                 pass
         log("stopped qemu pid %d" % pid)
         return True
+
+    def eject_cd(self):
+        """Remove the ISO from the virtual drive so the next reset boots the disk."""
+        with self.qmp() as q:
+            try:
+                q.execute("eject", id="cdrom0", force=True)
+            except QMPError:
+                q.execute("blockdev-open-tray", id="cdrom0", force=True)
+                q.execute("blockdev-remove-medium", id="cdrom0")
 
     # -- QMP helpers
     def qmp(self, timeout=15.0):
@@ -531,9 +572,9 @@ def default_timeout(vm, kvm_secs):
 
 
 def flow_no_keystroke(vm, iso, ref_path, record_path, timeout, tolerance, max_frac, ignore,
-                      settle, keep):
+                      settle, keep, up_kwargs=None):
     """Boot the ISO, send NO input, and assert the live session reaches a GUI screen."""
-    vm.up(iso=iso, fresh=True)
+    vm.up(iso=iso, fresh=True, **(up_kwargs or {}))
     vm.input_locked = True
     timeout = timeout or default_timeout(vm, 300)
     last_png = os.path.join(vm.shots, "last.png")
@@ -686,6 +727,12 @@ def build_parser():
     s.add_argument("--fresh", action="store_true", help="recreate disk and OVMF vars")
     s.add_argument("--no-disk", action="store_true")
     s.add_argument("--res", help="virtio-gpu resolution WxH")
+    s.add_argument("--disk", choices=["virtio", "nvme"], default="virtio", help="disk bus")
+    s.add_argument("--second-disk", metavar="SIZE", help="attach a second blank disk, e.g. 8G")
+    s.add_argument("--no-net", action="store_true", help="no network device at all")
+    s.add_argument("--bios", action="store_true", help="boot SeaBIOS instead of OVMF")
+    s.add_argument("--hostfwd", action="append", default=[], metavar="HOST:GUEST",
+                   help="forward 127.0.0.1:HOST to guest port GUEST (repeatable)")
     sub.add_parser("down", help="stop the VM by its recorded pid")
     sub.add_parser("status")
     s = sub.add_parser("shot"); s.add_argument("out")
@@ -739,7 +786,9 @@ def main(argv=None):
             res = None
             if a.res:
                 res = tuple(int(v) for v in a.res.lower().split("x"))
-            pid = vm.up(a.iso, a.mem, a.smp, a.disk_size, a.tcg, a.fresh, a.no_disk, res)
+            fwd = [tuple(int(v) for v in h.split(":")) for h in a.hostfwd]
+            pid = vm.up(a.iso, a.mem, a.smp, a.disk_size, a.tcg, a.fresh, a.no_disk, res,
+                        a.disk, a.second_disk, not a.no_net, fwd, a.bios)
             print("pid=%d accel=%s work=%s" % (pid, vm.accel(), vm.work))
         elif a.cmd == "down":
             print("stopped" if vm.down() else "not running")

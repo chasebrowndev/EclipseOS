@@ -21,12 +21,18 @@
 //! The Oracle Eyes model command (ADR 0072) is asked about the same way,
 //! after any queued widget: Revert writes the shipped default back, Allow
 //! records its hash under `approvals::MODEL_COMMAND_KEY`.
+//!
+//! An `exec` quick action (ADR 0067) is asked about last: Allow records the
+//! hash of its exact argv under `action:<id>`, Not now declines it for the
+//! session. There is no Revert or Remove: the action is never withheld from
+//! the config (the taskbar re-checks the store at every press), so the owner
+//! removes one by editing the file.
 
 use std::time::{Duration, Instant};
 
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 
-use crate::config::withhold::{self, PendingKind, PendingModelCommand, PendingWidget};
+use crate::config::withhold::{self, PendingKind, PendingModelCommand, PendingQuickAction, PendingWidget};
 use crate::state::AbyssState;
 
 use super::modal::{Button, Modal, Role};
@@ -40,6 +46,9 @@ const WELL: &str = "Taskbar widget and the command it runs";
 const MODEL_BODY: &str = "Oracle Eyes' model command was changed. It runs this command as you, \
                           on the text Oracle Eyes reads. EclipseOS is not responsible for what it does.";
 const MODEL_WELL: &str = "Oracle Eyes model command";
+const QUICK_BODY: &str = "This quick action runs this command as you when you press it. \
+                          EclipseOS is not responsible for what it does.";
+const QUICK_WELL: &str = "Taskbar quick action and the command it runs";
 const WELL_CUT: &str = "Too long to show whole, so it cannot be allowed here:";
 
 /// Longest widget name shown, in chars.
@@ -58,6 +67,7 @@ const NOT_NOW: Button = Button {
 enum Subject {
     Widget(PendingWidget),
     ModelCommand(PendingModelCommand),
+    QuickAction(PendingQuickAction),
 }
 
 /// The subject a prompt is asking about, keyed by the prompt's token.
@@ -87,6 +97,12 @@ pub fn pump(state: &mut AbyssState) {
                 .iter()
                 .any(|(_, p)| p.name == w.name && p.hash == w.hash),
             Subject::ModelCommand(p) => state.widget_approvals.model_command.withheld.as_ref() == Some(p),
+            Subject::QuickAction(q) => state
+                .widget_approvals
+                .quick_actions
+                .withheld
+                .iter()
+                .any(|p| p.id == q.id && p.hash == q.hash),
         };
         if still && state.trusted_ui.token() == Some(*token) {
             return;
@@ -115,6 +131,8 @@ pub fn pump(state: &mut AbyssState) {
         Subject::Widget(w)
     } else if let Some(p) = withhold::next_pending_model_command(state) {
         Subject::ModelCommand(p)
+    } else if let Some(q) = withhold::next_pending_quick_action(state) {
+        Subject::QuickAction(q)
     } else {
         return;
     };
@@ -123,6 +141,7 @@ pub fn pump(state: &mut AbyssState) {
     let modal = match &subject {
         Subject::Widget(w) => modal_for(token, w),
         Subject::ModelCommand(p) => model_modal_for(token, p),
+        Subject::QuickAction(q) => quick_action_modal_for(token, q),
     };
     let modal = match modal {
         Ok(m) => m,
@@ -139,6 +158,7 @@ pub fn pump(state: &mut AbyssState) {
         match subject {
             Subject::Widget(w) => state.widget_approvals.queue.push_front(w),
             Subject::ModelCommand(_) => state.widget_approvals.model_command.queued = true,
+            Subject::QuickAction(q) => state.widget_approvals.quick_actions.queue.push_front(q),
         }
         return;
     }
@@ -150,6 +170,7 @@ fn name(s: &Subject) -> &str {
     match s {
         Subject::Widget(w) => &w.name,
         Subject::ModelCommand(_) => MODEL_WELL,
+        Subject::QuickAction(q) => &q.id,
     }
 }
 
@@ -158,6 +179,7 @@ fn closed(state: &mut AbyssState, s: &Subject) {
     match s {
         Subject::Widget(_) => withhold::prompt_closed(state),
         Subject::ModelCommand(_) => withhold::model_command_prompt_closed(state),
+        Subject::QuickAction(_) => withhold::quick_action_prompt_closed(state),
     }
 }
 
@@ -198,6 +220,38 @@ fn model_modal_for(token: u64, p: &PendingModelCommand) -> Result<Modal, super::
         &p.command_text,
         buttons("Revert", None),
     )
+}
+
+/// Allow or Not now only: there is nothing to revert, the config is never
+/// rewritten for a quick action.
+fn quick_action_modal_for(token: u64, q: &PendingQuickAction) -> Result<Modal, super::modal::Invalid> {
+    let mut id = crate::render::text::sanitize_line(&q.id);
+    if id.chars().count() > NAME_MAX {
+        id = id.chars().take(NAME_MAX - 1).collect();
+        id.push('\u{2026}');
+    }
+    let untrusted = format!("action: {id}\n{}", q.command_text);
+    let only = |grant: Option<&'static str>| {
+        let mut b = vec![NOT_NOW];
+        b.extend(grant.map(|label| Button {
+            label,
+            role: Role::Grant,
+        }));
+        b
+    };
+    let m = Modal::new(
+        token,
+        HEADING,
+        None,
+        QUICK_BODY,
+        QUICK_WELL,
+        &untrusted,
+        only(Some("Allow")),
+    )?;
+    if !m.is_cut() {
+        return Ok(m);
+    }
+    Modal::new(token, HEADING, None, QUICK_BODY, WELL_CUT, &untrusted, only(None))
 }
 
 fn modal_for(token: u64, w: &PendingWidget) -> Result<Modal, super::modal::Invalid> {
@@ -251,6 +305,7 @@ pub fn answer(state: &mut AbyssState, choice: super::Choice) {
     let w = match s {
         Subject::Widget(w) => w,
         Subject::ModelCommand(p) => return answer_model_command(state, choice.role, p),
+        Subject::QuickAction(q) => return answer_quick_action(state, choice.role, q),
     };
     match choice.role {
         Role::Grant => {
@@ -279,6 +334,33 @@ pub fn answer(state: &mut AbyssState, choice: super::Choice) {
         }
         Role::Safe => {
             state.widget_approvals.declined.insert((w.name, w.hash));
+            quiet(state);
+        }
+    }
+}
+
+fn answer_quick_action(state: &mut AbyssState, role: Role, q: PendingQuickAction) {
+    use crate::config::approvals;
+    match role {
+        Role::Grant => {
+            tracing::info!(id = q.id, "exec quick action approved by the owner");
+            if let Err(e) = approvals::persist(&format!("action:{}", q.id), q.hash) {
+                tracing::error!(id = q.id, error = %e, "approval not stored; it lasts this session only");
+            }
+            state
+                .widget_approvals
+                .quick_actions
+                .granted
+                .insert((q.id, q.hash));
+            withhold::reapply(state);
+        }
+        // Allow is the only other button; any other role declines.
+        Role::Safe | Role::Other => {
+            state
+                .widget_approvals
+                .quick_actions
+                .declined
+                .insert((q.id, q.hash));
             quiet(state);
         }
     }
@@ -626,5 +708,20 @@ mod tests {
         pump(&mut h.state);
         assert!(!h.state.trusted_ui.is_open(), "a declined command came back");
         done(&file);
+    }
+
+    #[test]
+    fn a_quick_action_asks_allow_or_not_now_and_keeps_its_command_in_the_well() {
+        let q = PendingQuickAction {
+            id: "Command approval".into(),
+            command_text: "pactl mute".into(),
+            hash: WidgetHash([0; 32]),
+        };
+        let m = quick_action_modal_for(3, &q).unwrap();
+        let labels: Vec<_> = m.buttons().iter().map(|b| (b.label, b.role)).collect();
+        assert_eq!(labels, [("Not now", Role::Safe), ("Allow", Role::Grant)]);
+        let u = m.untrusted().join("\n");
+        assert!(u.starts_with("action: Command approval"), "{u}");
+        assert!(u.contains("pactl mute"));
     }
 }

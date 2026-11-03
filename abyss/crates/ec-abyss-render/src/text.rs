@@ -14,6 +14,15 @@
 //!   a panel until it covers the screen;
 //! * nothing is interpreted. There is no markup, no colour escape, no
 //!   substitution. A `<b>` renders as four glyphs.
+//!
+//! Two sanitisers, one per consumer. [`sanitize`] is the trusted UI's and
+//! stays printable ASCII only: a prompt must not carry a lookalike letter
+//! (homoglyph spoofing). [`sanitize_annotation`] is the annotation HUD's and
+//! keeps the wider set the HUD atlases draw (Latin-1, Greek, math). Both
+//! strip controls, bidi overrides and zero-width characters, and both clamp
+//! length the same way.
+
+use crate::hud_font;
 
 /// Hard character cap, applied after sanitising and before wrapping.
 /// `spec.md` §5 asks for 2-4 sentences; this is roughly twice that, so the
@@ -27,11 +36,12 @@ pub const MAX_LINES: usize = 10;
 /// visible as a gap in the text rather than silently closing up.
 const REPLACEMENT: char = '?';
 
-/// Reduce arbitrary input to the printable ASCII this font can draw.
+/// Reduce arbitrary input to the printable ASCII the trusted UI can draw.
 ///
 /// Newlines survive as explicit line breaks; every other control character,
 /// including tab and carriage return, is dropped. Non-ASCII collapses to
-/// [`REPLACEMENT`] -- one glyph per source character, so nothing shifts.
+/// [`REPLACEMENT`] -- one glyph per source character, so nothing shifts. The
+/// annotation HUD uses [`sanitize_annotation`] instead.
 pub fn sanitize(input: &str) -> String {
     let mut out = String::with_capacity(input.len().min(MAX_CHARS));
     let mut chars = 0usize;
@@ -51,27 +61,131 @@ pub fn sanitize(input: &str) -> String {
     out
 }
 
+/// Reduce annotation text to the glyphs the annotation atlases draw, the
+/// same way [`sanitize`] reduces trusted text.
+///
+/// The kept set is [`hud_font::covers`] less private use: printable ASCII,
+/// the compositor's two extras, Latin-1, Latin Extended-A, Greek and the math
+/// and punctuation set, plus the composed glyphs a base-and-mark pair folds
+/// into. Everything else is handled in this order:
+///
+/// * newlines survive as line breaks; no-break space becomes a space;
+/// * every other control character (C0, DEL, C1) is **stripped**, so a
+///   caller cannot aim a cursor game or an escape at the panel;
+/// * bidi overrides and isolates, zero-width characters, the soft hyphen and
+///   the byte-order mark are **stripped**: they are invisible and would let
+///   a reply read differently from the order its bytes arrive in;
+/// * combining marks are **stripped**, so a decomposed `e` + U+0301 draws as
+///   `e` rather than as a stray mark over the next glyph;
+/// * a base letter followed by U+0302 (circumflex) or U+0304 (macron) and
+///   listed in [`hud_font::COMPOSED`] is **one** composed glyph, so `p` +
+///   U+0302 draws as a hatted p and counts as one character. Any other
+///   pair strips the mark, as above;
+/// * private-use codepoints are **replaced**, not drawn: the composed cells
+///   live there and a caller must not be able to pick one. A caller's
+///   U+E000 becomes `?`;
+/// * anything else the atlas lacks becomes [`REPLACEMENT`], one glyph per
+///   character, so a dropped codepoint shows as a gap rather than closing up.
+///
+/// Length is clamped by [`MAX_CHARS`] in characters, as in [`sanitize`].
+pub fn sanitize_annotation(input: &str) -> String {
+    let mut out = String::with_capacity(input.len().min(MAX_CHARS));
+    let mut chars = 0usize;
+    let mut rest = input.chars().peekable();
+    while let Some(c) = rest.next() {
+        if chars >= MAX_CHARS {
+            break;
+        }
+        let keep = match c {
+            '\n' => '\n',
+            '\u{a0}' => ' ',
+            c if c.is_control() => continue,
+            c if is_invisible(c) || is_combining(c) => continue,
+            c if is_private_use(c) => REPLACEMENT,
+            c if hud_font::covers(c) => fold_mark(c, &mut rest),
+            _ => REPLACEMENT,
+        };
+        out.push(keep);
+        chars += 1;
+    }
+    out
+}
+
+/// `base`, or the composed glyph if the next character is the mark the atlas
+/// composes it with. The mark is consumed only on a match; otherwise the
+/// caller's loop strips it as any other combining mark.
+fn fold_mark(base: char, rest: &mut std::iter::Peekable<std::str::Chars<'_>>) -> char {
+    if let Some(&mark) = rest.peek() {
+        if let Some(composed) = hud_font::compose(base, mark) {
+            rest.next();
+            return composed;
+        }
+    }
+    base
+}
+
+/// Private use: the compositor's own composed cells (ADR 0083 amendment) and
+/// the rest of the planes a caller has no business naming.
+fn is_private_use(c: char) -> bool {
+    matches!(
+        c as u32,
+        0xe000..=0xf8ff | 0xf0000..=0xffffd | 0x100000..=0x10fffd
+    )
+}
+
+/// Format and bidi characters a reader cannot see, which must not reach the
+/// panel: soft hyphen, Arabic letter mark, Mongolian vowel separator, the
+/// zero-width and bidi-control blocks, word joiner and invisible operators,
+/// and the byte-order mark.
+fn is_invisible(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00ad
+            | 0x061c
+            | 0x180e
+            | 0x200b..=0x200f
+            | 0x202a..=0x202e
+            | 0x2060..=0x206f
+            | 0xfeff
+    )
+}
+
+/// The combining-mark blocks: a mark drawn without its base is a stray glyph.
+fn is_combining(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x0300..=0x036f | 0x1ab0..=0x1aff | 0x1dc0..=0x1dff | 0x20d0..=0x20ff | 0xfe20..=0xfe2f
+    )
+}
+
 /// Break sanitised text into at most [`MAX_LINES`] lines of at most `cols`
 /// characters, preferring word boundaries and hard-breaking a word longer than
-/// the column count.
+/// the column count. Columns are characters, not bytes: a Greek word is one
+/// column per letter, and a cut never splits a character.
 pub fn wrap(text: &str, cols: usize) -> Vec<String> {
     let cols = cols.max(1);
     let mut lines = Vec::new();
     for para in text.split('\n') {
         let mut line = String::new();
+        // Characters in `line`.
+        let mut len = 0usize;
         for word in para.split(' ').filter(|w| !w.is_empty()) {
+            let n = word.chars().count();
             // A word wider than the whole panel is cut rather than allowed to
             // overflow; there is nowhere else for it to go.
-            if word.len() > cols {
+            if n > cols {
                 if !line.is_empty() {
                     lines.push(std::mem::take(&mut line));
                 }
+                len = 0;
                 // The tail of the cut becomes the current line, so a short
                 // word after a long one still shares a row with it.
-                let mut chunks = word.as_bytes().chunks(cols).peekable();
+                let chars: Vec<char> = word.chars().collect();
+                let mut chunks = chars.chunks(cols).peekable();
                 while let Some(chunk) = chunks.next() {
-                    let chunk = String::from_utf8_lossy(chunk).into_owned();
+                    let chunk: String = chunk.iter().collect();
                     if chunks.peek().is_none() {
+                        len = chunk.chars().count();
                         line = chunk;
                     } else {
                         lines.push(chunk);
@@ -79,18 +193,17 @@ pub fn wrap(text: &str, cols: usize) -> Vec<String> {
                 }
                 continue;
             }
-            let need = if line.is_empty() {
-                word.len()
-            } else {
-                line.len() + 1 + word.len()
-            };
+            let need = if line.is_empty() { n } else { len + 1 + n };
             if need > cols {
                 lines.push(std::mem::take(&mut line));
+                len = 0;
             }
             if !line.is_empty() {
                 line.push(' ');
+                len += 1;
             }
             line.push_str(word);
+            len += n;
         }
         lines.push(line);
     }
@@ -108,6 +221,12 @@ pub fn wrap(text: &str, cols: usize) -> Vec<String> {
 /// than a break.
 pub fn sanitize_line(input: &str) -> String {
     sanitize(input).replace('\n', " ")
+}
+
+/// [`sanitize_line`] for the annotation HUD: one line, the annotation glyph
+/// set.
+pub fn sanitize_annotation_line(input: &str) -> String {
+    sanitize_annotation(input).replace('\n', " ")
 }
 
 /// A rasterised panel: premultiplied RGBA, row-major, `w * h * 4` bytes.
@@ -387,6 +506,113 @@ mod tests {
         assert_eq!(clean.chars().count(), MAX_CHARS);
         let lines = wrap(&"y ".repeat(MAX_CHARS), 10);
         assert!(lines.len() <= MAX_LINES);
+    }
+
+    #[test]
+    fn annotation_keeps_greek_latin_and_math() {
+        let s = "Σ = π/2 ≤ 4 · αβγ Ωμ café ±×÷ ²³¹ H₂O → ∞ — “ok”";
+        assert_eq!(sanitize_annotation(s), s);
+    }
+
+    #[test]
+    fn model_reply_headline_survives_sanitise_and_wrap() {
+        // Replay-style: the headline a model returns, through the same steps
+        // the annotation pass runs on it, comes out byte-for-byte intact.
+        let reply = "Σ = π/2 ≤ 4";
+        let clean = sanitize_annotation(reply);
+        assert_eq!(clean, reply);
+        assert_eq!(wrap(&clean, 24), [reply]);
+        assert_eq!(sanitize_annotation_line(reply), reply);
+    }
+
+    #[test]
+    fn annotation_strips_bidi_zero_width_and_combining() {
+        // An RTL override would reorder the reader's view of the reply.
+        assert_eq!(sanitize_annotation("a\u{202e}b\u{202c}c"), "abc");
+        assert_eq!(sanitize_annotation("x\u{2066}y\u{2069}z"), "xyz");
+        assert_eq!(
+            sanitize_annotation("a\u{200b}b\u{200d}c\u{feff}d\u{ad}e"),
+            "abcde"
+        );
+        // A decomposed accent folds away instead of drawing over the next glyph.
+        assert_eq!(sanitize_annotation("e\u{301}x"), "ex");
+    }
+
+    #[test]
+    fn a_base_and_its_mark_draw_one_composed_glyph() {
+        let hat_p = '\u{e000}';
+        let hat_x = '\u{e001}';
+        let bar_x = '\u{e008}';
+        let s = sanitize_annotation("p\u{302}1 > p\u{302}2");
+        assert_eq!(s, format!("{hat_p}1 > {hat_p}2"));
+        assert_eq!(sanitize_annotation("x\u{304}"), bar_x.to_string());
+        assert_eq!(sanitize_annotation("x\u{302}"), hat_x.to_string());
+        // Counted as one character, so a wrap and a width see one glyph.
+        assert_eq!(s.chars().count(), 7);
+        let three = sanitize_annotation("p\u{302}p\u{302}p\u{302}");
+        assert_eq!(wrap(&three, 3), [format!("{hat_p}{hat_p}{hat_p}")]);
+        assert_eq!(hud_font::Face::Body.width(&three), 3 * hud_font::ADVANCE);
+        // The clamp counts sequences, not the bytes they came in.
+        let long = sanitize_annotation(&"p\u{302}".repeat(MAX_CHARS * 2));
+        assert_eq!(long.chars().count(), MAX_CHARS);
+    }
+
+    #[test]
+    fn a_mark_without_a_composed_cell_is_still_stripped() {
+        // q has no hat in the atlas, and y's hat and macron are not generated.
+        assert_eq!(sanitize_annotation("q\u{302}"), "q");
+        assert_eq!(sanitize_annotation("y\u{302}y\u{304}"), "yy");
+        // Only the listed base takes the mark: a capital P does not fold.
+        assert_eq!(sanitize_annotation("P\u{302}"), "P");
+    }
+
+    #[test]
+    fn callers_cannot_name_a_composed_cell() {
+        // Private use is replaced whatever it is, so a raw U+E000 never draws
+        // as the hatted p and no caller can reach the atlas past the fold.
+        assert_eq!(sanitize_annotation("\u{e000}"), "?");
+        assert_eq!(sanitize_annotation("a\u{e008}b\u{f8ff}c"), "a?b?c");
+        assert_eq!(sanitize_annotation("\u{f0000}"), "?");
+        // A caller's PUA next to a real mark: the mark still folds nothing.
+        assert_eq!(sanitize_annotation("\u{e000}\u{302}"), "?");
+    }
+
+    #[test]
+    fn the_trusted_sanitiser_is_unchanged_by_composition() {
+        assert_eq!(sanitize("p\u{302}"), "p?");
+        assert_eq!(sanitize("x\u{304}"), "x?");
+    }
+
+    #[test]
+    fn annotation_strips_c0_and_c1_controls() {
+        assert_eq!(sanitize_annotation("a\u{1b}[31mb\rc\td\u{7f}"), "a[31mbcd");
+        assert_eq!(sanitize_annotation("x\u{85}y\u{9b}z"), "xyz");
+    }
+
+    #[test]
+    fn annotation_outside_the_atlas_is_one_replacement_each() {
+        assert_eq!(sanitize_annotation("\u{4e2d}\u{1f480}!"), "??!");
+        assert_eq!(sanitize_annotation("a\u{a0}b"), "a b");
+    }
+
+    #[test]
+    fn annotation_length_is_clamped_in_characters() {
+        let clean = sanitize_annotation(&"α".repeat(MAX_CHARS * 2));
+        assert_eq!(clean.chars().count(), MAX_CHARS);
+    }
+
+    #[test]
+    fn the_trusted_sanitiser_stays_ascii() {
+        // Homoglyph guard: the trusted UI never draws a Greek or accented
+        // letter, even though the annotation HUD does.
+        assert_eq!(sanitize("caf\u{e9} \u{3a3}"), "caf? ?");
+    }
+
+    #[test]
+    fn wrap_counts_characters_not_bytes() {
+        assert_eq!(wrap("αβγδ εζ", 4), ["αβγδ", "εζ"]);
+        // A hard cut never splits a character.
+        assert_eq!(wrap("αβγδεζ", 4), ["αβγδ", "εζ"]);
     }
 
     #[test]

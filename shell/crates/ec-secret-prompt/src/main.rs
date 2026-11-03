@@ -12,6 +12,8 @@ use ec_ui::tokens::secret;
 use iced::window;
 
 fn main() -> iced::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let target = match Target::parse(&args) {
         Ok(t) => t,

@@ -392,6 +392,14 @@ fn after(delay: Duration, message: Message) -> Task<Message> {
 }
 
 pub fn subscription(_app: &App) -> Subscription<Message> {
+    // Keep the palette on the compositor's theme (ADR 0084).
+    Subscription::batch([
+        subscription_inner(_app),
+        ec_ui::ipc::theme_subscription(|| Message::Reconfigured),
+    ])
+}
+
+fn subscription_inner(_app: &App) -> Subscription<Message> {
     Subscription::batch([
         compositor(),
         iced::window::close_events().map(Message::Closed),

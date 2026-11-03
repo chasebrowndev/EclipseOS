@@ -103,6 +103,23 @@ editor for any command widget that is not premade, marks catalog widgets
 - Without the `taskbar-widgets` hook, none of this runs: no catalog, no
   withholding, no prompt, and the widget collection is not writable.
 
+## Amendment (2026-11-03): `exec` quick actions
+
+A taskbar quick action with an `exec` target (`bar { action "<id>" { exec ... } }`)
+is asked about by the same surface. It differs from a command widget in three
+ways. It is never withheld from the config: `get_config` does not serve quick
+actions and the taskbar re-checks the recorded approval at every press
+(`QuickAction::runnable`), so an unapproved one cannot run. The approval is
+recorded under `action:<id>` as the hash of exactly that argv
+(`quick_action_hash`, domain-separated from widget and model-command hashes), so
+an edited command is asked about again. And the prompt has no Revert or Remove:
+Allow or Not now only; the owner removes an action by editing the file.
+An `app` target needs no approval, as the launcher starts desktop entries
+without one. Like everything here it needs the `taskbar-widgets` hook.
+Implemented in `config/withhold.rs` (`settle_quick_actions`) and
+`trusted_ui/approval.rs` (`Subject::QuickAction`). TCB; line-by-line owner
+review (F-07 §4).
+
 ## Revisit when
 - COMP-10 §2's personal secret lands: this surface adopts it.
 - The pending-decision queue (COMP-10 §3.10 in code comments) is built:

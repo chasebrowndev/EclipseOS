@@ -122,6 +122,9 @@ pub fn value_label(value: &str) -> &str {
         // `mode`: what each level adds, in the words COMP-17 §2 uses.
         "wm" => "WM",
         "hybrid" => "Hybrid",
+        // `misc.gpu-mode`, which shares `hybrid` with `mode`.
+        "integrated" => "Integrated",
+        "dedicated" => "Dedicated",
         "de" => "Desktop",
         // Component slots: the ids are program names and read as themselves;
         // only the opt-out needs a word.
@@ -136,6 +139,35 @@ pub fn value_label(value: &str) -> &str {
         "frost" => "Frost",
         "glass" => "Liquid Glass",
         other => other,
+    }
+}
+
+/// `general.color-scheme`, the one key whose values are sentence-cased on the
+/// pills: Dark, Light, Auto.
+pub const COLOR_SCHEME: &str = "general.color-scheme";
+
+/// The auto schedule's two times: they apply only while the scheme is `auto`.
+pub const SCHEDULE: [&str; 2] = ["general.light-from", "general.dark-from"];
+
+/// The `theme-dark` / `theme-light` names.
+pub const THEMES: [&str; 2] = ["general.theme-dark", "general.theme-light"];
+
+/// A scheme value as its pill reads.
+pub fn scheme_label(value: &str) -> &str {
+    match value {
+        "dark" => "Dark",
+        "light" => "Light",
+        "auto" => "Auto",
+        other => other,
+    }
+}
+
+/// What the scheme setting does, shown beneath it.
+pub fn scheme_blurb(value: &str) -> &'static str {
+    match value {
+        "dark" => "The warm-black desktop, always.",
+        "light" => "The bright frosted desktop, always.",
+        _ => "Dark and light by the times below, local time. No location is used.",
     }
 }
 
@@ -303,16 +335,22 @@ impl Row {
             "oracle-eyes.timeout-ms" => "Answer timeout",
             "oracle-eyes.auto-interval-ms" => "Automatic interval",
             "oracle-eyes.hold-ms" => "Answer hold time",
+            "oracle-eyes.models" => "Models",
+            "oracle-eyes.image-mode" => "Image mode (send screenshot)",
+            "oracle-eyes.image-auto-escalate" => "Escalate weak answers",
             "oracle-eyes.debug" => "Debug mode",
             "oracle-eyes.bind.select" => "Select a region",
             "oracle-eyes.bind.dismiss" => "Dismiss answers",
             "oracle-eyes.bind.expand" => "Expand an answer",
             "oracle-eyes.bind.auto-toggle" => "Automatic mode",
+            "oracle-eyes.bind.model-switch" => "Switch model",
+            "oracle-eyes.bind.image-toggle" => "Image mode",
             "annotations.accent-text" => "Pick letter",
             "annotations.panel-tint" => "Panel tint",
             "annotations.panel-rim" => "Panel rim",
             "annotations.region-outline" => "Region outline",
             "annotations.selection-dim" => "Selection dim",
+            "misc.gpu-mode" => "Graphics mode",
             "launcher.search.path-binaries" => "Programs on PATH",
             "launcher.search.terminal-apps" => "Terminal apps",
             // `settings.search.frecency` reads "settings search, frecency":
@@ -326,6 +364,16 @@ impl Row {
             "decoration.blur.glass.dispersion" => "Glass dispersion",
             "decoration.blur.glass.rim" => "Glass rim light",
             "decoration.blur.frost.tint" => "Frost tint",
+            // The window's own material (`ec_ui::surface`): the rail and column
+            // tint, a card's fill, an inset group's fill.
+            "decoration.surface.tint" => "Window tint",
+            "decoration.surface.card-fill" => "Card fill",
+            "decoration.surface.inset-fill" => "Inset fill",
+            // The desktop's scheme (ADR 0084): British spelling like the other
+            // colour labels, and the theme keys named for when they apply.
+            "general.color-scheme" => "Colour scheme",
+            "general.theme-dark" => "Theme while dark",
+            "general.theme-light" => "Theme while light",
             // Tokens abbreviated for a config file, or named for a mechanism
             // rather than for what a person sees change.
             "general.col-active-border" => "Active border colour",

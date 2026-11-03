@@ -170,3 +170,126 @@ squeezed), proportional crowding of unpinned widgets and chips instead of
 widgets-first, a collapse allowance on release, and a one-step tap ladder.
 The Settings Taskbar pane edits `order` and the tray lanes by drag and drop on
 its bar picture (D-05 §2); the writes are unchanged.
+
+## Amendment (2026-10-22): the Volume widget opens an audio picker
+
+Clicking the Volume widget used to toggle mute. It now opens a drawer that
+unrolls from the bar under the cell, the same reveal the wifi and bluetooth
+drawers use. Mute moved into the drawer, and wheel scrolling still steps the
+level. The drawer has two sections, output and input. Each has a level row
+(mute, rail, percent), the default device as the top row, and the other
+devices below it. Picking a device makes it the default and moves the
+streams that are playing or recording to it. The only exception is
+recordings of a monitor source, such as visualizers and loopbacks.
+`ec-services::audio` gains the sink and source lists, with `.monitor`
+sources left out, the default switch, and input volume and mute. It still
+speaks the native protocol, so nothing shells out.
+
+## Amendment (2026-11-03): the battery drawer, quick actions and Bluetooth battery
+
+Three things the bar gained on the widgets branch.
+
+**The battery drawer.** Clicking the battery cell opens a drawer: the reading
+as a magnitude hero (percentage, state, and the time left when UPower has
+one), then the power profile selector. The selector is `ec-services`'
+`power_profiles` (ADR 0038's bus pattern): one watcher, `set_profile` on its
+own thread, and the daemon's refusal shown in danger ink until the human
+asks again. The selector is hidden when the daemon is unavailable. Performance
+is greyed, with the reason as a line under the selector, when the machine does
+not offer it or the daemon reports it limited. The reading takes the accent
+only when the battery is full, as the cell does.
+
+**The `quick-actions` widget.** A new built-in id, default-ordered before the
+tray. Its cell is one understated glyph and is zero width while no `action`
+block is configured. The drawer is a grid of tiles, one per action. An `app`
+target launches its desktop entry as the launcher does. An `exec` target runs
+its argv with no shell, and only when the owner's approval for exactly that
+argv is recorded (ADR 0067); any other exec tile is disabled and reads "needs
+approval", and the bar checks the approval again at the press. The socket does
+not serve `bar.quick_actions`, so the bar reads the owner's config through
+`ec-abyss-config` at start and on reload, the way the compositor reads it.
+
+**Bluetooth.** A device's own battery (BlueZ `org.bluez.Battery1`
+`Percentage`) is read with the device list and shown as a figure on the
+device's row, and on the connected hero's state line when it is known. The
+drawer's marks are 13px tertiary, as the context menu's are. Closing the
+drawer stops discovery and clears the scanning state, so no scan runs unseen.
+
+## Amendment (2026-11-03): the progress widget
+
+The bar hosts `ec-services`' progress feed (ARCHITECTURE, "Progress feed") and
+shows it as a built-in widget, `progress`, default-ordered between the tray and
+the clock.
+
+**The cell.** Zero width, and drawn by nothing, while no job is in flight. With
+jobs, the shell's own presence and width animation brings it in. It shows the
+oldest job: a ring (a determinate arc from the top, or a partial arc turning
+slowly when the amount of work is unknown), the label cut to a width token, `N%`
+when the amount is known, and `+N` when there are more. The ring and its fill
+are the neutral ink, not the accent: the strip already carries the one live
+yellow (the focused chip's label and a full battery), and a second would
+compete with it.
+
+**The drawer.** Clicking the cell opens `Drawer::Progress`, a reveal drawer like
+the others. Its head is followed by a magnitude hero for the job the cell shows
+(its percent, or its elapsed time when the amount is unknown), a rule, and then
+one block per job, oldest first, up to the drawer's row cap with a note for the
+rest. A job shows its ring, label and reading, its bar when the amount is known,
+and a mono line with its source (`feed` or `scan`) and how long it has run.
+When the last job ends the drawer closes with the cell it hangs from.
+
+**Motion.** The frame clock runs only while an indeterminate job is in flight and
+motion is on (`App::progress_turning`), like the battery's energy flow. A bar
+with no job, or only determinate jobs, wakes nothing for progress.
+
+**Scanning.** The bar keeps the `/proc` scan on for the life of the process
+rather than turning it off while the cell is hidden. The scanner already
+slow-polls at five seconds while nothing runs, and `ec-ctl progress` should find
+a live feed whether or not a job is in flight.
+
+## Amendment (2026-11-03): the power widget
+
+The bar gains a built-in widget, `power`, default-ordered between `progress` and
+`clock`, so it sits at the far right of the strip. Its cell is one understated
+glyph (the system-shutdown mark, in the secondary ink), always present, and
+clicking it opens `Drawer::Power`, a reveal drawer like the others.
+
+**The rows.** Lock, Log out, Suspend, Reboot and Power off, each greyed by what
+logind answers for it (`ec_services::session`'s `Availability`): an action it
+offers is live, a Challenge is live with a note that polkit asks first, and a No
+is greyed with "not permitted". Log out, Reboot and Power off are destructive and
+need a second click: the row becomes "Confirm …" with a Cancel beside it. A
+confirmation, machine or update, is forgotten when the drawer closes, so
+a reopened drawer starts from its rows. Lock and Suspend are one press.
+
+**The update rows.** Below a hairline, and only while `ec_services::updates`
+reports a pending Eclipse package, sit "Update & reboot" and "Update & power
+off" (ADR 0085). Each is offered only when its power action is offered too, since
+the power action follows a successful upgrade. Choosing one asks for the same
+inline Confirm the destructive rows use, worded "Confirm update all (N) & reboot"
+(or "& power off"), where N is the count of all pending packages, which the
+upgrade installs in full, with Cancel beside it. Confirm hands the power action
+to `updates::apply`; the widget never runs
+pacman, and it never calls a power action except for a machine row the human
+confirmed. There is no scope choice: a partial upgrade is not offered (ADR 0085).
+
+**The apply.** While it runs the power rows wait, and the chosen update row shows
+a spinner and "see progress", pointing at the progress cell, where the backend
+reports the job `eclipse-update`. A refusal or a failure is shown inline in danger
+ink and the rows come back. A success shows the restart the backend requested.
+
+**The accent.** None. Availability is grey, the pending update is plain ink, and
+the spinner is neutral. The strip's one yellow stays where it was.
+
+**The services.** The update watcher is hosted with the other widget services
+and started on the first configure. It runs `checkupdates` on start, every 30
+minutes and never in a loop. The logind probe runs on a thread when the drawer
+opens, and a session action runs on a thread when the human confirms it; a
+refusal comes back as a line in the drawer. Nothing is polled from the draw. A
+debug preview (`HYPERION_PREVIEW=power`, with `HYPERION_PREVIEW_POWER` and
+`HYPERION_PREVIEW_SESSION`) starts none of these and its messages reach no
+service, so no fixture can reach logind, pkexec or pacman.
+
+**The config.** `power` is a built-in id of `bar.widgets.order` and is accepted
+by the compositor's validator and by `ec-ctl config migrate`'s default order
+(`docs/CONFIG.md` regenerated from the schema).

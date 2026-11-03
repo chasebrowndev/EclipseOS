@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!--
+  ADR 0085. The update action of the taskbar's power widget: pacman through
+  /usr/lib/eclipse/ec-update-apply, which accepts only `all` (a full upgrade).
+  Every path needs the administrator's password (auth_admin_keep),
+  so a session that is active, inactive or remote still has to be authorised
+  by an administrator, and the keep applies the authorisation to the same
+  process tree for a short while.
+
+  Authority-bearing: reviewed line by line, like the helper it gates (F-07 §4).
+-->
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>EclipseOS</vendor>
+  <vendor_url>https://github.com/chasebrowndev/EclipseOS</vendor_url>
+
+  <action id="org.eclipse.update.apply">
+    <description>Install EclipseOS updates</description>
+    <message>Authentication is required to install system updates</message>
+    <defaults>
+      <allow_any>auth_admin_keep</allow_any>
+      <allow_inactive>auth_admin_keep</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/eclipse/ec-update-apply</annotate>
+  </action>
+</policyconfig>

@@ -14,7 +14,7 @@
 //!
 //! All values are straight (non-premultiplied) RGBA, as in config.
 
-use ec_abyss_config::{AnnotationColors, PANEL_TINT_MIN_ALPHA};
+use ec_abyss_config::{AnnotationColors, Appearance, PANEL_TINT_MIN_ALPHA};
 
 use crate::text::Rgba;
 
@@ -116,6 +116,37 @@ impl HudPalette {
             pick_rim: alpha(c.accent, 0.28),
             shadow: [0.0, 0.0, 0.0, 0.70],
         }
+    }
+}
+
+impl HudPalette {
+    /// [`HudPalette::new`] under the active theme (ADR 0084). The owner-set
+    /// colours in `c` already carry the theme (`Config::apply_appearance`
+    /// fills the ones `annotations { }` left unset); this swaps the fixed
+    /// colours that were written for dark. The built-in dark theme is
+    /// `new` exactly.
+    pub fn themed(c: &AnnotationColors, a: &Appearance) -> HudPalette {
+        let mut p = HudPalette::new(c);
+        if a.is_builtin_dark() {
+            return p;
+        }
+        let t = ec_theme::derive(&a.seeds);
+        p.leader_dot = t.text_secondary.0;
+        p.ink = alpha(t.base.0, 1.0);
+        p.fallback_fill = t.glass_deep_backed.0;
+        p.fallback_highlight = t.highlight_soft.0;
+        let [r, g, b] = a.shadow_rgb();
+        p.shadow = [
+            r,
+            g,
+            b,
+            if a.scheme == ec_theme::Scheme::Light {
+                0.28
+            } else {
+                0.70
+            },
+        ];
+        p
     }
 }
 

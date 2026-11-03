@@ -455,7 +455,7 @@ pub fn mark_hole<'a>(hole: Element<'a, Message, Theme>, w: f32, h: f32) -> Eleme
         .height(Length::Fixed(h))
         .style(|_t: &Theme| container::Style {
             border: iced::Border {
-                color: ec_ui::tokens::color::CONNECTED,
+                color: ec_ui::tokens::color::connected(),
                 width: 1.0,
                 radius: 0.0.into(),
             },

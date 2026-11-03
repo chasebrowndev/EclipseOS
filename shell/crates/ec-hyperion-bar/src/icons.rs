@@ -14,7 +14,9 @@
 //! [`Icons::for_window`], which is the only entry point the view uses.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use iced::widget::image;
 
 use crate::model::{Trust, Window};
 
@@ -23,8 +25,9 @@ use crate::model::{Trust, Window};
 pub enum Icon {
     /// A scalable icon: rendered through `iced::widget::svg`.
     Svg(PathBuf),
-    /// A raster icon: rendered through `iced::widget::image`.
-    Raster(PathBuf),
+    /// A raster icon, already resampled on the CPU to [`device_px`] so the GPU
+    /// draws it 1:1 instead of bilinear-shrinking it (see [`rasterize`]).
+    Raster(image::Handle),
     /// Nothing was found, or the window is not allowed one. The view draws
     /// the token placeholder; it never leaves a hole.
     Placeholder,
@@ -36,7 +39,10 @@ impl Icon {
             Some(ext) if ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz") => {
                 Icon::Svg(path)
             }
-            Some(_) => Icon::Raster(path),
+            Some(_) => match rasterize(&path, device_px()) {
+                Some(h) => Icon::Raster(h),
+                None => Icon::Placeholder,
+            },
             // No extension at all is not something an icon theme produces;
             // treat it as a miss rather than guessing a decoder.
             None => Icon::Placeholder,
@@ -56,6 +62,58 @@ const SYMBOLIC_THEME: &str = "Adwaita";
 /// purpose: a 24px raster downscaled to 20 is sharper than a 16px one blown
 /// up, and for SVG the request only picks which directory wins.
 const LOOKUP_SIZE: u16 = 24;
+
+/// The raster size asked of the theme when no SVG exists. Bigger than any
+/// draw size so the CPU resample only ever shrinks, which Lanczos does well.
+const RASTER_LOOKUP_SIZE: u16 = 48;
+
+/// Output scale the bar draws at. The layer-shell surface scale is not
+/// plumbed to the view; 1.0 is what every current output runs. When it is,
+/// this is the only place to feed it.
+const SCALE: f32 = 1.0;
+
+/// Device pixels of the icon square: logical size times surface scale.
+pub fn device_px() -> u32 {
+    (ec_ui::tokens::size::ICON * SCALE).round().max(1.0) as u32
+}
+
+/// Decode `path` and resample it to `px` x `px`, as an iced
+/// handle of raw RGBA. iced's image pipeline is bilinear with no mipmaps, so
+/// handing it a large PNG to draw small aliases badly; doing the shrink here,
+/// once per `app_id` (the result lives in the [`Icons`] cache), keeps the
+/// view down to a handle clone. `None` if the file is not a decodable PNG.
+pub fn rasterize(path: &Path, px: u32) -> Option<image::Handle> {
+    let img = ::image::open(path).ok()?;
+    let (w, h) = (img.width(), img.height());
+    let pixels = if (w, h) == (px, px) {
+        img.to_rgba8().into_raw()
+    } else {
+        resample(img.to_rgba32f(), px)
+    };
+    Some(image::Handle::from_rgba(px, px, pixels))
+}
+
+/// Premultiplied-alpha resize. Filtering straight alpha lets the RGB of
+/// fully transparent texels (usually 0) bleed black into the edge, so the
+/// colour is weighted by alpha first, filtered with CatmullRom (it rings
+/// less than Lanczos3 on a hard alpha edge), clamped, and divided back out.
+fn resample(mut img: ::image::Rgba32FImage, px: u32) -> Vec<u8> {
+    for p in img.pixels_mut() {
+        let a = p.0[3];
+        p.0[0] *= a;
+        p.0[1] *= a;
+        p.0[2] *= a;
+    }
+    let out = ::image::imageops::resize(&img, px, px, ::image::imageops::FilterType::CatmullRom);
+    let mut bytes = Vec::with_capacity((px * px * 4) as usize);
+    for p in out.pixels() {
+        let a = p.0[3].clamp(0.0, 1.0);
+        let un = |c: f32| if a > 0.0 { (c / a).clamp(0.0, 1.0) } else { 0.0 };
+        let q = |v: f32| (v * 255.0).round() as u8;
+        bytes.extend_from_slice(&[q(un(p.0[0])), q(un(p.0[1])), q(un(p.0[2])), q(a)]);
+    }
+    bytes
+}
 
 /// The `app_id` → icon cache.
 #[derive(Debug, Default)]
@@ -127,7 +185,7 @@ pub fn resolve(app_id: &str) -> Icon {
         if name.is_empty() {
             continue;
         }
-        if let Some(path) = lookup(&name) {
+        if let Some(path) = lookup_app(&name) {
             return Icon::from_path(path);
         }
     }
@@ -171,6 +229,34 @@ pub fn tray(name: &str, theme_path: &str) -> Option<PathBuf> {
         }
     }
     lookup(name)
+}
+
+/// An application icon: the theme's SVG when it has one (rasterized by iced
+/// at the exact draw size), else a raster from [`RASTER_LOOKUP_SIZE`].
+fn lookup_app(name: &str) -> Option<PathBuf> {
+    if !Path::new(name).is_absolute() {
+        let svg = freedesktop_icons::lookup(name)
+            .with_size(RASTER_LOOKUP_SIZE)
+            .with_theme(THEME)
+            .with_cache()
+            .force_svg()
+            .find();
+        if svg
+            .as_deref()
+            .is_some_and(|p| p.extension().is_some_and(|e| e == "svg" || e == "svgz"))
+        {
+            return svg;
+        }
+    }
+    let direct = Path::new(name);
+    if direct.is_absolute() {
+        return direct.exists().then(|| direct.to_path_buf());
+    }
+    freedesktop_icons::lookup(name)
+        .with_size(RASTER_LOOKUP_SIZE)
+        .with_theme(THEME)
+        .with_cache()
+        .find()
 }
 
 /// An `Icon=` value may itself be an absolute path rather than a theme name;
@@ -308,12 +394,62 @@ mod tests {
     }
 
     #[test]
+    fn a_big_png_is_resampled_to_the_exact_draw_size() {
+        let dir = std::env::temp_dir().join(format!("ec-icons-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("big.png");
+        ::image::RgbaImage::from_pixel(256, 256, ::image::Rgba([200, 100, 50, 255]))
+            .save(&path)
+            .unwrap();
+        let h = rasterize(&path, 20).expect("decodes");
+        let image::Handle::Rgba {
+            width,
+            height,
+            pixels,
+            ..
+        } = h
+        else {
+            panic!("expected raw rgba");
+        };
+        assert_eq!((width, height), (20, 20));
+        assert_eq!(pixels.len(), 20 * 20 * 4);
+        assert_eq!(&pixels[..4], &[200, 100, 50, 255]);
+        assert!(rasterize(&dir.join("missing.png"), 20).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An opaque disc on a transparent field, shrunk: the colour of every
+    /// visible texel stays the disc's colour; only alpha falls off.
+    #[test]
+    fn a_downscaled_disc_has_no_dark_fringe() {
+        let mut src = ::image::Rgba32FImage::new(128, 128);
+        for (x, y, p) in src.enumerate_pixels_mut() {
+            let (dx, dy) = (x as f32 - 63.5, y as f32 - 63.5);
+            if dx * dx + dy * dy <= 56.0 * 56.0 {
+                *p = ::image::Rgba([0.9, 0.5, 0.2, 1.0]);
+            }
+        }
+        let out = resample(src, 20);
+        let mut edge = 0;
+        for px in out.chunks_exact(4) {
+            if px[3] > 0 && px[3] < 255 {
+                edge += 1;
+            }
+            if px[3] > 8 {
+                // Never darker (the fringe); a little ringing above is the
+                // filter's, bounded.
+                for (c, want) in [(px[0], 230), (px[1], 128), (px[2], 51)] {
+                    let d = c as i32 - want;
+                    assert!((-3..=14).contains(&d), "{px:?}");
+                }
+            }
+        }
+        assert!(edge > 0, "the edge should be partly transparent");
+    }
+
+    #[test]
     fn the_extension_picks_the_renderer() {
         assert!(matches!(Icon::from_path(PathBuf::from("/a/b.svg")), Icon::Svg(_)));
-        assert!(matches!(
-            Icon::from_path(PathBuf::from("/a/b.PNG")),
-            Icon::Raster(_)
-        ));
         assert_eq!(Icon::from_path(PathBuf::from("/a/b")), Icon::Placeholder);
     }
 }

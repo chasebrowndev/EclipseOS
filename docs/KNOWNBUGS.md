@@ -52,8 +52,10 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
   (2026-10-06). Nobody has walked a btrfs install through it yet; only ext4
   has been. This entry leaves when one has.
 - **Remote access is opt-in at install time.** Both script installers
-  (`install-eclipseos.sh`, `eclipseos-postinstall.sh`) ask whether to enable sshd, taking one public key and refusing password logins
-  (2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
+  (`install-eclipseos.sh`, `eclipseos-postinstall.sh`) ask whether to enable sshd. They run on a tty, where nothing pastes, so they
+  take no key: password login is allowed from private, link-local and tailnet
+  (CGNAT) addresses only, keys from anywhere, never root (2026-10-20; was one
+  pasted key, 2026-10-06). `tailscale` is still in no EclipseOS package set; it was what
   made the Framework install debuggable, but sshd on the LAN covers the same
   need without a third-party account. The graphical installer (`ec-setup`)
   deliberately has no remote-access step: whoever installs is at the machine
@@ -110,6 +112,121 @@ into the window, `SetInputRegion`, hands out a `WlRegion`. Smallest fix: a
 `LayerShellCustomAction` that runs a `Fn(&WlSurface)` callback (modelled on
 `SetInputRegion`), upstream or as a `[patch]`; the rest is client-side only.
 
+**Glass mode, 2026-11-01:** with `eclipse_glass_v1` (ADR 0081), each toast
+card is its own pane, and panes replace the layer's whole-surface glass, so the
+slab is gone in `glass` mode. The vendored iced_layershell hook
+(`shell/vendor/PATCHES.md`) also clears the block above. **Still open in
+`frost` mode**, where no panes are drawn and ec-toasts sets no
+background-effect region.
+
+---
+
+# Glass panes — found landing `eclipse_glass_v1`, 2026-11-01
+
+ADR 0081, PR #166. Every entry here is open. None blocks the merge: each one
+either falls back to how things looked before the change, or is a
+visual-polish gap.
+
+## GLASS-01: captures do not draw panes
+
+`abyss/crates/ec-abyss-render/src/still.rs` (`Frame::window`/`layer`)
+draws each surface with its pre-pane whole-layer glass, so `grim`, screencopy
+and the image-copy capture all show the old flat cells, on the bar and on
+windows. Screenshots of panes currently have to be taken one session level up
+(cage → nested abyss, `grim` against cage).
+**Repro:** `decoration.blur.mode "glass"`, bar up, `grim`; the chips are flat.
+**Proposed:** `still.rs` reads `committed_panes` and calls the same
+`insert_panes` path as the live frame (both live in `ec-abyss-render`).
+`render/capture.rs` (TCB) only feeds the list and needs no change, but the
+change must be checked against CAP-01's redaction rule. A redacted surface's
+panes must sample the placeholder, never the content.
+
+## GLASS-02: panes are not clipped to the window's rounded mask
+
+A window pane is clipped to the surface rectangle, not to the window's corner
+radius (`insert_panes`, `abyss/crates/ec-abyss-render/src/lib.rs`). On the
+Settings pages checked, no pane reaches a corner. One that does (a full-bleed
+card, a client with a large radius) shows square glass outside the rounded
+corner.
+**Proposed:** pass the window's rounding into the pane draw as a second SDF
+and take the min.
+
+## GLASS-03: scroll-clipped panes keep their rounded corners
+
+`ec_ui::glass::scroll_region` (`shell/crates/ec-ui/src/glass.rs`) clips a pane
+that is cut by the scroll edge to the viewport but keeps all four radii. The
+cut edge shows rounded corners where the content runs straight through.
+Nested scroll regions are not supported: only the innermost viewport is used.
+**Proposed:** per-corner radius in the pane record (a protocol v2 field), or
+a client-side rule that a clipped side squares off.
+
+## GLASS-04: the bar does not repaint when the capability flips
+
+Changing `decoration.blur.mode` between `glass` and anything else makes abyss
+send `capability` at once (`update_capabilities` after config apply).
+ec-hyperion-bar only picks the new value up on its next redraw, so until
+something on the bar changes, it shows either no ground at all (going
+glass → frost) or a client ground under glass panes (going the other way).
+**Proposed:** the capability listener emits a message that forces a redraw
+on every iced window.
+
+## GLASS-05: a toast's pane pops at the end of its fade
+
+`glass_card` and `glass_ground` (`shell/crates/ec-ui/src/widget/parts.rs`)
+always send `alpha = 255`. A toast's text fades out, and its glass disappears
+in one frame when the card is removed.
+**Proposed:** `glass::Pane` already has `.alpha(u8)`. `glass_card` and
+`glass_ground` should take an alpha and pass it through, and the toast stack
+should feed it from its fade value.
+
+## GLASS-06: controls still drawing their own ground
+
+These still draw a client fill in glass mode, so they read as dark flat
+fields next to glass:
+- **Settings dropdowns.** iced `pick_list` in `ec-settings` (`app.rs`,
+  `taskbar.rs`, `animations.rs`, `pinned.rs`), the "pop"/"glide" pickers.
+  The picker's overlay menu is a separate popup surface.
+- **ec-center** text rows outside the System/Session blocks.
+- **`prompt_cell`** and **`list_row`** in `ec-ui` (`list_row` has no
+  ground at all).
+- **ec-policy-viewer.** It is on the bind allowlist, but none of its views
+  push panes yet.
+
+Frontend work (`eclipse-frontend`). Each one leaves this list when converted.
+
+## GLASS-07: focused-pane rim step is subtle
+
+`glass::look()` (`abyss/crates/ec-abyss-render/src/glass.rs`) lifts the
+focused rim to about 77, against about 60 for plain. On a busy backdrop the
+current Settings page and the focused chip are hard to tell from their
+neighbours. The proposal is to tune the focused rim to about 1.4× plain,
+still with no fill brightening beyond the existing lift and no gold
+(STYLE.md: glassy, not glowy). It needs an owner look before the numbers
+change.
+
+## GLASS-08: unproven limits and modes
+
+- **64-pane cap.** Settings pages have been observed at 15–24 panes. A page
+  over the cap never reaches the compositor. `ec_ui::glass` drops panes past
+  64 and logs the count, so the panes at the end of the list are left with no
+  ground. No page is known to hit the cap, and it has not been tested at the
+  limit.
+- **Blur and frost unchanged.** The no-capability fallback in `blur` and
+  `frost` mode has only been compared by eye in one Settings screenshot. There
+  is no pixel diff against main.
+- **Cost unmeasured.** ADR 0081 says the per-pane pass is "well inside
+  COMP-02 §10". `abyss/bench` has not been run with panes.
+
+## GLASS-09: paperwork
+
+- ADR 0081 is still `proposed`. It becomes accepted when the owner merges
+  PR #166.
+- COMP-02 §9 and COMP-06 §1 need the Appendix A row for client-declared panes
+  (ADR 0081, Consequences).
+- `shell/vendor/` patches must be re-applied on any iced_layershell bump
+  (`shell/vendor/PATCHES.md`). Upstreaming `SurfaceHook` would retire the
+  vendor copy.
+
 ---
 
 ## Probing notes for the launcher
@@ -150,17 +267,25 @@ pre-map `_NET_WM_STATE` message, from an undecorated screen-sized window
 - **`scaling "client"` takes one scale at Xwayland start**, so outputs with
   mixed scales are wrong until restart (documented in `xwayland/mod.rs`).
 
-## SEAT-01: an agent's wl_seat is advertised to every client
+## SEAT-01: a new agent seat is announced to every connected client
 
-`abyss/crates/ec-abyss/src/protocols/agent/seat.rs` creates each agent seat
-with smithay's `SeatState::new_wl_seat`, whose global has no per-client
-filter. Every client on the main display can bind `agent-<id>`, see its
-capabilities, and bind text-input or input-method objects on it. Input is
-still only *delivered* by the agent through `policy::enforce`; what leaks is
-that the seat exists and its focus events. **Repro:** start an agent, call
-`get_seat`, run `wayland-info` on the main socket; `agent-1` is listed.
-**Proposed:** none committed. Either a filtered seat global hand-written like
-`output_power.rs`, or bind visibility to clients the agent has focused.
+Narrowed 2026-10-11: `protocols/agent/seat_global.rs` now admits an agent's
+`wl_seat` only to clients owning a window its seat capabilities can act on.
+Two residues remain, both upstream-blocked on wayland-backend 0.3.17:
+
+- **Timing leak.** The libwayland backend does not filter the announcement
+  made while a global is created, so every client connected at that moment
+  is told a `wl_seat` appeared. It binds a nameless, device-less decoy and
+  learns nothing of the agent, but it learns *that* a seat was made, and
+  when. **Repro:** keep a client connected that lists globals as they appear,
+  start an agent, call `get_seat`; the client receives a `wl_seat` global.
+- **Leaked display.** `get_global_handler` frees a global's user data while
+  the `wl_global` still points at it, so agent seat globals live on a hidden
+  display (`seat::HIDDEN`) that is leaked and never torn down: one
+  `wl_global` per agent seat ever made, one display per thread.
+
+**Proposed:** fix upstream (filter the creation-time announcement; keep the
+user data alive in `get_global_handler`), then drop the decoy and the leak.
 
 ## SEAT-02: xdg_activation from agent-launched clients is not checked
 
@@ -215,47 +340,60 @@ else and everything under `agents.slice`. Two things remain:
 
 # Agent batches, generations and locks — found landing M14, 2026-10-06
 
-## BATCH-01: a batch is all-or-nothing only up to what the compositor can check without running a step
+## BATCH-01: a step that fails while running leaves the steps before it applied
 
-`protocols/agent/atomic.rs` queues a batch's steps and checks the whole batch
-before running any (paused, a target gone or unmapped, a focus-dependent step
-with no focus, a stale generation). `policy::enforce` (TCB) has no "decide
-without executing" entry, so a step the *policy* refuses (deny, a prompt that
-parks, a rule change mid-batch) is only seen when its turn comes. Earlier steps
-have then run: the commit answers that step's status with detail
-`partial:<n>`, and a step that parks behind a prompt ends the batch with
-`batch_interrupted`. **Proposed:** `policy::enforce::dry_run` (steps 1 to 8 for
-every request, nothing executed), called from `atomic::commit` at the marked
-`TCB-HOOK`. Also: `max_frames` is validated and carried, but delivery is
-synchronous (0 frames), and an open batch is abandoned after 5 s, a constant
-the spec does not give.
+`atomic::commit` asks `policy::enforce::dry_run` about every step (steps 1 and
+3 to 8, `seat.atomic` on each target included) before any runs, so a policy
+refusal, a prompt or a deferral anywhere in the batch runs nothing. What the
+dry run cannot foresee is a step failing as it executes (a `keysym` the keymap
+cannot type, the client gone): the steps before it stay applied and the commit
+answers `partial:<n>`. Also: `max_frames` is validated and carried, but
+delivery is synchronous (0 frames), and an open batch is abandoned after 5 s,
+a constant the spec does not give. A prompt or deferral inside a batch is
+refused (`needs_prompt:<i>` / `needs_defer:<i>`): owner decision 2026-10-11,
+the spec does not say.
 
 ## GEN-01: generations track what a toplevel reports, not its tree
 
 COMP-09's semantic tree does not exist, so a toplevel's generation bumps on a
 change of app id, title, geometry, workspace, output or the
 maximized/fullscreen/floating/minimized bits (`generation.rs`). A change
-inside the client's content that moves none of those is not seen. Step 8 of
-COMP-08 §10 runs in `seat::execute` (after the table, and after the 8b class
-re-check for a prompted request) rather than between 7 and 8b, and dedupe
-(step 2) runs in `seat.rs` before the request reaches `enforce`. Both want to
-move into `policy::enforce` (see the `TCB-HOOK` in `seat::execute`).
+inside the client's content that moves none of those is not seen. Needs the
+COMP-09 tree (M22).
 
-## LOCK-01: compat_lock holds human input, but does not yet route agent acts through the human seat
+## LOCK-01: a compat lock's routing is human-seat focus only, and queued input can be discarded
 
-`protocols/agent/lock.rs` queues the human's keys, buttons and scrolls for the
-locked window and replays them on release. Not done: the COMP-10 §3.4
-indicator (TCB), the table check for `seat.compat_lock` (the grant must hold
-it and `seat.focus` reaching the window instead), queueing of touch and tablet
-input, and the compat fallback that sends an agent's acts through the human
-seat for a `seat-compat lock` app (COMP-04 §8). Queued input is discarded, not
-delivered, if the human's focus has left the window by release.
+`protocols/agent/lock.rs` queues the human's keys, buttons, scrolls, touch
+points and tablet tip/button events for the locked window and replays them on
+release, and routes the lock holder's acts on that window through the human
+seat (`Origin::AgentCompat`, COMP-04 §8). Open: the routed act needs the
+human's keyboard focus already on the window (an agent seat may not steal it),
+so an agent cannot give an X11 window keys on its own; a `seat-compat lock`
+window with no lock held is still acted on through the agent seat; a routed
+touch counts as human activity for the idle timer (`inject_touch_*`); and a
+tablet tip held while the cursor was on the window but released after it left
+is delivered unpaired; an agent button pressed on a code the human already
+holds is released with the lock. Queued input is discarded, not delivered, if the
+human's focus has left the window by release.
+
+## IND-01: a touch or tablet contact on a trusted indicator reaches the client under it
+
+`trusted_ui/indicator.rs` takes pointer buttons pressed on the capture marker
+or a compat-lock pill (COMP-10 §3.3, §4): the press and its release reach no
+client, and the left button opens the emergency panel. Touch-down and tablet
+tip/button events are not checked against the indicator, so a finger or pen
+on it goes to the window beneath. Fix: test `indicator::at` in the touch-down
+and tablet tip/button paths in `input/mod.rs`, the same way, and open the
+panel on a tap.
 
 ## WAIT-01: wait_for has no semantic or terminal predicates
 
 `node`, `text_contains`, `node_gone` (COMP-09) and `command_finished` are
-refused `invalid_argument` "unsupported". A wait is polled every 25 ms, not
-woken by the change; `waited` is not audited beyond the request's own record.
+refused `invalid_argument` "unsupported"; `waited` is not audited beyond the
+request's own record. A wait is woken after every loop dispatch round
+(`wait::wake` from `agent::flush`) plus one deadline timer, not polled, but
+each round with a wait pending evaluates it in full: there is no dirty flag
+for scene changes yet.
 
 ---
 

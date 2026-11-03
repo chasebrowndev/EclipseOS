@@ -1,0 +1,45 @@
+/* Managed by ec-glass-host (EclipseOS Glass for Firefox). Rewritten on every
+   start; edit your own rules in userContent.css instead.
+
+   Scoped to `:root[lwt-newtab]`, which Firefox sets only while a theme styles
+   Home, so with the Glass theme gone these rules do nothing. */
+
+/* Firefox Home: the round customize (pencil) button is glass. Its fill is the
+   theme's card colour (a key colour), its rim is not, so it stays crisp. It
+   still expands on hover; only its colours change. Firefox ships two builds of
+   the button. The moz-button one lives in a shadow tree that a user sheet can't
+   reach with ::part, so it is coloured through the custom properties
+   moz-button reads (`!important`, so the user sheet beats the page's own); the
+   plain `.personalize-button` is styled directly. */
+:root[lwt-newtab] {
+  --glass-fill: var(--newtab-background-color-secondary);
+  --glass-rim: color-mix(in srgb, var(--newtab-text-primary-color) 38%, var(--glass-fill));
+  --glass-rim-hover: color-mix(in srgb, var(--newtab-text-primary-color) 70%, var(--glass-fill));
+}
+:root[lwt-newtab] .open-customization-button {
+  --button-background-color-primary: var(--glass-fill) !important;
+  --button-background-color-primary-hover: var(--glass-fill) !important;
+  --button-background-color-primary-active: var(--glass-fill) !important;
+  --button-background-color-primary-selected: var(--glass-fill) !important;
+  --button-border-color-primary: var(--glass-rim) !important;
+  --button-border-color-primary-hover: var(--glass-rim-hover) !important;
+  --button-border-color-primary-active: var(--glass-rim-hover) !important;
+  --button-border-color-primary-selected: var(--glass-rim-hover) !important;
+  --button-text-color-primary: var(--newtab-text-primary-color) !important;
+  --button-text-color-primary-hover: var(--newtab-text-primary-color) !important;
+  --button-text-color-primary-active: var(--newtab-text-primary-color) !important;
+  --button-text-color-primary-selected: var(--newtab-text-primary-color) !important;
+}
+:root[lwt-newtab] .personalize-button {
+  background: var(--glass-fill) !important;
+  color: var(--newtab-text-primary-color) !important;
+  border: 1px solid var(--glass-rim) !important;
+  box-shadow: none !important;
+}
+:root[lwt-newtab] .personalize-button:hover,
+:root[lwt-newtab] .personalize-button:focus-visible {
+  border-color: var(--glass-rim-hover) !important;
+}
+:root[lwt-newtab] .personalize-button > div > img {
+  color: var(--newtab-text-primary-color);
+}

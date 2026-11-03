@@ -21,9 +21,9 @@
 //! before anything is committed. If either side fails to parse, nothing is
 //! written and the originals are untouched.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use kdl::{KdlDocument, KdlNode};
+use kdl::{KdlDocument, KdlEntry, KdlNode};
 
 /// Dotted paths the schema marks `Owner::Policy`
 /// (`ec_abyss_config::schema::TABLE`). Mirrored here so this CLI does not link
@@ -56,6 +56,24 @@ const LEGACY_TRAY_BUILTINS: &[&str] = &["network", "bluetooth", "battery", "volu
 /// this list with the legacy ids rearranged by the old tray lists.
 const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
     "now-playing",
+    "volume",
+    "network",
+    "bluetooth",
+    "battery",
+    "quick-actions",
+    "tray",
+    "progress",
+    "power",
+    "clock",
+];
+
+/// Built-in widget ids that existed before the offer step below. A first run
+/// (no state file) marks them offered without adding them: a pinned order
+/// written before then that lacks one of them was a choice, not an omission.
+/// Mirrors nothing in the schema; local to this verb.
+const OFFERED_BASELINE: &[&str] = &[
+    "now-playing",
+    "system-usage",
     "volume",
     "network",
     "bluetooth",
@@ -274,6 +292,121 @@ fn migrate_widgets(doc: &mut KdlDocument) -> bool {
     let snippet: KdlDocument = snippet.parse().expect("generated node parses");
     into.nodes_mut().extend(snippet.nodes().iter().cloned());
     true
+}
+
+/// `$XDG_STATE_HOME/eclipse/offered-widgets` (falling back to `~/.local/state`,
+/// like the approvals store): one built-in widget id per line, every id the
+/// offer step has added or been told to consider already settled.
+fn offered_path() -> Result<PathBuf, String> {
+    std::env::var_os("XDG_STATE_HOME")
+        .filter(|x| !x.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .map(|b| b.join("eclipse/offered-widgets"))
+        .ok_or_else(|| "neither XDG_STATE_HOME nor HOME is set".to_string())
+}
+
+/// `None` when there is no state file yet (the first run).
+fn read_offered(path: &Path) -> Result<Option<Vec<String>>, String> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_owned)
+                .collect(),
+        )),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
+}
+
+fn render_offered(ids: &[String]) -> String {
+    ids.iter().map(|id| format!("{id}\n")).collect()
+}
+
+/// The `order` node a human pinned: its (bar, widgets, order) child indices.
+/// The last one that pins it wins.
+fn pinned_order_at(doc: &KdlDocument) -> Option<(usize, usize, usize)> {
+    let mut at = None;
+    for (b, bar) in doc.nodes().iter().enumerate() {
+        if bar.name().value() != "bar" {
+            continue;
+        }
+        let widget_blocks = bar.children().map(|c| c.nodes()).unwrap_or_default();
+        for (w, widgets) in widget_blocks.iter().enumerate() {
+            if widgets.name().value() != "widgets" {
+                continue;
+            }
+            let orders = widgets.children().map(|c| c.nodes()).unwrap_or_default();
+            for (o, order) in orders.iter().enumerate() {
+                if order.name().value() == "order" {
+                    at = Some((b, w, o));
+                }
+            }
+        }
+    }
+    at
+}
+
+/// A string entry written the way the human writes ids (`"tray"`), not as a
+/// bare identifier. Parsed, so it carries the ordinary leading space.
+fn quoted_entry(id: &str) -> KdlEntry {
+    let doc: KdlDocument = format!("x {id:?}").parse().expect("a quoted id parses");
+    doc.nodes()[0].entries()[0].clone()
+}
+
+/// Appends the built-in widget ids a pinned `bar.widgets.order` lacks, except
+/// the ones already in `offered`, which are recorded there as they are added.
+/// Each id goes before the next later built-in id (in default order) that the
+/// order has; `clock` is the last default id, so a present `clock` is always
+/// that later one. With none, it goes at the end. An unset order is left
+/// alone. Returns the ids added, in order.
+fn offer_widgets(doc: &mut KdlDocument, offered: &mut Vec<String>) -> Vec<&'static str> {
+    let Some((b, w, o)) = pinned_order_at(doc) else {
+        return Vec::new();
+    };
+    let Some(order) = doc
+        .nodes_mut()
+        .get_mut(b)
+        .and_then(|bar| bar.children_mut().as_mut())
+        .and_then(|c| c.nodes_mut().get_mut(w))
+        .and_then(|widgets| widgets.children_mut().as_mut())
+        .and_then(|c| c.nodes_mut().get_mut(o))
+    else {
+        return Vec::new();
+    };
+    let has = |order: &KdlNode, id: &str| order.entries().iter().any(|e| e.value().as_string() == Some(id));
+    if order.entries().is_empty() {
+        // An emptied order is the human's word for "no widgets": mark every
+        // id offered so none is appended now or later, and add nothing.
+        for id in BAR_WIDGET_DEFAULT_ORDER.iter().copied() {
+            if !offered.iter().any(|x| x == id) {
+                offered.push(id.to_owned());
+            }
+        }
+        return Vec::new();
+    }
+    let mut added = Vec::new();
+    for (i, id) in BAR_WIDGET_DEFAULT_ORDER.iter().copied().enumerate() {
+        if has(order, id) || offered.iter().any(|x| x == id) {
+            continue;
+        }
+        let before = BAR_WIDGET_DEFAULT_ORDER[i + 1..].iter().find_map(|later| {
+            order
+                .entries()
+                .iter()
+                .position(|e| e.value().as_string() == Some(*later))
+        });
+        let entry = quoted_entry(id);
+        match before {
+            Some(p) => order.entries_mut().insert(p, entry),
+            None => order.entries_mut().push(entry),
+        }
+        offered.push(id.to_owned());
+        added.push(id);
+    }
+    added
 }
 
 /// Rewrite the legacy `decoration { blur { enabled #true|#false } }` as
@@ -614,8 +747,14 @@ fn split(doc: &KdlDocument, existing_policy: &KdlDocument) -> (String, String, b
     (abyss.to_string(), policy.to_string(), any_moved)
 }
 
-pub fn run(dry_run: bool) -> Result<String, String> {
-    let dir = config_dir()?;
+/// `only_widget_order` is the session-start form (`--only widget-order`): it
+/// runs the offer step and nothing else, so it never splits `policy.kdl` or
+/// rewrites a legacy form.
+pub fn run(dry_run: bool, only_widget_order: bool) -> Result<String, String> {
+    run_in(&config_dir()?, &offered_path()?, dry_run, only_widget_order)
+}
+
+fn run_in(dir: &Path, state: &Path, dry_run: bool, only_widget_order: bool) -> Result<String, String> {
     let abyss_path = dir.join("abyss.kdl");
     let policy_path = dir.join("policy.kdl");
 
@@ -626,21 +765,39 @@ pub fn run(dry_run: bool) -> Result<String, String> {
     let mut doc: KdlDocument = abyss_text
         .parse()
         .map_err(|e| format!("{}: {e}", abyss_path.display()))?;
-    let existing: KdlDocument = policy_text
-        .parse()
-        .map_err(|e| format!("{}: {e}", policy_path.display()))?;
+    let existing: KdlDocument = if only_widget_order {
+        KdlDocument::new()
+    } else {
+        policy_text
+            .parse()
+            .map_err(|e| format!("{}: {e}", policy_path.display()))?
+    };
 
-    let widgets = migrate_widgets(&mut doc);
-    let blur = migrate_blur_mode(&mut doc);
-    let anims = migrate_animations(&mut doc);
-    let (split_abyss, mut new_policy, moved) = split(&doc, &existing);
-    if !widgets && !blur && !anims && !moved {
+    let widgets = !only_widget_order && migrate_widgets(&mut doc);
+    let offered_on_disk = read_offered(state)?;
+    let first_run = offered_on_disk.is_none();
+    let mut offered =
+        offered_on_disk.unwrap_or_else(|| OFFERED_BASELINE.iter().map(|id| (*id).to_owned()).collect());
+    let added = offer_widgets(&mut doc, &mut offered);
+    let state_changed = first_run || !added.is_empty();
+    let blur = !only_widget_order && migrate_blur_mode(&mut doc);
+    let anims = !only_widget_order && migrate_animations(&mut doc);
+    let (split_abyss, mut new_policy, moved) = if only_widget_order {
+        (String::new(), String::new(), false)
+    } else {
+        split(&doc, &existing)
+    };
+    if !widgets && !blur && !anims && !moved && added.is_empty() {
+        if state_changed && !dry_run {
+            write(state, &render_offered(&offered))?;
+        }
         return Ok(format!(
             "{}: nothing to migrate — no policy settings, built-in tray ids, blur `enabled`, \
-             legacy animation forms or un-migrated bar.motion found\n",
+             legacy animation forms, un-migrated bar.motion or unoffered built-in widgets found\n",
             abyss_path.display()
         ));
     }
+    let added_list = added.join(", ");
     // With nothing moved, the document is written back whole so its own
     // leading and trailing trivia survive too.
     let new_abyss = if moved { split_abyss } else { doc.to_string() };
@@ -666,7 +823,11 @@ pub fn run(dry_run: bool) -> Result<String, String> {
     }
 
     if dry_run {
-        let mut out = format!("--- {} ---\n{new_abyss}\n", abyss_path.display());
+        let mut out = String::new();
+        if !added.is_empty() {
+            out.push_str(&format!("would add to bar.widgets.order: {added_list}\n"));
+        }
+        out.push_str(&format!("--- {} ---\n{new_abyss}\n", abyss_path.display()));
         if moved {
             out.push_str(&format!("--- {} ---\n{new_policy}", policy_path.display()));
         }
@@ -680,27 +841,47 @@ pub fn run(dry_run: bool) -> Result<String, String> {
         backup(&policy_path, &policy_text)?;
     }
     write(&abyss_path, &new_abyss)?;
-    if !moved {
-        let what = [
-            (widgets, "built-in tray ids -> bar.widgets.order"),
-            (blur, "decoration.blur.enabled -> decoration.blur.mode"),
-            (anims, "legacy animations -> presets and event blocks"),
-        ]
-        .iter()
-        .filter(|(on, _)| *on)
-        .map(|(_, w)| *w)
-        .collect::<Vec<_>>()
-        .join(", ");
+    if moved {
+        write(&policy_path, &new_policy)?;
+    }
+    // Last: a failed write above leaves the offers unrecorded, so they are
+    // offered again rather than lost.
+    if state_changed {
+        write(state, &render_offered(&offered))?;
+    }
+    let added_note = if added.is_empty() {
+        String::new()
+    } else {
+        format!("added to bar.widgets.order: {added_list}")
+    };
+    if moved {
+        let note = if added.is_empty() {
+            String::new()
+        } else {
+            format!("; {added_note}")
+        };
         return Ok(format!(
-            "migrated: {} {what} (original saved as .bak)\n",
-            abyss_path.display()
+            "migrated: {} -> {}{note} (originals saved as .bak)\n",
+            abyss_path.display(),
+            policy_path.display()
         ));
     }
-    write(&policy_path, &new_policy)?;
+    let mut what = [
+        (widgets, "built-in tray ids -> bar.widgets.order"),
+        (blur, "decoration.blur.enabled -> decoration.blur.mode"),
+        (anims, "legacy animations -> presets and event blocks"),
+    ]
+    .iter()
+    .filter(|(on, _)| *on)
+    .map(|(_, w)| (*w).to_owned())
+    .collect::<Vec<_>>();
+    if !added.is_empty() {
+        what.push(added_note);
+    }
     Ok(format!(
-        "migrated: {} -> {} (originals saved as .bak)\n",
+        "migrated: {} {} (original saved as .bak)\n",
         abyss_path.display(),
-        policy_path.display()
+        what.join(", ")
     ))
 }
 
@@ -770,7 +951,7 @@ mod tests {
         assert_eq!(
             out,
             "bar {\n    // my tray\n    tray {\n        pinned \"org.kde.x\"\n    }\n    widgets {\n        \
-             order \"now-playing\" \"battery\" \"volume\" \"network\" \"tray\" \"clock\"\n    }\n}\n"
+             order \"now-playing\" \"battery\" \"volume\" \"network\" \"quick-actions\" \"tray\" \"progress\" \"power\" \"clock\"\n    }\n}\n"
         );
     }
 
@@ -780,14 +961,16 @@ mod tests {
         assert!(out.contains("        pinned\n"), "{out}");
         assert!(
             out.contains(
-                "order \"now-playing\" \"network\" \"volume\" \"bluetooth\" \"battery\" \"tray\" \"clock\""
+                "order \"now-playing\" \"network\" \"volume\" \"bluetooth\" \"battery\" \"quick-actions\" \"tray\" \"progress\" \"power\" \"clock\""
             ),
             "{out}"
         );
         let (_, out) = widgets("bar {\n    tray {\n        hidden \"volume\"\n    }\n}\n");
         assert!(!out.contains("hidden"), "{out}");
         assert!(
-            out.contains("order \"now-playing\" \"network\" \"bluetooth\" \"battery\" \"tray\" \"clock\""),
+            out.contains(
+                "order \"now-playing\" \"network\" \"bluetooth\" \"battery\" \"quick-actions\" \"tray\" \"progress\" \"power\" \"clock\""
+            ),
             "{out}"
         );
     }
@@ -932,5 +1115,240 @@ mod tests {
         let (_, policy, moved) = split(&doc, &KdlDocument::new());
         assert!(!moved);
         assert!(policy.trim().is_empty(), "{policy}");
+    }
+
+    fn order_ids(text: &str) -> Vec<String> {
+        let doc = parse(text);
+        let bar = doc
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "bar")
+            .expect("bar");
+        let widgets = bar
+            .children()
+            .expect("bar children")
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "widgets")
+            .expect("widgets");
+        let order = widgets
+            .children()
+            .expect("widgets children")
+            .nodes()
+            .iter()
+            .find(|n| n.name().value() == "order")
+            .expect("order");
+        order
+            .entries()
+            .iter()
+            .filter_map(|e| e.value().as_string().map(str::to_owned))
+            .collect()
+    }
+
+    fn offer(text: &str, offered: &[&str]) -> (Vec<&'static str>, Vec<String>, String) {
+        let mut doc = parse(text);
+        let mut offered: Vec<String> = offered.iter().map(|s| (*s).to_owned()).collect();
+        let added = offer_widgets(&mut doc, &mut offered);
+        let out = doc.to_string();
+        out.parse::<KdlDocument>().expect("offered text re-parses");
+        (added, offered, out)
+    }
+
+    const PINNED_OLD: &str =
+        "bar {\n    widgets {\n        order \"now-playing\" \"volume\" \"network\" \"bluetooth\" \"battery\" \"tray\" \"clock\"\n    }\n}\n";
+
+    #[test]
+    fn new_built_ins_land_before_their_next_later_neighbour() {
+        let (added, offered, out) = offer(PINNED_OLD, OFFERED_BASELINE);
+        assert_eq!(added, ["quick-actions", "progress", "power"]);
+        assert_eq!(
+            order_ids(&out),
+            [
+                "now-playing",
+                "volume",
+                "network",
+                "bluetooth",
+                "battery",
+                "quick-actions",
+                "tray",
+                "progress",
+                "power",
+                "clock",
+            ]
+        );
+        assert!(offered.iter().any(|x| x == "quick-actions"));
+        assert!(offered.iter().any(|x| x == "system-usage"));
+    }
+
+    #[test]
+    fn a_second_offer_is_a_no_op() {
+        let (_, offered, out) = offer(PINNED_OLD, OFFERED_BASELINE);
+        let offered: Vec<&str> = offered.iter().map(String::as_str).collect();
+        let (added, _, again) = offer(&out, &offered);
+        assert!(added.is_empty());
+        assert_eq!(again, out);
+    }
+
+    #[test]
+    fn an_emptied_order_is_left_empty() {
+        let text = "bar {\n    widgets {\n        order\n    }\n}\n";
+        let (added, offered, out) = offer(text, OFFERED_BASELINE);
+        assert!(added.is_empty(), "{out}");
+        assert_eq!(out, text);
+        assert!(offered.iter().any(|x| x == "power"));
+    }
+
+    #[test]
+    fn a_removed_offer_stays_removed() {
+        let (_, offered, _) = offer(PINNED_OLD, OFFERED_BASELINE);
+        let offered: Vec<&str> = offered.iter().map(String::as_str).collect();
+        // The human took quick-actions back out after it was offered.
+        let text = "bar {\n    widgets {\n        order \"now-playing\" \"volume\" \"network\" \"bluetooth\" \"battery\" \"tray\" \"progress\" \"power\" \"clock\"\n    }\n}\n";
+        let (added, _, out) = offer(text, &offered);
+        assert!(added.is_empty(), "{out}");
+        assert_eq!(out, text);
+    }
+
+    #[test]
+    fn an_unset_order_is_untouched() {
+        let text = "bar {\n    tray {\n        pinned \"org.kde.x\"\n    }\n}\n";
+        let (added, offered, out) = offer(text, OFFERED_BASELINE);
+        assert!(added.is_empty());
+        assert_eq!(out, text);
+        assert_eq!(offered.len(), OFFERED_BASELINE.len());
+    }
+
+    #[test]
+    fn an_order_that_has_them_is_untouched() {
+        let text = "bar {\n    widgets {\n        order \"now-playing\" \"volume\" \"network\" \"bluetooth\" \"battery\" \"quick-actions\" \"tray\" \"progress\" \"power\" \"clock\"\n    }\n}\n";
+        let (added, _, out) = offer(text, OFFERED_BASELINE);
+        assert!(added.is_empty());
+        assert_eq!(out, text);
+    }
+
+    #[test]
+    fn comments_survive_the_offer() {
+        let (added, _, out) = offer(
+            "bar {\n    widgets {\n        // mine\n        order \"clock\" // keep\n    }\n}\n",
+            OFFERED_BASELINE,
+        );
+        assert_eq!(added, ["quick-actions", "progress", "power"]);
+        assert!(out.contains("// mine"), "{out}");
+        assert!(out.contains("// keep"), "{out}");
+        assert!(out.contains("\"progress\" \"power\""), "{out}");
+        assert_eq!(order_ids(&out), ["quick-actions", "progress", "power", "clock"]);
+    }
+
+    /// `run_in` against a scratch directory: the files and the state file.
+    fn scratch(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("ec-ctl-offer-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("scratch dir");
+        d
+    }
+
+    #[test]
+    fn migrate_appends_once_and_records_the_offer() {
+        let dir = scratch("once");
+        let state = dir.join("state/eclipse/offered-widgets");
+        let abyss = dir.join("abyss.kdl");
+        std::fs::write(&abyss, PINNED_OLD).unwrap();
+
+        let report = run_in(&dir, &state, false, true).expect("first run");
+        assert!(report.contains("quick-actions, progress, power"), "{report}");
+        let out = std::fs::read_to_string(&abyss).unwrap();
+        assert_eq!(
+            order_ids(&out),
+            [
+                "now-playing",
+                "volume",
+                "network",
+                "bluetooth",
+                "battery",
+                "quick-actions",
+                "tray",
+                "progress",
+                "power",
+                "clock",
+            ]
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("abyss.kdl.bak")).unwrap(),
+            PINNED_OLD
+        );
+        assert!(!dir.join("policy.kdl").exists(), "only-widget-order never splits");
+        let recorded = std::fs::read_to_string(&state).unwrap();
+        assert!(recorded.lines().any(|l| l == "quick-actions"), "{recorded}");
+        assert!(recorded.lines().any(|l| l == "system-usage"), "{recorded}");
+
+        // Second run: nothing to add, the file is not rewritten.
+        let report = run_in(&dir, &state, false, true).expect("second run");
+        assert!(report.contains("nothing to migrate"), "{report}");
+        assert_eq!(std::fs::read_to_string(&abyss).unwrap(), out);
+
+        // The human removes quick-actions: it stays removed.
+        assert!(out.contains("\"quick-actions\""), "{out}");
+        let removed = out.replace("\"quick-actions\" ", "");
+        assert_ne!(removed, out);
+        std::fs::write(&abyss, &removed).unwrap();
+        run_in(&dir, &state, false, true).expect("third run");
+        assert_eq!(std::fs::read_to_string(&abyss).unwrap(), removed);
+        assert!(!order_ids(&removed).contains(&"quick-actions".to_owned()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn first_run_without_a_pinned_order_only_records_the_baseline() {
+        let dir = scratch("unset");
+        let state = dir.join("state/eclipse/offered-widgets");
+        let text = "bar {\n    tray {\n        pinned \"org.kde.x\"\n    }\n}\n";
+        std::fs::write(dir.join("abyss.kdl"), text).unwrap();
+        run_in(&dir, &state, false, true).expect("first run");
+        assert_eq!(std::fs::read_to_string(dir.join("abyss.kdl")).unwrap(), text);
+        assert!(!dir.join("abyss.kdl.bak").exists());
+        let recorded = std::fs::read_to_string(&state).unwrap();
+        assert!(recorded.lines().any(|l| l == "battery"), "{recorded}");
+        assert!(!recorded.lines().any(|l| l == "quick-actions"), "{recorded}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dry_run_writes_nothing() {
+        let dir = scratch("dry");
+        let state = dir.join("state/eclipse/offered-widgets");
+        std::fs::write(dir.join("abyss.kdl"), PINNED_OLD).unwrap();
+        let report = run_in(&dir, &state, true, true).expect("dry run");
+        assert!(
+            report.contains("would add to bar.widgets.order: quick-actions, progress, power"),
+            "{report}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("abyss.kdl")).unwrap(),
+            PINNED_OLD
+        );
+        assert!(!state.exists());
+        assert!(!dir.join("abyss.kdl.bak").exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn full_migrate_also_offers_after_the_tray_cleanup() {
+        let dir = scratch("full");
+        let state = dir.join("state/eclipse/offered-widgets");
+        std::fs::write(
+            dir.join("abyss.kdl"),
+            "bar {\n    widgets {\n        order \"clock\"\n    }\n    tray {\n        hidden \"battery\"\n    }\n}\n",
+        )
+        .unwrap();
+        let report = run_in(&dir, &state, false, false).expect("full run");
+        assert!(
+            report.contains("added to bar.widgets.order: quick-actions, progress, power"),
+            "{report}"
+        );
+        let out = std::fs::read_to_string(dir.join("abyss.kdl")).unwrap();
+        assert!(!out.contains("hidden"), "{out}");
+        assert_eq!(order_ids(&out), ["quick-actions", "progress", "power", "clock"]);
+        assert!(!dir.join("policy.kdl").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

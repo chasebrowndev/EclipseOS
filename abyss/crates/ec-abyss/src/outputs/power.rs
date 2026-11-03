@@ -140,7 +140,7 @@ pub fn lid_switch(state: &mut AbyssState, closed: bool) {
         // the lid is handled by the resume path, so there is nothing to undo.
         if closed {
             tracing::info!("lid closed, suspending");
-            crate::shell::spawn("systemctl suspend");
+            crate::shell::spawn_with(&[], "systemctl suspend");
         }
         return;
     }

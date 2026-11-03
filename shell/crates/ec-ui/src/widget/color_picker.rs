@@ -197,9 +197,9 @@ impl<M: Clone> canvas::Program<M> for Picker<M> {
         let ((h, s, v), a) = self.current(state);
         let hovered = state.drag.is_some() || cursor.is_over(bounds);
         let ring = if hovered {
-            color::TEXT
+            color::text()
         } else {
-            color::TEXT_SECONDARY
+            color::text_secondary()
         };
         let round = |r: Rectangle| Path::rounded_rectangle(r.position(), r.size(), radius::CHIP.into());
         let knob = |frame: &mut canvas::Frame, at: Point| {
@@ -207,7 +207,7 @@ impl<M: Clone> canvas::Program<M> for Picker<M> {
             frame.stroke(
                 &c,
                 Stroke::default()
-                    .with_color(color::BASE)
+                    .with_color(color::base())
                     .with_width(space::PICKER_KNOB_EDGE * 2.0 + space::HAIRLINE * 2.0),
             );
             frame.stroke(
@@ -259,7 +259,7 @@ impl<M: Clone> canvas::Program<M> for Picker<M> {
         if self.alpha {
             let al = region_rect(Region::Alpha, w);
             let [r, g, b] = hsv_to_rgb(h, s, v);
-            frame.fill(&round(al), color::TRACK);
+            frame.fill(&round(al), color::track());
             frame.fill(
                 &round(al),
                 linear(

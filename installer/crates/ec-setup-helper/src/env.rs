@@ -32,6 +32,11 @@ pub struct Paths {
     pub live_pacman_conf: PathBuf,
     /// The live-side pacman.conf handed to `pacstrap -C`. Not part of the target.
     pub install_pacman_conf: PathBuf,
+    /// The live medium's mirror list; rotated between pacstrap attempts so a
+    /// retry starts on a different mirror.
+    pub mirrorlist: PathBuf,
+    /// Base pause before a pacstrap retry (times the attempt number).
+    pub retry_backoff: Duration,
     /// Lowest uid accepted as "a real user" for the seed.
     pub uid_min: u32,
     pub proc_cpuinfo: PathBuf,
@@ -75,6 +80,8 @@ impl Paths {
             packaging_key: "/root/eclipseos-packaging.asc".into(),
             live_pacman_conf: "/etc/pacman.conf".into(),
             install_pacman_conf: "/root/eclipseos-install-pacman.conf".into(),
+            mirrorlist: "/etc/pacman.d/mirrorlist".into(),
+            retry_backoff: Duration::from_secs(5),
             uid_min: 1000,
             proc_cpuinfo: "/proc/cpuinfo".into(),
             proc_meminfo: "/proc/meminfo".into(),

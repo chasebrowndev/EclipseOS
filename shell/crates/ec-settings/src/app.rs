@@ -22,9 +22,9 @@ use ec_ui::motion::{Animated, Motion};
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, radius, size, space};
 use ec_ui::widget::{
-    color_picker, content_at, dimmed_at, edge_note, hairline, header, list_row, list_row_at, micro_label,
-    nav_item_at, nav_page_at, nav_section_at, panel, pill, pill_group, row_caption, sidebar_at, status_chip,
-    subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
+    color_picker, content_at, dimmed_at, edge_note, glass_panel as panel, hairline, header, list_row,
+    list_row_at, micro_label, nav_item_at, nav_page_at, nav_section_at, pill, pill_group, row_caption,
+    sidebar_at, status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
 };
 
 mod display;
@@ -60,6 +60,9 @@ struct LiveWrite {
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// nothing to do but let the views rebuild.
+    ThemeChanged,
     /// A section's head in the sidebar: fold it if it is the open one,
     /// otherwise open it on its first page.
     Section(Section),
@@ -112,6 +115,10 @@ pub enum Message {
     /// at the application level instead.
     NumberBlur,
     Wire(EventKind, Value),
+    /// eclipse_glass_v1: the window exists; bind its glass object.
+    GlassWindow(iced::window::Id),
+    /// Glass is attached. Only makes iced redraw, with the panes this time.
+    GlassReady(bool),
     /// The Network pane's feed connected; its action handle.
     NetReady(network::Handle),
     NetDown(String),
@@ -126,6 +133,8 @@ pub enum Message {
     Bar(crate::taskbar::Msg),
     /// An edit to `bar.pinned-apps`.
     Pinned(crate::pinned::Msg),
+    /// An edit to `misc.discrete-gpu-apps`.
+    GpuApps(crate::pinned::Msg),
     /// The sidebar search's messages.
     Search(crate::search_ui::Msg),
     /// Launch the policy viewer, from the Oracle Eyes capture hero.
@@ -174,6 +183,9 @@ pub fn locate(target: &str) -> Option<Locus> {
 /// The terminal, and the launcher switch it gates (`schema_page`).
 const TERMINAL: &str = "misc.terminal-command";
 const TERMINAL_APPS: &str = "launcher.search.terminal-apps";
+/// Card fill is drawn only with blur off or `blur`; with glass or frost on,
+/// its row is labelled "not in use", as a moded run's rows are.
+const CARD_FILL: &str = "decoration.surface.card-fill";
 
 /// How search names a place in a bespoke pane (`search::BESPOKE`).
 const BESPOKE: &str = "pane:";
@@ -273,6 +285,9 @@ pub struct App {
     pub(crate) tray_sel: Option<String>,
     /// The apps `bar.pinned-apps` can take, scanned once at start.
     pub(crate) installed: Vec<crate::pinned::Choice>,
+    /// The discrete GPU's name, when the machine has one; the graphics
+    /// controls are drawn only then. Read once at start.
+    pub(crate) discrete_gpu: Option<String>,
     /// The running status-notifier items, while the Taskbar pane shows.
     /// `None` is not heard from yet; `Some(None)` is the feed failing.
     pub(crate) tray_live: Option<Option<Vec<String>>>,
@@ -289,6 +304,10 @@ pub struct App {
     /// window is transparent, so this decides whether the sidebar is
     /// translucent glass or its opaque backed fallback.
     pub(crate) blur: bool,
+    /// Whether a card is hairline-only (`decoration.blur.mode` is `off` or
+    /// `blur`) rather than the glass panel (`glass`/`frost`), synced with
+    /// `blur`. Unknown means glass, the spec's default card.
+    pub(crate) hairline_cards: bool,
     /// The Taskbar pane's picture, lane and editor.
     pub(crate) bar: crate::taskbar::Bar,
     /// Installed add-ons and the hooks they turn on (ADR 0066). `None` until
@@ -330,6 +349,8 @@ impl App {
         let mut conn = Conn::new();
         let glass_radius = conn.glass_radius().unwrap_or(ec_ui::tokens::radius::CARD);
         let blur = conn.blur().unwrap_or(false);
+        let hairline_cards = conn.hairline_cards().unwrap_or(false);
+        conn.sync_surface();
         let mut app = App {
             conn,
             rows: Vec::new(),
@@ -360,10 +381,12 @@ impl App {
             net: Net::default(),
             tray_sel: None,
             installed: crate::pinned::installed(),
+            discrete_gpu: discrete_gpu(),
             tray_live: None,
             tray_seen: Vec::new(),
             glass_radius,
             blur,
+            hairline_cards,
             bar: crate::taskbar::Bar::default(),
             addons: None,
             search: crate::search_ui::Search::default(),
@@ -783,6 +806,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 
 fn update_inner(app: &mut App, message: Message) -> Task<Message> {
     match message {
+        Message::ThemeChanged => return Task::none(),
         Message::Section(s) => {
             if app.open == Some(s) && s.expands() {
                 // Folding leaves the page where it is: closing a list is
@@ -1008,6 +1032,8 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             }
         }
 
+        Message::GlassWindow(id) => return ec_ui::glass::attach_window(id).map(Message::GlassReady),
+        Message::GlassReady(_) => {}
         Message::Wire(kind, data) => match kind {
             // Hot-plug: the output list is the compositor's, never cached
             // across an event.
@@ -1022,6 +1048,10 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 if let Some(blur) = app.conn.blur() {
                     app.blur = blur;
                 }
+                if let Some(hairline) = app.conn.hairline_cards() {
+                    app.hairline_cards = hairline;
+                }
+                app.conn.sync_surface();
                 app.refresh();
                 crate::taskbar::follow_config(app);
             }
@@ -1040,6 +1070,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::TrayLive(live) => app.tray_live = Some(live),
         Message::Bar(m) => return crate::taskbar::update(app, m),
         Message::Pinned(m) => crate::pinned::update(app, m),
+        Message::GpuApps(m) => crate::gpu::update(app, m),
         Message::Search(m) => return crate::search_ui::update(app, m),
         Message::Anim(m) => return crate::animations::update(app, m),
         Message::Accounts(m) => return crate::accounts::update(app, m),
@@ -1155,7 +1186,16 @@ impl iced::advanced::widget::Operation<Option<f32>> for Measure {
 /// iced's `time::every` needs a tokio or smol backend and we enable neither,
 /// so the wait lives in a thread rather than in a futures timer.
 pub fn subscription(app: &App) -> Subscription<Message> {
+    // Keep the palette on the compositor's theme (ADR 0084).
+    Subscription::batch([
+        subscription_inner(app),
+        ec_ui::ipc::theme_subscription(|| Message::ThemeChanged),
+    ])
+}
+
+fn subscription_inner(app: &App) -> Subscription<Message> {
     let mut subs = vec![blur(), events(), crate::search_ui::keys(&app.search)];
+    subs.push(ec_ui::glass::xdg_window().map(Message::GlassWindow));
     if app.nav_moving() {
         subs.push(iced::window::frames().map(Message::NavFrame));
     }
@@ -1263,7 +1303,10 @@ fn events() -> Subscription<Message> {
 pub fn view(app: &App) -> Element<'_, Message, Theme> {
     // The frame is the only thing that reads the window's width; every row
     // below folds on its own.
-    iced::widget::responsive(move |size| frame(app, Density::for_width(size.width))).into()
+    ec_ui::glass::root_sole(iced::widget::responsive(move |size| {
+        frame(app, Density::for_width(size.width))
+    }))
+    .into()
 }
 
 /// The sidebar's section tree: what the rail shows when nothing is searched.
@@ -1345,16 +1388,20 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         controls,
     )];
     if let Some(problem) = &app.banner {
-        blocks.push(banner(problem, app.glass_radius));
+        blocks.push(banner(problem, app.glass_radius, app.hairline_cards));
     }
     match app.page {
         Page::Display => blocks.extend(display::blocks(app)),
-        Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius)),
+        Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius, app.hairline_cards)),
         Page::Addons => blocks.extend(crate::addons::blocks(app)),
         // A status grid, then the rows: two silhouettes, not two panels of rows.
         Page::OeGeneral => {
             blocks.push(crate::oracle::hero(app));
             blocks.push(schema_page(app));
+        }
+        Page::Rendering => {
+            blocks.push(schema_page(app));
+            blocks.extend(crate::gpu::view(app));
         }
         Page::Animations => blocks.extend(crate::animations::blocks(app)),
         Page::Accounts => blocks.extend(crate::accounts::blocks(app)),
@@ -1371,28 +1418,32 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             // A thin rail, inset top and bottom so it reads as a hint, not a
             // full-height bar.
             iced::widget::container(
-                scrollable(content_at(density, blocks))
-                    .id(SCROLL)
-                    .direction(scrollable::Direction::Vertical(
-                        scrollable::Scrollbar::new().width(4).scroller_width(4).margin(3),
-                    ))
-                    .style(theme::eclipse_scrollable)
-                    .height(Length::Fill),
+                // Panes inside follow the scroll offset and are cut to its bounds.
+                ec_ui::glass::scroll_region(
+                    scrollable(content_at(density, blocks))
+                        .id(SCROLL)
+                        .direction(scrollable::Direction::Vertical(
+                            scrollable::Scrollbar::new().width(4).scroller_width(4).margin(3),
+                        ))
+                        .style(theme::eclipse_scrollable)
+                        .height(Length::Fill),
+                ),
             )
             .padding([space::BLOCK, 0.0]),
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::content_ground(app.blur)),
+        .style(theme::window_pane(app.blur)),
     ]
     .into()
 }
 
 /// The two error shapes every DE app renders identically: a denial and a
 /// config error. Neither is ever swallowed.
-fn banner(problem: &Problem, radius: f32) -> Element<'_, Message, Theme> {
+fn banner(problem: &Problem, radius: f32, hairline_cards: bool) -> Element<'_, Message, Theme> {
     panel(
         radius,
+        hairline_cards,
         column![
             row![
                 mono(&problem.headline()),
@@ -1408,7 +1459,6 @@ fn banner(problem: &Problem, radius: f32) -> Element<'_, Message, Theme> {
         ]
         .spacing(space::ROW_Y),
     )
-    .into()
 }
 
 /// Every schema key this page claims, in one panel: grouped by
@@ -1434,7 +1484,16 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
     let mut runs: Vec<(Vec<&str>, Vec<&Key>)> = Vec::new();
     let mut runs_group = None;
 
-    let shown = |k: &&Key| page_of(&k.path) == Some(app.page);
+    // The graphics controls mean nothing without a discrete GPU, so they are
+    // not drawn (the list has its own block, under hybrid only).
+    let shown = |k: &&Key| {
+        page_of(&k.path) == Some(app.page)
+            && match k.path.as_str() {
+                crate::gpu::MODE => app.discrete_gpu.is_some(),
+                crate::gpu::APPS => false,
+                _ => true,
+            }
+    };
     let mut keys: Vec<&Key> = app.rows.iter().filter(shown).collect();
     // The terminal command decides whether terminal apps are offered at
     // all: it goes directly above the switch it gates.
@@ -1447,7 +1506,14 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         keys.insert(to, gated);
     }
     let mut set_apart = false;
+    // The auto schedule and the theme names, set after the scheme row.
+    let mut schedule: Vec<&Key> = Vec::new();
+    let mut themes: Vec<&Key> = Vec::new();
+    let mut scheme = "dark";
     for key in keys {
+        if key.path == crate::schema::COLOR_SCHEME {
+            scheme = key.value.as_str().unwrap_or("dark");
+        }
         let group = place_for(&key.path).map_or("", |p| p.group);
         let rows = match groups.iter().position(|(g, _)| *g == group) {
             Some(i) => &mut groups[i].1,
@@ -1477,6 +1543,14 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             }
             continue;
         }
+        if crate::schema::SCHEDULE.contains(&key.path.as_str()) {
+            schedule.push(key);
+            continue;
+        }
+        if crate::schema::THEMES.contains(&key.path.as_str()) {
+            themes.push(key);
+            continue;
+        }
         if let Some(applies) = crate::schema::moded(crate::schema::BLUR, &key.path, modes) {
             runs_group.get_or_insert(group);
             match runs.iter_mut().find(|(a, _)| *a == applies) {
@@ -1485,10 +1559,16 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             }
             continue;
         }
-        rows.push(setting_row(app, &key.label(), key));
+        let unused = key.path == CARD_FILL && !matches!(current, "off" | "blur");
+        rows.push(setting_row_at(app, &key.label(), key, unused && app.blur));
         let blurb = match key.path.as_str() {
+            crate::schema::COLOR_SCHEME => Some(crate::schema::scheme_blurb(scheme)),
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
+            CARD_FILL => {
+                Some("Hairline cards, with blur off or blur. Glass and frost keep their glass panel.")
+            }
             p if p == mode_path => crate::schema::blur_blurb(current),
+            crate::gpu::MODE => crate::gpu::mode_blurb(key.value.as_str().unwrap_or("hybrid")),
             "ui.show-key-hints" => Some("Keyboard hints in the launcher and start menu"),
             "launcher.search.frecency" => Some(FRECENCY_BLURB),
             "settings.search.frecency" => Some(FRECENCY_BLURB),
@@ -1498,7 +1578,10 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             "oracle-eyes.debug" => Some("While on, the taskbar eye turns red and shows in screen captures."),
             _ => None,
         };
-        if let Some(blurb) = blurb {
+        let blurb = blurb
+            .into_iter()
+            .chain((key.path == crate::gpu::MODE).then_some(crate::gpu::LOGIN_NOTE));
+        for blurb in blurb {
             // Inset like `list_row`'s label, so it reads as that row's caption.
             rows.push(
                 iced::widget::container(
@@ -1513,6 +1596,32 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         }
     }
 
+    // The schedule only governs `auto`: dimmed, never hidden, like a blur run
+    // that does not apply. The theme names follow under their own caption.
+    if let Some((_, rows)) = groups.iter_mut().find(|(g, _)| *g == "colour scheme") {
+        let divider = || iced::widget::container(hairline()).padding([0.0, space::CARD]);
+        for (caption, keys, dim) in [
+            ("Auto schedule".to_owned(), schedule, scheme != "auto"),
+            ("Themes".to_owned(), themes, false),
+        ] {
+            if keys.is_empty() {
+                continue;
+            }
+            let caption = if dim {
+                format!("{caption} \u{b7} not in use")
+            } else {
+                caption
+            };
+            let mut run = Column::new()
+                .push(divider())
+                .push(row_caption(&caption))
+                .spacing(space::ROW_Y);
+            for key in keys {
+                run = run.push(setting_row_at(app, &key.label(), key, dim && app.blur));
+            }
+            rows.push(dimmed_at(run, dim, app.blur));
+        }
+    }
     // In mode order: a run goes where the first mode it applies to is.
     let first = |applies: &[&str]| {
         applies
@@ -1566,7 +1675,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             "Nothing to set here yet",
             "This compositor reports no settings for this page. A newer abyss adds them; until then \
              they are not in abyss.kdl either.",
-            color::NEUTRAL,
+            color::neutral(),
         );
     }
     let labelled = groups.len() > 1;
@@ -1582,7 +1691,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             col = col.push(r);
         }
     }
-    panel(app.glass_radius, col).into()
+    panel(app.glass_radius, app.hairline_cards, col)
 }
 
 const FRECENCY_BLURB: &str =
@@ -1646,9 +1755,9 @@ fn setting_row_at<'a>(app: &'a App, label: &str, key: &'a Key, dim: bool) -> Ele
     .id(row_id(&key.path))
     .width(Length::Fill)
     .style(move |_t: &Theme| iced::widget::container::Style {
-        background: Some(iced::Background::Color(color::HIGHLIGHT.scale_alpha(lit))),
+        background: Some(iced::Background::Color(color::highlight().scale_alpha(lit))),
         border: iced::Border {
-            color: color::BORDER_STRONG.scale_alpha(lit),
+            color: color::border_strong().scale_alpha(lit),
             width: space::HAIRLINE,
             radius: radius::INSET.into(),
         },
@@ -1683,6 +1792,20 @@ fn refusal<'a>(reason: &str) -> Element<'a, Message, Theme> {
         )
         .into()
     }
+}
+
+/// The discrete GPU's name, if the machine has one. Debug builds take
+/// `ECLIPSE_FAKE_DISCRETE_GPU` as a stand-in so the controls can be drawn on
+/// a single-GPU box; a release build has no such path.
+fn discrete_gpu() -> Option<String> {
+    #[cfg(debug_assertions)]
+    if let Ok(name) = std::env::var("ECLIPSE_FAKE_DISCRETE_GPU") {
+        return Some(name);
+    }
+    #[cfg(test)]
+    return None;
+    #[cfg(not(test))]
+    ec_services::apps::discrete_gpu().map(|g| g.name)
 }
 
 /// An unset key that mirrors another (`Key::mirror_of`) and can be written:
@@ -1755,7 +1878,11 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
                     .iter()
                     .map(|v| {
                         pill(
-                            crate::schema::value_label(v),
+                            if key.path == crate::schema::COLOR_SCHEME {
+                                crate::schema::scheme_label(v)
+                            } else {
+                                crate::schema::value_label(v)
+                            },
                             *v == current,
                             Message::Chose(path.clone(), v.clone()),
                         )

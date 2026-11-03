@@ -3,6 +3,43 @@
 
 use super::*;
 
+/// A quick-action id: 1..=32 characters of `[A-Za-z0-9_-]`. The `:` is never
+/// allowed, so `action:<id>` cannot collide with a command widget's name or
+/// with `oracle-eyes:model-command` in the approvals store.
+fn quick_action_id_ok(s: &str) -> bool {
+    (1..=schema::QUICK_ACTION_ID_MAX).contains(&s.chars().count())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+/// Plain text, not blank, at most [`schema::QUICK_ACTION_LABEL_MAX`]
+/// characters, no control characters (a label is drawn, never interpreted).
+fn quick_action_label_ok(s: &str) -> bool {
+    let t = s.trim();
+    !t.is_empty() && t.chars().count() <= schema::QUICK_ACTION_LABEL_MAX && !t.chars().any(char::is_control)
+}
+
+/// A freedesktop icon name: letters, digits, `.`, `-`, `_`, no leading dot.
+/// A slash is refused, so a path cannot pose as a name.
+fn icon_name_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && !s.starts_with('.')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+}
+
+/// A desktop-entry id as the pinned-apps list takes it: no path, no
+/// whitespace, no `.desktop` suffix.
+fn desktop_id_ok(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 128
+        && !s.ends_with(".desktop")
+        && !s
+            .chars()
+            .any(|c| c == '/' || c == '\\' || c.is_whitespace() || c.is_control())
+}
+
 impl Config {
     /// `style_set`: this document sets `launcher.style`, which wins over the
     /// deprecated `bar.launcher-style` wherever either sits.
@@ -66,6 +103,7 @@ impl Config {
                 "widgets" => self.apply_bar_widgets(n),
                 "motion" => self.apply_bar_motion(n),
                 "widget" => self.apply_bar_widget(n),
+                "action" => self.apply_bar_action(n),
                 "eye" => {
                     self.bar.eye = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
@@ -115,6 +153,25 @@ impl Config {
             let slot = match n.name().value() {
                 "hour-12" => &mut self.bar.clock.hour_12,
                 "date-mdy" => &mut self.bar.clock.date_mdy,
+                "week-numbers" => {
+                    self.bar.clock.week_numbers = arg(n).and_then(KdlValue::as_bool).unwrap_or(false);
+                    continue;
+                }
+                "week-start" => {
+                    match arg(n).and_then(KdlValue::as_string) {
+                        Some("auto") => self.bar.clock.week_start = BarWeekStart::Auto,
+                        Some("monday") => self.bar.clock.week_start = BarWeekStart::Monday,
+                        Some("sunday") => self.bar.clock.week_start = BarWeekStart::Sunday,
+                        other => self.reject(
+                            n,
+                            format!(
+                                "bar clock week-start must be \"auto\", \"monday\" or \"sunday\", keeping default (other={:?})",
+                                other
+                            ),
+                        ),
+                    }
+                    continue;
+                }
                 _ => {
                     self.unknown_key(n, "bar.clock", "bar clock node");
                     continue;
@@ -191,6 +248,10 @@ impl Config {
                     seen_important = true;
                     self.bar.widgets.important = self.widget_ids(n);
                 }
+                "rounding" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) => self.bar.widgets.rounding = v.clamp(0, 17) as u32,
+                    None => self.reject(n, "rounding expects an integer"),
+                },
                 "now-playing" => self.apply_bar_widget_now_playing(n),
                 "system-usage" => self.apply_bar_widget_system_usage(n),
                 "volume" => self.apply_bar_widget_volume(n),
@@ -644,6 +705,144 @@ impl Config {
         }
     }
 
+    /// `bar { action "<id>" { label …; icon …; exec … | app …; } }` (quick
+    /// actions). Like `widget`, the whole block is refused on any error, so a
+    /// button never runs half-configured. Whether an `exec` may run is decided
+    /// later, by [`QuickAction::runnable`] (ADR 0067), never here.
+    pub(crate) fn apply_bar_action(&mut self, node: &KdlNode) {
+        let id = match arg(node).and_then(KdlValue::as_string) {
+            Some(s) if quick_action_id_ok(s) => s.to_owned(),
+            _ => {
+                self.reject(
+                    node,
+                    format!(
+                        "action needs an id of 1..={} characters, letters, digits, '-' or '_': action \"<id>\" {{ … }}",
+                        schema::QUICK_ACTION_ID_MAX
+                    ),
+                );
+                return;
+            }
+        };
+        let mut ok = true;
+        let mut label = None;
+        let mut icon = None;
+        let mut exec = None;
+        let mut app = None;
+        let mut seen: Vec<&str> = Vec::new();
+        for n in node.children().map(|c| c.nodes()).unwrap_or_default() {
+            let key = n.name().value();
+            let Some(form) = schema::find(schema::ACTION_KEYS, key) else {
+                let names = schema::ACTION_KEYS.iter().map(|f| f.names[0]);
+                self.reject(
+                    n,
+                    match nearest(key, names) {
+                        Some(h) => format!("unknown action node {key:?} (did you mean {h:?}?)"),
+                        None => format!("unknown action node {key:?}"),
+                    },
+                );
+                ok = false;
+                continue;
+            };
+            if seen.contains(&form.names[0]) {
+                self.reject(n, format!("{key} given twice in action {id:?}"));
+                ok = false;
+                continue;
+            }
+            seen.push(form.names[0]);
+            let good = match form.names[0] {
+                "label" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(s) if quick_action_label_ok(s) => {
+                        label = Some(s.trim().to_owned());
+                        true
+                    }
+                    _ => {
+                        self.reject(
+                            n,
+                            format!(
+                                "action label must be plain text, 1..={} characters",
+                                schema::QUICK_ACTION_LABEL_MAX
+                            ),
+                        );
+                        false
+                    }
+                },
+                "icon" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(s) if icon_name_ok(s) => {
+                        icon = Some(s.to_owned());
+                        true
+                    }
+                    _ => {
+                        self.reject(n, "action icon must be a freedesktop icon name, not a path");
+                        false
+                    }
+                },
+                "exec" => self.argv(n).map(|a| exec = Some(a)).is_some(),
+                "app" => match arg(n).and_then(KdlValue::as_string) {
+                    Some(s) if desktop_id_ok(s) => {
+                        app = Some(s.to_owned());
+                        true
+                    }
+                    other => {
+                        self.reject(
+                            n,
+                            format!(
+                                "action app must be a desktop-entry id such as \"firefox\" (other={other:?})"
+                            ),
+                        );
+                        false
+                    }
+                },
+                // Every ACTION_KEYS form is matched above; a form added to the
+                // table alone must fail here, as it does for `widget`.
+                other => {
+                    self.reject(n, format!("action node {other:?} is documented but not wired into the parser \u{2014} this is a bug in abyss, not in your config"));
+                    false
+                }
+            };
+            ok &= good;
+        }
+        if !ok {
+            return;
+        }
+        let Some(label) = label else {
+            self.reject(node, format!("action {id:?} needs a label: label \"<text>\";"));
+            return;
+        };
+        let target = match (exec, app) {
+            (Some(argv), None) => QuickActionTarget::Exec(argv),
+            (None, Some(desktop)) => QuickActionTarget::App(desktop),
+            (Some(_), Some(_)) => {
+                self.reject(node, format!("action {id:?} has both exec and app; give it one"));
+                return;
+            }
+            (None, None) => {
+                self.reject(
+                    node,
+                    format!("action {id:?} needs exec \"<argv0>\" … or app \"<desktop-id>\""),
+                );
+                return;
+            }
+        };
+        let action = QuickAction {
+            id,
+            label,
+            icon,
+            target,
+        };
+        match self.bar.quick_actions.iter().position(|o| o.id == action.id) {
+            Some(slot) => self.bar.quick_actions[slot] = action,
+            None if self.bar.quick_actions.len() >= schema::QUICK_ACTION_MAX => self.reject(
+                node,
+                format!(
+                    "at most {} quick actions; action {:?} is refused",
+                    schema::QUICK_ACTION_MAX,
+                    action.id
+                ),
+            ),
+            None => self.bar.quick_actions.push(action),
+        }
+    }
+
     pub(crate) fn apply_launcher(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
@@ -742,7 +941,10 @@ impl Config {
         let Some(children) = node.children() else { return };
         for n in children.nodes() {
             let name = n.name().value();
-            if !matches!(name, "select" | "dismiss" | "expand" | "auto-toggle") {
+            if !matches!(
+                name,
+                "select" | "dismiss" | "expand" | "auto-toggle" | "model-switch" | "image-toggle"
+            ) {
                 self.unknown_key(n, "oracle-eyes.bind", "oracle-eyes bind key");
                 continue;
             }
@@ -764,6 +966,8 @@ impl Config {
                         "select" => b.select = parsed,
                         "dismiss" => b.dismiss = parsed,
                         "expand" => b.expand = parsed,
+                        "model-switch" => b.model_switch = parsed,
+                        "image-toggle" => b.image_toggle = parsed,
                         _ => b.auto_toggle = parsed,
                     }
                 }

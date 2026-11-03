@@ -76,6 +76,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn non_ascii_screen_text_is_logged_intact_and_secrets_still_blank() {
+        assert_eq!(log_safe("Σ = π/2 ≤ 4"), "Σ = π/2 ≤ 4");
+        let out = log_safe("Παράδειγμα\npassword: hunter2 — ναι");
+        assert_eq!(out, format!("Παράδειγμα\n{BLANK}"));
+        assert!(!out.contains("hunter2"));
+        assert_eq!(
+            marker_counts("α [REDACTED:secret] β [REDACTED:jwt]"),
+            "jwt=1 secret=1"
+        );
+    }
+
+    #[test]
     fn plain_text_passes_through() {
         assert_eq!(
             log_safe("Hello world\nsecond line"),

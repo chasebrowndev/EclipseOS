@@ -128,24 +128,18 @@ fi
 # --- remote access --------------------------------------------------------------
 # Opt in, default no. A machine with no working screen can otherwise only be
 # debugged from a photograph of it.
-read -rp $'\nenable ssh for remote debugging? [y/N] ' SSH
+# Run from a tty, where nothing can be pasted: no key prompt. The users'
+# passwords work from the LAN and the tailnet only; keys work from anywhere.
+read -rp $'\nenable ssh (password login from your LAN/tailnet)? [y/N] ' SSH
 if [[ $SSH == [yY]* ]]; then
-  read -rp 'user to authorise (an existing account on the new system): ' SSHUSER
-  read -rp 'paste one public key (ssh-ed25519 AAAA...): ' SSHKEY
-  [[ $SSHKEY == ssh-* || $SSHKEY == ecdsa-* || $SSHKEY == sk-* ]] || die "that does not look like a public key"
-  home=$(awk -F: -v u="$SSHUSER" '$1 == u {print $6}' /mnt/etc/passwd)
-  [[ -n $home ]] || die "no user $SSHUSER on the new system"
-  say "installing openssh, authorising one key for $SSHUSER"
+  say "installing openssh"
   pacstrap -C "$PACCONF" /mnt openssh
-  install -d -m0700 "/mnt$home/.ssh"
-  printf '%s\n' "$SSHKEY" >>"/mnt$home/.ssh/authorized_keys"
-  chmod 0600 "/mnt$home/.ssh/authorized_keys"
-  arch-chroot /mnt chown -R "$SSHUSER:" "$home/.ssh"
-  # Keys only: a password login over the network is not what was opted into.
   install -Dm0644 /dev/stdin /mnt/etc/ssh/sshd_config.d/10-eclipseos.conf <<'SSHD'
+PermitRootLogin no
 PasswordAuthentication no
 KbdInteractiveAuthentication no
-PermitRootLogin no
+Match Address 127.0.0.0/8,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,169.254.0.0/16,fc00::/7,fe80::/10
+    PasswordAuthentication yes
 SSHD
   arch-chroot /mnt systemctl enable sshd
 fi

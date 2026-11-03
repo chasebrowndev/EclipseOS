@@ -24,6 +24,9 @@ OUT="${ECLIPSEOS_ISO_OUT:-/var/tmp/eclipseos-out}"
   exit 1
 }
 
+# The profile's [eclipseos] Server names the repo on the build host, whose home
+# differs between machines. Point it at the repo being baked.
+sed -i "s#^Server = file://.*/eclipseos/repo/x86_64\$#Server = file://$REPO_ROOT/x86_64#" "$here/pacman.conf"
 echo "==> baking $REPO_ROOT/x86_64 into the medium"
 baked="$here/airootfs/opt/eclipseos-repo"
 rm -rf "$baked"

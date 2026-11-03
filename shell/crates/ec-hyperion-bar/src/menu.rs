@@ -214,6 +214,7 @@ mod tests {
             argv: vec![id.to_owned()],
             terminal: false,
             keywords: Vec::new(),
+            prefers_discrete_gpu: false,
         }
     }
 

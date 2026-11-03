@@ -111,7 +111,8 @@ use crate::model::{Snapshot, Window, Workspace};
 /// wrapped in [`Message::On`] with that surface's id, so `update` knows which
 /// bar a press, a hover or a grip came from.
 pub fn view(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, Theme> {
-    surface(app, id).map(move |m| Message::On(id, Box::new(m)))
+    let content = surface(app, id).map(move |m| Message::On(id, Box::new(m)));
+    ec_ui::glass::root(id, content).into()
 }
 
 fn surface(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, Theme> {
@@ -193,7 +194,7 @@ fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element
             .height(Length::Fill)
             .style(theme::bar_folded(radius, app.blur, folded)),
         radius,
-        color::HIGHLIGHT_SOFT.scale_alpha(folded),
+        color::highlight_soft().scale_alpha(folded),
     );
 
     // The horizontal inset is the unfolded bar's layer-shell margin, so the
@@ -251,6 +252,9 @@ fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a
     if bar.menu.showing() {
         return start_sheet(app, bar, bar_row.into());
     }
+    if bar.drawer.showing() {
+        return drawer_sheet(app, bar, bar_row.into());
+    }
     glass(
         app,
         container(bar_row)
@@ -268,7 +272,7 @@ fn glass<'a>(
     if app.blur {
         sheet.into()
     } else {
-        parts::lit(sheet, app.bar_radius, color::HIGHLIGHT_SOFT)
+        parts::lit(sheet, app.bar_radius, color::highlight_soft())
     }
 }
 
@@ -276,7 +280,7 @@ fn glass<'a>(
 /// widget wears (`theme::bar_cell`), so the pointer lifts it the same way.
 /// Never the accent — the mark itself is the yellow.
 fn launcher_style(t: &Theme, status: button::Status) -> button::Style {
-    theme::bar_cell(false)(t, status)
+    theme::bare_if_glass(theme::bar_cell(false)(t, status))
 }
 
 // ---------------------------------------------------------------- launcher
@@ -295,13 +299,16 @@ fn launcher_style(t: &Theme, status: button::Status) -> button::Style {
 /// That is also why the ring never turns gold itself: the gold of a live
 /// eye belongs to the surface captures leave out (ADR 0056).
 fn launcher_button() -> Element<'static, Message, Theme> {
-    button(launcher_mark())
-        .width(Length::Fixed(bar::TASK_MIN))
-        .height(Length::Fixed(bar::TASK_H))
-        .padding(0)
-        .style(launcher_style)
-        .on_press(Message::Launch)
-        .into()
+    parts::glass_ground(
+        button(launcher_mark())
+            .width(Length::Fixed(bar::TASK_MIN))
+            .height(Length::Fixed(bar::TASK_H))
+            .padding(0)
+            .style(launcher_style)
+            .on_press(Message::Launch),
+        false,
+        bar::RADIUS_CELL,
+    )
 }
 
 // -------------------------------------------------------------- start menu
@@ -319,7 +326,7 @@ fn eclipse_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Them
 /// The resting mark: [`parts::hover_ring`] over the whole button, so it
 /// lifts to full white with the button's glass.
 fn launcher_mark() -> Element<'static, Message, Theme> {
-    parts::hover_ring(bar::EYE_DISC, bar::RING, color::TEXT_SECONDARY, color::TEXT)
+    parts::hover_ring(bar::EYE_DISC, bar::RING, color::text_secondary(), color::text())
 }
 
 /// The launcher button grown into the menu's search field.
@@ -362,7 +369,7 @@ fn search_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Theme
             .size(size::MONO)
             .font(font::DATA)
             .wrapping(Wrapping::None)
-            .color(color::TEXT_TERTIARY)
+            .color(color::text_tertiary())
             .into()
     };
     let content = row![
@@ -374,14 +381,17 @@ fn search_cell(bar: &crate::app::Bar, hints: bool) -> Element<'_, Message, Theme
     .align_y(Alignment::Center)
     .height(Length::Fill);
 
-    button(content)
-        .width(Length::Fixed(width))
-        .height(Length::Fixed(bar::TASK_H))
-        .padding(0)
-        .clip(true)
-        .style(launcher_style)
-        .on_press(Message::Launch)
-        .into()
+    parts::glass_ground(
+        button(content)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(bar::TASK_H))
+            .padding(0)
+            .clip(true)
+            .style(launcher_style)
+            .on_press(Message::Launch),
+        false,
+        bar::RADIUS_CELL,
+    )
 }
 
 /// The bar with its start menu out: one sheet in the shape of the pill and
@@ -402,6 +412,7 @@ fn start_sheet<'a>(
     let top = app.edge == crate::conn::BarPosition::Top;
     let shape = SheetShape {
         pill_h: bar::PILL_H,
+        panel_x: 0.0,
         panel_w: bar::PANEL_W,
         radius: app.bar_radius,
         fillet: app.bar_radius,
@@ -467,7 +478,7 @@ fn start_panel(on: &crate::app::Bar, hints: bool) -> Element<'_, Message, Theme>
                 text(why)
                     .size(size::BODY)
                     .font(font::UI)
-                    .color(color::TEXT_TERTIARY),
+                    .color(color::text_tertiary()),
             )
             .height(Length::Fixed(bar::MENU_ROW_H))
             .padding([0.0, space::CARD])
@@ -506,11 +517,11 @@ fn start_row(
         .font(if selected { font::UI_MEDIUM } else { font::UI })
         .wrapping(Wrapping::None)
         .color(if entry.terminal {
-            color::TEXT_TERTIARY
+            color::text_tertiary()
         } else if live {
-            color::ACCENT_TEXT
+            color::accent_text()
         } else {
-            color::TEXT
+            color::text()
         });
     // The name is already beside it, so the refusal drops its own
     // `cannot start NAME:` lead and keeps only the reason.
@@ -543,11 +554,11 @@ fn start_row(
             Wrapping::None
         })
         .color(if refusal.is_some() {
-            color::DANGER
+            color::danger()
         } else if entry.terminal {
-            color::TEXT_TERTIARY
+            color::text_tertiary()
         } else {
-            color::TEXT_SECONDARY
+            color::text_secondary()
         });
     // The fixed name column lines every note up at one x; a refusal gives
     // that up, so the name keeps only what it needs (never more than the
@@ -570,13 +581,13 @@ fn start_row(
     } else {
         CellTone::Latent
     };
-    button(container(line).height(Length::Fill).align_y(Alignment::Center))
+    let cell = button(container(line).height(Length::Fill).align_y(Alignment::Center))
         .width(Length::Fill)
         .height(Length::Fixed(bar::MENU_ROW_H))
         .padding([0.0, space::CARD])
-        .style(theme::glass_cell(tone, radius::INSET))
-        .on_press(Message::MenuLaunch(index))
-        .into()
+        .style(move |t, st| theme::bare_if_glass(theme::glass_cell(tone, radius::INSET)(t, st)))
+        .on_press(Message::MenuLaunch(index));
+    parts::glass_ground(cell, tone, radius::INSET)
 }
 
 /// A refusal, verbatim, or the keys; how much of the list is off the panel
@@ -587,7 +598,7 @@ fn start_footer(m: &crate::menu::Menu) -> Element<'_, Message, Theme> {
             .size(size::BODY_SMALL)
             .font(font::DATA)
             .wrapping(Wrapping::None)
-            .color(color::DANGER)
+            .color(color::danger())
             .into(),
         None => parts::key_hints(&[("\u{2191}\u{2193}", "select"), ("enter", "run"), ("esc", "close")]),
     };
@@ -598,7 +609,7 @@ fn start_footer(m: &crate::menu::Menu) -> Element<'_, Message, Theme> {
             text(tally)
                 .size(size::MONO)
                 .font(font::DATA)
-                .color(color::TEXT_TERTIARY),
+                .color(color::text_tertiary()),
         ]
         .spacing(bar::GAP)
         .align_y(Alignment::Center),
@@ -625,7 +636,7 @@ fn start_tally(m: &crate::menu::Menu) -> String {
 /// Oracle-Eyes' status (ADR 0055), on the eye's own surface over the
 /// launcher mark. While the daemon watches, the ring becomes a glass iris in
 /// a gold rim with a gold pupil that darts about; while it thinks, the pupil
-/// narrows to a point. In debug the gold is [`color::DANGER`].
+/// narrows to a point. In debug the gold is [`color::danger()`].
 ///
 /// The surface is the launcher button's box and the disc is centred in it
 /// exactly as the ring is centred in the button, so the rim covers the ring
@@ -634,12 +645,12 @@ fn start_tally(m: &crate::menu::Menu) -> String {
 /// (`EYE_PUPIL + EYE_WANDER`). The whole eye fades in and out with
 /// [`Iris::alpha`](crate::eye::Iris::alpha).
 fn eye_view(iris: &crate::eye::Iris, accent: Color) -> Element<'static, Message, Theme> {
-    let ink = if iris.debug { color::DANGER } else { accent };
+    let ink = if iris.debug { color::danger() } else { accent };
     let mark = canvas(EyeMark {
         pupil: iris.pupil,
         offset: iris.offset,
         ink: ink.scale_alpha(iris.alpha),
-        iris: color::EYE_IRIS.scale_alpha(iris.alpha),
+        iris: color::eye_iris().scale_alpha(iris.alpha),
     })
     .width(Length::Fill)
     .height(Length::Fill);
@@ -766,11 +777,11 @@ fn active_workspace(snapshot: &Snapshot, output: u64) -> Option<usize> {
 fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
     let ws_active = ws.active;
     let tint = if ws.active {
-        color::ACCENT_TEXT
+        color::accent_text()
     } else if ws.windows > 0 {
-        color::TEXT_SECONDARY
+        color::text_secondary()
     } else {
-        color::TEXT_TERTIARY
+        color::text_tertiary()
     };
     let face = if ws.active { font::DATA_MEDIUM } else { font::DATA };
     let label = text(ws.index.to_string())
@@ -778,7 +789,7 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
         .font(face)
         .color(tint);
 
-    button(container(label).center(Length::Fill))
+    let cell = button(container(label).center(Length::Fill))
         .width(Length::Fixed(bar::PAGER_W))
         .height(Length::Fixed(bar::PAGER_H))
         .padding(0)
@@ -788,10 +799,10 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
             let mut style = theme::bar_cell(ws_active)(t, status);
             style.text_color = tint;
             style.border.radius = bar::RADIUS_TILE.into();
-            style
+            theme::bare_if_glass(style)
         })
-        .on_press(Message::Switch(ws.index))
-        .into()
+        .on_press(Message::Switch(ws.index));
+    parts::glass_ground(cell, ws_active, bar::RADIUS_TILE)
 }
 
 // ------------------------------------------------------------------- tasks
@@ -910,6 +921,12 @@ pub fn drawer_span(
     match drawer {
         crate::app::Drawer::Network => widget_span(app, on, &WidgetId::Network),
         crate::app::Drawer::Bluetooth => widget_span(app, on, &WidgetId::Bluetooth),
+        crate::app::Drawer::Audio => widget_span(app, on, &WidgetId::Volume),
+        crate::app::Drawer::Calendar => widget_span(app, on, &WidgetId::Clock),
+        crate::app::Drawer::Battery => widget_span(app, on, &WidgetId::Battery),
+        crate::app::Drawer::QuickActions => widget_span(app, on, &WidgetId::QuickActions),
+        crate::app::Drawer::Progress => widget_span(app, on, &WidgetId::Progress),
+        crate::app::Drawer::Power => widget_span(app, on, &WidgetId::Power),
         crate::app::Drawer::Overflow => {
             let (_, right) = widget_span(app, on, &WidgetId::Tray)?;
             let right = right - bar::WIDGET_X;
@@ -948,7 +965,7 @@ fn overflow_cell(hidden: usize) -> Element<'static, Message, Theme> {
         text(format!("+{hidden}"))
             .size(size::MICRO)
             .font(font::DATA)
-            .color(color::TEXT_TERTIARY),
+            .color(color::text_tertiary()),
     )
     .width(Length::Fixed(bar::OVERFLOW_W))
     .height(Length::Fixed(bar::TASK_H))
@@ -1076,11 +1093,11 @@ fn chip_face(
 ) -> Element<'_, Message, Theme> {
     // Gold for focus, white for on screen, dimmed for put away.
     let (tint, face, icon_alpha) = if accent {
-        (color::ACCENT_TEXT, font::UI_MEDIUM, alpha)
+        (color::accent_text(), font::UI_MEDIUM, alpha)
     } else if w.minimized {
-        (color::TEXT_TERTIARY, font::UI, alpha * color::DIM)
+        (color::text_tertiary(), font::UI, alpha * color::DIM)
     } else {
-        (color::TEXT, font::UI, alpha)
+        (color::text(), font::UI, alpha)
     };
     // The rung is this chip's own business: the width it got buys a rung,
     // and the words this window wants to say decide whether it can use it.
@@ -1194,7 +1211,7 @@ fn context_menu(handle: u64, items: &[crate::app::Item], radius: f32) -> Element
             .padding(menu::PAD)
             .style(theme::menu_surface(radius)),
         radius,
-        color::HIGHLIGHT,
+        color::highlight(),
     )
 }
 
@@ -1217,7 +1234,11 @@ fn menu_row(item: crate::app::Item, handle: u64) -> Element<'static, Message, Th
         Item::Unpin => ("Unpin", Message::Unpin(handle)),
     };
     let destructive = matches!(item, Item::Close);
-    let tint = if destructive { color::DANGER } else { color::TEXT };
+    let tint = if destructive {
+        color::danger()
+    } else {
+        color::text()
+    };
 
     let face = container(
         row![
@@ -1249,9 +1270,9 @@ fn menu_row(item: crate::app::Item, handle: u64) -> Element<'static, Message, Th
 fn menu_row_style(destructive: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_t: &Theme, status: button::Status| {
         let (hover, press) = if destructive {
-            (color::DANGER_FILL, color::DANGER)
+            (color::danger_fill(), color::danger())
         } else {
-            (color::LIFT, color::LIFT_STRONG)
+            (color::lift(), color::lift_strong())
         };
         let background = match status {
             button::Status::Hovered => hover,
@@ -1260,7 +1281,7 @@ fn menu_row_style(destructive: bool) -> impl Fn(&Theme, button::Status) -> butto
         };
         button::Style {
             background: Some(iced::Background::Color(background)),
-            text_color: color::TEXT,
+            text_color: color::text(),
             border: iced::border::rounded(menu::RADIUS_ROW),
             ..button::Style::default()
         }
@@ -1282,16 +1303,17 @@ fn menu_row_style(destructive: bool) -> impl Fn(&Theme, button::Status) -> butto
 /// most once per right-click.
 fn menu_mark(item: crate::app::Item) -> Element<'static, Message, Theme> {
     use crate::app::Item;
+    // Tertiary ink: a verb's mark is a quiet hint beside its label, which is
+    // the one that carries the weight. Close alone is red, matching its label.
     let (name, tint) = match item {
-        Item::Minimize => ("window-minimize", color::TEXT_SECONDARY),
-        Item::Unminimize => ("window-restore", color::TEXT_SECONDARY),
-        Item::Mute => ("audio-volume-muted", color::TEXT_SECONDARY),
-        Item::Unmute => ("audio-volume-high", color::TEXT_SECONDARY),
-        Item::NewInstance => ("window-new", color::TEXT_SECONDARY),
-        Item::Pin => ("view-pin", color::TEXT_SECONDARY),
-        Item::Unpin => ("list-remove", color::TEXT_SECONDARY),
-        // The one red mark on the menu, matching the one red label.
-        Item::Close => ("window-close", color::DANGER),
+        Item::Minimize => ("window-minimize", color::text_tertiary()),
+        Item::Unminimize => ("window-restore", color::text_tertiary()),
+        Item::Mute => ("audio-volume-muted", color::text_tertiary()),
+        Item::Unmute => ("audio-volume-high", color::text_tertiary()),
+        Item::NewInstance => ("window-new", color::text_tertiary()),
+        Item::Pin => ("view-pin", color::text_tertiary()),
+        Item::Unpin => ("list-remove", color::text_tertiary()),
+        Item::Close => ("window-close", color::danger()),
     };
     let cell = Length::Fixed(menu::MARK);
     container(parts::mark(crate::icons::symbolic(name), menu::MARK, tint))
@@ -1313,20 +1335,16 @@ fn icon_view(icon: Icon, alpha: f32) -> Element<'static, Message, Theme> {
             .height(square)
             .opacity(alpha)
             .into(),
-        Icon::Raster(path) => image(image::Handle::from_path(path))
-            .width(square)
-            .height(square)
-            .opacity(alpha)
-            .into(),
+        Icon::Raster(handle) => image(handle).width(square).height(square).opacity(alpha).into(),
         // A rounded square on the reference panes' 6px-on-18px placeholder
         // scale, so a missing icon still reads as a member of this row.
         Icon::Placeholder => container(Space::new())
             .width(square)
             .height(square)
             .style(move |_t: &Theme| container::Style {
-                background: Some(iced::Background::Color(color::CONTROL_OFF.scale_alpha(alpha))),
+                background: Some(iced::Background::Color(color::control_off().scale_alpha(alpha))),
                 border: iced::Border {
-                    color: color::BORDER.scale_alpha(alpha),
+                    color: color::border().scale_alpha(alpha),
                     width: bar::HAIRLINE,
                     radius: bar::RADIUS_ICON.into(),
                 },
@@ -1382,8 +1400,21 @@ impl Sheet {
         self.height += drawer::CURRENT_H;
     }
 
+    /// A section's label strip, [`drawer::HEAD_H`] tall, mid-sheet.
+    pub(crate) fn section(&mut self, label: &str) {
+        self.rows.push(parts::drawer_sheet_head(label));
+        self.height += drawer::HEAD_H;
+    }
+
+    /// A free-form block of `height` pixels, for a drawer whose body is a
+    /// layout and not a list of rows (the calendar's two columns).
+    pub(crate) fn block(&mut self, body: Element<'static, Message, Theme>, height: f32) {
+        self.rows.push(body);
+        self.height += height;
+    }
+
     pub(crate) fn rule(&mut self) {
-        self.rows.push(parts::menu_separator());
+        self.rows.push(parts::drawer_rule());
         self.height += menu::SEP_H;
     }
 }
@@ -1400,7 +1431,82 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
         crate::app::Drawer::Network => crate::widgets::network::sheet(app),
         crate::app::Drawer::Bluetooth => crate::widgets::bluetooth::sheet(app),
         crate::app::Drawer::Overflow => crate::widgets::tray::sheet(app),
+        crate::app::Drawer::Audio => crate::widgets::volume::sheet(app),
+        crate::app::Drawer::Calendar => crate::widgets::clock::sheet(app),
+        crate::app::Drawer::Battery => crate::widgets::battery::sheet(app),
+        crate::app::Drawer::QuickActions => crate::widgets::quick_actions::sheet(app),
+        crate::app::Drawer::Progress => crate::widgets::progress::sheet(app),
+        crate::app::Drawer::Power => crate::widgets::power::sheet(app),
     }
+}
+
+/// The bar with a radio drawer out: the start menu's mechanism with the panel
+/// hung under its own cell instead of the bar's left end.
+///
+/// One sheet in the shape of the pill and the panel together
+/// ([`parts::shaped_sheet`] with `panel_x` at the cell's anchor, a fillet on
+/// both sides), the pill's row on it and the panel cut to however much of it
+/// the surface holds. It rolls out from the pill's edge — down from a top
+/// bar, up from a bottom bar — so the drawer reads as the bar's own pill
+/// growing, not a popup beside it. The ground is the bar's tint, so there is
+/// one material; the rows lay light lozenges on it.
+fn drawer_sheet<'a>(
+    app: &'a crate::app::App,
+    on: &'a crate::app::Bar,
+    pill_row: Element<'a, Message, Theme>,
+) -> Element<'a, Message, Theme> {
+    let top = app.edge == crate::conn::BarPosition::Top;
+    let which = match on.drawer.which() {
+        Some(crate::drawer::DrawerKind::Bluetooth) => crate::app::Drawer::Bluetooth,
+        Some(crate::drawer::DrawerKind::Audio) => crate::app::Drawer::Audio,
+        Some(crate::drawer::DrawerKind::Calendar) => crate::app::Drawer::Calendar,
+        Some(crate::drawer::DrawerKind::Battery) => crate::app::Drawer::Battery,
+        Some(crate::drawer::DrawerKind::QuickActions) => crate::app::Drawer::QuickActions,
+        Some(crate::drawer::DrawerKind::Progress) => crate::app::Drawer::Progress,
+        Some(crate::drawer::DrawerKind::Power) => crate::app::Drawer::Power,
+        _ => crate::app::Drawer::Network,
+    };
+    let anchor = on.drawer.anchor_x();
+    let Sheet { head, rows, height } = sheet(app, which);
+    let extent = on.drawer.extent(height.ceil() as u32) as f32;
+    let shape = SheetShape {
+        pill_h: bar::PILL_H,
+        panel_x: anchor,
+        panel_w: on.drawer.width(),
+        radius: app.bar_radius,
+        fillet: app.bar_radius,
+        edge: if top { SheetEdge::Top } else { SheetEdge::Bottom },
+    };
+    let pill = container(pill_row)
+        .width(Length::Fill)
+        .height(Length::Fixed(bar::PILL_H));
+    // The panel's body is always laid out at full height and cut by the
+    // container, so the rows never reflow while the sheet opens: they are
+    // uncovered, from the pill's side outward.
+    let body = container(parts::drawer_body(head, rows))
+        .width(Length::Fixed(on.drawer.width()))
+        .height(Length::Fixed(height));
+    let panel = container(body)
+        .width(Length::Fixed(on.drawer.width()))
+        .height(Length::Fixed(extent))
+        .align_y(if top { Alignment::Start } else { Alignment::End })
+        .clip(true);
+    let panel = Row::new()
+        .push(Space::new().width(Length::Fixed(anchor)))
+        .push(panel);
+    let col = if top {
+        Column::new().push(pill).push(panel)
+    } else {
+        Column::new().push(panel).push(pill)
+    };
+    let col = container(col)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(if top { Alignment::Start } else { Alignment::End });
+    stack![parts::shaped_sheet(shape, app.blur), col]
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 /// A tray drawer.
@@ -1428,7 +1534,7 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
 ///
 /// - **Wi-fi, bluetooth:** the one yellow is the switch's lit track — the
 ///   radio being on is the drawer's live state. Whatever it is connected to
-///   is [`color::CONNECTED`] blue, and never the accent. The drawers draw
+///   is [`color::connected()`] blue, and never the accent. The drawers draw
 ///   their own glyphs through `widgets::network::glyph` rather than the bar's
 ///   `network_mark` and `bluetooth_mark`, which are the white ink ramp: on
 ///   the bar a link is a state, not a live value, and the widgets' one
@@ -1438,15 +1544,6 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
 fn drawer_view(app: &crate::app::App, which: crate::app::Drawer) -> Element<'static, Message, Theme> {
     let Sheet { head, rows, .. } = sheet(app, which);
     parts::drawer_frame(app.menu_radius, head, rows)
-}
-
-/// The empty square a list row keeps where its mark would be, so its name
-/// sits on the same gridline as the rows that do have one.
-pub(crate) fn blank_mark() -> Element<'static, Message, Theme> {
-    Space::new()
-        .width(Length::Fixed(drawer::MARK))
-        .height(Length::Fixed(drawer::MARK))
-        .into()
 }
 
 /// A tray item's own menu: its entries, in its order, on the context menu's
@@ -1478,7 +1575,7 @@ fn tray_menu(id: &str, entries: &[crate::radio::MenuEntry], radius: f32) -> Elem
             .padding(menu::PAD)
             .style(theme::menu_surface(radius)),
         radius,
-        color::HIGHLIGHT,
+        color::highlight(),
     )
 }
 
@@ -1486,9 +1583,9 @@ fn tray_menu(id: &str, entries: &[crate::radio::MenuEntry], radius: f32) -> Elem
 /// one. Zero yellow: an on checkbox is state, not the one live value.
 fn tray_menu_row(id: &str, e: &crate::radio::MenuEntry, marks: bool) -> Element<'static, Message, Theme> {
     let ink = if e.enabled {
-        color::TEXT
+        color::text()
     } else {
-        color::TEXT_TERTIARY
+        color::text_tertiary()
     };
     let mut line = Row::new().spacing(menu::MARK_GAP).align_y(Alignment::Center);
     if marks {
@@ -1530,7 +1627,7 @@ fn tick(checked: Option<bool>, ink: Color) -> Element<'static, Message, Theme> {
             inner,
             inner,
             space::HAIRLINE,
-            color::TEXT_TERTIARY,
+            color::text_tertiary(),
             menu::RADIUS_TICK,
         ),
         None => Space::new().into(),
@@ -1559,6 +1656,8 @@ pub fn tray_menu_height(entries: &[crate::radio::MenuEntry]) -> u32 {
 
 /// How much of a network's name a drawer row will show.
 pub(crate) const DRAWER_CHARS: usize = 14;
+/// The longest failure reason an inline drawer error shows before it elides.
+pub(crate) const DRAWER_ERR_CHARS: usize = 34;
 
 /// The bar draws on nothing: the layer surface itself is transparent, and the
 /// opaque ground is the container in [`view`].

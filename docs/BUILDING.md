@@ -220,6 +220,19 @@ In the symlinked dev install, `ec-inferenced` must be a `dev-peers` build too
 (the command above). Without an unlocked store the agent answers in the console
 that brokerd is locked.
 
+## Cutting a release
+
+Package updates reach installed machines through CI, not a local build (D-02):
+
+```
+git tag v0.1.2 && git push origin v0.1.2     # or v0.1.2-2 to rebuild 0.1.2
+```
+
+`.github/workflows/release-repo.yml` builds, signs and publishes the
+`repo-x86_64` release; clients then `pacman -Syu`. One-time setup: set the
+`PACKAGING_KEY` repo secret (see `docs/design/D-02-package-repository.md`).
+`packaging/repo/build-repo.sh local` remains the way to iterate on packaging.
+
 ## Packaging
 
 The distribution path (D-01..D-03), all under `packaging/`:

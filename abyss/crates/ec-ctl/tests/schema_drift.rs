@@ -34,21 +34,47 @@ const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
     "network",
     "bluetooth",
     "battery",
+    "quick-actions",
     "tray",
+    "progress",
+    "power",
     "clock",
 ];
+
+/// The taskbar's own built-in default order, as `shell/crates/ec-hyperion-bar`
+/// writes it (the shell is its own workspace and cannot be linked here). Read
+/// from its source so the pin is checked, not just restated.
+fn shell_default_order() -> Vec<&'static str> {
+    const SHELL: &str = include_str!("../../../../shell/crates/ec-hyperion-bar/src/widgets/mod.rs");
+    let start = SHELL
+        .find("order: ids(&[")
+        .expect("the bar's Config::default order list");
+    let body = &SHELL[start..];
+    let body = &body[..body.find("])").expect("end of the order list")];
+    body.split('"').skip(1).step_by(2).collect()
+}
+
+#[test]
+fn the_bar_default_order_matches_the_schema() {
+    assert_eq!(
+        shell_default_order(),
+        schema::BAR_WIDGET_DEFAULT_ORDER,
+        "ec-hyperion-bar's default order has drifted from ec-abyss-config's schema; \
+         update the schema (and migrate.rs, and this test's copy)"
+    );
+}
 
 #[test]
 fn migrate_knows_the_widget_ids() {
     assert_eq!(
-        LEGACY_TRAY_BUILTINS,
-        schema::LEGACY_TRAY_BUILTINS,
-        "migrate::LEGACY_TRAY_BUILTINS has drifted from the schema; update it and this test"
-    );
-    assert_eq!(
         BAR_WIDGET_DEFAULT_ORDER,
         schema::BAR_WIDGET_DEFAULT_ORDER,
         "migrate::BAR_WIDGET_DEFAULT_ORDER has drifted from the schema; update it and this test"
+    );
+    assert_eq!(
+        LEGACY_TRAY_BUILTINS,
+        schema::LEGACY_TRAY_BUILTINS,
+        "migrate::LEGACY_TRAY_BUILTINS has drifted from the schema; update it and this test"
     );
 }
 

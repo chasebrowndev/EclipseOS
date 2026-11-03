@@ -6,6 +6,8 @@ use ec_settings::app::{self, App};
 use ec_settings::pane::Page;
 
 fn main() -> iced::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     // `ec-settings [section[/page]]`: the taskbar's drawers open
     // `network`, and `desktop/wallpaper` opens that page. An unknown name
     // opens the default page rather than refusing to start.

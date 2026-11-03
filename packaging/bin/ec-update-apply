@@ -1,0 +1,24 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# ec-update-apply: the root entry point of the power widget's update (ADR 0085).
+# Installed to /usr/lib/eclipse/ec-update-apply (root:root 0755) and run only
+# through pkexec under polkit action org.eclipse.update.apply. It accepts exactly
+# one argument, `all`, and execs a full upgrade with fixed flags. Any other argv
+# exits 2 before pacman is reached:
+#
+#   ec-update-apply all
+#
+# A full upgrade is the only shape: a subset upgrade is a partial upgrade (ADR
+# 0085). Do not add options, package names or pass-through arguments here.
+# Widening this script is the privilege change to review.
+set -eu
+LC_ALL=C
+export LC_ALL
+
+[ "$#" -eq 1 ] && [ "$1" = all ] || exit 2
+[ "$(/usr/bin/id -u)" -eq 0 ] || exit 1
+# -Syu: the sync database is refreshed and every pending package is upgraded
+# together, so the install never takes a stale version and never splits a
+# dependency set.
+exec /usr/bin/pacman -Syu --noconfirm

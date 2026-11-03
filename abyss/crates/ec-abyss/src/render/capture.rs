@@ -595,14 +595,12 @@ pub fn indicator(output: &Output, active: bool) -> Vec<AbyssRenderElement> {
     if !active {
         return Vec::new();
     }
-    let Some(mode) = output.current_mode() else {
+    let Some(rect) = indicator_rect(output) else {
         return Vec::new();
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let logical: smithay::utils::Size<i32, Logical> = mode.size.to_f64().to_logical(scale).to_i32_round();
-    let size: smithay::utils::Size<i32, Logical> = (48, 8).into();
+    let (loc, size) = (rect.loc, rect.size);
     let buffer = SolidColorBuffer::new(size, [1.0, 0.15, 0.15, 1.0]);
-    let loc: Point<i32, Logical> = (logical.w - size.w - 8, 8).into();
     vec![AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
         &buffer,
         phys(loc, scale),
@@ -610,6 +608,22 @@ pub fn indicator(output: &Output, active: bool) -> Vec<AbyssRenderElement> {
         1.0,
         Kind::Unspecified,
     ))]
+}
+
+/// Where [`indicator`] draws, output-local: the click that opens the
+/// emergency panel (COMP-10 §3.3) hits exactly what is drawn. The size is
+/// the transformed one, so a rotated output still has it in its corner.
+pub fn indicator_rect(output: &Output) -> Option<Rectangle<i32, Logical>> {
+    let mode = output.current_mode()?;
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let logical: smithay::utils::Size<i32, Logical> = output
+        .current_transform()
+        .transform_size(mode.size)
+        .to_f64()
+        .to_logical(scale)
+        .to_i32_round();
+    let size: smithay::utils::Size<i32, Logical> = (48, 8).into();
+    Some(Rectangle::new((logical.w - size.w - 8, 8).into(), size))
 }
 
 /// Service every queued capture. Called once per composite, from the backend

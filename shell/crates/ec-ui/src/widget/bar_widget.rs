@@ -47,9 +47,9 @@ pub enum Grip {
 impl Grip {
     fn ink(self) -> Color {
         match self {
-            Grip::Rest => color::TEXT_TERTIARY,
-            Grip::Hover => color::TEXT_SECONDARY,
-            Grip::Active => color::TEXT,
+            Grip::Rest => color::text_tertiary(),
+            Grip::Hover => color::text_secondary(),
+            Grip::Active => color::text(),
         }
     }
 
@@ -409,6 +409,8 @@ struct Clip<'a, Message> {
     /// short of the bounds, so a squeezed body ends in air rather than
     /// against the hairline.
     trail: f32,
+    /// The ground's corner radius (clamped to half the short side on draw).
+    radius: f32,
 }
 
 #[derive(Default)]
@@ -600,30 +602,40 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
         };
         if let (Some(tone), true) = (self.ground, bounds.width >= 1.0 && self.opacity > 0.0) {
             let st = tree.state.downcast_ref::<CellState>();
-            let look = crate::theme::bar_cell(tone)(theme, st.status(cursor.is_over(bounds)));
+            let status = st.status(cursor.is_over(bounds));
+            let look = crate::theme::bar_cell(tone)(theme, status);
             // A cell narrower than its corners is a capsule, not a pinched
             // square: the radius never exceeds half the short side.
-            let r = bar::RADIUS_CELL.min(bounds.width / 2.0).min(bounds.height / 2.0);
-            let fill = look
-                .background
-                .unwrap_or(iced::Background::Color(Color::TRANSPARENT))
-                .scale_alpha(self.opacity);
-            renderer.fill_quad(
-                renderer::Quad {
-                    bounds,
-                    border: Border {
-                        color: look.border.color.scale_alpha(self.opacity),
-                        width: look.border.width,
-                        radius: r.into(),
+            let r = self.radius.min(bounds.width / 2.0).min(bounds.height / 2.0);
+            if crate::glass::available() {
+                // The compositor draws the ground; the cell is only content.
+                crate::glass::push(
+                    crate::glass::Pane::new(bounds, r, tone)
+                        .status(status)
+                        .alpha((self.opacity * 255.0).round() as u8),
+                );
+            } else {
+                let fill = look
+                    .background
+                    .unwrap_or(iced::Background::Color(Color::TRANSPARENT))
+                    .scale_alpha(self.opacity);
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds,
+                        border: Border {
+                            color: look.border.color.scale_alpha(self.opacity),
+                            width: look.border.width,
+                            radius: r.into(),
+                        },
+                        shadow: iced::Shadow {
+                            color: look.shadow.color.scale_alpha(self.opacity),
+                            ..look.shadow
+                        },
+                        ..renderer::Quad::default()
                     },
-                    shadow: iced::Shadow {
-                        color: look.shadow.color.scale_alpha(self.opacity),
-                        ..look.shadow
-                    },
-                    ..renderer::Quad::default()
-                },
-                fill,
-            );
+                    fill,
+                );
+            }
         }
         let cursor = self.inner_cursor(layout, cursor);
         let clip = Rectangle {
@@ -654,6 +666,222 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Clip<'_, Message> {
         self.content.as_widget_mut().overlay(
             &mut tree.children[0],
             layout.children().next().expect("clip has one child"),
+            renderer,
+            viewport,
+            translation,
+        )
+    }
+}
+
+// ---------------------------------------------------------------- ground
+
+/// A button-like cell's ground, given to the compositor when it draws glass.
+///
+/// A widget and not a styled container because the pane needs the cell's
+/// surface-local bounds and its pointer state at draw time, which a style
+/// closure never sees. The wrapped button still paints its own ground through
+/// [`crate::theme::bare_if_glass`] when no glass is available; with glass this
+/// pushes the pane and the button paints only its content.
+struct Ground<'a, Message> {
+    content: Element<'a, Message, Theme>,
+    tone: crate::theme::CellTone,
+    radius: f32,
+    /// A static card: always drawn at rest, whatever the pointer does.
+    rest: bool,
+}
+
+/// Wrap a static card (not pressable) so the compositor draws its ground at
+/// rest, never hovered. Pair its container style with
+/// [`crate::theme::bare_container_if_glass`]. See [`Ground`].
+pub fn glass_card<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    tone: impl Into<crate::theme::CellTone>,
+    radius: f32,
+) -> Element<'a, Message, Theme> {
+    Element::new(Ground {
+        content: content.into(),
+        tone: tone.into(),
+        radius,
+        rest: true,
+    })
+}
+
+/// Wrap a button so the compositor draws its ground. See [`Ground`].
+pub fn glass_ground<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    tone: impl Into<crate::theme::CellTone>,
+    radius: f32,
+) -> Element<'a, Message, Theme> {
+    Element::new(Ground {
+        content: content.into(),
+        tone: tone.into(),
+        radius,
+        rest: false,
+    })
+}
+
+impl<Message> Widget<Message, Theme, iced::Renderer> for Ground<'_, Message> {
+    fn tag(&self) -> tree::Tag {
+        tree::Tag::of::<CellState>()
+    }
+
+    fn state(&self) -> tree::State {
+        tree::State::new(CellState::default())
+    }
+
+    fn size(&self) -> Size<Length> {
+        self.content.as_widget().size()
+    }
+
+    fn children(&self) -> Vec<Tree> {
+        vec![Tree::new(&self.content)]
+    }
+
+    fn diff(&self, tree: &mut Tree) {
+        tree.diff_children(std::slice::from_ref(&self.content));
+    }
+
+    fn layout(
+        &mut self,
+        tree: &mut Tree,
+        renderer: &iced::Renderer,
+        limits: &layout::Limits,
+    ) -> layout::Node {
+        let child = self
+            .content
+            .as_widget_mut()
+            .layout(&mut tree.children[0], renderer, limits);
+        layout::Node::with_children(child.size(), vec![child])
+    }
+
+    fn operate(
+        &mut self,
+        tree: &mut Tree,
+        layout: Layout<'_>,
+        renderer: &iced::Renderer,
+        operation: &mut dyn Operation,
+    ) {
+        self.content.as_widget_mut().operate(
+            &mut tree.children[0],
+            layout.children().next().expect("ground has one child"),
+            renderer,
+            operation,
+        );
+    }
+
+    fn update(
+        &mut self,
+        tree: &mut Tree,
+        event: &Event,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        renderer: &iced::Renderer,
+        clipboard: &mut dyn Clipboard,
+        shell: &mut Shell<'_, Message>,
+        viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        let st = tree.state.downcast_mut::<CellState>();
+        match event {
+            Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) if cursor.is_over(bounds) => {
+                st.pressed = true;
+            }
+            Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) if st.finger.is_none() => {
+                st.pressed = false;
+            }
+            Event::Touch(touch::Event::FingerPressed { id, position }) if bounds.contains(*position) => {
+                st.pressed = true;
+                st.finger = Some(*id);
+            }
+            Event::Touch(touch::Event::FingerLifted { id, .. } | touch::Event::FingerLost { id, .. })
+                if st.finger == Some(*id) =>
+            {
+                st.pressed = false;
+                st.finger = None;
+            }
+            _ => {}
+        }
+        let now = st.status(cursor.is_over(bounds));
+        if let Event::Window(window::Event::RedrawRequested(_)) = event {
+            st.drawn = Some(now);
+        } else if st.drawn != Some(now) {
+            shell.request_redraw();
+        }
+        self.content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout.children().next().expect("ground has one child"),
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+
+    fn mouse_interaction(
+        &self,
+        tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+        renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        self.content.as_widget().mouse_interaction(
+            &tree.children[0],
+            layout.children().next().expect("ground has one child"),
+            cursor,
+            viewport,
+            renderer,
+        )
+    }
+
+    fn draw(
+        &self,
+        tree: &Tree,
+        renderer: &mut iced::Renderer,
+        theme: &Theme,
+        style: &renderer::Style,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        viewport: &Rectangle,
+    ) {
+        let bounds = layout.bounds();
+        if crate::glass::available() && bounds.intersects(viewport) {
+            let st = tree.state.downcast_ref::<CellState>();
+            let r = self.radius.min(bounds.width / 2.0).min(bounds.height / 2.0);
+            let pane = crate::glass::Pane::new(bounds, r, self.tone);
+            crate::glass::push_in(
+                if self.rest {
+                    pane
+                } else {
+                    pane.status(st.status(cursor.is_over(bounds)))
+                },
+                viewport,
+            );
+        }
+        self.content.as_widget().draw(
+            &tree.children[0],
+            renderer,
+            theme,
+            style,
+            layout.children().next().expect("ground has one child"),
+            cursor,
+            viewport,
+        );
+    }
+
+    fn overlay<'b>(
+        &'b mut self,
+        tree: &'b mut Tree,
+        layout: Layout<'b>,
+        renderer: &iced::Renderer,
+        viewport: &Rectangle,
+        translation: Vector,
+    ) -> Option<overlay::Element<'b, Message, Theme, iced::Renderer>> {
+        self.content.as_widget_mut().overlay(
+            &mut tree.children[0],
+            layout.children().next().expect("ground has one child"),
             renderer,
             viewport,
             translation,
@@ -813,6 +1041,18 @@ pub fn widget_shell<'a, Message: 'a>(
     span: ShellSpan,
     frame: ShellFrame,
 ) -> Element<'a, Message, Theme> {
+    widget_shell_rounded(grip, core, revealed, span, frame, bar::RADIUS_WIDGET)
+}
+
+/// [`widget_shell`] with its corner `radius` set (`bar.widgets.rounding`).
+pub fn widget_shell_rounded<'a, Message: 'a>(
+    grip: impl Into<Element<'a, Message, Theme>>,
+    core: impl Into<Element<'a, Message, Theme>>,
+    revealed: Option<Element<'a, Message, Theme>>,
+    span: ShellSpan,
+    frame: ShellFrame,
+    radius: f32,
+) -> Element<'a, Message, Theme> {
     let closed = 1.0 - frame.open.clamp(0.0, 1.0);
     widget_shell_with(
         grip,
@@ -825,6 +1065,7 @@ pub fn widget_shell<'a, Message: 'a>(
             closed,
             slide: 0.0,
             overlay: false,
+            radius,
         },
     )
 }
@@ -847,6 +1088,9 @@ pub struct ShellLook {
     /// the body's own pad) instead of in a column of its own, so an open
     /// widget reserves no empty glass for a grip that shows only on hover.
     pub overlay: bool,
+    /// The shell's corner radius (`bar.widgets.rounding`); a capsule at
+    /// [`bar::RADIUS_WIDGET`].
+    pub radius: f32,
 }
 
 impl ShellLook {
@@ -935,6 +1179,7 @@ pub fn widget_shell_with<'a, Message: 'a>(
         opacity: 1.0,
         anchor: Some(span.body_offset(body_w)),
         trail: span.squeeze_trail(body_w),
+        radius: look.radius,
     });
     let inner: Element<'a, Message, Theme> = if look.overlay {
         iced::widget::stack![row![Space::new().width(Length::Fixed(grip_w)), clip], grip.into()].into()
@@ -947,7 +1192,15 @@ pub fn widget_shell_with<'a, Message: 'a>(
     let open = (1.0 - look.closed.clamp(0.0, 1.0)).max(frame.reveal.clamp(0.0, 1.0));
     let ground = (bar::GRIP_GROUND + (1.0 - bar::GRIP_GROUND) * open) * presence;
 
-    glass_cell_faded(inner, natural, visible, false, ClipEdge::Right, ground)
+    glass_cell_rounded(
+        inner,
+        natural,
+        visible,
+        false,
+        ClipEdge::Right,
+        ground,
+        look.radius,
+    )
 }
 
 /// A bare glass cell: `content` laid out at `natural` width, shown `visible`
@@ -982,6 +1235,22 @@ pub fn glass_cell_faded<'a, Message: 'a>(
     edge: ClipEdge,
     opacity: f32,
 ) -> Element<'a, Message, Theme> {
+    glass_cell_rounded(content, natural, visible, tone, edge, opacity, bar::RADIUS_CELL)
+}
+
+/// [`glass_cell_faded`] with the ground's corner `radius` set by the caller:
+/// the widgets' cell (`bar.widgets.rounding`), where chips keep
+/// [`bar::RADIUS_CELL`]. A parameter and not a second widget because only the
+/// ground quad's corner differs.
+pub fn glass_cell_rounded<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    natural: f32,
+    visible: f32,
+    tone: impl Into<crate::theme::CellTone>,
+    edge: ClipEdge,
+    opacity: f32,
+    radius: f32,
+) -> Element<'a, Message, Theme> {
     let visible = visible.max(0.0);
     container(Element::new(Clip {
         content: content.into(),
@@ -993,6 +1262,7 @@ pub fn glass_cell_faded<'a, Message: 'a>(
         opacity: opacity.clamp(0.0, 1.0),
         anchor: None,
         trail: 0.0,
+        radius,
     }))
     .width(Length::Fixed(visible))
     .height(Length::Fixed(bar::WIDGET_H))
@@ -1026,7 +1296,11 @@ pub fn viz_bars_faded<'a, Message: 'a>(
     live: bool,
     alpha: f32,
 ) -> Element<'a, Message, Theme> {
-    let ink = if live { color::ACCENT } else { color::TEXT_TERTIARY };
+    let ink = if live {
+        color::accent()
+    } else {
+        color::text_tertiary()
+    };
     Element::new(VizBars {
         levels: *levels,
         ink: ink.scale_alpha(alpha.clamp(0.0, 1.0)),
@@ -1119,9 +1393,9 @@ pub fn mini_meter_faded<'a, Message: 'a>(
         0.0
     };
     let (fill, reading) = if accent {
-        (color::ACCENT, color::ACCENT_TEXT)
+        (color::accent(), color::accent_text())
     } else {
-        (color::TEXT_SECONDARY, color::TEXT)
+        (color::text_secondary(), color::text())
     };
     let (fill, reading) = (fill.scale_alpha(a), reading.scale_alpha(a));
     let lit = (bar::METER_W * f).round();
@@ -1129,7 +1403,7 @@ pub fn mini_meter_faded<'a, Message: 'a>(
         text(label.to_uppercase())
             .font(font::DATA_MEDIUM)
             .size(size::MICRO)
-            .color(color::TEXT_TERTIARY.scale_alpha(a))
+            .color(color::text_tertiary().scale_alpha(a))
             .wrapping(text::Wrapping::None),
         Space::new().width(Length::Fill),
         text(format!("{}%", (f * 100.0).round() as u32))
@@ -1144,7 +1418,7 @@ pub fn mini_meter_faded<'a, Message: 'a>(
         quad(
             Length::Fixed(bar::METER_W - lit),
             Length::Fixed(bar::METER_H),
-            color::TRACK.scale_alpha(a),
+            color::track().scale_alpha(a),
             0.0
         ),
     ];
@@ -1222,13 +1496,13 @@ fn transport_lift(alpha: f32) -> impl Fn(&Theme, button::Status) -> button::Styl
 
 fn transport_lift_at(status: button::Status, alpha: f32) -> button::Style {
     let background = match status {
-        button::Status::Hovered => color::LIFT_SOFT,
-        button::Status::Pressed => color::LIFT,
+        button::Status::Hovered => color::lift_soft(),
+        button::Status::Pressed => color::lift(),
         _ => Color::TRANSPARENT,
     };
     button::Style {
         background: Some(iced::Background::Color(background.scale_alpha(alpha))),
-        text_color: color::TEXT,
+        text_color: color::text(),
         border: iced::border::rounded(bar::RADIUS_TRANSPORT),
         ..button::Style::default()
     }
@@ -1241,9 +1515,9 @@ fn transport_button<'a, Message: Clone + 'a>(
     alpha: f32,
 ) -> Element<'a, Message, Theme> {
     let (ink, hover_ink) = match (on_press.is_some(), primary) {
-        (false, _) => (color::TEXT_TERTIARY, color::TEXT_TERTIARY),
-        (true, true) => (color::TEXT, color::TEXT),
-        (true, false) => (color::TEXT_SECONDARY, color::TEXT),
+        (false, _) => (color::text_tertiary(), color::text_tertiary()),
+        (true, true) => (color::text(), color::text()),
+        (true, false) => (color::text_secondary(), color::text()),
     };
     let mark = canvas(GlyphMark {
         glyph,
@@ -1347,9 +1621,9 @@ pub fn volume_slider_faded<'a, Message: Clone + 'a>(
         0.0
     };
     let (fill, reading) = match (muted, accent) {
-        (true, _) => (color::TEXT_TERTIARY, color::TEXT_TERTIARY),
-        (false, true) => (color::ACCENT, color::ACCENT_TEXT),
-        (false, false) => (color::TEXT_SECONDARY, color::TEXT),
+        (true, _) => (color::text_tertiary(), color::text_tertiary()),
+        (false, true) => (color::accent(), color::accent_text()),
+        (false, false) => (color::text_secondary(), color::text()),
     };
     let (fill, reading) = (fill.scale_alpha(a), reading.scale_alpha(a));
     let mut track = slider(0.0..=max, v, on_change)
@@ -1359,14 +1633,14 @@ pub fn volume_slider_faded<'a, Message: Clone + 'a>(
         .style(move |_t: &Theme, status: slider::Status| {
             let knob = match status {
                 slider::Status::Active => fill,
-                _ if muted => color::TEXT_SECONDARY.scale_alpha(a),
-                _ => color::TEXT.scale_alpha(a),
+                _ if muted => color::text_secondary().scale_alpha(a),
+                _ => color::text().scale_alpha(a),
             };
             slider::Style {
                 rail: slider::Rail {
                     backgrounds: (
                         iced::Background::Color(fill),
-                        iced::Background::Color(color::TRACK.scale_alpha(a)),
+                        iced::Background::Color(color::track().scale_alpha(a)),
                     ),
                     width: bar::VOLUME_RAIL,
                     border: Border::default(),
@@ -1388,7 +1662,7 @@ pub fn volume_slider_faded<'a, Message: Clone + 'a>(
     let shown = if muted {
         "mute".to_string()
     } else {
-        format!("{}", (v * 100.0).round() as u32)
+        format!("{}%", (v * 100.0).round() as u32)
     };
     row![
         track,
@@ -1434,7 +1708,12 @@ pub fn art_thumb<'a, Message: 'a>(art: Option<&image::Handle>, hard: bool) -> El
             .content_fit(iced::ContentFit::Cover)
             .border_radius(r)
             .into(),
-        None => quad(Length::Fixed(bar::ART), Length::Fixed(bar::ART), color::TRACK, r),
+        None => quad(
+            Length::Fixed(bar::ART),
+            Length::Fixed(bar::ART),
+            color::track(),
+            r,
+        ),
     }
 }
 
@@ -1459,7 +1738,7 @@ pub fn art_slot<'a, Message: 'a>(
     let under = |ink: Color| quad(Length::Fixed(bar::ART), Length::Fixed(bar::ART), ink, r);
     match art {
         Some(h) if arrival > 0.0 => iced::widget::stack![
-            under(color::TRACK.scale_alpha(a * (1.0 - arrival))),
+            under(color::track().scale_alpha(a * (1.0 - arrival))),
             image(h.clone())
                 .width(Length::Fixed(bar::ART))
                 .height(Length::Fixed(bar::ART))
@@ -1468,7 +1747,7 @@ pub fn art_slot<'a, Message: 'a>(
                 .opacity(a * arrival),
         ]
         .into(),
-        _ => under(color::TRACK.scale_alpha(a)),
+        _ => under(color::track().scale_alpha(a)),
     }
 }
 
@@ -1513,12 +1792,12 @@ pub fn track_label_faded<'a, Message: 'a>(
             text(elide(title, budget))
                 .font(font::UI_MEDIUM)
                 .size(size::BODY_SMALL)
-                .color(color::TEXT.scale_alpha(a))
+                .color(color::text().scale_alpha(a))
                 .wrapping(text::Wrapping::None),
             text(elide(subtitle, mono_budget))
                 .font(font::DATA)
                 .size(size::MICRO)
-                .color(color::TEXT_SECONDARY.scale_alpha(a))
+                .color(color::text_secondary().scale_alpha(a))
                 .wrapping(text::Wrapping::None),
         ]
         .spacing(bar::LABEL_LINE_GAP),

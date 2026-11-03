@@ -92,6 +92,7 @@ a system gets; nothing else turns an add-on on.
 | `activity-lens` | Fog | the lens pill bar and agent views, fed by the add-on's daemon |
 | `agents` | abyss | the privileged `ec-agent.sock` socket, agent and `eclipse_semantic_v1` globals, the `policyd` link, the "agents disabled" indicator, the agent lifecycle methods (`get_agents`, `pause_agent`, `resume_agent`, `terminate_agent`, `revoke_grants`) (ADR 0069) |
 | `transition-shaders` | abyss | the transition catalog `/usr/share/eclipse/transitions/` and its `pack:style` animation styles, compiled from package-owned GLSL (ADR 0073; the one in-process exception, at installed-package trust) |
+| `client-strips` | abyss | the `set_client_strips` method: a browser's helper sets the `translucent-region` strip on its parent's windows (ADR 0079) |
 
 **The add-ons.**
 - **hyperion** enables `taskbar-widgets`. `eclipseos-meta` lists it as an

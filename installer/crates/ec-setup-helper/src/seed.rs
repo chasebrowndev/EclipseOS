@@ -45,7 +45,7 @@ enum Verdict {
     Drop,
 }
 
-/// The allowlist, and the whole of it: `input.kb-*`, `general.layout`,
+/// The allowlist, and the whole of it: `input.kb-*`, `general.{layout,color-scheme}`,
 /// `decoration.rounding`, `decoration.blur.{mode,enabled}`, `animations.preset` (and the legacy
 /// `animations.enabled|animation`, which still load),
 /// `bar.position`, `mode`, `components.{bar,launcher,notifications,control-center}`,
@@ -60,7 +60,7 @@ fn verdict(path: &[&str]) -> Verdict {
         ["input"] => Verdict::Partial,
         ["input", k] if k.starts_with("kb-") => Verdict::Full,
         ["general"] => Verdict::Partial,
-        ["general", "layout"] => Verdict::Full,
+        ["general", "layout" | "color-scheme"] => Verdict::Full,
         ["decoration"] | ["animations"] | ["bar"] | ["components"] | ["setup"] => Verdict::Partial,
         ["decoration", "rounding"]
         | ["animations", "preset" | "enabled" | "animation"]
@@ -419,6 +419,7 @@ input {
 }
 general {
     layout "dwindle"
+    color-scheme "light"
     gaps-in 5
 }
 decoration {
@@ -442,6 +443,7 @@ setup { complete #true; profile "standard" }
             "input.kb-layout",
             "input.kb-variant",
             "general.layout",
+            "general.color-scheme",
             "decoration.rounding",
             "decoration.blur.enabled",
             "decoration.blur.mode",
@@ -491,6 +493,20 @@ input { kb-layout "us" }
         for bad in ["foot", "curl", "swaylock", "evil-terminal", "spawn", "exec"] {
             assert!(!text.contains(bad), "{bad}");
         }
+    }
+
+    /// The scheme travels; a user theme and its pickers do not (ADR 0084): the
+    /// seed carries a preference, not colours written by a same-uid process.
+    #[test]
+    fn the_scheme_is_kept_and_themes_are_dropped() {
+        let src = "general { color-scheme \"auto\"; theme-dark \"ember\"; light-from \"06:00\" }\n\
+                   theme \"ember\" { inherit \"dark\"; accent \"#e8873a\" }\n";
+        let (out, _) = filter_seed(src.as_bytes()).unwrap();
+        let got = leaves(&out);
+        assert!(got.contains("general.color-scheme"));
+        assert!(!got.contains("general.theme-dark"));
+        assert!(!got.contains("general.light-from"));
+        assert!(!String::from_utf8(out).unwrap().contains("ember"));
     }
 
     #[test]

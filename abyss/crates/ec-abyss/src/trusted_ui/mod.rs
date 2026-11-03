@@ -37,6 +37,7 @@ pub mod broker;
 pub mod commit;
 pub mod consent;
 pub mod erase;
+pub mod indicator;
 pub mod install;
 pub mod modal;
 pub mod notice;
@@ -62,7 +63,7 @@ use smithay::{
                 Kind,
             },
             gles::{GlesRenderer, GlesTexture},
-            ImportMem,
+            ContextId, ImportMem, Renderer,
         },
     },
     input::{keyboard::Keysym, pointer::MotionEvent},
@@ -116,9 +117,11 @@ struct Open {
 #[derive(Debug, Default)]
 pub struct TrustedUi {
     open: Option<Open>,
-    /// The uploaded panel per device scale, with the focus it was drawn with.
-    /// Kept across frames so the damage tracker sees the same element.
-    art: BTreeMap<usize, (usize, TextureBuffer<GlesTexture>)>,
+    /// The uploaded panel per renderer and device scale, with the focus it was
+    /// drawn with. Kept across frames so the damage tracker sees the same
+    /// element. A texture belongs to one GPU's context, and each GPU draws its
+    /// own outputs (ADR 0084), so the renderer is part of the key.
+    art: BTreeMap<(ContextId<GlesTexture>, usize), (usize, TextureBuffer<GlesTexture>)>,
     /// One dim buffer per output size, for the same reason.
     dim: BTreeMap<(i32, i32), SolidColorBuffer>,
     /// The command-approval prompt's widget, if that is what is up.
@@ -139,12 +142,27 @@ pub struct TrustedUi {
     pub(crate) installs: install::Installs,
     /// Commit slots' trusted side: preview, arming, cards (COMP-19).
     pub(crate) cards: commit::Cards,
+    /// The compat-lock indicator's state (§3.4).
+    pub(crate) marks: indicator::Marks,
     pub(crate) broker: broker::Broker,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
+    /// The light palette is in use. Off by default, so dark until told. Only
+    /// [`set_scheme`] writes it, from the compositor's own theme state: no
+    /// socket or client reaches it (§5, ADR 0084).
+    light: bool,
 }
 
 impl TrustedUi {
+    /// The compiled-in palette for the current colour scheme.
+    pub(crate) fn colors(&self) -> &'static modal::Colors {
+        if self.light {
+            &modal::LIGHT
+        } else {
+            &modal::DARK
+        }
+    }
+
     pub fn is_open(&self) -> bool {
         self.open.is_some()
     }
@@ -420,6 +438,20 @@ fn centre(geo: Rectangle<i32, Logical>, layout: &modal::Layout) -> Point<i32, Lo
         .into()
 }
 
+/// The colour scheme moved (ADR 0084): choose the other compiled-in palette and
+/// drop every uploaded surface so whatever is on screen repaints. The caller
+/// damages the outputs. Input, focus and timers are untouched, and so is an open
+/// prompt's answer: only its colours change.
+pub(crate) fn set_scheme(ui: &mut TrustedUi, scheme: ec_theme::Scheme) {
+    let light = scheme == ec_theme::Scheme::Light;
+    if ui.light != light {
+        ui.light = light;
+        ui.art.clear();
+        ui.marks.repaint();
+        ui.cards.repaint();
+    }
+}
+
 /// The prompt's elements for one output, front-to-back: the panel, then the
 /// dim over everything else. Empty with no prompt, or under the lock.
 pub fn elements(
@@ -436,7 +468,17 @@ pub fn elements(
         return Vec::new();
     };
     // Commit-slot cards: above every client, below any prompt and its dim.
-    let cards = commit::elements(renderer, ui, output, output_loc, logical);
+    let mut cards = commit::elements(renderer, ui, output, output_loc, logical);
+    // Compat-lock pills and outlines (§3.4): above every client, below cards.
+    let colors = ui.colors();
+    cards.extend(indicator::elements(
+        renderer,
+        &mut ui.marks,
+        colors,
+        output,
+        output_loc,
+        logical,
+    ));
     let Some(o) = ui.open.as_ref() else {
         return cards;
     };
@@ -445,27 +487,30 @@ pub fn elements(
     // Whole device pixels, like the annotation cards: the font is a bitmap.
     let dev = (fractional.round() as usize).max(1);
 
+    let key = (renderer.context_id(), dev);
+
     let mut out = Vec::with_capacity(2);
-    if ui.art.get(&dev).map(|(f, _)| *f != o.focus).unwrap_or(true) {
+    if ui.art.get(&key).map(|(f, _)| *f != o.focus).unwrap_or(true) {
         let raster = modal::rasterize(
             &o.modal,
             o.focus,
             dev,
             ui.phrase.as_ref().map(phrase::Phrase::as_str),
+            colors,
         );
         match upload(renderer, &raster, dev) {
             Some(buffer) => {
-                ui.art.insert(dev, (o.focus, buffer));
+                ui.art.insert(key.clone(), (o.focus, buffer));
             }
             None => {
                 // No panel means no way to answer; the dim still holds the
                 // seat visibly and the timeout still resolves it.
                 tracing::error!("trusted prompt upload failed");
-                ui.art.remove(&dev);
+                ui.art.remove(&key);
             }
         }
     }
-    if let Some((_, buffer)) = ui.art.get(&dev) {
+    if let Some((_, buffer)) = ui.art.get(&key) {
         let local = centre(Rectangle::new(output_loc, logical), &o.layout) - output_loc;
         out.push(AbyssRenderElement::Texture(
             TextureRenderElement::from_texture_buffer(
@@ -652,11 +697,16 @@ fn dump_trusted_surfaces() {
         f.write_all(&r.px).unwrap();
     };
     let write = |name: &str, m: &modal::Modal, phrase: Option<&str>| {
-        raw(name, &modal::rasterize(m, m.safe(), 2, phrase));
+        raw(name, &modal::rasterize(m, m.safe(), 2, phrase, &modal::DARK));
+        raw(
+            &format!("{name}-light"),
+            &modal::rasterize(m, m.safe(), 2, phrase, &modal::LIGHT),
+        );
     };
     for (name, r) in commit::dump_cards() {
         raw(name, &r);
     }
+    raw("compat-lock", &indicator::dump_pill());
     let ask = consent::Ask {
         principal: "agent:research-7".into(),
         action: "Click \"Send\"".into(),

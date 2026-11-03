@@ -42,6 +42,9 @@ pub mod clock;
 pub mod custom;
 pub mod network;
 pub mod now_playing;
+pub mod power;
+pub mod progress;
+pub mod quick_actions;
 pub mod system_usage;
 pub mod tray;
 pub mod volume;
@@ -55,6 +58,13 @@ pub enum WidgetId {
     Network,
     Bluetooth,
     Battery,
+    /// `bar { action … }` blocks: a grid of one-tap buttons.
+    QuickActions,
+    /// The progress cell (ADR 0065 amendment): zero width while nothing is in flight.
+    Progress,
+    /// The power glyph, opening the session actions and the Eclipse update
+    /// (ADR 0065 amendment, ADR 0085).
+    Power,
     Tray,
     Clock,
     /// A `widget "<name>" { … }` block, written `custom:<name>`.
@@ -72,6 +82,9 @@ impl WidgetId {
             "network" => WidgetId::Network,
             "bluetooth" => WidgetId::Bluetooth,
             "battery" => WidgetId::Battery,
+            "quick-actions" => WidgetId::QuickActions,
+            "progress" => WidgetId::Progress,
+            "power" => WidgetId::Power,
             "tray" => WidgetId::Tray,
             "clock" => WidgetId::Clock,
             other => {
@@ -93,6 +106,9 @@ impl WidgetId {
             WidgetId::Network => "network".to_owned(),
             WidgetId::Bluetooth => "bluetooth".to_owned(),
             WidgetId::Battery => "battery".to_owned(),
+            WidgetId::QuickActions => "quick-actions".to_owned(),
+            WidgetId::Progress => "progress".to_owned(),
+            WidgetId::Power => "power".to_owned(),
             WidgetId::Tray => "tray".to_owned(),
             WidgetId::Clock => "clock".to_owned(),
             WidgetId::Custom(name) => format!("custom:{name}"),
@@ -155,7 +171,10 @@ impl Default for Config {
                 "network",
                 "bluetooth",
                 "battery",
+                "quick-actions",
                 "tray",
+                "progress",
+                "power",
                 "clock",
             ]),
             important: ids(&["clock", "battery"]),
@@ -217,7 +236,7 @@ pub enum Action {
 /// delta is dropped; a pixel delta that trails a discrete one is its twin and
 /// dropped too; and a pixel stream with no discrete steps at all — a
 /// touchpad — counts a notch per [`PX_PER_NOTCH`] of travel.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Notches {
     /// When the last discrete step arrived.
     lines_at: Option<std::time::Instant>,
@@ -301,6 +320,9 @@ pub fn spans(app: &App, id: &WidgetId) -> Spans {
         WidgetId::Network => network::spans(app),
         WidgetId::Bluetooth => bluetooth::spans(app),
         WidgetId::Battery => battery::spans(app),
+        WidgetId::QuickActions => quick_actions::spans(app),
+        WidgetId::Progress => progress::spans(app),
+        WidgetId::Power => power::spans(app),
         WidgetId::Tray => tray::spans(app),
         WidgetId::Clock => clock::spans(app),
         WidgetId::Custom(name) => match cfg.spec(name) {
@@ -352,6 +374,9 @@ fn parts<'a>(app: &'a App, bar: &crate::app::Bar, id: &WidgetId, frame: ShellFra
         WidgetId::Network => network::view(app, frame),
         WidgetId::Bluetooth => bluetooth::view(app, frame),
         WidgetId::Battery => battery::view(app, frame),
+        WidgetId::QuickActions => quick_actions::view(app, frame),
+        WidgetId::Progress => progress::view(app, frame),
+        WidgetId::Power => power::view(app, frame),
         WidgetId::Tray => tray::view(app, frame),
         WidgetId::Clock => clock::view(app, frame),
         WidgetId::Custom(name) => match cfg.spec(name) {
@@ -390,6 +415,7 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
     if presence <= 0.0 {
         return None;
     }
+    let radius = app.bar.widget_rounding as f32;
     let extent = anim.extent.value().max(0.0);
     let core_run = input.core_run();
     let reveal_run = input.reveal_run();
@@ -419,13 +445,14 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         return Some(Cell {
             presence,
             closed: 0.0,
-            element: parts::glass_cell_faded(
+            element: parts::glass_cell_rounded(
                 body,
                 core_run,
                 visible,
                 false,
                 ClipEdge::Right,
                 frame.ground_alpha(),
+                radius,
             ),
         });
     }
@@ -450,6 +477,7 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         closed,
         slide: bar::GRIP_HOVER_SLIDE * hover,
         overlay,
+        radius,
     };
     // Grips appear on hover only: at rest the bar is content on clear glass.
     // A widget compressed to its grip keeps it in proportion to how shut it
@@ -521,7 +549,7 @@ pub(crate) fn press<'a>(
 pub(crate) fn bare(_t: &Theme, _s: button::Status) -> button::Style {
     button::Style {
         background: None,
-        text_color: color::TEXT,
+        text_color: color::text(),
         ..button::Style::default()
     }
 }
@@ -530,13 +558,13 @@ pub(crate) fn bare(_t: &Theme, _s: button::Status) -> button::Style {
 /// of its own under the pointer, so it is clear *which* of them answers.
 pub(crate) fn inner(_t: &Theme, status: button::Status) -> button::Style {
     let background = match status {
-        button::Status::Hovered => Some(iced::Background::Color(color::LIFT_SOFT)),
-        button::Status::Pressed => Some(iced::Background::Color(color::LIFT)),
+        button::Status::Hovered => Some(iced::Background::Color(color::lift_soft())),
+        button::Status::Pressed => Some(iced::Background::Color(color::lift())),
         _ => None,
     };
     button::Style {
         background,
-        text_color: color::TEXT,
+        text_color: color::text(),
         border: iced::border::rounded(bar::RADIUS_ICON),
         ..button::Style::default()
     }
@@ -555,6 +583,9 @@ mod tests {
             "network",
             "bluetooth",
             "battery",
+            "quick-actions",
+            "progress",
+            "power",
             "tray",
             "clock",
             "custom:weather",

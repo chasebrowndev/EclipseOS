@@ -22,11 +22,11 @@ pub fn body(m: &Model) -> Body<'_> {
             text(capitalised(t.id()))
                 .font(font::UI_SEMIBOLD)
                 .size(size::PROMPT)
-                .color(color::TEXT),
+                .color(color::text()),
             text(t.blurb())
                 .font(font::UI)
                 .size(size::BODY)
-                .color(color::TEXT_SECONDARY),
+                .color(color::text_secondary()),
         ]
         .spacing(space::CARD);
         cards = cards.push(parts::card(

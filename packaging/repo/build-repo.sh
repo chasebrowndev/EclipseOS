@@ -15,7 +15,14 @@ set -euo pipefail
 # one-line fix wait on a tag -- which means a PR, which means the full gate
 # and wlcs -- is minutes of CI per character. Iterate with `local`, then build
 # the real tag once when it works.
-TAG="${1:?usage: build-repo.sh <tag>|local}"
+#
+# `build-repo.sh ci` is the GitHub Actions mode (.github/workflows/release-repo.yml):
+# it builds this working tree's HEAD as ECLIPSEOS_PKGVER-ECLIPSEOS_PKGREL
+# (parsed from the pushed tag by the workflow), so a tag like v0.1.2-3 needs no
+# matching `#tag=` in the PKGBUILD. It makes its own checkout, uses the key
+# named by ECLIPSEOS_KEY_FPR (already imported) and, with ECLIPSEOS_NODEPS=1,
+# skips makepkg's pacman dependency step (rust comes from rustup there).
+TAG="${1:?usage: build-repo.sh <tag>|local|ci}"
 REPO_NAME=eclipseos
 REPO_ROOT="${ECLIPSEOS_REPO_ROOT:-$HOME/.local/share/eclipseos/repo}"
 export GNUPGHOME="${ECLIPSEOS_GNUPGHOME:-$HOME/.local/share/eclipseos/gnupg}"
@@ -28,7 +35,11 @@ repo_top="$(git -C "$here" rev-parse --show-toplevel)"
 # --- packaging key -----------------------------------------------------------
 mkdir -p "$GNUPGHOME"
 chmod 700 "$GNUPGHOME"
-if ! gpg --list-secret-keys "$KEY_UID" >/dev/null 2>&1; then
+if [[ -n "${ECLIPSEOS_KEY_FPR:-}" ]]; then
+  gpg --list-secret-keys "$ECLIPSEOS_KEY_FPR" >/dev/null 2>&1 ||
+    { echo "secret key $ECLIPSEOS_KEY_FPR not in $GNUPGHOME" >&2; exit 1; }
+  KEY_UID="$ECLIPSEOS_KEY_FPR"
+elif ! gpg --list-secret-keys "$KEY_UID" >/dev/null 2>&1; then
   echo "==> generating the EclipseOS packaging key in $GNUPGHOME"
   gpg --batch --passphrase '' --quick-generate-key "$KEY_UID" ed25519 sign 5y
 fi
@@ -42,8 +53,18 @@ echo "==> signing key $KEY_ID"
   # cargo target/ dir; deleting it turns every run into a cold release build
   # (~30 min). makepkg re-fetches the tag into the existing checkout itself.
   rm -rf pkg
-  [[ "$TAG" == local ]] ||
+  if [[ "$TAG" == ci ]]; then
+    : "${ECLIPSEOS_PKGVER:?ci mode needs ECLIPSEOS_PKGVER}"
+    sed -i -e "s/^pkgver=.*/pkgver=${ECLIPSEOS_PKGVER}/" \
+      -e "s/^pkgrel=.*/pkgrel=${ECLIPSEOS_PKGREL:-1}/" PKGBUILD
+    # Fresh runner: make the checkout the extract step would have made.
+    [[ -d src/EclipseOS/.git ]] || {
+      mkdir -p src
+      git clone -q "$repo_top" src/EclipseOS
+    }
+  elif [[ "$TAG" != local ]]; then
     sed -i "s/^pkgver=.*/pkgver=${TAG#v}/" PKGBUILD
+  fi
 
   # makepkg will not re-checkout an srcdir that already exists, so a moved or
   # newer tag would silently build the previous one. Reset the existing
@@ -51,7 +72,7 @@ echo "==> signing key $KEY_ID"
   # target/ and makes a repeat build incremental instead of a cold ~30 min.
   extract=()
   if [[ -d src/EclipseOS/.git ]]; then
-    if [[ "$TAG" == local ]]; then
+    if [[ "$TAG" == local || "$TAG" == ci ]]; then
       git -C src/EclipseOS fetch --force "$repo_top" HEAD
       git -C src/EclipseOS checkout -f --detach FETCH_HEAD
     else
@@ -69,7 +90,9 @@ echo "==> signing key $KEY_ID"
   # ECLIPSEOS_CHECK=1 when packaging a release you have not pushed.
   check_flag=--nocheck
   [[ "${ECLIPSEOS_CHECK:-0}" == 1 ]] && check_flag=--check
-  makepkg -sf "${extract[@]}" "$check_flag" --noconfirm --sign --key "$KEY_ID"
+  deps=-s
+  [[ "${ECLIPSEOS_NODEPS:-0}" == 1 ]] && deps=-d
+  makepkg "$deps" -f "${extract[@]}" "$check_flag" --noconfirm --sign --key "$KEY_ID"
 )
 
 # --- publish -----------------------------------------------------------------

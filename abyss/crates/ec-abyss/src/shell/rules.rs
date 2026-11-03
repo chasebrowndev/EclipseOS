@@ -27,7 +27,8 @@ use crate::state::AbyssState;
 use crate::xwayland::security::{AppTrust, SeatCompat};
 
 // Read by the renderer, written by `apply`; defined in `ec-abyss-render::userdata`.
-pub use ec_abyss_render::userdata::{blur_of, opacity_of, RuleBlur, RuleOpacity};
+pub use ec_abyss_render::userdata::{blur_of, opacity_of, RuleBlur, RuleOpacity, RuleStrip};
+use ec_abyss_render::userdata::{Keys, Strip, StripFill};
 
 /// Trust class pinned by an `app-trust` rule (COMP-05 §4). Consumed once
 /// COMP-08 gates agent actions on it.
@@ -315,6 +316,9 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
     // Identity arrives after the first commit for some clients; until it
     // does, a placement pass matches on empty strings and the caller retries.
     let named = !(facts.app_id.is_empty() && facts.title.is_empty());
+    // A rule that no longer matches (or no longer exists, after a reload)
+    // takes its strip off again; matching rules below set it back.
+    set_strip(window, None);
     if state.config.window_rules.is_empty() {
         set_irreversible(window, &facts.desktop_id, None);
         return (placement, named);
@@ -382,6 +386,13 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
                     window.user_data().insert_if_missing(|| RuleOpacity(Cell::new(v)));
                 }
             }
+            RuleAction::TranslucentRegion { top, opacity, key } => {
+                let fill = match key {
+                    Some(rgb) => StripFill::Keyed(Keys::one(rgb, opacity)),
+                    None => StripFill::Fade(opacity),
+                };
+                set_strip(window, Some(Strip { top, fill }));
+            }
             RuleAction::Blur(v) => {
                 if let Some(b) = window.user_data().get::<RuleBlur>() {
                     b.0.set(v);
@@ -408,6 +419,20 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
     let irreversible = irreversible_rule(&state.config.window_rules, &facts);
     set_irreversible(window, &facts.desktop_id, irreversible);
     (placement, named)
+}
+
+/// Pin (or clear) the window's `translucent-region` strip. Clearing a window
+/// that never had one allocates nothing.
+fn set_strip(window: &Window, strip: Option<Strip>) {
+    match window.user_data().get::<RuleStrip>() {
+        Some(slot) => slot.0.set(strip),
+        None if strip.is_some() => {
+            window
+                .user_data()
+                .insert_if_missing(|| RuleStrip(Cell::new(strip)));
+        }
+        None => {}
+    }
 }
 
 /// What the last matching `irreversible-capable` rule says, if any rule does
@@ -559,6 +584,9 @@ struct Facts {
     title: String,
     pid: Option<i32>,
     xwayland: bool,
+    /// On a workspace's floating list right now (read live, so a toggle
+    /// shows on the next evaluation, which every commit runs).
+    floating: bool,
     cgroup: String,
     output_connector: String,
     output_identity: String,
@@ -641,6 +669,7 @@ impl Facts {
             title: title.unwrap_or_default(),
             pid,
             xwayland: window.toplevel().is_none(),
+            floating: crate::shell::is_floating(state, window),
             output_connector: entry.map(|e| e.connector.clone()).unwrap_or_default(),
             output_identity: entry.map(|e| e.identity.clone()).unwrap_or_default(),
             workspace: entry.map(|e| e.active as i32 + 1).unwrap_or(1),
@@ -671,6 +700,11 @@ impl Facts {
         }
         if let Some(x) = m.xwayland {
             if self.xwayland != x {
+                return false;
+            }
+        }
+        if let Some(f) = m.floating {
+            if self.floating != f {
                 return false;
             }
         }
@@ -743,6 +777,7 @@ mod tests {
             title: title.into(),
             pid: None,
             xwayland: false,
+            floating: false,
             cgroup: String::new(),
             output_connector: String::new(),
             output_identity: String::new(),
@@ -776,6 +811,55 @@ mod tests {
             .expect("desktop entry");
         }
         dir
+    }
+
+    /// The strip the last matching `translucent-region` rule gives a window
+    /// whose facts are `f` (rules apply in file order, a later one wins).
+    fn strip_for(rules: &[WindowRule], f: &Facts) -> Option<i32> {
+        rules
+            .iter()
+            .filter(|r| f.matches(&r.matchers))
+            .fold(None, |acc, r| match r.action {
+                RuleAction::TranslucentRegion { top, .. } => Some(top),
+                _ => acc,
+            })
+    }
+
+    #[test]
+    fn toggling_floating_flips_which_translucent_region_applies() {
+        let mk = |top, floating| WindowRule {
+            action: RuleAction::TranslucentRegion {
+                top,
+                opacity: 0.6,
+                key: None,
+            },
+            matchers: Matchers {
+                app_id: Pattern::parse("firefox"),
+                floating: Some(floating),
+                ..Matchers::default()
+            },
+        };
+        let rules = [mk(74, true), mk(86, false)];
+        let mut f = facts("firefox", "");
+        assert_eq!(strip_for(&rules, &f), Some(86));
+        f.floating = true;
+        assert_eq!(strip_for(&rules, &f), Some(74));
+        f.floating = false;
+        assert_eq!(strip_for(&rules, &f), Some(86));
+        // Another app matches neither.
+        assert_eq!(strip_for(&rules, &facts("kitty", "")), None);
+    }
+
+    #[test]
+    fn a_floating_matcher_gates_a_rule_both_ways() {
+        let m = |floating| Matchers {
+            floating,
+            ..Matchers::default()
+        };
+        let mut f = facts("a", "");
+        assert!(f.matches(&m(None)) && f.matches(&m(Some(false))) && !f.matches(&m(Some(true))));
+        f.floating = true;
+        assert!(f.matches(&m(None)) && f.matches(&m(Some(true))) && !f.matches(&m(Some(false))));
     }
 
     #[test]

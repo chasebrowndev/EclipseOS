@@ -9,7 +9,7 @@
 use crate::error::{Error, Result};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use zeroize::Zeroizing;
 
@@ -172,7 +172,15 @@ pub trait Runner {
     fn run(&self, cmd: &Cmd) -> Result<()>;
     /// Run to completion and return stdout.
     fn capture(&self, cmd: &Cmd) -> Result<Vec<u8>>;
+    /// Like [`Runner::run`], but also hands back the tail of the child's stderr
+    /// (still passed on to ours) so a failure can be classified. Only for
+    /// commands that never see the password; the bytes are matched against a
+    /// fixed list of phrases and never stored or shown.
+    fn run_diag(&self, cmd: &Cmd) -> (Result<()>, Vec<u8>);
 }
+
+/// How much of a diagnosed command's stderr is kept.
+const DIAG_TAIL: usize = 64 * 1024;
 
 /// stdout of a captured command is bounded: lsblk on a big machine is tens of KiB.
 const MAX_CAPTURE: usize = 4 * 1024 * 1024;
@@ -217,7 +225,50 @@ impl SysRunner {
     }
 }
 
+impl SysRunner {
+    fn exec_diag(cmd: &Cmd) -> (Result<()>, Vec<u8>) {
+        let tool = cmd.tool.name();
+        let fail = |code| Error::Command { tool, code };
+        if cmd.stdin.is_some() {
+            return (Err(Error::Refused("diagnosed command with stdin")), Vec::new());
+        }
+        let mut c = Command::new(cmd.tool.path());
+        c.args(&cmd.args)
+            .env_clear()
+            .env("PATH", "/usr/bin")
+            .env("LC_ALL", "C")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped());
+        let Ok(mut child) = c.spawn() else {
+            return (Err(fail(None)), Vec::new());
+        };
+        let mut tail = Vec::new();
+        if let Some(mut err) = child.stderr.take() {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = err.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let _ = std::io::stderr().write_all(&buf[..n]);
+                tail.extend_from_slice(&buf[..n]);
+                if tail.len() > 2 * DIAG_TAIL {
+                    tail.drain(..tail.len() - DIAG_TAIL);
+                }
+            }
+        }
+        match child.wait() {
+            Ok(st) if st.success() => (Ok(()), tail),
+            Ok(st) => (Err(fail(st.code())), tail),
+            Err(_) => (Err(fail(None)), tail),
+        }
+    }
+}
+
 impl Runner for SysRunner {
+    fn run_diag(&self, cmd: &Cmd) -> (Result<()>, Vec<u8>) {
+        Self::exec_diag(cmd)
+    }
     fn run(&self, cmd: &Cmd) -> Result<()> {
         Self::exec(cmd, false).map(|_| ())
     }

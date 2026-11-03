@@ -29,8 +29,8 @@ crates/
   ec-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
   ec-secret-prompt/  one-shot wifi passphrase / Bluetooth PIN prompt (ADR 0053)
   ec-services/   D-Bus services: notifications, tray, status, session (ADR 0038);
-                      lib plus the ec-screensaver (ADR 0051) and
-                      ec-pairing (ADR 0066) bins
+                      lib plus the ec-screensaver (ADR 0051),
+                      ec-pairing (ADR 0066) and ec-portal (ADR 0084) bins
   ec-abyss-wlcs/         wlcs conformance cdylib, drives the headless backend
   policyd/            policy + audit daemon            [TCB]
   ec-policy-eval/        shared evaluator, linked by both [TCB]
@@ -119,3 +119,41 @@ agent → agentd → privileged socket → protocols/agent
                          ──deny───→ error to agent
       → audit/ (every outcome, with provenance)
 ```
+
+## Progress feed (`ec-ctl progress`, `ec-services` progress widget)
+
+Not a compositor concept, so it is not on the abyss control socket and not in
+the gate table. `ec-services` serves a per-user feed at
+`$XDG_RUNTIME_DIR/eclipse/progress.sock` (0600 in a 0700 directory, peer uid
+checked; `ECLIPSE_SOCKET_DIR` overrides the directory). The wire contract is
+`ec_ipc::progress`; the commands are:
+
+```
+ec-ctl progress start ID [--label L] [--total BYTES]
+ec-ctl progress set ID 0.4|40%|BYTES    a decimal or % is a fraction; a whole number is bytes and needs --total
+ec-ctl progress done ID
+ec-ctl progress list
+```
+
+Ids are `[A-Za-z0-9._:-]`, up to 64 bytes. A feed job that is not updated for 60 s
+expires. Alongside the feed, the service scans `/proc` for `cargo`, `rustc`,
+`pacman`, `cp`, `mv`, `rsync`, `curl`, `wget` and `tar` owned by the session user
+(every second while something runs, every five seconds while nothing does). A
+scanned copy gets a fraction from its bytes written against the source size;
+other tools are indeterminate. A scanned job whose label matches a feed job is
+hidden. The service runs inside whichever process calls
+`ec_services::progress::spawn`: the taskbar, which starts it at its first
+configure and keeps it for its whole life (ADR 0065, 2026-11-03 amendment). With
+no taskbar running the feed is unreachable and `ec-ctl progress` says so.
+Scanning stays on; `Handle::set_scanning` remains for a host that wants it off.
+
+## System update and power (`ec_services::updates`, ADR 0085)
+
+The taskbar's power widget offers "Update & reboot" / "Update & power off" only
+while an Eclipse package is pending (`checkupdates`, every 30 min and on
+`refresh`). Running it is always a full upgrade (`pacman -Syu`) of every pending
+package; the count shown is all of them. It runs through `pkexec` on polkit action
+`org.eclipse.update.apply`, whose helper `/usr/lib/eclipse/ec-update-apply`
+accepts exactly `all`. Progress reports as feed job `eclipse-update`. Only pacman
+exit 0 leads to logind's Reboot or PowerOff; any other outcome leaves the machine
+running. Without `checkupdates` the item is never offered (ADR 0085).

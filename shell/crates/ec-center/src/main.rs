@@ -9,7 +9,7 @@
 
 use ec_center::{app, view, WIDTH};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity, Layer};
-use iced_layershell::settings::LayerShellSettings;
+use iced_layershell::settings::{LayerShellSettings, Settings};
 
 fn namespace() -> String {
     "ec-center".to_owned()
@@ -23,11 +23,19 @@ const TOP_MARGIN: i32 = ec_ui::tokens::bar::SHEET_MARGIN_TOP;
 const RIGHT_MARGIN: i32 = ec_ui::tokens::bar::SHEET_MARGIN_X;
 
 fn main() -> iced_layershell::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     // A menu has no business holding the selection.
     iced_layershell::disable_clipboard();
+    // eclipse_glass_v1: fail-soft, nothing changes under a non-abyss host.
+    let connection = ec_ui::glass::setup(iced_layershell::set_surface_hook);
 
     let mut builder =
         iced_layershell::build_pattern::application(app::App::new, namespace, app::update, view::view)
+            .settings(Settings {
+                with_connection: connection.map(Into::into),
+                ..Default::default()
+            })
             .layer_settings(LayerShellSettings {
                 anchor: Anchor::Top | Anchor::Right,
                 layer: Layer::Overlay,

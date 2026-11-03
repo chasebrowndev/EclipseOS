@@ -15,16 +15,18 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use crate::answer::{Answerer, Ask, Confidence, Reply};
+use crate::answer::{self, Answer, Answerer, Ask, Confidence, Input, Reply};
 use crate::capture::Capturer;
 use crate::choice::{self, Choice};
-use crate::classify::{Gate, Verdict};
+use crate::classify::{Gate, Reason, Verdict};
 use crate::config::Config;
+use crate::context::{Limits, Rolling};
 use crate::fault::{Failure, Fault};
 use crate::frame::{Frame, Region};
 use crate::hud::{Anchor, Panel, PanelKind, Pick};
 use crate::logsafe::{log_safe, marker_counts};
 use crate::ocr::{self, Line, Ocr, Tesseract, Word};
+use crate::png;
 use crate::redact;
 
 /// Where pixels come from. A trait so the whole loop can be driven from
@@ -48,19 +50,23 @@ fn capture_failed(e: String) -> Failure {
 }
 
 /// What one pass produced, and how long it earned on screen.
-pub struct Answer {
+pub struct Drawn {
     pub anchor: Anchor,
     pub panel: Panel,
     pub hold_ms: u64,
 }
 
 /// One read of the screen: redacted lines, the options among them, OCR's
-/// confidence, and the rect the pixels actually came from.
+/// confidence, the rect the pixels actually came from, the redacted text of
+/// earlier screens (context, never logged), and in image mode or when image
+/// escalation is allowed, the frame as a PNG.
 struct Read {
     lines: Vec<Line>,
     options: Vec<Choice>,
     conf: f32,
     origin: Region,
+    context: Vec<String>,
+    png: Option<Vec<u8>>,
 }
 
 /// What asked for a pass. It decides how long the answer stays up and how
@@ -81,12 +87,29 @@ pub struct Job {
 }
 
 impl Job {
-    pub fn lines(&self) -> &[Line] {
-        &self.read.lines
+    /// What the model is sent for this job. The PNG goes only when `image` is
+    /// set and the read kept one: image mode is a choice made at the moment of
+    /// asking, not something a read decides for itself.
+    pub fn input(&self, image: bool) -> Input {
+        Input {
+            lines: self.read.lines.clone(),
+            options: self.read.options.clone(),
+            context: self.read.context.clone(),
+            png: if image { self.read.png.clone() } else { None },
+        }
     }
-    pub fn options(&self) -> &[Choice] {
-        &self.read.options
+
+    /// Whether this job's read carries a PNG at all.
+    pub fn has_png(&self) -> bool {
+        self.read.png.is_some()
     }
+}
+
+/// A second model call for a poor answer (auto-escalation): which call, and
+/// whether it is sent with the picture.
+pub struct Retry {
+    pub asker: Arc<dyn Ask>,
+    pub image: bool,
 }
 
 /// Which fallback anchor a pass uses when the model named no lines.
@@ -121,6 +144,14 @@ pub struct Pipeline {
     /// before OCR, which is what keeps an idle screen near-zero cost (§6)
     /// instead of a full OCR every tick.
     read_last: Option<(Region, u64)>,
+    /// Redacted text of recent screens, for questions that span them.
+    context: Rolling,
+    /// The clock the context's TTL runs on: monotonic, from daemon start.
+    epoch: Instant,
+    /// Index into `cfg.models` for the model-switch chord (0 with no list).
+    model_idx: usize,
+    /// Image mode (the image-toggle chord): pixels go to the model.
+    image: bool,
 }
 
 /// A stage's wall time in milliseconds, for the per-stage trace.
@@ -128,11 +159,21 @@ fn ms(since: Instant) -> u64 {
     since.elapsed().as_millis() as u64
 }
 
+fn context_limits(cfg: &Config) -> Limits {
+    Limits {
+        max_lines: cfg.context_lines,
+        max_bytes: cfg.context_bytes,
+        ttl_ms: cfg.context_ttl_ms,
+    }
+}
+
 impl Pipeline {
     pub fn new(cfg: Config) -> Pipeline {
+        let image = cfg.image_mode;
         let asker: Arc<dyn Ask> = Arc::new(Answerer::new(&cfg));
         let mut p = Pipeline::with(cfg, None, None, asker);
         p.asker_from_cfg = true;
+        p.image = image;
         p
     }
 
@@ -143,9 +184,42 @@ impl Pipeline {
     /// read once — and so do the capture and OCR handles.
     pub fn set_config(&mut self, cfg: Config) {
         if self.asker_from_cfg {
-            self.asker = Arc::new(Answerer::new(&cfg));
+            self.asker = Arc::new(Answerer::with_model(
+                &cfg,
+                cfg.selected_model(self.model_idx),
+            ));
         }
+        self.context.set_limits(context_limits(&cfg));
         self.cfg = cfg;
+    }
+
+    /// The model list's names, in switch order. Empty when there is no list.
+    pub fn models(&self) -> &[String] {
+        &self.cfg.models
+    }
+
+    /// The model the switch chord has selected, if the list is in use.
+    pub fn selected_model(&self) -> Option<&str> {
+        self.cfg.selected_model(self.model_idx)
+    }
+
+    /// Whether image mode is on.
+    pub fn image_mode(&self) -> bool {
+        self.image
+    }
+
+    /// The switch chord's state: which model, and image mode. The call is
+    /// rebuilt for the model, so the next question uses it; one in flight
+    /// keeps the call it started with.
+    pub fn set_selection(&mut self, model_idx: usize, image: bool) {
+        self.model_idx = model_idx;
+        self.image = image;
+        if self.asker_from_cfg {
+            self.asker = Arc::new(Answerer::with_model(
+                &self.cfg,
+                self.cfg.selected_model(model_idx),
+            ));
+        }
     }
 
     /// A pipeline over given stages, for driving the loop without a
@@ -176,6 +250,7 @@ impl Pipeline {
             min_confidence: cfg.auto_min_confidence,
             dedup_similarity: cfg.dedup_similarity,
         });
+        let context = Rolling::new(context_limits(&cfg));
         Pipeline {
             cfg,
             capturer,
@@ -186,6 +261,10 @@ impl Pipeline {
             last: None,
             settling: None,
             read_last: None,
+            context,
+            epoch: Instant::now(),
+            model_idx: 0,
+            image: false,
         }
     }
 
@@ -195,10 +274,16 @@ impl Pipeline {
     }
 
     /// Forget what automatic mode has already seen, so switching it on looks
-    /// at the screen afresh rather than skipping it as unchanged.
+    /// at the screen afresh rather than skipping it as unchanged. The rolling
+    /// context goes with it: switching automatic mode on is a new question.
     pub fn reset_auto(&mut self) {
         self.settling = None;
         self.read_last = None;
+        self.context.clear();
+    }
+
+    fn now_ms(&self) -> u64 {
+        self.epoch.elapsed().as_millis() as u64
     }
 
     /// The region the last question was about, so a failure can be reported
@@ -307,11 +392,25 @@ impl Pipeline {
             options = options.len(),
             "pipeline: read"
         );
+        // The redacted lines, and only those, go into the rolling context: the
+        // context is text the model may be shown later, so it holds nothing
+        // the redaction pass did not already see. It is counted, never logged.
+        let screen: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
+        let context = self.context.absorb(&screen, self.now_ms());
+        let png = (self.image || self.cfg.image_auto_escalate)
+            .then(|| png::frame_png(frame, self.cfg.image_max_width));
+        tracing::debug!(
+            context_lines = context.len(),
+            png_bytes = png.as_ref().map_or(0, Vec::len),
+            "pipeline: context and image"
+        );
         Ok(Read {
             lines,
             options,
             conf: mean_conf(&words),
             origin,
+            context,
+            png,
         })
     }
 
@@ -406,10 +505,23 @@ impl Pipeline {
         // no output id of any kind, so the output's own geometry is the
         // identity: without it, the same page open on two monitors is one
         // duplicate and the second monitor is suppressed forever.
-        match self
+        let scope = scope_of(read.origin);
+        let mut verdict = self
             .gate
-            .consider(scope_of(read.origin), &text.join("\n"), read.conf, now_ms)
-        {
+            .consider(scope, &text.join("\n"), read.conf, now_ms);
+        // A screen can hold several questions, and a whole screen that repeats
+        // can still carry one that is new. Such a read is asked after all: each
+        // question is weighed on its own text, and any new one is enough.
+        if verdict == Verdict::Skip(Reason::Duplicate) {
+            let novel = (0..group_count(&read.options)).any(|g| {
+                let t = group_text(&read, g);
+                self.gate.consider(scope, &t, read.conf, now_ms) == Verdict::Ask
+            });
+            if novel {
+                verdict = Verdict::Ask;
+            }
+        }
+        match verdict {
             Verdict::Skip(r) => {
                 tracing::debug!(reason = %r, total_ms = ms(t), "pipeline: auto pass dropped by gate");
                 Ok(None)
@@ -425,56 +537,172 @@ impl Pipeline {
         }
     }
 
-    /// A job's reply, dressed for the screen.
-    pub fn finish(&self, job: &Job, reply: Reply) -> Answer {
-        self.dress(&job.read, reply, job.fallback)
+    /// A job's reply, dressed for the screen: one panel per question answered.
+    /// The question cap was already applied by the model call (`Answerer::ask`).
+    /// `image` is whether the model was sent the picture, which the panel says.
+    pub fn finish(&self, job: &Job, reply: Reply, image: bool) -> Vec<Drawn> {
+        reply
+            .answers
+            .into_iter()
+            .map(|a| self.dress(&job.read, a, job.fallback, image))
+            .collect()
     }
 
-    /// Turn a validated reply into something to draw: where, what, and for
+    /// Whether a poor reply earns one more model call, and with what. Poor is:
+    /// no answer, or every answer low-confidence or unsure; OCR that read
+    /// little or badly; or a question cut off at the edge of the read. The
+    /// retry is the next model in the list, the picture, or both, each only if
+    /// config allows it. The daemon allows one retry per frame.
+    pub fn retry_for(&self, job: &Job, reply: &Reply) -> Option<Retry> {
+        let unsure = reply.answers.is_empty()
+            || reply
+                .answers
+                .iter()
+                .all(|a| matches!(a.confidence, None | Some(Confidence::Low)));
+        let poor_read = job.read.conf < self.cfg.auto_min_confidence
+            || job.read.lines.len() < 2
+            || cut_off(&job.read);
+        if !(unsure || poor_read) {
+            return None;
+        }
+        let next_model = if self.cfg.escalate && self.cfg.models.len() > 1 {
+            let next = (self.model_idx + 1) % self.cfg.models.len();
+            Some(self.cfg.selected_model(next).map(str::to_string))
+        } else {
+            None
+        };
+        let image = self.cfg.image_auto_escalate && job.has_png() && !self.image;
+        if next_model.is_none() && !image {
+            return None;
+        }
+        let escalates = next_model.is_some();
+        let model = next_model.flatten();
+        let asker: Arc<dyn Ask> = if self.asker_from_cfg && escalates {
+            Arc::new(Answerer::with_model(&self.cfg, model.as_deref()))
+        } else {
+            Arc::clone(&self.asker)
+        };
+        tracing::debug!(
+            unsure,
+            poor_read,
+            model = model.as_deref().unwrap_or("-"),
+            image,
+            "pipeline: escalating a poor answer"
+        );
+        Some(Retry {
+            asker,
+            image: self.image || image,
+        })
+    }
+
+    /// Turn one validated answer into something to draw: where, what, and for
     /// how long. The §2.2 display time is long enough to read, bounded at
     /// both ends so a one-word answer does not flash and a long one does not
     /// camp on the screen.
-    fn dress(&self, read: &Read, reply: Reply, fallback: Fallback) -> Answer {
-        let pick = pick_for(read, &reply);
-        let anchor = anchor_for(read, &reply.focus, pick, fallback);
+    fn dress(&self, read: &Read, a: Answer, fallback: Fallback, image: bool) -> Drawn {
+        let picks = picks_for(read, a.group, &a.choices);
+        let anchor = anchor_for(read, &a.focus, a.group, fallback);
         tracing::debug!(
             ?anchor,
-            picked = pick.map(|o| o.label.as_str()),
-            group = pick.map(|o| o.group),
+            group = ?a.group,
+            picked = picks.len(),
             "pipeline: anchor"
         );
-        let mut detail = reply.detail;
-        if reply.confidence == Some(Confidence::Low) {
+        let mut detail = a.detail;
+        if a.confidence == Some(Confidence::Low) {
             detail = if detail.is_empty() {
                 "low confidence".to_string()
             } else {
                 format!("{detail} (low confidence)")
             };
         }
+        if image {
+            // Pixels went to the model: the answer says so, as the mark of
+            // image mode is the owner's to see.
+            detail = if detail.is_empty() {
+                "image mode".to_string()
+            } else {
+                format!("{detail} (image mode)")
+            };
+        }
+        if clipped_pick(read, a.group, &a.choices) {
+            detail = if detail.is_empty() {
+                "an option runs off the bottom of the screen".to_string()
+            } else {
+                format!("{detail} (an option runs off the bottom of the screen)")
+            };
+        }
         let words =
-            (reply.headline.split_whitespace().count() + detail.split_whitespace().count()) as u64;
+            (a.headline.split_whitespace().count() + detail.split_whitespace().count()) as u64;
         let hold = self
             .cfg
             .min_display_ms
             .max(words.saturating_mul(self.cfg.ms_per_word))
             .min(self.cfg.max_display_ms);
-        Answer {
+        let mut picks = picks.into_iter();
+        Drawn {
             anchor: anchor.into(),
             panel: Panel {
-                title: reply.headline,
+                title: a.headline,
                 text: detail,
-                pick: pick.map(|o| Pick {
-                    label: o.label.clone(),
-                    x: o.x,
-                    y: o.y,
-                    w: o.w,
-                    h: o.h,
-                }),
+                pick: picks.next(),
+                more: picks.collect(),
                 kind: PanelKind::Answer,
             },
             hold_ms: hold,
         }
     }
+}
+
+/// Whether the read ends mid-sentence at its bottom edge: a last line that
+/// touches the edge and has no closing punctuation is a question or option
+/// whose rest is below the read, not on screen to be read.
+/// Whether a picked option is clipped: its own line touches the bottom edge
+/// with no closing punctuation, so its text probably runs past the read. The
+/// pick is still by label and still drawn; the answer only says so.
+fn clipped_pick(read: &Read, group: Option<usize>, labels: &[String]) -> bool {
+    let bottom = read.origin.y + read.origin.h;
+    read.options.iter().any(|o| {
+        group == Some(o.group)
+            && labels.contains(&o.label)
+            && read.lines.iter().any(|l| {
+                l.id == o.line
+                    && l.y + l.h >= bottom - 1
+                    && !l.text.trim_end().ends_with(['.', '?', '!', ':', ')'])
+            })
+    })
+}
+
+fn cut_off(read: &Read) -> bool {
+    let bottom = read.origin.y + read.origin.h;
+    read.lines.iter().any(|l| {
+        let open = !l.text.trim_end().ends_with(['.', '?', '!', ':', ')']);
+        open && l.y + l.h >= bottom - 1
+    })
+}
+
+/// The number of option lists, one more than the highest group.
+pub fn group_count(options: &[Choice]) -> usize {
+    answer::group_count(options)
+}
+
+/// The text of one option list and its question: the line above its first
+/// option through its last option. What the gate judges for one question.
+fn group_text(read: &Read, group: usize) -> String {
+    let at: Vec<usize> = read
+        .options
+        .iter()
+        .filter(|o| o.group == group)
+        .filter_map(|o| read.lines.iter().position(|l| l.id == o.line))
+        .collect();
+    let (Some(first), Some(last)) = (at.iter().min(), at.iter().max()) else {
+        return String::new();
+    };
+    read.lines[first.saturating_sub(1)..=*last]
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Margin around the text an anchor brackets, so the marks sit just outside
@@ -533,39 +761,26 @@ fn pad(r: Region, within: Region) -> Region {
     }
 }
 
-/// The option the reply picked, by label. With one list on screen the label
-/// is enough. With several, the same label is in each, so the pick is the one
-/// whose question holds a line the model named in `focus`; if none or more
-/// than one does, there is no pick: an unmarked answer is better than a mark
-/// on the other question's option.
-fn pick_for<'a>(read: &'a Read, reply: &Reply) -> Option<&'a Choice> {
-    let label = reply.choice.as_ref()?;
-    let mut found: Vec<&Choice> = read.options.iter().filter(|o| o.label == *label).collect();
-    let several = read
-        .options
+/// The options an answer picked, in list order. An answer names its list
+/// (its group), so a label is looked up only in that list: the same letters
+/// on two questions on one screen are two different options. A label that is
+/// not in the named list marks nothing, and an answer with no list marks
+/// nothing either.
+fn picks_for(read: &Read, group: Option<usize>, labels: &[String]) -> Vec<Pick> {
+    let Some(g) = group else {
+        return Vec::new();
+    };
+    read.options
         .iter()
-        .any(|o| o.group != read.options[0].group);
-    if several && (found.len() > 1 || !reply.focus.is_empty()) {
-        found.retain(|o| {
-            let (top, at) = stem_of(read, o.group, &[]);
-            reply.focus.iter().any(|id| {
-                read.lines[top..at].iter().any(|l| l.id == *id)
-                    || read
-                        .options
-                        .iter()
-                        .filter(|c| c.group == o.group)
-                        .any(|c| read.lines.iter().any(|l| l.id == *id && inside(l, c)))
-            })
-        });
-    }
-    if found.len() != 1 {
-        tracing::debug!(
-            matches = found.len(),
-            "pipeline: pick dropped, the label does not say which question"
-        );
-        return None;
-    }
-    found.pop()
+        .filter(|o| o.group == g && labels.contains(&o.label))
+        .map(|o| Pick {
+            label: o.label.clone(),
+            x: o.x,
+            y: o.y,
+            w: o.w,
+            h: o.h,
+        })
+        .collect()
 }
 
 /// Whether line `l` lies within option `c`'s rect: its first line or one of
@@ -658,17 +873,18 @@ fn stem_of(read: &Read, group: usize, focus: &[usize]) -> (usize, usize) {
     (top, at)
 }
 
-/// What the answer is about, as a rect measured from OCR. A pick anchors on
-/// the whole question — its stem ([`stem_of`]) and every option of its own
-/// list — and on nothing else: the compositor only draws a pick inside its
-/// anchor, "B out of these" needs the these, and focus lines elsewhere on the
-/// page would stretch the anchor past the compositor's size cap, which trims
-/// the options and can drop the pick with them.
-fn anchor_for(read: &Read, focus: &[usize], pick: Option<&Choice>, fallback: Fallback) -> Region {
-    let r = if let Some(p) = pick {
-        let (top, at) = stem_of(read, p.group, focus);
+/// What the answer is about, as a rect measured from OCR. An answer with a
+/// list anchors on the whole question — its stem ([`stem_of`]) and every
+/// option of its own list — and on nothing else: the compositor only draws a
+/// pick inside its anchor, "B out of these" needs the these, and focus lines
+/// elsewhere on the page would stretch the anchor past the compositor's size
+/// cap, which trims the options and can drop the picks with them.
+fn anchor_for(read: &Read, focus: &[usize], group: Option<usize>, fallback: Fallback) -> Region {
+    let listed = group.filter(|g| read.options.iter().any(|o| o.group == *g));
+    let r = if let Some(g) = listed {
+        let (top, at) = stem_of(read, g, focus);
         let stem = read.lines[top..at].iter().map(rect_of_line);
-        let opts = read.options.iter().filter(|o| o.group == p.group);
+        let opts = read.options.iter().filter(|o| o.group == g);
         bounds_of(stem.chain(opts.map(rect_of_choice)))
     } else if !focus.is_empty() {
         // The whole paragraph of every line the answer is about: the model
@@ -924,12 +1140,14 @@ mod tests {
         }
     }
 
-    fn reply(headline: &str, detail: &str, focus: &[usize], choice: Option<&str>) -> Reply {
-        Reply {
+    /// An answer about option list 0, the question these fixtures have.
+    fn answer_of(headline: &str, detail: &str, focus: &[usize], choice: Option<&str>) -> Answer {
+        Answer {
+            group: Some(0),
             headline: headline.into(),
             detail: detail.into(),
             focus: focus.to_vec(),
-            choice: choice.map(Into::into),
+            choices: choice.map(|c| vec![c.to_string()]).unwrap_or_default(),
             confidence: Some(Confidence::High),
         }
     }
@@ -941,19 +1159,158 @@ mod tests {
             options,
             conf: 0.9,
             origin: screen(),
+            context: Vec::new(),
+            png: None,
         }
+    }
+
+    #[test]
+    fn a_label_marks_only_within_the_list_its_answer_names() {
+        // Two questions, both with an option A and B. An answer about the
+        // second list must mark its own A, never the first list's.
+        let r = read_of(vec![
+            line(1, 100, 100, 300, true, "First?"),
+            line(2, 100, 120, 120, false, "A) Mars"),
+            line(3, 100, 140, 120, false, "B) Venus"),
+            line(4, 100, 300, 300, true, "Second?"),
+            line(5, 100, 320, 120, false, "A) Neon"),
+            line(6, 100, 340, 120, false, "B) Oxygen"),
+        ]);
+        let picked = picks_for(&r, Some(1), &["A".to_string()]);
+        assert_eq!(picked.len(), 1);
+        assert_eq!(picked[0].y, 320, "the second list's A");
+        assert!(picks_for(&r, None, &["A".to_string()]).is_empty());
+    }
+
+    #[test]
+    fn a_multi_select_marks_each_of_its_picks() {
+        let r = read_of(vec![
+            line(1, 100, 100, 300, true, "Pick two?"),
+            line(2, 100, 120, 120, false, "A) RIP"),
+            line(3, 100, 140, 120, false, "B) DNS"),
+            line(4, 100, 160, 120, false, "C) OSPF"),
+        ]);
+        let p = picks_for(&r, Some(0), &["A".to_string(), "C".to_string()]);
+        assert_eq!(
+            p.iter().map(|k| k.label.as_str()).collect::<Vec<_>>(),
+            ["A", "C"]
+        );
+    }
+
+    #[test]
+    fn the_read_ends_mid_question_only_at_the_bottom_edge() {
+        let mut r = read_of(vec![line(1, 0, 10, 100, false, "Complete sentence.")]);
+        r.origin = Region {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+        };
+        assert!(!cut_off(&r), "a line at the top is not a cut");
+        r.lines
+            .push(line(2, 0, 1070, 100, false, "and the answer is"));
+        assert!(cut_off(&r));
+        r.lines[1].text = "that is all.".into();
+        assert!(!cut_off(&r), "punctuation says it finished");
+    }
+
+    #[test]
+    fn a_pick_running_off_the_bottom_is_said_so() {
+        let p = Pipeline::new(Config::default());
+        let cut = read_of(vec![
+            line(1, 0, 100, 300, false, "Which planet?"),
+            line(2, 0, 120, 300, false, "A) Mars"),
+            line(3, 0, 140, 300, false, "B) Jupiter"),
+            line(4, 0, 1070, 300, false, "C) Venus"),
+        ]);
+        let d = p.dress(
+            &cut,
+            answer_of("Jupiter", "", &[], Some("B")),
+            Fallback::All,
+            false,
+        );
+        assert!(!d.panel.text.contains("runs off"), "B is on screen");
+        let d = p.dress(
+            &cut,
+            answer_of("Venus", "", &[], Some("C")),
+            Fallback::All,
+            false,
+        );
+        assert!(
+            d.panel.text.contains("runs off the bottom"),
+            "C is cut: {}",
+            d.panel.text
+        );
+
+        let whole = read_of(vec![
+            line(1, 0, 100, 300, false, "Which planet?"),
+            line(2, 0, 120, 300, false, "A) Mars"),
+            line(3, 0, 140, 300, false, "B) Jupiter"),
+            line(4, 0, 500, 300, false, "C) Venus."),
+        ]);
+        let d = p.dress(
+            &whole,
+            answer_of("Venus", "", &[], Some("C")),
+            Fallback::All,
+            false,
+        );
+        assert!(
+            !d.panel.text.contains("runs off"),
+            "C ends with its full stop"
+        );
+    }
+
+    #[test]
+    fn a_confident_answer_earns_no_retry() {
+        let p = Pipeline::new(Config {
+            escalate: true,
+            models: vec!["haiku".into(), "sonnet".into()],
+            ..Config::default()
+        });
+        let r = read_of(vec![
+            line(1, 0, 10, 300, false, "What is it?"),
+            line(2, 0, 30, 300, false, "It is a thing."),
+        ]);
+        let job = Job {
+            kind: Kind::Select,
+            read: r,
+            fallback: Fallback::All,
+        };
+        let sure = Reply {
+            answers: vec![answer_of("Thing", "", &[], None)],
+        };
+        assert!(p.retry_for(&job, &sure).is_none());
+        let mut unsure = sure.clone();
+        unsure.answers[0].confidence = Some(Confidence::Low);
+        let retry = p
+            .retry_for(&job, &unsure)
+            .expect("a poor answer is retried");
+        assert!(!retry.image, "the picture is not sent unless allowed");
+    }
+
+    #[test]
+    fn with_no_escalation_config_a_poor_answer_is_not_retried() {
+        let p = Pipeline::new(Config::default());
+        let job = Job {
+            kind: Kind::Select,
+            read: read_of(vec![line(1, 0, 10, 300, false, "x y z w")]),
+            fallback: Fallback::All,
+        };
+        let poor = Reply { answers: vec![] };
+        assert!(p.retry_for(&job, &poor).is_none());
     }
 
     #[test]
     fn display_time_is_bounded_at_both_ends() {
         let p = Pipeline::new(Config::default());
         let r = read_of(vec![line(1, 10, 10, 100, false, "x")]);
-        let short = p.dress(&r, reply("yes", "", &[], None), Fallback::All);
+        let short = p.dress(&r, answer_of("yes", "", &[], None), Fallback::All, false);
         assert_eq!(short.hold_ms, p.cfg.min_display_ms);
         let long = p.dress(
             &r,
-            reply("", &"word ".repeat(1000), &[], None),
+            answer_of("", &"word ".repeat(1000), &[], None),
             Fallback::All,
+            false,
         );
         assert_eq!(long.hold_ms, p.cfg.max_display_ms);
     }
@@ -1007,7 +1364,12 @@ mod tests {
             line(3, 100, 220, 120, false, "A) Mars"),
             line(4, 100, 240, 140, false, "B) Jupiter"),
         ]);
-        let a = p.dress(&r, reply("Jupiter", "", &[4], Some("B")), Fallback::All);
+        let a = p.dress(
+            &r,
+            answer_of("Jupiter", "", &[4], Some("B")),
+            Fallback::All,
+            false,
+        );
         assert_eq!((a.anchor.x, a.anchor.y), (94, 194), "stem to last option");
         assert_eq!(a.anchor.h, 56 + 12);
         let pick = a.panel.pick.expect("picked");
@@ -1035,7 +1397,12 @@ mod tests {
             line(5, 200, 520, 120, true, "C) Rome"),
             line(6, 200, 560, 120, true, "D) Madrid"),
         ]);
-        let a = p.dress(&r, reply("Paris", "", &[1, 4], Some("B")), Fallback::All);
+        let a = p.dress(
+            &r,
+            answer_of("Paris", "", &[1, 4], Some("B")),
+            Fallback::All,
+            false,
+        );
         assert_eq!(a.anchor.y, 394, "starts at the stem, not the search box");
         assert_eq!(a.anchor.y + a.anchor.h, 576 + 6, "ends below D");
     }
@@ -1051,7 +1418,12 @@ mod tests {
             line(5, 200, 390, 120, true, "A) On a mat"),
             line(6, 200, 420, 120, true, "B) On a bed"),
         ]);
-        let a = p.dress(&r, reply("A", "", &[6], Some("A")), Fallback::All);
+        let a = p.dress(
+            &r,
+            answer_of("A", "", &[6], Some("A")),
+            Fallback::All,
+            false,
+        );
         assert_eq!(a.anchor.y, 294, "starts at the passage, not the stem alone");
         assert_eq!(
             a.anchor.y + a.anchor.h,
@@ -1090,9 +1462,12 @@ mod tests {
     fn low_confidence_is_said_out_loud() {
         let p = Pipeline::new(Config::default());
         let r = read_of(vec![line(1, 10, 10, 100, false, "x")]);
-        let mut rep = reply("Maybe", "", &[], None);
+        let mut rep = answer_of("Maybe", "", &[], None);
         rep.confidence = Some(Confidence::Low);
-        assert_eq!(p.dress(&r, rep, Fallback::All).panel.text, "low confidence");
+        assert_eq!(
+            p.dress(&r, rep, Fallback::All, false).panel.text,
+            "low confidence"
+        );
     }
 
     #[test]

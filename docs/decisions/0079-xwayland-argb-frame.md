@@ -1,5 +1,5 @@
 # 0079 — Patch smithay's X11 frame window to depth 32 for ARGB clients
-Status: proposed
+Status: accepted
 Date: 2026-10-31
 Deciders: chase (owner), Claude (advisory)
 
@@ -25,7 +25,7 @@ same problem the same way.
    path: large, touches the render hot path.
 4. **Change Xwayland.** Out of our tree.
 
-## Decision (proposed)
+## Decision
 Option 2, carried as `0079-smithay-argb-frame.patch` and applied by a vendored
 copy or `[patch]` entry; upstream the change to smithay and drop the patch when
 it lands.

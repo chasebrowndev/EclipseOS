@@ -34,7 +34,7 @@ use smithay::backend::renderer::gles::{
     GlesError, GlesFrame, GlesRenderer, GlesTexProgram, GlesTexture, Uniform, UniformName, UniformType,
 };
 use smithay::backend::renderer::utils::{CommitCounter, DamageSet, OpaqueRegions};
-use smithay::backend::renderer::{Bind, Color32F, ContextId, Offscreen};
+use smithay::backend::renderer::{Bind, Color32F, ContextId, Offscreen, Renderer};
 use smithay::utils::{
     Buffer as BufferCoords, Logical, Physical, Point, Rectangle, Scale, Size, Transform as BufferTransform,
 };
@@ -44,6 +44,7 @@ use ec_abyss_config::transitions::{PackPreset, TransitionStyle, DRAWN_EVENTS};
 
 use super::curve::Leg;
 use super::shed::ShedLevel;
+use crate::context::PerContext;
 
 /// Consecutive frames over budget, with a style drawn in them, before it is
 /// off for the rest of the session. Below the shed monitor's own run length
@@ -359,12 +360,26 @@ enum Slot {
     Failed,
 }
 
+/// What a [`Registry`] keeps on one renderer.
+#[derive(Debug, Default)]
+struct RegistryGpu {
+    programs: HashMap<String, Slot>,
+    textures: HashMap<u64, GlesTexture>,
+    /// Open runs keep their tracker, so an unchanged window is not re-drawn
+    /// into its copy.
+    trackers: HashMap<u64, OutputDamageTracker>,
+    /// Serials whose copy holds a finished render of a static ghost.
+    rendered: HashSet<u64>,
+}
+
 /// The installed styles, their programs, and what has been switched off.
 #[derive(Debug, Default)]
 pub struct Registry {
     styles: Vec<TransitionStyle>,
     presets: Vec<PackPreset>,
-    programs: HashMap<String, Slot>,
+    /// Compiled programs and offscreen copies; GL objects, so one set per
+    /// renderer (ADR 0084).
+    gpu: PerContext<RegistryGpu>,
     /// Styles already warned about, so a missing pack logs once.
     warned: HashSet<String>,
     /// Off for the session: too slow.
@@ -372,12 +387,6 @@ pub struct Registry {
     overruns: HashMap<String, u32>,
     /// Styles drawn since the last [`Registry::frame_result`].
     drawn: Vec<Arc<str>>,
-    textures: HashMap<u64, GlesTexture>,
-    /// Open runs keep their tracker, so an unchanged window is not re-drawn
-    /// into its copy.
-    trackers: HashMap<u64, OutputDamageTracker>,
-    /// Serials whose copy holds a finished render of a static ghost.
-    rendered: HashSet<u64>,
     /// Add-on styles the resolved config selects, and every pack preset's:
     /// compiled ahead of any run.
     wanted: HashSet<String>,
@@ -408,19 +417,30 @@ pub fn wanted_styles(anims: &Animations, presets: &[PackPreset]) -> HashSet<Stri
 }
 
 impl Registry {
+    /// Drop the GPU objects of renderer contexts not in `keep` (a GPU went
+    /// away, ADR 0084).
+    pub fn retain_contexts(
+        &mut self,
+        keep: &[smithay::backend::renderer::ContextId<smithay::backend::renderer::gles::GlesTexture>],
+    ) {
+        self.gpu.retain_contexts(keep);
+    }
+
     /// Install the catalog the loader read (empty while the hook is off). A
     /// style whose source changed is recompiled; one that went away stops
     /// being drawn at once.
     pub fn set_catalog(&mut self, styles: Vec<TransitionStyle>) {
         let keep: HashSet<&str> = styles.iter().map(|s| s.id.as_str()).collect();
-        self.programs.retain(|id, _| {
-            keep.contains(id.as_str())
-                && self
-                    .styles
-                    .iter()
-                    .find(|s| &s.id == id)
-                    .zip(styles.iter().find(|s| &s.id == id))
-                    .is_some_and(|(a, b)| a.source == b.source)
+        let old = &self.styles;
+        self.gpu.each_mut(|g| {
+            g.programs.retain(|id, _| {
+                keep.contains(id.as_str())
+                    && old
+                        .iter()
+                        .find(|s| &s.id == id)
+                        .zip(styles.iter().find(|s| &s.id == id))
+                        .is_some_and(|(a, b)| a.source == b.source)
+            })
         });
         self.disabled.retain(|id| keep.contains(id.as_str()));
         self.overruns.retain(|id, _| keep.contains(id.as_str()));
@@ -453,10 +473,11 @@ impl Registry {
     /// Compile every wanted style not yet tried, whether or not a run exists,
     /// so no run compiles mid-animation.
     pub fn compile_wanted(&mut self, renderer: &mut GlesRenderer) {
+        self.gpu.bind(&renderer.context_id());
         let todo: Vec<String> = self
             .wanted
             .iter()
-            .filter(|id| !self.programs.contains_key(*id) && self.usable(id))
+            .filter(|id| !self.gpu.programs.contains_key(*id) && self.usable(id))
             .cloned()
             .collect();
         for id in todo {
@@ -480,13 +501,13 @@ impl Registry {
     fn usable(&self, id: &str) -> bool {
         self.get(id).is_some()
             && !self.disabled.contains(id)
-            && !matches!(self.programs.get(id), Some(Slot::Failed))
+            && !matches!(self.gpu.programs.get(id), Some(Slot::Failed))
     }
 
     /// Whether `id` has a compiled program and may be drawn now. A transform
     /// hands the window to the shader only when this holds.
     pub fn ready(&self, id: &str) -> bool {
-        self.usable(id) && matches!(self.programs.get(id), Some(Slot::Ready(_)))
+        self.usable(id) && matches!(self.gpu.programs.get(id), Some(Slot::Ready(_)))
     }
 
     pub fn is_disabled(&self, id: &str) -> bool {
@@ -556,7 +577,8 @@ impl Registry {
     /// Compile `id` if it has not been tried. A failure is final for the
     /// session and logged once; the built-in style runs in its place.
     pub fn ensure(&mut self, renderer: &mut GlesRenderer, id: &str) {
-        if self.programs.contains_key(id) || !self.usable(id) {
+        self.gpu.bind(&renderer.context_id());
+        if self.gpu.programs.contains_key(id) || !self.usable(id) {
             return;
         }
         let Some(style) = self.get(id) else { return };
@@ -572,12 +594,12 @@ impl Registry {
                 Slot::Failed
             }
         };
-        self.programs.insert(id.to_owned(), slot);
+        self.gpu.programs.insert(id.to_owned(), slot);
         self.compiled = true;
     }
 
     fn program(&self, id: &str) -> Option<&GlesTexProgram> {
-        match self.programs.get(id) {
+        match self.gpu.programs.get(id) {
             Some(Slot::Ready(p)) if self.usable(id) => Some(p),
             _ => None,
         }
@@ -609,9 +631,11 @@ impl Registry {
 
     /// Forget the offscreen copies of runs that are gone.
     pub fn retain_textures(&mut self, live: &HashSet<u64>) {
-        self.textures.retain(|serial, _| live.contains(serial));
-        self.trackers.retain(|serial, _| live.contains(serial));
-        self.rendered.retain(|serial| live.contains(serial));
+        self.gpu.each_mut(|g| {
+            g.textures.retain(|serial, _| live.contains(serial));
+            g.trackers.retain(|serial, _| live.contains(serial));
+            g.rendered.retain(|serial| live.contains(serial));
+        });
     }
 
     /// Whether the run's copy must be drawn into this frame. A close or
@@ -619,10 +643,10 @@ impl Registry {
     /// the live window. A fresh texture is empty either way.
     fn needs_render(&mut self, run: &ShaderRun, fresh: bool) -> bool {
         if fresh {
-            self.rendered.remove(&run.serial);
-            self.trackers.remove(&run.serial);
+            self.gpu.rendered.remove(&run.serial);
+            self.gpu.trackers.remove(&run.serial);
         }
-        run.kind == RunKind::Open || !self.rendered.contains(&run.serial)
+        run.kind == RunKind::Open || !self.gpu.rendered.contains(&run.serial)
     }
 
     fn texture(
@@ -632,14 +656,14 @@ impl Registry {
         size: Size<i32, Physical>,
     ) -> Result<(GlesTexture, bool), GlesError> {
         let want: Size<i32, BufferCoords> = size.to_logical(1).to_buffer(1, BufferTransform::Normal);
-        if let Some(t) = self.textures.get(&serial) {
+        if let Some(t) = self.gpu.textures.get(&serial) {
             use smithay::backend::renderer::Texture;
             if t.size() == want {
                 return Ok((t.clone(), false));
             }
         }
         let t = Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Abgr8888, want)?;
-        self.textures.insert(serial, t.clone());
+        self.gpu.textures.insert(serial, t.clone());
         Ok((t, true))
     }
 
@@ -661,6 +685,7 @@ impl Registry {
         scale: Scale<f64>,
         content: impl FnOnce(&mut GlesRenderer) -> Vec<E>,
     ) -> Option<ShaderElement> {
+        self.gpu.bind(&renderer.context_id());
         let program = self.program(&run.style)?.clone();
         let size = quad.size(win);
         if size.w <= 0 || size.h <= 0 || size.w > MAX_TEXTURE || size.h > MAX_TEXTURE {
@@ -679,7 +704,7 @@ impl Registry {
             // (age 1), so an unchanged window costs nothing. A frozen ghost is
             // drawn once, whole.
             let keep = run.kind == RunKind::Open;
-            let (mut tracker, age) = match self.trackers.remove(&run.serial) {
+            let (mut tracker, age) = match self.gpu.trackers.remove(&run.serial) {
                 Some(t) if keep => (t, 1),
                 _ => (OutputDamageTracker::new(size, scale, BufferTransform::Normal), 0),
             };
@@ -695,13 +720,13 @@ impl Registry {
                     style = &*run.style,
                     "drawing a window into its transition shader's copy failed"
                 );
-                self.rendered.remove(&run.serial);
+                self.gpu.rendered.remove(&run.serial);
                 return None;
             }
             if keep {
-                self.trackers.insert(run.serial, tracker);
+                self.gpu.trackers.insert(run.serial, tracker);
             }
-            self.rendered.insert(run.serial);
+            self.gpu.rendered.insert(run.serial);
         }
         // The first drawn frame starts the clock and is not held against the
         // style's frame budget (it also paid for the copy).
@@ -976,7 +1001,7 @@ mod tests {
         let mut reg = Registry::default();
         reg.set_catalog(vec![style("fx:a", &[Event::WindowClose])]);
         assert!(!reg.ready("fx:a"), "lazy: nothing compiled yet");
-        reg.programs.insert("fx:a".into(), Slot::Failed);
+        reg.gpu.programs.insert("fx:a".into(), Slot::Failed);
         let a = anims(Event::WindowClose, "fx:a");
         assert!(!reg.ready("fx:a"));
         assert!(
@@ -989,9 +1014,9 @@ mod tests {
     fn removing_the_catalog_stops_every_style() {
         let mut reg = Registry::default();
         reg.set_catalog(vec![style("fx:a", &[Event::WindowClose])]);
-        reg.programs.insert("fx:a".into(), Slot::Failed);
+        reg.gpu.programs.insert("fx:a".into(), Slot::Failed);
         reg.set_catalog(Vec::new());
-        assert!(reg.programs.is_empty() && reg.styles().is_empty());
+        assert!(reg.gpu.programs.is_empty() && reg.styles().is_empty());
         let a = anims(Event::WindowClose, "fx:a");
         assert!(start(&mut reg, &a, RunKind::Close, ShedLevel::Full).is_none());
     }
@@ -1078,19 +1103,19 @@ mod tests {
         let t0 = Instant::now();
         let close = run_at(&mut reg, RunKind::Close, t0);
         assert!(reg.needs_render(&close, true));
-        reg.rendered.insert(close.serial);
+        reg.gpu.rendered.insert(close.serial);
         for _ in 0..5 {
             assert!(!reg.needs_render(&close, false), "frozen: reused");
         }
         assert!(reg.needs_render(&close, true), "a new texture is empty");
         let min = run_at(&mut reg, RunKind::Minimize, t0);
-        reg.rendered.insert(min.serial);
+        reg.gpu.rendered.insert(min.serial);
         assert!(!reg.needs_render(&min, false));
         let open = run_at(&mut reg, RunKind::Open, t0);
-        reg.rendered.insert(open.serial);
+        reg.gpu.rendered.insert(open.serial);
         assert!(reg.needs_render(&open, false), "an open follows the live window");
         reg.retain_textures(&HashSet::new());
-        assert!(reg.rendered.is_empty());
+        assert!(reg.gpu.rendered.is_empty());
     }
 
     #[test]

@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# D-02: push a `v*` tag -> build the packages, sign them, publish the pacman
+# repo to the rolling `repo-x86_64` GitHub release. Installed machines then
+# pick it up with `pacman -Syu`.
+#
+#   v0.1.2     -> pkgver 0.1.2, pkgrel 1
+#   v0.1.2-3   -> pkgver 0.1.2, pkgrel 3   (rebuild of the same version)
+#
+# Secrets: PACKAGING_KEY (ASCII-armored private key), optional
+# PACKAGING_KEY_PASSPHRASE.
+name: release-repo
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to publish, e.g. v0.1.2 or v0.1.2-3'
+        required: true
+
+permissions:
+  contents: write
+
+# Never two publishes at once; a second tag waits instead of racing the first.
+concurrency:
+  group: release-repo
+  cancel-in-progress: false
+
+env:
+  PACKAGING_KEY_FPR: D9D44958A6BEFBAE5962F11272915A6EA2689111
+  RUST_TOOLCHAIN: 1.97.0   # keep equal to */rust-toolchain.toml
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    container:
+      image: archlinux:base-devel
+      # The host's preinstalled toolchains, mounted so the first step can free
+      # ~10 GB: a cold release build of five workspaces needs ~15 GB.
+      volumes:
+        - /usr/share/dotnet:/host/dotnet
+        - /usr/local/lib/android:/host/android
+        - /opt/hostedtoolcache:/host/toolcache
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GNUPGHOME: /tmp/ec-gnupg
+      CARGO_HOME: /home/builder/.cargo
+      RUSTUP_HOME: /home/builder/.rustup
+      ECLIPSEOS_REPO_ROOT: /home/builder/repo
+      ECLIPSEOS_GNUPGHOME: /tmp/ec-gnupg
+    steps:
+      - name: Free runner disk
+        run: rm -rf /host/dotnet/* /host/android/* /host/toolcache/*; df -h /
+
+      - name: Fail early if the signing secret is missing
+        env:
+          PACKAGING_KEY: ${{ secrets.PACKAGING_KEY }}
+        run: |
+          [ -n "$PACKAGING_KEY" ] || { echo "::error::secret PACKAGING_KEY is not set"; exit 1; }
+
+      - name: Parse version from tag
+        run: |
+          if [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-([0-9]+))?$ ]]; then
+            echo "ECLIPSEOS_PKGVER=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+            echo "ECLIPSEOS_PKGREL=${BASH_REMATCH[3]:-1}" >> "$GITHUB_ENV"
+          else
+            echo "::error::tag '$TAG' is not vX.Y.Z or vX.Y.Z-N"; exit 1
+          fi
+        shell: bash
+
+      - name: Install build dependencies
+        run: |
+          pacman -Syu --noconfirm --needed git github-cli rustup pkgconf sudo gnupg \
+            fontconfig freetype2 clang cmake \
+            wayland libxkbcommon libinput libdrm libdisplay-info mesa seatd
+          useradd -m builder
+          # No split -debug package: it is not published, and it doubles the
+          # disk the build needs.
+          sed -i 's/^OPTIONS=(\(.*\)\bdebug\b/OPTIONS=(\1!debug/' /etc/makepkg.conf
+          grep '^OPTIONS=' /etc/makepkg.conf
+          git config --system --add safe.directory '*'
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            /home/builder/.cargo/registry
+            /home/builder/.cargo/git
+          key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
+
+      - name: Install pinned Rust toolchain
+        run: |
+          chown -R builder: "$GITHUB_WORKSPACE" /home/builder
+          runuser -u builder -- bash -euc '
+            for t in */rust-toolchain.toml; do
+              want=$(sed -n "s/^channel *= *\"\(.*\)\"/\1/p" "$t")
+              [ "$want" = "$RUST_TOOLCHAIN" ] || { echo "::error::$t pins $want, workflow has $RUST_TOOLCHAIN"; exit 1; }
+            done
+            rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+            rustup default "$RUST_TOOLCHAIN"'
+
+      - name: Import packaging key
+        env:
+          PACKAGING_KEY: ${{ secrets.PACKAGING_KEY }}
+          PACKAGING_KEY_PASSPHRASE: ${{ secrets.PACKAGING_KEY_PASSPHRASE }}
+        run: |
+          runuser -u builder --preserve-environment -- bash -euo pipefail -c '
+            umask 077
+            mkdir -p "$GNUPGHOME"
+            printf "allow-loopback-pinentry\nallow-preset-passphrase\n" > "$GNUPGHOME/gpg-agent.conf"
+            printf "pinentry-mode loopback\n" > "$GNUPGHOME/gpg.conf"
+            printf "%s\n" "$PACKAGING_KEY" | gpg --batch --quiet --import 2>/dev/null ||
+              { echo "::error::PACKAGING_KEY is not an importable key"; exit 1; }
+            fprs=$(gpg --batch --list-secret-keys --with-colons | awk -F: "/^sec/{s=1;next} s&&/^fpr/{print \$10;s=0}")
+            [ "$fprs" = "$PACKAGING_KEY_FPR" ] ||
+              { echo "::error::PACKAGING_KEY fingerprint does not match the packaging key ($PACKAGING_KEY_FPR)"; exit 1; }
+            if [ -n "$PACKAGING_KEY_PASSPHRASE" ]; then
+              for g in $(gpg --batch --list-secret-keys --with-colons --with-keygrip | awk -F: "/^grp/{print \$10}"); do
+                /usr/lib/gnupg/gpg-preset-passphrase --preset -P "$PACKAGING_KEY_PASSPHRASE" "$g"
+              done
+            fi'
+
+      - name: Build, sign, repo-add
+        run: |
+          runuser -u builder --preserve-environment -- bash -euo pipefail -c '
+            export PATH="$CARGO_HOME/bin:$PATH"
+            export CARGO_BUILD_JOBS="$(nproc)"
+            export ECLIPSEOS_KEY_FPR="$PACKAGING_KEY_FPR" ECLIPSEOS_NODEPS=1
+            nice -n 10 packaging/repo/build-repo.sh ci'
+
+      - name: Publish to the repo-x86_64 release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ECLIPSEOS_GH_REPO: ${{ github.repository }}
+        run: |
+          runuser -u builder --preserve-environment -- packaging/repo/publish-github.sh
+
+      - name: Wipe signing keyring
+        if: always()
+        run: gpgconf --kill gpg-agent || true; rm -rf /tmp/ec-gnupg

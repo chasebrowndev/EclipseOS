@@ -38,7 +38,7 @@ use smithay::backend::renderer::ContextId;
 use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{LayerSurface, Space, Window};
 use smithay::output::Output;
-use smithay::utils::{Logical, Rectangle, Size};
+use smithay::utils::{Logical, Point, Rectangle, Size};
 
 use ec_abyss_config::animations::Event;
 use ec_abyss_config::Animations;
@@ -178,6 +178,10 @@ pub struct AnimStore<W = Window> {
     /// [`snapshot`] a closing window's textures from outside the render path.
     /// `None` until the first frame, when nothing has a texture to keep.
     pub context: Option<ContextId<GlesTexture>>,
+    /// Every renderer context a frame was drawn with, most recent first: with
+    /// one GPU per output (ADR 0084) a window's textures live on the context
+    /// of the output it was drawn on, not necessarily the last one.
+    contexts: Vec<ContextId<GlesTexture>>,
     /// `layer-open` per layer surface and output: seen once it has a buffer,
     /// and running while it holds a track (see [`layer`]).
     layers: HashMap<(Output, LayerSurface), Option<Track>>,
@@ -201,6 +205,7 @@ impl<W> Default for AnimStore<W> {
             ghosts: Vec::new(),
             last_frame: HashMap::new(),
             context: None,
+            contexts: Vec::new(),
             layers: HashMap::new(),
             shed: ShedLevel::Full,
             now: Instant::now(),
@@ -461,7 +466,11 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
         if surfaces.is_empty() {
             return;
         }
-        self.last_frame.insert(window.clone(), surfaces);
+        // One frame per renderer context (ADR 0084): a window shown on two
+        // GPUs' outputs keeps what each drew, so a close ghost can play on both.
+        let kept = self.last_frame.entry(window.clone()).or_default();
+        kept.retain(|k| surfaces.iter().all(|s| s.context != k.context));
+        kept.extend(surfaces);
     }
 
     /// Stop keeping frames (`window-close` is off).
@@ -472,6 +481,50 @@ impl<W: SpaceElement + Clone + Eq + Hash> AnimStore<W> {
     /// The frame [`AnimStore::remember`] kept for `window`.
     pub fn remembered(&self, window: &W) -> Option<&Vec<SnapshotSurface>> {
         self.last_frame.get(window)
+    }
+
+    /// Forget renderer contexts not in `keep` (a GPU went away, ADR 0084).
+    pub fn retain_contexts(&mut self, keep: &[ContextId<GlesTexture>]) {
+        self.contexts.retain(|c| keep.contains(c));
+        if self.context.as_ref().is_some_and(|c| !keep.contains(c)) {
+            self.context = self.contexts.first().cloned();
+        }
+        self.shaders.retain_contexts(keep);
+    }
+
+    /// Note that a frame was drawn with `context`.
+    pub fn note_context(&mut self, context: ContextId<GlesTexture>) {
+        if self.contexts.first() != Some(&context) {
+            self.contexts.retain(|c| c != &context);
+            self.contexts.insert(0, context.clone());
+        }
+        if self.context.as_ref() != Some(&context) {
+            self.context = Some(context);
+        }
+    }
+
+    /// [`snapshot`] against every context a frame was drawn with, so each
+    /// output's renderer finds its own textures among the result (the draw
+    /// path keeps the ones of its context); empty when none has a texture.
+    pub fn snapshot_all(
+        &self,
+        surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+        origin: Point<i32, Logical>,
+    ) -> Vec<SnapshotSurface> {
+        let mut out = Vec::new();
+        for (i, c) in self.contexts.iter().chain(self.context.as_ref()).enumerate() {
+            if self
+                .contexts
+                .iter()
+                .chain(self.context.as_ref())
+                .take(i)
+                .any(|p| p == c)
+            {
+                continue;
+            }
+            out.extend(snapshot(c, surface, origin));
+        }
+        out
     }
 
     /// Whether the close ghost of `window` is still playing out.

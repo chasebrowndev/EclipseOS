@@ -21,5 +21,6 @@ smithay = { workspace = true, features = [
   "xwayland",
 ] }
 ec-abyss-config = { path = "../ec-abyss-config" }
+ec-theme = { path = "../ec-theme" }
 tracing.workspace = true
 serde_json.workspace = true

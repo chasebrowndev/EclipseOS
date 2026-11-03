@@ -53,15 +53,78 @@ pub struct Bar {
     /// `widget "<name>" { ... }` blocks, in file order; a later block with
     /// the same name replaces the earlier one in place.
     pub custom_widgets: Vec<CustomWidget>,
+    /// `action "<id>" { … }` blocks, in file order; a later block with the
+    /// same id replaces the earlier one in place. Read them through
+    /// [`QuickAction::runnable`], never by `target` alone: an `exec` is not
+    /// runnable without the owner's approval (ADR 0067).
+    pub quick_actions: Vec<QuickAction>,
 }
 
-/// `bar { clock { hour-12 …; date-mdy … } }`.
+/// `bar { action "<id>" { label "…"; icon "…"; exec "…" | app "…"; } }`: a
+/// one-tap button on the taskbar. The compositor does not run these; the bar
+/// does, as the human, through the same approval rule as command widgets.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuickAction {
+    /// `[A-Za-z0-9_-]`, at most [`schema::QUICK_ACTION_ID_MAX`] characters.
+    /// Also the approval name's suffix: `action:<id>`.
+    pub id: String,
+    pub label: String,
+    /// A freedesktop icon name, never a path. `None` draws the default glyph.
+    pub icon: Option<String>,
+    pub target: QuickActionTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickActionTarget {
+    /// Argv, run with no shell. Needs the owner's approval (ADR 0067).
+    Exec(Vec<String>),
+    /// A desktop-entry id, launched the way the launcher launches one. Not a
+    /// command in the config, so it needs no approval.
+    App(String),
+}
+
+impl QuickAction {
+    /// The approval name an `exec` quick action is recorded under.
+    pub fn approval_name(&self) -> String {
+        format!("action:{}", self.id)
+    }
+
+    /// Whether the bar may run this now. An `app` always may. An `exec` only
+    /// when the owner's recorded approval under [`Self::approval_name`] is the
+    /// hash of exactly this argv. Fail-closed: no entry, or a different
+    /// command, is `false`.
+    pub fn runnable(&self, approvals: &approvals::Approvals) -> bool {
+        match &self.target {
+            QuickActionTarget::App(_) => true,
+            QuickActionTarget::Exec(argv) => {
+                approvals.get(&self.approval_name()) == Some(widget_hash::quick_action_hash(argv))
+            }
+        }
+    }
+}
+
+/// `bar { clock { week-start "auto" | "monday" | "sunday" } }`: the first
+/// column of the calendar drawer's month grid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BarWeekStart {
+    /// The locale's own first weekday.
+    #[default]
+    Auto,
+    Monday,
+    Sunday,
+}
+
+/// `bar { clock { hour-12 …; date-mdy …; week-start …; week-numbers … } }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BarClock {
     /// 12-hour clock with AM/PM; false is 24-hour.
     pub hour_12: bool,
     /// Month/day/year date order; false is day/month/year.
     pub date_mdy: bool,
+    /// First weekday of the calendar drawer's grid.
+    pub week_start: BarWeekStart,
+    /// ISO week numbers down the calendar drawer's left edge.
+    pub week_numbers: bool,
 }
 
 impl Default for BarClock {
@@ -69,6 +132,8 @@ impl Default for BarClock {
         Self {
             hour_12: true,
             date_mdy: true,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false,
         }
     }
 }
@@ -300,6 +365,9 @@ pub struct BarWidgets {
     pub order: Vec<String>,
     /// Widgets that never compress.
     pub important: Vec<String>,
+    /// Corner radius in logical px for each widget's glass cell. Separate
+    /// from [`Bar::rounding`], which rounds the bar's own sheet.
+    pub rounding: u32,
     pub now_playing: NowPlayingWidget,
     pub system_usage: SystemUsageWidget,
     pub volume: VolumeWidget,
@@ -311,6 +379,7 @@ impl Default for BarWidgets {
         Self {
             order: own(schema::BAR_WIDGET_DEFAULT_ORDER),
             important: own(schema::BAR_WIDGET_DEFAULT_IMPORTANT),
+            rounding: 17,
             now_playing: NowPlayingWidget::default(),
             system_usage: SystemUsageWidget::default(),
             volume: VolumeWidget::default(),
@@ -447,6 +516,7 @@ impl Default for Bar {
             widgets: BarWidgets::default(),
             motion: BarMotion::default(),
             custom_widgets: Vec::new(),
+            quick_actions: Vec::new(),
         }
     }
 }

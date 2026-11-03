@@ -227,7 +227,7 @@ fn clamp_to(
     size
 }
 
-fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool) {
+fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, tiled: bool) {
     let size = rect.size;
     let Some(toplevel) = window.toplevel() else {
         // X11 windows are positioned in the X root's coordinate space, so
@@ -245,6 +245,20 @@ fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool) {
             s.states.set(State::Activated);
         } else {
             s.states.unset(State::Activated);
+        }
+        // Tiled states stop clients like foot snapping to whole cells; smithay
+        // strips them for xdg_wm_base versions that predate them.
+        for t in [
+            State::TiledLeft,
+            State::TiledRight,
+            State::TiledTop,
+            State::TiledBottom,
+        ] {
+            if tiled {
+                s.states.set(t);
+            } else {
+                s.states.unset(t);
+            }
         }
     });
     toplevel.send_pending_configure();
@@ -502,7 +516,12 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         let inner = shrink(rect, border);
         let size = clamp_size(&w, inner.size, true);
         if mapping.as_ref() != Some(&w) {
-            configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+            configure(
+                &w,
+                Rectangle::new(inner.loc, size),
+                focus.as_ref() == Some(&w),
+                true,
+            );
         }
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, Some(inner));
@@ -521,7 +540,12 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
             clamp_size(&w, inner.size, false)
         };
         if mapping.as_ref() != Some(&w) {
-            configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+            configure(
+                &w,
+                Rectangle::new(inner.loc, size),
+                focus.as_ref() == Some(&w),
+                false,
+            );
         }
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, None);
@@ -936,6 +960,7 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);
     state.ipc.forget_chip(handle);
+    crate::ipc::client_strips::forget_window(state, window);
     crate::ipc::emit(
         state,
         "window",
@@ -1588,6 +1613,7 @@ pub fn toggle_floating(state: &mut AbyssState) {
     let geometry = state.space.element_geometry(&window);
     let mode = state.config.general.floating_placement;
     let pointer = state.pointer_location;
+    let toggled = window.clone();
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = entry.active;
     if entry.workspaces[ws].tiled.contains(&window) {
@@ -1622,6 +1648,10 @@ pub fn toggle_floating(state: &mut AbyssState) {
         }
     }
     arrange(state);
+    // `floating` matchers follow the toggle at once instead of waiting for the
+    // client's next commit. The window is already placed, so this re-applies
+    // property actions only (never `float`/`tile`/placement) and cannot loop.
+    let _ = rules::reevaluate(state, &toggled);
 }
 
 fn toplevel_window(
@@ -2394,11 +2424,21 @@ pub fn move_workspace_to_output(
     Ok(true)
 }
 
-pub fn spawn(command: &str) {
+/// Run `command` through `sh -c` on the human's behalf. In `dedicated` GPU
+/// mode it carries the discrete GPU's offload environment
+/// ([`AbyssState::dedicated_env`], ADR 0084), as every launch from the launcher
+/// and bar does through `ec-services`.
+pub fn spawn(state: &AbyssState, command: &str) {
+    spawn_with(&state.dedicated_env, command);
+}
+
+/// [`spawn`] with an explicit environment (none for compositor-internal commands).
+pub fn spawn_with(env: &[(&'static str, String)], command: &str) {
     tracing::info!(command, "spawning");
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.arg("-c").arg(command);
+    cmd.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
     // The child must not inherit our controlling terminal or process group.
     cmd.process_group(0);
     if let Err(e) = cmd.spawn() {

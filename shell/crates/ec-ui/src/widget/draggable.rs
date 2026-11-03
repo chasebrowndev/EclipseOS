@@ -687,8 +687,8 @@ pub fn drop_well<'a, Message: 'a>(
                 // stacked would read as three panels, which is the look the
                 // pane must not have.
                 Well::Idle => (iced::Color::TRANSPARENT, iced::Color::TRANSPARENT),
-                Well::Armed => (color::LIFT_SOFT, color::BORDER_STRONG),
-                Well::Hot => (color::LIFT, color::TEXT_SECONDARY),
+                Well::Armed => (color::lift_soft(), color::border_strong()),
+                Well::Hot => (color::lift(), color::text_secondary()),
             };
             container::Style {
                 background: Some(iced::Background::Color(fill)),
@@ -707,7 +707,7 @@ pub fn drop_well<'a, Message: 'a>(
 ///
 /// A widget because a ghost floats over anything — the bar picture, a list,
 /// the sidebar — and has to stay legible over all of it; the ground that
-/// guarantees that is [`color::MENU_GROUND`], and a ghost assembled at each
+/// guarantees that is [`color::menu_ground()`], and a ghost assembled at each
 /// call site would pick a thinner one. It is drawn by a [`draggable`], on
 /// its overlay.
 pub fn drag_ghost<'a, Message: 'a>(
@@ -719,9 +719,9 @@ pub fn drag_ghost<'a, Message: 'a>(
         .height(Length::Fixed(bar::WIDGET_H))
         .align_y(iced::Alignment::Center)
         .style(move |_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(color::MENU_GROUND)),
+            background: Some(iced::Background::Color(color::menu_ground())),
             border: iced::Border {
-                color: color::BORDER_STRONG,
+                color: color::border_strong(),
                 width: space::HAIRLINE,
                 radius: radius.into(),
             },

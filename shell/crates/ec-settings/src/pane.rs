@@ -419,6 +419,7 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "misc.terminal-command" => return Some((Page::LauncherSearch, "search")),
         "components.bar" => return Some((Page::BarAppearance, "bar")),
         "misc.render-device" => return Some((Page::Rendering, "rendering")),
+        "misc.gpu-mode" | "misc.discrete-gpu-apps" => return Some((Page::Rendering, "graphics")),
         "misc.scripted-input" => return Some((Page::Privacy, "input scripting")),
         "mode" => return Some((Page::Mode, "interaction")),
         _ => {}
@@ -432,7 +433,11 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "components" => (Page::Components, "components"),
         "wallpaper" => (Page::Wallpaper, "wallpaper"),
         "general" => {
-            if starts("gaps-") {
+            // The scheme decides the colour of every material the Blur &
+            // glass page tunes, so its controls live beside them.
+            if starts("color-scheme") || starts("light-from") || starts("dark-from") || starts("theme-") {
+                (Page::Blur, "colour scheme")
+            } else if starts("gaps-") {
                 (Page::Gaps, "gaps")
             } else if starts("border-") || starts("col-") {
                 (Page::Borders, "borders")
@@ -453,6 +458,8 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
             "blur" => (Page::Blur, "blur"),
             "shadow" => (Page::Shadow, "shadow"),
             "glow" => (Page::Shadow, "glow"),
+            // The window's material sits beside the blur it is drawn over.
+            "surface" => (Page::Blur, "surface"),
             _ => (Page::Rounding, "windows"),
         },
         "animations" => (Page::Animations, "animations"),
@@ -591,6 +598,9 @@ mod tests {
         assert_eq!(page_of("general.focus-follows-mouse"), Some(Page::Focus));
         assert_eq!(page_of("general.refocus-on-scene-change"), Some(Page::Focus));
         assert_eq!(page_of("general.drop-guides"), Some(Page::Focus));
+        assert_eq!(page_of("general.color-scheme"), Some(Page::Blur));
+        assert_eq!(page_of("general.light-from"), Some(Page::Blur));
+        assert_eq!(page_of("general.theme-dark"), Some(Page::Blur));
         assert_eq!(place_for("general.drop-edge-band").unwrap().group, "drag guides");
     }
 
@@ -639,6 +649,8 @@ mod tests {
     #[test]
     fn misc_splits_by_key_not_by_node() {
         assert_eq!(page_of("misc.render-device"), Some(Page::Rendering));
+        assert_eq!(page_of("misc.gpu-mode"), Some(Page::Rendering));
+        assert_eq!(page_of("misc.discrete-gpu-apps"), Some(Page::Rendering));
         assert_eq!(page_of("misc.scripted-input"), Some(Page::Privacy));
         assert_eq!(page_of("oracle-eyes.model-command"), Some(Page::OeGeneral));
         assert_eq!(page_of("oracle-eyes.debug"), Some(Page::OeGeneral));

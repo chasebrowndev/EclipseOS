@@ -39,6 +39,7 @@ use super::{
     text::{self, Rgba},
     AbyssRenderElement,
 };
+use crate::context::PerContext;
 
 /// Shortest edge, in logical pixels, that counts as a deliberate drag. Below
 /// this a release is a miss-click, and COMP-18 §1.3 gives an addon nothing on
@@ -111,14 +112,25 @@ struct Session {
 pub struct RegionSelect {
     session: Option<Session>,
     /// Per-output render state kept across frames, so an unchanged band or
+    /// pill keeps its element id and commit and is not repainted (dropped
+    /// when the session ends), and the border program. GL objects, so one
+    /// set per renderer (ADR 0084).
+    gpu: PerContext<SelectGpu>,
+    /// `animations.enabled` as of the last frame drawn.
+    motion: bool,
+}
+
+/// What the selector keeps on one renderer.
+#[derive(Debug, Default)]
+struct SelectGpu {
+    /// Per-output render state kept across frames, so an unchanged band or
     /// pill keeps its element id and commit and is not repainted. Dropped
     /// when the session ends.
     cache: HashMap<Output, Cache>,
-    /// The band program, compiled on first use; shared by every output.
+    /// The band program, compiled on first use; shared by every output of
+    /// that renderer.
     border: Option<GlesPixelProgram>,
     border_failed: bool,
-    /// `animations.enabled` as of the last frame drawn.
-    motion: bool,
 }
 
 #[derive(Debug, Default)]
@@ -134,6 +146,15 @@ struct Cache {
 }
 
 impl RegionSelect {
+    /// Drop the GPU objects of renderer contexts not in `keep` (a GPU went
+    /// away, ADR 0084).
+    pub fn retain_contexts(
+        &mut self,
+        keep: &[smithay::backend::renderer::ContextId<smithay::backend::renderer::gles::GlesTexture>],
+    ) {
+        self.gpu.retain_contexts(keep);
+    }
+
     pub fn active(&self) -> bool {
         self.session.is_some()
     }
@@ -151,7 +172,7 @@ impl RegionSelect {
     /// Leave selection mode with nothing to report.
     pub fn cancel(&mut self) {
         self.session = None;
-        self.cache.clear();
+        self.gpu.each_mut(|g| g.cache.clear());
     }
 
     /// Returns whether the drawn shape changed, so a motion that only moves
@@ -177,7 +198,7 @@ impl RegionSelect {
     /// press-release with no travel is a cancel, not a 0x0 rectangle.
     pub fn release(&mut self, pos: Point<i32, Logical>) -> Option<Rectangle<i32, Logical>> {
         let s = self.session.take()?;
-        self.cache.clear();
+        self.gpu.each_mut(|g| g.cache.clear());
         let anchor = s.anchor?;
         let rect = normalize(anchor, pos);
         (rect.size.w >= MIN_EDGE && rect.size.h >= MIN_EDGE).then_some(rect)
@@ -309,6 +330,9 @@ pub fn selector_elements(
     config: &Config,
 ) -> Vec<AbyssRenderElement> {
     select.motion = config.animations.motion();
+    select
+        .gpu
+        .bind(&smithay::backend::renderer::Renderer::context_id(&*renderer));
     let Some(session) = select.session.as_ref() else {
         return Vec::new();
     };
@@ -322,7 +346,7 @@ pub fn selector_elements(
     let dev = hud_font::raster_scale(fractional);
     let logical: Size<i32, Logical> = mode.size.to_f64().to_logical(scale).to_i32_round();
     let bounds = Rectangle::new(Point::from((0, 0)), logical);
-    let pal = HudPalette::new(&config.annotations);
+    let pal = HudPalette::themed(&config.annotations, &config.appearance);
     let motion = select.motion;
     let fade_in = if motion { eased(now, started, DIM_IN) } else { 1.0 };
     let hint_alpha = match pressed {
@@ -336,17 +360,17 @@ pub fn selector_elements(
     let whole = select.rect().map(|r| Rectangle::new(r.loc - output_loc, r.size));
     let local = whole.and_then(|r| r.intersection(bounds));
 
-    if select.border.is_none() && !select.border_failed {
+    if select.gpu.border.is_none() && !select.gpu.border_failed {
         match effects::compile_border(renderer) {
-            Ok(p) => select.border = Some(p),
+            Ok(p) => select.gpu.border = Some(p),
             Err(err) => {
                 tracing::warn!(?err, "compiling the selector band; drawing the dim only");
-                select.border_failed = true;
+                select.gpu.border_failed = true;
             }
         }
     }
-    let border = select.border.clone();
-    let cache = select.cache.entry(output.clone()).or_default();
+    let border = select.gpu.border.clone();
+    let cache = select.gpu.cache.entry(output.clone()).or_default();
     let mut out = Vec::new();
     let texture = |buffer: &TextureBuffer<GlesTexture>, at: Point<i32, Logical>, alpha: f32| {
         AbyssRenderElement::Texture(TextureRenderElement::from_texture_buffer(

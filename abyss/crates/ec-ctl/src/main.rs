@@ -14,6 +14,7 @@ use std::{
 use serde_json::{json, Value};
 
 mod migrate;
+mod progress;
 
 const USAGE: &str = "\
 ec-ctl — control the abyss compositor
@@ -52,6 +53,8 @@ ec-ctl — control the abyss compositor
   ec-ctl config set PATH VALUE   write a setting (abyss.kdl only)
   ec-ctl config validate         check a config file without applying it
   ec-ctl config migrate          split a legacy abyss.kdl into two files
+                                      (--only widget-order: just append new built-in
+                                      widgets to a pinned bar.widgets.order)
   ec-ctl config widget list      custom taskbar widgets (bar { widget … })
   ec-ctl config widget set NAME exec|stream ARGV0 [ARG...]
   ec-ctl config widget set NAME source SOURCE [FORMAT]
@@ -64,6 +67,11 @@ ec-ctl — control the abyss compositor
   ec-ctl config widget rename OLD NEW
                                       rename it, rewriting custom:OLD ids
   ec-ctl setup reset             clear setup.complete so ec-setup runs again
+  ec-ctl progress start ID [--label L] [--total BYTES]
+  ec-ctl progress set ID 0.4|40%|BYTES
+  ec-ctl progress done ID
+  ec-ctl progress list           work shown in the progress widget (its own
+                                      per-user feed socket, not the compositor's)
   ec-ctl call METHOD [JSON]      raw JSON-RPC, for anything not above
 
 Options:
@@ -111,6 +119,14 @@ fn main() -> ExitCode {
         flags.file = Some(args.remove(i + 1));
         args.remove(i);
     }
+    if let Some(i) = args.iter().position(|a| a == "--only") {
+        if i + 1 >= args.len() {
+            eprintln!("--only needs widget-order");
+            return ExitCode::FAILURE;
+        }
+        flags.only = Some(args.remove(i + 1));
+        args.remove(i);
+    }
     if let Some(i) = args.iter().position(|a| a == "--socket") {
         if i + 1 >= args.len() {
             eprintln!("--socket needs a path");
@@ -124,11 +140,24 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    // `progress` talks to the per-user progress feed, not the compositor.
+    if args[0] == "progress" {
+        return progress::run(&args[1..]);
+    }
+
     // `config migrate` never touches the socket: it edits the files in place,
     // and one of them is `policy.kdl`, which the socket may never write
     // (COMP-13 §1.3). It must also work with the compositor stopped.
     if args[0] == "config" && args.get(1).map(String::as_str) == Some("migrate") {
-        return match migrate::run(flags.dry_run) {
+        let only_widget_order = match flags.only.as_deref() {
+            None => false,
+            Some("widget-order") => true,
+            Some(other) => {
+                eprintln!("ec-ctl: --only takes widget-order, not {other}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return match migrate::run(flags.dry_run, only_widget_order) {
             Ok(report) => {
                 print!("{report}");
                 ExitCode::SUCCESS
@@ -192,6 +221,7 @@ struct Flags {
     changed: bool,
     dry_run: bool,
     file: Option<String>,
+    only: Option<String>,
 }
 
 /// Which columns a listing prints. Anything not here falls back to JSON.

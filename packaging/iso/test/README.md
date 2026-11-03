@@ -23,6 +23,7 @@ socket. No `pkill`/`killall`/`pkill -f` anywhere.
 |---|---|
 | `run.sh` | wrapper: `run.sh [--work DIR] <cmd>`, plus `unit` and `compare` shortcuts |
 | `vm.py` | VM lifecycle, QMP client, input, screendump, waits, `assert-no-keystroke`, `selftest` |
+| `scenario.py` | end-to-end install scenario (`run.sh scenario --iso ...`), see below |
 | `compare.py` | `compare.py A.png B.png [--tolerance N] [--max-frac F] [--max-mean M] [--ignore x,y,w,h]` |
 | `imgtools.py` | PPM/PNG codec, diff, screen heuristics |
 | `test_unit.py` | QEMU-free tests (fake QMP socket): `run.sh unit` |
@@ -102,3 +103,43 @@ unless `--keep`. The bootloader countdown must expire on its own, which is the p
 `./run.sh selftest` boots OVMF with no disk and no ISO (512 MB), checks QMP, that the screendump
 is a valid non-empty PNG, waits for stability, sends `esc`, typed text and a pointer click, then
 stops QEMU by pid and confirms it is gone. Screens are left in `<work>/shots/`.
+
+## End-to-end install scenario
+
+```
+./run.sh scenario --iso /var/tmp/eclipseos-out/eclipseos-*.iso --work $TMPDIR/e2e \
+    [--profile standard] [--disk virtio|nvme] [--disk-size 20G] [--second-disk 8G] [--res 1280x800] \
+    [--no-net] [--bios] [--wifi] [--reboot-count N] [--kernels linux,linux-lts] [--keep] [--tcg]
+```
+
+Boots the ISO fresh, asserts the welcome screen appears with zero keystrokes, then drives ec-setup
+with the keyboard (Space, Enter, Down, Tab; two clicks where the UI has no key path), confirms
+the compositor's erase prompt (Tab to Erase, Space), waits for `ec-setup-helper` to exit, reboots
+to the disk with the ISO ejected, logs in at the greeter and health-checks over SSH. Every step is
+shot to `<work>/shots/NN-name.png`; the verdict is `<work>/result.json` (pass/fail per check) and the
+exit status (0 pass, 1 a check failed, 2 harness/usage error).
+
+Honest limits:
+- No OCR. "Advanced" means the screen changed and settled. The disk name typed on Review is
+  predicted (`virtio-eclipse0`, `nvme-QEMU_NVMe_Ctrl_eclipse0`; override with `--disk-by-id`).
+- **ec-setup has no remote-access step**, so SSH is planted into the finished install from the live
+  session's tty2 root shell (key only, like the opt-in in `eclipseos-postinstall.sh`). Output of
+  live-side commands returns over the serial port (`/dev/ttyS0` into `serial.log`).
+- Only the Standard profile can be picked in ec-setup (`data::selectable`); the other `--profile`
+  values are accepted and reported as a failed `profile_selectable` check without booting.
+- `--wifi`: mac80211_hwsim and a hostapd/dnsmasq WPA2 AP (SSID `eclipse-test`) in a netns, installed
+  from the mirror over the ethernet SLIRP link (which stays the internet uplink). It tests the wizard's
+  join and the carry-over of the connection profile, not a real radio.
+- `--no-net` expects the install to stop at its first download; a clean stop is recorded, not asserted
+  to a particular banner. `--bios` expects the helper to refuse before any erase prompt.
+- Click targets are screen fractions (`CLICK_*` in `scenario.py`), calibrated at 1280x800.
+- Throwaway credentials (`tester` / `eclipse-test-pw`) are typed through `type`, so they appear in argv.
+- Options: `--stop-at SCREEN` ends the walk at a wizard screen (recorded as a pass), `--force-profile`
+  skips the check that the profile is selectable in the wizard, `--boot-entry lts` reboots through the
+  Limine menu into the LTS entry and asserts `uname -r`.
+- Step pacing uses the wizard's progress bar as truth for the step index; BIOS and 2560x1600 get extra
+  pacing because the display lags the keys (about 3 minutes per step at 2560x1600).
+- The install needs a disk of at least 16 GiB; smaller disks are asserted to be refused.
+- VT round trips before the install are avoided (input died after one on ISOs without the libinput
+  resume fix), so the Wi-Fi row needs the fixed ISO.
+- The installed `[eclipseos]` repo is `chase-pc:8088` (D-03), unreachable from the VM; `pacman -Sy` notes it.
