@@ -206,6 +206,7 @@ pub struct Portal {
 fn apply(state: &Mutex<Appearance>, conn: &zbus::blocking::Connection, new: Appearance) {
     let mut cur = state.lock().unwrap_or_else(|p| p.into_inner());
     let changed = new.changed_keys(&cur);
+    foot_follow(new.color_scheme, changed.contains(&"color-scheme"));
     *cur = new;
     for key in changed {
         if let Some(value) = new.get(key) {
@@ -216,6 +217,51 @@ fn apply(state: &Mutex<Appearance>, conn: &zbus::blocking::Connection, new: Appe
                 "SettingChanged",
                 &(NAMESPACE, key, value),
             );
+        }
+    }
+}
+
+/// Keep foot on the compositor's scheme. The include file feeds new windows
+/// (`packaging/etc/foot.ini`); a flip also signals the running foot processes
+/// of this user (SIGUSR1 dark, SIGUSR2 light), picked by pid so nothing else
+/// is touched.
+fn foot_follow(color_scheme: u32, flipped: bool) {
+    let theme = if color_scheme == 2 { "light" } else { "dark" };
+    if let Some(home) = std::env::var_os("HOME") {
+        let path = std::path::Path::new(&home).join(".config/eclipse/foot-theme.ini");
+        let body = format!("[main]\ninitial-color-theme={theme}\n");
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(&body) {
+            let _ = path.parent().map(std::fs::create_dir_all);
+            let _ = std::fs::write(&path, body);
+        }
+    }
+    if !flipped {
+        return;
+    }
+    let sig = if color_scheme == 2 {
+        libc::SIGUSR2
+    } else {
+        libc::SIGUSR1
+    };
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for entry in procs.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+            continue;
+        };
+        let is_foot =
+            std::fs::read_to_string(entry.path().join("comm")).is_ok_and(|c| c.trim_end() == "foot");
+        let ours = std::os::unix::fs::MetadataExt::uid(&match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        }) == uid;
+        if is_foot && ours {
+            // SAFETY: plain signal to a pid we just matched as our own foot,
+            // which handles SIGUSR1/2.
+            unsafe { libc::kill(pid, sig) };
         }
     }
 }
