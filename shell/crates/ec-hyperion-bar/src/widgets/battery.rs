@@ -35,21 +35,30 @@ pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
         return Parts::empty();
     };
     // Low and not charging is the one status the human has to act on, so it
-    // is the one status allowed to leave the neutral palette.
-    let tint = if battery.percent <= LOW && battery.state == Charge::Discharging {
-        color::danger()
+    // is the one status allowed to leave the neutral palette. Full takes the
+    // accent, on the gauge and the reading alike; charging stays neutral and
+    // lets the energy flow carry the state.
+    let (gauge, reading) = if battery.percent <= LOW && battery.state == Charge::Discharging {
+        (color::danger(), color::danger())
+    } else if battery.state == Charge::Full {
+        (color::accent(), color::accent_text())
     } else {
-        color::text_secondary()
+        (color::text_secondary(), color::text_secondary())
     };
     let face = Row::new()
         .spacing(bar::GAP)
         .align_y(Alignment::Center)
-        .push(parts::battery_gauge_faded(battery.percent, tint, ink))
+        .push(parts::battery_gauge_faded(
+            battery.percent,
+            gauge,
+            ink,
+            app.battery_flow(),
+        ))
         .push(
             text(battery_text(battery))
                 .size(size::MONO)
                 .font(font::DATA)
-                .color(tint.scale_alpha(ink)),
+                .color(reading.scale_alpha(ink)),
         );
     Parts {
         core: face.into(),
@@ -57,13 +66,13 @@ pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
     }
 }
 
-/// Charging is a leading `+`, discharging bare, full the word. Time remaining
-/// is deliberately absent: it is the least trustworthy number UPower reports.
+/// Charging is a leading `+`; full and discharging are the bare percentage.
+/// Time remaining is deliberately absent: it is the least trustworthy number
+/// UPower reports.
 pub(crate) fn battery_text(battery: Battery) -> String {
     match battery.state {
         Charge::Charging => format!("+{}%", battery.percent),
-        Charge::Full => "full".to_owned(),
-        Charge::Discharging | Charge::Unknown => format!("{}%", battery.percent),
+        Charge::Full | Charge::Discharging | Charge::Unknown => format!("{}%", battery.percent),
     }
 }
 
@@ -72,14 +81,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn battery_text_marks_charging_and_full() {
+    fn battery_text_marks_charging_and_shows_percent_when_full() {
         let b = |percent, state| Battery {
             percent,
             state,
             remaining: None,
         };
         assert_eq!(battery_text(b(40, Charge::Charging)), "+40%");
-        assert_eq!(battery_text(b(100, Charge::Full)), "full");
+        assert_eq!(battery_text(b(100, Charge::Full)), "100%");
         assert_eq!(battery_text(b(7, Charge::Discharging)), "7%");
+        assert_eq!(battery_text(b(15, Charge::Unknown)), "15%");
     }
 }

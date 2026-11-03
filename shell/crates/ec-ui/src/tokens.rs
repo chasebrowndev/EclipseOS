@@ -231,6 +231,10 @@ pub mod space {
     pub const MARK_GAP: f32 = 1.0;
     pub const MARK_CELL_W: f32 = 18.0;
     pub const MARK_BORDER: f32 = 1.0;
+    /// The energy particles a charging battery's fill carries: a bright
+    /// core and a faint halo, both small enough to read as dust in the cell.
+    pub const ENERGY_R: f32 = 1.1;
+    pub const ENERGY_HALO_R: f32 = 2.2;
     /// A sidebar nav item's selected bar, and the placeholder square that
     /// stands in for its icon.
     pub const NAV_BAR_H: f32 = 18.0;
@@ -652,9 +656,9 @@ pub mod bar {
     /// bead on a wire and reads as decoration.
     pub const VOLUME_KNOB_W: u16 = 2;
     pub const VOLUME_KNOB_H: f32 = 12.0;
-    /// Room for `100` in the mono face, so the track never shifts as the
+    /// Room for `100%` in the mono face, so the track never shifts as the
     /// reading changes width.
-    pub const VOLUME_READOUT_W: f32 = 22.0;
+    pub const VOLUME_READOUT_W: f32 = 28.0;
     /// Between the track and its reading.
     pub const VOLUME_GAP: f32 = 6.0;
 
@@ -839,6 +843,10 @@ pub mod motion {
     pub const FLING_LOOKAHEAD_S: f32 = 0.12;
     /// Weight of the newest sample in a drag's smoothed velocity.
     pub const VELOCITY_BLEND: f32 = 0.6;
+    /// One pass of a charging battery's energy particles across its fill,
+    /// and how many ride the fill at once (evenly spaced in the pass).
+    pub const ENERGY_MS: u64 = 1800;
+    pub const ENERGY_COUNT: usize = 3;
     /// The first fraction of a cell's travel over which its content stays
     /// fully transparent. Content fades *ahead of* its clip: closing, it is
     /// gone before the edge reaches a glyph; opening, it arrives once there
@@ -859,11 +867,12 @@ pub mod menu {
     /// One verb row, and the padding inside it.
     pub const ROW_H: f32 = 30.0;
     pub const ROW_X: f32 = 8.0;
-    /// The square a row's leading mark occupies, and the gap after it.
-    pub const MARK: f32 = 16.0;
-    pub const MARK_GAP: f32 = 10.0;
+    /// The square a row's leading mark occupies, and the gap after it. Small
+    /// on purpose: a verb's mark is a hint at the verb, not a button face.
+    pub const MARK: f32 = 13.0;
+    pub const MARK_GAP: f32 = 12.0;
     /// The placeholder drawn when the host's icon theme has no such mark.
-    pub const MARK_INNER: f32 = 9.0;
+    pub const MARK_INNER: f32 = 7.0;
     pub const RADIUS_MARK: f32 = 3.0;
     /// A checkable entry's tick box: square, so on (filled) and off (a
     /// hairline frame) are one shape and never read as the rounded
@@ -890,8 +899,9 @@ pub mod drawer {
     pub const PAD: f32 = 8.0;
     /// Padding inside a row.
     pub const ROW_X: f32 = 8.0;
-    /// The square a row's leading mark occupies, and the gap after it.
-    pub const MARK: f32 = 16.0;
+    /// The square a row's leading mark occupies, and the gap after it. Smaller
+    /// than an icon's usual 16: the row's label is the thing read first.
+    pub const MARK: f32 = 14.0;
     pub const MARK_GAP: f32 = 9.0;
     /// Corner radius of a hovered row, on the inset-chip scale.
     pub const RADIUS_ROW: f32 = 8.0;
