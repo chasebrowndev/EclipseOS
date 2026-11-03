@@ -367,7 +367,11 @@ fn gpu_actions(gpu: &str, always: bool, index: usize) -> Element<'static, Messag
         .style(move |t, st| {
             let tone = if on { CellTone::Focused } else { CellTone::Plain };
             let mut style = theme::glass_cell(tone, radius::CHIP)(t, st);
-            style.text_color = if on { color::TEXT } else { color::TEXT_SECONDARY };
+            style.text_color = if on {
+                color::text()
+            } else {
+                color::text_secondary()
+            };
             style
         })
     };
