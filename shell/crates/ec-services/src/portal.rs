@@ -10,11 +10,12 @@
 //! first reply, and whenever the socket is down, the last known (initially
 //! dark) values are served.
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
-use serde_json::Value as Json;
+use serde_json::{json, Value as Json};
 use zbus::blocking::connection;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::zvariant::{OwnedValue, Structure, Value};
@@ -206,6 +207,8 @@ pub struct Portal {
 fn apply(state: &Mutex<Appearance>, conn: &zbus::blocking::Connection, new: Appearance) {
     let mut cur = state.lock().unwrap_or_else(|p| p.into_inner());
     let changed = new.changed_keys(&cur);
+    foot_follow(new.color_scheme, changed.contains(&"color-scheme"));
+    SCHEME.store(new.color_scheme, Ordering::Relaxed);
     *cur = new;
     for key in changed {
         if let Some(value) = new.get(key) {
@@ -216,6 +219,78 @@ fn apply(state: &Mutex<Appearance>, conn: &zbus::blocking::Connection, new: Appe
                 "SettingChanged",
                 &(NAMESPACE, key, value),
             );
+        }
+    }
+}
+
+/// The compositor's `decoration.blur.mode` is `off`.
+static GLASS_OFF: AtomicBool = AtomicBool::new(false);
+/// Last published colour-scheme value, for rewriting foot's file on a mode change.
+static SCHEME: AtomicU32 = AtomicU32::new(1);
+
+fn read_blur_off(client: &mut ec_ipc::Client) -> Option<bool> {
+    let reply = client
+        .call(
+            "get_config",
+            json!({"schema": false, "path": "decoration.blur.mode"}),
+        )
+        .ok()?;
+    let row = reply
+        .get("keys")?
+        .as_array()?
+        .iter()
+        .find(|k| k.get("path").and_then(Json::as_str) == Some("decoration.blur.mode"))?;
+    Some(row.get("value").and_then(Json::as_str) == Some("off"))
+}
+
+/// Keep foot on the compositor's scheme. The include file feeds new windows
+/// (`packaging/etc/foot.ini`); a flip also signals the running foot processes
+/// of this user (SIGUSR1 dark, SIGUSR2 light), picked by pid so nothing else
+/// is touched.
+fn foot_follow(color_scheme: u32, flipped: bool) {
+    let theme = if color_scheme == 2 { "light" } else { "dark" };
+    // Blur `off` leaves nothing behind a translucent terminal, so new windows
+    // go opaque (the include comes last in foot.ini, so this alpha wins).
+    let opaque = if GLASS_OFF.load(Ordering::Relaxed) {
+        "[colors-dark]\nalpha=1.0\n[colors-light]\nalpha=1.0\n"
+    } else {
+        ""
+    };
+    if let Some(home) = std::env::var_os("HOME") {
+        let path = std::path::Path::new(&home).join(".config/eclipse/foot-theme.ini");
+        let body = format!("[main]\ninitial-color-theme={theme}\n{opaque}");
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(&body) {
+            let _ = path.parent().map(std::fs::create_dir_all);
+            let _ = std::fs::write(&path, body);
+        }
+    }
+    if !flipped {
+        return;
+    }
+    let sig = if color_scheme == 2 {
+        libc::SIGUSR2
+    } else {
+        libc::SIGUSR1
+    };
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let Ok(procs) = std::fs::read_dir("/proc") else {
+        return;
+    };
+    for entry in procs.flatten() {
+        let Some(pid) = entry.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+            continue;
+        };
+        let is_foot =
+            std::fs::read_to_string(entry.path().join("comm")).is_ok_and(|c| c.trim_end() == "foot");
+        let ours = std::os::unix::fs::MetadataExt::uid(&match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        }) == uid;
+        if is_foot && ours {
+            // SAFETY: plain signal to a pid we just matched as our own foot,
+            // which handles SIGUSR1/2.
+            unsafe { libc::kill(pid, sig) };
         }
     }
 }
@@ -256,17 +331,29 @@ fn bridge(state: &Mutex<Appearance>, conn: &zbus::blocking::Connection) {
     }
 }
 
+fn refresh_blur(client: &mut ec_ipc::Client) {
+    if let Some(off) = read_blur_off(client) {
+        if GLASS_OFF.swap(off, Ordering::Relaxed) != off {
+            foot_follow(SCHEME.load(Ordering::Relaxed), false);
+        }
+    }
+}
+
 fn follow(state: &Mutex<Appearance>, conn: &zbus::blocking::Connection) -> Result<(), ec_ipc::Error> {
     let mut client = ec_ipc::Client::connect()?;
     // Subscribe first so a change between the read and the subscription is
     // not lost; the read then covers anything before it.
-    client.subscribe(&[ec_ipc::EventKind::Theme])?;
+    client.subscribe(&[ec_ipc::EventKind::Theme, ec_ipc::EventKind::Config])?;
     let theme = client.call("get_theme", Json::Null)?;
     if let Some(a) = Appearance::from_theme(&theme) {
         apply(state, conn, a);
     }
+    refresh_blur(&mut client);
     loop {
         let ev = client.wait_event()?;
+        if ev.kind == ec_ipc::EventKind::Config {
+            refresh_blur(&mut client);
+        }
         if ev.kind == ec_ipc::EventKind::Theme {
             if let Some(a) = Appearance::from_theme(&ev.data) {
                 apply(state, conn, a);
