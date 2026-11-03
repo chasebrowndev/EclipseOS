@@ -42,6 +42,7 @@ pub mod clock;
 pub mod custom;
 pub mod network;
 pub mod now_playing;
+pub mod quick_actions;
 pub mod system_usage;
 pub mod tray;
 pub mod volume;
@@ -55,6 +56,8 @@ pub enum WidgetId {
     Network,
     Bluetooth,
     Battery,
+    /// `bar { action … }` blocks: a grid of one-tap buttons.
+    QuickActions,
     Tray,
     Clock,
     /// A `widget "<name>" { … }` block, written `custom:<name>`.
@@ -72,6 +75,7 @@ impl WidgetId {
             "network" => WidgetId::Network,
             "bluetooth" => WidgetId::Bluetooth,
             "battery" => WidgetId::Battery,
+            "quick-actions" => WidgetId::QuickActions,
             "tray" => WidgetId::Tray,
             "clock" => WidgetId::Clock,
             other => {
@@ -93,6 +97,7 @@ impl WidgetId {
             WidgetId::Network => "network".to_owned(),
             WidgetId::Bluetooth => "bluetooth".to_owned(),
             WidgetId::Battery => "battery".to_owned(),
+            WidgetId::QuickActions => "quick-actions".to_owned(),
             WidgetId::Tray => "tray".to_owned(),
             WidgetId::Clock => "clock".to_owned(),
             WidgetId::Custom(name) => format!("custom:{name}"),
@@ -155,6 +160,7 @@ impl Default for Config {
                 "network",
                 "bluetooth",
                 "battery",
+                "quick-actions",
                 "tray",
                 "clock",
             ]),
@@ -301,6 +307,7 @@ pub fn spans(app: &App, id: &WidgetId) -> Spans {
         WidgetId::Network => network::spans(app),
         WidgetId::Bluetooth => bluetooth::spans(app),
         WidgetId::Battery => battery::spans(app),
+        WidgetId::QuickActions => quick_actions::spans(app),
         WidgetId::Tray => tray::spans(app),
         WidgetId::Clock => clock::spans(app),
         WidgetId::Custom(name) => match cfg.spec(name) {
@@ -352,6 +359,7 @@ fn parts<'a>(app: &'a App, bar: &crate::app::Bar, id: &WidgetId, frame: ShellFra
         WidgetId::Network => network::view(app, frame),
         WidgetId::Bluetooth => bluetooth::view(app, frame),
         WidgetId::Battery => battery::view(app, frame),
+        WidgetId::QuickActions => quick_actions::view(app, frame),
         WidgetId::Tray => tray::view(app, frame),
         WidgetId::Clock => clock::view(app, frame),
         WidgetId::Custom(name) => match cfg.spec(name) {
@@ -558,6 +566,7 @@ mod tests {
             "network",
             "bluetooth",
             "battery",
+            "quick-actions",
             "tray",
             "clock",
             "custom:weather",
