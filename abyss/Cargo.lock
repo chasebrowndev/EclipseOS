@@ -742,6 +742,7 @@ name = "ec-ctl"
 version = "0.1.0"
 dependencies = [
  "ec-abyss-config",
+ "ec-ipc",
  "kdl",
  "libc",
  "serde_json",
