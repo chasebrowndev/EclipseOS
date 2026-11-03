@@ -171,3 +171,64 @@ pub fn open_bar_menu() -> bool {
         .and_then(|reply| reply.get("delivered")?.as_bool())
         .unwrap_or(false)
 }
+
+/// The discrete GPU's name, but only where the launcher should offer it: the
+/// machine has one and `misc.gpu-mode` is `hybrid` (the default; with
+/// `integrated` the card is off, with `dedicated` everything already runs on
+/// it). `None` on any failure. Debug builds take `ECLIPSE_FAKE_DISCRETE_GPU`
+/// as a stand-in name so the controls can be drawn on a single-GPU box; a
+/// release build has no such path.
+pub fn fetch_discrete_gpu() -> Option<String> {
+    let name = discrete_name()?;
+    let mut client = ec_ipc::Client::connect().ok()?;
+    let reply = client
+        .call("get_config", json!({ "path": "misc.gpu-mode" }))
+        .ok()?;
+    let mode = reply
+        .get("keys")
+        .and_then(|k| k.as_array())
+        .and_then(|k| k.first())
+        .and_then(|k| k.get("value"))
+        .and_then(|v| v.as_str());
+    // An older compositor without the key behaves as the default.
+    matches!(mode, None | Some("hybrid")).then_some(name)
+}
+
+fn discrete_name() -> Option<String> {
+    #[cfg(debug_assertions)]
+    if let Ok(name) = std::env::var("ECLIPSE_FAKE_DISCRETE_GPU") {
+        return Some(name);
+    }
+    ec_services::apps::discrete_gpu().map(|g| g.name)
+}
+
+/// `misc.discrete-gpu-apps`: the app ids that always run on the discrete GPU.
+/// Empty on any failure.
+pub fn fetch_discrete_apps() -> Vec<String> {
+    let Ok(mut client) = ec_ipc::Client::connect() else {
+        return Vec::new();
+    };
+    let Ok(reply) = client.call("get_config", json!({ "path": "misc.discrete-gpu-apps" })) else {
+        return Vec::new();
+    };
+    reply
+        .get("keys")
+        .and_then(|k| k.as_array())
+        .and_then(|k| k.first())
+        .and_then(|k| k.get("value"))
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
+/// Write the whole `misc.discrete-gpu-apps` list (live).
+pub fn set_discrete_apps(list: &[String]) -> Result<(), String> {
+    let mut client = ec_ipc::Client::connect().map_err(|e| e.to_string())?;
+    client
+        .call(
+            "set_config_value",
+            json!({ "path": "misc.discrete-gpu-apps", "value": list }),
+        )
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}

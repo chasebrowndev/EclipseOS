@@ -97,10 +97,14 @@ fn output_for(state: &AbyssState, geometry: &Rectangle<i32, Logical>) -> Option<
 /// keep: not mapped, no renderer context yet (nothing has been drawn), the
 /// surface already gone, or no texture imported for it.
 pub fn capture(state: &AbyssState, window: &Window) -> Option<Frame> {
-    let context = state.borders.anim.context.as_ref()?;
+    state.borders.anim.context.as_ref()?;
     let geometry = state.space.element_geometry(window)?;
     let surface = super::window_surface(window).filter(|s| s.alive())?;
-    let mut surfaces = anim::snapshot(context, &surface, Point::from((0, 0)) - window.geometry().loc);
+    // Whichever GPU's renderer drew the window holds its textures (ADR 0084).
+    let mut surfaces = state
+        .borders
+        .anim
+        .snapshot_all(&surface, Point::from((0, 0)) - window.geometry().loc);
     // A commit since the last frame dropped the textures of the buffer it
     // replaced and nothing has imported the new one (a window that draws its
     // last frame and closes at once): the previous frame beats no animation.
@@ -213,9 +217,9 @@ pub fn close_layer(state: &mut AbyssState, output: &Output, layer: &LayerSurface
     let Some((leg, style)) = resolve(state, Event::LayerClose) else {
         return;
     };
-    let Some(context) = state.borders.anim.context.as_ref() else {
+    if state.borders.anim.context.is_none() {
         return;
-    };
+    }
     let Some(output_size) = state.space.output_geometry(output).map(|g| g.size) else {
         return;
     };
@@ -233,7 +237,7 @@ pub fn close_layer(state: &mut AbyssState, output: &Output, layer: &LayerSurface
     if !surface.alive() {
         return;
     }
-    let surfaces = anim::snapshot(context, &surface, Point::from((0, 0)));
+    let surfaces = state.borders.anim.snapshot_all(&surface, Point::from((0, 0)));
     if surfaces.is_empty() {
         return;
     }

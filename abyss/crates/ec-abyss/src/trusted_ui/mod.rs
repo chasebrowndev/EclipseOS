@@ -63,7 +63,7 @@ use smithay::{
                 Kind,
             },
             gles::{GlesRenderer, GlesTexture},
-            ImportMem,
+            ContextId, ImportMem, Renderer,
         },
     },
     input::{keyboard::Keysym, pointer::MotionEvent},
@@ -117,9 +117,11 @@ struct Open {
 #[derive(Debug, Default)]
 pub struct TrustedUi {
     open: Option<Open>,
-    /// The uploaded panel per device scale, with the focus it was drawn with.
-    /// Kept across frames so the damage tracker sees the same element.
-    art: BTreeMap<usize, (usize, TextureBuffer<GlesTexture>)>,
+    /// The uploaded panel per renderer and device scale, with the focus it was
+    /// drawn with. Kept across frames so the damage tracker sees the same
+    /// element. A texture belongs to one GPU's context, and each GPU draws its
+    /// own outputs (ADR 0084), so the renderer is part of the key.
+    art: BTreeMap<(ContextId<GlesTexture>, usize), (usize, TextureBuffer<GlesTexture>)>,
     /// One dim buffer per output size, for the same reason.
     dim: BTreeMap<(i32, i32), SolidColorBuffer>,
     /// The command-approval prompt's widget, if that is what is up.
@@ -485,8 +487,10 @@ pub fn elements(
     // Whole device pixels, like the annotation cards: the font is a bitmap.
     let dev = (fractional.round() as usize).max(1);
 
+    let key = (renderer.context_id(), dev);
+
     let mut out = Vec::with_capacity(2);
-    if ui.art.get(&dev).map(|(f, _)| *f != o.focus).unwrap_or(true) {
+    if ui.art.get(&key).map(|(f, _)| *f != o.focus).unwrap_or(true) {
         let raster = modal::rasterize(
             &o.modal,
             o.focus,
@@ -496,17 +500,17 @@ pub fn elements(
         );
         match upload(renderer, &raster, dev) {
             Some(buffer) => {
-                ui.art.insert(dev, (o.focus, buffer));
+                ui.art.insert(key.clone(), (o.focus, buffer));
             }
             None => {
                 // No panel means no way to answer; the dim still holds the
                 // seat visibly and the timeout still resolves it.
                 tracing::error!("trusted prompt upload failed");
-                ui.art.remove(&dev);
+                ui.art.remove(&key);
             }
         }
     }
-    if let Some((_, buffer)) = ui.art.get(&dev) {
+    if let Some((_, buffer)) = ui.art.get(&key) {
         let local = centre(Rectangle::new(output_loc, logical), &o.layout) - output_loc;
         out.push(AbyssRenderElement::Texture(
             TextureRenderElement::from_texture_buffer(
