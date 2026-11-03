@@ -42,6 +42,7 @@ pub mod clock;
 pub mod custom;
 pub mod network;
 pub mod now_playing;
+pub mod power;
 pub mod progress;
 pub mod quick_actions;
 pub mod system_usage;
@@ -61,6 +62,9 @@ pub enum WidgetId {
     QuickActions,
     /// The progress cell (ADR 0065 amendment): zero width while nothing is in flight.
     Progress,
+    /// The power glyph, opening the session actions and the Eclipse update
+    /// (ADR 0065 amendment, ADR 0085).
+    Power,
     Tray,
     Clock,
     /// A `widget "<name>" { … }` block, written `custom:<name>`.
@@ -80,6 +84,7 @@ impl WidgetId {
             "battery" => WidgetId::Battery,
             "quick-actions" => WidgetId::QuickActions,
             "progress" => WidgetId::Progress,
+            "power" => WidgetId::Power,
             "tray" => WidgetId::Tray,
             "clock" => WidgetId::Clock,
             other => {
@@ -103,6 +108,7 @@ impl WidgetId {
             WidgetId::Battery => "battery".to_owned(),
             WidgetId::QuickActions => "quick-actions".to_owned(),
             WidgetId::Progress => "progress".to_owned(),
+            WidgetId::Power => "power".to_owned(),
             WidgetId::Tray => "tray".to_owned(),
             WidgetId::Clock => "clock".to_owned(),
             WidgetId::Custom(name) => format!("custom:{name}"),
@@ -168,6 +174,7 @@ impl Default for Config {
                 "quick-actions",
                 "tray",
                 "progress",
+                "power",
                 "clock",
             ]),
             important: ids(&["clock", "battery"]),
@@ -315,6 +322,7 @@ pub fn spans(app: &App, id: &WidgetId) -> Spans {
         WidgetId::Battery => battery::spans(app),
         WidgetId::QuickActions => quick_actions::spans(app),
         WidgetId::Progress => progress::spans(app),
+        WidgetId::Power => power::spans(app),
         WidgetId::Tray => tray::spans(app),
         WidgetId::Clock => clock::spans(app),
         WidgetId::Custom(name) => match cfg.spec(name) {
@@ -368,6 +376,7 @@ fn parts<'a>(app: &'a App, bar: &crate::app::Bar, id: &WidgetId, frame: ShellFra
         WidgetId::Battery => battery::view(app, frame),
         WidgetId::QuickActions => quick_actions::view(app, frame),
         WidgetId::Progress => progress::view(app, frame),
+        WidgetId::Power => power::view(app, frame),
         WidgetId::Tray => tray::view(app, frame),
         WidgetId::Clock => clock::view(app, frame),
         WidgetId::Custom(name) => match cfg.spec(name) {
@@ -576,6 +585,7 @@ mod tests {
             "battery",
             "quick-actions",
             "progress",
+            "power",
             "tray",
             "clock",
             "custom:weather",

@@ -814,7 +814,8 @@ pub const TABLE: &[Key] = &[
        Built-in ids: now-playing, system-usage, volume, network, bluetooth, \
        battery, tray (the StatusNotifierItems and their overflow drawer), \
        progress (zero width while nothing is in flight; the jobs of `ec-ctl \
-       progress`, and the scan of `/proc`) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left \
+       progress`, and the scan of `/proc`), power (the session actions and the pending Eclipse update, ADR 0085) and \
+       clock; `custom:<name>` names a `widget` block in `bar`. A widget left \
        out is not drawn. An unknown id, a repeated one, or a `custom:` \
        naming no `widget` block is refused.",
     ),
@@ -2104,6 +2105,7 @@ pub const BAR_WIDGET_IDS: &[&str] = &[
     "battery",
     "tray",
     "progress",
+    "power",
     "clock",
 ];
 /// The prefix a custom widget's id carries in `bar.widgets.order`.
@@ -2116,6 +2118,7 @@ pub const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
     "battery",
     "tray",
     "progress",
+    "power",
     "clock",
 ];
 pub const BAR_WIDGET_DEFAULT_IMPORTANT: &[&str] = &["clock", "battery"];
