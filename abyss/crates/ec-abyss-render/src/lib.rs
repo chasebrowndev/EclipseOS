@@ -1158,6 +1158,9 @@ fn insert_panes(
     };
     let panes = req.set.as_slice();
     let rect_of = |p: &glass::Pane| req.rect(p, scale);
+    let light = config.appearance.glass_light();
+    // A light pane's hairline is ink (STYLE.md Light); dark keeps the white one.
+    let rim = (light > 0.0).then_some((0, false, glass::LIGHT_RIM_INK));
     // A scaled window's corner radii scale with it.
     let grown = req.scaled.map_or(1.0, |(_, by)| by.x.max(by.y));
     // Every pane's box, drawn or not: a hover must not move the cache key.
@@ -1185,7 +1188,7 @@ fn insert_panes(
         req.alpha,
         |i| {
             let pane = &panes[i];
-            let look = glass::look(pane)?;
+            let look = glass::look(pane, light > 0.0)?;
             let rect = rect_of(pane)?;
             let mut tuned = cfg.glass.clone();
             tuned.dispersion = 0.0;
@@ -1201,13 +1204,10 @@ fn insert_panes(
                     strength,
                     glass::band(pane, rect, upscale * grown),
                     &tuned,
-                    None,
-                    if config.appearance.glass_light() > 0.0 {
-                        look.shade
-                    } else {
-                        look.lift
-                    },
-                    config.appearance.glass_light(),
+                    rim,
+                    look.lift,
+                    look.shade,
+                    light,
                 ),
             ))
         },
