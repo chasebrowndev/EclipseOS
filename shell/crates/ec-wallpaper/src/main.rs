@@ -13,6 +13,8 @@ fn namespace() -> String {
 }
 
 fn main() -> iced_layershell::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     // Nothing here reads or writes a selection.
     iced_layershell::disable_clipboard();
 

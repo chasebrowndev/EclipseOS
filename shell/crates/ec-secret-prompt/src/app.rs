@@ -39,6 +39,9 @@ const SAVED_FOR: std::time::Duration = std::time::Duration::from_millis(900);
 
 #[derive(Clone)]
 pub enum Message {
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// nothing to do but let the views rebuild.
+    ThemeChanged,
     /// The field's whole new value. Never `Debug`-printed: see the impl.
     Typed(String),
     Submit,
@@ -57,6 +60,7 @@ impl fmt::Debug for Message {
             Message::Done(r) => write!(f, "Done({r:?})"),
             Message::Cancel => f.write_str("Cancel"),
             Message::Close => f.write_str("Close"),
+            Message::ThemeChanged => f.write_str("ThemeChanged"),
         }
     }
 }
@@ -136,6 +140,7 @@ fn preview_shot(path: String) -> Task<Message> {
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
+        Message::ThemeChanged => return Task::none(),
         Message::Typed(new) => {
             if app.target.admits(&new) {
                 app.typed.replace(new);
@@ -307,6 +312,14 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
 /// regardless of capture status; nothing else about a key is looked at, and
 /// nothing about one is logged.
 pub fn subscription(_app: &App) -> Subscription<Message> {
+    // Keep the palette on the compositor's theme (ADR 0084).
+    Subscription::batch([
+        subscription_inner(_app),
+        ec_ui::ipc::theme_subscription(|| Message::ThemeChanged),
+    ])
+}
+
+fn subscription_inner(_app: &App) -> Subscription<Message> {
     iced::event::listen_with(|event, _status, _window| match event {
         iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
             key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),

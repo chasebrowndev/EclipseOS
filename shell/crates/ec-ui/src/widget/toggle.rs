@@ -136,12 +136,17 @@ where
         let track = if self.is_on {
             Color {
                 a: alpha,
-                ..color::ACCENT
+                ..color::accent()
             }
         } else {
+            let off = if state.hovered && live {
+                color::control_off_hover()
+            } else {
+                color::control_off()
+            };
             Color {
-                a: (if state.hovered && live { 0.18 } else { 0.13 }) * alpha,
-                ..Color::WHITE
+                a: off.a * alpha,
+                ..off
             }
         };
 
@@ -175,12 +180,12 @@ where
             if self.is_on {
                 Color {
                     a: alpha,
-                    ..color::BASE
+                    ..color::on_accent()
                 }
             } else {
                 Color {
-                    a: 0.62 * alpha,
-                    ..Color::WHITE
+                    a: color::knob_off().a * alpha,
+                    ..color::knob_off()
                 }
             },
         );

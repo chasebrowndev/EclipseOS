@@ -75,7 +75,7 @@ pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
         // every other mark: a row of vendor-coloured logos is the one place
         // a desktop loses its own palette to its guests.
         let press = button(super::fixed(
-            tray_mark(&item.icon, bar::MARK, color::TEXT_SECONDARY.scale_alpha(ink)),
+            tray_mark(&item.icon, bar::MARK, color::text_secondary().scale_alpha(ink)),
             bar::TRAY_MARK_W,
         ))
         .width(Length::Fixed(bar::TRAY_MARK_W))
@@ -101,7 +101,7 @@ fn disclosure(ink: f32) -> Element<'static, Message, Theme> {
         container(parts::chevron(
             bar::ARROW,
             bar::ARROW_STROKE,
-            color::TEXT_SECONDARY.scale_alpha(ink),
+            color::text_secondary().scale_alpha(ink),
         ))
         .center(Length::Fill),
     )
@@ -144,7 +144,7 @@ pub(crate) fn sheet(app: &App) -> Sheet {
         s.row(
             parts::long_press(
                 mouse_area(parts::drawer_choice(
-                    tray_mark(&item.icon, drawer::MARK, color::TEXT_SECONDARY),
+                    tray_mark(&item.icon, drawer::MARK, color::text_secondary()),
                     &elide(&item.title, DRAWER_CHARS),
                     None,
                     Some(Message::TrayActivate(item.address.clone())),

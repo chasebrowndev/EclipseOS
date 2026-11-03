@@ -14,13 +14,26 @@
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::widget::{Operation, Tree, Widget};
 use iced::advanced::{mouse, overlay, renderer, Clipboard, Shell};
-use iced::{Background, Color, Element, Event, Length, Rectangle, Size, Vector};
+use iced::{Background, Border, Color, Element, Event, Length, Rectangle, Size, Vector};
+
+use crate::tokens::space;
+
+/// What a [`Veil`] paints over its content, bottom to top: `base` fades the
+/// content, `fill` is the surface the row sits on, and `rim` is a hairline
+/// round its edge. Each is a single colour so the struct is `Copy` and a
+/// caller can build it from live values without allocating.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Ground {
+    pub base: Color,
+    pub fill: Color,
+    pub rim: Color,
+}
 
 pub struct Veil<'a, Message, Theme, Renderer> {
     content: Element<'a, Message, Theme, Renderer>,
     /// `None` draws the content untouched, so a caller can toggle the veil
     /// without changing the widget tree (and losing a field's focus).
-    ground: Option<&'a [Color]>,
+    ground: Option<Ground>,
     /// The veil's corners: soft, so that wherever the ground it repaints
     /// differs from what is really behind it the edge reads as glass, not a
     /// cut.
@@ -28,11 +41,10 @@ pub struct Veil<'a, Message, Theme, Renderer> {
 }
 
 impl<'a, Message, Theme, Renderer> Veil<'a, Message, Theme, Renderer> {
-    /// `ground` is painted over the content in order, each layer the full
-    /// size of the content.
+    /// `ground` is painted over the content, the full size of the content.
     pub fn new(
         content: impl Into<Element<'a, Message, Theme, Renderer>>,
-        ground: Option<&'a [Color]>,
+        ground: Option<Ground>,
         radius: f32,
     ) -> Self {
         Self {
@@ -144,16 +156,28 @@ where
         if let Some(ground) = self.ground {
             let bounds = layout.bounds();
             renderer.with_layer(bounds, |renderer| {
-                for layer in ground {
+                for layer in [ground.base, ground.fill] {
                     renderer.fill_quad(
                         renderer::Quad {
                             bounds,
                             border: iced::border::rounded(self.radius),
                             ..renderer::Quad::default()
                         },
-                        Background::Color(*layer),
+                        Background::Color(layer),
                     );
                 }
+                renderer.fill_quad(
+                    renderer::Quad {
+                        bounds,
+                        border: Border {
+                            color: ground.rim,
+                            width: space::HAIRLINE,
+                            radius: self.radius.into(),
+                        },
+                        ..renderer::Quad::default()
+                    },
+                    Background::Color(Color::TRANSPARENT),
+                );
             });
         }
     }

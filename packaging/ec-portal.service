@@ -1,0 +1,18 @@
+# The Eclipse xdg-desktop-portal Settings backend: owns
+# org.freedesktop.impl.portal.desktop.abyss and publishes the light/dark scheme
+# and accent from the compositor (ADR 0084). Installed to
+# /usr/lib/systemd/user/ec-portal.service.
+#
+# Bus-activated (see org.freedesktop.impl.portal.desktop.abyss.service) the
+# first time xdg-desktop-portal needs a setting, so it has no [Install]. If the
+# compositor is unreachable it serves dark and keeps retrying.
+[Unit]
+Description=Eclipse portal settings backend
+
+[Service]
+Type=dbus
+BusName=org.freedesktop.impl.portal.desktop.abyss
+ExecStart=/usr/bin/ec-portal
+Restart=on-failure
+RestartSec=5
+Slice=session.slice

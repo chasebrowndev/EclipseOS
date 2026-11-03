@@ -4,3 +4,4 @@ target/
 *.qcow2
 tray_keys
 __pycache__/
+browser/firefox-glass/.amo-upload-uuid

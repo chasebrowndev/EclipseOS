@@ -18,7 +18,9 @@
 //! 3. schema → defaults: [`get`] on a default `Config` returns exactly the
 //!    `default` column for every row.
 
-use super::{AnnotationColors, BarPopupAnchor, BarPosition, Config, FloatingPlacement, LayoutKind};
+use super::{
+    AnnotationColors, BarPopupAnchor, BarPosition, BarWeekStart, Config, FloatingPlacement, LayoutKind,
+};
 
 /// The type of a key's value, and whatever constrains it. A GUI maps this
 /// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
@@ -371,40 +373,76 @@ pub const TABLE: &[Key] = &[
        screen captures, and the daemon writes a debug log.",
     ),
     k(
-        "oracle-eyes.bind.select",
-        Ty::Str,
-        Str("none"),
+        "oracle-eyes.models",
+        Ty::StrList,
+        EmptyList,
         Abyss,
         Live,
-        "Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` (the default) \
-       leaves it unbound. A `bind` block on the same chord wins.",
+        "Oracle Eyes: model names for the model-switch chord, in the order it cycles, e.g. `models \"haiku\" \"sonnet\" \"opus\"`. Empty (the default) runs the model command with its own default model.",
+    ),
+    k(
+        "oracle-eyes.image-mode",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Oracle Eyes: send the frame to the model as an image as well as OCR text. Off by default, since the pixels leave the redaction filter; the image-toggle chord changes it for the session.",
+    ),
+    k(
+        "oracle-eyes.image-auto-escalate",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Oracle Eyes: when an answer is weak (low confidence or poor OCR), retry once with the next model and/or image mode. Off by default.",
+    ),
+    k(
+        "oracle-eyes.bind.select",
+        Ty::Str,
+        Str("Super+grave"),
+        Abyss,
+        Live,
+        "Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins.",
     ),
     k(
         "oracle-eyes.bind.dismiss",
         Ty::Str,
-        Str("none"),
+        Str("Super+Alt+Down"),
         Abyss,
         Live,
-        "Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` (the default) \
-       leaves it unbound. A `bind` block on the same chord wins.",
+        "Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins.",
     ),
     k(
         "oracle-eyes.bind.expand",
         Ty::Str,
-        Str("none"),
+        Str("Super+Alt+Up"),
         Abyss,
         Live,
-        "Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` (the default) \
-       leaves it unbound. A `bind` block on the same chord wins.",
+        "Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins.",
     ),
     k(
         "oracle-eyes.bind.auto-toggle",
         Ty::Str,
-        Str("none"),
+        Str("Super+a"),
         Abyss,
         Live,
-        "Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` (the default) \
-       leaves it unbound. A `bind` block on the same chord wins.",
+        "Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins.",
+    ),
+    k(
+        "oracle-eyes.bind.model-switch",
+        Ty::Str,
+        Str("Super+Alt+Right"),
+        Abyss,
+        Live,
+        "Chord for annotation-model-switch: move to the next model in `oracle-eyes.models`, like `Super+Shift+M`; `none` leaves it unbound. A `bind` block on the same chord wins.",
+    ),
+    k(
+        "oracle-eyes.bind.image-toggle",
+        Ty::Str,
+        Str("Super+Alt+Left"),
+        Abyss,
+        Live,
+        "Chord for annotation-image-toggle: turn image mode on or off for this session, like `Super+Shift+I`; `none` leaves it unbound. A `bind` block on the same chord wins.",
     ),
     // general
     k(
@@ -553,6 +591,47 @@ pub const TABLE: &[Key] = &[
         Live,
         "Width of the edge strip a dragged window's centre aims at to drop it as a full-height column or full-width row, logical px. 0 disables edge drops.",
     ),
+    // themes (ADR 0084)
+    k(
+        "general.color-scheme",
+        Ty::Enum(crate::COLOR_SCHEMES),
+        Str("dark"),
+        Abyss,
+        Live,
+        "Colour scheme of the whole desktop (ADR 0084): `dark`, `light`, or `auto`, which follows the `light-from` / `dark-from` schedule in local time. Compositor-drawn material, every shell pane and client apps (the `org.freedesktop.appearance` hint) follow it, live.",
+    ),
+    k(
+        "general.theme-dark",
+        Ty::Str,
+        Str("dark"),
+        Abyss,
+        Live,
+        "Name of the theme used while the scheme is dark: the built-in `dark` or a `theme` block. It must be a dark theme (its `base` is dark); a light theme is refused.",
+    ),
+    k(
+        "general.theme-light",
+        Ty::Str,
+        Str("light"),
+        Abyss,
+        Live,
+        "Name of the theme used while the scheme is light: the built-in `light` or a `theme` block. It must be a light theme; a dark theme is refused.",
+    ),
+    k(
+        "general.light-from",
+        Ty::Str,
+        Str("07:00"),
+        Abyss,
+        Live,
+        "With `color-scheme \"auto\"`: the local time of day, `HH:MM`, the light scheme starts. A fixed schedule, not sunrise: no location is used.",
+    ),
+    k(
+        "general.dark-from",
+        Ty::Str,
+        Str("19:00"),
+        Abyss,
+        Live,
+        "With `color-scheme \"auto\"`: the local time of day, `HH:MM`, the dark scheme starts. Must differ from `light-from`.",
+    ),
     // render
     k(
         "render.direct-scanout",
@@ -688,13 +767,32 @@ pub const TABLE: &[Key] = &[
        (2026-09-23).",
     ),
     k(
+        "bar.clock.week-start",
+        Ty::Enum(&["auto", "monday", "sunday"]),
+        Str("auto"),
+        Abyss,
+        Live,
+        "First weekday of the calendar that opens from the taskbar clock; \
+       auto follows the locale.",
+    ),
+    k(
+        "bar.clock.week-numbers",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Show ISO week numbers beside the calendar's weeks.",
+    ),
+    k(
         "bar.popup-anchor",
         Ty::Enum(&["cell", "pointer"]),
         Str("cell"),
         Abyss,
         Live,
-        "Where taskbar popups open: under the cell that was clicked, or at \
-       the pointer.",
+        "Where taskbar popups (tray menus, the tray overflow) open: under the \
+       cell that was clicked, or at the pointer. The wifi and bluetooth \
+       drawers are not popups: they unroll from the bar under their own \
+       cell, like the start menu.",
     ),
     k(
         "bar.eye",
@@ -728,6 +826,16 @@ pub const TABLE: &[Key] = &[
         "Widgets that never compress: when the bar runs short of room they \
        keep their full size and everything else gives way first. Same ids \
        as `bar.widgets.order`.",
+    ),
+    k(
+        "bar.widgets.rounding",
+        int(0, 17),
+        Int(17),
+        Abyss,
+        Live,
+        "Corner radius in logical px for each taskbar widget's glass cell. \
+       17 is a full capsule; 0 is square. Window chips and the bar's own \
+       sheet (`bar.rounding`) are unaffected.",
     ),
     k(
         "bar.widgets.now-playing.art",
@@ -953,6 +1061,30 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "`frost`: colour mixed over the blurred backdrop; its alpha is how much.",
+    ),
+    k(
+        "decoration.surface.tint",
+        PCT,
+        Float(0.70),
+        Abyss,
+        Live,
+        "Window tint opacity over the glass. sRGB-intent; clients convert.",
+    ),
+    k(
+        "decoration.surface.card-fill",
+        Ty::Float { min: 0.0, max: 0.30 },
+        Float(0.035),
+        Abyss,
+        Live,
+        "Alpha of a hairline card's white fill. sRGB-intent; clients convert.",
+    ),
+    k(
+        "decoration.surface.inset-fill",
+        Ty::Float { min: 0.0, max: 0.30 },
+        Float(0.03),
+        Abyss,
+        Live,
+        "Alpha of an inset group's white fill. sRGB-intent; clients convert.",
     ),
     k(
         "decoration.shadow.enabled",
@@ -1868,7 +2000,8 @@ pub const COLLECTIONS: &[Collection] = &[
     Collection { node: "output", owner: Abyss, doc: "Per-output settings: `output \"<glob>\" { … }`. The glob (`*` only) matches the connector name or the persistent identity; later blocks override earlier ones key by key." },
     Collection { node: "workspace", owner: Abyss, doc: "Per-workspace layout override." },
     Collection { node: "widget", owner: Abyss, doc: "A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget \"<name>\" { exec \"<argv0>\" \"<arg>\"…; interval-ms <ms>; }`; or `stream #true` instead of `interval-ms`, for a command that keeps running and prints one update per line; or `source \"<source>\"` with a `format` instead of `exec`. `bar.widgets.order` draws it as `custom:<name>`. Commands run argv-exec, never through a shell, off the draw path, with a timeout and a 4 KiB line cap, and are killed on reload or removal. A line of output is plain text or JSON `{text, detail, tooltip, state}`; it is shown as plain text, never markup, and never logged. A command has exactly your authority and gains nothing from the taskbar. A later block with the same name replaces an earlier one. `get_config` lists every block, in file order, under `collections.widget` as `{\"name\", \"kind\": \"exec\" | \"stream\" | \"source\", \"exec\": [argv] | null, \"interval-ms\": int | null, \"source\": string | null, \"format\": string | null, \"icon\": string | null, \"on-click\": [argv] | null, \"on-scroll-up\": [argv] | null, \"on-scroll-down\": [argv] | null, \"approval\": \"approved\", \"premade\": bool}`, every field always present: `exec` is set for `exec` and `stream`, `interval-ms` for `exec` only, `source` and `format` for `source` only; `premade` is true when the block is identical to the catalog block of the same name. Widgets are an add-on hook (ADR 0066): unless an installed add-on (the taskbar) turns on `taskbar-widgets`, `widget` blocks are ignored rather than refused, their `custom:` ids are dropped from `bar.widgets.*`, `collections.widget` is empty and `set_config_collection` for `widget` is refused. With the hook on, the premade catalog (`/usr/share/eclipse/widgets/*.kdl`, each file only `bar { widget … }`) is the lowest config layer, below `/etc/eclipse/abyss.kdl`, so `custom:<premade>` works with no block of your own and a block of the same name replaces it. Command widgets need your approval (ADR 0067): an `exec` or `stream` widget runs only if it is an unedited catalog block or you approved exactly this definition (name, argv, interval or stream, and actions) in the compositor-drawn prompt. Anything else, an edited premade or a new command, is withheld: it does not run, its `custom:` id stays and draws nothing, and `collections.widget` lists it as `{\"name\", \"approval\": \"pending\", \"premade\": false, \"altered\": bool}` with no command fields (`altered` is true for an edited premade). Any later edit withholds it again. Not now lasts for the session; the control-socket method `review_widget {\"name\"}` (owner only) brings the prompt back, returns `{\"name\", \"queued\": bool}`, never shows two prompts for one widget, and cannot approve anything itself. `approval`, `premade` and `altered` are ignored on write." },
-    Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Its *action* decides the owning file." },
+    Collection { node: "windowrule", owner: Abyss, doc: "A rule matched against windows at map time. Placement actions apply once, at map; property actions re-apply on every commit and on a float toggle (COMP-05 §4, C-22). Its *action* decides the owning file." },
+    Collection { node: "theme", owner: Abyss, doc: "A user theme (ADR 0084): `theme \"<name>\" { inherit \"dark\"; base \"#0b0906\"; ink \"#ffffff\"; accent \"#f2c33c\"; accent-text \"#f5cf5c\"; frost-tint \"#17140f\"; rim 0.2; }`. Any subset of the keys; an unset seed is inherited from `inherit`, a built-in (`dark`, `light`) or an earlier theme, and `inherit` defaults to `dark`. Colours are `#rrggbb`, opaque; `rim` is 0.0 to 1.0. A theme is selected with `general.theme-dark` / `general.theme-light`; whether it counts as dark or light follows its `base` luminance. It is refused, and the last good config kept, if text or accent text on its `base` is under 4.5:1, secondary text under 3:1, a seed does not parse, `inherit` names no earlier theme (so no cycles), or the name is `dark` or `light` (built in) or already defined. An explicit `blur { frost { tint } }`, `blur { glass { rim } }` or `annotations { }` key still wins over the theme. KDL-only: not settable over the socket and not listed by `get_config`; `get_theme` returns the active one." },
     Collection { node: "input.device", owner: Abyss, doc: "Per-device pointer settings, written inside `input { }`: `device \"<name>\" { accel-profile \"flat\"; accel-speed -0.3; scroll-method \"on-button-down\"; touchpad { tap-to-click #true; scroll-method \"edge\"; } calibration 1 0 0 0 1 0; }`. `<name>` is the libinput device name, matched exactly (`libinput list-devices` prints it); every device of that name gets the block. Any subset of `accel-profile`, `accel-speed`, `scroll-method` and a `touchpad { }` with any of the `input.touchpad.*` keys, each validated as its global key is; a key left out inherits the global one, and a key set here wins over it. `touchpad` keys reach only a touchpad, `scroll-method` only a device that is not one. `calibration a b c d e f` is libinput's 2x3 calibration matrix for a touchscreen or tablet, row-major, six numbers; it is only allowed in a device block, and a device without one keeps its default matrix. A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket, and not listed by `get_config`." },
     Collection { node: "wallpaper.output", owner: Abyss, doc: "A per-output wallpaper override, written inside `wallpaper { }`: `output \"<name>\" { path \"…\"; mode \"fit\"; color \"#rrggbb\"; }`, any subset of the three keys, each validated as its `wallpaper.*` key is; a key left out inherits the global one. `<name>` is the connector name (`DP-1`). A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket. `get_config` lists them, in file order, under `collections.\"wallpaper.output\"` as `{\"output\", \"path\": string | null, \"mode\": string | null, \"color\": \"#rrggbbaa\" | null}`, every field always present; `null` means inherited." },
 ];
@@ -1890,6 +2023,7 @@ pub const RULE_ACTIONS: &[(&str, Owner)] = &[
     ("position", Abyss),
     ("output", Abyss),
     ("opacity", Abyss),
+    ("translucent-region", Abyss),
     ("blur", Abyss),
     ("workspace", Abyss),
     ("no-focus-steal", Abyss),
@@ -2134,6 +2268,17 @@ pub const RULE_MATCHERS: &[Form] = &[
         "Whether the window is an X11 client. Bare means `#true`.",
     ),
     form(
+        &["floating"],
+        "[<bool>]",
+        &["floating", "floating #false"],
+        "Whether the window is floating right now. Write `#true` or `#false` \
+       (bare means `#true`; the quoted strings `\"true\"`/`\"false\"` are accepted too, bare `true` is a KDL syntax error). Re-read \
+       on every evaluation, so it follows tile/float toggles; a fullscreen \
+       window (held floating) counts as floating. Only property actions \
+       (`opacity`, `blur`, `translucent-region`, …) follow a toggle; `float`, \
+       `tile`, `size` and the other placement actions apply once, at map.",
+    ),
+    form(
         &["output"],
         "\"<glob>\"",
         &[r#"output "DP-*""#],
@@ -2199,6 +2344,19 @@ pub const RULE_ACTION_FORMS: &[Form] = &[
         "<0.0..1.0>",
         &["opacity 0.85"],
         "Alpha for this window, replacing `decoration.active-opacity`/`inactive-opacity`.",
+    ),
+    form(
+        &["translucent-region"],
+        "top=<px> opacity=<0.0..1.0> [key=#rrggbb]",
+        &[
+            "translucent-region top=84 opacity=0.6",
+            "translucent-region top=84 opacity=0.35 key=#1b1b1f",
+        ],
+        "Draw only the top `top` logical px of the window at `opacity`, with the \
+       window's blur mode behind that strip; the rest stays as the client drew \
+       it. Multiplies with `opacity`. For clients that submit an opaque buffer. \
+       With `key=#rrggbb` only pixels of exactly that colour (within 1/255 per \
+       channel) turn translucent; text and images in the strip stay opaque.",
     ),
     form(
         &["blur"],
@@ -2442,6 +2600,18 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["annotation-auto-toggle"],
         "Forwarded to the annotation addon.",
     ),
+    form(
+        &["annotation-model-switch"],
+        "",
+        &["annotation-model-switch"],
+        "Forwarded to the annotation addon: the next model in `oracle-eyes.models`.",
+    ),
+    form(
+        &["annotation-image-toggle"],
+        "",
+        &["annotation-image-toggle"],
+        "Forwarded to the annotation addon: image mode on or off for this session.",
+    ),
     form(&["quit", "exit"], "", &["quit"], "Exit the compositor."),
 ];
 
@@ -2490,6 +2660,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "oracle-eyes.auto-interval-ms" => V::Int(c.oracle_eyes.auto_interval_ms as i64),
         "oracle-eyes.hold-ms" => V::Int(c.oracle_eyes.hold_ms as i64),
         "oracle-eyes.debug" => V::Bool(c.oracle_eyes.debug),
+        "oracle-eyes.models" => V::List(c.oracle_eyes.models.clone()),
+        "oracle-eyes.image-mode" => V::Bool(c.oracle_eyes.image_mode),
+        "oracle-eyes.image-auto-escalate" => V::Bool(c.oracle_eyes.image_auto_escalate),
         "general.gaps-in" => V::Int(c.general.gaps_in as i64),
         "general.gaps-out" => V::Int(c.general.gaps_out as i64),
         "general.gaps-in-vertical" => c.general.gaps_in_vertical.map_or(V::Null, |v| V::Int(v as i64)),
@@ -2508,6 +2681,11 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.drop-guides" => V::Bool(c.general.drop_guides),
         "general.drop-guide-color" => V::Color(c.general.drop_guide_color),
         "general.drop-edge-band" => V::Int(c.general.drop_edge_band as i64),
+        "general.color-scheme" => V::Str(c.general.color_scheme.name().into()),
+        "general.theme-dark" => V::Str(c.general.theme_dark.clone()),
+        "general.theme-light" => V::Str(c.general.theme_light.clone()),
+        "general.light-from" => V::Str(crate::fmt_hhmm(c.general.light_from)),
+        "general.dark-from" => V::Str(crate::fmt_hhmm(c.general.dark_from)),
         "render.direct-scanout" => V::Bool(c.render.direct_scanout),
         "bar.fold-when-inactive" => V::Bool(c.bar.fold_when_inactive),
         "bar.fold-height" => V::Int(c.bar.fold_height as i64),
@@ -2522,6 +2700,15 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.rounding" => V::Int(c.bar.rounding as i64),
         "bar.clock.hour-12" => V::Bool(c.bar.clock.hour_12),
         "bar.clock.date-mdy" => V::Bool(c.bar.clock.date_mdy),
+        "bar.clock.week-start" => V::Str(
+            match c.bar.clock.week_start {
+                BarWeekStart::Auto => "auto",
+                BarWeekStart::Monday => "monday",
+                BarWeekStart::Sunday => "sunday",
+            }
+            .into(),
+        ),
+        "bar.clock.week-numbers" => V::Bool(c.bar.clock.week_numbers),
         "bar.eye" => V::Bool(c.bar.eye),
         "bar.widgets.order" => list(&c.bar.widgets.order),
         "bar.widgets.important" => list(&c.bar.widgets.important),
@@ -2535,6 +2722,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "bar.widgets.volume.step" => V::Int(c.bar.widgets.volume.step as i64),
         "bar.widgets.volume.scroll" => V::Bool(c.bar.widgets.volume.scroll),
         "bar.widgets.volume.max-percent" => V::Int(c.bar.widgets.volume.max_percent as i64),
+        "bar.widgets.rounding" => V::Int(c.bar.widgets.rounding as i64),
         "bar.motion.enabled" => V::Bool(c.bar.motion.enabled),
         "bar.motion.duration-ms" => V::Int(c.bar.motion.duration_ms as i64),
         "bar.motion.curve" => V::Str(c.bar.motion.curve.clone()),
@@ -2559,6 +2747,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "oracle-eyes.bind.dismiss" => V::Str(c.oracle_eyes.bind.dismiss.text.clone()),
         "oracle-eyes.bind.expand" => V::Str(c.oracle_eyes.bind.expand.text.clone()),
         "oracle-eyes.bind.auto-toggle" => V::Str(c.oracle_eyes.bind.auto_toggle.text.clone()),
+        "oracle-eyes.bind.model-switch" => V::Str(c.oracle_eyes.bind.model_switch.text.clone()),
+        "oracle-eyes.bind.image-toggle" => V::Str(c.oracle_eyes.bind.image_toggle.text.clone()),
         "launcher.bind.run" => V::Str(c.launcher.bind.run.text.clone()),
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
         "settings.search.frecency" => V::Bool(c.settings.search_frecency),
@@ -2574,6 +2764,9 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "decoration.blur.frost.tint" => V::Color(c.decoration.blur.frost.tint),
         "decoration.blur.size" => V::Int(c.decoration.blur.size as i64),
         "decoration.blur.passes" => V::Int(c.decoration.blur.passes as i64),
+        "decoration.surface.tint" => V::Float(widen(c.decoration.surface.tint)),
+        "decoration.surface.card-fill" => V::Float(widen(c.decoration.surface.card_fill)),
+        "decoration.surface.inset-fill" => V::Float(widen(c.decoration.surface.inset_fill)),
         "decoration.shadow.enabled" => V::Bool(c.decoration.shadow.enabled),
         "decoration.shadow.range" => V::Int(c.decoration.shadow.range as i64),
         "decoration.glow.enabled" => V::Bool(c.decoration.glow.enabled),
@@ -2740,6 +2933,11 @@ mod tests {
                 // "ask smithay", which is the unset state, not a value.
                 "misc.render-device" => "/dev/dri/card1".into(),
                 "input.kb-layout" => "de".into(),
+                // Times and theme names: validated on their own terms.
+                "general.light-from" => "06:30".into(),
+                "general.dark-from" => "20:15".into(),
+                "general.theme-dark" => "dark".into(),
+                "general.theme-light" => "light".into(),
                 "bar.widgets.system-usage.disk-path" => "/home".into(),
                 // A chord, not free text.
                 "launcher.bind.open" => "Super+o".into(),
@@ -2748,6 +2946,8 @@ mod tests {
                 "oracle-eyes.bind.dismiss" => "Super+Shift+d".into(),
                 "oracle-eyes.bind.expand" => "Super+Shift+x".into(),
                 "oracle-eyes.bind.auto-toggle" => "Super+Shift+t".into(),
+                "oracle-eyes.bind.model-switch" => "Super+Shift+m".into(),
+                "oracle-eyes.bind.image-toggle" => "Super+Shift+i".into(),
                 // One of the event's own styles.
                 p if p.starts_with("animations.") && p.ends_with(".style") => {
                     let ev = p.split('.').nth(1).and_then(crate::animations::Event::parse)?;

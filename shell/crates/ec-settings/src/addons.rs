@@ -13,7 +13,10 @@ use iced::{Alignment, Element, Length, Theme};
 use ec_ipc::Addons;
 use ec_ui::theme;
 use ec_ui::tokens::{font, size, space};
-use ec_ui::widget::{hairline, inset, micro_label, panel, status_cell, status_grid, value as mono};
+use ec_ui::widget::{
+    glass_inset as inset, glass_panel as panel, hairline, micro_label, status_cell, status_grid,
+    value as mono,
+};
 
 use crate::app::{App, Message};
 
@@ -175,6 +178,7 @@ fn hero<'a>(app: &App, a: &Addons) -> Element<'a, Message, Theme> {
     };
     panel(
         app.glass_radius,
+        app.hairline_cards,
         column![
             row![
                 micro_label("hooks"),
@@ -186,7 +190,6 @@ fn hero<'a>(app: &App, a: &Addons) -> Element<'a, Message, Theme> {
         ]
         .spacing(space::ROW_Y),
     )
-    .into()
 }
 
 fn padded<'a>(e: impl Into<Element<'a, Message, Theme>>) -> Element<'a, Message, Theme> {
@@ -263,7 +266,7 @@ fn installed<'a>(app: &App, a: &Addons) -> Element<'a, Message, Theme> {
             .align_y(Alignment::Center),
         ));
     }
-    inset(col).into()
+    inset(col)
 }
 
 #[cfg(test)]

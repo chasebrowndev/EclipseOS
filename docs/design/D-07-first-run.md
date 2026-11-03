@@ -100,7 +100,7 @@ session apply live, so the live medium itself is the preview.
 | 7 | **Interaction mode** | both | `mode`. Live: the session changes shape as the user chooses |
 | 8 | **Desktop components** | both | `components.*` (§4.1) |
 | 9 | **Applications** | both | Terminal, browser, office, image editor, file manager, media player. The terminal also writes `misc.terminal-command` |
-| 10 | **Appearance** | both | `general.layout`, `decoration.rounding`, `decoration.blur.enabled`, `animations.enabled`, `bar.position`. Live preview |
+| 10 | **Appearance** | both | `general.color-scheme` (Dark / Light / Auto, ADR 0084), `general.layout`, `decoration.rounding`, `decoration.blur.enabled`, `animations.enabled`, `bar.position`. Live preview |
 | 11 | **Displays** | both | The COMP-03 §1.1 overscan offer, one output at a time, via `calibrate_output`. *Offered, never forced*; the overlay is compositor-drawn (DP-1) |
 | 12 | **Agents** | both | §4.4. Collapsed ("Set up agents") unless the profile is Agentic |
 | 13 | **Review** | both | Every choice, the disk plan in full, packages to add and remove, total download. Apply |
@@ -268,7 +268,7 @@ they get. That file is written by a same-uid process and is therefore
   no swap between check and copy.
 - **Key allowlist, not just validation.** COMP-13 §1.2 validation checks schema,
   not intent. The helper keeps only presentation and preference keys
-  (`input.kb-*`, `general.layout`, `decoration.rounding`,
+  (`input.kb-*`, `general.layout`, `general.color-scheme`, `decoration.rounding`,
   `decoration.blur.enabled`, `animations.enabled|animation`, `bar.position`,
   `mode`, `components.{bar,launcher,notifications,control-center}`,
   `setup.{complete,profile}`: exactly the keys the wizard writes, leaf by leaf) and **drops every command-bearing key**:

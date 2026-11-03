@@ -217,7 +217,7 @@ pub enum Action {
 /// delta is dropped; a pixel delta that trails a discrete one is its twin and
 /// dropped too; and a pixel stream with no discrete steps at all — a
 /// touchpad — counts a notch per [`PX_PER_NOTCH`] of travel.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct Notches {
     /// When the last discrete step arrived.
     lines_at: Option<std::time::Instant>,
@@ -390,6 +390,7 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
     if presence <= 0.0 {
         return None;
     }
+    let radius = app.bar.widget_rounding as f32;
     let extent = anim.extent.value().max(0.0);
     let core_run = input.core_run();
     let reveal_run = input.reveal_run();
@@ -419,13 +420,14 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         return Some(Cell {
             presence,
             closed: 0.0,
-            element: parts::glass_cell_faded(
+            element: parts::glass_cell_rounded(
                 body,
                 core_run,
                 visible,
                 false,
                 ClipEdge::Right,
                 frame.ground_alpha(),
+                radius,
             ),
         });
     }
@@ -450,6 +452,7 @@ fn shell<'a>(app: &'a App, bar: &'a crate::app::Bar, index: usize) -> Option<Cel
         closed,
         slide: bar::GRIP_HOVER_SLIDE * hover,
         overlay,
+        radius,
     };
     // Grips appear on hover only: at rest the bar is content on clear glass.
     // A widget compressed to its grip keeps it in proportion to how shut it
@@ -521,7 +524,7 @@ pub(crate) fn press<'a>(
 pub(crate) fn bare(_t: &Theme, _s: button::Status) -> button::Style {
     button::Style {
         background: None,
-        text_color: color::TEXT,
+        text_color: color::text(),
         ..button::Style::default()
     }
 }
@@ -530,13 +533,13 @@ pub(crate) fn bare(_t: &Theme, _s: button::Status) -> button::Style {
 /// of its own under the pointer, so it is clear *which* of them answers.
 pub(crate) fn inner(_t: &Theme, status: button::Status) -> button::Style {
     let background = match status {
-        button::Status::Hovered => Some(iced::Background::Color(color::LIFT_SOFT)),
-        button::Status::Pressed => Some(iced::Background::Color(color::LIFT)),
+        button::Status::Hovered => Some(iced::Background::Color(color::lift_soft())),
+        button::Status::Pressed => Some(iced::Background::Color(color::lift())),
         _ => None,
     };
     button::Style {
         background,
-        text_color: color::TEXT,
+        text_color: color::text(),
         border: iced::border::rounded(bar::RADIUS_ICON),
         ..button::Style::default()
     }

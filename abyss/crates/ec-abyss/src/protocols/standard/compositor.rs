@@ -82,6 +82,8 @@ impl CompositorHandler for AbyssState {
                 // own bounds, which moves the window geometry origin the space
                 // pins the element by.
                 crate::shell::reanchor(self, &window);
+                // A browser's glass strips follow its windows' committed size.
+                crate::ipc::client_strips::on_window_commit(self, &window);
             }
         }
         crate::shell::handle_commit(self, surface);

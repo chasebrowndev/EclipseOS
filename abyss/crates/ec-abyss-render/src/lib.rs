@@ -15,12 +15,14 @@ pub mod curve;
 pub mod drop;
 pub mod effects;
 pub mod font;
+pub mod glass;
 pub mod glyphs;
 pub mod hud;
 pub mod hud_font;
 pub mod output_overscan;
 pub mod overscan;
 pub mod palette;
+pub mod popup_shape;
 pub mod sanitize;
 pub mod select;
 pub mod stats;
@@ -176,6 +178,69 @@ fn window_backdrop(
         }
         _ => translucent.then_some((rect, rounding, None)),
     }
+}
+
+/// A layer surface's glass panes waiting for their backdrop (`eclipse_glass_v1`):
+/// where they go in the element list (directly below the surface's own
+/// elements), the pane list, and the surface's logical size and output-local
+/// physical origin they are placed against.
+struct PaneRequest {
+    key: blur::BlurKey,
+    index: usize,
+    set: glass::PaneSet,
+    size: Size<i32, Logical>,
+    loc: Point<i32, Physical>,
+    crop: Option<Rectangle<i32, Physical>>,
+    /// A window's panes go directly above that window's own backdrop and bezel
+    /// (same splice index, inserted after them), as do a shaped layer's above
+    /// its sheet; an unshaped layer's replace its glass.
+    over: bool,
+    /// The window's animation scale about its pivot (output-local physical),
+    /// applied to every pane box; `None` at rest and for layers.
+    scaled: Option<(Point<i32, Physical>, Scale<f64>)>,
+    /// The window's animation alpha; 1.0 at rest and for layers.
+    alpha: f32,
+}
+
+impl PaneRequest {
+    /// Pane `pane`'s output-local physical box: placed against the surface
+    /// origin, carried through the window's animation scale, then cut to the
+    /// crop. `None` when it lies wholly outside the surface or the crop.
+    fn rect(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
+        let r = glass::pane_rect(pane, self.size, self.loc, scale)?;
+        let r = match self.scaled {
+            Some((origin, by)) => anim::track::scale_about(r, origin, by),
+            None => r,
+        };
+        match self.crop {
+            Some(crop) => r.intersection(crop),
+            None => Some(r),
+        }
+    }
+
+    /// Whether this set is spliced in before a backdrop request at `index`
+    /// is. Both lists are consumed back to front; a set at or below the
+    /// request's index goes first, except a window's, which at exactly the
+    /// request's index must land above the backdrop it just got.
+    fn before(&self, index: usize) -> bool {
+        self.index > index || (self.index == index && !self.over)
+    }
+}
+
+/// Whether a window with a backdrop draws its `eclipse_glass_v1` panes: only
+/// in glass mode, on an output the glass program can draw to, and not when the
+/// window is keyed-glass (ADR 0080), carries a translucent strip, or is
+/// fullscreen — those keep their behaviour as it was.
+fn window_takes_panes(mode: BlurMode, keyed: bool, strip: bool, fullscreen: bool, drawable: bool) -> bool {
+    mode == BlurMode::Glass && !keyed && !strip && !fullscreen && drawable
+}
+
+/// The non-empty pane list `surface` has committed, if it has one.
+fn committed_panes(surface: &WlSurface) -> Option<glass::PaneSet> {
+    with_states(surface, |states| {
+        let mut cached = states.cached_state.get::<glass::GlassState>();
+        cached.current().panes.clone().filter(|p| !p.is_empty())
+    })
 }
 
 /// The `ext_background_effect_v1` blur area `surface` has committed, or `None`
@@ -378,10 +443,18 @@ pub struct BorderStore {
     dims: HashMap<(Output, Window), SolidColorBuffer>,
     /// Rounded-corner texture program, compiled on the first frame that rounds.
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    /// Tint-keyed texture program (ADR 0079), compiled on the first frame a
+    /// keyed strip draws; `Err` once it failed, so it is not retried per frame.
+    keyed: Option<Result<smithay::backend::renderer::gles::GlesTexProgram, ()>>,
     /// Frost and glass backdrop programs, compiled on the first frame that
     /// draws a backdrop in that mode.
     frost: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     glass: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    /// The glass program failed to compile; layers with panes keep the
+    /// whole-surface glass instead (and it is not retried per frame).
+    glass_failed: bool,
+    /// Glass pane elements built this frame, kept to reuse the allocation.
+    pane_scratch: Vec<blur::BlurElement>,
     /// The same three (blur, frost, glass) masked to a layer's input-region
     /// shape (Vol 1 §5.2), compiled on the first frame that draws one.
     shaped: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
@@ -398,7 +471,7 @@ pub struct BorderStore {
     /// One drop shadow per window when shadows are on, kept alive between
     /// frames for the same reason; the last-applied range, radius, drop and
     /// focus weight are kept to skip no-op uniform updates.
-    shadows: HashMap<(Output, Window), (PixelShaderElement, [f32; 4])>,
+    shadows: HashMap<(Output, Window), (PixelShaderElement, [f32; 7])>,
     /// One border glow per window when glow is on, drawn by the ring
     /// program; the last-applied colour, range and radius are kept to skip
     /// no-op uniform updates.
@@ -419,8 +492,84 @@ impl BorderStore {
     }
 }
 
+/// One popup of a keyed window: its index, its physical rect (output-local)
+/// its backdrop's logical corner radius and its surface elements.
+type PopupGroup = (
+    usize,
+    Rectangle<i32, Physical>,
+    i32,
+    Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+);
+
+/// The logical corner radius for the glass behind a keyed popup: read off the
+/// popup's own texture alpha ([`popup_shape`]), else the window's `fallback`
+/// rounding for a texture that cannot be read back (an external-OES import).
+fn popup_blur_radius(renderer: &mut GlesRenderer, popup: &smithay::desktop::PopupKind, fallback: i32) -> i32 {
+    popup_shape::popup_radius(renderer, popup.wl_surface()).map_or(fallback, |r| r.round() as i32)
+}
+
+/// The keyed program and the output's framebuffer axis, if keying can draw on
+/// `output` (a rotated output cannot place the key region and keeps the strip
+/// opaque). Compiles on first use.
+fn keyed_target(
+    renderer: &mut GlesRenderer,
+    store: &mut BorderStore,
+    output: &Output,
+) -> Option<(smithay::backend::renderer::gles::GlesTexProgram, i32, bool)> {
+    let (mirrored, mode) = effects::fb_y_mirrored(output.current_transform()).zip(output.current_mode())?;
+    let program = store.keyed.get_or_insert_with(|| {
+        effects::compile_keyed(renderer)
+            .map_err(|err| tracing::warn!(?err, "compiling the keyed-glass shader; strip stays opaque"))
+    });
+    Some((program.clone().ok()?, mode.size.h, mirrored))
+}
+
 fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
     p.to_f64().to_physical(scale).to_i32_round()
+}
+
+/// The `translucent-region` strip of a window: the top `top` logical px of its
+/// physical `rect`, at the output `scale`, never taller than the window.
+pub fn strip_rect(rect: Rectangle<i32, Physical>, top: i32, scale: Scale<f64>) -> Rectangle<i32, Physical> {
+    let h = ((top.max(0) as f64 * scale.y).round() as i32).clamp(0, rect.size.h.max(0));
+    Rectangle::new(rect.loc, (rect.size.w, h).into())
+}
+
+/// The blur region behind a window's strip when the window is otherwise
+/// opaque: the strip grown down by the corner radius, so the backdrop's own
+/// rounded bottom corners fall under the opaque page and not in the strip.
+/// Never past the window. `None` for an empty strip.
+pub(crate) fn strip_backdrop(
+    strip: Rectangle<i32, Physical>,
+    rect: Rectangle<i32, Physical>,
+    corner: i32,
+) -> Option<Rectangle<i32, Physical>> {
+    let h = (strip.size.h + corner.max(0)).min(rect.size.h);
+    let region = Rectangle::new(strip.loc, (strip.size.w, h).into());
+    (!strip.is_empty() && !region.is_empty()).then_some(region)
+}
+
+/// Where a window's surface elements are cut so the strip and the rest can be
+/// drawn at different alphas: the output-wide band down to the strip's bottom
+/// edge, and the band below it, each cut to `crop` (the tile or output) too.
+pub(crate) fn strip_crops(
+    strip: Rectangle<i32, Physical>,
+    out_rect: Rectangle<i32, Physical>,
+    crop: Option<Rectangle<i32, Physical>>,
+) -> [Rectangle<i32, Physical>; 2] {
+    let edge = strip.loc.y + strip.size.h;
+    let above = Rectangle::new(
+        out_rect.loc,
+        (out_rect.size.w, (edge - out_rect.loc.y).max(0)).into(),
+    );
+    let below = Rectangle::new(
+        (out_rect.loc.x, edge).into(),
+        (out_rect.size.w, (out_rect.loc.y + out_rect.size.h - edge).max(0)).into(),
+    );
+    [above, below].map(|band| match crop {
+        Some(c) => band.intersection(c).unwrap_or_default(),
+        None => band,
+    })
 }
 
 /// The opaque regions of a surface tree's elements, output-local physical.
@@ -486,6 +635,7 @@ pub fn collect_elements(
     // (window, index in `elements` directly below its surfaces, region).
     // Filled front to back; `insert_blur` consumes it in reverse.
     let mut blur_requests: Vec<BlurRequest> = Vec::new();
+    let mut pane_requests: Vec<PaneRequest> = Vec::new();
 
     // Layers have no rules: they take the global mode.
     let layer_mode = config.decoration.blur.mode;
@@ -496,8 +646,12 @@ pub fn collect_elements(
         Point::from((0, 0)),
         output_geo.size.to_f64().to_physical(scale).to_i32_round(),
     );
+    // `eclipse_glass_v1` panes need the glass program; without it the layer
+    // keeps its whole-surface glass.
+    let panes_ok = layer_mode == BlurMode::Glass && ensure_glass(renderer, borders);
     let layers = |elements: &mut Vec<AbyssRenderElement>,
                   requests: &mut Vec<BlurRequest>,
+                  pane_requests: &mut Vec<PaneRequest>,
                   which: &[Layer],
                   anim: &anim::AnimStore,
                   renderer: &mut GlesRenderer| {
@@ -602,6 +756,52 @@ pub fn collect_elements(
                             None => area,
                         },
                     );
+                // `eclipse_glass_v1`: a surface with panes gets glass under
+                // each pane and none under the whole surface. Only at rest (the
+                // panes are laid out at the target) and where the glass program
+                // can draw (an unrotated output).
+                let panes = (panes_ok && t.is_identity())
+                    .then(|| effects::fb_y_mirrored(output.current_transform()))
+                    .flatten()
+                    .and_then(|_| committed_panes(surface.wl_surface()));
+                if let Some(set) = panes {
+                    let els = pushed(els);
+                    let index = elements.len() + els.len();
+                    // A layer that shapes itself by its input region (the
+                    // bar: the pill, and a drawer while one is out) is a sheet
+                    // with cells on it. The sheet keeps its own glass, and the
+                    // panes go above it, sampling what is behind the layer.
+                    // An unshaped layer (toasts, launcher) is only its panes.
+                    let sheet = (blur_layers && explicit.is_none())
+                        .then(|| layer_shape(surface, geo.size, loc, scale, config))
+                        .flatten();
+                    let over = sheet.is_some();
+                    if let Some(shape) = sheet {
+                        requests.push((
+                            blur::BlurKey::Layer(surface.clone()),
+                            index,
+                            shape.bounds().unwrap_or(layer_rect),
+                            layer_mode,
+                            layer_radius(surface, config),
+                            None,
+                            Some(shape),
+                            crop,
+                        ));
+                    }
+                    pane_requests.push(PaneRequest {
+                        key: blur::BlurKey::LayerPanes(surface.clone()),
+                        index,
+                        set,
+                        size: geo.size,
+                        loc,
+                        crop,
+                        over,
+                        scaled: None,
+                        alpha: 1.0,
+                    });
+                    elements.extend(els);
+                    continue;
+                }
                 let wants = match explicit {
                     Some(area) => area != blur::BlurArea::Nothing,
                     None => !scrim,
@@ -680,7 +880,14 @@ pub fn collect_elements(
     borders
         .anim
         .sync_layers(output, &config.animations, output_geo.size);
-    layers(&mut elements, &mut blur_requests, above, &borders.anim, renderer);
+    layers(
+        &mut elements,
+        &mut blur_requests,
+        &mut pane_requests,
+        above,
+        &borders.anim,
+        renderer,
+    );
 
     // Toplevels go one window at a time so each one's border and shadow stack
     // directly under its own surfaces rather than under the whole window stack
@@ -697,11 +904,27 @@ pub fn collect_elements(
         focus,
         &mut elements,
         &mut blur_requests,
+        &mut pane_requests,
     );
 
-    layers(&mut elements, &mut blur_requests, below, &borders.anim, renderer);
+    layers(
+        &mut elements,
+        &mut blur_requests,
+        &mut pane_requests,
+        below,
+        &borders.anim,
+        renderer,
+    );
 
-    insert_blur(renderer, output, borders, config, blur_requests, &mut elements);
+    insert_blur(
+        renderer,
+        output,
+        borders,
+        config,
+        blur_requests,
+        pane_requests,
+        &mut elements,
+    );
 
     elements
 }
@@ -717,17 +940,22 @@ fn insert_blur(
     store: &mut BorderStore,
     config: &Config,
     requests: Vec<BlurRequest>,
+    panes: Vec<PaneRequest>,
     elements: &mut Vec<AbyssRenderElement>,
 ) {
     let cfg = &config.decoration.blur;
-    if requests.is_empty() {
+    if requests.is_empty() && panes.is_empty() {
         // Nothing asked for a backdrop (blur `off`, or nothing translucent):
         // the chain must not sit in GPU memory for a frame that draws none.
         store.blur.remove(output);
         return;
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let live: Vec<blur::BlurKey> = requests.iter().map(|(key, ..)| key.clone()).collect();
+    let live: Vec<blur::BlurKey> = requests
+        .iter()
+        .map(|(key, ..)| key.clone())
+        .chain(panes.iter().map(|p| p.key.clone()))
+        .collect();
     store.blur.entry(output.clone()).or_default().retain(&live);
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
@@ -743,7 +971,13 @@ fn insert_blur(
         .unwrap_or((1, 1));
     let upscale = scale.x.max(scale.y);
 
+    // Both lists are front to back, so both are consumed from the back: a pane
+    // set goes in before any request whose index is not above its own.
+    let mut panes = panes.into_iter().rev().peekable();
     for (key, index, region, mode, radius, bezel, shape, crop) in requests.into_iter().rev() {
+        while let Some(req) = panes.next_if(|p| p.before(index)) {
+            insert_panes(renderer, output, store, config, req, elements);
+        }
         // The final draw's program: plain `blur` only needs one to round
         // (a square backdrop draws with smithay's own); frost and glass
         // always do, radius 0 included. A shaped layer (Vol 1 §5.2) takes
@@ -812,6 +1046,7 @@ fn insert_blur(
                         bevel,
                         &cfg.glass,
                         bezel.map(|b| (b.inner, b.opaque, b.rim)),
+                        config.appearance.glass_light(),
                     )
                 }
                 _ => effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius),
@@ -866,6 +1101,131 @@ fn insert_blur(
             }
         }
     }
+    for req in panes {
+        insert_panes(renderer, output, store, config, req, elements);
+    }
+}
+
+/// Make sure the glass program is compiled; false if it cannot be.
+fn ensure_glass(renderer: &mut GlesRenderer, store: &mut BorderStore) -> bool {
+    if store.glass.is_none() && !store.glass_failed {
+        match effects::compile_glass(renderer) {
+            Ok(program) => store.glass = Some(program),
+            Err(err) => {
+                store.glass_failed = true;
+                tracing::warn!(
+                    ?err,
+                    "compiling the glass shader; layers keep whole-surface glass"
+                );
+            }
+        }
+    }
+    store.glass.is_some()
+}
+
+/// Splice one layer surface's glass panes into the element list (`eclipse_glass_v1`).
+///
+/// The backdrop is blurred once over the union of the panes' boxes; the cache
+/// is keyed on that union, so a pane resizing inside it re-blurs nothing. Then
+/// the glass program draws once per pane, in array order (the last on top),
+/// each with its own box, radius and look. A pane is the window bezel's glass
+/// with its bend confined to its band, dispersion off, and no seam; tone and
+/// state only move the rim and a small fill lift, scaled by the pane's alpha.
+fn insert_panes(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    store: &mut BorderStore,
+    config: &Config,
+    req: PaneRequest,
+    elements: &mut Vec<AbyssRenderElement>,
+) {
+    let cfg = &config.decoration.blur;
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let upscale = scale.x.max(scale.y);
+    let Some((fb_height, mirrored)) = effects::fb_y_mirrored(output.current_transform())
+        .zip(output.current_mode())
+        .map(|(mirrored, mode)| (mode.size.h, mirrored))
+    else {
+        return;
+    };
+    let fb_size = output
+        .current_mode()
+        .map(|mode| output.current_transform().transform_size(mode.size))
+        .map(|size| (size.w, size.h))
+        .unwrap_or((1, 1));
+    let Some(program) = store.glass.clone() else {
+        return;
+    };
+    let panes = req.set.as_slice();
+    let rect_of = |p: &glass::Pane| req.rect(p, scale);
+    // A scaled window's corner radii scale with it.
+    let grown = req.scaled.map_or(1.0, |(_, by)| by.x.max(by.y));
+    // Every pane's box, drawn or not: a hover must not move the cache key.
+    let Some(union) = panes.iter().filter_map(rect_of).reduce(|a, b| a.merge(b)) else {
+        return;
+    };
+    let strength = (cfg.glass.refraction as f64 * upscale).min(BEZEL_REFRACTION * upscale) as f32;
+    let reach = effects::glass_reach(cfg.glass.refraction.min(BEZEL_REFRACTION as i32), upscale);
+    let mut blurs = std::mem::take(&mut store.pane_scratch);
+    blurs.clear();
+    // A window's own backdrop sits at `req.index`; panes sample what is
+    // behind it, not the already-smoked glass, or they re-smoke to a slab.
+    let behind = &elements[req.index + usize::from(req.over)..];
+    store.blur.entry(output.clone()).or_default().pane_elements(
+        renderer,
+        output,
+        &req.key,
+        union,
+        behind,
+        cfg,
+        scale,
+        reach,
+        &program,
+        panes.len(),
+        req.alpha,
+        |i| {
+            let pane = &panes[i];
+            let look = glass::look(pane)?;
+            let rect = rect_of(pane)?;
+            let mut tuned = cfg.glass.clone();
+            tuned.dispersion = 0.0;
+            tuned.rim = cfg.glass.rim * look.rim;
+            Some((
+                rect,
+                effects::glass_uniforms_lifted(
+                    rect,
+                    fb_height,
+                    mirrored,
+                    (pane.radius as f64 * upscale * grown) as f32,
+                    fb_size,
+                    strength,
+                    glass::band(pane, rect, upscale * grown),
+                    &tuned,
+                    None,
+                    if config.appearance.glass_light() > 0.0 {
+                        look.shade
+                    } else {
+                        look.lift
+                    },
+                    config.appearance.glass_light(),
+                ),
+            ))
+        },
+        &mut blurs,
+    );
+    // Inserting each at the same index leaves the last pane in front.
+    for element in blurs.drain(..) {
+        let element = match req.crop {
+            Some(crop) => {
+                CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
+            }
+            None => Some(AbyssRenderElement::Blur(element)),
+        };
+        if let Some(element) = element {
+            elements.insert(req.index, element);
+        }
+    }
+    store.pane_scratch = blurs;
 }
 
 /// A bezel's largest refraction, logical px: felt at the window edge, never a
@@ -1245,7 +1605,11 @@ fn ghost_decor(
             area,
             None,
             alpha,
-            effects::shadow_uniforms(geometry, if active { 1.0 } else { 0.0 }),
+            effects::shadow_uniforms(
+                geometry,
+                if active { 1.0 } else { 0.0 },
+                config.appearance.shadow_rgb(),
+            ),
             Kind::Unspecified,
         )));
     }
@@ -1273,6 +1637,7 @@ fn window_elements(
     focus: Option<&Window>,
     out: &mut Vec<AbyssRenderElement>,
     blurred: &mut Vec<BlurRequest>,
+    pane_requests: &mut Vec<PaneRequest>,
 ) {
     let Some(output_geo) = space.output_geometry(output) else {
         return;
@@ -1405,6 +1770,43 @@ fn window_elements(
         } else {
             deco.inactive_opacity
         }) * t.alpha;
+        // `windowrule "translucent-region …"`: the strip's physical rect, the
+        // window's, and the strip's own alpha (times the window's). Only a
+        // toplevel at rest has one; an animating window draws whole.
+        let strip_def = userdata::strip_of(&window)
+            .filter(|_| !t.scaled() && window.toplevel().is_some())
+            .zip(geo);
+        // A keyed strip needs the keyed program and a framebuffer axis; where
+        // either is missing the window stays opaque rather than fading whole.
+        let keyed = match strip_def.as_ref().and_then(|(s, _)| s.keyed().copied()) {
+            Some(keys) => keyed_target(renderer, store, output)
+                .map(|(program, h, mirrored)| (program, h, mirrored, keys)),
+            None => None,
+        };
+        let strip_def = strip_def.filter(|(s, _)| s.keyed().is_none() || keyed.is_some());
+        let strip = strip_def.map(|(s, geo)| {
+            let rect = Rectangle::new(
+                phys(geo.loc - output_geo.loc, scale),
+                geo.size.to_f64().to_physical(scale).to_i32_round(),
+            );
+            let fade = match s.fill {
+                userdata::StripFill::Fade(a) => alpha * a,
+                userdata::StripFill::Keyed(_) => alpha,
+            };
+            // Blur goes behind the whole window when any key matches everywhere.
+            let blur_rect = match s.keyed() {
+                Some(k) if k.any_everywhere() => rect,
+                _ => strip_rect(rect, s.top, scale),
+            };
+            (blur_rect, rect, fade)
+        });
+        let key_region = strip_def.map(|(s, geo)| {
+            let rect = Rectangle::new(
+                phys(geo.loc - output_geo.loc, scale),
+                geo.size.to_f64().to_physical(scale).to_i32_round(),
+            );
+            strip_rect(rect, s.top, scale)
+        });
 
         // The dim overlay belongs above this window but below the ones in
         // front of it, so it is pushed just before the window's own surfaces.
@@ -1428,23 +1830,34 @@ fn window_elements(
         let render_loc = loc + t.loc() - window.geometry().loc - output_geo.loc;
         // Popups are split off a cropped window so a menu that opens past the
         // tile edge is not cut; smithay's `render_elements` puts them first.
+        let mut popup_groups: Vec<PopupGroup> = Vec::new();
         let (popups, surfaces) = match (clip, window.toplevel()) {
-            (Some(_), Some(toplevel)) => {
+            (clip, Some(toplevel)) if clip.is_some() || strip.is_some() => {
                 let surface = toplevel.wl_surface();
-                let popups = PopupManager::popups_for_surface(surface)
-                    .flat_map(|(popup, popup_offset)| {
-                        let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
-                            .to_physical_precise_round(scale);
-                        render_elements_from_surface_tree(
-                            renderer,
-                            popup.wl_surface(),
-                            phys(render_loc, scale) + offset,
-                            scale,
-                            alpha,
-                            Kind::Unspecified,
-                        )
-                    })
-                    .collect();
+                let mut popups = Vec::new();
+                for (n, (popup, popup_offset)) in PopupManager::popups_for_surface(surface).enumerate() {
+                    let offset = (window.geometry().loc + popup_offset - popup.geometry().loc)
+                        .to_physical_precise_round(scale);
+                    let els = render_elements_from_surface_tree(
+                        renderer,
+                        popup.wl_surface(),
+                        phys(render_loc, scale) + offset,
+                        scale,
+                        alpha,
+                        Kind::Unspecified,
+                    );
+                    if keyed.is_some() {
+                        // Keyed over the whole surface, glass behind it.
+                        let at = render_loc + window.geometry().loc + popup_offset;
+                        let rect = Rectangle::new(
+                            phys(at, scale),
+                            popup.geometry().size.to_f64().to_physical(scale).to_i32_round(),
+                        );
+                        popup_groups.push((n, rect, popup_blur_radius(renderer, &popup, deco.rounding), els));
+                    } else {
+                        popups.extend(els);
+                    }
+                }
                 let own = render_elements_from_surface_tree(
                     renderer,
                     surface,
@@ -1464,6 +1877,22 @@ fn window_elements(
                     alpha,
                 ),
             ),
+        };
+        // The strip's copy of the surface tree, at the strip's alpha. A keyed
+        // strip is one draw through the keyed program instead.
+        let strip_surfaces: Vec<WaylandSurfaceRenderElement<GlesRenderer>> = match (strip, window.toplevel())
+        {
+            (Some((_, _, strip_alpha)), Some(toplevel)) if keyed.is_none() => {
+                render_elements_from_surface_tree(
+                    renderer,
+                    toplevel.wl_surface(),
+                    phys(render_loc, scale),
+                    scale,
+                    strip_alpha,
+                    Kind::Unspecified,
+                )
+            }
+            _ => Vec::new(),
         };
         let tile_crop = clip.map(|c| {
             let c = t.map(c, pivot);
@@ -1581,6 +2010,9 @@ fn window_elements(
                 }
             })
         });
+        // A `translucent-region` rule asks for glass behind the strip, so a
+        // toolkit's empty blur region (GTK declares one) does not veto it.
+        let explicit = explicit.filter(|a| strip.is_none() || *a != blur::BlurArea::Nothing);
         let backdrop = geo
             .filter(|_| mode != BlurMode::Off)
             .and_then(|geo| {
@@ -1597,20 +2029,45 @@ fn window_elements(
                 };
                 match explicit {
                     Some(area) if !explicit_bezel(&area, rect, bezel) => {
+                        // The strip is translucent whatever the client's
+                        // opaque region says.
+                        let opaque = match strip {
+                            Some((strip, _, _)) => Rectangle::subtract_rects_many(opaque, [strip]),
+                            None => opaque,
+                        };
                         explicit_window_backdrop(area, alpha, corner, opaque, deco.rounding)
                             .map(|(region, radius, shape)| (region, radius, None, shape))
                     }
-                    _ => window_backdrop(
-                        mode,
-                        alpha,
-                        rect,
-                        corner,
-                        opaque,
-                        deco.rounding,
-                        border_size,
-                        bezel,
-                    )
-                    .map(|(region, radius, bezel)| (region, radius, bezel, None)),
+                    _ => {
+                        let backdrop = |opaque| {
+                            window_backdrop(
+                                mode,
+                                alpha,
+                                rect,
+                                corner,
+                                opaque,
+                                deco.rounding,
+                                border_size,
+                                bezel,
+                            )
+                        };
+                        // The client's opaque region must not hide the glass
+                        // behind the strip. A bezel already blurs the whole
+                        // bordered rect, so the strip only has to stop
+                        // counting as opaque there; otherwise a window with
+                        // nothing translucent of its own blurs just the strip.
+                        match strip {
+                            Some((strip, _, _)) if bezel.is_some() => {
+                                backdrop(Rectangle::subtract_rects_many(opaque, [strip]))
+                            }
+                            Some((strip, _, _)) => backdrop(opaque.clone()).or_else(|| {
+                                strip_backdrop(strip, rect, corner)
+                                    .map(|region| (region, deco.rounding, None))
+                            }),
+                            None => backdrop(opaque),
+                        }
+                        .map(|(region, radius, bezel)| (region, radius, bezel, None))
+                    }
                 }
             })
             .map(|(region, radius, bezel, shape)| {
@@ -1625,7 +2082,88 @@ fn window_elements(
 
         // Every surface of one window is masked by the same rectangle, so a
         // window with subsurfaces rounds as a single shape.
+        //
+        // Each band is the surfaces drawn within one crop. A window with a
+        // translucent strip has two: the strip's copy at the strip's alpha
+        // above the strip's bottom edge, the plain one below it. They are
+        // disjoint, so the rounded mask (the whole window's) is shared.
+        let bands = match strip {
+            Some((strip, _, _)) if !shaded && keyed.is_none() => {
+                let [above, below] = strip_crops(strip, out_rect, crop);
+                vec![(strip_surfaces, Some(above)), (surfaces, Some(below))]
+            }
+            _ => vec![(surfaces, crop)],
+        };
+        // Keyed glass draws only when no transition shader reshapes the window;
+        // a keyed window's popups otherwise draw plain.
+        let keyed_on = keyed.filter(|_| !shaded);
+        let mut popups = popups;
+        if keyed_on.is_none() {
+            for (_, _, _, els) in popup_groups.drain(..) {
+                popups.extend(els);
+            }
+        }
         match (scaled, &rounding, geo) {
+            // Tint-keyed strip (ADR 0079): the popups, then the whole surface
+            // tree, each through the keyed program; only key-coloured pixels
+            // inside the region turn translucent. Idle windows only.
+            (None, _, Some(geo)) if keyed_on.is_some() => {
+                let Some((program, fb_h, mirrored, keys)) = keyed_on.clone() else {
+                    continue;
+                };
+                let rect = Rectangle::new(
+                    phys(geo.loc - output_geo.loc, scale),
+                    geo.size.to_f64().to_physical(scale).to_i32_round(),
+                );
+                let radius = deco.rounding as f64 * scale.x.max(scale.y);
+                let mask = rounding.as_ref().map(|_| (rect, radius as f32));
+                let region = key_region;
+                let popup_crop = overhangs.then_some(out_rect);
+                let push_keyed = |out: &mut Vec<AbyssRenderElement>,
+                                  els: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
+                                  uniforms: Vec<smithay::backend::renderer::gles::Uniform<'static>>,
+                                  crop: Option<Rectangle<i32, Physical>>| {
+                    for s in els {
+                        let el = effects::RoundedElement::new(s, program.clone(), uniforms.clone());
+                        match crop {
+                            Some(crop) => out.extend(
+                                CropRenderElement::from_element(el, scale, crop)
+                                    .map(AbyssRenderElement::CroppedRounded),
+                            ),
+                            None => out.push(AbyssRenderElement::Rounded(el)),
+                        }
+                    }
+                };
+                for (n, prect, pradius, els) in popup_groups.drain(..) {
+                    push_keyed(
+                        out,
+                        els,
+                        effects::keyed_uniforms(None, None, fb_h, mirrored, &keys),
+                        popup_crop,
+                    );
+                    if mode != BlurMode::Off {
+                        blurred.push((
+                            blur::BlurKey::Popup(window.clone(), n),
+                            out.len(),
+                            prect,
+                            mode,
+                            pradius,
+                            None,
+                            None,
+                            popup_crop,
+                        ));
+                    }
+                }
+                push_popups(out, popups, scale, popup_crop);
+                for (surfaces, crop) in bands {
+                    push_keyed(
+                        out,
+                        surfaces,
+                        effects::keyed_uniforms(mask, region, fb_h, mirrored, &keys),
+                        crop,
+                    );
+                }
+            }
             // Animating at a scale: the same arms through `ScaledElement`,
             // which carries the mask itself. Idle windows never get here.
             (Some((origin, by)), rounding, _) => {
@@ -1654,7 +2192,7 @@ fn window_elements(
                         None => out.push(AbyssRenderElement::Scaled(popup)),
                     }
                 }
-                for surface in surfaces {
+                for surface in bands.into_iter().flat_map(|(surfaces, _)| surfaces) {
                     let surface = anim::ScaledElement::new(surface, origin, by, mask.clone());
                     match crop {
                         Some(crop) => out.extend(
@@ -1676,30 +2214,34 @@ fn window_elements(
                     |surface| effects::RoundedElement::new(surface, program.clone(), uniforms.clone());
                 // Unmasked: the mask follows the tile, and would cut the popup too.
                 push_popups(out, popups, scale, overhangs.then_some(out_rect));
-                match crop {
-                    Some(crop) => out.extend(
-                        surfaces
-                            .into_iter()
-                            .filter_map(|s| CropRenderElement::from_element(round(s), scale, crop))
-                            .map(AbyssRenderElement::CroppedRounded),
-                    ),
-                    None => out.extend(
-                        surfaces
-                            .into_iter()
-                            .map(|s| AbyssRenderElement::Rounded(round(s))),
-                    ),
+                for (surfaces, crop) in bands {
+                    match crop {
+                        Some(crop) => out.extend(
+                            surfaces
+                                .into_iter()
+                                .filter_map(|s| CropRenderElement::from_element(round(s), scale, crop))
+                                .map(AbyssRenderElement::CroppedRounded),
+                        ),
+                        None => out.extend(
+                            surfaces
+                                .into_iter()
+                                .map(|s| AbyssRenderElement::Rounded(round(s))),
+                        ),
+                    }
                 }
             }
             _ => {
                 push_popups(out, popups, scale, overhangs.then_some(out_rect));
-                match crop {
-                    Some(crop) => out.extend(
-                        surfaces
-                            .into_iter()
-                            .filter_map(|s| CropRenderElement::from_element(s, scale, crop))
-                            .map(AbyssRenderElement::Cropped),
-                    ),
-                    None => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
+                for (surfaces, crop) in bands {
+                    match crop {
+                        Some(crop) => out.extend(
+                            surfaces
+                                .into_iter()
+                                .filter_map(|s| CropRenderElement::from_element(s, scale, crop))
+                                .map(AbyssRenderElement::Cropped),
+                        ),
+                        None => out.extend(surfaces.into_iter().map(AbyssRenderElement::Surface)),
+                    }
                 }
             }
         }
@@ -1719,7 +2261,12 @@ fn window_elements(
         // window's rounded mask, so it never covers window content from below
         // either; glow and shadow draw only outside the bordered rect. A glass
         // bezel replaces the painted ring.
-        let bezeled = backdrop.as_ref().is_some_and(|(_, _, b, _)| b.is_some());
+        // In glass and frost the bezel is the frame: a window whose bezel is
+        // not drawn yet (no backdrop on its first frames) gets no painted ring
+        // either, unless the bezel shader failed to compile.
+        let glassy = matches!(mode, BlurMode::Glass | BlurMode::Frost)
+            && bezel_ok[(mode == BlurMode::Frost) as usize] != Some(false);
+        let bezeled = glassy || backdrop.as_ref().is_some_and(|(_, _, b, _)| b.is_some());
         let start = out.len();
         match &border {
             Some(_) if bezeled => {
@@ -1768,6 +2315,49 @@ fn window_elements(
         // covers the window rect only, which the ring does not overlap — or,
         // for a bezel, the bordered rect, which the shadow does not overlap.
         if let Some((region, radius, bezel, shape)) = backdrop {
+            // `eclipse_glass_v1` on a window: glass under each pane, directly
+            // above the backdrop and bezel just below. Only where the window
+            // is glass already (it has a backdrop, in glass mode); a keyed,
+            // strip or fullscreen window is left as it was. The panes ride the
+            // window's animation: its scale about the pivot and its alpha.
+            let panes = window_takes_panes(
+                mode,
+                keyed_on.is_some(),
+                strip.is_some(),
+                is_fullscreen(&window),
+                effects::fb_y_mirrored(output.current_transform()).is_some(),
+            )
+            .then(|| smithay::wayland::seat::WaylandFocus::wl_surface(&window))
+            .flatten()
+            .and_then(|surface| {
+                let set = committed_panes(&surface)?;
+                ensure_glass(renderer, store).then_some(())?;
+                Some((surface, set))
+            });
+            if let Some((surface, set)) = panes {
+                use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
+                let size = with_states(&surface, |states| {
+                    states
+                        .data_map
+                        .get::<RendererSurfaceStateUserData>()
+                        .and_then(|d| d.lock().unwrap().surface_size())
+                })
+                .unwrap_or_else(|| window.bbox().size);
+                pane_requests.push(PaneRequest {
+                    key: blur::BlurKey::Panes(window.clone()),
+                    index: out.len(),
+                    set,
+                    size,
+                    // The root surface's origin: `render_loc` already carries
+                    // the window position, its animation offset and the xdg
+                    // window-geometry offset.
+                    loc: phys(render_loc, scale),
+                    crop: deco_crop,
+                    over: true,
+                    scaled,
+                    alpha: t.alpha,
+                });
+            }
             blurred.push((
                 blur::BlurKey::Window(window.clone()),
                 out.len(),
@@ -1987,8 +2577,17 @@ fn push_shadow(
 ) {
     let range = config.decoration.shadow.range;
     let (area, geometry) = shadow_geometry(geo, output_loc, range, shadow_drop(range), config);
-    let params = [geometry[0], geometry[1], geometry[2], focus];
-    let uniforms = || effects::shadow_uniforms(geometry, focus);
+    let rgb = config.appearance.shadow_rgb();
+    let params = [
+        geometry[0],
+        geometry[1],
+        geometry[2],
+        focus,
+        rgb[0],
+        rgb[1],
+        rgb[2],
+    ];
+    let uniforms = || effects::shadow_uniforms(geometry, focus, rgb);
     let (element, applied) = store
         .shadows
         .entry((output.clone(), window.clone()))
@@ -2139,9 +2738,11 @@ fn push_border(
     } = *frame;
     // The `border` animation crossfades this on focus change; with the
     // animation off it is the focused/unfocused colour outright.
+    let fade = store.anim.transform(window).alpha;
     let color = store
         .anim
-        .border_color(window, config.general.col_active, config.general.col_inactive);
+        .border_color(window, config.general.col_active, config.general.col_inactive)
+        .map(|c| c * fade);
     // Outer rect: the tile, with the window inset by `width` on every side.
     let outer = Rectangle::new(
         // Window geometry is global; elements are output-local.
@@ -2306,6 +2907,10 @@ pub fn scanout_candidate(space: &Space<Window>, output: &Output, config: &Config
     }
     let geo = space.output_geometry(output)?;
     let window = space.elements_for_output(output).last()?;
+    // A translucent strip is composited by us, like any other alpha.
+    if userdata::strip_of(window).is_some() {
+        return None;
+    }
     let win_geo = space.element_geometry(window)?;
     if !win_geo.contains_rect(geo) {
         return None;
@@ -2341,6 +2946,96 @@ pub fn send_dmabuf_feedback(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pane_set(boxes: &[(i32, i32, i32, i32)]) -> glass::PaneSet {
+        let bytes: Vec<u8> = boxes
+            .iter()
+            .flat_map(|&(x, y, w, h)| {
+                [x as u32, y as u32, w as u32, h as u32, 8, 0, 0, 0, 255]
+                    .into_iter()
+                    .flat_map(|v| v.to_ne_bytes())
+            })
+            .collect();
+        glass::parse_panes(&bytes).unwrap()
+    }
+
+    fn window_request(
+        index: usize,
+        over: bool,
+        loc: Point<i32, Physical>,
+        scaled: Option<(Point<i32, Physical>, Scale<f64>)>,
+    ) -> PaneRequest {
+        PaneRequest {
+            key: blur::BlurKey::Annotation(0),
+            index,
+            set: pane_set(&[(10, 20, 100, 30)]),
+            size: (400, 300).into(),
+            loc,
+            crop: None,
+            over,
+            scaled,
+            alpha: 1.0,
+        }
+    }
+
+    /// Panes are surface-local to the root surface, whose origin is the window
+    /// position minus the xdg geometry offset: a cell at (10, 20) under a
+    /// client with a (12, 8) shadow margin sits 12 and 8 px left and up of
+    /// where it would on the window rect, at the output scale.
+    #[test]
+    fn window_panes_follow_the_geometry_offset() {
+        let scale = Scale::from(2.0);
+        let window_at = Point::<i32, Logical>::from((100, 50));
+        let geometry = Point::<i32, Logical>::from((12, 8));
+        let origin = phys(window_at - geometry, scale);
+        let req = window_request(5, true, origin, None);
+        let pane = &req.set.as_slice()[0];
+        let r = req.rect(pane, scale).unwrap();
+        assert_eq!(
+            (r.loc.x, r.loc.y, r.size.w, r.size.h),
+            ((88 + 10) * 2, (42 + 20) * 2, 200, 60)
+        );
+        // Without the offset the same pane lands elsewhere.
+        let flat = window_request(5, true, phys(window_at, scale), None);
+        assert_ne!(flat.rect(pane, scale).unwrap().loc, r.loc);
+    }
+
+    /// An animating window carries its panes with it: scaled about the pivot.
+    #[test]
+    fn window_panes_ride_the_animation_scale() {
+        let scale = Scale::from(1.0);
+        let pivot = Point::<i32, Physical>::from((200, 150));
+        let req = window_request(0, true, (0, 0).into(), Some((pivot, Scale::from(0.5))));
+        let r = req.rect(&req.set.as_slice()[0], scale).unwrap();
+        // (10, 20) is (-190, -130) from the pivot, halved to (-95, -65).
+        assert_eq!((r.loc.x, r.loc.y, r.size.w, r.size.h), (105, 85, 50, 15));
+    }
+
+    /// At one splice index a layer's panes go in before its backdrop (they
+    /// replace it), a window's after (they sit above the window's backdrop and
+    /// bezel); anything lower in the list always goes in first.
+    #[test]
+    fn window_panes_land_above_their_backdrop() {
+        let at = |index, over| window_request(index, over, (0, 0).into(), None);
+        assert!(at(7, false).before(7));
+        assert!(!at(7, true).before(7));
+        assert!(at(8, true).before(7));
+        assert!(!at(6, true).before(7));
+        assert!(!at(6, false).before(7));
+    }
+
+    /// Panes change only a glass-mode window that nothing else claims.
+    #[test]
+    fn only_plain_glass_windows_take_panes() {
+        assert!(window_takes_panes(BlurMode::Glass, false, false, false, true));
+        for mode in [BlurMode::Off, BlurMode::Frost] {
+            assert!(!window_takes_panes(mode, false, false, false, true));
+        }
+        assert!(!window_takes_panes(BlurMode::Glass, true, false, false, true));
+        assert!(!window_takes_panes(BlurMode::Glass, false, true, false, true));
+        assert!(!window_takes_panes(BlurMode::Glass, false, false, true, true));
+        assert!(!window_takes_panes(BlurMode::Glass, false, false, false, false));
+    }
 
     fn config(rounding: i32, border: i32, range: i32) -> Config {
         let mut cfg = Config::default();
@@ -2420,7 +3115,7 @@ mod tests {
             "glow does not drop"
         );
         assert_eq!(params[2], 0.0);
-        assert_eq!(shadow_drop(20), 6);
+        assert_eq!(shadow_drop(20), 0, "an even halo, not an offset shadow");
     }
 
     #[test]
@@ -2453,6 +3148,49 @@ mod tests {
 
     fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
         Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn the_strip_is_measured_from_the_top_and_scales() {
+        // A 300x200 logical window at (100, 50).
+        let rect = r(100, 50, 300, 200);
+        assert_eq!(strip_rect(rect, 40, Scale::from(1.0)), r(100, 50, 300, 40));
+        // At scale 2 the window is 600x400 physical and the strip doubles.
+        let rect2 = r(200, 100, 600, 400);
+        assert_eq!(strip_rect(rect2, 40, Scale::from(2.0)), r(200, 100, 600, 80));
+        // Fractional scale rounds; a strip taller than the window is the window.
+        assert_eq!(strip_rect(rect, 40, Scale::from(1.5)).size.h, 60);
+        assert_eq!(strip_rect(rect, 999, Scale::from(1.0)), rect);
+        assert!(strip_rect(rect, 0, Scale::from(1.0)).is_empty());
+    }
+
+    #[test]
+    fn the_strip_blurs_a_region_that_hides_the_bottom_corners() {
+        let rect = r(100, 50, 300, 200);
+        let strip = strip_rect(rect, 40, Scale::from(1.0));
+        // Grown by the corner radius, so the rounded bottom is under the page.
+        assert_eq!(strip_backdrop(strip, rect, 12), Some(r(100, 50, 300, 52)));
+        // Never past the window.
+        let tall = strip_rect(rect, 195, Scale::from(1.0));
+        assert_eq!(strip_backdrop(tall, rect, 12), Some(rect));
+        assert_eq!(
+            strip_backdrop(strip_rect(rect, 0, Scale::from(1.0)), rect, 12),
+            None
+        );
+    }
+
+    #[test]
+    fn the_strip_splits_the_surfaces_into_two_disjoint_bands() {
+        let out = r(0, 0, 1000, 800);
+        let strip = r(100, 50, 300, 40);
+        let [above, below] = strip_crops(strip, out, None);
+        assert_eq!(above, r(0, 0, 1000, 90));
+        assert_eq!(below, r(0, 90, 1000, 710));
+        // A tile crop cuts both.
+        let tile = r(100, 50, 300, 200);
+        let [above, below] = strip_crops(strip, out, Some(tile));
+        assert_eq!(above, r(100, 50, 300, 40));
+        assert_eq!(below, r(100, 90, 300, 160));
     }
 
     #[test]

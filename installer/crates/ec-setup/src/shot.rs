@@ -9,7 +9,7 @@
 //! door the real app uses, so a screenshot cannot show a state the wizard cannot
 //! reach.
 
-use crate::choices::{BarPosition, Blur, Choices};
+use crate::choices::{BarPosition, Blur, Choices, ColorScheme};
 use crate::helper::{fake_disks, HelperEvent};
 use crate::model::{Inputs, Message, Model, Secret, Step, ZoneClock};
 use crate::net::fake_snapshot;
@@ -55,6 +55,9 @@ pub const NAMES: &[&str] = &[
     "components-more",
     "appearance",
     "appearance-changed",
+    "appearance-light",
+    "appearance-auto",
+    "review-light",
     "apps",
     "apps-full",
     "review",
@@ -219,6 +222,18 @@ pub fn fixture(name: &str) -> Option<Model> {
             m.update(Message::SetBlur(Blur::Glass));
             m.update(Message::SetBarPosition(BarPosition::Bottom));
         }
+        "appearance-light" | "appearance-auto" => {
+            walk(&mut m, Step::Appearance, true);
+            m.update(Message::SetColorScheme(if name.ends_with("light") {
+                ColorScheme::Light
+            } else {
+                ColorScheme::Auto
+            }));
+        }
+        "review-light" => {
+            walk(&mut m, Step::Review, true);
+            m.update(Message::SetColorScheme(ColorScheme::Light));
+        }
         "apps" => walk(&mut m, Step::Apps, true),
         "apps-full" => {
             walk(&mut m, Step::Apps, true);
@@ -281,6 +296,13 @@ pub fn fixture(name: &str) -> Option<Model> {
 pub fn render(name: &str, size: (f32, f32), scale: f32, path: &Path) -> Result<(), String> {
     let model =
         fixture(name).ok_or_else(|| format!("no such screen: {name} (try one of: {})", NAMES.join(", ")))?;
+    // No compositor to ask: Light draws in the light palette, Dark and Auto in
+    // dark (Auto resolves to the compositor's scheme, dark when none answers).
+    color::set_seeds(&if model.choices.color_scheme == ColorScheme::Light {
+        ec_theme::LIGHT_SEEDS
+    } else {
+        ec_theme::DARK_SEEDS
+    });
     let (w, h) = size;
     let logical = Size::new(w, h);
     let physical = Size::new((w * scale).round() as u32, (h * scale).round() as u32);
@@ -307,11 +329,11 @@ pub fn render(name: &str, size: (f32, f32), scale: f32, path: &Path) -> Result<(
             .reduced_motion(false)
             .frozen(timeline::READY + 1.0, 0.0);
         welcome.paint(&mut renderer, logical, scale);
-        Headless::screenshot(&mut renderer, physical, scale, color::BASE)
+        Headless::screenshot(&mut renderer, physical, scale, color::base())
     } else {
         let mut ui = UserInterface::build(crate::view::view(&model), logical, Cache::new(), &mut renderer);
         let style = Style {
-            text_color: color::TEXT,
+            text_color: color::text(),
         };
         // Widgets learn their status (active, disabled) from the redraw event;
         // without one every button is drawn as if it could not be pressed.
@@ -327,7 +349,7 @@ pub fn render(name: &str, size: (f32, f32), scale: f32, path: &Path) -> Result<(
         ui.draw(&mut renderer, &theme::theme(), &style, mouse::Cursor::Unavailable);
         // Text is drawn from paragraphs the interface owns, and the renderer
         // holds them weakly: the interface has to outlive the screenshot.
-        let rgba = Headless::screenshot(&mut renderer, physical, scale, color::BASE);
+        let rgba = Headless::screenshot(&mut renderer, physical, scale, color::base());
         drop(ui);
         rgba
     };
@@ -377,7 +399,7 @@ mod tests {
                 n if n.starts_with("components") => Step::Components,
                 n if n.starts_with("appearance") => Step::Appearance,
                 n if n.starts_with("apps") => Step::Apps,
-                "review" | "review-armed" | "review-agentic" => Step::Review,
+                "review" | "review-armed" | "review-agentic" | "review-light" => Step::Review,
                 _ => Step::Install,
             };
             assert_eq!(m.step, want, "{name}");

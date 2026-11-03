@@ -30,6 +30,9 @@ pub const ACTIONS: [Action; 6] = [
 #[to_layer_message]
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// nothing to do but let the views rebuild.
+    ThemeChanged,
     /// The system bus said something about network, bluetooth or battery.
     Status(Update),
     /// A row was clicked.
@@ -93,6 +96,7 @@ impl App {
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
+        Message::ThemeChanged => return Task::none(),
         Message::Status(update) => match update {
             Update::Network(network) => app.network = network,
             Update::Bluetooth(bluetooth) => app.bluetooth = bluetooth,
@@ -123,6 +127,14 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 
 /// The same system-bus watchers the bar runs, on the panel's own thread.
 pub fn subscription(_app: &App) -> Subscription<Message> {
+    // Keep the palette on the compositor's theme (ADR 0084).
+    Subscription::batch([
+        subscription_inner(_app),
+        ec_ui::ipc::theme_subscription(|| Message::ThemeChanged),
+    ])
+}
+
+fn subscription_inner(_app: &App) -> Subscription<Message> {
     Subscription::run(|| {
         iced::stream::channel(32, async move |mut sender| {
             std::thread::spawn(move || {

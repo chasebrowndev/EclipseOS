@@ -39,8 +39,12 @@ pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
         .map(|s| s.path.display().to_string())
         .collect();
     state.config = next;
+    // The theme follows the new config (ADR 0084); emits `theme` if it moved.
+    crate::theme::refresh(state);
     // ext_background_effect_v1: `blur` is advertised only while blur is on.
     crate::protocols::standard::background_effect::update_capabilities(state);
+    // eclipse_glass_v1: panes are drawn, and advertised, only in `glass` mode.
+    crate::protocols::standard::glass::update_capabilities(state);
     // A clean load: nothing is wrong any more, so nothing is replayed.
     state.config_error = None;
     // Remember what is on disk now, so the inotify event our own write is

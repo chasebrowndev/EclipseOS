@@ -851,6 +851,7 @@ mod m14 {
     const PAUSED: u32 = 14;
     const INVALID_ARGUMENT: u32 = 15;
     const DUPLICATE: u32 = 17;
+    const POLICY_DENIED: u32 = 10;
 
     impl World {
         /// Every result for `req`, in arrival order.
@@ -1137,6 +1138,96 @@ mod m14 {
         assert_eq!(w.all(b), vec![(OK, String::new()), (DUPLICATE, "0".into())]);
     }
 
+    /// A table holding `rule` for `cap` in phase `phase`, over a default allow.
+    fn table(w: &mut World, phase: &str, cap: &str) {
+        use ec_policy_eval::check::{CompiledRule, Phases, Pred, Table};
+        use ec_policy_eval::scope::Glob;
+        let mut rules = Phases::default();
+        let rule = CompiledRule {
+            id: "rule-x".into(),
+            preds: vec![Pred::Capability(vec![Glob::new(cap)])],
+            unless: Vec::new(),
+        };
+        match phase {
+            "deny" => rules.deny.push(rule),
+            "prompt" => rules.prompt.push(rule),
+            _ => rules.defer.push(rule),
+        }
+        rules.allow.push(CompiledRule {
+            id: "default-allow".into(),
+            preds: vec![Pred::Capability(vec![Glob::new("*")])],
+            unless: Vec::new(),
+        });
+        w.h.state.policy_table = Some(Table {
+            version: 2,
+            rules,
+            ..Default::default()
+        });
+    }
+
+    /// BATCH-01: the table is asked about every step before any runs. A
+    /// later step the policy refuses (deny, a prompt, a deferral, or a
+    /// capability the agent lacks) leaves the earlier ones unapplied too.
+    #[test]
+    fn a_policy_refusal_anywhere_in_a_batch_runs_nothing() {
+        for (phase, cap, want) in [
+            ("deny", "seat.key", (POLICY_DENIED, "rule-x".to_owned())),
+            ("prompt", "seat.key", (POLICY_DENIED, "needs_prompt:1".to_owned())),
+            ("defer", "seat.key", (POLICY_DENIED, "needs_defer:1".to_owned())),
+            ("deny", "seat.atomic", (POLICY_DENIED, "rule-x".to_owned())),
+        ] {
+            let mut w = world(&format!("m14-dry-{phase}-{cap}.sock"), &BATCH_CAPS);
+            table(&mut w, phase, cap);
+            let focus_events = w.peer.seen.seat_focus.len();
+            w.begin();
+            let f = w.id();
+            w.seat.focus(f, w.handle, 0, 0, vec![0x80]);
+            let k = w.key(KEY_A, true);
+            let c = w.commit();
+            for id in [f, k, c] {
+                assert_eq!(w.status(id), Some(want.clone()), "{phase} {cap}: req {id}");
+            }
+            assert_eq!(
+                w.peer.seen.seat_focus.len(),
+                focus_events,
+                "{phase} {cap}: focus not applied"
+            );
+            assert!(w.agent_keys().is_empty(), "{phase} {cap}: no key");
+        }
+
+        let mut w = world("m14-dry-nocap.sock", &["scene.list", "seat.focus", "seat.atomic"]);
+        let focus_events = w.peer.seen.seat_focus.len();
+        w.begin();
+        let f = w.id();
+        w.seat.focus(f, w.handle, 0, 0, vec![0x80]);
+        let k = w.key(KEY_A, true);
+        let c = w.commit();
+        assert_eq!(w.status(c), Some((NO_CAPABILITY, "seat.key".into())));
+        assert_eq!(w.status(f), Some((NO_CAPABILITY, "seat.key".into())));
+        assert_eq!(w.status(k), Some((NO_CAPABILITY, "seat.key".into())));
+        assert_eq!(
+            w.peer.seen.seat_focus.len(),
+            focus_events,
+            "the focus step did not run"
+        );
+    }
+
+    /// GEN-01: step 2 runs on arrival, inside `policy::enforce`, for a
+    /// queued batch step too: a repeated step is `duplicate` and queued once.
+    #[test]
+    fn a_repeated_batch_step_is_a_duplicate_and_runs_once() {
+        let mut w = world("m14-dedupe-batch.sock", &BATCH_CAPS);
+        w.focus();
+        w.begin();
+        let k = w.key(KEY_A, true);
+        w.seat.key(k, KEY_A, 1, 0, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.all(k), vec![(DUPLICATE, "pending".into())]);
+        let c = w.commit();
+        assert_eq!(w.status(c), Some((OK, "1".into())));
+        assert_eq!(w.agent_keys(), vec![Ev::Key(KEY_A, 1)]);
+    }
+
     /// A request parked behind a prompt answers a repeat `pending`, and runs
     /// exactly once when the human allows it.
     #[test]
@@ -1415,6 +1506,56 @@ mod m14 {
         assert_eq!(w.until_waited(u).map(|e| e.1), Some(1));
     }
 
+    /// WAIT-01: a wait is woken by the change, in the dispatch that carried
+    /// it, not by a poll; the only timer is one deadline.
+    #[test]
+    fn wait_for_wakes_on_the_change_with_no_poll_timer() {
+        let mut w = world("m14-wait-wake.sock", &["scene.list"]);
+        let t0 = std::time::Instant::now();
+        let id = w.wait(
+            &format!("title_matches handle={} regex=\"^woken$\"", w.handle),
+            60_000,
+        );
+        assert!(w.peer.seen.waited.iter().all(|e| e.0 != id), "parked");
+        let due = w.h.state.agents.waits.armed().expect("a deadline timer");
+        assert!(
+            due > t0 + std::time::Duration::from_secs(50),
+            "armed for the wait's deadline, not a 25 ms poll"
+        );
+        // The retitle commits in one server dispatch; the answer is sent by
+        // that same dispatch's flush, so one client read has it, with no
+        // sleep in between.
+        w.spy.toplevels[0].2.set_title("woken".into());
+        w.spy.toplevels[0].0.commit();
+        w.spy.pump(&mut w.h);
+        w.peer.pump(&mut w.h);
+        assert_eq!(
+            w.peer.seen.waited.iter().find(|e| e.0 == id).map(|e| e.1),
+            Some(1),
+            "answered with the change"
+        );
+        assert_eq!(w.h.state.agents.waits.len(), 0);
+
+        // idle has no event to wake on: it uses a deadline at the end of its
+        // quiet period, never a poll, and is answered when that passes.
+        let i = w.wait(&format!("idle handle={} ms=60", w.handle), 60_000);
+        let armed = w.h.state.agents.waits.armed().expect("armed");
+        let now = std::time::Instant::now();
+        assert!(
+            armed <= now + std::time::Duration::from_millis(80),
+            "at the idle deadline"
+        );
+        assert!(
+            armed > now + std::time::Duration::from_millis(20),
+            "not a 25 ms poll"
+        );
+        assert_eq!(w.until_waited(i).map(|e| e.1), Some(1));
+        assert!(
+            w.h.state.agents.waits.armed().is_none(),
+            "no timer once nothing waits"
+        );
+    }
+
     #[test]
     fn wait_for_refuses_what_it_cannot_answer_and_can_be_cancelled() {
         let mut w = world("m14-wait3.sock", &["scene.list"]);
@@ -1504,6 +1645,11 @@ mod m14 {
         w.pump();
         assert_eq!(w.status(lock), Some((OK, String::new())));
         assert_eq!(w.h.state.agents.locks.active().count(), 1);
+        // COMP-10 §3.4: the pill is up and the window outlined.
+        let drawn = crate::trusted_ui::indicator::drawn(&w.h.state);
+        assert_eq!(drawn.len(), 1);
+        assert_eq!(drawn[0], (0, w.h.state.space.element_geometry(&window)));
+        assert!(drawn[0].1.is_some(), "the locked window is outlined");
 
         let before = heard(&w).len();
         human_key(&mut w, KEY_ESC, true);
@@ -1511,6 +1657,12 @@ mod m14 {
         human_key(&mut w, KEY_A, true);
         human_key(&mut w, KEY_A, false);
         assert_eq!(heard(&w).len(), before, "held while locked, not dropped");
+        crate::trusted_ui::indicator::tick(&mut w.h.state);
+        assert_eq!(
+            crate::trusted_ui::indicator::drawn(&w.h.state)[0].0,
+            4,
+            "the pill counts what is held"
+        );
 
         let un = w.id();
         w.seat.compat_unlock(un);
@@ -1527,6 +1679,11 @@ mod m14 {
             "delivered in order on release"
         );
         assert_eq!(w.h.state.agents.locks.active().count(), 0);
+        crate::trusted_ui::indicator::tick(&mut w.h.state);
+        assert!(
+            crate::trusted_ui::indicator::drawn(&w.h.state).is_empty(),
+            "gone with the lock"
+        );
         let un = w.id();
         w.seat.compat_unlock(un);
         w.pump();
@@ -1535,6 +1692,194 @@ mod m14 {
         // Live again after release.
         human_key(&mut w, KEY_A, true);
         assert_eq!(heard(&w).len(), before + 5);
+    }
+
+    /// LOCK-01: touch and tablet input for the locked window is queued like
+    /// keys and buttons, and replayed on release.
+    #[test]
+    fn a_compat_lock_queues_touch_and_tablet_input_and_replays_it() {
+        use crate::protocols::agent::lock;
+        use smithay::backend::input::{ButtonState, TabletToolDescriptor, TabletToolType};
+        use std::cell::Cell;
+        let mut w = world(
+            "m14-lock-touch.sock",
+            &["scene.list", "seat.focus", "seat.compat_lock"],
+        );
+        let window = find(&w.h, "seatapp");
+        window
+            .user_data()
+            .insert_if_missing(|| crate::shell::rules::RuleSeat(Cell::new(SeatCompat::Lock)));
+        let g = w.h.state.space.element_geometry(&window).expect("mapped");
+        let inside = smithay::utils::Point::<f64, smithay::utils::Logical>::from((
+            f64::from(g.loc.x + g.size.w / 2),
+            f64::from(g.loc.y + g.size.h / 2),
+        ));
+        let tool = TabletToolDescriptor {
+            tool_type: TabletToolType::Pen,
+            hardware_serial: 1,
+            hardware_id_wacom: 1,
+            capabilities: smithay::backend::input::TabletToolCapabilities::empty(),
+        };
+        let held = |w: &World| w.h.state.agents.locks.shown().map(|l| l.3).sum::<usize>();
+
+        // No lock: every hook lets the event through, with nothing queued.
+        let st = &mut w.h.state;
+        assert!(!lock::hold_touch_down(st, 0, inside, 1));
+        assert!(!lock::hold_touch_up(st, 0, 2));
+        assert!(!lock::hold_tablet_tip(st, &tool, true, 3));
+        assert!(!lock::hold_tablet_button(
+            st,
+            &tool,
+            0x14b,
+            ButtonState::Pressed,
+            4
+        ));
+
+        let id = w.id();
+        w.seat.compat_lock(id, w.handle, 0);
+        w.pump();
+        assert_eq!(w.status(id), Some((OK, String::new())));
+
+        let st = &mut w.h.state;
+        st.pointer_location = inside;
+        // A touch off the window passes; on it, the point is held from its
+        // down through its moves and up.
+        let off = smithay::utils::Point::from((g.loc.x as f64 - 50.0, g.loc.y as f64 - 50.0));
+        assert!(!lock::hold_touch_down(st, 1, off, 5));
+        assert!(
+            !lock::hold_touch_move(st, 0, inside, 5),
+            "a point that was not held goes on"
+        );
+        assert!(lock::hold_touch_down(st, 0, inside, 6));
+        assert!(lock::hold_touch_move(st, 0, inside, 7));
+        assert!(st.touch_points.is_empty(), "nothing delivered while locked");
+        assert!(lock::hold_tablet_tip(st, &tool, true, 8));
+        assert!(lock::hold_tablet_button(
+            st,
+            &tool,
+            0x14b,
+            ButtonState::Pressed,
+            9
+        ));
+        assert_eq!(held(&w), 4);
+
+        // Release replays the touch down (its point is live on the window)
+        // and drains the queue.
+        let un = w.id();
+        w.seat.compat_unlock(un);
+        w.pump();
+        assert_eq!(w.h.state.agents.locks.active().count(), 0);
+        assert_eq!(
+            w.h.state.touch_points.len(),
+            1,
+            "the held touch-down was replayed"
+        );
+        let st = &mut w.h.state;
+        assert!(!lock::hold_touch_up(st, 0, 10), "live again after release");
+        assert!(!lock::hold_tablet_tip(st, &tool, false, 11));
+    }
+
+    /// COMP-04 §8: an agent act on a window it holds a compat lock on goes
+    /// through the human seat, not the agent's own.
+    #[test]
+    fn an_agent_act_under_a_compat_lock_goes_through_the_human_seat() {
+        use std::cell::Cell;
+        let caps = ["scene.list", "seat.focus", "seat.key", "seat.compat_lock"];
+        let mut w = world("m14-lock-route.sock", &caps);
+        let window = find(&w.h, "seatapp");
+        window
+            .user_data()
+            .insert_if_missing(|| crate::shell::rules::RuleSeat(Cell::new(SeatCompat::Lock)));
+        let human = |w: &World| -> Vec<Ev> {
+            w.spy
+                .data
+                .on("seat0")
+                .into_iter()
+                .filter(|e| matches!(e, Ev::Key(..)))
+                .collect()
+        };
+        w.focus();
+
+        // No lock: the agent's own seat hears it, the human's does not.
+        w.key(KEY_A, true);
+        w.key(KEY_A, false);
+        assert_eq!(w.agent_keys(), vec![Ev::Key(KEY_A, 1), Ev::Key(KEY_A, 0)]);
+        assert!(human(&w).is_empty());
+
+        let lock = w.id();
+        w.seat.compat_lock(lock, w.handle, 0);
+        w.pump();
+        assert_eq!(w.status(lock), Some((OK, String::new())));
+
+        // Locked: the same act now arrives on the human seat, and the lock
+        // does not queue the agent's own key.
+        let k = w.key(KEY_A, true);
+        assert_eq!(w.status(k), Some((OK, String::new())));
+        assert_eq!(w.agent_keys().len(), 2, "nothing more on the agent seat");
+        assert_eq!(human(&w), vec![Ev::Key(KEY_A, 1)]);
+        assert_eq!(
+            w.h.state.agents.locks.shown().next().map(|l| l.3),
+            Some(0),
+            "not queued"
+        );
+
+        // Releasing the lock lifts a key the agent left down.
+        let un = w.id();
+        w.seat.compat_unlock(un);
+        w.pump();
+        assert_eq!(human(&w), vec![Ev::Key(KEY_A, 1), Ev::Key(KEY_A, 0)]);
+    }
+
+    /// A routed act never reaches the human seat while something owns it, and
+    /// an agent can lift only the touch points it put down itself.
+    #[test]
+    fn routed_acts_respect_a_held_seat_and_the_agents_own_touch_points() {
+        use std::cell::Cell;
+        let caps = [
+            "scene.list",
+            "seat.focus",
+            "seat.key",
+            "seat.touch",
+            "seat.compat_lock",
+        ];
+        let mut w = world("m14-lock-guards.sock", &caps);
+        let window = find(&w.h, "seatapp");
+        window
+            .user_data()
+            .insert_if_missing(|| crate::shell::rules::RuleSeat(Cell::new(SeatCompat::Lock)));
+        let human = |w: &World| {
+            w.spy
+                .data
+                .on("seat0")
+                .iter()
+                .filter(|e| matches!(e, Ev::Key(..)))
+                .count()
+        };
+        w.focus();
+        let lock = w.id();
+        w.seat.compat_lock(lock, w.handle, 0);
+        w.pump();
+        assert_eq!(w.status(lock), Some((OK, String::new())));
+
+        // A selection (the same predicate as a trusted prompt) holds the seat.
+        w.h.state.region_select.start((0, 0).into());
+        let k = w.key(KEY_A, true);
+        assert_eq!(w.status(k), Some((FOCUS_LOST, "seat_held".into())));
+        assert_eq!(human(&w), 0, "nothing delivered");
+        w.h.state.region_select.cancel();
+        let k = w.key(KEY_A, true);
+        assert_eq!(w.status(k), Some((OK, String::new())));
+        assert_eq!(human(&w), 1);
+
+        // A touch point the human or another agent put down is not the agent's.
+        let id = w.id();
+        w.seat.touch_up(id, 7, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(id), Some((INVALID_ARGUMENT, "touch_id".into())));
+        let id = w.id();
+        w.seat.touch_motion(id, 7, 10, 10, 0, vec![0x80]);
+        w.pump();
+        assert_eq!(w.status(id), Some((INVALID_ARGUMENT, "touch_id".into())));
     }
 
     /// The lock gives the seat back by itself: on timeout, on pause (the
@@ -1608,15 +1953,13 @@ mod m14 {
         w.pump();
         assert_eq!(w.status(id), Some((NO_CAPABILITY, "seat.compat_lock".into())));
 
+        // Its own scope bounds it (S-01 §2.2); seat.focus is not needed. The
+        // window is not flagged, so it is reached and refused as not compat.
         let mut w = world("m14-lock-cap2.sock", &["scene.list", "seat.compat_lock"]);
         let id = w.id();
         w.seat.compat_lock(id, w.handle, 0);
         w.pump();
-        assert_eq!(
-            w.status(id),
-            Some((NO_CAPABILITY, "seat.focus".into())),
-            "scope comes from seat.focus"
-        );
+        assert_eq!(w.status(id), Some((INVALID_ARGUMENT, "not_compat".into())));
 
         let mut w = world(
             "m14-lock-big.sock",

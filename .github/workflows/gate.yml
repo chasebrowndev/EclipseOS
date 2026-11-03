@@ -224,10 +224,14 @@ jobs:
       - uses: actions/checkout@v4
       # Advisories + license + source checks. This is a down payment on
       # S-12; when S-12 lands it supersedes the deny.toml written here.
-      - uses: EmbarkStudios/cargo-deny-action@v2
+      # Installed as a binary rather than via cargo-deny-action: that action
+      # runs in a musl image that can't see the toolchain pinned in
+      # rust-toolchain.toml.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
         with:
-          command: check advisories bans licenses sources
-          manifest-path: ${{ matrix.workspace }}/Cargo.toml
+          tool: cargo-deny
+      - run: cargo deny --manifest-path ${{ matrix.workspace }}/Cargo.toml --all-features check advisories bans licenses sources
 
   tcb-review:
     name: TCB touch check
@@ -319,6 +323,19 @@ jobs:
       # F-07 §7: docs/ is the source of truth, so a path it cites must exist.
       - name: check doc paths
         run: abyss/ci/doc-refs.sh
+
+  firefox-glass:
+    name: Glass for Firefox lint + signed XPI matches source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # ADR 0079: the extension lints clean, and the committed AMO-signed
+      # XPI holds exactly the reviewed source.
+      - name: web-ext lint
+        run: npx --yes web-ext@10.7.0 lint -s browser/firefox-glass --warnings-as-errors
+      - name: signed XPI matches source
+        run: packaging/firefox/check-xpi.sh
 
   spec-trail:
     name: PR cites a spec section

@@ -49,6 +49,7 @@ mod general;
 mod parse;
 #[cfg(test)]
 pub(crate) mod tests;
+mod theme;
 mod windowrule;
 
 pub use bar::*;
@@ -58,6 +59,7 @@ pub use devices::*;
 pub use errors::*;
 pub use general::*;
 pub use parse::*;
+pub use theme::*;
 pub use windowrule::*;
 
 use std::path::{Path, PathBuf};
@@ -97,6 +99,7 @@ pub fn parse_single_for_tests(text: &str) -> Config {
         ..Config::default()
     };
     cfg.apply(&doc, &mut Vec::new());
+    cfg.finish_themes();
     cfg
 }
 
@@ -133,6 +136,11 @@ pub struct Config {
     pub wallpaper: Wallpaper,
     pub annotations: AnnotationColors,
     pub oracle_eyes: OracleEyes,
+    /// User `theme` blocks, in definition order (the built-ins are not here).
+    pub themes: Vec<ThemeDef>,
+    /// The theme in force, set by the compositor through
+    /// [`Config::apply_appearance`]; the built-in dark until then.
+    pub appearance: Appearance,
     pub input: Input,
     pub binds: Vec<Bind>,
     /// Touchpad swipe bindings, one per `(fingers, direction)`: the defaults
@@ -178,6 +186,10 @@ pub struct Config {
     /// block already has its own positioned error, so a `custom:` id naming
     /// it is not also reported missing.
     widget_blocks: Vec<String>,
+    /// Themed values the file set itself, so the theme never overrides them.
+    look_set: ExplicitLook,
+    /// `theme-dark` / `theme-light` to check once every file is read.
+    pending_themes: Vec<PendingThemeRef>,
 }
 
 impl Default for Config {
@@ -202,6 +214,8 @@ impl Default for Config {
             wallpaper: Wallpaper::default(),
             annotations: AnnotationColors::default(),
             oracle_eyes: OracleEyes::default(),
+            themes: Vec::new(),
+            appearance: Appearance::default(),
             input: Input::default(),
             binds: default_binds(),
             gesture_binds: default_gesture_binds(),
@@ -218,6 +232,8 @@ impl Default for Config {
             cur: None,
             pending_custom: Vec::new(),
             widget_blocks: Vec::new(),
+            look_set: ExplicitLook::default(),
+            pending_themes: Vec::new(),
         }
     }
 }
@@ -327,6 +343,7 @@ impl Config {
         let mut defaults = oracle_eyes_binds(&cfg.oracle_eyes);
         defaults.extend(defaults_with_launcher(&cfg.launcher));
         cfg.binds = merge_binds(defaults, binds_from_file);
+        cfg.finish_themes();
         if !any {
             tracing::info!("no config found, using built-in defaults");
         } else {
@@ -395,6 +412,7 @@ impl Config {
             ..Config::default()
         };
         cfg.apply(&doc, &mut Vec::new());
+        cfg.finish_themes();
         cfg.errors
     }
 
@@ -672,6 +690,7 @@ impl Config {
                 "decoration" => self.apply_decoration(node),
                 "animations" => self.apply_animations(node),
                 "windowrule" => self.apply_windowrule(node),
+                "theme" => self.apply_theme_block(node),
                 _ => {
                     self.unknown_key(node, "", "config node");
                     if let Some(g) = misspelt_guard(name) {

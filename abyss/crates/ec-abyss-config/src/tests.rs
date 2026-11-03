@@ -476,7 +476,9 @@ fn bar_clock_and_popup_anchor_parse() {
         d.bar.clock,
         BarClock {
             hour_12: true,
-            date_mdy: true
+            date_mdy: true,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(d.bar.popup_anchor, BarPopupAnchor::Cell);
@@ -487,7 +489,9 @@ fn bar_clock_and_popup_anchor_parse() {
         c.bar.clock,
         BarClock {
             hour_12: false,
-            date_mdy: false
+            date_mdy: false,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false
         }
     );
     assert_eq!(c.bar.popup_anchor, BarPopupAnchor::Pointer);
@@ -710,8 +714,16 @@ fn bar_widgets_parse() {
     assert_eq!(d.widgets.order, schema::BAR_WIDGET_DEFAULT_ORDER);
     assert_eq!(d.widgets.important, ["clock", "battery"]);
     assert_eq!(d.motion.curve, "spring");
+    assert_eq!(d.widgets.rounding, 17);
+    assert_eq!(
+        widgets_cfg("bar { widgets { rounding 40; } }")
+            .bar
+            .widgets
+            .rounding,
+        17
+    );
     let cfg = widgets_cfg(
-            "bar {\n    widgets {\n        order \"clock\" \"custom:cpu\" \"tray\"\n        important \"custom:cpu\"\n        \
+            "bar {\n    widgets {\n        order \"clock\" \"custom:cpu\" \"tray\"\n        important \"custom:cpu\"\n        rounding 6\n        \
              now-playing { art #false; visualizer; remote-art #false; }\n        system-usage { interval-ms \"2s\"; gpu #false; disk-path \"/home\"; }\n        \
              volume { step 10; scroll #false; max-percent 150; }\n    }\n    motion { enabled #false; duration-ms 300; curve \"ease-out\"; }\n    \
              widget \"cpu\" { source \"usage.cpu\"; format \"{}%\"; }\n}\n",
@@ -720,6 +732,7 @@ fn bar_widgets_parse() {
     let w = &cfg.bar.widgets;
     assert_eq!(w.order, ["clock", "custom:cpu", "tray"]);
     assert_eq!(w.important, ["custom:cpu"]);
+    assert_eq!(w.rounding, 6);
     assert!(!w.now_playing.art && w.now_playing.visualizer && !w.now_playing.remote_art);
     assert!(Config::default().bar.widgets.now_playing.remote_art);
     assert_eq!(w.system_usage.interval_ms, 2000);
@@ -962,6 +975,9 @@ fn an_unparseable_file_is_refused_not_defaulted() {
 /// A config that declares binds extends the defaults; it does not replace
 /// the table. The live regression this covers: a 3-bind user config left a
 /// 3-bind table, dropping the Super+Escape override chord.
+/// The six Oracle Eyes chords ship bound on top of `default_binds()`.
+const SHIPPED_OE_CHORDS: usize = 6;
+
 #[test]
 fn config_binds_extend_defaults() {
     let dir = std::env::temp_dir().join(format!("abyss-cfg-merge-{}", std::process::id()));
@@ -970,7 +986,7 @@ fn config_binds_extend_defaults() {
     std::fs::write(&f, "bind \"SUPER\" \"F1\" { quit; }\n").unwrap();
     let cfg = Config::load(Some(&f));
     assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
-    assert_eq!(cfg.binds.len(), default_binds().len() + 1);
+    assert_eq!(cfg.binds.len(), default_binds().len() + SHIPPED_OE_CHORDS + 1);
     assert!(cfg.binds.iter().any(|b| b.key == Keysym::F1));
 
     // The two reserved chords survive any config (COMP-04 §6, COMP-13 §1.1).
@@ -995,7 +1011,11 @@ fn config_bind_overrides_default_chord() {
     std::fs::write(&f, "bind \"SUPER\" \"q\" { spawn \"alacritty\"; }\n").unwrap();
     let cfg = Config::load(Some(&f));
     assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
-    assert_eq!(cfg.binds.len(), default_binds().len(), "override, not addition");
+    assert_eq!(
+        cfg.binds.len(),
+        default_binds().len() + SHIPPED_OE_CHORDS,
+        "override, not addition"
+    );
     let mods = ModifiersState {
         logo: true,
         ..Default::default()
@@ -1157,6 +1177,49 @@ fn decoration_defaults_round_but_are_otherwise_no_effect() {
     assert!(cfg.animations.any() && !cfg.animations.custom());
 }
 
+/// `surface` ships at its sRGB-intent defaults, and parses and range-checks
+/// like its `decoration` neighbours.
+#[test]
+fn surface_defaults_parse_and_reject_out_of_range() {
+    let s = &Config::default().decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+
+    let doc: KdlDocument = r#"
+            decoration {
+                surface { tint 0.5; card-fill 0.2; inset-fill 0 }
+            }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.5, 0.2, 0.0));
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+
+    // Every out-of-range or wrong-typed value keeps its default, and the
+    // fill maximum is 0.30 where the tint's is 1.0.
+    let doc: KdlDocument = r#"
+            decoration {
+                surface { tint 1.5; card-fill 0.31; inset-fill "half"; nope 1 }
+            }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+    assert_eq!(cfg.errors.len(), 4, "{:?}", cfg.errors);
+    let doc: KdlDocument = "decoration { surface { tint 1.0; card-fill 0.30; inset-fill 0.30 } }\n"
+        .parse()
+        .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    let s = &cfg.decoration.surface;
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (1.0, 0.30, 0.30));
+}
+
 /// Blur ships on, in glass mode (C-16): translucent surfaces get the
 /// Liquid Glass pass without being asked. It costs a render pass, so it
 /// is called out here rather than folded into the no-effect test above
@@ -1285,6 +1348,9 @@ fn oracle_eyes_parses_and_bad_values_keep_defaults() {
             auto_interval_ms: 5000,
             hold_ms: 6000,
             debug: true,
+            models: Vec::new(),
+            image_mode: false,
+            image_auto_escalate: false,
             bind: OracleEyesBinds::default(),
         }
     );
@@ -1295,6 +1361,30 @@ fn oracle_eyes_parses_and_bad_values_keep_defaults() {
     );
     assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
     assert_eq!(cfg.oracle_eyes, OracleEyes::default());
+
+    // The image flags and the model list, and a list that could read as a flag.
+    let cfg = parse_single_for_tests(
+        "oracle-eyes {\n  models \"haiku\" \"sonnet\" \"opus\"\n  image-mode #true\n  \
+             image-auto-escalate #true\n}\n",
+    );
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(cfg.oracle_eyes.models, ["haiku", "sonnet", "opus"]);
+    assert!(cfg.oracle_eyes.image_mode);
+    assert!(cfg.oracle_eyes.image_auto_escalate);
+    let cfg = parse_single_for_tests("oracle-eyes { models; }");
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert!(cfg.oracle_eyes.models.is_empty());
+    for bad in [
+        "oracle-eyes { models \"haiku\" \"--dangerously-skip\"; }",
+        "oracle-eyes { models \"\"; }",
+        "oracle-eyes { models \"son net\"; }",
+        "oracle-eyes { models 3; }",
+        "oracle-eyes { image-mode \"yes\"; }",
+    ] {
+        let cfg = parse_single_for_tests(bad);
+        assert_eq!(cfg.errors.len(), 1, "{bad}: {:?}", cfg.errors);
+        assert_eq!(cfg.oracle_eyes, OracleEyes::default(), "{bad}");
+    }
 
     for bad in [
         "oracle-eyes { model-command \"\"; }",
@@ -1313,20 +1403,24 @@ fn oracle_eyes_parses_and_bad_values_keep_defaults() {
 #[test]
 fn oracle_eyes_binds_become_default_binds() {
     let c = Config::default();
-    assert!(
-        oracle_eyes_binds(&c.oracle_eyes).is_empty(),
-        "nothing bound by default"
-    );
+    let defaults = oracle_eyes_binds(&c.oracle_eyes);
+    assert_eq!(defaults.len(), 6, "all six chords ship bound");
+    assert_eq!(defaults[0].action, Action::AnnotationSelect);
+    assert_eq!(defaults[0].key, Keysym::grave);
     let c = parse_single_for_tests(
         "oracle-eyes { bind { select \"Super+Shift+A\"; dismiss \"Super+Shift+D\"; \
-             expand \"none\"; auto-toggle \"Super+Shift+T\"; } }",
+             expand \"none\"; auto-toggle \"Super+Shift+T\"; model-switch \"Super+Shift+M\"; \
+             image-toggle \"Super+Shift+I\"; } }",
     );
     assert!(c.errors.is_empty(), "{:?}", c.errors);
     let binds = oracle_eyes_binds(&c.oracle_eyes);
-    assert_eq!(binds.len(), 3);
+    assert_eq!(binds.len(), 5);
     assert_eq!(binds[0].action, Action::AnnotationSelect);
     assert_eq!(binds[0].key, Keysym::a);
     assert_eq!(binds[2].action, Action::AnnotationAutoToggle);
+    assert_eq!(binds[3].action, Action::AnnotationModelSwitch);
+    assert_eq!(binds[4].action, Action::AnnotationImageToggle);
+    assert_eq!(binds[4].key, Keysym::i);
     assert_eq!(c.oracle_eyes.bind.expand.text, "none");
 
     let c =
@@ -1378,6 +1472,82 @@ fn annotation_and_oracle_eyes_edits_round_trip() {
     let mut cfg = cfg;
     cfg.oracle_eyes.model_command = None;
     assert_eq!(schema::get(&cfg, "oracle-eyes.model-command"), Some(V::Null));
+}
+
+#[test]
+fn windowrule_translucent_region_takes_top_and_opacity() {
+    for (value, want) in [("top=84 opacity=0.6", (84, 0.6)), ("opacity=1 top=0", (0, 1.0))] {
+        let cfg = blur_cfg(&format!(
+            "windowrule \"translucent-region {value}\" {{ app-id \"a\"; }}\n"
+        ));
+        assert!(cfg.errors.is_empty(), "{value}: {:?}", cfg.errors);
+        assert_eq!(
+            cfg.window_rules[0].action,
+            RuleAction::TranslucentRegion {
+                top: want.0,
+                opacity: want.1,
+                key: None
+            }
+        );
+    }
+    let cfg =
+        blur_cfg("windowrule \"translucent-region top=40 key=#1B1b1f opacity=0.35\" { app-id \"a\"; }\n");
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(
+        cfg.window_rules[0].action,
+        RuleAction::TranslucentRegion {
+            top: 40,
+            opacity: 0.35,
+            key: Some([0x1b, 0x1b, 0x1f])
+        }
+    );
+    for bad in [
+        "",
+        " top=40",
+        " opacity=0.5",
+        " top=-1 opacity=0.5",
+        " top=40 opacity=1.5",
+        " top=40 opacity=-0.1",
+        " top=4.5 opacity=0.5",
+        " top=40 opacity=0.5 extra=1",
+        " top=40 top=41 opacity=0.5",
+        " 40 0.5",
+        " top=40 opacity=0.5 key=1b1b1f",
+        " top=40 opacity=0.5 key=#1b1b1",
+        " top=40 opacity=0.5 key=#1b1b1fff",
+        " top=40 opacity=0.5 key=#zzzzzz",
+        " top=40 opacity=0.5 key=#1b1b1f key=#1b1b1f",
+    ] {
+        let cfg = blur_cfg(&format!(
+            "windowrule \"translucent-region{bad}\" {{ app-id \"a\"; }}\n"
+        ));
+        assert!(cfg.window_rules.is_empty(), "{bad:?} must be rejected");
+    }
+}
+
+#[test]
+fn windowrule_floating_matcher_takes_a_bool() {
+    for (spelling, want) in [
+        ("floating", true),
+        ("floating #true", true),
+        ("floating #false", false),
+        // Bare `true` is a KDL v2 syntax error; the quoted words are accepted.
+        ("floating \"true\"", true),
+        ("floating \"false\"", false),
+    ] {
+        let cfg = blur_cfg(&format!(
+            "windowrule \"translucent-region top=74 opacity=0.6\" {{ app-id \"firefox\"; {spelling}; }}\n"
+        ));
+        assert!(cfg.errors.is_empty(), "{spelling}: {:?}", cfg.errors);
+        assert_eq!(cfg.window_rules[0].matchers.floating, Some(want), "{spelling}");
+    }
+    // A floating matcher alone is a matcher, so the rule is not match-all.
+    let cfg = blur_cfg("windowrule \"opacity 0.9\" { floating #false; }\n");
+    assert_eq!(cfg.window_rules.len(), 1);
+    let cfg = blur_cfg("windowrule \"opacity 0.9\" { floating \"maybe\"; }\n");
+    assert!(cfg.window_rules.is_empty());
+    let cfg = blur_cfg("windowrule \"opacity 0.9\" { floating 3; }\n");
+    assert!(cfg.window_rules.is_empty());
 }
 
 #[test]
@@ -1852,6 +2022,8 @@ fn annotation_chords_parse_and_are_not_bound_by_default() {
         ("annotation-dismiss", Action::AnnotationDismiss),
         ("annotation-expand", Action::AnnotationExpand),
         ("annotation-auto-toggle", Action::AnnotationAutoToggle),
+        ("annotation-model-switch", Action::AnnotationModelSwitch),
+        ("annotation-image-toggle", Action::AnnotationImageToggle),
     ] {
         let doc: KdlDocument = format!("bind \"SUPER CTRL\" \"o\" {{ {name}; }}")
             .parse()
@@ -1868,6 +2040,8 @@ fn annotation_chords_parse_and_are_not_bound_by_default() {
             | Action::AnnotationDismiss
             | Action::AnnotationExpand
             | Action::AnnotationAutoToggle
+            | Action::AnnotationModelSwitch
+            | Action::AnnotationImageToggle
     )));
 }
 
@@ -2844,4 +3018,176 @@ mod startup_tests {
             .to_owned();
         assert!(r.contains("change not applied"), "{r}");
     }
+}
+
+// ---- themes (ADR 0084) ----
+
+fn theme_errs(text: &str) -> Vec<String> {
+    parse_single_for_tests(text)
+        .errors
+        .into_iter()
+        .map(|e| e.message)
+        .collect()
+}
+
+#[test]
+fn theme_defaults_and_general_keys() {
+    let cfg = parse_single_for_tests("");
+    assert_eq!(cfg.general.color_scheme, ColorSetting::Dark);
+    assert_eq!(
+        (cfg.general.theme_dark.as_str(), cfg.general.theme_light.as_str()),
+        ("dark", "light")
+    );
+    assert_eq!(fmt_hhmm(cfg.general.light_from), "07:00");
+    assert_eq!(fmt_hhmm(cfg.general.dark_from), "19:00");
+    assert_eq!(cfg.appearance, Appearance::default());
+    let cfg = parse_single_for_tests(
+        "general { color-scheme \"auto\"; light-from \"06:30\"; dark-from \"20:15\" }\n",
+    );
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(cfg.general.color_scheme, ColorSetting::Auto);
+    assert_eq!(cfg.scheme_at(6 * 60 + 29), ec_theme::Scheme::Dark);
+    assert_eq!(cfg.scheme_at(6 * 60 + 30), ec_theme::Scheme::Light);
+    assert_eq!(cfg.scheme_at(20 * 60 + 14), ec_theme::Scheme::Light);
+    assert_eq!(cfg.scheme_at(20 * 60 + 15), ec_theme::Scheme::Dark);
+    // light-from after dark-from wraps midnight.
+    let cfg = parse_single_for_tests(
+        "general { color-scheme \"auto\"; light-from \"22:00\"; dark-from \"05:00\" }\n",
+    );
+    assert_eq!(cfg.scheme_at(23 * 60), ec_theme::Scheme::Light);
+    assert_eq!(cfg.scheme_at(3 * 60), ec_theme::Scheme::Light);
+    assert_eq!(cfg.scheme_at(12 * 60), ec_theme::Scheme::Dark);
+}
+
+#[test]
+fn theme_general_rejections() {
+    for bad in [
+        "general { color-scheme \"sepia\" }",
+        "general { color-scheme 3 }",
+        "general { light-from \"7:00\" }",
+        "general { light-from \"24:00\" }",
+        "general { dark-from \"19:60\" }",
+        "general { dark-from \"evening\" }",
+        "general { light-from \"07:00\"; dark-from \"07:00\" }",
+        "general { theme-dark \"nope\" }",
+        "general { theme-dark \"light\" }",
+        "general { theme-light \"dark\" }",
+    ] {
+        assert_eq!(theme_errs(bad).len(), 1, "{bad}: {:?}", theme_errs(bad));
+    }
+}
+
+#[test]
+fn theme_blocks_resolve_inherit_and_select() {
+    let cfg = parse_single_for_tests(
+        "theme \"ember\" { accent \"#e8873a\"; accent-text \"#f0a060\" }\n\
+         theme \"ember2\" { inherit \"ember\"; rim 0.4 }\n\
+         theme \"paper\" { inherit \"light\"; accent \"#c06010\"; accent-text \"#7a3a00\" }\n\
+         general { theme-dark \"ember2\"; theme-light \"paper\"; color-scheme \"light\" }\n",
+    );
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    let e = cfg.theme_seeds("ember").unwrap();
+    assert_eq!(e.base, ec_theme::DARK_SEEDS.base);
+    assert_eq!(e.accent, ec_theme::Rgba::rgb(0xe8873a));
+    let e2 = cfg.theme_seeds("ember2").unwrap();
+    assert_eq!(e2.accent, e.accent);
+    assert_eq!(e2.rim, 0.4);
+    let p = cfg.theme_seeds("paper").unwrap();
+    assert_eq!(p.base, ec_theme::LIGHT_SEEDS.base);
+    let a = cfg.appearance_for(cfg.scheme_at(0));
+    assert_eq!((a.scheme, a.name.as_str()), (ec_theme::Scheme::Light, "paper"));
+    assert_eq!(cfg.appearance_for(ec_theme::Scheme::Dark).name, "ember2");
+}
+
+#[test]
+fn theme_block_rejections() {
+    let cases = [
+        ("theme \"dark\" { accent \"#ff0000\" }", "built in"),
+        ("theme \"light\" { }", "built in"),
+        ("theme \"a\" { }\ntheme \"a\" { }", "twice"),
+        ("theme \"a\" { inherit \"a\" }", "cycle"),
+        (
+            "theme \"a\" { inherit \"b\" }\ntheme \"b\" { inherit \"a\" }",
+            "unknown theme",
+        ),
+        ("theme \"a\" { inherit \"zzz\" }", "unknown theme"),
+        ("theme \"a\" { accent \"red\" }", "bad color"),
+        ("theme \"a\" { rim 1.5 }", "rim"),
+        ("theme \"a\" { frost-tint \"#17140f80\" }", "refused"),
+        ("theme \"a\" { base \"#101010\"; ink \"#303030\" }", "contrast"),
+        (
+            "theme \"a\" { accent \"#222222\"; accent-text \"#222222\" }",
+            "contrast",
+        ),
+        ("theme \"a\" { colour \"#ffffff\" }", ""),
+        ("theme { }", "name"),
+    ];
+    for (text, needle) in cases {
+        let errs = theme_errs(text);
+        assert!(
+            !errs.is_empty() && errs.iter().any(|m| m.contains(needle)),
+            "{text}: {errs:?}"
+        );
+        let cfg = parse_single_for_tests(text);
+        assert!(!cfg
+            .themes
+            .iter()
+            .any(|t| t.name == "a" && text.starts_with("theme \"a\" { inherit \"a\"")));
+    }
+}
+
+#[test]
+fn theme_scheme_must_match_selection() {
+    // A dark-brightness theme cannot be the light theme, and vice versa.
+    let cfg = parse_single_for_tests("theme \"night\" { }\ngeneral { theme-light \"night\" }\n");
+    assert!(
+        cfg.errors.iter().any(|e| e.message.contains("theme-light")),
+        "{:?}",
+        cfg.errors
+    );
+    let cfg = parse_single_for_tests("theme \"day\" { inherit \"light\" }\ngeneral { theme-dark \"day\" }\n");
+    assert!(
+        cfg.errors.iter().any(|e| e.message.contains("theme-dark")),
+        "{:?}",
+        cfg.errors
+    );
+    // A theme defined after the selection still resolves.
+    let cfg = parse_single_for_tests("general { theme-dark \"late\" }\ntheme \"late\" { }\n");
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+}
+
+#[test]
+fn appearance_fills_only_what_the_config_left_unset() {
+    // Built-in dark changes nothing.
+    let mut cfg = parse_single_for_tests("");
+    let before = (
+        cfg.decoration.blur.clone().frost,
+        cfg.decoration.blur.glass.rim,
+        cfg.annotations,
+    );
+    cfg.apply_appearance(cfg.appearance_for(ec_theme::Scheme::Dark));
+    assert_eq!(
+        before,
+        (
+            cfg.decoration.blur.frost.clone(),
+            cfg.decoration.blur.glass.rim,
+            cfg.annotations
+        )
+    );
+    // Dark glass is the original look (the shader's light mix is 0), light is 1.
+    assert_eq!(cfg.appearance.glass_light(), 0.0);
+    // Light supplies frost tint, rim and annotation colours.
+    cfg.apply_appearance(cfg.appearance_for(ec_theme::Scheme::Light));
+    assert_ne!(cfg.decoration.blur.frost.tint, FROST_TINT);
+    assert_ne!(cfg.annotations, AnnotationColors::DEFAULT);
+    assert_eq!(cfg.appearance.glass_light(), 1.0);
+    // An explicit key wins over the theme.
+    let mut cfg = parse_single_for_tests(
+        "decoration {\n blur {\n frost { tint \"#112233aa\"; }\n glass { rim 0.9; }\n }\n}\nannotations { accent \"#445566\" }\n",
+    );
+    cfg.apply_appearance(cfg.appearance_for(ec_theme::Scheme::Light));
+    assert_eq!(cfg.decoration.blur.frost.tint, parse_color("#112233aa").unwrap());
+    assert_eq!(cfg.decoration.blur.glass.rim, 0.9);
+    assert_eq!(cfg.annotations.accent, parse_color("#445566").unwrap());
+    assert_ne!(cfg.annotations.text, AnnotationColors::DEFAULT.text);
 }

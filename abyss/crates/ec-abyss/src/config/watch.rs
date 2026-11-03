@@ -64,6 +64,9 @@ fn dirs_config() -> Option<PathBuf> {
 /// Start watching. A failure is logged and the compositor runs on without hot
 /// reload; `reload_config` over the control socket still works.
 pub fn start(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
+    // The config is final here: settle the theme (and its `auto` timer) once,
+    // whichever backend started us.
+    crate::theme::refresh(state);
     // SAFETY: `inotify_init1` takes only flags and returns a new fd or -1.
     let raw = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
     if raw < 0 {

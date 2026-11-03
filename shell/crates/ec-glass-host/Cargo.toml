@@ -1,0 +1,21 @@
+[package]
+name = "ec-glass-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Firefox native-messaging host: relays the glass extension's page-area heights to abyss (ADR 0079)."
+publish = false
+
+[lib]
+name = "ec_glass_host"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-glass-host"
+path = "src/main.rs"
+
+[dependencies]
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
+serde_json.workspace = true

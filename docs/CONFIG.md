@@ -79,10 +79,15 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `oracle-eyes.auto-interval-ms` | int 1000..600000 | `3000` | live | Oracle Eyes: in automatic mode, the least time between two questions. |
 | `oracle-eyes.hold-ms` | int 500..60000 | `4000` | live | Oracle Eyes: the least time an answer stays on screen; longer answers stay longer. |
 | `oracle-eyes.debug` | bool | `#false` | live | Oracle Eyes debug mode: the taskbar eye turns red and is shown in screen captures, and the daemon writes a debug log. |
-| `oracle-eyes.bind.select` | string | `"none"` | live | Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
-| `oracle-eyes.bind.dismiss` | string | `"none"` | live | Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
-| `oracle-eyes.bind.expand` | string | `"none"` | live | Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
-| `oracle-eyes.bind.auto-toggle` | string | `"none"` | live | Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` (the default) leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.models` | list of strings | _empty_ | live | Oracle Eyes: model names for the model-switch chord, in the order it cycles, e.g. `models "haiku" "sonnet" "opus"`. Empty (the default) runs the model command with its own default model. |
+| `oracle-eyes.image-mode` | bool | `#false` | live | Oracle Eyes: send the frame to the model as an image as well as OCR text. Off by default, since the pixels leave the redaction filter; the image-toggle chord changes it for the session. |
+| `oracle-eyes.image-auto-escalate` | bool | `#false` | live | Oracle Eyes: when an answer is weak (low confidence or poor OCR), retry once with the next model and/or image mode. Off by default. |
+| `oracle-eyes.bind.select` | string | `"Super+grave"` | live | Chord for annotation-select: draw a rectangle for Oracle Eyes to read, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.dismiss` | string | `"Super+Alt+Down"` | live | Chord for annotation-dismiss: dismiss the answer on screen, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.expand` | string | `"Super+Alt+Up"` | live | Chord for annotation-expand: expand the answer on screen, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.auto-toggle` | string | `"Super+a"` | live | Chord for annotation-auto-toggle: turn automatic mode on or off, like `Super+Shift+A`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.model-switch` | string | `"Super+Alt+Right"` | live | Chord for annotation-model-switch: move to the next model in `oracle-eyes.models`, like `Super+Shift+M`; `none` leaves it unbound. A `bind` block on the same chord wins. |
+| `oracle-eyes.bind.image-toggle` | string | `"Super+Alt+Left"` | live | Chord for annotation-image-toggle: turn image mode on or off for this session, like `Super+Shift+I`; `none` leaves it unbound. A `bind` block on the same chord wins. |
 
 ### `general`
 
@@ -106,6 +111,11 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `general.drop-guides` | bool | `#true` | live | Draw the drop zones and a ghost of where a dragged window will land (radiant layout). |
 | `general.drop-guide-color` | colour `#rrggbb[aa]` | `#e8a33dff` | live | Colour of the drop guides. |
 | `general.drop-edge-band` | int 0..512 | `40` | live | Width of the edge strip a dragged window's centre aims at to drop it as a full-height column or full-width row, logical px. 0 disables edge drops. |
+| `general.color-scheme` | dark \| light \| auto | `"dark"` | live | Colour scheme of the whole desktop (ADR 0084): `dark`, `light`, or `auto`, which follows the `light-from` / `dark-from` schedule in local time. Compositor-drawn material, every shell pane and client apps (the `org.freedesktop.appearance` hint) follow it, live. |
+| `general.theme-dark` | string | `"dark"` | live | Name of the theme used while the scheme is dark: the built-in `dark` or a `theme` block. It must be a dark theme (its `base` is dark); a light theme is refused. |
+| `general.theme-light` | string | `"light"` | live | Name of the theme used while the scheme is light: the built-in `light` or a `theme` block. It must be a light theme; a dark theme is refused. |
+| `general.light-from` | string | `"07:00"` | live | With `color-scheme "auto"`: the local time of day, `HH:MM`, the light scheme starts. A fixed schedule, not sunrise: no location is used. |
+| `general.dark-from` | string | `"19:00"` | live | With `color-scheme "auto"`: the local time of day, `HH:MM`, the dark scheme starts. Must differ from `light-from`. |
 
 ### `render`
 
@@ -130,10 +140,13 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `bar.rounding` | int 0..64 | `20` | live | Corner radius in logical px for the taskbar's own blur backdrop, and the width of the curved fillets where a shaped layer's boxes meet. |
 | `bar.clock.hour-12` | bool | `#true` | live | Show the taskbar clock in 12-hour time with AM/PM; off is 24-hour. |
 | `bar.clock.date-mdy` | bool | `#true` | live | Write the taskbar date month/day/year; off is ISO year-month-day (2026-09-23). |
-| `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups open: under the cell that was clicked, or at the pointer. |
+| `bar.clock.week-start` | auto \| monday \| sunday | `"auto"` | live | First weekday of the calendar that opens from the taskbar clock; auto follows the locale. |
+| `bar.clock.week-numbers` | bool | `#false` | live | Show ISO week numbers beside the calendar's weeks. |
+| `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups (tray menus, the tray overflow) open: under the cell that was clicked, or at the pointer. The wifi and bluetooth drawers are not popups: they unroll from the bar under their own cell, like the start menu. |
 | `bar.eye` | bool | `#true` | live | Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The compositor only stores this; the taskbar reads Oracle-Eyes' own status socket (ADR 0055). |
 | `bar.widgets.order` | list of strings | `"now-playing" "volume" "network" "bluetooth" "battery" "tray" "clock"` | live | Widgets drawn after the task strip, left to right (ADR 0065). Built-in ids: now-playing, system-usage, volume, network, bluetooth, battery, tray (the StatusNotifierItems and their overflow drawer) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left out is not drawn. An unknown id, a repeated one, or a `custom:` naming no `widget` block is refused. |
 | `bar.widgets.important` | list of strings | `"clock" "battery"` | live | Widgets that never compress: when the bar runs short of room they keep their full size and everything else gives way first. Same ids as `bar.widgets.order`. |
+| `bar.widgets.rounding` | int 0..17 | `17` | live | Corner radius in logical px for each taskbar widget's glass cell. 17 is a full capsule; 0 is square. Window chips and the bar's own sheet (`bar.rounding`) are unaffected. |
 | `bar.widgets.now-playing.art` | bool | `#true` | live | Show album art in the Now Playing widget. Art the player keeps on this machine is read from disk; `https` art is fetched only while `bar.widgets.now-playing.remote-art` is on. |
 | `bar.widgets.now-playing.visualizer` | bool | `#true` | live | Draw the audio visualizer in Now Playing. While media plays and the widget is on screen it reads the default output's monitor, reduced to levels in memory and never stored, logged or sent. Off closes the stream. |
 | `bar.widgets.now-playing.remote-art` | bool | `#true` | live | Fetch Now Playing cover art the player publishes as an `https` URL, over https via `curl`. This reveals the playing track to the image host. Off shows the fallback glyph instead; `http` is never fetched. |
@@ -164,6 +177,9 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `decoration.blur.glass.dispersion` | float 0..1 | `0` | live | `glass`: colour fringing in the bevel; 0 (the default) is none. |
 | `decoration.blur.glass.rim` | float 0..1 | `0.5` | live | `glass`: strength of the neutral hairline rim, brightest along the top-left edges with a weaker lobe at the bottom-right. |
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
+| `decoration.surface.tint` | float 0..1 | `0.7` | live | Window tint opacity over the glass. sRGB-intent; clients convert. |
+| `decoration.surface.card-fill` | float 0..0.3 | `0.035` | live | Alpha of a hairline card's white fill. sRGB-intent; clients convert. |
+| `decoration.surface.inset-fill` | float 0..0.3 | `0.03` | live | Alpha of an inset group's white fill. sRGB-intent; clients convert. |
 | `decoration.shadow.enabled` | bool | `#true` | live | Drop shadow behind windows. |
 | `decoration.shadow.range` | int 0..128 | `16` | live | Shadow falloff distance, logical px. |
 | `decoration.glow.enabled` | bool | `#false` | live | Glow around windows in their border colour. |
@@ -365,6 +381,8 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `annotation-dismiss` | `annotation-dismiss` | Forwarded to the annotation addon on the `keybind` event stream. |
 | `annotation-expand` | `annotation-expand` | Forwarded to the annotation addon. |
 | `annotation-auto-toggle` | `annotation-auto-toggle` | Forwarded to the annotation addon. |
+| `annotation-model-switch` | `annotation-model-switch` | Forwarded to the annotation addon: the next model in `oracle-eyes.models`. |
+| `annotation-image-toggle` | `annotation-image-toggle` | Forwarded to the annotation addon: image mode on or off for this session. |
 | `quit` / `exit` | `quit` | Exit the compositor. |
 
 ### `gesture`
@@ -417,7 +435,7 @@ A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget "<name>" {
 
 ### `windowrule`
 
-A rule matched against windows at map time. Its *action* decides the owning file.
+A rule matched against windows at map time. Placement actions apply once, at map; property actions re-apply on every commit and on a float toggle (COMP-05 §4, C-22). Its *action* decides the owning file.
 
 Matchers, all of which must match. A rule with none is refused.
 
@@ -427,6 +445,7 @@ Matchers, all of which must match. A rule with none is refused.
 | `title "<regex>"` | `title "^Picture-in-Picture$"` | Regex against the window title. |
 | `pid <int>` | `pid 4242` | The client's process id, positive. |
 | `xwayland [<bool>]` | `xwayland`<br>`xwayland #false` | Whether the window is an X11 client. Bare means `#true`. |
+| `floating [<bool>]` | `floating`<br>`floating #false` | Whether the window is floating right now. Write `#true` or `#false` (bare means `#true`; the quoted strings `"true"`/`"false"` are accepted too, bare `true` is a KDL syntax error). Re-read on every evaluation, so it follows tile/float toggles; a fullscreen window (held floating) counts as floating. Only property actions (`opacity`, `blur`, `translucent-region`, …) follow a toggle; `float`, `tile`, `size` and the other placement actions apply once, at map. |
 | `output "<glob>"` | `output "DP-*"` | Glob (`*` only) against the connector or persistent identity of the output the window is on. |
 | `cgroup "<regex>"` | `cgroup "app-firefox"` | Regex against the client's cgroup path from `/proc/<pid>/cgroup`. |
 | `workspace <1..10>` | `workspace 3` | The active workspace number of the window's output. |
@@ -444,6 +463,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `position <X>,<Y>` | `abyss.kdl` | `position 100,-40` | Floating position in logical px. Implies `float`. |
 | `output <glob>` | `abyss.kdl` | `output HDMI-A-1` | Map on the output whose connector or identity matches. |
 | `opacity <0.0..1.0>` | `abyss.kdl` | `opacity 0.85` | Alpha for this window, replacing `decoration.active-opacity`/`inactive-opacity`. |
+| `translucent-region top=<px> opacity=<0.0..1.0> [key=#rrggbb]` | `abyss.kdl` | `translucent-region top=84 opacity=0.6`<br>`translucent-region top=84 opacity=0.35 key=#1b1b1f` | Draw only the top `top` logical px of the window at `opacity`, with the window's blur mode behind that strip; the rest stays as the client drew it. Multiplies with `opacity`. For clients that submit an opaque buffer. With `key=#rrggbb` only pixels of exactly that colour (within 1/255 per channel) turn translucent; text and images in the strip stay opaque. |
 | `blur off \| blur \| frost \| glass \| true \| false` | `abyss.kdl` | `blur glass`<br>`blur off`<br>`blur true` | This window's blur mode, overriding `decoration.blur.mode`. `true` is the global mode (plain `blur` if that is `off`), `false` is `off`. An opaque window never blurs. |
 | `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
 | `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |
@@ -453,6 +473,10 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |
 | `irreversible-capable true \| false` | `policy.kdl` | `irreversible-capable true`<br>`irreversible-capable false` | Pin whether the window counts as able to take irreversible actions (S-06 §3.3): coordinate-only or low-confidence agent input to it then prompts. Without a rule it is true for apps whose desktop entry lists `WebBrowser`, `Email`, `TerminalEmulator` or `FileManager`, false otherwise. |
+
+### `theme`
+
+A user theme (ADR 0084): `theme "<name>" { inherit "dark"; base "#0b0906"; ink "#ffffff"; accent "#f2c33c"; accent-text "#f5cf5c"; frost-tint "#17140f"; rim 0.2; }`. Any subset of the keys; an unset seed is inherited from `inherit`, a built-in (`dark`, `light`) or an earlier theme, and `inherit` defaults to `dark`. Colours are `#rrggbb`, opaque; `rim` is 0.0 to 1.0. A theme is selected with `general.theme-dark` / `general.theme-light`; whether it counts as dark or light follows its `base` luminance. It is refused, and the last good config kept, if text or accent text on its `base` is under 4.5:1, secondary text under 3:1, a seed does not parse, `inherit` names no earlier theme (so no cycles), or the name is `dark` or `light` (built in) or already defined. An explicit `blur { frost { tint } }`, `blur { glass { rim } }` or `annotations { }` key still wins over the theme. KDL-only: not settable over the socket and not listed by `get_config`; `get_theme` returns the active one.
 
 ### `input.device`
 

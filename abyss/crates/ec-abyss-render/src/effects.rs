@@ -54,13 +54,65 @@ uniform float tint;
 uniform vec4 win_rect;
 uniform float radius;
 
+#ifdef KEYED
+// Tint-keyed translucency (ADR 0079): inside `key_rect` (gl_FragCoord space)
+// a texel whose colour is within 1/255 per channel of key `i` is drawn at
+// that key's opacity (`key{i}.w`); every other texel is untouched.
+uniform vec4 key_rect;
+uniform float keys;
+uniform vec4 key0;
+uniform vec4 key1;
+uniform vec4 key2;
+uniform vec4 key3;
+uniform vec4 key_all; // 1.0 per key matched over the whole window
+
+bool near_key(vec3 c, vec3 k, float tol) {
+    return all(lessThanEqual(abs(c - k) * 255.0, vec3(tol)));
+}
+
+float key_opacity(vec4 texel) {
+    vec2 f = gl_FragCoord.xy;
+    bool inside = !(f.x < key_rect.x || f.y < key_rect.y || f.x >= key_rect.x + key_rect.z || f.y >= key_rect.y + key_rect.w);
+    // The client's own anti-aliased edge (Firefox rounds its corners itself)
+    // is a key colour at partial alpha, premultiplied. Match it on the
+    // straight colour, with the tolerance widened by what 8-bit
+    // premultiplication loses, so the edge fades like the pixels beside it
+    // instead of staying opaque as a dark speck.
+    float tol = 1.5;
+    vec3 rgb = texel.rgb;
+#if !defined(NO_ALPHA)
+    if (texel.a < 0.2)
+        return 1.0;
+    if (texel.a < 0.99) {
+        rgb = texel.rgb / texel.a;
+        tol = 1.5 / texel.a;
+    }
+#endif
+    if (keys > 0.5 && (inside || key_all.x > 0.5) && near_key(rgb, key0.rgb, tol))
+        return key0.w;
+    if (keys > 1.5 && (inside || key_all.y > 0.5) && near_key(rgb, key1.rgb, tol))
+        return key1.w;
+    if (keys > 2.5 && (inside || key_all.z > 0.5) && near_key(rgb, key2.rgb, tol))
+        return key2.w;
+    if (keys > 3.5 && (inside || key_all.w > 0.5) && near_key(rgb, key3.rgb, tol))
+        return key3.w;
+    return 1.0;
+}
+#endif
+
 void main() {
     vec4 color = texture2D(tex, v_coords);
+#ifdef KEYED
+    float key_k = key_opacity(color);
+#endif
 
 #if defined(NO_ALPHA)
     color = vec4(color.rgb, 1.0) * alpha;
 #else
     color = color * alpha;
+#endif
+#ifdef KEYED
+    color *= key_k;
 #endif
 
 #if defined(DEBUG_FLAGS)
@@ -81,6 +133,88 @@ void main() {
     gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
 }
 "#;
+
+/// The keyed program: the rounded-corner program with tint keying switched on
+/// (`KEYED`). Surfaces of a window with a keyed strip, and of its popups, draw
+/// through it; it is always handed every uniform, so nothing leaks from one
+/// draw to the next. Cached by the caller.
+pub fn compile_keyed(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        ROUNDED_TEX_SRC.replacen("//_DEFINES_", "//_DEFINES_\n#define KEYED 1", 1),
+        &[
+            UniformName::new("win_rect", UniformType::_4f),
+            UniformName::new("radius", UniformType::_1f),
+            UniformName::new("key_rect", UniformType::_4f),
+            UniformName::new("keys", UniformType::_1f),
+            UniformName::new("key0", UniformType::_4f),
+            UniformName::new("key1", UniformType::_4f),
+            UniformName::new("key2", UniformType::_4f),
+            UniformName::new("key3", UniformType::_4f),
+            UniformName::new("key_all", UniformType::_4f),
+        ],
+    )
+}
+
+/// A rectangle covering any framebuffer: "no mask" / "everywhere".
+const EVERYWHERE: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
+
+fn fb_rect(rect: Rectangle<i32, Physical>, fb_height: i32, mirrored: bool) -> [f32; 4] {
+    let y = if mirrored {
+        fb_height - rect.loc.y - rect.size.h
+    } else {
+        rect.loc.y
+    };
+    [
+        rect.loc.x as f32,
+        y as f32,
+        rect.size.w as f32,
+        rect.size.h as f32,
+    ]
+}
+
+/// Uniforms for [`compile_keyed`]. `mask` is the window rectangle and corner
+/// radius (physical, `rounding_uniforms`' convention), or `None` for no
+/// rounding. `region` is where the keys apply, `None` for the whole surface.
+pub fn keyed_uniforms(
+    mask: Option<(Rectangle<i32, Physical>, f32)>,
+    region: Option<Rectangle<i32, Physical>>,
+    fb_height: i32,
+    mirrored: bool,
+    keys: &crate::userdata::Keys,
+) -> Vec<Uniform<'static>> {
+    let (win, radius) = match mask {
+        Some((rect, radius)) => (fb_rect(rect, fb_height, mirrored), radius),
+        None => (EVERYWHERE, 0.0),
+    };
+    let key_rect = region.map_or(EVERYWHERE, |r| fb_rect(r, fb_height, mirrored));
+    let key = |i: usize| -> [f32; 4] {
+        if i < keys.n as usize {
+            let [r, g, b] = keys.rgb[i];
+            [
+                r as f32 / 255.0,
+                g as f32 / 255.0,
+                b as f32 / 255.0,
+                keys.opacity[i],
+            ]
+        } else {
+            [0.0; 4]
+        }
+    };
+    vec![
+        Uniform::new("win_rect", win),
+        Uniform::new("radius", radius),
+        Uniform::new("key_rect", key_rect),
+        Uniform::new("keys", keys.n as f32),
+        Uniform::new("key0", key(0)),
+        Uniform::new("key1", key(1)),
+        Uniform::new("key2", key(2)),
+        Uniform::new("key3", key(3)),
+        Uniform::new("key_all", {
+            let a = |i: usize| (i < keys.n as usize && keys.everywhere[i]) as u8 as f32;
+            [a(0), a(1), a(2), a(3)]
+        }),
+    ]
+}
 
 /// The line every mask program declares its corner radius on; the shape
 /// functions are spliced in right after it (see [`shaped_source`]).
@@ -347,6 +481,8 @@ uniform float rim;        // 0..1 hairline strength
 uniform vec4 rim_color;   // premultiplied hairline colour; opaque white off the bezel
 uniform float inner;      // bezel width, physical px; 0 off the bezel
 uniform float opaque;     // 1 when the window inside the bezel is opaque
+uniform float lift;       // 0..1 mix toward white (ink in light); 0 (unset) on windows
+uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);    // Rec.709
@@ -360,6 +496,14 @@ const float LINE_TL = 0.13;
 const float LINE_BR = 0.035;
 // Darkening of the 1 px seam where the bezel meets the window.
 const float SEAM = 0.1;
+// The light twins: bright frosted glass with the dark ink drawn on it. Each is
+// `mix(dark, light, scheme_light)`, which is the dark constant bit for bit at 0.
+const float SATURATE_L = 1.25;
+const float COMPRESS_L = 0.0;                       // no highlight knee
+const vec3 SMOKE_L = vec3(0.985, 0.975, 0.955);     // warm white
+const float SMOKE_MIX_L = 0.7;
+const float SEAM_L = 0.04;
+const vec3 LIFT_L = vec3(0.102, 0.086, 0.063);      // ink: a pointer darkens light glass
 
 vec4 blurred_at(vec2 uv) {
     return texture2D(tex, clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5));
@@ -424,9 +568,10 @@ void main() {
 
     // Vibrancy: saturate, compress the highlights, smoke toward neutral.
     vec3 c = color.rgb;
-    c = max(mix(vec3(dot(c, LUMA)), c, SATURATE), 0.0);
-    c = c / (1.0 + COMPRESS * dot(c, LUMA));
-    c = mix(c, SMOKE, SMOKE_MIX);
+    c = max(mix(vec3(dot(c, LUMA)), c, mix(SATURATE, SATURATE_L, scheme_light)), 0.0);
+    c = c / (1.0 + mix(COMPRESS, COMPRESS_L, scheme_light) * dot(c, LUMA));
+    c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light));
+    c = mix(c, mix(vec3(1.0), LIFT_L, scheme_light), lift);
 
     // Hairline: a 1.25 px band inside the mask edge.
     float band = 1.0 - smoothstep(0.0, 1.25, -d);
@@ -438,7 +583,7 @@ void main() {
 
     // Seam: a faint dark line just outside the window's own edge.
     if (inner > 0.0) {
-        c *= 1.0 - SEAM * max(1.0 - abs(d + inner - 0.5), 0.0);
+        c *= 1.0 - mix(SEAM, SEAM_L, scheme_light) * max(1.0 - abs(d + inner - 0.5), 0.0);
     }
 
     c += (grain(floor(gl_FragCoord.xy)) - 0.5) / 255.0;
@@ -503,7 +648,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 11] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 13] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -515,6 +660,8 @@ const GLASS_UNIFORMS: [(&str, UniformType); 11] = [
     ("rim_color", UniformType::_4f),
     ("inner", UniformType::_1f),
     ("opaque", UniformType::_1f),
+    ("lift", UniformType::_1f),
+    ("scheme_light", UniformType::_1f),
 ];
 
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
@@ -555,7 +702,8 @@ pub fn frost_uniforms(
 /// backdrop texture (the whole output, physical px); `strength` and `bevel`
 /// are physical px. `bezel` is a window bezel's width (physical px), whether
 /// the window inside it is opaque, and its premultiplied hairline colour;
-/// `None` is plain glass with the neutral white hairline.
+/// `None` is plain glass with the neutral white hairline. `light` is
+/// `Appearance::glass_light()`: 0.0 draws the original dark glass.
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms(
     rect: Rectangle<i32, Physical>,
@@ -567,6 +715,28 @@ pub fn glass_uniforms(
     bevel: f32,
     glass: &ec_abyss_config::GlassBlur,
     bezel: Option<(i32, bool, [f32; 4])>,
+    light: f32,
+) -> Vec<Uniform<'static>> {
+    glass_uniforms_lifted(
+        rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, light,
+    )
+}
+
+/// [`glass_uniforms`] with a fill `lift` (a mix toward white, 0.0..=1.0): a
+/// glass pane's hover/press/focus fill (`eclipse_glass_v1`).
+#[allow(clippy::too_many_arguments)]
+pub fn glass_uniforms_lifted(
+    rect: Rectangle<i32, Physical>,
+    fb_height: i32,
+    mirrored: bool,
+    radius: f32,
+    tex_size: (i32, i32),
+    strength: f32,
+    bevel: f32,
+    glass: &ec_abyss_config::GlassBlur,
+    bezel: Option<(i32, bool, [f32; 4])>,
+    lift: f32,
+    light: f32,
 ) -> Vec<Uniform<'static>> {
     let (inner, opaque, rim_color) = bezel.map_or((0.0, 0.0, [1.0; 4]), |(inner, opaque, rim)| {
         (inner.max(0) as f32, if opaque { 1.0f32 } else { 0.0 }, rim)
@@ -585,6 +755,8 @@ pub fn glass_uniforms(
         Uniform::new("rim_color", rim_color),
         Uniform::new("inner", inner),
         Uniform::new("opaque", opaque),
+        Uniform::new("lift", lift),
+        Uniform::new("scheme_light", light),
     ]);
     u
 }
@@ -822,6 +994,7 @@ uniform float range;
 uniform float radius;
 uniform float drop;
 uniform float focus; // 0 unfocused .. 1 focused, crossfading with the border
+uniform vec3 shadow_rgb; // black on dark; a warm brown on light (ADR 0084)
 
 float rounded_box(vec2 p, vec2 half_size, float r) {
     vec2 q = abs(p) - half_size + r;
@@ -856,8 +1029,8 @@ void main() {
     // a dark wedge filling the cutout. Measure from the box edge outward only
     // (coverage caps at one half, its value at the edge), so the corner is as
     // dark as the straight edge beside it.
-    float contact = soft(max(d_contact, 0.0), contact_sigma) * mix(0.08, 0.12, focus);
-    float ambient = soft(max(d_ambient, 0.0), ambient_sigma) * mix(0.34, 0.46, focus);
+    float contact = soft(max(d_contact, 0.0), contact_sigma) * mix(0.05, 0.08, focus);
+    float ambient = soft(max(d_ambient, 0.0), ambient_sigma) * mix(0.22, 0.32, focus);
     float a = 1.0 - (1.0 - contact) * (1.0 - ambient);
 
     // Zero at the element edge (`d_ambient` >= range all round it).
@@ -866,7 +1039,7 @@ void main() {
     // edge antialiased. The wide ambient sigma, not a fade, is what keeps the
     // shadow from reading as a dark band hugging each rounded corner.
     a *= smoothstep(0.0, 2.0, d_in);
-    gl_FragColor = vec4(0.0, 0.0, 0.0, a * alpha);
+    gl_FragColor = vec4(shadow_rgb * (a * alpha), a * alpha);
 }
 "#;
 
@@ -879,24 +1052,29 @@ pub fn compile_shadow(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, G
             UniformName::new("radius", UniformType::_1f),
             UniformName::new("drop", UniformType::_1f),
             UniformName::new("focus", UniformType::_1f),
+            UniformName::new("shadow_rgb", UniformType::_3f),
         ],
     )
 }
 
 /// Uniforms for one drop shadow: `[range, radius, drop]` from
-/// `shadow_geometry` (logical px) and the 0..1 `focus` weight.
-pub fn shadow_uniforms([range, radius, drop]: [f32; 3], focus: f32) -> Vec<Uniform<'static>> {
+/// `shadow_geometry` (logical px), the 0..1 `focus` weight and the shadow's
+/// straight colour (`Appearance::shadow_rgb`; black on dark).
+pub fn shadow_uniforms([range, radius, drop]: [f32; 3], focus: f32, rgb: [f32; 3]) -> Vec<Uniform<'static>> {
     vec![
         Uniform::new("range", range),
         Uniform::new("radius", radius),
         Uniform::new("drop", drop),
         Uniform::new("focus", focus),
+        Uniform::new("shadow_rgb", (rgb[0], rgb[1], rgb[2])),
     ]
 }
 
-/// How far the shadow drops below the window, as a share of its `range`.
+/// How far the shadow drops below the window, as a share of its `range`. Zero:
+/// an offset shadow's body lies under the window's rounded corners and fills
+/// their cutouts, so depth is the glass rim plus an even halo instead.
 /// Not configurable: `shadow { range }` is the only knob COMP-13 §1.1 gives.
-pub const SHADOW_DROP: f32 = 0.3;
+pub const SHADOW_DROP: f32 = 0.0;
 
 const BORDER_SRC: &str = r#"
 #ifdef GL_FRAGMENT_PRECISION_HIGH
@@ -994,6 +1172,7 @@ mod tests {
             16.0,
             &ec_abyss_config::GlassBlur::default(),
             None,
+            0.0,
         );
         let set: Vec<&str> = got.iter().map(|u| &*u.name).collect();
         let compiled: Vec<&str> = GLASS_UNIFORMS.iter().map(|&(name, _)| name).collect();
@@ -1009,6 +1188,7 @@ mod tests {
             6.0,
             &ec_abyss_config::GlassBlur::default(),
             Some((6, true, [0.43, 0.34, 0.11, 0.45])),
+            0.0,
         );
         let set: Vec<&str> = bezel.iter().map(|u| &*u.name).collect();
         assert_eq!(set, compiled);
@@ -1067,6 +1247,7 @@ mod tests {
             16.0,
             &ec_abyss_config::GlassBlur::default(),
             None,
+            0.0,
         );
         got.extend(shape_uniforms(&shape, 1080, true));
         let set: Vec<String> = got.iter().map(|u| u.name.to_string()).collect();
@@ -1112,6 +1293,7 @@ mod tests {
             16.0,
             &ec_abyss_config::GlassBlur::default(),
             None,
+            0.0,
         );
         let find = |name: &str| format!("{:?}", got.iter().find(|u| u.name == name).unwrap());
         assert_eq!(

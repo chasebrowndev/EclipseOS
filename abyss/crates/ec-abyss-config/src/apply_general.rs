@@ -92,6 +92,21 @@ impl Config {
                     Some(c) => self.general.drop_guide_color = c,
                     None => self.reject(n, "bad color for \"drop-guide-color\""),
                 },
+                "color-scheme" => match arg(n).and_then(KdlValue::as_string) {
+                    Some("dark") => self.general.color_scheme = ColorSetting::Dark,
+                    Some("light") => self.general.color_scheme = ColorSetting::Light,
+                    Some("auto") => self.general.color_scheme = ColorSetting::Auto,
+                    other => self.reject(
+                        n,
+                        format!(
+                            "color-scheme: unknown value {other:?}; expected \"dark\", \"light\" or \"auto\""
+                        ),
+                    ),
+                },
+                "theme-dark" => self.apply_theme_ref(n, false),
+                "theme-light" => self.apply_theme_ref(n, true),
+                "light-from" => self.apply_schedule(n, true),
+                "dark-from" => self.apply_schedule(n, false),
                 "drop-edge-band" => {
                     if !set_i32(&mut self.general.drop_edge_band, n) {
                         self.reject(n, "drop-edge-band expects an integer");
@@ -481,6 +496,9 @@ impl Config {
                     if let Some(slot) = self.annotations.slot_mut(name) {
                         *slot = c;
                     }
+                    if let Some(i) = ANNOTATION_KEYS.iter().position(|k| *k == name) {
+                        self.look_set.annotations |= 1 << i;
+                    }
                 }
                 None => self.reject(
                     n,
@@ -543,6 +561,45 @@ impl Config {
                 "debug" => {
                     if let Some(b) = self.flag(n) {
                         self.oracle_eyes.debug = b;
+                    }
+                }
+                "image-mode" => {
+                    if let Some(b) = self.flag(n) {
+                        self.oracle_eyes.image_mode = b;
+                    }
+                }
+                "image-auto-escalate" => {
+                    if let Some(b) = self.flag(n) {
+                        self.oracle_eyes.image_auto_escalate = b;
+                    }
+                }
+                "models" => {
+                    // A model name is one `--model` argument, so a name that
+                    // could read as a flag is refused, not passed through.
+                    let names: Option<Vec<String>> = n
+                        .entries()
+                        .iter()
+                        .map(|e| {
+                            e.name()
+                                .is_none()
+                                .then(|| e.value().as_string().map(str::to_owned))
+                                .flatten()
+                        })
+                        .collect();
+                    match names {
+                        Some(names)
+                            if names.iter().all(|m| {
+                                !m.is_empty()
+                                    && !m.starts_with('-')
+                                    && !m.chars().any(|c| c.is_whitespace() || c.is_control())
+                            }) =>
+                        {
+                            self.oracle_eyes.models = names
+                        }
+                        _ => self.reject(
+                            n,
+                            "oracle-eyes models takes model names as strings, e.g. models \"haiku\" \"sonnet\"",
+                        ),
                     }
                 }
                 "bind" => self.apply_oracle_eyes_bind(n),

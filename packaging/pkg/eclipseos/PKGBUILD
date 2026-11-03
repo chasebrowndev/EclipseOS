@@ -11,7 +11,8 @@
 
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
-         eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack eclipseos-meta)
+         eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack
+         eclipseos-firefox-glass eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -130,7 +131,7 @@ package_eclipseos-launcher() {
 }
 
 package_eclipseos-desktop() {
-  pkgdesc="EclipseOS desktop apps: settings, policy viewer, agent console, screensaver, welcome, pairing agent, secret prompt"
+  pkgdesc="EclipseOS desktop apps: settings, policy viewer, agent console, screensaver, welcome, pairing agent, secret prompt, portal settings backend"
   # Fonts for ec-welcome (D-07 step 0). Lora has no official package; the
   # version label falls back to a serif.
   depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk)
@@ -138,7 +139,7 @@ package_eclipseos-desktop() {
   # ec-console is here, not in eclipseos-agents, because Super+/ is a
   # shipped default bind and every one names an installed binary; without
   # agentd it shows the agents as unavailable (A-08 §12).
-  for b in ec-settings ec-policy-viewer ec-console ec-screensaver ec-welcome; do _bin "$b"; done
+  for b in ec-settings ec-policy-viewer ec-console ec-screensaver ec-welcome ec-portal; do _bin "$b"; done
   # The Bluetooth pairing agent and the prompt it and the taskbar spawn by name
   # from PATH for pairing PINs and wifi passphrases (ADR 0053). Here, not in the
   # taskbar's package, so pairing works with no taskbar (ADR 0066).
@@ -148,6 +149,15 @@ package_eclipseos-desktop() {
   _want ec-screensaver.service
   _unit ec-pairing.service
   _want ec-pairing.service
+  # xdg-desktop-portal Settings backend: colour scheme and accent for GTK, Qt
+  # and browsers (ADR 0084). Bus-activated, so no _want.
+  _unit ec-portal.service
+  install -Dm0644 "$srcdir/$_src/packaging/dbus/org.freedesktop.impl.portal.desktop.abyss.service" \
+    "$pkgdir/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.abyss.service"
+  install -Dm0644 "$srcdir/$_src/packaging/portal/abyss.portal" \
+    "$pkgdir/usr/share/xdg-desktop-portal/portals/abyss.portal"
+  install -Dm0644 "$srcdir/$_src/packaging/portal/abyss-portals.conf" \
+    "$pkgdir/usr/share/xdg-desktop-portal/abyss-portals.conf"
   _app ec-settings.desktop
   _app ec-policy-viewer.desktop
   _app ec-console.desktop
@@ -249,6 +259,26 @@ package_eclipseos-anim-pack() {
     "$srcdir/$_src"/packaging/transitions/anim-pack/presets/*.kdl
 }
 
+package_eclipseos-firefox-glass() {
+  pkgdesc="EclipseOS add-on: Glass for Firefox, a DE-matching Firefox theme"
+  # ADR 0079: the AMO-signed XPI and a policy that force-installs it from disk;
+  # ec-glass-host, the native-messaging helper that passes each window's page
+  # height to abyss (set_client_strips); and the manifest turning on the
+  # client-strips hook. No setup step: abyss sets the glass strip itself.
+  depends=(eclipseos-abyss firefox)
+
+  install -Dm0755 "$srcdir/target/release/ec-glass-host" \
+    "$pkgdir/usr/lib/eclipse/ec-glass-host"
+  install -Dm0644 "$srcdir/$_src/packaging/firefox/os.eclipse.glass.json" \
+    "$pkgdir/usr/lib/mozilla/native-messaging-hosts/os.eclipse.glass.json"
+  install -Dm0644 "$srcdir/$_src/packaging/addons/firefox-glass.kdl" \
+    "$pkgdir/usr/share/eclipse/addons/firefox-glass.kdl"
+  install -Dm0644 "$srcdir/$_src/packaging/firefox/glass.xpi" \
+    "$pkgdir/usr/share/eclipse/firefox/glass.xpi"
+  install -Dm0644 "$srcdir/$_src/packaging/firefox/policies.json" \
+    "$pkgdir/etc/firefox/policies/policies.json"
+}
+
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
   arch=(any)  # config and dependencies only, no ELF
@@ -260,7 +290,8 @@ package_eclipseos-meta() {
   # Add-ons (ADR 0066): suggested, not required. The session starts without
   # them; Super+E/R/N reach the launcher and center through built-in binds.
   optdepends=('eclipseos-hyperion: the taskbar add-on (workspaces, window chips, widgets, tray)'
-              'eclipseos-agents: the agent stack add-on (ADR 0069)')
+              'eclipseos-agents: the agent stack add-on (ADR 0069)'
+              'eclipseos-firefox-glass: Glass for Firefox theme add-on (ADR 0079)')
   # /etc/eclipse is image-owned (D-01 §4.1): deliberately NOT in backup(), so
   # pacman overwrites rather than leaving .pacnew, and the later atomic scheme
   # is a no-op migration.

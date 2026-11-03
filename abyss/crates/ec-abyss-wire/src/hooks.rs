@@ -20,15 +20,19 @@ pub enum Hook {
     /// transition catalog and compiles its fragment shaders. Not a gated
     /// method; the gate table is unaffected.
     TransitionShaders,
+    /// `set_client_strips` (ADR 0079): a browser's add-on helper tells abyss
+    /// where its page area starts, for the `translucent-region` strip.
+    ClientStrips,
 }
 
 impl Hook {
-    pub const ALL: [Hook; 5] = [
+    pub const ALL: [Hook; 6] = [
         Hook::Annotations,
         Hook::RegionSelect,
         Hook::TaskbarWidgets,
         Hook::Agents,
         Hook::TransitionShaders,
+        Hook::ClientStrips,
     ];
 
     pub fn name(self) -> &'static str {
@@ -38,6 +42,7 @@ impl Hook {
             Hook::TaskbarWidgets => "taskbar-widgets",
             Hook::Agents => "agents",
             Hook::TransitionShaders => "transition-shaders",
+            Hook::ClientStrips => "client-strips",
         }
     }
 
@@ -50,6 +55,7 @@ impl Hook {
             Hook::TaskbarWidgets => "add-on hook `taskbar-widgets` is off",
             Hook::Agents => "add-on hook `agents` is off",
             Hook::TransitionShaders => "add-on hook `transition-shaders` is off",
+            Hook::ClientStrips => "add-on hook `client-strips` is off",
         }
     }
 

@@ -11,11 +11,13 @@
 
 pub mod apps;
 pub mod audio;
+pub mod calendar;
 pub mod custom;
 pub mod frecency;
 pub mod fuzzy;
 pub mod media;
 pub mod notifications;
+pub mod portal;
 pub mod screensaver;
 pub mod session;
 pub mod status;

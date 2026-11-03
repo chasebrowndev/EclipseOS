@@ -1,0 +1,16 @@
+[package]
+name = "ec-theme"
+description = "Desktop palette derived from a few seed colours (ADR 0084): state-free, no deps"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "ec_theme"
+path = "src/lib.rs"
+
+# No smithay, no iced, no dependencies at all: the compositor, the DE panes and
+# ec-ctl all link this, and none of them may drag the others in.
+[dependencies]

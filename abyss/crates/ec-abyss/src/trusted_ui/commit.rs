@@ -240,6 +240,16 @@ pub struct Cards {
     marker: BTreeMap<(i32, i32), SolidColorBuffer>,
 }
 
+impl Cards {
+    /// Drop every uploaded card: the colour scheme moved (ADR 0084).
+    pub(super) fn repaint(&mut self) {
+        self.marker.clear();
+        for c in self.by_slot.values_mut() {
+            c.art.clear();
+        }
+    }
+}
+
 fn now_ms(state: &AbyssState) -> u64 {
     state.start_time.elapsed().as_millis() as u64
 }
@@ -831,17 +841,24 @@ pub fn answer(state: &mut AbyssState, choice: super::Choice) {
 
 // ---- drawing --------------------------------------------------------------
 
-fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str>, scale: usize) -> Raster {
+fn rasterize(
+    look: &Look,
+    shown: Option<&Shown>,
+    kind: Kind,
+    phrase: Option<&str>,
+    scale: usize,
+    p: &modal::Colors,
+) -> Raster {
     let (w, h) = card_size();
     let (w, h) = (w as usize, h as usize);
     let dim = !matches!(look, Look::Armed | Look::Pulse);
     let rim = match look {
-        Look::Pulse | Look::Refused(_) => (2, modal::WARN),
-        _ => (1, modal::EDGE),
+        Look::Pulse | Look::Refused(_) => (2, p.warn),
+        _ => (1, p.edge),
     };
-    let body = if dim { modal::LABEL } else { modal::BODY };
+    let body = if dim { p.label } else { p.body };
     let mut c = Canvas::new(w, h);
-    c.round(0, 0, w, h, modal::FRAME_R, modal::PANEL, Some(rim));
+    c.round(0, 0, w, h, modal::FRAME_R, p.panel, Some(rim));
     let x0 = BORDER + PAD;
     let inner = w - 2 * x0;
     let mut y = BORDER + PAD;
@@ -851,6 +868,7 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
         y,
         inner - 2 * modal::WELL_PAD,
         phrase,
+        p,
     );
     y += modal::PHRASE_H + 8;
     match (kind, shown) {
@@ -865,7 +883,7 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
                     s.publisher
                 )
             };
-            c.text(x0, y, &who, modal::HEADING, true);
+            c.text(x0, y, &who, p.heading, true);
             y += LINE_H;
             for (i, l) in wrapped(&s.statement).iter().take(STATEMENT_ROWS).enumerate() {
                 c.text(x0, y + i * LINE_H, l, body, false);
@@ -883,7 +901,7 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
                 .chars()
                 .take(COLS)
                 .collect();
-                c.text(x0, y, &line, modal::LABEL, false);
+                c.text(x0, y, &line, p.label, false);
             }
             y += LINE_H;
             if s.could.is_empty() && kind == Kind::TaskCommit {
@@ -903,7 +921,7 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
                 } else {
                     "Resumes a session that may hold untrusted content."
                 };
-                c.text(x0, y, line, modal::WARN, false);
+                c.text(x0, y, line, p.warn, false);
             }
         }
         (_, None) => {
@@ -913,9 +931,9 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
                 Kind::TaskUnpause => ("Let a paused task act again", IDLE_UNPAUSE),
                 _ => ("Start an agent task", IDLE_COMMIT),
             };
-            c.text(x0, y, head, modal::HEADING, true);
+            c.text(x0, y, head, p.heading, true);
             for (i, l) in lines.iter().enumerate() {
-                c.text(x0, y + (i + 1) * LINE_H, l, modal::LABEL, false);
+                c.text(x0, y + (i + 1) * LINE_H, l, p.label, false);
             }
             y += (1 + STATEMENT_ROWS + 1 + COULD_ROWS) * LINE_H;
         }
@@ -931,28 +949,22 @@ fn rasterize(look: &Look, shown: Option<&Shown>, kind: Kind, phrase: Option<&str
     let _ = y;
     let cy = h - BORDER - PAD - CONTROL_H;
     if matches!(look, Look::Armed) {
-        c.round(x0, cy, inner, CONTROL_H, modal::PILL, modal::GOLD, None);
+        c.round(x0, cy, inner, CONTROL_H, modal::PILL, p.gold, None);
         let label = if kind == Kind::TaskUnpause {
             "Enter: let it act again"
         } else {
             "Enter: start this task"
         };
-        c.text(
-            x0 + 16,
-            cy + (CONTROL_H - GLYPH_H) / 2 + 1,
-            label,
-            modal::INK,
-            true,
-        );
+        c.text(x0 + 16, cy + (CONTROL_H - GLYPH_H) / 2 + 1, label, p.ink, true);
     } else {
         c.text(
             x0,
             cy + (CONTROL_H - GLYPH_H) / 2,
             &status,
             if matches!(look, Look::Refused(_) | Look::Pulse) {
-                modal::WARN
+                p.warn
             } else {
-                modal::LABEL
+                p.label
             },
             false,
         );
@@ -1010,6 +1022,7 @@ pub(super) fn dump_cards() -> Vec<(&'static str, Raster)> {
                 Kind::TaskCommit,
                 Some("blue heron 42"),
                 2,
+                &modal::DARK,
             ),
         ),
         (
@@ -1020,6 +1033,7 @@ pub(super) fn dump_cards() -> Vec<(&'static str, Raster)> {
                 Kind::TaskCommit,
                 None,
                 2,
+                &modal::DARK,
             ),
         ),
         (
@@ -1030,6 +1044,7 @@ pub(super) fn dump_cards() -> Vec<(&'static str, Raster)> {
                 Kind::TaskCommit,
                 Some("blue heron 42"),
                 2,
+                &modal::DARK,
             ),
         ),
     ]
@@ -1050,6 +1065,7 @@ pub fn elements(
     let phrase = ui.phrase.as_ref().map(|p| p.as_str().to_owned());
     let out_rect = Rectangle::new(output_loc, output_size);
     let mut out = Vec::new();
+    let colors = ui.colors();
     let cards = &mut ui.cards;
     for c in cards.by_slot.values_mut() {
         let Some(d) = c.draw else { continue };
@@ -1059,7 +1075,7 @@ pub fn elements(
         let stale = c.art.get(&dev).is_none_or(|(l, _)| *l != c.look);
         if stale {
             let shown = c.preview.as_ref().map(|(_, s, _)| s);
-            let raster = rasterize(&c.look, shown, c.kind, phrase.as_deref(), dev);
+            let raster = rasterize(&c.look, shown, c.kind, phrase.as_deref(), dev, colors);
             match super::upload(renderer, &raster, dev) {
                 Some(b) => {
                     c.art.insert(dev, (c.look.clone(), b));
@@ -1088,7 +1104,7 @@ pub fn elements(
                 let buf = cards
                     .marker
                     .entry((m.size.w, m.size.h))
-                    .or_insert_with(|| SolidColorBuffer::new(m.size, modal::GOLD));
+                    .or_insert_with(|| SolidColorBuffer::new(m.size, colors.gold));
                 out.push(AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
                     buf,
                     (m.loc - output_loc).to_physical_precise_round(scale),
@@ -1160,7 +1176,14 @@ mod tests {
             Look::Waiting("x"),
             Look::Refused("not_installed".into()),
         ] {
-            let r = rasterize(&look, Some(&s), Kind::TaskCommit, Some("tangerine"), 1);
+            let r = rasterize(
+                &look,
+                Some(&s),
+                Kind::TaskCommit,
+                Some("tangerine"),
+                1,
+                &modal::DARK,
+            );
             assert_eq!((r.w, r.h), (w, h), "{look:?}");
         }
         assert_eq!(deadline_text(7_200_000), "2 h");

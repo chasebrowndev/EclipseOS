@@ -46,7 +46,7 @@ claude_code_agent=/usr/share/eclipse/agents/ec-claude-code-agent/0.1.0
 
 for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
          ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt \
-         ec-pairing; do
+         ec-pairing ec-portal; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
 if [ "$do_agents" -eq 1 ]; then
@@ -69,7 +69,7 @@ fi
 install -d /usr/local/bin
 for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
          ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt \
-         ec-pairing; do
+         ec-pairing ec-portal; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
 done
 if [ "$do_agents" -eq 1 ]; then
@@ -90,12 +90,20 @@ sed -i 's|^Exec=.*|Exec=/usr/local/bin/abyss-session|' /usr/share/wayland-sessio
 dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
-units_here="ec-hyperion-bar ec-toasts ec-wallpaper ec-screensaver ec-pairing"
+units_here="ec-hyperion-bar ec-toasts ec-wallpaper ec-screensaver ec-pairing ec-portal"
 [ "$do_agents" -eq 1 ] && units_here="$units_here $agent_units"
 for unit in $units_here; do
     sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
     chown "$user:$user" "$dest/$unit.service"
 done
+
+# 3a. The colour-scheme portal backend (ADR 0084). Bus-activated, so its unit
+#     is written above but not enabled below.
+sed 's|/usr/bin/|/usr/local/bin/|' "$here/dbus/org.freedesktop.impl.portal.desktop.abyss.service" \
+    > /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.abyss.service
+chmod 0644 /usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.abyss.service
+install -Dm 0644 "$here/portal/abyss.portal" /usr/share/xdg-desktop-portal/portals/abyss.portal
+install -Dm 0644 "$here/portal/abyss-portals.conf" /usr/share/xdg-desktop-portal/abyss-portals.conf
 
 # 3b. The taskbar's add-on manifest (ADR 0066). Hosts read manifests only from
 #     /usr/share/eclipse/addons, never a user directory, so it is copied there.

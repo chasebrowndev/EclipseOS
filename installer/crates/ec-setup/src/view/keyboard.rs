@@ -29,7 +29,7 @@ pub fn body(m: &Model) -> Body<'_> {
         .padding(0)
         .style(theme::prompt_input);
     let refused: Option<El<'_, Message>> =
-        (m.kb_live == KbLive::Refused).then(|| parts::mono("refused", color::DANGER));
+        (m.kb_live == KbLive::Refused).then(|| parts::mono("refused", color::danger()));
     let hero = prompt_band("kbd", field, refused);
 
     let mut blocks: Vec<El<'_, Message>> = vec![hero];
@@ -55,7 +55,7 @@ pub fn body(m: &Model) -> Body<'_> {
                     .size(size::BODY)
                     .style(theme::text_primary),
                 Space::new().width(Length::Fill),
-                parts::mono(l.code.clone(), color::TEXT_TERTIARY),
+                parts::mono(l.code.clone(), color::text_tertiary()),
             ]
             .align_y(Alignment::Center);
             layouts = layouts.push(parts::pick(
@@ -113,7 +113,7 @@ fn options<'a>(m: &'a Model, layout_name: &str) -> El<'a, Message> {
     } else {
         col = col.push(parts::mono(
             format!("console keymap {}", m.keymap),
-            color::TEXT_TERTIARY,
+            color::text_tertiary(),
         ));
     }
     inset(col).padding(space::CARD).width(Length::Fill).into()

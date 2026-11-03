@@ -24,6 +24,7 @@ iced = { version = "0.14", default-features = false, features = ["wgpu", "advanc
 # does not re-export it. Same version iced itself resolves.
 iced_runtime = "0.14"
 ec-ui = { path = "../../../shell/crates/ec-ui" }
+ec-theme = { path = "../../../abyss/crates/ec-theme" }
 # The COMP-13 §1.4 write API: `input.kb-*` live, `setup.*`. Nothing else.
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 # Step 0, embedded (its `Message::Begin` is the hand-off).

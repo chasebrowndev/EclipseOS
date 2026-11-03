@@ -8,269 +8,154 @@
 
 use iced::{Color, Font};
 
-/// `#rrggbb` at full opacity.
-const fn rgb(hex: u32) -> Color {
-    Color {
-        r: ((hex >> 16) & 0xff) as f32 / 255.0,
-        g: ((hex >> 8) & 0xff) as f32 / 255.0,
-        b: (hex & 0xff) as f32 / 255.0,
-        a: 1.0,
-    }
-}
-
-/// White at `a`. The spec expresses nearly every surface and text colour this
-/// way, because they all sit over the same warm base and over live wallpaper.
-const fn white(a: f32) -> Color {
-    Color {
-        r: 1.0,
-        g: 1.0,
-        b: 1.0,
-        a,
-    }
-}
-
-/// `fg` composited over an opaque `bg` (Porter-Duff "over", assuming
-/// `bg.a == 1.0`). Used once, for [`color::GLASS_DEEP_BACKED`]: a floating
-/// surface's translucent tint is meant to sit over the compositor's blur
-/// backdrop, but that backdrop is a purely compositor-side decision the
-/// client is never told about (BLUR-01), so when it is off there is nothing
-/// behind the tint. Pre-compositing it over an opaque token here gives the
-/// same tint a floor that holds regardless.
-const fn over_opaque(fg: Color, bg: Color) -> Color {
-    let keep = 1.0 - fg.a;
-    Color {
-        r: fg.r * fg.a + bg.r * keep,
-        g: fg.g * fg.a + bg.g * keep,
-        b: fg.b * fg.a + bg.b * keep,
-        a: 1.0,
-    }
-}
-
 pub mod color {
-    use super::{rgb, white, Color};
+    //! The colour tokens, as a runtime palette (ADR 0084).
+    //!
+    //! Each token is a function reading the process-wide current palette,
+    //! which defaults to `derive(DARK_SEEDS)` -- the historical dark values,
+    //! bit for bit. Call [`set_palette`] / [`set_seeds`] to switch theme; the
+    //! next view build reads the new values. Semantics of each token are
+    //! documented on the matching field of [`ec_theme::Palette`] and in
+    //! `docs/STYLE.md`; the alphas are linear-light (iced blends in linear).
 
-    /// Window and desktop base. Warm, never blue-grey.
-    pub const BASE: Color = rgb(0x0b0906);
-    /// Opaque surfaces behind glass, darkest to lightest.
-    pub const SURFACE_0: Color = rgb(0x12100b);
-    pub const SURFACE_1: Color = rgb(0x1a1712);
-    pub const SURFACE_2: Color = rgb(0x1c1913);
+    use super::Color;
+    use ec_theme::{Palette, Rgba, Seeds, DARK_SEEDS};
+    use std::sync::{OnceLock, RwLock};
 
-    /// The glass fill. Thin on purpose — the depth comes from the
-    /// compositor's blur underneath, not from this layer's opacity.
-    pub const GLASS: Color = white(0.045);
-    pub const GLASS_STRONG: Color = white(0.06);
-    /// The ground of a surface that floats over live wallpaper with the
-    /// compositor's blur behind it — a bar, a toast, the launcher.
-    ///
-    /// One warm translucent colour rather than a black scrim plus a white
-    /// lift, because a container has exactly one background and the two
-    /// layers composite to this. It is darker than [`GLASS`] on purpose: a
-    /// pane's glass sits over a known base, this sits over whatever the
-    /// wallpaper happens to be, and 11px mono has to stay legible on both.
-    pub const GLASS_DEEP: Color = Color {
-        a: 0.62,
-        ..rgb(0x17140f)
-    };
-    /// [`GLASS_DEEP`], pre-composited over [`SURFACE_1`] so the result is
-    /// opaque. Use this, not `GLASS_DEEP` directly, for a surface's own
-    /// background — see the note on [`super::over_opaque`] (BLUR-01).
-    pub const GLASS_DEEP_BACKED: Color = super::over_opaque(GLASS_DEEP, SURFACE_1);
-    /// The tint a floating sheet (launcher, center, toast, menu) lays over
-    /// the compositor's material when `decoration.blur` is on.
-    ///
-    /// Light on purpose. The compositor now draws the whole material under
-    /// the client — blur, vibrancy, a near-white rim and a soft shadow — so
-    /// the client only has to darken the backdrop enough for text. Anything
-    /// heavier buries the blur, and the sheet reads as a dark slab again.
-    pub const SHEET_TINT: Color = Color {
-        a: 0.34,
-        ..rgb(0x17140f)
-    };
-    /// The bar capsule's tint over the same material. Lighter than
-    /// [`SHEET_TINT`]: the bar is one dense row of short labels at the top
-    /// edge, and it should read as the thinnest pane of glass on screen.
-    pub const BAR_TINT: Color = Color {
-        a: 0.22,
-        ..rgb(0x17140f)
-    };
-    /// A bar cell — chip, widget, pager tile, launcher — is a small glass
-    /// lozenge on the bar's glass: a faint white fill, a hairline just
-    /// inside its edge, and a soft shadow under it ([`CELL_SHADOW`]). The
-    /// three move together with the pointer, so a hovered cell reads as the
-    /// same tile lifted a little, never as a grey slab dropped on the bar.
-    ///
-    /// These alphas are for iced's *linear* blending (the workspace builds
-    /// iced without `web-colors`): over the bar's near-black glass a white
-    /// at `a` lands near sRGB white at `8a`, so `.05` would read as a 25%
-    /// grey slab. Each value here is STYLE.md's sRGB figure brought back to
-    /// linear light — `.006` reads as `.05`, and so on — so the cell stays
-    /// glass the backdrop shows through.
-    pub const CELL: Color = white(0.006);
-    pub const CELL_HOVER: Color = white(0.012);
-    pub const CELL_PRESS: Color = white(0.02);
-    /// The cell's inside hairline at rest, and under the pointer (and
-    /// pressed). Neutral on every cell, the focused chip included: the
-    /// accent goes on a fill and a label, never on an outline.
-    pub const CELL_RIM: Color = white(0.016);
-    pub const CELL_RIM_HOVER: Color = white(0.026);
-    /// A minimized window's chip: no fill, only this ghost of a rim, so the
-    /// put-away window is still a place to click and nothing more.
-    pub const CELL_RIM_AWAY: Color = white(0.006);
-    /// The soft drop under a bar cell. Geometry in [`super::bar`].
-    pub const CELL_SHADOW: Color = Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.30,
-    };
-    /// The focused cell (the focused window's chip, the current workspace
-    /// tile, the launcher's selected row) is the same glass lozenge, only a
-    /// step clearer: a slightly brighter white fill ([`CELL_FOCUS`]) and a
-    /// crisper white rim ([`CELL_FOCUS_RIM`]), with the gold on its label
-    /// alone. No gold ground and no glow: gold light under or around a cell
-    /// reads as a smeared halo on glass, and a gold tint over a dark
-    /// backdrop turns olive. The label says which cell; the material only
-    /// says "this one is lifted".
-    ///
-    /// Linear-light alphas like the rest of the cell tokens. Each state sits
-    /// a step above the plain cell's same state, so a hovered plain cell
-    /// never reads as the focused one.
-    pub const CELL_FOCUS: Color = white(0.014);
-    pub const CELL_FOCUS_HOVER: Color = white(0.02);
-    pub const CELL_FOCUS_PRESS: Color = white(0.028);
-    pub const CELL_FOCUS_RIM: Color = white(0.04);
-    pub const CELL_FOCUS_RIM_HOVER: Color = white(0.055);
-    /// The ground under a floating sheet that must stay readable over any
-    /// wallpaper — a context menu, a tray drawer. Nearly opaque on purpose:
-    /// a menu is a mark rail, and a mark rail that lets the desktop through
-    /// is a mark rail you cannot read.
-    pub const MENU_GROUND: Color = rgb(0x17140f);
-    pub const BORDER: Color = white(0.10);
-    pub const BORDER_STRONG: Color = white(0.16);
-    /// Hairline between rows in an inset list.
-    pub const HAIRLINE: Color = white(0.055);
-    /// Top edge highlight, the one thing that reads as a light source. `SOFT`
-    /// and `STRONG` are the ends of the spec's `.07–.2` inset range: soft on
-    /// a big calm surface, strong on a small chip that has to pop.
-    pub const HIGHLIGHT: Color = white(0.12);
-    pub const HIGHLIGHT_SOFT: Color = white(0.07);
-    pub const HIGHLIGHT_STRONG: Color = white(0.20);
+    pub use ec_theme::VEIL_STRENGTH;
 
-    /// Hover and press over glass. Depth on a glass surface comes from a fill
-    /// *and* a border *and* a highlight moving together — a lone grey fill
-    /// swap reads as a slab dropped on the surface, which is the exact bug
-    /// this pair exists to avoid.
-    pub const LIFT: Color = white(0.08);
-    pub const LIFT_STRONG: Color = white(0.13);
-    /// The hover *fill* for a cell that already has an outline.
-    ///
-    /// [`LIFT`] is white(.08) and [`BORDER`] is white(.10): on a chip that
-    /// draws both, the fill arrives at almost exactly the outline's value and
-    /// the chip reads as one flat lighter slab instead of an outlined shape
-    /// with a wash inside it. A hover fill must stay clearly *under* the
-    /// outline it sits within — dimmer, and more transparent — so that the
-    /// outline keeps describing the shape and the fill only says "the pointer
-    /// is here".
-    pub const LIFT_SOFT: Color = white(0.035);
-    /// Laid over a settings row that does not apply right now
-    /// ([`crate::widget::dimmed`]): a panel's own ground — [`BASE`], then
-    /// [`GLASS`] — repainted at [`VEIL_STRENGTH`], so the row fades toward the
-    /// card it sits on instead of greying into a slab of its own.
-    ///
-    /// The two layers and not one pre-mixed colour, because the renderer
-    /// blends in linear light: `GLASS` over `BASE` on screen is far lighter
-    /// than the same mix worked out in sRGB, and a pre-mixed veil showed as a
-    /// dark box. Repainting the same layers lands on the same ground however
-    /// the renderer blends.
-    pub const VEIL: [Color; 2] = [
+    fn slot() -> &'static RwLock<Palette> {
+        static CURRENT: OnceLock<RwLock<Palette>> = OnceLock::new();
+        CURRENT.get_or_init(|| RwLock::new(ec_theme::derive(&DARK_SEEDS)))
+    }
+
+    /// The current palette (a copy).
+    pub fn palette() -> Palette {
+        *slot().read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Replace the current palette.
+    pub fn set_palette(p: Palette) {
+        *slot().write().unwrap_or_else(|e| e.into_inner()) = p;
+    }
+
+    /// Derive a palette from `seeds` and make it current. Does not validate;
+    /// call [`ec_theme::validate`] first on user input.
+    pub fn set_seeds(seeds: &Seeds) {
+        set_palette(ec_theme::derive(seeds));
+    }
+
+    /// Straight sRGB `Rgba` to the iced colour, channel for channel.
+    pub fn to_iced(c: Rgba) -> Color {
         Color {
-            a: VEIL_STRENGTH,
-            ..BASE
-        },
-        Color {
-            a: GLASS.a * VEIL_STRENGTH,
-            ..GLASS
-        },
-    ];
-    /// [`VEIL`] on a translucent column ([`CONTENT`] over the compositor's
-    /// blur). There the ground is the backdrop, which no client can repaint:
-    /// `BASE` lands as a dark box and a repainted white tint as a light one
-    /// (the renderer blends in linear light). Only the column's own dark
-    /// tint, at the veil's strength, fades a row without drawing a slab.
-    pub const VEIL_GLASS: [Color; 1] = [Color {
-        a: CONTENT.a * VEIL_STRENGTH,
-        ..CONTENT
-    }];
-    /// How far a [`VEIL`] fades what it covers toward the ground.
-    pub const VEIL_STRENGTH: f32 = 0.62;
-    /// Sidebar ground: darker than the panes it sits beside.
-    pub const SIDEBAR: Color = Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.4,
-    };
-    /// [`SIDEBAR`] over [`BASE`], opaque: the sidebar's ground when there is
-    /// no compositor blur behind the window to show through it.
-    pub const SIDEBAR_BACKED: Color = super::over_opaque(SIDEBAR, BASE);
-    /// The content column beside the sidebar, over the compositor's blur:
-    /// the same smoked glass, a step lighter than [`SIDEBAR`] so the nav
-    /// still reads as the darker rail, and dense enough that body text
-    /// holds over a bright wallpaper. With it the window is one pane of
-    /// glass, split by a hairline, instead of a glass rail beside a slab.
-    pub const CONTENT: Color = Color {
-        r: 0.0,
-        g: 0.0,
-        b: 0.0,
-        a: 0.28,
-    };
-    /// [`CONTENT`] over [`BASE`], opaque: the column's ground with blur off.
-    pub const CONTENT_BACKED: Color = super::over_opaque(CONTENT, BASE);
+            r: c.0[0],
+            g: c.0[1],
+            b: c.0[2],
+            a: c.0[3],
+        }
+    }
 
-    /// The single accent. See `accent discipline` in the spec: it marks state
-    /// and one live value per screen, and is never decorative.
-    pub const ACCENT: Color = rgb(0xf2c33c);
-    /// Accent as text — lifted, because #f2c33c on near-black is heavy at
-    /// 12px.
-    pub const ACCENT_TEXT: Color = rgb(0xf5cf5c);
-    pub const ACCENT_FILL: Color = Color { a: 0.09, ..ACCENT };
-    pub const ACCENT_BORDER: Color = Color { a: 0.28, ..ACCENT };
-    /// The faintest accent ground — a wash under a whole row, not a fill.
-    pub const ACCENT_WASH: Color = Color { a: 0.035, ..ACCENT };
-    /// How far a minimized window's chip — label and icon — fades. The
-    /// spec's tertiary text value, so a minimized chip reads as the same
-    /// quiet tier as every other tertiary mark.
+    macro_rules! tokens {
+        ($($name:ident),* $(,)?) => {
+            $(
+                #[doc = concat!("The `", stringify!($name), "` token of the current palette.")]
+                pub fn $name() -> Color {
+                    to_iced(palette().$name)
+                }
+            )*
+        };
+    }
+
+    tokens! {
+        base,
+        surface_0,
+        surface_1,
+        surface_2,
+        glass,
+        glass_strong,
+        glass_deep,
+        glass_deep_backed,
+        sheet_tint,
+        bar_tint,
+        cell,
+        cell_hover,
+        cell_press,
+        cell_rim,
+        cell_rim_hover,
+        cell_rim_away,
+        cell_shadow,
+        cell_focus,
+        cell_focus_hover,
+        cell_focus_press,
+        cell_focus_rim,
+        cell_focus_rim_hover,
+        menu_ground,
+        border,
+        border_strong,
+        hairline,
+        highlight,
+        highlight_soft,
+        highlight_strong,
+        lift,
+        lift_strong,
+        lift_soft,
+        veil,
+        sidebar,
+        sidebar_backed,
+        content,
+        content_backed,
+        accent,
+        accent_text,
+        accent_fill,
+        accent_border,
+        accent_wash,
+        text,
+        text_secondary,
+        text_tertiary,
+        neutral,
+        eye_iris,
+        control_off,
+        track,
+        danger,
+        danger_fill,
+        connected,
+        ok,
+        on_accent,
+        nav_active,
+        nav_hover,
+        pill,
+        pill_hover,
+        input_fill,
+        scroller,
+        scroller_hover,
+        chart_history,
+        control_off_hover,
+        knob_off,
+        highlight_rim,
+    }
+
+    /// [`veil`] on a translucent column ([`content`] over the compositor's
+    /// blur): only the column's own tint, at the veil's strength, fades a row
+    /// without drawing a slab.
+    pub fn veil_glass() -> [Color; 1] {
+        [to_iced(palette().veil_glass)]
+    }
+
+    /// How far a minimized window's chip -- label and icon -- fades. The
+    /// spec's tertiary text value.
     pub const DIM: f32 = 0.40;
 
-    pub const TEXT: Color = white(1.0);
-    pub const TEXT_SECONDARY: Color = white(0.64);
-    pub const TEXT_TERTIARY: Color = white(0.40);
-    /// Warm neutral for swatches and inert indicators.
-    pub const NEUTRAL: Color = rgb(0x96918a);
-
-    /// The launcher's eye: the iris's glass, white at the spec's focused-cell
-    /// .12 — the same linear-light value as [`CELL_FOCUS`], since the eye's
-    /// own surface is blended the same way (a literal .12 read as mid grey
-    /// in the headless captures).
-    pub const EYE_IRIS: Color = CELL_FOCUS;
-
-    /// Off state of a toggle, and the inert bars of a chart.
-    pub const CONTROL_OFF: Color = white(0.13);
-    pub const TRACK: Color = white(0.12);
-
-    /// Status. Deliberately not red/green pairs from a generic palette — a
-    /// desktop that only ever goes yellow needs its alarms to look unlike it.
-    pub const DANGER: Color = rgb(0xe0553f);
-    /// The ground behind a destructive verb on hover.
-    pub const DANGER_FILL: Color = Color { a: 0.14, ..DANGER };
-    /// *Connected* — a link that is not merely up but carrying traffic to a
-    /// peer. A status colour beside [`DANGER`] and [`OK`], not a second
-    /// accent: it is never used for emphasis, selection or focus, only to say
-    /// a radio has a peer on the other end. Bluetooth reads
-    /// [`NEUTRAL`] off, [`ACCENT`] powered-but-idle, this connected.
-    pub const CONNECTED: Color = rgb(0x4f9fe0);
-    pub const OK: Color = rgb(0x7fae5e);
+    /// A colour that arrives as data -- a calendar's own `0xRRGGBB` -- rather
+    /// than a choice of ours. A provider's palette is never mistaken for a token.
+    pub const fn data(hex: u32) -> Color {
+        let c = Rgba::rgb(hex);
+        Color {
+            r: c.0[0],
+            g: c.0[1],
+            b: c.0[2],
+            a: c.0[3],
+        }
+    }
 }
 
 pub mod radius {
@@ -526,7 +411,7 @@ pub mod bar {
     /// a circle, and the launcher mark is the bar's only circle. A small
     /// squircle keeps the pager legible as "numbered places", not buttons.
     pub const RADIUS_TILE: f32 = 8.0;
-    /// The drop under a bar cell ([`super::color::CELL_SHADOW`]): a pixel
+    /// The drop under a bar cell ([`super::color::cell_shadow()`]): a pixel
     /// down and a short blur — enough to lift a lozenge off the glass, not
     /// enough to read as a floating card.
     pub const CELL_SHADOW_Y: f32 = 1.0;
@@ -1028,6 +913,50 @@ pub mod drawer {
     pub const MAX_ROWS: usize = 8;
     /// Air between the two lines of the hero row.
     pub const LINE_GAP: f32 = 2.0;
+    /// The glass lozenge a row draws is its slot inset this much on the
+    /// vertical, so neighbours keep a 2px channel of the sheet between them
+    /// without the row's slot (and the arithmetic that sizes the sheet)
+    /// growing a gap.
+    pub const ROW_INSET: f32 = 1.0;
+    /// The hero row's lozenge: a step rounder than a list row.
+    pub const RADIUS_HERO: f32 = 11.0;
+    /// A spinner's box, its ring and the arc that travels round it.
+    pub const SPIN: f32 = 14.0;
+    pub const SPIN_W: f32 = 1.75;
+    pub const SPIN_SWEEP: f32 = 1.2;
+    /// How much of the arc's ink the ring it travels on keeps.
+    pub const SPIN_TRACK: f32 = 0.18;
+    /// Revolutions per second of the spinner.
+    pub const SPIN_HZ: f32 = 0.9;
+    /// A level row's rail, its round knob's radius, and the fixed box the
+    /// percent reading sits in so the rail never moves when `9` becomes `10`.
+    pub const LEVEL_RAIL: f32 = 4.0;
+    pub const LEVEL_KNOB_R: f32 = 6.0;
+    pub const LEVEL_READOUT_W: f32 = 32.0;
+
+    /// The calendar drawer's width: a month grid and a day's detail side by
+    /// side, so the one drawer wider than [`W`].
+    pub const CAL_W: f32 = 540.0;
+    /// A day cell. Seven of them are the grid's width.
+    pub const CAL_CELL_W: f32 = 40.0;
+    pub const CAL_CELL_H: f32 = 36.0;
+    /// The optional ISO-week column left of the grid.
+    pub const CAL_WEEK_W: f32 = 26.0;
+    /// The month header strip (month, year, Today, chevrons).
+    pub const CAL_HEAD_H: f32 = 36.0;
+    /// The weekday initials strip.
+    pub const CAL_WEEKDAY_H: f32 = 22.0;
+    /// Air between the grid and the day's detail, on both sides of the rule.
+    pub const CAL_GAP: f32 = 14.0;
+    /// An event dot under a day number, and the air between dots.
+    pub const CAL_DOT: f32 = 4.0;
+    pub const CAL_DOT_GAP: f32 = 3.0;
+    /// The colour bar that leads an event row.
+    pub const CAL_BAR_W: f32 = 3.0;
+    /// The square chevron buttons in the month header.
+    pub const CAL_NAV: f32 = 26.0;
+    /// The time column of an event row.
+    pub const CAL_TIME_W: f32 = 52.0;
 }
 
 /// The secret prompt: one field in a fixed-size toplevel. Fixed because
@@ -1154,7 +1083,7 @@ mod tests {
 
     #[test]
     fn the_accent_is_the_one_from_the_style_spec() {
-        let c = color::ACCENT;
+        let c = color::accent();
         let byte = |f: f32| (f * 255.0).round() as u8;
         assert_eq!((byte(c.r), byte(c.g), byte(c.b)), (0xf2, 0xc3, 0x3c));
     }

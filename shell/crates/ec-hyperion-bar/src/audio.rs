@@ -15,7 +15,52 @@
 
 use std::collections::HashSet;
 
-use ec_services::audio::Stream;
+use ec_services::audio::{Device, Stream};
+
+/// The audio picker's lists, as the service last reported them. Output
+/// level and mute live on the volume widget's sink; the input's are the
+/// default input device's own.
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Devices {
+    pub outputs: Vec<Device>,
+    pub inputs: Vec<Device>,
+    pub default_output: Option<String>,
+    pub default_input: Option<String>,
+}
+
+impl Devices {
+    /// Make `name` the default output now; the next report corrects it.
+    pub fn pick_output(&mut self, name: &str) {
+        if self.outputs.iter().any(|d| d.name == name) {
+            self.default_output = Some(name.to_owned());
+        }
+    }
+
+    pub fn pick_input(&mut self, name: &str) {
+        if self.inputs.iter().any(|d| d.name == name) {
+            self.default_input = Some(name.to_owned());
+        }
+    }
+
+    /// The default input, if there is one.
+    fn input_mut(&mut self) -> Option<&mut Device> {
+        let name = self.default_input.as_ref()?;
+        self.inputs.iter_mut().find(|d| &d.name == name)
+    }
+
+    pub fn set_input_volume(&mut self, v: f32) {
+        let v = if v.is_finite() { v.max(0.0) } else { 0.0 };
+        if let Some(d) = self.input_mut() {
+            d.volume = v;
+        }
+    }
+
+    pub fn set_input_muted(&mut self, m: bool) {
+        if let Some(d) = self.input_mut() {
+            d.muted = m;
+        }
+    }
+}
 
 /// The streams in `streams` that belong to `pid` or any of its descendants.
 pub fn streams_for(streams: &[Stream], pid: i32) -> Vec<Stream> {
@@ -60,6 +105,37 @@ pub fn state_of(streams: &[Stream], pid: Option<i32>) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn dev(name: &str) -> Device {
+        Device {
+            name: name.into(),
+            description: name.into(),
+            volume: 0.5,
+            muted: false,
+            kind: ec_services::audio::DeviceKind::Other,
+        }
+    }
+
+    #[test]
+    fn picking_a_device_is_optimistic_and_ignores_strangers() {
+        let mut d = Devices {
+            outputs: vec![dev("a"), dev("b")],
+            inputs: vec![dev("m")],
+            default_output: Some("a".into()),
+            default_input: Some("m".into()),
+        };
+        d.pick_output("b");
+        assert_eq!(d.default_output.as_deref(), Some("b"));
+        d.pick_output("nope");
+        assert_eq!(d.default_output.as_deref(), Some("b"));
+        d.pick_input("nope");
+        assert_eq!(d.default_input.as_deref(), Some("m"));
+        d.set_input_volume(0.8);
+        d.set_input_muted(true);
+        assert_eq!((d.inputs[0].volume, d.inputs[0].muted), (0.8, true));
+        d.set_input_volume(f32::NAN);
+        assert_eq!(d.inputs[0].volume, 0.0);
+    }
 
     fn me() -> i32 {
         std::process::id() as i32

@@ -309,6 +309,8 @@ pub struct AbyssState {
     pub virtual_pointer: crate::protocols::standard::virtual_pointer::VirtualPointerState,
     /// `ext_background_effect_v1` (BLUR-03).
     pub background_effect: crate::protocols::standard::background_effect::BackgroundEffectGlobals,
+    /// `eclipse_glass_v1` (COMP-02 §9).
+    pub glass: crate::protocols::standard::glass::GlassGlobals,
     /// `zwlr_output_power_management_v1`.
     pub output_power: crate::protocols::standard::output_power::OutputPowerState,
 
@@ -355,6 +357,8 @@ pub struct AbyssState {
     /// Withheld command widgets, the prompt queue and the session's Not now
     /// set (ADR 0067). Plain data; see `config::withhold`.
     pub widget_approvals: crate::config::withhold::WidgetApprovals,
+    /// The theme in force and its `auto` timer (ADR 0084).
+    pub theme: crate::theme::ThemeState,
 }
 
 impl AbyssState {
@@ -458,6 +462,11 @@ impl AbyssState {
         let background_effect = crate::protocols::standard::background_effect::BackgroundEffectGlobals::new(
             &dh,
             config.decoration.blur.mode != crate::config::BlurMode::Off,
+        );
+        let glass = crate::protocols::standard::glass::GlassGlobals::new(
+            &dh,
+            weak_dh.clone(),
+            config.decoration.blur.mode == crate::config::BlurMode::Glass,
         );
         let virtual_pointer = crate::protocols::standard::virtual_pointer::VirtualPointerState::new(&dh);
         // Capture reads every pixel of an output: allowlisted, fail-closed.
@@ -599,6 +608,7 @@ impl AbyssState {
             idle_inhibit_state,
             output_power,
             background_effect,
+            glass,
             virtual_pointer,
             xwayland_shell_state,
             xwayland: Default::default(),
@@ -613,6 +623,7 @@ impl AbyssState {
             catalog_pending: false,
             transitions_pending: false,
             widget_approvals: Default::default(),
+            theme: Default::default(),
         }
     }
 
@@ -622,7 +633,6 @@ impl AbyssState {
     }
 }
 
-#[derive(Default)]
 pub struct ClientState {
     pub compositor_state: CompositorClientState,
     /// Set when the client connected through a `wp_security_context` socket:
@@ -631,6 +641,28 @@ pub struct ClientState {
     /// Connected through the privileged agent socket (COMP-08 preamble). The
     /// agent globals' `can_view` admits only these clients.
     pub agent: bool,
+    /// Order of creation in this process ([`client_seq`] at the time). The
+    /// agent seat globals tell clients that existed before them from those
+    /// that came after (`protocols::agent::seat_global`).
+    pub seq: u64,
+}
+
+static NEXT_CLIENT_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The `seq` the next [`ClientState`] made will get.
+pub fn client_seq() -> u64 {
+    NEXT_CLIENT_SEQ.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Default for ClientState {
+    fn default() -> Self {
+        Self {
+            compositor_state: CompositorClientState::default(),
+            security_context: None,
+            agent: false,
+            seq: NEXT_CLIENT_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
 }
 
 impl ClientData for ClientState {

@@ -37,9 +37,9 @@ pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
     // Low and not charging is the one status the human has to act on, so it
     // is the one status allowed to leave the neutral palette.
     let tint = if battery.percent <= LOW && battery.state == Charge::Discharging {
-        color::DANGER
+        color::danger()
     } else {
-        color::TEXT_SECONDARY
+        color::text_secondary()
     };
     let face = Row::new()
         .spacing(bar::GAP)

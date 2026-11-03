@@ -32,7 +32,7 @@ pub fn body(m: &Model) -> Body<'_> {
         .size(size::PROMPT)
         .padding(0)
         .style(theme::prompt_input);
-    let hero = prompt_band("find", field, Some(parts::mono(clock, color::TEXT_TERTIARY)));
+    let hero = prompt_band("find", field, Some(parts::mono(clock, color::text_tertiary())));
 
     let mut blocks: Vec<El<'_, Message>> = vec![hero];
 
@@ -54,7 +54,7 @@ pub fn body(m: &Model) -> Body<'_> {
                     .font(font::UI_SEMIBOLD)
                     .size(size::PROMPT)
                     .style(theme::text_accent),
-                parts::mono(m.zone.clone(), color::TEXT_TERTIARY),
+                parts::mono(m.zone.clone(), color::text_tertiary()),
             ]
             .spacing(space::CHIP_GAP),
             Length::Shrink,
@@ -80,7 +80,7 @@ pub fn body(m: &Model) -> Body<'_> {
                     } else {
                         e.country.clone()
                     },
-                    color::TEXT_TERTIARY
+                    color::text_tertiary()
                 ),
             ]
             .spacing(space::CARD)

@@ -25,7 +25,8 @@ use ec_services::status::{self, Actions, BtDevice, Event, PairingAgent, Security
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, size, space};
 use ec_ui::widget::{
-    big_value, hairline, inset_list, list_row, meter_bar, micro_label, panel, pill, value as mono,
+    big_value, glass_panel as panel, hairline, inset_list, list_row, meter_bar, micro_label, pill,
+    value as mono,
 };
 
 use crate::app::Message;
@@ -246,7 +247,7 @@ fn grid<'a>(cells: Vec<(&str, String)>, per: usize) -> Element<'a, Message, Them
     col.into()
 }
 
-fn hero(net: &Net, radius: f32) -> Element<'_, Message, Theme> {
+fn hero(net: &Net, radius: f32, hairline_cards: bool) -> Element<'_, Message, Theme> {
     let d = match &net.detail {
         Some(Some(d)) => d,
         other => {
@@ -257,15 +258,15 @@ fn hero(net: &Net, radius: f32) -> Element<'_, Message, Theme> {
             };
             return panel(
                 radius,
+                hairline_cards,
                 column![
                     micro_label("signal"),
                     big_value(number, unit, false),
-                    meter_bar(space::HERO_METER_W, 0.0, color::TRACK),
+                    meter_bar(space::HERO_METER_W, 0.0, color::track()),
                     tertiary(why),
                 ]
                 .spacing(space::ROW_Y),
-            )
-            .into();
+            );
         }
     };
 
@@ -290,7 +291,7 @@ fn hero(net: &Net, radius: f32) -> Element<'_, Message, Theme> {
         .align_y(Alignment::Center),
         micro_label("signal"),
         big_value(&d.signal.to_string(), "%", true),
-        meter_bar(space::HERO_METER_W, f32::from(d.signal) / 100.0, color::ACCENT),
+        meter_bar(space::HERO_METER_W, f32::from(d.signal) / 100.0, color::accent()),
     ]
     .spacing(space::ROW_Y);
 
@@ -321,9 +322,9 @@ fn hero(net: &Net, radius: f32) -> Element<'_, Message, Theme> {
 
     panel(
         radius,
+        hairline_cards,
         column![head, hairline(), readings, hairline(), addresses].spacing(space::ROW_Y),
     )
-    .into()
 }
 
 fn saved_list(net: &Net) -> Element<'_, Message, Theme> {
@@ -362,9 +363,9 @@ fn device_list(net: &Net) -> Element<'_, Message, Theme> {
     inset_list("bluetooth devices", rows)
 }
 
-pub fn blocks(net: &Net, radius: f32) -> Vec<Element<'_, Message, Theme>> {
+pub fn blocks(net: &Net, radius: f32, hairline_cards: bool) -> Vec<Element<'_, Message, Theme>> {
     let mut out = vec![
-        hero(net, radius),
+        hero(net, radius, hairline_cards),
         row![saved_list(net), device_list(net)]
             .spacing(space::BLOCK)
             .align_y(Alignment::Start)

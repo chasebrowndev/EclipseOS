@@ -55,13 +55,28 @@ pub struct Bar {
     pub custom_widgets: Vec<CustomWidget>,
 }
 
-/// `bar { clock { hour-12 …; date-mdy … } }`.
+/// `bar { clock { week-start "auto" | "monday" | "sunday" } }`: the first
+/// column of the calendar drawer's month grid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BarWeekStart {
+    /// The locale's own first weekday.
+    #[default]
+    Auto,
+    Monday,
+    Sunday,
+}
+
+/// `bar { clock { hour-12 …; date-mdy …; week-start …; week-numbers … } }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BarClock {
     /// 12-hour clock with AM/PM; false is 24-hour.
     pub hour_12: bool,
     /// Month/day/year date order; false is day/month/year.
     pub date_mdy: bool,
+    /// First weekday of the calendar drawer's grid.
+    pub week_start: BarWeekStart,
+    /// ISO week numbers down the calendar drawer's left edge.
+    pub week_numbers: bool,
 }
 
 impl Default for BarClock {
@@ -69,6 +84,8 @@ impl Default for BarClock {
         Self {
             hour_12: true,
             date_mdy: true,
+            week_start: BarWeekStart::Auto,
+            week_numbers: false,
         }
     }
 }
@@ -300,6 +317,9 @@ pub struct BarWidgets {
     pub order: Vec<String>,
     /// Widgets that never compress.
     pub important: Vec<String>,
+    /// Corner radius in logical px for each widget's glass cell. Separate
+    /// from [`Bar::rounding`], which rounds the bar's own sheet.
+    pub rounding: u32,
     pub now_playing: NowPlayingWidget,
     pub system_usage: SystemUsageWidget,
     pub volume: VolumeWidget,
@@ -311,6 +331,7 @@ impl Default for BarWidgets {
         Self {
             order: own(schema::BAR_WIDGET_DEFAULT_ORDER),
             important: own(schema::BAR_WIDGET_DEFAULT_IMPORTANT),
+            rounding: 17,
             now_playing: NowPlayingWidget::default(),
             system_usage: SystemUsageWidget::default(),
             volume: VolumeWidget::default(),

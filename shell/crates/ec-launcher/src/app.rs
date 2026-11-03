@@ -19,6 +19,9 @@ pub const INPUT_ID: &str = "launcher-query";
 #[to_layer_message]
 #[derive(Debug, Clone)]
 pub enum Message {
+    /// The compositor's theme moved and the palette was re-applied (ADR 0084);
+    /// nothing to do but let the views rebuild.
+    ThemeChanged,
     /// The filter field changed.
     Query(String),
     /// The selection moved by a row: -1 up, 1 down.
@@ -165,6 +168,7 @@ fn refocus() -> Task<Message> {
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
+        Message::ThemeChanged => return Task::none(),
         Message::Query(query) => {
             app.query = query;
             // A new query is a new question; the old refusal was about a row
@@ -227,6 +231,14 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 /// that too — to unfocus itself, which is not what a human pressing Escape at
 /// a launcher is asking for.
 pub fn subscription(_app: &App) -> Subscription<Message> {
+    // Keep the palette on the compositor's theme (ADR 0084).
+    Subscription::batch([
+        subscription_inner(_app),
+        ec_ui::ipc::theme_subscription(|| Message::ThemeChanged),
+    ])
+}
+
+fn subscription_inner(_app: &App) -> Subscription<Message> {
     iced::event::listen_with(|event, _status, _window| match event {
         iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) => {
             use iced::keyboard::key::{Key, Named};

@@ -120,7 +120,7 @@ impl Wallpaper {
         Spec {
             path: p.path.filter(|s| !s.trim().is_empty()).map(|s| expand(&s)),
             mode: p.mode.unwrap_or_default(),
-            color: p.color.unwrap_or(ec_ui::tokens::color::BASE),
+            color: p.color.unwrap_or(ec_ui::tokens::color::base()),
         }
     }
 }
@@ -146,6 +146,13 @@ pub fn from_reply(reply: &Value) -> Wallpaper {
             .and_then(Value::as_str)
             .and_then(|p| p.strip_prefix("wallpaper."));
         if let (Some(field), Some(value)) = (field, key.get("value")) {
+            // The compositor reports the dark built-in `#0b0906ff` for an
+            // unset colour. Left as a value it would pin the desktop dark in
+            // the light scheme; a colour still at its default is unset, so the
+            // ground follows the theme's base (ADR 0084).
+            if field == "color" && key.get("default") == Some(value) {
+                continue;
+            }
             w.base.set(field, value);
         }
     }
@@ -194,7 +201,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    const BASE: Color = ec_ui::tokens::color::BASE;
+    fn base_colour() -> Color {
+        ec_ui::tokens::color::base()
+    }
 
     #[test]
     fn no_reply_is_the_base_colour_alone() {
@@ -204,7 +213,7 @@ mod tests {
             Spec {
                 path: None,
                 mode: Mode::Fill,
-                color: BASE
+                color: base_colour()
             }
         );
     }
@@ -229,7 +238,7 @@ mod tests {
         let other = w.for_output("HDMI-A-1");
         assert_eq!(other.path, Some(PathBuf::from("/w/a.png")));
         assert_eq!(other.mode, Mode::Fit);
-        assert_eq!(other.color, BASE);
+        assert_eq!(other.color, base_colour());
         let dp = w.for_output("DP-1");
         assert_eq!(
             dp.path,
@@ -261,19 +270,19 @@ mod tests {
             Spec {
                 path: None,
                 mode: Mode::Fill,
-                color: BASE
+                color: base_colour()
             }
         );
         assert_eq!(w.for_output("DP-2").path, None, "an empty path is no picture");
         let dp3 = w.for_output("DP-3");
         assert_eq!(dp3.mode, Mode::Fit);
-        assert_eq!(dp3.color, BASE, "a non-string colour is ignored");
+        assert_eq!(dp3.color, base_colour(), "a non-string colour is ignored");
     }
 
     #[test]
     fn colours() {
-        assert_eq!(parse_color("#0b0906"), Some(BASE));
-        assert_eq!(parse_color("0b0906ff"), Some(BASE));
+        assert_eq!(parse_color("#0b0906"), Some(base_colour()));
+        assert_eq!(parse_color("0b0906ff"), Some(base_colour()));
         assert_eq!(parse_color("#fff"), Some(Color::from_rgb8(255, 255, 255)));
         assert_eq!(parse_color("#12345"), None);
         assert_eq!(parse_color("#gggggg"), None);
@@ -287,5 +296,17 @@ mod tests {
         assert_eq!(expand("~"), home);
         assert_eq!(expand("~other/x"), PathBuf::from("~other/x"));
         assert_eq!(expand("/abs/x.png"), PathBuf::from("/abs/x.png"));
+    }
+
+    #[test]
+    fn a_colour_at_its_default_is_unset_so_the_theme_base_shows() {
+        let w = from_reply(&json!({"keys": [
+            {"path": "wallpaper.color", "value": "#0b0906ff", "default": "#0b0906ff"},
+        ]}));
+        assert_eq!(w.for_output("DP-1").color, base_colour());
+        let w = from_reply(&json!({"keys": [
+            {"path": "wallpaper.color", "value": "#223344ff", "default": "#0b0906ff"},
+        ]}));
+        assert_eq!(w.for_output("DP-1").color, Color::from_rgb8(0x22, 0x33, 0x44));
     }
 }

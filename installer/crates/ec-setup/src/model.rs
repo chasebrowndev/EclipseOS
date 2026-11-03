@@ -14,7 +14,7 @@
 //! leaves the model exactly once, inside [`Effect::Apply`], and both buffers
 //! that held it are empty afterwards.
 
-use crate::choices::{self, BarPosition, Blur, Choices, Mode, Tiling};
+use crate::choices::{self, BarPosition, Blur, Choices, ColorScheme, Mode, Tiling};
 use crate::config::{self, WriteError};
 use crate::data::{self, Layout, LANGUAGES};
 use crate::helper::HelperEvent;
@@ -388,6 +388,7 @@ pub enum Message {
     SetBlur(Blur),
     SetAnimations(bool),
     SetBarPosition(BarPosition),
+    SetColorScheme(ColorScheme),
     /// Tick or untick an application, by index into [`choices::APPS`].
     ToggleApp(usize),
 
@@ -964,6 +965,10 @@ impl Model {
             Message::SetBarPosition(v) => {
                 self.choices.bar_position = v;
                 self.write(choices::BAR_POSITION, self.choices.bar_position_value(), &mut fx);
+            }
+            Message::SetColorScheme(v) => {
+                self.choices.color_scheme = v;
+                self.write(choices::COLOR_SCHEME, self.choices.color_scheme_value(), &mut fx);
             }
             Message::ToggleApp(i) => {
                 // Staged until Apply: an application is a package, not a setting.

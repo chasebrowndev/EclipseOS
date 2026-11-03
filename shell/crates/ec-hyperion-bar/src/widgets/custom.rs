@@ -143,9 +143,9 @@ pub fn view<'a>(out: Option<Output>, spec: &'a WidgetSpec, frame: ShellFrame) ->
         return Parts::empty();
     };
     let ink = if out.state.as_deref() == Some("critical") {
-        color::DANGER
+        color::danger()
     } else {
-        color::TEXT_SECONDARY
+        color::text_secondary()
     }
     .scale_alpha(frame.core_alpha());
     let mut core = Row::new().spacing(bar::WIDGET_GAP).align_y(Alignment::Center);
@@ -187,7 +187,7 @@ pub fn view<'a>(out: Option<Output>, spec: &'a WidgetSpec, frame: ShellFrame) ->
         text(d)
             .font(font::DATA)
             .size(size::MICRO)
-            .color(color::TEXT_TERTIARY.scale_alpha(frame.revealed_alpha()))
+            .color(color::text_tertiary().scale_alpha(frame.revealed_alpha()))
             .wrapping(text::Wrapping::None)
             .into()
     });

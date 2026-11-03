@@ -1041,6 +1041,21 @@ mod tests {
     }
 
     #[test]
+    fn widget_rounding_is_found_by_its_everyday_names() {
+        let e = [
+            plain("bar.rounding", "Corner radius"),
+            plain("bar.widgets.rounding", "Corner radius"),
+        ];
+        for q in ["widget corner radius", "widget rounding", "widgets radius"] {
+            assert_eq!(
+                order(&e, q, &Store::default()).first().map(String::as_str),
+                Some("bar.widgets.rounding"),
+                "{q}"
+            );
+        }
+    }
+
+    #[test]
     fn the_plain_search_is_the_empty_history_search() {
         let e = entries();
         assert_eq!(

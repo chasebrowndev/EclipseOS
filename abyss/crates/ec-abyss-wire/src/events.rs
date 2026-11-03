@@ -18,4 +18,6 @@ pub const EVENTS: &[&str] = &[
     "phrase",
     // A-08 §7: how many consent prompts are parked. A count, never content.
     "decisions_pending",
+    // ADR 0084: the effective scheme or the active theme's seeds changed.
+    "theme",
 ];

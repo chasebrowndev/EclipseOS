@@ -15,6 +15,8 @@ fn window_size() -> (f32, f32) {
 }
 
 fn main() -> iced::Result {
+    // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
+    ec_ui::ipc::sync_theme_now();
     let (w, h) = window_size();
     let mut builder = iced::application(app::boot, app::update, app::view)
         .title("Eclipse Console")

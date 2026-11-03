@@ -41,7 +41,12 @@ if ! gh release view "$TAG" -R "$GH_REPO" >/dev/null 2>&1; then
     --notes "pacman repository. Point a [eclipseos] section at https://github.com/$GH_REPO/releases/download/$TAG. Signed by the EclipseOS packaging key (eclipseos-packaging.asc)."
 fi
 
-gh release upload "$TAG" -R "$GH_REPO" --clobber "$stage"/*
+# Packages first, then the database and key: a client that reads the new db
+# must find every file it names. Old versions are pruned only after that.
+gh release upload "$TAG" -R "$GH_REPO" --clobber "$stage"/*.pkg.tar.zst*
+gh release upload "$TAG" -R "$GH_REPO" --clobber \
+  "$stage"/eclipseos.files* "$stage"/eclipseos-packaging.asc
+gh release upload "$TAG" -R "$GH_REPO" --clobber "$stage"/eclipseos.db*
 
 # Prune what the local repo no longer has (old package versions).
 gh release view "$TAG" -R "$GH_REPO" --json assets -q '.assets[].name' |

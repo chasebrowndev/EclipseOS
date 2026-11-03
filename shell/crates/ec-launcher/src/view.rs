@@ -102,9 +102,10 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     // The sheet is the whole surface: the compositor masks it to
     // `decoration.rounding` and draws its material underneath, so there is
     // no outer padding for a blurred rim to show through.
-    container(parts::surface(app.glass_radius, app.blur, body))
-        .width(Length::Fixed(app.width as f32))
-        .into()
+    ec_ui::glass::root_sole(
+        container(parts::surface(app.glass_radius, app.blur, body)).width(Length::Fixed(app.width as f32)),
+    )
+    .into()
 }
 
 /// The hero. The query at hero scale, with the cursor's place in the match
@@ -138,11 +139,22 @@ fn prompt(app: &App) -> Element<'_, Message, Theme> {
     let position = text(position)
         .size(size::MONO)
         .font(font::DATA)
-        .color(color::TEXT_TERTIARY);
+        .color(color::text_tertiary());
 
-    parts::prompt_cell("/", field, Some(position.into()))
+    // Same material as `prompt_cell`'s own ground (a glass cell at rest), but
+    // with glass the compositor draws it and the cell keeps only its content.
+    let cell = parts::prompt_cell("/", field, Some(position.into()))
         .height(Length::Fixed(BAND_H))
-        .into()
+        .style(|t: &Theme| {
+            let c = theme::glass_cell(CellTone::Plain, radius::INSET)(t, button::Status::Active);
+            theme::bare_container_if_glass(container::Style {
+                background: c.background,
+                border: c.border,
+                shadow: c.shadow,
+                ..container::Style::default()
+            })
+        });
+    parts::glass_card(cell, CellTone::Plain, radius::INSET)
 }
 
 /// How far the drawn window has scrolled down the match list.
@@ -206,11 +218,11 @@ fn entry_row(
     // not read as a selected row that can.
     let live = selected && !entry.terminal;
     let name_tint = if entry.terminal {
-        color::TEXT_TERTIARY
+        color::text_tertiary()
     } else if live {
-        color::ACCENT_TEXT
+        color::accent_text()
     } else {
-        color::TEXT
+        color::text()
     };
     let name = text(entry.name.clone())
         .size(size::BODY)
@@ -239,11 +251,11 @@ fn entry_row(
             Wrapping::None
         })
         .color(if refusal.is_some() {
-            color::DANGER
+            color::danger()
         } else if entry.terminal {
-            color::TEXT_TERTIARY
+            color::text_tertiary()
         } else {
-            color::TEXT_SECONDARY
+            color::text_secondary()
         });
 
     // The identifier is on the selected row only. It is what will actually be
@@ -257,7 +269,7 @@ fn entry_row(
             .size(size::MONO)
             .font(font::DATA)
             .wrapping(Wrapping::None)
-            .color(color::TEXT_TERTIARY)
+            .color(color::text_tertiary())
             .into()
     } else {
         Space::new().into()
@@ -311,10 +323,10 @@ fn entry_row(
         .width(Length::Fill)
         .height(Length::Fixed(ROW_H))
         .padding([0.0, space::CARD])
-        .style(theme::glass_cell(tone, radius::INSET))
+        .style(move |t, st| theme::bare_if_glass(theme::glass_cell(tone, radius::INSET)(t, st)))
         .on_press(Message::Launch(index));
 
-    cell.into()
+    parts::glass_ground(cell, tone, radius::INSET)
 }
 
 /// The refusal or the key hints at the left, how much of the list is off the
@@ -326,7 +338,7 @@ fn footer(app: &App) -> Element<'_, Message, Theme> {
         Some(problem) => text(problem.clone())
             .size(size::BODY_SMALL)
             .font(font::DATA)
-            .color(color::DANGER)
+            .color(color::danger())
             .into(),
         None => parts::key_hints(&[("\u{2191}\u{2193}", "select"), ("enter", "run"), ("esc", "close")]),
     };
@@ -338,7 +350,7 @@ fn footer(app: &App) -> Element<'_, Message, Theme> {
         text(tally)
             .size(size::MONO)
             .font(font::DATA)
-            .color(color::TEXT_TERTIARY)
+            .color(color::text_tertiary())
             .into()
     };
 
