@@ -15,4 +15,12 @@ export XDG_SESSION_DESKTOP=abyss
 # greetd hands the session the VT as stdout/stderr; anything printed there
 # shows as text between the greeter and the first frame, and again on logout.
 # abyss logs to journald itself, so stray output goes there too.
+#
+# Before the compositor reads its config: append built-in taskbar widgets that
+# a pinned bar.widgets.order lacks (ADR 0065). `--only widget-order` touches
+# nothing else, and each id is offered once. Best effort: a failure here is
+# logged and never stops the session.
+if command -v ec-ctl >/dev/null 2>&1; then
+    ec-ctl config migrate --only widget-order 2>&1 | systemd-cat -t abyss-session || true
+fi
 exec systemd-cat -t abyss-session ec-abyss --backend drm --session "$@"
