@@ -413,13 +413,13 @@ const LIGHT: Table = Table {
     glass_deep: 0.62,
     sheet_tint: 0.55,
     bar_tint: 0.45,
-    cell: [0.40, 0.05, 0.09], // rest is white; hover and press are ink
-    cell_rim: [0.08, 0.12],
+    cell: [0.07, 0.11, 0.15], // ink at every state: a cell is darker than the frost it sits on, and each step darker still
+    cell_rim: [0.12, 0.18],
     cell_rim_away: 0.04,
     cell_focus: [0.70, 0.58, 0.46], // less white under the pointer
     cell_focus_rim: [0.18, 0.24],
     shadow: Rgba::rgb(0x3c2d14),
-    cell_shadow: 0.22,
+    cell_shadow: 0.28,
     border: [0.10, 0.16],
     hairline: 0.07,
     highlight: [0.40, 0.60, 0.80],
@@ -503,7 +503,7 @@ pub fn derive(seeds: &Seeds) -> Palette {
         glass_deep_backed: glass_deep.over_opaque(surface_1),
         sheet_tint: frost.with_alpha(t.sheet_tint),
         bar_tint: frost.with_alpha(t.bar_tint),
-        cell: fill.with_alpha(ia(fill, t.cell[0])),
+        cell: pointer.with_alpha(ia(pointer, t.cell[0])),
         cell_hover: pointer.with_alpha(ia(pointer, t.cell[1])),
         cell_press: pointer.with_alpha(ia(pointer, t.cell[2])),
         cell_rim: ink.with_alpha(ia(ink, t.cell_rim[0])),

@@ -74,32 +74,27 @@ pub fn white_fill(intent: f32) -> Color {
     }
 }
 
-/// How much more fill a light card or inset needs than a dark one for the same
-/// setting: `decoration.surface.card-fill` is white-on-dark intent, and white on
-/// an off-white ground needs about ten times the alpha to show (STYLE.md
-/// "Light": the glass fill is `.35`, the dark one `.035`).
-pub const LIGHT_FILL_GAIN: f32 = 10.0;
-
 fn is_light() -> bool {
     crate::tokens::color::palette().scheme == ec_theme::Scheme::Light
 }
 
-/// A card's or inset's ground for the setting `intent`: white thin on dark
-/// ([`white_fill`]); a frosted white, [`LIGHT_FILL_GAIN`] stronger, on light.
-pub fn group_fill(intent: f32) -> Color {
+/// A card's or inset's ground for the setting `intent`. Dark: white at that
+/// alpha ([`white_fill`]). Light: a step darker than the glass beneath, in the
+/// ink at the palette's own alpha for that step (`step`: `lift_soft` for a
+/// card, `cell` for an inset), scaled by the setting's proportion of its
+/// dark default `default`. White on the light column would lift a card above
+/// the glass it sits on; glass stacked on glass moves away from the backdrop
+/// (STYLE.md "Light"), so a light card or inset darkens, and an inset darkens
+/// past its card. `card-fill` and `inset-fill` still tune both.
+pub fn group_fill(intent: f32, step: ec_theme::Rgba, default: f32) -> Color {
     if !is_light() {
         return white_fill(intent);
     }
-    let a = ec_theme::linear_alpha(
-        ec_theme::Rgba::new(1.0, 1.0, 1.0, 1.0),
-        crate::tokens::color::palette().base,
-        (intent * LIGHT_FILL_GAIN).clamp(0.0, 1.0),
-    );
+    let ink = crate::tokens::color::to_iced(step);
+    let k = (intent / default).clamp(0.0, 3.0);
     Color {
-        r: 1.0,
-        g: 1.0,
-        b: 1.0,
-        a,
+        a: (ink.a * k).clamp(0.0, 1.0),
+        ..ink
     }
 }
 

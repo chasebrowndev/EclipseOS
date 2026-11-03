@@ -169,6 +169,11 @@ impl Hardware {
         self.gpus.contains(&Gpu::NvidiaOpen)
     }
 
+    /// Turing+ NVIDIA next to an Intel or AMD GPU: a hybrid laptop (ADR 0084).
+    pub fn hybrid_nvidia(&self) -> bool {
+        self.nvidia_open() && self.gpus.iter().any(|g| matches!(g, Gpu::Intel | Gpu::Amd))
+    }
+
     /// Packages this machine needs beyond the medium's list, in a stable order.
     pub fn packages(&self) -> Vec<&'static str> {
         let mut out: Vec<&'static str> = Vec::new();
@@ -184,6 +189,11 @@ impl Hardware {
             for p in g.packages() {
                 add(p);
             }
+        }
+        // ADR 0084: a Turing+ NVIDIA next to an Intel or AMD GPU is a hybrid
+        // laptop; `nvidia-prime` provides the offload launcher.
+        if self.hybrid_nvidia() {
+            add("nvidia-prime");
         }
         out
     }
@@ -287,7 +297,7 @@ mod tests {
     #[test]
     fn package_set_per_gpu_combination() {
         let nv = ["mesa", "nvidia-open-dkms", "nvidia-utils", "linux-headers"];
-        let cases: [(bool, &[Gpu], Vec<&str>); 6] = [
+        let cases: [(bool, &[Gpu], Vec<&str>); 8] = [
             (false, &[Gpu::Amd], vec!["amd-ucode", "mesa", "vulkan-radeon"]),
             (
                 false,
@@ -302,8 +312,31 @@ mod tests {
                 [
                     &["amd-ucode", "mesa", "vulkan-intel", "intel-media-driver"][..],
                     &nv[1..],
+                    &["nvidia-prime"],
                 ]
                 .concat(),
+            ),
+            (
+                false,
+                &[Gpu::Amd, Gpu::NvidiaOpen],
+                [
+                    &["amd-ucode", "mesa", "vulkan-radeon"][..],
+                    &nv[1..],
+                    &["nvidia-prime"],
+                ]
+                .concat(),
+            ),
+            // Pre-Turing NVIDIA is on nouveau; there is no offload launcher to add.
+            (
+                false,
+                &[Gpu::Intel, Gpu::Nvidia],
+                vec![
+                    "amd-ucode",
+                    "mesa",
+                    "vulkan-intel",
+                    "intel-media-driver",
+                    "vulkan-nouveau",
+                ],
             ),
             (true, &[], vec![]),
         ];
@@ -326,6 +359,14 @@ mod tests {
         assert!(!h.nvidia_open());
         assert!(machine(false, &[Gpu::Amd, Gpu::NvidiaOpen]).nvidia_open());
         assert!(!machine(true, &[]).nvidia_open());
+    }
+
+    #[test]
+    fn only_nvidia_open_beside_an_integrated_gpu_is_hybrid() {
+        assert!(machine(false, &[Gpu::Intel, Gpu::NvidiaOpen]).hybrid_nvidia());
+        assert!(machine(false, &[Gpu::Amd, Gpu::NvidiaOpen]).hybrid_nvidia());
+        assert!(!machine(false, &[Gpu::NvidiaOpen]).hybrid_nvidia());
+        assert!(!machine(false, &[Gpu::Intel, Gpu::Nvidia]).hybrid_nvidia());
     }
 
     #[test]

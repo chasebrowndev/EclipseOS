@@ -1768,6 +1768,28 @@ fn parses_render_device() {
     assert_eq!(c.misc.render_device, None);
 }
 
+/// ADR 0084: `misc.gpu-mode` defaults to hybrid; a bad value is refused and
+/// leaves the previous one.
+#[test]
+fn parses_gpu_mode_and_discrete_apps() {
+    assert_eq!(Config::default().misc.gpu_mode, GpuMode::Hybrid);
+    assert!(Config::default().misc.discrete_gpu_apps.is_empty());
+
+    let doc: KdlDocument = r#"misc { gpu-mode "dedicated"; discrete-gpu-apps "steam" "blender" }"#
+        .parse()
+        .unwrap();
+    let mut c = Config::default();
+    let mut errs = Vec::new();
+    c.apply(&doc, &mut errs);
+    assert_eq!(c.misc.gpu_mode, GpuMode::Dedicated);
+    assert_eq!(c.misc.discrete_gpu_apps, ["steam", "blender"]);
+
+    let doc: KdlDocument = r#"misc { gpu-mode "turbo" }"#.parse().unwrap();
+    c.apply(&doc, &mut Vec::new());
+    assert_eq!(c.misc.gpu_mode, GpuMode::Dedicated);
+    assert!(!c.errors.is_empty());
+}
+
 #[test]
 fn colors() {
     assert_eq!(parse_color("#ff0000"), Some([1.0, 0.0, 0.0, 1.0]));

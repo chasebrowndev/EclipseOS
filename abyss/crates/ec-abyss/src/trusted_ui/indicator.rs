@@ -26,6 +26,7 @@ use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRen
 use smithay::backend::renderer::element::texture::{TextureBuffer, TextureRenderElement};
 use smithay::backend::renderer::element::Kind;
 use smithay::backend::renderer::gles::{GlesRenderer, GlesTexture};
+use smithay::backend::renderer::{ContextId, Renderer};
 use smithay::output::Output;
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
@@ -88,8 +89,9 @@ pub struct Marks {
     /// Pointer buttons pressed on an indicator, one bit per evdev code from
     /// `BTN_MOUSE`, so their releases are swallowed too.
     pressed: u16,
-    /// The uploaded pill per (device scale, agent), with what it shows.
-    art: BTreeMap<(usize, u64), (Shown, TextureBuffer<GlesTexture>)>,
+    /// The uploaded pill per (renderer, device scale, agent), with what it
+    /// shows. Each GPU draws its own outputs with its own textures (ADR 0084).
+    art: BTreeMap<ArtKey, (Shown, TextureBuffer<GlesTexture>)>,
     /// The four outline sides per agent.
     rims: BTreeMap<(u64, usize), SolidColorBuffer>,
 }
@@ -196,6 +198,9 @@ fn rasterize(s: &Shown, scale: usize, p: &modal::Colors) -> Raster {
     c.into_raster(scale)
 }
 
+/// Renderer, device scale, agent.
+type ArtKey = (ContextId<GlesTexture>, usize, u64);
+
 /// The outlines and pills for `output`. Front-most first, like every pass.
 pub(super) fn elements(
     renderer: &mut GlesRenderer,
@@ -211,22 +216,24 @@ pub(super) fn elements(
     let fractional = output.current_scale().fractional_scale();
     let scale = Scale::from(fractional);
     let dev = (fractional.round() as usize).max(1);
+    let context = renderer.context_id();
     let out_rect = Rectangle::new(output_loc, logical);
     let mut out = Vec::new();
     for (i, s) in marks.shown.iter().enumerate() {
-        let stale = marks.art.get(&(dev, s.agent)).is_none_or(|(was, _)| was != s);
+        let key = (context.clone(), dev, s.agent);
+        let stale = marks.art.get(&key).is_none_or(|(was, _)| was != s);
         if stale {
             match super::upload(renderer, &rasterize(s, dev, colors), dev) {
                 Some(b) => {
-                    marks.art.insert((dev, s.agent), (s.clone(), b));
+                    marks.art.insert(key.clone(), (s.clone(), b));
                 }
                 None => {
                     tracing::error!("compat-lock indicator upload failed");
-                    marks.art.remove(&(dev, s.agent));
+                    marks.art.remove(&key);
                 }
             }
         }
-        if let Some((_, buffer)) = marks.art.get(&(dev, s.agent)) {
+        if let Some((_, buffer)) = marks.art.get(&key) {
             let loc = pill_rect(s, i, logical).loc;
             out.push(AbyssRenderElement::Texture(
                 TextureRenderElement::from_texture_buffer(
@@ -275,7 +282,7 @@ pub(super) fn elements(
     }
     let live: Vec<u64> = marks.shown.iter().map(|s| s.agent).collect();
     marks.rims.retain(|(a, _), _| live.contains(a));
-    marks.art.retain(|(_, a), _| live.contains(a));
+    marks.art.retain(|(_, _, a), _| live.contains(a));
     out
 }
 
