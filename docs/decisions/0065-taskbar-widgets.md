@@ -259,18 +259,19 @@ logind answers for it (`ec_services::session`'s `Availability`): an action it
 offers is live, a Challenge is live with a note that polkit asks first, and a No
 is greyed with "not permitted". Log out, Reboot and Power off are destructive and
 need a second click: the row becomes "Confirm …" with a Cancel beside it. A
-confirmation, and an open scope prompt, are forgotten when the drawer closes, so
+confirmation, machine or update, is forgotten when the drawer closes, so
 a reopened drawer starts from its rows. Lock and Suspend are one press.
 
 **The update rows.** Below a hairline, and only while `ec_services::updates`
 reports a pending Eclipse package, sit "Update & reboot" and "Update & power
 off" (ADR 0085). Each is offered only when its power action is offered too, since
-the power action follows a successful upgrade. Choosing one opens a scope prompt
-in the drawer: two radio options, "Eclipse and dependencies only (K packages)"
-and "All packages (N)", with the counts from the pending update, then Confirm and
-Cancel. Confirm hands the scope and the power action to `updates::apply`; the
-widget never runs pacman, and it never calls a power action except for a machine
-row the human confirmed.
+the power action follows a successful upgrade. Choosing one asks for the same
+inline Confirm the destructive rows use, worded "Confirm update all (N) & reboot"
+(or "& power off"), where N is the count of all pending packages, which the
+upgrade installs in full, with Cancel beside it. Confirm hands the power action
+to `updates::apply`; the widget never runs
+pacman, and it never calls a power action except for a machine row the human
+confirmed. There is no scope choice: a partial upgrade is not offered (ADR 0085).
 
 **The apply.** While it runs the power rows wait, and the chosen update row shows
 a spinner and "see progress", pointing at the progress cell, where the backend

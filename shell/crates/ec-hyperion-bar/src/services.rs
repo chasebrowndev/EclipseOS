@@ -21,7 +21,7 @@ use ec_services::custom::Kind;
 use ec_services::power_profiles::{self, PowerActions, PowerEvents, Profile};
 use ec_services::progress::{self, Update as ProgressUpdate};
 use ec_services::session::{Action as SessionAction, Availability, Session};
-use ec_services::updates::{self, After, Scope};
+use ec_services::updates::{self, After};
 use ec_services::{audio, calendar, custom, media, usage};
 
 use crate::app::Message;
@@ -364,15 +364,15 @@ pub fn session_perform(action: SessionAction) {
     }
 }
 
-/// Start the Eclipse update the scope prompt confirmed. The answer, whether a
-/// refusal or the upgrade's own outcome, comes back through [`drain`]. Only the
+/// Start the full Eclipse update the Confirm step asked for. The answer, whether
+/// a refusal or the upgrade's own outcome, comes back through [`drain`]. Only the
 /// backend runs pacman, and it powers the machine off only on success (ADR 0085).
-pub fn apply_update(scope: Scope, then: After) {
+pub fn apply_update(then: After) {
     if previewing() {
         return;
     }
     if let Some(u) = handles().updates.as_ref() {
-        u.apply(scope, then);
+        u.apply(then);
     }
 }
 

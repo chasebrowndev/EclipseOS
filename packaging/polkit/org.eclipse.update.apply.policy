@@ -2,8 +2,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!--
   ADR 0085. The update action of the taskbar's power widget: pacman through
-  /usr/lib/eclipse/ec-update-apply, which accepts only `eclipse-deps PKG...`
-  and `all`. Every path needs the administrator's password (auth_admin_keep),
+  /usr/lib/eclipse/ec-update-apply, which accepts only `all` (a full upgrade).
+  Every path needs the administrator's password (auth_admin_keep),
   so a session that is active, inactive or remote still has to be authorised
   by an administrator, and the keep applies the authorisation to the same
   process tree for a short while.

@@ -4,46 +4,21 @@
 # ec-update-apply: the root entry point of the power widget's update (ADR 0085).
 # Installed to /usr/lib/eclipse/ec-update-apply (root:root 0755) and run only
 # through pkexec under polkit action org.eclipse.update.apply. It accepts exactly
-# two shapes and execs pacman with fixed flags; any other argv exits 2 before
-# pacman is reached:
+# one argument, `all`, and execs a full upgrade with fixed flags. Any other argv
+# exits 2 before pacman is reached:
 #
-#   ec-update-apply eclipse-deps PKG...   each PKG matches [a-z0-9@._+-]+, no
-#                                         leading '-', at most 256 of them
 #   ec-update-apply all
 #
-# Do not add options or pass-through arguments here. Widening this script is
-# the privilege change to review.
+# A full upgrade is the only shape: a subset upgrade is a partial upgrade (ADR
+# 0085). Do not add options, package names or pass-through arguments here.
+# Widening this script is the privilege change to review.
 set -eu
 LC_ALL=C
 export LC_ALL
 
-valid_name() {
-	case "$1" in
-	"" | -*) return 1 ;;
-	*[!a-z0-9@._+-]*) return 1 ;;
-	esac
-	return 0
-}
-
-case "${1:-}" in
-eclipse-deps)
-	shift
-	[ "$#" -ge 1 ] && [ "$#" -le 256 ] || exit 2
-	for pkg in "$@"; do
-		valid_name "$pkg" || exit 2
-	done
-	[ "$(/usr/bin/id -u)" -eq 0 ] || exit 1
-	# -Sy: the sync database must be current, or the install would take the
-	# stale version and report success on a no-op. This is a partial upgrade
-	# by design (ADR 0085).
-	exec /usr/bin/pacman -Sy --needed --noconfirm "$@"
-	;;
-all)
-	[ "$#" -eq 1 ] || exit 2
-	[ "$(/usr/bin/id -u)" -eq 0 ] || exit 1
-	exec /usr/bin/pacman -Syu --noconfirm
-	;;
-*)
-	exit 2
-	;;
-esac
+[ "$#" -eq 1 ] && [ "$1" = all ] || exit 2
+[ "$(/usr/bin/id -u)" -eq 0 ] || exit 1
+# -Syu: the sync database is refreshed and every pending package is upgraded
+# together, so the install never takes a stale version and never splits a
+# dependency set.
+exec /usr/bin/pacman -Syu --noconfirm

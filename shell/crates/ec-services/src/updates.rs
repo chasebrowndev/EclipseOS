@@ -3,16 +3,13 @@
 //! and "Update & power off" (ADR 0085).
 //!
 //! The widget offers the item only while an Eclipse package update is pending.
-//! Clicking it asks the human for a scope, then calls [`Handle::apply`]:
+//! Running it is always a full upgrade, `pacman -Syu`, of every pending package.
+//! A subset upgrade is a partial upgrade, and a partial upgrade can leave a
+//! shared library out of step with the packages that link against it, so the
+//! count the widget shows is the total of all pending packages.
 //!
-//! * [`Scope::EclipseAndDeps`]: the pending Eclipse packages plus the pending
-//!   packages in their dependency closure. This is a deliberate partial
-//!   upgrade; the closure is what keeps it from leaving shared libraries
-//!   half-upgraded.
-//! * [`Scope::All`]: `pacman -Syu`, every pending package.
-//!
-//! Both run through `pkexec` on polkit action `org.eclipse.update.apply`, whose
-//! helper `/usr/lib/eclipse/ec-update-apply` accepts only those two shapes and
+//! The upgrade runs through `pkexec` on polkit action `org.eclipse.update.apply`,
+//! whose helper `/usr/lib/eclipse/ec-update-apply` accepts exactly `all` and
 //! execs pacman itself. Progress goes to the progress feed as job
 //! `eclipse-update`. Only exit status 0 leads to the power action, through
 //! logind; every other outcome leaves the machine running.
@@ -28,7 +25,6 @@
 //! The process, feed and power seams are traits so the tests never run pacman
 //! or touch logind.
 
-use std::collections::BTreeSet;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -49,7 +45,6 @@ pub const CHECK_INTERVAL: Duration = Duration::from_secs(30 * 60);
 /// `checkupdates` syncs a temporary database, so it can take a while on a
 /// slow link. Past this it is killed and the check reads as unavailable.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(300);
-const PACTREE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Feed sends are best effort and must never stall the upgrade.
 const FEED_TIMEOUT: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_millis(20);
@@ -74,15 +69,6 @@ pub struct PendingPkg {
     pub new: String,
 }
 
-/// What the human asked to upgrade.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Scope {
-    /// Eclipse packages and the pending packages they depend on.
-    EclipseAndDeps,
-    /// Every pending package (`pacman -Syu`).
-    All,
-}
-
 /// The power action that follows a successful upgrade.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum After {
@@ -94,8 +80,8 @@ pub enum After {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// The upgrade is running.
-    Started { scope: Scope, then: After },
-    /// Refused before anything ran: nothing Eclipse pending, a discovery that
+    Started { then: After },
+    /// Refused before anything ran: no Eclipse update pending, a discovery that
     /// is not known yet, or an upgrade already in flight.
     Refused { reason: String },
     /// The upgrade exited 0 and the power action is being requested.
@@ -107,16 +93,16 @@ pub enum Event {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Update {
-    /// The current state. `total` counts every pending package; `eclipse` the
-    /// pending Eclipse packages; `eclipse_with_deps` those plus the pending
-    /// packages in their dependency closure (the EclipseAndDeps set).
+    /// The current state. `total` counts every pending package, all of which
+    /// the upgrade installs. `eclipse_pending` says whether an Eclipse package
+    /// is among them, and `eclipse` lists those. The widget offers the item
+    /// only when `eclipse_pending` is true.
     Pending {
         total: usize,
+        eclipse_pending: bool,
         eclipse: Vec<PendingPkg>,
-        eclipse_with_deps: Vec<PendingPkg>,
     },
-    /// `checkupdates` is missing or failed, or the dependency closure could
-    /// not be read. The widget must not offer the update.
+    /// `checkupdates` is missing or failed. The widget must not offer the update.
     Unavailable,
     Event(Event),
 }
@@ -360,7 +346,8 @@ impl Power for LogindPower {
     }
 }
 
-/// A package name the helper would accept: `[a-z0-9@._+-]+`, no leading `-`.
+/// A package name `checkupdates` may list: `[a-z0-9@._+-]+`, no leading `-`.
+/// Lines naming anything else are dropped from the list.
 pub fn valid_pkg_name(name: &str) -> bool {
     !name.is_empty()
         && !name.starts_with('-')
@@ -370,7 +357,7 @@ pub fn valid_pkg_name(name: &str) -> bool {
 }
 
 /// Parses `checkupdates` output: `name old -> new`, one per line. Lines that
-/// do not have that shape, and names the helper would refuse, are dropped.
+/// do not have that shape, and names that fail [`valid_pkg_name`], are dropped.
 pub fn parse_checkupdates(text: &str) -> Vec<PendingPkg> {
     text.lines()
         .filter_map(|line| {
@@ -395,59 +382,25 @@ pub fn is_eclipse(name: &str) -> bool {
     name == "eclipseos" || name.starts_with("eclipseos-") || name.starts_with("ec-")
 }
 
-/// Parses `pactree -s -u -l <pkg>`: one dependency per line, possibly with a
-/// version constraint or a soname (`glibc>=2.38`, `libz.so=1-64`). Only the
-/// name is kept.
-pub fn parse_closure(text: &str) -> BTreeSet<String> {
-    text.lines()
-        .filter_map(|line| {
-            let name = line.split(['<', '>', '=']).next()?.trim();
-            valid_pkg_name(name).then(|| name.to_owned())
-        })
-        .collect()
-}
-
-/// Builds the state from the pending list and the union of the Eclipse
-/// packages' dependency closures.
-pub fn classify(pending: Vec<PendingPkg>, closure: &BTreeSet<String>) -> Update {
+/// Builds the state from the pending list.
+pub fn classify(pending: Vec<PendingPkg>) -> Update {
     let total = pending.len();
-    let eclipse = pending.iter().filter(|p| is_eclipse(&p.name)).cloned().collect();
-    let eclipse_with_deps = pending
-        .iter()
-        .filter(|p| is_eclipse(&p.name) || closure.contains(&p.name))
-        .cloned()
-        .collect();
+    let eclipse: Vec<PendingPkg> = pending.into_iter().filter(|p| is_eclipse(&p.name)).collect();
     Update::Pending {
         total,
+        eclipse_pending: !eclipse.is_empty(),
         eclipse,
-        eclipse_with_deps,
     }
 }
 
-/// The helper argv for a scope. Refused unless an Eclipse update is pending,
-/// so no apply can run for a state the widget was never allowed to offer.
-pub fn plan(
-    scope: Scope,
-    eclipse: &[PendingPkg],
-    eclipse_with_deps: &[PendingPkg],
-) -> Result<Vec<String>, String> {
-    if eclipse.is_empty() {
+/// The helper argv for the full upgrade. Refused unless an Eclipse update is
+/// pending, so no apply can run for a state the widget was never allowed to
+/// offer.
+pub fn plan(eclipse_pending: bool) -> Result<Vec<String>, String> {
+    if !eclipse_pending {
         return Err("no Eclipse update is pending".into());
     }
-    let mut argv = vec![PKEXEC.to_owned(), HELPER.to_owned()];
-    match scope {
-        Scope::All => argv.push("all".to_owned()),
-        Scope::EclipseAndDeps => {
-            argv.push("eclipse-deps".to_owned());
-            for p in eclipse_with_deps {
-                if !valid_pkg_name(&p.name) {
-                    return Err("a pending package name the helper would refuse".into());
-                }
-                argv.push(p.name.clone());
-            }
-        }
-    }
-    Ok(argv)
+    Ok(vec![PKEXEC.to_owned(), HELPER.to_owned(), "all".to_owned()])
 }
 
 /// Reads a pacman transaction line, `(3/12) upgrading foo`, as a fraction.
@@ -466,32 +419,14 @@ pub fn upgrade_fraction(line: &str) -> Option<f32> {
     (total > 0 && (1..=total).contains(&done)).then(|| done as f32 / total as f32)
 }
 
-/// Runs the discovery: `checkupdates`, then the closure of each pending Eclipse
-/// package. Any failure to read the closure is `Unavailable`, not a partial
-/// list: an Eclipse-only upgrade whose dependencies are unknown is not safe to
-/// offer.
+/// Runs the discovery: `checkupdates`. A failure is `Unavailable`, not an
+/// empty list: a host that cannot say what is pending is not offered an update.
 pub fn discover(runner: &dyn Runner) -> Update {
-    let stdout = match runner.capture(&["checkupdates".to_owned()], CHECK_TIMEOUT) {
+    match runner.capture(&["checkupdates".to_owned()], CHECK_TIMEOUT) {
         // checkupdates exits 2 when nothing is pending.
-        Ok(c) if matches!(c.code, Some(0 | 2)) => c.stdout,
-        Ok(_) | Err(_) => return Update::Unavailable,
-    };
-    let pending = parse_checkupdates(&stdout);
-    let mut closure = BTreeSet::new();
-    for p in pending.iter().filter(|p| is_eclipse(&p.name)) {
-        let argv = [
-            "pactree".to_owned(),
-            "-s".to_owned(),
-            "-u".to_owned(),
-            "-l".to_owned(),
-            p.name.clone(),
-        ];
-        match runner.capture(&argv, PACTREE_TIMEOUT) {
-            Ok(c) if c.code == Some(0) => closure.extend(parse_closure(&c.stdout)),
-            _ => return Update::Unavailable,
-        }
+        Ok(c) if matches!(c.code, Some(0 | 2)) => classify(parse_checkupdates(&c.stdout)),
+        Ok(_) | Err(_) => Update::Unavailable,
     }
-    classify(pending, &closure)
 }
 
 /// Single-flight: at most one upgrade at a time. The ticket is released when
@@ -523,15 +458,8 @@ fn emit(out: &Sender<Update>, event: Event) {
 
 /// Runs the upgrade, then, only on exit status 0, the power action. Every
 /// other outcome, a timeout included, ends with `Failed` and no power request.
-pub fn run_apply(
-    deps: &Deps,
-    argv: &[String],
-    scope: Scope,
-    then: After,
-    out: &Sender<Update>,
-    timeout: Duration,
-) {
-    emit(out, Event::Started { scope, then });
+pub fn run_apply(deps: &Deps, argv: &[String], then: After, out: &Sender<Update>, timeout: Duration) {
+    emit(out, Event::Started { then });
     deps.feed.send(FeedRequest::Start {
         id: JOB_ID.to_owned(),
         label: JOB_LABEL.to_owned(),
@@ -599,7 +527,7 @@ pub fn run_apply(
 
 enum Msg {
     Refresh,
-    Apply { scope: Scope, then: After },
+    Apply { then: After },
 }
 
 /// The GUI's end of the update service.
@@ -621,10 +549,10 @@ impl Handle {
         let _ = self.commands.send(Msg::Refresh);
     }
 
-    /// Start the upgrade for `scope`, then `then` on success. Refusals and
-    /// outcomes come back as [`Update::Event`]; this never blocks.
-    pub fn apply(&self, scope: Scope, then: After) {
-        let _ = self.commands.send(Msg::Apply { scope, then });
+    /// Start the full upgrade, then `then` on success. Refusals and outcomes
+    /// come back as [`Update::Event`]; this never blocks.
+    pub fn apply(&self, then: After) {
+        let _ = self.commands.send(Msg::Apply { then });
     }
 }
 
@@ -660,8 +588,8 @@ struct Service {
     deps: Deps,
     out: Sender<Update>,
     flight: Flight,
-    /// The last discovery result. Apply reads its eclipse lists, so an apply
-    /// always acts on what the widget last showed.
+    /// The last discovery result. Apply reads its `eclipse_pending`, so an
+    /// apply always acts on what the widget last showed.
     current: Option<Update>,
 }
 
@@ -676,7 +604,7 @@ fn serve(commands: Receiver<Msg>, out: Sender<Update>, deps: Deps, interval: Dur
     loop {
         match commands.recv_timeout(interval) {
             Ok(Msg::Refresh) | Err(RecvTimeoutError::Timeout) => service.refresh(),
-            Ok(Msg::Apply { scope, then }) => service.apply(scope, then),
+            Ok(Msg::Apply { then }) => service.apply(then),
             // The handle is gone: nobody is listening.
             Err(RecvTimeoutError::Disconnected) => return,
         }
@@ -692,16 +620,15 @@ impl Service {
         self.current = Some(next);
     }
 
-    fn apply(&self, scope: Scope, then: After) {
-        let argv = match &self.current {
+    fn apply(&self, then: After) {
+        let eclipse_pending = matches!(
+            &self.current,
             Some(Update::Pending {
-                eclipse,
-                eclipse_with_deps,
+                eclipse_pending: true,
                 ..
-            }) => plan(scope, eclipse, eclipse_with_deps),
-            _ => Err("no Eclipse update is pending".to_owned()),
-        };
-        let argv = match argv {
+            })
+        );
+        let argv = match plan(eclipse_pending) {
             Ok(argv) => argv,
             Err(reason) => return emit(&self.out, Event::Refused { reason }),
         };
@@ -719,7 +646,7 @@ impl Service {
             .name("eclipse-update-apply".into())
             .spawn(move || {
                 let _ticket = ticket;
-                run_apply(&deps, &argv, scope, then, &out, APPLY_TIMEOUT);
+                run_apply(&deps, &argv, then, &out, APPLY_TIMEOUT);
             });
         if let Err(e) = spawned {
             eprintln!("eclipse-updates: apply not started: {e}");
@@ -868,12 +795,10 @@ mod tests {
 
     const CHECK_OUT: &str = "eclipseos-abyss 0.1.1-1 -> 0.1.1-2\nglibc 2.40-1 -> 2.41-1\n";
 
-    /// A runner whose checkupdates shows CHECK_OUT and whose pactree lists
-    /// the closure `glibc`, so the Eclipse set pulls glibc in.
+    /// A runner whose checkupdates shows CHECK_OUT: two pending, one Eclipse.
     fn eclipse_runner() -> FakeRunner {
         FakeRunner::new(Box::new(|argv: &[String]| match argv[0].as_str() {
             "checkupdates" => captured(Some(0), CHECK_OUT),
-            "pactree" => captured(Some(0), "eclipseos-abyss\nglibc>=2.38\nreadline\n"),
             _ => Err(RunError::Missing),
         }))
     }
@@ -941,17 +866,7 @@ mod tests {
     }
 
     #[test]
-    fn closure_names_drop_versions_and_sonames() {
-        let got = parse_closure("bash\nglibc>=2.38\nlibncursesw.so=6-64\n\nglibc\nreadline<9\n");
-        let want: BTreeSet<String> = ["bash", "glibc", "libncursesw.so", "readline"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(got, want);
-    }
-
-    #[test]
-    fn classify_splits_eclipse_from_its_closure() {
+    fn classify_counts_every_pending_package_and_flags_eclipse() {
         let pending = vec![
             pkg("eclipseos-abyss"),
             pkg("glibc"),
@@ -959,45 +874,37 @@ mod tests {
             pkg("eclipseos-hyperion"),
             pkg("readline"),
         ];
-        let closure: BTreeSet<String> = ["glibc", "readline"].into_iter().map(str::to_owned).collect();
         let Update::Pending {
             total,
+            eclipse_pending,
             eclipse,
-            eclipse_with_deps,
-        } = classify(pending, &closure)
+        } = classify(pending)
         else {
             panic!("expected Pending");
         };
         assert_eq!(total, 5);
-        let names = |v: &[PendingPkg]| v.iter().map(|p| p.name.clone()).collect::<Vec<_>>();
-        assert_eq!(names(&eclipse), ["eclipseos-abyss", "eclipseos-hyperion"]);
+        assert!(eclipse_pending);
+        let names: Vec<_> = eclipse.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["eclipseos-abyss", "eclipseos-hyperion"]);
+
         assert_eq!(
-            names(&eclipse_with_deps),
-            ["eclipseos-abyss", "glibc", "eclipseos-hyperion", "readline"]
+            classify(vec![pkg("glibc")]),
+            Update::Pending {
+                total: 1,
+                eclipse_pending: false,
+                eclipse: vec![],
+            }
         );
     }
 
     #[test]
-    fn plan_maps_scope_to_helper_argv() {
-        let eclipse = vec![pkg("eclipseos-abyss")];
-        let with_deps = vec![pkg("eclipseos-abyss"), pkg("glibc")];
-        assert_eq!(
-            plan(Scope::All, &eclipse, &with_deps).unwrap(),
-            argv(&[PKEXEC, HELPER, "all"])
-        );
-        assert_eq!(
-            plan(Scope::EclipseAndDeps, &eclipse, &with_deps).unwrap(),
-            argv(&[PKEXEC, HELPER, "eclipse-deps", "eclipseos-abyss", "glibc"])
-        );
+    fn plan_is_always_the_full_upgrade() {
+        assert_eq!(plan(true).unwrap(), argv(&[PKEXEC, HELPER, "all"]));
     }
 
     #[test]
-    fn plan_refuses_without_an_eclipse_update_or_a_bad_name() {
-        let with_deps = vec![pkg("glibc")];
-        assert!(plan(Scope::All, &[], &with_deps).is_err());
-        assert!(plan(Scope::EclipseAndDeps, &[], &[]).is_err());
-        let hostile = vec![pkg("eclipseos-abyss"), pkg("--root")];
-        assert!(plan(Scope::EclipseAndDeps, &[pkg("eclipseos-abyss")], &hostile).is_err());
+    fn plan_refuses_without_an_eclipse_update() {
+        assert!(plan(false).is_err());
     }
 
     #[test]
@@ -1037,35 +944,26 @@ mod tests {
             discover(&none),
             Update::Pending {
                 total: 0,
+                eclipse_pending: false,
                 eclipse: vec![],
-                eclipse_with_deps: vec![]
             }
         );
     }
 
     #[test]
-    fn unreadable_closure_fails_closed() {
-        let runner = FakeRunner::new(Box::new(|argv: &[String]| match argv[0].as_str() {
-            "checkupdates" => captured(Some(0), CHECK_OUT),
-            _ => captured(Some(1), ""),
-        }));
-        assert_eq!(discover(&runner), Update::Unavailable);
-    }
-
-    #[test]
-    fn discovery_pulls_the_closure_into_the_eclipse_set() {
+    fn discovery_reports_the_total_and_the_eclipse_subset() {
         let Update::Pending {
             total,
+            eclipse_pending,
             eclipse,
-            eclipse_with_deps,
         } = discover(&eclipse_runner())
         else {
             panic!("expected Pending");
         };
         assert_eq!(total, 2);
-        assert_eq!(eclipse.len(), 1);
-        let names: Vec<_> = eclipse_with_deps.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["eclipseos-abyss", "glibc"]);
+        assert!(eclipse_pending);
+        let names: Vec<_> = eclipse.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["eclipseos-abyss"]);
     }
 
     #[test]
@@ -1078,15 +976,8 @@ mod tests {
         );
         let (d, runner) = deps(runner, feed.clone(), power.clone());
         let (tx, rx) = mpsc::channel();
-        let args = argv(&[PKEXEC, HELPER, "eclipse-deps", "eclipseos-abyss"]);
-        run_apply(
-            &d,
-            &args,
-            Scope::EclipseAndDeps,
-            After::PowerOff,
-            &tx,
-            APPLY_TIMEOUT,
-        );
+        let args = argv(&[PKEXEC, HELPER, "all"]);
+        run_apply(&d, &args, After::PowerOff, &tx, APPLY_TIMEOUT);
         drop(tx);
 
         assert_eq!(runner.calls(), vec![args]);
@@ -1096,7 +987,6 @@ mod tests {
             events,
             vec![
                 Update::Event(Event::Started {
-                    scope: Scope::EclipseAndDeps,
                     then: After::PowerOff
                 }),
                 Update::Event(Event::Installed {
@@ -1144,7 +1034,6 @@ mod tests {
             run_apply(
                 &d,
                 &argv(&[PKEXEC, HELPER, "all"]),
-                Scope::All,
                 After::Reboot,
                 &tx,
                 APPLY_TIMEOUT,
@@ -1169,7 +1058,6 @@ mod tests {
         run_apply(
             &d,
             &argv(&[PKEXEC, HELPER, "all"]),
-            Scope::All,
             After::Reboot,
             &tx,
             APPLY_TIMEOUT,
@@ -1193,7 +1081,6 @@ mod tests {
         run_apply(
             &d,
             &argv(&[PKEXEC, HELPER, "all"]),
-            Scope::All,
             After::PowerOff,
             &tx,
             Duration::from_millis(50),
@@ -1244,7 +1131,25 @@ mod tests {
         let power = Arc::new(FakePower::ok());
         let (d, runner) = deps(runner, feed, power.clone());
         let handle = spawn_with(d, Duration::from_secs(3600));
-        handle.apply(Scope::All, After::PowerOff);
+        handle.apply(After::PowerOff);
+        let ev = wait_for(&handle, |u| matches!(u, Update::Event(_)));
+        assert!(matches!(ev, Update::Event(Event::Refused { .. })));
+        assert!(power.calls().is_empty());
+        assert!(runner.calls().iter().all(|c| c[0] != PKEXEC));
+    }
+
+    #[test]
+    fn apply_with_only_non_eclipse_updates_pending_is_refused() {
+        let runner = FakeRunner::new(Box::new(|argv: &[String]| match argv[0].as_str() {
+            "checkupdates" => captured(Some(0), "glibc 2.40-1 -> 2.41-1\n"),
+            _ => Err(RunError::Missing),
+        }));
+        let feed = Arc::new(RecordFeed::default());
+        let power = Arc::new(FakePower::ok());
+        let (d, runner) = deps(runner, feed, power.clone());
+        let handle = spawn_with(d, Duration::from_secs(3600));
+        wait_for(&handle, |u| matches!(u, Update::Pending { .. }));
+        handle.apply(After::Reboot);
         let ev = wait_for(&handle, |u| matches!(u, Update::Event(_)));
         assert!(matches!(ev, Update::Event(Event::Refused { .. })));
         assert!(power.calls().is_empty());
@@ -1255,11 +1160,11 @@ mod tests {
     fn service_applies_then_powers_on_success() {
         let feed = Arc::new(RecordFeed::default());
         let power = Arc::new(FakePower::ok());
-        let runner = eclipse_runner().streaming(&["(1/1) upgrading eclipseos-abyss"], Ok(Some(0)));
+        let runner = eclipse_runner().streaming(&["(1/2) upgrading eclipseos-abyss"], Ok(Some(0)));
         let (d, runner) = deps(runner, feed, power.clone());
         let handle = spawn_with(d, Duration::from_secs(3600));
         wait_for(&handle, |u| matches!(u, Update::Pending { .. }));
-        handle.apply(Scope::EclipseAndDeps, After::Reboot);
+        handle.apply(After::Reboot);
         wait_for(&handle, |u| matches!(u, Update::Event(Event::Installed { .. })));
         let deadline = Instant::now() + Duration::from_secs(5);
         while power.calls().is_empty() && Instant::now() < deadline {
@@ -1271,10 +1176,7 @@ mod tests {
             .into_iter()
             .find(|c| c[0] == PKEXEC)
             .expect("pkexec ran");
-        assert_eq!(
-            pkexec_call,
-            argv(&[PKEXEC, HELPER, "eclipse-deps", "eclipseos-abyss", "glibc"])
-        );
+        assert_eq!(pkexec_call, argv(&[PKEXEC, HELPER, "all"]));
     }
 
     #[test]
@@ -1287,8 +1189,8 @@ mod tests {
         let (d, _) = deps(runner, feed, power.clone());
         let handle = spawn_with(d, Duration::from_secs(3600));
         wait_for(&handle, |u| matches!(u, Update::Pending { .. }));
-        handle.apply(Scope::All, After::PowerOff);
-        handle.apply(Scope::All, After::PowerOff);
+        handle.apply(After::PowerOff);
+        handle.apply(After::PowerOff);
         let refused = wait_for(&handle, |u| matches!(u, Update::Event(Event::Refused { .. })));
         assert_eq!(
             refused,
