@@ -9,10 +9,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
+use ec_ipc::progress::MAX_LINE;
 use serde_json::Value;
 
 use super::scan::{IoStat, Proc, ProcSource};
-use super::{spawn_with, Options, Source, Update};
+use super::{spawn_with, Options, Source, Update, MAX_CLIENTS};
 
 struct Fixed(Vec<Proc>);
 
@@ -162,6 +163,88 @@ fn oversized_line_drops_the_client() {
     let mut out = String::new();
     let _ = BufReader::new(s).read_line(&mut out);
     assert!(out.contains("too long") || out.is_empty(), "{out}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+fn serve_here() -> (super::Handle, PathBuf, PathBuf) {
+    let dir = temp_dir();
+    let sock = dir.join("progress.sock");
+    let h = spawn_with(Options {
+        socket: Some(sock.clone()),
+        source: Box::new(Fixed(vec![])),
+    });
+    (h, dir, sock)
+}
+
+#[test]
+fn request_then_half_close_is_answered_before_the_drop() {
+    let (_h, dir, sock) = serve_here();
+    let mut s = UnixStream::connect(&sock).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(b"{\"op\":\"list\"}\n").unwrap();
+    s.shutdown(std::net::Shutdown::Write).unwrap();
+    let mut buf = String::new();
+    BufReader::new(s).read_line(&mut buf).unwrap();
+    let v: Value = serde_json::from_str(&buf).expect("reply before close");
+    assert_eq!(v["ok"], true);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_line_past_the_cap_is_refused_with_or_without_a_newline() {
+    let (_h, dir, sock) = serve_here();
+    // Full buffer with no newline, then a complete line one byte too long.
+    let unterminated = vec![b'a'; MAX_LINE + 1];
+    let mut terminated = vec![b'a'; MAX_LINE + 1];
+    terminated.push(b'\n');
+    for junk in [unterminated, terminated] {
+        let mut s = UnixStream::connect(&sock).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let _ = s.write_all(&junk);
+        let mut out = String::new();
+        let _ = BufReader::new(s).read_line(&mut out);
+        assert!(out.contains("too long"), "{out}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_line_at_the_limit_is_served() {
+    let (_h, dir, sock) = serve_here();
+    // Body of exactly MAX_LINE bytes: a valid request padded with spaces.
+    let pad = " ".repeat(MAX_LINE - r#"{"op":"list"}"#.len());
+    let line = format!("{}{pad}\n", r#"{"op":"list"}"#);
+    assert_eq!(line.len(), MAX_LINE + 1);
+    let mut s = UnixStream::connect(&sock).unwrap();
+    s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    s.write_all(line.as_bytes()).unwrap();
+    let mut buf = String::new();
+    BufReader::new(s).read_line(&mut buf).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&buf).unwrap()["ok"], true);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn clients_past_the_cap_are_closed_on_accept() {
+    let (_h, dir, sock) = serve_here();
+    let mut held: Vec<UnixStream> = (0..MAX_CLIENTS)
+        .map(|_| UnixStream::connect(&sock).unwrap())
+        .collect();
+    // The backlog is first in, first accepted, so the extra one arrives last.
+    let extra = UnixStream::connect(&sock).unwrap();
+    extra.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+    let mut out = String::new();
+    let _ = BufReader::new(extra).read_line(&mut out);
+    assert!(out.is_empty(), "extra client was served: {out}");
+
+    // The held clients still get answers.
+    let first = &mut held[0];
+    first.write_all(b"{\"op\":\"list\"}\n").unwrap();
+    let mut buf = String::new();
+    BufReader::new(first.try_clone().unwrap())
+        .read_line(&mut buf)
+        .unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&buf).unwrap()["ok"], true);
     let _ = std::fs::remove_dir_all(&dir);
 }
 

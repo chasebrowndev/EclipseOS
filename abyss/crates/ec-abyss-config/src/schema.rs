@@ -812,12 +812,15 @@ pub const TABLE: &[Key] = &[
         Live,
         "Widgets drawn after the task strip, left to right (ADR 0065). \
        Built-in ids: now-playing, system-usage, volume, network, bluetooth, \
-       battery, tray (the StatusNotifierItems and their overflow drawer), \
-       progress (zero width while nothing is in flight; the jobs of `ec-ctl \
-       progress`, and the scan of `/proc`), power (the session actions and the pending Eclipse update, ADR 0085) and \
-       clock; `custom:<name>` names a `widget` block in `bar`. A widget left \
-       out is not drawn. An unknown id, a repeated one, or a `custom:` \
-       naming no `widget` block is refused.",
+       battery, quick-actions (the one-tap action grid: zero width until an \
+       `action` block exists), tray (the StatusNotifierItems and their overflow \
+       drawer), progress (zero width while nothing is in flight; the jobs of \
+       `ec-ctl progress`, and the scan of `/proc`), power (the session actions \
+       and the pending Eclipse update, ADR 0085) and clock; `custom:<name>` \
+       names a `widget` block in `bar`. A widget left out is not drawn. An \
+       unknown id, a repeated one, or a `custom:` naming no `widget` block is \
+       refused. `ec-ctl config migrate` appends a built-in id that a pinned \
+       order lacks, once; an id it has offered is never added again.",
     ),
     k(
         "bar.widgets.important",
@@ -2125,6 +2128,7 @@ pub const BAR_WIDGET_IDS: &[&str] = &[
     "network",
     "bluetooth",
     "battery",
+    "quick-actions",
     "tray",
     "progress",
     "power",
@@ -2138,6 +2142,7 @@ pub const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
     "network",
     "bluetooth",
     "battery",
+    "quick-actions",
     "tray",
     "progress",
     "power",

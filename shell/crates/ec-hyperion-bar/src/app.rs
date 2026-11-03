@@ -265,13 +265,10 @@ pub enum Message {
     PowerRow(ec_services::session::Action),
     /// The destructive row's Cancel.
     PowerCancel,
-    /// An update row was pressed: open its scope prompt.
+    /// An update row was pressed: ask for its inline Confirm.
     PowerUpdate(ec_services::updates::After),
-    /// The scope prompt's radio: the scope the human picked.
-    PowerScope(ec_services::updates::Scope),
-    /// The scope prompt's Confirm, and its Cancel.
-    PowerApply,
-    PowerScopeCancel,
+    /// The update's Confirm: start the full upgrade, then the power action.
+    PowerApply(ec_services::updates::After),
     /// logind's answer to the drawer's probe, or its refusal of an action.
     PowerAnswer(Vec<(ec_services::session::Action, ec_services::session::Availability)>),
     PowerRefused(String),
@@ -1949,35 +1946,19 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             return closed;
         }
         Message::PowerCancel => {
-            app.power_menu.confirm = None;
+            app.power_menu.reset();
             return reflow(app);
         }
         Message::PowerUpdate(then) => {
-            if app.power_menu.can_update(then) {
-                app.power_menu.confirm = None;
-                app.power_menu.scope_for = Some(then);
-            }
+            app.power_menu.ask_update(then);
             return reflow(app);
         }
-        Message::PowerScope(scope) => {
-            app.power_menu.scope = scope;
-            return reflow(app);
-        }
-        Message::PowerScopeCancel => {
-            app.power_menu.scope_for = None;
-            return reflow(app);
-        }
-        Message::PowerApply => {
-            let Some(then) = app.power_menu.scope_for else {
-                return Task::none();
-            };
-            if !app.power_menu.can_update(then) {
+        Message::PowerApply(then) => {
+            if !app.power_menu.apply_confirmed(then) {
                 return reflow(app);
             }
-            let scope = app.power_menu.scope;
-            app.power_menu.begin_apply(then);
             if !fixture_or_preview(app) {
-                crate::services::apply_update(scope, then);
+                crate::services::apply_update(then);
             }
             return reflow(app);
         }
@@ -2000,7 +1981,9 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         Message::PowerSet(profile) => {
             app.power.ask(profile);
-            crate::services::set_profile(profile);
+            if !fixture_or_preview(app) {
+                crate::services::set_profile(profile);
+            }
             return Task::none();
         }
         // A fixture's or a preview's power reading is the thing being screenshotted.
@@ -2032,9 +2015,12 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         Message::QuickAction(index) => {
             let closed = dismiss(app);
-            let term = app.conn.terminal_command();
-            if let Some(slot) = app.quick_actions.get(index) {
-                crate::widgets::quick_actions::run(slot, term);
+            // A fixture or a preview launches and execs nothing.
+            if !fixture_or_preview(app) {
+                let term = app.conn.terminal_command();
+                if let Some(slot) = app.quick_actions.get(index) {
+                    crate::widgets::quick_actions::run(slot, term);
+                }
             }
             return closed;
         }
@@ -2613,7 +2599,8 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
     if !app.bars.get(&id).is_some_and(|b| b.fold.pill()) {
         return Task::none();
     }
-    let closed = dismiss(app);
+    let switching = app.bars.get(&id).is_some_and(|b| b.drawer.open);
+    let closed = dismiss_with(app, !switching);
     if kind == crate::drawer::DrawerKind::Wifi && crate::radio::actions::available() {
         // The picker opening is the moment a fresh list matters.
         app.radios.start_wifi_scan();
@@ -3204,6 +3191,13 @@ fn launch_pin(_id: &str) {}
 /// The start menu and any drawer go with it: every path here is the human doing something
 /// else — Escape, a click on bare bar, a chip's action, a popup opening.
 fn dismiss(app: &mut App) -> Task<Message> {
+    dismiss_with(app, true)
+}
+
+/// [`dismiss`], and with `drawers` false the open drawers stay out. A switch
+/// from one drawer to another keeps the bar's keyboard: the release it would
+/// send is read back as an unfocus, and that closes the drawer just opened.
+fn dismiss_with(app: &mut App, drawers: bool) -> Task<Message> {
     end_bt_scan(app);
     // Only a power drawer that is out closes here; resetting unconditionally
     // would wipe a menu state that is about to be drawn as it opens.
@@ -3222,7 +3216,7 @@ fn dismiss(app: &mut App) -> Task<Message> {
         } else {
             Task::none()
         };
-        let drawer = if bar.drawer.open {
+        let drawer = if drawers && bar.drawer.open {
             close_drawer(bar, now)
         } else {
             Task::none()
@@ -3968,6 +3962,23 @@ pub(crate) mod tests {
         }
     }
 
+    /// A preview or fixture is on screen and no service may act on a click:
+    /// the power profile and the quick action both stop at the guard. The
+    /// effects are process-global calls with no seam, so this pins the guard
+    /// the arms consult and drives both arms through `update` to show they
+    /// return without reaching a service.
+    #[test]
+    fn a_preview_session_acts_on_no_power_or_quick_action_click() {
+        let mut a = app();
+        assert!(!fixture_or_preview(&a));
+        a.preview = Some(Preview::ChipMenu);
+        assert!(fixture_or_preview(&a));
+        a.quick_actions = crate::widgets::quick_actions::preview_slots();
+        let profile = ec_services::power_profiles::Profile::Balanced;
+        let _ = update(&mut a, Message::PowerSet(profile));
+        let _ = update(&mut a, Message::QuickAction(0));
+    }
+
     #[test]
     fn an_injected_layer_variant_is_a_no_op_not_a_panic() {
         let mut a = app();
@@ -4353,6 +4364,31 @@ pub(crate) mod tests {
 
     /// Content that grows or shrinks moves the open drawer's target; it does
     /// not close it.
+    /// A cell press on another drawer's cell while one is out takes the
+    /// panel over at once and leaves the bar's keyboard alone: the switch sends
+    /// no keyboard release, so the unfocus that release brings cannot close the
+    /// drawer just opened. The same cell still closes it.
+    #[test]
+    fn a_drawer_switch_takes_the_panel_and_keeps_the_keyboard() {
+        use crate::drawer::DrawerKind;
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 1);
+        let _ = open_drawer(&mut a, id, Drawer::Calendar, true);
+        assert!(a.bars[&id].drawer.is_open(DrawerKind::Calendar));
+        let _ = open_drawer(&mut a, id, Drawer::Network, true);
+        assert!(
+            a.bars[&id].drawer.is_open(DrawerKind::Wifi),
+            "the other cell takes over"
+        );
+        assert!(
+            a.bars[&id].drawer.reveal.target() > 0.0,
+            "the new panel is not shut"
+        );
+        let _ = open_drawer(&mut a, id, Drawer::Network, true);
+        assert!(!a.bars[&id].drawer.open, "the same cell still closes it");
+    }
+
+    /// A content change keeps the open drawer's extent moving.
     #[test]
     fn a_radio_drawer_follows_its_content_without_closing() {
         let mut a = app();

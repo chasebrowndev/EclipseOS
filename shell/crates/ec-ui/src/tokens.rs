@@ -975,13 +975,6 @@ pub mod drawer {
     pub const JOB_H: f32 = 46.0;
     pub const JOB_PAD: f32 = 3.0;
     pub const JOB_LABEL_CHARS: usize = 34;
-    /// The power drawer's two-line option (a scope the human picks between):
-    /// its label may wrap onto a second line, so it is taller than a row.
-    pub const OPTION_H: f32 = 40.0;
-    /// The radio's ring, and the dot that marks the one in force.
-    pub const RADIO: f32 = MARK;
-    pub const RADIO_DOT: f32 = 5.0;
-    pub const RADIO_RIM: f32 = 1.0;
 
     /// The calendar drawer's width: a month grid and a day's detail side by
     /// side, so the one drawer wider than [`W`].

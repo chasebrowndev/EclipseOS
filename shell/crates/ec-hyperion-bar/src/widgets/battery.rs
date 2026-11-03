@@ -49,7 +49,11 @@ impl Power {
                 }
                 self.reading = Some(state);
             }
-            Event::Failed { reason, .. } => self.failed = Some(reason),
+            // A refused set reverts the selector to what the daemon last said.
+            Event::Failed { reason, .. } => {
+                self.asked = None;
+                self.failed = Some(reason);
+            }
         }
     }
 
@@ -57,6 +61,12 @@ impl Power {
     pub fn ask(&mut self, profile: Profile) {
         self.asked = Some(profile);
         self.failed = None;
+    }
+
+    /// The profile the selector shows as chosen: the one asked for until the
+    /// daemon agrees, else the one it reports as active.
+    pub fn shown(&self, active: Profile) -> Profile {
+        self.asked.unwrap_or(active)
     }
 }
 
@@ -226,7 +236,11 @@ pub(crate) fn sheet(app: &App) -> Sheet {
                     // or the daemon says it is limited: the reason is the note.
                     let limited = profile == Profile::Performance && (!offered || snap.degraded.is_some());
                     let press = (offered && !limited).then_some(Message::PowerSet(profile));
-                    (profile_label(profile), snap.active == profile, press)
+                    (
+                        profile_label(profile),
+                        app.power.shown(snap.active) == profile,
+                        press,
+                    )
                 })
                 .collect();
             s.block(
@@ -389,6 +403,40 @@ mod tests {
         power.ask(Profile::Performance);
         power.apply(ready(Profile::Performance));
         assert_eq!(power.failed, None);
+    }
+
+    #[test]
+    fn a_pressed_profile_is_shown_as_chosen_until_the_daemon_agrees() {
+        let mut power = Power::default();
+        let ready = |active| {
+            Event::State(PowerState::Ready(Snapshot {
+                active,
+                profiles: Profile::ALL.to_vec(),
+                degraded: None,
+            }))
+        };
+        power.apply(ready(Profile::Balanced));
+        power.ask(Profile::Performance);
+        assert_eq!(power.shown(Profile::Balanced), Profile::Performance);
+        power.apply(ready(Profile::Balanced));
+        assert_eq!(
+            power.shown(Profile::Balanced),
+            Profile::Performance,
+            "a reading that has not agreed yet keeps the choice shown"
+        );
+        power.apply(Event::Failed {
+            action: "set_profile",
+            reason: "refused".to_owned(),
+        });
+        assert_eq!(
+            power.shown(Profile::Balanced),
+            Profile::Balanced,
+            "a refusal reverts the selector"
+        );
+        power.ask(Profile::Performance);
+        power.apply(ready(Profile::Performance));
+        assert_eq!(power.shown(Profile::Performance), Profile::Performance);
+        assert_eq!(power.asked, None);
     }
 
     #[test]

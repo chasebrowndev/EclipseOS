@@ -151,10 +151,9 @@ Scanning stays on; `Handle::set_scanning` remains for a host that wants it off.
 
 The taskbar's power widget offers "Update & reboot" / "Update & power off" only
 while an Eclipse package is pending (`checkupdates`, every 30 min and on
-`refresh`). Scope is the pending Eclipse packages plus their dependency closure,
-or every pending package. Both run through `pkexec` on polkit action
+`refresh`). Running it is always a full upgrade (`pacman -Syu`) of every pending
+package; the count shown is all of them. It runs through `pkexec` on polkit action
 `org.eclipse.update.apply`, whose helper `/usr/lib/eclipse/ec-update-apply`
-accepts only `eclipse-deps PKG...` and `all`. Progress reports as feed job
-`eclipse-update`. Only pacman exit 0 leads to logind's Reboot or PowerOff; any
-other outcome leaves the machine running. Without `checkupdates` or a readable
-closure the item is never offered.
+accepts exactly `all`. Progress reports as feed job `eclipse-update`. Only pacman
+exit 0 leads to logind's Reboot or PowerOff; any other outcome leaves the machine
+running. Without `checkupdates` the item is never offered (ADR 0085).
