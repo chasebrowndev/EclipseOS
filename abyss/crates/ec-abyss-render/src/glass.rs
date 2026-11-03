@@ -181,10 +181,33 @@ const RIM_AWAY: f32 = 0.375;
 const RIM_FOCUS: f32 = 2.5;
 const RIM_FOCUS_HOVER: f32 = 3.4375;
 
-/// What the glass program is told for one pane: the rim multiplier and the
-/// fill lift (a small mix toward white). No colour: gold never enters glass.
-/// `shade` is the light scheme's twin of `lift`: on near-white glass a pointer
-/// darkens instead (toward ink), and a focused pane at rest takes none.
+/// The light scheme's pane look (ADR 0084, STYLE.md Light, the `LIGHT` cell
+/// table in ec-theme). Each depth step moves toward the ink: a rest fill of
+/// ink .07, hover .11, press .15 (`shade`), and an ink hairline of .12 at rest,
+/// .18 hovered or focused, .24 focused and hovered. A minimized (`Away`) chip
+/// has no fill. The focused pane takes no ink: it is the one lift, with the
+/// white `lift` and the crisp ink rim.
+///
+/// `rim` is scaled so that at the default `glass.rim` (0.5) the base lobe of
+/// the shader's hairline (`LINE_BASE` .05, weight `lobe * rim_color.a * 2 *
+/// rim`) reads these alphas: `rim = alpha / 0.05`, which is `alpha * 20`.
+const LIGHT_REST: f32 = 0.07;
+const LIGHT_HOVER: f32 = 0.11;
+const LIGHT_PRESS: f32 = 0.15;
+const LIGHT_RIM_REST: f32 = 0.12 * 20.0;
+const LIGHT_RIM_HOT: f32 = 0.18 * 20.0;
+const LIGHT_RIM_FOCUS: f32 = 0.18 * 20.0;
+const LIGHT_RIM_FOCUS_HOT: f32 = 0.24 * 20.0;
+const LIGHT_RIM_AWAY: f32 = 0.05 * 20.0;
+
+/// The ink (`rgba(26,22,16)`, premultiplied at alpha 1) a light pane's hairline
+/// is drawn in. Dark panes keep the white one (`rim_color` opaque white).
+pub const LIGHT_RIM_INK: [f32; 4] = [0.102, 0.086, 0.063, 1.0];
+
+/// What the glass program is told for one pane: the rim multiplier, the white
+/// fill lift (a small mix toward white), and the light scheme's ink fill
+/// (`shade`, a mix toward ink; always 0 on dark). No colour: gold never enters
+/// glass.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Look {
     pub rim: f32,
@@ -193,28 +216,48 @@ pub struct Look {
 }
 
 /// The look of `pane`, or `None` when it draws nothing (latent at rest, or
-/// fully transparent). Everything scales by `alpha / 255`.
-pub fn look(pane: &Pane) -> Option<Look> {
+/// fully transparent). Everything scales by `alpha / 255`. `light` selects the
+/// light scheme's table; `false` is the dark table, unchanged.
+pub fn look(pane: &Pane, light: bool) -> Option<Look> {
     let pressed = pane.state & PRESSED != 0;
     let hot = pressed || pane.state & HOVERED != 0;
-    let (rim, lift) = match (pane.tone, hot) {
-        (Tone::Latent, false) => return None,
-        (Tone::Plain, false) => (RIM_PLAIN, 0.0),
-        (Tone::Plain | Tone::Latent, true) => (RIM_PLAIN_HOVER, if pressed { 0.02 } else { 0.012 }),
-        (Tone::Away, false) => (RIM_AWAY, 0.0),
-        (Tone::Away, true) => (RIM_PLAIN_HOVER * RIM_AWAY, if pressed { 0.02 } else { 0.012 }),
-        (Tone::Focused, false) => (RIM_FOCUS, 0.014),
-        (Tone::Focused, true) => (RIM_FOCUS_HOVER, if pressed { 0.028 } else { 0.02 }),
-    };
-    if pane.alpha == 0 {
+    if pane.alpha == 0 || (pane.tone == Tone::Latent && !hot) {
         return None;
     }
-    let shade = match (pane.tone, hot, pressed) {
-        (_, false, _) => 0.0,
-        (Tone::Focused, _, false) => 0.025,
-        (Tone::Focused, _, true) => 0.045,
-        (_, _, false) => 0.035,
-        (_, _, true) => 0.06,
+    let (rim, lift, shade) = if light {
+        let shade = match (pane.tone, hot, pressed) {
+            (Tone::Focused, _, _) | (Tone::Away, false, _) => 0.0,
+            (_, false, _) => LIGHT_REST,
+            (_, true, false) => LIGHT_HOVER,
+            (_, true, true) => LIGHT_PRESS,
+        };
+        let rim = match (pane.tone, hot) {
+            (Tone::Plain | Tone::Latent, false) => LIGHT_RIM_REST,
+            (Tone::Plain | Tone::Latent | Tone::Away, true) => LIGHT_RIM_HOT,
+            (Tone::Away, false) => LIGHT_RIM_AWAY,
+            (Tone::Focused, false) => LIGHT_RIM_FOCUS,
+            (Tone::Focused, true) => LIGHT_RIM_FOCUS_HOT,
+        };
+        // The white lift stays on the focused pane only (white on frost lifts
+        // nothing a pointer should not): the dark values, which are small.
+        let lift = match (pane.tone, pressed, hot) {
+            (Tone::Focused, _, false) => 0.014,
+            (Tone::Focused, true, true) => 0.028,
+            (Tone::Focused, false, true) => 0.02,
+            _ => 0.0,
+        };
+        (rim, lift, shade)
+    } else {
+        let (rim, lift) = match (pane.tone, hot) {
+            (Tone::Latent, false) => return None,
+            (Tone::Plain, false) => (RIM_PLAIN, 0.0),
+            (Tone::Plain | Tone::Latent, true) => (RIM_PLAIN_HOVER, if pressed { 0.02 } else { 0.012 }),
+            (Tone::Away, false) => (RIM_AWAY, 0.0),
+            (Tone::Away, true) => (RIM_PLAIN_HOVER * RIM_AWAY, if pressed { 0.02 } else { 0.012 }),
+            (Tone::Focused, false) => (RIM_FOCUS, 0.014),
+            (Tone::Focused, true) => (RIM_FOCUS_HOVER, if pressed { 0.028 } else { 0.02 }),
+        };
+        (rim, lift, 0.0)
     };
     let a = pane.alpha as f32 / 255.0;
     Some(Look {
@@ -260,6 +303,43 @@ pub fn band(pane: &Pane, rect: Rectangle<i32, Physical>, upscale: f64) -> f32 {
     };
     let px = (logical as f64 * upscale) as f32;
     px.min(rect.size.w.min(rect.size.h) as f32 * 0.5).max(1.0)
+}
+
+/// A pane's contact shadow: the shell cell's drop (ec-ui `bar::CELL_SHADOW_Y`
+/// 1, `CELL_SHADOW_BLUR` 6), drawn by the window shadow program at its rest
+/// weight. Logical px.
+pub const SHADOW_DROP: i32 = 1;
+pub const SHADOW_RANGE: i32 = 6;
+
+/// Whether `pane` casts a contact shadow, by the shell cell's rule
+/// (`ec-ui` `CellTone`): none while pressed (pushed into the glass), none for
+/// a minimized or latent cell at rest, none at zero alpha. Everything else,
+/// focused included, casts the same rest shadow.
+pub fn casts_shadow(pane: &Pane) -> bool {
+    let pressed = pane.state & PRESSED != 0;
+    let hovered = pane.state & HOVERED != 0;
+    let resting = matches!(pane.tone, Tone::Away | Tone::Latent) && !hovered;
+    pane.alpha != 0 && !pressed && !resting
+}
+
+/// The shadow's area, logical: the cell's box grown by `SHADOW_RANGE` on the
+/// sides and top, and by `SHADOW_DROP` more at the bottom. The shader's
+/// `size` is this area, so its `range` and `drop` are in the same units.
+pub fn shadow_area(cell: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    Rectangle::new(
+        (cell.loc.x - SHADOW_RANGE, cell.loc.y - SHADOW_RANGE).into(),
+        (
+            cell.size.w + 2 * SHADOW_RANGE,
+            cell.size.h + 2 * SHADOW_RANGE + SHADOW_DROP,
+        )
+            .into(),
+    )
+}
+
+/// The shadow shader's `[range, radius, drop]` for a cell of corner `radius`
+/// (logical px, already grown by any window animation scale).
+pub fn shadow_params(radius: f32) -> [f32; 3] {
+    [SHADOW_RANGE as f32, radius, SHADOW_DROP as f32]
 }
 
 #[cfg(test)]
@@ -359,31 +439,110 @@ mod tests {
         }
     }
 
+    /// The shader's two mixes for one channel, in its order: white lift, then
+    /// the ink shade (`effects::GLASS_BODY`). A CPU mirror for the look tests.
+    fn over(backdrop: f32, look: Look) -> f32 {
+        const INK: f32 = 0.102; // `LIFT_L`, the ink's red channel
+        let lifted = backdrop + (1.0 - backdrop) * look.lift;
+        lifted * (1.0 - look.shade) + INK * look.shade
+    }
+
     #[test]
     fn tone_and_state_map_to_rim_and_lift() {
-        let plain = look(&pane(Tone::Plain, 0, 255)).unwrap();
-        let focus = look(&pane(Tone::Focused, 0, 255)).unwrap();
-        let away = look(&pane(Tone::Away, 0, 255)).unwrap();
-        let hover = look(&pane(Tone::Plain, HOVERED, 255)).unwrap();
-        let press = look(&pane(Tone::Plain, PRESSED, 255)).unwrap();
+        let plain = look(&pane(Tone::Plain, 0, 255), false).unwrap();
+        let focus = look(&pane(Tone::Focused, 0, 255), false).unwrap();
+        let away = look(&pane(Tone::Away, 0, 255), false).unwrap();
+        let hover = look(&pane(Tone::Plain, HOVERED, 255), false).unwrap();
+        let press = look(&pane(Tone::Plain, PRESSED, 255), false).unwrap();
         assert!(focus.rim > hover.rim && hover.rim > plain.rim && plain.rim > away.rim);
         assert_eq!(away.lift, 0.0);
         assert_eq!(plain.lift, 0.0);
         assert!(press.lift > hover.lift && hover.lift > 0.0);
-        assert!(press.shade > hover.shade && hover.shade > 0.0);
-        assert_eq!(plain.shade, 0.0);
+        // Dark has no ink step at all: its look is what it was before.
+        for l in [plain, focus, away, hover, press] {
+            assert_eq!(l.shade, 0.0);
+        }
         assert!((focus.rim / plain.rim - 2.5).abs() < 1e-6);
-        assert!(look(&pane(Tone::Latent, 0, 255)).is_none());
-        assert_eq!(look(&pane(Tone::Latent, HOVERED, 255)), Some(hover));
+        assert!(look(&pane(Tone::Latent, 0, 255), false).is_none());
+        assert_eq!(look(&pane(Tone::Latent, HOVERED, 255), false), Some(hover));
     }
 
     #[test]
     fn alpha_scales_everything() {
-        let full = look(&pane(Tone::Focused, HOVERED, 255)).unwrap();
-        let half = look(&pane(Tone::Focused, HOVERED, 51)).unwrap();
-        assert!((half.rim - full.rim * 0.2).abs() < 1e-5);
-        assert!((half.lift - full.lift * 0.2).abs() < 1e-6);
-        assert!(look(&pane(Tone::Plain, 0, 0)).is_none());
+        for light in [false, true] {
+            let full = look(&pane(Tone::Focused, HOVERED, 255), light).unwrap();
+            let half = look(&pane(Tone::Focused, HOVERED, 51), light).unwrap();
+            assert!((half.rim - full.rim * 0.2).abs() < 1e-5);
+            assert!((half.lift - full.lift * 0.2).abs() < 1e-6);
+            assert!((half.shade - full.shade * 0.2).abs() < 1e-6);
+            assert!(look(&pane(Tone::Plain, 0, 0), light).is_none());
+        }
+    }
+
+    #[test]
+    fn light_rest_hover_press_step_toward_the_ink() {
+        let rest = look(&pane(Tone::Plain, 0, 255), true).unwrap();
+        let hover = look(&pane(Tone::Plain, HOVERED, 255), true).unwrap();
+        let press = look(&pane(Tone::Plain, PRESSED, 255), true).unwrap();
+        assert!((rest.shade - 0.07).abs() < 1e-6);
+        assert!((hover.shade - 0.11).abs() < 1e-6);
+        assert!((press.shade - 0.15).abs() < 1e-6);
+        // Rest < hover < press, and each is a darker step than the last.
+        assert!(rest.shade < hover.shade && hover.shade < press.shade);
+        // No white on a plain light pane: white over frost lifts it off its column.
+        assert_eq!(rest.lift, 0.0);
+        assert_eq!(hover.lift, 0.0);
+        assert_eq!(press.lift, 0.0);
+        // The hairline: .12 at rest, .18 hovered, all in units of the base lobe
+        // (rim * LINE_BASE at the default glass.rim 0.5 is the alpha).
+        assert!((rest.rim * 0.05 * 2.0 * 0.5 - 0.12).abs() < 1e-5);
+        assert!((hover.rim * 0.05 * 2.0 * 0.5 - 0.18).abs() < 1e-5);
+        assert_eq!(press.rim, hover.rim);
+    }
+
+    #[test]
+    fn light_focus_is_the_one_lift_and_takes_no_ink() {
+        let plain = look(&pane(Tone::Plain, 0, 255), true).unwrap();
+        for state in [0, HOVERED, PRESSED] {
+            let focus = look(&pane(Tone::Focused, state, 255), true).unwrap();
+            assert_eq!(focus.shade, 0.0);
+            assert!(focus.lift > 0.0);
+            // Lifted: brighter than a plain rest pane on the same backdrop.
+            assert!(over(0.97, focus) > over(0.97, plain));
+        }
+        // The focused rest hairline is the cell's .18, and it is above the plain one.
+        let focus = look(&pane(Tone::Focused, 0, 255), true).unwrap();
+        assert!((focus.rim * 0.05 - 0.18).abs() < 1e-5);
+        assert!(focus.rim > plain.rim);
+    }
+
+    #[test]
+    fn light_look_darkens_its_backdrop_and_orders_rest_hover_press() {
+        for backdrop in [0.93f32, 0.97, 0.99] {
+            let rest = over(backdrop, look(&pane(Tone::Plain, 0, 255), true).unwrap());
+            let hover = over(backdrop, look(&pane(Tone::Plain, HOVERED, 255), true).unwrap());
+            let press = over(backdrop, look(&pane(Tone::Plain, PRESSED, 255), true).unwrap());
+            assert!(rest < backdrop, "rest fill must darken {backdrop}");
+            assert!(
+                hover < rest && press < hover,
+                "rest > hover > press darkness order"
+            );
+        }
+        // An away (minimized) chip has no fill at rest: it sits on the backdrop.
+        let away = over(0.97, look(&pane(Tone::Away, 0, 255), true).unwrap());
+        assert_eq!(away, 0.97);
+    }
+
+    #[test]
+    fn dark_is_unchanged_by_the_light_table() {
+        // A dark pane's shade is zero, so the ink mix is the identity and the
+        // white lift is the only thing the shader adds: a dark pane lightens.
+        for (tone, state) in [(Tone::Plain, 0), (Tone::Plain, HOVERED), (Tone::Focused, PRESSED)] {
+            let l = look(&pane(tone, state, 255), false).unwrap();
+            assert_eq!(l.shade, 0.0);
+            assert!(over(0.2, l) >= 0.2);
+        }
+        assert_eq!(over(0.2, look(&pane(Tone::Plain, 0, 255), false).unwrap()), 0.2);
     }
 
     #[test]
@@ -404,5 +563,57 @@ mod tests {
         .unwrap();
         assert_eq!((r.loc.x, r.loc.y, r.size.w, r.size.h), (1020, 8, 180, 40));
         assert_eq!(band(&p, r, 2.0), 12.0);
+    }
+
+    #[test]
+    fn cells_cast_the_shell_cell_shadow() {
+        // Plain and focused cells cast one at rest; minimized and latent ones
+        // only when lit, as the shell's cell does.
+        assert!(casts_shadow(&pane(Tone::Plain, 0, 255)));
+        assert!(casts_shadow(&pane(Tone::Focused, 0, 255)));
+        assert!(!casts_shadow(&pane(Tone::Away, 0, 255)));
+        assert!(!casts_shadow(&pane(Tone::Latent, 0, 255)));
+        assert!(casts_shadow(&pane(Tone::Away, HOVERED, 255)));
+        assert!(casts_shadow(&pane(Tone::Latent, HOVERED, 255)));
+        assert!(casts_shadow(&pane(Tone::Plain, HOVERED, 255)));
+        // Pressed casts none, whatever the tone; so does a transparent pane.
+        for tone in [Tone::Plain, Tone::Focused, Tone::Away, Tone::Latent] {
+            assert!(!casts_shadow(&pane(tone, PRESSED, 255)));
+            assert!(!casts_shadow(&pane(tone, HOVERED | PRESSED, 255)));
+        }
+        assert!(!casts_shadow(&pane(Tone::Plain, 0, 0)));
+    }
+
+    #[test]
+    fn the_shadow_hugs_the_cell_and_drops_a_pixel() {
+        let cell = Rectangle::<i32, Logical>::new((20, 10).into(), (80, 30).into());
+        let area = shadow_area(cell);
+        // Six px out on the left, right and top; seven at the bottom: one px down.
+        assert_eq!((area.loc.x, area.loc.y), (14, 4));
+        assert_eq!((area.size.w, area.size.h), (92, 43));
+        assert_eq!(area.loc.x + area.size.w, cell.loc.x + cell.size.w + SHADOW_RANGE);
+        assert_eq!(
+            area.loc.y + area.size.h,
+            cell.loc.y + cell.size.h + SHADOW_RANGE + SHADOW_DROP
+        );
+        // Nothing reaches further than the range and drop, whatever the cell.
+        let tiny = Rectangle::<i32, Logical>::new((0, 0).into(), (1, 1).into());
+        let a = shadow_area(tiny);
+        assert!(a.loc.x >= -SHADOW_RANGE && a.loc.y >= -SHADOW_RANGE);
+        assert_eq!(a.size.w - tiny.size.w, 2 * SHADOW_RANGE);
+        assert_eq!(a.size.h - tiny.size.h, 2 * SHADOW_RANGE + SHADOW_DROP);
+        assert_eq!(shadow_params(8.0), [6.0, 8.0, 1.0]);
+    }
+
+    #[test]
+    fn light_casts_warm_ink_and_dark_casts_black() {
+        // The colour is the window shadow's, passed in by the caller.
+        let light = ec_abyss_config::Appearance {
+            scheme: ec_theme::Scheme::Light,
+            ..Default::default()
+        };
+        let [r, g, b] = light.shadow_rgb();
+        assert!(r > g && g > b && r < 0.3, "{:?}", [r, g, b]);
+        assert_eq!(ec_abyss_config::Appearance::default().shadow_rgb(), [0.0; 3]);
     }
 }
