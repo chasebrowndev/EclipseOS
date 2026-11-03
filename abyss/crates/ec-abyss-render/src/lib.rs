@@ -1274,7 +1274,8 @@ fn insert_panes(
             let params = [range, radius, drop, rgb[0], rgb[1], rgb[2]];
             let uniforms = || effects::shadow_uniforms([range, radius, drop], 0.0, rgb);
             let (element, applied, applied_alpha) = store
-                .gpu.pane_shadows
+                .gpu
+                .pane_shadows
                 .entry((output.clone(), req.key.clone(), i))
                 .or_insert_with(|| {
                     (
@@ -1314,7 +1315,8 @@ fn insert_panes(
     }
     // A pane list that shrank drops its stale shadows.
     store
-        .gpu.pane_shadows
+        .gpu
+        .pane_shadows
         .retain(|(o, k, i), _| o != output || k != &req.key || *i < panes.len());
     // Inserting each at the same index leaves the last pane in front.
     for element in blurs.drain(..) {

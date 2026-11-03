@@ -1,0 +1,24 @@
+[package]
+name = "ec-steam-glass"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The steam-glass add-on's injector: pushes the Eclipse glass stylesheet into Steam's CEF UI over its local DevTools port."
+# Its own package, like every add-on (ADR 0066): a session without Steam
+# leaves it out.
+publish = false
+
+[lib]
+name = "ec_steam_glass"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-steam-glass"
+path = "src/main.rs"
+
+[dependencies]
+# The DevTools wire is HTTP plus a tiny WebSocket client, written against std
+# in `cdp`: a websocket crate would be a new dependency for one client frame.
+serde_json.workspace = true

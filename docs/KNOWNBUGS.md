@@ -597,3 +597,69 @@ surface is only input-protected.
 - **`cost_usd` is passed through as Claude Code reports it**, which may be a
   per-session running total rather than per turn. It is logged, not audited:
   I-02 `Model` provenance records are not written yet (AGENTD-01).
+
+# Second hardware install — Intel + NVIDIA laptop, 2026-11-02
+
+## INST-01: the installed system does not trust the packaging key
+
+The first `pacman -Sy` on a freshly installed system (`eclipseos-meta` 0.1.1-1)
+fails, so nothing can be installed or updated from the repos:
+
+```
+error: eclipseos: key "D9D44958A6BEFBAE5962F11272915A6EA2689111" is unknown
+error: key "D9D44958A6BEFBAE5962F11272915A6EA2689111" could not be looked up remotely
+error: failed to synchronize all databases (invalid or corrupted database (PGP signature))
+```
+
+`packaging/pacman/eclipseos.conf` sets `SigLevel = Required DatabaseRequired`,
+so the sync stops at the `[eclipseos]` database. The key cannot be fetched
+because its only uid is `packaging@eclipseos.invalid`; it has to be on the disk.
+
+**Where:** not located. `installer/crates/ec-setup-helper/src/stages.rs:484`
+already adds and locally signs the key in the target's keyring after pacstrap,
+yet the key was unknown on this install. Either that step did not take effect
+or this ISO predates it. The install log,
+`/var/log/eclipseos-install/install.log`, is root-only and has not been read,
+and the ISO's build date was not recorded.
+
+**Reproduce:** install from the ISO, boot it, run `sudo pacman -Sy`. Seen once.
+
+**Workaround:** on the installed system, with the key exported from a machine
+that already trusts it:
+
+```
+sudo pacman-key --add eclipseos-packaging.asc
+sudo pacman-key --lsign-key D9D44958A6BEFBAE5962F11272915A6EA2689111
+```
+
+**Proposed:** none until the install log shows which case this is.
+
+## INST-02: the installed mirrorlist is full of literal `\1` lines
+
+On the same install, 425 lines of `/etc/pacman.d/mirrorlist` start with a
+literal `\1` where `Server = https:` belongs, and pacman warns about them on
+every run:
+
+```
+\1//fastly.mirror.pkgbuild.com/$repo/os/$arch
+warning: config file /etc/pacman.d/mirrorlist, line 23: directive '\1//ftpmirror...
+```
+
+Syncing still works because six valid `Server` lines remain at the top of the
+file (the first at line 9). Those six are the only mirrors in use, and the
+warnings show up in all pacman output.
+
+**Where:** not located. The file's mtime is 19:22 and the install ran at 21:43
+the same day, so it may have come from the ISO rather than the install. The one
+matching edit in `packaging/iso/` or the setup helper,
+`packaging/iso/airootfs/etc/pacman.d/hooks/uncomment-mirrors.hook:13`, has a
+valid `sed -E` expression and would not produce this as written.
+
+**Reproduce:** on the installed system, `grep -c '^\\1' /etc/pacman.d/mirrorlist`.
+Seen once.
+
+**Workaround:** delete the `\1` lines; the valid mirrors are enough. Not yet
+tried here.
+
+**Proposed:** none until the source of the file is known.
+

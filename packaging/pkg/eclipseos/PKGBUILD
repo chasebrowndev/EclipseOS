@@ -12,7 +12,7 @@
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
          eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack
-         eclipseos-firefox-glass eclipseos-meta)
+         eclipseos-steam-glass eclipseos-firefox-glass eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -264,6 +264,21 @@ package_eclipseos-anim-pack() {
     "$srcdir/$_src"/packaging/transitions/anim-pack/*.{kdl,frag}
   install -Dm0644 -t "$pkgdir/usr/share/eclipse/transitions/anim-pack/presets" \
     "$srcdir/$_src"/packaging/transitions/anim-pack/presets/*.kdl
+}
+
+package_eclipseos-steam-glass() {
+  pkgdesc="EclipseOS Steam glass: the Eclipse glass theme for Steam's UI"
+  # Not in eclipseos-meta; installing it is what turns it on. Steam itself is
+  # in multilib, so it is the user's to install.
+  depends=(eclipseos-abyss)
+
+  _bin ec-steam-glass
+  _unit ec-steam-glass.service
+  _want ec-steam-glass.service
+  install -Dm0644 "$srcdir/$_src/packaging/addons/steam-glass.kdl" \
+    "$pkgdir/usr/share/eclipse/addons/steam-glass.kdl"
+  install -Dm0644 -t "$pkgdir/usr/share/eclipse/steam-glass" \
+    "$srcdir/$_src"/packaging/addons/steam-glass/steam-glass.{css,js}
 }
 
 package_eclipseos-firefox-glass() {
