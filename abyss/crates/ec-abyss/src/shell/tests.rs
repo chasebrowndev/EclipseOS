@@ -319,6 +319,32 @@ mod initial_commit_placement {
     }
 
     #[test]
+    fn tiled_windows_carry_the_tiled_states_and_floating_ones_do_not() {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, _) = neighbour(&mut h, &mut c);
+        let window = window_of(&h, &n).expect("placed");
+        let tiled = |w: &Window| {
+            w.toplevel().unwrap().with_pending_state(|s| {
+                [
+                    State::TiledLeft,
+                    State::TiledRight,
+                    State::TiledTop,
+                    State::TiledBottom,
+                ]
+                .map(|t| s.states.contains(t))
+            })
+        };
+        assert_eq!(tiled(&window), [true; 4], "a tile is tiled on every edge");
+
+        crate::shell::focus::focus_window(&mut h.state, &window);
+        crate::shell::toggle_floating(&mut h.state);
+        assert!(floats(&h, &window), "toggled to floating");
+        assert_eq!(tiled(&window), [false; 4], "floating clears the tiled states");
+    }
+
+    #[test]
     fn a_float_rule_on_app_id_never_squeezes_the_neighbour() {
         let mut h = harness();
         h.state.config.window_rules = shipped_rules();
@@ -621,5 +647,54 @@ mod initial_commit_placement {
         // A bind, a click on the taskbar, IPC: the human wants the other one.
         focus(&mut h, &other, true);
         assert!(!h.state.fullscreen.contains_key(&full), "fullscreen ended");
+    }
+}
+
+mod held_layer_offset {
+    use super::*;
+
+    fn sz(w: i32, h: i32) -> Size<i32, Logical> {
+        Size::from((w, h))
+    }
+
+    #[test]
+    fn a_bottom_bar_that_grows_keeps_its_old_top_edge() {
+        // smithay places it at 1040 - 40 = 1000; the drawn 30 px buffer
+        // must stay at 1010, so the offset is +10.
+        let anchor = Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
+        assert_eq!(held_offset(anchor, sz(1920, 40), sz(1920, 30)), (0, 10).into());
+    }
+
+    #[test]
+    fn a_bottom_bar_that_shrinks_keeps_its_old_top_edge() {
+        let anchor = Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
+        assert_eq!(held_offset(anchor, sz(1920, 30), sz(1920, 40)), (0, -10).into());
+    }
+
+    #[test]
+    fn a_top_anchored_surface_is_never_held() {
+        let anchor = Anchor::TOP | Anchor::LEFT | Anchor::RIGHT;
+        assert_eq!(held_offset(anchor, sz(1920, 40), sz(1920, 30)), (0, 0).into());
+    }
+
+    #[test]
+    fn a_right_anchored_surface_holds_horizontally() {
+        let anchor = Anchor::RIGHT | Anchor::TOP | Anchor::BOTTOM;
+        assert_eq!(held_offset(anchor, sz(300, 900), sz(200, 900)), (100, 0).into());
+    }
+
+    #[test]
+    fn a_centred_surface_holds_its_centre() {
+        // smithay: y = c - placed/2 = c - 20; held: y = c - acked/2 = c - 15.
+        assert_eq!(
+            held_offset(Anchor::empty(), sz(100, 40), sz(100, 30)),
+            (0, 5).into()
+        );
+    }
+
+    #[test]
+    fn an_acked_size_equal_to_placed_is_no_offset() {
+        let anchor = Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT;
+        assert_eq!(held_offset(anchor, sz(1920, 30), sz(1920, 30)), (0, 0).into());
     }
 }

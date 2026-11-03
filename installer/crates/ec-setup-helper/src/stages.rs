@@ -32,6 +32,8 @@ pub struct Prepared {
     pub ucode: Option<Ucode>,
     /// Turing-or-newer NVIDIA present: DKMS module, cmdline and initramfs setup.
     pub nvidia: bool,
+    /// Hybrid laptop: write the NVIDIA runtime power-management files (ADR 0084).
+    pub nvidia_pm: bool,
     /// An earlier attempt left mounts at or under the target; they are
     /// unmounted once the erase is confirmed.
     pub stale_mounts: bool,
@@ -195,6 +197,18 @@ pub const NVIDIA_CMDLINE: &str = " nvidia-drm.modeset=1 nvidia-drm.fbdev=1";
 /// in early userspace. `+=`, so the stock hooks (`kms` included) stay: the
 /// `modconf` hook carries `nvidia-utils`' nouveau blacklist into the initramfs.
 pub const MKINITCPIO_NVIDIA: &str = "MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)\n";
+
+/// ADR 0084: Turing+ fine-grained runtime PM, so an idle or unused dGPU on a
+/// hybrid laptop reaches D3 (Integrated mode never opens it).
+pub const NVIDIA_PM_MODPROBE: &str = "options nvidia NVreg_DynamicPowerManagement=0x02\n";
+
+/// ADR 0084: runtime PM on for NVIDIA display (0x0300) and 3D (0x0302) PCI
+/// functions, as in the Arch wiki PRIME runtime-PM recipe.
+pub const NVIDIA_PM_UDEV: &str = "\
+ACTION==\"bind\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", ATTR{class}==\"0x030000\", TEST==\"power/control\", ATTR{power/control}=\"auto\"\n\
+ACTION==\"bind\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", ATTR{class}==\"0x030200\", TEST==\"power/control\", ATTR{power/control}=\"auto\"\n\
+ACTION==\"unbind\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", ATTR{class}==\"0x030000\", TEST==\"power/control\", ATTR{power/control}=\"on\"\n\
+ACTION==\"unbind\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", ATTR{class}==\"0x030200\", TEST==\"power/control\", ATTR{power/control}=\"on\"\n";
 
 pub fn limine_conf(root_uuid: &str, ucode: Option<Ucode>, nvidia: bool) -> String {
     let pstate = if ucode == Some(Ucode::Amd) {
@@ -698,7 +712,7 @@ pub fn pacstrap(env: &Env, prep: &Prepared, note: &mut dyn FnMut(&str)) -> Resul
 
 // ---- Configure ---------------------------------------------------------------
 
-pub fn configure(env: &Env, plan: &Plan, nvidia: bool) -> Result<()> {
+pub fn configure(env: &Env, plan: &Plan, nvidia: bool, nvidia_pm: bool) -> Result<()> {
     let t = &env.paths.target;
     target::write(t, TargetFile::Hostname, format!("{}\n", plan.hostname).as_bytes())?;
     target::link_localtime(t, &plan.timezone)?;
@@ -731,6 +745,10 @@ pub fn configure(env: &Env, plan: &Plan, nvidia: bool) -> Result<()> {
     target::write(t, TargetFile::ZramGenerator, ZRAM_CONF.as_bytes())?;
     if nvidia {
         target::write(t, TargetFile::MkinitcpioNvidia, MKINITCPIO_NVIDIA.as_bytes())?;
+    }
+    if nvidia && nvidia_pm {
+        target::write(t, TargetFile::NvidiaPmModprobe, NVIDIA_PM_MODPROBE.as_bytes())?;
+        target::write(t, TargetFile::NvidiaPmUdev, NVIDIA_PM_UDEV.as_bytes())?;
     }
     target::write(t, TargetFile::SudoersWheel, SUDOERS_WHEEL.as_bytes())?;
 
@@ -962,6 +980,18 @@ mod tests {
         assert_eq!(on.matches("cmdline:").count(), 3);
         assert!(on.contains("path: boot():/vmlinuz-linux-lts") && on.contains("initramfs-linux-lts.img"));
         assert!(!limine_conf("u", Some(Ucode::Amd), false).contains("nvidia"));
+    }
+
+    #[test]
+    fn nvidia_runtime_pm_files_name_the_dynamic_power_option_and_auto_control() {
+        assert_eq!(
+            NVIDIA_PM_MODPROBE,
+            "options nvidia NVreg_DynamicPowerManagement=0x02\n"
+        );
+        assert!(NVIDIA_PM_UDEV.contains("ATTR{power/control}=\"auto\""));
+        assert!(NVIDIA_PM_UDEV.contains("0x030000") && NVIDIA_PM_UDEV.contains("0x030200"));
+        assert_eq!(NVIDIA_PM_UDEV.matches("0x10de").count(), 4);
+        assert!(NVIDIA_PM_UDEV.ends_with('\n'));
     }
 
     #[test]

@@ -419,6 +419,7 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "misc.terminal-command" => return Some((Page::LauncherSearch, "search")),
         "components.bar" => return Some((Page::BarAppearance, "bar")),
         "misc.render-device" => return Some((Page::Rendering, "rendering")),
+        "misc.gpu-mode" | "misc.discrete-gpu-apps" => return Some((Page::Rendering, "graphics")),
         "misc.scripted-input" => return Some((Page::Privacy, "input scripting")),
         "mode" => return Some((Page::Mode, "interaction")),
         _ => {}
@@ -648,6 +649,8 @@ mod tests {
     #[test]
     fn misc_splits_by_key_not_by_node() {
         assert_eq!(page_of("misc.render-device"), Some(Page::Rendering));
+        assert_eq!(page_of("misc.gpu-mode"), Some(Page::Rendering));
+        assert_eq!(page_of("misc.discrete-gpu-apps"), Some(Page::Rendering));
         assert_eq!(page_of("misc.scripted-input"), Some(Page::Privacy));
         assert_eq!(page_of("oracle-eyes.model-command"), Some(Page::OeGeneral));
         assert_eq!(page_of("oracle-eyes.debug"), Some(Page::OeGeneral));
