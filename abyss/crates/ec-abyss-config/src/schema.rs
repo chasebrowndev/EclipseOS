@@ -812,8 +812,9 @@ pub const TABLE: &[Key] = &[
         Live,
         "Widgets drawn after the task strip, left to right (ADR 0065). \
        Built-in ids: now-playing, system-usage, volume, network, bluetooth, \
-       battery, tray (the StatusNotifierItems and their overflow drawer) and \
-       clock; `custom:<name>` names a `widget` block in `bar`. A widget left \
+       battery, tray (the StatusNotifierItems and their overflow drawer), \
+       progress (zero width while nothing is in flight; the jobs of `ec-ctl \
+       progress`, and the scan of `/proc`) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left \
        out is not drawn. An unknown id, a repeated one, or a `custom:` \
        naming no `widget` block is refused.",
     ),
@@ -2124,6 +2125,7 @@ pub const BAR_WIDGET_IDS: &[&str] = &[
     "bluetooth",
     "battery",
     "tray",
+    "progress",
     "clock",
 ];
 /// The prefix a custom widget's id carries in `bar.widgets.order`.
@@ -2135,6 +2137,7 @@ pub const BAR_WIDGET_DEFAULT_ORDER: &[&str] = &[
     "bluetooth",
     "battery",
     "tray",
+    "progress",
     "clock",
 ];
 pub const BAR_WIDGET_DEFAULT_IMPORTANT: &[&str] = &["clock", "battery"];

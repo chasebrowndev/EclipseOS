@@ -94,6 +94,8 @@ pub enum Drawer {
     Battery,
     /// The bar's quick actions, opened from their cell.
     QuickActions,
+    /// Every job in flight, opened from the progress cell (ADR 0065 amendment).
+    Progress,
 }
 
 /// The keys the calendar drawer answers to.
@@ -254,6 +256,8 @@ pub enum Message {
     PowerSet(ec_services::power_profiles::Profile),
     /// The power-profiles service said something.
     Power(ec_services::power_profiles::Event),
+    /// The progress service's list changed: every job in flight, oldest first.
+    Progress(Vec<ec_services::progress::Job>),
     /// A quick action's tile was pressed: its index in `quick_actions`.
     QuickAction(usize),
     /// A drawer's way out: start Settings on the named pane.
@@ -420,6 +424,9 @@ pub struct App {
     /// `bar { action … }`: the configured quick actions, gated. Read at start
     /// and on every reload, never from a draw.
     pub quick_actions: Vec<crate::widgets::quick_actions::Slot>,
+    /// Every job the progress service reports, oldest first. Empty means the
+    /// progress cell is zero width and draws nothing.
+    pub progress: Vec<ec_services::progress::Job>,
     /// Debug previews only: when a widget fixture started. A fixture bar
     /// neither refetches nor starts services — the fixture stands in for
     /// both.
@@ -778,6 +785,22 @@ impl App {
         })
     }
 
+    /// The progress ring's turn, in revolutions of `PROGRESS_SPIN_MS`. Read by
+    /// every ring on screen, so they agree, like [`App::spin_phase`].
+    pub fn progress_phase(&self) -> f32 {
+        let period = std::time::Duration::from_millis(tokens::motion::PROGRESS_SPIN_MS);
+        (self.epoch.elapsed().as_secs_f32() / period.as_secs_f32()).fract()
+    }
+
+    /// An indeterminate job is in flight, the progress cell is in the bar and
+    /// motion is on: the frame clock turns the ring. `false` otherwise, so a
+    /// bar with no progress, or only determinate jobs, wakes nothing.
+    pub fn progress_turning(&self) -> bool {
+        !self.widget_cfg.motion.snaps()
+            && self.widget_cfg.order.contains(&widgets::WidgetId::Progress)
+            && self.progress.iter().any(|job| job.fraction.is_none())
+    }
+
     /// Something in an open drawer is waiting on the radio: a wifi scan, or a
     /// join. The frame clock stays alive for it.
     pub fn spinning(&self) -> bool {
@@ -843,6 +866,7 @@ impl App {
             calendar: crate::calendar::Calendar::default(),
             power: crate::widgets::battery::Power::default(),
             quick_actions: crate::widgets::quick_actions::load(),
+            progress: Vec::new(),
             fixture: None,
             show_key_hints: true,
             launcher_menu,
@@ -941,8 +965,10 @@ fn preview(app: &mut App) {
         powered: true,
         connected: 1,
     };
+    app.progress = crate::preview::preview_progress(if which == "progress" { "several" } else { "none" });
     app.preview = match which.as_str() {
         "network" => Some(Preview::Drawer(Drawer::Network)),
+        "progress" => Some(Preview::Drawer(Drawer::Progress)),
         "bluetooth" => Some(Preview::Drawer(Drawer::Bluetooth)),
         "overflow" => Some(Preview::Drawer(Drawer::Overflow)),
         "audio" => Some(Preview::Drawer(Drawer::Audio)),
@@ -1894,6 +1920,27 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             app.power.apply(event);
             return reflow(app);
         }
+        // Debug fixtures own the list, as they own the readings above.
+        Message::Progress(_) if app.fixture.is_some() || app.preview.is_some() => return Task::none(),
+        Message::Progress(jobs) => {
+            let idle = jobs.is_empty();
+            app.progress = jobs;
+            // The drawer hangs from the cell, which is gone with the last job:
+            // it closes with it rather than hanging from nothing.
+            let closing = if idle {
+                let now = Instant::now();
+                each_bar(app, |_, bar| {
+                    if bar.drawer.is_open(crate::drawer::DrawerKind::Progress) {
+                        close_drawer(bar, now)
+                    } else {
+                        Task::none()
+                    }
+                })
+            } else {
+                Task::none()
+            };
+            return Task::batch([closing, reflow(app)]);
+        }
         Message::QuickAction(index) => {
             let closed = dismiss(app);
             let term = app.conn.terminal_command();
@@ -2343,6 +2390,7 @@ fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
         Drawer::Calendar => Some(crate::drawer::DrawerKind::Calendar),
         Drawer::Battery => Some(crate::drawer::DrawerKind::Battery),
         Drawer::QuickActions => Some(crate::drawer::DrawerKind::QuickActions),
+        Drawer::Progress => Some(crate::drawer::DrawerKind::Progress),
         Drawer::Overflow => None,
     }
 }
@@ -2357,6 +2405,7 @@ fn drawer_full(app: &App, kind: crate::drawer::DrawerKind) -> u32 {
         DrawerKind::Calendar => crate::view::drawer_height(app, Drawer::Calendar),
         DrawerKind::Battery => crate::view::drawer_height(app, Drawer::Battery),
         DrawerKind::QuickActions => crate::view::drawer_height(app, Drawer::QuickActions),
+        DrawerKind::Progress => crate::view::drawer_height(app, Drawer::Progress),
     }
 }
 
@@ -2389,13 +2438,14 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
 }
 
 /// The cells a drawer hangs from.
-const DRAWER_CELLS: [Drawer; 6] = [
+const DRAWER_CELLS: [Drawer; 7] = [
     Drawer::Network,
     Drawer::Bluetooth,
     Drawer::Audio,
     Drawer::Calendar,
     Drawer::Battery,
     Drawer::QuickActions,
+    Drawer::Progress,
 ];
 
 /// The pointer is over a cell a drawer hangs from. Its click is the toggle or
@@ -3399,6 +3449,7 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
         .any(|b| b.motion.animating() || b.menu.reveal.animating() || b.drawer.reveal.animating())
         || app.spinning()
         || app.battery_flow().is_some()
+        || app.progress_turning()
         || fixture_moves(app)
     {
         subs.push(frames());

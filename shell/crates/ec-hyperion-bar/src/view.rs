@@ -925,6 +925,7 @@ pub fn drawer_span(
         crate::app::Drawer::Calendar => widget_span(app, on, &WidgetId::Clock),
         crate::app::Drawer::Battery => widget_span(app, on, &WidgetId::Battery),
         crate::app::Drawer::QuickActions => widget_span(app, on, &WidgetId::QuickActions),
+        crate::app::Drawer::Progress => widget_span(app, on, &WidgetId::Progress),
         crate::app::Drawer::Overflow => {
             let (_, right) = widget_span(app, on, &WidgetId::Tray)?;
             let right = right - bar::WIDGET_X;
@@ -1433,6 +1434,7 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
         crate::app::Drawer::Calendar => crate::widgets::clock::sheet(app),
         crate::app::Drawer::Battery => crate::widgets::battery::sheet(app),
         crate::app::Drawer::QuickActions => crate::widgets::quick_actions::sheet(app),
+        crate::app::Drawer::Progress => crate::widgets::progress::sheet(app),
     }
 }
 
@@ -1458,6 +1460,7 @@ fn drawer_sheet<'a>(
         Some(crate::drawer::DrawerKind::Calendar) => crate::app::Drawer::Calendar,
         Some(crate::drawer::DrawerKind::Battery) => crate::app::Drawer::Battery,
         Some(crate::drawer::DrawerKind::QuickActions) => crate::app::Drawer::QuickActions,
+        Some(crate::drawer::DrawerKind::Progress) => crate::app::Drawer::Progress,
         _ => crate::app::Drawer::Network,
     };
     let anchor = on.drawer.anchor_x();

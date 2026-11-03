@@ -214,3 +214,35 @@ not serve `bar.quick_actions`, so the bar reads the owner's config through
 device's row, and on the connected hero's state line when it is known. The
 drawer's marks are 13px tertiary, as the context menu's are. Closing the
 drawer stops discovery and clears the scanning state, so no scan runs unseen.
+
+## Amendment (2026-11-03): the progress widget
+
+The bar hosts `ec-services`' progress feed (ARCHITECTURE, "Progress feed") and
+shows it as a built-in widget, `progress`, default-ordered between the tray and
+the clock.
+
+**The cell.** Zero width, and drawn by nothing, while no job is in flight. With
+jobs, the shell's own presence and width animation brings it in. It shows the
+oldest job: a ring (a determinate arc from the top, or a partial arc turning
+slowly when the amount of work is unknown), the label cut to a width token, `N%`
+when the amount is known, and `+N` when there are more. The ring and its fill
+are the neutral ink, not the accent: the strip already carries the one live
+yellow (the focused chip's label and a full battery), and a second would
+compete with it.
+
+**The drawer.** Clicking the cell opens `Drawer::Progress`, a reveal drawer like
+the others. Its head is followed by a magnitude hero for the job the cell shows
+(its percent, or its elapsed time when the amount is unknown), a rule, and then
+one block per job, oldest first, up to the drawer's row cap with a note for the
+rest. A job shows its ring, label and reading, its bar when the amount is known,
+and a mono line with its source (`feed` or `scan`) and how long it has run.
+When the last job ends the drawer closes with the cell it hangs from.
+
+**Motion.** The frame clock runs only while an indeterminate job is in flight and
+motion is on (`App::progress_turning`), like the battery's energy flow. A bar
+with no job, or only determinate jobs, wakes nothing for progress.
+
+**Scanning.** The bar keeps the `/proc` scan on for the life of the process
+rather than turning it off while the cell is hidden. The scanner already
+slow-polls at five seconds while nothing runs, and `ec-ctl progress` should find
+a live feed whether or not a job is in flight.

@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use ec_services::custom::Kind;
 use ec_services::power_profiles::{self, PowerActions, PowerEvents, Profile};
+use ec_services::progress::{self, Update as ProgressUpdate};
 use ec_services::{audio, calendar, custom, media, usage};
 
 use crate::app::Message;
@@ -31,6 +32,9 @@ struct Handles {
     custom: Option<custom::Handle>,
     /// The power-profiles daemon's actions and reading (ADR 0065 amendment).
     power: Option<(PowerActions, PowerEvents)>,
+    /// The progress feed and its `/proc` scan (ADR 0065 amendment). Started
+    /// once, scanning for the life of the bar.
+    progress: Option<progress::Handle>,
     /// What the monitor tap was last asked to be.
     tap: bool,
 }
@@ -115,6 +119,12 @@ pub fn configure(cfg: &widgets::Config) {
     if h.calendar.is_none() {
         h.calendar = Some(calendar::spawn());
     }
+    // The progress feed is served from here, so `ec-ctl progress` reaches
+    // this bar and the cell shows what the scan finds. It scans for as long as
+    // the bar runs; the scanner itself slow-polls while nothing is running.
+    if h.progress.is_none() {
+        h.progress = Some(progress::spawn());
+    }
     // No system bus means no power reading, and the battery drawer's selector
     // stays hidden; a later configure tries again.
     if h.power.is_none() {
@@ -178,6 +188,11 @@ pub fn drain() -> Vec<Message> {
     if let Some((_, events)) = h.power.as_ref() {
         while let Some(event) = events.try_recv() {
             out.push(Message::Power(event));
+        }
+    }
+    if let Some(p) = h.progress.as_ref() {
+        while let Some(ProgressUpdate::Progress(jobs)) = p.try_recv() {
+            out.push(Message::Progress(jobs));
         }
     }
     if let Some(u) = h.usage.as_ref() {
