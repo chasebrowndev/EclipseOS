@@ -23,4 +23,5 @@ pub mod screensaver;
 pub mod session;
 pub mod status;
 pub mod tray;
+pub mod updates;
 pub mod usage;
