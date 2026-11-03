@@ -122,6 +122,9 @@ pub fn value_label(value: &str) -> &str {
         // `mode`: what each level adds, in the words COMP-17 §2 uses.
         "wm" => "WM",
         "hybrid" => "Hybrid",
+        // `misc.gpu-mode`, which shares `hybrid` with `mode`.
+        "integrated" => "Integrated",
+        "dedicated" => "Dedicated",
         "de" => "Desktop",
         // Component slots: the ids are program names and read as themselves;
         // only the opt-out needs a word.
@@ -347,6 +350,7 @@ impl Row {
             "annotations.panel-rim" => "Panel rim",
             "annotations.region-outline" => "Region outline",
             "annotations.selection-dim" => "Selection dim",
+            "misc.gpu-mode" => "Graphics mode",
             "launcher.search.path-binaries" => "Programs on PATH",
             "launcher.search.terminal-apps" => "Terminal apps",
             // `settings.search.frecency` reads "settings search, frecency":

@@ -242,6 +242,46 @@ pub struct Misc {
     /// default) means those entries are dropped from the app index rather
     /// than shown and then refused (TERM-01).
     pub terminal_command: Option<String>,
+    /// `gpu-mode` (ADR 0084): which GPUs the compositor uses on a hybrid
+    /// machine. Restart-only (COMP-13 §1.2). `misc.render-device`, when set,
+    /// still pins the primary (ADR 0033).
+    pub gpu_mode: GpuMode,
+    /// `discrete-gpu-apps`: desktop-entry ids always launched on the
+    /// discrete GPU in `hybrid` mode (ADR 0084). Live.
+    pub discrete_gpu_apps: Vec<String>,
+}
+
+/// `misc.gpu-mode` (ADR 0084).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GpuMode {
+    /// The discrete GPU is never opened; its outputs stay dark.
+    Integrated,
+    /// Each GPU composites its own outputs; apps opt in to the dGPU.
+    #[default]
+    Hybrid,
+    /// The discrete GPU is primary and renders everything.
+    Dedicated,
+}
+
+impl GpuMode {
+    pub const NAMES: &'static [&'static str] = &["integrated", "hybrid", "dedicated"];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "integrated" => Self::Integrated,
+            "hybrid" => Self::Hybrid,
+            "dedicated" => Self::Dedicated,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Integrated => "integrated",
+            Self::Hybrid => "hybrid",
+            Self::Dedicated => "dedicated",
+        }
+    }
 }
 
 /// `mode` (COMP-17 §2, ADR 0062).
