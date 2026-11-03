@@ -146,3 +146,15 @@ hidden. The service runs inside whichever process calls
 configure and keeps it for its whole life (ADR 0065, 2026-11-03 amendment). With
 no taskbar running the feed is unreachable and `ec-ctl progress` says so.
 Scanning stays on; `Handle::set_scanning` remains for a host that wants it off.
+
+## System update and power (`ec_services::updates`, ADR 0085)
+
+The taskbar's power widget offers "Update & reboot" / "Update & power off" only
+while an Eclipse package is pending (`checkupdates`, every 30 min and on
+`refresh`). Scope is the pending Eclipse packages plus their dependency closure,
+or every pending package. Both run through `pkexec` on polkit action
+`org.eclipse.update.apply`, whose helper `/usr/lib/eclipse/ec-update-apply`
+accepts only `eclipse-deps PKG...` and `all`. Progress reports as feed job
+`eclipse-update`. Only pacman exit 0 leads to logind's Reboot or PowerOff; any
+other outcome leaves the machine running. Without `checkupdates` or a readable
+closure the item is never offered.

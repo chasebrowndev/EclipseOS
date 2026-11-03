@@ -82,7 +82,8 @@ package_eclipseos-hyperion() {
   # eclipseos-desktop carries ec-secret-prompt, spawned for wifi passphrases.
   depends=(eclipseos-abyss eclipseos-desktop wayland libxkbcommon mesa networkmanager bluez bluez-utils upower power-profiles-daemon)
   optdepends=('curl: Now Playing album art from https URLs (ADR 0065)'
-              'foot: click actions of the premade widgets (ADR 0067)')
+              'foot: click actions of the premade widgets (ADR 0067)'
+              'pacman-contrib: pending-update check for the power widget (ADR 0085)')
 
   _bin ec-hyperion-bar
   _unit ec-hyperion-bar.service
@@ -134,7 +135,7 @@ package_eclipseos-desktop() {
   pkgdesc="EclipseOS desktop apps: settings, policy viewer, agent console, screensaver, welcome, pairing agent, secret prompt, portal settings backend"
   # Fonts for ec-welcome (D-07 step 0). Lora has no official package; the
   # version label falls back to a serif.
-  depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk)
+  depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk polkit)
 
   # ec-console is here, not in eclipseos-agents, because Super+/ is a
   # shipped default bind and every one names an installed binary; without
@@ -161,6 +162,12 @@ package_eclipseos-desktop() {
   _app ec-settings.desktop
   _app ec-policy-viewer.desktop
   _app ec-console.desktop
+  # The power widget's update (ADR 0085): the root helper pkexec runs, and the
+  # polkit action that gates it. Authority-bearing; reviewed line by line.
+  install -Dm0755 "$srcdir/$_src/packaging/bin/ec-update-apply" \
+    "$pkgdir/usr/lib/eclipse/ec-update-apply"
+  install -Dm0644 "$srcdir/$_src/packaging/polkit/org.eclipse.update.apply.policy" \
+    "$pkgdir/usr/share/polkit-1/actions/org.eclipse.update.apply.policy"
 }
 
 # The agent stack is one add-on (ADR 0069): installed by the Agentic profile,
