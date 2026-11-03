@@ -1043,6 +1043,77 @@ pub fn place_layer(map: &LayerMap, layer: &DesktopLayerSurface, loc: Point<i32, 
     }
 }
 
+/// Offset that keeps a layer surface where its *acked* size puts it.
+///
+/// smithay's `LayerMap::arrange` places a layer from the size the client has
+/// committed to, and sends the new size as a configure. A bottom- or
+/// right-anchored bar that grows therefore jumps at once, while the buffer on
+/// screen is still the old one. This returns the delta from smithay's placement
+/// at `placed` (the size of the configure in flight) to the placement at
+/// `acked` (the size the client has acked, and so the size of the buffer it
+/// will draw). Zero when the two are equal.
+///
+/// Mirrors smithay's per-axis formulas: a surface on the near edge (top or
+/// left) keeps its origin, one on the far edge keeps its far edge, and a
+/// centred one stays centred.
+pub fn held_offset(
+    anchor: Anchor,
+    placed: Size<i32, Logical>,
+    acked: Size<i32, Logical>,
+) -> Point<i32, Logical> {
+    let axis = |near: bool, far: bool, placed: i32, acked: i32| {
+        if near {
+            0
+        } else if far {
+            placed - acked
+        } else {
+            placed / 2 - acked / 2
+        }
+    };
+    let x = axis(
+        anchor.contains(Anchor::LEFT),
+        anchor.contains(Anchor::RIGHT),
+        placed.w,
+        acked.w,
+    );
+    let y = axis(
+        anchor.contains(Anchor::TOP),
+        anchor.contains(Anchor::BOTTOM),
+        placed.h,
+        acked.h,
+    );
+    Point::from((x, y))
+}
+
+/// Hold one layer surface at the placement of its last acked size.
+///
+/// Returns whether the surface moved. A layer that has never been acked is
+/// left alone: its first configure carries no buffer to hold.
+pub fn hold_layer_size(map: &LayerMap, layer: &DesktopLayerSurface) -> bool {
+    let acked = with_states(layer.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<LayerSurfaceData>()
+            .and_then(|d| d.lock().unwrap().last_acked.as_ref().and_then(|s| s.size))
+    });
+    let Some(acked) = acked else {
+        return false;
+    };
+    // The size arrange placed at, i.e. the one in flight (or already acked).
+    // Reading it through `with_pending_state` changes nothing: it only
+    // materialises the server pending state, which equals the current one.
+    let Some(placed) = layer.layer_surface().with_pending_state(|s| s.size) else {
+        return false;
+    };
+    let Some(base) = map.layer_geometry(layer) else {
+        return false;
+    };
+    let before = layer_geometry(map, layer);
+    let delta = held_offset(layer.cached_state().anchor, placed, acked);
+    place_layer(map, layer, base.loc + delta);
+    before != layer_geometry(map, layer)
+}
+
 /// The topmost layer surface of `layer` under `point`, in output-local
 /// coordinates. `LayerMap::layer_under` tests the arranged bounding box, which
 /// is the wrong rectangle once a surface has been placed explicitly.
