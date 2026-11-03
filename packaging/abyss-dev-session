@@ -20,5 +20,6 @@ export PATH
 export XDG_CURRENT_DESKTOP=Abyss
 export XDG_SESSION_TYPE=wayland
 export XDG_SESSION_DESKTOP=abyss
+export XDG_CONFIG_DIRS="/etc/eclipse/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}"
 
 exec "$bin/ec-abyss" --backend drm --session --stats "$@"

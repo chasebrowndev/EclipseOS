@@ -318,7 +318,9 @@ package_eclipseos-meta() {
   # pacman overwrites rather than leaving .pacnew, and the later atomic scheme
   # is a no-op migration.
   install -Dm0644 "$srcdir/$_src/packaging/etc/abyss.kdl"  "$pkgdir/etc/eclipse/abyss.kdl"
-  install -Dm0644 "$srcdir/$_src/packaging/etc/foot.ini"   "$pkgdir/etc/xdg/foot/foot.ini"
+  # /etc/xdg/foot/foot.ini is owned by the foot package and pacman refuses to
+  # co-own a file, so this copy sits on abyss-session's XDG_CONFIG_DIRS instead.
+  install -Dm0644 "$srcdir/$_src/packaging/etc/foot.ini"   "$pkgdir/etc/eclipse/xdg/foot/foot.ini"
   install -Dm0644 "$srcdir/$_src/packaging/etc/policy.kdl" "$pkgdir/etc/eclipse/policy.kdl"
 
   # Pacman drop-in for the EclipseOS repo (D-02). /etc/pacman.conf must have
