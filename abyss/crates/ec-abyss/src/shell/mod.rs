@@ -227,7 +227,7 @@ fn clamp_to(
     size
 }
 
-fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool) {
+fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, tiled: bool) {
     let size = rect.size;
     let Some(toplevel) = window.toplevel() else {
         // X11 windows are positioned in the X root's coordinate space, so
@@ -245,6 +245,20 @@ fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool) {
             s.states.set(State::Activated);
         } else {
             s.states.unset(State::Activated);
+        }
+        // Tiled states stop clients like foot snapping to whole cells; smithay
+        // strips them for xdg_wm_base versions that predate them.
+        for t in [
+            State::TiledLeft,
+            State::TiledRight,
+            State::TiledTop,
+            State::TiledBottom,
+        ] {
+            if tiled {
+                s.states.set(t);
+            } else {
+                s.states.unset(t);
+            }
         }
     });
     toplevel.send_pending_configure();
@@ -502,7 +516,12 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         let inner = shrink(rect, border);
         let size = clamp_size(&w, inner.size, true);
         if mapping.as_ref() != Some(&w) {
-            configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+            configure(
+                &w,
+                Rectangle::new(inner.loc, size),
+                focus.as_ref() == Some(&w),
+                true,
+            );
         }
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, Some(inner));
@@ -521,7 +540,12 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
             clamp_size(&w, inner.size, false)
         };
         if mapping.as_ref() != Some(&w) {
-            configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+            configure(
+                &w,
+                Rectangle::new(inner.loc, size),
+                focus.as_ref() == Some(&w),
+                false,
+            );
         }
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, None);

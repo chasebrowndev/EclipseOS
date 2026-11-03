@@ -319,6 +319,32 @@ mod initial_commit_placement {
     }
 
     #[test]
+    fn tiled_windows_carry_the_tiled_states_and_floating_ones_do_not() {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, _) = neighbour(&mut h, &mut c);
+        let window = window_of(&h, &n).expect("placed");
+        let tiled = |w: &Window| {
+            w.toplevel().unwrap().with_pending_state(|s| {
+                [
+                    State::TiledLeft,
+                    State::TiledRight,
+                    State::TiledTop,
+                    State::TiledBottom,
+                ]
+                .map(|t| s.states.contains(t))
+            })
+        };
+        assert_eq!(tiled(&window), [true; 4], "a tile is tiled on every edge");
+
+        crate::shell::focus::focus_window(&mut h.state, &window);
+        crate::shell::toggle_floating(&mut h.state);
+        assert!(floats(&h, &window), "toggled to floating");
+        assert_eq!(tiled(&window), [false; 4], "floating clears the tiled states");
+    }
+
+    #[test]
     fn a_float_rule_on_app_id_never_squeezes_the_neighbour() {
         let mut h = harness();
         h.state.config.window_rules = shipped_rules();
