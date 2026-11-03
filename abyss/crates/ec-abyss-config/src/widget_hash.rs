@@ -116,6 +116,19 @@ pub fn model_command_hash(argv: &[String]) -> WidgetHash {
     WidgetHash(*h.finalize().as_bytes())
 }
 
+/// Domain separation for [`quick_action_hash`]: a quick action's approval
+/// never equals a widget's or the model command's for the same argv.
+pub const QUICK_ACTION_CONTEXT: &str = "EclipseOS 2026-11-03 quick action approval v1";
+
+/// The hash of a quick action's `exec` argv (ADR 0067): blake3 derive-key
+/// under [`QUICK_ACTION_CONTEXT`] over `list argv`. The id, label and icon are
+/// not covered: they do not run, and the id is the approval name.
+pub fn quick_action_hash(argv: &[String]) -> WidgetHash {
+    let mut h = blake3::Hasher::new_derive_key(QUICK_ACTION_CONTEXT);
+    put_list(&mut h, argv);
+    WidgetHash(*h.finalize().as_bytes())
+}
+
 fn put_str(h: &mut blake3::Hasher, s: &str) {
     h.update(&(s.len() as u64).to_le_bytes());
     h.update(s.as_bytes());

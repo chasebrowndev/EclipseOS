@@ -227,7 +227,7 @@ fn clamp_to(
     size
 }
 
-fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool) {
+fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, tiled: bool) {
     let size = rect.size;
     let Some(toplevel) = window.toplevel() else {
         // X11 windows are positioned in the X root's coordinate space, so
@@ -245,6 +245,20 @@ fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool) {
             s.states.set(State::Activated);
         } else {
             s.states.unset(State::Activated);
+        }
+        // Tiled states stop clients like foot snapping to whole cells; smithay
+        // strips them for xdg_wm_base versions that predate them.
+        for t in [
+            State::TiledLeft,
+            State::TiledRight,
+            State::TiledTop,
+            State::TiledBottom,
+        ] {
+            if tiled {
+                s.states.set(t);
+            } else {
+                s.states.unset(t);
+            }
         }
     });
     toplevel.send_pending_configure();
@@ -502,7 +516,12 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         let inner = shrink(rect, border);
         let size = clamp_size(&w, inner.size, true);
         if mapping.as_ref() != Some(&w) {
-            configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+            configure(
+                &w,
+                Rectangle::new(inner.loc, size),
+                focus.as_ref() == Some(&w),
+                true,
+            );
         }
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, Some(inner));
@@ -521,7 +540,12 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
             clamp_size(&w, inner.size, false)
         };
         if mapping.as_ref() != Some(&w) {
-            configure(&w, Rectangle::new(inner.loc, size), focus.as_ref() == Some(&w));
+            configure(
+                &w,
+                Rectangle::new(inner.loc, size),
+                focus.as_ref() == Some(&w),
+                false,
+            );
         }
         fractional_scale::update_window_scale(&w, &output);
         set_tile_clip(&w, None);
@@ -1041,6 +1065,77 @@ pub fn place_layer(map: &LayerMap, layer: &DesktopLayerSurface, loc: Point<i32, 
     if let Some(offset) = data.get::<LayerOffset>() {
         offset.0.set(loc - base.loc);
     }
+}
+
+/// Offset that keeps a layer surface where its *acked* size puts it.
+///
+/// smithay's `LayerMap::arrange` places a layer from the size the client has
+/// committed to, and sends the new size as a configure. A bottom- or
+/// right-anchored bar that grows therefore jumps at once, while the buffer on
+/// screen is still the old one. This returns the delta from smithay's placement
+/// at `placed` (the size of the configure in flight) to the placement at
+/// `acked` (the size the client has acked, and so the size of the buffer it
+/// will draw). Zero when the two are equal.
+///
+/// Mirrors smithay's per-axis formulas: a surface on the near edge (top or
+/// left) keeps its origin, one on the far edge keeps its far edge, and a
+/// centred one stays centred.
+pub fn held_offset(
+    anchor: Anchor,
+    placed: Size<i32, Logical>,
+    acked: Size<i32, Logical>,
+) -> Point<i32, Logical> {
+    let axis = |near: bool, far: bool, placed: i32, acked: i32| {
+        if near {
+            0
+        } else if far {
+            placed - acked
+        } else {
+            placed / 2 - acked / 2
+        }
+    };
+    let x = axis(
+        anchor.contains(Anchor::LEFT),
+        anchor.contains(Anchor::RIGHT),
+        placed.w,
+        acked.w,
+    );
+    let y = axis(
+        anchor.contains(Anchor::TOP),
+        anchor.contains(Anchor::BOTTOM),
+        placed.h,
+        acked.h,
+    );
+    Point::from((x, y))
+}
+
+/// Hold one layer surface at the placement of its last acked size.
+///
+/// Returns whether the surface moved. A layer that has never been acked is
+/// left alone: its first configure carries no buffer to hold.
+pub fn hold_layer_size(map: &LayerMap, layer: &DesktopLayerSurface) -> bool {
+    let acked = with_states(layer.wl_surface(), |states| {
+        states
+            .data_map
+            .get::<LayerSurfaceData>()
+            .and_then(|d| d.lock().unwrap().last_acked.as_ref().and_then(|s| s.size))
+    });
+    let Some(acked) = acked else {
+        return false;
+    };
+    // The size arrange placed at, i.e. the one in flight (or already acked).
+    // Reading it through `with_pending_state` changes nothing: it only
+    // materialises the server pending state, which equals the current one.
+    let Some(placed) = layer.layer_surface().with_pending_state(|s| s.size) else {
+        return false;
+    };
+    let Some(base) = map.layer_geometry(layer) else {
+        return false;
+    };
+    let before = layer_geometry(map, layer);
+    let delta = held_offset(layer.cached_state().anchor, placed, acked);
+    place_layer(map, layer, base.loc + delta);
+    before != layer_geometry(map, layer)
 }
 
 /// The topmost layer surface of `layer` under `point`, in output-local
@@ -2329,11 +2424,21 @@ pub fn move_workspace_to_output(
     Ok(true)
 }
 
-pub fn spawn(command: &str) {
+/// Run `command` through `sh -c` on the human's behalf. In `dedicated` GPU
+/// mode it carries the discrete GPU's offload environment
+/// ([`AbyssState::dedicated_env`], ADR 0084), as every launch from the launcher
+/// and bar does through `ec-services`.
+pub fn spawn(state: &AbyssState, command: &str) {
+    spawn_with(&state.dedicated_env, command);
+}
+
+/// [`spawn`] with an explicit environment (none for compositor-internal commands).
+pub fn spawn_with(env: &[(&'static str, String)], command: &str) {
     tracing::info!(command, "spawning");
     use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.arg("-c").arg(command);
+    cmd.envs(env.iter().map(|(k, v)| (*k, v.as_str())));
     // The child must not inherit our controlling terminal or process group.
     cmd.process_group(0);
     if let Err(e) = cmd.spawn() {

@@ -176,7 +176,7 @@ fn tick(state: &mut AbyssState) {
             match state.config.idle.lock_command.clone() {
                 Some(cmd) => {
                     tracing::info!(secs, "idle lock timeout, spawning locker");
-                    crate::shell::spawn(&cmd);
+                    crate::shell::spawn(state, &cmd);
                 }
                 // Self-locking without a locker would strand the human: only an
                 // ext_session_lock_v1 client can unlock (ADR 0024).

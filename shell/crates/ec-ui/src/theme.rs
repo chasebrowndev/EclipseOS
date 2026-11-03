@@ -171,13 +171,17 @@ pub fn bar_folded(radius: f32, blur: bool, rim: f32) -> impl Fn(&Theme) -> conta
 }
 
 /// One level of inset inside a panel. The spec's limit — there is no
-/// `inset_inside_inset`, on purpose. Its white fill is
-/// `decoration.surface.inset-fill`, its rim [`crate::surface::RIM_PER_FILL`]
+/// `inset_inside_inset`, on purpose. Its fill is
+/// `decoration.surface.inset-fill` (white on dark, the ink step on light), its rim [`crate::surface::RIM_PER_FILL`]
 /// times that.
 pub fn inset(_t: &Theme) -> container::Style {
     let fill = crate::surface::current().inset_fill;
     container::Style {
-        background: Some(Background::Color(crate::surface::group_fill(fill))),
+        background: Some(Background::Color(crate::surface::group_fill(
+            fill,
+            color::palette().cell,
+            crate::surface::DEFAULT.inset_fill,
+        ))),
         border: Border {
             color: crate::surface::group_rim(fill),
             width: 1.0,
@@ -194,7 +198,7 @@ pub fn veil() -> crate::widget::Ground {
     let fill = crate::surface::current().inset_fill;
     crate::widget::Ground {
         base: color::veil(),
-        fill: crate::surface::group_fill(fill),
+        fill: crate::surface::group_fill(fill, color::palette().cell, crate::surface::DEFAULT.inset_fill),
         rim: crate::surface::group_rim(fill),
     }
 }
@@ -260,7 +264,8 @@ pub fn window_pane(blur: bool) -> impl Fn(&Theme) -> container::Style {
 }
 
 /// A Settings card. `hairline` is set with blur off or `blur`: the same radius
-/// as [`panel`], a white fill of `decoration.surface.card-fill` and a rim at
+/// as [`panel`], a fill of `decoration.surface.card-fill` (white on dark, the
+/// ink step on light) and a rim at
 /// [`crate::surface::RIM_PER_FILL`] times that fill, and no shadow, so the edge
 /// is the card and nothing lifts it off the ground. Clear of it, the card is
 /// [`panel`]'s glass.
@@ -271,7 +276,11 @@ pub fn card(radius: f32, hairline: bool) -> impl Fn(&Theme) -> container::Style 
         }
         let fill = crate::surface::current().card_fill;
         container::Style {
-            background: Some(Background::Color(crate::surface::group_fill(fill))),
+            background: Some(Background::Color(crate::surface::group_fill(
+                fill,
+                color::palette().lift_soft,
+                crate::surface::DEFAULT.card_fill,
+            ))),
             border: Border {
                 color: crate::surface::group_rim(fill),
                 width: space::HAIRLINE,

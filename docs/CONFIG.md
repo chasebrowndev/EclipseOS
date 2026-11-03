@@ -144,7 +144,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `bar.clock.week-numbers` | bool | `#false` | live | Show ISO week numbers beside the calendar's weeks. |
 | `bar.popup-anchor` | cell \| pointer | `"cell"` | live | Where taskbar popups (tray menus, the tray overflow) open: under the cell that was clicked, or at the pointer. The wifi and bluetooth drawers are not popups: they unroll from the bar under their own cell, like the start menu. |
 | `bar.eye` | bool | `#true` | live | Show the Oracle-Eyes status eye on the taskbar's eclipse mark. The compositor only stores this; the taskbar reads Oracle-Eyes' own status socket (ADR 0055). |
-| `bar.widgets.order` | list of strings | `"now-playing" "volume" "network" "bluetooth" "battery" "tray" "clock"` | live | Widgets drawn after the task strip, left to right (ADR 0065). Built-in ids: now-playing, system-usage, volume, network, bluetooth, battery, tray (the StatusNotifierItems and their overflow drawer) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left out is not drawn. An unknown id, a repeated one, or a `custom:` naming no `widget` block is refused. |
+| `bar.widgets.order` | list of strings | `"now-playing" "volume" "network" "bluetooth" "battery" "tray" "progress" "clock"` | live | Widgets drawn after the task strip, left to right (ADR 0065). Built-in ids: now-playing, system-usage, volume, network, bluetooth, battery, tray (the StatusNotifierItems and their overflow drawer), progress (zero width while nothing is in flight; the jobs of `ec-ctl progress`, and the scan of `/proc`) and clock; `custom:<name>` names a `widget` block in `bar`. A widget left out is not drawn. An unknown id, a repeated one, or a `custom:` naming no `widget` block is refused. |
 | `bar.widgets.important` | list of strings | `"clock" "battery"` | live | Widgets that never compress: when the bar runs short of room they keep their full size and everything else gives way first. Same ids as `bar.widgets.order`. |
 | `bar.widgets.rounding` | int 0..17 | `17` | live | Corner radius in logical px for each taskbar widget's glass cell. 17 is a full capsule; 0 is square. Window chips and the bar's own sheet (`bar.rounding`) are unaffected. |
 | `bar.widgets.now-playing.art` | bool | `#true` | live | Show album art in the Now Playing widget. Art the player keeps on this machine is read from disk; `https` art is fetched only while `bar.widgets.now-playing.remote-art` is on. |
@@ -336,6 +336,8 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `misc.render-device` | string | _unset_ | restart | `auto`, a /dev/dri/… path, or `pci:DDDD:BB:DD.F`. The CLI flag and ECLIPSE_RENDER_DEVICE both override it. |
+| `misc.gpu-mode` | integrated \| hybrid \| dedicated | `"hybrid"` | restart | Which GPUs are used on a hybrid-graphics machine. `integrated` never opens the discrete GPU (its outputs stay dark, it can power off); `hybrid` has each GPU composite its own outputs and runs opted-in apps on the discrete GPU; `dedicated` renders everything on the discrete GPU. `misc.render-device`, when set, still pins the primary. |
+| `misc.discrete-gpu-apps` | list of strings | _empty_ | live | Desktop-entry ids (the `.desktop` file's name without the suffix) always launched on the discrete GPU in `hybrid` mode, on top of the entries that ask for it themselves (`PrefersNonDefaultGPU`). |
 | `misc.terminal-command` | string | _unset_ | live | Terminal emulator used to launch `Terminal=true` .desktop entries (`$term -e <argv>`). Unset: those entries are dropped from the app index rather than shown and refused, whatever `launcher.search.terminal-apps` says. |
 
 ### `setup`
@@ -432,6 +434,19 @@ A custom taskbar widget, written inside `bar { }` (ADR 0065): `widget "<name>" {
 | `on-scroll-down "<argv0>" ["<arg>"…]` | `on-scroll-down "brightnessctl" "set" "5%-"` | Command run on a scroll down, argv-exec. |
 
 `<source>` is one of `usage.cpu`, `usage.mem`, `usage.gpu`, `usage.disk`, `audio.volume`, `media.title`, `media.artist`.
+
+### `action`
+
+A one-tap quick action on the taskbar, written inside `bar { }`: `action "<id>" { label "Mute"; icon "audio-volume-muted"; exec "pactl" "set-sink-mute" "@DEFAULT_SINK@" "toggle"; }`, or `app "<desktop-id>"` instead of `exec`. Exactly one of `exec` and `app`, and `label` is required. A later block with the same id replaces an earlier one. At most 12. `exec` is argv-exec, never through a shell, and it runs only once you approve exactly this command (ADR 0067), the same approval a command widget needs: until then the button does nothing. `app` launches a desktop entry the way the launcher does and needs no approval. Ids are `[A-Za-z0-9_-]`, at most 32 characters. The control socket cannot write this collection and does not serve it through `get_config`.
+
+| key | example | what it does |
+| --- | --- | --- |
+| `label "<text>"` | `label "Mute"` | The text on the button. Required; plain text, at most 40 characters. |
+| `icon "<icon name>"` | `icon "audio-volume-muted"` | A freedesktop icon name, never a path. Optional. |
+| `exec "<argv0>" ["<arg>"…]` | `exec "pactl" "set-sink-mute" "@DEFAULT_SINK@" "toggle"` | Run this command, argv-exec with no shell. Needs your approval (ADR 0067): until you approve exactly this command, the button does nothing. |
+| `app "<desktop-id>"` | `app "firefox"` | Launch this desktop entry, the way the launcher does. A desktop-entry id without `.desktop`, never a path. |
+
+At most 12 quick actions. An `exec` is withheld until approved (ADR 0067); an `app` is not.
 
 ### `windowrule`
 

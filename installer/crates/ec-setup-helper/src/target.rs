@@ -30,12 +30,14 @@ pub enum TargetFile {
     Vconsole,
     ZramGenerator,
     MkinitcpioNvidia,
+    NvidiaPmModprobe,
+    NvidiaPmUdev,
     InstallLog,
     SyncDb,
     SyncDbSig,
 }
 
-pub const ALL: [TargetFile; 16] = [
+pub const ALL: [TargetFile; 18] = [
     TargetFile::Hostname,
     TargetFile::LocaleGen,
     TargetFile::LocaleConf,
@@ -49,6 +51,8 @@ pub const ALL: [TargetFile; 16] = [
     TargetFile::Vconsole,
     TargetFile::ZramGenerator,
     TargetFile::MkinitcpioNvidia,
+    TargetFile::NvidiaPmModprobe,
+    TargetFile::NvidiaPmUdev,
     TargetFile::InstallLog,
     TargetFile::SyncDb,
     TargetFile::SyncDbSig,
@@ -71,6 +75,8 @@ impl TargetFile {
             TargetFile::Vconsole => "etc/vconsole.conf",
             TargetFile::ZramGenerator => "etc/systemd/zram-generator.conf",
             TargetFile::MkinitcpioNvidia => "etc/mkinitcpio.conf.d/eclipseos-nvidia.conf",
+            TargetFile::NvidiaPmModprobe => "etc/modprobe.d/eclipseos-nvidia-pm.conf",
+            TargetFile::NvidiaPmUdev => "etc/udev/rules.d/80-eclipseos-nvidia-pm.rules",
             TargetFile::InstallLog => "var/log/eclipseos-install/install.log",
             TargetFile::SyncDb => "var/lib/pacman/sync/eclipseos.db",
             TargetFile::SyncDbSig => "var/lib/pacman/sync/eclipseos.db.sig",

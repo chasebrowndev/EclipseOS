@@ -65,6 +65,15 @@ impl Approvals {
         self.0.iter().find(|(n, _)| n == name).map(|(_, h)| *h)
     }
 
+    /// A store holding exactly one approval, for tests that exercise
+    /// `runnable` without touching the state directory.
+    #[cfg(test)]
+    pub(crate) fn with_one(name: &str, hash: WidgetHash) -> Self {
+        let mut a = Self::default();
+        a.set(name, hash);
+        a
+    }
+
     fn set(&mut self, name: &str, hash: WidgetHash) {
         match self.0.iter_mut().find(|(n, _)| n == name) {
             Some(slot) => slot.1 = hash,

@@ -13,10 +13,10 @@
 use std::fmt::Write as _;
 
 use ec_abyss_config::schema::{
-    rule_owner, Collection, Dv, Form, Key, Owner, Reload, Ty, ANIMATION_CURVES, ANIMATION_DEFAULT_CURVE,
-    ANIMATION_DEFAULT_MS, ANIMATION_MAX_MS, BIND_ACTIONS, COLLECTIONS, EASING_CURVES, LEGACY_ANIMATIONS,
-    LID_CLOSE, OUTPUT_KEYS, OUTPUT_TRANSFORMS, REFUSED_MATCHERS, RULE_ACTION_FORMS, RULE_MATCHERS, TABLE,
-    WIDGET_KEYS, WIDGET_SOURCES,
+    rule_owner, Collection, Dv, Form, Key, Owner, Reload, Ty, ACTION_KEYS, ANIMATION_CURVES,
+    ANIMATION_DEFAULT_CURVE, ANIMATION_DEFAULT_MS, ANIMATION_MAX_MS, BIND_ACTIONS, COLLECTIONS,
+    EASING_CURVES, LEGACY_ANIMATIONS, LID_CLOSE, OUTPUT_KEYS, OUTPUT_TRANSFORMS, QUICK_ACTION_MAX,
+    REFUSED_MATCHERS, RULE_ACTION_FORMS, RULE_MATCHERS, TABLE, WIDGET_KEYS, WIDGET_SOURCES,
 };
 
 fn ty(t: &Ty) -> String {
@@ -219,6 +219,14 @@ fn collections(out: &mut String, cs: &[&Collection]) {
             "widget" => {
                 forms(out, "key", WIDGET_KEYS);
                 let _ = writeln!(out, "`<source>` is one of {}.\n", ticks(WIDGET_SOURCES));
+            }
+            "action" => {
+                forms(out, "key", ACTION_KEYS);
+                let _ = writeln!(
+                    out,
+                    "At most {} quick actions. An `exec` is withheld until approved (ADR 0067); an `app` is not.\n",
+                    QUICK_ACTION_MAX
+                );
             }
             _ => {}
         }

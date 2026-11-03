@@ -11,7 +11,7 @@ use iced::widget::{button, column, container, row, rule, stack, svg, text, Colum
 use iced::{Alignment, Color, Element, Font, Length, Theme};
 
 use crate::theme;
-use crate::tokens::{breakpoint, canvas, color, drawer, font, menu, radius, size, space};
+use crate::tokens::{breakpoint, canvas, color, drawer, font, menu, motion, radius, size, space};
 use crate::widget::Fold;
 
 /// A glass panel. The one container every block on a pane sits in.
@@ -653,6 +653,86 @@ impl<Message> iced::widget::canvas::Program<Message> for Spinner {
     }
 }
 
+/// A progress ring: how far one job has come, drawn as a determinate arc from
+/// the top, clockwise, or, when the amount of work is unknown (`None`), a
+/// partial arc travelling round at `phase` (revolutions, as [`spinner`]).
+///
+/// A widget because the bar's progress cell and its drawer's rows must show a
+/// job the same way, and because a ring that fills is a magnitude this design
+/// system draws in one place. Neutral ink, no glow: the caller passes the tint.
+pub fn progress_ring<'a, Message: 'a>(
+    fraction: Option<f32>,
+    phase: f32,
+    side: f32,
+    tint: Color,
+) -> Element<'a, Message, Theme> {
+    iced::widget::canvas(ProgressRing {
+        fraction,
+        phase,
+        tint,
+    })
+    .width(Length::Fixed(side))
+    .height(Length::Fixed(side))
+    .into()
+}
+
+struct ProgressRing {
+    fraction: Option<f32>,
+    phase: f32,
+    tint: Color,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for ProgressRing {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{self, path::Arc, Path, Stroke};
+        use iced::Radians;
+        use std::f32::consts::{FRAC_PI_2, TAU};
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let c = iced::Point::new(bounds.width / 2.0, bounds.height / 2.0);
+        let r = (bounds.width.min(bounds.height) - drawer::SPIN_W) / 2.0;
+        frame.stroke(
+            &Path::circle(c, r),
+            Stroke::default()
+                .with_color(self.tint.scale_alpha(drawer::SPIN_TRACK))
+                .with_width(drawer::SPIN_W),
+        );
+        let (start, sweep) = match self.fraction {
+            Some(f) => (-FRAC_PI_2, f.clamp(0.0, 1.0) * TAU),
+            None => (self.phase.fract() * TAU, drawer::SPIN_SWEEP),
+        };
+        if sweep <= 0.0 {
+            return vec![frame.into_geometry()];
+        }
+        let stroke = Stroke::default()
+            .with_color(self.tint)
+            .with_width(drawer::SPIN_W)
+            .with_line_cap(canvas::LineCap::Round);
+        if sweep >= TAU {
+            frame.stroke(&Path::circle(c, r), stroke);
+        } else {
+            let arc = Path::new(|b| {
+                b.arc(Arc {
+                    center: c,
+                    radius: r,
+                    start_angle: Radians(start),
+                    end_angle: Radians(start + sweep),
+                });
+            });
+            frame.stroke(&arc, stroke);
+        }
+        vec![frame.into_geometry()]
+    }
+}
+
 /// The hero row of a radio drawer: the one network or device the radio is
 /// on, two lines tall, with the verb that ends it at the right.
 ///
@@ -1010,6 +1090,246 @@ pub fn drawer_note<'a, Message: 'a>(note: &str) -> Element<'a, Message, Theme> {
     .align_y(Alignment::Center)
     .padding([0.0, drawer::ROW_X + drawer::MARK + drawer::MARK_GAP])
     .into()
+}
+
+/// A drawer's magnitude hero: one big reading over a state line and a detail
+/// line, on the focused-chip glass.
+///
+/// `tint` is the reading's ink: the pane's one live yellow only when the
+/// reading is the live value, danger when it needs the human, the text ink
+/// otherwise. A widget rather than a [`drawer_current`] because the reading is
+/// a number, and a number at [`size::BIG_NUMBER`] is the whole point of the
+/// hero.
+pub fn drawer_magnitude<'a, Message: 'a>(
+    number: &str,
+    unit: &str,
+    tint: Color,
+    state: &str,
+    detail: &str,
+) -> Element<'a, Message, Theme> {
+    let reading = row![
+        text(number.to_string())
+            .font(Font {
+                weight: iced::font::Weight::Medium,
+                ..font::DATA
+            })
+            .size(size::BIG_NUMBER)
+            .color(tint),
+        text(unit.to_string())
+            .font(font::DATA)
+            .size(size::BODY_SMALL)
+            .color(color::text_tertiary()),
+    ]
+    .spacing(drawer::MARK_GAP / 2.0)
+    .align_y(Alignment::End);
+    let state_line = row![
+        text(state.to_string())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL)
+            .color(color::text_secondary()),
+        Space::new().width(Length::Fill),
+        text(detail.to_string())
+            .font(font::DATA)
+            .size(size::MICRO)
+            .color(color::text_tertiary()),
+    ]
+    .align_y(Alignment::Center);
+    container(
+        container(column![reading, state_line].spacing(drawer::LINE_GAP))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::Center)
+            .padding([0.0, drawer::ROW_X])
+            .style(drawer_hero_ground),
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(drawer::MAGNITUDE_H))
+    .padding([drawer::ROW_INSET, 0.0])
+    .into()
+}
+
+/// A segmented choice in one glass lozenge: equal cells, one of them in force.
+///
+/// Each option is `(label, in force, on press)`. The one in force is the
+/// focused chip's glass, a step clearer with the crisp white rim, and its
+/// label is the full ink: selection is a brighter fill and a rim, never the
+/// accent. A `None` press greys the option out and it does not answer the
+/// pointer (a profile the machine does not offer).
+///
+/// A widget because every exclusive choice in a drawer must read as the same
+/// control; a pill row built per drawer drifts in height and in what "chosen"
+/// looks like.
+pub fn segment_control<'a, Message: Clone + 'a>(
+    options: Vec<(&str, bool, Option<Message>)>,
+) -> Element<'a, Message, Theme> {
+    let mut group = Row::new()
+        .spacing(drawer::SEGMENT_GAP)
+        .width(Length::Fill)
+        .height(Length::Fill);
+    for (label, selected, on_press) in options {
+        let enabled = on_press.is_some();
+        // A disabled segment is dim even when it is the current choice: the
+        // fill still says "this is selected", and the ink says "not now".
+        let ink = match (selected, enabled) {
+            (true, true) => color::text(),
+            (_, true) => color::text_secondary(),
+            (_, false) => color::text_tertiary(),
+        };
+        let face = container(
+            text(label.to_string())
+                .font(font::UI_MEDIUM)
+                .size(size::BODY_SMALL)
+                .color(ink),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center);
+        let cell = button(face)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(0)
+            .style(move |_t: &Theme, status: button::Status| segment_style(selected, enabled, status));
+        let cell: Element<'a, Message, Theme> = match on_press {
+            Some(m) => cell.on_press(m).into(),
+            None => cell.into(),
+        };
+        group = group.push(cell);
+    }
+    container(group)
+        .width(Length::Fill)
+        .height(Length::Fixed(drawer::SEGMENT_H))
+        .padding(drawer::SEGMENT_GAP)
+        .style(|_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(color::cell())),
+            border: iced::Border {
+                color: color::cell_rim(),
+                width: space::HAIRLINE,
+                radius: radius::PILL.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A segment's ground: the one in force is the focused-chip glass; the others
+/// lift on hover, and a greyed option never lifts.
+fn segment_style(selected: bool, enabled: bool, status: button::Status) -> button::Style {
+    let hovered = enabled && matches!(status, button::Status::Hovered | button::Status::Pressed);
+    let (fill, rim) = match (selected, enabled, status) {
+        (true, _, _) if hovered => (color::cell_focus_hover(), color::cell_focus_rim_hover()),
+        (true, _, _) => (color::cell_focus(), color::cell_focus_rim()),
+        (false, true, button::Status::Hovered) => (color::cell_hover(), color::cell_rim_hover()),
+        (false, true, button::Status::Pressed) => (color::cell_press(), color::cell_rim_hover()),
+        _ => (Color::TRANSPARENT, Color::TRANSPARENT),
+    };
+    glass_button(fill, rim, radius::PILL)
+}
+
+/// A drawer row's secondary figure, such as a device's battery: mono and
+/// tertiary, so it reads as a reading and never competes with the name.
+pub fn drawer_figure<'a, Message: 'a>(figure: &str) -> Element<'a, Message, Theme> {
+    text(figure.to_string())
+        .font(font::DATA)
+        .size(size::MICRO)
+        .color(color::text_tertiary())
+        .into()
+}
+
+/// A quick action's tile: its mark, its label and, under the label, a mono
+/// note when it needs one ("needs approval").
+///
+/// A pressable tile lifts under the pointer like a drawer's choice row. A tile
+/// with no press keeps its rest glass and no hover, so it cannot read as
+/// something a click will do, and its label drops to the secondary ink.
+pub fn drawer_tile<'a, Message: Clone + 'a>(
+    mark: Element<'a, Message, Theme>,
+    label: &str,
+    note: Option<&str>,
+    on_press: Option<Message>,
+) -> Element<'a, Message, Theme> {
+    let enabled = on_press.is_some();
+    let mut lines = Column::new().push(
+        text(label.to_string())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL)
+            .color(if enabled {
+                color::text()
+            } else {
+                color::text_secondary()
+            }),
+    );
+    if let Some(note) = note {
+        lines = lines.push(
+            text(note.to_string())
+                .font(font::DATA)
+                .size(size::MICRO)
+                .color(color::text_tertiary()),
+        );
+    }
+    let face = container(
+        row![
+            container(mark)
+                .width(Length::Fixed(drawer::MARK))
+                .height(Length::Fixed(drawer::MARK))
+                .align_x(Alignment::Center)
+                .align_y(Alignment::Center),
+            lines,
+        ]
+        .spacing(drawer::MARK_GAP)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fill)
+    .align_y(Alignment::Center)
+    .padding([0.0, drawer::ROW_X]);
+    let b = button(face)
+        .width(Length::Fill)
+        .height(Length::Fixed(drawer::TILE_H))
+        .padding(0)
+        .style(move |_t: &Theme, status: button::Status| tile_style(enabled, status));
+    match on_press {
+        Some(m) => b.on_press(m).into(),
+        None => b.into(),
+    }
+}
+
+/// A tile's ground: a lift under the pointer when it answers the pointer,
+/// the rest glass otherwise.
+fn tile_style(enabled: bool, status: button::Status) -> button::Style {
+    let (fill, rim) = match (enabled, status) {
+        (true, button::Status::Hovered) => (color::cell_hover(), color::cell_rim_hover()),
+        (true, button::Status::Pressed) => (color::cell_press(), color::cell_rim_hover()),
+        _ => (color::cell(), color::cell_rim()),
+    };
+    glass_button(fill, rim, drawer::RADIUS_ROW)
+}
+
+/// The height [`tile_grid`] takes for `count` tiles, two to a row.
+pub fn tile_grid_height(count: usize) -> f32 {
+    let rows = count.div_ceil(2) as f32;
+    rows * drawer::TILE_H + (rows - 1.0).max(0.0) * drawer::TILE_GAP
+}
+
+/// Tiles two to a row, [`drawer::TILE_GAP`] apart, sized the way
+/// [`tile_grid_height`] says. An odd last tile keeps its half and leaves the
+/// other empty, so every tile is the same width.
+pub fn tile_grid<'a, Message: 'a>(tiles: Vec<Element<'a, Message, Theme>>) -> Element<'a, Message, Theme> {
+    let mut col = Column::new().spacing(drawer::TILE_GAP).width(Length::Fill);
+    let mut tiles = tiles.into_iter();
+    while let Some(first) = tiles.next() {
+        let second: Element<'a, Message, Theme> = match tiles.next() {
+            Some(t) => t,
+            None => Space::new().width(Length::Fill).into(),
+        };
+        col = col.push(
+            row![
+                container(first).width(Length::FillPortion(1)),
+                container(second).width(Length::FillPortion(1)),
+            ]
+            .spacing(drawer::TILE_GAP),
+        );
+    }
+    col.into()
 }
 
 /// A drawer row's ground at rest: the bar cell's own glass lozenge.
@@ -1586,25 +1906,42 @@ pub fn surface<'a, Message: 'a>(
 /// system's job — a caller that drew it inline would be reinventing
 /// [`big_value`] at 10 pixels.
 pub fn battery_gauge<'a, Message: 'a>(percent: u8, fill: Color) -> Element<'a, Message, Theme> {
-    battery_gauge_faded(percent, fill, 1.0)
+    battery_gauge_faded(percent, fill, 1.0, None)
 }
 
 /// [`battery_gauge`] at `alpha` of its ink — frame and level together — for
 /// a bar cell in motion. A gauge whose frame stayed at full ink while its
 /// cell faded around it would be the last thing on screen.
+///
+/// `flow` is the energy phase in revolutions while the battery is charging
+/// (`None` otherwise, and when motion is off): energy particles drift along
+/// the filled part, clipped to its width. The caller owns the clock, so this
+/// stays a pure function of its arguments, like [`spinner`].
 pub fn battery_gauge_faded<'a, Message: 'a>(
     percent: u8,
     fill: Color,
     alpha: f32,
+    flow: Option<f32>,
 ) -> Element<'a, Message, Theme> {
     let a = alpha.clamp(0.0, 1.0);
     let (fill, track) = (fill.scale_alpha(a), color::track().scale_alpha(a));
     let inner = space::MARK_CELL_W - 2.0 * space::MARK_BORDER;
     let filled = inner * (percent.min(100) as f32 / 100.0);
-    let level = row![
-        edge_quad(Length::Fixed(filled), Length::Fill, fill),
-        Space::new().width(Length::Fill),
-    ];
+    let body = edge_quad(Length::Fixed(filled), Length::Fill, fill);
+    let body: Element<'a, Message, Theme> = match flow {
+        Some(phase) => stack![
+            body,
+            iced::widget::canvas(Energy {
+                phase,
+                spark: color::text().scale_alpha(a),
+            })
+            .width(Length::Fixed(filled))
+            .height(Length::Fill),
+        ]
+        .into(),
+        None => body,
+    };
+    let level = row![body, Space::new().width(Length::Fill)];
     let cell = container(level)
         .width(Length::Fixed(space::MARK_CELL_W))
         .height(Length::Fixed(space::MARK))
@@ -1627,6 +1964,58 @@ pub fn battery_gauge_faded<'a, Message: 'a>(
     ]
     .align_y(Alignment::Center)
     .into()
+}
+
+/// The energy particles riding a charging battery's fill. Pure in `phase`:
+/// each particle has a fixed lane, and its place along the fill is the phase
+/// advanced by its share of one pass, so the drift needs no state of its own.
+/// Light on the accent fill, not a second yellow: a spark, not a halo. Each
+/// particle fades in at the fill's left edge and out at its right.
+struct Energy {
+    phase: f32,
+    spark: Color,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for Energy {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{self, Path};
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let (w, h) = (bounds.width, bounds.height);
+        if w < 2.0 * space::ENERGY_HALO_R {
+            return vec![frame.into_geometry()];
+        }
+        for i in 0..motion::ENERGY_COUNT {
+            let share = i as f32 / motion::ENERGY_COUNT as f32;
+            let p = (self.phase + share).fract();
+            let env = (std::f32::consts::PI * p).sin();
+            let lane = 0.3 + 0.2 * (i % 3) as f32;
+            let c = iced::Point::new(p * w, lane * h);
+            frame.fill(
+                &Path::circle(c, space::ENERGY_HALO_R),
+                Color {
+                    a: self.spark.a * 0.2 * env,
+                    ..self.spark
+                },
+            );
+            frame.fill(
+                &Path::circle(c, space::ENERGY_R),
+                Color {
+                    a: self.spark.a * 0.9 * env,
+                    ..self.spark
+                },
+            );
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 /// A list row: label at the left, mono value at the right — or, when the row

@@ -177,17 +177,22 @@ fi
 
 # D-01 §2.3: NVIDIA Turing or newer (PCI device id >= 0x1e00) gets the open
 # kernel module via DKMS; older NVIDIA stays on nouveau. Sysfs only.
+# ADR 0084: next to an Intel or AMD GPU (hybrid laptop) it also gets nvidia-prime.
 NVIDIA_OPEN=0
+OTHER_GPU=0
 for d in /sys/bus/pci/devices/*; do
   [[ -r $d/class && -r $d/vendor && -r $d/device ]] || continue
   v="$(<"$d/vendor")"; dev="$(<"$d/device")"
   [[ $v =~ ^0x[0-9a-fA-F]{4}$ && $dev =~ ^0x[0-9a-fA-F]{4}$ ]] || continue
-  [[ $(<"$d/class") == 0x03* && ${v,,} == 0x10de ]] || continue
+  [[ $(<"$d/class") == 0x03* ]] || continue
+  if [[ ${v,,} == 0x8086 || ${v,,} == 0x1002 ]]; then OTHER_GPU=1; fi
+  [[ ${v,,} == 0x10de ]] || continue
   if (( dev >= 0x1e00 )); then NVIDIA_OPEN=1; fi
 done
 if (( NVIDIA_OPEN )); then
   say "NVIDIA Turing or newer detected: installing nvidia-open-dkms"
   PKGS+=(nvidia-open-dkms nvidia-utils linux-headers)
+  if (( OTHER_GPU )); then PKGS+=(nvidia-prime); fi
   PKGS+=(linux-lts-headers)
 fi
 
@@ -340,6 +345,19 @@ if (( NVIDIA_OPEN )); then
   install -Dm0644 /dev/stdin /mnt/etc/mkinitcpio.conf.d/eclipseos-nvidia.conf <<'MKINIT'
 MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
 MKINIT
+  # ADR 0084: on a hybrid laptop the dGPU gets runtime power management, so an
+  # idle (or Integrated-mode) card reaches D3. Same files as ec-setup-helper.
+  if (( OTHER_GPU )); then
+    install -Dm0644 /dev/stdin /mnt/etc/modprobe.d/eclipseos-nvidia-pm.conf <<'NVPM'
+options nvidia NVreg_DynamicPowerManagement=0x02
+NVPM
+    install -Dm0644 /dev/stdin /mnt/etc/udev/rules.d/80-eclipseos-nvidia-pm.rules <<'NVUDEV'
+ACTION=="bind", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x030000", TEST=="power/control", ATTR{power/control}="auto"
+ACTION=="bind", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x030200", TEST=="power/control", ATTR{power/control}="auto"
+ACTION=="unbind", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x030000", TEST=="power/control", ATTR{power/control}="on"
+ACTION=="unbind", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{class}=="0x030200", TEST=="power/control", ATTR{power/control}="on"
+NVUDEV
+  fi
 fi
 
 arch-chroot /mnt /bin/bash -euo pipefail <<CHROOT

@@ -80,7 +80,7 @@ package_eclipseos-hyperion() {
   pkgdesc="EclipseOS taskbar (hyperion)"
   # The only DE component that talks to abyss directly (control socket).
   # eclipseos-desktop carries ec-secret-prompt, spawned for wifi passphrases.
-  depends=(eclipseos-abyss eclipseos-desktop wayland libxkbcommon mesa networkmanager bluez bluez-utils upower)
+  depends=(eclipseos-abyss eclipseos-desktop wayland libxkbcommon mesa networkmanager bluez bluez-utils upower power-profiles-daemon)
   optdepends=('curl: Now Playing album art from https URLs (ADR 0065)'
               'foot: click actions of the premade widgets (ADR 0067)'
               'pacman-contrib: pending-update check for the power widget (ADR 0085)')
