@@ -53,6 +53,10 @@ const PACTREE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Feed sends are best effort and must never stall the upgrade.
 const FEED_TIMEOUT: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_millis(20);
+/// The longest one upgrade may run. Generous: a full pacman run with a large
+/// download fits well inside it. Past it the group is killed, so a hung pacman
+/// or a stuck polkit prompt cannot hold the single-flight ticket until restart.
+const APPLY_TIMEOUT: Duration = Duration::from_secs(45 * 60);
 
 /// The progress job the upgrade reports under.
 pub const JOB_ID: &str = "eclipse-update";
@@ -138,8 +142,15 @@ pub struct Captured {
 pub trait Runner: Send + Sync {
     /// Runs to completion or `timeout`, collecting stdout.
     fn capture(&self, argv: &[String], timeout: Duration) -> Result<Captured, RunError>;
-    /// Runs with no timeout, calling `line` for each stdout line as it arrives.
-    fn stream(&self, argv: &[String], line: &mut dyn FnMut(&str)) -> Result<Option<i32>, RunError>;
+    /// Runs to completion or `timeout`, calling `line` for each stdout line as
+    /// it arrives. On timeout the process group is killed and `TimedOut` is
+    /// returned.
+    fn stream(
+        &self,
+        argv: &[String],
+        timeout: Duration,
+        line: &mut dyn FnMut(&str),
+    ) -> Result<Option<i32>, RunError>;
 }
 
 /// Where progress reports go. The real one is the progress feed socket.
@@ -232,24 +243,67 @@ impl Runner for SystemRunner {
         })
     }
 
-    fn stream(&self, argv: &[String], line: &mut dyn FnMut(&str)) -> Result<Option<i32>, RunError> {
+    fn stream(
+        &self,
+        argv: &[String],
+        timeout: Duration,
+        line: &mut dyn FnMut(&str),
+    ) -> Result<Option<i32>, RunError> {
         let mut child = spawn_group(argv)?;
         let Some(out) = child.stdout.take() else {
             kill_group(&child);
             let _ = child.wait();
             return Err(RunError::Io("no stdout pipe".into()));
         };
-        let mut reader = BufReader::new(out);
-        let mut buf = Vec::new();
-        loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf) {
-                Ok(0) => break,
-                Ok(_) => {
-                    let text = String::from_utf8_lossy(&buf);
-                    line(text.trim_end_matches(['\n', '\r']));
+        // Lines are read on their own thread so the deadline is enforced here,
+        // on the thread that owns the child. The reader ends at EOF, or when
+        // the kill closes the pipe; if it outlives us it is detached.
+        let (tx, rx) = mpsc::channel::<Result<Vec<u8>, io::ErrorKind>>();
+        thread::spawn(move || {
+            let mut reader = BufReader::new(out);
+            loop {
+                let mut buf = Vec::new();
+                match reader.read_until(b'\n', &mut buf) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        if tx.send(Ok(buf)).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) => {
+                        let _ = tx.send(Err(e.kind()));
+                        break;
+                    }
                 }
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+            }
+        });
+        let deadline = Instant::now() + timeout;
+        let mut failed = None;
+        while Instant::now() < deadline {
+            match rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+                Ok(Ok(buf)) => line(String::from_utf8_lossy(&buf).trim_end_matches(['\n', '\r'])),
+                Ok(Err(kind)) => {
+                    failed = Some(kind);
+                    break;
+                }
+                Err(RecvTimeoutError::Timeout | RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        loop {
+            if let Some(kind) = failed {
+                kill_group(&child);
+                let _ = child.wait();
+                return Err(RunError::Io(format!("{kind:?}")));
+            }
+            match child.try_wait() {
+                Ok(Some(status)) => return Ok(status.code()),
+                Ok(None) if Instant::now() >= deadline => {
+                    kill_group(&child);
+                    let _ = child.wait();
+                    return Err(RunError::TimedOut);
+                }
+                Ok(None) => thread::sleep(POLL),
                 Err(e) => {
                     kill_group(&child);
                     let _ = child.wait();
@@ -257,10 +311,6 @@ impl Runner for SystemRunner {
                 }
             }
         }
-        let status = child
-            .wait()
-            .map_err(|e| RunError::Io(format!("{:?}", e.kind())))?;
-        Ok(status.code())
     }
 }
 
@@ -472,8 +522,15 @@ fn emit(out: &Sender<Update>, event: Event) {
 }
 
 /// Runs the upgrade, then, only on exit status 0, the power action. Every
-/// other outcome ends with `Failed` and no power request.
-pub fn run_apply(deps: &Deps, argv: &[String], scope: Scope, then: After, out: &Sender<Update>) {
+/// other outcome, a timeout included, ends with `Failed` and no power request.
+pub fn run_apply(
+    deps: &Deps,
+    argv: &[String],
+    scope: Scope,
+    then: After,
+    out: &Sender<Update>,
+    timeout: Duration,
+) {
     emit(out, Event::Started { scope, then });
     deps.feed.send(FeedRequest::Start {
         id: JOB_ID.to_owned(),
@@ -481,7 +538,7 @@ pub fn run_apply(deps: &Deps, argv: &[String], scope: Scope, then: After, out: &
         total: None,
     });
     let mut last = None;
-    let result = deps.runner.stream(argv, &mut |line| {
+    let result = deps.runner.stream(argv, timeout, &mut |line| {
         if let Some(fraction) = upgrade_fraction(line) {
             if last != Some(fraction) {
                 last = Some(fraction);
@@ -662,7 +719,7 @@ impl Service {
             .name("eclipse-update-apply".into())
             .spawn(move || {
                 let _ticket = ticket;
-                run_apply(&deps, &argv, scope, then, &out);
+                run_apply(&deps, &argv, scope, then, &out, APPLY_TIMEOUT);
             });
         if let Err(e) = spawned {
             eprintln!("eclipse-updates: apply not started: {e}");
@@ -728,8 +785,19 @@ mod tests {
             (self.capture)(argv)
         }
 
-        fn stream(&self, argv: &[String], line: &mut dyn FnMut(&str)) -> Result<Option<i32>, RunError> {
+        fn stream(
+            &self,
+            argv: &[String],
+            timeout: Duration,
+            line: &mut dyn FnMut(&str),
+        ) -> Result<Option<i32>, RunError> {
             self.calls.lock().unwrap().push(argv.to_vec());
+            // Like the real runner: a process that outlives the timeout is
+            // killed at it and reported as timed out.
+            if self.stream_delay > timeout {
+                thread::sleep(timeout);
+                return Err(RunError::TimedOut);
+            }
             if !self.stream_delay.is_zero() {
                 thread::sleep(self.stream_delay);
             }
@@ -1011,7 +1079,14 @@ mod tests {
         let (d, runner) = deps(runner, feed.clone(), power.clone());
         let (tx, rx) = mpsc::channel();
         let args = argv(&[PKEXEC, HELPER, "eclipse-deps", "eclipseos-abyss"]);
-        run_apply(&d, &args, Scope::EclipseAndDeps, After::PowerOff, &tx);
+        run_apply(
+            &d,
+            &args,
+            Scope::EclipseAndDeps,
+            After::PowerOff,
+            &tx,
+            APPLY_TIMEOUT,
+        );
         drop(tx);
 
         assert_eq!(runner.calls(), vec![args]);
@@ -1072,6 +1147,7 @@ mod tests {
                 Scope::All,
                 After::Reboot,
                 &tx,
+                APPLY_TIMEOUT,
             );
             drop(tx);
             assert!(power.calls().is_empty(), "power ran after {result:?}");
@@ -1096,12 +1172,66 @@ mod tests {
             Scope::All,
             After::Reboot,
             &tx,
+            APPLY_TIMEOUT,
         );
         drop(tx);
         assert_eq!(power.calls(), vec![After::Reboot]);
         let events: Vec<Update> = rx.try_iter().collect();
         assert!(matches!(events.last(), Some(Update::Event(Event::Failed { .. }))));
         assert!(events.contains(&Update::Event(Event::Installed { then: After::Reboot })));
+    }
+
+    #[test]
+    fn a_hung_upgrade_fails_at_the_timeout_and_never_powers() {
+        let feed = Arc::new(RecordFeed::default());
+        let power = Arc::new(FakePower::ok());
+        let runner = FakeRunner::new(Box::new(|_| Err(RunError::Missing)))
+            .streaming(&[], Ok(Some(0)))
+            .delayed(Duration::from_secs(3600));
+        let (d, _) = deps(runner, feed.clone(), power.clone());
+        let (tx, rx) = mpsc::channel();
+        run_apply(
+            &d,
+            &argv(&[PKEXEC, HELPER, "all"]),
+            Scope::All,
+            After::PowerOff,
+            &tx,
+            Duration::from_millis(50),
+        );
+        drop(tx);
+        assert!(power.calls().is_empty());
+        let events: Vec<Update> = rx.try_iter().collect();
+        assert_eq!(
+            events.last(),
+            Some(&Update::Event(Event::Failed {
+                reason: "the upgrade timed out".into()
+            }))
+        );
+        assert_eq!(
+            feed.0.lock().unwrap().last(),
+            Some(&FeedRequest::Done { id: JOB_ID.into() }),
+            "the widget job ends with the upgrade"
+        );
+    }
+
+    #[test]
+    fn the_real_runner_kills_a_child_at_its_timeout() {
+        let started = Instant::now();
+        let r = SystemRunner.stream(&argv(&["sleep", "30"]), Duration::from_millis(100), &mut |_| {});
+        assert!(matches!(r, Err(RunError::TimedOut)), "{r:?}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn the_real_runner_passes_lines_and_status_within_the_timeout() {
+        let mut lines = Vec::new();
+        let r = SystemRunner.stream(
+            &argv(&["sh", "-c", "printf 'a\\r\\nb\\n'; exit 3"]),
+            Duration::from_secs(10),
+            &mut |l| lines.push(l.to_owned()),
+        );
+        assert!(matches!(r, Ok(Some(3))), "{r:?}");
+        assert_eq!(lines, vec!["a", "b"]);
     }
 
     #[test]

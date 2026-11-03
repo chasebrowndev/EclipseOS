@@ -31,6 +31,12 @@ pub const MAX_SCAN: usize = 16;
 
 /// Longest label fragment taken from argv, in characters.
 const MAX_NAME: usize = 60;
+/// Longest URL basename shown, in characters.
+const MAX_URL_NAME: usize = 40;
+/// The cargo subcommands a label may name. Anything else shows as plain `cargo`.
+pub const CARGO_SUBCOMMANDS: &[&str] = &[
+    "build", "check", "test", "clippy", "run", "doc", "install", "bench", "fmt", "publish", "update", "fetch",
+];
 
 /// Cumulative I/O counters from `/proc/<pid>/io`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -215,9 +221,11 @@ pub fn copy_source(comm: &str, argv: &[String]) -> Option<String> {
 pub fn label(p: &Proc) -> String {
     match p.comm.as_str() {
         "cargo" => {
-            let mut s = match operands(&p.argv).next() {
-                Some(sub) => format!("cargo {}", short(sub)),
-                None => "cargo".into(),
+            // Only argv[1] can be the subcommand: anything after a flag may be
+            // that flag's value, and values never reach a label.
+            let mut s = match p.argv.get(1).map(String::as_str) {
+                Some(sub) if CARGO_SUBCOMMANDS.contains(&sub) => format!("cargo {sub}"),
+                _ => "cargo".into(),
             };
             if let Some(dir) = &p.cwd_name {
                 s.push_str(&format!(" ({})", short(dir)));
@@ -261,14 +269,17 @@ pub fn label(p: &Proc) -> String {
     }
 }
 
-/// The last path segment of the first URL operand. Query and fragment are
-/// dropped: they often carry credentials, and the label does not need them.
+/// The last path segment of the first URL operand, at most [`MAX_URL_NAME`]
+/// characters. The fragment and query go first, then the authority, which
+/// may carry userinfo; neither reaches the label, since they often hold
+/// credentials.
 fn url_basename(argv: &[String]) -> Option<String> {
     let url = operands(argv).find(|a| a.contains("://"))?;
-    let path = url.split("://").nth(1)?.split(['?', '#']).next()?;
-    let (_host, rest) = path.split_once('/')?;
-    let name = rest.trim_end_matches('/').rsplit('/').next()?;
-    (!name.is_empty()).then(|| name.to_owned())
+    let after_scheme = url.split_once("://")?.1;
+    let no_frag_query = after_scheme.split(['?', '#']).next()?;
+    let (_authority, path) = no_frag_query.split_once('/')?;
+    let name = path.trim_end_matches('/').rsplit('/').next()?;
+    (!name.is_empty()).then(|| name.chars().take(MAX_URL_NAME).collect())
 }
 
 fn is_archive(name: &str) -> bool {
@@ -428,6 +439,33 @@ mod tests {
             "tar src.tar.zst"
         );
         assert_eq!(label(&proc(8, "tar", &["tar", "-tv"])), "tar");
+    }
+
+    #[test]
+    fn cargo_shows_only_an_allowed_subcommand_in_argv1() {
+        let c = |words: &[&str]| label(&proc(1, "cargo", words));
+        assert_eq!(c(&["cargo", "publish", "--token", "TOKENVALUE"]), "cargo publish");
+        assert_eq!(c(&["cargo", "login", "sekret"]), "cargo");
+        assert_eq!(c(&["cargo", "+nightly", "build"]), "cargo");
+        assert_eq!(c(&["cargo", "--config", "x=build", "check"]), "cargo");
+        assert_eq!(c(&["cargo", "-C", "/home/u/secret", "build"]), "cargo");
+        assert_eq!(c(&["cargo", "frobnicate"]), "cargo");
+        assert!(!c(&["cargo", "--config", "TOKENVALUE", "run"]).contains("TOKENVALUE"));
+    }
+
+    #[test]
+    fn url_labels_drop_userinfo_query_and_fragment() {
+        let u = |url: &str| label(&proc(7, "curl", &["curl", url]));
+        assert_eq!(
+            u("https://user:SECRET@h.example/dir/file.zip?token=SECRET#frag"),
+            "curl file.zip"
+        );
+        assert_eq!(u("https://h.example/x.zip#frag?q=SECRET"), "curl x.zip");
+        assert_eq!(u("https://user:SECRET@h.example/a/b/"), "curl b");
+        assert_eq!(u("https://user:SECRET@h.example"), "curl");
+        assert_eq!(u("https://user:SECRET@h.example?x=SECRET"), "curl");
+        let long = format!("https://h.example/{}", "z".repeat(200));
+        assert_eq!(u(&long), format!("curl {}", "z".repeat(MAX_URL_NAME)));
     }
 
     #[test]

@@ -32,7 +32,7 @@ eclipse-deps)
 	for pkg in "$@"; do
 		valid_name "$pkg" || exit 2
 	done
-	[ "$(id -u)" -eq 0 ] || exit 1
+	[ "$(/usr/bin/id -u)" -eq 0 ] || exit 1
 	# -Sy: the sync database must be current, or the install would take the
 	# stale version and report success on a no-op. This is a partial upgrade
 	# by design (ADR 0085).
@@ -40,7 +40,7 @@ eclipse-deps)
 	;;
 all)
 	[ "$#" -eq 1 ] || exit 2
-	[ "$(id -u)" -eq 0 ] || exit 1
+	[ "$(/usr/bin/id -u)" -eq 0 ] || exit 1
 	exec /usr/bin/pacman -Syu --noconfirm
 	;;
 *)

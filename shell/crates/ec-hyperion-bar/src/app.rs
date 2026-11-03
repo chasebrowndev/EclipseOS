@@ -2000,7 +2000,9 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         Message::PowerSet(profile) => {
             app.power.ask(profile);
-            crate::services::set_profile(profile);
+            if !fixture_or_preview(app) {
+                crate::services::set_profile(profile);
+            }
             return Task::none();
         }
         // A fixture's or a preview's power reading is the thing being screenshotted.
@@ -2032,9 +2034,12 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         Message::QuickAction(index) => {
             let closed = dismiss(app);
-            let term = app.conn.terminal_command();
-            if let Some(slot) = app.quick_actions.get(index) {
-                crate::widgets::quick_actions::run(slot, term);
+            // A fixture or a preview launches and execs nothing.
+            if !fixture_or_preview(app) {
+                let term = app.conn.terminal_command();
+                if let Some(slot) = app.quick_actions.get(index) {
+                    crate::widgets::quick_actions::run(slot, term);
+                }
             }
             return closed;
         }
@@ -3966,6 +3971,23 @@ pub(crate) mod tests {
             let (_, _, (w, h)) = eye_placement(edge, Air::default());
             assert!(w <= 64 && h <= 64);
         }
+    }
+
+    /// A preview or fixture is on screen and no service may act on a click:
+    /// the power profile and the quick action both stop at the guard. The
+    /// effects are process-global calls with no seam, so this pins the guard
+    /// the arms consult and drives both arms through `update` to show they
+    /// return without reaching a service.
+    #[test]
+    fn a_preview_session_acts_on_no_power_or_quick_action_click() {
+        let mut a = app();
+        assert!(!fixture_or_preview(&a));
+        a.preview = Some(Preview::ChipMenu);
+        assert!(fixture_or_preview(&a));
+        a.quick_actions = crate::widgets::quick_actions::preview_slots();
+        let profile = ec_services::power_profiles::Profile::Balanced;
+        let _ = update(&mut a, Message::PowerSet(profile));
+        let _ = update(&mut a, Message::QuickAction(0));
     }
 
     #[test]

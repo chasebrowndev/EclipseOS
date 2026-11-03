@@ -44,6 +44,13 @@ pub const ACTIVE_INTERVAL: Duration = Duration::from_secs(1);
 pub const IDLE_INTERVAL: Duration = Duration::from_secs(5);
 /// How often feed jobs are checked for expiry while any exist.
 const SWEEP: Duration = Duration::from_secs(1);
+/// Most feed clients served at once. A connection past this is closed on accept.
+pub const MAX_CLIENTS: usize = 16;
+/// Pause after a failed accept, so a persistent error such as EMFILE does not
+/// spin the loop while the listener stays readable.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+/// Most bytes one client may have buffered: a maximal line and its newline.
+const LINE_CAP: usize = MAX_LINE + 1;
 
 /// Where a job came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,15 +320,29 @@ impl Server {
         let Some(listener) = &self.listener else {
             return;
         };
-        while let Ok((stream, _)) = listener.accept() {
-            // Only our own uid may talk to the feed, whatever the socket's mode.
-            if peer_uid(&stream) != Some(self.uid) || stream.set_nonblocking(true).is_err() {
-                continue;
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    // Only our own uid may talk to the feed, whatever the socket's
+                    // mode. Past the client cap, dropping the stream closes it.
+                    if self.clients.len() >= MAX_CLIENTS
+                        || peer_uid(&stream) != Some(self.uid)
+                        || stream.set_nonblocking(true).is_err()
+                    {
+                        continue;
+                    }
+                    self.clients.push(Client {
+                        stream,
+                        buf: Vec::new(),
+                    });
+                }
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(_) => {
+                    std::thread::sleep(ACCEPT_BACKOFF);
+                    break;
+                }
             }
-            self.clients.push(Client {
-                stream,
-                buf: Vec::new(),
-            });
         }
     }
 
@@ -365,12 +386,23 @@ impl Drop for Server {
 }
 
 /// Read what the client has sent, answer each complete line, and keep the
-/// client while it stays well-behaved. `false` drops it.
+/// client while it stays well-behaved. `false` drops it. The buffer never
+/// holds more than [`LINE_CAP`] bytes, so a line that cannot fit is refused
+/// without reading the rest of it. Complete lines are answered before the
+/// client is closed on end of input.
 fn serve(c: &mut Client, model: &mut Model, now: Instant) -> bool {
     let mut tmp = [0u8; 1024];
+    let mut eof = false;
     loop {
-        match c.stream.read(&mut tmp) {
-            Ok(0) => return false,
+        let want = (LINE_CAP - c.buf.len()).min(tmp.len());
+        if want == 0 {
+            break;
+        }
+        match c.stream.read(&mut tmp[..want]) {
+            Ok(0) => {
+                eof = true;
+                break;
+            }
             Ok(n) => c.buf.extend_from_slice(&tmp[..n]),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -379,7 +411,12 @@ fn serve(c: &mut Client, model: &mut Model, now: Instant) -> bool {
     }
     while let Some(pos) = c.buf.iter().position(|b| *b == b'\n') {
         let line: Vec<u8> = c.buf.drain(..=pos).collect();
-        let text = String::from_utf8_lossy(&line[..line.len() - 1]);
+        let body = &line[..line.len() - 1];
+        if body.len() > MAX_LINE {
+            refuse_too_long(c);
+            return false;
+        }
+        let text = String::from_utf8_lossy(body);
         let reply = match Request::decode(&text) {
             Ok(req) => model.apply(req, now),
             Err(e) => err(e),
@@ -390,13 +427,18 @@ fn serve(c: &mut Client, model: &mut Model, now: Instant) -> bool {
             return false;
         }
     }
-    if c.buf.len() > MAX_LINE {
-        let _ = c
-            .stream
-            .write_all(format!("{}\n", err("request line too long")).as_bytes());
+    if c.buf.len() >= LINE_CAP {
+        refuse_too_long(c);
         return false;
     }
-    true
+    !eof
+}
+
+/// Answer an over-long request, then the caller drops the client.
+fn refuse_too_long(c: &mut Client) {
+    let _ = c
+        .stream
+        .write_all(format!("{}\n", err("request line too long")).as_bytes());
 }
 
 /// The uid of the process at the other end, via `SO_PEERCRED`.
