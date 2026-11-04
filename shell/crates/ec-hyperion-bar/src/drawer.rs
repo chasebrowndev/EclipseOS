@@ -159,21 +159,28 @@ pub fn panel_left(kind: DrawerKind, center: f32, surface_w: f32) -> f32 {
     (center - w / 2.0).min(surface_w - w).max(0.0).round()
 }
 
-/// The input region of a bar with a drawer out, surface-local: the panel's
-/// box at `x`, `w` wide, and the pill. Abyss draws the glass as the smooth
-/// union of these boxes, so this is also the shape the blur takes.
+/// The input region of a top bar with a drawer out, surface-local: the
+/// panel's box at `x`, `w` wide, and the pill. Abyss draws the glass as the
+/// smooth union of these boxes, so this is also the shape the blur takes.
 ///
-/// As with the start menu, a top bar's boxes do not depend on the surface's
-/// height — the panel runs off the bottom and is cut there — so one region
-/// holds for the whole slide. A bottom bar's pill sits at `height - PILL_H`.
-pub fn region(top: bool, x: i32, w: i32, height: u32) -> Vec<Rect> {
+/// As with the start menu, the boxes do not depend on the surface's height —
+/// the panel runs off the bottom and is cut there — so one region holds for
+/// the whole slide.
+pub fn region_top(x: i32, w: i32) -> Vec<Rect> {
+    vec![(x, 0, w, BIG), (0, 0, BIG, bar::PILL_H as i32)]
+}
+
+/// The same for a bottom bar, whose surface never changes size (see
+/// `menu::region_bottom` for why): `surface_h` tall for good, the pill on its
+/// far edge and the panel's `extent` over it. Only called with a panel out;
+/// closed, the bar's region is `menu::region_bottom`'s.
+pub fn region_bottom(x: i32, w: i32, surface_h: u32, extent: u32) -> Vec<Rect> {
+    let h = surface_h as i32;
     let pill_h = bar::PILL_H as i32;
-    let h = height as i32;
-    if top {
-        vec![(x, 0, w, BIG), (0, 0, BIG, pill_h)]
-    } else {
-        vec![(x, 0, w, h), (0, h - pill_h, BIG, pill_h)]
-    }
+    vec![
+        (x, h - pill_h - extent as i32, w, pill_h + extent as i32),
+        (0, h - pill_h, BIG, pill_h),
+    ]
 }
 
 #[cfg(test)]
@@ -300,19 +307,21 @@ mod tests {
     }
 
     #[test]
-    fn a_top_region_does_not_depend_on_the_height() {
-        assert_eq!(region(true, 400, 248, 40), region(true, 400, 248, 400));
-        // A bottom bar's pill rides the surface's far edge.
-        let [panel, pill] = region(false, 400, 248, 400)[..] else {
-            panic!("two boxes")
-        };
-        assert_eq!(pill.1, 400 - bar::PILL_H as i32);
-        assert_eq!(panel, (400, 0, 248, 400));
+    fn a_bottom_regions_pill_rides_the_far_edge_of_a_surface_that_never_moves() {
+        for extent in [1, 120, 300] {
+            let [panel, pill] = region_bottom(400, 248, 480, extent)[..] else {
+                panic!("two boxes")
+            };
+            assert_eq!(pill.1 + pill.3, 480, "extent {extent}");
+            assert_eq!(panel.1 + panel.3, 480, "the panel stands on the edge");
+            assert_eq!((panel.0, panel.2), (400, 248));
+            assert_eq!(panel.3, bar::PILL_H as i32 + extent as i32);
+        }
     }
 
     #[test]
     fn the_region_holds_the_panel_and_the_whole_pill() {
-        let [panel, pill] = region(true, 400, 248, 300)[..] else {
+        let [panel, pill] = region_top(400, 248)[..] else {
             panic!("two boxes")
         };
         assert_eq!((panel.0, panel.2), (400, 248));

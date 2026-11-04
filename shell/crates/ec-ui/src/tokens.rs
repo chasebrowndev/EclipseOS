@@ -950,6 +950,12 @@ pub mod drawer {
     /// sized once at creation, so a room full of access points must not be
     /// allowed to push the sheet off the bottom of a laptop panel.
     pub const MAX_ROWS: usize = 8;
+    /// How tall a panel a bottom bar's surface is made to hold for a drawer.
+    /// A bottom surface is sized once and never resized (the compositor draws
+    /// a stale buffer from a resized bottom surface's top, which wobbles the
+    /// pill), so it has to hold the tallest drawer from the start; one that
+    /// needs more raises it once.
+    pub const RESERVE_H: f32 = 440.0;
     /// Air between the two lines of the hero row.
     pub const LINE_GAP: f32 = 2.0;
     /// The glass lozenge a row draws is its slot inset this much on the
