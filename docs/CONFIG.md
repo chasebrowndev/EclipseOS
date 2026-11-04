@@ -298,7 +298,7 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | `input.accel-speed` | float -1..1 | `0` | live | Pointer speed, -1 slowest to 1 fastest; 0 is the device's default. |
 | `input.scroll-method` | default \| none \| on-button-down | `"default"` | live | Scroll method for mice and trackpoints (touchpads have their own): `on-button-down` scrolls by moving while the middle button is held, `default` keeps each device's own. |
 | `input.touchpad.natural-scroll` | bool | `#false` | live | Invert touchpad scroll direction. |
-| `input.touchpad.tap-to-click` | bool | `#false` | live | Treat a tap as a click. |
+| `input.touchpad.tap-to-click` | bool | `#true` | live | Treat a tap as a click: one finger is a left click, two fingers a right click, three a middle click. |
 | `input.touchpad.dwt` | bool | `#false` | live | Disable the touchpad while typing. |
 | `input.touchpad.click-method` | clickfinger \| button-areas | `"clickfinger"` | live | Touchpad click method: finger count or bottom-corner button areas. |
 | `input.touchpad.tap-and-drag` | bool | `#true` | live | Tap, then tap and hold, to drag. |

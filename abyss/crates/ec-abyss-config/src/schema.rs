@@ -1679,10 +1679,10 @@ pub const TABLE: &[Key] = &[
     k(
         "input.touchpad.tap-to-click",
         Ty::Bool,
-        Bool(false),
+        Bool(true),
         Abyss,
         Live,
-        "Treat a tap as a click.",
+        "Treat a tap as a click: one finger is a left click, two fingers a right click, three a middle click.",
     ),
     k(
         "input.touchpad.dwt",
