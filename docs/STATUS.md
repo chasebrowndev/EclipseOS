@@ -237,7 +237,7 @@ macros anywhere in the workspace.
    default of `no`; a real implementation waits on the capability model.
 5. **No xcursor theme, by design** (`abyss/crates/ec-abyss-render/src/cursor.rs:1-7`)
    — client-set cursor surfaces composite correctly at their hotspot, and
-   named `wp_cursor_shape_v1` shapes all draw one built-in amber arrow. A
+   named `wp_cursor_shape_v1` shapes all draw one built-in arrow filled with the shared accent. A
    theme would put a filesystem dependency in the render path, and the
    trusted pointer must draw whatever the theme directory holds. Compiled-in
    bitmaps for more shapes are the open direction, not a theme loader.
@@ -515,7 +515,7 @@ In rough order:
    are advertised and the handlers are written, but a third-party bar over
    `ext_foreign_toplevel_list` and mouse-look in a Proton game over
    `pointer_constraints`/`relative_pointer` have not been run.
-4. **A real xcursor theme** on DRM, replacing the built-in amber arrow used
+4. **A real xcursor theme** on DRM, replacing the built-in accent arrow used
    for named cursor shapes.
 5. **Effects (9b)** — optional by COMP-16 Open Decision 1. Borders, opacity,
    dim-inactive, rounding, shadows, blur and all four animations are in;

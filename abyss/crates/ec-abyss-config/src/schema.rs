@@ -606,7 +606,7 @@ pub const TABLE: &[Key] = &[
         Str(""),
         Abyss,
         Live,
-        "The one accent colour every Eclipse surface follows, `#rrggbb` (opaque), live. Empty (the default) keeps the active theme's own accent (gold `#f2c33c` in the built-in themes). When set it replaces the theme's `accent` seed and its accent text is re-derived from it (lighter on a dark theme, darker on a light one, always at least 4.5:1 on the base), so the override can never fail the theme contrast rule. `get_theme` returns the effective `accent` and `accent_text`; the `theme` event announces a change. `annotations { accent }` follows it unless set explicitly.",
+        "The one accent colour every Eclipse surface follows, `#rrggbb` (opaque), live. Empty (the default) keeps the active theme's own accent (gold `#f2c33c` in the built-in themes). When set it replaces the theme's `accent` seed and its accent text is re-derived from it (lighter on a dark theme, darker on a light one, always at least 4.5:1 on the base), so the override can never fail the theme contrast rule. `get_theme` returns the effective `accent` and `accent_text`; the `theme` event announces a change. `annotations { accent }` follows it unless set explicitly. The built-in pointer arrow is filled with it too (lifted toward white if too dark to see; the outline stays black).",
     ),
     k(
         "general.theme-dark",
