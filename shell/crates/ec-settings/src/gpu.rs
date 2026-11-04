@@ -21,6 +21,7 @@ use crate::app::{row_id, App, Message};
 use crate::pinned::{addable, edited, list_of, name_of, Choice, Msg};
 
 pub const MODE: &str = "misc.gpu-mode";
+pub const SECONDARY: &str = "misc.secondary-compositing";
 pub const APPS: &str = "misc.discrete-gpu-apps";
 
 /// What a graphics mode does, in a line.
@@ -32,6 +33,9 @@ pub fn mode_blurb(mode: &str) -> Option<&'static str> {
         _ => return None,
     })
 }
+
+pub const SECONDARY_BLURB: &str =
+    "Advanced. Off: the main GPU draws every screen and copies to the other GPU's. On: that GPU draws its own.";
 
 pub const LOGIN_NOTE: &str = "Takes effect at next login";
 
