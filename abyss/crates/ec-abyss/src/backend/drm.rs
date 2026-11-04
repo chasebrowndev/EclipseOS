@@ -1527,6 +1527,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                 }
                 // A connector may have changed while we were away.
                 scan_connectors(state);
+                crate::outputs::ensure_one_enabled(state);
                 render(state);
             }
         })
