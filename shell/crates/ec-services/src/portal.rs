@@ -207,6 +207,7 @@ pub struct Portal {
 fn apply(state: &Mutex<Appearance>, conn: &zbus::blocking::Connection, new: Appearance) {
     let mut cur = state.lock().unwrap_or_else(|p| p.into_inner());
     let changed = new.changed_keys(&cur);
+    ACCENT.store(pack_rgb(new.accent), Ordering::Relaxed);
     foot_follow(new.color_scheme, changed.contains(&"color-scheme"));
     SCHEME.store(new.color_scheme, Ordering::Relaxed);
     *cur = new;
@@ -227,6 +228,29 @@ fn apply(state: &Mutex<Appearance>, conn: &zbus::blocking::Connection, new: Appe
 static GLASS_OFF: AtomicBool = AtomicBool::new(false);
 /// Last published colour-scheme value, for rewriting foot's file on a mode change.
 static SCHEME: AtomicU32 = AtomicU32::new(1);
+/// Last published accent as 0xRRGGBB, for foot's selection colour.
+static ACCENT: AtomicU32 = AtomicU32::new(0xd8af48);
+
+fn pack_rgb((r, g, b): (f64, f64, f64)) -> u32 {
+    let c = |v: f64| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    c(r) << 16 | c(g) << 8 | c(b)
+}
+
+/// Foot's `[colors-*]` selection pair for `accent`: the accent as the
+/// background, near-black or near-white text, whichever reads on it.
+fn foot_selection(accent: u32) -> String {
+    let lin = |v: u32| {
+        let c = f64::from(v & 0xff) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    let lum = 0.2126 * lin(accent >> 16) + 0.7152 * lin(accent >> 8) + 0.0722 * lin(accent);
+    let fg = if lum >= 0.18 { "0d0d0d" } else { "f5f5f5" };
+    format!("selection-foreground={fg}\nselection-background={accent:06x}\n")
+}
 
 fn read_blur_off(client: &mut ec_ipc::Client) -> Option<bool> {
     let reply = client
@@ -250,15 +274,19 @@ fn read_blur_off(client: &mut ec_ipc::Client) -> Option<bool> {
 fn foot_follow(color_scheme: u32, flipped: bool) {
     let theme = if color_scheme == 2 { "light" } else { "dark" };
     // Blur `off` leaves nothing behind a translucent terminal, so new windows
-    // go opaque (the include comes last in foot.ini, so this alpha wins).
-    let opaque = if GLASS_OFF.load(Ordering::Relaxed) {
-        "[colors-dark]\nalpha=1.0\n[colors-light]\nalpha=1.0\n"
+    // go opaque (the include comes last in foot.ini, so this alpha wins). The
+    // selection colour follows the accent; running foot keeps the one it
+    // started with, new windows pick up the change.
+    let alpha = if GLASS_OFF.load(Ordering::Relaxed) {
+        "alpha=1.0\n"
     } else {
         ""
     };
+    let sel = foot_selection(ACCENT.load(Ordering::Relaxed));
+    let colors = format!("[colors-dark]\n{alpha}{sel}[colors-light]\n{alpha}{sel}");
     if let Some(home) = std::env::var_os("HOME") {
         let path = std::path::Path::new(&home).join(".config/eclipse/foot-theme.ini");
-        let body = format!("[main]\ninitial-color-theme={theme}\n{opaque}");
+        let body = format!("[main]\ninitial-color-theme={theme}\n{colors}");
         if std::fs::read_to_string(&path).ok().as_deref() != Some(&body) {
             let _ = path.parent().map(std::fs::create_dir_all);
             let _ = std::fs::write(&path, body);
@@ -380,6 +408,16 @@ mod tests {
         assert_eq!(dark.color_scheme, 1);
         assert_eq!(light.color_scheme, 2);
         assert_eq!(dark.contrast, 0);
+    }
+
+    #[test]
+    fn foot_selection_is_the_accent_with_readable_text() {
+        assert_eq!(
+            foot_selection(0xf2c33c),
+            "selection-foreground=0d0d0d\nselection-background=f2c33c\n"
+        );
+        assert!(foot_selection(0x101010).starts_with("selection-foreground=f5f5f5"));
+        assert_eq!(pack_rgb((1.0, 128.0 / 255.0, 0.0)), 0xff8000);
     }
 
     #[test]
