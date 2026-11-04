@@ -1275,6 +1275,7 @@ pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
         .set_chip_anims(app.widget_cfg.chip_add, app.widget_cfg.chip_remove);
     bar.fold = FoldState::with_air(app.air);
     let geometry = bar.fold.geometry(app.edge);
+    let height = surface_h(app, &bar);
     app.bars.insert(id, bar);
     Task::done(Message::NewLayerShell {
         settings: NewLayerShellSettings {
@@ -1283,7 +1284,7 @@ pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
             // `FoldState::geometry`); the zone plus the edge margin is the
             // full strip, so a window opened afterwards starts below the bar
             // rather than under it.
-            size: Some((0, geometry.height)),
+            size: Some((0, height)),
             layer: Layer::Top,
             anchor: bar_anchor(app.edge),
             exclusive_zone: Some(geometry.zone),
@@ -1562,7 +1563,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             let Some((first, region)) = with_bar(app, id, |app, bar| {
                 bar.width = size.width;
                 let first = !std::mem::replace(&mut bar.mapped, true);
-                (first, sync_region(app, bar, size.height))
+                (first, sync_region(app, bar))
             }) else {
                 return Task::none();
             };
@@ -1874,6 +1875,13 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 });
                 moved = Task::batch([moved, each]);
             }
+            // Whatever the reload moved of what a bar's surface is made of —
+            // the edge, the launcher style, the panel's rows — it is asked
+            // for again; a size and a region that did not change cost nothing.
+            let resurfaced = each_bar(app, |app, bar| {
+                Task::batch([push_size(app, bar), sync_region(app, bar)])
+            });
+            moved = Task::batch([moved, resurfaced]);
             if app.fixture.is_none() {
                 app.widget_cfg = app.conn.widgets_config();
                 let motion = app.widget_cfg.motion;
@@ -2169,8 +2177,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             crate::preview::frame(app, now);
             let tasks: Vec<_> = sized
                 .into_iter()
-                .filter_map(|id| app.bars.get(&id))
-                .map(|bar| push_size(app, bar))
+                .filter_map(|id| with_bar(app, id, size_and_region))
                 .collect();
             return Task::batch(tasks);
         }
@@ -2271,24 +2278,34 @@ fn fold(app: &App, bar: &mut Bar) -> Task<Message> {
     if fold.geometry(app.edge) == before {
         return Task::none();
     }
-    push_geometry(app, bar)
+    // A bottom bar's sheet is a region on a surface that holds still, so the
+    // fold moves the region where a top bar's moves the surface.
+    Task::batch([push_geometry(app, bar), sync_region(app, bar)])
 }
 
 /// Ask the compositor for the surface the fold state needs. Nothing before
 /// the surface is configured: [`Message::Sized`] pushes the state it reached
 /// by then.
+///
+/// A bottom bar's size is not the fold's to ask for ([`surface_h`]), so the
+/// fold never re-asks it there; whoever changes what the size is made of
+/// ([`push_size`]) does.
 fn push_geometry(app: &App, bar: &Bar) -> Task<Message> {
     let g = bar.fold.geometry(app.edge);
     if !bar.mapped {
         return Task::none();
     }
     let id = bar.id;
+    let size = match app.edge {
+        BarPosition::Top => push_size(app, bar),
+        BarPosition::Bottom => Task::none(),
+    };
     Task::batch([
         Task::done(Message::AnchorChange {
             id,
             anchor: bar_anchor(app.edge),
         }),
-        push_size(app, bar),
+        size,
         Task::done(Message::MarginChange { id, margin: g.margin }),
         Task::done(Message::ExclusiveZoneChange {
             id,
@@ -2297,21 +2314,66 @@ fn push_geometry(app: &App, bar: &Bar) -> Task<Message> {
     ])
 }
 
-/// The surface's height alone: the fold's sheet plus however much of the
-/// start menu's panel is out. The panel never adds to the exclusive zone —
-/// it floats over the windows, it does not push them.
+/// The height the bar's layer surface is asked for.
+///
+/// A top bar's surface is the fold's sheet plus however much of the start
+/// menu's panel or a drawer is out, and follows both as they move. A panel
+/// never adds to the exclusive zone — it floats over the windows, it does not
+/// push them.
+///
+/// A bottom bar's surface is asked for once, at the most the sheet and a
+/// panel together ever reach, and never again while either moves. The
+/// compositor lays a layer out by the size it was last asked for the moment
+/// that is committed, but draws the buffer it was last given, from the box's
+/// top: on a bottom-anchored surface that is the wrong end, so each resize
+/// shows the pill displaced by the size change until the frame sized to the
+/// new box arrives — a wobble for every step of a slide, both ways. With a
+/// size that never changes the buffer and the box always agree, and the
+/// sheet is shaped by the input region instead ([`sync_region`]).
+fn surface_h(app: &App, bar: &Bar) -> u32 {
+    match app.edge {
+        BarPosition::Top => {
+            bar.fold.geometry(app.edge).height + bar.menu.extent(app.show_key_hints) + drawer_extent(app, bar)
+        }
+        BarPosition::Bottom => {
+            FoldState::with_air(bar.fold.air).sheet_height()
+                + panel_reach(app).max(bar.drawer.height.ceil() as u32)
+        }
+    }
+}
+
+/// The tallest panel a bottom bar's surface is made to hold: the start menu
+/// fully out, or the drawers' reserve. A drawer that needs more than the
+/// reserve (a very long list) raises the surface once, by [`surface_h`].
+fn panel_reach(app: &App) -> u32 {
+    let menu = if app.bar.launcher == LauncherStyle::Menu {
+        bar::panel_h(app.show_key_hints, app.launcher_menu.rows.max(1)).round() as u32
+    } else {
+        0
+    };
+    menu.max(ec_ui::tokens::drawer::RESERVE_H as u32)
+}
+
+/// The surface's height alone. See [`surface_h`].
 fn push_size(app: &App, bar: &Bar) -> Task<Message> {
     if !bar.mapped {
         return Task::none();
     }
-    let g = bar.fold.geometry(app.edge);
     Task::done(Message::SizeChange {
         id: bar.id,
-        size: (
-            0,
-            g.height + bar.menu.extent(app.show_key_hints) + drawer_extent(app, bar),
-        ),
+        size: (0, surface_h(app, bar)),
     })
+}
+
+/// What a slide step of a panel changes: a top bar's surface, a bottom bar's
+/// region.
+fn size_and_region(app: &App, bar: &mut Bar) -> Task<Message> {
+    let region = sync_region(app, bar);
+    let size = match app.edge {
+        BarPosition::Top => push_size(app, bar),
+        BarPosition::Bottom => Task::none(),
+    };
+    Task::batch([size, region])
 }
 
 /// Apply `ui.show-key-hints`, live. The panel's full height depends on it,
@@ -2324,14 +2386,12 @@ pub fn set_key_hints(app: &mut App, on: bool) -> Task<Message> {
         return Task::none();
     }
     app.show_key_hints = on;
-    let mut tasks = Vec::new();
     for bar in app.bars.values_mut() {
         bar.menu.region = None;
     }
-    for bar in app.bars.values() {
-        tasks.push(push_size(app, bar));
-    }
-    Task::batch(tasks)
+    each_bar(app, |app, bar| {
+        Task::batch([push_size(app, bar), sync_region(app, bar)])
+    })
 }
 
 /// `--centered`: the launcher draws itself even with `bar.launcher-style
@@ -2341,8 +2401,8 @@ pub fn set_key_hints(app: &mut App, on: bool) -> Task<Message> {
 /// again.
 pub const CENTERED: &str = "--centered";
 
-/// Send the start menu's input region for a surface `h` logical pixels
-/// tall, and only if the boxes differ from the last ones sent.
+/// Send a bar's input region, and only if the boxes differ from the last ones
+/// sent.
 ///
 /// The region is the pointer's and the glass's at once: abyss draws a layer
 /// whose input region is 2..=4 boxes as their smooth union, so the blur
@@ -2359,32 +2419,51 @@ pub const CENTERED: &str = "--centered";
 /// last covering subtract (`render::blur::Shape::from_region`). Any height is
 /// therefore safe to send at.
 ///
-/// On a top bar the boxes do not depend on the height (`menu::region`), so
-/// the send in [`toggle_start`] holds for the whole slide and the per-configure
-/// sends dedupe to nothing. A bottom bar's pill rides the surface's far edge,
-/// so it is re-sent on every configure of the slide, both ways, and lags the
-/// surface by one configure.
+/// On a top bar the boxes do not depend on the height (`menu::region_top`,
+/// `drawer::region_top`), so the send in [`toggle_start`] or [`toggle_drawer`]
+/// holds for the whole slide and nothing is sent again. A bar that has never
+/// had a panel out sends nothing and keeps the plain whole-surface shape.
 ///
-/// A bar whose menu has never been out sends nothing and keeps the plain
-/// whole-surface shape.
-fn sync_region(app: &App, bar: &mut Bar, h: f32) -> Task<Message> {
+/// A bottom bar's boxes are the sheet and the panel on the surface's far edge
+/// (`menu::region_bottom`, `drawer::region_bottom`), so they follow the fold
+/// and the slides: this is called on every step of either, and the surface
+/// holds still ([`surface_h`]). The region is always there, since the surface
+/// is taller than the sheet.
+fn sync_region(app: &App, bar: &mut Bar) -> Task<Message> {
     let top = app.edge == BarPosition::Top;
-    let h = h.round().max(0.0) as u32;
     // A drawer owns the region while it is out, and until the start menu
-    // takes it over: the last send was its, and a bottom bar's pill moves.
+    // takes it over: the last send was its.
     let drawer = bar.drawer.open || (!bar.menu.open && bar.drawer.region.is_some());
-    let rects = if drawer {
-        if bar.drawer.region.is_none() && !bar.drawer.open {
-            return Task::none();
+    let rects = if top {
+        if drawer {
+            if bar.drawer.region.is_none() && !bar.drawer.open {
+                return Task::none();
+            }
+            let left = bar.drawer.anchor_x().round() as i32;
+            let w = bar.drawer.width().round() as i32;
+            crate::drawer::region_top(left, w)
+        } else {
+            if !bar.menu.open && bar.menu.region.is_none() {
+                return Task::none();
+            }
+            crate::menu::region_top(app.bar_radius)
         }
-        let left = bar.drawer.anchor_x().round() as i32;
-        let w = bar.drawer.width().round() as i32;
-        crate::drawer::region(top, left, w, h)
     } else {
-        if !bar.menu.open && bar.menu.region.is_none() {
-            return Task::none();
+        let surface = surface_h(app, bar);
+        let sheet = bar.fold.geometry(app.edge).height;
+        let drawer_out = drawer_extent(app, bar);
+        if drawer && drawer_out > 0 {
+            let left = bar.drawer.anchor_x().round() as i32;
+            let w = bar.drawer.width().round() as i32;
+            crate::drawer::region_bottom(left, w, surface, drawer_out)
+        } else {
+            crate::menu::region_bottom(
+                app.bar_radius,
+                surface,
+                sheet,
+                bar.menu.extent(app.show_key_hints),
+            )
         }
-        crate::menu::region(top, app.bar_radius, h)
     };
     let sent = if drawer {
         &bar.drawer.region
@@ -2431,12 +2510,10 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
     let term = app.conn.terminal_command();
     let entries = ec_services::apps::scan_with(term.as_deref(), &app.launcher_menu.search);
     let open = with_bar(app, id, |app, bar| {
-        // The surface's height as it stands, before the menu starts growing
-        // it: the region goes out ahead of the resize, so the glass has its
+        // The region goes out ahead of the resize, so the glass has its
         // shape from the first frame of the slide.
-        let h = bar.fold.geometry(app.edge).height + bar.menu.extent(app.show_key_hints);
         bar.menu.open(entries, term, app.launcher_menu, now);
-        let region = sync_region(app, bar, h as f32);
+        let region = sync_region(app, bar);
         Task::batch([
             region,
             // The keyboard, held until the menu closes: the query is typed
@@ -2448,7 +2525,7 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
                 keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::OnDemand,
             }),
             iced::widget::operation::focus(crate::menu::INPUT_ID),
-            push_size(app, bar),
+            size_and_region(app, bar),
         ])
     })
     .unwrap_or_else(Task::none);
@@ -2513,10 +2590,7 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
     }
     match app.edge {
         BarPosition::Top => bar.cursor.y >= bar::PILL_H,
-        BarPosition::Bottom => {
-            let total = bar.fold.geometry(app.edge).height + drawer_extent(app, bar);
-            bar.cursor.y < total as f32 - bar::PILL_H
-        }
+        BarPosition::Bottom => bar.cursor.y < surface_h(app, bar) as f32 - bar::PILL_H,
     }
 }
 
@@ -2620,11 +2694,9 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
         let center = crate::view::drawer_span(app, bar, drawer)
             .map_or(bar.cursor.x, |(left, right)| (left + right) / 2.0);
         let left = crate::drawer::panel_left(kind, center, bar.width);
-        // The surface's height as it stands, before the drawer starts
-        // growing it: the region goes out ahead of the resize.
-        let h = bar.fold.geometry(app.edge).height + drawer_extent(app, bar);
+        // The region goes out ahead of the resize.
         bar.drawer.open(kind, left, full, now);
-        let region = sync_region(app, bar, h as f32);
+        let region = sync_region(app, bar);
         Task::batch([
             region,
             // On-demand, so Escape reaches the bar; a click on a window takes
@@ -2633,7 +2705,7 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
                 id,
                 keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::OnDemand,
             }),
-            push_size(app, bar),
+            size_and_region(app, bar),
         ])
     })
     .unwrap_or_else(Task::none);
@@ -3292,7 +3364,7 @@ fn anchor(app: &App, bar: &Bar, span: Option<(f32, f32)>, edge: Edge) -> (i32, i
             // bottom one.
             let y = match app.edge {
                 BarPosition::Top => bar::SHEET_BOTTOM,
-                BarPosition::Bottom => 0.0,
+                BarPosition::Bottom => (surface_h(app, bar) - bar.fold.sheet_height()) as f32,
             };
             (x, y)
         }
@@ -3433,8 +3505,7 @@ fn resize_drawers(app: &mut App) -> Task<Message> {
     Task::batch(
         sized
             .into_iter()
-            .filter_map(|id| app.bars.get(&id))
-            .map(|bar| push_size(app, bar)),
+            .filter_map(|id| with_bar(app, id, size_and_region)),
     )
 }
 
@@ -4825,63 +4896,121 @@ mod fold_tests {
     #[test]
     fn a_second_bar_sends_its_own_first_region() {
         let mut a = app();
+        a.edge = BarPosition::Top;
         let first = bar_on(&mut a, "DP-1", 0);
         let second = bar_on(&mut a, "HDMI-A-1", 1);
         for id in [first, second] {
             a.bars.get_mut(&id).unwrap().menu.open = true;
         }
-        let t1 = with_bar(&mut a, first, |a, b| sync_region(a, b, 200.0)).unwrap();
+        let t1 = with_bar(&mut a, first, sync_region).unwrap();
         assert_eq!(t1.units(), 1);
         assert!(a.bars[&second].menu.region.is_none());
-        let t2 = with_bar(&mut a, second, |a, b| sync_region(a, b, 200.0)).unwrap();
+        let t2 = with_bar(&mut a, second, sync_region).unwrap();
         assert_eq!(t2.units(), 1);
         assert!(a.bars[&second].menu.region.as_ref().unwrap().len() >= 2);
     }
 
     /// A top bar's boxes do not depend on the height, so the region sent as
-    /// the menu opens holds for the whole slide: no resend per configure.
+    /// the menu opens holds for the whole slide: nothing is sent per step.
     #[test]
     fn a_top_bar_sends_once_and_holds_through_the_slide() {
         let mut a = app();
         a.edge = BarPosition::Top;
         let id = bar_on(&mut a, "DP-1", 0);
         a.bars.get_mut(&id).unwrap().menu.open = true;
-        let t = with_bar(&mut a, id, |a, b| sync_region(a, b, 60.0)).unwrap();
+        let t = with_bar(&mut a, id, sync_region).unwrap();
         assert_eq!(t.units(), 1);
-        for h in [80.0, 150.0, 300.0, 520.0] {
-            let t = with_bar(&mut a, id, |a, b| sync_region(a, b, h)).unwrap();
-            assert_eq!(t.units(), 0, "h={h}");
+        for v in [0.2, 0.5, 0.9, 1.0] {
+            a.bars.get_mut(&id).unwrap().menu.reveal.snap(v);
+            let t = with_bar(&mut a, id, sync_region).unwrap();
+            assert_eq!(t.units(), 0, "reveal={v}");
         }
     }
 
-    /// A bottom bar's pill rides the surface's far edge: every configure of
-    /// the slide moves it, opening or closing, and the closed bar at rest
-    /// still gets its last region.
+    /// A bottom bar never re-asks its size, whatever the menu, a drawer or
+    /// the fold do: the compositor draws a stale buffer from the top of a
+    /// resized bottom-anchored surface, so any resize wobbles the pill. The
+    /// sheet follows by region instead, one send per step, opening and
+    /// closing.
     #[test]
-    fn a_bottom_bar_resends_on_every_height_of_the_slide() {
+    fn a_bottom_bar_holds_its_size_and_moves_its_region_through_the_menu_slide() {
+        let mut a = app();
+        a.edge = BarPosition::Bottom;
+        a.bar.launcher = LauncherStyle::Menu;
+        let id = bar_on(&mut a, "DP-1", 0);
+        let steady = surface_h(&a, &a.bars[&id]);
+        assert!(steady > bar::PILL_H as u32, "room for the panel");
+        // The closed bar already has its region: the surface is taller than
+        // its pill.
+        let t = with_bar(&mut a, id, sync_region).unwrap();
+        assert_eq!(t.units(), 1);
+        for v in [0.1, 0.4, 0.8, 1.0, 0.6, 0.2, 0.0] {
+            a.bars.get_mut(&id).unwrap().menu.reveal.snap(v);
+            assert_eq!(surface_h(&a, &a.bars[&id]), steady, "reveal={v}");
+            let extent = a.bars[&id].menu.extent(a.show_key_hints);
+            let t = with_bar(&mut a, id, sync_region).unwrap();
+            assert_eq!(t.units(), 1, "reveal={v}");
+            let want = crate::menu::region_bottom(a.bar_radius, steady, bar::PILL_H as u32, extent);
+            assert_eq!(a.bars[&id].menu.region.as_ref(), Some(&want));
+        }
+        // And a fold step moves the region, not the size.
+        let b = a.bars.get_mut(&id).unwrap();
+        b.fold.target = FoldTarget::Folded;
+        b.fold.height = 12;
+        assert_eq!(surface_h(&a, &a.bars[&id]), steady);
+    }
+
+    /// A drawer sliding on a bottom bar moves the region from the far edge
+    /// and leaves the surface alone.
+    #[test]
+    fn a_bottom_bar_holds_its_size_through_a_drawer_slide() {
         let mut a = app();
         a.edge = BarPosition::Bottom;
         let id = bar_on(&mut a, "DP-1", 0);
-        a.bars.get_mut(&id).unwrap().menu.open = true;
-        for h in [60.0, 80.0, 150.0, 300.0] {
-            let t = with_bar(&mut a, id, |a, b| sync_region(a, b, h)).unwrap();
-            assert_eq!(t.units(), 1, "opening h={h}");
-        }
-        a.bars.get_mut(&id).unwrap().menu.open = false;
-        for h in [200.0, 100.0, 60.0] {
-            let t = with_bar(&mut a, id, |a, b| sync_region(a, b, h)).unwrap();
-            assert_eq!(t.units(), 1, "closing h={h}");
-            let want = crate::menu::region(false, a.bar_radius, h as u32);
-            assert_eq!(a.bars[&id].menu.region.as_ref(), Some(&want));
+        let steady = surface_h(&a, &a.bars[&id]);
+        let now = Instant::now();
+        let full = drawer_full(&a, crate::drawer::DrawerKind::Wifi) as f32;
+        a.bars
+            .get_mut(&id)
+            .unwrap()
+            .drawer
+            .open(crate::drawer::DrawerKind::Wifi, 300.0, full, now);
+        for frac in [0.2, 0.5, 1.0, 0.5, 0.2] {
+            a.bars.get_mut(&id).unwrap().drawer.reveal.snap(full * frac);
+            assert_eq!(surface_h(&a, &a.bars[&id]), steady, "frac={frac}");
+            let t = with_bar(&mut a, id, sync_region).unwrap();
+            assert_eq!(t.units(), 1, "frac={frac}");
+            let b = &a.bars[&id];
+            let pill = b
+                .drawer
+                .region
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|r| r.2 == crate::menu::BIG)
+                .unwrap();
+            assert_eq!(pill.1 + pill.3, steady as i32, "the pill stays on the far edge");
         }
     }
 
-    /// A bar whose menu has never been out sends nothing.
+    /// A top bar's surface is still the sheet and the panel's extent.
     #[test]
-    fn a_bar_that_never_opened_its_menu_sends_no_region() {
+    fn a_top_bars_surface_follows_the_panel() {
         let mut a = app();
+        a.edge = BarPosition::Top;
         let id = bar_on(&mut a, "DP-1", 0);
-        let t = with_bar(&mut a, id, |a, b| sync_region(a, b, 60.0)).unwrap();
+        let closed = surface_h(&a, &a.bars[&id]);
+        a.bars.get_mut(&id).unwrap().menu.reveal.snap(1.0);
+        assert!(surface_h(&a, &a.bars[&id]) > closed);
+    }
+
+    /// A top bar whose panels have never been out sends nothing.
+    #[test]
+    fn a_top_bar_that_never_opened_a_panel_sends_no_region() {
+        let mut a = app();
+        a.edge = BarPosition::Top;
+        let id = bar_on(&mut a, "DP-1", 0);
+        let t = with_bar(&mut a, id, sync_region).unwrap();
         assert_eq!(t.units(), 0);
     }
 }

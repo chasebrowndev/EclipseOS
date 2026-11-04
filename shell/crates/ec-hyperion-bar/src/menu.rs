@@ -178,28 +178,61 @@ impl Menu {
     }
 }
 
-/// The input region of a bar with its menu out, surface-local: the panel's
-/// box, and the pill from where the panel's straight top edge still covers
-/// the pill's rounded left end. Abyss draws the glass as the smooth union of
-/// these boxes, so this is also the shape the blur takes.
+/// The input region of a top bar with its menu out, surface-local: the
+/// panel's box, and the pill from where the panel's straight top edge still
+/// covers the pill's rounded left end. Abyss draws the glass as the smooth
+/// union of these boxes, so this is also the shape the blur takes.
 ///
-/// On a top bar neither box depends on the surface's height — the panel
-/// runs off the bottom and is cut there — so one region holds for the whole
-/// slide. A bottom bar's pill sits at `height - PILL_H`, which moves.
-pub fn region(top: bool, radius: f32, height: u32) -> Vec<Rect> {
+/// Neither box depends on the surface's height — the panel runs off the
+/// bottom and is cut there — so one region holds for the whole slide.
+pub fn region_top(radius: f32) -> Vec<Rect> {
+    let (x0, panel_w) = joint(radius);
+    vec![(0, 0, panel_w, BIG), (x0, 0, BIG, bar::PILL_H as i32)]
+}
+
+/// Where the pill's straight run starts and the panel ends.
+fn joint(radius: f32) -> (i32, i32) {
     let rp = radius.min(bar::PILL_H / 2.0);
     let rb = radius.min(bar::PANEL_W / 2.0);
     // Far enough left that the pill's own rounded corners fall under the
     // panel's straight top, and the panel's rounded corner under the pill's.
-    let x0 = (bar::PANEL_W - rb - rp).floor().max(0.0) as i32;
-    let panel_w = bar::PANEL_W as i32;
-    let pill_h = bar::PILL_H as i32;
-    let h = height as i32;
-    if top {
-        vec![(0, 0, panel_w, BIG), (x0, 0, BIG, pill_h)]
-    } else {
-        vec![(0, 0, panel_w, h), (x0, h - pill_h, BIG, pill_h)]
+    (
+        (bar::PANEL_W - rb - rp).floor().max(0.0) as i32,
+        bar::PANEL_W as i32,
+    )
+}
+
+/// The input region of a bottom bar, whose surface never changes size (see
+/// `app::surface_h`): `surface_h` tall for good, the sheet `sheet_h` tall on
+/// its far edge and, with the menu out, the panel's `extent` over it.
+///
+/// A bottom surface cannot follow the sheet by resizing. The compositor
+/// places a layer by its requested size the moment the request is
+/// committed, but draws the buffer it last got, top-aligned in that box, so
+/// every resize of a bottom-anchored surface shows the old content displaced
+/// by the size change until the client's next frame lands. The surface is
+/// therefore sized once, to the largest the sheet and the panel together
+/// reach, and what the human sees is this region: the input and the glass
+/// are both the union of its boxes (a region of 2..=4 boxes is a shape; one
+/// box, or none, is the whole surface).
+///
+/// Closed, that is one box, the sheet. A second box is needed to make a
+/// shape at all, so a one-pixel box goes in the surface's top-left corner:
+/// more than a fillet away from the sheet, where the smooth union does not
+/// reach, and glass too small to see. With the menu out it is the panel box
+/// and the pill box that top bars have, moved to the far edge.
+pub fn region_bottom(radius: f32, surface_h: u32, sheet_h: u32, extent: u32) -> Vec<Rect> {
+    let h = surface_h as i32;
+    let sheet = sheet_h as i32;
+    if extent == 0 {
+        return vec![(0, h - sheet, BIG, sheet), (0, 0, 1, 1)];
     }
+    let (x0, panel_w) = joint(radius);
+    let pill_h = bar::PILL_H as i32;
+    vec![
+        (0, h - pill_h - extent as i32, panel_w, pill_h + extent as i32),
+        (x0, h - pill_h, BIG, pill_h),
+    ]
 }
 
 #[cfg(test)]
@@ -272,18 +305,53 @@ mod tests {
     }
 
     #[test]
-    fn a_top_region_does_not_depend_on_the_height() {
-        assert_eq!(region(true, 20.0, 40), region(true, 20.0, 400));
-        // A bottom bar's pill rides the surface's far edge.
-        let [_, pill] = region(false, 20.0, 400)[..] else {
+    fn a_bottom_regions_pill_rides_the_far_edge_of_a_surface_that_never_moves() {
+        let h = 400;
+        for extent in [0, 1, 120, 300] {
+            let boxes = region_bottom(20.0, h, bar::PILL_H as u32, extent);
+            // Every box is cut to the surface, and the pill's box ends on
+            // its bottom edge at every frame of the slide.
+            let pill = boxes
+                .iter()
+                .find(|b| b.2 == BIG)
+                .expect("a pill box at every extent");
+            assert_eq!(pill.1 + pill.3, h as i32, "extent {extent}");
+        }
+        // Closed it is the sheet and the corner dot: a shape, not the
+        // surface.
+        assert_eq!(region_bottom(20.0, h, 40, 0).len(), 2);
+    }
+
+    #[test]
+    fn a_folded_bottom_sheet_sits_on_the_far_edge_too() {
+        let [sheet, _] = region_bottom(20.0, 400, 6, 0)[..] else {
             panic!("two boxes")
         };
-        assert_eq!(pill.1, 400 - bar::PILL_H as i32);
+        assert_eq!((sheet.1, sheet.3), (394, 6));
+    }
+
+    #[test]
+    fn the_panel_box_grows_up_from_the_pill() {
+        let h = 400;
+        let [panel, pill] = region_bottom(20.0, h, 40, 150)[..] else {
+            panic!("two boxes")
+        };
+        assert_eq!(panel.1 + panel.3, h as i32, "the panel stands on the edge");
+        assert_eq!(panel.3, bar::PILL_H as i32 + 150);
+        assert_eq!(pill.1, h as i32 - bar::PILL_H as i32);
+    }
+
+    #[test]
+    fn a_top_region_is_one_set_of_boxes_for_the_whole_slide() {
+        let [panel, pill] = region_top(20.0)[..] else {
+            panic!("two boxes")
+        };
+        assert_eq!((panel.1, pill.1), (0, 0));
     }
 
     #[test]
     fn the_pill_box_starts_under_the_panels_straight_top() {
-        let [panel, pill] = region(true, 20.0, 400)[..] else {
+        let [panel, pill] = region_top(20.0)[..] else {
             panic!("two boxes")
         };
         // The pill's left corners sit over the panel, whose own corner sits

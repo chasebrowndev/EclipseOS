@@ -143,10 +143,45 @@ fn surface(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, 
         // is room for a cell. `pill` is the same test the surface geometry
         // uses, so the view and the surface cannot disagree about which one
         // is up.
-        _ if !bar.fold.pill() => return folded_row(app, bar),
+        _ if !bar.fold.pill() => return far_edge(app, folded_row(app, bar)),
         _ => {}
     }
-    bar_row(app, bar)
+    far_edge(app, bar_row(app, bar))
+}
+
+/// A bottom bar's sheet on its surface's bottom edge. The surface is taller
+/// than the sheet at rest (`app::surface_h`: it is sized once, for the sheet
+/// and the largest panel together), and the part the sheet is not on is
+/// transparent and, with the input region, not there. A top bar's surface is
+/// the sheet, so there is nothing to place.
+fn far_edge<'a>(app: &crate::app::App, sheet: Element<'a, Message, Theme>) -> Element<'a, Message, Theme> {
+    if app.edge == crate::conn::BarPosition::Top {
+        return sheet;
+    }
+    container(sheet)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_y(Alignment::End)
+        .into()
+}
+
+/// The ground of a pill with a panel `extent` tall out of it: it fills a top
+/// bar's surface, which is exactly that tall, and stands on a bottom bar's
+/// far edge at that height, the surface being taller.
+fn ground<'a>(app: &crate::app::App, shape: SheetShape, extent: f32) -> Element<'a, Message, Theme> {
+    let ground = parts::shaped_sheet(shape, app.blur);
+    if app.edge == crate::conn::BarPosition::Top {
+        return ground;
+    }
+    container(
+        container(ground)
+            .width(Length::Fill)
+            .height(Length::Fixed(bar::PILL_H + extent)),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .align_y(Alignment::End)
+    .into()
 }
 
 /// The bar shrunk to a thin capsule on an output nobody is looking at.
@@ -432,15 +467,16 @@ fn start_sheet<'a>(
     } else {
         Column::new().push(panel).push(pill)
     };
-    // The surface is resized a configure after the panel's extent moves, so
-    // for a frame it is taller or shorter than the body. A bottom bar's pill
-    // rides the surface's far edge, so the body is pinned there rather than
-    // left to sit at the top and jump when the configure lands.
+    // A top bar's surface is the sheet and the panel's extent, so the ground
+    // fills it. A bottom bar's is taller (`app::surface_h`) and the sheet
+    // stands on its bottom edge: the body is pinned there, and the ground is
+    // as tall as the pill and the panel's extent.
+    let ground = ground(app, shape, on.menu.extent(hints) as f32);
     let body = container(body)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_y(if top { Alignment::Start } else { Alignment::End });
-    stack![parts::shaped_sheet(shape, app.blur), body]
+    stack![ground, body]
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
@@ -1503,7 +1539,8 @@ fn drawer_sheet<'a>(
         .width(Length::Fill)
         .height(Length::Fill)
         .align_y(if top { Alignment::Start } else { Alignment::End });
-    stack![parts::shaped_sheet(shape, app.blur), col]
+    let ground = ground(app, shape, extent);
+    stack![ground, col]
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
