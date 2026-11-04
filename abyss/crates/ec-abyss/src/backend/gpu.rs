@@ -143,11 +143,18 @@ pub fn opens_as_secondary(g: &Gpu, mode: GpuMode) -> bool {
     g.connectors_total > 0 && !(mode == GpuMode::Integrated && g.class == Class::Discrete)
 }
 
-/// Whether a secondary's outputs are always rendered on the primary and copied.
-/// In `dedicated` mode the discrete GPU renders everything; `hybrid` has each
-/// GPU render its own outputs and copies only as a per-frame fallback.
-pub fn always_copies(mode: GpuMode) -> bool {
-    mode == GpuMode::Dedicated
+/// Whether an output's frames are rendered on the primary and copied to it
+/// (ADR 0086). Never for the primary's own outputs. In `dedicated` always.
+/// Otherwise by default for a secondary, unless `secondary_compositing` opts
+/// into native compositing -- or no transfer format is shared with the primary
+/// (`copy_format_available` false), when native is the only way to light it.
+pub fn output_copies(
+    mode: GpuMode,
+    secondary: bool,
+    secondary_compositing: bool,
+    copy_format_available: bool,
+) -> bool {
+    secondary && (mode == GpuMode::Dedicated || (!secondary_compositing && copy_format_available))
 }
 
 /// Role of every GPU in `ranked` given the chosen primary. A secondary is any
@@ -298,11 +305,23 @@ pub fn plan_feedback(
             formats: formats.to_vec(),
         });
     }
-    if !home.texture.is_empty() {
+    // The primary renders the capture and every copied frame (ADR 0086), so a
+    // secondary's own tranche only offers formats the primary can also sample:
+    // a buffer one of them cannot import is never advertised.
+    let home_formats: Vec<Format> = match gpus.first().filter(|_| main != 0) {
+        Some(primary) => home
+            .texture
+            .iter()
+            .filter(|f| primary.texture.contains(f))
+            .copied()
+            .collect(),
+        None => home.texture.clone(),
+    };
+    if !home_formats.is_empty() {
         out.push(Tranche {
             target: home.render_node,
             scanout: false,
-            formats: home.texture.clone(),
+            formats: home_formats,
         });
     }
     let sets: Vec<&[Format]> = gpus.iter().map(|g| g.texture.as_slice()).collect();
@@ -708,10 +727,26 @@ mod tests {
     }
 
     #[test]
-    fn only_dedicated_always_copies() {
-        assert!(always_copies(GpuMode::Dedicated));
-        assert!(!always_copies(GpuMode::Hybrid));
-        assert!(!always_copies(GpuMode::Integrated));
+    fn output_copy_route() {
+        use GpuMode::*;
+        // Primary-GPU outputs (and so every output of a single-GPU box) never copy.
+        for m in [Integrated, Hybrid, Dedicated] {
+            for opt in [false, true] {
+                for fmt in [false, true] {
+                    assert!(!output_copies(m, false, opt, fmt));
+                }
+            }
+        }
+        // A secondary copies by default in hybrid and integrated ...
+        assert!(output_copies(Hybrid, true, false, true));
+        assert!(output_copies(Integrated, true, false, true));
+        // ... native compositing is opt-in ...
+        assert!(!output_copies(Hybrid, true, true, true));
+        // ... and with no shared format it lights natively rather than staying dark.
+        assert!(!output_copies(Hybrid, true, false, false));
+        // dedicated always copies, whatever the opt-in.
+        assert!(output_copies(Dedicated, true, true, true));
+        assert!(output_copies(Dedicated, true, false, false));
     }
 
     fn feedback_gpus() -> Vec<FeedbackGpu> {
@@ -765,6 +800,18 @@ mod tests {
         assert_eq!(plan[0].target, 200);
         assert_eq!(plan[1].target, 100);
         assert_eq!(plan[1].formats, [fmt(Fourcc::Xrgb8888, Modifier::Linear)]);
+    }
+
+    #[test]
+    fn a_secondary_tranche_offers_only_what_the_primary_can_sample() {
+        let mut g = feedback_gpus();
+        // A tiled layout only the dGPU understands must not be advertised.
+        let tiled = fmt(Fourcc::Xrgb8888, Modifier::from(0x0300_0000_0000_0001u64));
+        g[1].texture.push(tiled);
+        let plan = plan_feedback(1, &g, None);
+        assert_eq!(plan[0].target, 200);
+        assert!(!plan[0].formats.contains(&tiled));
+        assert!(plan.iter().all(|t| !t.formats.contains(&tiled)));
     }
 
     #[test]

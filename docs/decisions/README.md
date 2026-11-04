@@ -78,6 +78,7 @@ writing a new ADR that says so.
 | 0080 | [Keyed glass for opaque clients](0080-keyed-glass.md) | accepted |
 | 0084 | [Themes: derived palettes, dark and light as built-in presets](0084-themes.md) | accepted |
 | 0085 | [Update and power: the power widget's full upgrade](0085-update-and-power.md) | proposed |
+| 0086 | [Outputs on a secondary GPU get a copy by default; native compositing is opt-in](0086-secondary-gpu-copy-default.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

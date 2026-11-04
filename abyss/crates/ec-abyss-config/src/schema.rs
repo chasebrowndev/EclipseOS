@@ -1854,9 +1854,22 @@ pub const TABLE: &[Key] = &[
         NeedsRestart,
         "Which GPUs are used on a hybrid-graphics machine. `integrated` never \
        opens the discrete GPU (its outputs stay dark, it can power off); \
-       `hybrid` has each GPU composite its own outputs and runs opted-in \
+       `hybrid` renders on the primary GPU (copying to outputs wired to the \
+       other GPU unless `misc.secondary-compositing` is on) and runs opted-in \
        apps on the discrete GPU; `dedicated` renders everything on the \
        discrete GPU. `misc.render-device`, when set, still pins the primary.",
+    ),
+    k(
+        "misc.secondary-compositing",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        NeedsRestart,
+        "Composite outputs wired to a secondary GPU on that GPU (needs it to \
+       sample the primary GPU's client buffers). Off by default: the \
+       primary GPU renders every output and the secondary's screen receives \
+       a copy, as other compositors do. Ignored in `dedicated`, which always \
+       copies.",
     ),
     k(
         "misc.discrete-gpu-apps",
@@ -2883,6 +2896,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "input.scroll-method" => V::Str(c.input.scroll_method.clone()),
         "misc.render-device" => s(&c.misc.render_device),
         "misc.gpu-mode" => V::Str(c.misc.gpu_mode.name().into()),
+        "misc.secondary-compositing" => V::Bool(c.misc.secondary_compositing),
         "misc.discrete-gpu-apps" => list(&c.misc.discrete_gpu_apps),
         "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),
