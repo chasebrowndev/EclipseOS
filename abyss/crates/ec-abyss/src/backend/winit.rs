@@ -55,7 +55,10 @@ pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
         config,
         stats,
     );
-    crate::xwayland::start(&mut state);
+    crate::kiosk::init(&mut state);
+    if !state.kiosk {
+        crate::xwayland::start(&mut state);
+    }
     let dh = state.display_handle.clone();
 
     let attrs = WindowAttributes::default()
@@ -127,8 +130,11 @@ pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
 
     let handle = event_loop.handle();
     crate::input::idle::start(&mut state, &handle);
-    crate::ipc::start(&mut state, &handle);
-    crate::trusted_ui::socket::start(&mut state, &handle);
+    // Kiosk: no control socket and no trusted socket (kiosk.rs).
+    if !state.kiosk {
+        crate::ipc::start(&mut state, &handle);
+        crate::trusted_ui::socket::start(&mut state, &handle);
+    }
     // COMP-10 §2: every prompt shows the personal secret, once one is set.
     state.trusted_ui.phrase = crate::trusted_ui::phrase::load();
     crate::config::watch::start(&mut state, &handle);
@@ -156,6 +162,7 @@ pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
     if session {
         crate::session::import();
     }
+    crate::kiosk::launch(&mut state, &handle)?;
 
     state.winit = Some(Box::new(WinitData(backend)));
     let out = output.clone();

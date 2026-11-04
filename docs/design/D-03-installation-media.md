@@ -67,7 +67,7 @@ Framework 13 AMD choices and why:
 Beyond that: disk tooling the installer calls (`gptfdisk`, `dosfstools`,
 `e2fsprogs`, `arch-install-scripts`), the D-Bus services the bar consumes
 (`networkmanager`, `bluez`, `upower`, `pipewire`/`wireplumber`, `polkit` —
-D-01 §1), the greeter set (`greetd`, `greetd-regreet`, `cage`, `foot`), fonts,
+D-01 §1), the greeter set (`greetd`, `greetd-regreet`, `foot`), fonts,
 and `eclipseos-meta`, which pulls `abyss`, the desktop and `policyd`.
 
 ``noto-fonts-cjk` is on the live medium only (the wizard shows language names in their own script); the helper adds it to the target only for a ja/zh/ko locale.

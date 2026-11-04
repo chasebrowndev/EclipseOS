@@ -133,7 +133,8 @@ visual-polish gap.
 draws each surface with its pre-pane whole-layer glass, so `grim`, screencopy
 and the image-copy capture all show the old flat cells, on the bar and on
 windows. Screenshots of panes currently have to be taken one session level up
-(cage → nested abyss, `grim` against cage).
+(a non-Abyss compositor → nested abyss, `grim` against the outer one; cage works
+but no longer ships, ADR 0086).
 **Repro:** `decoration.blur.mode "glass"`, bar up, `grim`; the chips are flat.
 **Proposed:** `still.rs` reads `committed_panes` and calls the same
 `insert_panes` path as the live frame (both live in `ec-abyss-render`).

@@ -47,6 +47,8 @@ struct Args {
     config: Option<std::path::PathBuf>,
     stats: bool,
     session: bool,
+    /// `--kiosk -- <client…>`: the greeter host (kiosk.rs). `Some` when on.
+    kiosk: Option<Vec<String>>,
     render_device: Option<String>,
     /// Virtual output size. Headless only — every other backend takes its size
     /// from the host window or the connector.
@@ -68,6 +70,8 @@ fn parse_args() -> Result<Args> {
     let mut config = None;
     let mut stats = false;
     let mut session = false;
+    let mut kiosk = false;
+    let mut client: Vec<String> = Vec::new();
     let mut render_device = None;
     #[cfg(feature = "drm")]
     let mut list_gpus = false;
@@ -105,8 +109,15 @@ fn parse_args() -> Result<Args> {
             },
             "--stats" => stats = true,
             "--session" => session = true,
+            "--kiosk" => kiosk = true,
+            // Everything after `--` is the kiosk client's argv.
+            "--" if kiosk => {
+                client = args.by_ref().collect();
+                break;
+            }
+            "--" => anyhow::bail!("'--' is only accepted with --kiosk"),
             "-h" | "--help" => {
-                println!("usage: abyss [--backend drm|winit|headless] [--config <path.kdl>] [--render-device <path|pci:DDDD:BB:DD.F>] [--list-gpus] [--size WxH] [--stats] [--session]");
+                println!("usage: abyss [--backend drm|winit|headless] [--config <path.kdl>] [--render-device <path|pci:DDDD:BB:DD.F>] [--list-gpus] [--size WxH] [--stats] [--session] [--kiosk -- <client> [args…]]");
                 std::process::exit(0);
             }
             other => anyhow::bail!("unknown argument '{other}'"),
@@ -132,11 +143,18 @@ fn parse_args() -> Result<Args> {
         }
         std::process::exit(0);
     }
+    if kiosk && session {
+        anyhow::bail!("--kiosk cannot be combined with --session");
+    }
+    if kiosk && client.is_empty() {
+        anyhow::bail!("--kiosk needs a client command after '--'");
+    }
     Ok(Args {
         backend: kind,
         config,
         stats,
         session,
+        kiosk: kiosk.then_some(client),
         render_device,
         #[cfg(feature = "headless")]
         size,
@@ -178,9 +196,12 @@ fn main() -> Result<()> {
     // ADR 0067: with the taskbar add-on installed, the premade widget catalog
     // is the lowest config layer, so a `custom:<premade>` id validates at
     // startup. `addons::start` re-reads the hooks and settles the rest.
-    let catalog_layer = ec_abyss::addons::Addons::load()
-        .hooks
-        .is_on(ec_abyss::addons::Hook::TaskbarWidgets);
+    // Not in kiosk: no add-ons are read there at all.
+    let kiosk = args.kiosk.is_some();
+    let catalog_layer = !kiosk
+        && ec_abyss::addons::Addons::load()
+            .hooks
+            .is_on(ec_abyss::addons::Hook::TaskbarWidgets);
     let mut config = config::Config::load_with(args.config.as_deref(), catalog_layer);
     // COMP-01 §5 step 3 / COMP-13 §1.2, amended by ADR 0064: validation is
     // still total and every refusal is still reported, but a rejected node is
@@ -211,6 +232,9 @@ fn main() -> Result<()> {
         .or_else(|| std::env::var("ECLIPSE_RENDER_DEVICE").ok())
     {
         config.misc.render_device = if dev == "auto" { None } else { Some(dev) };
+    }
+    if let Some(argv) = args.kiosk {
+        ec_abyss::kiosk::enable(argv);
     }
     match args.backend {
         #[cfg(feature = "winit")]

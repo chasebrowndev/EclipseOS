@@ -255,7 +255,10 @@ fn boot(
     // sockets in that process's fd table, exhausting `ulimit -n` partway
     // through the run and taking the whole suite down with it.
     if wlcs.is_none() {
-        crate::xwayland::start(&mut state);
+        crate::kiosk::init(&mut state);
+        if !state.kiosk {
+            crate::xwayland::start(&mut state);
+        }
     }
     let dh = state.display_handle.clone();
 
@@ -324,8 +327,11 @@ fn boot(
 
     let handle = event_loop.handle();
     crate::input::idle::start(&mut state, &handle);
-    crate::ipc::start(&mut state, &handle);
-    crate::trusted_ui::socket::start(&mut state, &handle);
+    // Kiosk: no control socket and no trusted socket (kiosk.rs).
+    if !state.kiosk {
+        crate::ipc::start(&mut state, &handle);
+        crate::trusted_ui::socket::start(&mut state, &handle);
+    }
     // COMP-10 §2: every prompt shows the personal secret, once one is set.
     state.trusted_ui.phrase = crate::trusted_ui::phrase::load();
     crate::config::watch::start(&mut state, &handle);
@@ -374,6 +380,7 @@ fn boot(
     if session {
         crate::session::import();
     }
+    crate::kiosk::launch(&mut state, &event_loop.handle())?;
 
     state.headless = Some(Box::new(HeadlessData {
         renderer,

@@ -253,6 +253,13 @@ impl AbyssState {
 
     fn run_action(&mut self, action: Action) {
         use crate::shell;
+        // The one choke point for keys, pointer binds and gestures. In kiosk
+        // mode the default binds are still merged in, so this is what keeps a
+        // shell off the login screen.
+        if self.kiosk && !crate::kiosk::permits(&action) {
+            tracing::debug!("kiosk: bound action dropped");
+            return;
+        }
         match action {
             Action::Quit => self.quit(),
             Action::SwitchVt(vt) => self.switch_vt(vt),

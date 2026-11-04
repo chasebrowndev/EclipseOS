@@ -246,7 +246,7 @@ The distribution path (D-01..D-03), all under `packaging/`:
   `-launcher`, `-desktop` (settings, policy viewer, `ec-screensaver`, the
   `ec-pairing` Bluetooth agent and `ec-secret-prompt`), `-policyd`,
   and `-meta`, which depends on all of them except `-hyperion` (an
-  optdepend) plus greetd/regreet/cage, NetworkManager, BlueZ, UPower, PipeWire
+  optdepend) plus greetd/regreet, NetworkManager, BlueZ, UPower, PipeWire
   and foot, and ships `/etc/eclipse/{abyss,policy}.kdl`, the greetd config under
   `/etc/eclipse/greetd` and its `greetd.service.d` drop-in.
 - **User units.** `ec-hyperion-bar.service`, `ec-toasts.service`,

@@ -352,6 +352,10 @@ pub struct AbyssState {
     /// Installed add-ons and the hooks they turn on (ADR 0066). Empty until
     /// `addons::start`; every hook is off by default.
     pub addons: crate::addons::Addons,
+    /// Greeter host (`--kiosk`): one client, no add-ons, no Xwayland, no
+    /// control socket, and only the reserved chords act. Set before the loop
+    /// runs and never cleared. See `kiosk.rs`.
+    pub kiosk: bool,
     /// A debounced re-read of the add-on directory is armed.
     pub addons_pending: bool,
     /// A debounced re-read after a widget catalog change is armed.
@@ -624,6 +628,7 @@ impl AbyssState {
             config_written: std::collections::HashMap::new(),
             config_error,
             addons: crate::addons::Addons::default(),
+            kiosk: false,
             addons_pending: false,
             catalog_pending: false,
             transitions_pending: false,
