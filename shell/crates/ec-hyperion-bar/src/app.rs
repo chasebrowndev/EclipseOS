@@ -2175,9 +2175,18 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             app.bars = bars;
             #[cfg(debug_assertions)]
             crate::preview::frame(app, now);
+            // The focus asked for in `toggle_start` runs against the tree
+            // from before the menu opened, so the search field never takes
+            // it on a bottom bar. The slide's frames have the field in the
+            // tree; ask again.
+            let focus = sized
+                .iter()
+                .any(|id| app.bars.get(id).is_some_and(|b| b.menu.open))
+                .then(|| iced::widget::operation::focus(crate::menu::INPUT_ID));
             let tasks: Vec<_> = sized
                 .into_iter()
                 .filter_map(|id| with_bar(app, id, size_and_region))
+                .chain(focus)
                 .collect();
             return Task::batch(tasks);
         }
