@@ -120,6 +120,14 @@ pub fn refresh(state: &mut AbyssState) {
     let scheme = state.config.scheme_at((now / 60) as u16);
     let next = state.config.appearance_for(scheme);
     state.config.apply_appearance(next.clone());
+    // The built-in pointer follows the effective accent; the damage below
+    // makes the cursor element re-commit with the rebuilt buffer.
+    let [r, g, b, _] = next
+        .seeds
+        .accent
+        .0
+        .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u32);
+    ec_abyss_render::cursor::set_accent(r << 16 | g << 8 | b);
     let changed = state.theme.appearance != next;
     state.theme.appearance = next;
     crate::trusted_ui::set_scheme(&mut state.trusted_ui, state.theme.scheme());
