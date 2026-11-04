@@ -250,6 +250,10 @@ pub struct Misc {
     /// machine. Restart-only (COMP-13 §1.2). `misc.render-device`, when set,
     /// still pins the primary (ADR 0033).
     pub gpu_mode: GpuMode,
+    /// `secondary-compositing` (ADR 0086): composite outputs on a secondary
+    /// GPU natively on that GPU. Default **off**: the primary renders and the
+    /// secondary's scanout buffer receives a copy. Restart-only.
+    pub secondary_compositing: bool,
     /// `discrete-gpu-apps`: desktop-entry ids always launched on the
     /// discrete GPU in `hybrid` mode (ADR 0084). Live.
     pub discrete_gpu_apps: Vec<String>,

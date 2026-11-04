@@ -2235,22 +2235,25 @@ Override, highest precedence first:
 2. `ECLIPSE_RENDER_DEVICE` env var (one-off testing).
 3. Config: `render_device "pci:0000:01:00.0"` or a card path (COMP-13).
 
-**Multi-GPU: each GPU composites its own outputs** (ADR 0084, 2026-11-02,
-amends the original "not supported in v1"). `misc.gpu-mode` chooses
+**Multi-GPU: the primary GPU renders, secondary outputs get a copy** (ADR 0084,
+2026-11-02, clause superseded by ADR 0086-secondary-gpu-copy-default; amends the original "not supported in v1"). `misc.gpu-mode` chooses
 `integrated`, `hybrid` (default) or `dedicated`. The primary GPU owns the
 default dmabuf feedback, explicit sync and capture. In `integrated` and
 `hybrid` it is the GPU driving a connected internal panel, then `boot_vga`,
 then the ranking above; in `dedicated` it is the discrete GPU. The overrides
-above pin the primary. A frame whose surface cannot be imported on its
-output's GPU is rendered on the primary and copied across, and `dedicated`
-copies to iGPU outputs the same way.
+above pin the primary. By default (ADR 0086) the primary renders every
+output and a copy goes to the scanout buffer of an output on another GPU;
+`misc.secondary-compositing` opts that GPU into compositing its own outputs,
+and then a frame whose surface it cannot import still falls back to the copy.
+`dedicated` always copies to iGPU outputs. Client dmabuf feedback offers the
+primary's formats plus a shared-format (LINEAR in practice) tranche.
 
 **Laptops are a target** (decided 2026-09-05), scoped as:
 
 | Class | v1 status |
 |---|---|
 | Single-GPU laptops (integrated only) | **Fully supported.** Same path as desktop with a different device, plus §8.5 mobile concerns. |
-| Hybrid dGPU laptops (Optimus, AMD switchable) | **Supported (ADR 0084).** Each GPU composites its own screens. Apps run on the iGPU unless their desktop entry or `misc.discrete-gpu-apps` asks for the dGPU. Runtime hot-add of a whole GPU is not handled. |
+| Hybrid dGPU laptops (Optimus, AMD switchable) | **Supported (ADR 0084).** The primary GPU renders every screen and copies to the others (opt-in native compositing, ADR 0086). Apps run on the iGPU unless their desktop entry or `misc.discrete-gpu-apps` asks for the dGPU. Runtime hot-add of a whole GPU is not handled. |
 
 *Original 2026-09-05 scoping, superseded by ADR 0084:* hybrid support was
 to ship later as an experimental feature. To keep that from

@@ -1790,6 +1790,20 @@ fn parses_gpu_mode_and_discrete_apps() {
     assert!(!c.errors.is_empty());
 }
 
+/// ADR 0086: native compositing on a secondary GPU is opt-in.
+#[test]
+fn parses_secondary_compositing() {
+    assert!(!Config::default().misc.secondary_compositing);
+    let doc: KdlDocument = r#"misc { secondary-compositing #true }"#.parse().unwrap();
+    let mut c = Config::default();
+    c.apply(&doc, &mut Vec::new());
+    assert!(c.misc.secondary_compositing);
+    let doc: KdlDocument = r#"misc { secondary-compositing "yes" }"#.parse().unwrap();
+    c.apply(&doc, &mut Vec::new());
+    assert!(c.misc.secondary_compositing);
+    assert!(!c.errors.is_empty());
+}
+
 #[test]
 fn colors() {
     assert_eq!(parse_color("#ff0000"), Some([1.0, 0.0, 0.0, 1.0]));
