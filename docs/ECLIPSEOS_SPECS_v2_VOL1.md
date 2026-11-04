@@ -2895,8 +2895,16 @@ udev event → re-probe connectors → diff against current set
   │           right of the rightmost output at its preferred mode
   ├─ removed: move its workspaces to the fallback output (§5); never
   │           destroy a workspace because a monitor was unplugged
-  └─ changed: re-apply mode/scale
+  └─ changed: re-apply mode/scale; a change to an output's logical width
+              shifts the outputs to its right by the difference, so no gap
+              opens or closes unevenly (rotating and rotating back restores
+              the layout)
 ```
+
+The layout is kept normalized: after any change the bounding box of the
+enabled outputs starts at (0,0), and a gap along an axis (no output covering
+it) is closed. A layout containing a hand-written `position` is left as
+written.
 
 All layout changes are applied in a **single atomic DRM commit** where
 possible so the desktop does not flash through intermediate states.
@@ -2934,7 +2942,11 @@ changes are persisted back to `outputs.kdl`, not to the user's config.
 Invalid configurations (mode not supported, outputs overlapping, all
 outputs disabled) are rejected with the previous layout retained. **The
 compositor never leaves the human with no enabled output**; disabling the
-last one is refused.
+last one is refused. When the last enabled output disappears (unplugged, or
+all that remain were disabled) or the session resumes with none enabled, the
+internal panel, else any connected physical output, is enabled whatever the
+saved or configured enablement says. Only physical outputs count while any
+physical output exists; the virtual output (§5) does not.
 
 ---
 
