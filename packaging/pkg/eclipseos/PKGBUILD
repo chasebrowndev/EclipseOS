@@ -155,6 +155,14 @@ package_eclipseos-desktop() {
   _unit ec-portal.service
   install -Dm0644 "$srcdir/$_src/packaging/dbus/org.freedesktop.impl.portal.desktop.abyss.service" \
     "$pkgdir/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.abyss.service"
+  # One keyring daemon, not two: the hooks put this in /usr/local while
+  # gnome-keyring is installed (see the hook headers).
+  install -Dm0644 "$srcdir/$_src/packaging/dbus/org.freedesktop.secrets.service" \
+    "$pkgdir/usr/share/eclipseos/dbus/org.freedesktop.secrets.service"
+  install -Dm0644 "$srcdir/$_src/packaging/hooks/eclipseos-keyring.hook" \
+    "$pkgdir/usr/share/libalpm/hooks/eclipseos-keyring.hook"
+  install -Dm0644 "$srcdir/$_src/packaging/hooks/eclipseos-keyring-remove.hook" \
+    "$pkgdir/usr/share/libalpm/hooks/eclipseos-keyring-remove.hook"
   install -Dm0644 "$srcdir/$_src/packaging/portal/abyss.portal" \
     "$pkgdir/usr/share/xdg-desktop-portal/portals/abyss.portal"
   install -Dm0644 "$srcdir/$_src/packaging/portal/abyss-portals.conf" \
@@ -347,6 +355,8 @@ package_eclipseos-meta() {
     "$pkgdir/usr/share/eclipseos/splash.bmp"
   install -Dm0644 "$srcdir/$_src/packaging/systemd/10-eclipseos.conf" \
     "$pkgdir/usr/lib/systemd/system.conf.d/10-eclipseos.conf"
+  install -Dm0644 "$srcdir/$_src/packaging/logind/10-eclipseos.conf" \
+    "$pkgdir/usr/lib/systemd/logind.conf.d/10-eclipseos.conf"
 
   # The same mark over the console at shutdown and reboot. Enabled by the
   # shipped wants/ symlink, not a preset (see HW-02 in KNOWNBUGS history).
