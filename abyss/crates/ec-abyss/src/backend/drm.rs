@@ -1255,14 +1255,20 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         stats,
     );
 
+    crate::kiosk::init(&mut state);
     crate::input::idle::start(&mut state, &handle);
-    crate::ipc::start(&mut state, &handle);
-    crate::trusted_ui::socket::start(&mut state, &handle);
+    // Kiosk: no control socket and no trusted socket (kiosk.rs).
+    if !state.kiosk {
+        crate::ipc::start(&mut state, &handle);
+        crate::trusted_ui::socket::start(&mut state, &handle);
+    }
     // COMP-10 §2: every prompt shows the personal secret, once one is set.
     state.trusted_ui.phrase = crate::trusted_ui::phrase::load();
     crate::config::watch::start(&mut state, &handle);
     crate::addons::start(&mut state, &handle);
-    crate::xwayland::start(&mut state);
+    if !state.kiosk {
+        crate::xwayland::start(&mut state);
+    }
 
     // --- GPU discovery -----------------------------------------------------
     let udev = UdevBackend::new(&seat_name).context("udev backend")?;
@@ -1605,6 +1611,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     if session_handoff {
         crate::session::import();
     }
+    crate::kiosk::launch(&mut state, &handle)?;
 
     render(&mut state);
     event_loop.run(None, &mut state, |state| {

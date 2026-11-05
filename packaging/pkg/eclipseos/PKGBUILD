@@ -66,7 +66,9 @@ package_eclipseos-abyss() {
   # before it lights an output.
   depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa xorg-xwayland)
   optdepends=('seatd: fallback seat management when logind is unavailable (D-01 §5.3)')
-  provides=(abyss)
+  # wayland-compositor: greetd-regreet depends on the virtual package, and abyss
+  # hosts it (ADR 0087). Without this, pacman pulls in some other compositor.
+  provides=(abyss wayland-compositor)
   install=eclipseos.install
 
   for b in ec-abyss ec-ctl; do _bin "$b"; done
@@ -314,7 +316,7 @@ package_eclipseos-meta() {
   arch=(any)  # config and dependencies only, no ELF
   depends=(eclipseos-abyss eclipseos-toasts eclipseos-wallpaper eclipseos-center
            eclipseos-launcher eclipseos-desktop eclipseos-fog
-           greetd greetd-regreet cage
+           greetd greetd-regreet
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
            foot xdg-user-dirs brightnessctl playerctl)
   # Add-ons (ADR 0066): suggested, not required. The session starts without

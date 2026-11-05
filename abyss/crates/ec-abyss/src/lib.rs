@@ -11,6 +11,7 @@ pub mod backend;
 pub mod config;
 pub mod input;
 pub mod ipc;
+pub mod kiosk;
 pub mod outputs;
 pub mod policy;
 pub mod protocols;

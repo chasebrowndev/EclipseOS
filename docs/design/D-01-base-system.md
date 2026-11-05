@@ -277,9 +277,9 @@ reinvented; their units are S-tier documents' business.
 
 ### 3.5 greetd
 
-greetd stays the display manager, running `cage -s -m last -- regreet`. This is
-already the arrangement on `mainframe` and there is no reason to own a greeter.
-The session entry is `/usr/share/wayland-sessions/abyss.desktop` with
+greetd stays the display manager, running
+`ec-abyss --backend drm --kiosk -- regreet` (ADR 0087). There is no reason to own
+a greeter, but the compositor under it is ours. The session entry is `/usr/share/wayland-sessions/abyss.desktop` with
 `Exec=/usr/bin/abyss-session`.
 
 `abyss-session` passes `--backend drm` **explicitly**. `default_backend()` picks

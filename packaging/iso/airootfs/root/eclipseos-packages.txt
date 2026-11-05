@@ -83,7 +83,6 @@ polkit
 ## greeter and session (D-01 §3)
 greetd
 greetd-regreet
-cage
 foot
 xdg-user-dirs
 xdg-utils
