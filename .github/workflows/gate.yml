@@ -252,7 +252,7 @@ jobs:
           head="${{ github.event.pull_request.head.sha }}"
           changed=$(git diff --name-only "$base" "$head")
           tcb=$(echo "$changed" | grep -E \
-            '^(abyss/crates/ec-(policyd|policy-eval|sandbox|brokerd)/|installer/crates/ec-setup-helper/|packaging/(polkit/|bin/ec-update-apply$)|shell/crates/ec-services/src/bin/ec-polkit-agent\.rs$|abyss/crates/ec-abyss/src/(policy|trusted_ui|audit)/|abyss/crates/ec-abyss/src/render/capture\.rs$|AbyssCompositor/(crates/(policyd|ec-policy-eval|sandbox|brokerd|ec-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$))' \
+            '^(abyss/crates/ec-(policyd|policy-eval|sandbox|brokerd)/|installer/crates/ec-setup-helper/|packaging/(polkit/|bin/ec-update-apply$)|shell/crates/ec-services/src/bin/ec-polkit-agent\.rs$|shell/crates/ec-greeter/|abyss/crates/ec-abyss/src/(policy|trusted_ui|audit)/|abyss/crates/ec-abyss/src/render/capture\.rs$|AbyssCompositor/(crates/(policyd|ec-policy-eval|sandbox|brokerd|ec-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$))' \
             || true)
           if [ -n "$tcb" ]; then
             echo "::warning title=TCB path touched::Line-by-line owner review required (F-07 §4)"

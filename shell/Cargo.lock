@@ -992,6 +992,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-greeter"
+version = "0.1.0"
+dependencies = [
+ "ec-theme",
+ "libc",
+ "png 0.18.1",
+]
+
+[[package]]
 name = "ec-hyperion-bar"
 version = "0.1.0"
 dependencies = [

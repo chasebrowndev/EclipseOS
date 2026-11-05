@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<!--
+  ADR 0088. Changing the login screen: /usr/lib/eclipse/ec-greeter-apply, which
+  accepts only `apply` or `reset`. auth_admin with no keep, in the active session
+  only (D-07 §6): every change asks.
+
+  Authority-bearing: reviewed line by line, like the helper it gates (F-07 §4).
+-->
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>EclipseOS</vendor>
+  <vendor_url>https://github.com/chasebrowndev/EclipseOS</vendor_url>
+
+  <action id="org.eclipse.greeter.apply">
+    <description>Change the login screen</description>
+    <message>Authentication is required to change the login screen</message>
+    <defaults>
+      <allow_any>no</allow_any>
+      <allow_inactive>no</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/eclipse/ec-greeter-apply</annotate>
+  </action>
+</policyconfig>

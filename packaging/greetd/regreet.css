@@ -3,10 +3,11 @@
  * EclipseOS — login greeter.
  * Install to: /etc/greetd/regreet.css   (root:root 0644)
  *
- * Written from scratch against docs/STYLE.md. It shares nothing with, and
- * depends on nothing from, any theme generator: every value below is a
- * literal, because the greeter runs as the `greeter` user, which cannot read
- * /home, and the ISO cannot ship a generator living in someone's dotfiles.
+ * Written from scratch against docs/STYLE.md. The greeter runs as the `greeter`
+ * user, which cannot read /home, so nothing here comes from a user's files.
+ * Every colour is one of the definitions below or derived from one, because
+ * ec-greeter-run replaces those lines when the machine has chosen a theme
+ * (ADR 0088). Keep one definition per line.
  *
  * The screen is one glass card floating on a blurred amber corona:
  *
@@ -30,18 +31,19 @@
  * white rim; the accent never blooms or haloes past a control's edge.
  */
 
-/* ── palette, literal (docs/STYLE.md) ─────────────────────────────────── */
+/* ── palette, the default look (docs/STYLE.md) ─────────────────────────────────── */
 @define-color base        #0b0906;               /* warm near-black ground  */
 @define-color raised      rgba(28, 25, 19, 0.94); /* popovers               */
 @define-color accent      #f2c33c;
 @define-color accent_text #f5cf5c;
+@define-color on_accent   #0b0906;               /* label on an accent fill */
 @define-color ink         #ffffff;
-@define-color ink_2       rgba(255, 255, 255, 0.64);
-@define-color ink_3       rgba(255, 255, 255, 0.40);
-@define-color glass       rgba(255, 255, 255, 0.055);
-@define-color glass_hi    rgba(255, 255, 255, 0.09);
-@define-color edge        rgba(255, 255, 255, 0.14);
-@define-color edge_soft   rgba(255, 255, 255, 0.09);
+@define-color ink_2       alpha(@ink, 0.64);
+@define-color ink_3       alpha(@ink, 0.40);
+@define-color glass       alpha(@ink, 0.055);
+@define-color glass_hi    alpha(@ink, 0.09);
+@define-color edge        alpha(@ink, 0.14);
+@define-color edge_soft   alpha(@ink, 0.09);
 @define-color danger      #ff6b4a;
 
 /* ── reset ────────────────────────────────────────────────────────────── */
@@ -105,7 +107,7 @@ grid {
     border-radius: 24px;
     padding: 28px 30px;
     margin: 16px 0 20px 0;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    box-shadow: inset 0 1px 0 alpha(@ink, 0.16),
                 0 34px 84px -22px rgba(0, 0, 0, 0.92);
 }
 
@@ -123,7 +125,7 @@ password,
 spinbutton,
 combobox button,
 combobox entry {
-    background-color: rgba(255, 255, 255, 0.05);
+    background-color: alpha(@ink, 0.05);
     color: @ink;
     border: 1px solid @edge_soft;
     border-radius: 14px;
@@ -148,8 +150,8 @@ entry:focus,
 entry:focus-within,
 combobox button:focus,
 combobox button:focus-within {
-    border-color: rgba(255, 255, 255, 0.30);
-    background-color: rgba(255, 255, 255, 0.10);
+    border-color: alpha(@ink, 0.30);
+    background-color: alpha(@ink, 0.10);
     box-shadow: none;
 }
 
@@ -176,15 +178,15 @@ combobox {
 grid > combobox:nth-child(5) button,
 combobox.session button {
     color: @accent_text;
-    background-color: rgba(242, 195, 60, 0.10);
-    border: 1px solid rgba(242, 195, 60, 0.30);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    background-color: alpha(@accent, 0.10);
+    border: 1px solid alpha(@accent, 0.30);
+    box-shadow: inset 0 1px 0 alpha(@ink, 0.12);
 }
 
 grid > combobox:nth-child(5) button:hover,
 combobox.session button:hover {
-    background-color: rgba(242, 195, 60, 0.15);
-    border-color: rgba(242, 195, 60, 0.42);
+    background-color: alpha(@accent, 0.15);
+    border-color: alpha(@accent, 0.42);
 }
 
 grid > combobox:nth-child(5) arrow,
@@ -212,7 +214,7 @@ menu,
     border-radius: 18px;
     color: @ink;
     padding: 6px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12),
+    box-shadow: inset 0 1px 0 alpha(@ink, 0.12),
                 0 30px 74px -20px rgba(0, 0, 0, 0.92);
 }
 
@@ -233,7 +235,7 @@ popover modelbutton:hover,
 menuitem:hover,
 listview > row:hover,
 row:hover {
-    background-color: rgba(255, 255, 255, 0.08);
+    background-color: alpha(@ink, 0.08);
     color: @ink;
 }
 
@@ -243,7 +245,7 @@ listview > row:selected,
 row:selected,
 row:selected label,
 listview > row:selected label {
-    background-color: rgba(242, 195, 60, 0.14);
+    background-color: alpha(@accent, 0.14);
     color: @accent_text;
 }
 
@@ -261,7 +263,7 @@ button.image-button {
     letter-spacing: 0.04em;
     min-height: 22px;
     min-width: 22px;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 1px 0 alpha(@ink, 0.12);
     transition: background-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
                 color 220ms cubic-bezier(0.16, 1, 0.3, 1),
                 border-color 220ms cubic-bezier(0.16, 1, 0.3, 1),
@@ -276,13 +278,13 @@ button:hover {
 
 button:focus {
     background-color: @glass_hi;
-    border-color: rgba(255, 255, 255, 0.30);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    border-color: alpha(@ink, 0.30);
+    box-shadow: inset 0 1px 0 alpha(@ink, 0.12);
 }
 
 button:active,
 button:checked {
-    background-color: rgba(255, 255, 255, 0.15);
+    background-color: alpha(@ink, 0.15);
     color: @ink;
 }
 
@@ -296,11 +298,11 @@ button.suggested-action,
 button.default,
 grid > button.text-button {
     background-color: @accent;
-    color: #0b0906;
-    border: 1px solid rgba(242, 195, 60, 0.70);
+    color: @on_accent;
+    border: 1px solid alpha(@accent, 0.70);
     font-weight: 700;
     letter-spacing: 0.06em;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.38),
+    box-shadow: inset 0 1px 0 alpha(@ink, 0.38),
                 0 8px 20px -12px rgba(0, 0, 0, 0.55);
 }
 
@@ -314,7 +316,7 @@ grid > button.text-button:hover {
 button.suggested-action label,
 button.default label,
 grid > button.text-button label {
-    color: #0b0906;
+    color: @on_accent;
     font-family: "Inter", sans-serif;
     font-size: 13px;
     font-weight: 700;
@@ -327,7 +329,7 @@ grid button.image-button {
     background-color: @glass;
     color: @ink_2;
     border: 1px solid @edge_soft;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+    box-shadow: inset 0 1px 0 alpha(@ink, 0.12);
 }
 
 grid > button.image-button:hover,
@@ -337,7 +339,7 @@ grid button.image-button:hover {
 }
 
 button:disabled {
-    background-color: rgba(255, 255, 255, 0.03);
+    background-color: alpha(@ink, 0.03);
     color: @ink_3;
     border-color: @edge_soft;
     box-shadow: none;
@@ -372,6 +374,6 @@ tooltip.background {
 }
 
 selection {
-    background-color: rgba(242, 195, 60, 0.30);
+    background-color: alpha(@accent, 0.30);
     color: @ink;
 }

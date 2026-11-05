@@ -1,0 +1,28 @@
+[package]
+name = "ec-greeter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Login screen customisation: the settings file, its root helper and the greeter's start (ADR 0088)."
+publish = false
+
+[lib]
+name = "ec_greeter"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-greeter-apply"
+path = "src/bin/ec-greeter-apply.rs"
+
+[[bin]]
+name = "ec-greeter-run"
+path = "src/bin/ec-greeter-run.rs"
+
+[dependencies]
+# Seeds to palette and the contrast check, shared with the session's theme.
+ec-theme = { path = "../../../abyss/crates/ec-theme" }
+# Root encodes the wallpaper; the greeter checks it decodes. Already in the tree.
+png = "0.18"
+libc = "0.2"
