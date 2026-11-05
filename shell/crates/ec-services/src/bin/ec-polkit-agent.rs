@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `ec-polkit-agent`: the session's polkit authentication agent (COMP-10 §3.14,
-//! D-07 §6, ADR 0087). **TCB.**
+//! D-07 §6, ADR 0088). **TCB.**
 //!
 //! It holds the system-bus side and nothing else. polkitd's `BeginAuthentication`
 //! is relayed to the compositor over `polkit.sock`; the compositor draws the

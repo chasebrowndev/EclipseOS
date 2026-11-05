@@ -8,7 +8,7 @@
 # (10-eclipseos.conf) points greetd at this file instead; regreet is pointed at
 # its siblings the same way. D-01 §6: /etc/eclipse is the configuration.
 #
-# The greeter runs regreet on Abyss in kiosk mode (ADR 0086): no binds but the
+# The greeter runs regreet on Abyss in kiosk mode (ADR 0087): no binds but the
 # reserved override chords, no add-on hooks, no Xwayland, and the compositor
 # exits when regreet does, which is what lets greetd start the session.
 # /usr/bin/ec-abyss is absolute because the `greeter` user cannot follow a dev

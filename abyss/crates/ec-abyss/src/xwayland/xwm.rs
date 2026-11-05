@@ -83,6 +83,7 @@ fn legacy_fullscreen(
     element: &Window,
     rect: Rectangle<i32, Logical>,
 ) -> bool {
+    let declined = state.xwayland.declined_fullscreen.contains(x11);
     let output = output_rect(state, element);
     let covers = covers_output(
         x11.is_override_redirect() || x11.is_transient_for().is_some(),
@@ -97,7 +98,27 @@ fn legacy_fullscreen(
         );
         return false;
     }
-    covers
+    should_legacy_fullscreen(declined, covers)
+}
+
+/// A window that explicitly asked to leave fullscreen is never pulled back in
+/// by the screen-sized heuristic.
+fn should_legacy_fullscreen(declined: bool, covers: bool) -> bool {
+    !declined && covers
+}
+
+/// Wine/Proton drops fullscreen when it loses focus, which a workspace switch
+/// causes: an unfullscreen request on a fullscreen window that is not in the
+/// viewed space is held, not a real decline.
+fn unfullscreen_is_held(is_fullscreen: bool, in_viewed_space: bool) -> bool {
+    is_fullscreen && !in_viewed_space
+}
+
+/// Record that `item` declined fullscreen, unless the request was a held one.
+fn mark_declined<T: PartialEq>(list: &mut Vec<T>, item: T, held: bool) {
+    if !held && !list.contains(&item) {
+        list.push(item);
+    }
 }
 
 /// Do `WM_NORMAL_HINTS` leave the window resizable? Only a window that pins
@@ -319,6 +340,7 @@ impl XwmHandler for AbyssState {
         self.xwayland.unmanaged.retain(|s| *s != window);
         self.xwayland.unrefreshed.retain(|s| *s != window);
         self.xwayland.wants_fullscreen.retain(|s| *s != window);
+        self.xwayland.declined_fullscreen.retain(|s| *s != window);
     }
 
     /// Geometry requests. Tiled windows are held to the layout, so the
@@ -391,6 +413,7 @@ impl XwmHandler for AbyssState {
             mapped = window.is_mapped(),
             "x11 fullscreen request"
         );
+        take(&mut self.xwayland.declined_fullscreen, &window);
         match window_for(self, &window) {
             Some(w) => shell::set_x11_fullscreen(self, &w, true),
             None if !window.is_mapped() => park(&mut self.xwayland.wants_fullscreen, &window, true),
@@ -404,11 +427,23 @@ impl XwmHandler for AbyssState {
             mapped = window.is_mapped(),
             "x11 unfullscreen request"
         );
+        let held = window_for(self, &window).is_some_and(|w| {
+            unfullscreen_is_held(
+                self.fullscreen.contains_key(&w),
+                self.space.elements().any(|e| e == &w),
+            )
+        });
+        mark_declined(&mut self.xwayland.declined_fullscreen, window.clone(), held);
         match window_for(self, &window) {
             // Wine/Proton drops fullscreen when it loses focus, which a
             // workspace switch causes. A fullscreen window on an unviewed
             // workspace stays fullscreen there; the client is told so.
-            Some(w) if self.fullscreen.contains_key(&w) && !self.space.elements().any(|e| e == &w) => {
+            Some(w)
+                if unfullscreen_is_held(
+                    self.fullscreen.contains_key(&w),
+                    self.space.elements().any(|e| e == &w),
+                ) =>
+            {
                 let _ = window.set_fullscreen(true);
             }
             Some(w) => shell::set_x11_fullscreen(self, &w, false),
@@ -630,6 +665,41 @@ mod tests {
         assert!(configure_may_fullscreen(Some(0), None));
         assert!(configure_may_fullscreen(None, Some(0)));
         assert!(configure_may_fullscreen(Some(0), Some(0)));
+    }
+
+    #[test]
+    fn a_declined_window_never_legacy_fullscreens() {
+        assert!(should_legacy_fullscreen(false, true));
+        assert!(!should_legacy_fullscreen(false, false));
+        assert!(!should_legacy_fullscreen(true, true));
+        assert!(!should_legacy_fullscreen(true, false));
+    }
+
+    #[test]
+    fn unfullscreen_marks_declined_once_and_fullscreen_request_clears() {
+        let mut declined: Vec<u32> = Vec::new();
+        mark_declined(&mut declined, 7, false);
+        mark_declined(&mut declined, 7, false);
+        mark_declined(&mut declined, 8, false);
+        assert_eq!(declined, vec![7, 8]);
+        // An explicit fullscreen request clears the mark (as `take` does).
+        let mut list = declined;
+        list.retain(|s| *s != 7);
+        assert_eq!(list, vec![8]);
+    }
+
+    #[test]
+    fn wine_unfullscreen_on_an_unviewed_workspace_does_not_mark() {
+        // Fullscreen, but not in the viewed space: held, not declined.
+        assert!(unfullscreen_is_held(true, false));
+        assert!(!unfullscreen_is_held(true, true));
+        assert!(!unfullscreen_is_held(false, false));
+        assert!(!unfullscreen_is_held(false, true));
+        let mut declined: Vec<u32> = Vec::new();
+        mark_declined(&mut declined, 1, unfullscreen_is_held(true, false));
+        assert!(declined.is_empty());
+        mark_declined(&mut declined, 1, unfullscreen_is_held(true, true));
+        assert_eq!(declined, vec![1]);
     }
 
     #[test]

@@ -24,6 +24,10 @@
 // no `no-focus-steal`.
 windowrule "float" { app-id "^io\\.github\\.bugaevc\\.wl-clipboard$"; }
 
+// Zoom (X11) opens chat, toolbars and menus as separate toplevels; tiled,
+// they hide their buttons.
+windowrule "float" { app-id "^zoom$"; }
+
 // Animations ship on. The default lives in the schema (`animations.preset`);
 // it is stated here as well so the image's choice is visible and an upgrade
 // that changes the schema default cannot silently change the shipped one.

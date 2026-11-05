@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Login screen customisation: the settings file, its root helper and the greeter's start (ADR 0088)."
+description = "Login screen customisation: the settings file, its root helper and the greeter's start (ADR 0089)."
 publish = false
 
 [lib]

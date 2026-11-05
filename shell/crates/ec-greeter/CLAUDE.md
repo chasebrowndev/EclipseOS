@@ -1,6 +1,6 @@
 # ec-greeter — login screen customisation
 
-Read the root `CLAUDE.md` first. Governing spec: ADR 0088, D-01 §3.5, §4.1.
+Read the root `CLAUDE.md` first. Governing spec: ADR 0089, D-01 §3.5, §4.1.
 
 - **TCB.** `ec-greeter-apply` runs as root under polkit, and `ec-greeter-run`
   stands between greetd and the only way to log in.

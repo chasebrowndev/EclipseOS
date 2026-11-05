@@ -7,7 +7,7 @@
  * user, which cannot read /home, so nothing here comes from a user's files.
  * Every colour is one of the definitions below or derived from one, because
  * ec-greeter-run replaces those lines when the machine has chosen a theme
- * (ADR 0088). Keep one definition per line.
+ * (ADR 0089). Keep one definition per line.
  *
  * The screen is one glass card floating on a blurred amber corona:
  *

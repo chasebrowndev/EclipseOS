@@ -564,8 +564,9 @@ fixed by editing either side.
    - With more than one GPU, auto mode picks a primary in this order: the
      device driving a connected internal panel, then `boot_vga`, then the
      ranking.
-   - Each GPU composites its own outputs. A frame that cannot be imported on
-     its output's GPU is rendered on the primary and copied across.
+   - Superseded by ADR 0086: the primary renders every output and copies to
+     outputs on another GPU; `misc.secondary-compositing` opts into each GPU
+     compositing its own (a frame it cannot import is then copied).
    - `misc.gpu-mode` switches between `integrated`, `hybrid` and `dedicated`,
      and apps reach the dGPU through their desktop entry,
      `misc.discrete-gpu-apps` or the launcher.

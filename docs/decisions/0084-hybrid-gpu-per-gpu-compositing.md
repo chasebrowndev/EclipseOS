@@ -1,6 +1,6 @@
 # 0084 — hybrid GPU: each GPU composites its own outputs, with a switchable mode
 
-Status: accepted
+Status: accepted; the per-GPU compositing clause is superseded by 0086-secondary-gpu-copy-default.md
 Date: 2026-11-02
 Deciders: chase (owner), Claude (advisory)
 

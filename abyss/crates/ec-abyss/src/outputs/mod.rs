@@ -252,6 +252,34 @@ impl Outputs {
         Some(next)
     }
 
+    /// Whether some output other than `id` still counts as the desktop. Only
+    /// physical outputs count while any exist: the synthesised headless
+    /// output must not satisfy the "never disable the last output" guards,
+    /// or the human is left with no real screen at all.
+    pub fn other_enabled(&self, id: u64) -> bool {
+        let physical = self.entries.iter().any(|e| e.kind == OutputKind::Physical);
+        self.entries
+            .iter()
+            .any(|e| e.enabled && e.id != id && (!physical || e.kind == OutputKind::Physical))
+    }
+
+    /// The output to switch on when nothing real is enabled: `None` when the
+    /// desktop is fine already. The internal panel wins, then any physical
+    /// output; saved and configured enablement are ignored on purpose.
+    pub fn rescue_target(&self) -> Option<u64> {
+        let physical = |e: &&OutputEntry| e.kind == OutputKind::Physical;
+        if self.entries.iter().filter(physical).any(|e| e.enabled) {
+            return None;
+        }
+        let internal = self.entries.iter().filter(physical).find(|e| {
+            let c = e.connector.to_ascii_lowercase();
+            c.starts_with("edp") || c.starts_with("lvds") || c.starts_with("dsi")
+        });
+        internal
+            .or_else(|| self.entries.iter().find(physical))
+            .map(|e| e.id)
+    }
+
     /// The first non-virtual output, else the first output — where orphaned
     /// windows land when their own output disappears.
     pub fn fallback_id(&self) -> Option<u64> {
@@ -412,15 +440,79 @@ impl Outputs {
 
 /// Logical width of an output at its current mode, scale and transform.
 pub fn logical_width(output: &Output) -> i32 {
+    logical_size(output).0
+}
+
+/// Logical (width, height) of an output at its current mode, scale and transform.
+pub fn logical_size(output: &Output) -> (i32, i32) {
     let Some(mode) = output.current_mode() else {
-        return 0;
+        return (0, 0);
     };
     let size = output
         .current_transform()
         .transform_size(mode.size)
         .to_f64()
         .to_logical(output.current_scale().fractional_scale());
-    size.w.round() as i32
+    (size.w.round() as i32, size.h.round() as i32)
+}
+
+/// `[x, y, w, h]` of one output in logical space.
+pub type LayoutRect = [i32; 4];
+
+/// Make a layout start at (0,0) and leave no gap: per axis, shift everything
+/// so the bounding box begins at the origin, then slide any output (and all
+/// that follow it) back when nothing covers the span in front of it. Order and
+/// the relative arrangement of touching outputs are preserved.
+pub fn normalize_layout(rects: &mut [LayoutRect]) {
+    for axis in 0..2 {
+        let Some(min) = rects.iter().map(|r| r[axis]).min() else {
+            return;
+        };
+        for r in rects.iter_mut() {
+            r[axis] -= min;
+        }
+        let mut order: Vec<usize> = (0..rects.len()).collect();
+        order.sort_by_key(|&i| rects[i][axis]);
+        let (mut shift, mut reach) = (0, 0);
+        for i in order {
+            rects[i][axis] -= shift;
+            if rects[i][axis] > reach {
+                let gap = rects[i][axis] - reach;
+                rects[i][axis] -= gap;
+                shift += gap;
+            }
+            reach = reach.max(rects[i][axis] + rects[i][axis + 2]);
+        }
+    }
+}
+
+/// New x for an output at `x` when the output at `loc_x` (previously `old_w`
+/// wide) changes width by `delta`: `Some` only for outputs at or beyond its
+/// old right edge, which shift by `delta`.
+fn repack_x(x: i32, loc_x: i32, old_w: i32, delta: i32) -> Option<i32> {
+    (x >= loc_x + old_w).then_some(x + delta)
+}
+
+/// Whether any two outputs overlap in logical space.
+pub fn layout_overlaps(rects: &[LayoutRect]) -> bool {
+    rects.iter().enumerate().any(|(i, a)| {
+        rects[i + 1..]
+            .iter()
+            .any(|b| a[0] < b[0] + b[2] && b[0] < a[0] + a[2] && a[1] < b[1] + b[3] && b[1] < a[1] + a[3])
+    })
+}
+
+/// Ensure the desktop has at least one real enabled output: if none, switch on
+/// the internal panel (else any physical output), ignoring saved and configured
+/// enablement. Returns whether something had to be enabled. Call after anything
+/// that can remove or disable the last enabled output, including session resume.
+pub fn ensure_one_enabled(state: &mut crate::state::AbyssState) -> bool {
+    let Some(id) = state.outputs.rescue_target() else {
+        return false;
+    };
+    tracing::warn!(id, "no enabled output, enabling one so the screen is not black");
+    power::set_enabled(state, id, true);
+    true
 }
 
 /// Build an output identity string from an EDID blob, falling back to the
@@ -498,7 +590,7 @@ pub fn apply_change(
     };
     let output = entry.output.clone();
     // The refusal (COMP-03 §4) is checked before anything is applied.
-    if change.enabled == Some(false) && !state.outputs.iter().any(|e| e.enabled && e.id != id) {
+    if change.enabled == Some(false) && !state.outputs.other_enabled(id) {
         return Err("refusing to disable the only enabled output");
     }
 
@@ -511,9 +603,35 @@ pub fn apply_change(
     }
 
     if change.mode.is_some() || change.scale.is_some() || change.transform.is_some() {
+        let before = state
+            .space
+            .output_geometry(&output)
+            .map(|g| (g.loc, logical_width(&output)));
         output.change_current_state(change.mode, change.transform, change.scale, None);
         if let Some(m) = change.mode {
             output.set_preferred(m);
+        }
+        // A width change moves everything to its right by the same amount, so
+        // rotating and rotating back neither leaves a gap nor an overlap.
+        if let (Some((loc, old_w)), None) = (before, change.position) {
+            let delta = logical_width(&output) - old_w;
+            if delta != 0 {
+                let right: Vec<(Output, Point<i32, Logical>)> = state
+                    .outputs
+                    .iter()
+                    .filter(|e| e.enabled && e.output != output)
+                    .filter_map(|e| {
+                        let l = state.space.output_geometry(&e.output)?.loc;
+                        let x = repack_x(l.x, loc.x, old_w, delta)?;
+                        Some((e.output.clone(), Point::from((x, l.y))))
+                    })
+                    .collect();
+                for (o, l) in right {
+                    state.space.map_output(&o, (l.x, l.y));
+                }
+                let space = &state.space;
+                state.outputs.save(|o| space.output_geometry(o).map(|g| g.loc));
+            }
         }
     }
     if let Some((x, y)) = change.position {
@@ -626,6 +744,7 @@ pub fn register(
         .outputs
         .add(identity.clone(), connector.clone(), output.clone(), kind, global);
     apply_settings(state, id);
+    ensure_one_enabled(state);
     relayout(state);
     crate::protocols::standard::output_management::refresh(state);
     crate::ipc::emit(
@@ -653,6 +772,7 @@ pub fn reapply_settings(state: &mut crate::state::AbyssState) {
     for id in ids {
         apply_settings(state, id);
     }
+    ensure_one_enabled(state);
 }
 
 /// Config first, then the remembered layout for this exact output set.
@@ -675,10 +795,9 @@ fn apply_settings(state: &mut crate::state::AbyssState, id: u64) {
         .unwrap_or(true);
     if !enabled {
         // Refusal path (§4): a config that would leave zero outputs is ignored.
-        if state.outputs.iter().any(|e| e.enabled && e.id != id) {
-            if let Some(entry) = state.outputs.get_mut(id) {
-                entry.enabled = false;
-            }
+        if state.outputs.other_enabled(id) {
+            // Same path as a runtime disable: re-home windows, unmap, power off.
+            power::set_enabled(state, id, false);
             tracing::info!(id, "output disabled by config");
         } else {
             tracing::warn!(id, "refusing to disable the only output");
@@ -842,7 +961,45 @@ pub fn relayout(state: &mut crate::state::AbyssState) {
         state.space.unmap_output(&output);
         state.lock.forget_output(&output);
     }
-    let placement = state.outputs.auto_layout(&pinned);
+    let sizes: HashMap<u64, (i32, i32)> = state
+        .outputs
+        .iter()
+        .map(|e| (e.id, logical_size(&e.output)))
+        .collect();
+    let rects_of = |placement: &[(u64, Point<i32, Logical>)]| -> Vec<LayoutRect> {
+        placement
+            .iter()
+            .map(|(id, p)| {
+                let (w, h) = sizes.get(id).copied().unwrap_or((0, 0));
+                [p.x, p.y, w, h]
+            })
+            .collect()
+    };
+    let hand_placed = ids.iter().any(|(id, connector, identity)| {
+        state.outputs.get(*id).is_some_and(|e| e.enabled)
+            && state.config.output_rule(connector, identity).position.is_some()
+    });
+    let mut placement = state.outputs.auto_layout(&pinned);
+    // Remembered positions that now overlap (a size changed while they were
+    // saved) are stale: forget them and lay out left to right.
+    if layout_overlaps(&rects_of(&placement)) {
+        tracing::warn!("saved output layout overlaps, laying out afresh");
+        pinned.clear();
+        for (id, connector, identity) in &ids {
+            if let Some((x, y)) = state.config.output_rule(connector, identity).position {
+                pinned.insert(*id, (x, y).into());
+            }
+        }
+        placement = state.outputs.auto_layout(&pinned);
+    }
+    // Origin at (0,0), no dead gaps — unless a human wrote positions down.
+    if !hand_placed {
+        let mut rects = rects_of(&placement);
+        normalize_layout(&mut rects);
+        for ((_, pos), r) in placement.iter_mut().zip(&rects) {
+            *pos = (r[0], r[1]).into();
+        }
+    }
     for (id, pos) in placement {
         if let Some(entry) = state.outputs.get(id) {
             let output = entry.output.clone();
@@ -911,6 +1068,7 @@ pub fn unregister(state: &mut crate::state::AbyssState, id: u64) {
     {
         state.focus = None;
     }
+    ensure_one_enabled(state);
     relayout(state);
     crate::protocols::standard::output_management::refresh(state);
     crate::ipc::emit(
@@ -1047,6 +1205,116 @@ mod tests {
         let (output, _) = virtual_output("virtual-x", (800, 600));
         let id = outputs.add("x".into(), "x".into(), output, OutputKind::Virtual, None);
         assert_eq!(outputs.focused_id(), Some(id));
+    }
+
+    fn physical(outputs: &mut Outputs, name: &str) -> u64 {
+        let (output, _) = virtual_output(name, (800, 600));
+        outputs.add(name.into(), name.into(), output, OutputKind::Physical, None)
+    }
+
+    #[test]
+    fn removing_last_enabled_output_rescues_the_panel() {
+        let mut outputs = Outputs {
+            next_id: 1,
+            ..Default::default()
+        };
+        let panel = physical(&mut outputs, "eDP-1");
+        let ext = physical(&mut outputs, "HDMI-A-2");
+        let (v, _) = virtual_output("HEADLESS-1", (800, 600));
+        outputs.add("h".into(), "HEADLESS-1".into(), v, OutputKind::Virtual, None);
+        outputs.get_mut(panel).unwrap().enabled = false;
+        // The virtual output must not satisfy the guard.
+        assert!(!outputs.other_enabled(ext));
+        outputs.remove(ext);
+        assert_eq!(outputs.rescue_target(), Some(panel));
+        outputs.get_mut(panel).unwrap().enabled = true;
+        assert_eq!(outputs.rescue_target(), None);
+    }
+
+    #[test]
+    fn normalize_closes_gaps_and_moves_to_origin() {
+        // The reported layout: 1920 panel, 1080 gap, then two more.
+        let mut r = [[0, 0, 1920, 1080], [3000, 0, 1080, 1920], [4920, 0, 1920, 1080]];
+        normalize_layout(&mut r);
+        assert_eq!(
+            r,
+            [[0, 0, 1920, 1080], [1920, 0, 1080, 1920], [3000, 0, 1920, 1080]]
+        );
+        // Leftmost disabled: the rest start at the origin.
+        let mut r = [[3000, 0, 1080, 1920], [4080, 0, 1920, 1080]];
+        normalize_layout(&mut r);
+        assert_eq!(r, [[0, 0, 1080, 1920], [1080, 0, 1920, 1080]]);
+        // Stacked outputs stay stacked.
+        let mut r = [[0, 0, 1920, 1080], [0, 1080, 1920, 1080]];
+        normalize_layout(&mut r);
+        assert_eq!(r, [[0, 0, 1920, 1080], [0, 1080, 1920, 1080]]);
+    }
+
+    #[test]
+    fn rotate_and_back_restores_positions() {
+        // Three side by side: 1920x1080, 1920x1080 (middle), 1920x1080.
+        let mut xs = [0, 1920, 3840];
+        let (mid_x, w) = (xs[1], 1920);
+        let rotate = |xs: &mut [i32; 3], old_w: i32, new_w: i32| {
+            let delta = new_w - old_w;
+            for i in [0, 2] {
+                if let Some(n) = repack_x(xs[i], mid_x, old_w, delta) {
+                    xs[i] = n;
+                }
+            }
+        };
+        // Rotate the middle to portrait: width 1080, right neighbour moves left.
+        rotate(&mut xs, w, 1080);
+        assert_eq!(xs, [0, 1920, 3000]);
+        // Rotate back: everything is where it started.
+        rotate(&mut xs, 1080, w);
+        assert_eq!(xs, [0, 1920, 3840]);
+        // Left neighbour never moves.
+        assert_eq!(repack_x(0, mid_x, w, -840), None);
+    }
+
+    #[test]
+    fn persisted_gapped_layout_loads_normalized() {
+        let mut outputs = Outputs {
+            next_id: 1,
+            ..Default::default()
+        };
+        let a = physical(&mut outputs, "DP-1");
+        let b = physical(&mut outputs, "DP-2");
+        let c = physical(&mut outputs, "DP-3");
+        for (id, size) in [(a, (1920, 1080)), (b, (1080, 1920)), (c, (1920, 1080))] {
+            let o = outputs.get(id).unwrap().output.clone();
+            let mode = Mode {
+                size: size.into(),
+                refresh: 60_000,
+            };
+            o.change_current_state(Some(mode), None, None, None);
+        }
+        // Saved positions from the bug report, as the load path pins them.
+        let mut pinned = HashMap::new();
+        pinned.insert(a, Point::<i32, Logical>::from((0, 0)));
+        pinned.insert(b, (3000, 0).into());
+        pinned.insert(c, (4920, 0).into());
+        let placement = outputs.auto_layout(&pinned);
+        let mut rects: Vec<LayoutRect> = placement
+            .iter()
+            .map(|(id, p)| {
+                let (w, h) = logical_size(&outputs.get(*id).unwrap().output);
+                [p.x, p.y, w, h]
+            })
+            .collect();
+        assert!(!layout_overlaps(&rects));
+        normalize_layout(&mut rects);
+        assert_eq!(
+            rects,
+            [[0, 0, 1920, 1080], [1920, 0, 1080, 1920], [3000, 0, 1920, 1080]]
+        );
+    }
+
+    #[test]
+    fn overlap_detection() {
+        assert!(layout_overlaps(&[[0, 0, 1920, 1080], [1080, 0, 1920, 1080]]));
+        assert!(!layout_overlaps(&[[0, 0, 1920, 1080], [1920, 0, 1920, 1080]]));
     }
 
     #[test]

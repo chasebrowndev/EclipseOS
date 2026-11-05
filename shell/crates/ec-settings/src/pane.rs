@@ -423,7 +423,9 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "misc.terminal-command" => return Some((Page::LauncherSearch, "search")),
         "components.bar" => return Some((Page::BarAppearance, "bar")),
         "misc.render-device" => return Some((Page::Rendering, "rendering")),
-        "misc.gpu-mode" | "misc.discrete-gpu-apps" => return Some((Page::Rendering, "graphics")),
+        "misc.gpu-mode" | "misc.secondary-compositing" | "misc.discrete-gpu-apps" => {
+            return Some((Page::Rendering, "graphics"))
+        }
         "misc.scripted-input" => return Some((Page::Privacy, "input scripting")),
         "mode" => return Some((Page::Mode, "interaction")),
         _ => {}

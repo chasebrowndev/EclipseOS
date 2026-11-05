@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The login screen's customisation (ADR 0088). **TCB.**
+//! The login screen's customisation (ADR 0089). **TCB.**
 //!
 //! Settings are parsed strictly and rendered over the shipped regreet files, all
 //! of it pure. [`apply`] is the root helper's half and writes only what it

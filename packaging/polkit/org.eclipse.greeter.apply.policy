@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 <!--
-  ADR 0088. Changing the login screen: /usr/lib/eclipse/ec-greeter-apply, which
+  ADR 0089. Changing the login screen: /usr/lib/eclipse/ec-greeter-apply, which
   accepts only `apply` or `reset`. auth_admin with no keep, in the active session
   only (D-07 §6): every change asks.
 
