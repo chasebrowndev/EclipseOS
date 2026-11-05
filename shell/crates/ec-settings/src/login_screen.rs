@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The Login screen page (ADR 0088): the machine's login screen, changed from
+//! The Login screen page (ADR 0089): the machine's login screen, changed from
 //! Settings.
 //!
 //! Not schema keys. The current choices are the world-readable

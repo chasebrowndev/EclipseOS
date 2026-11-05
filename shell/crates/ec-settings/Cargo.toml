@@ -24,7 +24,7 @@ path = "src/main.rs"
 # futures executor, iced fires a compile_error!. See ADR 0039.
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 ec-ui = { path = "../ec-ui" }
-# The Login screen page (ADR 0088): the settings contract and the frame sent to
+# The Login screen page (ADR 0089): the settings contract and the frame sent to
 # the root helper. Settings never writes the machine's files itself.
 ec-greeter = { path = "../ec-greeter" }
 ec-theme = { path = "../../../abyss/crates/ec-theme" }
