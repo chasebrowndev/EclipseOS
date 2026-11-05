@@ -47,6 +47,9 @@ pub enum Action {
     ToggleFloating,
     /// Fullscreen the focused window, or end its fullscreen (COMP-05 §4).
     ToggleFullscreen,
+    /// Maximize the focused window, or restore it. Does nothing outside
+    /// `mode "de"` (COMP-05 §3.1, C-24).
+    ToggleMaximize,
     /// Send the focused window away (COMP-05 §4 `minimized`).
     Minimize,
     /// Bring back the last window sent away on the active workspace.

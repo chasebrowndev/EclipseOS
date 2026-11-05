@@ -316,6 +316,10 @@ pub struct ModeProfile {
     /// Windows stack and nothing is tiled (COMP-05 §3.1, §7.1). This follows
     /// the mode and is not a default: no key overrides it.
     pub stacking: bool,
+    /// `xdg_toplevel.set_maximized` and X11 `_NET_WM_STATE_MAXIMIZED_*` are
+    /// honoured. Elsewhere they are declined (C-20; C-24 scopes it to `wm` and
+    /// `hybrid`).
+    pub maximize: bool,
     /// Default for `general.focus-follows-mouse`; an explicit key wins.
     pub focus_follows_mouse: bool,
 }
@@ -324,6 +328,7 @@ impl Mode {
     pub fn profile(self) -> ModeProfile {
         ModeProfile {
             stacking: self == Mode::De,
+            maximize: self == Mode::De,
             focus_follows_mouse: self != Mode::De,
         }
     }

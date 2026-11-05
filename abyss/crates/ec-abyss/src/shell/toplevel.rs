@@ -139,7 +139,8 @@ fn unmap_toplevel(state: &mut AbyssState, surface: &WlSurface) {
 
 /// Where `window` floats, if it does. A fullscreen window's
 /// rectangle is derived from its output on every arrange, not placed, so it
-/// has nothing to remember.
+/// has nothing to remember. A maximized one is remembered at the rectangle it
+/// would return to: the remap is not maximized.
 fn floating_placement(state: &AbyssState, window: &Window) -> Option<Remembered> {
     if state.fullscreen.contains_key(window) {
         return None;
@@ -152,7 +153,10 @@ fn floating_placement(state: &AbyssState, window: &Window) -> Option<Remembered>
                 .map(|f| Remembered {
                     output: entry.id,
                     workspace,
-                    rect: f.rect,
+                    rect: match f.placement {
+                        Placement::Maximized { restore, .. } => restore,
+                        Placement::Free => f.rect,
+                    },
                 })
         })
     })
@@ -208,13 +212,15 @@ fn map_toplevel(state: &mut AbyssState, surface: &WlSurface, placement: Option<R
     // Fullscreen asked for before this commit had no window to act on and was
     // parked in the pending state. Take it out so the placement configure does
     // not carry it unapplied, and replay it once the window exists. A parked
-    // maximize is dropped: abyss has no maximized state.
-    let (fullscreen, fullscreen_output) = toplevel.with_pending_state(|s| {
+    // maximize is replayed the same way under `mode "de"` and dropped
+    // otherwise (C-20: Steam re-asserting its remembered maximize at startup
+    // must not open the window maximized).
+    let (fullscreen, fullscreen_output, maximized) = toplevel.with_pending_state(|s| {
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
         let requested = (s.states.unset(State::Fullscreen), s.fullscreen_output.take());
-        s.states.unset(State::Maximized);
+        let maximized = s.states.unset(State::Maximized);
         s.states.set(State::Activated);
-        requested
+        (requested.0, requested.1, maximized)
     });
     let window = Window::new_wayland_window(toplevel.clone());
     // The commit handler only refreshes windows it already found in the
@@ -225,6 +231,10 @@ fn map_toplevel(state: &mut AbyssState, surface: &WlSurface, placement: Option<R
     match placement {
         Some(p) if restore_floating(state, &window, p) => {}
         _ => place_new_window(state, window),
+    }
+    // Before fullscreen, so a window that asked for both returns to maximized.
+    if maximized && state.config.mode.profile().maximize {
+        maximize::request_toplevel(state, &toplevel, true);
     }
     if fullscreen {
         fullscreen_toplevel(state, &toplevel, fullscreen_output.as_ref());
@@ -249,6 +259,7 @@ fn restore_floating(state: &mut AbyssState, window: &Window, p: Remembered) -> b
         window: window.clone(),
         rect: p.rect,
         weight: None,
+        placement: Placement::Free,
     });
     // Same bookkeeping as `place_new_window`, minus the placement decision.
     classify(state, window);

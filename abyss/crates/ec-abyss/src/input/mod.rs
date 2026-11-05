@@ -267,6 +267,7 @@ impl AbyssState {
             Action::Close => shell::close_focused(self),
             Action::ToggleFloating => shell::toggle_floating(self),
             Action::ToggleFullscreen => shell::toggle_fullscreen(self),
+            Action::ToggleMaximize => shell::maximize::toggle(self),
             Action::Minimize => shell::minimize_focused(self),
             Action::Unminimize => shell::unminimize_last(self),
             Action::ToggleLayout => shell::toggle_layout(self),

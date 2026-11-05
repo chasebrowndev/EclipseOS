@@ -36,7 +36,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `mode` | wm \| hybrid \| de | `"hybrid"` | live | Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; `hybrid` adds window chips, tray and clock; `de` is a stacking desktop in the KDE manner, with titlebars, maximize, Quick Tile and desktop icons (being built, COMP-05 §7.1). Selects defaults that explicit configuration overrides (binds, `general.focus-follows-mouse`); how windows stack and their chrome follow the mode. Under `de` nothing is tiled: new windows float, a `tile` rule and the tile binds (`toggle-floating` into tiling, `toggle-layout`, `priority-up` and `priority-down`, Super-held tile-on-drop) do nothing, and `Alt+F4` closes the focused window unless you bind that chord yourself. Entering `de` floats every tiled window where it is; leaving re-tiles them where they were. Applies on hot reload. |
+| `mode` | wm \| hybrid \| de | `"hybrid"` | live | Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; `hybrid` adds window chips, tray and clock; `de` is a stacking desktop in the KDE manner, with titlebars, maximize, Quick Tile and desktop icons (being built, COMP-05 §7.1). Selects defaults that explicit configuration overrides (binds, `general.focus-follows-mouse`); how windows stack and their chrome follow the mode. Under `de` nothing is tiled: new windows float, a `tile` rule and the tile binds (`toggle-floating` into tiling, `toggle-layout`, `priority-up` and `priority-down`, Super-held tile-on-drop) do nothing, and `Alt+F4` closes the focused window unless you bind that chord yourself. Windows can be maximized (a client request, or `Super+PageUp` / `toggle-maximize`): the window fills the usable area, square and without a border, and restores its old rectangle; under `wm` and `hybrid` maximize requests are declined. Entering `de` floats every tiled window where it is; leaving re-tiles them where they were. Applies on hot reload. |
 
 ### `components`
 
@@ -360,6 +360,7 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `close-window` / `killactive` | `close-window` | Ask the focused window to close. |
 | `toggle-floating` | `toggle-floating` | Float or tile the focused window. |
 | `toggle-fullscreen` / `fullscreen` | `toggle-fullscreen` | Fullscreen the focused window, or end its fullscreen. |
+| `toggle-maximize` / `maximize` | `toggle-maximize` | Maximize the focused window, or restore it. Only under `mode "de"`; does nothing elsewhere. |
 | `minimize` | `minimize` | Send the focused window away. |
 | `unminimize` / `restore` | `unminimize` | Bring back the last window sent away on the active workspace. |
 | `toggle-layout` | `toggle-layout` | Cycle the workspace layout: radiant, dwindle, master. |

@@ -3439,6 +3439,9 @@ fn the_mode_profile_stacks_only_under_de() {
     assert!(Mode::De.profile().stacking);
     assert!(!Mode::Wm.profile().stacking);
     assert!(!Mode::Hybrid.profile().stacking);
+    assert!(Mode::De.profile().maximize);
+    assert!(!Mode::Wm.profile().maximize);
+    assert!(!Mode::Hybrid.profile().maximize);
     assert!(Mode::Wm.profile().focus_follows_mouse);
     assert!(Mode::Hybrid.profile().focus_follows_mouse);
     assert!(!Mode::De.profile().focus_follows_mouse);

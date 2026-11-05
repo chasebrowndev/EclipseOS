@@ -1021,6 +1021,8 @@ pub fn unregister(state: &mut crate::state::AbyssState, id: u64) {
     let output = entry.output.clone();
     let identity = entry.identity.clone();
     let global = state.outputs.get_mut(id).and_then(|e| e.global.take());
+    // Maximized windows stay maximized on the output that adopts them.
+    crate::shell::maximize::note_departing(state, id);
     let removed = state.outputs.remove(id);
     for w in removed.iter().flat_map(|r| r.windows.iter().flatten()) {
         state.space.unmap_elem(w);

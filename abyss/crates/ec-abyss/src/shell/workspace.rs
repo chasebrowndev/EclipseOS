@@ -14,10 +14,54 @@ use super::layout::Tree;
 
 pub const COUNT: usize = 10;
 
+/// How a floating window's rectangle is decided (COMP-05 §3.1, C-24).
+///
+/// `Free` rectangles are placed and stay where they are put. Any other
+/// placement derives the rectangle on every arrange, and records the rectangle
+/// to give back when it ends. A later placement (Quick Tile) is another variant
+/// carrying its own restore rect.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Placement {
+    Free,
+    /// `mode "de"` only. Fills the usable area along the set axes; `restore` is
+    /// the outer rectangle the window had before (the rectangle it keeps on any
+    /// axis that is not maximized).
+    Maximized {
+        h: bool,
+        v: bool,
+        restore: Rectangle<i32, Logical>,
+    },
+}
+
+impl Placement {
+    /// Maximized along both axes: what the client is told with `Maximized`.
+    pub fn is_fully_maximized(&self) -> bool {
+        matches!(self, Placement::Maximized { h: true, v: true, .. })
+    }
+
+    pub fn is_maximized(&self) -> bool {
+        matches!(self, Placement::Maximized { .. })
+    }
+
+    /// The same placement moved by `offset`, for a window sent to another output.
+    pub fn moved_by(self, offset: smithay::utils::Point<i32, Logical>) -> Placement {
+        match self {
+            Placement::Free => Placement::Free,
+            Placement::Maximized { h, v, mut restore } => {
+                restore.loc += offset;
+                Placement::Maximized { h, v, restore }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Floating {
     pub window: Window,
+    /// Absolute outer rectangle. For a `Maximized` window it is derived on
+    /// every arrange and is the window's own rectangle: no border inset.
     pub rect: Rectangle<i32, Logical>,
+    pub placement: Placement,
     /// The Radiant leaf weight it had when `toggle-floating` lifted it out
     /// of the tree, restored when it is toggled back in.
     pub weight: Option<f64>,
@@ -31,6 +75,8 @@ pub struct Floating {
 pub struct Minimized {
     pub window: Window,
     pub was_floating: Option<Rectangle<i32, Logical>>,
+    /// Kept across minimize, so a maximized window comes back maximized.
+    pub placement: Placement,
     /// Radiant weight to give the window when it is tiled on restore. Set when
     /// leaving `mode "de"` for a window that was a tile before it (`shell::de`).
     pub weight: Option<f64>,

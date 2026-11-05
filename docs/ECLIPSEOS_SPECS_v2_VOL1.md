@@ -3409,10 +3409,13 @@ Layout is a trait; two implementations plus floating in v1.
   Under `mode "de"` every window is stacking, so maximize has a job again and
   there is a fourth state. `set_maximized` and X11
   `_NET_WM_STATE_MAXIMIZED_HORZ`/`_VERT` are honoured: the window fills the
-  usable area (the output minus layer-shell exclusive zones) along the requested
-  axes, recomputed on every arrange, square and without a border, and leaving
-  maximize restores its prior rect. Fullscreen wins over maximized. C-19 is
-  unchanged.
+  usable area (the output minus layer-shell exclusive zones), recomputed on every
+  arrange, square and without a border, and leaving maximize restores its prior
+  rect. Fullscreen wins over maximized. C-19 is unchanged. As built, X11 maximize
+  is both axes together: smithay 0.7 delivers and writes
+  `_NET_WM_STATE_MAXIMIZED_HORZ` and `_VERT` only as a pair, so a single-axis
+  request never reaches the compositor. The shell's placement carries the axes
+  separately for when it can.
   An agent's `set_state(maximized)` stays refused in every mode, so C-24 gives
   agents nothing new.
   *(added C-24, 2026-11-05)* Under `mode "de"` no window is tiled and the layouts

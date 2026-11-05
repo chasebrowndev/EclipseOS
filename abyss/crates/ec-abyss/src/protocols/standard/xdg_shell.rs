@@ -106,11 +106,19 @@ impl XdgShellHandler for AbyssState {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        crate::shell::decline_maximize_toplevel(self, &surface);
+        if self.config.mode.profile().maximize {
+            crate::shell::maximize::request_toplevel(self, &surface, true);
+        } else {
+            crate::shell::decline_maximize_toplevel(self, &surface);
+        }
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        crate::shell::decline_maximize_toplevel(self, &surface);
+        if self.config.mode.profile().maximize {
+            crate::shell::maximize::request_toplevel(self, &surface, false);
+        } else {
+            crate::shell::decline_maximize_toplevel(self, &surface);
+        }
     }
 
     fn fullscreen_request(

@@ -624,9 +624,22 @@ impl TouchGrab<AbyssState> for TouchResizeSurfaceGrab {
     }
 }
 
+/// A client-requested move or resize of a maximized window (`mode "de"`): when
+/// the press is live, the window stops being maximized first and comes back
+/// under the pointer, so the grab starts from the restored rectangle.
+fn release_maximize(state: &mut AbyssState, window: &Window, surface: &WlSurface, serial: Serial) {
+    if crate::shell::maximize::is_maximized(state, window)
+        && (start_data(state, surface, serial).is_some()
+            || touch_start_data(state, surface, serial).is_some())
+    {
+        crate::shell::maximize::release_for_drag(state, window);
+    }
+}
+
 /// Begin an interactive move for `window` if `serial` really is a live press
 /// (pointer button or touch down) on a surface of the requesting client.
 pub fn start_move(state: &mut AbyssState, window: Window, surface: &WlSurface, serial: Serial) {
+    release_maximize(state, &window, surface, serial);
     let Some(initial_location) = state.space.element_geometry(&window).map(|g| g.loc) else {
         return;
     };
@@ -669,6 +682,7 @@ pub fn start_resize(
     serial: Serial,
     edges: xdg_toplevel::ResizeEdge,
 ) {
+    release_maximize(state, &window, surface, serial);
     let Some(initial_rect) = state.space.element_geometry(&window) else {
         return;
     };
@@ -722,6 +736,7 @@ pub fn edges_for(rect: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> xdg
 /// there is no client serial to vet. The grab starts where the pointer is now.
 /// Returns whether it was installed.
 pub fn start_move_at(state: &mut AbyssState, window: Window, button: u32) -> bool {
+    crate::shell::maximize::release_for_drag(state, &window);
     let Some(initial_location) = state.space.element_geometry(&window).map(|g| g.loc) else {
         return false;
     };
@@ -746,6 +761,7 @@ pub fn start_move_at(state: &mut AbyssState, window: Window, button: u32) -> boo
 /// Compositor-initiated resize; the dragged corner is the one nearest the
 /// pointer (see [`edges_for`]). Returns whether it was installed.
 pub fn start_resize_at(state: &mut AbyssState, window: Window, button: u32) -> bool {
+    crate::shell::maximize::release_for_drag(state, &window);
     let Some(initial_rect) = state.space.element_geometry(&window) else {
         return false;
     };

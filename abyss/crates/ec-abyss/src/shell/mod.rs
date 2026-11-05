@@ -6,6 +6,7 @@ pub mod de;
 mod drop_guides;
 pub mod focus;
 pub mod layout;
+pub mod maximize;
 pub mod rules;
 mod toplevel;
 pub mod workspace;
@@ -43,7 +44,7 @@ use crate::{
     config::{FloatingPlacement, LayoutKind},
     input::Direction,
     protocols::standard::fractional_scale,
-    shell::workspace::Floating,
+    shell::workspace::{Floating, Placement},
     state::AbyssState,
 };
 
@@ -228,7 +229,7 @@ fn clamp_to(
     size
 }
 
-fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, tiled: bool) {
+fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, tiled: bool, maximized: bool) {
     let size = rect.size;
     let Some(toplevel) = window.toplevel() else {
         // X11 windows are positioned in the X root's coordinate space, so
@@ -260,6 +261,12 @@ fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, ti
             } else {
                 s.states.unset(t);
             }
+        }
+        // Only `de` ever sets it (C-24); elsewhere this keeps it unset.
+        if maximized {
+            s.states.set(State::Maximized);
+        } else {
+            s.states.unset(State::Maximized);
         }
     });
     toplevel.send_pending_configure();
@@ -436,6 +443,8 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         for f in entry.workspaces[ws].floating.iter_mut() {
             if fullscreen.contains_key(&f.window) {
                 f.rect = full_area;
+            } else if f.placement.is_maximized() {
+                // Derived below, once adopted windows are in.
             } else if area_changed {
                 // The area moved or resized under this window — a mode/scale
                 // change, a bar fold, a reconfigured layout, or a monitor swap
@@ -463,21 +472,54 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         Rectangle::default()
     };
     for (i, w) in pending.into_iter().enumerate() {
-        let entry = state.outputs.get_mut(id).expect("checked above");
         if stacking {
             // Step each adopted window along a diagonal so none hides another.
             let step = Point::from((32 * i as i32, 32 * i as i32));
+            let mut rect = de::carried_rect(adopt_rect, step, area);
+            // A window that was maximized stays so, filling this output, and
+            // keeps the rectangle it had before (kept in the adopter's area).
+            let placement = match state.de.take_carried(&w) {
+                Some(Placement::Maximized { h, v, restore }) => {
+                    let origin = state
+                        .space
+                        .output_geometry(&output)
+                        .map_or(Point::default(), |g| g.loc);
+                    let restore = de::carried_rect(restore, origin, area);
+                    rect = restore;
+                    Placement::Maximized { h, v, restore }
+                }
+                _ => Placement::Free,
+            };
+            let entry = state.outputs.get_mut(id).expect("checked above");
             entry.workspaces[ws].floating.push(Floating {
                 window: w,
-                rect: de::carried_rect(adopt_rect, step, area),
+                rect,
                 weight: None,
+                placement,
             });
         } else {
+            let entry = state.outputs.get_mut(id).expect("checked above");
             entry.workspaces[ws].tiled.insert(w, None, area, pointer);
         }
     }
     if stacking {
         de::lift_stray(state, id, area);
+    }
+    // A maximized window fills the usable area as it is now, on every pass, so
+    // a panel appearing or an output resizing is followed (COMP-05 §3.1).
+    {
+        let usable = usable_area(state, &output);
+        #[allow(clippy::mutable_key_type)]
+        let fullscreen = &state.fullscreen;
+        let border = state.config.general.border_size;
+        let entry = state.outputs.get_mut(id).expect("checked above");
+        for f in entry.workspaces[ws].floating.iter_mut() {
+            if let Placement::Maximized { h, v, restore } = f.placement {
+                if !fullscreen.contains_key(&f.window) {
+                    f.rect = maximize::fitted_rect(&f.window, usable, border, restore, h, v);
+                }
+            }
+        }
     }
 
     // A close on this workspace is still playing: leave its tiles where they
@@ -514,10 +556,10 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         LayoutKind::Dwindle => entry.workspaces[ws].tiled.dwindle(area, gap_x, gap_y),
         LayoutKind::Master => entry.workspaces[ws].tiled.master(area, gap_x, gap_y),
     };
-    let floating: Vec<(Window, Rectangle<i32, Logical>)> = entry.workspaces[ws]
+    let floating: Vec<(Window, Rectangle<i32, Logical>, Placement)> = entry.workspaces[ws]
         .floating
         .iter()
-        .map(|f| (f.window.clone(), f.rect))
+        .map(|f| (f.window.clone(), f.rect, f.placement))
         .collect();
     let focus = state.focus.clone();
     let mapping = state.xwayland.mapping.clone();
@@ -541,6 +583,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
                 Rectangle::new(inner.loc, size),
                 focus.as_ref() == Some(&w),
                 true,
+                false,
             );
         }
         fractional_scale::update_window_scale(&w, &output);
@@ -548,10 +591,15 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         set_owner_output(&w, &output);
         state.space.map_element(w, inner.loc, false);
     }
-    for (w, rect) in floating {
-        // Fullscreen windows fill their area exactly; no border inset.
+    for (w, rect, placement) in floating {
+        // Fullscreen and maximized windows fill their area exactly; no border
+        // inset. Fullscreen wins: it is not told it is also maximized.
         let full = state.fullscreen.contains_key(&w);
-        let inner = if full { rect } else { shrink(rect, border) };
+        let inner = if full || placement.is_maximized() {
+            rect
+        } else {
+            shrink(rect, border)
+        };
         // Fullscreen ignores the client's size hints: a game floated at a
         // pinned windowed size (min == max) would otherwise be held to it.
         let size = if full {
@@ -565,6 +613,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
                 Rectangle::new(inner.loc, size),
                 focus.as_ref() == Some(&w),
                 false,
+                placement.is_fully_maximized() && !full,
             );
         }
         fractional_scale::update_window_scale(&w, &output);
@@ -675,6 +724,8 @@ pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Log
     if state.fullscreen.contains_key(window) {
         return;
     }
+    // Pinning a maximized window is a move or resize: it stops being maximized.
+    maximize::release(state, window);
     // `arrange_output` shrinks the stored rectangle by the border before it
     // configures and maps, so store the outer rectangle that shrinks back to
     // exactly `geo`.
@@ -696,6 +747,7 @@ pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Log
                     window: window.clone(),
                     rect: outer,
                     weight: None,
+                    placement: Placement::Free,
                 });
                 found = true;
                 break 'outer;
@@ -751,12 +803,16 @@ pub fn replace_window(state: &mut AbyssState, window: &Window, placement: &rules
     if is_unmanaged_x11(state, window) {
         return;
     }
+    // A re-placement (a rule re-matching on a changed title) is not a request
+    // to move: the window stays maximized.
+    let kept = maximize::placement_of(state, window);
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
             ws.remove(window);
         }
     }
     install(state, window, placement);
+    maximize::restore_placement(state, window, kept);
 }
 
 /// Put a window into a workspace according to `placement`. False when there is
@@ -855,6 +911,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
             window: window.clone(),
             rect,
             weight: None,
+            placement: Placement::Free,
         });
     } else {
         let near = state
@@ -1439,15 +1496,14 @@ pub fn minimize_window(state: &mut AbyssState, window: &Window) {
         // to take out of the layout.
         return;
     };
-    let was_floating = entry.workspaces[ws]
-        .floating
-        .iter()
-        .find(|f| &f.window == window)
-        .map(|f| f.rect);
+    let floating = entry.workspaces[ws].floating.iter().find(|f| &f.window == window);
+    let was_floating = floating.map(|f| f.rect);
+    let placement = floating.map_or(Placement::Free, |f| f.placement);
     entry.workspaces[ws].remove(window);
     entry.workspaces[ws].minimized.push(workspace::Minimized {
         window: window.clone(),
         was_floating,
+        placement,
         weight: None,
     });
     anim::minimize(state, window);
@@ -1509,11 +1565,13 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
             window: window.clone(),
             rect,
             weight: None,
+            placement: restored.placement,
         }),
         None if stacking => entry.workspaces[ws].floating.push(Floating {
             window: window.clone(),
             rect: default_rect,
             weight: None,
+            placement: Placement::Free,
         }),
         None => {
             entry.workspaces[ws]
@@ -1696,6 +1754,7 @@ pub fn toggle_floating(state: &mut AbyssState) {
             window,
             rect: Rectangle::new(loc, rect.size),
             weight,
+            placement: Placement::Free,
         });
     } else if let Some(i) = entry.workspaces[ws]
         .floating
@@ -1731,8 +1790,9 @@ fn toplevel_window(
 /// `fullscreen` (COMP-02 §9) plays over each of the fullscreen requests below, and
 /// over the X11 form: [`anim::toggle`] keeps the old frame, runs the change,
 /// and animates from the old rectangle to the new.
-/// xdg `set_maximized` / `unset_maximized`: abyss has no maximized state, so
-/// both are declined. The client is answered with a configure that does not
+/// xdg `set_maximized` / `unset_maximized` outside `mode "de"` (C-20; under
+/// `de` they go to [`maximize::request_toplevel`]): there is no maximized
+/// state, so both are declined. The client is answered with a configure that does not
 /// carry `Maximized`; its pending size is left as the layout set it, so a
 /// tiled window stays at its tile. A toplevel still owed its initial configure
 /// has no `Window` yet, so only its pending state is cleaned.
@@ -1833,15 +1893,19 @@ fn set_x11_fullscreen_now(state: &mut AbyssState, window: &Window, on: bool) {
             "configuring x11 window for fullscreen"
         );
         let ws = home_workspace(state, id, window);
-        let restore = detach_from_layout(state, id, window);
+        let detached = detach_from_layout(state, id, window);
+        let placement = detached.map_or(Placement::Free, |(_, p)| p);
         state.outputs.get_mut(id).expect("just resolved").workspaces[ws]
             .floating
             .push(Floating {
                 window: window.clone(),
                 rect: area,
                 weight: None,
+                placement,
             });
-        state.fullscreen.insert(window.clone(), restore);
+        state
+            .fullscreen
+            .insert(window.clone(), fullscreen_restore(detached));
     } else {
         let restore = state.fullscreen.remove(window);
         let area = tiling_area(state, &output);
@@ -1849,18 +1913,21 @@ fn set_x11_fullscreen_now(state: &mut AbyssState, window: &Window, on: bool) {
         let stacking = de::stacking(state);
         let default_rect = de::default_float_rect(state, id, area);
         let ws = home_workspace(state, id, window);
-        detach_from_layout(state, id, window);
+        // Maximized before fullscreen: back to it, not to the plain rectangle.
+        let placement = detach_from_layout(state, id, window).map_or(Placement::Free, |(_, p)| p);
         let entry = state.outputs.get_mut(id).expect("just resolved");
         match restore.flatten() {
             Some(rect) => entry.workspaces[ws].floating.push(Floating {
                 window: window.clone(),
                 rect,
                 weight: None,
+                placement,
             }),
             None if stacking => entry.workspaces[ws].floating.push(Floating {
                 window: window.clone(),
                 rect: default_rect,
                 weight: None,
+                placement,
             }),
             None => entry.workspaces[ws]
                 .tiled
@@ -1885,9 +1952,13 @@ fn home_workspace(state: &AbyssState, id: u64, window: &Window) -> usize {
 }
 
 /// Remove `window` from whatever placement it holds on `id`'s workspace that
-/// holds it, returning its floating rectangle if it had one and `None` if it
-/// was tiled.
-fn detach_from_layout(state: &mut AbyssState, id: u64, window: &Window) -> Option<Rectangle<i32, Logical>> {
+/// holds it, returning its floating rectangle and placement if it had one and
+/// `None` if it was tiled.
+fn detach_from_layout(
+    state: &mut AbyssState,
+    id: u64,
+    window: &Window,
+) -> Option<(Rectangle<i32, Logical>, Placement)> {
     let ws = home_workspace(state, id, window);
     let entry = state.outputs.get_mut(id)?;
     if let Some(i) = entry.workspaces[ws]
@@ -1895,11 +1966,23 @@ fn detach_from_layout(state: &mut AbyssState, id: u64, window: &Window) -> Optio
         .iter()
         .position(|f| f.window == *window)
     {
-        Some(entry.workspaces[ws].floating.remove(i).rect)
+        let f = entry.workspaces[ws].floating.remove(i);
+        Some((f.rect, f.placement))
     } else {
         entry.workspaces[ws].tiled.remove(window);
         None
     }
+}
+
+/// What a window returns to when it leaves fullscreen: the rectangle it was
+/// placed at, which for a maximized window is the one maximize will give back.
+fn fullscreen_restore(
+    detached: Option<(Rectangle<i32, Logical>, Placement)>,
+) -> Option<Rectangle<i32, Logical>> {
+    detached.map(|(rect, placement)| match placement {
+        Placement::Maximized { restore, .. } => restore,
+        Placement::Free => rect,
+    })
 }
 
 /// Does a fullscreen toplevel currently own `output`'s active workspace?
@@ -1967,19 +2050,25 @@ fn fullscreen_toplevel_now(
         Some(from) if from == id => home_workspace(state, id, &window),
         _ => state.outputs.get(id).expect("just resolved").active,
     };
-    let restore = current.and_then(|from| detach_from_layout(state, from, &window));
+    let detached = current.and_then(|from| detach_from_layout(state, from, &window));
+    let placement = detached.map_or(Placement::Free, |(_, p)| p);
 
     let entry = state.outputs.get_mut(id).expect("just resolved");
     entry.workspaces[ws].floating.push(Floating {
         window: window.clone(),
         rect: area,
         weight: None,
+        placement,
     });
-    state.fullscreen.insert(window.clone(), restore);
+    state
+        .fullscreen
+        .insert(window.clone(), fullscreen_restore(detached));
 
     surface.with_pending_state(|s| {
         s.size = Some(area.size);
         s.states.set(State::Fullscreen);
+        // Fullscreen wins over maximized; leaving it returns to maximized.
+        s.states.unset(State::Maximized);
     });
     surface.send_configure();
     arrange(state);
@@ -2026,22 +2115,34 @@ fn unfullscreen_toplevel_now(
     let default_rect = de::default_float_rect(state, id, area);
 
     let ws = home_workspace(state, id, &window);
-    detach_from_layout(state, id, &window);
+    // Maximized before fullscreen: back to it, not to the plain rectangle.
+    let placement = detach_from_layout(state, id, &window).map_or(Placement::Free, |(_, p)| p);
+    let usable = usable_area(state, &output);
+    let border = state.config.general.border_size;
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let size = match restore {
         Some(rect) => {
+            let (rect, size) = match placement {
+                Placement::Maximized { h, v, restore } => {
+                    let r = maximize::fitted_rect(&window, usable, border, restore, h, v);
+                    (r, r.size)
+                }
+                Placement::Free => (rect, rect.size),
+            };
             entry.workspaces[ws].floating.push(Floating {
                 window: window.clone(),
                 rect,
                 weight: None,
+                placement,
             });
-            rect.size
+            size
         }
         None if stacking => {
             entry.workspaces[ws].floating.push(Floating {
                 window: window.clone(),
                 rect: default_rect,
                 weight: None,
+                placement,
             });
             default_rect.size
         }
@@ -2056,6 +2157,9 @@ fn unfullscreen_toplevel_now(
     surface.with_pending_state(|s| {
         s.size = Some(size);
         s.states.unset(State::Fullscreen);
+        if placement.is_fully_maximized() {
+            s.states.set(State::Maximized);
+        }
     });
     surface.send_configure();
     arrange(state);
@@ -2288,11 +2392,13 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
     let default_rect = de::default_float_rect(state, id, area);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let active = entry.active;
-    let floating_rect = entry.workspaces[active]
+    let floating = entry.workspaces[active]
         .floating
         .iter()
-        .find(|f| f.window == window)
-        .map(|f| f.rect);
+        .find(|f| f.window == window);
+    let floating_rect = floating.map(|f| f.rect);
+    // A maximized window stays maximized on the workspace it goes to.
+    let placement = floating.map_or(Placement::Free, |f| f.placement);
     entry.workspaces[active].remove(&window);
     let follow = state.config.general.follow_window_to_workspace;
     let from = state.space.element_geometry(&window);
@@ -2307,6 +2413,7 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
             window: window.clone(),
             rect: floating_rect.unwrap_or(default_rect),
             weight: None,
+            placement,
         });
     } else {
         entry.workspaces[target]
@@ -2373,11 +2480,14 @@ pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
     };
     let default_rect = de::default_float_rect(state, target_id, area);
     let source_entry = state.outputs.get_mut(source_id).expect("just resolved");
-    let floating_rect = source_entry.workspaces[source_active]
+    let floating = source_entry.workspaces[source_active]
         .floating
         .iter()
-        .find(|f| f.window == window)
-        .map(|f| f.rect);
+        .find(|f| f.window == window);
+    let floating_rect = floating.map(|f| f.rect);
+    // Maximized stays so, and fills the target output's usable area; its
+    // restore rectangle moves with it.
+    let placement = floating.map_or(Placement::Free, |f| f.placement.moved_by(offset));
     source_entry.workspaces[source_active].remove(&window);
     let source_output = source_entry.output.clone();
     anim::leave_output(state, &window, &source_output, &target_output);
@@ -2389,6 +2499,7 @@ pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
             window: window.clone(),
             rect: floating_rect.map_or(default_rect, |r| de::carried_rect(r, offset, area)),
             weight: None,
+            placement,
         });
     } else {
         target_entry.workspaces[target_ws]
@@ -2428,6 +2539,11 @@ pub fn resize_window(
     let Some(id) = output_of_window(state, window) else {
         return Err("window is not on any output");
     };
+    // Resizing a maximized window ends the maximize first. Under fullscreen it
+    // stays: leaving fullscreen returns to maximized.
+    if !state.fullscreen.contains_key(window) {
+        maximize::release(state, window);
+    }
     let output = state.outputs.get(id).expect("just resolved").output.clone();
     let entry = state.outputs.get(id).expect("just resolved");
     let Some(ws) = entry
@@ -2547,6 +2663,7 @@ pub fn move_workspace_to_output(
                 window: w,
                 rect: de::carried_rect(default_rect, step, area),
                 weight: None,
+                placement: Placement::Free,
             });
         } else {
             dst.workspaces[target].tiled.insert(w, None, area, pointer);
@@ -2556,6 +2673,7 @@ pub fn move_workspace_to_output(
         // The rectangle is in global logical coordinates, so carry it across
         // by the difference between the two outputs' origins.
         f.rect.loc += dst_origin - src_origin;
+        f.placement = f.placement.moved_by(dst_origin - src_origin);
         dst.workspaces[target].floating.push(f);
     }
     state.focus = None;

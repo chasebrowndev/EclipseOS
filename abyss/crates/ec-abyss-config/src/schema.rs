@@ -175,6 +175,10 @@ pub const TABLE: &[Key] = &[
        (`toggle-floating` into tiling, `toggle-layout`, `priority-up` and \
        `priority-down`, Super-held tile-on-drop) do nothing, and `Alt+F4` \
        closes the focused window unless you bind that chord yourself. \
+       Windows can be maximized (a client request, or `Super+PageUp` / \
+       `toggle-maximize`): the window fills the usable area, square and \
+       without a border, and restores its old rectangle; under `wm` and \
+       `hybrid` maximize requests are declined. \
        Entering `de` floats every tiled window where it is; leaving re-tiles \
        them where they were. Applies on hot reload.",
     ),
@@ -2570,6 +2574,12 @@ pub const BIND_ACTIONS: &[Form] = &[
         "",
         &["toggle-fullscreen"],
         "Fullscreen the focused window, or end its fullscreen.",
+    ),
+    form(
+        &["toggle-maximize", "maximize"],
+        "",
+        &["toggle-maximize"],
+        "Maximize the focused window, or restore it. Only under `mode \"de\"`; does nothing elsewhere.",
     ),
     form(&["minimize"], "", &["minimize"], "Send the focused window away."),
     form(

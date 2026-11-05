@@ -281,6 +281,7 @@ pub(crate) fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "close-window" | "killactive" => Action::Close,
         "toggle-floating" => Action::ToggleFloating,
         "toggle-fullscreen" | "fullscreen" => Action::ToggleFullscreen,
+        "toggle-maximize" | "maximize" => Action::ToggleMaximize,
         "minimize" => Action::Minimize,
         "unminimize" | "restore" => Action::Unminimize,
         "toggle-layout" => Action::ToggleLayout,

@@ -1204,6 +1204,8 @@ pub(crate) mod state_tests {
             configures: Vec<(u32, i32, i32)>,
             /// Configures that carried the `maximized` state, per toplevel id.
             maximized_configures: Vec<u32>,
+            /// Whether the latest configure of each toplevel carried `maximized`.
+            maximized_last: std::collections::HashMap<u32, bool>,
         }
 
         /// A toplevel's three client objects, for tests that drive its
@@ -1323,9 +1325,11 @@ pub(crate) mod state_tests {
                 {
                     g.configures.push((toplevel.id().protocol_id(), width, height));
                     // `states` is an array of native-endian u32; maximized = 1.
-                    if states.chunks_exact(4).any(|c| c == 1u32.to_ne_bytes()) {
+                    let maximized = states.chunks_exact(4).any(|c| c == 1u32.to_ne_bytes());
+                    if maximized {
                         g.maximized_configures.push(toplevel.id().protocol_id());
                     }
+                    g.maximized_last.insert(toplevel.id().protocol_id(), maximized);
                 }
             }
         }
@@ -1530,6 +1534,44 @@ pub(crate) mod state_tests {
                     .iter()
                     .filter(|&&t| t == id)
                     .count()
+            }
+
+            /// Did the latest configure of `toplevel` carry `maximized`?
+            pub fn is_maximized(&self, toplevel: &XdgToplevel) -> bool {
+                self.data
+                    .maximized_last
+                    .get(&toplevel.id().protocol_id())
+                    .copied()
+                    .unwrap_or(false)
+            }
+
+            /// Map a full-width top-edge panel that claims `height` px.
+            pub fn map_panel(&mut self, h: &mut Harness, height: i32) -> (WlSurface, ZwlrLayerSurfaceV1) {
+                let qh = self.queue.handle();
+                let surface = self.surface();
+                let layer = self
+                    .layer_shell
+                    .as_ref()
+                    .expect("zwlr_layer_shell_v1")
+                    .get_layer_surface(
+                        &surface,
+                        self.outputs.first(),
+                        zwlr_layer_shell_v1::Layer::Top,
+                        "panel".into(),
+                        &qh,
+                        (),
+                    );
+                layer.set_size(0, height as u32);
+                layer.set_anchor(
+                    zwlr_layer_surface_v1::Anchor::Top
+                        | zwlr_layer_surface_v1::Anchor::Left
+                        | zwlr_layer_surface_v1::Anchor::Right,
+                );
+                layer.set_exclusive_zone(height);
+                self.commit(h, &surface);
+                surface.attach(Some(&self.buffer(super::W, height)), 0, 0);
+                self.commit(h, &surface);
+                (surface, layer)
             }
 
             /// An input method on the seat, with the keyboard grabbed.
