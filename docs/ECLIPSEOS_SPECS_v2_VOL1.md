@@ -4641,6 +4641,39 @@ approves. Accept/Allow records the hash; a later change asks again.
 
 ---
 
+### 3.14 Password for a system action *(added E-04, 2026-11-04)*
+
+A modal, compositor-drawn, human-seat-only prompt for the password polkit needs
+when a system action is `auth_admin` (D-07 §6, ADR 0087). It is an authority
+surface in the same trust class as §3.2 and extends ADR 0053's closed list by
+exactly this one entry.
+
+**Request channel.** `$XDG_RUNTIME_DIR/eclipse/polkit.sock` (0600, in the 0700
+directory of COMP-13 §2), outside the `gate.rs` table and not bound in kiosk mode.
+It accepts a connection only from the session owner running
+`/usr/bin/ec-polkit-agent`. One request per connection: `{user, cookie, action,
+message}`, reply `{result: "ok" | "failed" | "cancelled"}`. The agent holds no
+secret. `action` and `message` are drawn as the requester's unverified words;
+`user` is shown as a fact because it is what the password is checked against.
+
+**Where the password goes.** Only to polkit's helper at
+`/run/polkit/agent-helper.socket`, on a connection the compositor opens itself,
+after `SO_PEERCRED` says the peer is uid 0. It answers one no-echo prompt, once, and
+is wiped. It is never sent to the requester, logged or stored, and the requester
+learns only the result. A result from the helper grants nothing; polkitd decides.
+
+**Keys.** Default focus is Cancel and Escape is Cancel. Enter with an empty field
+follows the focus, so a reflexive keypress cancels. Enter with something typed
+submits, until Tab is pressed, after which Enter follows the focus: the typed
+password is the human's intent, and it is the one exception to §3.2's Enter rule.
+Authenticate with nothing typed asks again and costs no try. The usual arming delay
+applies.
+
+**Fail closed.** Cancel on hang-up and on timeout (§3.2 default). Failed after three
+wrong passwords, on an invalid field, on a full queue (8), when the helper is
+unreachable, not root, silent for 30 s, or asks a second question. No work happens
+on the event loop while PAM runs.
+
 ## 4. Input Handling
 
 - Prompts take a compositor-owned keyboard grab on the human seat. Clients
@@ -7469,7 +7502,7 @@ Tier 6's `D-0n` documents.
 | DA-02 | COMP-17 §2 | The autostart set moved from `mode` to `components`. `mode` keeps keybinds, decoration defaults and whether a configured panel shows | yes |
 | DA-03 | COMP-10 §2 | Phrase entry is compositor-drawn. While unset, `agent-attention` opens it. Set on the installed system at first login, not on the live medium. Setup learns only `phrase {set}` | yes |
 | DA-04 | Planning index D-07 | D-07 written as `docs/design/D-07-first-run.md`: first boot is the ISO, whose live session runs a graphical installer covering language, network, disk, identity, profile, mode, components, apps, appearance, displays and agents, then installs. Also amends D-03 §4, §5 and D-05 §7, §8 | yes |
-| DA-05 | COMP-10 §3.10; D-07 §6, §11.7 | Adds the compositor-drawn destructive-system-action confirmation and its request channel: a root-only socket in the session runtime directory, requester-side compositor authentication, human-seat-only answer with Deny as default. Extends the ADR 0053 closed list by this one surface. The compositor-drawn polkit authentication agent remains owed | yes |
+| DA-05 | COMP-10 §3.10; D-07 §6, §11.7 | Adds the compositor-drawn destructive-system-action confirmation and its request channel: a root-only socket in the session runtime directory, requester-side compositor authentication, human-seat-only answer with Deny as default. Extends the ADR 0053 closed list by this one surface. The compositor-drawn polkit authentication agent remains owed *(since built: §3.14, E-04)* | yes |
 
 ## Open decisions this appendix leaves standing
 
@@ -7483,7 +7516,7 @@ Tier 6's `D-0n` documents.
 5. **Two trusted-UI surfaces owed to COMP-10** for D-07 §6: a compositor-drawn
    "destructive system action" confirmation (the disk wipe) and a
    compositor-drawn polkit authentication agent. Until they exist the TTY
-   fallback installer is the only wipe path.
+   fallback installer is the only wipe path. *(Both since built: §3.10 and §3.14.)*
 6. **Agent sandboxes and the system bus.** D-07 §6's helper assumes agents cannot
    reach it. S-03 must state that; until it does, it is an assumption.
 
@@ -7499,6 +7532,7 @@ same day. Appendix D is reserved for the D-07 batch.
 | E-01 | COMP-18 §3 | Annotation methods, binds and region select are add-on hooks (ADR 0066), off unless an installed manifest names them. A manifest never grants capture | yes |
 | E-02 | COMP-10 §3.11 | New surface: command approval for taskbar command widgets (ADR 0067). Compositor-initiated; no client may request it | yes |
 | E-03 | COMP-10 §3.10 | On merging with D-07 (DA-05), the destructive-action prompt runs on §3.11's modal primitive: the granting Erase button needs Tab then Space (Enter never grants), input is ignored for the arming delay, and it is drawn front-most with the other prompts, above the §3.6 indicator. Owner review pending on the indicator ordering | yes |
+| E-04 | COMP-10 §3.14; D-07 §6, §11.7 | New surface: the password prompt for polkit `auth_admin`, closing the agent DA-05 left owed (ADR 0087). The password goes only to polkit's root helper, and "delivered" in the password invariant means delivered to anything except the verifying authority (owner ruling, 2026-11-04) | yes |
 
 ---
 

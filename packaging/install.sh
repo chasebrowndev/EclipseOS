@@ -32,8 +32,8 @@ root=$(CDPATH= cd -- "$here/.." && pwd)
 
 BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher
       ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt
-      ec-pairing ec-portal'
-UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service'
+      ec-pairing ec-polkit-agent ec-portal'
+UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service'
 # The agent stack add-on, as the PKGBUILD's eclipseos-agents ships it.
 AGENT_BINS='ec-policyd ec-brokerd ec-agentd ec-audit ec-secret ec-inferenced'
 AGENT_UNITS='ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service'
@@ -176,7 +176,7 @@ sudo install -Dm 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.de
 sudo install -Dm 0644 -t /usr/lib/systemd/user \
     "$here/abyss-session.target" "$here/ec-hyperion-bar.service" "$here/ec-toasts.service" \
     "$here/ec-wallpaper.service" "$here/ec-screensaver.service" "$here/ec-pairing.service" \
-    "$here/ec-portal.service"
+    "$here/ec-polkit-agent.service" "$here/ec-portal.service"
 
 # 4a. The colour-scheme portal backend (ADR 0084). Bus-activated, not enabled.
 sudo install -Dm 0644 -t /usr/share/dbus-1/services "$here/dbus/org.freedesktop.impl.portal.desktop.abyss.service"

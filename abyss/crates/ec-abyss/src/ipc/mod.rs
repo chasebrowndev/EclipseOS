@@ -321,7 +321,7 @@ pub fn cleanup(state: &AbyssState) {
     }
 }
 
-fn owner_uid() -> u32 {
+pub(crate) fn owner_uid() -> u32 {
     // SAFETY: `geteuid` is always safe; it cannot fail and touches no memory.
     unsafe { libc::geteuid() }
 }

@@ -147,11 +147,15 @@ package_eclipseos-desktop() {
   # from PATH for pairing PINs and wifi passphrases (ADR 0053). Here, not in the
   # taskbar's package, so pairing works with no taskbar (ADR 0066).
   _bin ec-pairing
+  # The polkit agent: relays to the compositor's password prompt (ADR 0087).
+  _bin ec-polkit-agent
   _bin ec-secret-prompt
   _unit ec-screensaver.service
   _want ec-screensaver.service
   _unit ec-pairing.service
   _want ec-pairing.service
+  _unit ec-polkit-agent.service
+  _want ec-polkit-agent.service
   # xdg-desktop-portal Settings backend: colour scheme and accent for GTK, Qt
   # and browsers (ADR 0084). Bus-activated, so no _want.
   _unit ec-portal.service

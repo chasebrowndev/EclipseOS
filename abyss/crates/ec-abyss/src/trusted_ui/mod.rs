@@ -26,7 +26,8 @@
 //! Owners: command-widget approval ([`approval`], §3.11, ADR 0067), the
 //! destructive-system-action confirmation ([`erase`], §3.10, ADR 0061),
 //! asked for over the root-only [`socket`], the agent consent prompt
-//! ([`consent`], §3.2) and personal-secret entry ([`phrase`], §2).
+//! ([`consent`], §3.2), personal-secret entry ([`phrase`], §2) and the polkit
+//! password prompt ([`polkit`], §3.14, ADR 0087).
 //!
 //! Every prompt shows the personal secret in its fixed frame at the top, or
 //! the unconfigured warning while there is none (§2).
@@ -43,6 +44,7 @@ pub mod modal;
 pub mod notice;
 pub mod panel;
 pub mod phrase;
+pub mod polkit;
 pub mod queue;
 pub mod slot;
 pub mod socket;
@@ -145,6 +147,8 @@ pub struct TrustedUi {
     /// The compat-lock indicator's state (§3.4).
     pub(crate) marks: indicator::Marks,
     pub(crate) broker: broker::Broker,
+    /// polkit password requests waiting or shown (§3.14).
+    pub(crate) polkit: polkit::Polkit,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
     /// The light palette is in use. Off by default, so dark until told. Only
@@ -353,6 +357,7 @@ fn choose(state: &mut AbyssState, button: usize, timed_out: bool) {
     batch::schedule(state);
     install::schedule(state);
     broker::schedule(state);
+    polkit::schedule(state);
     // The pointer is re-evaluated as though it had just moved, so whatever is
     // under it gets its enter now rather than on the next motion.
     state.refresh_pointer_focus();
@@ -369,6 +374,8 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         phrase::answer(state, choice);
     } else if broker::owns(state, choice.token) {
         broker::answer(state, choice);
+    } else if polkit::owns(state, choice.token) {
+        polkit::answer(state, choice);
     } else if consent::owns(state, choice.token) {
         consent::answer(state, choice);
     } else if batch::owns(state, choice.token) {
@@ -420,6 +427,8 @@ fn cancel(state: &mut AbyssState, token: u64) {
     state.trusted_ui.dim.clear();
     crate::backend::damage_all(state);
     state.refresh_pointer_focus();
+    // The other owners schedule only their own queues here.
+    polkit::schedule(state);
 }
 
 /// The panel's top-left on `output`, in global logical coordinates: centred.

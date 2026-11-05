@@ -355,7 +355,8 @@ authorities:
   Active local session only. **The `auth_admin` password is collected by a
 compositor-drawn polkit authentication agent** (trusted UI), never by a client
 such as `ec-secret-prompt`, since it is an admin-equivalent secret and a
-client prompt is spoofable. That agent is **owed** (COMP-10).
+client prompt is spoofable. That agent is `ec-polkit-agent` and COMP-10 §3.14
+(ADR 0087).
 
 Agent sandboxes must not reach the system bus at all. That is S-03's to
 guarantee, and until S-03 says so it is an assumption this section depends on.
@@ -447,7 +448,6 @@ file*, is met by D-07 alone for every profile and is its acceptance test.
    exists. Until then the option is shown disabled.
 7. **Two trusted-UI surfaces owed to COMP-10**: the "destructive system action"
    confirmation (§6; COMP-10 §3.10, built: compositor `trusted_ui/` and the helper's socket client) and the
-   compositor-drawn polkit authentication agent (§6; still unspecified). Until
-   the confirmation exists, the install falls back to the TTY script on tty2,
-   which is root-run by a person at the keyboard. Until the agent exists,
-   `--reconfigure` package changes are not offered.
+   compositor-drawn polkit authentication agent (§6; COMP-10 §3.14, built: ADR
+   0087). Until the confirmation exists, the install falls back to the TTY script
+   on tty2, which is root-run by a person at the keyboard.

@@ -28,7 +28,7 @@ Ten crates: seven programs, two libraries, and `ec-services`, which is both.
 | `ec-settings` | `ec-settings` | xdg_toplevel | `eclipseos-desktop` |
 | `ec-policy-viewer` | `ec-policy-viewer` | xdg_toplevel | `eclipseos-desktop` |
 | `ec-secret-prompt` | `ec-secret-prompt` | xdg_toplevel, fixed size | `eclipseos-desktop` |
-| `ec-services` | `ec-screensaver`, `ec-pairing` (`src/bin/`) | none; also a library | `eclipseos-desktop` (bins) |
+| `ec-services` | `ec-screensaver`, `ec-pairing`, `ec-polkit-agent` (`src/bin/`) | none; also a library | `eclipseos-desktop` (bins) |
 | `ec-ui` | — | library: tokens, theme, widgets, `ipc::fetch_config_radius` | inside consumers |
 | `ec-ipc` | — | library: control-socket client, `serde_json` + `libc` only | inside consumers |
 
@@ -69,6 +69,10 @@ approved it in the compositor-drawn prompt (ADR 0067, COMP-10 §3.11).
 **ec-pairing** — the one BlueZ pairing agent (ADR 0053), an
 `ec-services` binary with its own user unit, so pairing works with no
 taskbar. PINs go through `ec-secret-prompt`.
+
+**ec-polkit-agent** — the session's polkit authentication agent (ADR 0087). It
+relays requests to the compositor's password prompt (COMP-10 §3.14) and never
+holds a password.
 
 **ec-toasts** — the notification stack. Owns
 `org.freedesktop.Notifications` in-process via `ec_services::notifications`.
@@ -118,6 +122,7 @@ nothing listening renders empty, never crashes.
 |---|---|---|---|
 | hyperion (bar) | `get_workspaces`, `get_windows`, `get_focused`, `get_outputs`, `get_config`, `focus_window`, `close_window`, `set_minimized`, `set_window_chip_rect`, `switch_workspace` | `window`, `workspace`, `focus`, `output`, `config_error`, `config` | system: NetworkManager, BlueZ, UPower. session: SNI watcher/host, MPRIS players (`org.mpris.MediaPlayer2.*`). PipeWire: default sink volume/mute, monitor tap (ADR 0065) |
 | ec-pairing | — | — | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
+| ec-polkit-agent | — | — | system: polkit `AuthenticationAgent`, logind `User.Display`. Own socket: `polkit.sock` (COMP-10 §3.14) |
 | ec-toasts | `get_config` (`decoration.rounding`, startup) | — | session: serves `org.freedesktop.Notifications` |
 | ec-center | `get_config` (`decoration.rounding`, startup) | — | system: NetworkManager, BlueZ, UPower (read), logind `login1.Manager` / `login1.Session` |
 | ec-launcher | `get_config` (`misc.terminal-command`, `decoration.rounding`, startup) | — | — |
@@ -159,6 +164,7 @@ stays closed in `ipc/gate.rs`, which is why the viewer reads the file itself.
 |---|---|---|
 | hyperion (add-on) | `ec-hyperion-bar.service` | ordinary client |
 | ec-pairing | `ec-pairing.service` | ordinary client |
+| ec-polkit-agent | `ec-polkit-agent.service` | no Wayland client |
 | ec-toasts | `ec-toasts.service` | ordinary client |
 | ec-screensaver | `ec-screensaver.service` | ordinary client |
 | ec-launcher | `Super+E` / `Super+R` default binds; hyperion's launcher button | ordinary client |
