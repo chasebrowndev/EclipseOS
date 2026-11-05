@@ -789,6 +789,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
     // keyboard from whatever the human is using (COMP-05 §5).
     let steal_blocked = placement.no_focus_steal || (parent.is_some() && state.focus != parent);
     let mode = state.config.general.floating_placement;
+    let border = state.config.general.border_size;
     let pointer = state.pointer_location;
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = placement
@@ -808,7 +809,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         let size = placement
             .size
             .map(Size::from)
-            .or_else(|| x11_request.map(|r| x11_float_size(r.size, x11_min, area.size)))
+            .or_else(|| x11_request.map(|r| x11_outer_size(r.size, x11_min, area.size, border)))
             .or_else(|| geometry.map(|g| g.size))
             .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
         // A `position` rule is relative to the output's tiling area, so the
@@ -1596,6 +1597,23 @@ pub(crate) fn x11_float_size(
         if area.w > 0 { w.min(area.w) } else { w },
         if area.h > 0 { h.min(area.h) } else { h },
     ))
+}
+
+/// The stored (outer) floating size for an X11 window that asked to map at
+/// `requested`. `arrange_output` shrinks the stored rectangle by `border` on
+/// every side before configuring, so the request is the *inner* size: storing
+/// it as-is made the client a border smaller on each side at every map, and a
+/// client that unmaps and remaps (Zoom) shrank and crept a little further each
+/// time, because it re-requests whatever it was last configured to.
+pub(crate) fn x11_outer_size(
+    requested: Size<i32, Logical>,
+    min: Size<i32, Logical>,
+    area: Size<i32, Logical>,
+    border: i32,
+) -> Size<i32, Logical> {
+    let room = Size::from(((area.w - 2 * border).max(0), (area.h - 2 * border).max(0)));
+    let inner = x11_float_size(requested, min, room);
+    Size::from((inner.w + 2 * border, inner.h + 2 * border))
 }
 
 /// `size` centred on `anchor`, then moved to lie inside `area` (the area's
@@ -2544,6 +2562,32 @@ mod x11_float_tests {
 
     fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
         Rectangle::new((x, y).into(), sz(w, h))
+    }
+
+    #[test]
+    fn x11_outer_size_survives_a_remap_without_shrinking() {
+        let area = sz(1920, 1000);
+        let border = 2;
+        // The configured (inner) size is what `arrange_output` hands the client.
+        let configured =
+            |outer: Size<i32, Logical>| shrink(Rectangle::new((0, 0).into(), outer), border).size;
+        let mut asked = sz(1593, 764);
+        for _ in 0..3 {
+            let outer = x11_outer_size(asked, sz(800, 500), area, border);
+            assert_eq!(configured(outer), asked, "the client gets the size it asked for");
+            // The client re-requests whatever it was last configured to.
+            asked = configured(outer);
+        }
+        // Larger than the area: the configured size fits inside it.
+        let outer = x11_outer_size(sz(4000, 3000), sz(0, 0), area, border);
+        assert_eq!(outer, area);
+        // A pinned-size window keeps exactly its pinned size.
+        let outer = x11_outer_size(sz(320, 282), sz(320, 282), area, border);
+        assert_eq!(
+            clamp_to(configured(outer), sz(320, 282), sz(320, 282), false),
+            sz(320, 282)
+        );
+        assert_eq!(configured(outer), sz(320, 282));
     }
 
     #[test]
