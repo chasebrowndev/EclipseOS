@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `decoration` block: rounding, opacity, blur, shadow, glow and surface (COMP-02 §9).
 
+/// Default `decoration.titlebar-height`, logical px.
+pub const DEFAULT_TITLEBAR_HEIGHT: i32 = 32;
+
 /// `decoration { ... }` (COMP-13 §1.1, COMP-02 §9). Every effect here is off by
 /// default: the defaults below are the "no effect" values, so a config without a
 /// `decoration` block renders exactly as it did before milestone 9b and keeps
@@ -15,6 +18,9 @@ pub struct Decoration {
     /// `tokens::radius::CARD` (13px) so the compositor-drawn blur backdrop
     /// lines up with the client-drawn glass content on top of it.
     pub rounding: i32,
+    /// Height in logical pixels of the titlebar `mode "de"` draws above a
+    /// server-side-decorated window (COMP-05 §7.1). Other modes draw none.
+    pub titlebar_height: i32,
     /// Alpha applied to the focused window, 0.0..=1.0.
     pub active_opacity: f32,
     /// Alpha applied to every unfocused window, 0.0..=1.0.
@@ -31,6 +37,7 @@ impl Default for Decoration {
     fn default() -> Self {
         Self {
             rounding: 9,
+            titlebar_height: DEFAULT_TITLEBAR_HEIGHT,
             active_opacity: 1.0,
             inactive_opacity: 1.0,
             dim_inactive: 0.0,

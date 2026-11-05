@@ -320,6 +320,9 @@ pub struct ModeProfile {
     /// honoured. Elsewhere they are declined (C-20; C-24 scopes it to `wm` and
     /// `hybrid`).
     pub maximize: bool,
+    /// The compositor draws a titlebar above server-side-decorated windows
+    /// (COMP-05 §7.1, M3).
+    pub titlebars: bool,
     /// Default for `general.focus-follows-mouse`; an explicit key wins.
     pub focus_follows_mouse: bool,
 }
@@ -329,6 +332,7 @@ impl Mode {
         ModeProfile {
             stacking: self == Mode::De,
             maximize: self == Mode::De,
+            titlebars: self == Mode::De,
             focus_follows_mouse: self != Mode::De,
         }
     }

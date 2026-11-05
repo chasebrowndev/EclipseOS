@@ -381,6 +381,8 @@ pub fn capture_elements(
         let bbox = window.bbox();
         let cover = Rectangle::new(origin + bbox.loc, bbox.size);
         // Decided here, before any GPU work touches the surface.
+        let bar = ec_abyss_render::titlebar::bar_of(window)
+            .map(|info| ec_abyss_render::titlebar::bar_rect(geo, info.height));
         let (tree, generation, secret_known) = semantics_for(state, surface.as_ref());
         let verdict = resolve_nodes(&tree, generation, secret_known);
         let whole = match verdict {
@@ -402,12 +404,15 @@ pub fn capture_elements(
             } else {
                 whole.unwrap_or(RedactReason::Surface)
             };
+            // Its titlebar goes with it (COMP-02 §8), so neither its title nor a
+            // bar's outline reaches the target.
+            let whole = whole_cover(cover, bar);
             redacted.push(Redacted {
                 app_id,
-                rects: vec![cover],
+                rects: vec![whole],
                 reason,
             });
-            elements.extend(placeholders(&[cover], output_loc, scale));
+            elements.extend(placeholders(&[whole], output_loc, scale));
             continue;
         }
         if let NodeVerdict::Nodes(local) = verdict {
@@ -441,6 +446,14 @@ pub fn capture_elements(
 
     fx.finish(renderer, &mut elements);
     (elements, redacted)
+}
+
+/// What a wholesale redaction covers: the surface tree's box plus its titlebar.
+fn whole_cover(
+    cover: Rectangle<i32, Logical>,
+    bar: Option<Rectangle<i32, Logical>>,
+) -> Rectangle<i32, Logical> {
+    bar.map_or(cover, |bar| cover.merge(bar))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -841,6 +854,15 @@ mod tests {
         ] {
             assert_eq!(Transform::from(super::wire_transform(t)), t);
         }
+    }
+
+    #[test]
+    fn a_wholesale_redaction_covers_the_titlebar() {
+        let cover = Rectangle::new((100, 132).into(), (400, 300).into());
+        let bar = Rectangle::new((100, 100).into(), (400, 32).into());
+        let whole = super::whole_cover(cover, Some(bar));
+        assert_eq!(whole, Rectangle::new((100, 100).into(), (400, 332).into()));
+        assert_eq!(super::whole_cover(cover, None), cover);
     }
 
     #[test]

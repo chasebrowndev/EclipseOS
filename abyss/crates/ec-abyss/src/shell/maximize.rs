@@ -22,7 +22,9 @@ use smithay::{
 use crate::state::AbyssState;
 
 use super::{
-    anim, arrange, clamp_size, de, shrink, tiling_area, usable_area,
+    anim, arrange, clamp_size, de, shrink, tiling_area,
+    titlebar::{self, content_of_outer},
+    usable_area,
     workspace::{Floating, Placement},
 };
 
@@ -52,6 +54,10 @@ pub(super) fn maximized_rect(
 
 /// [`maximized_rect`] held to the client's size hints, as `arrange` configures
 /// it: a window with a max size is smaller than the area and reports so.
+///
+/// The rectangle is the frame (`bar` px of titlebar above the content), and the
+/// size hints apply to the content, so the content is `bar` shorter than the
+/// frame and a window held to a max size still reports it exactly.
 pub(super) fn fitted_rect(
     window: &Window,
     usable: Rectangle<i32, Logical>,
@@ -59,19 +65,23 @@ pub(super) fn fitted_rect(
     restore: Rectangle<i32, Logical>,
     h: bool,
     v: bool,
+    bar: i32,
 ) -> Rectangle<i32, Logical> {
     let mut rect = maximized_rect(usable, border, restore, h, v);
-    rect.size = clamp_size(window, rect.size, false);
+    let content = clamp_size(window, (rect.size.w, (rect.size.h - bar).max(1)).into(), false);
+    rect.size = (content.w, content.h + bar).into();
     rect
 }
 
 /// Where a floating window's content sits for `f`: a maximized or fullscreen
 /// window has no border inset.
-pub(super) fn content_rect(f: &Floating, fullscreen: bool, border: i32) -> Rectangle<i32, Logical> {
-    if fullscreen || f.placement.is_maximized() {
+pub(super) fn content_rect(f: &Floating, fullscreen: bool, border: i32, bar: i32) -> Rectangle<i32, Logical> {
+    if fullscreen {
         f.rect
+    } else if f.placement.is_maximized() {
+        content_of_outer(f.rect, 0, bar)
     } else {
-        shrink(f.rect, border)
+        content_of_outer(f.rect, border, bar)
     }
 }
 
@@ -128,8 +138,14 @@ pub fn set(state: &mut AbyssState, window: &Window, axes: Option<(bool, bool)>) 
 /// The `toggle-maximize` bind (Super+PageUp under `de`).
 pub fn toggle(state: &mut AbyssState) {
     let Some(window) = state.focus.clone() else { return };
-    let on = !is_maximized(state, &window);
-    set(state, &window, on.then_some((true, true)));
+    toggle_window(state, &window);
+}
+
+/// Maximize `window` if it is not, restore it if it is (the bind's body, and
+/// the titlebar's maximize button, which acts on its own window).
+pub fn toggle_window(state: &mut AbyssState, window: &Window) {
+    let on = !is_maximized(state, window);
+    set(state, window, on.then_some((true, true)));
 }
 
 /// The body of [`set`]. `pointer`: also move the restored window so that point
@@ -157,6 +173,7 @@ fn set_now(
     let fullscreen = state.fullscreen.contains_key(window);
     let fullscreen_restore = state.fullscreen.get(window).copied().flatten();
     let default_rect = de::default_float_rect(state, id, area);
+    let bar = titlebar::bar_height(state, window);
 
     let entry = state.outputs.get_mut(id).expect("just found");
     let f = entry.workspaces[ws]
@@ -165,7 +182,7 @@ fn set_now(
         .find(|f| &f.window == window)
         .expect("just found");
     // Where the window is now, from its placement (a client's buffer may lag).
-    let old = content_rect(f, fullscreen, border);
+    let old = content_rect(f, fullscreen, border, bar);
     let axes = axes.filter(|(h, v)| *h || *v);
     let mut restored_fullscreen = None;
     match (axes, f.placement) {
@@ -177,20 +194,20 @@ fn set_now(
             };
             f.placement = Placement::Maximized { h, v, restore };
             if !fullscreen {
-                f.rect = fitted_rect(&f.window, usable, border, restore, h, v);
+                f.rect = fitted_rect(&f.window, usable, border, restore, h, v, bar);
             }
         }
         (None, Placement::Maximized { restore, .. }) => {
             // The area may have moved since: keep the restored window on it.
             let mut rect = de::carried_rect(restore, Point::default(), usable);
             if let Some(p) = pointer {
-                let new = shrink(rect, border);
+                let new = content_of_outer(rect, border, bar);
                 let at = |p: f64, o: i32, ol: i32, nl: i32| {
                     p - (p - f64::from(o)) * f64::from(nl) / f64::from(ol.max(1))
                 };
                 let x = at(p.x, old.loc.x, old.size.w, new.size.w).round() as i32;
                 let y = at(p.y, old.loc.y, old.size.h, new.size.h).round() as i32;
-                rect.loc = Point::from((x - border, y - border));
+                rect.loc = Point::from((x - border, y - border - bar));
             }
             f.placement = Placement::Free;
             if fullscreen {
@@ -202,7 +219,7 @@ fn set_now(
         (None, Placement::Free) => {}
     }
     let placement = f.placement;
-    let content = content_rect(f, fullscreen, border);
+    let content = content_rect(f, fullscreen, border, bar);
     if let Some(rect) = restored_fullscreen {
         state.fullscreen.insert(window.clone(), Some(rect));
     }

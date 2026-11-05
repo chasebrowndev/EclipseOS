@@ -8,6 +8,7 @@ pub mod focus;
 pub mod layout;
 pub mod maximize;
 pub mod rules;
+pub mod titlebar;
 mod toplevel;
 pub mod workspace;
 
@@ -40,6 +41,7 @@ use smithay::{
     },
 };
 
+use self::titlebar::{content_of_outer, outer_of_content};
 use crate::{
     config::{FloatingPlacement, LayoutKind},
     input::Direction,
@@ -509,6 +511,15 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     // a panel appearing or an output resizing is followed (COMP-05 §3.1).
     {
         let usable = usable_area(state, &output);
+        // The frame fills the usable area, so the bar eats into the content.
+        #[allow(clippy::mutable_key_type)]
+        let bar_heights: Vec<(Window, i32)> = state.outputs.get(id).expect("checked above").workspaces[ws]
+            .floating
+            .iter()
+            .filter(|f| f.placement.is_maximized())
+            .map(|f| (f.window.clone(), titlebar::bar_height(state, &f.window)))
+            .collect();
+        let bars = |w: &Window| bar_heights.iter().find(|(b, _)| b == w).map_or(0, |(_, h)| *h);
         #[allow(clippy::mutable_key_type)]
         let fullscreen = &state.fullscreen;
         let border = state.config.general.border_size;
@@ -516,7 +527,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         for f in entry.workspaces[ws].floating.iter_mut() {
             if let Placement::Maximized { h, v, restore } = f.placement {
                 if !fullscreen.contains_key(&f.window) {
-                    f.rect = maximize::fitted_rect(&f.window, usable, border, restore, h, v);
+                    f.rect = maximize::fitted_rect(&f.window, usable, border, restore, h, v, bars(&f.window));
                 }
             }
         }
@@ -587,18 +598,25 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
             );
         }
         fractional_scale::update_window_scale(&w, &output);
+        titlebar::publish(state, &w, 0, false);
         set_tile_clip(&w, Some(inner));
         set_owner_output(&w, &output);
         state.space.map_element(w, inner.loc, false);
     }
     for (w, rect, placement) in floating {
         // Fullscreen and maximized windows fill their area exactly; no border
-        // inset. Fullscreen wins: it is not told it is also maximized.
+        // inset. Fullscreen wins: it is not told it is also maximized. The
+        // stored rect is the outer frame; the content is what is left under
+        // the bar (`shell::titlebar`).
         let full = state.fullscreen.contains_key(&w);
-        let inner = if full || placement.is_maximized() {
+        let bar = titlebar::bar_height(state, &w);
+        titlebar::publish(state, &w, bar, placement.is_fully_maximized());
+        let inner = if full {
             rect
+        } else if placement.is_maximized() {
+            content_of_outer(rect, 0, bar)
         } else {
-            shrink(rect, border)
+            content_of_outer(rect, border, bar)
         };
         // Fullscreen ignores the client's size hints: a game floated at a
         // pinned windowed size (min == max) would otherwise be held to it.
@@ -730,10 +748,15 @@ pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Log
     // configures and maps, so store the outer rectangle that shrinks back to
     // exactly `geo`.
     let border = state.config.general.border_size;
-    let outer = Rectangle::new(
-        Point::from((geo.loc.x - border, geo.loc.y - border)),
-        Size::from((geo.size.w + 2 * border, geo.size.h + 2 * border)),
-    );
+    let bar = titlebar::bar_height(state, window);
+    let mut outer = outer_of_content(geo, border, bar);
+    // A titlebar must stay reachable: the frame never starts above the top of
+    // the usable area of the output it lands on.
+    if bar > 0 {
+        if let Some(output) = output_at(state, geo.loc.to_f64()).or_else(|| focused_output(state)) {
+            outer.loc.y = outer.loc.y.max(usable_area(state, &output).loc.y);
+        }
+    }
     let mut found = false;
     'outer: for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
@@ -870,6 +893,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
     let mode = state.config.general.floating_placement;
     let pointer = state.pointer_location;
     let stacking = de::stacking(state);
+    let bar = titlebar::bar_height(state, &window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = placement
         .workspace
@@ -892,6 +916,11 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
             .or_else(|| x11_request.map(|r| x11_float_size(r.size, x11_min, area.size)))
             .or_else(|| geometry.map(|g| g.size))
             .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
+        // The rect is the frame. A size a rule, an X11 request or the client's
+        // own geometry names is the content's, so the bar goes on top of it,
+        // held to the area (the default half-area is a frame already).
+        let named = placement.size.is_some() || x11_request.is_some() || geometry.is_some();
+        let size = framed_size(size, named, bar, area.size.h);
         // A `position` rule is relative to the output's tiling area, so the
         // same rule lands in the same place on any output. Absent a rule,
         // `general.floating-placement` decides.
@@ -1059,6 +1088,7 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     state.geo_loc.remove(window);
     state.fullscreen.remove(window);
     state.de.forget(window);
+    state.bar_ui.forget(window);
     state.urgent.retain(|w| w != window);
     crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);
@@ -1096,6 +1126,44 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
             arrange(state);
         }
     }
+}
+
+/// The size of a new floating window's frame: a named content size gets the
+/// bar added on top (held to the area), a default half-area size is a frame
+/// already. Pure, so the X11 request path is testable without Xwayland.
+pub(crate) fn framed_size(
+    size: Size<i32, Logical>,
+    named: bool,
+    bar: i32,
+    area_h: i32,
+) -> Size<i32, Logical> {
+    if named && bar > 0 {
+        Size::from((size.w, (size.h + bar).min(area_h.max(bar + 1))))
+    } else {
+        size
+    }
+}
+
+/// Whether an overlay or top layer surface (or one of its popups) is at `pos`.
+/// Those sit above every window and its bar (COMP-02 §4).
+pub(crate) fn top_layer_at(state: &AbyssState, pos: Point<f64, Logical>) -> bool {
+    let Some(output) = output_at(state, pos) else {
+        return false;
+    };
+    let output_loc = state
+        .space
+        .output_geometry(&output)
+        .map(|g| g.loc)
+        .unwrap_or_default();
+    let local = pos - output_loc.to_f64();
+    let map = layer_map_for_output(&output);
+    [Layer::Overlay, Layer::Top].into_iter().any(|layer| {
+        layer_under(&map, layer, local).is_some_and(|l| {
+            let geo = layer_geometry(&map, l).unwrap_or_default();
+            l.surface_under(local - geo.loc.to_f64(), WindowSurfaceType::ALL)
+                .is_some()
+        })
+    })
 }
 
 /// Topmost surface at `pos`, honouring the COMP-02 §4 stacking order:
@@ -1138,6 +1206,11 @@ fn hit_under(
                 }
             }
         }
+    }
+    // A titlebar is the compositor's: over one no client is under the pointer,
+    // and nothing below it either (COMP-05 §7.1).
+    if titlebar::bar_at(state, pos).is_some() {
+        return None;
     }
     if let Some((window, loc)) = state.space.element_under(pos) {
         if let Some((s, p)) = window.surface_under(pos - loc.to_f64(), WindowSurfaceType::ALL) {
@@ -1468,12 +1541,18 @@ pub fn close_focused(state: &mut AbyssState) {
         return;
     }
     if let Some(w) = state.focus.clone() {
-        match w.underlying_surface() {
-            smithay::desktop::WindowSurface::Wayland(t) => t.send_close(),
-            smithay::desktop::WindowSurface::X11(x) => {
-                if let Err(e) = x.close() {
-                    tracing::warn!(error = %e, "could not close x11 window");
-                }
+        close_window(state, &w);
+    }
+}
+
+/// Ask `window` to close (not the focused one): the path `close_focused` and
+/// the titlebar's close button share.
+pub fn close_window(_state: &mut AbyssState, window: &Window) {
+    match window.underlying_surface() {
+        smithay::desktop::WindowSurface::Wayland(t) => t.send_close(),
+        smithay::desktop::WindowSurface::X11(x) => {
+            if let Err(e) = x.close() {
+                tracing::warn!(error = %e, "could not close x11 window");
             }
         }
     }
@@ -2119,12 +2198,13 @@ fn unfullscreen_toplevel_now(
     let placement = detach_from_layout(state, id, &window).map_or(Placement::Free, |(_, p)| p);
     let usable = usable_area(state, &output);
     let border = state.config.general.border_size;
+    let bar = titlebar::bar_height(state, &window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let size = match restore {
         Some(rect) => {
             let (rect, size) = match placement {
                 Placement::Maximized { h, v, restore } => {
-                    let r = maximize::fitted_rect(&window, usable, border, restore, h, v);
+                    let r = maximize::fitted_rect(&window, usable, border, restore, h, v, bar);
                     (r, r.size)
                 }
                 Placement::Free => (rect, rect.size),
@@ -2573,6 +2653,9 @@ pub fn resize_window(
     // Callers name the window's own size; the tree deals in tiles, which are
     // the window plus its border on each side.
     let want = (width.map(|w| w + 2 * border), height.map(|h| h + 2 * border));
+    // A floating window's rect is its frame, bar included.
+    let bar = titlebar::bar_height(state, window);
+    let want_floating = (want.0, want.1.map(|h| h + bar));
 
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let changed = if tiled {
@@ -2585,8 +2668,8 @@ pub fn resize_window(
         .find(|f| &f.window == window)
     {
         let before = f.rect.size;
-        f.rect.size.w = want.0.unwrap_or(before.w).max(1);
-        f.rect.size.h = want.1.unwrap_or(before.h).max(1);
+        f.rect.size.w = want_floating.0.unwrap_or(before.w).max(1);
+        f.rect.size.h = want_floating.1.unwrap_or(before.h).max(1);
         f.rect.size != before
     } else {
         return Err("window is neither tiled nor floating");

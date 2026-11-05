@@ -29,6 +29,7 @@ pub mod select;
 pub mod stats;
 pub mod still;
 pub mod text;
+pub mod titlebar;
 pub mod userdata;
 
 use std::collections::HashMap;
@@ -504,6 +505,8 @@ pub struct BorderStore {
     gpu: context::PerContext<BorderGpu>,
     /// Glass pane elements built this frame, kept to reuse the allocation.
     pane_scratch: Vec<blur::BlurElement>,
+    /// Titlebar textures under `mode "de"` (COMP-05 §7.1), per output and window.
+    pub bars: titlebar::BarCache,
 }
 
 impl BorderStore {
@@ -522,6 +525,7 @@ impl BorderStore {
             g.glows.retain(|(_, w), _| w != window);
         });
         self.dims.retain(|(_, w), _| w != window);
+        self.bars.remove(window);
     }
 
     /// Draw with `renderer` from here on: its programs and per-output
@@ -1800,6 +1804,7 @@ fn window_elements(
         Point::from((0, 0)),
         output_geo.size.to_f64().to_physical(scale).to_i32_round(),
     );
+    store.bars.retain_live(output, &live);
     if deco.dim_inactive > 0.0 {
         store.dims.retain(|(o, w), _| o != output || live.contains(w));
     } else {
@@ -1878,7 +1883,16 @@ fn window_elements(
             geo
         });
         let pivot = target.map_or_else(|| loc.to_f64() + t.offset, |g| anim::track::pivot(&t, g));
-        let geo = target.map(|g| t.map(g, pivot));
+        let content_geo = target.map(|g| t.map(g, pivot));
+        // Under `mode "de"` a server-side-decorated window has a titlebar above
+        // its content. The shadow, border, rounded mask, dim and glass backdrop
+        // follow the frame (bar plus content); the surfaces and a translucent
+        // strip stay on the content (COMP-05 §7.1).
+        let bar = titlebar::bar_of(&window).filter(|_| content_geo.is_some());
+        let geo = match (content_geo, bar) {
+            (Some(g), Some(b)) => Some(titlebar::frame_of_content(g, b.height)),
+            (g, _) => g,
+        };
         // Decorations are cut to the whole tile (the window plus its border),
         // whether or not the client overhangs it: unlike a surface, a shadow or
         // backdrop would otherwise bleed into the neighbouring tile.
@@ -1915,7 +1929,7 @@ fn window_elements(
         // toplevel at rest has one; an animating window draws whole.
         let strip_def = userdata::strip_of(&window)
             .filter(|_| !t.scaled() && window.toplevel().is_some())
-            .zip(geo);
+            .zip(content_geo);
         // A keyed strip needs the keyed program and a framebuffer axis; where
         // either is missing the window stays opaque rather than fading whole.
         let keyed = match strip_def.as_ref().and_then(|(s, _)| s.keyed().copied()) {
@@ -2219,6 +2233,38 @@ fn window_elements(
                 });
                 (region, radius, bezel, shape)
             });
+        // The titlebar is glass whatever the client under it is: an opaque
+        // window gets a backdrop over just the bar, and a client that asked
+        // for glass on its content only (a plain box) has that box grown to
+        // take in the bar, so the title never sits over unblurred pixels.
+        let backdrop = match (bar, content_geo, geo) {
+            (Some(info), Some(content), Some(frame)) if scaled.is_none() && mode != BlurMode::Off => {
+                let phys_rect = |r: Rectangle<i32, Logical>| {
+                    Rectangle::new(
+                        phys(r.loc - output_geo.loc, scale),
+                        r.size.to_f64().to_physical(scale).to_i32_round(),
+                    )
+                };
+                let strip = phys_rect(titlebar::bar_rect(content, info.height));
+                match backdrop {
+                    None => strip_backdrop(strip, phys_rect(frame), corner)
+                        .map(|region| (region, deco.rounding, None, None)),
+                    Some((region, radius, bezel, None)) if !region.contains_rect(strip) => {
+                        let (x0, y0) = (region.loc.x.min(strip.loc.x), region.loc.y.min(strip.loc.y));
+                        let x1 = (region.loc.x + region.size.w).max(strip.loc.x + strip.size.w);
+                        let y1 = (region.loc.y + region.size.h).max(strip.loc.y + strip.size.h);
+                        Some((
+                            Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into()),
+                            radius,
+                            bezel,
+                            None,
+                        ))
+                    }
+                    other => other,
+                }
+            }
+            (_, _, _) => backdrop,
+        };
 
         // Every surface of one window is masked by the same rectangle, so a
         // window with subsurfaces rounds as a single shape.
@@ -2395,6 +2441,32 @@ fn window_elements(
             store.gpu.rings.remove(&(output.clone(), window.clone()));
             store.borders.remove(&(output.clone(), window.clone()));
             continue;
+        }
+        // The titlebar sits with its window: directly above its border and
+        // shadow, level with its surfaces, so a window stacked above hides
+        // it. It rounds its top corners with the frame; maximized is square.
+        // Not while the window animates at a scale, where it would not follow.
+        if let (Some(info), true) = (bar, scaled.is_none()) {
+            let bar_rect = titlebar::bar_rect(content_geo.unwrap_or(geo), info.height);
+            let radius = match rounding {
+                Some(_) => deco.rounding,
+                None => 0,
+            };
+            if let Some(element) = titlebar::bar_element(
+                renderer,
+                &mut store.bars,
+                output,
+                &window,
+                info,
+                phys(bar_rect.loc - output_geo.loc, scale),
+                bar_rect.size.w,
+                scale,
+                active,
+                radius,
+                alpha,
+            ) {
+                out.push(AbyssRenderElement::Memory(element));
+            }
         }
         // Border, glow, then shadow, all directly under this window's
         // surfaces. The ring's inner edge is the exact complement of the

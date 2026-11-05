@@ -992,6 +992,16 @@ pub const TABLE: &[Key] = &[
        zone), which stays square; the taskbar uses `bar.rounding`.",
     ),
     k(
+        "decoration.titlebar-height",
+        int(16, 64),
+        Int(32),
+        Abyss,
+        Live,
+        "Height in logical px of the titlebar drawn above a server-side-decorated \
+       window under `mode \"de\"` (COMP-05 §7.1). `wm` and `hybrid` draw no titlebar \
+       and ignore it.",
+    ),
+    k(
         "decoration.active-opacity",
         PCT,
         Float(1.0),
@@ -2865,6 +2875,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
         "settings.search.frecency" => V::Bool(c.settings.search_frecency),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
+        "decoration.titlebar-height" => V::Int(c.decoration.titlebar_height as i64),
         "decoration.active-opacity" => V::Float(widen(c.decoration.active_opacity)),
         "decoration.inactive-opacity" => V::Float(widen(c.decoration.inactive_opacity)),
         "decoration.dim-inactive" => V::Float(widen(c.decoration.dim_inactive)),

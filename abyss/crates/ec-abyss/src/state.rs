@@ -72,6 +72,8 @@ pub struct AbyssState {
     /// `mode "de"`: which windows to tile again and which to place afresh when
     /// the mode is left (`shell::de`, COMP-17 §2).
     pub de: crate::shell::de::DeLift,
+    /// Titlebar hover and press (COMP-05 §7.1).
+    pub bar_ui: crate::shell::titlebar::BarUi,
 
     /// Last-seen `Window::geometry().loc` per space element (COMP-05 §3).
     ///
@@ -525,6 +527,7 @@ impl AbyssState {
             popups: PopupManager::default(),
             fullscreen: std::collections::HashMap::new(),
             de: Default::default(),
+            bar_ui: Default::default(),
             geo_loc: std::collections::HashMap::new(),
             compositor_state,
             xdg_shell_state,

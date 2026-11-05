@@ -502,6 +502,7 @@ impl AbyssState {
         }
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(pos);
+        crate::shell::titlebar::motion(self, pos);
         // A protected surface is not pointed at by anything but a physical
         // device, and nothing is pointed at inside a commit slot (COMP-19).
         crate::protocols::protected::gate::note_pointer_origin(self);
@@ -576,6 +577,7 @@ impl AbyssState {
         };
         let under = self.surface_under(self.pointer_location);
         let location = self.pointer_location;
+        crate::shell::titlebar::motion(self, location);
         let under = crate::protocols::protected::gate::filter_under(
             self,
             under,
@@ -1104,6 +1106,10 @@ impl AbyssState {
     /// `on_pointer_button` so tests drive the real path.
     pub(crate) fn pointer_button(&mut self, button: u32, button_state: ButtonState, time: u32) {
         let pressed = button_state == ButtonState::Pressed;
+        // The release of a press a titlebar swallowed is swallowed, behind no gate.
+        if !pressed && crate::shell::titlebar::release(self, button) {
+            return;
+        }
         if self.lock.locked {
             self.locked_pointer_button(button, button_state, time);
             return;
@@ -1153,6 +1159,13 @@ impl AbyssState {
         // A compat lock held by an agent queues the human's buttons for the
         // locked window, delivered on release (COMP-04 §7).
         if crate::protocols::agent::lock::hold_button(self, button, pressed, time) {
+            return;
+        }
+        // A press on a titlebar is the compositor's (COMP-05 §7.1): it focuses
+        // and raises the window, a button acts on release, and no client hears
+        // either. Behind every gate above, so a prompt, the lock and a
+        // protected surface keep the pointer exactly as they did.
+        if crate::shell::titlebar::button(self, button, button_state) {
             return;
         }
         // A `mousebind` press (Alt+drag by default) starts a compositor-owned

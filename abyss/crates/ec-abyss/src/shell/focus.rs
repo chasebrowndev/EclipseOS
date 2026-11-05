@@ -259,12 +259,16 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
         // Override-redirect menus/tooltips are not focus targets: the pointer
         // over one keeps the owning client's focus. A layer surface on top
         // hides whatever window is behind it.
-        window_under: state
-            .space
-            .element_under(pos)
-            .filter(|_| layer_under.is_none())
-            .filter(|(w, _)| !crate::shell::is_unmanaged_x11(state, w))
-            .map(|(w, _)| w.clone()),
+        window_under: crate::shell::titlebar::bar_at(state, pos)
+            .map(|(w, _)| w)
+            .or_else(|| {
+                state
+                    .space
+                    .element_under(pos)
+                    .map(|(w, _)| w.clone())
+                    .filter(|w| !crate::shell::is_unmanaged_x11(state, w))
+            })
+            .filter(|_| layer_under.is_none()),
         layer_under,
         click: false,
         focused,
@@ -1174,6 +1178,8 @@ pub(crate) mod state_tests {
             ext_session_lock_v1::ExtSessionLockV1,
         };
         use wayland_protocols::xdg::shell::client::{
+            xdg_popup::XdgPopup,
+            xdg_positioner::{self, XdgPositioner},
             xdg_surface::{self, XdgSurface},
             xdg_toplevel::{self, XdgToplevel},
             xdg_wm_base::{self, XdgWmBase},
@@ -1206,6 +1212,8 @@ pub(crate) mod state_tests {
             maximized_configures: Vec<u32>,
             /// Whether the latest configure of each toplevel carried `maximized`.
             maximized_last: std::collections::HashMap<u32, bool>,
+            /// Toplevel ids that were sent `xdg_toplevel.close`.
+            closes: Vec<u32>,
         }
 
         /// A toplevel's three client objects, for tests that drive its
@@ -1308,6 +1316,8 @@ pub(crate) mod state_tests {
         delegate_noop!(Globals: ignore WlBuffer);
         delegate_noop!(Globals: ignore WlSurface);
         delegate_noop!(Globals: ignore WlOutput);
+        delegate_noop!(Globals: ignore XdgPopup);
+        delegate_noop!(Globals: XdgPositioner);
         impl Dispatch<XdgToplevel, ()> for Globals {
             fn event(
                 g: &mut Self,
@@ -1317,6 +1327,9 @@ pub(crate) mod state_tests {
                 _: &Connection,
                 _: &QueueHandle<Self>,
             ) {
+                if let xdg_toplevel::Event::Close = event {
+                    g.closes.push(toplevel.id().protocol_id());
+                }
                 if let xdg_toplevel::Event::Configure {
                     width,
                     height,
@@ -1497,6 +1510,31 @@ pub(crate) mod state_tests {
                 }
             }
 
+            /// An `xdg_popup` of `parent`, 20x20, its top-left corner at `offset`
+            /// from the parent's window-geometry origin, with `slide_y`
+            /// constraint adjustment. Committed and delivered.
+            pub fn create_popup(
+                &mut self,
+                h: &mut Harness,
+                parent: &Toplevel,
+                offset: (i32, i32),
+            ) -> (WlSurface, XdgPopup) {
+                let qh = self.queue.handle();
+                let wm = self.wm.as_ref().expect("xdg_wm_base");
+                let positioner = wm.create_positioner(&qh, ());
+                positioner.set_size(20, 20);
+                positioner.set_anchor_rect(offset.0, offset.1, 1, 1);
+                positioner.set_anchor(xdg_positioner::Anchor::TopLeft);
+                positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
+                positioner.set_constraint_adjustment(xdg_positioner::ConstraintAdjustment::SlideY);
+                let surface = self.surface();
+                let xdg = wm.get_xdg_surface(&surface, &qh, ());
+                let popup = xdg.get_popup(Some(&parent.xdg), &positioner, &qh, ());
+                surface.commit();
+                self.pump(h);
+                (surface, popup)
+            }
+
             /// Commit `surface` as it stands and deliver it.
             pub fn commit(&mut self, h: &mut Harness, surface: &WlSurface) {
                 surface.commit();
@@ -1534,6 +1572,11 @@ pub(crate) mod state_tests {
                     .iter()
                     .filter(|&&t| t == id)
                     .count()
+            }
+
+            /// Has `toplevel` been asked to close?
+            pub fn closed(&self, toplevel: &XdgToplevel) -> bool {
+                self.data.closes.contains(&toplevel.id().protocol_id())
             }
 
             /// Did the latest configure of `toplevel` carry `maximized`?
