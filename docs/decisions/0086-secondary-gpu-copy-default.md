@@ -65,3 +65,42 @@ sticky for the output (CPU copy), logged once at warn.
 
 - Copy cost shows up in frame times on real hardware.
 - smithay's `MultiRenderer` becomes cheap to adopt (0084's revisit trigger).
+
+## Amendment 2026-11-05 — import-scanout first, no EGLImage on the secondary
+
+Hardware report (Intel iGPU primary, NVIDIA secondary, HDMI on the NVIDIA):
+every secondary frame logged `rendering secondary frame` followed by
+`GL_INVALID_OPERATION ... EGLImage not supported`. The copy step imported the
+primary's transfer dmabuf as a texture on the secondary's GL context
+(`import_dmabuf` -> `glEGLImageTargetTexture2DOES`). smithay 0.7.0 does not
+check `glGetError` after that call (and none after
+`glEGLImageTargetRenderbufferStorageOES` when binding a buffer), so
+`import_dmabuf` returned `Ok`, the "sticky CPU copy" trigger (an `Err` from the
+import) could never fire, and the bad texture was drawn or the frame failed
+every time.
+
+A secondary output now takes one of three routes, decided once at bring-up and
+logged once per output at info (`secondary output route`, field `route`):
+
+1. `import-scanout` (preferred). The primary allocates a LINEAR buffer on its
+   own GBM, renders the whole output into it with its own renderer, and the
+   secondary's KMS imports it (PRIME fd import, `drmModeAddFB2`) for scanout.
+   The secondary's GL context is never used. Implemented as a `DrmCompositor`
+   whose allocator is the primary's and whose framebuffer exporter is the
+   secondary's (no import node, so every buffer is foreign). Constructing it
+   allocates, imports and test-commits a buffer: that is the probe. The
+   intersection of formats is LINEAR ARGB/XRGB/ABGR/XBGR8888 the primary can
+   render and the plane takes. Client buffers are never scanned out directly
+   on such an output and dmabuf feedback carries the primary's formats only.
+2. `cpu-copy`. The primary renders, `glReadPixels` reads the frame back, the
+   secondary uploads it as a plain texture. Chosen when the probe fails (one
+   warn with the reason), and sticky-demoted to at runtime after 3 consecutive
+   frames that cannot be queued (one warn). Never promoted back until restart.
+3. `own-gpu`. Primary-GPU outputs (so every single-GPU output, unchanged), a
+   secondary with `secondary-compositing` on, or a secondary with no usable
+   shared format outside `dedicated`.
+
+The dmabuf-texture copy variant is removed: no EGLImage is created on a
+secondary GL context. `dedicated` follows the same table. No config key
+changes. Unverified on the cross-GPU laptop; see the hardware test plan in the
+change that introduced this amendment.
