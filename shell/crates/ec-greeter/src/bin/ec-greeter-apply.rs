@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `ec-greeter-apply`: the root entry point of the login screen settings (ADR
-//! 0088). **TCB.** Installed to /usr/lib/eclipse/ec-greeter-apply and run only
+//! 0089). **TCB.** Installed to /usr/lib/eclipse/ec-greeter-apply and run only
 //! through pkexec under polkit action org.eclipse.greeter.apply.
 //!
 //!     ec-greeter-apply apply   < settings and raw RGBA, see `ec_greeter::Input`
