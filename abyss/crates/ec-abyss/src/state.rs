@@ -69,6 +69,10 @@ pub struct AbyssState {
     /// `None` for a window that was tiled. Abyss has no maximized state.
     pub fullscreen: std::collections::HashMap<Window, Option<smithay::utils::Rectangle<i32, Logical>>>,
 
+    /// `mode "de"`: which windows to tile again and which to place afresh when
+    /// the mode is left (`shell::de`, COMP-17 §2).
+    pub de: crate::shell::de::DeLift,
+
     /// Last-seen `Window::geometry().loc` per space element (COMP-05 §3).
     ///
     /// A toplevel that never calls `set_window_geometry` has its geometry
@@ -520,6 +524,7 @@ impl AbyssState {
             space: Space::default(),
             popups: PopupManager::default(),
             fullscreen: std::collections::HashMap::new(),
+            de: Default::default(),
             geo_loc: std::collections::HashMap::new(),
             compositor_state,
             xdg_shell_state,

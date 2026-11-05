@@ -31,6 +31,20 @@ pub(crate) fn merge_binds(defaults: Vec<Bind>, from_file: Vec<Bind>) -> Vec<Bind
     out
 }
 
+/// Binds a mode adds to the built-ins (COMP-17 §2). Defaults like the rest: a
+/// `bind` on the same chord replaces them. Under `de`, Alt+F4 closes the
+/// focused window. Alt+Tab and Quick Tile are later milestones.
+pub fn mode_default_binds(mode: Mode) -> Vec<Bind> {
+    match mode {
+        Mode::De => vec![Bind {
+            mods: m(false, false, false, true),
+            key: Keysym::F4,
+            action: Action::Close,
+        }],
+        Mode::Wm | Mode::Hybrid => Vec::new(),
+    }
+}
+
 /// The built-in binds, with the launcher's chords taken from
 /// `launcher.bind` in place of the shipped Super+E / Super+R. They are still
 /// defaults: a `bind` block on the same chord wins over them, and they win

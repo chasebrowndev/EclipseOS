@@ -39,6 +39,7 @@ impl Config {
                 "focus-follows-mouse" => {
                     if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
                         self.general.focus_follows_mouse = b;
+                        self.general.focus_follows_mouse_set = true;
                     }
                 }
                 "focus-follows-mouse-across-outputs" => {

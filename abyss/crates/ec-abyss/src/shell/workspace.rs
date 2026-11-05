@@ -31,6 +31,9 @@ pub struct Floating {
 pub struct Minimized {
     pub window: Window,
     pub was_floating: Option<Rectangle<i32, Logical>>,
+    /// Radiant weight to give the window when it is tiled on restore. Set when
+    /// leaving `mode "de"` for a window that was a tile before it (`shell::de`).
+    pub weight: Option<f64>,
 }
 
 /// Most-recently-focused-first history. Generic only so the ordering rules can
@@ -93,6 +96,11 @@ pub struct Workspace {
     /// against the current area. Clamping unconditionally would drag a
     /// window pinned by `place_at` off its exact position.
     pub(crate) last_area: Option<Rectangle<i32, Logical>>,
+    /// `mode "de"` only: the tiling tree as it stood when the mode floated
+    /// every tile (`shell::de`), so leaving the mode puts the survivors back
+    /// where they were, weights included. `remove` prunes it, so a window that
+    /// closes or moves away is never put back here.
+    pub(crate) stash: Option<Tree>,
     /// Per-workspace focus history, most recent first (COMP-05 §5, ADR 0042).
     /// Written only by `note_focused`, whose single caller is
     /// `shell::focus::focus_window` — the one place focus actually moves.
@@ -162,6 +170,9 @@ impl Workspace {
 
     pub fn remove(&mut self, w: &Window) -> bool {
         self.focus_history.remove(w);
+        if let Some(stash) = self.stash.as_mut() {
+            stash.remove(w);
+        }
         if let Some(i) = self.pending.iter().position(|p| p == w) {
             self.pending.remove(i);
             return true;

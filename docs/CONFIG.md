@@ -36,7 +36,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `mode` | wm \| hybrid \| de | `"hybrid"` | live | Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; `hybrid` adds window chips, tray and clock; `de` is a stacking desktop in the KDE manner, with titlebars, maximize, Quick Tile and desktop icons (being built, COMP-05 §7.1). Selects defaults that explicit configuration overrides; how windows stack and their chrome follow the mode. Applies on hot reload. |
+| `mode` | wm \| hybrid \| de | `"hybrid"` | live | Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; `hybrid` adds window chips, tray and clock; `de` is a stacking desktop in the KDE manner, with titlebars, maximize, Quick Tile and desktop icons (being built, COMP-05 §7.1). Selects defaults that explicit configuration overrides (binds, `general.focus-follows-mouse`); how windows stack and their chrome follow the mode. Under `de` nothing is tiled: new windows float, a `tile` rule and the tile binds (`toggle-floating` into tiling, `toggle-layout`, `priority-up` and `priority-down`, Super-held tile-on-drop) do nothing, and `Alt+F4` closes the focused window unless you bind that chord yourself. Entering `de` floats every tiled window where it is; leaving re-tiles them where they were. Applies on hot reload. |
 
 ### `components`
 
@@ -100,7 +100,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `general.border-size` | int 0..512 | `1` | live | Window border thickness, logical px. 0 disables borders. |
 | `general.layout` | radiant \| dwindle \| master | `"radiant"` | live | Default tiling layout for workspaces without their own. `radiant` is a weighted tree with drag-to-tile drop zones and per-window priority; `dwindle` is classic dwindle; `master` puts the first window on the left. |
 | `general.floating-placement` | centered \| pointer \| cascade | `"centered"` | live | Where a new floating window lands when no window rule places it. |
-| `general.focus-follows-mouse` | bool | `#true` | live | Move keyboard focus to the window under the pointer. |
+| `general.focus-follows-mouse` | bool | `#true` | live | Move keyboard focus to the window under the pointer. Under `mode "de"` it defaults to off; a value written here wins. `get_config` serves the mode's default as `default` and `source` null until a file writes the key. |
 | `general.focus-follows-mouse-across-outputs` | bool | `#true` | live | Let pointer motion move focus to another output. Off keeps focus on the current output until you click. |
 | `general.cursor-follows-moved-window` | bool | `#true` | live | Move the pointer onto a window when a keybind moves it, instead of leaving the cursor behind. |
 | `general.follow-window-to-workspace` | bool | `#true` | live | Follow a window sent to another workspace or display, instead of staying where you are. |

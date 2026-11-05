@@ -3418,3 +3418,110 @@ fn shared_accent_overrides_theme_and_annotations_follow_unless_explicit() {
     cfg.apply_appearance(cfg.appearance_for(ec_theme::Scheme::Dark));
     assert_eq!(hex_rgb(cfg.annotations.accent), "#ff0000");
 }
+
+// ---- `mode` defaults (COMP-17 §2, C-24) ------------------------------------
+
+/// Load `text` as the one config file, so the whole path (parse, bind merge,
+/// mode resolution) runs, as a reload does.
+fn load_text(tag: &str, text: &str) -> Config {
+    let dir = std::env::temp_dir().join(format!("abyss-cfg-mode-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("abyss.kdl");
+    std::fs::write(&f, text).unwrap();
+    let cfg = Config::load(Some(&f));
+    std::fs::remove_dir_all(&dir).ok();
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    cfg
+}
+
+#[test]
+fn the_mode_profile_stacks_only_under_de() {
+    assert!(Mode::De.profile().stacking);
+    assert!(!Mode::Wm.profile().stacking);
+    assert!(!Mode::Hybrid.profile().stacking);
+    assert!(Mode::Wm.profile().focus_follows_mouse);
+    assert!(Mode::Hybrid.profile().focus_follows_mouse);
+    assert!(!Mode::De.profile().focus_follows_mouse);
+}
+
+#[test]
+fn focus_follows_mouse_defaults_with_the_mode_and_an_explicit_key_wins() {
+    for (mode, default) in [("wm", true), ("hybrid", true), ("de", false)] {
+        let cfg = load_text(&format!("ffm-{mode}"), &format!("mode \"{mode}\"\n"));
+        assert_eq!(cfg.general.focus_follows_mouse, default, "{mode} default");
+        assert!(!cfg.general.focus_follows_mouse_set, "{mode}: nothing written");
+        for explicit in [true, false] {
+            let cfg = load_text(
+                &format!("ffm-{mode}-{explicit}"),
+                &format!("mode \"{mode}\"\ngeneral {{ focus-follows-mouse #{explicit}; }}\n"),
+            );
+            assert_eq!(
+                cfg.general.focus_follows_mouse, explicit,
+                "{mode} explicit {explicit}"
+            );
+            assert!(cfg.general.focus_follows_mouse_set);
+        }
+    }
+}
+
+/// A reload re-resolves from the files: the key's order against `mode` in the
+/// file does not matter, and dropping the key hands the value back to the mode.
+#[test]
+fn focus_follows_mouse_resolution_survives_reload_and_key_order() {
+    let a = load_text("order-a", "general { focus-follows-mouse #true; }\nmode \"de\"\n");
+    let b = load_text("order-b", "mode \"de\"\ngeneral { focus-follows-mouse #true; }\n");
+    assert!(a.general.focus_follows_mouse && b.general.focus_follows_mouse);
+
+    let dir = std::env::temp_dir().join(format!("abyss-cfg-mode-reload-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let f = dir.join("abyss.kdl");
+    std::fs::write(&f, "mode \"de\"\ngeneral { focus-follows-mouse #true; }\n").unwrap();
+    let cfg = Config::load(Some(&f));
+    assert!(cfg.general.focus_follows_mouse && cfg.general.focus_follows_mouse_set);
+    std::fs::write(&f, "mode \"de\"\n").unwrap();
+    let cfg = cfg.reload();
+    assert!(
+        !cfg.general.focus_follows_mouse,
+        "key removed: the mode's default again"
+    );
+    assert!(!cfg.general.focus_follows_mouse_set);
+    std::fs::write(&f, "mode \"hybrid\"\n").unwrap();
+    let cfg = cfg.reload();
+    assert!(
+        cfg.general.focus_follows_mouse,
+        "mode changed: the new mode's default"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+fn alt_f4(cfg: &Config) -> Option<Action> {
+    let alt = ModifiersState {
+        alt: true,
+        ..Default::default()
+    };
+    cfg.action_for(&alt, Keysym::F4).cloned()
+}
+
+#[test]
+fn de_binds_alt_f4_to_close_and_the_file_overrides_it() {
+    assert_eq!(alt_f4(&load_text("f4-de", "mode \"de\"\n")), Some(Action::Close));
+    assert_eq!(alt_f4(&load_text("f4-wm", "mode \"wm\"\n")), None);
+    assert_eq!(alt_f4(&load_text("f4-hybrid", "")), None);
+    let own = load_text("f4-own", "mode \"de\"\nbind \"ALT\" \"F4\" { spawn \"true\"; }\n");
+    assert_eq!(alt_f4(&own), Some(Action::Spawn("true".into())));
+    // The profile bind is not part of the base table, and appears once.
+    let de = load_text("f4-once", "mode \"de\"\n");
+    assert_eq!(de.binds.iter().filter(|b| b.key == Keysym::F4).count(), 1);
+}
+
+/// Reserved chords stay reserved and present in every mode.
+#[test]
+fn de_keeps_the_reserved_binds() {
+    let cfg = load_text("reserved", "mode \"de\"\n");
+    let sup = ModifiersState {
+        logo: true,
+        ..Default::default()
+    };
+    assert_eq!(cfg.action_for(&sup, Keysym::Escape), Some(&Action::AgentOverride));
+    assert_eq!(cfg.action_for(&sup, Keysym::space), Some(&Action::AgentAttention));
+}

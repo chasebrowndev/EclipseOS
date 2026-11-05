@@ -43,7 +43,14 @@ pub struct General {
     pub border_size: i32,
     pub layout: LayoutKind,
     pub floating_placement: FloatingPlacement,
+    /// The effective value: the file's, else the mode's default
+    /// ([`ModeProfile::focus_follows_mouse`]). Resolved after parsing by
+    /// `Config::resolve_mode_defaults`; read this, not the file.
     pub focus_follows_mouse: bool,
+    /// Whether any config file wrote `focus-follows-mouse`. An explicit key
+    /// always beats the mode's default (COMP-17 §2); this is what tells the
+    /// two apart, on load and on every reload, and what `get_config` reports.
+    pub focus_follows_mouse_set: bool,
     pub focus_follows_mouse_across_outputs: bool,
     pub unfocus_on_empty_workspace: bool,
     pub refocus_on_scene_change: bool,
@@ -102,6 +109,7 @@ impl Default for General {
             layout: LayoutKind::Radiant,
             floating_placement: FloatingPlacement::Centered,
             focus_follows_mouse: true,
+            focus_follows_mouse_set: false,
             focus_follows_mouse_across_outputs: true,
             unfocus_on_empty_workspace: true,
             refocus_on_scene_change: true,
@@ -300,7 +308,26 @@ pub enum Mode {
     De,
 }
 
+/// What a [`Mode`] selects (COMP-17 §2, C-24). Derived from the mode, never
+/// written to a config file, never read back from one. Only what a milestone
+/// uses is here; later ones add their fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeProfile {
+    /// Windows stack and nothing is tiled (COMP-05 §3.1, §7.1). This follows
+    /// the mode and is not a default: no key overrides it.
+    pub stacking: bool,
+    /// Default for `general.focus-follows-mouse`; an explicit key wins.
+    pub focus_follows_mouse: bool,
+}
+
 impl Mode {
+    pub fn profile(self) -> ModeProfile {
+        ModeProfile {
+            stacking: self == Mode::De,
+            focus_follows_mouse: self != Mode::De,
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Mode::Wm => "wm",

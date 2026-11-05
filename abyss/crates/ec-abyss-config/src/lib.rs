@@ -99,6 +99,7 @@ pub fn parse_single_for_tests(text: &str) -> Config {
         ..Config::default()
     };
     cfg.apply(&doc, &mut Vec::new());
+    cfg.resolve_mode_defaults();
     cfg.finish_themes();
     cfg
 }
@@ -342,7 +343,11 @@ impl Config {
         }
         let mut defaults = oracle_eyes_binds(&cfg.oracle_eyes);
         defaults.extend(defaults_with_launcher(&cfg.launcher));
+        // The mode's own default binds sit under the file's and the launcher's
+        // chords: `merge_binds` lets any explicit chord replace them.
+        defaults.extend(mode_default_binds(cfg.mode));
         cfg.binds = merge_binds(defaults, binds_from_file);
+        cfg.resolve_mode_defaults();
         cfg.finish_themes();
         if !any {
             tracing::info!("no config found, using built-in defaults");
@@ -350,6 +355,15 @@ impl Config {
             tracing::info!(sources = ?cfg.sources.iter().map(|s| &s.path).collect::<Vec<_>>(), binds = cfg.binds.len(), "config loaded");
         }
         cfg
+    }
+
+    /// Fill every key the mode defaults and no file wrote (COMP-17 §2). Runs
+    /// on each load, so a reload that changes `mode` or drops an explicit key
+    /// re-resolves from scratch; nothing here is ever written back to a file.
+    pub(crate) fn resolve_mode_defaults(&mut self) {
+        if !self.general.focus_follows_mouse_set {
+            self.general.focus_follows_mouse = self.mode.profile().focus_follows_mouse;
+        }
     }
 
     /// Re-read the same sources. The inotify watcher (`config::watch`) calls

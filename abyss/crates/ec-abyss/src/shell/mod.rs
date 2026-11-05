@@ -2,6 +2,7 @@
 //! Window management: placement, layout, workspaces, focus (COMP-05).
 
 pub mod anim;
+pub mod de;
 mod drop_guides;
 pub mod focus;
 pub mod layout;
@@ -455,9 +456,28 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         let entry = state.outputs.get_mut(id).expect("checked above");
         std::mem::take(&mut entry.workspaces[ws].pending)
     };
-    for w in pending {
+    let stacking = de::stacking(state);
+    let adopt_rect = if stacking && !pending.is_empty() {
+        de::default_float_rect(state, id, area)
+    } else {
+        Rectangle::default()
+    };
+    for (i, w) in pending.into_iter().enumerate() {
         let entry = state.outputs.get_mut(id).expect("checked above");
-        entry.workspaces[ws].tiled.insert(w, None, area, pointer);
+        if stacking {
+            // Step each adopted window along a diagonal so none hides another.
+            let step = Point::from((32 * i as i32, 32 * i as i32));
+            entry.workspaces[ws].floating.push(Floating {
+                window: w,
+                rect: de::carried_rect(adopt_rect, step, area),
+                weight: None,
+            });
+        } else {
+            entry.workspaces[ws].tiled.insert(w, None, area, pointer);
+        }
+    }
+    if stacking {
+        de::lift_stray(state, id, area);
     }
 
     // A close on this workspace is still playing: leave its tiles where they
@@ -711,6 +731,9 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
     if !install(state, &window, &placement) {
         return;
     }
+    if de::stacking(state) {
+        state.de.note_opened(&window);
+    }
     let handle = state.ipc.handle_for(&window);
     crate::ipc::emit(
         state,
@@ -790,6 +813,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
     let steal_blocked = placement.no_focus_steal || (parent.is_some() && state.focus != parent);
     let mode = state.config.general.floating_placement;
     let pointer = state.pointer_location;
+    let stacking = de::stacking(state);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = placement
         .workspace
@@ -804,7 +828,8 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
         .x11_surface()
         .and_then(|x| x.min_size())
         .unwrap_or_default();
-    if placement.float {
+    // Under `de` nothing tiles: a `tile` rule or the default still floats.
+    if placement.float || stacking {
         let size = placement
             .size
             .map(Size::from)
@@ -976,6 +1001,7 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     state.borders.remove(window);
     state.geo_loc.remove(window);
     state.fullscreen.remove(window);
+    state.de.forget(window);
     state.urgent.retain(|w| w != window);
     crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);
@@ -1422,6 +1448,7 @@ pub fn minimize_window(state: &mut AbyssState, window: &Window) {
     entry.workspaces[ws].minimized.push(workspace::Minimized {
         window: window.clone(),
         was_floating,
+        weight: None,
     });
     anim::minimize(state, window);
     state.space.unmap_elem(window);
@@ -1465,6 +1492,8 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
     let pointer = state.pointer_location;
+    let stacking = de::stacking(state);
+    let default_rect = de::default_float_rect(state, id, area);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let Some(ws) = entry.workspaces.iter().position(|w| w.is_minimized(window)) else {
         return;
@@ -1481,9 +1510,19 @@ pub fn unminimize_window(state: &mut AbyssState, window: &Window) {
             rect,
             weight: None,
         }),
-        None => entry.workspaces[ws]
-            .tiled
-            .insert(window.clone(), None, area, pointer),
+        None if stacking => entry.workspaces[ws].floating.push(Floating {
+            window: window.clone(),
+            rect: default_rect,
+            weight: None,
+        }),
+        None => {
+            entry.workspaces[ws]
+                .tiled
+                .insert(window.clone(), None, area, pointer);
+            if let Some(wt) = restored.weight {
+                entry.workspaces[ws].tiled.set_weight(window, wt);
+            }
+        }
     }
     if let Some(x11) = window.x11_surface() {
         let _ = x11.set_mapped(true);
@@ -1614,6 +1653,10 @@ pub(crate) fn centered_in(
 }
 
 pub fn toggle_floating(state: &mut AbyssState) {
+    // Floating -> tiled is the tile-only half; nothing is tiled under `de`.
+    if de::stacking(state) {
+        return;
+    }
     let Some(window) = state.focus.clone() else { return };
     // Leave fullscreen first, or the `fullscreen` entry outlives the float and
     // the next fullscreen bind reads it as "already on".
@@ -1803,6 +1846,8 @@ fn set_x11_fullscreen_now(state: &mut AbyssState, window: &Window, on: bool) {
         let restore = state.fullscreen.remove(window);
         let area = tiling_area(state, &output);
         let pointer = state.pointer_location;
+        let stacking = de::stacking(state);
+        let default_rect = de::default_float_rect(state, id, area);
         let ws = home_workspace(state, id, window);
         detach_from_layout(state, id, window);
         let entry = state.outputs.get_mut(id).expect("just resolved");
@@ -1810,6 +1855,11 @@ fn set_x11_fullscreen_now(state: &mut AbyssState, window: &Window, on: bool) {
             Some(rect) => entry.workspaces[ws].floating.push(Floating {
                 window: window.clone(),
                 rect,
+                weight: None,
+            }),
+            None if stacking => entry.workspaces[ws].floating.push(Floating {
+                window: window.clone(),
+                rect: default_rect,
                 weight: None,
             }),
             None => entry.workspaces[ws]
@@ -1972,6 +2022,8 @@ fn unfullscreen_toplevel_now(
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
     let pointer = state.pointer_location;
+    let stacking = de::stacking(state);
+    let default_rect = de::default_float_rect(state, id, area);
 
     let ws = home_workspace(state, id, &window);
     detach_from_layout(state, id, &window);
@@ -1984,6 +2036,14 @@ fn unfullscreen_toplevel_now(
                 weight: None,
             });
             rect.size
+        }
+        None if stacking => {
+            entry.workspaces[ws].floating.push(Floating {
+                window: window.clone(),
+                rect: default_rect,
+                weight: None,
+            });
+            default_rect.size
         }
         None => {
             entry.workspaces[ws]
@@ -2004,6 +2064,9 @@ fn unfullscreen_toplevel_now(
 }
 
 pub fn toggle_layout(state: &mut AbyssState) {
+    if de::stacking(state) {
+        return;
+    }
     let Some(id) = state.outputs.focused().map(|e| e.id) else {
         return;
     };
@@ -2063,6 +2126,9 @@ pub fn focus_direction(state: &mut AbyssState, dir: Direction) {
 /// Swap the focused tiled window with its neighbour in `dir`. A floating
 /// window is not moved here; it is dragged with a `mousebind` (ADR 0057).
 pub fn move_direction(state: &mut AbyssState, dir: Direction) {
+    if de::stacking(state) {
+        return;
+    }
     let Some(from) = state.focus.clone() else { return };
     let Some(id) = output_of_window(state, &from) else {
         return;
@@ -2093,6 +2159,9 @@ fn active_layout(state: &AbyssState, id: u64) -> Option<(usize, LayoutKind)> {
 /// (COMP-05 §3.1 priority). Radiant only: classic dwindle and master ignore
 /// weights, and a floating window has none.
 pub fn adjust_priority(state: &mut AbyssState, delta: i32) {
+    if de::stacking(state) {
+        return;
+    }
     let Some(window) = state.focus.clone() else { return };
     let Some(id) = output_of_window(state, &window) else {
         return;
@@ -2215,8 +2284,15 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
     let pointer = state.pointer_location;
+    let stacking = de::stacking(state);
+    let default_rect = de::default_float_rect(state, id, area);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let active = entry.active;
+    let floating_rect = entry.workspaces[active]
+        .floating
+        .iter()
+        .find(|f| f.window == window)
+        .map(|f| f.rect);
     entry.workspaces[active].remove(&window);
     let follow = state.config.general.follow_window_to_workspace;
     let from = state.space.element_geometry(&window);
@@ -2226,9 +2302,17 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
     }
     state.space.unmap_elem(&window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
-    entry.workspaces[target]
-        .tiled
-        .insert(window.clone(), None, area, pointer);
+    if stacking {
+        entry.workspaces[target].floating.push(Floating {
+            window: window.clone(),
+            rect: floating_rect.unwrap_or(default_rect),
+            weight: None,
+        });
+    } else {
+        entry.workspaces[target]
+            .tiled
+            .insert(window.clone(), None, area, pointer);
+    }
     state.focus = None;
     arrange(state);
     refocus_topmost(state);
@@ -2276,16 +2360,41 @@ pub fn move_to_output_workspace(state: &mut AbyssState, number: u8) {
     let area = tiling_area(state, &target_output);
     let pointer = state.pointer_location;
 
+    let stacking = de::stacking(state);
+    let offset = match (
+        state
+            .outputs
+            .get(source_id)
+            .and_then(|e| state.space.output_geometry(&e.output)),
+        state.space.output_geometry(&target_output),
+    ) {
+        (Some(src), Some(dst)) => dst.loc - src.loc,
+        _ => Point::default(),
+    };
+    let default_rect = de::default_float_rect(state, target_id, area);
     let source_entry = state.outputs.get_mut(source_id).expect("just resolved");
+    let floating_rect = source_entry.workspaces[source_active]
+        .floating
+        .iter()
+        .find(|f| f.window == window)
+        .map(|f| f.rect);
     source_entry.workspaces[source_active].remove(&window);
     let source_output = source_entry.output.clone();
     anim::leave_output(state, &window, &source_output, &target_output);
     state.space.unmap_elem(&window);
 
     let target_entry = state.outputs.get_mut(target_id).expect("just resolved");
-    target_entry.workspaces[target_ws]
-        .tiled
-        .insert(window.clone(), None, area, pointer);
+    if stacking {
+        target_entry.workspaces[target_ws].floating.push(Floating {
+            window: window.clone(),
+            rect: floating_rect.map_or(default_rect, |r| de::carried_rect(r, offset, area)),
+            weight: None,
+        });
+    } else {
+        target_entry.workspaces[target_ws]
+            .tiled
+            .insert(window.clone(), None, area, pointer);
+    }
 
     state.focus = None;
     arrange(state);
@@ -2427,9 +2536,21 @@ pub fn move_workspace_to_output(
     layer_map_for_output(&dst_output).arrange();
     let area = tiling_area(state, &dst_output);
     let pointer = state.pointer_location;
+    let stacking = de::stacking(state);
+    let default_rect = de::default_float_rect(state, to, area);
     let dst = state.outputs.get_mut(to).expect("checked above");
-    for w in tiled.into_iter().chain(pending) {
-        dst.workspaces[target].tiled.insert(w, None, area, pointer);
+    for (i, w) in tiled.into_iter().chain(pending).enumerate() {
+        if stacking {
+            // Nothing tiles under `de`; step along a diagonal so none hides another.
+            let step = Point::from((32 * i as i32, 32 * i as i32));
+            dst.workspaces[target].floating.push(Floating {
+                window: w,
+                rect: de::carried_rect(default_rect, step, area),
+                weight: None,
+            });
+        } else {
+            dst.workspaces[target].tiled.insert(w, None, area, pointer);
+        }
     }
     for mut f in floating {
         // The rectangle is in global logical coordinates, so carry it across

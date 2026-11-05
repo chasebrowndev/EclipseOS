@@ -311,7 +311,14 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
             Decision::Allow
         );
         let (ty, constraints) = ty_json(key.path, &key.ty);
-        let default = default_json(&key.default);
+        let mut default = default_json(&key.default);
+        // A default the mode selects (COMP-17 §2) is the default the human is
+        // looking at, and it is not a value any file wrote: `source` follows
+        // whether a file did, not whether the value differs from the default.
+        let mode_defaulted = key.path == "general.focus-follows-mouse";
+        if mode_defaulted {
+            default = json!(state.config.mode.profile().focus_follows_mouse);
+        }
         // A key in the closed file is listed, never read. The GUI shows it,
         // greyed, with its documentation — an invisible setting is worse than
         // a visible one the human cannot change.
@@ -322,7 +329,10 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
         } else {
             Value::Null
         };
-        let source = if !readable || value == default {
+        let source = if !readable
+            || (mode_defaulted && !state.config.general.focus_follows_mouse_set)
+            || (!mode_defaulted && value == default)
+        {
             Value::Null
         } else {
             target_path(&state.config, key.owner).map_or(Value::Null, |p| json!(p.display().to_string()))
@@ -1473,6 +1483,49 @@ mod tests {
                 "bar {\n    rounding 6\n}\n"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// COMP-17 §2: `focus-follows-mouse` under `de` is served as the mode's
+    /// default (off, no source) until a file writes it; an explicit value
+    /// wins and names its file.
+    #[test]
+    fn focus_follows_mouse_reports_the_mode_default_and_an_explicit_value() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-ffm-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        let row = |h: &mut crate::shell::focus::state_tests::Harness, text: &str| {
+            std::fs::write(&file, text).unwrap();
+            h.state.config = Config::load(Some(&file));
+            let got = get_config(
+                &mut h.state,
+                Decision::Allow,
+                &json!({"path": "general.focus-follows-mouse"}),
+            )
+            .ok()
+            .expect("readable");
+            got["keys"][0].clone()
+        };
+        let r = row(&mut h, "mode \"de\"\n");
+        assert_eq!(
+            (&r["value"], &r["default"], &r["source"]),
+            (&json!(false), &json!(false), &Value::Null)
+        );
+        let r = row(&mut h, "mode \"de\"\ngeneral { focus-follows-mouse #true; }\n");
+        assert_eq!(r["value"], json!(true));
+        assert_eq!(r["default"], json!(false));
+        assert!(r["source"].is_string(), "{r}");
+        let r = row(&mut h, "mode \"de\"\ngeneral { focus-follows-mouse #false; }\n");
+        assert!(
+            r["source"].is_string(),
+            "an explicit value equal to the default still has a source"
+        );
+        let r = row(&mut h, "mode \"hybrid\"\n");
+        assert_eq!(
+            (&r["value"], &r["default"], &r["source"]),
+            (&json!(true), &json!(true), &Value::Null)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

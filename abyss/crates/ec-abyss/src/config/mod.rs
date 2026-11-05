@@ -38,7 +38,10 @@ pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
         .iter()
         .map(|s| s.path.display().to_string())
         .collect();
+    let old_mode = state.config.mode;
     state.config = next;
+    // `mode` moved: float or re-tile the windows before the arrange below.
+    crate::shell::de::mode_changed(state, old_mode, state.config.mode);
     // The theme follows the new config (ADR 0084); emits `theme` if it moved.
     crate::theme::refresh(state);
     // ext_background_effect_v1: `blur` is advertised only while blur is on.

@@ -393,6 +393,12 @@ fn get_windows(state: &mut AbyssState) -> Reply {
             "workspace": workspace,
             "floating": is_floating(state, &w),
             "minimized": crate::shell::is_minimized(state, &w),
+            // Where it is drawn, global logical px; null while minimized or
+            // on an inactive workspace (not in the space).
+            "rect": state
+                .space
+                .element_geometry(&w)
+                .map(|g| json!({"x": g.loc.x, "y": g.loc.y, "w": g.size.w, "h": g.size.h})),
             // The client's pid, so the owner's own shell can tie a window to
             // the rest of the session's view of that process — a taskbar
             // matching an audio stream to the window that plays it, say.

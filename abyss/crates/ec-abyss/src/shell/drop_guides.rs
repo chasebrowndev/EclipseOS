@@ -245,7 +245,8 @@ pub(crate) fn drop_candidates<W: Clone + PartialEq>(
 /// Super held) on the active workspace of a Radiant output, and neither
 /// fullscreen.
 fn start_tile_drag(state: &mut AbyssState, window: &Window) {
-    if state.lock.locked || state.fullscreen.contains_key(window) {
+    // Tile-on-drop, with or without Super, is a tiling feature (COMP-05 §3.1).
+    if state.lock.locked || state.fullscreen.contains_key(window) || super::de::stacking(state) {
         return;
     }
     let Some(id) = output_of_window(state, window) else {

@@ -698,3 +698,454 @@ mod held_layer_offset {
         assert_eq!(held_offset(anchor, sz(1920, 30), sz(1920, 30)), (0, 0).into());
     }
 }
+
+/// `mode "de"` (COMP-17 §2, COMP-05 §3.1, C-24): nothing tiles, and the flip
+/// in either direction is live. Driven end to end by a real client.
+mod de_mode {
+    use super::*;
+    use crate::config::Mode;
+    use crate::shell::focus::state_tests::{
+        client::{Client, Toplevel},
+        harness, Harness,
+    };
+
+    fn window_of(h: &Harness, t: &Toplevel) -> Window {
+        use wayland_client::Proxy;
+        let id = t.surface.id().protocol_id();
+        owned_windows(&h.state)
+            .into_iter()
+            .find(|w| {
+                window_surface(w)
+                    .is_some_and(|s| smithay::reexports::wayland_server::Resource::id(&s).protocol_id() == id)
+            })
+            .expect("placed")
+    }
+
+    fn map(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
+        let t = c.create_toplevel(h);
+        c.commit(h, &t.surface);
+        c.attach(h, &t.surface);
+        let w = window_of(h, &t);
+        (t, w)
+    }
+
+    /// A dialog of `parent`, mapped.
+    fn dialog(h: &mut Harness, c: &mut Client, parent: &Toplevel) -> (Toplevel, Window) {
+        let t = c.create_toplevel(h);
+        t.toplevel.set_parent(Some(&parent.toplevel));
+        c.commit(h, &t.surface);
+        c.attach(h, &t.surface);
+        let w = window_of(h, &t);
+        (t, w)
+    }
+
+    /// Reload with `mode` changed, through the same path a config reload takes.
+    fn flip(h: &mut Harness, mode: Mode) {
+        let mut next = h.state.config.clone();
+        next.mode = mode;
+        crate::config::apply_loaded(&mut h.state, next);
+    }
+
+    #[derive(Debug, PartialEq, Clone, Copy)]
+    enum At {
+        Tiled(u64, usize),
+        Floating(u64, usize),
+        Minimized(u64, usize),
+        Nowhere,
+    }
+
+    fn at(h: &Harness, w: &Window) -> At {
+        for e in h.state.outputs.iter() {
+            for (i, ws) in e.workspaces.iter().enumerate() {
+                if ws.tiled.contains(w) {
+                    return At::Tiled(e.id, i);
+                }
+                if ws.floating.iter().any(|f| &f.window == w) {
+                    return At::Floating(e.id, i);
+                }
+                if ws.is_minimized(w) {
+                    return At::Minimized(e.id, i);
+                }
+            }
+        }
+        At::Nowhere
+    }
+
+    fn loc(h: &Harness, w: &Window) -> Point<i32, Logical> {
+        h.state.space.element_geometry(w).expect("mapped").loc
+    }
+
+    fn focus(h: &mut Harness, w: &Window) {
+        crate::shell::focus::focus_window(&mut h.state, w);
+    }
+
+    fn active(h: &Harness, id: u64) -> &workspace::Workspace {
+        let e = h.state.outputs.get(id).expect("output");
+        &e.workspaces[e.active]
+    }
+
+    #[test]
+    fn entering_floats_every_tile_in_place_and_leaving_puts_them_back_with_weights() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        let (_cc, w3) = map(&mut h, &mut c);
+        let At::Tiled(id, _) = at(&h, &a) else {
+            panic!("tiles")
+        };
+        h.state.outputs.get_mut(id).unwrap().workspaces[0]
+            .tiled
+            .set_weight(&b, 1.8);
+        arrange(&mut h.state);
+        let order = active(&h, id).tiled.windows();
+        let before: Vec<_> = [&a, &b, &w3].iter().map(|w| loc(&h, w)).collect();
+
+        flip(&mut h, Mode::De);
+        for w in [&a, &b, &w3] {
+            assert_eq!(at(&h, w), At::Floating(id, 0), "floated");
+        }
+        assert!(active(&h, id).tiled.windows().is_empty());
+        let after: Vec<_> = [&a, &b, &w3].iter().map(|w| loc(&h, w)).collect();
+        assert_eq!(before, after, "at the rect each tile had");
+
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!(active(&h, id).tiled.windows(), order, "same tree, same order");
+        assert_eq!(active(&h, id).tiled.weight_of(&b), Some(1.8));
+        assert!(active(&h, id).floating.is_empty());
+        let back: Vec<_> = [&a, &b, &w3].iter().map(|w| loc(&h, w)).collect();
+        assert_eq!(before, back, "and in the same places");
+        assert!(h.state.de.forget_is_clean());
+    }
+
+    #[test]
+    fn every_workspace_and_output_is_lifted_not_only_the_active_one() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        switch_workspace(&mut h.state, 3);
+        let (_b, b) = map(&mut h, &mut c);
+        switch_workspace(&mut h.state, 1);
+        h.state.outputs.set_focused(h.b);
+        let (_d, d) = map(&mut h, &mut c);
+        let (ia, ib) = (h.a, h.b);
+        assert_eq!(at(&h, &a), At::Tiled(ia, 0));
+        assert_eq!(at(&h, &b), At::Tiled(ia, 2));
+        assert_eq!(at(&h, &d), At::Tiled(ib, 0));
+
+        flip(&mut h, Mode::De);
+        assert_eq!(at(&h, &a), At::Floating(ia, 0));
+        assert_eq!(at(&h, &b), At::Floating(ia, 2), "a hidden workspace too");
+        assert_eq!(at(&h, &d), At::Floating(ib, 0), "the other output too");
+
+        flip(&mut h, Mode::Wm);
+        assert_eq!(at(&h, &a), At::Tiled(ia, 0));
+        assert_eq!(at(&h, &b), At::Tiled(ia, 2));
+        assert_eq!(at(&h, &d), At::Tiled(ib, 0));
+    }
+
+    #[test]
+    fn wm_to_hybrid_touches_no_window() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        focus(&mut h, &b);
+        toggle_floating(&mut h.state);
+        let (ta, tb) = (at(&h, &a), at(&h, &b));
+        flip(&mut h, Mode::Wm);
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!((at(&h, &a), at(&h, &b)), (ta, tb));
+        assert!(matches!(tb, At::Floating(..)));
+        assert!(h.state.de.forget_is_clean(), "nothing recorded");
+    }
+
+    #[test]
+    fn a_window_that_floated_before_de_stays_floating_after() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        focus(&mut h, &b);
+        toggle_floating(&mut h.state);
+        flip(&mut h, Mode::De);
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &b), At::Floating(..)), "still floating");
+        assert!(matches!(at(&h, &a), At::Tiled(..)));
+    }
+
+    #[test]
+    fn new_windows_float_under_de_and_are_placed_by_default_on_leaving() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        flip(&mut h, Mode::De);
+        let (p, pw) = map(&mut h, &mut c);
+        let (_d, dw) = dialog(&mut h, &mut c, &p);
+        assert!(matches!(at(&h, &pw), At::Floating(..)), "a new window floats");
+        assert!(matches!(at(&h, &dw), At::Floating(..)));
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &pw), At::Tiled(..)), "default placement tiles it");
+        assert!(matches!(at(&h, &dw), At::Floating(..)), "a dialog stays floating");
+    }
+
+    #[test]
+    fn a_tile_rule_does_not_tile_under_de() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let rules = crate::config::parse_single_for_tests("windowrule \"tile\" { app-id \".*\"; }\n");
+        assert!(rules.errors.is_empty(), "{:?}", rules.errors);
+        h.state.config.window_rules = rules.window_rules;
+        assert!(!h.state.config.window_rules.is_empty());
+        // Control: under hybrid the rule tiles a dialog.
+        let (p, _) = map(&mut h, &mut c);
+        let (_d, dw) = dialog(&mut h, &mut c, &p);
+        assert!(matches!(at(&h, &dw), At::Tiled(..)), "the rule tiles in hybrid");
+        flip(&mut h, Mode::De);
+        let (_d2, dw2) = dialog(&mut h, &mut c, &p);
+        assert!(matches!(at(&h, &dw2), At::Floating(..)), "and does not under de");
+    }
+
+    #[test]
+    fn tile_only_actions_do_nothing_under_de() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        flip(&mut h, Mode::De);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        focus(&mut h, &b);
+        toggle_floating(&mut h.state);
+        assert!(
+            matches!(at(&h, &b), At::Floating(..)),
+            "toggle-floating never tiles"
+        );
+        toggle_layout(&mut h.state);
+        assert!(h
+            .state
+            .outputs
+            .iter()
+            .all(|e| e.workspaces.iter().all(|w| w.layout.is_none())));
+        adjust_priority(&mut h.state, 1);
+        move_direction(&mut h.state, Direction::Left);
+        assert!(matches!(at(&h, &a), At::Floating(..)) && matches!(at(&h, &b), At::Floating(..)));
+        assert!(h.state.tile_drag.is_none());
+    }
+
+    #[test]
+    fn a_minimized_tile_floats_when_restored_under_de_and_tiles_again_on_leaving() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        focus(&mut h, &b);
+        minimize_focused(&mut h.state);
+        assert!(matches!(at(&h, &b), At::Minimized(..)));
+
+        flip(&mut h, Mode::De);
+        assert!(matches!(at(&h, &b), At::Minimized(..)), "still minimized");
+        unminimize_window(&mut h.state, &b);
+        assert!(matches!(at(&h, &b), At::Floating(..)), "restored floating");
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &b), At::Tiled(..)) && matches!(at(&h, &a), At::Tiled(..)));
+
+        // Minimized across the whole of de, and across a de-minimize.
+        focus(&mut h, &b);
+        minimize_focused(&mut h.state);
+        flip(&mut h, Mode::De);
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &b), At::Minimized(..)));
+        unminimize_window(&mut h.state, &b);
+        assert!(matches!(at(&h, &b), At::Tiled(..)), "restores into the layout");
+
+        // A window floated under de and minimized there tiles on restore after.
+        flip(&mut h, Mode::De);
+        focus(&mut h, &b);
+        minimize_focused(&mut h.state);
+        flip(&mut h, Mode::Hybrid);
+        unminimize_window(&mut h.state, &b);
+        assert!(matches!(at(&h, &b), At::Tiled(..)));
+    }
+
+    #[test]
+    fn a_window_minimized_after_the_flip_keeps_its_weight_on_leaving() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        let (_cc, _w3) = map(&mut h, &mut c);
+        let At::Tiled(id, _) = at(&h, &a) else { panic!() };
+        h.state.outputs.get_mut(id).unwrap().workspaces[0]
+            .tiled
+            .set_weight(&b, 1.8);
+        flip(&mut h, Mode::De);
+        focus(&mut h, &b);
+        minimize_focused(&mut h.state);
+        flip(&mut h, Mode::Hybrid);
+        unminimize_window(&mut h.state, &b);
+        assert_eq!(at(&h, &b), At::Tiled(id, 0));
+        let wt = h.state.outputs.get(id).unwrap().workspaces[0].tiled.weight_of(&b);
+        assert_eq!(wt, Some(1.8));
+    }
+
+    #[test]
+    fn moving_a_workspace_under_de_floats_what_it_carries_apart() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        let (ia, ib) = (h.a, h.b);
+        flip(&mut h, Mode::De);
+        {
+            let ws = &mut h.state.outputs.get_mut(ia).unwrap().workspaces[4];
+            ws.pending.push(a.clone());
+            ws.pending.push(b.clone());
+        }
+        for w in [&a, &b] {
+            h.state.outputs.get_mut(ia).unwrap().workspaces[0]
+                .floating
+                .retain(|f| &f.window != w);
+        }
+        assert_eq!(move_workspace_to_output(&mut h.state, ia, 5, ib), Ok(true));
+        for w in [&a, &b] {
+            assert!(!matches!(at(&h, w), At::Tiled(..)), "nothing tiles under de");
+        }
+        let fl = &h.state.outputs.get(ib).unwrap().workspaces[4].floating;
+        assert_eq!(fl.len(), 2);
+        assert_ne!(fl[0].rect.loc, fl[1].rect.loc, "not stacked exactly");
+    }
+
+    #[test]
+    fn the_super_held_tile_drag_never_starts_under_de() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        flip(&mut h, Mode::De);
+        let (_a, a) = map(&mut h, &mut c);
+        // Force a tile in (a path nobody guarded): the drag must still refuse.
+        let id = h.a;
+        let area = Rectangle::from_size((800, 600).into());
+        let ws = &mut h.state.outputs.get_mut(id).unwrap().workspaces[0];
+        ws.floating.retain(|f| f.window != a);
+        ws.tiled.insert(a.clone(), None, area, Point::default());
+        let l = loc(&h, &a);
+        drop_guides::drag_tile(&mut h.state, &a, l);
+        assert!(h.state.tile_drag.is_none());
+    }
+
+    #[test]
+    fn a_window_closed_or_moved_during_de_is_not_put_back_where_it_was() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        let (_cc, w3) = map(&mut h, &mut c);
+        let At::Tiled(id, _) = at(&h, &a) else { panic!() };
+        flip(&mut h, Mode::De);
+        unmap_window(&mut h.state, &w3);
+        focus(&mut h, &b);
+        move_to_workspace(&mut h.state, 4);
+        assert_eq!(at(&h, &b), At::Floating(id, 3), "moves as a floating window");
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!(at(&h, &w3), At::Nowhere);
+        assert_eq!(at(&h, &a), At::Tiled(id, 0));
+        assert_eq!(at(&h, &b), At::Tiled(id, 3), "tiles where it now lives");
+        assert_eq!(
+            h.state.outputs.get(id).unwrap().workspaces[0].tiled.windows(),
+            vec![a.clone()]
+        );
+    }
+
+    #[test]
+    fn a_window_sent_to_the_other_output_in_de_floats_there_and_tiles_after() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        flip(&mut h, Mode::De);
+        focus(&mut h, &b);
+        let (ia, ib) = (h.a, h.b);
+        let number = h.state.outputs.get(ib).unwrap().number;
+        move_to_output_workspace(&mut h.state, number);
+        assert_eq!(at(&h, &b), At::Floating(ib, 0));
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!(at(&h, &b), At::Tiled(ib, 0));
+        assert_eq!(at(&h, &a), At::Tiled(ia, 0));
+    }
+
+    #[test]
+    fn a_removed_output_keeps_its_windows_floating_then_tiles_them_after() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        h.state.outputs.set_focused(h.b);
+        let (_d, d) = map(&mut h, &mut c);
+        let (_e, e) = map(&mut h, &mut c);
+        let ia = h.a;
+        flip(&mut h, Mode::De);
+        crate::outputs::unregister(&mut h.state, h.b);
+        arrange(&mut h.state);
+        assert_eq!(at(&h, &d), At::Floating(ia, 0), "adopted floating");
+        assert_eq!(at(&h, &e), At::Floating(ia, 0));
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!(at(&h, &d), At::Tiled(ia, 0));
+        assert_eq!(at(&h, &e), At::Tiled(ia, 0));
+    }
+
+    #[test]
+    fn fullscreen_across_the_flip_comes_back_tiled() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (b, bw) = map(&mut h, &mut c);
+        b.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        assert!(h.state.fullscreen.contains_key(&bw));
+
+        flip(&mut h, Mode::De);
+        assert!(h.state.fullscreen.contains_key(&bw), "still fullscreen");
+        assert!(matches!(at(&h, &a), At::Floating(..)));
+        // Unfullscreen under de floats; leaving then tiles it.
+        b.toplevel.unset_fullscreen();
+        c.pump(&mut h);
+        assert!(!h.state.fullscreen.contains_key(&bw));
+        assert!(matches!(at(&h, &bw), At::Floating(..)), "no tile under de");
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &bw), At::Tiled(..)));
+
+        // Still fullscreen when de ends: unfullscreen tiles it.
+        b.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        flip(&mut h, Mode::De);
+        flip(&mut h, Mode::Hybrid);
+        assert!(h.state.fullscreen.contains_key(&bw));
+        b.toplevel.unset_fullscreen();
+        c.pump(&mut h);
+        assert!(matches!(at(&h, &bw), At::Tiled(..)));
+    }
+
+    #[test]
+    fn a_floating_window_made_fullscreen_in_de_stays_floating_when_it_ends() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, _) = map(&mut h, &mut c);
+        flip(&mut h, Mode::De);
+        let (b, _) = map(&mut h, &mut c);
+        // A dialog default-places as floating, so fullscreen one.
+        let (p2, p2w) = dialog(&mut h, &mut c, &b);
+        p2.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        flip(&mut h, Mode::Hybrid);
+        p2.toplevel.unset_fullscreen();
+        c.pump(&mut h);
+        assert!(matches!(at(&h, &p2w), At::Floating(..)));
+    }
+
+    #[test]
+    fn maximize_stays_declined_under_de_until_m2() {
+        // M2 owns maximize; here it must still be refused in every mode.
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, _) = map(&mut h, &mut c);
+        flip(&mut h, Mode::De);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        assert_eq!(c.maximized_configures(&n.toplevel), 0);
+    }
+}
