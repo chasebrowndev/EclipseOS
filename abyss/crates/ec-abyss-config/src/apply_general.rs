@@ -441,6 +441,10 @@ impl Config {
                     Some(m) => self.misc.gpu_mode = m,
                     None => self.reject(n, "gpu-mode must be \"integrated\", \"hybrid\" or \"dedicated\""),
                 },
+                "secondary-compositing" => match arg(n).and_then(KdlValue::as_bool) {
+                    Some(b) => self.misc.secondary_compositing = b,
+                    None => self.reject(n, "secondary-compositing needs a boolean (#true or #false)"),
+                },
                 "discrete-gpu-apps" => {
                     if seen_gpu_apps {
                         self.reject(

@@ -132,7 +132,8 @@ pub struct DrmOutput {
     /// `always_copy`; otherwise only while a visible buffer is unimportable on
     /// the output's own GPU.
     copying: bool,
-    /// `dedicated` mode on a secondary device: the copy path is the only path.
+    /// Secondary device, copy by default (ADR 0086) or `dedicated`: the copy
+    /// path is the only path.
     always_copy: bool,
     /// Format and modifiers of the transfer buffer both GPUs share, when
     /// there are any; without them the fallback is unavailable.
@@ -255,6 +256,8 @@ pub struct DrmData {
     pub renderer: GlesRenderer,
     /// `misc.gpu-mode` as started (restart-only).
     pub gpu_mode: GpuMode,
+    /// `misc.secondary-compositing` as started (restart-only, ADR 0086).
+    pub secondary_compositing: bool,
     pub outputs: Vec<DrmOutput>,
     /// The primary GPU was removed; there is nothing left to render with.
     primary_lost: bool,
@@ -649,7 +652,6 @@ fn add_connector(
 
     let drm = state.drm.as_mut().ok_or_else(|| anyhow!("no DRM backend"))?;
     let secondary = !drm.devices[dev].primary;
-    let always_copy = secondary && gpu::always_copies(drm.gpu_mode);
     // The formats the compositor may render into: the renderer of the GPU that
     // composites this output (ADR 0084) -- the device's own, in `hybrid`.
     let renderer_formats = if secondary {
@@ -682,6 +684,12 @@ fn add_connector(
     } else {
         None
     };
+    let always_copy = gpu::output_copies(
+        drm.gpu_mode,
+        secondary,
+        drm.secondary_compositing,
+        copy_format.is_some(),
+    );
     if always_copy && copy_format.is_none() {
         anyhow::bail!(
             "no dmabuf format shared between the primary GPU and {}",
@@ -695,7 +703,7 @@ fn add_connector(
                 device = %drm.devices[dev].tag,
                 ?fourcc,
                 ?modifiers,
-                "secondary output (dedicated GPU mode): render on primary, copy to {}",
+                "secondary output: render on primary, copy to {}",
                 drm.devices[dev].tag
             ),
             (_, true) => {}
@@ -1232,6 +1240,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
 
     let requested_device = config.misc.render_device.clone();
     let gpu_mode = config.misc.gpu_mode;
+    let secondary_compositing = config.misc.secondary_compositing;
     tracing::info!(
         gpu_mode = gpu_mode.name(),
         "GPU mode (misc.gpu-mode, restart to change)"
@@ -1418,6 +1427,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         gbm,
         renderer,
         gpu_mode,
+        secondary_compositing,
         primary_lost: false,
         outputs: Vec::new(),
         fallback: None,
@@ -1533,6 +1543,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                 }
                 // A connector may have changed while we were away.
                 scan_connectors(state);
+                crate::outputs::ensure_one_enabled(state);
                 render(state);
             }
         })
