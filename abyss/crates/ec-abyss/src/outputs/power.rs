@@ -69,7 +69,11 @@ pub fn set_enabled(state: &mut AbyssState, id: u64, enabled: bool) -> bool {
         // Focus must not stay on an output that is off: new windows are placed
         // on the focused output and would join a workspace nobody can see.
         if state.outputs.focused_id() == Some(id) {
-            let next = state.outputs.iter().find(|e| e.enabled && e.id != id).map(|e| e.id);
+            let next = state
+                .outputs
+                .iter()
+                .find(|e| e.enabled && e.id != id)
+                .map(|e| e.id);
             if let Some(next) = next {
                 state.outputs.set_focused(next);
             }
