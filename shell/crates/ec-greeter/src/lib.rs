@@ -18,7 +18,7 @@ pub const STATE_DIR: &str = "/var/lib/eclipse/greeter";
 pub const SETTINGS_FILE: &str = "settings.toml";
 pub const WALLPAPER_FILE: &str = "wallpaper.png";
 
-pub const MAX_GREETING: usize = 120;
+pub const MAX_GREETING: usize = 80;
 pub const MAX_SETTINGS: usize = 4096;
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
@@ -33,6 +33,8 @@ pub enum Clock {
 }
 
 impl Clock {
+    pub const ALL: [Clock; 4] = [Clock::Time24, Clock::Time12, Clock::Date24, Clock::Date12];
+
     fn name(self) -> &'static str {
         match self {
             Clock::Time24 => "24h",
@@ -43,9 +45,7 @@ impl Clock {
     }
 
     fn from_name(name: &str) -> Option<Clock> {
-        [Clock::Time24, Clock::Time12, Clock::Date24, Clock::Date12]
-            .into_iter()
-            .find(|c| c.name() == name)
+        Clock::ALL.into_iter().find(|c| c.name() == name)
     }
 
     fn strftime(self) -> &'static str {
@@ -287,22 +287,33 @@ fn css(c: Rgba) -> String {
 
 /// `regreet.css`: the shipped file with its colour definitions replaced. The
 /// rest is written in terms of them, so a package update to the shape still
-/// applies.
-pub fn render_style(shipped: &str, theme: Option<Theme>) -> Result<String, Error> {
-    let Some(theme) = theme else {
+/// applies. The shipped wallpaper has the card's blur baked in and GTK4 has no
+/// backdrop filter, so over a chosen image the card's glass goes denser to keep
+/// its text readable.
+pub fn render_style(shipped: &str, theme: Option<Theme>, wallpaper: bool) -> Result<String, Error> {
+    let mut defines: Vec<(&str, String)> = Vec::new();
+    if let Some(theme) = theme {
+        let p = ec_theme::derive(&theme.seeds());
+        defines.extend([
+            ("base", hex(theme.base)),
+            ("raised", css(p.surface_1.with_alpha(0.94))),
+            ("accent", hex(theme.accent)),
+            ("accent_text", hex(theme.accent_text)),
+            ("on_accent", css(p.on_accent)),
+            ("ink", hex(theme.ink)),
+            ("danger", css(p.danger)),
+        ]);
+    }
+    if wallpaper {
+        defines.extend([
+            ("glass", "alpha(@base, 0.72)".to_owned()),
+            ("glass_hi", "alpha(@base, 0.80)".to_owned()),
+        ]);
+    }
+    if defines.is_empty() {
         return Ok(shipped.to_owned());
-    };
-    let p = ec_theme::derive(&theme.seeds());
-    let defines = [
-        ("base", hex(theme.base)),
-        ("raised", css(p.surface_1.with_alpha(0.94))),
-        ("accent", hex(theme.accent)),
-        ("accent_text", hex(theme.accent_text)),
-        ("on_accent", css(p.on_accent)),
-        ("ink", hex(theme.ink)),
-        ("danger", css(p.danger)),
-    ];
-    let mut found = [false; 7];
+    }
+    let mut found = vec![false; defines.len()];
     let mut out = String::with_capacity(shipped.len());
     for line in shipped.lines() {
         let name = line
@@ -336,6 +347,19 @@ pub struct Input {
 }
 
 const HEADER: usize = 12;
+
+/// The bytes [`Input::parse`] reads, for the process asking.
+pub fn frame(settings: &Settings, image: Option<(u32, u32, &[u8])>) -> Vec<u8> {
+    let text = settings.to_text();
+    let (w, h, rgba) = image.unwrap_or((0, 0, &[]));
+    let mut out = Vec::with_capacity(HEADER + text.len() + rgba.len());
+    out.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    out.extend_from_slice(&w.to_le_bytes());
+    out.extend_from_slice(&h.to_le_bytes());
+    out.extend_from_slice(text.as_bytes());
+    out.extend_from_slice(rgba);
+    out
+}
 
 /// Longest input that can be valid, so the helper can cap its read.
 pub const MAX_INPUT: u64 = (HEADER + MAX_SETTINGS) as u64 + (MAX_WIDTH as u64 * MAX_HEIGHT as u64 * 4);
@@ -494,7 +518,7 @@ pub fn prepare(
         }
     }
     let config = render_config(shipped_config, &s, s.wallpaper.then_some(wallpaper.as_path()))?;
-    Ok(Some((config, render_style(shipped_style, s.theme)?)))
+    Ok(Some((config, render_style(shipped_style, s.theme, s.wallpaper)?)))
 }
 
 #[cfg(test)]
@@ -582,7 +606,7 @@ mod tests {
     fn nothing_set_leaves_the_shipped_files_alone() {
         let s = Settings::default();
         assert_eq!(render_config(CONFIG, &s, None).unwrap(), CONFIG);
-        assert_eq!(render_style(STYLE, None).unwrap(), STYLE);
+        assert_eq!(render_style(STYLE, None, false).unwrap(), STYLE);
     }
 
     #[test]
@@ -596,7 +620,7 @@ mod tests {
 
     #[test]
     fn the_style_replaces_every_definition_it_must() {
-        let out = render_style(STYLE, Some(THEME)).unwrap();
+        let out = render_style(STYLE, Some(THEME), false).unwrap();
         assert!(out.contains("@define-color accent #4ca3ff;\n"));
         assert!(out.contains("@define-color ink #ffffff;\n"));
         assert!(!out.contains("#f2c33c"));
@@ -608,8 +632,31 @@ mod tests {
     }
 
     #[test]
+    fn a_chosen_wallpaper_makes_the_glass_denser() {
+        let out = render_style(STYLE, None, true).unwrap();
+        assert!(out.contains("@define-color glass alpha(@base, 0.72);\n"));
+        assert!(out.contains("@define-color accent      #f2c33c;"));
+    }
+
+    #[test]
+    fn a_frame_parses_back_to_what_went_in() {
+        let settings = full();
+        let input = Input::parse(frame(&settings, Some((2, 1, &[7; 8])))).unwrap();
+        assert_eq!(
+            input,
+            Input {
+                settings,
+                image: Some((2, 1, vec![7; 8]))
+            }
+        );
+        let input = Input::parse(frame(&full(), None)).unwrap();
+        assert_eq!(input.image, None);
+    }
+
+    #[test]
     fn a_shipped_file_missing_a_line_is_an_error() {
-        assert!(render_style("window {}\n", Some(THEME)).is_err());
+        assert!(render_style("window {}\n", Some(THEME), false).is_err());
+        assert!(render_style("window {}\n", None, true).is_err());
         assert!(render_config("[x]\n", &full(), None).is_err());
     }
 

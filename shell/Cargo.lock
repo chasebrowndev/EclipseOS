@@ -1085,11 +1085,14 @@ name = "ec-settings"
 version = "0.1.0"
 dependencies = [
  "ec-abyss-config",
+ "ec-greeter",
  "ec-ipc",
  "ec-policy-viewer",
  "ec-services",
+ "ec-theme",
  "ec-ui",
  "iced",
+ "image",
  "serde_json",
  "zbus",
 ]
