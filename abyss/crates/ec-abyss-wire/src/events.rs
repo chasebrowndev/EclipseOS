@@ -14,6 +14,8 @@ pub const EVENTS: &[&str] = &[
     "config",
     "keybind",
     "launcher",
+    // The bar's power drawer, same payload as `launcher`.
+    "power",
     // COMP-10 §2: whether a personal secret is set. Never the phrase.
     "phrase",
     // A-08 §7: how many consent prompts are parked. A count, never content.

@@ -168,7 +168,7 @@ stays closed in `ipc/gate.rs`, which is why the viewer reads the file itself.
 | ec-toasts | `ec-toasts.service` | ordinary client |
 | ec-screensaver | `ec-screensaver.service` | ordinary client |
 | ec-launcher | `Super+E` / `Super+R` default binds; hyperion's launcher button | ordinary client |
-| ec-center | `Super+N` and the power key (`XF86PowerOff`, a short press; logind keeps the long press) default binds; `ec-center.desktop` | ordinary client |
+| ec-center | `Super+N` default bind; `ec-center.desktop` | ordinary client |
 | ec-settings | `ec-settings.desktop`; hyperion drawer links | ordinary client |
 | ec-policy-viewer | `ec-policy-viewer.desktop` | ordinary client |
 | ec-secret-prompt | hyperion (wifi), ec-pairing (bluetooth) | ordinary client, surface classified `secret` |

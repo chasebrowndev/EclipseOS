@@ -159,6 +159,13 @@ pub fn panel_left(kind: DrawerKind, center: f32, surface_w: f32) -> f32 {
     (center - w / 2.0).min(surface_w - w).max(0.0).round()
 }
 
+/// The panel's left edge when the drawer has no cell to hang from (the
+/// compositor's `power` event with the power widget not on the bar): the panel's
+/// right edge sits at the pill's right end, where the power cell would be.
+pub fn panel_left_at_end(kind: DrawerKind, surface_w: f32) -> f32 {
+    panel_left(kind, surface_w - bar::MARGIN_X - kind.width() / 2.0, surface_w)
+}
+
 /// The input region of a top bar with a drawer out, surface-local: the
 /// panel's box at `x`, `w` wide, and the pill. Abyss draws the glass as the
 /// smooth union of these boxes, so this is also the shape the blur takes.
@@ -186,6 +193,15 @@ pub fn region_bottom(x: i32, w: i32, surface_h: u32, extent: u32) -> Vec<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_cellless_panel_ends_at_the_pill_end() {
+        let w = DrawerKind::Power.width();
+        let left = panel_left_at_end(DrawerKind::Power, 1920.0);
+        assert_eq!(left, (1920.0 - bar::MARGIN_X - w).round());
+        // A surface narrower than the panel pins it to the edge.
+        assert_eq!(panel_left_at_end(DrawerKind::Power, 100.0), 0.0);
+    }
 
     fn snapped() -> Drawer {
         Drawer::new(Motion::SNAP)

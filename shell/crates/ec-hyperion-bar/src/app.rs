@@ -209,6 +209,9 @@ pub enum Message {
     /// launcher keybind calls in menu style): toggle the start menu on the
     /// bar of this output.
     MenuOpen(u64),
+    /// The compositor's `power` event: toggle the power drawer on the bar of
+    /// this output, whether or not the power widget is on the bar.
+    PowerOpen(u64),
     /// The start menu's search field changed.
     MenuQuery(String),
     /// An arrow key on a surface, and which: moves the start menu's
@@ -1628,6 +1631,18 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 }
             };
         }
+        Message::PowerOpen(output) => {
+            let on = app
+                .bars
+                .values()
+                .find(|b| b.output_id == output)
+                .or_else(|| app.bars.values().find(|b| b.output_id == 0))
+                .map(|b| b.id);
+            return match on {
+                Some(id) => toggle_drawer(app, id, Drawer::Power, crate::drawer::DrawerKind::Power),
+                None => Task::none(),
+            };
+        }
         Message::MenuQuery(query) => {
             if let Some(bar) = at.and_then(|at| app.bars.get_mut(&at)) {
                 bar.menu.set_query(query);
@@ -2200,6 +2215,14 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                     Ok("open-bt") => Some((Drawer::Bluetooth, crate::drawer::DrawerKind::Bluetooth)),
                     Ok("open-audio") => Some((Drawer::Audio, crate::drawer::DrawerKind::Audio)),
                     Ok("open-calendar") => Some((Drawer::Calendar, crate::drawer::DrawerKind::Calendar)),
+                    Ok("open-power") => Some((Drawer::Power, crate::drawer::DrawerKind::Power)),
+                    // The `power` event with the widget left off the bar.
+                    Ok("open-power-nocell") => {
+                        app.widget_cfg
+                            .order
+                            .retain(|w| *w != crate::widgets::WidgetId::Power);
+                        Some((Drawer::Power, crate::drawer::DrawerKind::Power))
+                    }
                     Ok("open-calendar-empty") => {
                         app.calendar.provider = false;
                         app.calendar.events.clear();
@@ -2700,9 +2723,14 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
     }
     let full = drawer_full(app, kind) as f32;
     let open = with_bar(app, id, |app, bar| {
-        let center = crate::view::drawer_span(app, bar, drawer)
-            .map_or(bar.cursor.x, |(left, right)| (left + right) / 2.0);
-        let left = crate::drawer::panel_left(kind, center, bar.width);
+        let left = match crate::view::drawer_span(app, bar, drawer) {
+            Some((l, r)) => crate::drawer::panel_left(kind, (l + r) / 2.0, bar.width),
+            // No cell (the `power` event, widget unequipped): the pill's end.
+            None if kind == crate::drawer::DrawerKind::Power => {
+                crate::drawer::panel_left_at_end(kind, bar.width)
+            }
+            None => crate::drawer::panel_left(kind, bar.cursor.x, bar.width),
+        };
         // The region goes out ahead of the resize.
         bar.drawer.open(kind, left, full, now);
         let region = sync_region(app, bar);
@@ -3849,6 +3877,15 @@ fn compositor() -> Subscription<Message> {
                                             event.data.get("output").and_then(serde_json::Value::as_u64),
                                         ) {
                                             (Some("open"), Some(output)) => Message::MenuOpen(output),
+                                            _ => continue,
+                                        },
+                                        // `open_power`: the power drawer on
+                                        // the named output.
+                                        ec_ipc::EventKind::Power => match (
+                                            event.data.get("action").and_then(serde_json::Value::as_str),
+                                            event.data.get("output").and_then(serde_json::Value::as_u64),
+                                        ) {
+                                            (Some("open"), Some(output)) => Message::PowerOpen(output),
                                             _ => continue,
                                         },
                                         _ => Message::Refresh,

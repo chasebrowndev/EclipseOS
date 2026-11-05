@@ -187,12 +187,12 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::n,
             action: Action::Spawn("ec-center".into()),
         },
-        // A short press of the power key opens the session menu; logind's
+        // A short press of the power key opens the bar's power drawer; logind's
         // long-press (`HandlePowerKeyLongPress=poweroff`) stays the hard off.
         Bind {
             mods: none,
             key: Keysym::XF86_PowerOff,
-            action: Action::Spawn("ec-center".into()),
+            action: Action::Spawn("ec-ctl open-power".into()),
         },
         // Windows.
         Bind {
