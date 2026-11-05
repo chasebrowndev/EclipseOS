@@ -15,7 +15,7 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   session's one BlueZ pairing agent and serves `org.eclipse.Services.Pairing`
   (`packaging/ec-pairing.service`, ADR 0066); `src/bin/ec-polkit-agent.rs` is
   the session's polkit agent, **TCB**, holds no secret (`packaging/ec-polkit-agent.service`,
-  ADR 0087); `src/bin/ec-portal.rs` is the
+  ADR 0088); `src/bin/ec-portal.rs` is the
   xdg-desktop-portal Settings backend (`org.freedesktop.appearance` from the
   compositor's `get_theme`/`theme`, ADR 0084; `packaging/ec-portal.service`).
 - Deps stay at `zbus` (already in the tree via iced_layershell → mundy, so no

@@ -5,7 +5,7 @@
 #
 # Styling lives in /etc/greetd/regreet.css, hand-written and never built from a
 # user's home directory. These are the defaults: ec-greeter-run renders a copy
-# over them when the machine has chosen its own login screen (ADR 0088). It
+# over them when the machine has chosen its own login screen (ADR 0089). It
 # rewrites the `path` and `greeting_msg` lines, so keep each on one line.
 
 [background]

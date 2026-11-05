@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# 0088 — The machine chooses its login screen
+# 0089 — The machine chooses its login screen
 Status: accepted
 Date: 2026-11-04
 Deciders: chase (owner), Claude (advisory)

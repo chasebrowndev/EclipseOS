@@ -70,7 +70,7 @@ approved it in the compositor-drawn prompt (ADR 0067, COMP-10 §3.11).
 `ec-services` binary with its own user unit, so pairing works with no
 taskbar. PINs go through `ec-secret-prompt`.
 
-**ec-polkit-agent** — the session's polkit authentication agent (ADR 0087). It
+**ec-polkit-agent** — the session's polkit authentication agent (ADR 0088). It
 relays requests to the compositor's password prompt (COMP-10 §3.14) and never
 holds a password.
 
@@ -168,7 +168,7 @@ stays closed in `ipc/gate.rs`, which is why the viewer reads the file itself.
 | ec-toasts | `ec-toasts.service` | ordinary client |
 | ec-screensaver | `ec-screensaver.service` | ordinary client |
 | ec-launcher | `Super+E` / `Super+R` default binds; hyperion's launcher button | ordinary client |
-| ec-center | `Super+N` default bind; `ec-center.desktop` | ordinary client |
+| ec-center | `Super+N` and the power key (`XF86PowerOff`, a short press; logind keeps the long press) default binds; `ec-center.desktop` | ordinary client |
 | ec-settings | `ec-settings.desktop`; hyperion drawer links | ordinary client |
 | ec-policy-viewer | `ec-policy-viewer.desktop` | ordinary client |
 | ec-secret-prompt | hyperion (wifi), ec-pairing (bluetooth) | ordinary client, surface classified `secret` |

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The polkit password prompt (COMP-10 §3.14, D-07 §6, ADR 0087). **TCB.**
+//! The polkit password prompt (COMP-10 §3.14, D-07 §6, ADR 0088). **TCB.**
 //!
 //! ```text
 //!   polkitd → ec-polkit-agent → polkit.sock → this prompt

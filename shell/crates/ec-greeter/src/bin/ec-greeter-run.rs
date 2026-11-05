@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `ec-greeter-run`: starts regreet for greetd (ADR 0088). **TCB.** Renders the
+//! `ec-greeter-run`: starts regreet for greetd (ADR 0089). **TCB.** Renders the
 //! machine's settings over the shipped files into the greeter's runtime dir and
 //! execs regreet, keeping its pid for the kiosk compositor.
 //!

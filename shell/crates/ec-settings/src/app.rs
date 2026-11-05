@@ -1489,7 +1489,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
     let shown = |k: &&Key| {
         page_of(&k.path) == Some(app.page)
             && match k.path.as_str() {
-                crate::gpu::MODE => app.discrete_gpu.is_some(),
+                crate::gpu::MODE | crate::gpu::SECONDARY => app.discrete_gpu.is_some(),
                 crate::gpu::APPS => false,
                 _ => true,
             }
@@ -1572,6 +1572,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             }
             p if p == mode_path => crate::schema::blur_blurb(current),
             crate::gpu::MODE => crate::gpu::mode_blurb(key.value.as_str().unwrap_or("hybrid")),
+            crate::gpu::SECONDARY => Some(crate::gpu::SECONDARY_BLURB),
             "ui.show-key-hints" => Some("Keyboard hints in the launcher and start menu"),
             "launcher.search.frecency" => Some(FRECENCY_BLURB),
             "settings.search.frecency" => Some(FRECENCY_BLURB),
@@ -1581,9 +1582,10 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             "oracle-eyes.debug" => Some("While on, the taskbar eye turns red and shows in screen captures."),
             _ => None,
         };
-        let blurb = blurb
-            .into_iter()
-            .chain((key.path == crate::gpu::MODE).then_some(crate::gpu::LOGIN_NOTE));
+        let blurb = blurb.into_iter().chain(
+            (key.path == crate::gpu::MODE || key.path == crate::gpu::SECONDARY)
+                .then_some(crate::gpu::LOGIN_NOTE),
+        );
         for blurb in blurb {
             // Inset like `list_row`'s label, so it reads as that row's caption.
             rows.push(
