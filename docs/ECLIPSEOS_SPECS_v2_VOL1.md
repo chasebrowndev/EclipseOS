@@ -1745,7 +1745,7 @@ a session) exposed to agents. Associated metadata:
 ```
 handle, app_id, title, pid, cgroup, launching_principal,
 workspace, output, geometry (global logical px), scale,
-state {focused_by: [seats], minimized, maximized, fullscreen, floating},  // maximized: always false (C-20)
+state {focused_by: [seats], minimized, maximized, fullscreen, floating},  // maximized: false outside `mode "de"` (C-20, C-24)
 sensitivity: {public | private | secret},
 semantic: {none | atspi | native}, parent (for dialogs), children (popups)
 ```
@@ -2620,6 +2620,11 @@ surface's geometry is drawn instead.
 Rules:
 - Applies to capture targets (COMP-08 §5), never to the physical output the
   human is looking at.
+  *(added C-24, 2026-11-05)* A window thumbnail is a pixel operation (S-05 §4)
+  even when the human is its only viewer: previews, the switcher and the
+  overview (COMP-05 §7.1) go through this path, and the placeholder is what
+  they show. A window's live surface on the physical output is still not
+  redacted.
 - Redaction is decided when the pass list is built, before any GPU work,
   and the decision is recorded in the pass list so tests can assert on it
   without reading pixels.
@@ -2655,6 +2660,10 @@ surface never contributes a pixel without `capture.secret`.
   builder, not the output pipeline.
 - `capture_output` / `capture_region`: full pass list into an offscreen
   target with redaction applied.
+  *(added C-24, 2026-11-05)* The pass list includes titlebars (COMP-05 §7.1).
+  A window redacted wholesale has its titlebar redacted with it, so its title
+  and icon never reach the target. The window menu, switcher, overview and
+  previews are never in a capture pass list.
 - **On-demand only for offscreen (virtual) outputs**: an agent workspace on
   a virtual output renders when captured or when a client needs a frame
   callback, not every vblank. Otherwise 64 agent seats would each cost a
@@ -3290,7 +3299,7 @@ Toplevel {
   launching_principal,               // §6
   workspace, output, geometry, scale,
   states: {focused_by[], minimized, maximized, fullscreen, floating,
-           urgent, sticky},           // maximized: always false (C-20)
+           urgent, sticky},           // maximized: false outside `mode "de"` (C-20, C-24)
   sensitivity: public|private|secret,     // S-05, default private
   app_trust: trusted|standard|untrusted,  // S-05
   semantic: none|atspi|native,
@@ -3323,6 +3332,11 @@ agents check against (COMP §0.5).
 - A workspace whose output disappears moves to the fallback output
   (COMP-03 §5). Workspaces are never destroyed by hardware changes.
 - Named workspaces persist in the session snapshot (COMP-01 §7).
+- *(added C-24, 2026-11-05)* As built, each output has a fixed ten human
+  workspaces (`workspace <1..10>`), not dynamic ones. Under `mode "de"` these
+  are the desktops: the pager and desktop grid (§7.1) lay out the same ten, and
+  no second model exists. Agent workspaces stay out of the pager, grid,
+  switcher and overview.
 
 ---
 
@@ -3391,6 +3405,24 @@ Layout is a trait; two implementations plus floating in v1.
   so the client sees it. A window alone on a workspace already fills it as a
   tile, so maximize only added a second, floating "almost fullscreen" that
   kept rounded corners and hid nothing. Fullscreen windows are drawn square.
+  *(amended C-24, 2026-11-05)* C-20 holds under `mode "wm"` and `mode "hybrid"`.
+  Under `mode "de"` every window is stacking, so maximize has a job again and
+  there is a fourth state. `set_maximized` and X11
+  `_NET_WM_STATE_MAXIMIZED_HORZ`/`_VERT` are honoured: the window fills the
+  usable area (the output minus layer-shell exclusive zones) along the requested
+  axes, recomputed on every arrange, square and without a border, and leaving
+  maximize restores its prior rect. Fullscreen wins over maximized. C-19 is
+  unchanged.
+  An agent's `set_state(maximized)` stays refused in every mode, so C-24 gives
+  agents nothing new.
+  *(added C-24, 2026-11-05)* Under `mode "de"` no window is tiled and the layouts
+  above do not apply. Tile binds do nothing, and entering the mode floats each
+  tiled window at its current rect. Leaving it re-tiles those windows where they
+  were and drops de-only placements. Dragging a window to an output edge or
+  corner quick-tiles it to a half or a quarter, with a preview. A quick-tiled
+  window is still floating: it has a rect and a restore rect, its configure
+  carries `Tiled*` for the edges it touches, and dragging it away restores its
+  size under the pointer.
   *(added C-19, 2026-10-13)* A fullscreen window is the top of its
   workspace's stack. Only its own dialogs (an xdg parent or an X11
   `WM_TRANSIENT_FOR`, transitively) are drawn above it. Focus that restacks
@@ -3529,6 +3561,38 @@ there is no blanket "enable everywhere" switch.
 
 Agents never get SIGKILL through the compositor. Terminating a process is a
 policy decision with its own capability and audit record.
+
+### 7.1 Compositor chrome under `mode "de"` *(added C-24, 2026-11-05; ADR 0090)*
+
+Abyss draws the desktop's window chrome: **titlebars** (icon, title, minimize,
+maximize, close) on human workspaces, for windows using server-side decoration;
+the **window menu**; the **Alt-Tab switcher**; the **overview** (present windows,
+desktop grid); **hover previews** the bar asks for; **hot corners**. A client that
+explicitly chose client-side decoration keeps its own titlebar and reaches the
+menu through `xdg_toplevel.show_window_menu`. `mode "wm"` and `"hybrid"` draw none
+of this. Agent workspaces stay undecorated (§3.2).
+
+- **This chrome is not trusted UI.** It is ordinary furniture drawn by the
+  compositor and carries client-supplied text. It is not in `trusted_ui/`, uses
+  none of COMP-10's palette, layout or phrase, and is drawn before the TrustedUI
+  pass (COMP-02 §4), so a prompt always covers it. Titles pass through the
+  overlay text sanitizer. Being compositor-drawn confers no trust.
+- **Geometry.** A toplevel's geometry (§1, COMP-08) stays the client content
+  rect in every mode. The titlebar sits above it, in a frame rect that placement,
+  snapping and maximize use. Adding a titlebar never shifts an agent's
+  coordinates, and a titlebar's appearing or leaving does not itself bump
+  `generation` unless the content rect moved.
+- **Thumbnails.** Rendered by the compositor for the human; no pixel reaches a
+  client. Class is decided before any GPU work (COMP-02 §7, S-05 §4): a `secret`
+  window is a placeholder, a `secret` node in a `private` window is a redaction
+  rectangle, and stale trees fail closed to the whole surface. Disabled under
+  session lock. A thumbnail is on Corpus C's capture-path list.
+- **Titles on the physical output.** A `secret` window's title still shows in its
+  titlebar, the switcher and the taskbar, as the window itself does. It does not
+  reach capture targets (COMP-02 §8).
+- **Input.** The switcher, overview and menu act on human input only. Their
+  activation is a human focus change, not an `xdg_activation` request, so §5's
+  urgent fallback does not apply to it.
 
 ---
 
@@ -4080,7 +4144,7 @@ request create_workspace(req_id, output, layout: uint)   event workspace_created
 request destroy_workspace(req_id, id)
 request move_toplevel(req_id, handle, workspace, expected_generation)
 request set_geometry(req_id, handle, x, y, w, h, expected_generation)
-request set_state(req_id, handle, state: uint, value: uint)   -- minimized|maximized|fullscreen|floating; maximized is refused (C-20)
+request set_state(req_id, handle, state: uint, value: uint)   -- minimized|maximized|fullscreen|floating; maximized is refused in every mode (C-20, C-24)
 request close(req_id, handle)                                 -- xdg_toplevel.close (graceful)
 request create_virtual_output(req_id, w, h, scale)   event virtual_output_created(req_id, id)
 request resize_virtual_output(req_id, id, w, h)
@@ -7015,7 +7079,8 @@ switchable at runtime without a restart:
 - **Hybrid mode** — tiling plus a taskbar with window chips, tray and clock.
   What the shipped session is today.
 - **DE mode** — desktop metaphor: taskbar, desktop icons, pointer-first
-  navigation.
+  navigation. *(amended C-24, 2026-11-05)* A stacking desktop in the KDE manner:
+  titlebars, maximize, Quick Tile and no tiling layout (COMP-05 §3.1, §7.1).
 
 **These are interaction styles, not capability tiers.** Neither is the "real"
 mode and neither is degraded. Both are fully configurable through the GUI, both
@@ -7045,6 +7110,12 @@ and decoration defaults. *(amended DA-02, 2026-09-24)* The autostart set, which
 this sentence also listed, moved to `components` (§2.2): which bar, launcher
 and notifier run is a per-slot choice, not a consequence of the mode. `mode`
 still decides whether a configured panel is *shown*.
+*(amended C-24, 2026-11-05)* The window-management behaviour itself follows
+`mode` and is not a default: under `de`, windows stack and have the chrome of
+COMP-05 §7.1, and under `wm` and `hybrid` they do not. The keys it defaults
+stay overridable: binds, `focus-follows-mouse`, decoration values. §1's "changes
+nothing in COMP-02" means the render and capture rules; COMP-02 §7 and §8 say
+how this chrome goes through them.
 
 Mode changes apply on hot reload (COMP-13 §1.2); the session changes shape
 without a restart.
@@ -7479,6 +7550,7 @@ against source before it was written. Nothing was renumbered.
 | C-21 | COMP-02 §9; COMP-05 §4 | *(2026-10-30, owner ruling)* Content is never faded to obtain glass, with one opt-in exception: a user `translucent-region top=<px> opacity=<0..1>` window rule fades and blurs behind only that top strip, for clients that submit opaque buffers (Firefox on Wayland, ADR 0079) | yes |
 | C-22 | COMP-05 §4 | *(2026-10-30, owner ruling)* The spec follows the code on rule timing: placement actions once at map, property actions on every commit and on a float toggle. New `floating` matcher. Supersedes "re-evaluated on title change" | yes |
 | C-23 | COMP-02 §9; COMP-13 §2 | *(2026-10-31, owner ruling)* Keyed translucency: a strip with keys makes only pixels exactly equal to a declared key colour translucent (that key's alpha, blur behind) and fades nothing else. Keys apply only in declared regions: the strip, the whole window while the client reports a browser-owned page (`body`), the whole window for a key flagged `everywhere`, and the client's popups. `set_client_strips` takes up to four keys and is re-matched on resize; a resize commit no request matches keeps the window's stamp. A partly transparent texel matches on its un-premultiplied colour; popup blur follows the popup's own corner radius (ADR 0080) | yes |
+| C-24 | COMP-02 §7, §8; COMP-05 §1, §2, §3.1, new §7.1; COMP-08; COMP-17 §1, §2; S-05 Corpus C | *(2026-11-05, owner ruling)* `mode "de"` is a stacking desktop. C-20 is scoped to `wm` and `hybrid`: under `de`, xdg and X11 maximize are honoured and windows do not tile; entering floats tiled windows in place, leaving re-tiles them. Quick Tile, titlebars, window menu, switcher, overview, previews and hot corners are compositor-drawn, are not trusted UI, and exist only under `de`. Toplevel geometry stays the content rect. Agent `set_state(maximized)` stays refused in every mode. Thumbnails are redacted like capture targets; chrome overlays are never in a capture pass list, and a redacted window's titlebar is redacted with it. Records the as-built fixed ten workspaces per output. ADR 0090 | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

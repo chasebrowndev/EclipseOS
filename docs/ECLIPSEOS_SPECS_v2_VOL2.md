@@ -1611,6 +1611,7 @@ to catch accidents and naive injections and to track regressions.
 
 Pixel-level. For each capture path (`capture_toplevel`, `capture_output`,
 `capture_region`, `stream_*`, portal screen share, panel thumbnails,
+DE switcher, overview and hover-preview thumbnails *(added C-24, 2026-11-05)*,
 lockscreen preview) × each condition:
 
 scale 1.0 / 1.25 / 2.0 · each output transform · popup over parent ·

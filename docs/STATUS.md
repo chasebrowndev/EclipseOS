@@ -178,9 +178,11 @@ parallel one.
 | B4 control center + services | **in progress** | Landed: the notification server, system status (network/BT/battery), session control, the bar's status cells, the toast stack (`ec-toasts`), the control center (`ec-center`, `2408781`), the `.desktop` reader (`c9fab92`) and the launcher GUI over it (`ec-launcher`) — a centred overlay surface that takes the keyboard, filters as you type and refuses a terminal-only entry out loud. Since landed (`360b704`, ADR 0053): the SNI tray (watcher + host, dbusmenu flattened), wifi/Bluetooth pickers and status actions, and `ec-secret-prompt` for passphrases and PINs; the `org.freedesktop.ScreenSaver` bridge (`ec-screensaver`, ADR 0051); and the launcher now reads `misc.terminal-command` and hides `Terminal=true` entries unless one is configured (`654ad79`, `ee5f76a`). Owed: clipboard history (`smithay-clipboard`, a new dependency and therefore an ask first). Audio is `ec-services::audio` over the PulseAudio native protocol: the default sink and source, both device lists with default switching (the Volume widget's picker, ADR 0065 amendment), per-window mute, and the monitor tap |
 | B6 policy viewer | **done** | `1a5d506`. A plain `xdg_toplevel` reading `policy.kdl` off disk, never over the socket — `Policy/Read` stays closed. An empty allowlist renders as a sentence saying every client is denied, never a blank list. The policy-owned set is restated locally with a mirroring test rather than linking `abyss`; no `tests/coverage.rs` (that ratchet is settings-specific) |
 
-Out of scope by decision (plan B7): desktop icons (DP-6), `mode wm|de`
-profiles (DP-3), the compositor-drawn policy editor (that stays milestone 15),
-the first-boot overscan offer, and bind/windowrule editing.
+Out of scope by decision (plan B7): the compositor-drawn policy editor (that
+stays milestone 15), the first-boot overscan offer, and bind/windowrule editing.
+Desktop icons (DP-6) and `mode` behaviour (DP-3) were on this list and are now
+in progress as DE mode (C-24, ADR 0090). The `mode` key itself has landed, and
+so far only the taskbar reads it.
 
 The toolkit is iced 0.14 + `iced_layershell` 0.19.1, all Rust, in house — no
 Quickshell and no QML (ADR 0038). Blur under a translucent client is abyss's
@@ -750,7 +752,8 @@ session in under 30 minutes.
 touch/tablet/gesture input, maximize policy") is open: `31785c3` (touchpad
 swipe gestures, touch and tablet input), `a006d2e` and `20d8e3a` (only
 floating windows honour `xdg_toplevel.set_maximized`; a maximize from an
-unmapped tiled window is ignored), `429040a` (hyperion wakes on compositor
+unmapped tiled window is ignored; since removed by C-20 and scoped to
+`mode "de"` by C-24), `429040a` (hyperion wakes on compositor
 events and follows `title` changes). Local `main` also carries `aa8a4f7`
 (keep a tiled window tiled on a client maximize request), which is not on
 `origin/main`.

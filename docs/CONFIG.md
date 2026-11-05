@@ -36,7 +36,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `mode` | wm \| hybrid \| de | `"hybrid"` | live | Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; `hybrid` adds window chips, tray and clock; `de` adds desktop icons and pointer-first navigation. Selects defaults that explicit configuration overrides. Applies on hot reload. |
+| `mode` | wm \| hybrid \| de | `"hybrid"` | live | Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; `hybrid` adds window chips, tray and clock; `de` is a stacking desktop in the KDE manner, with titlebars, maximize, Quick Tile and desktop icons (being built, COMP-05 §7.1). Selects defaults that explicit configuration overrides; how windows stack and their chrome follow the mode. Applies on hot reload. |
 
 ### `components`
 
