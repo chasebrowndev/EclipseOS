@@ -65,6 +65,8 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "set_idle_inhibit" => set_idle_inhibit(state, conn, params),
         // The bar's start menu, relayed on the `launcher` event stream.
         "open_launcher" => open_launcher(state, params),
+        // The bar's power drawer, relayed on the `power` event stream.
+        "open_power" => open_power(state, params),
         // Agent lifecycle from the human seat (COMP-08, COMP-10 §3.3).
         "get_agents" => get_agents(state),
         "pause_agent" => pause_agent(state, params),
@@ -1110,6 +1112,16 @@ fn set_idle_inhibit(state: &mut AbyssState, conn: u64, params: &Value) -> Reply 
 /// subscribed to hear it, so a caller with no bar running can fall back to
 /// the centred launcher instead of doing nothing.
 fn open_launcher(state: &mut AbyssState, params: &Value) -> Reply {
+    relay_open(state, params, "launcher")
+}
+
+/// Ask the bar to open its power drawer (the short power-key press). Same
+/// shape and rules as [`open_launcher`], relayed as a `power` event.
+fn open_power(state: &mut AbyssState, params: &Value) -> Reply {
+    relay_open(state, params, "power")
+}
+
+fn relay_open(state: &mut AbyssState, params: &Value, event: &'static str) -> Reply {
     only_keys(params, &["output"])?;
     let entry = match params_obj(params).get("output") {
         None | Some(Value::Null) => state
@@ -1122,10 +1134,10 @@ fn open_launcher(state: &mut AbyssState, params: &Value) -> Reply {
             .ok_or_else(|| RpcError::invalid_params("no such output"))?,
     };
     let (id, name) = (entry.id, entry.connector.clone());
-    let delivered = super::has_subscriber(state, "launcher");
+    let delivered = super::has_subscriber(state, event);
     super::emit(
         state,
-        "launcher",
+        event,
         json!({"action": "open", "output": id, "output_name": name}),
     );
     Ok(json!({"ok": true, "output": id, "output_name": name, "delivered": delivered}))
