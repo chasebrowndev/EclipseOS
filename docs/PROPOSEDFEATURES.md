@@ -163,12 +163,6 @@ output. Beyond that:
   - Settings has no path/image control yet (`schema.rs` maps `string` to a
     text field), so the pane needs an image picker type.
 
-- **The greeter gets its own package.** `eclipseos-meta` owns the greetd
-  drop-in and `/etc/eclipse/greetd/`, and depends on every desktop package, so
-  removing a desktop package for an unrelated reason cascades into `-meta` and
-  silently drops the graphical login (was PKG-02, 2026-09-22). The greeter
-  belongs in a package with no dependency edge to the desktop ones.
-
 ---
 
 ## RGB lighting

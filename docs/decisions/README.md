@@ -81,6 +81,7 @@ writing a new ADR that says so.
 | 0086 | [Outputs on a secondary GPU get a copy by default; native compositing is opt-in](0086-secondary-gpu-copy-default.md) | accepted |
 | 0087 | [Abyss hosts the greeter](0087-abyss-hosts-the-greeter.md) | accepted |
 | 0088 | [The compositor collects polkit passwords](0088-compositor-polkit-prompt.md) | accepted |
+| 0089 | [The machine chooses its login screen](0089-login-screen-settings.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering
