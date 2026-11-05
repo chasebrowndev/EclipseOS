@@ -67,6 +67,8 @@ pub struct BarInfo {
     pub hover: Option<Button>,
     pub pressed: Option<Button>,
     pub maximized: bool,
+    /// Drawn with square corners: maximized, or Quick Tiled (M5).
+    pub square: bool,
     /// Rolled up to its bar (`shell::winops`): the renderer draws the bar and
     /// nothing under it, rounded on all four corners.
     pub shaded: bool,

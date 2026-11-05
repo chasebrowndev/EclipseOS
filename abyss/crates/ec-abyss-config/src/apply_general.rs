@@ -128,6 +128,26 @@ impl Config {
                 "theme-light" => self.apply_theme_ref(n, true),
                 "light-from" => self.apply_schedule(n, true),
                 "dark-from" => self.apply_schedule(n, false),
+                "snap" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.snap = b;
+                    }
+                }
+                "edge-tile" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.edge_tile = b;
+                    }
+                }
+                "snap-distance" => {
+                    if !set_i32(&mut self.general.snap_distance, n) {
+                        self.reject(n, "snap-distance expects an integer");
+                    }
+                }
+                "edge-tile-distance" => {
+                    if !set_i32(&mut self.general.edge_tile_distance, n) {
+                        self.reject(n, "edge-tile-distance expects an integer");
+                    }
+                }
                 "drop-edge-band" => {
                     if !set_i32(&mut self.general.drop_edge_band, n) {
                         self.reject(n, "drop-edge-band expects an integer");

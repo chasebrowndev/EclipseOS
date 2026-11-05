@@ -390,6 +390,8 @@ pub fn drop_window(state: &mut AbyssState, window: &Window) {
 /// Abandon a drag in flight (grab cancelled, session locked): the window goes
 /// back to its placeholder.
 pub fn cancel_tile_drag(state: &mut AbyssState) {
+    // The `de` screen-edge preview is a drag overlay too.
+    super::quicktile::clear_preview(state);
     if state.tile_drag.take().is_some() {
         arrange(state);
     }

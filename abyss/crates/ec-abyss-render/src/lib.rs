@@ -330,6 +330,14 @@ fn fills_area(window: &Window) -> bool {
         .is_some_and(|x| x.is_maximized() || x.is_fullscreen())
 }
 
+/// Is `window` Quick Tiled under `mode "de"` (M5)? A floating window (no tile
+/// clip: Radiant tiles carry one) that abyss told it is tiled on some edge.
+/// Like a maximized window it fills its zone with no border inset and is drawn
+/// square, with no ring or bezel.
+fn quick_tiled(window: &Window) -> bool {
+    userdata::tile_clip(window).is_none() && userdata::is_quick_tiled(window)
+}
+
 /// Whether `mode`'s backdrop program (glass or frost) can draw a bezel on
 /// `output` this frame: compiled on first use, and never on a rotated output
 /// (see [`effects::fb_y_mirrored`]).
@@ -1860,9 +1868,9 @@ fn window_elements(
         // Only abyss's own state counts: it holds those windows floating,
         // untiled. A tiled window that merely carries the X11/xdg fullscreen
         // state (a client that set it itself) keeps its rounding.
-        let rounding = rounding
-            .clone()
-            .filter(|_| !(fills_area(&window) && userdata::tile_clip(&window).is_none()));
+        let rounding = rounding.clone().filter(|_| {
+            !((fills_area(&window) && userdata::tile_clip(&window).is_none()) || quick_tiled(&window))
+        });
         // A tiled client that ignored its configure (Electron holds its own
         // min width) is cut back to its tile rather than drawn under its
         // neighbour. Only a window that actually overhangs is cropped, so one
@@ -2154,7 +2162,13 @@ fn window_elements(
                     let slot = (mode == BlurMode::Frost) as usize;
                     let ready =
                         *bezel_ok[slot].get_or_insert_with(|| bezel_ready(renderer, store, output, mode));
-                    bezel_width(mode, ready, fills_area(&window), border_size, upscale)
+                    bezel_width(
+                        mode,
+                        ready,
+                        fills_area(&window) || quick_tiled(&window),
+                        border_size,
+                        upscale,
+                    )
                 }
                 false => None,
             };
@@ -2496,6 +2510,11 @@ fn window_elements(
         let start = out.len();
         match &border {
             Some(_) if bezeled => {
+                store.gpu.rings.remove(&(output.clone(), window.clone()));
+                store.borders.remove(&(output.clone(), window.clone()));
+            }
+            // A Quick Tiled window is square and borderless, like a maximized one.
+            Some(_) if quick_tiled(&window) => {
                 store.gpu.rings.remove(&(output.clone(), window.clone()));
                 store.borders.remove(&(output.clone(), window.clone()));
             }

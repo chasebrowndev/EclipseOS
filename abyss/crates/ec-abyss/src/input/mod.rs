@@ -282,6 +282,7 @@ impl AbyssState {
             Action::ToggleFloating => shell::toggle_floating(self),
             Action::ToggleFullscreen => shell::toggle_fullscreen(self),
             Action::ToggleMaximize => shell::maximize::toggle(self),
+            Action::Tile(dir) => shell::quicktile::bind(self, dir),
             Action::Minimize => shell::minimize_focused(self),
             Action::Unminimize => shell::unminimize_last(self),
             Action::ToggleLayout => shell::toggle_layout(self),

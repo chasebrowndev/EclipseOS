@@ -75,6 +75,15 @@ pub struct General {
     /// Width, logical px, of the screen-edge band that adds a full-height
     /// column or full-width row on drop.
     pub drop_edge_band: i32,
+    /// `mode "de"`: snap a moved or resized window to the usable-area edges
+    /// and to other windows within `snap_distance` logical px (KDE: 10).
+    pub snap: bool,
+    pub snap_distance: i32,
+    /// `mode "de"`: dragging a titlebar to a screen edge or corner shows a
+    /// preview and tiles on release; `edge_tile_distance` is how close to the
+    /// screen edge the pointer must be (KDE: 20).
+    pub edge_tile: bool,
+    pub edge_tile_distance: i32,
     /// `color-scheme` (ADR 0084).
     pub color_scheme: ColorSetting,
     /// Theme used while the scheme is dark / light.
@@ -129,6 +138,10 @@ impl Default for General {
             drop_guides: true,
             drop_guide_color: [0.91, 0.64, 0.24, 1.0],
             drop_edge_band: 40,
+            snap: true,
+            snap_distance: 10,
+            edge_tile: true,
+            edge_tile_distance: 20,
             color_scheme: ColorSetting::Dark,
             theme_dark: "dark".into(),
             theme_light: "light".into(),
@@ -330,6 +343,9 @@ pub struct ModeProfile {
     /// The compositor draws a titlebar above server-side-decorated windows
     /// (COMP-05 §7.1, M3).
     pub titlebars: bool,
+    /// Quick Tile, edge tiling and window snapping (COMP-05 §3.1, M5). A
+    /// floating placement, not a layout: `de` stays pure stacking.
+    pub quick_tile: bool,
     /// Default for `general.focus-follows-mouse`; an explicit key wins.
     pub focus_follows_mouse: bool,
     /// Default for `general.floating-placement`; an explicit key wins. Windows
@@ -344,6 +360,7 @@ impl Mode {
             stacking: self == Mode::De,
             maximize: self == Mode::De,
             titlebars: self == Mode::De,
+            quick_tile: self == Mode::De,
             focus_follows_mouse: self != Mode::De,
             floating_placement: if self == Mode::De {
                 FloatingPlacement::Cascade

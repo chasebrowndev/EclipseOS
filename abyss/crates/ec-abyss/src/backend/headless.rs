@@ -469,6 +469,21 @@ fn redraw(
                 fullscreen,
             )
         };
+        // Quick Tile edge preview (`mode "de"`, COMP-05 §3.1): a compositor overlay
+        // level with the drop guides, never in a capture pass list.
+        elements.splice(
+            0..0,
+            crate::render::drop::preview_elements(
+                renderer,
+                state.tile_preview.as_ref().map(|p| (&p.output, p.rect)),
+                out,
+                state
+                    .space
+                    .output_geometry(out)
+                    .map(|g| g.loc)
+                    .unwrap_or_default(),
+            ),
+        );
         // Radiant drop guides (COMP-05 §3.1): above the windows, below
         // annotations and everything spliced after them.
         elements.splice(

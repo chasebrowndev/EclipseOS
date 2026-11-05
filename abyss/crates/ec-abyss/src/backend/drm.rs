@@ -1865,6 +1865,14 @@ fn render_output(state: &mut AbyssState, index: usize) {
         &output,
         output_loc,
     ));
+    // Quick Tile edge preview (`mode "de"`, COMP-05 §3.1): level with the drop
+    // guides, never in a capture pass list.
+    elements.extend(crate::render::drop::preview_elements(
+        renderer,
+        state.tile_preview.as_ref().map(|p| (&p.output, p.rect)),
+        &output,
+        output_loc,
+    ));
     // Radiant drop guides (COMP-05 §3.1): above the windows, below the
     // annotations and the cursor.
     elements.extend(crate::render::drop::drop_elements(

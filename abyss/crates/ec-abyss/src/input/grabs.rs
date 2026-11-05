@@ -93,6 +93,7 @@ fn place_moved(
     window: &Window,
     initial_location: Point<i32, Logical>,
     delta: Point<f64, Logical>,
+    pointer: Point<f64, Logical>,
 ) {
     // Nothing behind the lock moves. The grab can outlive `engage_lock`
     // (ending it there would send a focus-restoring motion to the surface
@@ -118,7 +119,28 @@ fn place_moved(
         .or_else(|| data.space.element_geometry(window))
         .map(|g| g.size)
         .unwrap_or_default();
-    crate::shell::place_at(data, &window.clone(), Rectangle::new(loc.to_i32_round(), size));
+    let mut rect = Rectangle::new(loc.to_i32_round(), size);
+    // Quick Tile (`mode "de"`): the screen-edge preview follows the pointer,
+    // and the edges snap unless Shift is held (`shell::snap`).
+    if data.config.mode.profile().quick_tile {
+        crate::shell::quicktile::drag_preview(data, window, pointer);
+        rect = crate::shell::snap::snap_content(data, window, rect, None);
+    }
+    crate::shell::place_at(data, &window.clone(), rect);
+}
+
+/// `rect` of a resize, with the dragged edges snapped (`mode "de"`).
+fn snapped_resize(
+    data: &AbyssState,
+    window: &Window,
+    edges: xdg_toplevel::ResizeEdge,
+    rect: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    if data.config.mode.profile().quick_tile {
+        crate::shell::snap::snap_content(data, window, rect, Some(edges))
+    } else {
+        rect
+    }
 }
 
 /// `initial` with `edges` dragged by `delta`; the opposite edges stay put and
@@ -179,7 +201,7 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
         // dragged, not pointed at.
         handle.motion(data, None, event);
         let delta = event.location - self.start_data.location;
-        place_moved(data, &self.window, self.initial_location, delta);
+        place_moved(data, &self.window, self.initial_location, delta, event.location);
     }
 
     fn relative_motion(
@@ -305,6 +327,8 @@ impl PointerGrab<AbyssState> for MoveSurfaceGrab {
 /// The shared end of a pointer or touch move: hand the window to the Radiant
 /// drop (a no-op when no drop is in flight).
 pub fn finish_move(state: &mut AbyssState, window: &Window) {
+    // A screen-edge preview lands (`mode "de"`); a no-op without one.
+    crate::shell::quicktile::drop_preview(state, window);
     crate::shell::drop_window(state, window);
 }
 
@@ -321,6 +345,7 @@ impl ResizeSurfaceGrab {
     fn apply(&self, data: &mut AbyssState, location: Point<f64, Logical>) {
         let delta = (location - self.start_data.location).to_i32_round::<i32>();
         let rect = resized_rect(self.initial_rect, self.edges, delta);
+        let rect = snapped_resize(data, &self.window, self.edges, rect);
         crate::shell::place_at(data, &self.window.clone(), rect);
     }
 }
@@ -506,7 +531,7 @@ impl TouchGrab<AbyssState> for TouchMoveSurfaceGrab {
             return;
         }
         let delta = event.location - self.start_data.location;
-        place_moved(data, &self.window, self.initial_location, delta);
+        place_moved(data, &self.window, self.initial_location, delta, event.location);
     }
 
     fn frame(&mut self, data: &mut AbyssState, handle: &mut TouchInnerHandle<'_, AbyssState>, seq: Serial) {
@@ -595,6 +620,7 @@ impl TouchGrab<AbyssState> for TouchResizeSurfaceGrab {
         }
         let delta = (event.location - self.start_data.location).to_i32_round::<i32>();
         let rect = resized_rect(self.initial_rect, self.edges, delta);
+        let rect = snapped_resize(data, &self.window, self.edges, rect);
         crate::shell::place_at(data, &self.window.clone(), rect);
     }
 
@@ -634,11 +660,11 @@ impl TouchGrab<AbyssState> for TouchResizeSurfaceGrab {
     }
 }
 
-/// A client-requested move or resize of a maximized window (`mode "de"`): when
+/// A client-requested move or resize of a maximized or Quick Tiled window (`mode "de"`): when
 /// the press is live, the window stops being maximized first and comes back
 /// under the pointer, so the grab starts from the restored rectangle.
 fn release_maximize(state: &mut AbyssState, window: &Window, surface: &WlSurface, serial: Serial) {
-    if crate::shell::maximize::is_maximized(state, window)
+    if crate::shell::maximize::is_placed(state, window)
         && (start_data(state, surface, serial).is_some()
             || touch_start_data(state, surface, serial).is_some())
     {
@@ -765,7 +791,7 @@ pub fn start_move_from(
     button: u32,
     origin: Option<Point<f64, Logical>>,
 ) -> bool {
-    let was_maximized = crate::shell::maximize::is_maximized(state, &window);
+    let was_maximized = crate::shell::maximize::is_placed(state, &window);
     crate::shell::maximize::release_for_drag(state, &window);
     let Some(initial_location) = state.space.element_geometry(&window).map(|g| g.loc) else {
         return false;
@@ -971,6 +997,19 @@ pub fn start_drag_gesture(state: &mut AbyssState, fingers: u32) -> bool {
     true
 }
 
+/// Start a gesture drag of `window` as `start_drag_gesture` would, minus the
+/// modifier and hit-test claim (tests).
+#[cfg(test)]
+pub(crate) fn begin_gesture_drag_for_test(state: &mut AbyssState, window: &Window) {
+    let initial_location = state.space.element_geometry(window).unwrap().loc;
+    state.gesture_drag = Some(GestureDrag {
+        fingers: 2,
+        window: window.clone(),
+        initial_location,
+        delta: Point::default(),
+    });
+}
+
 /// Move the dragged window by `delta` more, through the same path as a
 /// pointer move (Radiant tile drag, or a floating placement).
 pub fn update_drag_gesture(state: &mut AbyssState, delta: Point<f64, Logical>) {
@@ -979,7 +1018,10 @@ pub fn update_drag_gesture(state: &mut AbyssState, delta: Point<f64, Logical>) {
     };
     drag.delta += delta;
     let (window, initial_location, delta) = (drag.window.clone(), drag.initial_location, drag.delta);
-    place_moved(state, &window, initial_location, delta);
+    // A swipe does not move the pointer: the point the edge preview follows is
+    // where it would be had it carried the window.
+    let pointer = state.pointer_location + delta;
+    place_moved(state, &window, initial_location, delta, pointer);
 }
 
 /// The fingers lifted: land the window where the guides showed, or put a

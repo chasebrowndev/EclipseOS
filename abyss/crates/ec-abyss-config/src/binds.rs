@@ -33,8 +33,11 @@ pub(crate) fn merge_binds(defaults: Vec<Bind>, from_file: Vec<Bind>) -> Vec<Bind
 
 /// Binds a mode adds to the built-ins (COMP-17 §2). Defaults like the rest: a
 /// `bind` on the same chord replaces them. Under `de`, Alt+F4 closes the
-/// focused window and Super+PageUp toggles maximize (Super+arrows are kept for
-/// Quick Tile). Alt+Tab and Quick Tile are later milestones.
+/// focused window, Super+PageUp toggles maximize and Super+arrows Quick Tile
+/// (`tile-left` and the rest). The arrows take the place of the built-in
+/// `focus-*` on those chords (`Config::load` seats the mode's binds ahead of
+/// the built-ins, behind the launcher's chosen chords); `Super+Shift+arrows`
+/// are untouched. Alt+Tab is a later milestone.
 pub fn mode_default_binds(mode: Mode) -> Vec<Bind> {
     match mode {
         Mode::De => vec![
@@ -47,6 +50,26 @@ pub fn mode_default_binds(mode: Mode) -> Vec<Bind> {
                 mods: m(true, false, false, false),
                 key: Keysym::Page_Up,
                 action: Action::ToggleMaximize,
+            },
+            Bind {
+                mods: m(true, false, false, false),
+                key: Keysym::Left,
+                action: Action::Tile(Direction::Left),
+            },
+            Bind {
+                mods: m(true, false, false, false),
+                key: Keysym::Right,
+                action: Action::Tile(Direction::Right),
+            },
+            Bind {
+                mods: m(true, false, false, false),
+                key: Keysym::Up,
+                action: Action::Tile(Direction::Up),
+            },
+            Bind {
+                mods: m(true, false, false, false),
+                key: Keysym::Down,
+                action: Action::Tile(Direction::Down),
             },
         ],
         Mode::Wm | Mode::Hybrid => Vec::new(),

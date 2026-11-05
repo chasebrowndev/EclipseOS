@@ -153,10 +153,7 @@ fn floating_placement(state: &AbyssState, window: &Window) -> Option<Remembered>
                 .map(|f| Remembered {
                     output: entry.id,
                     workspace,
-                    rect: match f.placement {
-                        Placement::Maximized { restore, .. } => restore,
-                        Placement::Free => f.rect,
-                    },
+                    rect: f.placement.restore_rect().unwrap_or(f.rect),
                 })
         })
     })

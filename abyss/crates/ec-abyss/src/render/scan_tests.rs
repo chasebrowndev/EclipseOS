@@ -171,3 +171,35 @@ fn every_backend_draws_the_window_menu() {
         );
     }
 }
+
+#[test]
+fn the_capture_pass_cannot_see_the_tile_preview() {
+    // The Quick Tile edge preview (`mode "de"`, COMP-05 §3.1) is a drag overlay
+    // like the Radiant guides: spliced in by the backends, never recorded.
+    let src = include_str!("capture.rs");
+    for name in ["preview_elements", "tile_preview", "quicktile"] {
+        assert!(
+            !src.contains(name),
+            "capture.rs names `{name}`; the tile preview is never in a capture pass list"
+        );
+    }
+    let still = include_str!("../../../ec-abyss-render/src/still.rs");
+    assert!(
+        !still.contains("preview_elements"),
+        "still.rs draws the tile preview into a capture's effects"
+    );
+}
+
+#[test]
+fn every_backend_draws_the_tile_preview() {
+    for (src, path) in [
+        (include_str!("../backend/drm.rs"), "drm.rs"),
+        (include_str!("../backend/winit.rs"), "winit.rs"),
+        (include_str!("../backend/headless.rs"), "headless.rs"),
+    ] {
+        assert!(
+            src.contains("drop::preview_elements"),
+            "{path} does not draw the tile preview"
+        );
+    }
+}

@@ -50,6 +50,11 @@ pub enum Action {
     /// Maximize the focused window, or restore it. Does nothing outside
     /// `mode "de"` (COMP-05 §3.1, C-24).
     ToggleMaximize,
+    /// Quick Tile the focused window one step toward `Direction` (`mode "de"`
+    /// only; COMP-05 §3.1, C-24). Each press moves the zone one step on that
+    /// axis, so Left then Up is the top-left quarter and the opposite
+    /// direction steps back; see `shell::quicktile`.
+    Tile(Direction),
     /// Send the focused window away (COMP-05 §4 `minimized`).
     Minimize,
     /// Bring back the last window sent away on the active workspace.

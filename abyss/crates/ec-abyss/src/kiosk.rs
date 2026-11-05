@@ -57,6 +57,7 @@ pub fn permits(action: &Action) -> bool {
         | Action::ToggleFloating
         | Action::ToggleFullscreen
         | Action::ToggleMaximize
+        | Action::Tile(_)
         | Action::Minimize
         | Action::Unminimize
         | Action::ToggleLayout

@@ -193,6 +193,8 @@ pub struct AbyssState {
     /// A window being dragged onto the Radiant tree, while one is (COMP-05
     /// §3.1). Its drop guides are drawn from here.
     pub tile_drag: Option<crate::shell::TileDrag>,
+    /// The `mode "de"` screen-edge tile preview of a window drag (`shell::quicktile`).
+    pub tile_preview: Option<crate::shell::quicktile::Preview>,
     /// Whether the layout of a closing tiled window's neighbours is held
     /// until its close ghost is done (COMP-02 §9, ADR 0073).
     pub retile_hold: crate::shell::RetileHold,
@@ -601,6 +603,7 @@ impl AbyssState {
             region_select: crate::render::select::RegionSelect::default(),
             trusted_ui: crate::trusted_ui::TrustedUi::default(),
             tile_drag: None,
+            tile_preview: None,
             retile_hold: crate::shell::RetileHold::None,
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,

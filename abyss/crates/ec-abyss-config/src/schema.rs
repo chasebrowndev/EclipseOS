@@ -167,8 +167,8 @@ pub const TABLE: &[Key] = &[
         Live,
         "Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; \
        `hybrid` adds window chips, tray and clock; `de` is a stacking desktop \
-       in the KDE manner, with titlebars, maximize, Quick Tile and desktop \
-       icons (being built, COMP-05 §7.1). Selects defaults that explicit \
+       in the KDE manner, with titlebars, maximize, Quick Tile, snapping and \
+       desktop icons (being built, COMP-05 §7.1). Selects defaults that explicit \
        configuration overrides (binds, `general.focus-follows-mouse`); how \
        windows stack and their chrome follow the mode. Under `de` nothing is \
        tiled: new windows float, a `tile` rule and the tile binds \
@@ -186,6 +186,16 @@ pub const TABLE: &[Key] = &[
        server-side-decorated window can be resized from a band just outside \
        its frame. Keep above/below, shade and on-all-desktops are `de` only \
        and are forgotten when the mode is left. \
+       Quick Tile is a floating placement, not a layout: `Super+Left/Right/Up/\
+       Down` (`tile-left` and the rest) step the focused window one zone \
+       toward that direction, Left then Up being the top-left quarter and the \
+       opposite direction stepping back, out of the last tile to the old \
+       rectangle; dragging a titlebar to the top edge maximizes, to a side a \
+       half or quarter (`general.edge-tile`); moved and resized windows snap \
+       to the screen and to each other (`general.snap`, Shift disables). A \
+       tiled window fills its zone of the usable area, square and without a \
+       border, and tells its client the tiled edges. The `Super+arrows` take \
+       the place of `focus-*` on those chords under `de`. \
        Entering `de` floats every tiled window where it is; leaving re-tiles \
        them where they were. Applies on hot reload.",
     ),
@@ -615,6 +625,38 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Width of the edge strip a dragged window's centre aims at to drop it as a full-height column or full-width row, logical px. 0 disables edge drops.",
+    ),
+    k(
+        "general.snap",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, snap a window being moved or resized to the usable-area edges and to the frames of other visible windows on the same output and workspace. Hold Shift to move or resize without snapping.",
+    ),
+    k(
+        "general.snap-distance",
+        int(0, 512),
+        Int(10),
+        Abyss,
+        Live,
+        "How close, logical px, an edge must come to another edge to snap to it (KDE's border and window snap zones are both 10). 0 disables snapping.",
+    ),
+    k(
+        "general.edge-tile",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, dragging a titlebar to a screen edge shows a preview and tiles on release: the top edge maximizes, the left and right edges tile a half (a quarter near a corner). Only an outer edge of the output layout counts, never an edge shared with another output.",
+    ),
+    k(
+        "general.edge-tile-distance",
+        int(0, 512),
+        Int(20),
+        Abyss,
+        Live,
+        "How close to a screen edge, logical px, the pointer must be to show the edge-tile preview (KDE's side zone is 20). 0 disables edge tiling.",
     ),
     // themes (ADR 0084)
     k(
@@ -2602,6 +2644,30 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["toggle-maximize"],
         "Maximize the focused window, or restore it. Only under `mode \"de\"`; does nothing elsewhere.",
     ),
+    form(
+        &["tile-left"],
+        "",
+        &["tile-left"],
+        "Quick Tile the focused window one step left. Only under `mode \"de\"`; does nothing elsewhere. Left then up is the top-left quarter; the opposite direction steps back, and out of the last tile to floating.",
+    ),
+    form(
+        &["tile-right"],
+        "",
+        &["tile-right"],
+        "Quick Tile the focused window one step right (see `tile-left`).",
+    ),
+    form(
+        &["tile-up"],
+        "",
+        &["tile-up"],
+        "Quick Tile the focused window one step up: from floating, the top half (see `tile-left`).",
+    ),
+    form(
+        &["tile-down"],
+        "",
+        &["tile-down"],
+        "Quick Tile the focused window one step down: from floating, the bottom half (see `tile-left`).",
+    ),
     form(&["minimize"], "", &["minimize"], "Send the focused window away."),
     form(
         &["unminimize", "restore"],
@@ -2813,6 +2879,10 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.drop-guides" => V::Bool(c.general.drop_guides),
         "general.drop-guide-color" => V::Color(c.general.drop_guide_color),
         "general.drop-edge-band" => V::Int(c.general.drop_edge_band as i64),
+        "general.snap" => V::Bool(c.general.snap),
+        "general.snap-distance" => V::Int(c.general.snap_distance as i64),
+        "general.edge-tile" => V::Bool(c.general.edge_tile),
+        "general.edge-tile-distance" => V::Int(c.general.edge_tile_distance as i64),
         "general.color-scheme" => V::Str(c.general.color_scheme.name().into()),
         "general.accent" => V::Str(c.general.accent.map(crate::hex_rgb).unwrap_or_default()),
         "general.theme-dark" => V::Str(c.general.theme_dark.clone()),

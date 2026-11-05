@@ -18,11 +18,21 @@ pub const COUNT: usize = 10;
 ///
 /// `Free` rectangles are placed and stay where they are put. Any other
 /// placement derives the rectangle on every arrange, and records the rectangle
-/// to give back when it ends. A later placement (Quick Tile) is another variant
-/// carrying its own restore rect.
+/// to give back when it ends. Quick Tile is the second such placement, with
+/// its own restore rect. Both are `de` only and both are floating placements:
+/// nothing tiles under `de`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Placement {
     Free,
+    /// `mode "de"` only (Quick Tile, M5). The frame fills `zone` of the usable
+    /// area, derived on every arrange. `restore` is the outer rectangle the
+    /// window had before it was first tiled or maximized: a tile that replaces
+    /// a maximize keeps the maximize's `restore`, and moving from tile to tile
+    /// keeps it, so leaving any of them gives back the original free rect.
+    QuickTile {
+        zone: super::quicktile::Zone,
+        restore: Rectangle<i32, Logical>,
+    },
     /// `mode "de"` only. Fills the usable area along the set axes; `restore` is
     /// the outer rectangle the window had before (the rectangle it keeps on any
     /// axis that is not maximized).
@@ -43,6 +53,20 @@ impl Placement {
         matches!(self, Placement::Maximized { .. })
     }
 
+    /// Does this placement derive the rectangle (maximized or Quick Tile)?
+    /// Such a window is drawn square and without a border inset.
+    pub fn is_placed(&self) -> bool {
+        !matches!(self, Placement::Free)
+    }
+
+    /// The rectangle to give back when the placement ends.
+    pub fn restore_rect(&self) -> Option<Rectangle<i32, Logical>> {
+        match self {
+            Placement::Free => None,
+            Placement::Maximized { restore, .. } | Placement::QuickTile { restore, .. } => Some(*restore),
+        }
+    }
+
     /// The same placement moved by `offset`, for a window sent to another output.
     pub fn moved_by(self, offset: smithay::utils::Point<i32, Logical>) -> Placement {
         match self {
@@ -50,6 +74,10 @@ impl Placement {
             Placement::Maximized { h, v, mut restore } => {
                 restore.loc += offset;
                 Placement::Maximized { h, v, restore }
+            }
+            Placement::QuickTile { zone, mut restore } => {
+                restore.loc += offset;
+                Placement::QuickTile { zone, restore }
             }
         }
     }

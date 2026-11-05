@@ -342,10 +342,20 @@ impl Config {
             cfg.cur = None;
         }
         let mut defaults = oracle_eyes_binds(&cfg.oracle_eyes);
-        defaults.extend(defaults_with_launcher(&cfg.launcher));
+        let launcher_defaults = defaults_with_launcher(&cfg.launcher);
         // The mode's own default binds sit under the file's and the launcher's
-        // chords: `merge_binds` lets any explicit chord replace them.
+        // chosen chords (`merge_binds` lets any explicit chord replace them)
+        // but over the other built-ins, so `de`'s Super+arrows Quick Tile
+        // where `wm` and `hybrid` move focus.
+        let chosen = [&cfg.launcher.bind.open, &cfg.launcher.bind.run].map(|c| c.chord);
+        defaults.extend(
+            launcher_defaults
+                .iter()
+                .take_while(|b| chosen.contains(&Some((b.mods, b.key))))
+                .cloned(),
+        );
         defaults.extend(mode_default_binds(cfg.mode));
+        defaults.extend(launcher_defaults);
         cfg.binds = merge_binds(defaults, binds_from_file);
         cfg.resolve_mode_defaults();
         cfg.finish_themes();

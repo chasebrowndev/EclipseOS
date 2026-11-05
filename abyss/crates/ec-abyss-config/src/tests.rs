@@ -382,7 +382,7 @@ fn unknown_keys_suggest_the_schema_path_they_nearly_are() {
     assert!(m.contains("did you mean \"general.gaps-in\""), "{m}");
 
     // Nothing close enough: no suggestion rather than a misleading one.
-    let m = err("general {\n    quux 4\n}\n");
+    let m = err("general {\n    xyzzyplugh 4\n}\n");
     assert!(!m.contains("did you mean"), "{m}");
 }
 
@@ -3552,4 +3552,96 @@ fn de_keeps_the_reserved_binds() {
     };
     assert_eq!(cfg.action_for(&sup, Keysym::Escape), Some(&Action::AgentOverride));
     assert_eq!(cfg.action_for(&sup, Keysym::space), Some(&Action::AgentAttention));
+}
+
+// ---- Quick Tile binds and keys (M5) ----------------------------------------
+
+fn sup_key(cfg: &Config, key: Keysym) -> Option<Action> {
+    let sup = ModifiersState {
+        logo: true,
+        ..Default::default()
+    };
+    cfg.action_for(&sup, key).cloned()
+}
+
+#[test]
+fn de_binds_super_arrows_to_quick_tile_and_other_modes_keep_focus() {
+    let de = load_text("tile-de", "mode \"de\"\n");
+    assert_eq!(sup_key(&de, Keysym::Left), Some(Action::Tile(Direction::Left)));
+    assert_eq!(sup_key(&de, Keysym::Right), Some(Action::Tile(Direction::Right)));
+    assert_eq!(sup_key(&de, Keysym::Up), Some(Action::Tile(Direction::Up)));
+    assert_eq!(sup_key(&de, Keysym::Down), Some(Action::Tile(Direction::Down)));
+    // One entry per chord.
+    assert_eq!(
+        de.binds
+            .iter()
+            .filter(|b| b.key == Keysym::Left
+                && b.mods
+                    == ModifiersState {
+                        logo: true,
+                        ..Default::default()
+                    })
+            .count(),
+        1
+    );
+    for (tag, text) in [("tile-wm", "mode \"wm\"\n"), ("tile-hybrid", "")] {
+        let cfg = load_text(tag, text);
+        assert_eq!(sup_key(&cfg, Keysym::Left), Some(Action::Focus(Direction::Left)));
+        assert_eq!(sup_key(&cfg, Keysym::Up), Some(Action::Focus(Direction::Up)));
+    }
+    // Super+Shift+arrows are untouched.
+    let ss = ModifiersState {
+        logo: true,
+        shift: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        de.action_for(&ss, Keysym::Left),
+        Some(&Action::Move(Direction::Left))
+    );
+}
+
+#[test]
+fn an_explicit_bind_beats_the_tile_default_and_reserved_binds_stay() {
+    let own = load_text(
+        "tile-own",
+        "mode \"de\"\nbind \"SUPER\" \"Left\" { focus-left; }\nbind \"SUPER\" \"Right\" { tile-up; }\n",
+    );
+    assert_eq!(sup_key(&own, Keysym::Left), Some(Action::Focus(Direction::Left)));
+    assert_eq!(sup_key(&own, Keysym::Right), Some(Action::Tile(Direction::Up)));
+    assert_eq!(sup_key(&own, Keysym::Up), Some(Action::Tile(Direction::Up)));
+    assert_eq!(sup_key(&own, Keysym::Escape), Some(Action::AgentOverride));
+    // The launcher's own chosen chord keeps winning over the mode.
+    let launcher = load_text(
+        "tile-launcher",
+        "mode \"de\"\nlauncher {\n    bind {\n        open \"Super+Left\"\n    }\n}\n",
+    );
+    assert_eq!(
+        sup_key(&launcher, Keysym::Left),
+        Some(Action::Spawn("ec-launcher".into()))
+    );
+}
+
+#[test]
+fn the_tile_actions_validate_and_the_snap_keys_default_to_kde() {
+    let doc: KdlDocument = "bind \"SUPER\" \"KP_1\" { tile-down; }\n".parse().unwrap();
+    let mut cfg = Config {
+        cur: Some((abyss_src("a.kdl"), String::new())),
+        ..Config::default()
+    };
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    let g = Config::default().general;
+    assert!(g.snap && g.edge_tile);
+    assert_eq!((g.snap_distance, g.edge_tile_distance), (10, 20));
+    let cfg = load_text(
+        "snap-keys",
+        "general {\n    snap #false\n    snap-distance 4\n    edge-tile #false\n    edge-tile-distance 0\n}\n",
+    );
+    assert!(!cfg.general.snap && !cfg.general.edge_tile);
+    assert_eq!(
+        (cfg.general.snap_distance, cfg.general.edge_tile_distance),
+        (4, 0)
+    );
+    assert!(Mode::De.profile().quick_tile && !Mode::Hybrid.profile().quick_tile);
 }
