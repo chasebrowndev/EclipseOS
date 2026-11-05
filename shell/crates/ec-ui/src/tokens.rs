@@ -1177,3 +1177,42 @@ pub mod popup {
     /// compositor is not there.
     pub const ANCHOR: Anchor = Anchor::Cell;
 }
+
+/// The Settings > Login screen preview: a small stand-in for the greeter at
+/// its real 16:9 proportions. The greeter is a separate program with its own
+/// stylesheet, so the sizes here are a scaled picture of it, not the pane's
+/// own type scale; its colours come from the theme being previewed, never
+/// from the palette.
+pub mod login_preview {
+    pub const W: f32 = 480.0;
+    pub const H: f32 = 270.0;
+    pub const RADIUS: f32 = 10.0;
+    /// Gap from the top edge to the clock, and from the bottom edge to the pills.
+    pub const EDGE: f32 = 16.0;
+    pub const CLOCK_SIZE: f32 = 13.0;
+    pub const CARD_W: f32 = 210.0;
+    pub const CARD_PAD: f32 = 14.0;
+    pub const CARD_GAP: f32 = 9.0;
+    pub const CARD_RADIUS: f32 = 9.0;
+    pub const GREETING_SIZE: f32 = 9.0;
+    pub const FIELD_H: f32 = 18.0;
+    pub const BUTTON_H: f32 = 20.0;
+    pub const BUTTON_SIZE: f32 = 9.0;
+    pub const BUTTON_RADIUS: f32 = 6.0;
+    pub const PILL_SIZE: f32 = 8.0;
+    pub const PILL_PAD_X: f32 = 10.0;
+    pub const PILL_PAD_Y: f32 = 4.0;
+    pub const PILL_GAP: f32 = 8.0;
+    /// Alphas of the theme's ink over the picture: the card, its rim, the
+    /// field and the pills.
+    pub const CARD_FILL: f32 = 0.10;
+    pub const CARD_RIM: f32 = 0.22;
+    /// Over a chosen wallpaper the real card is the base colour at this alpha
+    /// (`ec_greeter::render_style`), so its text stays readable.
+    pub const CARD_DENSE: f32 = 0.72;
+    pub const FIELD_FILL: f32 = 0.08;
+    pub const PILL_FILL: f32 = 0.12;
+    pub const PILL_RIM: f32 = 0.20;
+    /// The ink of the secondary line (the "Current wallpaper" tag).
+    pub const TAG_ALPHA: f32 = 0.5;
+}

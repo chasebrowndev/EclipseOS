@@ -25,7 +25,7 @@ choice must not be able to lock anyone out.
 0644. Machine state, so it survives an image swap.
 
 **Settings.** Whether to use the stored wallpaper; four theme colours, which must pass
-`ec_theme::validate`; a greeting of at most 120 printable characters; a clock preset,
+`ec_theme::validate`; a greeting of at most 80 printable characters (regreet never wraps it, so the card grows to fit and a longer one would push Login off a small screen); a clock preset,
 never a free format, because a bad strftime string could break the screen. Everything
 is optional. The file is a strict flat subset of TOML, parsed by hand: any unknown
 key, repeat or bad value fails the whole file. This adds no TOML dependency to a root
@@ -61,8 +61,9 @@ used to take `-meta` and so the graphical login with it (PKG-02).
 - Whoever authenticates decides what the login screen shows every user, including a
   greeting that imitates a system message. Admin rights already allow that.
 - The wallpaper shipped has the card's blur baked in, because GTK4 has no backdrop
-  filter. A user's image does not, so the card's legibility over a bright image is a
-  matter for the Settings page, which does the conversion.
+  filter. A chosen image does not, so over one the card's glass goes denser. Text
+  outside the card (the clock, the power pills) sits on the image directly, and the
+  Settings page's preview is how someone sees that before applying.
 
 ## Revisit when
 regreet changes its config or stops reading `--config` and `--style`, or someone wants

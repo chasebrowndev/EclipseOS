@@ -48,6 +48,7 @@ pub enum Page {
     Mode,
     Components,
     Wallpaper,
+    LoginScreen,
     // Taskbar
     BarAppearance,
     BarWidgets,
@@ -125,7 +126,7 @@ impl Section {
         match self {
             Section::Windows => &[Page::Layout, Page::Gaps, Page::Borders, Page::Focus],
             Section::Effects => &[Page::Blur, Page::Shadow, Page::Rounding, Page::Animations],
-            Section::Desktop => &[Page::Mode, Page::Components, Page::Wallpaper],
+            Section::Desktop => &[Page::Mode, Page::Components, Page::Wallpaper, Page::LoginScreen],
             Section::Taskbar => &[
                 Page::BarAppearance,
                 Page::BarWidgets,
@@ -182,7 +183,7 @@ impl Page {
         match self {
             Page::Layout | Page::Gaps | Page::Borders | Page::Focus => Section::Windows,
             Page::Blur | Page::Shadow | Page::Rounding | Page::Animations => Section::Effects,
-            Page::Mode | Page::Components | Page::Wallpaper => Section::Desktop,
+            Page::Mode | Page::Components | Page::Wallpaper | Page::LoginScreen => Section::Desktop,
             Page::BarAppearance | Page::BarWidgets | Page::BarFolding | Page::BarTray | Page::BarMotion => {
                 Section::Taskbar
             }
@@ -218,6 +219,7 @@ impl Page {
             Page::Mode => "Mode",
             Page::Components => "Components",
             Page::Wallpaper => "Wallpaper",
+            Page::LoginScreen => "Login screen",
             Page::BarAppearance => "Appearance",
             Page::BarWidgets => "Widgets",
             Page::BarFolding => "Folding",
@@ -255,6 +257,7 @@ impl Page {
             Page::Mode => "How much desktop there is around your windows.",
             Page::Components => "The programs that draw the desktop's notifications and panels.",
             Page::Wallpaper => "The picture behind everything.",
+            Page::LoginScreen => "The picture, greeting and clock on this machine's login screen.",
             Page::BarAppearance => "Where the bar sits and how it looks.",
             Page::BarWidgets => "Widgets, their order, and how the bar gives way.",
             Page::BarFolding => "When the bar folds away to a strip.",
@@ -299,6 +302,7 @@ impl Page {
                 | Page::BarFolding
                 | Page::Animations
                 | Page::Accounts
+                | Page::LoginScreen
         )
     }
 
@@ -538,6 +542,8 @@ mod tests {
         assert_eq!(Page::from_arg("NETWORK"), Some(Page::Network));
         // The agent console opens `ec-settings accounts`.
         assert_eq!(Page::from_arg("accounts"), Some(Page::Accounts));
+        assert_eq!(Page::from_arg("login-screen"), Some(Page::LoginScreen));
+        assert_eq!(Page::from_arg("desktop/login-screen"), Some(Page::LoginScreen));
         assert_eq!(Page::from_arg("nope"), None);
     }
 
@@ -589,7 +595,7 @@ mod tests {
             assert_eq!(owners, 1, "{page:?}");
             assert!(page.section().pages().contains(&page));
         }
-        assert_eq!(Page::all().count(), 36);
+        assert_eq!(Page::all().count(), 37);
     }
 
     #[test]

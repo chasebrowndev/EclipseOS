@@ -24,6 +24,12 @@ path = "src/main.rs"
 # futures executor, iced fires a compile_error!. See ADR 0039.
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
 ec-ui = { path = "../ec-ui" }
+# The Login screen page (ADR 0088): the settings contract and the frame sent to
+# the root helper. Settings never writes the machine's files itself.
+ec-greeter = { path = "../ec-greeter" }
+ec-theme = { path = "../../../abyss/crates/ec-theme" }
+# Decode and downscale the login wallpaper as the user, before root sees pixels.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 # The Network pane reads the link and forgets profiles and devices through the
 # status service's action handle.

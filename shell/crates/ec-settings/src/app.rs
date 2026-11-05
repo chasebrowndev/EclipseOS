@@ -143,6 +143,8 @@ pub enum Message {
     Anim(crate::animations::Msg),
     /// The Accounts page's own messages.
     Accounts(crate::accounts::Msg),
+    /// The Login screen page's own messages.
+    LoginScreen(crate::login_screen::Msg),
 }
 
 /// Somewhere to take the user: a page, and optionally a row on it by its
@@ -327,6 +329,8 @@ pub struct App {
     pub(crate) anim: crate::animations::Anim,
     /// The Accounts page: the store, its account names, and a sign-in.
     pub(crate) accounts: crate::accounts::Accounts,
+    /// The Login screen page: what the machine has, and the pending choices.
+    pub(crate) login: crate::login_screen::LoginScreen,
 }
 
 /// How long "Cleared" stands in for the button.
@@ -395,6 +399,7 @@ impl App {
             viewer: None,
             anim: crate::animations::Anim::default(),
             accounts: crate::accounts::Accounts::default(),
+            login: crate::login_screen::LoginScreen::default(),
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -410,6 +415,11 @@ impl App {
         crate::accounts::preview_env(&mut app.accounts);
         if app.page == Page::Animations {
             crate::animations::sync(&mut app);
+        }
+        if app.page == Page::LoginScreen {
+            crate::login_screen::load(&mut app);
+            #[cfg(debug_assertions)]
+            crate::login_screen::preview_env(&mut app.login);
         }
         crate::taskbar::adopt_selection(&mut app);
         app
@@ -745,6 +755,11 @@ fn preview_shot(path: String) -> Task<Message> {
 fn boot_inner(page: Page) -> (App, Task<Message>) {
     #[allow(unused_mut)]
     let mut app = App::with_page(page);
+    let pictures = if page == Page::LoginScreen {
+        crate::login_screen::refresh_pictures(&mut app.login)
+    } else {
+        Task::none()
+    };
     #[cfg(debug_assertions)]
     if let Ok(q) = std::env::var("SETTINGS_PREVIEW_SEARCH") {
         app.search.set_query(&q);
@@ -785,9 +800,12 @@ fn boot_inner(page: Page) -> (App, Task<Message>) {
         .and_then(|y| y.parse::<f32>().ok())
     {
         let to = iced::widget::scrollable::AbsoluteOffset { x: None, y: Some(y) };
-        return (app, iced::widget::operation::scroll_to(SCROLL, to));
+        return (
+            app,
+            Task::batch([pictures, iced::widget::operation::scroll_to(SCROLL, to)]),
+        );
     }
-    (app, Task::none())
+    (app, pictures)
 }
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -877,7 +895,12 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 }
             }
         }
-        Message::Reload => app.reload(),
+        Message::Reload => {
+            app.reload();
+            if app.page == Page::LoginScreen {
+                return crate::login_screen::reload(app);
+            }
+        }
 
         Message::Toggled(path, on) => app.write(&path, Value::Bool(on)),
 
@@ -1074,6 +1097,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::Search(m) => return crate::search_ui::update(app, m),
         Message::Anim(m) => return crate::animations::update(app, m),
         Message::Accounts(m) => return crate::accounts::update(app, m),
+        Message::LoginScreen(m) => return crate::login_screen::update(app, m),
     }
     Task::none()
 }
@@ -1088,7 +1112,15 @@ fn go(app: &mut App, page: Page) -> Task<Message> {
         return Task::none();
     }
     app.flash = None;
-    iced::widget::operation::snap_to(SCROLL, iced::widget::scrollable::RelativeOffset::START)
+    let pictures = if page == Page::LoginScreen {
+        crate::login_screen::reload(app)
+    } else {
+        Task::none()
+    };
+    Task::batch([
+        pictures,
+        iced::widget::operation::snap_to(SCROLL, iced::widget::scrollable::RelativeOffset::START),
+    ])
 }
 
 impl App {
@@ -1376,6 +1408,10 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             let (state, measure) = crate::accounts::status(app);
             controls.push(status_chip(&state, &measure));
         }
+        _ if app.page == Page::LoginScreen => {
+            let (state, measure) = crate::login_screen::status(app);
+            controls.push(status_chip(&state, &measure));
+        }
         _ if app.page == Page::Animations => {
             let (state, measure) = crate::animations::status(app);
             controls.push(status_chip(&state, &measure));
@@ -1405,6 +1441,7 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         }
         Page::Animations => blocks.extend(crate::animations::blocks(app)),
         Page::Accounts => blocks.extend(crate::accounts::blocks(app)),
+        Page::LoginScreen => blocks.extend(crate::login_screen::blocks(app)),
         p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
         _ => blocks.push(schema_page(app)),
     }
