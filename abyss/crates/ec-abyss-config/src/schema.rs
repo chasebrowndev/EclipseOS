@@ -200,6 +200,14 @@ pub const TABLE: &[Key] = &[
        (`general.desktop-rows`): `Ctrl+Super+arrows` (`desktop-left` and the \
        rest) switch along it and `Ctrl+Shift+Super+arrows` \
        (`move-to-desktop-left` and the rest) take the focused window along. \
+       `Alt+Tab` and `Alt+Shift+Tab` (`switch-windows`) open a window switcher \
+       in recent-use order across every desktop, minimized windows last: \
+       releasing Alt activates the selection, Escape cancels. `Super+W` \
+       (`toggle-overview`) shows this desktop's windows as thumbnails with the \
+       desktops as a strip, and the screen corners can do the same \
+       (`general.hot-corners.*`). Thumbnails are drawn by the compositor and \
+       never leave it; a window redacted from capture is a placeholder card with a \
+       padlock and no title, and one hidden from capture altogether has no card. \
        Entering `de` floats every tiled window where it is; leaving re-tiles \
        them where they were. Applies on hot reload.",
     ),
@@ -677,6 +685,54 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Under `mode \"de\"`, stepping past an edge of the desktop grid comes round to the other side. Off stops at the edge.",
+    ),
+    k(
+        "general.hot-corners.top-left",
+        Ty::Enum(HOT_CORNER_ACTIONS),
+        Str("auto"),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, what pushing the pointer into the top-left corner of an output does (COMP-05 §7.1): `toggle-overview`, `switch-windows` (open the window switcher; it stays open until Enter, a click or Escape) or `off`. `auto` takes the mode's default, which is `toggle-overview` under `de` and `off` elsewhere. Nothing fires during fullscreen, a grab, the session lock, or while a button is held.",
+    ),
+    k(
+        "general.hot-corners.top-right",
+        Ty::Enum(HOT_CORNER_ACTIONS),
+        Str("auto"),
+        Abyss,
+        Live,
+        "The top-right corner (see `general.hot-corners.top-left`). `auto` is `off`.",
+    ),
+    k(
+        "general.hot-corners.bottom-left",
+        Ty::Enum(HOT_CORNER_ACTIONS),
+        Str("auto"),
+        Abyss,
+        Live,
+        "The bottom-left corner (see `general.hot-corners.top-left`). `auto` is `off`.",
+    ),
+    k(
+        "general.hot-corners.bottom-right",
+        Ty::Enum(HOT_CORNER_ACTIONS),
+        Str("auto"),
+        Abyss,
+        Live,
+        "The bottom-right corner (see `general.hot-corners.top-left`). `auto` is `off`.",
+    ),
+    k(
+        "general.hot-corner-dwell",
+        int(0, 2000),
+        Int(150),
+        Abyss,
+        Live,
+        "How long, ms, the pointer must stay in a hot corner before its action fires (KDE's activation delay). It never blocks: a timer waits it out and a pointer that left cancels it.",
+    ),
+    k(
+        "general.hot-corner-cooldown",
+        int(0, 10000),
+        Int(750),
+        Abyss,
+        Live,
+        "After a hot corner fires, the time in ms before any hot corner can fire again, so a pointer resting in the corner does not open and close the overview in a loop.",
     ),
     // themes (ADR 0084)
     k(
@@ -2633,6 +2689,9 @@ pub const OUTPUT_KEYS: &[Form] = &[
 ];
 
 /// Actions a `bind` or `gesture` block accepts (COMP-13 §3).
+/// The values a hot corner takes (`general.hot-corners.*`).
+pub const HOT_CORNER_ACTIONS: &[&str] = &["auto", "off", "toggle-overview", "switch-windows"];
+
 pub const BIND_ACTIONS: &[Form] = &[
     form(
         &["spawn", "exec"],
@@ -2735,6 +2794,24 @@ pub const BIND_ACTIONS: &[Form] = &[
         "",
         &["move-to-desktop-down"],
         "Move the focused window to the desktop below this one and go there with it (see `move-to-desktop-left`).",
+    ),
+    form(
+        &["switch-windows"],
+        "",
+        &["switch-windows"],
+        "Open the window switcher on the next window in recent-use order, or step it forward. Only under `mode \"de\"`; does nothing elsewhere. Releasing the modifiers of the chord activates the selection (its desktop, unminimized, focused); Escape cancels; the arrow keys also step and a click on a card activates it. A window whose content is redacted from capture shows as a placeholder card with a padlock and no title.",
+    ),
+    form(
+        &["switch-windows-reverse"],
+        "",
+        &["switch-windows-reverse"],
+        "As `switch-windows`, but opens on the least recently used window and steps backwards.",
+    ),
+    form(
+        &["toggle-overview"],
+        "",
+        &["toggle-overview"],
+        "Open the overview of this desktop's windows with the desktop strip, or close it. Only under `mode \"de\"`; does nothing elsewhere. Typing filters the cards by title, a click on a card focuses it, a middle click closes its window, a click on a desktop switches to it, and dragging a card onto a desktop moves the window there. Escape closes it.",
     ),
     form(&["minimize"], "", &["minimize"], "Send the focused window away."),
     form(
@@ -2953,6 +3030,12 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.edge-tile-distance" => V::Int(c.general.edge_tile_distance as i64),
         "general.desktop-rows" => V::Int(c.general.desktop_rows as i64),
         "general.desktop-wrap" => V::Bool(c.general.desktop_wrap),
+        "general.hot-corners.top-left" => V::Str(c.general.hot_corners[0].name().into()),
+        "general.hot-corners.top-right" => V::Str(c.general.hot_corners[1].name().into()),
+        "general.hot-corners.bottom-left" => V::Str(c.general.hot_corners[2].name().into()),
+        "general.hot-corners.bottom-right" => V::Str(c.general.hot_corners[3].name().into()),
+        "general.hot-corner-dwell" => V::Int(c.general.hot_corner_dwell_ms as i64),
+        "general.hot-corner-cooldown" => V::Int(c.general.hot_corner_cooldown_ms as i64),
         "general.color-scheme" => V::Str(c.general.color_scheme.name().into()),
         "general.accent" => V::Str(c.general.accent.map(crate::hex_rgb).unwrap_or_default()),
         "general.theme-dark" => V::Str(c.general.theme_dark.clone()),

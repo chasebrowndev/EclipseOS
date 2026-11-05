@@ -46,6 +46,8 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "switch_workspace" => switch_workspace(state, params),
         "switch_desktop_direction" => switch_desktop_direction(state, params),
         "open_window_menu" => open_window_menu(state, params),
+        "show_window_preview" => show_window_preview(state, params),
+        "hide_window_preview" => hide_window_preview(state, params),
         "resize" => resize(state, params),
         "move_workspace_to_output" => move_workspace_to_output(state, params),
         "set_output" => set_output(state, params),
@@ -821,6 +823,70 @@ fn open_window_menu(state: &mut AbyssState, params: &Value) -> Reply {
         return Err(RpcError::denied("the window menu cannot open now"));
     }
     Ok(json!({"ok": true, "x": at.x, "y": at.y}))
+}
+
+/// Show the hover preview of window `id` (`handle` is accepted too) near the
+/// taskbar chip at `(x, y)` sized `width` x `height`, global logical px
+/// (COMP-05 §7.1). The card is placed beside the rectangle and kept on its
+/// output; it needs no input, and the bar hides it again with
+/// `hide_window_preview`. It also ends when the window closes, when focus moves
+/// to the window, on the session lock, and after ten idle seconds.
+///
+/// `{"ok": true, "shown": true}` when it is up. `shown: false` when the
+/// window must have no card at all (it is protected, COMP-19): the call is
+/// answered, nothing is drawn. Unknown window, a window on no output and a bad
+/// rectangle are `invalid params`; any other mode than `de`, the session lock
+/// and an open switcher or overview are `denied`. A redacted window shows a
+/// blank card with no title.
+fn show_window_preview(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["id", "handle", "x", "y", "width", "height"])?;
+    refuse_unless_de(state, "show_window_preview")?;
+    refuse_if_locked(state)?;
+    let obj = params_obj(params);
+    let key = if obj.contains_key("id") { "id" } else { "handle" };
+    let handle = u64_param(params, key)?;
+    let extent = |name: &str| {
+        let v = f64_param(params, name)?;
+        if (0.0..=100_000.0).contains(&v) {
+            Ok(v.round() as i32)
+        } else {
+            Err(RpcError::invalid_params(&format!("{name} is out of range")))
+        }
+    };
+    let coord = |name: &str| {
+        let v = f64_param(params, name)?;
+        if v.abs() <= 100_000.0 {
+            Ok(v.round() as i32)
+        } else {
+            Err(RpcError::invalid_params(&format!("{name} is out of range")))
+        }
+    };
+    let (w, h) = (extent("width")?, extent("height")?);
+    if w == 0 || h == 0 {
+        return Err(RpcError::invalid_params("width and height must be positive"));
+    }
+    let anchor = smithay::utils::Rectangle::new(
+        smithay::utils::Point::from((coord("x")?, coord("y")?)),
+        smithay::utils::Size::from((w, h)),
+    );
+    let window = state
+        .ipc
+        .window_for(handle)
+        .filter(IsAlive::alive)
+        .ok_or_else(|| RpcError::invalid_params("no such window"))?;
+    if crate::shell::output_of_window(state, &window).is_none() {
+        return Err(RpcError::invalid_params("window is not on an output"));
+    }
+    let shown = crate::overview::preview::show(state, &window, anchor).map_err(RpcError::denied)?;
+    Ok(json!({"ok": true, "shown": shown}))
+}
+
+/// Take the hover preview down. `{"ok": true, "hidden": true}` when one was
+/// up; with none it is still `ok`.
+fn hide_window_preview(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &[])?;
+    let hidden = crate::overview::preview::hide(state);
+    Ok(json!({"ok": true, "hidden": hidden}))
 }
 
 fn reload_config(state: &mut AbyssState) -> Reply {

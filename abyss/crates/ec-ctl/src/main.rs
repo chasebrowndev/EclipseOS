@@ -35,6 +35,9 @@ ec-ctl — control the abyss compositor
                                       step along the desktop grid (mode \"de\" only)
   ec-ctl menu HANDLE X Y         open a window's menu at X Y (mode \"de\" only; works
                                       on a minimized window)
+  ec-ctl preview HANDLE X Y W H  show a window's hover preview beside the rectangle
+                                      X Y W H (mode \"de\" only)
+  ec-ctl preview-hide            take the hover preview down
   ec-ctl move HANDLE N           move a window to workspace N
   ec-ctl output ID overscan SPEC set overscan: N, or top=N,left=N,...
   ec-ctl output ID calibrate [commit|cancel]
@@ -469,6 +472,18 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
                 None,
             )
         }
+        "preview" => {
+            let f = |i: usize| -> Result<f64, String> {
+                a(i).parse::<f64>()
+                    .map_err(|_| format!("expected a number, got {:?}", a(i)))
+            };
+            (
+                "show_window_preview".into(),
+                json!({"id": num(1)?, "x": f(2)?, "y": f(3)?, "width": f(4)?, "height": f(5)?}),
+                None,
+            )
+        }
+        "preview-hide" => ("hide_window_preview".into(), Value::Null, None),
         "type" => ("type_text".into(), json!({"text": args[1..].join(" ")}), None),
         "key" => {
             if a(1).is_empty() {
@@ -989,6 +1004,21 @@ mod tests {
         assert_eq!(m, "open_window_menu");
         assert_eq!(p, json!({"id": 7, "x": 100.0, "y": 200.5}));
         assert!(parsed(&["menu", "7"], &f).is_err());
+    }
+
+    #[test]
+    fn preview_verbs_map_to_their_methods() {
+        let f = Flags::default();
+        let (m, p, _) = parsed(&["preview", "7", "100", "770", "120", "30"], &f).unwrap();
+        assert_eq!(m, "show_window_preview");
+        assert_eq!(
+            p,
+            json!({"id": 7, "x": 100.0, "y": 770.0, "width": 120.0, "height": 30.0})
+        );
+        assert!(parsed(&["preview", "7", "100", "770", "120"], &f).is_err());
+        assert!(parsed(&["preview", "7", "a", "770", "120", "30"], &f).is_err());
+        let (m, p, _) = parsed(&["preview-hide"], &f).unwrap();
+        assert_eq!((m.as_str(), p), ("hide_window_preview", Value::Null));
     }
 
     #[test]

@@ -517,6 +517,20 @@ fn redraw(
                     .unwrap_or_default(),
             ),
         );
+        // The window switcher, overview and hover previews (`mode "de"`,
+        // COMP-05 §7.1): compositor chrome level with the window menu, below
+        // annotations and trusted UI, and never in a capture pass list.
+        let overlay = crate::overview::overlay_elements(
+            renderer,
+            state,
+            out,
+            state
+                .space
+                .output_geometry(out)
+                .map(|g| g.loc)
+                .unwrap_or_default(),
+        );
+        elements.splice(0..0, overlay);
         // Annotations (COMP-18) go in first so the trusted indicator, spliced
         // after them, stays ahead of them in this front-to-back list. What is
         // already in the list is what their glass panels blur.

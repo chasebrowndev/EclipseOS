@@ -126,6 +126,7 @@ impl AbyssState {
         // The window menu and the resize cursor belong to the session behind
         // the lock.
         self.winmenu.close();
+        crate::overview::close_all(self);
         crate::shell::edge::restore_cursor(self);
         // The region selector is a modal over the session behind the lock.
         self.region_select.cancel();

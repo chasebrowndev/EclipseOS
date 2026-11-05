@@ -140,6 +140,11 @@ impl<T: PartialEq + Clone> FocusHistory<T> {
         self.0.retain(|x| x != v);
     }
 
+    /// Most recent first.
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        self.0.iter()
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.0.len()
@@ -179,6 +184,11 @@ pub struct Workspace {
     /// Written only by `note_focused`, whose single caller is
     /// `shell::focus::focus_window` — the one place focus actually moves.
     focus_history: FocusHistory<Window>,
+    /// When each window here was last focused, on the state's focus clock.
+    /// Orders windows against those of other workspaces for the window
+    /// switcher's most-recently-used list (`overview::switcher`). Pruned by
+    /// `remove`.
+    focus_stamps: Vec<(Window, u64)>,
 }
 
 impl Workspace {
@@ -211,11 +221,42 @@ impl Workspace {
     ///
     /// `raise` is false for passive focus changes — focus-follows-mouse and the
     /// scene-change refresh — which must not restack; see `FocusCause::raises`.
-    pub(crate) fn note_focused(&mut self, w: &Window, raise: bool) {
+    pub(crate) fn note_focused(&mut self, w: &Window, raise: bool, stamp: u64) {
         self.focus_history.note(w);
+        if let Some(e) = self.focus_stamps.iter_mut().find(|(x, _)| x == w) {
+            e.1 = stamp;
+        } else {
+            self.focus_stamps.push((w.clone(), stamp));
+        }
         if raise {
             self.raise_floating(w);
         }
+    }
+
+    /// When `w` was last focused here (see `focus_stamps`); 0 = never.
+    pub(crate) fn focus_stamp_of(&self, w: &Window) -> u64 {
+        self.focus_stamps
+            .iter()
+            .find(|(x, _)| x == w)
+            .map_or(0, |(_, s)| *s)
+    }
+
+    /// Windows on screen here, most recently focused first; any never
+    /// focused follow, topmost first. Minimized windows are not included
+    /// (`minimized`).
+    pub(crate) fn recent_live(&self) -> Vec<Window> {
+        let mut out: Vec<Window> = self
+            .focus_history
+            .iter()
+            .filter(|w| self.holds_live(w))
+            .cloned()
+            .collect();
+        for w in self.windows().into_iter().rev() {
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+        out
     }
 
     /// Move `w` to the top of the floating stack. No-op for a window that is
@@ -244,6 +285,7 @@ impl Workspace {
 
     pub fn remove(&mut self, w: &Window) -> bool {
         self.focus_history.remove(w);
+        self.focus_stamps.retain(|(x, _)| x != w);
         if let Some(stash) = self.stash.as_mut() {
             stash.remove(w);
         }

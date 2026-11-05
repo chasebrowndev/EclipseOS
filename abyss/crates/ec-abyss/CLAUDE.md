@@ -18,6 +18,11 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   `config/` (re-exports `ec-abyss-config`, which holds KDL parse, schema, in-place edit; here: apply, watch, widget catalog watcher, approval withholding), `xwayland/` (XWM,
   security), `state.rs` (globals + seat), `session.rs`. `ec-abyss-config/tests/config_doc.rs`
   checks the config schema against `docs/CONFIG.md`.
+- `overview/` (COMP-05 §7.1, `mode "de"`): the Alt-Tab switcher, the overview, hot corners and
+  hover previews. Compositor overlays like the window menu, never in a capture pass list, never
+  trusted UI. `thumbs.rs` is the one door to a thumbnail texture: `shown` asks
+  `render::capture::classify` first and `refresh` draws only windows it cleared. Drawing and layout
+  live in `ec-abyss-render` (`overview.rs`, `thumb.rs`).
 - `trusted_ui/` (TCB): the modal prompt primitive (COMP-10 §3.11, §4) and
   its owners: command-widget approval (`approval.rs`, ADR 0067) and the §3.10
   destructive-action prompt (`erase.rs`, asked over the root-only `socket.rs`,

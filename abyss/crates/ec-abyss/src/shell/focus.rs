@@ -362,9 +362,11 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
         // output's active one — focusing a window on an inactive workspace
         // would otherwise record it where it is not, and `focus_head` would
         // hand back a window from the wrong workspace.
+        state.focus_clock += 1;
+        let stamp = state.focus_clock;
         if let Some(entry) = state.outputs.get_mut(id) {
             if let Some(ws) = entry.workspaces.iter_mut().find(|ws| ws.holds(window)) {
-                ws.note_focused(window, raise);
+                ws.note_focused(window, raise, stamp);
             }
         }
         if state.outputs.set_focused(id) {

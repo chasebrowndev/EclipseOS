@@ -23,6 +23,7 @@ pub mod hud_font;
 pub mod menu;
 pub mod output_overscan;
 pub mod overscan;
+pub mod overview;
 pub mod palette;
 pub mod popup_shape;
 pub mod sanitize;
@@ -30,6 +31,7 @@ pub mod select;
 pub mod stats;
 pub mod still;
 pub mod text;
+pub mod thumb;
 pub mod titlebar;
 pub mod userdata;
 
