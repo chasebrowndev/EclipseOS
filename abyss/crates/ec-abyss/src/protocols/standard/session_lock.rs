@@ -113,6 +113,8 @@ impl AbyssState {
         // A window mid-drag goes back to its tile rather than landing blind.
         crate::shell::cancel_tile_drag(self);
         self.gesture_drag = None;
+        // A scripted drag waiting on its release lets go now.
+        self.cancel_drag_hold();
         // Nothing behind the lock may keep focus, even for one frame.
         if let Some(keyboard) = self.seat.get_keyboard() {
             // An input-method grab receives every key whatever holds focus,

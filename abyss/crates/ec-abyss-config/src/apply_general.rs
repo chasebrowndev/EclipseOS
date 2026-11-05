@@ -148,6 +148,17 @@ impl Config {
                         self.reject(n, "edge-tile-distance expects an integer");
                     }
                 }
+                "desktop-rows" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (1..=10).contains(&v) => self.general.desktop_rows = v as i32,
+                    _ => self.reject(
+                        n,
+                        "desktop-rows expects an integer 1..=10 (the number of workspaces)",
+                    ),
+                },
+                "desktop-wrap" => match arg(n).and_then(KdlValue::as_bool) {
+                    Some(b) => self.general.desktop_wrap = b,
+                    None => self.reject(n, "desktop-wrap expects #true or #false"),
+                },
                 "drop-edge-band" => {
                     if !set_i32(&mut self.general.drop_edge_band, n) {
                         self.reject(n, "drop-edge-band expects an integer");

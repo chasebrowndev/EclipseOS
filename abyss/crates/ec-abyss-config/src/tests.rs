@@ -3645,3 +3645,80 @@ fn the_tile_actions_validate_and_the_snap_keys_default_to_kde() {
     );
     assert!(Mode::De.profile().quick_tile && !Mode::Hybrid.profile().quick_tile);
 }
+
+// ---- Desktop grid keys and binds (M6) --------------------------------------
+
+#[test]
+fn de_binds_ctrl_super_arrows_to_the_desktop_grid_and_other_modes_do_not() {
+    let both = |ctrl_shift: bool| ModifiersState {
+        logo: true,
+        ctrl: true,
+        shift: ctrl_shift,
+        ..Default::default()
+    };
+    let de = load_text("desk-de", "mode \"de\"\n");
+    for (key, dir) in [
+        (Keysym::Left, Direction::Left),
+        (Keysym::Right, Direction::Right),
+        (Keysym::Up, Direction::Up),
+        (Keysym::Down, Direction::Down),
+    ] {
+        assert_eq!(
+            de.action_for(&both(false), key),
+            Some(&Action::DesktopSwitch(dir))
+        );
+        assert_eq!(de.action_for(&both(true), key), Some(&Action::DesktopMove(dir)));
+    }
+    for (tag, text) in [("desk-wm", "mode \"wm\"\n"), ("desk-hybrid", "")] {
+        let cfg = load_text(tag, text);
+        assert_eq!(cfg.action_for(&both(false), Keysym::Left), None);
+        assert_eq!(cfg.action_for(&both(true), Keysym::Left), None);
+    }
+    // An explicit bind on the chord wins, and the digit binds are untouched.
+    let own = load_text(
+        "desk-own",
+        "mode \"de\"\nbind \"SUPER CTRL\" \"Left\" { focus-left; }\n",
+    );
+    assert_eq!(
+        own.action_for(&both(false), Keysym::Left),
+        Some(&Action::Focus(Direction::Left))
+    );
+    assert_eq!(
+        own.action_for(&both(false), Keysym::Right),
+        Some(&Action::DesktopSwitch(Direction::Right))
+    );
+}
+
+#[test]
+fn the_desktop_actions_validate_and_the_grid_keys_default_and_refuse_out_of_range() {
+    let doc: KdlDocument =
+        "bind \"SUPER\" \"KP_1\" { desktop-up; }\nbind \"SUPER\" \"KP_2\" { move-to-desktop-down; }\n"
+            .parse()
+            .unwrap();
+    let mut cfg = Config {
+        cur: Some((abyss_src("a.kdl"), String::new())),
+        ..Config::default()
+    };
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    let g = Config::default().general;
+    assert_eq!((g.desktop_rows, g.desktop_wrap), (2, true));
+    let ok = load_text(
+        "rows-ok",
+        "general {\n    desktop-rows 3\n    desktop-wrap #false\n}\n",
+    );
+    assert_eq!((ok.general.desktop_rows, ok.general.desktop_wrap), (3, false));
+    for bad in ["0", "11", "-1"] {
+        let doc: KdlDocument = format!("general {{\n    desktop-rows {bad}\n}}\n")
+            .parse()
+            .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.general.desktop_rows, 2, "{bad}");
+    }
+    let doc: KdlDocument = "general {\n    desktop-wrap \"no\"\n}\n".parse().unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(!cfg.errors.is_empty(), "a non-boolean desktop-wrap is reported");
+    assert!(cfg.general.desktop_wrap);
+}

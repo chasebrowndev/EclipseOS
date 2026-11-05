@@ -78,6 +78,9 @@ pub struct AbyssState {
     pub winops: crate::shell::winops::WinOps,
     /// The window menu, when open (`shell::winmenu`).
     pub winmenu: crate::shell::winmenu::WinMenu,
+    /// A scripted drag (`drag_at` with `hold-ms`) holding its button down until
+    /// a timer releases it (`input::inject`). `None` between calls.
+    pub drag_hold: Option<crate::input::inject::DragHold>,
     /// The window menu's textures (`ec_abyss_render::menu`).
     pub menu_cache: ec_abyss_render::menu::MenuCache,
     /// Resize-band hover and the cursor it set (`shell::edge`).
@@ -540,6 +543,7 @@ impl AbyssState {
             bar_ui: Default::default(),
             winops: Default::default(),
             winmenu: Default::default(),
+            drag_hold: None,
             menu_cache: Default::default(),
             edge: Default::default(),
             geo_loc: std::collections::HashMap::new(),

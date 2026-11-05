@@ -3598,7 +3598,17 @@ of this. Agent workspaces stay undecorated (§3.2).
 - **Titles on the physical output.** A `secret` window's title still shows in its
   titlebar, the switcher and the taskbar, as the window itself does. It does not
   reach capture targets (COMP-02 §8).
-- **Input.** The switcher, overview and menu act on human input only. Their
+- **Desktop grid and the menu on the socket.** *(added M6)* The desktop grid is
+  the ten human workspaces laid out by `general.desktop-rows` (§2); the
+  directional switch and `open_window_menu` are owner-socket methods (COMP-13
+  §2.1), and `get_desktop_grid` reports counts only. The window menu may be
+  opened on a minimized window by the taskbar chip; it is no part of any
+  capture pass list.
+- **Input.** The switcher, overview and menu act on human input, with one
+  exception: `open_window_menu` (owner socket, `de` only, refused under session
+  lock) opens the menu without a device, and a scripted click on a row then acts
+  as any scripted click does (`Origin::Scripted`, never reaching a protected
+  surface, COMP-13 §2.2). Their
   activation is a human focus change, not an `xdg_activation` request, so §5's
   urgent fallback does not apply to it.
 
@@ -5427,6 +5437,22 @@ above gains:
 | `get_config` / `validate_config` / `set_config_value` | the §1.4 write API; which file a write may touch is decided by the file, not the method kind |
 | `unsubscribe` | ends a `subscribe` stream |
 
+*(added C-24, 2026-11-05)* Under `mode "de"` (COMP-05 §7.1) the table gains the
+desktop grid and the window menu. All three are owner-uid Command/Query rows,
+the same tier as `switch_workspace` and `focus_window`:
+
+| Method | Returns / does |
+|---|---|
+| `get_desktop_grid` | Query, every mode. `{rows, columns, count, wrap, directional, outputs:[{output, name, active, desktops:[{index, occupied, windows}]}], desktops:[{index, occupied, windows}]}`. The desktops are the human workspaces (COMP-05 §2), `count` of them, laid out row by row in `general.desktop-rows` rows (`columns` = `count` / rows, rounded up; a short last row has no cells past the last desktop). `desktops` totals each desktop over every output, minimized windows counted. Counts only, never a title or an app id; agent workspaces are not in it. `directional` is whether `switch_desktop_direction` acts (mode `de` is running) |
+| `switch_desktop_direction` | `{direction: "left"\|"right"\|"up"\|"down"}` moves the focused output one cell along the grid and wraps at an edge per `general.desktop-wrap` (default on). It goes through `switch_workspace`'s path, so sticky windows, focus, animation and the `workspace` event are the same. Reply `{ok, changed, workspace}`; `changed: false` at an unwrapped edge or on a one-cell line is not an error. Under `wm` and `hybrid` it is refused (`-32000`, "de only") and changes nothing |
+| `open_window_menu` | `{id, x, y}`: opens the window menu (COMP-05 §7.1) for window `id` with its corner at `(x, y)`, global logical px. The anchor is clamped onto the window's own output and the panel kept inside that output's usable area; the reply carries the clamped `{x, y}`. It works for a minimized window (the taskbar chip opens it: no focus, no raise; Minimize reads "Unminimize", Maximize and Shade are off, the rest act on what the window will be on return; the menu closes if the window is restored another way), but only from an anchor on that window's output. Unknown window, a window not on an output, and a minimized window asked about from another output are `-32602`; the session lock and any mode but `de` are `-32000`. The menu is compositor furniture, not trusted UI, and is in no capture pass list |
+
+Bind actions for the same grid (`mode "de"` only, defaults through
+`mode_default_binds`, an explicit bind on the chord wins): `desktop-left`,
+`desktop-right`, `desktop-up`, `desktop-down` on Ctrl+Super+arrows, and
+`move-to-desktop-left` and the rest, which take the focused window along, on
+Ctrl+Shift+Super+arrows.
+
 `subscribe` also carries `config` and `keybind` events, and `window` carries
 `change: "title"` on a title change and `change: "resized"` on a resize.
 `get_agents`, `pause_agent`, `resume_agent`, `terminate_agent`,
@@ -5437,13 +5463,30 @@ in `abyss.kdl` (default: connection order).
 
 ### 2.2 Scripted input (the `wtype` replacement)
 
-`type_text` and `click_at` exist here, guarded by:
+`type_text`, `click_at`, `press_key`, `scroll_at` and `drag_at` exist here,
+guarded by:
 - socket ownership (uid check on connect),
 - a config toggle `misc { scripted-input #false }`, default **off**,
   *(amended C-05, 2026-09-23)* policy-owned: it lives in `policy.kdl` and is
   refused in `abyss.kdl` (ADR 0037),
 - a trusted-UI indicator while a scripted-input session is active,
 - an audit record per call attributed to `human:script`.
+
+*(added C-24, 2026-11-05)* `drag_at` `{x, y, to_x, to_y, button?, steps?,
+modifiers?, hold_ms?}` presses `button` (default left) at `(x, y)`, moves to
+`(to_x, to_y)` in `steps` equal steps (default 8, at most 200) and releases,
+with `modifiers` (`ctrl`, `alt`, `shift`, `logo`) held throughout. It enters
+through the same `pointer_moved` and `pointer_button` as `click_at`, so a
+titlebar, a resize band, a grab and the edge-tile preview all see it, and it is
+tagged `scripted`, so a protected surface never takes it (COMP-19 §3). The
+release is unconditional: a compositor that stopped listening part way (lock,
+prompt, menu) is never left with a button down. With `hold_ms` (at most 30000)
+the release comes from a calloop timer after the last move so a caller can look
+at the screen mid-drag; the loop never blocks. The pending release is
+compositor state, one at a time (a second `drag_at` meanwhile is `-32602`), and
+is released at once, timer removed, when the session locks or a window goes
+away. Without `hold_ms` nothing outlives the call. Parameters are validated
+before the first event.
 
 Rationale (COMP-06 §2): scripting is a legitimate need; ambient
 `zwp_virtual_keyboard` is not the way to serve it. This path is

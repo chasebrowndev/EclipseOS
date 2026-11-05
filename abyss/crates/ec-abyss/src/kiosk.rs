@@ -58,6 +58,8 @@ pub fn permits(action: &Action) -> bool {
         | Action::ToggleFullscreen
         | Action::ToggleMaximize
         | Action::Tile(_)
+        | Action::DesktopSwitch(_)
+        | Action::DesktopMove(_)
         | Action::Minimize
         | Action::Unminimize
         | Action::ToggleLayout

@@ -196,6 +196,10 @@ pub const TABLE: &[Key] = &[
        tiled window fills its zone of the usable area, square and without a \
        border, and tells its client the tiled edges. The `Super+arrows` take \
        the place of `focus-*` on those chords under `de`. \
+       The ten workspaces are the desktops, laid out as a grid \
+       (`general.desktop-rows`): `Ctrl+Super+arrows` (`desktop-left` and the \
+       rest) switch along it and `Ctrl+Shift+Super+arrows` \
+       (`move-to-desktop-left` and the rest) take the focused window along. \
        Entering `de` floats every tiled window where it is; leaving re-tiles \
        them where they were. Applies on hot reload.",
     ),
@@ -657,6 +661,22 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "How close to a screen edge, logical px, the pointer must be to show the edge-tile preview (KDE's side zone is 20). 0 disables edge tiling.",
+    ),
+    k(
+        "general.desktop-rows",
+        int(1, 10),
+        Int(2),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, the rows of the desktop grid laid over the ten workspaces (COMP-05 §7.1). Columns follow: ten divided by the rows, rounded up (2 rows give 5 columns, 1 row gives a single row of ten). The directional desktop binds and `switch_desktop_direction` move over this grid.",
+    ),
+    k(
+        "general.desktop-wrap",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, stepping past an edge of the desktop grid comes round to the other side. Off stops at the edge.",
     ),
     // themes (ADR 0084)
     k(
@@ -2668,6 +2688,54 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["tile-down"],
         "Quick Tile the focused window one step down: from floating, the bottom half (see `tile-left`).",
     ),
+    form(
+        &["desktop-left"],
+        "",
+        &["desktop-left"],
+        "Switch to the desktop (workspace) left of this one on the desktop grid (`general.desktop-rows`). Only under `mode \"de\"`; does nothing elsewhere. Wraps per `general.desktop-wrap`. Sticky windows and focus behave as for `switch_workspace`.",
+    ),
+    form(
+        &["desktop-right"],
+        "",
+        &["desktop-right"],
+        "Switch to the desktop right of this one (see `desktop-left`).",
+    ),
+    form(
+        &["desktop-up"],
+        "",
+        &["desktop-up"],
+        "Switch to the desktop above this one (see `desktop-left`).",
+    ),
+    form(
+        &["desktop-down"],
+        "",
+        &["desktop-down"],
+        "Switch to the desktop below this one (see `desktop-left`).",
+    ),
+    form(
+        &["move-to-desktop-left"],
+        "",
+        &["move-to-desktop-left"],
+        "Move the focused window to the desktop left of this one and go there with it (see `desktop-left`). Only under `mode \"de\"`.",
+    ),
+    form(
+        &["move-to-desktop-right"],
+        "",
+        &["move-to-desktop-right"],
+        "Move the focused window to the desktop right of this one and go there with it (see `move-to-desktop-left`).",
+    ),
+    form(
+        &["move-to-desktop-up"],
+        "",
+        &["move-to-desktop-up"],
+        "Move the focused window to the desktop above this one and go there with it (see `move-to-desktop-left`).",
+    ),
+    form(
+        &["move-to-desktop-down"],
+        "",
+        &["move-to-desktop-down"],
+        "Move the focused window to the desktop below this one and go there with it (see `move-to-desktop-left`).",
+    ),
     form(&["minimize"], "", &["minimize"], "Send the focused window away."),
     form(
         &["unminimize", "restore"],
@@ -2883,6 +2951,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.snap-distance" => V::Int(c.general.snap_distance as i64),
         "general.edge-tile" => V::Bool(c.general.edge_tile),
         "general.edge-tile-distance" => V::Int(c.general.edge_tile_distance as i64),
+        "general.desktop-rows" => V::Int(c.general.desktop_rows as i64),
+        "general.desktop-wrap" => V::Bool(c.general.desktop_wrap),
         "general.color-scheme" => V::Str(c.general.color_scheme.name().into()),
         "general.accent" => V::Str(c.general.accent.map(crate::hex_rgb).unwrap_or_default()),
         "general.theme-dark" => V::Str(c.general.theme_dark.clone()),

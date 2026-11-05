@@ -82,6 +82,10 @@ pub struct Flags {
     pub above: bool,
     pub below: bool,
     pub sticky: bool,
+    /// The window is minimized (the taskbar chip opened the menu). Nothing of
+    /// it is on screen, so Minimize reads "Unminimize" and Maximize and Shade
+    /// are off; the rest act on what it will be when it returns.
+    pub minimized: bool,
     /// The workspace the window is on, 0-based.
     pub workspace: usize,
 }
@@ -137,10 +141,17 @@ impl MenuModel {
         };
         match page {
             Page::Main => {
-                add(Item::Minimize, row("Minimize", false, true));
+                add(
+                    Item::Minimize,
+                    row(if f.minimized { "Unminimize" } else { "Minimize" }, false, true),
+                );
                 add(
                     Item::Maximize,
-                    row(if f.maximized { "Restore" } else { "Maximize" }, false, true),
+                    row(
+                        if f.maximized { "Restore" } else { "Maximize" },
+                        false,
+                        !f.minimized,
+                    ),
                 );
                 add(
                     Item::Shade,
@@ -301,6 +312,8 @@ impl MenuModel {
 #[derive(Debug)]
 struct Open {
     window: Window,
+    /// Opened for a minimized window (no focus, no place in the space).
+    minimized: bool,
     model: MenuModel,
 }
 
@@ -342,13 +355,17 @@ fn flags_of(state: &AbyssState, window: &Window) -> Flags {
         .find_map(|e| e.workspaces.iter().position(|ws| ws.holds(window)))
         .unwrap_or(0);
     let band = state.winops.band(window);
+    let minimized = super::is_minimized(state, window);
     Flags {
         maximized: maximize::is_maximized(state, window),
         shaded: state.winops.is_shaded(window),
-        can_shade: titlebar::bar_height(state, window) > 0 && !state.fullscreen.contains_key(window),
+        can_shade: !minimized
+            && titlebar::bar_height(state, window) > 0
+            && !state.fullscreen.contains_key(window),
         above: band == winops::Band::Above,
         below: band == winops::Band::Below,
         sticky: state.winops.is_sticky(window),
+        minimized,
         workspace: ws,
     }
 }
@@ -366,24 +383,32 @@ fn allowed(state: &AbyssState) -> bool {
 /// logical), moved to stay on the output. Focuses and raises the window first
 /// (the menu is the human's act on it). False, and nothing opens, when the
 /// session is locked, the mode is not `de`, a prompt or the region selector
-/// holds the seat, the window is not placed on an output or is minimized, or a
-/// move or resize is under way.
+/// holds the seat, the window is not placed on an output, or a move or resize
+/// is under way.
+///
+/// A minimized window may have a menu (the taskbar chip opens it through
+/// `open_window_menu` on the socket): it is not focused or raised, since it is
+/// not on screen, and the menu closes if it is restored by another route. The
+/// anchor is the caller's to place; this only keeps the panel on the output
+/// the anchor is on.
 ///
 /// For human input only: the titlebar's right press, `show_window_menu` with a
-/// live press serial, and the M6 socket method on the human socket.
+/// live press serial, and the socket method of the owner's own session.
 pub fn open_window_menu(state: &mut AbyssState, window: &Window, anchor: Point<i32, Logical>) -> bool {
     if !allowed(state)
         || super::is_unmanaged_x11(state, window)
-        || super::is_minimized(state, window)
         || super::output_of_window(state, window).is_none()
         || crate::input::grabs::drag_active(state)
     {
         return false;
     }
     state.winmenu.close();
-    focus::focus_window_raising(state, window, true);
-    if state.focus.as_ref() != Some(window) {
-        return false;
+    let minimized = super::is_minimized(state, window);
+    if !minimized {
+        focus::focus_window_raising(state, window, true);
+        if state.focus.as_ref() != Some(window) {
+            return false;
+        }
     }
     let area = super::output_at(state, anchor.to_f64()).map_or_else(
         || Rectangle::new(Point::from((0, 0)), (1, 1).into()),
@@ -407,6 +432,7 @@ pub fn open_window_menu(state: &mut AbyssState, window: &Window, anchor: Point<i
     state.last_pointer_focus = None;
     state.winmenu.open = Some(Open {
         window: window.clone(),
+        minimized,
         model,
     });
     tracing::info!("window menu opened");
@@ -422,9 +448,11 @@ pub(super) fn validate(state: &mut AbyssState) {
     let Some(open) = &state.winmenu.open else {
         return;
     };
+    // A menu for a minimized window never had focus to lose; it ends when the
+    // window is restored (or a non-minimized one is minimized).
     let stale = !allowed(state)
-        || state.focus.as_ref() != Some(&open.window)
-        || super::is_minimized(state, &open.window)
+        || (!open.minimized && state.focus.as_ref() != Some(&open.window))
+        || super::is_minimized(state, &open.window) != open.minimized
         || super::output_of_window(state, &open.window).is_none();
     if stale {
         tracing::info!("window menu dismissed: what it stood on changed");
@@ -510,6 +538,7 @@ pub fn button(state: &mut AbyssState, button: u32, pressed: bool) {
 /// Do what a row says, to `window`.
 fn run(state: &mut AbyssState, window: &Window, item: Item) {
     match item {
+        Item::Minimize if super::is_minimized(state, window) => super::unminimize_window(state, window),
         Item::Minimize => super::minimize_window(state, window),
         Item::Maximize => maximize::toggle_window(state, window),
         Item::Shade => {
@@ -576,6 +605,7 @@ mod tests {
             above: false,
             below: false,
             sticky: false,
+            minimized: false,
             workspace: 2,
         }
     }

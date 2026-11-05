@@ -84,6 +84,11 @@ pub struct General {
     /// screen edge the pointer must be (KDE: 20).
     pub edge_tile: bool,
     pub edge_tile_distance: i32,
+    /// `mode "de"`: rows of the desktop grid over the ten human workspaces
+    /// (COMP-05 §7.1). Columns derive from it: `ceil(10 / rows)`.
+    pub desktop_rows: i32,
+    /// `mode "de"`: whether stepping off an edge of the desktop grid wraps.
+    pub desktop_wrap: bool,
     /// `color-scheme` (ADR 0084).
     pub color_scheme: ColorSetting,
     /// Theme used while the scheme is dark / light.
@@ -142,6 +147,8 @@ impl Default for General {
             snap_distance: 10,
             edge_tile: true,
             edge_tile_distance: 20,
+            desktop_rows: 2,
+            desktop_wrap: true,
             color_scheme: ColorSetting::Dark,
             theme_dark: "dark".into(),
             theme_light: "light".into(),

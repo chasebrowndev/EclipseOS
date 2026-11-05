@@ -37,41 +37,65 @@ pub(crate) fn merge_binds(defaults: Vec<Bind>, from_file: Vec<Bind>) -> Vec<Bind
 /// (`tile-left` and the rest). The arrows take the place of the built-in
 /// `focus-*` on those chords (`Config::load` seats the mode's binds ahead of
 /// the built-ins, behind the launcher's chosen chords); `Super+Shift+arrows`
-/// are untouched. Alt+Tab is a later milestone.
+/// are untouched. Ctrl+Super+arrows switch desktop on the desktop grid
+/// (`desktop-left` and the rest) and Ctrl+Shift+Super+arrows take the focused
+/// window along (`move-to-desktop-left`). Alt+Tab is a later milestone.
 pub fn mode_default_binds(mode: Mode) -> Vec<Bind> {
     match mode {
-        Mode::De => vec![
-            Bind {
-                mods: m(false, false, false, true),
-                key: Keysym::F4,
-                action: Action::Close,
-            },
-            Bind {
-                mods: m(true, false, false, false),
-                key: Keysym::Page_Up,
-                action: Action::ToggleMaximize,
-            },
-            Bind {
-                mods: m(true, false, false, false),
-                key: Keysym::Left,
-                action: Action::Tile(Direction::Left),
-            },
-            Bind {
-                mods: m(true, false, false, false),
-                key: Keysym::Right,
-                action: Action::Tile(Direction::Right),
-            },
-            Bind {
-                mods: m(true, false, false, false),
-                key: Keysym::Up,
-                action: Action::Tile(Direction::Up),
-            },
-            Bind {
-                mods: m(true, false, false, false),
-                key: Keysym::Down,
-                action: Action::Tile(Direction::Down),
-            },
-        ],
+        Mode::De => {
+            let mut v = vec![
+                Bind {
+                    mods: m(false, false, false, true),
+                    key: Keysym::F4,
+                    action: Action::Close,
+                },
+                Bind {
+                    mods: m(true, false, false, false),
+                    key: Keysym::Page_Up,
+                    action: Action::ToggleMaximize,
+                },
+                Bind {
+                    mods: m(true, false, false, false),
+                    key: Keysym::Left,
+                    action: Action::Tile(Direction::Left),
+                },
+                Bind {
+                    mods: m(true, false, false, false),
+                    key: Keysym::Right,
+                    action: Action::Tile(Direction::Right),
+                },
+                Bind {
+                    mods: m(true, false, false, false),
+                    key: Keysym::Up,
+                    action: Action::Tile(Direction::Up),
+                },
+                Bind {
+                    mods: m(true, false, false, false),
+                    key: Keysym::Down,
+                    action: Action::Tile(Direction::Down),
+                },
+            ];
+            // Desktop grid (COMP-05 §7.1): KDE's Meta+Ctrl+arrows switch, and
+            // adding Shift takes the focused window along.
+            for (key, dir) in [
+                (Keysym::Left, Direction::Left),
+                (Keysym::Right, Direction::Right),
+                (Keysym::Up, Direction::Up),
+                (Keysym::Down, Direction::Down),
+            ] {
+                v.push(Bind {
+                    mods: m(true, false, true, false),
+                    key,
+                    action: Action::DesktopSwitch(dir),
+                });
+                v.push(Bind {
+                    mods: m(true, true, true, false),
+                    key,
+                    action: Action::DesktopMove(dir),
+                });
+            }
+            v
+        }
         Mode::Wm | Mode::Hybrid => Vec::new(),
     }
 }

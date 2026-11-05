@@ -55,6 +55,12 @@ pub enum Action {
     /// axis, so Left then Up is the top-left quarter and the opposite
     /// direction steps back; see `shell::quicktile`.
     Tile(Direction),
+    /// Switch to the desktop (human workspace) next to the active one on the
+    /// desktop grid (`mode "de"` only; COMP-05 §7.1, `general.desktop-rows`).
+    DesktopSwitch(Direction),
+    /// Move the focused window to the next desktop in that direction and go
+    /// there with it (`mode "de"` only).
+    DesktopMove(Direction),
     /// Send the focused window away (COMP-05 §4 `minimized`).
     Minimize,
     /// Bring back the last window sent away on the active workspace.
