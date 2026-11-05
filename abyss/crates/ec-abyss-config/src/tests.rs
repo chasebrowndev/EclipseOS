@@ -3467,6 +3467,31 @@ fn focus_follows_mouse_defaults_with_the_mode_and_an_explicit_key_wins() {
     }
 }
 
+#[test]
+fn floating_placement_defaults_with_the_mode_and_an_explicit_key_wins() {
+    for (mode, default) in [
+        ("wm", FloatingPlacement::Centered),
+        ("hybrid", FloatingPlacement::Centered),
+        ("de", FloatingPlacement::Cascade),
+    ] {
+        let cfg = load_text(&format!("fp-{mode}"), &format!("mode \"{mode}\"\n"));
+        assert_eq!(cfg.general.floating_placement, default, "{mode} default");
+        assert!(!cfg.general.floating_placement_set, "{mode}: nothing written");
+        for (word, explicit) in [
+            ("centered", FloatingPlacement::Centered),
+            ("pointer", FloatingPlacement::Pointer),
+            ("cascade", FloatingPlacement::Cascade),
+        ] {
+            let cfg = load_text(
+                &format!("fp-{mode}-{word}"),
+                &format!("mode \"{mode}\"\ngeneral {{ floating-placement \"{word}\"; }}\n"),
+            );
+            assert_eq!(cfg.general.floating_placement, explicit, "{mode} explicit {word}");
+            assert!(cfg.general.floating_placement_set);
+        }
+    }
+}
+
 /// A reload re-resolves from the files: the key's order against `mode` in the
 /// file does not matter, and dropping the key hands the value back to the mode.
 #[test]

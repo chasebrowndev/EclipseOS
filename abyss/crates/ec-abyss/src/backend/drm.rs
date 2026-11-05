@@ -1855,6 +1855,16 @@ fn render_output(state: &mut AbyssState, index: usize) {
             scale,
         ));
     }
+    // The window menu (`mode "de"`, COMP-05 §7.1): compositor chrome above the
+    // windows and the drop guides, below annotations and the cursor, and never
+    // in a capture pass list.
+    elements.extend(crate::render::menu::menu_elements(
+        renderer,
+        &mut state.menu_cache,
+        state.winmenu.view(),
+        &output,
+        output_loc,
+    ));
     // Radiant drop guides (COMP-05 §3.1): above the windows, below the
     // annotations and the cursor.
     elements.extend(crate::render::drop::drop_elements(

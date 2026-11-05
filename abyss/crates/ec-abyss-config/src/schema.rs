@@ -179,6 +179,13 @@ pub const TABLE: &[Key] = &[
        `toggle-maximize`): the window fills the usable area, square and \
        without a border, and restores its old rectangle; under `wm` and \
        `hybrid` maximize requests are declined. \
+       Under `de` a titlebar drags its window (a drag on a maximized window \
+       restores it under the pointer), a double-click on it toggles maximize, \
+       a right press opens the window menu (minimize, maximize, shade, keep \
+       above, keep below, on all desktops, move to desktop, close), and a \
+       server-side-decorated window can be resized from a band just outside \
+       its frame. Keep above/below, shade and on-all-desktops are `de` only \
+       and are forgotten when the mode is left. \
        Entering `de` floats every tiled window where it is; leaving re-tiles \
        them where they were. Applies on hot reload.",
     ),
@@ -513,7 +520,11 @@ pub const TABLE: &[Key] = &[
         Str("centered"),
         Abyss,
         Live,
-        "Where a new floating window lands when no window rule places it.",
+        "Where a new floating window lands when no window rule places it. \
+       Under `mode \"de\"` it defaults to `cascade`, so stacked windows do not \
+       all open on the same centre; a value written here wins. `get_config` \
+       serves the mode's default as `default` and `source` null until a file \
+       writes the key.",
     ),
     k(
         "general.focus-follows-mouse",
@@ -2974,7 +2985,7 @@ fn layout_name(l: LayoutKind) -> &'static str {
     }
 }
 
-fn floating_placement_name(p: FloatingPlacement) -> &'static str {
+pub fn floating_placement_name(p: FloatingPlacement) -> &'static str {
     match p {
         FloatingPlacement::Centered => "centered",
         FloatingPlacement::Pointer => "pointer",

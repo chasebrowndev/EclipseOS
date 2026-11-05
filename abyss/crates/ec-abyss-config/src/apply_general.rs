@@ -78,12 +78,21 @@ impl Config {
                     Some("master") => self.general.layout = LayoutKind::Master,
                     other => self.reject(n, format!("unknown layout {other:?}")),
                 },
-                "floating-placement" => match arg(n).and_then(KdlValue::as_string) {
-                    Some("centered") => self.general.floating_placement = FloatingPlacement::Centered,
-                    Some("pointer") => self.general.floating_placement = FloatingPlacement::Pointer,
-                    Some("cascade") => self.general.floating_placement = FloatingPlacement::Cascade,
-                    other => self.reject(n, format!("unknown floating-placement {other:?}")),
-                },
+                "floating-placement" => {
+                    let parsed = match arg(n).and_then(KdlValue::as_string) {
+                        Some("centered") => Some(FloatingPlacement::Centered),
+                        Some("pointer") => Some(FloatingPlacement::Pointer),
+                        Some("cascade") => Some(FloatingPlacement::Cascade),
+                        other => {
+                            self.reject(n, format!("unknown floating-placement {other:?}"));
+                            None
+                        }
+                    };
+                    if let Some(p) = parsed {
+                        self.general.floating_placement = p;
+                        self.general.floating_placement_set = true;
+                    }
+                }
                 "drop-guides" => {
                     if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
                         self.general.drop_guides = b;

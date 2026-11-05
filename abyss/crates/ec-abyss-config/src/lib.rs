@@ -364,6 +364,9 @@ impl Config {
         if !self.general.focus_follows_mouse_set {
             self.general.focus_follows_mouse = self.mode.profile().focus_follows_mouse;
         }
+        if !self.general.floating_placement_set {
+            self.general.floating_placement = self.mode.profile().floating_placement;
+        }
     }
 
     /// Re-read the same sources. The inotify watcher (`config::watch`) calls

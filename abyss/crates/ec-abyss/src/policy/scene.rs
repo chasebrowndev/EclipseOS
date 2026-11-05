@@ -169,10 +169,10 @@ pub fn hit(
     view: &SceneView,
     pos: Point<f64, Logical>,
 ) -> Option<(Window, Point<f64, Logical>)> {
-    if crate::shell::layer_at(state, pos).is_some() {
+    if crate::shell::layer_at(state, pos).is_some() || crate::shell::titlebar::bar_at(state, pos).is_some() {
         return None;
     }
-    let (window, loc) = state.space.element_under(pos)?;
+    let (window, loc) = crate::shell::winops::element_under(state, pos)?;
     let window = window.clone();
     visible(state, view, &window).then(|| (window, pos - loc.to_f64()))
 }

@@ -105,9 +105,17 @@ fn place_moved(
     if crate::shell::drag_tile(data, window, loc.to_i32_round()) {
         return;
     }
-    let size = data
-        .space
-        .element_geometry(window)
+    // The size the layout gave the window, not the one its client has drawn so
+    // far: a window just restored from maximize has not redrawn yet, and
+    // pinning it at the old size would undo the restore.
+    // Under `de` only; `wm` and `hybrid` pin the drawn size as they always did.
+    let stored = if crate::shell::de::stacking(data) {
+        crate::shell::stored_content(data, window)
+    } else {
+        None
+    };
+    let size = stored
+        .or_else(|| data.space.element_geometry(window))
         .map(|g| g.size)
         .unwrap_or_default();
     crate::shell::place_at(data, &window.clone(), Rectangle::new(loc.to_i32_round(), size));
@@ -443,6 +451,8 @@ impl PointerGrab<AbyssState> for ResizeSurfaceGrab {
 
     fn unset(&mut self, data: &mut AbyssState) {
         data.pointer_grab_active = false;
+        // The resize cursor goes back with the grab (`shell::edge`).
+        crate::shell::edge::grab_ended(data);
     }
 }
 
@@ -682,6 +692,10 @@ pub fn start_resize(
     serial: Serial,
     edges: xdg_toplevel::ResizeEdge,
 ) {
+    // A shaded window has no content to size (`shell::winops`).
+    if !crate::shell::winops::can_resize(state, &window) {
+        return;
+    }
     release_maximize(state, &window, surface, serial);
     let Some(initial_rect) = state.space.element_geometry(&window) else {
         return;
@@ -698,6 +712,8 @@ pub fn start_resize(
         };
         pointer.set_grab(state, grab, serial, Focus::Clear);
         state.pointer_grab_active = true;
+        // After `set_grab`, whose focus clear resets the cursor.
+        crate::shell::edge::show_cursor(state, edges);
         return;
     }
     let Some(start_data) = touch_start_data(state, surface, serial) else {
@@ -736,6 +752,20 @@ pub fn edges_for(rect: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> xdg
 /// there is no client serial to vet. The grab starts where the pointer is now.
 /// Returns whether it was installed.
 pub fn start_move_at(state: &mut AbyssState, window: Window, button: u32) -> bool {
+    start_move_from(state, window, button, None)
+}
+
+/// [`start_move_at`] measuring the drag from `origin` (where the press was)
+/// instead of from where the pointer is now, so a titlebar drag that began a few
+/// pixels back carries the window the whole way. A maximized window is restored
+/// under the pointer first, so its drag starts from the pointer, not `origin`.
+pub fn start_move_from(
+    state: &mut AbyssState,
+    window: Window,
+    button: u32,
+    origin: Option<Point<f64, Logical>>,
+) -> bool {
+    let was_maximized = crate::shell::maximize::is_maximized(state, &window);
     crate::shell::maximize::release_for_drag(state, &window);
     let Some(initial_location) = state.space.element_geometry(&window).map(|g| g.loc) else {
         return false;
@@ -743,11 +773,15 @@ pub fn start_move_at(state: &mut AbyssState, window: Window, button: u32) -> boo
     let Some(pointer) = state.seat.get_pointer() else {
         return false;
     };
+    let location = match origin {
+        Some(o) if !was_maximized => o,
+        _ => state.pointer_location,
+    };
     let grab = MoveSurfaceGrab {
         start_data: GrabStartData {
             focus: None,
             button,
-            location: state.pointer_location,
+            location,
         },
         window,
         initial_location,
@@ -761,6 +795,9 @@ pub fn start_move_at(state: &mut AbyssState, window: Window, button: u32) -> boo
 /// Compositor-initiated resize; the dragged corner is the one nearest the
 /// pointer (see [`edges_for`]). Returns whether it was installed.
 pub fn start_resize_at(state: &mut AbyssState, window: Window, button: u32) -> bool {
+    if !crate::shell::winops::can_resize(state, &window) {
+        return false;
+    }
     crate::shell::maximize::release_for_drag(state, &window);
     let Some(initial_rect) = state.space.element_geometry(&window) else {
         return false;
@@ -769,6 +806,7 @@ pub fn start_resize_at(state: &mut AbyssState, window: Window, button: u32) -> b
         return false;
     };
     let location = state.pointer_location;
+    let edges = edges_for(initial_rect, location);
     let grab = ResizeSurfaceGrab {
         start_data: GrabStartData {
             focus: None,
@@ -776,11 +814,51 @@ pub fn start_resize_at(state: &mut AbyssState, window: Window, button: u32) -> b
             location,
         },
         window,
-        edges: edges_for(initial_rect, location),
+        edges,
         initial_rect,
     };
     pointer.set_grab(state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
     state.pointer_grab_active = true;
+    crate::shell::edge::show_cursor(state, edges);
+    tracing::info!(?edges, "resize from the window band started");
+    true
+}
+
+/// Begin a resize of `edges` from the resize band of a decorated window under
+/// `mode "de"` (`shell::edge`): the human pressed `button` in the band, so
+/// there is no client serial to vet. Returns whether the grab was installed.
+pub fn start_resize_edges(
+    state: &mut AbyssState,
+    window: Window,
+    button: u32,
+    edges: xdg_toplevel::ResizeEdge,
+) -> bool {
+    if state.lock.locked
+        || drag_active(state)
+        || state.fullscreen.contains_key(&window)
+        || !crate::shell::winops::can_resize(state, &window)
+    {
+        return false;
+    }
+    let Some(initial_rect) = state.space.element_geometry(&window) else {
+        return false;
+    };
+    let Some(pointer) = state.seat.get_pointer() else {
+        return false;
+    };
+    let grab = ResizeSurfaceGrab {
+        start_data: GrabStartData {
+            focus: None,
+            button,
+            location: state.pointer_location,
+        },
+        window,
+        edges,
+        initial_rect,
+    };
+    pointer.set_grab(state, grab, SERIAL_COUNTER.next_serial(), Focus::Clear);
+    state.pointer_grab_active = true;
+    crate::shell::edge::show_cursor(state, edges);
     true
 }
 

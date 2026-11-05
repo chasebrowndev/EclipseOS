@@ -144,3 +144,30 @@ fn every_backend_draws_the_guides() {
         );
     }
 }
+
+#[test]
+fn the_capture_pass_cannot_see_the_window_menu() {
+    // The window menu is compositor chrome (COMP-05 §7.1, ADR 0090): an overlay
+    // pass spliced in by the backends, never part of what a capture records.
+    let src = include_str!("capture.rs");
+    for name in ["menu_elements", "winmenu", "MenuView", "menu_cache"] {
+        assert!(
+            !src.contains(name),
+            "capture.rs names `{name}`; the window menu is never in a capture pass list"
+        );
+    }
+}
+
+#[test]
+fn every_backend_draws_the_window_menu() {
+    for (src, path) in [
+        (include_str!("../backend/drm.rs"), "drm.rs"),
+        (include_str!("../backend/winit.rs"), "winit.rs"),
+        (include_str!("../backend/headless.rs"), "headless.rs"),
+    ] {
+        assert!(
+            src.contains("menu::menu_elements"),
+            "{path} does not draw the window menu"
+        );
+    }
+}

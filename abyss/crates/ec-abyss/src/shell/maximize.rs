@@ -128,6 +128,11 @@ pub fn set(state: &mut AbyssState, window: &Window, axes: Option<(bool, bool)>) 
     if !state.config.mode.profile().maximize {
         return false;
     }
+    // Maximize restores a rolled-up window (`winops`); restoring from maximize
+    // leaves it as it is.
+    if axes.is_some() {
+        super::winops::unshade(state, window);
+    }
     let mut done = false;
     anim::toggle(state, Some(window.clone()), |state| {
         done = set_now(state, window, axes, None);
@@ -206,7 +211,15 @@ fn set_now(
                     p - (p - f64::from(o)) * f64::from(nl) / f64::from(ol.max(1))
                 };
                 let x = at(p.x, old.loc.x, old.size.w, new.size.w).round() as i32;
-                let y = at(p.y, old.loc.y, old.size.h, new.size.h).round() as i32;
+                // A pointer on the bar stays the same distance below the bar's
+                // top (the x above keeps its place along the bar); one in the
+                // content keeps its proportion of the content.
+                let y = if bar > 0 && p.y < f64::from(old.loc.y) {
+                    let below_top = p.y - f64::from(old.loc.y - bar);
+                    (p.y - below_top + f64::from(bar)).round() as i32
+                } else {
+                    at(p.y, old.loc.y, old.size.h, new.size.h).round() as i32
+                };
                 rect.loc = Point::from((x - border, y - border - bar));
             }
             f.placement = Placement::Free;

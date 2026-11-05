@@ -262,9 +262,7 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
         window_under: crate::shell::titlebar::bar_at(state, pos)
             .map(|(w, _)| w)
             .or_else(|| {
-                state
-                    .space
-                    .element_under(pos)
+                crate::shell::winops::element_under(state, pos)
                     .map(|(w, _)| w.clone())
                     .filter(|w| !crate::shell::is_unmanaged_x11(state, w))
             })

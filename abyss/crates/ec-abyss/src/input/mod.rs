@@ -196,6 +196,20 @@ impl AbyssState {
                     }
                     return FilterResult::Intercept(Action::Prompt(sym));
                 }
+                // The window menu (`mode "de"`) owns the keyboard while it is
+                // open: no client and no binding sees the key, except the
+                // reserved override chords, which always work. It holds no
+                // keyboard grab, so nothing is left to release when it closes.
+                if state.winmenu.is_open() {
+                    match state.config.action_for(&held, sym) {
+                        Some(Action::AgentOverride) => return FilterResult::Intercept(Action::AgentOverride),
+                        Some(Action::AgentTerminate) => {
+                            return FilterResult::Intercept(Action::AgentTerminate)
+                        }
+                        _ => {}
+                    }
+                    return FilterResult::Intercept(Action::WindowMenu(sym));
+                }
                 // Calibration owns the seat outright while it runs: every key
                 // is consumed, including ones that are bound to something else.
                 if let Some(step) = crate::outputs::calibrate::step_for(state, mods, sym) {
@@ -287,6 +301,7 @@ impl AbyssState {
             }
             Action::RegionSelect(key) => self.region_select_key(key),
             Action::Prompt(sym) => crate::trusted_ui::key(self, sym),
+            Action::WindowMenu(sym) => shell::winmenu::key(self, sym),
             // ADR 0066: add-on hooks. Off, the chord is consumed and does nothing.
             Action::AnnotationSelect if !self.addons.hooks.is_on(Hook::RegionSelect) => {
                 tracing::debug!("region-select hook is off; chord ignored");
@@ -440,6 +455,13 @@ impl AbyssState {
             }
             return;
         }
+        // The window menu holds the pointer: the cursor moves, the highlight
+        // follows it, and no client hears about it.
+        if self.winmenu.is_open() {
+            self.pointer_location = pos;
+            crate::shell::winmenu::motion(self, pos);
+            return;
+        }
         let current = self.pointer_location;
         let pointer = self.seat.get_pointer().unwrap();
         let focus = pointer.current_focus();
@@ -536,6 +558,8 @@ impl AbyssState {
             },
         );
         pointer.frame(self);
+        // After the seat's own motion, whose focus change resets the cursor.
+        crate::shell::edge::motion(self, pos);
         // Smithay deactivates a constraint on the surface being left
         // automatically (`PointerTarget::leave`); activating one held by the
         // surface being entered is the compositor's half (COMP-06 §1).
@@ -555,7 +579,7 @@ impl AbyssState {
     /// hands focus to whatever is now underneath instead of leaving it stale
     /// until the mouse is jiggled (ADR 0042).
     pub(crate) fn refresh_pointer_focus(&mut self) {
-        if self.lock.locked || crate::trusted_ui::holds_seat(self) {
+        if self.lock.locked || crate::trusted_ui::holds_seat(self) || self.winmenu.is_open() {
             return;
         }
         // An interactive move/resize deliberately clears pointer focus for the
@@ -588,6 +612,7 @@ impl AbyssState {
         // Smithay forwards a same-focus refresh as an unconditional
         // `wl_pointer.motion`, so only deliver when something actually moved.
         if next == self.last_pointer_focus {
+            crate::shell::edge::motion(self, location);
             return;
         }
         // The scene changed under a stationary pointer, so re-derive keyboard
@@ -615,6 +640,7 @@ impl AbyssState {
             },
         );
         pointer.frame(self);
+        crate::shell::edge::motion(self, location);
         crate::protocols::standard::pointer_constraints::update_pointer_constraint_focus(
             self,
             old_focus.as_ref(),
@@ -734,6 +760,14 @@ impl AbyssState {
     /// point already down when the selection began is released normally.
     fn on_touch_down<B: InputBackend>(&mut self, event: B::TouchDownEvent) {
         if self.seat_held() {
+            return;
+        }
+        // A touch is a click outside the window menu: it dismisses it, and is
+        // not delivered.
+        if self.winmenu.is_open() {
+            self.winmenu.close();
+            crate::backend::damage_all(self);
+            self.refresh_pointer_focus();
             return;
         }
         if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
@@ -1133,6 +1167,11 @@ impl AbyssState {
             }
             return;
         }
+        // The window menu holds the pointer while it is open (`mode "de"`).
+        if self.winmenu.is_open() {
+            crate::shell::winmenu::button(self, button, pressed);
+            return;
+        }
         // A press on a trusted indicator is the compositor's, never a
         // client's; the left button opens the emergency panel (COMP-10 §3.3).
         if crate::trusted_ui::indicator::button(self, button, pressed) {
@@ -1166,6 +1205,10 @@ impl AbyssState {
         // either. Behind every gate above, so a prompt, the lock and a
         // protected surface keep the pointer exactly as they did.
         if crate::shell::titlebar::button(self, button, button_state) {
+            return;
+        }
+        // So is a press in the resize band just outside a decorated window.
+        if crate::shell::edge::button(self, button, pressed) {
             return;
         }
         // A `mousebind` press (Alt+drag by default) starts a compositor-owned
@@ -1252,8 +1295,9 @@ impl AbyssState {
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
-        // Nothing under the lock or behind a prompt scrolls.
-        if self.lock.locked || crate::trusted_ui::holds_seat(self) {
+        // Nothing under the lock, behind a prompt or behind the window menu
+        // scrolls.
+        if self.lock.locked || crate::trusted_ui::holds_seat(self) || self.winmenu.is_open() {
             return;
         }
         let source = event.source();

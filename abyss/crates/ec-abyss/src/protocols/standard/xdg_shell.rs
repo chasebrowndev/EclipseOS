@@ -85,6 +85,19 @@ impl XdgShellHandler for AbyssState {
         crate::input::grabs::start_resize(self, window, &wl_surface, serial, edges);
     }
 
+    /// `xdg_toplevel.show_window_menu`: under `mode "de"` the compositor's window
+    /// menu, for a press the client was really sent (like a move). Elsewhere,
+    /// and under the session lock, nothing opens.
+    fn show_window_menu(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: WlSeat,
+        serial: Serial,
+        location: smithay::utils::Point<i32, smithay::utils::Logical>,
+    ) {
+        crate::shell::winmenu::show_for_client(self, &surface, serial, location);
+    }
+
     fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
         crate::shell::popup_grab_start(self, surface);
     }

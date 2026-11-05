@@ -20,6 +20,7 @@ pub mod glass;
 pub mod glyphs;
 pub mod hud;
 pub mod hud_font;
+pub mod menu;
 pub mod output_overscan;
 pub mod overscan;
 pub mod palette;
@@ -1875,10 +1876,17 @@ fn window_elements(
         // about the centre of what it shows. The identity when idle, where
         // `map` is exactly the target rectangle.
         let t = store.anim.transform(&window);
+        // A window rolled up to its bar (`shell::winops`) is only the bar: its
+        // content has no height and its surfaces are not drawn. The client is
+        // not told; it keeps the size it has.
+        let rolled = titlebar::bar_of(&window).is_some_and(|b| b.shaded);
         let target = space.element_geometry(&window).map(|mut geo| {
             if let Some(c) = clip {
                 geo.size.w = geo.size.w.min(c.size.w);
                 geo.size.h = geo.size.h.min(c.size.h);
+            }
+            if rolled {
+                geo.size.h = 0;
             }
             geo
         });
@@ -1928,7 +1936,7 @@ fn window_elements(
         // window's, and the strip's own alpha (times the window's). Only a
         // toplevel at rest has one; an animating window draws whole.
         let strip_def = userdata::strip_of(&window)
-            .filter(|_| !t.scaled() && window.toplevel().is_some())
+            .filter(|_| !t.scaled() && window.toplevel().is_some() && !rolled)
             .zip(content_geo);
         // A keyed strip needs the keyed program and a framebuffer axis; where
         // either is missing the window stays opaque rather than fading whole.
@@ -2031,6 +2039,12 @@ fn window_elements(
                     alpha,
                 ),
             ),
+        };
+        let (popups, surfaces) = if rolled {
+            popup_groups.clear();
+            (Vec::new(), Vec::new())
+        } else {
+            (popups, surfaces)
         };
         // The strip's copy of the surface tree, at the strip's alpha. A keyed
         // strip is one draw through the keyed program instead.

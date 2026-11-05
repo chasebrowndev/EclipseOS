@@ -42,7 +42,13 @@ pub struct General {
     pub gaps_out_vertical: Option<i32>,
     pub border_size: i32,
     pub layout: LayoutKind,
+    /// The effective value: the file's, else the mode's default
+    /// ([`ModeProfile::floating_placement`]). Resolved after parsing by
+    /// `Config::resolve_mode_defaults`; read this, not the file.
     pub floating_placement: FloatingPlacement,
+    /// Whether any config file wrote `floating-placement`. An explicit key
+    /// always beats the mode's default (COMP-17 §2).
+    pub floating_placement_set: bool,
     /// The effective value: the file's, else the mode's default
     /// ([`ModeProfile::focus_follows_mouse`]). Resolved after parsing by
     /// `Config::resolve_mode_defaults`; read this, not the file.
@@ -108,6 +114,7 @@ impl Default for General {
             border_size: 1,
             layout: LayoutKind::Radiant,
             floating_placement: FloatingPlacement::Centered,
+            floating_placement_set: false,
             focus_follows_mouse: true,
             focus_follows_mouse_set: false,
             focus_follows_mouse_across_outputs: true,
@@ -325,6 +332,10 @@ pub struct ModeProfile {
     pub titlebars: bool,
     /// Default for `general.focus-follows-mouse`; an explicit key wins.
     pub focus_follows_mouse: bool,
+    /// Default for `general.floating-placement`; an explicit key wins. Windows
+    /// stack under `de`, so the centred default (every window on the same
+    /// centre, each hiding the last) is the existing `cascade` there.
+    pub floating_placement: FloatingPlacement,
 }
 
 impl Mode {
@@ -334,6 +345,11 @@ impl Mode {
             maximize: self == Mode::De,
             titlebars: self == Mode::De,
             focus_follows_mouse: self != Mode::De,
+            floating_placement: if self == Mode::De {
+                FloatingPlacement::Cascade
+            } else {
+                FloatingPlacement::Centered
+            },
         }
     }
 

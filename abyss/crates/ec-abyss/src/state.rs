@@ -74,6 +74,14 @@ pub struct AbyssState {
     pub de: crate::shell::de::DeLift,
     /// Titlebar hover and press (COMP-05 §7.1).
     pub bar_ui: crate::shell::titlebar::BarUi,
+    /// Keep above/below, shade and sticky (`mode "de"`, `shell::winops`).
+    pub winops: crate::shell::winops::WinOps,
+    /// The window menu, when open (`shell::winmenu`).
+    pub winmenu: crate::shell::winmenu::WinMenu,
+    /// The window menu's textures (`ec_abyss_render::menu`).
+    pub menu_cache: ec_abyss_render::menu::MenuCache,
+    /// Resize-band hover and the cursor it set (`shell::edge`).
+    pub edge: crate::shell::edge::EdgeUi,
 
     /// Last-seen `Window::geometry().loc` per space element (COMP-05 §3).
     ///
@@ -528,6 +536,10 @@ impl AbyssState {
             fullscreen: std::collections::HashMap::new(),
             de: Default::default(),
             bar_ui: Default::default(),
+            winops: Default::default(),
+            winmenu: Default::default(),
+            menu_cache: Default::default(),
+            edge: Default::default(),
             geo_loc: std::collections::HashMap::new(),
             compositor_state,
             xdg_shell_state,

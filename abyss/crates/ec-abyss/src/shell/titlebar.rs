@@ -37,6 +37,54 @@ use ec_abyss_render::titlebar::{hit, set_bar};
 use crate::state::AbyssState;
 
 const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+
+/// Two presses on a bar this close in time (ms) make a double-click. abyss has
+/// no double-click setting to follow (no key in `docs/CONFIG.md`, and the
+/// compositor has no toolkit settings to read it from), so this is the usual
+/// desktop value.
+pub const DOUBLE_CLICK_MS: u64 = 400;
+/// ... and this close in space (logical px, per axis).
+pub const DOUBLE_CLICK_SLOP: f64 = 6.0;
+/// A press held on a bar and moved this far (logical px) becomes a window move.
+pub const DRAG_THRESHOLD: f64 = 4.0;
+
+/// Pairs presses into double-clicks. Generic over what was clicked so the
+/// timing rules are testable without a window.
+#[derive(Debug)]
+pub struct ClickTracker<K> {
+    last: Option<(K, u64, Point<f64, Logical>)>,
+}
+
+impl<K> Default for ClickTracker<K> {
+    fn default() -> Self {
+        ClickTracker { last: None }
+    }
+}
+
+impl<K: PartialEq> ClickTracker<K> {
+    /// A press on `key` at `now_ms` at `pos`. True when it completes a
+    /// double-click (the pair is then used up: a third press starts over).
+    pub fn press(&mut self, key: K, now_ms: u64, pos: Point<f64, Logical>) -> bool {
+        let double = self.last.as_ref().is_some_and(|(k, t, p)| {
+            *k == key
+                && now_ms >= *t
+                && now_ms - *t <= DOUBLE_CLICK_MS
+                && (pos.x - p.x).abs() <= DOUBLE_CLICK_SLOP
+                && (pos.y - p.y).abs() <= DOUBLE_CLICK_SLOP
+        });
+        self.last = if double { None } else { Some((key, now_ms, pos)) };
+        double
+    }
+
+    pub fn clear(&mut self) {
+        self.last = None;
+    }
+
+    pub fn is_of(&self, key: &K) -> bool {
+        self.last.as_ref().is_some_and(|(k, ..)| k == key)
+    }
+}
 
 /// What the pointer is doing on bars. Plain data owned by `AbyssState`.
 #[derive(Debug, Default)]
@@ -48,6 +96,11 @@ pub struct BarUi {
     /// Buttons whose press a bar swallowed, so their release is swallowed too.
     /// Fixed-size: the pointer path allocates nothing.
     swallowed: [u32; 4],
+    /// A left press on the bar itself, until the pointer has moved far enough
+    /// to be a window move (or the button comes up): the window and where it
+    /// was pressed.
+    drag: Option<(Window, Point<f64, Logical>)>,
+    clicks: ClickTracker<Window>,
 }
 
 impl BarUi {
@@ -58,9 +111,15 @@ impl BarUi {
         if self.press.as_ref().is_some_and(|(w, _)| w == window) {
             self.press = None;
         }
+        if self.drag.as_ref().is_some_and(|(w, _)| w == window) {
+            self.drag = None;
+        }
+        if self.clicks.is_of(window) {
+            self.clicks.clear();
+        }
     }
 
-    fn swallow(&mut self, button: u32) {
+    pub(super) fn swallow(&mut self, button: u32) {
         if let Some(slot) = self.swallowed.iter_mut().find(|s| **s == 0) {
             *slot = button;
         }
@@ -74,6 +133,11 @@ impl BarUi {
             }
             None => false,
         }
+    }
+
+    #[cfg(test)]
+    pub fn swallowed_is_clear(&self) -> bool {
+        self.swallowed == [0; 4]
     }
 
     #[cfg(test)]
@@ -123,6 +187,7 @@ pub(super) fn publish(state: &AbyssState, window: &Window, bar: i32, maximized: 
         hover: hover_button(&state.bar_ui, window),
         pressed: pressed_button(&state.bar_ui, window),
         maximized,
+        shaded: state.winops.is_shaded(window),
     });
     set_bar(window, info);
 }
@@ -147,7 +212,7 @@ pub fn bar_at(state: &AbyssState, pos: Point<f64, Logical>) -> Option<(Window, H
     if !state.config.mode.profile().titlebars || super::top_layer_at(state, pos) {
         return None;
     }
-    let top = state.space.element_under(pos);
+    let top = super::winops::element_under(state, pos);
     for w in state.space.elements().rev() {
         if let Some(info) = bar_of(w) {
             if let Some(content) = state.space.element_geometry(w) {
@@ -185,6 +250,7 @@ fn republish(state: &AbyssState, window: &Window) {
 /// The pointer moved to `pos`: update which bar button is hovered, redrawing
 /// only on a change. Returns whether the pointer is over a bar.
 pub fn motion(state: &mut AbyssState, pos: Point<f64, Logical>) -> bool {
+    start_drag_if_moved(state, pos);
     let now = bar_at(state, pos);
     if now != state.bar_ui.hover {
         let old = std::mem::replace(&mut state.bar_ui.hover, now.clone());
@@ -197,6 +263,37 @@ pub fn motion(state: &mut AbyssState, pos: Point<f64, Logical>) -> bool {
         crate::backend::damage_all(state);
     }
     now.is_some()
+}
+
+/// A left press on a bar that has moved [`DRAG_THRESHOLD`] becomes a window move
+/// through the existing move grab (`input::grabs`), which restores a maximized
+/// window under the pointer first, keeping the pointer at the same place along
+/// the bar. The press was swallowed; its release must reach the grab to end it,
+/// so it is taken off the swallow list.
+fn start_drag_if_moved(state: &mut AbyssState, pos: Point<f64, Logical>) {
+    let Some((_, origin)) = &state.bar_ui.drag else {
+        return;
+    };
+    let (dx, dy) = (pos.x - origin.x, pos.y - origin.y);
+    if dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD {
+        return;
+    }
+    let Some((window, origin)) = state.bar_ui.drag.take() else {
+        return;
+    };
+    if state.lock.locked
+        || state.pointer_grab_active
+        || crate::input::grabs::drag_active(state)
+        || !state.bar_ui.take_swallowed(BTN_LEFT)
+    {
+        return;
+    }
+    if crate::input::grabs::start_move_from(state, window, BTN_LEFT, Some(origin)) {
+        tracing::info!("titlebar drag started");
+    } else {
+        // Nothing to drag: the release is the bar's again.
+        state.bar_ui.swallow(BTN_LEFT);
+    }
 }
 
 /// A pointer button. True when a bar took it, in which case the seat must not
@@ -216,12 +313,35 @@ pub fn button(state: &mut AbyssState, button: u32, button_state: ButtonState) ->
         }
         // The window is the human's choice: focus and raise it. A bar is never
         // a client's surface, so nothing reaches one.
+        // The menu is the human's alone and replaces any other grab: a right
+        // press opens it where the pointer is. Focus and raise happen there.
+        if button == BTN_RIGHT {
+            state.bar_ui.swallow(button);
+            super::winmenu::open_window_menu(state, &window, pos.to_i32_round());
+            return true;
+        }
         super::focus::focus_window_raising(state, &window, true);
         state.bar_ui.swallow(button);
-        if let (BTN_LEFT, Hit::Button(b)) = (button, hit) {
-            state.bar_ui.press = Some((window.clone(), b));
-            republish(state, &window);
-            crate::backend::damage_all(state);
+        match (button, hit) {
+            (BTN_LEFT, Hit::Button(b)) => {
+                state.bar_ui.press = Some((window.clone(), b));
+                state.bar_ui.clicks.clear();
+                republish(state, &window);
+                crate::backend::damage_all(state);
+            }
+            (BTN_LEFT, Hit::Bar) => {
+                let now = state.start_time.elapsed().as_millis() as u64;
+                if state.bar_ui.clicks.press(window.clone(), now, pos) {
+                    // A double-click toggles maximize; the second press is
+                    // not the start of a drag.
+                    state.bar_ui.drag = None;
+                    super::maximize::toggle_window(state, &window);
+                } else {
+                    state.bar_ui.drag = Some((window, pos));
+                }
+            }
+            // A middle press on the bar is the bar's and does nothing.
+            _ => {}
         }
         return true;
     }
@@ -242,6 +362,7 @@ pub fn release(state: &mut AbyssState, button: u32) -> bool {
         || state.region_select.active()
         || !state.config.mode.profile().titlebars;
     if button == BTN_LEFT {
+        state.bar_ui.drag = None;
         if let Some((window, b)) = state.bar_ui.press.take() {
             republish(state, &window);
             crate::backend::damage_all(state);

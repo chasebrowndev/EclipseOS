@@ -121,6 +121,10 @@ impl AbyssState {
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
         }
         crate::audit::focus(self, None, "human");
+        // The window menu and the resize cursor belong to the session behind
+        // the lock.
+        self.winmenu.close();
+        crate::shell::edge::restore_cursor(self);
         // The region selector is a modal over the session behind the lock.
         self.region_select.cancel();
         if let Some(pointer) = self.seat.get_pointer() {

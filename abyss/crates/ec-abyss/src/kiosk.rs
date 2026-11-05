@@ -71,6 +71,7 @@ pub fn permits(action: &Action) -> bool {
         | Action::AgentAttention
         | Action::Calibrate(_)
         | Action::RegionSelect(_)
+        | Action::WindowMenu(_)
         | Action::AnnotationSelect
         | Action::AnnotationDismiss
         | Action::AnnotationExpand

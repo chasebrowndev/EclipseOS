@@ -95,6 +95,10 @@ pub enum Action {
     /// from config -- the input filter synthesises it while a prompt holds
     /// the seat.
     Prompt(Keysym),
+    /// One keypress consumed by the window menu (COMP-05 §7.1, `mode "de"`).
+    /// Not bindable from config -- the input filter synthesises it while the
+    /// menu is open, so no client and no binding sees the key.
+    WindowMenu(Keysym),
     /// Chords an addon owns (COMP-18 §4). The compositor does not act on
     /// these itself; it forwards the name on the `keybind` event stream, so
     /// nothing happens when no addon is listening.

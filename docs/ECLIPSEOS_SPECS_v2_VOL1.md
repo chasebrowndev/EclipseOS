@@ -3585,6 +3585,11 @@ of this. Agent workspaces stay undecorated (§3.2).
   snapping and maximize use. Adding a titlebar never shifts an agent's
   coordinates, and a titlebar's appearing or leaving does not itself bump
   `generation` unless the content rect moved.
+- **Shade and hit-testing.** A window shaded to its bar sends its client nothing
+  and keeps its size. Its content is not drawn, not captured and not a hit target
+  for the human or an agent. A point on a titlebar hits no window for an agent
+  (`hit_test` returns handle 0), and agent pointer input does not land on what is
+  beneath the bar.
 - **Thumbnails.** Rendered by the compositor for the human; no pixel reaches a
   client. Class is decided before any GPU work (COMP-02 §7, S-05 §4): a `secret`
   window is a placeholder, a `secret` node in a `private` window is a redaction
