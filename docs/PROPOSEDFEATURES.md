@@ -159,7 +159,7 @@ output. Beyond that:
     `mkinitcpio -P`. Root never parses a user-supplied PNG.
   - Applying the boot image needs root, and the owner wants an admin prompt,
     not a passwordless wheel rule. The compositor-drawn prompt exists now
-    (COMP-10 §3.14, ADR 0087).
+    (COMP-10 §3.14, ADR 0088).
   - Settings has no path/image control yet (`schema.rs` maps `string` to a
     text field), so the pane needs an image picker type.
 

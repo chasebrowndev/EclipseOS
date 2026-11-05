@@ -358,6 +358,7 @@ impl Row {
             "annotations.region-outline" => "Region outline",
             "annotations.selection-dim" => "Selection dim",
             "misc.gpu-mode" => "Graphics mode",
+            "misc.secondary-compositing" => "Render second GPU's screens natively",
             "launcher.search.path-binaries" => "Programs on PATH",
             "launcher.search.terminal-apps" => "Terminal apps",
             // `settings.search.frecency` reads "settings search, frecency":

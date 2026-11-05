@@ -278,7 +278,7 @@ reinvented; their units are S-tier documents' business.
 ### 3.5 greetd
 
 greetd stays the display manager, running
-`ec-abyss --backend drm --kiosk -- regreet` (ADR 0086). There is no reason to own
+`ec-abyss --backend drm --kiosk -- regreet` (ADR 0087). There is no reason to own
 a greeter, but the compositor under it is ours. The session entry is `/usr/share/wayland-sessions/abyss.desktop` with
 `Exec=/usr/bin/abyss-session`.
 

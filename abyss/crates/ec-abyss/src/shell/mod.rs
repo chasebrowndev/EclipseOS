@@ -746,7 +746,11 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
     // so there is deliberately no fallback: there is genuinely nowhere to put
     // the window. Say so, because the window is then dropped on the floor.
     let Some(mut id) = state.outputs.focused().map(|e| e.id) else {
-        tracing::warn!("no output to place a new window on; dropping it");
+        tracing::warn!(
+            x11 = window.x11_surface().is_some(),
+            class = window.x11_surface().map(|x| x.class()),
+            "no output to place a new window on; dropping it"
+        );
         return false;
     };
     // An `output` rule retargets the window before anything is computed from
@@ -760,11 +764,26 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
             tracing::warn!(output = name, "windowrule output matches no connected output");
         }
     }
+    // A transient follows its parent's output and workspace unless a rule
+    // said otherwise, so a dialog never lands on another head or desktop.
+    let parent = x11_parent(state, &window);
+    let mut parent_ws = None;
+    if placement.output.is_none() {
+        if let Some(p) = &parent {
+            if let Some((pid, pws)) = state
+                .outputs
+                .iter()
+                .find_map(|e| e.workspaces.iter().position(|ws| ws.holds(p)).map(|i| (e.id, i)))
+            {
+                id = pid;
+                parent_ws = Some(pws);
+            }
+        }
+    }
     let output = state.outputs.get(id).expect("just resolved").output.clone();
     layer_map_for_output(&output).arrange();
     let area = tiling_area(state, &output);
     let geometry = state.space.element_geometry(&window);
-    let parent = x11_parent(state, &window);
     let parent_rect = parent.as_ref().and_then(|p| state.space.element_geometry(p));
     // An X11 dialog whose parent is not the focused window must not take the
     // keyboard from whatever the human is using (COMP-05 §5).
@@ -775,6 +794,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
     let ws = placement
         .workspace
         .map(|n| (n as usize - 1).min(entry.workspaces.len() - 1))
+        .or(parent_ws)
         .unwrap_or(entry.active);
     // An X11 window floats at the size it asked to map at, clamped to the
     // output, rather than at half the area (a dialog narrower than its

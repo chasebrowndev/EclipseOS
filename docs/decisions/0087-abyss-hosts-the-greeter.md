@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# 0086 — Abyss hosts the greeter
+# 0087 — Abyss hosts the greeter
 Status: accepted
 Date: 2026-11-04
 Deciders: chase (owner), Claude (advisory)

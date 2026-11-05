@@ -1,6 +1,6 @@
 # The Eclipse polkit authentication agent: relays polkitd's password requests to
 # the compositor, which draws the prompt and talks to polkit's root helper
-# itself (COMP-10 §3.14, ADR 0087). Holds no secret. Installed to
+# itself (COMP-10 §3.14, ADR 0088). Holds no secret. Installed to
 # /usr/lib/systemd/user/ec-polkit-agent.service.
 #
 # Must run /usr/bin/ec-polkit-agent: the compositor refuses any other binary at

@@ -67,7 +67,7 @@ package_eclipseos-abyss() {
   depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa xorg-xwayland)
   optdepends=('seatd: fallback seat management when logind is unavailable (D-01 §5.3)')
   # wayland-compositor: greetd-regreet depends on the virtual package, and abyss
-  # hosts it (ADR 0086). Without this, pacman pulls in some other compositor.
+  # hosts it (ADR 0087). Without this, pacman pulls in some other compositor.
   provides=(abyss wayland-compositor)
   install=eclipseos.install
 
@@ -147,7 +147,7 @@ package_eclipseos-desktop() {
   # from PATH for pairing PINs and wifi passphrases (ADR 0053). Here, not in the
   # taskbar's package, so pairing works with no taskbar (ADR 0066).
   _bin ec-pairing
-  # The polkit agent: relays to the compositor's password prompt (ADR 0087).
+  # The polkit agent: relays to the compositor's password prompt (ADR 0088).
   _bin ec-polkit-agent
   _bin ec-secret-prompt
   _unit ec-screensaver.service
@@ -161,6 +161,14 @@ package_eclipseos-desktop() {
   _unit ec-portal.service
   install -Dm0644 "$srcdir/$_src/packaging/dbus/org.freedesktop.impl.portal.desktop.abyss.service" \
     "$pkgdir/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.abyss.service"
+  # One keyring daemon, not two: the hooks put this in /usr/local while
+  # gnome-keyring is installed (see the hook headers).
+  install -Dm0644 "$srcdir/$_src/packaging/dbus/org.freedesktop.secrets.service" \
+    "$pkgdir/usr/share/eclipseos/dbus/org.freedesktop.secrets.service"
+  install -Dm0644 "$srcdir/$_src/packaging/hooks/eclipseos-keyring.hook" \
+    "$pkgdir/usr/share/libalpm/hooks/eclipseos-keyring.hook"
+  install -Dm0644 "$srcdir/$_src/packaging/hooks/eclipseos-keyring-remove.hook" \
+    "$pkgdir/usr/share/libalpm/hooks/eclipseos-keyring-remove.hook"
   install -Dm0644 "$srcdir/$_src/packaging/portal/abyss.portal" \
     "$pkgdir/usr/share/xdg-desktop-portal/portals/abyss.portal"
   install -Dm0644 "$srcdir/$_src/packaging/portal/abyss-portals.conf" \
@@ -353,6 +361,8 @@ package_eclipseos-meta() {
     "$pkgdir/usr/share/eclipseos/splash.bmp"
   install -Dm0644 "$srcdir/$_src/packaging/systemd/10-eclipseos.conf" \
     "$pkgdir/usr/lib/systemd/system.conf.d/10-eclipseos.conf"
+  install -Dm0644 "$srcdir/$_src/packaging/logind/10-eclipseos.conf" \
+    "$pkgdir/usr/lib/systemd/logind.conf.d/10-eclipseos.conf"
 
   # The same mark over the console at shutdown and reboot. Enabled by the
   # shipped wants/ symlink, not a preset (see HW-02 in KNOWNBUGS history).

@@ -27,7 +27,7 @@
 //! destructive-system-action confirmation ([`erase`], §3.10, ADR 0061),
 //! asked for over the root-only [`socket`], the agent consent prompt
 //! ([`consent`], §3.2), personal-secret entry ([`phrase`], §2) and the polkit
-//! password prompt ([`polkit`], §3.14, ADR 0087).
+//! password prompt ([`polkit`], §3.14, ADR 0088).
 //!
 //! Every prompt shows the personal secret in its fixed frame at the top, or
 //! the unconfigured warning while there is none (§2).

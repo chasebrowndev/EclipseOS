@@ -2235,22 +2235,25 @@ Override, highest precedence first:
 2. `ECLIPSE_RENDER_DEVICE` env var (one-off testing).
 3. Config: `render_device "pci:0000:01:00.0"` or a card path (COMP-13).
 
-**Multi-GPU: each GPU composites its own outputs** (ADR 0084, 2026-11-02,
-amends the original "not supported in v1"). `misc.gpu-mode` chooses
+**Multi-GPU: the primary GPU renders, secondary outputs get a copy** (ADR 0084,
+2026-11-02, clause superseded by ADR 0086-secondary-gpu-copy-default; amends the original "not supported in v1"). `misc.gpu-mode` chooses
 `integrated`, `hybrid` (default) or `dedicated`. The primary GPU owns the
 default dmabuf feedback, explicit sync and capture. In `integrated` and
 `hybrid` it is the GPU driving a connected internal panel, then `boot_vga`,
 then the ranking above; in `dedicated` it is the discrete GPU. The overrides
-above pin the primary. A frame whose surface cannot be imported on its
-output's GPU is rendered on the primary and copied across, and `dedicated`
-copies to iGPU outputs the same way.
+above pin the primary. By default (ADR 0086) the primary renders every
+output and a copy goes to the scanout buffer of an output on another GPU;
+`misc.secondary-compositing` opts that GPU into compositing its own outputs,
+and then a frame whose surface it cannot import still falls back to the copy.
+`dedicated` always copies to iGPU outputs. Client dmabuf feedback offers the
+primary's formats plus a shared-format (LINEAR in practice) tranche.
 
 **Laptops are a target** (decided 2026-09-05), scoped as:
 
 | Class | v1 status |
 |---|---|
 | Single-GPU laptops (integrated only) | **Fully supported.** Same path as desktop with a different device, plus §8.5 mobile concerns. |
-| Hybrid dGPU laptops (Optimus, AMD switchable) | **Supported (ADR 0084).** Each GPU composites its own screens. Apps run on the iGPU unless their desktop entry or `misc.discrete-gpu-apps` asks for the dGPU. Runtime hot-add of a whole GPU is not handled. |
+| Hybrid dGPU laptops (Optimus, AMD switchable) | **Supported (ADR 0084).** The primary GPU renders every screen and copies to the others (opt-in native compositing, ADR 0086). Apps run on the iGPU unless their desktop entry or `misc.discrete-gpu-apps` asks for the dGPU. Runtime hot-add of a whole GPU is not handled. |
 
 *Original 2026-09-05 scoping, superseded by ADR 0084:* hybrid support was
 to ship later as an experimental feature. To keep that from
@@ -2895,8 +2898,16 @@ udev event → re-probe connectors → diff against current set
   │           right of the rightmost output at its preferred mode
   ├─ removed: move its workspaces to the fallback output (§5); never
   │           destroy a workspace because a monitor was unplugged
-  └─ changed: re-apply mode/scale
+  └─ changed: re-apply mode/scale; a change to an output's logical width
+              shifts the outputs to its right by the difference, so no gap
+              opens or closes unevenly (rotating and rotating back restores
+              the layout)
 ```
+
+The layout is kept normalized: after any change the bounding box of the
+enabled outputs starts at (0,0), and a gap along an axis (no output covering
+it) is closed. A layout containing a hand-written `position` is left as
+written.
 
 All layout changes are applied in a **single atomic DRM commit** where
 possible so the desktop does not flash through intermediate states.
@@ -2934,7 +2945,11 @@ changes are persisted back to `outputs.kdl`, not to the user's config.
 Invalid configurations (mode not supported, outputs overlapping, all
 outputs disabled) are rejected with the previous layout retained. **The
 compositor never leaves the human with no enabled output**; disabling the
-last one is refused.
+last one is refused. When the last enabled output disappears (unplugged, or
+all that remain were disabled) or the session resumes with none enabled, the
+internal panel, else any connected physical output, is enabled whatever the
+saved or configured enablement says. Only physical outputs count while any
+physical output exists; the virtual output (§5) does not.
 
 ---
 
@@ -4644,7 +4659,7 @@ approves. Accept/Allow records the hash; a later change asks again.
 ### 3.14 Password for a system action *(added E-04, 2026-11-04)*
 
 A modal, compositor-drawn, human-seat-only prompt for the password polkit needs
-when a system action is `auth_admin` (D-07 §6, ADR 0087). It is an authority
+when a system action is `auth_admin` (D-07 §6, ADR 0088). It is an authority
 surface in the same trust class as §3.2 and extends ADR 0053's closed list by
 exactly this one entry.
 
@@ -7532,7 +7547,7 @@ same day. Appendix D is reserved for the D-07 batch.
 | E-01 | COMP-18 §3 | Annotation methods, binds and region select are add-on hooks (ADR 0066), off unless an installed manifest names them. A manifest never grants capture | yes |
 | E-02 | COMP-10 §3.11 | New surface: command approval for taskbar command widgets (ADR 0067). Compositor-initiated; no client may request it | yes |
 | E-03 | COMP-10 §3.10 | On merging with D-07 (DA-05), the destructive-action prompt runs on §3.11's modal primitive: the granting Erase button needs Tab then Space (Enter never grants), input is ignored for the arming delay, and it is drawn front-most with the other prompts, above the §3.6 indicator. Owner review pending on the indicator ordering | yes |
-| E-04 | COMP-10 §3.14; D-07 §6, §11.7 | New surface: the password prompt for polkit `auth_admin`, closing the agent DA-05 left owed (ADR 0087). The password goes only to polkit's root helper, and "delivered" in the password invariant means delivered to anything except the verifying authority (owner ruling, 2026-11-04) | yes |
+| E-04 | COMP-10 §3.14; D-07 §6, §11.7 | New surface: the password prompt for polkit `auth_admin`, closing the agent DA-05 left owed (ADR 0088). The password goes only to polkit's root helper, and "delivered" in the password invariant means delivered to anything except the verifying authority (owner ruling, 2026-11-04) | yes |
 
 ---
 

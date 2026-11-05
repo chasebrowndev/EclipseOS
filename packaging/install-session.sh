@@ -79,7 +79,7 @@ if [ "$do_agents" -eq 1 ]; then
 fi
 install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session
 # A real copy at the shipped path: the compositor admits nothing else at its
-# polkit door (ADR 0087), and a symlink's /proc/<pid>/exe is its target.
+# polkit door (ADR 0088), and a symlink's /proc/<pid>/exe is its target.
 install -m 0755 "$bin/ec-polkit-agent" /usr/bin/ec-polkit-agent
 
 # 2. The session entry the greeter lists. Exec is the wrapper, not the binary:

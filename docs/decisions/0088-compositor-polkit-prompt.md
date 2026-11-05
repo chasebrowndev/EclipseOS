@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# 0087 — The compositor collects polkit passwords
+# 0088 — The compositor collects polkit passwords
 Status: accepted
 Date: 2026-11-04
 Deciders: chase (owner), Claude (advisory)

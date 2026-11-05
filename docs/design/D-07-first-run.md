@@ -356,7 +356,7 @@ authorities:
 compositor-drawn polkit authentication agent** (trusted UI), never by a client
 such as `ec-secret-prompt`, since it is an admin-equivalent secret and a
 client prompt is spoofable. That agent is `ec-polkit-agent` and COMP-10 §3.14
-(ADR 0087).
+(ADR 0088).
 
 Agent sandboxes must not reach the system bus at all. That is S-03's to
 guarantee, and until S-03 says so it is an assumption this section depends on.

@@ -1,0 +1,16 @@
+# Install to: /usr/share/libalpm/hooks/eclipseos-keyring.hook
+#
+# gnome-keyring's own org.freedesktop.secrets service file execs a second
+# daemon next to gnome-keyring-daemon.service. Route D-Bus activation to the
+# unit instead, but only while gnome-keyring is installed: the override would
+# shadow KWallet's provider of the same name otherwise.
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = gnome-keyring
+
+[Action]
+Description = Routing org.freedesktop.secrets activation to gnome-keyring-daemon.service
+When = PostTransaction
+Exec = /usr/bin/install -Dm0644 /usr/share/eclipseos/dbus/org.freedesktop.secrets.service /usr/local/share/dbus-1/services/org.freedesktop.secrets.service

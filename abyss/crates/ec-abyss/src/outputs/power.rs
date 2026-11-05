@@ -50,7 +50,7 @@ pub fn set_enabled(state: &mut AbyssState, id: u64, enabled: bool) -> bool {
     if entry.enabled == enabled {
         return true;
     }
-    if !enabled && !state.outputs.iter().any(|e| e.enabled && e.id != id) {
+    if !enabled && !state.outputs.other_enabled(id) {
         tracing::warn!(id, "refusing to disable the only enabled output");
         return false;
     }
