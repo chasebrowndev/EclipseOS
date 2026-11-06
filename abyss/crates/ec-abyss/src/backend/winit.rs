@@ -160,7 +160,7 @@ pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
     std::env::set_var("WAYLAND_DISPLAY", &state.socket_name);
     tracing::info!(socket = %state.socket_name, "listening");
     if session {
-        crate::session::import();
+        crate::session::import(state.config.mode);
     }
     crate::kiosk::launch(&mut state, &handle)?;
 

@@ -4235,3 +4235,283 @@ pub fn arrangement_tile<'a, Message: 'a>(
         })
         .into()
 }
+
+// --- The desktop's icons (`ec-desktop`) ------------------------------------
+
+/// How a desktop icon's cell answers the pointer and the selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellState {
+    /// Nothing: the icon sits on the wallpaper with no ground at all.
+    Rest,
+    /// The pointer is over it, or it is the folder a drag would drop into.
+    Hover,
+    /// Part of the selection.
+    Selected,
+    /// Selected, with the pointer over it.
+    SelectedHover,
+}
+
+/// One desktop icon: its art over its label in a cell of glass.
+///
+/// A widget and not a styled container because the cell is the one place the
+/// bar's glass-cell material meets a wallpaper rather than a bar: selection
+/// is the focused cell (a brighter fill and a crisp rim, white, never gold and
+/// never a halo) and hover is the plain cell's lift, and both must be read
+/// from the palette's cell tokens so a theme change moves them with the bar's.
+/// The cell is a fixed `desktop::CELL_W x CELL_H` so the view can pin it to a
+/// grid position without measuring it.
+pub fn icon_cell<'a, Message: 'a>(
+    art: Element<'a, Message, Theme>,
+    label: Element<'a, Message, Theme>,
+    state: CellState,
+) -> Element<'a, Message, Theme> {
+    use crate::tokens::desktop;
+    // The painted cell sits `CELL_INSET` inside the grid cell, so two selected
+    // neighbours read as two cells with air between, not one slab.
+    let face = container(
+        column![art, label]
+            .spacing(desktop::ICON_GAP)
+            .align_x(Alignment::Center),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(desktop::CELL_PAD - desktop::CELL_INSET)
+    .align_x(Alignment::Center)
+    .style(move |_t: &Theme| {
+        let (fill, rim) = match state {
+            CellState::Rest => (Color::TRANSPARENT, Color::TRANSPARENT),
+            CellState::Hover => (color::cell_hover(), color::cell_rim_hover()),
+            CellState::Selected => (color::cell_focus(), color::cell_focus_rim()),
+            CellState::SelectedHover => (color::cell_focus_hover(), color::cell_focus_rim_hover()),
+        };
+        container::Style {
+            background: Some(iced::Background::Color(fill)),
+            border: iced::Border {
+                color: rim,
+                width: space::HAIRLINE,
+                radius: radius::INSET.into(),
+            },
+            ..container::Style::default()
+        }
+    });
+    container(face)
+        .width(Length::Fixed(desktop::CELL_W))
+        .height(Length::Fixed(desktop::CELL_H))
+        .padding(desktop::CELL_INSET)
+        .into()
+}
+
+/// The picture of a desktop icon: the theme's file, or, on a miss, a rounded
+/// square carrying a few letters of what it is (`PNG`, `DIR`).
+///
+/// A widget because the miss must look the same everywhere an icon can be
+/// missing, and because the placeholder is the only icon this desktop ever
+/// invents: small rounded rects stand in for icons (`docs/STYLE.md`). `alpha`
+/// fades it (an icon left behind by a drag); `warn` inks the badge in the
+/// danger colour (a broken link).
+pub fn icon_art<'a, Message: 'a>(
+    file: Option<std::path::PathBuf>,
+    badge: &str,
+    alpha: f32,
+    warn: bool,
+) -> Element<'a, Message, Theme> {
+    use crate::tokens::desktop;
+    let side = Length::Fixed(desktop::ICON);
+    match file {
+        Some(path) if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) => {
+            svg(svg::Handle::from_path(path))
+                .width(side)
+                .height(side)
+                .opacity(alpha)
+                .into()
+        }
+        Some(path) => iced::widget::image(path)
+            .width(side)
+            .height(side)
+            .opacity(alpha)
+            .into(),
+        None => {
+            let ink = if warn {
+                color::danger()
+            } else {
+                color::text_secondary()
+            };
+            container(
+                text(badge.to_owned())
+                    .size(size::MICRO)
+                    .font(font::DATA_MEDIUM)
+                    .color(ink.scale_alpha(alpha)),
+            )
+            .width(side)
+            .height(side)
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center)
+            .style(move |_t: &Theme| container::Style {
+                background: Some(iced::Background::Color(color::control_off().scale_alpha(alpha))),
+                border: iced::Border {
+                    color: color::border().scale_alpha(alpha),
+                    width: space::HAIRLINE,
+                    radius: radius::CARD.into(),
+                },
+                ..container::Style::default()
+            })
+            .into()
+        }
+    }
+}
+
+/// An icon's name under it: the caller has already cut it to
+/// `desktop::LABEL_LINES` lines. Centred, in the UI face.
+pub fn icon_label<'a, Message: 'a>(lines: &str, alpha: f32, warn: bool) -> Element<'a, Message, Theme> {
+    let ink = if warn { color::danger() } else { color::text() };
+    text(lines.to_owned())
+        .size(size::BODY_SMALL)
+        .font(font::UI_MEDIUM)
+        .color(ink.scale_alpha(alpha))
+        .align_x(Alignment::Center)
+        .width(Length::Fill)
+        .wrapping(iced::widget::text::Wrapping::None)
+        .into()
+}
+
+/// A rubber band: the pointer's drag rectangle over empty desktop.
+///
+/// A widget because it is neither a card (it has no content and must not
+/// cast) nor a cell (it is not a control); it is the one translucent
+/// rectangle whose size the pointer sets, drawn in the selected cell's own
+/// fill and rim so what it covers and what it selects read as one thing.
+pub fn rubber_band<'a, Message: 'a>(width: f32, height: f32) -> Element<'a, Message, Theme> {
+    container(Space::new())
+        .width(Length::Fixed(width.max(0.0)))
+        .height(Length::Fixed(height.max(0.0)))
+        .style(|_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(color::cell_focus())),
+            border: iced::Border {
+                color: color::cell_focus_rim_hover(),
+                width: space::HAIRLINE,
+                radius: radius::CHIP.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A floating glass sheet for the desktop's own small popovers: the context
+/// menu, the launch prompt and the failure note.
+///
+/// A widget because all three are one material, the context menu's: opaque
+/// (the desktop's surface sits under the windows, and the compositor gives a
+/// Bottom-layer client no blur to tint), with the lit top edge. `width` is a
+/// token; the height is the content's.
+pub fn desk_sheet<'a, Message: 'a>(
+    width: f32,
+    pad: f32,
+    content: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    lit(
+        container(content)
+            .width(Length::Fixed(width))
+            .padding(pad)
+            .style(theme::menu_surface(menu::RADIUS)),
+        menu::RADIUS,
+        color::highlight(),
+    )
+}
+
+/// One verb in the desktop's context menu: a mark, a label, and a ground
+/// that answers the pointer. The same row as the bar's window menu; `danger`
+/// inks it red.
+///
+/// A widget because the bar's own row is private to its view and the desktop
+/// needs the same one; `tick` (when `Some`) puts a square tick box where the
+/// mark goes, for the checked entry of a choice.
+pub fn desk_menu_item<'a, Message: Clone + 'a>(
+    label: &str,
+    mark: Element<'a, Message, Theme>,
+    danger: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let ink = if danger { color::danger() } else { color::text() };
+    let face = container(
+        row![
+            mark,
+            text(label.to_owned())
+                .size(size::BODY_SMALL)
+                .font(font::UI_MEDIUM)
+                .color(ink),
+        ]
+        .spacing(menu::MARK_GAP)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fill)
+    .align_y(Alignment::Center)
+    .padding([0.0, menu::ROW_X]);
+    button(face)
+        .width(Length::Fill)
+        .height(Length::Fixed(menu::ROW_H))
+        .padding(0)
+        .style(move |_t: &Theme, status: button::Status| {
+            let (hover, press) = if danger {
+                (color::danger_fill(), color::danger())
+            } else {
+                (color::lift(), color::lift_strong())
+            };
+            button::Style {
+                background: Some(iced::Background::Color(match status {
+                    button::Status::Hovered => hover,
+                    button::Status::Pressed => press,
+                    _ => Color::TRANSPARENT,
+                })),
+                text_color: color::text(),
+                border: iced::border::rounded(menu::RADIUS_ROW),
+                ..button::Style::default()
+            }
+        })
+        .on_press(on_press)
+        .into()
+}
+
+/// The square that leads a menu row: a tick box, filled when `on`, a hairline
+/// frame when not, in a `menu::MARK` slot so labels stay on one gridline.
+///
+/// A widget because "is this the current sort" is a state the menu must show
+/// without spending the accent: it is the ink at full strength, not gold.
+pub fn desk_menu_tick<'a, Message: 'a>(on: bool) -> Element<'a, Message, Theme> {
+    use crate::tokens::desktop;
+    let slot = Length::Fixed(menu::MARK);
+    let tick = container(Space::new())
+        .width(Length::Fixed(desktop::TICK))
+        .height(Length::Fixed(desktop::TICK))
+        .style(move |_t: &Theme| container::Style {
+            background: on.then(|| iced::Background::Color(color::text())),
+            border: iced::Border {
+                color: if on { color::text() } else { color::border_strong() },
+                width: space::HAIRLINE,
+                radius: menu::RADIUS_TICK.into(),
+            },
+            ..container::Style::default()
+        });
+    container(tick)
+        .width(slot)
+        .height(slot)
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .into()
+}
+
+/// A small mono caption inside a menu ("SORT BY"): the heading of a run of
+/// rows, `desktop::MENU_HEADING_H` tall so the menu's height can be summed
+/// before layout.
+pub fn desk_menu_heading<'a, Message: 'a>(label: &str) -> Element<'a, Message, Theme> {
+    use crate::tokens::desktop;
+    container(
+        text(label.to_uppercase())
+            .size(size::MICRO)
+            .font(font::DATA)
+            .color(color::text_tertiary()),
+    )
+    .height(Length::Fixed(desktop::MENU_HEADING_H))
+    .align_y(Alignment::Center)
+    .padding([0.0, menu::ROW_X])
+    .into()
+}

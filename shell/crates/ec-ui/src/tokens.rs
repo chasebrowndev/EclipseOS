@@ -924,6 +924,55 @@ pub mod menu {
     pub const SEP_H: f32 = 9.0;
 }
 
+/// The desktop's icons (`mode "de"`, `ec-desktop`): a grid of cells laid on the
+/// usable area of each output, like Plasma's folder view.
+pub mod desktop {
+    /// Surface edge to the first cell, on every side.
+    pub const MARGIN: f32 = 14.0;
+    /// One cell of the grid: wide enough for a two-line label, tall enough for
+    /// the icon, its gap and those lines, and the padding round them.
+    pub const CELL_W: f32 = 92.0;
+    pub const CELL_H: f32 = 100.0;
+    /// Inside a cell: padding round the content, and the icon's square.
+    pub const CELL_PAD: f32 = 6.0;
+    /// Air between the painted cell and the edge of its grid cell, so
+    /// neighbouring selections do not fuse.
+    pub const CELL_INSET: f32 = 2.0;
+    pub const ICON: f32 = 48.0;
+    /// Between the icon and its label.
+    pub const ICON_GAP: f32 = 6.0;
+    /// Rows of label under an icon, then an ellipsis.
+    pub const LABEL_LINES: usize = 2;
+    /// How much label fits on a line, in average-letter widths at
+    /// `size::BODY_SMALL` (see `ec_desktop::grid::label`).
+    pub const LABEL_UNITS: f32 = 11.8;
+    /// A press that travels this far is a drag or a rubber band, not a click.
+    pub const DRAG_SLOP: f32 = 4.0;
+    /// Two releases on one icon within this are a double-click.
+    pub const DOUBLE_CLICK_MS: u64 = 400;
+    /// How long a failure note stays when nobody clicks it.
+    pub const TOAST_MS: u64 = 5000;
+    /// The failure note and the launch prompt: their width, the note's
+    /// height (its pixel size is needed to pin it to a corner), and the
+    /// prompt's.
+    pub const TOAST_W: f32 = 280.0;
+    pub const TOAST_H: f32 = 56.0;
+    pub const PROMPT_W: f32 = 252.0;
+    pub const PROMPT_H: f32 = 92.0;
+    /// The air between a cell and the prompt hung under it.
+    pub const PROMPT_GAP: f32 = 4.0;
+    /// Ink of an icon left behind by a drag, and of the ghost that follows
+    /// the pointer.
+    pub const DRAG_REST_ALPHA: f32 = 0.4;
+    pub const DRAG_GHOST_ALPHA: f32 = 0.75;
+    /// A heading row in the context menu ("Sort by").
+    pub const MENU_HEADING_H: f32 = 24.0;
+    /// The extension badge of an icon the theme has no picture for.
+    pub const BADGE_CHARS: usize = 4;
+    /// The tick that marks the current sort: a square, like every tick box.
+    pub const TICK: f32 = 7.0;
+}
+
 /// The window list a multi-window group chip opens (`mode "de"`): a glass
 /// popup of one row per window, in the context menu's rows.
 pub mod group {
