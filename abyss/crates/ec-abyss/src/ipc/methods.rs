@@ -26,6 +26,7 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
     match method {
         // Queries.
         "get_workspaces" => get_workspaces(state),
+        "get_desktop_grid" => get_desktop_grid(state, params),
         "get_outputs" => get_outputs(state, params),
         "get_windows" => get_windows(state),
         "get_focused" => get_focused(state),
@@ -43,6 +44,10 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "set_window_chip_rect" => set_window_chip_rect(state, params),
         "set_client_strips" => super::client_strips::set_client_strips(state, conn, params),
         "switch_workspace" => switch_workspace(state, params),
+        "switch_desktop_direction" => switch_desktop_direction(state, params),
+        "open_window_menu" => open_window_menu(state, params),
+        "show_window_preview" => show_window_preview(state, params),
+        "hide_window_preview" => hide_window_preview(state, params),
         "resize" => resize(state, params),
         "move_workspace_to_output" => move_workspace_to_output(state, params),
         "set_output" => set_output(state, params),
@@ -55,6 +60,7 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "type_text" => scripted(state, |s| type_text(s, params)),
         "press_key" => scripted(state, |s| press_key(s, params)),
         "scroll_at" => scripted(state, |s| scroll_at(s, params)),
+        "drag_at" => scripted(state, |s| drag_at(s, params)),
         // Annotation overlays (COMP-18 §3). `conn` is the owner: a caller may
         // address only the handles it created.
         "annotation_create" => annotation_create(state, conn, params),
@@ -146,6 +152,63 @@ fn scroll_at(state: &mut AbyssState, params: &Value) -> Reply {
     }
     state.inject_scroll((x, y).into(), dx, dy);
     Ok(json!({}))
+}
+
+/// Press at `(x, y)`, move to `(to_x, to_y)` in `steps` (default 8, at most
+/// 200), release (COMP-13 §2.2). `button` is left unless named; `modifiers` are
+/// held for the whole drag. With `hold_ms` (at most 30000) the release comes
+/// from a timer after the last move instead of in this call, so a screenshot
+/// can be taken mid-drag; the loop is never blocked.
+fn drag_at(state: &mut AbyssState, params: &Value) -> Reply {
+    // Refused up front, before a modifier or the button goes down.
+    refuse_if_locked(state)?;
+    only_keys(
+        params,
+        &[
+            "x",
+            "y",
+            "to_x",
+            "to_y",
+            "button",
+            "steps",
+            "modifiers",
+            "hold_ms",
+        ],
+    )?;
+    let from = (f64_param(params, "x")?, f64_param(params, "y")?);
+    let to = (f64_param(params, "to_x")?, f64_param(params, "to_y")?);
+    let obj = params_obj(params);
+    let button = match obj.get("button").and_then(Value::as_str).unwrap_or("left") {
+        "left" => 0x110,
+        "right" => 0x111,
+        "middle" => 0x112,
+        _ => return Err(RpcError::invalid_params("button is left, right or middle")),
+    };
+    let steps = match obj.get("steps") {
+        None => 8,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| (1..=200).contains(n))
+            .ok_or_else(|| RpcError::invalid_params("steps is 1 to 200"))? as u32,
+    };
+    let hold_ms = match obj.get("hold_ms") {
+        None => 0,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| *n <= 30_000)
+            .ok_or_else(|| RpcError::invalid_params("hold_ms is 0 to 30000"))?,
+    };
+    let mods: Vec<&str> = match obj.get("modifiers") {
+        None => Vec::new(),
+        Some(v) => v
+            .as_array()
+            .and_then(|a| a.iter().map(Value::as_str).collect())
+            .ok_or_else(|| RpcError::invalid_params("modifiers must be an array of strings"))?,
+    };
+    state
+        .inject_drag(from.into(), to.into(), button, steps, &mods, hold_ms)
+        .map_err(RpcError::invalid_params)?;
+    Ok(json!({"ok": true, "holding": state.drag_hold.is_some()}))
 }
 
 /// The text is never logged or echoed back, only counted.
@@ -317,6 +380,51 @@ fn get_workspaces(state: &mut AbyssState) -> Reply {
         }
     }
     Ok(Value::Array(out))
+}
+
+/// The desktop grid (COMP-05 §7.1): the human workspaces laid out in
+/// `general.desktop-rows` rows. Counts only, never a title or an app id, and
+/// only human workspaces: desktops are the same ten workspaces
+/// `get_workspaces` lists, not a second model. A read, so it answers in every
+/// mode; `directional` says whether `switch_desktop_direction` will act.
+///
+/// `desktops` totals each desktop over every output; each output also reports
+/// its own active desktop and per-desktop counts. A minimized window still
+/// lives on its desktop and counts toward it.
+fn get_desktop_grid(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &[])?;
+    let grid = crate::shell::desktop::Grid::of(state);
+    let count = crate::shell::workspace::COUNT;
+    let mut total = vec![0usize; count];
+    let mut outputs = Vec::new();
+    for entry in state.outputs.iter() {
+        let mut per = Vec::with_capacity(count);
+        for (i, ws) in entry.workspaces.iter().enumerate().take(count) {
+            let n = ws.all_windows().len();
+            total[i] += n;
+            per.push(json!({"index": i + 1, "occupied": n > 0, "windows": n}));
+        }
+        outputs.push(json!({
+            "output": entry.id,
+            "name": entry.connector,
+            "active": entry.active + 1,
+            "desktops": per,
+        }));
+    }
+    let desktops: Vec<Value> = total
+        .iter()
+        .enumerate()
+        .map(|(i, n)| json!({"index": i + 1, "occupied": *n > 0, "windows": n}))
+        .collect();
+    Ok(json!({
+        "rows": grid.rows,
+        "columns": grid.columns,
+        "count": count,
+        "wrap": state.config.general.desktop_wrap,
+        "directional": crate::shell::de::stacking(state),
+        "outputs": outputs,
+        "desktops": desktops,
+    }))
 }
 
 fn get_outputs(state: &mut AbyssState, params: &Value) -> Reply {
@@ -638,6 +746,147 @@ fn switch_workspace(state: &mut AbyssState, params: &Value) -> Reply {
     crate::shell::switch_workspace(state, idx);
     crate::backend::damage_all(state);
     Ok(json!({"ok": true}))
+}
+
+/// Step the focused output's desktop along the grid. Under `wm` and `hybrid`
+/// there is no desktop grid to walk and nothing changes. At an unwrapped edge
+/// (or on a one-cell line) the answer is `changed: false`, not an error.
+fn switch_desktop_direction(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["direction"])?;
+    let dir = match params_obj(params).get("direction").and_then(Value::as_str) {
+        Some("left") => crate::input::Direction::Left,
+        Some("right") => crate::input::Direction::Right,
+        Some("up") => crate::input::Direction::Up,
+        Some("down") => crate::input::Direction::Down,
+        _ => return Err(RpcError::invalid_params("direction is left, right, up or down")),
+    };
+    refuse_unless_de(state, "switch_desktop_direction")?;
+    let changed = crate::shell::desktop::switch(state, dir);
+    if changed {
+        crate::backend::damage_all(state);
+    }
+    let active = state.outputs.focused().map(|e| e.active + 1);
+    Ok(json!({"ok": true, "changed": changed, "workspace": active}))
+}
+
+fn refuse_unless_de(state: &AbyssState, method: &str) -> Result<(), RpcError> {
+    if crate::shell::de::stacking(state) {
+        Ok(())
+    } else {
+        Err(RpcError::denied(&format!(
+            "{method} is de only (mode \"de\" is not running)"
+        )))
+    }
+}
+
+/// Open the window menu for window `id` (`handle` is accepted too) with its
+/// corner at `(x, y)`, global logical px (COMP-05 §7.1). The anchor is clamped
+/// onto the window's own output; the menu then keeps itself inside that
+/// output's usable area. A minimized window is allowed (the taskbar chip opens
+/// it) but only from an anchor on its own output, since its chip cannot be on
+/// another. Unknown window, a window not on an output, and a minimized window
+/// asked about from another output are `invalid params`; the session lock and
+/// any other mode than `de` are `denied`.
+fn open_window_menu(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["id", "handle", "x", "y"])?;
+    refuse_unless_de(state, "open_window_menu")?;
+    refuse_if_locked(state)?;
+    let obj = params_obj(params);
+    let key = if obj.contains_key("id") { "id" } else { "handle" };
+    let handle = u64_param(params, key)?;
+    let anchor = (f64_param(params, "x")?, f64_param(params, "y")?);
+    let window = state
+        .ipc
+        .window_for(handle)
+        .filter(IsAlive::alive)
+        .ok_or_else(|| RpcError::invalid_params("no such window"))?;
+    let id = crate::shell::output_of_window(state, &window)
+        .ok_or_else(|| RpcError::invalid_params("window is not on an output"))?;
+    let output = state.outputs.get(id).expect("just resolved").output.clone();
+    let geo = state
+        .space
+        .output_geometry(&output)
+        .ok_or_else(|| RpcError::invalid_params("window's output has no geometry"))?;
+    let on_it = |p: (f64, f64)| geo.to_f64().contains(smithay::utils::Point::from(p));
+    if crate::shell::is_minimized(state, &window) && !on_it(anchor) {
+        return Err(RpcError::invalid_params(
+            "window is minimized on another output than the anchor",
+        ));
+    }
+    let clamp =
+        |v: f64, lo: i32, len: i32| v.clamp(f64::from(lo), f64::from(lo + len.max(1) - 1)).round() as i32;
+    let at = smithay::utils::Point::from((
+        clamp(anchor.0, geo.loc.x, geo.size.w),
+        clamp(anchor.1, geo.loc.y, geo.size.h),
+    ));
+    if !crate::shell::winmenu::open_window_menu(state, &window, at) {
+        return Err(RpcError::denied("the window menu cannot open now"));
+    }
+    Ok(json!({"ok": true, "x": at.x, "y": at.y}))
+}
+
+/// Show the hover preview of window `id` (`handle` is accepted too) near the
+/// taskbar chip at `(x, y)` sized `width` x `height`, global logical px
+/// (COMP-05 §7.1). The card is placed beside the rectangle and kept on its
+/// output; it needs no input, and the bar hides it again with
+/// `hide_window_preview`. It also ends when the window closes, when focus moves
+/// to the window, on the session lock, and after ten idle seconds.
+///
+/// `{"ok": true, "shown": true}` when it is up. `shown: false` when the
+/// window must have no card at all (it is protected, COMP-19): the call is
+/// answered, nothing is drawn. Unknown window, a window on no output and a bad
+/// rectangle are `invalid params`; any other mode than `de`, the session lock
+/// and an open switcher or overview are `denied`. A redacted window shows a
+/// blank card with no title.
+fn show_window_preview(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &["id", "handle", "x", "y", "width", "height"])?;
+    refuse_unless_de(state, "show_window_preview")?;
+    refuse_if_locked(state)?;
+    let obj = params_obj(params);
+    let key = if obj.contains_key("id") { "id" } else { "handle" };
+    let handle = u64_param(params, key)?;
+    let extent = |name: &str| {
+        let v = f64_param(params, name)?;
+        if (0.0..=100_000.0).contains(&v) {
+            Ok(v.round() as i32)
+        } else {
+            Err(RpcError::invalid_params(&format!("{name} is out of range")))
+        }
+    };
+    let coord = |name: &str| {
+        let v = f64_param(params, name)?;
+        if v.abs() <= 100_000.0 {
+            Ok(v.round() as i32)
+        } else {
+            Err(RpcError::invalid_params(&format!("{name} is out of range")))
+        }
+    };
+    let (w, h) = (extent("width")?, extent("height")?);
+    if w == 0 || h == 0 {
+        return Err(RpcError::invalid_params("width and height must be positive"));
+    }
+    let anchor = smithay::utils::Rectangle::new(
+        smithay::utils::Point::from((coord("x")?, coord("y")?)),
+        smithay::utils::Size::from((w, h)),
+    );
+    let window = state
+        .ipc
+        .window_for(handle)
+        .filter(IsAlive::alive)
+        .ok_or_else(|| RpcError::invalid_params("no such window"))?;
+    if crate::shell::output_of_window(state, &window).is_none() {
+        return Err(RpcError::invalid_params("window is not on an output"));
+    }
+    let shown = crate::overview::preview::show(state, &window, anchor).map_err(RpcError::denied)?;
+    Ok(json!({"ok": true, "shown": shown}))
+}
+
+/// Take the hover preview down. `{"ok": true, "hidden": true}` when one was
+/// up; with none it is still `ok`.
+fn hide_window_preview(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &[])?;
+    let hidden = crate::overview::preview::hide(state);
+    Ok(json!({"ok": true, "hidden": hidden}))
 }
 
 fn reload_config(state: &mut AbyssState) -> Reply {

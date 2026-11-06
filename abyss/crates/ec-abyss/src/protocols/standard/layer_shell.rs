@@ -69,6 +69,11 @@ impl WlrLayerShellHandler for AbyssState {
             .cloned();
         if let Some(layer) = layer {
             refocus = layer.can_receive_keyboard_focus();
+            // Under `de` only the departing holder of the keyboard gives it
+            // back; a popup that never had it must not disturb an activate.
+            if self.config.mode == crate::config::Mode::De {
+                refocus = refocus && shell::focused_layer(self).as_ref() == Some(&layer);
+            }
             // `layer-close`: keep its last frame before the unmap. The map is
             // not locked here, since the snapshot takes the lock itself.
             shell::anim::close_layer(self, &output, &layer);

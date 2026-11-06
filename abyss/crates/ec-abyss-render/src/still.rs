@@ -356,7 +356,7 @@ impl Frame<'_> {
         if let Some(info) = bar {
             let at = crate::titlebar::bar_rect(geo, info.height);
             let radius = match &self.rounding {
-                Some(_) if !info.maximized => deco.rounding,
+                Some(_) if !info.square => deco.rounding,
                 _ => 0,
             };
             if let Some(element) = crate::titlebar::bar_element(

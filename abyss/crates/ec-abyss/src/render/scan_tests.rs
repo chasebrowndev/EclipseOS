@@ -171,3 +171,141 @@ fn every_backend_draws_the_window_menu() {
         );
     }
 }
+
+#[test]
+fn the_capture_pass_cannot_see_the_tile_preview() {
+    // The Quick Tile edge preview (`mode "de"`, COMP-05 §3.1) is a drag overlay
+    // like the Radiant guides: spliced in by the backends, never recorded.
+    let src = include_str!("capture.rs");
+    for name in ["preview_elements", "tile_preview", "quicktile"] {
+        assert!(
+            !src.contains(name),
+            "capture.rs names `{name}`; the tile preview is never in a capture pass list"
+        );
+    }
+    let still = include_str!("../../../ec-abyss-render/src/still.rs");
+    assert!(
+        !still.contains("preview_elements"),
+        "still.rs draws the tile preview into a capture's effects"
+    );
+}
+
+#[test]
+fn every_backend_draws_the_tile_preview() {
+    for (src, path) in [
+        (include_str!("../backend/drm.rs"), "drm.rs"),
+        (include_str!("../backend/winit.rs"), "winit.rs"),
+        (include_str!("../backend/headless.rs"), "headless.rs"),
+    ] {
+        assert!(
+            src.contains("drop::preview_elements"),
+            "{path} does not draw the tile preview"
+        );
+    }
+}
+
+#[test]
+fn the_capture_pass_cannot_see_the_overlays() {
+    // The window switcher, the overview and hover previews (COMP-05 §7.1,
+    // ADR 0090) are compositor overlays: spliced in by the backends, never
+    // recorded. `capture.rs` may *classify* a window (the thumbnails read it)
+    // but must not draw or read any overlay.
+    let src = include_str!("capture.rs");
+    for name in [
+        "overlay_elements",
+        "overview::",
+        "OverlayView",
+        "OverlayCache",
+        "overlay_cache",
+        "ThumbStore",
+        "state.thumbs",
+        "state.switcher",
+        "state.overview",
+        "state.preview",
+        "state.corners",
+    ] {
+        assert!(
+            !src.contains(name),
+            "capture.rs names `{name}`; the overlays are never in a capture pass list"
+        );
+    }
+    for (name, still) in [
+        ("still.rs", include_str!("../../../ec-abyss-render/src/still.rs")),
+        (
+            "effects.rs",
+            include_str!("../../../ec-abyss-render/src/effects.rs"),
+        ),
+    ] {
+        assert!(
+            !still.contains("overlay_elements") && !still.contains("overview::"),
+            "{name} draws an overlay into a capture's effects"
+        );
+    }
+}
+
+#[test]
+fn every_backend_draws_the_overlays_before_trusted_ui() {
+    // Same front-to-back rule as the other untrusted passes: trusted UI is
+    // spliced ahead of the overlay in every backend (drm appends top-first,
+    // winit and headless splice each pass in at index 0).
+    for (src, path, indicator_first) in [
+        (include_str!("../backend/drm.rs"), "drm.rs", true),
+        (include_str!("../backend/winit.rs"), "winit.rs", false),
+        (include_str!("../backend/headless.rs"), "headless.rs", false),
+    ] {
+        let overlay = src
+            .find("overview::overlay_elements")
+            .or_else(|| src.find("overview::draw"))
+            .unwrap_or_else(|| panic!("{path} does not draw the overlays"));
+        let ind = src
+            .find("capture::indicator")
+            .unwrap_or_else(|| panic!("{path} does not draw the indicator"));
+        assert_eq!(
+            ind < overlay,
+            indicator_first,
+            "{path} puts the overlay pass on the wrong side of trusted UI"
+        );
+        let trusted = src
+            .find("trusted_ui::elements")
+            .unwrap_or_else(|| panic!("{path} does not draw trusted UI"));
+        assert_eq!(
+            trusted < overlay,
+            indicator_first,
+            "{path}: overlay and trusted UI are in the wrong order"
+        );
+    }
+}
+
+#[test]
+fn only_a_cleared_window_reaches_a_thumbnail() {
+    // The one door to the GPU is `thumbs::refresh`, and it draws a window only
+    // for a face `shown` (which asks `classify`) gave pixels. The renderer-side
+    // store is state-free, so this is asserted in the source: `shown` calls
+    // `classify`, and `refresh` skips every face but `Pixels`.
+    let thumbs = include_str!("../overview/thumbs.rs");
+    assert!(thumbs.contains("classify(state, window, geo)"));
+    let refresh = &thumbs[thumbs.find("pub fn refresh").expect("refresh")..];
+    let first_render = refresh.find("store.render(").expect("render call");
+    let gate = refresh.find("split(wanted)").expect("the pixels gate");
+    assert!(
+        gate < first_render,
+        "the pixels gate must come before the render call"
+    );
+    let split = &thumbs[thumbs.find("pub fn split").expect("split")..];
+    assert!(
+        split[..split.find("\n}\n").unwrap()].contains("Face::Pixels"),
+        "split gates on the pixels face"
+    );
+    // And nothing else in the overlay code renders a thumbnail.
+    for (name, src) in [
+        ("mod.rs", include_str!("../overview/mod.rs")),
+        ("switcher.rs", include_str!("../overview/switcher.rs")),
+        ("preview.rs", include_str!("../overview/preview.rs")),
+        ("corners.rs", include_str!("../overview/corners.rs")),
+    ] {
+        assert!(
+            !src.contains("store.render(") && !src.contains("ThumbStore"),
+            "overview/{name} renders a thumbnail outside the classified path"
+        );
+    }
+}

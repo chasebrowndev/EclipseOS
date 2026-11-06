@@ -119,7 +119,7 @@ impl BarUi {
         }
     }
 
-    pub(super) fn swallow(&mut self, button: u32) {
+    pub(crate) fn swallow(&mut self, button: u32) {
         if let Some(slot) = self.swallowed.iter_mut().find(|s| **s == 0) {
             *slot = button;
         }
@@ -181,12 +181,13 @@ pub fn bar_height(state: &AbyssState, window: &Window) -> i32 {
 
 /// Write `window`'s bar into its user data for the renderer and the hit test:
 /// `bar` is [`bar_height`] (0 clears it). Called by every layout pass.
-pub(super) fn publish(state: &AbyssState, window: &Window, bar: i32, maximized: bool) {
+pub(super) fn publish(state: &AbyssState, window: &Window, bar: i32, maximized: bool, square: bool) {
     let info = (bar > 0).then(|| BarInfo {
         height: bar,
         hover: hover_button(&state.bar_ui, window),
         pressed: pressed_button(&state.bar_ui, window),
         maximized,
+        square: square || maximized,
         shaded: state.winops.is_shaded(window),
     });
     set_bar(window, info);

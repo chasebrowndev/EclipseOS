@@ -30,8 +30,8 @@ use super::{
 };
 use crate::{config::Mode, shell};
 
-const LEFT: u32 = 0x110;
-const RIGHT: u32 = 0x111;
+pub(super) const LEFT: u32 = 0x110;
+pub(super) const RIGHT: u32 = 0x111;
 const MIDDLE: u32 = 0x112;
 // evdev codes; +8 is the xkb keycode.
 const KEY_ESC: u32 = 1;
@@ -43,7 +43,7 @@ const KEY_A: u32 = 30;
 
 // ---------------------------------------------------------------- helpers
 
-fn window_of(h: &Harness, t: &Toplevel) -> Window {
+pub(super) fn window_of(h: &Harness, t: &Toplevel) -> Window {
     use wayland_client::Proxy;
     let id = t.surface.id().protocol_id();
     owned_windows(&h.state)
@@ -55,26 +55,26 @@ fn window_of(h: &Harness, t: &Toplevel) -> Window {
         .expect("placed")
 }
 
-fn flip(h: &mut Harness, mode: Mode) {
+pub(super) fn flip(h: &mut Harness, mode: Mode) {
     let mut next = h.state.config.clone();
     next.mode = mode;
     crate::config::apply_loaded(&mut h.state, next);
 }
 
-fn ssd(h: &mut Harness, w: &Window) {
+pub(super) fn ssd(h: &mut Harness, w: &Window) {
     w.toplevel()
         .expect("xdg")
         .with_pending_state(|s| s.decoration_mode = Some(Deco::ServerSide));
     shell::arrange(&mut h.state);
 }
 
-fn settle(h: &mut Harness, c: &mut Client, t: &Toplevel) {
+pub(super) fn settle(h: &mut Harness, c: &mut Client, t: &Toplevel) {
     let (w, ht) = *c.configured_sizes(&t.toplevel).last().expect("configured");
     c.attach_sized(h, &t.surface, w, ht);
 }
 
 /// A decorated window under `de`, drawn at the size it was given.
-fn de_window(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
+pub(super) fn de_window(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
     flip(h, Mode::De);
     let t = c.create_toplevel(h);
     c.commit(h, &t.surface);
@@ -86,18 +86,18 @@ fn de_window(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
     (t, w)
 }
 
-fn content(h: &Harness, w: &Window) -> Rectangle<i32, Logical> {
+pub(super) fn content(h: &Harness, w: &Window) -> Rectangle<i32, Logical> {
     h.state.space.element_geometry(w).expect("mapped")
 }
 
-fn frame(h: &Harness, w: &Window) -> Rectangle<i32, Logical> {
+pub(super) fn frame(h: &Harness, w: &Window) -> Rectangle<i32, Logical> {
     let bar = h.state.config.decoration.titlebar_height;
     titlebar::outer_of_content(content(h, w), h.state.config.general.border_size, bar)
 }
 
 /// The stored frame (what placement works on); the content the space reports
 /// lags until the client draws its new size.
-fn float_rect(h: &Harness, w: &Window) -> Rectangle<i32, Logical> {
+pub(super) fn float_rect(h: &Harness, w: &Window) -> Rectangle<i32, Logical> {
     h.state
         .outputs
         .iter()
@@ -108,26 +108,26 @@ fn float_rect(h: &Harness, w: &Window) -> Rectangle<i32, Logical> {
         .expect("floating")
 }
 
-fn move_to(h: &mut Harness, p: Point<f64, Logical>) {
+pub(super) fn move_to(h: &mut Harness, p: Point<f64, Logical>) {
     h.state.pointer_moved(p, 0);
 }
 
-fn click(h: &mut Harness, button: u32, state: ButtonState) {
+pub(super) fn click(h: &mut Harness, button: u32, state: ButtonState) {
     h.state.pointer_button(button, state, 0);
 }
 
-fn key(h: &mut Harness, code: u32) {
+pub(super) fn key(h: &mut Harness, code: u32) {
     h.state.keyboard_key(Keycode::new(code + 8), KeyState::Pressed, 1);
     h.state
         .keyboard_key(Keycode::new(code + 8), KeyState::Released, 2);
 }
 
-fn pt(x: f64, y: f64) -> Point<f64, Logical> {
+pub(super) fn pt(x: f64, y: f64) -> Point<f64, Logical> {
     Point::from((x, y))
 }
 
 /// A point on `w`'s bar, `frac` of the way along, clear of the buttons.
-fn on_bar_at(h: &Harness, w: &Window, frac: f64) -> Point<f64, Logical> {
+pub(super) fn on_bar_at(h: &Harness, w: &Window, frac: f64) -> Point<f64, Logical> {
     let bar = bar_geometry(&h.state, w).expect("has a bar");
     let usable = f64::from(bar.size.w) - 3.0 * f64::from(bar.size.h + 8) - 12.0;
     pt(
@@ -136,7 +136,7 @@ fn on_bar_at(h: &Harness, w: &Window, frac: f64) -> Point<f64, Logical> {
     )
 }
 
-fn centre(r: Rectangle<i32, Logical>) -> Point<f64, Logical> {
+pub(super) fn centre(r: Rectangle<i32, Logical>) -> Point<f64, Logical> {
     pt(
         f64::from(r.loc.x) + f64::from(r.size.w) / 2.0,
         f64::from(r.loc.y) + f64::from(r.size.h) / 2.0,
@@ -1242,4 +1242,36 @@ fn a_shaded_windows_content_is_not_an_agent_hit_target() {
     assert!(winops::element_under(&h.state, p).is_some_and(|(e, _)| e == &w));
     winops::set_shaded(&mut h.state, &w, true);
     assert!(winops::element_under(&h.state, p).is_none());
+}
+
+#[test]
+fn pressing_the_resize_band_focuses_and_raises_the_window() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_, a) = de_window(&mut h, &mut c);
+    let (_, b) = de_window(&mut h, &mut c);
+    let u = h
+        .state
+        .space
+        .output_geometry(&h.state.outputs.get(h.a).unwrap().output)
+        .unwrap();
+    shell::place_at(
+        &mut h.state,
+        &a,
+        Rectangle::new(Point::from((u.loc.x + 100, u.loc.y + 100)), (300, 200).into()),
+    );
+    shell::place_at(
+        &mut h.state,
+        &b,
+        Rectangle::new(Point::from((u.loc.x + 700, u.loc.y + 100)), (300, 200).into()),
+    );
+    c.pump(&mut h);
+    focus::focus_window(&mut h.state, &b);
+    assert_eq!(h.state.focus.as_ref(), Some(&b));
+    let p = outside_right(&h, &a);
+    move_to(&mut h, p);
+    click(&mut h, LEFT, ButtonState::Pressed);
+    assert!(h.state.pointer_grab_active, "it resizes");
+    assert_eq!(h.state.focus.as_ref(), Some(&a), "and focuses");
+    assert_eq!(index(&h, &a), order(&h).len() - 1, "and raises");
 }

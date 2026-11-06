@@ -5,12 +5,19 @@ pub mod anim;
 pub mod de;
 #[cfg(test)]
 mod de_chrome_tests;
+pub mod desktop;
+#[cfg(test)]
+mod desktop_tests;
 mod drop_guides;
 pub mod edge;
 pub mod focus;
 pub mod layout;
 pub mod maximize;
+pub mod quicktile;
+#[cfg(test)]
+mod quicktile_tests;
 pub mod rules;
+pub mod snap;
 pub mod titlebar;
 mod toplevel;
 pub mod winmenu;
@@ -66,7 +73,7 @@ pub fn window_surface(window: &Window) -> Option<WlSurface> {
 
 // Read by the renderer, written here; defined in `ec-abyss-render::userdata`.
 pub use ec_abyss_render::userdata::{
-    layer_geometry, owner_output, tile_clip, LayerOffset, OwnerOutput, TileClip,
+    layer_geometry, owner_output, tile_clip, LayerOffset, OwnerOutput, QuickTiled, TileClip,
 };
 
 fn set_owner_output(window: &Window, output: &Output) {
@@ -74,6 +81,14 @@ fn set_owner_output(window: &Window, output: &Output) {
     data.insert_if_missing(|| OwnerOutput(Cell::new(None)));
     if let Some(o) = data.get::<OwnerOutput>() {
         o.0.set(Some(output.clone()));
+    }
+}
+
+fn set_quick_tiled(window: &Window, on: bool) {
+    let data = window.user_data();
+    data.insert_if_missing(|| QuickTiled(Cell::new(false)));
+    if let Some(c) = data.get::<QuickTiled>() {
+        c.0.set(on);
     }
 }
 
@@ -115,7 +130,7 @@ pub fn output_of_window(state: &AbyssState, window: &Window) -> Option<u64> {
 /// Usable area: output geometry minus layer-shell exclusive zones, with no
 /// outer gap applied: the raw protocol-defined usable region, independent of
 /// abyss's own gap styling (COMP-06 §3).
-fn usable_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
+pub(crate) fn usable_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
     let geo = state.space.output_geometry(output).unwrap_or_default();
     let zone = accumulate_non_exclusive_zone(output, geo.size);
     let loc = Point::from((geo.loc.x + zone.loc.x, geo.loc.y + zone.loc.y));
@@ -236,7 +251,18 @@ fn clamp_to(
     size
 }
 
-fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, tiled: bool, maximized: bool) {
+/// Send the client its content rectangle, activation, the `Tiled*` states for
+/// `tiled` (every edge for a Radiant tile, the zone's for a Quick Tile, none
+/// for a free window) and `Maximized`. An X11 window gets the rectangle and
+/// activation only: it has no tiled or maximized state here (see
+/// [`quicktile`]).
+fn configure(
+    window: &Window,
+    rect: Rectangle<i32, Logical>,
+    activated: bool,
+    tiled: quicktile::Edges,
+    maximized: bool,
+) {
     let size = rect.size;
     let Some(toplevel) = window.toplevel() else {
         // X11 windows are positioned in the X root's coordinate space, so
@@ -257,13 +283,13 @@ fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, ti
         }
         // Tiled states stop clients like foot snapping to whole cells; smithay
         // strips them for xdg_wm_base versions that predate them.
-        for t in [
-            State::TiledLeft,
-            State::TiledRight,
-            State::TiledTop,
-            State::TiledBottom,
+        for (t, on) in [
+            (State::TiledLeft, tiled.left),
+            (State::TiledRight, tiled.right),
+            (State::TiledTop, tiled.top),
+            (State::TiledBottom, tiled.bottom),
         ] {
-            if tiled {
+            if on {
                 s.states.set(t);
             } else {
                 s.states.unset(t);
@@ -371,6 +397,7 @@ pub fn arrange(state: &mut AbyssState) {
     }
     state.winops.prune();
     winmenu::validate(state);
+    crate::overview::validate(state);
     let ids: Vec<u64> = state.outputs.iter().map(|e| e.id).collect();
     for id in ids {
         arrange_output(state, id);
@@ -378,6 +405,7 @@ pub fn arrange(state: &mut AbyssState) {
     raise_override_redirect(state);
     crate::xwayland::sync_stacking(state);
     refresh_reactive_popups(state);
+    crate::overview::corners::rebuild(state);
     // Layout changes are not driven by a client commit: an unmapped surface
     // sends nothing, so without this the last composite stays on screen and a
     // closed window or dismissed launcher goes on being visible until some
@@ -473,7 +501,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         for f in entry.workspaces[ws].floating.iter_mut() {
             if fullscreen.contains_key(&f.window) {
                 f.rect = full_area;
-            } else if f.placement.is_maximized() {
+            } else if f.placement.is_placed() {
                 // Derived below, once adopted windows are in.
             } else if area_changed {
                 // The area moved or resized under this window — a mode/scale
@@ -508,15 +536,21 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
             let mut rect = de::carried_rect(adopt_rect, step, area);
             // A window that was maximized stays so, filling this output, and
             // keeps the rectangle it had before (kept in the adopter's area).
+            let origin = state
+                .space
+                .output_geometry(&output)
+                .map_or(Point::default(), |g| g.loc);
             let placement = match state.de.take_carried(&w) {
                 Some(Placement::Maximized { h, v, restore }) => {
-                    let origin = state
-                        .space
-                        .output_geometry(&output)
-                        .map_or(Point::default(), |g| g.loc);
                     let restore = de::carried_rect(restore, origin, area);
                     rect = restore;
                     Placement::Maximized { h, v, restore }
+                }
+                // A Quick Tile keeps its zone on the adopting output.
+                Some(Placement::QuickTile { zone, restore }) => {
+                    let restore = de::carried_rect(restore, origin, area);
+                    rect = restore;
+                    Placement::QuickTile { zone, restore }
                 }
                 _ => Placement::Free,
             };
@@ -535,8 +569,9 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     if stacking {
         de::lift_stray(state, id, area);
     }
-    // A maximized window fills the usable area as it is now, on every pass, so
-    // a panel appearing or an output resizing is followed (COMP-05 §3.1).
+    // A maximized or Quick Tiled window fills its area of the usable area as it
+    // is now, on every pass, so a panel appearing or an output resizing is
+    // followed (COMP-05 §3.1).
     {
         let usable = usable_area(state, &output);
         // The frame fills the usable area, so the bar eats into the content.
@@ -544,7 +579,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         let bar_heights: Vec<(Window, i32)> = state.outputs.get(id).expect("checked above").workspaces[ws]
             .floating
             .iter()
-            .filter(|f| f.placement.is_maximized())
+            .filter(|f| f.placement.is_placed())
             .map(|f| (f.window.clone(), titlebar::bar_height(state, &f.window)))
             .collect();
         let bars = |w: &Window| bar_heights.iter().find(|(b, _)| b == w).map_or(0, |(_, h)| *h);
@@ -553,9 +588,11 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         let border = state.config.general.border_size;
         let entry = state.outputs.get_mut(id).expect("checked above");
         for f in entry.workspaces[ws].floating.iter_mut() {
-            if let Placement::Maximized { h, v, restore } = f.placement {
-                if !fullscreen.contains_key(&f.window) {
-                    f.rect = maximize::fitted_rect(&f.window, usable, border, restore, h, v, bars(&f.window));
+            if !fullscreen.contains_key(&f.window) {
+                if let Some(rect) =
+                    quicktile::placed_rect(&f.window, f.placement, usable, border, bars(&f.window))
+                {
+                    f.rect = rect;
                 }
             }
         }
@@ -626,12 +663,13 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
                 &w,
                 Rectangle::new(inner.loc, size),
                 focus.as_ref() == Some(&w),
-                true,
+                quicktile::Edges::ALL,
                 false,
             );
         }
         fractional_scale::update_window_scale(&w, &output);
-        titlebar::publish(state, &w, 0, false);
+        titlebar::publish(state, &w, 0, false, false);
+        set_quick_tiled(&w, false);
         set_tile_clip(&w, Some(inner));
         set_owner_output(&w, &output);
         state.space.map_element(w, inner.loc, false);
@@ -643,10 +681,17 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         // the bar (`shell::titlebar`).
         let full = state.fullscreen.contains_key(&w);
         let bar = titlebar::bar_height(state, &w);
-        titlebar::publish(state, &w, bar, placement.is_fully_maximized());
+        titlebar::publish(
+            state,
+            &w,
+            bar,
+            placement.is_fully_maximized(),
+            placement.is_placed(),
+        );
+        set_quick_tiled(&w, !full && matches!(placement, Placement::QuickTile { .. }));
         let inner = if full {
             rect
-        } else if placement.is_maximized() {
+        } else if placement.is_placed() {
             content_of_outer(rect, 0, bar)
         } else {
             content_of_outer(rect, border, bar)
@@ -663,7 +708,10 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
                 &w,
                 Rectangle::new(inner.loc, size),
                 focus.as_ref() == Some(&w),
-                false,
+                match placement {
+                    Placement::QuickTile { zone, .. } if !full => zone.edges(),
+                    _ => quicktile::Edges::NONE,
+                },
                 placement.is_fully_maximized() && !full,
             );
         }
@@ -1123,6 +1171,8 @@ pub(crate) fn reanchor(state: &mut AbyssState, window: &Window) {
 }
 
 pub fn unmap_window(state: &mut AbyssState, window: &Window) {
+    // A scripted drag held down on a window that goes away lets go with it.
+    state.cancel_drag_hold_for(window);
     let hold = holds_retile(state, window);
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
@@ -2130,10 +2180,7 @@ fn detach_from_layout(
 fn fullscreen_restore(
     detached: Option<(Rectangle<i32, Logical>, Placement)>,
 ) -> Option<Rectangle<i32, Logical>> {
-    detached.map(|(rect, placement)| match placement {
-        Placement::Maximized { restore, .. } => restore,
-        Placement::Free => rect,
-    })
+    detached.map(|(rect, placement)| placement.restore_rect().unwrap_or(rect))
 }
 
 /// Does a fullscreen toplevel currently own `output`'s active workspace?
@@ -2276,12 +2323,9 @@ fn unfullscreen_toplevel_now(
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let size = match restore {
         Some(rect) => {
-            let (rect, size) = match placement {
-                Placement::Maximized { h, v, restore } => {
-                    let r = maximize::fitted_rect(&window, usable, border, restore, h, v, bar);
-                    (r, r.size)
-                }
-                Placement::Free => (rect, rect.size),
+            let (rect, size) = match quicktile::placed_rect(&window, placement, usable, border, bar) {
+                Some(r) => (r, r.size),
+                None => (rect, rect.size),
             };
             entry.workspaces[ws].floating.push(Floating {
                 window: window.clone(),
@@ -2547,6 +2591,10 @@ pub fn move_window_to_workspace(state: &mut AbyssState, window: &Window, idx: us
     }
     let target = idx - 1;
     let window = window.clone();
+    if is_minimized(state, &window) {
+        move_minimized(state, &window, target);
+        return;
+    }
     let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
         return;
     };
@@ -2606,6 +2654,31 @@ pub fn move_window_to_workspace(state: &mut AbyssState, window: &Window, idx: us
             anim::carried(state, &window, from);
         }
     }
+}
+
+/// A minimized window changes desktop where it sits: its entry moves to the
+/// target workspace's minimized list and it stays minimized, so nothing is
+/// shown, switched or focused (the window menu's "Move to desktop" on a
+/// taskbar chip). It reappears on that desktop when restored.
+fn move_minimized(state: &mut AbyssState, window: &Window, target: usize) {
+    let Some(id) = output_of_window(state, window) else {
+        return;
+    };
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let Some(from) = entry.workspaces.iter().position(|ws| ws.is_minimized(window)) else {
+        return;
+    };
+    if from == target {
+        return;
+    }
+    let i = entry.workspaces[from]
+        .minimized
+        .iter()
+        .position(|m| &m.window == window)
+        .expect("just resolved");
+    let m = entry.workspaces[from].minimized.remove(i);
+    entry.workspaces[target].minimized.push(m);
+    tracing::info!(workspace = target + 1, "minimized window moved to workspace");
 }
 
 /// Move the focused window to display `number`'s currently active workspace

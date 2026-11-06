@@ -128,6 +128,46 @@ impl Config {
                 "theme-light" => self.apply_theme_ref(n, true),
                 "light-from" => self.apply_schedule(n, true),
                 "dark-from" => self.apply_schedule(n, false),
+                "snap" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.snap = b;
+                    }
+                }
+                "edge-tile" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.edge_tile = b;
+                    }
+                }
+                "snap-distance" => {
+                    if !set_i32(&mut self.general.snap_distance, n) {
+                        self.reject(n, "snap-distance expects an integer");
+                    }
+                }
+                "edge-tile-distance" => {
+                    if !set_i32(&mut self.general.edge_tile_distance, n) {
+                        self.reject(n, "edge-tile-distance expects an integer");
+                    }
+                }
+                "desktop-rows" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (1..=10).contains(&v) => self.general.desktop_rows = v as i32,
+                    _ => self.reject(
+                        n,
+                        "desktop-rows expects an integer 1..=10 (the number of workspaces)",
+                    ),
+                },
+                "desktop-wrap" => match arg(n).and_then(KdlValue::as_bool) {
+                    Some(b) => self.general.desktop_wrap = b,
+                    None => self.reject(n, "desktop-wrap expects #true or #false"),
+                },
+                "hot-corners" => self.apply_hot_corners(n),
+                "hot-corner-dwell" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (0..=2000).contains(&v) => self.general.hot_corner_dwell_ms = v as u32,
+                    _ => self.reject(n, "hot-corner-dwell expects an integer 0..=2000 (ms)"),
+                },
+                "hot-corner-cooldown" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (0..=10000).contains(&v) => self.general.hot_corner_cooldown_ms = v as u32,
+                    _ => self.reject(n, "hot-corner-cooldown expects an integer 0..=10000 (ms)"),
+                },
                 "drop-edge-band" => {
                     if !set_i32(&mut self.general.drop_edge_band, n) {
                         self.reject(n, "drop-edge-band expects an integer");
@@ -141,6 +181,32 @@ impl Config {
                     }
                 }
                 _ => self.unknown_key(n, "general", "general key"),
+            }
+        }
+    }
+
+    pub(crate) fn apply_hot_corners(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let slot = match n.name().value() {
+                "top-left" => CORNER_TOP_LEFT,
+                "top-right" => CORNER_TOP_RIGHT,
+                "bottom-left" => CORNER_BOTTOM_LEFT,
+                "bottom-right" => CORNER_BOTTOM_RIGHT,
+                _ => {
+                    self.unknown_key(n, "general.hot-corners", "hot corner");
+                    continue;
+                }
+            };
+            match arg(n).and_then(KdlValue::as_string).and_then(HotCorner::parse) {
+                Some(a) => self.general.hot_corners[slot] = a,
+                None => self.reject(
+                    n,
+                    format!(
+                        "hot corner action must be one of {}",
+                        schema::HOT_CORNER_ACTIONS.join(", ")
+                    ),
+                ),
             }
         }
     }

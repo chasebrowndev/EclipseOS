@@ -323,6 +323,70 @@ impl Conn {
         }
     }
 
+    /// A typed `ec-ipc` call, with the same fail-soft rule as [`Conn::call`]:
+    /// a refusal (`denied` outside `mode "de"`) is `None` and the connection
+    /// stays; a dead socket drops it for `ensure` to retry.
+    fn typed<T>(&mut self, f: impl FnOnce(&mut Client) -> Result<T, Error>) -> Option<T> {
+        let client = self.client.as_mut()?;
+        match f(client) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                if matches!(e, Error::Connect(_) | Error::Io(_)) {
+                    self.client = None;
+                    self.chips.reset();
+                }
+                None
+            }
+        }
+    }
+
+    /// The desktop grid (`mode "de"`'s pager).
+    pub fn desktop_grid(&mut self) -> Option<ec_ipc::DesktopGrid> {
+        self.ensure();
+        self.typed(Client::desktop_grid)
+    }
+
+    /// Step to a neighbouring desktop. `de` only.
+    pub fn switch_desktop(&mut self, dir: ec_ipc::Direction) {
+        self.typed(|c| c.switch_desktop_direction(dir));
+    }
+
+    /// The compositor-drawn window menu, its corner at `(x, y)` in global
+    /// logical pixels. `false` when it was refused.
+    pub fn open_window_menu(&mut self, handle: u64, x: f64, y: f64) -> bool {
+        self.typed(|c| c.open_window_menu(handle, x, y)).is_some()
+    }
+
+    /// Ask for window `handle`'s hover card beside the chip at `rect`
+    /// `(x, y, w, h)`, global logical pixels.
+    pub fn show_window_preview(&mut self, handle: u64, rect: (f64, f64, f64, f64)) -> bool {
+        self.typed(|c| c.show_window_preview(handle, rect.0, rect.1, rect.2, rect.3))
+            .unwrap_or(false)
+    }
+
+    /// Take the hover card down.
+    pub fn hide_window_preview(&mut self) {
+        self.typed(Client::hide_window_preview);
+    }
+
+    /// An output's global top-left and logical height, for turning the bar's
+    /// surface coordinates into the global ones the desktop methods take.
+    pub fn output_frame(&mut self, name: &str) -> Option<(f32, f32, f32)> {
+        self.ensure();
+        let v = self.call("get_outputs", json!({}))?;
+        let row = v
+            .as_array()?
+            .iter()
+            .find(|r| r.get("name").and_then(Value::as_str) == Some(name))?;
+        let at = |k: &str| {
+            row.get("position")
+                .and_then(|p| p.get(k))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0) as f32
+        };
+        Some((at("x"), at("y"), logical_height(row)?))
+    }
+
     /// One pass over the three read methods. A query that fails leaves its
     /// part of the snapshot empty rather than tearing the whole bar down.
     pub fn snapshot(&mut self) -> Snapshot {

@@ -38,6 +38,8 @@ path = "src/bin/ec-polkit-agent.rs"
 zbus = "5.19"
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 serde_json.workspace = true
+# Only for the bound on the history client's call helper; already in the tree via zbus.
+serde = "1"
 # ADR 0065. The audio service (default sink, per-app mute, the visualizer's
 # monitor tap) speaks the PulseAudio native protocol, which pipewire-pulse
 # serves. Pure Rust: no libpulse, no bindgen/libclang (the `pipewire` crate
