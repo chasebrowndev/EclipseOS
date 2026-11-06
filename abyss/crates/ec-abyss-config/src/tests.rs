@@ -983,11 +983,11 @@ fn config_binds_extend_defaults() {
     let dir = std::env::temp_dir().join(format!("abyss-cfg-merge-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let f = dir.join("abyss.kdl");
-    std::fs::write(&f, "bind \"SUPER\" \"F1\" { quit; }\n").unwrap();
+    std::fs::write(&f, "bind \"SUPER\" \"F12\" { quit; }\n").unwrap();
     let cfg = Config::load(Some(&f));
     assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
     assert_eq!(cfg.binds.len(), default_binds().len() + SHIPPED_OE_CHORDS + 1);
-    assert!(cfg.binds.iter().any(|b| b.key == Keysym::F1));
+    assert!(cfg.binds.iter().any(|b| b.key == Keysym::F12));
 
     // The two reserved chords survive any config (COMP-04 §6, COMP-13 §1.1).
     let sup = m(true, false, false, false);
@@ -1035,18 +1035,18 @@ fn later_config_bind_wins() {
         vec![
             Bind {
                 mods: m(true, false, false, false),
-                key: Keysym::F1,
+                key: Keysym::F12,
                 action: Action::Spawn("first".into()),
             },
             Bind {
                 mods: m(true, false, false, false),
-                key: Keysym::F1,
+                key: Keysym::F12,
                 action: Action::Spawn("second".into()),
             },
         ],
     );
     assert_eq!(binds.len(), default_binds().len() + 1);
-    let f1 = binds.iter().find(|b| b.key == Keysym::F1).unwrap();
+    let f1 = binds.iter().find(|b| b.key == Keysym::F12).unwrap();
     assert!(matches!(&f1.action, Action::Spawn(c) if c == "second"));
 }
 
@@ -2012,14 +2012,14 @@ fn bad_nodes_are_skipped_not_fatal() {
 #[test]
 fn both_agent_chords_stay_reserved() {
     let doc: KdlDocument =
-            "bind \"SUPER\" \"Escape\" { quit; }\nbind \"SUPER SHIFT\" \"Escape\" { quit; }\nbind \"SUPER\" \"space\" { quit; }\nbind \"SUPER\" \"F1\" { quit; }\n"
+            "bind \"SUPER\" \"Escape\" { quit; }\nbind \"SUPER SHIFT\" \"Escape\" { quit; }\nbind \"SUPER\" \"space\" { quit; }\nbind \"SUPER\" \"F12\" { quit; }\n"
                 .parse()
                 .unwrap();
     let mut cfg = Config::default();
     let mut binds = Vec::new();
     cfg.apply(&doc, &mut binds);
     assert_eq!(binds.len(), 1, "only the unreserved bind survives");
-    assert_eq!(binds[0].key, Keysym::F1);
+    assert_eq!(binds[0].key, Keysym::F12);
 }
 
 #[test]

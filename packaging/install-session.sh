@@ -45,7 +45,7 @@ claude_agent=/usr/share/eclipse/agents/ec-claude-agent/0.1.0
 claude_code_agent=/usr/share/eclipse/agents/ec-claude-code-agent/0.1.0
 
 for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher \
-         ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt \
+         ec-settings ec-policy-viewer ec-console ec-cheatsheet ec-ctl ec-screensaver ec-secret-prompt \
          ec-pairing ec-polkit-agent ec-portal; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
@@ -68,7 +68,7 @@ fi
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
 for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher \
-         ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt \
+         ec-settings ec-policy-viewer ec-console ec-cheatsheet ec-ctl ec-screensaver ec-secret-prompt \
          ec-pairing ec-portal; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
 done

@@ -961,6 +961,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-cheatsheet"
+version = "0.1.0"
+dependencies = [
+ "ec-abyss-config",
+ "ec-ui",
+ "iced",
+ "iced_layershell",
+ "libc",
+ "xkbcommon",
+]
+
+[[package]]
 name = "ec-console"
 version = "0.1.0"
 dependencies = [

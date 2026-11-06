@@ -3964,6 +3964,75 @@ pub fn status_grid<'a, Message: 'a>(
     grid.into()
 }
 
+/// One bind in the keybind sheet: what it does at the left, its chord as
+/// keycaps at the right, and a ground that answers the pointer.
+///
+/// A widget because a chord row is the one list row that is a key sequence:
+/// the keycaps and their `+` joins must read the same in every pane that
+/// shows a chord. `tag` is a mono reading between label and chord (empty for
+/// none). The row is a button so it has a hover and press state; `on_press`
+/// is what a press sends, and a row that does nothing sends a no-op.
+pub fn chord_row<'a, Message: Clone + 'a>(
+    label: &str,
+    keys: &[String],
+    tag: &str,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let mut chord = Row::new().spacing(space::KEY_GAP).align_y(Alignment::Center);
+    for (i, key) in keys.iter().enumerate() {
+        if i > 0 {
+            chord = chord.push(
+                text("+")
+                    .font(font::DATA)
+                    .size(size::MICRO)
+                    .style(theme::text_tertiary),
+            );
+        }
+        chord = chord.push(badge(key));
+    }
+    let face = row![
+        text(label.to_string())
+            .font(font::UI)
+            .size(size::BODY)
+            .style(theme::text_primary)
+            .wrapping(text::Wrapping::None),
+        Space::new().width(Length::Fill),
+        text(tag.to_string())
+            .font(font::DATA)
+            .size(size::MICRO)
+            .style(theme::text_tertiary),
+        chord,
+    ]
+    .spacing(space::BLOCK)
+    .align_y(Alignment::Center);
+    button(
+        container(face)
+            .padding([space::ROW_Y, space::CARD])
+            .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .padding(0)
+    .style(|_t: &Theme, status: button::Status| {
+        let (fill, rim) = match status {
+            button::Status::Hovered => (color::cell_hover(), color::cell_rim_hover()),
+            button::Status::Pressed => (color::cell_press(), color::cell_rim_hover()),
+            _ => (Color::TRANSPARENT, Color::TRANSPARENT),
+        };
+        button::Style {
+            background: Some(iced::Background::Color(fill)),
+            border: iced::Border {
+                color: rim,
+                width: space::HAIRLINE,
+                radius: radius::INSET.into(),
+            },
+            text_color: color::text(),
+            ..button::Style::default()
+        }
+    })
+    .on_press(on_press)
+    .into()
+}
+
 /// A note with a hard coloured edge: a headline, and a paragraph under it.
 ///
 /// A widget and not a styled column because the edge is a sibling quad (see
