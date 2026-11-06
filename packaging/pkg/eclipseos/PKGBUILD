@@ -142,7 +142,7 @@ package_eclipseos-desktop() {
   # ec-console is here, not in eclipseos-agents, because Super+/ is a
   # shipped default bind and every one names an installed binary; without
   # agentd it shows the agents as unavailable (A-08 §12).
-  for b in ec-settings ec-policy-viewer ec-console ec-screensaver ec-welcome ec-portal; do _bin "$b"; done
+  for b in ec-settings ec-policy-viewer ec-console ec-cheatsheet ec-screensaver ec-welcome ec-portal; do _bin "$b"; done
   # The Bluetooth pairing agent and the prompt it and the taskbar spawn by name
   # from PATH for pairing PINs and wifi passphrases (ADR 0053). Here, not in the
   # taskbar's package, so pairing works with no taskbar (ADR 0066).

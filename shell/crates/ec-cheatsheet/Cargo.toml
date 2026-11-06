@@ -1,0 +1,26 @@
+[package]
+name = "ec-cheatsheet"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Eclipse keybind cheat sheet: the chords the compositor is listening for, from the live config."
+# Its own crate and package so it installs without the taskbar (ADR 0052).
+publish = false
+
+[lib]
+name = "ec_cheatsheet"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-cheatsheet"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+iced_layershell = "0.19.1"
+ec-ui = { path = "../ec-ui" }
+ec-abyss-config = { path = "../../../abyss/crates/ec-abyss-config" }
+xkbcommon = "0.8"
+libc = "0.2"

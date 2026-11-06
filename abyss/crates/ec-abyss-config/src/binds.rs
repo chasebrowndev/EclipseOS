@@ -203,7 +203,7 @@ pub(crate) fn m(logo: bool, shift: bool, ctrl: bool, alt: bool) -> Mods {
 /// compositors costs no relearning (`~/.config/hypr/hyprland.lua`). Where
 /// Hyprland spawns a Quickshell popup the equivalent here spawns our own
 /// binary; where abyss has no matching action at all — fullscreen, pseudo,
-/// the special workspace, the keybind cheatsheet, the dashboard, the overview
+/// the special workspace, the dashboard, the overview
 /// — the bind is simply absent rather than approximated.
 ///
 /// `Super+Escape` is bound here and nowhere else: it is the trusted-UI
@@ -273,6 +273,13 @@ pub fn default_binds() -> Vec<Bind> {
             mods: sup,
             key: Keysym::n,
             action: Action::Spawn("ec-center".into()),
+        },
+        // The keybind cheat sheet: the chords in force, read from the live
+        // config. Super+slash is the agent console, so this takes Super+F1.
+        Bind {
+            mods: sup,
+            key: Keysym::F1,
+            action: Action::Spawn("ec-cheatsheet".into()),
         },
         // A short press of the power key opens the bar's power drawer; logind's
         // long-press (`HandlePowerKeyLongPress=poweroff`) stays the hard off.
