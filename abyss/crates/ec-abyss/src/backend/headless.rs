@@ -378,7 +378,7 @@ fn boot(
     tracing::info!(socket = %state.socket_name, w = size.0, h = size.1, "listening (headless)");
 
     if session {
-        crate::session::import();
+        crate::session::import(state.config.mode);
     }
     crate::kiosk::launch(&mut state, &event_loop.handle())?;
 
@@ -469,6 +469,21 @@ fn redraw(
                 fullscreen,
             )
         };
+        // Quick Tile edge preview (`mode "de"`, COMP-05 §3.1): a compositor overlay
+        // level with the drop guides, never in a capture pass list.
+        elements.splice(
+            0..0,
+            crate::render::drop::preview_elements(
+                renderer,
+                state.tile_preview.as_ref().map(|p| (&p.output, p.rect)),
+                out,
+                state
+                    .space
+                    .output_geometry(out)
+                    .map(|g| g.loc)
+                    .unwrap_or_default(),
+            ),
+        );
         // Radiant drop guides (COMP-05 §3.1): above the windows, below
         // annotations and everything spliced after them.
         elements.splice(
@@ -485,6 +500,37 @@ fn redraw(
                     .unwrap_or_default(),
             ),
         );
+        // The window menu (`mode "de"`, COMP-05 §7.1): compositor chrome above
+        // the windows and the drop guides, below annotations and trusted UI,
+        // and never in a capture pass list.
+        elements.splice(
+            0..0,
+            crate::render::menu::menu_elements(
+                renderer,
+                &mut state.menu_cache,
+                state.winmenu.view(),
+                out,
+                state
+                    .space
+                    .output_geometry(out)
+                    .map(|g| g.loc)
+                    .unwrap_or_default(),
+            ),
+        );
+        // The window switcher, overview and hover previews (`mode "de"`,
+        // COMP-05 §7.1): compositor chrome level with the window menu, below
+        // annotations and trusted UI, and never in a capture pass list.
+        let overlay = crate::overview::overlay_elements(
+            renderer,
+            state,
+            out,
+            state
+                .space
+                .output_geometry(out)
+                .map(|g| g.loc)
+                .unwrap_or_default(),
+        );
+        elements.splice(0..0, overlay);
         // Annotations (COMP-18) go in first so the trusted indicator, spliced
         // after them, stays ahead of them in this front-to-back list. What is
         // already in the list is what their glass panels blur.

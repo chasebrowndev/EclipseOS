@@ -14,10 +14,82 @@ use super::layout::Tree;
 
 pub const COUNT: usize = 10;
 
+/// How a floating window's rectangle is decided (COMP-05 §3.1, C-24).
+///
+/// `Free` rectangles are placed and stay where they are put. Any other
+/// placement derives the rectangle on every arrange, and records the rectangle
+/// to give back when it ends. Quick Tile is the second such placement, with
+/// its own restore rect. Both are `de` only and both are floating placements:
+/// nothing tiles under `de`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Placement {
+    Free,
+    /// `mode "de"` only (Quick Tile, M5). The frame fills `zone` of the usable
+    /// area, derived on every arrange. `restore` is the outer rectangle the
+    /// window had before it was first tiled or maximized: a tile that replaces
+    /// a maximize keeps the maximize's `restore`, and moving from tile to tile
+    /// keeps it, so leaving any of them gives back the original free rect.
+    QuickTile {
+        zone: super::quicktile::Zone,
+        restore: Rectangle<i32, Logical>,
+    },
+    /// `mode "de"` only. Fills the usable area along the set axes; `restore` is
+    /// the outer rectangle the window had before (the rectangle it keeps on any
+    /// axis that is not maximized).
+    Maximized {
+        h: bool,
+        v: bool,
+        restore: Rectangle<i32, Logical>,
+    },
+}
+
+impl Placement {
+    /// Maximized along both axes: what the client is told with `Maximized`.
+    pub fn is_fully_maximized(&self) -> bool {
+        matches!(self, Placement::Maximized { h: true, v: true, .. })
+    }
+
+    pub fn is_maximized(&self) -> bool {
+        matches!(self, Placement::Maximized { .. })
+    }
+
+    /// Does this placement derive the rectangle (maximized or Quick Tile)?
+    /// Such a window is drawn square and without a border inset.
+    pub fn is_placed(&self) -> bool {
+        !matches!(self, Placement::Free)
+    }
+
+    /// The rectangle to give back when the placement ends.
+    pub fn restore_rect(&self) -> Option<Rectangle<i32, Logical>> {
+        match self {
+            Placement::Free => None,
+            Placement::Maximized { restore, .. } | Placement::QuickTile { restore, .. } => Some(*restore),
+        }
+    }
+
+    /// The same placement moved by `offset`, for a window sent to another output.
+    pub fn moved_by(self, offset: smithay::utils::Point<i32, Logical>) -> Placement {
+        match self {
+            Placement::Free => Placement::Free,
+            Placement::Maximized { h, v, mut restore } => {
+                restore.loc += offset;
+                Placement::Maximized { h, v, restore }
+            }
+            Placement::QuickTile { zone, mut restore } => {
+                restore.loc += offset;
+                Placement::QuickTile { zone, restore }
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Floating {
     pub window: Window,
+    /// Absolute outer rectangle. For a `Maximized` window it is derived on
+    /// every arrange and is the window's own rectangle: no border inset.
     pub rect: Rectangle<i32, Logical>,
+    pub placement: Placement,
     /// The Radiant leaf weight it had when `toggle-floating` lifted it out
     /// of the tree, restored when it is toggled back in.
     pub weight: Option<f64>,
@@ -31,6 +103,11 @@ pub struct Floating {
 pub struct Minimized {
     pub window: Window,
     pub was_floating: Option<Rectangle<i32, Logical>>,
+    /// Kept across minimize, so a maximized window comes back maximized.
+    pub placement: Placement,
+    /// Radiant weight to give the window when it is tiled on restore. Set when
+    /// leaving `mode "de"` for a window that was a tile before it (`shell::de`).
+    pub weight: Option<f64>,
 }
 
 /// Most-recently-focused-first history. Generic only so the ordering rules can
@@ -63,6 +140,11 @@ impl<T: PartialEq + Clone> FocusHistory<T> {
         self.0.retain(|x| x != v);
     }
 
+    /// Most recent first.
+    fn iter(&self) -> impl Iterator<Item = &T> {
+        self.0.iter()
+    }
+
     #[cfg(test)]
     fn len(&self) -> usize {
         self.0.len()
@@ -93,10 +175,20 @@ pub struct Workspace {
     /// against the current area. Clamping unconditionally would drag a
     /// window pinned by `place_at` off its exact position.
     pub(crate) last_area: Option<Rectangle<i32, Logical>>,
+    /// `mode "de"` only: the tiling tree as it stood when the mode floated
+    /// every tile (`shell::de`), so leaving the mode puts the survivors back
+    /// where they were, weights included. `remove` prunes it, so a window that
+    /// closes or moves away is never put back here.
+    pub(crate) stash: Option<Tree>,
     /// Per-workspace focus history, most recent first (COMP-05 §5, ADR 0042).
     /// Written only by `note_focused`, whose single caller is
     /// `shell::focus::focus_window` — the one place focus actually moves.
     focus_history: FocusHistory<Window>,
+    /// When each window here was last focused, on the state's focus clock.
+    /// Orders windows against those of other workspaces for the window
+    /// switcher's most-recently-used list (`overview::switcher`). Pruned by
+    /// `remove`.
+    focus_stamps: Vec<(Window, u64)>,
 }
 
 impl Workspace {
@@ -129,11 +221,42 @@ impl Workspace {
     ///
     /// `raise` is false for passive focus changes — focus-follows-mouse and the
     /// scene-change refresh — which must not restack; see `FocusCause::raises`.
-    pub(crate) fn note_focused(&mut self, w: &Window, raise: bool) {
+    pub(crate) fn note_focused(&mut self, w: &Window, raise: bool, stamp: u64) {
         self.focus_history.note(w);
+        if let Some(e) = self.focus_stamps.iter_mut().find(|(x, _)| x == w) {
+            e.1 = stamp;
+        } else {
+            self.focus_stamps.push((w.clone(), stamp));
+        }
         if raise {
             self.raise_floating(w);
         }
+    }
+
+    /// When `w` was last focused here (see `focus_stamps`); 0 = never.
+    pub(crate) fn focus_stamp_of(&self, w: &Window) -> u64 {
+        self.focus_stamps
+            .iter()
+            .find(|(x, _)| x == w)
+            .map_or(0, |(_, s)| *s)
+    }
+
+    /// Windows on screen here, most recently focused first; any never
+    /// focused follow, topmost first. Minimized windows are not included
+    /// (`minimized`).
+    pub(crate) fn recent_live(&self) -> Vec<Window> {
+        let mut out: Vec<Window> = self
+            .focus_history
+            .iter()
+            .filter(|w| self.holds_live(w))
+            .cloned()
+            .collect();
+        for w in self.windows().into_iter().rev() {
+            if !out.contains(&w) {
+                out.push(w);
+            }
+        }
+        out
     }
 
     /// Move `w` to the top of the floating stack. No-op for a window that is
@@ -162,6 +285,10 @@ impl Workspace {
 
     pub fn remove(&mut self, w: &Window) -> bool {
         self.focus_history.remove(w);
+        self.focus_stamps.retain(|(x, _)| x != w);
+        if let Some(stash) = self.stash.as_mut() {
+            stash.remove(w);
+        }
         if let Some(i) = self.pending.iter().position(|p| p == w) {
             self.pending.remove(i);
             return true;

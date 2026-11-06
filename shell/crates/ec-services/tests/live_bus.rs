@@ -100,6 +100,88 @@ fn a_notify_call_arrives_as_an_event() {
 
 #[test]
 #[ignore = "needs dbus-daemon; spawns a private bus"]
+fn history_lists_removes_and_refuses_a_stale_invoke() {
+    use ec_services::notifications::HistoryClient;
+
+    let (_bus, address) = private_bus();
+    // SAFETY: single-threaded, before any bus connection is made.
+    unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &address) };
+    let handle = notifications::spawn().expect("name is free");
+
+    let mut client = HistoryClient::at(&address);
+    let changes = client.changes();
+    let notify = |summary: &str, extra: &str| {
+        let out = Command::new("dbus-send")
+            .args([
+                "--session",
+                "--print-reply",
+                "--dest=org.freedesktop.Notifications",
+                "/org/freedesktop/Notifications",
+                "org.freedesktop.Notifications.Notify",
+                "string:app",
+                "uint32:0",
+                "string:icon",
+                &format!("string:{summary}"),
+                "string:body",
+                "array:string:ok,OK",
+                extra,
+                "int32:0",
+            ])
+            .output()
+            .expect("dbus-send runs");
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    notify("one", "dict:string:variant:urgency,byte:1");
+    notify("two", "dict:string:variant:urgency,byte:1");
+    notify("quiet", "dict:string:variant:transient,boolean:true");
+
+    // The history is not reachable through the notification name.
+    let out = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.Notifications",
+            "/org/eclipse/NotificationHistory",
+            "org.eclipse.NotificationHistory.List",
+        ])
+        .output()
+        .expect("dbus-send runs");
+    assert!(
+        !out.status.success(),
+        "history must not answer on the notification name"
+    );
+
+    let list = client.list();
+    let summaries: Vec<&str> = list.iter().map(|e| e.summary.as_str()).collect();
+    assert_eq!(summaries, ["two", "one"], "newest first, transient absent");
+    assert!(list.iter().all(|e| e.live));
+
+    // The human dismissed "one": still in history, no longer invokable.
+    handle.close(list[1].id, CloseReason::Dismissed);
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(!client.invoke_action(list[1].id, "ok"));
+    assert!(client.list().iter().any(|e| e.id == list[1].id && !e.live));
+
+    // "two" is live: invoking works once and closes it.
+    assert!(client.invoke_action(list[0].id, "ok"));
+    assert!(!client.invoke_action(list[0].id, "ok"));
+
+    client.remove(list[0].id);
+    assert_eq!(client.list().len(), 1);
+    client.clear();
+    assert!(client.list().is_empty());
+
+    // Two stored Notifys, a close, an invoke, a remove and a clear each signalled
+    // (the transient Notify stores nothing, so it does not).
+    let mut ticks = 0;
+    while changes.recv_timeout(Duration::from_millis(500)).is_ok() {
+        ticks += 1;
+    }
+    assert!(ticks >= 6, "expected Changed signals, got {ticks}");
+}
+
+#[test]
+#[ignore = "needs dbus-daemon; spawns a private bus"]
 fn the_name_is_never_stolen_from_a_running_daemon() {
     let (_bus, address) = private_bus();
     // SAFETY: single-threaded, before any bus connection is made.
