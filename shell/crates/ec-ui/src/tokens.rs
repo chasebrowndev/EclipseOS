@@ -420,6 +420,16 @@ pub mod bar {
     /// A pager tile: a small rounded chip, one per workspace.
     pub const PAGER_W: f32 = 24.0;
     pub const PAGER_H: f32 = 24.0;
+    /// Under `mode "de"` the pager is the desktop grid (COMP-05 §7.1): `rows`
+    /// stacked rows of tiles, together no taller than a task chip. A tile is
+    /// this wide, and the air between two of them (either way) this much.
+    pub const PAGER_GRID_W: f32 = 22.0;
+    pub const PAGER_GRID_GAP: f32 = 2.0;
+    /// The notification bell's unseen dot.
+    pub const BELL_DOT: f32 = 6.0;
+    /// How long the pointer rests on a window chip before the compositor is
+    /// asked for its hover preview (`mode "de"`).
+    pub const PREVIEW_DELAY_MS: u64 = 400;
 
     /// Radii. The bar's own outline is a pill — [`RADIUS_SHEET`], half its
     /// height — and every cell inside it is concentric with that pill: a
@@ -914,6 +924,96 @@ pub mod menu {
     pub const SEP_H: f32 = 9.0;
 }
 
+/// The desktop's icons (`mode "de"`, `ec-desktop`): a grid of cells laid on the
+/// usable area of each output, like Plasma's folder view.
+pub mod desktop {
+    /// Surface edge to the first cell, on every side.
+    pub const MARGIN: f32 = 14.0;
+    /// One cell of the grid: wide enough for a two-line label, tall enough for
+    /// the icon, its gap and those lines, and the padding round them.
+    pub const CELL_W: f32 = 92.0;
+    pub const CELL_H: f32 = 100.0;
+    /// Inside a cell: padding round the content, and the icon's square.
+    pub const CELL_PAD: f32 = 6.0;
+    /// Air between the painted cell and the edge of its grid cell, so
+    /// neighbouring selections do not fuse.
+    pub const CELL_INSET: f32 = 2.0;
+    pub const ICON: f32 = 48.0;
+    /// Between the icon and its label.
+    pub const ICON_GAP: f32 = 6.0;
+    /// Rows of label under an icon, then an ellipsis.
+    pub const LABEL_LINES: usize = 2;
+    /// How much label fits on a line, in average-letter widths at
+    /// `size::BODY_SMALL` (see `ec_desktop::grid::label`).
+    pub const LABEL_UNITS: f32 = 11.8;
+    /// A press that travels this far is a drag or a rubber band, not a click.
+    pub const DRAG_SLOP: f32 = 4.0;
+    /// Two releases on one icon within this are a double-click.
+    pub const DOUBLE_CLICK_MS: u64 = 400;
+    /// How long a failure note stays when nobody clicks it.
+    pub const TOAST_MS: u64 = 5000;
+    /// The failure note and the launch prompt: their width, the note's
+    /// height (its pixel size is needed to pin it to a corner), and the
+    /// prompt's.
+    pub const TOAST_W: f32 = 280.0;
+    pub const TOAST_H: f32 = 56.0;
+    pub const PROMPT_W: f32 = 252.0;
+    pub const PROMPT_H: f32 = 92.0;
+    /// The air between a cell and the prompt hung under it.
+    pub const PROMPT_GAP: f32 = 4.0;
+    /// Ink of an icon left behind by a drag, and of the ghost that follows
+    /// the pointer.
+    pub const DRAG_REST_ALPHA: f32 = 0.4;
+    pub const DRAG_GHOST_ALPHA: f32 = 0.75;
+    /// A heading row in the context menu ("Sort by").
+    pub const MENU_HEADING_H: f32 = 24.0;
+    /// The extension badge of an icon the theme has no picture for.
+    pub const BADGE_CHARS: usize = 4;
+    /// The tick that marks the current sort: a square, like every tick box.
+    pub const TICK: f32 = 7.0;
+}
+
+/// The window list a multi-window group chip opens (`mode "de"`): a glass
+/// popup of one row per window, in the context menu's rows.
+pub mod group {
+    /// Sheet width: wider than a verb menu, a window title wants room.
+    pub const W: f32 = 280.0;
+    /// How many characters of a title a row shows before it is cut.
+    pub const TITLE_CHARS: usize = 30;
+    /// How many rows the popup holds; a popup is sized once, so a group of
+    /// forty terminals must not run off the screen.
+    pub const MAX_ROWS: usize = 12;
+}
+
+/// The notification history panel the bar's bell opens (`mode "de"`).
+pub mod history {
+    /// Sheet width.
+    pub const W: f32 = 328.0;
+    /// How many entries the panel lists before it stops growing.
+    pub const MAX_ROWS: usize = 6;
+    /// The body is cut to this many lines of this many characters.
+    pub const BODY_LINES: usize = 3;
+    pub const BODY_CHARS: usize = 46;
+    /// Characters of an app name or summary shown on its line.
+    pub const SUMMARY_CHARS: usize = 34;
+    pub const APP_CHARS: usize = 16;
+    /// One entry: its head line (app, time, dismiss) and its summary line, the
+    /// air around them, one line of body, and a row of action buttons.
+    pub const HEAD_H: f32 = 18.0;
+    pub const SUMMARY_H: f32 = 18.0;
+    pub const LINE_H: f32 = 15.0;
+    pub const ACTION_H: f32 = 26.0;
+    pub const PAD_Y: f32 = 7.0;
+    /// The air between the lines of one entry.
+    pub const GAP: f32 = 2.0;
+    /// The dismiss cross's square.
+    pub const DISMISS: f32 = 18.0;
+    /// The empty state's height.
+    pub const EMPTY_H: f32 = 64.0;
+    /// The urgency rail down the left of a critical entry.
+    pub const RAIL_W: f32 = 2.0;
+}
+
 /// A tray drawer: the reading rail the disclosure arrow opens.
 pub mod drawer {
     /// Drawer width. Wider than a context menu — it carries label/value rows
@@ -950,6 +1050,12 @@ pub mod drawer {
     /// sized once at creation, so a room full of access points must not be
     /// allowed to push the sheet off the bottom of a laptop panel.
     pub const MAX_ROWS: usize = 8;
+    /// How tall a panel a bottom bar's surface is made to hold for a drawer.
+    /// A bottom surface is sized once and never resized (the compositor draws
+    /// a stale buffer from a resized bottom surface's top, which wobbles the
+    /// pill), so it has to hold the tallest drawer from the start; one that
+    /// needs more raises it once.
+    pub const RESERVE_H: f32 = 440.0;
     /// Air between the two lines of the hero row.
     pub const LINE_GAP: f32 = 2.0;
     /// The glass lozenge a row draws is its slot inset this much on the
@@ -1170,4 +1276,43 @@ pub mod popup {
     /// (`"cell"` / `"pointer"`); this is what applies when it is unset or the
     /// compositor is not there.
     pub const ANCHOR: Anchor = Anchor::Cell;
+}
+
+/// The Settings > Login screen preview: a small stand-in for the greeter at
+/// its real 16:9 proportions. The greeter is a separate program with its own
+/// stylesheet, so the sizes here are a scaled picture of it, not the pane's
+/// own type scale; its colours come from the theme being previewed, never
+/// from the palette.
+pub mod login_preview {
+    pub const W: f32 = 480.0;
+    pub const H: f32 = 270.0;
+    pub const RADIUS: f32 = 10.0;
+    /// Gap from the top edge to the clock, and from the bottom edge to the pills.
+    pub const EDGE: f32 = 16.0;
+    pub const CLOCK_SIZE: f32 = 13.0;
+    pub const CARD_W: f32 = 210.0;
+    pub const CARD_PAD: f32 = 14.0;
+    pub const CARD_GAP: f32 = 9.0;
+    pub const CARD_RADIUS: f32 = 9.0;
+    pub const GREETING_SIZE: f32 = 9.0;
+    pub const FIELD_H: f32 = 18.0;
+    pub const BUTTON_H: f32 = 20.0;
+    pub const BUTTON_SIZE: f32 = 9.0;
+    pub const BUTTON_RADIUS: f32 = 6.0;
+    pub const PILL_SIZE: f32 = 8.0;
+    pub const PILL_PAD_X: f32 = 10.0;
+    pub const PILL_PAD_Y: f32 = 4.0;
+    pub const PILL_GAP: f32 = 8.0;
+    /// Alphas of the theme's ink over the picture: the card, its rim, the
+    /// field and the pills.
+    pub const CARD_FILL: f32 = 0.10;
+    pub const CARD_RIM: f32 = 0.22;
+    /// Over a chosen wallpaper the real card is the base colour at this alpha
+    /// (`ec_greeter::render_style`), so its text stays readable.
+    pub const CARD_DENSE: f32 = 0.72;
+    pub const FIELD_FILL: f32 = 0.08;
+    pub const PILL_FILL: f32 = 0.12;
+    pub const PILL_RIM: f32 = 0.20;
+    /// The ink of the secondary line (the "Current wallpaper" tag).
+    pub const TAG_ALPHA: f32 = 0.5;
 }

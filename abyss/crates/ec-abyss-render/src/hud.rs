@@ -22,15 +22,15 @@ use crate::text::{wrap, Raster, Rgba};
 // ------------------------------------------------------------------ canvas
 
 /// A float canvas of premultiplied pixels, device-sized.
-struct Paint {
-    w: usize,
-    h: usize,
+pub(crate) struct Paint {
+    pub(crate) w: usize,
+    pub(crate) h: usize,
     px: Vec<[f32; 4]>,
 }
 
 /// Signed distance from `(x, y)` to the rounded box at `(bx, by)` sized
 /// `bw`x`bh` with corner radius `r`. Negative inside.
-fn sd_box(x: f32, y: f32, (bx, by, bw, bh): (f32, f32, f32, f32), r: f32) -> f32 {
+pub(crate) fn sd_box(x: f32, y: f32, (bx, by, bw, bh): (f32, f32, f32, f32), r: f32) -> f32 {
     let (hw, hh) = (bw * 0.5, bh * 0.5);
     let r = r.min(hw).min(hh).max(0.0);
     let qx = (x - bx - hw).abs() - (hw - r);
@@ -40,17 +40,17 @@ fn sd_box(x: f32, y: f32, (bx, by, bw, bh): (f32, f32, f32, f32), r: f32) -> f32
 }
 
 /// One device pixel of antialiasing across the edge.
-fn cov(d: f32) -> f32 {
+pub(crate) fn cov(d: f32) -> f32 {
     (0.5 - d).clamp(0.0, 1.0)
 }
 
 /// Coverage of the band `lo <= d <= hi` of a distance field: a stroke.
-fn band(d: f32, lo: f32, hi: f32) -> f32 {
+pub(crate) fn band(d: f32, lo: f32, hi: f32) -> f32 {
     (cov(d - hi) - cov(d - lo)).max(0.0)
 }
 
 impl Paint {
-    fn new(w: usize, h: usize) -> Paint {
+    pub(crate) fn new(w: usize, h: usize) -> Paint {
         Paint {
             w,
             h,
@@ -73,7 +73,7 @@ impl Paint {
 
     /// Blend `c` over every pixel of the device box `(x, y, w, h)` (clipped
     /// to the canvas) at the coverage `f` gives the pixel's centre.
-    fn shade(&mut self, (x, y, w, h): (f32, f32, f32, f32), c: Rgba, f: impl Fn(f32, f32) -> f32) {
+    pub(crate) fn shade(&mut self, (x, y, w, h): (f32, f32, f32, f32), c: Rgba, f: impl Fn(f32, f32) -> f32) {
         let x0 = x.floor().max(0.0) as usize;
         let y0 = y.floor().max(0.0) as usize;
         let x1 = ((x + w).ceil().max(0.0) as usize).min(self.w);
@@ -86,7 +86,7 @@ impl Paint {
         }
     }
 
-    fn fill(&mut self, b: (f32, f32, f32, f32), r: f32, c: Rgba) {
+    pub(crate) fn fill(&mut self, b: (f32, f32, f32, f32), r: f32, c: Rgba) {
         self.shade(b, c, |x, y| cov(sd_box(x, y, b, r)));
     }
 
@@ -98,7 +98,7 @@ impl Paint {
     /// One row of `s` in `face`. `x` and `top` are logical; the line box's
     /// top is `top`, and every column is [`ADVANCE`]-wide logical whatever
     /// atlas `dev` picks, so text lines up with layout at every scale.
-    fn text(&mut self, face: Face, dev: usize, x: usize, top: usize, s: &str, c: Rgba) {
+    pub(crate) fn text(&mut self, face: Face, dev: usize, x: usize, top: usize, s: &str, c: Rgba) {
         let a = face.atlas(dev);
         let col = face.advance() * dev;
         // Centre a 2x advance that rounded off its 1x double, and put its
@@ -125,7 +125,7 @@ impl Paint {
         }
     }
 
-    fn into_raster(self) -> Raster {
+    pub(crate) fn into_raster(self) -> Raster {
         let mut px = Vec::with_capacity(self.w * self.h * 4);
         for p in &self.px {
             for v in p {

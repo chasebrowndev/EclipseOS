@@ -262,6 +262,21 @@ pub fn bespoke() -> Vec<SearchEntry> {
             &["addons", "extensions", "plugins", "packages", "hooks", "optional"],
         ),
         (
+            "desktop.login-screen",
+            "Login screen",
+            "Desktop",
+            "The picture, greeting and clock on this machine's login screen.",
+            &[
+                "login",
+                "greeter",
+                "lock screen",
+                "sign in screen",
+                "greeting",
+                "clock",
+                "welcome",
+            ],
+        ),
+        (
             "accounts",
             "Accounts",
             "Accounts",

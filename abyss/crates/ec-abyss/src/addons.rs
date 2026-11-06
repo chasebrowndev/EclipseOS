@@ -216,6 +216,12 @@ pub fn json(a: &Addons) -> (serde_json::Value, serde_json::Value) {
 /// watch the directory. A watch failure is logged and the compositor runs on
 /// with what it loaded.
 pub fn start(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
+    // Kiosk (greeter): no add-ons. Hooks stay empty and no manifest watcher
+    // exists, so nothing can turn one on later.
+    if state.kiosk {
+        tracing::info!("kiosk: add-ons not loaded");
+        return;
+    }
     state.addons = Addons::load();
     log_hooks(&state.addons);
     // The config was loaded before these hooks were read (main.rs reads them

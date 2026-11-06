@@ -44,9 +44,9 @@ ref_agent=/usr/share/eclipse/agents/ec-ref-agent/0.1.0
 claude_agent=/usr/share/eclipse/agents/ec-claude-agent/0.1.0
 claude_code_agent=/usr/share/eclipse/agents/ec-claude-code-agent/0.1.0
 
-for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
+for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher \
          ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt \
-         ec-pairing ec-portal; do
+         ec-pairing ec-polkit-agent ec-portal; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
 if [ "$do_agents" -eq 1 ]; then
@@ -67,7 +67,7 @@ fi
 
 # 1. Binaries. Symlinks, so the session always runs what was last built.
 install -d /usr/local/bin
-for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher \
+for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher \
          ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt \
          ec-pairing ec-portal; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
@@ -78,6 +78,9 @@ if [ "$do_agents" -eq 1 ]; then
     done
 fi
 install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session
+# A real copy at the shipped path: the compositor admits nothing else at its
+# polkit door (ADR 0088), and a symlink's /proc/<pid>/exe is its target.
+install -m 0755 "$bin/ec-polkit-agent" /usr/bin/ec-polkit-agent
 
 # 2. The session entry the greeter lists. Exec is the wrapper, not the binary:
 #    XDG_SESSION_TYPE and friends have to be set before the compositor starts.
@@ -90,12 +93,14 @@ sed -i 's|^Exec=.*|Exec=/usr/local/bin/abyss-session|' /usr/share/wayland-sessio
 dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
-units_here="ec-hyperion-bar ec-toasts ec-wallpaper ec-screensaver ec-pairing ec-portal"
+# ec-desktop is copied but never enabled: abyss starts it under mode "de".
+units_here="ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-screensaver ec-pairing ec-portal"
 [ "$do_agents" -eq 1 ] && units_here="$units_here $agent_units"
 for unit in $units_here; do
     sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
     chown "$user:$user" "$dest/$unit.service"
 done
+install -m 0644 -o "$user" -g "$user" "$here/ec-polkit-agent.service" "$dest/ec-polkit-agent.service"
 
 # 3a. The colour-scheme portal backend (ADR 0084). Bus-activated, so its unit
 #     is written above but not enabled below.
@@ -140,7 +145,7 @@ done
 #    already written and are read when their manager next starts.
 uid=$(id -u "$user")
 rt="/run/user/$uid"
-units="ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service"
+units="ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service"
 [ "$do_agents" -eq 1 ] && units="$units ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service"
 if [ -S "$rt/bus" ]; then
     as_user() {

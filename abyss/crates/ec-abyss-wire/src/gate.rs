@@ -65,6 +65,18 @@ pub const TABLE: &[Entry] = &[
     // Where the taskbar drew a window's chip, so minimize can aim at it
     // (ADR 0073). Render-only: it moves nothing and grants nothing.
     e("set_window_chip_rect", Kind::Command, true),
+    // Desktop grid and window menu for the taskbar pager and chips (COMP-05
+    // §7.1). OWNER REVIEW: same tier as `switch_workspace` and `focus_window`.
+    // The menu is the human's own furniture; the handler clamps its anchor to
+    // the output and refuses under session lock.
+    e("get_desktop_grid", Kind::Query, true),
+    e("switch_desktop_direction", Kind::Command, true),
+    e("open_window_menu", Kind::Command, true),
+    // Hover preview the taskbar asks for. OWNER REVIEW: Command, owner only.
+    // No pixel leaves the compositor; the handler redacts through
+    // `capture::classify` and refuses under lock.
+    e("show_window_preview", Kind::Command, true),
+    e("hide_window_preview", Kind::Command, true),
     e("switch_workspace", Kind::Command, true),
     e("reload_config", Kind::Command, true),
     e("resize", Kind::Command, true),
@@ -89,6 +101,9 @@ pub const TABLE: &[Entry] = &[
     // does, and it only rebroadcasts on the `launcher` event stream; the
     // compositor holds no launcher state and the bar decides what opens.
     e("open_launcher", Kind::Command, true),
+    // Open the bar's power drawer (short power-key press, `ec-ctl open-power`).
+    // Same reasoning as `open_launcher`: a rebroadcast on the `power` event.
+    e("open_power", Kind::Command, true),
     // Config read/write (COMP-13 §1.4). `set_config_value` is Command and not
     // Privileged on purpose: it edits the same keys a human edits in a text
     // editor, and the file it may touch is decided by `CONFIG_FILES`, not by
@@ -129,6 +144,9 @@ pub const TABLE: &[Entry] = &[
     e("click_at", Kind::ScriptedInput, true),
     e("press_key", Kind::ScriptedInput, true),
     e("scroll_at", Kind::ScriptedInput, true),
+    // OWNER REVIEW: press, move and release through the path `click_at` takes,
+    // same kind and same gate as its neighbours.
+    e("drag_at", Kind::ScriptedInput, true),
 ];
 
 /// Which config file an operation names (COMP-13 §1.3). Not a path: the
@@ -416,6 +434,20 @@ mod tests {
     }
 
     #[test]
+    fn open_power_is_an_owner_only_command() {
+        let cfg = Config::default();
+        let other = Peer { uid: 1001, ..owner() };
+        let entry = TABLE.iter().find(|e| e.method == "open_power").expect("row");
+        assert_eq!(entry.kind, Kind::Command);
+        assert!(entry.implemented);
+        assert_eq!(check(&owner(), 1000, &cfg, "open_power"), Decision::Allow);
+        assert!(matches!(
+            check(&other, 1000, &cfg, "open_power"),
+            Decision::Deny(_)
+        ));
+    }
+
+    #[test]
     fn missing_credentials_are_denied() {
         let cfg = Config::default();
         let anon = Peer { pid: 0, ..owner() };
@@ -455,6 +487,38 @@ mod tests {
             check_config_file(Decision::Allow, ConfigFile::Abyss, Access::Write),
             Decision::Allow
         );
+    }
+
+    #[test]
+    fn desktop_grid_and_window_menu_are_owner_only() {
+        let cfg = Config::default();
+        let other = Peer { uid: 1001, ..owner() };
+        for (method, kind) in [
+            ("get_desktop_grid", Kind::Query),
+            ("switch_desktop_direction", Kind::Command),
+            ("open_window_menu", Kind::Command),
+            ("show_window_preview", Kind::Command),
+            ("hide_window_preview", Kind::Command),
+        ] {
+            let entry = TABLE.iter().find(|e| e.method == method).expect("row");
+            assert_eq!(entry.kind, kind, "{method}");
+            assert_eq!(check(&owner(), 1000, &cfg, method), Decision::Allow, "{method}");
+            assert!(
+                matches!(check(&other, 1000, &cfg, method), Decision::Deny(_)),
+                "{method}"
+            );
+        }
+    }
+
+    #[test]
+    fn drag_at_needs_the_scripted_input_toggle() {
+        let mut cfg = Config::default();
+        assert!(matches!(
+            check(&owner(), 1000, &cfg, "drag_at"),
+            Decision::Deny(_)
+        ));
+        cfg.misc.scripted_input = true;
+        assert_eq!(check(&owner(), 1000, &cfg, "drag_at"), Decision::Allow);
     }
 
     #[test]

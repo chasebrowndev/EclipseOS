@@ -28,6 +28,11 @@ use crate::state::AbyssState;
 const MAX_LINE: usize = 2048;
 
 pub fn start(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
+    start_erase(state, handle);
+    super::polkit::start(state, handle);
+}
+
+fn start_erase(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
     let Some(dir) = crate::ipc::socket_dir() else {
         return;
     };
@@ -90,6 +95,7 @@ pub fn cleanup(state: &AbyssState) {
     if let Some(path) = &state.trusted_ui.path {
         let _ = std::fs::remove_file(path);
     }
+    super::polkit::cleanup(state);
 }
 
 /// Where a connection is in its one exchange.

@@ -903,7 +903,7 @@ fn sensitivity(state: &AbyssState, window: &Window) -> u32 {
 }
 
 /// What a `toplevel` event carries.
-struct Facts {
+pub(crate) struct Facts {
     handle: u32,
     app_id: String,
     title: String,
@@ -915,7 +915,7 @@ struct Facts {
     w: i32,
     h: i32,
     scale: f64,
-    states: u32,
+    pub(crate) states: u32,
 }
 
 fn identity(window: &Window) -> (String, String) {
@@ -926,7 +926,7 @@ fn identity(window: &Window) -> (String, String) {
     (a.unwrap_or_default(), t.unwrap_or_default())
 }
 
-fn facts(state: &AbyssState, handle: u32, window: &Window) -> Facts {
+pub(crate) fn facts(state: &AbyssState, handle: u32, window: &Window) -> Facts {
     use eclipse_scene_v1::State as S;
     let (app_id, title) = identity(window);
     let (output, workspace) = crate::ipc::methods::location_of(state, window).unwrap_or((0, 0));

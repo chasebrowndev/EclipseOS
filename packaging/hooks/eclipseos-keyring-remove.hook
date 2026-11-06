@@ -1,0 +1,10 @@
+# Install to: /usr/share/libalpm/hooks/eclipseos-keyring-remove.hook
+[Trigger]
+Operation = Remove
+Type = Package
+Target = gnome-keyring
+
+[Action]
+Description = Dropping the org.freedesktop.secrets activation override
+When = PostTransaction
+Exec = /usr/bin/rm -f /usr/local/share/dbus-1/services/org.freedesktop.secrets.service

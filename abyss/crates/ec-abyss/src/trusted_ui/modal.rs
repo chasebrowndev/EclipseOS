@@ -227,6 +227,8 @@ pub struct Modal {
     /// Drawn with the irreversible accent (§3.2).
     accent: bool,
     entry: Option<Entry>,
+    /// Enter with something typed picks the first `Other` button (§3.14).
+    submit_on_enter: bool,
 }
 
 /// Why a prompt could not be built. A malformed prompt is refused rather than
@@ -268,6 +270,7 @@ impl Modal {
             buttons,
             accent: false,
             entry: None,
+            submit_on_enter: false,
         })
     }
 
@@ -348,6 +351,16 @@ impl Modal {
             e.masked = true;
         }
         m
+    }
+
+    /// Enter submits once something is typed, until Tab is pressed: the polkit
+    /// prompt (§3.14), where the typed password is the human's intent. With an
+    /// empty field, or after a Tab, Enter keeps the focus rule, so a reflexive
+    /// one lands on the safe button and so does one aimed at it. Never picks a
+    /// `Grant`.
+    pub fn submit_on_enter(mut self) -> Modal {
+        self.submit_on_enter = true;
+        self
     }
 
     /// What has been typed, if the prompt takes text.
@@ -497,9 +510,21 @@ pub fn apply(modal: &mut Modal, focus: usize, k: Key) -> Outcome {
             Some(_) => Outcome::Edited,
             None => Outcome::Nothing,
         },
-        Key::Next => Outcome::Focus((focus + 1) % n),
-        Key::Prev => Outcome::Focus((focus + n - 1) % n),
+        Key::Next => {
+            modal.submit_on_enter = false;
+            Outcome::Focus((focus + 1) % n)
+        }
+        Key::Prev => {
+            modal.submit_on_enter = false;
+            Outcome::Focus((focus + n - 1) % n)
+        }
         Key::Activate => Outcome::Choose(focus),
+        Key::Enter if modal.submit_on_enter && modal.typed().is_some_and(|t| !t.as_str().is_empty()) => {
+            match modal.buttons.iter().position(|b| b.role == Role::Other) {
+                Some(i) => Outcome::Choose(i),
+                None => Outcome::Nothing,
+            }
+        }
         Key::Enter if modal.buttons[focus].role == Role::Grant => Outcome::Nothing,
         Key::Enter => Outcome::Choose(focus),
         Key::Escape => Outcome::Choose(modal.safe()),

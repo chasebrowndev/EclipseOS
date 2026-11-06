@@ -46,6 +46,13 @@ ignore = [
     # attacker-supplied documents. Unmaintained, not vulnerable. Revisit when
     # resvg moves to harfrust.
     "RUSTSEC-2026-0206",
+
+    # RUSTSEC-2026-0441 — `pin-utils` is unmaintained (repository archived
+    # 2026-10-01). Not a vulnerability, and on this platform it is never
+    # compiled: it reaches the graph only through `wasmtimer`, a wasm-only
+    # dependency of iced_futures. Revisit when iced drops wasmtimer or moves
+    # it off pin-utils.
+    "RUSTSEC-2026-0441",
 ]
 
 # ---------------------------------------------------------------------------

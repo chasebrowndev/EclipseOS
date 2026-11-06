@@ -143,11 +143,112 @@ pub fn opens_as_secondary(g: &Gpu, mode: GpuMode) -> bool {
     g.connectors_total > 0 && !(mode == GpuMode::Integrated && g.class == Class::Discrete)
 }
 
-/// Whether a secondary's outputs are always rendered on the primary and copied.
-/// In `dedicated` mode the discrete GPU renders everything; `hybrid` has each
-/// GPU render its own outputs and copies only as a per-frame fallback.
-pub fn always_copies(mode: GpuMode) -> bool {
-    mode == GpuMode::Dedicated
+/// How an output's pixels reach its connector (ADR 0086, amended).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputRoute {
+    /// Composited by the GPU that owns the connector: every primary-GPU output
+    /// (so every output of a single-GPU box), and a secondary's with
+    /// `secondary-compositing` on.
+    Own,
+    /// The primary GPU renders into a LINEAR dmabuf it allocated and the
+    /// secondary's KMS imports that buffer for scanout (PRIME import +
+    /// `drmModeAddFB2`). No GL context of the secondary touches a pixel.
+    ImportScanout,
+    /// The primary renders, reads the frame back into system memory and the
+    /// secondary uploads it. Slower, but needs no cross-device buffer sharing.
+    CpuCopy,
+}
+
+impl OutputRoute {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OutputRoute::Own => "own-gpu",
+            OutputRoute::ImportScanout => "import-scanout",
+            OutputRoute::CpuCopy => "cpu-copy",
+        }
+    }
+
+    /// The primary GPU renders this output's frames.
+    pub fn renders_on_primary(self) -> bool {
+        self != OutputRoute::Own
+    }
+}
+
+/// Whether an output's frames are rendered on the primary rather than by its
+/// own GPU (ADR 0086). Never for the primary's own outputs. In `dedicated`
+/// always. Otherwise by default for a secondary, unless `secondary_compositing`
+/// opts into native compositing.
+pub fn wants_primary_render(mode: GpuMode, secondary: bool, secondary_compositing: bool) -> bool {
+    secondary && (mode == GpuMode::Dedicated || !secondary_compositing)
+}
+
+/// The route an output takes, given what was found out at bring-up.
+/// `import_ok`: a probe scanned a primary-allocated LINEAR buffer out on the
+/// secondary successfully. `copy_format`: a transfer format both GPUs share.
+/// Preference: import-scanout, then CPU copy, then (outside `dedicated`) the
+/// output's own GPU so it still lights. `dedicated` with neither is `CpuCopy`
+/// and the caller refuses the output.
+pub fn select_route(
+    mode: GpuMode,
+    secondary: bool,
+    secondary_compositing: bool,
+    import_ok: bool,
+    copy_format: bool,
+) -> OutputRoute {
+    if !wants_primary_render(mode, secondary, secondary_compositing) {
+        OutputRoute::Own
+    } else if import_ok {
+        OutputRoute::ImportScanout
+    } else if copy_format || mode == GpuMode::Dedicated {
+        OutputRoute::CpuCopy
+    } else {
+        OutputRoute::Own
+    }
+}
+
+/// Consecutive unqueueable frames after which an import-scanout output gives
+/// up on importing and drops to the CPU copy for good.
+pub const IMPORT_STRIKES: u32 = 3;
+
+/// Sticky demotion: `ImportScanout` becomes `CpuCopy` after
+/// [`IMPORT_STRIKES`] failed frames in a row when a copy format exists; a
+/// route never moves back up, nor does any other route change.
+pub fn demote(route: OutputRoute, strikes: u32, copy_format: bool) -> OutputRoute {
+    if route == OutputRoute::ImportScanout && strikes >= IMPORT_STRIKES && copy_format {
+        OutputRoute::CpuCopy
+    } else {
+        route
+    }
+}
+
+/// Colour formats tried, in order, for a buffer scanned out on another GPU.
+/// NVIDIA's planes take linear XRGB/ARGB8888 everywhere.
+pub const IMPORT_COLOR_FORMATS: [Fourcc; 4] = [
+    Fourcc::Argb8888,
+    Fourcc::Xrgb8888,
+    Fourcc::Abgr8888,
+    Fourcc::Xbgr8888,
+];
+
+/// The formats the primary renders LINEAR that the secondary's primary plane
+/// also takes (exactly, or as the opaque twin of an alpha format). Empty
+/// means no import-scanout buffer can exist.
+pub fn linear_scanout_formats(primary_render: &[Format], plane: &[Format]) -> Vec<Format> {
+    let opaque = |c: Fourcc| match c {
+        Fourcc::Argb8888 => Fourcc::Xrgb8888,
+        Fourcc::Abgr8888 => Fourcc::Xbgr8888,
+        o => o,
+    };
+    primary_render
+        .iter()
+        .filter(|f| f.modifier == Modifier::Linear && IMPORT_COLOR_FORMATS.contains(&f.code))
+        .filter(|f| {
+            plane
+                .iter()
+                .any(|p| p.modifier == Modifier::Linear && (p.code == f.code || p.code == opaque(f.code)))
+        })
+        .copied()
+        .collect()
 }
 
 /// Role of every GPU in `ranked` given the chosen primary. A secondary is any
@@ -298,11 +399,23 @@ pub fn plan_feedback(
             formats: formats.to_vec(),
         });
     }
-    if !home.texture.is_empty() {
+    // The primary renders the capture and every copied frame (ADR 0086), so a
+    // secondary's own tranche only offers formats the primary can also sample:
+    // a buffer one of them cannot import is never advertised.
+    let home_formats: Vec<Format> = match gpus.first().filter(|_| main != 0) {
+        Some(primary) => home
+            .texture
+            .iter()
+            .filter(|f| primary.texture.contains(f))
+            .copied()
+            .collect(),
+        None => home.texture.clone(),
+    };
+    if !home_formats.is_empty() {
         out.push(Tranche {
             target: home.render_node,
             scanout: false,
-            formats: home.texture.clone(),
+            formats: home_formats,
         });
     }
     let sets: Vec<&[Format]> = gpus.iter().map(|g| g.texture.as_slice()).collect();
@@ -708,10 +821,67 @@ mod tests {
     }
 
     #[test]
-    fn only_dedicated_always_copies() {
-        assert!(always_copies(GpuMode::Dedicated));
-        assert!(!always_copies(GpuMode::Hybrid));
-        assert!(!always_copies(GpuMode::Integrated));
+    fn route_selection() {
+        use GpuMode::*;
+        use OutputRoute::*;
+        // Primary-GPU outputs, and so every output of a single-GPU box, never
+        // take a cross-GPU route, whatever the probes or options say.
+        for m in [Integrated, Hybrid, Dedicated] {
+            for opt in [false, true] {
+                for import in [false, true] {
+                    for fmt in [false, true] {
+                        assert!(!wants_primary_render(m, false, opt));
+                        assert_eq!(select_route(m, false, opt, import, fmt), Own);
+                    }
+                }
+            }
+        }
+        // A secondary prefers importing, then the CPU copy ...
+        assert_eq!(select_route(Hybrid, true, false, true, true), ImportScanout);
+        assert_eq!(select_route(Integrated, true, false, true, false), ImportScanout);
+        assert_eq!(select_route(Hybrid, true, false, false, true), CpuCopy);
+        // ... native compositing is opt-in ...
+        assert_eq!(select_route(Hybrid, true, true, true, true), Own);
+        // ... with nothing shared it lights natively rather than staying dark ...
+        assert_eq!(select_route(Hybrid, true, false, false, false), Own);
+        // ... and dedicated never composites on the secondary.
+        assert_eq!(select_route(Dedicated, true, true, true, true), ImportScanout);
+        assert_eq!(select_route(Dedicated, true, false, false, false), CpuCopy);
+    }
+
+    #[test]
+    fn demotion_is_sticky_and_one_way() {
+        use OutputRoute::*;
+        assert_eq!(demote(ImportScanout, IMPORT_STRIKES - 1, true), ImportScanout);
+        assert_eq!(demote(ImportScanout, IMPORT_STRIKES, true), CpuCopy);
+        // No copy format: stay put rather than strand the output.
+        assert_eq!(demote(ImportScanout, 99, false), ImportScanout);
+        // Nothing climbs back, and the other routes never move.
+        assert_eq!(demote(CpuCopy, 0, true), CpuCopy);
+        assert_eq!(demote(Own, 99, true), Own);
+    }
+
+    #[test]
+    fn linear_scanout_intersection() {
+        let tiled = Modifier::from(0x0100_0000_0000_0001);
+        let primary = [
+            fmt(Fourcc::Argb8888, tiled),
+            fmt(Fourcc::Argb8888, Modifier::Linear),
+            fmt(Fourcc::Nv12, Modifier::Linear),
+        ];
+        // The plane takes only the opaque twin: still importable.
+        let plane = [
+            fmt(Fourcc::Xrgb8888, Modifier::Linear),
+            fmt(Fourcc::Xrgb8888, tiled),
+        ];
+        assert_eq!(
+            linear_scanout_formats(&primary, &plane),
+            vec![fmt(Fourcc::Argb8888, Modifier::Linear)]
+        );
+        // A plane with only a vendor-tiled layout cannot take our buffer.
+        assert!(linear_scanout_formats(&primary, &[fmt(Fourcc::Xrgb8888, tiled)]).is_empty());
+        // A primary that cannot render LINEAR has nothing to offer.
+        assert!(linear_scanout_formats(&[fmt(Fourcc::Argb8888, tiled)], &plane).is_empty());
     }
 
     fn feedback_gpus() -> Vec<FeedbackGpu> {
@@ -765,6 +935,18 @@ mod tests {
         assert_eq!(plan[0].target, 200);
         assert_eq!(plan[1].target, 100);
         assert_eq!(plan[1].formats, [fmt(Fourcc::Xrgb8888, Modifier::Linear)]);
+    }
+
+    #[test]
+    fn a_secondary_tranche_offers_only_what_the_primary_can_sample() {
+        let mut g = feedback_gpus();
+        // A tiled layout only the dGPU understands must not be advertised.
+        let tiled = fmt(Fourcc::Xrgb8888, Modifier::from(0x0300_0000_0000_0001u64));
+        g[1].texture.push(tiled);
+        let plan = plan_feedback(1, &g, None);
+        assert_eq!(plan[0].target, 200);
+        assert!(!plan[0].formats.contains(&tiled));
+        assert!(plan.iter().all(|t| !t.formats.contains(&tiled)));
     }
 
     #[test]

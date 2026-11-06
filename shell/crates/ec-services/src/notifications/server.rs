@@ -9,8 +9,10 @@ use std::thread;
 use zbus::blocking::connection;
 use zbus::fdo::{RequestNameFlags, RequestNameReply};
 use zbus::interface;
+use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedValue;
 
+use super::history::{now_secs, wire_list, Shared, WireEntry, HISTORY_BUS_NAME, HISTORY_PATH};
 use super::{parse_actions, CloseReason, Command, Event, Notification, Notifications, Urgency};
 
 const BUS_NAME: &str = "org.freedesktop.Notifications";
@@ -27,6 +29,103 @@ struct Server {
     /// Ids are handed out from here. Zero is reserved by the spec as "not a
     /// notification", so the first one out is 1.
     last_id: u32,
+    store: Shared,
+}
+
+/// Tell history watchers the list (or a live flag) changed.
+async fn history_changed(conn: &zbus::Connection) {
+    if let Ok(emitter) = SignalEmitter::new(conn, HISTORY_PATH) {
+        let _ = HistoryServer::changed(&emitter).await;
+    }
+}
+
+/// `org.eclipse.NotificationHistory`: the taskbar's window onto the store.
+/// Private to the session; see `history.rs` for what is and is not kept.
+/// Served under its own bus name, not `org.freedesktop.Notifications`: a
+/// sandbox granted the latter to post its own notices must not get a read of
+/// everyone's bodies or a way to press other apps' buttons.
+struct HistoryServer {
+    store: Shared,
+    /// Back to the toasts GUI, so an invoked toast leaves the screen.
+    events: Sender<Event>,
+}
+
+/// The connection owns two names and zbus routes by path, so a call addressed
+/// to `org.freedesktop.Notifications` would reach this object too. Refuse
+/// anything not sent to the history's own name.
+fn addressed_to_history(header: &zbus::message::Header<'_>) -> zbus::fdo::Result<()> {
+    match header.destination() {
+        Some(d) if d.as_str() == HISTORY_BUS_NAME => Ok(()),
+        _ => Err(zbus::fdo::Error::AccessDenied(
+            "notification history is served on org.eclipse.NotificationHistory".into(),
+        )),
+    }
+}
+
+#[interface(name = "org.eclipse.NotificationHistory")]
+impl HistoryServer {
+    /// Newest first.
+    fn list(&self, #[zbus(header)] header: zbus::message::Header<'_>) -> zbus::fdo::Result<Vec<WireEntry>> {
+        addressed_to_history(&header)?;
+        Ok(wire_list(&self.store.lock()))
+    }
+
+    async fn remove(
+        &self,
+        id: u32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        addressed_to_history(&header)?;
+        let changed = self.store.lock().remove(id);
+        if changed {
+            let _ = Self::changed(&emitter).await;
+        }
+        Ok(())
+    }
+
+    async fn clear(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        addressed_to_history(&header)?;
+        let changed = self.store.lock().clear();
+        if changed {
+            let _ = Self::changed(&emitter).await;
+        }
+        Ok(())
+    }
+
+    /// Press a button on a notification that is still live. False (nothing
+    /// sent) once it has expired, been dismissed or withdrawn.
+    async fn invoke_action(
+        &self,
+        id: u32,
+        key: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+        #[zbus(connection)] conn: &zbus::Connection,
+    ) -> zbus::fdo::Result<bool> {
+        addressed_to_history(&header)?;
+        if !self.store.lock().invoke(id, &key) {
+            return Ok(false);
+        }
+        if let Ok(e) = SignalEmitter::new(conn, OBJECT_PATH) {
+            let _ = Server::action_invoked(&e, id, &key).await;
+            let _ = Server::notification_closed(&e, id, CloseReason::Dismissed as u32).await;
+        }
+        // The toast, if drawn, goes; the GUI does not echo a close back.
+        let _ = self.events.send(Event::Closed {
+            id,
+            reason: CloseReason::Dismissed,
+        });
+        let _ = Self::changed(&emitter).await;
+        Ok(true)
+    }
+
+    #[zbus(signal)]
+    async fn changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
 }
 
 #[interface(name = "org.freedesktop.Notifications")]
@@ -35,8 +134,9 @@ impl Server {
     /// we do not render is dropped here rather than passed on, so the GUI sees
     /// a plain struct and no `Value`s.
     #[allow(clippy::too_many_arguments)]
-    fn notify(
+    async fn notify(
         &mut self,
+        #[zbus(connection)] conn: &zbus::Connection,
         app_name: String,
         replaces_id: u32,
         app_icon: String,
@@ -82,16 +182,23 @@ impl Server {
 
         // A full channel or a gone GUI is not an error the client can act on;
         // it still gets its id back.
+        let stored = self.store.lock().posted(&notification, now_secs());
         let _ = self.events.send(Event::Posted(Box::new(notification)));
+        if stored {
+            history_changed(conn).await;
+        }
         id
     }
 
     /// The sending application withdrawing its own notification.
-    fn close_notification(&mut self, id: u32) {
+    async fn close_notification(&mut self, id: u32, #[zbus(connection)] conn: &zbus::Connection) {
         let _ = self.events.send(Event::Closed {
             id,
             reason: CloseReason::ByCall,
         });
+        if self.store.lock().closed(id) {
+            history_changed(conn).await;
+        }
     }
 
     fn get_capabilities(&self) -> Vec<&'static str> {
@@ -132,6 +239,8 @@ pub fn spawn() -> zbus::Result<Notifications> {
     let (event_tx, event_rx) = mpsc::channel();
     let (command_tx, command_rx) = mpsc::channel();
     let compositor_tx = event_tx.clone();
+    let history = Shared::default();
+    let history_for_serve = history.clone();
 
     // The connection is built on the service thread so that the whole D-Bus
     // side lives and dies there, but the caller still learns about a name
@@ -151,17 +260,30 @@ pub fn spawn() -> zbus::Result<Notifications> {
                     b.serve_at(
                         OBJECT_PATH,
                         Server {
-                            events: event_tx,
+                            events: event_tx.clone(),
                             last_id: 0,
+                            store: history.clone(),
+                        },
+                    )
+                })
+                .and_then(|b| {
+                    b.serve_at(
+                        HISTORY_PATH,
+                        HistoryServer {
+                            store: history,
+                            events: event_tx,
                         },
                     )
                 })
                 .and_then(connection::Builder::build)
                 .and_then(|connection| {
-                    match connection.request_name_with_flags(BUS_NAME, RequestNameFlags::DoNotQueue.into())? {
-                        RequestNameReply::PrimaryOwner => Ok(connection),
-                        _ => Err(zbus::Error::NameTaken),
+                    for name in [BUS_NAME, HISTORY_BUS_NAME] {
+                        match connection.request_name_with_flags(name, RequestNameFlags::DoNotQueue.into())? {
+                            RequestNameReply::PrimaryOwner => {}
+                            _ => return Err(zbus::Error::NameTaken),
+                        }
                     }
+                    Ok(connection)
                 });
 
             let connection = match connection {
@@ -177,7 +299,7 @@ pub fn spawn() -> zbus::Result<Notifications> {
                 }
             };
 
-            serve(&connection, &command_rx);
+            serve(&connection, &command_rx, &history_for_serve);
         })
         .map_err(|e| zbus::Error::InputOutput(std::sync::Arc::new(e)))?;
 
@@ -198,7 +320,7 @@ pub fn spawn() -> zbus::Result<Notifications> {
 /// Emit what the human did, until the GUI drops its handle. Method calls are
 /// dispatched by the connection's own task, so this thread only carries the
 /// outbound half.
-fn serve(connection: &zbus::blocking::Connection, commands: &mpsc::Receiver<Command>) {
+fn serve(connection: &zbus::blocking::Connection, commands: &mpsc::Receiver<Command>, history: &Shared) {
     let object_server = connection.object_server();
     let Ok(iface) = object_server.interface::<_, Server>(OBJECT_PATH) else {
         return;
@@ -206,6 +328,11 @@ fn serve(connection: &zbus::blocking::Connection, commands: &mpsc::Receiver<Comm
     let emitter = iface.signal_emitter();
 
     while let Ok(command) = commands.recv() {
+        // Whatever the GUI did, that toast is no longer live.
+        let id = match &command {
+            Command::Close { id, .. } | Command::Invoke { id, .. } => *id,
+        };
+        let history_changed_now = history.lock().closed(id);
         let result = match command {
             Command::Close { id, reason } => {
                 zbus::block_on(Server::notification_closed(emitter, id, reason as u32))
@@ -218,6 +345,13 @@ fn serve(connection: &zbus::blocking::Connection, commands: &mpsc::Receiver<Comm
                 Server::notification_closed(emitter, id, CloseReason::Dismissed as u32).await
             }),
         };
+        if history_changed_now {
+            zbus::block_on(async {
+                if let Ok(e) = SignalEmitter::new(connection.inner(), HISTORY_PATH) {
+                    let _ = HistoryServer::changed(&e).await;
+                }
+            });
+        }
         if result.is_err() {
             // The bus is gone. Nothing further will succeed either.
             return;
