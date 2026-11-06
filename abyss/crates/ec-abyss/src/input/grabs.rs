@@ -330,6 +330,8 @@ pub fn finish_move(state: &mut AbyssState, window: &Window) {
     // A screen-edge preview lands (`mode "de"`); a no-op without one.
     crate::shell::quicktile::drop_preview(state, window);
     crate::shell::drop_window(state, window);
+    // A floating window released over another output moves there.
+    crate::shell::land_on_output(state, window);
 }
 
 /// Drag one or two edges of the window; the opposite edges stay put.
@@ -818,6 +820,89 @@ pub fn start_move_from(
     true
 }
 
+/// Height of the strip along the top of a floating `mode "de"` window that a
+/// press can start a move from, logical px. A fixed constant, not a config key.
+pub(crate) const DRAG_STRIP_HEIGHT: i32 = 32;
+
+/// Whether `pos` lies in the top [`DRAG_STRIP_HEIGHT`] rows of `content`.
+pub(crate) fn in_drag_strip(content: Rectangle<i32, Logical>, pos: Point<f64, Logical>) -> bool {
+    let height = DRAG_STRIP_HEIGHT.min(content.size.h);
+    let x = pos.x >= content.loc.x as f64 && pos.x < (content.loc.x + content.size.w) as f64;
+    let y = pos.y >= content.loc.y as f64 && pos.y < (content.loc.y + height) as f64;
+    x && y
+}
+
+/// A left press on the top strip of a window, waiting to see whether it
+/// becomes a move. The press itself went to the seat (the client and click to
+/// focus see it); only motion past the titlebar drag threshold starts the grab.
+#[derive(Debug)]
+pub struct StripDrag {
+    pub window: Window,
+    pub origin: Point<f64, Logical>,
+}
+
+/// The floating window whose top strip is under the pointer, when that strip
+/// may start a move: `mode "de"`, a Wayland toplevel with no compositor
+/// titlebar of its own (a client-side-decorated window; server-side ones drag
+/// by their bar), not fullscreen, and not while the screen is locked.
+fn strip_window_under_pointer(state: &AbyssState) -> Option<Window> {
+    if !crate::shell::de::stacking(state) || state.lock.locked || state.pointer_grab_active {
+        return None;
+    }
+    let window = grabbable_window_under_pointer(state)?;
+    if window.toplevel().is_none() || crate::shell::titlebar::bar_height(state, &window) > 0 {
+        return None;
+    }
+    let id = crate::shell::output_of_window(state, &window)?;
+    let entry = state.outputs.get(id)?;
+    if !entry.workspaces[entry.active]
+        .floating
+        .iter()
+        .any(|f| f.window == window)
+    {
+        return None;
+    }
+    let content = state.space.element_geometry(&window)?;
+    in_drag_strip(content, state.pointer_location).then_some(window)
+}
+
+/// A left press (not taken by a titlebar, edge, or mousebind): arm a strip drag
+/// if the press is on a floating window's top strip. Never swallows the press.
+pub fn arm_strip_drag(state: &mut AbyssState) {
+    state.strip_drag = strip_window_under_pointer(state).map(|window| StripDrag {
+        window,
+        origin: state.pointer_location,
+    });
+}
+
+/// Pointer motion: once an armed strip press has moved past the titlebar drag
+/// threshold, start the same move grab a titlebar drag uses.
+pub fn strip_motion(state: &mut AbyssState) {
+    let Some(origin) = state.strip_drag.as_ref().map(|d| d.origin) else {
+        return;
+    };
+    let p = state.pointer_location;
+    let (dx, dy) = (p.x - origin.x, p.y - origin.y);
+    let threshold = crate::shell::titlebar::DRAG_THRESHOLD;
+    if dx * dx + dy * dy < threshold * threshold {
+        return;
+    }
+    let Some(StripDrag { window, origin }) = state.strip_drag.take() else {
+        return;
+    };
+    if state.lock.locked || drag_active_but_click(state) {
+        return;
+    }
+    start_move_from(state, window, super::BTN_LEFT, Some(origin));
+}
+
+/// A button release ends an armed strip press without a move.
+pub fn strip_release(state: &mut AbyssState, button: u32) {
+    if button == super::BTN_LEFT {
+        state.strip_drag = None;
+    }
+}
+
 /// Compositor-initiated resize; the dragged corner is the one nearest the
 /// pointer (see [`edges_for`]). Returns whether it was installed.
 pub fn start_resize_at(state: &mut AbyssState, window: Window, button: u32) -> bool {
@@ -1096,6 +1181,28 @@ mod tests {
         assert_eq!(resized_rect(init, E::Right, d), r(100, 100, 450, 300));
         assert_eq!(resized_rect(init, E::Top, d), r(100, 130, 400, 270));
         assert_eq!(resized_rect(init, E::None, d), init);
+    }
+
+    #[test]
+    fn drag_strip_is_the_top_rows_of_the_content_only() {
+        let content = r(100, 100, 300, 200);
+        let at = |x: f64, y: f64| in_drag_strip(content, Point::from((x, y)));
+        assert!(at(100.0, 100.0), "the first row, first column");
+        assert!(
+            at(399.0, 100.0 + DRAG_STRIP_HEIGHT as f64 - 1.0),
+            "the last strip row"
+        );
+        assert!(
+            !at(200.0, 100.0 + DRAG_STRIP_HEIGHT as f64),
+            "one row below the strip"
+        );
+        assert!(!at(200.0, 99.0), "above the content");
+        assert!(!at(400.0, 150.0), "right of the content");
+        assert!(!at(99.0, 150.0), "left of the content");
+        // A window shorter than the strip is all strip, never past its bottom.
+        let short = r(0, 0, 50, 10);
+        assert!(in_drag_strip(short, Point::from((5.0, 9.0))));
+        assert!(!in_drag_strip(short, Point::from((5.0, 10.0))));
     }
 
     #[test]

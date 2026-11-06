@@ -213,6 +213,9 @@ pub struct AbyssState {
     pub tile_drag: Option<crate::shell::TileDrag>,
     /// The `mode "de"` screen-edge tile preview of a window drag (`shell::quicktile`).
     pub tile_preview: Option<crate::shell::quicktile::Preview>,
+    /// A press on the top strip of a floating `mode "de"` window that may
+    /// still become a move (`input::grabs::arm_strip_drag`).
+    pub strip_drag: Option<crate::input::grabs::StripDrag>,
     /// Whether the layout of a closing tiled window's neighbours is held
     /// until its close ghost is done (COMP-02 §9, ADR 0073).
     pub retile_hold: crate::shell::RetileHold,
@@ -630,6 +633,7 @@ impl AbyssState {
             trusted_ui: crate::trusted_ui::TrustedUi::default(),
             tile_drag: None,
             tile_preview: None,
+            strip_drag: None,
             retile_hold: crate::shell::RetileHold::None,
             cursor_status: smithay::input::pointer::CursorImageStatus::default_named(),
             config,
