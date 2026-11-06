@@ -1891,6 +1891,9 @@ mod tests {
             icon: TrayIcon::None,
         };
         let mut app = crate::app::App::new();
+        // `App::new` reads the live compositor's widget order when one is
+        // reachable; this test is about the default layout, tray included.
+        app.widget_cfg = crate::widgets::Config::default();
         app.radios.tray = vec![item("steam"), item("discord"), item("slack")];
         app.tray = crate::conn::TrayConfig {
             pinned: Some(vec!["discord".into(), "steam".into()]),

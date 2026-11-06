@@ -30,6 +30,13 @@ ignore = [
     # Revisit when cosmic-text moves to a maintained parser, or if an advisory
     # upgrades this to a vulnerability.
     "RUSTSEC-2026-0192",
+
+    # RUSTSEC-2026-0441 — `pin-utils` is unmaintained (repository archived
+    # 2026-10-01). Not a vulnerability, and on this platform it is never
+    # compiled: it reaches the graph only through `wasmtimer`, a wasm-only
+    # dependency of iced_futures. Revisit when iced drops wasmtimer or moves
+    # it off pin-utils.
+    "RUSTSEC-2026-0441",
 ]
 
 # Must be compatible with AGPL-3.0-only distribution. GPLv2-only is
