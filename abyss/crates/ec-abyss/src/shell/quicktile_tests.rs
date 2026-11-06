@@ -755,3 +755,113 @@ fn a_resize_snaps_the_moving_edges() {
     );
     assert_eq!(float_rect(&h, &w).loc, f.loc, "the fixed edges stayed");
 }
+
+fn zone_of_win(h: &Harness, w: &Window) -> Option<Zone> {
+    quicktile::zone_of(&h.state, w)
+}
+
+/// Every pair of tiled windows on the output is disjoint.
+fn assert_no_tile_overlap(h: &Harness, ws: &[&Window]) {
+    let id = shell::output_of_window(&h.state, ws[0]).unwrap();
+    let usable = usable_of(h, id);
+    for (i, a) in ws.iter().enumerate() {
+        for b in &ws[i + 1..] {
+            if let (Some(za), Some(zb)) = (zone_of_win(h, a), zone_of_win(h, b)) {
+                assert!(
+                    !za.rect(usable).overlaps(zb.rect(usable)),
+                    "{za:?} overlaps {zb:?}"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn tiling_onto_an_occupied_zone_swaps_the_occupant_to_the_free_side() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_ta, a) = de_window(&mut h, &mut c);
+    let (_tb, b) = de_window(&mut h, &mut c);
+    tile(&mut h, &a, Direction::Left);
+    tile(&mut h, &b, Direction::Right);
+    assert_eq!(zone_of_win(&h, &a), Some(Zone::Left));
+    assert_eq!(zone_of_win(&h, &b), Some(Zone::Right));
+    // b goes to the occupied left half (as an edge drop would): a is swapped over.
+    quicktile::set(&mut h.state, &b, Some(Zone::Left));
+    assert_eq!(zone_of_win(&h, &b), Some(Zone::Left));
+    assert_eq!(zone_of_win(&h, &a), Some(Zone::Right));
+    assert_no_tile_overlap(&h, &[&a, &b]);
+}
+
+#[test]
+fn tiling_onto_a_half_reflows_quarter_occupants_and_a_third_window_never_overlaps() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_ta, a) = de_window(&mut h, &mut c);
+    let (_tb, b) = de_window(&mut h, &mut c);
+    let (_tc, w) = de_window(&mut h, &mut c);
+    quicktile::set(&mut h.state, &a, Some(Zone::TopLeft));
+    quicktile::set(&mut h.state, &b, Some(Zone::BottomLeft));
+    quicktile::set(&mut h.state, &w, Some(Zone::Left));
+    assert_eq!(zone_of_win(&h, &w), Some(Zone::Left));
+    assert_eq!(zone_of_win(&h, &a), Some(Zone::TopRight));
+    assert_eq!(zone_of_win(&h, &b), Some(Zone::BottomRight));
+    assert_no_tile_overlap(&h, &[&a, &b, &w]);
+    // Nowhere free: a full-height tile over a half and two quarters on the
+    // right frees nothing, so the occupants go back to floating.
+    quicktile::set(&mut h.state, &w, Some(Zone::Top));
+    assert_no_tile_overlap(&h, &[&a, &b, &w]);
+}
+
+#[test]
+fn a_client_moveresize_needs_a_floating_window_and_a_held_button_on_it() {
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge;
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_t, w) = de_window(&mut h, &mut c);
+    let r = content(&h, &w);
+    let inside = pt(
+        r.loc.x as f64 + r.size.w as f64 / 2.0,
+        r.loc.y as f64 + r.size.h as f64 / 2.0,
+    );
+    move_to(&mut h, inside);
+
+    // No button held: refused.
+    assert!(!crate::input::grabs::start_client_moveresize(
+        &mut h.state,
+        w.clone(),
+        None
+    ));
+
+    click(&mut h, LEFT, ButtonState::Pressed);
+    // Held on the window, floating: a move starts, and replaces the click grab.
+    assert!(crate::input::grabs::start_client_moveresize(
+        &mut h.state,
+        w.clone(),
+        None
+    ));
+    assert!(h.state.pointer_grab_active);
+    click(&mut h, LEFT, ButtonState::Released);
+    assert!(!h.state.pointer_grab_active);
+
+    // A resize with an explicit edge.
+    click(&mut h, LEFT, ButtonState::Pressed);
+    assert!(crate::input::grabs::start_client_moveresize(
+        &mut h.state,
+        w.clone(),
+        Some(ResizeEdge::BottomRight)
+    ));
+    click(&mut h, LEFT, ButtonState::Released);
+
+    // Not over the window: refused.
+    click(&mut h, LEFT, ButtonState::Pressed);
+    let far = pt(1.0, 1.0);
+    h.state.pointer_location = far;
+    let (_t2, other) = de_window(&mut h, &mut c);
+    assert!(!crate::input::grabs::start_client_moveresize(
+        &mut h.state,
+        other,
+        None
+    ));
+    click(&mut h, LEFT, ButtonState::Released);
+}

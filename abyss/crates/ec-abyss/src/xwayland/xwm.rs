@@ -544,14 +544,30 @@ impl XwmHandler for AbyssState {
         self.space.raise_element(&element, true);
     }
 
-    /// Interactive move/resize is compositor policy, not client policy: a
-    /// tiled window cannot talk its way out of the layout (COMP-07 §1).
-    fn resize_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32, _edge: ResizeEdge) {
-        tracing::debug!(class = window.class(), "ignoring x11 interactive resize request");
+    /// Interactive move/resize from the client's own titlebar (ADR 0026): the
+    /// same grab as Alt-drag, but only for a floating window with a physical
+    /// button held on it. A tiled window cannot talk its way out of the layout.
+    fn resize_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32, edge: ResizeEdge) {
+        use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::ResizeEdge as E;
+        let edges = match edge {
+            ResizeEdge::Top => E::Top,
+            ResizeEdge::Bottom => E::Bottom,
+            ResizeEdge::Left => E::Left,
+            ResizeEdge::TopLeft => E::TopLeft,
+            ResizeEdge::BottomLeft => E::BottomLeft,
+            ResizeEdge::Right => E::Right,
+            ResizeEdge::TopRight => E::TopRight,
+            ResizeEdge::BottomRight => E::BottomRight,
+        };
+        let started = window_for(self, &window)
+            .is_some_and(|w| crate::input::grabs::start_client_moveresize(self, w, Some(edges)));
+        tracing::debug!(class = window.class(), started, "x11 interactive resize request");
     }
 
     fn move_request(&mut self, _xwm: XwmId, window: X11Surface, _button: u32) {
-        tracing::debug!(class = window.class(), "ignoring x11 interactive move request");
+        let started = window_for(self, &window)
+            .is_some_and(|w| crate::input::grabs::start_client_moveresize(self, w, None));
+        tracing::debug!(class = window.class(), started, "x11 interactive move request");
     }
 
     // ------------------------------------------------------------ selection
