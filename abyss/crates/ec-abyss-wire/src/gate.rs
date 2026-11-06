@@ -101,6 +101,9 @@ pub const TABLE: &[Entry] = &[
     // does, and it only rebroadcasts on the `launcher` event stream; the
     // compositor holds no launcher state and the bar decides what opens.
     e("open_launcher", Kind::Command, true),
+    // Open the bar's power drawer (short power-key press, `ec-ctl open-power`).
+    // Same reasoning as `open_launcher`: a rebroadcast on the `power` event.
+    e("open_power", Kind::Command, true),
     // Config read/write (COMP-13 §1.4). `set_config_value` is Command and not
     // Privileged on purpose: it edits the same keys a human edits in a text
     // editor, and the file it may touch is decided by `CONFIG_FILES`, not by
@@ -426,6 +429,20 @@ mod tests {
         assert_eq!(check(&owner(), 1000, &cfg, "open_launcher"), Decision::Allow);
         assert!(matches!(
             check(&other, 1000, &cfg, "open_launcher"),
+            Decision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn open_power_is_an_owner_only_command() {
+        let cfg = Config::default();
+        let other = Peer { uid: 1001, ..owner() };
+        let entry = TABLE.iter().find(|e| e.method == "open_power").expect("row");
+        assert_eq!(entry.kind, Kind::Command);
+        assert!(entry.implemented);
+        assert_eq!(check(&owner(), 1000, &cfg, "open_power"), Decision::Allow);
+        assert!(matches!(
+            check(&other, 1000, &cfg, "open_power"),
             Decision::Deny(_)
         ));
     }

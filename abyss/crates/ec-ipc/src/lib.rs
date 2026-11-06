@@ -52,6 +52,9 @@ pub enum EventKind {
     /// `open_launcher` relayed to the bar (`bar.launcher-style "menu"`):
     /// `{"action": "open", "output": <id>, "output_name": "<connector>"}`.
     Launcher,
+    /// `open_power` relayed to the bar (short power-key press), same shape as
+    /// `Launcher`: `{"action": "open", "output": <id>, "output_name": "<connector>"}`.
+    Power,
     /// Whether a personal secret is set: `{"set": bool}`. Never the phrase
     /// itself (COMP-10 §2).
     Phrase,
@@ -74,6 +77,7 @@ impl EventKind {
         EventKind::Config,
         EventKind::Keybind,
         EventKind::Launcher,
+        EventKind::Power,
         EventKind::Phrase,
         EventKind::DecisionsPending,
         EventKind::Theme,
@@ -90,6 +94,7 @@ impl EventKind {
             EventKind::Config => "config",
             EventKind::Keybind => "keybind",
             EventKind::Launcher => "launcher",
+            EventKind::Power => "power",
             EventKind::Phrase => "phrase",
             EventKind::DecisionsPending => "decisions_pending",
             EventKind::Theme => "theme",

@@ -22,6 +22,7 @@ pub const KINDS: &[EventKind] = &[
     EventKind::ConfigError,
     EventKind::Config,
     EventKind::Launcher,
+    EventKind::Power,
 ];
 
 /// What the bar reads out of `bar.*` once, at startup, and again on every

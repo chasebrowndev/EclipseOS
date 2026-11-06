@@ -49,6 +49,7 @@ ec-ctl — control the abyss compositor
   ec-ctl agent install DIR       review and install an agent package from DIR
                                       (the decision is made in a compositor modal)
   ec-ctl reload                  re-read the config
+  ec-ctl open-power              open the bar's power drawer
   ec-ctl click X Y [left|right|middle] [COUNT]
   ec-ctl scroll X Y DX DY        scripted pointer input (needs misc { scripted-input })
   ec-ctl drag X1 Y1 X2 Y2 [left|right|middle] [--steps N] [--hold-ms MS]
@@ -275,6 +276,7 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
         "dump" => ("dump_state".into(), Value::Null, None),
         "agents" => ("get_agents".into(), Value::Null, None),
         "reload" => ("reload_config".into(), Value::Null, None),
+        "open-power" => ("open_power".into(), Value::Null, None),
         "addons" => ("get_config".into(), json!({}), Some(Table::Addons)),
         "watch" => {
             let events: Vec<Value> = args[1..].iter().map(|s| Value::String(s.clone())).collect();

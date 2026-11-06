@@ -22,7 +22,6 @@
 //! warning; it never stops the primary starting.
 
 use std::{
-    cell::RefCell,
     collections::HashSet,
     path::{Path, PathBuf},
     time::{Duration, Instant},
@@ -48,7 +47,7 @@ use smithay::{
         renderer::{
             damage::OutputDamageTracker,
             element::{texture::TextureRenderElement, Id, Kind, RenderElementStates},
-            gles::{GlesRenderer, GlesTexture},
+            gles::GlesRenderer,
             utils::DamageBag,
             Bind, ExportMem, ImportDma, ImportMem, Renderer, Texture, TextureMapping,
         },
@@ -135,6 +134,11 @@ pub struct DrmOutput {
     /// Secondary device, copy by default (ADR 0086) or `dedicated`: the copy
     /// path is the only path.
     always_copy: bool,
+    /// How this output's pixels reach its connector (ADR 0086). Only ever
+    /// demoted, `ImportScanout` -> `CpuCopy`, never promoted.
+    route: gpu::OutputRoute,
+    /// Frames in a row an import-scanout output could not queue.
+    import_strikes: u32,
     /// Format and modifiers of the transfer buffer both GPUs share, when
     /// there are any; without them the fallback is unavailable.
     copy_format: Option<(Fourcc, Vec<Modifier>)>,
@@ -159,13 +163,7 @@ struct SecondaryPass {
     /// The transfer buffer the secondary GPU may still be reading; kept out of
     /// the swapchain until that output's next VBlank.
     held: Option<Slot<GbmBuffer>>,
-    /// Importing the dmabuf failed, so frames go through system memory.
-    cpu_copy: bool,
 }
-
-/// The secondary-side texture imported from one swapchain slot, kept in the
-/// slot's user data so a buffer is imported once for its whole life.
-struct SlotTexture(RefCell<Option<GlesTexture>>);
 
 impl SecondaryPass {
     fn new(
@@ -195,7 +193,6 @@ impl SecondaryPass {
             damage: DamageBag::default(),
             force_full: true,
             held: None,
-            cpu_copy: false,
         }
     }
 
@@ -675,59 +672,106 @@ fn add_connector(
             .iter()
             .copied()
             .collect();
-        let secondary_texture: Vec<Format> = drm.devices[dev]
-            .renderer
-            .as_ref()
-            .map(|r| r.egl_context().dmabuf_texture_formats().iter().copied().collect())
-            .unwrap_or_default();
-        gpu::pick_transfer_format(&primary_render, &secondary_texture)
+        // The secondary never samples this buffer (the copy goes through
+        // system memory), so only the primary's side has to agree.
+        gpu::pick_transfer_format(&primary_render, &primary_render)
     } else {
         None
     };
-    let always_copy = gpu::output_copies(
+    // The route is decided here, once, from what this machine can do: first
+    // try to scan a primary-rendered LINEAR buffer out on the secondary (no
+    // secondary GL at all), then the CPU copy, then the output's own GPU.
+    let wants_primary = gpu::wants_primary_render(drm.gpu_mode, secondary, drm.secondary_compositing);
+    let mut compositor = None;
+    let mut import_ok = false;
+    if wants_primary {
+        let primary_render: Vec<Format> = drm
+            .renderer
+            .egl_context()
+            .dmabuf_render_formats()
+            .iter()
+            .copied()
+            .collect();
+        let surface = drm.devices[dev]
+            .drm
+            .create_surface(crtc, mode, &[handle])
+            .context("creating DRM surface")?;
+        let plane: Vec<Format> = surface.plane_info().formats.iter().copied().collect();
+        let linear = gpu::linear_scanout_formats(&primary_render, &plane);
+        if linear.is_empty() {
+            tracing::warn!(
+                output = %name,
+                device = %drm.devices[dev].tag,
+                "no LINEAR format is both rendered by the primary GPU and taken by the secondary's plane; \
+                 cannot scan out an imported buffer"
+            );
+        } else {
+            // `DrmCompositor::new` allocates a buffer, exports it through the
+            // secondary's framebuffer exporter (a foreign dmabuf, so a PRIME
+            // import and drmModeAddFB2) and test-commits it: this is the probe.
+            match new_compositor(drm, dev, surface, true, OutputModeSource::from(&output), linear) {
+                Ok(c) => {
+                    compositor = Some(c);
+                    import_ok = true;
+                }
+                Err(err) => tracing::warn!(
+                    output = %name,
+                    device = %drm.devices[dev].tag,
+                    ?err,
+                    "secondary GPU cannot scan out a buffer imported from the primary; falling back"
+                ),
+            }
+        }
+    }
+    let route = gpu::select_route(
         drm.gpu_mode,
         secondary,
         drm.secondary_compositing,
+        import_ok,
         copy_format.is_some(),
     );
-    if always_copy && copy_format.is_none() {
+    if route == gpu::OutputRoute::CpuCopy && copy_format.is_none() {
         anyhow::bail!(
             "no dmabuf format shared between the primary GPU and {}",
             drm.devices[dev].tag
         );
     }
     if secondary {
-        match (&copy_format, always_copy) {
-            (Some((fourcc, modifiers)), true) => tracing::info!(
-                output = %name,
-                device = %drm.devices[dev].tag,
-                ?fourcc,
-                ?modifiers,
-                "secondary output: render on primary, copy to {}",
-                drm.devices[dev].tag
-            ),
-            (_, true) => {}
-            (Some(_), false) => tracing::info!(
-                output = %name,
-                device = %drm.devices[dev].tag,
-                "output composited on {}; render-on-primary copy kept as the fallback",
-                drm.devices[dev].tag
-            ),
-            (None, false) => tracing::warn!(
-                output = %name,
-                device = %drm.devices[dev].tag,
-                "no dmabuf format shared with the primary GPU: no fallback for buffers {} cannot import",
-                drm.devices[dev].tag
-            ),
-        }
+        tracing::info!(
+            output = %name,
+            device = %drm.devices[dev].tag,
+            route = route.as_str(),
+            import_probe = import_ok,
+            copy_format = ?copy_format,
+            "secondary output route"
+        );
     }
-    let mode_source = if always_copy {
-        static_source(wl_mode.size)
-    } else {
-        OutputModeSource::from(&output)
+    let always_copy = route.renders_on_primary();
+    let compositor = match compositor {
+        Some(c) => c,
+        None => {
+            let mode_source = if route == gpu::OutputRoute::CpuCopy {
+                static_source(wl_mode.size)
+            } else {
+                OutputModeSource::from(&output)
+            };
+            let surface = drm.devices[dev]
+                .drm
+                .create_surface(crtc, mode, &[handle])
+                .context("creating DRM surface")?;
+            new_compositor(
+                drm,
+                dev,
+                surface,
+                false,
+                mode_source,
+                renderer_formats.iter().copied().collect(),
+            )
+            .context("DrmCompositor::new")?
+        }
     };
-    let pass = match (&copy_format, always_copy) {
-        (Some((fourcc, modifiers)), true) => Some(SecondaryPass::new(
+    let pass = match (&copy_format, route) {
+        (Some((fourcc, modifiers)), gpu::OutputRoute::CpuCopy) => Some(SecondaryPass::new(
             &drm.gbm,
             *fourcc,
             modifiers.clone(),
@@ -736,38 +780,6 @@ fn add_connector(
         )),
         _ => None,
     };
-    let device = &mut drm.devices[dev];
-    let surface = device
-        .drm
-        .create_surface(crtc, mode, &[handle])
-        .context("creating DRM surface")?;
-    let allocator = GbmAllocator::new(
-        device.gbm.clone(),
-        GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
-    );
-    let exporter = GbmFramebufferExporter::new(device.gbm.clone(), None);
-    let cursor_size = device.drm.cursor_size();
-    let gbm = device.gbm.clone();
-    let compositor = AbyssDrmCompositor::new(
-        mode_source,
-        surface,
-        None,
-        allocator,
-        exporter,
-        // Opaque variants are listed too: a driver that advertises only
-        // XRGB8888 on its primary plane would otherwise fail the modeset
-        // outright and surface as a black screen behind a single warning.
-        [
-            Fourcc::Abgr8888,
-            Fourcc::Argb8888,
-            Fourcc::Xbgr8888,
-            Fourcc::Xrgb8888,
-        ],
-        renderer_formats.iter().copied(),
-        cursor_size,
-        Some(gbm),
-    )
-    .context("DrmCompositor::new")?;
 
     // Dmabuf feedback for the surfaces this output mostly shows (COMP-02 §2,
     // ADR 0084).
@@ -808,8 +820,10 @@ fn add_connector(
             feedback,
             vrr_config,
             vrr_capable: matches!(vrr_support, VrrSupport::Supported),
-            copying: always_copy,
+            copying: route == gpu::OutputRoute::CpuCopy,
             always_copy,
+            route,
+            import_strikes: 0,
             copy_format,
             pass,
         });
@@ -823,6 +837,63 @@ fn add_connector(
         "output configured"
     );
     Ok(())
+}
+
+/// Build the scanout compositor of one output.
+///
+/// `via_primary`: the swapchain is allocated on the primary's GBM as LINEAR
+/// (`formats` are the primary's renderable LINEAR formats the plane takes), and
+/// the secondary's exporter imports each buffer as a foreign dmabuf
+/// (`GbmFramebufferExporter` with no import node treats every buffer as foreign
+/// and never accepts a client wl_buffer for direct scanout). Otherwise the
+/// swapchain lives on the output's own GBM.
+fn new_compositor(
+    drm: &DrmData,
+    dev: usize,
+    surface: smithay::backend::drm::DrmSurface,
+    via_primary: bool,
+    mode_source: OutputModeSource,
+    formats: Vec<Format>,
+) -> Result<AbyssDrmCompositor> {
+    let device = &drm.devices[dev];
+    let (allocator, colors): (_, &[Fourcc]) = if via_primary {
+        (
+            GbmAllocator::new(
+                drm.gbm.clone(),
+                GbmBufferFlags::RENDERING | GbmBufferFlags::LINEAR,
+            ),
+            &gpu::IMPORT_COLOR_FORMATS,
+        )
+    } else {
+        (
+            GbmAllocator::new(
+                device.gbm.clone(),
+                GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+            ),
+            // Opaque variants are listed too: a driver that advertises only
+            // XRGB8888 on its primary plane would otherwise fail the modeset
+            // outright and surface as a black screen behind a single warning.
+            &[
+                Fourcc::Abgr8888,
+                Fourcc::Argb8888,
+                Fourcc::Xbgr8888,
+                Fourcc::Xrgb8888,
+            ],
+        )
+    };
+    let exporter = GbmFramebufferExporter::new(device.gbm.clone(), None);
+    AbyssDrmCompositor::new(
+        mode_source,
+        surface,
+        None,
+        allocator,
+        exporter,
+        colors.iter().copied(),
+        formats,
+        device.drm.cursor_size(),
+        Some(device.gbm.clone()),
+    )
+    .map_err(|err| anyhow!("{err}"))
 }
 
 /// What each GPU we composite with can sample, in device order.
@@ -1778,13 +1849,23 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let output = entry.output.clone();
     let crtc = entry.crtc;
     let dev_id = drm.devices[entry.device].dev_id;
-    let (home, always_copy, can_fall_back) = (entry.device, entry.always_copy, entry.copy_format.is_some());
+    let route = entry.route;
+    // An import-scanout output is rendered by the primary like a primary
+    // output; only the buffer it lands in is scanned out elsewhere.
+    let home = if route == gpu::OutputRoute::ImportScanout {
+        0
+    } else {
+        entry.device
+    };
+    let can_fall_back = entry.copy_format.is_some();
     // ADR 0084: an output composites on its own GPU. Only when a visible client
     // buffer cannot be imported there does this frame go down the copy path (the
     // primary renders, the output's GPU blits); the next frame tries natively
-    // again. `dedicated` mode copies every frame of a secondary's output.
-    let copy = if always_copy {
+    // again. A `CpuCopy` output copies every frame.
+    let copy = if route == gpu::OutputRoute::CpuCopy {
         true
+    } else if route == gpu::OutputRoute::ImportScanout {
+        false
     } else if home != 0 && can_fall_back && !state.lock.locked {
         drm.devices[home]
             .renderer
@@ -1992,7 +2073,12 @@ fn render_output(state: &mut AbyssState, index: usize) {
     if copy != drm.outputs[index].copying {
         set_route(drm, index, copy);
     }
-    let flags = if copy { FrameFlags::empty() } else { flags };
+    // Client buffers are never scanned out on another GPU's plane (ADR 0086).
+    let flags = if copy || route.renders_on_primary() {
+        FrameFlags::empty()
+    } else {
+        flags
+    };
 
     let compositor = &mut drm.outputs[index].compositor;
     // COMP-03 §8: adaptive sync only while a surface covers the whole output;
@@ -2057,7 +2143,11 @@ fn render_output(state: &mut AbyssState, index: usize) {
     let surface_feedback = drm.outputs[index].feedback.as_ref().map(|f| SurfaceFeedback {
         render: f.render.clone(),
         // A copied frame never scans a client buffer out (ADR 0084).
-        scanout: if copy { f.render.clone() } else { f.scanout.clone() },
+        scanout: if copy || route.renders_on_primary() {
+            f.render.clone()
+        } else {
+            f.scanout.clone()
+        },
     });
 
     // Feedback needs `&state.space`, so the frame data is built outside the
@@ -2137,9 +2227,16 @@ fn render_output(state: &mut AbyssState, index: usize) {
     entry.frame_pending = queued;
     if queued {
         entry.commit_failures = 0;
+        entry.import_strikes = 0;
     } else if failed {
         entry.commit_failures = entry.commit_failures.saturating_add(1);
+        entry.import_strikes = entry.import_strikes.saturating_add(1);
     }
+    let demoted = gpu::demote(entry.route, entry.import_strikes, entry.copy_format.is_some());
+    if demoted != entry.route {
+        demote_to_cpu_copy(drm, index);
+    }
+    let entry = &mut drm.outputs[index];
     let arm = !queued && !entry.retry_armed && failed;
     if arm {
         // The frame had damage but could not be queued: retry within a frame
@@ -2219,6 +2316,67 @@ fn set_route(drm: &mut DrmData, index: usize, copy: bool) {
     );
 }
 
+/// An import-scanout output kept failing to queue frames (the secondary's
+/// KMS refused the primary's buffer at runtime): drop it to the CPU copy for
+/// good. The compositor's swapchain moves to the output's own GBM, the
+/// primary reads each frame back and the secondary uploads it. Logged once,
+/// at warn, with the reason.
+fn demote_to_cpu_copy(drm: &mut DrmData, index: usize) {
+    let dev = drm.outputs[index].device;
+    let name = drm.outputs[index].output.name();
+    let own_formats: Vec<Format> = drm.devices[dev]
+        .renderer
+        .as_ref()
+        .map(|r| r.egl_context().dmabuf_render_formats().iter().copied().collect())
+        .unwrap_or_default();
+    let mut switched = false;
+    for code in [
+        Fourcc::Abgr8888,
+        Fourcc::Argb8888,
+        Fourcc::Xbgr8888,
+        Fourcc::Xrgb8888,
+    ] {
+        let mods: Vec<Modifier> = own_formats
+            .iter()
+            .filter(|f| f.code == code)
+            .map(|f| f.modifier)
+            .collect();
+        if mods.is_empty() {
+            continue;
+        }
+        let allocator = GbmAllocator::new(
+            drm.devices[dev].gbm.clone(),
+            GbmBufferFlags::RENDERING | GbmBufferFlags::SCANOUT,
+        );
+        if drm.outputs[index]
+            .compositor
+            .set_format(allocator, code, mods)
+            .is_ok()
+        {
+            switched = true;
+            break;
+        }
+    }
+    let out = &mut drm.outputs[index];
+    out.import_strikes = 0;
+    if !switched {
+        tracing::warn!(
+            output = %name,
+            "import-scanout keeps failing and the CPU copy has no scanout format on the secondary; staying on import-scanout"
+        );
+        return;
+    }
+    out.route = gpu::OutputRoute::CpuCopy;
+    tracing::warn!(
+        output = %name,
+        strikes = gpu::IMPORT_STRIKES,
+        route = out.route.as_str(),
+        "secondary GPU refused the imported buffer {} frames in a row; this output now copies through system memory until restart",
+        gpu::IMPORT_STRIKES
+    );
+    set_route(drm, index, true);
+}
+
 /// What a secondary-output frame came to.
 enum SecondaryFrame {
     /// The primary pass had no damage; nothing to copy or queue.
@@ -2230,16 +2388,16 @@ enum SecondaryFrame {
     Frame(RenderElementStates),
 }
 
-/// ADR 0084 "render then copy" for one secondary output. The primary renders
-/// `elements` into an offscreen dmabuf; the secondary imports that dmabuf and
-/// its own [`DrmCompositor`] draws it as one full-output texture carrying the
-/// primary pass's damage. The caller queues the frame.
+/// The `CpuCopy` route (ADR 0084, ADR 0086). The primary renders `elements`
+/// into an offscreen dmabuf and reads it back into system memory; the
+/// secondary uploads those pixels as a plain texture and its own
+/// [`DrmCompositor`] draws them as one full-output texture carrying the
+/// primary pass's damage. The caller queues the frame. The secondary's GL
+/// context never imports a dmabuf.
 ///
-/// Sync: the primary's render fence is waited on before the secondary touches
-/// the buffer (a blocking wait, but the frame was just submitted and this is
-/// one GPU hop; explicit cross-device fences are future work). Going the other
-/// way, the transfer buffer is held until the output's VBlank so the
-/// primary does not overwrite it under the secondary's blit.
+/// Sync: the read-back is synchronous, so the upload sees finished pixels.
+/// The transfer buffer is held until the output's VBlank so the primary does
+/// not overwrite it while a queued frame is outstanding.
 fn render_secondary(
     primary: &mut GlesRenderer,
     secondary: &mut GlesRenderer,
@@ -2260,7 +2418,7 @@ fn render_secondary(
         .ok_or_else(|| anyhow!("transfer swapchain exhausted"))?;
     let age = if pass.force_full { 0 } else { slot.age() as usize };
     // `Slot::export` keeps the dmabuf in the slot, so this is the same
-    // buffer (and the same EGL image) every time the slot comes round.
+    // buffer (and the same primary-side EGL image) every time the slot comes round.
     let dmabuf = slot
         .export()
         .map_err(|err| anyhow!("exporting the transfer buffer: {err}"))?;
@@ -2293,58 +2451,21 @@ fn render_secondary(
     }
     pass.damage.add(damage);
 
-    // The secondary-side texture: imported once per slot.
-    slot.userdata()
-        .insert_if_missing(|| SlotTexture(RefCell::new(None)));
-    let cached = slot
-        .userdata()
-        .get::<SlotTexture>()
-        .and_then(|c| c.0.borrow().clone());
-    let mut texture = None;
-    if !pass.cpu_copy {
-        texture = match cached {
-            Some(t) => Some(t),
-            None => match secondary.import_dmabuf(&dmabuf, None) {
-                Ok(t) => {
-                    if let Some(c) = slot.userdata().get::<SlotTexture>() {
-                        *c.0.borrow_mut() = Some(t.clone());
-                    }
-                    Some(t)
-                }
-                Err(err) => {
-                    tracing::warn!(
-                        output = %out.output.name(),
-                        ?err,
-                        "secondary GPU cannot import the transfer buffer; copying through system memory"
-                    );
-                    pass.cpu_copy = true;
-                    None
-                }
-            },
-        };
-    }
-    let texture = match texture {
-        Some(t) => {
-            if sync.wait().is_err() {
-                tracing::debug!("waiting for the primary pass was interrupted");
-            }
-            t
-        }
-        None => {
-            // glReadPixels is synchronous, so no fence wait is needed here.
-            let region = Rectangle::from_size((size.w, size.h).into());
-            let mapping = primary
-                .copy_framebuffer(&target, region, Fourcc::Abgr8888)
-                .map_err(|err| anyhow!("reading back the transfer buffer: {err}"))?;
-            let flipped = mapping.flipped();
-            let bytes = primary
-                .map_texture(&mapping)
-                .map_err(|err| anyhow!("mapping the read-back: {err}"))?;
-            secondary
-                .import_memory(bytes, Fourcc::Abgr8888, (size.w, size.h).into(), flipped)
-                .map_err(|err| anyhow!("uploading to the secondary GPU: {err}"))?
-        }
-    };
+    // Through system memory: glReadPixels on the primary, a plain texture
+    // upload on the secondary. No EGLImage is ever created on the secondary's
+    // GL context (ADR 0086). glReadPixels is synchronous, so no fence wait.
+    drop(sync);
+    let region = Rectangle::from_size((size.w, size.h).into());
+    let mapping = primary
+        .copy_framebuffer(&target, region, Fourcc::Abgr8888)
+        .map_err(|err| anyhow!("reading back the transfer buffer: {err}"))?;
+    let flipped = mapping.flipped();
+    let bytes = primary
+        .map_texture(&mapping)
+        .map_err(|err| anyhow!("mapping the read-back: {err}"))?;
+    let texture = secondary
+        .import_memory(bytes, Fourcc::Abgr8888, (size.w, size.h).into(), flipped)
+        .map_err(|err| anyhow!("uploading to the secondary GPU: {err}"))?;
     drop(target);
 
     let full = Rectangle::from_size(texture.size());
