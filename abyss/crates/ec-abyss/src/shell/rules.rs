@@ -255,6 +255,14 @@ pub fn apply(state: &mut AbyssState, window: &Window) -> Placement {
     placement
 }
 
+/// Where the rules and the dialog default would put `window` if it mapped now,
+/// for `shell::de` when `mode "de"` ends and a window opened under it must be
+/// placed as `wm`/`hybrid` would have (COMP-17 §2). Read-only apart from the
+/// property actions every commit re-applies anyway.
+pub fn default_placement(state: &mut AbyssState, window: &Window) -> Placement {
+    evaluate(state, window, true).0
+}
+
 /// Re-evaluate after a commit. Property actions always re-apply; placement is
 /// returned at most once, while the window settles (see [`Placed`]), and the
 /// caller then has to re-install the window.

@@ -48,6 +48,7 @@ pub enum Page {
     Mode,
     Components,
     Wallpaper,
+    LoginScreen,
     // Taskbar
     BarAppearance,
     BarWidgets,
@@ -125,7 +126,7 @@ impl Section {
         match self {
             Section::Windows => &[Page::Layout, Page::Gaps, Page::Borders, Page::Focus],
             Section::Effects => &[Page::Blur, Page::Shadow, Page::Rounding, Page::Animations],
-            Section::Desktop => &[Page::Mode, Page::Components, Page::Wallpaper],
+            Section::Desktop => &[Page::Mode, Page::Components, Page::Wallpaper, Page::LoginScreen],
             Section::Taskbar => &[
                 Page::BarAppearance,
                 Page::BarWidgets,
@@ -182,7 +183,7 @@ impl Page {
         match self {
             Page::Layout | Page::Gaps | Page::Borders | Page::Focus => Section::Windows,
             Page::Blur | Page::Shadow | Page::Rounding | Page::Animations => Section::Effects,
-            Page::Mode | Page::Components | Page::Wallpaper => Section::Desktop,
+            Page::Mode | Page::Components | Page::Wallpaper | Page::LoginScreen => Section::Desktop,
             Page::BarAppearance | Page::BarWidgets | Page::BarFolding | Page::BarTray | Page::BarMotion => {
                 Section::Taskbar
             }
@@ -218,6 +219,7 @@ impl Page {
             Page::Mode => "Mode",
             Page::Components => "Components",
             Page::Wallpaper => "Wallpaper",
+            Page::LoginScreen => "Login screen",
             Page::BarAppearance => "Appearance",
             Page::BarWidgets => "Widgets",
             Page::BarFolding => "Folding",
@@ -255,6 +257,7 @@ impl Page {
             Page::Mode => "How much desktop there is around your windows.",
             Page::Components => "The programs that draw the desktop's notifications and panels.",
             Page::Wallpaper => "The picture behind everything.",
+            Page::LoginScreen => "The picture, greeting and clock on this machine's login screen.",
             Page::BarAppearance => "Where the bar sits and how it looks.",
             Page::BarWidgets => "Widgets, their order, and how the bar gives way.",
             Page::BarFolding => "When the bar folds away to a strip.",
@@ -299,6 +302,7 @@ impl Page {
                 | Page::BarFolding
                 | Page::Animations
                 | Page::Accounts
+                | Page::LoginScreen
         )
     }
 
@@ -419,7 +423,9 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "misc.terminal-command" => return Some((Page::LauncherSearch, "search")),
         "components.bar" => return Some((Page::BarAppearance, "bar")),
         "misc.render-device" => return Some((Page::Rendering, "rendering")),
-        "misc.gpu-mode" | "misc.discrete-gpu-apps" => return Some((Page::Rendering, "graphics")),
+        "misc.gpu-mode" | "misc.secondary-compositing" | "misc.discrete-gpu-apps" => {
+            return Some((Page::Rendering, "graphics"))
+        }
         "misc.scripted-input" => return Some((Page::Privacy, "input scripting")),
         "mode" => return Some((Page::Mode, "interaction")),
         _ => {}
@@ -435,7 +441,12 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "general" => {
             // The scheme decides the colour of every material the Blur &
             // glass page tunes, so its controls live beside them.
-            if starts("color-scheme") || starts("light-from") || starts("dark-from") || starts("theme-") {
+            if starts("color-scheme")
+                || starts("accent")
+                || starts("light-from")
+                || starts("dark-from")
+                || starts("theme-")
+            {
                 (Page::Blur, "colour scheme")
             } else if starts("gaps-") {
                 (Page::Gaps, "gaps")
@@ -533,6 +544,8 @@ mod tests {
         assert_eq!(Page::from_arg("NETWORK"), Some(Page::Network));
         // The agent console opens `ec-settings accounts`.
         assert_eq!(Page::from_arg("accounts"), Some(Page::Accounts));
+        assert_eq!(Page::from_arg("login-screen"), Some(Page::LoginScreen));
+        assert_eq!(Page::from_arg("desktop/login-screen"), Some(Page::LoginScreen));
         assert_eq!(Page::from_arg("nope"), None);
     }
 
@@ -584,7 +597,7 @@ mod tests {
             assert_eq!(owners, 1, "{page:?}");
             assert!(page.section().pages().contains(&page));
         }
-        assert_eq!(Page::all().count(), 36);
+        assert_eq!(Page::all().count(), 37);
     }
 
     #[test]
@@ -601,6 +614,7 @@ mod tests {
         assert_eq!(page_of("general.color-scheme"), Some(Page::Blur));
         assert_eq!(page_of("general.light-from"), Some(Page::Blur));
         assert_eq!(page_of("general.theme-dark"), Some(Page::Blur));
+        assert_eq!(page_of("general.accent"), Some(Page::Blur));
         assert_eq!(place_for("general.drop-edge-band").unwrap().group, "drag guides");
     }
 

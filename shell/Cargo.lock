@@ -984,11 +984,34 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-desktop"
+version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "ec-services",
+ "ec-ui",
+ "freedesktop-icons",
+ "iced",
+ "iced_layershell",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
 name = "ec-glass-host"
 version = "0.1.0"
 dependencies = [
  "ec-ipc",
  "serde_json",
+]
+
+[[package]]
+name = "ec-greeter"
+version = "0.1.0"
+dependencies = [
+ "ec-theme",
+ "libc",
+ "png 0.18.1",
 ]
 
 [[package]]
@@ -1067,6 +1090,7 @@ dependencies = [
  "nvml-wrapper-sys",
  "pulseaudio",
  "realfft",
+ "serde",
  "serde_json",
  "zbus",
 ]
@@ -1076,11 +1100,14 @@ name = "ec-settings"
 version = "0.1.0"
 dependencies = [
  "ec-abyss-config",
+ "ec-greeter",
  "ec-ipc",
  "ec-policy-viewer",
  "ec-services",
+ "ec-theme",
  "ec-ui",
  "iced",
+ "image",
  "serde_json",
  "zbus",
 ]

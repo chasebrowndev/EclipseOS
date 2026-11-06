@@ -131,6 +131,12 @@ pub(crate) fn look(a: &Appearance) -> Look {
     }
 }
 
+/// `[r, g, b, a]` as `#rrggbb` (alpha dropped).
+pub fn hex_rgb(c: [f32; 4]) -> String {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", b(c[0]), b(c[1]), b(c[2]))
+}
+
 /// `"HH:MM"` as minutes since midnight.
 pub fn parse_hhmm(s: &str) -> Option<u16> {
     let (h, m) = s.split_once(':')?;
@@ -198,6 +204,19 @@ impl Config {
     /// names. An unresolvable name cannot survive validation; if one reaches
     /// here anyway it falls back to the built-in, never to a half theme.
     pub fn appearance_for(&self, scheme: Scheme) -> Appearance {
+        let mut a = self.themed_appearance(scheme);
+        // The shared accent replaces the theme's seed; its text variant is
+        // re-derived, so the override clears the contrast rule by construction.
+        if let Some(c) = self.general.accent {
+            let seeds = a.seeds.with_accent(to_seeds_color(c));
+            if ec_theme::validate(&seeds).is_ok() {
+                a.seeds = seeds;
+            }
+        }
+        a
+    }
+
+    fn themed_appearance(&self, scheme: Scheme) -> Appearance {
         let (name, builtin) = match scheme {
             Scheme::Dark => (&self.general.theme_dark, DARK_SEEDS),
             Scheme::Light => (&self.general.theme_light, LIGHT_SEEDS),

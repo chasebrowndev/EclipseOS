@@ -50,7 +50,7 @@ pub fn set_enabled(state: &mut AbyssState, id: u64, enabled: bool) -> bool {
     if entry.enabled == enabled {
         return true;
     }
-    if !enabled && !state.outputs.iter().any(|e| e.enabled && e.id != id) {
+    if !enabled && !state.outputs.other_enabled(id) {
         tracing::warn!(id, "refusing to disable the only enabled output");
         return false;
     }
@@ -66,6 +66,18 @@ pub fn set_enabled(state: &mut AbyssState, id: u64, enabled: bool) -> bool {
             state.space.unmap_output(&output);
         }
         set_power(state, id, false);
+        // Focus must not stay on an output that is off: new windows are placed
+        // on the focused output and would join a workspace nobody can see.
+        if state.outputs.focused_id() == Some(id) {
+            let next = state
+                .outputs
+                .iter()
+                .find(|e| e.enabled && e.id != id)
+                .map(|e| e.id);
+            if let Some(next) = next {
+                state.outputs.set_focused(next);
+            }
+        }
     }
     tracing::info!(id, enabled, "output enablement changed");
     crate::outputs::relayout(state);
@@ -83,6 +95,7 @@ fn rehome(state: &mut AbyssState, id: u64) {
         return;
     };
     let mut moved: Vec<Vec<Window>> = Vec::new();
+    crate::shell::maximize::note_departing(state, id);
     if let Some(entry) = state.outputs.get_mut(id) {
         for ws in entry.workspaces.iter_mut() {
             let mut wins = ws.windows();

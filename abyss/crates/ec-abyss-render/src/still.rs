@@ -137,6 +137,18 @@ impl Frame<'_> {
         out: &mut Vec<AbyssRenderElement>,
     ) {
         let (scale, deco, output_loc) = (self.scale, &self.config.decoration, self.output_geo.loc);
+        // Under `mode "de"` the dim, rounded mask, glow and shadow follow the
+        // frame, and the surfaces stay on the content, as in `window_elements`.
+        let bar = crate::titlebar::bar_of(window);
+        // A window rolled up to its bar has no content here either, so what the
+        // human shaded away is not captured. Its surfaces and popups stay out.
+        let rolled = bar.is_some_and(|b| b.shaded);
+        let geo = if rolled {
+            Rectangle::new(geo.loc, (geo.size.w, 0).into())
+        } else {
+            geo
+        };
+        let frame = bar.map_or(geo, |b| crate::titlebar::frame_of_content(geo, b.height));
         let alpha = userdata::opacity_of(window).unwrap_or(if active {
             deco.active_opacity
         } else {
@@ -147,7 +159,7 @@ impl Frame<'_> {
                 self.store,
                 self.output,
                 window,
-                geo,
+                frame,
                 output_loc,
                 scale,
                 deco.dim_inactive * alpha,
@@ -159,7 +171,7 @@ impl Frame<'_> {
         // follows the window never cuts a menu.
         let render_loc = phys(geo.loc - window.geometry().loc - output_loc, scale);
         // Tint-keyed strip (ADR 0079), drawn as the live path does.
-        let strip_def = userdata::strip_of(window).filter(|_| window.toplevel().is_some());
+        let strip_def = userdata::strip_of(window).filter(|_| !rolled && window.toplevel().is_some());
         let keyed = match strip_def.as_ref().and_then(|s| s.keyed().copied()) {
             Some(keys) => crate::keyed_target(renderer, self.store, self.output)
                 .map(|(program, h, mirrored)| (program, h, mirrored, keys)),
@@ -168,6 +180,7 @@ impl Frame<'_> {
         let strip_def = strip_def.filter(|s| s.keyed().is_none() || keyed.is_some());
         let mut popup_groups: Vec<crate::PopupGroup> = Vec::new();
         let (popups, surfaces) = match window.toplevel() {
+            _ if rolled => (Vec::new(), Vec::new()),
             Some(toplevel) => {
                 let surface = toplevel.wl_surface();
                 let mut popups = Vec::new();
@@ -219,6 +232,10 @@ impl Frame<'_> {
         let rect: Rectangle<i32, Physical> = Rectangle::new(
             phys(geo.loc - output_loc, scale),
             geo.size.to_f64().to_physical(scale).to_i32_round(),
+        );
+        let frame_rect: Rectangle<i32, Physical> = Rectangle::new(
+            phys(frame.loc - output_loc, scale),
+            frame.size.to_f64().to_physical(scale).to_i32_round(),
         );
         // `translucent-region`: the strip's copy of the surface tree at the
         // strip's alpha, drawn above the strip's bottom edge (see the live
@@ -334,6 +351,30 @@ impl Frame<'_> {
             }
         }
         push_popups(out, popups, scale, None);
+        // Below its popups and level with its surfaces, as in `window_elements`.
+        // A redacted window never reaches this method, so its title is not drawn.
+        if let Some(info) = bar {
+            let at = crate::titlebar::bar_rect(geo, info.height);
+            let radius = match &self.rounding {
+                Some(_) if !info.square => deco.rounding,
+                _ => 0,
+            };
+            if let Some(element) = crate::titlebar::bar_element(
+                renderer,
+                &mut self.store.bars,
+                self.output,
+                window,
+                info,
+                phys(at.loc - output_loc, scale),
+                at.size.w,
+                scale,
+                active,
+                radius,
+                alpha,
+            ) {
+                out.push(AbyssRenderElement::Memory(element));
+            }
+        }
         // Each band is the surfaces drawn within one crop: the whole tree, or
         // for a strip the strip's copy above its bottom edge and the plain
         // one below it.
@@ -351,7 +392,7 @@ impl Frame<'_> {
         for (surfaces, crop) in bands {
             if let Some((program, fb_h, mirrored, keys)) = &keyed {
                 let radius = deco.rounding as f64 * scale.x.max(scale.y);
-                let mask = self.rounding.as_ref().map(|_| (rect, radius as f32));
+                let mask = self.rounding.as_ref().map(|_| (frame_rect, radius as f32));
                 let region = key_region;
                 push_keyed(
                     out,
@@ -365,7 +406,8 @@ impl Frame<'_> {
             match (&self.rounding, crop) {
                 (Some(((fb_height, mirrored), program)), crop) => {
                     let radius = deco.rounding as f64 * scale.x.max(scale.y);
-                    let uniforms = effects::rounding_uniforms(rect, *fb_height, *mirrored, radius as f32);
+                    let uniforms =
+                        effects::rounding_uniforms(frame_rect, *fb_height, *mirrored, radius as f32);
                     let round = |s| effects::RoundedElement::new(s, program.clone(), uniforms.clone());
                     match crop {
                         Some(crop) => out.extend(
@@ -399,7 +441,7 @@ impl Frame<'_> {
                 program,
                 self.output,
                 window,
-                geo,
+                frame,
                 output_loc,
                 self.config,
                 color,
@@ -413,7 +455,7 @@ impl Frame<'_> {
                 program,
                 self.output,
                 window,
-                geo,
+                frame,
                 output_loc,
                 self.config,
                 focus,

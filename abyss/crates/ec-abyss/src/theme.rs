@@ -120,6 +120,14 @@ pub fn refresh(state: &mut AbyssState) {
     let scheme = state.config.scheme_at((now / 60) as u16);
     let next = state.config.appearance_for(scheme);
     state.config.apply_appearance(next.clone());
+    // The built-in pointer follows the effective accent; the damage below
+    // makes the cursor element re-commit with the rebuilt buffer.
+    let [r, g, b, _] = next
+        .seeds
+        .accent
+        .0
+        .map(|v| (v.clamp(0.0, 1.0) * 255.0).round() as u32);
+    ec_abyss_render::cursor::set_accent(r << 16 | g << 8 | b);
     let changed = state.theme.appearance != next;
     state.theme.appearance = next;
     crate::trusted_ui::set_scheme(&mut state.trusted_ui, state.theme.scheme());
@@ -213,6 +221,43 @@ mod tests {
         assert_eq!(themes[0].1["scheme"], "light");
         assert_eq!(h.state.theme.scheme(), Scheme::Light);
         assert_eq!(themes[0].1["seeds"]["base"], "#f4f1ea");
+
+        // The shared accent: one `theme` event carrying the effective accent
+        // and its derived text colour; unsetting it restores the theme's own.
+        let ok = crate::ipc::config_rpc::dispatch(
+            &mut h.state,
+            Decision::Allow,
+            "set_config_value",
+            &json!({"path": "general.accent", "value": "#1e90ff"}),
+        );
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.message));
+        let events = crate::ipc::capture::take();
+        let themes: Vec<_> = events.iter().filter(|(k, _)| k == "theme").collect();
+        assert_eq!(themes.len(), 1, "{events:?}");
+        assert_eq!(themes[0].1["seeds"]["accent"], "#1e90ff");
+        assert!(themes[0].1["seeds"]["accent_text"].is_string());
+        let g = crate::ipc::methods::dispatch(&mut h.state, 0, "get_theme", &json!({}))
+            .ok()
+            .unwrap();
+        assert_eq!(g["seeds"]["accent"], "#1e90ff");
+        let cfgv = crate::ipc::config_rpc::dispatch(
+            &mut h.state,
+            Decision::Allow,
+            "get_config",
+            &json!({"path": "general.accent"}),
+        );
+        assert!(cfgv.is_ok());
+        let ok = crate::ipc::config_rpc::dispatch(
+            &mut h.state,
+            Decision::Allow,
+            "set_config_value",
+            &json!({"path": "general.accent", "value": ""}),
+        );
+        assert!(ok.is_ok(), "{:?}", ok.err().map(|e| e.message));
+        let events = crate::ipc::capture::take();
+        let themes: Vec<_> = events.iter().filter(|(k, _)| k == "theme").collect();
+        assert_eq!(themes.len(), 1, "{events:?}");
+        assert_eq!(themes[0].1["seeds"]["accent"], "#f2c33c");
 
         // Re-applying the same config is not a change.
         refresh(&mut h.state);

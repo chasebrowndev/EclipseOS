@@ -166,9 +166,94 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; \
-       `hybrid` adds window chips, tray and clock; `de` adds desktop icons and \
-       pointer-first navigation. Selects defaults that explicit configuration \
-       overrides. Applies on hot reload.",
+       `hybrid` adds window chips, tray and clock; `de` is a stacking desktop \
+       in the KDE manner, with titlebars, maximize, Quick Tile, snapping and \
+       desktop icons (COMP-05 §7.1). Selects defaults that explicit \
+       configuration overrides (binds, `general.focus-follows-mouse`); how \
+       windows stack and their chrome follow the mode. Under `de` nothing is \
+       tiled: new windows float, a `tile` rule and the tile binds \
+       (`toggle-floating` into tiling, `toggle-layout`, `priority-up` and \
+       `priority-down`, Super-held tile-on-drop) do nothing, and `Alt+F4` \
+       closes the focused window unless you bind that chord yourself. Windows \
+       can be maximized (a client request, or `Super+PageUp` / \
+       `toggle-maximize`): the window fills the usable area, square and \
+       without a border, and restores its old rectangle; under `wm` and \
+       `hybrid` maximize requests are declined. Under `de` a titlebar drags \
+       its window (a drag on a maximized window restores it under the \
+       pointer), a double-click on it toggles maximize, a right press opens \
+       the window menu (minimize, maximize, shade, keep above, keep below, on \
+       all desktops, move to desktop, close), and a server-side-decorated \
+       window can be resized from a band just outside its frame. Keep \
+       above/below, shade and on-all-desktops are `de` only and are forgotten \
+       when the mode is left. Quick Tile is a floating placement, not a \
+       layout: `Super+Left/Right/Up/Down` (`tile-left` and the rest) step the \
+       focused window one zone toward that direction, Left then Up being the \
+       top-left quarter and the opposite direction stepping back, out of the \
+       last tile to the old rectangle; dragging a titlebar to the top edge \
+       maximizes, to a side a half or quarter (`general.edge-tile`); moved \
+       and resized windows snap to the screen and to each other \
+       (`general.snap`, Shift disables). A tiled window fills its zone of the \
+       usable area, square and without a border, and tells its client the \
+       tiled edges. The `Super+arrows` take the place of `focus-*` on those \
+       chords under `de`. The ten workspaces are the desktops, laid out as a \
+       grid (`general.desktop-rows`): `Ctrl+Super+arrows` (`desktop-left` and \
+       the rest) switch along it and `Ctrl+Shift+Super+arrows` \
+       (`move-to-desktop-left` and the rest) take the focused window along. \
+       `Alt+Tab` and `Alt+Shift+Tab` (`switch-windows`) open a window \
+       switcher in recent-use order across every desktop, minimized windows \
+       last: releasing Alt activates the selection, Escape cancels. `Super+W` \
+       (`toggle-overview`) shows this desktop's windows as thumbnails with \
+       the desktops as a strip, and the screen corners can do the same \
+       (`general.hot-corners.*`). Thumbnails are drawn by the compositor and \
+       never leave it; a window redacted from capture is a placeholder card \
+       with a padlock and no title, and one hidden from capture altogether \
+       has no card. Entering `de` floats every tiled window where it is; \
+       leaving re-tiles them where they were. Under `de` the taskbar follows \
+       the KDE task manager: window chips group by application (a group shows \
+       the app and its window count; a click on a group of one acts as on any \
+       chip, on several it lists the windows, and a row brings that window \
+       forward; a pinned app merges with its group, and a `secret` window is \
+       never grouped nor named in the list), a right click on a chip or a \
+       list row opens the compositor's own window menu at the pointer, the \
+       pager is the desktop grid (`general.desktop-rows`) with the active \
+       desktop marked, a click on a tile switches to it and the wheel over \
+       the grid steps through the desktops, resting the pointer on a window's \
+       chip for about 400 ms shows that window's hover preview (drawn by the \
+       compositor, not for a group of several windows), and the widget area \
+       gains a bell that opens the notification history (newest first, \
+       dismiss per entry, Clear all, and the action buttons of a notification \
+       still on screen; a dot means unseen history). `wm` and `hybrid` keep \
+       one chip per window, the taskbar's own chip menu, the workspace row, \
+       and no bell. Under `de` abyss also runs `ec-desktop` \
+       (`ec-desktop.service`, a user unit with no `[Install]`): it starts \
+       with a `--session` that begins in `de` or a reload that enters it, and \
+       stops on a reload that leaves it; it keeps one bottom-layer surface \
+       per output (above the wallpaper however the two start, below windows), \
+       inside the bar's exclusive zone, and shows the folder \
+       `$XDG_DESKTOP_DIR` (else `user-dirs.dirs`, else `~/Desktop`) as icons \
+       whose grid positions are saved per output in \
+       `$XDG_STATE_HOME/eclipse/desktop-layout`. Deleting there moves to the \
+       trash (`$XDG_DATA_HOME/Trash`), nothing is overwritten (a taken name \
+       becomes `name (2)`), and a `.desktop` file launches only once its \
+       owner-execute bit is set (the human's \"allow launching\"), and a \
+       symlink to a folder is not a drop target. Icons sit in a grid of cells \
+       per output, drawn from the icon theme (a lettered placeholder when it \
+       has none) with the name under them cut to two lines. A click selects, \
+       Ctrl+click toggles, and a drag on empty space rubber-bands a \
+       selection; selected icons are a brighter glass cell with a crisp rim. \
+       A double-click or Enter opens (a launcher without the execute bit \
+       instead asks \"Allow launching?\" and runs only after you allow it), \
+       dragging moves icons to another cell, and dropping on a folder moves \
+       them into it. Arrows move the selection, F2 renames in place, Delete \
+       moves to the trash, Escape clears. A right click on empty space offers \
+       New Folder, New File, Open Terminal Here (in `misc.terminal-command`), \
+       Sort By (name, kind, modified) and Desktop Settings; on an icon, Open, \
+       Rename, Copy (a duplicate beside it), Move to Trash and, for a \
+       launcher not yet allowed, Allow Launching. An operation that fails \
+       shows one small note in the corner that goes on a click or after a few \
+       seconds. The surface asks for the keyboard only while something is \
+       selected, a menu or prompt is open, or a name is being edited. Applies \
+       on hot reload.",
     ),
     k(
         "components.bar",
@@ -501,7 +586,11 @@ pub const TABLE: &[Key] = &[
         Str("centered"),
         Abyss,
         Live,
-        "Where a new floating window lands when no window rule places it.",
+        "Where a new floating window lands when no window rule places it. \
+       Under `mode \"de\"` it defaults to `cascade`, so stacked windows do not \
+       all open on the same centre; a value written here wins. `get_config` \
+       serves the mode's default as `default` and `source` null until a file \
+       writes the key.",
     ),
     k(
         "general.focus-follows-mouse",
@@ -509,7 +598,9 @@ pub const TABLE: &[Key] = &[
         Bool(true),
         Abyss,
         Live,
-        "Move keyboard focus to the window under the pointer.",
+        "Move keyboard focus to the window under the pointer. Under `mode \"de\"` it defaults to off; a value written here wins. \
+       `get_config` serves the mode's default as `default` and `source` null \
+       until a file writes the key.",
     ),
     k(
         "general.focus-follows-mouse-across-outputs",
@@ -591,6 +682,102 @@ pub const TABLE: &[Key] = &[
         Live,
         "Width of the edge strip a dragged window's centre aims at to drop it as a full-height column or full-width row, logical px. 0 disables edge drops.",
     ),
+    k(
+        "general.snap",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, snap a window being moved or resized to the usable-area edges and to the frames of other visible windows on the same output and workspace. Hold Shift to move or resize without snapping.",
+    ),
+    k(
+        "general.snap-distance",
+        int(0, 512),
+        Int(10),
+        Abyss,
+        Live,
+        "How close, logical px, an edge must come to another edge to snap to it (KDE's border and window snap zones are both 10). 0 disables snapping.",
+    ),
+    k(
+        "general.edge-tile",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, dragging a titlebar to a screen edge shows a preview and tiles on release: the top edge maximizes, the left and right edges tile a half (a quarter near a corner). Only an outer edge of the output layout counts, never an edge shared with another output.",
+    ),
+    k(
+        "general.edge-tile-distance",
+        int(0, 512),
+        Int(20),
+        Abyss,
+        Live,
+        "How close to a screen edge, logical px, the pointer must be to show the edge-tile preview (KDE's side zone is 20). 0 disables edge tiling.",
+    ),
+    k(
+        "general.desktop-rows",
+        int(1, 10),
+        Int(2),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, the rows of the desktop grid laid over the ten workspaces (COMP-05 §7.1). Columns follow: ten divided by the rows, rounded up (2 rows give 5 columns, 1 row gives a single row of ten). The directional desktop binds and `switch_desktop_direction` move over this grid.",
+    ),
+    k(
+        "general.desktop-wrap",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, stepping past an edge of the desktop grid comes round to the other side. Off stops at the edge.",
+    ),
+    k(
+        "general.hot-corners.top-left",
+        Ty::Enum(HOT_CORNER_ACTIONS),
+        Str("auto"),
+        Abyss,
+        Live,
+        "Under `mode \"de\"`, what pushing the pointer into the top-left corner of an output does (COMP-05 §7.1): `toggle-overview`, `switch-windows` (open the window switcher; it stays open until Enter, a click or Escape) or `off`. `auto` takes the mode's default, which is `toggle-overview` under `de` and `off` elsewhere. Nothing fires during fullscreen, a grab, the session lock, or while a button is held.",
+    ),
+    k(
+        "general.hot-corners.top-right",
+        Ty::Enum(HOT_CORNER_ACTIONS),
+        Str("auto"),
+        Abyss,
+        Live,
+        "The top-right corner (see `general.hot-corners.top-left`). `auto` is `off`.",
+    ),
+    k(
+        "general.hot-corners.bottom-left",
+        Ty::Enum(HOT_CORNER_ACTIONS),
+        Str("auto"),
+        Abyss,
+        Live,
+        "The bottom-left corner (see `general.hot-corners.top-left`). `auto` is `off`.",
+    ),
+    k(
+        "general.hot-corners.bottom-right",
+        Ty::Enum(HOT_CORNER_ACTIONS),
+        Str("auto"),
+        Abyss,
+        Live,
+        "The bottom-right corner (see `general.hot-corners.top-left`). `auto` is `off`.",
+    ),
+    k(
+        "general.hot-corner-dwell",
+        int(0, 2000),
+        Int(150),
+        Abyss,
+        Live,
+        "How long, ms, the pointer must stay in a hot corner before its action fires (KDE's activation delay). It never blocks: a timer waits it out and a pointer that left cancels it.",
+    ),
+    k(
+        "general.hot-corner-cooldown",
+        int(0, 10000),
+        Int(750),
+        Abyss,
+        Live,
+        "After a hot corner fires, the time in ms before any hot corner can fire again, so a pointer resting in the corner does not open and close the overview in a loop.",
+    ),
     // themes (ADR 0084)
     k(
         "general.color-scheme",
@@ -599,6 +786,14 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Colour scheme of the whole desktop (ADR 0084): `dark`, `light`, or `auto`, which follows the `light-from` / `dark-from` schedule in local time. Compositor-drawn material, every shell pane and client apps (the `org.freedesktop.appearance` hint) follow it, live.",
+    ),
+    k(
+        "general.accent",
+        Ty::Str,
+        Str(""),
+        Abyss,
+        Live,
+        "The one accent colour every Eclipse surface follows, `#rrggbb` (opaque), live. Empty (the default) keeps the active theme's own accent (gold `#f2c33c` in the built-in themes). When set it replaces the theme's `accent` seed and its accent text is re-derived from it (lighter on a dark theme, darker on a light one, always at least 4.5:1 on the base), so the override can never fail the theme contrast rule. `get_theme` returns the effective `accent` and `accent_text`; the `theme` event announces a change. `annotations { accent }` follows it unless set explicitly. The built-in pointer arrow is filled with it too (lifted toward white if too dark to see; the outline stays black).",
     ),
     k(
         "general.theme-dark",
@@ -968,6 +1163,16 @@ pub const TABLE: &[Key] = &[
        behind a layer-shell surface, except one that spans an output edge to \
        edge (three anchors, or two opposite ones, with no positive exclusive \
        zone), which stays square; the taskbar uses `bar.rounding`.",
+    ),
+    k(
+        "decoration.titlebar-height",
+        int(16, 64),
+        Int(32),
+        Abyss,
+        Live,
+        "Height in logical px of the titlebar drawn above a server-side-decorated \
+       window under `mode \"de\"` (COMP-05 §7.1). `wm` and `hybrid` draw no titlebar \
+       and ignore it.",
     ),
     k(
         "decoration.active-opacity",
@@ -1846,9 +2051,22 @@ pub const TABLE: &[Key] = &[
         NeedsRestart,
         "Which GPUs are used on a hybrid-graphics machine. `integrated` never \
        opens the discrete GPU (its outputs stay dark, it can power off); \
-       `hybrid` has each GPU composite its own outputs and runs opted-in \
+       `hybrid` renders on the primary GPU (copying to outputs wired to the \
+       other GPU unless `misc.secondary-compositing` is on) and runs opted-in \
        apps on the discrete GPU; `dedicated` renders everything on the \
        discrete GPU. `misc.render-device`, when set, still pins the primary.",
+    ),
+    k(
+        "misc.secondary-compositing",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        NeedsRestart,
+        "Composite outputs wired to a secondary GPU on that GPU (needs it to \
+       sample the primary GPU's client buffers). Off by default: the \
+       primary GPU renders every output and the secondary's screen receives \
+       a copy, as other compositors do. Ignored in `dedicated`, which always \
+       copies.",
     ),
     k(
         "misc.discrete-gpu-apps",
@@ -2515,6 +2733,9 @@ pub const OUTPUT_KEYS: &[Form] = &[
 ];
 
 /// Actions a `bind` or `gesture` block accepts (COMP-13 §3).
+/// The values a hot corner takes (`general.hot-corners.*`).
+pub const HOT_CORNER_ACTIONS: &[&str] = &["auto", "off", "toggle-overview", "switch-windows"];
+
 pub const BIND_ACTIONS: &[Form] = &[
     form(
         &["spawn", "exec"],
@@ -2539,6 +2760,102 @@ pub const BIND_ACTIONS: &[Form] = &[
         "",
         &["toggle-fullscreen"],
         "Fullscreen the focused window, or end its fullscreen.",
+    ),
+    form(
+        &["toggle-maximize", "maximize"],
+        "",
+        &["toggle-maximize"],
+        "Maximize the focused window, or restore it. Only under `mode \"de\"`; does nothing elsewhere.",
+    ),
+    form(
+        &["tile-left"],
+        "",
+        &["tile-left"],
+        "Quick Tile the focused window one step left. Only under `mode \"de\"`; does nothing elsewhere. Left then up is the top-left quarter; the opposite direction steps back, and out of the last tile to floating.",
+    ),
+    form(
+        &["tile-right"],
+        "",
+        &["tile-right"],
+        "Quick Tile the focused window one step right (see `tile-left`).",
+    ),
+    form(
+        &["tile-up"],
+        "",
+        &["tile-up"],
+        "Quick Tile the focused window one step up: from floating, the top half (see `tile-left`).",
+    ),
+    form(
+        &["tile-down"],
+        "",
+        &["tile-down"],
+        "Quick Tile the focused window one step down: from floating, the bottom half (see `tile-left`).",
+    ),
+    form(
+        &["desktop-left"],
+        "",
+        &["desktop-left"],
+        "Switch to the desktop (workspace) left of this one on the desktop grid (`general.desktop-rows`). Only under `mode \"de\"`; does nothing elsewhere. Wraps per `general.desktop-wrap`. Sticky windows and focus behave as for `switch_workspace`.",
+    ),
+    form(
+        &["desktop-right"],
+        "",
+        &["desktop-right"],
+        "Switch to the desktop right of this one (see `desktop-left`).",
+    ),
+    form(
+        &["desktop-up"],
+        "",
+        &["desktop-up"],
+        "Switch to the desktop above this one (see `desktop-left`).",
+    ),
+    form(
+        &["desktop-down"],
+        "",
+        &["desktop-down"],
+        "Switch to the desktop below this one (see `desktop-left`).",
+    ),
+    form(
+        &["move-to-desktop-left"],
+        "",
+        &["move-to-desktop-left"],
+        "Move the focused window to the desktop left of this one and go there with it (see `desktop-left`). Only under `mode \"de\"`.",
+    ),
+    form(
+        &["move-to-desktop-right"],
+        "",
+        &["move-to-desktop-right"],
+        "Move the focused window to the desktop right of this one and go there with it (see `move-to-desktop-left`).",
+    ),
+    form(
+        &["move-to-desktop-up"],
+        "",
+        &["move-to-desktop-up"],
+        "Move the focused window to the desktop above this one and go there with it (see `move-to-desktop-left`).",
+    ),
+    form(
+        &["move-to-desktop-down"],
+        "",
+        &["move-to-desktop-down"],
+        "Move the focused window to the desktop below this one and go there with it (see `move-to-desktop-left`).",
+    ),
+    form(
+        &["switch-windows"],
+        "",
+        &["switch-windows"],
+        "Open the window switcher on the next window in recent-use order, or step it forward. Only under `mode \"de\"`; does nothing elsewhere. Releasing the modifiers of the chord activates the selection (its desktop, unminimized, focused); Escape cancels; the arrow keys also step and a click on a card activates it. A window whose content is redacted from capture shows as a placeholder card with a padlock and no title.",
+    ),
+    form(
+        &["switch-windows-reverse"],
+        "",
+        &["switch-windows-reverse"],
+        "As `switch-windows`, but opens on the least recently used window and steps backwards.",
+    ),
+    form(
+        &["toggle-overview"],
+        "",
+        &["toggle-overview"],
+        "Open the overview of this desktop's windows with the desktop strip, or close it. Only under `mode \"de\"`; does nothing elsewhere. Typing filters the cards by title, a click on a card focuses it, a middle click closes its window, a click on a desktop switches to it, and dragging a card onto a desktop moves the window there. Escape closes it.",
     ),
     form(&["minimize"], "", &["minimize"], "Send the focused window away."),
     form(
@@ -2751,7 +3068,20 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "general.drop-guides" => V::Bool(c.general.drop_guides),
         "general.drop-guide-color" => V::Color(c.general.drop_guide_color),
         "general.drop-edge-band" => V::Int(c.general.drop_edge_band as i64),
+        "general.snap" => V::Bool(c.general.snap),
+        "general.snap-distance" => V::Int(c.general.snap_distance as i64),
+        "general.edge-tile" => V::Bool(c.general.edge_tile),
+        "general.edge-tile-distance" => V::Int(c.general.edge_tile_distance as i64),
+        "general.desktop-rows" => V::Int(c.general.desktop_rows as i64),
+        "general.desktop-wrap" => V::Bool(c.general.desktop_wrap),
+        "general.hot-corners.top-left" => V::Str(c.general.hot_corners[0].name().into()),
+        "general.hot-corners.top-right" => V::Str(c.general.hot_corners[1].name().into()),
+        "general.hot-corners.bottom-left" => V::Str(c.general.hot_corners[2].name().into()),
+        "general.hot-corners.bottom-right" => V::Str(c.general.hot_corners[3].name().into()),
+        "general.hot-corner-dwell" => V::Int(c.general.hot_corner_dwell_ms as i64),
+        "general.hot-corner-cooldown" => V::Int(c.general.hot_corner_cooldown_ms as i64),
         "general.color-scheme" => V::Str(c.general.color_scheme.name().into()),
+        "general.accent" => V::Str(c.general.accent.map(crate::hex_rgb).unwrap_or_default()),
         "general.theme-dark" => V::Str(c.general.theme_dark.clone()),
         "general.theme-light" => V::Str(c.general.theme_light.clone()),
         "general.light-from" => V::Str(crate::fmt_hhmm(c.general.light_from)),
@@ -2823,6 +3153,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
         "settings.search.frecency" => V::Bool(c.settings.search_frecency),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
+        "decoration.titlebar-height" => V::Int(c.decoration.titlebar_height as i64),
         "decoration.active-opacity" => V::Float(widen(c.decoration.active_opacity)),
         "decoration.inactive-opacity" => V::Float(widen(c.decoration.inactive_opacity)),
         "decoration.dim-inactive" => V::Float(widen(c.decoration.dim_inactive)),
@@ -2874,6 +3205,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "input.scroll-method" => V::Str(c.input.scroll_method.clone()),
         "misc.render-device" => s(&c.misc.render_device),
         "misc.gpu-mode" => V::Str(c.misc.gpu_mode.name().into()),
+        "misc.secondary-compositing" => V::Bool(c.misc.secondary_compositing),
         "misc.discrete-gpu-apps" => list(&c.misc.discrete_gpu_apps),
         "misc.terminal-command" => s(&c.misc.terminal_command),
         "misc.scripted-input" => V::Bool(c.misc.scripted_input),
@@ -2920,7 +3252,7 @@ fn layout_name(l: LayoutKind) -> &'static str {
     }
 }
 
-fn floating_placement_name(p: FloatingPlacement) -> &'static str {
+pub fn floating_placement_name(p: FloatingPlacement) -> &'static str {
     match p {
         FloatingPlacement::Centered => "centered",
         FloatingPlacement::Pointer => "pointer",
@@ -3008,6 +3340,7 @@ mod tests {
                 // Times and theme names: validated on their own terms.
                 "general.light-from" => "06:30".into(),
                 "general.dark-from" => "20:15".into(),
+                "general.accent" => "#1e90ff".into(),
                 "general.theme-dark" => "dark".into(),
                 "general.theme-light" => "light".into(),
                 "bar.widgets.system-usage.disk-path" => "/home".into(),

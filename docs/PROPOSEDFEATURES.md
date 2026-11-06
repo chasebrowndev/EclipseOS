@@ -158,18 +158,10 @@ output. Beyond that:
     (BMP for the UKI, raw XRGB for fbdev), installs it and runs
     `mkinitcpio -P`. Root never parses a user-supplied PNG.
   - Applying the boot image needs root, and the owner wants an admin prompt,
-    not a passwordless wheel rule. **Blocked:** the session has no polkit
-    authentication agent, and a password prompt is trusted UI that must be
-    compositor-drawn (COMP-10). This lands after that, or with an interim
-    `sudo eclipse-splash apply` step if one is wanted sooner.
+    not a passwordless wheel rule. The compositor-drawn prompt exists now
+    (COMP-10 §3.14, ADR 0088).
   - Settings has no path/image control yet (`schema.rs` maps `string` to a
     text field), so the pane needs an image picker type.
-
-- **The greeter gets its own package.** `eclipseos-meta` owns the greetd
-  drop-in and `/etc/eclipse/greetd/`, and depends on every desktop package, so
-  removing a desktop package for an unrelated reason cascades into `-meta` and
-  silently drops the graphical login (was PKG-02, 2026-09-22). The greeter
-  belongs in a package with no dependency edge to the desktop ones.
 
 ---
 

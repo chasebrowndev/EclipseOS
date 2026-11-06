@@ -177,7 +177,7 @@ pub fn mode_blurb(value: &str) -> Option<&'static str> {
     match value {
         "wm" => Some("Tiling with a workspaces bar only."),
         "hybrid" => Some("The bar also shows window chips, the tray and the clock."),
-        "de" => Some("Hybrid, plus desktop icons and pointer-first navigation."),
+        "de" => Some("Hybrid, plus desktop icons, window titlebars, snapping and the Overview."),
         _ => None,
     }
 }
@@ -293,8 +293,9 @@ impl Row {
     pub fn parse(v: &Value) -> Option<Self> {
         let ty = v.get("type")?.as_str()?;
         let constraints = v.get("constraints").unwrap_or(&Value::Null);
+        let path = v.get("path")?.as_str()?.to_owned();
         Some(Row {
-            path: v.get("path")?.as_str()?.to_owned(),
+            path: path.clone(),
             file: File::parse(v.get("file")?.as_str()?)?,
             value: v.get("value").cloned().unwrap_or(Value::Null),
             default: v.get("default").cloned().unwrap_or(Value::Null),
@@ -308,7 +309,13 @@ impl Row {
                 .to_owned(),
             needs_restart: v.get("reload").and_then(Value::as_str) == Some("restart"),
             approval: v.get("approval").and_then(Value::as_str).map(str::to_owned),
-            control: control_for(ty, constraints)?,
+            // The accent is a string on the wire but a colour to a person:
+            // swatch, picker, hex field.
+            control: if path == crate::accent::KEY {
+                Control::Text { color: true }
+            } else {
+                control_for(ty, constraints)?
+            },
         })
     }
 
@@ -351,6 +358,7 @@ impl Row {
             "annotations.region-outline" => "Region outline",
             "annotations.selection-dim" => "Selection dim",
             "misc.gpu-mode" => "Graphics mode",
+            "misc.secondary-compositing" => "Render second GPU's screens natively",
             "launcher.search.path-binaries" => "Programs on PATH",
             "launcher.search.terminal-apps" => "Terminal apps",
             // `settings.search.frecency` reads "settings search, frecency":

@@ -14,8 +14,10 @@ yellow accent. Use this as art direction; do not copy any specific screen.
   both the same tint, rgba(11,9,6,.70) by default, over the same blur (opaque #0b0906 with
   blur off), parted by a 1px hairline, not by a change of ground.
   The surface values are defaults, and users tune them live (the compositor's
-  `decoration.surface.tint` .70, `card-fill` .035, `inset-fill` .03; sRGB intent, converted
-  to linear alpha in the client, 0..1 and 0..0.30 respectively). Settings' Effects > Blur & glass page shows them as Window tint,
+  `decoration.surface.tint` .70, `card-fill` .035, `inset-fill` .03; sRGB intent, 0..1 and
+  0..0.30 respectively. The tint is written as the buffer's alpha as is, because the compositor
+  blends it in sRGB like a terminal's `alpha=`; card and inset fills are converted to linear alpha
+  because iced blends those itself). Settings' Effects > Blur & glass page shows them as Window tint,
   Card fill and Inset fill. Every window re-reads them on a config reload.
   Settings cards with blur off or `blur` are hairline-only: a white `card-fill` fill, a 1px
   rim at about 3.4x that fill (.12 by default), no drop shadow. `glass` and `frost` keep the
@@ -40,7 +42,11 @@ yellow accent. Use this as art direction; do not copy any specific screen.
   A widget that reveals reserves no grip column while open: the grip draws over its leading
   pad and the cell eases 8px wider under the pointer. Alphas above are sRGB intent; iced
   blends in linear light, so `tokens.rs` carries the linear equivalents
-- Accent: #f2c33c. Tints: rgba(242,195,60,.09) fill, .24-.32 border, #f5cf5c for text
+- Accent: the theme's `accent` seed (#f2c33c gold in the built-in themes), user-overridable with
+  `general.accent` (`#rrggbb`, live; Settings > Effects > Blur & glass > Colour scheme offers
+  Gold, Coral, Rose, Violet, Azure, Teal, Green, a hex field and a picker). The accent text is
+  re-derived from the override so contrast holds. Tints: rgba(242,195,60,.09) fill, .24-.32 border,
+  #f5cf5c for text, all as the gold defaults; every pane reads them from the palette, never a literal
 - Text: #fff primary, rgba(255,255,255,.64) secondary, rgba(255,255,255,.4) tertiary
 - Neutral swatch grey: #96918a (warm, not #8f8f96)
 - These values are the built-in dark seeds run through `derive` in `abyss/crates/ec-theme`
@@ -90,7 +96,7 @@ the same rules (ADR 0084).
   brightness, never a user theme's colours (ADR 0084)
 
 ## Accent discipline
-Yellow marks state and one live value per screen: the active nav item, the selected
+The accent (yellow by default) marks state and one live value per screen: the active nav item, the selected
 option, the current slider fill, an "in use" status. Never decorative, never two
 competing yellow areas in one pane, no gradients of it.
 

@@ -21,7 +21,7 @@ use iced_layershell::reexport::PopupGravity;
 use iced_layershell::to_layer_message;
 
 use ec_services::status::{Battery, Bluetooth, Charge, Network, Update};
-use ec_ui::tokens::{self, bar};
+use ec_ui::tokens::{self, bar, drawer, menu};
 
 use crate::conn::{BarConfig, BarPosition, Conn, LauncherStyle};
 use crate::icons::Icons;
@@ -99,6 +99,8 @@ pub enum Drawer {
     /// The session actions and the pending Eclipse update, opened from the
     /// power glyph (ADR 0065 amendment, ADR 0085).
     Power,
+    /// The notification history, opened from the bell (`mode "de"`).
+    History,
 }
 
 /// The keys the calendar drawer answers to.
@@ -126,6 +128,15 @@ pub enum Kind {
     /// [`reflow`]). The wifi and bluetooth drawers are not popups: they grow
     /// the bar's own surface (see [`crate::drawer`]).
     Drawer { which: Drawer, height: u32 },
+    /// The window list of a group chip (`mode "de"`): the group's key (its
+    /// case-folded app id), how many rows the popup was created for, and the
+    /// popup's top-left in global logical pixels when that could be worked
+    /// out (a row's right-click anchors the window menu from it).
+    Group {
+        key: String,
+        rows: usize,
+        origin: Option<(f32, f32)>,
+    },
     /// A StatusNotifierItem's own menu, fetched once when it opened.
     TrayMenu {
         id: String,
@@ -161,6 +172,9 @@ pub enum Message {
     Focus(u64),
     /// A window entry was middle-clicked, or `Close` was picked in the menu.
     Close(u64),
+    /// A chip was middle-clicked. Under `de` a group closes the window its
+    /// right-click would act on (the focused one), not its representative.
+    CloseChip(u64),
     /// Send a window away, or bring it back — the chip's left click.
     ToggleMinimize(u64),
     /// A window entry was right-clicked: open its menu.
@@ -209,6 +223,9 @@ pub enum Message {
     /// launcher keybind calls in menu style): toggle the start menu on the
     /// bar of this output.
     MenuOpen(u64),
+    /// The compositor's `power` event: toggle the power drawer on the bar of
+    /// this output, whether or not the power widget is on the bar.
+    PowerOpen(u64),
     /// The start menu's search field changed.
     MenuQuery(String),
     /// An arrow key on a surface, and which: moves the start menu's
@@ -322,6 +339,24 @@ pub enum Message {
     Frame,
     /// Debug previews: the next step of `HYPERION_PREVIEW_SCRIPT`.
     Script(u32),
+    /// A group chip with several windows was clicked: list them (`mode "de"`).
+    /// The chip's representative window.
+    GroupOpen(u64),
+    /// A row of a group's list was right-clicked: the window and its row.
+    GroupMenu(u64, usize),
+    /// The pointer came onto (`Some`) or left (`None`) a window chip, or the
+    /// bar (`mode "de"`'s hover preview).
+    ChipHover(Option<u64>),
+    /// One tick of the hover debounce, alive only while a chip waits.
+    HoverTick,
+    /// The wheel over the desktop grid.
+    PagerScroll(iced::mouse::ScrollDelta),
+    /// The notification service's list, newest first.
+    History(Vec<ec_services::notifications::HistoryEntry>),
+    /// Dismiss one entry; clear them all; press a live entry's button.
+    HistoryRemove(u32),
+    HistoryClear,
+    HistoryAction(u32, String),
     /// A message a surface's view produced, and that surface. The view is
     /// one function for every bar; this is how a click knows which bar it
     /// was on. See [`owner`].
@@ -459,6 +494,15 @@ pub struct App {
     pub launcher_menu: crate::conn::MenuConfig,
     /// When the app started: the spinner's phase is read off it.
     pub epoch: Instant,
+    /// `get_desktop_grid`, refetched with the snapshot while `mode` is `de`.
+    /// `None` outside `de`, and when the compositor does not answer.
+    pub grid: Option<ec_ipc::DesktopGrid>,
+    /// The chip the pointer rests on, for the hover preview (`de`).
+    pub hover: crate::hover::Hover,
+    /// The notification history panel (`de`).
+    pub history: crate::history::Panel,
+    /// The wheel over the desktop grid, counted in notches.
+    pub pager_wheel: widgets::Notches,
 }
 
 /// One output's bar: everything that depends on *where* it is drawn.
@@ -533,6 +577,8 @@ pub enum Preview {
     TrayMenu(String, Vec<crate::radio::MenuEntry>),
     /// The context menu of the fixture's first window.
     ChipMenu,
+    /// The window list of the first group with several windows (`de`).
+    Group,
 }
 
 /// What the bar should be right now.
@@ -891,6 +937,10 @@ impl App {
             show_key_hints: true,
             launcher_menu,
             epoch: Instant::now(),
+            grid: None,
+            hover: crate::hover::Hover::default(),
+            history: crate::history::Panel::default(),
+            pager_wheel: widgets::Notches::default(),
         };
         // No bar exists yet, so there is nothing to resize: the task is empty.
         let _ = set_key_hints(&mut app, hints);
@@ -899,8 +949,12 @@ impl App {
         app.programs.fill(&mut app.snapshot.windows);
         #[cfg(debug_assertions)]
         preview(&mut app);
+        let _ = apply_mode(&mut app);
         if app.fixture.is_none() {
             crate::services::configure(&app.widget_cfg);
+        }
+        if app.mode == crate::model::Mode::De && app.fixture.is_none() && !fixture_pinned() {
+            app.grid = app.conn.desktop_grid();
         }
         app
     }
@@ -1013,6 +1067,19 @@ fn preview(app: &mut App) {
             let output = app.conn.outputs().0.first().map_or(0, |o| o.0);
             crate::preview::widgets(app, which == "widgets-idle", output);
             (which == "widgets-menu").then_some(Preview::ChipMenu)
+        }
+        "groups" | "history" | "history-empty" => {
+            let output = app.conn.outputs().0.first().map_or(0, |o| o.0);
+            crate::preview::widgets(app, true, output);
+            crate::preview::de(app, output);
+            if which == "history-empty" {
+                app.history.set(Vec::new());
+            }
+            Some(if which != "groups" {
+                Preview::Drawer(Drawer::History)
+            } else {
+                Preview::Group
+            })
         }
         _ => None,
     };
@@ -1275,6 +1342,7 @@ pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
         .set_chip_anims(app.widget_cfg.chip_add, app.widget_cfg.chip_remove);
     bar.fold = FoldState::with_air(app.air);
     let geometry = bar.fold.geometry(app.edge);
+    let height = surface_h(app, &bar);
     app.bars.insert(id, bar);
     Task::done(Message::NewLayerShell {
         settings: NewLayerShellSettings {
@@ -1283,7 +1351,7 @@ pub fn open_bar(app: &mut App, name: String, output_id: u64) -> Task<Message> {
             // `FoldState::geometry`); the zone plus the edge margin is the
             // full strip, so a window opened afterwards starts below the bar
             // rather than under it.
-            size: Some((0, geometry.height)),
+            size: Some((0, height)),
             layer: Layer::Top,
             anchor: bar_anchor(app.edge),
             exclusive_zone: Some(geometry.zone),
@@ -1372,6 +1440,35 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 
 /// One message. `at` is the bar it came from, when a view produced it.
 fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
+    let task = step_inner(app, message, at);
+    reconcile_hover(app);
+    task
+}
+
+/// Drop a hover whose chip is no longer a chip of one window: it became a
+/// group, went to another desktop or closed. The chip's own exit event never
+/// comes in those cases, so the card (and the debounce) are taken down here.
+fn reconcile_hover(app: &mut App) {
+    if app.hover.over().is_none() && app.hover.shown().is_none() {
+        return;
+    }
+    let stale = |h: u64| app.mode != crate::model::Mode::De || !lone_chip(app, h);
+    if app.hover.over().is_some_and(stale) || app.hover.shown().is_some_and(stale) {
+        let call = app.hover.dismiss();
+        hover_call(app, call);
+    }
+}
+
+/// Whether `handle` is the chip of exactly one window on some bar.
+fn lone_chip(app: &App, handle: u64) -> bool {
+    app.bars.values().any(|b| {
+        crate::view::strip_groups(app, b)
+            .iter()
+            .any(|g| g.rep.handle == handle && g.members.len() == 1)
+    })
+}
+
+fn step_inner(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
     match message {
         Message::ThemeChanged => return Task::none(),
         Message::On(id, inner) => {
@@ -1380,7 +1477,8 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         }
         Message::Refresh => {
             refetch(app);
-            return screens(app, SETTLE);
+            let regrouped = regroup(app);
+            return Task::batch([screens(app, SETTLE), regrouped]);
         }
         Message::Screens => {
             app.checking = false;
@@ -1390,6 +1488,16 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
         Message::Focus(handle) => {
             let dismiss = dismiss(app);
             app.conn.focus_window(handle);
+            refetch(app);
+            return dismiss;
+        }
+        Message::CloseChip(handle) => {
+            let handle = match at {
+                Some(at) if app.mode == crate::model::Mode::De => group_target(app, at, handle),
+                _ => handle,
+            };
+            let dismiss = dismiss(app);
+            app.conn.close_window(handle);
             refetch(app);
             return dismiss;
         }
@@ -1407,10 +1515,94 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             return dismiss;
         }
         Message::Menu(handle) => {
+            let Some(at) = at else { return Task::none() };
+            // Under `de` the compositor draws the full window menu at the
+            // pointer; the bar's own menu stays for `wm`, `hybrid`, an idle
+            // pinned chip (nothing to act on but unpin) and a refusal.
+            if app.mode == crate::model::Mode::De
+                && window(app, handle).is_some_and(|w| !crate::pins::is_idle(w))
+            {
+                let target = group_target(app, at, handle);
+                match window_menu(app, at, target, None) {
+                    Ok(done) => return done,
+                    Err(closed) => return Task::batch([closed, open_menu(app, at, handle)]),
+                }
+            }
+            return open_menu(app, at, handle);
+        }
+        Message::GroupOpen(handle) => {
             return match at {
-                Some(at) => open_menu(app, at, handle),
+                Some(at) => open_group(app, at, handle, true),
                 None => Task::none(),
             }
+        }
+        Message::GroupMenu(handle, index) => {
+            let Some(at) = at else { return Task::none() };
+            let anchor = group_row_anchor(app, index);
+            return match window_menu(app, at, handle, anchor) {
+                Ok(done) => done,
+                // Refused: the list is closed, so fall back to the bar's own
+                // menu rather than leave the click answered by nothing.
+                Err(closed) => Task::batch([closed, open_menu(app, at, handle)]),
+            };
+        }
+        Message::ChipHover(over) => {
+            if app.mode != crate::model::Mode::De {
+                return Task::none();
+            }
+            let call = match over {
+                Some(handle) => app.hover.enter(handle, Instant::now()),
+                None => app.hover.leave(),
+            };
+            hover_call(app, call);
+            return Task::none();
+        }
+        Message::HoverTick => {
+            let call = app.hover.due(Instant::now());
+            hover_call(app, call);
+            return Task::none();
+        }
+        Message::PagerScroll(delta) => {
+            let notches = app.pager_wheel.count(delta, Instant::now());
+            if let Some(dir) = crate::pager::scroll_step(notches) {
+                // A fast spin is a few steps, not a few dozen.
+                for _ in 0..notches.unsigned_abs().min(4) {
+                    app.conn.switch_desktop(dir);
+                }
+                refetch(app);
+            }
+            return Task::none();
+        }
+        Message::History(list) => {
+            app.history.set(list);
+            // The panel is on screen: what arrives while it is, is seen.
+            if matches!(
+                app.popup.as_ref(),
+                Some(Popup {
+                    kind: Kind::Drawer {
+                        which: Drawer::History,
+                        ..
+                    },
+                    ..
+                })
+            ) {
+                app.history.mark_seen();
+            }
+            return reflow(app);
+        }
+        Message::HistoryRemove(id) => {
+            app.history.remove(id);
+            crate::services::history_act(crate::services::HistoryCmd::Remove(id));
+            return reflow(app);
+        }
+        Message::HistoryClear => {
+            app.history.clear();
+            crate::services::history_act(crate::services::HistoryCmd::Clear);
+            return reflow(app);
+        }
+        Message::HistoryAction(id, key) => {
+            crate::services::history_act(crate::services::HistoryCmd::Invoke(id, key));
+            return dismiss(app);
         }
         Message::Open(drawer) => {
             return match at {
@@ -1562,7 +1754,7 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             let Some((first, region)) = with_bar(app, id, |app, bar| {
                 bar.width = size.width;
                 let first = !std::mem::replace(&mut bar.mapped, true);
-                (first, sync_region(app, bar, size.height))
+                (first, sync_region(app, bar))
             }) else {
                 return Task::none();
             };
@@ -1585,9 +1777,24 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 tasks.push(push_geometry(app, bar));
             }
             if let Some(which) = app.preview.take() {
+                // A popup hangs from its cell, and the cell's place is the
+                // solver's: this is the first message that knows the width.
+                let _ = with_bar(app, id, |app, bar| relayout(app, bar, Instant::now()));
                 tasks.push(match which {
                     Preview::Drawer(drawer) => open_drawer(app, id, drawer, false),
                     Preview::TrayMenu(item, entries) => show_tray_menu(app, id, item, entries),
+                    Preview::Group => {
+                        let rep = app.bars.get(&id).and_then(|bar| {
+                            crate::view::strip_groups(app, bar)
+                                .iter()
+                                .find(|g| g.members.len() > 1)
+                                .map(|g| g.rep.handle)
+                        });
+                        match rep {
+                            Some(rep) => open_group(app, id, rep, false),
+                            None => Task::none(),
+                        }
+                    }
                     Preview::ChipMenu => match app.snapshot.windows.first().map(|w| w.handle) {
                         Some(handle) => open_menu(app, id, handle),
                         None => Task::none(),
@@ -1625,6 +1832,18 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                     spawn_once(LAUNCHER, &[CENTERED]);
                     Task::none()
                 }
+            };
+        }
+        Message::PowerOpen(output) => {
+            let on = app
+                .bars
+                .values()
+                .find(|b| b.output_id == output)
+                .or_else(|| app.bars.values().find(|b| b.output_id == 0))
+                .map(|b| b.id);
+            return match on {
+                Some(id) => toggle_drawer(app, id, Drawer::Power, crate::drawer::DrawerKind::Power),
+                None => Task::none(),
             };
         }
         Message::MenuQuery(query) => {
@@ -1822,7 +2041,13 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             app.tray = app.conn.tray_config();
             refresh_pins(app);
             if !fixture_pinned() {
+                let before = app.mode;
                 app.mode = app.conn.mode();
+                if app.mode != before {
+                    // The grid and the groups follow the mode at once.
+                    app.grid = None;
+                    refetch(app);
+                }
             }
             if let Some(radius) = app.conn.glass_radius("bar.rounding") {
                 app.bar_radius = radius;
@@ -1874,8 +2099,17 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                 });
                 moved = Task::batch([moved, each]);
             }
+            // Whatever the reload moved of what a bar's surface is made of —
+            // the edge, the launcher style, the panel's rows — it is asked
+            // for again; a size and a region that did not change cost nothing.
+            let resurfaced = each_bar(app, |app, bar| {
+                Task::batch([push_size(app, bar), sync_region(app, bar)])
+            });
+            moved = Task::batch([moved, resurfaced]);
             if app.fixture.is_none() {
                 app.widget_cfg = app.conn.widgets_config();
+                let closed = apply_mode(app);
+                moved = Task::batch([moved, closed]);
                 let motion = app.widget_cfg.motion;
                 let (add, remove) = (app.widget_cfg.chip_add, app.widget_cfg.chip_remove);
                 for bar in app.bars.values_mut() {
@@ -2167,10 +2401,18 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
             app.bars = bars;
             #[cfg(debug_assertions)]
             crate::preview::frame(app, now);
+            // The focus asked for in `toggle_start` runs against the tree
+            // from before the menu opened, so the search field never takes
+            // it on a bottom bar. The slide's frames have the field in the
+            // tree; ask again.
+            let focus = sized
+                .iter()
+                .any(|id| app.bars.get(id).is_some_and(|b| b.menu.open))
+                .then(|| iced::widget::operation::focus(crate::menu::INPUT_ID));
             let tasks: Vec<_> = sized
                 .into_iter()
-                .filter_map(|id| app.bars.get(&id))
-                .map(|bar| push_size(app, bar))
+                .filter_map(|id| with_bar(app, id, size_and_region))
+                .chain(focus)
                 .collect();
             return Task::batch(tasks);
         }
@@ -2184,6 +2426,14 @@ fn step(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> {
                     Ok("open-bt") => Some((Drawer::Bluetooth, crate::drawer::DrawerKind::Bluetooth)),
                     Ok("open-audio") => Some((Drawer::Audio, crate::drawer::DrawerKind::Audio)),
                     Ok("open-calendar") => Some((Drawer::Calendar, crate::drawer::DrawerKind::Calendar)),
+                    Ok("open-power") => Some((Drawer::Power, crate::drawer::DrawerKind::Power)),
+                    // The `power` event with the widget left off the bar.
+                    Ok("open-power-nocell") => {
+                        app.widget_cfg
+                            .order
+                            .retain(|w| *w != crate::widgets::WidgetId::Power);
+                        Some((Drawer::Power, crate::drawer::DrawerKind::Power))
+                    }
                     Ok("open-calendar-empty") => {
                         app.calendar.provider = false;
                         app.calendar.events.clear();
@@ -2271,24 +2521,34 @@ fn fold(app: &App, bar: &mut Bar) -> Task<Message> {
     if fold.geometry(app.edge) == before {
         return Task::none();
     }
-    push_geometry(app, bar)
+    // A bottom bar's sheet is a region on a surface that holds still, so the
+    // fold moves the region where a top bar's moves the surface.
+    Task::batch([push_geometry(app, bar), sync_region(app, bar)])
 }
 
 /// Ask the compositor for the surface the fold state needs. Nothing before
 /// the surface is configured: [`Message::Sized`] pushes the state it reached
 /// by then.
+///
+/// A bottom bar's size is not the fold's to ask for ([`surface_h`]), so the
+/// fold never re-asks it there; whoever changes what the size is made of
+/// ([`push_size`]) does.
 fn push_geometry(app: &App, bar: &Bar) -> Task<Message> {
     let g = bar.fold.geometry(app.edge);
     if !bar.mapped {
         return Task::none();
     }
     let id = bar.id;
+    let size = match app.edge {
+        BarPosition::Top => push_size(app, bar),
+        BarPosition::Bottom => Task::none(),
+    };
     Task::batch([
         Task::done(Message::AnchorChange {
             id,
             anchor: bar_anchor(app.edge),
         }),
-        push_size(app, bar),
+        size,
         Task::done(Message::MarginChange { id, margin: g.margin }),
         Task::done(Message::ExclusiveZoneChange {
             id,
@@ -2297,21 +2557,66 @@ fn push_geometry(app: &App, bar: &Bar) -> Task<Message> {
     ])
 }
 
-/// The surface's height alone: the fold's sheet plus however much of the
-/// start menu's panel is out. The panel never adds to the exclusive zone —
-/// it floats over the windows, it does not push them.
+/// The height the bar's layer surface is asked for.
+///
+/// A top bar's surface is the fold's sheet plus however much of the start
+/// menu's panel or a drawer is out, and follows both as they move. A panel
+/// never adds to the exclusive zone — it floats over the windows, it does not
+/// push them.
+///
+/// A bottom bar's surface is asked for once, at the most the sheet and a
+/// panel together ever reach, and never again while either moves. The
+/// compositor lays a layer out by the size it was last asked for the moment
+/// that is committed, but draws the buffer it was last given, from the box's
+/// top: on a bottom-anchored surface that is the wrong end, so each resize
+/// shows the pill displaced by the size change until the frame sized to the
+/// new box arrives — a wobble for every step of a slide, both ways. With a
+/// size that never changes the buffer and the box always agree, and the
+/// sheet is shaped by the input region instead ([`sync_region`]).
+fn surface_h(app: &App, bar: &Bar) -> u32 {
+    match app.edge {
+        BarPosition::Top => {
+            bar.fold.geometry(app.edge).height + bar.menu.extent(app.show_key_hints) + drawer_extent(app, bar)
+        }
+        BarPosition::Bottom => {
+            FoldState::with_air(bar.fold.air).sheet_height()
+                + panel_reach(app).max(bar.drawer.height.ceil() as u32)
+        }
+    }
+}
+
+/// The tallest panel a bottom bar's surface is made to hold: the start menu
+/// fully out, or the drawers' reserve. A drawer that needs more than the
+/// reserve (a very long list) raises the surface once, by [`surface_h`].
+fn panel_reach(app: &App) -> u32 {
+    let menu = if app.bar.launcher == LauncherStyle::Menu {
+        bar::panel_h(app.show_key_hints, app.launcher_menu.rows.max(1)).round() as u32
+    } else {
+        0
+    };
+    menu.max(ec_ui::tokens::drawer::RESERVE_H as u32)
+}
+
+/// The surface's height alone. See [`surface_h`].
 fn push_size(app: &App, bar: &Bar) -> Task<Message> {
     if !bar.mapped {
         return Task::none();
     }
-    let g = bar.fold.geometry(app.edge);
     Task::done(Message::SizeChange {
         id: bar.id,
-        size: (
-            0,
-            g.height + bar.menu.extent(app.show_key_hints) + drawer_extent(app, bar),
-        ),
+        size: (0, surface_h(app, bar)),
     })
+}
+
+/// What a slide step of a panel changes: a top bar's surface, a bottom bar's
+/// region.
+fn size_and_region(app: &App, bar: &mut Bar) -> Task<Message> {
+    let region = sync_region(app, bar);
+    let size = match app.edge {
+        BarPosition::Top => push_size(app, bar),
+        BarPosition::Bottom => Task::none(),
+    };
+    Task::batch([size, region])
 }
 
 /// Apply `ui.show-key-hints`, live. The panel's full height depends on it,
@@ -2324,14 +2629,12 @@ pub fn set_key_hints(app: &mut App, on: bool) -> Task<Message> {
         return Task::none();
     }
     app.show_key_hints = on;
-    let mut tasks = Vec::new();
     for bar in app.bars.values_mut() {
         bar.menu.region = None;
     }
-    for bar in app.bars.values() {
-        tasks.push(push_size(app, bar));
-    }
-    Task::batch(tasks)
+    each_bar(app, |app, bar| {
+        Task::batch([push_size(app, bar), sync_region(app, bar)])
+    })
 }
 
 /// `--centered`: the launcher draws itself even with `bar.launcher-style
@@ -2341,8 +2644,8 @@ pub fn set_key_hints(app: &mut App, on: bool) -> Task<Message> {
 /// again.
 pub const CENTERED: &str = "--centered";
 
-/// Send the start menu's input region for a surface `h` logical pixels
-/// tall, and only if the boxes differ from the last ones sent.
+/// Send a bar's input region, and only if the boxes differ from the last ones
+/// sent.
 ///
 /// The region is the pointer's and the glass's at once: abyss draws a layer
 /// whose input region is 2..=4 boxes as their smooth union, so the blur
@@ -2359,32 +2662,51 @@ pub const CENTERED: &str = "--centered";
 /// last covering subtract (`render::blur::Shape::from_region`). Any height is
 /// therefore safe to send at.
 ///
-/// On a top bar the boxes do not depend on the height (`menu::region`), so
-/// the send in [`toggle_start`] holds for the whole slide and the per-configure
-/// sends dedupe to nothing. A bottom bar's pill rides the surface's far edge,
-/// so it is re-sent on every configure of the slide, both ways, and lags the
-/// surface by one configure.
+/// On a top bar the boxes do not depend on the height (`menu::region_top`,
+/// `drawer::region_top`), so the send in [`toggle_start`] or [`toggle_drawer`]
+/// holds for the whole slide and nothing is sent again. A bar that has never
+/// had a panel out sends nothing and keeps the plain whole-surface shape.
 ///
-/// A bar whose menu has never been out sends nothing and keeps the plain
-/// whole-surface shape.
-fn sync_region(app: &App, bar: &mut Bar, h: f32) -> Task<Message> {
+/// A bottom bar's boxes are the sheet and the panel on the surface's far edge
+/// (`menu::region_bottom`, `drawer::region_bottom`), so they follow the fold
+/// and the slides: this is called on every step of either, and the surface
+/// holds still ([`surface_h`]). The region is always there, since the surface
+/// is taller than the sheet.
+fn sync_region(app: &App, bar: &mut Bar) -> Task<Message> {
     let top = app.edge == BarPosition::Top;
-    let h = h.round().max(0.0) as u32;
     // A drawer owns the region while it is out, and until the start menu
-    // takes it over: the last send was its, and a bottom bar's pill moves.
+    // takes it over: the last send was its.
     let drawer = bar.drawer.open || (!bar.menu.open && bar.drawer.region.is_some());
-    let rects = if drawer {
-        if bar.drawer.region.is_none() && !bar.drawer.open {
-            return Task::none();
+    let rects = if top {
+        if drawer {
+            if bar.drawer.region.is_none() && !bar.drawer.open {
+                return Task::none();
+            }
+            let left = bar.drawer.anchor_x().round() as i32;
+            let w = bar.drawer.width().round() as i32;
+            crate::drawer::region_top(left, w)
+        } else {
+            if !bar.menu.open && bar.menu.region.is_none() {
+                return Task::none();
+            }
+            crate::menu::region_top(app.bar_radius)
         }
-        let left = bar.drawer.anchor_x().round() as i32;
-        let w = bar.drawer.width().round() as i32;
-        crate::drawer::region(top, left, w, h)
     } else {
-        if !bar.menu.open && bar.menu.region.is_none() {
-            return Task::none();
+        let surface = surface_h(app, bar);
+        let sheet = bar.fold.geometry(app.edge).height;
+        let drawer_out = drawer_extent(app, bar);
+        if drawer && drawer_out > 0 {
+            let left = bar.drawer.anchor_x().round() as i32;
+            let w = bar.drawer.width().round() as i32;
+            crate::drawer::region_bottom(left, w, surface, drawer_out)
+        } else {
+            crate::menu::region_bottom(
+                app.bar_radius,
+                surface,
+                sheet,
+                bar.menu.extent(app.show_key_hints),
+            )
         }
-        crate::menu::region(top, app.bar_radius, h)
     };
     let sent = if drawer {
         &bar.drawer.region
@@ -2431,12 +2753,10 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
     let term = app.conn.terminal_command();
     let entries = ec_services::apps::scan_with(term.as_deref(), &app.launcher_menu.search);
     let open = with_bar(app, id, |app, bar| {
-        // The surface's height as it stands, before the menu starts growing
-        // it: the region goes out ahead of the resize, so the glass has its
+        // The region goes out ahead of the resize, so the glass has its
         // shape from the first frame of the slide.
-        let h = bar.fold.geometry(app.edge).height + bar.menu.extent(app.show_key_hints);
         bar.menu.open(entries, term, app.launcher_menu, now);
-        let region = sync_region(app, bar, h as f32);
+        let region = sync_region(app, bar);
         Task::batch([
             region,
             // The keyboard, held until the menu closes: the query is typed
@@ -2448,7 +2768,7 @@ fn toggle_start(app: &mut App, id: Id) -> Task<Message> {
                 keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::OnDemand,
             }),
             iced::widget::operation::focus(crate::menu::INPUT_ID),
-            push_size(app, bar),
+            size_and_region(app, bar),
         ])
     })
     .unwrap_or_else(Task::none);
@@ -2473,7 +2793,7 @@ fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
         Drawer::QuickActions => Some(crate::drawer::DrawerKind::QuickActions),
         Drawer::Progress => Some(crate::drawer::DrawerKind::Progress),
         Drawer::Power => Some(crate::drawer::DrawerKind::Power),
-        Drawer::Overflow => None,
+        Drawer::Overflow | Drawer::History => None,
     }
 }
 
@@ -2513,10 +2833,7 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
     }
     match app.edge {
         BarPosition::Top => bar.cursor.y >= bar::PILL_H,
-        BarPosition::Bottom => {
-            let total = bar.fold.geometry(app.edge).height + drawer_extent(app, bar);
-            bar.cursor.y < total as f32 - bar::PILL_H
-        }
+        BarPosition::Bottom => bar.cursor.y < surface_h(app, bar) as f32 - bar::PILL_H,
     }
 }
 
@@ -2617,14 +2934,17 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
     }
     let full = drawer_full(app, kind) as f32;
     let open = with_bar(app, id, |app, bar| {
-        let center = crate::view::drawer_span(app, bar, drawer)
-            .map_or(bar.cursor.x, |(left, right)| (left + right) / 2.0);
-        let left = crate::drawer::panel_left(kind, center, bar.width);
-        // The surface's height as it stands, before the drawer starts
-        // growing it: the region goes out ahead of the resize.
-        let h = bar.fold.geometry(app.edge).height + drawer_extent(app, bar);
+        let left = match crate::view::drawer_span(app, bar, drawer) {
+            Some((l, r)) => crate::drawer::panel_left(kind, (l + r) / 2.0, bar.width),
+            // No cell (the `power` event, widget unequipped): the pill's end.
+            None if kind == crate::drawer::DrawerKind::Power => {
+                crate::drawer::panel_left_at_end(kind, bar.width)
+            }
+            None => crate::drawer::panel_left(kind, bar.cursor.x, bar.width),
+        };
+        // The region goes out ahead of the resize.
         bar.drawer.open(kind, left, full, now);
-        let region = sync_region(app, bar, h as f32);
+        let region = sync_region(app, bar);
         Task::batch([
             region,
             // On-demand, so Escape reaches the bar; a click on a window takes
@@ -2633,7 +2953,7 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
                 id,
                 keyboard_interactivity: iced_layershell::reexport::KeyboardInteractivity::OnDemand,
             }),
-            push_size(app, bar),
+            size_and_region(app, bar),
         ])
     })
     .unwrap_or_else(Task::none);
@@ -2878,6 +3198,11 @@ fn refetch(app: &mut App) {
     app.snapshot = app.conn.snapshot();
     app.icons.warm(&app.snapshot.windows);
     app.programs.fill(&mut app.snapshot.windows);
+    app.grid = if app.mode == crate::model::Mode::De {
+        app.conn.desktop_grid()
+    } else {
+        None
+    };
 }
 
 /// Re-solve every bar, then open or close the monitor tap for all of them.
@@ -2907,19 +3232,27 @@ fn report_chips(app: &mut App) {
         }
         let air = bar.fold.air;
         let inset = air.y as f32 + (bar::PILL_H - bar::TASK_H) / 2.0;
-        let windows = crate::view::strip_windows(app, bar);
-        for (w, c) in windows.iter().zip(&bar.layout.chips) {
+        let groups = crate::view::strip_groups(app, bar);
+        for (g, c) in groups.iter().zip(&bar.layout.chips) {
             // An idle pinned chip has no window to shrink into it.
-            if crate::pins::is_idle(w) {
+            if crate::pins::is_idle(g.rep) {
                 continue;
             }
-            rows.push((
-                w.handle,
-                bar.output_name.clone(),
-                air.x as f32 + c.x,
-                inset,
-                c.width,
-            ));
+            // Every member of a group shrinks toward the group's one chip.
+            let handles: Vec<u64> = if g.members.is_empty() {
+                vec![g.rep.handle]
+            } else {
+                g.members.iter().map(|m| m.handle).collect()
+            };
+            for handle in handles {
+                rows.push((
+                    handle,
+                    bar.output_name.clone(),
+                    air.x as f32 + c.x,
+                    inset,
+                    c.width,
+                ));
+            }
         }
     }
     let mut heights: HashMap<String, Option<f32>> = HashMap::new();
@@ -2994,14 +3327,29 @@ pub fn relayout(app: &App, bar: &mut Bar, now: Instant) {
         return;
     }
 
-    let windows: Vec<&crate::model::Window> = crate::view::strip_windows(app, bar);
+    let groups = crate::view::strip_groups(app, bar);
+    let windows: Vec<&crate::model::Window> = groups.iter().map(|g| g.rep).collect();
+    let tallies: Vec<crate::group::Tally> = groups
+        .iter()
+        .map(|g| g.tally(|m| crate::view::focused(app, m)))
+        .collect();
     let chips: Vec<layout::ChipIn> = windows
         .iter()
-        .map(|w| layout::ChipIn {
-            whole: layout::whole_width(w.label()),
-            name: layout::whole_width(w.name()),
-            minimized: w.minimized,
-            icon_only: crate::pins::is_idle(w),
+        .zip(&tallies)
+        .map(|(w, t)| {
+            // A group has no one title: it is as wide as "app · N".
+            let (whole, name) = if t.is_group() {
+                let text = crate::group::chip_text(w, t.count);
+                (layout::whole_width(&text), layout::whole_width(&text))
+            } else {
+                (layout::whole_width(w.label()), layout::whole_width(w.name()))
+            };
+            layout::ChipIn {
+                whole,
+                name,
+                minimized: t.minimized,
+                icon_only: crate::pins::is_idle(w),
+            }
         })
         .collect();
     bar.layout = layout::solve(layout::Input {
@@ -3020,6 +3368,12 @@ pub fn relayout(app: &App, bar: &mut Bar, now: Instant) {
     let snap = bar.motion.snaps(workspace);
     bar.motion
         .retarget_chips(&windows, &bar.layout.chips, workspace, now);
+    let counts: Vec<(u64, usize)> = windows
+        .iter()
+        .zip(&tallies)
+        .map(|(w, t)| (w.handle, t.count))
+        .collect();
+    bar.motion.tag_counts(&counts);
     let targets: Vec<(String, bool, layout::WidgetOut)> = order
         .iter()
         .zip(&bar.widget_inputs)
@@ -3198,6 +3552,9 @@ fn dismiss(app: &mut App) -> Task<Message> {
 /// from one drawer to another keeps the bar's keyboard: the release it would
 /// send is read back as an unfocus, and that closes the drawer just opened.
 fn dismiss_with(app: &mut App, drawers: bool) -> Task<Message> {
+    // Whatever the human does next, a hover card is no longer wanted.
+    let call = app.hover.dismiss();
+    hover_call(app, call);
     end_bt_scan(app);
     // Only a power drawer that is out closes here; resetting unconditionally
     // would wipe a menu state that is about to be drawn as it opens.
@@ -3292,7 +3649,7 @@ fn anchor(app: &App, bar: &Bar, span: Option<(f32, f32)>, edge: Edge) -> (i32, i
             // bottom one.
             let y = match app.edge {
                 BarPosition::Top => bar::SHEET_BOTTOM,
-                BarPosition::Bottom => 0.0,
+                BarPosition::Bottom => (surface_h(app, bar) - bar.fold.sheet_height()) as f32,
             };
             (x, y)
         }
@@ -3345,6 +3702,276 @@ fn open_menu(app: &mut App, at: Id, handle: u64) -> Task<Message> {
     Task::batch([closed, open])
 }
 
+/// A point of a bar's surface in the compositor's global logical pixels, which
+/// is what the desktop methods (`open_window_menu`, `show_window_preview`) take.
+///
+/// `air` is the layer-shell margin the surface sits in, `frame` the output's
+/// global top-left and logical height. A top bar's surface starts `air.y` below
+/// the output's top; a bottom bar's ends `air.y` above its bottom.
+pub(crate) fn global_point(
+    edge: BarPosition,
+    air: Air,
+    surface_h: f32,
+    frame: (f32, f32, f32),
+    local: (f32, f32),
+) -> (f32, f32) {
+    let x = frame.0 + air.x as f32 + local.0;
+    let y = match edge {
+        BarPosition::Top => frame.1 + air.y as f32 + local.1,
+        BarPosition::Bottom => frame.1 + frame.2 - air.y as f32 - surface_h + local.1,
+    };
+    (x, y)
+}
+
+/// A chip's box in global logical pixels, from its horizontal `span` on the
+/// bar: the same rows [`report_chips`] sends, plus the output's origin.
+pub(crate) fn chip_box(
+    edge: BarPosition,
+    air: Air,
+    frame: (f32, f32, f32),
+    span: (f32, f32),
+) -> (f64, f64, f64, f64) {
+    let inset = air.y as f32 + (bar::PILL_H - bar::TASK_H) / 2.0;
+    let y = match edge {
+        BarPosition::Top => frame.1 + inset,
+        BarPosition::Bottom => frame.1 + frame.2 - inset - bar::TASK_H,
+    };
+    (
+        f64::from(frame.0 + air.x as f32 + span.0),
+        f64::from(y),
+        f64::from(span.1 - span.0),
+        f64::from(bar::TASK_H),
+    )
+}
+
+/// Carry out what the hover debounce decided.
+fn hover_call(app: &mut App, call: Option<crate::hover::Call>) {
+    use crate::hover::Call;
+    match call {
+        None => {}
+        Some(Call::Hide) => app.conn.hide_window_preview(),
+        Some(Call::Show(handle)) => {
+            // The chip may have turned into a group since the pointer came:
+            // a group shows its list, never a card.
+            if !lone_chip(app, handle) {
+                let call = app.hover.dismiss();
+                if call.is_some() {
+                    app.conn.hide_window_preview();
+                }
+                return;
+            }
+            let found = app.bars.values().find_map(|b| {
+                crate::view::chip_span(app, b, handle).map(|span| (b.output_name.clone(), b.fold.air, span))
+            });
+            let Some((name, air, span)) = found else {
+                return;
+            };
+            let Some(frame) = app.conn.output_frame(&name) else {
+                return;
+            };
+            // `false` is "no card for this window" (protected from capture):
+            // nothing to track, and the eventual hide is a no-op.
+            let _ = app
+                .conn
+                .show_window_preview(handle, chip_box(app.edge, air, frame, span));
+        }
+    }
+}
+
+/// The window a right-click on the chip of `handle` acts on: under `de`, the
+/// focused window of its group, else the group's representative.
+fn group_target(app: &App, at: Id, handle: u64) -> u64 {
+    let Some(bar) = app.bars.get(&at) else {
+        return handle;
+    };
+    crate::view::strip_groups(app, bar)
+        .iter()
+        .find(|g| g.rep.handle == handle)
+        .map_or(handle, |g| g.menu_target(|m| crate::view::focused(app, m)))
+}
+
+/// Ask the compositor for the full window menu of `handle`, its corner at
+/// `anchor` (global pixels) or, with none, at the pointer. Either way the open
+/// popup has come down first (the menu takes the pointer's grab) and the
+/// task that closes it is returned; `Err` says the menu did not open
+/// (`denied`, an output that does not answer), for a caller with a fallback.
+fn window_menu(
+    app: &mut App,
+    at: Id,
+    handle: u64,
+    anchor: Option<(f32, f32)>,
+) -> Result<Task<Message>, Task<Message>> {
+    let point = match anchor {
+        Some(p) => Some(p),
+        None => {
+            let local = app.bars.get(&at).map(|bar| {
+                (
+                    bar.output_name.clone(),
+                    bar.fold.air,
+                    surface_h(app, bar) as f32,
+                    (bar.cursor.x, bar.cursor.y),
+                )
+            });
+            local.and_then(|(name, air, surface, cursor)| {
+                let frame = app.conn.output_frame(&name)?;
+                Some(global_point(app.edge, air, surface, frame, cursor))
+            })
+        }
+    };
+    let Some(point) = point else {
+        return Err(Task::none());
+    };
+    let closed = dismiss(app);
+    if app
+        .conn
+        .open_window_menu(handle, f64::from(point.0), f64::from(point.1))
+    {
+        Ok(closed)
+    } else {
+        Err(closed)
+    }
+}
+
+/// The global top-left of a group popup's row `index`, for its window menu.
+fn group_row_anchor(app: &App, index: usize) -> Option<(f32, f32)> {
+    let Some(Popup {
+        kind: Kind::Group {
+            origin: Some((x, y)), ..
+        },
+        ..
+    }) = app.popup.as_ref()
+    else {
+        return None;
+    };
+    Some((
+        x + drawer::PAD + menu::ROW_X,
+        y + drawer::PAD + drawer::HEAD_H + (index as f32 + 0.5) * drawer::ROW_H,
+    ))
+}
+
+/// Open the window list of the group the chip of `rep` stands for, under that
+/// chip. A chip with fewer than two windows has no list. `toggle`: a second
+/// click on the chip whose list is open closes it; a reflow reopening it at a
+/// new height must not read as that click.
+fn open_group(app: &mut App, at: Id, rep: u64, toggle: bool) -> Task<Message> {
+    let key = window(app, rep).and_then(crate::group::key_of);
+    let same = matches!(
+        app.popup.as_ref(),
+        Some(Popup { owner, kind: Kind::Group { key: k, .. }, .. }) if *owner == at && Some(k) == key.as_ref()
+    );
+    let closed = dismiss(app);
+    if same && toggle {
+        return closed;
+    }
+    let Some(key) = key else {
+        return closed;
+    };
+    let Some(bar) = app.bars.get(&at) else {
+        return closed;
+    };
+    let count = crate::view::group_rows(app, bar, &key).len();
+    if count < 2 {
+        return closed;
+    }
+    let rows = count.min(tokens::group::MAX_ROWS);
+    let height = crate::view::group_height(app, at, &key);
+    let rect = anchor(app, bar, crate::view::chip_span(app, bar, rep), Edge::Left);
+    let (name, air, surface) = (bar.output_name.clone(), bar.fold.air, surface_h(app, bar) as f32);
+    let edge = app.edge;
+    // Where the popup's top-left lands, for a row's window menu.
+    let origin = app.conn.output_frame(&name).map(|frame| {
+        let (gx, gy) = global_point(edge, air, surface, frame, (rect.0 as f32, rect.1 as f32));
+        match edge {
+            BarPosition::Top => (gx, gy),
+            BarPosition::Bottom => (gx, gy - height as f32),
+        }
+    });
+    let size = (crate::view::GROUP_W, height);
+    let settings = IcedNewPopupSettings::new(at, size, rect).gravity(popup_gravity(app.edge, Edge::Left));
+    let (id, open) = Message::popup_open(settings);
+    app.popup = Some(Popup {
+        id,
+        owner: at,
+        kind: Kind::Group { key, rows, origin },
+    });
+    Task::batch([closed, open])
+}
+
+/// Keep an open group list the size of its group: closed when the group is
+/// down to one window, reopened when it gained or lost rows.
+fn regroup(app: &mut App) -> Task<Message> {
+    let Some(Popup {
+        owner,
+        kind: Kind::Group { key, rows, .. },
+        ..
+    }) = app.popup.as_ref()
+    else {
+        return Task::none();
+    };
+    let (owner, key, rows) = (*owner, key.clone(), *rows);
+    let now = app
+        .bars
+        .get(&owner)
+        .map_or(0, |b| crate::view::group_rows(app, b, &key).len());
+    if now < 2 {
+        return dismiss_popup(app);
+    }
+    if now.min(tokens::group::MAX_ROWS) == rows {
+        return Task::none();
+    }
+    let rep = app.bars.get(&owner).and_then(|b| {
+        crate::view::strip_groups(app, b)
+            .iter()
+            .find(|g| crate::group::key_of(g.rep).as_deref() == Some(key.as_str()))
+            .map(|g| g.rep.handle)
+    });
+    match rep {
+        Some(rep) => open_group(app, owner, rep, false),
+        None => dismiss_popup(app),
+    }
+}
+
+/// What `mode` adds to the widget area and the services behind it: under `de`
+/// the notification bell (before the clock) and the history thread; elsewhere
+/// neither, and no desktop grid. Called wherever the mode or the configured
+/// widget order is set, so a reload's order never loses or keeps the bell.
+pub(crate) fn apply_mode(app: &mut App) -> Task<Message> {
+    use widgets::WidgetId;
+    let de = app.mode == crate::model::Mode::De;
+    let order = &mut app.widget_cfg.order;
+    let has = order.contains(&WidgetId::History);
+    if de && !has {
+        let at = order
+            .iter()
+            .position(|w| *w == WidgetId::Clock)
+            .unwrap_or(order.len());
+        order.insert(at, WidgetId::History);
+    } else if !de && has {
+        order.retain(|w| *w != WidgetId::History);
+    }
+    if de {
+        crate::services::history_start();
+    } else {
+        app.grid = None;
+        // A card that is up comes down with the mode that drew it.
+        let call = app.hover.dismiss();
+        hover_call(app, call);
+        // So do the popups only `de` has: a group list, the history panel.
+        let de_popup = matches!(
+            app.popup.as_ref().map(|p| &p.kind),
+            Some(Kind::Group { .. })
+                | Some(Kind::Drawer {
+                    which: Drawer::History,
+                    ..
+                })
+        );
+        if de_popup {
+            return dismiss_popup(app);
+        }
+    }
+    Task::none()
+}
+
 /// A tray applet's click. The wifi and bluetooth cells roll their drawer out
 /// of the bar ([`toggle_drawer`]); the overflow arrow opens its popup, under
 /// the pointer, on exactly the machinery the context menu uses — one anchored
@@ -3362,6 +3989,10 @@ fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Mess
     if let Some(kind) = drawer_kind(drawer) {
         return toggle_drawer(app, at, drawer, kind);
     }
+    if drawer == Drawer::History {
+        // The panel is about to be in front of the human.
+        app.history.mark_seen();
+    }
     let same = matches!(
         app.popup.as_ref(),
         Some(Popup { owner, kind: Kind::Drawer { which, .. }, .. }) if *which == drawer && *owner == at
@@ -3374,7 +4005,12 @@ fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Mess
         return closed;
     };
     let height = crate::view::drawer_height(app, drawer);
-    let size = (crate::view::DRAWER_W, height);
+    let width = if drawer == Drawer::History {
+        crate::view::HISTORY_W
+    } else {
+        crate::view::DRAWER_W
+    };
+    let size = (width, height);
     // Gravity down-and-*left*: the tray lives at the right end of the bar, so
     // a drawer growing to the right would hang off the edge of the screen —
     // which is also why it hangs from the cell's right edge and not its left.
@@ -3433,8 +4069,7 @@ fn resize_drawers(app: &mut App) -> Task<Message> {
     Task::batch(
         sized
             .into_iter()
-            .filter_map(|id| app.bars.get(&id))
-            .map(|bar| push_size(app, bar)),
+            .filter_map(|id| with_bar(app, id, size_and_region)),
     )
 }
 
@@ -3562,6 +4197,10 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
     {
         subs.push(frames());
     }
+    // The hover debounce's clock, alive only while a chip waits for its card.
+    if app.hover.pending() {
+        subs.push(hover_ticks());
+    }
     #[cfg(debug_assertions)]
     if app.fixture.is_some() {
         subs.push(crate::preview::script());
@@ -3585,6 +4224,21 @@ fn fold_ticks() -> Subscription<Message> {
             std::thread::spawn(move || loop {
                 std::thread::sleep(FOLD_TICK);
                 if !send(&mut sender, Message::FoldTick) {
+                    return;
+                }
+            });
+        })
+    })
+}
+
+/// A clock for the hover debounce: a tick well inside [`crate::hover::DELAY`],
+/// so a card is asked for within a tick of the delay.
+fn hover_ticks() -> Subscription<Message> {
+    Subscription::run(|| {
+        iced::stream::channel(8, async move |mut sender| {
+            std::thread::spawn(move || loop {
+                std::thread::sleep(Duration::from_millis(50));
+                if !send(&mut sender, Message::HoverTick) {
                     return;
                 }
             });
@@ -3625,6 +4279,9 @@ fn pointer() -> Subscription<Message> {
             Some(Message::BarPress(id, None))
         }
         iced::Event::Mouse(iced::mouse::Event::ButtonPressed(_)) => Some(Message::CellPress(id, None)),
+        // The pointer left a surface: a hover card is no longer wanted. (The
+        // chip's own exit covers leaving the chip; this is the bar itself.)
+        iced::Event::Mouse(iced::mouse::Event::CursorLeft) => Some(Message::ChipHover(None)),
         iced::Event::Touch(iced::touch::Event::FingerPressed { position, .. })
             if status == Status::Ignored =>
         {
@@ -3769,6 +4426,15 @@ fn compositor() -> Subscription<Message> {
                                             event.data.get("output").and_then(serde_json::Value::as_u64),
                                         ) {
                                             (Some("open"), Some(output)) => Message::MenuOpen(output),
+                                            _ => continue,
+                                        },
+                                        // `open_power`: the power drawer on
+                                        // the named output.
+                                        ec_ipc::EventKind::Power => match (
+                                            event.data.get("action").and_then(serde_json::Value::as_str),
+                                            event.data.get("output").and_then(serde_json::Value::as_u64),
+                                        ) {
+                                            (Some("open"), Some(output)) => Message::PowerOpen(output),
                                             _ => continue,
                                         },
                                         _ => Message::Refresh,
@@ -4499,6 +5165,332 @@ pub(crate) mod tests {
         assert!(!a.bars.contains_key(&one));
         assert!(a.bars.contains_key(&two));
     }
+
+    fn foot_win(handle: u64, minimized: bool) -> Window {
+        Window {
+            handle,
+            app_id: "foot".into(),
+            title: format!("foot {handle}"),
+            workspace: Some(1),
+            output: Some(0),
+            focused: false,
+            minimized,
+            pid: None,
+            program: None,
+            trust: Trust::Private,
+        }
+    }
+
+    /// An app on `mode` with one bar and these windows on its only desktop.
+    fn windows_app(mode: crate::model::Mode, windows: Vec<Window>) -> (App, Id) {
+        let mut a = app();
+        a.mode = mode;
+        let id = bar_on(&mut a, "DP-1", 0);
+        a.snapshot.workspaces = vec![Workspace {
+            index: 1,
+            output: 0,
+            output_name: "DP-1".into(),
+            active: true,
+            windows: windows.len(),
+        }];
+        a.snapshot.windows = windows;
+        let _ = with_bar(&mut a, id, |app, bar| relayout(app, bar, Instant::now()));
+        (a, id)
+    }
+
+    /// Clicking a group of several opens a list; a second click closes it.
+    #[test]
+    fn a_group_with_several_windows_opens_a_list_and_a_second_click_closes_it() {
+        let (mut a, id) = windows_app(
+            crate::model::Mode::De,
+            vec![foot_win(1, false), foot_win(2, false), foot_win(3, true)],
+        );
+        let _ = step(&mut a, Message::GroupOpen(1), Some(id));
+        match a.popup.as_ref().map(|p| &p.kind) {
+            Some(Kind::Group { key, rows, .. }) => {
+                assert_eq!(key, "foot");
+                assert_eq!(*rows, 3);
+            }
+            other => panic!("expected the group list, got {other:?}"),
+        }
+        let _ = step(&mut a, Message::GroupOpen(1), Some(id));
+        assert!(a.popup.is_none(), "the chip toggles its list");
+    }
+
+    /// A chip that is one window has no list; it acts as it always did.
+    #[test]
+    fn a_group_of_one_opens_no_list() {
+        let (mut a, id) = windows_app(crate::model::Mode::De, vec![foot_win(1, false)]);
+        let _ = step(&mut a, Message::GroupOpen(1), Some(id));
+        assert!(a.popup.is_none());
+    }
+
+    /// A list follows its group: down to one window it closes, and a change
+    /// of count reopens it at the new height.
+    #[test]
+    fn the_group_list_follows_its_group() {
+        let (mut a, id) = windows_app(
+            crate::model::Mode::De,
+            vec![foot_win(1, false), foot_win(2, false), foot_win(3, false)],
+        );
+        let _ = step(&mut a, Message::GroupOpen(1), Some(id));
+        let first = a.popup.as_ref().map(|p| p.id).expect("open");
+        a.snapshot.windows.pop();
+        let _ = regroup(&mut a);
+        let second = a.popup.as_ref().map(|p| p.id).expect("still open");
+        assert_ne!(first, second, "reopened at two rows");
+        assert!(matches!(
+            a.popup.as_ref().map(|p| &p.kind),
+            Some(Kind::Group { rows: 2, .. })
+        ));
+        a.snapshot.windows.pop();
+        let _ = regroup(&mut a);
+        assert!(a.popup.is_none(), "one window left is not a group");
+    }
+
+    /// Picking a row acts on that window and closes the list: the same messages
+    /// a chip sends, so there is one focus path.
+    #[test]
+    fn a_group_row_activates_its_window_and_closes_the_list() {
+        let (mut a, id) = windows_app(
+            crate::model::Mode::De,
+            vec![foot_win(1, false), foot_win(2, false)],
+        );
+        let _ = step(&mut a, Message::GroupOpen(1), Some(id));
+        assert!(a.popup.is_some());
+        let _ = step(&mut a, Message::Focus(2), Some(id));
+        assert!(a.popup.is_none());
+    }
+
+    /// `wm` and `hybrid` keep their chips and their menu: a group message is
+    /// ignored by hand-built state, and the right-click opens the bar's own.
+    #[test]
+    fn hybrid_keeps_one_chip_per_window_and_the_bars_own_menu() {
+        let (mut a, id) = windows_app(
+            crate::model::Mode::Hybrid,
+            vec![foot_win(1, false), foot_win(2, false)],
+        );
+        assert_eq!(crate::view::strip_windows(&a, &a.bars[&id]).len(), 2);
+        let _ = step(&mut a, Message::Menu(1), Some(id));
+        assert!(
+            matches!(a.popup.as_ref().map(|p| &p.kind), Some(Kind::Menu { .. })),
+            "the bar's own chip menu"
+        );
+    }
+
+    /// Under `de` the right-click asks the compositor; with nothing answering
+    /// (no socket here) it falls back to the bar's own menu rather than doing
+    /// nothing.
+    #[test]
+    fn de_right_click_falls_back_to_the_bars_menu_when_refused() {
+        let (mut a, id) = windows_app(crate::model::Mode::De, vec![foot_win(1, false)]);
+        let _ = step(&mut a, Message::Menu(1), Some(id));
+        assert!(matches!(
+            a.popup.as_ref().map(|p| &p.kind),
+            Some(Kind::Menu { .. })
+        ));
+    }
+
+    /// The preview is for a chip of one window, under `de` only, asked for once
+    /// the debounce is up, and taken down on leave or on any press.
+    #[test]
+    fn the_hover_debounce_runs_under_de_only() {
+        let (mut a, id) = windows_app(crate::model::Mode::Hybrid, vec![foot_win(1, false)]);
+        let _ = step(&mut a, Message::ChipHover(Some(1)), Some(id));
+        assert!(!a.hover.pending(), "hybrid never previews");
+        a.mode = crate::model::Mode::De;
+        let _ = step(&mut a, Message::ChipHover(Some(1)), Some(id));
+        assert!(a.hover.pending());
+        assert_eq!(a.hover.over(), Some(1));
+        let _ = step(&mut a, Message::ChipHover(None), Some(id));
+        assert!(!a.hover.pending());
+        // A press clears a hover in progress: no card comes after a click.
+        let _ = step(&mut a, Message::ChipHover(Some(1)), Some(id));
+        let _ = step(&mut a, Message::Dismiss, None);
+        assert_eq!(a.hover.over(), None);
+    }
+
+    /// Rest the pointer on window 1's chip and let the card come up.
+    fn card_up(a: &mut App) {
+        let past = Instant::now() - crate::hover::DELAY * 2;
+        let _ = a.hover.enter(1, past);
+        let _ = a.hover.due(Instant::now());
+        assert_eq!(a.hover.shown(), Some(1));
+    }
+
+    /// A chip that turns into a group while the pointer waits never gets its
+    /// card, and the wait is forgotten.
+    #[test]
+    fn a_chip_that_becomes_a_group_loses_its_pending_hover() {
+        let (mut a, id) = windows_app(crate::model::Mode::De, vec![foot_win(1, false)]);
+        let _ = step(&mut a, Message::ChipHover(Some(1)), Some(id));
+        assert!(a.hover.pending());
+        a.snapshot.windows.push(foot_win(2, false));
+        let _ = step(&mut a, Message::HoverTick, None);
+        assert_eq!(a.hover.over(), None);
+        assert!(!a.hover.pending());
+        // Even a `Show` that was already decided is refused for a group.
+        let _ = a.hover.enter(1, Instant::now() - crate::hover::DELAY * 2);
+        let call = a.hover.due(Instant::now());
+        hover_call(&mut a, call);
+        assert_eq!(a.hover.shown(), None);
+    }
+
+    /// A card that is up for a window that closes, or a chip that vanishes
+    /// without an exit event, is taken down.
+    #[test]
+    fn a_card_is_hidden_when_its_chip_goes() {
+        let (mut a, id) = windows_app(crate::model::Mode::De, vec![foot_win(1, false)]);
+        card_up(&mut a);
+        let _ = step(&mut a, Message::HoverTick, Some(id));
+        assert_eq!(a.hover.shown(), Some(1), "a live chip keeps its card");
+        a.snapshot.windows.clear();
+        let _ = step(&mut a, Message::HoverTick, None);
+        assert_eq!(a.hover.shown(), None);
+        assert_eq!(a.hover.over(), None);
+    }
+
+    /// Leaving `de` takes the card, the group list and the history panel down.
+    #[test]
+    fn leaving_de_closes_what_de_opened() {
+        let (mut a, id) = windows_app(crate::model::Mode::De, vec![foot_win(1, false)]);
+        card_up(&mut a);
+        a.mode = crate::model::Mode::Hybrid;
+        let _ = apply_mode(&mut a);
+        assert_eq!(a.hover.shown(), None);
+
+        let (mut a, id2) = windows_app(
+            crate::model::Mode::De,
+            vec![foot_win(1, false), foot_win(2, false)],
+        );
+        let _ = (id, id2);
+        let _ = step(&mut a, Message::GroupOpen(1), Some(id2));
+        assert!(matches!(
+            a.popup.as_ref().map(|p| &p.kind),
+            Some(Kind::Group { .. })
+        ));
+        a.mode = crate::model::Mode::Hybrid;
+        let _ = apply_mode(&mut a);
+        assert!(a.popup.is_none());
+    }
+
+    /// Middle-click and right-click on a group chip name the same window: the
+    /// focused member, not the lowest handle.
+    #[test]
+    fn a_group_chip_acts_on_its_focused_member() {
+        let mut focused = foot_win(7, false);
+        focused.focused = true;
+        let (mut a, id) = windows_app(
+            crate::model::Mode::De,
+            vec![foot_win(2, false), foot_win(5, false), focused],
+        );
+        a.snapshot.focused = Some(7);
+        assert_eq!(group_target(&a, id, 2), 7);
+    }
+
+    /// A refused menu on a group row does not leave the click unanswered.
+    #[test]
+    fn a_refused_group_row_menu_falls_back_to_the_bars_menu() {
+        let (mut a, id) = windows_app(
+            crate::model::Mode::De,
+            vec![foot_win(1, false), foot_win(2, false)],
+        );
+        let _ = step(&mut a, Message::GroupOpen(1), Some(id));
+        let _ = step(&mut a, Message::GroupMenu(2, 1), Some(id));
+        assert!(matches!(
+            a.popup.as_ref().map(|p| &p.kind),
+            Some(Kind::Menu { .. })
+        ));
+    }
+
+    /// The bell is `de`'s: added before the clock under it, gone elsewhere,
+    /// and a reload's order never keeps or loses it.
+    #[test]
+    fn the_bell_is_a_de_widget() {
+        use crate::widgets::WidgetId;
+        let mut a = app();
+        a.mode = crate::model::Mode::De;
+        let _ = apply_mode(&mut a);
+        let order = &a.widget_cfg.order;
+        let bell = order
+            .iter()
+            .position(|w| *w == WidgetId::History)
+            .expect("the bell");
+        assert_eq!(order[bell + 1], WidgetId::Clock);
+        let _ = apply_mode(&mut a);
+        assert_eq!(
+            a.widget_cfg
+                .order
+                .iter()
+                .filter(|w| **w == WidgetId::History)
+                .count(),
+            1,
+            "applying twice adds it once"
+        );
+        a.mode = crate::model::Mode::Hybrid;
+        let _ = apply_mode(&mut a);
+        assert!(!a.widget_cfg.order.contains(&WidgetId::History));
+        assert!(a.grid.is_none());
+    }
+
+    #[test]
+    fn history_clear_and_remove_reach_the_panel() {
+        use ec_services::notifications::{HistoryEntry, Urgency};
+        let entry = |id: u32| HistoryEntry {
+            id,
+            app_name: "mail".into(),
+            app_icon: String::new(),
+            summary: "s".into(),
+            body: String::new(),
+            urgency: Urgency::Normal,
+            timestamp: u64::from(id),
+            actions: Vec::new(),
+            live: false,
+        };
+        let mut a = app();
+        let _ = step(&mut a, Message::History(vec![entry(1), entry(2)]), None);
+        assert!(a.history.unseen());
+        let _ = step(&mut a, Message::HistoryRemove(2), None);
+        assert_eq!(a.history.entries().len(), 1);
+        let _ = step(&mut a, Message::HistoryClear, None);
+        assert!(a.history.is_empty());
+    }
+
+    /// A point on a bar's surface, in the compositor's global pixels: a top
+    /// bar hangs `air.y` below the output's top, a bottom one ends `air.y`
+    /// above its bottom, and a second output adds its own origin.
+    #[test]
+    fn surface_points_become_global_ones() {
+        let air = Air {
+            x: 10,
+            y: 6,
+            inner: 4,
+        };
+        let top = global_point(BarPosition::Top, air, 40.0, (0.0, 0.0, 1080.0), (100.0, 20.0));
+        assert_eq!(top, (110.0, 26.0));
+        let bottom = global_point(BarPosition::Bottom, air, 40.0, (0.0, 0.0, 1080.0), (100.0, 20.0));
+        assert_eq!(bottom, (110.0, 1080.0 - 6.0 - 40.0 + 20.0));
+        let second = global_point(BarPosition::Top, air, 40.0, (1920.0, 0.0, 1080.0), (0.0, 0.0));
+        assert_eq!(second, (1930.0, 6.0));
+    }
+
+    /// The chip's box is what `report_chips` sends, with the output's origin.
+    #[test]
+    fn a_chip_box_sits_in_the_pill_on_either_edge() {
+        let air = Air {
+            x: 10,
+            y: 6,
+            inner: 4,
+        };
+        let inset = 6.0 + (bar::PILL_H - bar::TASK_H) / 2.0;
+        let (x, y, w, h) = chip_box(BarPosition::Top, air, (0.0, 0.0, 1080.0), (50.0, 150.0));
+        assert_eq!(
+            (x, y, w, h),
+            (60.0, f64::from(inset), 100.0, f64::from(bar::TASK_H))
+        );
+        let (_, y, _, _) = chip_box(BarPosition::Bottom, air, (0.0, 0.0, 1080.0), (50.0, 150.0));
+        assert_eq!(y, f64::from(1080.0 - inset - bar::TASK_H));
+    }
 }
 
 #[cfg(test)]
@@ -4825,63 +5817,121 @@ mod fold_tests {
     #[test]
     fn a_second_bar_sends_its_own_first_region() {
         let mut a = app();
+        a.edge = BarPosition::Top;
         let first = bar_on(&mut a, "DP-1", 0);
         let second = bar_on(&mut a, "HDMI-A-1", 1);
         for id in [first, second] {
             a.bars.get_mut(&id).unwrap().menu.open = true;
         }
-        let t1 = with_bar(&mut a, first, |a, b| sync_region(a, b, 200.0)).unwrap();
+        let t1 = with_bar(&mut a, first, sync_region).unwrap();
         assert_eq!(t1.units(), 1);
         assert!(a.bars[&second].menu.region.is_none());
-        let t2 = with_bar(&mut a, second, |a, b| sync_region(a, b, 200.0)).unwrap();
+        let t2 = with_bar(&mut a, second, sync_region).unwrap();
         assert_eq!(t2.units(), 1);
         assert!(a.bars[&second].menu.region.as_ref().unwrap().len() >= 2);
     }
 
     /// A top bar's boxes do not depend on the height, so the region sent as
-    /// the menu opens holds for the whole slide: no resend per configure.
+    /// the menu opens holds for the whole slide: nothing is sent per step.
     #[test]
     fn a_top_bar_sends_once_and_holds_through_the_slide() {
         let mut a = app();
         a.edge = BarPosition::Top;
         let id = bar_on(&mut a, "DP-1", 0);
         a.bars.get_mut(&id).unwrap().menu.open = true;
-        let t = with_bar(&mut a, id, |a, b| sync_region(a, b, 60.0)).unwrap();
+        let t = with_bar(&mut a, id, sync_region).unwrap();
         assert_eq!(t.units(), 1);
-        for h in [80.0, 150.0, 300.0, 520.0] {
-            let t = with_bar(&mut a, id, |a, b| sync_region(a, b, h)).unwrap();
-            assert_eq!(t.units(), 0, "h={h}");
+        for v in [0.2, 0.5, 0.9, 1.0] {
+            a.bars.get_mut(&id).unwrap().menu.reveal.snap(v);
+            let t = with_bar(&mut a, id, sync_region).unwrap();
+            assert_eq!(t.units(), 0, "reveal={v}");
         }
     }
 
-    /// A bottom bar's pill rides the surface's far edge: every configure of
-    /// the slide moves it, opening or closing, and the closed bar at rest
-    /// still gets its last region.
+    /// A bottom bar never re-asks its size, whatever the menu, a drawer or
+    /// the fold do: the compositor draws a stale buffer from the top of a
+    /// resized bottom-anchored surface, so any resize wobbles the pill. The
+    /// sheet follows by region instead, one send per step, opening and
+    /// closing.
     #[test]
-    fn a_bottom_bar_resends_on_every_height_of_the_slide() {
+    fn a_bottom_bar_holds_its_size_and_moves_its_region_through_the_menu_slide() {
+        let mut a = app();
+        a.edge = BarPosition::Bottom;
+        a.bar.launcher = LauncherStyle::Menu;
+        let id = bar_on(&mut a, "DP-1", 0);
+        let steady = surface_h(&a, &a.bars[&id]);
+        assert!(steady > bar::PILL_H as u32, "room for the panel");
+        // The closed bar already has its region: the surface is taller than
+        // its pill.
+        let t = with_bar(&mut a, id, sync_region).unwrap();
+        assert_eq!(t.units(), 1);
+        for v in [0.1, 0.4, 0.8, 1.0, 0.6, 0.2, 0.0] {
+            a.bars.get_mut(&id).unwrap().menu.reveal.snap(v);
+            assert_eq!(surface_h(&a, &a.bars[&id]), steady, "reveal={v}");
+            let extent = a.bars[&id].menu.extent(a.show_key_hints);
+            let t = with_bar(&mut a, id, sync_region).unwrap();
+            assert_eq!(t.units(), 1, "reveal={v}");
+            let want = crate::menu::region_bottom(a.bar_radius, steady, bar::PILL_H as u32, extent);
+            assert_eq!(a.bars[&id].menu.region.as_ref(), Some(&want));
+        }
+        // And a fold step moves the region, not the size.
+        let b = a.bars.get_mut(&id).unwrap();
+        b.fold.target = FoldTarget::Folded;
+        b.fold.height = 12;
+        assert_eq!(surface_h(&a, &a.bars[&id]), steady);
+    }
+
+    /// A drawer sliding on a bottom bar moves the region from the far edge
+    /// and leaves the surface alone.
+    #[test]
+    fn a_bottom_bar_holds_its_size_through_a_drawer_slide() {
         let mut a = app();
         a.edge = BarPosition::Bottom;
         let id = bar_on(&mut a, "DP-1", 0);
-        a.bars.get_mut(&id).unwrap().menu.open = true;
-        for h in [60.0, 80.0, 150.0, 300.0] {
-            let t = with_bar(&mut a, id, |a, b| sync_region(a, b, h)).unwrap();
-            assert_eq!(t.units(), 1, "opening h={h}");
-        }
-        a.bars.get_mut(&id).unwrap().menu.open = false;
-        for h in [200.0, 100.0, 60.0] {
-            let t = with_bar(&mut a, id, |a, b| sync_region(a, b, h)).unwrap();
-            assert_eq!(t.units(), 1, "closing h={h}");
-            let want = crate::menu::region(false, a.bar_radius, h as u32);
-            assert_eq!(a.bars[&id].menu.region.as_ref(), Some(&want));
+        let steady = surface_h(&a, &a.bars[&id]);
+        let now = Instant::now();
+        let full = drawer_full(&a, crate::drawer::DrawerKind::Wifi) as f32;
+        a.bars
+            .get_mut(&id)
+            .unwrap()
+            .drawer
+            .open(crate::drawer::DrawerKind::Wifi, 300.0, full, now);
+        for frac in [0.2, 0.5, 1.0, 0.5, 0.2] {
+            a.bars.get_mut(&id).unwrap().drawer.reveal.snap(full * frac);
+            assert_eq!(surface_h(&a, &a.bars[&id]), steady, "frac={frac}");
+            let t = with_bar(&mut a, id, sync_region).unwrap();
+            assert_eq!(t.units(), 1, "frac={frac}");
+            let b = &a.bars[&id];
+            let pill = b
+                .drawer
+                .region
+                .as_ref()
+                .unwrap()
+                .iter()
+                .find(|r| r.2 == crate::menu::BIG)
+                .unwrap();
+            assert_eq!(pill.1 + pill.3, steady as i32, "the pill stays on the far edge");
         }
     }
 
-    /// A bar whose menu has never been out sends nothing.
+    /// A top bar's surface is still the sheet and the panel's extent.
     #[test]
-    fn a_bar_that_never_opened_its_menu_sends_no_region() {
+    fn a_top_bars_surface_follows_the_panel() {
         let mut a = app();
+        a.edge = BarPosition::Top;
         let id = bar_on(&mut a, "DP-1", 0);
-        let t = with_bar(&mut a, id, |a, b| sync_region(a, b, 60.0)).unwrap();
+        let closed = surface_h(&a, &a.bars[&id]);
+        a.bars.get_mut(&id).unwrap().menu.reveal.snap(1.0);
+        assert!(surface_h(&a, &a.bars[&id]) > closed);
+    }
+
+    /// A top bar whose panels have never been out sends nothing.
+    #[test]
+    fn a_top_bar_that_never_opened_a_panel_sends_no_region() {
+        let mut a = app();
+        a.edge = BarPosition::Top;
+        let id = bar_on(&mut a, "DP-1", 0);
+        let t = with_bar(&mut a, id, sync_region).unwrap();
         assert_eq!(t.units(), 0);
     }
 }

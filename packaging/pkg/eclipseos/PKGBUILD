@@ -12,7 +12,7 @@
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
          eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack
-         eclipseos-steam-glass eclipseos-firefox-glass eclipseos-meta)
+         eclipseos-steam-glass eclipseos-firefox-glass eclipseos-greeter eclipseos-meta)
 pkgver=0.1.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -66,7 +66,9 @@ package_eclipseos-abyss() {
   # before it lights an output.
   depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa xorg-xwayland)
   optdepends=('seatd: fallback seat management when logind is unavailable (D-01 §5.3)')
-  provides=(abyss)
+  # wayland-compositor: greetd-regreet depends on the virtual package, and abyss
+  # hosts it (ADR 0087). Without this, pacman pulls in some other compositor.
+  provides=(abyss wayland-compositor)
   install=eclipseos.install
 
   for b in ec-abyss ec-ctl; do _bin "$b"; done
@@ -132,7 +134,7 @@ package_eclipseos-launcher() {
 }
 
 package_eclipseos-desktop() {
-  pkgdesc="EclipseOS desktop apps: settings, policy viewer, agent console, screensaver, welcome, pairing agent, secret prompt, portal settings backend"
+  pkgdesc="EclipseOS desktop apps: settings, policy viewer, agent console, desktop icons, screensaver, welcome, pairing agent, secret prompt, portal settings backend"
   # Fonts for ec-welcome (D-07 step 0). Lora has no official package; the
   # version label falls back to a serif.
   depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk polkit)
@@ -145,16 +147,32 @@ package_eclipseos-desktop() {
   # from PATH for pairing PINs and wifi passphrases (ADR 0053). Here, not in the
   # taskbar's package, so pairing works with no taskbar (ADR 0066).
   _bin ec-pairing
+  # The polkit agent: relays to the compositor's password prompt (ADR 0088).
+  _bin ec-polkit-agent
   _bin ec-secret-prompt
+  # The desktop icons (mode "de"). The unit has no [Install], so no _want:
+  # abyss starts and stops it with the mode (ec-abyss/src/session.rs).
+  _bin ec-desktop
+  _unit ec-desktop.service
   _unit ec-screensaver.service
   _want ec-screensaver.service
   _unit ec-pairing.service
   _want ec-pairing.service
+  _unit ec-polkit-agent.service
+  _want ec-polkit-agent.service
   # xdg-desktop-portal Settings backend: colour scheme and accent for GTK, Qt
   # and browsers (ADR 0084). Bus-activated, so no _want.
   _unit ec-portal.service
   install -Dm0644 "$srcdir/$_src/packaging/dbus/org.freedesktop.impl.portal.desktop.abyss.service" \
     "$pkgdir/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.abyss.service"
+  # One keyring daemon, not two: the hooks put this in /usr/local while
+  # gnome-keyring is installed (see the hook headers).
+  install -Dm0644 "$srcdir/$_src/packaging/dbus/org.freedesktop.secrets.service" \
+    "$pkgdir/usr/share/eclipseos/dbus/org.freedesktop.secrets.service"
+  install -Dm0644 "$srcdir/$_src/packaging/hooks/eclipseos-keyring.hook" \
+    "$pkgdir/usr/share/libalpm/hooks/eclipseos-keyring.hook"
+  install -Dm0644 "$srcdir/$_src/packaging/hooks/eclipseos-keyring-remove.hook" \
+    "$pkgdir/usr/share/libalpm/hooks/eclipseos-keyring-remove.hook"
   install -Dm0644 "$srcdir/$_src/packaging/portal/abyss.portal" \
     "$pkgdir/usr/share/xdg-desktop-portal/portals/abyss.portal"
   install -Dm0644 "$srcdir/$_src/packaging/portal/abyss-portals.conf" \
@@ -301,12 +319,37 @@ package_eclipseos-firefox-glass() {
     "$pkgdir/etc/firefox/policies/policies.json"
 }
 
+package_eclipseos-greeter() {
+  pkgdesc="EclipseOS graphical login: greetd configuration and its customisation (D-01 §3.5, ADR 0089)"
+  # No edge to any desktop package: removing one must not take the login with it.
+  depends=(eclipseos-abyss greetd greetd-regreet polkit)
+  # These live under /etc/eclipse, not /etc/greetd: config.toml and
+  # regreet.toml there are owned by the greetd and greetd-regreet packages and
+  # pacman refuses to co-own a file. The drop-in below points greetd at this
+  # copy, and ec-greeter-run passes regreet --config/--style for its siblings.
+  # The wallpaper goes under /usr/share because the `greeter` user cannot read
+  # any home directory.
+  install -Dm0644 "$srcdir/$_src/packaging/greetd/config.toml"  "$pkgdir/etc/eclipse/greetd/config.toml"
+  install -Dm0644 "$srcdir/$_src/packaging/greetd/regreet.toml" "$pkgdir/etc/eclipse/greetd/regreet.toml"
+  install -Dm0644 "$srcdir/$_src/packaging/greetd/regreet.css"  "$pkgdir/etc/eclipse/greetd/regreet.css"
+  install -Dm0644 "$srcdir/$_src/packaging/greetd/10-eclipseos.conf" \
+    "$pkgdir/usr/lib/systemd/system/greetd.service.d/10-eclipseos.conf"
+  install -Dm0644 "$srcdir/$_src/packaging/greetd/wallpaper.png" \
+    "$pkgdir/usr/share/backgrounds/eclipseos/greeter.png"
+  # Root writes the machine's choices, greeter reads them (ADR 0089).
+  install -Dm0755 "$srcdir/target/release/ec-greeter-run" "$pkgdir/usr/lib/eclipse/ec-greeter-run"
+  install -Dm0755 "$srcdir/target/release/ec-greeter-apply" "$pkgdir/usr/lib/eclipse/ec-greeter-apply"
+  install -Dm0644 "$srcdir/$_src/packaging/polkit/org.eclipse.greeter.apply.policy" \
+    "$pkgdir/usr/share/polkit-1/actions/org.eclipse.greeter.apply.policy"
+  install -Dm0644 "$srcdir/$_src/packaging/greetd/tmpfiles.conf" \
+    "$pkgdir/usr/lib/tmpfiles.d/eclipseos-greeter.conf"
+}
+
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
   arch=(any)  # config and dependencies only, no ELF
   depends=(eclipseos-abyss eclipseos-toasts eclipseos-wallpaper eclipseos-center
-           eclipseos-launcher eclipseos-desktop eclipseos-fog
-           greetd greetd-regreet cage
+           eclipseos-launcher eclipseos-desktop eclipseos-fog eclipseos-greeter
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
            foot xdg-user-dirs brightnessctl playerctl)
   # Add-ons (ADR 0066): suggested, not required. The session starts without
@@ -328,20 +371,6 @@ package_eclipseos-meta() {
   install -Dm0644 "$srcdir/$_src/packaging/pacman/eclipseos.conf" \
     "$pkgdir/etc/pacman.d/eclipseos.conf"
 
-  # Greeter. These live under /etc/eclipse, not /etc/greetd: config.toml and
-  # regreet.toml there are owned by the greetd and greetd-regreet packages and
-  # pacman refuses to co-own a file. The drop-in below points greetd at this
-  # copy, and config.toml passes regreet --config/--style for its siblings.
-  # The wallpaper goes under /usr/share because the `greeter` user cannot read
-  # any home directory.
-  install -Dm0644 "$srcdir/$_src/packaging/greetd/config.toml"  "$pkgdir/etc/eclipse/greetd/config.toml"
-  install -Dm0644 "$srcdir/$_src/packaging/greetd/regreet.toml" "$pkgdir/etc/eclipse/greetd/regreet.toml"
-  install -Dm0644 "$srcdir/$_src/packaging/greetd/regreet.css"  "$pkgdir/etc/eclipse/greetd/regreet.css"
-  install -Dm0644 "$srcdir/$_src/packaging/greetd/10-eclipseos.conf" \
-    "$pkgdir/usr/lib/systemd/system/greetd.service.d/10-eclipseos.conf"
-  install -Dm0644 "$srcdir/$_src/packaging/greetd/wallpaper.png" \
-    "$pkgdir/usr/share/backgrounds/eclipseos/greeter.png"
-
   # Boot splash systemd-stub draws from the UKI. The mkinitcpio preset is
   # generated, not package-owned, so eclipseos-postinstall.sh points its
   # `--splash` here.
@@ -349,6 +378,8 @@ package_eclipseos-meta() {
     "$pkgdir/usr/share/eclipseos/splash.bmp"
   install -Dm0644 "$srcdir/$_src/packaging/systemd/10-eclipseos.conf" \
     "$pkgdir/usr/lib/systemd/system.conf.d/10-eclipseos.conf"
+  install -Dm0644 "$srcdir/$_src/packaging/logind/10-eclipseos.conf" \
+    "$pkgdir/usr/lib/systemd/logind.conf.d/10-eclipseos.conf"
 
   # The same mark over the console at shutdown and reboot. Enabled by the
   # shipped wants/ symlink, not a preset (see HW-02 in KNOWNBUGS history).

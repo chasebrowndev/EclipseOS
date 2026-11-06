@@ -8,8 +8,9 @@
 //! prints its frame intervals as one JSON line. Run twice: the list alone,
 //! and with the blurred palette sheet held open over it.
 //!
-//! Needs a Wayland display. Run it inside a headless compositor (cage with
-//! `WLR_BACKENDS=headless`) in CI; without `WAYLAND_DISPLAY` it skips.
+//! Needs a Wayland display. Run it inside a headless compositor
+//! (`ec-abyss --backend headless --kiosk -- …`) in CI; without `WAYLAND_DISPLAY`
+//! it skips.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

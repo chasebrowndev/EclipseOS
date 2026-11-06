@@ -316,7 +316,8 @@ fn pointer_on(state: &AbyssState, window: &Window) -> bool {
 /// The topmost thing at `pos` is `window`.
 fn over(state: &AbyssState, window: &Window, pos: Point<f64, Logical>) -> bool {
     crate::shell::layer_at(state, pos).is_none()
-        && state.space.element_under(pos).is_some_and(|(w, _)| w == window)
+        && crate::shell::titlebar::bar_at(state, pos).is_none()
+        && crate::shell::winops::element_under(state, pos).is_some_and(|(w, _)| w == window)
 }
 
 fn replay(state: &mut AbyssState, window: &Window, held: Vec<Held>) {
