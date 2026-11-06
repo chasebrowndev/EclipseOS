@@ -1076,6 +1076,7 @@ dependencies = [
  "nvml-wrapper-sys",
  "pulseaudio",
  "realfft",
+ "serde",
  "serde_json",
  "zbus",
 ]

@@ -420,6 +420,16 @@ pub mod bar {
     /// A pager tile: a small rounded chip, one per workspace.
     pub const PAGER_W: f32 = 24.0;
     pub const PAGER_H: f32 = 24.0;
+    /// Under `mode "de"` the pager is the desktop grid (COMP-05 §7.1): `rows`
+    /// stacked rows of tiles, together no taller than a task chip. A tile is
+    /// this wide, and the air between two of them (either way) this much.
+    pub const PAGER_GRID_W: f32 = 22.0;
+    pub const PAGER_GRID_GAP: f32 = 2.0;
+    /// The notification bell's unseen dot.
+    pub const BELL_DOT: f32 = 6.0;
+    /// How long the pointer rests on a window chip before the compositor is
+    /// asked for its hover preview (`mode "de"`).
+    pub const PREVIEW_DELAY_MS: u64 = 400;
 
     /// Radii. The bar's own outline is a pill — [`RADIUS_SHEET`], half its
     /// height — and every cell inside it is concentric with that pill: a
@@ -912,6 +922,47 @@ pub mod menu {
     /// A separator's own height, so a menu's pixel height — fixed at popup
     /// creation — can be computed before layout.
     pub const SEP_H: f32 = 9.0;
+}
+
+/// The window list a multi-window group chip opens (`mode "de"`): a glass
+/// popup of one row per window, in the context menu's rows.
+pub mod group {
+    /// Sheet width: wider than a verb menu, a window title wants room.
+    pub const W: f32 = 280.0;
+    /// How many characters of a title a row shows before it is cut.
+    pub const TITLE_CHARS: usize = 30;
+    /// How many rows the popup holds; a popup is sized once, so a group of
+    /// forty terminals must not run off the screen.
+    pub const MAX_ROWS: usize = 12;
+}
+
+/// The notification history panel the bar's bell opens (`mode "de"`).
+pub mod history {
+    /// Sheet width.
+    pub const W: f32 = 328.0;
+    /// How many entries the panel lists before it stops growing.
+    pub const MAX_ROWS: usize = 6;
+    /// The body is cut to this many lines of this many characters.
+    pub const BODY_LINES: usize = 3;
+    pub const BODY_CHARS: usize = 46;
+    /// Characters of an app name or summary shown on its line.
+    pub const SUMMARY_CHARS: usize = 34;
+    pub const APP_CHARS: usize = 16;
+    /// One entry: its head line (app, time, dismiss) and its summary line, the
+    /// air around them, one line of body, and a row of action buttons.
+    pub const HEAD_H: f32 = 18.0;
+    pub const SUMMARY_H: f32 = 18.0;
+    pub const LINE_H: f32 = 15.0;
+    pub const ACTION_H: f32 = 26.0;
+    pub const PAD_Y: f32 = 7.0;
+    /// The air between the lines of one entry.
+    pub const GAP: f32 = 2.0;
+    /// The dismiss cross's square.
+    pub const DISMISS: f32 = 18.0;
+    /// The empty state's height.
+    pub const EMPTY_H: f32 = 64.0;
+    /// The urgency rail down the left of a critical entry.
+    pub const RAIL_W: f32 = 2.0;
 }
 
 /// A tray drawer: the reading rail the disclosure arrow opens.
