@@ -951,6 +951,16 @@ pub fn start_resize_edges(
     {
         return false;
     }
+    install_resize(state, window, button, edges)
+}
+
+/// The grab itself, once the caller has decided it may start.
+fn install_resize(
+    state: &mut AbyssState,
+    window: Window,
+    button: u32,
+    edges: xdg_toplevel::ResizeEdge,
+) -> bool {
     let Some(initial_rect) = state.space.element_geometry(&window) else {
         return false;
     };
@@ -971,6 +981,41 @@ pub fn start_resize_edges(
     state.pointer_grab_active = true;
     crate::shell::edge::show_cursor(state, edges);
     true
+}
+
+/// An X11 client's `_NET_WM_MOVERESIZE` (its own titlebar was dragged). Honoured
+/// only for a floating window, only while a physical button is held with the
+/// pointer over that very window; anything else is declined. `edges` of `None`
+/// is a move. Returns whether a grab was installed.
+pub fn start_client_moveresize(
+    state: &mut AbyssState,
+    window: Window,
+    edges: Option<xdg_toplevel::ResizeEdge>,
+) -> bool {
+    if state.lock.locked || drag_active_but_click(state) || !crate::shell::is_floating(state, &window) {
+        return false;
+    }
+    // smithay's implicit click grab is live exactly while a button is held;
+    // its start data names that button.
+    let Some(button) = state
+        .seat
+        .get_pointer()
+        .filter(|p| p.is_grabbed())
+        .and_then(|p| p.grab_start_data())
+        .map(|d| d.button)
+    else {
+        return false;
+    };
+    if grabbable_window_under_pointer(state).as_ref() != Some(&window) {
+        return false;
+    }
+    match edges {
+        None => start_move_at(state, window, button),
+        Some(e) if crate::shell::winops::can_resize(state, &window) => {
+            install_resize(state, window, button, e)
+        }
+        Some(_) => false,
+    }
 }
 
 /// The root of a surface tree: a subsurface resolves to the surface it hangs

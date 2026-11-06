@@ -60,9 +60,11 @@ resolved as a config knob defaulting to enabled.
 - Every X11 window is `private`, so none of them can ever be marked `secret`.
   A password manager that only ships an X11 build cannot get `secret` handling;
   the right fix is a Wayland build, not a hole here.
-- Interactive move/resize requests from X11 clients (`_NET_WM_MOVERESIZE`,
-  `ConfigureRequest` on a managed window) are ignored: the compositor re-asserts
-  its layout rectangle. A tiled window does not talk its way out of the layout.
+- `ConfigureRequest` on a managed window is clamped: the compositor re-asserts
+  its layout rectangle. Interactive move/resize (`_NET_WM_MOVERESIZE`, sent when
+  the client's own titlebar is dragged) starts the same grab as Alt-drag, but
+  only for a floating window, only while a physical pointer button is held on
+  that window. A tiled window does not talk its way out of the layout.
   Override-redirect windows (menus, tooltips, drag icons) do get what they ask
   for — they are unmanaged by definition — and are tracked separately so a later
   milestone can exclude them from the agent scene.

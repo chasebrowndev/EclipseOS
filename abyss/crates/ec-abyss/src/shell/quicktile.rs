@@ -47,7 +47,9 @@
 //! pointer is in the upper or lower quarter of the edge. An edge shared with
 //! another output never triggers. The preview is a compositor overlay
 //! (`ec_abyss_render::drop::preview_elements`) and is never in a capture pass
-//! list.
+//! list. A drop (or key) onto a zone another tile occupies displaces that tile
+//! so tiles never overlap: it takes the mirror zone (a swap of halves), else the
+//! free zone sharing most of its area, else its free rectangle.
 
 use smithay::{
     desktop::{layer_map_for_output, Window},
@@ -238,9 +240,92 @@ pub fn set(state: &mut AbyssState, window: &Window, zone: Option<Zone>) -> bool 
     let mut done = false;
     anim::toggle(state, Some(window.clone()), |state| {
         done = set_now(state, window, zone);
+        if done {
+            displace_occupants(state, window, zone);
+        }
     });
     done
 }
+
+/// Tiles do not overlap: every other Quick Tiled window on `window`'s output
+/// and workspace whose zone overlaps `zone` moves to a free zone, preferring
+/// the mirror image of its own (so a drag onto an occupied half swaps the
+/// halves), else the free zone sharing most of its old area. With no free zone
+/// left it is given back its free rectangle.
+fn displace_occupants(state: &mut AbyssState, window: &Window, zone: Zone) {
+    let Some((id, ws)) = state.outputs.iter().find_map(|e| {
+        e.workspaces
+            .iter()
+            .position(|w| w.floating.iter().any(|f| &f.window == window))
+            .map(|ws| (e.id, ws))
+    }) else {
+        return;
+    };
+    let output = state.outputs.get(id).expect("just found").output.clone();
+    let usable = usable_area(state, &output);
+    let target = zone.rect(usable);
+    let tiled = |state: &AbyssState| -> Vec<(Window, Zone)> {
+        state.outputs.get(id).map_or_else(Vec::new, |e| {
+            e.workspaces[ws]
+                .floating
+                .iter()
+                .filter_map(|f| match f.placement {
+                    Placement::QuickTile { zone, .. } if &f.window != window => {
+                        Some((f.window.clone(), zone))
+                    }
+                    _ => None,
+                })
+                .collect()
+        })
+    };
+    let (tx, ty) = zone.axes();
+    for (other, old) in tiled(state) {
+        let old_rect = old.rect(usable);
+        if !old_rect.overlaps(target) {
+            continue;
+        }
+        let (ox, oy) = old.axes();
+        // Mirror across the axis the target splits; a half spanning the other
+        // axis keeps its shape.
+        let mirror = Zone::from_axes(if tx != 0 { -ox } else { ox }, if ty != 0 { -oy } else { oy });
+        let taken: Vec<Rectangle<i32, Logical>> = tiled(state)
+            .into_iter()
+            .filter(|(w, _)| w != &other)
+            .map(|(_, z)| z.rect(usable))
+            .chain(std::iter::once(target))
+            .collect();
+        let best = ALL_ZONES
+            .iter()
+            .copied()
+            .filter(|z| !taken.iter().any(|t| z.rect(usable).overlaps(*t)))
+            .max_by_key(|z| {
+                let shared = z
+                    .rect(usable)
+                    .intersection(old_rect)
+                    .map_or(0, |r| r.size.w * r.size.h);
+                (Some(*z) == mirror, shared)
+            });
+        match best {
+            Some(z) => {
+                set_now(state, &other, z);
+            }
+            None => {
+                maximize::set(state, &other, None);
+            }
+        }
+    }
+}
+
+const ALL_ZONES: [Zone; 8] = [
+    Zone::Left,
+    Zone::Right,
+    Zone::Top,
+    Zone::Bottom,
+    Zone::TopLeft,
+    Zone::TopRight,
+    Zone::BottomLeft,
+    Zone::BottomRight,
+];
 
 fn set_now(state: &mut AbyssState, window: &Window, zone: Zone) -> bool {
     let located = state.outputs.iter().find_map(|e| {
