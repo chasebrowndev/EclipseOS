@@ -387,6 +387,11 @@ impl Ui {
             .collect()
     }
 
+    /// Close the menu and the prompt (a press on the ground around them).
+    pub fn dismiss_floating(&mut self) {
+        self.close_floating();
+    }
+
     /// Close whatever is floating over the icons.
     fn close_floating(&mut self) {
         self.menu = None;
@@ -1541,5 +1546,19 @@ mod tests {
             kind: "invalid-name",
         });
         assert_eq!(t, "Could not rename that: that name is not allowed.");
+    }
+
+    #[test]
+    fn a_press_on_the_ground_around_the_sheet_closes_menu_and_prompt() {
+        let mut ui = Ui {
+            menu: Some(Menu {
+                at: Point::new(1.0, 1.0),
+                target: Target::Empty,
+            }),
+            prompt: Some("a.desktop".to_owned()),
+            ..Ui::default()
+        };
+        ui.dismiss_floating();
+        assert!(ui.menu.is_none() && ui.prompt.is_none());
     }
 }

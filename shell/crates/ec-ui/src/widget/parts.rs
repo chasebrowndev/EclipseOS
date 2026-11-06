@@ -4400,8 +4400,8 @@ pub fn rubber_band<'a, Message: 'a>(width: f32, height: f32) -> Element<'a, Mess
 /// menu, the launch prompt and the failure note.
 ///
 /// A widget because all three are one material, the context menu's: opaque
-/// (the desktop's surface sits under the windows, and the compositor gives a
-/// Bottom-layer client no blur to tint), with the lit top edge. `width` is a
+/// (the desktop draws them on its own short-lived overlay surface, which the
+/// compositor gives no blur to tint), with the lit top edge. `width` is a
 /// token; the height is the content's.
 pub fn desk_sheet<'a, Message: 'a>(
     width: f32,

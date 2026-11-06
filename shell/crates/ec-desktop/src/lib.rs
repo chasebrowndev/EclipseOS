@@ -7,6 +7,7 @@
 
 pub mod app;
 pub mod desktop;
+pub mod float;
 pub mod grid;
 pub mod icons;
 pub mod launch;

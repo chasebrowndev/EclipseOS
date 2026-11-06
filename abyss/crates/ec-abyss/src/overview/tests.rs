@@ -1217,3 +1217,48 @@ fn a_window_that_becomes_secret_with_the_overview_open_is_hidden_at_once() {
     assert_eq!(f.view.cards[0].title, None);
     assert!(!drawn_text(&f).contains("payroll"));
 }
+
+/// Click-to-focus under `de`: cancelling an overlay changes no window, so the
+/// window under the resting pointer must not take the keyboard.
+#[test]
+fn cancelling_an_overlay_never_moves_keyboard_focus_to_the_window_under_the_pointer() {
+    let (mut h, mut c) = de();
+    h.state.config.general.focus_follows_mouse = false;
+    let (_, a) = win(&mut h, &mut c, "a");
+    let (_, b) = win(&mut h, &mut c, "b");
+    let u = h
+        .state
+        .space
+        .output_geometry(&h.state.outputs.get(h.a).unwrap().output)
+        .unwrap();
+    shell::place_at(
+        &mut h.state,
+        &a,
+        Rectangle::new((u.loc.x + 50, u.loc.y + 100).into(), (300, 200).into()),
+    );
+    shell::place_at(
+        &mut h.state,
+        &b,
+        Rectangle::new((u.loc.x + 600, u.loc.y + 100).into(), (300, 200).into()),
+    );
+    c.pump(&mut h);
+    // Rest the pointer over a, then focus b by other means (ec-ctl focus).
+    move_to(&mut h, pt(f64::from(u.loc.x + 150), f64::from(u.loc.y + 200)));
+    crate::shell::focus::focus_window(&mut h.state, &b);
+    assert_eq!(h.state.focus.as_ref(), Some(&b));
+
+    down(&mut h, KEY_LEFTMETA);
+    tap(&mut h, KEY_W);
+    assert!(h.state.overview.is_open());
+    up(&mut h, KEY_LEFTMETA);
+    tap(&mut h, KEY_ESC);
+    assert!(!h.state.overview.is_open());
+    assert_eq!(h.state.focus.as_ref(), Some(&b), "overview cancel");
+
+    down(&mut h, KEY_LEFTALT);
+    tap(&mut h, KEY_TAB);
+    assert!(h.state.switcher.is_open());
+    tap(&mut h, KEY_ESC);
+    up(&mut h, KEY_LEFTALT);
+    assert_eq!(h.state.focus.as_ref(), Some(&b), "switcher cancel");
+}

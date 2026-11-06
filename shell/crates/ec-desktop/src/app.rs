@@ -25,6 +25,7 @@ use iced_layershell::to_layer_message;
 use serde_json::{json, Value};
 
 use crate::desktop::{Desktop, Failure, Op};
+use crate::float::{self, Float};
 use crate::scan;
 use crate::ui::{Act, Key, Pointer, Scene, Ui, Verb};
 
@@ -65,6 +66,8 @@ pub enum Message {
     /// The launch prompt's buttons.
     Allow,
     KeepLocked,
+    /// A press on the clear ground around the menu or prompt: close it.
+    DismissFloating,
     /// A click on the failure note, or its time ran out.
     DismissToast,
     ToastExpired(u64),
@@ -96,6 +99,10 @@ pub struct App {
     pub active: Option<Id>,
     /// The surface that has asked for the keyboard, if any.
     keys_on: Option<Id>,
+    /// The Overlay surface carrying the context menu or the launch prompt.
+    pub sheet: Option<Float>,
+    /// The Overlay surface carrying the failure note.
+    pub note: Option<Float>,
 }
 
 impl App {
@@ -158,6 +165,8 @@ pub fn boot() -> (App, Task<Message>) {
         ui: Ui::default(),
         active: None,
         keys_on: None,
+        sheet: None,
+        note: None,
     };
     #[cfg(debug_assertions)]
     crate::preview::apply(&mut app);
@@ -172,7 +181,7 @@ pub const RENAME_ID: &str = "desktop-rename";
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     let was = app.ui.rename.as_ref().map(|r| r.from.clone());
     let task = handle(app, message);
-    let mut tasks = vec![task, sync_keys(app)];
+    let mut tasks = vec![task, sync_floats(app), sync_keys(app)];
     // A rename that just began takes the field's focus, all selected.
     let now = app.ui.rename.as_ref().map(|r| r.from.clone());
     if now.is_some() && now != was {
@@ -187,7 +196,9 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 /// from `None` to `OnDemand`, and takes it back on the way down.
 fn sync_keys(app: &mut App) -> Task<Message> {
     use iced_layershell::reexport::KeyboardInteractivity;
-    let want = app.ui.wants_keys().then_some(app.active).flatten();
+    // While the sheet is up it is the surface that holds the keyboard.
+    let sheet_up = app.ui.menu.is_some() || app.ui.prompt.is_some();
+    let want = (app.ui.wants_keys() && !sheet_up).then_some(app.active).flatten();
     if want == app.keys_on {
         return Task::none();
     }
@@ -345,6 +356,10 @@ fn handle(app: &mut App, message: Message) -> Task<Message> {
             app.ui.expire(seq);
             Task::none()
         }
+        Message::DismissFloating => {
+            app.ui.dismiss_floating();
+            Task::none()
+        }
         Message::Swallow => Task::none(),
         Message::Sized(id, size) => {
             if let Some(s) = app.surfaces.get_mut(&id) {
@@ -358,6 +373,12 @@ fn handle(app: &mut App, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::Closed(id) => {
+            if app.sheet.is_some_and(|f| f.id == id) {
+                app.sheet = None;
+            }
+            if app.note.is_some_and(|f| f.id == id) {
+                app.note = None;
+            }
             if app.active == Some(id) {
                 app.active = None;
                 app.ui.abandon_gesture();
@@ -373,6 +394,96 @@ fn handle(app: &mut App, message: Message) -> Task<Message> {
         // The layer-shell actions `to_layer_message` added are the runtime's.
         _ => Task::none(),
     }
+}
+
+/// Open and close the menu/prompt sheet and the failure note so that they
+/// exist exactly while the model has something to show. See [`float`].
+fn sync_floats(app: &mut App) -> Task<Message> {
+    let sheet_want = (app.ui.menu.is_some() || app.ui.prompt.is_some())
+        .then(|| surface_for(app, app.active).map(|(id, ..)| id))
+        .flatten();
+    let note_want = app
+        .ui
+        .toast
+        .is_some()
+        .then(|| surface_for(app, app.active).map(|(id, ..)| id))
+        .flatten();
+    let mut tasks = Vec::new();
+    for (kind, want) in [(Kind::Sheet, sheet_want), (Kind::Note, note_want)] {
+        let slot = match kind {
+            Kind::Sheet => &mut app.sheet,
+            Kind::Note => &mut app.note,
+        };
+        let plan = float::plan(*slot, want);
+        if let Some(id) = plan.close {
+            *slot = None;
+            tasks.push(Task::done(Message::RemoveWindow(id)));
+        }
+        if let (Some(over), Some(output)) = (
+            plan.open,
+            plan.open
+                .and_then(|o| app.surfaces.get(&o))
+                .map(|s| s.output.clone()),
+        ) {
+            let id = Id::unique();
+            let slot = match kind {
+                Kind::Sheet => &mut app.sheet,
+                Kind::Note => &mut app.note,
+            };
+            *slot = Some(Float { id, over });
+            tasks.push(open_float(kind, id, output));
+        }
+    }
+    Task::batch(tasks)
+}
+
+#[derive(Clone, Copy)]
+enum Kind {
+    Sheet,
+    Note,
+}
+
+/// An Overlay-layer surface above the windows. The sheet covers the same area
+/// as the desktop surface (same anchors, same exclusive-zone rule) so a point
+/// means the same on both; it holds the keyboard while it is open and hears
+/// every press outside the menu. The note is only as big as itself, in the
+/// corner, and takes no keyboard.
+fn open_float(kind: Kind, id: Id, output: String) -> Task<Message> {
+    use ec_ui::tokens::desktop;
+    use iced_layershell::reexport::{
+        Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
+    };
+    let (size, anchor, margin, keyboard_interactivity) = match kind {
+        Kind::Sheet => (
+            (0, 0),
+            Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right,
+            None,
+            KeyboardInteractivity::OnDemand,
+        ),
+        Kind::Note => {
+            let m = desktop::MARGIN as i32;
+            (
+                (desktop::TOAST_W as u32, desktop::TOAST_H as u32),
+                Anchor::Bottom | Anchor::Right,
+                Some((0, m, m, 0)),
+                KeyboardInteractivity::None,
+            )
+        }
+    };
+    Task::done(Message::NewLayerShell {
+        settings: NewLayerShellSettings {
+            size: Some(size),
+            layer: Layer::Overlay,
+            anchor,
+            exclusive_zone: Some(0),
+            margin,
+            keyboard_interactivity,
+            output_option: OutputOption::OutputName(output),
+            events_transparent: false,
+            namespace: None,
+        },
+        id,
+    })
 }
 
 /// What to do about the output list. See [`reconcile`].

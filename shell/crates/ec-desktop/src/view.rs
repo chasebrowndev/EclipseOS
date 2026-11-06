@@ -30,6 +30,16 @@ use crate::ui::{Pointer, Row, Scene, Verb};
 type El<'a> = Element<'a, Message, Theme>;
 
 pub fn view(app: &App, id: Id) -> El<'_> {
+    if let Some(f) = app.sheet.filter(|f| f.id == id) {
+        return sheet(app, f.over);
+    }
+    if app.note.is_some_and(|f| f.id == id) {
+        return app
+            .ui
+            .toast
+            .as_ref()
+            .map_or_else(|| Space::new().into(), |t| note(&t.text));
+    }
     let ground = || container(Space::new()).width(Length::Fill).height(Length::Fill);
     let Some(size) = app.surfaces.get(&id).and_then(|s| s.size) else {
         return ground().into();
@@ -110,30 +120,41 @@ pub fn view(app: &App, id: Id) -> El<'_> {
         layers.push(pin(parts::rubber_band(r.width, r.height)).x(r.x).y(r.y).into());
     }
 
-    if let Some(item) = here
-        .then_some(ui.prompt.as_deref())
-        .flatten()
-        .and_then(|n| scene.find(n))
-    {
+    iced::widget::stack(layers)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+/// The menu/prompt overlay: clear ground that hears every pointer event on the
+/// output (a move or right press goes on to the desktop as it would have on
+/// the surface below; a left press only closes the sheet), with the menu and
+/// the prompt on it where they were always drawn. `over` is the desktop
+/// surface it covers, whose size and output these coordinates are in.
+fn sheet(app: &App, over: Id) -> El<'_> {
+    let ground = || container(Space::new()).width(Length::Fill).height(Length::Fill);
+    let Some(surface) = app.surfaces.get(&over) else {
+        return ground().into();
+    };
+    let Some(size) = surface.size else {
+        return ground().into();
+    };
+    let scene = Scene::new(&app.desktop, &surface.output, size);
+    let ui = &app.ui;
+    let mut layers: Vec<El<'_>> = vec![mouse_area(ground())
+        .on_move(move |p| Message::Pointer(over, Pointer::Moved(p)))
+        .on_press(Message::DismissFloating)
+        .on_right_press(Message::Pointer(over, Pointer::RightPressed))
+        .into()];
+    if let Some(item) = ui.prompt.as_deref().and_then(|n| scene.find(n)) {
         let at = prompt_origin(item.rect, size);
         layers.push(pin(prompt(item.entry)).x(at.x).y(at.y).into());
     }
-
-    if let Some(toast) = ui.toast.as_ref().filter(|_| app.active.is_none_or(|a| a == id)) {
-        layers.push(
-            pin(note(&toast.text))
-                .x((size.width - desktop::TOAST_W - desktop::MARGIN).max(0.0))
-                .y((size.height - desktop::TOAST_H - desktop::MARGIN).max(0.0))
-                .into(),
-        );
-    }
-
-    if let Some(m) = here.then_some(ui.menu.as_ref()).flatten() {
+    if let Some(m) = ui.menu.as_ref() {
         let rows = ui.menu_rows(&scene);
         let at = m.origin(size, &rows);
         layers.push(pin(context_menu(&rows, scene.sort)).x(at.x).y(at.y).into());
     }
-
     iced::widget::stack(layers)
         .width(Length::Fill)
         .height(Length::Fill)

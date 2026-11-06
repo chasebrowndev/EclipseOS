@@ -8,6 +8,13 @@ Its own crate and package (ADR 0052); never depend on `hyperion`.
   on Background, whatever maps first), one
   surface per output, following the wallpaper's per-output pattern
   (`app::reconcile`). It holds no capability and grants none.
+- **The menu, the launch prompt and the failure note are not drawn on the
+  Bottom surface** (windows would cover them): each is its own short-lived
+  `Layer::Overlay` surface (`float.rs`, `app::sync_floats`). The menu/prompt
+  sheet covers the same area as the output's surface, holds the keyboard
+  (OnDemand) while open and closes on a press outside; the note is a small
+  corner surface with no keyboard. An `xdg_popup` would not do: it stacks with
+  its parent's layer.
 - **Only under `mode "de"`.** `ec-desktop.service` has no `[Install]`;
   abyss starts and stops it (`ec-abyss/src/session.rs`, `desktop_sync`).
 - **The model is non-visual and unit-tested**: `scan` (the directory and its
