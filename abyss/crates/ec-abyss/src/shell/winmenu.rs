@@ -466,7 +466,7 @@ fn dismiss(state: &mut AbyssState) {
     tracing::info!("window menu closed");
     state.winmenu.close();
     crate::backend::damage_all(state);
-    state.refresh_pointer_focus();
+    state.refresh_pointer_focus_keeping_keyboard();
 }
 
 /// A key while the menu is open (the input filter has already taken it from

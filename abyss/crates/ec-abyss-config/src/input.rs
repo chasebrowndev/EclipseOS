@@ -61,6 +61,12 @@ pub enum Action {
     /// Move the focused window to the next desktop in that direction and go
     /// there with it (`mode "de"` only).
     DesktopMove(Direction),
+    /// Open the window switcher, or step it (`mode "de"` only; COMP-05 §7.1).
+    /// `true` steps backwards. The modifiers held on the chord are the ones
+    /// whose release activates the selection.
+    Switcher(bool),
+    /// Open the overview, or close it (`mode "de"` only; COMP-05 §7.1).
+    ToggleOverview,
     /// Send the focused window away (COMP-05 §4 `minimized`).
     Minimize,
     /// Bring back the last window sent away on the active workspace.
@@ -110,6 +116,11 @@ pub enum Action {
     /// Not bindable from config -- the input filter synthesises it while the
     /// menu is open, so no client and no binding sees the key.
     WindowMenu(Keysym),
+    /// One keypress consumed by the window switcher or the overview (COMP-05
+    /// §7.1, `mode "de"`): the keysym as typed (case kept) and whether Shift
+    /// is down. Not bindable from config -- the input filter synthesises it
+    /// while one is open, so no client and no binding sees the key.
+    Overlay(Keysym, bool),
     /// Chords an addon owns (COMP-18 §4). The compositor does not act on
     /// these itself; it forwards the name on the `keybind` event stream, so
     /// nothing happens when no addon is listening.

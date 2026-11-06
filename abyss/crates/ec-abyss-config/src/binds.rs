@@ -39,7 +39,8 @@ pub(crate) fn merge_binds(defaults: Vec<Bind>, from_file: Vec<Bind>) -> Vec<Bind
 /// the built-ins, behind the launcher's chosen chords); `Super+Shift+arrows`
 /// are untouched. Ctrl+Super+arrows switch desktop on the desktop grid
 /// (`desktop-left` and the rest) and Ctrl+Shift+Super+arrows take the focused
-/// window along (`move-to-desktop-left`). Alt+Tab is a later milestone.
+/// window along (`move-to-desktop-left`). Alt+Tab and Alt+Shift+Tab drive the
+/// window switcher (`switch-windows`) and Super+W toggles the overview.
 pub fn mode_default_binds(mode: Mode) -> Vec<Bind> {
     match mode {
         Mode::De => {
@@ -48,6 +49,23 @@ pub fn mode_default_binds(mode: Mode) -> Vec<Bind> {
                     mods: m(false, false, false, true),
                     key: Keysym::F4,
                     action: Action::Close,
+                },
+                // Alt+Tab steps the window switcher (KDE); the release of Alt
+                // activates. Shift reverses.
+                Bind {
+                    mods: m(false, false, false, true),
+                    key: Keysym::Tab,
+                    action: Action::Switcher(false),
+                },
+                Bind {
+                    mods: m(false, true, false, true),
+                    key: Keysym::Tab,
+                    action: Action::Switcher(true),
+                },
+                Bind {
+                    mods: m(true, false, false, false),
+                    key: Keysym::w,
+                    action: Action::ToggleOverview,
                 },
                 Bind {
                     mods: m(true, false, false, false),

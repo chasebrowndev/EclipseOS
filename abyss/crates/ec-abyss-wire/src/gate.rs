@@ -72,6 +72,11 @@ pub const TABLE: &[Entry] = &[
     e("get_desktop_grid", Kind::Query, true),
     e("switch_desktop_direction", Kind::Command, true),
     e("open_window_menu", Kind::Command, true),
+    // Hover preview the taskbar asks for. OWNER REVIEW: Command, owner only.
+    // No pixel leaves the compositor; the handler redacts through
+    // `capture::classify` and refuses under lock.
+    e("show_window_preview", Kind::Command, true),
+    e("hide_window_preview", Kind::Command, true),
     e("switch_workspace", Kind::Command, true),
     e("reload_config", Kind::Command, true),
     e("resize", Kind::Command, true),
@@ -475,6 +480,8 @@ mod tests {
             ("get_desktop_grid", Kind::Query),
             ("switch_desktop_direction", Kind::Command),
             ("open_window_menu", Kind::Command),
+            ("show_window_preview", Kind::Command),
+            ("hide_window_preview", Kind::Command),
         ] {
             let entry = TABLE.iter().find(|e| e.method == method).expect("row");
             assert_eq!(entry.kind, kind, "{method}");

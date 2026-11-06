@@ -1243,3 +1243,35 @@ fn a_shaded_windows_content_is_not_an_agent_hit_target() {
     winops::set_shaded(&mut h.state, &w, true);
     assert!(winops::element_under(&h.state, p).is_none());
 }
+
+#[test]
+fn pressing_the_resize_band_focuses_and_raises_the_window() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_, a) = de_window(&mut h, &mut c);
+    let (_, b) = de_window(&mut h, &mut c);
+    let u = h
+        .state
+        .space
+        .output_geometry(&h.state.outputs.get(h.a).unwrap().output)
+        .unwrap();
+    shell::place_at(
+        &mut h.state,
+        &a,
+        Rectangle::new(Point::from((u.loc.x + 100, u.loc.y + 100)), (300, 200).into()),
+    );
+    shell::place_at(
+        &mut h.state,
+        &b,
+        Rectangle::new(Point::from((u.loc.x + 700, u.loc.y + 100)), (300, 200).into()),
+    );
+    c.pump(&mut h);
+    focus::focus_window(&mut h.state, &b);
+    assert_eq!(h.state.focus.as_ref(), Some(&b));
+    let p = outside_right(&h, &a);
+    move_to(&mut h, p);
+    click(&mut h, LEFT, ButtonState::Pressed);
+    assert!(h.state.pointer_grab_active, "it resizes");
+    assert_eq!(h.state.focus.as_ref(), Some(&a), "and focuses");
+    assert_eq!(index(&h, &a), order(&h).len() - 1, "and raises");
+}

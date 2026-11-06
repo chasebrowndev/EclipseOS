@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Desktop grid, window menu and scripted drag (COMP-05 §7.1, COMP-13 §2.1,
 //! §2.2): typed calls for `get_desktop_grid`, `switch_desktop_direction`,
-//! `open_window_menu` and `drag_at`.
+//! `open_window_menu`, `show_window_preview`, `hide_window_preview` and `drag_at`.
 //!
 //! The grid, the switch and the menu are `mode "de"` features; the compositor
 //! answers a `denied` error elsewhere ([`crate::Error::is_denied`]) except for
@@ -182,6 +182,24 @@ impl Client {
         }
     }
 
+    /// Show window `id`'s hover preview beside the rectangle `(x, y, w, h)`
+    /// (the taskbar chip), global logical px. `Ok(false)` when the window must
+    /// have no card (it is protected from capture). `denied` outside `mode
+    /// "de"`, under the session lock, or while the switcher or overview is up.
+    /// The compositor hides it again on its own after ten idle seconds.
+    pub fn show_window_preview(&mut self, id: u64, x: f64, y: f64, w: f64, h: f64) -> Result<bool> {
+        let v = self.call("show_window_preview", preview_params(id, x, y, w, h))?;
+        v.get("shown")
+            .and_then(Value::as_bool)
+            .ok_or_else(|| Error::Protocol("malformed show_window_preview reply".into()))
+    }
+
+    /// Take the hover preview down. `Ok(true)` when one was up.
+    pub fn hide_window_preview(&mut self) -> Result<bool> {
+        let v = self.call("hide_window_preview", Value::Null)?;
+        Ok(v.get("hidden").and_then(Value::as_bool).unwrap_or(false))
+    }
+
     /// Scripted drag (needs `misc { scripted-input }`). `Ok(true)` when the
     /// button is being held for `hold_ms` rather than already released.
     pub fn drag_at(&mut self, drag: &Drag) -> Result<bool> {
@@ -190,9 +208,22 @@ impl Client {
     }
 }
 
+/// The `show_window_preview` params.
+pub fn preview_params(id: u64, x: f64, y: f64, w: f64, h: f64) -> Value {
+    json!({"id": id, "x": x, "y": y, "width": w, "height": h})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_params_name_the_window_and_the_anchor() {
+        assert_eq!(
+            preview_params(7, 10.0, 20.0, 120.0, 30.0),
+            json!({"id": 7, "x": 10.0, "y": 20.0, "width": 120.0, "height": 30.0})
+        );
+    }
 
     #[test]
     fn a_grid_reply_parses() {

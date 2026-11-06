@@ -130,7 +130,7 @@ pub fn output_of_window(state: &AbyssState, window: &Window) -> Option<u64> {
 /// Usable area: output geometry minus layer-shell exclusive zones, with no
 /// outer gap applied: the raw protocol-defined usable region, independent of
 /// abyss's own gap styling (COMP-06 §3).
-fn usable_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
+pub(crate) fn usable_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
     let geo = state.space.output_geometry(output).unwrap_or_default();
     let zone = accumulate_non_exclusive_zone(output, geo.size);
     let loc = Point::from((geo.loc.x + zone.loc.x, geo.loc.y + zone.loc.y));
@@ -397,6 +397,7 @@ pub fn arrange(state: &mut AbyssState) {
     }
     state.winops.prune();
     winmenu::validate(state);
+    crate::overview::validate(state);
     let ids: Vec<u64> = state.outputs.iter().map(|e| e.id).collect();
     for id in ids {
         arrange_output(state, id);
@@ -404,6 +405,7 @@ pub fn arrange(state: &mut AbyssState) {
     raise_override_redirect(state);
     crate::xwayland::sync_stacking(state);
     refresh_reactive_popups(state);
+    crate::overview::corners::rebuild(state);
     // Layout changes are not driven by a client commit: an unmapped surface
     // sends nothing, so without this the last composite stays on screen and a
     // closed window or dismissed launcher goes on being visible until some

@@ -75,6 +75,9 @@ pub fn permits(action: &Action) -> bool {
         | Action::Calibrate(_)
         | Action::RegionSelect(_)
         | Action::WindowMenu(_)
+        | Action::Switcher(_)
+        | Action::ToggleOverview
+        | Action::Overlay(..)
         | Action::AnnotationSelect
         | Action::AnnotationDismiss
         | Action::AnnotationExpand

@@ -426,7 +426,7 @@ impl BarCache {
 }
 
 /// `window`'s title: xdg title or X11 `WM_NAME`. Empty when it has none.
-fn title_of(window: &Window) -> String {
+pub fn title_of(window: &Window) -> String {
     use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
     if let Some(toplevel) = window.toplevel() {
         return smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
