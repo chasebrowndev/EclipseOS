@@ -37,18 +37,40 @@ Rust client: `HistoryClient` (blocking; connects lazily; every call is a no-op/e
 |---|---|---|
 | `GetMode() -> s` | `mode() -> Mode` | `"normal"` / `"quiet"` / `"dnd"` |
 | `SetMode(s)` | `set_mode(Mode) -> bool` | invalid string = `InvalidArgs`; persisted |
+| `SetViewing(b)` | `set_viewing(bool) -> bool` | drawer open/closed; see below; not persisted |
 | `ListPage(s filter, u offset, u limit) -> s` | `page(PageFilter, u32, u32) -> Page` | newest first; filter `all`/`unread`/`read` (unknown = all); limit capped at 200 |
 | `UnreadCount() -> u` | `unread_count() -> u32` | |
 | `MarkAllRead()` | `mark_all_read()` | call when the widget opens; entries stay in history as read |
 | `MarkRead(u)` | `mark_read(id)` | |
 | `Remove(u)` / `Clear()` | `remove(id)` / `clear()` | delete |
-| `InvokeAction(u, s) -> b` | `invoke_action(id, key)` | only while the toast is live |
+| `InvokeAction(u, s) -> b` | `invoke_action(id, key)` | only while the entry is `live` (see below); works for quiet/viewing-suppressed entries too |
 | signal `Changed()` | `changes() -> Receiver<()>` | list/flags changed; re-`page` |
 | signal `UnreadChanged(u)` | `unread_changes() -> Receiver<u32>` | emitted with every `Changed` and on mark-read; carries the new count |
 | signal `ModeChanged(s)` | `mode_changes() -> Receiver<Mode>` | |
 
 Quick view = `page(Unread, 0, n)`. History drawer = `page(Read, offset, limit)`.
 Badge = `UnreadChanged` / `unread_count()` (Quiet arrivals + toasts shown but never opened in the widget).
+
+### `live`
+
+`live` means "invokable this session": true for every notification this running service instance
+admitted (shown, Quiet, rule-quiet or viewing-suppressed; DND stores nothing) until the sender calls
+`CloseNotification`, it is replaced, the toast is dismissed/expires, an action closes it, or the
+service restarts. Entries restored from disk are never live. `InvokeAction(id, key)` on a live
+entry with that action emits `ActionInvoked(id, key)`, marks it read and, unless `resident`, emits
+`NotificationClosed(id, 2)` and clears `live`. An `Event::Closed` toast event is sent only if a toast
+was actually on screen. `live` no longer implies a toast is on screen.
+
+### `SetViewing(b)`
+
+Call `true` when the bar's notification drawer opens, `false` when it closes. While viewing, a
+Normal-mode arrival that would be shown is handled like Quiet for presentation only: stored and
+counted, but no popup, no sound, no `Posted` event (a replaced live toast is closed). Exceptions:
+Critical urgency (after per-app rules) still pops and sounds, and the config-error notice
+(id `u32::MAX`) still shows. DND stays DND. Toasts already on screen are left alone.
+Never persisted. Reset to false on service start, when the setting client's unique bus name
+leaves the bus (name-owner watch, one thread per client name), and after 15 minutes without a
+fresh `SetViewing(true)` (safety net). Re-send `true` to extend it on a long-lived drawer.
 
 ### `ListPage` JSON
 

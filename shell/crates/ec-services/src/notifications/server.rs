@@ -133,7 +133,10 @@ impl HistoryServer {
         #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<bool> {
         addressed_to_history(&header)?;
-        let resident = self.store.lock().is_resident(id);
+        let (resident, shown) = {
+            let s = self.store.lock();
+            (s.is_resident(id), s.is_shown(id))
+        };
         if !self.mutate(|s| s.invoke(id, &key)) {
             return Ok(false);
         }
@@ -144,8 +147,8 @@ impl HistoryServer {
                 let _ = Server::notification_closed(&e, id, CloseReason::Dismissed as u32).await;
             }
         }
-        if !resident {
-            // The toast, if drawn, goes; the GUI does not echo a close back.
+        if !resident && shown {
+            // The toast goes; the GUI does not echo a close back.
             let _ = self.events.send(Event::Closed {
                 id,
                 reason: CloseReason::Dismissed,
@@ -172,6 +175,26 @@ impl HistoryServer {
             .ok_or_else(|| zbus::fdo::Error::InvalidArgs("mode is normal, quiet or dnd".into()))?;
         if self.mutate(|s| s.set_mode(mode)) {
             let _ = Self::mode_changed(&emitter, mode.as_str()).await;
+        }
+        Ok(())
+    }
+
+    /// The bar's notification drawer opened (`true`) or closed. While open,
+    /// Normal-mode arrivals are stored without popup or sound (Critical and
+    /// the config-error notice still pop). Resets when the caller leaves the
+    /// bus, after 15 minutes, and on service start; never persisted.
+    fn set_viewing(
+        &self,
+        viewing: bool,
+        #[zbus(connection)] conn: &zbus::Connection,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        addressed_to_history(&header)?;
+        self.store.lock().set_viewing(viewing, now_secs());
+        if viewing {
+            if let Some(sender) = header.sender() {
+                self.watch_viewer(conn, sender.as_str());
+            }
         }
         Ok(())
     }
@@ -236,6 +259,45 @@ impl HistoryServer {
 }
 
 impl HistoryServer {
+    /// End `viewing` if the client that set it drops off the bus, so a crashed
+    /// bar cannot leave popups suppressed. One watcher thread per client name.
+    fn watch_viewer(&self, conn: &zbus::Connection, owner: &str) {
+        if !self.store.lock().claim_viewing_watch(owner) {
+            return;
+        }
+        let store = self.store.clone();
+        let conn = zbus::blocking::Connection::from(conn.clone());
+        let owner = owner.to_owned();
+        let failed = owner.clone();
+        let spawned = thread::Builder::new()
+            .name("eclipse-notif-viewer".into())
+            .spawn(move || {
+                let gone = || store.lock().viewing_owner_gone(&owner);
+                let Ok(name) = zbus::names::BusName::try_from(owner.as_str()) else {
+                    return gone();
+                };
+                let Ok(dbus) = zbus::blocking::fdo::DBusProxy::new(&conn) else {
+                    return gone();
+                };
+                let Ok(changes) = dbus.receive_name_owner_changed_with_args(&[(0, owner.as_str())]) else {
+                    return gone();
+                };
+                // Subscribed first, then checked: no gap for the exit to hide in.
+                if !dbus.name_has_owner(name).unwrap_or(false) {
+                    return gone();
+                }
+                for change in changes {
+                    if change.args().is_ok_and(|a| a.new_owner().is_none()) {
+                        return gone();
+                    }
+                }
+                gone();
+            });
+        if spawned.is_err() {
+            self.store.lock().viewing_owner_gone(&failed);
+        }
+    }
+
     /// Change the store, then write it out.
     fn mutate<T>(&self, f: impl FnOnce(&mut Store) -> T) -> T {
         let mut s = self.store.lock();
@@ -343,12 +405,20 @@ impl Server {
             id,
             reason: CloseReason::ByCall,
         });
-        let closed = {
+        let (closed, shown) = {
             let mut s = self.store.lock();
+            let shown = s.is_shown(id);
             let c = s.closed(id);
             s.save();
-            c
+            (c, shown)
         };
+        // A shown toast answers with its own `NotificationClosed`; one that
+        // never had a popup (Quiet, drawer open) has no GUI to do it.
+        if closed && !shown {
+            if let Ok(e) = SignalEmitter::new(conn, OBJECT_PATH) {
+                let _ = Server::notification_closed(&e, id, CloseReason::ByCall as u32).await;
+            }
+        }
         if closed {
             history_changed(conn, &self.store).await;
         }

@@ -30,6 +30,8 @@ pub enum DrawerKind {
     QuickActions,
     Progress,
     Power,
+    /// The notification list, rolled out of the bell.
+    History,
 }
 
 impl DrawerKind {
@@ -38,7 +40,9 @@ impl DrawerKind {
     pub fn width(self) -> f32 {
         match self {
             DrawerKind::Wifi | DrawerKind::Bluetooth | DrawerKind::Audio | DrawerKind::Progress => drawer::W,
-            DrawerKind::Battery | DrawerKind::QuickActions | DrawerKind::Power => drawer::WIDE_W,
+            DrawerKind::Battery | DrawerKind::QuickActions | DrawerKind::Power | DrawerKind::History => {
+                drawer::WIDE_W
+            }
             DrawerKind::Calendar => drawer::CAL_W,
         }
     }

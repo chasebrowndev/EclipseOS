@@ -353,14 +353,22 @@ pub enum Message {
     PagerScroll(iced::mouse::ScrollDelta),
     /// What the notification service reported.
     History(crate::history::Report),
-    /// The mode switch.
+    /// The mode switch. The drawer stays open and follows the new mode live.
     HistoryMode(ec_services::notifications::Mode),
-    /// Fold or unfold the history drawer.
+    /// Fold or unfold the history section.
     HistoryFold,
-    /// Show the history page at this offset.
-    HistoryPage(u32),
+    /// List another step of the history.
+    HistoryMore,
+    /// A row was clicked: reveal its body, or hide it.
+    HistoryToggle(u32),
+    /// The pointer is on (`Some`) or left (`None`) a row.
+    HistoryHot(Option<u32>),
+    /// The Delete key: remove the row the keyboard is on.
+    HistoryDelete,
     /// Dismiss one entry; clear them all; press a live entry's button.
     HistoryRemove(u32),
+    /// The notification run was scrolled to this offset.
+    HistoryScrolled(f32),
     HistoryClear,
     HistoryAction(u32, String),
     /// A message a surface's view produced, and that surface. The view is
@@ -507,6 +515,9 @@ pub struct App {
     pub hover: crate::hover::Hover,
     /// The notification history panel (`de`).
     pub history: crate::history::Panel,
+    /// What the service was last told about the drawer being in front of the
+    /// human, so a change is sent once and from one place ([`sync_viewing`]).
+    pub history_viewing: bool,
     /// The wheel over the desktop grid, counted in notches.
     pub pager_wheel: widgets::Notches,
 }
@@ -946,6 +957,7 @@ impl App {
             grid: None,
             hover: crate::hover::Hover::default(),
             history: crate::history::Panel::default(),
+            history_viewing: false,
             pager_wheel: widgets::Notches::default(),
         };
         // No bar exists yet, so there is nothing to resize: the task is empty.
@@ -1074,7 +1086,8 @@ fn preview(app: &mut App) {
             crate::preview::widgets(app, which == "widgets-idle", output);
             (which == "widgets-menu").then_some(Preview::ChipMenu)
         }
-        "groups" | "history" | "history-open" | "history-quiet" | "history-bell" | "history-empty" => {
+        "groups" | "history" | "history-open" | "history-quiet" | "history-dnd" | "history-long"
+        | "history-bell" | "history-empty" | "history-flood" => {
             let output = app.conn.outputs().0.first().map_or(0, |o| o.0);
             crate::preview::widgets(app, true, output);
             crate::preview::de(app, output);
@@ -1095,6 +1108,85 @@ fn preview(app: &mut App) {
                 }
                 "history-open" => app.history.set_expanded(true),
                 "history-quiet" => app.history.set_mode(ec_services::notifications::Mode::Quiet),
+                "history-dnd" => app.history.set_mode(ec_services::notifications::Mode::Dnd),
+                "history-long" => {
+                    use crate::history::Report;
+                    app.history.set_expanded(true);
+                    let at = crate::history::now();
+                    let many = (10..22)
+                        .rev()
+                        .map(|id| ec_services::notifications::HistoryEntry {
+                            id,
+                            app_name: "updater".to_owned(),
+                            app_icon: String::new(),
+                            summary: format!("Update {id} installed"),
+                            body: String::new(),
+                            urgency: ec_services::notifications::Urgency::Normal,
+                            timestamp: at.saturating_sub(u64::from(id) * 3600),
+                            actions: Vec::new(),
+                            live: false,
+                        })
+                        .collect();
+                    app.history.apply(Report::Read {
+                        entries: many,
+                        total: 22,
+                        offset: 4,
+                    });
+                    app.history.grow();
+                    app.history.toggle(7);
+                }
+                "history-flood" => {
+                    // 26 arrived while open (the service reports a page of
+                    // four and the count), then the history unfolded.
+                    use crate::history::Report;
+                    let at = crate::history::now();
+                    let e = |id: u32, body: &str| ec_services::notifications::HistoryEntry {
+                        id,
+                        app_name: "updater".to_owned(),
+                        app_icon: String::new(),
+                        summary: format!("Update {id} installed"),
+                        body: body.to_owned(),
+                        urgency: ec_services::notifications::Urgency::Normal,
+                        timestamp: at.saturating_sub(u64::from(id) * 600),
+                        actions: Vec::new(),
+                        live: false,
+                    };
+                    app.history.begin_open();
+                    app.history.apply(Report::Unread {
+                        count: 26,
+                        entries: (23..=26)
+                            .rev()
+                            .map(|i| {
+                                e(
+                                    i,
+                                    if i == 25 {
+                                        "Installed 3 packages\nRestart to apply"
+                                    } else {
+                                        ""
+                                    },
+                                )
+                            })
+                            .collect(),
+                        read_total: 0,
+                    });
+                    app.history.absorb();
+                    // The service has marked them all read since.
+                    app.history.apply(Report::Unread {
+                        count: 0,
+                        entries: Vec::new(),
+                        read_total: 26,
+                    });
+                    app.history.set_expanded(true);
+                    app.history.apply(Report::Read {
+                        entries: (1..=22).rev().map(|i| e(i, "")).collect(),
+                        total: 26,
+                        offset: 4,
+                    });
+                    while app.history.can_grow() && app.history.left() > 0 {
+                        app.history.grow();
+                    }
+                    app.history.toggle(25);
+                }
                 "history-bell" => {
                     // The closed bell with three waiting: the badge.
                     use crate::history::Report;
@@ -1466,7 +1558,24 @@ fn with_bar<R>(app: &mut App, id: Id, f: impl FnOnce(&App, &mut Bar) -> R) -> Op
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     let task = step(app, message, None);
     relayout_all(app, Instant::now());
+    if let Some(cmd) = viewing_change(app) {
+        crate::services::history_act(cmd);
+    }
     task
+}
+
+/// The command that tells the notification service the drawer opened or
+/// closed, if that changed since the last message. Every way out of the
+/// drawer (Escape, a click outside, the bell, another drawer, leaving `de`)
+/// ends in some message, so one check after it covers them all. Never in a
+/// preview or fixture, which have no service to tell.
+fn viewing_change(app: &mut App) -> Option<crate::services::HistoryCmd> {
+    let now = history_out(app) && !fixture_or_preview(app);
+    if now == app.history_viewing {
+        return None;
+    }
+    app.history_viewing = now;
+    Some(crate::services::HistoryCmd::Viewing(now))
 }
 
 /// One message. `at` is the bar it came from, when a view produced it.
@@ -1605,21 +1714,25 @@ fn step_inner(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> 
             return Task::none();
         }
         Message::History(report) => {
+            let report_kind = if matches!(report, crate::history::Report::Read { .. }) {
+                ReportKind::Read
+            } else {
+                ReportKind::Other
+            };
             app.history.apply(report);
-            // The popover is on screen: what arrives while it is, is read as
-            // it lands, so the badge stays at nothing under the human's eyes.
-            let open = matches!(
-                app.popup.as_ref(),
-                Some(Popup {
-                    kind: Kind::Drawer {
-                        which: Drawer::History,
-                        ..
-                    },
-                    ..
-                })
-            );
-            if open && app.history.absorb() {
+            // The drawer is out: what arrives while it is, is read as it
+            // lands, so the badge stays at nothing under the human's eyes.
+            if matches!(report_kind, ReportKind::Read) && !app.history.expanded() {
+                // Asked for only to backfill the quick view: done with it.
+                crate::services::history_act(crate::services::HistoryCmd::Read(None));
+            }
+            if history_out(app) && app.history.absorb() {
                 crate::services::history_act(crate::services::HistoryCmd::MarkAllRead);
+                if app.history.expanded() {
+                    // The newest read entries moved; the section starts past them.
+                    let (first, limit) = (app.history.first_offset(), app.history.limit());
+                    crate::services::history_act(crate::services::HistoryCmd::Read(Some((first, limit))));
+                }
             }
             return reflow(app);
         }
@@ -1632,17 +1745,48 @@ fn step_inner(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> 
             let on = !app.history.expanded();
             app.history.set_expanded(on);
             let first = app.history.first_offset();
-            crate::services::history_act(crate::services::HistoryCmd::Read(on.then_some(first)));
+            let limit = app.history.limit();
+            crate::services::history_act(crate::services::HistoryCmd::Read(on.then_some((first, limit))));
             return reflow(app);
         }
-        Message::HistoryPage(offset) => {
-            crate::services::history_act(crate::services::HistoryCmd::Read(Some(offset)));
+        Message::HistoryMore => {
+            let limit = app.history.grow();
+            let first = app.history.first_offset();
+            crate::services::history_act(crate::services::HistoryCmd::Read(Some((first, limit))));
+            return reflow(app);
+        }
+        Message::HistoryToggle(id) => {
+            app.history.toggle(id);
+            return reflow(app);
+        }
+        Message::HistoryScrolled(y) => {
+            app.history.set_scroll(y);
+            return Task::none();
+        }
+        Message::HistoryHot(id) => {
+            // The pointer moved: it owns the cross now, not the keyboard.
+            app.history.set_hot(id);
+            return Task::none();
+        }
+        Message::HistoryDelete => {
+            if history_out(app) {
+                // Only a row the human can see lit goes: one scrolled out of
+                // view is brought into it first, and the key does nothing.
+                if !crate::widgets::history::lit_in_view(app) {
+                    return history_follow(app);
+                }
+                if let Some(id) = app.history.remove_selected() {
+                    crate::services::history_act(crate::services::HistoryCmd::Remove(id));
+                    return Task::batch([backfill(app), reflow(app), history_follow(app)]);
+                }
+            }
             return Task::none();
         }
         Message::HistoryRemove(id) => {
+            // Removing is not leaving: the drawer stays out.
             app.history.remove(id);
             crate::services::history_act(crate::services::HistoryCmd::Remove(id));
-            return reflow(app);
+            return Task::batch([backfill(app), reflow(app), history_follow(app)]);
         }
         Message::HistoryClear => {
             app.history.clear();
@@ -1914,6 +2058,10 @@ fn step_inner(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> 
             {
                 cal_step(app, |c| c.step_days(7 * i64::from(delta)));
             }
+            if history_out(app) {
+                app.history.step(delta);
+                return history_follow(app);
+            }
             return Task::none();
         }
         Message::CalPrev => {
@@ -1956,6 +2104,27 @@ fn step_inner(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> 
         }
         Message::CalKey(key) => {
             use crate::calendar::Calendar;
+            // Enter on the notification drawer reveals the row the keyboard is
+            // on; every other key there is someone else's.
+            if history_out(app) {
+                use crate::history::Stop;
+                if key != CalKey::Enter {
+                    return Task::none();
+                }
+                return match app.history.stop() {
+                    Some(Stop::Row(id)) => {
+                        app.history.toggle(id);
+                        Task::batch([reflow(app), history_follow(app)])
+                    }
+                    Some(Stop::Hidden | Stop::Fold) => Task::done(Message::HistoryFold),
+                    Some(Stop::More) => Task::done(Message::HistoryMore),
+                    Some(Stop::Foot) if crate::widgets::history::foot_clears(&app.history) => {
+                        Task::done(Message::HistoryClear)
+                    }
+                    Some(Stop::Foot) => Task::done(Message::OpenSettings("notifications")),
+                    None => Task::none(),
+                };
+            }
             // Only while the calendar is out; everywhere else the keys are
             // someone else's.
             if !app
@@ -2830,6 +2999,13 @@ fn fixture_or_preview(app: &App) -> bool {
     app.fixture.is_some() || app.preview.is_some()
 }
 
+/// The notification drawer is out on some bar.
+fn history_out(app: &App) -> bool {
+    app.bars
+        .values()
+        .any(|b| b.drawer.is_open(crate::drawer::DrawerKind::History))
+}
+
 /// The drawer a cell's `Message::Open` names, if it is one of the reveal
 /// drawers. The tray overflow is a popup.
 fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
@@ -2842,7 +3018,8 @@ fn drawer_kind(drawer: Drawer) -> Option<crate::drawer::DrawerKind> {
         Drawer::QuickActions => Some(crate::drawer::DrawerKind::QuickActions),
         Drawer::Progress => Some(crate::drawer::DrawerKind::Progress),
         Drawer::Power => Some(crate::drawer::DrawerKind::Power),
-        Drawer::Overflow | Drawer::History => None,
+        Drawer::History => Some(crate::drawer::DrawerKind::History),
+        Drawer::Overflow => None,
     }
 }
 
@@ -2858,6 +3035,7 @@ fn drawer_full(app: &App, kind: crate::drawer::DrawerKind) -> u32 {
         DrawerKind::QuickActions => crate::view::drawer_height(app, Drawer::QuickActions),
         DrawerKind::Progress => crate::view::drawer_height(app, Drawer::Progress),
         DrawerKind::Power => crate::view::drawer_height(app, Drawer::Power),
+        DrawerKind::History => crate::view::drawer_height(app, Drawer::History),
     }
 }
 
@@ -2887,7 +3065,7 @@ fn on_drawer_panel(app: &App, bar: &Bar) -> bool {
 }
 
 /// The cells a drawer hangs from.
-const DRAWER_CELLS: [Drawer; 8] = [
+const DRAWER_CELLS: [Drawer; 9] = [
     Drawer::Network,
     Drawer::Bluetooth,
     Drawer::Audio,
@@ -2896,6 +3074,7 @@ const DRAWER_CELLS: [Drawer; 8] = [
     Drawer::QuickActions,
     Drawer::Progress,
     Drawer::Power,
+    Drawer::History,
 ];
 
 /// The pointer is over a cell a drawer hangs from. Its click is the toggle or
@@ -2980,6 +3159,13 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
     if kind == crate::drawer::DrawerKind::Power {
         // logind is asked what it will do as the drawer opens, never in a draw.
         crate::services::probe_session();
+    }
+    if kind == crate::drawer::DrawerKind::History && !fixture_or_preview(app) {
+        // The drawer is about to be in front of the human: what was unread is
+        // its list, and everything is read from here on.
+        app.history.begin_open();
+        crate::services::history_act(crate::services::HistoryCmd::Read(None));
+        crate::services::history_act(crate::services::HistoryCmd::MarkAllRead);
     }
     let full = drawer_full(app, kind) as f32;
     let open = with_bar(app, id, |app, bar| {
@@ -4005,18 +4191,17 @@ pub(crate) fn apply_mode(app: &mut App) -> Task<Message> {
         // A card that is up comes down with the mode that drew it.
         let call = app.hover.dismiss();
         hover_call(app, call);
-        // So do the popups only `de` has: a group list, the history panel.
-        let de_popup = matches!(
-            app.popup.as_ref().map(|p| &p.kind),
-            Some(Kind::Group { .. })
-                | Some(Kind::Drawer {
-                    which: Drawer::History,
-                    ..
-                })
-        );
+        // So do the things only `de` has: a group list, the notification drawer.
+        let de_popup = matches!(app.popup.as_ref().map(|p| &p.kind), Some(Kind::Group { .. }));
+        let drawer = if history_out(app) {
+            dismiss(app)
+        } else {
+            Task::none()
+        };
         if de_popup {
-            return dismiss_popup(app);
+            return Task::batch([drawer, dismiss_popup(app)]);
         }
+        return drawer;
     }
     Task::none()
 }
@@ -4042,13 +4227,6 @@ fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Mess
         app.popup.as_ref(),
         Some(Popup { owner, kind: Kind::Drawer { which, .. }, .. }) if *which == drawer && *owner == at
     );
-    if drawer == Drawer::History && toggle && !same {
-        // The popover is about to be in front of the human: what was unread is
-        // its quick view, and everything is read from here on.
-        app.history.begin_open();
-        crate::services::history_act(crate::services::HistoryCmd::Read(None));
-        crate::services::history_act(crate::services::HistoryCmd::MarkAllRead);
-    }
     let closed = dismiss(app);
     if same && toggle {
         return closed;
@@ -4057,12 +4235,7 @@ fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Mess
         return closed;
     };
     let height = crate::view::drawer_height(app, drawer);
-    let width = if drawer == Drawer::History {
-        crate::view::HISTORY_W
-    } else {
-        crate::view::DRAWER_W
-    };
-    let size = (width, height);
+    let size = (crate::view::DRAWER_W, height);
     // Gravity down-and-*left*: the tray lives at the right end of the bar, so
     // a drawer growing to the right would hang off the edge of the screen —
     // which is also why it hangs from the cell's right edge and not its left.
@@ -4087,6 +4260,40 @@ fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Mess
 /// fixed when it is created, so it is closed and reopened at the new height on
 /// the same bar — one frame of churn, against a sheet that would otherwise
 /// clip its own last row or hang empty glass under it.
+/// Scroll the notification run so the keyboard's stop is in it.
+fn history_follow(app: &mut App) -> Task<Message> {
+    match crate::widgets::history::follow(app) {
+        Some(y) => {
+            app.history.set_scroll(y);
+            iced::widget::operation::scroll_to(
+                crate::widgets::history::SCROLL,
+                iced::widget::scrollable::AbsoluteOffset { x: None, y: Some(y) },
+            )
+        }
+        None => Task::none(),
+    }
+}
+
+/// After a removal from the quick view: ask for the entries that step up.
+fn backfill(app: &mut App) -> Task<Message> {
+    if app.history.needs_backfill() {
+        let first = app.history.first_offset();
+        let limit = if app.history.expanded() {
+            app.history.limit()
+        } else {
+            ec_ui::tokens::history::MAX_ROWS as u32
+        };
+        crate::services::history_act(crate::services::HistoryCmd::Read(Some((first, limit))));
+    }
+    Task::none()
+}
+
+/// What a history report was, for the arm that handles it.
+enum ReportKind {
+    Read,
+    Other,
+}
+
 fn reflow(app: &mut App) -> Task<Message> {
     let sized = resize_drawers(app);
     let Some(Popup {
@@ -4385,6 +4592,12 @@ fn pointer() -> Subscription<Message> {
         }) if status == Status::Ignored && c.eq_ignore_ascii_case("t") => {
             Some(Message::CalKey(CalKey::Today))
         }
+        // The notification drawer's Delete; `update` drops it unless that
+        // drawer is out.
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Named(Named::Delete | Named::Backspace),
+            ..
+        }) if status == Status::Ignored => Some(Message::HistoryDelete),
         // The start menu's selection. Whichever surface has the keyboard, the
         // message names it, and only a bar with its menu open acts on it.
         iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
@@ -5080,6 +5293,47 @@ pub(crate) mod tests {
         assert!(a.bars[&id].drawer.open);
     }
 
+    /// The notification list is a reveal drawer: it opens on the drawer path
+    /// (no popup), a row click retargets its height in place, and Escape
+    /// closes it.
+    #[test]
+    fn the_notification_drawer_is_a_reveal_drawer_that_resizes_in_place() {
+        use crate::drawer::DrawerKind;
+        use crate::history::Report;
+        use ec_services::notifications::{HistoryEntry, Urgency};
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 1);
+        let entry = |id: u32| HistoryEntry {
+            id,
+            app_name: "mail".into(),
+            app_icon: String::new(),
+            summary: format!("s{id}"),
+            body: "one\ntwo".into(),
+            urgency: Urgency::Normal,
+            timestamp: 1,
+            actions: Vec::new(),
+            live: false,
+        };
+        let _ = step(
+            &mut a,
+            Message::History(Report::Unread {
+                count: 2,
+                entries: vec![entry(2), entry(1)],
+                read_total: 0,
+            }),
+            None,
+        );
+        let _ = open_drawer(&mut a, id, Drawer::History, true);
+        assert!(a.bars[&id].drawer.is_open(DrawerKind::History));
+        assert!(a.popup.is_none(), "no popup surface");
+        let before = a.bars[&id].drawer.height;
+        let _ = step(&mut a, Message::HistoryToggle(1), Some(id));
+        assert!(a.bars[&id].drawer.open, "a reflow never closes it");
+        assert!(a.bars[&id].drawer.height > before, "the revealed body grows it");
+        let _ = step(&mut a, Message::Dismiss, None);
+        assert!(!a.bars[&id].drawer.open, "Escape closes it");
+    }
+
     /// Content that grows or shrinks moves the open drawer's target; it does
     /// not close it.
     /// A cell press on another drawer's cell while one is out takes the
@@ -5483,6 +5737,209 @@ pub(crate) mod tests {
         let _ = apply_mode(&mut a);
         assert!(!a.widget_cfg.order.contains(&WidgetId::History));
         assert!(a.grid.is_none());
+    }
+
+    /// The service is told once when the drawer comes up and once when it
+    /// goes, however it goes, and never in a preview.
+    #[test]
+    fn the_service_hears_the_drawer_open_and_close() {
+        use crate::services::HistoryCmd;
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 1);
+        assert!(viewing_change(&mut a).is_none(), "closed: nothing to say");
+        let _ = open_drawer(&mut a, id, Drawer::History, true);
+        assert!(matches!(viewing_change(&mut a), Some(HistoryCmd::Viewing(true))));
+        assert!(viewing_change(&mut a).is_none(), "once, not per message");
+        // Switching to another drawer is closing this one.
+        let _ = open_drawer(&mut a, id, Drawer::Network, true);
+        assert!(matches!(viewing_change(&mut a), Some(HistoryCmd::Viewing(false))));
+        let _ = open_drawer(&mut a, id, Drawer::History, true);
+        assert!(matches!(viewing_change(&mut a), Some(HistoryCmd::Viewing(true))));
+        let _ = step(&mut a, Message::Dismiss, None);
+        assert!(matches!(viewing_change(&mut a), Some(HistoryCmd::Viewing(false))));
+        // A preview has no service to tell.
+        a.preview = Some(Preview::Drawer(Drawer::History));
+        let _ = open_drawer(&mut a, id, Drawer::History, true);
+        assert!(viewing_change(&mut a).is_none());
+    }
+
+    /// A long list and an unfolded history never make the sheet taller than
+    /// the reserve a bottom surface is made to hold.
+    #[test]
+    fn the_notification_drawer_never_outgrows_the_reserve() {
+        use crate::history::Report;
+        use ec_services::notifications::{HistoryEntry, Urgency};
+        let mut a = app();
+        let entry = |id: u32| HistoryEntry {
+            id,
+            app_name: "mail".into(),
+            app_icon: String::new(),
+            summary: format!("s{id}"),
+            body: "one\ntwo\nthree".into(),
+            urgency: Urgency::Normal,
+            timestamp: 1,
+            actions: Vec::new(),
+            live: false,
+        };
+        let _ = step(
+            &mut a,
+            Message::History(Report::Unread {
+                count: 16,
+                entries: (13..=16).rev().map(entry).collect(),
+                read_total: 40,
+            }),
+            None,
+        );
+        a.history.begin_open();
+        a.history.set_expanded(true);
+        a.history.apply(Report::Read {
+            entries: (1..=12).rev().map(entry).collect(),
+            total: 40,
+            offset: 4,
+        });
+        a.history.toggle(15);
+        let h = crate::view::drawer_height(&a, Drawer::History) as f32;
+        assert!(h <= ec_ui::tokens::drawer::RESERVE_H, "{h}");
+    }
+
+    /// A drawer with a read history unfolded, taller than the region.
+    fn long_history_drawer() -> (App, Id) {
+        use crate::drawer::DrawerKind;
+        use crate::history::Report;
+        use ec_services::notifications::{HistoryEntry, Urgency};
+        let entry = |id: u32| HistoryEntry {
+            id,
+            app_name: "mail".into(),
+            app_icon: String::new(),
+            summary: format!("s{id}"),
+            body: String::new(),
+            urgency: Urgency::Normal,
+            timestamp: u64::from(id),
+            actions: Vec::new(),
+            live: false,
+        };
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 1);
+        let _ = step(
+            &mut a,
+            Message::History(Report::Unread {
+                count: 4,
+                entries: (13..=16).rev().map(entry).collect(),
+                read_total: 40,
+            }),
+            None,
+        );
+        let _ = open_drawer(&mut a, id, Drawer::History, true);
+        assert!(a.bars[&id].drawer.is_open(DrawerKind::History));
+        a.history.set_expanded(true);
+        a.history.apply(Report::Read {
+            entries: (1..=12).rev().map(entry).collect(),
+            total: 40,
+            offset: 4,
+        });
+        (a, id)
+    }
+
+    /// Down past the visible region keeps the lit row on screen, and Delete
+    /// takes only a row that is lit and visible.
+    #[test]
+    fn down_keeps_the_selection_in_view_and_delete_takes_only_a_visible_row() {
+        let (mut a, id) = long_history_drawer();
+        for _ in 0..10 {
+            let _ = step(&mut a, Message::MenuMove(id, 1), Some(id));
+            assert!(
+                crate::widgets::history::lit_in_view(&a),
+                "{:?} at {}",
+                a.history.stop(),
+                a.history.scroll()
+            );
+        }
+        assert!(a.history.scroll() > 0.0, "the region followed");
+        let sel = a.history.selected().expect("a row is lit");
+        let _ = step(&mut a, Message::HistoryDelete, Some(id));
+        assert!(!a.history.stops().contains(&crate::history::Stop::Row(sel)));
+        assert_ne!(a.history.selected(), Some(sel));
+        // A selection scrolled out of view is brought back, not deleted.
+        a.history.set_scroll(0.0);
+        let sel = a.history.selected();
+        let before = a.history.stops().len();
+        let _ = step(&mut a, Message::HistoryDelete, Some(id));
+        assert_eq!(a.history.stops().len(), before);
+        assert_eq!(a.history.selected(), sel);
+        assert!(a.history.scroll() > 0.0);
+    }
+
+    /// Down reaches the controls under the rows, and Enter works them.
+    #[test]
+    fn down_reaches_the_controls_and_the_way_out() {
+        use crate::history::Stop;
+        let (mut a, id) = long_history_drawer();
+        for _ in 0..200 {
+            let _ = step(&mut a, Message::MenuMove(id, 1), Some(id));
+        }
+        assert_eq!(a.history.stop(), Some(Stop::Foot));
+        assert!(crate::widgets::history::lit_in_view(&a));
+        let _ = step(&mut a, Message::MenuMove(id, -1), Some(id));
+        assert_eq!(a.history.stop(), Some(Stop::More));
+    }
+
+    /// Dismiss removes the entry and leaves the drawer out; an action closes it.
+    #[test]
+    fn dismiss_keeps_the_drawer_out_and_the_quick_view_refills() {
+        use crate::history::Report;
+        use ec_services::notifications::{HistoryEntry, Urgency};
+        let entry = |id: u32| HistoryEntry {
+            id,
+            app_name: "mail".into(),
+            app_icon: String::new(),
+            summary: format!("s{id}"),
+            body: String::new(),
+            urgency: Urgency::Normal,
+            timestamp: u64::from(id),
+            actions: Vec::new(),
+            live: false,
+        };
+        let mut a = app();
+        let id = bar_on(&mut a, "DP-1", 1);
+        let max = ec_ui::tokens::history::MAX_ROWS as u32;
+        let _ = step(
+            &mut a,
+            Message::History(Report::Unread {
+                count: max + 2,
+                entries: (3..max + 3).rev().map(entry).collect(),
+                read_total: 0,
+            }),
+            None,
+        );
+        let _ = open_drawer(&mut a, id, Drawer::History, true);
+        // Opening marked everything read.
+        let _ = step(
+            &mut a,
+            Message::History(Report::Unread {
+                count: 0,
+                entries: Vec::new(),
+                read_total: max + 2,
+            }),
+            None,
+        );
+        assert_eq!(a.history.quick_hidden(), 2);
+        let _ = step(&mut a, Message::HistoryRemove(max + 2), Some(id));
+        assert!(a.bars[&id].drawer.open, "Dismiss does not close the drawer");
+        assert!(a.history.needs_backfill());
+        let offset = a.history.first_offset();
+        let _ = step(
+            &mut a,
+            Message::History(Report::Read {
+                entries: (1..max + 2).rev().map(entry).collect(),
+                total: max + 1,
+                offset,
+            }),
+            None,
+        );
+        assert_eq!(a.history.quick().len(), max as usize);
+        assert_eq!(a.history.quick_hidden(), 1);
+        let _ = step(&mut a, Message::HistoryAction(1, "x".into()), Some(id));
+        assert!(!a.bars[&id].drawer.open, "an action closes it");
     }
 
     #[test]

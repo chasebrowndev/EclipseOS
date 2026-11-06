@@ -111,9 +111,53 @@ fn modes_unread_and_mark_read_over_the_bus() {
 
     let page = client.page(PageFilter::Unread, 0, 10);
     assert_eq!(page.entries.len(), 2);
+    assert!(
+        page.entries.iter().all(|e| e.entry.live),
+        "quiet entries are invokable too"
+    );
     client.mark_all_read();
     assert_eq!(client.unread_count(), 0);
     assert_eq!(client.page(PageFilter::Read, 0, 10).total, 2);
+}
+
+#[test]
+#[ignore = "needs dbus-daemon; spawns a private bus"]
+fn viewing_suppresses_popups_but_not_critical_and_ends_with_the_client() {
+    use ec_services::notifications::HistoryClient;
+
+    let (_bus, address) = private_bus();
+    // SAFETY: single-threaded, before any bus connection is made.
+    unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &address) };
+    isolate_state();
+    let handle = notifications::spawn().expect("name is free");
+    let mut client = HistoryClient::at(&address);
+
+    assert!(client.set_viewing(true));
+    notify_via_dbus_send("hidden", "dict:string:variant:x,byte:1");
+    assert_eq!(client.unread_count(), 1);
+    assert!(!matches!(next_event(&handle), Event::Posted(_)));
+
+    notify_via_dbus_send("urgent", "dict:string:variant:urgency,byte:2");
+    loop {
+        match next_event(&handle) {
+            Event::Posted(n) => {
+                assert_eq!(n.summary, "urgent");
+                break;
+            }
+            _ => continue,
+        }
+    }
+
+    // The setting client leaves the bus without clearing: popups return.
+    drop(client);
+    std::thread::sleep(Duration::from_millis(500));
+    notify_via_dbus_send("again", "dict:string:variant:x,byte:1");
+    loop {
+        if let Event::Posted(n) = next_event(&handle) {
+            assert_eq!(n.summary, "again");
+            break;
+        }
+    }
 }
 
 fn next_event(handle: &notifications::Notifications) -> Event {
