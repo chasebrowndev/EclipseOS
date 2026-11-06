@@ -67,6 +67,11 @@ pub struct BarInfo {
     pub hover: Option<Button>,
     pub pressed: Option<Button>,
     pub maximized: bool,
+    /// Drawn with square corners: maximized, or Quick Tiled (M5).
+    pub square: bool,
+    /// Rolled up to its bar (`shell::winops`): the renderer draws the bar and
+    /// nothing under it, rounded on all four corners.
+    pub shaded: bool,
 }
 
 /// The window's [`BarInfo`], in its user data.
@@ -227,6 +232,7 @@ struct Look {
     hover: Option<Button>,
     pressed: Option<Button>,
     maximized: bool,
+    shaded: bool,
     active: bool,
 }
 
@@ -236,7 +242,17 @@ fn paint(look: &Look) -> Vec<u8> {
     let mut p = Paint::new(pw, ph);
     // Rounded on top only: a box twice as tall, cut off by the canvas.
     let r = look.radius as f32 * d;
-    let body = (0.0, 0.0, pw as f32, ph as f32 + r * 2.0);
+    // A shaded window is only its bar, so all four corners round.
+    let body = (
+        0.0,
+        0.0,
+        pw as f32,
+        if look.shaded {
+            ph as f32
+        } else {
+            ph as f32 + r * 2.0
+        },
+    );
     let ground = [
         GROUND[0],
         GROUND[1],
@@ -251,11 +267,13 @@ fn paint(look: &Look) -> Vec<u8> {
     if look.active {
         p.fill(body, r, LIFT);
     }
-    p.shade(
-        (0.0, ph as f32 - d, pw as f32, d),
-        if look.active { SEAM } else { SEAM_IDLE },
-        |_, _| 1.0,
-    );
+    if !look.shaded {
+        p.shade(
+            (0.0, ph as f32 - d, pw as f32, d),
+            if look.active { SEAM } else { SEAM_IDLE },
+            |_, _| 1.0,
+        );
+    }
 
     let ink = if look.active { GLYPH } else { GLYPH_IDLE };
     for b in [Button::Minimize, Button::Maximize, Button::Close] {
@@ -408,7 +426,7 @@ impl BarCache {
 }
 
 /// `window`'s title: xdg title or X11 `WM_NAME`. Empty when it has none.
-fn title_of(window: &Window) -> String {
+pub fn title_of(window: &Window) -> String {
     use smithay::wayland::shell::xdg::XdgToplevelSurfaceData;
     if let Some(toplevel) = window.toplevel() {
         return smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
@@ -462,6 +480,7 @@ pub fn bar_element(
         hover: info.hover,
         pressed: info.pressed,
         maximized: info.maximized,
+        shaded: info.shaded,
         active,
     };
     let key = (output.clone(), window.clone());
@@ -604,6 +623,7 @@ mod tests {
             hover: None,
             pressed: None,
             maximized: false,
+            shaded: false,
             active: true,
         }
     }
@@ -623,6 +643,21 @@ mod tests {
         assert!(alpha_at(&px, 300, 299, 31) > 0);
         let square = paint(&Look { radius: 0, ..look() });
         assert!(alpha_at(&square, 300, 0, 0) > 0, "a maximized bar is square");
+    }
+
+    #[test]
+    fn a_shaded_bar_rounds_all_four_corners() {
+        let px = paint(&Look {
+            shaded: true,
+            ..look()
+        });
+        assert_eq!(alpha_at(&px, 300, 0, 0), 0);
+        assert_eq!(alpha_at(&px, 300, 0, 31), 0, "bottom-left is cut too");
+        assert_eq!(alpha_at(&px, 300, 299, 31), 0, "bottom-right is cut too");
+        assert!(
+            alpha_at(&px, 300, 150, 31) > 0,
+            "the middle of the bar is still there"
+        );
     }
 
     #[test]

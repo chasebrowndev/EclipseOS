@@ -4990,7 +4990,7 @@ COMP-04 is amended (Appendix F-05) so that every input event carries an
 | `agent_seat` | An agent seat (COMP-04 §3) |
 | `agent_compat` | Agent input routed over the human seat under a compat lock (COMP-04 §8) |
 | `virtual` | `zwlr_virtual_pointer`, `zwp_virtual_keyboard`, allowlisted |
-| `scripted` | `type_text`, `click_at` (COMP-13 §2.2) |
+| `scripted` | `type_text`, `click_at`, `press_key`, `scroll_at`, `drag_at` (COMP-13 §2.2) |
 | `injected` | Test and headless injection (`input/inject.rs`) |
 
 A protected surface receives **`physical` only**. Everything else aimed at it

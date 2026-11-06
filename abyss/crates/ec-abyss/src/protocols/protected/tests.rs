@@ -1458,3 +1458,78 @@ fn a_draft_previews_arms_and_commits_on_physical_enter_only() {
         "no Enter reached the client"
     );
 }
+
+// ------------------------------------------- compositor-drawn thumbnails
+
+/// COMP-19 §4 with COMP-05 §7.1: a protected window is in no compositor-drawn
+/// copy of the screen, not even as a placeholder -- no card in the switcher or
+/// the overview and no hover preview, however the taskbar asks.
+#[test]
+fn a_protected_window_has_no_card_in_the_switcher_the_overview_or_a_preview() {
+    use crate::overview::{self, preview};
+    let mut r = rig();
+    let _second = r.c.map(&mut r.h);
+    let mut next = r.h.state.config.clone();
+    next.mode = crate::config::Mode::De;
+    crate::config::apply_loaded(&mut r.h.state, next);
+    let window =
+        |h: &Harness, n| crate::shell::window_for_surface(&h.state, &server_surface(h, n)).expect("window");
+    let (protected, plain) = (window(&r.h, 0), window(&r.h, 1));
+    let protected_handle = r.h.state.ipc.handle_for(&protected);
+    assert!(has_protected(&r.h.state, &server_surface(&r.h, 0)));
+    // The switcher lists the plain window alone.
+    assert!(overview::switcher::open(&mut r.h.state, false));
+    assert_eq!(r.h.state.switcher.windows(), std::slice::from_ref(&plain));
+    let f = overview::frame(&r.h.state).expect("switcher");
+    assert!(f.view.cards.iter().all(|c| c.id != protected_handle));
+    assert!(f.wanted.iter().all(|w| w.handle != protected_handle));
+    overview::close(&mut r.h.state);
+    // So does the overview.
+    assert!(overview::open(&mut r.h.state));
+    assert_eq!(r.h.state.overview.cards(), std::slice::from_ref(&plain));
+    let f = overview::frame(&r.h.state).expect("overview");
+    assert!(f.view.cards.iter().all(|c| c.id != protected_handle));
+    overview::close(&mut r.h.state);
+    // A preview of it is refused without error and shows nothing.
+    let anchor = smithay::utils::Rectangle::new((300, 560).into(), (120, 30).into());
+    assert_eq!(preview::show(&mut r.h.state, &protected, anchor), Ok(false));
+    assert!(!r.h.state.preview.is_open());
+    // Even one already up for it is taken down when it is asked again.
+    assert_eq!(preview::show(&mut r.h.state, &plain, anchor), Ok(true));
+    assert_eq!(preview::show(&mut r.h.state, &protected, anchor), Ok(false));
+    assert!(!r.h.state.preview.is_open());
+}
+
+#[test]
+fn a_window_that_becomes_protected_leaves_the_switcher_and_the_overview() {
+    use crate::config::Mode;
+    let mut h = harness();
+    let mut next = h.state.config.clone();
+    next.mode = Mode::De;
+    next.binds.extend(crate::config::mode_default_binds(Mode::De));
+    crate::config::apply_loaded(&mut h.state, next);
+    let mut c = Cli::connect(&mut h);
+    let w0 = c.map(&mut h);
+    let w1 = c.map(&mut h);
+    let s0 = server_surface(&h, 0);
+    let window = |h: &Harness, s: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface| {
+        crate::shell::owned_windows(&h.state)
+            .into_iter()
+            .find(|w| crate::shell::window_surface(w).as_ref() == Some(s))
+            .expect("window")
+    };
+    let s1 = server_surface(&h, 1);
+    let (win0, win1) = (window(&h, &s0), window(&h, &s1));
+    assert!(crate::overview::switcher::open(&mut h.state, false));
+    assert!(h.state.switcher.windows().contains(&win0));
+    let _p0 = c.protect(&mut h, &w0.surface);
+    crate::overview::validate(&mut h.state);
+    assert_eq!(h.state.switcher.windows(), std::slice::from_ref(&win1));
+    // The overview too.
+    crate::overview::close(&mut h.state);
+    assert!(crate::overview::open(&mut h.state));
+    assert_eq!(h.state.overview.cards(), std::slice::from_ref(&win1));
+    let _p1 = c.protect(&mut h, &w1.surface);
+    crate::overview::validate(&mut h.state);
+    assert!(h.state.overview.cards().is_empty());
+}

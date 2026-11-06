@@ -4,6 +4,7 @@ members = [
   "crates/ec-center",
   "crates/ec-console",
   "crates/ec-console-client",
+  "crates/ec-desktop",
   "crates/ec-glass-host",
   "crates/ec-greeter",
   "crates/ec-hyperion-bar",

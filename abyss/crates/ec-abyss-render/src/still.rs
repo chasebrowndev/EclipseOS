@@ -140,6 +140,14 @@ impl Frame<'_> {
         // Under `mode "de"` the dim, rounded mask, glow and shadow follow the
         // frame, and the surfaces stay on the content, as in `window_elements`.
         let bar = crate::titlebar::bar_of(window);
+        // A window rolled up to its bar has no content here either, so what the
+        // human shaded away is not captured. Its surfaces and popups stay out.
+        let rolled = bar.is_some_and(|b| b.shaded);
+        let geo = if rolled {
+            Rectangle::new(geo.loc, (geo.size.w, 0).into())
+        } else {
+            geo
+        };
         let frame = bar.map_or(geo, |b| crate::titlebar::frame_of_content(geo, b.height));
         let alpha = userdata::opacity_of(window).unwrap_or(if active {
             deco.active_opacity
@@ -163,7 +171,7 @@ impl Frame<'_> {
         // follows the window never cuts a menu.
         let render_loc = phys(geo.loc - window.geometry().loc - output_loc, scale);
         // Tint-keyed strip (ADR 0079), drawn as the live path does.
-        let strip_def = userdata::strip_of(window).filter(|_| window.toplevel().is_some());
+        let strip_def = userdata::strip_of(window).filter(|_| !rolled && window.toplevel().is_some());
         let keyed = match strip_def.as_ref().and_then(|s| s.keyed().copied()) {
             Some(keys) => crate::keyed_target(renderer, self.store, self.output)
                 .map(|(program, h, mirrored)| (program, h, mirrored, keys)),
@@ -172,6 +180,7 @@ impl Frame<'_> {
         let strip_def = strip_def.filter(|s| s.keyed().is_none() || keyed.is_some());
         let mut popup_groups: Vec<crate::PopupGroup> = Vec::new();
         let (popups, surfaces) = match window.toplevel() {
+            _ if rolled => (Vec::new(), Vec::new()),
             Some(toplevel) => {
                 let surface = toplevel.wl_surface();
                 let mut popups = Vec::new();
@@ -347,7 +356,7 @@ impl Frame<'_> {
         if let Some(info) = bar {
             let at = crate::titlebar::bar_rect(geo, info.height);
             let radius = match &self.rounding {
-                Some(_) if !info.maximized => deco.rounding,
+                Some(_) if !info.square => deco.rounding,
                 _ => 0,
             };
             if let Some(element) = crate::titlebar::bar_element(

@@ -20,8 +20,10 @@ pub mod glass;
 pub mod glyphs;
 pub mod hud;
 pub mod hud_font;
+pub mod menu;
 pub mod output_overscan;
 pub mod overscan;
+pub mod overview;
 pub mod palette;
 pub mod popup_shape;
 pub mod sanitize;
@@ -29,6 +31,7 @@ pub mod select;
 pub mod stats;
 pub mod still;
 pub mod text;
+pub mod thumb;
 pub mod titlebar;
 pub mod userdata;
 
@@ -327,6 +330,14 @@ fn fills_area(window: &Window) -> bool {
     window
         .x11_surface()
         .is_some_and(|x| x.is_maximized() || x.is_fullscreen())
+}
+
+/// Is `window` Quick Tiled under `mode "de"` (M5)? A floating window (no tile
+/// clip: Radiant tiles carry one) that abyss told it is tiled on some edge.
+/// Like a maximized window it fills its zone with no border inset and is drawn
+/// square, with no ring or bezel.
+fn quick_tiled(window: &Window) -> bool {
+    userdata::tile_clip(window).is_none() && userdata::is_quick_tiled(window)
 }
 
 /// Whether `mode`'s backdrop program (glass or frost) can draw a bezel on
@@ -1859,9 +1870,9 @@ fn window_elements(
         // Only abyss's own state counts: it holds those windows floating,
         // untiled. A tiled window that merely carries the X11/xdg fullscreen
         // state (a client that set it itself) keeps its rounding.
-        let rounding = rounding
-            .clone()
-            .filter(|_| !(fills_area(&window) && userdata::tile_clip(&window).is_none()));
+        let rounding = rounding.clone().filter(|_| {
+            !((fills_area(&window) && userdata::tile_clip(&window).is_none()) || quick_tiled(&window))
+        });
         // A tiled client that ignored its configure (Electron holds its own
         // min width) is cut back to its tile rather than drawn under its
         // neighbour. Only a window that actually overhangs is cropped, so one
@@ -1875,10 +1886,17 @@ fn window_elements(
         // about the centre of what it shows. The identity when idle, where
         // `map` is exactly the target rectangle.
         let t = store.anim.transform(&window);
+        // A window rolled up to its bar (`shell::winops`) is only the bar: its
+        // content has no height and its surfaces are not drawn. The client is
+        // not told; it keeps the size it has.
+        let rolled = titlebar::bar_of(&window).is_some_and(|b| b.shaded);
         let target = space.element_geometry(&window).map(|mut geo| {
             if let Some(c) = clip {
                 geo.size.w = geo.size.w.min(c.size.w);
                 geo.size.h = geo.size.h.min(c.size.h);
+            }
+            if rolled {
+                geo.size.h = 0;
             }
             geo
         });
@@ -1928,7 +1946,7 @@ fn window_elements(
         // window's, and the strip's own alpha (times the window's). Only a
         // toplevel at rest has one; an animating window draws whole.
         let strip_def = userdata::strip_of(&window)
-            .filter(|_| !t.scaled() && window.toplevel().is_some())
+            .filter(|_| !t.scaled() && window.toplevel().is_some() && !rolled)
             .zip(content_geo);
         // A keyed strip needs the keyed program and a framebuffer axis; where
         // either is missing the window stays opaque rather than fading whole.
@@ -2031,6 +2049,12 @@ fn window_elements(
                     alpha,
                 ),
             ),
+        };
+        let (popups, surfaces) = if rolled {
+            popup_groups.clear();
+            (Vec::new(), Vec::new())
+        } else {
+            (popups, surfaces)
         };
         // The strip's copy of the surface tree, at the strip's alpha. A keyed
         // strip is one draw through the keyed program instead.
@@ -2140,7 +2164,13 @@ fn window_elements(
                     let slot = (mode == BlurMode::Frost) as usize;
                     let ready =
                         *bezel_ok[slot].get_or_insert_with(|| bezel_ready(renderer, store, output, mode));
-                    bezel_width(mode, ready, fills_area(&window), border_size, upscale)
+                    bezel_width(
+                        mode,
+                        ready,
+                        fills_area(&window) || quick_tiled(&window),
+                        border_size,
+                        upscale,
+                    )
                 }
                 false => None,
             };
@@ -2482,6 +2512,11 @@ fn window_elements(
         let start = out.len();
         match &border {
             Some(_) if bezeled => {
+                store.gpu.rings.remove(&(output.clone(), window.clone()));
+                store.borders.remove(&(output.clone(), window.clone()));
+            }
+            // A Quick Tiled window is square and borderless, like a maximized one.
+            Some(_) if quick_tiled(&window) => {
                 store.gpu.rings.remove(&(output.clone(), window.clone()));
                 store.borders.remove(&(output.clone(), window.clone()));
             }

@@ -1609,7 +1609,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
     tracing::info!(socket = %state.socket_name, "abyss ready on DRM");
     if session_handoff {
-        crate::session::import();
+        crate::session::import(state.config.mode);
     }
     crate::kiosk::launch(&mut state, &handle)?;
 
@@ -1757,6 +1757,15 @@ fn render_output(state: &mut AbyssState, index: usize) {
     if !state.outputs.get(out_id).map(|e| e.powered).unwrap_or(true) {
         return;
     }
+    // What the window switcher, overview or a hover preview draws on this
+    // output is decided here, from the whole state, before the renderer is
+    // borrowed out of it.
+    let overlay = state
+        .outputs
+        .get(out_id)
+        .map(|e| e.output.clone())
+        .and_then(|o| crate::overview::plan(state, &o));
+    let overlay_open = crate::overview::any_open(state);
     // A fullscreen toplevel drops the `Top` layer below the window stack.
     let fullscreen = match state.outputs.get(out_id).map(|e| e.output.clone()) {
         Some(out) => crate::shell::output_has_fullscreen(state, &out),
@@ -1855,6 +1864,39 @@ fn render_output(state: &mut AbyssState, index: usize) {
             scale,
         ));
     }
+    // The window menu (`mode "de"`, COMP-05 §7.1): compositor chrome above the
+    // windows and the drop guides, below annotations and the cursor, and never
+    // in a capture pass list.
+    elements.extend(crate::render::menu::menu_elements(
+        renderer,
+        &mut state.menu_cache,
+        state.winmenu.view(),
+        &output,
+        output_loc,
+    ));
+    // The window switcher, overview and hover previews (`mode "de"`, COMP-05
+    // §7.1): level with the window menu, below annotations and the cursor, and
+    // never in a capture pass list. Planned before the renderer was borrowed.
+    elements.extend(crate::overview::draw(
+        renderer,
+        crate::overview::Parts {
+            thumbs: &mut state.thumbs,
+            cache: &mut state.overlay_cache,
+            handle: &state.loop_handle,
+        },
+        overlay.as_ref(),
+        overlay_open,
+        &output,
+        output_loc,
+    ));
+    // Quick Tile edge preview (`mode "de"`, COMP-05 §3.1): level with the drop
+    // guides, never in a capture pass list.
+    elements.extend(crate::render::drop::preview_elements(
+        renderer,
+        state.tile_preview.as_ref().map(|p| (&p.output, p.rect)),
+        &output,
+        output_loc,
+    ));
     // Radiant drop guides (COMP-05 §3.1): above the windows, below the
     // annotations and the cursor.
     elements.extend(crate::render::drop::drop_elements(

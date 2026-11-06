@@ -50,6 +50,23 @@ pub enum Action {
     /// Maximize the focused window, or restore it. Does nothing outside
     /// `mode "de"` (COMP-05 §3.1, C-24).
     ToggleMaximize,
+    /// Quick Tile the focused window one step toward `Direction` (`mode "de"`
+    /// only; COMP-05 §3.1, C-24). Each press moves the zone one step on that
+    /// axis, so Left then Up is the top-left quarter and the opposite
+    /// direction steps back; see `shell::quicktile`.
+    Tile(Direction),
+    /// Switch to the desktop (human workspace) next to the active one on the
+    /// desktop grid (`mode "de"` only; COMP-05 §7.1, `general.desktop-rows`).
+    DesktopSwitch(Direction),
+    /// Move the focused window to the next desktop in that direction and go
+    /// there with it (`mode "de"` only).
+    DesktopMove(Direction),
+    /// Open the window switcher, or step it (`mode "de"` only; COMP-05 §7.1).
+    /// `true` steps backwards. The modifiers held on the chord are the ones
+    /// whose release activates the selection.
+    Switcher(bool),
+    /// Open the overview, or close it (`mode "de"` only; COMP-05 §7.1).
+    ToggleOverview,
     /// Send the focused window away (COMP-05 §4 `minimized`).
     Minimize,
     /// Bring back the last window sent away on the active workspace.
@@ -95,6 +112,15 @@ pub enum Action {
     /// from config -- the input filter synthesises it while a prompt holds
     /// the seat.
     Prompt(Keysym),
+    /// One keypress consumed by the window menu (COMP-05 §7.1, `mode "de"`).
+    /// Not bindable from config -- the input filter synthesises it while the
+    /// menu is open, so no client and no binding sees the key.
+    WindowMenu(Keysym),
+    /// One keypress consumed by the window switcher or the overview (COMP-05
+    /// §7.1, `mode "de"`): the keysym as typed (case kept) and whether Shift
+    /// is down. Not bindable from config -- the input filter synthesises it
+    /// while one is open, so no client and no binding sees the key.
+    Overlay(Keysym, bool),
     /// Chords an addon owns (COMP-18 §4). The compositor does not act on
     /// these itself; it forwards the name on the `keybind` event stream, so
     /// nothing happens when no addon is listening.

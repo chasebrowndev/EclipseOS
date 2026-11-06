@@ -8,6 +8,10 @@
 //! a border, like a fullscreen window, and the placement keeps the rectangle to
 //! give back. Fullscreen wins over it and leaving fullscreen returns to it.
 //!
+//! Quick Tile (`shell::quicktile`) is the other placement of this kind and
+//! shares the restore code here: leaving either gives back the same rectangle,
+//! and a drag out of either puts the window under the pointer.
+//!
 //! Outside `de` none of this runs: the requests are declined (C-20,
 //! [`super::decline_maximize_toplevel`]). The gate is `ModeProfile::maximize`,
 //! checked at each entry point, and [`clear_all`] runs when the mode is left.
@@ -78,7 +82,7 @@ pub(super) fn fitted_rect(
 pub(super) fn content_rect(f: &Floating, fullscreen: bool, border: i32, bar: i32) -> Rectangle<i32, Logical> {
     if fullscreen {
         f.rect
-    } else if f.placement.is_maximized() {
+    } else if f.placement.is_placed() {
         content_of_outer(f.rect, 0, bar)
     } else {
         content_of_outer(f.rect, border, bar)
@@ -88,6 +92,11 @@ pub(super) fn content_rect(f: &Floating, fullscreen: bool, border: i32, bar: i32
 /// Is `window` maximized (along any axis)? No allocation.
 pub fn is_maximized(state: &AbyssState, window: &Window) -> bool {
     placement_of(state, window).is_maximized()
+}
+
+/// Is `window` maximized or Quick Tiled? Either is released by a drag.
+pub fn is_placed(state: &AbyssState, window: &Window) -> bool {
+    placement_of(state, window).is_placed()
 }
 
 /// The placement of `window` wherever it floats or is minimized; `Free` for a
@@ -108,7 +117,7 @@ pub(super) fn placement_of(state: &AbyssState, window: &Window) -> Placement {
 
 /// Put a placement back on a window that was re-installed (`replace_window`).
 pub(super) fn restore_placement(state: &mut AbyssState, window: &Window, placement: Placement) {
-    if !placement.is_maximized() {
+    if !placement.is_placed() {
         return;
     }
     for entry in state.outputs.iter_mut() {
@@ -127,6 +136,11 @@ pub(super) fn restore_placement(state: &mut AbyssState, window: &Window, placeme
 pub fn set(state: &mut AbyssState, window: &Window, axes: Option<(bool, bool)>) -> bool {
     if !state.config.mode.profile().maximize {
         return false;
+    }
+    // Maximize restores a rolled-up window (`winops`); restoring from maximize
+    // leaves it as it is.
+    if axes.is_some() {
+        super::winops::unshade(state, window);
     }
     let mut done = false;
     anim::toggle(state, Some(window.clone()), |state| {
@@ -187,17 +201,19 @@ fn set_now(
     let mut restored_fullscreen = None;
     match (axes, f.placement) {
         (Some((h, v)), placement) => {
-            let restore = match placement {
-                Placement::Maximized { restore, .. } => restore,
-                Placement::Free if fullscreen => fullscreen_restore.unwrap_or(default_rect),
-                Placement::Free => f.rect,
+            // A maximize that replaces a tile keeps the tile's restore rect, so
+            // leaving it gives back the original free rectangle.
+            let restore = match placement.restore_rect() {
+                Some(restore) => restore,
+                None if fullscreen => fullscreen_restore.unwrap_or(default_rect),
+                None => f.rect,
             };
             f.placement = Placement::Maximized { h, v, restore };
             if !fullscreen {
                 f.rect = fitted_rect(&f.window, usable, border, restore, h, v, bar);
             }
         }
-        (None, Placement::Maximized { restore, .. }) => {
+        (None, Placement::Maximized { restore, .. } | Placement::QuickTile { restore, .. }) => {
             // The area may have moved since: keep the restored window on it.
             let mut rect = de::carried_rect(restore, Point::default(), usable);
             if let Some(p) = pointer {
@@ -206,7 +222,15 @@ fn set_now(
                     p - (p - f64::from(o)) * f64::from(nl) / f64::from(ol.max(1))
                 };
                 let x = at(p.x, old.loc.x, old.size.w, new.size.w).round() as i32;
-                let y = at(p.y, old.loc.y, old.size.h, new.size.h).round() as i32;
+                // A pointer on the bar stays the same distance below the bar's
+                // top (the x above keeps its place along the bar); one in the
+                // content keeps its proportion of the content.
+                let y = if bar > 0 && p.y < f64::from(old.loc.y) {
+                    let below_top = p.y - f64::from(old.loc.y - bar);
+                    (p.y - below_top + f64::from(bar)).round() as i32
+                } else {
+                    at(p.y, old.loc.y, old.size.h, new.size.h).round() as i32
+                };
                 rect.loc = Point::from((x - border, y - border - bar));
             }
             f.placement = Placement::Free;
@@ -289,7 +313,7 @@ pub fn request_x11(state: &mut AbyssState, window: &Window, h: bool, v: bool, on
 /// begins: unmaximize first, and put the restored window under the pointer.
 pub fn release_for_drag(state: &mut AbyssState, window: &Window) {
     // Fullscreen wins: it keeps the placement for when it ends (C-19).
-    if !is_maximized(state, window) || state.fullscreen.contains_key(window) {
+    if !is_placed(state, window) || state.fullscreen.contains_key(window) {
         return;
     }
     let pointer = state.pointer_location;
@@ -299,7 +323,7 @@ pub fn release_for_drag(state: &mut AbyssState, window: &Window) {
 /// A client or the shell pins a maximized window to an exact rectangle
 /// (`place_at`, `resize_window`): it is no longer maximized. The client is told.
 pub(super) fn release(state: &mut AbyssState, window: &Window) {
-    if !is_maximized(state, window) {
+    if !is_placed(state, window) {
         return;
     }
     set_now(state, window, None, None);
@@ -323,7 +347,7 @@ pub(crate) fn note_departing(state: &mut AbyssState, id: u64) {
             let minimized = ws.minimized.iter().map(|m| (m.window.clone(), m.placement));
             floating.chain(minimized)
         })
-        .filter(|(_, p)| p.is_maximized())
+        .filter(|(_, p)| p.is_placed())
         .map(|(w, p)| (w, p.moved_by(Point::from((-origin.x, -origin.y)))))
         .collect();
     for (w, p) in carried {
@@ -342,7 +366,7 @@ pub(super) fn clear_all(state: &mut AbyssState) {
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
             for f in ws.floating.iter_mut() {
-                let Placement::Maximized { restore, .. } = f.placement else {
+                let Some(restore) = f.placement.restore_rect() else {
                     continue;
                 };
                 f.placement = Placement::Free;
@@ -355,7 +379,7 @@ pub(super) fn clear_all(state: &mut AbyssState) {
                 }
             }
             for m in ws.minimized.iter_mut() {
-                if let Placement::Maximized { restore, .. } = m.placement {
+                if let Some(restore) = m.placement.restore_rect() {
                     m.placement = Placement::Free;
                     m.was_floating = Some(restore);
                     told.push((m.window.clone(), shrink(restore, border)));
