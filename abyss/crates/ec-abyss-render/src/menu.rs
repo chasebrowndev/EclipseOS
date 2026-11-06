@@ -323,7 +323,7 @@ pub fn menu_elements(
                 &paint(&look, view),
                 Fourcc::Argb8888,
                 size,
-                dev as i32,
+                1,
                 Transform::Normal,
                 None,
             );
@@ -339,7 +339,7 @@ pub fn menu_elements(
         loc.to_f64(),
         &slot.buffer,
         None,
-        None,
+        Some(crate::titlebar::raster_src(size)),
         Some(rect.size),
         Kind::Unspecified,
     )

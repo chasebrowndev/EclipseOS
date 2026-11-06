@@ -440,6 +440,20 @@ pub fn title_of(window: &Window) -> String {
     window.x11_surface().map(|x| x.title()).unwrap_or_default()
 }
 
+/// The source rectangle of a `size` raster of device pixels, uploaded at buffer
+/// scale 1.
+///
+/// A `MemoryRenderBuffer` must not carry a buffer scale above 1: smithay's
+/// `MemoryRenderBufferRenderElement::damage_since` divides by that scale a
+/// second time, so a 2x raster reports only its top-left quarter as damaged and
+/// the rest never repaints under a damage-tracked frame (a hover highlight on
+/// the right-hand buttons stayed stale at any scale above 1). At scale 1 the
+/// source covers the whole raster and the damage maps one to one; the element's
+/// own `size` still places it at its logical size.
+pub fn raster_src((w, h): (i32, i32)) -> Rectangle<f64, Logical> {
+    Rectangle::from_size(smithay::utils::Size::from((w as f64, h as f64)))
+}
+
 /// One window's titlebar as a render element, or `None` when it cannot be
 /// built (no room, or the upload failed).
 ///
@@ -510,7 +524,7 @@ pub fn bar_element(
                 &paint(&look),
                 Fourcc::Argb8888,
                 size,
-                dev as i32,
+                1,
                 Transform::Normal,
                 None,
             );
@@ -522,7 +536,7 @@ pub fn bar_element(
         loc.to_f64(),
         &slot.buffer,
         Some(alpha),
-        None,
+        Some(raster_src(size)),
         Some(Size::from((width, info.height))),
         Kind::Unspecified,
     )
@@ -679,6 +693,17 @@ mod tests {
             ..look()
         });
         assert_ne!(base, blank);
+    }
+
+    #[test]
+    fn a_raster_is_sourced_whole_at_buffer_scale_one() {
+        // 2x raster of a 328x32 bar: the source must be the 656x64 pixels, so
+        // smithay's damage mapping covers the bar and not a quarter of it.
+        let src = raster_src((656, 64));
+        assert_eq!(
+            (src.loc.x, src.loc.y, src.size.w, src.size.h),
+            (0.0, 0.0, 656.0, 64.0)
+        );
     }
 
     #[test]
