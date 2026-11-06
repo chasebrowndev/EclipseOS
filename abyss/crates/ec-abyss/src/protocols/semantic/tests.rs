@@ -954,3 +954,90 @@ fn live_arm_echo_off_from_the_terminal_publisher_covers_the_terminal() {
         NodeVerdict::WholeSurface(RedactReason::UnplacedSecret)
     );
 }
+
+// ------------------------------------------- redaction, compositor thumbnails
+
+/// COMP-05 §7.1: a thumbnail in the switcher, the overview or a hover preview
+/// is node-redacted exactly where capture is: the window is drawn with an
+/// opaque cover over each secret rectangle, scaled into the thumbnail, and its
+/// title is shown (only the nodes are withheld).
+#[test]
+fn live_arm_a_node_redacted_window_gets_covers_in_every_thumbnail_path() {
+    use crate::overview::{self, preview, thumbs};
+    use ec_abyss_render::overview::Body;
+    let mut r = rig();
+    r.base();
+    r.sem.add_node(10, 1, 3);
+    r.sem.set_role(10, ROLE_PASSWORD);
+    r.sem.set_rect(10, 10, 70, 100, 20);
+    r.sem.commit();
+    r.pump();
+    let mut next = r.h.state.config.clone();
+    next.mode = crate::config::Mode::De;
+    crate::config::apply_loaded(&mut r.h.state, next);
+    let window = crate::shell::window_for_surface(&r.h.state, &r.surface()).expect("window");
+    let shown = thumbs::shown(&r.h.state, &window).expect("a card");
+    let thumbs::Face::Pixels { covers } = &shown.face else {
+        panic!("a node-redacted window still shows its pixels, covered");
+    };
+    assert_eq!(covers.len(), 1);
+
+    let check = |frame: overview::Frame| {
+        let card = &frame.view.cards[0];
+        let Body::Pixels { covers } = &card.body else {
+            panic!("pixels with covers")
+        };
+        assert_eq!(covers.len(), 1, "one cover per secret node");
+        assert!(
+            card.thumb.contains_rect(covers[0]),
+            "{:?} in {:?}",
+            covers[0],
+            card.thumb
+        );
+        // Scaled, and never smaller than the node: 100x20 of a WIN-sized
+        // window at the thumbnail's scale, rounded outwards.
+        let s = f64::from(card.thumb.size.w) / f64::from(WIN.0);
+        assert!(f64::from(covers[0].size.w) >= 100.0 * s - 0.01);
+        assert!(f64::from(covers[0].size.h) >= 20.0 * s - 0.01);
+        // Drawn through the GPU gate as pixels.
+        assert_eq!(thumbs::split(&frame.wanted).0.len(), 1);
+    };
+    assert!(overview::switcher::open(&mut r.h.state, false));
+    check(overview::frame(&r.h.state).expect("switcher"));
+    overview::close(&mut r.h.state);
+    assert!(overview::open(&mut r.h.state));
+    check(overview::frame(&r.h.state).expect("overview"));
+    overview::close(&mut r.h.state);
+    let anchor = smithay::utils::Rectangle::new((300, 560).into(), (120, 30).into());
+    assert_eq!(preview::show(&mut r.h.state, &window, anchor), Ok(true));
+    check(overview::frame(&r.h.state).expect("preview"));
+}
+
+/// A secret node placed outside its window cannot be covered where it is, so
+/// capture draws nothing of the window (`NodesOutOfBounds`); a thumbnail does
+/// the same -- a blank card, no pixels and no title.
+#[test]
+fn live_arm_a_node_outside_its_window_makes_the_thumbnail_a_blank_card() {
+    use crate::overview::{self, thumbs};
+    use ec_abyss_render::overview::Body;
+    let mut r = rig();
+    r.base();
+    r.sem.add_node(10, 1, 3);
+    r.sem.set_role(10, ROLE_PASSWORD);
+    r.sem.set_rect(10, 5000, 5000, 100, 20);
+    r.sem.commit();
+    r.pump();
+    let mut next = r.h.state.config.clone();
+    next.mode = crate::config::Mode::De;
+    crate::config::apply_loaded(&mut r.h.state, next);
+    let window = crate::shell::window_for_surface(&r.h.state, &r.surface()).expect("window");
+    assert_eq!(
+        thumbs::shown(&r.h.state, &window).expect("a card").face,
+        thumbs::Face::Hidden
+    );
+    assert!(overview::switcher::open(&mut r.h.state, false));
+    let f = overview::frame(&r.h.state).expect("switcher");
+    assert_eq!(f.view.cards[0].body, Body::Hidden);
+    assert_eq!(f.view.cards[0].title, None);
+    assert!(thumbs::split(&f.wanted).0.is_empty());
+}

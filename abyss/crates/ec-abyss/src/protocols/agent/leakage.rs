@@ -812,6 +812,38 @@ fn hit_test_never_reaches_beneath_an_invisible_top() {
     assert!(p.seen.results.is_empty());
 }
 
+/// COMP-05 §7.1: a compositor-drawn bar is not the window beneath it, and what
+/// the human shaded away is not there to hit.
+#[test]
+fn hit_test_stops_at_a_titlebar_and_ignores_shaded_content() {
+    use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as Deco;
+
+    let mut w = world("hitde.sock");
+    let (mut p, _agent, scene) = w.agent(list_and_read(&lines(&[&["workspace:human", "class:private"]])));
+    let mut next = w.h.state.config.clone();
+    next.mode = ec_abyss_config::Mode::De;
+    crate::config::apply_loaded(&mut w.h.state, next);
+    let top = w.win("pubB").window.clone();
+    top.toplevel()
+        .expect("xdg")
+        .with_pending_state(|s| s.decoration_mode = Some(Deco::ServerSide));
+    crate::shell::arrange(&mut w.h.state);
+
+    let c = centre(&w.h, &top).expect("shown");
+    let on_bar = w.h.state.space.element_geometry(&top).expect("shown").loc.y - 5;
+    let handle = w.handle("pubB");
+    scene.hit_test(1, c.x, c.y);
+    scene.hit_test(2, c.x, on_bar);
+    p.pump(&mut w.h);
+    assert_eq!(hits_for(&p, 1), vec![handle], "the content is the window");
+    assert_eq!(hits_for(&p, 2), vec![0], "the bar is not what lies beneath it");
+
+    assert!(crate::shell::winops::set_shaded(&mut w.h.state, &top, true));
+    scene.hit_test(3, c.x, c.y);
+    p.pump(&mut w.h);
+    assert_ne!(hits_for(&p, 3), vec![handle], "shaded content is not hit");
+}
+
 /// S-01 §2.1 (`scene.list` grants listing, metadata only; `get_toplevel`
 /// and `hit_test` need `scene.read`), COMP-08 §2.1 (`no_capability`, detail
 /// the capability name), and COMP-08 §3 (absence comes first: a hidden

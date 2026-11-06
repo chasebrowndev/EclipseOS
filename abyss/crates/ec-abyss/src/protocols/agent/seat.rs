@@ -564,10 +564,10 @@ fn target_under(
     window: &Window,
     pos: Point<f64, Logical>,
 ) -> Option<(WlSurface, Point<f64, Logical>)> {
-    if crate::shell::layer_at(state, pos).is_some() {
+    if crate::shell::layer_at(state, pos).is_some() || crate::shell::titlebar::bar_at(state, pos).is_some() {
         return None;
     }
-    let hit = match state.space.element_under(pos) {
+    let hit = match crate::shell::winops::element_under(state, pos) {
         Some((w, _)) if w == window => crate::shell::surface_under(state, pos),
         _ => None,
     };

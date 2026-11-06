@@ -259,12 +259,14 @@ pub(crate) fn pointer_focus_ctx(state: &AbyssState, pos: Point<f64, Logical>) ->
         // Override-redirect menus/tooltips are not focus targets: the pointer
         // over one keeps the owning client's focus. A layer surface on top
         // hides whatever window is behind it.
-        window_under: state
-            .space
-            .element_under(pos)
-            .filter(|_| layer_under.is_none())
-            .filter(|(w, _)| !crate::shell::is_unmanaged_x11(state, w))
-            .map(|(w, _)| w.clone()),
+        window_under: crate::shell::titlebar::bar_at(state, pos)
+            .map(|(w, _)| w)
+            .or_else(|| {
+                crate::shell::winops::element_under(state, pos)
+                    .map(|(w, _)| w.clone())
+                    .filter(|w| !crate::shell::is_unmanaged_x11(state, w))
+            })
+            .filter(|_| layer_under.is_none()),
         layer_under,
         click: false,
         focused,
@@ -360,9 +362,11 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
         // output's active one — focusing a window on an inactive workspace
         // would otherwise record it where it is not, and `focus_head` would
         // hand back a window from the wrong workspace.
+        state.focus_clock += 1;
+        let stamp = state.focus_clock;
         if let Some(entry) = state.outputs.get_mut(id) {
             if let Some(ws) = entry.workspaces.iter_mut().find(|ws| ws.holds(window)) {
-                ws.note_focused(window, raise);
+                ws.note_focused(window, raise, stamp);
             }
         }
         if state.outputs.set_focused(id) {
@@ -1174,6 +1178,8 @@ pub(crate) mod state_tests {
             ext_session_lock_v1::ExtSessionLockV1,
         };
         use wayland_protocols::xdg::shell::client::{
+            xdg_popup::XdgPopup,
+            xdg_positioner::{self, XdgPositioner},
             xdg_surface::{self, XdgSurface},
             xdg_toplevel::{self, XdgToplevel},
             xdg_wm_base::{self, XdgWmBase},
@@ -1206,6 +1212,8 @@ pub(crate) mod state_tests {
             maximized_configures: Vec<u32>,
             /// Whether the latest configure of each toplevel carried `maximized`.
             maximized_last: std::collections::HashMap<u32, bool>,
+            /// Toplevel ids that were sent `xdg_toplevel.close`.
+            closes: Vec<u32>,
         }
 
         /// A toplevel's three client objects, for tests that drive its
@@ -1308,6 +1316,8 @@ pub(crate) mod state_tests {
         delegate_noop!(Globals: ignore WlBuffer);
         delegate_noop!(Globals: ignore WlSurface);
         delegate_noop!(Globals: ignore WlOutput);
+        delegate_noop!(Globals: ignore XdgPopup);
+        delegate_noop!(Globals: XdgPositioner);
         impl Dispatch<XdgToplevel, ()> for Globals {
             fn event(
                 g: &mut Self,
@@ -1317,6 +1327,9 @@ pub(crate) mod state_tests {
                 _: &Connection,
                 _: &QueueHandle<Self>,
             ) {
+                if let xdg_toplevel::Event::Close = event {
+                    g.closes.push(toplevel.id().protocol_id());
+                }
                 if let xdg_toplevel::Event::Configure {
                     width,
                     height,
@@ -1497,6 +1510,31 @@ pub(crate) mod state_tests {
                 }
             }
 
+            /// An `xdg_popup` of `parent`, 20x20, its top-left corner at `offset`
+            /// from the parent's window-geometry origin, with `slide_y`
+            /// constraint adjustment. Committed and delivered.
+            pub fn create_popup(
+                &mut self,
+                h: &mut Harness,
+                parent: &Toplevel,
+                offset: (i32, i32),
+            ) -> (WlSurface, XdgPopup) {
+                let qh = self.queue.handle();
+                let wm = self.wm.as_ref().expect("xdg_wm_base");
+                let positioner = wm.create_positioner(&qh, ());
+                positioner.set_size(20, 20);
+                positioner.set_anchor_rect(offset.0, offset.1, 1, 1);
+                positioner.set_anchor(xdg_positioner::Anchor::TopLeft);
+                positioner.set_gravity(xdg_positioner::Gravity::BottomRight);
+                positioner.set_constraint_adjustment(xdg_positioner::ConstraintAdjustment::SlideY);
+                let surface = self.surface();
+                let xdg = wm.get_xdg_surface(&surface, &qh, ());
+                let popup = xdg.get_popup(Some(&parent.xdg), &positioner, &qh, ());
+                surface.commit();
+                self.pump(h);
+                (surface, popup)
+            }
+
             /// Commit `surface` as it stands and deliver it.
             pub fn commit(&mut self, h: &mut Harness, surface: &WlSurface) {
                 surface.commit();
@@ -1534,6 +1572,11 @@ pub(crate) mod state_tests {
                     .iter()
                     .filter(|&&t| t == id)
                     .count()
+            }
+
+            /// Has `toplevel` been asked to close?
+            pub fn closed(&self, toplevel: &XdgToplevel) -> bool {
+                self.data.closes.contains(&toplevel.id().protocol_id())
             }
 
             /// Did the latest configure of `toplevel` carry `maximized`?
@@ -1655,7 +1698,7 @@ pub(crate) mod state_tests {
         }
     }
 
-    fn window_by_protocol_id(h: &Harness, id: u32) -> Window {
+    pub(super) fn window_by_protocol_id(h: &Harness, id: u32) -> Window {
         h.state
             .space
             .elements()
@@ -1916,5 +1959,53 @@ pub(crate) mod state_tests {
         layer.set_keyboard_interactivity(ClientKi::Exclusive);
         c.commit(&mut h, &surface);
         assert!(keyboard_on_layer(&h), "none -> exclusive takes the keyboard");
+    }
+}
+
+#[cfg(test)]
+mod de_click_to_focus_tests {
+    use super::state_tests::{client, harness, Harness};
+    use super::*;
+    use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::KeyboardInteractivity as ClientKi;
+
+    /// A popup layer surface that never held the keyboard closing under a
+    /// resting pointer must not hand focus to the window under it.
+    #[test]
+    fn a_closing_layer_popup_does_not_undo_an_activate_under_de() {
+        let mut h = harness();
+        let mut c = client::Client::connect(&mut h);
+        let id_a = c.map_window(&mut h);
+        let id_b = c.map_window(&mut h);
+        let find = |h: &Harness, id| super::state_tests::window_by_protocol_id(h, id);
+        let (a, b) = (find(&h, id_a), find(&h, id_b));
+        crate::shell::de_chrome_tests::flip(&mut h, crate::config::Mode::De);
+        h.state.config.general.focus_follows_mouse = false;
+        // The popup layer sits over a's corner, with the pointer on it.
+        let (surface, layer) = c.map_layer(&mut h, ClientKi::None);
+        let g = h
+            .state
+            .space
+            .output_geometry(&h.state.outputs.iter().next().unwrap().output)
+            .unwrap();
+        let corner = Point::from((g.loc.x + g.size.w - 10, g.loc.y + g.size.h - 10));
+        crate::shell::place_at(
+            &mut h.state,
+            &a,
+            smithay::utils::Rectangle::new(corner - Point::from((100, 100)), (200, 200).into()),
+        );
+        c.pump(&mut h);
+        h.state
+            .pointer_moved((corner - Point::from((20, 20))).to_f64(), 1);
+        c.pump(&mut h);
+        focus_window(&mut h.state, &b);
+        assert_eq!(h.state.focus.as_ref(), Some(&b));
+        // The popup unmaps (null buffer) while the pointer rests where it was.
+        surface.attach(None, 0, 0);
+        surface.commit();
+        layer.destroy();
+        c.pump(&mut h);
+        // Any later commit re-evaluates what is under the resting pointer.
+        h.state.refresh_pointer_focus();
+        assert_eq!(h.state.focus.as_ref(), Some(&b), "the explicit activate stands");
     }
 }

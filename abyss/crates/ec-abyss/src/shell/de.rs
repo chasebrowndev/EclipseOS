@@ -310,6 +310,11 @@ fn leave(state: &mut AbyssState) {
         }
     }
     state.de = DeLift::default();
+    // Keep above/below, shade and sticky are `de` only (`shell::winops`).
+    state.winops.clear();
+    state.winmenu.close();
+    crate::overview::close_all(state);
+    super::edge::grab_ended(state);
     tracing::info!("mode de left: tiled windows put back");
 }
 

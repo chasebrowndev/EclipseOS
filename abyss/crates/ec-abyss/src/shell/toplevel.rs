@@ -153,10 +153,7 @@ fn floating_placement(state: &AbyssState, window: &Window) -> Option<Remembered>
                 .map(|f| Remembered {
                     output: entry.id,
                     workspace,
-                    rect: match f.placement {
-                        Placement::Maximized { restore, .. } => restore,
-                        Placement::Free => f.rect,
-                    },
+                    rect: f.placement.restore_rect().unwrap_or(f.rect),
                 })
         })
     })
@@ -306,6 +303,11 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
         // Title and app_id can change at any commit; the foreign-toplevel list
         // has no other notification path for them. The bar hears it over IPC.
         if crate::protocols::standard::foreign_toplevel::window_updated(&window) {
+            // A titlebar shows the title: redraw (the bar's texture is the only
+            // thing that changes, so only the bar is damaged).
+            if titlebar::bar_of(&window).is_some() {
+                crate::backend::damage_all(state);
+            }
             let handle = state.ipc.handle_for(&window);
             crate::ipc::emit(
                 state,

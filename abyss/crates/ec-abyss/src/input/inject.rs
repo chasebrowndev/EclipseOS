@@ -22,6 +22,21 @@ use smithay::{
 use crate::state::AbyssState;
 
 use smithay::input::keyboard::{Keycode, Keysym};
+use smithay::reexports::calloop::{
+    timer::{TimeoutAction, Timer},
+    RegistrationToken,
+};
+
+/// A scripted drag waiting out its `hold-ms` with the button down. Owned by
+/// `AbyssState`; the timer behind `token` releases it.
+#[derive(Debug)]
+pub struct DragHold {
+    button: u32,
+    held: Vec<Keycode>,
+    token: RegistrationToken,
+    /// The window under the press: only its going away ends the hold.
+    window: Option<smithay::desktop::Window>,
+}
 
 /// A key, and the Shift that must be held to get its keysym.
 #[derive(Clone, Copy)]
@@ -287,6 +302,132 @@ impl AbyssState {
         for _ in 0..count {
             self.pointer_button(button, ButtonState::Pressed, time);
             self.pointer_button(button, ButtonState::Released, time);
+        }
+    }
+
+    /// Scripted drag (COMP-13 §2.2): hold `mods`, press `button` at `from`,
+    /// move to `to` in `steps` equal steps, release. It goes through the entry
+    /// points `inject_click` does (`pointer_moved`, `pointer_button`), so a
+    /// titlebar, a resize band, a grab and the edge-tile preview all see it.
+    ///
+    /// The button and the modifiers are always let go: the release is not
+    /// conditional on anything the moves did, so a compositor that stopped
+    /// listening part way (a lock, a prompt, a menu) is never left with a
+    /// button down. With `hold_ms` the release waits on a timer after the last
+    /// move, so a caller can look at the screen mid-drag; nothing blocks, and
+    /// the pending release is [`DragHold`] on the state, ended early by
+    /// [`AbyssState::cancel_drag_hold`]. Without `hold_ms` no state outlives the
+    /// call. Only one hold at a time.
+    pub fn inject_drag(
+        &mut self,
+        from: Point<f64, Logical>,
+        to: Point<f64, Logical>,
+        button: u32,
+        steps: u32,
+        mods: &[&str],
+        hold_ms: u64,
+    ) -> Result<(), &'static str> {
+        if self.drag_hold.is_some() {
+            return Err("a drag is already being held");
+        }
+        // Everything that can be refused is refused before the first event.
+        let mut held = Vec::with_capacity(mods.len());
+        for m in mods {
+            let msym = match *m {
+                "ctrl" => 0xffe3,
+                "alt" => 0xffe9,
+                "shift" => 0xffe1,
+                "logo" | "super" => 0xffeb,
+                _ => return Err("unknown modifier"),
+            };
+            held.push(find_key(self, msym).ok_or("modifier has no key")?.key);
+        }
+        let clock = |s: &Self| s.start_time.elapsed().as_millis() as u32;
+        for code in &held {
+            let t = clock(self);
+            self.keyboard_key(*code, smithay::backend::input::KeyState::Pressed, t);
+        }
+        let t = clock(self);
+        self.inject_pointer_absolute(from, t);
+        self.pointer_button(button, ButtonState::Pressed, t);
+        let target = crate::shell::titlebar::bar_at(self, from)
+            .map(|(w, _)| w)
+            .or_else(|| crate::shell::winops::element_under(self, from).map(|(w, _)| w.clone()));
+        let steps = steps.max(1);
+        for i in 1..=steps {
+            if self.lock.locked {
+                break;
+            }
+            let f = f64::from(i) / f64::from(steps);
+            let at =
+                Point::<f64, Logical>::from((from.x + (to.x - from.x) * f, from.y + (to.y - from.y) * f));
+            let t = clock(self);
+            self.inject_pointer_absolute(at, t);
+        }
+        if hold_ms > 0 && !self.lock.locked {
+            let timer = Timer::from_duration(std::time::Duration::from_millis(hold_ms));
+            let inserted = self.loop_handle.insert_source(timer, |_, _, state| {
+                state.finish_drag_hold();
+                TimeoutAction::Drop
+            });
+            if let Ok(token) = inserted {
+                self.drag_hold = Some(DragHold {
+                    button,
+                    held,
+                    token,
+                    window: target,
+                });
+                return Ok(());
+            }
+        }
+        self.release_drag(button, &held);
+        Ok(())
+    }
+
+    /// Let go of `button` and the modifiers, in the order a person would.
+    fn release_drag(&mut self, button: u32, held: &[Keycode]) {
+        let t = self.start_time.elapsed().as_millis() as u32;
+        self.pointer_button(button, ButtonState::Released, t);
+        for code in held.iter().rev() {
+            self.keyboard_key(*code, smithay::backend::input::KeyState::Released, t);
+        }
+    }
+
+    /// The hold timer fired: release as scripted input.
+    pub(crate) fn finish_drag_hold(&mut self) {
+        if let Some(hold) = self.drag_hold.take() {
+            self.with_origin(super::Origin::Scripted, |s| {
+                s.release_drag(hold.button, &hold.held)
+            });
+        }
+    }
+
+    /// End a held scripted drag now: the session locked or a window went away.
+    /// The timer is removed and the button released, so nothing is left down
+    /// and nothing fires later. A no-op when none is held.
+    pub fn cancel_drag_hold(&mut self) {
+        self.cancel_drag_hold_if(|_| true);
+    }
+
+    /// [`Self::cancel_drag_hold`] only for a hold pressed on `window`: an
+    /// unrelated window going away leaves the hold alone.
+    pub fn cancel_drag_hold_for(&mut self, window: &smithay::desktop::Window) {
+        self.cancel_drag_hold_if(|h| h.window.as_ref() == Some(window));
+    }
+
+    fn cancel_drag_hold_if(&mut self, pred: impl Fn(&DragHold) -> bool) {
+        if self.drag_hold.as_ref().is_some_and(pred) {
+            self.end_drag_hold();
+        }
+    }
+
+    fn end_drag_hold(&mut self) {
+        if let Some(hold) = self.drag_hold.take() {
+            self.loop_handle.remove(hold.token);
+            tracing::info!("scripted drag hold cancelled");
+            self.with_origin(super::Origin::Scripted, |s| {
+                s.release_drag(hold.button, &hold.held)
+            });
         }
     }
 

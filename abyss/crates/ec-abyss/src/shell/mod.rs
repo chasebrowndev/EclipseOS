@@ -3,12 +3,25 @@
 
 pub mod anim;
 pub mod de;
+#[cfg(test)]
+mod de_chrome_tests;
+pub mod desktop;
+#[cfg(test)]
+mod desktop_tests;
 mod drop_guides;
+pub mod edge;
 pub mod focus;
 pub mod layout;
 pub mod maximize;
+pub mod quicktile;
+#[cfg(test)]
+mod quicktile_tests;
 pub mod rules;
+pub mod snap;
+pub mod titlebar;
 mod toplevel;
+pub mod winmenu;
+pub mod winops;
 pub mod workspace;
 
 // The focus path lives in `focus`, but every existing call site says
@@ -40,6 +53,7 @@ use smithay::{
     },
 };
 
+use self::titlebar::{content_of_outer, outer_of_content};
 use crate::{
     config::{FloatingPlacement, LayoutKind},
     input::Direction,
@@ -59,7 +73,7 @@ pub fn window_surface(window: &Window) -> Option<WlSurface> {
 
 // Read by the renderer, written here; defined in `ec-abyss-render::userdata`.
 pub use ec_abyss_render::userdata::{
-    layer_geometry, owner_output, tile_clip, LayerOffset, OwnerOutput, TileClip,
+    layer_geometry, owner_output, tile_clip, LayerOffset, OwnerOutput, QuickTiled, TileClip,
 };
 
 fn set_owner_output(window: &Window, output: &Output) {
@@ -67,6 +81,14 @@ fn set_owner_output(window: &Window, output: &Output) {
     data.insert_if_missing(|| OwnerOutput(Cell::new(None)));
     if let Some(o) = data.get::<OwnerOutput>() {
         o.0.set(Some(output.clone()));
+    }
+}
+
+fn set_quick_tiled(window: &Window, on: bool) {
+    let data = window.user_data();
+    data.insert_if_missing(|| QuickTiled(Cell::new(false)));
+    if let Some(c) = data.get::<QuickTiled>() {
+        c.0.set(on);
     }
 }
 
@@ -108,7 +130,7 @@ pub fn output_of_window(state: &AbyssState, window: &Window) -> Option<u64> {
 /// Usable area: output geometry minus layer-shell exclusive zones, with no
 /// outer gap applied: the raw protocol-defined usable region, independent of
 /// abyss's own gap styling (COMP-06 §3).
-fn usable_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
+pub(crate) fn usable_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
     let geo = state.space.output_geometry(output).unwrap_or_default();
     let zone = accumulate_non_exclusive_zone(output, geo.size);
     let loc = Point::from((geo.loc.x + zone.loc.x, geo.loc.y + zone.loc.y));
@@ -229,7 +251,18 @@ fn clamp_to(
     size
 }
 
-fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, tiled: bool, maximized: bool) {
+/// Send the client its content rectangle, activation, the `Tiled*` states for
+/// `tiled` (every edge for a Radiant tile, the zone's for a Quick Tile, none
+/// for a free window) and `Maximized`. An X11 window gets the rectangle and
+/// activation only: it has no tiled or maximized state here (see
+/// [`quicktile`]).
+fn configure(
+    window: &Window,
+    rect: Rectangle<i32, Logical>,
+    activated: bool,
+    tiled: quicktile::Edges,
+    maximized: bool,
+) {
     let size = rect.size;
     let Some(toplevel) = window.toplevel() else {
         // X11 windows are positioned in the X root's coordinate space, so
@@ -250,13 +283,13 @@ fn configure(window: &Window, rect: Rectangle<i32, Logical>, activated: bool, ti
         }
         // Tiled states stop clients like foot snapping to whole cells; smithay
         // strips them for xdg_wm_base versions that predate them.
-        for t in [
-            State::TiledLeft,
-            State::TiledRight,
-            State::TiledTop,
-            State::TiledBottom,
+        for (t, on) in [
+            (State::TiledLeft, tiled.left),
+            (State::TiledRight, tiled.right),
+            (State::TiledTop, tiled.top),
+            (State::TiledBottom, tiled.bottom),
         ] {
-            if tiled {
+            if on {
                 s.states.set(t);
             } else {
                 s.states.unset(t);
@@ -362,6 +395,9 @@ pub fn arrange(state: &mut AbyssState) {
         crate::backend::damage_all(state);
         return;
     }
+    state.winops.prune();
+    winmenu::validate(state);
+    crate::overview::validate(state);
     let ids: Vec<u64> = state.outputs.iter().map(|e| e.id).collect();
     for id in ids {
         arrange_output(state, id);
@@ -369,6 +405,7 @@ pub fn arrange(state: &mut AbyssState) {
     raise_override_redirect(state);
     crate::xwayland::sync_stacking(state);
     refresh_reactive_popups(state);
+    crate::overview::corners::rebuild(state);
     // Layout changes are not driven by a client commit: an unmapped surface
     // sends nothing, so without this the last composite stays on screen and a
     // closed window or dismissed launcher goes on being visible until some
@@ -402,6 +439,22 @@ pub fn is_unmanaged_x11(state: &AbyssState, window: &Window) -> bool {
         .is_some_and(|x| x.is_override_redirect() || state.xwayland.unmanaged.contains(x))
 }
 
+/// The content rectangle the layout gave a floating `window` (what its client
+/// is told), as opposed to the size it has drawn so far. `None` for a window
+/// that is not floating.
+pub fn stored_content(state: &AbyssState, window: &Window) -> Option<Rectangle<i32, Logical>> {
+    let border = state.config.general.border_size;
+    let bar = titlebar::bar_height(state, window);
+    let fullscreen = state.fullscreen.contains_key(window);
+    state
+        .outputs
+        .iter()
+        .flat_map(|e| e.workspaces.iter())
+        .flat_map(|ws| ws.floating.iter())
+        .find(|f| &f.window == window)
+        .map(|f| maximize::content_rect(f, fullscreen, border, bar))
+}
+
 /// Whether `window` is floating on some workspace.
 pub fn is_floating(state: &AbyssState, window: &Window) -> bool {
     state.outputs.iter().any(|e| {
@@ -413,6 +466,11 @@ pub fn is_floating(state: &AbyssState, window: &Window) -> bool {
 
 /// Lay out one output's active workspace and remap it into the space.
 pub fn arrange_output(state: &mut AbyssState, id: u64) {
+    if state.outputs.get(id).is_none() {
+        return;
+    }
+    // Sticky windows follow the active workspace before anything is laid out.
+    winops::sync_sticky(state, id);
     let Some(entry) = state.outputs.get(id) else {
         return;
     };
@@ -443,7 +501,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         for f in entry.workspaces[ws].floating.iter_mut() {
             if fullscreen.contains_key(&f.window) {
                 f.rect = full_area;
-            } else if f.placement.is_maximized() {
+            } else if f.placement.is_placed() {
                 // Derived below, once adopted windows are in.
             } else if area_changed {
                 // The area moved or resized under this window — a mode/scale
@@ -478,15 +536,21 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
             let mut rect = de::carried_rect(adopt_rect, step, area);
             // A window that was maximized stays so, filling this output, and
             // keeps the rectangle it had before (kept in the adopter's area).
+            let origin = state
+                .space
+                .output_geometry(&output)
+                .map_or(Point::default(), |g| g.loc);
             let placement = match state.de.take_carried(&w) {
                 Some(Placement::Maximized { h, v, restore }) => {
-                    let origin = state
-                        .space
-                        .output_geometry(&output)
-                        .map_or(Point::default(), |g| g.loc);
                     let restore = de::carried_rect(restore, origin, area);
                     rect = restore;
                     Placement::Maximized { h, v, restore }
+                }
+                // A Quick Tile keeps its zone on the adopting output.
+                Some(Placement::QuickTile { zone, restore }) => {
+                    let restore = de::carried_rect(restore, origin, area);
+                    rect = restore;
+                    Placement::QuickTile { zone, restore }
                 }
                 _ => Placement::Free,
             };
@@ -505,18 +569,30 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     if stacking {
         de::lift_stray(state, id, area);
     }
-    // A maximized window fills the usable area as it is now, on every pass, so
-    // a panel appearing or an output resizing is followed (COMP-05 §3.1).
+    // A maximized or Quick Tiled window fills its area of the usable area as it
+    // is now, on every pass, so a panel appearing or an output resizing is
+    // followed (COMP-05 §3.1).
     {
         let usable = usable_area(state, &output);
+        // The frame fills the usable area, so the bar eats into the content.
+        #[allow(clippy::mutable_key_type)]
+        let bar_heights: Vec<(Window, i32)> = state.outputs.get(id).expect("checked above").workspaces[ws]
+            .floating
+            .iter()
+            .filter(|f| f.placement.is_placed())
+            .map(|f| (f.window.clone(), titlebar::bar_height(state, &f.window)))
+            .collect();
+        let bars = |w: &Window| bar_heights.iter().find(|(b, _)| b == w).map_or(0, |(_, h)| *h);
         #[allow(clippy::mutable_key_type)]
         let fullscreen = &state.fullscreen;
         let border = state.config.general.border_size;
         let entry = state.outputs.get_mut(id).expect("checked above");
         for f in entry.workspaces[ws].floating.iter_mut() {
-            if let Placement::Maximized { h, v, restore } = f.placement {
-                if !fullscreen.contains_key(&f.window) {
-                    f.rect = maximize::fitted_rect(&f.window, usable, border, restore, h, v);
+            if !fullscreen.contains_key(&f.window) {
+                if let Some(rect) =
+                    quicktile::placed_rect(&f.window, f.placement, usable, border, bars(&f.window))
+                {
+                    f.rect = rect;
                 }
             }
         }
@@ -556,11 +632,16 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         LayoutKind::Dwindle => entry.workspaces[ws].tiled.dwindle(area, gap_x, gap_y),
         LayoutKind::Master => entry.workspaces[ws].tiled.master(area, gap_x, gap_y),
     };
-    let floating: Vec<(Window, Rectangle<i32, Logical>, Placement)> = entry.workspaces[ws]
+    let mut floating: Vec<(Window, Rectangle<i32, Logical>, Placement)> = entry.workspaces[ws]
         .floating
         .iter()
         .map(|f| (f.window.clone(), f.rect, f.placement))
         .collect();
+    // Keep-above / keep-below: a stable sort by band, so raising a normal
+    // window never crosses one (`winops`). Fullscreen is raised after this.
+    if stacking && state.winops.has_bands() {
+        winops::sort_by_band(&mut floating, |(w, ..)| winops::effective_band(state, w));
+    }
     let focus = state.focus.clone();
     let mapping = state.xwayland.mapping.clone();
 
@@ -582,23 +663,38 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
                 &w,
                 Rectangle::new(inner.loc, size),
                 focus.as_ref() == Some(&w),
-                true,
+                quicktile::Edges::ALL,
                 false,
             );
         }
         fractional_scale::update_window_scale(&w, &output);
+        titlebar::publish(state, &w, 0, false, false);
+        set_quick_tiled(&w, false);
         set_tile_clip(&w, Some(inner));
         set_owner_output(&w, &output);
         state.space.map_element(w, inner.loc, false);
     }
     for (w, rect, placement) in floating {
         // Fullscreen and maximized windows fill their area exactly; no border
-        // inset. Fullscreen wins: it is not told it is also maximized.
+        // inset. Fullscreen wins: it is not told it is also maximized. The
+        // stored rect is the outer frame; the content is what is left under
+        // the bar (`shell::titlebar`).
         let full = state.fullscreen.contains_key(&w);
-        let inner = if full || placement.is_maximized() {
+        let bar = titlebar::bar_height(state, &w);
+        titlebar::publish(
+            state,
+            &w,
+            bar,
+            placement.is_fully_maximized(),
+            placement.is_placed(),
+        );
+        set_quick_tiled(&w, !full && matches!(placement, Placement::QuickTile { .. }));
+        let inner = if full {
             rect
+        } else if placement.is_placed() {
+            content_of_outer(rect, 0, bar)
         } else {
-            shrink(rect, border)
+            content_of_outer(rect, border, bar)
         };
         // Fullscreen ignores the client's size hints: a game floated at a
         // pinned windowed size (min == max) would otherwise be held to it.
@@ -612,7 +708,10 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
                 &w,
                 Rectangle::new(inner.loc, size),
                 focus.as_ref() == Some(&w),
-                false,
+                match placement {
+                    Placement::QuickTile { zone, .. } if !full => zone.edges(),
+                    _ => quicktile::Edges::NONE,
+                },
                 placement.is_fully_maximized() && !full,
             );
         }
@@ -730,10 +829,15 @@ pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Log
     // configures and maps, so store the outer rectangle that shrinks back to
     // exactly `geo`.
     let border = state.config.general.border_size;
-    let outer = Rectangle::new(
-        Point::from((geo.loc.x - border, geo.loc.y - border)),
-        Size::from((geo.size.w + 2 * border, geo.size.h + 2 * border)),
-    );
+    let bar = titlebar::bar_height(state, window);
+    let mut outer = outer_of_content(geo, border, bar);
+    // A titlebar must stay reachable: the frame never starts above the top of
+    // the usable area of the output it lands on.
+    if bar > 0 {
+        if let Some(output) = output_at(state, geo.loc.to_f64()).or_else(|| focused_output(state)) {
+            outer.loc.y = outer.loc.y.max(usable_area(state, &output).loc.y);
+        }
+    }
     let mut found = false;
     'outer: for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
@@ -870,6 +974,7 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
     let mode = state.config.general.floating_placement;
     let pointer = state.pointer_location;
     let stacking = de::stacking(state);
+    let bar = titlebar::bar_height(state, &window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let ws = placement
         .workspace
@@ -892,6 +997,11 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
             .or_else(|| x11_request.map(|r| x11_float_size(r.size, x11_min, area.size)))
             .or_else(|| geometry.map(|g| g.size))
             .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
+        // The rect is the frame. A size a rule, an X11 request or the client's
+        // own geometry names is the content's, so the bar goes on top of it,
+        // held to the area (the default half-area is a frame already).
+        let named = placement.size.is_some() || x11_request.is_some() || geometry.is_some();
+        let size = framed_size(size, named, bar, area.size.h);
         // A `position` rule is relative to the output's tiling area, so the
         // same rule lands in the same place on any output. Absent a rule,
         // `general.floating-placement` decides.
@@ -901,6 +1011,19 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
                 // A transient dialog opens centred over its parent, kept on
                 // the output.
                 Some(p) => centered_in(p, size, area),
+                // An X11 window opens centred, wherever the pointer is.
+                // Under `de` a window that asked for a position (WM_NORMAL_HINTS
+                // USPosition/PPosition) keeps it, held to the area; one that
+                // did not falls through to `general.floating-placement`.
+                None if stacking && x11_request.is_some() => {
+                    let hinted = window
+                        .x11_surface()
+                        .is_some_and(|x| x.size_hints().is_some_and(|h| h.position.is_some()));
+                    match x11_request {
+                        Some(r) if hinted => x11_hinted_origin(r.loc, size, area),
+                        _ => floating_origin(mode, area, size, pointer, entry.workspaces[ws].floating.len()),
+                    }
+                }
                 // An X11 window opens centred, wherever the pointer is.
                 None if x11_request.is_some() => centered_in(area, size, area),
                 None => floating_origin(mode, area, size, pointer, entry.workspaces[ws].floating.len()),
@@ -1048,6 +1171,8 @@ pub(crate) fn reanchor(state: &mut AbyssState, window: &Window) {
 }
 
 pub fn unmap_window(state: &mut AbyssState, window: &Window) {
+    // A scripted drag held down on a window that goes away lets go with it.
+    state.cancel_drag_hold_for(window);
     let hold = holds_retile(state, window);
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
@@ -1059,6 +1184,9 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
     state.geo_loc.remove(window);
     state.fullscreen.remove(window);
     state.de.forget(window);
+    state.bar_ui.forget(window);
+    state.winops.forget(window);
+    state.edge.forget(window);
     state.urgent.retain(|w| w != window);
     crate::protocols::standard::foreign_toplevel::window_closed(window);
     let handle = state.ipc.handle_for(window);
@@ -1096,6 +1224,44 @@ pub fn unmap_window(state: &mut AbyssState, window: &Window) {
             arrange(state);
         }
     }
+}
+
+/// The size of a new floating window's frame: a named content size gets the
+/// bar added on top (held to the area), a default half-area size is a frame
+/// already. Pure, so the X11 request path is testable without Xwayland.
+pub(crate) fn framed_size(
+    size: Size<i32, Logical>,
+    named: bool,
+    bar: i32,
+    area_h: i32,
+) -> Size<i32, Logical> {
+    if named && bar > 0 {
+        Size::from((size.w, (size.h + bar).min(area_h.max(bar + 1))))
+    } else {
+        size
+    }
+}
+
+/// Whether an overlay or top layer surface (or one of its popups) is at `pos`.
+/// Those sit above every window and its bar (COMP-02 §4).
+pub(crate) fn top_layer_at(state: &AbyssState, pos: Point<f64, Logical>) -> bool {
+    let Some(output) = output_at(state, pos) else {
+        return false;
+    };
+    let output_loc = state
+        .space
+        .output_geometry(&output)
+        .map(|g| g.loc)
+        .unwrap_or_default();
+    let local = pos - output_loc.to_f64();
+    let map = layer_map_for_output(&output);
+    [Layer::Overlay, Layer::Top].into_iter().any(|layer| {
+        layer_under(&map, layer, local).is_some_and(|l| {
+            let geo = layer_geometry(&map, l).unwrap_or_default();
+            l.surface_under(local - geo.loc.to_f64(), WindowSurfaceType::ALL)
+                .is_some()
+        })
+    })
 }
 
 /// Topmost surface at `pos`, honouring the COMP-02 §4 stacking order:
@@ -1139,7 +1305,16 @@ fn hit_under(
             }
         }
     }
-    if let Some((window, loc)) = state.space.element_under(pos) {
+    // A titlebar is the compositor's: over one no client is under the pointer,
+    // and nothing below it either (COMP-05 §7.1).
+    if titlebar::bar_at(state, pos).is_some() {
+        return None;
+    }
+    // The resize band just outside a decorated window is the compositor's too.
+    if edge::band_at(state, pos).is_some() {
+        return None;
+    }
+    if let Some((window, loc)) = winops::element_under(state, pos) {
         if let Some((s, p)) = window.surface_under(pos - loc.to_f64(), WindowSurfaceType::ALL) {
             return Some((s, (loc + p).to_f64(), None));
         }
@@ -1468,12 +1643,18 @@ pub fn close_focused(state: &mut AbyssState) {
         return;
     }
     if let Some(w) = state.focus.clone() {
-        match w.underlying_surface() {
-            smithay::desktop::WindowSurface::Wayland(t) => t.send_close(),
-            smithay::desktop::WindowSurface::X11(x) => {
-                if let Err(e) = x.close() {
-                    tracing::warn!(error = %e, "could not close x11 window");
-                }
+        close_window(state, &w);
+    }
+}
+
+/// Ask `window` to close (not the focused one): the path `close_focused` and
+/// the titlebar's close button share.
+pub fn close_window(_state: &mut AbyssState, window: &Window) {
+    match window.underlying_surface() {
+        smithay::desktop::WindowSurface::Wayland(t) => t.send_close(),
+        smithay::desktop::WindowSurface::X11(x) => {
+            if let Err(e) = x.close() {
+                tracing::warn!(error = %e, "could not close x11 window");
             }
         }
     }
@@ -1643,6 +1824,22 @@ pub fn unminimize_last(state: &mut AbyssState) {
         return;
     };
     unminimize_window(state, &window);
+}
+
+/// The requested origin of an X11 window that asked for a position, held so
+/// the frame stays on the area.
+pub(crate) fn x11_hinted_origin(
+    requested: Point<i32, Logical>,
+    size: Size<i32, Logical>,
+    area: Rectangle<i32, Logical>,
+) -> Point<i32, Logical> {
+    let max_x = (area.loc.x + area.size.w - size.w).max(area.loc.x);
+    let max_y = (area.loc.y + area.size.h - size.h).max(area.loc.y);
+    (
+        requested.x.clamp(area.loc.x, max_x),
+        requested.y.clamp(area.loc.y, max_y),
+    )
+        .into()
 }
 
 /// Where a floating window lands when no `position` rule places it
@@ -1883,6 +2080,10 @@ fn set_x11_fullscreen_now(state: &mut AbyssState, window: &Window, on: bool) {
     if on == state.fullscreen.contains_key(window) {
         return;
     }
+    if on {
+        // Fullscreen restores a rolled-up window (`winops`).
+        winops::unshade(state, window);
+    }
     let output = state.outputs.get(id).expect("just resolved").output.clone();
     layer_map_for_output(&output).arrange();
     if on {
@@ -1979,10 +2180,7 @@ fn detach_from_layout(
 fn fullscreen_restore(
     detached: Option<(Rectangle<i32, Logical>, Placement)>,
 ) -> Option<Rectangle<i32, Logical>> {
-    detached.map(|(rect, placement)| match placement {
-        Placement::Maximized { restore, .. } => restore,
-        Placement::Free => rect,
-    })
+    detached.map(|(rect, placement)| placement.restore_rect().unwrap_or(rect))
 }
 
 /// Does a fullscreen toplevel currently own `output`'s active workspace?
@@ -2031,6 +2229,8 @@ fn fullscreen_toplevel_now(
     if state.fullscreen.contains_key(&window) {
         return;
     }
+    // Fullscreen restores a rolled-up window (`winops`).
+    winops::unshade(state, &window);
     let current = output_of_window(state, &window);
     let Some(id) = target
         .and_then(|wl| state.outputs.by_wl_output(wl).map(|e| e.id))
@@ -2119,15 +2319,13 @@ fn unfullscreen_toplevel_now(
     let placement = detach_from_layout(state, id, &window).map_or(Placement::Free, |(_, p)| p);
     let usable = usable_area(state, &output);
     let border = state.config.general.border_size;
+    let bar = titlebar::bar_height(state, &window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let size = match restore {
         Some(rect) => {
-            let (rect, size) = match placement {
-                Placement::Maximized { h, v, restore } => {
-                    let r = maximize::fitted_rect(&window, usable, border, restore, h, v);
-                    (r, r.size)
-                }
-                Placement::Free => (rect, rect.size),
+            let (rect, size) = match quicktile::placed_rect(&window, placement, usable, border, bar) {
+                Some(r) => (r, r.size),
+                None => (rect, rect.size),
             };
             entry.workspaces[ws].floating.push(Floating {
                 window: window.clone(),
@@ -2316,7 +2514,12 @@ pub fn switch_workspace(state: &mut AbyssState, idx: usize) {
         return;
     }
     let previous = entry.active;
-    let outgoing = entry.workspace().windows();
+    let outgoing: Vec<Window> = entry
+        .workspace()
+        .windows()
+        .into_iter()
+        .filter(|w| !winops::stays_on_switch(state, w))
+        .collect();
     let output = entry.output.clone();
     // COMP-02 §9 `workspace-switch`, outgoing half: the old windows are
     // handed to the render path as ghosts before they leave the space.
@@ -2337,11 +2540,14 @@ pub fn switch_workspace(state: &mut AbyssState, idx: usize) {
         .and_then(|e| state.space.output_geometry(&e.output))
         .map_or_else(Default::default, |g| g.size);
     let dir = if target > previous { 1 } else { -1 };
-    let windows = state
+    let windows: Vec<Window> = state
         .outputs
         .get(id)
         .map(|e| e.workspace().windows())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|w| !winops::stays_on_switch(state, w))
+        .collect();
     state
         .borders
         .anim
@@ -2372,11 +2578,23 @@ pub fn switch_workspace_relative(state: &mut AbyssState, step: isize) {
 }
 
 pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
+    let Some(window) = state.focus.clone() else { return };
+    move_window_to_workspace(state, &window, idx);
+}
+
+/// [`move_to_workspace`] for a named window (the window menu's "Move to
+/// desktop"), 1-based. A sticky window is on every workspace of its output
+/// already, so it stays where it is showing (`winops::sync_sticky`).
+pub fn move_window_to_workspace(state: &mut AbyssState, window: &Window, idx: usize) {
     if !(1..=workspace::COUNT).contains(&idx) {
         return;
     }
     let target = idx - 1;
-    let Some(window) = state.focus.clone() else { return };
+    let window = window.clone();
+    if is_minimized(state, &window) {
+        move_minimized(state, &window, target);
+        return;
+    }
     let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
         return;
     };
@@ -2436,6 +2654,31 @@ pub fn move_to_workspace(state: &mut AbyssState, idx: usize) {
             anim::carried(state, &window, from);
         }
     }
+}
+
+/// A minimized window changes desktop where it sits: its entry moves to the
+/// target workspace's minimized list and it stays minimized, so nothing is
+/// shown, switched or focused (the window menu's "Move to desktop" on a
+/// taskbar chip). It reappears on that desktop when restored.
+fn move_minimized(state: &mut AbyssState, window: &Window, target: usize) {
+    let Some(id) = output_of_window(state, window) else {
+        return;
+    };
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let Some(from) = entry.workspaces.iter().position(|ws| ws.is_minimized(window)) else {
+        return;
+    };
+    if from == target {
+        return;
+    }
+    let i = entry.workspaces[from]
+        .minimized
+        .iter()
+        .position(|m| &m.window == window)
+        .expect("just resolved");
+    let m = entry.workspaces[from].minimized.remove(i);
+    entry.workspaces[target].minimized.push(m);
+    tracing::info!(workspace = target + 1, "minimized window moved to workspace");
 }
 
 /// Move the focused window to display `number`'s currently active workspace
@@ -2539,6 +2782,9 @@ pub fn resize_window(
     let Some(id) = output_of_window(state, window) else {
         return Err("window is not on any output");
     };
+    if !winops::can_resize(state, window) {
+        return Err("a shaded window cannot be resized");
+    }
     // Resizing a maximized window ends the maximize first. Under fullscreen it
     // stays: leaving fullscreen returns to maximized.
     if !state.fullscreen.contains_key(window) {
@@ -2573,6 +2819,9 @@ pub fn resize_window(
     // Callers name the window's own size; the tree deals in tiles, which are
     // the window plus its border on each side.
     let want = (width.map(|w| w + 2 * border), height.map(|h| h + 2 * border));
+    // A floating window's rect is its frame, bar included.
+    let bar = titlebar::bar_height(state, window);
+    let want_floating = (want.0, want.1.map(|h| h + bar));
 
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let changed = if tiled {
@@ -2585,8 +2834,8 @@ pub fn resize_window(
         .find(|f| &f.window == window)
     {
         let before = f.rect.size;
-        f.rect.size.w = want.0.unwrap_or(before.w).max(1);
-        f.rect.size.h = want.1.unwrap_or(before.h).max(1);
+        f.rect.size.w = want_floating.0.unwrap_or(before.w).max(1);
+        f.rect.size.h = want_floating.1.unwrap_or(before.h).max(1);
         f.rect.size != before
     } else {
         return Err("window is neither tiled nor floating");

@@ -7,16 +7,19 @@
 //! reaches `capture.rs`: guides are compositor chrome, not screen content.
 
 use smithay::{
-    backend::renderer::element::{
-        solid::{SolidColorBuffer, SolidColorRenderElement},
-        Kind,
+    backend::renderer::{
+        element::{
+            solid::{SolidColorBuffer, SolidColorRenderElement},
+            Kind,
+        },
+        gles::{element::PixelShaderElement, GlesPixelProgram, GlesRenderer},
     },
     desktop::Window,
     output::Output,
     utils::{Logical, Point, Rectangle, Scale, Size},
 };
 
-use super::AbyssRenderElement;
+use super::{effects, AbyssRenderElement};
 
 /// What the guides need of a running Radiant drag. `ec-abyss` implements it
 /// for its `TileDrag`; the renderer never sees the shell's drag state.
@@ -117,6 +120,86 @@ pub fn drop_elements(
             quad(b, scale, color, BAND_ALPHA, &mut out);
         }
     }
+    out
+}
+
+/// Preview panel, straight RGBA (the shader premultiplies): the same neutral
+/// glass as the shell's selected cells, a brighter fill with a crisp white
+/// rim, never the gold guide colour and nothing past the zone's edge.
+const PREVIEW_FILL: [f32; 4] = [1.0, 1.0, 1.0, 0.10];
+const PREVIEW_RIM: [f32; 4] = [1.0, 1.0, 1.0, 0.42];
+/// A hairline of shade just inside the rim, so the rim holds over a bright backdrop.
+const PREVIEW_SHADE: [f32; 4] = [0.0, 0.0, 0.0, 0.14];
+/// Corner radius of the panel, logical px.
+const PREVIEW_RADIUS: f32 = 14.0;
+
+/// The compiled preview shader, kept on the renderer's EGL context so it lives
+/// and dies with the context. `None` once a compile failed (drawn as quads).
+struct PreviewProgram(Option<GlesPixelProgram>);
+
+fn preview_program(renderer: &mut GlesRenderer) -> Option<GlesPixelProgram> {
+    let ctx = renderer.egl_context();
+    if let Some(p) = ctx.user_data().get::<PreviewProgram>() {
+        return p.0.clone();
+    }
+    let program = match effects::compile_preview(renderer) {
+        Ok(p) => Some(p),
+        Err(err) => {
+            tracing::warn!(?err, "compiling the tile preview; drawing flat quads");
+            None
+        }
+    };
+    renderer
+        .egl_context()
+        .user_data()
+        .insert_if_missing(|| PreviewProgram(program.clone()));
+    program
+}
+
+/// The edge-tile preview of `mode "de"` (COMP-05 §3.1): a dragged titlebar at a
+/// screen edge shows where the window will land. `preview` is the output it is
+/// on and the target rectangle, global logical. A rounded glass panel in the
+/// language of the shell's selected cells (neutral fill, crisp rim). Drawn like
+/// the Radiant ghost: a backend-prepended compositor overlay that never reaches
+/// `capture.rs`.
+pub fn preview_elements(
+    renderer: &mut GlesRenderer,
+    preview: Option<(&Output, Rectangle<i32, Logical>)>,
+    output: &Output,
+    output_loc: Point<i32, Logical>,
+) -> Vec<AbyssRenderElement> {
+    let Some((_, rect)) = preview.filter(|(o, _)| *o == output) else {
+        return Vec::new();
+    };
+    let fscale = output.current_scale().fractional_scale();
+    let scale = Scale::from(fscale);
+    let g = Rectangle::new(rect.loc - output_loc, rect.size);
+    if g.size.w <= 0 || g.size.h <= 0 {
+        return Vec::new();
+    }
+    if let Some(program) = preview_program(renderer) {
+        return vec![AbyssRenderElement::Shader(PixelShaderElement::new(
+            program,
+            g,
+            None,
+            1.0,
+            effects::preview_uniforms(
+                PREVIEW_FILL,
+                PREVIEW_RIM,
+                PREVIEW_SHADE,
+                PREVIEW_RADIUS,
+                fscale as f32,
+            ),
+            Kind::Unspecified,
+        ))];
+    }
+    // No shader: square flat glass, same colours.
+    let rgb = |c: [f32; 4]| [c[0], c[1], c[2], 1.0];
+    let mut out = Vec::new();
+    for e in outline(g, 1) {
+        quad(e, scale, rgb(PREVIEW_RIM), PREVIEW_RIM[3], &mut out);
+    }
+    quad(g, scale, rgb(PREVIEW_FILL), PREVIEW_FILL[3], &mut out);
     out
 }
 

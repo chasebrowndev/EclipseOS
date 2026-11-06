@@ -64,6 +64,16 @@ pub fn bind_sym(sym: Keysym, state: &ModifiersState) -> Keysym {
     Keysym::new(if state.shift { lower & !0x20 } else { lower })
 }
 
+/// What one key event asks of the code after the keyboard filter returns
+/// (the filter itself may not touch focus: the keyboard is locked then).
+#[derive(Default)]
+struct KeyEffects {
+    /// The modifiers of the chord that ran `switch-windows`.
+    hold: Option<ec_abyss_config::input::Mods>,
+    /// A release ended the Alt-Tab chord: activate the selection.
+    commit_switcher: bool,
+}
+
 /// A swipe the compositor has claimed at begin. Only the deltas are kept, so
 /// the update path adds two floats and allocates nothing.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -147,6 +157,20 @@ impl AbyssState {
     /// A human key press or release. Split from `on_keyboard` so tests drive
     /// the real path.
     pub(crate) fn keyboard_key(&mut self, key_code: Keycode, key_state: KeyState, time: u32) {
+        let mut fx = KeyEffects::default();
+        self.keyboard_key_inner(key_code, key_state, time, &mut fx);
+        // After the key itself went where it was going: the release that ends
+        // an Alt-Tab chord is forwarded first and the switcher then activates;
+        // the modifiers that opened it are noted once it exists.
+        if let Some(hold) = fx.hold {
+            self.switcher.set_hold(hold);
+        }
+        if fx.commit_switcher {
+            crate::overview::switcher::commit(self);
+        }
+    }
+
+    fn keyboard_key_inner(&mut self, key_code: Keycode, key_state: KeyState, time: u32, fx: &mut KeyEffects) {
         let serial = SERIAL_COUNTER.next_serial();
         let keyboard = self.seat.get_keyboard().unwrap();
         // An input method can grab the keyboard again while locked; a grab
@@ -170,6 +194,12 @@ impl AbyssState {
                         || mods.iso_level5_shift),
                 );
                 if key_state != KeyState::Pressed {
+                    // Letting go of the modifiers that opened the window
+                    // switcher activates its selection (after this release is
+                    // forwarded).
+                    if state.switcher.releases(held_mods(mods)) {
+                        fx.commit_switcher = true;
+                    }
                     return FilterResult::Forward;
                 }
                 let sym = bind_sym(handle.modified_sym(), mods);
@@ -195,6 +225,38 @@ impl AbyssState {
                         _ => {}
                     }
                     return FilterResult::Intercept(Action::Prompt(sym));
+                }
+                // The window menu (`mode "de"`) owns the keyboard while it is
+                // open: no client and no binding sees the key, except the
+                // reserved override chords, which always work. It holds no
+                // keyboard grab, so nothing is left to release when it closes.
+                if state.winmenu.is_open() {
+                    match state.config.action_for(&held, sym) {
+                        Some(Action::AgentOverride) => return FilterResult::Intercept(Action::AgentOverride),
+                        Some(Action::AgentTerminate) => {
+                            return FilterResult::Intercept(Action::AgentTerminate)
+                        }
+                        _ => {}
+                    }
+                    return FilterResult::Intercept(Action::WindowMenu(sym));
+                }
+                // The window switcher and the overview (`mode "de"`) own the
+                // keyboard while open, the same way: no client and no binding
+                // sees the key, except the reserved override chords and the
+                // bind that toggles the overview (which closes it again).
+                // Neither sets a keyboard grab.
+                if crate::overview::holds_keys(state) {
+                    match state.config.action_for(&held, sym) {
+                        Some(Action::AgentOverride) => return FilterResult::Intercept(Action::AgentOverride),
+                        Some(Action::AgentTerminate) => {
+                            return FilterResult::Intercept(Action::AgentTerminate)
+                        }
+                        Some(Action::ToggleOverview) if state.overview.is_open() => {
+                            return FilterResult::Intercept(Action::ToggleOverview)
+                        }
+                        _ => {}
+                    }
+                    return FilterResult::Intercept(Action::Overlay(handle.modified_sym(), mods.shift));
                 }
                 // Calibration owns the seat outright while it runs: every key
                 // is consumed, including ones that are bound to something else.
@@ -226,6 +288,10 @@ impl AbyssState {
                         | Action::AnnotationModelSwitch
                         | Action::AnnotationImageToggle,
                     ) if !state.addons.hooks.is_on(Hook::Annotations) => FilterResult::Forward,
+                    Some(a @ Action::Switcher(_)) => {
+                        fx.hold = Some(held);
+                        FilterResult::Intercept(a.clone())
+                    }
                     Some(a) => FilterResult::Intercept(a.clone()),
                     None => FilterResult::Forward,
                 }
@@ -268,6 +334,13 @@ impl AbyssState {
             Action::ToggleFloating => shell::toggle_floating(self),
             Action::ToggleFullscreen => shell::toggle_fullscreen(self),
             Action::ToggleMaximize => shell::maximize::toggle(self),
+            Action::Tile(dir) => shell::quicktile::bind(self, dir),
+            Action::DesktopSwitch(dir) => {
+                shell::desktop::switch(self, dir);
+            }
+            Action::DesktopMove(dir) => {
+                shell::desktop::move_with(self, dir);
+            }
             Action::Minimize => shell::minimize_focused(self),
             Action::Unminimize => shell::unminimize_last(self),
             Action::ToggleLayout => shell::toggle_layout(self),
@@ -287,6 +360,10 @@ impl AbyssState {
             }
             Action::RegionSelect(key) => self.region_select_key(key),
             Action::Prompt(sym) => crate::trusted_ui::key(self, sym),
+            Action::WindowMenu(sym) => shell::winmenu::key(self, sym),
+            Action::Switcher(reverse) => crate::overview::switcher::step_or_open(self, reverse),
+            Action::ToggleOverview => crate::overview::toggle(self),
+            Action::Overlay(sym, shift) => crate::overview::key(self, sym, shift),
             // ADR 0066: add-on hooks. Off, the chord is consumed and does nothing.
             Action::AnnotationSelect if !self.addons.hooks.is_on(Hook::RegionSelect) => {
                 tracing::debug!("region-select hook is off; chord ignored");
@@ -425,6 +502,9 @@ impl AbyssState {
     /// Shared tail for both relative and absolute motion.
     pub(crate) fn pointer_moved(&mut self, pos: Point<f64, Logical>, time: u32) {
         let pos = self.clamp_to_outputs(pos);
+        // Hot corners (`mode "de"`): the dwell is a timer; this only compares
+        // the point against the precomputed corner rectangles.
+        crate::overview::corners::motion(self, pos);
         // A trusted prompt holds the pointer too: the cursor moves, no
         // surface hears about it (COMP-10 §4).
         if crate::trusted_ui::holds_seat(self) {
@@ -438,6 +518,19 @@ impl AbyssState {
             if self.region_select.motion(pos.to_i32_round()) {
                 crate::backend::damage_all(self);
             }
+            return;
+        }
+        // The window menu holds the pointer: the cursor moves, the highlight
+        // follows it, and no client hears about it.
+        if self.winmenu.is_open() {
+            self.pointer_location = pos;
+            crate::shell::winmenu::motion(self, pos);
+            return;
+        }
+        // So do the window switcher and the overview.
+        if crate::overview::holds_pointer(self) {
+            self.pointer_location = pos;
+            crate::overview::motion(self, pos);
             return;
         }
         let current = self.pointer_location;
@@ -502,6 +595,7 @@ impl AbyssState {
         }
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(pos);
+        crate::shell::titlebar::motion(self, pos);
         // A protected surface is not pointed at by anything but a physical
         // device, and nothing is pointed at inside a commit slot (COMP-19).
         crate::protocols::protected::gate::note_pointer_origin(self);
@@ -535,6 +629,8 @@ impl AbyssState {
             },
         );
         pointer.frame(self);
+        // After the seat's own motion, whose focus change resets the cursor.
+        crate::shell::edge::motion(self, pos);
         // Smithay deactivates a constraint on the surface being left
         // automatically (`PointerTarget::leave`); activating one held by the
         // surface being entered is the compositor's half (COMP-06 §1).
@@ -554,7 +650,22 @@ impl AbyssState {
     /// hands focus to whatever is now underneath instead of leaving it stale
     /// until the mouse is jiggled (ADR 0042).
     pub(crate) fn refresh_pointer_focus(&mut self) {
-        if self.lock.locked || crate::trusted_ui::holds_seat(self) {
+        self.refresh_pointer_focus_with(true);
+    }
+
+    /// [`Self::refresh_pointer_focus`] for an overlay going away (switcher,
+    /// overview, window menu, hover preview): no window changed, so the pointer
+    /// finds its surface again but the keyboard stays where it is.
+    pub(crate) fn refresh_pointer_focus_keeping_keyboard(&mut self) {
+        self.refresh_pointer_focus_with(false);
+    }
+
+    fn refresh_pointer_focus_with(&mut self, keyboard: bool) {
+        if self.lock.locked
+            || crate::trusted_ui::holds_seat(self)
+            || self.winmenu.is_open()
+            || crate::overview::holds_pointer(self)
+        {
             return;
         }
         // An interactive move/resize deliberately clears pointer focus for the
@@ -576,6 +687,7 @@ impl AbyssState {
         };
         let under = self.surface_under(self.pointer_location);
         let location = self.pointer_location;
+        crate::shell::titlebar::motion(self, location);
         let under = crate::protocols::protected::gate::filter_under(
             self,
             under,
@@ -586,13 +698,19 @@ impl AbyssState {
         // Smithay forwards a same-focus refresh as an unconditional
         // `wl_pointer.motion`, so only deliver when something actually moved.
         if next == self.last_pointer_focus {
+            crate::shell::edge::motion(self, location);
             return;
         }
         // The scene changed under a stationary pointer, so re-derive keyboard
         // focus from the same rules a real motion would use. Gated: with
         // `refocus-on-scene-change` off, only pointer focus is refreshed.
         let ctx = crate::shell::focus::pointer_focus_ctx(self, self.pointer_location);
-        if ctx.refocus_on_scene_change {
+        // Under `mode "de"` with click-to-focus the keyboard never follows a
+        // stationary pointer: a closing popup or overlay must not undo an
+        // explicit activate. Unmaps are `refocus_topmost`'s job.
+        let click_to_focus_de =
+            self.config.mode == crate::config::Mode::De && !self.config.general.focus_follows_mouse;
+        if keyboard && ctx.refocus_on_scene_change && !click_to_focus_de {
             let action = crate::shell::focus::decide_pointer_focus(&ctx);
             crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::WindowUnmap);
         }
@@ -613,6 +731,7 @@ impl AbyssState {
             },
         );
         pointer.frame(self);
+        crate::shell::edge::motion(self, location);
         crate::protocols::standard::pointer_constraints::update_pointer_constraint_focus(
             self,
             old_focus.as_ref(),
@@ -732,6 +851,18 @@ impl AbyssState {
     /// point already down when the selection began is released normally.
     fn on_touch_down<B: InputBackend>(&mut self, event: B::TouchDownEvent) {
         if self.seat_held() {
+            return;
+        }
+        // A touch is a click outside the window menu: it dismisses it, and is
+        // not delivered.
+        if self.winmenu.is_open() {
+            self.winmenu.close();
+            crate::backend::damage_all(self);
+            self.refresh_pointer_focus_keeping_keyboard();
+            return;
+        }
+        if crate::overview::holds_pointer(self) {
+            crate::overview::close(self);
             return;
         }
         if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
@@ -1104,6 +1235,10 @@ impl AbyssState {
     /// `on_pointer_button` so tests drive the real path.
     pub(crate) fn pointer_button(&mut self, button: u32, button_state: ButtonState, time: u32) {
         let pressed = button_state == ButtonState::Pressed;
+        // The release of a press a titlebar swallowed is swallowed, behind no gate.
+        if !pressed && crate::shell::titlebar::release(self, button) {
+            return;
+        }
         if self.lock.locked {
             self.locked_pointer_button(button, button_state, time);
             return;
@@ -1125,6 +1260,16 @@ impl AbyssState {
                 BTN_RIGHT if pressed => self.region_select_key(crate::render::select::SelectKey::Cancel),
                 _ => {}
             }
+            return;
+        }
+        // The window menu holds the pointer while it is open (`mode "de"`).
+        if self.winmenu.is_open() {
+            crate::shell::winmenu::button(self, button, pressed);
+            return;
+        }
+        // So do the window switcher and the overview.
+        if crate::overview::holds_pointer(self) {
+            crate::overview::button(self, button, pressed);
             return;
         }
         // A press on a trusted indicator is the compositor's, never a
@@ -1153,6 +1298,17 @@ impl AbyssState {
         // A compat lock held by an agent queues the human's buttons for the
         // locked window, delivered on release (COMP-04 §7).
         if crate::protocols::agent::lock::hold_button(self, button, pressed, time) {
+            return;
+        }
+        // A press on a titlebar is the compositor's (COMP-05 §7.1): it focuses
+        // and raises the window, a button acts on release, and no client hears
+        // either. Behind every gate above, so a prompt, the lock and a
+        // protected surface keep the pointer exactly as they did.
+        if crate::shell::titlebar::button(self, button, button_state) {
+            return;
+        }
+        // So is a press in the resize band just outside a decorated window.
+        if crate::shell::edge::button(self, button, pressed) {
             return;
         }
         // A `mousebind` press (Alt+drag by default) starts a compositor-owned
@@ -1239,8 +1395,13 @@ impl AbyssState {
     }
 
     fn on_pointer_axis<B: InputBackend>(&mut self, event: B::PointerAxisEvent) {
-        // Nothing under the lock or behind a prompt scrolls.
-        if self.lock.locked || crate::trusted_ui::holds_seat(self) {
+        // Nothing under the lock, behind a prompt or behind the window menu
+        // scrolls.
+        if self.lock.locked
+            || crate::trusted_ui::holds_seat(self)
+            || self.winmenu.is_open()
+            || crate::overview::holds_pointer(self)
+        {
             return;
         }
         let source = event.source();

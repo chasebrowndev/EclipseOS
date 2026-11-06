@@ -1024,6 +1024,7 @@ pub fn unregister(state: &mut crate::state::AbyssState, id: u64) {
     // Maximized windows stay maximized on the output that adopts them.
     crate::shell::maximize::note_departing(state, id);
     let removed = state.outputs.remove(id);
+    crate::overview::output_removed(state, id);
     for w in removed.iter().flat_map(|r| r.windows.iter().flatten()) {
         state.space.unmap_elem(w);
     }

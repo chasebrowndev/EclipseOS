@@ -1357,6 +1357,10 @@ mod de_mode {
     #[test]
     fn a_panel_appearing_or_resizing_is_followed_and_restore_survives_it() {
         let mut h = harness();
+        // Centred, as a user who wrote `floating-placement "centered"` has it:
+        // the de default is cascade, which starts at the corner a panel claims.
+        h.state.config.general.floating_placement = FloatingPlacement::Centered;
+        h.state.config.general.floating_placement_set = true;
         let mut c = Client::connect(&mut h);
         let (n, w) = de_window(&mut h, &mut c);
         let id = h.a;

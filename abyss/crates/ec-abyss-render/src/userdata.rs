@@ -138,6 +138,16 @@ pub fn tile_clip(window: &Window) -> Option<Rectangle<i32, Logical>> {
     window.user_data().get::<TileClip>().and_then(|c| c.0.get())
 }
 
+/// Whether abyss's placement has this window Quick Tiled (`mode "de"`), set by
+/// the layout pass. Render draws it square and borderless from this, not from
+/// the client's acked `Tiled*` states, which lag (or do not exist for X11).
+pub struct QuickTiled(pub Cell<bool>);
+
+/// Is `window` Quick Tiled by placement?
+pub fn is_quick_tiled(window: &Window) -> bool {
+    window.user_data().get::<QuickTiled>().is_some_and(|c| c.0.get())
+}
+
 /// The output whose workspace laid this window out. Render draws a window on
 /// that output only and cuts it to that output's rectangle, so no part of it
 /// shows again on a neighbouring monitor sharing the global space.
