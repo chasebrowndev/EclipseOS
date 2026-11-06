@@ -17,7 +17,6 @@ blake3 = { version = "1.8.7", default-features = false, features = ["std"] }
 ed25519-dalek = "3.0.0"
 getrandom = "0.4.3"
 zstd = "0.14.0"
-anyhow.workspace = true
 tracing.workspace = true
 libc = "0.2"
 rustix.workspace = true
