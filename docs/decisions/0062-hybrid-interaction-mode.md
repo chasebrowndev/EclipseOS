@@ -1,5 +1,5 @@
 # 0062 — Hybrid interaction mode
-Status: proposed
+Status: accepted
 Date: 2026-09-25
 Deciders: chase (owner), Claude (advisory)
 

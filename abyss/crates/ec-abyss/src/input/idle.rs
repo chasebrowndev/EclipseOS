@@ -170,7 +170,9 @@ fn tick(state: &mut AbyssState) {
         }
     }
 
-    if let Some(secs) = state.config.idle.lock_timeout {
+    // Kiosk (greeter): `lock-command` is a shell line, and nobody is logged in to
+    // lock. Skipped here because this spawn does not pass through `run_action`.
+    if let Some(secs) = state.config.idle.lock_timeout.filter(|_| !state.kiosk) {
         if !state.idle.lock_spawned && elapsed >= Duration::from_secs(secs) {
             state.idle.lock_spawned = true;
             match state.config.idle.lock_command.clone() {

@@ -177,7 +177,7 @@ pub fn mode_blurb(value: &str) -> Option<&'static str> {
     match value {
         "wm" => Some("Tiling with a workspaces bar only."),
         "hybrid" => Some("The bar also shows window chips, the tray and the clock."),
-        "de" => Some("Hybrid, plus desktop icons and pointer-first navigation."),
+        "de" => Some("Hybrid, plus desktop icons, window titlebars, snapping and the Overview."),
         _ => None,
     }
 }
@@ -358,6 +358,7 @@ impl Row {
             "annotations.region-outline" => "Region outline",
             "annotations.selection-dim" => "Selection dim",
             "misc.gpu-mode" => "Graphics mode",
+            "misc.secondary-compositing" => "Render second GPU's screens natively",
             "launcher.search.path-binaries" => "Programs on PATH",
             "launcher.search.terminal-apps" => "Terminal apps",
             // `settings.search.frecency` reads "settings search, frecency":

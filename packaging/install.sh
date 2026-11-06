@@ -30,10 +30,12 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
 
-BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-center ec-launcher
+BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher
       ec-settings ec-policy-viewer ec-console ec-ctl ec-screensaver ec-secret-prompt
-      ec-pairing ec-portal'
-UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service'
+      ec-pairing ec-polkit-agent ec-portal'
+UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service'
+# Installed but never enabled: abyss starts it only under mode "de" (no [Install]).
+DESKTOP_UNIT='ec-desktop.service'
 # The agent stack add-on, as the PKGBUILD's eclipseos-agents ships it.
 AGENT_BINS='ec-policyd ec-brokerd ec-agentd ec-audit ec-secret ec-inferenced'
 AGENT_UNITS='ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service'
@@ -68,7 +70,7 @@ if [ "$uninstall" -eq 1 ]; then
                /usr/share/eclipse/addons/eclipseos-agents.kdl \
                /usr/bin/abyss-session \
                /usr/share/wayland-sessions/abyss.desktop \
-               $(for u in $UNITS; do printf '/usr/lib/systemd/user/%s ' "$u"; done) \
+               $(for u in $UNITS $DESKTOP_UNIT; do printf '/usr/lib/systemd/user/%s ' "$u"; done) \
                /usr/lib/systemd/user/abyss-session.target \
                /usr/share/eclipse/addons/hyperion.kdl \
                /usr/share/applications/ec-center.desktop \
@@ -175,8 +177,8 @@ sudo install -Dm 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.de
 #    shipped pointing at /usr/bin, which is where step 1 put the binaries.
 sudo install -Dm 0644 -t /usr/lib/systemd/user \
     "$here/abyss-session.target" "$here/ec-hyperion-bar.service" "$here/ec-toasts.service" \
-    "$here/ec-wallpaper.service" "$here/ec-screensaver.service" "$here/ec-pairing.service" \
-    "$here/ec-portal.service"
+    "$here/ec-wallpaper.service" "$here/ec-desktop.service" "$here/ec-screensaver.service" "$here/ec-pairing.service" \
+    "$here/ec-polkit-agent.service" "$here/ec-portal.service"
 
 # 4a. The colour-scheme portal backend (ADR 0084). Bus-activated, not enabled.
 sudo install -Dm 0644 -t /usr/share/dbus-1/services "$here/dbus/org.freedesktop.impl.portal.desktop.abyss.service"

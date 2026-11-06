@@ -42,7 +42,7 @@ impl Mode {
         match self {
             Mode::Wm => "A bar that shows workspaces and nothing else.",
             Mode::Hybrid => "The bar also lists your open windows.",
-            Mode::De => "Everything in the taskbar mode, plus icons on the desktop.",
+            Mode::De => "Everything in the taskbar mode, plus desktop icons, window titlebars, snapping and the Overview.",
         }
     }
 }

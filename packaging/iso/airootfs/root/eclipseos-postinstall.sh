@@ -93,7 +93,7 @@ REPO
 
 # --- install ------------------------------------------------------------------
 say "installing EclipseOS and the greeter"
-pacstrap -K -C "$PACCONF" /mnt eclipseos-meta greetd greetd-regreet cage
+pacstrap -K -C "$PACCONF" /mnt eclipseos-meta greetd greetd-regreet
 
 # The installed system talks to the repo over the tailnet, so it needs the key
 # in its own keyring too -- the same trap the ISO build hit.

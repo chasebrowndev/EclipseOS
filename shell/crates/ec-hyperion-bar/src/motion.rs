@@ -144,6 +144,10 @@ impl Anims {
 #[derive(Debug, Clone)]
 pub struct Chip {
     pub window: Window,
+    /// How many windows the chip stands for (`mode "de"` groups; `1` always
+    /// elsewhere). A group has no one title, so its face says the app and the
+    /// count and its rungs are those of that text.
+    pub count: usize,
     pub width: Animated,
     pub presence: Animated,
     /// The width the chip's content is laid out at: its target, so it never
@@ -197,6 +201,10 @@ impl Chip {
 
     /// The face's rung at content width `width`.
     fn detail(&self, width: f32) -> crate::layout::Detail {
+        if self.count > 1 {
+            let text = crate::group::chip_text(&self.window, self.count);
+            return crate::layout::chip_detail(&text, &text, width);
+        }
         crate::layout::chip_detail(self.window.label(), self.window.name(), width)
     }
 
@@ -436,6 +444,7 @@ impl Bar {
                     let width = target.unwrap_or_default();
                     Chip {
                         window: (*w).clone(),
+                        count: 1,
                         width: Animated::new(width, motion),
                         presence: Animated::new(0.0, add.motion),
                         content: width,
@@ -485,6 +494,18 @@ impl Bar {
         self.chips = next;
         self.laid_out = true;
         self.workspace = workspace;
+    }
+
+    /// Say how many windows each chip stands for: `(handle, count)`. Called
+    /// after [`Bar::retarget_chips`] with the groups `mode "de"` draws; a chip
+    /// not named keeps one.
+    pub fn tag_counts(&mut self, counts: &[(u64, usize)]) {
+        for chip in &mut self.chips {
+            chip.count = counts
+                .iter()
+                .find(|(h, _)| *h == chip.window.handle)
+                .map_or(1, |(_, n)| (*n).max(1));
+        }
     }
 
     /// Point the widgets at the solver's answer: `(key, present, out)` in
