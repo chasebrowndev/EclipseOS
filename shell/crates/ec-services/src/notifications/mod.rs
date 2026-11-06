@@ -10,9 +10,10 @@
 //! plain `std::sync::mpsc` channel — the same idiom the settings app already
 //! uses for its config watcher.
 //!
-//! The newest 100 non-transient notifications are also kept in memory and
-//! served to the taskbar over `org.eclipse.NotificationHistory`; see
-//! [`HistoryClient`].
+//! The newest 200 non-transient notifications are also kept (persisted to the
+//! state dir, with a mode and per-app rules) and served to the taskbar and
+//! the notification widget over `org.eclipse.NotificationHistory`; see
+//! [`HistoryClient`] and `docs/internal/notifications-contract.md`.
 //!
 //! Two behaviours are deliberate and tested:
 //!
@@ -26,14 +27,51 @@
 //!   human dismisses it.
 
 mod compositor;
+mod hints;
 mod history;
+mod rules;
 mod server;
+mod sound;
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
-pub use history::{HistoryClient, HistoryEntry, CAP as HISTORY_CAP};
+pub use hints::{Image, Sound};
+pub use history::{HistoryClient, HistoryEntry, Page, PageEntry, PageFilter, CAP as HISTORY_CAP};
 pub use server::spawn;
+
+/// What the human wants done with arrivals. Persisted, shared by every
+/// process through `org.eclipse.NotificationHistory`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    /// Popups, and stored.
+    #[default]
+    Normal,
+    /// No popup, no sound; stored unread.
+    Quiet,
+    /// Ignored entirely: no popup, no sound, not stored. The client still
+    /// gets an id back. Only the compositor's config-error notice bypasses it.
+    Dnd,
+}
+
+impl Mode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Quiet => "quiet",
+            Self::Dnd => "dnd",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "normal" => Some(Self::Normal),
+            "quiet" => Some(Self::Quiet),
+            "dnd" => Some(Self::Dnd),
+            _ => None,
+        }
+    }
+}
 
 /// How loudly the client asked to be heard. The `urgency` hint, as a byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -50,6 +88,23 @@ impl Urgency {
             0 => Self::Low,
             2 => Self::Critical,
             _ => Self::Normal,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Normal => "normal",
+            Self::Critical => "critical",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "low" => Some(Self::Low),
+            "normal" => Some(Self::Normal),
+            "critical" => Some(Self::Critical),
+            _ => None,
         }
     }
 }
@@ -74,7 +129,7 @@ pub enum CloseReason {
 
 /// A notification as the GUI needs it: parsed, clamped, and with the hint bag
 /// already reduced to the few things we render.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Notification {
     pub id: u32,
     pub app_name: String,
@@ -89,6 +144,21 @@ pub struct Notification {
     pub expires_in: Option<Duration>,
     /// The `transient` hint: show it, but keep no history entry.
     pub transient: bool,
+    /// The `category` hint (`email.arrived`, …). Empty when absent.
+    pub category: String,
+    /// The `desktop-entry` hint, without `.desktop`. Empty when absent.
+    pub desktop_entry: String,
+    /// The `resident` hint: invoking an action does not close it.
+    pub resident: bool,
+    /// The `value` hint, clamped to 0..=100: a progress bar.
+    pub progress: Option<u8>,
+    /// Decoded `image-data`, if the client sent a usable one.
+    pub image: Option<Image>,
+    /// Sound hints, played by `sound.rs` when the notification is shown.
+    pub sound: Sound,
+    /// Grouping key for the UI: the desktop entry if given, else the app name,
+    /// lowercased.
+    pub group: String,
 }
 
 /// The server's default lifetime when a client passes `-1`.
@@ -100,7 +170,7 @@ const MAX_TIMEOUT: Duration = Duration::from_secs(30);
 impl Notification {
     /// Turn the wire's `expire_timeout` (milliseconds, `0` = never, `-1` =
     /// server decides) into a lifetime this server is willing to honour.
-    fn lifetime(expire_timeout: i32, urgency: Urgency) -> Option<Duration> {
+    pub(crate) fn lifetime(expire_timeout: i32, urgency: Urgency) -> Option<Duration> {
         match expire_timeout {
             ..=-1 => Some(DEFAULT_TIMEOUT),
             0 if urgency == Urgency::Critical => None,

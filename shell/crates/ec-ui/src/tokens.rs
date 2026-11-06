@@ -989,8 +989,18 @@ pub mod group {
 pub mod history {
     /// Sheet width.
     pub const W: f32 = 328.0;
-    /// How many entries the panel lists before it stops growing.
-    pub const MAX_ROWS: usize = 6;
+    /// How many unread entries the quick view lists before it stops growing:
+    /// the popover is sized once at creation, so it has a ceiling.
+    pub const MAX_ROWS: usize = 4;
+    /// How many read entries one page of the history drawer lists.
+    pub const PAGE: usize = 3;
+    /// The mode switch block: the segmented lozenge and the air around it.
+    pub const SWITCH_H: f32 = 40.0;
+    /// The history drawer's fold row, and its paging row.
+    pub const FOLD_H: f32 = 32.0;
+    pub const PAGER_H: f32 = 30.0;
+    /// The bell's mode mark when the mode is not Normal, as a share of full ink.
+    pub const QUIET_INK: f32 = 0.6;
     /// The body is cut to this many lines of this many characters.
     pub const BODY_LINES: usize = 3;
     pub const BODY_CHARS: usize = 46;

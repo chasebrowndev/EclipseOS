@@ -16,13 +16,13 @@ use pulseaudio::protocol::{
     SetClientNameReply, DESCRIPTOR_SIZE, MAX_MEMBLOCKQ_LENGTH,
 };
 
-pub(super) type Result<T> = std::result::Result<T, ProtocolError>;
+pub(crate) type Result<T> = std::result::Result<T, ProtocolError>;
 
 /// How long a request may wait for its reply before the connection is
 /// treated as dead.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(3);
 
-pub(super) struct Conn {
+pub(crate) struct Conn {
     sock: BufReader<UnixStream>,
     version: u16,
     seq: u32,
@@ -30,7 +30,7 @@ pub(super) struct Conn {
 }
 
 /// Connect, authenticate and name the client.
-pub(super) fn connect(path: &Path, name: &CStr) -> Result<Conn> {
+pub(crate) fn connect(path: &Path, name: &CStr) -> Result<Conn> {
     let stream = UnixStream::connect(path)?;
     stream.set_read_timeout(Some(REPLY_TIMEOUT))?;
     stream.set_write_timeout(Some(REPLY_TIMEOUT))?;
@@ -58,11 +58,11 @@ pub(super) fn connect(path: &Path, name: &CStr) -> Result<Conn> {
 }
 
 impl Conn {
-    pub(super) fn stream(&self) -> &UnixStream {
+    pub(crate) fn stream(&self) -> &UnixStream {
         self.sock.get_ref()
     }
 
-    fn send(&mut self, command: &Command) -> Result<u32> {
+    pub(crate) fn send(&mut self, command: &Command) -> Result<u32> {
         let seq = self.seq;
         self.seq = self.seq.wrapping_add(1);
         protocol::write_command_message(self.sock.get_mut(), seq, command, self.version)?;
@@ -70,7 +70,7 @@ impl Conn {
     }
 
     /// Send `command` and read its typed reply.
-    pub(super) fn request<T: CommandReply>(&mut self, command: &Command) -> Result<T> {
+    pub(crate) fn request<T: CommandReply>(&mut self, command: &Command) -> Result<T> {
         let seq = self.send(command)?;
         loop {
             if self.read_frame()?.channel != u32::MAX {
@@ -83,7 +83,7 @@ impl Conn {
     }
 
     /// Send `command` and wait for its empty acknowledgement.
-    pub(super) fn ack(&mut self, command: &Command) -> Result<()> {
+    pub(crate) fn ack(&mut self, command: &Command) -> Result<()> {
         let seq = self.send(command)?;
         loop {
             if self.read_frame()?.channel != u32::MAX {
@@ -95,7 +95,7 @@ impl Conn {
     }
 
     /// Read the next unsolicited command (an event), skipping stream data.
-    pub(super) fn read_command(&mut self) -> Result<Command> {
+    pub(crate) fn read_command(&mut self) -> Result<Command> {
         loop {
             if self.read_frame()?.channel != u32::MAX {
                 continue;
@@ -106,7 +106,7 @@ impl Conn {
     }
 
     /// Read one whole message into the frame buffer.
-    pub(super) fn read_frame(&mut self) -> Result<Descriptor> {
+    pub(crate) fn read_frame(&mut self) -> Result<Descriptor> {
         self.frame.resize(DESCRIPTOR_SIZE, 0);
         self.sock.read_exact(&mut self.frame)?;
         let desc = protocol::read_descriptor(&mut &self.frame[..])?;
@@ -120,11 +120,11 @@ impl Conn {
     }
 
     /// The payload of the last frame read.
-    pub(super) fn payload(&self) -> &[u8] {
+    pub(crate) fn payload(&self) -> &[u8] {
         &self.frame[DESCRIPTOR_SIZE..]
     }
 
-    pub(super) fn version(&self) -> u16 {
+    pub(crate) fn version(&self) -> u16 {
         self.version
     }
 }

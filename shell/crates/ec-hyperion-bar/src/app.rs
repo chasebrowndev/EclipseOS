@@ -351,8 +351,14 @@ pub enum Message {
     HoverTick,
     /// The wheel over the desktop grid.
     PagerScroll(iced::mouse::ScrollDelta),
-    /// The notification service's list, newest first.
-    History(Vec<ec_services::notifications::HistoryEntry>),
+    /// What the notification service reported.
+    History(crate::history::Report),
+    /// The mode switch.
+    HistoryMode(ec_services::notifications::Mode),
+    /// Fold or unfold the history drawer.
+    HistoryFold,
+    /// Show the history page at this offset.
+    HistoryPage(u32),
     /// Dismiss one entry; clear them all; press a live entry's button.
     HistoryRemove(u32),
     HistoryClear,
@@ -1068,18 +1074,43 @@ fn preview(app: &mut App) {
             crate::preview::widgets(app, which == "widgets-idle", output);
             (which == "widgets-menu").then_some(Preview::ChipMenu)
         }
-        "groups" | "history" | "history-empty" => {
+        "groups" | "history" | "history-open" | "history-quiet" | "history-bell" | "history-empty" => {
             let output = app.conn.outputs().0.first().map_or(0, |o| o.0);
             crate::preview::widgets(app, true, output);
             crate::preview::de(app, output);
-            if which == "history-empty" {
-                app.history.set(Vec::new());
+            match which.as_str() {
+                "history-empty" => {
+                    use crate::history::Report;
+                    app.history.apply(Report::Unread {
+                        count: 0,
+                        entries: Vec::new(),
+                        read_total: 0,
+                    });
+                    app.history.begin_open();
+                    app.history.apply(Report::Read {
+                        entries: Vec::new(),
+                        total: 0,
+                        offset: 0,
+                    });
+                }
+                "history-open" => app.history.set_expanded(true),
+                "history-quiet" => app.history.set_mode(ec_services::notifications::Mode::Quiet),
+                "history-bell" => {
+                    // The closed bell with three waiting: the badge.
+                    use crate::history::Report;
+                    app.history.apply(Report::Unread {
+                        count: 3,
+                        entries: Vec::new(),
+                        read_total: 12,
+                    });
+                }
+                _ => {}
             }
-            Some(if which != "groups" {
-                Preview::Drawer(Drawer::History)
-            } else {
-                Preview::Group
-            })
+            match which.as_str() {
+                "history-bell" => None,
+                "groups" => Some(Preview::Group),
+                _ => Some(Preview::Drawer(Drawer::History)),
+            }
         }
         _ => None,
     };
@@ -1573,10 +1604,11 @@ fn step_inner(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> 
             }
             return Task::none();
         }
-        Message::History(list) => {
-            app.history.set(list);
-            // The panel is on screen: what arrives while it is, is seen.
-            if matches!(
+        Message::History(report) => {
+            app.history.apply(report);
+            // The popover is on screen: what arrives while it is, is read as
+            // it lands, so the badge stays at nothing under the human's eyes.
+            let open = matches!(
                 app.popup.as_ref(),
                 Some(Popup {
                     kind: Kind::Drawer {
@@ -1585,10 +1617,27 @@ fn step_inner(app: &mut App, message: Message, at: Option<Id>) -> Task<Message> 
                     },
                     ..
                 })
-            ) {
-                app.history.mark_seen();
+            );
+            if open && app.history.absorb() {
+                crate::services::history_act(crate::services::HistoryCmd::MarkAllRead);
             }
             return reflow(app);
+        }
+        Message::HistoryMode(mode) => {
+            app.history.set_mode(mode);
+            crate::services::history_act(crate::services::HistoryCmd::SetMode(mode));
+            return Task::none();
+        }
+        Message::HistoryFold => {
+            let on = !app.history.expanded();
+            app.history.set_expanded(on);
+            let first = app.history.first_offset();
+            crate::services::history_act(crate::services::HistoryCmd::Read(on.then_some(first)));
+            return reflow(app);
+        }
+        Message::HistoryPage(offset) => {
+            crate::services::history_act(crate::services::HistoryCmd::Read(Some(offset)));
+            return Task::none();
         }
         Message::HistoryRemove(id) => {
             app.history.remove(id);
@@ -3989,14 +4038,17 @@ fn open_drawer(app: &mut App, at: Id, drawer: Drawer, toggle: bool) -> Task<Mess
     if let Some(kind) = drawer_kind(drawer) {
         return toggle_drawer(app, at, drawer, kind);
     }
-    if drawer == Drawer::History {
-        // The panel is about to be in front of the human.
-        app.history.mark_seen();
-    }
     let same = matches!(
         app.popup.as_ref(),
         Some(Popup { owner, kind: Kind::Drawer { which, .. }, .. }) if *which == drawer && *owner == at
     );
+    if drawer == Drawer::History && toggle && !same {
+        // The popover is about to be in front of the human: what was unread is
+        // its quick view, and everything is read from here on.
+        app.history.begin_open();
+        crate::services::history_act(crate::services::HistoryCmd::Read(None));
+        crate::services::history_act(crate::services::HistoryCmd::MarkAllRead);
+    }
     let closed = dismiss(app);
     if same && toggle {
         return closed;
@@ -5434,8 +5486,9 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn history_clear_and_remove_reach_the_panel() {
-        use ec_services::notifications::{HistoryEntry, Urgency};
+    fn history_reports_reach_the_panel_and_clear_empties_it() {
+        use crate::history::Report;
+        use ec_services::notifications::{HistoryEntry, Mode, Urgency};
         let entry = |id: u32| HistoryEntry {
             id,
             app_name: "mail".into(),
@@ -5448,12 +5501,24 @@ pub(crate) mod tests {
             live: false,
         };
         let mut a = app();
-        let _ = step(&mut a, Message::History(vec![entry(1), entry(2)]), None);
-        assert!(a.history.unseen());
+        let _ = step(
+            &mut a,
+            Message::History(Report::Unread {
+                count: 2,
+                entries: vec![entry(2), entry(1)],
+                read_total: 0,
+            }),
+            None,
+        );
+        assert_eq!(a.history.unread(), 2);
+        let _ = step(&mut a, Message::History(Report::Mode(Mode::Quiet)), None);
+        assert_eq!(a.history.mode(), Mode::Quiet);
+        a.history.begin_open();
         let _ = step(&mut a, Message::HistoryRemove(2), None);
-        assert_eq!(a.history.entries().len(), 1);
+        assert_eq!(a.history.quick().len(), 1);
         let _ = step(&mut a, Message::HistoryClear, None);
-        assert!(a.history.is_empty());
+        assert!(a.history.quick().is_empty());
+        assert_eq!(a.history.unread(), 0);
     }
 
     /// A point on a bar's surface, in the compositor's global pixels: a top

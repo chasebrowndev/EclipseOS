@@ -1142,6 +1142,7 @@ dependencies = [
  "ec-ipc",
  "ec-services",
  "ec-ui",
+ "freedesktop-icons",
  "iced",
  "iced_layershell",
 ]

@@ -971,6 +971,89 @@ pub fn drawer_link<'a, Message: Clone + 'a>(label: &str, on_press: Message) -> E
     )
 }
 
+/// The fold row of a drawer's collapsible section: a label, a mono count and
+/// an arrow that points the way the section will go.
+///
+/// A widget and not a styled container because it is the one row in a sheet
+/// that changes the sheet's own height, so it must read as a control (the
+/// quiet row's lozenge on hover, secondary ink at rest) and not as one more
+/// item of the list above it.
+pub fn drawer_fold<'a, Message: Clone + 'a>(
+    label: &str,
+    count: &str,
+    open: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let face = container(
+        row![
+            text(label.to_string())
+                .font(font::UI_MEDIUM)
+                .size(size::BODY_SMALL)
+                .color(color::text_secondary()),
+            Space::new().width(Length::Fill),
+            text(count.to_string())
+                .font(font::DATA)
+                .size(size::MICRO)
+                .color(color::text_tertiary()),
+            text(if open { "\u{2191}" } else { "\u{2193}" })
+                .font(font::DATA)
+                .size(size::MONO)
+                .color(color::text_tertiary()),
+        ]
+        .spacing(drawer::MARK_GAP)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fill)
+    .align_y(Alignment::Center)
+    .padding([0.0, drawer::ROW_X]);
+    slot(
+        button(face)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(0)
+            .style(drawer_quiet)
+            .on_press(on_press)
+            .into(),
+    )
+}
+
+/// A drawer note that does something: the mono note of [`drawer_note`] as a
+/// quiet row, lit with the row lozenge under the pointer and ending in an
+/// arrow.
+///
+/// A widget and not a [`drawer_note`] with a press because a note is read as
+/// inert; this one ("+3 more in history") hands the human the rest of the
+/// list, so it has to answer the pointer like [`drawer_fold`] does.
+pub fn drawer_more<'a, Message: Clone + 'a>(note: &str, on_press: Message) -> Element<'a, Message, Theme> {
+    let face = container(
+        row![
+            text(note.to_string())
+                .font(font::DATA)
+                .size(size::MONO)
+                .color(color::text_secondary()),
+            Space::new().width(Length::Fill),
+            text("\u{2193}")
+                .font(font::DATA)
+                .size(size::MONO)
+                .color(color::text_tertiary()),
+        ]
+        .spacing(drawer::MARK_GAP)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fill)
+    .align_y(Alignment::Center)
+    .padding([0.0, drawer::ROW_X]);
+    slot(
+        button(face)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(0)
+            .style(drawer_quiet)
+            .on_press(on_press)
+            .into(),
+    )
+}
+
 /// A power row: a mark, a label and, at the right, an optional mono note
 /// ("password", "not permitted").
 ///

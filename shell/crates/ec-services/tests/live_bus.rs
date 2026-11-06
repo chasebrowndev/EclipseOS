@@ -41,6 +41,81 @@ fn private_bus() -> (PrivateBus, String) {
     (PrivateBus(child), address.trim().to_owned())
 }
 
+/// Point the history file and rules at a fresh directory: the server persists
+/// to `$XDG_STATE_HOME`, and a test must never touch the human's.
+fn isolate_state() {
+    static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "ec-live-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    // SAFETY: tests that call this run before any server thread reads them.
+    unsafe {
+        std::env::set_var("XDG_STATE_HOME", dir.join("state"));
+        std::env::set_var("XDG_CONFIG_HOME", dir.join("config"));
+    }
+}
+
+fn notify_via_dbus_send(summary: &str, extra: &str) {
+    let out = Command::new("dbus-send")
+        .args([
+            "--session",
+            "--print-reply",
+            "--dest=org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications.Notify",
+            "string:app",
+            "uint32:0",
+            "string:",
+            &format!("string:{summary}"),
+            "string:body",
+            "array:string:",
+            extra,
+            "int32:0",
+        ])
+        .output()
+        .expect("dbus-send runs");
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+}
+
+#[test]
+#[ignore = "needs dbus-daemon; spawns a private bus"]
+fn modes_unread_and_mark_read_over_the_bus() {
+    use ec_services::notifications::{HistoryClient, Mode, PageFilter};
+
+    let (_bus, address) = private_bus();
+    // SAFETY: single-threaded, before any bus connection is made.
+    unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &address) };
+    isolate_state();
+    let handle = notifications::spawn().expect("name is free");
+    let mut client = HistoryClient::at(&address);
+    let unread = client.unread_changes();
+
+    assert_eq!(client.mode(), Mode::Normal);
+    notify_via_dbus_send("shown", "dict:string:variant:x,byte:1");
+    assert!(matches!(next_event(&handle), Event::Posted(_)));
+    assert_eq!(unread.recv_timeout(Duration::from_secs(5)), Ok(1));
+
+    assert!(client.set_mode(Mode::Quiet));
+    assert_eq!(client.mode(), Mode::Quiet);
+    notify_via_dbus_send("quiet", "dict:string:variant:x,byte:1");
+    assert_eq!(unread.recv_timeout(Duration::from_secs(5)), Ok(2));
+    // No popup for the quiet one (only the withdraw-if-replacing close).
+    assert!(!matches!(next_event(&handle), Event::Posted(_)));
+
+    assert!(client.set_mode(Mode::Dnd));
+    notify_via_dbus_send("dropped", "dict:string:variant:x,byte:1");
+    std::thread::sleep(Duration::from_millis(200));
+    assert_eq!(client.unread_count(), 2, "dnd stores nothing");
+
+    let page = client.page(PageFilter::Unread, 0, 10);
+    assert_eq!(page.entries.len(), 2);
+    client.mark_all_read();
+    assert_eq!(client.unread_count(), 0);
+    assert_eq!(client.page(PageFilter::Read, 0, 10).total, 2);
+}
+
 fn next_event(handle: &notifications::Notifications) -> Event {
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
@@ -58,6 +133,7 @@ fn a_notify_call_arrives_as_an_event() {
     let (_bus, address) = private_bus();
     // SAFETY: single-threaded, before any bus connection is made.
     unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &address) };
+    isolate_state();
 
     let handle = notifications::spawn().expect("the private bus has no other daemon on it");
 
@@ -106,6 +182,7 @@ fn history_lists_removes_and_refuses_a_stale_invoke() {
     let (_bus, address) = private_bus();
     // SAFETY: single-threaded, before any bus connection is made.
     unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &address) };
+    isolate_state();
     let handle = notifications::spawn().expect("name is free");
 
     let mut client = HistoryClient::at(&address);
@@ -186,6 +263,7 @@ fn the_name_is_never_stolen_from_a_running_daemon() {
     let (_bus, address) = private_bus();
     // SAFETY: single-threaded, before any bus connection is made.
     unsafe { std::env::set_var("DBUS_SESSION_BUS_ADDRESS", &address) };
+    isolate_state();
 
     let _first = notifications::spawn().expect("the first one takes the name");
     assert!(

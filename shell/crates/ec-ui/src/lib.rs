@@ -2,6 +2,7 @@
 //! The Eclipse design system.
 pub mod glass;
 pub mod ipc;
+pub mod markup;
 pub mod motion;
 pub mod reading;
 pub mod surface;
