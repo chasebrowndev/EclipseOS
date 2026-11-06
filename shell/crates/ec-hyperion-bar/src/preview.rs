@@ -638,18 +638,20 @@ pub fn de(app: &mut App, output: u64) {
             live,
         }
     };
-    app.history.set(vec![
+    let unread = vec![
+        entry(9, "files", "Copy finished", "<b>project.tar</b> copied to the backup disk", 20, Urgency::Normal, false),
+        entry(8, "chat", "Sam", "Sent you a <i>file</i> &amp; a note", 30, Urgency::Normal, false),
         entry(
-            5,
+            7,
             "mail",
             "Mara \u{2014} review at 15:00",
-            "Are we still on for the review at 15:00? I pushed the notes to the shared folder and tagged you on the three open questions, the second one blocks the release.",
+            "Are we still on for the <b>review at 15:00</b>? I pushed the notes to the shared folder and tagged you on the three open questions, the second one blocks the release.",
             40,
             Urgency::Normal,
             true,
         ),
         entry(
-            4,
+            6,
             "battery",
             "Battery low",
             "9% remaining. Plug in the charger.",
@@ -657,8 +659,11 @@ pub fn de(app: &mut App, output: u64) {
             Urgency::Critical,
             false,
         ),
+        entry(5, "calendar", "Standup in 10 minutes", "Room 4 / video link", 2 * 3600, Urgency::Normal, false),
+    ];
+    let read = vec![
         entry(
-            3,
+            5,
             "calendar",
             "Standup in 10 minutes",
             "Room 4 / video link",
@@ -666,6 +671,39 @@ pub fn de(app: &mut App, output: u64) {
             Urgency::Normal,
             false,
         ),
-        entry(2, "backup", "Backup complete", "", 5 * 3600, Urgency::Low, false),
-    ]);
+        entry(4, "backup", "Backup complete", "", 5 * 3600, Urgency::Low, false),
+        entry(
+            3,
+            "updater",
+            "3 updates installed",
+            "linux 7.2.11, mesa 26.1, foot 1.26",
+            9 * 3600,
+            Urgency::Normal,
+            false,
+        ),
+    ];
+    use crate::history::Report;
+    app.history
+        .apply(Report::Mode(ec_services::notifications::Mode::Normal));
+    app.history.apply(Report::Unread {
+        count: unread.len() as u32,
+        entries: unread,
+        read_total: 12,
+    });
+    // The popover opens on what was unread; the drawer is folded until a
+    // preview asks for it.
+    app.history.begin_open();
+    // Opening marked them read: the bell's count is gone, the rows stay.
+    app.history.apply(Report::Unread {
+        count: 0,
+        entries: Vec::new(),
+        read_total: 17,
+    });
+    // The store lists the five just read first; the drawer starts past the
+    // four the quick view shows.
+    app.history.apply(Report::Read {
+        entries: read,
+        total: 17,
+        offset: 4,
+    });
 }

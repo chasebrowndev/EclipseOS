@@ -90,6 +90,8 @@ fn to_event(kind: EventKind, data: &Value) -> Option<Event> {
                 actions: Vec::new(),
                 expires_in: None,
                 transient: false,
+                group: "abyss".into(),
+                ..Notification::default()
             })))
         }
         EventKind::Config => Some(Event::Closed {

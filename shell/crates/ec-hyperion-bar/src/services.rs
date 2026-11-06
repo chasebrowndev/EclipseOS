@@ -18,7 +18,10 @@ use std::thread;
 use std::time::Duration;
 
 use ec_services::custom::Kind;
-use ec_services::notifications::{HistoryClient, HistoryEntry};
+use ec_services::notifications::{HistoryClient, Mode};
+use ec_ui::tokens::history as tok;
+
+use crate::history::Report as HistoryReport;
 use ec_services::power_profiles::{self, PowerActions, PowerEvents, Profile};
 use ec_services::progress::{self, Update as ProgressUpdate};
 use ec_services::session::{Action as SessionAction, Availability, Session};
@@ -55,7 +58,7 @@ struct Handles {
     /// logind's answers and refusals for the power drawer, on one channel.
     session: Option<(Sender<SessionFeed>, Receiver<SessionFeed>)>,
     /// The notification history thread's commands and reports (`mode "de"`).
-    history: Option<(Sender<HistoryCmd>, Receiver<Vec<HistoryEntry>>)>,
+    history: Option<(Sender<HistoryCmd>, Receiver<HistoryReport>)>,
     /// What the monitor tap was last asked to be.
     tap: bool,
 }
@@ -227,9 +230,8 @@ pub fn drain() -> Vec<Message> {
         }
     }
     if let Some((_, rx)) = h.history.as_ref() {
-        // Only the newest list matters; a burst of changes is one redraw.
-        if let Some(list) = rx.try_iter().last() {
-            out.push(Message::History(list));
+        while let Ok(report) = rx.try_recv() {
+            out.push(Message::History(report));
         }
     }
     if let Some((_, rx)) = h.session.as_ref() {
@@ -412,19 +414,23 @@ pub fn set_tap(on: bool) {
     }
 }
 
-/// What the bar asks of the notification history.
+/// What the bar asks of the notification service.
 #[derive(Debug)]
 pub enum HistoryCmd {
-    /// Read it again now.
-    Refresh,
+    /// The popover opened (or more arrived under it): everything is read.
+    MarkAllRead,
+    /// The history drawer is open at this offset; `None` folds it.
+    Read(Option<u32>),
+    SetMode(Mode),
     Remove(u32),
+    /// Delete the whole history.
     Clear,
     /// Press a live entry's action button: `(id, key)`.
     Invoke(u32, String),
 }
 
-/// How often the history is read again with no signal, so a toasts process
-/// that starts after the bar is picked up.
+/// How often the service is read again with no signal, so a toasts process
+/// that starts after the bar is picked up and a missed signal heals.
 const HISTORY_POLL: Duration = Duration::from_secs(5);
 
 /// Start the history thread, once. Under `mode "de"` only: `wm` and `hybrid`
@@ -455,20 +461,36 @@ pub fn history_act(cmd: HistoryCmd) {
     }
 }
 
-/// Own the client: act on commands, re-list on a `Changed` signal, on a
-/// command, and on a slow poll. The list goes out only when it differs.
-fn history_loop(cmds: &Receiver<HistoryCmd>, out: &Sender<Vec<HistoryEntry>>) {
+/// Own the client: act on commands, and report the mode, the unread count with
+/// the newest unread entries, and (while the drawer is open) a page of read
+/// ones. Signals mark the state dirty; a slow poll covers a service that
+/// starts late. A report goes out only when it differs from the last.
+fn history_loop(cmds: &Receiver<HistoryCmd>, out: &Sender<HistoryReport>) {
+    use crate::history::Report;
+    use ec_services::notifications::PageFilter;
     let mut client = HistoryClient::new();
-    let mut changes = client.changes();
+    let (mut changes, mut unread_sig, mut mode_sig) =
+        (client.changes(), client.unread_changes(), client.mode_changes());
     let mut retried = std::time::Instant::now();
-    let mut listed = std::time::Instant::now();
-    let mut last: Option<Vec<HistoryEntry>> = None;
+    let mut polled = std::time::Instant::now();
+    let mut read_at: Option<u32> = None;
     let mut dirty = true;
+    let mut last_unread: Option<Report> = None;
+    let mut last_read: Option<Report> = None;
+    let mut last_mode: Option<Mode> = None;
+    let page = tok::PAGE as u32;
     loop {
         match cmds.recv_timeout(Duration::from_millis(250)) {
             Ok(cmd) => {
                 match cmd {
-                    HistoryCmd::Refresh => {}
+                    HistoryCmd::MarkAllRead => client.mark_all_read(),
+                    HistoryCmd::Read(at) => {
+                        read_at = at;
+                        last_read = None;
+                    }
+                    HistoryCmd::SetMode(m) => {
+                        client.set_mode(m);
+                    }
                     HistoryCmd::Remove(id) => client.remove(id),
                     HistoryCmd::Clear => client.clear(),
                     HistoryCmd::Invoke(id, key) => {
@@ -480,28 +502,71 @@ fn history_loop(cmds: &Receiver<HistoryCmd>, out: &Sender<Vec<HistoryEntry>>) {
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
+        let mut lost = false;
         loop {
             match changes.try_recv() {
                 Ok(()) => dirty = true,
                 Err(mpsc::TryRecvError::Empty) => break,
                 Err(mpsc::TryRecvError::Disconnected) => {
-                    // No bus, or it went away: look for it again, slowly.
-                    if retried.elapsed() >= HISTORY_POLL {
-                        retried = std::time::Instant::now();
-                        changes = client.changes();
-                        dirty = true;
-                    }
+                    lost = true;
                     break;
                 }
             }
         }
-        if dirty || listed.elapsed() >= HISTORY_POLL {
-            dirty = false;
-            listed = std::time::Instant::now();
-            let list = client.list();
-            if last.as_ref() != Some(&list) {
-                last = Some(list.clone());
-                if out.send(list).is_err() {
+        while let Ok(_n) = unread_sig.try_recv() {
+            dirty = true;
+        }
+        while let Ok(_m) = mode_sig.try_recv() {
+            dirty = true;
+        }
+        if lost && retried.elapsed() >= HISTORY_POLL {
+            // No bus, or it went away: look for it again, slowly.
+            retried = std::time::Instant::now();
+            (changes, unread_sig, mode_sig) =
+                (client.changes(), client.unread_changes(), client.mode_changes());
+            dirty = true;
+        }
+        if !(dirty || polled.elapsed() >= HISTORY_POLL) {
+            continue;
+        }
+        dirty = false;
+        polled = std::time::Instant::now();
+        let mode = client.mode();
+        if last_mode != Some(mode) {
+            last_mode = Some(mode);
+            if out.send(Report::Mode(mode)).is_err() {
+                return;
+            }
+        }
+        let unread = client.page(PageFilter::Unread, 0, tok::MAX_ROWS as u32);
+        let read_total = client.page(PageFilter::Read, 0, 1).total;
+        let report = Report::Unread {
+            count: unread.unread,
+            entries: unread.entries.into_iter().map(|e| e.entry).collect(),
+            read_total,
+        };
+        if last_unread.as_ref() != Some(&report) {
+            last_unread = Some(report.clone());
+            if out.send(report).is_err() {
+                return;
+            }
+        }
+        if let Some(mut offset) = read_at {
+            let mut p = client.page(PageFilter::Read, offset, page);
+            // The page under the drawer emptied (a dismiss): step back one.
+            while p.entries.is_empty() && offset > 0 {
+                offset = offset.saturating_sub(page);
+                p = client.page(PageFilter::Read, offset, page);
+            }
+            read_at = Some(offset);
+            let report = Report::Read {
+                entries: p.entries.into_iter().map(|e| e.entry).collect(),
+                total: p.total,
+                offset,
+            };
+            if last_read.as_ref() != Some(&report) {
+                last_read = Some(report.clone());
+                if out.send(report).is_err() {
                     return;
                 }
             }

@@ -25,7 +25,7 @@
 mod pids;
 mod spectrum;
 mod tap;
-mod wire;
+pub(crate) mod wire;
 
 use std::ffi::CString;
 use std::net::Shutdown;

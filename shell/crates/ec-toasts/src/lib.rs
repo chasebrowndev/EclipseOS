@@ -12,7 +12,9 @@
 //! capability and can grant none.
 
 pub mod app;
+pub mod art;
 pub mod conn;
+pub mod pane;
 pub mod view;
 
 /// Width of the stack's surface — the cards' own width, edge to edge.

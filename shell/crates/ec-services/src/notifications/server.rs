@@ -12,8 +12,10 @@ use zbus::interface;
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::OwnedValue;
 
-use super::history::{now_secs, wire_list, Shared, WireEntry, HISTORY_BUS_NAME, HISTORY_PATH};
-use super::{parse_actions, CloseReason, Command, Event, Notification, Notifications, Urgency};
+use super::history::{
+    now_secs, wire_list, PageFilter, Shared, Store, Verdict, WireEntry, HISTORY_BUS_NAME, HISTORY_PATH,
+};
+use super::{hints, parse_actions, CloseReason, Command, Event, Mode, Notification, Notifications, Urgency};
 
 const BUS_NAME: &str = "org.freedesktop.Notifications";
 const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
@@ -21,7 +23,22 @@ const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
 /// What we tell clients we can do. Deliberately short: every capability listed
 /// here is one this server actually honours, because a client that believes
 /// `actions` and gets none renders a notification the human cannot answer.
-const CAPABILITIES: &[&str] = &["body", "body-markup", "actions", "icon-static", "persistence"];
+///
+/// `persistence` is true: history survives restarts. Not listed until the
+/// whole path honours them: `body-hyperlinks` (needs the toast and widget to
+/// render and open links) and `action-icons`.
+///
+/// `sound` is true: a shown notification's `sound-file` / `sound-name` is
+/// played by `sound.rs` over the PulseAudio protocol (best effort; with no
+/// audio server the sound is dropped, as the spec allows).
+const CAPABILITIES: &[&str] = &[
+    "body",
+    "body-markup",
+    "actions",
+    "icon-static",
+    "persistence",
+    "sound",
+];
 
 /// The object the bus talks to. Owns nothing the GUI owns — it forwards.
 struct Server {
@@ -30,13 +47,21 @@ struct Server {
     /// notification", so the first one out is 1.
     last_id: u32,
     store: Shared,
+    sound: super::sound::Player,
 }
 
-/// Tell history watchers the list (or a live flag) changed.
-async fn history_changed(conn: &zbus::Connection) {
+/// Tell history watchers the list (or a live flag) changed, and what the
+/// unread count is now.
+async fn history_changed(conn: &zbus::Connection, store: &Shared) {
     if let Ok(emitter) = SignalEmitter::new(conn, HISTORY_PATH) {
-        let _ = HistoryServer::changed(&emitter).await;
+        announce(&emitter, store).await;
     }
+}
+
+async fn announce(emitter: &SignalEmitter<'_>, store: &Shared) {
+    let unread = store.lock().unread();
+    let _ = HistoryServer::changed(emitter).await;
+    let _ = HistoryServer::unread_changed(emitter, unread).await;
 }
 
 /// `org.eclipse.NotificationHistory`: the taskbar's window onto the store.
@@ -77,9 +102,9 @@ impl HistoryServer {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
         addressed_to_history(&header)?;
-        let changed = self.store.lock().remove(id);
+        let changed = self.mutate(|s| s.remove(id));
         if changed {
-            let _ = Self::changed(&emitter).await;
+            announce(&emitter, &self.store).await;
         }
         Ok(())
     }
@@ -90,9 +115,9 @@ impl HistoryServer {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> zbus::fdo::Result<()> {
         addressed_to_history(&header)?;
-        let changed = self.store.lock().clear();
+        let changed = self.mutate(Store::clear);
         if changed {
-            let _ = Self::changed(&emitter).await;
+            announce(&emitter, &self.store).await;
         }
         Ok(())
     }
@@ -108,24 +133,116 @@ impl HistoryServer {
         #[zbus(connection)] conn: &zbus::Connection,
     ) -> zbus::fdo::Result<bool> {
         addressed_to_history(&header)?;
-        if !self.store.lock().invoke(id, &key) {
+        let resident = self.store.lock().is_resident(id);
+        if !self.mutate(|s| s.invoke(id, &key)) {
             return Ok(false);
         }
         if let Ok(e) = SignalEmitter::new(conn, OBJECT_PATH) {
             let _ = Server::action_invoked(&e, id, &key).await;
-            let _ = Server::notification_closed(&e, id, CloseReason::Dismissed as u32).await;
+            // A `resident` notification outlives its actions (spec 1.2).
+            if !resident {
+                let _ = Server::notification_closed(&e, id, CloseReason::Dismissed as u32).await;
+            }
         }
-        // The toast, if drawn, goes; the GUI does not echo a close back.
-        let _ = self.events.send(Event::Closed {
-            id,
-            reason: CloseReason::Dismissed,
-        });
-        let _ = Self::changed(&emitter).await;
+        if !resident {
+            // The toast, if drawn, goes; the GUI does not echo a close back.
+            let _ = self.events.send(Event::Closed {
+                id,
+                reason: CloseReason::Dismissed,
+            });
+        }
+        announce(&emitter, &self.store).await;
         Ok(true)
+    }
+
+    /// `"normal"`, `"quiet"` or `"dnd"`.
+    fn get_mode(&self, #[zbus(header)] header: zbus::message::Header<'_>) -> zbus::fdo::Result<String> {
+        addressed_to_history(&header)?;
+        Ok(self.store.lock().mode().as_str().to_owned())
+    }
+
+    async fn set_mode(
+        &self,
+        mode: String,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        addressed_to_history(&header)?;
+        let mode = Mode::parse(&mode)
+            .ok_or_else(|| zbus::fdo::Error::InvalidArgs("mode is normal, quiet or dnd".into()))?;
+        if self.mutate(|s| s.set_mode(mode)) {
+            let _ = Self::mode_changed(&emitter, mode.as_str()).await;
+        }
+        Ok(())
+    }
+
+    /// One page as JSON, newest first. `filter`: `all`, `unread`, `read`.
+    /// See `docs/internal/notifications-contract.md` for the shape.
+    fn list_page(
+        &self,
+        filter: String,
+        offset: u32,
+        limit: u32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<String> {
+        addressed_to_history(&header)?;
+        Ok(self
+            .store
+            .lock()
+            .page(PageFilter::parse(&filter), offset as usize, limit as usize)
+            .to_json())
+    }
+
+    fn unread_count(&self, #[zbus(header)] header: zbus::message::Header<'_>) -> zbus::fdo::Result<u32> {
+        addressed_to_history(&header)?;
+        Ok(self.store.lock().unread())
+    }
+
+    /// The widget was opened: everything in it is now read.
+    async fn mark_all_read(
+        &self,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        addressed_to_history(&header)?;
+        if self.mutate(Store::mark_all_read) {
+            announce(&emitter, &self.store).await;
+        }
+        Ok(())
+    }
+
+    async fn mark_read(
+        &self,
+        id: u32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        addressed_to_history(&header)?;
+        if self.mutate(|s| s.mark_read(id)) {
+            announce(&emitter, &self.store).await;
+        }
+        Ok(())
     }
 
     #[zbus(signal)]
     async fn changed(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+
+    /// The unread count after a change.
+    #[zbus(signal)]
+    async fn unread_changed(emitter: &SignalEmitter<'_>, count: u32) -> zbus::Result<()>;
+
+    #[zbus(signal)]
+    async fn mode_changed(emitter: &SignalEmitter<'_>, mode: &str) -> zbus::Result<()>;
+}
+
+impl HistoryServer {
+    /// Change the store, then write it out.
+    fn mutate<T>(&self, f: impl FnOnce(&mut Store) -> T) -> T {
+        let mut s = self.store.lock();
+        let out = f(&mut s);
+        s.save();
+        out
+    }
 }
 
 #[interface(name = "org.freedesktop.Notifications")]
@@ -168,8 +285,10 @@ impl Server {
             self.last_id
         };
 
-        let notification = Notification {
+        let desktop_entry = hints::desktop_entry(&hints);
+        let mut notification = Notification {
             id,
+            group: hints::group_key(&desktop_entry, &app_name),
             app_name,
             summary,
             body,
@@ -178,14 +297,42 @@ impl Server {
             actions: parse_actions(&actions),
             expires_in: Notification::lifetime(expire_timeout, urgency),
             transient,
+            category: hints::category(&hints),
+            desktop_entry,
+            resident: hints::resident(&hints),
+            progress: hints::progress(&hints),
+            image: hints::image(&hints),
+            sound: hints::sound(&hints),
         };
 
-        // A full channel or a gone GUI is not an error the client can act on;
-        // it still gets its id back.
-        let stored = self.store.lock().posted(&notification, now_secs());
-        let _ = self.events.send(Event::Posted(Box::new(notification)));
-        if stored {
-            history_changed(conn).await;
+        // Mode and the user's rules decide whether this pops up, is only
+        // remembered, or is ignored. Either way the client gets its id back.
+        let verdict = {
+            let mut store = self.store.lock();
+            let v = store.admit(&mut notification, expire_timeout, now_secs());
+            store.save();
+            v
+        };
+        match verdict {
+            Verdict::Show => {
+                // Only a notification that is actually shown may sound: Quiet,
+                // DND and the `mute` rule never reach here.
+                self.sound.notify(&notification);
+                // A full channel or a gone GUI is not an error the client can act on.
+                let _ = self.events.send(Event::Posted(Box::new(notification)));
+            }
+            // Quiet: remembered, not shown. If it replaces a toast that is
+            // still up, that toast must go.
+            Verdict::Quiet => {
+                let _ = self.events.send(Event::Closed {
+                    id,
+                    reason: CloseReason::ByCall,
+                });
+            }
+            Verdict::Drop => {}
+        }
+        if verdict != Verdict::Drop {
+            history_changed(conn, &self.store).await;
         }
         id
     }
@@ -196,8 +343,14 @@ impl Server {
             id,
             reason: CloseReason::ByCall,
         });
-        if self.store.lock().closed(id) {
-            history_changed(conn).await;
+        let closed = {
+            let mut s = self.store.lock();
+            let c = s.closed(id);
+            s.save();
+            c
+        };
+        if closed {
+            history_changed(conn, &self.store).await;
         }
     }
 
@@ -239,7 +392,9 @@ pub fn spawn() -> zbus::Result<Notifications> {
     let (event_tx, event_rx) = mpsc::channel();
     let (command_tx, command_rx) = mpsc::channel();
     let compositor_tx = event_tx.clone();
-    let history = Shared::default();
+    let store = Store::open();
+    let first_id = store.max_id();
+    let history = Shared::new(store);
     let history_for_serve = history.clone();
 
     // The connection is built on the service thread so that the whole D-Bus
@@ -261,8 +416,9 @@ pub fn spawn() -> zbus::Result<Notifications> {
                         OBJECT_PATH,
                         Server {
                             events: event_tx.clone(),
-                            last_id: 0,
+                            last_id: first_id,
                             store: history.clone(),
+                            sound: super::sound::Player::new(),
                         },
                     )
                 })
@@ -332,7 +488,13 @@ fn serve(connection: &zbus::blocking::Connection, commands: &mpsc::Receiver<Comm
         let id = match &command {
             Command::Close { id, .. } | Command::Invoke { id, .. } => *id,
         };
-        let history_changed_now = history.lock().closed(id);
+        let (history_changed_now, resident) = {
+            let mut s = history.lock();
+            let resident = s.is_resident(id);
+            let c = s.closed(id);
+            s.save();
+            (c, resident)
+        };
         let result = match command {
             Command::Close { id, reason } => {
                 zbus::block_on(Server::notification_closed(emitter, id, reason as u32))
@@ -340,15 +502,17 @@ fn serve(connection: &zbus::blocking::Connection, commands: &mpsc::Receiver<Comm
             Command::Invoke { id, key } => zbus::block_on(async {
                 Server::action_invoked(emitter, id, &key).await?;
                 // The spec pairs the two: a clicked notification is a closed
-                // notification unless the client asked for `resident`, which
-                // we do not advertise.
+                // notification unless the client asked for `resident`.
+                if resident {
+                    return Ok(());
+                }
                 Server::notification_closed(emitter, id, CloseReason::Dismissed as u32).await
             }),
         };
         if history_changed_now {
             zbus::block_on(async {
                 if let Ok(e) = SignalEmitter::new(connection.inner(), HISTORY_PATH) {
-                    let _ = HistoryServer::changed(&e).await;
+                    announce(&e, history).await;
                 }
             });
         }

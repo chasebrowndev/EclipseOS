@@ -19,8 +19,9 @@ name = "ec-toasts"
 path = "src/main.rs"
 
 [dependencies]
-iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image"] }
 iced_layershell = "0.19.1"
 ec-ui = { path = "../ec-ui" }
 ec-services = { path = "../ec-services" }
+freedesktop-icons = "0.4"
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }

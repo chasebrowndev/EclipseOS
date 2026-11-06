@@ -179,6 +179,9 @@ in one frame when the card is removed.
 **Proposed:** `glass::Pane` already has `.alpha(u8)`. `glass_card` and
 `glass_ground` should take an alpha and pass it through, and the toast stack
 should feed it from its fade value.
+**Update 2026-11-06:** `ec-toasts/src/pane.rs` now passes alpha through, so the pane
+should fade with the card. Not yet confirmed visually: `grim` does not capture panes
+(GLASS-01).
 
 ## GLASS-06: controls still drawing their own ground
 
