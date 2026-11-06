@@ -667,3 +667,83 @@ tried here.
 
 **Proposed:** none until the source of the file is known.
 
+
+---
+
+# Zoom on alayna-laptop-2 (hybrid Intel + NVIDIA), 2026-11-06
+
+Symptoms: extra blank/white windows, a frozen meeting view (audio continues),
+odd stacking. Only that machine; Zoom is fine on the dev box. Zoom 7.2.1 (Qt 6.8,
+xcb via XWayland), eclipseos-abyss 0.1.7 built 2026-11-06, which already has
+`2881070` (transients follow parent, Zoom floats). Not diagnosed: ZOOM-01 and
+ZOOM-02 are leads, not causes.
+
+## ZOOM-01 — X11 errors on every Zoom window map
+
+**Where:** `abyss/crates/ec-abyss/src/xwayland/xwm.rs` (`map_window_request`,
+`mapped_override_redirect_window`); the log lines come from smithay's XWM.
+
+**Seen:** each `x11 window map decision` for Zoom is followed by `Failed to handle
+X11 event` + `Got X11 Error` (29 pairs in one boot; also on 2026-11-03/04 boots).
+The error code is not logged. Zoom makes and destroys short-lived windows fast, so
+the likely shape is a request against a window that is already gone (BadWindow) that
+aborts the handler part-way, but that is a guess.
+
+**Reproduce:** join a Zoom meeting on the laptop, `journalctl --user -t ec-abyss -b | rg -B2 "X11 Error"`.
+
+**Proposed:** log the X error code and request opcode (smithay 0.7.0 xwm source
+first), then see which handler is dropped.
+
+## ZOOM-02 — two large Zoom windows stack like the blank ones in the photo
+
+**Seen:** during a meeting `_NET_CLIENT_LIST` holds "Zoom Workplace" (1230x723) and
+"Meeting" (1188x800), both floating, `WM_STATE` Normal, offset a few px — the
+same shape as the two stacked white rounded rects in the user's photo. A third
+300x83 "Zoom Workplace" window appeared earlier and was gone later. Which one is
+blank is unknown; needs a screenshot while broken.
+
+**Capture when it breaks (do not restart Zoom first):** `grim`, `ec-ctl dump`,
+`DISPLAY=:0 xprop -id <win> WM_STATE _NET_WM_STATE _NET_WM_WINDOW_TYPE` per Zoom
+window, and the journal for that minute.
+
+**Config trial:** `~/.config/zoomus.conf` `enableAlphaBuffer=false` (Qt asks for an
+alpha channel on every window; log says "Alpha channel requested = yes"). Set
+2026-11-06, backup `zoomus.conf.bak-claude`; takes effect on next Zoom launch.
+Result not yet known.
+
+## ZOOM-03 — apps launched from the bar live in `ec-hyperion-bar.service`
+
+**Where:** how the bar/launcher spawns apps; `/usr/lib/systemd/user/ec-hyperion-bar.service`
+(`KillMode=control-group`).
+
+**Seen:** the running Zoom's cgroup is `.../session.slice/ec-hyperion-bar.service`
+(also the 2026-11-05 coredump). Restarting the bar — `ec-update`, a bar crash, or
+`systemctl --user restart` — kills every app started from it, **including a live
+meeting**. Bar restarts on that box: 09:21, 09:26, 10:42 on 2026-11-06.
+
+**Reproduce:** `cat /proc/$(pgrep -x zoom|head -1)/cgroup`.
+
+**Proposed:** spawn apps in their own transient scope (`systemd-run --user --scope`
+or `app-<id>.scope`, as Chromium got there already) so unit restarts don't reach them.
+
+## ZOOM-04 — Zoom SIGABRT 2026-11-05 21:38, same second the compositor died
+
+**Seen:** `coredumpctl` shows an `assert` abort in Zoom code called from a libpulse
+callback thread (a second Zoom thread was also in `__assert_fail`). It lands the
+same second `ec-abyss` died and every Wayland client got EPIPE (21:38:05); an
+`ec-abyss` binary had been installed over ssh at 21:37:50, but what stopped the
+running compositor is not established. pipewire-pulse stayed up. Reading this as
+Zoom asserting while its X connection vanished is an inference from timing, not
+proven; nothing shows it crashing on its own. Zoom symbols are stripped; core is
+in `/var/lib/systemd/coredump/` on the laptop.
+
+## ZOOM-05 — `_NET_WM_SYNC_REQUEST` was not implemented
+
+Zoom advertises it (`WM_PROTOCOLS`, counter `_NET_WM_SYNC_REQUEST_COUNTER`); smithay
+0.7.0 has no support. `xwayland/sync.rs` now sends the request (over a second x11rb
+connection) when a managed X11 window's size changes, from both client configure
+requests and layout configures. It never waits for the answer, never reads the
+counter back and never holds a frame, so it cannot change what Zoom shows; it only
+lets us see whether Zoom responds. Holding presentation until the counter catches up
+is the part that would matter, and is not done. The spec has no section for it;
+the protocol is EWMH.

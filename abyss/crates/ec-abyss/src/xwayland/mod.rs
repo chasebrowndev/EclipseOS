@@ -6,6 +6,7 @@
 //! like every other child — no shared handles, no locks.
 
 pub mod security;
+pub mod sync;
 pub mod xwm;
 
 use smithay::{
@@ -26,6 +27,9 @@ pub struct XWaylandState {
     pub client: Option<Client>,
     /// `:N`, once known.
     pub display: Option<u32>,
+    /// `_NET_WM_SYNC_REQUEST` sender on a second connection to `:N`; `None`
+    /// if that connection could not be opened (resizes then go unannounced).
+    pub sync: Option<sync::SyncRequests>,
     /// Override-redirect surfaces: menus, tooltips, drag icons. Mapped for
     /// the human to see, excluded from the managed window set and (later)
     /// from the agent scene (COMP-07 §1).
@@ -138,6 +142,16 @@ pub fn creation_geometry(raw: Rectangle<i32, Logical>, scale: f64) -> Rectangle<
     from_x11(x, scale)
 }
 
+/// The compositor is about to configure managed X11 window `surface` to
+/// `rect`: announce a size change with `_NET_WM_SYNC_REQUEST` first, so the
+/// client sees the request before the configure. Never holds the configure.
+pub fn sync_on_configure(state: &mut AbyssState, surface: &X11Surface, rect: Rectangle<i32, Logical>) {
+    let size_changed = surface.geometry().size != rect.size;
+    if let Some(sync) = state.xwayland.sync.as_mut() {
+        sync.on_configure(surface.window_id(), size_changed);
+    }
+}
+
 /// Mirror the compositor's stacking of managed X11 windows into the X stack
 /// (`_NET_CLIENT_LIST_STACKING`, `XQueryTree`). Without it the two diverge: the
 /// compositor raises a window on focus or relayout, X keeps its old order, and
@@ -243,6 +257,13 @@ fn ready(state: &mut AbyssState, socket: std::os::unix::net::UnixStream, dpy: u3
     };
     state.xwayland.wm = Some(wm);
     state.xwayland.display = Some(dpy);
+    state.xwayland.sync = match sync::SyncRequests::connect(dpy) {
+        Ok(s) => Some(s),
+        Err(e) => {
+            tracing::warn!(error = %e, "no sync-request connection; resizes will not be announced");
+            None
+        }
+    };
 
     // Children spawned from binds must find the X server. Safe here: the
     // compositor core is single-threaded and no thread has been started yet
