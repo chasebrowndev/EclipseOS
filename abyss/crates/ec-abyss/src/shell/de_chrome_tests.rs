@@ -467,6 +467,67 @@ fn a_sticky_window_moved_to_another_output_leaves_no_copy_behind() {
 }
 
 #[test]
+fn a_floating_window_released_over_the_other_output_moves_there() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_, w) = de_window(&mut h, &mut c);
+    let b_geo = h
+        .state
+        .space
+        .output_geometry(&h.state.outputs.get(h.b).unwrap().output)
+        .unwrap();
+    // Dragged past the edge of A: the centre is on B, the rectangle overhangs.
+    let at = Rectangle::new(
+        Point::from((b_geo.loc.x - 100, b_geo.loc.y + 100)),
+        smithay::utils::Size::from((400, 300)),
+    );
+    shell::place_at(&mut h.state, &w, at);
+    crate::input::grabs::finish_move(&mut h.state, &w);
+    assert_eq!(shell::output_of_window(&h.state, &w), Some(h.b));
+    assert_eq!(h.state.outputs.focused().map(|e| e.id), Some(h.b));
+    let now = content(&h, &w);
+    assert!(now.loc.x >= b_geo.loc.x, "clamped onto B");
+    assert!(now.loc.y >= b_geo.loc.y);
+    assert!(now.loc.x + now.size.w <= b_geo.loc.x + b_geo.size.w);
+    assert_eq!(holders(&h, &w), 1);
+}
+
+#[test]
+fn a_press_on_a_client_side_windows_strip_drags_it_and_a_click_does_not() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    flip(&mut h, Mode::De);
+    let t = c.create_toplevel(&mut h);
+    c.commit(&mut h, &t.surface);
+    c.attach(&mut h, &t.surface);
+    c.pump(&mut h);
+    settle(&mut h, &mut c, &t);
+    let w = window_of(&h, &t);
+    let before = content(&h, &w);
+    let strip = before.loc.to_f64() + Point::from((50.0, 10.0));
+    // Below the strip nothing is armed.
+    move_to(&mut h, before.loc.to_f64() + Point::from((50.0, 40.0)));
+    click(&mut h, LEFT, ButtonState::Pressed);
+    assert!(h.state.strip_drag.is_none());
+    click(&mut h, LEFT, ButtonState::Released);
+    // A click on the strip moves nothing.
+    move_to(&mut h, strip);
+    click(&mut h, LEFT, ButtonState::Pressed);
+    assert!(h.state.strip_drag.is_some());
+    click(&mut h, LEFT, ButtonState::Released);
+    assert!(h.state.strip_drag.is_none());
+    assert_eq!(content(&h, &w), before);
+    // Dragging past the threshold moves the window with the pointer.
+    move_to(&mut h, strip);
+    click(&mut h, LEFT, ButtonState::Pressed);
+    move_to(&mut h, pt(strip.x + 60.0, strip.y + 40.0));
+    assert!(h.state.pointer_grab_active, "the existing move grab");
+    assert_eq!(content(&h, &w).loc, before.loc + Point::from((60, 40)));
+    click(&mut h, LEFT, ButtonState::Released);
+    assert!(!h.state.pointer_grab_active);
+}
+
+#[test]
 fn choosing_a_desktop_for_a_sticky_window_ends_its_stickiness() {
     let mut h = harness();
     let mut c = Client::connect(&mut h);

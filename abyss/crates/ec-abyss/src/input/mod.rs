@@ -596,6 +596,7 @@ impl AbyssState {
         let serial = SERIAL_COUNTER.next_serial();
         let under = self.surface_under(pos);
         crate::shell::titlebar::motion(self, pos);
+        grabs::strip_motion(self);
         // A protected surface is not pointed at by anything but a physical
         // device, and nothing is pointed at inside a commit slot (COMP-19).
         crate::protocols::protected::gate::note_pointer_origin(self);
@@ -688,6 +689,7 @@ impl AbyssState {
         let under = self.surface_under(self.pointer_location);
         let location = self.pointer_location;
         crate::shell::titlebar::motion(self, location);
+        grabs::strip_motion(self);
         let under = crate::protocols::protected::gate::filter_under(
             self,
             under,
@@ -1236,6 +1238,9 @@ impl AbyssState {
     pub(crate) fn pointer_button(&mut self, button: u32, button_state: ButtonState, time: u32) {
         let pressed = button_state == ButtonState::Pressed;
         // The release of a press a titlebar swallowed is swallowed, behind no gate.
+        if !pressed {
+            grabs::strip_release(self, button);
+        }
         if !pressed && crate::shell::titlebar::release(self, button) {
             return;
         }
@@ -1317,7 +1322,11 @@ impl AbyssState {
         // the client under the pointer never receives it (ADR 0057). Whether it
         // fired or not, the press carries on to the seat and click-to-focus.
         if pressed {
-            grabs::start_mouse_bind(self, button);
+            let moved = grabs::start_mouse_bind(self, button);
+            // Else a left press on a floating window's top strip may become a move.
+            if !moved && button == BTN_LEFT {
+                grabs::arm_strip_drag(self);
+            }
         }
         // An X11 client decides what to do with a press from whether it holds
         // the X input focus when the press arrives; Qt drops the click that

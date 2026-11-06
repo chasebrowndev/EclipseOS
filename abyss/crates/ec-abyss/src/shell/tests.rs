@@ -235,6 +235,21 @@ fn apply_drop_side_centre_band_and_stale_target() {
 }
 
 #[test]
+fn landing_output_is_the_other_output_under_the_window_centre() {
+    // Two outputs side by side, the second one at x = 1000.
+    let outs = [(1, rr(0, 0, 1000, 800)), (2, rr(1000, 0, 1920, 1080))];
+    let p = |x: f64, y: f64| Point::from((x, y));
+    // Centre over the other output lands there.
+    assert_eq!(landing_output(&outs, 1, p(1500.0, 300.0)), Some(2));
+    assert_eq!(landing_output(&outs, 2, p(200.0, 300.0)), Some(1));
+    // Centre still on the source output stays put.
+    assert_eq!(landing_output(&outs, 1, p(900.0, 300.0)), None);
+    // Centre on no output at all stays put.
+    assert_eq!(landing_output(&outs, 1, p(-50.0, 300.0)), None);
+    assert_eq!(landing_output(&[], 1, p(0.0, 0.0)), None);
+}
+
+#[test]
 fn drop_candidates_precompute_exactly_what_a_drop_would_do() {
     let (t, tiles) = two();
     let area = rr(0, 0, 1000, 500);

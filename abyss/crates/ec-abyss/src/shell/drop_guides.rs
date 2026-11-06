@@ -387,6 +387,79 @@ pub fn drop_window(state: &mut AbyssState, window: &Window) {
     arrange(state);
 }
 
+/// The output a window whose centre is `centre` lands on when released: the
+/// output other than `from` whose logical geometry contains it. `None` when the
+/// centre is still on `from` or on no output, and the window stays put. Pure.
+pub(crate) fn landing_output(
+    outputs: &[(u64, Rectangle<i32, Logical>)],
+    from: u64,
+    centre: Point<f64, Logical>,
+) -> Option<u64> {
+    outputs
+        .iter()
+        .find(|(id, geo)| *id != from && geo.to_f64().contains(centre))
+        .map(|(id, _)| *id)
+}
+
+/// A floating window released over another output moves to that output's
+/// active workspace. Its rectangle is carried across by the offset between the
+/// two outputs and kept inside the target's usable area, as
+/// `move_to_output_workspace` does. Tiled windows keep their output. Focus goes
+/// with the window (`COMP-05 §5.1`).
+pub fn land_on_output(state: &mut AbyssState, window: &Window) {
+    if state.lock.locked {
+        return;
+    }
+    let Some(from) = output_of_window(state, window) else {
+        return;
+    };
+    let Some(geo) = state.space.element_geometry(window) else {
+        return;
+    };
+    let outputs: Vec<(u64, Rectangle<i32, Logical>)> = state
+        .outputs
+        .iter()
+        .filter_map(|e| state.space.output_geometry(&e.output).map(|g| (e.id, g)))
+        .collect();
+    let Some(to) = landing_output(&outputs, from, centre(geo)) else {
+        return;
+    };
+    let src = state.outputs.get(from).expect("just resolved");
+    let (src_output, src_active) = (src.output.clone(), src.active);
+    let Some((rect, placement)) = src.workspaces[src_active]
+        .floating
+        .iter()
+        .find(|f| &f.window == window)
+        .map(|f| (f.rect, f.placement))
+    else {
+        return;
+    };
+    let dst = state.outputs.get(to).expect("from the geometry list");
+    let (dst_output, dst_active) = (dst.output.clone(), dst.active);
+    // A drag keeps the stored rectangle in global coordinates (`place_at`), so
+    // it is already where the window was dropped: only clamp it to the target.
+    layer_map_for_output(&dst_output).arrange();
+    let area = tiling_area(state, &dst_output);
+    let rect = super::de::carried_rect(rect, Point::default(), area);
+    let src = state.outputs.get_mut(from).expect("just resolved");
+    src.workspaces[src_active].remove(window);
+    super::anim::leave_output(state, window, &src_output, &dst_output);
+    state.space.unmap_elem(window);
+    let dst = state.outputs.get_mut(to).expect("from the geometry list");
+    dst.workspaces[dst_active]
+        .floating
+        .push(super::workspace::Floating {
+            window: window.clone(),
+            rect,
+            weight: None,
+            placement,
+        });
+    state.outputs.set_focused(to);
+    arrange(state);
+    super::anim::arrive_on_output(state, window);
+    tracing::info!(output = to, "floating window moved to output on drop");
+}
+
 /// Abandon a drag in flight (grab cancelled, session locked): the window goes
 /// back to its placeholder.
 pub fn cancel_tile_drag(state: &mut AbyssState) {
