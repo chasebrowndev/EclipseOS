@@ -33,7 +33,7 @@ use smithay::{
         allocator::{
             dmabuf::AsDmabuf,
             gbm::{GbmAllocator, GbmBuffer, GbmBufferFlags, GbmDevice},
-            Format, Fourcc, Modifier, Slot, Swapchain,
+            Buffer as _, Format, Fourcc, Modifier, Slot, Swapchain,
         },
         drm::{
             compositor::{DrmCompositor, FrameFlags},
@@ -142,6 +142,23 @@ pub struct DrmOutput {
     /// Format and modifiers of the transfer buffer both GPUs share, when
     /// there are any; without them the fallback is unavailable.
     copy_format: Option<(Fourcc, Vec<Modifier>)>,
+    /// Diagnostic bookkeeping only: what has already been logged. Never read
+    /// by any decision on the frame path.
+    diag: OutputDiag,
+}
+
+/// What has been logged for one output, so the once-per-output and
+/// on-change diagnostics fire on the first occurrence and on changes only.
+#[derive(Default)]
+struct OutputDiag {
+    /// Transfer buffer as last exported: size, stride, format.
+    transfer: Option<(Size<i32, BufferCoord>, u32, Format)>,
+    /// Bytes read back from the primary last frame.
+    readback_len: Option<usize>,
+    /// CRTC geometry was logged after a successful commit since the last mode change.
+    geometry_logged: bool,
+    /// Overscan last logged.
+    overscan: Option<crate::outputs::overscan::Overscan>,
 }
 
 /// What a secondary output needs to be fed by the primary GPU (ADR 0084).
@@ -179,6 +196,15 @@ impl SecondaryPass {
         if modifiers == [Modifier::Linear] {
             flags |= GbmBufferFlags::LINEAR;
         }
+        tracing::info!(
+            output = %output.name(),
+            transfer_w = size.w.max(1),
+            transfer_h = size.h.max(1),
+            format = ?format,
+            modifiers = ?modifiers,
+            linear = flags.contains(GbmBufferFlags::LINEAR),
+            "secondary transfer swapchain requested (actual stride logged at first export)"
+        );
         Self {
             swapchain: Swapchain::new(
                 GbmAllocator::new(primary_gbm.clone(), flags),
@@ -203,6 +229,13 @@ impl SecondaryPass {
         if size == self.size {
             return;
         }
+        tracing::info!(
+            from_w = self.size.w,
+            from_h = self.size.h,
+            to_w = size.w,
+            to_h = size.h,
+            "secondary transfer swapchain follows mode change"
+        );
         self.size = size;
         self.swapchain.resize(size.w.max(1) as u32, size.h.max(1) as u32);
         self.held = None;
@@ -647,7 +680,16 @@ fn scan_device(state: &mut AbyssState, dev: usize) {
             Ok(info) if info.state() == connector::State::Connected && !info.modes().is_empty() => {
                 connected.push((*handle, info))
             }
-            Ok(info) => pending |= info.state() == connector::State::Connected,
+            Ok(info) => {
+                pending |= info.state() == connector::State::Connected;
+                tracing::info!(
+                    device = %device.tag,
+                    connector = %connector_name(&info),
+                    state = ?info.state(),
+                    modes = info.modes().len(),
+                    "connector skipped by scan (not connected, or reports no modes)"
+                );
+            }
             Err(err) => tracing::warn!(device = %device.tag, ?err, "reading connector"),
         }
     }
@@ -1015,6 +1057,7 @@ fn add_connector(
             import_strikes: 0,
             copy_format,
             pass,
+            diag: OutputDiag::default(),
         });
     }
     tracing::info!(
@@ -1071,7 +1114,8 @@ fn new_compositor(
         )
     };
     let exporter = GbmFramebufferExporter::new(device.gbm.clone(), None);
-    AbyssDrmCompositor::new(
+    let mode = surface.pending_mode();
+    let compositor = AbyssDrmCompositor::new(
         mode_source,
         surface,
         None,
@@ -1082,7 +1126,19 @@ fn new_compositor(
         device.drm.cursor_size(),
         Some(device.gbm.clone()),
     )
-    .map_err(|err| anyhow!("{err}"))
+    .map_err(|err| anyhow!("{err}"))?;
+    // Smithay allocates the scanout buffers lazily, on the first render, so
+    // their stride is not known here; this records what the compositor settled on.
+    tracing::info!(
+        device = %device.tag,
+        via_primary,
+        mode_w = mode.size().0,
+        mode_h = mode.size().1,
+        format = ?compositor.format(),
+        modifiers = compositor.modifiers().len(),
+        "output scanout compositor created"
+    );
+    Ok(compositor)
 }
 
 /// What each GPU we composite with can sample, in device order.
@@ -2221,6 +2277,18 @@ fn render_output(state: &mut AbyssState, index: usize) {
         crate::render::overscan::calibration_markers(overscan, mode_size, &mut elements);
     }
     let Some(drm) = state.drm.as_mut() else { return };
+    // Diagnostics: the overscan in effect, once per output and on change.
+    if drm.outputs[index].diag.overscan != Some(overscan) {
+        tracing::info!(
+            output = %output.name(),
+            top = overscan.top,
+            bottom = overscan.bottom,
+            left = overscan.left,
+            right = overscan.right,
+            "overscan in effect"
+        );
+        drm.outputs[index].diag.overscan = Some(overscan);
+    }
 
     // Annotation and selector fades schedule frames only while in flight.
     // A held retile keeps frames coming so the tick sees its ghost finish.
@@ -2352,7 +2420,25 @@ fn render_output(state: &mut AbyssState, index: usize) {
         let submit_start = Instant::now();
         let Some(drm) = state.drm.as_mut() else { return };
         match drm.outputs[index].compositor.queue_frame(Some(presentation)) {
-            Ok(()) => queued = true,
+            Ok(()) => {
+                queued = true;
+                // Diagnostics: once per output after a commit, and again after a mode change.
+                let entry = &mut drm.outputs[index];
+                if !entry.diag.geometry_logged {
+                    entry.diag.geometry_logged = true;
+                    let mode = entry.compositor.current_mode();
+                    tracing::info!(
+                        output = %entry.output.name(),
+                        route = route.as_str(),
+                        copy,
+                        plane = ?entry.compositor.plane(),
+                        crtc = ?entry.compositor.crtc(),
+                        crtc_w = mode.size().0,
+                        crtc_h = mode.size().1,
+                        "first commit on output: plane, crtc and mode (src/dst/fb not visible to the backend)"
+                    );
+                }
+            }
             Err(err) => {
                 let failures = drm.outputs[index].commit_failures.saturating_add(1);
                 if log_failure_now(failures) {
@@ -2613,6 +2699,36 @@ fn render_secondary(
         .export()
         .map_err(|err| anyhow!("exporting the transfer buffer: {err}"))?;
 
+    // Diagnostics: the exported buffer against the mode it must fill. Logged on
+    // first export and on any change; a size mismatch is the failure to look for.
+    let stride = dmabuf.strides().next().unwrap_or(0);
+    let buf = dmabuf.size();
+    let transfer = (buf, stride, dmabuf.format());
+    if out.diag.transfer.as_ref() != Some(&transfer) {
+        if buf.w != size.w || buf.h != size.h {
+            tracing::warn!(
+                output = %out.output.name(),
+                buf_w = buf.w,
+                buf_h = buf.h,
+                mode_w = size.w,
+                mode_h = size.h,
+                stride,
+                format = ?transfer.2,
+                "transfer buffer size does not match the output mode"
+            );
+        } else {
+            tracing::info!(
+                output = %out.output.name(),
+                buf_w = buf.w,
+                buf_h = buf.h,
+                stride,
+                format = ?transfer.2,
+                "transfer buffer exported"
+            );
+        }
+        out.diag.transfer = Some(transfer);
+    }
+
     // A clone shares the underlying buffer; `bind` wants it by `&mut`.
     let mut bind_to = dmabuf.clone();
     let mut target = primary
@@ -2653,6 +2769,30 @@ fn render_secondary(
     let bytes = primary
         .map_texture(&mapping)
         .map_err(|err| anyhow!("mapping the read-back: {err}"))?;
+    // Diagnostics: bytes read back against w*h*4, on first frame and on change.
+    let len = bytes.len();
+    if out.diag.readback_len != Some(len) {
+        let expected = (size.w.max(0) as usize) * (size.h.max(0) as usize) * 4;
+        if len != expected {
+            tracing::warn!(
+                output = %out.output.name(),
+                readback_bytes = len,
+                expected_w_h_4 = expected,
+                w = size.w,
+                h = size.h,
+                "CPU readback length differs from w*h*4"
+            );
+        } else {
+            tracing::info!(
+                output = %out.output.name(),
+                readback_bytes = len,
+                w = size.w,
+                h = size.h,
+                "CPU readback length"
+            );
+        }
+        out.diag.readback_len = Some(len);
+    }
     let texture = secondary
         .import_memory(bytes, Fourcc::Abgr8888, (size.w, size.h).into(), flipped)
         .map_err(|err| anyhow!("uploading to the secondary GPU: {err}"))?;
@@ -2751,6 +2891,8 @@ pub fn set_mode(state: &mut AbyssState, id: u64, mode: OutputMode) -> bool {
         tracing::warn!(id, error = %e, "surface refused the mode switch");
         return false;
     }
+    // Diagnostics: the next commit on this output logs its geometry again.
+    drm.outputs[index].diag.geometry_logged = false;
     drm.outputs[index].needs_render = true;
     schedule_render(state);
     true
