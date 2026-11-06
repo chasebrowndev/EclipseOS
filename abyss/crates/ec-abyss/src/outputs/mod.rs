@@ -524,14 +524,6 @@ pub fn identity(edid_blob: Option<&[u8]>, connector: &str) -> String {
     }
 }
 
-/// Whether an identity came from the EDID rather than the connector-name
-/// fallback [`identity`] uses when the blob is missing or unparseable. An EDID
-/// identity is `make model serial` and a connector name never contains spaces,
-/// so the two never collide.
-pub fn identity_is_edid(identity: &str, connector: &str) -> bool {
-    identity != connector
-}
-
 /// A headless output so the compositor stays usable with no connector (§5).
 pub fn virtual_output(name: &str, size: (i32, i32)) -> (Output, Mode) {
     let mode = Mode {
@@ -792,13 +784,6 @@ fn apply_settings(state: &mut crate::state::AbyssState, id: u64) {
     let ident = entry.identity.clone();
     let rule = state.config.output_rule(&entry.connector, &entry.identity);
     let saved = state.outputs.saved_for(&entry.identity).cloned();
-    // A saved disable is keyed by identity; a connector-name identity (no EDID)
-    // is too weak to inherit one from a different monitor on that port.
-    let edid_identity = identity_is_edid(&entry.identity, &entry.connector);
-    let saved_enabled = saved.as_ref().and_then(|s| s.enabled);
-    if saved_enabled == Some(false) && !edid_identity {
-        tracing::info!(id, connector = %entry.connector, "ignoring saved disable: output has no EDID identity");
-    }
 
     if let Some(number) = rule.number {
         state.outputs.set_number(id, number);
@@ -806,7 +791,7 @@ fn apply_settings(state: &mut crate::state::AbyssState, id: u64) {
 
     let enabled = rule
         .enabled
-        .or(saved_enabled.filter(|&e| e || edid_identity))
+        .or(saved.as_ref().and_then(|s| s.enabled))
         .unwrap_or(true);
     if !enabled {
         // Refusal path (§4): a config that would leave zero outputs is ignored.
@@ -1124,18 +1109,6 @@ mod tests {
     fn identity_falls_back_to_connector() {
         assert_eq!(identity(None, "DP-3"), "DP-3");
         assert_eq!(identity(Some(&[0u8; 4]), "DP-3"), "DP-3");
-    }
-
-    /// Only an EDID-derived identity may carry a saved disable (fix: a monitor
-    /// with no EDID must not inherit a disable saved for another panel).
-    #[test]
-    fn saved_disable_needs_a_real_identity() {
-        assert!(identity_is_edid("ACM Panel 1234", "DP-3"));
-        assert!(!identity_is_edid(&identity(None, "DP-3"), "DP-3"));
-        assert!(!identity_is_edid(
-            &identity(Some(&[0u8; 4]), "DP-3@card1"),
-            "DP-3@card1"
-        ));
     }
 
     /// The cases the thresholds exist to get right, named by the hardware
