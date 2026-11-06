@@ -85,6 +85,19 @@ impl XdgShellHandler for AbyssState {
         crate::input::grabs::start_resize(self, window, &wl_surface, serial, edges);
     }
 
+    /// `xdg_toplevel.show_window_menu`: under `mode "de"` the compositor's window
+    /// menu, for a press the client was really sent (like a move). Elsewhere,
+    /// and under the session lock, nothing opens.
+    fn show_window_menu(
+        &mut self,
+        surface: ToplevelSurface,
+        _seat: WlSeat,
+        serial: Serial,
+        location: smithay::utils::Point<i32, smithay::utils::Logical>,
+    ) {
+        crate::shell::winmenu::show_for_client(self, &surface, serial, location);
+    }
+
     fn grab(&mut self, surface: PopupSurface, _seat: WlSeat, _serial: Serial) {
         crate::shell::popup_grab_start(self, surface);
     }
@@ -106,11 +119,19 @@ impl XdgShellHandler for AbyssState {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        crate::shell::decline_maximize_toplevel(self, &surface);
+        if self.config.mode.profile().maximize {
+            crate::shell::maximize::request_toplevel(self, &surface, true);
+        } else {
+            crate::shell::decline_maximize_toplevel(self, &surface);
+        }
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        crate::shell::decline_maximize_toplevel(self, &surface);
+        if self.config.mode.profile().maximize {
+            crate::shell::maximize::request_toplevel(self, &surface, false);
+        } else {
+            crate::shell::decline_maximize_toplevel(self, &surface);
+        }
     }
 
     fn fullscreen_request(

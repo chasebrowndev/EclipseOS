@@ -698,3 +698,1079 @@ mod held_layer_offset {
         assert_eq!(held_offset(anchor, sz(1920, 30), sz(1920, 30)), (0, 0).into());
     }
 }
+
+/// `mode "de"` (COMP-17 §2, COMP-05 §3.1, C-24): nothing tiles, and the flip
+/// in either direction is live. Driven end to end by a real client.
+mod de_mode {
+    use super::*;
+    use crate::config::Mode;
+    use crate::shell::focus::state_tests::{
+        client::{Client, Toplevel},
+        harness, Harness,
+    };
+
+    fn window_of(h: &Harness, t: &Toplevel) -> Window {
+        use wayland_client::Proxy;
+        let id = t.surface.id().protocol_id();
+        owned_windows(&h.state)
+            .into_iter()
+            .find(|w| {
+                window_surface(w)
+                    .is_some_and(|s| smithay::reexports::wayland_server::Resource::id(&s).protocol_id() == id)
+            })
+            .expect("placed")
+    }
+
+    fn map(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
+        let t = c.create_toplevel(h);
+        c.commit(h, &t.surface);
+        c.attach(h, &t.surface);
+        let w = window_of(h, &t);
+        (t, w)
+    }
+
+    /// A dialog of `parent`, mapped.
+    fn dialog(h: &mut Harness, c: &mut Client, parent: &Toplevel) -> (Toplevel, Window) {
+        let t = c.create_toplevel(h);
+        t.toplevel.set_parent(Some(&parent.toplevel));
+        c.commit(h, &t.surface);
+        c.attach(h, &t.surface);
+        let w = window_of(h, &t);
+        (t, w)
+    }
+
+    /// Reload with `mode` changed, through the same path a config reload takes.
+    fn flip(h: &mut Harness, mode: Mode) {
+        let mut next = h.state.config.clone();
+        next.mode = mode;
+        crate::config::apply_loaded(&mut h.state, next);
+    }
+
+    #[derive(Debug, PartialEq, Clone, Copy)]
+    enum At {
+        Tiled(u64, usize),
+        Floating(u64, usize),
+        Minimized(u64, usize),
+        Nowhere,
+    }
+
+    fn at(h: &Harness, w: &Window) -> At {
+        for e in h.state.outputs.iter() {
+            for (i, ws) in e.workspaces.iter().enumerate() {
+                if ws.tiled.contains(w) {
+                    return At::Tiled(e.id, i);
+                }
+                if ws.floating.iter().any(|f| &f.window == w) {
+                    return At::Floating(e.id, i);
+                }
+                if ws.is_minimized(w) {
+                    return At::Minimized(e.id, i);
+                }
+            }
+        }
+        At::Nowhere
+    }
+
+    fn loc(h: &Harness, w: &Window) -> Point<i32, Logical> {
+        h.state.space.element_geometry(w).expect("mapped").loc
+    }
+
+    fn focus(h: &mut Harness, w: &Window) {
+        crate::shell::focus::focus_window(&mut h.state, w);
+    }
+
+    fn active(h: &Harness, id: u64) -> &workspace::Workspace {
+        let e = h.state.outputs.get(id).expect("output");
+        &e.workspaces[e.active]
+    }
+
+    #[test]
+    fn entering_floats_every_tile_in_place_and_leaving_puts_them_back_with_weights() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        let (_cc, w3) = map(&mut h, &mut c);
+        let At::Tiled(id, _) = at(&h, &a) else {
+            panic!("tiles")
+        };
+        h.state.outputs.get_mut(id).unwrap().workspaces[0]
+            .tiled
+            .set_weight(&b, 1.8);
+        arrange(&mut h.state);
+        let order = active(&h, id).tiled.windows();
+        let before: Vec<_> = [&a, &b, &w3].iter().map(|w| loc(&h, w)).collect();
+
+        flip(&mut h, Mode::De);
+        for w in [&a, &b, &w3] {
+            assert_eq!(at(&h, w), At::Floating(id, 0), "floated");
+        }
+        assert!(active(&h, id).tiled.windows().is_empty());
+        let after: Vec<_> = [&a, &b, &w3].iter().map(|w| loc(&h, w)).collect();
+        assert_eq!(before, after, "at the rect each tile had");
+
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!(active(&h, id).tiled.windows(), order, "same tree, same order");
+        assert_eq!(active(&h, id).tiled.weight_of(&b), Some(1.8));
+        assert!(active(&h, id).floating.is_empty());
+        let back: Vec<_> = [&a, &b, &w3].iter().map(|w| loc(&h, w)).collect();
+        assert_eq!(before, back, "and in the same places");
+        assert!(h.state.de.forget_is_clean());
+    }
+
+    #[test]
+    fn every_workspace_and_output_is_lifted_not_only_the_active_one() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        switch_workspace(&mut h.state, 3);
+        let (_b, b) = map(&mut h, &mut c);
+        switch_workspace(&mut h.state, 1);
+        h.state.outputs.set_focused(h.b);
+        let (_d, d) = map(&mut h, &mut c);
+        let (ia, ib) = (h.a, h.b);
+        assert_eq!(at(&h, &a), At::Tiled(ia, 0));
+        assert_eq!(at(&h, &b), At::Tiled(ia, 2));
+        assert_eq!(at(&h, &d), At::Tiled(ib, 0));
+
+        flip(&mut h, Mode::De);
+        assert_eq!(at(&h, &a), At::Floating(ia, 0));
+        assert_eq!(at(&h, &b), At::Floating(ia, 2), "a hidden workspace too");
+        assert_eq!(at(&h, &d), At::Floating(ib, 0), "the other output too");
+
+        flip(&mut h, Mode::Wm);
+        assert_eq!(at(&h, &a), At::Tiled(ia, 0));
+        assert_eq!(at(&h, &b), At::Tiled(ia, 2));
+        assert_eq!(at(&h, &d), At::Tiled(ib, 0));
+    }
+
+    #[test]
+    fn wm_to_hybrid_touches_no_window() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        focus(&mut h, &b);
+        toggle_floating(&mut h.state);
+        let (ta, tb) = (at(&h, &a), at(&h, &b));
+        flip(&mut h, Mode::Wm);
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!((at(&h, &a), at(&h, &b)), (ta, tb));
+        assert!(matches!(tb, At::Floating(..)));
+        assert!(h.state.de.forget_is_clean(), "nothing recorded");
+    }
+
+    #[test]
+    fn a_window_that_floated_before_de_stays_floating_after() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        focus(&mut h, &b);
+        toggle_floating(&mut h.state);
+        flip(&mut h, Mode::De);
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &b), At::Floating(..)), "still floating");
+        assert!(matches!(at(&h, &a), At::Tiled(..)));
+    }
+
+    #[test]
+    fn new_windows_float_under_de_and_are_placed_by_default_on_leaving() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        flip(&mut h, Mode::De);
+        let (p, pw) = map(&mut h, &mut c);
+        let (_d, dw) = dialog(&mut h, &mut c, &p);
+        assert!(matches!(at(&h, &pw), At::Floating(..)), "a new window floats");
+        assert!(matches!(at(&h, &dw), At::Floating(..)));
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &pw), At::Tiled(..)), "default placement tiles it");
+        assert!(matches!(at(&h, &dw), At::Floating(..)), "a dialog stays floating");
+    }
+
+    #[test]
+    fn a_tile_rule_does_not_tile_under_de() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let rules = crate::config::parse_single_for_tests("windowrule \"tile\" { app-id \".*\"; }\n");
+        assert!(rules.errors.is_empty(), "{:?}", rules.errors);
+        h.state.config.window_rules = rules.window_rules;
+        assert!(!h.state.config.window_rules.is_empty());
+        // Control: under hybrid the rule tiles a dialog.
+        let (p, _) = map(&mut h, &mut c);
+        let (_d, dw) = dialog(&mut h, &mut c, &p);
+        assert!(matches!(at(&h, &dw), At::Tiled(..)), "the rule tiles in hybrid");
+        flip(&mut h, Mode::De);
+        let (_d2, dw2) = dialog(&mut h, &mut c, &p);
+        assert!(matches!(at(&h, &dw2), At::Floating(..)), "and does not under de");
+    }
+
+    #[test]
+    fn tile_only_actions_do_nothing_under_de() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        flip(&mut h, Mode::De);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        focus(&mut h, &b);
+        toggle_floating(&mut h.state);
+        assert!(
+            matches!(at(&h, &b), At::Floating(..)),
+            "toggle-floating never tiles"
+        );
+        toggle_layout(&mut h.state);
+        assert!(h
+            .state
+            .outputs
+            .iter()
+            .all(|e| e.workspaces.iter().all(|w| w.layout.is_none())));
+        adjust_priority(&mut h.state, 1);
+        move_direction(&mut h.state, Direction::Left);
+        assert!(matches!(at(&h, &a), At::Floating(..)) && matches!(at(&h, &b), At::Floating(..)));
+        assert!(h.state.tile_drag.is_none());
+    }
+
+    #[test]
+    fn a_minimized_tile_floats_when_restored_under_de_and_tiles_again_on_leaving() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        focus(&mut h, &b);
+        minimize_focused(&mut h.state);
+        assert!(matches!(at(&h, &b), At::Minimized(..)));
+
+        flip(&mut h, Mode::De);
+        assert!(matches!(at(&h, &b), At::Minimized(..)), "still minimized");
+        unminimize_window(&mut h.state, &b);
+        assert!(matches!(at(&h, &b), At::Floating(..)), "restored floating");
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &b), At::Tiled(..)) && matches!(at(&h, &a), At::Tiled(..)));
+
+        // Minimized across the whole of de, and across a de-minimize.
+        focus(&mut h, &b);
+        minimize_focused(&mut h.state);
+        flip(&mut h, Mode::De);
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &b), At::Minimized(..)));
+        unminimize_window(&mut h.state, &b);
+        assert!(matches!(at(&h, &b), At::Tiled(..)), "restores into the layout");
+
+        // A window floated under de and minimized there tiles on restore after.
+        flip(&mut h, Mode::De);
+        focus(&mut h, &b);
+        minimize_focused(&mut h.state);
+        flip(&mut h, Mode::Hybrid);
+        unminimize_window(&mut h.state, &b);
+        assert!(matches!(at(&h, &b), At::Tiled(..)));
+    }
+
+    #[test]
+    fn a_window_minimized_after_the_flip_keeps_its_weight_on_leaving() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        let (_cc, _w3) = map(&mut h, &mut c);
+        let At::Tiled(id, _) = at(&h, &a) else { panic!() };
+        h.state.outputs.get_mut(id).unwrap().workspaces[0]
+            .tiled
+            .set_weight(&b, 1.8);
+        flip(&mut h, Mode::De);
+        focus(&mut h, &b);
+        minimize_focused(&mut h.state);
+        flip(&mut h, Mode::Hybrid);
+        unminimize_window(&mut h.state, &b);
+        assert_eq!(at(&h, &b), At::Tiled(id, 0));
+        let wt = h.state.outputs.get(id).unwrap().workspaces[0].tiled.weight_of(&b);
+        assert_eq!(wt, Some(1.8));
+    }
+
+    #[test]
+    fn moving_a_workspace_under_de_floats_what_it_carries_apart() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        let (ia, ib) = (h.a, h.b);
+        flip(&mut h, Mode::De);
+        {
+            let ws = &mut h.state.outputs.get_mut(ia).unwrap().workspaces[4];
+            ws.pending.push(a.clone());
+            ws.pending.push(b.clone());
+        }
+        for w in [&a, &b] {
+            h.state.outputs.get_mut(ia).unwrap().workspaces[0]
+                .floating
+                .retain(|f| &f.window != w);
+        }
+        assert_eq!(move_workspace_to_output(&mut h.state, ia, 5, ib), Ok(true));
+        for w in [&a, &b] {
+            assert!(!matches!(at(&h, w), At::Tiled(..)), "nothing tiles under de");
+        }
+        let fl = &h.state.outputs.get(ib).unwrap().workspaces[4].floating;
+        assert_eq!(fl.len(), 2);
+        assert_ne!(fl[0].rect.loc, fl[1].rect.loc, "not stacked exactly");
+    }
+
+    #[test]
+    fn the_super_held_tile_drag_never_starts_under_de() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        flip(&mut h, Mode::De);
+        let (_a, a) = map(&mut h, &mut c);
+        // Force a tile in (a path nobody guarded): the drag must still refuse.
+        let id = h.a;
+        let area = Rectangle::from_size((800, 600).into());
+        let ws = &mut h.state.outputs.get_mut(id).unwrap().workspaces[0];
+        ws.floating.retain(|f| f.window != a);
+        ws.tiled.insert(a.clone(), None, area, Point::default());
+        let l = loc(&h, &a);
+        drop_guides::drag_tile(&mut h.state, &a, l);
+        assert!(h.state.tile_drag.is_none());
+    }
+
+    #[test]
+    fn a_window_closed_or_moved_during_de_is_not_put_back_where_it_was() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        let (_cc, w3) = map(&mut h, &mut c);
+        let At::Tiled(id, _) = at(&h, &a) else { panic!() };
+        flip(&mut h, Mode::De);
+        unmap_window(&mut h.state, &w3);
+        focus(&mut h, &b);
+        move_to_workspace(&mut h.state, 4);
+        assert_eq!(at(&h, &b), At::Floating(id, 3), "moves as a floating window");
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!(at(&h, &w3), At::Nowhere);
+        assert_eq!(at(&h, &a), At::Tiled(id, 0));
+        assert_eq!(at(&h, &b), At::Tiled(id, 3), "tiles where it now lives");
+        assert_eq!(
+            h.state.outputs.get(id).unwrap().workspaces[0].tiled.windows(),
+            vec![a.clone()]
+        );
+    }
+
+    #[test]
+    fn a_window_sent_to_the_other_output_in_de_floats_there_and_tiles_after() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (_b, b) = map(&mut h, &mut c);
+        flip(&mut h, Mode::De);
+        focus(&mut h, &b);
+        let (ia, ib) = (h.a, h.b);
+        let number = h.state.outputs.get(ib).unwrap().number;
+        move_to_output_workspace(&mut h.state, number);
+        assert_eq!(at(&h, &b), At::Floating(ib, 0));
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!(at(&h, &b), At::Tiled(ib, 0));
+        assert_eq!(at(&h, &a), At::Tiled(ia, 0));
+    }
+
+    #[test]
+    fn a_removed_output_keeps_its_windows_floating_then_tiles_them_after() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        h.state.outputs.set_focused(h.b);
+        let (_d, d) = map(&mut h, &mut c);
+        let (_e, e) = map(&mut h, &mut c);
+        let ia = h.a;
+        flip(&mut h, Mode::De);
+        crate::outputs::unregister(&mut h.state, h.b);
+        arrange(&mut h.state);
+        assert_eq!(at(&h, &d), At::Floating(ia, 0), "adopted floating");
+        assert_eq!(at(&h, &e), At::Floating(ia, 0));
+        flip(&mut h, Mode::Hybrid);
+        assert_eq!(at(&h, &d), At::Tiled(ia, 0));
+        assert_eq!(at(&h, &e), At::Tiled(ia, 0));
+    }
+
+    #[test]
+    fn fullscreen_across_the_flip_comes_back_tiled() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, a) = map(&mut h, &mut c);
+        let (b, bw) = map(&mut h, &mut c);
+        b.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        assert!(h.state.fullscreen.contains_key(&bw));
+
+        flip(&mut h, Mode::De);
+        assert!(h.state.fullscreen.contains_key(&bw), "still fullscreen");
+        assert!(matches!(at(&h, &a), At::Floating(..)));
+        // Unfullscreen under de floats; leaving then tiles it.
+        b.toplevel.unset_fullscreen();
+        c.pump(&mut h);
+        assert!(!h.state.fullscreen.contains_key(&bw));
+        assert!(matches!(at(&h, &bw), At::Floating(..)), "no tile under de");
+        flip(&mut h, Mode::Hybrid);
+        assert!(matches!(at(&h, &bw), At::Tiled(..)));
+
+        // Still fullscreen when de ends: unfullscreen tiles it.
+        b.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        flip(&mut h, Mode::De);
+        flip(&mut h, Mode::Hybrid);
+        assert!(h.state.fullscreen.contains_key(&bw));
+        b.toplevel.unset_fullscreen();
+        c.pump(&mut h);
+        assert!(matches!(at(&h, &bw), At::Tiled(..)));
+    }
+
+    #[test]
+    fn a_floating_window_made_fullscreen_in_de_stays_floating_when_it_ends() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (_a, _) = map(&mut h, &mut c);
+        flip(&mut h, Mode::De);
+        let (b, _) = map(&mut h, &mut c);
+        // A dialog default-places as floating, so fullscreen one.
+        let (p2, p2w) = dialog(&mut h, &mut c, &b);
+        p2.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        flip(&mut h, Mode::Hybrid);
+        p2.toplevel.unset_fullscreen();
+        c.pump(&mut h);
+        assert!(matches!(at(&h, &p2w), At::Floating(..)));
+    }
+
+    // ---- maximize (M2: COMP-05 §3.1, C-24) ------------------------------
+
+    use crate::shell::workspace::Placement;
+    use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState;
+
+    fn floating_of(h: &Harness, w: &Window) -> (Rectangle<i32, Logical>, Placement) {
+        h.state
+            .outputs
+            .iter()
+            .flat_map(|e| e.workspaces.iter())
+            .flat_map(|ws| ws.floating.iter())
+            .find(|f| &f.window == w)
+            .map(|f| (f.rect, f.placement))
+            .expect("floating")
+    }
+
+    fn usable(h: &Harness, id: u64) -> Rectangle<i32, Logical> {
+        let output = h.state.outputs.get(id).expect("output").output.clone();
+        layer_map_for_output(&output).arrange();
+        usable_area(&h.state, &output)
+    }
+
+    /// A de-mode window with a rectangle that is not the usable area.
+    fn de_window(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
+        flip(h, Mode::De);
+        let (t, w) = map(h, c);
+        (t, w)
+    }
+
+    #[test]
+    fn set_maximized_under_de_fills_the_usable_area_square_and_unmaximize_restores() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        let id = h.a;
+        let (before, p) = floating_of(&h, &w);
+        assert_eq!(p, Placement::Free);
+
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        let u = usable(&h, id);
+        let (rect, p) = floating_of(&h, &w);
+        assert!(matches!(p, Placement::Maximized { h: true, v: true, .. }));
+        assert_eq!(rect, u, "fills the usable area exactly: no border inset");
+        assert_eq!(loc(&h, &w), u.loc);
+        assert_eq!(
+            c.configured_sizes(&n.toplevel).last(),
+            Some(&(u.size.w, u.size.h))
+        );
+        assert!(c.is_maximized(&n.toplevel), "the configure carries Maximized");
+        assert!(maximize::is_maximized(&h.state, &w));
+
+        n.toplevel.unset_maximized();
+        c.pump(&mut h);
+        let (rect, p) = floating_of(&h, &w);
+        assert_eq!(p, Placement::Free);
+        assert_eq!(rect, before, "the prior rectangle is back");
+        assert!(!c.is_maximized(&n.toplevel));
+    }
+
+    #[test]
+    fn maximize_is_declined_in_wm_and_hybrid_and_nothing_changes() {
+        for mode in [Mode::Wm, Mode::Hybrid] {
+            let mut h = harness();
+            let mut c = Client::connect(&mut h);
+            flip(&mut h, mode);
+            let (n, w) = map(&mut h, &mut c);
+            n.toplevel.set_maximized();
+            c.pump(&mut h);
+            assert_eq!(c.maximized_configures(&n.toplevel), 0, "{mode:?}");
+            assert!(matches!(at(&h, &w), At::Tiled(..)), "{mode:?}: still tiled");
+            assert!(!maximize::is_maximized(&h.state, &w));
+            assert!(!mode.profile().maximize);
+        }
+        assert!(Mode::De.profile().maximize);
+    }
+
+    #[test]
+    fn steam_style_startup_maximize_is_declined_in_wm_and_hybrid_and_honoured_in_de() {
+        for (mode, honoured) in [(Mode::Wm, false), (Mode::Hybrid, false), (Mode::De, true)] {
+            let mut h = harness();
+            let mut c = Client::connect(&mut h);
+            flip(&mut h, mode);
+            let t = c.create_toplevel(&mut h);
+            t.toplevel.set_maximized();
+            c.pump(&mut h);
+            c.commit(&mut h, &t.surface);
+            c.attach(&mut h, &t.surface);
+            let w = window_of(&h, &t);
+            assert_eq!(c.is_maximized(&t.toplevel), honoured, "{mode:?}");
+            assert_eq!(maximize::is_maximized(&h.state, &w), honoured, "{mode:?}");
+            if honoured {
+                let u = usable(&h, h.a);
+                assert_eq!(floating_of(&h, &w).0, u);
+                assert_eq!(
+                    c.configured_sizes(&t.toplevel).last(),
+                    Some(&(u.size.w, u.size.h))
+                );
+            } else {
+                assert_eq!(c.maximized_configures(&t.toplevel), 0, "{mode:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_x11_premap_decision_follows_the_mode_profile() {
+        // `map_window_request`: parked request or property, honoured only where
+        // the profile allows it.
+        use crate::xwayland::xwm::premap_maximize;
+        for mode in [Mode::Wm, Mode::Hybrid] {
+            assert!(!premap_maximize(mode.profile().maximize, true, true));
+            assert!(!premap_maximize(mode.profile().maximize, false, true));
+        }
+        assert!(premap_maximize(Mode::De.profile().maximize, true, false));
+        assert!(premap_maximize(Mode::De.profile().maximize, false, true));
+        assert!(!premap_maximize(Mode::De.profile().maximize, false, false));
+    }
+
+    #[test]
+    fn horizontal_only_and_vertical_only_fill_one_axis() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        let id = h.a;
+        let (before, _) = floating_of(&h, &w);
+        let border = h.state.config.general.border_size;
+        let own = shrink(before, border);
+        let u = usable(&h, id);
+
+        assert!(maximize::set(&mut h.state, &w, Some((true, false))));
+        let (rect, p) = floating_of(&h, &w);
+        assert!(matches!(
+            p,
+            Placement::Maximized {
+                h: true,
+                v: false,
+                ..
+            }
+        ));
+        assert_eq!((rect.loc.x, rect.size.w), (u.loc.x, u.size.w));
+        assert_eq!(
+            (rect.loc.y, rect.size.h),
+            (own.loc.y, own.size.h),
+            "height untouched"
+        );
+        c.pump(&mut h);
+        assert!(!c.is_maximized(&n.toplevel), "Maximized needs both axes");
+
+        assert!(maximize::set(&mut h.state, &w, Some((false, true))));
+        let (rect, _) = floating_of(&h, &w);
+        assert_eq!((rect.loc.y, rect.size.h), (u.loc.y, u.size.h));
+        assert_eq!((rect.loc.x, rect.size.w), (own.loc.x, own.size.w));
+
+        assert!(maximize::set(&mut h.state, &w, None));
+        assert_eq!(
+            floating_of(&h, &w),
+            (before, Placement::Free),
+            "restores the original rect"
+        );
+    }
+
+    #[test]
+    fn fullscreen_wins_and_leaving_it_returns_to_maximized() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        let id = h.a;
+        let (before, _) = floating_of(&h, &w);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        n.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        let output = h.state.outputs.get(id).unwrap().output.clone();
+        let full = h.state.space.output_geometry(&output).unwrap();
+        assert_eq!(floating_of(&h, &w).0, full, "fullscreen wins");
+        assert!(!c.is_maximized(&n.toplevel), "told fullscreen, not maximized");
+
+        n.toplevel.unset_fullscreen();
+        c.pump(&mut h);
+        let u = usable(&h, id);
+        let (rect, p) = floating_of(&h, &w);
+        assert!(p.is_fully_maximized(), "back to maximized");
+        assert_eq!(rect, u);
+        assert!(c.is_maximized(&n.toplevel));
+        assert_eq!(
+            c.configured_sizes(&n.toplevel).last(),
+            Some(&(u.size.w, u.size.h))
+        );
+
+        n.toplevel.unset_maximized();
+        c.pump(&mut h);
+        assert_eq!(
+            floating_of(&h, &w).0,
+            before,
+            "fullscreen round trip lost no restore rect"
+        );
+    }
+
+    #[test]
+    fn unmaximizing_during_fullscreen_returns_to_the_old_rect() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        let (before, _) = floating_of(&h, &w);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        n.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        n.toplevel.unset_maximized();
+        c.pump(&mut h);
+        n.toplevel.unset_fullscreen();
+        c.pump(&mut h);
+        let (rect, p) = floating_of(&h, &w);
+        assert_eq!(p, Placement::Free);
+        assert_eq!(rect, before);
+    }
+
+    #[test]
+    fn a_panel_appearing_or_resizing_is_followed_and_restore_survives_it() {
+        let mut h = harness();
+        // Centred, as a user who wrote `floating-placement "centered"` has it:
+        // the de default is cascade, which starts at the corner a panel claims.
+        h.state.config.general.floating_placement = FloatingPlacement::Centered;
+        h.state.config.general.floating_placement_set = true;
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        let id = h.a;
+        let (before, _) = floating_of(&h, &w);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        let full = floating_of(&h, &w).0;
+
+        let (panel, layer) = c.map_panel(&mut h, 40);
+        arrange(&mut h.state);
+        let u = usable(&h, id);
+        assert_eq!(u.loc.y, full.loc.y + 40, "the panel claims the top strip");
+        assert_eq!(floating_of(&h, &w).0, u, "the window follows the panel");
+        assert_eq!(
+            c.configured_sizes(&n.toplevel).last(),
+            Some(&(u.size.w, u.size.h))
+        );
+
+        layer.set_exclusive_zone(90);
+        c.commit(&mut h, &panel);
+        arrange(&mut h.state);
+        let u2 = usable(&h, id);
+        assert_eq!(u2.loc.y, full.loc.y + 90);
+        assert_eq!(floating_of(&h, &w).0, u2);
+
+        n.toplevel.unset_maximized();
+        c.pump(&mut h);
+        let (rect, _) = floating_of(&h, &w);
+        assert_eq!(rect, before, "the pre-maximize rect, untouched by the panel");
+    }
+
+    #[test]
+    fn an_output_resize_is_followed() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        let output = h.state.outputs.get(h.a).unwrap().output.clone();
+        let mode = smithay::output::Mode {
+            size: (1000, 700).into(),
+            refresh: 60_000,
+        };
+        output.change_current_state(Some(mode), None, None, None);
+        arrange(&mut h.state);
+        let u = usable(&h, h.a);
+        assert_eq!(u.size, (1000, 700).into());
+        assert_eq!(floating_of(&h, &w).0, u);
+    }
+
+    #[test]
+    fn a_removed_output_leaves_the_window_maximized_on_the_adopter() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        h.state.outputs.set_focused(h.b);
+        let (n, w) = de_window(&mut h, &mut c);
+        // A rectangle that is not what the adopter would pick by default.
+        let usable_b = usable(&h, h.b);
+        let before = Rectangle::new(usable_b.loc + Point::from((57, 43)), (301, 203).into());
+        for e in h.state.outputs.iter_mut() {
+            for ws in e.workspaces.iter_mut() {
+                for f in ws.floating.iter_mut().filter(|f| f.window == w) {
+                    f.rect = before;
+                }
+            }
+        }
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        assert_eq!(at(&h, &w), At::Floating(h.b, 0));
+        let (ia, ib) = (h.a, h.b);
+        let geo = |h: &Harness, id: u64| {
+            let o = h.state.outputs.get(id).expect("output").output.clone();
+            h.state.space.output_geometry(&o).expect("mapped")
+        };
+        let offset = geo(&h, ia).loc - geo(&h, ib).loc;
+        crate::outputs::unregister(&mut h.state, ib);
+        arrange(&mut h.state);
+        assert_eq!(at(&h, &w), At::Floating(ia, 0), "adopted");
+        let (rect, p) = floating_of(&h, &w);
+        assert!(p.is_fully_maximized(), "still maximized");
+        assert_eq!(rect, usable(&h, ia), "filling the adopter");
+        assert!(c.is_maximized(&n.toplevel));
+        // And it can still be restored, onto the adopter.
+        n.toplevel.unset_maximized();
+        c.pump(&mut h);
+        let (rect, p) = floating_of(&h, &w);
+        assert_eq!(p, Placement::Free);
+        assert!(usable(&h, ia).contains_rect(rect), "restored inside the adopter");
+        assert_eq!(
+            rect,
+            de::carried_rect(before, offset, usable(&h, ia)),
+            "its own pre-maximize rectangle, not the default"
+        );
+    }
+
+    #[test]
+    fn minimize_and_restore_keeps_it_maximized() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        focus(&mut h, &w);
+        minimize_focused(&mut h.state);
+        assert!(matches!(at(&h, &w), At::Minimized(..)));
+        assert!(maximize::is_maximized(&h.state, &w), "kept while minimized");
+        unminimize_window(&mut h.state, &w);
+        c.pump(&mut h);
+        let (rect, p) = floating_of(&h, &w);
+        assert!(p.is_fully_maximized());
+        assert_eq!(rect, usable(&h, h.a));
+        assert!(c.is_maximized(&n.toplevel));
+    }
+
+    #[test]
+    fn a_workspace_move_keeps_it_maximized() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        let id = h.a;
+        let (before, _) = floating_of(&h, &w);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        focus(&mut h, &w);
+        move_to_workspace(&mut h.state, 4);
+        c.pump(&mut h);
+        assert_eq!(at(&h, &w), At::Floating(id, 3));
+        let e = h.state.outputs.get(id).unwrap();
+        if e.active != 3 {
+            switch_workspace(&mut h.state, 4);
+        }
+        let (rect, p) = floating_of(&h, &w);
+        assert!(p.is_fully_maximized(), "maximized there");
+        assert_eq!(rect, usable(&h, id));
+        n.toplevel.unset_maximized();
+        c.pump(&mut h);
+        assert_eq!(floating_of(&h, &w).0, before);
+    }
+
+    #[test]
+    fn an_output_move_fills_the_other_outputs_usable_area() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        let (ia, ib) = (h.a, h.b);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        // A panel on the first output only, so the two usable areas differ.
+        let (_panel, _layer) = c.map_panel(&mut h, 30);
+        focus(&mut h, &w);
+        let number = h.state.outputs.get(ib).unwrap().number;
+        move_to_output_workspace(&mut h.state, number);
+        c.pump(&mut h);
+        assert_eq!(at(&h, &w), At::Floating(ib, 0));
+        let (rect, p) = floating_of(&h, &w);
+        assert!(p.is_fully_maximized());
+        assert_eq!(rect, usable(&h, ib));
+        assert_ne!(usable(&h, ia).size, usable(&h, ib).size, "the panels differ");
+    }
+
+    #[test]
+    fn a_client_move_or_resize_request_unmaximizes_first_keeping_the_pointer_inside() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        let u = usable(&h, h.a);
+        h.state.pointer_location = (u.loc.x as f64 + u.size.w as f64 * 0.75, u.loc.y as f64 + 10.0).into();
+        let p = h.state.pointer_location;
+        maximize::release_for_drag(&mut h.state, &w);
+        c.pump(&mut h);
+        let (rect, placement) = floating_of(&h, &w);
+        assert_eq!(placement, Placement::Free);
+        assert!(!c.is_maximized(&n.toplevel));
+        assert!(
+            rect.to_f64().contains(p),
+            "the restored window {rect:?} is under the pointer {p:?}"
+        );
+        // And not still pinned to the whole area.
+        assert!(rect.size.w < u.size.w);
+    }
+
+    #[test]
+    fn a_drag_start_on_a_fullscreen_maximized_window_changes_nothing() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        n.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        let restore = h.state.fullscreen.get(&w).copied();
+        h.state.pointer_location = (100.0, 100.0).into();
+        maximize::release_for_drag(&mut h.state, &w);
+        c.pump(&mut h);
+        assert!(
+            floating_of(&h, &w).1.is_maximized(),
+            "placement kept under fullscreen"
+        );
+        assert_eq!(
+            h.state.fullscreen.get(&w).copied(),
+            restore,
+            "restore rect untouched"
+        );
+    }
+
+    #[test]
+    fn resizing_a_fullscreen_maximized_window_keeps_the_maximize() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        n.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        let _ = crate::shell::resize_window(&mut h.state, &w, Some(300), Some(200));
+        c.pump(&mut h);
+        assert!(
+            floating_of(&h, &w).1.is_maximized(),
+            "leaving fullscreen must still return to maximized"
+        );
+    }
+
+    #[test]
+    fn a_maximized_window_with_a_max_size_reports_the_size_it_has() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        n.toplevel.set_max_size(400, 300);
+        c.commit(&mut h, &n.surface);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        let (rect, p) = floating_of(&h, &w);
+        assert!(p.is_fully_maximized());
+        assert_eq!((rect.size.w, rect.size.h), (400, 300));
+        assert_eq!(c.configured_sizes(&n.toplevel).last(), Some(&(400, 300)));
+    }
+
+    #[test]
+    fn set_maximized_on_a_hidden_workspace_window_is_honoured() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        crate::shell::switch_workspace(&mut h.state, 2);
+        assert!(!h.state.space.elements().any(|e| e == &w), "hidden");
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        assert!(floating_of(&h, &w).1.is_fully_maximized());
+        assert!(c.is_maximized(&n.toplevel));
+    }
+
+    #[test]
+    fn an_x11_style_exact_placement_or_an_ipc_resize_unmaximizes() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        let want = Rectangle::new(Point::from((50, 60)), Size::from((300, 200)));
+        place_at(&mut h.state, &w, want);
+        c.pump(&mut h);
+        let (_, p) = floating_of(&h, &w);
+        assert_eq!(p, Placement::Free, "place_at is a move/resize");
+        assert!(!c.is_maximized(&n.toplevel));
+
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        assert!(maximize::is_maximized(&h.state, &w));
+        assert_eq!(resize_window(&mut h.state, &w, Some(320), None), Ok(true));
+        assert_eq!(floating_of(&h, &w).1, Placement::Free);
+    }
+
+    #[test]
+    fn alt_drag_unmaximizes_and_keeps_the_window_under_the_pointer() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        let u = usable(&h, h.a);
+        h.state.pointer_location = (u.loc.x as f64 + 100.0, u.loc.y as f64 + 100.0).into();
+        let p = h.state.pointer_location;
+        assert!(crate::input::grabs::start_move_at(&mut h.state, w.clone(), 0x110));
+        let (rect, placement) = floating_of(&h, &w);
+        assert_eq!(placement, Placement::Free);
+        assert!(rect.to_f64().contains(p));
+        c.pump(&mut h);
+        assert!(!c.is_maximized(&n.toplevel));
+    }
+
+    #[test]
+    fn leaving_de_restores_rects_and_tells_the_client_before_the_retile() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        // A tile that becomes maximized under de goes back to its tile.
+        let (_a, a) = map(&mut h, &mut c);
+        let (b, bw) = map(&mut h, &mut c);
+        let At::Tiled(id, _) = at(&h, &a) else { panic!() };
+        let order = active(&h, id).tiled.windows();
+        flip(&mut h, Mode::De);
+        b.toplevel.set_maximized();
+        c.pump(&mut h);
+        assert!(c.is_maximized(&b.toplevel));
+        flip(&mut h, Mode::Hybrid);
+        c.pump(&mut h);
+        assert!(!c.is_maximized(&b.toplevel), "the client is told");
+        assert!(!maximize::is_maximized(&h.state, &bw));
+        assert_eq!(active(&h, id).tiled.windows(), order, "re-tiled where it was");
+        assert!(h.state.de.forget_is_clean());
+
+        // A window that stays floating (a dialog) gets its old rect back.
+        let (p, pw) = dialog(&mut h, &mut c, &b);
+        flip(&mut h, Mode::De);
+        let (before, _) = floating_of(&h, &pw);
+        p.toplevel.set_maximized();
+        c.pump(&mut h);
+        assert_ne!(floating_of(&h, &pw).0, before);
+        flip(&mut h, Mode::Wm);
+        c.pump(&mut h);
+        let (rect, placement) = floating_of(&h, &pw);
+        assert_eq!(placement, Placement::Free);
+        assert_eq!(rect, before);
+        assert!(!c.is_maximized(&p.toplevel));
+    }
+
+    #[test]
+    fn leaving_de_clears_a_minimized_or_fullscreen_maximize_too() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (m, mw) = de_window(&mut h, &mut c);
+        let (f, fw) = map(&mut h, &mut c);
+        m.toplevel.set_maximized();
+        c.pump(&mut h);
+        focus(&mut h, &mw);
+        minimize_focused(&mut h.state);
+        f.toplevel.set_maximized();
+        c.pump(&mut h);
+        f.toplevel.set_fullscreen(None);
+        c.pump(&mut h);
+        flip(&mut h, Mode::Hybrid);
+        assert!(!maximize::is_maximized(&h.state, &mw));
+        assert!(!maximize::is_maximized(&h.state, &fw));
+        unminimize_window(&mut h.state, &mw);
+        // Opened under de, so default placement tiles it on leaving.
+        assert!(
+            matches!(at(&h, &mw), At::Tiled(..)),
+            "no stale maximize holds it floating"
+        );
+        f.toplevel.unset_fullscreen();
+        c.pump(&mut h);
+        assert!(!c.is_maximized(&f.toplevel));
+    }
+
+    #[test]
+    fn the_scene_state_bit_reports_maximized_under_de() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        let bit = ec_protocols::agent::server::eclipse_scene_v1::State::Maximized as u32;
+        let handle = h.state.ipc.handle_for(&w) as u32;
+        let states = |h: &Harness| crate::protocols::agent::facts(&h.state, handle, &w).states;
+        assert_eq!(states(&h) & bit, 0);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        c.commit(&mut h, &n.surface);
+        assert!(
+            w.toplevel()
+                .unwrap()
+                .current_state()
+                .states
+                .contains(XdgState::Maximized),
+            "the client acked it"
+        );
+        assert_ne!(states(&h) & bit, 0, "reported maximized");
+        n.toplevel.unset_maximized();
+        c.pump(&mut h);
+        c.commit(&mut h, &n.surface);
+        assert_eq!(states(&h) & bit, 0);
+    }
+
+    #[test]
+    fn the_toggle_maximize_bind_toggles_under_de_and_does_nothing_elsewhere() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        focus(&mut h, &w);
+        maximize::toggle(&mut h.state);
+        c.pump(&mut h);
+        assert!(maximize::is_maximized(&h.state, &w));
+        assert!(c.is_maximized(&n.toplevel));
+        maximize::toggle(&mut h.state);
+        c.pump(&mut h);
+        assert!(!maximize::is_maximized(&h.state, &w));
+
+        flip(&mut h, Mode::Hybrid);
+        let (_b, bw) = map(&mut h, &mut c);
+        focus(&mut h, &bw);
+        maximize::toggle(&mut h.state);
+        assert!(!maximize::is_maximized(&h.state, &bw));
+        assert!(matches!(at(&h, &bw), At::Tiled(..)));
+    }
+
+    #[test]
+    fn de_binds_super_page_up_to_toggle_maximize() {
+        use crate::input::Action;
+        let defaults = crate::config::mode_default_binds(Mode::De);
+        assert!(defaults
+            .iter()
+            .any(|b| b.action == Action::ToggleMaximize && b.mods.logo && !b.mods.alt && !b.mods.shift));
+        assert!(crate::config::mode_default_binds(Mode::Hybrid).is_empty());
+    }
+}

@@ -125,6 +125,7 @@ fn surface(app: &crate::app::App, id: iced::window::Id) -> Element<'_, Message, 
                 crate::app::Kind::Menu { handle, items } => context_menu(*handle, items, app.menu_radius),
                 crate::app::Kind::Drawer { which, .. } => drawer_view(app, *which),
                 crate::app::Kind::TrayMenu { id, entries } => tray_menu(id, entries, app.menu_radius),
+                crate::app::Kind::Group { key, .. } => group_view(app, popup.owner, key),
             };
         }
         _ => {}
@@ -756,11 +757,67 @@ impl canvas::Program<Message> for EyeMark {
 /// two never compete for area — the tile is 24px, the chip is a strip — and
 /// nothing else on the row is allowed to join them.
 fn pager<'a>(app: &'a crate::app::App, on: &crate::app::Bar) -> Element<'a, Message, Theme> {
+    if let (Some(g), Some(desktops)) = (grid(app), app.grid.as_ref()) {
+        return grid_pager(g, desktops, on);
+    }
     let mut r = Row::new().spacing(bar::GAP).align_y(Alignment::Center);
     for ws in live_workspaces(&app.snapshot, on.output_id) {
         r = r.push(tile(ws));
     }
     r.into()
+}
+
+/// The desktop grid the pager draws under `de`: `None` elsewhere, and when the
+/// compositor did not answer `get_desktop_grid`, in which case the pager is
+/// the workspace row it has always been.
+pub(crate) fn grid(app: &crate::app::App) -> Option<crate::pager::Grid> {
+    if app.mode != crate::model::Mode::De {
+        return None;
+    }
+    app.grid.as_ref().map(crate::pager::Grid::of)
+}
+
+/// The pager as the desktop grid (`mode "de"`, COMP-05 §7.1): every desktop,
+/// `rows` × `columns`, the active one of this bar's output lit and the ones
+/// with windows on them in the brighter ink. A click switches to a desktop;
+/// the wheel over the grid steps through them.
+///
+/// Same ledger as the row it replaces: the active desktop is the pager's
+/// yellow, nothing else here is.
+fn grid_pager<'a>(
+    g: crate::pager::Grid,
+    desktops: &ec_ipc::DesktopGrid,
+    on: &crate::app::Bar,
+) -> Element<'a, Message, Theme> {
+    let out = desktops
+        .outputs
+        .iter()
+        .find(|o| on.output_id != 0 && o.output == on.output_id)
+        .or_else(|| desktops.outputs.first());
+    let active = out.map(|o| o.active);
+    let (tile_w, tile_h) = g.tile();
+    let (gap_x, gap_y) = g.gap();
+    let mut col = Column::new().spacing(gap_y);
+    for r in 0..g.rows {
+        let mut row = Row::new().spacing(gap_x);
+        for c in 0..g.columns {
+            let index = g.index_of(r, c);
+            let windows = out
+                .and_then(|o| o.desktops.iter().find(|d| d.index == index))
+                .map_or(0, |d| d.windows);
+            row = row.push(tile_sized(
+                index,
+                windows > 0,
+                active == Some(index),
+                tile_w,
+                tile_h,
+            ));
+        }
+        col = col.push(row);
+    }
+    mouse_area(container(col).align_y(Alignment::Center))
+        .on_scroll(Message::PagerScroll)
+        .into()
 }
 
 /// The workspaces worth drawing: the ones with something on them, plus the
@@ -811,23 +868,31 @@ fn active_workspace(snapshot: &Snapshot, output: u64) -> Option<usize> {
 }
 
 fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
-    let ws_active = ws.active;
-    let tint = if ws.active {
+    tile_sized(ws.index, ws.windows > 0, ws.active, bar::PAGER_W, bar::PAGER_H)
+}
+
+/// One pager tile, `width` × `height`: the workspace row's, and the desktop
+/// grid's (which is shorter when it has several rows).
+fn tile_sized<'a>(
+    index: usize,
+    occupied: bool,
+    ws_active: bool,
+    width: f32,
+    height: f32,
+) -> Element<'a, Message, Theme> {
+    let tint = if ws_active {
         color::accent_text()
-    } else if ws.windows > 0 {
+    } else if occupied {
         color::text_secondary()
     } else {
         color::text_tertiary()
     };
-    let face = if ws.active { font::DATA_MEDIUM } else { font::DATA };
-    let label = text(ws.index.to_string())
-        .size(size::MICRO)
-        .font(face)
-        .color(tint);
+    let face = if ws_active { font::DATA_MEDIUM } else { font::DATA };
+    let label = text(index.to_string()).size(size::MICRO).font(face).color(tint);
 
     let cell = button(container(label).center(Length::Fill))
-        .width(Length::Fixed(bar::PAGER_W))
-        .height(Length::Fixed(bar::PAGER_H))
+        .width(Length::Fixed(width))
+        .height(Length::Fixed(height))
         .padding(0)
         .style(move |t: &Theme, status: button::Status| {
             // The bar cell's glass lozenge and lifts, on the tile's smaller
@@ -837,7 +902,7 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
             style.border.radius = bar::RADIUS_TILE.into();
             theme::bare_if_glass(style)
         })
-        .on_press(Message::Switch(ws.index));
+        .on_press(Message::Switch(index));
     parts::glass_ground(cell, ws_active, bar::RADIUS_TILE)
 }
 
@@ -851,16 +916,86 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
 /// every consumer of the strip (the solver, the chip animation, popup
 /// anchoring) sees the same answer because they all come through here.
 pub(crate) fn strip_windows<'a>(app: &'a crate::app::App, on: &crate::app::Bar) -> Vec<&'a Window> {
+    strip_groups(app, on).into_iter().map(|g| g.rep).collect()
+}
+
+/// The strip as groups: what each chip stands for.
+///
+/// Under `wm` and `hybrid` every chip is one window — exactly the strip as it
+/// has always been. Under `de` the windows of one application share a chip
+/// (see [`crate::group`]), and a pinned app (ADR 0074) merges with its group.
+/// An idle pinned chip has no members.
+pub(crate) fn strip_groups<'a>(
+    app: &'a crate::app::App,
+    on: &crate::app::Bar,
+) -> Vec<crate::group::Group<'a>> {
+    use crate::group::Group;
     if !app.mode.shows_chips() {
         return Vec::new();
     }
     let snapshot = &app.snapshot;
     let active = active_workspace(snapshot, on.output_id);
-    let windows = windows_on(snapshot, on.output_id)
+    let windows: Vec<&Window> = windows_on(snapshot, on.output_id)
         .filter(|w| active.is_none() || w.workspace == active)
         .collect();
+    let grouped: Vec<Group<'a>> = if app.mode == crate::model::Mode::De {
+        crate::group::group(windows)
+    } else {
+        windows
+            .into_iter()
+            .map(|w| Group {
+                rep: w,
+                members: vec![w],
+            })
+            .collect()
+    };
+    let reps: Vec<&'a Window> = grouped.iter().map(|g| g.rep).collect();
     // Pinned apps lead, merged with their windows (ADR 0074).
-    crate::pins::order(&app.pins, windows)
+    crate::pins::order(&app.pins, reps)
+        .into_iter()
+        .map(|rep| {
+            grouped
+                .iter()
+                .find(|g| g.rep.handle == rep.handle)
+                .cloned()
+                .unwrap_or(Group {
+                    rep,
+                    members: Vec::new(),
+                })
+        })
+        .collect()
+}
+
+/// What the chip drawn for `w` stands for. Elsewhere than `de` that is the one
+/// window, with the bar's own answer to "is it focused".
+#[cfg(test)]
+pub(crate) fn tally(app: &crate::app::App, on: &crate::app::Bar, w: &Window) -> crate::group::Tally {
+    if app.mode != crate::model::Mode::De || crate::pins::is_idle(w) {
+        return crate::group::Tally::solo(w, focused(app, w));
+    }
+    tally_in(app, &strip_groups(app, on), w)
+}
+
+/// [`tally`] against groups the caller already built, so a pass over every
+/// chip builds the groups once and not once per chip.
+fn tally_in(app: &crate::app::App, groups: &[crate::group::Group<'_>], w: &Window) -> crate::group::Tally {
+    if app.mode != crate::model::Mode::De || crate::pins::is_idle(w) {
+        return crate::group::Tally::solo(w, focused(app, w));
+    }
+    groups.iter().find(|g| g.rep.handle == w.handle).map_or_else(
+        || crate::group::Tally::solo(w, focused(app, w)),
+        |g| g.tally(|m| focused(app, m)),
+    )
+}
+
+/// The group a chip's representative stands for, as list rows. Empty when the
+/// group is gone or is one window.
+pub(crate) fn group_rows(app: &crate::app::App, on: &crate::app::Bar, key: &str) -> Vec<crate::group::Row> {
+    strip_groups(app, on)
+        .iter()
+        .find(|g| crate::group::key_of(g.rep).as_deref() == Some(key) && g.members.len() > 1)
+        .map(|g| crate::group::rows(g, |m| focused(app, m)))
+        .unwrap_or_default()
 }
 
 /// The workspace the strip is drawing; a change lands the chips at once
@@ -873,8 +1008,11 @@ pub(crate) fn strip_workspace(app: &crate::app::App, on: &crate::app::Bar) -> Op
 ///
 /// Click brings a window forward, sends the focused one away and brings a
 /// minimized one back; middle-click closes, right-click is the menu.
-/// Windows are *not* grouped by `app_id`: grouping means a popup list for the
-/// group, which means a second surface and a second focus path.
+/// Under `hybrid` windows are *not* grouped by `app_id`: grouping means a popup
+/// list for the group, which means a second surface and a second focus path.
+/// Under `de` they are (see [`crate::group`]): a group of one acts as above, a
+/// group of several opens a list of its windows, and right-click is the
+/// compositor's own window menu.
 ///
 /// Every chip is drawn at the width its animation has reached, including
 /// the ghosts of windows that just closed, and each carries its own trailing
@@ -884,6 +1022,7 @@ pub(crate) fn strip_workspace(app: &crate::app::App, on: &crate::app::Bar) -> Op
 /// fall under the widgets' edge rather than over it.
 fn tasks<'a>(app: &'a crate::app::App, on: &'a crate::app::Bar) -> Element<'a, Message, Theme> {
     let mut r = Row::new().align_y(Alignment::Center);
+    let groups = strip_groups(app, on);
     for chip in &on.motion.chips {
         let visible = chip.visible();
         if visible <= 0.0 && chip.presence.value() <= 0.0 {
@@ -895,7 +1034,8 @@ fn tasks<'a>(app: &'a crate::app::App, on: &'a crate::app::Bar) -> Element<'a, M
                 chip,
                 app.icons.for_window(&chip.window),
                 visible,
-                focused(app, &chip.window),
+                tally_in(app, &groups, &chip.window),
+                app.mode == crate::model::Mode::De,
             ))
             .push(Space::new().width(Length::Fixed((bar::GAP * room).round())));
     }
@@ -912,8 +1052,13 @@ fn tasks<'a>(app: &'a crate::app::App, on: &'a crate::app::Bar) -> Element<'a, M
 /// Where the task strip's first chip begins, in surface-local pixels: the
 /// solver's `lead`.
 pub(crate) fn strip_left(app: &crate::app::App, on: &crate::app::Bar) -> f32 {
-    let count = live_workspaces(&app.snapshot, on.output_id).count() as f32;
-    let pager = (count * bar::PAGER_W + (count - 1.0).max(0.0) * bar::GAP).max(0.0);
+    let pager = match grid(app) {
+        Some(g) => g.size().0,
+        None => {
+            let count = live_workspaces(&app.snapshot, on.output_id).count() as f32;
+            (count * bar::PAGER_W + (count - 1.0).max(0.0) * bar::GAP).max(0.0)
+        }
+    };
     // Where the eclipse cell is going, not where it is: the solver shares out
     // the room the open (or closed) menu leaves, once, and the row carries
     // the chips along while the cell grows.
@@ -963,6 +1108,7 @@ pub fn drawer_span(
         crate::app::Drawer::QuickActions => widget_span(app, on, &WidgetId::QuickActions),
         crate::app::Drawer::Progress => widget_span(app, on, &WidgetId::Progress),
         crate::app::Drawer::Power => widget_span(app, on, &WidgetId::Power),
+        crate::app::Drawer::History => widget_span(app, on, &WidgetId::History),
         crate::app::Drawer::Overflow => {
             let (_, right) = widget_span(app, on, &WidgetId::Tray)?;
             let right = right - bar::WIDGET_X;
@@ -1016,7 +1162,7 @@ fn overflow_cell(hidden: usize) -> Element<'static, Message, Theme> {
 /// re-wraps it.
 /// Whether `w` holds focus: `get_focused` when it answered, else the
 /// window's own flag.
-fn focused(app: &crate::app::App, w: &crate::model::Window) -> bool {
+pub(crate) fn focused(app: &crate::app::App, w: &crate::model::Window) -> bool {
     app.snapshot.focused.map_or(w.focused, |f| f == w.handle)
 }
 
@@ -1024,14 +1170,18 @@ fn task_chip(
     chip: &crate::motion::Chip,
     icon: Icon,
     visible: f32,
-    focused: bool,
+    tally: crate::group::Tally,
+    de: bool,
 ) -> Element<'_, Message, Theme> {
     let w = &chip.window;
     let width = chip.content;
     // Focused, on screen, or put away — see the accent ledger. Only the
-    // focused chip is gold; a minimized one is dimmed (`chip_face`).
-    let up = !w.minimized;
+    // focused chip is gold; a minimized one is dimmed (`chip_face`). A group
+    // is focused when any of its windows is, and away when all of them are.
+    let up = !tally.minimized;
+    let focused = tally.focused;
     let accent = focused && up;
+    let count = chip.count.max(1);
     // Ink leads the glass: an arriving chip's face shows once there is room
     // to read it, a closing one's is gone before the edge reaches a glyph.
     let presence = chip.ink();
@@ -1049,13 +1199,20 @@ fn task_chip(
                 icon.clone(),
                 prev,
                 visible,
-                accent,
+                (accent, tally.minimized, count),
                 ink * parts::lead(1.0 - swap)
             ),
-            chip_face(w, icon, width, visible, accent, ink * parts::lead(swap)),
+            chip_face(
+                w,
+                icon,
+                width,
+                visible,
+                (accent, tally.minimized, count),
+                ink * parts::lead(swap)
+            ),
         ]
         .into(),
-        _ => chip_face(w, icon, width, visible, accent, ink),
+        _ => chip_face(w, icon, width, visible, (accent, tally.minimized, count), ink),
     };
     let body = container(body)
         .width(Length::Fixed(natural))
@@ -1087,23 +1244,26 @@ fn task_chip(
             )
             .into()
         } else {
-            let click = if up && !focused {
-                Message::Focus(w.handle)
-            } else {
-                Message::ToggleMinimize(w.handle)
+            let click = match crate::group::click(de, &tally, w.handle) {
+                crate::group::Click::Open(h) => Message::GroupOpen(h),
+                crate::group::Click::Focus(h) => Message::Focus(h),
+                crate::group::Click::Toggle(h) => Message::ToggleMinimize(h),
             };
-            parts::long_press(
-                mouse_area(press.on_press(click))
-                    .on_middle_press(Message::Close(w.handle))
-                    .on_right_press(Message::Menu(w.handle)),
-                Message::Menu(w.handle),
-            )
-            .into()
+            let area = mouse_area(press.on_press(click))
+                .on_middle_press(Message::CloseChip(w.handle))
+                .on_right_press(Message::Menu(w.handle));
+            let area = if de && count == 1 {
+                area.on_enter(Message::ChipHover(Some(w.handle)))
+                    .on_exit(Message::ChipHover(None))
+            } else {
+                area
+            };
+            parts::long_press(area, Message::Menu(w.handle)).into()
         }
     };
     let tone = if accent {
         theme::CellTone::Focused
-    } else if w.minimized {
+    } else if tally.minimized {
         theme::CellTone::Away
     } else {
         theme::CellTone::Plain
@@ -1124,20 +1284,25 @@ fn chip_face(
     icon: Icon,
     width: f32,
     visible: f32,
-    accent: bool,
+    (accent, minimized, count): (bool, bool, usize),
     alpha: f32,
 ) -> Element<'_, Message, Theme> {
     // Gold for focus, white for on screen, dimmed for put away.
     let (tint, face, icon_alpha) = if accent {
         (color::accent_text(), font::UI_MEDIUM, alpha)
-    } else if w.minimized {
+    } else if minimized {
         (color::text_tertiary(), font::UI, alpha * color::DIM)
     } else {
         (color::text(), font::UI, alpha)
     };
     // The rung is this chip's own business: the width it got buys a rung,
     // and the words this window wants to say decide whether it can use it.
-    let detail = chip_detail(w.label(), w.name(), width);
+    // A group has no one title: it says the application and how many.
+    let group_text = (count > 1).then(|| crate::group::chip_text(w, count));
+    let detail = match group_text.as_deref() {
+        Some(t) => chip_detail(t, t, width),
+        None => chip_detail(w.label(), w.name(), width),
+    };
     let mut face_row = Row::new().spacing(bar::GAP + bar::GAP).align_y(Alignment::Center);
     if detail != Detail::Bare {
         face_row = face_row.push(icon_view(icon, icon_alpha));
@@ -1146,11 +1311,13 @@ fn chip_face(
     // terminals condense to three `kitty`s rather than three copies of the
     // same truncated path. Neither is ever cut — `rung` already promised that
     // whichever of the two is chosen fits whole.
-    let label = match detail {
-        Detail::Full => Some(w.label()),
-        Detail::Name => Some(w.name()),
-        Detail::Icon | Detail::Bare => None,
+    let label: Option<std::borrow::Cow<'_, str>> = match (detail, group_text) {
+        (Detail::Full | Detail::Name, Some(t)) => Some(t.into()),
+        (Detail::Full, None) => Some(w.label().into()),
+        (Detail::Name, None) => Some(w.name().into()),
+        (Detail::Icon | Detail::Bare, _) => None,
     };
+    let labelled = label.is_some();
     if let Some(label) = label {
         face_row = face_row.push(
             text(label)
@@ -1162,10 +1329,19 @@ fn chip_face(
                 .wrapping(iced::widget::text::Wrapping::None),
         );
     }
+    // A group squeezed to its icon still says how many, beside it.
+    if count > 1 && detail == Detail::Icon {
+        face_row = face_row.push(
+            text(count.to_string())
+                .size(size::MICRO)
+                .font(font::DATA)
+                .color(color::text_secondary().scale_alpha(alpha)),
+        );
+    }
     // Labelled chips are read from a left gridline; iconic ones are marks and
     // centre, which is what keeps a row of them from looking like a row of
     // chips that lost their words.
-    let (align, pad, laid) = if label.is_some() {
+    let (align, pad, laid) = if labelled {
         (Alignment::Start, bar::CELL_X, width)
     } else {
         (Alignment::Center, 0.0, visible)
@@ -1455,6 +1631,10 @@ impl Sheet {
     }
 }
 
+/// A history panel's width, and a group list's: fixed at popup creation.
+pub const HISTORY_W: u32 = ec_ui::tokens::history::W as u32;
+pub const GROUP_W: u32 = ec_ui::tokens::group::W as u32;
+
 /// The popup height `which` needs right now. `app::open_drawer` sizes the
 /// surface from this and `app::reflow` reopens it when it changes; both read
 /// the same [`Sheet`] the view draws.
@@ -1473,6 +1653,7 @@ fn sheet(app: &crate::app::App, which: crate::app::Drawer) -> Sheet {
         crate::app::Drawer::QuickActions => crate::widgets::quick_actions::sheet(app),
         crate::app::Drawer::Progress => crate::widgets::progress::sheet(app),
         crate::app::Drawer::Power => crate::widgets::power::sheet(app),
+        crate::app::Drawer::History => crate::widgets::history::sheet(app),
     }
 }
 
@@ -1581,6 +1762,101 @@ fn drawer_sheet<'a>(
 fn drawer_view(app: &crate::app::App, which: crate::app::Drawer) -> Element<'static, Message, Theme> {
     let Sheet { head, rows, .. } = sheet(app, which);
     parts::drawer_frame(app.menu_radius, head, rows)
+}
+
+/// The window list of a group chip (`mode "de"`): one row per window of the
+/// application, the title at the left and its state at the right.
+///
+/// ## Shape
+///
+/// The context menu's rows, under the drawers' micro head that names the
+/// application and how many windows it has. Each row is a window, not a verb:
+/// its title (a `secret` window's is the placeholder, from
+/// [`crate::model::Window::label`]) and a mono state, and a click brings that
+/// window forward. Right-click asks the compositor for that window's menu.
+///
+/// ## The accent ledger
+///
+/// The focused window's row is the popup's one yellow, on its title, as the
+/// focused chip's label is on the strip. A minimized one is dimmed.
+pub(crate) fn group_sheet(app: &crate::app::App, owner: iced::window::Id, key: &str) -> Sheet {
+    let rows = app
+        .bars
+        .get(&owner)
+        .map(|bar| group_rows(app, bar, key))
+        .unwrap_or_default();
+    let head = parts::drawer_sheet_head(&format!("{key} \u{b7} {}", rows.len()));
+    let mut s = Sheet::new(head, drawer::HEAD_H);
+    let cap = ec_ui::tokens::group::MAX_ROWS;
+    for (i, r) in rows.iter().take(cap).enumerate() {
+        s.row(group_row(r, i));
+    }
+    if rows.len() > cap {
+        s.row(parts::drawer_note(&format!("+{} more", rows.len() - cap)));
+    }
+    s
+}
+
+/// The popup height a group's list needs: the same [`Sheet`] the view draws.
+pub(crate) fn group_height(app: &crate::app::App, owner: iced::window::Id, key: &str) -> u32 {
+    group_sheet(app, owner, key).height.ceil() as u32
+}
+
+fn group_view(app: &crate::app::App, owner: iced::window::Id, key: &str) -> Element<'static, Message, Theme> {
+    let Sheet { head, rows, .. } = group_sheet(app, owner, key);
+    parts::drawer_frame(app.menu_radius, head, rows)
+}
+
+fn group_row(r: &crate::group::Row, index: usize) -> Element<'static, Message, Theme> {
+    use crate::group::Activate;
+    let (tint, face) = if r.focused {
+        (color::accent_text(), font::UI_MEDIUM)
+    } else if r.minimized {
+        (color::text_tertiary(), font::UI)
+    } else {
+        (color::text(), font::UI)
+    };
+    let state = if r.focused {
+        "focused"
+    } else if r.minimized {
+        "minimized"
+    } else {
+        ""
+    };
+    let face = container(
+        row![
+            text(elide(&r.title, ec_ui::tokens::group::TITLE_CHARS))
+                .size(size::BODY_SMALL)
+                .color(tint)
+                .font(face)
+                .wrapping(Wrapping::None),
+            Space::new().width(Length::Fill),
+            text(state)
+                .size(size::MICRO)
+                .font(font::DATA)
+                .color(color::text_tertiary()),
+        ]
+        .spacing(menu::MARK_GAP)
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fill)
+    .align_y(Alignment::Center)
+    .padding([0.0, menu::ROW_X]);
+    let click = match crate::group::activation(r) {
+        Activate::Focus(h) => Message::Focus(h),
+        Activate::Restore(h) => Message::ToggleMinimize(h),
+        Activate::Nothing => Message::Dismiss,
+    };
+    mouse_area(
+        button(face)
+            .width(Length::Fill)
+            .height(Length::Fixed(drawer::ROW_H))
+            .padding(0)
+            .style(menu_row_style(false))
+            .on_press(click),
+    )
+    .on_right_press(Message::GroupMenu(r.handle, index))
+    .into()
 }
 
 /// A tray item's own menu: its entries, in its order, on the context menu's
@@ -1916,5 +2192,122 @@ mod tests {
         assert!((steam.0 - discord.0 - (bar::TRAY_MARK_W + bar::TRAY_GAP)).abs() < 0.01);
         assert!((arrow.0 - steam.1 - bar::TRAY_GAP).abs() < 0.01);
         assert_eq!(tray_item_span(&app, &on, ":1.slack"), Some(arrow));
+    }
+
+    fn foot(handle: u64, minimized: bool) -> Window {
+        let mut w = win(handle, 0, 1, minimized);
+        w.app_id = "foot".into();
+        w.title = format!("foot {handle}");
+        w
+    }
+
+    fn de_app(windows: Vec<Window>) -> (crate::app::App, crate::app::Bar) {
+        let mut app = crate::app::App::new();
+        app.mode = crate::model::Mode::De;
+        let on = crate::app::Bar::new(
+            iced::window::Id::unique(),
+            "DP-1".into(),
+            0,
+            ec_ui::motion::Motion::DEFAULT,
+        );
+        app.snapshot = Snapshot {
+            workspaces: vec![ws(1, 0, true, windows.len())],
+            windows,
+            ..Snapshot::default()
+        };
+        (app, on)
+    }
+
+    /// Grouping is a `de` behaviour: `hybrid` keeps a chip per window, and `wm`
+    /// has no chips, exactly as before this existed.
+    #[test]
+    fn grouping_happens_under_de_and_nowhere_else() {
+        use crate::model::Mode;
+        let (mut app, mut on) = de_app(vec![foot(1, false), foot(2, false), {
+            let mut k = win(3, 0, 1, false);
+            k.app_id = "firefox".into();
+            k
+        }]);
+        on.width = 1830.0;
+        for (mode, chips) in [(Mode::Hybrid, 3), (Mode::Wm, 0), (Mode::De, 2)] {
+            app.mode = mode;
+            crate::app::relayout(&app, &mut on, std::time::Instant::now());
+            assert_eq!(strip_windows(&app, &on).len(), chips, "{mode:?}");
+        }
+        // Hybrid: every chip is one window, so none is a group.
+        app.mode = Mode::Hybrid;
+        for w in strip_windows(&app, &on) {
+            assert!(!tally(&app, &on, w).is_group());
+            assert_eq!(tally(&app, &on, w).count, 1);
+        }
+        app.mode = Mode::De;
+        let strip = strip_windows(&app, &on);
+        assert_eq!(
+            strip[0].handle, 1,
+            "the group is represented by its lowest handle"
+        );
+        assert_eq!(tally(&app, &on, strip[0]).count, 2);
+        assert_eq!(tally(&app, &on, strip[1]).count, 1);
+    }
+
+    /// The group's order is the order of its first window, and it holds as
+    /// windows come and go inside it.
+    #[test]
+    fn groups_keep_their_place_in_the_strip() {
+        let mut other = win(2, 0, 1, false);
+        other.app_id = "firefox".into();
+        let (mut app, on) = de_app(vec![foot(1, false), other, foot(3, false)]);
+        let reps = |app: &crate::app::App| -> Vec<u64> {
+            strip_windows(app, &on).iter().map(|w| w.handle).collect()
+        };
+        assert_eq!(reps(&app), [1, 2]);
+        app.snapshot.windows.remove(0);
+        // foot's lowest handle is now 3, and it is still ahead of nothing it
+        // was not ahead of: firefox first seen at 2 comes first.
+        assert_eq!(reps(&app), [2, 3]);
+    }
+
+    #[test]
+    fn a_pinned_app_merges_with_its_group() {
+        let (mut app, on) = de_app(vec![foot(4, false), foot(5, true)]);
+        app.pins = vec![crate::pins::Pinned::new("foot", "Foot")];
+        let groups = strip_groups(&app, &on);
+        assert_eq!(groups.len(), 1);
+        assert!(!crate::pins::is_idle(groups[0].rep));
+        assert_eq!(groups[0].members.len(), 2);
+        // With no window the pin is an idle chip with nobody in it.
+        app.snapshot.windows.clear();
+        let groups = strip_groups(&app, &on);
+        assert!(crate::pins::is_idle(groups[0].rep));
+        assert!(groups[0].members.is_empty());
+    }
+
+    /// The window list never carries a secret window's title.
+    #[test]
+    fn the_group_list_redacts_a_secret_window() {
+        let mut secret = foot(2, false);
+        secret.title = "hunter2".into();
+        secret.trust = crate::model::Trust::Secret;
+        let (app, on) = de_app(vec![foot(1, false), foot(3, false), secret]);
+        let rows = group_rows(&app, &on, "foot");
+        assert_eq!(rows.len(), 2, "a secret window never joins a group");
+        assert!(rows.iter().all(|r| !r.title.contains("hunter2")));
+    }
+
+    #[test]
+    fn the_pager_is_the_grid_only_under_de_and_only_once_it_answered() {
+        let (mut app, _) = de_app(vec![]);
+        assert!(grid(&app).is_none(), "no answer yet: the workspace row");
+        app.grid = Some(ec_ipc::DesktopGrid {
+            rows: 2,
+            columns: 5,
+            wrap: true,
+            directional: true,
+            outputs: vec![],
+            desktops: vec![],
+        });
+        assert_eq!(grid(&app).map(|g| g.count()), Some(10));
+        app.mode = crate::model::Mode::Hybrid;
+        assert!(grid(&app).is_none());
     }
 }

@@ -136,7 +136,17 @@ impl SeatHandler for AbyssState {
         // Named shapes from `wp_cursor_shape_v1` arrive here too, so this one
         // path covers both. The winit backend draws the host cursor and ignores
         // this; the DRM backend composites it (`render::cursor`).
-        self.cursor_status = image;
+        // The resize glyphs are `mode "de"` chrome; elsewhere a client's
+        // resize shape is drawn as the arrow it always was.
+        self.cursor_status = match image {
+            CursorImageStatus::Named(icon)
+                if !self.config.mode.profile().titlebars
+                    && ec_abyss_render::cursor::resize_axis(icon).is_some() =>
+            {
+                CursorImageStatus::default_named()
+            }
+            other => other,
+        };
     }
 }
 

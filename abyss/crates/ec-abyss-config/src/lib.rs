@@ -99,6 +99,7 @@ pub fn parse_single_for_tests(text: &str) -> Config {
         ..Config::default()
     };
     cfg.apply(&doc, &mut Vec::new());
+    cfg.resolve_mode_defaults();
     cfg.finish_themes();
     cfg
 }
@@ -341,8 +342,22 @@ impl Config {
             cfg.cur = None;
         }
         let mut defaults = oracle_eyes_binds(&cfg.oracle_eyes);
-        defaults.extend(defaults_with_launcher(&cfg.launcher));
+        let launcher_defaults = defaults_with_launcher(&cfg.launcher);
+        // The mode's own default binds sit under the file's and the launcher's
+        // chosen chords (`merge_binds` lets any explicit chord replace them)
+        // but over the other built-ins, so `de`'s Super+arrows Quick Tile
+        // where `wm` and `hybrid` move focus.
+        let chosen = [&cfg.launcher.bind.open, &cfg.launcher.bind.run].map(|c| c.chord);
+        defaults.extend(
+            launcher_defaults
+                .iter()
+                .take_while(|b| chosen.contains(&Some((b.mods, b.key))))
+                .cloned(),
+        );
+        defaults.extend(mode_default_binds(cfg.mode));
+        defaults.extend(launcher_defaults);
         cfg.binds = merge_binds(defaults, binds_from_file);
+        cfg.resolve_mode_defaults();
         cfg.finish_themes();
         if !any {
             tracing::info!("no config found, using built-in defaults");
@@ -350,6 +365,18 @@ impl Config {
             tracing::info!(sources = ?cfg.sources.iter().map(|s| &s.path).collect::<Vec<_>>(), binds = cfg.binds.len(), "config loaded");
         }
         cfg
+    }
+
+    /// Fill every key the mode defaults and no file wrote (COMP-17 §2). Runs
+    /// on each load, so a reload that changes `mode` or drops an explicit key
+    /// re-resolves from scratch; nothing here is ever written back to a file.
+    pub(crate) fn resolve_mode_defaults(&mut self) {
+        if !self.general.focus_follows_mouse_set {
+            self.general.focus_follows_mouse = self.mode.profile().focus_follows_mouse;
+        }
+        if !self.general.floating_placement_set {
+            self.general.floating_placement = self.mode.profile().floating_placement;
+        }
     }
 
     /// Re-read the same sources. The inotify watcher (`config::watch`) calls
@@ -757,10 +784,20 @@ impl Config {
 
     /// `mods` is the held modifier set (a binding matches on equality).
     pub fn action_for(&self, mods: &Mods, key: Keysym) -> Option<&Action> {
-        self.binds
-            .iter()
-            .find(|b| b.key == key && b.mods == *mods)
-            .map(|b| &b.action)
+        let find = |key: Keysym| {
+            self.binds
+                .iter()
+                .find(|b| b.key == key && b.mods == *mods)
+                .map(|b| &b.action)
+        };
+        // Shift+Tab types `ISO_Left_Tab`; a bind written for `Shift+Tab` is
+        // meant to fire on it. Only under `mode "de"`: wm and hybrid binds
+        // behave as they always did.
+        find(key).or_else(|| {
+            (self.mode == Mode::De && key == Keysym::ISO_Left_Tab)
+                .then(|| find(Keysym::Tab))
+                .flatten()
+        })
     }
 
     /// Whether any `fingers`-finger swipe is bound. Asked at swipe begin,

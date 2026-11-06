@@ -10,6 +10,10 @@
 //! plain `std::sync::mpsc` channel — the same idiom the settings app already
 //! uses for its config watcher.
 //!
+//! The newest 100 non-transient notifications are also kept in memory and
+//! served to the taskbar over `org.eclipse.NotificationHistory`; see
+//! [`HistoryClient`].
+//!
 //! Two behaviours are deliberate and tested:
 //!
 //! * **The body is never logged.** A notification body is other people's mail;
@@ -22,11 +26,13 @@
 //!   human dismisses it.
 
 mod compositor;
+mod history;
 mod server;
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
 
+pub use history::{HistoryClient, HistoryEntry, CAP as HISTORY_CAP};
 pub use server::spawn;
 
 /// How loudly the client asked to be heard. The `urgency` hint, as a byte.

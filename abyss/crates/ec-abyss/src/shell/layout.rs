@@ -203,6 +203,19 @@ impl<W: Clone + PartialEq> Tree<W> {
         out
     }
 
+    /// No window tiled. Allocation free.
+    pub fn is_empty(&self) -> bool {
+        !self.nodes.iter().any(|n| {
+            matches!(
+                n,
+                Some(Node {
+                    kind: Kind::Leaf(_),
+                    ..
+                })
+            )
+        })
+    }
+
     pub fn windows(&self) -> Vec<W> {
         self.leaf_ids()
             .into_iter()

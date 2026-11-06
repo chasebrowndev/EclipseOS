@@ -1,0 +1,22 @@
+# The Eclipse desktop icons. Install to ~/.config/systemd/user/ec-desktop.service.
+#
+# Deliberately NO [Install]: abyss-session.target does not pull this in. The
+# compositor starts it when the session is in `mode "de"` (at startup, and on a
+# config reload that enters it) and stops it when the mode leaves "de"
+# (ec-abyss/src/session.rs, desktop_sync). Enabling it by hand would show icons
+# in the other modes.
+[Unit]
+Description=Eclipse desktop icons
+PartOf=graphical-session.target
+After=abyss-session.target
+# Requires, not Requisite as the wallpaper has: abyss starts the target and
+# this unit back to back, and a Requisite check would lose that race. Requires
+# pulls the target into the same start transaction and orders this after it.
+Requires=abyss-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ec-desktop
+Restart=on-failure
+RestartSec=2
+Slice=session.slice

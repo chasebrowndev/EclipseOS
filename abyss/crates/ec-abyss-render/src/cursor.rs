@@ -18,7 +18,7 @@ use smithay::{
             gles::GlesRenderer,
         },
     },
-    input::pointer::{CursorImageStatus, CursorImageSurfaceData},
+    input::pointer::{CursorIcon, CursorImageStatus, CursorImageSurfaceData},
     utils::{Physical, Point, Scale, Transform},
     wayland::compositor::with_states,
 };
@@ -121,7 +121,10 @@ const _: () = assert!(ARROW_W <= MIN_CURSOR_PLANE && ARROW_H <= MIN_CURSOR_PLANE
 /// element out on a plane when it has underlying storage (COMP-02 §5), and a
 /// texture element has none, so the arrow would always be composited.
 #[derive(Default)]
-pub struct Fallback(Option<(u32, MemoryRenderBuffer)>);
+pub struct Fallback(
+    Option<(u32, MemoryRenderBuffer)>,
+    [Option<(u32, MemoryRenderBuffer)>; 4],
+);
 
 impl std::fmt::Debug for Fallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -133,6 +136,24 @@ impl Fallback {
     /// The arrow buffer for the current accent. A new accent builds a fresh
     /// buffer (new id, so the renderer re-uploads and the cursor plane updates);
     /// an unchanged one reuses it with no allocation.
+    /// The resize glyph for `axis`, built like [`Fallback::get`].
+    fn get_resize(&mut self, axis: Axis) -> &MemoryRenderBuffer {
+        let accent = ACCENT.load(Ordering::Relaxed);
+        let slot = &mut self.1[axis as usize];
+        if slot.as_ref().is_none_or(|(a, _)| *a != accent) {
+            let buf = MemoryRenderBuffer::from_slice(
+                &resize_pixels(axis, accent),
+                Fourcc::Argb8888,
+                (GLYPH, GLYPH),
+                1,
+                Transform::Normal,
+                None,
+            );
+            *slot = Some((accent, buf));
+        }
+        &slot.as_ref().expect("just built").1
+    }
+
     fn get(&mut self) -> &MemoryRenderBuffer {
         let accent = ACCENT.load(Ordering::Relaxed);
         if self.0.as_ref().is_none_or(|(a, _)| *a != accent) {
@@ -148,6 +169,81 @@ impl Fallback {
         }
         &self.0.as_ref().expect("just built").1
     }
+}
+
+/// Resize glyph edge, device px.
+const GLYPH: i32 = 24;
+const _: () = assert!(GLYPH <= MIN_CURSOR_PLANE);
+
+/// Which double arrow a resize shape is drawn as.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Axis {
+    Ns = 0,
+    Ew = 1,
+    Nesw = 2,
+    Nwse = 3,
+}
+
+/// The glyph axis of a resize cursor, `None` for any other shape.
+pub fn resize_axis(icon: CursorIcon) -> Option<Axis> {
+    use CursorIcon as I;
+    match icon {
+        I::NResize | I::SResize | I::NsResize | I::RowResize => Some(Axis::Ns),
+        I::EResize | I::WResize | I::EwResize | I::ColResize => Some(Axis::Ew),
+        I::NeResize | I::SwResize | I::NeswResize => Some(Axis::Nesw),
+        I::NwResize | I::SeResize | I::NwseResize => Some(Axis::Nwse),
+        _ => None,
+    }
+}
+
+/// Is `(x, y)` (glyph-centred, device px) inside the double arrow along `axis`?
+fn in_arrow(axis: Axis, x: f32, y: f32) -> bool {
+    // Rotate into the arrow's own frame: `u` along it, `v` across.
+    let (u, v) = match axis {
+        Axis::Ew => (x, y),
+        Axis::Ns => (y, x),
+        // y grows downward: NE-SW runs up and to the right.
+        Axis::Nesw => (
+            (x - y) * std::f32::consts::FRAC_1_SQRT_2,
+            (x + y) * std::f32::consts::FRAC_1_SQRT_2,
+        ),
+        Axis::Nwse => (
+            (x + y) * std::f32::consts::FRAC_1_SQRT_2,
+            (y - x) * std::f32::consts::FRAC_1_SQRT_2,
+        ),
+    };
+    let (au, av) = (u.abs(), v.abs());
+    let shaft = au <= 7.0 && av <= 1.2;
+    let head = (5.0..=10.0).contains(&au) && av <= (10.0 - au) * 0.9;
+    shaft || head
+}
+
+/// Argb8888 bytes for a resize glyph: the accent fill with a black outline.
+fn resize_pixels(axis: Axis, accent: u32) -> Vec<u8> {
+    let fill = fill_for(accent);
+    let n = GLYPH as usize;
+    let c = GLYPH as f32 / 2.0;
+    let inside = |px: i32, py: i32| {
+        px >= 0
+            && py >= 0
+            && px < GLYPH
+            && py < GLYPH
+            && in_arrow(axis, px as f32 + 0.5 - c, py as f32 + 0.5 - c)
+    };
+    let mut out = Vec::with_capacity(n * n * 4);
+    for py in 0..GLYPH {
+        for px in 0..GLYPH {
+            let px_bytes: &[u8] = if inside(px, py) {
+                &fill
+            } else if (-1..=1).any(|dy| (-1..=1).any(|dx| inside(px + dx, py + dy))) {
+                &OUTLINE
+            } else {
+                &[0, 0, 0, 0]
+            };
+            out.extend_from_slice(px_bytes);
+        }
+    }
+    out
 }
 
 /// Elements for the pointer at `location` (output-local, logical). Empty when
@@ -184,14 +280,25 @@ pub fn elements(
             .map(AbyssRenderElement::Surface)
             .collect()
         }
-        // Named shapes all get the arrow for now; the shape is advisory and a
-        // wrong-looking pointer is better than no pointer at all.
-        CursorImageStatus::Named(_) => {
-            let pos: Point<i32, Physical> = location.to_physical_precise_round(scale);
+        // The resize shapes (a window edge or corner under `mode "de"`) get a
+        // double arrow centred on the pointer. Every other named shape gets the
+        // arrow for now; the shape is advisory and a wrong-looking pointer is
+        // better than no pointer at all.
+        CursorImageStatus::Named(icon) => {
+            let axis = resize_axis(*icon);
+            let at = match axis {
+                Some(_) => location - Point::from((GLYPH / 2, GLYPH / 2)).to_f64(),
+                None => location,
+            };
+            let pos: Point<i32, Physical> = at.to_physical_precise_round(scale);
+            let buffer = match axis {
+                Some(axis) => fallback.get_resize(axis),
+                None => fallback.get(),
+            };
             match MemoryRenderBufferRenderElement::from_buffer(
                 renderer,
                 pos.to_f64(),
-                fallback.get(),
+                buffer,
                 None,
                 None,
                 None,
@@ -210,6 +317,40 @@ pub fn elements(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resize_shapes_map_to_their_axis_and_others_do_not() {
+        assert_eq!(resize_axis(CursorIcon::NResize), Some(Axis::Ns));
+        assert_eq!(resize_axis(CursorIcon::SResize), Some(Axis::Ns));
+        assert_eq!(resize_axis(CursorIcon::WResize), Some(Axis::Ew));
+        assert_eq!(resize_axis(CursorIcon::NwResize), Some(Axis::Nwse));
+        assert_eq!(resize_axis(CursorIcon::SeResize), Some(Axis::Nwse));
+        assert_eq!(resize_axis(CursorIcon::NeResize), Some(Axis::Nesw));
+        assert_eq!(resize_axis(CursorIcon::SwResize), Some(Axis::Nesw));
+        assert_eq!(resize_axis(CursorIcon::Default), None);
+        assert_eq!(resize_axis(CursorIcon::Text), None);
+    }
+
+    #[test]
+    fn a_resize_glyph_is_drawn_along_its_axis_and_centred() {
+        let at = |px: &[u8], x: usize, y: usize| px[(y * GLYPH as usize + x) * 4 + 3];
+        let c = GLYPH as usize / 2;
+        let ew = resize_pixels(Axis::Ew, 0xf2c33c);
+        assert_eq!(ew.len(), (GLYPH * GLYPH * 4) as usize);
+        assert_eq!(at(&ew, c, c), 255, "the centre is filled");
+        assert_eq!(at(&ew, c + 8, c), 255, "east head");
+        assert_eq!(at(&ew, c - 9, c), 255, "west head");
+        assert_eq!(at(&ew, c, c - 8), 0, "nothing north of an EW arrow");
+        let ns = resize_pixels(Axis::Ns, 0xf2c33c);
+        assert_eq!(at(&ns, c, c + 8), 255);
+        assert_eq!(at(&ns, c + 8, c), 0);
+        let nesw = resize_pixels(Axis::Nesw, 0xf2c33c);
+        assert_eq!(at(&nesw, c + 6, c - 6), 255, "up and to the right");
+        assert_eq!(at(&nesw, c - 6, c - 6), 0, "not up and to the left");
+        let nwse = resize_pixels(Axis::Nwse, 0xf2c33c);
+        assert_eq!(at(&nwse, c - 6, c - 6), 255);
+        assert_eq!(at(&nwse, c + 6, c - 6), 0);
+    }
 
     #[test]
     fn arrow_pixels_are_argb8888_sized_to_the_arrow() {

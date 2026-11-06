@@ -1,0 +1,31 @@
+[package]
+name = "ec-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The Eclipse desktop: icons for ~/Desktop on a Bottom-layer surface per output, under mode \"de\"."
+# Its own crate and package, like the wallpaper (ADR 0052, 0090).
+publish = false
+
+[lib]
+name = "ec_desktop"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-desktop"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+iced_layershell = "0.19.1"
+ec-ui = { path = "../ec-ui" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
+# `.desktop` parsing and launching, shared with the launcher.
+ec-services = { path = "../ec-services" }
+serde_json.workspace = true
+# Path-producing icon-theme lookup, as the bar's. Already in the tree.
+freedesktop-icons = "0.4"
+# renameat2(RENAME_NOREPLACE) and localtime_r for the trash. Already in the tree.
+libc = "0.2"

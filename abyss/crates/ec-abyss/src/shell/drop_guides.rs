@@ -245,7 +245,8 @@ pub(crate) fn drop_candidates<W: Clone + PartialEq>(
 /// Super held) on the active workspace of a Radiant output, and neither
 /// fullscreen.
 fn start_tile_drag(state: &mut AbyssState, window: &Window) {
-    if state.lock.locked || state.fullscreen.contains_key(window) {
+    // Tile-on-drop, with or without Super, is a tiling feature (COMP-05 §3.1).
+    if state.lock.locked || state.fullscreen.contains_key(window) || super::de::stacking(state) {
         return;
     }
     let Some(id) = output_of_window(state, window) else {
@@ -389,6 +390,8 @@ pub fn drop_window(state: &mut AbyssState, window: &Window) {
 /// Abandon a drag in flight (grab cancelled, session locked): the window goes
 /// back to its placeholder.
 pub fn cancel_tile_drag(state: &mut AbyssState) {
+    // The `de` screen-edge preview is a drag overlay too.
+    super::quicktile::clear_preview(state);
     if state.tile_drag.take().is_some() {
         arrange(state);
     }

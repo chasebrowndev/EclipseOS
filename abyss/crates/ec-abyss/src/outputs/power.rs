@@ -95,6 +95,7 @@ fn rehome(state: &mut AbyssState, id: u64) {
         return;
     };
     let mut moved: Vec<Vec<Window>> = Vec::new();
+    crate::shell::maximize::note_departing(state, id);
     if let Some(entry) = state.outputs.get_mut(id) {
         for ws in entry.workspaces.iter_mut() {
             let mut wins = ws.windows();
