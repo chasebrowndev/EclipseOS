@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use crate::app_scope;
 use crate::frecency::{self, Store};
 use crate::fuzzy::{osa, subsequence, typo_budget};
 
@@ -559,50 +560,65 @@ pub fn launch(entry: &Entry, term: Option<&str>) -> std::io::Result<()> {
 /// offloads whenever a discrete GPU is there and the mode is not
 /// `integrated`.
 pub fn launch_with(entry: &Entry, term: Option<&str>, choice: GpuChoice) -> std::io::Result<()> {
-    let mut cmd = if entry.terminal {
+    let argv: Vec<String> = if entry.terminal {
         let Some(term) = term else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "entry wants a terminal",
             ));
         };
-        let mut cmd = std::process::Command::new(term);
-        cmd.arg("-e").args(&entry.argv);
-        cmd
+        [term, "-e"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain(entry.argv.iter().cloned())
+            .collect()
     } else {
-        let (program, args) = entry
-            .argv
-            .split_first()
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "entry has no command"))?;
-        let mut cmd = std::process::Command::new(program);
-        cmd.args(args);
-        cmd
+        entry.argv.clone()
     };
+    if argv.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "entry has no command",
+        ));
+    }
     // A long-lived caller (the taskbar) starts with the session target, before
     // XWayland is up; abyss imports `DISPLAY` into the user manager later, and
     // a running process never sees that. Without it X11-only apps (Steam) die
     // with "unable to open a connection to X".
+    let mut env: Vec<(String, String)> = Vec::new();
     if std::env::var_os("DISPLAY").is_none() {
-        cmd.envs(session_display());
+        env.extend(session_display());
     }
-    if let Some(env) = offload_env_for(entry, choice) {
-        cmd.envs(env);
+    if let Some(offload) = offload_env_for(entry, choice) {
+        env.extend(offload.into_iter().map(|(k, v)| (k.to_owned(), v)));
     }
-    use std::os::unix::process::CommandExt;
-    // The child must not inherit our controlling terminal or process group,
-    // so the launcher exiting doesn't take the application with it.
-    cmd.process_group(0);
-    cmd.stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map(|mut child| {
-            // A long-lived caller (the taskbar's menu) would otherwise keep
-            // every exited app as a zombie; reap it off-thread.
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-        })
+    let spawn = |argv: &[String]| {
+        let mut cmd = std::process::Command::new(&argv[0]);
+        cmd.args(&argv[1..]).envs(env.iter().map(|(k, v)| (k, v)));
+        use std::os::unix::process::CommandExt;
+        // The child must not inherit our controlling terminal or process group,
+        // so the launcher exiting doesn't take the application with it.
+        cmd.process_group(0)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+    };
+    // Each launch gets its own scope (app_scope), so a bar restart does not
+    // take the app with it. A wrapped spawn that fails before exec runs the
+    // plain argv instead: the app never started, so nothing runs twice.
+    let scoped = app_scope::wrap(&entry.id, argv.clone());
+    let child = match spawn(&scoped) {
+        Err(_) if scoped.len() != argv.len() => spawn(&argv),
+        other => other,
+    };
+    child.map(|mut child| {
+        // A long-lived caller (the taskbar's menu) would otherwise keep
+        // every exited app as a zombie; reap it off-thread.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+    })
 }
 
 // --- Discrete GPU offload (ADR 0084) ---------------------------------------
