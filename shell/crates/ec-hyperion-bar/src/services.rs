@@ -18,6 +18,7 @@ use std::thread;
 use std::time::Duration;
 
 use ec_services::custom::Kind;
+use ec_services::notifications::{HistoryClient, HistoryEntry};
 use ec_services::power_profiles::{self, PowerActions, PowerEvents, Profile};
 use ec_services::progress::{self, Update as ProgressUpdate};
 use ec_services::session::{Action as SessionAction, Availability, Session};
@@ -53,6 +54,8 @@ struct Handles {
     updates: Option<updates::Handle>,
     /// logind's answers and refusals for the power drawer, on one channel.
     session: Option<(Sender<SessionFeed>, Receiver<SessionFeed>)>,
+    /// The notification history thread's commands and reports (`mode "de"`).
+    history: Option<(Sender<HistoryCmd>, Receiver<Vec<HistoryEntry>>)>,
     /// What the monitor tap was last asked to be.
     tap: bool,
 }
@@ -221,6 +224,12 @@ pub fn drain() -> Vec<Message> {
     if let Some(u) = h.updates.as_ref() {
         while let Some(update) = u.try_recv() {
             out.push(Message::Updates(update));
+        }
+    }
+    if let Some((_, rx)) = h.history.as_ref() {
+        // Only the newest list matters; a burst of changes is one redraw.
+        if let Some(list) = rx.try_iter().last() {
+            out.push(Message::History(list));
         }
     }
     if let Some((_, rx)) = h.session.as_ref() {
@@ -400,5 +409,102 @@ pub fn set_tap(on: bool) {
     h.tap = on;
     if let Some(a) = h.audio.as_ref() {
         a.set_tap(on);
+    }
+}
+
+/// What the bar asks of the notification history.
+#[derive(Debug)]
+pub enum HistoryCmd {
+    /// Read it again now.
+    Refresh,
+    Remove(u32),
+    Clear,
+    /// Press a live entry's action button: `(id, key)`.
+    Invoke(u32, String),
+}
+
+/// How often the history is read again with no signal, so a toasts process
+/// that starts after the bar is picked up.
+const HISTORY_POLL: Duration = Duration::from_secs(5);
+
+/// Start the history thread, once. Under `mode "de"` only: `wm` and `hybrid`
+/// never touch the history bus name. Nothing starts under test or in a preview.
+pub fn history_start() {
+    if cfg!(test) || previewing() {
+        return;
+    }
+    let mut h = handles();
+    if h.history.is_some() {
+        return;
+    }
+    let (cmd_tx, cmd_rx) = mpsc::channel();
+    let (out_tx, out_rx) = mpsc::channel();
+    let spawned = thread::Builder::new()
+        .name("eclipse-history".into())
+        .spawn(move || history_loop(&cmd_rx, &out_tx));
+    match spawned {
+        Ok(_) => h.history = Some((cmd_tx, out_rx)),
+        Err(e) => eprintln!("eclipse-history: not started: {e}"),
+    }
+}
+
+/// Ask the history thread for something. A no-op before it has started.
+pub fn history_act(cmd: HistoryCmd) {
+    if let Some((tx, _)) = handles().history.as_ref() {
+        let _ = tx.send(cmd);
+    }
+}
+
+/// Own the client: act on commands, re-list on a `Changed` signal, on a
+/// command, and on a slow poll. The list goes out only when it differs.
+fn history_loop(cmds: &Receiver<HistoryCmd>, out: &Sender<Vec<HistoryEntry>>) {
+    let mut client = HistoryClient::new();
+    let mut changes = client.changes();
+    let mut retried = std::time::Instant::now();
+    let mut listed = std::time::Instant::now();
+    let mut last: Option<Vec<HistoryEntry>> = None;
+    let mut dirty = true;
+    loop {
+        match cmds.recv_timeout(Duration::from_millis(250)) {
+            Ok(cmd) => {
+                match cmd {
+                    HistoryCmd::Refresh => {}
+                    HistoryCmd::Remove(id) => client.remove(id),
+                    HistoryCmd::Clear => client.clear(),
+                    HistoryCmd::Invoke(id, key) => {
+                        client.invoke_action(id, &key);
+                    }
+                }
+                dirty = true;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+        loop {
+            match changes.try_recv() {
+                Ok(()) => dirty = true,
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    // No bus, or it went away: look for it again, slowly.
+                    if retried.elapsed() >= HISTORY_POLL {
+                        retried = std::time::Instant::now();
+                        changes = client.changes();
+                        dirty = true;
+                    }
+                    break;
+                }
+            }
+        }
+        if dirty || listed.elapsed() >= HISTORY_POLL {
+            dirty = false;
+            listed = std::time::Instant::now();
+            let list = client.list();
+            if last.as_ref() != Some(&list) {
+                last = Some(list.clone());
+                if out.send(list).is_err() {
+                    return;
+                }
+            }
+        }
     }
 }

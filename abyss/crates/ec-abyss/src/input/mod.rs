@@ -650,6 +650,17 @@ impl AbyssState {
     /// hands focus to whatever is now underneath instead of leaving it stale
     /// until the mouse is jiggled (ADR 0042).
     pub(crate) fn refresh_pointer_focus(&mut self) {
+        self.refresh_pointer_focus_with(true);
+    }
+
+    /// [`Self::refresh_pointer_focus`] for an overlay going away (switcher,
+    /// overview, window menu, hover preview): no window changed, so the pointer
+    /// finds its surface again but the keyboard stays where it is.
+    pub(crate) fn refresh_pointer_focus_keeping_keyboard(&mut self) {
+        self.refresh_pointer_focus_with(false);
+    }
+
+    fn refresh_pointer_focus_with(&mut self, keyboard: bool) {
         if self.lock.locked
             || crate::trusted_ui::holds_seat(self)
             || self.winmenu.is_open()
@@ -694,7 +705,12 @@ impl AbyssState {
         // focus from the same rules a real motion would use. Gated: with
         // `refocus-on-scene-change` off, only pointer focus is refreshed.
         let ctx = crate::shell::focus::pointer_focus_ctx(self, self.pointer_location);
-        if ctx.refocus_on_scene_change {
+        // Under `mode "de"` with click-to-focus the keyboard never follows a
+        // stationary pointer: a closing popup or overlay must not undo an
+        // explicit activate. Unmaps are `refocus_topmost`'s job.
+        let click_to_focus_de =
+            self.config.mode == crate::config::Mode::De && !self.config.general.focus_follows_mouse;
+        if keyboard && ctx.refocus_on_scene_change && !click_to_focus_de {
             let action = crate::shell::focus::decide_pointer_focus(&ctx);
             crate::shell::focus::apply_focus(self, action, crate::shell::focus::FocusCause::WindowUnmap);
         }
@@ -842,7 +858,7 @@ impl AbyssState {
         if self.winmenu.is_open() {
             self.winmenu.close();
             crate::backend::damage_all(self);
-            self.refresh_pointer_focus();
+            self.refresh_pointer_focus_keeping_keyboard();
             return;
         }
         if crate::overview::holds_pointer(self) {

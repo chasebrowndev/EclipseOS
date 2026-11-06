@@ -177,7 +177,7 @@ pub fn mode_blurb(value: &str) -> Option<&'static str> {
     match value {
         "wm" => Some("Tiling with a workspaces bar only."),
         "hybrid" => Some("The bar also shows window chips, the tray and the clock."),
-        "de" => Some("Hybrid, plus desktop icons and pointer-first navigation."),
+        "de" => Some("Hybrid, plus desktop icons, window titlebars, snapping and the Overview."),
         _ => None,
     }
 }

@@ -108,7 +108,7 @@ pub fn close(state: &mut AbyssState) {
 
 fn dismiss(state: &mut AbyssState) {
     close_all(state);
-    state.refresh_pointer_focus();
+    state.refresh_pointer_focus_keeping_keyboard();
 }
 
 /// Open one overlay at the exclusion of the others (and the window menu).
