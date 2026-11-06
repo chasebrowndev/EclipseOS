@@ -409,6 +409,7 @@ uniform float y_sign;     // -1 when the framebuffer is y-mirrored
 uniform vec4 rim_color;   // premultiplied bezel hairline colour
 uniform float inner;      // bezel width, physical px; 0 off the bezel
 uniform float opaque;     // 1 when the window inside the bezel is opaque
+uniform float bar;        // titlebar depth from the region's top, physical px; 0 none
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
 // The glass program's neutral hairline, so a bezel reads the same in both.
@@ -432,7 +433,7 @@ void main() {
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 #endif
     // Under an opaque window only the ring can show.
-    if (opaque > 0.5 && d < -inner - 1.0) {
+    if (opaque > 0.5 && d < -inner - 1.0 && p.y + half_size.y >= bar) {
         gl_FragColor = vec4(0.0);
         return;
     }
@@ -481,6 +482,7 @@ uniform float rim;        // 0..1 hairline strength
 uniform vec4 rim_color;   // premultiplied hairline colour; opaque white off the bezel
 uniform float inner;      // bezel width, physical px; 0 off the bezel
 uniform float opaque;     // 1 when the window inside the bezel is opaque
+uniform float bar;        // titlebar depth from the region's top, physical px; 0 none
 uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
 uniform float shade;      // 0..1 mix toward ink (light only: a pane's depth step); 0 elsewhere
 uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
@@ -533,7 +535,7 @@ void main() {
 #endif
     // Under an opaque window only the ring (and the window's own antialiased
     // edge) can show.
-    if (opaque > 0.5 && d < -inner - 1.0) {
+    if (opaque > 0.5 && d < -inner - 1.0 && p.y + half_size.y >= bar) {
         gl_FragColor = vec4(0.0);
         return;
     }
@@ -596,7 +598,7 @@ void main() {
 "#;
 
 /// The frost program's uniforms, in the order [`frost_uniforms`] sets them.
-const FROST_UNIFORMS: [(&str, UniformType); 7] = [
+const FROST_UNIFORMS: [(&str, UniformType); 8] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("frost_tint", UniformType::_4f),
@@ -604,6 +606,7 @@ const FROST_UNIFORMS: [(&str, UniformType); 7] = [
     ("rim_color", UniformType::_4f),
     ("inner", UniformType::_1f),
     ("opaque", UniformType::_1f),
+    ("bar", UniformType::_1f),
 ];
 
 /// Compile the frost backdrop program (COMP-02 §9). Cached by the caller.
@@ -650,7 +653,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 14] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 15] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -662,6 +665,7 @@ const GLASS_UNIFORMS: [(&str, UniformType); 14] = [
     ("rim_color", UniformType::_4f),
     ("inner", UniformType::_1f),
     ("opaque", UniformType::_1f),
+    ("bar", UniformType::_1f),
     ("lift", UniformType::_1f),
     ("shade", UniformType::_1f),
     ("scheme_light", UniformType::_1f),
@@ -685,11 +689,17 @@ pub fn frost_uniforms(
     mirrored: bool,
     radius: f32,
     tint: [f32; 4],
-    bezel: Option<(i32, bool, [f32; 4])>,
+    bezel: Option<(i32, bool, [f32; 4], i32)>,
 ) -> Vec<Uniform<'static>> {
-    let (inner, opaque, rim_color) = bezel.map_or((0.0, 0.0, [0.0; 4]), |(inner, opaque, rim)| {
-        (inner.max(0) as f32, if opaque { 1.0f32 } else { 0.0 }, rim)
-    });
+    let (inner, opaque, rim_color, bar) =
+        bezel.map_or((0.0, 0.0, [0.0; 4], 0.0), |(inner, opaque, rim, bar)| {
+            (
+                inner.max(0) as f32,
+                if opaque { 1.0f32 } else { 0.0 },
+                rim,
+                bar.max(0) as f32,
+            )
+        });
     let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
     u.extend([
         Uniform::new("frost_tint", tint),
@@ -697,6 +707,7 @@ pub fn frost_uniforms(
         Uniform::new("rim_color", rim_color),
         Uniform::new("inner", inner),
         Uniform::new("opaque", opaque),
+        Uniform::new("bar", bar),
     ]);
     u
 }
@@ -717,7 +728,7 @@ pub fn glass_uniforms(
     strength: f32,
     bevel: f32,
     glass: &ec_abyss_config::GlassBlur,
-    bezel: Option<(i32, bool, [f32; 4])>,
+    bezel: Option<(i32, bool, [f32; 4], i32)>,
     light: f32,
 ) -> Vec<Uniform<'static>> {
     glass_uniforms_lifted(
@@ -738,14 +749,20 @@ pub fn glass_uniforms_lifted(
     strength: f32,
     bevel: f32,
     glass: &ec_abyss_config::GlassBlur,
-    bezel: Option<(i32, bool, [f32; 4])>,
+    bezel: Option<(i32, bool, [f32; 4], i32)>,
     lift: f32,
     shade: f32,
     light: f32,
 ) -> Vec<Uniform<'static>> {
-    let (inner, opaque, rim_color) = bezel.map_or((0.0, 0.0, [1.0; 4]), |(inner, opaque, rim)| {
-        (inner.max(0) as f32, if opaque { 1.0f32 } else { 0.0 }, rim)
-    });
+    let (inner, opaque, rim_color, bar) =
+        bezel.map_or((0.0, 0.0, [1.0; 4], 0.0), |(inner, opaque, rim, bar)| {
+            (
+                inner.max(0) as f32,
+                if opaque { 1.0f32 } else { 0.0 },
+                rim,
+                bar.max(0) as f32,
+            )
+        });
     let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
     u.extend([
         Uniform::new(
@@ -760,6 +777,7 @@ pub fn glass_uniforms_lifted(
         Uniform::new("rim_color", rim_color),
         Uniform::new("inner", inner),
         Uniform::new("opaque", opaque),
+        Uniform::new("bar", bar),
         Uniform::new("lift", lift),
         Uniform::new("shade", shade),
         Uniform::new("scheme_light", light),
@@ -1274,7 +1292,7 @@ mod tests {
             4.0,
             6.0,
             &ec_abyss_config::GlassBlur::default(),
-            Some((6, true, [0.43, 0.34, 0.11, 0.45])),
+            Some((6, true, [0.43, 0.34, 0.11, 0.45], 30)),
             0.0,
         );
         let set: Vec<&str> = bezel.iter().map(|u| &*u.name).collect();

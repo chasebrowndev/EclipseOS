@@ -150,17 +150,26 @@ pub fn invalidates(
 /// can show through over an opaque window, relative to the region's origin:
 /// top and bottom deep enough to hold the window's corners (`corner` is its
 /// physical radius), left and right `inner` wide, each with a pixel of margin
-/// for the window's antialiased edge. Disjoint, and clamped to `size`.
-pub fn ring_strips(size: Size<i32, Physical>, inner: i32, corner: i32) -> [Rectangle<i32, Physical>; 4] {
+/// for the window's antialiased edge. A titlebar `bar` px deep (from the
+/// region's top; 0 for none) is glass whatever the window is, so the top strip
+/// reaches down over it. Disjoint, and clamped to `size`.
+pub fn ring_strips(
+    size: Size<i32, Physical>,
+    inner: i32,
+    corner: i32,
+    bar: i32,
+) -> [Rectangle<i32, Physical>; 4] {
     let (w, h) = (size.w.max(0), size.h.max(0));
-    let t = (inner + corner.max(0) + 1).clamp(0, h / 2);
+    let base = (inner + corner.max(0) + 1).clamp(0, h / 2);
+    let top = base.max(bar).clamp(0, h);
+    let t = base.min(h - top);
     let side = (inner + 1).clamp(0, w / 2);
-    let mid = h - 2 * t;
+    let mid = h - top - t;
     [
-        Rectangle::new((0, 0).into(), (w, t).into()),
+        Rectangle::new((0, 0).into(), (w, top).into()),
         Rectangle::new((0, h - t).into(), (w, t).into()),
-        Rectangle::new((0, t).into(), (side, mid).into()),
-        Rectangle::new((w - side, t).into(), (side, mid).into()),
+        Rectangle::new((0, top).into(), (side, mid).into()),
+        Rectangle::new((w - side, top).into(), (side, mid).into()),
     ]
 }
 
@@ -714,7 +723,7 @@ impl BlurStore {
     /// `reach` is how far past `region` the final draw samples on top of the
     /// kernel (the glass refraction; 0 for every other mode), so damage that
     /// far out invalidates too. `ring` is an opaque window's bezel, as
-    /// `(width, corner radius)` in physical px: only its strips are ever seen,
+    /// `(width, corner radius, titlebar depth)` in physical px: only its strips are ever seen,
     /// so only damage near them invalidates, and only they report damage.
     /// `shape` is a shaped layer's boxes: only damage within reach of one of
     /// them (grown by the fillet, which can only fill in between them)
@@ -735,7 +744,7 @@ impl BlurStore {
         scale: Scale<f64>,
         rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
         reach: i32,
-        ring: Option<(i32, i32)>,
+        ring: Option<(i32, i32, i32)>,
         shape: Option<&Shape>,
         alpha: f32,
     ) -> Option<BlurElement>
@@ -857,7 +866,7 @@ impl BlurStore {
         blur: &Blur,
         scale: Scale<f64>,
         reach: i32,
-        ring: Option<(i32, i32)>,
+        ring: Option<(i32, i32, i32)>,
         shape: Option<&Shape>,
     ) -> Option<Refreshed>
     where
@@ -890,7 +899,7 @@ impl BlurStore {
         // The invalidation rule: recompute only when damage behind this surface
         // lands inside the region (or only the bezel's ring of it) grown by
         // the kernel radius.
-        let strips = ring.map(|(inner, corner)| ring_strips(region.size, inner, corner));
+        let strips = ring.map(|(inner, corner, bar)| ring_strips(region.size, inner, corner, bar));
         let dirty = {
             let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
             let radius = kernel_radius(blur).saturating_add(reach.max(0));
@@ -1361,7 +1370,7 @@ mod tests {
     fn ring_strips_cover_only_the_bezel() {
         // A 300x200 window inside a 6 px bezel, corner radius 9.
         let size = Size::<i32, Physical>::from((312, 212));
-        let strips = ring_strips(size, 6, 9);
+        let strips = ring_strips(size, 6, 9, 0);
         assert_eq!(
             strips,
             [
@@ -1394,9 +1403,35 @@ mod tests {
         assert!(strips.iter().any(|s| invalidates(*s, k, &[r(12, 100, 2, 2)])));
     }
 
+    /// A titlebar is glass over an opaque window: the top strip reaches down
+    /// over it, and the strips stay disjoint and inside the region.
+    #[test]
+    fn ring_strips_take_in_the_titlebar() {
+        let size = Size::<i32, Physical>::from((312, 212));
+        let strips = ring_strips(size, 6, 9, 40);
+        assert_eq!(
+            strips,
+            [
+                r(0, 0, 312, 40),
+                r(0, 196, 312, 16),
+                r(0, 40, 7, 156),
+                r(305, 40, 7, 156)
+            ]
+        );
+        for (i, a) in strips.iter().enumerate() {
+            for b in &strips[i + 1..] {
+                assert!(!a.overlaps(*b), "{a:?} overlaps {b:?}");
+            }
+        }
+        // A bar deeper than the region never overruns it.
+        for s in ring_strips(size, 6, 9, 500) {
+            assert!(s.size.h >= 0 && s.loc.y + s.size.h <= 212);
+        }
+    }
+
     #[test]
     fn ring_strips_clamp_to_a_tiny_region() {
-        for s in ring_strips(Size::from((10, 6)), 6, 9) {
+        for s in ring_strips(Size::from((10, 6)), 6, 9, 0) {
             assert!(s.loc.x >= 0 && s.loc.y >= 0 && s.size.w >= 0 && s.size.h >= 0);
             assert!(s.loc.x + s.size.w <= 10 && s.loc.y + s.size.h <= 6);
         }

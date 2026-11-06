@@ -304,6 +304,27 @@ impl Frame<'_> {
                 }
             })
             .flatten();
+        // The titlebar is glass whatever the client is, as in `window_elements`
+        // (a still has no bezel, so the region is simply grown over the bar).
+        let backdrop = match bar {
+            Some(info) if mode != BlurMode::Off && !rolled => {
+                let strip = crate::titlebar::bar_rect(geo, info.height);
+                let strip = Rectangle::new(
+                    phys(strip.loc - output_loc, scale),
+                    strip.size.to_f64().to_physical(scale).to_i32_round(),
+                );
+                match backdrop {
+                    None => {
+                        strip_backdrop(strip, frame_rect, corner).map(|region| (region, deco.rounding, None))
+                    }
+                    Some((region, radius, None)) => {
+                        Some((crate::union_with_bar(region, strip), radius, None))
+                    }
+                    other => other,
+                }
+            }
+            _ => backdrop,
+        };
 
         let mut popups = popups;
         if keyed.is_none() {
