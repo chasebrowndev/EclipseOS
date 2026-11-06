@@ -257,6 +257,7 @@ fn clamp_to(
 /// activation only: it has no tiled or maximized state here (see
 /// [`quicktile`]).
 fn configure(
+    state: &mut AbyssState,
     window: &Window,
     rect: Rectangle<i32, Logical>,
     activated: bool,
@@ -269,6 +270,7 @@ fn configure(
         // they need the whole rectangle, not just a size.
         if let Some(x11) = window.x11_surface() {
             x11.set_activated(activated).ok();
+            crate::xwayland::sync_on_configure(state, x11, rect);
             let _ = x11.configure(rect);
         }
         return;
@@ -660,6 +662,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         let size = clamp_size(&w, inner.size, true);
         if mapping.as_ref() != Some(&w) {
             configure(
+                state,
                 &w,
                 Rectangle::new(inner.loc, size),
                 focus.as_ref() == Some(&w),
@@ -705,6 +708,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         };
         if mapping.as_ref() != Some(&w) {
             configure(
+                state,
                 &w,
                 Rectangle::new(inner.loc, size),
                 focus.as_ref() == Some(&w),

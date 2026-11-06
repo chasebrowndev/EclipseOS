@@ -360,6 +360,9 @@ impl XwmHandler for AbyssState {
         self.xwayland.wants_fullscreen.retain(|s| *s != window);
         self.xwayland.wants_maximized.retain(|s| *s != window);
         self.xwayland.declined_fullscreen.retain(|s| *s != window);
+        if let Some(sync) = self.xwayland.sync.as_mut() {
+            sync.forget(window.window_id());
+        }
     }
 
     /// Geometry requests. Tiled windows are held to the layout, so the
@@ -411,6 +414,11 @@ impl XwmHandler for AbyssState {
             }
             None => requested_rect(current, x, y, w, h),
         };
+        // Managed windows only: popups and menus place themselves and never
+        // get a sync request (EWMH sync is for windows the WM sizes).
+        if element.is_some() && !self.xwayland.unmanaged.contains(&window) {
+            xwayland::sync_on_configure(self, &window, rect);
+        }
         let _ = window.configure(rect);
     }
 
@@ -635,6 +643,7 @@ impl XwmHandler for AbyssState {
         self.xwayland.unmanaged.clear();
         self.xwayland.unrefreshed.clear();
         self.xwayland.stacking.clear();
+        self.xwayland.sync = None;
         self.xwayland.wm = None;
         self.xwayland.advertised_scale = None;
         self.xwayland.client_scale = None;
