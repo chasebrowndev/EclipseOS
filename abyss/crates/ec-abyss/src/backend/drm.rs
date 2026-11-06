@@ -265,6 +265,8 @@ pub struct DrmData {
     pub input_devices: Vec<smithay::reexports::input::Device>,
     /// Frame-budget watch that sheds animations (COMP-14 §6).
     shed: crate::render::anim::ShedMonitor,
+    /// Late-connector rescan state, one entry per device that has had one.
+    late_retry: Vec<LateRetry>,
 }
 
 impl super::Backend for DrmData {
@@ -462,6 +464,126 @@ fn pick_crtc(
         .find(|crtc| !used.contains(crtc))
 }
 
+/// Delays before rescanning a connector that is connected but has no modes yet
+/// (EDID or link training still finishing). Bounded: after the last one, stop
+/// until the next udev event.
+const LATE_CONNECTOR_DELAYS: [Duration; 3] = [
+    Duration::from_secs(1),
+    Duration::from_secs(3),
+    Duration::from_secs(10),
+];
+
+/// Mode attempts when bringing up a connector on the automatic choice.
+const BRING_UP_ATTEMPTS: usize = 3;
+
+/// The delay before the late-connector retry at `step` (0-based), or `None`
+/// once the ladder is spent.
+fn next_late_retry(step: usize) -> Option<Duration> {
+    LATE_CONNECTOR_DELAYS.get(step).copied()
+}
+
+/// Modes to try, in order, when the automatic choice fails its modeset: the
+/// preferred one (`preferred`, an index into `modes`), then the next lower modes
+/// in descending (area, refresh) order, at most `attempts` in all. Each entry is
+/// an index into `modes`, so nothing is invented; duplicate sizes and refreshes
+/// are tried once. Returns empty only if `preferred` is out of range.
+fn bandwidth_ladder(modes: &[(u16, u16, i32)], preferred: usize, attempts: usize) -> Vec<usize> {
+    let key = |i: usize| {
+        let (w, h, r) = modes[i];
+        (u32::from(w) * u32::from(h), r)
+    };
+    let mut order: Vec<usize> = (0..modes.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(key(i)));
+    let Some(start) = order.iter().position(|&i| i == preferred) else {
+        return Vec::new();
+    };
+    let mut out: Vec<usize> = Vec::new();
+    for &i in &order[start..] {
+        if out.len() == attempts {
+            break;
+        }
+        if out.iter().any(|&j| key(j) == key(i)) {
+            continue;
+        }
+        out.push(i);
+    }
+    out
+}
+
+/// Retry state for a device with a connector that is connected but has no modes.
+struct LateRetry {
+    dev_id: libc::dev_t,
+    /// Retries already scheduled for the current episode.
+    step: usize,
+    /// A retry timer is in the loop and has not fired yet.
+    armed: bool,
+}
+
+/// Arm the next late-connector rescan of device `dev_id`, if the ladder allows.
+fn schedule_late_rescan(state: &mut AbyssState, dev_id: libc::dev_t) {
+    let Some(drm) = state.drm.as_mut() else {
+        return;
+    };
+    let loop_handle = drm.loop_handle.clone();
+    let idx = match drm.late_retry.iter().position(|r| r.dev_id == dev_id) {
+        Some(i) => i,
+        None => {
+            drm.late_retry.push(LateRetry {
+                dev_id,
+                step: 0,
+                armed: false,
+            });
+            drm.late_retry.len() - 1
+        }
+    };
+    let retry = &mut drm.late_retry[idx];
+    if retry.armed {
+        return;
+    }
+    let Some(delay) = next_late_retry(retry.step) else {
+        tracing::info!(
+            ?dev_id,
+            "connector still reports no modes after the late retries; waiting for the next udev event"
+        );
+        return;
+    };
+    retry.step += 1;
+    retry.armed = true;
+    let attempt = retry.step;
+    tracing::info!(
+        ?dev_id,
+        retry = attempt,
+        delay_ms = delay.as_millis() as u64,
+        "connected connector has no modes yet; scheduling a rescan"
+    );
+    if let Err(err) = loop_handle.insert_source(Timer::from_duration(delay), move |_, _, state| {
+        let dev = state.drm.as_mut().and_then(|drm| {
+            if let Some(r) = drm.late_retry.iter_mut().find(|r| r.dev_id == dev_id) {
+                r.armed = false;
+            }
+            drm.device_index(dev_id)
+        });
+        if let Some(dev) = dev {
+            tracing::info!(
+                ?dev_id,
+                retry = attempt,
+                of = LATE_CONNECTOR_DELAYS.len(),
+                "rescanning connector that had no modes"
+            );
+            scan_device(state, dev);
+            schedule_render(state);
+        }
+        TimeoutAction::Drop
+    }) {
+        tracing::warn!(?err, "arming late connector rescan");
+        if let Some(drm) = state.drm.as_mut() {
+            if let Some(r) = drm.late_retry.iter_mut().find(|r| r.dev_id == dev_id) {
+                r.armed = false;
+            }
+        }
+    }
+}
+
 /// Rescan every device (COMP-03 §3). Called at startup and after a VT switch.
 pub fn scan_connectors(state: &mut AbyssState) {
     let n = state.drm.as_ref().map_or(0, |d| d.devices.len());
@@ -515,14 +637,17 @@ fn scan_device(state: &mut AbyssState, dev: usize) {
         tracing::warn!(device = %device.tag, "reading DRM resources");
         return;
     };
+    let dev_id = device.dev_id;
 
     let mut connected: Vec<(connector::Handle, connector::Info)> = Vec::new();
+    // Connected but no modes yet (EDID or link training still finishing).
+    let mut pending = false;
     for handle in resources.connectors() {
         match device.drm.get_connector(*handle, true) {
             Ok(info) if info.state() == connector::State::Connected && !info.modes().is_empty() => {
                 connected.push((*handle, info))
             }
-            Ok(_) => {}
+            Ok(info) => pending |= info.state() == connector::State::Connected,
             Err(err) => tracing::warn!(device = %device.tag, ?err, "reading connector"),
         }
     }
@@ -566,6 +691,16 @@ fn scan_device(state: &mut AbyssState, dev: usize) {
         }
     }
 
+    if pending {
+        schedule_late_rescan(state, dev_id);
+    } else if let Some(r) = state
+        .drm
+        .as_mut()
+        .and_then(|d| d.late_retry.iter_mut().find(|r| r.dev_id == dev_id && !r.armed))
+    {
+        r.step = 0;
+    }
+
     sync_fallback(state);
 }
 
@@ -601,24 +736,31 @@ fn add_connector(
         .or_else(|| state.outputs.saved_for(&identity).and_then(|s| s.mode));
     // A connector can report zero modes (a live link that has not read EDID
     // yet); indexing [0] would panic mid-hotplug, so bail instead.
-    let preferred = info
+    let preferred_idx = info
         .modes()
         .iter()
-        .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
-        .or_else(|| info.modes().first())
-        .copied()
+        .position(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+        .or_else(|| (!info.modes().is_empty()).then_some(0))
         .ok_or_else(|| anyhow!("connector {name} reports no modes"))?;
-    let mode = wanted
-        .and_then(|(w, h, r)| {
-            let exact = info
-                .modes()
+    // Indices into `info.modes()`, tried in order until one modesets.
+    let ladder: Vec<usize> = if wanted.is_some() {
+        // A named mode is taken or refused, never stepped down from.
+        let named = wanted.and_then(|(w, h, r)| {
+            info.modes()
                 .iter()
-                .find(|m| m.size() == (w as u16, h as u16) && refresh_mhz(m) == r);
-            exact
-                .or_else(|| info.modes().iter().find(|m| m.size() == (w as u16, h as u16)))
-                .copied()
-        })
-        .unwrap_or(preferred);
+                .position(|m| m.size() == (w as u16, h as u16) && refresh_mhz(m) == r)
+                .or_else(|| info.modes().iter().position(|m| m.size() == (w as u16, h as u16)))
+        });
+        vec![named.unwrap_or(preferred_idx)]
+    } else {
+        let keys: Vec<(u16, u16, i32)> = info
+            .modes()
+            .iter()
+            .map(|m| (m.size().0, m.size().1, refresh_mhz(m)))
+            .collect();
+        bandwidth_ladder(&keys, preferred_idx, BRING_UP_ATTEMPTS)
+    };
+    let mode = info.modes()[ladder[0]];
 
     let (phys_w, phys_h) = info.size().unwrap_or((0, 0));
     let edid = edid_blob(&device.drm, handle).and_then(|b| crate::outputs::edid::parse(&b));
@@ -639,7 +781,7 @@ fn add_connector(
             refresh: refresh_mhz(m),
         });
     }
-    let wl_mode = OutputMode {
+    let mut wl_mode = OutputMode {
         size: (mode.size().0 as i32, mode.size().1 as i32).into(),
         refresh: refresh_mhz(&mode),
     };
@@ -750,24 +892,71 @@ fn add_connector(
     let compositor = match compositor {
         Some(c) => c,
         None => {
-            let mode_source = if route == gpu::OutputRoute::CpuCopy {
-                static_source(wl_mode.size)
-            } else {
-                OutputModeSource::from(&output)
-            };
-            let surface = drm.devices[dev]
-                .drm
-                .create_surface(crtc, mode, &[handle])
-                .context("creating DRM surface")?;
-            new_compositor(
-                drm,
-                dev,
-                surface,
-                false,
-                mode_source,
-                renderer_formats.iter().copied().collect(),
-            )
-            .context("DrmCompositor::new")?
+            // The output's current mode is what the compositor modesets to
+            // (`OutputModeSource::Auto` reads it), so set it per attempt.
+            let mut made = None;
+            let mut last_err = None;
+            for (n, &idx) in ladder.iter().enumerate() {
+                let attempt = info.modes()[idx];
+                let attempt_wl = OutputMode {
+                    size: (attempt.size().0 as i32, attempt.size().1 as i32).into(),
+                    refresh: refresh_mhz(&attempt),
+                };
+                output.change_current_state(Some(attempt_wl), None, None, None);
+                let mode_source = if route == gpu::OutputRoute::CpuCopy {
+                    static_source(attempt_wl.size)
+                } else {
+                    OutputModeSource::from(&output)
+                };
+                let result = drm.devices[dev]
+                    .drm
+                    .create_surface(crtc, attempt, &[handle])
+                    .context("creating DRM surface")
+                    .and_then(|surface| {
+                        new_compositor(
+                            drm,
+                            dev,
+                            surface,
+                            false,
+                            mode_source,
+                            renderer_formats.iter().copied().collect(),
+                        )
+                        .context("DrmCompositor::new")
+                    });
+                match result {
+                    Ok(c) => {
+                        if n > 0 {
+                            tracing::info!(
+                                output = %name,
+                                width = attempt_wl.size.w,
+                                height = attempt_wl.size.h,
+                                refresh_mhz = attempt_wl.refresh,
+                                "bringing up output at a lower mode after the preferred one was rejected"
+                            );
+                        }
+                        made = Some((c, attempt_wl));
+                        break;
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            output = %name,
+                            width = attempt_wl.size.w,
+                            height = attempt_wl.size.h,
+                            refresh_mhz = attempt_wl.refresh,
+                            ?err,
+                            "modeset rejected at this mode"
+                        );
+                        last_err = Some(err);
+                    }
+                }
+            }
+            match made {
+                Some((c, chosen)) => {
+                    wl_mode = chosen;
+                    c
+                }
+                None => return Err(last_err.unwrap_or_else(|| anyhow!("no mode to try"))),
+            }
         }
     };
     let pass = match (&copy_format, route) {
@@ -1505,6 +1694,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         cursor: crate::render::cursor::Fallback::default(),
         input_devices: Vec::new(),
         shed: Default::default(),
+        late_retry: Vec::new(),
     }));
 
     scan_connectors(&mut state);
@@ -2632,6 +2822,35 @@ pub fn set_power(state: &mut AbyssState, id: u64, on: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn late_connector_retries_run_once_each_then_stop() {
+        assert_eq!(next_late_retry(0), Some(Duration::from_secs(1)));
+        assert_eq!(next_late_retry(1), Some(Duration::from_secs(3)));
+        assert_eq!(next_late_retry(2), Some(Duration::from_secs(10)));
+        assert_eq!(next_late_retry(3), None);
+    }
+
+    /// 4K60 preferred, with a 1440p60, a 1080p144 and a duplicate 1080p60.
+    #[test]
+    fn bandwidth_ladder_steps_down_by_area_then_refresh_without_inventing() {
+        let modes = [
+            (3840, 2160, 60_000),
+            (1920, 1080, 144_000),
+            (1920, 1080, 60_000),
+            (2560, 1440, 60_000),
+            (1920, 1080, 60_000),
+        ];
+        // Preferred first, then 1440p60, then 1080p144; the 1080p60 duplicate
+        // is skipped and the cap of three stops the ladder there.
+        assert_eq!(bandwidth_ladder(&modes, 0, 3), vec![0, 3, 1]);
+        // From the middle of the list only lower modes follow.
+        assert_eq!(bandwidth_ladder(&modes, 1, 3), vec![1, 2]);
+        // A single-mode connector has nothing to step down to.
+        assert_eq!(bandwidth_ladder(&[(1280, 720, 60_000)], 0, 3), vec![0]);
+        // An out-of-range preferred index yields nothing rather than a guess.
+        assert!(bandwidth_ladder(&modes, 9, 3).is_empty());
+    }
 
     /// ADR 0033, kept fatal by ADR 0064: an explicit render device that does
     /// not resolve refuses, whether it came from the config, `--render-device`
