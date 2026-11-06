@@ -676,7 +676,8 @@ Symptoms: extra blank/white windows, a frozen meeting view (audio continues),
 odd stacking. Only that machine; Zoom is fine on the dev box. Zoom 7.2.1 (Qt 6.8,
 xcb via XWayland), eclipseos-abyss 0.1.7 built 2026-11-06, which already has
 `2881070` (transients follow parent, Zoom floats). Not diagnosed: ZOOM-01 and
-ZOOM-02 are leads, not causes.
+ZOOM-02 are leads, not causes. (ZOOM-03, apps living in the bar's cgroup, was fixed by
+`app_scope`: launches now get their own `app-*.scope`.)
 
 ## ZOOM-01 — X11 errors on every Zoom window map
 
@@ -710,21 +711,6 @@ window, and the journal for that minute.
 alpha channel on every window; log says "Alpha channel requested = yes"). Set
 2026-11-06, backup `zoomus.conf.bak-claude`; takes effect on next Zoom launch.
 Result not yet known.
-
-## ZOOM-03 — apps launched from the bar live in `ec-hyperion-bar.service`
-
-**Where:** how the bar/launcher spawns apps; `/usr/lib/systemd/user/ec-hyperion-bar.service`
-(`KillMode=control-group`).
-
-**Seen:** the running Zoom's cgroup is `.../session.slice/ec-hyperion-bar.service`
-(also the 2026-11-05 coredump). Restarting the bar — `ec-update`, a bar crash, or
-`systemctl --user restart` — kills every app started from it, **including a live
-meeting**. Bar restarts on that box: 09:21, 09:26, 10:42 on 2026-11-06.
-
-**Reproduce:** `cat /proc/$(pgrep -x zoom|head -1)/cgroup`.
-
-**Proposed:** spawn apps in their own transient scope (`systemd-run --user --scope`
-or `app-<id>.scope`, as Chromium got there already) so unit restarts don't reach them.
 
 ## ZOOM-04 — Zoom SIGABRT 2026-11-05 21:38, same second the compositor died
 
