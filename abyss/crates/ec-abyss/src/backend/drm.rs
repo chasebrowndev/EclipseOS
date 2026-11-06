@@ -1609,7 +1609,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     unsafe { std::env::set_var("WAYLAND_DISPLAY", &state.socket_name) };
     tracing::info!(socket = %state.socket_name, "abyss ready on DRM");
     if session_handoff {
-        crate::session::import();
+        crate::session::import(state.config.mode);
     }
     crate::kiosk::launch(&mut state, &handle)?;
 

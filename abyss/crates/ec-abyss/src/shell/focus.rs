@@ -1698,7 +1698,7 @@ pub(crate) mod state_tests {
         }
     }
 
-    fn window_by_protocol_id(h: &Harness, id: u32) -> Window {
+    pub(super) fn window_by_protocol_id(h: &Harness, id: u32) -> Window {
         h.state
             .space
             .elements()
@@ -1959,5 +1959,53 @@ pub(crate) mod state_tests {
         layer.set_keyboard_interactivity(ClientKi::Exclusive);
         c.commit(&mut h, &surface);
         assert!(keyboard_on_layer(&h), "none -> exclusive takes the keyboard");
+    }
+}
+
+#[cfg(test)]
+mod de_click_to_focus_tests {
+    use super::state_tests::{client, harness, Harness};
+    use super::*;
+    use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::KeyboardInteractivity as ClientKi;
+
+    /// A popup layer surface that never held the keyboard closing under a
+    /// resting pointer must not hand focus to the window under it.
+    #[test]
+    fn a_closing_layer_popup_does_not_undo_an_activate_under_de() {
+        let mut h = harness();
+        let mut c = client::Client::connect(&mut h);
+        let id_a = c.map_window(&mut h);
+        let id_b = c.map_window(&mut h);
+        let find = |h: &Harness, id| super::state_tests::window_by_protocol_id(h, id);
+        let (a, b) = (find(&h, id_a), find(&h, id_b));
+        crate::shell::de_chrome_tests::flip(&mut h, crate::config::Mode::De);
+        h.state.config.general.focus_follows_mouse = false;
+        // The popup layer sits over a's corner, with the pointer on it.
+        let (surface, layer) = c.map_layer(&mut h, ClientKi::None);
+        let g = h
+            .state
+            .space
+            .output_geometry(&h.state.outputs.iter().next().unwrap().output)
+            .unwrap();
+        let corner = Point::from((g.loc.x + g.size.w - 10, g.loc.y + g.size.h - 10));
+        crate::shell::place_at(
+            &mut h.state,
+            &a,
+            smithay::utils::Rectangle::new(corner - Point::from((100, 100)), (200, 200).into()),
+        );
+        c.pump(&mut h);
+        h.state
+            .pointer_moved((corner - Point::from((20, 20))).to_f64(), 1);
+        c.pump(&mut h);
+        focus_window(&mut h.state, &b);
+        assert_eq!(h.state.focus.as_ref(), Some(&b));
+        // The popup unmaps (null buffer) while the pointer rests where it was.
+        surface.attach(None, 0, 0);
+        surface.commit();
+        layer.destroy();
+        c.pump(&mut h);
+        // Any later commit re-evaluates what is under the resting pointer.
+        h.state.refresh_pointer_focus();
+        assert_eq!(h.state.focus.as_ref(), Some(&b), "the explicit activate stands");
     }
 }

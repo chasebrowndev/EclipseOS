@@ -378,7 +378,7 @@ fn boot(
     tracing::info!(socket = %state.socket_name, w = size.0, h = size.1, "listening (headless)");
 
     if session {
-        crate::session::import();
+        crate::session::import(state.config.mode);
     }
     crate::kiosk::launch(&mut state, &event_loop.handle())?;
 
