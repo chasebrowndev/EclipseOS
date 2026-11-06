@@ -56,6 +56,10 @@ pub fn permits(action: &Action) -> bool {
         | Action::Close
         | Action::ToggleFloating
         | Action::ToggleFullscreen
+        | Action::ToggleMaximize
+        | Action::Tile(_)
+        | Action::DesktopSwitch(_)
+        | Action::DesktopMove(_)
         | Action::Minimize
         | Action::Unminimize
         | Action::ToggleLayout
@@ -70,6 +74,10 @@ pub fn permits(action: &Action) -> bool {
         | Action::AgentAttention
         | Action::Calibrate(_)
         | Action::RegionSelect(_)
+        | Action::WindowMenu(_)
+        | Action::Switcher(_)
+        | Action::ToggleOverview
+        | Action::Overlay(..)
         | Action::AnnotationSelect
         | Action::AnnotationDismiss
         | Action::AnnotationExpand

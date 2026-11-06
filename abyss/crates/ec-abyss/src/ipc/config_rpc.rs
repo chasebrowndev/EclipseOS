@@ -315,10 +315,19 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
         // A default the mode selects (COMP-17 §2) is the default the human is
         // looking at, and it is not a value any file wrote: `source` follows
         // whether a file did, not whether the value differs from the default.
-        let mode_defaulted = key.path == "general.focus-follows-mouse";
-        if mode_defaulted {
-            default = json!(state.config.mode.profile().focus_follows_mouse);
-        }
+        let profile = state.config.mode.profile();
+        // `Some(written)` for a key the mode defaults: whether a file wrote it.
+        let mode_defaulted = match key.path {
+            "general.focus-follows-mouse" => {
+                default = json!(profile.focus_follows_mouse);
+                Some(state.config.general.focus_follows_mouse_set)
+            }
+            "general.floating-placement" => {
+                default = json!(schema::floating_placement_name(profile.floating_placement));
+                Some(state.config.general.floating_placement_set)
+            }
+            _ => None,
+        };
         // A key in the closed file is listed, never read. The GUI shows it,
         // greyed, with its documentation — an invisible setting is worse than
         // a visible one the human cannot change.
@@ -329,14 +338,12 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
         } else {
             Value::Null
         };
-        let source = if !readable
-            || (mode_defaulted && !state.config.general.focus_follows_mouse_set)
-            || (!mode_defaulted && value == default)
-        {
-            Value::Null
-        } else {
-            target_path(&state.config, key.owner).map_or(Value::Null, |p| json!(p.display().to_string()))
-        };
+        let source =
+            if !readable || mode_defaulted == Some(false) || (mode_defaulted.is_none() && value == default) {
+                Value::Null
+            } else {
+                target_path(&state.config, key.owner).map_or(Value::Null, |p| json!(p.display().to_string()))
+            };
         let mut row = json!({
             "path": key.path,
             "file": file_name(file),
@@ -1483,6 +1490,46 @@ mod tests {
                 "bar {\n    rounding 6\n}\n"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `floating-placement` is a mode default too: `cascade` under `de`, served
+    /// with no source until a file writes it.
+    #[test]
+    fn floating_placement_reports_the_mode_default_and_an_explicit_value() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-fp-mode-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        let row = |h: &mut crate::shell::focus::state_tests::Harness, text: &str| {
+            std::fs::write(&file, text).unwrap();
+            h.state.config = Config::load(Some(&file));
+            let got = get_config(
+                &mut h.state,
+                Decision::Allow,
+                &json!({"path": "general.floating-placement"}),
+            )
+            .ok()
+            .expect("readable");
+            got["keys"][0].clone()
+        };
+        let r = row(&mut h, "mode \"de\"\n");
+        assert_eq!(
+            (&r["value"], &r["default"], &r["source"]),
+            (&json!("cascade"), &json!("cascade"), &Value::Null)
+        );
+        let r = row(
+            &mut h,
+            "mode \"de\"\ngeneral { floating-placement \"centered\"; }\n",
+        );
+        assert_eq!(r["value"], json!("centered"));
+        assert_eq!(r["default"], json!("cascade"));
+        assert!(r["source"].is_string(), "{r}");
+        let r = row(&mut h, "mode \"hybrid\"\n");
+        assert_eq!(
+            (&r["value"], &r["default"], &r["source"]),
+            (&json!("centered"), &json!("centered"), &Value::Null)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

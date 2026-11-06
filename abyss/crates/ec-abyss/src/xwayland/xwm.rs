@@ -62,6 +62,14 @@ fn window_for(state: &AbyssState, surface: &X11Surface) -> Option<Window> {
         .find(|w| w.x11_surface() == Some(surface))
 }
 
+/// Is a maximize asked for before the map honoured? Only where the mode
+/// profile allows it (`de`); `wm` and `hybrid` decline it as Steam's startup
+/// re-assertion (C-20). `parked`: a request that arrived while unmapped;
+/// `property`: `_NET_WM_STATE` already set on the window.
+pub(crate) fn premap_maximize(profile_allows: bool, parked: bool, property: bool) -> bool {
+    profile_allows && (parked || property)
+}
+
 /// KWin's "legacy fullscreen": an undecorated, non-transient window that sits
 /// at its output's origin and covers the whole output is fullscreen, whatever
 /// it said. The origin matters: a large CSD window (Steam) is placed elsewhere.
@@ -261,8 +269,12 @@ impl XwmHandler for AbyssState {
         }
         // Decide the state before placing, so the first configure the client
         // sees is the final rect, not a tile it then stretches its swapchain to.
-        // No maximized state: clear one the client set before the map.
-        if window.is_maximized() {
+        // A maximize the client set before the map (the property, or a request
+        // parked while unmapped) is honoured under `de` and cleared otherwise
+        // (C-20: Steam re-asserting its remembered maximize must not stick).
+        let wanted = take(&mut self.xwayland.wants_maximized, &window);
+        let maximize = premap_maximize(self.config.mode.profile().maximize, wanted, window.is_maximized());
+        if !maximize && window.is_maximized() {
             let _ = window.set_maximized(false);
         }
         let fullscreen = take(&mut self.xwayland.wants_fullscreen, &window)
@@ -273,6 +285,7 @@ impl XwmHandler for AbyssState {
             ?requested,
             output = ?output_rect(self, &element),
             fullscreen,
+            maximize,
             decorated = window.is_decorated(),
             transient = window.is_transient_for().is_some(),
             "x11 window map decision"
@@ -284,6 +297,10 @@ impl XwmHandler for AbyssState {
         shell::place_new_window(self, element.clone());
         self.xwayland.requested = None;
         self.xwayland.mapping = None;
+        // Before fullscreen, so a window that asked for both returns to maximized.
+        if maximize {
+            shell::maximize::request_x11(self, &element, true, true, true);
+        }
         if fullscreen {
             tracing::info!(class = window.class(), "x11 window mapped fullscreen");
             shell::set_x11_fullscreen(self, &element, true);
@@ -325,6 +342,7 @@ impl XwmHandler for AbyssState {
         self.xwayland.unmanaged.retain(|s| *s != window);
         self.xwayland.unrefreshed.retain(|s| *s != window);
         self.xwayland.wants_fullscreen.retain(|s| *s != window);
+        self.xwayland.wants_maximized.retain(|s| *s != window);
         if !window.is_override_redirect() {
             let _ = window.set_mapped(false);
         }
@@ -340,6 +358,7 @@ impl XwmHandler for AbyssState {
         self.xwayland.unmanaged.retain(|s| *s != window);
         self.xwayland.unrefreshed.retain(|s| *s != window);
         self.xwayland.wants_fullscreen.retain(|s| *s != window);
+        self.xwayland.wants_maximized.retain(|s| *s != window);
         self.xwayland.declined_fullscreen.retain(|s| *s != window);
     }
 
@@ -395,16 +414,34 @@ impl XwmHandler for AbyssState {
         let _ = window.configure(rect);
     }
 
-    /// Abyss has no maximized state: decline, and clear the property so the
-    /// client's `_NET_WM_STATE` stays truthful.
+    /// Under `mode "de"` the window is maximized; elsewhere (C-20) it is
+    /// declined and the property cleared so the client's `_NET_WM_STATE` stays
+    /// truthful. smithay 0.7 delivers this only when both axes are named in one
+    /// message, so `_HORZ` or `_VERT` alone never reaches here.
     fn maximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        tracing::debug!(class = window.class(), "x11 maximize request declined");
-        let _ = window.set_maximized(false);
+        if !self.config.mode.profile().maximize {
+            tracing::debug!(class = window.class(), "x11 maximize request declined");
+            let _ = window.set_maximized(false);
+            return;
+        }
+        match window_for(self, &window) {
+            Some(w) => shell::maximize::request_x11(self, &w, true, true, true),
+            None if !window.is_mapped() => park(&mut self.xwayland.wants_maximized, &window, true),
+            None => {}
+        }
     }
 
     fn unmaximize_request(&mut self, _xwm: XwmId, window: X11Surface) {
-        tracing::debug!(class = window.class(), "x11 unmaximize request declined");
-        let _ = window.set_maximized(false);
+        if !self.config.mode.profile().maximize {
+            tracing::debug!(class = window.class(), "x11 unmaximize request declined");
+            let _ = window.set_maximized(false);
+            return;
+        }
+        match window_for(self, &window) {
+            Some(w) => shell::maximize::request_x11(self, &w, true, true, false),
+            None if !window.is_mapped() => park(&mut self.xwayland.wants_maximized, &window, false),
+            None => {}
+        }
     }
 
     fn fullscreen_request(&mut self, _xwm: XwmId, window: X11Surface) {

@@ -1150,6 +1150,87 @@ pub fn border_uniforms(color: [f32; 4], radius: f32, width: f32, scale: f32) -> 
     ]
 }
 
+/// The Quick Tile drop preview (`mode "de"`, COMP-05 §3.1): one rounded glass
+/// panel over the target zone. A translucent neutral fill and a crisp 1 px
+/// white rim inside the edge, with a hairline of shade just inside that so the
+/// rim keeps its edge over a bright backdrop. No outward spread: nothing draws
+/// past the zone, so it cannot read as a glow. Premultiplied uniforms.
+const PREVIEW_SRC: &str = r#"
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+uniform vec2 size;
+uniform float alpha;
+varying vec2 v_coords;
+
+#if defined(DEBUG_FLAGS)
+uniform float tint;
+#endif
+
+uniform vec4 fill;
+uniform vec4 rim;
+uniform vec4 shade;
+uniform float radius;
+uniform float scale;
+
+float rounded_box(vec2 p, vec2 half_size, float r) {
+    vec2 q = abs(p) - half_size + r;
+    return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+}
+
+void main() {
+    vec2 half_out = size * 0.5 * scale;
+    vec2 p = v_coords * size * scale - half_out;
+    float r = min(radius * scale, min(half_out.x, half_out.y));
+    float d = rounded_box(p, half_out, r);
+    float body = 1.0 - smoothstep(-0.5, 0.5, d);
+    // Band widths in physical px: the rim is the outermost line, the shade the next.
+    float line = max(scale, 1.0);
+    float rim_a = body * (1.0 - smoothstep(-line - 0.5, -line + 0.5, d));
+    float shade_a = body * (1.0 - rim_a) * (1.0 - smoothstep(-2.0 * line - 0.5, -2.0 * line + 0.5, d));
+    vec4 c = fill * body;
+    c = rim * rim_a + c * (1.0 - rim.a * rim_a);
+    c = shade * shade_a + c * (1.0 - shade.a * shade_a);
+    gl_FragColor = c * alpha;
+}
+"#;
+
+/// Compile the Quick Tile preview program.
+pub fn compile_preview(renderer: &mut GlesRenderer) -> Result<GlesPixelProgram, GlesError> {
+    renderer.compile_custom_pixel_shader(
+        PREVIEW_SRC,
+        &[
+            UniformName::new("fill", UniformType::_4f),
+            UniformName::new("rim", UniformType::_4f),
+            UniformName::new("shade", UniformType::_4f),
+            UniformName::new("radius", UniformType::_1f),
+            UniformName::new("scale", UniformType::_1f),
+        ],
+    )
+}
+
+/// Uniforms for the preview: `fill`, `rim` and `shade` are straight RGBA (they
+/// are premultiplied here), `radius` is logical, `scale` the output scale.
+pub fn preview_uniforms(
+    fill: [f32; 4],
+    rim: [f32; 4],
+    shade: [f32; 4],
+    radius: f32,
+    scale: f32,
+) -> Vec<Uniform<'static>> {
+    let pm = |c: [f32; 4]| [c[0] * c[3], c[1] * c[3], c[2] * c[3], c[3]];
+    vec![
+        Uniform::new("fill", pm(fill)),
+        Uniform::new("rim", pm(rim)),
+        Uniform::new("shade", pm(shade)),
+        Uniform::new("radius", radius),
+        Uniform::new("scale", scale),
+    ]
+}
+
 /// How far the border glow reaches past the border, logical px. Not
 /// configurable: `glow { strength }` scales intensity only (COMP-13 §1.1).
 pub const GLOW_RANGE: i32 = 24;

@@ -8,7 +8,8 @@
 //! - entering `de` floats every tiled window on every human workspace of every
 //!   output at the rect it had, and keeps each workspace's tree aside
 //!   ([`Workspace::stash`]) and a list of what it lifted ([`DeLift`]);
-//! - leaving `de` puts those windows back into the tree they came from, with
+//! - leaving `de` first ends every maximize ([`super::maximize::clear_all`]:
+//!   pre-maximize rectangle back, client told), then puts those windows back into the tree they came from, with
 //!   their weights, and places the windows opened meanwhile the way
 //!   `wm`/`hybrid` would have (dialogs and fixed-size windows stay floating).
 //!
@@ -39,6 +40,9 @@ pub struct DeLift {
     lifted: Vec<(Window, Option<f64>)>,
     /// Windows mapped while `de` was on.
     opened: Vec<Window>,
+    /// Maximized windows handed over by an output that went away, until the
+    /// output that adopts them places them (`shell::arrange_output`).
+    carried: Vec<(Window, workspace::Placement)>,
 }
 
 impl DeLift {
@@ -46,6 +50,21 @@ impl DeLift {
     pub fn forget(&mut self, window: &Window) {
         self.lifted.retain(|(w, _)| w != window);
         self.opened.retain(|w| w != window);
+        self.carried.retain(|(w, _)| w != window);
+    }
+
+    pub(crate) fn carry(&mut self, window: Window, placement: workspace::Placement) {
+        self.carried.retain(|(w, _)| *w != window);
+        self.carried.push((window, placement));
+    }
+
+    pub(super) fn take_carried(&mut self, window: &Window) -> Option<workspace::Placement> {
+        let i = self.carried.iter().position(|(w, _)| w == window)?;
+        Some(self.carried.remove(i).1)
+    }
+
+    pub(super) fn drop_carried(&mut self) {
+        self.carried.clear();
     }
 
     fn note_lifted(&mut self, window: &Window, weight: Option<f64>) {
@@ -70,7 +89,7 @@ impl DeLift {
     /// Nothing recorded: the state before `de` and after leaving it.
     #[cfg(test)]
     pub(crate) fn forget_is_clean(&self) -> bool {
-        self.lifted.is_empty() && self.opened.is_empty()
+        self.lifted.is_empty() && self.opened.is_empty() && self.carried.is_empty()
     }
 
     fn is_lifted(&self, window: &Window) -> bool {
@@ -161,7 +180,15 @@ fn lift_workspace(
         .into_iter()
         .map(|(window, rect)| {
             let weight = w.tiled.weight_of(&window);
-            (Floating { window, rect, weight }, weight)
+            (
+                Floating {
+                    window,
+                    rect,
+                    weight,
+                    placement: workspace::Placement::Free,
+                },
+                weight,
+            )
         })
         .collect();
     let tree = std::mem::take(&mut w.tiled);
@@ -204,6 +231,9 @@ fn enter(state: &mut AbyssState) {
 
 /// `de` -> `wm`/`hybrid`.
 fn leave(state: &mut AbyssState) {
+    // Maximize is a de-only placement: windows get their old rectangles back
+    // before anything is re-tiled, so the tree sees where they really were.
+    super::maximize::clear_all(state);
     super::cancel_tile_drag(state);
     state.retile_hold = RetileHold::None;
     let opened = std::mem::take(&mut state.de.opened);
@@ -280,6 +310,11 @@ fn leave(state: &mut AbyssState) {
         }
     }
     state.de = DeLift::default();
+    // Keep above/below, shade and sticky are `de` only (`shell::winops`).
+    state.winops.clear();
+    state.winmenu.close();
+    crate::overview::close_all(state);
+    super::edge::grab_ended(state);
     tracing::info!("mode de left: tiled windows put back");
 }
 

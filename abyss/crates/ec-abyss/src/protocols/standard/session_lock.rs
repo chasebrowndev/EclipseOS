@@ -113,6 +113,8 @@ impl AbyssState {
         // A window mid-drag goes back to its tile rather than landing blind.
         crate::shell::cancel_tile_drag(self);
         self.gesture_drag = None;
+        // A scripted drag waiting on its release lets go now.
+        self.cancel_drag_hold();
         // Nothing behind the lock may keep focus, even for one frame.
         if let Some(keyboard) = self.seat.get_keyboard() {
             // An input-method grab receives every key whatever holds focus,
@@ -121,6 +123,11 @@ impl AbyssState {
             keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
         }
         crate::audit::focus(self, None, "human");
+        // The window menu and the resize cursor belong to the session behind
+        // the lock.
+        self.winmenu.close();
+        crate::overview::close_all(self);
+        crate::shell::edge::restore_cursor(self);
         // The region selector is a modal over the session behind the lock.
         self.region_select.cancel();
         if let Some(pointer) = self.seat.get_pointer() {
