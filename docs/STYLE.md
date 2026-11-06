@@ -88,6 +88,10 @@ the same rules (ADR 0084).
   (`nav_active`, `pill`, `input_fill`, `scroller`, `control_off_hover`, `knob_off`,
   `highlight_rim`, `on_accent`), never from `Color::WHITE`. Selection is a brighter fill plus a
   `highlight_rim` border
+- The window tint is premultiplied by iced in linear light, the compositor blends it in sRGB. A
+  near-black base hides the difference; a light base does not (Settings read near-opaque white). The
+  tint colour is therefore pre-compensated per channel (`surface::tint`: `enc(dec(c*a)/a)`), so the
+  buffer carries `c*a` and alpha `a`, the same effective .70-.72 as a terminal's `alpha=0.72` in either scheme
 - Compositor glass (`eclipse_glass_v1` panes, layer and window glass) in light has no dark smoke
   and no highlight knee. The backdrop is saturated lightly (1.25) and mixed 70% toward warm white
   (.985,.975,.955). The bezel seam is .04 and the rim stays white. `Appearance::glass_light()`

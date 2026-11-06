@@ -128,11 +128,33 @@ pub fn tint_alpha(intent: f32) -> f32 {
     intent.clamp(0.0, 1.0)
 }
 
-/// [`base`] at the alpha of the tint `intent`.
+/// [`base`] at the alpha of the tint `intent`, as the colour iced must be
+/// handed so the buffer reads right to the compositor.
+///
+/// The surface is premultiplied, and iced multiplies colour by alpha in linear
+/// light before the sRGB encode. For a near-black base that equals the
+/// premultiply in sRGB, which is what the compositor assumes; for a light base
+/// it does not (`f4f1ea` at .70 came out far too bright, and the compositor
+/// then added the backdrop on top: Settings in light read white, nearly
+/// opaque). So each channel is pre-compensated: `enc(dec(c * a) / a)`, which
+/// the pipeline turns back into `c * a`. Never above 1 (`dec` is convex).
 pub fn tint(intent: f32) -> Color {
+    let a = tint_alpha(intent);
+    let b = base();
     Color {
-        a: tint_alpha(intent),
-        ..base()
+        r: precompensate(b.r, a),
+        g: precompensate(b.g, a),
+        b: precompensate(b.b, a),
+        a,
+    }
+}
+
+/// One channel of [`tint`].
+fn precompensate(c: f32, a: f32) -> f32 {
+    if a <= 0.0 {
+        c
+    } else {
+        to_srgb((to_linear(c * a) / a).min(1.0))
     }
 }
 
@@ -147,6 +169,14 @@ fn linear_alpha(intent: f32) -> f32 {
         })
         .sum();
     (sum / 3.0).clamp(0.0, 1.0)
+}
+
+fn to_srgb(c: f32) -> f32 {
+    if c <= 0.0031308 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 fn to_linear(c: f32) -> f32 {
@@ -194,6 +224,23 @@ mod tests {
     fn the_tint_alpha_is_the_intent_the_compositor_blends() {
         assert_eq!(tint_alpha(0.70), 0.70);
         assert_eq!(tint(0.72).a, 0.72);
+    }
+
+    #[test]
+    fn the_pipeline_premultiply_lands_on_the_srgb_premultiply_in_either_scheme() {
+        // What iced writes (alpha * linear colour, encoded) must equal c * a,
+        // the premultiplied sRGB the compositor blends: the same effective
+        // alpha as a terminal's `alpha=0.72`, light base or dark.
+        for seeds in [ec_theme::LIGHT_SEEDS, ec_theme::DARK_SEEDS] {
+            for c in [seeds.base.r(), seeds.base.g(), seeds.base.b()] {
+                for a in [0.2_f32, 0.55, 0.72, 0.9] {
+                    let handed = precompensate(c, a);
+                    assert!(handed <= 1.0);
+                    let written = to_srgb(to_linear(handed) * a);
+                    assert!((written - c * a).abs() < 0.004, "c {c} a {a}: {written}");
+                }
+            }
+        }
     }
 
     #[test]
