@@ -106,7 +106,7 @@ impl Default for Touchpad {
     fn default() -> Self {
         Self {
             natural_scroll: false,
-            tap_to_click: false,
+            tap_to_click: true,
             dwt: false,
             click_method: "clickfinger".into(),
             tap_and_drag: true,
