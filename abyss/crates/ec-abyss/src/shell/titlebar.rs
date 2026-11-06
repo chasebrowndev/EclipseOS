@@ -119,7 +119,7 @@ impl BarUi {
         }
     }
 
-    pub(super) fn swallow(&mut self, button: u32) {
+    pub(crate) fn swallow(&mut self, button: u32) {
         if let Some(slot) = self.swallowed.iter_mut().find(|s| **s == 0) {
             *slot = button;
         }

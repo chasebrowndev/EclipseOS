@@ -78,8 +78,26 @@ pub struct AbyssState {
     pub winops: crate::shell::winops::WinOps,
     /// The window menu, when open (`shell::winmenu`).
     pub winmenu: crate::shell::winmenu::WinMenu,
+    /// A scripted drag (`drag_at` with `hold-ms`) holding its button down until
+    /// a timer releases it (`input::inject`). `None` between calls.
+    pub drag_hold: Option<crate::input::inject::DragHold>,
     /// The window menu's textures (`ec_abyss_render::menu`).
     pub menu_cache: ec_abyss_render::menu::MenuCache,
+    /// Counts focus moves; stamps each workspace's last one so the window
+    /// switcher can order windows across desktops (`overview::switcher`).
+    pub focus_clock: u64,
+    /// The window switcher, when open (COMP-05 §7.1; `overview::switcher`).
+    pub switcher: crate::overview::switcher::Switcher,
+    /// The overview, when open (`overview`).
+    pub overview: crate::overview::Overview,
+    /// The hover preview, when shown (`overview::preview`).
+    pub preview: crate::overview::preview::Preview,
+    /// Hot corners: rects, dwell and cooldown (`overview::corners`).
+    pub corners: crate::overview::corners::Corners,
+    /// Thumbnail textures and their refresh clock (`overview::thumbs`).
+    pub thumbs: crate::overview::thumbs::Thumbs,
+    /// The overlays' chrome textures (`ec_abyss_render::overview`).
+    pub overlay_cache: ec_abyss_render::overview::OverlayCache,
     /// Resize-band hover and the cursor it set (`shell::edge`).
     pub edge: crate::shell::edge::EdgeUi,
 
@@ -540,7 +558,15 @@ impl AbyssState {
             bar_ui: Default::default(),
             winops: Default::default(),
             winmenu: Default::default(),
+            drag_hold: None,
             menu_cache: Default::default(),
+            focus_clock: 0,
+            switcher: Default::default(),
+            overview: Default::default(),
+            preview: Default::default(),
+            corners: Default::default(),
+            thumbs: Default::default(),
+            overlay_cache: Default::default(),
             edge: Default::default(),
             geo_loc: std::collections::HashMap::new(),
             compositor_state,

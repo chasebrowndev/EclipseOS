@@ -984,6 +984,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-desktop"
+version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "ec-services",
+ "ec-ui",
+ "freedesktop-icons",
+ "iced",
+ "iced_layershell",
+ "libc",
+ "serde_json",
+]
+
+[[package]]
 name = "ec-glass-host"
 version = "0.1.0"
 dependencies = [
@@ -1076,6 +1090,7 @@ dependencies = [
  "nvml-wrapper-sys",
  "pulseaudio",
  "realfft",
+ "serde",
  "serde_json",
  "zbus",
 ]

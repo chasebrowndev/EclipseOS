@@ -28,6 +28,45 @@ pub enum LayoutKind {
     Master,
 }
 
+/// What a hot corner does (`general.hot-corners.*`, COMP-05 §7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotCorner {
+    /// The mode's default: the overview for the top-left corner under `de`,
+    /// nothing otherwise and for every other corner.
+    Auto,
+    Off,
+    ToggleOverview,
+    /// Open the window switcher.
+    SwitchWindows,
+}
+
+impl HotCorner {
+    pub fn name(self) -> &'static str {
+        match self {
+            HotCorner::Auto => "auto",
+            HotCorner::Off => "off",
+            HotCorner::ToggleOverview => "toggle-overview",
+            HotCorner::SwitchWindows => "switch-windows",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<HotCorner> {
+        Some(match s {
+            "auto" => HotCorner::Auto,
+            "off" => HotCorner::Off,
+            "toggle-overview" => HotCorner::ToggleOverview,
+            "switch-windows" => HotCorner::SwitchWindows,
+            _ => return None,
+        })
+    }
+}
+
+/// Corner indexes into [`General::hot_corners`].
+pub const CORNER_TOP_LEFT: usize = 0;
+pub const CORNER_TOP_RIGHT: usize = 1;
+pub const CORNER_BOTTOM_LEFT: usize = 2;
+pub const CORNER_BOTTOM_RIGHT: usize = 3;
+
 #[derive(Debug, Clone)]
 pub struct General {
     pub gaps_in: i32,
@@ -84,6 +123,18 @@ pub struct General {
     /// screen edge the pointer must be (KDE: 20).
     pub edge_tile: bool,
     pub edge_tile_distance: i32,
+    /// `mode "de"`: rows of the desktop grid over the ten human workspaces
+    /// (COMP-05 §7.1). Columns derive from it: `ceil(10 / rows)`.
+    pub desktop_rows: i32,
+    /// `mode "de"`: whether stepping off an edge of the desktop grid wraps.
+    pub desktop_wrap: bool,
+    /// `mode "de"` hot corners, as written (top-left, top-right, bottom-left,
+    /// bottom-right). Resolve through [`General::corner_action`].
+    pub hot_corners: [HotCorner; 4],
+    /// Dwell before a hot corner fires, ms (KDE: 150).
+    pub hot_corner_dwell_ms: u32,
+    /// Quiet time after one fires, ms.
+    pub hot_corner_cooldown_ms: u32,
     /// `color-scheme` (ADR 0084).
     pub color_scheme: ColorSetting,
     /// Theme used while the scheme is dark / light.
@@ -98,6 +149,16 @@ pub struct General {
 }
 
 impl General {
+    /// What corner `i` does under `mode`: the file's choice, or for `auto`
+    /// the mode's default (the overview on the top-left under `de`).
+    pub fn corner_action(&self, i: usize, mode: Mode) -> HotCorner {
+        match self.hot_corners.get(i).copied().unwrap_or(HotCorner::Off) {
+            HotCorner::Auto if i == CORNER_TOP_LEFT && mode == Mode::De => HotCorner::ToggleOverview,
+            HotCorner::Auto => HotCorner::Off,
+            other => other,
+        }
+    }
+
     /// The vertical inner gap, resolving `gaps-in-vertical` against
     /// `gaps-in` (COMP-05 §3) when the config never set it — so a config that
     /// only ever touches `gaps-in` renders identically whether or not the
@@ -142,6 +203,11 @@ impl Default for General {
             snap_distance: 10,
             edge_tile: true,
             edge_tile_distance: 20,
+            desktop_rows: 2,
+            desktop_wrap: true,
+            hot_corners: [HotCorner::Auto; 4],
+            hot_corner_dwell_ms: 150,
+            hot_corner_cooldown_ms: 750,
             color_scheme: ColorSetting::Dark,
             theme_dark: "dark".into(),
             theme_light: "light".into(),

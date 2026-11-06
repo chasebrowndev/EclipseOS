@@ -3645,3 +3645,206 @@ fn the_tile_actions_validate_and_the_snap_keys_default_to_kde() {
     );
     assert!(Mode::De.profile().quick_tile && !Mode::Hybrid.profile().quick_tile);
 }
+
+// ---- Desktop grid keys and binds (M6) --------------------------------------
+
+#[test]
+fn de_binds_ctrl_super_arrows_to_the_desktop_grid_and_other_modes_do_not() {
+    let both = |ctrl_shift: bool| ModifiersState {
+        logo: true,
+        ctrl: true,
+        shift: ctrl_shift,
+        ..Default::default()
+    };
+    let de = load_text("desk-de", "mode \"de\"\n");
+    for (key, dir) in [
+        (Keysym::Left, Direction::Left),
+        (Keysym::Right, Direction::Right),
+        (Keysym::Up, Direction::Up),
+        (Keysym::Down, Direction::Down),
+    ] {
+        assert_eq!(
+            de.action_for(&both(false), key),
+            Some(&Action::DesktopSwitch(dir))
+        );
+        assert_eq!(de.action_for(&both(true), key), Some(&Action::DesktopMove(dir)));
+    }
+    for (tag, text) in [("desk-wm", "mode \"wm\"\n"), ("desk-hybrid", "")] {
+        let cfg = load_text(tag, text);
+        assert_eq!(cfg.action_for(&both(false), Keysym::Left), None);
+        assert_eq!(cfg.action_for(&both(true), Keysym::Left), None);
+    }
+    // An explicit bind on the chord wins, and the digit binds are untouched.
+    let own = load_text(
+        "desk-own",
+        "mode \"de\"\nbind \"SUPER CTRL\" \"Left\" { focus-left; }\n",
+    );
+    assert_eq!(
+        own.action_for(&both(false), Keysym::Left),
+        Some(&Action::Focus(Direction::Left))
+    );
+    assert_eq!(
+        own.action_for(&both(false), Keysym::Right),
+        Some(&Action::DesktopSwitch(Direction::Right))
+    );
+}
+
+#[test]
+fn the_desktop_actions_validate_and_the_grid_keys_default_and_refuse_out_of_range() {
+    let doc: KdlDocument =
+        "bind \"SUPER\" \"KP_1\" { desktop-up; }\nbind \"SUPER\" \"KP_2\" { move-to-desktop-down; }\n"
+            .parse()
+            .unwrap();
+    let mut cfg = Config {
+        cur: Some((abyss_src("a.kdl"), String::new())),
+        ..Config::default()
+    };
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    let g = Config::default().general;
+    assert_eq!((g.desktop_rows, g.desktop_wrap), (2, true));
+    let ok = load_text(
+        "rows-ok",
+        "general {\n    desktop-rows 3\n    desktop-wrap #false\n}\n",
+    );
+    assert_eq!((ok.general.desktop_rows, ok.general.desktop_wrap), (3, false));
+    for bad in ["0", "11", "-1"] {
+        let doc: KdlDocument = format!("general {{\n    desktop-rows {bad}\n}}\n")
+            .parse()
+            .unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert_eq!(cfg.general.desktop_rows, 2, "{bad}");
+    }
+    let doc: KdlDocument = "general {\n    desktop-wrap \"no\"\n}\n".parse().unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(!cfg.errors.is_empty(), "a non-boolean desktop-wrap is reported");
+    assert!(cfg.general.desktop_wrap);
+}
+
+// ---- Switcher, overview and hot corners (M7) ------------------------------
+
+#[test]
+fn de_binds_alt_tab_to_the_switcher_and_super_w_to_the_overview_and_others_do_not() {
+    let alt = ModifiersState {
+        alt: true,
+        ..Default::default()
+    };
+    let alt_shift = ModifiersState {
+        alt: true,
+        shift: true,
+        ..Default::default()
+    };
+    let logo = ModifiersState {
+        logo: true,
+        ..Default::default()
+    };
+    let de = load_text("sw-de", "mode \"de\"\n");
+    assert_eq!(de.action_for(&alt, Keysym::Tab), Some(&Action::Switcher(false)));
+    assert_eq!(
+        de.action_for(&alt_shift, Keysym::Tab),
+        Some(&Action::Switcher(true))
+    );
+    // Shift+Tab types ISO_Left_Tab, which the same bind answers.
+    assert_eq!(
+        de.action_for(&alt_shift, Keysym::ISO_Left_Tab),
+        Some(&Action::Switcher(true))
+    );
+    assert_eq!(de.action_for(&logo, Keysym::w), Some(&Action::ToggleOverview));
+    for (tag, text) in [("sw-wm", "mode \"wm\"\n"), ("sw-hybrid", "")] {
+        let cfg = load_text(tag, text);
+        assert_eq!(cfg.action_for(&alt, Keysym::Tab), None);
+        assert_eq!(cfg.action_for(&logo, Keysym::w), None);
+    }
+    // The ISO_Left_Tab fallback is de only: wm and hybrid user binds on
+    // Shift+Tab never fire on it.
+    let shift = ModifiersState {
+        shift: true,
+        ..Default::default()
+    };
+    for (tag, text) in [
+        (
+            "sw-wm-st",
+            "mode \"wm\"\nbind \"SHIFT\" \"Tab\" { toggle-overview; }\n",
+        ),
+        ("sw-hy-st", "bind \"SHIFT\" \"Tab\" { toggle-overview; }\n"),
+    ] {
+        let cfg = load_text(tag, text);
+        assert_eq!(cfg.action_for(&shift, Keysym::Tab), Some(&Action::ToggleOverview));
+        assert_eq!(cfg.action_for(&shift, Keysym::ISO_Left_Tab), None);
+    }
+    // An explicit bind on the chord wins, and the actions are bindable anywhere.
+    let own = load_text(
+        "sw-own",
+        "mode \"de\"\nbind \"ALT\" \"Tab\" { toggle-overview; }\nbind \"CTRL\" \"Tab\" { switch-windows-reverse; }\n",
+    );
+    assert_eq!(own.action_for(&alt, Keysym::Tab), Some(&Action::ToggleOverview));
+    let ctrl = ModifiersState {
+        ctrl: true,
+        ..Default::default()
+    };
+    assert_eq!(own.action_for(&ctrl, Keysym::Tab), Some(&Action::Switcher(true)));
+}
+
+#[test]
+fn hot_corners_default_to_the_overview_top_left_under_de_and_validate() {
+    let g = Config::default().general;
+    assert_eq!((g.hot_corner_dwell_ms, g.hot_corner_cooldown_ms), (150, 750));
+    assert_eq!(
+        g.corner_action(CORNER_TOP_LEFT, Mode::De),
+        HotCorner::ToggleOverview
+    );
+    for i in [CORNER_TOP_RIGHT, CORNER_BOTTOM_LEFT, CORNER_BOTTOM_RIGHT] {
+        assert_eq!(g.corner_action(i, Mode::De), HotCorner::Off, "{i}");
+    }
+    for mode in [Mode::Wm, Mode::Hybrid] {
+        assert_eq!(g.corner_action(CORNER_TOP_LEFT, mode), HotCorner::Off);
+    }
+    let set = load_text(
+        "corners-set",
+        "general {\n    hot-corners {\n        top-left \"off\"\n        bottom-right \"switch-windows\"\n    }\n    hot-corner-dwell 0\n    hot-corner-cooldown 2000\n}\n",
+    );
+    assert_eq!(
+        set.general.corner_action(CORNER_TOP_LEFT, Mode::De),
+        HotCorner::Off
+    );
+    assert_eq!(
+        set.general.corner_action(CORNER_BOTTOM_RIGHT, Mode::De),
+        HotCorner::SwitchWindows
+    );
+    assert_eq!(
+        (
+            set.general.hot_corner_dwell_ms,
+            set.general.hot_corner_cooldown_ms
+        ),
+        (0, 2000)
+    );
+    for bad in [
+        "hot-corners {\n top-left \"explode\"\n }",
+        "hot-corners {\n middle \"off\"\n }",
+        "hot-corner-dwell 5000",
+        "hot-corner-dwell -1",
+        "hot-corner-cooldown \"long\"",
+    ] {
+        let doc: KdlDocument = format!("general {{\n    {bad}\n}}\n").parse().unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(!cfg.errors.is_empty(), "{bad} is refused");
+        assert_eq!(cfg.general.hot_corner_dwell_ms, 150, "{bad}");
+        assert_eq!(cfg.general.hot_corners, [HotCorner::Auto; 4], "{bad}");
+    }
+}
+
+#[test]
+fn the_overlay_actions_validate_in_binds() {
+    let doc: KdlDocument = "bind \"SUPER\" \"KP_1\" { switch-windows; }\nbind \"SUPER\" \"KP_2\" { switch-windows-reverse; }\nbind \"SUPER\" \"KP_3\" { toggle-overview; }\n"
+        .parse()
+        .unwrap();
+    let mut cfg = Config {
+        cur: Some((abyss_src("a.kdl"), String::new())),
+        ..Config::default()
+    };
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+}

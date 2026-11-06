@@ -5,6 +5,9 @@ pub mod anim;
 pub mod de;
 #[cfg(test)]
 mod de_chrome_tests;
+pub mod desktop;
+#[cfg(test)]
+mod desktop_tests;
 mod drop_guides;
 pub mod edge;
 pub mod focus;
@@ -127,7 +130,7 @@ pub fn output_of_window(state: &AbyssState, window: &Window) -> Option<u64> {
 /// Usable area: output geometry minus layer-shell exclusive zones, with no
 /// outer gap applied: the raw protocol-defined usable region, independent of
 /// abyss's own gap styling (COMP-06 §3).
-fn usable_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
+pub(crate) fn usable_area(state: &AbyssState, output: &Output) -> Rectangle<i32, Logical> {
     let geo = state.space.output_geometry(output).unwrap_or_default();
     let zone = accumulate_non_exclusive_zone(output, geo.size);
     let loc = Point::from((geo.loc.x + zone.loc.x, geo.loc.y + zone.loc.y));
@@ -394,6 +397,7 @@ pub fn arrange(state: &mut AbyssState) {
     }
     state.winops.prune();
     winmenu::validate(state);
+    crate::overview::validate(state);
     let ids: Vec<u64> = state.outputs.iter().map(|e| e.id).collect();
     for id in ids {
         arrange_output(state, id);
@@ -401,6 +405,7 @@ pub fn arrange(state: &mut AbyssState) {
     raise_override_redirect(state);
     crate::xwayland::sync_stacking(state);
     refresh_reactive_popups(state);
+    crate::overview::corners::rebuild(state);
     // Layout changes are not driven by a client commit: an unmapped surface
     // sends nothing, so without this the last composite stays on screen and a
     // closed window or dismissed launcher goes on being visible until some
@@ -1166,6 +1171,8 @@ pub(crate) fn reanchor(state: &mut AbyssState, window: &Window) {
 }
 
 pub fn unmap_window(state: &mut AbyssState, window: &Window) {
+    // A scripted drag held down on a window that goes away lets go with it.
+    state.cancel_drag_hold_for(window);
     let hold = holds_retile(state, window);
     for entry in state.outputs.iter_mut() {
         for ws in entry.workspaces.iter_mut() {
@@ -2584,6 +2591,10 @@ pub fn move_window_to_workspace(state: &mut AbyssState, window: &Window, idx: us
     }
     let target = idx - 1;
     let window = window.clone();
+    if is_minimized(state, &window) {
+        move_minimized(state, &window, target);
+        return;
+    }
     let Some(id) = output_of_window(state, &window).or_else(|| state.outputs.focused().map(|e| e.id)) else {
         return;
     };
@@ -2643,6 +2654,31 @@ pub fn move_window_to_workspace(state: &mut AbyssState, window: &Window, idx: us
             anim::carried(state, &window, from);
         }
     }
+}
+
+/// A minimized window changes desktop where it sits: its entry moves to the
+/// target workspace's minimized list and it stays minimized, so nothing is
+/// shown, switched or focused (the window menu's "Move to desktop" on a
+/// taskbar chip). It reappears on that desktop when restored.
+fn move_minimized(state: &mut AbyssState, window: &Window, target: usize) {
+    let Some(id) = output_of_window(state, window) else {
+        return;
+    };
+    let entry = state.outputs.get_mut(id).expect("just resolved");
+    let Some(from) = entry.workspaces.iter().position(|ws| ws.is_minimized(window)) else {
+        return;
+    };
+    if from == target {
+        return;
+    }
+    let i = entry.workspaces[from]
+        .minimized
+        .iter()
+        .position(|m| &m.window == window)
+        .expect("just resolved");
+    let m = entry.workspaces[from].minimized.remove(i);
+    entry.workspaces[target].minimized.push(m);
+    tracing::info!(workspace = target + 1, "minimized window moved to workspace");
 }
 
 /// Move the focused window to display `number`'s currently active workspace

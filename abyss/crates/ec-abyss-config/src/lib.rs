@@ -784,10 +784,20 @@ impl Config {
 
     /// `mods` is the held modifier set (a binding matches on equality).
     pub fn action_for(&self, mods: &Mods, key: Keysym) -> Option<&Action> {
-        self.binds
-            .iter()
-            .find(|b| b.key == key && b.mods == *mods)
-            .map(|b| &b.action)
+        let find = |key: Keysym| {
+            self.binds
+                .iter()
+                .find(|b| b.key == key && b.mods == *mods)
+                .map(|b| &b.action)
+        };
+        // Shift+Tab types `ISO_Left_Tab`; a bind written for `Shift+Tab` is
+        // meant to fire on it. Only under `mode "de"`: wm and hybrid binds
+        // behave as they always did.
+        find(key).or_else(|| {
+            (self.mode == Mode::De && key == Keysym::ISO_Left_Tab)
+                .then(|| find(Keysym::Tab))
+                .flatten()
+        })
     }
 
     /// Whether any `fingers`-finger swipe is bound. Asked at swipe begin,

@@ -21,7 +21,7 @@
 //! | `eclipse_agent_seat_v1` | `AgentSeat`, at its own delivery points |
 //! | compat-lock routed agent input | `AgentCompat` |
 //! | `zwlr_virtual_pointer_v1` | `Virtual` |
-//! | control-socket `type_text` / `click_at` / `press_key` / `scroll_at` | `Scripted` |
+//! | control-socket `type_text` / `click_at` / `press_key` / `scroll_at` / `drag_at` | `Scripted` |
 //! | `input/inject.rs`, conformance harness, tests | untagged, so `Injected` |
 
 use crate::state::AbyssState;
@@ -37,7 +37,7 @@ pub enum Origin {
     AgentCompat,
     /// `zwlr_virtual_pointer`, `zwp_virtual_keyboard`.
     Virtual,
-    /// `type_text`, `click_at` (COMP-13 §2.2).
+    /// `type_text`, `click_at`, `drag_at` (COMP-13 §2.2).
     Scripted,
     /// Test and headless injection.
     Injected,
