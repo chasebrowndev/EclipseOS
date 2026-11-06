@@ -142,6 +142,9 @@ struct Bezel {
     inner: i32,
     /// Nothing shows through the window itself, so only the ring is glass.
     opaque: bool,
+    /// Titlebar depth from the region's top, physical px (0: none). The bar is
+    /// glass whatever the client is, so it is drawn even where the bezel is not.
+    bar: i32,
     /// The hairline colour, premultiplied white, dimmed while unfocused and
     /// crossfading with focus like the painted border does.
     rim: [f32; 4],
@@ -183,6 +186,23 @@ fn window_backdrop(
         }
         _ => translucent.then_some((rect, rounding, None)),
     }
+}
+
+/// `region` grown to take in the titlebar `strip`.
+pub(crate) fn union_with_bar(
+    region: Rectangle<i32, Physical>,
+    strip: Rectangle<i32, Physical>,
+) -> Rectangle<i32, Physical> {
+    if region.contains_rect(strip) {
+        region
+    } else {
+        region.merge(strip)
+    }
+}
+
+/// How far down from `region`'s top the titlebar `strip` reaches, physical px.
+fn bar_depth(region: Rectangle<i32, Physical>, strip: Rectangle<i32, Physical>) -> i32 {
+    (strip.loc.y + strip.size.h - region.loc.y).max(0)
 }
 
 /// A layer surface's glass panes waiting for their backdrop (`eclipse_glass_v1`):
@@ -1089,7 +1109,7 @@ fn insert_blur(
                     mirrored,
                     scaled_radius,
                     cfg.frost.tint,
-                    bezel.map(|b| (b.inner, b.opaque, b.rim)),
+                    bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
                 ),
                 BlurMode::Glass => {
                     let refraction = (cfg.glass.refraction as f64 * upscale) as f32;
@@ -1110,7 +1130,7 @@ fn insert_blur(
                         strength,
                         bevel,
                         &cfg.glass,
-                        bezel.map(|b| (b.inner, b.opaque, b.rim)),
+                        bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
                         config.appearance.glass_light(),
                     )
                 }
@@ -1138,6 +1158,7 @@ fn insert_blur(
             (
                 b.inner,
                 (config.decoration.rounding.max(0) as f64 * upscale).ceil() as i32,
+                b.bar,
             )
         });
         let behind = &elements[index..];
@@ -1225,7 +1246,7 @@ fn insert_panes(
     let rect_of = |p: &glass::Pane| req.rect(p, scale);
     let light = config.appearance.glass_light();
     // A light pane's hairline is ink (STYLE.md Light); dark keeps the white one.
-    let rim = (light > 0.0).then_some((0, false, glass::LIGHT_RIM_INK));
+    let rim = (light > 0.0).then_some((0, false, glass::LIGHT_RIM_INK, 0));
     // A scaled window's corner radii scale with it.
     let grown = req.scaled.map_or(1.0, |(_, by)| by.x.max(by.y));
     // Every pane's box, drawn or not: a hover must not move the cache key.
@@ -2259,7 +2280,12 @@ fn window_elements(
                     // The layer's neutral white hairline; focus only dims it,
                     // crossfading like the painted border does.
                     let rim = store.anim.border_color(&window, [1.0; 4], [BEZEL_DIM; 4]);
-                    Bezel { inner, opaque, rim }
+                    Bezel {
+                        inner,
+                        opaque,
+                        bar: 0,
+                        rim,
+                    }
                 });
                 (region, radius, bezel, shape)
             });
@@ -2279,16 +2305,14 @@ fn window_elements(
                 match backdrop {
                     None => strip_backdrop(strip, phys_rect(frame), corner)
                         .map(|region| (region, deco.rounding, None, None)),
-                    Some((region, radius, bezel, None)) if !region.contains_rect(strip) => {
-                        let (x0, y0) = (region.loc.x.min(strip.loc.x), region.loc.y.min(strip.loc.y));
-                        let x1 = (region.loc.x + region.size.w).max(strip.loc.x + strip.size.w);
-                        let y1 = (region.loc.y + region.size.h).max(strip.loc.y + strip.size.h);
-                        Some((
-                            Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into()),
-                            radius,
-                            bezel,
-                            None,
-                        ))
+                    Some((region, radius, bezel, None)) => {
+                        let region = union_with_bar(region, strip);
+                        // An opaque bezel is ring-only; the bar stays glass.
+                        let bezel = bezel.map(|b| Bezel {
+                            bar: bar_depth(region, strip),
+                            ..b
+                        });
+                        Some((region, radius, bezel, None))
                     }
                     other => other,
                 }
@@ -3592,6 +3616,22 @@ mod tests {
         let got = window_backdrop(BlurMode::Glass, 1.0, rect, 0, vec![rect], 0, 6, bezel);
         assert_eq!(got.map(|g| g.1), Some(0));
         assert_eq!(bezel_width(BlurMode::Glass, true, false, 6, 1.5), Some(9));
+    }
+
+    /// The titlebar is glass over an opaque window with a bezel: its rect is in
+    /// the region and the bezel reports how deep it reaches, so the ring-only
+    /// backdrop is not ring-only under the bar.
+    #[test]
+    fn the_titlebar_stays_glass_inside_an_opaque_bezel() {
+        let rect = r(100, 50, 300, 200);
+        let (region, ..) = window_backdrop(BlurMode::Glass, 1.0, rect, 9, vec![rect], 9, 6, Some(6)).unwrap();
+        let bar = r(100, 50, 300, 40);
+        assert!(region.contains_rect(bar));
+        assert_eq!(union_with_bar(region, bar), region, "no growth, no double blur");
+        assert_eq!(bar_depth(region, bar), 46, "ring above the bar plus the bar");
+        // A bar outside the region grows it to cover both.
+        let apart = r(100, 20, 300, 40);
+        assert_eq!(union_with_bar(rect, apart), r(100, 20, 300, 230));
     }
 
     #[test]
