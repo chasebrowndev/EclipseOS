@@ -3,9 +3,10 @@
 # EclipseOS — ReGreet configuration.
 # Install to: /etc/greetd/regreet.toml  (root:root 0644)
 #
-# Styling lives entirely in /etc/greetd/regreet.css, which is hand-written and
-# self-contained — it is NOT generated from any theme tool and must not be
-# regenerated from a user's home directory.
+# Styling lives in /etc/greetd/regreet.css, hand-written and never built from a
+# user's home directory. These are the defaults: ec-greeter-run renders a copy
+# over them when the machine has chosen its own login screen (ADR 0089). It
+# rewrites the `path` and `greeting_msg` lines, so keep each on one line.
 
 [background]
 # Ships as packaging/greetd/wallpaper.png.

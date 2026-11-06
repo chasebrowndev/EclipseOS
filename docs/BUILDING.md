@@ -162,9 +162,8 @@ pacman -Qq | grep '^eclipseos-'
 ```
 
 If that prints anything, decide which install you want. Removing
-`eclipseos-desktop` forces `eclipseos-meta` out with it, and `-meta` owns the
-greetd config — reinstate it (or `pacman -S eclipseos-meta`) before rebooting,
-or the next boot drops to a text greeter.
+`eclipseos-desktop` forces `eclipseos-meta` out with it. The greetd config lives
+in `eclipseos-greeter` and stays, so the next boot still reaches the login screen.
 
 The installed wrapper passes `--backend drm` explicitly. `default_backend()`
 would infer it, but only from `WAYLAND_DISPLAY` and `DISPLAY` both being unset;
@@ -246,7 +245,7 @@ The distribution path (D-01..D-03), all under `packaging/`:
   `-launcher`, `-desktop` (settings, policy viewer, `ec-screensaver`, the
   `ec-pairing` Bluetooth agent and `ec-secret-prompt`), `-policyd`,
   and `-meta`, which depends on all of them except `-hyperion` (an
-  optdepend) plus greetd/regreet/cage, NetworkManager, BlueZ, UPower, PipeWire
+  optdepend) plus greetd/regreet, NetworkManager, BlueZ, UPower, PipeWire
   and foot, and ships `/etc/eclipse/{abyss,policy}.kdl`, the greetd config under
   `/etc/eclipse/greetd` and its `greetd.service.d` drop-in.
 - **User units.** `ec-hyperion-bar.service`, `ec-toasts.service`,

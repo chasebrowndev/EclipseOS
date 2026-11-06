@@ -331,7 +331,6 @@ pub fn capture_elements(
     let output_loc = output_geo.loc;
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
     let mut redacted: Vec<Redacted> = Vec::new();
-    let redact_ids = &state.config.capture.redact_app_id;
     let windows: Vec<Window> = state.space.elements().cloned().collect();
     let mut fx = still.begin(renderer, output, output_geo, &state.config, &windows);
 
@@ -351,78 +350,39 @@ pub fn capture_elements(
         let Some(geo) = state.space.element_geometry(window) else {
             continue;
         };
-        let surface = crate::shell::window_surface(window);
-        // COMP-19 §4: a protected surface is never in a pass list. Not
-        // redaction (no placeholder, no record): the capture shows what lies
-        // beneath. The whole window goes, not just the protected subtree:
-        // its elements are generated as one tree, and leaving out exactly
-        // the protected part would be a per-element decision that has to
-        // fire correctly, which is what exclusion by construction avoids.
-        if surface
-            .as_ref()
-            .is_some_and(|s| crate::protocols::protected::has_protected(state, s))
-        {
-            continue;
-        }
-        let app_id = surface
-            .as_ref()
-            .and_then(crate::protocols::standard::data_device::app_id_of);
-        // The policy class counts once a table is live (S-05 §2: `secret` is
-        // redacted from capture). With no table the agent-facing answer is
-        // "everything secret", which must not black out the human's own
-        // screenshots, so only the compositor's own set applies then.
-        let in_set = surface.as_ref().is_some_and(|s| state.sensitive.contains(s))
-            || (state.policy_table.is_some()
-                && crate::policy::classes::class_of(state, window) == ec_policy_eval::Class::Secret);
-        // Where the surface tree's own (0, 0) lands, and the box it occupies.
-        // `geo` is the *placed* rect; a client with CSD shadow insets draws
-        // outside it, so covering `geo` alone would leave those pixels through.
-        let origin = geo.loc - window.geometry().loc;
-        let bbox = window.bbox();
-        let cover = Rectangle::new(origin + bbox.loc, bbox.size);
-        // Decided here, before any GPU work touches the surface.
-        let (tree, generation, secret_known) = semantics_for(state, surface.as_ref());
-        let verdict = resolve_nodes(&tree, generation, secret_known);
-        let whole = match verdict {
-            NodeVerdict::WholeSurface(reason) => Some(reason),
-            _ => None,
-        };
-        let surface_level = in_set
-            || app_id
-                .as_deref()
-                .is_some_and(|id| redact_ids.iter().any(|r| r == id));
-        if is_sensitive(in_set, app_id.as_deref(), redact_ids, whole.is_some()) {
-            // Skipping the walk entirely is what keeps the pixels off the
-            // target: popups and subsurfaces inherit the parent's class here by
-            // construction, because none of their elements are ever generated.
-            // Surface-level wins the label when both rules fire — it is the
-            // standing classification, the tree verdict only the day's reason.
-            let reason = if surface_level {
-                RedactReason::Surface
-            } else {
-                whole.unwrap_or(RedactReason::Surface)
-            };
-            redacted.push(Redacted {
+        match classify(state, window, geo) {
+            Classified::Protected => continue,
+            Classified::Whole {
                 app_id,
-                rects: vec![cover],
                 reason,
-            });
-            elements.extend(placeholders(&[cover], output_loc, scale));
-            continue;
-        }
-        if let NodeVerdict::Nodes(local) = verdict {
-            let (rects, reason) = node_rects(&local, origin, cover);
-            redacted.push(Redacted {
-                app_id: app_id.clone(),
-                rects: rects.clone(),
-                reason,
-            });
-            // Pushed before the surface's own elements: the list is front-to-back,
-            // so the placeholders occlude the nodes they cover.
-            elements.extend(placeholders(&rects, output_loc, scale));
-            if reason == RedactReason::NodesOutOfBounds {
+                cover,
+            } => {
+                redacted.push(Redacted {
+                    app_id,
+                    rects: vec![cover],
+                    reason,
+                });
+                elements.extend(placeholders(&[cover], output_loc, scale));
                 continue;
             }
+            Classified::Nodes {
+                app_id,
+                rects,
+                reason,
+            } => {
+                // Pushed before the surface's own elements: the list is
+                // front-to-back, so the placeholders occlude the nodes they cover.
+                elements.extend(placeholders(&rects, output_loc, scale));
+                redacted.push(Redacted {
+                    app_id,
+                    rects,
+                    reason,
+                });
+                if reason == RedactReason::NodesOutOfBounds {
+                    continue;
+                }
+            }
+            Classified::Clear => {}
         }
         let active = state.focus.as_ref() == Some(window);
         fx.window(renderer, window, geo, active, &mut elements);
@@ -441,6 +401,115 @@ pub fn capture_elements(
 
     fx.finish(renderer, &mut elements);
     (elements, redacted)
+}
+
+/// What one window may show in a capture or any compositor-drawn copy of it
+/// (COMP-02 §7, §8; COMP-05 §7.1 thumbnails). Decided before any GPU work.
+/// Rectangles are global logical.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Classified {
+    /// COMP-19 §4: never in a pass list, not even as a placeholder.
+    Protected,
+    /// Covered whole, titlebar included.
+    Whole {
+        app_id: Option<String>,
+        reason: RedactReason,
+        cover: Rectangle<i32, Logical>,
+    },
+    /// These rectangles are covered; for `NodesOutOfBounds` the surface is
+    /// not drawn at all.
+    Nodes {
+        app_id: Option<String>,
+        rects: Vec<Rectangle<i32, Logical>>,
+        reason: RedactReason,
+    },
+    /// Nothing withheld.
+    Clear,
+}
+
+/// The single redaction decision for a window placed at `geo`. Capture and
+/// every compositor-drawn copy (switcher, overview, previews) read this, so a
+/// rule added here applies to all of them.
+pub fn classify(state: &AbyssState, window: &Window, geo: Rectangle<i32, Logical>) -> Classified {
+    let redact_ids = &state.config.capture.redact_app_id;
+    let surface = crate::shell::window_surface(window);
+    // COMP-19 §4: a protected surface is never in a pass list. Not
+    // redaction (no placeholder, no record): the capture shows what lies
+    // beneath. The whole window goes, not just the protected subtree:
+    // its elements are generated as one tree, and leaving out exactly
+    // the protected part would be a per-element decision that has to
+    // fire correctly, which is what exclusion by construction avoids.
+    if surface
+        .as_ref()
+        .is_some_and(|s| crate::protocols::protected::has_protected(state, s))
+    {
+        return Classified::Protected;
+    }
+    let app_id = surface
+        .as_ref()
+        .and_then(crate::protocols::standard::data_device::app_id_of);
+    // The policy class counts once a table is live (S-05 §2: `secret` is
+    // redacted from capture). With no table the agent-facing answer is
+    // "everything secret", which must not black out the human's own
+    // screenshots, so only the compositor's own set applies then.
+    let in_set = surface.as_ref().is_some_and(|s| state.sensitive.contains(s))
+        || (state.policy_table.is_some()
+            && crate::policy::classes::class_of(state, window) == ec_policy_eval::Class::Secret);
+    // Where the surface tree's own (0, 0) lands, and the box it occupies.
+    // `geo` is the *placed* rect; a client with CSD shadow insets draws
+    // outside it, so covering `geo` alone would leave those pixels through.
+    let origin = geo.loc - window.geometry().loc;
+    let bbox = window.bbox();
+    let cover = Rectangle::new(origin + bbox.loc, bbox.size);
+    // Decided here, before any GPU work touches the surface.
+    let bar = ec_abyss_render::titlebar::bar_of(window)
+        .map(|info| ec_abyss_render::titlebar::bar_rect(geo, info.height));
+    let (tree, generation, secret_known) = semantics_for(state, surface.as_ref());
+    let verdict = resolve_nodes(&tree, generation, secret_known);
+    let whole = match verdict {
+        NodeVerdict::WholeSurface(reason) => Some(reason),
+        _ => None,
+    };
+    let surface_level = in_set
+        || app_id
+            .as_deref()
+            .is_some_and(|id| redact_ids.iter().any(|r| r == id));
+    if is_sensitive(in_set, app_id.as_deref(), redact_ids, whole.is_some()) {
+        // Skipping the walk entirely is what keeps the pixels off the
+        // target: popups and subsurfaces inherit the parent's class here by
+        // construction, because none of their elements are ever generated.
+        // Surface-level wins the label when both rules fire — it is the
+        // standing classification, the tree verdict only the day's reason.
+        let reason = if surface_level {
+            RedactReason::Surface
+        } else {
+            whole.unwrap_or(RedactReason::Surface)
+        };
+        // Its titlebar goes with it (COMP-02 §8), so neither its title nor a
+        // bar's outline reaches the target.
+        return Classified::Whole {
+            app_id,
+            reason,
+            cover: whole_cover(cover, bar),
+        };
+    }
+    if let NodeVerdict::Nodes(local) = verdict {
+        let (rects, reason) = node_rects(&local, origin, cover);
+        return Classified::Nodes {
+            app_id,
+            rects,
+            reason,
+        };
+    }
+    Classified::Clear
+}
+
+/// What a wholesale redaction covers: the surface tree's box plus its titlebar.
+fn whole_cover(
+    cover: Rectangle<i32, Logical>,
+    bar: Option<Rectangle<i32, Logical>>,
+) -> Rectangle<i32, Logical> {
+    bar.map_or(cover, |bar| cover.merge(bar))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -841,6 +910,15 @@ mod tests {
         ] {
             assert_eq!(Transform::from(super::wire_transform(t)), t);
         }
+    }
+
+    #[test]
+    fn a_wholesale_redaction_covers_the_titlebar() {
+        let cover = Rectangle::new((100, 132).into(), (400, 300).into());
+        let bar = Rectangle::new((100, 100).into(), (400, 32).into());
+        let whole = super::whole_cover(cover, Some(bar));
+        assert_eq!(whole, Rectangle::new((100, 100).into(), (400, 332).into()));
+        assert_eq!(super::whole_cover(cover, None), cover);
     }
 
     #[test]

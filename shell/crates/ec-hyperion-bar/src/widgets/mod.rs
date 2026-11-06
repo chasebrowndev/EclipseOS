@@ -40,6 +40,7 @@ pub mod battery;
 pub mod bluetooth;
 pub mod clock;
 pub mod custom;
+pub mod history;
 pub mod network;
 pub mod now_playing;
 pub mod power;
@@ -67,6 +68,10 @@ pub enum WidgetId {
     Power,
     Tray,
     Clock,
+    /// The notification bell (`mode "de"` only). Never in a config's order:
+    /// the bar adds it under `de` and removes it elsewhere
+    /// ([`crate::app::apply_mode`]).
+    History,
     /// A `widget "<name>" { … }` block, written `custom:<name>`.
     Custom(String),
 }
@@ -87,6 +92,7 @@ impl WidgetId {
             "power" => WidgetId::Power,
             "tray" => WidgetId::Tray,
             "clock" => WidgetId::Clock,
+            "history" => WidgetId::History,
             other => {
                 let name = other.strip_prefix("custom:")?;
                 if name.is_empty() {
@@ -111,6 +117,7 @@ impl WidgetId {
             WidgetId::Power => "power".to_owned(),
             WidgetId::Tray => "tray".to_owned(),
             WidgetId::Clock => "clock".to_owned(),
+            WidgetId::History => "history".to_owned(),
             WidgetId::Custom(name) => format!("custom:{name}"),
         }
     }
@@ -325,6 +332,7 @@ pub fn spans(app: &App, id: &WidgetId) -> Spans {
         WidgetId::Power => power::spans(app),
         WidgetId::Tray => tray::spans(app),
         WidgetId::Clock => clock::spans(app),
+        WidgetId::History => history::spans(app),
         WidgetId::Custom(name) => match cfg.spec(name) {
             Some(spec) => custom::spans(custom_out(app, spec).as_ref(), spec),
             None => Spans::default(),
@@ -379,6 +387,7 @@ fn parts<'a>(app: &'a App, bar: &crate::app::Bar, id: &WidgetId, frame: ShellFra
         WidgetId::Power => power::view(app, frame),
         WidgetId::Tray => tray::view(app, frame),
         WidgetId::Clock => clock::view(app, frame),
+        WidgetId::History => history::view(app, frame),
         WidgetId::Custom(name) => match cfg.spec(name) {
             Some(spec) => custom::view(custom_out(app, spec), spec, frame),
             None => Parts::empty(),

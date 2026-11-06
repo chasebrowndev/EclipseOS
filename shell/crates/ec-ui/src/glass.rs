@@ -33,6 +33,7 @@
 
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::mem::ManuallyDrop;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use ec_protocols::glass::client::eclipse_glass_manager_v1::{self, EclipseGlassManagerV1};
@@ -253,7 +254,12 @@ struct Shared {
 
 thread_local! {
     // The event loop, the hook and every draw run on one thread.
-    static SHARED: RefCell<Option<Shared>> = const { RefCell::new(None) };
+    //
+    // Never dropped: this slot is torn down by `exit()` after winit has already
+    // closed its display, and dropping the proxies then calls
+    // `wl_proxy_destroy` on freed memory (ec-settings segfaulted on every close).
+    // The process is going away; the compositor reaps the objects with the socket.
+    static SHARED: RefCell<Option<ManuallyDrop<Shared>>> = const { RefCell::new(None) };
     static FRAME: RefCell<GlassPanes> = RefCell::new(GlassPanes::default());
     // Visible bounds (surface-local) of the scroll region being drawn, if any.
     static CLIP: std::cell::Cell<Option<Rectangle>> = const { std::cell::Cell::new(None) };
@@ -306,12 +312,12 @@ pub fn bootstrap() -> Option<Connection> {
         let _ = queue.roundtrip(&mut Dispatcher);
     }
     SHARED.with(|s| {
-        *s.borrow_mut() = Some(Shared {
+        *s.borrow_mut() = Some(ManuallyDrop::new(Shared {
             conn: None,
             queue,
             manager,
             surfaces: HashMap::new(),
-        });
+        }));
     });
     Some(conn)
 }
@@ -472,12 +478,12 @@ fn attach_raw(id: window::Id, w: &dyn window::Window) -> bool {
         },
     );
     SHARED.with(|sh| {
-        *sh.borrow_mut() = Some(Shared {
+        *sh.borrow_mut() = Some(ManuallyDrop::new(Shared {
             conn: Some(conn),
             queue,
             manager: Some(manager),
             surfaces,
-        });
+        }));
     });
     available()
 }

@@ -14,11 +14,15 @@ pub mod clock;
 pub mod conn;
 pub mod drawer;
 pub mod eye;
+pub mod group;
+pub mod history;
+pub mod hover;
 pub mod icons;
 pub mod layout;
 pub mod menu;
 pub mod model;
 pub mod motion;
+pub mod pager;
 pub mod pins;
 #[cfg(debug_assertions)]
 pub mod preview;

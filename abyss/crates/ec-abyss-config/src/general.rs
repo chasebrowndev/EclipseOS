@@ -28,6 +28,45 @@ pub enum LayoutKind {
     Master,
 }
 
+/// What a hot corner does (`general.hot-corners.*`, COMP-05 §7.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HotCorner {
+    /// The mode's default: the overview for the top-left corner under `de`,
+    /// nothing otherwise and for every other corner.
+    Auto,
+    Off,
+    ToggleOverview,
+    /// Open the window switcher.
+    SwitchWindows,
+}
+
+impl HotCorner {
+    pub fn name(self) -> &'static str {
+        match self {
+            HotCorner::Auto => "auto",
+            HotCorner::Off => "off",
+            HotCorner::ToggleOverview => "toggle-overview",
+            HotCorner::SwitchWindows => "switch-windows",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<HotCorner> {
+        Some(match s {
+            "auto" => HotCorner::Auto,
+            "off" => HotCorner::Off,
+            "toggle-overview" => HotCorner::ToggleOverview,
+            "switch-windows" => HotCorner::SwitchWindows,
+            _ => return None,
+        })
+    }
+}
+
+/// Corner indexes into [`General::hot_corners`].
+pub const CORNER_TOP_LEFT: usize = 0;
+pub const CORNER_TOP_RIGHT: usize = 1;
+pub const CORNER_BOTTOM_LEFT: usize = 2;
+pub const CORNER_BOTTOM_RIGHT: usize = 3;
+
 #[derive(Debug, Clone)]
 pub struct General {
     pub gaps_in: i32,
@@ -42,8 +81,21 @@ pub struct General {
     pub gaps_out_vertical: Option<i32>,
     pub border_size: i32,
     pub layout: LayoutKind,
+    /// The effective value: the file's, else the mode's default
+    /// ([`ModeProfile::floating_placement`]). Resolved after parsing by
+    /// `Config::resolve_mode_defaults`; read this, not the file.
     pub floating_placement: FloatingPlacement,
+    /// Whether any config file wrote `floating-placement`. An explicit key
+    /// always beats the mode's default (COMP-17 §2).
+    pub floating_placement_set: bool,
+    /// The effective value: the file's, else the mode's default
+    /// ([`ModeProfile::focus_follows_mouse`]). Resolved after parsing by
+    /// `Config::resolve_mode_defaults`; read this, not the file.
     pub focus_follows_mouse: bool,
+    /// Whether any config file wrote `focus-follows-mouse`. An explicit key
+    /// always beats the mode's default (COMP-17 §2); this is what tells the
+    /// two apart, on load and on every reload, and what `get_config` reports.
+    pub focus_follows_mouse_set: bool,
     pub focus_follows_mouse_across_outputs: bool,
     pub unfocus_on_empty_workspace: bool,
     pub refocus_on_scene_change: bool,
@@ -62,6 +114,27 @@ pub struct General {
     /// Width, logical px, of the screen-edge band that adds a full-height
     /// column or full-width row on drop.
     pub drop_edge_band: i32,
+    /// `mode "de"`: snap a moved or resized window to the usable-area edges
+    /// and to other windows within `snap_distance` logical px (KDE: 10).
+    pub snap: bool,
+    pub snap_distance: i32,
+    /// `mode "de"`: dragging a titlebar to a screen edge or corner shows a
+    /// preview and tiles on release; `edge_tile_distance` is how close to the
+    /// screen edge the pointer must be (KDE: 20).
+    pub edge_tile: bool,
+    pub edge_tile_distance: i32,
+    /// `mode "de"`: rows of the desktop grid over the ten human workspaces
+    /// (COMP-05 §7.1). Columns derive from it: `ceil(10 / rows)`.
+    pub desktop_rows: i32,
+    /// `mode "de"`: whether stepping off an edge of the desktop grid wraps.
+    pub desktop_wrap: bool,
+    /// `mode "de"` hot corners, as written (top-left, top-right, bottom-left,
+    /// bottom-right). Resolve through [`General::corner_action`].
+    pub hot_corners: [HotCorner; 4],
+    /// Dwell before a hot corner fires, ms (KDE: 150).
+    pub hot_corner_dwell_ms: u32,
+    /// Quiet time after one fires, ms.
+    pub hot_corner_cooldown_ms: u32,
     /// `color-scheme` (ADR 0084).
     pub color_scheme: ColorSetting,
     /// Theme used while the scheme is dark / light.
@@ -76,6 +149,16 @@ pub struct General {
 }
 
 impl General {
+    /// What corner `i` does under `mode`: the file's choice, or for `auto`
+    /// the mode's default (the overview on the top-left under `de`).
+    pub fn corner_action(&self, i: usize, mode: Mode) -> HotCorner {
+        match self.hot_corners.get(i).copied().unwrap_or(HotCorner::Off) {
+            HotCorner::Auto if i == CORNER_TOP_LEFT && mode == Mode::De => HotCorner::ToggleOverview,
+            HotCorner::Auto => HotCorner::Off,
+            other => other,
+        }
+    }
+
     /// The vertical inner gap, resolving `gaps-in-vertical` against
     /// `gaps-in` (COMP-05 §3) when the config never set it — so a config that
     /// only ever touches `gaps-in` renders identically whether or not the
@@ -101,7 +184,9 @@ impl Default for General {
             border_size: 1,
             layout: LayoutKind::Radiant,
             floating_placement: FloatingPlacement::Centered,
+            floating_placement_set: false,
             focus_follows_mouse: true,
+            focus_follows_mouse_set: false,
             focus_follows_mouse_across_outputs: true,
             unfocus_on_empty_workspace: true,
             refocus_on_scene_change: true,
@@ -114,6 +199,15 @@ impl Default for General {
             drop_guides: true,
             drop_guide_color: [0.91, 0.64, 0.24, 1.0],
             drop_edge_band: 40,
+            snap: true,
+            snap_distance: 10,
+            edge_tile: true,
+            edge_tile_distance: 20,
+            desktop_rows: 2,
+            desktop_wrap: true,
+            hot_corners: [HotCorner::Auto; 4],
+            hot_corner_dwell_ms: 150,
+            hot_corner_cooldown_ms: 750,
             color_scheme: ColorSetting::Dark,
             theme_dark: "dark".into(),
             theme_light: "light".into(),
@@ -250,6 +344,10 @@ pub struct Misc {
     /// machine. Restart-only (COMP-13 §1.2). `misc.render-device`, when set,
     /// still pins the primary (ADR 0033).
     pub gpu_mode: GpuMode,
+    /// `secondary-compositing` (ADR 0086): composite outputs on a secondary
+    /// GPU natively on that GPU. Default **off**: the primary renders and the
+    /// secondary's scanout buffer receives a copy. Restart-only.
+    pub secondary_compositing: bool,
     /// `discrete-gpu-apps`: desktop-entry ids always launched on the
     /// discrete GPU in `hybrid` mode (ADR 0084). Live.
     pub discrete_gpu_apps: Vec<String>,
@@ -296,7 +394,48 @@ pub enum Mode {
     De,
 }
 
+/// What a [`Mode`] selects (COMP-17 §2, C-24). Derived from the mode, never
+/// written to a config file, never read back from one. Only what a milestone
+/// uses is here; later ones add their fields.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModeProfile {
+    /// Windows stack and nothing is tiled (COMP-05 §3.1, §7.1). This follows
+    /// the mode and is not a default: no key overrides it.
+    pub stacking: bool,
+    /// `xdg_toplevel.set_maximized` and X11 `_NET_WM_STATE_MAXIMIZED_*` are
+    /// honoured. Elsewhere they are declined (C-20; C-24 scopes it to `wm` and
+    /// `hybrid`).
+    pub maximize: bool,
+    /// The compositor draws a titlebar above server-side-decorated windows
+    /// (COMP-05 §7.1, M3).
+    pub titlebars: bool,
+    /// Quick Tile, edge tiling and window snapping (COMP-05 §3.1, M5). A
+    /// floating placement, not a layout: `de` stays pure stacking.
+    pub quick_tile: bool,
+    /// Default for `general.focus-follows-mouse`; an explicit key wins.
+    pub focus_follows_mouse: bool,
+    /// Default for `general.floating-placement`; an explicit key wins. Windows
+    /// stack under `de`, so the centred default (every window on the same
+    /// centre, each hiding the last) is the existing `cascade` there.
+    pub floating_placement: FloatingPlacement,
+}
+
 impl Mode {
+    pub fn profile(self) -> ModeProfile {
+        ModeProfile {
+            stacking: self == Mode::De,
+            maximize: self == Mode::De,
+            titlebars: self == Mode::De,
+            quick_tile: self == Mode::De,
+            focus_follows_mouse: self != Mode::De,
+            floating_placement: if self == Mode::De {
+                FloatingPlacement::Cascade
+            } else {
+                FloatingPlacement::Centered
+            },
+        }
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Mode::Wm => "wm",

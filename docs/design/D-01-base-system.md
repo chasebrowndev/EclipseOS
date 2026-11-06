@@ -44,6 +44,7 @@ Four packages, split so the repo can move pieces independently (D-02, and
 | `eclipseos-launcher` | `ec-launcher` | AGPL-3.0-only |
 | `eclipseos-desktop` | `ec-settings`, `ec-policy-viewer`, `ec-screensaver`, their `.desktop` files and user units | AGPL-3.0-only |
 | `eclipseos-agents` | The agent stack add-on (ADR 0069): `ec-policyd`, its user unit and the `agents` manifest. Not in the floor; the Agentic profile installs it. Replaces `eclipseos-policyd` | AGPL-3.0-only |
+| `eclipseos-greeter` | The greetd configuration, its assets, `ec-greeter-run` and `ec-greeter-apply` (ADR 0089). Depends on `eclipseos-abyss` and no desktop package | AGPL-3.0-only |
 | `eclipseos-meta` | Depends on every package above except the add-ons (`eclipseos-hyperion`, `eclipseos-agents`), plus §1.2; ships the pacman drop-in and `/etc/eclipse` defaults | AGPL-3.0-only |
 
 **One crate, one package per swappable component** (ADR 0052). The taskbar
@@ -277,9 +278,11 @@ reinvented; their units are S-tier documents' business.
 
 ### 3.5 greetd
 
-greetd stays the display manager, running `cage -s -m last -- regreet`. This is
-already the arrangement on `mainframe` and there is no reason to own a greeter.
-The session entry is `/usr/share/wayland-sessions/abyss.desktop` with
+greetd stays the display manager, running
+`ec-abyss --backend drm --kiosk -- /usr/lib/eclipse/ec-greeter-run` (ADR 0087),
+which renders the machine's choices over the shipped files and execs regreet, and
+falls back to the shipped files on any problem (ADR 0089). There is no reason to own
+a greeter, but the compositor under it is ours. The session entry is `/usr/share/wayland-sessions/abyss.desktop` with
 `Exec=/usr/bin/abyss-session`.
 
 `abyss-session` passes `--backend drm` **explicitly**. `default_backend()` picks
@@ -306,7 +309,8 @@ is labelled.
 | `/etc/eclipse/*.d/` | machine | reserved, not yet read by abyss |
 | `~/.config/eclipse/` | **machine** | untouched |
 | `~/.local/state/eclipse/` | **machine** | untouched |
-| `/var/lib/eclipse/` | machine | reserved; nothing writes it today |
+| `/var/lib/eclipse/greeter/` | **machine** (login screen choices, root-written, ADR 0089) | untouched |
+| `/var/lib/eclipse/` | machine | reserved otherwise |
 
 The rule that follows: **the shipped configuration is read-only and lives under
 `/etc/eclipse`, and no component ever writes there.** `ec-settings` writes

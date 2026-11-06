@@ -15,6 +15,10 @@ impl Config {
                     Some(v) if (0..=64).contains(&v) => self.decoration.rounding = v as i32,
                     _ => self.reject(n, "decoration rounding must be an integer 0..=64"),
                 },
+                "titlebar-height" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (16..=64).contains(&v) => self.decoration.titlebar_height = v as i32,
+                    _ => self.reject(n, "decoration titlebar-height must be an integer 16..=64"),
+                },
                 "active-opacity" | "inactive-opacity" | "dim-inactive" => match arg(n).and_then(as_f64) {
                     Some(v) if (0.0..=1.0).contains(&v) => {
                         let v = v as f32;
