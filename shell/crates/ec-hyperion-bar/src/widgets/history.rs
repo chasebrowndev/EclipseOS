@@ -1,50 +1,50 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The notification widget (`mode "de"`, COMP-17 §2): the bar's bell, its
-//! quick view and the history drawer inside it.
+//! The notification widget (`mode "de"`, COMP-17 §2): the bar's bell and the
+//! reveal drawer that rolls out of it.
 //!
 //! The bell carries the mode's mark (a bell, a moon, a bell struck through)
 //! and, when something is unread, the count in the bar's mono: `(3)`. It opens
-//! a small popover with the unread notifications, newest first (the app, the
-//! summary, the body cut to a few lines and how long ago, a dismiss per entry
-//! and a live entry's own action buttons), under a three-way mode switch.
-//! Opening marks everything read; the rows stay on screen for as long as the
-//! popover is open, then live on in the history.
-//!
-//! The **history drawer** is a fold row under the quick view, shut by
-//! default. Unfolded it lists the read entries three at a time with a pager
-//! and "Clear all".
-//!
-//! A status widget like progress: it reads `app.history` and owns no state.
-//! The popover is a popup (the tray overflow's machinery), sized from what it
-//! lists and reopened when that changes.
+//! a reveal drawer, the wifi and battery drawers' machinery and vocabulary,
+//! with the unread notifications at the top, newest first. Opening marks
+//! everything read; the rows stay on screen for as long as the drawer is out,
+//! then live on in the history.
 //!
 //! ## Shape
 //!
-//! Not a menu and not a list of menu rows: a head, the segmented mode lozenge,
-//! then blocks of different heights (a short entry is two lines, a long one
-//! has its body and a row of pill buttons) parted by hairlines, a critical
-//! entry carrying a short danger rail, and the fold row at the foot. Empty,
-//! the quick view is one centred note.
+//! Head with the new count, the mode in one segment block (the battery's
+//! pattern), the hero (the newest unread, with its body and its live action
+//! pills under it), then one-line rows in the network drawer's `ROW_H` (a
+//! click reveals the body, the pointer swaps the reading for a dismiss
+//! cross), a fold row for the history, and "Clear all" as the way out. Rows
+//! are all one line; the only things that make the sheet taller are a body
+//! that is revealed and the history that is unfolded, and it retargets its
+//! height in place. The sheet never outgrows the surface's reserve
+//! ([`drawer::RESERVE_H`]): past it, everything between the mode switch and
+//! the way out scrolls. Changing the mode leaves the drawer open; the rows
+//! follow the new mode live. Empty, the list is one `drawer_note`.
+//!
+//! A critical entry is told by a danger-ink mark, not a rail. Unread rows are
+//! in the full ink and read ones one step down; a revealed or keyboard-selected
+//! row takes the focused-chip glass.
 //!
 //! ## The accent ledger
 //!
-//! **None.** The count is white: it says "unread", not "live". The selected
-//! mode is the focused-chip glass, a brighter fill and a crisp rim, never the
-//! accent. The one yellow on the bar is the focused chip's.
+//! **None.** The count is mono tertiary: it says "unread", not "live". The
+//! selected mode is the focused-chip glass, a brighter fill and a crisp rim,
+//! never the accent. The one yellow on the bar is the focused chip's.
 //!
 //! Bodies are human content and are never logged.
 
-use iced::widget::{button, row, text, Column, Row, Space};
+use iced::widget::{container, text, Row};
 use iced::{Alignment, Element, Length, Theme};
 
 use ec_services::notifications::{HistoryEntry, Mode, Urgency};
-use ec_ui::theme;
-use ec_ui::tokens::{bar, color, drawer, font, history as tok, size};
-use ec_ui::widget::{self as parts, ShellFrame};
+use ec_ui::tokens::{bar, color, drawer, font, history as tok, menu, size};
+use ec_ui::widget::{self as parts, EntryRow, ShellFrame};
 
 use super::{Parts, Spans};
 use crate::app::{App, Drawer, Message};
-use crate::history::{ago, badge, clamp_body, entry_height, now};
+use crate::history::{ago, badge, clamp_body, has_verbs, now, title, Panel, Stop};
 use crate::view::{elide, Sheet};
 
 /// The mark for each mode: the freedesktop bell, a moon for Quiet (stored, no
@@ -106,319 +106,297 @@ pub fn view(app: &App, frame: ShellFrame) -> Parts<'_> {
     }
 }
 
-/// The popover. See the module doc for its anatomy and ledger.
-pub(crate) fn sheet(app: &App) -> Sheet {
-    let panel = &app.history;
-    let quick = panel.quick();
-    let mut s = Sheet::new(head(panel.unread() as usize), drawer::HEAD_H);
+/// The scrolling region's widget id, so the keyboard can scroll it.
+pub(crate) const SCROLL: &str = "history-run";
 
-    s.block(mode_switch(panel.mode()), tok::SWITCH_H);
+/// Where a stop sits in the scrolling run, in pixels from its top: the row's
+/// own height and the height with its revealed body.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Mark {
+    pub stop: Stop,
+    pub top: f32,
+    pub row: f32,
+    pub full: f32,
+}
+
+/// The drawer built, and where its stops are.
+pub(crate) struct Plan {
+    pub sheet: Sheet,
+    pub marks: Vec<Mark>,
+    /// The region's visible height, and whether the run overflows it.
+    pub cap: f32,
+    pub run_h: f32,
+    pub scrolls: bool,
+}
+
+/// The drawer. See the module doc for its anatomy and ledger.
+pub(crate) fn sheet(app: &App) -> Sheet {
+    plan(app).sheet
+}
+
+/// Whether the way out clears the history (else it opens the settings).
+pub(crate) fn foot_clears(panel: &Panel) -> bool {
+    panel.fresh() > 0 || panel.read_total() > 0
+}
+
+pub(crate) fn plan(app: &App) -> Plan {
+    let panel = &app.history;
+    let fresh = panel.fresh();
+    let count = if fresh > 0 {
+        format!("{fresh} new")
+    } else {
+        String::new()
+    };
+    let mut s = Sheet::new(
+        parts::drawer_sheet_head_count("notifications", &count),
+        drawer::HEAD_H,
+    );
+
+    s.block(mode_switch(panel.mode()), drawer::ROW_H);
     s.rule();
 
     let at = now();
-    if quick.is_empty() {
-        s.block(
-            empty("All caught up", "New notifications land here"),
-            tok::EMPTY_H,
-        );
-    }
-    for (i, e) in quick.iter().enumerate() {
-        if i > 0 {
-            s.rule();
+    let total = panel.read_total();
+    let lit = |stop| panel.stop() == Some(stop);
+    let mut marks = Vec::new();
+    // Everything between the mode switch and the way out is one run. It is
+    // laid in place while the whole sheet fits the surface's reserve and is a
+    // scrolling region once it would not, so the sheet never outgrows it.
+    let mut r = Sheet::run();
+    match panel.hero() {
+        Some(hero) => {
+            r.current(hero_row(hero, at));
+            details(&mut r, hero);
+            for e in panel.rows() {
+                entry(&mut r, &mut marks, panel, e, at, false);
+            }
         }
-        s.block(entry(e, at, false), entry_height(e));
+        None => r.row(parts::drawer_note("all caught up")),
     }
     if panel.quick_hidden() > 0 && !panel.expanded() {
-        // Opens the drawer, where the rest are.
-        s.block(
-            parts::drawer_more(
-                &format!("+{} more in history", panel.quick_hidden()),
-                Message::HistoryFold,
-            ),
-            drawer::ROW_H,
-        );
+        // Opens the history, where the rest are.
+        marks.push(Mark::at(Stop::Hidden, r.used(), drawer::ROW_H));
+        r.row(parts::drawer_more(
+            &format!("+{} more in history", panel.quick_hidden()),
+            lit(Stop::Hidden),
+            Message::HistoryFold,
+        ));
     }
+    r.rule();
+    marks.push(Mark::at(Stop::Fold, r.used(), drawer::ROW_H));
+    r.row(parts::drawer_fold(
+        "History",
+        &total.to_string(),
+        panel.expanded(),
+        lit(Stop::Fold),
+        Message::HistoryFold,
+    ));
+    if panel.expanded() {
+        if total == 0 {
+            r.row(parts::drawer_note("nothing in history"));
+        }
+        for e in panel.drawer_rows() {
+            entry(&mut r, &mut marks, panel, e, at, true);
+        }
+        if panel.can_grow() {
+            marks.push(Mark::at(Stop::More, r.used(), drawer::ROW_H));
+            r.row(parts::drawer_more(
+                &format!("+{} more", panel.left()),
+                lit(Stop::More),
+                Message::HistoryMore,
+            ));
+        } else if panel.left() > 0 {
+            r.row(parts::drawer_note(&format!("+{} older", panel.left())));
+        }
+    }
+    // What stays put under the run: the rule and the way out.
+    let foot = menu::SEP_H + drawer::ROW_H;
+    let cap = (drawer::RESERVE_H - s.used() - foot).max(drawer::ROW_H);
+    let (run_h, scrolls) = (r.used(), Sheet::overflows(&r, cap));
+    s.scrolled(r, cap, Some((SCROLL, Message::HistoryScrolled)));
 
     s.rule();
-    let total = panel.read_total();
-    s.block(
-        parts::drawer_fold(
-            "History",
-            &total.to_string(),
-            panel.expanded(),
-            Message::HistoryFold,
-        ),
-        drawer::ROW_H,
-    );
-    if panel.expanded() {
-        let rows = panel.drawer_rows();
-        if total == 0 {
-            s.block(
-                empty("Nothing in history", "Read notifications are kept here"),
-                tok::EMPTY_H,
-            );
-        }
-        for (i, e) in rows.into_iter().enumerate() {
-            if i > 0 {
-                s.rule();
-            }
-            s.block(entry(e, at, true), entry_height(e));
-        }
-        if total > 0 {
-            s.rule();
-            s.block(pager(panel), tok::PAGER_H);
-        }
+    if foot_clears(panel) {
+        s.row(parts::drawer_link_lit(
+            "Clear all",
+            Message::HistoryClear,
+            lit(Stop::Foot),
+        ));
+    } else {
+        s.row(parts::drawer_link_lit(
+            "Notification settings",
+            Message::OpenSettings("notifications"),
+            lit(Stop::Foot),
+        ));
     }
-    s
+    Plan {
+        sheet: s,
+        marks,
+        cap,
+        run_h,
+        scrolls,
+    }
 }
 
-/// The head: the micro label, and how many were new at the right.
-fn head(unread: usize) -> Element<'static, Message, Theme> {
-    let mut r = Row::new()
-        .align_y(Alignment::Center)
-        .push(parts::micro_label("notifications"))
-        .push(Space::new().width(Length::Fill));
-    if unread > 0 {
-        r = r.push(
-            text(format!("{unread} new"))
-                .font(font::DATA)
-                .size(size::MICRO)
-                .color(color::text_tertiary()),
-        );
+impl Mark {
+    fn at(stop: Stop, top: f32, row: f32) -> Self {
+        Self {
+            stop,
+            top,
+            row,
+            full: row,
+        }
     }
-    iced::widget::container(r)
-        .width(Length::Fill)
-        .height(Length::Fixed(drawer::HEAD_H))
-        .align_y(Alignment::Center)
-        .padding([0.0, drawer::ROW_X])
-        .into()
 }
 
-/// Normal, Quiet, Do not disturb: one lozenge, one in force.
+/// Where the scrolling region must go for the keyboard's stop to be in view:
+/// `None` if there is nothing to scroll, no stop in the run, or it is
+/// already shown. Scrolls as little as it can, to the top for the first stop
+/// so the hero shows above it.
+pub(crate) fn follow(app: &App) -> Option<f32> {
+    let p = plan(app);
+    if !p.scrolls {
+        return None;
+    }
+    let panel = &app.history;
+    let stop = panel.stop()?;
+    let m = p.marks.iter().find(|m| m.stop == stop)?;
+    let cur = panel.scroll();
+    let max = (p.run_h - p.cap).max(0.0);
+    let first = panel.stops().first() == Some(&stop);
+    let want = if first {
+        0.0
+    } else if m.top < cur {
+        m.top
+    } else if m.top + m.full > cur + p.cap {
+        // The revealed body too if it fits, else the row at the top.
+        (m.top + m.full - p.cap).min(m.top)
+    } else {
+        return None;
+    };
+    let want = want.clamp(0.0, max);
+    ((want - cur).abs() > 0.5).then_some(want)
+}
+
+/// Whether the keyboard's stop is on screen right now, scroll included. A
+/// control under the region (the way out) always is.
+pub(crate) fn lit_in_view(app: &App) -> bool {
+    let p = plan(app);
+    let panel = &app.history;
+    let Some(stop) = panel.stop() else {
+        return false;
+    };
+    if !p.scrolls {
+        return true;
+    }
+    match p.marks.iter().find(|m| m.stop == stop) {
+        Some(m) => m.top >= panel.scroll() - 0.5 && m.top + m.row <= panel.scroll() + p.cap + 0.5,
+        None => stop == Stop::Foot,
+    }
+}
+
+/// Normal, Quiet, Do not disturb: one segment, one in force, in the battery
+/// drawer's block. Short labels: three cells share the sheet's width.
 fn mode_switch(mode: Mode) -> Element<'static, Message, Theme> {
     let option = |label, m: Mode| (label, mode == m, Some(Message::HistoryMode(m)));
-    iced::widget::container(parts::segment_control(vec![
+    container(parts::segment_control(vec![
         option("Normal", Mode::Normal),
         option("Quiet", Mode::Quiet),
-        option("Do not disturb", Mode::Dnd),
+        option("DND", Mode::Dnd),
     ]))
     .width(Length::Fill)
-    .height(Length::Fixed(tok::SWITCH_H))
+    .height(Length::Fixed(drawer::ROW_H))
     .align_y(Alignment::Center)
     .padding([0.0, drawer::ROW_X])
     .into()
 }
 
-/// The drawer's foot: older/newer, where the page is, and "Clear all".
-fn pager(panel: &crate::history::Panel) -> Element<'static, Message, Theme> {
-    let (first, last) = panel.span();
-    let step = |glyph: &'static str, to: Option<u32>| {
-        let b = button(
-            iced::widget::container(text(glyph).font(font::DATA).size(size::BODY_SMALL).color(
-                if to.is_some() {
-                    color::text_secondary()
-                } else {
-                    color::text_tertiary()
-                },
-            ))
-            .center(Length::Fill),
-        )
-        .width(Length::Fixed(tok::DISMISS))
-        .height(Length::Fixed(tok::DISMISS))
-        .padding(0)
-        .style(lift_style);
-        match to {
-            Some(offset) => Element::from(b.on_press(Message::HistoryPage(offset))),
-            // No page that way: the slot stays, empty, so the count does not shift.
-            None => Space::new()
-                .width(Length::Fixed(tok::DISMISS))
-                .height(Length::Fixed(tok::DISMISS))
-                .into(),
-        }
-    };
-    let r = row![
-        step("\u{2190}", panel.newer()),
-        text(format!("{first}\u{2013}{last} of {}", panel.read_total()))
-            .font(font::DATA)
-            .size(size::MICRO)
-            .color(color::text_tertiary()),
-        step("\u{2192}", panel.older()),
-        Space::new().width(Length::Fill),
-        button(text("Clear all").font(font::UI_MEDIUM).size(size::BODY_SMALL))
-            .padding(0)
-            .style(theme::link)
-            .on_press(Message::HistoryClear),
-    ]
-    .spacing(drawer::MARK_GAP)
-    .align_y(Alignment::Center);
-    iced::widget::container(r)
-        .width(Length::Fill)
-        .height(Length::Fixed(tok::PAGER_H))
-        .align_y(Alignment::Center)
-        .padding([0.0, drawer::ROW_X])
-        .into()
-}
-
-fn empty(title: &str, hint: &str) -> Element<'static, Message, Theme> {
-    iced::widget::container(
-        Column::new()
-            .align_x(Alignment::Center)
-            .spacing(tok::GAP)
-            .push(
-                text(title.to_owned())
-                    .font(font::UI_MEDIUM)
-                    .size(size::BODY_SMALL)
-                    .color(color::text_secondary()),
-            )
-            .push(
-                text(hint.to_owned())
-                    .font(font::DATA)
-                    .size(size::MICRO)
-                    .color(color::text_tertiary()),
-            ),
+/// The leading mark: the bell on the ink ramp (a step down once read), or the
+/// warning glyph in danger ink for a critical entry.
+fn mark_of(e: &HistoryEntry, side: f32, read: bool) -> Element<'static, Message, Theme> {
+    if e.urgency == Urgency::Critical {
+        return parts::mark(crate::icons::symbolic("dialog-warning"), side, color::danger());
+    }
+    parts::mark(
+        crate::icons::symbolic("preferences-system-notifications"),
+        side,
+        if read {
+            color::text_tertiary()
+        } else {
+            color::text_secondary()
+        },
     )
-    .width(Length::Fill)
-    .height(Length::Fixed(tok::EMPTY_H))
-    .align_x(Alignment::Center)
-    .align_y(Alignment::Center)
-    .into()
 }
 
-/// One entry's block (a read one in the secondary ink): app and age with the dismiss cross, the summary, up to a
-/// few lines of body, and the buttons of a notification that is still up.
-fn entry(e: &HistoryEntry, at: u64, read: bool) -> Element<'static, Message, Theme> {
-    let critical = e.urgency == Urgency::Critical;
-    let id = e.id;
-    let head = row![
-        text(elide(&e.app_name.to_uppercase(), tok::APP_CHARS))
-            .font(font::DATA)
-            .size(size::MICRO)
-            .color(color::text_tertiary()),
-        text(ago(at, e.timestamp))
-            .font(font::DATA)
-            .size(size::MICRO)
-            .color(color::text_tertiary()),
-        Space::new().width(Length::Fill),
-        button(
-            iced::widget::container(
-                text("\u{d7}")
-                    .font(font::DATA)
-                    .size(size::BODY_SMALL)
-                    .color(color::text_secondary()),
-            )
-            .center(Length::Fill),
-        )
-        .width(Length::Fixed(tok::DISMISS))
-        .height(Length::Fixed(tok::DISMISS))
-        .padding(0)
-        .style(lift_style)
-        .on_press(Message::HistoryRemove(id)),
-    ]
-    .spacing(drawer::MARK_GAP)
-    .align_y(Alignment::Center)
-    .height(Length::Fixed(tok::HEAD_H));
+/// The newest unread, on the hero's glass: the summary over its app and age,
+/// and the verb that removes it.
+fn hero_row(e: &HistoryEntry, at: u64) -> Element<'static, Message, Theme> {
+    let state = format!(
+        "{} \u{b7} {}",
+        elide(&e.app_name, tok::APP_CHARS),
+        ago(at, e.timestamp)
+    );
+    let tint = if e.urgency == Urgency::Critical {
+        color::danger()
+    } else {
+        color::text_tertiary()
+    };
+    parts::drawer_current(
+        mark_of(e, drawer::CURRENT_MARK, false),
+        &elide(title(e), tok::HERO_CHARS),
+        &state,
+        tint,
+        Some(("Dismiss", Message::HistoryRemove(e.id))),
+    )
+}
 
-    let mut col = Column::new()
-        .spacing(tok::GAP)
-        .width(Length::Fill)
-        .push(head)
-        .push(
-            iced::widget::container(
-                text(elide(&e.summary, tok::SUMMARY_CHARS))
-                    .font(font::UI_MEDIUM)
-                    .size(size::BODY_SMALL)
-                    .color(if read {
-                        color::text_secondary()
-                    } else {
-                        color::text()
-                    }),
-            )
-            .height(Length::Fixed(tok::SUMMARY_H))
-            .align_y(Alignment::Center),
-        );
-    for line in clamp_body(&e.body) {
-        col = col.push(
-            iced::widget::container(
-                text(line)
-                    .font(font::UI)
-                    .size(size::BODY_SMALL)
-                    .color(color::text_secondary()),
-            )
-            .height(Length::Fixed(tok::LINE_H))
-            .align_y(Alignment::Center),
-        );
+/// An entry's revealed block: its body, and its live actions as pills.
+fn details(s: &mut Sheet, e: &HistoryEntry) {
+    let lines = clamp_body(&e.body);
+    if !lines.is_empty() {
+        let height = parts::drawer_detail_height(lines.len());
+        s.block(parts::drawer_detail(lines), height);
     }
-    if e.live && !e.actions.is_empty() {
-        let mut actions = Row::new().spacing(drawer::MARK_GAP);
-        for (key, label) in &e.actions {
-            actions = actions.push(
-                button(
-                    iced::widget::container(
-                        text(elide(label, tok::APP_CHARS))
-                            .font(font::UI_MEDIUM)
-                            .size(size::MICRO),
-                    )
-                    .height(Length::Fill)
-                    .align_y(Alignment::Center),
+    if has_verbs(e) {
+        let verbs = e
+            .actions
+            .iter()
+            .map(|(key, label)| {
+                (
+                    elide(label, tok::ACTION_CHARS),
+                    Message::HistoryAction(e.id, key.clone()),
                 )
-                .padding([0.0, drawer::ROW_X])
-                .height(Length::Fixed(tok::ACTION_H - tok::GAP))
-                .style(theme::pill(false))
-                .on_press(Message::HistoryAction(id, key.clone())),
-            );
-        }
-        col = col.push(actions);
+            })
+            .collect();
+        s.block(parts::drawer_pills(verbs), drawer::ROW_H);
     }
-    let height = entry_height(e);
-    // The rail sits in the left pad, so a critical entry's text stays on the
-    // same gridline as its neighbours'.
-    let left = if critical {
-        drawer::ROW_X - tok::RAIL_W
-    } else {
-        drawer::ROW_X
-    };
-    let body = iced::widget::container(col)
-        .width(Length::Fill)
-        .padding(iced::Padding {
-            top: tok::PAD_Y,
-            right: drawer::ROW_X,
-            bottom: tok::PAD_Y,
-            left,
-        });
-    let block: Element<'static, Message, Theme> = if critical {
-        row![
-            iced::widget::container(parts::quad(
-                Length::Fixed(tok::RAIL_W),
-                Length::Fill,
-                color::danger(),
-                tok::RAIL_W / 2.0
-            ))
-            .height(Length::Fill)
-            .padding([tok::PAD_Y, 0.0]),
-            body
-        ]
-        .into()
-    } else {
-        body.into()
-    };
-    iced::widget::container(block)
-        .width(Length::Fill)
-        .height(Length::Fixed(height))
-        .into()
 }
 
-/// A small square control (the dismiss cross, a pager arrow): bare until the
-/// pointer is on it.
-fn lift_style(_t: &Theme, status: button::Status) -> button::Style {
-    let background = match status {
-        button::Status::Hovered => Some(iced::Background::Color(color::lift())),
-        button::Status::Pressed => Some(iced::Background::Color(color::lift_strong())),
-        _ => None,
-    };
-    button::Style {
-        background,
-        text_color: color::text_secondary(),
-        border: iced::border::rounded(drawer::RADIUS_ROW),
-        ..button::Style::default()
+/// One row, and its body under it if it is revealed.
+fn entry(s: &mut Sheet, marks: &mut Vec<Mark>, panel: &Panel, e: &HistoryEntry, at: u64, read: bool) {
+    let id = e.id;
+    let selected = panel.selected() == Some(id);
+    let revealed = panel.revealed(id);
+    let top = s.used();
+    s.row(parts::drawer_entry(EntryRow {
+        mark: mark_of(e, drawer::MARK, read),
+        summary: elide(title(e), tok::SUMMARY_CHARS),
+        meta: format!("{} {}", elide(&e.app_name, tok::APP_CHARS), ago(at, e.timestamp)),
+        read,
+        lit: selected || revealed,
+        hot: selected || panel.hot() == Some(id),
+        on_press: Message::HistoryToggle(id),
+        on_dismiss: Message::HistoryRemove(id),
+        on_enter: Message::HistoryHot(Some(id)),
+        on_exit: Message::HistoryHot(None),
+    }));
+    if revealed {
+        details(s, e);
     }
+    marks.push(Mark {
+        stop: Stop::Row(id),
+        top,
+        row: drawer::ROW_H,
+        full: s.used() - top,
+    });
 }

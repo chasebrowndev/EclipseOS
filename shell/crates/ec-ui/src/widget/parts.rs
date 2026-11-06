@@ -943,6 +943,16 @@ pub fn drawer_error<'a, Message: 'a>(reason: &str) -> Element<'a, Message, Theme
 /// "Bluetooth settings") and they must read as the same exit — secondary
 /// ink, never a mark, so it is not taken for one more item of the list.
 pub fn drawer_link<'a, Message: Clone + 'a>(label: &str, on_press: Message) -> Element<'a, Message, Theme> {
+    drawer_link_lit(label, on_press, false)
+}
+
+/// [`drawer_link`] that the keyboard may be on: `lit` takes the selected-row
+/// glass, so a stop of the arrow keys is never invisible.
+pub fn drawer_link_lit<'a, Message: Clone + 'a>(
+    label: &str,
+    on_press: Message,
+    lit: bool,
+) -> Element<'a, Message, Theme> {
     let face = container(
         row![
             text(label.to_string())
@@ -965,7 +975,7 @@ pub fn drawer_link<'a, Message: Clone + 'a>(label: &str, on_press: Message) -> E
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(0)
-            .style(drawer_quiet)
+            .style(move |t, s| if lit { drawer_lit(t, s) } else { drawer_quiet(t, s) })
             .on_press(on_press)
             .into(),
     )
@@ -982,6 +992,7 @@ pub fn drawer_fold<'a, Message: Clone + 'a>(
     label: &str,
     count: &str,
     open: bool,
+    lit: bool,
     on_press: Message,
 ) -> Element<'a, Message, Theme> {
     let face = container(
@@ -1011,7 +1022,7 @@ pub fn drawer_fold<'a, Message: Clone + 'a>(
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(0)
-            .style(drawer_quiet)
+            .style(move |t, s| if lit { drawer_lit(t, s) } else { drawer_quiet(t, s) })
             .on_press(on_press)
             .into(),
     )
@@ -1024,7 +1035,11 @@ pub fn drawer_fold<'a, Message: Clone + 'a>(
 /// A widget and not a [`drawer_note`] with a press because a note is read as
 /// inert; this one ("+3 more in history") hands the human the rest of the
 /// list, so it has to answer the pointer like [`drawer_fold`] does.
-pub fn drawer_more<'a, Message: Clone + 'a>(note: &str, on_press: Message) -> Element<'a, Message, Theme> {
+pub fn drawer_more<'a, Message: Clone + 'a>(
+    note: &str,
+    lit: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
     let face = container(
         row![
             text(note.to_string())
@@ -1048,7 +1063,7 @@ pub fn drawer_more<'a, Message: Clone + 'a>(note: &str, on_press: Message) -> El
             .width(Length::Fill)
             .height(Length::Fill)
             .padding(0)
-            .style(drawer_quiet)
+            .style(move |t, s| if lit { drawer_lit(t, s) } else { drawer_quiet(t, s) })
             .on_press(on_press)
             .into(),
     )
@@ -1339,6 +1354,212 @@ pub fn drawer_note<'a, Message: 'a>(note: &str) -> Element<'a, Message, Theme> {
     .into()
 }
 
+/// [`drawer_sheet_head`] with a mono reading at its right ("3 new").
+///
+/// A widget and not a styled container because the notification drawer's head
+/// is the only one that counts something, and the count must sit on the same
+/// strip, in the same ink, as the readings of [`drawer_fold`] and
+/// [`drawer_row`]. Empty `count` draws the bare head. [`drawer::HEAD_H`] tall.
+pub fn drawer_sheet_head_count<'a, Message: 'a>(heading: &str, count: &str) -> Element<'a, Message, Theme> {
+    container(
+        row![
+            micro_label(heading),
+            Space::new().width(Length::Fill),
+            text(count.to_string())
+                .font(font::DATA)
+                .size(size::MICRO)
+                .color(color::text_tertiary()),
+        ]
+        .align_y(Alignment::Center),
+    )
+    .height(Length::Fixed(drawer::HEAD_H))
+    .align_y(Alignment::Center)
+    .padding([0.0, drawer::ROW_X])
+    .into()
+}
+
+/// What a [`drawer_entry`] says and does.
+pub struct EntryRow<'a, Message> {
+    /// The leading mark, [`drawer::MARK`] square.
+    pub mark: Element<'a, Message, Theme>,
+    /// One line, already cut to fit.
+    pub summary: String,
+    /// The trailing reading ("mail 4m"), already cut to fit.
+    pub meta: String,
+    /// Already seen: the summary drops a step of ink.
+    pub read: bool,
+    /// Revealed or keyboard-selected: the focused-chip glass.
+    pub lit: bool,
+    /// The pointer is on this row: the reading gives way to the dismiss cross.
+    pub hot: bool,
+    pub on_press: Message,
+    pub on_dismiss: Message,
+    /// The pointer entered / left the row.
+    pub on_enter: Message,
+    pub on_exit: Message,
+}
+
+/// One notification in a drawer's list: a mark, a one-line summary and a mono
+/// reading, on the same lozenge as [`drawer_choice`], and a dismiss cross that
+/// takes the reading's place under the pointer.
+///
+/// A widget because a notification row has two targets in one slot (the row
+/// opens its detail, the cross removes it) and a state a choice has not: the
+/// summary is full ink while unread and secondary once read, and a revealed
+/// or keyboard-selected row takes the focused-chip glass. Selection is a
+/// brighter fill and a crisp rim, never the accent. Fixed [`drawer::ROW_H`].
+pub fn drawer_entry<'a, Message: Clone + 'a>(e: EntryRow<'a, Message>) -> Element<'a, Message, Theme> {
+    let ink = if e.read {
+        color::text_secondary()
+    } else {
+        color::text()
+    };
+    let tail: Element<'a, Message, Theme> = if e.hot {
+        button(
+            container(
+                text("\u{d7}")
+                    .font(font::DATA)
+                    .size(size::BODY_SMALL)
+                    .color(color::text_secondary()),
+            )
+            .center(Length::Fill),
+        )
+        .width(Length::Fixed(drawer::DISMISS))
+        .height(Length::Fixed(drawer::DISMISS))
+        .padding(0)
+        .style(drawer_dismiss)
+        .on_press(e.on_dismiss)
+        .into()
+    } else {
+        // The cross's slot is as tall as the cross, so the row's text does
+        // not shift when it appears.
+        container(
+            text(e.meta)
+                .font(font::DATA)
+                .size(size::MICRO)
+                .wrapping(text::Wrapping::None)
+                .color(color::text_tertiary()),
+        )
+        .height(Length::Fixed(drawer::DISMISS))
+        .align_y(Alignment::Center)
+        .into()
+    };
+    let r = row![
+        container(e.mark)
+            .width(Length::Fixed(drawer::MARK))
+            .height(Length::Fixed(drawer::MARK))
+            .align_x(Alignment::Center)
+            .align_y(Alignment::Center),
+        container(
+            text(e.summary)
+                .font(font::UI)
+                .size(size::BODY_SMALL)
+                .wrapping(text::Wrapping::None)
+                .color(ink),
+        )
+        .width(Length::Fill)
+        .clip(true),
+        tail,
+    ]
+    .spacing(drawer::MARK_GAP)
+    .align_y(Alignment::Center);
+    let face = container(r)
+        .height(Length::Fill)
+        .align_y(Alignment::Center)
+        .padding([0.0, drawer::ROW_X]);
+    let lit = e.lit;
+    let b = button(face)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(0)
+        .style(move |t: &Theme, status| {
+            if lit {
+                drawer_lit(t, status)
+            } else {
+                drawer_lift(t, status)
+            }
+        })
+        .on_press(e.on_press);
+    slot(
+        iced::widget::mouse_area(b)
+            .on_enter(e.on_enter)
+            .on_exit(e.on_exit)
+            .into(),
+    )
+}
+
+/// The lines of a notification's body, revealed under its row, on the name's
+/// gridline and in the secondary ink. [`drawer_detail_height`] tall.
+///
+/// A widget because the sheet's arithmetic has to know the block's height
+/// before it is drawn, and the one function that draws the lines is the one
+/// that sizes them.
+pub fn drawer_detail<'a, Message: 'a>(lines: Vec<String>) -> Element<'a, Message, Theme> {
+    let height = drawer_detail_height(lines.len());
+    let mut col = Column::new();
+    for line in lines {
+        col = col.push(
+            container(
+                text(line)
+                    .font(font::UI)
+                    .size(size::BODY_SMALL)
+                    .wrapping(text::Wrapping::None)
+                    .color(color::text_secondary()),
+            )
+            .height(Length::Fixed(drawer::DETAIL_LINE_H))
+            .align_y(Alignment::Center),
+        );
+    }
+    container(col)
+        .width(Length::Fill)
+        .height(Length::Fixed(height))
+        .padding(iced::Padding {
+            top: drawer::DETAIL_PAD / 2.0,
+            right: drawer::ROW_X,
+            bottom: drawer::DETAIL_PAD / 2.0,
+            left: drawer::ROW_X + drawer::MARK + drawer::MARK_GAP,
+        })
+        .into()
+}
+
+/// The height [`drawer_detail`] takes for `lines` lines.
+pub fn drawer_detail_height(lines: usize) -> f32 {
+    lines as f32 * drawer::DETAIL_LINE_H + drawer::DETAIL_PAD
+}
+
+/// A row of verbs on the hero's pill glass ("Reply", "Archive"), on the name's
+/// gridline. One [`drawer::ROW_H`] slot.
+///
+/// A widget so a drawer's verbs are always the hero's [`drawer_current`] pill,
+/// whether they hang off the hero or off a revealed row.
+pub fn drawer_pills<'a, Message: Clone + 'a>(verbs: Vec<(String, Message)>) -> Element<'a, Message, Theme> {
+    let mut r = Row::new().spacing(drawer::MARK_GAP).align_y(Alignment::Center);
+    for (label, msg) in verbs {
+        r = r.push(
+            button(
+                text(label)
+                    .font(font::UI_MEDIUM)
+                    .size(size::BODY_SMALL)
+                    .color(color::text_secondary()),
+            )
+            .padding([space::ROW_Y / 2.0, drawer::ROW_X])
+            .style(drawer_pill)
+            .on_press(msg),
+        );
+    }
+    container(r)
+        .width(Length::Fill)
+        .height(Length::Fixed(drawer::ROW_H))
+        .align_y(Alignment::Center)
+        .padding(iced::Padding {
+            top: 0.0,
+            right: drawer::ROW_X,
+            bottom: 0.0,
+            left: drawer::ROW_X + drawer::MARK + drawer::MARK_GAP,
+        })
+        .into()
+}
+
 /// A drawer's magnitude hero: one big reading over a state line and a detail
 /// line, on the focused-chip glass.
 ///
@@ -1620,6 +1841,27 @@ fn drawer_lift(_t: &Theme, status: button::Status) -> button::Style {
         _ => (color::cell(), color::cell_rim()),
     };
     glass_button(fill, rim, drawer::RADIUS_ROW)
+}
+
+/// A selected or revealed row: the focused-chip glass, a step clearer with a
+/// crisp rim. Never the accent.
+fn drawer_lit(_t: &Theme, status: button::Status) -> button::Style {
+    let (fill, rim) = match status {
+        button::Status::Hovered => (color::cell_focus_hover(), color::cell_focus_rim_hover()),
+        button::Status::Pressed => (color::cell_focus_press(), color::cell_focus_rim_hover()),
+        _ => (color::cell_focus(), color::cell_focus_rim()),
+    };
+    glass_button(fill, rim, drawer::RADIUS_ROW)
+}
+
+/// A row's dismiss cross: bare until the pointer is on it.
+fn drawer_dismiss(_t: &Theme, status: button::Status) -> button::Style {
+    match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            glass_button(color::cell_press(), color::cell_rim_hover(), drawer::RADIUS_ROW)
+        }
+        _ => glass_button(Color::TRANSPARENT, Color::TRANSPARENT, drawer::RADIUS_ROW),
+    }
 }
 
 /// A quiet row (the way out): no ground at rest, the same lozenge on hover.

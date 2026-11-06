@@ -425,8 +425,6 @@ pub mod bar {
     /// this wide, and the air between two of them (either way) this much.
     pub const PAGER_GRID_W: f32 = 22.0;
     pub const PAGER_GRID_GAP: f32 = 2.0;
-    /// The notification bell's unseen dot.
-    pub const BELL_DOT: f32 = 6.0;
     /// How long the pointer rests on a window chip before the compositor is
     /// asked for its hover preview (`mode "de"`).
     pub const PREVIEW_DELAY_MS: u64 = 400;
@@ -987,41 +985,26 @@ pub mod group {
 
 /// The notification history panel the bar's bell opens (`mode "de"`).
 pub mod history {
-    /// Sheet width.
-    pub const W: f32 = 328.0;
-    /// How many unread entries the quick view lists before it stops growing:
-    /// the popover is sized once at creation, so it has a ceiling.
+    /// How many unread entries the drawer lists (the hero and the rows under
+    /// it) before "+N more in history". It is also how many the bar asks the
+    /// service for at a time.
     pub const MAX_ROWS: usize = 4;
-    /// How many read entries one page of the history drawer lists.
-    pub const PAGE: usize = 3;
-    /// The mode switch block: the segmented lozenge and the air around it.
-    pub const SWITCH_H: f32 = 40.0;
-    /// The history drawer's fold row, and its paging row.
-    pub const FOLD_H: f32 = 32.0;
-    pub const PAGER_H: f32 = 30.0;
-    /// The bell's mode mark when the mode is not Normal, as a share of full ink.
-    pub const QUIET_INK: f32 = 0.6;
-    /// The body is cut to this many lines of this many characters.
+    /// How many read entries one step of the history section adds, and the
+    /// most the bar will hold and list at once (the region scrolls): past
+    /// that the section says how many are left in the store.
+    pub const PAGE: usize = 10;
+    pub const HISTORY_MAX: usize = 200;
+    /// The body is cut to this many lines of this many characters: the
+    /// drawer's inner width at the detail ink.
     pub const BODY_LINES: usize = 3;
-    pub const BODY_CHARS: usize = 46;
-    /// Characters of an app name or summary shown on its line.
-    pub const SUMMARY_CHARS: usize = 34;
-    pub const APP_CHARS: usize = 16;
-    /// One entry: its head line (app, time, dismiss) and its summary line, the
-    /// air around them, one line of body, and a row of action buttons.
-    pub const HEAD_H: f32 = 18.0;
-    pub const SUMMARY_H: f32 = 18.0;
-    pub const LINE_H: f32 = 15.0;
-    pub const ACTION_H: f32 = 26.0;
-    pub const PAD_Y: f32 = 7.0;
-    /// The air between the lines of one entry.
-    pub const GAP: f32 = 2.0;
-    /// The dismiss cross's square.
-    pub const DISMISS: f32 = 18.0;
-    /// The empty state's height.
-    pub const EMPTY_H: f32 = 64.0;
-    /// The urgency rail down the left of a critical entry.
-    pub const RAIL_W: f32 = 2.0;
+    pub const BODY_CHARS: usize = 36;
+    /// Characters of a summary, and of an app name, on a row's one line.
+    pub const SUMMARY_CHARS: usize = 24;
+    pub const APP_CHARS: usize = 8;
+    /// The hero's name has the row's room and a pill beside it.
+    pub const HERO_CHARS: usize = 20;
+    /// A live action's label on its pill.
+    pub const ACTION_CHARS: usize = 14;
 }
 
 /// A tray drawer: the reading rail the disclosure arrow opens.
@@ -1092,6 +1075,11 @@ pub mod drawer {
     /// The battery and quick-action drawers' width. A three-way segment and a
     /// two-column tile grid need more room than a list's [`W`].
     pub const WIDE_W: f32 = 272.0;
+    /// One line of a row's revealed body, and the air under the block.
+    pub const DETAIL_LINE_H: f32 = 16.0;
+    pub const DETAIL_PAD: f32 = 6.0;
+    /// The square of a row's dismiss cross, shown while the pointer is on it.
+    pub const DISMISS: f32 = 20.0;
     /// The battery's magnitude hero: one big reading over a state line.
     pub const MAGNITUDE_H: f32 = 72.0;
     /// A segmented control's height inside its one [`ROW_H`] block.

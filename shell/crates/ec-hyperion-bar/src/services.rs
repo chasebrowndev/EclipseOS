@@ -419,15 +419,24 @@ pub fn set_tap(on: bool) {
 pub enum HistoryCmd {
     /// The popover opened (or more arrived under it): everything is read.
     MarkAllRead,
-    /// The history drawer is open at this offset; `None` folds it.
-    Read(Option<u32>),
+    /// The history section is open: list this many read entries from this
+    /// offset, `(offset, limit)`; `None` folds it.
+    Read(Option<(u32, u32)>),
     SetMode(Mode),
     Remove(u32),
     /// Delete the whole history.
     Clear,
     /// Press a live entry's action button: `(id, key)`.
     Invoke(u32, String),
+    /// The drawer is in front of the human (or is not any more). The service
+    /// holds popups and sound while it is; it lapses the flag by itself, so
+    /// the thread re-sends `true` while it stays open.
+    Viewing(bool),
 }
+
+/// How often an open drawer re-asserts that it is viewed (the service lets
+/// the flag lapse after 15 minutes).
+const VIEWING_RESEND: Duration = Duration::from_secs(5 * 60);
 
 /// How often the service is read again with no signal, so a toasts process
 /// that starts after the bar is picked up and a missed signal heals.
@@ -473,12 +482,13 @@ fn history_loop(cmds: &Receiver<HistoryCmd>, out: &Sender<HistoryReport>) {
         (client.changes(), client.unread_changes(), client.mode_changes());
     let mut retried = std::time::Instant::now();
     let mut polled = std::time::Instant::now();
-    let mut read_at: Option<u32> = None;
+    let mut read_at: Option<(u32, u32)> = None;
+    let mut viewing: Option<std::time::Instant> = None;
     let mut dirty = true;
     let mut last_unread: Option<Report> = None;
+    let mut last_gone: Vec<u32> = Vec::new();
     let mut last_read: Option<Report> = None;
     let mut last_mode: Option<Mode> = None;
-    let page = tok::PAGE as u32;
     loop {
         match cmds.recv_timeout(Duration::from_millis(250)) {
             Ok(cmd) => {
@@ -496,11 +506,24 @@ fn history_loop(cmds: &Receiver<HistoryCmd>, out: &Sender<HistoryReport>) {
                     HistoryCmd::Invoke(id, key) => {
                         client.invoke_action(id, &key);
                     }
+                    HistoryCmd::Viewing(on) => {
+                        client.set_viewing(on);
+                        viewing = on.then(std::time::Instant::now);
+                    }
                 }
                 dirty = true;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if viewing.is_some() {
+                    client.set_viewing(false);
+                }
+                return;
+            }
+        }
+        if viewing.is_some_and(|t| t.elapsed() >= VIEWING_RESEND) {
+            client.set_viewing(true);
+            viewing = Some(std::time::Instant::now());
         }
         let mut lost = false;
         loop {
@@ -551,14 +574,21 @@ fn history_loop(cmds: &Receiver<HistoryCmd>, out: &Sender<HistoryReport>) {
                 return;
             }
         }
-        if let Some(mut offset) = read_at {
-            let mut p = client.page(PageFilter::Read, offset, page);
-            // The page under the drawer emptied (a dismiss): step back one.
-            while p.entries.is_empty() && offset > 0 {
-                offset = offset.saturating_sub(page);
-                p = client.page(PageFilter::Read, offset, page);
+        let gone: Vec<u32> = client
+            .page(PageFilter::All, 0, 64)
+            .entries
+            .into_iter()
+            .filter(|e| !e.entry.live)
+            .map(|e| e.entry.id)
+            .collect();
+        if last_gone != gone {
+            last_gone = gone.clone();
+            if out.send(Report::Gone(gone)).is_err() {
+                return;
             }
-            read_at = Some(offset);
+        }
+        if let Some((offset, limit)) = read_at {
+            let p = client.page(PageFilter::Read, offset, limit);
             let report = Report::Read {
                 entries: p.entries.into_iter().map(|e| e.entry).collect(),
                 total: p.total,

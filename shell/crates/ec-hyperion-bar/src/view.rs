@@ -1584,6 +1584,9 @@ pub(crate) fn elide(label: &str, max: usize) -> String {
 /// renegotiated from the layout pass.
 pub const DRAWER_W: u32 = drawer::W as u32;
 
+/// A scroll region's widget id and the message that reports its offset.
+pub(crate) type ScrollBy = (&'static str, fn(f32) -> Message);
+
 /// A drawer under construction: its head, its rows, and the height they add
 /// up to, kept together so the arithmetic that sizes the popup and the column
 /// that fills it are one computation and cannot disagree.
@@ -1629,10 +1632,82 @@ impl Sheet {
         self.rows.push(parts::drawer_rule());
         self.height += menu::SEP_H;
     }
+
+    /// Rows only, no head and no padding: a run of rows to be added to a
+    /// sheet with [`Sheet::append`] or [`Sheet::scrolled`].
+    pub(crate) fn run() -> Self {
+        Self {
+            head: iced::widget::Space::new().into(),
+            rows: Vec::new(),
+            height: 0.0,
+        }
+    }
+
+    /// The rows of `run`, in place.
+    pub(crate) fn append(&mut self, run: Sheet) {
+        self.rows.extend(run.rows);
+        self.height += run.height;
+    }
+
+    /// The rows of `run` in a scrolling region no taller than `cap`: a drawer
+    /// whose list can outgrow the surface it is held in stays inside it, and
+    /// the rest is a scroll away. A run that fits is added in place. With
+    /// `by`, the region has that widget id (so it can be scrolled from
+    /// outside) and reports where it was scrolled to.
+    pub(crate) fn scrolled(&mut self, run: Sheet, cap: f32, by: Option<ScrollBy>) {
+        if run.height <= cap {
+            if by.is_some() {
+                // The lane the scrollbar would take stays, so rows keep their
+                // width whether or not the run overflows.
+                let mut col = Column::new();
+                for r in run.rows {
+                    col = col.push(r);
+                }
+                self.rows.push(
+                    container(col)
+                        .padding(iced::Padding::ZERO.right(drawer::PAD))
+                        .into(),
+                );
+                self.height += run.height;
+            } else {
+                self.append(run);
+            }
+            return;
+        }
+        let cap = cap.max(drawer::ROW_H);
+        let mut col = Column::new();
+        for r in run.rows {
+            col = col.push(r);
+        }
+        let mut region =
+            iced::widget::scrollable(container(col).padding(iced::Padding::ZERO.right(drawer::PAD)))
+                .direction(iced::widget::scrollable::Direction::Vertical(
+                    iced::widget::scrollable::Scrollbar::new()
+                        .width(drawer::METER_H)
+                        .scroller_width(drawer::METER_H),
+                ))
+                .style(ec_ui::theme::eclipse_scrollable)
+                .width(Length::Fill)
+                .height(Length::Fixed(cap));
+        if let Some((id, on_scroll)) = by {
+            region = region.id(id).on_scroll(move |v| on_scroll(v.absolute_offset().y));
+        }
+        self.rows.push(region.into());
+        self.height += cap;
+    }
+
+    /// Whether `run` would be a scrolling region in `cap`.
+    pub(crate) fn overflows(run: &Sheet, cap: f32) -> bool {
+        run.height > cap
+    }
+
+    /// The height so far.
+    pub(crate) fn used(&self) -> f32 {
+        self.height
+    }
 }
 
-/// A history panel's width, and a group list's: fixed at popup creation.
-pub const HISTORY_W: u32 = ec_ui::tokens::history::W as u32;
+/// A group list's width: fixed at popup creation.
 pub const GROUP_W: u32 = ec_ui::tokens::group::W as u32;
 
 /// The popup height `which` needs right now. `app::open_drawer` sizes the
@@ -1681,6 +1756,7 @@ fn drawer_sheet<'a>(
         Some(crate::drawer::DrawerKind::QuickActions) => crate::app::Drawer::QuickActions,
         Some(crate::drawer::DrawerKind::Progress) => crate::app::Drawer::Progress,
         Some(crate::drawer::DrawerKind::Power) => crate::app::Drawer::Power,
+        Some(crate::drawer::DrawerKind::History) => crate::app::Drawer::History,
         _ => crate::app::Drawer::Network,
     };
     let anchor = on.drawer.anchor_x();

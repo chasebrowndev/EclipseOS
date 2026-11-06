@@ -39,8 +39,14 @@ and `action-icons` are not.
 existing PulseAudio native-protocol client. No new dependency. One sound per 250 ms,
 dropped on any failure. OGG/OPUS and theme lookup are not supported.
 
-**Widget.** The bar bell shows a mode mark and `(N)`; the popover is quick view, mode
-switch and a folded history drawer. The contract is `docs/internal/notifications-contract.md`.
+**Widget.** The bar bell shows a mode mark and `(N)`; it opens a reveal drawer like the
+network and battery ones (not a popup): mode switch, the newest unread as a hero, quick
+rows, and a folded, scrollable history. Its height is capped at the bar's reserved height
+for either bar position. While it is open the bar tells the service (`SetViewing`), so
+Normal arrivals are stored and merged into the drawer without a popup or sound; Critical
+and the config-error notice still pop. `live` means "can still be invoked this session",
+so an entry that never had a popup keeps its action buttons until the sender closes it.
+The contract is `docs/internal/notifications-contract.md`.
 
 ## Consequences
 - History holds notification content on disk (0600, bounded). DND stores nothing.

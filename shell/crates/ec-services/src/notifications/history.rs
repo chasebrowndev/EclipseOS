@@ -20,9 +20,10 @@
 //! * **Dismissing a toast keeps its entry.** Only [`Store::remove`] and
 //!   [`Store::clear`] delete one.
 //! * **Bodies are never logged**, same as the rest of this module.
-//! * `InvokeAction` works only while the source notification is still live
-//!   (on screen, not expired, dismissed or withdrawn). After that the entry
-//!   is read-only.
+//! * `InvokeAction` works only while the source notification is still live:
+//!   received by this running service (shown, quiet or viewing-suppressed)
+//!   and not since closed by the sender, dismissed/expired at the toast,
+//!   replaced or acted on. Restored entries are never live; they are read-only.
 //! * **Only D-Bus notifications.** Compositor-originated notices (the
 //!   persistent config-error notice, `compositor.rs`) go straight to the toast
 //!   stack, bypass mode and rules, and are not recorded here.
@@ -302,14 +303,25 @@ pub(crate) enum Verdict {
 #[derive(Debug, Default)]
 pub(crate) struct Store {
     entries: VecDeque<PageEntry>,
-    /// Ids currently on screen or queued, stored or not.
+    /// Ids invokable this session: every arrival this process admitted
+    /// (shown, quiet or viewing-suppressed) until closed. Stored or not.
     live: HashSet<u32>,
+    /// Ids with a toast on screen or queued (a subset of `live`).
+    shown: HashSet<u32>,
     mode: Mode,
     rules: Rules,
     /// Where to persist; `None` keeps everything in memory (tests).
     path: Option<PathBuf>,
     dirty: bool,
+    /// The drawer is open (set by `SetViewing`): when it was set, in
+    /// `now_secs` time. Never persisted; lapses after [`VIEWING_TIMEOUT`].
+    viewing_since: Option<u64>,
+    /// Unique name of the client a name-owner watch is already running for.
+    viewing_watch: Option<String>,
 }
+
+/// Safety net: a viewing flag nobody cleared stops suppressing popups after this.
+pub(crate) const VIEWING_TIMEOUT: u64 = 15 * 60;
 
 impl Store {
     /// The store at the standard state path, restored from disk, with the
@@ -423,6 +435,34 @@ impl Store {
         changed
     }
 
+    /// The drawer opened or closed. Presentation only; not persisted.
+    pub(crate) fn set_viewing(&mut self, on: bool, now: u64) {
+        self.viewing_since = on.then_some(now);
+    }
+
+    /// True while the drawer is open and the flag has not lapsed.
+    pub(crate) fn viewing(&self, now: u64) -> bool {
+        self.viewing_since
+            .is_some_and(|t| now.saturating_sub(t) < VIEWING_TIMEOUT)
+    }
+
+    /// Claim the name-owner watch for `owner`; false if one already runs.
+    pub(crate) fn claim_viewing_watch(&mut self, owner: &str) -> bool {
+        if self.viewing_watch.as_deref() == Some(owner) {
+            return false;
+        }
+        self.viewing_watch = Some(owner.to_owned());
+        true
+    }
+
+    /// The watched client vanished: viewing ends, the watch is spent.
+    pub(crate) fn viewing_owner_gone(&mut self, owner: &str) {
+        if self.viewing_watch.as_deref() == Some(owner) {
+            self.viewing_watch = None;
+            self.viewing_since = None;
+        }
+    }
+
     /// Highest stored id, so fresh ids never collide with restored ones.
     pub(crate) fn max_id(&self) -> u32 {
         self.entries
@@ -458,6 +498,10 @@ impl Store {
             Verdict::Drop
         } else if self.mode == Mode::Quiet || rule.as_ref().is_some_and(|r| r.quiet) {
             Verdict::Quiet
+        } else if self.viewing(now) && n.urgency != Urgency::Critical && n.id != super::compositor::CONFIG_ID
+        {
+            // The open drawer already shows it: stored, no popup, no sound.
+            Verdict::Quiet
         } else {
             Verdict::Show
         };
@@ -470,20 +514,21 @@ impl Store {
                 }
             }
             Verdict::Show => {
-                self.posted(n, now, true);
+                self.shown.insert(n.id);
+                self.posted(n, now);
             }
             Verdict::Quiet => {
-                self.posted(n, now, false);
+                self.shown.remove(&n.id);
+                self.posted(n, now);
             }
         }
         verdict
     }
 
-    /// Record an arrival. `live`: it is on screen. True if the history changed.
-    fn posted(&mut self, n: &Notification, now: u64, live: bool) -> bool {
-        if live {
-            self.live.insert(n.id);
-        }
+    /// Record an arrival; it is invokable this session. True if the history changed.
+    fn posted(&mut self, n: &Notification, now: u64) -> bool {
+        self.live.insert(n.id);
+        let live = true;
         // A replacement supersedes the old entry, even when the new one is
         // transient: the old actions must not answer for the new content.
         let had = self.take(n.id);
@@ -520,10 +565,11 @@ impl Store {
         true
     }
 
-    /// The toast left the screen (any reason). True if an entry's `live`
-    /// flag changed.
+    /// The notification was closed (sender, toast dismissal/expiry, or an
+    /// action). True if an entry's `live` flag changed.
     pub(crate) fn closed(&mut self, id: u32) -> bool {
         self.live.remove(&id);
+        self.shown.remove(&id);
         match self.entries.iter_mut().find(|e| e.entry.id == id && e.entry.live) {
             Some(e) => {
                 e.entry.live = false;
@@ -532,6 +578,11 @@ impl Store {
             }
             None => false,
         }
+    }
+
+    /// Whether a toast for `id` is on screen or queued.
+    pub(crate) fn is_shown(&self, id: u32) -> bool {
+        self.shown.contains(&id)
     }
 
     /// Whether a stored notification asked to stay after an action.
@@ -793,6 +844,15 @@ impl HistoryClient {
         self.call("SetMode", &(mode.as_str(),)).is_some()
     }
 
+    /// Tell the service the notification drawer is open (`true`) or closed.
+    /// While open, Normal-mode arrivals are stored without a popup or sound
+    /// (Critical and the config-error notice still pop). Not persisted; the
+    /// service resets it on start, when this client leaves the bus, and after
+    /// 15 minutes. False if there is no service.
+    pub fn set_viewing(&mut self, viewing: bool) -> bool {
+        self.call("SetViewing", &(viewing,)).is_some()
+    }
+
     /// One page, newest first. Empty without a service.
     pub fn page(&mut self, filter: PageFilter, offset: u32, limit: u32) -> Page {
         self.call("ListPage", &(filter.as_str(), offset, limit))
@@ -939,7 +999,29 @@ mod tests {
         s.set_mode(Mode::Quiet);
         assert_eq!(arrive(&mut s, note(1, false, &[])), Verdict::Quiet);
         assert_eq!(s.unread(), 1);
+        assert!(s.list()[0].live);
+        assert!(!s.is_shown(1));
+    }
+
+    #[test]
+    fn quiet_entry_with_actions_is_invokable_without_a_toast() {
+        let mut s = Store::default();
+        s.set_mode(Mode::Quiet);
+        arrive(&mut s, note(1, false, &["ok"]));
+        assert!(!s.is_shown(1));
+        assert!(s.invoke(1, "ok"));
         assert!(!s.list()[0].live);
+        assert!(!s.invoke(1, "ok"));
+    }
+
+    #[test]
+    fn closed_by_app_is_not_live() {
+        let mut s = Store::default();
+        s.set_mode(Mode::Quiet);
+        arrive(&mut s, note(1, false, &["ok"]));
+        assert!(s.closed(1));
+        assert!(!s.list()[0].live);
+        assert!(!s.invoke(1, "ok"));
     }
 
     #[test]
@@ -1096,9 +1178,72 @@ mod tests {
         assert!(c.changes().try_recv().is_err());
         assert_eq!(c.mode(), Mode::Normal);
         assert!(!c.set_mode(Mode::Dnd));
+        assert!(!c.set_viewing(true));
         assert_eq!(c.page(PageFilter::All, 0, 10), Page::default());
         assert_eq!(c.unread_count(), 0);
         c.mark_all_read();
         c.mark_read(1);
+    }
+
+    #[test]
+    fn viewing_verdict_matrix() {
+        use Verdict::*;
+        for (mode, urg, viewing, want) in [
+            (Mode::Normal, Urgency::Normal, false, Show),
+            (Mode::Normal, Urgency::Normal, true, Quiet),
+            (Mode::Normal, Urgency::Low, true, Quiet),
+            (Mode::Normal, Urgency::Critical, true, Show),
+            (Mode::Normal, Urgency::Critical, false, Show),
+            (Mode::Quiet, Urgency::Normal, true, Quiet),
+            (Mode::Quiet, Urgency::Critical, true, Quiet),
+            (Mode::Quiet, Urgency::Normal, false, Quiet),
+            (Mode::Dnd, Urgency::Normal, true, Drop),
+            (Mode::Dnd, Urgency::Critical, true, Drop),
+            (Mode::Dnd, Urgency::Normal, false, Drop),
+        ] {
+            let mut s = Store::default();
+            s.set_mode(mode);
+            s.set_viewing(viewing, 0);
+            let mut n = note(1, false, &[]);
+            n.urgency = urg;
+            assert_eq!(arrive(&mut s, n), want, "{mode:?} {urg:?} viewing={viewing}");
+        }
+    }
+
+    #[test]
+    fn viewing_quiet_arrival_is_stored_unread_and_live() {
+        let mut s = Store::default();
+        s.set_viewing(true, 0);
+        arrive(&mut s, note(1, false, &["ok"]));
+        assert_eq!(s.unread(), 1);
+        assert!(s.list()[0].live);
+        assert!(s.invoke(1, "ok"));
+    }
+
+    #[test]
+    fn viewing_spares_the_config_notice_and_lapses() {
+        let mut s = Store::default();
+        s.set_viewing(true, 0);
+        assert_eq!(
+            arrive(&mut s, note(super::super::compositor::CONFIG_ID, false, &[])),
+            Verdict::Show
+        );
+        assert!(s.viewing(VIEWING_TIMEOUT - 1));
+        assert!(!s.viewing(VIEWING_TIMEOUT));
+        s.set_viewing(false, 0);
+        assert!(!s.viewing(0));
+    }
+
+    #[test]
+    fn viewing_ends_when_the_watched_client_leaves() {
+        let mut s = Store::default();
+        assert!(s.claim_viewing_watch(":1.5"));
+        assert!(!s.claim_viewing_watch(":1.5"));
+        s.set_viewing(true, 0);
+        s.viewing_owner_gone(":1.9");
+        assert!(s.viewing(0));
+        s.viewing_owner_gone(":1.5");
+        assert!(!s.viewing(0));
+        assert!(s.claim_viewing_watch(":1.5"));
     }
 }
