@@ -46,6 +46,8 @@ pub struct XWaylandState {
     /// parked here and applied at map, the way `map_toplevel` replays the xdg
     /// pending state.
     pub wants_fullscreen: Vec<X11Surface>,
+    /// Likewise for maximize, honoured at map under `mode "de"` only.
+    pub wants_maximized: Vec<X11Surface>,
     /// Windows that explicitly asked to leave fullscreen. The screen-sized
     /// heuristic ([`xwm::legacy_fullscreen`]) must not pull them back in on the
     /// next map, or the client and the compositor fight in a loop.

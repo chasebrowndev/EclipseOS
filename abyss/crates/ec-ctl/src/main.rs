@@ -30,6 +30,14 @@ ec-ctl — control the abyss compositor
   ec-ctl close HANDLE            ask a window to close
   ec-ctl float HANDLE on|off     set a window floating or tiled
   ec-ctl workspace N             switch to workspace N
+  ec-ctl desktops                the desktop grid: shape, active desktop, window counts
+  ec-ctl desktop left|right|up|down
+                                      step along the desktop grid (mode \"de\" only)
+  ec-ctl menu HANDLE X Y         open a window's menu at X Y (mode \"de\" only; works
+                                      on a minimized window)
+  ec-ctl preview HANDLE X Y W H  show a window's hover preview beside the rectangle
+                                      X Y W H (mode \"de\" only)
+  ec-ctl preview-hide            take the hover preview down
   ec-ctl move HANDLE N           move a window to workspace N
   ec-ctl output ID overscan SPEC set overscan: N, or top=N,left=N,...
   ec-ctl output ID calibrate [commit|cancel]
@@ -43,6 +51,10 @@ ec-ctl — control the abyss compositor
   ec-ctl reload                  re-read the config
   ec-ctl click X Y [left|right|middle] [COUNT]
   ec-ctl scroll X Y DX DY        scripted pointer input (needs misc { scripted-input })
+  ec-ctl drag X1 Y1 X2 Y2 [left|right|middle] [--steps N] [--hold-ms MS]
+                                      press at X1 Y1, move to X2 Y2, release; with
+                                      --hold-ms the button stays down that long
+                                      (also ctrl|alt|shift|logo, held throughout)
   ec-ctl type TEXT               scripted typing
   ec-ctl key NAME [ctrl|alt|shift|logo...]
                                       scripted key press by keysym name
@@ -414,6 +426,64 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
                 None,
             )
         }
+        "drag" => {
+            let f = |i: usize| -> Result<f64, String> {
+                a(i).parse::<f64>()
+                    .map_err(|_| format!("expected a number, got {:?}", a(i)))
+            };
+            let mut p = json!({"x": f(1)?, "y": f(2)?, "to_x": f(3)?, "to_y": f(4)?});
+            let mut mods = Vec::new();
+            let mut rest = args[5..].iter();
+            while let Some(arg) = rest.next() {
+                let mut value = |what: &str| -> Result<u64, String> {
+                    rest.next()
+                        .and_then(|v| v.parse::<u64>().ok())
+                        .ok_or_else(|| format!("{what} needs a number"))
+                };
+                match arg.as_str() {
+                    "left" | "right" | "middle" => p["button"] = json!(arg),
+                    "ctrl" | "alt" | "shift" | "logo" => mods.push(json!(arg)),
+                    "--hold-ms" => p["hold_ms"] = json!(value("--hold-ms")?),
+                    "--steps" => p["steps"] = json!(value("--steps")?),
+                    other => return Err(format!("unexpected drag argument {other:?}")),
+                }
+            }
+            if !mods.is_empty() {
+                p["modifiers"] = Value::Array(mods);
+            }
+            ("drag_at".into(), p, None)
+        }
+        "desktops" => ("get_desktop_grid".into(), Value::Null, None),
+        "desktop" => {
+            let dir = a(1);
+            if !["left", "right", "up", "down"].contains(&dir) {
+                return Err(format!("expected left|right|up|down, got {dir:?}"));
+            }
+            ("switch_desktop_direction".into(), json!({"direction": dir}), None)
+        }
+        "menu" => {
+            let f = |i: usize| -> Result<f64, String> {
+                a(i).parse::<f64>()
+                    .map_err(|_| format!("expected a number, got {:?}", a(i)))
+            };
+            (
+                "open_window_menu".into(),
+                json!({"id": num(1)?, "x": f(2)?, "y": f(3)?}),
+                None,
+            )
+        }
+        "preview" => {
+            let f = |i: usize| -> Result<f64, String> {
+                a(i).parse::<f64>()
+                    .map_err(|_| format!("expected a number, got {:?}", a(i)))
+            };
+            (
+                "show_window_preview".into(),
+                json!({"id": num(1)?, "x": f(2)?, "y": f(3)?, "width": f(4)?, "height": f(5)?}),
+                None,
+            )
+        }
+        "preview-hide" => ("hide_window_preview".into(), Value::Null, None),
         "type" => ("type_text".into(), json!({"text": args[1..].join(" ")}), None),
         "key" => {
             if a(1).is_empty() {
@@ -886,6 +956,69 @@ mod tests {
     fn parsed(words: &[&str], flags: &Flags) -> Result<Parsed, String> {
         let args: Vec<String> = words.iter().map(|w| (*w).to_owned()).collect();
         parse(&args, flags)
+    }
+
+    #[test]
+    fn drag_maps_to_drag_at_with_its_options() {
+        let f = Flags::default();
+        let (m, p, _) = parsed(&["drag", "10", "20", "300", "40.5"], &f).unwrap();
+        assert_eq!(m, "drag_at");
+        assert_eq!(p, json!({"x": 10.0, "y": 20.0, "to_x": 300.0, "to_y": 40.5}));
+        let (_, p, _) = parsed(
+            &[
+                "drag",
+                "1",
+                "2",
+                "3",
+                "4",
+                "right",
+                "shift",
+                "--hold-ms",
+                "800",
+                "--steps",
+                "3",
+            ],
+            &f,
+        )
+        .unwrap();
+        assert_eq!(p["button"], "right");
+        assert_eq!(p["modifiers"], json!(["shift"]));
+        assert_eq!((p["hold_ms"].clone(), p["steps"].clone()), (json!(800), json!(3)));
+        assert!(parsed(&["drag", "1", "2", "3"], &f).is_err());
+        assert!(parsed(&["drag", "1", "2", "3", "4", "--hold-ms"], &f).is_err());
+        assert!(parsed(&["drag", "1", "2", "3", "4", "sideways"], &f).is_err());
+    }
+
+    #[test]
+    fn desktop_verbs_map_to_their_methods() {
+        let f = Flags::default();
+        let (m, p, _) = parsed(&["desktops"], &f).unwrap();
+        assert_eq!((m.as_str(), p), ("get_desktop_grid", Value::Null));
+        let (m, p, _) = parsed(&["desktop", "left"], &f).unwrap();
+        assert_eq!(
+            (m.as_str(), p),
+            ("switch_desktop_direction", json!({"direction": "left"}))
+        );
+        assert!(parsed(&["desktop", "sideways"], &f).is_err());
+        let (m, p, _) = parsed(&["menu", "7", "100", "200.5"], &f).unwrap();
+        assert_eq!(m, "open_window_menu");
+        assert_eq!(p, json!({"id": 7, "x": 100.0, "y": 200.5}));
+        assert!(parsed(&["menu", "7"], &f).is_err());
+    }
+
+    #[test]
+    fn preview_verbs_map_to_their_methods() {
+        let f = Flags::default();
+        let (m, p, _) = parsed(&["preview", "7", "100", "770", "120", "30"], &f).unwrap();
+        assert_eq!(m, "show_window_preview");
+        assert_eq!(
+            p,
+            json!({"id": 7, "x": 100.0, "y": 770.0, "width": 120.0, "height": 30.0})
+        );
+        assert!(parsed(&["preview", "7", "100", "770", "120"], &f).is_err());
+        assert!(parsed(&["preview", "7", "a", "770", "120", "30"], &f).is_err());
+        let (m, p, _) = parsed(&["preview-hide"], &f).unwrap();
+        assert_eq!((m.as_str(), p), ("hide_window_preview", Value::Null));
     }
 
     #[test]

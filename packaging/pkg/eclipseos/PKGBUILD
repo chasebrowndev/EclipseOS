@@ -134,7 +134,7 @@ package_eclipseos-launcher() {
 }
 
 package_eclipseos-desktop() {
-  pkgdesc="EclipseOS desktop apps: settings, policy viewer, agent console, screensaver, welcome, pairing agent, secret prompt, portal settings backend"
+  pkgdesc="EclipseOS desktop apps: settings, policy viewer, agent console, desktop icons, screensaver, welcome, pairing agent, secret prompt, portal settings backend"
   # Fonts for ec-welcome (D-07 step 0). Lora has no official package; the
   # version label falls back to a serif.
   depends=(eclipseos-abyss wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk polkit)
@@ -150,6 +150,10 @@ package_eclipseos-desktop() {
   # The polkit agent: relays to the compositor's password prompt (ADR 0088).
   _bin ec-polkit-agent
   _bin ec-secret-prompt
+  # The desktop icons (mode "de"). The unit has no [Install], so no _want:
+  # abyss starts and stops it with the mode (ec-abyss/src/session.rs).
+  _bin ec-desktop
+  _unit ec-desktop.service
   _unit ec-screensaver.service
   _want ec-screensaver.service
   _unit ec-pairing.service

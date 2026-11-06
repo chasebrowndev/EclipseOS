@@ -13,6 +13,7 @@ pub mod input;
 pub mod ipc;
 pub mod kiosk;
 pub mod outputs;
+pub mod overview;
 pub mod policy;
 pub mod protocols;
 pub mod render;

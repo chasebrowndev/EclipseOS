@@ -20,8 +20,10 @@ pub mod glass;
 pub mod glyphs;
 pub mod hud;
 pub mod hud_font;
+pub mod menu;
 pub mod output_overscan;
 pub mod overscan;
+pub mod overview;
 pub mod palette;
 pub mod popup_shape;
 pub mod sanitize;
@@ -29,6 +31,8 @@ pub mod select;
 pub mod stats;
 pub mod still;
 pub mod text;
+pub mod thumb;
+pub mod titlebar;
 pub mod userdata;
 
 use std::collections::HashMap;
@@ -146,7 +150,7 @@ struct Bezel {
 /// The bezel width (physical px) a window's border becomes, or `None` when it
 /// stays painted: only in `glass` mode, with the glass program available on
 /// this output, a border to replace, and a window that is not
-/// fullscreen (those have no border inset to fill).
+/// maximized or fullscreen (those have no border inset to fill).
 fn bezel_width(mode: BlurMode, glass: bool, fullscreen: bool, border: i32, upscale: f64) -> Option<i32> {
     (matches!(mode, BlurMode::Glass | BlurMode::Frost) && glass && !fullscreen && border > 0)
         .then(|| ((border as f64 * upscale).round() as i32).max(1))
@@ -314,13 +318,26 @@ fn explicit_bezel(area: &blur::BlurArea, rect: Rectangle<i32, Physical>, bezel: 
     bezel.is_some() && matches!(area, blur::BlurArea::Rect(r) if blur::grow(*r, 1).contains_rect(rect))
 }
 
-/// Is `window` fullscreen? Fullscreen windows are drawn without rounding.
-fn is_fullscreen(window: &Window) -> bool {
+/// Is `window` fullscreen, or maximized under `mode "de"`? Either fills its
+/// area with no border inset and is drawn square (COMP-05 §3.1, C-24). Read
+/// from the state the client was last configured with.
+fn fills_area(window: &Window) -> bool {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
     if let Some(toplevel) = window.toplevel() {
-        return toplevel.current_state().states.contains(State::Fullscreen);
+        let states = toplevel.current_state().states;
+        return states.contains(State::Maximized) || states.contains(State::Fullscreen);
     }
-    window.x11_surface().is_some_and(|x| x.is_fullscreen())
+    window
+        .x11_surface()
+        .is_some_and(|x| x.is_maximized() || x.is_fullscreen())
+}
+
+/// Is `window` Quick Tiled under `mode "de"` (M5)? A floating window (no tile
+/// clip: Radiant tiles carry one) that abyss told it is tiled on some edge.
+/// Like a maximized window it fills its zone with no border inset and is drawn
+/// square, with no ring or bezel.
+fn quick_tiled(window: &Window) -> bool {
+    userdata::tile_clip(window).is_none() && userdata::is_quick_tiled(window)
 }
 
 /// Whether `mode`'s backdrop program (glass or frost) can draw a bezel on
@@ -499,6 +516,8 @@ pub struct BorderStore {
     gpu: context::PerContext<BorderGpu>,
     /// Glass pane elements built this frame, kept to reuse the allocation.
     pane_scratch: Vec<blur::BlurElement>,
+    /// Titlebar textures under `mode "de"` (COMP-05 §7.1), per output and window.
+    pub bars: titlebar::BarCache,
 }
 
 impl BorderStore {
@@ -517,6 +536,7 @@ impl BorderStore {
             g.glows.retain(|(_, w), _| w != window);
         });
         self.dims.retain(|(_, w), _| w != window);
+        self.bars.remove(window);
     }
 
     /// Draw with `renderer` from here on: its programs and per-output
@@ -1795,6 +1815,7 @@ fn window_elements(
         Point::from((0, 0)),
         output_geo.size.to_f64().to_physical(scale).to_i32_round(),
     );
+    store.bars.retain_live(output, &live);
     if deco.dim_inactive > 0.0 {
         store.dims.retain(|(o, w), _| o != output || live.contains(w));
     } else {
@@ -1844,14 +1865,14 @@ fn window_elements(
         if smithay::wayland::seat::WaylandFocus::wl_surface(&window).is_none() {
             continue;
         }
-        // A fullscreen window is square: a rounded corner would only show the
-        // border and the wallpaper behind it.
-        // Only abyss's own fullscreen counts: it holds those windows floating,
+        // A fullscreen or maximized window is square: a rounded corner would
+        // only show the border and the wallpaper behind it.
+        // Only abyss's own state counts: it holds those windows floating,
         // untiled. A tiled window that merely carries the X11/xdg fullscreen
         // state (a client that set it itself) keeps its rounding.
-        let rounding = rounding
-            .clone()
-            .filter(|_| !(is_fullscreen(&window) && userdata::tile_clip(&window).is_none()));
+        let rounding = rounding.clone().filter(|_| {
+            !((fills_area(&window) && userdata::tile_clip(&window).is_none()) || quick_tiled(&window))
+        });
         // A tiled client that ignored its configure (Electron holds its own
         // min width) is cut back to its tile rather than drawn under its
         // neighbour. Only a window that actually overhangs is cropped, so one
@@ -1865,15 +1886,31 @@ fn window_elements(
         // about the centre of what it shows. The identity when idle, where
         // `map` is exactly the target rectangle.
         let t = store.anim.transform(&window);
+        // A window rolled up to its bar (`shell::winops`) is only the bar: its
+        // content has no height and its surfaces are not drawn. The client is
+        // not told; it keeps the size it has.
+        let rolled = titlebar::bar_of(&window).is_some_and(|b| b.shaded);
         let target = space.element_geometry(&window).map(|mut geo| {
             if let Some(c) = clip {
                 geo.size.w = geo.size.w.min(c.size.w);
                 geo.size.h = geo.size.h.min(c.size.h);
             }
+            if rolled {
+                geo.size.h = 0;
+            }
             geo
         });
         let pivot = target.map_or_else(|| loc.to_f64() + t.offset, |g| anim::track::pivot(&t, g));
-        let geo = target.map(|g| t.map(g, pivot));
+        let content_geo = target.map(|g| t.map(g, pivot));
+        // Under `mode "de"` a server-side-decorated window has a titlebar above
+        // its content. The shadow, border, rounded mask, dim and glass backdrop
+        // follow the frame (bar plus content); the surfaces and a translucent
+        // strip stay on the content (COMP-05 §7.1).
+        let bar = titlebar::bar_of(&window).filter(|_| content_geo.is_some());
+        let geo = match (content_geo, bar) {
+            (Some(g), Some(b)) => Some(titlebar::frame_of_content(g, b.height)),
+            (g, _) => g,
+        };
         // Decorations are cut to the whole tile (the window plus its border),
         // whether or not the client overhangs it: unlike a surface, a shadow or
         // backdrop would otherwise bleed into the neighbouring tile.
@@ -1909,8 +1946,8 @@ fn window_elements(
         // window's, and the strip's own alpha (times the window's). Only a
         // toplevel at rest has one; an animating window draws whole.
         let strip_def = userdata::strip_of(&window)
-            .filter(|_| !t.scaled() && window.toplevel().is_some())
-            .zip(geo);
+            .filter(|_| !t.scaled() && window.toplevel().is_some() && !rolled)
+            .zip(content_geo);
         // A keyed strip needs the keyed program and a framebuffer axis; where
         // either is missing the window stays opaque rather than fading whole.
         let keyed = match strip_def.as_ref().and_then(|(s, _)| s.keyed().copied()) {
@@ -2012,6 +2049,12 @@ fn window_elements(
                     alpha,
                 ),
             ),
+        };
+        let (popups, surfaces) = if rolled {
+            popup_groups.clear();
+            (Vec::new(), Vec::new())
+        } else {
+            (popups, surfaces)
         };
         // The strip's copy of the surface tree, at the strip's alpha. A keyed
         // strip is one draw through the keyed program instead.
@@ -2121,7 +2164,13 @@ fn window_elements(
                     let slot = (mode == BlurMode::Frost) as usize;
                     let ready =
                         *bezel_ok[slot].get_or_insert_with(|| bezel_ready(renderer, store, output, mode));
-                    bezel_width(mode, ready, is_fullscreen(&window), border_size, upscale)
+                    bezel_width(
+                        mode,
+                        ready,
+                        fills_area(&window) || quick_tiled(&window),
+                        border_size,
+                        upscale,
+                    )
                 }
                 false => None,
             };
@@ -2214,6 +2263,38 @@ fn window_elements(
                 });
                 (region, radius, bezel, shape)
             });
+        // The titlebar is glass whatever the client under it is: an opaque
+        // window gets a backdrop over just the bar, and a client that asked
+        // for glass on its content only (a plain box) has that box grown to
+        // take in the bar, so the title never sits over unblurred pixels.
+        let backdrop = match (bar, content_geo, geo) {
+            (Some(info), Some(content), Some(frame)) if scaled.is_none() && mode != BlurMode::Off => {
+                let phys_rect = |r: Rectangle<i32, Logical>| {
+                    Rectangle::new(
+                        phys(r.loc - output_geo.loc, scale),
+                        r.size.to_f64().to_physical(scale).to_i32_round(),
+                    )
+                };
+                let strip = phys_rect(titlebar::bar_rect(content, info.height));
+                match backdrop {
+                    None => strip_backdrop(strip, phys_rect(frame), corner)
+                        .map(|region| (region, deco.rounding, None, None)),
+                    Some((region, radius, bezel, None)) if !region.contains_rect(strip) => {
+                        let (x0, y0) = (region.loc.x.min(strip.loc.x), region.loc.y.min(strip.loc.y));
+                        let x1 = (region.loc.x + region.size.w).max(strip.loc.x + strip.size.w);
+                        let y1 = (region.loc.y + region.size.h).max(strip.loc.y + strip.size.h);
+                        Some((
+                            Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into()),
+                            radius,
+                            bezel,
+                            None,
+                        ))
+                    }
+                    other => other,
+                }
+            }
+            (_, _, _) => backdrop,
+        };
 
         // Every surface of one window is masked by the same rectangle, so a
         // window with subsurfaces rounds as a single shape.
@@ -2391,6 +2472,32 @@ fn window_elements(
             store.borders.remove(&(output.clone(), window.clone()));
             continue;
         }
+        // The titlebar sits with its window: directly above its border and
+        // shadow, level with its surfaces, so a window stacked above hides
+        // it. It rounds its top corners with the frame; maximized is square.
+        // Not while the window animates at a scale, where it would not follow.
+        if let (Some(info), true) = (bar, scaled.is_none()) {
+            let bar_rect = titlebar::bar_rect(content_geo.unwrap_or(geo), info.height);
+            let radius = match rounding {
+                Some(_) => deco.rounding,
+                None => 0,
+            };
+            if let Some(element) = titlebar::bar_element(
+                renderer,
+                &mut store.bars,
+                output,
+                &window,
+                info,
+                phys(bar_rect.loc - output_geo.loc, scale),
+                bar_rect.size.w,
+                scale,
+                active,
+                radius,
+                alpha,
+            ) {
+                out.push(AbyssRenderElement::Memory(element));
+            }
+        }
         // Border, glow, then shadow, all directly under this window's
         // surfaces. The ring's inner edge is the exact complement of the
         // window's rounded mask, so it never covers window content from below
@@ -2405,6 +2512,11 @@ fn window_elements(
         let start = out.len();
         match &border {
             Some(_) if bezeled => {
+                store.gpu.rings.remove(&(output.clone(), window.clone()));
+                store.borders.remove(&(output.clone(), window.clone()));
+            }
+            // A Quick Tiled window is square and borderless, like a maximized one.
+            Some(_) if quick_tiled(&window) => {
                 store.gpu.rings.remove(&(output.clone(), window.clone()));
                 store.borders.remove(&(output.clone(), window.clone()));
             }
@@ -2459,7 +2571,7 @@ fn window_elements(
                 mode,
                 keyed_on.is_some(),
                 strip.is_some(),
-                is_fullscreen(&window),
+                fills_area(&window),
                 effects::fb_y_mirrored(output.current_transform()).is_some(),
             )
             .then(|| smithay::wayland::seat::WaylandFocus::wl_surface(&window))

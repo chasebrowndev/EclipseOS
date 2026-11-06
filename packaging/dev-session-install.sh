@@ -10,7 +10,8 @@ dest="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$dest"
 
 cp "$here/abyss-session.target" "$dest/"
-for unit in ec-hyperion-bar ec-toasts ec-wallpaper ec-screensaver ec-pairing ec-portal; do
+# ec-desktop is installed but not enabled below: abyss starts it under mode "de".
+for unit in ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-screensaver ec-pairing ec-portal; do
     sed "s|/usr/bin/|$bin/|" "$here/$unit.service" > "$dest/$unit.service"
 done
 

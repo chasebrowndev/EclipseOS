@@ -11,6 +11,11 @@
 //!   pushed shut and held inside the collapse allowance and then past it, the
 //!   player stopping (and coming back with a new cover), and a compress sent
 //!   back open while it is still moving.
+//! - `HYPERION_PREVIEW=groups` — `mode "de"`: windows grouped by app (foot
+//!   three, firefox two), the desktop grid pager, the bell with its dot, and the
+//!   first multi-window group's list open. `HYPERION_PREVIEW=history` is the
+//!   same strip with the notification history panel open, and
+//!   `history-empty` the panel with nothing in it.
 //! - `HYPERION_PREVIEW_SLOW=<n>` — every movement `n` times slower, so a
 //!   screenshot loop catches the frames in between.
 //!
@@ -548,4 +553,113 @@ fn recount(app: &mut App) {
     if let Some(ws) = app.snapshot.workspaces.first_mut() {
         ws.windows = app.snapshot.windows.len();
     }
+}
+
+/// The `de` fixture (`HYPERION_PREVIEW=groups|history`): grouped windows, the
+/// desktop grid and a notification history, on top of the widget fixture.
+pub fn de(app: &mut App, output: u64) {
+    use ec_services::notifications::{HistoryEntry, Urgency};
+    app.mode = crate::model::Mode::De;
+    let win = |handle: u64, app_id: &str, title: &str, minimized: bool| Window {
+        handle,
+        app_id: app_id.to_owned(),
+        title: title.to_owned(),
+        workspace: Some(1),
+        output: Some(output),
+        focused: handle == 3,
+        minimized,
+        pid: None,
+        program: None,
+        trust: Trust::Private,
+    };
+    let windows = vec![
+        win(1, "foot", "~/syncedprojects/EclipseOS", false),
+        win(2, "firefox", "Eclipse OS \u{2014} design notes", false),
+        win(3, "foot", "cargo test \u{2014} hyperion", false),
+        win(4, "code", "group.rs \u{2014} hyperion", false),
+        win(5, "foot", "htop", true),
+        win(6, "firefox", "Docs \u{2014} Eclipse", false),
+        win(7, "org.gnome.Nautilus", "Downloads", false),
+        win(8, "spotify", "Spotify", true),
+    ];
+    app.snapshot.focused = Some(3);
+    app.snapshot.windows = windows;
+    app.icons.warm(&app.snapshot.windows);
+
+    let desktop = |index: usize, windows: usize| ec_ipc::Desktop {
+        index,
+        occupied: windows > 0,
+        windows,
+    };
+    let counts = [8, 0, 2, 0, 0, 1, 0, 0, 0, 0];
+    let desktops: Vec<ec_ipc::Desktop> = counts
+        .iter()
+        .enumerate()
+        .map(|(i, n)| desktop(i + 1, *n))
+        .collect();
+    app.grid = Some(ec_ipc::DesktopGrid {
+        rows: 2,
+        columns: 5,
+        wrap: true,
+        directional: true,
+        outputs: vec![ec_ipc::OutputDesktops {
+            output,
+            name: String::new(),
+            active: 1,
+            desktops: desktops.clone(),
+        }],
+        desktops,
+    });
+
+    let now = crate::history::now();
+    let entry = |id: u32, app: &str, summary: &str, body: &str, ago: u64, urgency: Urgency, live: bool| {
+        HistoryEntry {
+            id,
+            app_name: app.to_owned(),
+            app_icon: String::new(),
+            summary: summary.to_owned(),
+            body: body.to_owned(),
+            urgency,
+            timestamp: now.saturating_sub(ago),
+            actions: if live {
+                vec![
+                    ("reply".to_owned(), "Reply".to_owned()),
+                    ("archive".to_owned(), "Archive".to_owned()),
+                ]
+            } else {
+                Vec::new()
+            },
+            live,
+        }
+    };
+    app.history.set(vec![
+        entry(
+            5,
+            "mail",
+            "Mara \u{2014} review at 15:00",
+            "Are we still on for the review at 15:00? I pushed the notes to the shared folder and tagged you on the three open questions, the second one blocks the release.",
+            40,
+            Urgency::Normal,
+            true,
+        ),
+        entry(
+            4,
+            "battery",
+            "Battery low",
+            "9% remaining. Plug in the charger.",
+            4 * 60,
+            Urgency::Critical,
+            false,
+        ),
+        entry(
+            3,
+            "calendar",
+            "Standup in 10 minutes",
+            "Room 4 / video link",
+            2 * 3600,
+            Urgency::Normal,
+            false,
+        ),
+        entry(2, "backup", "Backup complete", "", 5 * 3600, Urgency::Low, false),
+    ]);
 }
