@@ -107,7 +107,7 @@ pub(crate) fn look(a: &Appearance) -> Look {
     let p = ec_theme::derive(&a.seeds);
     let mix = match a.scheme {
         Scheme::Dark => FROST_TINT[3],
-        Scheme::Light => 0.55,
+        Scheme::Light => 0.35,
     };
     let f = a.seeds.frost_tint.0;
     let base = p.base.0;

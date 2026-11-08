@@ -501,10 +501,10 @@ const float LINE_BR = 0.035;
 const float SEAM = 0.1;
 // The light twins: bright frosted glass with the dark ink drawn on it. Each is
 // `mix(dark, light, scheme_light)`, which is the dark constant bit for bit at 0.
-const float SATURATE_L = 1.25;
+const float SATURATE_L = 1.6;
 const float COMPRESS_L = 0.0;                       // no highlight knee
 const vec3 SMOKE_L = vec3(0.985, 0.975, 0.955);     // warm white
-const float SMOKE_MIX_L = 0.7;
+const float SMOKE_MIX_L = 0.22;   // a light veil; the window tint does the whitening (ADR 0084)
 const float SEAM_L = 0.04;
 const vec3 LIFT_L = vec3(0.102, 0.086, 0.063);      // ink #1a1610: a depth step darkens light glass
 
