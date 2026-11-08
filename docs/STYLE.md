@@ -101,6 +101,9 @@ the same rules (ADR 0084).
   (.985,.975,.955), the light twin of dark's 28% smoke. Whitening happens once, in the window
   tint: the shader only veils, or the backdrop is whitened twice and the glass reads opaque.
   The bezel seam is .04 and the rim stays white. `Appearance::glass_light()` drives this
+- Compositor titlebars (`mode "de"`) follow the scheme: #f4f1ea at the light window tint
+  (.455 focused, .34 idle) plus the white focus lift, ink title and glyphs at the text steps,
+  an ink seam (.10 / .06), and bar-cell ink steps on hovered buttons. Close keeps its danger cell
 - Trusted-UI prompts use the built-in dark or light palette matching the theme's
   brightness, never a user theme's colours (ADR 0084)
 
