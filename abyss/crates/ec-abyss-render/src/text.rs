@@ -89,6 +89,22 @@ pub fn sanitize(input: &str) -> String {
 ///
 /// Length is clamped by [`MAX_CHARS`] in characters, as in [`sanitize`].
 pub fn sanitize_annotation(input: &str) -> String {
+    sanitize_annotation_with(input, false)
+}
+
+/// [`sanitize_annotation_line`] for window titles: a character the atlas
+/// cannot draw (and any private-use input) is dropped instead of becoming
+/// `?`, then runs of spaces collapse and the ends are trimmed. A literal `?`
+/// in the input stays.
+pub fn sanitize_title_line(input: &str) -> String {
+    let s = sanitize_annotation_with(input, true).replace('\n', " ");
+    s.split(' ')
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn sanitize_annotation_with(input: &str, drop: bool) -> String {
     let mut out = String::with_capacity(input.len().min(MAX_CHARS));
     let mut chars = 0usize;
     let mut rest = input.chars().peekable();
@@ -101,8 +117,14 @@ pub fn sanitize_annotation(input: &str) -> String {
             '\u{a0}' => ' ',
             c if c.is_control() => continue,
             c if is_invisible(c) || is_combining(c) => continue,
-            c if is_private_use(c) => REPLACEMENT,
+            c if is_private_use(c) => {
+                if drop {
+                    continue;
+                }
+                REPLACEMENT
+            }
             c if hud_font::covers(c) => fold_mark(c, &mut rest),
+            _ if drop => continue,
             _ => REPLACEMENT,
         };
         out.push(keep);
