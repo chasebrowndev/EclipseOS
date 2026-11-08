@@ -188,13 +188,16 @@ pub(super) fn placed_rect(
     window: &Window,
     placement: Placement,
     usable: Rectangle<i32, Logical>,
+    tiling: Rectangle<i32, Logical>,
     border: i32,
     bar: i32,
 ) -> Option<Rectangle<i32, Logical>> {
     match placement {
         Placement::Free => None,
+        // Maximized takes the lone-tile frame: the usable area inset by the
+        // outer gaps. Quick Tile zones keep the raw usable area.
         Placement::Maximized { h, v, restore } => {
-            Some(maximize::fitted_rect(window, usable, border, restore, h, v, bar))
+            Some(maximize::fitted_rect(window, tiling, border, restore, h, v, bar))
         }
         Placement::QuickTile { zone, .. } => Some(fitted_zone(window, usable, zone, bar)),
     }

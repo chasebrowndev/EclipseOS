@@ -592,7 +592,7 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         for f in entry.workspaces[ws].floating.iter_mut() {
             if !fullscreen.contains_key(&f.window) {
                 if let Some(rect) =
-                    quicktile::placed_rect(&f.window, f.placement, usable, border, bars(&f.window))
+                    quicktile::placed_rect(&f.window, f.placement, usable, area, border, bars(&f.window))
                 {
                     f.rect = rect;
                 }
@@ -689,12 +689,12 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
             &w,
             bar,
             placement.is_fully_maximized(),
-            placement.is_placed(),
+            matches!(placement, Placement::QuickTile { .. }),
         );
         set_quick_tiled(&w, !full && matches!(placement, Placement::QuickTile { .. }));
         let inner = if full {
             rect
-        } else if placement.is_placed() {
+        } else if matches!(placement, Placement::QuickTile { .. }) {
             content_of_outer(rect, 0, bar)
         } else {
             content_of_outer(rect, border, bar)
@@ -2345,7 +2345,7 @@ fn unfullscreen_toplevel_now(
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let size = match restore {
         Some(rect) => {
-            let (rect, size) = match quicktile::placed_rect(&window, placement, usable, border, bar) {
+            let (rect, size) = match quicktile::placed_rect(&window, placement, usable, area, border, bar) {
                 Some(r) => (r, r.size),
                 None => (rect, rect.size),
             };

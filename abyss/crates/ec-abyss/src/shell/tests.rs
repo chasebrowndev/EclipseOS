@@ -1168,10 +1168,15 @@ mod de_mode {
             .expect("floating")
     }
 
-    fn usable(h: &Harness, id: u64) -> Rectangle<i32, Logical> {
+    fn bpx(h: &Harness) -> i32 {
+        h.state.config.general.border_size
+    }
+
+    /// The frame a maximized window takes: the usable area inset by the outer gaps.
+    fn lone(h: &Harness, id: u64) -> Rectangle<i32, Logical> {
         let output = h.state.outputs.get(id).expect("output").output.clone();
         layer_map_for_output(&output).arrange();
-        usable_area(&h.state, &output)
+        tiling_area(&h.state, &output)
     }
 
     /// A de-mode window with a rectangle that is not the usable area.
@@ -1192,14 +1197,21 @@ mod de_mode {
 
         n.toplevel.set_maximized();
         c.pump(&mut h);
-        let u = usable(&h, id);
+        let u = lone(&h, id);
         let (rect, p) = floating_of(&h, &w);
         assert!(matches!(p, Placement::Maximized { h: true, v: true, .. }));
-        assert_eq!(rect, u, "fills the usable area exactly: no border inset");
-        assert_eq!(loc(&h, &w), u.loc);
+        assert_eq!(
+            rect, u,
+            "the frame is the lone-tile frame: usable inset by the outer gaps"
+        );
+        assert_eq!(
+            loc(&h, &w),
+            Point::from((u.loc.x + bpx(&h), u.loc.y + bpx(&h))),
+            "the content sits inside the border, as in a lone tile"
+        );
         assert_eq!(
             c.configured_sizes(&n.toplevel).last(),
-            Some(&(u.size.w, u.size.h))
+            Some(&(u.size.w - 2 * bpx(&h), u.size.h - 2 * bpx(&h)))
         );
         assert!(c.is_maximized(&n.toplevel), "the configure carries Maximized");
         assert!(maximize::is_maximized(&h.state, &w));
@@ -1210,6 +1222,35 @@ mod de_mode {
         assert_eq!(p, Placement::Free);
         assert_eq!(rect, before, "the prior rectangle is back");
         assert!(!c.is_maximized(&n.toplevel));
+    }
+
+    /// Maximized under `de` is a lone tile to look at: the frame of the one
+    /// window of a tiling workspace, the border inset kept, round corners, and
+    /// nothing under the panel's exclusive zone.
+    #[test]
+    fn a_maximized_frame_is_the_lone_tile_frame_and_clears_the_panel() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, w) = de_window(&mut h, &mut c);
+        let (_panel, _layer) = c.map_panel(&mut h, 40);
+        arrange(&mut h.state);
+        n.toplevel.set_maximized();
+        c.pump(&mut h);
+        let id = h.a;
+        let output = h.state.outputs.get(id).expect("output").output.clone();
+        let (rect, _) = floating_of(&h, &w);
+        let area = tiling_area(&h.state, &output);
+        // The rect a lone window gets from the tiling layout under the same gaps.
+        let mut tree = crate::shell::layout::Tree::<u32>::new();
+        tree.insert(1, None, area, Point::default());
+        let gaps = &h.state.config.general;
+        let lone = tree.radiant(area, gaps.gaps_in, gaps.gaps_in_y());
+        assert_eq!(rect, lone[0].1, "same rect as a lone tile");
+        let usable = usable_area(&h.state, &output);
+        assert!(usable.contains_rect(rect), "inside the usable area");
+        let geo = h.state.space.output_geometry(&output).unwrap();
+        let panel_zone = Rectangle::new(geo.loc, (geo.size.w, usable.loc.y - geo.loc.y).into());
+        assert!(!rect.overlaps(panel_zone), "clear of the bar's exclusive zone");
     }
 
     #[test]
@@ -1244,11 +1285,11 @@ mod de_mode {
             assert_eq!(c.is_maximized(&t.toplevel), honoured, "{mode:?}");
             assert_eq!(maximize::is_maximized(&h.state, &w), honoured, "{mode:?}");
             if honoured {
-                let u = usable(&h, h.a);
+                let u = lone(&h, h.a);
                 assert_eq!(floating_of(&h, &w).0, u);
                 assert_eq!(
                     c.configured_sizes(&t.toplevel).last(),
-                    Some(&(u.size.w, u.size.h))
+                    Some(&(u.size.w - 2 * bpx(&h), u.size.h - 2 * bpx(&h)))
                 );
             } else {
                 assert_eq!(c.maximized_configures(&t.toplevel), 0, "{mode:?}");
@@ -1277,9 +1318,8 @@ mod de_mode {
         let (n, w) = de_window(&mut h, &mut c);
         let id = h.a;
         let (before, _) = floating_of(&h, &w);
-        let border = h.state.config.general.border_size;
-        let own = shrink(before, border);
-        let u = usable(&h, id);
+        let own = before;
+        let u = lone(&h, id);
 
         assert!(maximize::set(&mut h.state, &w, Some((true, false))));
         let (rect, p) = floating_of(&h, &w);
@@ -1331,14 +1371,14 @@ mod de_mode {
 
         n.toplevel.unset_fullscreen();
         c.pump(&mut h);
-        let u = usable(&h, id);
+        let u = lone(&h, id);
         let (rect, p) = floating_of(&h, &w);
         assert!(p.is_fully_maximized(), "back to maximized");
         assert_eq!(rect, u);
         assert!(c.is_maximized(&n.toplevel));
         assert_eq!(
             c.configured_sizes(&n.toplevel).last(),
-            Some(&(u.size.w, u.size.h))
+            Some(&(u.size.w - 2 * bpx(&h), u.size.h - 2 * bpx(&h)))
         );
 
         n.toplevel.unset_maximized();
@@ -1386,18 +1426,18 @@ mod de_mode {
 
         let (panel, layer) = c.map_panel(&mut h, 40);
         arrange(&mut h.state);
-        let u = usable(&h, id);
+        let u = lone(&h, id);
         assert_eq!(u.loc.y, full.loc.y + 40, "the panel claims the top strip");
         assert_eq!(floating_of(&h, &w).0, u, "the window follows the panel");
         assert_eq!(
             c.configured_sizes(&n.toplevel).last(),
-            Some(&(u.size.w, u.size.h))
+            Some(&(u.size.w - 2 * bpx(&h), u.size.h - 2 * bpx(&h)))
         );
 
         layer.set_exclusive_zone(90);
         c.commit(&mut h, &panel);
         arrange(&mut h.state);
-        let u2 = usable(&h, id);
+        let u2 = lone(&h, id);
         assert_eq!(u2.loc.y, full.loc.y + 90);
         assert_eq!(floating_of(&h, &w).0, u2);
 
@@ -1421,8 +1461,9 @@ mod de_mode {
         };
         output.change_current_state(Some(mode), None, None, None);
         arrange(&mut h.state);
-        let u = usable(&h, h.a);
-        assert_eq!(u.size, (1000, 700).into());
+        let u = lone(&h, h.a);
+        let g = &h.state.config.general;
+        assert_eq!(u.size, (1000 - 2 * g.gaps_out, 700 - 2 * g.gaps_out_y()).into());
         assert_eq!(floating_of(&h, &w).0, u);
     }
 
@@ -1433,7 +1474,7 @@ mod de_mode {
         h.state.outputs.set_focused(h.b);
         let (n, w) = de_window(&mut h, &mut c);
         // A rectangle that is not what the adopter would pick by default.
-        let usable_b = usable(&h, h.b);
+        let usable_b = lone(&h, h.b);
         let before = Rectangle::new(usable_b.loc + Point::from((57, 43)), (301, 203).into());
         for e in h.state.outputs.iter_mut() {
             for ws in e.workspaces.iter_mut() {
@@ -1456,17 +1497,17 @@ mod de_mode {
         assert_eq!(at(&h, &w), At::Floating(ia, 0), "adopted");
         let (rect, p) = floating_of(&h, &w);
         assert!(p.is_fully_maximized(), "still maximized");
-        assert_eq!(rect, usable(&h, ia), "filling the adopter");
+        assert_eq!(rect, lone(&h, ia), "filling the adopter");
         assert!(c.is_maximized(&n.toplevel));
         // And it can still be restored, onto the adopter.
         n.toplevel.unset_maximized();
         c.pump(&mut h);
         let (rect, p) = floating_of(&h, &w);
         assert_eq!(p, Placement::Free);
-        assert!(usable(&h, ia).contains_rect(rect), "restored inside the adopter");
+        assert!(lone(&h, ia).contains_rect(rect), "restored inside the adopter");
         assert_eq!(
             rect,
-            de::carried_rect(before, offset, usable(&h, ia)),
+            de::carried_rect(before, offset, lone(&h, ia)),
             "its own pre-maximize rectangle, not the default"
         );
     }
@@ -1486,7 +1527,7 @@ mod de_mode {
         c.pump(&mut h);
         let (rect, p) = floating_of(&h, &w);
         assert!(p.is_fully_maximized());
-        assert_eq!(rect, usable(&h, h.a));
+        assert_eq!(rect, lone(&h, h.a));
         assert!(c.is_maximized(&n.toplevel));
     }
 
@@ -1509,7 +1550,7 @@ mod de_mode {
         }
         let (rect, p) = floating_of(&h, &w);
         assert!(p.is_fully_maximized(), "maximized there");
-        assert_eq!(rect, usable(&h, id));
+        assert_eq!(rect, lone(&h, id));
         n.toplevel.unset_maximized();
         c.pump(&mut h);
         assert_eq!(floating_of(&h, &w).0, before);
@@ -1532,8 +1573,8 @@ mod de_mode {
         assert_eq!(at(&h, &w), At::Floating(ib, 0));
         let (rect, p) = floating_of(&h, &w);
         assert!(p.is_fully_maximized());
-        assert_eq!(rect, usable(&h, ib));
-        assert_ne!(usable(&h, ia).size, usable(&h, ib).size, "the panels differ");
+        assert_eq!(rect, lone(&h, ib));
+        assert_ne!(lone(&h, ia).size, lone(&h, ib).size, "the panels differ");
     }
 
     #[test]
@@ -1543,7 +1584,7 @@ mod de_mode {
         let (n, w) = de_window(&mut h, &mut c);
         n.toplevel.set_maximized();
         c.pump(&mut h);
-        let u = usable(&h, h.a);
+        let u = lone(&h, h.a);
         h.state.pointer_location = (u.loc.x as f64 + u.size.w as f64 * 0.75, u.loc.y as f64 + 10.0).into();
         let p = h.state.pointer_location;
         maximize::release_for_drag(&mut h.state, &w);
@@ -1611,7 +1652,7 @@ mod de_mode {
         c.pump(&mut h);
         let (rect, p) = floating_of(&h, &w);
         assert!(p.is_fully_maximized());
-        assert_eq!((rect.size.w, rect.size.h), (400, 300));
+        assert_eq!((rect.size.w, rect.size.h), (400 + 2 * bpx(&h), 300 + 2 * bpx(&h)));
         assert_eq!(c.configured_sizes(&n.toplevel).last(), Some(&(400, 300)));
     }
 
@@ -1656,7 +1697,7 @@ mod de_mode {
         let (n, w) = de_window(&mut h, &mut c);
         n.toplevel.set_maximized();
         c.pump(&mut h);
-        let u = usable(&h, h.a);
+        let u = lone(&h, h.a);
         h.state.pointer_location = (u.loc.x as f64 + 100.0, u.loc.y as f64 + 100.0).into();
         let p = h.state.pointer_location;
         assert!(crate::input::grabs::start_move_at(&mut h.state, w.clone(), 0x110));

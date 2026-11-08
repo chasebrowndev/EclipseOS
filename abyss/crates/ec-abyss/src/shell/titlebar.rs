@@ -187,7 +187,7 @@ pub(super) fn publish(state: &AbyssState, window: &Window, bar: i32, maximized: 
         hover: hover_button(&state.bar_ui, window),
         pressed: pressed_button(&state.bar_ui, window),
         maximized,
-        square: square || maximized,
+        square,
         shaded: state.winops.is_shaded(window),
     });
     set_bar(window, info);
@@ -488,6 +488,12 @@ mod tests {
         h.state.config.general.border_size
     }
 
+    fn lone(h: &Harness, id: u64) -> Rectangle<i32, Logical> {
+        let output = h.state.outputs.get(id).expect("output").output.clone();
+        smithay::desktop::layer_map_for_output(&output).arrange();
+        shell::tiling_area(&h.state, &output)
+    }
+
     fn usable(h: &Harness, id: u64) -> Rectangle<i32, Logical> {
         let output = h.state.outputs.get(id).expect("output").output.clone();
         smithay::desktop::layer_map_for_output(&output).arrange();
@@ -617,13 +623,17 @@ mod tests {
 
         assert!(maximize::set(&mut h.state, &w, Some((true, true))));
         c.pump(&mut h);
-        let u = usable(&h, id);
+        let u = lone(&h, id);
+        let bd = border(&h);
         let (rect, p) = floating_of(&h, &w);
         assert!(p.is_fully_maximized());
-        assert_eq!(rect, u, "the frame fills the usable area");
+        assert_eq!(rect, u, "the frame is the lone-tile frame");
+        let info = bar_of(&w).expect("a titlebar");
+        assert!(!info.square, "rounded like a tile");
+        assert!(info.maximized, "the glyph is still restore");
         let body = Rectangle::new(
-            Point::from((u.loc.x, u.loc.y + bar)),
-            (u.size.w, u.size.h - bar).into(),
+            Point::from((u.loc.x + bd, u.loc.y + bd + bar)),
+            (u.size.w - 2 * bd, u.size.h - 2 * bd - bar).into(),
         );
         assert_eq!(
             c.configured_sizes(&t.toplevel).last(),
@@ -633,8 +643,8 @@ mod tests {
         assert_eq!(content(&h, &w), body, "the content is shorter by the bar");
         assert_eq!(
             bar_geometry(&h.state, &w).unwrap().loc,
-            u.loc,
-            "bar flush with the top"
+            Point::from((u.loc.x + bd, u.loc.y + bd)),
+            "bar at the top of the bordered frame"
         );
 
         assert!(maximize::set(&mut h.state, &w, None));

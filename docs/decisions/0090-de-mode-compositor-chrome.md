@@ -37,7 +37,9 @@ Take option 1, in `mode "de"` only.
 - A toplevel's geometry stays the client content rect, and the titlebar sits
   above it in a frame rect, so agent coordinates do not change.
 - Maximize returns under `de` only. C-20 stands in `wm` and `hybrid`, and an
-  agent's `set_state(maximized)` stays refused everywhere.
+  agent's `set_state(maximized)` stays refused everywhere. *(amended
+  2026-11-08)* A maximized window looks like a lone tile (gapped, bordered,
+  rounded), not a flush square, so it stays clear of the inset taskbar.
 - Desktops are the existing ten per-output workspaces, laid out as a grid.
 - Thumbnails are built by the compositor and shown only by it. They take the
   stricter reading of the conflict above: redacted like a capture target, even
