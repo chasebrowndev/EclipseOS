@@ -2688,7 +2688,7 @@ inactive opacity 1.0.
 | Effect | Implementation | Cost note |
 |---|---|---|
 | Rounded corners | Fragment-shader mask in the surface pass | Negligible; disables direct scanout for that surface |
-| Borders | Quad pass around surface geometry. *(C-15)* In `glass` mode a tiled or floating window's border is a glass bezel instead: its backdrop grows by `border-size` (radius rounding + border), the painted ring is skipped, the lens bends only inside the ring, the hairline takes the border colour (following the focus crossfade) and a faint seam marks where glass meets content. An opaque window gets a ring-only backdrop; maximized, fullscreen and rotated outputs keep the painted border | Negligible; a bezel on an opaque window costs a ring-only blur and damages only the four ring strips |
+| Borders | Quad pass around surface geometry. *(C-15)* In `glass` mode a tiled or floating window's border is a glass bezel instead: its backdrop grows by `border-size` (radius rounding + border), the painted ring is skipped, the lens bends only inside the ring, the hairline takes the border colour (following the focus crossfade) and a faint seam marks where glass meets content. An opaque window gets a ring-only backdrop; fullscreen and rotated outputs keep the painted border (a `de` maximized window wears the bezel like a lone tile, C-24 as amended) | Negligible; a bezel on an opaque window costs a ring-only blur and damages only the four ring strips |
 | Shadows | ~~Pre-blurred nine-slice texture~~ *(C-11)* SDF pixel shader over the bordered rect grown by `range`; drawn only outside it, so a translucent window is not darkened by its own shadow. *(C-14)* Two gaussian layers — a tight contact shadow and a wide ambient one — dropped downward by ≈0.3·`range`, still excluded under the unshifted rect; deeper and wider on the focused window, following the border's focus crossfade | Cheap; expands damage (grown downward by the drop) |
 | Glow *(added C-11)* | The shadow's ~~pixel shader~~ *(C-14)* original single-ring pixel shader (not the dropped two-layer one), tinted with the window's border colour (following its focus crossfade) and scaled by `strength`; reaches a fixed 24 logical px, drawn only outside the bordered rect, below the border and surface; `active` / `inactive` gate it per focus state | Cheap; expands damage |
 | Dim inactive | Colour multiply in the surface pass | Negligible |
@@ -3410,8 +3410,10 @@ Layout is a trait; two implementations plus floating in v1.
   there is a fourth state. `set_maximized` and X11
   `_NET_WM_STATE_MAXIMIZED_HORZ`/`_VERT` are honoured: the window fills the
   usable area (the output minus layer-shell exclusive zones), recomputed on every
-  arrange, square and without a border, and leaving maximize restores its prior
-  rect. Fullscreen wins over maximized. C-19 is unchanged. As built, X11 maximize
+  arrange, and leaving maximize restores its prior rect. *(amended 2026-11-08)*
+  It takes the frame of a lone tile: the usable area inset by `gaps-out`, with
+  the normal border or glass bezel, rounded corners, shadow and titlebar. Flush
+  and square it read as running into the inset taskbar. Fullscreen wins over maximized. C-19 is unchanged. As built, X11 maximize
   is both axes together: smithay 0.7 delivers and writes
   `_NET_WM_STATE_MAXIMIZED_HORZ` and `_VERT` only as a pair, so a single-axis
   request never reaches the compositor. The shell's placement carries the axes

@@ -338,18 +338,17 @@ fn explicit_bezel(area: &blur::BlurArea, rect: Rectangle<i32, Physical>, bezel: 
     bezel.is_some() && matches!(area, blur::BlurArea::Rect(r) if blur::grow(*r, 1).contains_rect(rect))
 }
 
-/// Is `window` fullscreen, or maximized under `mode "de"`? Either fills its
-/// area with no border inset and is drawn square (COMP-05 §3.1, C-24). Read
-/// from the state the client was last configured with.
+/// Is `window` fullscreen? It fills its area with no border inset and is drawn
+/// square (COMP-05 §3.1). A maximized window is not: under `mode "de"` it takes
+/// the frame of a lone tile and looks like one. Read from the state the client
+/// was last configured with.
 fn fills_area(window: &Window) -> bool {
     use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State;
     if let Some(toplevel) = window.toplevel() {
         let states = toplevel.current_state().states;
-        return states.contains(State::Maximized) || states.contains(State::Fullscreen);
+        return states.contains(State::Fullscreen);
     }
-    window
-        .x11_surface()
-        .is_some_and(|x| x.is_maximized() || x.is_fullscreen())
+    window.x11_surface().is_some_and(|x| x.is_fullscreen())
 }
 
 /// Is `window` Quick Tiled under `mode "de"` (M5)? A floating window (no tile
