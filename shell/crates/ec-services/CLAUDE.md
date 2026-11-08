@@ -9,7 +9,7 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   the human, not escalate. Anything that would need to be trusted belongs in
   `abyss/src/trusted_ui/` instead.
 - Lib plus three bins. The lib is linked by the panes (`notifications`, `tray`,
-  `status`, `session`, `apps`); `src/bin/ec-screensaver.rs` owns
+  `status`, `session`, `apps`, which launches each app in its own `app-*.scope` and, via `app_scope`, stops opted-in apps such as Zoom when their last window closes); `src/bin/ec-screensaver.rs` owns
   `org.freedesktop.ScreenSaver` and forwards inhibits to the compositor
   (`packaging/ec-screensaver.service`); `src/bin/ec-pairing.rs` is the
   session's one BlueZ pairing agent and serves `org.eclipse.Services.Pairing`
