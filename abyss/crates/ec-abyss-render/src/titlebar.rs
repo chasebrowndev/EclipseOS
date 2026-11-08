@@ -196,6 +196,22 @@ const CELL_PRESS: (Rgba, Rgba) = ([1.0, 1.0, 1.0, 0.17], [1.0, 1.0, 1.0, 0.24]);
 /// glass cell and not a solid fill.
 const CLOSE_HOVER: (Rgba, Rgba) = ([0.90, 0.28, 0.30, 0.34], [0.95, 0.40, 0.42, 0.60]);
 const CLOSE_PRESS: (Rgba, Rgba) = ([0.90, 0.28, 0.30, 0.52], [0.95, 0.40, 0.42, 0.75]);
+/// The light twins (ADR 0084, STYLE.md Light): the warm off-white tint at the
+/// light window tint (`.70 x .65`, the same veil a light client lays), ink in
+/// place of white for text, glyphs, seam and cells. Focus stays the one white
+/// lift; the rim stays the compositor's.
+const GROUND_L: [f32; 3] = [0.957, 0.945, 0.918];
+const GROUND_ALPHA_L: f32 = 0.455;
+const GROUND_ALPHA_IDLE_L: f32 = 0.34;
+const LIFT_L: Rgba = [1.0, 1.0, 1.0, 0.10];
+const SEAM_L: Rgba = [0.102, 0.086, 0.063, 0.10];
+const SEAM_IDLE_L: Rgba = [0.102, 0.086, 0.063, 0.06];
+const INK_L: Rgba = [0.102, 0.086, 0.063, 0.94];
+const INK_IDLE_L: Rgba = [0.102, 0.086, 0.063, 0.50];
+const GLYPH_L: Rgba = [0.102, 0.086, 0.063, 0.82];
+const GLYPH_IDLE_L: Rgba = [0.102, 0.086, 0.063, 0.46];
+const CELL_HOVER_L: (Rgba, Rgba) = ([0.102, 0.086, 0.063, 0.11], [0.102, 0.086, 0.063, 0.18]);
+const CELL_PRESS_L: (Rgba, Rgba) = ([0.102, 0.086, 0.063, 0.15], [0.102, 0.086, 0.063, 0.24]);
 /// The hovered button's cell: inset from the bar's edge, rounded.
 const CELL_INSET: f32 = 4.0;
 const CELL_RADIUS: f32 = 7.0;
@@ -234,6 +250,7 @@ struct Look {
     maximized: bool,
     shaded: bool,
     active: bool,
+    light: bool,
 }
 
 fn paint(look: &Look) -> Vec<u8> {
@@ -253,29 +270,26 @@ fn paint(look: &Look) -> Vec<u8> {
             ph as f32 + r * 2.0
         },
     );
-    let ground = [
-        GROUND[0],
-        GROUND[1],
-        GROUND[2],
-        if look.active {
-            GROUND_ALPHA
-        } else {
-            GROUND_ALPHA_IDLE
-        },
-    ];
-    p.fill(body, r, ground);
+    let (g, alpha, lift, seam) = match (look.light, look.active) {
+        (false, true) => (GROUND, GROUND_ALPHA, LIFT, SEAM),
+        (false, false) => (GROUND, GROUND_ALPHA_IDLE, LIFT, SEAM_IDLE),
+        (true, true) => (GROUND_L, GROUND_ALPHA_L, LIFT_L, SEAM_L),
+        (true, false) => (GROUND_L, GROUND_ALPHA_IDLE_L, LIFT_L, SEAM_IDLE_L),
+    };
+    p.fill(body, r, [g[0], g[1], g[2], alpha]);
     if look.active {
-        p.fill(body, r, LIFT);
+        p.fill(body, r, lift);
     }
     if !look.shaded {
-        p.shade(
-            (0.0, ph as f32 - d, pw as f32, d),
-            if look.active { SEAM } else { SEAM_IDLE },
-            |_, _| 1.0,
-        );
+        p.shade((0.0, ph as f32 - d, pw as f32, d), seam, |_, _| 1.0);
     }
 
-    let ink = if look.active { GLYPH } else { GLYPH_IDLE };
+    let ink = match (look.light, look.active) {
+        (false, true) => GLYPH,
+        (false, false) => GLYPH_IDLE,
+        (true, true) => GLYPH_L,
+        (true, false) => GLYPH_IDLE_L,
+    };
     for b in [Button::Minimize, Button::Maximize, Button::Close] {
         let rect = button_rect(look.w, look.h, b);
         let (cx, cy) = (
@@ -291,11 +305,13 @@ fn paint(look: &Look) -> Vec<u8> {
         };
         let mut icon = ink;
         if let Some(down) = state {
-            let (fill, rim) = match (b, down) {
-                (Button::Close, false) => CLOSE_HOVER,
-                (Button::Close, true) => CLOSE_PRESS,
-                (_, false) => CELL_HOVER,
-                (_, true) => CELL_PRESS,
+            let (fill, rim) = match (b, down, look.light) {
+                (Button::Close, false, _) => CLOSE_HOVER,
+                (Button::Close, true, _) => CLOSE_PRESS,
+                (_, false, false) => CELL_HOVER,
+                (_, true, false) => CELL_PRESS,
+                (_, false, true) => CELL_HOVER_L,
+                (_, true, true) => CELL_PRESS_L,
             };
             let cell = (
                 (rect.loc.x as f32 + CELL_INSET) * d,
@@ -309,7 +325,12 @@ fn paint(look: &Look) -> Vec<u8> {
             );
             p.fill(cell, cr, fill);
             p.shade(outer, rim, |x, y| band(sd_box(x, y, cell, cr), -d, 0.0));
-            icon = [1.0, 1.0, 1.0, 0.96];
+            // White on the danger cell in either scheme; ink on a light cell.
+            icon = if look.light && b != Button::Close {
+                [INK_L[0], INK_L[1], INK_L[2], 0.96]
+            } else {
+                [1.0, 1.0, 1.0, 0.96]
+            };
         }
         let half = 5.0 * d;
         let stroke = 0.8 * d;
@@ -364,7 +385,12 @@ fn paint(look: &Look) -> Vec<u8> {
     if !look.title.is_empty() && left > PAD {
         let face = Face::Body;
         let top = ((look.h as usize).saturating_sub(face.line_h())) / 2;
-        let ink = if look.active { INK } else { INK_IDLE };
+        let ink = match (look.light, look.active) {
+            (false, true) => INK,
+            (false, false) => INK_IDLE,
+            (true, true) => INK_L,
+            (true, false) => INK_IDLE_L,
+        };
         p.text(face, look.dev, PAD as usize, top, &look.title, ink);
     }
     let raster = p.into_raster();
@@ -460,7 +486,8 @@ pub fn raster_src((w, h): (i32, i32)) -> Rectangle<f64, Logical> {
 /// `bar` is the bar's rectangle: `loc` output-local physical, `size.w` its
 /// logical width and `size.h` the bar height (taken from `info.height`).
 /// `radius` is the logical corner radius of the top corners, 0 for a square
-/// (maximized) bar. `alpha` is the window's. A redacted window never gets here:
+/// (maximized) bar. `alpha` is the window's. `light` draws the light scheme's
+/// twin (`Appearance::glass_light`). A redacted window never gets here:
 /// the capture pass covers its bar with the placeholder (COMP-02 §8).
 ///
 /// The texture is rebuilt only when something that decides its pixels changed.
@@ -477,6 +504,7 @@ pub fn bar_element(
     active: bool,
     radius: i32,
     alpha: f32,
+    light: bool,
 ) -> Option<MemoryRenderBufferRenderElement<GlesRenderer>> {
     if width <= 0 || info.height <= 0 {
         return None;
@@ -496,6 +524,7 @@ pub fn bar_element(
         maximized: info.maximized,
         shaded: info.shaded,
         active,
+        light,
     };
     let key = (output.clone(), window.clone());
     let size = (width * dev as i32, info.height * dev as i32);
@@ -639,6 +668,7 @@ mod tests {
             maximized: false,
             shaded: false,
             active: true,
+            light: false,
         }
     }
 
@@ -693,6 +723,19 @@ mod tests {
             ..look()
         });
         assert_ne!(base, blank);
+    }
+
+    #[test]
+    fn light_is_its_own_look_with_ink_title_and_a_clearer_ground() {
+        let dark = paint(&look());
+        let light = paint(&Look {
+            light: true,
+            ..look()
+        });
+        assert_ne!(dark, light);
+        // Mid-bar, clear of the title and buttons: the light ground lets more
+        // backdrop through than the dark one does.
+        assert!(alpha_at(&light, 300, 150, 16) < alpha_at(&dark, 300, 150, 16));
     }
 
     #[test]

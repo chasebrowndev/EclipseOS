@@ -76,6 +76,9 @@ colour.
 built-in or an earlier theme, so cycles cannot form. Theme blocks are KDL-only,
 not settable over the socket. An explicit `blur { frost { tint } }`,
 `blur { glass { rim } }` or `annotations { }` key still wins over the theme.
+Light glass whitens once (amended): the compositor's glass only veils the
+backdrop lightly, as dark's smoke does, and the window tint carries the
+white. Whitening in both stacked into a near-opaque window (STYLE.md Light).
 `ec-portal` (`ec-services`) is the bus-activated portal Settings backend,
 selected by `abyss.portal` and `abyss-portals.conf` under
 `XDG_CURRENT_DESKTOP=Abyss`. It serves dark until the compositor answers.

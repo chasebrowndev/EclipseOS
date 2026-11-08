@@ -392,6 +392,7 @@ impl Frame<'_> {
                 active,
                 radius,
                 alpha,
+                self.config.appearance.glass_light() > 0.0,
             ) {
                 out.push(AbyssRenderElement::Memory(element));
             }

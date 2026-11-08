@@ -74,6 +74,11 @@ pub fn white_fill(intent: f32) -> Color {
     }
 }
 
+/// Light veils the backdrop with a near-white base; the alpha that holds a
+/// dark window up flattens the wallpaper under a white one. One user knob
+/// (`decoration.surface.tint`), scaled down on light.
+const LIGHT_TINT_SCALE: f32 = 0.65;
+
 fn is_light() -> bool {
     crate::tokens::color::palette().scheme == ec_theme::Scheme::Light
 }
@@ -125,7 +130,16 @@ pub fn group_rim(fill: f32) -> Color {
 /// against mid-grey, as the card and inset fills below are, gave about `.89`
 /// for `.70` and made Settings visibly darker than a terminal.)
 pub fn tint_alpha(intent: f32) -> f32 {
-    intent.clamp(0.0, 1.0)
+    scheme_tint(intent, is_light())
+}
+
+fn scheme_tint(intent: f32, light: bool) -> f32 {
+    let a = intent.clamp(0.0, 1.0);
+    if light {
+        a * LIGHT_TINT_SCALE
+    } else {
+        a
+    }
 }
 
 /// [`base`] at the alpha of the tint `intent`, as the colour iced must be
@@ -208,6 +222,13 @@ mod tests {
     fn tint_endpoints_are_exact() {
         assert_eq!(tint_alpha(0.0), 0.0);
         assert!((tint_alpha(1.0) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn light_veils_less_than_dark_and_dark_is_untouched() {
+        assert_eq!(scheme_tint(0.70, false), 0.70);
+        assert!((scheme_tint(0.70, true) - 0.70 * LIGHT_TINT_SCALE).abs() < 1e-6);
+        assert!(scheme_tint(0.0, true) == 0.0);
     }
 
     #[test]
