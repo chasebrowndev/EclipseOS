@@ -351,7 +351,8 @@ fn maximize_replaces_a_tile_and_restore_gives_back_the_original_free_rect() {
     assert!(maximize::set(&mut h.state, &w, Some((true, true))));
     let id = shell::output_of_window(&h.state, &w).unwrap();
     assert!(maximize::is_maximized(&h.state, &w));
-    assert_eq!(float_rect(&h, &w), usable_of(&h, id));
+    let o = h.state.outputs.get(id).expect("output").output.clone();
+    assert_eq!(float_rect(&h, &w), shell::tiling_area(&h.state, &o));
     assert_eq!(tiled_states(&w), [false; 4]);
     assert!(maximize::set(&mut h.state, &w, None));
     assert_eq!(placement(&h, &w), Placement::Free);

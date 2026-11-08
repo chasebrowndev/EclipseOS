@@ -2793,6 +2793,16 @@ fn render_secondary(
         }
         out.diag.readback_len = Some(len);
     }
+    // Refuse a read-back that is not exactly the packed frame: uploading it
+    // as `size` would shear or shift the image on the secondary.
+    if !gpu::is_packed_argb8888(size.w, size.h, bytes.len()) {
+        anyhow::bail!(
+            "read-back is {} bytes, not packed {}x{} ARGB",
+            bytes.len(),
+            size.w,
+            size.h
+        );
+    }
     let texture = secondary
         .import_memory(bytes, Fourcc::Abgr8888, (size.w, size.h).into(), flipped)
         .map_err(|err| anyhow!("uploading to the secondary GPU: {err}"))?;

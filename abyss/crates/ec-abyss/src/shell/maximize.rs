@@ -3,9 +3,10 @@
 //!
 //! A maximized window is a floating window whose [`Placement`] is `Maximized`:
 //! its rectangle is not placed but derived on every arrange from the output's
-//! usable area (the output minus layer-shell exclusive zones), so a panel
-//! appearing or an output resizing is followed. It is drawn square and without
-//! a border, like a fullscreen window, and the placement keeps the rectangle to
+//! tiling area (the usable area, the output minus layer-shell exclusive zones,
+//! inset by the outer gaps), so a panel appearing or an output resizing is
+//! followed. It takes the frame, border, rounded corners and shadow of a single
+//! window alone in a tiling workspace; the placement keeps the rectangle to
 //! give back. Fullscreen wins over it and leaving fullscreen returns to it.
 //!
 //! Quick Tile (`shell::quicktile`) is the other placement of this kind and
@@ -32,17 +33,16 @@ use super::{
     workspace::{Floating, Placement},
 };
 
-/// The rectangle a maximized window takes: the usable area along each set axis,
+/// The rectangle a maximized window takes: the tiling area (usable minus gaps) along each set axis,
 /// and `restore` (shrunk to its content) along the other. It is the window's
 /// own rectangle, so the caller adds no border inset.
 pub(super) fn maximized_rect(
     usable: Rectangle<i32, Logical>,
-    border: i32,
     restore: Rectangle<i32, Logical>,
     h: bool,
     v: bool,
 ) -> Rectangle<i32, Logical> {
-    let own = shrink(restore, border);
+    let own = restore;
     let (x, w) = if h {
         (usable.loc.x, usable.size.w)
     } else {
@@ -71,9 +71,10 @@ pub(super) fn fitted_rect(
     v: bool,
     bar: i32,
 ) -> Rectangle<i32, Logical> {
-    let mut rect = maximized_rect(usable, border, restore, h, v);
-    let content = clamp_size(window, (rect.size.w, (rect.size.h - bar).max(1)).into(), false);
-    rect.size = (content.w, content.h + bar).into();
+    let mut rect = maximized_rect(usable, restore, h, v);
+    let inner = shrink(rect, border);
+    let content = clamp_size(window, (inner.size.w, (inner.size.h - bar).max(1)).into(), false);
+    rect.size = (content.w + 2 * border, content.h + bar + 2 * border).into();
     rect
 }
 
@@ -82,7 +83,7 @@ pub(super) fn fitted_rect(
 pub(super) fn content_rect(f: &Floating, fullscreen: bool, border: i32, bar: i32) -> Rectangle<i32, Logical> {
     if fullscreen {
         f.rect
-    } else if f.placement.is_placed() {
+    } else if matches!(f.placement, Placement::QuickTile { .. }) {
         content_of_outer(f.rect, 0, bar)
     } else {
         content_of_outer(f.rect, border, bar)
@@ -210,7 +211,7 @@ fn set_now(
             };
             f.placement = Placement::Maximized { h, v, restore };
             if !fullscreen {
-                f.rect = fitted_rect(&f.window, usable, border, restore, h, v, bar);
+                f.rect = fitted_rect(&f.window, area, border, restore, h, v, bar);
             }
         }
         (None, Placement::Maximized { restore, .. } | Placement::QuickTile { restore, .. }) => {

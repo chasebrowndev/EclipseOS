@@ -54,7 +54,8 @@ impl Placement {
     }
 
     /// Does this placement derive the rectangle (maximized or Quick Tile)?
-    /// Such a window is drawn square and without a border inset.
+    /// A Quick Tile is drawn square and without a border inset; a maximized
+    /// window looks like a lone tile instead.
     pub fn is_placed(&self) -> bool {
         !matches!(self, Placement::Free)
     }

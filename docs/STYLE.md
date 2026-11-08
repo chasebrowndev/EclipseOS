@@ -59,7 +59,11 @@ starting points to tune in the per-pane visual pass. Every dark token has a
 light twin, derived from the built-in light seeds. User themes override seeds and obey
 the same rules (ADR 0084).
 - Base: #f4f1ea (warm off-white, never blue-white). Surfaces: #ebe6dc, #e3ddd1, #ddd6c9
-- Frost tint (compositor): #f4f1ea at .55. Glass fill on top: rgba(255,255,255,.35-.5)
+- Frost tint (compositor): #f4f1ea at .35. Glass fill on top: rgba(255,255,255,.22-.32);
+  sheets #f4f1ea at .36, the bar at .30
+- Window tint: the `decoration.surface.tint` intent times .65 (`LIGHT_TINT_SCALE`), so the
+  default .70 is .455. A white veil flattens the backdrop far more than a dark one at the
+  same alpha; one knob still drives both schemes
 - Ink: rgba(26,22,16,α) replaces rgba(255,255,255,α) for hairlines, borders and
   tracks, at roughly the same α (.06-.14). The rim stays white: on light glass it reads as
   a bright edge, not a highlight
@@ -73,7 +77,7 @@ the same rules (ADR 0084).
 - Accent: #f2c33c for fills, toggles, slider fill and marks; knob and glyph ink on it #1a1610.
   Accent *text* is #856000 (≥ 4.5:1 on the base and on a selected `accent_fill` pill). Tints: rgba(242,195,60,.18) fill, .45 border
 - Text: #1a1610 primary, rgba(26,22,16,.62) secondary, rgba(26,22,16,.42) tertiary
-- Settings content column: rgba(255,255,255,.30) tint on the shared blur (the light twin
+- Settings content column: rgba(255,255,255,.12) tint on the shared blur (the light twin
   of the dark .28 black)
 - Depth runs toward the ink on light. A light card on the column is ink at the `lift_soft`
   step (rgba(26,22,16,.04)); an inset on a card is the bar cell's rest step (`cell`,
@@ -93,9 +97,13 @@ the same rules (ADR 0084).
   tint colour is therefore pre-compensated per channel (`surface::tint`: `enc(dec(c*a)/a)`), so the
   buffer carries `c*a` and alpha `a`, the same effective .70-.72 as a terminal's `alpha=0.72` in either scheme
 - Compositor glass (`eclipse_glass_v1` panes, layer and window glass) in light has no dark smoke
-  and no highlight knee. The backdrop is saturated lightly (1.25) and mixed 70% toward warm white
-  (.985,.975,.955). The bezel seam is .04 and the rim stays white. `Appearance::glass_light()`
-  drives this
+  and no highlight knee. The backdrop is saturated (1.6) and veiled 22% toward warm white
+  (.985,.975,.955), the light twin of dark's 28% smoke. Whitening happens once, in the window
+  tint: the shader only veils, or the backdrop is whitened twice and the glass reads opaque.
+  The bezel seam is .04 and the rim stays white. `Appearance::glass_light()` drives this
+- Compositor titlebars (`mode "de"`) follow the scheme: #f4f1ea at the light window tint
+  (.455 focused, .34 idle) plus the white focus lift, ink title and glyphs at the text steps,
+  an ink seam (.10 / .06), and bar-cell ink steps on hovered buttons. Close keeps its danger cell
 - Trusted-UI prompts use the built-in dark or light palette matching the theme's
   brightness, never a user theme's colours (ADR 0084)
 

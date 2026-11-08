@@ -791,7 +791,6 @@ dependencies = [
 name = "ec-policyd"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "blake3",
  "ec-policy-eval",
  "ed25519-dalek",

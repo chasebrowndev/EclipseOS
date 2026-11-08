@@ -176,8 +176,9 @@ pub const TABLE: &[Key] = &[
        `priority-down`, Super-held tile-on-drop) do nothing, and `Alt+F4` \
        closes the focused window unless you bind that chord yourself. Windows \
        can be maximized (a client request, or `Super+PageUp` / \
-       `toggle-maximize`): the window fills the usable area, square and \
-       without a border, and restores its old rectangle; under `wm` and \
+       `toggle-maximize`): the window takes a lone tile's frame (the usable \
+       area inset by `gaps-out`, with its border, rounded corners, shadow and \
+       titlebar), and restores its old rectangle; under `wm` and \
        `hybrid` maximize requests are declined. Under `de` a titlebar drags \
        its window (a drag on a maximized window restores it under the \
        pointer), a double-click on it toggles maximize, a right press opens \
