@@ -347,6 +347,14 @@ pub fn pick_transfer_format(
     })
 }
 
+/// The `CpuCopy` read-back is one tightly packed 4-byte-per-pixel image: GL's
+/// pack alignment is 4 and a row is `4 * w` bytes, so no row padding exists.
+/// Anything else (a padded pitch, a size from a stale mode) would upload a
+/// sheared or shifted frame, so the caller refuses it.
+pub fn is_packed_argb8888(w: i32, h: i32, len: usize) -> bool {
+    w > 0 && h > 0 && len == w as usize * h as usize * 4
+}
+
 /// Formats every set contains, in the order of the first set. Empty when there
 /// are no sets.
 pub fn common_formats(sets: &[&[Format]]) -> Vec<Format> {
@@ -771,6 +779,17 @@ mod tests {
             pick_transfer_format(&p, &s),
             Some((Fourcc::Xrgb8888, vec![m1, m2]))
         );
+    }
+
+    #[test]
+    fn copy_readback_must_be_tightly_packed() {
+        // 3x2 ARGB: 24 bytes when packed.
+        assert!(is_packed_argb8888(3, 2, 24));
+        // Rows padded to 16 bytes (3 px * 4 + 4) would be 32 bytes.
+        assert!(!is_packed_argb8888(3, 2, 32));
+        // A size from another mode (4x2) against the old buffer length.
+        assert!(!is_packed_argb8888(4, 2, 24));
+        assert!(!is_packed_argb8888(0, 2, 0));
     }
 
     #[test]
