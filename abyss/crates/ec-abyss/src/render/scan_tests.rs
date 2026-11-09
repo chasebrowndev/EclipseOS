@@ -91,6 +91,23 @@ fn the_capture_pass_cannot_see_the_selector() {
     );
 }
 
+/// Winit and headless call `capture::service` every frame; DRM gates it on a
+/// queue. A built-in screenshot rides that call, so the gate must name it or
+/// the bind does nothing on a real session (ADR 0093).
+#[test]
+fn the_drm_capture_gate_lets_a_queued_screenshot_through() {
+    let drm = include_str!("../backend/drm.rs");
+    let gate = drm
+        .split("fn service_captures")
+        .nth(1)
+        .and_then(|rest| rest.split("capture::service").next())
+        .expect("drm.rs has a service_captures gate");
+    assert!(
+        gate.contains("wants_service"),
+        "service_captures returns early without checking `state.shot.wants_service()`"
+    );
+}
+
 #[test]
 fn the_selector_sits_between_annotations_and_the_trusted_indicator_in_every_backend() {
     for (src, path, indicator_first) in [

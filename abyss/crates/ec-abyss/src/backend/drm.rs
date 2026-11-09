@@ -1969,7 +1969,9 @@ pub fn schedule_render(state: &mut AbyssState) {
 /// Drain the authorised capture queue. The renderer is moved out of
 /// `AbyssState` for the call because `service` needs the state too.
 fn service_captures(state: &mut AbyssState) {
-    if state.captures.is_empty() {
+    // A built-in screenshot rides this call too (ADR 0093): winit and headless
+    // call `service` every frame, this one must not skip it.
+    if state.captures.is_empty() && !state.shot.wants_service() {
         return;
     }
     let Some(mut drm) = state.drm.take() else { return };
