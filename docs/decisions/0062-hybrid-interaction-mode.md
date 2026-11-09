@@ -16,7 +16,7 @@ PROPOSEDFEATURES) but is not a value of `mode`.
 
 | Mode | Taskbar | Extras |
 |---|---|---|
-| `wm` | workspaces only | tiling, keyboard-first, no chips |
+| `wm` | workspaces, tray, clock | tiling, keyboard-first, no chips (amended 2026-11-09: tray and clock are shown in `wm`, owner decision) |
 | `hybrid` | workspaces, window chips, tray, clock | today's behaviour |
 | `de` | as hybrid | desktop icons, pointer-first navigation (COMP-17 §1) |
 
