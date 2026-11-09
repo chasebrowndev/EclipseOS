@@ -236,7 +236,8 @@ fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element
     // The horizontal inset is the unfolded bar's layer-shell margin, so the
     // strip is the same sheet seen edge-on rather than a second, wider
     // object. The surface *is* the sheet.
-    container(sheet)
+    // Its glass pane too: the same reason as the pill's in `bar_row`.
+    container(ec_ui::widget::glass_card(sheet, CellTone::Plain, radius))
         .width(Length::Fill)
         .height(Length::Fixed(h))
         .into()
@@ -293,9 +294,17 @@ fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a
     }
     glass(
         app,
-        container(bar_row)
-            .width(Length::Fill)
-            .style(theme::bar_ground(app.bar_radius, app.blur)),
+        // The capsule is one static pane under the cells. In glass mode the
+        // compositor's panes replace the layer's whole-surface blur, so a
+        // bar with no pane of its own is unblurred wherever no chip sits
+        // (the empty task strip between the pinned apps and the widgets).
+        ec_ui::widget::glass_card(
+            container(bar_row)
+                .width(Length::Fill)
+                .style(theme::bar_ground(app.bar_radius, app.blur)),
+            CellTone::Plain,
+            app.bar_radius,
+        ),
     )
 }
 
@@ -747,9 +756,9 @@ impl canvas::Program<Message> for EyeMark {
 // ------------------------------------------------------------------ pager
 
 /// One tile per workspace, in wire order. Plasma's pager: the current desktop
-/// is accented, an occupied one reads in secondary ink, an empty one is dim.
-/// No tile has an outline: the pointer lifts the glass under it, as it does
-/// under every bar cell.
+/// is accented, an occupied one is a glass lozenge in primary ink, and an
+/// empty one is recessed (no fill, dim ink). No tile has an outline: the
+/// pointer lifts the glass under it, as it does under every bar cell.
 ///
 /// The current desktop is the bar's *second* yellow, by explicit direction:
 /// "which desktop am I on" is live state of the same kind as "which window
@@ -783,7 +792,8 @@ pub(crate) fn grid(app: &crate::app::App) -> Option<crate::pager::Grid> {
 /// the wheel over the grid steps through them.
 ///
 /// Same ledger as the row it replaces: the active desktop is the pager's
-/// yellow, nothing else here is.
+/// yellow, nothing else here is. Empty desktops are recessed, so the grid
+/// reads as "these are used" rather than ten equal tiles.
 fn grid_pager<'a>(
     g: crate::pager::Grid,
     desktops: &ec_ipc::DesktopGrid,
@@ -873,6 +883,12 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
 
 /// One pager tile, `width` × `height`: the workspace row's, and the desktop
 /// grid's (which is shorter when it has several rows).
+///
+/// Three looks, so an occupied desktop and an empty one never read alike:
+/// - **active** — the `Focused` lozenge with the accent label (the one yellow);
+/// - **occupied** — a `Plain` glass lozenge with primary ink;
+/// - **empty** — `Latent`: no fill and no rim at rest, dim tertiary ink. The
+///   pointer lifts it into the plain lozenge and brightens the label.
 fn tile_sized<'a>(
     index: usize,
     occupied: bool,
@@ -880,15 +896,24 @@ fn tile_sized<'a>(
     width: f32,
     height: f32,
 ) -> Element<'a, Message, Theme> {
-    let tint = if ws_active {
-        color::accent_text()
+    let tone = if ws_active {
+        CellTone::Focused
     } else if occupied {
-        color::text_secondary()
+        CellTone::Plain
     } else {
-        color::text_tertiary()
+        CellTone::Latent
+    };
+    let (rest, lit) = if ws_active {
+        (color::accent_text(), color::accent_text())
+    } else if occupied {
+        (color::text(), color::text())
+    } else {
+        (color::text_tertiary(), color::text_secondary())
     };
     let face = if ws_active { font::DATA_MEDIUM } else { font::DATA };
-    let label = text(index.to_string()).size(size::MICRO).font(face).color(tint);
+    // No explicit colour on the label: the button hands its style's text
+    // colour down to the content, so the ink follows the pointer.
+    let label = text(index.to_string()).size(size::MICRO).font(face);
 
     let cell = button(container(label).center(Length::Fill))
         .width(Length::Fixed(width))
@@ -897,13 +922,15 @@ fn tile_sized<'a>(
         .style(move |t: &Theme, status: button::Status| {
             // The bar cell's glass lozenge and lifts, on the tile's smaller
             // squircle corner.
-            let mut style = theme::bar_cell(ws_active)(t, status);
-            style.text_color = tint;
-            style.border.radius = bar::RADIUS_TILE.into();
+            let mut style = theme::glass_cell(tone, bar::RADIUS_TILE)(t, status);
+            style.text_color = match status {
+                button::Status::Hovered | button::Status::Pressed => lit,
+                _ => rest,
+            };
             theme::bare_if_glass(style)
         })
         .on_press(Message::Switch(index));
-    parts::glass_ground(cell, ws_active, bar::RADIUS_TILE)
+    parts::glass_ground(cell, tone, bar::RADIUS_TILE)
 }
 
 // ------------------------------------------------------------------- tasks
