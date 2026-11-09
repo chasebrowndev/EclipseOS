@@ -786,38 +786,31 @@ pub(crate) fn grid(app: &crate::app::App) -> Option<crate::pager::Grid> {
     app.grid.as_ref().map(crate::pager::Grid::of)
 }
 
-/// The pager as the desktop grid (`mode "de"`, COMP-05 §7.1): every desktop,
-/// `rows` × `columns`, the active one of this bar's output lit and the ones
-/// with windows on them in the brighter ink. A click switches to a desktop;
-/// the wheel over the grid steps through them.
+/// The pager as the desktop grid (`mode "de"`, COMP-05 §7.1): the desktops
+/// this bar needs, not all of them. Those are the active one of this bar's
+/// output and every desktop with windows on it ([`grid_shown`]), laid out at the
+/// grid's own tile size and wrapped at its `columns`. A quiet session is a
+/// short row; a busy one fills the grid. A click switches to a desktop; the
+/// wheel over the grid steps through all of them, empty ones included.
 ///
 /// Same ledger as the row it replaces: the active desktop is the pager's
-/// yellow, nothing else here is. Empty desktops are recessed, so the grid
-/// reads as "these are used" rather than ten equal tiles.
+/// yellow, nothing else here is. Occupied desktops are the brighter ink.
 fn grid_pager<'a>(
     g: crate::pager::Grid,
     desktops: &ec_ipc::DesktopGrid,
     on: &crate::app::Bar,
 ) -> Element<'a, Message, Theme> {
-    let out = desktops
-        .outputs
-        .iter()
-        .find(|o| on.output_id != 0 && o.output == on.output_id)
-        .or_else(|| desktops.outputs.first());
+    let out = grid_output(desktops, on);
     let active = out.map(|o| o.active);
     let (tile_w, tile_h) = g.tile();
     let (gap_x, gap_y) = g.gap();
     let mut col = Column::new().spacing(gap_y);
-    for r in 0..g.rows {
+    for line in grid_shown(g, desktops, on).chunks(g.columns) {
         let mut row = Row::new().spacing(gap_x);
-        for c in 0..g.columns {
-            let index = g.index_of(r, c);
-            let windows = out
-                .and_then(|o| o.desktops.iter().find(|d| d.index == index))
-                .map_or(0, |d| d.windows);
+        for &index in line {
             row = row.push(tile_sized(
                 index,
-                windows > 0,
+                desktop_windows(out, index) > 0,
                 active == Some(index),
                 tile_w,
                 tile_h,
@@ -828,6 +821,37 @@ fn grid_pager<'a>(
     mouse_area(container(col).align_y(Alignment::Center))
         .on_scroll(Message::PagerScroll)
         .into()
+}
+
+/// The output whose desktops this bar draws: its own, or the first one when
+/// the bar was started without `--output` (a single-monitor dev run).
+fn grid_output<'a>(
+    desktops: &'a ec_ipc::DesktopGrid,
+    on: &crate::app::Bar,
+) -> Option<&'a ec_ipc::OutputDesktops> {
+    desktops
+        .outputs
+        .iter()
+        .find(|o| on.output_id != 0 && o.output == on.output_id)
+        .or_else(|| desktops.outputs.first())
+}
+
+/// The windows on `index` on the output `out`, `0` when it reports none.
+fn desktop_windows(out: Option<&ec_ipc::OutputDesktops>, index: usize) -> usize {
+    out.and_then(|o| o.desktops.iter().find(|d| d.index == index))
+        .map_or(0, |d| d.windows)
+}
+
+/// The desktops the grid draws on this bar, in number order: the active one of
+/// this output and every desktop with windows on it. What [`grid_pager`] lays
+/// out and [`strip_left`] reserves room for, so the two cannot disagree.
+pub(crate) fn grid_shown(
+    g: crate::pager::Grid,
+    desktops: &ec_ipc::DesktopGrid,
+    on: &crate::app::Bar,
+) -> Vec<usize> {
+    let out = grid_output(desktops, on);
+    crate::pager::shown(g.count(), out.map(|o| o.active), |i| desktop_windows(out, i) > 0)
 }
 
 /// The workspaces worth drawing: the ones with something on them, plus the
@@ -1079,9 +1103,9 @@ fn tasks<'a>(app: &'a crate::app::App, on: &'a crate::app::Bar) -> Element<'a, M
 /// Where the task strip's first chip begins, in surface-local pixels: the
 /// solver's `lead`.
 pub(crate) fn strip_left(app: &crate::app::App, on: &crate::app::Bar) -> f32 {
-    let pager = match grid(app) {
-        Some(g) => g.size().0,
-        None => {
+    let pager = match (grid(app), app.grid.as_ref()) {
+        (Some(g), Some(desktops)) => g.size_shown(grid_shown(g, desktops, on).len()).0,
+        _ => {
             let count = live_workspaces(&app.snapshot, on.output_id).count() as f32;
             (count * bar::PAGER_W + (count - 1.0).max(0.0) * bar::GAP).max(0.0)
         }
@@ -2417,5 +2441,50 @@ mod tests {
         assert_eq!(grid(&app).map(|g| g.count()), Some(10));
         app.mode = crate::model::Mode::Hybrid;
         assert!(grid(&app).is_none());
+    }
+
+    /// The grid draws the active desktop of this bar's output and the ones with
+    /// windows on them, and nothing else. Another output's occupancy does not
+    /// count, and the strip is given exactly the width those survivors take.
+    #[test]
+    fn the_grid_pager_draws_only_occupied_and_the_active_desktop() {
+        use ec_ipc::{Desktop, DesktopGrid, OutputDesktops};
+        let desk = |index: usize, windows: usize| Desktop {
+            index,
+            occupied: windows > 0,
+            windows,
+        };
+        let (mut app, mut on) = de_app(vec![]);
+        on.output_id = 9;
+        app.grid = Some(DesktopGrid {
+            rows: 2,
+            columns: 5,
+            wrap: true,
+            directional: true,
+            outputs: vec![
+                // The other monitor: its desktop 2 has windows, ours does not.
+                OutputDesktops {
+                    output: 7,
+                    name: "DP-2".into(),
+                    active: 1,
+                    desktops: vec![desk(1, 2), desk(2, 2)],
+                },
+                OutputDesktops {
+                    output: 9,
+                    name: "DP-1".into(),
+                    active: 4,
+                    desktops: vec![desk(1, 3), desk(6, 1), desk(9, 1)],
+                },
+            ],
+            desktops: vec![],
+        });
+        let g = grid(&app).expect("the grid under de");
+        assert_eq!(grid_shown(g, app.grid.as_ref().unwrap(), &on), vec![1, 4, 6, 9]);
+
+        crate::app::relayout(&app, &mut on, std::time::Instant::now());
+        let fixed = bar::EDGE + crate::layout::eclipse_w(on.menu.reveal.target()) + 2.0 * bar::ZONE_GAP;
+        let pager_w = strip_left(&app, &on) - fixed;
+        assert!((pager_w - g.size_shown(4).0).abs() < 0.01, "pager {pager_w}");
+        assert!(pager_w < g.size().0, "fewer survivors than the full grid");
     }
 }

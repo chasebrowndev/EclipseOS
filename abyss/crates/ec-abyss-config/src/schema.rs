@@ -216,8 +216,9 @@ pub const TABLE: &[Key] = &[
        forward; a pinned app merges with its group, and a `secret` window is \
        never grouped nor named in the list), a right click on a chip or a \
        list row opens the compositor's own window menu at the pointer, the \
-       pager is the desktop grid (`general.desktop-rows`) with the active \
-       desktop marked, a click on a tile switches to it and the wheel over \
+       pager is the desktop grid (`general.desktop-rows`) cut to the desktops \
+       with windows on them and the active one, which is marked, a click on \
+       a tile switches to it and the wheel over \
        the grid steps through the desktops, resting the pointer on a window's \
        chip for about 400 ms shows that window's hover preview (drawn by the \
        compositor, not for a group of several windows), and the widget area \

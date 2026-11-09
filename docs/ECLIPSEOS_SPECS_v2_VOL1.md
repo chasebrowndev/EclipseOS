@@ -3334,7 +3334,8 @@ agents check against (COMP §0.5).
 - Named workspaces persist in the session snapshot (COMP-01 §7).
 - *(added C-24, 2026-11-05)* As built, each output has a fixed ten human
   workspaces (`workspace <1..10>`), not dynamic ones. Under `mode "de"` these
-  are the desktops: the pager and desktop grid (§7.1) lay out the same ten, and
+  are the desktops: the pager and desktop grid (§7.1) lay out the same ten (the
+  taskbar's pager draws only the occupied desktops and the active one), and
   no second model exists. Agent workspaces stay out of the pager, grid,
   switcher and overview.
 
