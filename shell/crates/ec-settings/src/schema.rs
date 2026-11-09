@@ -197,6 +197,17 @@ pub fn blur_blurb(value: &str) -> Option<&'static str> {
 /// The node whose `mode` key decides which of its other keys apply.
 pub const BLUR: &str = "decoration.blur";
 
+/// The `decoration.blur` sub-node that tints glass against its backdrop.
+const ADAPTIVE: &str = "adaptive";
+
+/// Its switch and its strength: the strength is dimmed while the switch is off.
+pub const ADAPTIVE_ENABLED: &str = "decoration.blur.adaptive.enabled";
+pub const ADAPTIVE_STRENGTH: &str = "decoration.blur.adaptive.strength";
+
+/// Shown beneath the adaptive switch.
+pub const ADAPTIVE_BLURB: &str =
+    "Darkens or lightens glass so text stays readable over bright or dark backgrounds.";
+
 /// The value of a node's `mode` key that turns the node off: nothing under
 /// it applies.
 const MODE_OFF: &str = "off";
@@ -213,7 +224,12 @@ pub fn moded<'m>(node: &str, path: &str, modes: &'m [String]) -> Option<Vec<&'m 
     if rest == "mode" {
         return None;
     }
-    let sub = rest.split_once('.').map(|(sub, _)| sub);
+    // Adaptive glass reads the backdrop under any blurred material, so it is
+    // tuned like a key directly under the node, not like a mode's own.
+    let sub = rest
+        .split_once('.')
+        .map(|(sub, _)| sub)
+        .filter(|sub| *sub != ADAPTIVE);
     Some(
         modes
             .iter()
@@ -372,6 +388,8 @@ impl Row {
             "decoration.blur.glass.dispersion" => "Glass dispersion",
             "decoration.blur.glass.rim" => "Glass rim light",
             "decoration.blur.frost.tint" => "Frost tint",
+            "decoration.blur.adaptive.enabled" => "Adaptive glass",
+            "decoration.blur.adaptive.strength" => "Adaptive strength",
             // The window's own material (`ec_ui::surface`): the rail and column
             // tint, a card's fill, an inset group's fill.
             "decoration.surface.tint" => "Window tint",
@@ -623,6 +641,10 @@ mod tests {
         // A sub-node no mode is named for applies to no mode, and says so by
         // being dimmed under every one of them rather than by vanishing.
         assert_eq!(moded(BLUR, "decoration.blur.smoke.depth", &modes), Some(vec![]));
+        assert_eq!(
+            moded(BLUR, ADAPTIVE_STRENGTH, &modes),
+            Some(vec!["blur", "frost", "glass"])
+        );
     }
 
     #[test]
