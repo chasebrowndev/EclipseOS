@@ -25,7 +25,14 @@ path = "src/main.rs"
 name = "shader-preview"
 path = "src/bin/shader-preview.rs"
 
+# Dev-only: compiles every glass/frost/rounded backdrop program on the local
+# GPU and prints the driver's info log on failure. Not shipped.
+[[bin]]
+name = "shader-compile"
+path = "src/bin/shader-compile.rs"
+
 [dependencies]
+tracing-subscriber.workspace = true
 smithay = { workspace = true, features = ["wayland_frontend", "desktop", "renderer_gl", "xwayland"] }
 ec-abyss-config = { path = "../crates/ec-abyss-config" }
 ec-abyss-render = { path = "../crates/ec-abyss-render" }

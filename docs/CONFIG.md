@@ -190,6 +190,8 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `decoration.blur.glass.bevel` | int 1..128 | `16` | live | `glass`: width of the edge band the backdrop rolls off in, logical px in from the edge. |
 | `decoration.blur.glass.dispersion` | float 0..1 | `0` | live | `glass`: colour fringing in the bevel; 0 (the default) is none. |
 | `decoration.blur.glass.rim` | float 0..1 | `0.5` | live | `glass`: strength of the neutral hairline rim, brightest along the top-left edges with a weaker lobe at the bottom-right. |
+| `decoration.blur.adaptive.enabled` | bool | `#true` | live | Adaptive glass (ADR 0092): the backdrop's tint follows the brightness of what is behind it, so text stays readable. In a dark scheme a bright backdrop darkens the glass; in a light scheme a dark one lightens it. Measured on the GPU; nothing is read back. |
+| `decoration.blur.adaptive.strength` | float 0..1 | `0.5` | live | How far adaptive glass may move the tint; 0 keeps the fixed tint. |
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
 | `decoration.surface.tint` | float 0..1 | `0.7` | live | Window tint opacity over the glass. sRGB-intent; clients convert. |
 | `decoration.surface.card-fill` | float 0..0.3 | `0.035` | live | Alpha of a hairline card's white fill. sRGB-intent; clients convert. |

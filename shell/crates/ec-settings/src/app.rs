@@ -1692,8 +1692,25 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             if !caption.is_empty() {
                 run = run.push(row_caption(&caption));
             }
+            let adaptive_on = app
+                .key(crate::schema::ADAPTIVE_ENABLED)
+                .and_then(|k| k.value.as_bool())
+                .unwrap_or(true);
             for key in keys {
-                run = run.push(setting_row_at(app, &key.label(), key, dim && app.blur));
+                // The strength means nothing while adaptive glass is off.
+                let off = key.path == crate::schema::ADAPTIVE_STRENGTH && !adaptive_on;
+                run = run.push(setting_row_at(app, &key.label(), key, (dim || off) && app.blur));
+                if key.path == crate::schema::ADAPTIVE_ENABLED {
+                    run = run.push(
+                        iced::widget::container(
+                            iced::widget::text(crate::schema::ADAPTIVE_BLURB)
+                                .font(ec_ui::tokens::font::UI)
+                                .size(ec_ui::tokens::size::BODY_SMALL)
+                                .style(theme::text_tertiary),
+                        )
+                        .padding([0.0, space::CARD]),
+                    );
+                }
             }
             rows.1.push(dimmed_at(run, dim, app.blur));
         }

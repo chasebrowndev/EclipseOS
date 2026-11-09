@@ -372,14 +372,19 @@ fn bezel_ready(
     if effects::fb_y_mirrored(output.current_transform()).is_none() || output.current_mode().is_none() {
         return false;
     }
+    let gpu = &mut *store.gpu;
+    let failed = &mut gpu.compile_failed;
     let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match mode {
-        BlurMode::Frost => (&mut store.gpu.frost, effects::compile_frost, "frost"),
-        _ => (&mut store.gpu.glass, effects::compile_glass, "glass"),
+        BlurMode::Frost => (&mut gpu.frost, effects::compile_frost, "frost"),
+        _ => (&mut gpu.glass, effects::compile_glass, "glass"),
     };
-    if slot.is_none() {
+    if slot.is_none() && !failed.contains(&what) {
         match compile(renderer) {
             Ok(program) => *slot = Some(program),
-            Err(err) => tracing::warn!(?err, shader = what, "compiling a bezel shader; painted borders"),
+            Err(err) => {
+                failed.push(what);
+                tracing::warn!(?err, shader = what, "compiling a bezel shader; painted borders");
+            }
         }
     }
     slot.is_some()
@@ -491,6 +496,9 @@ pub struct BorderGpu {
     /// The glass program failed to compile; layers with panes keep the
     /// whole-surface glass instead (and it is not retried per frame).
     glass_failed: bool,
+    /// Backdrop programs (by name) whose compile failed: warned once, not
+    /// retried every frame.
+    compile_failed: Vec<&'static str>,
     /// The same three (blur, frost, glass) masked to a layer's input-region
     /// shape (Vol 1 §5.2), compiled on the first frame that draws one.
     shaped: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
@@ -1068,35 +1076,31 @@ fn insert_blur(
         // A rotated output (`fb_height` None) keeps the plain square
         // backdrop in every mode.
         let scaled_radius = (radius as f64 * upscale) as f32;
+        let gpu = &mut *store.gpu;
         let program = fb_height.and_then(|(fb_height, mirrored)| {
             let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match (mode, shape.is_some()) {
                 (BlurMode::Off, _) => return None,
                 (BlurMode::Blur, false) if radius <= 0 => return None,
-                (BlurMode::Blur, false) => {
-                    (&mut store.gpu.rounded, effects::compile_rounded, "rounded-corner")
-                }
-                (BlurMode::Frost, false) => (&mut store.gpu.frost, effects::compile_frost, "frost"),
-                (BlurMode::Glass, false) => (&mut store.gpu.glass, effects::compile_glass, "glass"),
+                (BlurMode::Blur, false) => (&mut gpu.rounded, effects::compile_rounded, "rounded-corner"),
+                (BlurMode::Frost, false) => (&mut gpu.frost, effects::compile_frost, "frost"),
+                (BlurMode::Glass, false) => (&mut gpu.glass, effects::compile_glass, "glass"),
                 (BlurMode::Blur, true) => (
-                    &mut store.gpu.shaped[0],
+                    &mut gpu.shaped[0],
                     effects::compile_rounded_shaped,
                     "shaped rounded-corner",
                 ),
-                (BlurMode::Frost, true) => (
-                    &mut store.gpu.shaped[1],
-                    effects::compile_frost_shaped,
-                    "shaped frost",
-                ),
-                (BlurMode::Glass, true) => (
-                    &mut store.gpu.shaped[2],
-                    effects::compile_glass_shaped,
-                    "shaped glass",
-                ),
+                (BlurMode::Frost, true) => {
+                    (&mut gpu.shaped[1], effects::compile_frost_shaped, "shaped frost")
+                }
+                (BlurMode::Glass, true) => {
+                    (&mut gpu.shaped[2], effects::compile_glass_shaped, "shaped glass")
+                }
             };
-            if slot.is_none() {
+            if slot.is_none() && !gpu.compile_failed.contains(&what) {
                 match compile(renderer) {
                     Ok(program) => *slot = Some(program),
                     Err(err) => {
+                        gpu.compile_failed.push(what);
                         tracing::warn!(?err, shader = what, "compiling a blur shader; plain backdrop")
                     }
                 }
@@ -1110,6 +1114,9 @@ fn insert_blur(
                     scaled_radius,
                     cfg.frost.tint,
                     bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
+                    fb_size,
+                    config.appearance.glass_light(),
+                    cfg.adaptive.effective(),
                 ),
                 BlurMode::Glass => {
                     let refraction = (cfg.glass.refraction as f64 * upscale) as f32;
@@ -1132,6 +1139,7 @@ fn insert_blur(
                         &cfg.glass,
                         bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
                         config.appearance.glass_light(),
+                        cfg.adaptive.effective(),
                     )
                 }
                 _ => effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius),
@@ -1294,6 +1302,7 @@ fn insert_panes(
                     look.lift,
                     look.shade,
                     light,
+                    cfg.adaptive.effective(),
                 ),
             ))
         },

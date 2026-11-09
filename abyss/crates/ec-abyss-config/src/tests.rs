@@ -1287,6 +1287,26 @@ fn blur_mode_wins_over_enabled_regardless_of_order() {
 }
 
 #[test]
+fn adaptive_glass_defaults_parse_and_reject() {
+    let cfg = blur_cfg("");
+    assert_eq!(
+        cfg.decoration.blur.adaptive,
+        AdaptiveBlur {
+            enabled: true,
+            strength: 0.5
+        }
+    );
+    assert_eq!(cfg.decoration.blur.adaptive.effective(), 0.5);
+    let cfg = blur_cfg("decoration { blur { adaptive { enabled #false; strength 0.8 } } }\n");
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(cfg.decoration.blur.adaptive.strength, 0.8);
+    assert_eq!(cfg.decoration.blur.adaptive.effective(), 0.0);
+    let cfg = blur_cfg("decoration { blur { adaptive { strength 2.0; enabled 3; nope 1 } } }\n");
+    assert_eq!(cfg.errors.len(), 3, "{:?}", cfg.errors);
+    assert_eq!(cfg.decoration.blur.adaptive, AdaptiveBlur::default());
+}
+
+#[test]
 fn glass_and_frost_tunables_parse_and_bad_ones_keep_defaults() {
     let cfg = blur_cfg(
             "decoration { blur {\n  glass { refraction 20; bevel 8; dispersion 0.5; rim 1.0 }\n  frost { tint \"#10203040\" }\n} }\n",
