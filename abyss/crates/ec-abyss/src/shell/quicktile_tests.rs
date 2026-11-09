@@ -34,6 +34,14 @@ fn usable_of(h: &Harness, id: u64) -> Rectangle<i32, Logical> {
     shell::usable_area(&h.state, &o)
 }
 
+/// A zone's frame as `arrange` places it: in the tiling area, with the inner gap.
+fn zrect(h: &Harness, id: u64, zone: Zone) -> Rectangle<i32, Logical> {
+    let o = h.state.outputs.get(id).expect("output").output.clone();
+    layer_map_for_output(&o).arrange();
+    let g = &h.state.config.general;
+    zone.tile_rect(shell::tiling_area(&h.state, &o), g.gaps_in, g.gaps_in_y())
+}
+
 fn placement(h: &Harness, w: &Window) -> Placement {
     maximize::placement_of(&h.state, w)
 }
@@ -116,7 +124,7 @@ fn a_tile_fills_its_zone_with_the_frame_and_the_content_follows() {
     tile(&mut h, &w, Direction::Left);
     c.pump(&mut h);
     let id = shell::output_of_window(&h.state, &w).unwrap();
-    let zone = Zone::Left.rect(usable_of(&h, id));
+    let zone = zrect(&h, id, Zone::Left);
     assert_eq!(
         float_rect(&h, &w),
         zone,
@@ -126,14 +134,18 @@ fn a_tile_fills_its_zone_with_the_frame_and_the_content_follows() {
         panic!("not tiled");
     };
     assert_eq!((z, restore), (Zone::Left, before));
-    // The client is configured for the frame less the bar, with no border.
+    // The client is configured for the frame less the bar and the border.
     let bar = bar_of(&h, &w);
+    let b = h.state.config.general.border_size;
     assert_eq!(
         c.configured_sizes(&t.toplevel).last().copied(),
-        Some((zone.size.w, zone.size.h - bar))
+        Some((zone.size.w - 2 * b, zone.size.h - bar - 2 * b))
     );
     settle(&mut h, &mut c, &t);
-    assert_eq!(content(&h, &w), titlebar::content_of_outer(zone, 0, bar));
+    assert_eq!(
+        content(&h, &w),
+        titlebar::content_of_outer(zone, h.state.config.general.border_size, bar)
+    );
 }
 
 #[test]
@@ -144,7 +156,7 @@ fn zones_follow_an_output_resize_and_every_zone_fills_its_quarter() {
     tile(&mut h, &w, Direction::Right);
     tile(&mut h, &w, Direction::Down);
     let id = shell::output_of_window(&h.state, &w).unwrap();
-    assert_eq!(float_rect(&h, &w), Zone::BottomRight.rect(usable_of(&h, id)));
+    assert_eq!(float_rect(&h, &w), zrect(&h, id, Zone::BottomRight));
     let o = h.state.outputs.get(id).unwrap().output.clone();
     let mode = smithay::output::Mode {
         size: (1200, 900).into(),
@@ -156,7 +168,7 @@ fn zones_follow_an_output_resize_and_every_zone_fills_its_quarter() {
     assert_eq!(u.size, (1200, 900).into());
     assert_eq!(
         float_rect(&h, &w),
-        Zone::BottomRight.rect(u),
+        zrect(&h, id, Zone::BottomRight),
         "followed the new area"
     );
 }
@@ -259,7 +271,7 @@ fn a_tile_survives_minimize_a_workspace_move_and_a_rearrange() {
     let (_, w) = de_window(&mut h, &mut c);
     tile(&mut h, &w, Direction::Right);
     let id = shell::output_of_window(&h.state, &w).unwrap();
-    let want = Zone::Right.rect(usable_of(&h, id));
+    let want = zrect(&h, id, Zone::Right);
 
     shell::minimize_window(&mut h.state, &w);
     shell::unminimize_window(&mut h.state, &w);
@@ -291,7 +303,7 @@ fn removing_an_output_moves_the_tile_to_the_next_one_keeping_its_zone() {
     shell::arrange(&mut h.state);
     assert_eq!(shell::output_of_window(&h.state, &w), Some(ia));
     assert_eq!(quicktile::zone_of(&h.state, &w), Some(Zone::TopRight));
-    assert_eq!(float_rect(&h, &w), Zone::TopRight.rect(usable_of(&h, ia)));
+    assert_eq!(float_rect(&h, &w), zrect(&h, ia, Zone::TopRight));
     assert!(placement(&h, &w)
         .restore_rect()
         .is_some_and(|r| usable_of(&h, ia).contains_rect(r)));
@@ -310,7 +322,7 @@ fn an_output_move_by_bind_keeps_the_zone_on_the_new_output() {
     shell::move_to_output_workspace(&mut h.state, number);
     assert_eq!(shell::output_of_window(&h.state, &w), Some(ib));
     assert_eq!(quicktile::zone_of(&h.state, &w), Some(Zone::BottomLeft));
-    assert_eq!(float_rect(&h, &w), Zone::BottomLeft.rect(usable_of(&h, ib)));
+    assert_eq!(float_rect(&h, &w), zrect(&h, ib, Zone::BottomLeft));
 }
 
 #[test]
@@ -320,7 +332,7 @@ fn fullscreen_wins_over_a_tile_and_returns_to_it() {
     let (_, w) = de_window(&mut h, &mut c);
     tile(&mut h, &w, Direction::Left);
     let id = shell::output_of_window(&h.state, &w).unwrap();
-    let want = Zone::Left.rect(usable_of(&h, id));
+    let want = zrect(&h, id, Zone::Left);
     focus_on(&mut h, &w);
     shell::toggle_fullscreen(&mut h.state);
     assert!(h.state.fullscreen.contains_key(&w));
@@ -479,7 +491,6 @@ fn dragging_to_a_screen_edge_previews_the_zone_and_tiles_on_release() {
         Rectangle::new(Point::from((300, 200)), (200, 150).into()),
     );
     let id = shell::output_of_window(&h.state, &w).unwrap();
-    let u = usable_of(&h, id);
     let g = h
         .state
         .space
@@ -494,7 +505,7 @@ fn dragging_to_a_screen_edge_previews_the_zone_and_tiles_on_release() {
     move_to(&mut h, pt(f64::from(g.loc.x), f64::from(g.loc.y + g.size.h / 2)));
     let pv = h.state.tile_preview.clone().expect("preview");
     assert_eq!(pv.target, EdgeTarget::Tile(Zone::Left));
-    assert_eq!(pv.rect, Zone::Left.rect(u));
+    assert_eq!(pv.rect, zrect(&h, id, Zone::Left));
     // Moving away cancels it.
     move_to(&mut h, pt(f64::from(g.loc.x + 300), f64::from(g.loc.y + 300)));
     assert!(h.state.tile_preview.is_none());
@@ -506,13 +517,17 @@ fn dragging_to_a_screen_edge_previews_the_zone_and_tiles_on_release() {
     );
     move_to(&mut h, pt(f64::from(g.loc.x + 300), f64::from(g.loc.y)));
     let pv = h.state.tile_preview.clone().expect("top");
-    assert_eq!((pv.target, pv.rect), (EdgeTarget::Maximize, u));
+    let o = h.state.outputs.get(id).unwrap().output.clone();
+    assert_eq!(
+        (pv.target, pv.rect),
+        (EdgeTarget::Maximize, shell::tiling_area(&h.state, &o))
+    );
     // Releasing on a side tiles.
     move_to(&mut h, pt(f64::from(g.loc.x), f64::from(g.loc.y + g.size.h / 2)));
     click(&mut h, LEFT, ButtonState::Released);
     assert!(h.state.tile_preview.is_none(), "the preview goes with the drop");
     assert_eq!(quicktile::zone_of(&h.state, &w), Some(Zone::Left));
-    assert_eq!(float_rect(&h, &w), Zone::Left.rect(u));
+    assert_eq!(float_rect(&h, &w), zrect(&h, id, Zone::Left));
 }
 
 #[test]
@@ -525,7 +540,6 @@ fn a_touchpad_drag_previews_from_the_dragged_point_not_the_stale_pointer() {
         Rectangle::new(Point::from((300, 200)), (200, 150).into()),
     );
     let id = shell::output_of_window(&h.state, &w).unwrap();
-    let u = usable_of(&h, id);
     let g = h
         .state
         .space
@@ -544,7 +558,7 @@ fn a_touchpad_drag_previews_from_the_dragged_point_not_the_stale_pointer() {
     assert_eq!(pv.target, EdgeTarget::Tile(Zone::Left));
     crate::input::grabs::end_drag_gesture(&mut h.state, false);
     assert_eq!(quicktile::zone_of(&h.state, &w), Some(Zone::Left));
-    assert_eq!(float_rect(&h, &w), Zone::Left.rect(u));
+    assert_eq!(float_rect(&h, &w), zrect(&h, id, Zone::Left));
     assert!(
         ec_abyss_render::userdata::is_quick_tiled(&w),
         "drawn by placement"
@@ -865,4 +879,84 @@ fn a_client_moveresize_needs_a_floating_window_and_a_held_button_on_it() {
         None
     ));
     click(&mut h, LEFT, ButtonState::Released);
+}
+
+// ------------------------------------------- gaps, and a maximized window behind
+
+#[test]
+fn tiles_sit_in_the_tiling_area_with_the_inner_gap_between_them() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_ta, a) = de_window(&mut h, &mut c);
+    let (_tb, b) = de_window(&mut h, &mut c);
+    tile(&mut h, &a, Direction::Left);
+    tile(&mut h, &b, Direction::Right);
+    let id = shell::output_of_window(&h.state, &a).unwrap();
+    let o = h.state.outputs.get(id).unwrap().output.clone();
+    let area = shell::tiling_area(&h.state, &o);
+    let (ra, rb) = (float_rect(&h, &a), float_rect(&h, &b));
+    let gx = h.state.config.general.gaps_in;
+    assert_eq!(ra.loc, area.loc, "outer gap on the outside");
+    assert_eq!(rb.loc.x + rb.size.w, area.loc.x + area.size.w);
+    assert_eq!(rb.loc.x - (ra.loc.x + ra.size.w), gx, "inner gap between");
+    assert_eq!((ra.size.h, rb.size.h), (area.size.h, area.size.h));
+}
+
+fn maximize_behind(h: &mut Harness, c: &mut Client) -> (Window, Window, Rectangle<i32, Logical>) {
+    let (_ta, a) = de_window(h, c);
+    let (_tb, b) = de_window(h, c);
+    let before = float_rect(h, &a);
+    assert!(maximize::set(&mut h.state, &a, Some((true, true))));
+    (a, b, before)
+}
+
+#[test]
+fn a_half_dropped_over_a_maximized_window_sends_it_to_the_opposite_half() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (a, b, before) = maximize_behind(&mut h, &mut c);
+    assert!(quicktile::set(&mut h.state, &b, Some(Zone::Left)));
+    let id = shell::output_of_window(&h.state, &a).unwrap();
+    assert_eq!(zone_of_win(&h, &b), Some(Zone::Left));
+    assert_eq!(zone_of_win(&h, &a), Some(Zone::Right));
+    assert_eq!(float_rect(&h, &a), zrect(&h, id, Zone::Right));
+    assert_eq!(placement(&h, &a).restore_rect(), Some(before), "restore kept");
+    assert_no_tile_overlap(&h, &[&a, &b]);
+    // Untiling it gives back the pre-maximize rectangle.
+    assert!(quicktile::set(&mut h.state, &a, None));
+    assert_eq!(placement(&h, &a), Placement::Free);
+    assert_eq!(float_rect(&h, &a), before);
+}
+
+#[test]
+fn a_quarter_leaves_a_maximized_window_behind_alone() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (a, b, _) = maximize_behind(&mut h, &mut c);
+    assert!(quicktile::set(&mut h.state, &b, Some(Zone::TopLeft)));
+    assert!(maximize::is_maximized(&h.state, &a));
+    assert_eq!(zone_of_win(&h, &a), None);
+}
+
+#[test]
+fn a_tiled_window_that_is_itself_maximized_is_not_displaced() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_ta, a) = de_window(&mut h, &mut c);
+    assert!(maximize::set(&mut h.state, &a, Some((true, true))));
+    assert!(quicktile::set(&mut h.state, &a, Some(Zone::Left)));
+    assert_eq!(zone_of_win(&h, &a), Some(Zone::Left));
+}
+
+#[test]
+fn a_fullscreen_window_behind_is_left_alone() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (a, b, _) = maximize_behind(&mut h, &mut c);
+    focus_on(&mut h, &a);
+    shell::toggle_fullscreen(&mut h.state);
+    assert!(h.state.fullscreen.contains_key(&a));
+    assert!(quicktile::set(&mut h.state, &b, Some(Zone::Left)));
+    assert_eq!(zone_of_win(&h, &a), None);
+    assert!(maximize::is_maximized(&h.state, &a));
 }

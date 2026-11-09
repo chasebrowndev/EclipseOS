@@ -83,8 +83,6 @@ pub(super) fn fitted_rect(
 pub(super) fn content_rect(f: &Floating, fullscreen: bool, border: i32, bar: i32) -> Rectangle<i32, Logical> {
     if fullscreen {
         f.rect
-    } else if matches!(f.placement, Placement::QuickTile { .. }) {
-        content_of_outer(f.rect, 0, bar)
     } else {
         content_of_outer(f.rect, border, bar)
     }
