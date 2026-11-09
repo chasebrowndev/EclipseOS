@@ -257,6 +257,35 @@ pub(crate) fn on_window_commit(state: &mut AbyssState, window: &Window) {
     }
 }
 
+/// What abyss sees for `window` against the stored client requests, for
+/// `get_windows` (owner socket, debug only): its own size, the strip in
+/// force, and every size entry the client's helper reported, so a request that
+/// matches nothing is visible. Carries sizes and key counts, no colours.
+pub(crate) fn debug_for(state: &AbyssState, window: &Window) -> Value {
+    let Some(pid) = super::methods::pid_of(state, window) else {
+        return Value::Null;
+    };
+    let reported: Vec<Value> = state
+        .ipc
+        .client_requests
+        .iter()
+        .filter(|(_, p, _)| *p == pid)
+        .flat_map(|(_, _, r)| r.entries.iter())
+        .map(|e| json!({"width": e.width, "height": e.height, "content": e.content, "body": e.body}))
+        .collect();
+    if reported.is_empty() && window.user_data().get::<ClientStrip>().is_none() {
+        return Value::Null;
+    }
+    let strip = window.user_data().get::<ClientStrip>().and_then(|s| s.0.get());
+    let bbox = window.bbox().size;
+    json!({
+        "bbox": [bbox.w, bbox.h],
+        "geometry_h": window.geometry().size.h,
+        "applied": strip.map(|s| json!({"top": s.top, "whole": s.top == Strip::WHOLE})),
+        "reported": reported,
+    })
+}
+
 /// [`set_client_strips`] with the target client pid already resolved.
 fn apply(state: &mut AbyssState, conn: u64, parent: i32, params: &Value) -> Result<Value, RpcError> {
     let request = parse(params)?;
