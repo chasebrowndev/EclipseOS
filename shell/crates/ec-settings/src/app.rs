@@ -135,6 +135,8 @@ pub enum Message {
     Pinned(crate::pinned::Msg),
     /// An edit to `misc.discrete-gpu-apps`.
     GpuApps(crate::pinned::Msg),
+    /// An edit to `general.maximize-first-window-exempt`.
+    Exempt(crate::pinned::Msg),
     /// The sidebar search's messages.
     Search(crate::search_ui::Msg),
     /// Launch the policy viewer, from the Oracle Eyes capture hero.
@@ -287,6 +289,8 @@ pub struct App {
     pub(crate) tray_sel: Option<String>,
     /// The apps `bar.pinned-apps` can take, scanned once at start.
     pub(crate) installed: Vec<crate::pinned::Choice>,
+    /// The same apps under the `app_id` their windows carry.
+    pub(crate) wm_apps: Vec<crate::pinned::Choice>,
     /// The discrete GPU's name, when the machine has one; the graphics
     /// controls are drawn only then. Read once at start.
     pub(crate) discrete_gpu: Option<String>,
@@ -385,6 +389,7 @@ impl App {
             net: Net::default(),
             tray_sel: None,
             installed: crate::pinned::installed(),
+            wm_apps: crate::maximize::installed(),
             discrete_gpu: discrete_gpu(),
             tray_live: None,
             tray_seen: Vec::new(),
@@ -1094,6 +1099,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::Bar(m) => return crate::taskbar::update(app, m),
         Message::Pinned(m) => crate::pinned::update(app, m),
         Message::GpuApps(m) => crate::gpu::update(app, m),
+        Message::Exempt(m) => crate::maximize::update(app, m),
         Message::Search(m) => return crate::search_ui::update(app, m),
         Message::Anim(m) => return crate::animations::update(app, m),
         Message::Accounts(m) => return crate::accounts::update(app, m),
@@ -1439,6 +1445,10 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             blocks.push(schema_page(app));
             blocks.extend(crate::gpu::view(app));
         }
+        Page::Focus => {
+            blocks.push(schema_page(app));
+            blocks.extend(crate::maximize::view(app));
+        }
         Page::Animations => blocks.extend(crate::animations::blocks(app)),
         Page::Accounts => blocks.extend(crate::accounts::blocks(app)),
         Page::LoginScreen => blocks.extend(crate::login_screen::blocks(app)),
@@ -1528,6 +1538,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             && match k.path.as_str() {
                 crate::gpu::MODE | crate::gpu::SECONDARY => app.discrete_gpu.is_some(),
                 crate::gpu::APPS => false,
+                crate::maximize::TOGGLE | crate::maximize::EXEMPT => false,
                 _ => true,
             }
     };
@@ -1804,7 +1815,12 @@ pub(crate) fn setting_row<'a>(app: &'a App, label: &str, key: &'a Key) -> Elemen
 
 /// [`setting_row`] with its label stepped down, for a row that does not
 /// apply right now on a translucent column (`dimmed_at`).
-fn setting_row_at<'a>(app: &'a App, label: &str, key: &'a Key, dim: bool) -> Element<'a, Message, Theme> {
+pub(crate) fn setting_row_at<'a>(
+    app: &'a App,
+    label: &str,
+    key: &'a Key,
+    dim: bool,
+) -> Element<'a, Message, Theme> {
     let lit = app.lit(&key.path);
     let reason = app.invalid.get(&key.path).map_or("", String::as_str);
     iced::widget::container(column![

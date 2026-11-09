@@ -452,6 +452,8 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
                 (Page::Gaps, "gaps")
             } else if starts("border-") || starts("col-") {
                 (Page::Borders, "borders")
+            } else if starts("maximize-") {
+                (Page::Focus, "new windows")
             } else if starts("drop-") {
                 (Page::Focus, "drag guides")
             } else if starts("focus-")
@@ -611,6 +613,8 @@ mod tests {
         assert_eq!(page_of("general.focus-follows-mouse"), Some(Page::Focus));
         assert_eq!(page_of("general.refocus-on-scene-change"), Some(Page::Focus));
         assert_eq!(page_of("general.drop-guides"), Some(Page::Focus));
+        assert_eq!(page_of("general.maximize-first-window"), Some(Page::Focus));
+        assert_eq!(page_of("general.maximize-first-window-exempt"), Some(Page::Focus));
         assert_eq!(page_of("general.color-scheme"), Some(Page::Blur));
         assert_eq!(page_of("general.light-from"), Some(Page::Blur));
         assert_eq!(page_of("general.theme-dark"), Some(Page::Blur));

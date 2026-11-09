@@ -400,6 +400,8 @@ impl Row {
             "general.color-scheme" => "Colour scheme",
             "general.theme-dark" => "Theme while dark",
             "general.theme-light" => "Theme while light",
+            "general.maximize-first-window" => "Maximize first window on a workspace",
+            "general.maximize-first-window-exempt" => "Exemptions",
             // Tokens abbreviated for a config file, or named for a mechanism
             // rather than for what a person sees change.
             "general.col-active-border" => "Active border colour",
