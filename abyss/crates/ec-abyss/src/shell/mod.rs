@@ -575,7 +575,6 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
     // is now, on every pass, so a panel appearing or an output resizing is
     // followed (COMP-05 §3.1).
     {
-        let usable = usable_area(state, &output);
         // The frame fills the usable area, so the bar eats into the content.
         #[allow(clippy::mutable_key_type)]
         let bar_heights: Vec<(Window, i32)> = state.outputs.get(id).expect("checked above").workspaces[ws]
@@ -588,11 +587,12 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         #[allow(clippy::mutable_key_type)]
         let fullscreen = &state.fullscreen;
         let border = state.config.general.border_size;
+        let gaps = (state.config.general.gaps_in, state.config.general.gaps_in_y());
         let entry = state.outputs.get_mut(id).expect("checked above");
         for f in entry.workspaces[ws].floating.iter_mut() {
             if !fullscreen.contains_key(&f.window) {
                 if let Some(rect) =
-                    quicktile::placed_rect(&f.window, f.placement, usable, area, border, bars(&f.window))
+                    quicktile::placed_rect(&f.window, f.placement, area, gaps, border, bars(&f.window))
                 {
                     f.rect = rect;
                 }
@@ -684,18 +684,10 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         // the bar (`shell::titlebar`).
         let full = state.fullscreen.contains_key(&w);
         let bar = titlebar::bar_height(state, &w);
-        titlebar::publish(
-            state,
-            &w,
-            bar,
-            placement.is_fully_maximized(),
-            matches!(placement, Placement::QuickTile { .. }),
-        );
+        titlebar::publish(state, &w, bar, placement.is_fully_maximized(), false);
         set_quick_tiled(&w, !full && matches!(placement, Placement::QuickTile { .. }));
         let inner = if full {
             rect
-        } else if matches!(placement, Placement::QuickTile { .. }) {
-            content_of_outer(rect, 0, bar)
         } else {
             content_of_outer(rect, border, bar)
         };
@@ -2339,13 +2331,13 @@ fn unfullscreen_toplevel_now(
     let ws = home_workspace(state, id, &window);
     // Maximized before fullscreen: back to it, not to the plain rectangle.
     let placement = detach_from_layout(state, id, &window).map_or(Placement::Free, |(_, p)| p);
-    let usable = usable_area(state, &output);
+    let gaps = (state.config.general.gaps_in, state.config.general.gaps_in_y());
     let border = state.config.general.border_size;
     let bar = titlebar::bar_height(state, &window);
     let entry = state.outputs.get_mut(id).expect("just resolved");
     let size = match restore {
         Some(rect) => {
-            let (rect, size) = match quicktile::placed_rect(&window, placement, usable, area, border, bar) {
+            let (rect, size) = match quicktile::placed_rect(&window, placement, area, gaps, border, bar) {
                 Some(r) => (r, r.size),
                 None => (rect, rect.size),
             };

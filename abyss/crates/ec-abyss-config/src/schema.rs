@@ -706,7 +706,7 @@ pub const TABLE: &[Key] = &[
         Bool(true),
         Abyss,
         Live,
-        "Under `mode \"de\"`, dragging a titlebar to a screen edge shows a preview and tiles on release: the top edge maximizes, the left and right edges tile a half (a quarter near a corner). Only an outer edge of the output layout counts, never an edge shared with another output.",
+        "Under `mode \"de\"`, dragging a titlebar to a screen edge shows a preview and tiles on release: the top edge maximizes, the left and right edges tile a half (a quarter near a corner). Tiles use `gaps-in`/`gaps-out`, the border and `decoration.rounding`, and a half tile sends a maximized window behind it to the opposite half. Only an outer edge of the output layout counts, never an edge shared with another output.",
     ),
     k(
         "general.edge-tile-distance",

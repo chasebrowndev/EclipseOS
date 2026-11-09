@@ -7,8 +7,10 @@
 //! arrange from the output's usable area (the output minus layer-shell
 //! exclusive zones), so a panel appearing or an output resizing is followed.
 //! The frame, titlebar included, fills the zone; the content rect and the
-//! configure follow from it as in `shell::titlebar`. It is drawn square and
-//! without a border, like a maximized window. `restore` is the outer rectangle
+//! configure follow from it as in `shell::titlebar`. The zone lies in the
+//! tiling area (the usable area less `gaps-out`) with `gaps-in` between
+//! neighbours, and the window has the border and rounding of any tile, like a
+//! maximized one; only fullscreen is square. `restore` is the outer rectangle
 //! the window had before it was first tiled or maximized.
 //!
 //! **What clients are told.** An `xdg_toplevel` gets the content size and the
@@ -157,6 +159,34 @@ impl Zone {
         Rectangle::new(Point::from((x, y)), (w.max(1), h.max(1)).into())
     }
 
+    /// The zone's frame in the tiling `area` (the usable area less the outer
+    /// gaps), with the inner gap `gx` x `gy` between it and a neighbouring
+    /// zone, as between tiled windows. Edges on the area's border get no gap.
+    pub fn tile_rect(self, area: Rectangle<i32, Logical>, gx: i32, gy: i32) -> Rectangle<i32, Logical> {
+        let mut r = self.rect(area);
+        let (ax, ay) = self.axes();
+        let (lo, hi) = (gx / 2, gx - gx / 2);
+        match ax {
+            -1 => r.size.w -= lo,
+            1 => {
+                r.loc.x += hi;
+                r.size.w -= hi;
+            }
+            _ => {}
+        }
+        let (lo, hi) = (gy / 2, gy - gy / 2);
+        match ay {
+            -1 => r.size.h -= lo,
+            1 => {
+                r.loc.y += hi;
+                r.size.h -= hi;
+            }
+            _ => {}
+        }
+        r.size = (r.size.w.max(1), r.size.h.max(1)).into();
+        r
+    }
+
     /// The edges of the usable area this zone touches.
     pub fn edges(self) -> Edges {
         let (ax, ay) = self.axes();
@@ -173,13 +203,16 @@ impl Zone {
 /// the hints apply to the content, `bar` shorter than the frame.
 pub(super) fn fitted_zone(
     window: &Window,
-    usable: Rectangle<i32, Logical>,
+    area: Rectangle<i32, Logical>,
     zone: Zone,
+    gaps: (i32, i32),
+    border: i32,
     bar: i32,
 ) -> Rectangle<i32, Logical> {
-    let mut rect = zone.rect(usable);
-    let content = clamp_size(window, (rect.size.w, (rect.size.h - bar).max(1)).into(), false);
-    rect.size = (content.w, content.h + bar).into();
+    let mut rect = zone.tile_rect(area, gaps.0, gaps.1);
+    let inner = super::shrink(rect, border);
+    let content = clamp_size(window, (inner.size.w, (inner.size.h - bar).max(1)).into(), false);
+    rect.size = (content.w + 2 * border, content.h + bar + 2 * border).into();
     rect
 }
 
@@ -187,19 +220,20 @@ pub(super) fn fitted_zone(
 pub(super) fn placed_rect(
     window: &Window,
     placement: Placement,
-    usable: Rectangle<i32, Logical>,
     tiling: Rectangle<i32, Logical>,
+    gaps: (i32, i32),
     border: i32,
     bar: i32,
 ) -> Option<Rectangle<i32, Logical>> {
     match placement {
         Placement::Free => None,
         // Maximized takes the lone-tile frame: the usable area inset by the
-        // outer gaps. Quick Tile zones keep the raw usable area.
+        // outer gaps. Quick Tile zones sit in that same area, with the inner
+        // gap between neighbours.
         Placement::Maximized { h, v, restore } => {
             Some(maximize::fitted_rect(window, tiling, border, restore, h, v, bar))
         }
-        Placement::QuickTile { zone, .. } => Some(fitted_zone(window, usable, zone, bar)),
+        Placement::QuickTile { zone, .. } => Some(fitted_zone(window, tiling, zone, gaps, border, bar)),
     }
 }
 
@@ -317,6 +351,46 @@ fn displace_occupants(state: &mut AbyssState, window: &Window, zone: Zone) {
             }
         }
     }
+    fill_opposite_half(state, window, zone, id, ws);
+}
+
+/// A half dropped over a maximized window behind it: the maximized window fills
+/// the opposite half instead of staying hidden, keeping its restore rectangle
+/// (as on other desktops). The topmost fully maximized window on the workspace,
+/// if it is not `window` and not fullscreen, and only when the opposite half is
+/// free of other tiles. Quarters leave it alone.
+fn fill_opposite_half(state: &mut AbyssState, window: &Window, zone: Zone, id: u64, ws: usize) {
+    let opposite = match zone {
+        Zone::Left => Zone::Right,
+        Zone::Right => Zone::Left,
+        Zone::Top => Zone::Bottom,
+        Zone::Bottom => Zone::Top,
+        _ => return,
+    };
+    let Some(entry) = state.outputs.get(id) else {
+        return;
+    };
+    let floating = &entry.workspaces[ws].floating;
+    let free = !floating.iter().any(|f| {
+        &f.window != window
+            && matches!(f.placement, Placement::QuickTile { zone: z, .. }
+                if z.rect(Rectangle::from_size((2, 2).into())).overlaps(opposite.rect(Rectangle::from_size((2, 2).into()))))
+    });
+    if !free {
+        return;
+    }
+    let behind = floating
+        .iter()
+        .rev()
+        .find(|f| {
+            &f.window != window
+                && f.placement.is_fully_maximized()
+                && !state.fullscreen.contains_key(&f.window)
+        })
+        .map(|f| f.window.clone());
+    if let Some(behind) = behind {
+        set_now(state, &behind, opposite);
+    }
 }
 
 const ALL_ZONES: [Zone; 8] = [
@@ -342,7 +416,9 @@ fn set_now(state: &mut AbyssState, window: &Window, zone: Zone) -> bool {
     };
     let output = state.outputs.get(id).expect("just found").output.clone();
     layer_map_for_output(&output).arrange();
-    let usable = usable_area(state, &output);
+    let area = super::tiling_area(state, &output);
+    let gaps = (state.config.general.gaps_in, state.config.general.gaps_in_y());
+    let border = state.config.general.border_size;
     let bar = titlebar::bar_height(state, window);
     let entry = state.outputs.get_mut(id).expect("just found");
     let f = entry.workspaces[ws]
@@ -352,7 +428,7 @@ fn set_now(state: &mut AbyssState, window: &Window, zone: Zone) -> bool {
         .expect("just found");
     let restore = f.placement.restore_rect().unwrap_or(f.rect);
     f.placement = Placement::QuickTile { zone, restore };
-    f.rect = fitted_zone(&f.window, usable, zone, bar);
+    f.rect = fitted_zone(&f.window, area, zone, gaps, border, bar);
     // An X11 window carries no tiled state, but must not keep a maximized one
     // from before the tile.
     if let Some(x11) = window.x11_surface() {
@@ -468,10 +544,11 @@ fn target_at(
     let bounds = state.space.output_geometry(&output)?;
     let outer = outer_edges(state, bounds, pointer);
     let target = edge_target(bounds, outer, pointer, g.edge_tile_distance)?;
-    let usable = usable_area(state, &output);
+    let area = super::tiling_area(state, &output);
+    let g = &state.config.general;
     let rect = match target {
-        EdgeTarget::Tile(zone) => zone.rect(usable),
-        EdgeTarget::Maximize => usable,
+        EdgeTarget::Tile(zone) => zone.tile_rect(area, g.gaps_in, g.gaps_in_y()),
+        EdgeTarget::Maximize => area,
     };
     Some((output, target, rect))
 }
