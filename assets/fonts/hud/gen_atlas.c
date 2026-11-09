@@ -20,13 +20,13 @@
  *   5      cell height  (pixels)
  *   6      advance      (pixels; cell width minus a margin on each side)
  *   7      margin       (pixels of overhang room left of the advance box)
- *   8..    430 cells, in this order:
+ *   8..    435 cells, in this order:
  *          a. printable ASCII 0x20..=0x7e in order (95 cells, indices 0..94)
  *          b. U+00D7 (multiplication sign, the selector's `412 × 128`) and
  *             U+00B7 (middle dot, the selector hint's separator)
  *             (indices 95, 96)
  *          c. the EXTENDED table below, ascending by codepoint (indices
- *             97..429). The annotation HUD draws these; the trusted UI never
+ *             97..434). The annotation HUD draws these; the trusted UI never
  *             does. The last eleven are the private-use composed cells of
  *             COMPOSED below. `hud_font.rs` carries the same lists and maps a
  *             codepoint to its cell by binary search, so the two must stay in
@@ -82,7 +82,10 @@ static const struct face FACES[] = {
  * U+0132/U+0133, which JetBrains Mono lacks), Greek (U+03A2 skipped; U+03C2
  * is inside the lowercase run), selected superscripts and subscripts (less
  * the unassigned U+2072/U+2073 and U+2071, which the face lacks), arrows,
- * the mathematical operators the HUD's maths needs, and general punctuation.
+ * the mathematical operators the HUD's maths needs, general punctuation, and
+ * a few title symbols (circles, check and cross marks, and the six-pointed
+ * star U+2736, one frame of Claude Code's title spinner; its sibling frames
+ * U+2722/2733/273B/273D are not in the face).
  * Every entry was checked against both faces' cmap. The private-use tail
  * (U+E000..) is the composed cells; its order is COMPOSED's order. */
 static const FT_ULong EXTENDED[] = {
@@ -126,7 +129,7 @@ static const FT_ULong EXTENDED[] = {
     0x2192, 0x2193, 0x2194, 0x2195, 0x2200, 0x2202, 0x2203, 0x2206,
     0x2207, 0x2208, 0x2211, 0x2212, 0x221a, 0x221e, 0x2227, 0x2228,
     0x2229, 0x222a, 0x222b, 0x2248, 0x2260, 0x2261, 0x2264, 0x2265,
-    0x2282, 0x2283,
+    0x2282, 0x2283, 0x25cb, 0x25cf, 0x2713, 0x2717, 0x2736,
     /* Composed cells, one per COMPOSED entry, in its order. */
     0xe000, 0xe001, 0xe002, 0xe003, 0xe004, 0xe005, 0xe006, 0xe007,
     0xe008, 0xe009, 0xe00a,

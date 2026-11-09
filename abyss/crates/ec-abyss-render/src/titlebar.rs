@@ -219,7 +219,7 @@ const CELL_RADIUS: f32 = 7.0;
 /// The title as it is drawn: sanitised for the overlay face, one line, cut to
 /// `cols` columns with an ellipsis when it does not fit.
 pub fn display_title(raw: &str, cols: usize) -> String {
-    let clean = text::sanitize_annotation_line(raw);
+    let clean = text::sanitize_title_line(raw);
     let n = clean.chars().count();
     if n <= cols {
         return clean;
@@ -632,6 +632,23 @@ mod tests {
     }
 
     #[test]
+    fn a_covered_spinner_glyph_survives() {
+        assert_eq!(display_title("\u{2736} Claude Code", 40), "\u{2736} Claude Code");
+    }
+
+    #[test]
+    fn an_uncovered_symbol_is_dropped_and_the_title_trimmed() {
+        assert_eq!(display_title("\u{273b} Claude Code", 40), "Claude Code");
+        assert_eq!(display_title("a \u{273d} b", 40), "a b");
+        assert_eq!(display_title("what?", 40), "what?");
+    }
+
+    #[test]
+    fn titles_drop_control_bidi_and_private_use() {
+        assert_eq!(display_title("a\u{1b}b\u{202e}c\u{e000}d", 40), "abcd");
+    }
+
+    #[test]
     fn titles_are_sanitised_and_truncated_with_an_ellipsis() {
         assert_eq!(display_title("hello", 10), "hello");
         assert_eq!(display_title("a\u{1b}[31mb\r\nc\u{202e}d", 20), "a[31mb cd");
@@ -643,10 +660,11 @@ mod tests {
     }
 
     #[test]
-    fn what_the_overlay_face_cannot_draw_becomes_a_question_mark() {
+    fn what_the_overlay_face_cannot_draw_is_dropped() {
         // Latin-1 and Greek draw; CJK, Cyrillic and emoji do not.
         assert_eq!(display_title("café Σ", 20), "café Σ");
-        assert_eq!(display_title("日本語 Привет \u{1f600}", 40), "??? ?????? ?");
+        assert_eq!(display_title("日本語 Привет \u{1f600}", 40), "");
+        assert_eq!(display_title("日本語 ok Привет", 40), "ok");
     }
 
     #[test]

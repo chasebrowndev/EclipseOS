@@ -112,6 +112,7 @@ smithay::backend::renderer::element::render_elements! {
     Scaled=anim::ScaledElement,
     CroppedScaled=CropRenderElement<anim::ScaledElement>,
     // A closed window's last frame, played out as a ghost (`anim::Ghost`).
+    ScaledBar=anim::ScaledElement<smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>>,
     ScaledTexture=anim::ScaledElement<smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>>,
     // A window's offscreen copy drawn through an add-on transition shader
     // (ADR 0073); see `anim::shader`. Only while that run plays.
@@ -2293,14 +2294,27 @@ fn window_elements(
         // for glass on its content only (a plain box) has that box grown to
         // take in the bar, so the title never sits over unblurred pixels.
         let backdrop = match (bar, content_geo, geo) {
-            (Some(info), Some(content), Some(frame)) if scaled.is_none() && mode != BlurMode::Off => {
+            (Some(info), Some(content), Some(frame)) if mode != BlurMode::Off => {
                 let phys_rect = |r: Rectangle<i32, Logical>| {
                     Rectangle::new(
                         phys(r.loc - output_geo.loc, scale),
                         r.size.to_f64().to_physical(scale).to_i32_round(),
                     )
                 };
-                let strip = phys_rect(titlebar::bar_rect(content, info.height));
+                // Animating at a scale, the bar rides the window: its rest
+                // rect (moved, not scaled) is carried about the same origin
+                // the surfaces are.
+                let strip = match (scaled, target) {
+                    (Some((origin, by)), Some(rest)) => anim::track::scale_about(
+                        phys_rect(titlebar::bar_rect(
+                            Rectangle::new(rest.loc + t.loc(), rest.size),
+                            info.height,
+                        )),
+                        origin,
+                        by,
+                    ),
+                    _ => phys_rect(titlebar::bar_rect(content, info.height)),
+                };
                 match backdrop {
                     None => strip_backdrop(strip, phys_rect(frame), corner)
                         .map(|region| (region, deco.rounding, None, None)),
@@ -2498,9 +2512,14 @@ fn window_elements(
         // The titlebar sits with its window: directly above its border and
         // shadow, level with its surfaces, so a window stacked above hides
         // it. It rounds its top corners with the frame; maximized is square.
-        // Not while the window animates at a scale, where it would not follow.
-        if let (Some(info), true) = (bar, scaled.is_none()) {
-            let bar_rect = titlebar::bar_rect(content_geo.unwrap_or(geo), info.height);
+        // Animating at a scale, it is drawn at its rest size and carried
+        // about the same origin as the surfaces (`ScaledElement`).
+        if let Some(info) = bar {
+            let rest = match (scaled, target) {
+                (Some(_), Some(rest)) => Rectangle::new(rest.loc + t.loc(), rest.size),
+                _ => content_geo.unwrap_or(geo),
+            };
+            let bar_rect = titlebar::bar_rect(rest, info.height);
             let radius = match rounding {
                 Some(_) => deco.rounding,
                 None => 0,
@@ -2519,7 +2538,12 @@ fn window_elements(
                 alpha,
                 config.appearance.glass_light() > 0.0,
             ) {
-                out.push(AbyssRenderElement::Memory(element));
+                out.push(match scaled {
+                    Some((origin, by)) => {
+                        AbyssRenderElement::ScaledBar(anim::ScaledElement::new(element, origin, by, None))
+                    }
+                    None => AbyssRenderElement::Memory(element),
+                });
             }
         }
         // Border, glow, then shadow, all directly under this window's
@@ -3632,6 +3656,22 @@ mod tests {
         // A bar outside the region grows it to cover both.
         let apart = r(100, 20, 300, 40);
         assert_eq!(union_with_bar(rect, apart), r(100, 20, 300, 230));
+    }
+
+    /// A pop-open window carries its bar: the bar's rest rect scaled about the
+    /// window's origin keeps its edges on the scaled frame's.
+    #[test]
+    fn the_titlebar_scales_with_its_window() {
+        let origin = Point::from((250, 150));
+        let by = Scale::from(0.5);
+        let frame = r(100, 50, 300, 200);
+        let bar = r(100, 50, 300, 40);
+        let (f, b) = (
+            anim::track::scale_about(frame, origin, by),
+            anim::track::scale_about(bar, origin, by),
+        );
+        assert_eq!((b.loc, b.size.w), (f.loc, f.size.w));
+        assert_eq!(b.size.h, 20);
     }
 
     #[test]
