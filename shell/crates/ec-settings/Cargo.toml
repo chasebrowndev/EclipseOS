@@ -22,8 +22,11 @@ path = "src/main.rs"
 # Pinned to match ec-ui exactly. `wayland` and `thread-pool` are both
 # load-bearing: without the first, winit does not compile at all; without a
 # futures executor, iced fires a compile_error!. See ADR 0039.
-iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "svg", "image"] }
 ec-ui = { path = "../ec-ui" }
+# The Widgets and Tray pages draw the bar's real symbolic icons and the
+# tray's own, looked up the way the bar looks them up.
+freedesktop-icons = "0.4"
 # The Login screen page (ADR 0089): the settings contract and the frame sent to
 # the root helper. Settings never writes the machine's files itself.
 ec-greeter = { path = "../ec-greeter" }

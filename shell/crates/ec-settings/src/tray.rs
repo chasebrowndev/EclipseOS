@@ -12,8 +12,10 @@
 //!
 //! The live status-notifier items come from [`feed`], which hosts against
 //! whichever process serves the tray watcher (normally the taskbar) while the
-//! Taskbar pane is showing. Only their ids cross over: nothing an app puts in
-//! its item is shown or logged here.
+//! Taskbar pane is showing. Only their ids and icons cross over: the lanes
+//! draw each app's own status icon, as the bar does, and nothing else an app
+//! puts in its item (title, tooltip, menu) is shown or logged here. Icons
+//! are resolved on the feed's thread, never in a `view`.
 
 use std::time::Duration;
 
@@ -216,6 +218,21 @@ pub fn feed() -> Subscription<Message> {
                 loop {
                     let alive = match updates.recv_timeout(TICK) {
                         Some(ec_services::tray::TrayUpdate::Items(items)) => {
+                            let mut art: Vec<(String, ec_ui::widget::Art)> = Vec::new();
+                            for i in &items {
+                                if i.id.is_empty() || art.iter().any(|(id, _)| *id == i.id) {
+                                    continue;
+                                }
+                                let px = i
+                                    .icon_pixmap
+                                    .as_ref()
+                                    .map(|p| (p.width, p.height, p.rgba.as_slice()));
+                                art.push((
+                                    i.id.clone(),
+                                    crate::icons::tray(&i.icon_name, &i.icon_theme_path, px),
+                                ));
+                            }
+                            let _ = sender.try_send(Message::TrayArt(art));
                             let ids = live_ids(items.into_iter().map(|i| i.id));
                             match sender.try_send(Message::TrayLive(Some(ids))) {
                                 Ok(()) => true,

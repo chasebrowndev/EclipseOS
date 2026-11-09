@@ -30,7 +30,7 @@ use crate::tokens::{bar, color, motion, space};
 /// A widget and not a styled container because it *is* a gesture. It owns
 /// the press, keeps following the pointer (or the finger) after it leaves its
 /// own bounds for as long as the button is held, reports travel on both axes,
-/// and tells a click from a drag by [`motion::TAP_SLOP`] — so one object can
+/// and tells a click from a drag by [`motion::DRAG_SLOP`] — so one object can
 /// be selected by a click and moved by a drag without a separate grip. While
 /// it is held, a ghost of it follows the pointer on an overlay, above
 /// everything, so what is being moved is never in doubt. The ghost hangs one
@@ -52,6 +52,7 @@ pub struct Draggable<'a, Message> {
     on_click: Option<Message>,
     on_cancel: Option<Message>,
     lifted: Option<Point>,
+    homing: Option<f32>,
 }
 
 /// `content`, as the handle of a drag. Nothing is wired until a callback is
@@ -65,6 +66,7 @@ pub fn draggable<'a, Message>(content: impl Into<Element<'a, Message, Theme>>) -
         on_click: None,
         on_cancel: None,
         lifted: None,
+        homing: None,
     }
 }
 
@@ -123,6 +125,16 @@ impl<'a, Message> Draggable<'a, Message> {
         self
     }
 
+    /// Fly the ghost back home: `Some(t)`, `t` running `0.0..=1.0`, draws
+    /// it `t` of the way from where the last drag let go of it to this
+    /// object's own place. For a drop that landed nowhere: the object visibly
+    /// returns rather than vanishing, so a miss reads as a miss. The caller
+    /// owns the clock (and skips it under reduce-motion).
+    pub fn homing(mut self, t: Option<f32>) -> Self {
+        self.homing = t;
+        self
+    }
+
     fn wired(&self) -> bool {
         self.on_press.is_some()
             || self.on_move.is_some()
@@ -145,10 +157,14 @@ struct Press {
 #[derive(Default)]
 struct DragState {
     press: Option<Press>,
+    /// Where the ghost was when the last drag let go: where
+    /// [`Draggable::homing`] flies it back from.
+    released: Option<Point>,
 }
 
 impl<Message: Clone> Draggable<'_, Message> {
     fn begin(&self, st: &mut DragState, p: Point, bounds: Rectangle, finger: Option<touch::Finger>) {
+        st.released = None;
         st.press = Some(Press {
             origin: p,
             grab: p - bounds.position(),
@@ -163,7 +179,7 @@ impl<Message: Clone> Draggable<'_, Message> {
             return;
         };
         press.at = p;
-        if !press.dragging && press.origin.distance(p) > motion::TAP_SLOP {
+        if !press.dragging && press.origin.distance(p) > motion::DRAG_SLOP {
             press.dragging = true;
         }
         if press.dragging {
@@ -178,11 +194,13 @@ impl<Message: Clone> Draggable<'_, Message> {
         shell.capture_event();
     }
 
-    fn end(&self, st: &mut DragState, shell: &mut Shell<'_, Message>) {
+    fn end(&self, st: &mut DragState, bounds: Rectangle, shell: &mut Shell<'_, Message>) {
         let Some(press) = st.press.take() else {
             return;
         };
         if press.dragging {
+            let at = self.lifted.unwrap_or(press.at);
+            st.released = Some(at - press.grab + hang(bounds));
             if let Some(f) = &self.on_release {
                 shell.publish(f(press.at));
             }
@@ -200,17 +218,35 @@ impl<Message: Clone> Draggable<'_, Message> {
         if self.children.len() < 2 {
             return None;
         }
-        let hang = Vector::new(0.0, bounds.height + space::CHIP_GAP);
+        let hang = hang(bounds);
+        let centred = |at: Point| at - Vector::new(bounds.width / 2.0, bounds.height / 2.0) + hang;
         match st.press {
             // The caller dropped the drag (Escape) while the button is
-            // still down: the ghost goes now, not on release.
-            Some(p) if p.dragging => self.lifted.map(|_| p.at - p.grab + hang),
+            // still down: the ghost goes now, not on release. Otherwise it
+            // sits at the caller's point, which is the pointer's unless the
+            // caller scrolled the pane under a pointer that stayed put.
+            Some(p) if p.dragging => self.lifted.map(|at| at - p.grab + hang),
             Some(_) => None,
-            None => self
-                .lifted
-                .map(|at| at - Vector::new(bounds.width / 2.0, bounds.height / 2.0) + hang),
+            None => match self.homing {
+                Some(t) => {
+                    let home = bounds.position();
+                    let from = st.released.or(self.lifted.map(centred)).unwrap_or(home);
+                    let t = t.clamp(0.0, 1.0);
+                    Some(Point::new(
+                        from.x + (home.x - from.x) * t,
+                        from.y + (home.y - from.y) * t,
+                    ))
+                }
+                None => self.lifted.map(centred),
+            },
         }
     }
+}
+
+/// How far below where it was taken a ghost hangs: one object-height and a
+/// gap, so the drop mark under the pointer stays in sight.
+fn hang(bounds: Rectangle) -> Vector {
+    Vector::new(0.0, bounds.height + space::CHIP_GAP)
 }
 
 impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for Draggable<'_, Message> {
@@ -321,13 +357,13 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for Draggable<'_, Me
                 Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))
                     if st.press.is_some_and(|p| p.finger.is_none()) =>
                 {
-                    self.end(st, shell);
+                    self.end(st, bounds, shell);
                     return;
                 }
                 Event::Touch(touch::Event::FingerLifted { id, .. })
                     if st.press.is_some_and(|p| p.finger == Some(*id)) =>
                 {
-                    self.end(st, shell);
+                    self.end(st, bounds, shell);
                     return;
                 }
                 Event::Touch(touch::Event::FingerLost { id, .. })
@@ -702,14 +738,15 @@ pub fn drop_well<'a, Message: 'a>(
         })
 }
 
-/// The object in hand: `content` on the nearly opaque menu ground with a
-/// strong edge, at the object's own `radius`.
+/// The object in hand: `content` on the deep frosted glass with a crisp
+/// rim, at the object's own `radius`.
 ///
 /// A widget because a ghost floats over anything — the bar picture, a list,
-/// the sidebar — and has to stay legible over all of it; the ground that
-/// guarantees that is [`color::menu_ground()`], and a ghost assembled at each
-/// call site would pick a thinner one. It is drawn by a [`draggable`], on
-/// its overlay.
+/// the sidebar — and has to read as the object lifted *off* the pane: see
+/// through enough that what is under it stays placeable, frosted enough
+/// ([`color::glass_deep()`]) that its own content stays legible, and rimmed
+/// so its edge is never lost. A ghost assembled at each call site would pick
+/// a different glass. It is drawn by a [`draggable`], on its overlay.
 pub fn drag_ghost<'a, Message: 'a>(
     content: impl Into<Element<'a, Message, Theme>>,
     radius: f32,
@@ -719,9 +756,9 @@ pub fn drag_ghost<'a, Message: 'a>(
         .height(Length::Fixed(bar::WIDGET_H))
         .align_y(iced::Alignment::Center)
         .style(move |_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(color::menu_ground())),
+            background: Some(iced::Background::Color(color::glass_deep())),
             border: iced::Border {
-                color: color::border_strong(),
+                color: color::highlight_rim(),
                 width: space::HAIRLINE,
                 radius: radius.into(),
             },

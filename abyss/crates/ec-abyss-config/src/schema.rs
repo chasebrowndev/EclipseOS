@@ -165,8 +165,8 @@ pub const TABLE: &[Key] = &[
         Str("hybrid"),
         Abyss,
         Live,
-        "Interaction mode (COMP-17 §2): `wm` tiling, workspaces-only taskbar; \
-       `hybrid` adds window chips, tray and clock; `de` is a stacking desktop \
+        "Interaction mode (COMP-17 §2): `wm` tiling, workspaces, tray and clock; \
+       `hybrid` adds window chips; `de` is a stacking desktop \
        in the KDE manner, with titlebars, maximize, Quick Tile, snapping and \
        desktop icons (COMP-05 §7.1). Selects defaults that explicit \
        configuration overrides (binds, `general.focus-follows-mouse`); how \

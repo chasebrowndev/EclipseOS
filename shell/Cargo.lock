@@ -1118,6 +1118,7 @@ dependencies = [
  "ec-services",
  "ec-theme",
  "ec-ui",
+ "freedesktop-icons",
  "iced",
  "image",
  "serde_json",

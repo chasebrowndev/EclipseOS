@@ -19,7 +19,7 @@
 //! the taskbar crate is not a dependency of settings, and a preview that
 //! pulled it in would drag its services along.
 
-use ec_ui::tokens::{bar, space};
+use ec_ui::tokens::{bar, canvas, space};
 use ec_ui::widget::{ShellFrame, ShellSpan, TRANSPORT_W, VOLUME_SLIDER_W};
 
 /// Every built-in widget id, in the order the add picker lists them.
@@ -119,9 +119,9 @@ pub fn span(id: &str, k: &Knobs) -> ShellSpan {
             let m = usage_meters(k) as f32;
             (bar::METER_W, m * bar::METER_W + (m - 1.0) * bar::METER_GAP)
         }
-        "volume" => (chars(VOLUME_TAG.len()), VOLUME_SLIDER_W),
-        "network" => (chars(NETWORK_TAG.len()), 0.0),
-        "bluetooth" => (chars(BLUETOOTH_TAG.len()), 0.0),
+        // The bar draws these three as their symbolic icon alone.
+        "volume" => (bar::MARK, VOLUME_SLIDER_W),
+        "network" | "bluetooth" => (bar::MARK, 0.0),
         "battery" => (
             space::MARK_CELL_W + space::MARK_BORDER + bar::GAP + chars(BATTERY_READING.len()),
             0.0,
@@ -227,13 +227,104 @@ pub struct Solved {
     pub compressed: usize,
 }
 
-/// Where the first chip starts: after the launcher and the gap that closes
-/// its zone.
+/// Where the first chip starts with no pager: after the launcher and the
+/// gap that closes its zone.
 pub const CHIPS_X: f32 = bar::TASK_MIN + bar::ZONE_GAP;
 
-/// The x of chip `i` at width `w`.
+/// The interaction mode the preview draws (COMP-17, `mode` in `abyss.kdl`).
+/// It decides what sits left of the widgets: `wm` has the launcher and the
+/// workspace pager and no window chips; `hybrid` adds the chips; `de` turns
+/// the pager into the desktop grid and puts the notification history bell
+/// before the clock.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    Wm,
+    #[default]
+    Hybrid,
+    De,
+}
+
+impl Mode {
+    /// The config's spelling; anything unknown is the default, as abyss
+    /// reads it.
+    pub fn parse(s: &str) -> Mode {
+        match s {
+            "wm" => Mode::Wm,
+            "de" => Mode::De,
+            _ => Mode::Hybrid,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::Wm => "wm",
+            Mode::Hybrid => "hybrid",
+            Mode::De => "de",
+        }
+    }
+
+    /// Whether the bar draws window chips in this mode.
+    pub fn shows_chips(self) -> bool {
+        self != Mode::Wm
+    }
+
+    /// The pager's tile size and how many columns and rows of them.
+    pub fn pager(self) -> PagerShape {
+        match self {
+            Mode::De => {
+                let rows = canvas::PREVIEW_GRID_ROWS;
+                let gap = bar::PAGER_GRID_GAP;
+                let h = ((bar::TASK_H - gap * (rows as f32 - 1.0)) / rows as f32).floor();
+                PagerShape {
+                    tile: (bar::PAGER_GRID_W, h),
+                    gap,
+                    columns: canvas::PREVIEW_GRID_COLUMNS,
+                    rows,
+                }
+            }
+            Mode::Wm | Mode::Hybrid => PagerShape {
+                tile: (bar::PAGER_W, bar::PAGER_H),
+                gap: bar::GAP,
+                columns: canvas::PREVIEW_WORKSPACES,
+                rows: 1,
+            },
+        }
+    }
+
+    /// Where the first window chip starts: launcher, pager, a zone gap
+    /// after each.
+    pub fn chips_x(self) -> f32 {
+        CHIPS_X + self.pager().width() + bar::ZONE_GAP
+    }
+}
+
+/// The pager as the preview draws it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PagerShape {
+    pub tile: (f32, f32),
+    pub gap: f32,
+    pub columns: usize,
+    pub rows: usize,
+}
+
+impl PagerShape {
+    pub fn width(&self) -> f32 {
+        let c = self.columns as f32;
+        c * self.tile.0 + (c - 1.0).max(0.0) * self.gap
+    }
+}
+
+/// The widget `de` puts before the clock, which is not in the order and
+/// cannot be moved: the preview draws it where the bar does.
+pub const HISTORY: &str = "history";
+
+/// The x of chip `i` at width `w`, with no pager.
 pub fn chip_x(i: usize, w: f32) -> f32 {
-    CHIPS_X + i as f32 * (w + bar::GAP)
+    chip_x_from(CHIPS_X, i, w)
+}
+
+fn chip_x_from(start: f32, i: usize, w: f32) -> f32 {
+    start + i as f32 * (w + bar::GAP)
 }
 
 /// What `n` chips need to all be at least `each` wide.
@@ -246,17 +337,50 @@ fn need(n: usize, each: f32) -> f32 {
 }
 
 /// Room left for the chip strip.
-fn room(inner: f32, extents: &[f32], cells: &[Cell]) -> f32 {
+/// Room left for the chip strip; negative when the widgets already run
+/// into the pager, which must fold them even with no chips to make room for.
+fn room(start: f32, inner: f32, extents: &[f32], cells: &[Cell]) -> f32 {
     if cells.is_empty() {
-        return (inner - CHIPS_X).max(0.0);
+        return inner - start;
     }
     let run: f32 = cells.iter().zip(extents).map(|(c, e)| c.width(*e)).sum();
     let gaps = (cells.len() - 1) as f32 * bar::GAP;
-    (inner - CHIPS_X - run - gaps - bar::ZONE_GAP).max(0.0)
+    inner - start - run - gaps - bar::ZONE_GAP
 }
 
-/// Lay the bar out in `inner` pixels (the sheet less its edge padding).
+/// Lay the bar out in `inner` pixels (the sheet less its edge padding), with
+/// no pager.
 pub fn solve(inner: f32, windows: usize, cells: &[Cell]) -> Solved {
+    solve_from(CHIPS_X, inner, windows, cells)
+}
+
+/// [`solve`] for the bar `mode` draws: its pager before the chips, and no
+/// chips at all under `wm`.
+pub fn solve_in(mode: Mode, inner: f32, windows: usize, cells: &[Cell]) -> Solved {
+    let windows = if mode.shows_chips() { windows } else { 0 };
+    solve_from(mode.chips_x(), inner, windows, cells)
+}
+
+/// The narrowest `inner` that draws `cells` under `mode` without a widget
+/// running into the pager, or into the overflow chip when `windows` are
+/// open: every widget that can fold folded to its grip, the important ones
+/// whole. A pane narrower than this scrolls the picture rather than draw the
+/// bar overlapping itself.
+pub fn min_inner(mode: Mode, windows: usize, cells: &[Cell]) -> f32 {
+    let run: f32 = cells
+        .iter()
+        .map(|c| c.width(if c.important { c.core_run() } else { 0.0 }))
+        .sum();
+    let gaps = cells.len().saturating_sub(1) as f32 * bar::GAP;
+    let chips = if windows > 0 && mode.shows_chips() {
+        bar::OVERFLOW_W
+    } else {
+        0.0
+    };
+    mode.chips_x() + chips + run + gaps + bar::ZONE_GAP
+}
+
+fn solve_from(start: f32, inner: f32, windows: usize, cells: &[Cell]) -> Solved {
     let mut extents: Vec<f32> = cells
         .iter()
         .map(|c| if c.important { c.core_run() } else { 0.0 })
@@ -270,7 +394,7 @@ pub fn solve(inner: f32, windows: usize, cells: &[Cell]) -> Solved {
             continue;
         }
         extents[i] = cells[i].core_run();
-        if room(inner, &extents, cells) < full {
+        if room(start, inner, &extents, cells) < full {
             extents[i] = 0.0;
             break;
         }
@@ -281,7 +405,7 @@ pub fn solve(inner: f32, windows: usize, cells: &[Cell]) -> Solved {
         .filter(|(c, e)| !c.important && **e == 0.0)
         .count();
 
-    let avail = room(inner, &extents, cells);
+    let avail = room(start, inner, &extents, cells).max(0.0);
     let (chip_w, shown) = if windows == 0 {
         (bar::TASK_MAX, 0)
     } else {
@@ -309,7 +433,7 @@ pub fn solve(inner: f32, windows: usize, cells: &[Cell]) -> Solved {
         chip_w,
         shown,
         overflow: windows - shown,
-        overflow_x: chip_x(shown, chip_w),
+        overflow_x: chip_x_from(start, shown, chip_w),
         compressed,
     }
 }
@@ -460,5 +584,58 @@ mod tests {
     fn titles_read_as_words() {
         assert_eq!(title("now-playing"), "Now Playing");
         assert_eq!(title("custom:weather"), "weather");
+    }
+
+    #[test]
+    fn wm_draws_no_chips_and_every_mode_starts_them_after_its_pager() {
+        let bar = default_bar();
+        let s = solve_in(Mode::Wm, WIDE, 5, &bar);
+        assert_eq!((s.shown, s.overflow), (0, 0));
+        for m in [Mode::Wm, Mode::Hybrid, Mode::De] {
+            assert!(m.chips_x() > CHIPS_X + m.pager().width());
+            assert_eq!(Mode::parse(m.as_str()), m);
+        }
+        assert!(solve_in(Mode::Hybrid, WIDE, 3, &bar).shown > 0);
+    }
+
+    #[test]
+    fn the_desktop_grid_fits_in_one_task_chip() {
+        let p = Mode::De.pager();
+        let h = p.rows as f32 * p.tile.1 + (p.rows as f32 - 1.0) * p.gap;
+        assert!(h <= bar::TASK_H);
+    }
+
+    #[test]
+    fn with_no_windows_the_widgets_still_fold_off_the_pager() {
+        let mut bar = default_bar();
+        bar.extend(cells(&[
+            ("system-usage", false),
+            ("custom:weather", false),
+            ("custom:load", false),
+        ]));
+        for m in [Mode::Wm, Mode::Hybrid, Mode::De] {
+            let s = solve_in(m, 640.0, 0, &bar);
+            assert!(s.xs[0] >= m.chips_x() - bar::ZONE_GAP, "{m:?}: {}", s.xs[0]);
+            assert!(s.compressed > 0);
+        }
+    }
+
+    #[test]
+    fn at_its_narrowest_the_bar_still_clears_the_pager() {
+        let bar = default_bar();
+        for m in [Mode::Wm, Mode::Hybrid, Mode::De] {
+            let inner = min_inner(m, 0, &bar);
+            let s = solve_in(m, inner, 0, &bar);
+            assert!(s.xs[0] + 0.5 >= m.chips_x(), "{m:?}");
+            // With windows open the overflow chip keeps its room too.
+            let inner = min_inner(m, 2, &bar);
+            let s = solve_in(m, inner, 2, &bar);
+            let chips_end = if m.shows_chips() {
+                m.chips_x() + bar::OVERFLOW_W
+            } else {
+                m.chips_x()
+            };
+            assert!(s.xs[0] + 0.5 >= chips_end, "{m:?}");
+        }
     }
 }
