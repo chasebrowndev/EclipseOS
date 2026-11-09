@@ -11,8 +11,23 @@
 //! [`Grid`] is the one place the geometry lives: the view lays tiles out from
 //! it and [`Grid::index_at`] reads the same numbers back, so what is drawn
 //! and what is hit cannot disagree.
+//!
+//! The bar does not draw every desktop. [`shown`] picks the occupied ones and
+//! the active one of this bar's output; [`Grid::size_shown`] is the width the
+//! bar reserves for those survivors, and `slot_rect` places them, wrapping at
+//! `columns`, so the drawn pager and the room the task strip is given agree.
 
 use ec_ui::tokens::bar;
+
+/// The desktops a bar draws from its grid: `active` (the one its output is on)
+/// and every desktop `occupied` reports, in number order. Empty desktops that
+/// are not active are left out; they are reached by the wheel or the keyboard,
+/// and the grid is a pager, not a ruler of ten.
+pub fn shown(count: usize, active: Option<usize>, occupied: impl Fn(usize) -> bool) -> Vec<usize> {
+    (1..=count)
+        .filter(|&index| active == Some(index) || occupied(index))
+        .collect()
+}
 
 /// The grid's shape and the tile it is drawn with.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -72,15 +87,35 @@ impl Grid {
         row * self.columns + col + 1
     }
 
-    /// Where the tile of desktop `index` (1-based, row-major) sits:
-    /// `(x, y, width, height)` from the grid's top-left.
+    /// The width and height of a grid that draws only `shown` of its tiles, in
+    /// the wrapped layout `slot_rect` places them: `min(shown, columns)` across,
+    /// as many rows down as that needs. Zero tiles is zero air.
+    pub fn size_shown(&self, shown: usize) -> (f32, f32) {
+        if shown == 0 {
+            return (0.0, 0.0);
+        }
+        let ((w, h), (gx, gy)) = (self.tile(), self.gap());
+        let cols = shown.min(self.columns) as f32;
+        let rows = shown.div_ceil(self.columns) as f32;
+        (cols * w + (cols - 1.0) * gx, rows * h + (rows - 1.0) * gy)
+    }
+
+    /// Where the `slot`th drawn tile (0-based, in the order [`shown`] gives)
+    /// sits: `(x, y, width, height)` from the top-left, wrapping at `columns`.
+    /// Every desktop drawn is the same tile it is on the full grid.
+    pub fn slot_rect(&self, slot: usize) -> (f32, f32, f32, f32) {
+        let (row, col) = (slot / self.columns, slot % self.columns);
+        let ((w, h), (gx, gy)) = (self.tile(), self.gap());
+        (col as f32 * (w + gx), row as f32 * (h + gy), w, h)
+    }
+
+    /// Where the tile of desktop `index` (1-based, row-major) sits on the full
+    /// grid: `(x, y, width, height)` from the grid's top-left.
     pub fn rect_of(&self, index: usize) -> Option<(f32, f32, f32, f32)> {
         if index == 0 || index > self.count() {
             return None;
         }
-        let (row, col) = ((index - 1) / self.columns, (index - 1) % self.columns);
-        let ((w, h), (gx, gy)) = (self.tile(), self.gap());
-        Some((col as f32 * (w + gx), row as f32 * (h + gy), w, h))
+        Some(self.slot_rect(index - 1))
     }
 
     /// The desktop under `(x, y)`, from the grid's top-left. `None` in the air
@@ -197,5 +232,51 @@ mod tests {
         assert_eq!(scroll_step(1), Some(Direction::Left));
         assert_eq!(scroll_step(-3), Some(Direction::Right));
         assert_eq!(scroll_step(0), None);
+    }
+
+    #[test]
+    fn shown_keeps_the_active_and_the_occupied_in_number_order() {
+        assert_eq!(shown(10, Some(4), |i| i == 2 || i == 9), vec![2, 4, 9]);
+        assert_eq!(shown(10, None, |i| i == 1), vec![1]);
+        assert_eq!(shown(10, Some(10), |_| false), vec![10]);
+        assert!(shown(10, None, |_| false).is_empty());
+    }
+
+    /// The bar reserves `size_shown(n)` for `n` survivors, so that must be the
+    /// box the first `n` wrapped slots actually cover, at every count.
+    #[test]
+    fn the_shown_grid_is_as_big_as_the_tiles_it_draws() {
+        for (rows, columns) in [(1, 10), (2, 5), (3, 4)] {
+            let g = Grid::new(rows, columns);
+            assert_eq!(g.size_shown(g.count()), g.size(), "{rows}x{columns} full");
+            assert_eq!(g.size_shown(0), (0.0, 0.0));
+            for n in 1..=g.count() {
+                let (mut right, mut bottom) = (0.0f32, 0.0f32);
+                for slot in 0..n {
+                    let (x, y, w, h) = g.slot_rect(slot);
+                    right = right.max(x + w);
+                    bottom = bottom.max(y + h);
+                }
+                let (w, h) = g.size_shown(n);
+                assert!(
+                    (w - right).abs() < 0.01,
+                    "{rows}x{columns} n={n} width {w} vs {right}"
+                );
+                assert!(
+                    (h - bottom).abs() < 0.01,
+                    "{rows}x{columns} n={n} height {h} vs {bottom}"
+                );
+            }
+        }
+    }
+
+    /// Survivors wrap at `columns`: the sixth drawn tile starts the second line.
+    #[test]
+    fn survivors_wrap_at_the_grids_columns() {
+        let g = Grid::new(2, 5);
+        let (x, y, _, _) = g.slot_rect(5);
+        assert_eq!(x, 0.0);
+        assert!(y > 0.0);
+        assert_eq!(g.size_shown(3).1, g.tile().1, "three survivors are one line");
     }
 }

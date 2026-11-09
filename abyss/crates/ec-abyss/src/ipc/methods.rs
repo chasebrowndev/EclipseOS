@@ -524,6 +524,7 @@ fn get_windows(state: &mut AbyssState) -> Reply {
             // on it.
             "irreversible_capable": crate::shell::rules::irreversible_capable_of(&w),
             "class_source": crate::shell::rules::class_source_of(&w),
+            "client_strip": super::client_strips::debug_for(state, &w),
         }));
     }
     Ok(Value::Array(out))

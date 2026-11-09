@@ -236,7 +236,8 @@ fn folded_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element
     // The horizontal inset is the unfolded bar's layer-shell margin, so the
     // strip is the same sheet seen edge-on rather than a second, wider
     // object. The surface *is* the sheet.
-    container(sheet)
+    // Its glass pane too: the same reason as the pill's in `bar_row`.
+    container(ec_ui::widget::glass_card(sheet, CellTone::Plain, radius))
         .width(Length::Fill)
         .height(Length::Fixed(h))
         .into()
@@ -293,9 +294,17 @@ fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a
     }
     glass(
         app,
-        container(bar_row)
-            .width(Length::Fill)
-            .style(theme::bar_ground(app.bar_radius, app.blur)),
+        // The capsule is one static pane under the cells. In glass mode the
+        // compositor's panes replace the layer's whole-surface blur, so a
+        // bar with no pane of its own is unblurred wherever no chip sits
+        // (the empty task strip between the pinned apps and the widgets).
+        ec_ui::widget::glass_card(
+            container(bar_row)
+                .width(Length::Fill)
+                .style(theme::bar_ground(app.bar_radius, app.blur)),
+            CellTone::Plain,
+            app.bar_radius,
+        ),
     )
 }
 
@@ -747,9 +756,9 @@ impl canvas::Program<Message> for EyeMark {
 // ------------------------------------------------------------------ pager
 
 /// One tile per workspace, in wire order. Plasma's pager: the current desktop
-/// is accented, an occupied one reads in secondary ink, an empty one is dim.
-/// No tile has an outline: the pointer lifts the glass under it, as it does
-/// under every bar cell.
+/// is accented, an occupied one is a glass lozenge in primary ink, and an
+/// empty one is recessed (no fill, dim ink). No tile has an outline: the
+/// pointer lifts the glass under it, as it does under every bar cell.
 ///
 /// The current desktop is the bar's *second* yellow, by explicit direction:
 /// "which desktop am I on" is live state of the same kind as "which window
@@ -777,37 +786,31 @@ pub(crate) fn grid(app: &crate::app::App) -> Option<crate::pager::Grid> {
     app.grid.as_ref().map(crate::pager::Grid::of)
 }
 
-/// The pager as the desktop grid (`mode "de"`, COMP-05 §7.1): every desktop,
-/// `rows` × `columns`, the active one of this bar's output lit and the ones
-/// with windows on them in the brighter ink. A click switches to a desktop;
-/// the wheel over the grid steps through them.
+/// The pager as the desktop grid (`mode "de"`, COMP-05 §7.1): the desktops
+/// this bar needs, not all of them. Those are the active one of this bar's
+/// output and every desktop with windows on it ([`grid_shown`]), laid out at the
+/// grid's own tile size and wrapped at its `columns`. A quiet session is a
+/// short row; a busy one fills the grid. A click switches to a desktop; the
+/// wheel over the grid steps through all of them, empty ones included.
 ///
 /// Same ledger as the row it replaces: the active desktop is the pager's
-/// yellow, nothing else here is.
+/// yellow, nothing else here is. Occupied desktops are the brighter ink.
 fn grid_pager<'a>(
     g: crate::pager::Grid,
     desktops: &ec_ipc::DesktopGrid,
     on: &crate::app::Bar,
 ) -> Element<'a, Message, Theme> {
-    let out = desktops
-        .outputs
-        .iter()
-        .find(|o| on.output_id != 0 && o.output == on.output_id)
-        .or_else(|| desktops.outputs.first());
+    let out = grid_output(desktops, on);
     let active = out.map(|o| o.active);
     let (tile_w, tile_h) = g.tile();
     let (gap_x, gap_y) = g.gap();
     let mut col = Column::new().spacing(gap_y);
-    for r in 0..g.rows {
+    for line in grid_shown(g, desktops, on).chunks(g.columns) {
         let mut row = Row::new().spacing(gap_x);
-        for c in 0..g.columns {
-            let index = g.index_of(r, c);
-            let windows = out
-                .and_then(|o| o.desktops.iter().find(|d| d.index == index))
-                .map_or(0, |d| d.windows);
+        for &index in line {
             row = row.push(tile_sized(
                 index,
-                windows > 0,
+                desktop_windows(out, index) > 0,
                 active == Some(index),
                 tile_w,
                 tile_h,
@@ -818,6 +821,37 @@ fn grid_pager<'a>(
     mouse_area(container(col).align_y(Alignment::Center))
         .on_scroll(Message::PagerScroll)
         .into()
+}
+
+/// The output whose desktops this bar draws: its own, or the first one when
+/// the bar was started without `--output` (a single-monitor dev run).
+fn grid_output<'a>(
+    desktops: &'a ec_ipc::DesktopGrid,
+    on: &crate::app::Bar,
+) -> Option<&'a ec_ipc::OutputDesktops> {
+    desktops
+        .outputs
+        .iter()
+        .find(|o| on.output_id != 0 && o.output == on.output_id)
+        .or_else(|| desktops.outputs.first())
+}
+
+/// The windows on `index` on the output `out`, `0` when it reports none.
+fn desktop_windows(out: Option<&ec_ipc::OutputDesktops>, index: usize) -> usize {
+    out.and_then(|o| o.desktops.iter().find(|d| d.index == index))
+        .map_or(0, |d| d.windows)
+}
+
+/// The desktops the grid draws on this bar, in number order: the active one of
+/// this output and every desktop with windows on it. What [`grid_pager`] lays
+/// out and [`strip_left`] reserves room for, so the two cannot disagree.
+pub(crate) fn grid_shown(
+    g: crate::pager::Grid,
+    desktops: &ec_ipc::DesktopGrid,
+    on: &crate::app::Bar,
+) -> Vec<usize> {
+    let out = grid_output(desktops, on);
+    crate::pager::shown(g.count(), out.map(|o| o.active), |i| desktop_windows(out, i) > 0)
 }
 
 /// The workspaces worth drawing: the ones with something on them, plus the
@@ -873,6 +907,12 @@ fn tile(ws: &Workspace) -> Element<'_, Message, Theme> {
 
 /// One pager tile, `width` × `height`: the workspace row's, and the desktop
 /// grid's (which is shorter when it has several rows).
+///
+/// Three looks, so an occupied desktop and an empty one never read alike:
+/// - **active** — the `Focused` lozenge with the accent label (the one yellow);
+/// - **occupied** — a `Plain` glass lozenge with primary ink;
+/// - **empty** — `Latent`: no fill and no rim at rest, dim tertiary ink. The
+///   pointer lifts it into the plain lozenge and brightens the label.
 fn tile_sized<'a>(
     index: usize,
     occupied: bool,
@@ -880,15 +920,24 @@ fn tile_sized<'a>(
     width: f32,
     height: f32,
 ) -> Element<'a, Message, Theme> {
-    let tint = if ws_active {
-        color::accent_text()
+    let tone = if ws_active {
+        CellTone::Focused
     } else if occupied {
-        color::text_secondary()
+        CellTone::Plain
     } else {
-        color::text_tertiary()
+        CellTone::Latent
+    };
+    let (rest, lit) = if ws_active {
+        (color::accent_text(), color::accent_text())
+    } else if occupied {
+        (color::text(), color::text())
+    } else {
+        (color::text_tertiary(), color::text_secondary())
     };
     let face = if ws_active { font::DATA_MEDIUM } else { font::DATA };
-    let label = text(index.to_string()).size(size::MICRO).font(face).color(tint);
+    // No explicit colour on the label: the button hands its style's text
+    // colour down to the content, so the ink follows the pointer.
+    let label = text(index.to_string()).size(size::MICRO).font(face);
 
     let cell = button(container(label).center(Length::Fill))
         .width(Length::Fixed(width))
@@ -897,13 +946,15 @@ fn tile_sized<'a>(
         .style(move |t: &Theme, status: button::Status| {
             // The bar cell's glass lozenge and lifts, on the tile's smaller
             // squircle corner.
-            let mut style = theme::bar_cell(ws_active)(t, status);
-            style.text_color = tint;
-            style.border.radius = bar::RADIUS_TILE.into();
+            let mut style = theme::glass_cell(tone, bar::RADIUS_TILE)(t, status);
+            style.text_color = match status {
+                button::Status::Hovered | button::Status::Pressed => lit,
+                _ => rest,
+            };
             theme::bare_if_glass(style)
         })
         .on_press(Message::Switch(index));
-    parts::glass_ground(cell, ws_active, bar::RADIUS_TILE)
+    parts::glass_ground(cell, tone, bar::RADIUS_TILE)
 }
 
 // ------------------------------------------------------------------- tasks
@@ -1052,9 +1103,9 @@ fn tasks<'a>(app: &'a crate::app::App, on: &'a crate::app::Bar) -> Element<'a, M
 /// Where the task strip's first chip begins, in surface-local pixels: the
 /// solver's `lead`.
 pub(crate) fn strip_left(app: &crate::app::App, on: &crate::app::Bar) -> f32 {
-    let pager = match grid(app) {
-        Some(g) => g.size().0,
-        None => {
+    let pager = match (grid(app), app.grid.as_ref()) {
+        (Some(g), Some(desktops)) => g.size_shown(grid_shown(g, desktops, on).len()).0,
+        _ => {
             let count = live_workspaces(&app.snapshot, on.output_id).count() as f32;
             (count * bar::PAGER_W + (count - 1.0).max(0.0) * bar::GAP).max(0.0)
         }
@@ -2390,5 +2441,50 @@ mod tests {
         assert_eq!(grid(&app).map(|g| g.count()), Some(10));
         app.mode = crate::model::Mode::Hybrid;
         assert!(grid(&app).is_none());
+    }
+
+    /// The grid draws the active desktop of this bar's output and the ones with
+    /// windows on them, and nothing else. Another output's occupancy does not
+    /// count, and the strip is given exactly the width those survivors take.
+    #[test]
+    fn the_grid_pager_draws_only_occupied_and_the_active_desktop() {
+        use ec_ipc::{Desktop, DesktopGrid, OutputDesktops};
+        let desk = |index: usize, windows: usize| Desktop {
+            index,
+            occupied: windows > 0,
+            windows,
+        };
+        let (mut app, mut on) = de_app(vec![]);
+        on.output_id = 9;
+        app.grid = Some(DesktopGrid {
+            rows: 2,
+            columns: 5,
+            wrap: true,
+            directional: true,
+            outputs: vec![
+                // The other monitor: its desktop 2 has windows, ours does not.
+                OutputDesktops {
+                    output: 7,
+                    name: "DP-2".into(),
+                    active: 1,
+                    desktops: vec![desk(1, 2), desk(2, 2)],
+                },
+                OutputDesktops {
+                    output: 9,
+                    name: "DP-1".into(),
+                    active: 4,
+                    desktops: vec![desk(1, 3), desk(6, 1), desk(9, 1)],
+                },
+            ],
+            desktops: vec![],
+        });
+        let g = grid(&app).expect("the grid under de");
+        assert_eq!(grid_shown(g, app.grid.as_ref().unwrap(), &on), vec![1, 4, 6, 9]);
+
+        crate::app::relayout(&app, &mut on, std::time::Instant::now());
+        let fixed = bar::EDGE + crate::layout::eclipse_w(on.menu.reveal.target()) + 2.0 * bar::ZONE_GAP;
+        let pager_w = strip_left(&app, &on) - fixed;
+        assert!((pager_w - g.size_shown(4).0).abs() < 0.01, "pager {pager_w}");
+        assert!(pager_w < g.size().0, "fewer survivors than the full grid");
     }
 }

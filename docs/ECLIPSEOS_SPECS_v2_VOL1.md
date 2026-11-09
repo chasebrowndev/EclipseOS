@@ -3334,7 +3334,8 @@ agents check against (COMP §0.5).
 - Named workspaces persist in the session snapshot (COMP-01 §7).
 - *(added C-24, 2026-11-05)* As built, each output has a fixed ten human
   workspaces (`workspace <1..10>`), not dynamic ones. Under `mode "de"` these
-  are the desktops: the pager and desktop grid (§7.1) lay out the same ten, and
+  are the desktops: the pager and desktop grid (§7.1) lay out the same ten (the
+  taskbar's pager draws only the occupied desktops and the active one), and
   no second model exists. Agent workspaces stay out of the pager, grid,
   switcher and overview.
 
@@ -3428,6 +3429,13 @@ Layout is a trait; two implementations plus floating in v1.
   window is still floating: it has a rect and a restore rect, its configure
   carries `Tiled*` for the edges it touches, and dragging it away restores its
   size under the pointer.
+  *(amended 2026-11-09)* A quick-tiled window looks like a tile, not a flush
+  square: it sits in the `tiling_area` (usable area inset by `gaps-out`), with
+  `gaps-in` between neighbours, the border or glass bezel, and
+  `decoration.rounding`. Tiling a half over a fully maximized window on the
+  same workspace and output sends that window to the opposite half, if free,
+  keeping its restore rect. Quarters, the top-edge maximize, the dragged
+  window, fullscreen windows and other outputs are not affected.
   *(added C-19, 2026-10-13)* A fullscreen window is the top of its
   workspace's stack. Only its own dialogs (an xdg parent or an X11
   `WM_TRANSIENT_FOR`, transitively) are drawn above it. Focus that restacks

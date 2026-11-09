@@ -139,8 +139,8 @@ pub fn tile_clip(window: &Window) -> Option<Rectangle<i32, Logical>> {
 }
 
 /// Whether abyss's placement has this window Quick Tiled (`mode "de"`), set by
-/// the layout pass. Render draws it square and borderless from this, not from
-/// the client's acked `Tiled*` states, which lag (or do not exist for X11).
+/// the layout pass. Placement, not the client's acked `Tiled*` states (which
+/// lag, or do not exist for X11), is the source of truth for it.
 pub struct QuickTiled(pub Cell<bool>);
 
 /// Is `window` Quick Tiled by placement?

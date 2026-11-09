@@ -98,6 +98,12 @@ impl Shot {
         }
     }
 
+    /// Whether a frame must run [`service`]: a queued request, or a frozen
+    /// frame whose selection may have ended.
+    pub fn wants_service(&self) -> bool {
+        self.request.is_some() || self.frozen.is_some()
+    }
+
     /// The last shot's PNG, if its selection is still the clipboard.
     pub fn clipboard(&self, mime: &str) -> Option<Arc<Vec<u8>>> {
         self.clip.clone().filter(|_| mime == MIME)
@@ -432,8 +438,13 @@ mod tests {
         shot.crop(r(0, 0, 10, 10));
         assert!(shot.request.is_none(), "nothing frozen, nothing to crop");
         assert!(!shot.selecting());
+        assert!(!shot.wants_service());
         shot.begin_region();
         assert!(shot.selecting());
+        assert!(
+            shot.wants_service(),
+            "a queued shot must reach the backend's service call"
+        );
         shot.clip = Some(Arc::new(vec![1]));
         assert!(shot.clipboard("image/png").is_some());
         assert!(shot.clipboard("text/plain").is_none());

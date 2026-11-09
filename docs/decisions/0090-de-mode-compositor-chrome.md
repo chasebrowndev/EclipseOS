@@ -40,6 +40,9 @@ Take option 1, in `mode "de"` only.
   agent's `set_state(maximized)` stays refused everywhere. *(amended
   2026-11-08)* A maximized window looks like a lone tile (gapped, bordered,
   rounded), not a flush square, so it stays clear of the inset taskbar.
+  *(amended 2026-11-09)* Quick-tiled windows get the same frame, with `gaps-in`
+  between neighbours, and a half tile sends a maximized window behind it to the
+  opposite half.
 - Desktops are the existing ten per-output workspaces, laid out as a grid.
 - Thumbnails are built by the compositor and shown only by it. They take the
   stricter reading of the conflict above: redacted like a capture target, even

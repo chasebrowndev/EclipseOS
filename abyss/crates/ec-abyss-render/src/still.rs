@@ -48,9 +48,9 @@ use crate::{
     bar_depth, bezel_ready, bezel_width, blur, border_frame, committed_panes, effects, ensure_glass,
     explicit_bezel, explicit_blur, explicit_window_backdrop, fills_area, glow_colors, glow_program,
     insert_blur, is_scrim, layer_radius, layer_shape, layer_shows, opaque_of, phys, push_border, push_dim,
-    push_glow, push_popups, push_shadow, quick_tiled, shadow_program, strip_backdrop, strip_crops,
-    strip_rect, union_with_bar, userdata, window_backdrop, window_takes_panes, AbyssRenderElement, Bezel,
-    BlurRequest, BorderFrame, BorderStore, PaneRequest, BEZEL_DIM,
+    push_glow, push_popups, push_shadow, shadow_program, strip_backdrop, strip_crops, strip_rect,
+    union_with_bar, userdata, window_backdrop, window_takes_panes, AbyssRenderElement, Bezel, BlurRequest,
+    BorderFrame, BorderStore, PaneRequest, BEZEL_DIM,
 };
 
 /// The capture pass's own effect store. Kept between captures so a
@@ -314,13 +314,7 @@ impl Frame<'_> {
             _ => false,
         };
         let border_size = self.config.general.border_size;
-        let bezel = bezel_width(
-            mode,
-            ready,
-            fills_area(window) || quick_tiled(window),
-            border_size,
-            scale.x.max(scale.y),
-        );
+        let bezel = bezel_width(mode, ready, fills_area(window), border_size, scale.x.max(scale.y));
         // A settled frame: the bezel's rim is the focus state's resting colour.
         let rim = if active { [1.0; 4] } else { [BEZEL_DIM; 4] };
         // `ext_background_effect_v1`, read exactly as the live path does.
@@ -570,7 +564,6 @@ impl Frame<'_> {
         // bezel is the frame, so no painted ring is drawn beside it.
         match &self.border {
             Some(_) if ready => {}
-            Some(_) if quick_tiled(window) => {}
             Some(border) => {
                 let color = if active {
                     self.config.general.col_active
