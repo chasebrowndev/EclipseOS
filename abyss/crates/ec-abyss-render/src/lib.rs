@@ -1304,6 +1304,7 @@ fn insert_panes(
                     look.shade,
                     light,
                     cfg.adaptive.effective(),
+                    2.0,
                 ),
             ))
         },

@@ -408,41 +408,55 @@ const float ADAPT_TEXT_DARK = 1.0;
 const float ADAPT_TEXT_LIGHT = 0.01;
 const float ADAPT_C_OK = 7.0;
 const float ADAPT_C_MIN = 2.0;
-const float ADAPT_REACH = 1.5;
+const float ADAPT_REACH = 1.75;
 const float ADAPT_MAX = 0.95;
+const float ADAPT_MAX_L = 0.8;     // light glass keeps some backdrop: it must not read as a white slab
+const float ADAPT_EASE = 1.5;      // exponent of the response curve
+const float ADAPT_WORST = 0.75;    // weight of the worst tap over the mean
 uniform vec2 px_uv;         // 1 / backdrop texture size
 uniform float y_sign;       // -1 when the framebuffer is y-mirrored
 uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
 uniform float adapt;        // effective adaptive strength; 0 off
+uniform float adapt_layers; // glass layers over this backdrop: 1 window, 2 pane on a window; 0 unset = 1
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);    // Rec.709
 const vec3 SURFACE_D = vec3(0.047, 0.047, 0.055);  // #0c0c0e
 const vec3 SURFACE_L = vec3(0.985, 0.975, 0.955);  // warm white
 
-// Mean luma (display-encoded) of the blurred backdrop around this fragment:
-// five taps in a cross centred on it, taken from `tex`, which is the blur
-// chain's own output. The arms are at most `ADAPT_STEP` long (on a small
-// surface, `ADAPT_SPAN` of its half-size) and each tap is held inside the
-// surface's rect, so a shape's drawer and pill each read the backdrop behind
-// themselves, not one mean for the union. Where the arms would be under
-// `ADAPT_MIN_STEP` the backdrop is flat at that scale and one tap does.
+// Luma (display-encoded) of the blurred backdrop around this fragment that
+// the text has to survive: nine taps (centre, cross, diagonals) from `tex`,
+// the blur chain's own output. The mean is pulled `ADAPT_WORST` of the way to
+// the tap the text contrasts with least (darkest for ink, brightest for
+// white), so a busy backdrop (dark blocks under a light surface) is judged by
+// its worst patch, not its average. The arms are at most `ADAPT_STEP` long (on
+// a small surface, `ADAPT_SPAN` of its half-size) and each tap is held inside
+// the surface's rect, so a shape's drawer and pill each read the backdrop
+// behind themselves. Under `ADAPT_MIN_STEP` the backdrop is flat at that
+// scale and one tap does. Mirrors `adaptive_luma` below.
 float backdrop_luma() {
     vec2 hs = win_rect.zw * 0.5;
     vec2 step = min(vec2(ADAPT_STEP), hs * ADAPT_SPAN);
+    float c = dot(texture2D(tex, v_coords).rgb, LUMA);
     if (max(step.x, step.y) < ADAPT_MIN_STEP) {
-        return dot(texture2D(tex, v_coords).rgb, LUMA);
+        return c;
     }
     vec2 p0 = gl_FragCoord.xy - (win_rect.xy + hs);
     p0.y *= y_sign;
-    vec2 ex = vec2(step.x, 0.0);
-    vec2 ey = vec2(0.0, step.y);
-    float sum = dot(texture2D(tex, v_coords).rgb, LUMA);
-    for (int i = 0; i < 4; i++) {
-        vec2 t = i == 0 ? ex : i == 1 ? -ex : i == 2 ? ey : -ey;
-        vec2 q = clamp(p0 + t, -hs, hs);
+    float sum = c;
+    float lo = c;
+    float hi = c;
+    for (int i = 0; i < 8; i++) {
+        vec2 d = i == 0 ? vec2(1.0, 0.0) : i == 1 ? vec2(-1.0, 0.0) : i == 2 ? vec2(0.0, 1.0)
+            : i == 3 ? vec2(0.0, -1.0) : i == 4 ? vec2(0.7, 0.7) : i == 5 ? vec2(-0.7, 0.7)
+            : i == 6 ? vec2(0.7, -0.7) : vec2(-0.7, -0.7);
+        vec2 q = clamp(p0 + d * step, -hs, hs);
         vec2 uv = clamp(v_coords + (q - p0) * px_uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
-        sum += dot(texture2D(tex, uv).rgb, LUMA);
+        float l = dot(texture2D(tex, uv).rgb, LUMA);
+        sum += l;
+        lo = min(lo, l);
+        hi = max(hi, l);
     }
-    return sum * 0.2;
+    float mean = sum / 9.0;
+    return mix(mean, mix(hi, lo, scheme_light), ADAPT_WORST);
 }
 
 // How far to pull the tint toward the scheme's surface colour.
@@ -452,7 +466,10 @@ float adapt_amount(float luma, float light, float strength) {
     float lt = mix(ADAPT_TEXT_DARK, ADAPT_TEXT_LIGHT, light);
     float contrast = (max(lb, lt) + 0.05) / (min(lb, lt) + 0.05);
     float need = clamp((ADAPT_C_OK - contrast) / (ADAPT_C_OK - ADAPT_C_MIN), 0.0, 1.0);
-    return min(need * strength * ADAPT_REACH, ADAPT_MAX);
+    // Convex ease; each glass layer stacked on the backdrop multiplies the
+    // exponent, so a pane over a window's glass compounds, not adds.
+    float a = need * strength * ADAPT_REACH;
+    return min(1.0 - pow(max(1.0 - a, 0.0), ADAPT_EASE * max(adapt_layers, 1.0)), mix(ADAPT_MAX, ADAPT_MAX_L, light));
 }
 
 vec3 adapt_tint(vec3 c) {
@@ -671,7 +688,7 @@ void main() {
 "#;
 
 /// The frost program's uniforms, in the order [`frost_uniforms`] sets them.
-const FROST_UNIFORMS: [(&str, UniformType); 11] = [
+const FROST_UNIFORMS: [(&str, UniformType); 12] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("frost_tint", UniformType::_4f),
@@ -683,6 +700,7 @@ const FROST_UNIFORMS: [(&str, UniformType); 11] = [
     ("px_uv", UniformType::_2f),
     ("scheme_light", UniformType::_1f),
     ("adapt", UniformType::_1f),
+    ("adapt_layers", UniformType::_1f),
 ];
 
 /// Compile the frost backdrop program (COMP-02 §9). Cached by the caller.
@@ -729,7 +747,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 16] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 17] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -746,6 +764,7 @@ const GLASS_UNIFORMS: [(&str, UniformType); 16] = [
     ("shade", UniformType::_1f),
     ("scheme_light", UniformType::_1f),
     ("adapt", UniformType::_1f),
+    ("adapt_layers", UniformType::_1f),
 ];
 
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
@@ -824,12 +843,14 @@ pub fn glass_uniforms(
 ) -> Vec<Uniform<'static>> {
     glass_uniforms_lifted(
         rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, 0.0, light, adapt,
+        1.0,
     )
 }
 
 /// [`glass_uniforms`] with a fill `lift` (a mix toward white, 0.0..=1.0) and a
 /// `shade` (a mix toward ink, light only): a glass pane's hover/press/focus
-/// fill (`eclipse_glass_v1`).
+/// fill (`eclipse_glass_v1`). `layers` is how many glass layers stack on the
+/// sampled backdrop for adaptive glass: 1 a window, 2 a pane on a window.
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms_lifted(
     rect: Rectangle<i32, Physical>,
@@ -845,6 +866,7 @@ pub fn glass_uniforms_lifted(
     shade: f32,
     light: f32,
     adapt: f32,
+    layers: f32,
 ) -> Vec<Uniform<'static>> {
     let (inner, opaque, rim_color, bar) =
         bezel.map_or((0.0, 0.0, [1.0; 4], 0.0), |(inner, opaque, rim, bar)| {
@@ -874,6 +896,7 @@ pub fn glass_uniforms_lifted(
         Uniform::new("shade", shade),
         Uniform::new("scheme_light", light),
         Uniform::new("adapt", adapt),
+        Uniform::new("adapt_layers", layers),
     ]);
     u
 }
@@ -888,11 +911,25 @@ const ADAPT_TEXT_DARK: f32 = 1.0;
 const ADAPT_TEXT_LIGHT: f32 = 0.01;
 /// How much of the tint `strength` 1.0 (or less, times this) may replace, and
 /// the most it ever does.
-const ADAPT_REACH: f32 = 1.5;
+const ADAPT_REACH: f32 = 1.75;
 const ADAPT_MAX: f32 = 0.95;
+/// The cap on light glass: it keeps some backdrop instead of a white slab.
+const ADAPT_MAX_L: f32 = 0.8;
+/// Exponent of the response curve: 1 - (1 - a)^EASE steepens small shifts.
+const ADAPT_EASE: f32 = 1.5;
+/// Weight of the worst tap over the mean in [`adaptive_luma`].
+const ADAPT_WORST: f32 = 0.75;
 /// The scheme's surface colour the tint moves toward (the glass smoke).
 pub const ADAPT_SURFACE_DARK: [f32; 3] = [0.047, 0.047, 0.055];
 pub const ADAPT_SURFACE_LIGHT: [f32; 3] = [0.985, 0.975, 0.955];
+
+/// The luma adaptive glass judges: the mean of the sampled backdrop pulled
+/// toward the tap the scheme's text contrasts with least (`hi` for dark, `lo`
+/// for light). Mirrors the tail of `backdrop_luma` in the shader.
+pub fn adaptive_luma(mean: f32, lo: f32, hi: f32, light: f32) -> f32 {
+    let worst = hi + (lo - hi) * light;
+    mean + (worst - mean) * ADAPT_WORST
+}
 
 /// How far, 0.0..=0.95, adaptive glass pulls the tint toward the scheme's
 /// surface colour. `luma` is the display-encoded mean luma of the blurred
@@ -904,7 +941,15 @@ pub fn adaptive_amount(luma: f32, light: f32, strength: f32) -> f32 {
     let lt = ADAPT_TEXT_DARK + (ADAPT_TEXT_LIGHT - ADAPT_TEXT_DARK) * light;
     let contrast = (lb.max(lt) + 0.05) / (lb.min(lt) + 0.05);
     let need = ((ADAPT_CONTRAST_OK - contrast) / (ADAPT_CONTRAST_OK - ADAPT_CONTRAST_MIN)).clamp(0.0, 1.0);
-    (need * strength.max(0.0) * ADAPT_REACH).min(ADAPT_MAX)
+    adaptive_stacked(need * strength.max(0.0) * ADAPT_REACH, 1.0, light)
+}
+
+/// The response curve for a raw shift `a` under `layers` glass layers (1 a
+/// window, 2 a pane on a window's glass): each layer multiplies the exponent.
+/// `light` is the scheme (light glass has the lower cap).
+pub fn adaptive_stacked(a: f32, layers: f32, light: f32) -> f32 {
+    (1.0 - (1.0 - a).max(0.0).powf(ADAPT_EASE * layers.max(1.0)))
+        .min(ADAPT_MAX + (ADAPT_MAX_L - ADAPT_MAX) * light)
 }
 
 /// `tint` moved toward the scheme's surface colour by [`adaptive_amount`].
@@ -1608,8 +1653,29 @@ mod tests {
         let l = adaptive_tint(t, 0.0, 1.0, 0.5);
         assert!(l.iter().zip(t).all(|(a, b)| *a > b), "{l:?}");
         // Stronger moves further, and brighter moves further.
-        assert!(adaptive_amount(1.0, 0.0, 1.0) > adaptive_amount(1.0, 0.0, 0.5));
-        assert!(adaptive_amount(1.0, 0.0, 0.5) > adaptive_amount(0.5, 0.0, 0.5));
+        assert!(adaptive_amount(1.0, 0.0, 0.4) > adaptive_amount(1.0, 0.0, 0.2));
+        assert!(adaptive_amount(1.0, 0.0, 0.3) > adaptive_amount(0.5, 0.0, 0.3));
         assert!(adaptive_amount(1.0, 0.0, 1.0) <= ADAPT_MAX);
+    }
+
+    #[test]
+    fn adaptive_luma_judges_a_busy_backdrop_by_its_worst_patch() {
+        // Light glass (ink) over a mostly bright backdrop with a dark patch.
+        let l = adaptive_luma(0.7, 0.1, 0.9, 1.0);
+        assert!(l < 0.7 && l > 0.1, "{l}");
+        assert!(adaptive_amount(l, 1.0, 1.0) > adaptive_amount(0.7, 1.0, 1.0));
+        // Dark glass (white) over a mostly dark backdrop with a bright patch.
+        assert!(adaptive_luma(0.2, 0.1, 0.9, 0.0) > 0.2);
+        // A flat backdrop is unchanged.
+        assert_eq!(adaptive_luma(0.5, 0.5, 0.5, 1.0), 0.5);
+    }
+
+    #[test]
+    fn a_pane_on_window_glass_shifts_further_than_the_window() {
+        for a in [0.1, 0.3, 0.5] {
+            assert!(adaptive_stacked(a, 2.0, 0.0) > adaptive_stacked(a, 1.0, 0.0));
+        }
+        assert!(adaptive_stacked(5.0, 2.0, 1.0) <= ADAPT_MAX_L);
+        assert_eq!(adaptive_stacked(0.0, 2.0, 1.0), 0.0);
     }
 }
