@@ -342,7 +342,7 @@ pub fn apply(state: &mut AbyssState, next: Addons) {
     }
     crate::protocols::agent::sync(state);
 
-    if turned_off(Hook::RegionSelect) && state.region_select.active() {
+    if turned_off(Hook::RegionSelect) && state.region_select.active() && !state.shot.selecting() {
         state.region_select.cancel();
         crate::backend::damage_all(state);
     }

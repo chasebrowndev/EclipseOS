@@ -2577,7 +2577,16 @@ fn window_elements(
                 store.gpu.rings.remove(&(output.clone(), window.clone()));
                 store.borders.remove(&(output.clone(), window.clone()));
             }
-            Some(frame) => push_border(store, frame, output, &window, geo, config, out),
+            Some(frame) => {
+                // The `border` animation crossfades this on focus change; with
+                // the animation off it is the focused/unfocused colour outright.
+                let fade = store.anim.transform(&window).alpha;
+                let color = store
+                    .anim
+                    .border_color(&window, config.general.col_active, config.general.col_inactive)
+                    .map(|c| c * fade);
+                push_border(store, frame, output, &window, geo, color, out)
+            }
             None => {}
         }
         if let Some(program) = &glow {
@@ -3041,7 +3050,7 @@ fn push_border(
     output: &Output,
     window: &Window,
     geo: Rectangle<i32, Logical>,
-    config: &Config,
+    color: [f32; 4],
     out: &mut Vec<AbyssRenderElement>,
 ) {
     let BorderFrame {
@@ -3051,13 +3060,6 @@ fn push_border(
         scale,
         ref ring,
     } = *frame;
-    // The `border` animation crossfades this on focus change; with the
-    // animation off it is the focused/unfocused colour outright.
-    let fade = store.anim.transform(window).alpha;
-    let color = store
-        .anim
-        .border_color(window, config.general.col_active, config.general.col_inactive)
-        .map(|c| c * fade);
     // Outer rect: the tile, with the window inset by `width` on every side.
     let outer = Rectangle::new(
         // Window geometry is global; elements are output-local.

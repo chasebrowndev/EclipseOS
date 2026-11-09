@@ -319,6 +319,8 @@ pub(crate) fn parse_action(node: &KdlNode) -> Result<Action, String> {
         "agent-terminate" => Action::AgentTerminate,
         "agent-attention" => Action::AgentAttention,
         "annotation-select" => Action::AnnotationSelect,
+        "screenshot" => Action::ScreenshotFull,
+        "screenshot-region" => Action::ScreenshotRegion,
         "annotation-dismiss" => Action::AnnotationDismiss,
         "annotation-expand" => Action::AnnotationExpand,
         "annotation-auto-toggle" => Action::AnnotationAutoToggle,

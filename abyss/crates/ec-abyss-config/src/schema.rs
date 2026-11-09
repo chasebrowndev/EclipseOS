@@ -2990,6 +2990,18 @@ pub const BIND_ACTIONS: &[Form] = &[
         "Start a region selection (COMP-18 §1.3).",
     ),
     form(
+        &["screenshot"],
+        "",
+        &["screenshot"],
+        "Screenshot the output under the pointer as composed, redaction applied (ADR 0093). PNG in `~/Pictures/Screenshots`, and on the clipboard. Default `Print`.",
+    ),
+    form(
+        &["screenshot-region"],
+        "",
+        &["screenshot-region"],
+        "Freeze the output under the pointer now, drag a rectangle, release to save it; Esc or the same chord cancels. Default `Shift+Print`.",
+    ),
+    form(
         &["annotation-dismiss"],
         "",
         &["annotation-dismiss"],

@@ -2071,6 +2071,29 @@ fn agent_attention_action_parses() {
 }
 
 #[test]
+fn screenshot_actions_parse_and_ship_bound() {
+    use crate::input::Action;
+    let doc: KdlDocument =
+        "bind \"SUPER\" \"Print\" { screenshot; }\nbind \"SUPER\" \"F12\" { screenshot-region; }"
+            .parse()
+            .unwrap();
+    let mut cfg = Config::default();
+    let mut binds = Vec::new();
+    cfg.apply(&doc, &mut binds);
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(binds.len(), 2);
+    assert_eq!(binds[0].action, Action::ScreenshotFull);
+    assert_eq!(binds[1].action, Action::ScreenshotRegion);
+    let d = crate::binds::default_binds();
+    assert!(d
+        .iter()
+        .any(|b| b.key == Keysym::Print && !b.mods.shift && b.action == Action::ScreenshotFull));
+    assert!(d
+        .iter()
+        .any(|b| b.key == Keysym::Print && b.mods.shift && b.action == Action::ScreenshotRegion));
+}
+
+#[test]
 fn annotation_chords_parse_and_are_not_bound_by_default() {
     use crate::input::Action;
     for (name, want) in [
