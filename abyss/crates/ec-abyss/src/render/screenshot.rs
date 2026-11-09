@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Built-in screenshots (ADR 0092).
+//! Built-in screenshots (ADR 0093).
 //!
 //! Both actions render through [`capture::capture_elements`], the one place
 //! redaction is decided (ADR 0030), so a shot has the screen's blur, glass,

@@ -112,6 +112,7 @@ smithay::backend::renderer::element::render_elements! {
     Scaled=anim::ScaledElement,
     CroppedScaled=CropRenderElement<anim::ScaledElement>,
     // A closed window's last frame, played out as a ghost (`anim::Ghost`).
+    ScaledBar=anim::ScaledElement<smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement<GlesRenderer>>,
     ScaledTexture=anim::ScaledElement<smithay::backend::renderer::element::texture::TextureRenderElement<smithay::backend::renderer::gles::GlesTexture>>,
     // A window's offscreen copy drawn through an add-on transition shader
     // (ADR 0073); see `anim::shader`. Only while that run plays.
@@ -371,14 +372,19 @@ fn bezel_ready(
     if effects::fb_y_mirrored(output.current_transform()).is_none() || output.current_mode().is_none() {
         return false;
     }
+    let gpu = &mut *store.gpu;
+    let failed = &mut gpu.compile_failed;
     let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match mode {
-        BlurMode::Frost => (&mut store.gpu.frost, effects::compile_frost, "frost"),
-        _ => (&mut store.gpu.glass, effects::compile_glass, "glass"),
+        BlurMode::Frost => (&mut gpu.frost, effects::compile_frost, "frost"),
+        _ => (&mut gpu.glass, effects::compile_glass, "glass"),
     };
-    if slot.is_none() {
+    if slot.is_none() && !failed.contains(&what) {
         match compile(renderer) {
             Ok(program) => *slot = Some(program),
-            Err(err) => tracing::warn!(?err, shader = what, "compiling a bezel shader; painted borders"),
+            Err(err) => {
+                failed.push(what);
+                tracing::warn!(?err, shader = what, "compiling a bezel shader; painted borders");
+            }
         }
     }
     slot.is_some()
@@ -490,6 +496,9 @@ pub struct BorderGpu {
     /// The glass program failed to compile; layers with panes keep the
     /// whole-surface glass instead (and it is not retried per frame).
     glass_failed: bool,
+    /// Backdrop programs (by name) whose compile failed: warned once, not
+    /// retried every frame.
+    compile_failed: Vec<&'static str>,
     /// The same three (blur, frost, glass) masked to a layer's input-region
     /// shape (Vol 1 §5.2), compiled on the first frame that draws one.
     shaped: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
@@ -1067,35 +1076,31 @@ fn insert_blur(
         // A rotated output (`fb_height` None) keeps the plain square
         // backdrop in every mode.
         let scaled_radius = (radius as f64 * upscale) as f32;
+        let gpu = &mut *store.gpu;
         let program = fb_height.and_then(|(fb_height, mirrored)| {
             let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match (mode, shape.is_some()) {
                 (BlurMode::Off, _) => return None,
                 (BlurMode::Blur, false) if radius <= 0 => return None,
-                (BlurMode::Blur, false) => {
-                    (&mut store.gpu.rounded, effects::compile_rounded, "rounded-corner")
-                }
-                (BlurMode::Frost, false) => (&mut store.gpu.frost, effects::compile_frost, "frost"),
-                (BlurMode::Glass, false) => (&mut store.gpu.glass, effects::compile_glass, "glass"),
+                (BlurMode::Blur, false) => (&mut gpu.rounded, effects::compile_rounded, "rounded-corner"),
+                (BlurMode::Frost, false) => (&mut gpu.frost, effects::compile_frost, "frost"),
+                (BlurMode::Glass, false) => (&mut gpu.glass, effects::compile_glass, "glass"),
                 (BlurMode::Blur, true) => (
-                    &mut store.gpu.shaped[0],
+                    &mut gpu.shaped[0],
                     effects::compile_rounded_shaped,
                     "shaped rounded-corner",
                 ),
-                (BlurMode::Frost, true) => (
-                    &mut store.gpu.shaped[1],
-                    effects::compile_frost_shaped,
-                    "shaped frost",
-                ),
-                (BlurMode::Glass, true) => (
-                    &mut store.gpu.shaped[2],
-                    effects::compile_glass_shaped,
-                    "shaped glass",
-                ),
+                (BlurMode::Frost, true) => {
+                    (&mut gpu.shaped[1], effects::compile_frost_shaped, "shaped frost")
+                }
+                (BlurMode::Glass, true) => {
+                    (&mut gpu.shaped[2], effects::compile_glass_shaped, "shaped glass")
+                }
             };
-            if slot.is_none() {
+            if slot.is_none() && !gpu.compile_failed.contains(&what) {
                 match compile(renderer) {
                     Ok(program) => *slot = Some(program),
                     Err(err) => {
+                        gpu.compile_failed.push(what);
                         tracing::warn!(?err, shader = what, "compiling a blur shader; plain backdrop")
                     }
                 }
@@ -1109,6 +1114,9 @@ fn insert_blur(
                     scaled_radius,
                     cfg.frost.tint,
                     bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
+                    fb_size,
+                    config.appearance.glass_light(),
+                    cfg.adaptive.effective(),
                 ),
                 BlurMode::Glass => {
                     let refraction = (cfg.glass.refraction as f64 * upscale) as f32;
@@ -1131,6 +1139,7 @@ fn insert_blur(
                         &cfg.glass,
                         bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
                         config.appearance.glass_light(),
+                        cfg.adaptive.effective(),
                     )
                 }
                 _ => effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius),
@@ -1293,6 +1302,7 @@ fn insert_panes(
                     look.lift,
                     look.shade,
                     light,
+                    cfg.adaptive.effective(),
                 ),
             ))
         },
@@ -2293,14 +2303,27 @@ fn window_elements(
         // for glass on its content only (a plain box) has that box grown to
         // take in the bar, so the title never sits over unblurred pixels.
         let backdrop = match (bar, content_geo, geo) {
-            (Some(info), Some(content), Some(frame)) if scaled.is_none() && mode != BlurMode::Off => {
+            (Some(info), Some(content), Some(frame)) if mode != BlurMode::Off => {
                 let phys_rect = |r: Rectangle<i32, Logical>| {
                     Rectangle::new(
                         phys(r.loc - output_geo.loc, scale),
                         r.size.to_f64().to_physical(scale).to_i32_round(),
                     )
                 };
-                let strip = phys_rect(titlebar::bar_rect(content, info.height));
+                // Animating at a scale, the bar rides the window: its rest
+                // rect (moved, not scaled) is carried about the same origin
+                // the surfaces are.
+                let strip = match (scaled, target) {
+                    (Some((origin, by)), Some(rest)) => anim::track::scale_about(
+                        phys_rect(titlebar::bar_rect(
+                            Rectangle::new(rest.loc + t.loc(), rest.size),
+                            info.height,
+                        )),
+                        origin,
+                        by,
+                    ),
+                    _ => phys_rect(titlebar::bar_rect(content, info.height)),
+                };
                 match backdrop {
                     None => strip_backdrop(strip, phys_rect(frame), corner)
                         .map(|region| (region, deco.rounding, None, None)),
@@ -2498,9 +2521,14 @@ fn window_elements(
         // The titlebar sits with its window: directly above its border and
         // shadow, level with its surfaces, so a window stacked above hides
         // it. It rounds its top corners with the frame; maximized is square.
-        // Not while the window animates at a scale, where it would not follow.
-        if let (Some(info), true) = (bar, scaled.is_none()) {
-            let bar_rect = titlebar::bar_rect(content_geo.unwrap_or(geo), info.height);
+        // Animating at a scale, it is drawn at its rest size and carried
+        // about the same origin as the surfaces (`ScaledElement`).
+        if let Some(info) = bar {
+            let rest = match (scaled, target) {
+                (Some(_), Some(rest)) => Rectangle::new(rest.loc + t.loc(), rest.size),
+                _ => content_geo.unwrap_or(geo),
+            };
+            let bar_rect = titlebar::bar_rect(rest, info.height);
             let radius = match rounding {
                 Some(_) => deco.rounding,
                 None => 0,
@@ -2519,7 +2547,12 @@ fn window_elements(
                 alpha,
                 config.appearance.glass_light() > 0.0,
             ) {
-                out.push(AbyssRenderElement::Memory(element));
+                out.push(match scaled {
+                    Some((origin, by)) => {
+                        AbyssRenderElement::ScaledBar(anim::ScaledElement::new(element, origin, by, None))
+                    }
+                    None => AbyssRenderElement::Memory(element),
+                });
             }
         }
         // Border, glow, then shadow, all directly under this window's
@@ -3634,6 +3667,22 @@ mod tests {
         // A bar outside the region grows it to cover both.
         let apart = r(100, 20, 300, 40);
         assert_eq!(union_with_bar(rect, apart), r(100, 20, 300, 230));
+    }
+
+    /// A pop-open window carries its bar: the bar's rest rect scaled about the
+    /// window's origin keeps its edges on the scaled frame's.
+    #[test]
+    fn the_titlebar_scales_with_its_window() {
+        let origin = Point::from((250, 150));
+        let by = Scale::from(0.5);
+        let frame = r(100, 50, 300, 200);
+        let bar = r(100, 50, 300, 40);
+        let (f, b) = (
+            anim::track::scale_about(frame, origin, by),
+            anim::track::scale_about(bar, origin, by),
+        );
+        assert_eq!((b.loc, b.size.w), (f.loc, f.size.w));
+        assert_eq!(b.size.h, 20);
     }
 
     #[test]

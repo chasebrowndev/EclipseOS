@@ -129,10 +129,10 @@ pub enum Action {
     /// gets read, so the compositor runs the selection itself (COMP-18 §1.3)
     /// and forwards only the result.
     AnnotationSelect,
-    /// Screenshot the output under the pointer, exactly as composed (ADR 0092).
+    /// Screenshot the output under the pointer, exactly as composed (ADR 0093).
     ScreenshotFull,
     /// Freeze the output under the pointer now, pick a rectangle of it, and
-    /// screenshot that (ADR 0092). The chord toggles, as `AnnotationSelect` does.
+    /// screenshot that (ADR 0093). The chord toggles, as `AnnotationSelect` does.
     ScreenshotRegion,
     AnnotationDismiss,
     AnnotationExpand,

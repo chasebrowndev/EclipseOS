@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# 0092 — The compositor takes its own screenshots
+# 0093 — The compositor takes its own screenshots
 Status: accepted
 Date: 2026-11-08
 Deciders: chase (owner), Claude (advisory)

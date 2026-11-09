@@ -61,6 +61,7 @@ impl Config {
                 },
                 "glass" => self.apply_glass(n),
                 "frost" => self.apply_frost(n),
+                "adaptive" => self.apply_adaptive(n),
                 "size" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) if (1..=64).contains(&v) => self.decoration.blur.size = v as i32,
                     _ => self.reject(n, "blur size must be an integer 1..=64"),
@@ -99,6 +100,23 @@ impl Config {
                     _ => self.reject(n, "glass rim must be 0.0..=1.0"),
                 },
                 _ => self.unknown_key(n, "decoration.blur.glass", "glass key"),
+            }
+        }
+    }
+
+    pub(crate) fn apply_adaptive(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            match n.name().value() {
+                "enabled" => match arg(n).and_then(KdlValue::as_bool) {
+                    Some(v) => self.decoration.blur.adaptive.enabled = v,
+                    None => self.reject(n, "adaptive enabled must be #true or #false"),
+                },
+                "strength" => match arg(n).and_then(as_f64) {
+                    Some(v) if (0.0..=1.0).contains(&v) => self.decoration.blur.adaptive.strength = v as f32,
+                    _ => self.reject(n, "adaptive strength must be 0.0..=1.0"),
+                },
+                _ => self.unknown_key(n, "decoration.blur.adaptive", "adaptive key"),
             }
         }
     }

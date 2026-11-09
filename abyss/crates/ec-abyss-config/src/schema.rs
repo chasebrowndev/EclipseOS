@@ -1266,6 +1266,25 @@ pub const TABLE: &[Key] = &[
        top-left edges with a weaker lobe at the bottom-right.",
     ),
     k(
+        "decoration.blur.adaptive.enabled",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Adaptive glass (ADR 0092): the backdrop's tint follows the brightness of \
+       what is behind it, so text stays readable. In a dark scheme a bright \
+       backdrop darkens the glass; in a light scheme a dark one lightens it. \
+       Measured on the GPU; nothing is read back.",
+    ),
+    k(
+        "decoration.blur.adaptive.strength",
+        PCT,
+        Float(0.5),
+        Abyss,
+        Live,
+        "How far adaptive glass may move the tint; 0 keeps the fixed tint.",
+    ),
+    k(
         "decoration.blur.frost.tint",
         Ty::Color,
         Color(crate::FROST_TINT),
@@ -2974,7 +2993,7 @@ pub const BIND_ACTIONS: &[Form] = &[
         &["screenshot"],
         "",
         &["screenshot"],
-        "Screenshot the output under the pointer as composed, redaction applied (ADR 0092). PNG in `~/Pictures/Screenshots`, and on the clipboard. Default `Print`.",
+        "Screenshot the output under the pointer as composed, redaction applied (ADR 0093). PNG in `~/Pictures/Screenshots`, and on the clipboard. Default `Print`.",
     ),
     form(
         &["screenshot-region"],
@@ -3175,6 +3194,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "decoration.blur.glass.bevel" => V::Int(c.decoration.blur.glass.bevel as i64),
         "decoration.blur.glass.dispersion" => V::Float(widen(c.decoration.blur.glass.dispersion)),
         "decoration.blur.glass.rim" => V::Float(widen(c.decoration.blur.glass.rim)),
+        "decoration.blur.adaptive.enabled" => V::Bool(c.decoration.blur.adaptive.enabled),
+        "decoration.blur.adaptive.strength" => V::Float(widen(c.decoration.blur.adaptive.strength)),
         "decoration.blur.frost.tint" => V::Color(c.decoration.blur.frost.tint),
         "decoration.blur.size" => V::Int(c.decoration.blur.size as i64),
         "decoration.blur.passes" => V::Int(c.decoration.blur.passes as i64),

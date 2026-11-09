@@ -288,7 +288,7 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::XF86_PowerOff,
             action: Action::Spawn("ec-ctl open-power".into()),
         },
-        // Screenshots (ADR 0092): the whole output, and a frozen region.
+        // Screenshots (ADR 0093): the whole output, and a frozen region.
         Bind {
             mods: none,
             key: Keysym::Print,
