@@ -2731,7 +2731,7 @@ chromatic dispersion in the bevel band (default 0) and a specular rim
 (`decoration.blur.glass` tunables). *(C-14)* Glass also applies vibrancy
 (saturation ≈1.7 about Rec.709 luma, soft luminance compression, a
 near-neutral smoke), a near-white hairline rim of ≈1.25 physical px with a
-top-left and a weaker bottom-right lobe, and ±0.5/255 dither against banding. `off` draws no backdrop and expands no damage. Every rule in
+top-left and a weaker bottom-right lobe, and ±0.5/255 dither against banding. *(C-25)* Glass and frost backdrops adapt their tint to the blurred backdrop's mean luminance, measured on the GPU and never read back (`decoration.blur.adaptive`, ADR 0092). `off` draws no backdrop and expands no damage. Every rule in
 this section — translucent-only, layer opaque regions, rounding, direct
 scanout, COMP-14 §6 shedding (which sheds every mode) — applies to all
 modes alike. Where glass samples beyond the kernel footprint, the §3
@@ -7604,6 +7604,7 @@ against source before it was written. Nothing was renumbered.
 | C-22 | COMP-05 §4 | *(2026-10-30, owner ruling)* The spec follows the code on rule timing: placement actions once at map, property actions on every commit and on a float toggle. New `floating` matcher. Supersedes "re-evaluated on title change" | yes |
 | C-23 | COMP-02 §9; COMP-13 §2 | *(2026-10-31, owner ruling)* Keyed translucency: a strip with keys makes only pixels exactly equal to a declared key colour translucent (that key's alpha, blur behind) and fades nothing else. Keys apply only in declared regions: the strip, the whole window while the client reports a browser-owned page (`body`), the whole window for a key flagged `everywhere`, and the client's popups. `set_client_strips` takes up to four keys and is re-matched on resize; a resize commit no request matches keeps the window's stamp. A partly transparent texel matches on its un-premultiplied colour; popup blur follows the popup's own corner radius (ADR 0080) | yes |
 | C-24 | COMP-02 §7, §8; COMP-05 §1, §2, §3.1, new §7.1; COMP-08; COMP-17 §1, §2; S-05 Corpus C | *(2026-11-05, owner ruling)* `mode "de"` is a stacking desktop. C-20 is scoped to `wm` and `hybrid`: under `de`, xdg and X11 maximize are honoured and windows do not tile; entering floats tiled windows in place, leaving re-tiles them. Quick Tile, titlebars, window menu, switcher, overview, previews and hot corners are compositor-drawn, are not trusted UI, and exist only under `de`. Toplevel geometry stays the content rect. Agent `set_state(maximized)` stays refused in every mode. Thumbnails are redacted like capture targets; chrome overlays are never in a capture pass list, and a redacted window's titlebar is redacted with it. Records the as-built fixed ten workspaces per output. ADR 0090 | yes |
+| C-25 | COMP-02 §9 | *(2026-11-08, owner ruling)* Adaptive glass: each glass surface's tint follows the mean luminance of its blurred backdrop so the scheme's text keeps contrast (dark scheme darkens over bright, light lightens over dark), on by default with `decoration.blur.adaptive { enabled; strength }`; measured and applied on the GPU only, no readback, nothing sent to clients (ADR 0092) | yes |
 | — | ADR 0049 | Citation "COMP-05 §5.1" corrected to C-00 §5.3 / COMP-05 §7 | yes |
 
 ## Open decisions this appendix leaves standing

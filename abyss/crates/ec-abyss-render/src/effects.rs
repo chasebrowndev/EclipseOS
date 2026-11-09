@@ -399,13 +399,64 @@ float grain(vec2 p) {
     p3 += dot(p3, p3.yzx + 33.33);
     return fract((p3.x + p3.y) * p3.z);
 }
+
+// Adaptive glass (ADR 0092). Mirrors `adaptive_amount` below.
+const float ADAPT_SPAN = 0.7;
+const float ADAPT_TEXT_DARK = 1.0;
+const float ADAPT_TEXT_LIGHT = 0.01;
+const float ADAPT_C_OK = 7.0;
+const float ADAPT_C_MIN = 2.0;
+const float ADAPT_REACH = 1.5;
+const float ADAPT_MAX = 0.95;
+uniform vec2 px_uv;         // 1 / backdrop texture size
+uniform float y_sign;       // -1 when the framebuffer is y-mirrored
+uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
+uniform float adapt;        // effective adaptive strength; 0 off
+const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);    // Rec.709
+const vec3 SURFACE_D = vec3(0.047, 0.047, 0.055);  // #0c0c0e
+const vec3 SURFACE_L = vec3(0.985, 0.975, 0.955);  // warm white
+
+// Mean luma (display-encoded) of the blurred backdrop under the surface:
+// nine taps on a 3x3 grid across its rect, taken from `tex`, which is the
+// blur chain's own output. The taps depend on the rect only, so every
+// fragment of a surface gets the same value.
+float backdrop_luma() {
+    vec2 hs = win_rect.zw * 0.5;
+    vec2 p0 = gl_FragCoord.xy - (win_rect.xy + hs);
+    p0.y *= y_sign;
+    float sum = 0.0;
+    for (int i = 0; i < 3; i++) {
+        for (int j = 0; j < 3; j++) {
+            vec2 t = vec2(float(i) - 1.0, float(j) - 1.0) * hs * ADAPT_SPAN;
+            vec2 uv = clamp(v_coords + (t - p0) * px_uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
+            sum += dot(texture2D(tex, uv).rgb, LUMA);
+        }
+    }
+    return sum / 9.0;
+}
+
+// How far to pull the tint toward the scheme's surface colour.
+float adapt_amount(float luma, float light, float strength) {
+    float lb = clamp(luma, 0.0, 1.0);
+    lb *= lb;
+    float lt = mix(ADAPT_TEXT_DARK, ADAPT_TEXT_LIGHT, light);
+    float contrast = (max(lb, lt) + 0.05) / (min(lb, lt) + 0.05);
+    float need = clamp((ADAPT_C_OK - contrast) / (ADAPT_C_OK - ADAPT_C_MIN), 0.0, 1.0);
+    return min(need * strength * ADAPT_REACH, ADAPT_MAX);
+}
+
+vec3 adapt_tint(vec3 c) {
+    if (adapt <= 0.0) {
+        return c;
+    }
+    return mix(c, mix(SURFACE_D, SURFACE_L, scheme_light), adapt_amount(backdrop_luma(), scheme_light, adapt));
+}
 "#;
 
 /// Frost: the rounded mask, a tint mixed in by its own alpha, and a fine
 /// static grain hashed from the framebuffer position (COMP-02 §9).
 const FROST_BODY: &str = r#"
 uniform vec4 frost_tint;
-uniform float y_sign;     // -1 when the framebuffer is y-mirrored
 uniform vec4 rim_color;   // premultiplied bezel hairline colour
 uniform float inner;      // bezel width, physical px; 0 off the bezel
 uniform float opaque;     // 1 when the window inside the bezel is opaque
@@ -420,14 +471,17 @@ const float LINE_BR = 0.07;
 void main() {
     vec4 color = texture2D(tex, v_coords);
     color.rgb = mix(color.rgb, frost_tint.rgb, frost_tint.a);
+    color.rgb = adapt_tint(color.rgb);
     color.rgb = clamp(color.rgb + (grain(floor(gl_FragCoord.xy)) - 0.5) * 0.035, 0.0, 1.0);
 
-#ifdef SHAPED
-    float d = shape_sd(gl_FragCoord.xy);
-#else
+    // `p` and `half_size` are read by the opaque-window test below in both
+    // variants, so they sit outside the shaped split.
     vec2 half_size = win_rect.zw * 0.5;
     vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
     p.y *= y_sign;
+#ifdef SHAPED
+    float d = shape_sd(gl_FragCoord.xy);
+#else
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
@@ -473,8 +527,6 @@ void main() {
 /// opaque window nothing inside the ring is drawn at all. Off the bezel
 /// `rim_color` is opaque white.
 const GLASS_BODY: &str = r#"
-uniform vec2 px_uv;       // 1 / backdrop texture size
-uniform float y_sign;     // -1 when the framebuffer is y-mirrored
 uniform float strength;   // largest displacement, physical px, at the edge
 uniform float bevel;      // roll-off band width, physical px
 uniform float dispersion; // 0..1, off by default
@@ -485,10 +537,8 @@ uniform float opaque;     // 1 when the window inside the bezel is opaque
 uniform float bar;        // titlebar depth from the region's top, physical px; 0 none
 uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
 uniform float shade;      // 0..1 mix toward ink (light only: a pane's depth step); 0 elsewhere
-uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
-const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);    // Rec.709
 const float SATURATE = 1.7;
 const float COMPRESS = 1.0;  // highlight knee: c / (1 + COMPRESS * luma)
 const vec3 SMOKE = vec3(0.047, 0.047, 0.055);       // #0c0c0e
@@ -523,12 +573,14 @@ vec2 shape_grad(vec2 f) {
 #endif
 
 void main() {
-#ifdef SHAPED
-    float d = shape_sd(gl_FragCoord.xy);
-#else
+    // `p` and `half_size` are read by the opaque-window test below in both
+    // variants, so they sit outside the shaped split.
     vec2 half_size = win_rect.zw * 0.5;
     vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
     p.y *= y_sign;
+#ifdef SHAPED
+    float d = shape_sd(gl_FragCoord.xy);
+#else
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
@@ -574,6 +626,7 @@ void main() {
     c = max(mix(vec3(dot(c, LUMA)), c, mix(SATURATE, SATURATE_L, scheme_light)), 0.0);
     c = c / (1.0 + mix(COMPRESS, COMPRESS_L, scheme_light) * dot(c, LUMA));
     c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light));
+    c = adapt_tint(c);
     c = mix(c, vec3(1.0), lift);
     c = mix(c, LIFT_L, shade);
 
@@ -598,7 +651,7 @@ void main() {
 "#;
 
 /// The frost program's uniforms, in the order [`frost_uniforms`] sets them.
-const FROST_UNIFORMS: [(&str, UniformType); 8] = [
+const FROST_UNIFORMS: [(&str, UniformType); 11] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("frost_tint", UniformType::_4f),
@@ -607,6 +660,9 @@ const FROST_UNIFORMS: [(&str, UniformType); 8] = [
     ("inner", UniformType::_1f),
     ("opaque", UniformType::_1f),
     ("bar", UniformType::_1f),
+    ("px_uv", UniformType::_2f),
+    ("scheme_light", UniformType::_1f),
+    ("adapt", UniformType::_1f),
 ];
 
 /// Compile the frost backdrop program (COMP-02 §9). Cached by the caller.
@@ -653,7 +709,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 15] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 16] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -669,6 +725,7 @@ const GLASS_UNIFORMS: [(&str, UniformType); 15] = [
     ("lift", UniformType::_1f),
     ("shade", UniformType::_1f),
     ("scheme_light", UniformType::_1f),
+    ("adapt", UniformType::_1f),
 ];
 
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
@@ -682,7 +739,10 @@ pub fn compile_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gles
 
 /// [`rounding_uniforms`] plus the frost tint (straight alpha, as configured)
 /// and a window bezel's `(width, opaque, premultiplied hairline colour)`;
-/// `None` is plain frost, no hairline.
+/// `None` is plain frost, no hairline. `tex_size` is the backdrop texture,
+/// `light` is `Appearance::glass_light()` and `adapt` the effective adaptive
+/// strength ([`ec_abyss_config::AdaptiveBlur::effective`]).
+#[allow(clippy::too_many_arguments)]
 pub fn frost_uniforms(
     rect: Rectangle<i32, Physical>,
     fb_height: i32,
@@ -690,6 +750,9 @@ pub fn frost_uniforms(
     radius: f32,
     tint: [f32; 4],
     bezel: Option<(i32, bool, [f32; 4], i32)>,
+    tex_size: (i32, i32),
+    light: f32,
+    adapt: f32,
 ) -> Vec<Uniform<'static>> {
     let (inner, opaque, rim_color, bar) =
         bezel.map_or((0.0, 0.0, [0.0; 4], 0.0), |(inner, opaque, rim, bar)| {
@@ -708,6 +771,12 @@ pub fn frost_uniforms(
         Uniform::new("inner", inner),
         Uniform::new("opaque", opaque),
         Uniform::new("bar", bar),
+        Uniform::new(
+            "px_uv",
+            [1.0 / tex_size.0.max(1) as f32, 1.0 / tex_size.1.max(1) as f32],
+        ),
+        Uniform::new("scheme_light", light),
+        Uniform::new("adapt", adapt),
     ]);
     u
 }
@@ -717,7 +786,8 @@ pub fn frost_uniforms(
 /// are physical px. `bezel` is a window bezel's width (physical px), whether
 /// the window inside it is opaque, and its premultiplied hairline colour;
 /// `None` is plain glass with the neutral white hairline. `light` is
-/// `Appearance::glass_light()`: 0.0 draws the original dark glass.
+/// `Appearance::glass_light()`: 0.0 draws the original dark glass. `adapt` is
+/// the effective adaptive strength (0.0 leaves the tint fixed).
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms(
     rect: Rectangle<i32, Physical>,
@@ -730,9 +800,10 @@ pub fn glass_uniforms(
     glass: &ec_abyss_config::GlassBlur,
     bezel: Option<(i32, bool, [f32; 4], i32)>,
     light: f32,
+    adapt: f32,
 ) -> Vec<Uniform<'static>> {
     glass_uniforms_lifted(
-        rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, 0.0, light,
+        rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, 0.0, light, adapt,
     )
 }
 
@@ -753,6 +824,7 @@ pub fn glass_uniforms_lifted(
     lift: f32,
     shade: f32,
     light: f32,
+    adapt: f32,
 ) -> Vec<Uniform<'static>> {
     let (inner, opaque, rim_color, bar) =
         bezel.map_or((0.0, 0.0, [1.0; 4], 0.0), |(inner, opaque, rim, bar)| {
@@ -781,8 +853,49 @@ pub fn glass_uniforms_lifted(
         Uniform::new("lift", lift),
         Uniform::new("shade", shade),
         Uniform::new("scheme_light", light),
+        Uniform::new("adapt", adapt),
     ]);
     u
+}
+
+/// Adaptive glass (ADR 0092): contrast of the scheme's text on a backdrop at
+/// or above which the tint is left alone, and below which it starts to move.
+pub const ADAPT_CONTRAST_OK: f32 = 7.0;
+/// Contrast at which the shift is at its largest.
+pub const ADAPT_CONTRAST_MIN: f32 = 2.0;
+/// Relative luminance of the text: white on a dark scheme, ink on a light one.
+const ADAPT_TEXT_DARK: f32 = 1.0;
+const ADAPT_TEXT_LIGHT: f32 = 0.01;
+/// How much of the tint `strength` 1.0 (or less, times this) may replace, and
+/// the most it ever does.
+const ADAPT_REACH: f32 = 1.5;
+const ADAPT_MAX: f32 = 0.95;
+/// The scheme's surface colour the tint moves toward (the glass smoke).
+pub const ADAPT_SURFACE_DARK: [f32; 3] = [0.047, 0.047, 0.055];
+pub const ADAPT_SURFACE_LIGHT: [f32; 3] = [0.985, 0.975, 0.955];
+
+/// How far, 0.0..=0.95, adaptive glass pulls the tint toward the scheme's
+/// surface colour. `luma` is the display-encoded mean luma of the blurred
+/// backdrop, `light` is `Appearance::glass_light()` (0 dark, 1 light) and
+/// `strength` the configured strength. 0 when the strength is 0 or the text
+/// already contrasts with the backdrop. Mirrors `adapt_amount` in the shader.
+pub fn adaptive_amount(luma: f32, light: f32, strength: f32) -> f32 {
+    let lb = luma.clamp(0.0, 1.0).powi(2);
+    let lt = ADAPT_TEXT_DARK + (ADAPT_TEXT_LIGHT - ADAPT_TEXT_DARK) * light;
+    let contrast = (lb.max(lt) + 0.05) / (lb.min(lt) + 0.05);
+    let need = ((ADAPT_CONTRAST_OK - contrast) / (ADAPT_CONTRAST_OK - ADAPT_CONTRAST_MIN)).clamp(0.0, 1.0);
+    (need * strength.max(0.0) * ADAPT_REACH).min(ADAPT_MAX)
+}
+
+/// `tint` moved toward the scheme's surface colour by [`adaptive_amount`].
+pub fn adaptive_tint(tint: [f32; 3], luma: f32, light: f32, strength: f32) -> [f32; 3] {
+    let a = adaptive_amount(luma, light, strength);
+    let mut out = [0.0; 3];
+    for i in 0..3 {
+        let surface = ADAPT_SURFACE_DARK[i] + (ADAPT_SURFACE_LIGHT[i] - ADAPT_SURFACE_DARK[i]) * light;
+        out[i] = tint[i] + (surface - tint[i]) * a;
+    }
+    out
 }
 
 /// How far past the blurred region the glass program samples, physical px:
@@ -1278,6 +1391,7 @@ mod tests {
             &ec_abyss_config::GlassBlur::default(),
             None,
             0.0,
+            0.0,
         );
         let set: Vec<&str> = got.iter().map(|u| &*u.name).collect();
         let compiled: Vec<&str> = GLASS_UNIFORMS.iter().map(|&(name, _)| name).collect();
@@ -1293,6 +1407,7 @@ mod tests {
             6.0,
             &ec_abyss_config::GlassBlur::default(),
             Some((6, true, [0.43, 0.34, 0.11, 0.45], 30)),
+            0.0,
             0.0,
         );
         let set: Vec<&str> = bezel.iter().map(|u| &*u.name).collect();
@@ -1353,6 +1468,7 @@ mod tests {
             &ec_abyss_config::GlassBlur::default(),
             None,
             0.0,
+            0.0,
         );
         got.extend(shape_uniforms(&shape, 1080, true));
         let set: Vec<String> = got.iter().map(|u| u.name.to_string()).collect();
@@ -1398,6 +1514,7 @@ mod tests {
             16.0,
             &ec_abyss_config::GlassBlur::default(),
             None,
+            0.0,
             0.0,
         );
         let find = |name: &str| format!("{:?}", got.iter().find(|u| u.name == name).unwrap());
@@ -1449,5 +1566,30 @@ mod tests {
         ] {
             assert_eq!(fb_y_mirrored(t), None);
         }
+    }
+
+    #[test]
+    fn adaptive_tint_is_off_at_zero_strength_and_over_a_contrasting_backdrop() {
+        let t = [0.2, 0.3, 0.4];
+        for light in [0.0, 1.0] {
+            assert_eq!(adaptive_tint(t, 0.0, light, 0.0), t);
+            assert_eq!(adaptive_tint(t, 1.0, light, 0.0), t);
+        }
+        // Dark scheme over a dark backdrop, light scheme over a bright one.
+        assert_eq!(adaptive_tint(t, 0.1, 0.0, 1.0), t);
+        assert_eq!(adaptive_tint(t, 1.0, 1.0, 1.0), t);
+    }
+
+    #[test]
+    fn adaptive_tint_darkens_dark_glass_over_bright_and_lightens_light_over_dark() {
+        let t = [0.2, 0.3, 0.4];
+        let d = adaptive_tint(t, 1.0, 0.0, 0.5);
+        assert!(d.iter().zip(t).all(|(a, b)| *a < b), "{d:?}");
+        let l = adaptive_tint(t, 0.0, 1.0, 0.5);
+        assert!(l.iter().zip(t).all(|(a, b)| *a > b), "{l:?}");
+        // Stronger moves further, and brighter moves further.
+        assert!(adaptive_amount(1.0, 0.0, 1.0) > adaptive_amount(1.0, 0.0, 0.5));
+        assert!(adaptive_amount(1.0, 0.0, 0.5) > adaptive_amount(0.5, 0.0, 0.5));
+        assert!(adaptive_amount(1.0, 0.0, 1.0) <= ADAPT_MAX);
     }
 }

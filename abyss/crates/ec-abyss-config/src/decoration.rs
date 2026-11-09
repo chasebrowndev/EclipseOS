@@ -113,6 +113,7 @@ pub struct Blur {
     pub passes: i32,
     pub glass: GlassBlur,
     pub frost: FrostBlur,
+    pub adaptive: AdaptiveBlur,
 }
 
 impl Default for Blur {
@@ -123,6 +124,36 @@ impl Default for Blur {
             passes: 4,
             glass: GlassBlur::default(),
             frost: FrostBlur::default(),
+            adaptive: AdaptiveBlur::default(),
+        }
+    }
+}
+
+/// `blur { adaptive { enabled #true; strength 0.5 } }` (ADR 0092): the glass
+/// tint follows the blurred backdrop's brightness.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AdaptiveBlur {
+    pub enabled: bool,
+    /// How far the tint may move, 0.0..=1.0; 0 is the fixed tint.
+    pub strength: f32,
+}
+
+impl Default for AdaptiveBlur {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            strength: 0.5,
+        }
+    }
+}
+
+impl AdaptiveBlur {
+    /// The strength the renderer applies: 0 when off.
+    pub fn effective(&self) -> f32 {
+        if self.enabled {
+            self.strength.clamp(0.0, 1.0)
+        } else {
+            0.0
         }
     }
 }
