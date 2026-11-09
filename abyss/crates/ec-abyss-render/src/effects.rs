@@ -402,6 +402,8 @@ float grain(vec2 p) {
 
 // Adaptive glass (ADR 0092). Mirrors `adaptive_amount` below.
 const float ADAPT_SPAN = 0.7;
+const float ADAPT_STEP = 48.0;     // cross arm cap, physical px
+const float ADAPT_MIN_STEP = 6.0;  // below this one tap is enough
 const float ADAPT_TEXT_DARK = 1.0;
 const float ADAPT_TEXT_LIGHT = 0.01;
 const float ADAPT_C_OK = 7.0;
@@ -416,23 +418,31 @@ const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);    // Rec.709
 const vec3 SURFACE_D = vec3(0.047, 0.047, 0.055);  // #0c0c0e
 const vec3 SURFACE_L = vec3(0.985, 0.975, 0.955);  // warm white
 
-// Mean luma (display-encoded) of the blurred backdrop under the surface:
-// nine taps on a 3x3 grid across its rect, taken from `tex`, which is the
-// blur chain's own output. The taps depend on the rect only, so every
-// fragment of a surface gets the same value.
+// Mean luma (display-encoded) of the blurred backdrop around this fragment:
+// five taps in a cross centred on it, taken from `tex`, which is the blur
+// chain's own output. The arms are at most `ADAPT_STEP` long (on a small
+// surface, `ADAPT_SPAN` of its half-size) and each tap is held inside the
+// surface's rect, so a shape's drawer and pill each read the backdrop behind
+// themselves, not one mean for the union. Where the arms would be under
+// `ADAPT_MIN_STEP` the backdrop is flat at that scale and one tap does.
 float backdrop_luma() {
     vec2 hs = win_rect.zw * 0.5;
+    vec2 step = min(vec2(ADAPT_STEP), hs * ADAPT_SPAN);
+    if (max(step.x, step.y) < ADAPT_MIN_STEP) {
+        return dot(texture2D(tex, v_coords).rgb, LUMA);
+    }
     vec2 p0 = gl_FragCoord.xy - (win_rect.xy + hs);
     p0.y *= y_sign;
-    float sum = 0.0;
-    for (int i = 0; i < 3; i++) {
-        for (int j = 0; j < 3; j++) {
-            vec2 t = vec2(float(i) - 1.0, float(j) - 1.0) * hs * ADAPT_SPAN;
-            vec2 uv = clamp(v_coords + (t - p0) * px_uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
-            sum += dot(texture2D(tex, uv).rgb, LUMA);
-        }
+    vec2 ex = vec2(step.x, 0.0);
+    vec2 ey = vec2(0.0, step.y);
+    float sum = dot(texture2D(tex, v_coords).rgb, LUMA);
+    for (int i = 0; i < 4; i++) {
+        vec2 t = i == 0 ? ex : i == 1 ? -ex : i == 2 ? ey : -ey;
+        vec2 q = clamp(p0 + t, -hs, hs);
+        vec2 uv = clamp(v_coords + (q - p0) * px_uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
+        sum += dot(texture2D(tex, uv).rgb, LUMA);
     }
-    return sum / 9.0;
+    return sum * 0.2;
 }
 
 // How far to pull the tint toward the scheme's surface colour.
@@ -470,9 +480,6 @@ const float LINE_BR = 0.07;
 
 void main() {
     vec4 color = texture2D(tex, v_coords);
-    color.rgb = mix(color.rgb, frost_tint.rgb, frost_tint.a);
-    color.rgb = adapt_tint(color.rgb);
-    color.rgb = clamp(color.rgb + (grain(floor(gl_FragCoord.xy)) - 0.5) * 0.035, 0.0, 1.0);
 
     // `p` and `half_size` are read by the opaque-window test below in both
     // variants, so they sit outside the shaped split.
@@ -486,11 +493,19 @@ void main() {
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 #endif
+    // Outside the mask the result is zero: skip the taps below.
+    if (d >= 0.5) {
+        gl_FragColor = vec4(0.0);
+        return;
+    }
     // Under an opaque window only the ring can show.
     if (opaque > 0.5 && d < -inner - 1.0 && p.y + half_size.y >= bar) {
         gl_FragColor = vec4(0.0);
         return;
     }
+    color.rgb = mix(color.rgb, frost_tint.rgb, frost_tint.a);
+    color.rgb = adapt_tint(color.rgb);
+    color.rgb = clamp(color.rgb + (grain(floor(gl_FragCoord.xy)) - 0.5) * 0.035, 0.0, 1.0);
 #ifndef SHAPED
     // Bezel hairline: a 1.25 px band inside the mask edge, lit top-left.
     if (inner > 0.0) {
@@ -585,6 +600,11 @@ void main() {
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 #endif
+    // Outside the mask the result is zero: skip the taps below.
+    if (d >= 0.5) {
+        gl_FragColor = vec4(0.0);
+        return;
+    }
     // Under an opaque window only the ring (and the window's own antialiased
     // edge) can show.
     if (opaque > 0.5 && d < -inner - 1.0 && p.y + half_size.y >= bar) {

@@ -47,3 +47,9 @@ tint.
 A client needs to choose its own text colour from the backdrop (then the luminance event
 of option 1 comes back with a trust review), or the per-surface mean proves wrong for
 split backdrops (then option 2).
+
+## Amendment (2026-11-09)
+The measure is local, not per surface: each fragment takes five taps in a cross centred
+on itself (arms at most 48 px, one tap on a tiny surface, clamped to the surface's rect), so a shaped surface such as
+the bar with a drawer out adapts each part to the backdrop behind it. The tint function and
+config are unchanged.
