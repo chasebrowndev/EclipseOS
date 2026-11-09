@@ -73,12 +73,15 @@ redaction decision itself, then hands each surviving window and layer to
 `abyss/crates/ec-abyss-render/src/still.rs`, which adds opacity, dim-inactive,
 rounding, shadow, glow and blurred backdrops from its own store. A backdrop
 samples only the redacted capture list, placeholders included, so a blurred
-secret is a blurred placeholder. Borders and trusted UI stay out, as before.
+secret is a blurred placeholder. Window borders are drawn as the live path
+draws them: a painted ring, or the glass bezel where the bezel program draws
+(glass and frost), focus colour at rest. Trusted UI stays out, as before.
 `still.rs` never reads animation state (`scan_tests.rs` pins it), so a capture
 shows the settled frame. There is no GL pixel test; this entry leaves after a
 nested-winit check: `decoration.blur.mode "glass"`, a translucent window over a
-`capture.redact-app-id` window, `grim` the output, and see rounded corners and
-a backdrop with only placeholder grey under the redacted rect.
+`capture.redact-app-id` window, `grim` the output, and see rounded corners, a
+bezel or ring around each window, and a backdrop with only placeholder grey
+under the redacted rect.
 
 **Cursor (fixed 2026-09-29):** `wlr_screencopy`'s `overlay_cursor` request
 flag was silently discarded, so no client — with or without the flag set —
@@ -129,18 +132,18 @@ visual-polish gap.
 
 ## GLASS-01: captures do not draw panes
 
-`abyss/crates/ec-abyss-render/src/still.rs` (`Frame::window`/`layer`)
-draws each surface with its pre-pane whole-layer glass, so `grim`, screencopy
-and the image-copy capture all show the old flat cells, on the bar and on
-windows. Screenshots of panes currently have to be taken one session level up
-(a non-Abyss compositor → nested abyss, `grim` against the outer one; cage works
-but no longer ships, ADR 0087).
-**Repro:** `decoration.blur.mode "glass"`, bar up, `grim`; the chips are flat.
-**Proposed:** `still.rs` reads `committed_panes` and calls the same
-`insert_panes` path as the live frame (both live in `ec-abyss-render`).
-`render/capture.rs` (TCB) only feeds the list and needs no change, but the
-change must be checked against CAP-01's redaction rule. A redacted surface's
-panes must sample the placeholder, never the content.
+**Fix landed 2026-11-08, not yet seen on screen.** `still.rs` (`Frame::window`
+and `Frame::layer`) reads `committed_panes` and splices each set in through the
+same `insert_blur`/`insert_panes` path and `PaneRequest::before` ordering as the
+live frame, so a window's or layer's panes show in `grim` and screencopy. The
+panes sample only the capture list (the redacted one, placeholders included),
+at rest: `scaled: None`, `alpha: 1.0`, like the live path at its target. No
+GL pixel test exists; this entry leaves after a nested-winit check:
+`decoration.blur.mode "glass"`, bar up, `grim` the output, and see the chips
+as glass, not flat cells.
+**Still open:** frost mode draws no panes on the live path either, so there is
+nothing to capture there; a keyed, strip or fullscreen window keeps its
+whole-window glass in a capture, as it does live.
 
 ## GLASS-02: panes are not clipped to the window's rounded mask
 
