@@ -652,6 +652,11 @@ struct SurfaceBlur {
     look: Vec<Uniform<'static>>,
     /// `eclipse_glass_v1` panes drawn from `result`, by index in the pane list.
     panes: Vec<PaneSlot>,
+    /// Damage landed while the store was crowded and the recompute was
+    /// deferred; flushed once `last` is [`CROWDED_INTERVAL`] frames old.
+    pending: bool,
+    /// The store frame `result` was last recomputed on.
+    last: u64,
 }
 
 /// What [`BlurStore::refresh`] hands back: the crop the texture covers and an
@@ -685,6 +690,10 @@ pub struct BlurStore {
     /// blurred window on the output.
     backdrop: Option<OutputDamageTracker>,
     surfaces: HashMap<BlurKey, SurfaceBlur>,
+    /// Frames seen, bumped by [`BlurStore::retain`].
+    frame: u64,
+    /// First-time backdrops built this frame.
+    started: usize,
 }
 
 impl std::fmt::Debug for BlurStore {
@@ -703,6 +712,8 @@ impl BlurStore {
     /// window that closed — or simply stopped being translucent — does not
     /// leave a texture behind.
     pub fn retain(&mut self, keep: &[BlurKey]) {
+        self.frame = self.frame.wrapping_add(1);
+        self.started = 0;
         self.surfaces.retain(|key, _| keep.contains(key));
     }
 
@@ -894,6 +905,8 @@ impl BlurStore {
             id: Id::new(),
             look: Vec::new(),
             panes: Vec::new(),
+            pending: false,
+            last: 0,
         });
 
         // The invalidation rule: recompute only when damage behind this surface
@@ -919,7 +932,30 @@ impl BlurStore {
                 None => entry.result.is_none(),
             }
         };
-        if dirty || entry.result.is_none() || entry.crop != Some(crop) {
+        // Past CROWDED surfaces, a backdrop whose only reason to redraw is
+        // damage behind it is refreshed at most every CROWDED_INTERVAL frames.
+        // A new surface or a moved/resized one still redraws at once.
+        let crowded = self.surfaces.len() > CROWDED;
+        let frame = self.frame;
+        let entry = self.surfaces.get_mut(key)?;
+        let mut dirty = dirty || entry.pending;
+        let fresh = entry.result.is_none() || entry.crop != Some(crop);
+        if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
+            entry.pending = true;
+            dirty = false;
+        }
+        // A crowd of new surfaces (a workspace opening) builds a few backdrops
+        // a frame; the rest show unblurred until their turn.
+        if crowded && entry.result.is_none() {
+            if self.started >= CROWDED_STARTS {
+                return None;
+            }
+            self.started += 1;
+        }
+        let entry = self.surfaces.get_mut(key)?;
+        if dirty || fresh {
+            entry.pending = false;
+            entry.last = frame;
             let Self {
                 down,
                 up,
@@ -1037,6 +1073,13 @@ impl BlurStore {
 
 /// Most distinct crop sizes whose chains are kept before the pool is reset.
 const MAX_CHAINS: usize = 16;
+
+/// More blurred surfaces than this and damage-only refreshes are rate-limited.
+const CROWDED: usize = 10;
+/// Frames between those refreshes (about 100ms at 60Hz).
+const CROWDED_INTERVAL: u64 = 6;
+/// First-time backdrops built per frame once crowded.
+const CROWDED_STARTS: usize = 2;
 
 /// Levels `1..=passes` of a chain whose level 0 covers `crop`.
 fn alloc_levels(
