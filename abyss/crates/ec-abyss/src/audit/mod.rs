@@ -213,6 +213,17 @@ enum Body<'a> {
     /// Appendix F-13 `input_refused`: agent-origin input dropped before a
     /// protected surface. The target is a window handle, 0 when the window
     /// has none; never what the input was.
+    /// S-04 §1.1 `capture`: what a screenshot delivered, never its pixels
+    /// (S-04 §2). `scale_milli` is the output scale in thousandths: the
+    /// canonical encoder has no floats.
+    Capture {
+        kind: &'a str,
+        target: &'a str,
+        region: [i32; 4],
+        scale_milli: u64,
+        content_hash: [u8; 32],
+        redacted: &'a [[i32; 4]],
+    },
     InputRefused {
         origin: &'a str,
         target: u64,
@@ -352,6 +363,39 @@ impl Body<'_> {
                 }
                 w.text("draft_hash");
                 w.bytes(&draft_hash);
+            }
+            Body::Capture {
+                kind,
+                target,
+                region,
+                scale_milli,
+                content_hash,
+                redacted,
+            } => {
+                w.map(7);
+                w.text("kind");
+                w.text(kind);
+                w.text("scale");
+                w.u64(scale_milli);
+                w.text("format");
+                w.text("png");
+                w.text("region");
+                w.array(4);
+                for v in region {
+                    w.i64(i64::from(v));
+                }
+                w.text("target");
+                w.text(target);
+                w.text("content_hash");
+                w.bytes(&content_hash);
+                w.text("redacted_regions");
+                w.array(redacted.len());
+                for r in redacted {
+                    w.array(4);
+                    for v in r {
+                        w.i64(i64::from(*v));
+                    }
+                }
             }
             Body::InputRefused { origin, target } => {
                 w.map(2);
@@ -570,6 +614,31 @@ pub fn focus(state: &mut AbyssState, to: Option<u64>, cause: &str) {
         state,
         record(Kind::Focus, "human", None, Body::Focus { cause, from, to }),
     );
+}
+
+/// A built-in screenshot (ADR 0090): the human's own shot, so no request
+/// id. Rings, never waits.
+pub fn capture(
+    state: &mut AbyssState,
+    kind: &str,
+    target: &str,
+    region: [i32; 4],
+    scale_milli: u64,
+    content_hash: [u8; 32],
+    redacted: &[[i32; 4]],
+) {
+    if !on(state) {
+        return;
+    }
+    let body = Body::Capture {
+        kind,
+        target,
+        region,
+        scale_milli,
+        content_hash,
+        redacted,
+    };
+    human(state, record(Kind::Capture, "human", None, body));
 }
 
 /// `slot` (F-13): `preview`, `arm`, `commit` or `refuse`. A human record:

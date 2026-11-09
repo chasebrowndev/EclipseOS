@@ -411,6 +411,8 @@ A key binding: `bind ["<modifiers>"] "<keysym>" { <action>; }`, e.g. `bind "SUPE
 | `agent-terminate` | `agent-terminate` | The second reserved chord (COMP-04 §6): pauses every agent and terminates them via `policyd`. |
 | `agent-attention` | `agent-attention` | The pending-decision-queue chord (COMP-10 §3.10). The queue arrives with the trusted UI. |
 | `annotation-select` | `annotation-select` | Start a region selection (COMP-18 §1.3). |
+| `screenshot` | `screenshot` | Screenshot the output under the pointer as composed, redaction applied (ADR 0092). PNG in `~/Pictures/Screenshots`, and on the clipboard. Default `Print`. |
+| `screenshot-region` | `screenshot-region` | Freeze the output under the pointer now, drag a rectangle, release to save it; Esc or the same chord cancels. Default `Shift+Print`. |
 | `annotation-dismiss` | `annotation-dismiss` | Forwarded to the annotation addon on the `keybind` event stream. |
 | `annotation-expand` | `annotation-expand` | Forwarded to the annotation addon. |
 | `annotation-auto-toggle` | `annotation-auto-toggle` | Forwarded to the annotation addon. |

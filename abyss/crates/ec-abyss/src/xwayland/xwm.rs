@@ -617,6 +617,7 @@ impl XwmHandler for AbyssState {
         let seat = self.seat.clone();
         match selection {
             SelectionTarget::Clipboard => {
+                self.shot.forget_clipboard();
                 set_data_device_selection(&self.display_handle, &seat, mime_types.clone(), ());
                 self.clipboard = Some(crate::protocols::standard::data_device::ClipboardSource {
                     surface: None,

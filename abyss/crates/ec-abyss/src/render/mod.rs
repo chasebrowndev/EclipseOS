@@ -6,6 +6,7 @@
 pub use ec_abyss_render::*;
 
 pub mod capture;
+pub mod screenshot;
 
 #[cfg(test)]
 mod scan_tests;

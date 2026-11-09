@@ -702,6 +702,7 @@ pub fn indicator_rect(output: &Output) -> Option<Rectangle<i32, Logical>> {
 /// import the compositor's modal-prompt code, so the backend computes the
 /// answer and hands it down as a plain bool instead.
 pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer, seat_held_by_prompt: bool) {
+    crate::render::screenshot::service(state, renderer);
     if state.captures.is_empty() {
         return;
     }

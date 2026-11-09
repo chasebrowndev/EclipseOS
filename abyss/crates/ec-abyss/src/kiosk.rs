@@ -79,6 +79,8 @@ pub fn permits(action: &Action) -> bool {
         | Action::ToggleOverview
         | Action::Overlay(..)
         | Action::AnnotationSelect
+        | Action::ScreenshotFull
+        | Action::ScreenshotRegion
         | Action::AnnotationDismiss
         | Action::AnnotationExpand
         | Action::AnnotationAutoToggle

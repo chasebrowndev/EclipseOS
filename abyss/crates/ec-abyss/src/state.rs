@@ -199,6 +199,8 @@ pub struct AbyssState {
     /// The capture pass's own effect store (CAP-01): never the on-screen
     /// `borders`, so a captured backdrop samples only the redacted list.
     pub capture_fx: crate::render::still::Still,
+    /// Built-in screenshots in flight (ADR 0090).
+    pub shot: crate::render::screenshot::Shot,
     /// Live annotation overlays (COMP-18). Untrusted text, drawn below trusted
     /// UI and never into a capture target.
     pub annotations: crate::render::annotation::AnnotationStore,
@@ -628,6 +630,7 @@ impl AbyssState {
             tablet_in_use: None,
             borders: crate::render::BorderStore::default(),
             capture_fx: crate::render::still::Still::default(),
+            shot: Default::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),
             region_select: crate::render::select::RegionSelect::default(),
             trusted_ui: crate::trusted_ui::TrustedUi::default(),

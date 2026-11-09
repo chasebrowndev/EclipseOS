@@ -89,6 +89,7 @@ impl SelectionHandler for AbyssState {
 
     fn new_selection(&mut self, ty: SelectionTarget, source: Option<SelectionSource>, _seat: Seat<Self>) {
         if ty == SelectionTarget::Clipboard {
+            self.shot.forget_clipboard();
             self.record_selection(source.as_ref());
         }
         // Mirror the offer into X11 so its clients see the same clipboard
@@ -101,7 +102,7 @@ impl SelectionHandler for AbyssState {
         }
     }
 
-    /// A Wayland client is reading a selection owned by X11.
+    /// A Wayland client is reading a selection the compositor or X11 owns.
     fn send_selection(
         &mut self,
         ty: SelectionTarget,
@@ -110,6 +111,12 @@ impl SelectionHandler for AbyssState {
         _seat: Seat<Self>,
         _user_data: &Self::SelectionUserData,
     ) {
+        if ty == SelectionTarget::Clipboard {
+            if let Some(png) = self.shot.clipboard(&mime_type) {
+                crate::render::screenshot::serve_clipboard(png, fd);
+                return;
+            }
+        }
         let handle = self.loop_handle.clone();
         let Some(wm) = self.xwayland.wm.as_mut() else {
             return;

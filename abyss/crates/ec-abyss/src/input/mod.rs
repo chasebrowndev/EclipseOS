@@ -269,7 +269,7 @@ impl AbyssState {
                 if state.region_select.active() {
                     let chord = matches!(
                         state.config.action_for(&held, sym),
-                        Some(Action::AnnotationSelect)
+                        Some(Action::AnnotationSelect | Action::ScreenshotRegion)
                     );
                     return FilterResult::Intercept(Action::RegionSelect(crate::render::select::key(
                         sym, chord,
@@ -369,6 +369,18 @@ impl AbyssState {
                 tracing::debug!("region-select hook is off; chord ignored");
             }
             Action::AnnotationSelect => self.region_select_start(),
+            Action::ScreenshotFull => {
+                self.shot.full();
+                crate::backend::damage_all(self);
+            }
+            Action::ScreenshotRegion if self.region_select.active() => {
+                self.region_select.cancel();
+                crate::backend::damage_all(self);
+            }
+            Action::ScreenshotRegion => {
+                self.shot.begin_region();
+                self.region_select_start();
+            }
             Action::AnnotationDismiss
             | Action::AnnotationExpand
             | Action::AnnotationAutoToggle
@@ -457,8 +469,12 @@ impl AbyssState {
         if pressed {
             self.region_select.press(pos);
         } else if let Some(rect) = self.region_select.release(pos) {
-            let payload = crate::render::select::payload(rect);
-            crate::ipc::emit(self, "keybind", payload);
+            if self.shot.selecting() {
+                self.shot.crop(rect);
+            } else {
+                let payload = crate::render::select::payload(rect);
+                crate::ipc::emit(self, "keybind", payload);
+            }
         }
         crate::backend::damage_all(self);
     }
