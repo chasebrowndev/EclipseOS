@@ -2164,6 +2164,9 @@ mod tests {
     #[test]
     fn a_chip_span_follows_the_strip_it_describes() {
         let mut app = crate::app::App::new();
+        // `App::new` reads the live session's mode; under `de` the three
+        // kitty windows below would group into one chip.
+        app.mode = crate::model::Mode::Hybrid;
         let mut on = crate::app::Bar::new(
             iced::window::Id::unique(),
             "DP-1".into(),
@@ -2280,6 +2283,8 @@ mod tests {
     fn de_app(windows: Vec<Window>) -> (crate::app::App, crate::app::Bar) {
         let mut app = crate::app::App::new();
         app.mode = crate::model::Mode::De;
+        // Under a live `de` session `App::new` already fetched the grid.
+        app.grid = None;
         let on = crate::app::Bar::new(
             iced::window::Id::unique(),
             "DP-1".into(),
