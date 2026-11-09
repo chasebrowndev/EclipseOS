@@ -4909,3 +4909,201 @@ pub fn desk_menu_heading<'a, Message: 'a>(label: &str) -> Element<'a, Message, T
     .padding([0.0, menu::ROW_X])
     .into()
 }
+
+// ------------------------------------------------------ bar preview parts
+
+/// An icon as it was found: a themed SVG, pixels, or nothing.
+///
+/// What a caller's icon lookup hands [`art_mark`]. The lookup is the
+/// caller's (it does filesystem work, so it runs off the view); the drawing
+/// of each outcome is this crate's, so a status icon in a settings pane and
+/// the same icon on the bar can never fall back two different ways.
+#[derive(Debug, Clone)]
+pub enum Art {
+    /// Recoloured to the ink, as [`glyph`] does.
+    Svg(std::path::PathBuf),
+    /// Drawn as given, at the ink's alpha: pixels already silhouetted by the
+    /// caller, or a raster this process cannot recolour.
+    Image(iced::widget::image::Handle),
+    /// Nothing found: [`mark`]'s placeholder, never a hole.
+    None,
+}
+
+/// [`mark`] for an [`Art`]: the SVG in `tint`, the pixels at `tint`'s alpha,
+/// or the placeholder.
+///
+/// A widget for [`mark`]'s reason — every icon may be missing and every
+/// fallback must be the same shape — widened to the pixmaps a tray item can
+/// carry instead of a theme name.
+pub fn art_mark<'a, Message: 'a>(art: &Art, side: f32, tint: Color) -> Element<'a, Message, Theme> {
+    match art {
+        Art::Svg(path) => glyph(path.clone(), side, tint),
+        Art::Image(handle) => iced::widget::image(handle.clone())
+            .width(Length::Fixed(side))
+            .height(Length::Fixed(side))
+            .opacity(tint.a)
+            .into(),
+        Art::None => mark(None, side, tint),
+    }
+}
+
+/// One pager tile in a bar preview: a workspace (or desktop) number on the
+/// bar cell's glass at the tile's squircle corner.
+///
+/// A widget because it is the bar's own pager tile drawn still, and the
+/// settings preview must not link the bar to get it: the tile's material is
+/// [`theme::bar_cell`], one step clearer when `lit` (the current one). The
+/// number is never gold here — a preview's one yellow belongs to the pane.
+pub fn pager_tile<'a, Message: 'a>(
+    index: usize,
+    width: f32,
+    height: f32,
+    lit: bool,
+) -> Element<'a, Message, Theme> {
+    use crate::tokens::bar;
+    let ink = if lit {
+        color::text_secondary()
+    } else {
+        color::text_tertiary()
+    };
+    container(
+        text(index.to_string())
+            .size(size::MICRO)
+            .font(if lit { font::DATA_MEDIUM } else { font::DATA })
+            .color(ink),
+    )
+    .center_x(Length::Fixed(width))
+    .center_y(Length::Fixed(height))
+    .style(move |t: &Theme| {
+        let cell = theme::bar_cell(lit)(t, button::Status::Active);
+        container::Style {
+            background: cell.background,
+            border: iced::Border {
+                radius: bar::RADIUS_TILE.into(),
+                ..cell.border
+            },
+            ..container::Style::default()
+        }
+    })
+    .into()
+}
+
+/// A widget waiting on a shelf: its live cell on a strip of bar ground,
+/// with its name under it. Hovered, the strip lifts; `lit` (the one being
+/// added by keyboard, or just landed back) draws it a step clearer with a
+/// crisp rim, never gold.
+///
+/// A widget and not a styled container because a shelf tile is a picture of
+/// the thing itself — the bar's cell at 1:1 on the bar's own ground — and a
+/// shelf that drew its tiles any other way would be a list of names again.
+/// `cell` is the caller's drawing of the widget (the same one the bar
+/// preview uses), so what is picked up is exactly what lands.
+pub fn shelf_tile<'a, Message: Clone + 'a>(
+    cell: impl Into<Element<'a, Message, Theme>>,
+    label: &str,
+    lit: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    use crate::tokens::bar;
+    let ground = container(cell)
+        .padding([0.0, canvas::SHELF_PAD])
+        .height(Length::Fixed(bar::PILL_H))
+        .align_y(Alignment::Center)
+        .style(theme::bar_ground(bar::RADIUS_SHEET, false));
+    let name = text(label.to_owned())
+        .font(font::UI)
+        .size(size::MICRO)
+        .wrapping(text::Wrapping::None);
+    button(
+        column![ground, name]
+            .spacing(space::LINE_GAP)
+            .align_x(Alignment::Center),
+    )
+    .padding(canvas::SHELF_PAD)
+    .on_press(on_press)
+    .style(move |_t: &Theme, status: button::Status| {
+        let (fill, rim) = match (lit, status) {
+            (_, button::Status::Pressed) => (color::lift(), color::highlight_rim()),
+            (true, button::Status::Hovered) => (color::lift(), color::highlight_rim()),
+            (true, _) => (color::lift_soft(), color::highlight_rim()),
+            (false, button::Status::Hovered) => (color::lift_soft(), color::border()),
+            (false, _) => (Color::TRANSPARENT, Color::TRANSPARENT),
+        };
+        button::Style {
+            background: Some(iced::Background::Color(fill)),
+            text_color: color::text_secondary(),
+            border: iced::Border {
+                color: rim,
+                width: space::HAIRLINE,
+                radius: radius::INSET.into(),
+            },
+            ..button::Style::default()
+        }
+    })
+    .into()
+}
+
+/// A short-lived note floating over the bottom of a pane: what just
+/// happened, and the one thing that takes it back.
+///
+/// A widget because it floats over whatever is under it — a list, a
+/// picture, a field — and has to stay legible over all of it, on the menu
+/// ground with a crisp rim; and because "Moved Clock · Undo" must look the
+/// same wherever a pane offers an undo. Never yellow: the action is a pill.
+pub fn toast<'a, Message: Clone + 'a>(
+    note: &str,
+    action: Option<(&str, Message)>,
+    dismiss: Message,
+) -> Element<'a, Message, Theme> {
+    let mut r = Row::new()
+        .push(
+            text(note.to_owned())
+                .font(font::UI)
+                .size(size::BODY_SMALL)
+                .color(color::text()),
+        )
+        .spacing(space::CONTROL_GAP)
+        .align_y(Alignment::Center);
+    if let Some((label, m)) = action {
+        r = r.push(pill(label, false, m));
+    }
+    r = r.push(pill("Dismiss", false, dismiss));
+    container(r)
+        .padding([space::CHIP_Y, space::CARD])
+        .max_width(canvas::TOAST_MAX_W)
+        .style(|_t: &Theme| container::Style {
+            background: Some(iced::Background::Color(color::menu_ground())),
+            border: iced::Border {
+                color: color::highlight_rim(),
+                width: space::HAIRLINE,
+                radius: radius::INSET.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
+/// A [`chip`] that is also a picture: the object's own icon before its
+/// name. For a canvas of things that have icons (tray apps), where a name
+/// alone is not what the owner recognises on the bar.
+///
+/// A widget for [`chip`]'s reason, with the icon placed in the chip's own
+/// padding so a lane of icon chips and a lane of plain ones share a height.
+pub fn icon_chip<'a, Message: Clone + 'a>(
+    icon: impl Into<Element<'a, Message, Theme>>,
+    label: &str,
+    selected: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
+    let r = row![
+        icon.into(),
+        text(label.to_string()).font(font::DATA_MEDIUM).size(size::MONO)
+    ]
+    .spacing(space::CHIP_ORDINAL_GAP)
+    .align_y(Alignment::Center);
+    button(r)
+        .padding([space::CHIP_Y, space::CHIP_X])
+        .on_press(on_press)
+        .style(theme::chip(selected))
+        .into()
+}

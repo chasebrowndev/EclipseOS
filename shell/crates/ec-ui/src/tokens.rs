@@ -324,6 +324,9 @@ pub mod space {
     /// One row of chips. An empty lane keeps it, so moving the last chip
     /// out does not collapse the canvas under the pointer.
     pub const CHIP_H: f32 = 28.0;
+    /// A thin scrollbar, for a strip that scrolls sideways inside a pane
+    /// (the bar preview, narrower than the bar).
+    pub const SCROLLBAR_W: f32 = 4.0;
     /// A badge's padding: a line of micro mono with a hair of air around it.
     pub const BADGE_Y: f32 = 2.0;
     /// A badge's side padding.
@@ -786,9 +789,9 @@ pub mod canvas {
     /// Most windows the preview's stepper offers: far enough down the ladder
     /// to reach the `+N` cell on a pane-wide bar.
     pub const WINDOWS_MAX: usize = 40;
-    /// What the preview opens on: enough windows that the chips have to
-    /// negotiate with the widgets.
-    pub const WINDOWS_DEFAULT: usize = 3;
+    /// What the preview opens on: no windows, so every widget being
+    /// arranged is open and readable; the stepper adds the crowd.
+    pub const WINDOWS_DEFAULT: usize = 0;
 
     /// An argument chip in an argv editor, and the gap before its remove
     /// mark.
@@ -849,6 +852,30 @@ pub mod canvas {
     /// The rim of a tile and of the dashed-in-spirit outline left where a
     /// dragged tile started.
     pub const ARRANGE_RIM: f32 = 1.0;
+
+    /// Workspaces a bar preview's pager draws under `wm` and `hybrid`, and
+    /// which of them is the current one (lit in secondary ink, never yellow:
+    /// the preview's one accent is the selected widget's name).
+    pub const PREVIEW_WORKSPACES: usize = 4;
+    pub const PREVIEW_ACTIVE: usize = 0;
+    /// The desktop grid a bar preview's pager draws under `de`.
+    pub const PREVIEW_GRID_ROWS: usize = 2;
+    pub const PREVIEW_GRID_COLUMNS: usize = 2;
+
+    /// A shelf tile: the widget's own cell on a bar ground, its name under
+    /// it. The ground is the bar's pill height, so the cell sits on it as it
+    /// sits on the bar.
+    pub const SHELF_PAD: f32 = 6.0;
+    pub const SHELF_GAP: f32 = 10.0;
+    /// While a drag is in hand, how near the scrolled pane's top or bottom
+    /// edge the pointer has to be to scroll it, and how far one frame
+    /// scrolls at the very edge (less further in).
+    pub const AUTOSCROLL_EDGE: f32 = 48.0;
+    pub const AUTOSCROLL_STEP: f32 = 14.0;
+    /// The undo toast: how far it floats off the pane's bottom edge, and the
+    /// widest it gets before its text wraps.
+    pub const TOAST_OFFSET: f32 = 22.0;
+    pub const TOAST_MAX_W: f32 = 460.0;
 }
 
 /// Motion defaults. Taste, not mechanism: the live values are
@@ -893,6 +920,15 @@ pub mod motion {
     /// One turn of an indeterminate progress ring. Slower than the radio
     /// spinner: a copy in flight is not a scan in flight.
     pub const PROGRESS_SPIN_MS: u64 = 1600;
+    /// Travel past which a held object is in hand ([`crate::widget::draggable`]).
+    /// Tighter than [`TAP_SLOP`]: an object lifts the moment it is pulled,
+    /// as a desktop drag does, while a grip still forgives a shaky click.
+    pub const DRAG_SLOP: f32 = 3.0;
+    /// How long a missed drop takes to fly back to where it came from: short
+    /// enough to read as the object refusing, not as an animation to wait on.
+    pub const HOMING_MS: u64 = 200;
+    /// How long an undo toast stays up after the change it offers to undo.
+    pub const TOAST_MS: u64 = 6000;
 }
 
 /// A context menu: the mark rail that opens on a right-click.

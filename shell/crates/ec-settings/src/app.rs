@@ -129,6 +129,15 @@ pub enum Message {
     TraySelect(String),
     /// The live tray ids from `tray::feed`; `None` when it could not start.
     TrayLive(Option<Vec<String>>),
+    /// Each live tray app's icon, resolved on the feed's thread.
+    TrayArt(Vec<(String, ec_ui::widget::Art)>),
+    /// The content column scrolled or was laid out: where it is now, for a
+    /// drag that scrolls it from near its edge.
+    Scrolled(iced::widget::scrollable::Viewport),
+    /// The undo toast's timer ran out (by serial: an old timer leaves a
+    /// newer toast up).
+    ToastExpire(u64),
+    ToastDismiss,
     /// The Taskbar pane's own messages.
     Bar(crate::taskbar::Msg),
     /// An edit to `bar.pinned-apps`.
@@ -247,7 +256,7 @@ pub struct App {
     pub(crate) conn: Conn,
     pub(crate) rows: Vec<Key>,
     /// The page the content column shows.
-    page: Page,
+    pub(crate) page: Page,
     /// The expanded section in the sidebar: at most one, and not always the
     /// shown page's — folding the current section leaves its page showing.
     open: Option<Section>,
@@ -285,6 +294,13 @@ pub struct App {
     net: Net,
     /// The tray entry the move pills act on.
     pub(crate) tray_sel: Option<String>,
+    /// Each live tray app's icon, as the feed resolved it.
+    pub(crate) tray_art: Vec<(String, ec_ui::widget::Art)>,
+    /// What the toast offers to take back, newest last.
+    pub(crate) undo: crate::undo::Stack<crate::taskbar::Restore>,
+    /// The content column's viewport: its bounds on screen, how far it is
+    /// scrolled, and how far it can be.
+    pub(crate) viewport: Option<(iced::Rectangle, f32, f32)>,
     /// The apps `bar.pinned-apps` can take, scanned once at start.
     pub(crate) installed: Vec<crate::pinned::Choice>,
     /// The discrete GPU's name, when the machine has one; the graphics
@@ -384,6 +400,9 @@ impl App {
             restart_pending: false,
             net: Net::default(),
             tray_sel: None,
+            tray_art: Vec::new(),
+            undo: crate::undo::Stack::default(),
+            viewport: None,
             installed: crate::pinned::installed(),
             discrete_gpu: discrete_gpu(),
             tray_live: None,
@@ -391,7 +410,7 @@ impl App {
             glass_radius,
             blur,
             hairline_cards,
-            bar: crate::taskbar::Bar::default(),
+            bar: crate::taskbar::Bar::with_glyphs(),
             addons: None,
             search: crate::search_ui::Search::default(),
             cleared: None,
@@ -508,15 +527,28 @@ impl App {
         t
     }
 
-    /// Write a tray move: only the lists it changed.
-    pub(crate) fn write_tray(&mut self, w: Writes) {
+    /// A tray move as the edits it makes: only the lists it changed, to be
+    /// written as one commit.
+    pub(crate) fn tray_edits(&mut self, w: Writes) -> Vec<(String, Value)> {
         self.tray_seen = self.tray().ids();
+        let mut edits = Vec::new();
         if let Some(p) = w.pinned {
-            self.write(TRAY_PINNED, json!(p));
+            edits.push((TRAY_PINNED.to_owned(), json!(p)));
         }
         if let Some(h) = w.hidden {
-            self.write(TRAY_HIDDEN, json!(h));
+            edits.push((TRAY_HIDDEN.to_owned(), json!(h)));
         }
+        edits
+    }
+
+    /// Write several keys as one commit and re-read, handing a refusal back
+    /// to the caller to explain where it happened rather than in the banner.
+    pub(crate) fn write_batch(&mut self, edits: &[(String, Value)]) -> Result<(), Problem> {
+        let restart = self.conn.set_many(edits)?;
+        self.restart_pending |= restart;
+        self.banner = None;
+        self.reload();
+        Ok(())
     }
 
     /// Write one scalar and fold the outcome into the banner.
@@ -703,7 +735,7 @@ impl App {
 const PREVIEW_HOLD: Duration = Duration::from_secs(10);
 
 /// The content column's scrollable, so a debug build can open scrolled.
-const SCROLL: &str = "content";
+pub(crate) const SCROLL: &str = "content";
 
 /// Start on `page`. Debug builds read `SETTINGS_PREVIEW_SCROLL` (logical px)
 /// and open scrolled that far, so a lower block can be screenshotted with no
@@ -750,6 +782,23 @@ fn preview_shot(path: String) -> Task<Message> {
         let _ = std::fs::write(&path, [head.as_bytes(), &shot.rgba[..]].concat());
         iced::exit()
     })
+}
+
+/// The undo toast's timer: [`Message::ToastExpire`] after
+/// `tokens::motion::TOAST_MS`. iced here has no timer backend, so the wait
+/// is a thread's, as [`preview_shot`]'s is.
+fn toast_timer(serial: u64) -> Task<Message> {
+    let (tx, rx) = iced::futures::channel::oneshot::channel::<()>();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(ec_ui::tokens::motion::TOAST_MS));
+        let _ = tx.send(());
+    });
+    Task::perform(
+        async move {
+            let _ = rx.await;
+        },
+        move |()| Message::ToastExpire(serial),
+    )
 }
 
 fn boot_inner(page: Page) -> (App, Task<Message>) {
@@ -1090,8 +1139,23 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::TraySelect(id) => {
             app.tray_sel = (app.tray_sel.as_deref() != Some(id.as_str())).then_some(id);
         }
+        Message::TrayLive(_) | Message::TrayArt(_) if app.bar.tray_preview => {}
         Message::TrayLive(live) => app.tray_live = Some(live),
-        Message::Bar(m) => return crate::taskbar::update(app, m),
+        Message::TrayArt(art) => app.tray_art = art,
+        Message::Scrolled(v) => {
+            let max = v.content_bounds().height - v.bounds().height;
+            app.viewport = Some((v.bounds(), v.absolute_offset().y, max));
+        }
+        Message::ToastExpire(serial) => app.undo.expire(serial),
+        Message::ToastDismiss => app.undo.dismiss(),
+        Message::Bar(m) => {
+            let before = app.undo.serial();
+            let task = crate::taskbar::update(app, m);
+            return match app.undo.serial() {
+                Some(now) if before != Some(now) => Task::batch([task, toast_timer(now)]),
+                _ => task,
+            };
+        }
         Message::Pinned(m) => crate::pinned::update(app, m),
         Message::GpuApps(m) => crate::gpu::update(app, m),
         Message::Search(m) => return crate::search_ui::update(app, m),
@@ -1267,8 +1331,10 @@ fn blur() -> Subscription<Message> {
     })
 }
 
-/// The Taskbar pane's keyboard: arrows move the selected widget (or tray
-/// entry), Delete takes it off, Escape drops a drag. Only keys nothing else
+/// The Taskbar pane's keyboard: Tab walks the selection, arrows move the
+/// selected widget (or tray entry), Space lifts it to move several places
+/// and drops it, Enter drops it, Delete takes it off, Escape cancels a lift
+/// or a drag, Ctrl+Z undoes. Only keys nothing else
 /// took; the pane then asks the tree whether a text field is focused, since
 /// iced 0.14's `text_input` lets Up and Down through uncaptured.
 fn taskbar_keys() -> Subscription<Message> {
@@ -1278,10 +1344,30 @@ fn taskbar_keys() -> Subscription<Message> {
         let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
             return None;
         };
-        if status == iced::event::Status::Captured || !modifiers.is_empty() {
+        if status == iced::event::Status::Captured {
+            return None;
+        }
+        // Ctrl+Z takes back the last move; Shift+Tab walks the selection
+        // back. Every other chord is someone else's.
+        if modifiers == iced::keyboard::Modifiers::CTRL {
+            return match key.as_ref() {
+                Key::Character("z") => Some(Message::Bar(Msg::Key(K::Undo))),
+                _ => None,
+            };
+        }
+        if modifiers == iced::keyboard::Modifiers::SHIFT {
+            return match key {
+                Key::Named(Named::Tab) => Some(Message::Bar(Msg::Key(K::BackTab))),
+                _ => None,
+            };
+        }
+        if !modifiers.is_empty() {
             return None;
         }
         let k = match key {
+            Key::Named(Named::Tab) => K::Tab,
+            Key::Named(Named::Space) => K::Space,
+            Key::Named(Named::Enter) => K::Enter,
             Key::Named(Named::ArrowLeft) => K::Left,
             Key::Named(Named::ArrowRight) => K::Right,
             Key::Named(Named::ArrowUp) => K::Up,
@@ -1456,15 +1542,21 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             // full-height bar.
             iced::widget::container(
                 // Panes inside follow the scroll offset and are cut to its bounds.
-                ec_ui::glass::scroll_region(
-                    scrollable(content_at(density, blocks))
-                        .id(SCROLL)
-                        .direction(scrollable::Direction::Vertical(
-                            scrollable::Scrollbar::new().width(4).scroller_width(4).margin(3),
-                        ))
-                        .style(theme::eclipse_scrollable)
-                        .height(Length::Fill),
-                ),
+                // The undo toast floats over the column's foot, outside the
+                // scroll, so it stays put while the page moves under it.
+                iced::widget::stack![
+                    ec_ui::glass::scroll_region(
+                        scrollable(content_at(density, blocks))
+                            .id(SCROLL)
+                            .on_scroll(Message::Scrolled)
+                            .direction(scrollable::Direction::Vertical(
+                                scrollable::Scrollbar::new().width(4).scroller_width(4).margin(3),
+                            ))
+                            .style(theme::eclipse_scrollable)
+                            .height(Length::Fill),
+                    ),
+                    toast_layer(app),
+                ],
             )
             .padding([space::BLOCK, 0.0]),
         )
@@ -1473,6 +1565,26 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         .style(theme::window_pane(app.blur)),
     ]
     .into()
+}
+
+/// The undo toast, bottom-centre of the content column, or nothing.
+fn toast_layer(app: &App) -> Element<'_, Message, Theme> {
+    let Some(t) = app.undo.toast() else {
+        return Space::new().into();
+    };
+    let undo = (t.undoable && app.undo.can_undo()).then(|| {
+        (
+            "Undo",
+            Message::Bar(crate::taskbar::Msg::Key(crate::taskbar::Stroke::Undo)),
+        )
+    });
+    iced::widget::container(ec_ui::widget::toast(&t.note, undo, Message::ToastDismiss))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding([ec_ui::tokens::canvas::TOAST_OFFSET, 0.0])
+        .align_x(iced::Alignment::Center)
+        .align_y(iced::Alignment::End)
+        .into()
 }
 
 /// The two error shapes every DE app renders identically: a denial and a
