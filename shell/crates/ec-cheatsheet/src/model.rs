@@ -199,6 +199,8 @@ fn describe(action: &Action) -> Option<(Group, String)> {
         Action::AgentOverride => line(Session, "Pause every agent"),
         Action::AgentTerminate => line(Session, "Stop every agent"),
         Action::AgentAttention => line(Session, "Decisions waiting"),
+        Action::ScreenshotFull => line(Session, "Screenshot"),
+        Action::ScreenshotRegion => line(Session, "Screenshot: select region"),
         Action::AnnotationSelect => line(Session, "Annotate: select region"),
         Action::AnnotationDismiss => line(Session, "Annotate: dismiss"),
         Action::AnnotationExpand => line(Session, "Annotate: expand"),
