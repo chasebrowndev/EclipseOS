@@ -948,6 +948,9 @@ pub(crate) mod state_tests {
             crate::config::Config::default(),
             false,
         );
+        // Most `de` tests open a lone window and expect it floating; the
+        // tests of `general.maximize-first-window` turn it on.
+        state.config.general.maximize_first_window = false;
         let dh = state.display_handle.clone();
         let mode = Mode {
             size: (W, H).into(),

@@ -62,6 +62,15 @@ impl Config {
                         self.general.unfocus_on_empty_workspace = b;
                     }
                 }
+                "maximize-first-window" => {
+                    if let Some(b) = arg(n).and_then(KdlValue::as_bool) {
+                        self.general.maximize_first_window = b;
+                    }
+                }
+                "maximize-first-window-exempt" => {
+                    let mut seen = false;
+                    self.general.maximize_first_window_exempt = names(n, &mut seen);
+                }
                 // Removed: hover never takes the keyboard from an on-demand
                 // layer now, only a click does (wlr-layer-shell `on_demand`).
                 "focus-follows-mouse-layers" => {

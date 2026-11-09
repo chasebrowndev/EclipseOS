@@ -1336,3 +1336,42 @@ fn pressing_the_resize_band_focuses_and_raises_the_window() {
     assert_eq!(h.state.focus.as_ref(), Some(&a), "and focuses");
     assert_eq!(index(&h, &a), order(&h).len() - 1, "and raises");
 }
+
+#[test]
+fn first_window_on_an_empty_workspace_opens_maximized() {
+    let mut h = harness();
+    h.state.config.general.maximize_first_window = true;
+    let mut c = Client::connect(&mut h);
+    let (_, first) = de_window(&mut h, &mut c);
+    assert!(maximize::is_maximized(&h.state, &first));
+    let t = c.create_toplevel(&mut h);
+    c.commit(&mut h, &t.surface);
+    c.attach(&mut h, &t.surface);
+    let second = window_of(&h, &t);
+    assert!(
+        !maximize::is_maximized(&h.state, &second),
+        "workspace was not empty"
+    );
+}
+
+#[test]
+fn first_window_stays_floating_when_exempt_or_switched_off() {
+    let mut h = harness();
+    h.state.config.general.maximize_first_window = true;
+    let mut c = Client::connect(&mut h);
+    flip(&mut h, Mode::De);
+    let t = c.create_toplevel(&mut h);
+    t.toplevel.set_app_id("Foot".into());
+    c.commit(&mut h, &t.surface);
+    c.attach(&mut h, &t.surface);
+    let w = window_of(&h, &t);
+    assert!(
+        !maximize::is_maximized(&h.state, &w),
+        "foot is exempt, case-insensitively"
+    );
+
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_, w) = de_window(&mut h, &mut c);
+    assert!(!maximize::is_maximized(&h.state, &w), "switched off");
+}

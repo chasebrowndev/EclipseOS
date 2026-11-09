@@ -98,6 +98,10 @@ pub struct General {
     pub focus_follows_mouse_set: bool,
     pub focus_follows_mouse_across_outputs: bool,
     pub unfocus_on_empty_workspace: bool,
+    /// Under `mode "de"`, a window that opens on an empty workspace opens
+    /// maximized, unless its `app_id` is in `maximize_first_window_exempt`.
+    pub maximize_first_window: bool,
+    pub maximize_first_window_exempt: Vec<String>,
     pub refocus_on_scene_change: bool,
     /// Warp the pointer onto a window a keybind just moved, so the cursor is
     /// never left behind on the workspace or display the window came from.
@@ -189,6 +193,8 @@ impl Default for General {
             focus_follows_mouse_set: false,
             focus_follows_mouse_across_outputs: true,
             unfocus_on_empty_workspace: true,
+            maximize_first_window: true,
+            maximize_first_window_exempt: vec!["foot".into()],
             refocus_on_scene_change: true,
             cursor_follows_moved_window: true,
             follow_window_to_workspace: true,

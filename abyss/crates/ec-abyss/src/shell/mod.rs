@@ -886,12 +886,45 @@ pub fn place_new_window(state: &mut AbyssState, window: Window) {
     if de::stacking(state) {
         state.de.note_opened(&window);
     }
+    if wants_first_window_maximize(state, &window, &placement) {
+        maximize::set(state, &window, Some((true, true)));
+    }
     let handle = state.ipc.handle_for(&window);
     crate::ipc::emit(
         state,
         "window",
         serde_json::json!({"change": "opened", "handle": handle}),
     );
+}
+
+/// `general.maximize-first-window`: under `de`, a plain window that is the only
+/// one on its workspace opens maximized. A dialog, a window a rule sized,
+/// placed or sent fullscreen, and an exempt `app_id` keep their own placement.
+fn wants_first_window_maximize(state: &AbyssState, window: &Window, placement: &rules::Placement) -> bool {
+    let g = &state.config.general;
+    if !g.maximize_first_window
+        || !state.config.mode.profile().maximize
+        || placement.fullscreen
+        || placement.size.is_some()
+        || placement.position.is_some()
+        || window.toplevel().is_some_and(|t| t.parent().is_some())
+        || x11_parent(state, window).is_some()
+    {
+        return false;
+    }
+    if let (Some(app_id), _) = crate::ipc::methods::identity_of(window) {
+        if g.maximize_first_window_exempt
+            .iter()
+            .any(|e| e.eq_ignore_ascii_case(&app_id))
+        {
+            return false;
+        }
+    }
+    state
+        .outputs
+        .iter()
+        .find_map(|e| e.workspaces.iter().find(|ws| ws.holds(window)))
+        .is_some_and(|ws| ws.all_windows().iter().all(|w| w == window))
 }
 
 /// Re-run placement once a window has settled (see `rules::Placed`), so rules
