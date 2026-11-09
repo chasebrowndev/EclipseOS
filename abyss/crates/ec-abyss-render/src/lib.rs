@@ -439,7 +439,16 @@ fn is_scrim(
     size: Size<i32, Logical>,
     output: Size<i32, Logical>,
 ) -> bool {
-    surface.cached_state().anchor.contains(Anchor::all()) && size == output
+    let anchored = surface.cached_state().anchor.contains(Anchor::all());
+    // Below the windows, a four-edge surface is the desktop itself (ec-desktop
+    // fills the usable area, which is smaller than the output once a bar
+    // reserves its zone), never a sheet.
+    let desktop = matches!(
+        surface.layer(),
+        smithay::wayland::shell::wlr_layer::Layer::Background
+            | smithay::wayland::shell::wlr_layer::Layer::Bottom
+    );
+    anchored && (size == output || desktop)
 }
 
 /// Vol 1 §5.2: a layer whose input region is 2..=4 boxes (a bar pill and the
