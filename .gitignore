@@ -5,3 +5,6 @@ target/
 tray_keys
 __pycache__/
 browser/firefox-glass/.amo-upload-uuid
+
+# Syncthing conflict copies (the tree is synced between dev machines)
+*.sync-conflict-*
