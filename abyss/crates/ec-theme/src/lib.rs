@@ -585,7 +585,7 @@ pub fn derive(seeds: &Seeds) -> Palette {
         glass_strong: fill.with_alpha(ia(fill, t.glass_strong)),
         glass_deep,
         glass_deep_backed: glass_deep.over_opaque(surface_1),
-        sheet_tint: frost.with_alpha(t.sheet_tint),
+        sheet_tint: frost.with_alpha(ia(frost, t.sheet_tint)),
         bar_tint: frost.with_alpha(ia(frost, t.bar_tint)),
         cell: pointer.with_alpha(ia(pointer, t.cell[0])),
         cell_hover: pointer.with_alpha(ia(pointer, t.cell[1])),
