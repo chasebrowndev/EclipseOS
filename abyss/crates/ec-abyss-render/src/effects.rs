@@ -234,27 +234,38 @@ uniform vec4 box3;
 uniform float boxes;
 uniform float fillet;
 
-float box_sd(vec2 f, vec4 b) {
+// A box's signed distance (x), and the centre of the corner arc f is nearest
+// to (yz). Mirrors `blur::shape_sd`'s `box_sd`.
+vec3 box_sd(vec2 f, vec4 b) {
     vec2 h = b.zw * 0.5;
-    float r = min(radius, min(h.x, h.y));
+    float r = max(min(radius, min(h.x, h.y)), 0.0);
     vec2 q = abs(f - (b.xy + h)) - h + r;
-    return length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    vec2 arc = min(max(f, b.xy + r), b.xy + b.zw - r);
+    return vec3(d, arc);
 }
 
-float smin(float a, float b) {
+// Mirrors `blur::join`: the smooth-min bite is scaled by the gap between the
+// two arc centres, so a shared corner keeps its own radius.
+vec3 join(vec3 a, vec3 b) {
+    // `gap` is the arc centres' distance in radii, as `blur::join` takes it.
+    vec3 m = a;
+    if (b.x < a.x)
+        m = b;
     if (fillet <= 0.0)
-        return min(a, b);
-    float h = max(fillet - abs(a - b), 0.0) / fillet;
-    return min(a, b) - h * h * fillet * 0.25;
+        return m;
+    float h = max(fillet - abs(a.x - b.x), 0.0) / fillet;
+    float gap = min(length(a.yz - b.yz) / max(radius, 1.0), 1.0);
+    return vec3(m.x - gap * h * h * fillet * 0.25, m.yz);
 }
 
 float shape_sd(vec2 f) {
-    float d = smin(box_sd(f, box0), box_sd(f, box1));
+    vec3 d = join(box_sd(f, box0), box_sd(f, box1));
     if (boxes > 2.5)
-        d = smin(d, box_sd(f, box2));
+        d = join(d, box_sd(f, box2));
     if (boxes > 3.5)
-        d = smin(d, box_sd(f, box3));
-    return d;
+        d = join(d, box_sd(f, box3));
+    return d.x;
 }
 "#;
 
