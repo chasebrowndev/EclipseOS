@@ -8,6 +8,7 @@
 > The goal of EclipseOS is not recognition, nor is it a quest to surpass others.  
 > It is merely my attempt at making something other humans will like.  
 > I truly, truly hope you enjoy.
+> - Chase Brown
 
 <table>
   <tr>
