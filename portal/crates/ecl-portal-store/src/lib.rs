@@ -7,7 +7,7 @@
 //!
 //! Stateless over the files: every operation reads fresh and writes through,
 //! so `ecl-portal-ctl` and the daemon never disagree. Records are claims we
-//! store for the user's convenience; they are not enforcement (ADR 0084). A
+//! store for the user's convenience; they are not enforcement (ADR 0096). A
 //! missing or unreadable record means "ask", never "allow".
 
 use std::collections::BTreeMap;

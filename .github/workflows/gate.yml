@@ -11,9 +11,9 @@ concurrency:
   cancel-in-progress: true
 
 # The workflow files must sit at the repository root for GitHub to read them.
-# The repo holds five cargo workspaces (abyss/, shell/, installer/,
-# oracle-eyes/, fog/), so each job sets its own `defaults.run.working-directory`
-# and points any filesystem-touching `uses:` action at its workspace explicitly
+# The repo holds six cargo workspaces (abyss/, shell/, installer/,
+# oracle-eyes/, fog/, portal/), so each job sets its own
+# `defaults.run.working-directory` and points any filesystem-touching `uses:` action at its workspace explicitly
 # (actions ignore `defaults`). All of them build into <repo>/target, set by the
 # root .cargo/config.toml.
 

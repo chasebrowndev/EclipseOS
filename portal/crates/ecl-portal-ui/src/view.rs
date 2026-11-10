@@ -128,9 +128,9 @@ fn avatar<'a>(app: &App, side: f32) -> El<'a> {
     .center_x(Length::Fixed(side))
     .center_y(Length::Fixed(side))
     .style(|_t: &Theme| container::Style {
-        background: Some(Background::Color(color::LIFT)),
+        background: Some(Background::Color(color::lift())),
         border: Border {
-            color: color::BORDER,
+            color: color::border(),
             width: space::HAIRLINE,
             radius: radius::INSET.into(),
         },
@@ -390,7 +390,7 @@ fn permission<'a>(
 ) -> El<'a> {
     let subject = clean(title, metrics::MAX_SUBJECT);
     let sub = subtitle("asks for ", &subject, "");
-    let banner = edge_note("Details", detail, color::NEUTRAL);
+    let banner = edge_note("Details", detail, color::neutral());
 
     // The shared prefix is noise; the tail names the portal interface.
     let short = interface
@@ -523,7 +523,7 @@ fn colour<'a>(app: &App, p: &crate::model::ColorPick) -> El<'a> {
         .style(move |_t: &Theme| container::Style {
             background: Some(Background::Color(picked)),
             border: Border {
-                color: color::BORDER_STRONG,
+                color: color::border_strong(),
                 width: space::HAIRLINE,
                 radius: radius::INSET.into(),
             },
@@ -578,7 +578,7 @@ fn account<'a>(app: &App, reason: &str, form: &crate::model::AccountForm) -> El<
     } else {
         reason.to_owned()
     };
-    let quote = edge_note("Reason given by the app", &why, color::NEUTRAL);
+    let quote = edge_note("Reason given by the app", &why, color::neutral());
 
     let name = text_input("login name", &form.name)
         .on_input(Message::Name)

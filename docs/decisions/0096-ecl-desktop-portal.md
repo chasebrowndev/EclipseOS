@@ -1,4 +1,4 @@
-# 0084 — `ecl-desktop-portal`: an in-house, drop-in desktop portal
+# 0096 — `ecl-desktop-portal`: an in-house, drop-in desktop portal
 Status: proposed
 Date: 2026-11-02
 Deciders: chase (owner), Claude (advisory)
@@ -39,7 +39,7 @@ dialogs. The wire API is bit-compatible, so no application changes.
 Rules the daemon lives under:
 - It is an **untrusted session process** (ADR 0028). It holds no ambient capture
   or input authority; every capture/input grant is minted by policyd and
-  enforced by abyss (ADR 0085).
+  enforced by abyss (ADR 0097).
 - Anything it forwards about the requester (app id, target) is a **claim to
   display**, never a grant, and may only narrow a decision (ratchet rule).
 - App identity is best-effort and advisory: D-Bus connection credentials, the
@@ -65,7 +65,7 @@ Rules the daemon lives under:
   `eclipseos-portal` split package.
 - `docs/STATUS.md` row 8 and a new D-08 design doc track it. The daemon and
   panes follow the frontend/backend agent split; nothing here touches TCB paths
-  (those are ADR 0085).
+  (those are ADR 0097).
 - New dependencies (`pipewire`, later `fuser`) each need a `cargo deny` review.
 - We owe: D-Bus conformance tests per interface, compat smoke tests against real
   clients, and a Settings page for grants.

@@ -1,4 +1,4 @@
-# 0085 — Scoped capture grants and a compositor-drawn capture confirm
+# 0097 — Scoped capture grants and a compositor-drawn capture confirm
 Status: proposed
 Date: 2026-11-02
 Deciders: chase (owner), Claude (advisory)

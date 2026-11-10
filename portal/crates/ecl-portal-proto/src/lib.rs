@@ -2,7 +2,7 @@
 
 //! Wire types between `ecl-desktop-portal` and its dialog panes
 //! (`ecl-portal-ui`), and the capture-confirm request sent to abyss over
-//! `portal.sock` (ADR 0085). No I/O. Panes carry no authority: every reply is
+//! `portal.sock` (ADR 0097). No I/O. Panes carry no authority: every reply is
 //! a *choice*, never a grant.
 
 use serde::{Deserialize, Serialize};
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Frame version for the pane socketpair.
 pub const VERSION: u16 = 1;
 
-/// Who is asking, as far as the daemon can tell. Advisory only (ADR 0084).
+/// Who is asking, as far as the daemon can tell. Advisory only (ADR 0096).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Requester {
     /// `.desktop` id, `host` when unknown.
@@ -117,7 +117,7 @@ pub enum ScreenshotMode {
     Area,
 }
 
-/// Daemon -> abyss over `portal.sock` (ADR 0085). Fields are claims to display;
+/// Daemon -> abyss over `portal.sock` (ADR 0097). Fields are claims to display;
 /// abyss re-derives the target itself and shows what *it* sees.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CaptureConfirm {

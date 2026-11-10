@@ -1,5 +1,5 @@
 # D-08 — Desktop portal (`ecl-desktop-portal`)
-Status: specification only. Governing ADRs: 0084 (architecture), 0085 (scoped
+Status: specification only. Governing ADRs: 0096 (architecture), 0097 (scoped
 capture grants + trusted confirm). Both are `proposed`.
 
 ## 1. What it is
@@ -29,7 +29,7 @@ glassy-not-glowy).
 3. Permission store decides: allow / deny / ask. Ask launches a pane over a
    private socketpair, one pane per request, which closes itself.
 4. Authority-bearing interfaces (ScreenCast, later RemoteDesktop/InputCapture)
-   additionally send a request over `portal.sock` to abyss (ADR 0085) and only
+   additionally send a request over `portal.sock` to abyss (ADR 0097) and only
    proceed on a minted grant.
 5. Daemon emits `Request::Response(code, results)`; `Close` and peer exit cancel.
 
@@ -54,7 +54,9 @@ Chooser pane -> daemon -> `portal.sock` -> abyss confirm modal -> policyd mints
 `ecl-portal-screencast` pulls frames (wl_shm first, dmabuf later), publishes a
 PipeWire node with cursor metadata. Redaction is applied by abyss before frames
 leave the compositor. Prerequisites in abyss: cursor-session metadata
-(`ext_image_copy_capture`), `ext-foreign-toplevel-list`.
+(`ext_image_copy_capture`, still refused) and a toplevel capture source
+(`ext_foreign_toplevel_image_capture_source_manager_v1`, absent) for
+per-window capture; `ext-foreign-toplevel-list` itself has since landed.
 
 ## 7. Packaging
 New split `eclipseos-portal`: `/usr/bin/ecl-desktop-portal`, `ecl-portal-ui`,

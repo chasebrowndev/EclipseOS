@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! `zwlr_screencopy_v1` client (wl_shm only) against abyss: outputs only.
-//! Windows and virtual sources need `ext-foreign-toplevel-list` in abyss
-//! (ADR 0085) and are refused here. Cursor: `Embedded` maps to
+//! Windows and virtual sources need a toplevel image-capture source in abyss
+//! (ADR 0097) and are refused here. Cursor: `Embedded` maps to
 //! `overlay_cursor = 1`; abyss refuses cursor sessions, so `Metadata` is
 //! never requested (the session layer does not offer it).
 //!
-//! Capture authority is entirely abyss's (ADR 0027/0085): if abyss does not
+//! Capture authority is entirely abyss's (ADR 0027/0097): if abyss does not
 //! admit this process, the manager global is absent or frames `failed`, and
 //! we surface that as an error. No retry loops that could mask a denial.
 
@@ -377,7 +377,7 @@ impl Capturer for WlrCapturer {
         match source {
             Source::Output { name, .. } => Ok(Box::new(WlrSource::connect(name, cursor)?)),
             Source::Window { .. } => Err(CaptureError::Unsupported(
-                "window capture needs ext-foreign-toplevel-list in abyss",
+                "window capture needs a toplevel image-capture source in abyss",
             )),
         }
     }

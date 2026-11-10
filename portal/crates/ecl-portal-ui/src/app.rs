@@ -125,7 +125,7 @@ pub fn system_identity() -> (String, String, Option<String>) {
 
 /// The colour the picker opens on: the style's neutral, so no hue is implied.
 pub fn start_color() -> [u8; 3] {
-    let [r, g, b, _] = color::NEUTRAL.into_rgba8();
+    let [r, g, b, _] = color::neutral().into_rgba8();
     [r, g, b]
 }
 

@@ -102,8 +102,8 @@ pub struct Capabilities {
 }
 
 impl Capabilities {
-    /// What abyss supports today: outputs only (no `ext-foreign-toplevel-list`
-    /// yet), cursor hidden or painted into the frame (`overlay_cursor`); the
+    /// What abyss supports today: outputs only (no toplevel image-capture
+    /// source yet), cursor hidden or painted into the frame (`overlay_cursor`); the
     /// cursor session is refused so `Metadata` is not offered.
     pub const ABYSS_TODAY: Self = Self {
         source_types: SOURCE_MONITOR,
@@ -158,7 +158,7 @@ pub struct Stream {
     /// PipeWire node id (what `Start` returns and `OpenPipeWireRemote` serves).
     pub node_id: u32,
     pub source: Source,
-    /// Grant minted by policyd, relayed by abyss (ADR 0085).
+    /// Grant minted by policyd, relayed by abyss (ADR 0097).
     pub grant: u64,
     pub position: Option<(i32, i32)>,
     pub size: (u32, u32),

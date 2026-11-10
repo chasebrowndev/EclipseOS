@@ -1,6 +1,6 @@
 # The Eclipse desktop portal. Installed to /usr/lib/systemd/user/.
 #
-# Untrusted session process (ADR 0084): no ambient capture or input authority.
+# Untrusted session process (ADR 0096): no ambient capture or input authority.
 # Hardening that would be inherited by launched applications (NoNewPrivileges,
 # UMask) is deliberately absent: the direct-spawn fallback in OpenURI runs
 # handlers as children of this unit.

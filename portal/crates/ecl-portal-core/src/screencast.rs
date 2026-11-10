@@ -54,7 +54,7 @@ pub trait ScreenCastBackend: Send + Sync {
     /// `CreateSession`: set up state for `call.session`.
     fn create_session(&self, call: Call) -> BoxFuture<'_, Reply>;
     fn select_sources(&self, call: Call) -> BoxFuture<'_, Reply>;
-    /// `Start`: may show the source chooser and the abyss confirm (ADR 0085).
+    /// `Start`: may show the source chooser and the abyss confirm (ADR 0097).
     fn start(&self, call: Call) -> BoxFuture<'_, Reply>;
     /// A PipeWire remote socket for `session`.
     fn open_pipewire_remote(

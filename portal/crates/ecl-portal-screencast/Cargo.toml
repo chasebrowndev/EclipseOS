@@ -14,7 +14,7 @@ default = ["wayland"]
 wayland = ["dep:wayland-client", "dep:wayland-protocols-wlr"]
 # PipeWire producer node. Needs libpipewire + clang; the `pipewire` crate is
 # not in the offline registry of the dev host, so this is opt-in until vetted
-# with `cargo deny` (ADR 0084).
+# with `cargo deny` (ADR 0096).
 pipewire = ["dep:pipewire"]
 
 [dependencies]

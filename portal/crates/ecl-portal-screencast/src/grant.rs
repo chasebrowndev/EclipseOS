@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Capture-grant client (ADR 0085): asks abyss, over
+//! Capture-grant client (ADR 0097): asks abyss, over
 //! `$XDG_RUNTIME_DIR/eclipse/portal.sock`, to show its compositor-drawn
 //! confirm and mint a grant for one stream.
 //!

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! `ecl-desktop-portal`: Eclipse desktop portal daemon. An untrusted session
-//! process (ADR 0084): it holds no capture or input authority and treats
+//! process (ADR 0096): it holds no capture or input authority and treats
 //! everything a caller says as a claim.
 
 mod account;

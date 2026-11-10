@@ -3,7 +3,7 @@
 //! App-identity resolution (D-08 §4) as a pure function over injected facts.
 //!
 //! The result is advisory: it is shown to the user and may only narrow a
-//! decision. It is never an enforcement key (ADR 0084).
+//! decision. It is never an enforcement key (ADR 0096).
 
 use std::collections::HashMap;
 

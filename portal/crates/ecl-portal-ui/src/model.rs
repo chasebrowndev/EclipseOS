@@ -4,7 +4,7 @@
 //! so the views are only a picture of it and the tests need no window.
 //!
 //! A pane only ever makes a *choice*. The daemon turns it into a request to
-//! the compositor, which asks the human again (ADR 0085); nothing here grants.
+//! the compositor, which asks the human again (ADR 0097); nothing here grants.
 
 use ecl_portal_proto::{PaneReply, PaneRequest, Requester, ScreenshotMode, Source};
 

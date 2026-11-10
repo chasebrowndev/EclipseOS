@@ -22,7 +22,7 @@ async fn pid_of(conn: &Connection, sender: &str) -> Option<u32> {
         .process_id()
 }
 
-/// Identity to show for `sender`. Advisory only (ADR 0084): never an
+/// Identity to show for `sender`. Advisory only (ADR 0096): never an
 /// enforcement key.
 pub async fn requester(shared: &Shared, conn: &Connection, sender: &str) -> Requester {
     let Some(pid) = pid_of(conn, sender).await else {

@@ -124,9 +124,9 @@ pub fn source_tile<'a, M: Clone + 'a>(spec: TileSpec, on_press: M) -> Element<'a
     } = spec;
 
     let ink = if selected {
-        color::TEXT_SECONDARY
+        color::text_secondary()
     } else {
-        color::TEXT_TERTIARY
+        color::text_tertiary()
     };
 
     let inside: Element<'a, M, Theme> = match thumb {
@@ -161,9 +161,9 @@ pub fn source_tile<'a, M: Clone + 'a>(spec: TileSpec, on_press: M) -> Element<'a
         .height(Length::Fixed(well_h))
         .clip(true)
         .style(|_t: &Theme| container::Style {
-            background: Some(Background::Color(color::LIFT_SOFT)),
+            background: Some(Background::Color(color::lift_soft())),
             border: Border {
-                color: color::HAIRLINE,
+                color: color::hairline(),
                 width: space::HAIRLINE,
                 radius: radius::CHIP.into(),
             },
@@ -177,7 +177,7 @@ pub fn source_tile<'a, M: Clone + 'a>(spec: TileSpec, on_press: M) -> Element<'a
             .width(Length::Fixed(metrics::DOT))
             .height(Length::Fixed(metrics::DOT))
             .style(|_t: &Theme| container::Style {
-                background: Some(Background::Color(color::TEXT)),
+                background: Some(Background::Color(color::text())),
                 border: iced::border::rounded(radius::PILL),
                 ..container::Style::default()
             })
@@ -194,9 +194,9 @@ pub fn source_tile<'a, M: Clone + 'a>(spec: TileSpec, on_press: M) -> Element<'a
             .font(font::UI_MEDIUM)
             .size(size::BODY_SMALL)
             .color(if selected {
-                color::ACCENT_TEXT
+                color::accent_text()
             } else {
-                color::TEXT
+                color::text()
             })
             .wrapping(text::Wrapping::None),
         Space::new().width(Length::Fill),
@@ -225,15 +225,19 @@ pub fn source_tile<'a, M: Clone + 'a>(spec: TileSpec, on_press: M) -> Element<'a
         .style(move |_t: &Theme, status: button::Status| {
             let lit = matches!(status, button::Status::Hovered | button::Status::Pressed);
             let (fill, rim, width) = match (selected, cursor, lit) {
-                (true, _, _) => (color::HIGHLIGHT, color::HIGHLIGHT_STRONG, metrics::RING),
-                (false, true, true) => (color::LIFT_STRONG, color::TEXT_SECONDARY, space::HAIRLINE),
-                (false, true, false) => (color::LIFT, color::TEXT_SECONDARY, space::HAIRLINE),
-                (false, false, true) => (color::LIFT, color::BORDER_STRONG, space::HAIRLINE),
-                (false, false, false) => (color::LIFT_SOFT, color::BORDER, space::HAIRLINE),
+                (true, _, _) => (color::highlight(), color::highlight_strong(), metrics::RING),
+                (false, true, true) => (
+                    color::lift_strong(),
+                    color::text_secondary(),
+                    space::HAIRLINE,
+                ),
+                (false, true, false) => (color::lift(), color::text_secondary(), space::HAIRLINE),
+                (false, false, true) => (color::lift(), color::border_strong(), space::HAIRLINE),
+                (false, false, false) => (color::lift_soft(), color::border(), space::HAIRLINE),
             };
             button::Style {
                 background: Some(Background::Color(fill)),
-                text_color: color::TEXT,
+                text_color: color::text(),
                 border: Border {
                     color: rim,
                     width,

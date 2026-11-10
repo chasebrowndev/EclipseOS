@@ -5,7 +5,7 @@
 //! A pane reads one `PaneRequest`, shows it, writes one `PaneReply` and exits.
 //! It is an ordinary `xdg_toplevel` client with no authority: what it returns
 //! is a *choice*, and the compositor asks again before anything is captured
-//! (ADR 0085).
+//! (ADR 0097).
 
 pub mod app;
 pub mod input;

@@ -86,8 +86,8 @@ writing a new ADR that says so.
 | 0091 | [Notifications have modes, a history and one widget](0091-notification-modes-and-history.md) | accepted |
 | 0092 | [Adaptive glass: the tint follows the backdrop](0092-adaptive-glass.md) | accepted |
 | 0093 | [The compositor takes its own screenshots](0093-built-in-screenshot.md) | accepted |
-| 0084 | [`ecl-desktop-portal`: an in-house, drop-in desktop portal](0084-ecl-desktop-portal.md) | proposed |
-| 0085 | [Scoped capture grants and a compositor-drawn capture confirm](0085-scoped-capture-grant-and-trusted-confirm.md) | proposed |
+| 0096 | [`ecl-desktop-portal`: an in-house, drop-in desktop portal](0096-ecl-desktop-portal.md) | proposed |
+| 0097 | [Scoped capture grants and a compositor-drawn capture confirm](0097-scoped-capture-grant-and-trusted-confirm.md) | proposed |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

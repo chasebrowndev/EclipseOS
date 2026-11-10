@@ -3,7 +3,7 @@
 //! ScreenCast + Screenshot backend logic for `ecl-desktop-portal`.
 //!
 //! Untrusted session code: this crate holds no capture authority. Every frame
-//! source is gated by abyss (ADR 0085); the [`grant`] client only *asks*, and
+//! source is gated by abyss (ADR 0097); the [`grant`] client only *asks*, and
 //! any failure means no capture (fail closed).
 
 pub mod grant;
