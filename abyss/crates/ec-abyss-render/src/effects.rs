@@ -413,6 +413,8 @@ const float ADAPT_REACH = 1.75;
 const float ADAPT_MAX = 0.95;
 const float ADAPT_MAX_L = 0.8;     // light glass keeps some backdrop: it must not read as a white slab
 const float ADAPT_EASE = 1.5;      // exponent of the response curve
+const float ADAPT_GHOST = 0.22;    // share of the backdrop's own deviation kept through the correction
+const float ADAPT_GRAIN = 0.03;    // faint frost, scaled by the correction
 const float ADAPT_WORST = 0.75;    // weight of the worst tap over the mean
 uniform vec2 px_uv;         // 1 / backdrop texture size
 uniform float y_sign;       // -1 when the framebuffer is y-mirrored
@@ -433,6 +435,7 @@ const vec3 SURFACE_L = vec3(0.985, 0.975, 0.955);  // warm white
 // the surface's rect, so a shape's drawer and pill each read the backdrop
 // behind themselves. Under `ADAPT_MIN_STEP` the backdrop is flat at that
 // scale and one tap does. Mirrors `adaptive_luma` below.
+float g_dev;  // centre minus local mean luma of the last backdrop_luma()
 float backdrop_luma() {
     vec2 hs = win_rect.zw * 0.5;
     vec2 step = min(vec2(ADAPT_STEP), hs * ADAPT_SPAN);
@@ -444,6 +447,7 @@ float backdrop_luma() {
     p0.y *= y_sign;
     vec2 pc = clamp(p0, -lim, lim);
     float c = dot(texture2D(tex, clamp(v_coords + (pc - p0) * px_uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5)).rgb, LUMA);
+    g_dev = 0.0;
     if (max(step.x, step.y) < ADAPT_MIN_STEP) {
         return c;
     }
@@ -462,6 +466,7 @@ float backdrop_luma() {
         hi = max(hi, l);
     }
     float mean = sum / 9.0;
+    g_dev = c - mean;
     return mix(mean, mix(hi, lo, scheme_light), ADAPT_WORST);
 }
 
@@ -482,7 +487,13 @@ vec3 adapt_tint(vec3 c) {
     if (adapt <= 0.0) {
         return c;
     }
-    return mix(c, mix(SURFACE_D, SURFACE_L, scheme_light), adapt_amount(backdrop_luma(), scheme_light, adapt));
+    float a = adapt_amount(backdrop_luma(), scheme_light, adapt);
+    vec3 t = mix(c, mix(SURFACE_D, SURFACE_L, scheme_light), a);
+    // Keep a ghost of the backdrop and a little frost where the correction is
+    // heavy, so the glass does not read as a flat slab. Mirrors `adaptive_ghost`.
+    t += vec3(g_dev * ADAPT_GHOST * a);
+    t += (grain(floor(gl_FragCoord.xy) + 17.0) - 0.5) * ADAPT_GRAIN * a;
+    return t;
 }
 "#;
 
@@ -923,6 +934,10 @@ const ADAPT_MAX: f32 = 0.95;
 const ADAPT_MAX_L: f32 = 0.8;
 /// Exponent of the response curve: 1 - (1 - a)^EASE steepens small shifts.
 const ADAPT_EASE: f32 = 1.5;
+/// Share of the backdrop's own luma deviation (centre minus local mean) kept
+/// through the correction, scaled by it: a dark band stays a faint ghost
+/// under the glass instead of vanishing into a flat slab.
+pub const ADAPT_GHOST: f32 = 0.22;
 /// Weight of the worst tap over the mean in [`adaptive_luma`].
 const ADAPT_WORST: f32 = 0.75;
 /// The scheme's surface colour the tint moves toward (the glass smoke).
@@ -956,6 +971,12 @@ pub fn adaptive_amount(luma: f32, light: f32, strength: f32) -> f32 {
 pub fn adaptive_stacked(a: f32, layers: f32, light: f32) -> f32 {
     (1.0 - (1.0 - a).max(0.0).powf(ADAPT_EASE * layers.max(1.0)))
         .min(ADAPT_MAX + (ADAPT_MAX_L - ADAPT_MAX) * light)
+}
+
+/// The luma added back to a corrected pixel: `dev` (its centre-minus-mean
+/// luma) kept at [`ADAPT_GHOST`] of its size, scaled by the `amount`.
+pub fn adaptive_ghost(dev: f32, amount: f32) -> f32 {
+    dev * ADAPT_GHOST * amount
 }
 
 /// `tint` moved toward the scheme's surface colour by [`adaptive_amount`].
@@ -1683,5 +1704,13 @@ mod tests {
         }
         assert!(adaptive_stacked(5.0, 2.0, 1.0) <= ADAPT_MAX_L);
         assert_eq!(adaptive_stacked(0.0, 2.0, 1.0), 0.0);
+    }
+
+    #[test]
+    fn adaptive_ghost_keeps_a_small_share_of_the_deviation_and_none_when_uncorrected() {
+        assert_eq!(adaptive_ghost(-0.4, 0.0), 0.0);
+        let g = adaptive_ghost(-0.4, 0.8);
+        assert!(g < 0.0 && g.abs() < 0.4 * 0.25, "{g}");
+        assert!(adaptive_ghost(-0.4, 0.8).abs() > adaptive_ghost(-0.4, 0.4).abs());
     }
 }
