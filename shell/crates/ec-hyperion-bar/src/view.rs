@@ -1341,6 +1341,12 @@ fn chip_face(
     // Gold for focus, white for on screen, dimmed for put away.
     let (tint, face, icon_alpha) = if accent {
         (color::accent_text(), font::UI_MEDIUM, alpha)
+    } else if crate::pins::is_idle(w) {
+        // A pinned app with no window is not put away, it is waiting: the app's
+        // own colours at full strength, the label a step quieter. The ghost
+        // rim of the Away cell already says it is idle; a 40% icon read as
+        // washed out, most of all on light glass.
+        (color::text_secondary(), font::UI, alpha)
     } else if minimized {
         (color::text_tertiary(), font::UI, alpha * color::DIM)
     } else {

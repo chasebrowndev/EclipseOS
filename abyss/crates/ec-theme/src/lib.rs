@@ -278,6 +278,20 @@ pub fn linear_alpha(src: Rgba, ground: Rgba, intent: f32) -> f32 {
     }
 }
 
+/// The alpha to write into a tint buffer so it reads as the sRGB figure
+/// `intent`. iced stores the premultiplied colour sRGB-encoded and the
+/// compositor reads it as plain sRGB, so a written alpha `a` weighs about
+/// `enc(0.89 * a)` on screen (measured headless: written .30 landed near .74).
+/// `linear_alpha` cannot help here, the frost tint is the base colour. A
+/// scheme without `intent` keeps its figure as written.
+pub fn premult_alpha(intent: f32, scheme_intent: bool) -> f32 {
+    if scheme_intent {
+        (srgb_to_linear(intent) / 0.89).clamp(0.0, 1.0)
+    } else {
+        intent
+    }
+}
+
 /// How far a veil fades what it covers toward the ground.
 pub const VEIL_STRENGTH: f32 = 0.62;
 
@@ -585,8 +599,8 @@ pub fn derive(seeds: &Seeds) -> Palette {
         glass_strong: fill.with_alpha(ia(fill, t.glass_strong)),
         glass_deep,
         glass_deep_backed: glass_deep.over_opaque(surface_1),
-        sheet_tint: frost.with_alpha(ia(frost, t.sheet_tint)),
-        bar_tint: frost.with_alpha(ia(frost, t.bar_tint)),
+        sheet_tint: frost.with_alpha(premult_alpha(t.sheet_tint, t.intent)),
+        bar_tint: frost.with_alpha(premult_alpha(t.bar_tint, t.intent)),
         cell: pointer.with_alpha(ia(pointer, t.cell[0])),
         cell_hover: pointer.with_alpha(ia(pointer, t.cell[1])),
         cell_press: pointer.with_alpha(ia(pointer, t.cell[2])),

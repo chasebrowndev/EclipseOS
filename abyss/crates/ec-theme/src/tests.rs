@@ -221,3 +221,11 @@ fn with_accent_derives_readable_accent_text() {
     let l = LIGHT_SEEDS.with_accent(hex(0xf2c33c));
     assert!(l.accent_text.unwrap().luminance() < hex(0xf2c33c).luminance());
 }
+
+#[test]
+fn premult_alpha_inverts_the_buffer_encoding_only_for_intent_schemes() {
+    assert_eq!(premult_alpha(0.36, false), 0.36);
+    let a = premult_alpha(0.36, true);
+    assert!((0.1..0.14).contains(&a), "{a}");
+    assert_eq!(premult_alpha(0.0, true), 0.0);
+}
