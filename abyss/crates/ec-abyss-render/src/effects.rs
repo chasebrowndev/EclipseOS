@@ -401,8 +401,9 @@ float grain(vec2 p) {
 }
 
 // Adaptive glass (ADR 0092). Mirrors `adaptive_amount` below.
-const float ADAPT_SPAN = 0.7;
+const float ADAPT_SPAN = 0.5;
 const float ADAPT_STEP = 48.0;     // cross arm cap, physical px
+const float ADAPT_INSET = 24.0;    // taps stay this far inside the rect, physical px
 const float ADAPT_MIN_STEP = 6.0;  // below this one tap is enough
 const float ADAPT_TEXT_DARK = 1.0;
 const float ADAPT_TEXT_LIGHT = 0.01;
@@ -435,12 +436,17 @@ const vec3 SURFACE_L = vec3(0.985, 0.975, 0.955);  // warm white
 float backdrop_luma() {
     vec2 hs = win_rect.zw * 0.5;
     vec2 step = min(vec2(ADAPT_STEP), hs * ADAPT_SPAN);
-    float c = dot(texture2D(tex, v_coords).rgb, LUMA);
+    // Taps stay `ADAPT_INSET` inside the rect (at least half its size): the
+    // blur chain is low-res and ragged at an output edge, and a worst-patch
+    // read turns those blocks into pale rectangles.
+    vec2 lim = max(hs - vec2(ADAPT_INSET), hs * 0.5);
+    vec2 p0 = gl_FragCoord.xy - (win_rect.xy + hs);
+    p0.y *= y_sign;
+    vec2 pc = clamp(p0, -lim, lim);
+    float c = dot(texture2D(tex, clamp(v_coords + (pc - p0) * px_uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5)).rgb, LUMA);
     if (max(step.x, step.y) < ADAPT_MIN_STEP) {
         return c;
     }
-    vec2 p0 = gl_FragCoord.xy - (win_rect.xy + hs);
-    p0.y *= y_sign;
     float sum = c;
     float lo = c;
     float hi = c;
@@ -448,7 +454,7 @@ float backdrop_luma() {
         vec2 d = i == 0 ? vec2(1.0, 0.0) : i == 1 ? vec2(-1.0, 0.0) : i == 2 ? vec2(0.0, 1.0)
             : i == 3 ? vec2(0.0, -1.0) : i == 4 ? vec2(0.7, 0.7) : i == 5 ? vec2(-0.7, 0.7)
             : i == 6 ? vec2(0.7, -0.7) : vec2(-0.7, -0.7);
-        vec2 q = clamp(p0 + d * step, -hs, hs);
+        vec2 q = clamp(pc + d * step, -lim, lim);
         vec2 uv = clamp(v_coords + (q - p0) * px_uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
         float l = dot(texture2D(tex, uv).rgb, LUMA);
         sum += l;
