@@ -11,18 +11,21 @@ use std::path::{Path, PathBuf};
 
 use kdl::{KdlDocument, KdlNode, KdlValue};
 
-/// The four policy-owned scalar keys and the four policy-owned windowrule
-/// actions, restated locally so this crate does not link the whole compositor.
+/// The policy-owned scalar keys this viewer shows and the four policy-owned
+/// windowrule actions, restated locally so this crate does not link the whole compositor.
 ///
 /// `abyss`'s `config::schema::tests::the_policy_owned_set_is_exactly_this`
 /// asserts the same two lists against the real table; [`the_policy_owned_set_is_mirrored`]
 /// below asserts them against this copy. A key changing owner fails there and
 /// has to be carried here by hand.
-pub const POLICY_KEYS: [&str; 4] = [
+pub const POLICY_KEYS: [&str; 7] = [
     "misc.scripted-input",
     "clipboard.data-control-allow",
     "capture.allow",
     "capture.redact-app-id",
+    "capture.hide-layer",
+    "input-method.allow",
+    "virtual-pointer.allow",
 ];
 
 /// Windowrule verbs the policy file owns.
@@ -127,6 +130,9 @@ pub struct Policy {
     pub data_control_allow: Allowlist,
     pub capture_allow: Allowlist,
     pub capture_redact: Allowlist,
+    pub capture_hide_layer: Allowlist,
+    pub input_method_allow: Allowlist,
+    pub virtual_pointer_allow: Allowlist,
     pub rules: Vec<Rule>,
 }
 
@@ -236,7 +242,22 @@ fn merge(policy: &mut Policy, doc: &KdlDocument, text: &str, path: &Path) {
                     match n.name().value() {
                         "allow" => policy.capture_allow = allowlist(n, text, path),
                         "redact-app-id" => policy.capture_redact = allowlist(n, text, path),
+                        "hide-layer" => policy.capture_hide_layer = allowlist(n, text, path),
                         _ => {}
+                    }
+                }
+            }
+            "input-method" => {
+                for n in node.children().iter().flat_map(|c| c.nodes()) {
+                    if n.name().value() == "allow" {
+                        policy.input_method_allow = allowlist(n, text, path);
+                    }
+                }
+            }
+            "virtual-pointer" => {
+                for n in node.children().iter().flat_map(|c| c.nodes()) {
+                    if n.name().value() == "allow" {
+                        policy.virtual_pointer_allow = allowlist(n, text, path);
                     }
                 }
             }
@@ -348,6 +369,25 @@ mod tests {
     }
 
     #[test]
+    fn hidden_layers_read_beside_the_capture_allowlist() {
+        let p = parse("capture {\n  allow \"grim\"\n  hide-layer \"ec-hyperion-bar:eclipse-eye\"\n}\n");
+        let names: Vec<&str> = p.capture_hide_layer.entries.iter().map(|e| &*e.name).collect();
+        assert_eq!(names, ["ec-hyperion-bar:eclipse-eye"]);
+        assert_eq!(p.capture_hide_layer.entries[0].source.line, 3);
+        assert!(parse("capture {\n  allow\n}\n").capture_hide_layer.is_empty());
+    }
+
+    #[test]
+    fn the_injected_input_allowlists_read() {
+        let p = parse("input-method {\n  allow \"fcitx5\" \"kime\"\n}\nvirtual-pointer {\n  allow\n}\n");
+        let names: Vec<&str> = p.input_method_allow.entries.iter().map(|e| &*e.name).collect();
+        assert_eq!(names, ["fcitx5", "kime"]);
+        assert_eq!(p.input_method_allow.entries[0].source.line, 2);
+        assert!(p.virtual_pointer_allow.is_empty());
+        assert!(p.virtual_pointer_allow.declared.is_some());
+    }
+
+    #[test]
     fn garbage_is_a_report_not_a_panic() {
         assert!("windowrule {{{".parse::<KdlDocument>().is_err());
     }
@@ -362,7 +402,10 @@ mod tests {
                 "misc.scripted-input",
                 "clipboard.data-control-allow",
                 "capture.allow",
-                "capture.redact-app-id"
+                "capture.redact-app-id",
+                "capture.hide-layer",
+                "input-method.allow",
+                "virtual-pointer.allow"
             ]
         );
         assert_eq!(

@@ -278,7 +278,7 @@ impl Page {
             Page::Xwayland => "Running X11 apps.",
             Page::Setup => "The first-run profile.",
             Page::General => "Settings that apply across the desktop.",
-            Page::Privacy => "Capture, clipboard and input scripting.",
+            Page::Privacy => "Capture, clipboard, input methods and injected input.",
             Page::Accounts => {
                 "The Claude accounts a task can sign in as. Names only; values stay in the store."
             }
@@ -514,6 +514,8 @@ fn page_for(path: &str) -> Option<(Page, &'static str)> {
         "settings" => (Page::General, "search"),
         "clipboard" => (Page::Privacy, "clipboard"),
         "capture" => (Page::Privacy, "capture"),
+        "input-method" => (Page::Privacy, "input method"),
+        "virtual-pointer" => (Page::Privacy, "virtual pointer"),
         "oracle-eyes" => {
             if sub == "bind" {
                 (Page::OeGeneral, "keybinds")
@@ -670,6 +672,14 @@ mod tests {
         assert_eq!(page_of("misc.gpu-mode"), Some(Page::Rendering));
         assert_eq!(page_of("misc.discrete-gpu-apps"), Some(Page::Rendering));
         assert_eq!(page_of("misc.scripted-input"), Some(Page::Privacy));
+        assert_eq!(
+            place_for("input-method.allow").map(|p| p.group),
+            Some("input method")
+        );
+        assert_eq!(
+            place_for("virtual-pointer.allow").map(|p| p.group),
+            Some("virtual pointer")
+        );
         assert_eq!(page_of("oracle-eyes.model-command"), Some(Page::OeGeneral));
         assert_eq!(page_of("oracle-eyes.debug"), Some(Page::OeGeneral));
         assert_eq!(
