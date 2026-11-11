@@ -13,6 +13,8 @@ const POLICY_KEYS: &[&str] = &[
     "capture.allow",
     "capture.redact-app-id",
     "capture.hide-layer",
+    "input-method.allow",
+    "virtual-pointer.allow",
 ];
 
 /// Keep in sync with `migrate::POLICY_RULE_ACTIONS`.

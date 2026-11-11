@@ -34,6 +34,8 @@ const POLICY_KEYS: &[&str] = &[
     "capture.allow",
     "capture.redact-app-id",
     "capture.hide-layer",
+    "input-method.allow",
+    "virtual-pointer.allow",
 ];
 
 /// `windowrule` actions the schema marks `Owner::Policy`

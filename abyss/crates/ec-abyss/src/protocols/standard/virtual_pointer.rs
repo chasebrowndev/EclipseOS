@@ -10,6 +10,11 @@
 //! it through [`AbyssState::inject_pointer_absolute`] and friends — the same
 //! entry points a real device uses, so idle activity, click-to-focus, cursor
 //! clamping and lock suppression all still apply.
+//!
+//! Ambient injection is what this project replaces (COMP-06 §2), so the
+//! global is visible only to executables named in `virtual-pointer { allow
+//! ... }` in `policy.kdl` (ADR 0094). Empty — the default — hides it from
+//! everyone.
 
 use smithay::{
     input::pointer::AxisFrame,
@@ -31,7 +36,11 @@ use smithay::{
     utils::{Logical, Point},
 };
 
-use crate::state::AbyssState;
+use crate::{
+    config::ExeAllowlist,
+    protocols::standard::data_control::{admit, WeakDh},
+    state::AbyssState,
+};
 
 const VERSION: u32 = 2;
 
@@ -55,18 +64,35 @@ pub struct VirtualPointerData {
     output: Option<WlOutput>,
 }
 
+/// Global data: enough to identify a client at bind time.
+#[derive(Debug)]
+pub struct ManagerData {
+    dh: WeakDh,
+    allow: ExeAllowlist,
+}
+
 pub struct VirtualPointerState {
     #[allow(dead_code)] // holds the global alive
     global: GlobalId,
     devices: Vec<(ZwlrVirtualPointerV1, Pending)>,
+    /// Who may bind. Shared with the global's filter; the config reload path
+    /// writes it.
+    pub allow: ExeAllowlist,
 }
 
 impl VirtualPointerState {
-    pub fn new(display: &DisplayHandle) -> Self {
-        let global = display.create_global::<AbyssState, ZwlrVirtualPointerManagerV1, _>(VERSION, ());
+    pub fn new(display: &DisplayHandle, dh: WeakDh, allow: ExeAllowlist) -> Self {
+        let global = display.create_global::<AbyssState, ZwlrVirtualPointerManagerV1, _>(
+            VERSION,
+            ManagerData {
+                dh,
+                allow: allow.clone(),
+            },
+        );
         Self {
             global,
             devices: Vec::new(),
+            allow,
         }
     }
 }
@@ -90,16 +116,28 @@ fn source_of(value: WEnum<WlAxisSource>) -> Option<smithay::backend::input::Axis
     }
 }
 
-impl GlobalDispatch<ZwlrVirtualPointerManagerV1, ()> for AbyssState {
+impl GlobalDispatch<ZwlrVirtualPointerManagerV1, ManagerData> for AbyssState {
     fn bind(
         _state: &mut Self,
         _display: &DisplayHandle,
         _client: &Client,
         manager: New<ZwlrVirtualPointerManagerV1>,
-        _data: &(),
+        _data: &ManagerData,
         data_init: &mut DataInit<'_, Self>,
     ) {
         data_init.init(manager, ());
+    }
+
+    fn can_view(client: Client, data: &ManagerData) -> bool {
+        // wayland-server refuses a bind to a global `can_view` hides, so this
+        // is the whole gate (COMP-06 §5: absent for non-allowlisted clients).
+        admit(
+            &data.dh,
+            &data.allow,
+            &client,
+            "zwlr_virtual_pointer_manager_v1",
+            "virtual-pointer.allow",
+        )
     }
 }
 

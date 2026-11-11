@@ -316,10 +316,13 @@ pub struct AbyssState {
 
     /// Live capture allowlist, shared with the `zwlr_screencopy_v1` bind
     /// filter. Written by the config reload path.
-    pub capture_allow: crate::config::Allowlist,
+    pub capture_allow: crate::config::ExeAllowlist,
     /// Live data-control allowlist, shared with the `zwlr_data_control_v1`
     /// bind filter. Written by the config reload path.
-    pub clipboard_allow: crate::config::Allowlist,
+    pub clipboard_allow: crate::config::ExeAllowlist,
+    /// Live input-method allowlist, shared with the
+    /// `zwp_input_method_manager_v2` bind filter (ADR 0094).
+    pub input_method_allow: crate::config::ExeAllowlist,
 
     /// `zwlr_screencopy_v1` (COMP-06 §3). Holds the global alive; the gate
     /// lives in the dispatch impls.
@@ -334,9 +337,9 @@ pub struct AbyssState {
     /// When capture last produced a frame, for the trusted-UI indicator
     /// (COMP-10 §3.6). `None` means nothing has ever been captured.
     pub capture_seen: Option<Instant>,
-    /// Process name of the client currently capturing, for the indicator and
-    /// the audit log. Never a buffer, never window content.
-    pub capture_consumer: Option<String>,
+    /// Executable of the client currently capturing, for the capture-time
+    /// re-check. Never a buffer, never window content.
+    pub capture_consumer: Option<std::path::PathBuf>,
 
     /// `ext_session_lock_v1` (COMP-10 §5).
     pub session_lock_state: SessionLockManagerState,
@@ -461,8 +464,9 @@ impl AbyssState {
         );
         // Live handles, shared with the two global filters so that a config
         // reload retunes them without a restart (ADR 0022 amendment).
-        let clipboard_allow = crate::config::Allowlist::new(config.clipboard.data_control_allow.clone());
-        let capture_allow = crate::config::Allowlist::new(config.capture.allow.clone());
+        let clipboard_allow = crate::config::ExeAllowlist::new(config.clipboard.data_control_allow.clone());
+        let capture_allow = crate::config::ExeAllowlist::new(config.capture.allow.clone());
+        let input_method_allow = crate::config::ExeAllowlist::new(config.input_method.allow.clone());
         let output_manager_state = OutputManagerState::new_with_xdg_output::<Self>(&dh);
         let data_device_state = DataDeviceState::new::<Self>(&dh);
         let primary_selection_state = PrimarySelectionState::new::<Self>(&dh);
@@ -470,10 +474,25 @@ impl AbyssState {
         let data_control_state = DataControlState::new::<Self, _>(
             &dh,
             Some(&primary_selection_state),
-            crate::protocols::standard::data_control::allow_filter(weak_dh.clone(), clipboard_allow.clone()),
+            crate::protocols::standard::data_control::allow_filter(
+                weak_dh.clone(),
+                clipboard_allow.clone(),
+                "zwlr_data_control_manager_v1",
+                "clipboard.data-control-allow",
+            ),
         );
         let text_input_manager_state = TextInputManagerState::new::<Self>(&dh);
-        let input_method_manager_state = InputMethodManagerState::new::<Self, _>(&dh, |_| true);
+        // The input method reads the focused text field and commits into it:
+        // named executables only, fail-closed (COMP-06 §1, ADR 0094).
+        let input_method_manager_state = InputMethodManagerState::new::<Self, _>(
+            &dh,
+            crate::protocols::standard::data_control::allow_filter(
+                weak_dh.clone(),
+                input_method_allow.clone(),
+                "zwp_input_method_manager_v2",
+                "input-method.allow",
+            ),
+        );
         let fractional_scale_state = FractionalScaleManagerState::new::<Self>(&dh);
         let viewporter_state = ViewporterState::new::<Self>(&dh);
         // CLOCK_MONOTONIC: the clock every backend timestamps frames against.
@@ -515,7 +534,18 @@ impl AbyssState {
             weak_dh.clone(),
             config.decoration.blur.mode == crate::config::BlurMode::Glass,
         );
-        let virtual_pointer = crate::protocols::standard::virtual_pointer::VirtualPointerState::new(&dh);
+        // Ambient pointer injection: named executables only (COMP-06 §2).
+        let virtual_pointer = crate::protocols::standard::virtual_pointer::VirtualPointerState::new(
+            &dh,
+            weak_dh.clone(),
+            crate::config::ExeAllowlist::new(config.virtual_pointer.allow.clone()),
+        );
+        crate::config::warn_missing_admissions(&[
+            ("capture.allow", &capture_allow),
+            ("clipboard.data-control-allow", &clipboard_allow),
+            ("input-method.allow", &input_method_allow),
+            ("virtual-pointer.allow", &virtual_pointer.allow),
+        ]);
         // Capture reads every pixel of an output: allowlisted, fail-closed.
         let screencopy = crate::protocols::standard::screencopy::ScreencopyState::new(
             &dh,
@@ -584,6 +614,7 @@ impl AbyssState {
             data_control_state,
             capture_allow,
             clipboard_allow,
+            input_method_allow,
             screencopy,
             image_copy,
             captures: Vec::new(),
