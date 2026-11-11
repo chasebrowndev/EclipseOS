@@ -1,0 +1,23 @@
+# Starts the screen locker when logind asks for a lock (ADR 0095): Session.Lock
+# on the display session (loginctl lock-session: the Super+Shift+L bind, the
+# bar, the center) and PrepareForSleep, holding a bounded sleep delay until
+# ec-lock is up. Installed to /usr/lib/systemd/user/ec-lock-trigger.service.
+#
+# Each ec-lock runs in its own app-*.scope, so stopping or restarting this
+# unit never kills a running locker. If this unit is down the session simply
+# does not lock on request; it never unlocks anything.
+[Unit]
+Description=Eclipse screen lock trigger
+PartOf=graphical-session.target
+After=abyss-session.target
+Requisite=abyss-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ec-lock-trigger
+Restart=on-failure
+RestartSec=5
+Slice=session.slice
+
+[Install]
+WantedBy=abyss-session.target

@@ -243,7 +243,8 @@ The distribution path (D-01..D-03), all under `packaging/`:
   `-hyperion` (the taskbar, an add-on with its manifest
   `/usr/share/eclipse/addons/hyperion.kdl`, ADR 0066), `-toasts`, `-center`,
   `-launcher`, `-desktop` (settings, policy viewer, `ec-screensaver`, the
-  `ec-pairing` Bluetooth agent and `ec-secret-prompt`), `-policyd`,
+  `ec-pairing` Bluetooth agent, `ec-secret-prompt`, and the `ec-lock` locker
+  with `ec-lock-trigger`, ADR 0095), `-policyd`,
   and `-meta`, which depends on all of them except `-hyperion` (an
   optdepend) plus greetd/regreet, NetworkManager, BlueZ, UPower, PipeWire
   and foot, and ships `/etc/eclipse/{abyss,policy}.kdl`, the greetd config under
