@@ -296,10 +296,6 @@ fn cap(name: &str) -> Capability {
     }
 }
 
-fn grant(caps: &[&str]) -> Vec<u8> {
-    grant_with(caps, Constraints::default())
-}
-
 fn grant_with(caps: &[&str], constraints: Constraints) -> Vec<u8> {
     signed(&Grant {
         id: Ulid([1; 16]),
