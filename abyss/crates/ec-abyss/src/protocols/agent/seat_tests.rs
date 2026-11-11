@@ -47,6 +47,7 @@ const KEY_ESC: u32 = 1;
 const KEY_LEFTMETA: u32 = 125;
 const KEY_LEFTSHIFT: u32 = 42;
 const NO_CAPABILITY: u32 = 1;
+const RATE_LIMITED: u32 = 3;
 const OK: u32 = 0;
 
 /// What a client's keyboards heard, and on which seat.
@@ -296,6 +297,10 @@ fn cap(name: &str) -> Capability {
 }
 
 fn grant(caps: &[&str]) -> Vec<u8> {
+    grant_with(caps, Constraints::default())
+}
+
+fn grant_with(caps: &[&str], constraints: Constraints) -> Vec<u8> {
     signed(&Grant {
         id: Ulid([1; 16]),
         principal: "agent:seat".into(),
@@ -304,7 +309,7 @@ fn grant(caps: &[&str]) -> Vec<u8> {
         issuer: "policyd".into(),
         task_id: Ulid([2; 16]),
         capabilities: caps.iter().map(|c| cap(c)).collect(),
-        constraints: Constraints::default(),
+        constraints,
         unattended: false,
     })
 }
@@ -324,6 +329,10 @@ struct World {
 /// One window mapped by a recording client, one agent holding `caps` with a
 /// seat. The window is `public`, so a grant on `workspace:human` sees it.
 fn world(sock: &str, caps: &[&str]) -> World {
+    world_with(sock, caps, Constraints::default())
+}
+
+fn world_with(sock: &str, caps: &[&str], constraints: Constraints) -> World {
     let (mut h, _path) = hooked(sock, true);
     h.state.audit.sink = Some(Vec::new());
     h.state.policy_key = Some(sk().verifying_key());
@@ -335,7 +344,7 @@ fn world(sock: &str, caps: &[&str]) -> World {
     crate::policy::scene::test_class::set(&w, ec_policy_eval::Class::Public);
     let handle = u32::try_from(h.state.ipc.handle_for(&w)).expect("handle");
     let mut peer = Peer::inserted(&mut h, true);
-    let (agent, scene) = peer.admit(&mut h, grant(caps));
+    let (agent, scene) = peer.admit(&mut h, grant_with(caps, constraints));
     assert_eq!(peer.error(), None, "admitted");
     let seat = peer.get_seat(&mut h, &agent);
     assert_eq!(peer.error(), None, "seat created");
@@ -526,6 +535,91 @@ fn an_act_without_its_capability_is_no_capability() {
     let k = w.key(KEY_A, true);
     assert_eq!(w.status(k), Some((NO_CAPABILITY, "seat.key".into())));
     assert!(w.spy.data.on(&seat).iter().all(|e| !matches!(e, Ev::Key(..))));
+}
+
+/// COMP-08 §10 step 5: a grant's `rate "requests"` is counted. The request
+/// over the limit is `rate_limited` with a wait, and delivers nothing.
+#[test]
+fn a_request_over_the_grants_rate_is_rate_limited_and_delivers_nothing() {
+    let rates = Constraints {
+        rates: vec![ec_policy_eval::Rate {
+            event: "requests".into(),
+            count: 3,
+            per_ms: 3_600_000,
+        }],
+        prompt_budget: None,
+    };
+    let mut w = world_with("seat-rate.sock", &["scene.list", "seat.focus", "seat.key"], rates);
+    let f = w.focus();
+    assert_eq!(w.status(f).map(|s| s.0), Some(OK));
+    let seat = w.name();
+    let down = w.key(KEY_A, true);
+    let up = w.key(KEY_A, false);
+    assert_eq!(w.status(down).map(|s| s.0), Some(OK));
+    assert_eq!(w.status(up).map(|s| s.0), Some(OK));
+    let keys = |w: &World| {
+        w.spy
+            .data
+            .on(&seat)
+            .iter()
+            .filter(|e| matches!(e, Ev::Key(..)))
+            .count()
+    };
+    let before = keys(&w);
+    let over = w.key(KEY_A, true);
+    let (status, detail) = w.status(over).expect("answered");
+    assert_eq!(status, RATE_LIMITED);
+    assert!(
+        detail.parse::<u64>().is_ok_and(|ms| ms > 0),
+        "detail is the wait in ms: {detail:?}"
+    );
+    assert_eq!(keys(&w), before, "nothing reached the client");
+}
+
+/// `rate "input_events"` counts what a request would deliver: text is one
+/// event per character, so a string longer than the budget never types.
+#[test]
+fn text_longer_than_the_input_event_rate_is_rate_limited() {
+    let rates = Constraints {
+        rates: vec![ec_policy_eval::Rate {
+            event: "input_events".into(),
+            count: 4,
+            per_ms: 3_600_000,
+        }],
+        prompt_budget: None,
+    };
+    let mut w = world_with(
+        "seat-rate-text.sock",
+        &["scene.list", "seat.focus", "seat.text"],
+        rates,
+    );
+    w.focus();
+    let id = w.id();
+    w.seat.text(id, w.handle, 0, "abcdefgh".into(), 0, 0, vec![0x80]);
+    w.pump();
+    assert_eq!(w.status(id).map(|s| s.0), Some(RATE_LIMITED));
+}
+
+/// A grant whose `rate` the compositor cannot count is not admitted at all.
+#[test]
+fn a_grant_with_an_uncountable_rate_is_refused_at_admission() {
+    let (mut h, _path) = hooked("seat-rate-refuse.sock", true);
+    h.state.policy_key = Some(sk().verifying_key());
+    h.state.audit.sink = Some(Vec::new());
+    crate::policy::table::install_for_test(&mut h.state);
+    let mut peer = Peer::inserted(&mut h, true);
+    let rates = Constraints {
+        rates: vec![ec_policy_eval::Rate {
+            event: "capture_frames".into(),
+            count: 10,
+            per_ms: 1000,
+        }],
+        prompt_budget: None,
+    };
+    let _ = peer.admit(&mut h, grant_with(&["scene.list"], rates));
+    // INVALID_GRANT (code 0), not POLICY_UNAVAILABLE (1): the key and table are live.
+    assert_eq!(peer.error().map(|e| e.1), Some(0), "refused as an invalid grant");
+    assert!(h.state.agents.slots.is_empty());
 }
 
 /// Destroying the seat (or the agent) releases every held key, so nothing
