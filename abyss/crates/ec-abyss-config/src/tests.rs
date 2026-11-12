@@ -3891,3 +3891,24 @@ fn the_overlay_actions_validate_in_binds() {
     cfg.apply(&doc, &mut Vec::new());
     assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
 }
+
+#[test]
+fn capture_indicator_color_defaults_red_and_is_forced_opaque() {
+    fn cfg(text: &str) -> Config {
+        let doc: KdlDocument = text.parse().unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        cfg
+    }
+    let d = Config::default();
+    assert_eq!(d.ui.capture_indicator_color, [1.0, 0.15, 0.15, 1.0]);
+    let c = cfg("ui { capture-indicator-color \"#2060ff40\"; }\n");
+    assert!(c.errors.is_empty(), "{:?}", c.errors);
+    let [r, g, b, a] = c.ui.capture_indicator_color;
+    assert!((r - 0x20 as f32 / 255.0).abs() < 1e-3 && (g - 0x60 as f32 / 255.0).abs() < 1e-3);
+    assert!((b - 1.0).abs() < 1e-3);
+    assert_eq!(a, 1.0, "a translucent indicator could be hidden");
+    let bad = cfg("ui { capture-indicator-color \"red\"; }\n");
+    assert!(!bad.errors.is_empty());
+    assert_eq!(bad.ui.capture_indicator_color, [1.0, 0.15, 0.15, 1.0]);
+}

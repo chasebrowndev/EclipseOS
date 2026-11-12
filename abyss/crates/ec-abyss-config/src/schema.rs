@@ -2059,6 +2059,16 @@ pub const TABLE: &[Key] = &[
         Live,
         "Show the keyboard control hints in the launcher and the start menu.",
     ),
+    k(
+        "ui.capture-indicator-color",
+        Ty::Color,
+        Color(crate::bar::CAPTURE_INDICATOR_COLOR),
+        Abyss,
+        Live,
+        "Pupil colour of the capture indicator, the taskbar's eclipse eye \
+       the compositor draws while a client captures the screen. Alpha is \
+       ignored: the indicator is always opaque.",
+    ),
     // settings: the settings app's own preferences
     k(
         "settings.search.frecency",
@@ -3202,6 +3212,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "oracle-eyes.bind.image-toggle" => V::Str(c.oracle_eyes.bind.image_toggle.text.clone()),
         "launcher.bind.run" => V::Str(c.launcher.bind.run.text.clone()),
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
+        "ui.capture-indicator-color" => V::Color(c.ui.capture_indicator_color),
         "settings.search.frecency" => V::Bool(c.settings.search_frecency),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.titlebar-height" => V::Int(c.decoration.titlebar_height as i64),

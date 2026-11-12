@@ -659,44 +659,58 @@ fn placeholders(
 /// interval so the indicator does not flicker.
 pub const INDICATOR_LINGER: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// The compositor-drawn capture indicator (COMP-10 §3.6): a solid marker in
-/// the top-right corner of every output, persistent for as long as capture is
-/// happening. It is trusted UI, so it is drawn only by the backends into the
-/// on-screen frame — never by [`capture_elements`], which is why a capture
-/// client cannot see, capture or spoof it.
-pub fn indicator(output: &Output, active: bool) -> Vec<AbyssRenderElement> {
-    if !active {
-        return Vec::new();
-    }
-    let Some(rect) = indicator_rect(output) else {
+/// The compositor-drawn capture indicator (COMP-10 §3.6): the taskbar's
+/// eclipse eye with a red (configurable) moving pupil, on every output,
+/// over the spot where the bar draws its launcher ring, bar running or not,
+/// for as long as capture is happening. It is trusted UI, so it is drawn only
+/// by the backends into the on-screen frame — never by [`capture_elements`],
+/// which is why a capture client cannot see, capture or spoof it.
+///
+/// The eye is opaque and over the bar's own layer surfaces; a click on it
+/// goes to the launcher beneath (the emergency panel opens on the override
+/// chord, §3.3). `eye` keeps the textures and the clock: the pupil is a pure
+/// function of the time since the indicator lit, and `backend::eye_kick`
+/// wakes the loop only while it moves.
+pub fn indicator(
+    renderer: &mut GlesRenderer,
+    eye: &mut ec_abyss_render::capture_eye::EyeState,
+    config: &ec_abyss_config::Config,
+    seeds: &ec_theme::Seeds,
+    output: &Output,
+    active: bool,
+) -> Vec<AbyssRenderElement> {
+    use ec_abyss_render::capture_eye as ce;
+    let Some(since) = eye.since(active, std::time::Instant::now()) else {
         return Vec::new();
     };
-    let scale = Scale::from(output.current_scale().fractional_scale());
-    let (loc, size) = (rect.loc, rect.size);
-    let buffer = SolidColorBuffer::new(size, [1.0, 0.15, 0.15, 1.0]);
-    vec![AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
-        &buffer,
-        phys(loc, scale),
-        scale,
-        1.0,
-        Kind::Unspecified,
-    ))]
-}
-
-/// Where [`indicator`] draws, output-local: the click that opens the
-/// emergency panel (COMP-10 §3.3) hits exactly what is drawn. The size is
-/// the transformed one, so a rotated output still has it in its corner.
-pub fn indicator_rect(output: &Output) -> Option<Rectangle<i32, Logical>> {
-    let mode = output.current_mode()?;
-    let scale = Scale::from(output.current_scale().fractional_scale());
-    let logical: smithay::utils::Size<i32, Logical> = output
+    let Some(mode) = output.current_mode() else {
+        return Vec::new();
+    };
+    let fractional = output.current_scale().fractional_scale();
+    let logical = output
         .current_transform()
         .transform_size(mode.size)
         .to_f64()
-        .to_logical(scale)
-        .to_i32_round();
-    let size: smithay::utils::Size<i32, Logical> = (48, 8).into();
-    Some(Rectangle::new((logical.w - size.w - 8, 8).into(), size))
+        .to_logical(Scale::from(fractional));
+    let bottom = config.bar.position == ec_abyss_config::BarPosition::Bottom;
+    let centre = ce::centre(
+        logical,
+        bottom,
+        f64::from(config.general.gaps_out),
+        f64::from(config.general.gaps_out_y()),
+    );
+    let colours = ce::Colours::from_palette(&ec_theme::derive(seeds), config.ui.capture_indicator_color);
+    let mut out = Vec::with_capacity(2);
+    ce::elements(
+        &mut eye.textures,
+        renderer,
+        centre,
+        fractional,
+        colours,
+        ce::pupil(since),
+        &mut out,
+    );
+    out
 }
 
 /// Service every queued capture. Called once per composite, from the backend
@@ -729,6 +743,8 @@ pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer, seat_held_by
                 let now = std::time::Duration::from(state.clock.now());
                 p.sink.ready(p.region, transform, p.with_damage, now);
                 state.capture_seen = Some(std::time::Instant::now());
+                // Light the eye now, even if no frame follows (a one-shot grab).
+                crate::backend::eye_kick(state);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "capture failed");

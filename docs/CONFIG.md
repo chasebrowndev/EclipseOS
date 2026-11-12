@@ -344,6 +344,7 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `ui.show-key-hints` | bool | `#true` | live | Show the keyboard control hints in the launcher and the start menu. |
+| `ui.capture-indicator-color` | colour `#rrggbb[aa]` | `#ff2626ff` | live | Pupil colour of the capture indicator, the taskbar's eclipse eye the compositor draws while a client captures the screen. Alpha is ignored: the indicator is always opaque. |
 
 ### `settings`
 

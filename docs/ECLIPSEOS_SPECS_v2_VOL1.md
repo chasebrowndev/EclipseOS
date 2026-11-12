@@ -4603,7 +4603,9 @@ Requirements:
 - **Timeout** (default 120 s, S-02) → `prompt_timeout`, fail-closed.
 
 ### 3.3 Emergency panel
-Opened by `Super+Escape` (COMP-04 §6), or by clicking the indicator.
+Opened by `Super+Escape` (COMP-04 §6), or by clicking an agent activity
+indicator (§3.1) or a compat-lock indicator (§3.4). The capture indicator
+(§3.6) is not a target: a click on it goes to the launcher beneath it.
 Lists every agent: id, task, grants held, current activity, recent actions
 (last 20 from the audit tail), and per-agent **Pause / Resume / Revoke
 grants / Terminate**. Plus global pause-all and terminate-all.
@@ -4626,6 +4628,11 @@ classification is actually applied rather than merely configured.
 ### 3.6 Capture indicator
 Any active capture — portal screen share or agent capture stream — shows a
 persistent indicator naming the consumer. Never a transient toast.
+
+It is drawn as the taskbar's eclipse eye with a moving pupil in
+`ui.capture-indicator-color` (default red), over the spot where the bar draws
+its launcher ring, on every output, whether a bar is running or not. It is
+opaque, so the bar's own ring never shows through it.
 
 ### 3.7 Batch prompt (`preflight`)
 Rendering for COMP-08 §4.2. Shows the taxonomy, the count, and an
