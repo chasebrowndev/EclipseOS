@@ -875,6 +875,7 @@ version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "ec-ui",
+ "ecl-portal-core",
  "ecl-portal-proto",
  "iced",
  "postcard",

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The pane socketpair: one `PaneRequest` in, one `PaneReply` out.
 //!
-//! Frame: `u32` little-endian length, then that many bytes of postcard. The
+//! Frame: `u32` big-endian length (`ecl_portal_core::frame`, which the daemon writes), then that many bytes of postcard. The
 //! daemon is untrusted and so is its peer's length field: it is capped before
 //! anything is allocated.
 
@@ -25,7 +25,7 @@ pub fn parse_fd(args: &[String]) -> Option<i32> {
 pub fn read_request(r: &mut impl Read) -> io::Result<PaneRequest> {
     let mut len = [0u8; 4];
     r.read_exact(&mut len)?;
-    let len = u32::from_le_bytes(len) as usize;
+    let len = u32::from_be_bytes(len) as usize;
     if len > MAX_FRAME {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -43,7 +43,7 @@ pub fn write_reply(w: &mut impl Write, reply: &PaneReply) -> io::Result<()> {
         postcard::to_stdvec(reply).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     let len = u32::try_from(body.len())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "reply too large"))?;
-    w.write_all(&len.to_le_bytes())?;
+    w.write_all(&len.to_be_bytes())?;
     w.write_all(&body)?;
     w.flush()
 }
@@ -65,7 +65,7 @@ mod tests {
     }
 
     fn frame(body: &[u8]) -> Vec<u8> {
-        let mut v = (body.len() as u32).to_le_bytes().to_vec();
+        let mut v = (body.len() as u32).to_be_bytes().to_vec();
         v.extend_from_slice(body);
         v
     }
@@ -76,11 +76,27 @@ mod tests {
         assert_eq!(read_request(&mut bytes.as_slice()).unwrap(), req());
     }
 
+    /// The daemon's own framing (`ecl_portal_core::frame`), both ways. Each
+    /// side once tested only against itself and they disagreed on byte order,
+    /// so every real request was refused as "too large".
     #[test]
-    fn a_reply_is_length_prefixed_little_endian() {
+    fn frames_match_the_daemon() {
+        let theirs = ecl_portal_core::frame::encode(&req()).unwrap();
+        assert_eq!(read_request(&mut theirs.as_slice()).unwrap(), req());
+        let mut ours = Vec::new();
+        write_reply(&mut ours, &PaneReply::Cancelled).unwrap();
+        let n = ecl_portal_core::frame::check_len(ours[..4].try_into().unwrap()).unwrap();
+        assert_eq!(
+            ecl_portal_core::frame::decode::<PaneReply>(&ours[4..n + 4]).unwrap(),
+            PaneReply::Cancelled
+        );
+    }
+
+    #[test]
+    fn a_reply_is_length_prefixed_big_endian() {
         let mut out = Vec::new();
         write_reply(&mut out, &PaneReply::Cancelled).unwrap();
-        let n = u32::from_le_bytes(out[..4].try_into().unwrap()) as usize;
+        let n = u32::from_be_bytes(out[..4].try_into().unwrap()) as usize;
         assert_eq!(n, out.len() - 4);
         assert_eq!(
             postcard::from_bytes::<PaneReply>(&out[4..]).unwrap(),
@@ -90,7 +106,7 @@ mod tests {
 
     #[test]
     fn an_oversized_length_is_refused_before_allocating() {
-        let bytes = u32::MAX.to_le_bytes().to_vec();
+        let bytes = u32::MAX.to_be_bytes().to_vec();
         let e = read_request(&mut bytes.as_slice()).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidData);
     }
