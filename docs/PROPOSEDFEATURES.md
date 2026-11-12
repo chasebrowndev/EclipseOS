@@ -163,6 +163,51 @@ output. Beyond that:
   - Settings has no path/image control yet (`schema.rs` maps `string` to a
     text field), so the pane needs an image picker type.
 
+- **EclipseOS names on everything we write at boot, not Arch's.** EclipseOS
+  is Arch-based, but the names it puts on a user's machine should be its own.
+  The owner asked for this on 2026-11-12, after a framework upgrade showed
+  `/boot/EFI/Linux/arch-linux.efi`, the stock mkinitcpio preset's UKI name.
+  Rename what we generate, and leave upstream package names alone:
+  - Ship our own `/etc/mkinitcpio.d/linux.preset` (and `linux-lts.preset`)
+    from `eclipseos-meta`, writing `eclipseos.efi` / `eclipseos-fallback.efi`
+    (and `eclipseos-lts*.efi`). Point the limine entries at those files, and
+    remove the stale `arch-linux*.efi` on upgrade.
+  - Decide UKI or separate kernel + initramfs once. Today `ec-setup-helper`
+    (`stages.rs::limine_conf`) boots `vmlinuz-linux` + `initramfs-linux.img`,
+    while hand-built machines boot an `arch-linux.efi` UKI. One layout means
+    one upgrade path to test (see the clean-update work).
+  - Name the ISO's syslinux labels and `archiso_*.cfg` entries after
+    EclipseOS where archiso allows it. Some `archiso_*` filenames and
+    `%INSTALL_DIR%` paths are fixed by mkarchiso, so check which ones before
+    renaming.
+  - `/etc/os-release`: the live medium ships `ID=arch`, and installed systems
+    keep the `filesystem` package's. Ship `ID=eclipseos` with `ID_LIKE=arch`,
+    so tools that key on Arch keep working.
+  - `linux`, `vmlinuz-linux` and `pacman`'s `[core]`/`[extra]` stay as they
+    are: they belong to upstream packages, and renaming them would fork them.
+
+- **Updates the owner has tested first: a pinned upstream snapshot.** Asked
+  for on 2026-11-12, after the owner chose a derivative over a fork. An Arch
+  fork (rebuilding, signing and mirroring ~14k packages) was weighed and
+  rejected: it is a distribution team's work, and the bus factor is one. The
+  derivative layer gets the same control where it matters:
+  - Installed machines pull `[core]`/`[extra]` from a dated Arch Linux Archive
+    snapshot (`archive.archlinux.org/repos/YYYY/MM/DD/`), not live mirrors.
+    `eclipseos-meta` owns the mirrorlist drop-in that names the date.
+  - The snapshot moves forward only after an upgrade smoke test passes: CI
+    boots the current ISO in qemu, upgrades it to the candidate date plus
+    `repo-x86_64`, and checks the greeter, the session and a share/lock round
+    trip. A release then bumps the date in the drop-in. Manjaro holds
+    packages back this way.
+  - A package that breaks EclipseOS is overridden by our own build in
+    `repo-x86_64`, listed above `[core]`/`[extra]`, until upstream catches up.
+    It is never patched in place on users' machines.
+  - Security fixes can't wait for the next scheduled bump. Allow an
+    out-of-band date bump, still gated on the smoke test.
+  - This builds on the clean-update work: dev installs through packages,
+    `ec-ctl repo enable`, and a pre-update check that refuses an upgrade that
+    would need `--overwrite`.
+
 ---
 
 ## RGB lighting
