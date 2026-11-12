@@ -1750,20 +1750,10 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         let blurb = match key.path.as_str() {
             crate::schema::COLOR_SCHEME => Some(crate::schema::scheme_blurb(scheme)),
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
-            CARD_FILL => {
-                Some("Hairline cards, with blur off or blur. Glass and frost keep their glass panel.")
-            }
             p if p == mode_path => crate::schema::blur_blurb(current),
             crate::gpu::MODE => crate::gpu::mode_blurb(key.value.as_str().unwrap_or("hybrid")),
-            crate::gpu::SECONDARY => Some(crate::gpu::SECONDARY_BLURB),
-            "ui.show-key-hints" => Some("Keyboard hints in the launcher and start menu"),
-            "launcher.search.frecency" => Some(FRECENCY_BLURB),
-            "settings.search.frecency" => Some(FRECENCY_BLURB),
-            TERMINAL_APPS => Some("Opened in the terminal command above."),
             crate::oracle::MODEL_COMMAND => Some(crate::oracle::approval_line(key)),
-            "oracle-eyes.bind.select" => Some("A chord like Super+A. \"none\" leaves an action unbound."),
-            "oracle-eyes.debug" => Some("While on, the taskbar eye turns red and shows in screen captures."),
-            _ => None,
+            p => crate::schema::caption(p),
         };
         // A live value, read off the row, the field and the switch beside it.
         let secs = app.live.get(&key.path).copied().unwrap_or_else(|| key.as_f64());
@@ -1849,10 +1839,10 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
                 // The strength means nothing while adaptive glass is off.
                 let off = key.path == crate::schema::ADAPTIVE_STRENGTH && !adaptive_on;
                 run = run.push(setting_row_at(app, &key.label(), key, (dim || off) && app.blur));
-                if key.path == crate::schema::ADAPTIVE_ENABLED {
+                if let Some(blurb) = crate::schema::caption(&key.path) {
                     run = run.push(
                         iced::widget::container(
-                            iced::widget::text(crate::schema::ADAPTIVE_BLURB)
+                            iced::widget::text(blurb)
                                 .font(ec_ui::tokens::font::UI)
                                 .size(ec_ui::tokens::size::BODY_SMALL)
                                 .style(theme::text_tertiary),
@@ -1901,9 +1891,6 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
     }
     panel(app.glass_radius, app.hairline_cards, col)
 }
-
-const FRECENCY_BLURB: &str =
-    "History stays on this device and stores no search text, only what was opened and when.";
 
 fn is_frecency(path: &str) -> bool {
     matches!(path, "launcher.search.frecency" | "settings.search.frecency")
