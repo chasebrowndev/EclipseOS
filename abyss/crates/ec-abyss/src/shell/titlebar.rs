@@ -120,8 +120,15 @@ impl BarUi {
     }
 
     pub(crate) fn swallow(&mut self, button: u32) {
+        // One slot per button: a press whose release never came (suspend, a
+        // device going away) must not pile up and eat a later client release.
+        if self.swallowed.contains(&button) {
+            return;
+        }
         if let Some(slot) = self.swallowed.iter_mut().find(|s| **s == 0) {
             *slot = button;
+        } else {
+            tracing::info!("titlebar swallow list full; a press will not be paired with its release");
         }
     }
 
@@ -282,11 +289,17 @@ fn start_drag_if_moved(state: &mut AbyssState, pos: Point<f64, Logical>) {
     let Some((window, origin)) = state.bar_ui.drag.take() else {
         return;
     };
-    if state.lock.locked
-        || state.pointer_grab_active
-        || crate::input::grabs::drag_active(state)
-        || !state.bar_ui.take_swallowed(BTN_LEFT)
-    {
+    let blocked = if state.lock.locked {
+        Some("locked")
+    } else if crate::input::grabs::drag_active(state) {
+        Some(crate::input::grabs::drag_blockers(state))
+    } else if !state.bar_ui.take_swallowed(BTN_LEFT) {
+        Some("press_not_swallowed")
+    } else {
+        None
+    };
+    if let Some(why) = blocked {
+        tracing::info!(why, "titlebar drag refused");
         return;
     }
     if crate::input::grabs::start_move_from(state, window, BTN_LEFT, Some(origin)) {
@@ -323,6 +336,9 @@ pub fn button(state: &mut AbyssState, button: u32, button_state: ButtonState) ->
         }
         super::focus::focus_window_raising(state, &window, true);
         state.bar_ui.swallow(button);
+        if button == BTN_LEFT {
+            crate::input::grabs::reclaim_stale_drag_state(state);
+        }
         match (button, hit) {
             (BTN_LEFT, Hit::Button(b)) => {
                 state.bar_ui.press = Some((window.clone(), b));

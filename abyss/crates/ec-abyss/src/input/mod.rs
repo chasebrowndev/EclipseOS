@@ -947,6 +947,10 @@ impl AbyssState {
             self.gesture_capture = None;
             return;
         }
+        // A swipe cannot begin inside one still in flight: its end was lost.
+        if self.gesture_drag.as_ref().is_some_and(|d| d.fingers >= 3) {
+            grabs::end_drag_gesture(self, true);
+        }
         // A drag gesture with its modifiers held owns the swipe outright,
         // unless the region selector or a trusted prompt holds the seat.
         if !self.seat_held() && grabs::start_drag_gesture(self, fingers) {
@@ -1442,6 +1446,10 @@ impl AbyssState {
             || self.winmenu.is_open()
             || crate::overview::holds_pointer(self)
         {
+            // A two-finger drag must not outlive the scroll that carried it.
+            if self.gesture_drag.as_ref().is_some_and(|d| d.fingers == 2) {
+                grabs::end_drag_gesture(self, true);
+            }
             return;
         }
         let source = event.source();
