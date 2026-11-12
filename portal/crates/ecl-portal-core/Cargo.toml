@@ -1,0 +1,15 @@
+[package]
+name = "ecl-portal-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+description = "Request/Session lifecycle, option parsing, app identity (pure)."
+publish = false
+
+[dependencies]
+ecl-portal-proto.workspace = true
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true

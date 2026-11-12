@@ -1,0 +1,18 @@
+[package]
+name = "ecl-portal-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+description = "Permission store (atomic postcard files)."
+publish = false
+
+[dependencies]
+ecl-portal-proto.workspace = true
+serde.workspace = true
+postcard.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

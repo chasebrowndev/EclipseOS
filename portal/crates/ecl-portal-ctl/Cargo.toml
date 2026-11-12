@@ -1,0 +1,17 @@
+[package]
+name = "ecl-portal-ctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+description = "List and revoke portal grants."
+publish = false
+
+[dependencies]
+ecl-portal-proto.workspace = true
+ecl-portal-store.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

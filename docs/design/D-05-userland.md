@@ -237,7 +237,8 @@ it holds to the four §3 limits:
 - No terminal of our own. `foot` is the default (`eclipseos-meta` depends on
   it, and the default `Super+Return` bind spawns it) until `cataclysm` exists.
   This is the D-01 §1.3 substitution, said out loud.
-- No portal. `xdg-desktop-portal*` is not in `eclipseos-meta`.
+- No portal yet. `xdg-desktop-portal*` is not in `eclipseos-meta` and will not
+  be: `ecl-desktop-portal` (ADR 0096, D-08) is the planned replacement.
 - No policy editor; that is COMP-10 §3.9, compositor-drawn, milestone 15.
 - No clipboard manager, OSD or desktop icons.
 - No in-process widget plugins. Custom taskbar widgets are argv commands run

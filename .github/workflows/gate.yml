@@ -18,9 +18,9 @@ concurrency:
   cancel-in-progress: true
 
 # The workflow files must sit at the repository root for GitHub to read them.
-# The repo holds five cargo workspaces (abyss/, shell/, installer/,
-# oracle-eyes/, fog/), so each job sets its own `defaults.run.working-directory`
-# and points any filesystem-touching `uses:` action at its workspace explicitly
+# The repo holds six cargo workspaces (abyss/, shell/, installer/,
+# oracle-eyes/, fog/, portal/), so each job sets its own
+# `defaults.run.working-directory` and points any filesystem-touching `uses:` action at its workspace explicitly
 # (actions ignore `defaults`). All of them build into <repo>/target, set by the
 # root .cargo/config.toml.
 
@@ -219,6 +219,39 @@ jobs:
 
       - run: cargo test --workspace
 
+  portal:
+    name: portal build / fmt / clippy / test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # ecl-desktop-portal (docs/design/D-08-portal.md) is its own cargo workspace.
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev libpipewire-0.3-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: portal -> ../target
+
+      - run: cargo fmt --all --check
+
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - run: cargo build --workspace --all-targets
+
+      - run: cargo test --workspace
+
   supply-chain:
     name: ${{ matrix.workspace }} cargo-deny
     runs-on: ubuntu-24.04
@@ -226,7 +259,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        workspace: [abyss, shell, installer, oracle-eyes, fog]
+        workspace: [abyss, shell, installer, oracle-eyes, fog, portal]
     steps:
       - uses: actions/checkout@v4
       # Advisories + license + source checks. This is a down payment on
