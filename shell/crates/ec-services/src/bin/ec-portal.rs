@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `ec-portal`: the xdg-desktop-portal Settings backend for Abyss, serving
-//! `org.freedesktop.appearance` from the compositor's theme (ADR 0084).
+//! `ec-portal`: the xdg-desktop-portal backend for Abyss. Settings serves
+//! `org.freedesktop.appearance` from the compositor's theme (ADR 0084);
+//! FileChooser opens Fog as the Open/Save dialog (ADR 0100).
 
 use std::process::ExitCode;
 

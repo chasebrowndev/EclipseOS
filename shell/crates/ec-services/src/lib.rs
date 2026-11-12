@@ -14,6 +14,7 @@ pub mod apps;
 pub mod audio;
 pub mod calendar;
 pub mod custom;
+pub mod filechooser;
 pub mod frecency;
 pub mod fuzzy;
 pub mod media;
