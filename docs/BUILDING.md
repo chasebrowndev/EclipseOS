@@ -232,6 +232,14 @@ git tag v0.1.2 && git push origin v0.1.2     # or v0.1.2-2 to rebuild 0.1.2
 `PACKAGING_KEY` repo secret (see `docs/design/D-02-package-repository.md`).
 `packaging/repo/build-repo.sh local` remains the way to iterate on packaging.
 
+If an update breaks the compositor (ADR 0101): a greeter that dies within 10 s
+of starting comes up once on the build kept before the upgrade; after a session
+crash you land at the login screen, where "Abyss (previous)" picks it. From there, downgrade
+with `sudo pacman -U /var/cache/pacman/pkg/eclipseos-abyss-<v>-x86_64.pkg.tar.zst`,
+`<v>` being `/usr/lib/eclipse/previous/VERSION`. The pre-upgrade hook refuses
+the upgrade when it cannot take the copy; `sudo EC_ABYSS_KEEP=skip pacman -Syu`
+overrides that. Test the scripts with `packaging/test/update-rollback.sh`.
+
 ## Packaging
 
 The distribution path (D-01..D-03), all under `packaging/`:
@@ -239,7 +247,10 @@ The distribution path (D-01..D-03), all under `packaging/`:
 - **`packaging/pkg/eclipseos/PKGBUILD`** — split package, built from the pushed
   `v$pkgver` tag (`pkgver=0.1.1`). One package per swappable component
   (ADR 0052): `eclipseos-abyss` (abyss, ec-ctl, the session wrapper,
-  desktop entry and target; hard-depends on `xorg-xwayland`),
+  desktop entry and target, and the update fallback of ADR 0101: the
+  `eclipseos-abyss-keep.hook` pre-upgrade hook, `ec-abyss-keep`,
+  `ec-abyss-launch` and the "Abyss (previous)" entry
+  `abyss-previous.desktop`; hard-depends on `xorg-xwayland`),
   `-hyperion` (the taskbar, an add-on with its manifest
   `/usr/share/eclipse/addons/hyperion.kdl`, ADR 0066), `-toasts`, `-center`,
   `-launcher`, `-desktop` (settings, policy viewer, `ec-screensaver`, the

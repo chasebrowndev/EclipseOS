@@ -267,7 +267,7 @@ jobs:
           head="${{ github.event.pull_request.head.sha }}"
           changed=$(git diff --name-only "$base" "$head")
           tcb=$(echo "$changed" | grep -E \
-            '^(abyss/crates/ec-(policyd|policy-eval|sandbox|brokerd)/|installer/crates/ec-setup-helper/|packaging/(polkit/|bin/ec-update-apply$)|shell/crates/ec-services/src/bin/ec-polkit-agent\.rs$|shell/crates/ec-greeter/|abyss/crates/ec-abyss/src/(policy|trusted_ui|audit)/|abyss/crates/ec-abyss/src/render/capture\.rs$|abyss/crates/ec-agentd/src/sandbox\.rs$|AbyssCompositor/(crates/(policyd|ec-policy-eval|sandbox|brokerd|ec-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$))' \
+            '^(abyss/crates/ec-(policyd|policy-eval|sandbox|brokerd)/|installer/crates/ec-setup-helper/|packaging/(polkit/|bin/ec-update-apply$|bin/ec-abyss-keep$|hooks/eclipseos-abyss-keep\.hook$)|shell/crates/ec-services/src/bin/ec-polkit-agent\.rs$|shell/crates/ec-greeter/|abyss/crates/ec-abyss/src/(policy|trusted_ui|audit)/|abyss/crates/ec-abyss/src/render/capture\.rs$|abyss/crates/ec-agentd/src/sandbox\.rs$|AbyssCompositor/(crates/(policyd|ec-policy-eval|sandbox|brokerd|ec-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$))' \
             || true)
           if [ -n "$tcb" ]; then
             echo "::warning title=TCB path touched::Line-by-line owner review required (F-07 §4)"
@@ -355,6 +355,17 @@ jobs:
         run: npx --yes web-ext@10.7.0 lint -s browser/firefox-glass --warnings-as-errors
       - name: signed XPI matches source
         run: packaging/firefox/check-xpi.sh
+
+  update-rollback:
+    name: update fallback scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # ADR 0101: the pre-upgrade copy and the startup-crash fallback, against
+      # a fake root in a temp dir. Rootless.
+      - name: keep + launch tests
+        run: packaging/test/update-rollback.sh
 
   spec-trail:
     name: PR cites a spec section

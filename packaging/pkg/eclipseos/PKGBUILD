@@ -76,6 +76,18 @@ package_eclipseos-abyss() {
   install -Dm0644 "$srcdir/$_src/packaging/abyss.desktop" \
     "$pkgdir/usr/share/wayland-sessions/abyss.desktop"
   _unit abyss-session.target
+  # Update fallback (ADR 0101): the pre-upgrade hook keeps the running build
+  # under /usr/lib/eclipse/previous/ (not package-owned), the greeter's
+  # launcher falls back to it on a startup crash, and the second session entry
+  # (chosen at the login screen) picks it.
+  install -Dm0755 "$srcdir/$_src/packaging/bin/ec-abyss-keep" \
+    "$pkgdir/usr/lib/eclipse/ec-abyss-keep"
+  install -Dm0755 "$srcdir/$_src/packaging/bin/ec-abyss-launch" \
+    "$pkgdir/usr/lib/eclipse/ec-abyss-launch"
+  install -Dm0644 "$srcdir/$_src/packaging/hooks/eclipseos-abyss-keep.hook" \
+    "$pkgdir/usr/share/libalpm/hooks/eclipseos-abyss-keep.hook"
+  install -Dm0644 "$srcdir/$_src/packaging/abyss-previous.desktop" \
+    "$pkgdir/usr/share/wayland-sessions/abyss-previous.desktop"
 }
 
 package_eclipseos-hyperion() {
