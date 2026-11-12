@@ -2081,6 +2081,19 @@ pub const TABLE: &[Key] = &[
         Live,
         "Show the keyboard control hints in the launcher and the start menu.",
     ),
+    k(
+        "ui.capture-toasts",
+        Ty::Enum(crate::CaptureToasts::NAMES),
+        Str("redact"),
+        Abyss,
+        Live,
+        "What notification toasts do while a screen is being shared or \
+       recorded (ADR 0106). `redact` covers the toast in the shared image \
+       with a \"Private: Redacted\" card and shows it to you normally; \
+       `hold` keeps toasts back until the share ends; `history` sends them \
+       straight to the notification history; `show` shares them like any \
+       other window. Only `show` can put a toast's text in a share.",
+    ),
     // settings: the settings app's own preferences
     k(
         "settings.search.frecency",
@@ -2755,7 +2768,13 @@ pub const RULE_ACTION_FORMS: &[Form] = &[
         &["sensitivity"],
         "secret | normal",
         &["sensitivity secret", "sensitivity normal"],
-        "Raise the capture sensitivity class. Raise-only: `public` is refused.",
+        "Raise the capture sensitivity class. Raise-only: `public` is refused. \
+       `secret` windows are withheld from every capture and shown there as a \
+       \"Private: Redacted\" card (ADR 0106); the image ships `secret` rules for \
+       common password managers in `/etc/eclipse/policy.kdl`. On an X11 \
+       (XWayland) window `secret` only redacts captures: its class stays \
+       `normal`, and other X11 clients can still read the window through the X \
+       server (COMP-07 §2).",
     ),
     form(
         &["app-trust"],
@@ -3244,6 +3263,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "oracle-eyes.bind.image-toggle" => V::Str(c.oracle_eyes.bind.image_toggle.text.clone()),
         "launcher.bind.run" => V::Str(c.launcher.bind.run.text.clone()),
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
+        "ui.capture-toasts" => V::Str(c.ui.capture_toasts.name().into()),
         "settings.search.frecency" => V::Bool(c.settings.search_frecency),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.titlebar-height" => V::Int(c.decoration.titlebar_height as i64),

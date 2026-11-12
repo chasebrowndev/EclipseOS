@@ -23,6 +23,27 @@
 // regexes, and `eclipse-secret-prompt-foo` must not inherit the class.
 windowrule "sensitivity secret" { app-id "^ec-secret-prompt$"; }
 
+// Password managers and keyring UIs are `secret` (ADR 0106): never composited
+// into a screen share, recording or screenshot -- a "Private: Redacted" card
+// takes their place -- and still shown normally on the monitor. These are a
+// security default: remove a line here to let that app appear in shares.
+// Anchored and case-insensitive, one rule per app. Wayland matches the
+// xdg-shell app_id; an XWayland window matches its WM_CLASS class, and is
+// withheld from compositor captures only (COMP-07 §2 as amended: another X11
+// client can still read it through the X server).
+//   KeePassXC (Wayland id from its desktop file; XWayland class `keepassxc`)
+windowrule "sensitivity secret" { app-id "^(?i:org\\.keepassxc\\.KeePassXC|keepassxc)$"; }
+//   Bitwarden desktop (Electron: `bitwarden` native/AUR, Flatpak id
+//   `com.bitwarden.desktop`; XWayland class `Bitwarden`)
+windowrule "sensitivity secret" { app-id "^(?i:bitwarden|com\\.bitwarden\\.desktop)$"; }
+//   1Password (Electron: `1password`; XWayland class `1Password`)
+windowrule "sensitivity secret" { app-id "^(?i:1password)$"; }
+//   GNOME Secrets (Flathub id) and Seahorse
+windowrule "sensitivity secret" { app-id "^org\\.gnome\\.World\\.Secrets$"; }
+windowrule "sensitivity secret" { app-id "^org\\.gnome\\.seahorse\\.Application$"; }
+//   KeePass 2 (Mono, XWayland only: WM_CLASS class `KeePass`)
+windowrule "sensitivity secret" { app-id "^(?i:keepass2?)$"; }
+
 // The agent console shows every agent's conversation: no agent may see it,
 // hit it or capture it (A-08 §10). App-id is client-chosen, so this hides
 // rather than trusts; the guarantee is the console's protected surface.

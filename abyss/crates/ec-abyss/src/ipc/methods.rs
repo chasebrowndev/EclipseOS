@@ -648,6 +648,11 @@ fn subscribe(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
     if let Some(event) = state.config_error.clone() {
         crate::ipc::emit_to(state, conn, "config-error", event);
     }
+    // ADR 0106: `capture` is state too; a toast daemon that starts mid-share
+    // must hold from its first toast.
+    if crate::protocols::standard::capture_event::announced(state) {
+        crate::ipc::emit_to(state, conn, "capture", json!({"active": true}));
+    }
     // ADR 0102: a feature a contained panic turned off stays off, so a
     // subscriber that connected later hears about it too.
     for payload in state.contained.payloads() {

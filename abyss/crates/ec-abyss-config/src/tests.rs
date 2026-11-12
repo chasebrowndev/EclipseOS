@@ -1972,6 +1972,27 @@ fn capture_defaults_to_denying_everything() {
 }
 
 #[test]
+fn capture_toasts_defaults_to_redact_and_parses_each_mode() {
+    assert_eq!(Config::default().ui.capture_toasts, CaptureToasts::Redact);
+    for name in CaptureToasts::NAMES {
+        let doc: KdlDocument = format!("ui {{ capture-toasts \"{name}\" }}").parse().unwrap();
+        let mut cfg = Config::default();
+        cfg.apply(&doc, &mut Vec::new());
+        assert!(cfg.errors.is_empty(), "{name}: {:?}", cfg.errors);
+        assert_eq!(cfg.ui.capture_toasts.name(), *name);
+    }
+}
+
+#[test]
+fn an_unknown_capture_toasts_mode_is_rejected_and_keeps_redact() {
+    let doc: KdlDocument = r#"ui { capture-toasts "drop" }"#.parse().unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+    assert_eq!(cfg.ui.capture_toasts, CaptureToasts::Redact);
+}
+
+#[test]
 fn parses_capture_hide_layer() {
     let doc: KdlDocument = r#"
             capture { hide-layer "hyperion:eclipse-eye" "foo:ns:with:colons" }
@@ -2025,6 +2046,54 @@ fn shipped_policy_hides_the_taskbar_eye() {
     assert!(cfg.virtual_pointer.allow.is_empty());
     assert!(cfg.capture.allow.is_empty());
     assert!(cfg.clipboard.data_control_allow.is_empty());
+}
+
+/// ADR 0106: the shipped policy marks the password managers `secret`, and
+/// only them. Ids are matched as the rule engine does (unanchored regex over
+/// the app_id, or an X11 window's WM_CLASS class).
+#[test]
+fn shipped_policy_marks_password_managers_secret() {
+    let text = include_str!("../../../../packaging/etc/policy.kdl");
+    let doc: KdlDocument = text.parse().unwrap();
+    let mut cfg = Config {
+        cur: Some((policy_src("/etc/eclipse/policy.kdl"), text.to_owned())),
+        ..Config::default()
+    };
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    let secret = |id: &str| {
+        cfg.window_rules.iter().any(|r| {
+            matches!(&r.action, RuleAction::Sensitivity(c) if c == "secret")
+                && r.matchers.app_id.as_ref().is_some_and(|p| p.matches(id))
+        })
+    };
+    for id in [
+        "org.keepassxc.KeePassXC",
+        "keepassxc",
+        "KeePassXC",
+        "Bitwarden",
+        "bitwarden",
+        "com.bitwarden.desktop",
+        "1password",
+        "1Password",
+        "org.gnome.World.Secrets",
+        "org.gnome.seahorse.Application",
+        "KeePass",
+        "keepass2",
+        "ec-secret-prompt",
+    ] {
+        assert!(secret(id), "{id} must be secret");
+    }
+    for id in [
+        "foot",
+        "firefox",
+        "org.keepassxc.KeePassXC-helper",
+        "not-bitwarden",
+        "ec-secret-prompt-foo",
+        "org.gnome.Nautilus",
+    ] {
+        assert!(!secret(id), "{id} must not be secret");
+    }
 }
 
 #[test]
