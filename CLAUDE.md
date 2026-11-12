@@ -13,7 +13,7 @@ agent is for. See "Working style" below.
 - No state mutation before `check()` returns `Allow`. Policy is fail-closed:
   unknown request, missing table entry, or an unavailable `policyd` = deny.
 - App-declared sensitivity may only raise a class, never lower it. Default
-  class is `private`.
+  class is `normal`.
 - `password`-role values are never delivered, logged, or stored.
 - Human input is never logged by content (keystrokes, clipboard, IME).
 - **Single-threaded core.** One `calloop` loop owns `AbyssState`. No locks on
@@ -172,9 +172,9 @@ abyss/crates/ec-abyss/src/input/       COMP-04  keyboard, pointer, touch, tablet
 abyss/crates/ec-abyss/src/shell/       COMP-05  layouts, workspaces, rules, focus
 abyss/crates/ec-abyss/src/protocols/standard/  COMP-06
 abyss/crates/ec-abyss/src/protocols/agent/     COMP-08  ec-agent.sock, eclipse_agent_v1 (M11: admission, scene queries)
-abyss/crates/ec-abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1    (not yet)
+abyss/crates/ec-abyss/src/protocols/semantic/  COMP-09  eclipse_semantic_v1 server + tree store (M22, unreviewed)
 abyss/crates/ec-abyss/src/trusted_ui/  COMP-10  prompts (modal primitive; §3.10 erase, §3.11 command approval), emergency panel, compat-lock indicator
-abyss/crates/ec-abyss/src/policy/      COMP-11  grant admission, agent scene filter; enforcement table, check() not yet
+abyss/crates/ec-abyss/src/policy/      COMP-11  grant admission, agent scene filter, signed table (table.rs), check() on agent seat requests only (enforce.rs) — human-path Wayland globals and clipboard are not policy-checked (KNOWNBUGS SEC-01..05)
 abyss/crates/ec-abyss/src/audit/       COMP-12  provenance emission to policyd (M12: scene requests, focus, lifecycle)
 abyss/crates/ec-abyss/src/ipc/         COMP-13  human JSON-RPC socket, methods, config RPC (gate.rs is a re-export shim)
 abyss/crates/ec-abyss-wire/         COMP-13  state-free: gate table + check, Decision/Peer, RpcError + codes, EVENTS, Hook/HookSet (gate.rs = authz enforcement, owner review)
@@ -184,7 +184,7 @@ abyss/crates/ec-abyss/src/config/      COMP-13  re-exports ec-abyss-config; appl
 abyss/crates/ec-abyss/src/xwayland/    COMP-07
 abyss/crates/ec-policyd/, abyss/crates/ec-policy-eval/   A-04, S-01 §4, S-04 §4  policy daemon + shared types (TCB)
 abyss/crates/ec-protocols/          eclipse_agent_v1 XML + bindings (Apache-2.0)
-abyss/crates/ec-agentd/             agentd skeleton (M11)
+abyss/crates/ec-agentd/             agentd: admission, sessions, Landlock/seccomp sandbox (sandbox.rs — TCB)
 abyss/crates/ec-audit/              ec-audit: verify, trace, query the audit store (S-04 §4–§5)
 abyss/crates/ec-ipc/           control-socket client + types
 abyss/crates/ec-ctl/           CLI over the control socket, config migrate

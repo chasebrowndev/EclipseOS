@@ -11,9 +11,14 @@ struct Run {
     stderr: String,
 }
 
-/// Run `ec-abyss --backend headless <args>` and wait up to 20 s, killing the
+/// Run `ec-abyss --backend headless <args>` and wait up to 60 s, killing the
 /// captured pid on timeout.
 fn run(args: &[&str]) -> Run {
+    // One compositor boot at a time: two software-EGL startups racing on a
+    // small CI runner both sat past the deadline (run 43133667811). The
+    // argument-error cases exit before EGL, so serialising them costs nothing.
+    static BOOT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _boot = BOOT.lock().unwrap_or_else(|e| e.into_inner());
     // Short path: a wayland socket path must fit in `SUN_LEN`.
     static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -37,7 +42,7 @@ fn run(args: &[&str]) -> Run {
         if let Some(s) = child.try_wait().unwrap() {
             break Some(s);
         }
-        if start.elapsed() > Duration::from_secs(20) {
+        if start.elapsed() > Duration::from_secs(60) {
             let _ = child.kill();
             let _ = child.wait();
             break None;

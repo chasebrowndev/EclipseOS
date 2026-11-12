@@ -1831,6 +1831,37 @@ fn colors() {
     assert_eq!(parse_color("nope"), None);
 }
 
+/// ADR 0099: idle never suspends by default, and locks first when it does.
+#[test]
+fn idle_suspend_defaults_off_and_locks_first() {
+    let cfg = Config::default();
+    assert_eq!(cfg.idle.suspend_timeout, None);
+    assert!(cfg.idle.lock_before_suspend);
+    assert_eq!(cfg.idle.lock_timeout, None, "no shipped idle-lock timeout");
+
+    let doc: KdlDocument = r#"
+            idle { suspend-timeout-seconds 1800; lock-before-suspend #false }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert_eq!(cfg.idle.suspend_timeout, Some(1800));
+    assert!(!cfg.idle.lock_before_suspend);
+
+    // 0 is "never", like the other idle timeouts; a non-bool keeps the default.
+    let doc: KdlDocument = r#"
+            idle { suspend-timeout-seconds 0; lock-before-suspend "no" }
+        "#
+    .parse()
+    .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert_eq!(cfg.idle.suspend_timeout, None);
+    assert!(cfg.idle.lock_before_suspend);
+    assert_eq!(cfg.errors.len(), 1);
+}
+
 #[test]
 fn parses_idle_and_lid() {
     let doc: KdlDocument = r#"
@@ -2867,6 +2898,11 @@ mod startup_tests {
         // in the ordinary way.
         let mut cfg = abyss("idle {\n    dpms-timeout-seconds -5\n}\n");
         assert_eq!(cfg.startup(), Startup::Start { ignored: 1 });
+        assert!(startup_summary(&cfg).starts_with("abyss.kdl: 1 problem ignored"));
+        // Nor is the idle suspend (ADR 0099): a bad value leaves it off.
+        let mut cfg = abyss("idle {\n    suspend-timeout-seconds -5\n}\n");
+        assert_eq!(cfg.startup(), Startup::Start { ignored: 1 });
+        assert!(cfg.idle.suspend_timeout.is_none());
         assert!(startup_summary(&cfg).starts_with("abyss.kdl: 1 problem ignored"));
     }
 

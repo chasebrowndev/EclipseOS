@@ -39,6 +39,16 @@ impl LineEdit {
         Self { text, cursor }
     }
 
+    /// `text` with the cursor at byte `at` (clamped to a char boundary).
+    pub fn at(text: impl Into<String>, at: usize) -> Self {
+        let text = text.into();
+        let mut cursor = at.min(text.len());
+        while !text.is_char_boundary(cursor) {
+            cursor -= 1;
+        }
+        Self { text, cursor }
+    }
+
     pub fn text(&self) -> &str {
         &self.text
     }

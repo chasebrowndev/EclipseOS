@@ -128,7 +128,12 @@ where
 }
 
 fn entry_for(row: &Row, place: &Place) -> SearchEntry {
-    let mut extra = Vec::new();
+    // The key's own search words, beside its label in `ec_abyss_config::meta`.
+    let mut extra: Vec<String> = ec_abyss_config::meta::get(&row.path)
+        .map_or(&[][..], |m| m.keywords)
+        .iter()
+        .map(|k| (*k).to_owned())
+        .collect();
     let mut more = String::new();
     if let Control::Segmented(values) | Control::Dropdown(values) = &row.control {
         let blur_mode = format!("{}.mode", schema::BLUR);
@@ -342,18 +347,15 @@ pub const SYNONYMS: &[(&[&str], &[&str])] = &[
         ],
         &["opacity", "blur", "glass"],
     ),
+    // A screensaver is the lock screen first: "lock screen" is the phrase only
+    // the lock timeout's label holds, so it leads that key's siblings.
     (
-        &[
-            "sleep",
-            "screensaver",
-            "screen saver",
-            "suspend",
-            "away",
-            "inactivity",
-            "afk",
-        ],
-        &["lock", "idle", "screen off"],
+        &["screensaver", "screen saver", "away", "inactivity", "afk"],
+        &["lock screen", "lock", "idle", "screen off"],
     ),
+    // Sleep is suspend, which is now a setting of its own
+    // (`idle.suspend-timeout-seconds`), not another word for locking.
+    (&["sleep", "standby", "hibernate", "suspend to ram"], &["suspend"]),
     (
         &["bar", "panel", "dock", "menubar", "menu bar", "status bar"],
         &["taskbar"],
@@ -937,6 +939,9 @@ mod tests {
         let e = entries();
         assert_top3(&e, "trackpad tap", "input.touchpad.tap-to-click");
         assert_top3(&e, "screensaver", "idle.lock-timeout-seconds");
+        assert_top3(&e, "suspend", "idle.suspend-timeout-seconds");
+        assert_top3(&e, "sleep", "idle.suspend-timeout-seconds");
+        assert_top3(&e, "standby", "idle.suspend-timeout-seconds");
         let dock = search(&e, "dock", 3);
         assert!(
             dock.len() == 3 && dock.iter().all(|&(_, i)| e[i].breadcrumb.starts_with("Taskbar")),
@@ -973,6 +978,37 @@ mod tests {
         for (l, r) in SYNONYMS {
             for t in l.iter().chain(r.iter()) {
                 assert_eq!(words(t).join(" "), *t, "table term {t:?} is not normalised");
+            }
+        }
+    }
+
+    /// A key's own keyword that is also a synonym-table term would be read
+    /// twice, at two weights, and the table's reading would decide the tie.
+    #[test]
+    fn key_keywords_are_not_synonym_terms() {
+        for m in ec_abyss_config::meta::META {
+            for k in m.keywords {
+                assert!(!table_has(k), "{}: keyword {k:?} is already in SYNONYMS", m.path);
+            }
+        }
+    }
+
+    /// Every indexed schema row carries the label and keywords the
+    /// presentation table gives it.
+    #[test]
+    fn indexed_rows_read_from_the_presentation_table() {
+        let e = entries();
+        for m in ec_abyss_config::meta::META {
+            let Some(x) = e.iter().find(|x| x.path == m.path) else {
+                continue;
+            };
+            assert_eq!(x.label, m.label, "{}", m.path);
+            for k in m.keywords {
+                assert!(
+                    x.extra_terms.iter().any(|t| t == k),
+                    "{}: {k:?} not indexed",
+                    m.path
+                );
             }
         }
     }

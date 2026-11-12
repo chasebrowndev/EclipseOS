@@ -30,6 +30,7 @@ pub mod approvals;
 pub mod catalog;
 pub mod edit;
 pub mod input;
+pub mod meta;
 pub mod outputs;
 pub mod schema;
 pub mod transitions;

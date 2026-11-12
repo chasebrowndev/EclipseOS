@@ -28,9 +28,11 @@ crates/
   ec-settings/   settings panes; every write via set_config_value (COMP-17 §3)
   ec-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
   ec-secret-prompt/  one-shot wifi passphrase / Bluetooth PIN prompt (ADR 0053)
+  ec-lock/           screen locker, ext_session_lock_v1 client, PAM in-process (ADR 0095)
   ec-services/   D-Bus services: notifications, tray, status, session (ADR 0038);
                       lib plus the ec-screensaver (ADR 0051),
-                      ec-pairing (ADR 0066) and ec-portal (ADR 0084) bins
+                      ec-pairing (ADR 0066), ec-portal (ADR 0084) and
+                      ec-lock-trigger (ADR 0095) bins
   ec-abyss-wlcs/         wlcs conformance cdylib, drives the headless backend
   policyd/            policy + audit daemon            [TCB]
   ec-policy-eval/        shared evaluator, linked by both [TCB]
@@ -77,6 +79,14 @@ SPDX header naming which.
 - Frame scheduling is per-output, driven by page-flip completion. The loop
   never busy-waits.
 - No allocation in input delivery or the policy check.
+- Failure model (ADR 0102): a panic ends the process, unwinding so the DRM
+  session and VT are restored, except inside a *contained* feature (today the
+  overview, the annotation socket methods and the read-only socket queries).
+  A panic raised in such a feature's own code turns that feature off for the
+  session, resets it to closed/empty, logs its location once and emits
+  `feature-disabled`; the session carries on. The TCB, the session lock,
+  input delivery and the frame path are never contained. The panic hook logs
+  location only, never the payload.
 
 ## Module map — `abyss/crates/ec-abyss/src/`
 

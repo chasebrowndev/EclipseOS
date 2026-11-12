@@ -568,35 +568,56 @@ pub fn blur_area(
 
 /// Signed distance from `p` (output-local physical px) to `shape`, negative
 /// inside: each box rounded by `radius` (clamped to its half size), unioned
-/// in order by the polynomial smooth-min `min(a, b) - h² k / 4` with
-/// `h = max(k - |a - b|, 0) / k` and `k = shape.fillet`.
+/// in order by [`join`] with `k = shape.fillet`.
 ///
 /// This is the mask the shaped backdrop programs draw (`SHAPE_FNS` in
 /// [`crate::effects`], line for line). A client that paints a fill
 /// under the same shape uses the same formula so its tint meets the blur's
 /// edge.
 pub fn shape_sd(shape: &Shape, radius: f32, p: (f32, f32)) -> f32 {
+    // A box's signed distance, and the centre of the corner arc `p` is
+    // nearest to (the nearest point of the box's inner rectangle, inset by
+    // the radius). Two boxes that share a corner share that centre.
     let box_sd = |b: &Rectangle<i32, Physical>| {
         let (hx, hy) = (b.size.w as f32 * 0.5, b.size.h as f32 * 0.5);
         let r = radius.min(hx.min(hy)).max(0.0);
-        let qx = (p.0 - (b.loc.x as f32 + hx)).abs() - hx + r;
-        let qy = (p.1 - (b.loc.y as f32 + hy)).abs() - hy + r;
-        qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r
+        let (x0, y0) = (b.loc.x as f32, b.loc.y as f32);
+        let qx = (p.0 - (x0 + hx)).abs() - hx + r;
+        let qy = (p.1 - (y0 + hy)).abs() - hy + r;
+        let d = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r;
+        let arc = (
+            p.0.max(x0 + r).min(x0 + 2.0 * hx - r),
+            p.1.max(y0 + r).min(y0 + 2.0 * hy - r),
+        );
+        (d, arc)
     };
     let k = shape.fillet;
-    let smin = |a: f32, b: f32| {
-        if k <= 0.0 {
-            return a.min(b);
-        }
-        let h = (k - (a - b).abs()).max(0.0) / k;
-        a.min(b) - h * h * k * 0.25
-    };
     let mut rects = shape.rects().iter();
-    let mut d = rects.next().map_or(f32::INFINITY, box_sd);
+    let mut d = rects.next().map_or((f32::INFINITY, (0.0, 0.0)), box_sd);
     for b in rects {
-        d = smin(d, box_sd(b));
+        d = join(d, box_sd(b), k, radius);
     }
-    d
+    d.0
+}
+
+/// The union of two boxes' `(distance, arc centre)` pairs, the polynomial
+/// smooth-min `min(a, b) - gap · h² k / 4` with `h = max(k - |a - b|, 0) / k`.
+///
+/// The bite is the concave fillet, and it belongs only where the two boxes'
+/// arcs differ. Where they share a centre (a panel flush with the pill's end
+/// shares the pill's top-right corner) `gap` is 0 and the union keeps that
+/// corner's own radius. `gap` is the centres' distance in units of the corner
+/// `radius` (at least 1 px), capped at 1: a real join's centres sit about a
+/// radius apart and get the full bite, a corner offset by a pixel gets almost
+/// none. The GLSL `join` in `SHAPE_FNS` mirrors this line for line.
+fn join(a: (f32, (f32, f32)), b: (f32, (f32, f32)), k: f32, radius: f32) -> (f32, (f32, f32)) {
+    let m = if b.0 < a.0 { b } else { a };
+    if k <= 0.0 {
+        return m;
+    }
+    let h = (k - (a.0 - b.0).abs()).max(0.0) / k;
+    let gap = ((a.1 .0 - b.1 .0).hypot(a.1 .1 - b.1 .1) / radius.max(1.0)).min(1.0);
+    (m.0 - gap * h * h * k * 0.25, m.1)
 }
 
 /// [`shows_through`] for a shaped surface: only the shape's boxes can be
@@ -1776,6 +1797,41 @@ mod tests {
         assert!(shape_sd(&shape, radius, (380.0, 100.0)) > 20.0);
         assert!(shape_sd(&shape, radius, (1.0, 1.0)) > 0.0);
         assert!(shape_sd(&shape, radius, (200.0, 260.0)) > 0.0);
+    }
+
+    /// The calendar drawer hung off a bar's far end: its panel is flush with
+    /// the surface's right edge, so its top-right corner and the pill's share
+    /// one corner centre and radius. The smooth union must not push that
+    /// corner outward (the fillet is for concave joins only); the mask has to
+    /// stay on the painted rounded outline there.
+    #[test]
+    fn a_panel_flush_with_the_pill_end_keeps_the_corner_round() {
+        let (w, radius) = (400.0_f32, 20.0_f32);
+        let shape = shape_of(&[(true, (0, 0, 400, 40)), (true, (200, 0, 200, 300))], 1.0, 20.0).unwrap();
+        // The top-right arc is centred at (w - r, r); test 2 px outside and 2 px
+        // inside it along the diagonal.
+        let c = (w - radius, radius);
+        let step = |d: f32| {
+            let t = d * std::f32::consts::FRAC_1_SQRT_2;
+            (c.0 + t, c.1 - t)
+        };
+        let outside = step(radius + 2.0);
+        let inside = step(radius - 2.0);
+        assert!(
+            shape_sd(&shape, radius, outside) > 1.0,
+            "corner pushed out: {}",
+            shape_sd(&shape, radius, outside)
+        );
+        assert!(
+            shape_sd(&shape, radius, inside) < -1.0,
+            "corner pulled in: {}",
+            shape_sd(&shape, radius, inside)
+        );
+        // A panel one pixel short of the edge is not a shared corner: its arc
+        // centre is a pixel off, which must not buy the full bite either.
+        let offset = shape_of(&[(true, (0, 0, 400, 40)), (true, (200, 0, 199, 300))], 1.0, 20.0).unwrap();
+        let sd = shape_sd(&offset, radius, outside);
+        assert!(sd > 1.0, "a one-pixel offset bit the corner: {sd}");
     }
 
     #[test]

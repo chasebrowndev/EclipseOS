@@ -2,10 +2,12 @@
 //! Where a config key appears: a [`Section`] in the sidebar, one of its
 //! [`Page`]s, and a group heading on that page.
 //!
-//! The assignment is by path, not by a per-page list of keys — a new key in a
-//! node a page already claims needs no change here. A new *node* does, and
-//! `tests/coverage.rs` is what says so: an unassigned key fails the build
-//! rather than quietly becoming unreachable from the GUI (F-01 §4).
+//! The assignment is not made here: every schema key names its page and group
+//! in `ec_abyss_config::meta`, beside its label (ADR 0107). This module owns
+//! the sidebar's shape and resolves those names. A key with no row there
+//! fails `ec_abyss_config`'s own tests, and `tests/coverage.rs` fails one that
+//! lands nowhere, rather than let it quietly become unreachable from the GUI
+//! (F-01 §4).
 //!
 //! Each topic lives in one place. A key is placed by what it changes, not by
 //! the config node it happens to be spelled under: `components.launcher` and
@@ -352,6 +354,21 @@ impl Page {
         !want.is_empty() && (want == title || want == lead)
     }
 
+    /// The page whose [`Page::path`] is exactly `path`, without the
+    /// leniency of [`Page::from_arg`]. Allocation-free: it runs per row.
+    pub fn from_path(path: &str) -> Option<Page> {
+        let (head, tail) = match path.split_once('/') {
+            Some((h, t)) => (h, Some(t)),
+            None => (path, None),
+        };
+        let section = Section::ALL.iter().copied().find(|s| slug_is(s.title(), head))?;
+        match (section.expands(), tail) {
+            (true, Some(t)) => section.pages().iter().copied().find(|p| slug_is(p.title(), t)),
+            (false, None) => Some(section.first()),
+            _ => None,
+        }
+    }
+
     /// `section/page` — the inverse of [`Page::from_arg`].
     pub fn path(self) -> String {
         let s = self.section();
@@ -390,6 +407,22 @@ fn slug(s: &str) -> String {
         .join("-")
 }
 
+/// Whether `seg` is `slug(title)`, compared word by word without building it.
+fn slug_is(title: &str, seg: &str) -> bool {
+    let mut words = title
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty());
+    let mut segs = seg.split('-');
+    loop {
+        match (words.next(), segs.next()) {
+            (None, None) => return true,
+            (Some(w), Some(s))
+                if w.len() == s.len() && w.bytes().map(|b| b.to_ascii_lowercase()).eq(s.bytes()) => {}
+            _ => return false,
+        }
+    }
+}
+
 /// Where a key appears: the section, the page within it, and the group
 /// heading on that page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -401,134 +434,17 @@ pub struct Place {
 
 /// Where a dotted config path appears, or `None` if nothing claims it.
 ///
-/// Matched on the path's leading nodes, so a key the compositor grows under a
-/// node already claimed lands with no change here — in particular every
-/// `launcher.*` key, by sub-node, as the compositor adds them.
+/// Read from the compositor's presentation table (`ec_abyss_config::meta`):
+/// each schema key names its page and group there, beside its label. A key
+/// that table does not know (one a newer compositor grew) lands where its
+/// top-level node's fallback puts it, or nowhere.
 pub fn place_for(path: &str) -> Option<Place> {
-    let (page, group) = page_for(path)?;
+    let (page, group) = ec_abyss_config::meta::place(path)?;
+    let page = Page::from_path(page)?;
     Some(Place {
         section: page.section(),
         page,
         group,
-    })
-}
-
-fn page_for(path: &str) -> Option<(Page, &'static str)> {
-    // Keys placed by what they change rather than by the node they are
-    // spelled under.
-    match path {
-        "components.launcher" => return Some((Page::LauncherStyle, "launcher")),
-        // It decides whether terminal apps are offered at all, so it sits
-        // beside `launcher.search.terminal-apps`.
-        "misc.terminal-command" => return Some((Page::LauncherSearch, "search")),
-        "components.bar" => return Some((Page::BarAppearance, "bar")),
-        "misc.render-device" => return Some((Page::Rendering, "rendering")),
-        "misc.gpu-mode" | "misc.secondary-compositing" | "misc.discrete-gpu-apps" => {
-            return Some((Page::Rendering, "graphics"))
-        }
-        "misc.scripted-input" => return Some((Page::Privacy, "input scripting")),
-        "mode" => return Some((Page::Mode, "interaction")),
-        _ => {}
-    }
-    let mut parts = path.split('.');
-    let node = parts.next().unwrap_or(path);
-    let rest = path[node.len()..].trim_start_matches('.');
-    let sub = parts.next().unwrap_or_default();
-    let starts = |p: &str| rest.starts_with(p);
-    Some(match node {
-        "components" => (Page::Components, "components"),
-        "wallpaper" => (Page::Wallpaper, "wallpaper"),
-        "general" => {
-            // The scheme decides the colour of every material the Blur &
-            // glass page tunes, so its controls live beside them.
-            if starts("color-scheme")
-                || starts("accent")
-                || starts("light-from")
-                || starts("dark-from")
-                || starts("theme-")
-            {
-                (Page::Blur, "colour scheme")
-            } else if starts("gaps-") {
-                (Page::Gaps, "gaps")
-            } else if starts("border-") || starts("col-") {
-                (Page::Borders, "borders")
-            } else if starts("maximize-") {
-                (Page::Focus, "new windows")
-            } else if starts("drop-") {
-                (Page::Focus, "drag guides")
-            } else if starts("focus-")
-                || starts("cursor-")
-                || starts("follow-")
-                || starts("unfocus-")
-                || starts("refocus-")
-            {
-                (Page::Focus, "focus")
-            } else {
-                (Page::Layout, "layout")
-            }
-        }
-        "decoration" => match sub {
-            "blur" => (Page::Blur, "blur"),
-            "shadow" => (Page::Shadow, "shadow"),
-            "glow" => (Page::Shadow, "glow"),
-            // The window's material sits beside the blur it is drawn over.
-            "surface" => (Page::Blur, "surface"),
-            _ => (Page::Rounding, "windows"),
-        },
-        "animations" => (Page::Animations, "animations"),
-        "bar" => {
-            if starts("tray.") {
-                (Page::BarTray, "tray")
-            } else if starts("motion.") {
-                (Page::BarMotion, "motion")
-            } else if starts("fold-") || starts("idle-") {
-                (Page::BarFolding, "folding")
-            } else if starts("widgets.") || starts("clock.") {
-                (Page::BarWidgets, "widgets")
-            } else {
-                (Page::BarAppearance, "appearance")
-            }
-        }
-        "launcher" => match sub {
-            "centered" => (Page::LauncherCentered, "centered"),
-            "menu" => (Page::LauncherMenu, "in-bar menu"),
-            "search" => (Page::LauncherSearch, "search"),
-            "bind" | "binds" | "keybind" | "keybinds" => (Page::LauncherKeybinds, "keybinds"),
-            _ => (Page::LauncherStyle, "launcher"),
-        },
-        "input" => {
-            if starts("touchpad.") {
-                (Page::Touchpad, "touchpad")
-            } else if starts("kb-") || starts("repeat-") {
-                (Page::Keyboard, "keyboard")
-            } else {
-                (Page::Pointer, "pointer")
-            }
-        }
-        "idle" => (Page::Session, "idle"),
-        "render" => (Page::Rendering, "rendering"),
-        "xwayland" => (Page::Xwayland, "xwayland"),
-        "setup" => (Page::Setup, "setup"),
-        "ui" => (Page::General, "general"),
-        // The settings app's own preferences: today, how its search ranks.
-        "settings" => (Page::General, "search"),
-        "clipboard" => (Page::Privacy, "clipboard"),
-        "capture" => (Page::Privacy, "capture"),
-        "input-method" => (Page::Privacy, "input method"),
-        "virtual-pointer" => (Page::Privacy, "virtual pointer"),
-        "oracle-eyes" => {
-            if sub == "bind" {
-                (Page::OeGeneral, "keybinds")
-            } else if starts("debug") {
-                (Page::OeGeneral, "debug")
-            } else if starts("model-") {
-                (Page::OeGeneral, "model")
-            } else {
-                (Page::OeGeneral, "timing")
-            }
-        }
-        "annotations" => (Page::OeColours, "colours"),
-        _ => return None,
     })
 }
 
@@ -592,6 +508,44 @@ mod tests {
         assert_eq!(Page::Wallpaper.path(), "desktop/wallpaper");
         assert_eq!(Page::Blur.path(), "effects/blur-glass");
         assert_eq!(Page::Addons.path(), "add-ons");
+    }
+
+    #[test]
+    fn a_page_is_found_by_its_exact_path() {
+        for page in Page::all() {
+            assert_eq!(Page::from_path(&page.path()), Some(page), "{}", page.path());
+        }
+        assert_eq!(Page::from_path("windows"), None);
+        assert_eq!(Page::from_path("display/display"), None);
+        assert_eq!(Page::from_path("effects/blur"), None);
+    }
+
+    /// Every row the compositor's presentation table describes is a real
+    /// schema key and lands on a real page with the group it names.
+    #[test]
+    fn every_meta_row_is_a_schema_key_on_a_real_page() {
+        for m in ec_abyss_config::meta::META {
+            assert!(
+                ec_abyss_config::schema::get_key(m.path).is_some(),
+                "{} is placed but not in the schema",
+                m.path
+            );
+            let page = Page::from_path(m.page).unwrap_or_else(|| panic!("{}: no page {:?}", m.path, m.page));
+            assert_eq!(
+                place_for(m.path),
+                Some(Place {
+                    section: page.section(),
+                    page,
+                    group: m.group
+                })
+            );
+        }
+        for (node, page, _) in ec_abyss_config::meta::NODE_FALLBACK {
+            assert!(
+                Page::from_path(page).is_some(),
+                "{node} falls back to no page {page:?}"
+            );
+        }
     }
 
     #[test]

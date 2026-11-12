@@ -11,7 +11,7 @@ use serde_json::Value;
 /// title is never rendered — that is a policy invariant, not a nicety.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trust {
-    Private,
+    Normal,
     Secret,
 }
 
@@ -19,7 +19,7 @@ impl Trust {
     fn parse(s: Option<&str>) -> Self {
         match s {
             Some("secret") => Trust::Secret,
-            _ => Trust::Private,
+            _ => Trust::Normal,
         }
     }
 }
@@ -241,7 +241,7 @@ mod tests {
     fn a_private_window_falls_back_to_its_app_id() {
         let wins = parse_windows(&json!([
             {"handle": 1, "app_id": "kitty", "title": "",
-             "floating": false, "focused": false, "trust": "private", "no_agent": false}
+             "floating": false, "focused": false, "trust": "normal", "no_agent": false}
         ]));
         assert_eq!(wins[0].label(), "kitty");
     }

@@ -220,7 +220,7 @@ fn matchers(rule: &Rule) -> String {
 fn rules(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
     let rows: Vec<Element<'_, Message, Theme>> = if policy.rules.is_empty() {
         vec![list_row(
-            "No window carries a policy-owned rule; every window is private and untrusted.",
+            "No window carries a policy-owned rule; every window is normal and untrusted.",
             value("0 rules"),
         )]
     } else {

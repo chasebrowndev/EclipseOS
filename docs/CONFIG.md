@@ -300,7 +300,9 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | --- | --- | --- | --- | --- |
 | `idle.dpms-timeout-seconds` | int 0..86400 | _unset_ | live | Inactivity before outputs power off. Unset or 0 disables. |
 | `idle.lock-timeout-seconds` | int 0..86400 | _unset_ | live | Inactivity before `idle.lock-command` runs. Unset or 0 disables. |
-| `idle.lock-command` | string | _unset_ | live | Locker to spawn on the lock timeout. Without one the timeout is inert. |
+| `idle.lock-command` | string | _unset_ | live | Locker to spawn on the lock timeout, `ec-ctl lock`, and to relaunch (with backoff) if it dies while the session is locked. Without one the lock timeout is inert. |
+| `idle.suspend-timeout-seconds` | int 0..86400 | _unset_ | live | Inactivity before the machine suspends (`systemctl suspend`). Unset or 0 never suspends on idle, the default. Idle inhibitors hold it off like the other stages (ADR 0099). |
+| `idle.lock-before-suspend` | bool | `#true` | live | Run `idle.lock-command` before an idle suspend and suspend only once the session reports locked. A session that does not lock within 10 s is not suspended (ADR 0099). |
 
 ### `input`
 
@@ -520,7 +522,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
 | `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |
 | `idle-inhibit` | `abyss.kdl` | `idle-inhibit` | Hold the idle timers off while the window is mapped. |
-| `sensitivity secret \| private` | `policy.kdl` | `sensitivity secret`<br>`sensitivity private` | Raise the capture sensitivity class. Raise-only: `public` is refused. |
+| `sensitivity secret \| normal` | `policy.kdl` | `sensitivity secret`<br>`sensitivity normal` | Raise the capture sensitivity class. Raise-only: `public` is refused. |
 | `app-trust standard \| trusted` | `policy.kdl` | `app-trust standard`<br>`app-trust trusted` | Trust level (COMP-07 §2). Clamped to `standard` for X11 windows. |
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |

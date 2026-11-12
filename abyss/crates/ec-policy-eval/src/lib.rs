@@ -20,6 +20,7 @@ pub mod check;
 pub mod classify;
 pub mod grant;
 pub mod link;
+pub mod rate;
 pub mod scope;
 pub mod table;
 pub mod task;
