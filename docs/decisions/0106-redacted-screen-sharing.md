@@ -157,12 +157,10 @@ being serviced. It is trusted UI and cannot be captured.
 - A click opens the emergency panel, as today.
 - It is not shown for the built-in screenshot (ADR 0093).
 
-**"Share anyway".** **Decided 2026-11-12 (owner):** allowed. A per-share,
-compositor-drawn (trusted UI, COMP-10 modal) prompt lifts redaction for that one window
-for that one share:
-- per window, per capture session, audited, never persisted;
-- the prompt cannot be captured, and the override widens authority, so it needs a
-  COMP-06 §3 amendment ("always" gains this one prompted exception) before it lands.
+**"Share anyway".** **Decided 2026-11-12 (owner): dropped.** There is no in-share
+override. An earlier answer the same day allowed a per-share trusted-UI prompt, but no
+way to reach it fit (from the share pill, a chip on the window, or a dialog at share
+start), so the owner withdrew it. COMP-06 §3's "always" stands unamended.
 
 Removing the rule in `policy.kdl` remains the standing way to stop redacting an app.
 
@@ -271,19 +269,20 @@ is for agent `capture.stream`.
 - Whole-output sharing with password managers redacted works after M0 with no code.
   That is a desktop feature built from the agent stack's parts.
 - The human can see that redaction is on, and what it hid, only after M1c.
-- "Share anyway" is a per-share trusted-UI prompt; it needs the COMP-06 §3 amendment.
+- No "share anyway": a `secret` window cannot be shown in a share except by removing
+  its rule.
 - We owe:
   - tests: placeholder card pixels; the indicator is absent from captures; a toast
     is held while `capture_active` is set; an unassociated X11 window contributes no
     pixel;
   - the CONFIG.md entries for `capture.redact-class` and the toast-during-share setting;
-  - the COMP-10 §3.6, COMP-07 §2 and COMP-06 §3 amendments, as the owner decides.
+  - the COMP-10 §3.6 and COMP-07 §2 amendments, as the owner decides.
 
 ## Open owner questions
 1. ~~In human shares, are `private` windows shown, or redacted by default?~~
    **Decided 2026-11-11 (owner):** `normal` (formerly `private`) windows are shown.
-2. ~~"Share anyway"?~~ **Decided 2026-11-12 (owner):** allowed, via a per-share trusted-UI
-   prompt; see Decision.
+2. ~~"Share anyway"?~~ **Decided 2026-11-12 (owner):** dropped; no in-share override.
+   Removing the rule is the only way to share a `secret` app. See Decision.
 3. ~~Placeholder look?~~ **Decided 2026-11-12 (owner):** glass police tape, "Private:
    Redacted", no title, no icon.
 4. ~~X11 password managers?~~ **Decided 2026-11-12 (owner):** redacted; amend COMP-07 §2.
