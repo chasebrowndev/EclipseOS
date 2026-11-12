@@ -938,7 +938,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "ec-abyss-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ec-theme",
@@ -951,7 +951,7 @@ dependencies = [
 
 [[package]]
 name = "ec-center"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "ec-services",
@@ -962,7 +962,7 @@ dependencies = [
 
 [[package]]
 name = "ec-cheatsheet"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-abyss-config",
  "ec-ui",
@@ -974,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "ec-console"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-console-client",
  "ec-ipc",
@@ -987,7 +987,7 @@ dependencies = [
 
 [[package]]
 name = "ec-console-client"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
  "wayland-backend",
@@ -997,7 +997,7 @@ dependencies = [
 
 [[package]]
 name = "ec-desktop"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "ec-services",
@@ -1011,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "ec-glass-host"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "serde_json",
@@ -1019,7 +1019,7 @@ dependencies = [
 
 [[package]]
 name = "ec-greeter"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-theme",
  "libc",
@@ -1028,7 +1028,7 @@ dependencies = [
 
 [[package]]
 name = "ec-hyperion-bar"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-abyss-config",
  "ec-ipc",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "ec-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde_json",
@@ -1052,7 +1052,7 @@ dependencies = [
 
 [[package]]
 name = "ec-launcher"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "ec-services",
@@ -1064,7 +1064,7 @@ dependencies = [
 
 [[package]]
 name = "ec-lock"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "ec-ui",
@@ -1076,7 +1076,7 @@ dependencies = [
 
 [[package]]
 name = "ec-policy-viewer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-abyss-config",
  "ec-ipc",
@@ -1087,7 +1087,7 @@ dependencies = [
 
 [[package]]
 name = "ec-protocols"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "wayland-backend",
  "wayland-client",
@@ -1097,7 +1097,7 @@ dependencies = [
 
 [[package]]
 name = "ec-secret-prompt"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-services",
  "ec-ui",
@@ -1107,7 +1107,7 @@ dependencies = [
 
 [[package]]
 name = "ec-services"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "libc",
@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "ec-settings"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-abyss-config",
  "ec-greeter",
@@ -1140,18 +1140,18 @@ dependencies = [
 
 [[package]]
 name = "ec-steam-glass"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "ec-theme"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "ec-toasts"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "ec-services",
@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "ec-ui"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "ec-protocols",
@@ -1177,7 +1177,7 @@ dependencies = [
 
 [[package]]
 name = "ec-wallpaper"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-ipc",
  "ec-ui",

@@ -26,7 +26,7 @@ members = [
 # socket client, a path dependency on the sibling `abyss/` workspace.
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 license = "AGPL-3.0-only"
