@@ -196,6 +196,8 @@ pub struct AbyssState {
     pub tablet_in_use: Option<smithay::wayland::tablet_manager::TabletHandle>,
     /// Per-window border quads, kept alive across frames.
     pub borders: crate::render::BorderStore,
+    /// The wallpaper's decode worker (ADR 0104); the pixels live in `borders`.
+    pub wallpaper: crate::outputs::wallpaper::Loader,
     /// The capture pass's own effect store (CAP-01): never the on-screen
     /// `borders`, so a captured backdrop samples only the redacted list.
     pub capture_fx: crate::render::still::Still,
@@ -662,6 +664,7 @@ impl AbyssState {
             finger_scroll_forwarded: false,
             tablet_in_use: None,
             borders: crate::render::BorderStore::default(),
+            wallpaper: Default::default(),
             capture_fx: crate::render::still::Still::default(),
             shot: Default::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),

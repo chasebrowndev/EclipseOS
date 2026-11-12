@@ -441,6 +441,7 @@ fn redraw(
     // Commit slots follow their window this frame, not 50 ms later.
     crate::trusted_ui::commit::tick(state);
     crate::trusted_ui::indicator::tick(state);
+    crate::outputs::wallpaper::tick(state);
     // An output resized by the IPC layer needs a target of the new size before
     // anything is drawn into it; a stale one would crop or stretch the frame.
     if let Some(mode) = out.current_mode() {
@@ -610,6 +611,7 @@ fn redraw(
         }
     };
     let render_time = frame_start.elapsed();
+    dump_frame(data);
     update_primary_scanout(&state.space, out, &rendered);
     let prompt = crate::trusted_ui::holds_seat(state);
     crate::render::capture::service(state, &mut data.renderer, prompt);
@@ -630,6 +632,53 @@ fn redraw(
     send_frames(&state.space, out, time);
     state.space.refresh();
     state.popups.cleanup();
+}
+
+/// Test aid: with `EC_ABYSS_HEADLESS_DUMP=<file.png>` set, write the composited
+/// frame there every 30th frame. This is the compositor's own output (the
+/// wallpaper and every compositor-drawn element included), not a capture, so
+/// it only exists on the headless backend, which has no screen to show it on.
+fn dump_frame(data: &mut HeadlessData) {
+    use smithay::backend::renderer::{Bind, ExportMem};
+    static PATH: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    static FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let Some(path) = PATH.get_or_init(|| std::env::var_os("EC_ABYSS_HEADLESS_DUMP").map(Into::into)) else {
+        return;
+    };
+    if FRAME.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 30 != 0 {
+        return;
+    }
+    let region = smithay::utils::Rectangle::from_size(data.size);
+    let pixels = (|| -> anyhow::Result<Vec<u8>> {
+        let fb = Bind::bind(&mut data.renderer, &mut data.target)?;
+        let mapping =
+            ExportMem::copy_framebuffer(&mut data.renderer, &fb, region, crate::render::capture::FORMAT)?;
+        Ok(ExportMem::map_texture(&mut data.renderer, &mapping)?.to_vec())
+    })();
+    let Ok(rgbx) = pixels else {
+        return;
+    };
+    let mut rgb = Vec::with_capacity(rgbx.len() / 4 * 3);
+    for px in rgbx.chunks_exact(4) {
+        rgb.extend_from_slice(&px[..3]);
+    }
+    let tmp = path.with_extension("tmp");
+    let written = (|| -> anyhow::Result<()> {
+        let file = std::fs::File::create(&tmp)?;
+        let mut enc = png::Encoder::new(
+            std::io::BufWriter::new(file),
+            data.size.w as u32,
+            data.size.h as u32,
+        );
+        enc.set_color(png::ColorType::Rgb);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()?.write_image_data(&rgb)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    })();
+    if let Err(e) = written {
+        tracing::warn!(error = %e, "EC_ABYSS_HEADLESS_DUMP");
+    }
 }
 
 /// Send `event`, then block until the loop has handled it.

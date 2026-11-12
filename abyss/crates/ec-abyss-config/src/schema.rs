@@ -144,7 +144,7 @@ pub const LEGACY_COMPONENT_IDS: &[(&str, &str)] = &[
     ("eclipse-center", "ec-center"),
 ];
 
-/// `wallpaper.mode` values, as `ec-wallpaper` draws them.
+/// `wallpaper.mode` values (the compositor and `ec-wallpaper` agree on them).
 pub const WALLPAPER_MODES: &[&str] = &["fill", "fit", "center"];
 /// `wallpaper.color` default, `#0b0906`.
 pub const WALLPAPER_DEFAULT_COLOR: [f32; 4] = [11.0 / 255.0, 9.0 / 255.0, 6.0 / 255.0, 1.0];
@@ -290,14 +290,14 @@ pub const TABLE: &[Key] = &[
         Live,
         "Which control center `abyss-session` runs (COMP-17 §2.2).",
     ),
-    // wallpaper: read by the ec-wallpaper daemon; abyss draws nothing
+    // wallpaper: drawn by the compositor (ADR 0104); `ec-wallpaper` reads the same keys
     k(
         "wallpaper.path",
         Ty::Str,
         Null,
         Abyss,
         Live,
-        "Image file drawn behind all windows. Unset or unreadable falls back to color.",
+        "PNG or JPEG file the compositor draws behind all windows, on every output. Unset, unreadable or not a PNG/JPEG falls back to color; while it loads the output shows the color.",
     ),
     k(
         "wallpaper.mode",

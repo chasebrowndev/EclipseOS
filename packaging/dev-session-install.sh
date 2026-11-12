@@ -30,6 +30,7 @@ mkdir -p "$apps"
 cp "$here"/applications/*.desktop "$apps/"
 
 systemctl --user daemon-reload
-systemctl --user enable ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service \
+systemctl --user disable ec-wallpaper.service 2>/dev/null || true  # abyss draws it (ADR 0104)
+systemctl --user enable ec-hyperion-bar.service ec-toasts.service ec-screensaver.service \
     ec-pairing.service ec-lock-trigger.service
 echo "installed into $dest, ExecStart -> $bin"
