@@ -668,6 +668,10 @@ fn the_agent_socket_serves_only_the_agent_manager() {
         "xdg_wm_base",
     ];
     let (mut h, path) = hooked("only.sock", true);
+    // The virtual pointer is admission-gated (ADR 0094); admit this test
+    // binary so the human display carries it.
+    let me = std::env::current_exe().unwrap().to_string_lossy().into_owned();
+    h.state.virtual_pointer.allow.set(vec![me]);
 
     // The human display does carry them, so their absence below means
     // something.

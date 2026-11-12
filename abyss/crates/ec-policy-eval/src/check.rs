@@ -329,7 +329,7 @@ mod tests {
             capability,
             app_id: None,
             title: None,
-            class: Class::Private,
+            class: Class::Normal,
             app_trust: Trust::Standard,
             app_irreversible_capable: false,
             node: None,

@@ -260,10 +260,11 @@ fn restore_floating(state: &mut AbyssState, window: &Window, p: Remembered) -> b
     });
     // Same bookkeeping as `place_new_window`, minus the placement decision.
     classify(state, window);
-    crate::protocols::standard::foreign_toplevel::window_mapped(state, window);
     // Property rules (opacity, blur, trust) still apply to the new `Window`,
     // but its placement is final: a settle pass must not move it again.
     let _ = rules::apply(state, window);
+    // After the rules, so a `sensitivity` rule withholds it (ADR 0094).
+    crate::protocols::standard::foreign_toplevel::window_mapped(state, window);
     window.user_data().insert_if_missing(|| rules::Placed);
     if !state.lock.locked {
         state.focus = Some(window.clone());
@@ -300,9 +301,21 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
         .find(|w| window_surface(w).as_ref() == Some(surface))
         .cloned();
     if let Some(window) = mapped {
+        // Title-matching rules are re-evaluated on title change (COMP-05 §4).
+        // Not for an X11 window that places itself (override-redirect menu,
+        // tooltip): it was never placed by a rule, so the pass would read its
+        // transient/popup hints as a dialog and re-install it as a floating
+        // window centred on the output, away from where X put it. Before the
+        // foreign-toplevel update, so a title that raises the class to
+        // `secret` withdraws the entry instead of being published (ADR 0094).
+        if !is_unmanaged_x11(state, &window) {
+            if let Some(placement) = rules::reevaluate(state, &window) {
+                replace_window(state, &window, &placement);
+            }
+        }
         // Title and app_id can change at any commit; the foreign-toplevel list
         // has no other notification path for them. The bar hears it over IPC.
-        if crate::protocols::standard::foreign_toplevel::window_updated(&window) {
+        if crate::protocols::standard::foreign_toplevel::window_updated(state, &window) {
             // A titlebar shows the title: redraw (the bar's texture is the only
             // thing that changes, so only the bar is damaged).
             if titlebar::bar_of(&window).is_some() {
@@ -314,16 +327,6 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
                 "window",
                 serde_json::json!({"change": "title", "handle": handle}),
             );
-        }
-        // Title-matching rules are re-evaluated on title change (COMP-05 §4).
-        // Not for an X11 window that places itself (override-redirect menu,
-        // tooltip): it was never placed by a rule, so the pass would read its
-        // transient/popup hints as a dialog and re-install it as a floating
-        // window centred on the output, away from where X put it.
-        if !is_unmanaged_x11(state, &window) {
-            if let Some(placement) = rules::reevaluate(state, &window) {
-                replace_window(state, &window, &placement);
-            }
         }
         if window.toplevel().is_none() {
             // X11: no configure handshake to complete on this side.

@@ -266,6 +266,12 @@ fn generate() -> String {
         let _ = writeln!(out, "## `{}`\n", file(owner));
         if owner == Owner::Policy {
             out.push_str("Read-only over the socket. A GUI shows these; it cannot change them.\n\n");
+            out.push_str(
+                "Admission lists (`capture.allow`, `clipboard.data-control-allow`, `input-method.allow`, `virtual-pointer.allow`) name executables, not process names (ADR 0094). An entry containing `/` is an exact absolute path; a bare name means `/usr/bin/<name>`, so `grim` admits `/usr/bin/grim` and not `/tmp/grim`. A symlink entry admits its target as of the last load (the dev layout's `/usr/local/bin/<bin>`). A binary outside `/usr/bin` needs its path: `/usr/lib/xdg-desktop-portal-wlr`. A client whose binary was deleted or replaced since it started is denied; restart it. An entry naming no existing file admits nothing and is logged as a warning.\n\n",
+            );
+            out.push_str(
+                "Upgrade note (ADR 0094): entries for binaries outside `/usr/bin` must become absolute paths. An existing `capture { allow \"xdg-desktop-portal-wlr\" }` admits nothing now; write `allow \"/usr/lib/xdg-desktop-portal-wlr\"`.\n\n",
+            );
         }
         let mut nodes: Vec<&str> = Vec::new();
         for k in TABLE.iter().filter(|k| k.owner == owner) {
@@ -283,6 +289,9 @@ fn generate() -> String {
             section(&mut out, &keys);
             if node == "animations" {
                 animations(&mut out);
+            }
+            if node == "wallpaper" {
+                out.push_str("The compositor draws the wallpaper itself (ADR 0104): one picture per output, decoded off the main thread and drawn as the bottom-most element, under the background layer, so blur behind translucent windows samples it. A background-layer client still draws over it; `ec-wallpaper` is no longer started by the session but stays installed for other hosts. A colour left at the built-in default follows the theme's base colour. A reload re-reads the file. Screenshots and screen shares include it (it is `public`).\n\n");
             }
         }
         let cs: Vec<&Collection> = COLLECTIONS.iter().filter(|c| c.owner == owner).collect();

@@ -8,7 +8,14 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   hold no capability and enforce no policy; a compromised service can annoy
   the human, not escalate. Anything that would need to be trusted belongs in
   `abyss/src/trusted_ui/` instead.
-- Lib plus three bins. The lib is linked by the panes (`notifications`, `tray`,
+- `src/bin/ec-lock-trigger.rs` starts `ec-lock` on logind's `Session.Lock`
+  for the display session and on `PrepareForSleep(true)`, holding a sleep
+  `delay` inhibitor for at most `session::SLEEP_GRACE` (3 s, under logind's
+  5 s default). It only ever starts the locker, in its own `app-*.scope` so a
+  unit restart never kills it; nothing logind says (`Unlock`) unlocks. The
+  decision logic is pure (`session::{classify, respond, release_sleep_delay}`)
+  (`packaging/ec-lock-trigger.service`, ADR 0095).
+- Lib plus bins. The lib is linked by the panes (`notifications`, `tray`,
   `status`, `session`, `apps`, which launches each app in its own `app-*.scope` and, via `app_scope`, stops opted-in apps such as Zoom when their last window closes); `src/bin/ec-screensaver.rs` owns
   `org.freedesktop.ScreenSaver` and forwards inhibits to the compositor
   (`packaging/ec-screensaver.service`); `src/bin/ec-pairing.rs` is the
@@ -16,8 +23,10 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   (`packaging/ec-pairing.service`, ADR 0066); `src/bin/ec-polkit-agent.rs` is
   the session's polkit agent, **TCB**, holds no secret (`packaging/ec-polkit-agent.service`,
   ADR 0088); `src/bin/ec-portal.rs` is the
-  xdg-desktop-portal Settings backend (`org.freedesktop.appearance` from the
-  compositor's `get_theme`/`theme`, ADR 0084; `packaging/ec-portal.service`).
+  xdg-desktop-portal backend: Settings (`org.freedesktop.appearance` from the
+  compositor's `get_theme`/`theme`, ADR 0084) and FileChooser (`filechooser.rs`,
+  one `ec-fog-ui --pick` child per request, ADR 0100; app strings reach it as
+  sanitized argv values only, never through a shell; `packaging/ec-portal.service`).
 - Deps stay at `zbus` (already in the tree via iced_layershell → mundy, so no
   new supply chain), `ec-ipc` and `serde_json`, plus what ADR 0065
   admits for the taskbar widgets: `pulseaudio` (pure-Rust PulseAudio

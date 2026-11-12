@@ -32,10 +32,12 @@ root=$(CDPATH= cd -- "$here/.." && pwd)
 
 BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher
       ec-settings ec-policy-viewer ec-console ec-cheatsheet ec-ctl ec-screensaver ec-secret-prompt
-      ec-pairing ec-polkit-agent ec-portal'
-UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service'
-# Installed but never enabled: abyss starts it only under mode "de" (no [Install]).
-DESKTOP_UNIT='ec-desktop.service'
+      ec-pairing ec-polkit-agent ec-portal ec-lock ec-lock-trigger'
+UNITS='ec-hyperion-bar.service ec-toasts.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service ec-lock-trigger.service'
+# Installed but never enabled: abyss starts ec-desktop only under mode "de" (no
+# [Install]); abyss draws the wallpaper itself (ADR 0104), ec-wallpaper stays for
+# other hosts.
+DESKTOP_UNIT='ec-desktop.service ec-wallpaper.service'
 # The agent stack add-on, as the PKGBUILD's eclipseos-agents ships it.
 AGENT_BINS='ec-policyd ec-brokerd ec-agentd ec-audit ec-secret ec-inferenced'
 AGENT_UNITS='ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service'
@@ -69,6 +71,7 @@ if [ "$uninstall" -eq 1 ]; then
                $(for u in $AGENT_UNITS; do printf '/usr/lib/systemd/user/%s ' "$u"; done) \
                /usr/share/eclipse/addons/eclipseos-agents.kdl \
                /usr/bin/abyss-session \
+               /etc/pam.d/ec-lock \
                /usr/share/wayland-sessions/abyss.desktop \
                $(for u in $UNITS $DESKTOP_UNIT; do printf '/usr/lib/systemd/user/%s ' "$u"; done) \
                /usr/lib/systemd/user/abyss-session.target \
@@ -168,6 +171,10 @@ sudo install -Dm 0755 -t /usr/bin $(for b in $BINS; do printf '%s ' "$bin/$b"; d
 #    because WAYLAND_DISPLAY does not exist until the socket does (ADR 0032).
 sudo install -Dm 0755 "$here/abyss-session" /usr/bin/abyss-session
 
+# 2a. The screen locker's PAM service (ADR 0095). Without it PAM falls back to
+#     `other`, which denies everything, and the locker could never unlock.
+sudo install -Dm 0644 "$here/pam.d/ec-lock" /etc/pam.d/ec-lock
+
 # 3. The session entry the greeter lists. greetd/regreet, GDM, SDDM and LightDM
 #    all build their session menu by scanning this directory — no greeter
 #    configuration is needed, and the entry already points at /usr/bin.
@@ -178,7 +185,7 @@ sudo install -Dm 0644 "$here/abyss.desktop" /usr/share/wayland-sessions/abyss.de
 sudo install -Dm 0644 -t /usr/lib/systemd/user \
     "$here/abyss-session.target" "$here/ec-hyperion-bar.service" "$here/ec-toasts.service" \
     "$here/ec-wallpaper.service" "$here/ec-desktop.service" "$here/ec-screensaver.service" "$here/ec-pairing.service" \
-    "$here/ec-polkit-agent.service" "$here/ec-portal.service"
+    "$here/ec-polkit-agent.service" "$here/ec-portal.service" "$here/ec-lock-trigger.service"
 
 # 4a. The colour-scheme portal backend (ADR 0084). Bus-activated, not enabled.
 sudo install -Dm 0644 -t /usr/share/dbus-1/services "$here/dbus/org.freedesktop.impl.portal.desktop.abyss.service"
@@ -244,6 +251,8 @@ done
 
 say "enabling the session's own services for $user"
 systemctl --user daemon-reload
+# Earlier installs enabled ec-wallpaper; abyss draws the wallpaper now.
+systemctl --user disable --now ec-wallpaper.service 2>/dev/null || true
 systemctl --user enable $UNITS
 
 cat <<EOF

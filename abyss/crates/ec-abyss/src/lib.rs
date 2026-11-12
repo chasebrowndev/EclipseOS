@@ -9,6 +9,7 @@ pub mod addons;
 pub mod audit;
 pub mod backend;
 pub mod config;
+pub mod contain;
 pub mod input;
 pub mod ipc;
 pub mod kiosk;

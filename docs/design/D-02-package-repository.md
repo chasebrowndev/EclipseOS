@@ -132,7 +132,8 @@ unhelpful error. This is the step people forget.
 
 No downgrades, no rollback, no pinning, no staged rollout. Those belong to D-04,
 which is where the question "what happens when an upgrade breaks the session"
-is answered. D-02's job ends when a signed package is reachable.
+is answered. D-02's job ends when a signed package is reachable. Until D-04,
+ADR 0101 keeps the previous compositor build as a fallback session, chosen at the login screen.
 
 ## Release hosting (planned, not yet built)
 

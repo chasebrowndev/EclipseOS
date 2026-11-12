@@ -9,6 +9,8 @@
 //! Everything below the hero (model, timing, debug, colours) is ordinary
 //! schema rows from the `oracle-eyes` and `annotations` blocks of abyss.kdl.
 
+use std::path::{Path, PathBuf};
+
 use iced::widget::{column, row, text, Space};
 use iced::{Alignment, Element, Length, Theme};
 
@@ -37,9 +39,10 @@ pub fn approval_line(key: &crate::schema::Row) -> &'static str {
     }
 }
 
-/// The names a `capture { allow … }` line may grant the daemon under: its
-/// executable, and the add-on id the spec still spells it as.
-const GRANTED_AS: [&str; 2] = ["ec-oracle-eyes", ADDON];
+/// Where the daemon may be installed, in the order a launch finds it: the dev
+/// layout's `/usr/local/bin` symlink (`packaging/install-session.sh` rewrites
+/// the unit's `ExecStart` to it), then the package's `/usr/bin`.
+const DAEMON_PATHS: [&str; 2] = ["/usr/local/bin/ec-oracle-eyes", "/usr/bin/ec-oracle-eyes"];
 
 /// What `policy.kdl` says about Oracle Eyes capturing the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,13 +71,37 @@ pub fn read_grant() -> Grant {
         .files
         .iter()
         .any(|f| matches!(f.state, ec_policy_viewer::read::FileState::Read));
-    grant_in(policy.capture_allow.entries.iter().map(|e| e.name.as_str()), read)
+    grant_in(
+        policy.capture_allow.entries.iter().map(|e| e.name.as_str()),
+        &daemon_exe(),
+        read,
+    )
 }
 
-/// `allowed` is every name on the merged `capture { allow … }` list; `read`
-/// whether any policy file parsed at all.
-fn grant_in<'a>(mut allowed: impl Iterator<Item = &'a str>, read: bool) -> Grant {
-    if allowed.any(|n| GRANTED_AS.contains(&n)) {
+/// The daemon's executable as the compositor sees it: `/proc/<pid>/exe` is
+/// canonical, so the first installed candidate with its symlinks resolved.
+/// Installed nowhere: the package path, which is where an install puts it.
+fn daemon_exe() -> PathBuf {
+    DAEMON_PATHS
+        .iter()
+        .find_map(|p| std::fs::canonicalize(p).ok())
+        .unwrap_or_else(|| PathBuf::from(DAEMON_PATHS[1]))
+}
+
+/// Whether one `capture.allow` entry admits `exe`, by the compositor's own
+/// rule (ADR 0094): a bare name is `/usr/bin/<name>`, an entry with a slash is
+/// that exact absolute path, and the entry is resolved through symlinks, kept
+/// literal when it names no file. A malformed entry admits nothing.
+fn admits(entry: &str, exe: &Path) -> bool {
+    ec_abyss_config::exe_entry_path(entry)
+        .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+        .is_some_and(|p| p == exe)
+}
+
+/// `allowed` is every entry on the merged `capture { allow … }` list, `exe`
+/// the daemon's resolved executable, `read` whether any policy file parsed.
+fn grant_in<'a>(mut allowed: impl Iterator<Item = &'a str>, exe: &Path, read: bool) -> Grant {
+    if allowed.any(|n| admits(n, exe)) {
         Grant::Granted
     } else if read {
         Grant::NotGranted
@@ -161,10 +188,62 @@ pub fn hero(app: &App) -> Element<'_, Message, Theme> {
 mod tests {
     use super::*;
 
+    /// `/usr/bin/ec-oracle-eyes` as the compositor would compare it on this
+    /// host: resolved if it exists, literal if not.
+    fn packaged() -> PathBuf {
+        std::fs::canonicalize(DAEMON_PATHS[1]).unwrap_or_else(|_| DAEMON_PATHS[1].into())
+    }
+
+    fn grant(entries: &[&str], exe: &Path) -> Grant {
+        grant_in(entries.iter().copied(), exe, true)
+    }
+
     #[test]
-    fn the_grant_is_read_by_executable_name() {
-        assert_eq!(grant_in(["ec-oracle-eyes"].into_iter(), true), Grant::Granted);
-        assert_eq!(grant_in(["ec-hyperion-bar"].into_iter(), true), Grant::NotGranted);
-        assert_eq!(grant_in(std::iter::empty(), false), Grant::Unread);
+    fn a_bare_name_means_usr_bin() {
+        let exe = packaged();
+        assert_eq!(grant(&["ec-oracle-eyes"], &exe), Grant::Granted);
+        assert_eq!(grant(&["/usr/bin/ec-oracle-eyes"], &exe), Grant::Granted);
+        assert_eq!(grant(&["ec-hyperion-bar"], &exe), Grant::NotGranted);
+        // The same basename anywhere else is not the packaged daemon.
+        assert_eq!(
+            grant(&["ec-oracle-eyes"], Path::new("/tmp/ec-oracle-eyes")),
+            Grant::NotGranted
+        );
+    }
+
+    #[test]
+    fn the_add_on_id_is_not_the_executable() {
+        // `oracle-eyes` now means `/usr/bin/oracle-eyes`, which is not the daemon.
+        assert_eq!(grant(&["oracle-eyes"], &packaged()), Grant::NotGranted);
+    }
+
+    #[test]
+    fn a_malformed_entry_admits_nothing() {
+        for bad in ["", ".", "..", "bin/ec-oracle-eyes"] {
+            assert_eq!(grant(&[bad], &packaged()), Grant::NotGranted, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_symlink_entry_admits_the_file_it_points_to() {
+        let dir = std::env::temp_dir().join(format!("ec-settings-oracle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("ec-oracle-eyes");
+        let link = dir.join("link");
+        std::fs::write(&real, b"").unwrap();
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let exe = std::fs::canonicalize(&real).unwrap();
+        let entry = link.to_str().unwrap();
+        assert_eq!(grant(&[entry], &exe), Grant::Granted);
+        // A dev symlink entry does not admit the packaged daemon.
+        assert_eq!(grant(&[entry], &packaged()), Grant::NotGranted);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn nothing_read_is_unread_not_denied() {
+        assert_eq!(grant_in(std::iter::empty(), &packaged(), false), Grant::Unread);
+        assert_eq!(grant(&[], &packaged()), Grant::NotGranted);
     }
 }

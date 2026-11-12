@@ -1,0 +1,37 @@
+[package]
+name = "ec-lock"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The EclipseOS screen locker: an ext-session-lock-v1 client that unlocks only on PAM success (ADR 0095)."
+publish = false
+
+[lib]
+name = "ec_lock"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-lock"
+path = "src/main.rs"
+
+[dependencies]
+# Pinned to match ec-ui exactly (ADR 0039).
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool"] }
+# ext-session-lock-v1 surfaces for iced: the session-lock sibling of the
+# iced_layershell 0.19.1 the panes already use, from the same upstream
+# (waycrate/exwlshelleventloop). Adds three crates (iced_sessionlock,
+# iced_sessionlock_macros, sessionlockev), all MIT; every crate under them is
+# already in the tree through iced_layershell. No `linux-theme-detection`: the
+# palette comes from the compositor (ADR 0084), not from the desktop portal.
+iced_sessionlock = { version = "0.19.1", default-features = false }
+ec-ui = { path = "../ec-ui" }
+# getuid, getpwuid_r, localtime_r, flock, and the PAM conversation's
+# calloc/free. libpam itself is linked by `src/pam.rs` (no binding crate).
+libc = "0.2"
+
+[dev-dependencies]
+# tests/headless.rs asks the compositor whether the session is locked.
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
+serde_json.workspace = true

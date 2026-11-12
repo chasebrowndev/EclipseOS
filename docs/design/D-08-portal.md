@@ -1,5 +1,8 @@
 # D-08 — Desktop portal (`ecl-desktop-portal`)
-Status: specification only. Governing ADRs: 0096 (architecture), 0097 (scoped
+Status: P1 partly built in `portal/` (not packaged, not started by the session;
+ScreenCast answers from a stub backend; Wallpaper not yet served). Until this
+ships, ADR 0100's `ec-portal` FileChooser backend under upstream
+`xdg-desktop-portal` is what installs use. Governing ADRs: 0096 (architecture), 0097 (scoped
 capture grants + trusted confirm). Both are `proposed`.
 
 ## 1. What it is

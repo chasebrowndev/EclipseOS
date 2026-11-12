@@ -35,3 +35,12 @@ windowrule "float" { app-id "^zoom$"; }
 animations {
     preset "smooth"
 }
+
+// The locker the idle timeout runs: ec-lock (ADR 0095). Here, not in the
+// schema, because ec-lock ships in eclipseos-desktop and abyss installs
+// without it; this file ships in eclipseos-meta, which pulls the desktop in.
+// No timeout ships: `idle.lock-timeout-seconds` stays unset, so nothing locks
+// on its own until you set one in ~/.config.
+idle {
+    lock-command "ec-lock"
+}

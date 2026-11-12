@@ -20,7 +20,7 @@ use std::time::Duration;
 use ec_ipc::EventKind;
 use serde_json::Value;
 
-use super::{CloseReason, Event, Notification, Urgency};
+use super::{share, CloseReason, Event, Notification, Share, Urgency};
 
 /// The one slot config problems occupy. Reused, so a second report replaces
 /// the first on screen instead of stacking.
@@ -30,34 +30,58 @@ pub const CONFIG_ID: u32 = u32::MAX;
 /// non-Abyss host, or while Abyss restarts.
 const RETRY: Duration = Duration::from_secs(5);
 
-pub(super) fn spawn(events: Sender<Event>) {
+pub(super) fn spawn(events: Sender<Event>, share: Share) {
     let _ = thread::Builder::new()
         .name("eclipse-notifications-abyss".into())
-        .spawn(move || run(&events));
+        .spawn(move || run(&events, &share));
 }
 
-fn run(events: &Sender<Event>) {
+fn run(events: &Sender<Event>, share: &Share) {
     loop {
         if let Ok(mut client) = ec_ipc::Client::connect() {
             if client
-                .subscribe(&[EventKind::ConfigError, EventKind::Config])
+                .subscribe(&[EventKind::ConfigError, EventKind::Config, EventKind::Capture])
                 .is_ok()
-                && !pump(&mut client, events)
             {
-                // The GUI dropped its end; nobody is left to show anything.
-                return;
+                // The compositor replays a running share on subscribe, so the
+                // flag is right from here. The mode is read once now and again
+                // whenever a reload lands.
+                share.set_active(false);
+                refresh_mode(&mut client, share);
+                if !pump(&mut client, events, share) {
+                    // The GUI dropped its end; nobody is left to show anything.
+                    return;
+                }
             }
         }
+        // Without the socket nothing says a share ended: assume one runs.
+        share.lost();
         thread::sleep(RETRY);
     }
 }
 
+/// `ui.capture-toasts`; an older compositor without the key leaves the default.
+fn refresh_mode(client: &mut ec_ipc::Client, share: &Share) {
+    if let Some(mode) = client
+        .call("get_config", serde_json::json!({"path": "ui.capture-toasts"}))
+        .ok()
+        .and_then(|r| share::mode_of(&r))
+    {
+        share.set_mode(mode);
+    }
+}
+
 /// Forward events until the socket dies (`true`) or the GUI is gone (`false`).
-fn pump(client: &mut ec_ipc::Client, events: &Sender<Event>) -> bool {
+fn pump(client: &mut ec_ipc::Client, events: &Sender<Event>, share: &Share) -> bool {
     loop {
         let Ok(ev) = client.wait_event() else {
             return true;
         };
+        match ev.kind {
+            EventKind::Capture => share.on_capture(&ev.data),
+            EventKind::Config => refresh_mode(client, share),
+            _ => {}
+        }
         if let Some(out) = to_event(ev.kind, &ev.data) {
             if events.send(out).is_err() {
                 return false;

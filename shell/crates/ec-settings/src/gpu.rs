@@ -34,9 +34,6 @@ pub fn mode_blurb(mode: &str) -> Option<&'static str> {
     })
 }
 
-pub const SECONDARY_BLURB: &str =
-    "Advanced. Off: the main GPU draws every screen and copies to the other GPU's. On: that GPU draws its own.";
-
 pub const LOGIN_NOTE: &str = "Takes effect at next login";
 
 /// Whether the mode is hybrid; an unset key is the default, which is hybrid.
