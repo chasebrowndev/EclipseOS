@@ -6,27 +6,50 @@
 //! readable because the file is readable, not because a socket grants it. So
 //! the search path from `abyss`'s `config::search_path` is re-derived here,
 //! policy entries only, and parsed with the same `kdl` crate.
+//!
+//! Which keys and windowrule actions are policy-owned is not restated here: it
+//! is read from the schema (`ec_abyss_config::schema`, the `Policy` owner),
+//! which links no compositor. One the viewer cannot show yet is named in
+//! [`NOT_SHOWN_KEYS`] / [`NOT_SHOWN_RULES`]; a policy item in neither that this
+//! reader does not pick up fails the tests below.
 
 use std::path::{Path, PathBuf};
 
+use ec_abyss_config::schema::{Owner, RULE_ACTIONS, TABLE};
 use kdl::{KdlDocument, KdlNode, KdlValue};
 
-/// The four policy-owned scalar keys and the four policy-owned windowrule
-/// actions, restated locally so this crate does not link the whole compositor.
-///
-/// `abyss`'s `config::schema::tests::the_policy_owned_set_is_exactly_this`
-/// asserts the same two lists against the real table; [`the_policy_owned_set_is_mirrored`]
-/// below asserts them against this copy. A key changing owner fails there and
-/// has to be carried here by hand.
-pub const POLICY_KEYS: [&str; 4] = [
-    "misc.scripted-input",
-    "clipboard.data-control-allow",
-    "capture.allow",
-    "capture.redact-app-id",
+/// Every policy-owned scalar key, from the schema.
+pub fn policy_keys() -> impl Iterator<Item = &'static str> {
+    TABLE.iter().filter(|k| k.owner == Owner::Policy).map(|k| k.path)
+}
+
+/// Every policy-owned windowrule action, from the schema.
+pub fn policy_rules() -> impl Iterator<Item = &'static str> {
+    RULE_ACTIONS
+        .iter()
+        .filter(|(_, o)| *o == Owner::Policy)
+        .map(|(a, _)| *a)
+}
+
+/// Policy keys this viewer does not read or show yet. Each needs a reader
+/// here and a section in `view.rs`; until then it is listed, so a new policy
+/// key cannot go missing without a line saying so.
+pub const NOT_SHOWN_KEYS: &[&str] = &[
+    // ADR 0056 layer hiding: no section in the viewer yet.
+    "capture.hide-layer",
 ];
 
-/// Windowrule verbs the policy file owns.
-pub const POLICY_RULES: [&str; 4] = ["sensitivity", "app-trust", "seat-compat", "no-agent"];
+/// Policy windowrule actions this viewer does not show yet, as above.
+pub const NOT_SHOWN_RULES: &[&str] = &[
+    // S-06 §3.3 app-capable fallback opt-out: not listed in the viewer yet.
+    "irreversible-capable",
+];
+
+/// Whether a windowrule with this verb is shown: policy-owned and not
+/// [`NOT_SHOWN_RULES`].
+fn shown_rule(verb: &str) -> bool {
+    !NOT_SHOWN_RULES.contains(&verb) && policy_rules().any(|r| r == verb)
+}
 
 /// Where one line came from: which file, and which line of it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,6 +150,9 @@ pub struct Policy {
     pub data_control_allow: Allowlist,
     pub capture_allow: Allowlist,
     pub capture_redact: Allowlist,
+    pub capture_hide_layer: Allowlist,
+    pub input_method_allow: Allowlist,
+    pub virtual_pointer_allow: Allowlist,
     pub rules: Vec<Rule>,
 }
 
@@ -236,7 +262,22 @@ fn merge(policy: &mut Policy, doc: &KdlDocument, text: &str, path: &Path) {
                     match n.name().value() {
                         "allow" => policy.capture_allow = allowlist(n, text, path),
                         "redact-app-id" => policy.capture_redact = allowlist(n, text, path),
+                        "hide-layer" => policy.capture_hide_layer = allowlist(n, text, path),
                         _ => {}
+                    }
+                }
+            }
+            "input-method" => {
+                for n in node.children().iter().flat_map(|c| c.nodes()) {
+                    if n.name().value() == "allow" {
+                        policy.input_method_allow = allowlist(n, text, path);
+                    }
+                }
+            }
+            "virtual-pointer" => {
+                for n in node.children().iter().flat_map(|c| c.nodes()) {
+                    if n.name().value() == "allow" {
+                        policy.virtual_pointer_allow = allowlist(n, text, path);
                     }
                 }
             }
@@ -258,7 +299,7 @@ fn windowrule(node: &KdlNode, text: &str, path: &Path) -> Option<Rule> {
     let action = first_arg(node)?.as_string()?;
     let mut parts = action.split_whitespace();
     let verb = parts.next()?.to_owned();
-    if !POLICY_RULES.contains(&verb.as_str()) {
+    if !shown_rule(&verb) {
         return None;
     }
     let param = parts.next().map(str::to_owned);
@@ -348,27 +389,122 @@ mod tests {
     }
 
     #[test]
+    fn hidden_layers_read_beside_the_capture_allowlist() {
+        let p = parse("capture {\n  allow \"grim\"\n  hide-layer \"ec-hyperion-bar:eclipse-eye\"\n}\n");
+        let names: Vec<&str> = p.capture_hide_layer.entries.iter().map(|e| &*e.name).collect();
+        assert_eq!(names, ["ec-hyperion-bar:eclipse-eye"]);
+        assert_eq!(p.capture_hide_layer.entries[0].source.line, 3);
+        assert!(parse("capture {\n  allow\n}\n").capture_hide_layer.is_empty());
+    }
+
+    #[test]
+    fn the_injected_input_allowlists_read() {
+        let p = parse("input-method {\n  allow \"fcitx5\" \"kime\"\n}\nvirtual-pointer {\n  allow\n}\n");
+        let names: Vec<&str> = p.input_method_allow.entries.iter().map(|e| &*e.name).collect();
+        assert_eq!(names, ["fcitx5", "kime"]);
+        assert_eq!(p.input_method_allow.entries[0].source.line, 2);
+        assert!(p.virtual_pointer_allow.is_empty());
+        assert!(p.virtual_pointer_allow.declared.is_some());
+    }
+
+    #[test]
     fn garbage_is_a_report_not_a_panic() {
         assert!("windowrule {{{".parse::<KdlDocument>().is_err());
     }
 
+    /// A `policy.kdl` (or `abyss.kdl`) fragment setting `path` to a value of
+    /// its schema type, nested as the dotted path is.
+    fn fragment(path: &str) -> String {
+        use ec_abyss_config::schema::{get_key, Ty};
+        let value = match get_key(path).expect("a schema key").ty {
+            Ty::Bool => "#true",
+            Ty::Int { .. } => "1",
+            Ty::Float { .. } => "0.5",
+            _ => "\"probe\"",
+        };
+        let parts: Vec<&str> = path.split('.').collect();
+        let (leaf, nodes) = parts.split_last().expect("a path has a leaf");
+        let mut out = String::new();
+        for n in nodes {
+            out.push_str(n);
+            out.push_str(" {\n");
+        }
+        out.push_str(&format!("{leaf} {value}\n"));
+        for _ in nodes {
+            out.push_str("}\n");
+        }
+        out
+    }
+
+    /// Whether `path` reached the [`Policy`] the view draws. A policy key
+    /// the schema grows lands in no arm and so fails the test below until it
+    /// is read and shown, or listed in [`NOT_SHOWN_KEYS`].
+    fn landed(p: &Policy, path: &str) -> bool {
+        match path {
+            "misc.scripted-input" => p.scripted_input.is_some(),
+            "clipboard.data-control-allow" => p.data_control_allow.declared.is_some(),
+            "capture.allow" => p.capture_allow.declared.is_some(),
+            "capture.redact-app-id" => p.capture_redact.declared.is_some(),
+            "input-method.allow" => p.input_method_allow.declared.is_some(),
+            "virtual-pointer.allow" => p.virtual_pointer_allow.declared.is_some(),
+            _ => false,
+        }
+    }
+
+    fn untouched(p: &Policy) -> bool {
+        p.scripted_input.is_none()
+            && p.data_control_allow.declared.is_none()
+            && p.capture_allow.declared.is_none()
+            && p.capture_redact.declared.is_none()
+            && p.input_method_allow.declared.is_none()
+            && p.virtual_pointer_allow.declared.is_none()
+            && p.rules.is_empty()
+    }
+
     #[test]
-    fn the_policy_owned_set_is_mirrored() {
-        // Mirrors `ec_abyss_config::schema::tests::the_policy_owned_set_is_exactly_this`.
-        // If that test fails, this copy is the other half of the fix.
-        assert_eq!(
-            POLICY_KEYS,
-            [
-                "misc.scripted-input",
-                "clipboard.data-control-allow",
-                "capture.allow",
-                "capture.redact-app-id"
-            ]
-        );
-        assert_eq!(
-            POLICY_RULES,
-            ["sensitivity", "app-trust", "seat-compat", "no-agent"]
-        );
+    fn every_schema_policy_key_is_shown_or_listed_as_not_shown() {
+        assert!(policy_keys().count() > 0);
+        for path in policy_keys() {
+            let p = parse(&fragment(path));
+            if NOT_SHOWN_KEYS.contains(&path) {
+                assert!(
+                    !landed(&p, path),
+                    "{path} is shown now: drop it from NOT_SHOWN_KEYS"
+                );
+            } else {
+                assert!(
+                    landed(&p, path),
+                    "{path} is policy-owned and the viewer does not show it"
+                );
+            }
+        }
+        for path in NOT_SHOWN_KEYS {
+            assert!(policy_keys().any(|k| k == *path), "{path} is not a policy key");
+        }
+    }
+
+    #[test]
+    fn no_abyss_owned_key_is_read_as_policy() {
+        for key in TABLE.iter().filter(|k| k.owner == Owner::Abyss) {
+            let p = parse(&fragment(key.path));
+            assert!(
+                untouched(&p),
+                "{} is abyss-owned but the viewer read it",
+                key.path
+            );
+        }
+    }
+
+    #[test]
+    fn the_rules_shown_are_the_schema_policy_rules() {
+        for (verb, owner) in RULE_ACTIONS {
+            let p = parse(&format!("windowrule \"{verb} x\" {{\n  app-id \"a\"\n}}\n"));
+            let want = *owner == Owner::Policy && !NOT_SHOWN_RULES.contains(verb);
+            assert_eq!(p.rules.len() == 1, want, "{verb}");
+        }
+        for verb in NOT_SHOWN_RULES {
+            assert!(policy_rules().any(|r| r == *verb), "{verb} is not a policy rule");
+        }
     }
 
     #[test]

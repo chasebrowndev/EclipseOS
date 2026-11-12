@@ -413,9 +413,10 @@ fn evaluate(state: &mut AbyssState, window: &Window, placing: bool) -> (Placemen
             }
             // Settled after the loop by `irreversible_rule`.
             RuleAction::IrreversibleCapable(_) => {}
+            // `normal` (or its old spelling `private`) is the default class:
+            // such a rule raises nothing. Only `secret` raises.
+            RuleAction::Sensitivity(class) if class != "secret" => {}
             RuleAction::Sensitivity(_) => {
-                // Raise-only, and the class is already the strictest this
-                // build represents; there is nothing to lower.
                 if let Some(surface) = crate::shell::window_surface(window) {
                     if state.sensitive.insert(surface.clone()) {
                         record_class_source(&surface, rule_class_source(i));

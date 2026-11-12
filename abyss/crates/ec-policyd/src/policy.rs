@@ -20,7 +20,7 @@
 //!   (`node_role`, `node_name`) or facts abyss does not hold yet
 //!   (`workspace`, `pid_exe_hash`, `path`) are compile errors: dropping a
 //!   raising line would leave content under-classified, which fails open.
-//! - `defaults { sensitivity }` sets the default class (`private` or
+//! - `defaults { sensitivity }` sets the default class (`normal`, formerly `private`, or
 //!   `secret`, never `public`). Its other keys, and `irreversible`,
 //!   `profile`, `dedupe_exclude` and `trusted_endpoint`, are reported as
 //!   **not yet enforced**.
@@ -177,12 +177,12 @@ pub fn compile(files: &[(String, String)]) -> Result<Compiled, CompileError> {
                     for d in node.children().map(|c| c.nodes()).unwrap_or_default() {
                         if d.name().value() == "sensitivity" {
                             c.classifier.default = match strings(d).as_slice() {
-                                ["private"] => Class::Private,
+                                ["normal"] | ["private"] => Class::Normal,
                                 ["secret"] => Class::Secret,
                                 _ => {
                                     return Err(err(
                                         None,
-                                        "defaults sensitivity must be \"private\" or \"secret\"; only a classify \"public\" rule makes something public".into(),
+                                        "defaults sensitivity must be \"normal\" or \"secret\"; only a classify \"public\" rule makes something public".into(),
                                     ))
                                 }
                             };
@@ -593,7 +593,7 @@ mod tests {
             },
         };
         assert_eq!(check(&t, &ctx).rule, "no-secret-capture");
-        ctx.class = Class::Private;
+        ctx.class = Class::Normal;
         assert_eq!(check(&t, &ctx).outcome, Outcome::Allow);
         let channel = ["channel"];
         ctx.capability = "seat.action";
@@ -633,7 +633,7 @@ mod tests {
         .unwrap();
         assert_eq!(c.classifier.classify.len(), 2);
         assert_eq!(c.classifier.trust.len(), 2);
-        assert_eq!(c.classifier.default, Class::Private);
+        assert_eq!(c.classifier.default, Class::Normal);
         assert_eq!(c.not_enforced.len(), 2, "prompt_timeout and irreversible");
         for bad in [
             r#"classify "secret" { node_role "password"; }"#,
@@ -690,7 +690,7 @@ mod tests {
             capability: "click",
             app_id: None,
             title: None,
-            class: Class::Private,
+            class: Class::Normal,
             app_trust: Trust::Standard,
             app_irreversible_capable: false,
             node: None,

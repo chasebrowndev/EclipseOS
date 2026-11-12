@@ -2056,6 +2056,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // Commit slots follow their window this frame, not 50 ms later.
     crate::trusted_ui::commit::tick(state);
     crate::trusted_ui::indicator::tick(state);
+    crate::outputs::wallpaper::tick(state);
     let capture_active = state.capture_active();
     let prompt = crate::trusted_ui::holds_seat(state);
     // Over a slot card or an indicator too, the compositor's arrow replaces

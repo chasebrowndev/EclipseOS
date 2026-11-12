@@ -21,3 +21,6 @@ iced = { version = "0.14", default-features = false, features = ["wgpu", "advanc
 ec-ui = { path = "../ec-ui" }
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 kdl.workspace = true
+# Which keys and windowrule actions are policy-owned, read from the schema
+# rather than restated (ADR 0107). State-free: no compositor, no smithay.
+ec-abyss-config = { path = "../../../abyss/crates/ec-abyss-config" }

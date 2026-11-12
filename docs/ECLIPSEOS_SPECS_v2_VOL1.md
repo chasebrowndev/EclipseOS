@@ -664,11 +664,11 @@ An agent exploits `agentd` and inherits the privileged socket.
 Agent (or `registryd`) reads secrets from captures, trees, or clipboard and
 sends them to P7 or P9.
 - Mitigation: sensitivity classes enforced on every read path (tree, text,
-  capture, clipboard) in the compositor. Default class is `private`;
+  capture, clipboard) in the compositor. Default class is `normal`;
   `secret` for password managers, auth prompts, terminals showing key
   material (rule-based, plus app-declared raise), and any node with role
   `password`.
-- Mitigation: agents get `scene.read` (public+private) only when the task
+- Mitigation: agents get `scene.read` (public+normal) only when the task
   needs a human-facing app; `capture.secret` is never granted to
   general-purpose agents; `clipboard.read` is gated on the source
   toplevel's class.
@@ -773,7 +773,7 @@ burns cloud spend.
 ### T13 XWayland (S13)
 X11 apps observe each other.
 - Mitigation: X11 is a separate trust domain; all X11 toplevels default to
-  `private`; agents interacting with X11 apps are flagged in audit; secret
+  `normal`; agents interacting with X11 apps are flagged in audit; secret
   material should not be displayed in X11 apps (documented limitation).
 - Residual: inherent to X11. Accepted; XWayland is a compatibility path.
 
@@ -789,7 +789,7 @@ Malicious crate, package, or model.
 
 | Question | Decision | Basis |
 |---|---|---|
-| Default sensitivity class | **`private`**. `public` by rule only. | T5: fail closed on unknown apps. |
+| Default sensitivity class | **`normal`**. `public` by rule only. | T5: fail closed on unknown apps. |
 | Human keystroke logging | **Never by content.** Focus events only. | Building a keylogger into the TCB creates an A1 asset the TCB must then protect; not worth it. |
 | Can app-declared sensitivity lower the class? | **No.** Raise only. | T2. |
 | Are semantic trees trusted? | **No.** Data with provenance; actions still gated. | T2, B5. |
@@ -1169,7 +1169,7 @@ root `CLAUDE.md` as it stands.
 - No state mutation before `check()` returns Allow. Policy is fail-closed:
   unknown request, missing table entry, or an unavailable `policyd` = deny.
 - App-declared sensitivity may only raise a class, never lower it. Default
-  class is `private`.
+  class is `normal`.
 - `password`-role values are never delivered, logged, or stored.
 - Human input is never logged by content (keystrokes, clipboard, IME).
 - Single-threaded core. One `calloop` loop owns `AbyssState`. No locks on
@@ -1382,7 +1382,7 @@ source file, `cargo-deny` config.
 | **Capability** | Named permission (`scene.tree`, `seat.key`…), optionally scoped | grant |
 | **Grant** | Signed, time-boxed statement that a principal holds capabilities under scopes/quotas | capability |
 | **Scope** | Constraint on targets a capability applies to | sensitivity class |
-| **Sensitivity class** | `public` / `private` / `secret`, assigned per toplevel and per node; floor set by rules | trust class |
+| **Sensitivity class** | `public` / `normal` / `secret` (named `private` before 2026-11; the old word is still accepted in policy files, grants and window rules), assigned per toplevel and per node; floor set by rules | trust class |
 | **Trust class** | `trusted` / `standard` / `untrusted`, per app, describes how much to believe its content/tree | sensitivity class |
 | **Handle** | Stable `u64` id of a toplevel for the session | pid, node id |
 | **Node** | Element of a semantic tree | widget (toolkit-internal object) |
@@ -1746,7 +1746,7 @@ a session) exposed to agents. Associated metadata:
 handle, app_id, title, pid, cgroup, launching_principal,
 workspace, output, geometry (global logical px), scale,
 state {focused_by: [seats], minimized, maximized, fullscreen, floating},  // maximized: false outside `mode "de"` (C-20, C-24)
-sensitivity: {public | private | secret},
+sensitivity: {public | normal | secret},
 semantic: {none | atspi | native}, parent (for dialogs), children (popups)
 ```
 
@@ -1824,7 +1824,7 @@ Clipboard: agents read/write the clipboard through `eclipse_agent_v1`, not
 - X11 clients cannot participate in `eclipse_semantic_v1`; they are always
   `semantic: atspi|none`.
 - Security: X11 clients can snoop each other. Policy default: X11 windows
-  are `private` and X11 is a separate trust domain; an agent talking to an
+  are `normal` and X11 is a separate trust domain; an agent talking to an
   X11 app is flagged in audit.
 
 ---
@@ -1911,12 +1911,12 @@ Events carry serials for ordering against `result` events.
 
 ### 8.10 Capabilities (initial set; finalized by threat model)
 ```
-scene.read            scene.read.private   scene.read.secret
+scene.read            scene.read.normal   scene.read.secret
 scene.tree            scene.text
 seat.key              seat.pointer         seat.text
 seat.focus.agent      seat.focus.human     seat.atomic
 capture.toplevel      capture.output       capture.stream
-capture.private       capture.secret
+capture.normal       capture.secret
 clipboard.read        clipboard.write
 launch                workspace.manage     output.virtual
 window.move_resize    window.close         idle.inhibit
@@ -2003,7 +2003,7 @@ Division of labor:
   runtime; the compositor stores the current class and applies it to
   capture, tree, text, and clipboard paths.
 
-Assumption pending threat model: default sensitivity is `private`;
+Assumption pending threat model: default sensitivity is `normal`;
 `public` must be opted into by rule.
 
 ---
@@ -2113,7 +2113,7 @@ Decided 2026-09-04:
   visuals as Phase 1 stretch (§5.1).
 - Config format: **KDL** with Hyprland-like block structure. hyprlang is
   not reimplemented; Hyprland-config compatibility is a non-goal (§13).
-- Default sensitivity class: `private` (settled in THREAT_MODEL §6).
+- Default sensitivity class: `normal` (settled in THREAT_MODEL §6).
 - Human keystrokes are never logged by content (THREAT_MODEL §6, S-04 §2).
 - GPU baseline: NVIDIA-first; explicit sync mandatory, no implicit-sync
   fallback, no assumption of direct scanout or overlay planes (F-04 §2).
@@ -2572,6 +2572,10 @@ always**. A fullscreen toplevel that owns its output is drawn above the top
 layer, not above overlay. While the session is locked the lock surfaces replace
 everything below TrustedUI. A translucent layer surface gets its blur
 backdrop directly beneath it (§9). The drag icon is not yet drawn (code owed).
+
+*(amended ADR 0104, 2026-11-12)* Beneath everything, the compositor draws the
+wallpaper (`wallpaper.*` in `abyss.kdl`), class `public`; a background
+layer-shell client still draws over it. Capture passes draw it too, bottom-most.
 
 Trusted UI is a pass, not a client surface, and nothing can be scheduled
 after it (COMP-10, T9).
@@ -3300,7 +3304,7 @@ Toplevel {
   workspace, output, geometry, scale,
   states: {focused_by[], minimized, maximized, fullscreen, floating,
            urgent, sticky},           // maximized: false outside `mode "de"` (C-20, C-24)
-  sensitivity: public|private|secret,     // S-05, default private
+  sensitivity: public|normal|secret,     // S-05, default normal
   app_trust: trusted|standard|untrusted,  // S-05
   semantic: none|atspi|native,
   seat_compat: multi|lock,                // COMP-04 §8
@@ -3503,7 +3507,7 @@ actions add **`blur true|false`**, a per-window override of
 *(amended C-13, 2026-09-27)* `blur` also takes a mode,
 `off|blur|frost|glass`, overriding `decoration.blur.mode` for that window;
 `false` is `off`, and `true` is the global mode, or `blur` when that is `off`.
-`sensitivity` (raise-only: `private`, `secret`), `app-trust` (`standard`,
+`sensitivity` (raise-only: `normal`, `secret`), `app-trust` (`standard`,
 `trusted`), `seat-compat` and `no-agent` are policy-owned and live in
 `policy.kdl`; the rest live in `abyss.kdl` (ADR 0037). `output` matches by
 glob. `launching-principal` is refused as a config error until COMP-08
@@ -3602,7 +3606,7 @@ of this. Agent workspaces stay undecorated (§3.2).
   beneath the bar.
 - **Thumbnails.** Rendered by the compositor for the human; no pixel reaches a
   client. Class is decided before any GPU work (COMP-02 §7, S-05 §4): a `secret`
-  window is a placeholder, a `secret` node in a `private` window is a redaction
+  window is a placeholder, a `secret` node in a `normal` window is a redaction
   rectangle, and stale trees fail closed to the whole surface. Disabled under
   session lock. A thumbnail is on Corpus C's capture-path list.
 - **Titles on the physical output.** A `secret` window's title still shows in its
@@ -3800,7 +3804,7 @@ other's input and window contents; nothing the compositor does changes
 that.
 
 Consequences, all enforced:
-- All X11 toplevels default to `sensitivity: private` and
+- All X11 toplevels default to `sensitivity: normal` and
   `app_trust: standard` at best; a rule may raise but the default never
   drops to `public`.
 - X11 windows are **never** classified `secret`. If a rule tries, the
@@ -6058,11 +6062,11 @@ Dotted names. A capability may be scoped with `:<scope>`.
 | Capability | Grants | Default for general agents |
 |---|---|---|
 | `scene.list` | `list_outputs`, `list_toplevels` (metadata only, filtered by class and scope) | yes, scoped to agent's own workspaces + `public` |
-| `scene.read` | `get_toplevel`, `hit_test` on `public`+`private` | yes, task-scoped |
+| `scene.read` | `get_toplevel`, `hit_test` on `public`+`normal` | yes, task-scoped |
 | `scene.read.secret` | above, on `secret` | **never** without per-request prompt |
-| `scene.tree` | `get_tree` on `public`+`private` | yes, task-scoped |
+| `scene.tree` | `get_tree` on `public`+`normal` | yes, task-scoped |
 | `scene.tree.secret` | `get_tree` on `secret` | prompt |
-| `scene.text` | `get_text` on `public`+`private` | yes, task-scoped |
+| `scene.text` | `get_text` on `public`+`normal` | yes, task-scoped |
 | `scene.text.secret` | `get_text` on `secret` | prompt |
 | `scene.wait` | `wait_for` | yes |
 | `scene.events` | `subscribe` | yes, filtered to visible set |
@@ -6083,7 +6087,7 @@ Dotted names. A capability may be scoped with `:<scope>`.
 ### 2.3 Capture
 | Capability | Grants | Default |
 |---|---|---|
-| `capture.toplevel` | single-surface capture, `public`+`private` | yes, task-scoped |
+| `capture.toplevel` | single-surface capture, `public`+`normal` | yes, task-scoped |
 | `capture.output` | whole-output capture (redaction applied) | no |
 | `capture.stream` | continuous capture | no |
 | `capture.secret` | include `secret` surfaces | **never** without per-request prompt; not grantable persistently |
@@ -6092,7 +6096,7 @@ Dotted names. A capability may be scoped with `:<scope>`.
 ### 2.4 Clipboard
 | Capability | Grants | Default |
 |---|---|---|
-| `clipboard.read` | read selection when source is `public`/`private` | no |
+| `clipboard.read` | read selection when source is `public`/`normal` | no |
 | `clipboard.read.secret` | read when source is `secret` | prompt |
 | `clipboard.write` | set selection | no |
 
@@ -6149,7 +6153,7 @@ A scope restricts targets. Types, combinable with AND:
 workspace:<id|own|human>      output:<id|virtual|physical>
 app_id:<glob>                 title:<regex>
 handle:<u64>                  principal:<launched_by_self|any>
-class:<public|private|secret> url:<glob>   (browsers; from tree)
+class:<public|normal|secret> url:<glob>   (browsers; from tree)
 path:<glob>                   host:<glob>
 node_role:<role>              (for seat.action)
 ```
@@ -6367,7 +6371,7 @@ KDL. Top-level node types: `classify`, `trust`, `rule`, `irreversible`,
 
 ```kdl
 defaults {
-  sensitivity "private"          // F-02 §6
+  sensitivity "normal"          // F-02 §6
   app_trust "standard"
   prompt_timeout 120s
   defer_timeout 500ms            // fail-closed after
@@ -6876,7 +6880,7 @@ the labels. Export is itself an audited action.
 
 1. Anchor destination beyond local root-owned dir (hardware token? remote?).
    Proposed: local only in v1, hooks for both.
-2. Whether agent-typed text into `private` fields should be logged in full
+2. Whether agent-typed text into `normal` fields should be logged in full
    or hashed. Proposed: full (see §3 rationale), owner-configurable.
 3. SQLite index vs. a purpose-built columnar index. Proposed: SQLite.
 
@@ -6908,7 +6912,7 @@ Node {
   states:      set<State>
   rect:        Rect         // surface-local logical px; compositor joins to global
   actions:     list<Action>
-  sensitivity: Class        // public | private | secret (floor from rules)
+  sensitivity: Class        // public | normal | secret (floor from rules)
   source:      Source       // native | atspi | terminal | vision | synthesized
   confidence:  f32          // 1.0 for native/atspi; <1.0 for vision
   children:    list<u64>

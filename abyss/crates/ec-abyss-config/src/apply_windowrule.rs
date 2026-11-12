@@ -103,7 +103,9 @@ impl Config {
                     return;
                 }
             },
-            ("sensitivity", Some(p @ ("secret" | "private"))) => RuleAction::Sensitivity(p.to_owned()),
+            ("sensitivity", Some(p @ ("secret" | "normal" | "private"))) => {
+                RuleAction::Sensitivity(p.to_owned())
+            }
             ("sensitivity", Some(p)) => {
                 // App-declared sensitivity may only raise a class, never lower.
                 self.reject(

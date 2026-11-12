@@ -25,6 +25,7 @@ use smithay::{
 };
 
 use crate::addons::Hook;
+use crate::contain::{contain, Feature};
 use crate::outputs::overscan::OverscanGeometry as _;
 use crate::state::AbyssState;
 
@@ -166,7 +167,7 @@ impl AbyssState {
             self.switcher.set_hold(hold);
         }
         if fx.commit_switcher {
-            crate::overview::switcher::commit(self);
+            contain(self, Feature::Overview, crate::overview::switcher::commit);
         }
     }
 
@@ -361,9 +362,19 @@ impl AbyssState {
             Action::RegionSelect(key) => self.region_select_key(key),
             Action::Prompt(sym) => crate::trusted_ui::key(self, sym),
             Action::WindowMenu(sym) => shell::winmenu::key(self, sym),
-            Action::Switcher(reverse) => crate::overview::switcher::step_or_open(self, reverse),
-            Action::ToggleOverview => crate::overview::toggle(self),
-            Action::Overlay(sym, shift) => crate::overview::key(self, sym, shift),
+            // Contained (ADR 0102): a panic in the overlays closes them and
+            // turns them off; the key was already consumed.
+            Action::Switcher(reverse) => {
+                contain(self, Feature::Overview, |s| {
+                    crate::overview::switcher::step_or_open(s, reverse)
+                });
+            }
+            Action::ToggleOverview => {
+                contain(self, Feature::Overview, crate::overview::toggle);
+            }
+            Action::Overlay(sym, shift) => {
+                contain(self, Feature::Overview, |s| crate::overview::key(s, sym, shift));
+            }
             // ADR 0066: add-on hooks. Off, the chord is consumed and does nothing.
             Action::AnnotationSelect if !self.addons.hooks.is_on(Hook::RegionSelect) => {
                 tracing::debug!("region-select hook is off; chord ignored");
@@ -520,7 +531,9 @@ impl AbyssState {
         let pos = self.clamp_to_outputs(pos);
         // Hot corners (`mode "de"`): the dwell is a timer; this only compares
         // the point against the precomputed corner rectangles.
-        crate::overview::corners::motion(self, pos);
+        contain(self, Feature::Overview, |s| {
+            crate::overview::corners::motion(s, pos)
+        });
         // A trusted prompt holds the pointer too: the cursor moves, no
         // surface hears about it (COMP-10 §4).
         if crate::trusted_ui::holds_seat(self) {
@@ -546,7 +559,7 @@ impl AbyssState {
         // So do the window switcher and the overview.
         if crate::overview::holds_pointer(self) {
             self.pointer_location = pos;
-            crate::overview::motion(self, pos);
+            contain(self, Feature::Overview, |s| crate::overview::motion(s, pos));
             return;
         }
         let current = self.pointer_location;
@@ -880,7 +893,7 @@ impl AbyssState {
             return;
         }
         if crate::overview::holds_pointer(self) {
-            crate::overview::close(self);
+            contain(self, Feature::Overview, crate::overview::close);
             return;
         }
         if let Some(pos) = self.absolute_to_global(|size| event.position_transformed(size)) {
@@ -1290,7 +1303,9 @@ impl AbyssState {
         }
         // So do the window switcher and the overview.
         if crate::overview::holds_pointer(self) {
-            crate::overview::button(self, button, pressed);
+            contain(self, Feature::Overview, |s| {
+                crate::overview::button(s, button, pressed)
+            });
             return;
         }
         // A press on a trusted indicator is the compositor's, never a

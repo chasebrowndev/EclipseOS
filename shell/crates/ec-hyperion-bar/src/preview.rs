@@ -130,7 +130,7 @@ fn window(i: usize, output: u64) -> Window {
         minimized: i % 5 == 3,
         pid: None,
         program: None,
-        trust: Trust::Private,
+        trust: Trust::Normal,
     }
 }
 
@@ -576,7 +576,7 @@ pub fn de(app: &mut App, output: u64) {
         minimized,
         pid: None,
         program: None,
-        trust: Trust::Private,
+        trust: Trust::Normal,
     };
     let windows = vec![
         win(1, "foot", "~/syncedprojects/EclipseOS", false),

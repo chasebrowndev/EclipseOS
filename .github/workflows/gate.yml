@@ -2,9 +2,16 @@
 # Cloud runner only — no GPU. GPU work is nightly per COMP-14 §5.
 name: gate
 
+# Branches are tested through their PR, main on every push, and main again
+# nightly so a newly published advisory shows up without a code change.
+# (push on every branch + pull_request ran each PR twice in different
+# concurrency groups, doubling every failure.)
 on:
   push:
+    branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 6 * * *"
 
 concurrency:
   group: gate-${{ github.ref }}
@@ -46,7 +53,7 @@ jobs:
             libwayland-dev libseat-dev libinput-dev libxkbcommon-dev \
             libudev-dev libgbm-dev libegl-dev libgles2-mesa-dev \
             libdisplay-info-dev libpixman-1-dev libdrm-dev \
-            pkg-config
+            libpam0g-dev pkg-config
 
       # Toolchain comes from each workspace's rust-toolchain.toml. CI and dev
       # must not drift, same rule as the Smithay pin in CLAUDE.md.
@@ -231,7 +238,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - run: cargo deny --manifest-path ${{ matrix.workspace }}/Cargo.toml --all-features check advisories bans licenses sources
+      - run: cargo deny --manifest-path ${{ matrix.workspace }}/Cargo.toml --all-features check bans licenses sources
+      # A RUSTSEC published against a dependency the PR didn't touch is not
+      # the PR's fault: on PRs it warns, on main and nightly it blocks. Same
+      # command set as the local gate.
+      - run: cargo deny --manifest-path ${{ matrix.workspace }}/Cargo.toml --all-features check advisories
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
 
   tcb-review:
     name: TCB touch check
@@ -244,20 +256,27 @@ jobs:
           fetch-depth: 0
 
       # F-07 §4: the owner reads every line in the enforcement path.
-      # This does not enforce review — it makes the obligation visible on
-      # the PR so it cannot be forgotten six months from now.
+      # A PR that touches a TCB path fails until its body carries a
+      # `TCB-Reviewed:` line — written by the owner after the read, the same
+      # way `spec-trail` requires a citation.
       - name: flag TCB paths
+        env:
+          BODY: ${{ github.event.pull_request.body }}
         run: |
           base="${{ github.event.pull_request.base.sha }}"
           head="${{ github.event.pull_request.head.sha }}"
           changed=$(git diff --name-only "$base" "$head")
           tcb=$(echo "$changed" | grep -E \
-            '^(abyss/crates/ec-(policyd|policy-eval|sandbox|brokerd)/|installer/crates/ec-setup-helper/|packaging/(polkit/|bin/ec-update-apply$|bin/ec-abyss-keep$|hooks/eclipseos-abyss-keep\.hook$)|shell/crates/ec-services/src/bin/ec-polkit-agent\.rs$|shell/crates/ec-greeter/|abyss/crates/ec-abyss/src/(policy|trusted_ui|audit)/|abyss/crates/ec-abyss/src/render/capture\.rs$|AbyssCompositor/(crates/(policyd|ec-policy-eval|sandbox|brokerd|ec-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$))' \
+            '^(abyss/crates/ec-(policyd|policy-eval|sandbox|brokerd)/|installer/crates/ec-setup-helper/|packaging/(polkit/|bin/ec-update-apply$|bin/ec-abyss-keep$|hooks/eclipseos-abyss-keep\.hook$)|shell/crates/ec-services/src/bin/ec-polkit-agent\.rs$|shell/crates/ec-greeter/|abyss/crates/ec-abyss/src/(policy|trusted_ui|audit)/|abyss/crates/ec-abyss/src/render/capture\.rs$|abyss/crates/ec-agentd/src/sandbox\.rs$|AbyssCompositor/(crates/(policyd|ec-policy-eval|sandbox|brokerd|ec-setup-helper)/|dist/polkit/|crates/abyss/src/(policy|trusted_ui|audit)/|crates/abyss/src/render/capture\.rs$))' \
             || true)
           if [ -n "$tcb" ]; then
             echo "::warning title=TCB path touched::Line-by-line owner review required (F-07 §4)"
             echo "$tcb" | sed 's/^/  /'
             echo "TCB_TOUCHED=1" >> "$GITHUB_ENV"
+            if ! echo "$BODY" | grep -qE '^TCB-Reviewed: .+'; then
+              echo "::error title=TCB review missing::PR touches TCB paths; the owner adds 'TCB-Reviewed: <what was read>' to the PR body after the line-by-line read (F-07 §4)"
+              exit 1
+            fi
           else
             echo "no TCB paths touched"
           fi

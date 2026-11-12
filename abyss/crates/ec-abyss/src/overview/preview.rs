@@ -164,6 +164,7 @@ pub fn show(state: &mut AbyssState, window: &Window, anchor: Rect) -> Result<boo
 
 /// Take the preview down. True when one was up.
 pub fn hide(state: &mut AbyssState) -> bool {
+    crate::contain::fault(crate::contain::Feature::Overview);
     let was = state.preview.is_open();
     close_quietly(state);
     if was {
