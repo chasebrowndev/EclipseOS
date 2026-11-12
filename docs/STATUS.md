@@ -68,8 +68,11 @@ filter (`policy/scene.rs`, whose `class_of` answers `secret` for every surface
 until the M16 table lands); `audit/` emits provenance to `policyd` (COMP-12);
 `protocols/agent/` serves the M11 admission and read-only scene queries; and
 `trusted_ui/` holds the erase (COMP-10 §3.10) and command-approval (§3.11)
-prompts. There is still no enforcement table and no `check()`, and
-`protocols/semantic/` does not exist. Two things landed early —
+prompts. The enforcement table (`policy/table.rs`) and `check()` exist, but
+`check()` has exactly one caller — agent seat requests (`policy/enforce.rs`);
+nothing on the human path (Wayland globals, clipboard, capture) is a policy
+decision yet (KNOWNBUGS SEC-01..05). `protocols/semantic/` serves
+`eclipse_semantic_v1` (M22, unreviewed). Two things landed early —
 frame-level capture redaction (milestones 9d and 22, landed inside milestone 8)
 and the capture indicator (milestone 15, same).
 
@@ -202,10 +205,10 @@ compositor's corner radius over `get_config` (`ec_ui::ipc::fetch_config_radius`,
 | COMP-05 shell | `abyss/crates/ec-abyss/src/shell/mod.rs` | radiant (default, weighted n-ary tree, drop-zone drag, priority; ADR 0058) + dwindle classic + master, workspaces, floating, focus. App identity is a `/proc` stopgap (`data_control.rs:14` TODO) — the provenance record is Phase 2. Window rules match at map time and re-evaluate on commit (`shell/rules.rs`), which also produces the `irreversible_capable` and `class_source` toplevel facts (milestone 9e). |
 | COMP-06 standard protocols | `abyss/crates/ec-abyss/src/protocols/standard/` (33 modules) | activation, background_effect, compositor, data_control, data_device, decoration, dmabuf, drm_syncobj, foreign, foreign_toplevel, fractional_scale, gamma_control, idle_inhibit, idle_notify, image_copy_capture, input_method, layer_shell, output_management, output_power, pointer_constraints, pointer_extra, presentation, primary_selection, screencopy, seat, security_context, session_lock, shm, surface_extra, tablet, text_input, virtual_pointer, xdg_shell. |
 | COMP-07 XWayland | `abyss/crates/ec-abyss/src/xwayland/{mod,xwm,security}.rs` | Rootless, eager start; the `xwayland` config block is honoured. |
-| COMP-08 agent protocol | — | Does not exist. |
+| COMP-08 agent protocol | `abyss/crates/ec-abyss/src/protocols/agent/`, `abyss/crates/ec-protocols`, `abyss/crates/ec-agentd` | `ec-agent.sock` served while the `agents` hook is on; admission, scene queries and seat requests through `policy/` (see the Phase 2 table, M11–M16). Never exercised end to end on a live session with a human trusted-UI commit. |
 | COMP-09 semantic protocol | M22 | Server and reference client written; capture, `get_tree` and seat `action` seams are TCB-HOOKs (see M22). |
-| COMP-10 trusted UI | `render/capture.rs::indicator` only | Indicator done; prompts/panel/phrase absent. |
-| COMP-11 policy | `abyss/crates/ec-policy-eval`, `abyss/crates/ec-policyd` | Milestone 10: task store, grant issue/revoke (see the Phase 2 table). In-compositor `policy/` does grant admission and the agent scene filter; there is no enforcement table and no `check()` (M16), and sensitivity is a manual stub (`state.rs:236`). |
+| COMP-10 trusted UI | `abyss/crates/ec-abyss/src/trusted_ui/` (17 modules) | Indicator, modal primitive, consent, erase and command-approval prompts, phrase, emergency panel, commit path to `policyd`. No COMP-15 trusted-UI suite. |
+| COMP-11 policy | `abyss/crates/ec-policy-eval`, `abyss/crates/ec-policyd` | Milestone 10: task store, grant issue/revoke (see the Phase 2 table). In-compositor `policy/` does grant admission, the agent scene filter, the signed table (`table.rs`) and `check()` for agent seat requests (`enforce.rs`, M16 in progress). `check()` is not called for any human-path operation; rate/quota are uncounted and most `defaults` keys unenforced (KNOWNBUGS SEC-01..06). |
 | COMP-12 audit | `abyss/crates/ec-policyd/src/audit.rs` | The S-04 §4 store, landed early at milestone 10 (ADR 0046). Provenance emission from abyss is `abyss/crates/ec-abyss/src/audit/mod.rs` (M12). |
 | COMP-13 human IPC + config | `abyss/crates/ec-abyss/src/ipc/`, `abyss/crates/ec-abyss/src/config/` (apply, watch), `abyss/crates/ec-abyss-config` (schema, parse, edit), `abyss/crates/ec-ctl`, `abyss/crates/ec-ipc` | Socket, gate table, event stream, KDL parse + hot-reload, plus (2026-09-11) the §1.4 write API: byte-splice in-place edits, a declarative schema over every key, per-file gate rows after the `policy.kdl` split, `ec-ctl config` verbs, and `abyss/crates/ec-ipc` as the client half. |
 | COMP-14 performance | `bench/` | The harness exists (milestone 9f, ADR 0043): a sampler that keeps every sample and reports p50/p99/p99.9/max, the §2.1/§2.1b budget table as data, and §3's counting allocator so a bench on a no-alloc path fails on its first allocation. Nothing real is plugged into it yet — §4.1's five subjects arrive with the milestones that create them — so the frame budgets milestone 4's gate cites are still unmeasured. §5's per-commit baselines and the >10% regression gate are unbuilt. `--stats` remains a live-run diagnostic, separate from the harness. |
@@ -316,9 +319,9 @@ macros anywhere in the workspace.
     COMP-08 `eclipse_agent_v1` lands (Phase 2, milestone 11): the event has no
     source to fire from until an agent client can attach, so there is nothing
     to implement before then. Nothing else blocks it.
-14. **No `crates/agentd`, `crates/sandbox`** — `abyss/crates/ec-policyd` and
-    `abyss/crates/ec-policy-eval` exist since milestone 10; the other TCB crates do not.
-    The root `CLAUDE.md` map marks the absent `abyss` modules "(not yet)".
+14. **No standalone `sandbox` crate** — `abyss/crates/ec-agentd` exists and
+    carries the agent sandbox (`src/sandbox.rs`: Landlock, seccomp, bwrap). It
+    confines agent processes only; ordinary apps are unconfined.
 15. **Overscan compensation has no first-boot offer.** Everything else is
     done. The backend (COMP-03 §2): `outputs/overscan.rs` (re-export of `ec-abyss-render/src/output_overscan.rs`; per-edge insets,
     clamping, the inverse map), `render/overscan.rs` (the scale-and-pad wrap
@@ -361,8 +364,9 @@ macros anywhere in the workspace.
     `panel` goes back to `GLASS` and blur stops being opt-in. Owner's call,
     deliberately deferred (2026-09-11) — opaque now, glass later.
 
-17. **No semantic-tree source** — `protocols/semantic/` does not exist, so
-    nothing ever supplies the node tree COMP-02 §7 redacts against. This is
+17. **No semantic-tree publisher in a shipped client** — `protocols/semantic/`
+    exists (M22) and `render/capture.rs::semantics_for` reads it, but no real
+    client publishes a tree, so every surface still answers "no tree". This is
     the remaining half of milestone 9d: the redaction machinery and its
     fail-closed stale/absent arm are landing on
     `comp02-m09d-node-redaction`, driven in tests from a synthetic tree,
