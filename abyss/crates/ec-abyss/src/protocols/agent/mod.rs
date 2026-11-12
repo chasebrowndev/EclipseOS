@@ -567,6 +567,7 @@ fn refusal(e: AdmitError) -> (Refusal, &'static str) {
         AdmitError::Invalid(_) => (Refusal::InvalidGrant, "grant failed verification"),
         AdmitError::WrongPrincipal => (Refusal::InvalidGrant, "grant principal refused"),
         AdmitError::Revoked => (Refusal::InvalidGrant, "grant revoked"),
+        AdmitError::Unenforceable => (Refusal::InvalidGrant, "grant constraint not enforceable"),
     }
 }
 

@@ -395,6 +395,10 @@ pub fn capture_elements(
         &mut elements,
         &mut redacted,
     );
+    // The compositor wallpaper, bottom-most: `public` chrome, no client behind it.
+    elements.extend(crate::outputs::wallpaper::capture_element(
+        state, renderer, output, scale,
+    ));
 
     fx.finish(renderer, &mut elements);
     (elements, redacted)

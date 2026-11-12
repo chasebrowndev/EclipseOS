@@ -671,7 +671,7 @@ fn fmt_name(f: &wl_shm::Format) -> String {
 fn denied(what: &str) -> String {
     format!(
         "capture capability denied: the compositor did not offer {what}. \
-         Add `capture {{ allow \"oracle-eyes\" }}` to policy.kdl (it hot-reloads)."
+         Add this binary's absolute path to policy.kdl, e.g. `capture {{ allow \"/usr/bin/ec-oracle-eyes\" }}` (it hot-reloads)."
     )
 }
 

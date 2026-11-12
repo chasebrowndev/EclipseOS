@@ -54,7 +54,7 @@ use smithay::{
 };
 
 use crate::{
-    config::Allowlist,
+    config::ExeAllowlist,
     protocols::standard::screencopy::{self, decide},
     render::capture,
     state::AbyssState,
@@ -76,18 +76,18 @@ const FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16)
 #[derive(Debug)]
 pub struct ManagerData {
     dh: crate::protocols::standard::data_control::WeakDh,
-    allow: Allowlist,
+    allow: ExeAllowlist,
 }
 
 impl ManagerData {
     fn can_view(&self, client: &Client, what: &'static str) -> bool {
         // The lock state is not reachable here; `decide` re-checks it per
         // request and at service time.
-        let name = self.dh.client_name(client);
-        let d = decide(&self.allow, false, name.as_deref());
+        let exe = self.dh.client_exe(client);
+        let d = decide(&self.allow, false, exe.as_deref());
         if !d.allowed() {
             tracing::debug!(
-                client = name.as_deref().unwrap_or("<unknown>"),
+                client = ?exe,
                 global = what,
                 "image-copy-capture global hidden"
             );
@@ -151,12 +151,12 @@ pub struct ImageCopyCaptureState {
 }
 
 impl ImageCopyCaptureState {
-    /// Register both globals. The bind filters hold an [`Allowlist`] handle,
+    /// Register both globals. The bind filters hold an [`ExeAllowlist`] handle,
     /// so a config reload retunes them without a restart (ADR 0022 amendment).
     pub fn new(
         dh: &DisplayHandle,
         weak_dh: crate::protocols::standard::data_control::WeakDh,
-        allow: Allowlist,
+        allow: ExeAllowlist,
     ) -> Self {
         dh.create_global::<AbyssState, ExtOutputImageCaptureSourceManagerV1, _>(
             VERSION,
@@ -223,13 +223,13 @@ impl Dispatch<ExtOutputImageCaptureSourceManagerV1, ()> for AbyssState {
             return;
         };
         // A source is a capability handle: gate it like everything else.
-        let name = crate::protocols::standard::data_control::client_name(dh, client);
-        let decision = decide(&state.capture_allow, state.lock.locked, name.as_deref());
+        let exe = crate::protocols::standard::data_control::client_exe(dh, client);
+        let decision = decide(&state.capture_allow, state.lock.locked, exe.as_deref());
         let output_id = if decision.allowed() {
             state.outputs.by_wl_output(&output).map(|e| e.id)
         } else {
             tracing::warn!(
-                client = name.as_deref().unwrap_or("<unknown>"),
+                client = ?exe,
                 "image capture source denied"
             );
             None
@@ -289,8 +289,8 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for AbyssState {
                 options,
             } => {
                 // The gate runs before any table entry or event exists.
-                let name = crate::protocols::standard::data_control::client_name(dh, client);
-                let decision = decide(&state.capture_allow, state.lock.locked, name.as_deref());
+                let exe = crate::protocols::standard::data_control::client_exe(dh, client);
+                let decision = decide(&state.capture_allow, state.lock.locked, exe.as_deref());
                 let source_data = source.data::<SourceData>().copied();
                 let target = if decision.allowed() {
                     source_data.and_then(|s| s.output_id)
@@ -299,7 +299,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for AbyssState {
                 };
                 let Some(output_id) = target else {
                     tracing::warn!(
-                        client = name.as_deref().unwrap_or("<unknown>"),
+                        client = ?exe,
                         "image copy capture session denied"
                     );
                     let session = data_init.init(session, SessionData { id: None });
@@ -329,13 +329,13 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for AbyssState {
                 // implemented, exactly as for `zwlr_screencopy_v1`.
                 session.done();
                 tracing::info!(
-                    client = name.as_deref().unwrap_or("<unknown>"),
+                    client = ?exe,
                     w = size.0,
                     h = size.1,
                     "image copy capture session allowed"
                 );
                 state.capture_seen = Some(std::time::Instant::now());
-                state.capture_consumer = name;
+                state.capture_consumer = exe;
                 super::capture_event::sync(state);
             }
             Request::CreatePointerCursorSession {
@@ -549,8 +549,12 @@ fn capture_request(state: &mut AbyssState, resource: &ExtImageCopyCaptureFrameV1
     let paint_cursors = session.paint_cursors;
 
     // Re-check the gate: a session may have outlived a lock or a reload.
-    let name = state.capture_consumer.clone();
-    if decide(&state.capture_allow, state.lock.locked, name.as_deref()) != screencopy::Decision::Allow {
+    if decide(
+        &state.capture_allow,
+        state.lock.locked,
+        state.capture_consumer.as_deref(),
+    ) != screencopy::Decision::Allow
+    {
         tracing::warn!("image copy capture denied at capture time");
         resource.failed(FailureReason::Stopped);
         return;
@@ -616,35 +620,37 @@ fn validate(buffer: &WlBuffer, region: Rectangle<i32, Physical>) -> Result<(), &
 #[cfg(test)]
 mod tests {
     use crate::{
-        config::Allowlist,
+        config::ExeAllowlist,
         protocols::standard::screencopy::{decide, Decision},
     };
+    use std::path::Path;
+
+    /// The portal lives outside /usr/bin, so its entry is a path (ADR 0094).
+    /// Not installed by that name anywhere, so it stays literal.
+    const PORTAL: &str = "/usr/lib/ec-test-xdg-desktop-portal-wlr";
 
     /// The gate this protocol uses is the same function `zwlr_screencopy_v1`
     /// uses, so the ordering guarantee must hold for it too: a locked session
     /// denies whatever the allowlist says.
     #[test]
     fn lock_beats_the_allowlist() {
-        let allow = Allowlist::new(vec!["xdg-desktop-portal-wlr".to_string()]);
+        let allow = ExeAllowlist::new(vec![PORTAL.to_string()]);
         assert_eq!(
-            decide(&allow, true, Some("xdg-desktop-portal-wlr")),
+            decide(&allow, true, Some(Path::new(PORTAL))),
             Decision::DenyLocked
         );
         assert_eq!(
-            decide(&Allowlist::default(), true, Some("xdg-desktop-portal-wlr")),
+            decide(&ExeAllowlist::default(), true, Some(Path::new(PORTAL))),
             Decision::DenyLocked
         );
         // And unlocked, the same client is the one that is allowed.
-        assert_eq!(
-            decide(&allow, false, Some("xdg-desktop-portal-wlr")),
-            Decision::Allow
-        );
+        assert_eq!(decide(&allow, false, Some(Path::new(PORTAL))), Decision::Allow);
     }
 
     #[test]
     fn sessions_are_denied_by_default() {
         assert_eq!(
-            decide(&Allowlist::default(), false, Some("xdg-desktop-portal-wlr")),
+            decide(&ExeAllowlist::default(), false, Some(Path::new(PORTAL))),
             Decision::DenyNoAllowlist
         );
     }

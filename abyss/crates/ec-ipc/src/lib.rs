@@ -67,6 +67,12 @@ pub enum EventKind {
     /// A human capture (screen share, recording) started or stopped:
     /// `{"active": bool}` (ADR 0106).
     Capture,
+    /// A contained panic turned a compositor feature off for the rest of the
+    /// session: `{"feature": "overview" | "annotations" | "queries"}`, plus `"method"` for a query method. Replayed
+    /// on every `subscribe` while it stands (ADR 0102).
+    FeatureDisabled,
+    /// The session lock changed: the [`LockState`] shape (ADR 0099).
+    Lock,
 }
 
 impl EventKind {
@@ -85,6 +91,8 @@ impl EventKind {
         EventKind::DecisionsPending,
         EventKind::Theme,
         EventKind::Capture,
+        EventKind::FeatureDisabled,
+        EventKind::Lock,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -103,11 +111,41 @@ impl EventKind {
             EventKind::DecisionsPending => "decisions_pending",
             EventKind::Theme => "theme",
             EventKind::Capture => "capture",
+            EventKind::FeatureDisabled => "feature-disabled",
+            EventKind::Lock => "lock",
         }
     }
 
     pub fn parse(s: &str) -> Option<EventKind> {
         EventKind::ALL.iter().copied().find(|k| k.as_str() == s)
+    }
+}
+
+/// The session lock as the compositor reports it (`get_lock_state`, the
+/// `lock` event; ADR 0099). There is no unlock call: only the locker unlocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LockState {
+    /// The session is locked: only the locker's surface or the compositor's
+    /// fallback is on screen.
+    pub locked: bool,
+    /// A locker has been asked for (the lock command ran, or a relaunch is
+    /// scheduled after the locker died) and none holds the session yet.
+    pub pending: bool,
+    /// A live locker holds the session. `locked && !locker_alive` is the
+    /// fallback screen.
+    pub locker_alive: bool,
+}
+
+impl LockState {
+    /// Parse a `get_lock_state` reply or `lock` event payload. `None` if it is
+    /// not that shape.
+    pub fn from_value(v: &Value) -> Option<LockState> {
+        let b = |k: &str| v.get(k).and_then(Value::as_bool);
+        Some(LockState {
+            locked: b("locked")?,
+            pending: b("pending")?,
+            locker_alive: b("locker_alive")?,
+        })
     }
 }
 
@@ -126,6 +164,14 @@ impl Event {
             return None;
         }
         self.data.get("active")?.as_bool()
+    }
+
+    /// The payload of a `lock` event.
+    pub fn lock_state(&self) -> Option<LockState> {
+        if self.kind != EventKind::Lock {
+            return None;
+        }
+        LockState::from_value(&self.data)
     }
 
     /// The parked-prompt count of a `decisions_pending` event.
@@ -331,6 +377,19 @@ impl Client {
         self.call("agent_install", json!({ "path": path })).map(drop)
     }
 
+    /// The session lock state (ADR 0099).
+    pub fn lock_state(&mut self) -> Result<LockState> {
+        let v = self.call("get_lock_state", json!({}))?;
+        LockState::from_value(&v).ok_or_else(|| Error::Protocol(format!("not a lock state: {v}")))
+    }
+
+    /// Run the configured `idle.lock-command`. `Ok(false)` when a live locker
+    /// already holds the session. Fails when no lock command is configured.
+    pub fn lock_session(&mut self) -> Result<bool> {
+        let v = self.call("lock_session", json!({}))?;
+        Ok(v.get("spawned").and_then(Value::as_bool).unwrap_or(false))
+    }
+
     pub fn subscribe(&mut self, kinds: &[EventKind]) -> Result<()> {
         let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
         self.call("subscribe", json!({"events": names}))?;
@@ -499,6 +558,26 @@ mod tests {
             assert_eq!(EventKind::parse(k.as_str()), Some(*k));
         }
         assert_eq!(EventKind::parse("nonsense"), None);
+    }
+
+    #[test]
+    fn lock_state_parses_its_three_fields() {
+        let v = json!({"locked": true, "pending": false, "locker_alive": false});
+        assert_eq!(
+            LockState::from_value(&v),
+            Some(LockState {
+                locked: true,
+                pending: false,
+                locker_alive: false
+            })
+        );
+        assert_eq!(LockState::from_value(&json!({"locked": true})), None);
+        let ev = Event {
+            kind: EventKind::Lock,
+            data: v,
+        };
+        assert_eq!(ev.lock_state().map(|s| s.locked), Some(true));
+        assert_eq!(EventKind::parse("lock"), Some(EventKind::Lock));
     }
 
     #[test]

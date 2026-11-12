@@ -18,6 +18,11 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   `config/` (re-exports `ec-abyss-config`, which holds KDL parse, schema, in-place edit; here: apply, watch, widget catalog watcher, approval withholding), `xwayland/` (XWM,
   security), `state.rs` (globals + seat), `session.rs`. `ec-abyss-config/tests/config_doc.rs`
   checks the config schema against `docs/CONFIG.md`.
+- `outputs/wallpaper.rs` + `ec-abyss-render/src/wallpaper.rs` (ADR 0104): the compositor draws the
+  wallpaper, the bottom-most element. Decode and layout run on a worker thread and return by calloop
+  channel; the render side owns fit-mode geometry (`place`, `compose`) and the per-output store.
+  Compositor chrome, class `public`; `render/capture.rs` draws it bottom-most through
+  `outputs::wallpaper::capture_element`, the one door from capture to the on-screen store.
 - `overview/` (COMP-05 §7.1, `mode "de"`): the Alt-Tab switcher, the overview, hot corners and
   hover previews. Compositor overlays like the window menu, never in a capture pass list, never
   trusted UI. `thumbs.rs` is the one door to a thumbnail texture: `shown` asks
