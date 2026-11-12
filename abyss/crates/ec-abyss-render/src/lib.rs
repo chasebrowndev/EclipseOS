@@ -3271,6 +3271,18 @@ pub fn surfaces_missing_texture(space: &Space<Window>, output: &Output, renderer
     missing
 }
 
+/// Whether a client dmabuf must not be drawn by an output's own secondary GPU:
+/// an implicit modifier always (only the allocating driver knows the layout,
+/// and a texture made from it by another driver is garbage); otherwise only an
+/// untextured buffer in a format this GPU does not list.
+fn cross_device_unreadable(
+    modifier: smithay::backend::allocator::Modifier,
+    textured: bool,
+    has_format: impl FnOnce() -> bool,
+) -> bool {
+    modifier == smithay::backend::allocator::Modifier::Invalid || (!textured && !has_format())
+}
+
 /// [`surfaces_missing_texture`] for one surface tree.
 fn tree_missing_texture(renderer: &mut GlesRenderer, root: &WlSurface) -> bool {
     use smithay::backend::allocator::Buffer;
@@ -3284,6 +3296,9 @@ fn tree_missing_texture(renderer: &mut GlesRenderer, root: &WlSurface) -> bool {
 
     let context = Renderer::context_id(&*renderer);
     // First: a dmabuf this GPU has no format for is missing, whatever else.
+    // So is one with an implicit modifier: its layout is private to the driver
+    // that allocated it, and another vendor's driver imports it anyway and
+    // samples tiles as if they were rows (colored scribbles on a hybrid box).
     let mut unsupported = false;
     with_surface_tree_downward(
         root,
@@ -3293,13 +3308,13 @@ fn tree_missing_texture(renderer: &mut GlesRenderer, root: &WlSurface) -> bool {
                 return TraversalAction::SkipChildren;
             };
             let data = data.lock().unwrap();
-            if data
-                .texture::<smithay::backend::renderer::gles::GlesTexture>(context.clone())
-                .is_none()
-            {
-                if let Some(dmabuf) = data.buffer().and_then(|b| get_dmabuf(b).ok()) {
-                    unsupported |= !renderer.has_dmabuf_format(Buffer::format(dmabuf));
-                }
+            if let Some(dmabuf) = data.buffer().and_then(|b| get_dmabuf(b).ok()) {
+                let format = Buffer::format(dmabuf);
+                let textured = data
+                    .texture::<smithay::backend::renderer::gles::GlesTexture>(context.clone())
+                    .is_some();
+                unsupported |=
+                    cross_device_unreadable(format.modifier, textured, || renderer.has_dmabuf_format(format));
             }
             TraversalAction::DoChildren(())
         },
@@ -3804,5 +3819,17 @@ mod tests {
     fn blur_off_never_asks() {
         let region = r(100, 50, 300, 200);
         assert!(!wants_backdrop(BlurMode::Off, 0.5, region, 0, vec![]));
+    }
+
+    #[test]
+    fn implicit_modifier_is_never_read_cross_device() {
+        use smithay::backend::allocator::Modifier;
+        // Imported fine by the other driver, still unreadable: the layout is private.
+        assert!(cross_device_unreadable(Modifier::Invalid, true, || true));
+        assert!(cross_device_unreadable(Modifier::Invalid, false, || true));
+        // An explicit modifier the GPU lists, or an already-made texture, is fine.
+        assert!(!cross_device_unreadable(Modifier::Linear, false, || true));
+        assert!(!cross_device_unreadable(Modifier::Linear, true, || false));
+        assert!(cross_device_unreadable(Modifier::Linear, false, || false));
     }
 }
