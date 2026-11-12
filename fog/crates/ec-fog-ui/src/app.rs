@@ -1704,7 +1704,7 @@ async fn spawn(argv: Vec<String>, cwd: Vec<u8>, selection: Vec<u8>) -> Result<()
     let Some((prog, args)) = argv.split_first() else {
         return Err("empty run".into());
     };
-    let mut cmd = tokio::process::Command::new(prog);
+    let mut cmd = std::process::Command::new(prog);
     for a in args {
         cmd.arg(expand_cwd(a, &cwd));
     }
@@ -1714,8 +1714,8 @@ async fn spawn(argv: Vec<String>, cwd: Vec<u8>, selection: Vec<u8>) -> Result<()
         .stdin(Stdio::null());
     let mut child = cmd.spawn().map_err(|e| e.to_string())?;
     // Reap it whenever it exits; nothing waits on the result.
-    tokio::spawn(async move {
-        let _ = child.wait().await;
+    std::thread::spawn(move || {
+        let _ = child.wait();
     });
     Ok(())
 }
@@ -1797,10 +1797,10 @@ pub fn subscription(app: &App) -> Subscription<Message> {
         window::resize_events().map(|_| Message::Resized),
     ];
     if !app.tray.jobs.is_empty() {
-        subs.push(iced::time::every(TRAY_TICK).map(Message::Tick));
+        subs.push(ec_fog_widgets::tick::every(TRAY_TICK).map(Message::Tick));
     }
     if !app.script.is_empty() {
-        subs.push(iced::time::every(SCRIPT_TICK).map(|_| Message::Script));
+        subs.push(ec_fog_widgets::tick::every(SCRIPT_TICK).map(|_| Message::Script));
     }
     if app.drag.is_some() || app.drag_escaped {
         // The button may come up outside the row that took the press. A
