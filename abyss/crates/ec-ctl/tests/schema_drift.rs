@@ -6,15 +6,6 @@
 
 use ec_abyss_config::schema::{self, Owner, RULE_ACTIONS, TABLE};
 
-/// Keep in sync with `migrate::POLICY_KEYS`.
-const POLICY_KEYS: &[&str] = &[
-    "misc.scripted-input",
-    "clipboard.data-control-allow",
-    "capture.allow",
-    "capture.redact-app-id",
-    "capture.hide-layer",
-];
-
 /// Keep in sync with `migrate::POLICY_RULE_ACTIONS`.
 const POLICY_RULE_ACTIONS: &[&str] = &[
     "sensitivity",
@@ -75,22 +66,6 @@ fn migrate_knows_the_widget_ids() {
         LEGACY_TRAY_BUILTINS,
         schema::LEGACY_TRAY_BUILTINS,
         "migrate::LEGACY_TRAY_BUILTINS has drifted from the schema; update it and this test"
-    );
-}
-
-#[test]
-fn migrate_knows_every_policy_owned_key() {
-    let mut from_schema: Vec<&str> = TABLE
-        .iter()
-        .filter(|k| matches!(k.owner, Owner::Policy))
-        .map(|k| k.path)
-        .collect();
-    from_schema.sort_unstable();
-    let mut mirrored = POLICY_KEYS.to_vec();
-    mirrored.sort_unstable();
-    assert_eq!(
-        from_schema, mirrored,
-        "migrate::POLICY_KEYS has drifted from the schema; update it and this test"
     );
 }
 

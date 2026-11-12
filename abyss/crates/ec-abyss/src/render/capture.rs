@@ -326,7 +326,6 @@ pub fn capture_elements(
     still: &mut crate::render::still::Still,
     output: &Output,
 ) -> (Vec<AbyssRenderElement>, Vec<Redacted>) {
-    let scale = Scale::from(output.current_scale().fractional_scale());
     let output_geo = state.space.output_geometry(output).unwrap_or_default();
     let output_loc = output_geo.loc;
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
@@ -340,7 +339,6 @@ pub fn capture_elements(
         &mut fx,
         output,
         [Layer::Overlay, Layer::Top],
-        scale,
         &mut elements,
         &mut redacted,
     );
@@ -362,7 +360,7 @@ pub fn capture_elements(
                     rects: vec![cover],
                     reason,
                 });
-                elements.extend(placeholders(&[cover], output_loc, scale));
+                fx.redaction(renderer, &[cover], output_loc, &mut elements);
                 continue;
             }
             Classified::Nodes {
@@ -372,7 +370,7 @@ pub fn capture_elements(
             } => {
                 // Pushed before the surface's own elements: the list is
                 // front-to-back, so the placeholders occlude the nodes they cover.
-                elements.extend(placeholders(&rects, output_loc, scale));
+                fx.redaction(renderer, &rects, output_loc, &mut elements);
                 redacted.push(Redacted {
                     app_id,
                     rects,
@@ -394,7 +392,6 @@ pub fn capture_elements(
         &mut fx,
         output,
         [Layer::Bottom, Layer::Background],
-        scale,
         &mut elements,
         &mut redacted,
     );
@@ -523,7 +520,6 @@ fn layer_elements(
     fx: &mut crate::render::still::Frame<'_>,
     output: &Output,
     which: [Layer; 2],
-    scale: Scale<f64>,
     elements: &mut Vec<AbyssRenderElement>,
     redacted: &mut Vec<Redacted>,
 ) {
@@ -549,7 +545,12 @@ fn layer_elements(
                 NodeVerdict::WholeSurface(reason) => Some(reason),
                 _ => None,
             };
-            let in_set = state.sensitive.contains(wl);
+            // ADR 0106: a toast can carry a message preview. Unless the owner chose
+            // `show`, the stack is covered in every capture; `hold` and `history`
+            // cover it too, for a toast already up when a share starts.
+            let toast = surface.namespace() == TOASTS_NAMESPACE
+                && state.config.ui.capture_toasts != ec_abyss_config::CaptureToasts::Show;
+            let in_set = state.sensitive.contains(wl) || toast;
             if is_sensitive(in_set, None, &state.config.capture.redact_app_id, whole.is_some()) {
                 let reason = if in_set {
                     RedactReason::Surface
@@ -561,7 +562,7 @@ fn layer_elements(
                     rects: vec![geo],
                     reason,
                 });
-                elements.extend(placeholders(&[geo], Point::default(), scale));
+                fx.redaction(renderer, &[geo], Point::default(), elements);
                 continue;
             }
             if let NodeVerdict::Nodes(local) = verdict {
@@ -571,7 +572,7 @@ fn layer_elements(
                     rects: rects.clone(),
                     reason,
                 });
-                elements.extend(placeholders(&rects, Point::default(), scale));
+                fx.redaction(renderer, &rects, Point::default(), elements);
                 if reason == RedactReason::NodesOutOfBounds {
                     continue;
                 }
@@ -580,6 +581,9 @@ fn layer_elements(
         }
     }
 }
+
+/// The layer-shell namespace of the notification stack (`ec-toasts`).
+const TOASTS_NAMESPACE: &str = "ec-toasts";
 
 /// The largest layer surface `capture.hide-layer` may omit, per side, in
 /// logical px (ADR 0056). A surface that can hide from every capture could
@@ -631,27 +635,6 @@ pub fn hide_layer(
     size.w <= HIDE_LAYER_MAX
         && size.h <= HIDE_LAYER_MAX
         && entries.iter().any(|(e, ns)| e == exe && ns == namespace)
-}
-
-/// One opaque quad per redaction rectangle, front-to-back order preserved.
-fn placeholders(
-    rects: &[Rectangle<i32, Logical>],
-    output_loc: Point<i32, Logical>,
-    scale: Scale<f64>,
-) -> Vec<AbyssRenderElement> {
-    rects
-        .iter()
-        .map(|geo| {
-            let buffer = SolidColorBuffer::new(geo.size, PLACEHOLDER);
-            AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
-                &buffer,
-                phys(geo.loc - output_loc, scale),
-                scale,
-                1.0,
-                Kind::Unspecified,
-            ))
-        })
-        .collect()
 }
 
 /// How long after the last captured frame the indicator stays lit. Capture

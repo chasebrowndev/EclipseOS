@@ -318,6 +318,9 @@ pub(crate) struct Store {
     viewing_since: Option<u64>,
     /// Unique name of the client a name-owner watch is already running for.
     viewing_watch: Option<String>,
+    /// A screen share is running and `ui.capture-toasts` is `history`
+    /// (ADR 0106): arrivals are stored unread with no popup. Never persisted.
+    share_quiet: bool,
 }
 
 /// Safety net: a viewing flag nobody cleared stops suppressing popups after this.
@@ -477,6 +480,11 @@ impl Store {
         self.entries.iter().filter(|e| !e.read).count() as u32
     }
 
+    /// Set by the server before each arrival from [`Share::history`](super::Share::history).
+    pub(crate) fn set_share_quiet(&mut self, quiet: bool) {
+        self.share_quiet = quiet;
+    }
+
     /// Apply the user's rules and the mode to an arrival, then record it.
     /// `n.urgency` and `n.expires_in` are final afterwards. The verdict says
     /// whether to pop it up; after anything but `Drop` the history changed.
@@ -496,7 +504,7 @@ impl Store {
 
         let verdict = if self.mode == Mode::Dnd || rule.as_ref().is_some_and(|r| r.mute) {
             Verdict::Drop
-        } else if self.mode == Mode::Quiet || rule.as_ref().is_some_and(|r| r.quiet) {
+        } else if self.mode == Mode::Quiet || rule.as_ref().is_some_and(|r| r.quiet) || self.share_quiet {
             Verdict::Quiet
         } else if self.viewing(now) && n.urgency != Urgency::Critical && n.id != super::compositor::CONFIG_ID
         {
@@ -991,6 +999,19 @@ mod tests {
         assert_eq!(arrive(&mut s, note(1, false, &[])), Verdict::Show);
         assert_eq!(s.unread(), 1);
         assert!(s.list()[0].live);
+    }
+
+    /// ADR 0106, `ui.capture-toasts history`: during a share an arrival is stored
+    /// unread with no popup; after it, popups are back.
+    #[test]
+    fn a_share_in_history_mode_stores_unread_without_a_popup() {
+        let mut s = Store::default();
+        s.set_share_quiet(true);
+        assert_eq!(arrive(&mut s, note(1, false, &[])), Verdict::Quiet);
+        assert_eq!(s.unread(), 1);
+        assert!(!s.is_shown(1));
+        s.set_share_quiet(false);
+        assert_eq!(arrive(&mut s, note(2, false, &[])), Verdict::Show);
     }
 
     #[test]

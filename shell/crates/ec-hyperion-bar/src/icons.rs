@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn trust_is_what_withholds_the_icon_not_the_lookup() {
         let mut icons = Icons::new();
-        let private = window("firefox", Trust::Private);
+        let private = window("firefox", Trust::Normal);
         icons.warm(std::slice::from_ref(&private));
         // One entry either way: found or cached as a miss. What matters is
         // that the private window was looked up at all.
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn an_app_id_is_looked_up_once_and_then_remembered() {
         let mut icons = Icons::new();
-        let wins = vec![window("kitty", Trust::Private), window("kitty", Trust::Private)];
+        let wins = vec![window("kitty", Trust::Normal), window("kitty", Trust::Normal)];
         icons.warm(&wins);
         assert_eq!(icons.len(), 1);
         icons.warm(&wins);
@@ -376,7 +376,7 @@ mod tests {
     #[test]
     fn a_window_with_no_app_id_is_not_cached_under_the_empty_string() {
         let mut icons = Icons::new();
-        icons.warm(&[window("", Trust::Private)]);
+        icons.warm(&[window("", Trust::Normal)]);
         assert!(icons.is_empty());
     }
 

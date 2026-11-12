@@ -42,7 +42,7 @@ impl Pinned {
                 minimized: true,
                 pid: None,
                 program: None,
-                trust: Trust::Private,
+                trust: Trust::Normal,
             },
         }
     }

@@ -1,0 +1,118 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# ec-abyss-keep: keep the Abyss that is running as the "previous" fallback
+# before pacman replaces it (ADR 0101). Installed to
+# /usr/lib/eclipse/ec-abyss-keep (root:root 0755) and run by the PreTransaction
+# hook eclipseos-abyss-keep.hook on any upgrade of /usr/bin/ec-abyss, whether
+# that came from the power widget (ec-update-apply) or a hand-typed pacman.
+#
+#   ec-abyss-keep [ROOT]
+#
+# ROOT defaults to / and exists so a test can stand a temp dir in for the
+# system. Everything read or written is under it, /proc included.
+#
+# The kept copy lives in ROOT/usr/lib/eclipse/previous/ (ec-abyss, ec-ctl,
+# VERSION). It is replaced only by a build that has proven itself: an ec-abyss
+# from /usr/bin running with --session right now. Otherwise the older copy
+# stays, so a second update on top of a bad one never overwrites the last good
+# compositor with the bad one. With no copy at all yet, the current one is kept
+# (better than nothing).
+#
+# Fail closed: any error exits non-zero, and the hook's AbortOnFail stops the
+# transaction before a single file changes. The owner override is
+# `EC_ABYSS_KEEP=skip`, e.g. `sudo EC_ABYSS_KEEP=skip pacman -Syu`.
+#
+# Never deletes the only copy: the old tree is renamed aside, the new one
+# renamed in, and only then is the old one removed.
+set -eu
+LC_ALL=C
+export LC_ALL
+umask 022
+
+say() { printf 'ec-abyss-keep: %s\n' "$*" >&2; }
+
+[ "$#" -le 1 ] || { say "usage: ec-abyss-keep [ROOT]"; exit 2; }
+root=${1:-/}
+root=${root%/}
+
+if [ "${EC_ABYSS_KEEP:-}" = skip ]; then
+    say "EC_ABYSS_KEEP=skip: no fallback copy taken; the update proceeds unprotected"
+    exit 0
+fi
+
+cur="$root/usr/bin/ec-abyss"
+ctl="$root/usr/bin/ec-ctl"
+dir="$root/usr/lib/eclipse/previous"
+new="$dir.new"
+old="$dir.old"
+
+# A crash between the two renames below leaves only $old: put it back first.
+if [ ! -d "$dir" ] && [ -d "$old" ]; then
+    mv "$old" "$dir"
+    say "restored the fallback from an interrupted swap"
+fi
+
+# True while a session compositor from /usr/bin runs. The kiosk greeter does
+# not count: the greeter path is smaller than a session and proves less.
+session_running() {
+    for p in "$root"/proc/[0-9]*; do
+        [ "$(readlink "$p/exe" 2>/dev/null || true)" = /usr/bin/ec-abyss ] || continue
+        tr '\000' '\n' <"$p/cmdline" 2>/dev/null | grep -qx -- --session && return 0
+    done
+    return 1
+}
+
+# The installed eclipseos-abyss version from pacman's local database, for the
+# log and for the downgrade hint in docs; "unknown" without one.
+installed_version() {
+    for d in "$root"/var/lib/pacman/local/eclipseos-abyss-[0-9]*; do
+        [ -f "$d/desc" ] || continue
+        sed -n '/^%VERSION%$/{n;p;q;}' "$d/desc"
+        return 0
+    done
+    echo unknown
+}
+
+if [ ! -f "$cur" ]; then
+    say "no $cur: nothing to keep"
+    exit 0
+fi
+
+if [ -f "$dir/ec-abyss" ]; then
+    if cmp -s "$cur" "$dir/ec-abyss"; then
+        say "the running Abyss is already the kept fallback"
+        exit 0
+    fi
+    if ! session_running; then
+        say "no Abyss session from /usr/bin is running, so the current build is unproven;" \
+            "keeping the older fallback ($(cat "$dir/VERSION" 2>/dev/null || echo unknown))"
+        exit 0
+    fi
+fi
+
+rm -rf "$new"
+mkdir -p "$new"
+cp "$cur" "$new/ec-abyss"
+cmp -s "$cur" "$new/ec-abyss"
+chmod 0755 "$new/ec-abyss"
+if [ -f "$ctl" ]; then
+    cp "$ctl" "$new/ec-ctl"
+    cmp -s "$ctl" "$new/ec-ctl"
+    chmod 0755 "$new/ec-ctl"
+fi
+version=$(installed_version)
+printf '%s\n' "$version" >"$new/VERSION"
+sync "$new/ec-abyss" 2>/dev/null || sync
+
+if [ -d "$dir" ]; then
+    rm -rf "$old"
+    mv "$dir" "$old"
+fi
+if ! mv "$new" "$dir"; then
+    [ -d "$old" ] && mv "$old" "$dir"
+    say "could not install the new fallback; the old one is back in place"
+    exit 1
+fi
+rm -rf "$old"
+say "kept Abyss $version as the fallback session (Abyss (previous))"

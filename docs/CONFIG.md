@@ -302,7 +302,9 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | --- | --- | --- | --- | --- |
 | `idle.dpms-timeout-seconds` | int 0..86400 | _unset_ | live | Inactivity before outputs power off. Unset or 0 disables. |
 | `idle.lock-timeout-seconds` | int 0..86400 | _unset_ | live | Inactivity before `idle.lock-command` runs. Unset or 0 disables. |
-| `idle.lock-command` | string | _unset_ | live | Locker to spawn on the lock timeout. Without one the timeout is inert. |
+| `idle.lock-command` | string | _unset_ | live | Locker to spawn on the lock timeout, `ec-ctl lock`, and to relaunch (with backoff) if it dies while the session is locked. Without one the lock timeout is inert. |
+| `idle.suspend-timeout-seconds` | int 0..86400 | _unset_ | live | Inactivity before the machine suspends (`systemctl suspend`). Unset or 0 never suspends on idle, the default. Idle inhibitors hold it off like the other stages (ADR 0099). |
+| `idle.lock-before-suspend` | bool | `#true` | live | Run `idle.lock-command` before an idle suspend and suspend only once the session reports locked. A session that does not lock within 10 s is not suspended (ADR 0099). |
 
 ### `input`
 
@@ -344,6 +346,7 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `ui.show-key-hints` | bool | `#true` | live | Show the keyboard control hints in the launcher and the start menu. |
+| `ui.capture-toasts` | show \| redact \| hold \| history | `"redact"` | live | What notification toasts do while a screen is being shared or recorded (ADR 0106). `redact` covers the toast in the shared image with a "Private: Redacted" card and shows it to you normally; `hold` keeps toasts back until the share ends; `history` sends them straight to the notification history; `show` shares them like any other window. Only `show` can put a toast's text in a share. |
 | `ui.capture-indicator-color` | colour `#rrggbb[aa]` | `#ff2626ff` | live | Pupil colour of the capture indicator, the taskbar's eclipse eye the compositor draws while a client captures the screen. Alpha is ignored: the indicator is always opaque. |
 
 ### `settings`
@@ -523,7 +526,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
 | `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |
 | `idle-inhibit` | `abyss.kdl` | `idle-inhibit` | Hold the idle timers off while the window is mapped. |
-| `sensitivity secret \| private` | `policy.kdl` | `sensitivity secret`<br>`sensitivity private` | Raise the capture sensitivity class. Raise-only: `public` is refused. |
+| `sensitivity secret \| normal` | `policy.kdl` | `sensitivity secret`<br>`sensitivity normal` | Raise the capture sensitivity class. Raise-only: `public` is refused. `secret` windows are withheld from every capture and shown there as a "Private: Redacted" card (ADR 0106); the image ships `secret` rules for common password managers in `/etc/eclipse/policy.kdl`. On an X11 (XWayland) window `secret` only redacts captures: its class stays `normal`, and other X11 clients can still read the window through the X server (COMP-07 §2). |
 | `app-trust standard \| trusted` | `policy.kdl` | `app-trust standard`<br>`app-trust trusted` | Trust level (COMP-07 §2). Clamped to `standard` for X11 windows. |
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |
@@ -545,6 +548,10 @@ A per-output wallpaper override, written inside `wallpaper { }`: `output "<name>
 
 Read-only over the socket. A GUI shows these; it cannot change them.
 
+Admission lists (`capture.allow`, `clipboard.data-control-allow`, `input-method.allow`, `virtual-pointer.allow`) name executables, not process names (ADR 0094). An entry containing `/` is an exact absolute path; a bare name means `/usr/bin/<name>`, so `grim` admits `/usr/bin/grim` and not `/tmp/grim`. A symlink entry admits its target as of the last load (the dev layout's `/usr/local/bin/<bin>`). A binary outside `/usr/bin` needs its path: `/usr/lib/xdg-desktop-portal-wlr`. A client whose binary was deleted or replaced since it started is denied; restart it. An entry naming no existing file admits nothing and is logged as a warning.
+
+Upgrade note (ADR 0094): entries for binaries outside `/usr/bin` must become absolute paths. An existing `capture { allow "xdg-desktop-portal-wlr" }` admits nothing now; write `allow "/usr/lib/xdg-desktop-portal-wlr"`.
+
 ### `misc`
 
 | setting | type | default | reload | what it does |
@@ -555,13 +562,25 @@ Read-only over the socket. A GUI shows these; it cannot change them.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `clipboard.data-control-allow` | list of strings | _empty_ | live | Process names allowed to bind zwlr_data_control_manager_v1. Empty denies everyone — data control reads every selection. |
+| `clipboard.data-control-allow` | list of strings | _empty_ | live | Executables allowed to bind zwlr_data_control_manager_v1 (ADR 0094). Empty denies everyone — data control reads every selection. |
 
 ### `capture`
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `capture.allow` | list of strings | _empty_ | live | Process names allowed to bind zwlr_screencopy_manager_v1. Empty denies everyone. |
+| `capture.allow` | list of strings | _empty_ | live | Executables allowed to bind zwlr_screencopy_manager_v1 and ext_image_copy_capture_manager_v1 (ADR 0094). Empty denies everyone. |
 | `capture.redact-app-id` | list of strings | _empty_ | live | app_ids whose windows are `secret`: never composited into a capture target, only a solid placeholder (COMP-02 §7). |
 | `capture.hide-layer` | list of strings | _empty_ | live | exe:namespace pairs whose layer surfaces are omitted from every capture: shown on screen, absent from screenshots and screen shares, with whatever is beneath showing instead. Only surfaces up to 64x64 logical px qualify (ADR 0056). Empty hides nothing. |
+
+### `input-method`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `input-method.allow` | list of strings | _empty_ | live | Executables allowed to bind zwp_input_method_manager_v2 and act as the input method (ADR 0094). Empty denies everyone; the image's policy.kdl lists the common IME daemons. |
+
+### `virtual-pointer`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `virtual-pointer.allow` | list of strings | _empty_ | live | Executables allowed to bind zwlr_virtual_pointer_manager_v1 and inject pointer input (COMP-06 §2, ADR 0094). Empty denies everyone. |
 

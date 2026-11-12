@@ -78,7 +78,7 @@ struct Ctx {
 
 impl Ctx {
     fn declared(&self, id: u32) -> Class {
-        self.decl.get(&id).copied().unwrap_or(Class::Private)
+        self.decl.get(&id).copied().unwrap_or(Class::Normal)
     }
 
     /// The node's declared class is now secret.
@@ -159,7 +159,7 @@ fn op(m: &mut Model, g: &mut Rng, c: &mut Ctx, now: Instant) -> Result<(), Viola
             let want = g.below(4) as u32;
             let class = match want {
                 0 => Class::Public,
-                1 => Class::Private,
+                1 => Class::Normal,
                 _ => Class::Secret,
             };
             let exists = m.contains(id);
@@ -241,7 +241,7 @@ fn check_view(v: &View, c: &Ctx, size: (i32, i32), now: Instant) {
             assert_eq!(n.value, Value::Empty, "password {id} holds a value");
         }
     }
-    let snap = v.snapshot(Class::Private, now);
+    let snap = v.snapshot(Class::Normal, now);
     let seen: HashSet<u32> = snap.nodes.iter().map(|n| n.id).collect();
     for n in &snap.nodes {
         assert_ne!(n.sensitivity, Class::Secret);
@@ -391,7 +391,7 @@ fn id_reuse_cannot_launder_a_classification() {
         "a former password has no text"
     );
     assert!(v
-        .snapshot(Class::Private, now)
+        .snapshot(Class::Normal, now)
         .nodes
         .iter()
         .all(|n| n.id == 1 || n.id == 6));
@@ -410,7 +410,7 @@ fn a_full_raise_table_taints_the_surface_instead_of_forgetting() {
     let (_, v) = m.commit((10, 10), now).unwrap().unwrap();
     let f = v.secret_facts(now);
     assert!(f.known && f.unplaced);
-    assert!(v.snapshot(Class::Private, now).nodes.is_empty());
+    assert!(v.snapshot(Class::Normal, now).nodes.is_empty());
 }
 
 // ------------------------------------------------------------ huge trees
@@ -603,7 +603,7 @@ fn random_wire_traffic_never_breaks_the_compositor() {
             if let Some(v) = &e.view {
                 let now = Instant::now();
                 // Nothing a client can send gives an agent a secret node.
-                let snap = v.snapshot(Class::Private, now);
+                let snap = v.snapshot(Class::Normal, now);
                 for n in &snap.nodes {
                     assert_ne!(v.class_of(n.id, now), Some(Class::Secret));
                 }

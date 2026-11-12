@@ -11,7 +11,7 @@ mkdir -p "$dest"
 
 cp "$here/abyss-session.target" "$dest/"
 # ec-desktop is installed but not enabled below: abyss starts it under mode "de".
-for unit in ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-screensaver ec-pairing ec-portal; do
+for unit in ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-screensaver ec-pairing ec-portal ec-lock-trigger; do
     sed "s|/usr/bin/|$bin/|" "$here/$unit.service" > "$dest/$unit.service"
 done
 
@@ -32,5 +32,5 @@ cp "$here"/applications/*.desktop "$apps/"
 systemctl --user daemon-reload
 systemctl --user disable ec-wallpaper.service 2>/dev/null || true  # abyss draws it (ADR 0104)
 systemctl --user enable ec-hyperion-bar.service ec-toasts.service ec-screensaver.service \
-    ec-pairing.service
+    ec-pairing.service ec-lock-trigger.service
 echo "installed into $dest, ExecStart -> $bin"

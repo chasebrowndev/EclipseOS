@@ -1168,6 +1168,46 @@ pub mod secret {
     pub const TITLE_GAP: f32 = 4.0;
 }
 
+/// The lock screen (`ec-lock`, ADR 0095): a clock over one card on an opaque
+/// ground. The surface is full-screen and opaque, so the depth is the card's
+/// fill, rim and drop, never translucency.
+pub mod lock {
+    /// The time: the one numeral on the screen, far past `BIG_NUMBER`
+    /// because it is read from across a room.
+    pub const CLOCK: f32 = 88.0;
+    /// Air between the time and the date under it.
+    pub const DATE_GAP: f32 = 2.0;
+    /// Air between the clock group and the card.
+    pub const CLOCK_GAP: f32 = 44.0;
+    pub const CARD_W: f32 = 392.0;
+    pub const CARD_PAD: f32 = 22.0;
+    pub const CARD_RADIUS: f32 = 20.0;
+    /// The card's drop: soft and short, a sheet resting on the ground.
+    pub const CARD_SHADOW_Y: f32 = 18.0;
+    pub const CARD_SHADOW_BLUR: f32 = 44.0;
+    /// The account's initial disc.
+    pub const AVATAR: f32 = 40.0;
+    /// The field is one height in every state, so nothing moves when it
+    /// changes from dots to "Checking" to "Unlocking".
+    pub const FIELD_H: f32 = 50.0;
+    /// The message line under the field, one height in every state.
+    pub const NOTE_H: f32 = 16.0;
+    /// One typed character.
+    pub const DOT: f32 = 8.0;
+    pub const DOT_GAP: f32 = 6.0;
+    /// The run stops growing here, so a long password never reflows the
+    /// field; the count past it is not shown.
+    pub const DOTS_MAX: usize = 14;
+    /// The insertion mark after the dots: a still bar, no blink.
+    pub const CARET_W: f32 = 2.0;
+    pub const CARET_H: f32 = 18.0;
+    /// A static arc for "checking": the view has no frame clock.
+    pub const SPIN_PHASE: f32 = 0.12;
+    /// The field's rim after a failure, as a fraction of `danger`: a crisp
+    /// edge that says "no", not a red glow.
+    pub const FAIL_RIM: f32 = 0.55;
+}
+
 /// The agent console (A-08 §8, D-05): a fleet column beside one task's
 /// thread, with a reply bar or a compositor-drawn slot at the foot.
 pub mod console {

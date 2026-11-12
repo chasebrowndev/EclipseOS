@@ -421,7 +421,7 @@ fn an_unknown_irreversible_id_is_dropped_with_a_warning() {
     assert_eq!(r.c.seen.budget, 1, "the budget_exceeded-style warning");
     r.sem.commit();
     r.pump();
-    let (view, handle) = r.agent(Class::Private);
+    let (view, handle) = r.agent(Class::Normal);
     match read_tree(&r.h.state, &view, handle, Instant::now()) {
         ReadOutcome::Tree(t) => {
             let n = t.nodes.iter().find(|n| n.id == 2).unwrap();
@@ -440,7 +440,7 @@ fn an_unknown_irreversible_id_is_dropped_with_a_warning() {
 fn an_agent_reads_the_tree_through_the_scene_filter() {
     let mut r = rig();
     r.base();
-    let (view, handle) = r.agent(Class::Private);
+    let (view, handle) = r.agent(Class::Normal);
     let ReadOutcome::Tree(t) = read_tree(&r.h.state, &view, handle, Instant::now()) else {
         panic!("a visible window with a tree");
     };
@@ -448,7 +448,7 @@ fn an_agent_reads_the_tree_through_the_scene_filter() {
     assert_eq!(t.nodes.len(), 4);
     assert!(t.complete);
     assert!(
-        t.nodes.iter().all(|n| n.sensitivity >= Class::Private),
+        t.nodes.iter().all(|n| n.sensitivity >= Class::Normal),
         "every node is at least the window's class, and the default is private"
     );
     let send = t.nodes.iter().find(|n| n.id == 2).unwrap();
@@ -502,7 +502,7 @@ fn secret_nodes_never_reach_an_agent() {
     assert_eq!(r.c.error(), None);
     // The compositor holds the nodes; the password's text is gone for good.
     assert_eq!(r.view().node(10).unwrap().value, Value::Empty);
-    let (view, handle) = r.agent(Class::Private);
+    let (view, handle) = r.agent(Class::Normal);
     let ReadOutcome::Tree(t) = read_tree(&r.h.state, &view, handle, Instant::now()) else {
         panic!("tree");
     };
@@ -523,7 +523,7 @@ fn secret_nodes_never_reach_an_agent() {
 fn a_destroyed_publisher_answers_client_gone_for_a_second() {
     let mut r = rig();
     r.base();
-    let (view, handle) = r.agent(Class::Private);
+    let (view, handle) = r.agent(Class::Normal);
     r.sem.destroy();
     r.pump();
     assert_eq!(r.c.error(), None);
@@ -940,7 +940,7 @@ fn live_arm_echo_off_from_the_terminal_publisher_covers_the_terminal() {
         NodeVerdict::WholeSurface(RedactReason::UnplacedSecret)
     );
     // The agent reads nothing of it: the terminal root is secret.
-    let (view, handle) = r.agent(Class::Private);
+    let (view, handle) = r.agent(Class::Normal);
     let ReadOutcome::Tree(t) = read_tree(&r.h.state, &view, handle, Instant::now()) else {
         panic!("tree");
     };

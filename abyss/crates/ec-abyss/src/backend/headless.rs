@@ -210,7 +210,16 @@ pub type WlcsSender = smithay::reexports::calloop::channel::Sender<WlcsEvent>;
 /// Same compositor, same render loop; the only difference is where clients and
 /// input come from. Blocks until the harness sends [`WlcsEvent::Exit`].
 pub fn run_wlcs(channel: smithay::reexports::calloop::channel::Channel<WlcsEvent>) -> Result<()> {
-    boot(Config::default(), false, false, WLCS_SIZE, Some(channel))
+    // wlcs's clients run inside the wlcs process, and its input-method and
+    // virtual-pointer suites need those globals. Admit that one executable
+    // through the ordinary allowlists (ADR 0094) rather than bypassing them.
+    let mut config = Config::default();
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = exe.to_string_lossy().into_owned();
+        config.input_method.allow = vec![exe.clone()];
+        config.virtual_pointer.allow = vec![exe];
+    }
+    boot(config, false, false, WLCS_SIZE, Some(channel))
 }
 
 pub fn run(config: Config, stats: bool, session: bool, size: (i32, i32)) -> Result<()> {

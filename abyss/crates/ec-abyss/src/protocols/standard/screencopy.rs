@@ -9,8 +9,9 @@
 //!
 //! Capture reads every pixel of an output, including other clients' windows.
 //! There is no ambient authority here and no ungated path: a capture is
-//! authorised only if the requesting client's process name appears in
-//! `capture { allow ... }`, exactly as `wlr_data_control` is gated (ADR 0022).
+//! authorised only if the requesting client's executable is admitted by
+//! `capture { allow ... }`, exactly as `wlr_data_control` is gated (ADR 0022,
+//! matched by full executable path since ADR 0094).
 //! `policyd` does not exist yet, so with no allowlist configured — the default
 //! — **every** capture is denied. The gate is applied twice: as a global
 //! visibility filter, so a denied client never sees the manager at all, and
@@ -45,7 +46,9 @@ use smithay::{
     utils::{Physical, Rectangle},
 };
 
-use crate::{config::Allowlist, render::capture, state::AbyssState};
+use std::path::Path;
+
+use crate::{config::ExeAllowlist, render::capture, state::AbyssState};
 
 /// Protocol version advertised. v3 adds `linux_dmabuf`/`buffer_done`; we
 /// advertise the version but offer shm buffers only.
@@ -60,7 +63,7 @@ pub enum Decision {
     DenyLocked,
     /// No allowlist configured. This is the default, and it denies.
     DenyNoAllowlist,
-    /// `SO_PEERCRED` gave us no usable process name.
+    /// `SO_PEERCRED` gave us no usable executable (unreadable, or deleted).
     DenyUnknownClient,
     /// Identified, but not allowed.
     DenyNotAllowed,
@@ -86,16 +89,16 @@ impl Decision {
 ///
 /// Order matters: the lock check comes first so that no allowlist entry can
 /// ever unlock capture of a locked session.
-pub fn decide(allow: &Allowlist, locked: bool, name: Option<&str>) -> Decision {
+pub fn decide(allow: &ExeAllowlist, locked: bool, exe: Option<&Path>) -> Decision {
     if locked {
         return Decision::DenyLocked;
     }
     if allow.is_empty() {
         return Decision::DenyNoAllowlist;
     }
-    match name {
+    match exe {
         None => Decision::DenyUnknownClient,
-        Some(n) if allow.contains(n) => Decision::Allow,
+        Some(e) if allow.contains_exe(e) => Decision::Allow,
         Some(_) => Decision::DenyNotAllowed,
     }
 }
@@ -104,7 +107,7 @@ pub fn decide(allow: &Allowlist, locked: bool, name: Option<&str>) -> Decision {
 #[derive(Debug)]
 pub struct ManagerData {
     dh: crate::protocols::standard::data_control::WeakDh,
-    allow: Allowlist,
+    allow: ExeAllowlist,
 }
 
 /// What a frame object is allowed to copy. `None` means the request was
@@ -131,12 +134,12 @@ pub struct FrameData {
 pub struct ScreencopyState;
 
 impl ScreencopyState {
-    /// Register the global. The bind filter holds an [`Allowlist`] handle, so
+    /// Register the global. The bind filter holds an [`ExeAllowlist`] handle, so
     /// a config reload retunes it without a restart (ADR 0022 amendment).
     pub fn new(
         dh: &DisplayHandle,
         weak_dh: crate::protocols::standard::data_control::WeakDh,
-        allow: Allowlist,
+        allow: ExeAllowlist,
     ) -> Self {
         if allow.is_empty() {
             tracing::info!("screencopy: no capture.allow entries, all capture denied");
@@ -166,11 +169,11 @@ impl GlobalDispatch<ZwlrScreencopyManagerV1, ManagerData> for AbyssState {
     fn can_view(client: Client, global_data: &ManagerData) -> bool {
         // The lock state is not reachable from here, so this filter enforces
         // the allowlist only; `decide` re-checks the lock per request.
-        let name = global_data.dh.client_name(&client);
-        let d = decide(&global_data.allow, false, name.as_deref());
+        let exe = global_data.dh.client_exe(&client);
+        let d = decide(&global_data.allow, false, exe.as_deref());
         if !d.allowed() {
             tracing::debug!(
-                client = name.as_deref().unwrap_or("<unknown>"),
+                client = ?exe,
                 reason = d.reason(),
                 "screencopy global hidden"
             );
@@ -216,11 +219,11 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AbyssState {
         };
 
         // The gate runs before anything is computed, allocated or queued.
-        let name = crate::protocols::standard::data_control::client_name(dh, client);
-        let decision = decide(&state.capture_allow, state.lock.locked, name.as_deref());
+        let exe = crate::protocols::standard::data_control::client_exe(dh, client);
+        let decision = decide(&state.capture_allow, state.lock.locked, exe.as_deref());
         if !decision.allowed() {
             tracing::warn!(
-                client = name.as_deref().unwrap_or("<unknown>"),
+                client = ?exe,
                 reason = decision.reason(),
                 "screencopy denied"
             );
@@ -289,7 +292,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AbyssState {
         };
 
         tracing::info!(
-            client = name.as_deref().unwrap_or("<unknown>"),
+            client = ?exe,
             output = %entry.identity,
             w = rect.size.w,
             h = rect.size.h,
@@ -319,7 +322,8 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AbyssState {
         }
         // The indicator is persistent for as long as capture keeps happening.
         state.capture_seen = Some(std::time::Instant::now());
-        state.capture_consumer = name;
+        state.capture_consumer = exe;
+        super::capture_event::sync(state);
     }
 }
 
@@ -413,40 +417,66 @@ fn _assert_output_type(_: &WlOutput) {}
 
 #[cfg(test)]
 mod tests {
-    use super::{decide, Allowlist, Decision};
+    use super::{decide, Decision, ExeAllowlist};
+    use std::path::Path;
 
-    fn allow() -> Allowlist {
-        Allowlist::new(vec!["grim".to_string()])
+    /// Not installed anywhere, so the entry stays literal on every host.
+    const GRIM: &str = "/usr/bin/ec-test-grim";
+
+    fn allow() -> ExeAllowlist {
+        ExeAllowlist::new(vec![GRIM.to_string()])
     }
 
-    fn empty() -> Allowlist {
-        Allowlist::default()
+    fn empty() -> ExeAllowlist {
+        ExeAllowlist::default()
+    }
+
+    fn grim() -> &'static Path {
+        Path::new(GRIM)
     }
 
     #[test]
     fn fail_closed_by_default() {
         // No configuration at all: nothing captures, whoever asks.
-        assert_eq!(decide(&empty(), false, Some("grim")), Decision::DenyNoAllowlist);
+        assert_eq!(decide(&empty(), false, Some(grim())), Decision::DenyNoAllowlist);
         assert_eq!(decide(&empty(), false, None), Decision::DenyNoAllowlist);
     }
 
     #[test]
     fn allowlisted_client_is_allowed() {
-        assert_eq!(decide(&allow(), false, Some("grim")), Decision::Allow);
-        assert!(decide(&allow(), false, Some("grim")).allowed());
+        assert_eq!(decide(&allow(), false, Some(grim())), Decision::Allow);
+        assert!(decide(&allow(), false, Some(grim())).allowed());
     }
 
     #[test]
     fn unlisted_and_unidentified_clients_are_denied() {
-        assert_eq!(decide(&allow(), false, Some("evil")), Decision::DenyNotAllowed);
+        assert_eq!(
+            decide(&allow(), false, Some(Path::new("/usr/bin/evil"))),
+            Decision::DenyNotAllowed
+        );
         assert_eq!(decide(&allow(), false, None), Decision::DenyUnknownClient);
+    }
+
+    /// SEC-04: the basename is not the identity. `/tmp/grim` is a different
+    /// executable from the allowlisted one, whether the entry is the bare
+    /// name or the path.
+    #[test]
+    fn a_copy_under_an_allowlisted_name_is_denied() {
+        for entry in ["ec-test-grim", GRIM] {
+            let allow = ExeAllowlist::new(vec![entry.to_string()]);
+            assert_eq!(
+                decide(&allow, false, Some(Path::new("/tmp/ec-test-grim"))),
+                Decision::DenyNotAllowed,
+                "{entry}"
+            );
+        }
     }
 
     #[test]
     fn lock_beats_the_allowlist() {
         // The lock check is first, so no allowlist entry can capture a locked
         // session.
-        assert_eq!(decide(&allow(), true, Some("grim")), Decision::DenyLocked);
-        assert_eq!(decide(&empty(), true, Some("grim")), Decision::DenyLocked);
+        assert_eq!(decide(&allow(), true, Some(grim())), Decision::DenyLocked);
+        assert_eq!(decide(&empty(), true, Some(grim())), Decision::DenyLocked);
     }
 }

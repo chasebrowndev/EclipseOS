@@ -1218,7 +1218,7 @@ fn preview(app: &mut App) {
             minimized: false,
             pid: None,
             program: None,
-            trust: crate::model::Trust::Private,
+            trust: crate::model::Trust::Normal,
         };
         let workspace = |index: usize, active: bool, windows: usize| crate::model::Workspace {
             index,
@@ -5483,7 +5483,7 @@ pub(crate) mod tests {
             minimized,
             pid: None,
             program: None,
-            trust: Trust::Private,
+            trust: Trust::Normal,
         }
     }
 

@@ -65,7 +65,9 @@ type Rect = Rectangle<i32, Logical>;
 /// May an overlay exist right now? `de`, a live session, nothing else holding
 /// the human's seat.
 pub fn allowed(state: &AbyssState) -> bool {
-    shell::de::stacking(state)
+    // Off for the session after a contained panic (ADR 0102).
+    !state.contained.is_off(crate::contain::Feature::Overview)
+        && shell::de::stacking(state)
         && !state.lock.locked
         && !crate::trusted_ui::holds_seat(state)
         && !state.region_select.active()
@@ -665,6 +667,7 @@ pub fn key(state: &mut AbyssState, sym: Keysym, shift: bool) {
 
 /// The pointer moved while the switcher or the overview is open.
 pub fn motion(state: &mut AbyssState, pos: Point<f64, Logical>) {
+    crate::contain::fault(crate::contain::Feature::Overview);
     if state.switcher.is_open() {
         switcher::motion(state, pos);
     } else {

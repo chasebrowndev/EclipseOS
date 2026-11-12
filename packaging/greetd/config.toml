@@ -23,5 +23,9 @@ vt = 1
 [default_session]
 # systemd-cat: the greeter's stdio is the VT, and its output would show as text
 # around the handoff to the session.
-command = "systemd-cat -t greeter /usr/bin/ec-abyss --backend drm --kiosk -- /usr/lib/eclipse/ec-greeter-run"
+# ec-abyss-launch (ADR 0101) runs /usr/bin/ec-abyss with these arguments and,
+# only if it dies within seconds of starting, the build kept from before the
+# last update: the greeter has no session menu to pick "Abyss (previous)" from
+# when the compositor it runs on is the thing that broke.
+command = "systemd-cat -t greeter /usr/lib/eclipse/ec-abyss-launch /usr/bin/ec-abyss --backend drm --kiosk -- /usr/lib/eclipse/ec-greeter-run"
 user = "greeter"

@@ -69,19 +69,51 @@ pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
                 .map(|t| (s.path.clone(), crate::ipc::config_rpc::hash(&t)))
         })
         .collect();
-    // Retune the two global bind filters. They hold Allowlist handles rather
-    // than snapshots precisely so this line is possible (ADR 0022 amendment).
+    // Retune the admission filters. They hold ExeAllowlist handles rather
+    // than snapshots precisely so this is possible (ADR 0022 amendment); each
+    // `set` re-resolves symlink entries (ADR 0094).
     state.capture_allow.set(state.config.capture.allow.clone());
     state
         .clipboard_allow
         .set(state.config.clipboard.data_control_allow.clone());
+    state
+        .input_method_allow
+        .set(state.config.input_method.allow.clone());
+    state
+        .virtual_pointer
+        .allow
+        .set(state.config.virtual_pointer.allow.clone());
+    warn_missing_admissions(&[
+        ("capture.allow", &state.capture_allow),
+        ("clipboard.data-control-allow", &state.clipboard_allow),
+        ("input-method.allow", &state.input_method_allow),
+        ("virtual-pointer.allow", &state.virtual_pointer.allow),
+    ]);
     crate::input::apply_config(state);
     crate::outputs::reapply_settings(state);
     crate::outputs::relayout(state);
     crate::shell::arrange(state);
+    // `capture.redact-app-id` may have grown: withdraw what is now `secret`.
+    crate::protocols::standard::foreign_toplevel::refresh_all(state);
     crate::backend::damage_all(state);
     crate::trusted_ui::approval::schedule(state);
     tracing::info!(?sources, "config applied");
+}
+
+/// ADR 0094: an admission entry that names no file admits nothing. Almost
+/// always a bare name for a binary outside `/usr/bin` (a portal backend in
+/// `/usr/lib`, a dev build behind `/usr/local/bin`), so say how to fix it.
+/// Startup and every reload; executable names only, never input.
+pub fn warn_missing_admissions(lists: &[(&'static str, &ExeAllowlist)]) {
+    for (key, list) in lists {
+        for entry in list.missing() {
+            tracing::warn!(
+                key,
+                entry = %entry,
+                "admission entry names no existing file and admits nothing; a bare name means /usr/bin/<name>, anything else needs its absolute path (ADR 0094)"
+            );
+        }
+    }
 }
 
 /// ADR 0066: `widget` blocks are inert without the `taskbar-widgets` hook.

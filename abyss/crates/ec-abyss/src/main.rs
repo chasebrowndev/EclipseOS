@@ -178,6 +178,9 @@ fn init_logging() {
 
 fn main() -> Result<()> {
     init_logging();
+    // ADR 0102: panics are logged by location (never payload) and, inside a
+    // contained feature, turn only that feature off.
+    ec_abyss::contain::install_hook();
     let args = parse_args()?;
     tracing::info!(version = env!("CARGO_PKG_VERSION"), kind = ?args.backend, "abyss starting");
     // Reap spawned children without a wait loop: nothing on the hot path may block.
