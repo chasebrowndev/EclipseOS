@@ -84,15 +84,17 @@ impl ManagerData {
         // The lock state is not reachable here; `decide` re-checks it per
         // request and at service time.
         let exe = self.dh.client_exe(client);
-        let d = decide(&self.allow, false, exe.as_deref());
-        if !d.allowed() {
+        // The portal sees the globals; it captures nothing without a grant.
+        let shown = decide(&self.allow, false, exe.as_deref()).allowed()
+            || crate::trusted_ui::screencast::is_portal(exe.as_deref());
+        if !shown {
             tracing::debug!(
                 client = ?exe,
                 global = what,
                 "image-copy-capture global hidden"
             );
         }
-        d.allowed()
+        shown
     }
 }
 
@@ -224,9 +226,13 @@ impl Dispatch<ExtOutputImageCaptureSourceManagerV1, ()> for AbyssState {
         };
         // A source is a capability handle: gate it like everything else.
         let exe = crate::protocols::standard::data_control::client_exe(dh, client);
-        let decision = decide(&state.capture_allow, state.lock.locked, exe.as_deref());
+        let wanted = state.outputs.by_wl_output(&output).map(|e| e.id);
+        let decision = match wanted {
+            Some(id) => screencopy::admit(state, exe.as_deref(), id),
+            None => decide(&state.capture_allow, state.lock.locked, exe.as_deref()),
+        };
         let output_id = if decision.allowed() {
-            state.outputs.by_wl_output(&output).map(|e| e.id)
+            wanted
         } else {
             tracing::warn!(
                 client = ?exe,
@@ -290,13 +296,10 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for AbyssState {
             } => {
                 // The gate runs before any table entry or event exists.
                 let exe = crate::protocols::standard::data_control::client_exe(dh, client);
-                let decision = decide(&state.capture_allow, state.lock.locked, exe.as_deref());
                 let source_data = source.data::<SourceData>().copied();
-                let target = if decision.allowed() {
-                    source_data.and_then(|s| s.output_id)
-                } else {
-                    None
-                };
+                let target = source_data
+                    .and_then(|s| s.output_id)
+                    .filter(|&id| screencopy::admit(state, exe.as_deref(), id).allowed());
                 let Some(output_id) = target else {
                     tracing::warn!(
                         client = ?exe,
@@ -549,12 +552,7 @@ fn capture_request(state: &mut AbyssState, resource: &ExtImageCopyCaptureFrameV1
     let paint_cursors = session.paint_cursors;
 
     // Re-check the gate: a session may have outlived a lock or a reload.
-    if decide(
-        &state.capture_allow,
-        state.lock.locked,
-        state.capture_consumer.as_deref(),
-    ) != screencopy::Decision::Allow
-    {
+    if screencopy::admit(state, state.capture_consumer.as_deref(), output_id) != screencopy::Decision::Allow {
         tracing::warn!("image copy capture denied at capture time");
         resource.failed(FailureReason::Stopped);
         return;

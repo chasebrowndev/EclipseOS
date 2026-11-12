@@ -1,5 +1,5 @@
 # 0097 — Scoped capture grants and a compositor-drawn capture confirm
-Status: proposed
+Status: accepted (amended 2026-11-12, see below)
 Date: 2026-11-02
 Deciders: chase (owner), Claude (advisory)
 
@@ -66,3 +66,25 @@ Option 3.
 ## Revisit when
 A sandbox/app-identity scheme gives abyss an authenticated app id; or the
 modal needs previews drawn by the compositor.
+
+## Amendment, 2026-11-12: what v1 builds
+The owner accepted this design to make screen sharing work out of the box,
+without the user editing policy. v1 (`ec-abyss/src/trusted_ui/screencast.rs`)
+narrows it:
+- **abyss holds the grant, not policyd.** policyd ships in the optional
+  `eclipseos-agents` package, and a desktop without it must still be able to
+  share a screen. The grant `{stream, output, app-id claim}` lives in abyss.
+  Minting it through policyd, with the byte-identical scope test, comes back
+  once policyd leaves the agent package (ADR 0098).
+- **The grant lives exactly as long as the asking connection.** After
+  `Granted` the portal keeps `portal.sock` open for the whole stream. Hanging
+  up, any further byte, or the daemon dying revokes the grant, and the next
+  frame is refused. Locking the session revokes every grant.
+- **Screens only.** `Source::Window` is refused until a toplevel capture
+  source exists (D-08 §6). `persistent` is ignored: every share asks again.
+- **Admission.** Screencopy and image-copy admit `/usr/bin/ecl-desktop-portal`
+  only for the output named in a live grant (`screencopy::admit`). The lock is
+  checked first, and a grant never lifts it. The capture globals are visible to
+  that executable so it can bind before asking.
+- **Wire.** The postcard frames of `ecl-portal-proto` are decoded by hand in
+  abyss, so the TCB carries no codec dependency.

@@ -162,4 +162,31 @@ mod tests {
         let b = postcard::to_stdvec(&a).unwrap();
         assert_eq!(postcard::from_bytes::<CaptureAnswer>(&b).unwrap(), a);
     }
+
+    /// abyss decodes and encodes these by hand (`trusted_ui/screencast.rs`,
+    /// ADR 0097); its tests use exactly these bytes. Change one, change both.
+    #[test]
+    fn portal_sock_bytes_match_abyss() {
+        let c = CaptureConfirm {
+            app_id_claim: "com.discordapp.Discord".into(),
+            stream: 7,
+            target: Source::Output {
+                name: "DP-1".into(),
+                width: 1920,
+                height: 1200,
+            },
+            audio: true,
+            persistent: false,
+        };
+        let mut want = vec![22];
+        want.extend_from_slice(b"com.discordapp.Discord");
+        want.extend_from_slice(&[7, 0, 4]);
+        want.extend_from_slice(b"DP-1");
+        want.extend_from_slice(&[0x80, 0x0f, 0xb0, 0x09, 1, 0]);
+        assert_eq!(postcard::to_stdvec(&c).unwrap(), want);
+        let ans = |a: CaptureAnswer| postcard::to_stdvec(&a).unwrap();
+        assert_eq!(ans(CaptureAnswer::Granted { grant: 300 }), [0, 0xac, 0x02]);
+        assert_eq!(ans(CaptureAnswer::Denied), [1]);
+        assert_eq!(ans(CaptureAnswer::Timeout), [2]);
+    }
 }

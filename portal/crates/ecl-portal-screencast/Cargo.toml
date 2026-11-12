@@ -9,12 +9,11 @@ description = "PipeWire producer fed by abyss capture protocols."
 publish = false
 
 [features]
-default = ["wayland"]
+default = ["wayland", "pipewire"]
 # wlr-screencopy client against abyss (wl_shm only).
 wayland = ["dep:wayland-client", "dep:wayland-protocols-wlr"]
-# PipeWire producer node. Needs libpipewire + clang; the `pipewire` crate is
-# not in the offline registry of the dev host, so this is opt-in until vetted
-# with `cargo deny` (ADR 0096).
+# PipeWire producer node. Needs libpipewire + clang at build time. On by
+# default: the portal's ScreenCast is the reason this crate exists.
 pipewire = ["dep:pipewire"]
 
 [dependencies]

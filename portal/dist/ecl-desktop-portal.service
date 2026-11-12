@@ -12,7 +12,10 @@ BindsTo=abyss-session.target
 
 [Service]
 Type=dbus
-BusName=org.freedesktop.portal.Desktop
+# The backend name is the one this daemon always owns; the frontend name
+# (org.freedesktop.portal.Desktop) only when upstream xdg-desktop-portal is
+# not running.
+BusName=org.freedesktop.impl.portal.desktop.eclipse
 ExecStart=/usr/bin/ecl-desktop-portal
 Restart=on-failure
 RestartSec=1

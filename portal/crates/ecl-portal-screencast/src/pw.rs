@@ -140,6 +140,25 @@ impl Drop for Producer {
     }
 }
 
+/// Production [`SinkFactory`]: one PipeWire producer node per stream.
+pub struct PwSinkFactory;
+
+impl crate::stream::SinkFactory for PwSinkFactory {
+    fn make(&self, cfg: crate::stream::SinkConfig) -> Result<crate::stream::MadeSink, String> {
+        let p = Producer::spawn(ProducerConfig {
+            width: cfg.width,
+            height: cfg.height,
+            format: cfg.format,
+            max_fps: cfg.max_fps,
+        })?;
+        let node_id = p.node_id();
+        Ok(crate::stream::MadeSink {
+            sink: Box::new(p),
+            node_id,
+        })
+    }
+}
+
 fn pod_bytes(obj: pod::Object) -> Vec<u8> {
     PodSerializer::serialize(Cursor::new(Vec::new()), &Value::Object(obj))
         .expect("serialize pod")

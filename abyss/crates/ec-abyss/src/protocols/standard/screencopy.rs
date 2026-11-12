@@ -103,6 +103,26 @@ pub fn decide(allow: &ExeAllowlist, locked: bool, exe: Option<&Path>) -> Decisio
     }
 }
 
+/// The whole gate for one output: [`decide`] first (the lock, then the
+/// allowlist), then a live screen-share grant for exactly this output
+/// (ADR 0097). A grant never lifts the lock.
+pub fn admit(state: &AbyssState, exe: Option<&Path>, output_id: u64) -> Decision {
+    let d = decide(&state.capture_allow, state.lock.locked, exe);
+    if d.allowed() || d == Decision::DenyLocked {
+        return d;
+    }
+    match exe {
+        Some(e) if crate::trusted_ui::screencast::granted(state, e, output_id) => Decision::Allow,
+        _ => d,
+    }
+}
+
+/// Global visibility: the allowlist, or the portal, which can bind but
+/// captures nothing without a grant.
+fn visible(allow: &ExeAllowlist, exe: Option<&Path>) -> bool {
+    decide(allow, false, exe).allowed() || crate::trusted_ui::screencast::is_portal(exe)
+}
+
 /// Global data for the manager: enough to identify a client at bind time.
 #[derive(Debug)]
 pub struct ManagerData {
@@ -170,15 +190,11 @@ impl GlobalDispatch<ZwlrScreencopyManagerV1, ManagerData> for AbyssState {
         // The lock state is not reachable from here, so this filter enforces
         // the allowlist only; `decide` re-checks the lock per request.
         let exe = global_data.dh.client_exe(&client);
-        let d = decide(&global_data.allow, false, exe.as_deref());
-        if !d.allowed() {
-            tracing::debug!(
-                client = ?exe,
-                reason = d.reason(),
-                "screencopy global hidden"
-            );
+        let shown = visible(&global_data.allow, exe.as_deref());
+        if !shown {
+            tracing::debug!(client = ?exe, "screencopy global hidden");
         }
-        d.allowed()
+        shown
     }
 }
 
@@ -218,9 +234,13 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AbyssState {
             _ => return,
         };
 
-        // The gate runs before anything is computed, allocated or queued.
+        // The gate runs before anything is computed, allocated or queued. A
+        // screen-share grant is for one output, so the output is named first.
         let exe = crate::protocols::standard::data_control::client_exe(dh, client);
-        let decision = decide(&state.capture_allow, state.lock.locked, exe.as_deref());
+        let decision = match state.outputs.by_wl_output(&output).map(|e| e.id) {
+            Some(id) => admit(state, exe.as_deref(), id),
+            None => decide(&state.capture_allow, state.lock.locked, exe.as_deref()),
+        };
         if !decision.allowed() {
             tracing::warn!(
                 client = ?exe,
@@ -330,11 +350,11 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AbyssState {
 impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for AbyssState {
     fn request(
         state: &mut Self,
-        _client: &Client,
+        client: &Client,
         frame: &ZwlrScreencopyFrameV1,
         request: zwlr_screencopy_frame_v1::Request,
         data: &FrameData,
-        _dh: &DisplayHandle,
+        dh: &DisplayHandle,
         _data_init: &mut DataInit<'_, Self>,
     ) {
         use zwlr_screencopy_frame_v1::Request;
@@ -357,9 +377,11 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for AbyssState {
             frame.failed();
             return;
         };
-        // Re-check: a client may have held an authorised frame across a lock.
-        if state.lock.locked {
-            tracing::warn!("screencopy copy denied (session locked)");
+        // Re-check: a client may have held an authorised frame across a lock,
+        // a reload, or the end of its screen-share grant.
+        let exe = crate::protocols::standard::data_control::client_exe(dh, client);
+        if !admit(state, exe.as_deref(), target.output_id).allowed() {
+            tracing::warn!("screencopy copy denied at copy time");
             frame.failed();
             return;
         }
