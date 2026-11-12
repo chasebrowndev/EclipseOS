@@ -39,6 +39,7 @@ use crate::edit::{Edit, PathEdit};
 use crate::motion::{self, Motion};
 use crate::ops::{Confirm, Conflict, JobKind, NameEntry, Tray, TrayEvent};
 use crate::palette::{Item, Palette};
+use crate::pick::{self, Answer, PickMode, PickRequest};
 use crate::state::{join, Browser, Click, Effect, Notice, Tabs};
 use crate::theme::{self, size};
 
@@ -95,6 +96,9 @@ pub struct App {
     drag_escaped: bool,
     /// The sidebar place under the pointer.
     pub place_hover: Option<usize>,
+    /// `--pick`: this window is a portal file picker (ADR 0100). Opening a
+    /// file confirms it instead of launching a handler; see [`App::pick_open`].
+    pub pick: Option<PickRequest>,
 }
 
 /// A drag of rows: what they are, and what the ghost says.
@@ -282,6 +286,7 @@ impl App {
             drag: None,
             drag_escaped: false,
             place_hover: None,
+            pick: None,
         }
     }
 
@@ -567,6 +572,10 @@ impl App {
                 self.request(Request::Unsubscribe { dir });
                 Task::none()
             }
+            Effect::Open(path) if self.pick.is_some() => {
+                self.pick_open(tab, path);
+                Task::none()
+            }
             Effect::Open(path) => {
                 self.request(Request::Open { path, app: None });
                 Task::none()
@@ -575,6 +584,59 @@ impl App {
                 self.request(Request::SetSort { dir, sort });
                 Task::none()
             }
+        }
+    }
+
+    /// Picker mode: the user opened file `path` in tab `tab`. In the file
+    /// modes that confirms the pick (in open-multiple, the marked files if
+    /// `path` is among them, else `path` alone); nothing is ever launched.
+    /// The folder and save modes confirm through the view's accept action,
+    /// [`pick::confirm`], not here.
+    fn pick_open(&mut self, tab: usize, path: Vec<u8>) {
+        let Some(req) = &self.pick else {
+            return;
+        };
+        let Some(b) = self.tabs.get(tab) else {
+            return;
+        };
+        let paths = match req.mode {
+            PickMode::Open => vec![path],
+            PickMode::OpenMultiple => {
+                let marked: Vec<Vec<u8>> = b
+                    .picked()
+                    .iter()
+                    .filter(|e| e.kind != Kind::Dir)
+                    .map(|e| join(&b.path, &e.name))
+                    .collect();
+                if marked.contains(&path) {
+                    marked
+                } else {
+                    vec![path]
+                }
+            }
+            PickMode::Directory
+            | PickMode::DirectoryMultiple
+            | PickMode::Save
+            | PickMode::SaveFiles => Vec::new(),
+        };
+        let notice = if paths.is_empty() {
+            // Until the view's accept bar lands (ADR 0100), these modes
+            // can only be cancelled.
+            Notice::Unavailable("pick accept")
+        } else {
+            let answer = Answer {
+                paths,
+                ..Answer::default()
+            };
+            // Returns only on a refusal; a confirmed pick exits the process.
+            match pick::confirm(req, &answer) {
+                Err(r) => Notice::Hint(r.hint()),
+                Ok(never) => match never {},
+            }
+        };
+        if let Some(b) = self.tabs.iter_mut().nth(tab) {
+            b.opening = None;
+            b.notice = Some(notice);
         }
     }
 

@@ -16,8 +16,10 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   (`packaging/ec-pairing.service`, ADR 0066); `src/bin/ec-polkit-agent.rs` is
   the session's polkit agent, **TCB**, holds no secret (`packaging/ec-polkit-agent.service`,
   ADR 0088); `src/bin/ec-portal.rs` is the
-  xdg-desktop-portal Settings backend (`org.freedesktop.appearance` from the
-  compositor's `get_theme`/`theme`, ADR 0084; `packaging/ec-portal.service`).
+  xdg-desktop-portal backend: Settings (`org.freedesktop.appearance` from the
+  compositor's `get_theme`/`theme`, ADR 0084) and FileChooser (`filechooser.rs`,
+  one `ec-fog-ui --pick` child per request, ADR 0100; app strings reach it as
+  sanitized argv values only, never through a shell; `packaging/ec-portal.service`).
 - Deps stay at `zbus` (already in the tree via iced_layershell → mundy, so no
   new supply chain), `ec-ipc` and `serde_json`, plus what ADR 0065
   admits for the taskbar widgets: `pulseaudio` (pure-Rust PulseAudio

@@ -4,6 +4,7 @@
 //!
 //! `ec-fog-ui [PATH]` — opens PATH, or the current directory. All listing I/O
 //! and sorting happens in `ec-fogd`; this process only draws what it sends.
+//! `ec-fog-ui --pick MODE …` is the portal's file picker ([`pick`], ADR 0100).
 
 mod app;
 mod bench;
@@ -14,6 +15,7 @@ mod motion;
 mod ops;
 mod palette;
 mod parts;
+mod pick;
 mod state;
 mod theme;
 mod view;
@@ -78,8 +80,22 @@ fn from_uri(arg: OsString) -> OsString {
 }
 
 fn main() -> iced::Result {
+    // Before anything else, and before any thread: picker mode moves stdout
+    // aside for its answer.
+    let pick = match pick::parse(std::env::args_os().skip(1)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("ec-fog-ui: {e}");
+            std::process::exit(2);
+        }
+    };
+    if pick.is_some() {
+        if let Err(e) = pick::claim_stdout() {
+            eprintln!("ec-fog-ui: cannot take stdout for the pick: {e}");
+            std::process::exit(2);
+        }
+    }
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let path = resolve(&cwd, std::env::args_os().nth(1));
 
     // Read before iced starts: the UI thread never does filesystem I/O.
     let config = match ec_fog_config::path().map(|p| ec_fog_config::load(&p)) {
@@ -95,6 +111,14 @@ fn main() -> iced::Result {
     let home = std::env::var_os("HOME")
         .map(OsStringExt::into_vec)
         .unwrap_or_else(|| b"/".to_vec());
+    let path = match &pick {
+        Some(p) => match &p.current_folder {
+            Some(dir) => resolve(&cwd, Some(OsString::from_vec(dir.clone()))),
+            None => home.clone(),
+        },
+        None => resolve(&cwd, std::env::args_os().nth(1)),
+    };
+    let picking = pick.is_some();
     // The desktop's rounding, blur, opacity and motion, and the contrast
     // floor over them (FOG §Visual design).
     theme::init(
@@ -103,11 +127,15 @@ fn main() -> iced::Result {
     );
 
     let app = iced::application(
-        move || app::App::new(path.clone(), config.clone(), tz.clone(), home.clone()),
+        move || {
+            let mut app = app::App::new(path.clone(), config.clone(), tz.clone(), home.clone());
+            app.pick = pick.clone();
+            app
+        },
         app::update,
         view::view,
     );
-    theme::font::BYTES
+    let result = theme::font::BYTES
         .iter()
         .fold(app, |app, face| app.font(*face))
         .title("Fog")
@@ -129,7 +157,17 @@ fn main() -> iced::Result {
             },
             ..window::Settings::default()
         })
-        .run()
+        .run();
+    // A confirmed pick has already exited 0 from `pick::confirm`; reaching
+    // here means the window closed without one.
+    if picking {
+        if let Err(e) = &result {
+            eprintln!("ec-fog-ui: {e}");
+            std::process::exit(2);
+        }
+        pick::cancel();
+    }
+    result
 }
 
 #[cfg(test)]

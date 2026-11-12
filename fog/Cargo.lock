@@ -587,6 +587,7 @@ dependencies = [
  "ec-fog-widgets",
  "iced",
  "jiff",
+ "libc",
  "tokio",
 ]
 
