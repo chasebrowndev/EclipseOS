@@ -167,12 +167,11 @@ SEC-07 (#269). STATUS "per-user policyd" entry. ADR 0028 and 0061 stated limits.
 
 ## Open, for the owner
 1. Setgid compositor versus the fd-passing helper, once the spike reports.
-2. Whether the greeter session (ADR 0087) runs with `policyd` at all.
-3. Whether `eclipseos-agents` staying an add-on (ADR 0069) means the system
-   user and unit ship only with it, leaving a floor install with no policy
-   daemon and the allowlists back in an owner-writable file. Proposed: the
-   system user and the policy file move ship in the floor; the agent parts
-   stay in the add-on.
+2. ~~Whether the greeter session (ADR 0087) runs with `policyd`.~~ **Decided
+   2026-11-12 (owner):** it does not.
+3. ~~Whether the system user and unit ship only with the add-on.~~ **Decided
+   2026-11-12 (owner):** the system user and the policy-file move ship in the base
+   OS (floor); the agent parts stay in the add-on (ADR 0069).
 
 ## Revisit when
 Z-03 (multi-user) is taken up, or applications become confinable by default.
