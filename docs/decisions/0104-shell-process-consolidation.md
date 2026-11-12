@@ -156,8 +156,10 @@ Proposed, staged, cheapest and most reversible first:
   of toasts while a card is visible. Report system-wide PSS and VRAM, not RSS.
 - **Stage 1, option 5's environment knobs** in the three pane units. Config only,
   one-line revert.
-- **Stage 2, the wallpaper**: option 4 or option 2, by owner decision (Q2). Either removes
-  most of a GPU context from the always-on set for a pane that draws one picture.
+- **Stage 2, the wallpaper**: option 4, the compositor draws it (owner, 2026-11-11). Removes
+  most of a GPU context from the always-on set for a pane that draws one picture. The
+  `eclipseos-wallpaper` fate (retire, or keep for non-abyss hosts per ADR 0052) is settled
+  in the implementing PR.
 - **Stage 3, the bar on tiny-skia** only if stage 0's CPU measurement of its animations is
   acceptable and screenshots match STYLE.md; otherwise it stays on wgpu.
 - **Option 3 is deferred**, not rejected. After stages 1–3 the always-on set holds at most
@@ -176,8 +178,8 @@ Proposed, staged, cheapest and most reversible first:
 1. Is ADR 0052's one-package-per-component worth more than an estimated 70–110 MiB from a
    shared host? **Keep 0052 strictly** (option 3 stays off the table) **or allow a bundling
    host package**.
-2. Wallpaper: **compositor-drawn** (option 4, largest saving, abyss grows) **or a
-   tiny-skia client** (option 2, stays a portable layer-shell package).
+2. ~~Wallpaper: compositor-drawn or tiny-skia client?~~ **Decided 2026-11-11 (owner):
+   compositor-drawn** (option 4); see Decision stage 2.
 3. Bar: **tiny-skia allowed if the CPU and screenshot checks pass**, **or wgpu regardless**.
 4. If Q1 is "allow": **a bar crash may take toasts and wallpaper down for 2 s**, **or crash
    isolation is a hard requirement**.

@@ -218,6 +218,19 @@ output and no scanout.
 
 ## Decision
 
+**Decided by Claude on the owner's delegation (2026-11-11; owner: "whichever is
+more efficient/better mechanically").** The single event loop is the design.
+There is no render thread, and COMP-01 §3, ADR 0018 and `docs/ARCHITECTURE.md`
+are amended to say so (Consequences). Mechanically: smithay 0.7.0's
+`GlesRenderer` is `!Send` and every element builder needs `&mut renderer`, so a
+render thread costs a describe/import split of every builder plus locks or a
+second scene representation, for no measured gain. **B1 is done now as a spec
+fix** (render once per dispatch round, after queued input is processed and
+flushed, with the COMP-02 §2 `next_vblank − render_estimate` deadline), not
+held for numbers: it closes a spec/code gap and is a precondition for reading
+any latency number. The render-thread question reopens only if Step B's numeric
+thresholds below are crossed.
+
 **Step A: measure first.** Nothing about threading changes until the baseline set
 below exists and has been run on the reference machine.
 
@@ -286,9 +299,9 @@ drives (144 Hz, period 6.94 ms):
 - **Stay single-threaded** while all hold: L1 p99 ≤ 200 µs; L2 ≤ 1 frame at p99;
   main-thread busy time per rendering dispatch p99 ≤ 25 % of the period (≤ 1.7 ms);
   missed frames < 0.1 % in S4, SO, SM.
-- **Apply B1 first** (in-loop input priority + COMP-02 §2 deadline) if L1 p99 > 200 µs
-  or L2 > 1 frame and the excess is attributable to `render_output` running inside the
-  input callback. It is a precondition for every later option: until it lands, input
+- **B1 (in-loop input priority + COMP-02 §2 deadline) is applied now, unconditionally**
+  (see Decision); it is not gated on these numbers. The measurements then show
+  whether anything beyond it is needed. It is a precondition for every later option: until it lands, input
   latency is measured against an artefact of scheduling, not of threading.
 - **Apply B2** if, after B1, first-use stalls (shader compile, chain or texture
   allocation) show in `max` but not in p99, or GPU time, not CPU time, is what breaches
@@ -314,13 +327,14 @@ drives (144 Hz, period 6.94 ms):
   >   Blocking work runs on dedicated threads that talk back to the loop over
   >   channels (screenshot PNG encode, clipboard serving, the brokerd prompt socket,
   >   ordered session spawns, approval writes). There is no shared pool.
-- COMP-01 §3 needs an amendment line, owner's call (see Open questions). Proposed:
+- COMP-01 §3 is amended now (decided 2026-11-11, see Decision), in the PR that
+  carries the spec fix. Text:
   *(amended, ADR 0105)* "a render thread per GPU" is not built; rendering runs on the
   loop until ADR 0105's rule is met; blocking work uses dedicated threads, not a pool.
   ADR 0018's Decision carries the same sentence; mark it "as amended by 0105" rather
   than rewrite an accepted ADR.
 - COMP-02 §2's EWMA deadline schedule is recorded as not built: a second spec/code gap
-  surfaced here, fixed by B1 or amended, not ignored.
+  surfaced here, fixed by B1 now (decided 2026-11-11), not ignored.
 - Owed, in order: per-output stats + input timestamps; scene drivers; headless frame
   benches in `gate.yml`; hardware runbook and first reference baselines;
   `abyss/bench/README.md` updated ("What runs today"). The bench subjects and
@@ -332,14 +346,16 @@ drives (144 Hz, period 6.94 ms):
   shared or locked access to `AbyssState` or smithay surface state from another thread.
 
 ## Open owner questions
-1. COMP-01 §3: amend now to "not built, conditional on ADR 0105", **or** leave the
-   render thread in the spec as a target and mark only ARCHITECTURE.md as-built?
+1. ~~COMP-01 §3: amend now, or leave the render thread as a spec target?~~
+   **Decided 2026-11-11 (Claude, on the owner's delegation):** amend now; also
+   ADR 0018 ("as amended by 0105") and ARCHITECTURE.md.
 2. Reference refresh for the rule: 144 Hz (strictest, per COMP-14 §2.2), **or** the
    panel actually on the reference machine?
 3. Hardware baselines: manual runbook per milestone, **or** stand up the self-hosted
    nightly runner COMP-14 §5 assumes?
-4. B1 (render once per dispatch round + EWMA deadline): implement now as a spec
-   conformance fix, **or** only once L1/L2 numbers show the need?
+4. ~~B1 (render once per dispatch round + EWMA deadline): now, or only once
+   numbers show the need?~~ **Decided 2026-11-11 (Claude, on the owner's
+   delegation):** implement now as a spec conformance fix.
 5. Headless CI runner: Mesa software rendering (portable, CPU-bound numbers), **or**
    gate headless benches only on a runner with a render node?
 6. Baseline record location: in-repo JSON under `abyss/bench/baselines/`, **or** CI

@@ -1,5 +1,5 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
-# 0103 — One workspace and one lockfile for the OS; fog and Oracle Eyes stay out for now
+# 0103 — One workspace and one lockfile for the OS; fog joins later, Oracle Eyes stays out
 Status: proposed
 Date: 2026-11-11
 Deciders: chase (owner), Claude (advisory)
@@ -166,7 +166,7 @@ when both features are enabled.
      PKGBUILD loop. It introduces no new unification hazard: abyss has no
      iced/wgpu/zbus/tokio, and the only union is rustix features, `net process
      time` ∪ default.
-   - fog stays out until it drops iced `tokio`.
+   - fog stays out until it drops iced `tokio`, then joins (decided 2026-11-11).
    - oracle-eyes stays out because it is an add-on (58 locked crates, one path
      dependency).
 
@@ -186,10 +186,17 @@ The workspace root is the repository root: a virtual `Cargo.toml`, plus one
 - **Profiles.** Today's identical block, moved to the root.
 - **`resolver`.** Stays `"2"`.
 
-fog and oracle-eyes keep their own workspaces and locks. `ci/lock-drift.sh`
-fails the gate when a watched crate differs between the root lock and theirs.
-Each one joins later only by its own ADR amendment, once open questions 1 and 2
-are decided.
+Fog does not stay separate permanently (owner, 2026-11-11: "Change fog so it's
+able to be merged into the others cleanly, fog needs a lot of work anyhow.").
+Fog drops iced's `tokio` feature, so it runs on the same iced executor
+(thread-pool) as the other panes; any fog async work that needs tokio moves to
+its own thread or runtime owned by fog, not through iced's feature. Fog then
+joins the root workspace as stage 3, after the abyss+shell+installer merge.
+
+Until fog joins, and permanently for oracle-eyes (an add-on, not shipped with
+the OS), they keep their own workspaces and locks. `ci/lock-drift.sh` fails the
+gate when a watched crate differs between the root lock and theirs. Oracle Eyes
+joins only by its own ADR amendment, once open question 2 is decided.
 
 This ADR amends ADR 0070 (layout) and brings the tree back in line with
 F-07 §1 for the OS proper.
@@ -234,10 +241,19 @@ installer's lock has no iced_layershell.
    - (c) The gate is green.
    - (d) `cargo metadata --locked` succeeds from `abyss/`, `shell/` and
      `installer/`.
-3. **Optional, after the owner decides.** For fog: a fog-only PR that removes
-   iced `tokio` comes first, then a join PR. The join PR is checked by `cargo
-   tree -e features -i iced_futures` showing no `tokio`. Oracle Eyes can join in
-   its own PR at any time.
+3. **Fog joins (decided 2026-11-11).** Two PRs, after stage 2.
+   - 3a. Fog-only PR: remove iced `tokio` from fog's `[workspace.dependencies]`
+     and move its async work off iced's tokio executor (own thread/runtime in
+     fog). Check: `cargo tree -e features -i iced_futures` in `fog/` shows no
+     `tokio`; fog's tests pass.
+   - 3b. Join PR: add fog's members to the root workspace, drop `fog/` manifest,
+     lock, deny and toolchain files, fold its `deny.toml` ignores into the root
+     one, update `gate.yml` and PKGBUILD. Same checks as stage 2 (a)-(d), plus
+     the `cargo tree` check from the root.
+   - The `fog` entry leaves `ci/lock-drift.sh`'s outside set.
+
+   Oracle Eyes stays separate; it may join in its own PR if question 2 is
+   decided that way.
 
 **Coordination.** On 2026-11-11 there are 8 open PRs. Only #273 (`de-ec-lock`
 adds a shell member) and #274 touch cargo files. Land both before stage 2, or
@@ -276,9 +292,8 @@ once other PRs land on top of it.
   - An F-07 §1 note that fog and oracle-eyes remain separate workspaces.
 
 ## Open owner questions
-1. Fog: does it join the root workspace after it drops iced `tokio`, which is a
-   fog code change, or does it stay a separate workspace under the drift check
-   permanently?
+1. ~~Fog: join after dropping iced `tokio`, or stay separate permanently?~~
+   **Decided 2026-11-11 (owner):** it joins; see Decision and migration stage 3.
 2. Oracle Eyes: does it stay a separate workspace with its own lock because it
    is an add-on that does not ship with the OS, or does it join the root the way
    the agent-stack add-on lives in abyss?
@@ -293,7 +308,7 @@ once other PRs land on top of it.
 
 ## Revisit when
 - A product needs its own release cadence or repo (ADR 0070's trigger).
-- Fog stops enabling iced `tokio`.
+- Fog stops enabling iced `tokio` (stage 3a; triggers stage 3b).
 - Oracle Eyes is published or versioned on its own.
 - The merged gate job exceeds the CI time budget.
 - smithay or iced_layershell upstream absorbs a fork.

@@ -115,14 +115,24 @@ the real monitor.
    other direct client.
 
 ## Decision
+**Class rename (owner, 2026-11-11).** `private` is a misleading name, so the class
+is renamed to `normal`: public / normal / secret. The old `private` keeps parsing
+as a deprecated alias. The rename is a separate change, not part of this ADR's
+milestones: it touches the spec's sensitivity-class definition (S-05, threat
+model, COMP-11), policy files and KDL rule values (`sensitivity`,
+`capture.redact-class`). Until it lands, code and spec text still say `private`;
+this ADR uses "`normal` (formerly `private`)" for the class.
+
 Option 2, built entirely on `capture_elements`/`classify`. No second redaction path is
 added.
 
 **Defaults per class.**
 - `secret` is always redacted in every capture: shares, screenshots, and direct clients.
   No setting relaxes it (COMP-06 §3).
-- `private` is shown, as S-05 §2 says.
-- A raise-only knob, `capture.redact-class "private"` (policy.kdl, default `secret`),
+- `normal` (formerly `private`) is shown in human screen shares, as S-05 §2 says
+  (owner, 2026-11-11: today's behaviour stays).
+- A raise-only knob, `capture.redact-class "normal"` (formerly `"private"`, still
+  accepted; policy.kdl, default `secret`),
   lets an owner redact more. Nothing can redact less.
 
 **Placeholder.** The secret window stays out of the pass list. A themed card is drawn in
@@ -255,13 +265,13 @@ is for agent `capture.stream`.
   - the COMP-10 §3.6, COMP-07 §2 and COMP-06 §3 amendments, as the owner decides.
 
 ## Open owner questions
-1. In human shares, are `private` windows shown (S-05 §2), or should the new knob default
-   to redacting them?
+1. ~~In human shares, are `private` windows shown, or redacted by default?~~
+   **Decided 2026-11-11 (owner):** `normal` (formerly `private`) windows are shown.
 2. "Share anyway": never, or a per-window, per-session COMP-10 prompt (which needs a
    COMP-06 §3 amendment)?
 3. Placeholder: plain opaque black (today), or a themed padlock card? Should the app icon
    show on the card, or nothing that identifies the app?
-4. X11 password managers: redact them from capture while their class stays `private`
+4. X11 password managers: redact them from capture while their class stays `normal` (formerly `private`)
    (amend COMP-07 §2, keeping code path 3)? Or refuse the rule, as the spec literally says
    (they then appear in shares)?
 5. Toasts during a share: hold them until the share ends, or drop them to the history
