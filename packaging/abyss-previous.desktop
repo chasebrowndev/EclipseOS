@@ -1,0 +1,10 @@
+# Wayland session entry for the kept previous Abyss (ADR 0101). Install to
+# /usr/share/wayland-sessions/abyss-previous.desktop. A recovery session: the
+# compositor from before the last update, under today's libraries, config and
+# desktop components. Without a kept copy it starts the current Abyss.
+[Desktop Entry]
+Name=Abyss (previous)
+Comment=The Abyss compositor from before the last update
+Exec=/usr/bin/abyss-session --previous
+Type=Application
+DesktopNames=Abyss

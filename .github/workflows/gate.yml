@@ -337,6 +337,17 @@ jobs:
       - name: signed XPI matches source
         run: packaging/firefox/check-xpi.sh
 
+  update-rollback:
+    name: update fallback scripts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      # ADR 0101: the pre-upgrade copy and the startup-crash fallback, against
+      # a fake root in a temp dir. Rootless.
+      - name: keep + launch tests
+        run: packaging/test/update-rollback.sh
+
   spec-trail:
     name: PR cites a spec section
     runs-on: ubuntu-24.04

@@ -157,3 +157,10 @@ package; the count shown is all of them. It runs through `pkexec` on polkit acti
 accepts exactly `all`. Progress reports as feed job `eclipse-update`. Only pacman
 exit 0 leads to logind's Reboot or PowerOff; any other outcome leaves the machine
 running. Without `checkupdates` the item is never offered (ADR 0085).
+
+Every upgrade of `/usr/bin/ec-abyss`, from the widget or a hand-typed pacman,
+first runs the `eclipseos-abyss-keep.hook` PreTransaction hook
+(`/usr/lib/eclipse/ec-abyss-keep`, `AbortOnFail`): the build running as a
+session is copied to `/usr/lib/eclipse/previous/`. `ec-abyss-launch` starts
+that copy when the greeter's compositor dies within 10 s of starting, and the
+"Abyss (previous)" session entry at the login screen picks it by hand (ADR 0101). Kernel, driver and library breakage are not covered.
