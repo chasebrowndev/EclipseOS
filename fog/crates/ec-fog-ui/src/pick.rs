@@ -34,10 +34,6 @@
 //! the UI starts and points fd 1 at /dev/null, so nothing else this process
 //! or its children (custom actions) print can reach the portal.
 
-// The view reads most of the request (title, labels, filters, choices,
-// files, parent); until it lands they are parsed and tested but unread.
-#![allow(dead_code)]
-
 use std::convert::Infallible;
 use std::ffi::OsString;
 use std::fmt;

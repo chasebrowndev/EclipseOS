@@ -16,6 +16,7 @@ mod ops;
 mod palette;
 mod parts;
 mod pick;
+mod picker;
 mod state;
 mod theme;
 mod view;
@@ -129,7 +130,9 @@ fn main() -> iced::Result {
     let app = iced::application(
         move || {
             let mut app = app::App::new(path.clone(), config.clone(), tz.clone(), home.clone());
-            app.pick = pick.clone();
+            if let Some(req) = pick.clone() {
+                app.start_pick(req);
+            }
             app
         },
         app::update,
@@ -138,7 +141,10 @@ fn main() -> iced::Result {
     let result = theme::font::BYTES
         .iter()
         .fold(app, |app, face| app.font(*face))
-        .title("Fog")
+        .title(|app: &app::App| match &app.pick {
+            Some(req) => picker::title(req),
+            None => "Fog".to_owned(),
+        })
         .subscription(app::subscription)
         .theme(|_: &app::App| theme::iced_theme())
         .style(|_: &app::App, _| iced::theme::Style {
