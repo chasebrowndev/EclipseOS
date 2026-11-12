@@ -4566,6 +4566,10 @@ impl<Message> iced::widget::canvas::Program<Message> for ShapedSheet {
     }
 }
 
+/// How close the panel's far edge may sit to the pill's end and still count
+/// as flush with it (sub-pixel layout rounding).
+const FLUSH_EPS: f32 = 0.5;
+
 /// [`shaped_sheet`]'s outline in a `w`×`h` box. With no room below the pill
 /// it is the pill alone.
 pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas::Path {
@@ -4609,6 +4613,12 @@ pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas:
         // in while it is still opening; the fillet takes what they leave.
         let rb = radius.min(panel_w / 2.0).min(drop).max(0.0);
         let kf = fillet.min(drop - rb).min(w - panel_r - rp).max(0.0);
+        // Flush with the pill's end, the panel's side is the pill's side: the
+        // pill's corner is the panel's corner, so the edge runs straight down
+        // from the pill's radius to the panel's. Arcing the pill's corner
+        // there would double back to (w, pill_h) and leave a notch the blur
+        // mask (a union, no notch) fills.
+        let flush = panel_r >= w - FLUSH_EPS;
         if panel_x <= 0.5 {
             // The panel is the one box at the top-left corner, so its radius —
             // clamped to its own size, as the mask clamps it — is the corner's.
@@ -4617,10 +4627,12 @@ pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas:
             b.line_to(at(w - rp, 0.0));
             b.arc_to(at(w, 0.0), at(w, rp), rp);
             b.line_to(at(w, pill_h - rp));
-            b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
-            b.line_to(at(panel_w + kf, pill_h));
-            if kf > 0.0 {
-                b.quadratic_curve_to(at(panel_w, pill_h), at(panel_w, pill_h + kf));
+            if !flush {
+                b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
+                b.line_to(at(panel_w + kf, pill_h));
+                if kf > 0.0 {
+                    b.quadratic_curve_to(at(panel_w, pill_h), at(panel_w, pill_h + kf));
+                }
             }
             b.line_to(at(panel_w, h - rb));
             b.arc_to(at(panel_w, h), at(panel_w - rb, h), rb);
@@ -4634,10 +4646,12 @@ pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas:
             b.line_to(at(w - rp, 0.0));
             b.arc_to(at(w, 0.0), at(w, rp), rp);
             b.line_to(at(w, pill_h - rp));
-            b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
-            b.line_to(at(panel_r + kf, pill_h));
-            if kf > 0.0 {
-                b.quadratic_curve_to(at(panel_r, pill_h), at(panel_r, pill_h + kf));
+            if !flush {
+                b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
+                b.line_to(at(panel_r + kf, pill_h));
+                if kf > 0.0 {
+                    b.quadratic_curve_to(at(panel_r, pill_h), at(panel_r, pill_h + kf));
+                }
             }
             b.line_to(at(panel_r, h - rb));
             b.arc_to(at(panel_r, h), at(panel_r - rb, h), rb);
@@ -5197,4 +5211,61 @@ pub fn icon_chip<'a, Message: Clone + 'a>(
         .on_press(on_press)
         .style(theme::chip(selected))
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The outline's vertices (each segment's end point), in path order.
+    fn vertices(shape: SheetShape, w: f32, h: f32) -> Vec<(f32, f32)> {
+        sheet_outline(shape, w, h)
+            .raw()
+            .iter()
+            .map(|ev| {
+                let p = ev.to();
+                (p.x, p.y)
+            })
+            .collect()
+    }
+
+    fn at(pts: &[(f32, f32)], x: f32, y: f32) -> bool {
+        pts.iter()
+            .any(|&(px, py)| (px - x).abs() < 0.01 && (py - y).abs() < 0.01)
+    }
+
+    #[test]
+    fn a_panel_flush_with_the_pill_end_has_no_notch_at_the_pill_corner() {
+        let (w, h, pill_h, r) = (400.0, 120.0, 40.0, 12.0);
+        let shape = SheetShape {
+            pill_h,
+            panel_x: 300.0,
+            panel_w: 100.0,
+            radius: r,
+            fillet: r,
+            edge: SheetEdge::Top,
+        };
+        let pts = vertices(shape, w, h);
+        // The pill's corner would double back to (w, pill_h); the straight
+        // edge runs from the pill's radius down to the panel's corner.
+        assert!(!at(&pts, w, pill_h), "notch at the pill corner: {pts:?}");
+        assert!(at(&pts, w, pill_h - r), "missing the pill's straight edge");
+        assert!(at(&pts, w, h - r), "missing the panel's corner");
+    }
+
+    #[test]
+    fn a_panel_short_of_the_pill_end_keeps_the_pill_corner_arc() {
+        let (w, h, pill_h, r) = (400.0, 120.0, 40.0, 12.0);
+        let shape = SheetShape {
+            pill_h,
+            panel_x: 200.0,
+            panel_w: 100.0,
+            radius: r,
+            fillet: r,
+            edge: SheetEdge::Top,
+        };
+        let pts = vertices(shape, w, h);
+        // The arc ends on the pill's bottom edge, short of the bar's end.
+        assert!(at(&pts, w - r, pill_h), "pill corner arc lost: {pts:?}");
+    }
 }

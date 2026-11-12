@@ -2,9 +2,16 @@
 # Cloud runner only — no GPU. GPU work is nightly per COMP-14 §5.
 name: gate
 
+# Branches are tested through their PR, main on every push, and main again
+# nightly so a newly published advisory shows up without a code change.
+# (push on every branch + pull_request ran each PR twice in different
+# concurrency groups, doubling every failure.)
 on:
   push:
+    branches: [main]
   pull_request:
+  schedule:
+    - cron: "17 6 * * *"
 
 concurrency:
   group: gate-${{ github.ref }}
@@ -231,7 +238,12 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-deny
-      - run: cargo deny --manifest-path ${{ matrix.workspace }}/Cargo.toml --all-features check advisories bans licenses sources
+      - run: cargo deny --manifest-path ${{ matrix.workspace }}/Cargo.toml --all-features check bans licenses sources
+      # A RUSTSEC published against a dependency the PR didn't touch is not
+      # the PR's fault: on PRs it warns, on main and nightly it blocks. Same
+      # command set as the local gate.
+      - run: cargo deny --manifest-path ${{ matrix.workspace }}/Cargo.toml --all-features check advisories
+        continue-on-error: ${{ github.event_name == 'pull_request' }}
 
   tcb-review:
     name: TCB touch check
