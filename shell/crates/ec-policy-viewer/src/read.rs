@@ -150,6 +150,9 @@ pub struct Policy {
     pub data_control_allow: Allowlist,
     pub capture_allow: Allowlist,
     pub capture_redact: Allowlist,
+    pub capture_hide_layer: Allowlist,
+    pub input_method_allow: Allowlist,
+    pub virtual_pointer_allow: Allowlist,
     pub rules: Vec<Rule>,
 }
 
@@ -259,7 +262,22 @@ fn merge(policy: &mut Policy, doc: &KdlDocument, text: &str, path: &Path) {
                     match n.name().value() {
                         "allow" => policy.capture_allow = allowlist(n, text, path),
                         "redact-app-id" => policy.capture_redact = allowlist(n, text, path),
+                        "hide-layer" => policy.capture_hide_layer = allowlist(n, text, path),
                         _ => {}
+                    }
+                }
+            }
+            "input-method" => {
+                for n in node.children().iter().flat_map(|c| c.nodes()) {
+                    if n.name().value() == "allow" {
+                        policy.input_method_allow = allowlist(n, text, path);
+                    }
+                }
+            }
+            "virtual-pointer" => {
+                for n in node.children().iter().flat_map(|c| c.nodes()) {
+                    if n.name().value() == "allow" {
+                        policy.virtual_pointer_allow = allowlist(n, text, path);
                     }
                 }
             }
@@ -371,6 +389,25 @@ mod tests {
     }
 
     #[test]
+    fn hidden_layers_read_beside_the_capture_allowlist() {
+        let p = parse("capture {\n  allow \"grim\"\n  hide-layer \"ec-hyperion-bar:eclipse-eye\"\n}\n");
+        let names: Vec<&str> = p.capture_hide_layer.entries.iter().map(|e| &*e.name).collect();
+        assert_eq!(names, ["ec-hyperion-bar:eclipse-eye"]);
+        assert_eq!(p.capture_hide_layer.entries[0].source.line, 3);
+        assert!(parse("capture {\n  allow\n}\n").capture_hide_layer.is_empty());
+    }
+
+    #[test]
+    fn the_injected_input_allowlists_read() {
+        let p = parse("input-method {\n  allow \"fcitx5\" \"kime\"\n}\nvirtual-pointer {\n  allow\n}\n");
+        let names: Vec<&str> = p.input_method_allow.entries.iter().map(|e| &*e.name).collect();
+        assert_eq!(names, ["fcitx5", "kime"]);
+        assert_eq!(p.input_method_allow.entries[0].source.line, 2);
+        assert!(p.virtual_pointer_allow.is_empty());
+        assert!(p.virtual_pointer_allow.declared.is_some());
+    }
+
+    #[test]
     fn garbage_is_a_report_not_a_panic() {
         assert!("windowrule {{{".parse::<KdlDocument>().is_err());
     }
@@ -408,6 +445,8 @@ mod tests {
             "clipboard.data-control-allow" => p.data_control_allow.declared.is_some(),
             "capture.allow" => p.capture_allow.declared.is_some(),
             "capture.redact-app-id" => p.capture_redact.declared.is_some(),
+            "input-method.allow" => p.input_method_allow.declared.is_some(),
+            "virtual-pointer.allow" => p.virtual_pointer_allow.declared.is_some(),
             _ => false,
         }
     }
@@ -417,6 +456,8 @@ mod tests {
             && p.data_control_allow.declared.is_none()
             && p.capture_allow.declared.is_none()
             && p.capture_redact.declared.is_none()
+            && p.input_method_allow.declared.is_none()
+            && p.virtual_pointer_allow.declared.is_none()
             && p.rules.is_empty()
     }
 

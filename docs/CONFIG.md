@@ -544,6 +544,10 @@ A per-output wallpaper override, written inside `wallpaper { }`: `output "<name>
 
 Read-only over the socket. A GUI shows these; it cannot change them.
 
+Admission lists (`capture.allow`, `clipboard.data-control-allow`, `input-method.allow`, `virtual-pointer.allow`) name executables, not process names (ADR 0094). An entry containing `/` is an exact absolute path; a bare name means `/usr/bin/<name>`, so `grim` admits `/usr/bin/grim` and not `/tmp/grim`. A symlink entry admits its target as of the last load (the dev layout's `/usr/local/bin/<bin>`). A binary outside `/usr/bin` needs its path: `/usr/lib/xdg-desktop-portal-wlr`. A client whose binary was deleted or replaced since it started is denied; restart it. An entry naming no existing file admits nothing and is logged as a warning.
+
+Upgrade note (ADR 0094): entries for binaries outside `/usr/bin` must become absolute paths. An existing `capture { allow "xdg-desktop-portal-wlr" }` admits nothing now; write `allow "/usr/lib/xdg-desktop-portal-wlr"`.
+
 ### `misc`
 
 | setting | type | default | reload | what it does |
@@ -554,13 +558,25 @@ Read-only over the socket. A GUI shows these; it cannot change them.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `clipboard.data-control-allow` | list of strings | _empty_ | live | Process names allowed to bind zwlr_data_control_manager_v1. Empty denies everyone — data control reads every selection. |
+| `clipboard.data-control-allow` | list of strings | _empty_ | live | Executables allowed to bind zwlr_data_control_manager_v1 (ADR 0094). Empty denies everyone — data control reads every selection. |
 
 ### `capture`
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `capture.allow` | list of strings | _empty_ | live | Process names allowed to bind zwlr_screencopy_manager_v1. Empty denies everyone. |
+| `capture.allow` | list of strings | _empty_ | live | Executables allowed to bind zwlr_screencopy_manager_v1 and ext_image_copy_capture_manager_v1 (ADR 0094). Empty denies everyone. |
 | `capture.redact-app-id` | list of strings | _empty_ | live | app_ids whose windows are `secret`: never composited into a capture target, only a solid placeholder (COMP-02 §7). |
 | `capture.hide-layer` | list of strings | _empty_ | live | exe:namespace pairs whose layer surfaces are omitted from every capture: shown on screen, absent from screenshots and screen shares, with whatever is beneath showing instead. Only surfaces up to 64x64 logical px qualify (ADR 0056). Empty hides nothing. |
+
+### `input-method`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `input-method.allow` | list of strings | _empty_ | live | Executables allowed to bind zwp_input_method_manager_v2 and act as the input method (ADR 0094). Empty denies everyone; the image's policy.kdl lists the common IME daemons. |
+
+### `virtual-pointer`
+
+| setting | type | default | reload | what it does |
+| --- | --- | --- | --- | --- |
+| `virtual-pointer.allow` | list of strings | _empty_ | live | Executables allowed to bind zwlr_virtual_pointer_manager_v1 and inject pointer input (COMP-06 §2, ADR 0094). Empty denies everyone. |
 

@@ -2193,8 +2193,8 @@ pub const TABLE: &[Key] = &[
         EmptyList,
         Policy,
         Live,
-        "Process names allowed to bind zwlr_data_control_manager_v1. Empty \
-       denies everyone — data control reads every selection.",
+        "Executables allowed to bind zwlr_data_control_manager_v1 (ADR 0094). \
+       Empty denies everyone — data control reads every selection.",
     ),
     k(
         "capture.allow",
@@ -2202,8 +2202,8 @@ pub const TABLE: &[Key] = &[
         EmptyList,
         Policy,
         Live,
-        "Process names allowed to bind zwlr_screencopy_manager_v1. Empty \
-       denies everyone.",
+        "Executables allowed to bind zwlr_screencopy_manager_v1 and \
+       ext_image_copy_capture_manager_v1 (ADR 0094). Empty denies everyone.",
     ),
     k(
         "capture.redact-app-id",
@@ -2224,6 +2224,25 @@ pub const TABLE: &[Key] = &[
        capture: shown on screen, absent from screenshots and screen shares, \
        with whatever is beneath showing instead. Only surfaces up to 64x64 \
        logical px qualify (ADR 0056). Empty hides nothing.",
+    ),
+    k(
+        "input-method.allow",
+        Ty::StrList,
+        EmptyList,
+        Policy,
+        Live,
+        "Executables allowed to bind zwp_input_method_manager_v2 and act as \
+       the input method (ADR 0094). Empty denies everyone; the image's \
+       policy.kdl lists the common IME daemons.",
+    ),
+    k(
+        "virtual-pointer.allow",
+        Ty::StrList,
+        EmptyList,
+        Policy,
+        Live,
+        "Executables allowed to bind zwlr_virtual_pointer_manager_v1 and \
+       inject pointer input (COMP-06 §2, ADR 0094). Empty denies everyone.",
     ),
 ];
 
@@ -3292,6 +3311,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "setup.pending-preset" => V::Bool(c.setup.pending_preset),
         "clipboard.data-control-allow" => list(&c.clipboard.data_control_allow),
         "capture.allow" => list(&c.capture.allow),
+        "input-method.allow" => list(&c.input_method.allow),
+        "virtual-pointer.allow" => list(&c.virtual_pointer.allow),
         "capture.redact-app-id" => list(&c.capture.redact_app_id),
         "capture.hide-layer" => V::List(
             c.capture
@@ -3801,6 +3822,8 @@ mod tests {
                 "capture.allow",
                 "capture.redact-app-id",
                 "capture.hide-layer",
+                "input-method.allow",
+                "virtual-pointer.allow",
             ]
         );
         let rules: Vec<_> = RULE_ACTIONS

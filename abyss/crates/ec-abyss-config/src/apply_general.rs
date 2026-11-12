@@ -242,8 +242,50 @@ impl Config {
                         self.reject(n, "repeated data-control-allow replaces the previous one; list every name on a single node");
                     }
                     self.clipboard.data_control_allow = names(n, &mut seen_allow);
+                    self.check_exe_entries(n);
                 }
                 _ => self.unknown_key(n, "clipboard", "clipboard node"),
+            }
+        }
+    }
+
+    /// ADR 0094: an admission entry containing `/` must be an absolute
+    /// path. A relative one would silently admit nothing, and this file is
+    /// the security surface, so it is refused (fatal in `policy.kdl`, ADR 0064).
+    fn check_exe_entries(&mut self, n: &KdlNode) {
+        for v in args(n) {
+            let ok = v.as_string().is_some_and(|e| exe_entry_path(e).is_some());
+            if !ok {
+                self.reject(
+                    n,
+                    format!("allow entry {v} must be a bare executable name (meaning /usr/bin/<name>) or an absolute path"),
+                );
+            }
+        }
+    }
+
+    /// `input-method { allow ... }` and `virtual-pointer { allow ... }`
+    /// (ADR 0094): one key each, matched by executable path.
+    pub(crate) fn apply_exe_allow(&mut self, node: &KdlNode, block: &'static str) {
+        let Some(children) = node.children() else { return };
+        let mut seen_allow = false;
+        for n in children.nodes() {
+            match n.name().value() {
+                "allow" => {
+                    if seen_allow {
+                        self.reject(
+                            n,
+                            "repeated allow replaces the previous one; list every name on a single node",
+                        );
+                    }
+                    let list = names(n, &mut seen_allow);
+                    self.check_exe_entries(n);
+                    match block {
+                        "input-method" => self.input_method.allow = list,
+                        _ => self.virtual_pointer.allow = list,
+                    }
+                }
+                _ => self.unknown_key(n, block, &format!("{block} node")),
             }
         }
     }
@@ -263,6 +305,7 @@ impl Config {
                         );
                     }
                     self.capture.allow = names(n, &mut seen_allow);
+                    self.check_exe_entries(n);
                 }
                 "redact-app-id" => {
                     if seen_redact {

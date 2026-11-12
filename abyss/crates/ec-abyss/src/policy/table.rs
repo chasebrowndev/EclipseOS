@@ -67,6 +67,9 @@ pub fn receive(state: &mut AbyssState, bytes: &[u8], sig: &[u8; 64]) {
                 "enforcement table live"
             );
             state.policy_table = Some(table);
+            // A new table can raise a window to `secret` with no commit from
+            // its client; the foreign-toplevel list must withdraw it now.
+            crate::protocols::standard::foreign_toplevel::refresh_all(state);
             crate::audit::agent(state, crate::audit::policy(version, wire::hash(bytes)));
         }
         Err(why) => {

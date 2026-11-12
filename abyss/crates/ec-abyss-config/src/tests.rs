@@ -2020,6 +2020,11 @@ fn shipped_policy_hides_the_taskbar_eye() {
         cfg.capture.hide_layer,
         [("ec-hyperion-bar".to_string(), "eclipse-eye".to_string())]
     );
+    // ADR 0094: the image's only grants. A change here is an owner review.
+    assert_eq!(cfg.input_method.allow, ["fcitx5", "kime", "squeekboard"]);
+    assert!(cfg.virtual_pointer.allow.is_empty());
+    assert!(cfg.capture.allow.is_empty());
+    assert!(cfg.clipboard.data_control_allow.is_empty());
 }
 
 #[test]
@@ -2472,6 +2477,67 @@ mod allowlist_tests {
     }
 }
 
+mod exe_allowlist_tests {
+    use super::{exe_entry_path, ExeAllowlist};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn entry_rules() {
+        // Bare name: /usr/bin. Slash: exact absolute path. Anything else: nothing.
+        assert_eq!(exe_entry_path("grim"), Some(PathBuf::from("/usr/bin/grim")));
+        assert_eq!(
+            exe_entry_path("/usr/lib/xdg-desktop-portal-wlr"),
+            Some(PathBuf::from("/usr/lib/xdg-desktop-portal-wlr"))
+        );
+        for bad in ["", ".", "..", "bin/grim", "./grim", "a\0b"] {
+            assert_eq!(exe_entry_path(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn a_bare_name_admits_only_usr_bin() {
+        let a = ExeAllowlist::new(vec!["grim".to_string()]);
+        let usr_bin =
+            std::fs::canonicalize("/usr/bin/grim").unwrap_or_else(|_| PathBuf::from("/usr/bin/grim"));
+        assert!(a.contains_exe(&usr_bin));
+        // SEC-04: the same basename anywhere else is not the same executable.
+        assert!(!a.contains_exe(Path::new("/tmp/grim")));
+        assert!(!a.contains_exe(Path::new("/home/u/.local/bin/grim")));
+    }
+
+    #[test]
+    fn a_symlink_entry_admits_its_target_as_loaded() {
+        let dir = std::env::temp_dir().join(format!("ec-exe-allow-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real-bin");
+        std::fs::write(&real, b"").unwrap();
+        let link = dir.join("link-bin");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let real = std::fs::canonicalize(&real).unwrap();
+
+        let a = ExeAllowlist::new(vec![link.to_string_lossy().into_owned()]);
+        // /proc/<pid>/exe is the resolved target, which is what is matched.
+        assert!(a.contains_exe(&real));
+        assert!(a.missing().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_and_reload_revoke() {
+        let held = ExeAllowlist::default();
+        assert!(held.is_empty());
+        assert!(!held.contains_exe(Path::new("/usr/bin/grim")));
+        let reload = held.clone();
+        reload.set(vec!["/opt/x/bin/tool".to_string()]);
+        assert!(held.contains_exe(Path::new("/opt/x/bin/tool")));
+        assert_eq!(held.missing(), ["/opt/x/bin/tool"]);
+        reload.set(Vec::new());
+        assert!(held.is_empty());
+        assert!(!held.contains_exe(Path::new("/opt/x/bin/tool")));
+    }
+}
+
 mod rounding_tests {
     use super::*;
 
@@ -2718,6 +2784,8 @@ mod startup_tests {
             "misc {\n    scripted-input #true\n}\n",
             "capture {\n    allow \"grim\"\n}\n",
             "clipboard {\n    data-control-allow \"wl-paste\"\n}\n",
+            "input-method {\n    allow \"fcitx5\"\n}\n",
+            "virtual-pointer {\n    allow \"wlrctl\"\n}\n",
             "windowrule \"no-agent\" {\n    app-id \"keepassxc\"\n}\n",
             "windowrule \"sensitivity secret\" {\n    app-id \"keepassxc\"\n}\n",
             "windowrule \"app-trust trusted\" {\n    app-id \"x\"\n}\n",
@@ -2725,6 +2793,35 @@ mod startup_tests {
             "windowrule \"irreversible-capable false\" {\n    app-id \"x\"\n}\n",
         ] {
             let mut cfg = abyss(text);
+            assert_eq!(
+                cfg.startup(),
+                Startup::Refuse { fatal: 1 },
+                "{text}: {:?}",
+                cfg.errors
+            );
+        }
+    }
+
+    /// ADR 0094: the two admission blocks parse in `policy.kdl`, and an
+    /// entry that is neither a bare name nor an absolute path refuses.
+    #[test]
+    fn exe_admission_lists_parse_and_validate() {
+        let cfg = parse(
+            schema::Owner::Policy,
+            "input-method {\n    allow \"fcitx5\" \"/usr/lib/ibus/ibus-wayland\"\n}\nvirtual-pointer {\n    allow \"/usr/local/bin/x\"\n}\n",
+        );
+        assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+        assert_eq!(cfg.input_method.allow, ["fcitx5", "/usr/lib/ibus/ibus-wayland"]);
+        assert_eq!(cfg.virtual_pointer.allow, ["/usr/local/bin/x"]);
+
+        for text in [
+            "capture {\n    allow \"bin/grim\"\n}\n",
+            "clipboard {\n    data-control-allow \"./cliphist\"\n}\n",
+            "input-method {\n    allow \"..\"\n}\n",
+            "virtual-pointer {\n    allow \"\"\n}\n",
+            "virtual-pointer {\n    allw \"x\"\n}\n",
+        ] {
+            let mut cfg = parse(schema::Owner::Policy, text);
             assert_eq!(
                 cfg.startup(),
                 Startup::Refuse { fatal: 1 },

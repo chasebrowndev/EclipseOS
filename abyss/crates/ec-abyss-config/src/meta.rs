@@ -1201,6 +1201,9 @@ pub const META: &[Meta] = &[
     m("capture.allow", "Allow", "privacy", "capture"),
     m("capture.redact-app-id", "Redact app IDs", "privacy", "capture"),
     m("capture.hide-layer", "Hide layer", "privacy", "capture"),
+    // input-method / virtual-pointer (ADR 0094)
+    m("input-method.allow", "Allow", "privacy", "input method"),
+    m("virtual-pointer.allow", "Allow", "privacy", "virtual pointer"),
 ];
 
 /// Where a key that is not in [`META`] lands: one the compositor grew after

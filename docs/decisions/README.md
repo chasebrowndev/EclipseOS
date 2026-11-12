@@ -86,6 +86,7 @@ writing a new ADR that says so.
 | 0091 | [Notifications have modes, a history and one widget](0091-notification-modes-and-history.md) | accepted |
 | 0092 | [Adaptive glass: the tint follows the backdrop](0092-adaptive-glass.md) | accepted |
 | 0093 | [The compositor takes its own screenshots](0093-built-in-screenshot.md) | accepted |
+| 0094 | [Security globals admit by executable path](0094-global-admission-by-executable-path.md) (amends 0022, 0027) | proposed |
 | 0095 | [ec-lock: the screen locker is a client, with PAM in it](0095-ec-lock-client-locker.md) | accepted |
 | 0099 | [One locker holds the session, a dead one is relaunched, and idle may suspend](0099-session-lock-hardening-and-idle-suspend.md) | proposed |
 | 0100 | [The portal file chooser is ec-portal driving Fog's picker](0100-portal-file-chooser.md) | proposed |
