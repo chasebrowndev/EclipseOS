@@ -51,9 +51,11 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
-| `wallpaper.path` | string | _unset_ | live | Image file drawn behind all windows. Unset or unreadable falls back to color. |
+| `wallpaper.path` | string | _unset_ | live | PNG or JPEG file the compositor draws behind all windows, on every output. Unset, unreadable or not a PNG/JPEG falls back to color; while it loads the output shows the color. |
 | `wallpaper.mode` | fill \| fit \| center | `"fill"` | live | How the image is sized: `fill` covers the output and crops, `fit` letterboxes, `center` draws it at native size. |
 | `wallpaper.color` | colour `#rrggbb[aa]` | `#0b0906ff` | live | Solid background, and letterbox fill. |
+
+The compositor draws the wallpaper itself (ADR 0104): one picture per output, decoded off the main thread and drawn as the bottom-most element, under the background layer, so blur behind translucent windows samples it. A background-layer client (the old `ec-wallpaper`) still draws over it. A colour left at the built-in default follows the theme's base colour. A reload re-reads the file. The wallpaper is not part of a window capture.
 
 ### `annotations`
 

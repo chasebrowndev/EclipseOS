@@ -473,9 +473,9 @@ impl Default for Components {
     }
 }
 
-/// `wallpaper { ... }`. Read over the socket by the `ec-wallpaper`
-/// daemon; abyss draws nothing from it. `path` is not checked for existence:
-/// a missing file is the daemon's to fall back from.
+/// `wallpaper { ... }`. Drawn by the compositor (`outputs/wallpaper.rs`) and
+/// still served over the socket for `ec-wallpaper`. `path` is not checked for
+/// existence: a missing file falls back to the colour at draw time.
 #[derive(Debug, Clone)]
 pub struct Wallpaper {
     pub path: Option<String>,

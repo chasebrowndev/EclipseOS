@@ -34,6 +34,7 @@ pub mod text;
 pub mod thumb;
 pub mod titlebar;
 pub mod userdata;
+pub mod wallpaper;
 
 use std::collections::HashMap;
 
@@ -547,6 +548,8 @@ pub struct BorderStore {
     pane_scratch: Vec<blur::BlurElement>,
     /// Titlebar textures under `mode "de"` (COMP-05 §7.1), per output and window.
     pub bars: titlebar::BarCache,
+    /// Each output's wallpaper, the bottom-most element (ADR 0104).
+    pub wallpaper: wallpaper::Store,
 }
 
 impl BorderStore {
@@ -1002,6 +1005,11 @@ pub fn collect_elements(
         &borders.anim,
         renderer,
     );
+
+    // The wallpaper is the very last element, so everything above it, and
+    // every backdrop `insert_blur` builds from what lies below a window,
+    // sees it. A background-layer client is drawn above it and covers it.
+    elements.extend(borders.wallpaper.element(renderer, output, scale));
 
     insert_blur(
         renderer,

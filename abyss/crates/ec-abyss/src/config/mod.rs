@@ -40,6 +40,8 @@ pub fn apply_loaded(state: &mut crate::state::AbyssState, next: Config) {
         .collect();
     let old_mode = state.config.mode;
     state.config = next;
+    // The wallpaper file may have changed under the same name: re-read it.
+    state.borders.wallpaper.invalidate();
     // `mode` moved: float or re-tile the windows before the arrange below.
     crate::shell::de::mode_changed(state, old_mode, state.config.mode);
     // The desktop icons run only under "de": start or stop their unit.

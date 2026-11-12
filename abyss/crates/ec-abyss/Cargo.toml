@@ -54,6 +54,8 @@ x11rb = { version = "0.13.2", default-features = false }
 # eclipse_agent_v1 server bindings (COMP-08).
 ec-protocols = { path = "../ec-protocols", features = ["server"] }
 png = "0.18.1"
+# Wallpaper JPEGs (ADR 0104); the decoder `image` 0.25 already uses in the shell workspace.
+zune-jpeg = "0.5.15"
 
 [dev-dependencies]
 ec-abyss-config = { path = "../ec-abyss-config", features = ["test-hooks"] }
