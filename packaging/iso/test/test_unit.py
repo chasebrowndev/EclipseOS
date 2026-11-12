@@ -394,7 +394,7 @@ class TestChecks(unittest.TestCase):
         inst = {"eclipseos-hyperion", "eclipseos-toasts", "eclipseos-desktop"}
         self.assertEqual(sc.expected_user_units(inst),
                          ["ec-hyperion-bar.service", "ec-toasts.service", "ec-screensaver.service", "ec-pairing.service",
-                          "ec-polkit-agent.service"])
+                          "ec-polkit-agent.service", "ec-lock-trigger.service"])
         self.assertIn("ec-policyd.service", sc.expected_user_units(inst | {"eclipseos-agents"}))
         kv = sc.parse_kv("ec-toasts.service=active\nec-hyperion-bar.service=failed\nnoise\n")
         ok, detail = sc.eval_active(kv, ["ec-toasts.service", "ec-hyperion-bar.service", "ec-x.service"])
