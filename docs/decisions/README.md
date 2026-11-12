@@ -86,6 +86,10 @@ writing a new ADR that says so.
 | 0091 | [Notifications have modes, a history and one widget](0091-notification-modes-and-history.md) | accepted |
 | 0092 | [Adaptive glass: the tint follows the backdrop](0092-adaptive-glass.md) | accepted |
 | 0093 | [The compositor takes its own screenshots](0093-built-in-screenshot.md) | accepted |
+| 0103 | [One workspace and one lockfile for the OS](0103-one-workspace-one-lockfile.md) | proposed |
+| 0104 | [Shell pane memory: measure, trim, then decide](0104-shell-process-consolidation.md) | proposed |
+| 0105 | [Render thread: measure first, then a numeric rule](0105-render-thread-and-frame-baselines.md) | proposed |
+| 0106 | [Redacted screen sharing as a desktop feature](0106-redacted-screen-sharing.md) | proposed |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering
