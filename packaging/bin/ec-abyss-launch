@@ -1,0 +1,60 @@
+#!/bin/sh
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# ec-abyss-launch: start the greeter's Abyss, falling back once to the kept
+# previous build when it dies at startup (ADR 0101). Installed to
+# /usr/lib/eclipse/ec-abyss-launch (0755). Used only by the greetd command: a
+# broken compositor cannot draw the login screen that would offer "Abyss
+# (previous)". User sessions do not use it; a crash there returns to the login
+# screen. Runs as `greeter`, never root, and grants nothing.
+#
+#   ec-abyss-launch BINARY [ARGS...]
+#
+# BINARY runs as a child. If it exits non-zero within EC_ABYSS_FALLBACK_SECS
+# (default 10) of starting, and was not stopped by a signal sent to this
+# wrapper, ROOT/usr/lib/eclipse/previous/ec-abyss is exec'd once with the same
+# ARGS. No loop: the fallback is exec'd, never watched. A clean exit, a late
+# crash, or a stop from greetd passes BINARY's status through.
+#
+# ECLIPSE_ROOT (default empty, i.e. /) prefixes the previous tree, for tests.
+set -eu
+
+say() { printf 'ec-abyss-launch: %s\n' "$*" >&2; }
+
+prev="${ECLIPSE_ROOT:-}/usr/lib/eclipse/previous/ec-abyss"
+window=${EC_ABYSS_FALLBACK_SECS:-10}
+
+[ "$#" -ge 1 ] || { say "usage: ec-abyss-launch BINARY [ARGS...]"; exit 2; }
+bin=$1
+shift
+
+# No fallback to offer: behave exactly like a plain exec.
+[ -x "$prev" ] || exec "$bin" "$@"
+
+stopped=0
+child=
+trap 'stopped=1; [ -z "$child" ] || kill -TERM "$child" 2>/dev/null || true' TERM INT HUP
+start=$(date +%s)
+# `0<&0`: an asynchronous list would otherwise get /dev/null as stdin, and the
+# compositor keeps the VT greetd handed over.
+"$bin" "$@" 0<&0 &
+child=$!
+status=0
+# A trapped signal interrupts `wait` with a status above 128; wait again for
+# the child's own status.
+while :; do
+    wait "$child" && status=0 || status=$?
+    kill -0 "$child" 2>/dev/null || break
+done
+trap - TERM INT HUP
+elapsed=$(($(date +%s) - start))
+
+# The kept copy being this very build would only crash the same way.
+same=0
+cmp -s "$(command -v "$bin" || echo "$bin")" "$prev" && same=1
+if [ "$status" -ne 0 ] && [ "$stopped" = 0 ] && [ "$elapsed" -lt "$window" ] && [ "$same" = 0 ]; then
+    say "$bin exited $status after ${elapsed}s; starting the previous Abyss" \
+        "($(cat "${prev%/*}/VERSION" 2>/dev/null || echo unknown))"
+    exec "$prev" "$@"
+fi
+exit "$status"

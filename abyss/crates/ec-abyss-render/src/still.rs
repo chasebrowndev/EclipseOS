@@ -162,6 +162,28 @@ fn cropped(
 }
 
 impl Frame<'_> {
+    /// Push the redaction card (ADR 0106) for each of `rects` (global logical),
+    /// replacing the opaque quad `capture.rs` drew before. `output_loc` is the
+    /// output's corner in the same space; layers pass the default.
+    pub fn redaction(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        rects: &[Rectangle<i32, Logical>],
+        output_loc: Point<i32, Logical>,
+        out: &mut Vec<AbyssRenderElement>,
+    ) {
+        for rect in rects {
+            crate::redact::card(
+                &mut self.store.gpu.redact,
+                renderer,
+                *rect,
+                output_loc,
+                self.scale,
+                out,
+            );
+        }
+    }
+
     /// Push one window, placed at `geo` (global logical, window geometry),
     /// with its effects: dim overlay, popups, surfaces, border or bezel, glow,
     /// shadow, panes, and a backdrop request spliced in by [`Frame::finish`].

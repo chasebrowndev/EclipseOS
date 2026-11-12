@@ -242,8 +242,50 @@ impl Config {
                         self.reject(n, "repeated data-control-allow replaces the previous one; list every name on a single node");
                     }
                     self.clipboard.data_control_allow = names(n, &mut seen_allow);
+                    self.check_exe_entries(n);
                 }
                 _ => self.unknown_key(n, "clipboard", "clipboard node"),
+            }
+        }
+    }
+
+    /// ADR 0094: an admission entry containing `/` must be an absolute
+    /// path. A relative one would silently admit nothing, and this file is
+    /// the security surface, so it is refused (fatal in `policy.kdl`, ADR 0064).
+    fn check_exe_entries(&mut self, n: &KdlNode) {
+        for v in args(n) {
+            let ok = v.as_string().is_some_and(|e| exe_entry_path(e).is_some());
+            if !ok {
+                self.reject(
+                    n,
+                    format!("allow entry {v} must be a bare executable name (meaning /usr/bin/<name>) or an absolute path"),
+                );
+            }
+        }
+    }
+
+    /// `input-method { allow ... }` and `virtual-pointer { allow ... }`
+    /// (ADR 0094): one key each, matched by executable path.
+    pub(crate) fn apply_exe_allow(&mut self, node: &KdlNode, block: &'static str) {
+        let Some(children) = node.children() else { return };
+        let mut seen_allow = false;
+        for n in children.nodes() {
+            match n.name().value() {
+                "allow" => {
+                    if seen_allow {
+                        self.reject(
+                            n,
+                            "repeated allow replaces the previous one; list every name on a single node",
+                        );
+                    }
+                    let list = names(n, &mut seen_allow);
+                    self.check_exe_entries(n);
+                    match block {
+                        "input-method" => self.input_method.allow = list,
+                        _ => self.virtual_pointer.allow = list,
+                    }
+                }
+                _ => self.unknown_key(n, block, &format!("{block} node")),
             }
         }
     }
@@ -263,6 +305,7 @@ impl Config {
                         );
                     }
                     self.capture.allow = names(n, &mut seen_allow);
+                    self.check_exe_entries(n);
                 }
                 "redact-app-id" => {
                     if seen_redact {
@@ -337,14 +380,14 @@ impl Config {
             let name = n.name().value();
             let before = self.errors.len();
             match name {
-                "dpms-timeout-seconds" | "lock-timeout-seconds" => {
+                "dpms-timeout-seconds" | "lock-timeout-seconds" | "suspend-timeout-seconds" => {
                     match arg(n).and_then(KdlValue::as_integer) {
                         Some(v) if v >= 0 => {
                             let v = (v as u64 != 0).then_some(v as u64);
-                            if name == "dpms-timeout-seconds" {
-                                self.idle.dpms_timeout = v;
-                            } else {
-                                self.idle.lock_timeout = v;
+                            match name {
+                                "dpms-timeout-seconds" => self.idle.dpms_timeout = v,
+                                "lock-timeout-seconds" => self.idle.lock_timeout = v,
+                                _ => self.idle.suspend_timeout = v,
                             }
                         }
                         _ => self.reject(
@@ -357,14 +400,20 @@ impl Config {
                     Some(c) => self.idle.lock_command = Some(c.to_owned()),
                     None => self.reject(n, "idle lock-command needs a string argument"),
                 },
+                // A malformed value keeps the default (on): the safe reading.
+                "lock-before-suspend" => match arg(n).and_then(KdlValue::as_bool) {
+                    Some(b) => self.idle.lock_before_suspend = b,
+                    None => self.reject(n, "idle lock-before-suspend needs #true or #false"),
+                },
                 _ => self.unknown_key(n, "idle", "idle node"),
             }
             // ADR 0064, owner decision 2026-09-25: a refused lock setting no
             // longer refuses to start. Auto-lock stays at its default (off)
             // and the summary leads with that. Every refusal in `idle` counts,
             // a misspelt key included (`lock-timout-seconds`), except one about
-            // DPMS (`dpms-*`), which is not a protection.
-            if self.errors.len() > before && !name.starts_with("dpms") {
+            // DPMS (`dpms-*`) or the suspend timeout, which are not protections.
+            // A refused value for either leaves that stage off.
+            if self.errors.len() > before && !name.starts_with("dpms") && name != "suspend-timeout-seconds" {
                 self.fail_safe_last(FailSafe::AutoLockOff);
             }
         }

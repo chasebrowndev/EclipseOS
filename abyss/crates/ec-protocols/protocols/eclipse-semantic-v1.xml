@@ -187,7 +187,7 @@
     <enum name="class">
       <description summary="S-05 sensitivity classes"/>
       <entry name="public" value="0"/>
-      <entry name="private" value="1" summary="the default"/>
+      <entry name="normal" value="1" summary="the default"/>
       <entry name="secret" value="2"/>
     </enum>
 

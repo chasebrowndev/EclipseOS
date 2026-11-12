@@ -8,6 +8,7 @@ pub mod dnd;
 pub mod elide;
 pub mod glass;
 pub mod spring;
+pub mod tick;
 pub mod virtual_list;
 
 pub use dnd::{draggable, Draggable};

@@ -68,8 +68,11 @@ filter (`policy/scene.rs`, whose `class_of` answers `secret` for every surface
 until the M16 table lands); `audit/` emits provenance to `policyd` (COMP-12);
 `protocols/agent/` serves the M11 admission and read-only scene queries; and
 `trusted_ui/` holds the erase (COMP-10 §3.10) and command-approval (§3.11)
-prompts. There is still no enforcement table and no `check()`, and
-`protocols/semantic/` does not exist. Two things landed early —
+prompts. The enforcement table (`policy/table.rs`) and `check()` exist, but
+`check()` has exactly one caller — agent seat requests (`policy/enforce.rs`);
+nothing on the human path (Wayland globals, clipboard, capture) is a policy
+decision yet (KNOWNBUGS SEC-01..05). `protocols/semantic/` serves
+`eclipse_semantic_v1` (M22, unreviewed). Two things landed early —
 frame-level capture redaction (milestones 9d and 22, landed inside milestone 8)
 and the capture indicator (milestone 15, same).
 
@@ -108,7 +111,7 @@ event, which has no source to fire from until milestone 11 lands.
 | 3 | DRM backend, multi-output, hotplug, fractional scale, output persistence | **runs on real KMS; gate partially met** | `backend/drm.rs`, `outputs/` (hotplug, layout, persistence), `protocols/standard/fractional_scale.rs`. **Booted on real KMS 2026-09-10**: two connectors, each on its own native mode (HDMI-A-1 1360x768 on crtc 198/plane 52; DP-3 1280x720 on crtc 390/plane 244), a kitty client rendered and typed into, `grim` capture 2640x768. Multi-output composition and per-output modeset are therefore verified. **Still unmet:** three physical monitors, a hotplug event, and a dock/undock cycle restoring a saved layout — this box has two panels and no dock. |
 | 4 | dmabuf + explicit sync + direct scanout + VRR; damage tracking complete | **code complete, gate never run** | `protocols/standard/dmabuf.rs`, `drm_syncobj.rs` (registered only when the driver reports `supports_syncobj_eventfd`, else a warning and no global), `render/` damage + `scanout_candidate` (defined `render/mod.rs:821`, called `backend/drm.rs:1146`), VRR via `VrrSupport::Supported` + per-output `vrr` config. Gate needs Firefox and mpv on real KMS and the COMP-14 frame benchmarks, which have never been collected. The 2026-09-10 KMS boot produced the first real frame timings from any backend (`--stats`: 465 frames, ~1 fps idle rising to 38.1 fps under input, render p50 ~500 us, submit p50 ~166 us) — that is the damage tracker and the submit path behaving, not a COMP-14 measurement, and direct scanout was not confirmed taken. |
 | 5 | Clipboard, primary selection, data-control, DnD, IME | **done** | `data_device.rs`, `primary_selection.rs`, `data_control.rs` (allowlisted per ADR 0027), `text_input.rs`, `input_method.rs`. Gate run nested: copy/paste across clients including primary; `wl-clipboard` via data-control honours the allowlist. |
-| 6 | Session lock, idle, DPMS, power, lid | **code complete, gate never run** | `session_lock.rs`, `idle_notify.rs`, `idle_inhibit.rs`, `output_power.rs`, `outputs/power.rs`. Lock/unlock is exercised nested; suspend/resume and lid handling need real hardware. `lid-close "suspend"` now spawns `systemctl suspend` (`outputs/power.rs`), untested for want of a lid. |
+| 6 | Session lock, idle, DPMS, power, lid | **code complete, gate never run** | `session_lock.rs`, `idle_notify.rs`, `idle_inhibit.rs`, `output_power.rs`, `outputs/power.rs`. Lock/unlock is exercised nested; suspend/resume and lid handling need real hardware. `lid-close "suspend"` now spawns `systemctl suspend` (`outputs/power.rs`), untested for want of a lid. The locker is `ec-lock` (`shell/crates/ec-lock`, ADR 0095): an `ext_session_lock_v1` client, PAM in-process, shipped as `idle.lock-command`; its view is a placeholder pending eclipse-frontend. `ec-lock-trigger` (ec-services) starts it on logind `Lock` (`loginctl lock-session`) and on `PrepareForSleep`, holding a sleep delay of at most 3 s. ec-lock refuses to lock without its PAM service file. |
 | 7 | XWayland | **done, with two spec deviations** | `xwayland/mod.rs` (193 lines) + `xwayland_shell.rs`; rootless, one untrusted trust domain (ADR 0026). Gate run nested with X11 clients. Deviations: started **eagerly at compositor start**, not lazily, and without `-noTouchPointerEmulation` / MIT-SHM off — smithay 0.7.0's `XWayland::spawn` exposes no lazy entry point and no flag parameter (verified in the vendored source, `src/xwayland/xserver.rs:112`). Both are blocked upstream, not oversights. A fullscreen request made before map is honoured (pre-map `_NET_WM_STATE` message, or KWin-style legacy fullscreen for an undecorated screen-sized window); gaps that remain are XWL-01 in `KNOWNBUGS.md`. |
 | 8 | Screen sharing via xdg-desktop-portal | **partial** | Two capture protocols behind **one shared fail-closed gate**: `zwlr_screencopy_v1` (`screencopy.rs`) and `ext_image_copy_capture_v1` + `ext_image_capture_source_v1` (`image_copy_capture.rs`), ADRs 0027/0029/0030. Measured against `xdg-desktop-portal-wlr` 0.8.3: 60 frames in 1.18 s. Frame-level redaction verified across 860,343 pixels of a redacted surface, all exactly opaque black. Remaining for the gate: an actual video call. `zwlr_screencopy_v1`'s `overlay_cursor` request now bakes the pointer into the copy (COMP-02 §8 opt-in), suppressed while a trusted prompt holds the seat. `ext_image_copy_capture_v1`'s separate cursor session is still refused (session answered `stopped`/`leave`, `image_copy_capture.rs:329`; the inert `CursorSessionData` is at `:344`) — it needs a metadata cursor stream, not baked-in pixels. |
 | 9 | Human IPC, `ec-ctl`, metrics | **done (Phase 1 scope)** | `ipc/` (JSON-RPC 2.0 line-delimited over `$XDG_RUNTIME_DIR/eclipse/abyss.sock`, `SO_PEERCRED` owner-uid gating, ADR 0028), `abyss/crates/ec-abyss-wire/src/gate.rs` authorisation table (re-exported as `ipc::gate`), `ipc/methods.rs` (24 per-method dispatch arms plus one arm forwarding `get_config`/`set_config_value`/`validate_config` to `ipc/config_rpc.rs`, the COMP-13 §3 config surface — 27 implemented methods), `abyss/crates/ec-ctl` (859 lines across `main.rs` and `migrate.rs`, with a `schema_drift` integration test). 7 of the 34 gate rows are deliberately `implemented: false` — all Phase 2 surface, listed below and asserted by the `phase_two_rows_stay_unimplemented` test. `gate.rs` also carries a second table, `CONFIG_FILES`, naming the four files the config methods may touch, for the same no-ambient-authority reason. Gate "waybar driven by our IPC" is fully met: `ec-ctl watch` streams workspace/window/output/focus events, and `ext_foreign_toplevel_list` shipped with milestone 9a, so a bar does enumerate windows it does not own — `hyperion`, the taskbar, does exactly that over `get_windows` and the `subscribe` event stream, and since `429040a` it wakes on compositor events rather than polling and follows `title` changes. |
@@ -202,10 +205,10 @@ compositor's corner radius over `get_config` (`ec_ui::ipc::fetch_config_radius`,
 | COMP-05 shell | `abyss/crates/ec-abyss/src/shell/mod.rs` | radiant (default, weighted n-ary tree, drop-zone drag, priority; ADR 0058) + dwindle classic + master, workspaces, floating, focus. App identity is a `/proc` stopgap (`data_control.rs:14` TODO) — the provenance record is Phase 2. Window rules match at map time and re-evaluate on commit (`shell/rules.rs`), which also produces the `irreversible_capable` and `class_source` toplevel facts (milestone 9e). |
 | COMP-06 standard protocols | `abyss/crates/ec-abyss/src/protocols/standard/` (33 modules) | activation, background_effect, compositor, data_control, data_device, decoration, dmabuf, drm_syncobj, foreign, foreign_toplevel, fractional_scale, gamma_control, idle_inhibit, idle_notify, image_copy_capture, input_method, layer_shell, output_management, output_power, pointer_constraints, pointer_extra, presentation, primary_selection, screencopy, seat, security_context, session_lock, shm, surface_extra, tablet, text_input, virtual_pointer, xdg_shell. |
 | COMP-07 XWayland | `abyss/crates/ec-abyss/src/xwayland/{mod,xwm,security}.rs` | Rootless, eager start; the `xwayland` config block is honoured. |
-| COMP-08 agent protocol | — | Does not exist. |
+| COMP-08 agent protocol | `abyss/crates/ec-abyss/src/protocols/agent/`, `abyss/crates/ec-protocols`, `abyss/crates/ec-agentd` | `ec-agent.sock` served while the `agents` hook is on; admission, scene queries and seat requests through `policy/` (see the Phase 2 table, M11–M16). Never exercised end to end on a live session with a human trusted-UI commit. |
 | COMP-09 semantic protocol | M22 | Server and reference client written; capture, `get_tree` and seat `action` seams are TCB-HOOKs (see M22). |
-| COMP-10 trusted UI | `render/capture.rs::indicator` only | Indicator done; prompts/panel/phrase absent. |
-| COMP-11 policy | `abyss/crates/ec-policy-eval`, `abyss/crates/ec-policyd` | Milestone 10: task store, grant issue/revoke (see the Phase 2 table). In-compositor `policy/` does grant admission and the agent scene filter; there is no enforcement table and no `check()` (M16), and sensitivity is a manual stub (`state.rs:236`). |
+| COMP-10 trusted UI | `abyss/crates/ec-abyss/src/trusted_ui/` (17 modules) | Indicator, modal primitive, consent, erase and command-approval prompts, phrase, emergency panel, commit path to `policyd`. No COMP-15 trusted-UI suite. |
+| COMP-11 policy | `abyss/crates/ec-policy-eval`, `abyss/crates/ec-policyd` | Milestone 10: task store, grant issue/revoke (see the Phase 2 table). In-compositor `policy/` does grant admission, the agent scene filter, the signed table (`table.rs`) and `check()` for agent seat requests (`enforce.rs`, M16 in progress). `check()` is not called for any human-path operation; rate/quota are uncounted and most `defaults` keys unenforced (KNOWNBUGS SEC-01..06). |
 | COMP-12 audit | `abyss/crates/ec-policyd/src/audit.rs` | The S-04 §4 store, landed early at milestone 10 (ADR 0046). Provenance emission from abyss is `abyss/crates/ec-abyss/src/audit/mod.rs` (M12). |
 | COMP-13 human IPC + config | `abyss/crates/ec-abyss/src/ipc/`, `abyss/crates/ec-abyss/src/config/` (apply, watch), `abyss/crates/ec-abyss-config` (schema, parse, edit), `abyss/crates/ec-ctl`, `abyss/crates/ec-ipc` | Socket, gate table, event stream, KDL parse + hot-reload, plus (2026-09-11) the §1.4 write API: byte-splice in-place edits, a declarative schema over every key, per-file gate rows after the `policy.kdl` split, `ec-ctl config` verbs, and `abyss/crates/ec-ipc` as the client half. |
 | COMP-14 performance | `bench/` | The harness exists (milestone 9f, ADR 0043): a sampler that keeps every sample and reports p50/p99/p99.9/max, the §2.1/§2.1b budget table as data, and §3's counting allocator so a bench on a no-alloc path fails on its first allocation. Nothing real is plugged into it yet — §4.1's five subjects arrive with the milestones that create them — so the frame budgets milestone 4's gate cites are still unmeasured. §5's per-commit baselines and the >10% regression gate are unbuilt. `--stats` remains a live-run diagnostic, separate from the harness. |
@@ -267,7 +270,7 @@ macros anywhere in the workspace.
 7. **`windowrule` is complete except `launching-principal`**
    (COMP-05 §4). `shell/rules.rs` matches at map time and re-evaluates on every
    commit; `float`, `tile`, `workspace N`, `size WxH`, `position X,Y`,
-   `output NAME`, `opacity F`, `blur true|false`, `fullscreen`, `sensitivity secret|private` (raise-only),
+   `output NAME`, `opacity F`, `blur true|false`, `fullscreen`, `sensitivity secret|normal` (raise-only),
    `app-trust`, `seat-compat`, `idle-inhibit`, `no-focus-steal` and `no-agent`
    all parse and apply. `no-agent`, `app-trust` and `seat-compat` set state
    nothing reads yet — COMP-08 `list_toplevels` and the COMP-04 §8 focus locks
@@ -316,9 +319,9 @@ macros anywhere in the workspace.
     COMP-08 `eclipse_agent_v1` lands (Phase 2, milestone 11): the event has no
     source to fire from until an agent client can attach, so there is nothing
     to implement before then. Nothing else blocks it.
-14. **No `crates/agentd`, `crates/sandbox`** — `abyss/crates/ec-policyd` and
-    `abyss/crates/ec-policy-eval` exist since milestone 10; the other TCB crates do not.
-    The root `CLAUDE.md` map marks the absent `abyss` modules "(not yet)".
+14. **No standalone `sandbox` crate** — `abyss/crates/ec-agentd` exists and
+    carries the agent sandbox (`src/sandbox.rs`: Landlock, seccomp, bwrap). It
+    confines agent processes only; ordinary apps are unconfined.
 15. **Overscan compensation has no first-boot offer.** Everything else is
     done. The backend (COMP-03 §2): `outputs/overscan.rs` (re-export of `ec-abyss-render/src/output_overscan.rs`; per-edge insets,
     clamping, the inverse map), `render/overscan.rs` (the scale-and-pad wrap
@@ -361,8 +364,9 @@ macros anywhere in the workspace.
     `panel` goes back to `GLASS` and blur stops being opt-in. Owner's call,
     deliberately deferred (2026-09-11) — opaque now, glass later.
 
-17. **No semantic-tree source** — `protocols/semantic/` does not exist, so
-    nothing ever supplies the node tree COMP-02 §7 redacts against. This is
+17. **No semantic-tree publisher in a shipped client** — `protocols/semantic/`
+    exists (M22) and `render/capture.rs::semantics_for` reads it, but no real
+    client publishes a tree, so every surface still answers "no tree". This is
     the remaining half of milestone 9d: the redaction machinery and its
     fail-closed stale/absent arm are landing on
     `comp02-m09d-node-redaction`, driven in tests from a synthetic tree,

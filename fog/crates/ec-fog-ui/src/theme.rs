@@ -133,6 +133,11 @@ pub mod color {
     /// place, and a drop target under the pointer. Neutral, so a selection
     /// never competes with the one gold value.
     pub const MARK_FILL: Color = white(0.07);
+    /// tokens `HIGHLIGHT_SOFT` fill: the picker's accept button at rest, a
+    /// step clearer than a marked row, with [`RIM`] as its crisp edge.
+    pub const LIFT_STRONG: Color = white(0.12);
+    /// The same button under the pointer.
+    pub const LIFT_HOVER: Color = white(0.17);
     /// tokens `LIFT_SOFT`: whatever is under the pointer: a row, a place, a
     /// crumb, a column label, a button.
     pub const HOVER: Color = white(0.035);
@@ -302,6 +307,14 @@ pub mod size {
     /// The conflict and delete sheets, and the name sheet.
     pub const DIALOG_W: f32 = 560.0;
     pub const NAME_W: f32 = 420.0;
+    /// The picker bar's dropdowns, and the menus that open over them.
+    pub const DROP_W: f32 = 210.0;
+    /// A picker checkbox's box.
+    pub const CHECK: f32 = 14.0;
+    /// The name field's caption column in the picker bar.
+    pub const BAR_LABEL_W: f32 = 52.0;
+    /// A dropdown menu's padding inside its edge.
+    pub const MENU_PAD: f32 = 4.0;
     /// Padding inside a sheet.
     pub const SHEET_PAD: f32 = 18.0;
     /// A dialog's choice button.
@@ -473,6 +486,15 @@ impl Look {
             shadow_offset: Vector::new(0.0, glass::SHEET_SHADOW_Y),
             shadow_blur: glass::SHEET_SHADOW_BLUR,
             ..self.panel()
+        }
+    }
+
+    /// A dropdown menu's drop shadow: a docked panel's, on the menu ground.
+    pub fn menu_shadow(&self) -> iced::Shadow {
+        iced::Shadow {
+            color: color::SHADOW,
+            offset: Vector::new(0.0, glass::SHADOW_Y),
+            blur_radius: glass::SHADOW_BLUR,
         }
     }
 
