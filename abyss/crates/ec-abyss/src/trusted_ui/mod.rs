@@ -46,6 +46,7 @@ pub mod panel;
 pub mod phrase;
 pub mod polkit;
 pub mod queue;
+pub mod screencast;
 pub mod slot;
 pub mod socket;
 
@@ -149,6 +150,8 @@ pub struct TrustedUi {
     pub(crate) broker: broker::Broker,
     /// polkit password requests waiting or shown (§3.14).
     pub(crate) polkit: polkit::Polkit,
+    /// Screen-share confirms waiting or shown, and the live grants (ADR 0097).
+    pub(crate) screencast: screencast::Screencast,
     /// The bound trusted socket, so a clean exit can unlink it.
     pub path: Option<PathBuf>,
     /// The light palette is in use. Off by default, so dark until told. Only
@@ -358,6 +361,7 @@ fn choose(state: &mut AbyssState, button: usize, timed_out: bool) {
     install::schedule(state);
     broker::schedule(state);
     polkit::schedule(state);
+    screencast::schedule(state);
     // The pointer is re-evaluated as though it had just moved, so whatever is
     // under it gets its enter now rather than on the next motion.
     state.refresh_pointer_focus();
@@ -376,6 +380,8 @@ fn resolve(state: &mut AbyssState, choice: Choice) {
         broker::answer(state, choice);
     } else if polkit::owns(state, choice.token) {
         polkit::answer(state, choice);
+    } else if screencast::owns(state, choice.token) {
+        screencast::answer(state, choice);
     } else if consent::owns(state, choice.token) {
         consent::answer(state, choice);
     } else if batch::owns(state, choice.token) {
@@ -429,6 +435,7 @@ fn cancel(state: &mut AbyssState, token: u64) {
     state.refresh_pointer_focus();
     // The other owners schedule only their own queues here.
     polkit::schedule(state);
+    screencast::schedule(state);
 }
 
 /// The panel's top-left on `output`, in global logical coordinates: centred.

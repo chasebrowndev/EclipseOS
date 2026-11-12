@@ -211,6 +211,8 @@ impl AbyssState {
         tracing::info!("session locked");
         // S-08 §2: the secret store locks with the screen.
         crate::trusted_ui::broker::session_locked(self);
+        // ADR 0097: a screen share never resumes after unlock without asking.
+        crate::trusted_ui::screencast::revoke_all(self);
         // A window mid-drag goes back to its tile rather than landing blind.
         crate::shell::cancel_tile_drag(self);
         self.gesture_drag = None;
