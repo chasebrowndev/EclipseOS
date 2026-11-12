@@ -1329,3 +1329,31 @@ fn a_panic_in_the_overview_closes_it_and_keeps_it_off_for_the_session() {
         .iter()
         .all(|(k, _)| k != "feature-disabled"));
 }
+
+/// A panic in the dwell timer's callback, run by a real calloop dispatch: the
+/// reset removes the very timer that is running (its token is still stored,
+/// because the fault precedes `Corners::due`), and the callback then returns
+/// `Drop`. calloop supports removing a source from its own callback (its
+/// `kill_source` test), and `Drop` after it only clears an already-empty slot.
+#[test]
+fn a_panic_in_the_dwell_timer_callback_is_contained_through_a_real_loop_dispatch() {
+    let (mut h, mut c) = de();
+    let (_, _w) = win(&mut h, &mut c, "a");
+    h.state.config.general.hot_corner_dwell_ms = 1;
+    move_to(&mut h, pt(400.0, 300.0));
+    move_to(&mut h, pt(1.0, 1.0));
+    assert_eq!(h.state.corners.armed(), Some(0));
+    crate::contain::testing::arm(crate::contain::Feature::Overview);
+    for _ in 0..50 {
+        std::thread::sleep(Duration::from_millis(5));
+        h.dispatch();
+        if h.state.contained.is_off(crate::contain::Feature::Overview) {
+            break;
+        }
+    }
+    assert!(h.state.contained.is_off(crate::contain::Feature::Overview));
+    assert_eq!(h.state.corners.armed(), None, "the reset disarmed it");
+    assert!(!h.state.overview.is_open());
+    h.dispatch();
+    h.dispatch();
+}

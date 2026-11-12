@@ -509,4 +509,28 @@ mod tests {
         assert!(r.is_err(), "propagated");
         assert!(!h.state.contained.is_off(Feature::Overview));
     }
+
+    #[test]
+    #[allow(clippy::assertions_on_constants)]
+    fn unwinding_is_on() {
+        // Containment and the VT restore need unwinding; see Cargo.toml.
+        assert!(cfg!(panic = "unwind"), "panic = \"abort\" defeats ADR 0102");
+    }
+
+    #[test]
+    fn a_panic_in_the_preview_code_reached_by_the_socket_method_is_contained() {
+        let mut h = harness();
+        let (conn, _peer) = crate::ipc::test_conn(&mut h.state);
+        let _ = crate::ipc::capture::take();
+        // The fault sits in `overview::preview::hide`, an overview source;
+        // `hide_window_preview` reaches it through the Overview boundary.
+        testing::arm(Feature::Overview);
+        let r = dispatch(&mut h.state, conn, "hide_window_preview", &json!({}));
+        assert!(r.is_err_and(|e| e.code == crate::ipc::DENIED));
+        assert!(h.state.contained.is_off(Feature::Overview));
+        assert!(crate::ipc::capture::take()
+            .iter()
+            .any(|(k, v)| k == "feature-disabled" && v["feature"] == "overview"));
+        assert!(dispatch(&mut h.state, conn, "hide_window_preview", &json!({})).is_err());
+    }
 }

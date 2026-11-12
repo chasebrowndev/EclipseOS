@@ -293,6 +293,7 @@ pub fn motion(state: &mut AbyssState, pos: Point<f64, Logical>) {
 
 /// The dwell timer of arming `serial` ran out.
 pub fn fire(state: &mut AbyssState, serial: u64) {
+    crate::contain::fault(crate::contain::Feature::Overview);
     let still = state
         .corners
         .at(state.pointer_location)
