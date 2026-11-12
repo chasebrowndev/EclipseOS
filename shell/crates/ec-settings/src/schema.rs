@@ -242,6 +242,83 @@ pub fn moded<'m>(node: &str, path: &str, modes: &'m [String]) -> Option<Vec<&'m 
     )
 }
 
+/// The idle keys in the order the stages happen to a person: the screen
+/// locks, the display goes dark, the machine suspends, then the two keys
+/// that say how locking is done. The schema lists them in the order they were
+/// added. A path with no place here (an `idle.*` key the compositor grows
+/// later) sorts after these, in schema order.
+pub const IDLE_ORDER: [&str; 5] = [
+    IDLE_LOCK,
+    IDLE_DPMS,
+    IDLE_SUSPEND,
+    IDLE_LOCK_FIRST,
+    IDLE_LOCK_COMMAND,
+];
+pub const IDLE_LOCK: &str = "idle.lock-timeout-seconds";
+pub const IDLE_DPMS: &str = "idle.dpms-timeout-seconds";
+pub const IDLE_SUSPEND: &str = "idle.suspend-timeout-seconds";
+pub const IDLE_LOCK_FIRST: &str = "idle.lock-before-suspend";
+pub const IDLE_LOCK_COMMAND: &str = "idle.lock-command";
+
+/// Where an `idle.*` key sorts within its group (see [`IDLE_ORDER`]), or
+/// `None` for a key outside `idle`.
+pub fn idle_rank(path: &str) -> Option<usize> {
+    path.starts_with("idle.").then(|| {
+        IDLE_ORDER
+            .iter()
+            .position(|p| *p == path)
+            .unwrap_or(IDLE_ORDER.len())
+    })
+}
+
+/// Seconds as a person reads a wait: `45 s`, `5 min`, `1 h 30 min`.
+pub fn duration(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    let mut parts = Vec::new();
+    if h > 0 {
+        parts.push(format!("{h} h"));
+    }
+    if m > 0 {
+        parts.push(format!("{m} min"));
+    }
+    if s > 0 || parts.is_empty() {
+        parts.push(format!("{s} s"));
+    }
+    parts.join(" ")
+}
+
+/// What the idle setting at `path` amounts to now, shown beneath its row.
+/// `secs` is the row's own timeout (unset reads 0), `lock_first` is
+/// `idle.lock-before-suspend` and `has_locker` whether `idle.lock-command`
+/// is set. A timeout of 0 says "never" in words, since the field shows 0.
+pub fn idle_blurb(path: &str, secs: u64, lock_first: bool, has_locker: bool) -> Option<String> {
+    let after = duration(secs);
+    Some(match path {
+        IDLE_LOCK if secs == 0 => "Never: the screen does not lock on its own.".into(),
+        IDLE_LOCK if !has_locker => {
+            format!("Would lock after {after} without input, but no lock command is set below.")
+        }
+        IDLE_LOCK => format!("Locks after {after} without input."),
+        IDLE_DPMS if secs == 0 => "Never: the screen stays on.".into(),
+        IDLE_DPMS => format!("Turns the screen off after {after} without input."),
+        IDLE_SUSPEND if secs == 0 => "Never: the machine does not suspend on its own.".into(),
+        IDLE_SUSPEND if lock_first && !has_locker => {
+            "Never: suspending waits for the screen to lock, and no lock command is set.".into()
+        }
+        IDLE_SUSPEND if lock_first => {
+            format!("Suspends after {after} without input, once the screen has locked.")
+        }
+        IDLE_SUSPEND => format!("Suspends after {after} without input, without locking first."),
+        IDLE_LOCK_FIRST => "Suspend waits for the screen to lock. If it has not locked within 10 s, \
+             the machine stays awake."
+            .into(),
+        IDLE_LOCK_COMMAND => {
+            "Runs at the lock timeout and before an idle suspend. Without one, nothing locks.".into()
+        }
+        _ => return None,
+    })
+}
+
 /// A `color` value as the wire spells it — `#rrggbb` or `#rrggbbaa` — as
 /// red, green, blue and alpha bytes. Anything else is `None`: the swatch is
 /// then left out, and the field beside it still says what is wrong.
@@ -419,8 +496,12 @@ impl Row {
             "input.kb-options" => "Keyboard options",
             "input.accel-profile" => "Pointer acceleration",
             "input.touchpad.dwt" => "Disable while typing",
+            // The idle stages, named for what a person sees happen. Unset
+            // or 0 is "never"; the caption under each row says so in words.
+            "idle.lock-timeout-seconds" => "Lock screen after (seconds)",
             "idle.dpms-timeout-seconds" => "Screen off after (seconds)",
-            "idle.lock-timeout-seconds" => "Lock after (seconds)",
+            "idle.suspend-timeout-seconds" => "Suspend after (seconds)",
+            "idle.lock-before-suspend" => "Lock before suspending",
             "capture.redact-app-id" => "Redact app IDs",
             // Gaps are named for where the air is, not for the mechanism;
             // the vertical pair only shows once set apart (`mirror_of`).
@@ -647,6 +728,50 @@ mod tests {
             moded(BLUR, ADAPTIVE_STRENGTH, &modes),
             Some(vec!["blur", "frost", "glass"])
         );
+    }
+
+    #[test]
+    fn idle_keys_sort_in_the_order_the_stages_happen() {
+        let mut paths = vec![
+            IDLE_DPMS,
+            IDLE_LOCK,
+            IDLE_LOCK_COMMAND,
+            "idle.future-key",
+            IDLE_SUSPEND,
+            IDLE_LOCK_FIRST,
+        ];
+        paths.sort_by_key(|p| idle_rank(p));
+        assert_eq!(
+            paths,
+            [
+                IDLE_LOCK,
+                IDLE_DPMS,
+                IDLE_SUSPEND,
+                IDLE_LOCK_FIRST,
+                IDLE_LOCK_COMMAND,
+                "idle.future-key"
+            ]
+        );
+        assert_eq!(idle_rank("bar.idle-seconds"), None);
+    }
+
+    #[test]
+    fn an_unset_idle_timeout_reads_never_and_a_set_one_reads_as_time() {
+        assert_eq!(duration(45), "45 s");
+        assert_eq!(duration(300), "5 min");
+        assert_eq!(duration(5400), "1 h 30 min");
+        assert_eq!(duration(0), "0 s");
+        for path in [IDLE_LOCK, IDLE_DPMS, IDLE_SUSPEND] {
+            let b = idle_blurb(path, 0, true, true).expect("an idle stage has a caption");
+            assert!(b.starts_with("Never"), "{path}: {b}");
+        }
+        let suspend = |first, locker| idle_blurb(IDLE_SUSPEND, 900, first, locker).unwrap();
+        assert!(suspend(true, true).contains("once the screen has locked"));
+        assert!(suspend(true, false).starts_with("Never"));
+        assert!(suspend(false, false).contains("15 min"));
+        assert!(idle_blurb(IDLE_LOCK_FIRST, 0, true, true)
+            .unwrap()
+            .contains("waits for the screen to lock"));
     }
 
     #[test]
