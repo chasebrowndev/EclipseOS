@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The three sections: capture, data control, security window rules.
+//! The sections: capture, data control, injected input, security window rules.
 //!
 //! Every colour, size and spacing comes from `ec_ui::tokens`. The accent
 //! is spent once per section, on the sentence that says what the section
@@ -24,6 +24,7 @@ pub fn view(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
         files(policy, radius),
         capture(policy, radius),
         data_control(policy, radius),
+        injected_input(policy, radius),
         rules(policy, radius),
     ]
     .spacing(space::BLOCK);
@@ -138,7 +139,7 @@ fn capture(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
 
     section(
         "Screen capture",
-        "Process names allowed to bind zwlr_screencopy_manager_v1. Capture reads \
+        "Executables allowed to bind zwlr_screencopy_manager_v1. Capture reads \
          every pixel of an output, including other clients' windows.",
         vec![
             verdict(&permits(&policy.capture_allow, "capture the screen")),
@@ -154,6 +155,17 @@ fn capture(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
                     allow_rows(&policy.capture_redact)
                 },
             ),
+            inset_list(
+                "CAPTURE.HIDE-LAYER",
+                if policy.capture_hide_layer.is_empty() {
+                    vec![list_row(
+                        "Not set — no layer surface is hidden from a capture.",
+                        value("0 hidden"),
+                    )]
+                } else {
+                    allow_rows(&policy.capture_hide_layer)
+                },
+            ),
             inset_list("MISC.SCRIPTED-INPUT", vec![scripted]),
         ],
         radius,
@@ -163,7 +175,7 @@ fn capture(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
 fn data_control(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
     section(
         "Clipboard data control",
-        "Process names allowed to bind zwlr_data_control_manager_v1. Data control \
+        "Executables allowed to bind zwlr_data_control_manager_v1. Data control \
          reads every selection, including ones typed into another window.",
         vec![
             verdict(&permits(
@@ -174,6 +186,21 @@ fn data_control(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
                 "CLIPBOARD.DATA-CONTROL-ALLOW",
                 allow_rows(&policy.data_control_allow),
             ),
+        ],
+        radius,
+    )
+}
+
+fn injected_input(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
+    section(
+        "Input methods and virtual pointers",
+        "Executables allowed to bind zwp_input_method_manager_v2 or \
+         zwlr_virtual_pointer_manager_v1. An input method reads the focused field \
+         and types into it; a virtual pointer moves and clicks as you.",
+        vec![
+            verdict(&permits(&policy.input_method_allow, "act as the input method")),
+            inset_list("INPUT-METHOD.ALLOW", allow_rows(&policy.input_method_allow)),
+            inset_list("VIRTUAL-POINTER.ALLOW", allow_rows(&policy.virtual_pointer_allow)),
         ],
         radius,
     )
@@ -193,7 +220,7 @@ fn matchers(rule: &Rule) -> String {
 fn rules(policy: &Policy, radius: f32) -> Element<'_, Message, Theme> {
     let rows: Vec<Element<'_, Message, Theme>> = if policy.rules.is_empty() {
         vec![list_row(
-            "No window carries a policy-owned rule; every window is private and untrusted.",
+            "No window carries a policy-owned rule; every window is normal and untrusted.",
             value("0 rules"),
         )]
     } else {

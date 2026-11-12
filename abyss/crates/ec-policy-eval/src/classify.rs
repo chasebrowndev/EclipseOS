@@ -9,7 +9,7 @@
 //! ```text
 //! base  = public   if an owner `classify "public"` matcher hits
 //!       = default  otherwise (`defaults { sensitivity }`, private unless set)
-//! final = max(base, every `classify "private"/"secret"` matcher that hits,
+//! final = max(base, every `classify "normal"/"secret"` (`"private"` still parses) matcher that hits,
 //!             the caller's own raise)
 //! ```
 //!
@@ -20,7 +20,7 @@
 //! X11 windows are never `secret` (COMP-07 §2: the X server lets any X
 //! client read another's input and pixels, so a `secret` promise cannot be
 //! kept). A `secret` result for one is refused, reported, and the window
-//! stays `private`; callers keep X11 windows out of `secret`-only paths.
+//! stays `normal`; callers keep X11 windows out of `secret`-only paths.
 //!
 //! [`trust`] follows S-05 §6: owner `trust` rules only, `standard` by
 //! default, `untrusted` when the surface has no `app_id`, and any
@@ -60,7 +60,7 @@ pub struct TrustRule {
 /// The classification half of the table.
 #[derive(Debug, Clone)]
 pub struct Classifier {
-    /// `defaults { sensitivity }`: `private` or `secret`, never `public`.
+    /// `defaults { sensitivity }`: `normal` (formerly `private`) or `secret`, never `public`.
     pub default: Class,
     pub classify: Vec<ClassifyRule>,
     pub trust: Vec<TrustRule>,
@@ -69,7 +69,7 @@ pub struct Classifier {
 impl Default for Classifier {
     fn default() -> Self {
         Classifier {
-            default: Class::Private,
+            default: Class::Normal,
             classify: Vec::new(),
             trust: Vec::new(),
         }
@@ -126,7 +126,7 @@ pub fn classify(c: &Classifier, t: &TargetFacts<'_>, raise: Class) -> Classified
         .max(raise);
     if t.xwayland && raised == Class::Secret {
         return Classified {
-            class: Class::Private,
+            class: Class::Normal,
             x11_secret_refused: true,
         };
     }
@@ -161,7 +161,7 @@ mod tests {
 
     fn sample() -> Classifier {
         Classifier {
-            default: Class::Private,
+            default: Class::Normal,
             classify: vec![
                 rule(
                     Class::Secret,
@@ -205,7 +205,7 @@ mod tests {
     fn default_public_and_raises() {
         let c = sample();
         let at = |f| classify(&c, &f, Class::Public).class;
-        assert_eq!(at(facts("org.gnome.TextEditor", "notes", None)), Class::Private);
+        assert_eq!(at(facts("org.gnome.TextEditor", "notes", None)), Class::Normal);
         assert_eq!(
             at(facts(
                 "firefox",
@@ -246,7 +246,7 @@ mod tests {
         assert_eq!(
             classify(&c, &f, Class::Public),
             Classified {
-                class: Class::Private,
+                class: Class::Normal,
                 x11_secret_refused: true
             }
         );
@@ -288,7 +288,7 @@ mod tests {
                 Class::Public,
                 vec![Matcher::Url(vec![Glob::new("https://*.wikipedia.org/*")])],
             ),
-            rule(Class::Private, vec![Matcher::AppId(vec![Glob::new("firefox")])]),
+            rule(Class::Normal, vec![Matcher::AppId(vec![Glob::new("firefox")])]),
             rule(
                 Class::Secret,
                 vec![Matcher::Url(vec![Glob::new("https://bank.example/*")])],

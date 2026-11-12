@@ -2141,7 +2141,7 @@ mod tests {
             minimized,
             pid: None,
             program: None,
-            trust: crate::model::Trust::Private,
+            trust: crate::model::Trust::Normal,
         }
     }
 

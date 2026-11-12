@@ -215,7 +215,10 @@ fn demo_row(i: usize, selected: bool) -> Element<'static, Message> {
 fn subscription(demo: &Demo) -> Subscription<Message> {
     let keys = keyboard::listen().map(Message::Key);
     if demo.tour {
-        Subscription::batch([keys, iced::time::every(TOUR_TICK).map(Message::Tour)])
+        Subscription::batch([
+            keys,
+            ec_fog_widgets::tick::every(TOUR_TICK).map(Message::Tour),
+        ])
     } else {
         keys
     }

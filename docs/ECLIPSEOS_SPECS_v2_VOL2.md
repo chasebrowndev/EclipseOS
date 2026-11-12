@@ -281,7 +281,7 @@ Conflating them is the most common design error in systems like this.
 
 | Axis | Question | Direction of control | Lattice |
 |---|---|---|---|
-| **Sensitivity** | How bad is it if an agent (and therefore a model provider) sees this? | Controls **outflow**: reads, capture, clipboard, egress | `public` < `private` < `secret` |
+| **Sensitivity** | How bad is it if an agent (and therefore a model provider) sees this? | Controls **outflow**: reads, capture, clipboard, egress | `public` < `normal` < `secret` |
 | **App trust** | How much authority should content *originating* here carry? | Controls **inflow**: how much weight content has in a decision | `untrusted` < `standard` < `trusted` < `human` |
 
 A banking site is `secret` **and** `trusted`. A random forum is `public`
@@ -298,14 +298,14 @@ policy predicates (S-02 §3).
 | Class | Meaning | Compositor consequences |
 |---|---|---|
 | `public` | Content the owner would not mind an agent, a log, or a provider seeing. | Readable/capturable under ordinary `scene.*`/`capture.*` grants. Text logged in audit under normal elision rules. |
-| `private` | **Default.** Ordinary personal content: mail, documents, code, chat. | Same grants, but egress restricted to trusted endpoints (S-09 §5); capture of a whole output redacts nothing but records the region list; content appears in audit. |
+| `normal` | **Default.** Ordinary personal content: mail, documents, code, chat. | Same grants, but egress restricted to trusted endpoints (S-09 §5); capture of a whole output redacts nothing but records the region list; content appears in audit. |
 | `secret` | Credentials, authentication surfaces, anything the owner has marked. | Not delivered to any agent without a `*.secret` capability **and** a per-request prompt. Redacted from output capture. Text values replaced by `[secret:<len>]` in audit. Never reaches `registryd`. |
 
 `secret` is not a general "sensitive personal data" bucket. It is the class
 whose contents the TCB refuses to hand to an agent at all. Widening it to
 mean "confidential" would make it useless, because the owner would start
 granting `scene.tree.secret` routinely. Medical or financial *documents*
-are `private`; the login page for the portal is `secret`.
+are `normal`; the login page for the portal is `secret`.
 
 ---
 
@@ -318,10 +318,10 @@ monotone and rule order cannot introduce a downgrade bug.
 
 ```
 base   = public   if an owner `classify "public"` rule matches the target
-       = defaults.sensitivity (private) otherwise
+       = defaults.sensitivity (normal) otherwise
 
 final  = max( base,
-              owner classify "private"/"secret" rules that match,
+              owner classify "normal"/"secret" rules that match,
               role-derived (role=password → secret),
               app-declared raise (eclipse_semantic_v1, raise only),
               inherited from ancestor node,
@@ -371,7 +371,7 @@ browser's own chrome `secret`. The *window* class is the max over currently
   rectangles for any `secret` node inside a non-`secret` window
   (COMP-02 redaction path).
 
-A `secret` node inside a `private` window does **not** raise the window to
+A `secret` node inside a `normal` window does **not** raise the window to
 `secret` — that would make a single password field hide an entire IDE. It
 produces a redaction rectangle and a stubbed node.
 
@@ -385,7 +385,7 @@ hallucinate around invisible structure and makes debugging impossible.
 ## 5. Dynamic Reclassification and the Race
 
 Class is not static. A tab navigates. A title changes. A password dialog
-maps. A `secret` popup opens over a `private` window. The dangerous window
+maps. A `secret` popup opens over a `normal` window. The dangerous window
 is between "content becomes secret" and "the classifier knows".
 
 Rules:
@@ -455,7 +455,7 @@ pages are not.
 | Clipboard selection | Class of the source surface **at copy time**, sticky until replaced | Trust of source | `clipboard.read` on a `secret`-sourced selection needs `clipboard.read.secret` + prompt. Class travels with the selection, not with the reader. |
 | Channel message (F-02 §7.5) | `max` over its provenance chain | `min` over its chain | Computed by `agentd`; agents cannot set either. |
 | Agent scratch file | Class inherited from the highest-class read that the agent performed since process start (coarse, conservative) | — | Honest limit: this is a process-level watermark, not information-flow tracking. See S-07 §9. |
-| Notification content | `private` unless a rule matches the sending app | Trust of sending app | Agents need `scene.*` scoped to the notification surface to see it at all. |
+| Notification content | `normal` unless a rule matches the sending app | Trust of sending app | Agents need `scene.*` scoped to the notification surface to see it at all. |
 | Terminal **emulator** | Class of the terminal toplevel; a rule may raise on prompt-detected `ssh`/`sudo` context | Carries the app's trust — `trusted` if the terminal is | Typed-secret detection is out of scope; use S-08 injection instead. |
 | Terminal **line content** (`terminal_line` nodes) | Class of the enclosing toplevel | **`untrusted` by default**, regardless of the emulator's trust | Exception: a line the human typed at a prompt — OSC 133 `B`→`C` bracket **plus** human-seat input over that interval — carries a `Human` link (P-04 §6.2). Without this split, command output launders into trusted instructions: `curl evil.com \| cat` would print attacker text into a `trusted` buffer. |
 | File read through `fs.read` grant | Path-rule class (`classify` supports `path` matchers for this axis only) | `untrusted` for anything under `~/Downloads`, `/tmp`, agent scratch | Enforced by S-09 §5 grant-compatibility, not at read time. |
@@ -466,8 +466,8 @@ pages are not.
 
 | Situation | Result |
 |---|---|
-| Unknown `app_id`, no rule matches | `private` (default), `standard` |
-| Surface has no `app_id` at all | `private`, `untrusted` |
+| Unknown `app_id`, no rule matches | `normal` (default), `standard` |
+| Surface has no `app_id` at all | `normal`, `untrusted` |
 | Classify table failed to compile | Previous table stays live; compiler error surfaced in trusted UI; no reclassification occurs |
 | No table at all (cold start before `policyd` ready) | Every surface `secret`, every app `untrusted`, so agents can see nothing. Compositor runs; agents wait. (COMP-01 §6 degraded mode.) |
 | Class recompute panics | Treat as `secret` for that target, log, do not crash the compositor |
@@ -829,7 +829,7 @@ channels.** It is not: "we know what influenced this decision."
 Link {
   source:      Source
   trust:       untrusted | standard | trusted | human
-  sensitivity: public | private | secret
+  sensitivity: public | normal | secret
   ts:          u64 ns (mono) + u64 ns (realtime)
   stamper:     "abyss" | "agentd" | "policyd"
   principal:   string?          // agent that caused the read
@@ -1386,7 +1386,7 @@ flags grant combinations that pair broad read capability with broad egress:
 
 | Combination | Result |
 |---|---|
-| `scene.tree`/`scene.text`/`capture.*` over `private` targets **+** any `net.egress` host not marked `trusted_endpoint` in policy | **Rejected**. The agent must either read only `public`, or egress only to trusted endpoints. |
+| `scene.tree`/`scene.text`/`capture.*` over `normal` targets **+** any `net.egress` host not marked `trusted_endpoint` in policy | **Rejected**. The agent must either read only `public`, or egress only to trusted endpoints. |
 | `fs.read` on paths classified above `public` **+** untrusted egress | Rejected |
 | `secret.expose:*` **+** any egress | Warning, requires explicit owner acknowledgement in the prompt |
 | `channel.read:*` **+** untrusted egress | Warning (a channel may carry private-derived content) |
@@ -1415,7 +1415,7 @@ controls that actually apply:
 1. `secret`-class content never reaches an agent, so it never reaches a
    provider. This is the hard boundary and it is enforced in the
    compositor, not the network.
-2. `private`-class content reaches only `trusted_endpoint` hosts (§4b).
+2. `normal`-class content reaches only `trusted_endpoint` hosts (§4b).
 3. Content the owner wants kept local is handled by routing (I-02): a
    `local_only` grant constraint forces the router to the local model and
    the agent's egress allowlist then contains no provider host at all.
@@ -1615,7 +1615,7 @@ DE switcher, overview and hover-preview thumbnails *(added C-24, 2026-11-05)*,
 lockscreen preview) × each condition:
 
 scale 1.0 / 1.25 / 2.0 · each output transform · popup over parent ·
-`secret` node inside `private` window · `secret` surface occluded by a
+`secret` node inside `normal` window · `secret` surface occluded by a
 benign one · XWayland surface · client holding direct scanout · stale
 semantic tree (must fall back to whole-surface redaction, A-10) · surface
 raised to `secret` mid-capture (must yield `class_changed`).
@@ -3111,7 +3111,7 @@ Every result that carries desktop content is wrapped:
 {
   "content": "...",
   "provenance": { "ref": "p:9c2e", "min_trust": "untrusted",
-                  "max_sensitivity": "private", "head": "url:forum.example.com" },
+                  "max_sensitivity": "normal", "head": "url:forum.example.com" },
   "revision": "r:41",
   "truncated": false
 }
@@ -4618,7 +4618,7 @@ and the agent must re-observe before acting.
 
 **Retention.** Session records follow transcript retention (§11), and the
 console's History has a per-session **Delete**. The record holds whatever the
-agent perceived at `private` class or below. `secret` content never reaches an
+agent perceived at `normal` class or below. `secret` content never reaches an
 agent (S-05 §2), so it never reaches the record.
 
 ---
@@ -5315,7 +5315,7 @@ Extend the `defaults` block:
 
 ```kdl
 defaults {
-  sensitivity "private"
+  sensitivity "normal"
   app_trust "standard"
   prompt_timeout 120s
   defer_timeout 500ms

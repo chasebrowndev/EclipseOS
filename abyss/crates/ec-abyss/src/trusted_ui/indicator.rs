@@ -4,7 +4,7 @@
 //!
 //! While an agent holds a compat lock (COMP-04 §8) the locked toplevel gets a
 //! thin outline in the agent's colour, and every output shows a pill in its
-//! top-right corner, under the capture marker: a lock in the agent's colour,
+//! top-right corner: a lock in the agent's colour,
 //! the agent, the seconds left, and how many of the human's inputs are being
 //! held, so it is plain why typing "isn't working".
 //!
@@ -13,7 +13,8 @@
 //! nothing (§2). It costs nothing at idle: the tick runs only while a lock
 //! exists.
 //!
-//! A left press on the capture marker or on a lock pill opens the panel. It
+//! A left press on a lock pill opens the panel (the capture eye is not a
+//! target: a click on it goes to the launcher beneath). It
 //! pauses nothing; only the override chord does (§3.3). A pointer button
 //! pressed there is the compositor's, press and release, and reaches no
 //! client. Touch and tablet contacts are not intercepted yet (KNOWNBUGS
@@ -44,7 +45,7 @@ const TICK: Duration = Duration::from_millis(50);
 const RIM: i32 = 2;
 const PILL_H: i32 = 28;
 const PILL_GAP: i32 = 6;
-/// Below the capture marker (8 px from the top, 8 tall).
+/// From the top of the output.
 const TOP: i32 = 24;
 const EDGE_GAP: i32 = 8;
 const PAD: i32 = 12;
@@ -52,8 +53,6 @@ const ICON_W: i32 = 12;
 const ICON_GAP: i32 = 8;
 /// The longest agent name drawn, in glyphs.
 const NAME: usize = 24;
-/// Extra reach around the capture marker: 8 px tall is a thin target.
-const SLOP: i32 = 6;
 
 /// §8.3: the agent's colour is a deterministic hash of its id into a
 /// colourblind-safe palette (Okabe–Ito, without black and the yellow that
@@ -99,6 +98,8 @@ pub struct Marks {
 /// Re-read the locks; damage if what is drawn changed. Every backend calls
 /// it each frame, and it ticks itself while a lock exists.
 pub fn tick(state: &mut AbyssState) {
+    // The capture eye's pupil moves; wake the loop for it (a no-op when dark).
+    crate::backend::eye_kick(state);
     let marks = &state.trusted_ui.marks;
     if marks.shown.is_empty() && state.agents.locks.active().next().is_none() {
         return;
@@ -286,12 +287,11 @@ pub(super) fn elements(
     out
 }
 
-/// Whether `p` (global logical) is on the capture marker while it is lit, or
-/// on a lock pill.
+/// Whether `p` (global logical) is on a lock pill. The capture eye is not a
+/// target: a click on it goes to the launcher beneath.
 pub fn at(state: &AbyssState, p: Point<f64, Logical>) -> bool {
-    let capture = state.capture_active();
     let marks = &state.trusted_ui.marks;
-    if !capture && marks.shown.is_empty() {
+    if marks.shown.is_empty() {
         return false;
     }
     let hit = |r: Rectangle<i32, Logical>| {
@@ -302,20 +302,12 @@ pub fn at(state: &AbyssState, p: Point<f64, Logical>) -> bool {
         let Some(geo) = state.space.output_geometry(out) else {
             return false;
         };
-        let on_capture = capture
-            && crate::render::capture::indicator_rect(out).is_some_and(|r| {
-                hit(Rectangle::new(
-                    geo.loc + r.loc - Point::from((SLOP, SLOP)),
-                    r.size + Size::from((2 * SLOP, 2 * SLOP)),
-                ))
-            });
-        on_capture
-            || super::logical_size(out).is_some_and(|logical| {
-                marks.shown.iter().enumerate().any(|(i, s)| {
-                    let r = pill_rect(s, i, logical);
-                    hit(Rectangle::new(geo.loc + r.loc, r.size))
-                })
+        super::logical_size(out).is_some_and(|logical| {
+            marks.shown.iter().enumerate().any(|(i, s)| {
+                let r = pill_rect(s, i, logical);
+                hit(Rectangle::new(geo.loc + r.loc, r.size))
             })
+        })
     })
 }
 
@@ -384,44 +376,33 @@ mod tests {
         }
     }
 
-    /// §3.3: clicking the capture marker opens the emergency panel, the
-    /// press reaches no client, and a dark marker is no target at all.
+    /// The capture eye is not a click target: the press reaches the launcher
+    /// beneath it, and the panel opens only on the override chord (§3.3).
     #[test]
-    fn clicking_the_capture_marker_opens_the_panel() {
+    fn clicking_the_capture_eye_goes_through() {
         use smithay::backend::input::ButtonState;
         let mut h = crate::shell::focus::state_tests::harness();
         let s = &mut h.state;
         let out = s.space.outputs().next().unwrap().clone();
         let geo = s.space.output_geometry(&out).unwrap();
-        let r = crate::render::capture::indicator_rect(&out).unwrap();
-        s.pointer_location = (geo.loc + r.loc + Point::from((r.size.w / 2, r.size.h / 2))).to_f64();
-
-        assert!(!at(s, s.pointer_location), "not lit, not a target");
+        s.capture_seen = Some(Instant::now());
+        let eye = ec_abyss_render::capture_eye::centre(
+            geo.size.to_f64(),
+            false,
+            f64::from(s.config.general.gaps_out),
+            f64::from(s.config.general.gaps_out_y()),
+        );
+        s.pointer_location = geo.loc.to_f64() + eye.to_f64();
+        assert!(!at(s, s.pointer_location), "lit, still not a target");
         s.pointer_button(0x110, ButtonState::Pressed, 0);
         assert!(!s.trusted_ui.is_open());
+        assert_eq!(s.trusted_ui.marks.pressed, 0, "the press is not swallowed");
         s.pointer_button(0x110, ButtonState::Released, 0);
-
-        s.capture_seen = Some(Instant::now());
-        assert!(at(s, s.pointer_location));
-        s.pointer_button(0x111, ButtonState::Pressed, 0);
-        assert!(!s.trusted_ui.is_open(), "only the left button opens it");
-        assert_ne!(s.trusted_ui.marks.pressed, 0);
-        s.pointer_location = (0.0, 500.0).into();
-        s.pointer_button(0x111, ButtonState::Released, 0);
-        assert_eq!(
-            s.trusted_ui.marks.pressed, 0,
-            "its release is swallowed, off the marker too"
-        );
-        s.pointer_location = (geo.loc + r.loc + Point::from((r.size.w / 2, r.size.h / 2))).to_f64();
-        s.pointer_button(0x110, ButtonState::Pressed, 0);
-        assert!(s.trusted_ui.is_open(), "the panel is up");
-        assert!(super::super::panel::owns(s, s.trusted_ui.token().unwrap()));
     }
 
-    /// On a rotated output the marker and the pills stay in its top-right
-    /// corner, the pills under the marker.
+    /// On a rotated output the pills stay in its top-right corner.
     #[test]
-    fn a_rotated_output_keeps_both_in_its_corner() {
+    fn a_rotated_output_keeps_the_pills_in_its_corner() {
         use smithay::output::{Mode, PhysicalProperties, Subpixel};
         use smithay::utils::Transform;
         let o = Output::new(
@@ -439,8 +420,6 @@ mod tests {
         };
         o.change_current_state(Some(mode), Some(Transform::_90), None, None);
         let logical = super::super::logical_size(&o).unwrap();
-        let m = crate::render::capture::indicator_rect(&o).unwrap();
-        assert!(m.loc.x + m.size.w <= logical.w, "the marker is on screen");
         let s = Shown {
             agent: 1,
             name: "agent:a".into(),
@@ -449,8 +428,12 @@ mod tests {
             held: 0,
         };
         let p = pill_rect(&s, 0, logical);
-        assert!(p.loc.y >= m.loc.y + m.size.h);
-        assert_eq!(p.loc.x + p.size.w, m.loc.x + m.size.w, "right edges align");
+        assert!(p.loc.y >= TOP);
+        assert_eq!(
+            p.loc.x + p.size.w,
+            logical.w - EDGE_GAP,
+            "right edge in the corner"
+        );
     }
 
     #[test]

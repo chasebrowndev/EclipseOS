@@ -306,15 +306,29 @@ impl Default for LauncherBinds {
 
 /// `ui { … }`: preferences every DE pane shares. Stored only; each pane
 /// reads them over `get_config`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Ui {
     /// Show the keyboard hint line in the launcher and the start menu.
     pub show_key_hints: bool,
+    /// What toasts do while a screen is shared (ADR 0106); the compositor
+    /// reads it for capture redaction, ec-toasts for hold and history.
+    pub capture_toasts: crate::CaptureToasts,
+    /// The pupil of the capture indicator eye (COMP-10 §3.6). Alpha is
+    /// always 1.0: a translucent indicator could be hidden behind a window's
+    /// own glass, so [`Config::apply_ui`] forces it opaque.
+    pub capture_indicator_color: [f32; 4],
 }
+
+/// `#ff2626`: the red the capture indicator has always been.
+pub const CAPTURE_INDICATOR_COLOR: [f32; 4] = [1.0, 0.15, 0.15, 1.0];
 
 impl Default for Ui {
     fn default() -> Self {
-        Self { show_key_hints: true }
+        Self {
+            show_key_hints: true,
+            capture_toasts: crate::CaptureToasts::Redact,
+            capture_indicator_color: CAPTURE_INDICATOR_COLOR,
+        }
     }
 }
 

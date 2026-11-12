@@ -138,37 +138,10 @@ fn claimed(path: &str) -> bool {
 
 /// A key as a person reads it on this pane.
 fn label(key: &Key) -> std::borrow::Cow<'_, str> {
-    std::borrow::Cow::Borrowed(match key.path.as_str() {
-        "components.bar" => "Show the bar",
-        "bar.position" => "Position",
-        "bar.rounding" => "Corner radius",
-        WIDGET_ROUNDING => "Corner radius",
-        "bar.popup-anchor" => "Popups open",
-        "bar.fold-when-inactive" => "Fold when inactive",
-        "bar.fold-when-idle" => "Fold when idle",
-        "bar.idle-seconds" => "Idle after, s",
-        "bar.fold-height" => "Folded height",
-        "bar.fold-duration-ms" => "Fold duration, ms",
-        "bar.fold-curve" => "Fold curve",
-        "bar.widgets.now-playing.art" => "Album art",
-        "bar.widgets.now-playing.visualizer" => "Visualizer",
-        REMOTE_ART => "Fetch remote art",
-        "bar.widgets.system-usage.interval-ms" => "Refresh, ms",
-        "bar.widgets.system-usage.gpu" => "GPU meter",
-        "bar.widgets.system-usage.disk" => "Disk meter",
-        "bar.widgets.system-usage.disk-path" => "Disk to measure",
-        "bar.widgets.volume.step" => "Step, %",
-        "bar.widgets.volume.scroll" => "Scroll to adjust",
-        "bar.widgets.volume.max-percent" => "Loudest, %",
-        "bar.clock.hour-12" => "12-hour time",
-        "bar.clock.date-mdy" => "Month / day / year",
-        "bar.clock.week-start" => "Week starts on",
-        "bar.clock.week-numbers" => "Week numbers",
-        MOTION_ENABLED => "Animate",
-        MOTION_DURATION => "Duration, ms",
-        MOTION_CURVE => "Curve",
-        _ => return key.label(),
-    })
+    match ec_abyss_config::meta::get(&key.path) {
+        Some(m) => std::borrow::Cow::Borrowed(m.pane_label()),
+        None => key.label(),
+    }
 }
 
 /// One line under a widget's rows: what it does, or what it reads.

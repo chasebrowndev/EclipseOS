@@ -183,6 +183,10 @@ target instead. Everything else is spawned by name, so `PATH` must carry it:
 `/usr/bin` packaged, `target/debug` under `packaging/abyss-dev-session`. Default
 binds: `abyss/crates/ec-abyss-config/src/lib.rs`. `.desktop` files: `packaging/applications/`.
 
+*(amended ADR 0104, 2026-11-12: abyss draws the wallpaper from the same `wallpaper`
+node; `ec-wallpaper.service` is no longer wanted by `abyss-session.target`, and the
+client stays packaged for other hosts.)*
+
 **Wallpaper** is a core component (ADR 0068), not yet written:
 `ec-wallpaper`, a layer-shell client on `Background`, one surface per
 output, started by `ec-wallpaper.service`

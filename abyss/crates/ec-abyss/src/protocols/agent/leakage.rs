@@ -55,12 +55,12 @@ const HIT: u32 = 200;
 /// - `fsec` floats over `pubA`'s centre, `fnag` over `privA`'s.
 const WINDOWS: &[(&str, Option<Class>)] = &[
     ("pubA", Some(Class::Public)),
-    ("privA", Some(Class::Private)),
+    ("privA", Some(Class::Normal)),
     ("secA", Some(Class::Secret)),
     ("unsetA", None),
     ("nagA", Some(Class::Public)),
     ("pubW2", Some(Class::Public)),
-    ("privW2", Some(Class::Private)),
+    ("privW2", Some(Class::Normal)),
     ("fsec", Some(Class::Secret)),
     ("fnag", Some(Class::Public)),
     ("pubB", Some(Class::Public)),
@@ -375,7 +375,7 @@ fn wire_class(name: &str) -> u32 {
     match WINDOWS.iter().find(|(n, _)| *n == name).and_then(|(_, c)| *c) {
         Some(Class::Public) => 0,
         // S-05 §8: no matching rule is `private`, the default.
-        Some(Class::Private) | None => 1,
+        Some(Class::Normal) | None => 1,
         Some(Class::Secret) => 2,
     }
 }
@@ -1233,7 +1233,7 @@ fn a_flickering_title_never_leaks_and_downgrades_only_after_the_grace() {
     // Back to the world's own title, which the listing oracle expects.
     set_title(&mut w, &title("unsetA"));
     let _ = read(&mut w, p, SEEABLE, "after the grace");
-    assert_eq!(crate::policy::scene::class_of(&w.h.state, &unset), Class::Private);
+    assert_eq!(crate::policy::scene::class_of(&w.h.state, &unset), Class::Normal);
 }
 
 /// KNOWNBUGS SEAT-01, COMP-04 §7, COMP-08 §10 step 4: an agent's `wl_seat`

@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Install to: /usr/share/libalpm/hooks/eclipseos-abyss-keep.hook
+#
+# ADR 0101: before any upgrade replaces /usr/bin/ec-abyss, keep the running
+# build as the "Abyss (previous)" fallback. A hook, not a step in
+# ec-update-apply, so a hand-typed `pacman -Syu` is covered too and the
+# privileged helper of ADR 0085 does not widen. AbortOnFail: no fallback copy,
+# no upgrade. Owner override: `sudo EC_ABYSS_KEEP=skip pacman -Syu`.
+[Trigger]
+Operation = Upgrade
+Type = Path
+Target = usr/bin/ec-abyss
+
+[Action]
+Description = Keeping the running Abyss as the fallback session...
+When = PreTransaction
+Exec = /usr/lib/eclipse/ec-abyss-keep
+AbortOnFail

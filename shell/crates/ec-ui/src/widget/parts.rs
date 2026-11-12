@@ -3485,6 +3485,97 @@ pub fn prompt_cell<'a, Message: 'a>(
         .style(glass_ground(theme::CellTone::Plain, radius::INSET))
 }
 
+/// What a [`secret_field`]'s ground says about the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldState {
+    /// Keys land here: the focused cell, a brighter fill and a crisp rim.
+    Taking,
+    /// The last try was refused and keys still land here: the focused fill
+    /// with a [`crate::tokens::lock::FAIL_RIM`] danger rim. An edge, never a
+    /// glow.
+    Refused,
+    /// Nothing typed now reaches the field (it is being checked, or done):
+    /// the resting cell.
+    Resting,
+}
+
+/// A password field that holds no text: [`prompt_cell`]'s shape, with a
+/// ground that follows [`FieldState`].
+///
+/// A widget, not a styled [`prompt_cell`], because the field is focus made
+/// visible without a `text_input` (a locker reads keys itself, so no widget
+/// ever holds the secret) — and "brighter fill plus crisp rim" for focus,
+/// danger rim for refusal, has to be one rule, not one per app.
+/// `body` is what the field shows: a [`dot_run`], a placeholder, a reading.
+pub fn secret_field<'a, Message: 'a>(
+    state: FieldState,
+    marker: &str,
+    body: impl Into<Element<'a, Message, Theme>>,
+    trailing: Option<Element<'a, Message, Theme>>,
+) -> container::Container<'a, Message, Theme> {
+    let ground = move |t: &Theme| match state {
+        FieldState::Resting => glass_ground(theme::CellTone::Plain, radius::INSET)(t),
+        FieldState::Taking => glass_ground(theme::CellTone::Focused, radius::INSET)(t),
+        FieldState::Refused => {
+            let mut s = glass_ground(theme::CellTone::Focused, radius::INSET)(t);
+            s.border.color = color::danger().scale_alpha(crate::tokens::lock::FAIL_RIM);
+            s
+        }
+    };
+    prompt_cell(marker, body, trailing).style(ground)
+}
+
+/// A secret's length as a run of discs, then a still caret: the only thing a
+/// password field may show.
+///
+/// A widget, not `"•".repeat(n)`, because a bullet glyph's weight and advance
+/// belong to the font and its run to text shaping, while these are quads,
+/// anti-aliased like every other mark, at a size the field is drawn for. The
+/// run saturates at [`crate::tokens::lock::DOTS_MAX`] so a long password never
+/// reflows the field; past that the count is not shown. `count == 0` is the
+/// caret alone. `ink` is the caller's: the live yellow while typing.
+pub fn dot_run<'a, Message: 'a>(count: usize, ink: Color) -> Element<'a, Message, Theme> {
+    use crate::tokens::lock;
+    let mut r = Row::new().spacing(lock::DOT_GAP).align_y(Alignment::Center);
+    for _ in 0..count.min(lock::DOTS_MAX) {
+        r = r.push(quad(
+            Length::Fixed(lock::DOT),
+            Length::Fixed(lock::DOT),
+            ink,
+            radius::PILL,
+        ));
+    }
+    r.push(edge_quad(
+        Length::Fixed(lock::CARET_W),
+        Length::Fixed(lock::CARET_H),
+        ink,
+    ))
+    .into()
+}
+
+/// An account's mark: its initial in a glass disc.
+///
+/// A widget because the desktop loads no account pictures — an initial is
+/// what stands in, and wherever an account is named (the lock screen, an
+/// accounts list) it should be the same disc. Never accented: a name is not
+/// state.
+pub fn avatar<'a, Message: 'a>(name: &str, side: f32) -> Element<'a, Message, Theme> {
+    let initial: String = name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    container(
+        text(initial)
+            .font(font::UI_MEDIUM)
+            .size(size::PROMPT)
+            .style(theme::text_secondary),
+    )
+    .center(Length::Fixed(side))
+    .style(glass_ground(theme::CellTone::Plain, radius::PILL))
+    .into()
+}
+
 /// A key and what it does: `esc close`, with the key in a small glass cap.
 ///
 /// A widget because a hint line is a sentence of alternating keys and verbs,
@@ -4475,6 +4566,10 @@ impl<Message> iced::widget::canvas::Program<Message> for ShapedSheet {
     }
 }
 
+/// How close the panel's far edge may sit to the pill's end and still count
+/// as flush with it (sub-pixel layout rounding).
+const FLUSH_EPS: f32 = 0.5;
+
 /// [`shaped_sheet`]'s outline in a `w`×`h` box. With no room below the pill
 /// it is the pill alone.
 pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas::Path {
@@ -4518,6 +4613,12 @@ pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas:
         // in while it is still opening; the fillet takes what they leave.
         let rb = radius.min(panel_w / 2.0).min(drop).max(0.0);
         let kf = fillet.min(drop - rb).min(w - panel_r - rp).max(0.0);
+        // Flush with the pill's end, the panel's side is the pill's side: the
+        // pill's corner is the panel's corner, so the edge runs straight down
+        // from the pill's radius to the panel's. Arcing the pill's corner
+        // there would double back to (w, pill_h) and leave a notch the blur
+        // mask (a union, no notch) fills.
+        let flush = panel_r >= w - FLUSH_EPS;
         if panel_x <= 0.5 {
             // The panel is the one box at the top-left corner, so its radius —
             // clamped to its own size, as the mask clamps it — is the corner's.
@@ -4526,10 +4627,12 @@ pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas:
             b.line_to(at(w - rp, 0.0));
             b.arc_to(at(w, 0.0), at(w, rp), rp);
             b.line_to(at(w, pill_h - rp));
-            b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
-            b.line_to(at(panel_w + kf, pill_h));
-            if kf > 0.0 {
-                b.quadratic_curve_to(at(panel_w, pill_h), at(panel_w, pill_h + kf));
+            if !flush {
+                b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
+                b.line_to(at(panel_w + kf, pill_h));
+                if kf > 0.0 {
+                    b.quadratic_curve_to(at(panel_w, pill_h), at(panel_w, pill_h + kf));
+                }
             }
             b.line_to(at(panel_w, h - rb));
             b.arc_to(at(panel_w, h), at(panel_w - rb, h), rb);
@@ -4543,10 +4646,12 @@ pub fn sheet_outline(shape: SheetShape, w: f32, h: f32) -> iced::widget::canvas:
             b.line_to(at(w - rp, 0.0));
             b.arc_to(at(w, 0.0), at(w, rp), rp);
             b.line_to(at(w, pill_h - rp));
-            b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
-            b.line_to(at(panel_r + kf, pill_h));
-            if kf > 0.0 {
-                b.quadratic_curve_to(at(panel_r, pill_h), at(panel_r, pill_h + kf));
+            if !flush {
+                b.arc_to(at(w, pill_h), at(w - rp, pill_h), rp);
+                b.line_to(at(panel_r + kf, pill_h));
+                if kf > 0.0 {
+                    b.quadratic_curve_to(at(panel_r, pill_h), at(panel_r, pill_h + kf));
+                }
             }
             b.line_to(at(panel_r, h - rb));
             b.arc_to(at(panel_r, h), at(panel_r - rb, h), rb);
@@ -5106,4 +5211,61 @@ pub fn icon_chip<'a, Message: Clone + 'a>(
         .on_press(on_press)
         .style(theme::chip(selected))
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The outline's vertices (each segment's end point), in path order.
+    fn vertices(shape: SheetShape, w: f32, h: f32) -> Vec<(f32, f32)> {
+        sheet_outline(shape, w, h)
+            .raw()
+            .iter()
+            .map(|ev| {
+                let p = ev.to();
+                (p.x, p.y)
+            })
+            .collect()
+    }
+
+    fn at(pts: &[(f32, f32)], x: f32, y: f32) -> bool {
+        pts.iter()
+            .any(|&(px, py)| (px - x).abs() < 0.01 && (py - y).abs() < 0.01)
+    }
+
+    #[test]
+    fn a_panel_flush_with_the_pill_end_has_no_notch_at_the_pill_corner() {
+        let (w, h, pill_h, r) = (400.0, 120.0, 40.0, 12.0);
+        let shape = SheetShape {
+            pill_h,
+            panel_x: 300.0,
+            panel_w: 100.0,
+            radius: r,
+            fillet: r,
+            edge: SheetEdge::Top,
+        };
+        let pts = vertices(shape, w, h);
+        // The pill's corner would double back to (w, pill_h); the straight
+        // edge runs from the pill's radius down to the panel's corner.
+        assert!(!at(&pts, w, pill_h), "notch at the pill corner: {pts:?}");
+        assert!(at(&pts, w, pill_h - r), "missing the pill's straight edge");
+        assert!(at(&pts, w, h - r), "missing the panel's corner");
+    }
+
+    #[test]
+    fn a_panel_short_of_the_pill_end_keeps_the_pill_corner_arc() {
+        let (w, h, pill_h, r) = (400.0, 120.0, 40.0, 12.0);
+        let shape = SheetShape {
+            pill_h,
+            panel_x: 200.0,
+            panel_w: 100.0,
+            radius: r,
+            fillet: r,
+            edge: SheetEdge::Top,
+        };
+        let pts = vertices(shape, w, h);
+        // The arc ends on the pill's bottom edge, short of the bar's end.
+        assert!(at(&pts, w - r, pill_h), "pill corner arc lost: {pts:?}");
+    }
 }

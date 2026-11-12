@@ -1388,6 +1388,12 @@ pub(crate) mod state_tests {
 
         impl Client {
             pub fn connect(h: &mut Harness) -> Self {
+                // The input method is admission-gated (ADR 0094); this
+                // in-process client is the test binary, so admit it.
+                let me = std::env::current_exe().expect("current exe");
+                h.state
+                    .input_method_allow
+                    .set(vec![me.to_string_lossy().into_owned()]);
                 let (server, client) = UnixStream::pair().expect("socket pair");
                 h.state
                     .display_handle

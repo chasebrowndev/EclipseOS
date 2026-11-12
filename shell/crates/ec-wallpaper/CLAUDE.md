@@ -3,6 +3,10 @@
 Read the root `CLAUDE.md` first. Its own crate and package (ADR 0052); never
 depend on `hyperion`.
 
+Under abyss the compositor draws the wallpaper itself (ADR 0104) and the session
+no longer starts this client; it stays for other compositors. A running copy
+still draws over abyss's picture.
+
 - **Not TCB.** An ordinary layer-shell client on `Layer::Background`, one
   surface per output, following hyperion's per-output daemon pattern
   (`app::reconcile`). It holds no capability and grants none.

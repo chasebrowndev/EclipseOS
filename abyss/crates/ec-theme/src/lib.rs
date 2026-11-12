@@ -13,6 +13,8 @@
 //! dark ones are STYLE.md's sRGB intent brought back to linear (see `tokens.rs`
 //! history); they are not the CSS figures in STYLE.md.
 
+pub mod bar_mark;
+
 use std::fmt;
 
 /// Straight sRGB, each channel `0..=1`: `[r, g, b, a]`.

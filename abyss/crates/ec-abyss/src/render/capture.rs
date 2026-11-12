@@ -326,7 +326,6 @@ pub fn capture_elements(
     still: &mut crate::render::still::Still,
     output: &Output,
 ) -> (Vec<AbyssRenderElement>, Vec<Redacted>) {
-    let scale = Scale::from(output.current_scale().fractional_scale());
     let output_geo = state.space.output_geometry(output).unwrap_or_default();
     let output_loc = output_geo.loc;
     let mut elements: Vec<AbyssRenderElement> = Vec::new();
@@ -340,7 +339,6 @@ pub fn capture_elements(
         &mut fx,
         output,
         [Layer::Overlay, Layer::Top],
-        scale,
         &mut elements,
         &mut redacted,
     );
@@ -362,7 +360,7 @@ pub fn capture_elements(
                     rects: vec![cover],
                     reason,
                 });
-                elements.extend(placeholders(&[cover], output_loc, scale));
+                fx.redaction(renderer, &[cover], output_loc, &mut elements);
                 continue;
             }
             Classified::Nodes {
@@ -372,7 +370,7 @@ pub fn capture_elements(
             } => {
                 // Pushed before the surface's own elements: the list is
                 // front-to-back, so the placeholders occlude the nodes they cover.
-                elements.extend(placeholders(&rects, output_loc, scale));
+                fx.redaction(renderer, &rects, output_loc, &mut elements);
                 redacted.push(Redacted {
                     app_id,
                     rects,
@@ -394,10 +392,13 @@ pub fn capture_elements(
         &mut fx,
         output,
         [Layer::Bottom, Layer::Background],
-        scale,
         &mut elements,
         &mut redacted,
     );
+    // The compositor wallpaper, bottom-most: `public` chrome, no client behind it.
+    elements.extend(crate::outputs::wallpaper::capture_element(
+        state, renderer, output, scale,
+    ));
 
     fx.finish(renderer, &mut elements);
     (elements, redacted)
@@ -519,7 +520,6 @@ fn layer_elements(
     fx: &mut crate::render::still::Frame<'_>,
     output: &Output,
     which: [Layer; 2],
-    scale: Scale<f64>,
     elements: &mut Vec<AbyssRenderElement>,
     redacted: &mut Vec<Redacted>,
 ) {
@@ -545,7 +545,12 @@ fn layer_elements(
                 NodeVerdict::WholeSurface(reason) => Some(reason),
                 _ => None,
             };
-            let in_set = state.sensitive.contains(wl);
+            // ADR 0106: a toast can carry a message preview. Unless the owner chose
+            // `show`, the stack is covered in every capture; `hold` and `history`
+            // cover it too, for a toast already up when a share starts.
+            let toast = surface.namespace() == TOASTS_NAMESPACE
+                && state.config.ui.capture_toasts != ec_abyss_config::CaptureToasts::Show;
+            let in_set = state.sensitive.contains(wl) || toast;
             if is_sensitive(in_set, None, &state.config.capture.redact_app_id, whole.is_some()) {
                 let reason = if in_set {
                     RedactReason::Surface
@@ -557,7 +562,7 @@ fn layer_elements(
                     rects: vec![geo],
                     reason,
                 });
-                elements.extend(placeholders(&[geo], Point::default(), scale));
+                fx.redaction(renderer, &[geo], Point::default(), elements);
                 continue;
             }
             if let NodeVerdict::Nodes(local) = verdict {
@@ -567,7 +572,7 @@ fn layer_elements(
                     rects: rects.clone(),
                     reason,
                 });
-                elements.extend(placeholders(&rects, Point::default(), scale));
+                fx.redaction(renderer, &rects, Point::default(), elements);
                 if reason == RedactReason::NodesOutOfBounds {
                     continue;
                 }
@@ -576,6 +581,9 @@ fn layer_elements(
         }
     }
 }
+
+/// The layer-shell namespace of the notification stack (`ec-toasts`).
+const TOASTS_NAMESPACE: &str = "ec-toasts";
 
 /// The largest layer surface `capture.hide-layer` may omit, per side, in
 /// logical px (ADR 0056). A surface that can hide from every capture could
@@ -629,70 +637,63 @@ pub fn hide_layer(
         && entries.iter().any(|(e, ns)| e == exe && ns == namespace)
 }
 
-/// One opaque quad per redaction rectangle, front-to-back order preserved.
-fn placeholders(
-    rects: &[Rectangle<i32, Logical>],
-    output_loc: Point<i32, Logical>,
-    scale: Scale<f64>,
-) -> Vec<AbyssRenderElement> {
-    rects
-        .iter()
-        .map(|geo| {
-            let buffer = SolidColorBuffer::new(geo.size, PLACEHOLDER);
-            AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
-                &buffer,
-                phys(geo.loc - output_loc, scale),
-                scale,
-                1.0,
-                Kind::Unspecified,
-            ))
-        })
-        .collect()
-}
-
 /// How long after the last captured frame the indicator stays lit. Capture
 /// clients pull frames continuously; this only has to outlast one frame
 /// interval so the indicator does not flicker.
 pub const INDICATOR_LINGER: std::time::Duration = std::time::Duration::from_secs(2);
 
-/// The compositor-drawn capture indicator (COMP-10 §3.6): a solid marker in
-/// the top-right corner of every output, persistent for as long as capture is
-/// happening. It is trusted UI, so it is drawn only by the backends into the
-/// on-screen frame — never by [`capture_elements`], which is why a capture
-/// client cannot see, capture or spoof it.
-pub fn indicator(output: &Output, active: bool) -> Vec<AbyssRenderElement> {
-    if !active {
-        return Vec::new();
-    }
-    let Some(rect) = indicator_rect(output) else {
+/// The compositor-drawn capture indicator (COMP-10 §3.6): the taskbar's
+/// eclipse eye with a red (configurable) moving pupil, on every output,
+/// over the spot where the bar draws its launcher ring, bar running or not,
+/// for as long as capture is happening. It is trusted UI, so it is drawn only
+/// by the backends into the on-screen frame — never by [`capture_elements`],
+/// which is why a capture client cannot see, capture or spoof it.
+///
+/// The eye is opaque and over the bar's own layer surfaces; a click on it
+/// goes to the launcher beneath (the emergency panel opens on the override
+/// chord, §3.3). `eye` keeps the textures and the clock: the pupil is a pure
+/// function of the time since the indicator lit, and `backend::eye_kick`
+/// wakes the loop only while it moves.
+pub fn indicator(
+    renderer: &mut GlesRenderer,
+    eye: &mut ec_abyss_render::capture_eye::EyeState,
+    config: &ec_abyss_config::Config,
+    seeds: &ec_theme::Seeds,
+    output: &Output,
+    active: bool,
+) -> Vec<AbyssRenderElement> {
+    use ec_abyss_render::capture_eye as ce;
+    let Some(since) = eye.since(active, std::time::Instant::now()) else {
         return Vec::new();
     };
-    let scale = Scale::from(output.current_scale().fractional_scale());
-    let (loc, size) = (rect.loc, rect.size);
-    let buffer = SolidColorBuffer::new(size, [1.0, 0.15, 0.15, 1.0]);
-    vec![AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
-        &buffer,
-        phys(loc, scale),
-        scale,
-        1.0,
-        Kind::Unspecified,
-    ))]
-}
-
-/// Where [`indicator`] draws, output-local: the click that opens the
-/// emergency panel (COMP-10 §3.3) hits exactly what is drawn. The size is
-/// the transformed one, so a rotated output still has it in its corner.
-pub fn indicator_rect(output: &Output) -> Option<Rectangle<i32, Logical>> {
-    let mode = output.current_mode()?;
-    let scale = Scale::from(output.current_scale().fractional_scale());
-    let logical: smithay::utils::Size<i32, Logical> = output
+    let Some(mode) = output.current_mode() else {
+        return Vec::new();
+    };
+    let fractional = output.current_scale().fractional_scale();
+    let logical = output
         .current_transform()
         .transform_size(mode.size)
         .to_f64()
-        .to_logical(scale)
-        .to_i32_round();
-    let size: smithay::utils::Size<i32, Logical> = (48, 8).into();
-    Some(Rectangle::new((logical.w - size.w - 8, 8).into(), size))
+        .to_logical(Scale::from(fractional));
+    let bottom = config.bar.position == ec_abyss_config::BarPosition::Bottom;
+    let centre = ce::centre(
+        logical,
+        bottom,
+        f64::from(config.general.gaps_out),
+        f64::from(config.general.gaps_out_y()),
+    );
+    let colours = ce::Colours::from_palette(&ec_theme::derive(seeds), config.ui.capture_indicator_color);
+    let mut out = Vec::with_capacity(2);
+    ce::elements(
+        &mut eye.textures,
+        renderer,
+        centre,
+        fractional,
+        colours,
+        ce::pupil(since),
+        &mut out,
+    );
+    out
 }
 
 /// Service every queued capture. Called once per composite, from the backend
@@ -725,6 +726,8 @@ pub fn service(state: &mut AbyssState, renderer: &mut GlesRenderer, seat_held_by
                 let now = std::time::Duration::from(state.clock.now());
                 p.sink.ready(p.region, transform, p.with_damage, now);
                 state.capture_seen = Some(std::time::Instant::now());
+                // Light the eye now, even if no frame follows (a one-shot grab).
+                crate::backend::eye_kick(state);
             }
             Err(e) => {
                 tracing::warn!(error = %e, "capture failed");
