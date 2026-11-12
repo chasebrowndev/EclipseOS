@@ -317,7 +317,7 @@ impl Default for Xwayland {
 }
 
 /// `idle { ... }` (COMP-03 §7). Zero or absent disables a timeout.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Idle {
     /// Seconds of inactivity before outputs are powered off (DPMS).
     pub dpms_timeout: Option<u64>,
@@ -327,6 +327,24 @@ pub struct Idle {
     /// the compositor never self-locks, because only a locker client can
     /// unlock an `ext_session_lock_v1` session.
     pub lock_command: Option<String>,
+    /// Seconds of inactivity before the machine is suspended through logind
+    /// (ADR 0099). Absent by default: idle never suspends unless asked to.
+    pub suspend_timeout: Option<u64>,
+    /// Lock before an idle suspend, and do not suspend a session that did not
+    /// lock (ADR 0099). Default on.
+    pub lock_before_suspend: bool,
+}
+
+impl Default for Idle {
+    fn default() -> Self {
+        Self {
+            dpms_timeout: None,
+            lock_timeout: None,
+            lock_command: None,
+            suspend_timeout: None,
+            lock_before_suspend: true,
+        }
+    }
 }
 
 /// `misc { ... }` (COMP-13 §1.1).

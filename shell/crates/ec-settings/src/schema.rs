@@ -204,9 +204,12 @@ const ADAPTIVE: &str = "adaptive";
 pub const ADAPTIVE_ENABLED: &str = "decoration.blur.adaptive.enabled";
 pub const ADAPTIVE_STRENGTH: &str = "decoration.blur.adaptive.strength";
 
-/// Shown beneath the adaptive switch.
-pub const ADAPTIVE_BLURB: &str =
-    "Darkens or lightens glass so text stays readable over bright or dark backgrounds.";
+/// The fixed line shown beneath a key's row, from the compositor's
+/// presentation table (`ec_abyss_config::meta`). Value-dependent lines
+/// ([`mode_blurb`], [`blur_blurb`], …) are not data and stay here.
+pub fn caption(path: &str) -> Option<&'static str> {
+    ec_abyss_config::meta::get(path).and_then(|m| m.caption)
+}
 
 /// The value of a node's `mode` key that turns the node off: nothing under
 /// it applies.
@@ -240,6 +243,83 @@ pub fn moded<'m>(node: &str, path: &str, modes: &'m [String]) -> Option<Vec<&'m 
             })
             .collect(),
     )
+}
+
+/// The idle keys in the order the stages happen to a person: the screen
+/// locks, the display goes dark, the machine suspends, then the two keys
+/// that say how locking is done. The schema lists them in the order they were
+/// added. A path with no place here (an `idle.*` key the compositor grows
+/// later) sorts after these, in schema order.
+pub const IDLE_ORDER: [&str; 5] = [
+    IDLE_LOCK,
+    IDLE_DPMS,
+    IDLE_SUSPEND,
+    IDLE_LOCK_FIRST,
+    IDLE_LOCK_COMMAND,
+];
+pub const IDLE_LOCK: &str = "idle.lock-timeout-seconds";
+pub const IDLE_DPMS: &str = "idle.dpms-timeout-seconds";
+pub const IDLE_SUSPEND: &str = "idle.suspend-timeout-seconds";
+pub const IDLE_LOCK_FIRST: &str = "idle.lock-before-suspend";
+pub const IDLE_LOCK_COMMAND: &str = "idle.lock-command";
+
+/// Where an `idle.*` key sorts within its group (see [`IDLE_ORDER`]), or
+/// `None` for a key outside `idle`.
+pub fn idle_rank(path: &str) -> Option<usize> {
+    path.starts_with("idle.").then(|| {
+        IDLE_ORDER
+            .iter()
+            .position(|p| *p == path)
+            .unwrap_or(IDLE_ORDER.len())
+    })
+}
+
+/// Seconds as a person reads a wait: `45 s`, `5 min`, `1 h 30 min`.
+pub fn duration(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    let mut parts = Vec::new();
+    if h > 0 {
+        parts.push(format!("{h} h"));
+    }
+    if m > 0 {
+        parts.push(format!("{m} min"));
+    }
+    if s > 0 || parts.is_empty() {
+        parts.push(format!("{s} s"));
+    }
+    parts.join(" ")
+}
+
+/// What the idle setting at `path` amounts to now, shown beneath its row.
+/// `secs` is the row's own timeout (unset reads 0), `lock_first` is
+/// `idle.lock-before-suspend` and `has_locker` whether `idle.lock-command`
+/// is set. A timeout of 0 says "never" in words, since the field shows 0.
+pub fn idle_blurb(path: &str, secs: u64, lock_first: bool, has_locker: bool) -> Option<String> {
+    let after = duration(secs);
+    Some(match path {
+        IDLE_LOCK if secs == 0 => "Never: the screen does not lock on its own.".into(),
+        IDLE_LOCK if !has_locker => {
+            format!("Would lock after {after} without input, but no lock command is set below.")
+        }
+        IDLE_LOCK => format!("Locks after {after} without input."),
+        IDLE_DPMS if secs == 0 => "Never: the screen stays on.".into(),
+        IDLE_DPMS => format!("Turns the screen off after {after} without input."),
+        IDLE_SUSPEND if secs == 0 => "Never: the machine does not suspend on its own.".into(),
+        IDLE_SUSPEND if lock_first && !has_locker => {
+            "Never: suspending waits for the screen to lock, and no lock command is set.".into()
+        }
+        IDLE_SUSPEND if lock_first => {
+            format!("Suspends after {after} without input, once the screen has locked.")
+        }
+        IDLE_SUSPEND => format!("Suspends after {after} without input, without locking first."),
+        IDLE_LOCK_FIRST => "Suspend waits for the screen to lock. If it has not locked within 10 s, \
+             the machine stays awake."
+            .into(),
+        IDLE_LOCK_COMMAND => {
+            "Runs at the lock timeout and before an idle suspend. Without one, nothing locks.".into()
+        }
+        _ => return None,
+    })
 }
 
 /// A `color` value as the wire spells it — `#rrggbb` or `#rrggbbaa` — as
@@ -335,105 +415,15 @@ impl Row {
         })
     }
 
-    /// The last segment of the path in sentence case, used as the row label
-    /// (`focus-follows-mouse` reads "Focus follows mouse") — or, for the few
-    /// keys whose last segment names a thing rather than a setting, a
-    /// display form. `bar.eye` alone reads as a body part; what the switch
-    /// governs is the indicator.
+    /// The row label: the key's own in the compositor's presentation table
+    /// (`ec_abyss_config::meta`), or, for a key that table does not know (one
+    /// a newer compositor grew), the last segment of the path in sentence case
+    /// (`focus-follows-mouse` reads "Focus follows mouse").
     pub fn label(&self) -> Cow<'_, str> {
-        Cow::Borrowed(match self.path.as_str() {
-            "bar.eye" => "Eye indicator",
-            "mode" => "Interaction mode",
-            "components.bar" => "Bar",
-            "components.launcher" => "Launcher",
-            "components.notifications" => "Notifications",
-            "components.control-center" => "Control center",
-            // The keyboard hint lines under the launcher and start menu.
-            // "Key hints" names the mechanism; what goes is the controls.
-            "ui.show-key-hints" => "Show controls",
-            "launcher.style" => "Launcher style",
-            "launcher.bind.open" => "Open launcher",
-            "launcher.bind.run" => "Run command",
-            "oracle-eyes.model-command" => "Model command",
-            "oracle-eyes.timeout-ms" => "Answer timeout",
-            "oracle-eyes.auto-interval-ms" => "Automatic interval",
-            "oracle-eyes.hold-ms" => "Answer hold time",
-            "oracle-eyes.models" => "Models",
-            "oracle-eyes.image-mode" => "Image mode (send screenshot)",
-            "oracle-eyes.image-auto-escalate" => "Escalate weak answers",
-            "oracle-eyes.debug" => "Debug mode",
-            "oracle-eyes.bind.select" => "Select a region",
-            "oracle-eyes.bind.dismiss" => "Dismiss answers",
-            "oracle-eyes.bind.expand" => "Expand an answer",
-            "oracle-eyes.bind.auto-toggle" => "Automatic mode",
-            "oracle-eyes.bind.model-switch" => "Switch model",
-            "oracle-eyes.bind.image-toggle" => "Image mode",
-            "annotations.accent-text" => "Pick letter",
-            "annotations.panel-tint" => "Panel tint",
-            "annotations.panel-rim" => "Panel rim",
-            "annotations.region-outline" => "Region outline",
-            "annotations.selection-dim" => "Selection dim",
-            "misc.gpu-mode" => "Graphics mode",
-            "misc.secondary-compositing" => "Render second GPU's screens natively",
-            "launcher.search.path-binaries" => "Programs on PATH",
-            "launcher.search.terminal-apps" => "Terminal apps",
-            // `settings.search.frecency` reads "settings search, frecency":
-            // the word is the mechanism, "recent use" is what a person sees.
-            "launcher.search.frecency" | "settings.search.frecency" => "Rank by recent use",
-            // The blur group flattens its `glass` and `frost` sub-nodes
-            // (`pane::place_for`), so the leaf alone would lose which mode a
-            // row tunes.
-            "decoration.blur.glass.refraction" => "Glass refraction",
-            "decoration.blur.glass.bevel" => "Glass bevel",
-            "decoration.blur.glass.dispersion" => "Glass dispersion",
-            "decoration.blur.glass.rim" => "Glass rim light",
-            "decoration.blur.frost.tint" => "Frost tint",
-            "decoration.blur.adaptive.enabled" => "Adaptive glass",
-            "decoration.blur.adaptive.strength" => "Adaptive strength",
-            // The window's own material (`ec_ui::surface`): the rail and column
-            // tint, a card's fill, an inset group's fill.
-            "decoration.surface.tint" => "Window tint",
-            "decoration.surface.card-fill" => "Card fill",
-            "decoration.surface.inset-fill" => "Inset fill",
-            // The desktop's scheme (ADR 0084): British spelling like the other
-            // colour labels, and the theme keys named for when they apply.
-            "general.color-scheme" => "Colour scheme",
-            "general.theme-dark" => "Theme while dark",
-            "general.theme-light" => "Theme while light",
-            "general.maximize-first-window" => "Maximize first window on a workspace",
-            "general.maximize-first-window-exempt" => "Exemptions",
-            // Tokens abbreviated for a config file, or named for a mechanism
-            // rather than for what a person sees change.
-            "general.col-active-border" => "Active border colour",
-            "general.col-inactive-border" => "Inactive border colour",
-            "general.drop-guide-color" => "Drop guide colour",
-            "decoration.active-opacity" => "Active window opacity",
-            "decoration.inactive-opacity" => "Inactive window opacity",
-            "decoration.dim-inactive" => "Dim inactive windows",
-            "decoration.glow.active" => "Glow on the active window",
-            "decoration.glow.inactive" => "Glow on inactive windows",
-            "input.repeat-rate" => "Key repeat rate",
-            "input.repeat-delay" => "Key repeat delay",
-            "input.kb-layout" => "Keyboard layout",
-            "input.kb-variant" => "Keyboard variant",
-            "input.kb-options" => "Keyboard options",
-            "input.accel-profile" => "Pointer acceleration",
-            "input.touchpad.dwt" => "Disable while typing",
-            "idle.dpms-timeout-seconds" => "Screen off after (seconds)",
-            "idle.lock-timeout-seconds" => "Lock after (seconds)",
-            "capture.redact-app-id" => "Redact app IDs",
-            // Gaps are named for where the air is, not for the mechanism;
-            // the vertical pair only shows once set apart (`mirror_of`).
-            "general.gaps-in" => "Between windows",
-            "general.gaps-out" => "Screen edges",
-            "general.gaps-in-vertical" => "Between rows",
-            "general.gaps-out-vertical" => "Top and bottom",
-            // A bare verb or state under its node's heading reads as an
-            // instruction or a report, not as a setting.
-            "xwayland.enable" => "Xwayland enabled",
-            "setup.complete" => "Setup complete",
-            path => return Cow::Owned(sentence_case(path.rsplit('.').next().unwrap_or(path))),
-        })
+        match ec_abyss_config::meta::get(&self.path) {
+            Some(m) => Cow::Borrowed(m.label),
+            None => Cow::Owned(sentence_case(self.path.rsplit('.').next().unwrap_or(&self.path))),
+        }
     }
 
     /// Policy-owned keys are read-only here by construction, not by a check at
@@ -607,6 +597,55 @@ mod tests {
     }
 
     #[test]
+    fn a_label_comes_from_the_presentation_table_else_the_path() {
+        let row =
+            |path: &str| Row::parse(&json!({"path": path, "file": "abyss", "type": "bool"})).expect("parses");
+        for m in ec_abyss_config::meta::META {
+            assert_eq!(row(m.path).label(), m.label, "{}", m.path);
+        }
+        assert_eq!(
+            row("bar.some-key-from-a-newer-abyss").label(),
+            "Some key from a newer abyss"
+        );
+    }
+
+    /// The fixed captions moved into the presentation table unchanged.
+    #[test]
+    fn fixed_captions_read_from_the_presentation_table() {
+        let frecency =
+            "History stays on this device and stores no search text, only what was opened and when.";
+        for (path, want) in [
+            (
+                "decoration.surface.card-fill",
+                "Hairline cards, with blur off or blur. Glass and frost keep their glass panel.",
+            ),
+            (
+                "misc.secondary-compositing",
+                "Advanced. Off: the main GPU draws every screen and copies to the other GPU's. On: that GPU draws its own.",
+            ),
+            ("ui.show-key-hints", "Keyboard hints in the launcher and start menu"),
+            ("launcher.search.frecency", frecency),
+            ("settings.search.frecency", frecency),
+            ("launcher.search.terminal-apps", "Opened in the terminal command above."),
+            (
+                "oracle-eyes.bind.select",
+                "A chord like Super+A. \"none\" leaves an action unbound.",
+            ),
+            (
+                "oracle-eyes.debug",
+                "While on, the taskbar eye turns red and shows in screen captures.",
+            ),
+            (
+                ADAPTIVE_ENABLED,
+                "Darkens or lightens glass so text stays readable over bright or dark backgrounds.",
+            ),
+        ] {
+            assert_eq!(caption(path), Some(want), "{path}");
+        }
+        assert_eq!(caption("general.layout"), None);
+    }
+
+    #[test]
     fn every_label_starts_with_a_capital() {
         for path in [
             "decoration.blur.glass.refraction",
@@ -647,6 +686,50 @@ mod tests {
             moded(BLUR, ADAPTIVE_STRENGTH, &modes),
             Some(vec!["blur", "frost", "glass"])
         );
+    }
+
+    #[test]
+    fn idle_keys_sort_in_the_order_the_stages_happen() {
+        let mut paths = vec![
+            IDLE_DPMS,
+            IDLE_LOCK,
+            IDLE_LOCK_COMMAND,
+            "idle.future-key",
+            IDLE_SUSPEND,
+            IDLE_LOCK_FIRST,
+        ];
+        paths.sort_by_key(|p| idle_rank(p));
+        assert_eq!(
+            paths,
+            [
+                IDLE_LOCK,
+                IDLE_DPMS,
+                IDLE_SUSPEND,
+                IDLE_LOCK_FIRST,
+                IDLE_LOCK_COMMAND,
+                "idle.future-key"
+            ]
+        );
+        assert_eq!(idle_rank("bar.idle-seconds"), None);
+    }
+
+    #[test]
+    fn an_unset_idle_timeout_reads_never_and_a_set_one_reads_as_time() {
+        assert_eq!(duration(45), "45 s");
+        assert_eq!(duration(300), "5 min");
+        assert_eq!(duration(5400), "1 h 30 min");
+        assert_eq!(duration(0), "0 s");
+        for path in [IDLE_LOCK, IDLE_DPMS, IDLE_SUSPEND] {
+            let b = idle_blurb(path, 0, true, true).expect("an idle stage has a caption");
+            assert!(b.starts_with("Never"), "{path}: {b}");
+        }
+        let suspend = |first, locker| idle_blurb(IDLE_SUSPEND, 900, first, locker).unwrap();
+        assert!(suspend(true, true).contains("once the screen has locked"));
+        assert!(suspend(true, false).starts_with("Never"));
+        assert!(suspend(false, false).contains("15 min"));
+        assert!(idle_blurb(IDLE_LOCK_FIRST, 0, true, true)
+            .unwrap()
+            .contains("waits for the screen to lock"));
     }
 
     #[test]

@@ -411,9 +411,10 @@ for scene changes yet.
 `protocols/semantic/` serves `eclipse_semantic_v1` and exposes
 `capture_facts`, `read_tree`, `request_action`/`take_done` and `focus_hint`,
 but the three consumers are TCB or agent-protocol code that has not been
-switched over: `render/capture.rs::semantics_for` still returns `Absent`, the
-`eclipse_agent_v1` XML has no `get_tree`, and `eclipse_agent_seat_v1.action`
-does not forward to a publisher. Until they do, node-level redaction is not
+switched over. As of 2026-11-10 `render/capture.rs::semantics_for` calls
+`semantic::capture_facts` and the `eclipse_agent_v1` XML carries `get_tree`;
+whether `eclipse_agent_seat_v1.action` forwards to a publisher was not
+re-checked. Until they do, node-level redaction is not
 live and agents cannot read or act on a native tree. **Proposed:** the
 TCB-HOOKs in `protocols/semantic/mod.rs`, in that order.
 
@@ -736,3 +737,66 @@ counter back and never holds a frame, so it cannot change what Zoom shows; it on
 lets us see whether Zoom responds. Holding presentation until the counter catches up
 is the part that would matter, and is not done. The spec has no section for it;
 the protocol is EWMH.
+
+## SEC-01: the input-method global admits any client
+
+`state.rs` creates `InputMethodManagerState` with the filter `|_| true`, so any
+Wayland client may bind `zwp_input_method_manager_v2` and become the IME — the
+component every committed keystroke passes through. Nothing withholds text
+entered into a `password`-purpose text input from it. Not confirmed at runtime
+with a hostile client. Contradicts "no ambient authority" and "`password`-role
+values are never delivered". **Proposed:** an allowlist bind filter on the
+verified client identity (SEC-04), and no IME activation on password-purpose inputs.
+
+## SEC-02: the virtual-pointer global has no bind filter
+
+`protocols/standard/virtual_pointer.rs` registers `zwlr_virtual_pointer_manager_v1`
+unfiltered. Origin tagging keeps synthetic events off protected surfaces and
+lock suppresses them, but any client can move and click on ordinary windows
+with no policy decision. **Proposed:** same allowlist filter as SEC-01.
+
+## SEC-03: `ext_foreign_toplevel_list` publishes every title, `secret` included
+
+`state.rs` creates `ForeignToplevelListState` for all clients and
+`foreign_toplevel.rs` applies no sensitivity class, so the title and app_id of
+a `secret` window reach any client that binds the global. **Proposed:** bind
+filter, and never publish `secret`-class toplevels.
+
+## SEC-04: capture and data-control identity is an executable basename
+
+`data_control.rs::client_name` returns the file name of `/proc/<pid>/exe`. The
+screencopy, image-copy-capture and data-control allowlists compare against it,
+so any binary named `grim` — in `/tmp`, in `$HOME` — is admitted. **Proposed:**
+match the full resolved path; a bare allowlist name means the root-owned
+`/usr/bin/<name>`.
+
+## SEC-05: the clipboard has no sensitivity class and no read check
+
+`data_device.rs::ClipboardSource` records provenance and is `#[allow(dead_code)]`
+pending "the clipboard policy check (COMP-11, Phase 2)". No `clipboard.read`
+capability exists in `policy/` or `ec-policy-eval`; paste to the focused client
+is unmediated and a copied password is delivered like any other text.
+
+## SEC-06: enforcement the table promises and the compositor does not do
+
+Rate and quota are not counted (`policy/enforce.rs`), most `defaults` keys are
+parsed and not enforced (`ec-policyd/src/policy.rs`), owner policy does not
+bound issuance (`ec-policyd/src/dispatch.rs`), and revocation is not pushed
+from `policyd`, so a revoked grant lives until expiry.
+
+## SEC-07: the policyd issuer key is readable by any same-uid process
+
+`ec-policyd` keeps `issuer.key` 0600 under `~/.local/state/eclipse/policyd`.
+Every process running as the session user can read it and sign grants or
+policy tables. The threat model names same-uid clients as adversaries
+(Vol 1, protected-surface section). See also TASK-01 (ptrace).
+
+## REPO-01: `.git` is inside a Syncthing folder
+
+The repository, `.git` included, syncs between two dev machines. On 2026-11-10
+that had produced 24 conflict copies inside `.git` (index, config, packed-refs,
+reflogs), 30 in the tree, a commit-graph naming seven absent commits, and
+worktree records for paths that exist on one machine only. Never run
+`git worktree prune` or `git gc --prune=now` — each machine sees the other's
+worktrees as dead. Both machines writing to the repo at once is what produces
+the conflicts.

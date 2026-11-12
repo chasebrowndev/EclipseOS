@@ -556,6 +556,11 @@ fn a_model_failure_in_automatic_mode_is_shown_once() {
 #[test]
 fn a_select_during_an_automatic_call_takes_over() {
     let mut r = Rig::new(true);
+    // One `Slow` per call: the auto call and the select each run on their own
+    // worker and take their scripted reply in whichever order the threads get
+    // there. With a single `Slow`, the cancelled auto call could draw a plain
+    // answer and never be counted.
+    r.script(Says::Slow(Duration::from_millis(300)));
     r.script(Says::Slow(Duration::from_millis(300)));
     r.step(600);
     r.poke(1200);

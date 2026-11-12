@@ -37,6 +37,9 @@ blake3 = { version = "1.8.7", default-features = false, features = ["std"] }
 # SEQPACKET + SO_PEERCRED for the abyss↔policyd link (F-05), without unsafe.
 rustix = { version = "1", features = ["net", "process", "time"] }
 
+# NEVER set `panic = "abort"` in any profile: ec-abyss's panic containment
+# (src/contain.rs, ADR 0102) and the DRM session/VT restore on an uncontained
+# panic both rely on unwinding. `contain::tests` fails if unwinding is off.
 [profile.release]
 debug = 1
 lto = "thin"
