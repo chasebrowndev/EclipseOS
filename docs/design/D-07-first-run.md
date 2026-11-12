@@ -172,6 +172,13 @@ Guards, all enforced by the helper and none trusted from the UI:
 ### 4.3 Identity
 
 Hostname and username are validated against fixed patterns by the helper.
+The hostname defaults to `<username>-<model>` and follows the username until
+the human types one of their own. The model comes from the firmware's DMI
+strings (`product_family`, else `product_name`). A generic family gets the
+vendor in front (`framework-laptop`), and placeholder-only firmware gives the
+vendor alone. Without a usable model or username, the default is
+`eclipse-<4 random hex>` (`ec_setup_plan::suggest_hostname`). No two installs
+share a fixed name.
 Passwords are entered into a `password`-role field, sent to the helper on a
 file descriptor, and applied with `chpasswd` (§6 rejects newlines and NUL). They
 are never written to any file the wizard owns, never logged, never placed on an

@@ -130,6 +130,86 @@ pub fn valid_hostname(s: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')
 }
 
+/// Lowercase `[a-z0-9-]` form of one DMI string, at most `max` bytes; `None`
+/// for empty, vendor-placeholder or digit-only values.
+fn dmi_slug(raw: &str, max: usize) -> Option<String> {
+    const JUNK: [&str; 9] = [
+        "to be filled",
+        "system product name",
+        "system manufacturer",
+        "default string",
+        "not specified",
+        "not applicable",
+        "type1productconfigid",
+        "standard pc",
+        "none",
+    ];
+    let low = raw.trim().to_ascii_lowercase();
+    if low.is_empty() || JUNK.iter().any(|j| low.starts_with(j)) {
+        return None;
+    }
+    let mut s = String::new();
+    for c in low.chars() {
+        if c.is_ascii_alphanumeric() {
+            s.push(c);
+        } else if !s.is_empty() && !s.ends_with('-') {
+            s.push('-');
+        }
+    }
+    s.truncate(max);
+    let s = s.trim_end_matches('-').to_owned();
+    (s.len() >= 2 && s.bytes().any(|b| b.is_ascii_alphabetic())).then_some(s)
+}
+
+/// The machine's model as a hostname part, from the firmware's DMI strings:
+/// `product_family`, else `product_name` (`thinkpad-x1-carbon-gen-11`). A
+/// generic family (`Laptop`) gets the vendor in front (`framework-laptop`);
+/// with nothing but placeholders, the vendor alone (`asus`). `None` when even
+/// that is unusable, so callers fall back.
+pub fn model_slug(vendor: &str, models: &[&str]) -> Option<String> {
+    const GENERIC: [&str; 7] = [
+        "laptop",
+        "notebook",
+        "desktop",
+        "computer",
+        "pc",
+        "tower",
+        "all-series",
+    ];
+    // Placeholder check on the whole string, then the first word: `Dell Inc.`
+    // is `dell`, `System manufacturer` is nothing.
+    let vendor =
+        dmi_slug(vendor, 64).and_then(|_| dmi_slug(vendor.split_whitespace().next().unwrap_or(""), 12));
+    let model = models.iter().find_map(|m| dmi_slug(m, 24));
+    match (model, vendor) {
+        (Some(m), Some(v)) if GENERIC.contains(&m.as_str()) => Some(format!("{v}-{m}")),
+        (Some(m), _) => Some(m),
+        (None, v) => v,
+    }
+}
+
+/// The installer's default hostname, unique enough that two EclipseOS
+/// machines on one network or tailnet don't collide: `<user>-<model>`, or
+/// `eclipse-<suffix>` (a few random hex digits) without a usable model or
+/// before a username is typed. Always a [`valid_hostname`].
+pub fn suggest_hostname(username: &str, model: Option<&str>, suffix: &str) -> String {
+    let user: String = username
+        .chars()
+        .filter(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+        .take(32)
+        .collect();
+    let user = user.trim_matches('-');
+    let pick = match model {
+        Some(m) if !user.is_empty() => format!("{user}-{m}"),
+        _ => format!("eclipse-{suffix}"),
+    };
+    if valid_hostname(&pick) {
+        pick
+    } else {
+        "eclipse".to_owned()
+    }
+}
+
 /// A conservative POSIX login name, and never `root`.
 pub fn valid_username(s: &str) -> bool {
     let b = s.as_bytes();
@@ -169,6 +249,51 @@ pub fn valid_by_id(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_slug_cleans_dmi_and_drops_placeholders() {
+        // Real machines (2026-11-12): a Framework 13 and an ASUS desktop.
+        assert_eq!(
+            model_slug("Framework", &["Laptop", "Laptop 13 (AMD Ryzen AI 300 Series)"]).as_deref(),
+            Some("framework-laptop")
+        );
+        assert_eq!(
+            model_slug("ASUS", &["To be filled by O.E.M.", "System Product Name"]).as_deref(),
+            Some("asus")
+        );
+        assert_eq!(
+            model_slug("LENOVO", &["ThinkPad X1 Carbon Gen 11", ""]).as_deref(),
+            Some("thinkpad-x1-carbon-gen-1")
+        );
+        assert_eq!(
+            model_slug("Dell Inc.", &["", "XPS 13 9340"]).as_deref(),
+            Some("xps-13-9340")
+        );
+        assert_eq!(model_slug("System manufacturer", &["Default string"]), None);
+        assert_eq!(
+            model_slug("QEMU", &["Standard PC (Q35 + ICH9, 2009)"]).as_deref(),
+            Some("qemu")
+        );
+        assert_eq!(model_slug("", &["123"]), None);
+    }
+
+    #[test]
+    fn suggested_hostnames_are_valid_and_personal() {
+        assert_eq!(
+            suggest_hostname("chase", Some("framework"), "7f3a"),
+            "chase-framework"
+        );
+        assert_eq!(suggest_hostname("", Some("framework"), "7f3a"), "eclipse-7f3a");
+        assert_eq!(suggest_hostname("chase", None, "7f3a"), "eclipse-7f3a");
+        assert_eq!(suggest_hostname("Bad_User", Some("x1"), "00ff"), "adser-x1");
+        for (u, m, s) in [
+            ("-", Some("m"), "ab12"),
+            ("a".repeat(40).as_str(), Some("model"), "ab12"),
+            ("x", None, ""),
+        ] {
+            assert!(valid_hostname(&suggest_hostname(u, m, s)), "{u:?} {m:?} {s:?}");
+        }
+    }
 
     #[test]
     fn hostnames() {

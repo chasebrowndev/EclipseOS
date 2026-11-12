@@ -20,8 +20,8 @@ use crate::data::{self, Layout, LANGUAGES};
 use crate::helper::HelperEvent;
 use crate::net::Snapshot;
 use ec_setup_plan::{
-    check_password, valid_by_id, valid_hostname, valid_username, Disk, Plan, Profile, Progress, Request,
-    Stage, MIN_PASSWORD_CHARS,
+    check_password, suggest_hostname, valid_by_id, valid_hostname, valid_username, Disk, Plan, Profile,
+    Progress, Request, Stage, MIN_PASSWORD_CHARS,
 };
 use serde_json::{json, Value};
 use std::fmt;
@@ -289,6 +289,10 @@ pub struct Inputs {
     pub reduced_motion: bool,
     pub version: String,
     pub fake: bool,
+    /// The machine's model as a hostname part (`ec_setup_plan::model_slug`).
+    pub machine: Option<String>,
+    /// Random hex for `eclipse-<suffix>` when there is no usable model.
+    pub host_suffix: String,
 }
 
 impl Inputs {
@@ -305,6 +309,8 @@ impl Inputs {
             reduced_motion,
             version: env!("CARGO_PKG_VERSION").to_owned(),
             fake,
+            machine: data::machine_model(),
+            host_suffix: data::host_suffix(),
         }
     }
 
@@ -320,6 +326,8 @@ impl Inputs {
             reduced_motion: false,
             version: env!("CARGO_PKG_VERSION").to_owned(),
             fake,
+            machine: Some("framework".into()),
+            host_suffix: "7f3a".into(),
         }
     }
 }
@@ -504,6 +512,11 @@ pub struct Model {
 
     // 5
     pub hostname: String,
+    /// The hostname still follows the username (`suggest_hostname`); typing
+    /// one of your own stops that.
+    pub hostname_auto: bool,
+    pub machine: Option<String>,
+    pub host_suffix: String,
     pub username: String,
     pub password: Secret,
     pub password2: Secret,
@@ -571,7 +584,10 @@ impl Model {
             join_failed: false,
             disks: Load::Idle,
             disk: None,
-            hostname: "eclipse".to_owned(),
+            hostname: suggest_hostname("", inputs.machine.as_deref(), &inputs.host_suffix),
+            hostname_auto: true,
+            machine: inputs.machine,
+            host_suffix: inputs.host_suffix,
             username: String::new(),
             password: Secret::default(),
             password2: Secret::default(),
@@ -922,11 +938,18 @@ impl Model {
 
             Message::Hostname(s) => {
                 self.hostname = s;
+                self.hostname_auto = false;
                 if self.step == Step::Identity && !self.hostname_ok() {
                     self.more = true;
                 }
             }
-            Message::Username(s) => self.username = s,
+            Message::Username(s) => {
+                self.username = s;
+                if self.hostname_auto {
+                    self.hostname =
+                        suggest_hostname(&self.username, self.machine.as_deref(), &self.host_suffix);
+                }
+            }
             Message::Password(s) => self.password = s,
             Message::Password2(s) => self.password2 = s,
 
@@ -2203,6 +2226,17 @@ mod tests {
         m.update(Message::Key(Key::Enter));
         assert_eq!(m.step, Step::Identity);
         assert!(m.more);
+    }
+
+    #[test]
+    fn the_host_name_follows_the_user_until_typed() {
+        let mut m = model();
+        assert_eq!(m.hostname, "eclipse-7f3a");
+        m.update(Message::Username("chase".into()));
+        assert_eq!(m.hostname, "chase-framework");
+        m.update(Message::Hostname("desk".into()));
+        m.update(Message::Username("robin".into()));
+        assert_eq!(m.hostname, "desk");
     }
 
     #[test]

@@ -660,6 +660,39 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
+/// The machine's model for the default hostname, from the firmware's DMI
+/// strings (bounded reads; unreadable or placeholder values give `None`).
+pub fn machine_model() -> Option<String> {
+    let read = |f: &str| {
+        std::fs::read(format!("/sys/class/dmi/id/{f}"))
+            .ok()
+            .map(|b| String::from_utf8_lossy(&b[..b.len().min(128)]).into_owned())
+            .unwrap_or_default()
+    };
+    let (family, product) = (read("product_family"), read("product_name"));
+    ec_setup_plan::model_slug(&read("sys_vendor"), &[&family, &product])
+}
+
+/// Four random hex digits for `eclipse-<suffix>`, from the kernel's
+/// per-read random UUID. Falls back to the low bits of the clock.
+pub fn host_suffix() -> String {
+    std::fs::read_to_string("/proc/sys/kernel/random/uuid")
+        .ok()
+        .map(|u| {
+            u.chars()
+                .filter(char::is_ascii_hexdigit)
+                .take(4)
+                .collect::<String>()
+        })
+        .filter(|s| s.len() == 4)
+        .unwrap_or_else(|| {
+            let n = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.subsec_nanos());
+            format!("{:04x}", n & 0xffff)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
