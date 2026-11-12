@@ -320,6 +320,7 @@ impl Dispatch<ZwlrScreencopyManagerV1, ()> for AbyssState {
         // The indicator is persistent for as long as capture keeps happening.
         state.capture_seen = Some(std::time::Instant::now());
         state.capture_consumer = name;
+        super::capture_event::sync(state);
     }
 }
 

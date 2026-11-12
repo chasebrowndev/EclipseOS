@@ -294,6 +294,47 @@ pub struct Capture {
     pub hide_layer: Vec<(String, String)>,
 }
 
+/// `ui.capture-toasts`: toasts while a human capture (screen share, recording,
+/// screenshot) is running. Only `Show` puts a toast's pixels in a capture; the
+/// other three never do, so a toast already on screen when a share starts is
+/// still covered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureToasts {
+    /// Toasts are captured like any other layer surface.
+    Show,
+    /// A redaction card covers the toast in the capture; the human sees it
+    /// normally.
+    #[default]
+    Redact,
+    /// Toasts wait until the share ends, then appear.
+    Hold,
+    /// Toasts go straight to the notification history while a share runs.
+    History,
+}
+
+impl CaptureToasts {
+    pub const NAMES: &'static [&'static str] = &["show", "redact", "hold", "history"];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "show" => Self::Show,
+            "redact" => Self::Redact,
+            "hold" => Self::Hold,
+            "history" => Self::History,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Show => "show",
+            Self::Redact => "redact",
+            Self::Hold => "hold",
+            Self::History => "history",
+        }
+    }
+}
+
 /// `xwayland { ... }` (COMP-07 §4, §7 open decision 2).
 #[derive(Debug, Clone)]
 pub struct Xwayland {

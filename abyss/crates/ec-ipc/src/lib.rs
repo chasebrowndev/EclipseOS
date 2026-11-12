@@ -64,6 +64,9 @@ pub enum EventKind {
     /// The effective scheme or active theme's seeds changed; the payload is the
     /// `get_theme` reply (ADR 0084).
     Theme,
+    /// A human capture (screen share, recording) started or stopped:
+    /// `{"active": bool}` (ADR 0106).
+    Capture,
 }
 
 impl EventKind {
@@ -81,6 +84,7 @@ impl EventKind {
         EventKind::Phrase,
         EventKind::DecisionsPending,
         EventKind::Theme,
+        EventKind::Capture,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -98,6 +102,7 @@ impl EventKind {
             EventKind::Phrase => "phrase",
             EventKind::DecisionsPending => "decisions_pending",
             EventKind::Theme => "theme",
+            EventKind::Capture => "capture",
         }
     }
 
@@ -115,6 +120,14 @@ pub struct Event {
 }
 
 impl Event {
+    /// The `active` flag of a `capture` event.
+    pub fn capture_active(&self) -> Option<bool> {
+        if self.kind != EventKind::Capture {
+            return None;
+        }
+        self.data.get("active")?.as_bool()
+    }
+
     /// The parked-prompt count of a `decisions_pending` event.
     pub fn decisions_pending(&self) -> Option<u32> {
         if self.kind != EventKind::DecisionsPending {

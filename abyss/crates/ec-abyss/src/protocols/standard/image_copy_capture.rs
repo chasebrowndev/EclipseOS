@@ -146,6 +146,8 @@ pub struct ImageCopyCaptureState {
     next: u64,
     sessions: HashMap<u64, Session>,
     frames: HashMap<u64, Frame>,
+    /// What the `capture` event last said (ADR 0106).
+    pub(super) announced: super::capture_event::Announced,
 }
 
 impl ImageCopyCaptureState {
@@ -171,7 +173,13 @@ impl ImageCopyCaptureState {
             next: 1,
             sessions: HashMap::new(),
             frames: HashMap::new(),
+            announced: Default::default(),
         }
+    }
+
+    /// Is any capture session open? A stream is one for its whole life.
+    pub fn has_sessions(&self) -> bool {
+        !self.sessions.is_empty()
     }
 
     fn alloc(&mut self) -> u64 {
@@ -328,6 +336,7 @@ impl Dispatch<ExtImageCopyCaptureManagerV1, ()> for AbyssState {
                 );
                 state.capture_seen = Some(std::time::Instant::now());
                 state.capture_consumer = name;
+                super::capture_event::sync(state);
             }
             Request::CreatePointerCursorSession {
                 session,
@@ -427,6 +436,7 @@ impl Dispatch<ExtImageCopyCaptureSessionV1, SessionData> for AbyssState {
     ) {
         if let Some(id) = data.id {
             state.image_copy.sessions.remove(&id);
+            super::capture_event::sync(state);
         }
     }
 }

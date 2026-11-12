@@ -3803,10 +3803,15 @@ Consequences, all enforced:
 - All X11 toplevels default to `sensitivity: normal` and
   `app_trust: standard` at best; a rule may raise but the default never
   drops to `public`.
-- X11 windows are **never** classified `secret`. If a rule tries, the
-  compositor refuses and logs it: marking a window secret inside a domain
-  where any X11 client can screenshot it is a false guarantee. Secret
-  material belongs in native clients.
+- X11 windows are **never** classified `secret`: their class stays
+  `normal`. *(ADR 0106 amendment)* A rule may still mark an X11 window
+  `secret` **for capture redaction only**: the compositor then withholds
+  it from every compositor-mediated capture (screen share, recording,
+  screenshot), exactly as for a native `secret` window, and the class stays
+  `normal` for every other purpose (agent scene, policy). This is not
+  isolation: any other X11 client can still read the window through the X
+  server, and the user docs say so. Secret material still belongs in
+  native clients.
 - `seat_compat` is always `lock` (COMP-04 §8) — X11 has one input model and
   cannot represent a second seat. Agent input to X11 windows therefore
   takes an exclusive focus lock, with the trusted-UI indicator.
@@ -4994,8 +4999,8 @@ The compositor holds the current class and trust for every toplevel:
 - Raised, never lowered, by client declaration (COMP-09 §3).
 - Raised at runtime by `policyd` (e.g. classifier spotted a credential
   field); lowering requires a table change plus an audit record.
-- X11 windows can never be `secret` (COMP-07 §2); attempts are refused and
-  logged.
+- X11 windows can never be `secret` (COMP-07 §2); a rule may mark one
+  `secret` for capture redaction only, the class itself stays `normal`.
 
 ---
 
@@ -5806,7 +5811,7 @@ agent.
 request+decision+result; `trace --req-id` reconstructs the chain; no human
 keystroke content appears anywhere; capture records contain no pixels.
 
-**X11 posture** (COMP-07 §6): `secret` classification refused and logged;
+**X11 posture** (COMP-07 §6): `secret` class refused and logged (capture redaction by rule is separate, COMP-07 §2);
 `seat_compat=lock` forced and not overridable.
 
 **Classification races** (S-05 §9): the raise/downgrade race harness and the
