@@ -204,9 +204,12 @@ const ADAPTIVE: &str = "adaptive";
 pub const ADAPTIVE_ENABLED: &str = "decoration.blur.adaptive.enabled";
 pub const ADAPTIVE_STRENGTH: &str = "decoration.blur.adaptive.strength";
 
-/// Shown beneath the adaptive switch.
-pub const ADAPTIVE_BLURB: &str =
-    "Darkens or lightens glass so text stays readable over bright or dark backgrounds.";
+/// The fixed line shown beneath a key's row, from the compositor's
+/// presentation table (`ec_abyss_config::meta`). Value-dependent lines
+/// ([`mode_blurb`], [`blur_blurb`], …) are not data and stay here.
+pub fn caption(path: &str) -> Option<&'static str> {
+    ec_abyss_config::meta::get(path).and_then(|m| m.caption)
+}
 
 /// The value of a node's `mode` key that turns the node off: nothing under
 /// it applies.
@@ -335,105 +338,15 @@ impl Row {
         })
     }
 
-    /// The last segment of the path in sentence case, used as the row label
-    /// (`focus-follows-mouse` reads "Focus follows mouse") — or, for the few
-    /// keys whose last segment names a thing rather than a setting, a
-    /// display form. `bar.eye` alone reads as a body part; what the switch
-    /// governs is the indicator.
+    /// The row label: the key's own in the compositor's presentation table
+    /// (`ec_abyss_config::meta`), or, for a key that table does not know (one
+    /// a newer compositor grew), the last segment of the path in sentence case
+    /// (`focus-follows-mouse` reads "Focus follows mouse").
     pub fn label(&self) -> Cow<'_, str> {
-        Cow::Borrowed(match self.path.as_str() {
-            "bar.eye" => "Eye indicator",
-            "mode" => "Interaction mode",
-            "components.bar" => "Bar",
-            "components.launcher" => "Launcher",
-            "components.notifications" => "Notifications",
-            "components.control-center" => "Control center",
-            // The keyboard hint lines under the launcher and start menu.
-            // "Key hints" names the mechanism; what goes is the controls.
-            "ui.show-key-hints" => "Show controls",
-            "launcher.style" => "Launcher style",
-            "launcher.bind.open" => "Open launcher",
-            "launcher.bind.run" => "Run command",
-            "oracle-eyes.model-command" => "Model command",
-            "oracle-eyes.timeout-ms" => "Answer timeout",
-            "oracle-eyes.auto-interval-ms" => "Automatic interval",
-            "oracle-eyes.hold-ms" => "Answer hold time",
-            "oracle-eyes.models" => "Models",
-            "oracle-eyes.image-mode" => "Image mode (send screenshot)",
-            "oracle-eyes.image-auto-escalate" => "Escalate weak answers",
-            "oracle-eyes.debug" => "Debug mode",
-            "oracle-eyes.bind.select" => "Select a region",
-            "oracle-eyes.bind.dismiss" => "Dismiss answers",
-            "oracle-eyes.bind.expand" => "Expand an answer",
-            "oracle-eyes.bind.auto-toggle" => "Automatic mode",
-            "oracle-eyes.bind.model-switch" => "Switch model",
-            "oracle-eyes.bind.image-toggle" => "Image mode",
-            "annotations.accent-text" => "Pick letter",
-            "annotations.panel-tint" => "Panel tint",
-            "annotations.panel-rim" => "Panel rim",
-            "annotations.region-outline" => "Region outline",
-            "annotations.selection-dim" => "Selection dim",
-            "misc.gpu-mode" => "Graphics mode",
-            "misc.secondary-compositing" => "Render second GPU's screens natively",
-            "launcher.search.path-binaries" => "Programs on PATH",
-            "launcher.search.terminal-apps" => "Terminal apps",
-            // `settings.search.frecency` reads "settings search, frecency":
-            // the word is the mechanism, "recent use" is what a person sees.
-            "launcher.search.frecency" | "settings.search.frecency" => "Rank by recent use",
-            // The blur group flattens its `glass` and `frost` sub-nodes
-            // (`pane::place_for`), so the leaf alone would lose which mode a
-            // row tunes.
-            "decoration.blur.glass.refraction" => "Glass refraction",
-            "decoration.blur.glass.bevel" => "Glass bevel",
-            "decoration.blur.glass.dispersion" => "Glass dispersion",
-            "decoration.blur.glass.rim" => "Glass rim light",
-            "decoration.blur.frost.tint" => "Frost tint",
-            "decoration.blur.adaptive.enabled" => "Adaptive glass",
-            "decoration.blur.adaptive.strength" => "Adaptive strength",
-            // The window's own material (`ec_ui::surface`): the rail and column
-            // tint, a card's fill, an inset group's fill.
-            "decoration.surface.tint" => "Window tint",
-            "decoration.surface.card-fill" => "Card fill",
-            "decoration.surface.inset-fill" => "Inset fill",
-            // The desktop's scheme (ADR 0084): British spelling like the other
-            // colour labels, and the theme keys named for when they apply.
-            "general.color-scheme" => "Colour scheme",
-            "general.theme-dark" => "Theme while dark",
-            "general.theme-light" => "Theme while light",
-            "general.maximize-first-window" => "Maximize first window on a workspace",
-            "general.maximize-first-window-exempt" => "Exemptions",
-            // Tokens abbreviated for a config file, or named for a mechanism
-            // rather than for what a person sees change.
-            "general.col-active-border" => "Active border colour",
-            "general.col-inactive-border" => "Inactive border colour",
-            "general.drop-guide-color" => "Drop guide colour",
-            "decoration.active-opacity" => "Active window opacity",
-            "decoration.inactive-opacity" => "Inactive window opacity",
-            "decoration.dim-inactive" => "Dim inactive windows",
-            "decoration.glow.active" => "Glow on the active window",
-            "decoration.glow.inactive" => "Glow on inactive windows",
-            "input.repeat-rate" => "Key repeat rate",
-            "input.repeat-delay" => "Key repeat delay",
-            "input.kb-layout" => "Keyboard layout",
-            "input.kb-variant" => "Keyboard variant",
-            "input.kb-options" => "Keyboard options",
-            "input.accel-profile" => "Pointer acceleration",
-            "input.touchpad.dwt" => "Disable while typing",
-            "idle.dpms-timeout-seconds" => "Screen off after (seconds)",
-            "idle.lock-timeout-seconds" => "Lock after (seconds)",
-            "capture.redact-app-id" => "Redact app IDs",
-            // Gaps are named for where the air is, not for the mechanism;
-            // the vertical pair only shows once set apart (`mirror_of`).
-            "general.gaps-in" => "Between windows",
-            "general.gaps-out" => "Screen edges",
-            "general.gaps-in-vertical" => "Between rows",
-            "general.gaps-out-vertical" => "Top and bottom",
-            // A bare verb or state under its node's heading reads as an
-            // instruction or a report, not as a setting.
-            "xwayland.enable" => "Xwayland enabled",
-            "setup.complete" => "Setup complete",
-            path => return Cow::Owned(sentence_case(path.rsplit('.').next().unwrap_or(path))),
-        })
+        match ec_abyss_config::meta::get(&self.path) {
+            Some(m) => Cow::Borrowed(m.label),
+            None => Cow::Owned(sentence_case(self.path.rsplit('.').next().unwrap_or(&self.path))),
+        }
     }
 
     /// Policy-owned keys are read-only here by construction, not by a check at
@@ -604,6 +517,55 @@ mod tests {
         assert_eq!(row("decoration.blur.frost.tint").label(), "Frost tint");
         assert_eq!(row("general.col-active-border").label(), "Active border colour");
         assert_eq!(row("input.repeat-rate").label(), "Key repeat rate");
+    }
+
+    #[test]
+    fn a_label_comes_from_the_presentation_table_else_the_path() {
+        let row =
+            |path: &str| Row::parse(&json!({"path": path, "file": "abyss", "type": "bool"})).expect("parses");
+        for m in ec_abyss_config::meta::META {
+            assert_eq!(row(m.path).label(), m.label, "{}", m.path);
+        }
+        assert_eq!(
+            row("bar.some-key-from-a-newer-abyss").label(),
+            "Some key from a newer abyss"
+        );
+    }
+
+    /// The fixed captions moved into the presentation table unchanged.
+    #[test]
+    fn fixed_captions_read_from_the_presentation_table() {
+        let frecency =
+            "History stays on this device and stores no search text, only what was opened and when.";
+        for (path, want) in [
+            (
+                "decoration.surface.card-fill",
+                "Hairline cards, with blur off or blur. Glass and frost keep their glass panel.",
+            ),
+            (
+                "misc.secondary-compositing",
+                "Advanced. Off: the main GPU draws every screen and copies to the other GPU's. On: that GPU draws its own.",
+            ),
+            ("ui.show-key-hints", "Keyboard hints in the launcher and start menu"),
+            ("launcher.search.frecency", frecency),
+            ("settings.search.frecency", frecency),
+            ("launcher.search.terminal-apps", "Opened in the terminal command above."),
+            (
+                "oracle-eyes.bind.select",
+                "A chord like Super+A. \"none\" leaves an action unbound.",
+            ),
+            (
+                "oracle-eyes.debug",
+                "While on, the taskbar eye turns red and shows in screen captures.",
+            ),
+            (
+                ADAPTIVE_ENABLED,
+                "Darkens or lightens glass so text stays readable over bright or dark backgrounds.",
+            ),
+        ] {
+            assert_eq!(caption(path), Some(want), "{path}");
+        }
+        assert_eq!(caption("general.layout"), None);
     }
 
     #[test]
