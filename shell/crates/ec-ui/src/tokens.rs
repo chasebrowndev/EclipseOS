@@ -1325,6 +1325,30 @@ mod tests {
         let byte = |f: f32| (f * 255.0).round() as u8;
         assert_eq!((byte(c.r), byte(c.g), byte(c.b)), (0xf2, 0xc3, 0x3c));
     }
+
+    /// The compositor draws the capture eye from `ec_theme::bar_mark`, a copy
+    /// of these tokens; this is the drift guard.
+    #[test]
+    fn bar_mark_matches_tokens() {
+        use ec_theme::bar_mark as m;
+        assert_eq!(m::PILL_H, bar::PILL_H);
+        assert_eq!(m::EDGE, bar::EDGE);
+        assert_eq!(m::TASK_MIN, bar::TASK_MIN);
+        assert_eq!(m::TASK_H, bar::TASK_H);
+        assert_eq!(m::RING, bar::RING);
+        assert_eq!(m::EYE_DISC, bar::EYE_DISC);
+        assert_eq!(m::EYE_PUPIL, bar::EYE_PUPIL);
+        assert_eq!(m::EYE_WANDER, bar::EYE_WANDER);
+        assert_eq!(m::EYE_GLANCE, bar::EYE_GLANCE);
+        assert_eq!(m::EYE_RECENTRE, bar::EYE_RECENTRE);
+        assert_eq!(m::EYE_RIM, bar::EYE_RIM);
+        assert_eq!(m::EYE_BLEED, bar::EYE_BLEED);
+        assert_eq!(m::EYE_DART_MS, bar::EYE_DART_MS);
+        assert_eq!(m::EYE_RESIZE_MS, bar::EYE_RESIZE_MS);
+        assert_eq!(m::EYE_HOLD_MIN_MS, bar::EYE_HOLD_MIN_MS);
+        assert_eq!(m::EYE_HOLD_MAX_MS, bar::EYE_HOLD_MAX_MS);
+        assert_eq!(m::EYE_FRAME_MS, bar::EYE_FRAME_MS);
+    }
 }
 
 /// Where a popup the bar owns comes from.

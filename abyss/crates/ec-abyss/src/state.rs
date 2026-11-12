@@ -344,6 +344,8 @@ pub struct AbyssState {
     /// Executable of the client currently capturing, for the capture-time
     /// re-check. Never a buffer, never window content.
     pub capture_consumer: Option<std::path::PathBuf>,
+    /// The capture indicator's eye: textures, clock, wake-up timer.
+    pub capture_eye: ec_abyss_render::capture_eye::EyeState,
 
     /// `ext_session_lock_v1` (COMP-10 §5).
     pub session_lock_state: SessionLockManagerState,
@@ -623,6 +625,7 @@ impl AbyssState {
             image_copy,
             captures: Vec::new(),
             capture_seen: None,
+            capture_eye: Default::default(),
             capture_consumer: None,
             text_input_manager_state,
             input_method_manager_state,

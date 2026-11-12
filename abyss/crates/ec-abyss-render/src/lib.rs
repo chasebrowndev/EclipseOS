@@ -10,6 +10,7 @@
 pub mod anim;
 pub mod annotation;
 pub mod blur;
+pub mod capture_eye;
 pub mod context;
 pub mod cursor;
 pub mod curve;

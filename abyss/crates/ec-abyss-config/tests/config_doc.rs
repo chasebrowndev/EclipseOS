@@ -290,6 +290,9 @@ fn generate() -> String {
             if node == "animations" {
                 animations(&mut out);
             }
+            if node == "wallpaper" {
+                out.push_str("The compositor draws the wallpaper itself (ADR 0104): one picture per output, decoded off the main thread and drawn as the bottom-most element, under the background layer, so blur behind translucent windows samples it. A background-layer client still draws over it; `ec-wallpaper` is no longer started by the session but stays installed for other hosts. A colour left at the built-in default follows the theme's base colour. A reload re-reads the file. Screenshots and screen shares include it (it is `public`).\n\n");
+            }
         }
         let cs: Vec<&Collection> = COLLECTIONS.iter().filter(|c| c.owner == owner).collect();
         if !cs.is_empty() {

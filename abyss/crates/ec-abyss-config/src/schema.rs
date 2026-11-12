@@ -2094,6 +2094,16 @@ pub const TABLE: &[Key] = &[
        straight to the notification history; `show` shares them like any \
        other window. Only `show` can put a toast's text in a share.",
     ),
+    k(
+        "ui.capture-indicator-color",
+        Ty::Color,
+        Color(crate::bar::CAPTURE_INDICATOR_COLOR),
+        Abyss,
+        Live,
+        "Pupil colour of the capture indicator, the taskbar's eclipse eye \
+       the compositor draws while a client captures the screen. Alpha is \
+       ignored: the indicator is always opaque.",
+    ),
     // settings: the settings app's own preferences
     k(
         "settings.search.frecency",
@@ -3264,6 +3274,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "launcher.bind.run" => V::Str(c.launcher.bind.run.text.clone()),
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
         "ui.capture-toasts" => V::Str(c.ui.capture_toasts.name().into()),
+        "ui.capture-indicator-color" => V::Color(c.ui.capture_indicator_color),
         "settings.search.frecency" => V::Bool(c.settings.search_frecency),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.titlebar-height" => V::Int(c.decoration.titlebar_height as i64),

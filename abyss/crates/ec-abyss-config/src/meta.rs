@@ -1138,6 +1138,18 @@ pub const META: &[Meta] = &[
         caption: Some("Keyboard hints in the launcher and start menu"),
         ..m("ui.show-key-hints", "Show controls", "system/general", "general")
     },
+    m(
+        "ui.capture-toasts",
+        "Notifications while sharing",
+        "privacy",
+        "capture",
+    ),
+    m(
+        "ui.capture-indicator-color",
+        "Capture indicator colour",
+        "privacy",
+        "capture",
+    ),
     // settings
     Meta {
         pane_label: None,

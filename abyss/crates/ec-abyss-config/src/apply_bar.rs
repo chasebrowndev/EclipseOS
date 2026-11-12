@@ -1033,6 +1033,12 @@ impl Config {
                         "ui capture-toasts must be \"show\", \"redact\", \"hold\" or \"history\"",
                     ),
                 },
+                "capture-indicator-color" => match arg(n).and_then(KdlValue::as_string).and_then(parse_color)
+                {
+                    // Opaque always: a translucent indicator could be hidden.
+                    Some([r, g, b, _]) => self.ui.capture_indicator_color = [r, g, b, 1.0],
+                    None => self.reject(n, "bad color for \"capture-indicator-color\""),
+                },
                 _ => self.unknown_key(n, "ui", "ui key"),
             }
         }

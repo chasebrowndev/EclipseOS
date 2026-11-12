@@ -2170,7 +2170,14 @@ fn render_output(state: &mut AbyssState, index: usize) {
         output_loc,
     ));
     // Trusted UI, above the cursor and never drawn into a capture target.
-    elements.extend(crate::render::capture::indicator(&output, capture_active));
+    elements.extend(crate::render::capture::indicator(
+        renderer,
+        &mut state.capture_eye,
+        &state.config,
+        &state.theme.appearance().seeds,
+        &output,
+        capture_active,
+    ));
     // The region selector (COMP-18 §1.3): untrusted too, but above the
     // annotation pass it is about to feed.
     elements.extend(crate::render::select::selector_elements(

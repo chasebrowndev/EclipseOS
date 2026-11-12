@@ -365,9 +365,17 @@ fn redraw(
             ),
         );
         // Trusted UI, drawn on top of everything and never into a capture.
+        let active = state.capture_active();
         elements.splice(
             0..0,
-            crate::render::capture::indicator(out, state.capture_active()),
+            crate::render::capture::indicator(
+                renderer,
+                &mut state.capture_eye,
+                &state.config,
+                &state.theme.appearance().seeds,
+                out,
+                active,
+            ),
         );
         // A trusted prompt (COMP-10) is front-most of all.
         elements.splice(
