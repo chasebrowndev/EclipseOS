@@ -101,6 +101,13 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "annotation_clear" => contained(state, Feature::Annotations, |s| annotation_clear(s, conn, params)),
         // Idle inhibit held by the calling connection (ADR 0051).
         "set_idle_inhibit" => set_idle_inhibit(state, conn, params),
+        // Session lock state, and running the locker (ADR 0099). No unlock:
+        // only the locker's `unlock_and_destroy` unlocks.
+        "get_lock_state" => {
+            only_keys(params, &[])?;
+            Ok(crate::protocols::standard::session_lock::lock_payload(state))
+        }
+        "lock_session" => lock_session(state, params),
         // The bar's start menu, relayed on the `launcher` event stream.
         "open_launcher" => open_launcher(state, params),
         // The bar's power drawer, relayed on the `power` event stream.
@@ -1398,6 +1405,25 @@ fn set_idle_inhibit(state: &mut AbyssState, conn: u64, params: &Value) -> Reply 
     Ok(json!({"ok": true, "inhibit": inhibit}))
 }
 
+/// Run `idle.lock-command` (ADR 0099), as the idle lock timeout does. A
+/// session held by a live locker answers `spawned: false`; a locked session
+/// whose locker died gets a fresh one, which takes it over. This can only
+/// ever lock: there is no unlock method.
+fn lock_session(state: &mut AbyssState, params: &Value) -> Reply {
+    only_keys(params, &[])?;
+    if state.lock.locker_alive() {
+        return Ok(json!({"ok": true, "spawned": false}));
+    }
+    if state.kiosk {
+        return Err(RpcError::denied("no session to lock in kiosk mode"));
+    }
+    if state.config.idle.lock_command.is_none() {
+        return Err(RpcError::invalid_params("no idle.lock-command is configured"));
+    }
+    let spawned = crate::protocols::standard::session_lock::spawn_locker(state, "control socket");
+    Ok(json!({"ok": true, "spawned": spawned}))
+}
+
 /// Ask the bar to open its start menu (`launcher.style "menu"`,
 /// COMP-13 §2.1). `output` is an output id as `get_outputs` reports it;
 /// absent or null means the focused output, so exactly one bar opens. The
@@ -1589,6 +1615,32 @@ fn agent_install(state: &mut AbyssState, params: &Value) -> Reply {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR 0099: the lock methods' shapes and refusals.
+    #[test]
+    fn get_lock_state_and_lock_session() {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let s = &mut h.state;
+        assert_eq!(
+            dispatch(s, 0, "get_lock_state", &json!({})).ok(),
+            Some(json!({"locked": false, "pending": false, "locker_alive": false}))
+        );
+        assert!(dispatch(s, 0, "get_lock_state", &json!({"x": 1})).is_err());
+        let e = dispatch(s, 0, "lock_session", &json!({})).expect_err("no lock-command");
+        assert_eq!(e.code, ec_abyss_wire::rpc::INVALID_PARAMS);
+        s.config.idle.lock_command = Some("true".into());
+        assert_eq!(
+            dispatch(s, 0, "lock_session", &json!({})).ok(),
+            Some(json!({"ok": true, "spawned": true}))
+        );
+        let state = dispatch(s, 0, "get_lock_state", &json!({}))
+            .ok()
+            .expect("lock state");
+        assert_eq!(state["pending"], json!(true), "the locker was asked for");
+        assert_eq!(state["locked"], json!(false), "running the locker is not locking");
+        s.kiosk = true;
+        assert!(dispatch(s, 0, "lock_session", &json!({})).is_err());
+    }
 
     #[test]
     fn show_decisions_is_rate_limited_to_one_per_second() {

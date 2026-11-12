@@ -18,6 +18,9 @@ ec-fog-config.workspace = true
 ec-fog-widgets.workspace = true
 iced.workspace = true
 jiff.workspace = true
+# Picker mode (ADR 0100): dup2 of /dev/null onto stdout once the result
+# descriptor is set aside. Already in the tree via ec-fog-daemon.
+libc.workspace = true
 
 [features]
 activity = []
