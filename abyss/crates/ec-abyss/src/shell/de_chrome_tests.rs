@@ -1375,3 +1375,66 @@ fn first_window_stays_floating_when_exempt_or_switched_off() {
     let (_, w) = de_window(&mut h, &mut c);
     assert!(!maximize::is_maximized(&h.state, &w), "switched off");
 }
+
+/// Press on the bar, move past the threshold, and report the window moved.
+fn bar_drag_works(h: &mut Harness, w: &Window) -> bool {
+    let before = content(h, w);
+    let p = on_bar_at(h, w, 0.3);
+    move_to(h, p);
+    click(h, LEFT, ButtonState::Pressed);
+    move_to(h, pt(p.x + 60.0, p.y + 40.0));
+    let moved = h.state.pointer_grab_active && content(h, w).loc == before.loc + Point::from((60, 40));
+    click(h, LEFT, ButtonState::Released);
+    moved
+}
+
+#[test]
+fn a_gesture_drag_that_never_ended_does_not_kill_the_bar_drag() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_, w) = de_window(&mut h, &mut c);
+    crate::input::grabs::begin_gesture_drag_for_test(&mut h.state, &w);
+    assert!(bar_drag_works(&mut h, &w));
+    assert!(h.state.gesture_drag.is_none());
+}
+
+#[test]
+fn a_stale_pointer_grab_flag_does_not_kill_the_bar_drag() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_, w) = de_window(&mut h, &mut c);
+    h.state.pointer_grab_active = true;
+    assert!(bar_drag_works(&mut h, &w));
+    assert!(!h.state.pointer_grab_active, "the release ended the grab");
+}
+
+#[test]
+fn a_stale_implicit_click_grab_does_not_kill_the_bar_drag() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_, w) = de_window(&mut h, &mut c);
+    // A press in the client whose release never reached the seat.
+    let inside = content(&h, &w).loc.to_f64() + Point::from((50.0, 40.0));
+    move_to(&mut h, inside);
+    click(&mut h, LEFT, ButtonState::Pressed);
+    assert!(
+        h.state.seat.get_pointer().unwrap().is_grabbed(),
+        "smithay implicit click grab"
+    );
+    assert!(bar_drag_works(&mut h, &w));
+    assert!(!h.state.pointer_grab_active);
+}
+
+#[test]
+fn lost_releases_do_not_pile_up_swallow_slots() {
+    let mut h = harness();
+    let mut c = Client::connect(&mut h);
+    let (_, w) = de_window(&mut h, &mut c);
+    let p = on_bar_at(&h, &w, 0.3);
+    move_to(&mut h, p);
+    for _ in 0..6 {
+        click(&mut h, LEFT, ButtonState::Pressed);
+    }
+    click(&mut h, LEFT, ButtonState::Released);
+    assert!(h.state.bar_ui.swallowed_is_clear(), "one slot per button");
+}
