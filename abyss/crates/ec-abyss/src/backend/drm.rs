@@ -2134,6 +2134,9 @@ fn describe_elements(elements: &[crate::render::overscan::OutputElement], scale:
 
 /// Composite and page-flip one output. A no-op when the session is inactive.
 fn render_output(state: &mut AbyssState, index: usize) {
+    // The vblank this frame aims at is the one after the render *starts*: a
+    // render that overruns it lands a vblank late, which `on_vblank` must see.
+    let frame_start: Duration = state.clock.now().into();
     // Every frame path (VBlank, schedule, retry) lands here, not in `render`.
     crate::shell::tick_retile_hold(state);
     // Commit slots follow their window this frame, not 50 ms later.
@@ -2536,12 +2539,14 @@ fn render_output(state: &mut AbyssState, index: usize) {
         state.stats.record(render_time, submit_start.elapsed());
         if let Some(drm) = state.drm.as_mut() {
             let o = &mut drm.outputs[index];
-            o.estimate.record(frame_time);
             // The vblank this frame is aimed at, for `on_vblank`'s miss check.
+            // Only queued frames feed the estimate: empty and failed ones are
+            // cheap and would pull the lead toward zero.
             o.target_vblank = if queued {
+                o.estimate.record(frame_time);
                 let period = frame_period(output.current_mode().map_or(0, |m| m.refresh));
-                let now: Duration = state.clock.now().into();
-                o.last_vblank.and_then(|l| deadline::next_vblank(l, period, now))
+                o.last_vblank
+                    .and_then(|l| deadline::next_vblank(l, period, frame_start))
             } else {
                 None
             };
