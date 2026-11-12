@@ -186,6 +186,28 @@ output. Beyond that:
   - `linux`, `vmlinuz-linux` and `pacman`'s `[core]`/`[extra]` stay as they
     are: they belong to upstream packages, and renaming them would fork them.
 
+- **Updates the owner has tested first: a pinned upstream snapshot.** Asked
+  for on 2026-11-12, after the owner chose a derivative over a fork. An Arch
+  fork (rebuilding, signing and mirroring ~14k packages) was weighed and
+  rejected: it is a distribution team's work, and the bus factor is one. The
+  derivative layer gets the same control where it matters:
+  - Installed machines pull `[core]`/`[extra]` from a dated Arch Linux Archive
+    snapshot (`archive.archlinux.org/repos/YYYY/MM/DD/`), not live mirrors.
+    `eclipseos-meta` owns the mirrorlist drop-in that names the date.
+  - The snapshot moves forward only after an upgrade smoke test passes: CI
+    boots the current ISO in qemu, upgrades it to the candidate date plus
+    `repo-x86_64`, and checks the greeter, the session and a share/lock round
+    trip. A release then bumps the date in the drop-in. Manjaro holds
+    packages back this way.
+  - A package that breaks EclipseOS is overridden by our own build in
+    `repo-x86_64`, listed above `[core]`/`[extra]`, until upstream catches up.
+    It is never patched in place on users' machines.
+  - Security fixes can't wait for the next scheduled bump. Allow an
+    out-of-band date bump, still gated on the smoke test.
+  - This builds on the clean-update work: dev installs through packages,
+    `ec-ctl repo enable`, and a pre-update check that refuses an upgrade that
+    would need `--overwrite`.
+
 ---
 
 ## RGB lighting
