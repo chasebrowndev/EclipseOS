@@ -346,6 +346,7 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
 | `ui.show-key-hints` | bool | `#true` | live | Show the keyboard control hints in the launcher and the start menu. |
+| `ui.capture-toasts` | show \| redact \| hold \| history | `"redact"` | live | What notification toasts do while a screen is being shared or recorded (ADR 0106). `redact` covers the toast in the shared image with a "Private: Redacted" card and shows it to you normally; `hold` keeps toasts back until the share ends; `history` sends them straight to the notification history; `show` shares them like any other window. Only `show` can put a toast's text in a share. |
 
 ### `settings`
 
@@ -524,7 +525,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
 | `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |
 | `idle-inhibit` | `abyss.kdl` | `idle-inhibit` | Hold the idle timers off while the window is mapped. |
-| `sensitivity secret \| normal` | `policy.kdl` | `sensitivity secret`<br>`sensitivity normal` | Raise the capture sensitivity class. Raise-only: `public` is refused. |
+| `sensitivity secret \| normal` | `policy.kdl` | `sensitivity secret`<br>`sensitivity normal` | Raise the capture sensitivity class. Raise-only: `public` is refused. `secret` windows are withheld from every capture and shown there as a "Private: Redacted" card (ADR 0106); the image ships `secret` rules for common password managers in `/etc/eclipse/policy.kdl`. On an X11 (XWayland) window `secret` only redacts captures: its class stays `normal`, and other X11 clients can still read the window through the X server (COMP-07 §2). |
 | `app-trust standard \| trusted` | `policy.kdl` | `app-trust standard`<br>`app-trust trusted` | Trust level (COMP-07 §2). Clamped to `standard` for X11 windows. |
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |

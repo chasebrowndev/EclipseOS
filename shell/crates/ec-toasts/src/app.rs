@@ -8,7 +8,7 @@ use iced::window::Id;
 use iced::{Subscription, Task};
 use iced_layershell::to_layer_message;
 
-use ec_services::notifications::{CloseReason, Event, Notification, Notifications};
+use ec_services::notifications::{CloseReason, Event, Notification, Notifications, Share};
 use ec_ui::ipc::EventAnim;
 use ec_ui::motion::{Motion, Tween};
 
@@ -264,6 +264,12 @@ pub struct App {
     /// daemon is running, and we must not steal it. The surface then stays
     /// empty for the rest of its life rather than half-serving the session.
     pub service: Option<Notifications>,
+    /// Whether a screen share is running and what toasts do then
+    /// (`ui.capture-toasts`, ADR 0106).
+    pub share: Share,
+    /// Arrivals kept back by `hold` while a share ran, oldest first. They go
+    /// to the stack the tick after it ends; a withdrawal removes them here.
+    pub held: Vec<Notification>,
     pub toasts: Vec<Toast>,
     /// The stack's layer surface, while it has one. There is none while
     /// nothing is drawn: an empty surface, however small, is still a region
@@ -302,8 +308,12 @@ impl Default for App {
 impl App {
     pub fn new() -> Self {
         let (radius, blur) = crate::conn::fetch_glass();
+        let service = ec_services::notifications::spawn().ok();
+        let share = service.as_ref().map(|s| s.share().clone()).unwrap_or_default();
         App {
-            service: ec_services::notifications::spawn().ok(),
+            service,
+            share,
+            held: Vec::new(),
             toasts: Vec::new(),
             surface: None,
             height: 0,
@@ -486,6 +496,44 @@ fn post(toasts: &mut Vec<Toast>, notification: Notification) {
     }
 }
 
+/// Fold one bus event into the app, keeping arrivals back while `hold` is on
+/// and a share runs (ADR 0106). A replacement of a held toast replaces it in
+/// the queue, so the stack never sees the stale text.
+fn admit(app: &mut App, event: Event) {
+    match event {
+        Event::Posted(notification) if app.share.holding() => {
+            let id = notification.id;
+            match app.held.iter_mut().find(|n| n.id == id) {
+                Some(slot) => *slot = *notification,
+                None => app.held.push(*notification),
+            }
+            // It replaces a toast already on screen: that one goes now.
+            app.leave(id);
+        }
+        Event::Posted(notification) => {
+            app.refresh_anim();
+            post(&mut app.toasts, *notification);
+        }
+        // The sender withdrew it; it is already gone as far as the
+        // bus is concerned, so we do not report the close back.
+        Event::Closed { id, .. } => {
+            app.held.retain(|n| n.id != id);
+            app.leave(id);
+        }
+    }
+}
+
+/// Show what `hold` kept back, once the share has ended (or the mode changed).
+fn release_held(app: &mut App) {
+    if app.held.is_empty() || app.share.holding() {
+        return;
+    }
+    app.refresh_anim();
+    for n in std::mem::take(&mut app.held) {
+        post(&mut app.toasts, n);
+    }
+}
+
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
     match message {
         Message::ThemeChanged => return Task::none(),
@@ -500,18 +548,9 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             // `Closed` for an id not on screen is a quiet arrival replacing
             // nothing, or a withdrawal that lost a race: `leave` finds no
             // card and there is nothing to do.
+            release_held(app);
             while let Some(event) = app.service.as_ref().and_then(Notifications::try_recv) {
-                match event {
-                    Event::Posted(notification) => {
-                        app.refresh_anim();
-                        post(&mut app.toasts, *notification);
-                    }
-                    // The sender withdrew it; it is already gone as far as the
-                    // bus is concerned, so we do not report the close back.
-                    Event::Closed { id, .. } => {
-                        app.leave(id);
-                    }
-                }
+                admit(app, event);
             }
             let now = app.now;
             let anim = app.anim.clone();
@@ -735,6 +774,8 @@ mod tests {
     fn app() -> App {
         App {
             service: None,
+            share: Share::default(),
+            held: Vec::new(),
             toasts: Vec::new(),
             surface: None,
             height: 0,
@@ -747,6 +788,84 @@ mod tests {
             pinned: HashSet::new(),
             drag: None,
         }
+    }
+
+    fn posted(id: u32) -> Event {
+        Event::Posted(Box::new(notification(id, None)))
+    }
+
+    /// ADR 0106: `hold` keeps arrivals back for as long as the share runs, then
+    /// shows them in order.
+    #[test]
+    fn hold_keeps_toasts_back_until_the_share_ends() {
+        let mut a = app();
+        a.share.set_mode(ec_services::notifications::ToastMode::Hold);
+        a.share.set_active(true);
+        admit(&mut a, posted(1));
+        admit(&mut a, posted(2));
+        assert!(a.toasts.is_empty());
+        assert_eq!(a.held.len(), 2);
+        release_held(&mut a);
+        assert!(a.toasts.is_empty(), "still sharing");
+        a.share.set_active(false);
+        release_held(&mut a);
+        assert!(a.held.is_empty());
+        let ids: Vec<u32> = a.toasts.iter().map(|t| t.notification.id).collect();
+        assert_eq!(ids, [1, 2]);
+    }
+
+    #[test]
+    fn a_held_toast_can_be_replaced_or_withdrawn() {
+        let mut a = app();
+        a.share.set_mode(ec_services::notifications::ToastMode::Hold);
+        a.share.set_active(true);
+        admit(&mut a, posted(1));
+        let mut newer = notification(1, None);
+        newer.summary = "Newer".into();
+        admit(&mut a, Event::Posted(Box::new(newer)));
+        assert_eq!(a.held.len(), 1);
+        assert_eq!(a.held[0].summary, "Newer");
+        admit(&mut a, posted(2));
+        admit(
+            &mut a,
+            Event::Closed {
+                id: 2,
+                reason: CloseReason::ByCall,
+            },
+        );
+        assert_eq!(a.held.len(), 1);
+    }
+
+    /// The other modes, and `hold` with no share, show a toast at once.
+    #[test]
+    fn nothing_is_held_outside_hold_mode_or_a_share() {
+        use ec_services::notifications::ToastMode;
+        for (mode, active) in [
+            (ToastMode::Hold, false),
+            (ToastMode::Show, true),
+            (ToastMode::Redact, true),
+            (ToastMode::History, true),
+        ] {
+            let mut a = app();
+            a.share.set_mode(mode);
+            a.share.set_active(active);
+            admit(&mut a, posted(1));
+            assert!(a.held.is_empty(), "{mode:?} {active}");
+            assert_eq!(a.toasts.len(), 1);
+        }
+    }
+
+    /// Ending hold mode mid-share releases what it held.
+    #[test]
+    fn leaving_hold_mode_releases_the_queue() {
+        use ec_services::notifications::ToastMode;
+        let mut a = app();
+        a.share.set_mode(ToastMode::Hold);
+        a.share.set_active(true);
+        admit(&mut a, posted(1));
+        a.share.set_mode(ToastMode::Show);
+        release_held(&mut a);
+        assert_eq!(a.toasts.len(), 1);
     }
 
     /// `replaces_id` is a replacement, not a second notification.

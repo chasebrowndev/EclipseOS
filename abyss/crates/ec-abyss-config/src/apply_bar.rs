@@ -1023,6 +1023,16 @@ impl Config {
                     Some(Some(b)) => self.ui.show_key_hints = b,
                     Some(None) => self.reject(n, "ui show-key-hints expects #true or #false"),
                 },
+                "capture-toasts" => match arg(n)
+                    .and_then(KdlValue::as_string)
+                    .and_then(CaptureToasts::parse)
+                {
+                    Some(m) => self.ui.capture_toasts = m,
+                    None => self.reject(
+                        n,
+                        "ui capture-toasts must be \"show\", \"redact\", \"hold\" or \"history\"",
+                    ),
+                },
                 _ => self.unknown_key(n, "ui", "ui key"),
             }
         }

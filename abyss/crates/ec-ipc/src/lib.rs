@@ -64,6 +64,9 @@ pub enum EventKind {
     /// The effective scheme or active theme's seeds changed; the payload is the
     /// `get_theme` reply (ADR 0084).
     Theme,
+    /// A human capture (screen share, recording) started or stopped:
+    /// `{"active": bool}` (ADR 0106).
+    Capture,
     /// A contained panic turned a compositor feature off for the rest of the
     /// session: `{"feature": "overview" | "annotations" | "queries"}`, plus `"method"` for a query method. Replayed
     /// on every `subscribe` while it stands (ADR 0102).
@@ -87,6 +90,7 @@ impl EventKind {
         EventKind::Phrase,
         EventKind::DecisionsPending,
         EventKind::Theme,
+        EventKind::Capture,
         EventKind::FeatureDisabled,
         EventKind::Lock,
     ];
@@ -106,6 +110,7 @@ impl EventKind {
             EventKind::Phrase => "phrase",
             EventKind::DecisionsPending => "decisions_pending",
             EventKind::Theme => "theme",
+            EventKind::Capture => "capture",
             EventKind::FeatureDisabled => "feature-disabled",
             EventKind::Lock => "lock",
         }
@@ -153,6 +158,14 @@ pub struct Event {
 }
 
 impl Event {
+    /// The `active` flag of a `capture` event.
+    pub fn capture_active(&self) -> Option<bool> {
+        if self.kind != EventKind::Capture {
+            return None;
+        }
+        self.data.get("active")?.as_bool()
+    }
+
     /// The payload of a `lock` event.
     pub fn lock_state(&self) -> Option<LockState> {
         if self.kind != EventKind::Lock {

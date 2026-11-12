@@ -310,11 +310,17 @@ impl Default for LauncherBinds {
 pub struct Ui {
     /// Show the keyboard hint line in the launcher and the start menu.
     pub show_key_hints: bool,
+    /// What toasts do while a screen is shared (ADR 0106); the compositor
+    /// reads it for capture redaction, ec-toasts for hold and history.
+    pub capture_toasts: crate::CaptureToasts,
 }
 
 impl Default for Ui {
     fn default() -> Self {
-        Self { show_key_hints: true }
+        Self {
+            show_key_hints: true,
+            capture_toasts: crate::CaptureToasts::Redact,
+        }
     }
 }
 

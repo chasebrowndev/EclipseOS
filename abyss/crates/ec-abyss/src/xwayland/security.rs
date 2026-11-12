@@ -31,6 +31,11 @@ pub struct X11Class {
     pub seat_compat: SeatCompat,
     /// Stamped onto every audit record touching this window (COMP-07 §2).
     pub xwayland: bool,
+    /// A rule asked for `secret`: the window is withheld from compositor
+    /// captures (ADR 0106, the COMP-07 §2 amendment). This is capture
+    /// redaction only. [`Self::sensitivity`] stays `normal`, and any other
+    /// X11 client can still read the window through the X server.
+    pub redact_capture: bool,
 }
 
 impl Default for X11Class {
@@ -40,6 +45,7 @@ impl Default for X11Class {
             app_trust: AppTrust::Standard,
             seat_compat: SeatCompat::Lock,
             xwayland: true,
+            redact_capture: false,
         }
     }
 }
@@ -48,22 +54,25 @@ impl Default for X11Class {
 /// actually deliver (COMP-07 §2).
 ///
 /// - the default is `private`, and a request may only *raise* it;
-/// - `secret` is refused outright and logged — inside a domain where any X11
-///   client can screenshot the window, the guarantee would be a lie;
+/// - the *class* is never `secret` — inside a domain where any X11 client can
+///   screenshot the window, an isolation guarantee would be a lie. A request
+///   for it instead sets [`X11Class::redact_capture`], which only keeps the
+///   window out of compositor captures (ADR 0106);
 /// - `app_trust` never exceeds `standard`;
 /// - `seat_compat` is always `lock` and no rule can override it.
 ///
 /// `class` is the window's X11 class name (`WM_CLASS`), used only for the
-/// refusal log line.
+/// log line.
 pub fn classify(class: &str, requested: Option<Sensitivity>, requested_trust: Option<AppTrust>) -> X11Class {
     let mut out = X11Class::default();
 
     match requested {
         Some(Sensitivity::Secret) => {
-            tracing::warn!(
+            out.redact_capture = true;
+            tracing::info!(
                 x11_class = class,
-                "refusing `secret` classification for an X11 window: XWayland cannot \
-                 isolate it from other X11 clients; keeping `private` (COMP-07 §2)"
+                "X11 window marked `secret` for capture redaction only: XWayland cannot \
+                 isolate it from other X11 clients; class stays `normal` (COMP-07 §2)"
             );
         }
         // Ratchet: a request may tighten, never loosen.
@@ -101,13 +110,16 @@ mod tests {
         assert!(c.xwayland);
     }
 
-    /// COMP-07 §6: `secret` on an X11 window is refused.
+    /// COMP-07 §2/§6: `secret` on an X11 window never becomes its class; it
+    /// only asks for capture redaction.
     #[test]
-    fn secret_is_refused() {
-        assert_eq!(
-            classify("Steam", Some(Sensitivity::Secret), None).sensitivity,
-            Sensitivity::Normal
-        );
+    fn secret_redacts_capture_but_is_never_the_class() {
+        let c = classify("Steam", Some(Sensitivity::Secret), None);
+        assert_eq!(c.sensitivity, Sensitivity::Normal);
+        assert!(c.redact_capture);
+        for s in [None, Some(Sensitivity::Public), Some(Sensitivity::Normal)] {
+            assert!(!classify("Steam", s, None).redact_capture);
+        }
     }
 
     /// The default never drops to `public` (COMP-07 §2).

@@ -26,6 +26,7 @@ pub mod overscan;
 pub mod overview;
 pub mod palette;
 pub mod popup_shape;
+pub mod redact;
 pub mod sanitize;
 pub mod select;
 pub mod stats;
@@ -486,6 +487,8 @@ type PaneShadow = (PixelShaderElement, [f32; 6], f32);
 /// ADR 0084).
 #[derive(Default)]
 pub struct BorderGpu {
+    /// The redaction card's textures (ADR 0106).
+    pub(crate) redact: redact::Textures,
     /// Rounded-corner texture program, compiled on the first frame that rounds.
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     /// Tint-keyed texture program (ADR 0079), compiled on the first frame a
