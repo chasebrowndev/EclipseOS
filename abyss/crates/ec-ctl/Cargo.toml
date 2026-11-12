@@ -20,9 +20,6 @@ libc = "0.2"
 kdl.workspace = true
 # The progress feed wire contract (`ec-ctl progress`). ec-ipc is serde_json + libc.
 ec-ipc = { path = "../ec-ipc" }
-
-[dev-dependencies]
-# Only so `tests/schema_drift.rs` can compare this crate's copy of the
-# policy-owned key list against the schema it mirrors. Not linked into the
-# shipped binary.
+# Key ownership (`schema::get_key(..).owner`) for the policy/main file split,
+# and the schema drift test. State-free: no smithay, no calloop.
 ec-abyss-config = { path = "../ec-abyss-config" }
