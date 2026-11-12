@@ -10,7 +10,7 @@
 /// A dialog window: width and height, logical px. Fixed, so abyss floats it
 /// without a rule, like `ec-secret-prompt`.
 pub const SOURCE_W: f32 = 720.0;
-pub const SOURCE_H: f32 = 640.0;
+pub const SOURCE_H: f32 = 650.0;
 pub const SHEET_W: f32 = 480.0;
 pub const SHEET_H: f32 = 380.0;
 pub const SHOT_W: f32 = 600.0;
@@ -32,9 +32,11 @@ pub const AVATAR_GAP: f32 = 16.0;
 /// Tiles per row in the source grid, and how tall the grid's viewport is
 /// (two rows and a hint of the third, so a long list shows it scrolls).
 pub const GRID_COLS: usize = 3;
-pub const GRID_H: f32 = 330.0;
+pub const GRID_H: f32 = 345.0;
 /// A tile's thumbnail well.
-pub const THUMB_H: f32 = 92.0;
+pub const THUMB_H: f32 = 112.0;
+/// A short list (one row) gets taller wells: the picture is the hero.
+pub const THUMB_H_TALL: f32 = 170.0;
 /// Padding inside a tile, around the well and the caption.
 pub const TILE_PAD: f32 = 8.0;
 /// Between a tile's well and its caption lines.
@@ -45,10 +47,16 @@ pub const RING: f32 = 1.5;
 pub const DOT: f32 = 8.0;
 
 /// The placeholder monitor and window drawn in a thumbnail well.
-pub const GLYPH_SCREEN_W: f32 = 56.0;
-pub const GLYPH_SCREEN_H: f32 = 34.0;
-pub const GLYPH_WINDOW_W: f32 = 44.0;
-pub const GLYPH_WINDOW_H: f32 = 30.0;
+pub const GLYPH_SCREEN_H: f32 = 40.0;
+/// Default and clamp for a placeholder screen's width over height.
+pub const GLYPH_ASPECT: f32 = 16.0 / 10.0;
+pub const GLYPH_ASPECT_MIN: f32 = 1.2;
+pub const GLYPH_ASPECT_MAX: f32 = 2.4;
+pub const GLYPH_WINDOW_W: f32 = 64.0;
+pub const GLYPH_WINDOW_H: f32 = 44.0;
+/// Body lines in the placeholder window.
+pub const GLYPH_LINE_H: f32 = 3.0;
+pub const GLYPH_LINE_GAP: f32 = 4.0;
 pub const GLYPH_BAR_H: f32 = 5.0;
 pub const GLYPH_STROKE: f32 = 1.5;
 /// Air between the screen outline and the region drawn in it.
