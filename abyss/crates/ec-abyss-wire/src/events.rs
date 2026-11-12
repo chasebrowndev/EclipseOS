@@ -22,6 +22,9 @@ pub const EVENTS: &[&str] = &[
     "decisions_pending",
     // ADR 0084: the effective scheme or the active theme's seeds changed.
     "theme",
+    // ADR 0102: a contained panic turned a feature off for the session:
+    // `{"feature": "<name>"}`, plus `"method"` when one query method went off. Replayed on `subscribe` while it stands.
+    "feature-disabled",
     // ADR 0099: `{locked, pending, locker_alive}`, on every change.
     "lock",
 ];

@@ -18,20 +18,45 @@ use smithay::{
 };
 
 use super::RpcError;
-use crate::state::AbyssState;
+use crate::{
+    contain::{Feature, Query},
+    state::AbyssState,
+};
 
 type Reply = Result<Value, RpcError>;
 
+/// Run one method of a contained feature (ADR 0102). Off, whether just now or
+/// earlier in the session, the method is refused before it runs.
+fn contained(state: &mut AbyssState, feature: Feature, f: impl FnOnce(&mut AbyssState) -> Reply) -> Reply {
+    crate::contain::contain(state, feature, f).unwrap_or_else(|| {
+        Err(RpcError::denied(&format!(
+            "{} is off for this session after an internal error",
+            feature.name()
+        )))
+    })
+}
+
+/// [`contained`] for one query method: only that method turns off.
+fn query(state: &mut AbyssState, q: Query, f: impl FnOnce(&mut AbyssState) -> Reply) -> Reply {
+    crate::contain::contain_query(state, q, f).unwrap_or_else(|| {
+        Err(RpcError::denied(&format!(
+            "{} is off for this session after an internal error",
+            q.name()
+        )))
+    })
+}
+
 pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value) -> Reply {
     match method {
-        // Queries.
-        "get_workspaces" => get_workspaces(state),
-        "get_desktop_grid" => get_desktop_grid(state, params),
-        "get_outputs" => get_outputs(state, params),
-        "get_windows" => get_windows(state),
-        "get_focused" => get_focused(state),
-        "get_metrics" => get_metrics(state),
-        "dump_state" => dump_state(state),
+        // Queries. Read-only, so a panic in one is contained (ADR 0102): the
+        // reply being built unwinds unsent and the queries turn off.
+        "get_workspaces" => query(state, Query::GetWorkspaces, get_workspaces),
+        "get_desktop_grid" => query(state, Query::GetDesktopGrid, |s| get_desktop_grid(s, params)),
+        "get_outputs" => query(state, Query::GetOutputs, |s| get_outputs(s, params)),
+        "get_windows" => query(state, Query::GetWindows, get_windows),
+        "get_focused" => query(state, Query::GetFocused, get_focused),
+        "get_metrics" => query(state, Query::GetMetrics, get_metrics),
+        "dump_state" => query(state, Query::DumpState, dump_state),
         // Subscription.
         "subscribe" => subscribe(state, conn, params),
         "unsubscribe" => unsubscribe(state, conn),
@@ -46,8 +71,8 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "switch_workspace" => switch_workspace(state, params),
         "switch_desktop_direction" => switch_desktop_direction(state, params),
         "open_window_menu" => open_window_menu(state, params),
-        "show_window_preview" => show_window_preview(state, params),
-        "hide_window_preview" => hide_window_preview(state, params),
+        "show_window_preview" => contained(state, Feature::Overview, |s| show_window_preview(s, params)),
+        "hide_window_preview" => contained(state, Feature::Overview, |s| hide_window_preview(s, params)),
         "resize" => resize(state, params),
         "move_workspace_to_output" => move_workspace_to_output(state, params),
         "set_output" => set_output(state, params),
@@ -63,10 +88,17 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         "drag_at" => scripted(state, |s| drag_at(s, params)),
         // Annotation overlays (COMP-18 §3). `conn` is the owner: a caller may
         // address only the handles it created.
-        "annotation_create" => annotation_create(state, conn, params),
-        "annotation_update" => annotation_update(state, conn, params),
-        "annotation_destroy" => annotation_destroy(state, conn, params),
-        "annotation_clear" => annotation_clear(state, conn, params),
+        // Contained (ADR 0102): a panic drops every annotation and turns them off.
+        "annotation_create" => contained(state, Feature::Annotations, |s| {
+            annotation_create(s, conn, params)
+        }),
+        "annotation_update" => contained(state, Feature::Annotations, |s| {
+            annotation_update(s, conn, params)
+        }),
+        "annotation_destroy" => contained(state, Feature::Annotations, |s| {
+            annotation_destroy(s, conn, params)
+        }),
+        "annotation_clear" => contained(state, Feature::Annotations, |s| annotation_clear(s, conn, params)),
         // Idle inhibit held by the calling connection (ADR 0051).
         "set_idle_inhibit" => set_idle_inhibit(state, conn, params),
         // Session lock state, and running the locker (ADR 0099). No unlock:
@@ -95,10 +127,10 @@ pub fn dispatch(state: &mut AbyssState, conn: u64, method: &str, params: &Value)
         }
         "agent_install" => agent_install(state, params),
         // ADR 0084: the effective scheme, theme name and seeds.
-        "get_theme" => {
+        "get_theme" => query(state, Query::GetTheme, |s| {
             only_keys(params, &[])?;
-            Ok(crate::theme::payload(state))
-        }
+            Ok(crate::theme::payload(s))
+        }),
         // Config read/write (COMP-13 §1.4). The outer gate already returned
         // `Allow` to reach this line; `config_rpc` tightens onto it per file.
         "get_config"
@@ -372,6 +404,7 @@ fn retarget(state: &mut AbyssState, window: &Window) {
 // ---------------------------------------------------------------- queries
 
 fn get_workspaces(state: &mut AbyssState) -> Reply {
+    crate::contain::fault(Feature::Queries);
     let mut out = Vec::new();
     for entry in state.outputs.iter() {
         for (i, ws) in entry.workspaces.iter().enumerate() {
@@ -614,6 +647,11 @@ fn subscribe(state: &mut AbyssState, conn: u64, params: &Value) -> Reply {
     // repeatedly, for as long as it stands. A clean load clears it.
     if let Some(event) = state.config_error.clone() {
         crate::ipc::emit_to(state, conn, "config-error", event);
+    }
+    // ADR 0102: a feature a contained panic turned off stays off, so a
+    // subscriber that connected later hears about it too.
+    for payload in state.contained.payloads() {
+        crate::ipc::emit_to(state, conn, "feature-disabled", payload);
     }
     Ok(json!({"subscribed": wanted}))
 }
@@ -1323,6 +1361,7 @@ fn annotation_create(state: &mut AbyssState, conn: u64, params: &Value) -> Reply
     else {
         return Err(RpcError::invalid_params("too many live annotations"));
     };
+    crate::contain::fault(Feature::Annotations);
     crate::backend::damage_all(state);
     Ok(json!({"ok": true, "id": id.0}))
 }
