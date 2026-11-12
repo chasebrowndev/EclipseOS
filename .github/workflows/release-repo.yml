@@ -75,7 +75,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed git github-cli rustup pkgconf sudo gnupg \
             fontconfig freetype2 clang cmake \
-            wayland libxkbcommon libinput libdrm libdisplay-info mesa seatd
+            wayland libxkbcommon libinput libdrm libdisplay-info mesa seatd libpipewire
           useradd -m builder
           # No split -debug package: it is not published, and it doubles the
           # disk the build needs.
