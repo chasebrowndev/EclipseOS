@@ -907,6 +907,9 @@ mod tests {
             "capture.allow",
             "capture.redact-app-id",
             "capture.hide-layer",
+            // ADR 0094: the privileged globals admit by executable path.
+            "input-method.allow",
+            "virtual-pointer.allow",
         ];
         for p in OLD {
             assert!(is_policy_key(p), "{p}");

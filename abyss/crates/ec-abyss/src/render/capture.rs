@@ -11,15 +11,7 @@
 //! backends, never here, so it cannot be captured by construction.
 
 use smithay::{
-    backend::renderer::{
-        damage::OutputDamageTracker,
-        element::{
-            solid::{SolidColorBuffer, SolidColorRenderElement},
-            Kind,
-        },
-        gles::GlesRenderer,
-        Bind, ExportMem, Offscreen,
-    },
+    backend::renderer::{damage::OutputDamageTracker, gles::GlesRenderer, Bind, ExportMem, Offscreen},
     desktop::{layer_map_for_output, Window},
     output::Output,
     reexports::{
@@ -306,10 +298,6 @@ pub fn mark_sensitive(state: &mut AbyssState, window: &Window) {
     }
 }
 
-fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
-    p.to_f64().to_physical(scale).to_i32_round()
-}
-
 /// Build the capture pass list for one output, with redaction applied.
 ///
 /// Returns the elements front-to-back and the redaction decisions taken. The
@@ -396,6 +384,7 @@ pub fn capture_elements(
         &mut redacted,
     );
     // The compositor wallpaper, bottom-most: `public` chrome, no client behind it.
+    let scale = Scale::from(output.current_scale().fractional_scale());
     elements.extend(crate::outputs::wallpaper::capture_element(
         state, renderer, output, scale,
     ));
