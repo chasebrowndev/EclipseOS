@@ -93,6 +93,10 @@ writing a new ADR that says so.
 | 0100 | [The portal file chooser is ec-portal driving Fog's picker](0100-portal-file-chooser.md) | proposed |
 | 0101 | [A bad Abyss update falls back to the previous build](0101-update-rollback.md) | proposed |
 | 0102 | [Panic containment for non-essential features](0102-panic-containment.md) | proposed |
+| 0103 | [One workspace and one lockfile for the OS](0103-one-workspace-one-lockfile.md) | proposed |
+| 0104 | [Shell pane memory: measure, trim, then decide](0104-shell-process-consolidation.md) | proposed |
+| 0105 | [Render thread: measure first, then a numeric rule](0105-render-thread-and-frame-baselines.md) | proposed |
+| 0106 | [Redacted screen sharing as a desktop feature](0106-redacted-screen-sharing.md) | proposed |
 | 0107 | [A config key's presentation lives beside its schema row](0107-config-schema-single-source.md) | proposed |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
