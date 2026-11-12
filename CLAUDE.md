@@ -13,7 +13,7 @@ agent is for. See "Working style" below.
 - No state mutation before `check()` returns `Allow`. Policy is fail-closed:
   unknown request, missing table entry, or an unavailable `policyd` = deny.
 - App-declared sensitivity may only raise a class, never lower it. Default
-  class is `private`.
+  class is `normal`.
 - `password`-role values are never delivered, logged, or stored.
 - Human input is never logged by content (keystrokes, clipboard, IME).
 - **Single-threaded core.** One `calloop` loop owns `AbyssState`. No locks on

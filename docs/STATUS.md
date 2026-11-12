@@ -270,7 +270,7 @@ macros anywhere in the workspace.
 7. **`windowrule` is complete except `launching-principal`**
    (COMP-05 §4). `shell/rules.rs` matches at map time and re-evaluates on every
    commit; `float`, `tile`, `workspace N`, `size WxH`, `position X,Y`,
-   `output NAME`, `opacity F`, `blur true|false`, `fullscreen`, `sensitivity secret|private` (raise-only),
+   `output NAME`, `opacity F`, `blur true|false`, `fullscreen`, `sensitivity secret|normal` (raise-only),
    `app-trust`, `seat-compat`, `idle-inhibit`, `no-focus-steal` and `no-agent`
    all parse and apply. `no-agent`, `app-trust` and `seat-compat` set state
    nothing reads yet — COMP-08 `list_toplevels` and the COMP-04 §8 focus locks

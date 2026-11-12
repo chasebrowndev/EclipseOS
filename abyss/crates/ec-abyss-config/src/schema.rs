@@ -2734,8 +2734,8 @@ pub const RULE_ACTION_FORMS: &[Form] = &[
     ),
     form(
         &["sensitivity"],
-        "secret | private",
-        &["sensitivity secret", "sensitivity private"],
+        "secret | normal",
+        &["sensitivity secret", "sensitivity normal"],
         "Raise the capture sensitivity class. Raise-only: `public` is refused.",
     ),
     form(

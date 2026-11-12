@@ -64,7 +64,7 @@ pub fn regex(src: &str) -> Result<Regex, TableError> {
 fn class_str(c: Class) -> &'static str {
     match c {
         Class::Public => "public",
-        Class::Private => "private",
+        Class::Normal => "normal",
         Class::Secret => "secret",
     }
 }
@@ -72,7 +72,7 @@ fn class_str(c: Class) -> &'static str {
 pub fn class_of(s: &str) -> Option<Class> {
     Some(match s {
         "public" => Class::Public,
-        "private" => Class::Private,
+        "normal" | "private" => Class::Normal,
         "secret" => Class::Secret,
         _ => return None,
     })
@@ -609,7 +609,7 @@ mod tests {
             version: 7,
             rules: Phases::default(),
             classifier: Classifier {
-                default: Class::Private,
+                default: Class::Normal,
                 classify: vec![
                     ClassifyRule {
                         class: Class::Secret,
@@ -710,7 +710,7 @@ mod tests {
             capability: "click",
             app_id: None,
             title: None,
-            class: Class::Private,
+            class: Class::Normal,
             app_trust: Trust::Standard,
             app_irreversible_capable: false,
             node: None,

@@ -16,7 +16,7 @@
 #[allow(dead_code)] // the full ladder is the vocabulary COMP-11 clamps against
 pub enum Sensitivity {
     Public,
-    Private,
+    Normal,
     Secret,
 }
 
@@ -36,7 +36,7 @@ pub struct X11Class {
 impl Default for X11Class {
     fn default() -> Self {
         Self {
-            sensitivity: Sensitivity::Private,
+            sensitivity: Sensitivity::Normal,
             app_trust: AppTrust::Standard,
             seat_compat: SeatCompat::Lock,
             xwayland: true,
@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn defaults_to_private_untrusted_locked() {
         let c = classify("xterm", None, None);
-        assert_eq!(c.sensitivity, Sensitivity::Private);
+        assert_eq!(c.sensitivity, Sensitivity::Normal);
         assert_eq!(c.app_trust, AppTrust::Standard);
         assert_eq!(c.seat_compat, SeatCompat::Lock);
         assert!(c.xwayland);
@@ -106,7 +106,7 @@ mod tests {
     fn secret_is_refused() {
         assert_eq!(
             classify("Steam", Some(Sensitivity::Secret), None).sensitivity,
-            Sensitivity::Private
+            Sensitivity::Normal
         );
     }
 
@@ -115,7 +115,7 @@ mod tests {
     fn public_never_wins() {
         assert_eq!(
             classify("xeyes", Some(Sensitivity::Public), None).sensitivity,
-            Sensitivity::Private
+            Sensitivity::Normal
         );
     }
 
@@ -126,7 +126,7 @@ mod tests {
         for s in [
             None,
             Some(Sensitivity::Public),
-            Some(Sensitivity::Private),
+            Some(Sensitivity::Normal),
             Some(Sensitivity::Secret),
         ] {
             for t in [None, Some(AppTrust::Standard), Some(AppTrust::Trusted)] {
