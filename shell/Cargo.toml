@@ -10,6 +10,7 @@ members = [
   "crates/ec-greeter",
   "crates/ec-hyperion-bar",
   "crates/ec-launcher",
+  "crates/ec-lock",
   "crates/ec-policy-viewer",
   "crates/ec-secret-prompt",
   "crates/ec-services",

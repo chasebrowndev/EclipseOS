@@ -28,9 +28,11 @@ crates/
   ec-settings/   settings panes; every write via set_config_value (COMP-17 §3)
   ec-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
   ec-secret-prompt/  one-shot wifi passphrase / Bluetooth PIN prompt (ADR 0053)
+  ec-lock/           screen locker, ext_session_lock_v1 client, PAM in-process (ADR 0095)
   ec-services/   D-Bus services: notifications, tray, status, session (ADR 0038);
                       lib plus the ec-screensaver (ADR 0051),
-                      ec-pairing (ADR 0066) and ec-portal (ADR 0084) bins
+                      ec-pairing (ADR 0066), ec-portal (ADR 0084) and
+                      ec-lock-trigger (ADR 0095) bins
   ec-abyss-wlcs/         wlcs conformance cdylib, drives the headless backend
   policyd/            policy + audit daemon            [TCB]
   ec-policy-eval/        shared evaluator, linked by both [TCB]
