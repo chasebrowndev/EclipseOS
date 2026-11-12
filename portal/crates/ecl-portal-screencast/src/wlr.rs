@@ -61,6 +61,8 @@ struct ShmBuf {
 
 struct State {
     outputs: Vec<(WlOutput, Option<String>)>,
+    /// Current mode (w, h) per output.
+    modes: Vec<(WlOutput, (u32, u32))>,
     frame: Option<(ZwlrScreencopyFrameV1, Pending)>,
 }
 
@@ -85,10 +87,29 @@ impl Dispatch<WlOutput, ()> for State {
         _: &Connection,
         _: &QueueHandle<Self>,
     ) {
-        if let wl_output::Event::Name { name } = e {
-            if let Some(slot) = s.outputs.iter_mut().find(|(p, _)| p == o) {
-                slot.1 = Some(name);
+        match e {
+            wl_output::Event::Name { name } => {
+                if let Some(slot) = s.outputs.iter_mut().find(|(p, _)| p == o) {
+                    slot.1 = Some(name);
+                }
             }
+            wl_output::Event::Mode {
+                flags,
+                width,
+                height,
+                ..
+            } => {
+                let current =
+                    matches!(flags, WEnum::Value(f) if f.contains(wl_output::Mode::Current));
+                if current && width > 0 && height > 0 {
+                    let wh = (width as u32, height as u32);
+                    match s.modes.iter_mut().find(|(p, _)| p == o) {
+                        Some(slot) => slot.1 = wh,
+                        None => s.modes.push((o.clone(), wh)),
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -162,6 +183,52 @@ impl Dispatch<ZwlrScreencopyFrameV1, ()> for State {
     }
 }
 
+fn bind_outputs(
+    globals: &wayland_client::globals::GlobalList,
+    qh: &QueueHandle<State>,
+    state: &mut State,
+) {
+    let names: Vec<_> = globals.contents().with_list(|l| {
+        l.iter()
+            .filter(|g| g.interface == "wl_output")
+            .map(|g| (g.name, g.version))
+            .collect()
+    });
+    for (name, ver) in names {
+        let o: WlOutput = globals.registry().bind(name, ver.min(4), qh, ());
+        state.outputs.push((o, None));
+    }
+}
+
+/// The outputs the compositor advertises, as shareable sources. Needs only
+/// `wl_output`, no capture global.
+pub fn list_outputs() -> Result<Vec<Source>, CaptureError> {
+    let conn = Connection::connect_to_env().map_err(io)?;
+    let (globals, mut queue) = registry_queue_init::<State>(&conn).map_err(io)?;
+    let qh = queue.handle();
+    let mut state = State {
+        outputs: Vec::new(),
+        modes: Vec::new(),
+        frame: None,
+    };
+    bind_outputs(&globals, &qh, &mut state);
+    queue.roundtrip(&mut state).map_err(io)?;
+    let mut out = Vec::new();
+    for (o, name) in &state.outputs {
+        let (Some(name), Some((_, (width, height)))) =
+            (name, state.modes.iter().find(|(p, _)| p == o))
+        else {
+            continue;
+        };
+        out.push(Source::Output {
+            name: name.clone(),
+            width: *width,
+            height: *height,
+        });
+    }
+    Ok(out)
+}
+
 pub struct WlrSource {
     conn: Connection,
     queue: EventQueue<State>,
@@ -188,18 +255,10 @@ impl WlrSource {
         let shm: WlShm = globals.bind(&qh, 1..=1, ()).map_err(io)?;
         let mut state = State {
             outputs: Vec::new(),
+            modes: Vec::new(),
             frame: None,
         };
-        let names: Vec<_> = globals.contents().with_list(|l| {
-            l.iter()
-                .filter(|g| g.interface == "wl_output")
-                .map(|g| (g.name, g.version))
-                .collect()
-        });
-        for (name, ver) in names {
-            let o: WlOutput = globals.registry().bind(name, ver.min(4), &qh, ());
-            state.outputs.push((o, None));
-        }
+        bind_outputs(&globals, &qh, &mut state);
         queue.roundtrip(&mut state).map_err(io)?;
         let output = state
             .outputs

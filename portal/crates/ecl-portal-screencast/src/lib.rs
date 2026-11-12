@@ -15,6 +15,7 @@ pub mod remote;
 pub mod screenshot;
 pub mod session;
 pub mod source;
+pub mod stream;
 #[cfg(feature = "wayland")]
 pub mod wlr;
 

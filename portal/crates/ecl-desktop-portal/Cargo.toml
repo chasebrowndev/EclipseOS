@@ -21,3 +21,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 rustix.workspace = true
 thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

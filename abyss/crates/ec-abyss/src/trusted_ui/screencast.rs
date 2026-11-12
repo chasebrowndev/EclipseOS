@@ -702,6 +702,17 @@ mod tests {
         v
     }
 
+    /// The same bytes `ecl-portal-proto`'s `portal_sock_bytes_match_abyss`
+    /// pins against the real postcard. Change one, change both.
+    #[test]
+    fn wire_bytes_match_the_portal() {
+        let r = Request::parse(&confirm("com.discordapp.Discord", 7, &output("DP-1"), &[1, 0])).unwrap();
+        assert_eq!((r.stream, r.output.as_str()), (7, "DP-1"));
+        assert_eq!(encode(Answer::Granted(300)), [0, 0, 0, 3, 0, 0xac, 0x02]);
+        assert_eq!(encode(Answer::Denied), [0, 0, 0, 1, 1]);
+        assert_eq!(encode(Answer::Timeout), [0, 0, 0, 1, 2]);
+    }
+
     #[test]
     fn a_screen_request_parses() {
         let r = Request::parse(&confirm("com.discordapp.Discord", 7, &output("DP-1"), &[1, 0])).unwrap();

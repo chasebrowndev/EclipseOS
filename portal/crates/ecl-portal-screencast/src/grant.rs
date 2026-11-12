@@ -27,7 +27,7 @@ pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 /// Frames are tiny; anything bigger is a protocol violation.
 const MAX_FRAME: u32 = 16 * 1024;
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, Clone, thiserror::Error, PartialEq, Eq)]
 pub enum GrantError {
     #[error("capture denied")]
     Denied,
@@ -69,7 +69,20 @@ pub fn encode(req: &CaptureConfirm) -> Result<Vec<u8>, GrantError> {
     Ok(out)
 }
 
-async fn exchange(path: &Path, req: &CaptureConfirm) -> Result<CaptureAnswer, GrantError> {
+/// A live grant. The grant lives exactly as long as its `portal.sock`
+/// connection: dropping this closes the stream and abyss revokes at once.
+/// Nothing may be written to `conn` after the answer (abyss treats any byte
+/// as a protocol error and revokes).
+#[derive(Debug)]
+pub struct Grant {
+    pub id: u64,
+    pub conn: UnixStream,
+}
+
+async fn exchange(
+    path: &Path,
+    req: &CaptureConfirm,
+) -> Result<(CaptureAnswer, UnixStream), GrantError> {
     check_socket(path)?;
     let msg = encode(req)?;
     let mut s = UnixStream::connect(path)
@@ -90,21 +103,23 @@ async fn exchange(path: &Path, req: &CaptureConfirm) -> Result<CaptureAnswer, Gr
     s.read_exact(&mut body)
         .await
         .map_err(|_| GrantError::Protocol("short read"))?;
-    postcard::from_bytes(&body).map_err(|_| GrantError::Protocol("decode"))
+    let answer = postcard::from_bytes(&body).map_err(|_| GrantError::Protocol("decode"))?;
+    Ok((answer, s))
 }
 
-/// Ask abyss for a grant. `Ok(grant_id)` only on an explicit `Granted`.
+/// Ask abyss for a grant. `Ok` only on an explicit `Granted`; keep the
+/// returned [`Grant`] alive for as long as the capture runs.
 pub async fn request_grant(
     path: &Path,
     req: &CaptureConfirm,
     timeout: Duration,
-) -> Result<u64, GrantError> {
+) -> Result<Grant, GrantError> {
     match tokio::time::timeout(timeout, exchange(path, req)).await {
         Err(_) => Err(GrantError::Timeout),
         Ok(Err(e)) => Err(e),
-        Ok(Ok(CaptureAnswer::Granted { grant })) => Ok(grant),
-        Ok(Ok(CaptureAnswer::Denied)) => Err(GrantError::Denied),
-        Ok(Ok(CaptureAnswer::Timeout)) => Err(GrantError::Timeout),
+        Ok(Ok((CaptureAnswer::Granted { grant }, conn))) => Ok(Grant { id: grant, conn }),
+        Ok(Ok((CaptureAnswer::Denied, _))) => Err(GrantError::Denied),
+        Ok(Ok((CaptureAnswer::Timeout, _))) => Err(GrantError::Timeout),
     }
 }
 
@@ -166,10 +181,10 @@ mod tests {
             Some(frame(&CaptureAnswer::Granted { grant: 77 })),
             Duration::ZERO,
         );
-        assert_eq!(
-            request_grant(&p, &req(), Duration::from_secs(2)).await,
-            Ok(77)
-        );
+        let g = request_grant(&p, &req(), Duration::from_secs(2))
+            .await
+            .unwrap();
+        assert_eq!(g.id, 77);
         assert_eq!(h.await.unwrap(), req());
     }
 
@@ -183,8 +198,10 @@ mod tests {
             let p = d.path().join("portal.sock");
             let _h = serve(&p, Some(frame(&a)), Duration::ZERO);
             assert_eq!(
-                request_grant(&p, &req(), Duration::from_secs(2)).await,
-                Err(want)
+                request_grant(&p, &req(), Duration::from_secs(2))
+                    .await
+                    .unwrap_err(),
+                want
             );
         }
     }
@@ -214,8 +231,10 @@ mod tests {
             Duration::from_secs(5),
         );
         assert_eq!(
-            request_grant(&p, &req(), Duration::from_millis(50)).await,
-            Err(GrantError::Timeout)
+            request_grant(&p, &req(), Duration::from_millis(50))
+                .await
+                .unwrap_err(),
+            GrantError::Timeout
         );
         // no socket
         let r = request_grant(&d.path().join("nope"), &req(), Duration::from_secs(1)).await;
