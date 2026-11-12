@@ -14,6 +14,7 @@ pub mod capture_eye;
 pub mod context;
 pub mod cursor;
 pub mod curve;
+pub mod deadline;
 pub mod drop;
 pub mod effects;
 pub mod font;

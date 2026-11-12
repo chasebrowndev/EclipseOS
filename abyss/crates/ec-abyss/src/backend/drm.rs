@@ -81,7 +81,7 @@ use crate::{
     config::{Config, GpuMode},
     outputs::OutputKind,
     render::{
-        collect_elements, presentation_feedback, send_dmabuf_feedback, update_primary_scanout,
+        collect_elements, deadline, presentation_feedback, send_dmabuf_feedback, update_primary_scanout,
         AbyssRenderElement, SurfaceFeedback,
     },
     state::{client_state, AbyssState},
@@ -116,6 +116,16 @@ pub struct DrmOutput {
     frame_pending: bool,
     /// Content changed since the last composite; render at the next chance.
     needs_render: bool,
+    /// A deadline timer is armed for this output (COMP-02 §2), so the end of a
+    /// dispatch round does not stack another.
+    deadline_armed: bool,
+    /// Monotonic timestamp of the last page flip the kernel reported.
+    last_vblank: Option<Duration>,
+    /// The vblank the frame in flight was queued to land on, to tell on-time
+    /// flips from late ones.
+    target_vblank: Option<Duration>,
+    /// EWMA of this output's frame render time; sets the deadline's lead.
+    estimate: deadline::RenderEstimate,
     /// Render + scanout dmabuf tranches for this output (COMP-02 §2).
     feedback: Option<SurfaceFeedback>,
     /// `vrr` requested for this output in the config or over the socket.
@@ -1048,6 +1058,10 @@ fn add_connector(
             commit_failures: 0,
             frame_pending: false,
             needs_render: true,
+            deadline_armed: false,
+            last_vblank: None,
+            target_vblank: None,
+            estimate: deadline::RenderEstimate::default(),
             feedback,
             vrr_config,
             vrr_capable: matches!(vrr_support, VrrSupport::Supported),
@@ -1485,9 +1499,9 @@ fn on_vblank(
     meta: Option<&DrmEventMetadata>,
 ) {
     let clock_now = state.clock.now();
-    let pending = if let Some(drm) = state.drm.as_mut() {
-        match drm.index_of(dev_id, crtc) {
-            Some(i) => {
+    if let Some(drm) = state.drm.as_mut() {
+        if let Some(i) = drm.index_of(dev_id, crtc) {
+            {
                 let o = &mut drm.outputs[i];
                 let refresh = o
                     .output
@@ -1498,7 +1512,7 @@ fn on_vblank(
                     // wp_presentation: report the real page-flip
                     // timestamp and sequence the kernel gave us.
                     Ok(Some(Some(mut feedback))) => {
-                        let (time, seq) = match meta {
+                        let (time, seq): (Duration, u64) = match meta {
                             Some(m) => (
                                 match m.time {
                                     DrmEventTime::Monotonic(t) => t,
@@ -1525,22 +1539,29 @@ fn on_vblank(
                     Ok(_) => {}
                     Err(err) => tracing::warn!(?err, "frame_submitted"),
                 }
+                // COMP-02 §2: remember when the flip landed (the next deadline
+                // counts from it) and back the estimate off if it landed late.
+                let flipped = match meta.map(|m| &m.time) {
+                    Some(DrmEventTime::Monotonic(t)) => *t,
+                    _ => clock_now.into(),
+                };
+                if let Some(target) = o.target_vblank.take() {
+                    if deadline::is_miss(target, flipped, refresh) {
+                        o.estimate.missed(refresh);
+                    }
+                }
+                o.last_vblank = Some(flipped);
                 o.frame_pending = false;
                 // The flip is done, so the secondary GPU has finished reading
                 // the transfer buffer it was fed from.
                 if let Some(pass) = o.pass.as_mut() {
                     pass.held = None;
                 }
-                o.needs_render.then_some(i)
             }
-            None => None,
         }
-    } else {
-        None
-    };
-    if let Some(i) = pending {
-        render_output(state, i);
     }
+    // No render here: the end of this dispatch round plans the next frame
+    // against the deadline (`flush_renders`).
 }
 
 pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
@@ -1852,6 +1873,9 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
                         o.commit_failures = 0;
                         o.frame_pending = false;
                         o.needs_render = true;
+                        // The vblank phase is unknown after a VT switch.
+                        o.last_vblank = None;
+                        o.target_vblank = None;
                         if let Some(pass) = o.pass.as_mut() {
                             pass.force_full = true;
                             pass.held = None;
@@ -1932,6 +1956,12 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
 
     render(&mut state);
     event_loop.run(None, &mut state, |state| {
+        // Clients first, so nothing a dispatch round produced waits on a
+        // composite; then one composite per dirty output, then the frame
+        // callbacks and buffer releases it queued.
+        let _ = state.display_handle.flush_clients();
+        crate::protocols::agent::flush(state);
+        flush_renders(state);
         let _ = state.display_handle.flush_clients();
         crate::protocols::agent::flush(state);
     })?;
@@ -1944,22 +1974,75 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     Ok(())
 }
 
-/// Mark every output dirty and composite the ones that are idle. An output
-/// with a frame in flight picks the new content up at its VBlank, which keeps
-/// `render_frame` calls one-to-one with submitted frames — what smithay's
-/// damage tracker assumes.
+/// Mark every output dirty. Nothing renders here: this is called from the
+/// libinput callback, the display dispatch and inside client requests, and a
+/// composite there delays every event and request queued behind it and runs
+/// before clients are flushed. [`flush_renders`] composites once per dispatch
+/// round instead, after the round's input and requests have all been
+/// applied.
 pub fn schedule_render(state: &mut AbyssState) {
+    if let Some(drm) = state.drm.as_mut() {
+        for o in drm.outputs.iter_mut() {
+            o.needs_render = true;
+        }
+    }
+}
+
+/// End of a dispatch round (COMP-02 §2, ADR 0105 step B1): composite what the
+/// round dirtied, then service captures. An output with a frame in flight picks
+/// the new content up at its VBlank, which keeps `render_frame` calls
+/// one-to-one with submitted frames, what smithay's damage tracker assumes.
+/// An idle output renders at `next_vblank - render_estimate`: now if that
+/// moment has passed, otherwise from a one-shot timer.
+pub fn flush_renders(state: &mut AbyssState) {
+    let now: Duration = state.clock.now().into();
     let n = state.drm.as_ref().map_or(0, |d| d.outputs.len());
     for i in 0..n {
-        let idle = match state.drm.as_mut() {
-            Some(drm) => {
+        let Some(drm) = state.drm.as_mut() else { break };
+        if !drm.session.is_active() {
+            break;
+        }
+        let o = &mut drm.outputs[i];
+        if !o.needs_render || o.frame_pending || o.retry_armed || o.deadline_armed {
+            continue;
+        }
+        // A dark output renders nothing; leaving it dirty must not arm a timer
+        // every frame.
+        if !state.outputs.get(o.id).is_none_or(|e| e.powered) {
+            continue;
+        }
+        let period = frame_period(o.output.current_mode().map_or(0, |m| m.refresh));
+        let wait = deadline::delay(
+            o.last_vblank,
+            now,
+            period,
+            o.compositor.vrr_enabled(),
+            o.estimate.lead(period),
+        );
+        if wait.is_zero() {
+            render_output(state, i);
+            continue;
+        }
+        o.deadline_armed = true;
+        let crtc = o.crtc;
+        let dev_id = drm.devices[o.device].dev_id;
+        let handle = drm.loop_handle.clone();
+        if let Err(err) = handle.insert_source(Timer::from_duration(wait), move |_, _, state| {
+            let i = state.drm.as_mut().and_then(|drm| {
+                let i = drm.index_of(dev_id, crtc)?;
                 let o = &mut drm.outputs[i];
-                o.needs_render = true;
-                !o.frame_pending && !o.retry_armed
+                o.deadline_armed = false;
+                (o.needs_render && !o.frame_pending && !o.retry_armed).then_some(i)
+            });
+            if let Some(i) = i {
+                render_output(state, i);
             }
-            None => false,
-        };
-        if idle {
+            TimeoutAction::Drop
+        }) {
+            tracing::warn!(?err, "arming render deadline timer");
+            if let Some(drm) = state.drm.as_mut() {
+                drm.outputs[i].deadline_armed = false;
+            }
             render_output(state, i);
         }
     }
@@ -2051,6 +2134,9 @@ fn describe_elements(elements: &[crate::render::overscan::OutputElement], scale:
 
 /// Composite and page-flip one output. A no-op when the session is inactive.
 fn render_output(state: &mut AbyssState, index: usize) {
+    // The vblank this frame aims at is the one after the render *starts*: a
+    // render that overruns it lands a vblank late, which `on_vblank` must see.
+    let frame_start: Duration = state.clock.now().into();
     // Every frame path (VBlank, schedule, retry) lands here, not in `render`.
     crate::shell::tick_retile_hold(state);
     // Commit slots follow their window this frame, not 50 ms later.
@@ -2459,6 +2545,20 @@ fn render_output(state: &mut AbyssState, index: usize) {
         }
         let frame_time = render_time + submit_start.elapsed();
         state.stats.record(render_time, submit_start.elapsed());
+        if let Some(drm) = state.drm.as_mut() {
+            let o = &mut drm.outputs[index];
+            // The vblank this frame is aimed at, for `on_vblank`'s miss check.
+            // Only queued frames feed the estimate: empty and failed ones are
+            // cheap and would pull the lead toward zero.
+            o.target_vblank = if queued {
+                o.estimate.record(frame_time);
+                let period = frame_period(output.current_mode().map_or(0, |m| m.refresh));
+                o.last_vblank
+                    .and_then(|l| deadline::next_vblank(l, period, frame_start))
+            } else {
+                None
+            };
+        }
         // COMP-14 §6: a sustained run of missed frames sheds animations a
         // step, a longer run of headroom restores one.
         if let Some(drm) = state.drm.as_mut() {

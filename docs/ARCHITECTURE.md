@@ -73,11 +73,18 @@ SPDX header naming which.
 - One `calloop` event loop owns `AbyssState`. No locks on the hot path.
 - State is a tree of plain structs; children are referenced by `u64` handle or
   index, never by pointer. No `Rc<RefCell<_>>` graph.
-- Concurrency only where it pays: a render thread per GPU, and blocking work
-  (config parse, screenshot encode, audit serialization) on a small pool that
-  talks back to the loop over channels.
+- Rendering runs on the loop thread: every output's composite, blur and capture
+  happen inside the `calloop` loop that owns `AbyssState`. There is no render
+  thread; ADR 0105 sets the measured threshold at which one would be considered.
+  Blocking work runs on dedicated threads that talk back to the loop over
+  channels (screenshot PNG encode, clipboard serving, the brokerd prompt socket,
+  ordered session spawns, approval writes). There is no shared pool.
 - Frame scheduling is per-output, driven by page-flip completion. The loop
-  never busy-waits.
+  never busy-waits. Input and client requests only mark outputs dirty; once per
+  dispatch round, after clients are flushed, each dirty idle output renders at
+  `next_vblank - render_estimate` (COMP-02 §2; the estimate is an EWMA of that
+  output's recent render time, backed off when a flip lands late). DRM backend
+  only: winit and headless render from their own frame callback or timer.
 - No allocation in input delivery or the policy check.
 - Failure model (ADR 0102): a panic ends the process, unwinding so the DRM
   session and VT are restored, except inside a *contained* feature (today the
