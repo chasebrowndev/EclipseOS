@@ -945,6 +945,18 @@ pub const META: &[Meta] = &[
         "idle",
     ),
     m("idle.lock-command", "Lock command", "session", "idle"),
+    m(
+        "idle.suspend-timeout-seconds",
+        "Suspend after (seconds)",
+        "session",
+        "idle",
+    ),
+    m(
+        "idle.lock-before-suspend",
+        "Lock before suspending",
+        "session",
+        "idle",
+    ),
     // input
     m("input.kb-layout", "Keyboard layout", "input/keyboard", "keyboard"),
     m(

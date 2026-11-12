@@ -300,7 +300,9 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | --- | --- | --- | --- | --- |
 | `idle.dpms-timeout-seconds` | int 0..86400 | _unset_ | live | Inactivity before outputs power off. Unset or 0 disables. |
 | `idle.lock-timeout-seconds` | int 0..86400 | _unset_ | live | Inactivity before `idle.lock-command` runs. Unset or 0 disables. |
-| `idle.lock-command` | string | _unset_ | live | Locker to spawn on the lock timeout. Without one the timeout is inert. |
+| `idle.lock-command` | string | _unset_ | live | Locker to spawn on the lock timeout, `ec-ctl lock`, and to relaunch (with backoff) if it dies while the session is locked. Without one the lock timeout is inert. |
+| `idle.suspend-timeout-seconds` | int 0..86400 | _unset_ | live | Inactivity before the machine suspends (`systemctl suspend`). Unset or 0 never suspends on idle, the default. Idle inhibitors hold it off like the other stages (ADR 0099). |
+| `idle.lock-before-suspend` | bool | `#true` | live | Run `idle.lock-command` before an idle suspend and suspend only once the session reports locked. A session that does not lock within 10 s is not suspended (ADR 0099). |
 
 ### `input`
 

@@ -50,6 +50,8 @@ ec-ctl — control the abyss compositor
                                       (the decision is made in a compositor modal)
   ec-ctl reload                  re-read the config
   ec-ctl open-power              open the bar's power drawer
+  ec-ctl lock                    run idle.lock-command (there is no unlock)
+  ec-ctl lock --status           locked, pending, locker_alive
   ec-ctl click X Y [left|right|middle] [COUNT]
   ec-ctl scroll X Y DX DY        scripted pointer input (needs misc { scripted-input })
   ec-ctl drag X1 Y1 X2 Y2 [left|right|middle] [--steps N] [--hold-ms MS]
@@ -277,6 +279,11 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
         "agents" => ("get_agents".into(), Value::Null, None),
         "reload" => ("reload_config".into(), Value::Null, None),
         "open-power" => ("open_power".into(), Value::Null, None),
+        "lock" => match a(1) {
+            "" => ("lock_session".into(), json!({}), None),
+            "--status" | "status" => ("get_lock_state".into(), json!({}), None),
+            other => return Err(format!("lock takes --status or nothing, not {other:?}")),
+        },
         "addons" => ("get_config".into(), json!({}), Some(Table::Addons)),
         "watch" => {
             let events: Vec<Value> = args[1..].iter().map(|s| Value::String(s.clone())).collect();
@@ -989,6 +996,16 @@ mod tests {
         assert!(parsed(&["drag", "1", "2", "3"], &f).is_err());
         assert!(parsed(&["drag", "1", "2", "3", "4", "--hold-ms"], &f).is_err());
         assert!(parsed(&["drag", "1", "2", "3", "4", "sideways"], &f).is_err());
+    }
+
+    #[test]
+    fn lock_maps_to_lock_session_and_status_to_get_lock_state() {
+        let f = Flags::default();
+        let (m, p, _) = parsed(&["lock"], &f).unwrap();
+        assert_eq!((m.as_str(), p), ("lock_session", json!({})));
+        let (m, p, _) = parsed(&["lock", "--status"], &f).unwrap();
+        assert_eq!((m.as_str(), p), ("get_lock_state", json!({})));
+        assert!(parsed(&["lock", "--off"], &f).is_err());
     }
 
     #[test]

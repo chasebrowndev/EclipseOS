@@ -1665,6 +1665,27 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             .unwrap_or(keys.len());
         keys.insert(to, gated);
     }
+    // The idle stages read in the order they happen
+    // (`schema::IDLE_ORDER`), in the slots the idle keys already hold.
+    let slots: Vec<usize> = (0..keys.len())
+        .filter(|&i| crate::schema::idle_rank(&keys[i].path).is_some())
+        .collect();
+    let mut idle: Vec<&Key> = slots.iter().map(|&i| keys[i]).collect();
+    idle.sort_by_key(|k| crate::schema::idle_rank(&k.path));
+    for (slot, key) in slots.into_iter().zip(idle) {
+        keys[slot] = key;
+    }
+    let lock_first = app
+        .key(crate::schema::IDLE_LOCK_FIRST)
+        .and_then(|k| k.value.as_bool())
+        .unwrap_or(true);
+    let has_locker = app
+        .key(crate::schema::IDLE_LOCK_COMMAND)
+        .and_then(|k| k.value.as_str())
+        .is_some_and(|c| !c.trim().is_empty());
+    let suspends = app
+        .key(crate::schema::IDLE_SUSPEND)
+        .is_some_and(|k| k.as_f64() > 0.0);
     let mut set_apart = false;
     // The auto schedule and the theme names, set after the scheme row.
     let mut schedule: Vec<&Key> = Vec::new();
@@ -1719,7 +1740,9 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             }
             continue;
         }
-        let unused = key.path == CARD_FILL && !matches!(current, "off" | "blur");
+        // Locking before a suspend means nothing while nothing suspends.
+        let unused = (key.path == CARD_FILL && !matches!(current, "off" | "blur"))
+            || (key.path == crate::schema::IDLE_LOCK_FIRST && !suspends);
         rows.push(setting_row_at(app, &key.label(), key, unused && app.blur));
         if key.path == crate::accent::KEY {
             rows.push(crate::accent::strip(key.value.as_str().unwrap_or_default()));
@@ -1732,9 +1755,12 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             crate::oracle::MODEL_COMMAND => Some(crate::oracle::approval_line(key)),
             p => crate::schema::caption(p),
         };
-        let blurb = blurb.into_iter().chain(
+        // A live value, read off the row, the field and the switch beside it.
+        let secs = app.live.get(&key.path).copied().unwrap_or_else(|| key.as_f64());
+        let idle = crate::schema::idle_blurb(&key.path, secs.max(0.0) as u64, lock_first, has_locker);
+        let blurb = blurb.map(str::to_owned).into_iter().chain(idle).chain(
             (key.path == crate::gpu::MODE || key.path == crate::gpu::SECONDARY)
-                .then_some(crate::gpu::LOGIN_NOTE),
+                .then(|| crate::gpu::LOGIN_NOTE.to_owned()),
         );
         for blurb in blurb {
             // Inset like `list_row`'s label, so it reads as that row's caption.

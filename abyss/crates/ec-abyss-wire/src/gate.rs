@@ -96,6 +96,13 @@ pub const TABLE: &[Entry] = &[
     // Privileged: it can only keep the screen on, which any client can already
     // do with `zwp_idle_inhibit_v1`, and it lapses with the connection.
     e("set_idle_inhibit", Kind::Command, true),
+    // Session lock (ADR 0099). OWNER REVIEW: `get_lock_state` is a Query like
+    // `get_focused` (three booleans, no content). `lock_session` is Command:
+    // it runs the configured `idle.lock-command`, which only ever locks, as
+    // Super+Shift+L or the idle timeout would. There is no unlock method and
+    // there must never be one: only the locker's `unlock_and_destroy` unlocks.
+    e("get_lock_state", Kind::Query, true),
+    e("lock_session", Kind::Command, true),
     // Open the bar's start menu (`launcher.style "menu"`). Command and not
     // Privileged: it is the eclipse button / Super+R, a thing the human already
     // does, and it only rebroadcasts on the `launcher` event stream; the
@@ -445,6 +452,24 @@ mod tests {
             check(&other, 1000, &cfg, "open_power"),
             Decision::Deny(_)
         ));
+    }
+
+    #[test]
+    fn lock_methods_are_owner_only_and_there_is_no_unlock() {
+        let cfg = Config::default();
+        for (method, kind) in [("get_lock_state", Kind::Query), ("lock_session", Kind::Command)] {
+            let entry = TABLE.iter().find(|e| e.method == method).expect("row");
+            assert_eq!(entry.kind, kind, "{method}");
+            assert_eq!(check(&owner(), 1000, &cfg, method), Decision::Allow);
+            let other = Peer { uid: 1001, ..owner() };
+            assert!(matches!(check(&other, 1000, &cfg, method), Decision::Deny(_)));
+        }
+        assert!(
+            !TABLE
+                .iter()
+                .any(|e| e.method.contains("unlock") && e.method != "secrets_unlock_prompt"),
+            "the session is unlocked only by its locker, never over the socket"
+        );
     }
 
     #[test]
