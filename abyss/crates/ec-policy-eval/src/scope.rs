@@ -20,8 +20,8 @@
 //!   `scene.list` that is the visibility rule itself, and S-01 §8 open item 2
 //!   leaves unscoped `scene.list` undecided. Until it is decided, it is denied.
 //! - A line without a `class:` scope is capped at `public`, the S-01 §2.1
-//!   default. `class:<c>` is a ceiling: `class:private` reaches `public` and
-//!   `private` windows.
+//!   default. `class:<c>` is a ceiling: `class:normal` reaches `public` and
+//!   `normal` windows (`class:private` is the old spelling and still parses).
 //! - `url:`, `path:`, `host:` and `node_role:` describe things inside a
 //!   window, not the window. On a `scene.list` line they match no window.
 //!
@@ -31,11 +31,11 @@
 use crate::grant::Grant;
 use regex::Regex;
 
-/// Data sensitivity class (C-00). Ordered: `Public < Private < Secret`.
+/// Data sensitivity class (C-00). Ordered: `Public < Normal < Secret` (`Normal` was `private` before 2026-11; the old word still parses).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Class {
     Public,
-    Private,
+    Normal,
     Secret,
 }
 
@@ -116,7 +116,7 @@ impl Scope {
             }),
             "class" => Scope::Class(match value {
                 "public" => Class::Public,
-                "private" => Class::Private,
+                "normal" | "private" => Class::Normal,
                 "secret" => Class::Secret,
                 _ => return Err(ScopeError::BadValue),
             }),
@@ -377,7 +377,7 @@ mod tests {
             ..win()
         }));
         assert!(!v.visible(&WindowFacts {
-            class: Class::Private,
+            class: Class::Normal,
             ..win()
         }));
     }
@@ -402,11 +402,11 @@ mod tests {
     #[test]
     fn class_is_a_ceiling_defaulting_to_public() {
         let w = WindowFacts {
-            class: Class::Private,
+            class: Class::Normal,
             ..win()
         };
         assert!(!view(&[&["handle:7"]]).visible(&w));
-        assert!(view(&[&["handle:7", "class:private"]]).visible(&w));
+        assert!(view(&[&["handle:7", "class:normal"]]).visible(&w));
         assert!(view(&[&["handle:7", "class:secret"]]).visible(&w));
         // Two class clauses AND: the tighter one holds.
         assert!(!view(&[&["handle:7", "class:secret", "class:public"]]).visible(&w));

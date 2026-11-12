@@ -10,6 +10,7 @@
 pub mod anim;
 pub mod annotation;
 pub mod blur;
+pub mod capture_eye;
 pub mod context;
 pub mod cursor;
 pub mod curve;
@@ -26,6 +27,7 @@ pub mod overscan;
 pub mod overview;
 pub mod palette;
 pub mod popup_shape;
+pub mod redact;
 pub mod sanitize;
 pub mod select;
 pub mod stats;
@@ -34,6 +36,7 @@ pub mod text;
 pub mod thumb;
 pub mod titlebar;
 pub mod userdata;
+pub mod wallpaper;
 
 use std::collections::HashMap;
 
@@ -485,6 +488,8 @@ type PaneShadow = (PixelShaderElement, [f32; 6], f32);
 /// ADR 0084).
 #[derive(Default)]
 pub struct BorderGpu {
+    /// The redaction card's textures (ADR 0106).
+    pub(crate) redact: redact::Textures,
     /// Rounded-corner texture program, compiled on the first frame that rounds.
     rounded: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     /// Tint-keyed texture program (ADR 0079), compiled on the first frame a
@@ -547,6 +552,8 @@ pub struct BorderStore {
     pane_scratch: Vec<blur::BlurElement>,
     /// Titlebar textures under `mode "de"` (COMP-05 §7.1), per output and window.
     pub bars: titlebar::BarCache,
+    /// Each output's wallpaper, the bottom-most element (ADR 0104).
+    pub wallpaper: wallpaper::Store,
 }
 
 impl BorderStore {
@@ -1002,6 +1009,11 @@ pub fn collect_elements(
         &borders.anim,
         renderer,
     );
+
+    // The wallpaper is the very last element, so everything above it, and
+    // every backdrop `insert_blur` builds from what lies below a window,
+    // sees it. A background-layer client is drawn above it and covers it.
+    elements.extend(borders.wallpaper.element(renderer, output, scale));
 
     insert_blur(
         renderer,

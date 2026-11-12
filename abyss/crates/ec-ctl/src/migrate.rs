@@ -25,16 +25,11 @@ use std::path::{Path, PathBuf};
 
 use kdl::{KdlDocument, KdlEntry, KdlNode};
 
-/// Dotted paths the schema marks `Owner::Policy`
-/// (`ec_abyss_config::schema::TABLE`). Mirrored here so this CLI does not link
-/// the compositor; `tests/schema_drift.rs` fails if the two ever diverge.
-const POLICY_KEYS: &[&str] = &[
-    "misc.scripted-input",
-    "clipboard.data-control-allow",
-    "capture.allow",
-    "capture.redact-app-id",
-    "capture.hide-layer",
-];
+/// Whether the schema marks `path` `Owner::Policy` (unknown paths: no).
+fn is_policy_key(path: &str) -> bool {
+    use ec_abyss_config::schema::{get_key, Owner};
+    get_key(path).is_some_and(|k| matches!(k.owner, Owner::Policy))
+}
 
 /// `windowrule` actions the schema marks `Owner::Policy`
 /// (`ec_abyss_config::schema::RULE_ACTIONS`). A rule carrying both kinds is
@@ -126,7 +121,7 @@ fn config_dir() -> Result<PathBuf, String> {
 /// Which file a top-level node's child belongs in.
 fn child_is_policy(node: &str, child: &KdlNode) -> bool {
     let path = format!("{node}.{}", child.name().value());
-    POLICY_KEYS.contains(&path.as_str())
+    is_policy_key(&path)
 }
 
 fn rule_action_is_policy(child: &KdlNode) -> bool {
@@ -902,6 +897,27 @@ fn write(path: &std::path::Path, text: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hand-kept list this module carried before it read the schema.
+    #[test]
+    fn policy_keys_match_the_old_table() {
+        const OLD: &[&str] = &[
+            "misc.scripted-input",
+            "clipboard.data-control-allow",
+            "capture.allow",
+            "capture.redact-app-id",
+            "capture.hide-layer",
+        ];
+        for p in OLD {
+            assert!(is_policy_key(p), "{p}");
+        }
+        let n = ec_abyss_config::schema::TABLE
+            .iter()
+            .filter(|k| is_policy_key(k.path))
+            .count();
+        assert_eq!(n, OLD.len());
+        assert!(!is_policy_key("no.such.key"));
+    }
 
     fn parse(s: &str) -> KdlDocument {
         s.parse().expect("valid kdl")

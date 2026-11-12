@@ -48,6 +48,8 @@ struct Server {
     last_id: u32,
     store: Shared,
     sound: super::sound::Player,
+    /// A share is running, and what toasts do then (ADR 0106).
+    share: super::Share,
 }
 
 /// Tell history watchers the list (or a live flag) changed, and what the
@@ -371,6 +373,7 @@ impl Server {
         // remembered, or is ignored. Either way the client gets its id back.
         let verdict = {
             let mut store = self.store.lock();
+            store.set_share_quiet(self.share.history());
             let v = store.admit(&mut notification, expire_timeout, now_secs());
             store.save();
             v
@@ -379,7 +382,10 @@ impl Server {
             Verdict::Show => {
                 // Only a notification that is actually shown may sound: Quiet,
                 // DND and the `mute` rule never reach here.
-                self.sound.notify(&notification);
+                // A held toast is silent too: its sound would reach the share.
+                if !self.share.holding() {
+                    self.sound.notify(&notification);
+                }
                 // A full channel or a gone GUI is not an error the client can act on.
                 let _ = self.events.send(Event::Posted(Box::new(notification)));
             }
@@ -462,10 +468,12 @@ pub fn spawn() -> zbus::Result<Notifications> {
     let (event_tx, event_rx) = mpsc::channel();
     let (command_tx, command_rx) = mpsc::channel();
     let compositor_tx = event_tx.clone();
+    let share = super::Share::default();
     let store = Store::open();
     let first_id = store.max_id();
     let history = Shared::new(store);
     let history_for_serve = history.clone();
+    let share_for_server = share.clone();
 
     // The connection is built on the service thread so that the whole D-Bus
     // side lives and dies there, but the caller still learns about a name
@@ -489,6 +497,7 @@ pub fn spawn() -> zbus::Result<Notifications> {
                             last_id: first_id,
                             store: history.clone(),
                             sound: super::sound::Player::new(),
+                            share: share_for_server,
                         },
                     )
                 })
@@ -533,8 +542,8 @@ pub fn spawn() -> zbus::Result<Notifications> {
         Ok(Ok(())) => {
             // Only the daemon that owns the name shows the compositor's config
             // problems (ADR 0064); a second instance would double them.
-            super::compositor::spawn(compositor_tx);
-            Ok(Notifications::new(event_rx, command_tx))
+            super::compositor::spawn(compositor_tx, share.clone());
+            Ok(Notifications::new(event_rx, command_tx, share))
         }
         Ok(Err(e)) => Err(e),
         // The thread died before it said anything; treat it as a failure to

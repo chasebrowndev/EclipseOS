@@ -257,7 +257,7 @@ impl Allowlist {
     }
 
     /// Whether the list is empty, i.e. nothing is allowed at all. A poisoned
-    /// lock reports empty, which is the denying answer.
+    /// lock reports *not* empty; `contains` still denies everything then.
     pub fn is_empty(&self) -> bool {
         self.0.read().is_ok_and(|g| g.is_empty())
     }
@@ -267,12 +267,123 @@ impl Allowlist {
     }
 }
 
+/// The executable an admission entry names (ADR 0094), before symlinks are
+/// resolved. An entry containing `/` is an exact absolute path; a bare name
+/// is `/usr/bin/<name>`. `None` for an entry that names nothing: empty, `.`,
+/// `..`, a relative path, or one with a NUL. `None` never matches.
+#[must_use]
+pub fn exe_entry_path(entry: &str) -> Option<std::path::PathBuf> {
+    if entry.is_empty() || entry == "." || entry == ".." || entry.contains('\0') {
+        return None;
+    }
+    if entry.contains('/') {
+        let p = std::path::Path::new(entry);
+        return p.is_absolute().then(|| p.to_path_buf());
+    }
+    Some(std::path::Path::new("/usr/bin").join(entry))
+}
+
+#[derive(Debug, Default)]
+struct ExeEntries {
+    /// As written, for logs and `names()`.
+    names: Vec<String>,
+    /// Each valid entry's path, symlinks resolved when the list was set.
+    paths: Vec<std::path::PathBuf>,
+}
+
+/// A live admission list matched against a client's full executable path
+/// (ADR 0094): `capture.allow`, `clipboard.data-control-allow`,
+/// `input-method.allow`, `virtual-pointer.allow`.
+///
+/// Entries are resolved once, in [`ExeAllowlist::new`] and
+/// [`ExeAllowlist::set`] (startup and config reload), never at bind or
+/// capture time: a symlink entry such as the dev layout's
+/// `/usr/local/bin/<bin>` admits the file it points to *when the list was
+/// loaded*. A client's `/proc/<pid>/exe` is already canonical, so the match
+/// is plain path equality. The lock has the same justification as
+/// [`Allowlist`]'s.
+#[derive(Debug, Clone, Default)]
+pub struct ExeAllowlist(std::sync::Arc<std::sync::RwLock<ExeEntries>>);
+
+impl ExeAllowlist {
+    pub fn new(names: Vec<String>) -> Self {
+        Self(std::sync::Arc::new(std::sync::RwLock::new(Self::resolve(names))))
+    }
+
+    fn resolve(names: Vec<String>) -> ExeEntries {
+        let paths = names
+            .iter()
+            .filter_map(|n| exe_entry_path(n))
+            .map(|p| std::fs::canonicalize(&p).unwrap_or(p))
+            .collect();
+        ExeEntries { names, paths }
+    }
+
+    /// Replace the entries. Called from the config reload path only.
+    pub fn set(&self, names: Vec<String>) {
+        let resolved = Self::resolve(names);
+        if let Ok(mut guard) = self.0.write() {
+            *guard = resolved;
+        }
+    }
+
+    /// Whether `exe` (a client's resolved executable) is admitted. An empty
+    /// list or a poisoned lock denies.
+    pub fn contains_exe(&self, exe: &std::path::Path) -> bool {
+        self.0.read().is_ok_and(|g| g.paths.iter().any(|p| p == exe))
+    }
+
+    /// Whether nothing is listed at all. A poisoned lock reports *not* empty;
+    /// `contains_exe` still denies everything then.
+    pub fn is_empty(&self) -> bool {
+        self.0.read().is_ok_and(|g| g.names.is_empty())
+    }
+
+    pub fn names(&self) -> Vec<String> {
+        self.0.read().map(|g| g.names.clone()).unwrap_or_default()
+    }
+
+    /// Entries whose path does not exist right now: almost always a bare
+    /// name for a binary that is not in `/usr/bin` (ADR 0094). For a warning.
+    pub fn missing(&self) -> Vec<String> {
+        self.0
+            .read()
+            .map(|g| {
+                g.names
+                    .iter()
+                    .filter(|n| exe_entry_path(n).is_none_or(|p| !p.exists()))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 /// `clipboard { ... }` (COMP-06 §4).
 #[derive(Debug, Clone, Default)]
 pub struct Clipboard {
-    /// Process names allowed to bind `zwlr_data_control_manager_v1`. Empty
-    /// (the default) denies everyone — data control reads every selection.
+    /// Executables allowed to bind `zwlr_data_control_manager_v1` (ADR 0094
+    /// entry rules). Empty (the default) denies everyone — data control reads
+    /// every selection.
     pub data_control_allow: Vec<String>,
+}
+
+/// `input-method { ... }` (COMP-06 §1, ADR 0094).
+#[derive(Debug, Clone, Default)]
+pub struct InputMethod {
+    /// Executables allowed to bind `zwp_input_method_manager_v2`. An input
+    /// method sees what the focused text field holds and commits text into
+    /// it, so it is named, not ambient. Empty denies everyone.
+    pub allow: Vec<String>,
+}
+
+/// `virtual-pointer { ... }` (COMP-06 §2, ADR 0094).
+#[derive(Debug, Clone, Default)]
+pub struct VirtualPointer {
+    /// Executables allowed to bind `zwlr_virtual_pointer_manager_v1`.
+    /// Ambient pointer injection is what this project replaces; empty (the
+    /// default) denies everyone.
+    pub allow: Vec<String>,
 }
 
 /// `capture { ... }` (COMP-06 §3, COMP-02 §7). Fail-closed by construction:
@@ -280,7 +391,8 @@ pub struct Clipboard {
 /// asks to be".
 #[derive(Debug, Clone, Default)]
 pub struct Capture {
-    /// Process names allowed to bind `zwlr_screencopy_manager_v1`. Empty
+    /// Executables allowed to bind `zwlr_screencopy_manager_v1` and
+    /// `ext_image_copy_capture_manager_v1` (ADR 0094 entry rules). Empty
     /// (the default) denies everyone — screen capture reads every pixel of an
     /// output, including other clients' windows.
     pub allow: Vec<String>,
@@ -292,6 +404,47 @@ pub struct Capture {
     /// and screen shares. Only surfaces up to 64x64 logical px qualify
     /// (ADR 0056); that bound is enforced by the consumer.
     pub hide_layer: Vec<(String, String)>,
+}
+
+/// `ui.capture-toasts`: toasts while a human capture (screen share, recording,
+/// screenshot) is running. Only `Show` puts a toast's pixels in a capture; the
+/// other three never do, so a toast already on screen when a share starts is
+/// still covered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CaptureToasts {
+    /// Toasts are captured like any other layer surface.
+    Show,
+    /// A redaction card covers the toast in the capture; the human sees it
+    /// normally.
+    #[default]
+    Redact,
+    /// Toasts wait until the share ends, then appear.
+    Hold,
+    /// Toasts go straight to the notification history while a share runs.
+    History,
+}
+
+impl CaptureToasts {
+    pub const NAMES: &'static [&'static str] = &["show", "redact", "hold", "history"];
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "show" => Self::Show,
+            "redact" => Self::Redact,
+            "hold" => Self::Hold,
+            "history" => Self::History,
+            _ => return None,
+        })
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Show => "show",
+            Self::Redact => "redact",
+            Self::Hold => "hold",
+            Self::History => "history",
+        }
+    }
 }
 
 /// `xwayland { ... }` (COMP-07 §4, §7 open decision 2).
@@ -317,7 +470,7 @@ impl Default for Xwayland {
 }
 
 /// `idle { ... }` (COMP-03 §7). Zero or absent disables a timeout.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Idle {
     /// Seconds of inactivity before outputs are powered off (DPMS).
     pub dpms_timeout: Option<u64>,
@@ -327,6 +480,24 @@ pub struct Idle {
     /// the compositor never self-locks, because only a locker client can
     /// unlock an `ext_session_lock_v1` session.
     pub lock_command: Option<String>,
+    /// Seconds of inactivity before the machine is suspended through logind
+    /// (ADR 0099). Absent by default: idle never suspends unless asked to.
+    pub suspend_timeout: Option<u64>,
+    /// Lock before an idle suspend, and do not suspend a session that did not
+    /// lock (ADR 0099). Default on.
+    pub lock_before_suspend: bool,
+}
+
+impl Default for Idle {
+    fn default() -> Self {
+        Self {
+            dpms_timeout: None,
+            lock_timeout: None,
+            lock_command: None,
+            suspend_timeout: None,
+            lock_before_suspend: true,
+        }
+    }
 }
 
 /// `misc { ... }` (COMP-13 §1.1).
@@ -473,9 +644,9 @@ impl Default for Components {
     }
 }
 
-/// `wallpaper { ... }`. Read over the socket by the `ec-wallpaper`
-/// daemon; abyss draws nothing from it. `path` is not checked for existence:
-/// a missing file is the daemon's to fall back from.
+/// `wallpaper { ... }`. Drawn by the compositor (`outputs/wallpaper.rs`) and
+/// still served over the socket for `ec-wallpaper`. `path` is not checked for
+/// existence: a missing file falls back to the colour at draw time.
 #[derive(Debug, Clone)]
 pub struct Wallpaper {
     pub path: Option<String>,

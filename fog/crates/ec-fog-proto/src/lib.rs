@@ -537,6 +537,43 @@ where
     Ok(())
 }
 
+/// [`write_frame`] over blocking `std::io`, for threads that own a socket.
+pub fn write_frame_blocking<W, T>(w: &mut W, body: &T) -> Result<(), FrameError>
+where
+    W: std::io::Write,
+    T: Serialize,
+{
+    w.write_all(&encode(body)?)?;
+    Ok(())
+}
+
+/// [`read_frame`] over blocking `std::io`.
+pub fn read_frame_blocking<R, T>(r: &mut R) -> Result<Option<T>, FrameError>
+where
+    R: std::io::Read,
+    T: DeserializeOwned,
+{
+    let mut hdr = [0u8; 4];
+    let mut got = 0;
+    while got < 4 {
+        let n = r.read(&mut hdr[got..])?;
+        if n == 0 {
+            if got == 0 {
+                return Ok(None);
+            }
+            return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        }
+        got += n;
+    }
+    let len = u32::from_le_bytes(hdr);
+    if len > MAX_FRAME {
+        return Err(FrameError::TooLarge(len));
+    }
+    let mut payload = vec![0u8; len as usize];
+    r.read_exact(&mut payload)?;
+    decode_payload(&payload).map(Some)
+}
+
 /// Read one frame. `Ok(None)` on clean EOF between frames; EOF mid-frame is
 /// an `Io` error. A length over [`MAX_FRAME`] is refused before allocating.
 pub async fn read_frame<R, T>(r: &mut R) -> Result<Option<T>, FrameError>

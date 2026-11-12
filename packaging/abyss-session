@@ -22,7 +22,23 @@ export XDG_CONFIG_DIRS="/etc/eclipse/xdg:${XDG_CONFIG_DIRS:-/etc/xdg}"
 # a pinned bar.widgets.order lacks (ADR 0065). `--only widget-order` touches
 # nothing else, and each id is offered once. Best effort: a failure here is
 # logged and never stops the session.
-if command -v ec-ctl >/dev/null 2>&1; then
+#
+# `--previous` (the "Abyss (previous)" entry, ADR 0101) skips the migration:
+# the kept build may not know the widget ids today's ec-ctl would add.
+previous=
+if [ "${1:-}" = --previous ]; then
+    previous=--previous
+    shift
+fi
+if [ -z "$previous" ] && command -v ec-ctl >/dev/null 2>&1; then
     ec-ctl config migrate --only widget-order 2>&1 | systemd-cat -t abyss-session || true
 fi
-exec systemd-cat -t abyss-session ec-abyss --backend drm --session "$@"
+# A crashed session ends here and greetd shows the login screen again, where
+# "Abyss (previous)" is listed (ADR 0101). `--previous` starts the kept build;
+# without a kept copy (dev installs, first update) it starts the current one.
+bin=ec-abyss
+prev="${ECLIPSE_ROOT:-}/usr/lib/eclipse/previous/ec-abyss"
+if [ -n "$previous" ] && [ -x "$prev" ]; then
+    bin=$prev
+fi
+exec systemd-cat -t abyss-session "$bin" --backend drm --session "$@"

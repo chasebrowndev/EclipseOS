@@ -47,7 +47,7 @@ const CAPS: [&str; 11] = [
     "policy.edit",
     "scene.list",
 ];
-const CLASSES: [Class; 3] = [Class::Public, Class::Private, Class::Secret];
+const CLASSES: [Class; 3] = [Class::Public, Class::Normal, Class::Secret];
 const APPS: [Option<&str>; 3] = [None, Some("foot"), Some("org.mozilla.firefox")];
 const IRREVERSIBLE: [Option<&str>; 3] = [None, Some("communication.send"), Some("system.policy")];
 /// (empty, untrusted link, channel source)

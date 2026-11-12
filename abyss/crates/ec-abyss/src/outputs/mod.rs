@@ -18,6 +18,7 @@ pub mod edid;
 pub mod overscan;
 pub mod persist;
 pub mod power;
+pub mod wallpaper;
 
 use std::collections::HashMap;
 

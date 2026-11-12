@@ -47,9 +47,9 @@ rule "default-allow" allow {
     capability "*"
 }
 
-// Sensitivity (S-05 §3): private by default; these raise to secret. The
+// Sensitivity (S-05 §3): normal by default; these raise to secret. The
 // S-02 §3 example's `node_role "password"` line waits on the semantic tree.
-defaults { sensitivity "private"; }
+defaults { sensitivity "normal"; }
 classify "secret" {
     app_id "org.keepassxc.KeePassXC" "1password" "bitwarden" "com.bitwarden.desktop"
     title "(?i)authenticat|password|2fa|one-time"

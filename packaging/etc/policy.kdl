@@ -2,10 +2,10 @@
 // Shipped policy defaults — /etc/eclipse/policy.kdl. Owned by the image.
 //
 // This is a security default, not a convenience default, and it gets the same
-// line-by-line owner review as TCB code (F-07 §4). It grants nothing: policy
-// is fail-closed, so everything not granted elsewhere is denied, and that is
-// the correct starting position. What it does carry only tightens — a
-// sensitivity class can be raised by a rule, never lowered.
+// line-by-line owner review as TCB code (F-07 §4). Policy is fail-closed, so
+// everything not granted is denied, and that is the correct starting
+// position. What this file carries tightens, with one exception: the
+// input-method grant below, without which no IME works at all (ADR 0094).
 //
 // It ships at all — rather than being omitted — so that the path, the owner and
 // the file mode are established before anything is at stake. An empty file with
@@ -23,10 +23,45 @@
 // regexes, and `eclipse-secret-prompt-foo` must not inherit the class.
 windowrule "sensitivity secret" { app-id "^ec-secret-prompt$"; }
 
+// Password managers and keyring UIs are `secret` (ADR 0106): never composited
+// into a screen share, recording or screenshot -- a "Private: Redacted" card
+// takes their place -- and still shown normally on the monitor. These are a
+// security default: remove a line here to let that app appear in shares.
+// Anchored and case-insensitive, one rule per app. Wayland matches the
+// xdg-shell app_id; an XWayland window matches its WM_CLASS class, and is
+// withheld from compositor captures only (COMP-07 §2 as amended: another X11
+// client can still read it through the X server).
+//   KeePassXC (Wayland id from its desktop file; XWayland class `keepassxc`)
+windowrule "sensitivity secret" { app-id "^(?i:org\\.keepassxc\\.KeePassXC|keepassxc)$"; }
+//   Bitwarden desktop (Electron: `bitwarden` native/AUR, Flatpak id
+//   `com.bitwarden.desktop`; XWayland class `Bitwarden`)
+windowrule "sensitivity secret" { app-id "^(?i:bitwarden|com\\.bitwarden\\.desktop)$"; }
+//   1Password (Electron: `1password`; XWayland class `1Password`)
+windowrule "sensitivity secret" { app-id "^(?i:1password)$"; }
+//   GNOME Secrets (Flathub id) and Seahorse
+windowrule "sensitivity secret" { app-id "^org\\.gnome\\.World\\.Secrets$"; }
+windowrule "sensitivity secret" { app-id "^org\\.gnome\\.seahorse\\.Application$"; }
+//   KeePass 2 (Mono, XWayland only: WM_CLASS class `KeePass`)
+windowrule "sensitivity secret" { app-id "^(?i:keepass2?)$"; }
+
 // The agent console shows every agent's conversation: no agent may see it,
 // hit it or capture it (A-08 §10). App-id is client-chosen, so this hides
 // rather than trusts; the guarantee is the console's protected surface.
 windowrule "no-agent" { app-id "^eclipse-console$"; }
+
+// Who may be the input method (zwp_input_method_manager_v2, ADR 0094). An IME
+// sees the focused text field and commits into it, so it is named, not
+// ambient. Entries are executable paths: a bare name means /usr/bin/<name>,
+// so a copy of `fcitx5` in /tmp or ~/.local/bin is not admitted. These are
+// the Arch input-method_v2 daemons a user would actually install: fcitx5
+// (the common CJK framework), kime (Korean) and squeekboard (the on-screen
+// keyboard). An entry for a binary that is not installed admits nothing.
+// Your own policy.kdl's `allow` replaces this list rather than adding to it.
+input-method { allow "fcitx5" "kime" "squeekboard"; }
+
+// No virtual-pointer grant: nothing in the image injects pointer input, and
+// COMP-06 §2 wants that global off unless a client is named. Add
+// `virtual-pointer { allow "/usr/bin/<tool>"; }` in your own policy.kdl.
 
 // The taskbar's Oracle-Eyes eye is on-screen only; captures see the static eclipse.
 capture { hide-layer "ec-hyperion-bar:eclipse-eye"; }

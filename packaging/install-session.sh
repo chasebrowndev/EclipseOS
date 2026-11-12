@@ -46,7 +46,7 @@ claude_code_agent=/usr/share/eclipse/agents/ec-claude-code-agent/0.1.0
 
 for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher \
          ec-settings ec-policy-viewer ec-console ec-cheatsheet ec-ctl ec-screensaver ec-secret-prompt \
-         ec-pairing ec-polkit-agent ec-portal; do
+         ec-pairing ec-polkit-agent ec-portal ec-lock ec-lock-trigger; do
     [ -x "$bin/$b" ] || { echo "missing $bin/$b — cargo build --release --workspace --bins" >&2; exit 1; }
 done
 if [ "$do_agents" -eq 1 ]; then
@@ -69,7 +69,7 @@ fi
 install -d /usr/local/bin
 for b in ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher \
          ec-settings ec-policy-viewer ec-console ec-cheatsheet ec-ctl ec-screensaver ec-secret-prompt \
-         ec-pairing ec-portal; do
+         ec-pairing ec-portal ec-lock ec-lock-trigger; do
     ln -sfn "$bin/$b" "/usr/local/bin/$b"
 done
 if [ "$do_agents" -eq 1 ]; then
@@ -81,6 +81,9 @@ install -m 0755 "$here/abyss-session" /usr/local/bin/abyss-session
 # A real copy at the shipped path: the compositor admits nothing else at its
 # polkit door (ADR 0088), and a symlink's /proc/<pid>/exe is its target.
 install -m 0755 "$bin/ec-polkit-agent" /usr/bin/ec-polkit-agent
+# The screen locker's PAM service (ADR 0095). Without it PAM falls back to
+# `other`, which denies everything, and the locker could never unlock.
+install -Dm 0644 "$here/pam.d/ec-lock" /etc/pam.d/ec-lock
 
 # 2. The session entry the greeter lists. Exec is the wrapper, not the binary:
 #    XDG_SESSION_TYPE and friends have to be set before the compositor starts.
@@ -94,7 +97,7 @@ dest="$home/.config/systemd/user"
 install -d -o "$user" -g "$user" "$dest"
 install -m 0644 -o "$user" -g "$user" "$here/abyss-session.target" "$dest/abyss-session.target"
 # ec-desktop is copied but never enabled: abyss starts it under mode "de".
-units_here="ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-screensaver ec-pairing ec-portal"
+units_here="ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-screensaver ec-pairing ec-portal ec-lock-trigger"
 [ "$do_agents" -eq 1 ] && units_here="$units_here $agent_units"
 for unit in $units_here; do
     sed 's|/usr/bin/|/usr/local/bin/|' "$here/$unit.service" > "$dest/$unit.service"
@@ -145,13 +148,15 @@ done
 #    already written and are read when their manager next starts.
 uid=$(id -u "$user")
 rt="/run/user/$uid"
-units="ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service"
+units="ec-hyperion-bar.service ec-toasts.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service ec-lock-trigger.service"
 [ "$do_agents" -eq 1 ] && units="$units ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service"
 if [ -S "$rt/bus" ]; then
     as_user() {
         runuser -u "$user" -- env XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"
     }
     as_user systemctl --user daemon-reload
+    # Earlier installs enabled ec-wallpaper; abyss draws the wallpaper now (ADR 0104).
+    as_user systemctl --user disable ec-wallpaper.service 2>/dev/null || true
     # shellcheck disable=SC2086 # $units is a list of unit names on purpose
     as_user systemctl --user enable $units
 else

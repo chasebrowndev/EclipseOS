@@ -104,8 +104,9 @@ render nodes and `evdev`, all of which are stock. Carrying a kernel would add a
 build, a signing story and a rollback surface for zero function.
 
 `linux-lts` is shipped as a second installed kernel with its own boot entry.
-This is the only rollback that exists before the atomic scheme (D-04), and it is
-worth an extra 150 MB.
+This is the only kernel rollback that exists before the atomic scheme (D-04),
+and it is worth an extra 150 MB. The compositor has its own until then: the
+build running before an upgrade is kept as "Abyss (previous)" (ADR 0101).
 
 ### 2.1 Two reference machines, and which one the ISO is built for
 
@@ -279,11 +280,14 @@ reinvented; their units are S-tier documents' business.
 ### 3.5 greetd
 
 greetd stays the display manager, running
-`ec-abyss --backend drm --kiosk -- /usr/lib/eclipse/ec-greeter-run` (ADR 0087),
+`ec-abyss --backend drm --kiosk -- /usr/lib/eclipse/ec-greeter-run` (ADR 0087)
+through `/usr/lib/eclipse/ec-abyss-launch`, which starts the kept previous build
+if that one dies at startup (ADR 0101; the greeter only),
 which renders the machine's choices over the shipped files and execs regreet, and
 falls back to the shipped files on any problem (ADR 0089). There is no reason to own
 a greeter, but the compositor under it is ours. The session entry is `/usr/share/wayland-sessions/abyss.desktop` with
-`Exec=/usr/bin/abyss-session`.
+`Exec=/usr/bin/abyss-session`; `abyss-previous.desktop` beside it runs
+`abyss-session --previous` (ADR 0101).
 
 `abyss-session` passes `--backend drm` **explicitly**. `default_backend()` picks
 DRM only by the *absence* of `WAYLAND_DISPLAY`/`DISPLAY`, and a greeter that

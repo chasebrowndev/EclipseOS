@@ -56,6 +56,43 @@ pub fn damage_all(state: &mut AbyssState) {
     let _ = state;
 }
 
+/// Keep frames coming while the capture indicator's pupil moves (COMP-10
+/// §3.6). A calloop timer wakes at [`next_frame`], damages every output, and
+/// re-arms itself; once capture lapses it fires one last time so the
+/// indicator is cleared, then stops. The nested backends render every frame
+/// anyway; this is what drives DRM. Idempotent: at most one timer.
+///
+/// [`next_frame`]: ec_abyss_render::capture_eye::next_frame
+pub fn eye_kick(state: &mut AbyssState) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    if state.capture_eye.ticking {
+        return;
+    }
+    let Some(seen) = state.capture_seen else { return };
+    let left = crate::render::capture::INDICATOR_LINGER.saturating_sub(seen.elapsed());
+    if left.is_zero() {
+        return;
+    }
+    let since = state
+        .capture_eye
+        .started
+        .map_or_else(Default::default, |t| t.elapsed());
+    let wake =
+        ec_abyss_render::capture_eye::next_frame(since).min(left + std::time::Duration::from_millis(1));
+    state.capture_eye.ticking = true;
+    let armed = state
+        .loop_handle
+        .insert_source(Timer::from_duration(wake), |_, _, state| {
+            state.capture_eye.ticking = false;
+            damage_all(state);
+            eye_kick(state);
+            TimeoutAction::Drop
+        });
+    if armed.is_err() {
+        state.capture_eye.ticking = false;
+    }
+}
+
 /// Turn one output's scanout on or off (DPMS, COMP-03 §7). Geometry, windows
 /// and workspaces are untouched — only the pixels stop.
 pub fn set_output_power(state: &mut AbyssState, id: u64, on: bool) {

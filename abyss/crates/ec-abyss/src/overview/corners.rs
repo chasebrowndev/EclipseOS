@@ -280,7 +280,7 @@ pub fn motion(state: &mut AbyssState, pos: Point<f64, Logical>) {
             let token = state
                 .loop_handle
                 .insert_source(Timer::from_duration(dwell), move |_, _, state| {
-                    fire(state, serial);
+                    crate::contain::contain(state, crate::contain::Feature::Overview, |s| fire(s, serial));
                     TimeoutAction::Drop
                 })
                 .ok();
@@ -293,6 +293,7 @@ pub fn motion(state: &mut AbyssState, pos: Point<f64, Logical>) {
 
 /// The dwell timer of arming `serial` ran out.
 pub fn fire(state: &mut AbyssState, serial: u64) {
+    crate::contain::fault(crate::contain::Feature::Overview);
     let still = state
         .corners
         .at(state.pointer_location)

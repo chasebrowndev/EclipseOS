@@ -323,7 +323,8 @@ fn foot_follow(color_scheme: u32, flipped: bool) {
     }
 }
 
-/// Own the backend name and follow the compositor's theme.
+/// Own the backend name, serve Settings and FileChooser, and follow the
+/// compositor's theme.
 ///
 /// Fails if the name is taken -- we never steal it.
 pub fn spawn() -> zbus::Result<Portal> {
@@ -335,6 +336,8 @@ pub fn spawn() -> zbus::Result<Portal> {
                 state: Arc::clone(&state),
             },
         )?
+        // Same object, same bus name: one backend, two interfaces (ADR 0100).
+        .serve_at(OBJECT_PATH, crate::filechooser::FileChooser)?
         .build()?;
     match connection.request_name_with_flags(BUS_NAME, RequestNameFlags::DoNotQueue.into())? {
         RequestNameReply::PrimaryOwner => {}

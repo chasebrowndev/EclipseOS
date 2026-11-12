@@ -17,6 +17,7 @@ pub mod link;
 pub mod scene;
 pub mod table;
 
+use ec_policy_eval::rate;
 use ec_policy_eval::scope::SCENE_READ;
 use ec_policy_eval::{Grant, SceneView, VerifyError, VerifyingKey};
 
@@ -33,6 +34,36 @@ pub enum AdmitError {
     WrongPrincipal,
     /// `policyd` has revoked this grant or its principal.
     Revoked,
+    /// The grant carries a `rate` constraint the compositor cannot count: an
+    /// event it does not know, or a zero count or period. A grant is
+    /// admitted whole or not at all (S-01 §4, COMP-08 §10 step 5).
+    Unenforceable,
+}
+
+/// One `rate` line of one live grant, counting.
+#[derive(Debug)]
+struct Meter {
+    grant: ec_policy_eval::Ulid,
+    event: rate::Event,
+    window: rate::Window,
+}
+
+/// The meters for `grant`'s `rate` lines, or `Unenforceable`.
+fn meters(grant: &Grant) -> Result<Vec<Meter>, AdmitError> {
+    grant
+        .constraints
+        .rates
+        .iter()
+        .map(|r| {
+            let event = rate::Event::parse(&r.event).ok_or(AdmitError::Unenforceable)?;
+            let window = rate::Window::new(r.count, r.per_ms).ok_or(AdmitError::Unenforceable)?;
+            Ok(Meter {
+                grant: grant.id,
+                event,
+                window,
+            })
+        })
+        .collect()
 }
 
 /// One agent object's authority: the principal it speaks for and every live
@@ -45,6 +76,9 @@ pub struct Agent {
     read: SceneView,
     /// One per [`SEAT_CAPS`] entry, same order.
     acts: Vec<SceneView>,
+    /// Every live grant's `rate` lines. Built at admission, so the request
+    /// path counts and allocates nothing.
+    meters: Vec<Meter>,
 }
 
 /// What one request is filtered through, compiled from the live grants.
@@ -90,12 +124,14 @@ impl Agent {
         revoked: impl Fn(&Grant) -> bool,
     ) -> Result<Agent, AdmitError> {
         let grant = verify(cose, key, now_ms, &revoked)?;
+        let meters = meters(&grant)?;
         let mut agent = Agent {
             principal: grant.principal.clone(),
             grants: vec![grant],
             view: SceneView::default(),
             read: SceneView::default(),
             acts: Vec::new(),
+            meters,
         };
         agent.recompile();
         Ok(agent)
@@ -113,6 +149,8 @@ impl Agent {
         if grant.principal != self.principal {
             return Err(AdmitError::WrongPrincipal);
         }
+        let mut meters = meters(&grant)?;
+        self.meters.append(&mut meters);
         self.grants.push(grant);
         self.recompile();
         Ok(())
@@ -200,6 +238,49 @@ impl Agent {
         n
     }
 
+    /// COMP-08 §10 step 5: whether `requests` more requests delivering
+    /// `input` input events between them fit every live grant's `rate` constraints. `Err` is the
+    /// longest wait any of them asks for, in ms (`rate_limited`'s detail).
+    ///
+    /// Every live grant's constraint binds every request the principal
+    /// makes: a second grant can add a limit and can never lift one (the
+    /// ratchet, and S-01 §4 "never widened by merging"). Changes nothing —
+    /// [`rate_spend`](Self::rate_spend) counts.
+    pub fn rate_fits(&self, now_ms: u64, requests: u32, input: u32) -> Result<(), u64> {
+        let mut wait = 0u64;
+        for m in &self.meters {
+            let n = match m.event {
+                rate::Event::Requests => requests,
+                rate::Event::InputEvents => input,
+            };
+            if n == 0 {
+                continue;
+            }
+            if let Err(w) = m.window.fits(now_ms, n) {
+                wait = wait.max(w);
+            }
+        }
+        if wait == 0 {
+            Ok(())
+        } else {
+            Err(wait)
+        }
+    }
+
+    /// Counts `requests` requests delivering `input` input events against every
+    /// live grant's `rate` constraints. Call after [`rate_fits`](Self::rate_fits).
+    pub fn rate_spend(&mut self, now_ms: u64, requests: u32, input: u32) {
+        for m in &mut self.meters {
+            let n = match m.event {
+                rate::Event::Requests => requests,
+                rate::Event::InputEvents => input,
+            };
+            if n != 0 {
+                m.window.record(now_ms, n);
+            }
+        }
+    }
+
     /// One line per live grant, for the emergency panel: its capabilities
     /// and their scopes as written (S-01 §4).
     pub fn describe_grants(&self) -> Vec<String> {
@@ -219,6 +300,9 @@ impl Agent {
     }
 
     fn recompile(&mut self) {
+        // A grant that expired or was revoked takes its meters with it.
+        let grants = &self.grants;
+        self.meters.retain(|m| grants.iter().any(|g| g.id == m.grant));
         self.view = SceneView::compile(&self.grants);
         self.read = SceneView::compile_for(SCENE_READ, &self.grants);
         self.acts = SEAT_CAPS
@@ -285,6 +369,92 @@ mod tests {
 
     fn never(_: &Grant) -> bool {
         false
+    }
+
+    fn rated(id: u8, expires_ms: u64, event: &str, count: u32, per_ms: u64) -> Grant {
+        let mut g = grant("agent:a", id, expires_ms);
+        g.constraints.rates.push(ec_policy_eval::Rate {
+            event: event.into(),
+            count,
+            per_ms,
+        });
+        g
+    }
+
+    #[test]
+    fn a_rate_is_counted_and_reports_the_wait() {
+        let key = sk().verifying_key();
+        let cose = sign(&rated(1, u64::MAX, "requests", 2, 800), &sk());
+        let mut a = Agent::admit(&cose, Some(&key), 0, never).unwrap();
+        for _ in 0..2 {
+            assert_eq!(a.rate_fits(0, 1, 1), Ok(()));
+            a.rate_spend(0, 1, 1);
+        }
+        let wait = a.rate_fits(0, 1, 1).unwrap_err();
+        assert!(wait > 0 && wait <= 900, "{wait}");
+        assert_eq!(a.rate_fits(wait, 1, 1), Ok(()));
+    }
+
+    #[test]
+    fn a_second_grant_adds_a_limit_and_never_lifts_one() {
+        let key = sk().verifying_key();
+        let tight = sign(&rated(1, u64::MAX, "requests", 1, 3_600_000), &sk());
+        let loose = sign(&rated(2, u64::MAX, "requests", 1000, 3_600_000), &sk());
+        let mut a = Agent::admit(&tight, Some(&key), 0, never).unwrap();
+        a.add_grant(&loose, Some(&key), 0, never).unwrap();
+        assert_eq!(a.rate_fits(0, 1, 0), Ok(()));
+        a.rate_spend(0, 1, 0);
+        assert!(a.rate_fits(1, 1, 0).is_err(), "the tight grant still binds");
+    }
+
+    #[test]
+    fn an_expired_or_revoked_grant_takes_its_rate_with_it() {
+        let key = sk().verifying_key();
+        let short = sign(&rated(1, 100, "requests", 1, 3_600_000), &sk());
+        let mut long = grant("agent:a", 2, u64::MAX);
+        long.capabilities[0].name = "seat.key".into();
+        let long = sign(&long, &sk());
+        let mut a = Agent::admit(&short, Some(&key), 0, never).unwrap();
+        a.add_grant(&long, Some(&key), 0, never).unwrap();
+        a.rate_spend(0, 1, 0);
+        assert!(a.rate_fits(1, 1, 0).is_err());
+        // The request path drops expired grants; the meter goes with them.
+        assert!(a.act_view(200, "seat.key").is_some());
+        assert_eq!(a.rate_fits(200, 1, 0), Ok(()));
+
+        let again = sign(&rated(3, u64::MAX, "requests", 1, 3_600_000), &sk());
+        a.add_grant(&again, Some(&key), 200, never).unwrap();
+        a.rate_spend(200, 1, 0);
+        assert!(a.rate_fits(201, 1, 0).is_err());
+        assert!(a.revoke(|g| g.id == Ulid([3; 16])));
+        assert_eq!(a.rate_fits(201, 1, 0), Ok(()));
+    }
+
+    #[test]
+    fn an_uncountable_rate_refuses_the_whole_grant() {
+        let key = sk().verifying_key();
+        for g in [
+            rated(1, u64::MAX, "capture_frames", 5, 1000),
+            rated(1, u64::MAX, "requests", 0, 1000),
+            rated(1, u64::MAX, "requests", 5, 0),
+        ] {
+            let cose = sign(&g, &sk());
+            assert_eq!(
+                Agent::admit(&cose, Some(&key), 0, never).unwrap_err(),
+                AdmitError::Unenforceable
+            );
+        }
+        let mut a = Agent::admit(&sign(&grant("agent:a", 1, u64::MAX), &sk()), Some(&key), 0, never).unwrap();
+        let bad = sign(&rated(2, u64::MAX, "nope", 1, 1), &sk());
+        assert_eq!(
+            a.add_grant(&bad, Some(&key), 0, never).unwrap_err(),
+            AdmitError::Unenforceable
+        );
+        assert_eq!(
+            a.rate_fits(0, 1, 1),
+            Ok(()),
+            "the refused grant left no meter behind"
+        );
     }
 
     #[test]

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 mod activation;
+#[cfg(test)]
+mod admission_tests;
 pub mod background_effect;
+pub mod capture_event;
 mod compositor;
 pub mod data_control;
 pub mod data_device;

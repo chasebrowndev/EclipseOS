@@ -14,8 +14,13 @@
 //! 4. Capability and scope: the agent's view for the act's capability
 //!    resolves the target (a handle, a point, or the seat's focus) or the
 //!    request is `no_capability` / `out_of_scope`.
-//! 5. Rate and quota: not yet (grant `rate` constraints are carried but not
-//!    counted).
+//! 5. Rate: every live grant's `rate` constraints (`requests`,
+//!    `input_events`) are counted, and a request that does not fit is
+//!    `rate_limited` with the wait in ms as detail. It is charged here, on
+//!    arrival, whatever the table then says: the limit is on what an agent
+//!    may ask the compositor to consider. A grant with a `rate` the
+//!    compositor cannot count was never admitted (`policy::Agent`). Quota:
+//!    not yet — no capability served here defines one.
 //! 6. Sensitivity: a `secret` window is never in any view, so it can never
 //!    be a target.
 //! 7. The table: `check()` with a [`RequestCtx`] built on the stack.
@@ -26,7 +31,8 @@
 //!    target's is `stale_generation`, with the current one as detail.
 //!    Generations only rise, so it is also checked before a prompt goes up.
 //!
-//!    8b. Before a parked request runs, steps 3 to 6 run again: a human
+//!    8b. Before a parked request runs, steps 3, 4 and 6 run again (step 5
+//!    was charged on arrival and is not charged twice): a human
 //!    "allow" is permission, not a snapshot of the world (COMP-11 §4 step 5),
 //!    and a target whose class rose is `class_changed`.
 //! 9. Execute. Then `result`, and the audit records.
@@ -133,6 +139,18 @@ impl Act {
             }
             Act::TouchDown { .. } | Act::TouchUp { .. } | Act::TouchMotion { .. } => "seat.touch",
             Act::Click { .. } => "click",
+        }
+    }
+
+    /// Input events the act delivers, for a grant's `rate "input_events"`
+    /// (S-01 §4). Text counts one per character: it is typed, not pasted.
+    /// A click is a press and a release.
+    pub fn input_events(&self) -> u32 {
+        match self {
+            Act::Focus { .. } => 0,
+            Act::Text { text, .. } => u32::try_from(text.chars().count()).unwrap_or(u32::MAX),
+            Act::Click { .. } => 2,
+            _ => 1,
         }
     }
 
@@ -347,6 +365,21 @@ pub fn admit(state: &mut AbyssState, req: &Request) -> Result<(), (Status, Strin
     dedupe(state, req.agent, req.req_id)
 }
 
+/// Step 5: the request fits every live grant's `rate`, and is counted.
+fn charge(state: &mut AbyssState, req: &Request) -> Result<(), (Status, String)> {
+    let Some(mut agent) = state.agents.take_agent(req.agent) else {
+        return Err((Status::NoCapability, req.act.capability().to_owned()));
+    };
+    let now = now_ms();
+    let input = req.act.input_events();
+    let fits = agent.rate_fits(now, 1, input);
+    if fits.is_ok() {
+        agent.rate_spend(now, 1, input);
+    }
+    state.agents.put_agent(req.agent, agent);
+    fits.map_err(|wait| (Status::RateLimited, wait.to_string()))
+}
+
 /// Step 8: the generation the agent acted on is still the target's.
 fn current(state: &mut AbyssState, req: &Request, window: &Window) -> Result<(), (Status, String)> {
     if req.expected_generation == 0 {
@@ -383,6 +416,9 @@ pub fn submit(state: &mut AbyssState, req: Request) -> Submitted {
         Ok(w) => w,
         Err((s, d)) => return answered(state, &principal, &req, s, d),
     };
+    if let Err((s, d)) = charge(state, &req) {
+        return answered(state, &principal, &req, s, d);
+    }
     let (outcome, rule) = decide(
         state,
         req.agent,
@@ -445,8 +481,21 @@ pub fn dry_run(state: &mut AbyssState, agent: u64, reqs: &[Request]) -> Result<(
     let mut focus = crate::protocols::agent::seat::focused_window(state, agent);
     // Batch-token targets the steps before this one will consume.
     let mut claimed: Vec<(u64, u64)> = Vec::new();
+    // Step 5 for the batch as a whole: the steps up to and including this
+    // one must fit together, or `submit` would stop the batch halfway.
+    let now = now_ms();
+    let mut input = 0u32;
     for (i, req) in reqs.iter().enumerate() {
         let window = dry_step(state, i, req, focus.clone(), &mut claimed).map_err(|(s, d)| (i, s, d))?;
+        input = input.saturating_add(req.act.input_events());
+        let steps = u32::try_from(i + 1).unwrap_or(u32::MAX);
+        if let Some(Err(wait)) = state
+            .agents
+            .peek_agent(agent)
+            .map(|a| a.rate_fits(now, steps, input))
+        {
+            return Err((i, Status::RateLimited, wait.to_string()));
+        }
         if matches!(req.act, Act::Focus { .. } | Act::Click { .. }) {
             focus = Some(window);
         }

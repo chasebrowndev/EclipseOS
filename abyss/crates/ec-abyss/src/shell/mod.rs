@@ -877,9 +877,11 @@ fn classify(state: &mut AbyssState, window: &Window) {
 pub fn place_new_window(state: &mut AbyssState, window: Window) {
     // Classify before the window is ever composited (COMP-02 §7). Raise-only.
     classify(state, &window);
-    crate::protocols::standard::foreign_toplevel::window_mapped(state, &window);
     // COMP-05 §4: rules decide placement before the window joins a workspace.
     let placement = rules::apply(state, &window);
+    // After the rules: a `sensitivity` rule must have raised the class before
+    // the window is published, or never is (ADR 0094).
+    crate::protocols::standard::foreign_toplevel::window_mapped(state, &window);
     if !install(state, &window, &placement) {
         return;
     }
@@ -2101,16 +2103,18 @@ pub fn x11_properties_changed(state: &mut AbyssState, surface: &smithay::xwaylan
     else {
         return;
     };
-    if crate::protocols::standard::foreign_toplevel::window_updated(&window) {
+    // Rules first: a title that matches a `sensitivity` rule must raise the
+    // class before the foreign-toplevel list is told the title (ADR 0094).
+    if let Some(placement) = rules::reevaluate(state, &window) {
+        replace_window(state, &window, &placement);
+    }
+    if crate::protocols::standard::foreign_toplevel::window_updated(state, &window) {
         let handle = state.ipc.handle_for(&window);
         crate::ipc::emit(
             state,
             "window",
             serde_json::json!({"change": "title", "handle": handle}),
         );
-    }
-    if let Some(placement) = rules::reevaluate(state, &window) {
-        replace_window(state, &window, &placement);
     }
 }
 

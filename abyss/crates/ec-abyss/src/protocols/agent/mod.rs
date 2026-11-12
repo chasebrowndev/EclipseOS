@@ -567,6 +567,7 @@ fn refusal(e: AdmitError) -> (Refusal, &'static str) {
         AdmitError::Invalid(_) => (Refusal::InvalidGrant, "grant failed verification"),
         AdmitError::WrongPrincipal => (Refusal::InvalidGrant, "grant principal refused"),
         AdmitError::Revoked => (Refusal::InvalidGrant, "grant revoked"),
+        AdmitError::Unenforceable => (Refusal::InvalidGrant, "grant constraint not enforceable"),
     }
 }
 
@@ -897,7 +898,7 @@ fn unreadable(views: Views<'_>) -> Status {
 fn sensitivity(state: &AbyssState, window: &Window) -> u32 {
     match scene::class(state, window) {
         Class::Public => 0,
-        Class::Private => 1,
+        Class::Normal => 1,
         Class::Secret => 2,
     }
 }

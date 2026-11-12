@@ -222,7 +222,7 @@ struct Sec {
 impl Sec {
     fn new() -> Self {
         Self {
-            class: Class::Private,
+            class: Class::Normal,
             password: false,
             credential: false,
             irreversible: None,
@@ -291,10 +291,10 @@ fn effective(
     now: Instant,
 ) -> Vec<(u32, Class)> {
     let mut out = Vec::with_capacity(nodes.len());
-    let mut stack = vec![(root, Class::Private)];
+    let mut stack = vec![(root, Class::Normal)];
     while let Some((id, inherited)) = stack.pop() {
         let Some(node) = nodes.get(&id) else { continue };
-        let own = sec.get(&id).map_or(Class::Private, |s| s.local(now));
+        let own = sec.get(&id).map_or(Class::Normal, |s| s.local(now));
         let class = if tainted {
             Class::Secret
         } else {
@@ -659,10 +659,10 @@ impl Model {
         self.node_mut(id)?;
         let want = match class {
             0 => Class::Public,
-            1 => Class::Private,
+            1 => Class::Normal,
             _ => Class::Secret,
         };
-        let have = self.sec.get(&id).map_or(Class::Private, |s| s.class);
+        let have = self.sec.get(&id).map_or(Class::Normal, |s| s.class);
         if want < have {
             return Err(Violation::LowerClassification);
         }
@@ -1210,7 +1210,7 @@ mod tests {
         m.add_node(2, 1, 0).unwrap();
         let (_, v) = m.commit((100, 100), t0()).unwrap().unwrap();
         assert_eq!(v.class_of(2, t0()), Some(Class::Secret));
-        assert_eq!(v.class_of(3, t0()), Some(Class::Private));
+        assert_eq!(v.class_of(3, t0()), Some(Class::Normal));
     }
 
     #[test]
@@ -1219,7 +1219,7 @@ mod tests {
         m.set_sensitivity(1, 2).unwrap();
         let (_, v) = m.commit((10, 10), t0()).unwrap().unwrap();
         assert_eq!(v.class_of(3, t0()), Some(Class::Secret));
-        assert!(v.snapshot(Class::Private, t0()).nodes.is_empty());
+        assert!(v.snapshot(Class::Normal, t0()).nodes.is_empty());
     }
 
     #[test]

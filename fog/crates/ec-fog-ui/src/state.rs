@@ -137,6 +137,11 @@ pub struct Browser {
     /// A name to put the cursor on once it shows up: what we just created
     /// or renamed.
     pub want: Option<Vec<u8>>,
+    /// Picker mode: only files matching one of these globs are listed
+    /// (folders always are, to navigate by). Empty lists everything.
+    globs: Vec<String>,
+    /// Picker mode, folder choosers: files are not listed at all.
+    dirs_only: bool,
 }
 
 impl Browser {
@@ -166,7 +171,31 @@ impl Browser {
             notice: None,
             space: None,
             want: None,
+            globs: Vec::new(),
+            dirs_only: false,
         }
+    }
+
+    /// Picker mode: narrow the listing to `globs` (folders stay) or, with
+    /// `dirs_only`, to folders. The cursor stays on its entry if it still
+    /// shows. In memory only; the listing is `ec-fogd`'s.
+    pub fn set_mask(&mut self, globs: Vec<String>, dirs_only: bool) -> Effect {
+        let keep = self.selected_name();
+        self.globs = globs;
+        self.dirs_only = dirs_only;
+        self.refilter();
+        self.follow(keep)
+    }
+
+    /// Whether the picker's mask lets `e` through.
+    fn masked(&self, e: &Entry) -> bool {
+        if e.kind == Kind::Dir {
+            return true;
+        }
+        if self.dirs_only {
+            return e.kind == Kind::Symlink;
+        }
+        self.globs.is_empty() || self.globs.iter().any(|g| crate::picker::glob(g, &e.name))
     }
 
     /// The path to (re)request when a connection comes up.
@@ -189,7 +218,11 @@ impl Browser {
 
     /// Every row of the listing, hidden and filtered ones included.
     pub fn total(&self) -> usize {
-        self.order.len()
+        self.order
+            .iter()
+            .filter_map(|&i| self.entries.get(i as usize))
+            .filter(|e| self.masked(e))
+            .count()
     }
 
     /// Rows the hidden-files setting shows, before the filter narrows them.
@@ -200,7 +233,7 @@ impl Browser {
         self.order
             .iter()
             .filter_map(|&i| self.entries.get(i as usize))
-            .filter(|e| !e.name.starts_with(b"."))
+            .filter(|e| !e.name.starts_with(b".") && self.masked(e))
             .count()
     }
 
@@ -466,7 +499,9 @@ impl Browser {
             .copied()
             .filter(|&i| {
                 self.entries.get(i as usize).is_some_and(|e| {
-                    (self.show_hidden || !e.name.starts_with(b".")) && fuzzy(&self.filter, &e.name)
+                    (self.show_hidden || !e.name.starts_with(b"."))
+                        && self.masked(e)
+                        && fuzzy(&self.filter, &e.name)
                 })
             })
             .collect();

@@ -31,6 +31,7 @@ mod hints;
 mod history;
 mod rules;
 mod server;
+mod share;
 mod sound;
 
 use std::sync::mpsc::{Receiver, Sender};
@@ -39,6 +40,7 @@ use std::time::Duration;
 pub use hints::{Image, Sound};
 pub use history::{HistoryClient, HistoryEntry, Page, PageEntry, PageFilter, CAP as HISTORY_CAP};
 pub use server::spawn;
+pub use share::{Share, ToastMode};
 
 /// What the human wants done with arrivals. Persisted, shared by every
 /// process through `org.eclipse.NotificationHistory`.
@@ -208,11 +210,21 @@ pub(crate) enum Command {
 pub struct Notifications {
     events: Receiver<Event>,
     commands: Sender<Command>,
+    share: Share,
 }
 
 impl Notifications {
-    pub(crate) fn new(events: Receiver<Event>, commands: Sender<Command>) -> Self {
-        Self { events, commands }
+    pub(crate) fn new(events: Receiver<Event>, commands: Sender<Command>, share: Share) -> Self {
+        Self {
+            events,
+            commands,
+            share,
+        }
+    }
+
+    /// Whether a screen share is running and what toasts do then (ADR 0106).
+    pub fn share(&self) -> &Share {
+        &self.share
     }
 
     /// Next event, or `None` when there is nothing waiting. Never blocks —
