@@ -326,3 +326,48 @@ fn only_a_cleared_window_reaches_a_thumbnail() {
         );
     }
 }
+
+/// ADR 0105 step B1 / COMP-02 §2: input and client dispatch only mark outputs
+/// dirty; the composite happens once per dispatch round, after clients are
+/// flushed. DRM cannot run in a unit test, so the property is asserted where it
+/// lives: `schedule_render` (what the libinput source, the display source and
+/// `damage_all` call) never renders, and `run`'s end-of-round callback flushes
+/// clients before `flush_renders`.
+#[test]
+fn drm_input_and_dispatch_only_mark_dirty_and_the_round_renders_once() {
+    let drm = include_str!("../backend/drm.rs");
+    let body = |after: &str, until: &str| -> String {
+        let rest = drm
+            .split(after)
+            .nth(1)
+            .unwrap_or_else(|| panic!("drm.rs lacks `{after}`"));
+        rest.split(until).next().unwrap().to_string()
+    };
+    let mark = body("pub fn schedule_render(", "\n}\n");
+    assert!(
+        !mark.contains("render_output") && !mark.contains("render(") && !mark.contains("service_captures"),
+        "schedule_render composites; it must only set needs_render"
+    );
+    let libinput = body("LibinputInputBackend::new(libinput)", "inserting libinput source");
+    let display = body("Generic::new(display, Interest::READ", "inserting display source");
+    for (name, src) in [("libinput", libinput), ("display", display)] {
+        assert!(
+            src.contains("schedule_render")
+                && !src.contains("render_output")
+                && !src.replace("schedule_render(", "").contains("render("),
+            "the {name} callback must mark dirty, not composite"
+        );
+    }
+    let round = body("event_loop.run(None, &mut state", "crate::ipc::cleanup");
+    let flush = round.find("flush_clients").expect("round flushes clients");
+    let render = round.find("flush_renders").expect("round renders");
+    assert!(
+        flush < render,
+        "clients must be flushed before the round's composite"
+    );
+    assert_eq!(
+        round.matches("flush_renders").count(),
+        1,
+        "one composite pass per round"
+    );
+}

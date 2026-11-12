@@ -142,10 +142,12 @@ mod tests {
     /// live session down on 2026-09-18.
     #[test]
     fn backends_only_flush_clients_from_the_event_loop() {
-        for (src, path) in [
-            (include_str!("drm.rs"), "drm.rs"),
-            (include_str!("winit.rs"), "winit.rs"),
-            (include_str!("headless.rs"), "headless.rs"),
+        // drm.rs flushes twice per round: before the composite, and after it
+        // for the frame callbacks it queued (ADR 0105 step B1).
+        for (src, path, count) in [
+            (include_str!("drm.rs"), "drm.rs", 2),
+            (include_str!("winit.rs"), "winit.rs", 1),
+            (include_str!("headless.rs"), "headless.rs", 1),
         ] {
             // Match the method, not one spelling of the receiver: rustfmt
             // will break `state.display_handle` onto its own line as soon as
@@ -160,20 +162,21 @@ mod tests {
                 .collect();
             assert_eq!(
                 sites.len(),
-                1,
-                "{path}: expected exactly one flush_clients call, found {}; \
+                count,
+                "{path}: expected exactly {count} flush_clients call(s), found {}; \
                  flushing outside the event loop can destroy a client mid-dispatch",
                 sites.len()
             );
-            let at = sites[0];
-            let before = lines[at.saturating_sub(4)..at].join("\n");
-            assert!(
-                before.contains("event_loop"),
-                "{path}:{}: flush_clients is not inside the event-loop callback; \
-                 wl_display_flush_clients may destroy a client synchronously, \
-                 which is a use-after-free if a request is being dispatched",
-                at + 1
-            );
+            for &at in &sites {
+                let before = lines[at.saturating_sub(12)..at].join("\n");
+                assert!(
+                    before.contains("event_loop"),
+                    "{path}:{}: flush_clients is not inside the event-loop callback; \
+                     wl_display_flush_clients may destroy a client synchronously, \
+                     which is a use-after-free if a request is being dispatched",
+                    at + 1
+                );
+            }
         }
     }
 }
