@@ -44,11 +44,21 @@ pub fn make_shared() -> anyhow::Result<(Arc<Shared>, Option<UnboundedReceiver<St
     ))
 }
 
-/// Claim the frontend names if nobody owns them. When upstream
-/// `xdg-desktop-portal` is running it keeps `org.freedesktop.portal.Desktop`
-/// and PermissionStore, and routes ScreenCast/Screenshot to our backend names
-/// (`impl_cast`); we then serve the backend only.
+/// Set to `1` to serve the frontend names too: only for a system where
+/// ecl-desktop-portal replaces upstream `xdg-desktop-portal` (D-08 §7).
+pub const FRONTEND_ENV: &str = "ECL_PORTAL_FRONTEND";
+
+/// Claim the frontend names, when asked to and nobody owns them. As shipped,
+/// upstream `xdg-desktop-portal` owns `org.freedesktop.portal.Desktop` and
+/// PermissionStore and routes ScreenCast/Screenshot to our backend names
+/// (`impl_cast`), so we serve the backend only. It bus-activates us before it
+/// requests its own name, so claiming "if free" would steal the frontend and
+/// leave every other interface unserved.
 async fn claim_frontend(conn: &Connection) {
+    if std::env::var(FRONTEND_ENV).as_deref() != Ok("1") {
+        tracing::info!("serving the backend interfaces only");
+        return;
+    }
     for name in [FRONTEND_NAME, permstore::BUS_NAME] {
         let got = conn
             .request_name_with_flags(name, zbus::fdo::RequestNameFlags::DO_NOT_QUEUE)
