@@ -231,6 +231,10 @@ held for numbers: it closes a spec/code gap and is a precondition for reading
 any latency number. The render-thread question reopens only if Step B's numeric
 thresholds below are crossed.
 
+**Baselines (owner, 2026-11-12).** CI runs the CPU-side, software-rendered numbers on
+every PR. GPU numbers come from a manual TTY runbook, with no self-hosted runner.
+Baselines are JSON committed in the repo.
+
 **Step A: measure first.** Nothing about threading changes until the baseline set
 below exists and has been run on the reference machine.
 
@@ -351,15 +355,17 @@ drives (144 Hz, period 6.94 ms):
    ADR 0018 ("as amended by 0105") and ARCHITECTURE.md.
 2. Reference refresh for the rule: 144 Hz (strictest, per COMP-14 §2.2), **or** the
    panel actually on the reference machine?
-3. Hardware baselines: manual runbook per milestone, **or** stand up the self-hosted
-   nightly runner COMP-14 §5 assumes?
+3. ~~Hardware baselines: manual runbook, or self-hosted nightly runner?~~
+   **Decided 2026-11-12 (owner):** GPU numbers come from a manual TTY runbook. No
+   self-hosted runner.
 4. ~~B1 (render once per dispatch round + EWMA deadline): now, or only once
    numbers show the need?~~ **Decided 2026-11-11 (Claude, on the owner's
    delegation):** implement now as a spec conformance fix.
-5. Headless CI runner: Mesa software rendering (portable, CPU-bound numbers), **or**
-   gate headless benches only on a runner with a render node?
-6. Baseline record location: in-repo JSON under `abyss/bench/baselines/`, **or** CI
-   artifacts with only the rolling median committed?
+5. ~~Headless CI runner: Mesa software rendering, or a runner with a render node?~~
+   **Decided 2026-11-12 (owner):** CI runs CPU-side software-rendered numbers on every
+   PR.
+6. ~~Baseline record location?~~ **Decided 2026-11-12 (owner):** baselines are JSON
+   committed in the repo (`abyss/bench/baselines/`).
 
 ## Unverified in this ADR
 - Whether config parse and audit serialization run on the loop today.

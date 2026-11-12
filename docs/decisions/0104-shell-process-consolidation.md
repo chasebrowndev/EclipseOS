@@ -160,8 +160,8 @@ Proposed, staged, cheapest and most reversible first:
   most of a GPU context from the always-on set for a pane that draws one picture. The
   `eclipseos-wallpaper` fate (retire, or keep for non-abyss hosts per ADR 0052) is settled
   in the implementing PR.
-- **Stage 3, the bar on tiny-skia** only if stage 0's CPU measurement of its animations is
-  acceptable and screenshots match STYLE.md; otherwise it stays on wgpu.
+- **Stage 3, the bar on tiny-skia** only if stage 0's CPU-usage check and a screenshot check
+  against STYLE.md both pass; otherwise it stays on wgpu (owner, 2026-11-12).
 - **Option 3 is deferred**, not rejected. After stages 1–3 the always-on set holds at most
   one GPU context besides abyss, which leaves little for a host process to share, and the
   host costs crash isolation and ADR 0052's swap story.
@@ -180,7 +180,8 @@ Proposed, staged, cheapest and most reversible first:
    host package**.
 2. ~~Wallpaper: compositor-drawn or tiny-skia client?~~ **Decided 2026-11-11 (owner):
    compositor-drawn** (option 4); see Decision stage 2.
-3. Bar: **tiny-skia allowed if the CPU and screenshot checks pass**, **or wgpu regardless**.
+3. ~~Bar: tiny-skia if the checks pass, or wgpu regardless?~~ **Decided 2026-11-12 (owner):**
+   tiny-skia only if the CPU-usage and screenshot checks pass; otherwise wgpu.
 4. If Q1 is "allow": **a bar crash may take toasts and wallpaper down for 2 s**, **or crash
    isolation is a hard requirement**.
 5. Target metric: **system-wide PSS + VRAM** **or summed RSS** (the figure first quoted).

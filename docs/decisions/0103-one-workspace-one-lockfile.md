@@ -196,7 +196,7 @@ joins the root workspace as stage 3, after the abyss+shell+installer merge.
 Until fog joins, and permanently for oracle-eyes (an add-on, not shipped with
 the OS), they keep their own workspaces and locks. `ci/lock-drift.sh` fails the
 gate when a watched crate differs between the root lock and theirs. Oracle Eyes
-joins only by its own ADR amendment, once open question 2 is decided.
+stays separate (owner, 2026-11-12); it joins only by its own ADR amendment.
 
 This ADR amends ADR 0070 (layout) and brings the tree back in line with
 F-07 §1 for the OS proper.
@@ -252,8 +252,7 @@ installer's lock has no iced_layershell.
      the `cargo tree` check from the root.
    - The `fog` entry leaves `ci/lock-drift.sh`'s outside set.
 
-   Oracle Eyes stays separate; it may join in its own PR if question 2 is
-   decided that way.
+   Oracle Eyes stays separate (decided 2026-11-12).
 
 **Coordination.** On 2026-11-11 there are 8 open PRs. Only #273 (`de-ec-lock`
 adds a shell member) and #274 touch cargo files. Land both before stage 2, or
@@ -294,9 +293,8 @@ once other PRs land on top of it.
 ## Open owner questions
 1. ~~Fog: join after dropping iced `tokio`, or stay separate permanently?~~
    **Decided 2026-11-11 (owner):** it joins; see Decision and migration stage 3.
-2. Oracle Eyes: does it stay a separate workspace with its own lock because it
-   is an add-on that does not ship with the OS, or does it join the root the way
-   the agent-stack add-on lives in abyss?
+2. ~~Oracle Eyes: separate workspace, or join the root?~~ **Decided 2026-11-12
+   (owner):** it stays separate, with its own lockfile, behind the drift check.
 3. Drift check scope: should it fail on a watched list (rustix, iced*, wgpu*,
    wayland-*, calloop, kdl, serde_json, regex), or on any crate present in two
    locks at different semver-compatible versions? The second fails today on

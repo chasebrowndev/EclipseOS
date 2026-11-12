@@ -95,7 +95,8 @@ the real monitor.
    an out-of-tree UI we do not trust (ADR 0029).
 3. **X11 and `secret`.** COMP-07 §2 refuses `secret` on X11, and the classifier agrees.
    Yet a `sensitivity secret` windowrule on an X11 window still redacts it from capture.
-   That is tighter, not a leak, but the two paths disagree.
+   That is tighter, not a leak, but the two paths disagree. **Resolved 2026-11-12
+   (owner):** amend COMP-07 §2 (see Decision, "X11 password managers").
 4. **`sensitivity private`.** `shell/rules.rs:416` matches `Sensitivity(_)` and ignores
    the argument, so `sensitivity private` redacts the window as if it were `secret`.
    S-05 §2 says `private` capture redacts nothing.
@@ -137,9 +138,11 @@ added.
 
 **Placeholder.** The secret window stays out of the pass list. A themed card is drawn in
 its geometry instead of plain black:
-- an opaque fill from the theme base, then a padlock glyph;
-- no title and no app icon (see owner questions);
-- the same visual language as the overview's padlock card.
+- **Decided 2026-11-12 (owner):** a glass card the size of the window, with diagonal
+  stripes and the label "Private: Redacted" ("glass police tape"). The label word
+  "Private" is the owner's wording for the tape, not the class name (now `normal`);
+- no title and no app icon;
+- it replaces the earlier padlock-card sketch.
 
 Opacity is required. A backdrop blur samples only the pass list, and the secret window
 is not in it, so a glass tile would be safe. But it would let a window that moves under
@@ -154,13 +157,14 @@ being serviced. It is trusted UI and cannot be captured.
 - A click opens the emergency panel, as today.
 - It is not shown for the built-in screenshot (ADR 0093).
 
-**"Share anyway".** Not in v1. COMP-06 §3 says "always", and an override widens
-authority. If the owner wants one later, it is a COMP-10 modal prompt:
+**"Share anyway".** **Decided 2026-11-12 (owner):** allowed. A per-share,
+compositor-drawn (trusted UI, COMP-10 modal) prompt lifts redaction for that one window
+for that one share:
 - per window, per capture session, audited, never persisted;
-- it needs a COMP-06 §3 amendment first.
+- the prompt cannot be captured, and the override widens authority, so it needs a
+  COMP-06 §3 amendment ("always" gains this one prompted exception) before it lands.
 
-The standing way to stop redacting an app is to remove its rule in `policy.kdl`, which
-is an owner edit made in a text editor.
+Removing the rule in `policy.kdl` remains the standing way to stop redacting an app.
 
 **Shipped rules.** `packaging/etc/policy.kdl` gains anchored
 `windowrule "sensitivity secret"` lines for native password managers, pinentry and
@@ -172,17 +176,28 @@ keyring apps. Candidates (app_ids **unverified**, to be checked against each pac
 - `pinentry-qt`, `pinentry-gtk`
 - `Bitwarden`
 
+**Decided 2026-11-12 (owner):** these rules ship ON by default in
+`/etc/eclipse/policy.kdl`, not as commented examples.
+
 These lines are a security default, so they get the same owner line-by-line review as
-TCB code. Electron password managers that run under XWayland (1Password, possibly
-Bitwarden) hit disagreement 3 (owner question 4).
+TCB code.
 
-**Toasts during a share.** The compositor emits a `capture_active` control-socket event
-(start/stop, no consumer detail). While a stream is active, ec-toasts holds banners
-until the share ends. The bell history keeps them as usual.
+**X11 password managers.** **Decided 2026-11-12 (owner):** XWayland password managers
+(1Password, possibly Bitwarden) ARE redacted in screen shares. COMP-07 §2 is amended so
+an X11 window can be `secret` for capture redaction (code path 3 stays). The amendment
+must say plainly that redaction covers compositor capture only: other X11 clients can
+still read the window through the X server (COMP-07 §2's existing limit).
 
-The alternatives were rejected. Placeholder-boxing toasts announces that something
-arrived. `hide-layer` is capped at icon size by ADR 0056, and raising that cap needs its
-own ADR. The built-in screenshot does not set `capture_active`.
+**Toasts during a share.** **Decided 2026-11-12 (owner):** every behaviour is
+configurable in Settings: show, redact, hold until the share ends, or straight to
+history. Default: **redact**, with the same glass police tape drawn over the toast in
+the shared stream. The human still sees the toast normally.
+
+The compositor emits a `capture_active` control-socket event (start/stop, no consumer
+detail) so ec-toasts can hold or divert banners. The bell history keeps them as usual.
+`hide-layer` is capped at icon size by ADR 0056, and raising that cap needs its own ADR,
+so redaction of a toast is a placeholder over its layer rect in the capture pass list.
+The built-in screenshot does not set `capture_active`.
 
 **Content-type hints.** `wp_content_type_v1` is a scheduling hint (photo/video/game),
 not a sensitivity signal. It is not used. Wayland has no DRM/HDCP protected-content
@@ -230,10 +245,10 @@ is for agent `capture.stream`.
 |---|---|---|---|
 | M0 | **Smallest shippable.** Default `sensitivity secret` rules for the verified password-manager app_ids in `packaging/etc/policy.kdl`, plus a CONFIG/README note on sharing via xdpw. Works today and needs no code. | packaging | main, owner review |
 | M1a | Fix disagreement 4: `sensitivity private` must not insert into `state.sensitive`. | `shell/rules.rs` | main (small) |
-| M1b | Themed padlock placeholder in `placeholders()`; pixel and record tests unchanged in what they cover. | `render/capture.rs` | **TCB**, main |
+| M1b | Glass police-tape placeholder in `placeholders()`; pixel and record tests unchanged in what they cover. | `render/capture.rs` | **TCB**, main |
 | M1c | Share pill: consumer name, hidden-window count, cached texture. COMP-10 §3.6 text amended to match. | `trusted_ui/indicator.rs`, `render/capture.rs` | **TCB**, main |
 | M2a | `capture_active` event on the control socket. | `ec-abyss-wire` EVENTS (gate.rs is owner review), `ipc/` | backend agent |
-| M2b | Toast hold during a share, and a check that bar chips never show a `secret` title. | `ec-toasts`, `ec-hyperion-bar` | **frontend agent** (visual), backend (event plumbing) |
+| M2b | Toast share behaviour (show / redact / hold / history, Settings), and a check that bar chips never show a `secret` title. | `ec-toasts`, `ec-hyperion-bar` | **frontend agent** (visual), backend (event plumbing) |
 | M3 | Per-window share: foreign-toplevel capture source, `capture_toplevel`, and a `secret` source shown as placeholder frames. | `protocols/standard/`, `render/capture.rs` | backend + **TCB** for capture.rs |
 | M4 | Native ScreenCast/Screenshot portal with a trusted-UI picker; retire the xdpw allowlist line. | `ec-services/ec-portal`, `trusted_ui/` | backend + **TCB** + frontend; spec amendment |
 | M5 | S-05 §5 dynamic raise on title or URL change (for example, a browser tab navigating to a bank login) once the `policyd` table is live. | `policy/classes.rs` | **TCB** |
@@ -241,7 +256,8 @@ is for agent `capture.stream`.
 ## What it does not protect
 - A camera or a person pointed at the monitor.
 - X11 clients reading each other inside XWayland (COMP-07 §2). An XWayland screenshot
-  tool reads X11 windows directly.
+  tool reads X11 windows directly, so an X11 password manager redacted in a share is
+  still readable through the X server.
 - A process that borrows an allowlisted exe name (ADR 0027 identity is containment, not
   authentication).
 - Secrets inside a window that is not classified `secret`: a password in a terminal, an
@@ -255,29 +271,25 @@ is for agent `capture.stream`.
 - Whole-output sharing with password managers redacted works after M0 with no code.
   That is a desktop feature built from the agent stack's parts.
 - The human can see that redaction is on, and what it hid, only after M1c.
-- No override exists in v1. An owner who needs to show a vault in a call edits
-  `policy.kdl`.
+- "Share anyway" is a per-share trusted-UI prompt; it needs the COMP-06 §3 amendment.
 - We owe:
   - tests: placeholder card pixels; the indicator is absent from captures; a toast
     is held while `capture_active` is set; an unassociated X11 window contributes no
     pixel;
-  - the CONFIG.md entries for `capture.redact-class`;
+  - the CONFIG.md entries for `capture.redact-class` and the toast-during-share setting;
   - the COMP-10 §3.6, COMP-07 §2 and COMP-06 §3 amendments, as the owner decides.
 
 ## Open owner questions
 1. ~~In human shares, are `private` windows shown, or redacted by default?~~
    **Decided 2026-11-11 (owner):** `normal` (formerly `private`) windows are shown.
-2. "Share anyway": never, or a per-window, per-session COMP-10 prompt (which needs a
-   COMP-06 §3 amendment)?
-3. Placeholder: plain opaque black (today), or a themed padlock card? Should the app icon
-   show on the card, or nothing that identifies the app?
-4. X11 password managers: redact them from capture while their class stays `normal` (formerly `private`)
-   (amend COMP-07 §2, keeping code path 3)? Or refuse the rule, as the spec literally says
-   (they then appear in shares)?
-5. Toasts during a share: hold them until the share ends, or drop them to the history
-   silently?
-6. Shipped password-manager rules: active in `/etc/eclipse/policy.kdl`, or present only
-   as commented examples?
+2. ~~"Share anyway"?~~ **Decided 2026-11-12 (owner):** allowed, via a per-share trusted-UI
+   prompt; see Decision.
+3. ~~Placeholder look?~~ **Decided 2026-11-12 (owner):** glass police tape, "Private:
+   Redacted", no title, no icon.
+4. ~~X11 password managers?~~ **Decided 2026-11-12 (owner):** redacted; amend COMP-07 §2.
+5. ~~Toasts during a share?~~ **Decided 2026-11-12 (owner):** configurable; default
+   redact with police tape.
+6. ~~Shipped password-manager rules?~~ **Decided 2026-11-12 (owner):** ON by default.
 7. Should the share pill list redacted apps by name on hover, or show only a count?
 
 ## Revisit when
