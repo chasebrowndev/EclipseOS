@@ -163,6 +163,29 @@ output. Beyond that:
   - Settings has no path/image control yet (`schema.rs` maps `string` to a
     text field), so the pane needs an image picker type.
 
+- **EclipseOS names on everything we write at boot, not Arch's.** EclipseOS
+  is Arch-based, but the names it puts on a user's machine should be its own.
+  The owner asked for this on 2026-11-12, after a framework upgrade showed
+  `/boot/EFI/Linux/arch-linux.efi`, the stock mkinitcpio preset's UKI name.
+  Rename what we generate, and leave upstream package names alone:
+  - Ship our own `/etc/mkinitcpio.d/linux.preset` (and `linux-lts.preset`)
+    from `eclipseos-meta`, writing `eclipseos.efi` / `eclipseos-fallback.efi`
+    (and `eclipseos-lts*.efi`). Point the limine entries at those files, and
+    remove the stale `arch-linux*.efi` on upgrade.
+  - Decide UKI or separate kernel + initramfs once. Today `ec-setup-helper`
+    (`stages.rs::limine_conf`) boots `vmlinuz-linux` + `initramfs-linux.img`,
+    while hand-built machines boot an `arch-linux.efi` UKI. One layout means
+    one upgrade path to test (see the clean-update work).
+  - Name the ISO's syslinux labels and `archiso_*.cfg` entries after
+    EclipseOS where archiso allows it. Some `archiso_*` filenames and
+    `%INSTALL_DIR%` paths are fixed by mkarchiso, so check which ones before
+    renaming.
+  - `/etc/os-release`: the live medium ships `ID=arch`, and installed systems
+    keep the `filesystem` package's. Ship `ID=eclipseos` with `ID_LIKE=arch`,
+    so tools that key on Arch keep working.
+  - `linux`, `vmlinuz-linux` and `pacman`'s `[core]`/`[extra]` stay as they
+    are: they belong to upstream packages, and renaming them would fork them.
+
 ---
 
 ## RGB lighting
