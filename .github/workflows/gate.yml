@@ -46,7 +46,7 @@ jobs:
             libwayland-dev libseat-dev libinput-dev libxkbcommon-dev \
             libudev-dev libgbm-dev libegl-dev libgles2-mesa-dev \
             libdisplay-info-dev libpixman-1-dev libdrm-dev \
-            pkg-config
+            libpam0g-dev pkg-config
 
       # Toolchain comes from each workspace's rust-toolchain.toml. CI and dev
       # must not drift, same rule as the Smithay pin in CLAUDE.md.

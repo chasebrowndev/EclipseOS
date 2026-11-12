@@ -28,7 +28,7 @@ Arch:
 
 ```
 sudo pacman -S --needed rust seatd libinput wayland libxkbcommon \
-                        libdisplay-info mesa libdrm pkgconf
+                        libdisplay-info mesa libdrm pam pkgconf
 ```
 
 Debian/Ubuntu (what CI installs):
@@ -36,7 +36,7 @@ Debian/Ubuntu (what CI installs):
 ```
 sudo apt-get install -y libseat-dev libinput-dev libwayland-dev \
   libxkbcommon-dev libgbm-dev libegl-dev libudev-dev libdrm-dev \
-  libdisplay-info-dev pkg-config
+  libdisplay-info-dev libpam0g-dev pkg-config
 ```
 
 No C library is needed for D-Bus: `ec-services` uses `zbus` (pure Rust,
