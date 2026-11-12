@@ -34,6 +34,9 @@ pub struct Meta {
     /// Words people search for this key by, beyond its label, path and doc.
     /// Lowercase words joined by single spaces.
     pub keywords: &'static [&'static str],
+    /// The label on the page's own pane when that pane words it differently
+    /// from search and the generic list (`label`). `None`: same as `label`.
+    pub pane_label: Option<&'static str>,
 }
 
 const fn m(path: &'static str, label: &'static str, page: &'static str, group: &'static str) -> Meta {
@@ -44,6 +47,20 @@ const fn m(path: &'static str, label: &'static str, page: &'static str, group: &
         group,
         caption: None,
         keywords: &[],
+        pane_label: None,
+    }
+}
+
+impl Meta {
+    /// This row with its own-pane wording.
+    const fn pane(mut self, label: &'static str) -> Self {
+        self.pane_label = Some(label);
+        self
+    }
+
+    /// The label the page's own pane shows.
+    pub fn pane_label(&self) -> &'static str {
+        self.pane_label.unwrap_or(self.label)
     }
 }
 
@@ -63,7 +80,7 @@ pub const META: &[Meta] = &[
     // mode
     m("mode", "Interaction mode", "desktop/mode", "interaction"),
     // components
-    m("components.bar", "Bar", "taskbar/appearance", "bar"),
+    m("components.bar", "Bar", "taskbar/appearance", "bar").pane("Show the bar"),
     m("components.launcher", "Launcher", "launcher/style", "launcher"),
     m(
         "components.notifications",
@@ -148,6 +165,7 @@ pub const META: &[Meta] = &[
         "timing",
     ),
     Meta {
+        pane_label: None,
         caption: Some("While on, the taskbar eye turns red and shows in screen captures."),
         ..m(
             "oracle-eyes.debug",
@@ -175,6 +193,7 @@ pub const META: &[Meta] = &[
         "timing",
     ),
     Meta {
+        pane_label: None,
         caption: Some("A chord like Super+A. \"none\" leaves an action unbound."),
         ..m(
             "oracle-eyes.bind.select",
@@ -405,23 +424,26 @@ pub const META: &[Meta] = &[
         "Fold when inactive",
         "taskbar/folding",
         "folding",
-    ),
-    m("bar.fold-height", "Fold height", "taskbar/folding", "folding"),
+    )
+    .pane("Fold when inactive"),
+    m("bar.fold-height", "Fold height", "taskbar/folding", "folding").pane("Folded height"),
     m(
         "bar.fold-when-idle",
         "Fold when idle",
         "taskbar/folding",
         "folding",
-    ),
-    m("bar.idle-seconds", "Idle seconds", "taskbar/folding", "folding"),
+    )
+    .pane("Fold when idle"),
+    m("bar.idle-seconds", "Idle seconds", "taskbar/folding", "folding").pane("Idle after, s"),
     m(
         "bar.fold-duration-ms",
         "Fold duration ms",
         "taskbar/folding",
         "folding",
-    ),
-    m("bar.fold-curve", "Fold curve", "taskbar/folding", "folding"),
-    m("bar.position", "Position", "taskbar/appearance", "appearance"),
+    )
+    .pane("Fold duration, ms"),
+    m("bar.fold-curve", "Fold curve", "taskbar/folding", "folding").pane("Fold curve"),
+    m("bar.position", "Position", "taskbar/appearance", "appearance").pane("Position"),
     m("bar.tray.pinned", "Pinned", "taskbar/tray", "tray"),
     m(
         "bar.pinned-apps",
@@ -430,84 +452,95 @@ pub const META: &[Meta] = &[
         "appearance",
     ),
     m("bar.tray.hidden", "Hidden", "taskbar/tray", "tray"),
-    m("bar.rounding", "Rounding", "taskbar/appearance", "appearance"),
-    m("bar.clock.hour-12", "Hour 12", "taskbar/widgets", "widgets"),
-    m("bar.clock.date-mdy", "Date mdy", "taskbar/widgets", "widgets"),
-    m("bar.clock.week-start", "Week start", "taskbar/widgets", "widgets"),
+    m("bar.rounding", "Rounding", "taskbar/appearance", "appearance").pane("Corner radius"),
+    m("bar.clock.hour-12", "Hour 12", "taskbar/widgets", "widgets").pane("12-hour time"),
+    m("bar.clock.date-mdy", "Date mdy", "taskbar/widgets", "widgets").pane("Month / day / year"),
+    m("bar.clock.week-start", "Week start", "taskbar/widgets", "widgets").pane("Week starts on"),
     m(
         "bar.clock.week-numbers",
         "Week numbers",
         "taskbar/widgets",
         "widgets",
-    ),
+    )
+    .pane("Week numbers"),
     m(
         "bar.popup-anchor",
         "Popup anchor",
         "taskbar/appearance",
         "appearance",
-    ),
+    )
+    .pane("Popups open"),
     m("bar.eye", "Eye indicator", "taskbar/appearance", "appearance"),
     m("bar.widgets.order", "Order", "taskbar/widgets", "widgets"),
     m("bar.widgets.important", "Important", "taskbar/widgets", "widgets"),
-    m("bar.widgets.rounding", "Rounding", "taskbar/widgets", "widgets"),
-    m("bar.widgets.now-playing.art", "Art", "taskbar/widgets", "widgets"),
+    m("bar.widgets.rounding", "Rounding", "taskbar/widgets", "widgets").pane("Corner radius"),
+    m("bar.widgets.now-playing.art", "Art", "taskbar/widgets", "widgets").pane("Album art"),
     m(
         "bar.widgets.now-playing.visualizer",
         "Visualizer",
         "taskbar/widgets",
         "widgets",
-    ),
+    )
+    .pane("Visualizer"),
     m(
         "bar.widgets.now-playing.remote-art",
         "Remote art",
         "taskbar/widgets",
         "widgets",
-    ),
+    )
+    .pane("Fetch remote art"),
     m(
         "bar.widgets.system-usage.interval-ms",
         "Interval ms",
         "taskbar/widgets",
         "widgets",
-    ),
+    )
+    .pane("Refresh, ms"),
     m(
         "bar.widgets.system-usage.gpu",
         "Gpu",
         "taskbar/widgets",
         "widgets",
-    ),
+    )
+    .pane("GPU meter"),
     m(
         "bar.widgets.system-usage.disk",
         "Disk",
         "taskbar/widgets",
         "widgets",
-    ),
+    )
+    .pane("Disk meter"),
     m(
         "bar.widgets.system-usage.disk-path",
         "Disk path",
         "taskbar/widgets",
         "widgets",
-    ),
-    m("bar.widgets.volume.step", "Step", "taskbar/widgets", "widgets"),
+    )
+    .pane("Disk to measure"),
+    m("bar.widgets.volume.step", "Step", "taskbar/widgets", "widgets").pane("Step, %"),
     m(
         "bar.widgets.volume.scroll",
         "Scroll",
         "taskbar/widgets",
         "widgets",
-    ),
+    )
+    .pane("Scroll to adjust"),
     m(
         "bar.widgets.volume.max-percent",
         "Max percent",
         "taskbar/widgets",
         "widgets",
-    ),
-    m("bar.motion.enabled", "Enabled", "taskbar/motion", "motion"),
+    )
+    .pane("Loudest, %"),
+    m("bar.motion.enabled", "Enabled", "taskbar/motion", "motion").pane("Animate"),
     m(
         "bar.motion.duration-ms",
         "Duration ms",
         "taskbar/motion",
         "motion",
-    ),
-    m("bar.motion.curve", "Curve", "taskbar/motion", "motion"),
+    )
+    .pane("Duration, ms"),
+    m("bar.motion.curve", "Curve", "taskbar/motion", "motion").pane("Curve"),
     // decoration
     m(
         "decoration.rounding",
@@ -567,6 +600,7 @@ pub const META: &[Meta] = &[
         "blur",
     ),
     Meta {
+        pane_label: None,
         caption: Some(ADAPTIVE_CAPTION),
         ..m(
             "decoration.blur.adaptive.enabled",
@@ -594,6 +628,7 @@ pub const META: &[Meta] = &[
         "surface",
     ),
     Meta {
+        pane_label: None,
         caption: Some("Hairline cards, with blur off or blur. Glass and frost keep their glass panel."),
         ..m(
             "decoration.surface.card-fill",
@@ -1048,6 +1083,7 @@ pub const META: &[Meta] = &[
         "search",
     ),
     Meta {
+        pane_label: None,
         caption: Some("Opened in the terminal command above."),
         ..m(
             "launcher.search.terminal-apps",
@@ -1063,6 +1099,7 @@ pub const META: &[Meta] = &[
         "search",
     ),
     Meta {
+        pane_label: None,
         caption: Some(FRECENCY_CAPTION),
         ..m(
             "launcher.search.frecency",
@@ -1085,11 +1122,13 @@ pub const META: &[Meta] = &[
     ),
     // ui
     Meta {
+        pane_label: None,
         caption: Some("Keyboard hints in the launcher and start menu"),
         ..m("ui.show-key-hints", "Show controls", "system/general", "general")
     },
     // settings
     Meta {
+        pane_label: None,
         caption: Some(FRECENCY_CAPTION),
         ..m(
             "settings.search.frecency",
@@ -1107,6 +1146,7 @@ pub const META: &[Meta] = &[
     ),
     m("misc.gpu-mode", "Graphics mode", "system/rendering", "graphics"),
     Meta {
+        pane_label: None,
         caption: Some(SECONDARY_CAPTION),
         ..m(
             "misc.secondary-compositing",
@@ -1197,6 +1237,47 @@ pub fn place(path: &str) -> Option<(&'static str, &'static str)> {
 mod tests {
     use super::*;
     use crate::schema;
+
+    /// The taskbar pane's labels, as they read before they moved onto `META`.
+    #[test]
+    fn pane_labels_match_the_old_taskbar_table() {
+        let old: &[(&str, &str)] = &[
+            ("components.bar", "Show the bar"),
+            ("bar.position", "Position"),
+            ("bar.rounding", "Corner radius"),
+            ("bar.widgets.rounding", "Corner radius"),
+            ("bar.popup-anchor", "Popups open"),
+            ("bar.fold-when-inactive", "Fold when inactive"),
+            ("bar.fold-when-idle", "Fold when idle"),
+            ("bar.idle-seconds", "Idle after, s"),
+            ("bar.fold-height", "Folded height"),
+            ("bar.fold-duration-ms", "Fold duration, ms"),
+            ("bar.fold-curve", "Fold curve"),
+            ("bar.widgets.now-playing.art", "Album art"),
+            ("bar.widgets.now-playing.visualizer", "Visualizer"),
+            ("bar.widgets.now-playing.remote-art", "Fetch remote art"),
+            ("bar.widgets.system-usage.interval-ms", "Refresh, ms"),
+            ("bar.widgets.system-usage.gpu", "GPU meter"),
+            ("bar.widgets.system-usage.disk", "Disk meter"),
+            ("bar.widgets.system-usage.disk-path", "Disk to measure"),
+            ("bar.widgets.volume.step", "Step, %"),
+            ("bar.widgets.volume.scroll", "Scroll to adjust"),
+            ("bar.widgets.volume.max-percent", "Loudest, %"),
+            ("bar.clock.hour-12", "12-hour time"),
+            ("bar.clock.date-mdy", "Month / day / year"),
+            ("bar.clock.week-start", "Week starts on"),
+            ("bar.clock.week-numbers", "Week numbers"),
+            ("bar.motion.enabled", "Animate"),
+            ("bar.motion.duration-ms", "Duration, ms"),
+            ("bar.motion.curve", "Curve"),
+        ];
+        for (path, label) in old {
+            assert_eq!(get(path).map(Meta::pane_label), Some(*label), "{path}");
+        }
+        // A key with no own-pane wording reads as its generic label.
+        let plain = get("bar.position").unwrap();
+        assert_eq!(plain.pane_label(), plain.label);
+    }
 
     #[test]
     fn every_schema_key_has_metadata() {

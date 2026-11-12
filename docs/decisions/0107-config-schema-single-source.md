@@ -39,11 +39,11 @@ scheme, model-command approval) are code and stay in the app.
 A new key fails `meta::tests::every_schema_key_has_metadata` until it has a
 row, and the label, page and caption are reviewed in the same diff as the
 key. The rows were generated from the old tables, so what Settings shows did not
-change. Still outside the table: the Taskbar pages' own row labels
-(`taskbar.rs`), the bespoke search entries and the word-level `SYNONYMS`
-table, and `ec-ctl`'s `migrate::POLICY_KEYS` mirror (checked by
-`tests/schema_drift.rs`). `ec-policy-viewer` now links `ec-abyss-config`.
+change. The Taskbar pages' own row wording is `Meta::pane_label`, and `ec-ctl`
+reads key ownership from the schema (`migrate::is_policy_key`) instead of
+mirroring it. Still outside the table: the bespoke search entries and the
+word-level `SYNONYMS` table. `ec-policy-viewer` now links `ec-abyss-config`.
 
 ## Revisit when
 Settings needs per-value presentation (enum pill labels and blurbs) as data,
-or the Taskbar pages' labels move into `META`.
+or the search entries move into `META`.
