@@ -39,6 +39,8 @@ use crate::edit::{Edit, PathEdit};
 use crate::motion::{self, Motion};
 use crate::ops::{Confirm, Conflict, JobKind, NameEntry, Tray, TrayEvent};
 use crate::palette::{Item, Palette};
+use crate::pick::{self, PickMode, PickRequest};
+use crate::picker::{self, Of, Ui};
 use crate::state::{join, Browser, Click, Effect, Notice, Tabs};
 use crate::theme::{self, size};
 
@@ -95,6 +97,11 @@ pub struct App {
     drag_escaped: bool,
     /// The sidebar place under the pointer.
     pub place_hover: Option<usize>,
+    /// `--pick`: this window is a portal file picker (ADR 0100). Opening a
+    /// file confirms it instead of launching a handler; see [`App::pick_open`].
+    pub pick: Option<PickRequest>,
+    /// Picker mode's bar: name, filter, choices. `Some` with `pick`.
+    pub pickui: Option<Ui>,
 }
 
 /// A drag of rows: what they are, and what the ghost says.
@@ -198,6 +205,19 @@ pub enum Message {
     /// The pointer entered a place, or left place `usize`.
     PlaceHover(usize),
     PlaceUnhover(usize),
+    /// Picker bar: the accept button.
+    PickAccept,
+    PickCancel,
+    /// Open or close a dropdown.
+    PickMenu(Of),
+    /// A dropdown row was chosen.
+    PickSet(Of, usize),
+    /// A checkbox choice.
+    PickToggle(usize),
+    /// The name field was clicked.
+    PickName,
+    /// The overwrite question's buttons: `true` replaces.
+    PickReplace(bool),
 }
 
 const SCRIPT_TICK: Duration = Duration::from_millis(900);
@@ -282,6 +302,8 @@ impl App {
             drag: None,
             drag_escaped: false,
             place_hover: None,
+            pick: None,
+            pickui: None,
         }
     }
 
@@ -321,7 +343,29 @@ impl App {
 
     /// Row `i` is dragged: the first call picks up the selection if the row
     /// is in it, else the row alone, selecting it.
+    /// Become a portal file picker for `req` (ADR 0100): the bar's state, the
+    /// listing narrowed to the filter and the mode's kind of row.
+    pub fn start_pick(&mut self, req: PickRequest) {
+        let ui = Ui::new(&req);
+        let globs = ui.globs(&req);
+        let _ = self.tabs.active_mut().set_mask(globs, req.mode.folders());
+        self.pickui = Some(ui);
+        self.pick = Some(req);
+    }
+
+    /// The name field or a dropdown has the keyboard: no list cursor is
+    /// the gold one.
+    pub fn pick_typing(&self) -> bool {
+        self.pickui
+            .as_ref()
+            .is_some_and(|u| u.typing || u.menu.is_some() || u.replace.is_some())
+    }
+
     fn lift(&mut self, i: usize) {
+        if self.pick.is_some() {
+            // A picker moves nothing.
+            return;
+        }
         if self.drag.is_some() || self.drag_escaped {
             return;
         }
@@ -567,6 +611,10 @@ impl App {
                 self.request(Request::Unsubscribe { dir });
                 Task::none()
             }
+            Effect::Open(path) if self.pick.is_some() => {
+                self.pick_open(tab, path);
+                Task::none()
+            }
             Effect::Open(path) => {
                 self.request(Request::Open { path, app: None });
                 Task::none()
@@ -575,6 +623,113 @@ impl App {
                 self.request(Request::SetSort { dir, sort });
                 Task::none()
             }
+        }
+    }
+
+    /// Picker mode: the user opened file `path` in tab `tab`. In the file
+    /// modes that confirms the pick (in open-multiple, the marked files if
+    /// `path` is among them, else `path` alone); in save it names the file
+    /// to write over; nothing is ever launched. The folder modes confirm
+    /// through the bar's accept action, [`App::pick_accept`].
+    fn pick_open(&mut self, tab: usize, path: Vec<u8>) {
+        let (Some(req), Some(ui)) = (&self.pick, &mut self.pickui) else {
+            return;
+        };
+        let Some(b) = self.tabs.get(tab) else {
+            return;
+        };
+        let paths = match req.mode {
+            PickMode::Open => vec![path],
+            PickMode::OpenMultiple => {
+                let marked: Vec<Vec<u8>> = b
+                    .picked()
+                    .iter()
+                    .filter(|e| e.kind != Kind::Dir)
+                    .map(|e| join(&b.path, &e.name))
+                    .collect();
+                if marked.contains(&path) {
+                    marked
+                } else {
+                    vec![path]
+                }
+            }
+            PickMode::Save => {
+                ui.name = crate::edit::LineEdit::new(crate::view::basename(&path));
+                ui.typing = true;
+                ui.replace = None;
+                return;
+            }
+            PickMode::Directory | PickMode::DirectoryMultiple | PickMode::SaveFiles => return,
+        };
+        // Returns only on a refusal; a confirmed pick exits the process.
+        let notice = match pick::confirm(req, &ui.answer_of(paths)) {
+            Err(r) => Notice::Hint(r.hint()),
+            Ok(never) => match never {},
+        };
+        if let Some(b) = self.tabs.iter_mut().nth(tab) {
+            b.opening = None;
+            b.notice = Some(notice);
+        }
+    }
+
+    /// The bar's accept button (or Ctrl+Enter). In save, a name that is
+    /// already a file asks first; `replace` is the answer to that question.
+    pub fn pick_accept(&mut self, replace: bool) {
+        let (Some(req), Some(ui)) = (&self.pick, &mut self.pickui) else {
+            return;
+        };
+        let b = self.tabs.active();
+        ui.hint = None;
+        if req.mode.named() && !replace {
+            if ui.is_folder(b) {
+                ui.hint = Some("a folder has that name");
+                return;
+            }
+            if ui.exists(b) {
+                ui.replace = ui.paths(req, b).ok().and_then(|p| p.into_iter().next());
+                ui.menu = None;
+                return;
+            }
+        }
+        match ui.answer(req, b) {
+            // Returns only on a refusal; a confirmed pick exits the process.
+            Ok(a) => {
+                let Err(r) = pick::confirm(req, &a);
+                ui.hint = Some(r.hint());
+            }
+            Err(r) => ui.hint = Some(r.hint()),
+        }
+        ui.replace = None;
+    }
+
+    /// Row `i` of the shown folder was clicked: it is now a choice; in save
+    /// a file's name fills the name field.
+    fn pick_row(&mut self, i: usize) {
+        let (Some(req), Some(ui)) = (&self.pick, &mut self.pickui) else {
+            return;
+        };
+        let b = self.tabs.active();
+        ui.menu = None;
+        ui.replace = None;
+        ui.hint = None;
+        ui.touched = Some(b.path.clone());
+        if !req.mode.named() {
+            ui.typing = false;
+        } else if let Some(e) = b.row(i).filter(|e| e.kind != Kind::Dir) {
+            ui.name = crate::edit::LineEdit::new(e.display().into_owned());
+        }
+    }
+
+    /// Dropdown `of`, row `n`, chosen: a filter re-masks the listing.
+    fn pick_set(&mut self, of: Of, n: usize) {
+        let (Some(req), Some(ui)) = (&self.pick, &mut self.pickui) else {
+            return;
+        };
+        ui.menu = None;
+        ui.hint = None;
+        if n < ui.options(req, of).len() && ui.set(of, n) {
+            let globs = ui.globs(req);
+            let _ = self.tabs.active_mut().set_mask(globs, req.mode.folders());
         }
     }
 
@@ -817,6 +972,7 @@ fn handle(app: &mut App, message: Message) -> Task<Message> {
                 Click::Only
             };
             app.tabs.active_mut().click(i, how);
+            app.pick_row(i);
             Task::none()
         }
         Message::OpenRow(i) => {
@@ -855,7 +1011,12 @@ fn handle(app: &mut App, message: Message) -> Task<Message> {
                 }
                 Overlay::Palette(p) => p.edit(Edit::Insert(line)),
                 Overlay::Name(n) => n.edit(Edit::Insert(line)),
-                Overlay::None | Overlay::Confirm(_) => {}
+                Overlay::None => {
+                    if let Some(u) = app.pickui.as_mut().filter(|u| u.typing) {
+                        u.name.apply(Edit::Insert(line));
+                    }
+                }
+                Overlay::Confirm(_) => {}
             }
             Task::none()
         }
@@ -909,6 +1070,50 @@ fn handle(app: &mut App, message: Message) -> Task<Message> {
         Message::Act(a) => {
             app.overlay = Overlay::None;
             run_action(app, a)
+        }
+        Message::PickAccept => {
+            app.pick_accept(false);
+            Task::none()
+        }
+        Message::PickCancel => pick::cancel(),
+        Message::PickMenu(of) => {
+            if let Some(u) = &mut app.pickui {
+                u.hint = None;
+                u.replace = None;
+                u.menu = match u.menu {
+                    Some(m) if m.of == of => None,
+                    _ => Some(picker::Menu {
+                        of,
+                        at: u.current(of),
+                    }),
+                };
+            }
+            Task::none()
+        }
+        Message::PickSet(of, n) => {
+            app.pick_set(of, n);
+            Task::none()
+        }
+        Message::PickToggle(i) => {
+            if let Some(u) = &mut app.pickui {
+                u.toggle(i);
+            }
+            Task::none()
+        }
+        Message::PickName => {
+            if let Some(u) = &mut app.pickui {
+                u.typing = true;
+                u.menu = None;
+            }
+            Task::none()
+        }
+        Message::PickReplace(yes) => {
+            if yes {
+                app.pick_accept(true);
+            } else if let Some(u) = &mut app.pickui {
+                u.replace = None;
+            }
+            Task::none()
         }
         // Handled in `update`.
         Message::Frame(_)
@@ -1089,6 +1294,10 @@ pub fn on_key(
         Overlay::None => {}
     }
 
+    if let Some(t) = pick_key(app, key, text, m) {
+        return t;
+    }
+
     let bound = chord(key, modified, m).and_then(|c| app.keys.get(&c).cloned());
 
     if app.focus == Focus::Places {
@@ -1147,10 +1356,18 @@ pub fn on_key(
     }
 
     if esc {
+        // A picker's Escape cancels; a typed filter goes first.
+        if app.pick.is_some() && app.tabs.active().filter.is_empty() {
+            pick::cancel();
+        }
         let fx = app.tabs.active_mut().escape();
         return app.apply_active(fx);
     }
     let typed = typed(text, m);
+    if let (Some(ui), true) = (&mut app.pickui, bound.is_some() || typed.is_some()) {
+        // The cursor now rests where the user put it.
+        ui.touched = Some(app.tabs.active().path.clone());
+    }
     if !app.tabs.active().filter.is_empty() {
         // While filtering, typing extends the filter and Backspace edits it;
         // arrows, Enter and chorded bindings still work.
@@ -1179,9 +1396,99 @@ pub fn on_key(
     }
 }
 
+/// Picker mode's keys: the overwrite question, an open dropdown and the name
+/// field take them before the list does. `None` leaves the key to the list.
+fn pick_key(app: &mut App, key: &Key, text: Option<&str>, m: Modifiers) -> Option<Task<Message>> {
+    let esc = matches!(key, Key::Named(Named::Escape));
+    let enter = matches!(key, Key::Named(Named::Enter));
+    let tab = matches!(key, Key::Named(Named::Tab));
+    let named = app.pick.as_ref()?.mode.named();
+    let ui = app.pickui.as_mut()?;
+    if ui.replace.is_some() {
+        // Enter backs out: replacing a file is never the default.
+        if esc || enter {
+            ui.replace = None;
+        } else if typed(text, m) == Some("y") {
+            app.pick_accept(true);
+        }
+        return Some(Task::none());
+    }
+    if let Some(menu) = ui.menu {
+        let n = ui.options(app.pick.as_ref()?, menu.of).len();
+        if esc {
+            ui.menu = None;
+        } else if enter {
+            app.pick_set(menu.of, menu.at);
+        } else if let Some(d) = step_of(key, m) {
+            let at = (menu.at as isize + d).clamp(0, n.saturating_sub(1) as isize) as usize;
+            ui.menu = Some(picker::Menu { at, ..menu });
+        }
+        return Some(Task::none());
+    }
+    if enter && m.control() {
+        app.pick_accept(false);
+        return Some(Task::none());
+    }
+    // Ctrl+T: the file type menu, for the keyboard.
+    if m.control() && matches!(key.as_ref(), Key::Character("t")) {
+        if !app.pick.as_ref()?.filters.is_empty() {
+            ui.menu = Some(picker::Menu {
+                of: Of::Filter,
+                at: ui.current(Of::Filter),
+            });
+        }
+        return Some(Task::none());
+    }
+    if ui.typing {
+        ui.hint = None;
+        if esc {
+            pick::cancel();
+        } else if enter {
+            app.pick_accept(false);
+        } else if tab {
+            ui.typing = false;
+        } else if is_paste(key, m) {
+            return Some(iced::clipboard::read().map(Message::Paste));
+        } else if let Some(e) = edit_of(key, text, m) {
+            ui.name.apply(e);
+        }
+        return Some(Task::none());
+    }
+    if tab && named {
+        ui.typing = true;
+        return Some(Task::none());
+    }
+    None
+}
+
+/// Actions a picker does not offer: it chooses a path, it changes nothing.
+/// Navigation, sorting, hidden files, the palette and New folder stay.
+fn pick_blocks(a: Action) -> bool {
+    matches!(
+        a,
+        Action::Copy
+            | Action::Cut
+            | Action::Paste
+            | Action::Rename
+            | Action::Trash
+            | Action::Delete
+            | Action::Undo
+            | Action::NewFile
+            | Action::Restore
+            | Action::FocusJobs
+            | Action::NewTab
+            | Action::CloseTab
+            | Action::NextTab
+            | Action::PrevTab
+            | Action::SplitToggle
+            | Action::QuickLook
+    )
+}
+
 fn run_item(app: &mut App, item: Item) -> Task<Message> {
     match item {
         Item::Action(a) => run_action(app, a),
+        Item::Custom(_) if app.pick.is_some() => Task::none(),
         Item::Custom(i) => run_custom(app, i),
     }
 }
@@ -1198,6 +1505,9 @@ fn run(app: &mut App, t: Target) -> Task<Message> {
 
 /// Run a built-in action on the active tab.
 pub fn run_action(app: &mut App, a: Action) -> Task<Message> {
+    if app.pick.is_some() && pick_blocks(a) {
+        return Task::none();
+    }
     if let Some(t) = file_action(app, a) {
         return t;
     }

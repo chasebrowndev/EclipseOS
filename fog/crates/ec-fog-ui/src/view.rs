@@ -19,6 +19,8 @@
 //! tab's marker is the only other gold, and it is small. Every other
 //! cursor, every mark and every progress bar goes neutral.
 
+mod bar;
+
 use std::time::{Duration, Instant};
 
 use ec_fog_config::{Action, Target};
@@ -46,7 +48,7 @@ pub fn view(app: &App) -> Element<'_, Message> {
     let b = app.tabs.active();
     let m = &app.motion;
     let mut main = Column::new();
-    if app.tabs.len() > 1 {
+    if app.tabs.len() > 1 && app.pick.is_none() {
         main = main.push(tab_strip(app));
     }
     main = main.push(capsule(app)).push(
@@ -80,12 +82,23 @@ pub fn view(app: &App) -> Element<'_, Message> {
     if m.sidebar.value > REST {
         body = body.push(sidebar(app, m.sidebar.value));
     }
-    let base = container(body.push(main))
+    let body = container(body.push(main)).height(Length::Fill);
+    // A picker's bar runs under the places column too.
+    let page: Element<'_, Message> = match bar::bar(app) {
+        Some(bar) => column![body, bar].into(),
+        None => body.into(),
+    };
+    let base = container(page)
         .width(Length::Fill)
         .height(Length::Fill)
         .style(move |_| ground(l.window, Some(color::TEXT)));
 
     let k = m.sheet.value;
+    if let Some(menu) = app.pickui.as_ref().and_then(|u| u.menu) {
+        if let Some(menu) = bar::menu(app, menu) {
+            return stack![base, menu].into();
+        }
+    }
     // A waiting conflict outranks any overlay: its job is stalled on it.
     if let Some(c) = app.conflicts.first() {
         return modal(
@@ -241,7 +254,13 @@ fn rule_h<'a>(k: f32) -> Element<'a, Message> {
 
 /// Nothing modal is open: the regions' own cursors may take the gold.
 fn unobstructed(app: &App) -> bool {
-    matches!(app.overlay, Overlay::None) && app.conflicts.is_empty()
+    matches!(app.overlay, Overlay::None) && app.conflicts.is_empty() && !app.pick_typing()
+}
+
+/// An inset field's ground: one step off the window, a hairline edge.
+fn field_style() -> impl Fn(&iced::Theme) -> container::Style {
+    let r = look().inset_radius;
+    move |_| pill(color::FIELD, color::BORDER, None, r)
 }
 
 /// Which cursor is the gold one.
