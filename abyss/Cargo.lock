@@ -601,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "ec-abyss"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "blake3",
@@ -637,7 +637,7 @@ dependencies = [
 
 [[package]]
 name = "ec-abyss-bench"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-abyss-config",
  "ec-abyss-render",
@@ -647,7 +647,7 @@ dependencies = [
 
 [[package]]
 name = "ec-abyss-config"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ec-theme",
@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "ec-abyss-render"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-abyss-config",
  "ec-theme",
@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "ec-abyss-wire"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-abyss-config",
  "serde_json",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "ec-abyss-wlcs"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-abyss",
  "wayland-sys",
@@ -688,7 +688,7 @@ dependencies = [
 
 [[package]]
 name = "ec-agentd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ec-inference-wire",
@@ -704,7 +704,7 @@ dependencies = [
 
 [[package]]
 name = "ec-audit"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-policy-eval",
  "ec-policyd",
@@ -713,7 +713,7 @@ dependencies = [
 
 [[package]]
 name = "ec-brokerd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "argon2",
  "blake3",
@@ -731,18 +731,18 @@ dependencies = [
 
 [[package]]
 name = "ec-cataclysm-pub"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "ec-claude-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "ec-ctl"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-abyss-config",
  "ec-ipc",
@@ -753,14 +753,14 @@ dependencies = [
 
 [[package]]
 name = "ec-inference-wire"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "ec-inferenced"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-agentd",
  "ec-brokerd",
@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "ec-ipc"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "libc",
  "serde_json",
@@ -783,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "ec-policy-eval"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ed25519-dalek",
@@ -792,7 +792,7 @@ dependencies = [
 
 [[package]]
 name = "ec-policyd"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "blake3",
  "ec-policy-eval",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "ec-protocols"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "wayland-backend",
  "wayland-client",
@@ -819,14 +819,14 @@ dependencies = [
 
 [[package]]
 name = "ec-ref-agent"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "ec-secret"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ec-brokerd",
  "ec-inference-wire",
@@ -837,7 +837,7 @@ dependencies = [
 
 [[package]]
 name = "ec-theme"
-version = "0.1.0"
+version = "0.2.0"
 
 [[package]]
 name = "ed25519"

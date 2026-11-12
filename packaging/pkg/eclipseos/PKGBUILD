@@ -13,7 +13,7 @@ pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
          eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack
          eclipseos-steam-glass eclipseos-firefox-glass eclipseos-greeter eclipseos-meta)
-pkgver=0.1.1
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
 arch=(x86_64)
