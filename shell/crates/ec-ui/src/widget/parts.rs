@@ -3485,6 +3485,97 @@ pub fn prompt_cell<'a, Message: 'a>(
         .style(glass_ground(theme::CellTone::Plain, radius::INSET))
 }
 
+/// What a [`secret_field`]'s ground says about the keyboard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldState {
+    /// Keys land here: the focused cell, a brighter fill and a crisp rim.
+    Taking,
+    /// The last try was refused and keys still land here: the focused fill
+    /// with a [`crate::tokens::lock::FAIL_RIM`] danger rim. An edge, never a
+    /// glow.
+    Refused,
+    /// Nothing typed now reaches the field (it is being checked, or done):
+    /// the resting cell.
+    Resting,
+}
+
+/// A password field that holds no text: [`prompt_cell`]'s shape, with a
+/// ground that follows [`FieldState`].
+///
+/// A widget, not a styled [`prompt_cell`], because the field is focus made
+/// visible without a `text_input` (a locker reads keys itself, so no widget
+/// ever holds the secret) — and "brighter fill plus crisp rim" for focus,
+/// danger rim for refusal, has to be one rule, not one per app.
+/// `body` is what the field shows: a [`dot_run`], a placeholder, a reading.
+pub fn secret_field<'a, Message: 'a>(
+    state: FieldState,
+    marker: &str,
+    body: impl Into<Element<'a, Message, Theme>>,
+    trailing: Option<Element<'a, Message, Theme>>,
+) -> container::Container<'a, Message, Theme> {
+    let ground = move |t: &Theme| match state {
+        FieldState::Resting => glass_ground(theme::CellTone::Plain, radius::INSET)(t),
+        FieldState::Taking => glass_ground(theme::CellTone::Focused, radius::INSET)(t),
+        FieldState::Refused => {
+            let mut s = glass_ground(theme::CellTone::Focused, radius::INSET)(t);
+            s.border.color = color::danger().scale_alpha(crate::tokens::lock::FAIL_RIM);
+            s
+        }
+    };
+    prompt_cell(marker, body, trailing).style(ground)
+}
+
+/// A secret's length as a run of discs, then a still caret: the only thing a
+/// password field may show.
+///
+/// A widget, not `"•".repeat(n)`, because a bullet glyph's weight and advance
+/// belong to the font and its run to text shaping, while these are quads,
+/// anti-aliased like every other mark, at a size the field is drawn for. The
+/// run saturates at [`crate::tokens::lock::DOTS_MAX`] so a long password never
+/// reflows the field; past that the count is not shown. `count == 0` is the
+/// caret alone. `ink` is the caller's: the live yellow while typing.
+pub fn dot_run<'a, Message: 'a>(count: usize, ink: Color) -> Element<'a, Message, Theme> {
+    use crate::tokens::lock;
+    let mut r = Row::new().spacing(lock::DOT_GAP).align_y(Alignment::Center);
+    for _ in 0..count.min(lock::DOTS_MAX) {
+        r = r.push(quad(
+            Length::Fixed(lock::DOT),
+            Length::Fixed(lock::DOT),
+            ink,
+            radius::PILL,
+        ));
+    }
+    r.push(edge_quad(
+        Length::Fixed(lock::CARET_W),
+        Length::Fixed(lock::CARET_H),
+        ink,
+    ))
+    .into()
+}
+
+/// An account's mark: its initial in a glass disc.
+///
+/// A widget because the desktop loads no account pictures — an initial is
+/// what stands in, and wherever an account is named (the lock screen, an
+/// accounts list) it should be the same disc. Never accented: a name is not
+/// state.
+pub fn avatar<'a, Message: 'a>(name: &str, side: f32) -> Element<'a, Message, Theme> {
+    let initial: String = name
+        .chars()
+        .next()
+        .map(|c| c.to_uppercase().collect())
+        .unwrap_or_default();
+    container(
+        text(initial)
+            .font(font::UI_MEDIUM)
+            .size(size::PROMPT)
+            .style(theme::text_secondary),
+    )
+    .center(Length::Fixed(side))
+    .style(glass_ground(theme::CellTone::Plain, radius::PILL))
+    .into()
+}
+
 /// A key and what it does: `esc close`, with the key in a small glass cap.
 ///
 /// A widget because a hint line is a sentence of alternating keys and verbs,

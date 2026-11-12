@@ -1,0 +1,12 @@
+#%PAM-1.0
+# SPDX-License-Identifier: AGPL-3.0-only
+# ec-lock, the EclipseOS screen locker (ADR 0095). Installed to /etc/pam.d/ec-lock.
+#
+# Authentication only: the locker never opens a session, changes a password or
+# touches the account. It answers one no-echo prompt with the password, so a
+# stack that asks a second question (an OTP) cannot unlock from here.
+# system-auth carries pam_faillock: repeated failures lock the account out for
+# a while, on top of the locker's own backoff. Only the user running ec-lock
+# can be authenticated.
+
+auth      include   system-auth
