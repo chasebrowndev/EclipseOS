@@ -64,6 +64,10 @@ pub enum EventKind {
     /// The effective scheme or active theme's seeds changed; the payload is the
     /// `get_theme` reply (ADR 0084).
     Theme,
+    /// A contained panic turned a compositor feature off for the rest of the
+    /// session: `{"feature": "overview" | "annotations" | "queries"}`, plus `"method"` for a query method. Replayed
+    /// on every `subscribe` while it stands (ADR 0102).
+    FeatureDisabled,
 }
 
 impl EventKind {
@@ -81,6 +85,7 @@ impl EventKind {
         EventKind::Phrase,
         EventKind::DecisionsPending,
         EventKind::Theme,
+        EventKind::FeatureDisabled,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -98,6 +103,7 @@ impl EventKind {
             EventKind::Phrase => "phrase",
             EventKind::DecisionsPending => "decisions_pending",
             EventKind::Theme => "theme",
+            EventKind::FeatureDisabled => "feature-disabled",
         }
     }
 

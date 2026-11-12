@@ -77,6 +77,14 @@ SPDX header naming which.
 - Frame scheduling is per-output, driven by page-flip completion. The loop
   never busy-waits.
 - No allocation in input delivery or the policy check.
+- Failure model (ADR 0102): a panic ends the process, unwinding so the DRM
+  session and VT are restored, except inside a *contained* feature (today the
+  overview, the annotation socket methods and the read-only socket queries).
+  A panic raised in such a feature's own code turns that feature off for the
+  session, resets it to closed/empty, logs its location once and emits
+  `feature-disabled`; the session carries on. The TCB, the session lock,
+  input delivery and the frame path are never contained. The panic hook logs
+  location only, never the payload.
 
 ## Module map — `abyss/crates/ec-abyss/src/`
 

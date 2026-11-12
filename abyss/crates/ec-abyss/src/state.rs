@@ -204,6 +204,8 @@ pub struct AbyssState {
     /// Live annotation overlays (COMP-18). Untrusted text, drawn below trusted
     /// UI and never into a capture target.
     pub annotations: crate::render::annotation::AnnotationStore,
+    /// Features turned off for the session by a contained panic (ADR 0102).
+    pub contained: crate::contain::Contained,
     /// A modal region selection, while one is running (COMP-18 §1.3). The
     /// compositor owns the interaction so an addon never grabs the seat.
     pub region_select: crate::render::select::RegionSelect,
@@ -632,6 +634,7 @@ impl AbyssState {
             capture_fx: crate::render::still::Still::default(),
             shot: Default::default(),
             annotations: crate::render::annotation::AnnotationStore::default(),
+            contained: crate::contain::Contained::default(),
             region_select: crate::render::select::RegionSelect::default(),
             trusted_ui: crate::trusted_ui::TrustedUi::default(),
             tile_drag: None,

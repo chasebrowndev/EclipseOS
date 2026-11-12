@@ -1262,3 +1262,70 @@ fn cancelling_an_overlay_never_moves_keyboard_focus_to_the_window_under_the_poin
     up(&mut h, KEY_LEFTALT);
     assert_eq!(h.state.focus.as_ref(), Some(&b), "switcher cancel");
 }
+
+// ---------------------------------------------------------- containment (ADR 0102)
+
+#[test]
+fn a_panic_in_the_overview_closes_it_and_keeps_it_off_for_the_session() {
+    use crate::contain::{testing, Feature};
+    let (mut h, mut c) = de();
+    let (_, a) = win(&mut h, &mut c, "a");
+    let (_, b) = win(&mut h, &mut c, "b");
+    let focus = h.state.focus.clone();
+    let windows = shell::owned_windows(&h.state).len();
+    let desk = active(&h);
+
+    // Opened the real way: the bind, through the contained input arm.
+    down(&mut h, KEY_LEFTMETA);
+    tap(&mut h, KEY_W);
+    up(&mut h, KEY_LEFTMETA);
+    assert!(h.state.overview.is_open());
+    let _ = crate::ipc::capture::take();
+
+    // The pointer path calls `overview::motion` behind the boundary.
+    testing::arm(Feature::Overview);
+    move_to(&mut h, pt(400.0, 300.0));
+    assert!(h.state.contained.is_off(Feature::Overview));
+    // The reset: everything the module owns is closed and dropped.
+    assert!(!super::any_open(&h.state));
+    assert!(h.state.corners.armed().is_none());
+    assert!(frame(&h.state).is_none(), "nothing left to draw");
+    // Session-critical state is untouched.
+    assert_eq!(h.state.focus, focus);
+    assert_eq!(shell::owned_windows(&h.state).len(), windows);
+    assert_eq!(active(&h), desk);
+    assert!(!h.state.lock.locked);
+    let events = crate::ipc::capture::take();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|(k, v)| k == "feature-disabled" && v["feature"] == "overview")
+            .count(),
+        1
+    );
+
+    // Stays off by every door: the bind, Alt+Tab, the socket, a direct open.
+    down(&mut h, KEY_LEFTMETA);
+    tap(&mut h, KEY_W);
+    up(&mut h, KEY_LEFTMETA);
+    assert!(!h.state.overview.is_open());
+    down(&mut h, KEY_LEFTALT);
+    tap(&mut h, KEY_TAB);
+    up(&mut h, KEY_LEFTALT);
+    assert!(!h.state.switcher.is_open());
+    assert!(!super::open(&mut h.state));
+    let anchor = Rectangle::new((10, 10).into(), (40, 40).into());
+    assert_eq!(
+        preview::show(&mut h.state, &a, anchor),
+        Err("previews need mode \"de\" and a live session")
+    );
+    let (conn, _peer) = crate::ipc::test_conn(&mut h.state);
+    let hb = handle(&mut h, &b);
+    let req = json!({"handle": hb, "x": 10, "y": 10, "width": 40, "height": 40});
+    assert!(dispatch(&mut h.state, conn, "show_window_preview", &req).is_err());
+    // No second report, and the pointer belongs to the clients again.
+    move_to(&mut h, pt(410.0, 310.0));
+    assert!(crate::ipc::capture::take()
+        .iter()
+        .all(|(k, _)| k != "feature-disabled"));
+}
