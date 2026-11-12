@@ -11,9 +11,9 @@
 //! decode, the output shows its colour alone.
 //!
 //! Classification: the wallpaper is compositor chrome with no client behind
-//! it, so it is `public` and is not a surface the capture path ever lists.
-//! `render/capture.rs` builds its own pass from window surfaces and never
-//! calls `collect_elements`, so a capture does not contain it either.
+//! it, so it is `public`. `render/capture.rs` builds its own pass and never
+//! calls `collect_elements`; it takes the wallpaper through [`capture_element`],
+//! the one door from the capture path to this store.
 //!
 //! No human input is read here, and the path is configuration, not content.
 
@@ -95,6 +95,18 @@ fn byte(c: f32) -> u8 {
 
 /// Called once per frame before the elements are collected. Cheap when
 /// nothing moved: one hash over the inputs.
+/// The wallpaper for `output` as the capture pass draws it: the same static
+/// `public` picture the screen shows, bottom-most. Nothing animated or
+/// on-screen-only is reachable from here.
+pub fn capture_element(
+    state: &AbyssState,
+    renderer: &mut smithay::backend::renderer::gles::GlesRenderer,
+    output: &Output,
+    scale: Scale<f64>,
+) -> Option<crate::render::AbyssRenderElement> {
+    state.borders.wallpaper.element(renderer, output, scale)
+}
+
 pub fn tick(state: &mut AbyssState) {
     let theme_base = state.theme.appearance().seeds.base.0;
     let epoch = state.borders.wallpaper.epoch();

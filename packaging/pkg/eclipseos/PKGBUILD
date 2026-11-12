@@ -115,7 +115,7 @@ package_eclipseos-wallpaper() {
 
   _bin ec-wallpaper
   _unit ec-wallpaper.service
-  _want ec-wallpaper.service
+  # Not wanted by abyss-session.target: abyss draws the wallpaper (ADR 0104).
 }
 
 package_eclipseos-center() {

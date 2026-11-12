@@ -145,13 +145,15 @@ done
 #    already written and are read when their manager next starts.
 uid=$(id -u "$user")
 rt="/run/user/$uid"
-units="ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service"
+units="ec-hyperion-bar.service ec-toasts.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service"
 [ "$do_agents" -eq 1 ] && units="$units ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service"
 if [ -S "$rt/bus" ]; then
     as_user() {
         runuser -u "$user" -- env XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"
     }
     as_user systemctl --user daemon-reload
+    # Earlier installs enabled ec-wallpaper; abyss draws the wallpaper now (ADR 0104).
+    as_user systemctl --user disable ec-wallpaper.service 2>/dev/null || true
     # shellcheck disable=SC2086 # $units is a list of unit names on purpose
     as_user systemctl --user enable $units
 else

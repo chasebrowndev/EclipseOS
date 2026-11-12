@@ -33,9 +33,11 @@ root=$(CDPATH= cd -- "$here/.." && pwd)
 BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher
       ec-settings ec-policy-viewer ec-console ec-cheatsheet ec-ctl ec-screensaver ec-secret-prompt
       ec-pairing ec-polkit-agent ec-portal'
-UNITS='ec-hyperion-bar.service ec-toasts.service ec-wallpaper.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service'
-# Installed but never enabled: abyss starts it only under mode "de" (no [Install]).
-DESKTOP_UNIT='ec-desktop.service'
+UNITS='ec-hyperion-bar.service ec-toasts.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service'
+# Installed but never enabled: abyss starts ec-desktop only under mode "de" (no
+# [Install]); abyss draws the wallpaper itself (ADR 0104), ec-wallpaper stays for
+# other hosts.
+DESKTOP_UNIT='ec-desktop.service ec-wallpaper.service'
 # The agent stack add-on, as the PKGBUILD's eclipseos-agents ships it.
 AGENT_BINS='ec-policyd ec-brokerd ec-agentd ec-audit ec-secret ec-inferenced'
 AGENT_UNITS='ec-policyd.service ec-brokerd.service ec-agentd.service ec-inferenced.service'
@@ -244,6 +246,8 @@ done
 
 say "enabling the session's own services for $user"
 systemctl --user daemon-reload
+# Earlier installs enabled ec-wallpaper; abyss draws the wallpaper now.
+systemctl --user disable --now ec-wallpaper.service 2>/dev/null || true
 systemctl --user enable $UNITS
 
 cat <<EOF

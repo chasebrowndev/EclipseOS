@@ -2575,8 +2575,7 @@ backdrop directly beneath it (§9). The drag icon is not yet drawn (code owed).
 
 *(amended ADR 0104, 2026-11-12)* Beneath everything, the compositor draws the
 wallpaper (`wallpaper.*` in `abyss.kdl`), class `public`; a background
-layer-shell client still draws over it. Capture passes do not include it yet
-(owner-review change to `render/capture.rs` owed).
+layer-shell client still draws over it. Capture passes draw it too, bottom-most.
 
 Trusted UI is a pass, not a client surface, and nothing can be scheduled
 after it (COMP-10, T9).

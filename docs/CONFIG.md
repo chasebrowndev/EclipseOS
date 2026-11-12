@@ -55,7 +55,7 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `wallpaper.mode` | fill \| fit \| center | `"fill"` | live | How the image is sized: `fill` covers the output and crops, `fit` letterboxes, `center` draws it at native size. |
 | `wallpaper.color` | colour `#rrggbb[aa]` | `#0b0906ff` | live | Solid background, and letterbox fill. |
 
-The compositor draws the wallpaper itself (ADR 0104): one picture per output, decoded off the main thread and drawn as the bottom-most element, under the background layer, so blur behind translucent windows samples it. A background-layer client (the old `ec-wallpaper`) still draws over it. A colour left at the built-in default follows the theme's base colour. A reload re-reads the file. The wallpaper is not part of a window capture.
+The compositor draws the wallpaper itself (ADR 0104): one picture per output, decoded off the main thread and drawn as the bottom-most element, under the background layer, so blur behind translucent windows samples it. A background-layer client still draws over it; `ec-wallpaper` is no longer started by the session but stays installed for other hosts. A colour left at the built-in default follows the theme's base colour. A reload re-reads the file. Screenshots and screen shares include it (it is `public`).
 
 ### `annotations`
 

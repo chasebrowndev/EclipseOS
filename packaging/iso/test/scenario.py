@@ -82,7 +82,7 @@ AGENTS_PACKAGE = "eclipseos-agents"
 PACKAGE_USER_UNITS = {
     "eclipseos-hyperion": ["ec-hyperion-bar.service"],
     "eclipseos-toasts": ["ec-toasts.service"],
-    "eclipseos-wallpaper": ["ec-wallpaper.service"],
+    "eclipseos-wallpaper": [],  # abyss draws the wallpaper (ADR 0104)
     "eclipseos-desktop": ["ec-screensaver.service", "ec-pairing.service", "ec-polkit-agent.service"],
     "eclipseos-agents": ["ec-policyd.service", "ec-brokerd.service", "ec-agentd.service",
                          "ec-inferenced.service"],
