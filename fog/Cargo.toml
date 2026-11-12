@@ -21,13 +21,13 @@ ec-fog-proto = { path = "crates/ec-fog-proto" }
 ec-fog-config = { path = "crates/ec-fog-config" }
 ec-fog-daemon = { path = "crates/ec-fog-daemon" }
 ec-fog-widgets = { path = "crates/ec-fog-widgets" }
-# ec-ui's pin, but with the tokio executor: the UI's fogd connection is a
-# tokio UnixStream.
+# ec-ui's pin (thread-pool executor): the UI's fogd connection runs on std
+# threads; tokio stays in the daemon and bench only.
 iced = { version = "0.14", default-features = false, features = [
   "wgpu",
   "advanced",
   "wayland",
-  "tokio",
+  "thread-pool",
 ] }
 # iced hides its renderer re-export; the glass widget needs the primitive
 # trait to draw its shader beside other content. Same crate iced resolves.
