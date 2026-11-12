@@ -1847,7 +1847,29 @@ pub const TABLE: &[Key] = &[
         Null,
         Abyss,
         Live,
-        "Locker to spawn on the lock timeout. Without one the timeout is inert.",
+        "Locker to spawn on the lock timeout, `ec-ctl lock`, and to relaunch \
+       (with backoff) if it dies while the session is locked. Without one the \
+       lock timeout is inert.",
+    ),
+    k(
+        "idle.suspend-timeout-seconds",
+        int(0, 86_400),
+        Null,
+        Abyss,
+        Live,
+        "Inactivity before the machine suspends (`systemctl suspend`). Unset or 0 \
+       never suspends on idle, the default. Idle inhibitors hold it off like \
+       the other stages (ADR 0099).",
+    ),
+    k(
+        "idle.lock-before-suspend",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Run `idle.lock-command` before an idle suspend and suspend only once the \
+       session reports locked. A session that does not lock within 10 s is not \
+       suspended (ADR 0099).",
     ),
     // input
     k("input.kb-layout", Ty::Str, Str("us"), Abyss, Live, "XKB layout."),
@@ -2255,6 +2277,7 @@ pub const DRAG_MAX: &[(&str, i64)] = &[
     ("decoration.rounding", 64),
     ("idle.dpms-timeout-seconds", 3600),
     ("idle.lock-timeout-seconds", 3600),
+    ("idle.suspend-timeout-seconds", 3600),
     ("input.repeat-delay", 1000),
 ];
 
@@ -3242,6 +3265,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "idle.dpms-timeout-seconds" => n(&c.idle.dpms_timeout),
         "idle.lock-timeout-seconds" => n(&c.idle.lock_timeout),
         "idle.lock-command" => s(&c.idle.lock_command),
+        "idle.suspend-timeout-seconds" => n(&c.idle.suspend_timeout),
+        "idle.lock-before-suspend" => V::Bool(c.idle.lock_before_suspend),
         "input.kb-layout" => V::Str(c.input.kb_layout.clone()),
         "input.kb-variant" => V::Str(c.input.kb_variant.clone()),
         "input.kb-options" => s(&c.input.kb_options),
