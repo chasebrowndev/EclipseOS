@@ -172,7 +172,7 @@
 
     <enum name="sensitivity">
       <entry name="public" value="0"/>
-      <entry name="private" value="1"/>
+      <entry name="normal" value="1"/>
       <entry name="secret" value="2"/>
     </enum>
 

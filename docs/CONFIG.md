@@ -520,7 +520,7 @@ Actions. The action and its argument are one string: `windowrule "size 800x600" 
 | `workspace <1..10>` | `abyss.kdl` | `workspace 2` | Map on this workspace. |
 | `no-focus-steal` | `abyss.kdl` | `no-focus-steal` | Do not take keyboard focus on map. |
 | `idle-inhibit` | `abyss.kdl` | `idle-inhibit` | Hold the idle timers off while the window is mapped. |
-| `sensitivity secret \| private` | `policy.kdl` | `sensitivity secret`<br>`sensitivity private` | Raise the capture sensitivity class. Raise-only: `public` is refused. |
+| `sensitivity secret \| normal` | `policy.kdl` | `sensitivity secret`<br>`sensitivity normal` | Raise the capture sensitivity class. Raise-only: `public` is refused. |
 | `app-trust standard \| trusted` | `policy.kdl` | `app-trust standard`<br>`app-trust trusted` | Trust level (COMP-07 §2). Clamped to `standard` for X11 windows. |
 | `seat-compat lock \| multi` | `policy.kdl` | `seat-compat lock`<br>`seat-compat multi` | Seat concurrency (COMP-07 §6). Clamped to `lock` for X11 windows. |
 | `no-agent` | `policy.kdl` | `no-agent` | Hide the window from agents. |

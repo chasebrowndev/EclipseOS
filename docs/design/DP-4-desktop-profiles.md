@@ -144,7 +144,7 @@ open in COMP-13 §1; settle that alongside the split.
 
 `shell/rules.rs` supports one rule construct whose actions span both trust
 levels. `float`, `tile`, `workspace N`, `size`, `position`, `output`,
-`fullscreen` and `opacity` are appearance. `sensitivity secret|private`,
+`fullscreen` and `opacity` are appearance. `sensitivity secret|normal`,
 `app-trust`, `seat-compat` and `no-agent` are security. The construct cannot go
 in one file.
 
