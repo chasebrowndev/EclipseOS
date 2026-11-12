@@ -226,8 +226,8 @@ fn fill_gap<'a>() -> El<'a> {
 
 // ---- source chooser --------------------------------------------------------
 
-fn source_tile_for<'a>(c: &Chooser, i: usize, cursor: bool) -> El<'a> {
-    let (glyph, title, caption, well_note) = match c.source(i) {
+fn source_tile_for<'a>(c: &Chooser, i: usize, cursor: bool, well_h: f32) -> El<'a> {
+    let (glyph, title, caption, well_note, aspect) = match c.source(i) {
         Source::Output {
             name,
             width,
@@ -237,6 +237,7 @@ fn source_tile_for<'a>(c: &Chooser, i: usize, cursor: bool) -> El<'a> {
             clean(name, metrics::MAX_CAPTION),
             "Display".to_owned(),
             Some(format!("{width} × {height}")),
+            (*height > 0).then(|| *width as f32 / *height as f32),
         ),
         Source::Window { title, app_id, .. } => {
             let t = clean(title, metrics::MAX_CAPTION);
@@ -249,6 +250,7 @@ fn source_tile_for<'a>(c: &Chooser, i: usize, cursor: bool) -> El<'a> {
                 },
                 clean(app_id, metrics::MAX_CAPTION),
                 None,
+                None,
             )
         }
     };
@@ -258,10 +260,11 @@ fn source_tile_for<'a>(c: &Chooser, i: usize, cursor: bool) -> El<'a> {
             title,
             caption,
             well_note,
+            aspect,
             // The daemon sends frames later; until then the well shows the
             // type icon and the resolution.
             thumb: None,
-            well_h: metrics::THUMB_H,
+            well_h,
             selected: c.is_selected(i),
             cursor,
         },
@@ -318,9 +321,14 @@ fn source<'a>(app: &App, c: &Chooser) -> El<'a> {
         .center_y(Length::Fixed(metrics::GRID_H))
         .into()
     } else {
+        let well_h = if visible.len() <= metrics::GRID_COLS {
+            metrics::THUMB_H_TALL
+        } else {
+            metrics::THUMB_H
+        };
         let tiles = visible
             .iter()
-            .map(|i| source_tile_for(c, *i, at == Some(*i)))
+            .map(|i| source_tile_for(c, *i, at == Some(*i), well_h))
             .collect();
         // A short list hugs its tiles; only a long one takes the scrolling
         // viewport, so a few displays do not sit in an empty well.
@@ -337,6 +345,17 @@ fn source<'a>(app: &App, c: &Chooser) -> El<'a> {
     let hero = column![bar, inset(grid).padding(space::ROW_Y)].spacing(space::ROW_Y);
 
     let mut options = row![].spacing(space::BLOCK).align_y(Alignment::Center);
+    options = options.push(
+        text(match c.selected_count() {
+            0 => "Nothing picked".to_owned(),
+            1 => "1 picked".to_owned(),
+            n => format!("{n} picked"),
+        })
+        .font(font::DATA)
+        .size(size::MICRO)
+        .style(theme::text_tertiary),
+    );
+    options = options.push(Space::new().width(Length::Fill));
     if c.allow_audio() {
         options = options.push(switch("Share audio", c.audio, Message::Audio));
     }
@@ -346,6 +365,7 @@ fn source<'a>(app: &App, c: &Chooser) -> El<'a> {
         Message::Remember,
     ));
 
+    let options = inset(options).padding([space::ROW_Y, space::CARD]);
     let share = match c.selected_count() {
         0 | 1 => "Share".to_owned(),
         n => format!("Share {n}"),
@@ -479,6 +499,7 @@ fn shot<'a>(app: &App, mode: ScreenshotMode) -> El<'a> {
                     title: title.to_owned(),
                     caption: caption.to_owned(),
                     well_note: None,
+                    aspect: None,
                     thumb: None,
                     well_h: metrics::MODE_WELL_H,
                     selected: *m == mode,

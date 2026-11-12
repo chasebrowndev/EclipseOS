@@ -9,8 +9,9 @@
 //!                 9:41 AM              the hero: the time, the one numeral
 //!           Wednesday, November 11
 //!   ╭──────────────────────────────────╮
-//!   │ (R)  robin                       │  account
-//!   │      L O C K E D                 │
+//!   │               (R)                │  account: disc over its name
+//!   │              robin               │
+//!   │             L O C K E D          │
 //!   │ ╭──────────────────────────────╮ │
 //!   │ │ ›  ● ● ● ● ● ●|      (Unlock)│ │  the field: dots only, no text
 //!   │ ╰──────────────────────────────╯ │
@@ -101,7 +102,9 @@ pub fn scene(s: Scene<'_>) -> Element<'_, Message, Theme> {
     .spacing(lock::DATE_GAP)
     .align_x(Alignment::Center);
 
-    let account = row![
+    // The account sits centred on top of the card, a disc over its name, the
+    // way a phone or a laptop greets: the card holds one person and one field.
+    let account = column![
         avatar(s.user, lock::AVATAR),
         column![
             text(s.user)
@@ -115,10 +118,12 @@ pub fn scene(s: Scene<'_>) -> Element<'_, Message, Theme> {
                 "locked"
             }),
         ]
-        .spacing(space::LINE_GAP),
+        .spacing(space::LINE_GAP)
+        .align_x(Alignment::Center),
     ]
     .spacing(space::CONTROL_GAP)
-    .align_y(Alignment::Center);
+    .align_x(Alignment::Center)
+    .width(Length::Fill);
 
     let card = container(column![account, field(&s), note(&s)].spacing(space::CARD))
         .padding(lock::CARD_PAD)
@@ -251,6 +256,7 @@ fn note<'a>(s: &Scene<'a>) -> Element<'a, Message, Theme> {
 /// soft drop. The ground is opaque, so the drop is depth, not a halo.
 fn card_ground(t: &Theme) -> container::Style {
     let mut s = theme::panel(lock::CARD_RADIUS)(t);
+    s.border.color = color::border_strong();
     // Over an opaque ground the panel's white tint reads as grey paint; the
     // card is the next warm surface up instead, with the panel's rim.
     s.background = Some(iced::Background::Color(color::surface_1()));
