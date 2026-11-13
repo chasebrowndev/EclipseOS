@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# T-18 §11, T-25 §4: dated nightly for -Zsanitizer; bumping it is its own PR.
+# The main apotheosis/rust-toolchain.toml stays on 1.97.0.
+[toolchain]
+channel = "nightly-2026-11-01"
+profile = "minimal"

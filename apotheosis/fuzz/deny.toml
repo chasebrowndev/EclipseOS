@@ -1,0 +1,9 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Fuzz workspace only (T-24 §4): exceptions for crates in its own graph. Non-shipping.
+[advisories]
+version = "2"
+[licenses]
+version = 2
+allow = ["MIT", "Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "Unicode-3.0", "AGPL-3.0-only", "Zlib", "ISC"]
+# libfuzzer-sys (libFuzzer runtime) is NCSA.
+exceptions = [{ allow = ["NCSA"], crate = "libfuzzer-sys" }]
