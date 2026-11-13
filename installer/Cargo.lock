@@ -651,7 +651,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "ec-ipc"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "libc",
  "serde_json",
@@ -659,7 +659,7 @@ dependencies = [
 
 [[package]]
 name = "ec-protocols"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "wayland-backend",
  "wayland-client",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "ec-setup"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ec-ipc",
  "ec-setup-plan",
@@ -685,7 +685,7 @@ dependencies = [
 
 [[package]]
 name = "ec-setup-helper"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ec-setup-plan",
  "kdl",
@@ -696,7 +696,7 @@ dependencies = [
 
 [[package]]
 name = "ec-setup-plan"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -705,11 +705,11 @@ dependencies = [
 
 [[package]]
 name = "ec-theme"
-version = "0.2.1"
+version = "0.2.2"
 
 [[package]]
 name = "ec-ui"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "ec-ipc",
  "ec-protocols",
@@ -723,7 +723,7 @@ dependencies = [
 
 [[package]]
 name = "ec-welcome"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "iced",
  "image",
