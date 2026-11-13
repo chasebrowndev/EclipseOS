@@ -1,0 +1,8 @@
+fixture "never-decrqcra-no-reply" {
+  desc "DECRQCRA is never answered in a release build (T-03 section 3.3)"
+  covers "T03-NEVER"
+  size rows=3 cols=10
+  feed #"\e[1;1;1;1;1;1*y"#
+  grid
+  replies
+}

@@ -1,0 +1,13 @@
+fixture "erase-ech" {
+  desc "ECH erases n cells without moving the cursor"
+  covers "T03-ECH" "VTCORE-15"
+  size rows=4 cols=6
+  feed #"AAAAAA\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\e[2;3H\e[2X"#
+  grid {
+    row "AAAAAA"
+    row "BB  BB"
+    row "CCCCCC"
+    row "DDDDDD"
+  }
+  cursor row=1 col=2
+}

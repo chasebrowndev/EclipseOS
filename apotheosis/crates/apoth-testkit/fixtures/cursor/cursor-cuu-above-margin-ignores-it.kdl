@@ -1,0 +1,10 @@
+fixture "cursor-cuu-above-margin-ignores-it" {
+  desc "a cursor outside the region moves to the screen edge"
+  covers "T03-CUX" "T03-DECSTBM"
+  size rows=5 cols=10
+  feed #"\e[3;5r\e[2;1H\e[9A*"#
+  grid {
+    row "*"
+  }
+  cursor row=0 col=1
+}

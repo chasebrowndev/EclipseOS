@@ -1,0 +1,11 @@
+fixture "wrap-exact-then-crlf" {
+  desc "CR LF after a full row does not leave a blank row"
+  covers "T03-AUTOWRAP"
+  size rows=3 cols=5
+  feed #"ABCDE\r\nF"#
+  grid {
+    row "ABCDE"
+    row "F"
+  }
+  cursor row=1 col=1
+}

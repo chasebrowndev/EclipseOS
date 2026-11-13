@@ -1,0 +1,12 @@
+fixture "osc133-prompt-marks" {
+  desc "A prompt start, B command start, C output start, D finished with exit status"
+  covers "T03-OSC133" "SHELLINTEGRATION-03"
+  review "event text form `mark:<kind>[;status]` is this harness's vocabulary; the real event type is T-11 section 3"
+  size rows=3 cols=20
+  feed #"\e]133;A\a$ \e]133;B\als\r\n\e]133;C\aout\r\n\e]133;D;0\a"#
+  grid {
+    row "$ ls"
+    row "out"
+  }
+  events "mark:A" "mark:B" "mark:C" "mark:D;0"
+}

@@ -1,0 +1,9 @@
+fixture "mode-decstr-restores-defaults" {
+  desc "mode decstr restores defaults (migrated from the apoth-term corpus)"
+  covers "T03-DECSTR" "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?7l\e[?25l\e[4h\e[!p"#
+  mode "?7" 1
+  mode "?25" 1
+  mode "4" 2
+}

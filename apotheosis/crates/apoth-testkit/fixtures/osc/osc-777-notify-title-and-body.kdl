@@ -1,0 +1,8 @@
+fixture "osc-777-notify-title-and-body" {
+  desc "OSC 777 notify joins title and body into one notification"
+  covers "T03-OSC99-777"
+  size rows=2 cols=8
+  feed #"\e]777;notify;Build;done\a"#
+  events "notify:Build: done"
+  grid
+}

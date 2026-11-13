@@ -1,0 +1,7 @@
+fixture "osc-777-notify-title-only" {
+  desc "OSC 777 notify with a title only"
+  covers "T03-OSC99-777"
+  size rows=2 cols=8
+  feed #"\e]777;notify;Build\e\\"#
+  events "notify:Build"
+}

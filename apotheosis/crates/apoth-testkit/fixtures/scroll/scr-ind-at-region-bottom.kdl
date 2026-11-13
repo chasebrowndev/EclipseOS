@@ -1,0 +1,12 @@
+fixture "scr-ind-at-region-bottom" {
+  desc "scr ind at region bottom (migrated from the apoth-term corpus)"
+  covers "T03-IND-NEL-RI"
+  size rows=4 cols=3
+  feed #"a\r\nb\r\nc\r\nd\e[2;3r\e[3;1H\eD"#
+  grid {
+    row "a"
+    row "c"
+    row ""
+    row "d"
+  }
+}

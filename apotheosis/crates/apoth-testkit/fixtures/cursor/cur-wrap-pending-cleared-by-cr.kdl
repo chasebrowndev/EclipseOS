@@ -1,0 +1,9 @@
+fixture "cur-wrap-pending-cleared-by-cr" {
+  desc "cur wrap pending cleared by cr (migrated from the apoth-term corpus)"
+  covers "T03-AUTOWRAP"
+  size rows=3 cols=3
+  feed #"abc\rx"#
+  grid {
+    row "xbc"
+  }
+}

@@ -1,0 +1,11 @@
+fixture "el-keeps-other-rows" {
+  desc "el keeps other rows (migrated from the apoth-term corpus)"
+  covers "T03-EL"
+  size rows=3 cols=3
+  feed #"aaa\r\nbbb\r\nccc\e[2;2H\e[2K"#
+  grid {
+    row "aaa"
+    row ""
+    row "ccc"
+  }
+}

@@ -1895,6 +1895,8 @@ user-run `ssh -R` forward of the socket is treated as an ordinary client.
 override class), `config …` (T-10 §8: edits or reads the file locally, no socket), `icat`, `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
 (`list`, `explain <char>`), `doctor` (capability and environment report), `completions`.
 `--json` everywhere; exit codes: 0 ok, 1 error, 2 usage, 3 denied, 4 no instance.
+Inside Apotheosis panes the shell-integration snippets (T-14 §2) define `ap` as a short
+alias of `apoth`; nothing is installed system-wide, and no other short names are defined.
 `apotheosis` itself (the GUI binary) accepts `-e argv…`, `--cwd`, `--title`, `--app-id`,
 `--profile`, `--layout`, `--hold`, `-o key=value`, `--new-instance`, `--wait`. A second
 launch sends one `launch` request (cwd, env, argv, activation token, overrides) to the
@@ -2038,6 +2040,8 @@ user's value; bash by `--rcfile` shim / `PROMPT_COMMAND`; fish and nushell throu
 `XDG_DATA_DIRS`. `shell-integration.enabled` `auto|off`; feature flags `cursor`, `title`,
 `cwd`, `marks`, `sudo-terminfo`. Shells that emit OSC 133 natively need nothing.
 `apoth shell-init <shell>` prints the snippet for manual use.
+Each snippet defines `ap` as an alias of `apoth` (T-12 §5), only when `APOTHEOSIS_PANE`
+is set, so a manually sourced snippet has no effect outside a pane.
 
 ## 3. Working directory and process
 OSC 7 (`file://host/path`, percent-decoded; non-local host ignored for local spawns) is

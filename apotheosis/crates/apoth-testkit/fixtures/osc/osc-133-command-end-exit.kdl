@@ -1,0 +1,7 @@
+fixture "osc-133-command-end-exit" {
+  desc "osc 133 command end exit (migrated from the apoth-term corpus)"
+  covers "T03-OSC133"
+  size rows=3 cols=8
+  feed #"\e]133;D;3\a"#
+  events "mark:D;3"
+}

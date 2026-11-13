@@ -1,0 +1,9 @@
+fixture "tab-stops-survive-sgr" {
+  desc "tab stops survive sgr (migrated from the apoth-term corpus)"
+  covers "T03-HTS-TBC"
+  size rows=1 cols=12
+  feed #"\e[1m\tx"#
+  grid {
+    row "        x"
+  }
+}

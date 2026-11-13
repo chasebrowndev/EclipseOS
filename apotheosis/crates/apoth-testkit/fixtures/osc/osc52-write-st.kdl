@@ -1,0 +1,8 @@
+fixture "osc52-write-st" {
+  covers "T03-OSC52"
+  review "see osc52-write-clipboard"
+  size rows=3 cols=20
+  feed #"\e]52;c;SGk=\e\\"#
+  grid
+  events "clipboard-set:c:2"
+}

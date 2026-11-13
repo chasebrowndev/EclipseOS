@@ -1,0 +1,7 @@
+fixture "sgr-29-clears-strike" {
+  desc "sgr 29 clears strike (migrated from the apoth-term corpus)"
+  covers "T03-SGR-BASIC"
+  size rows=1 cols=4
+  feed #"\e[9m\e[29mA"#
+  cell row=0 col=0 attrs=""
+}

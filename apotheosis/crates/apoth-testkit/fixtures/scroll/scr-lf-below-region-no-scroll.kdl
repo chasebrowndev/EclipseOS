@@ -1,0 +1,7 @@
+fixture "scr-lf-below-region-no-scroll" {
+  desc "scr lf below region no scroll (migrated from the apoth-term corpus)"
+  covers "T03-SCROLL-HISTORY"
+  size rows=4 cols=3
+  feed #"\e[1;2r\e[4;1H\n"#
+  cursor row=3 col=0
+}

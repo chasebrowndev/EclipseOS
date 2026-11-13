@@ -1,0 +1,7 @@
+fixture "mode-decscnm-set" {
+  desc "mode decscnm set (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?5h"#
+  mode "?5" 1
+}
