@@ -353,6 +353,8 @@ pub struct AbyssState {
     pub lock: crate::protocols::standard::session_lock::LockState,
     /// Idle clock: last activity, inhibitors, DPMS state (COMP-03 §7).
     pub idle: crate::input::idle::IdleTracker,
+    /// Lid closed/open and whether this closure already asked for suspend.
+    pub lid: crate::outputs::power::LidState,
     /// `ext_idle_notify_v1`.
     pub idle_notifier: IdleNotifierState<Self>,
     #[allow(dead_code)] // holds the zwp_idle_inhibit_manager_v1 global alive
@@ -657,6 +659,7 @@ impl AbyssState {
             last_pointer_focus: None,
             popup_grabs: Vec::new(),
             pointer_grab_active: false,
+            lid: Default::default(),
             touch_grab_active: false,
             outputs: crate::outputs::Outputs::new(),
             focus: None,

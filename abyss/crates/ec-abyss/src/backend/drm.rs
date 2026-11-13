@@ -1846,6 +1846,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         .insert_source(session_notifier, move |event, &mut (), state| match event {
             SessionEvent::PauseSession => {
                 tracing::info!("session paused (VT switch away)");
+                crate::outputs::power::session_state(state, false);
                 libinput_session.suspend();
                 if let Some(drm) = state.drm.as_mut() {
                     // Every device loses master together (ADR 0084).
@@ -1856,6 +1857,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
             }
             SessionEvent::ActivateSession => {
                 tracing::info!("session activated");
+                crate::outputs::power::session_state(state, true);
                 if libinput_session.resume().is_err() {
                     tracing::error!("resuming libinput after VT switch");
                 }

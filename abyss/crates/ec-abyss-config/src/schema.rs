@@ -2835,7 +2835,7 @@ pub const OUTPUT_KEYS: &[Form] = &[
     form(&["transform"], "\"<transform>\"", &[r#"transform "90""#, r#"transform "flipped-270""#], "Rotation and flip."),
     form(&["overscan"], "<px> | top= bottom= left= right=", &["overscan 30", "overscan top=20 left=40"], "Per-edge inset in physical px for a panel that crops the signal. Bare applies to all four edges. Wins over saved calibration."),
     form(&["enabled", "disabled"], "[<bool>]", &["enabled", "disabled", "enabled #false"], "Turn the output on or off. Bare `disabled` is off."),
-    form(&["lid-close"], "\"<lid-close>\"", &[r#"lid-close "suspend""#, r#"lid-close "ignore""#, r#"lid-close "off""#], "On an internal panel: `off` turns the panel off (never the last output), `suspend` runs `systemctl suspend`, `ignore` does nothing."),
+    form(&["lid-close"], "\"<lid-close>\"", &[r#"lid-close "suspend""#, r#"lid-close "ignore""#, r#"lid-close "off""#], "On an internal panel: `off` turns the panel off when another screen is on and suspends otherwise (also when the last other screen goes away with the lid closed), `suspend` always suspends, `ignore` does nothing."),
     form(&["vrr", "adaptive-sync"], "[<bool>]", &["vrr", "adaptive-sync #false"], "Variable refresh rate. Bare means `#true`."),
     form(&["number"], "<1..255>", &["number 2"], "Display number used by `move-to-output` (ADR 0049). Defaults to connection order."),
 ];
