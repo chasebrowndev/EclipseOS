@@ -1,0 +1,10 @@
+fixture "edit-rep" {
+  desc "REP repeats the last graphic character"
+  covers "T03-REP" "VTCORE-15"
+  size rows=2 cols=10
+  feed #"A\e[3b"#
+  grid {
+    row "AAAA"
+  }
+  cursor row=0 col=4
+}

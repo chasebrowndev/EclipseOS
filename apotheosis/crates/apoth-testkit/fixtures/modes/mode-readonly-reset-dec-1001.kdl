@@ -1,0 +1,7 @@
+fixture "mode-readonly-reset-dec-1001" {
+  desc "mode readonly reset dec 1001 (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?1001h"#
+  mode "?1001" 4
+}

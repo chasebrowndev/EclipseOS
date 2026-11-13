@@ -1,0 +1,9 @@
+fixture "osc8-other-params-ignored" {
+  covers "T03-OSC8" "VTCORE-29"
+  size rows=3 cols=20
+  feed #"\e]8;foo=bar:id=2;https://x.example\aX"#
+  grid {
+    row "X"
+  }
+  cell row=0 col=0 link="https://x.example"
+}

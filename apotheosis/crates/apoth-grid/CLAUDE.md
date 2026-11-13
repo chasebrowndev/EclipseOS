@@ -18,8 +18,11 @@ Governing spec: T-02 (`docs/ECLIPSEOS_SPECS_APOTHEOSIS.md`). AGPL-3.0-only, not 
 - `cell.rs`: 8-byte `Cell` (T-02 §1.2). `style.rs`: `Style`, `Color`, `Attrs`. `tabs.rs`:
   `TabStops`. `pin.rs`: tracked pins. `snapshot.rs`: the two snapshot APIs.
 - `Screen::new(rows, cols, ScreenConfig)` clamps the active area to `MAX_CELLS` (hostile
-  sizes cannot allocate). There is no in-place `resize`/reflow yet (M12): until then
-  apoth-term builds a new `Screen` and replays/copies as it sees fit.
+  sizes cannot allocate). `Screen::resize(rows, cols)` / `resize_keeping(rows, cols, cursor_row)` resize
+  in place WITHOUT reflow (reflow is M12): columns truncate/pad (cut wide cells blanked), rows
+  grow at the bottom (no history pull), shrink drops rows below the cursor then pushes the top
+  into scrollback (primary) or discards it (alt). Pins follow; discarded rows' pins go garbage;
+  everything is marked dirty (`epoch` bump, next snapshot `Full`; reset `SeenSet`s).
 
 ## How apoth-term uses it
 Coordinates `(y, x)` are active-area, 0-based; margins/regions are the caller's.
@@ -43,8 +46,20 @@ Coordinates `(y, x)` are active-area, 0-based; margins/regions are the caller's.
   Both reuse buffer capacity and allocate nothing once warm.
 - Determinism: no clocks, no randomness; same call sequence -> same state.
 
+## M12 additions
+- `screen/reflow.rs`: `Screen::resize_reflow(rows, cols, cursor, ReflowOpts) -> Reflowed`.
+  Eager reflow of primary screen + history as logical lines (wide cells never split,
+  `SpacerHead` via `set_spacer_head`, cursor/pins/blocks/links carried, fresh seqs, `Full`
+  damage). Falls back to `resize_keeping` on alt screen, rows-only change, `reflow:false`.
+  `protect_from` pin: rows from there down are truncated, not re-wrapped. Lazy history
+  conversion and lz4 cold pages are NOT implemented yet.
+- `select.rs`: `Selection` = two pins + sides; `selection_range` resolves
+  simple/word/line/block/semantic; `extract` joins wraps, trims trailing blanks.
+- `search.rs`: `logical_line` (text + byte->cell map), `search(dir, from, fold, scratch, matcher)`
+  returns `(Pin, Pin)`; `find_literal` on top. Regex plugs in as the matcher (app side).
+
 ## Tests
-`src/tests.rs` (naive-model property tests, scroll/eviction/pin/snapshot/overflow/split
+`src/tests_reflow.rs` (reflow/selection/search vs naive logical-line model), `src/tests.rs` (naive-model property tests, scroll/eviction/pin/snapshot/overflow/split
 tests) and `src/page.rs` unit tests (refcounts, link map vs model, seams, from_bytes
 validation and corruption fuzz-by-loop). Run:
 `CARGO_INCREMENTAL=0 cargo test -p apoth-grid -j 2`.

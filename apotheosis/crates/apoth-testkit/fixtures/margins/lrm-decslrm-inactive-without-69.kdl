@@ -1,0 +1,10 @@
+fixture "lrm-decslrm-inactive-without-69" {
+  desc "DECSLRM is ignored unless mode 69 is set"
+  covers "T03-DECLRMM" "VTCORE-31"
+  size rows=3 cols=8
+  feed #"\e[2;5s*"#
+  grid {
+    row "*"
+  }
+  cursor row=0 col=1
+}

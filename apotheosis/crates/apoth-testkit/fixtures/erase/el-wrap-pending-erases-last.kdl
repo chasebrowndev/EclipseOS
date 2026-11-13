@@ -1,0 +1,10 @@
+fixture "el-wrap-pending-erases-last" {
+  desc "el wrap pending erases last (migrated from the apoth-term corpus)"
+  covers "T03-EL"
+  size rows=1 cols=3
+  feed #"abc\e[K"#
+  grid {
+    row "ab"
+  }
+  cursor row=0 col=2
+}
