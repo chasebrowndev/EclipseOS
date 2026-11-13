@@ -1,0 +1,76 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# T-18 §11, T-00 §3.1 exception 2, T-25 §4: the cargo-fuzz workspace. Non-shipping; the only
+# place libfuzzer's C++ runtime is built. Its own lockfile; not a member of ../Cargo.toml.
+[package]
+name = "apoth-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+apoth-vt = { path = "../crates/apoth-vt" }
+apoth-grid = { path = "../crates/apoth-grid" }
+apoth-input = { path = "../crates/apoth-input", default-features = false }
+apoth-unicode = { path = "../crates/apoth-unicode" }
+apoth-terminfo = { path = "../crates/apoth-terminfo" }
+
+[profile.release]
+debug = 1
+
+
+[[bin]]
+name = "vt_advance"
+path = "fuzz_targets/vt_advance.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vt_utf8_parity"
+path = "fuzz_targets/vt_utf8_parity.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "grid_ops"
+path = "fuzz_targets/grid_ops.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "input_paste"
+path = "fuzz_targets/input_paste.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "input_key"
+path = "fuzz_targets/input_key.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "unicode_segment"
+path = "fuzz_targets/unicode_segment.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xtgettcap"
+path = "fuzz_targets/xtgettcap.rs"
+test = false
+doc = false
+bench = false
