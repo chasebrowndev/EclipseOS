@@ -39,12 +39,19 @@ fn ty(t: &Ty) -> String {
         Ty::Regex => "regex".into(),
         Ty::Template => "template".into(),
         Ty::Bytes { min, max } => format!("bytes {min}..{max}"),
+        Ty::Argv => "argv".into(),
+        Ty::CodepointRanges => "codepoint ranges".into(),
+        Ty::Match => "match expression".into(),
+        Ty::StringSet => "set of strings".into(),
+        Ty::Map { .. } => "map".into(),
+        Ty::ThemeRef => "theme".into(),
     }
 }
 
 fn default(d: &Dv) -> String {
     match d {
         Dv::Null => "_unset_".into(),
+        Dv::Computed { .. } => "_automatic_".into(),
         Dv::Bool(b) => format!("`#{b}`"),
         Dv::Int(i) => format!("`{i}`"),
         Dv::Float(f) => format!("`{f}`"),
@@ -78,6 +85,8 @@ fn section(out: &mut String, keys: &[&Key]) {
     for k in keys {
         let reload = match k.reload {
             Reload::Live => "live",
+            Reload::NewPane => "new pane",
+            Reload::NewWindow => "new window",
             Reload::NeedsRestart => "restart",
         };
         let _ = writeln!(

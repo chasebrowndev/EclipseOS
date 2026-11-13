@@ -3388,7 +3388,13 @@ mod tests {
             | Ty::Action
             | Ty::Regex
             | Ty::Template
-            | Ty::Bytes { .. } => return None,
+            | Ty::Bytes { .. }
+            | Ty::Argv
+            | Ty::CodepointRanges
+            | Ty::Match
+            | Ty::StringSet
+            | Ty::Map { .. }
+            | Ty::ThemeRef => return None,
         })
     }
 
