@@ -68,6 +68,9 @@ fn file_of(owner: schema::Owner) -> ConfigFile {
     match owner {
         schema::Owner::Abyss => ConfigFile::Abyss,
         schema::Owner::Policy => ConfigFile::Policy,
+        // Not an abyss key (apotheosis.kdl is written by ec-settings directly).
+        // Fail closed: treat it as the file this socket may never write.
+        schema::Owner::Terminal => ConfigFile::Policy,
     }
 }
 
@@ -125,6 +128,17 @@ fn ty_json(path: &str, ty: &schema::Ty) -> (&'static str, Value) {
         Enum(v) => ("enum", json!({"values": v})),
         Color => ("color", Value::Null),
         StrList => ("string-list", Value::Null),
+        // Terminal-only types: never in abyss's table, named for completeness.
+        Font => ("font", Value::Null),
+        FontFeatures => ("font-features", Value::Null),
+        KeyChord => ("key-chord", Value::Null),
+        Duration { min_ms, max_ms } => ("duration", json!({"min-ms": min_ms, "max-ms": max_ms})),
+        Path => ("path", Value::Null),
+        Palette16 => ("palette16", Value::Null),
+        Action => ("action", Value::Null),
+        Regex => ("regex", Value::Null),
+        Template => ("template", Value::Null),
+        Bytes { min, max } => ("bytes", json!({"min": min, "max": max})),
     }
 }
 
@@ -221,6 +235,7 @@ fn target_path(cfg: &Config, owner: schema::Owner) -> Option<std::path::PathBuf>
         return Some(user.unwrap_or_else(|| match owner {
             schema::Owner::Abyss => base.join("eclipse/abyss.kdl"),
             schema::Owner::Policy => base.join("eclipse/policy.kdl"),
+            schema::Owner::Terminal => base.join("eclipse/apotheosis.kdl"),
         }));
     }
     cfg.sources
@@ -1095,6 +1110,21 @@ fn coerce(raw: &Value, ty: &schema::Ty) -> Result<kdl::KdlValue, RpcError> {
         // A list is many arguments on one node: `coerce_edit` routes it to
         // `coerce_list` and `edit::set_list`, never through here.
         StrList => return Err(RpcError::invalid_params("value must be an array of strings")),
+        // Terminal-only types are not writable over abyss's socket.
+        Font
+        | FontFeatures
+        | KeyChord
+        | Duration { .. }
+        | Path
+        | Palette16
+        | Action
+        | Regex
+        | Template
+        | Bytes { .. } => {
+            return Err(RpcError::invalid_params(
+                "value type is not writable over this socket",
+            ))
+        }
     })
 }
 
