@@ -1,0 +1,510 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! The events that cross the crate boundary. Input events carry the client stamp: the
+//! `CLOCK_MONOTONIC` read when the display fd became readable, before dispatch (T-09 §2,
+//! T-23 §1). Wayland event times are passed through for protocol use only and are never a
+//! budget input.
+//!
+//! Anything that can carry user content (keymaps aside, preedit, commits, clipboard bytes)
+//! is wrapped in [`Secret`], whose `Debug` prints a length only.
+
+use std::fmt;
+
+use crate::caps::BlurPath;
+use crate::clock::Stamp;
+use crate::gesture::Gesture;
+use crate::scale::{Scale, ScaleMode};
+use crate::transfer::Transfer;
+use crate::window::{FrameKind, WindowStates};
+
+/// A window id (stable for the life of the connection).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WindowId(pub u32);
+
+/// A seat id (the registry name of its `wl_seat`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct SeatId(pub u32);
+
+/// An output id (the registry name of its `wl_output`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OutputId(pub u32);
+
+/// Clipboard or primary selection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SelectionKind {
+    /// `wl_data_device` selection.
+    Clipboard,
+    /// `zwp_primary_selection_device_v1` selection.
+    Primary,
+}
+
+/// User content: `Debug` shows only the length so it cannot reach a log by accident.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Secret<T: AsRef<[u8]>>(pub T);
+
+impl<T: AsRef<[u8]>> fmt::Debug for Secret<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} bytes>", self.0.as_ref().len())
+    }
+}
+
+/// `wl_keyboard` keymap format.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeymapFormat {
+    /// `xkb_v1` text.
+    XkbV1,
+    /// No keymap: raw keycodes only.
+    NoKeymap,
+}
+
+/// The keymap as raw bytes, handed up to the `KeyboardBackend` (T-05 §1). Parsing is not
+/// done in this crate. A trailing NUL is trimmed.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Keymap {
+    /// Format.
+    pub format: KeymapFormat,
+    /// Keymap text bytes.
+    pub bytes: Vec<u8>,
+}
+
+impl fmt::Debug for Keymap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Keymap {{ format: {:?}, {} bytes }}",
+            self.format,
+            self.bytes.len()
+        )
+    }
+}
+
+impl Keymap {
+    /// The keymap text for `apoth_input::KbvmBackend::load_keymap_bytes` / `load_keymap`.
+    /// `None` for `NoKeymap` or non-UTF-8 bytes.
+    pub fn text(&self) -> Option<&str> {
+        if self.format != KeymapFormat::XkbV1 {
+            return None;
+        }
+        std::str::from_utf8(&self.bytes).ok()
+    }
+}
+
+/// One pointer-frame worth of scrolling. Positive is down / right (Wayland convention).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScrollFrame {
+    /// Whole lines now due, vertical.
+    pub lines_y: i32,
+    /// Whole lines now due, horizontal.
+    pub lines_x: i32,
+    /// Raw vertical pixels in this frame (0 for wheel-only sources).
+    pub px_y: f64,
+    /// Raw horizontal pixels in this frame.
+    pub px_x: f64,
+    /// `axis_stop` seen on the vertical axis: kinetic accumulation ended.
+    pub stop_y: bool,
+    /// `axis_stop` seen on the horizontal axis.
+    pub stop_x: bool,
+}
+
+impl ScrollFrame {
+    /// Nothing happened.
+    pub fn is_empty(&self) -> bool {
+        *self == ScrollFrame::default()
+    }
+}
+
+/// text-input-v3 events, applied on `done` in protocol order: delete, commit, preedit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImeEvent {
+    /// The text input gained focus on a window.
+    Enter {
+        /// Window.
+        window: WindowId,
+    },
+    /// Lost focus.
+    Leave {
+        /// Window.
+        window: WindowId,
+    },
+    /// Preedit text; `None` clears it. Cursor offsets are bytes into the text, -1 = hidden.
+    Preedit {
+        /// Text.
+        text: Option<Secret<String>>,
+        /// Cursor begin.
+        cursor_begin: i32,
+        /// Cursor end.
+        cursor_end: i32,
+    },
+    /// Text to insert.
+    Commit(Secret<String>),
+    /// Delete around the cursor, bytes.
+    DeleteSurrounding {
+        /// Before the cursor.
+        before: u32,
+        /// After the cursor.
+        after: u32,
+    },
+}
+
+/// What happened on a seat.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InputKind {
+    /// Keymap (raw bytes).
+    Keymap(Keymap),
+    /// Compositor-reported `repeat_info`. Repeat itself is timed here.
+    RepeatInfo {
+        /// Repeats per second (0 = disabled).
+        rate_hz: i32,
+        /// Delay in ms.
+        delay_ms: i32,
+    },
+    /// Keyboard focus entered a window (drives mode 1004 and modifier reset). `held` are the
+    /// keys already down, as evdev codes.
+    KeyboardEnter {
+        /// Window.
+        window: WindowId,
+        /// Keys held on entry.
+        held: Vec<u32>,
+    },
+    /// Keyboard focus left. Synthetic releases for held keys precede this event.
+    KeyboardLeave {
+        /// Window.
+        window: WindowId,
+    },
+    /// A key. `repeat` events are generated by us; `synthetic` releases come from focus loss.
+    Key {
+        /// Evdev keycode (xkb keycode is +8).
+        key: u32,
+        /// Down or up.
+        pressed: bool,
+        /// Generated by the repeat timer.
+        repeat: bool,
+        /// Generated by focus loss.
+        synthetic: bool,
+        /// Wayland event time (ms, unspecified base).
+        time_ms: u32,
+    },
+    /// `wl_keyboard.modifiers` as sent.
+    Modifiers {
+        /// Depressed mask.
+        depressed: u32,
+        /// Latched mask.
+        latched: u32,
+        /// Locked mask.
+        locked: u32,
+        /// Group.
+        group: u32,
+    },
+    /// Modifier state must be reset to none (focus change).
+    ModifiersReset,
+    /// Pointer entered.
+    PointerEnter {
+        /// Window.
+        window: WindowId,
+        /// X (logical).
+        x: f64,
+        /// Y (logical).
+        y: f64,
+    },
+    /// Pointer left.
+    PointerLeave {
+        /// Window.
+        window: WindowId,
+    },
+    /// Pointer motion.
+    PointerMotion {
+        /// X (logical).
+        x: f64,
+        /// Y (logical).
+        y: f64,
+    },
+    /// Button (evdev code).
+    PointerButton {
+        /// Button.
+        button: u32,
+        /// Down or up.
+        pressed: bool,
+        /// Wayland event time.
+        time_ms: u32,
+    },
+    /// Scroll for one pointer frame.
+    Scroll(ScrollFrame),
+    /// Touch down.
+    TouchDown {
+        /// Window.
+        window: WindowId,
+        /// Touch id.
+        id: i32,
+        /// X.
+        x: f64,
+        /// Y.
+        y: f64,
+    },
+    /// Touch motion.
+    TouchMotion {
+        /// Touch id.
+        id: i32,
+        /// X.
+        x: f64,
+        /// Y.
+        y: f64,
+    },
+    /// Touch up.
+    TouchUp {
+        /// Touch id.
+        id: i32,
+    },
+    /// The compositor cancelled touch.
+    TouchCancel,
+    /// A recognised touch gesture (tap = click, drag = scroll).
+    Gesture(Gesture),
+    /// IME.
+    Ime(ImeEvent),
+}
+
+/// An input event with its client stamp.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InputEvent {
+    /// `CLOCK_MONOTONIC` when the display fd became readable (T-23 §1).
+    pub stamp: Stamp,
+    /// Seat.
+    pub seat: SeatId,
+    /// What happened.
+    pub kind: InputKind,
+}
+
+/// A `xdg_toplevel` configure, acked and ready for layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigureEvent {
+    /// Window.
+    pub window: WindowId,
+    /// Serial that was acked.
+    pub serial: u32,
+    /// Logical size from the compositor; `None` means we choose. Authoritative otherwise.
+    pub size: Option<(u32, u32)>,
+    /// `configure_bounds`, if sent.
+    pub bounds: Option<(u32, u32)>,
+    /// States.
+    pub states: WindowStates,
+    /// Who draws the frame after this configure.
+    pub frame: FrameKind,
+    /// First configure of the window (map time).
+    pub first: bool,
+}
+
+/// `wp_presentation_feedback.presented`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PresentedEvent {
+    /// Window.
+    pub window: WindowId,
+    /// Feedback id returned by `request_presentation_feedback`.
+    pub feedback: u64,
+    /// Present time on `CLOCK_MONOTONIC`; `None` when the presentation clock is not
+    /// monotonic (LAT-PHOTON is then unavailable, never converted).
+    pub time: Option<Stamp>,
+    /// Refresh period in ns (0 = unknown).
+    pub refresh_ns: u32,
+    /// Msc counter.
+    pub seq: u64,
+    /// `wp_presentation_feedback.kind` bits.
+    pub flags: u32,
+}
+
+/// Output info.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OutputInfo {
+    /// Registry name.
+    pub id: u32,
+    /// `wl_output.name` (v4).
+    pub name: Option<String>,
+    /// `wl_output.description` (v4).
+    pub description: Option<String>,
+    /// Integer scale.
+    pub scale: i32,
+    /// Current mode in physical pixels.
+    pub mode: Option<(i32, i32)>,
+    /// Refresh in mHz.
+    pub refresh_mhz: i32,
+    /// Position in the compositor space.
+    pub position: (i32, i32),
+    /// Physical size in mm.
+    pub physical_mm: (i32, i32),
+}
+
+/// Output changes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OutputEvent {
+    /// New output (complete after its first `done`).
+    Added(OutputInfo),
+    /// Properties changed.
+    Changed(OutputInfo),
+    /// Output gone (hot-unplug). Windows that were on it get a `ScaleChanged` if it moves.
+    Removed(OutputId),
+}
+
+/// Selection ownership changes (no content).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SelectionEvent {
+    /// Someone else owns a selection; these are its MIME types.
+    Offered {
+        /// Seat.
+        seat: SeatId,
+        /// Clipboard or primary.
+        kind: SelectionKind,
+        /// MIME types offered.
+        mimes: Vec<String>,
+    },
+    /// The selection was cleared.
+    Cleared {
+        /// Seat.
+        seat: SeatId,
+        /// Clipboard or primary.
+        kind: SelectionKind,
+    },
+    /// Our own selection was replaced by another client.
+    Lost {
+        /// Seat.
+        seat: SeatId,
+        /// Clipboard or primary.
+        kind: SelectionKind,
+    },
+}
+
+/// A fatal connection error (protocol error or I/O failure). The connection is unusable.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FatalError {
+    /// Interface of the object that errored, if a protocol error.
+    pub interface: String,
+    /// Protocol error code.
+    pub code: u32,
+    /// Object id.
+    pub object_id: u32,
+    /// Compositor's message (not user content).
+    pub message: String,
+}
+
+/// Everything the source delivers.
+#[derive(Debug)]
+pub enum WlEvent {
+    /// A configure was acked.
+    Configure(ConfigureEvent),
+    /// `xdg_toplevel.close`.
+    CloseRequested(WindowId),
+    /// Scale changed (fractional or integer). Reallocate the swapchain from the buffer size.
+    ScaleChanged {
+        /// Window.
+        window: WindowId,
+        /// New scale.
+        scale: Scale,
+        /// Mode in force.
+        mode: ScaleMode,
+    },
+    /// A frame callback fired.
+    Frame {
+        /// Window.
+        window: WindowId,
+        /// Compositor time of the callback (ms, unspecified base).
+        callback_ms: u32,
+        /// Client stamp of the dispatch.
+        stamp: Stamp,
+    },
+    /// Presentation feedback.
+    Presented(PresentedEvent),
+    /// The frame was never shown.
+    PresentationDiscarded {
+        /// Window.
+        window: WindowId,
+        /// Feedback id.
+        feedback: u64,
+    },
+    /// The blur ladder resolved differently (a capability appeared or went away).
+    BlurPathChanged {
+        /// Window.
+        window: WindowId,
+        /// New path.
+        path: BlurPath,
+    },
+    /// The capability table changed (a global appeared or went away).
+    CapabilitiesChanged,
+    /// Output change.
+    Output(OutputEvent),
+    /// Input on a seat.
+    Input(InputEvent),
+    /// Selection ownership.
+    Selection(SelectionEvent),
+    /// A client asked for our selection: insert this transfer into the loop.
+    Send(Transfer),
+    /// An xdg-activation token requested with `request_activation_token` is ready.
+    ActivationToken {
+        /// Window the token was requested for.
+        window: WindowId,
+        /// The token (pass it to the launched child as `XDG_ACTIVATION_TOKEN`).
+        token: Secret<String>,
+    },
+    /// Nanosecond input time from `zwp_input_timestamps_v1` (arrives just before the input
+    /// event it belongs to). Informative latency series only, never a gate input (T-23 §1).
+    InputTimestamp {
+        /// Seat.
+        seat: SeatId,
+        /// Compositor input time in ns (the input device's clock, normally CLOCK_MONOTONIC).
+        time_ns: u64,
+        /// Client stamp of the dispatch.
+        stamp: Stamp,
+    },
+    /// The connection died.
+    Fatal(FatalError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn secret_debug_prints_length_only() {
+        let s = Secret("hunter2".to_string());
+        assert_eq!(format!("{s:?}"), "<7 bytes>");
+        let e = ImeEvent::Commit(Secret("pässword".to_string()));
+        assert!(!format!("{e:?}").contains("ssword"));
+        let p = ImeEvent::Preedit {
+            text: Some(Secret("abc".into())),
+            cursor_begin: 0,
+            cursor_end: 3,
+        };
+        assert!(!format!("{p:?}").contains("abc"));
+    }
+
+    #[test]
+    fn keymap_debug_prints_length_only() {
+        let k = Keymap {
+            format: KeymapFormat::XkbV1,
+            bytes: b"xkb_keymap { }".to_vec(),
+        };
+        let s = format!("{k:?}");
+        assert!(s.contains("14 bytes") && !s.contains("xkb_keymap"));
+    }
+
+    #[test]
+    fn keymap_text() {
+        let k = Keymap {
+            format: KeymapFormat::XkbV1,
+            bytes: b"xkb_keymap { }".to_vec(),
+        };
+        assert_eq!(k.text(), Some("xkb_keymap { }"));
+        let n = Keymap {
+            format: KeymapFormat::NoKeymap,
+            bytes: vec![],
+        };
+        assert_eq!(n.text(), None);
+    }
+
+    #[test]
+    fn empty_scroll_frame() {
+        assert!(ScrollFrame::default().is_empty());
+        assert!(
+            !ScrollFrame {
+                lines_y: 1,
+                ..Default::default()
+            }
+            .is_empty()
+        );
+    }
+}

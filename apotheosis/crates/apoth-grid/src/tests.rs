@@ -1301,3 +1301,349 @@ fn hostile_dimensions_are_clamped() {
         assert_eq!((s.rows(), s.cols()), (1, 1));
     }
 }
+
+// ---- resize (no reflow) ---------------------------------------------------------------
+
+fn abs_text(s: &Screen, abs: usize) -> String {
+    let mut r = SnapRow::default();
+    assert!(s.copy_abs_row(abs, &mut r));
+    r.cells
+        .iter()
+        .map(|c| char::from_u32(c.cp).filter(|&c| c != '\0').unwrap_or(' '))
+        .collect()
+}
+
+/// Every retained row (history first), as text.
+fn all_text(s: &Screen) -> Vec<String> {
+    (0..s.history_rows() + s.rows())
+        .map(|a| abs_text(s, a))
+        .collect()
+}
+
+fn fill_rows(s: &mut Screen) {
+    let a = CellAttrs::default();
+    for y in 0..s.rows() {
+        for x in 0..s.cols() {
+            let ch = (b'a' + ((y * 7 + x) % 26) as u8) as u32;
+            s.print_run(y, x, &[Glyph { cp: ch, width: 1 }], &a);
+        }
+    }
+}
+
+fn cfg(history: bool) -> ScreenConfig {
+    ScreenConfig {
+        history,
+        limits: Limits::default(),
+    }
+}
+
+#[test]
+fn resize_grow_rows_appends_blank_rows_and_pulls_no_history() {
+    let mut s = Screen::new(3, 4, cfg(true));
+    fill_rows(&mut s);
+    s.scroll_up(Region::full(3, 4), 1, Color::Default);
+    let before = all_text(&s);
+    assert_eq!(s.history_rows(), 1);
+    let r = s.resize(5, 4);
+    assert_eq!((r.rows, r.cols, r.cursor_row, r.pushed), (5, 4, 2, 0));
+    assert_eq!(s.history_rows(), 1, "no history pull");
+    let after = all_text(&s);
+    assert_eq!(&after[..before.len()], &before[..]);
+    assert_eq!(after[before.len()], "    ");
+    assert_eq!(after.len(), 6);
+    s.check_invariants().unwrap();
+}
+
+#[test]
+fn resize_shrink_rows_pushes_top_rows_into_scrollback_on_primary() {
+    let mut s = Screen::new(4, 4, cfg(true));
+    fill_rows(&mut s);
+    let before = all_text(&s);
+    let r = s.resize(2, 4);
+    assert_eq!((r.rows, r.cursor_row, r.pushed), (2, 1, 2));
+    assert_eq!(s.history_rows(), 2);
+    assert_eq!(
+        all_text(&s),
+        before,
+        "nothing lost, top rows are history now"
+    );
+    s.check_invariants().unwrap();
+}
+
+#[test]
+fn resize_shrink_rows_drops_rows_below_the_cursor_first() {
+    let mut s = Screen::new(4, 4, cfg(true));
+    fill_rows(&mut s);
+    let before = all_text(&s);
+    // Cursor on row 1: two rows below it go, nothing is pushed.
+    let r = s.resize_keeping(2, 4, 1);
+    assert_eq!((r.cursor_row, r.pushed), (1, 0));
+    assert_eq!(s.history_rows(), 0);
+    assert_eq!(all_text(&s), before[..2].to_vec());
+    // Cursor on row 2 of 4, shrink to 2: one row dropped below, one pushed.
+    let mut s = Screen::new(4, 4, cfg(true));
+    fill_rows(&mut s);
+    let r = s.resize_keeping(2, 4, 2);
+    assert_eq!((r.cursor_row, r.pushed), (1, 1));
+    assert_eq!(all_text(&s), before[..3].to_vec());
+    assert_eq!(s.history_rows(), 1);
+    s.check_invariants().unwrap();
+}
+
+#[test]
+fn resize_alt_screen_drops_instead_of_scrollback() {
+    let mut s = Screen::new(4, 4, cfg(false));
+    fill_rows(&mut s);
+    let before = all_text(&s);
+    let r = s.resize(2, 4);
+    assert_eq!((r.pushed, r.cursor_row), (0, 1));
+    assert_eq!(s.history_rows(), 0, "alt has no history");
+    assert_eq!(all_text(&s), before[2..].to_vec());
+    let r = s.resize(5, 6);
+    assert_eq!(r.rows, 5);
+    assert_eq!(s.history_rows(), 0);
+    assert_eq!(abs_text(&s, 0), format!("{:<6}", before[2]));
+    s.check_invariants().unwrap();
+}
+
+#[test]
+fn resize_truncates_and_pads_columns() {
+    let mut s = Screen::new(3, 6, cfg(true));
+    fill_rows(&mut s);
+    let before = all_text(&s);
+    s.set_row_flag(1, flags::WRAPPED, true);
+    s.set_row_block(1, 7);
+    s.resize(3, 3);
+    let narrow = all_text(&s);
+    for (n, b) in narrow.iter().zip(&before) {
+        assert_eq!(n, &b[..3]);
+    }
+    assert_ne!(s.row_flags(1) & flags::WRAPPED, 0);
+    assert_eq!(s.row_block(1), 7);
+    s.resize(3, 8);
+    for (n, b) in all_text(&s).iter().zip(&before) {
+        assert_eq!(n, &format!("{:<8}", &b[..3]));
+    }
+    assert_eq!(s.row_block(1), 7);
+    s.check_invariants().unwrap();
+}
+
+#[test]
+fn resize_round_trip_when_growing_first() {
+    let mut s = Screen::new(5, 7, cfg(true));
+    fill_rows(&mut s);
+    s.scroll_up(Region::full(5, 7), 2, Color::Default);
+    let before = all_text(&s);
+    s.resize(9, 12);
+    s.resize(5, 7);
+    // Growing appended blanks at the bottom; shrinking with the cursor on the bottom row
+    // pushes them... the blank rows are now history, the original rows are intact.
+    let after = all_text(&s);
+    assert_eq!(&after[..before.len()], &before[..]);
+    s.check_invariants().unwrap();
+    // Cursor-aware shrink gives the exact original back.
+    let mut s = Screen::new(5, 7, cfg(true));
+    fill_rows(&mut s);
+    let before = all_text(&s);
+    s.resize(9, 12);
+    s.resize_keeping(5, 7, 4);
+    assert_eq!(all_text(&s), before);
+}
+
+#[test]
+fn resize_wide_char_at_the_new_right_edge_is_blanked() {
+    let a = CellAttrs::default();
+    let mut s = Screen::new(2, 6, cfg(true));
+    s.print_run(0, 3, &[wg(0x4E2D)], &a); // cols 3..=4
+    s.print_run(1, 4, &[wg(0x4E2D)], &a); // cols 4..=5
+    s.resize(2, 4);
+    assert_eq!(s.cell(0, 3), Cell::EMPTY, "head cut off from its tail");
+    s.check_invariants().unwrap();
+    // A wide char that fits whole survives.
+    let mut s = Screen::new(1, 6, cfg(true));
+    s.print_run(0, 2, &[wg(0x4E2D)], &a);
+    s.resize(1, 4);
+    assert_eq!(s.cell(0, 2).wide(), Wide::Wide);
+    assert_eq!(s.cell(0, 3).wide(), Wide::SpacerTail);
+    s.resize(1, 3);
+    assert_eq!(s.cell(0, 2), Cell::EMPTY);
+    assert_eq!(s.cell(0, 1), Cell::EMPTY);
+    s.check_invariants().unwrap();
+}
+
+#[test]
+fn resize_pins_survive_and_dropped_rows_become_garbage() {
+    let mut s = Screen::new(4, 6, cfg(true));
+    fill_rows(&mut s);
+    s.scroll_up(Region::full(4, 6), 2, Color::Default);
+    let texts = all_text(&s);
+    let hist = s.history_rows();
+    let a = s.track_abs(0, 5, PinKind::Mark).unwrap();
+    let b = s.track_active(1, 2, PinKind::Cursor).unwrap();
+    let c = s.track_active(3, 0, PinKind::SavedCursor).unwrap();
+    // Shrink with the cursor on row 1: row 3 (pin c) is dropped.
+    s.resize_keeping(2, 3, 1);
+    assert_eq!(s.pin_pos(a), Some((0, 2)), "col clamped to the new width");
+    assert_eq!(s.pin_pos(b), Some((hist + 1, 2)));
+    assert_eq!(abs_text(&s, hist + 1), texts[hist + 1][..3]);
+    assert_eq!(s.pin_state(c), Some(PinState::Garbage));
+    let mut g = Vec::new();
+    s.take_garbage(&mut g);
+    assert_eq!(g, vec![(c, PinKind::SavedCursor)]);
+    s.check_invariants().unwrap();
+    // Row-only fast path keeps pins as well.
+    s.resize(6, 3);
+    assert_eq!(s.pin_pos(b), Some((hist + 1, 2)));
+    s.check_invariants().unwrap();
+}
+
+#[test]
+fn resize_alt_pin_on_discarded_top_row_becomes_garbage() {
+    let mut s = Screen::new(4, 4, cfg(false));
+    let top = s.track_active(0, 0, PinKind::Mark).unwrap();
+    let keep = s.track_active(3, 1, PinKind::Mark).unwrap();
+    s.resize(2, 4);
+    assert_eq!(s.pin_state(top), Some(PinState::Garbage));
+    assert_eq!(s.pin_pos(keep), Some((1, 1)));
+}
+
+#[test]
+fn resize_marks_everything_dirty_and_clamps_to_max_cells() {
+    let mut s = Screen::new(3, 4, cfg(true));
+    let mut snap = FrameSnapshot::new();
+    s.snapshot_dirty(&mut snap);
+    assert!(matches!(s.snapshot_dirty(&mut snap), Damage::None));
+    s.resize(3, 5);
+    assert!(matches!(s.snapshot_dirty(&mut snap), Damage::Full));
+    s.resize(4, 5);
+    assert!(matches!(s.snapshot_dirty(&mut snap), Damage::Full));
+    let r = s.resize(65_535, 65_535);
+    assert!(r.rows * r.cols <= MAX_CELLS && s.rows() * s.cols() <= MAX_CELLS);
+    assert_eq!(s.cols(), 65_535);
+    let r = s.resize(0, 0);
+    assert_eq!((r.rows, r.cols), (1, 1));
+    s.check_invariants().unwrap();
+}
+
+#[test]
+fn resize_keeps_styles_links_and_clusters() {
+    let mut s = Screen::new(3, 6, cfg(true));
+    let st = style(3);
+    let attrs = CellAttrs {
+        style: st,
+        link: Some(("x", "https://b.example/")),
+        ..CellAttrs::default()
+    };
+    s.print_cluster(0, 1, &[0x65, 0x301], 1, &attrs);
+    s.print_run(1, 0, &[Glyph { cp: 66, width: 1 }], &attrs);
+    s.resize(3, 4);
+    s.resize(5, 9);
+    let mut r = SnapRow::default();
+    s.copy_row(0, &mut r);
+    assert_eq!(r.cells[1].cp, 0x65);
+    assert_eq!(r.cluster(&r.cells[1]), &[0x65, 0x301]);
+    assert_eq!(r.cells[1].style, st);
+    assert!(r.cells[1].link);
+    s.check_invariants().unwrap();
+}
+
+#[test]
+fn resize_random_sequences_match_a_naive_model() {
+    // Model: all retained rows as Vec<Vec<char>> (history first), blanks are ' '.
+    for seed in 1..=40u64 {
+        let mut rng = Rng::new(seed);
+        for history in [true, false] {
+            let mut s = Screen::with_page_cap(4, 5, cfg(history), Some(3));
+            let mut model: Vec<Vec<char>> = vec![vec![' '; s.cols()]; s.rows()];
+            let mut cols = s.cols();
+            let mut rows = s.rows();
+            let mut pins: Vec<(PinId, usize, usize)> = Vec::new(); // id, abs row, col
+            for _ in 0..60 {
+                match rng.below(5) {
+                    0 | 1 => {
+                        let (y, x) = (rng.below(rows), rng.below(cols));
+                        let ch = char::from(b'a' + rng.below(26) as u8);
+                        s.print_run(
+                            y,
+                            x,
+                            &[Glyph {
+                                cp: ch as u32,
+                                width: 1,
+                            }],
+                            &CellAttrs::default(),
+                        );
+                        let base = model.len() - rows;
+                        model[base + y][x] = ch;
+                    }
+                    2 => {
+                        if history {
+                            let n = (1 + rng.below(2)).min(rows);
+                            s.scroll_up(Region::full(rows, cols), n, Color::Default);
+                            for _ in 0..n {
+                                model.push(vec![' '; cols]);
+                            }
+                        }
+                    }
+                    3 => {
+                        let (y, x) = (rng.below(rows), rng.below(cols));
+                        let base = model.len() - rows;
+                        if let Some(id) = s.track_active(y, x, PinKind::Mark) {
+                            pins.push((id, base + y, x));
+                        }
+                    }
+                    _ => {
+                        let nr = 1 + rng.below(8);
+                        let nc = 1 + rng.below(9);
+                        let cy = rng.below(rows);
+                        let r = s.resize_keeping(nr, nc, cy);
+                        assert_eq!((r.rows, r.cols), (nr, nc));
+                        let d = rows.saturating_sub(nr);
+                        let trim = d.min(rows - 1 - cy);
+                        let drop_top = d - trim;
+                        let keep_start = if history {
+                            0
+                        } else {
+                            model.len() - rows + drop_top
+                        };
+                        let keep_end = model.len() - trim;
+                        let mut kept: Vec<Vec<char>> = model[keep_start..keep_end].to_vec();
+                        for row in &mut kept {
+                            row.resize(nc, ' ');
+                        }
+                        let append = nr.saturating_sub(rows);
+                        for _ in 0..append {
+                            kept.push(vec![' '; nc]);
+                        }
+                        pins.retain_mut(|(id, abs, col)| {
+                            if *abs < keep_start || *abs >= keep_end {
+                                assert_eq!(s.pin_state(*id), Some(PinState::Garbage));
+                                false
+                            } else {
+                                *abs -= keep_start;
+                                *col = (*col).min(nc - 1);
+                                true
+                            }
+                        });
+                        model = kept;
+                        rows = nr;
+                        cols = nc;
+                        assert_eq!(r.cursor_row, cy - drop_top);
+                    }
+                }
+                assert_eq!(s.rows(), rows);
+                assert_eq!(
+                    all_text(&s),
+                    model
+                        .iter()
+                        .map(|r| r.iter().collect::<String>())
+                        .collect::<Vec<_>>(),
+                    "seed {seed} history {history}"
+                );
+                for (id, abs, col) in &pins {
+                    assert_eq!(s.pin_pos(*id), Some((*abs, *col)), "seed {seed}");
+                }
+                s.check_invariants().unwrap();
+            }
+        }
+    }
+}

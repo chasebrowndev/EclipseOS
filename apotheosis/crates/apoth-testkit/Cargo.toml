@@ -8,5 +8,15 @@ license = "AGPL-3.0-only"
 repository.workspace = true
 publish = false
 
+[dependencies]
+apoth-term = { workspace = true }
+apoth-grid = { workspace = true }
+
 [lints]
 workspace = true
+
+[dev-dependencies]
+vte = "0.15"
+# Differential oracle (T-25 section 2), Apache-2.0, pure Rust (no build script of its own).
+# default-features = false drops serde; the crate's own deps are listed in the report.
+alacritty_terminal = { version = "0.26", default-features = false }

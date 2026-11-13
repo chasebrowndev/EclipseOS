@@ -1,0 +1,10 @@
+fixture "esc-ind" {
+  desc "esc ind (migrated from the apoth-term corpus)"
+  covers "T03-IND-NEL-RI"
+  size rows=3 cols=3
+  feed #"a\eDb"#
+  grid {
+    row "a"
+    row " b"
+  }
+}

@@ -1,0 +1,11 @@
+fixture "wide-hangul-jamo-cluster" {
+  desc "L+V+T jamo form one cluster"
+  covers "T03-GRAPHEME" "UNICODE-07"
+  review "conjoining jamo cluster width (2) assumed from the grapheme-cluster rule"
+  size rows=2 cols=10
+  feed #"각X"#
+  grid {
+    row "각X"
+  }
+  cursor row=0 col=3
+}

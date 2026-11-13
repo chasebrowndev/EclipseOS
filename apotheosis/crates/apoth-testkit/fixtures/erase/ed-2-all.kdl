@@ -1,0 +1,8 @@
+fixture "ed-2-all" {
+  desc "ed 2 all (migrated from the apoth-term corpus)"
+  covers "T03-ED"
+  size rows=3 cols=4
+  feed #"aaaa\r\nbbbb\r\ncccc\e[2;3H\e[2J"#
+  grid
+  cursor row=1 col=2
+}

@@ -1,0 +1,11 @@
+fixture "alt-47-no-clear-no-cursor-save" {
+  desc "alt 47 no clear no cursor save (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=5
+  feed #"ab\e[?47hX\e[?47l"#
+  grid {
+    row "ab"
+  }
+  cursor row=0 col=3
+  alt #false
+}

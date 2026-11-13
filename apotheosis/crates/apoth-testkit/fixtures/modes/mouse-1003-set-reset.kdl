@@ -1,0 +1,14 @@
+fixture "mouse-1003-set-reset" {
+  desc "mode 1003 (any-event tracking) defaults reset, sets and resets"
+  covers "T03-MOUSE"
+  size rows=2 cols=4
+  checkpoint "default" {
+    mode "?1003" 2
+  }
+  feed #"\e[?1003h"#
+  checkpoint "set" {
+    mode "?1003" 1
+  }
+  feed #"\e[?1003l"#
+  mode "?1003" 2
+}

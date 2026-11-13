@@ -10,3 +10,18 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+apoth-config.workspace = true
+apoth-font.workspace = true
+apoth-grid.workspace = true
+apoth-input.workspace = true
+apoth-pty.workspace = true
+apoth-render.workspace = true
+apoth-term.workspace = true
+apoth-wl.workspace = true
+calloop = "0.14"
+rustix = { version = "1", features = ["std", "event", "pipe", "process"] }
+tracing = "0.1"
+tracing-journald = "0.3"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "registry"] }

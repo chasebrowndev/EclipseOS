@@ -1,0 +1,13 @@
+fixture "scr-decstbm-reset" {
+  desc "scr decstbm reset (migrated from the apoth-term corpus)"
+  covers "T03-DECSTBM"
+  size rows=4 cols=3
+  feed #"\e[2;3r\e[r"#
+  feed #"a\r\nb\r\nc\r\nd\r\ne"#
+  grid {
+    row "b"
+    row "c"
+    row "d"
+    row "e"
+  }
+}

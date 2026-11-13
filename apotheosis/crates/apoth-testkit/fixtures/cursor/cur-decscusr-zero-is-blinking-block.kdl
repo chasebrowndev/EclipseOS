@@ -1,0 +1,7 @@
+fixture "cur-decscusr-zero-is-blinking-block" {
+  desc "cur decscusr zero is blinking block (migrated from the apoth-term corpus)"
+  covers "T03-DECSCUSR"
+  size rows=2 cols=4
+  feed #"\e[4 q\e[0 q"#
+  cursor row=0 col=0 shape=1
+}

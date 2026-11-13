@@ -1,0 +1,13 @@
+fixture "cursor-cud-clamps-bottom" {
+  covers "T03-CUX"
+  size rows=5 cols=10
+  feed #"\e[99B*"#
+  grid {
+    row ""
+    row ""
+    row ""
+    row ""
+    row "*"
+  }
+  cursor row=4 col=1
+}
