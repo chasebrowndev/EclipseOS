@@ -3251,6 +3251,10 @@ pub fn sidebar<'a, Message: 'a>(
     sidebar_at(Density::Regular, false, items, footer)
 }
 
+/// The widget id of the sidebar's scrolling nav, for apps that scroll the
+/// active entry into view.
+pub const SIDEBAR_NAV: &str = "ec-sidebar-nav";
+
 /// [`sidebar`] at a [`Density`]: [`space::SIDEBAR_W`] regular,
 /// [`space::SIDEBAR_W_COMPACT`] compact. Build its items with
 /// [`nav_item_at`] at the same density. `blur` is whether the compositor's
@@ -3288,15 +3292,24 @@ pub fn sidebar_at<'a, Message: 'a>(
         );
     }
 
-    let rail = container(
-        column![nav, Space::new().height(Length::Fill), foot]
-            .spacing(space::BLOCK)
-            .width(Length::Fill),
-    )
-    .width(width)
-    .height(Length::Fill)
-    .padding([space::PANE_Y, pad_x])
-    .style(theme::window_pane(blur));
+    // The nav scrolls when the tree is taller than the window; the footer
+    // stays put under it. A thin rail like the content column's.
+    let nav = iced::widget::scrollable(nav)
+        .id(SIDEBAR_NAV)
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            iced::widget::scrollable::Scrollbar::new()
+                .width(space::SCROLLBAR_W)
+                .scroller_width(space::SCROLLBAR_W)
+                .margin(3),
+        ))
+        .style(theme::eclipse_scrollable)
+        .width(Length::Fill)
+        .height(Length::Fill);
+    let rail = container(column![nav, foot].spacing(space::BLOCK).width(Length::Fill))
+        .width(width)
+        .height(Length::Fill)
+        .padding([space::PANE_Y, pad_x])
+        .style(theme::window_pane(blur));
     // The one line between the rail and the content: both are the same
     // window material ([`theme::window_pane`]), so the edge is a hairline,
     // not a slab meeting a slab.
