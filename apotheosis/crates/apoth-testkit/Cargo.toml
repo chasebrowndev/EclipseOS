@@ -11,6 +11,7 @@ publish = false
 [dependencies]
 apoth-term = { workspace = true }
 apoth-grid = { workspace = true }
+apoth-vt = { workspace = true }
 # Peers for the T-23 §2 relative targets (`perf::peers`) and the differential oracles
 # (T-25 section 2). Apache-2.0, pure Rust. They are run, never read (T-00 §3.4). This crate
 # is test infrastructure and ships in no package. default-features = false drops serde.

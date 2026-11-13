@@ -57,4 +57,6 @@ pub use tabs::TabStops;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
+mod tests_fast;
+#[cfg(test)]
 mod tests_reflow;

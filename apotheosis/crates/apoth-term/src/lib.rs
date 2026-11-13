@@ -29,6 +29,8 @@ mod machine;
 pub mod modes;
 mod osc;
 mod sgr;
+#[cfg(test)]
+mod tests_batch;
 
 use std::sync::Arc;
 use std::time::Instant;

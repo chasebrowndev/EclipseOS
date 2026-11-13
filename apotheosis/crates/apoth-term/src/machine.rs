@@ -152,6 +152,9 @@ pub(crate) struct Machine {
     pub now: Option<Instant>,
     pub strm: StrMode,
     pub sbuf: Vec<u8>,
+    /// Tests: print one character at a time, bypassing the batching path.
+    #[cfg(test)]
+    pub no_batch: bool,
 }
 
 pub(crate) fn mk_attrs<'a>(
@@ -248,6 +251,8 @@ impl Machine {
             now: None,
             strm: StrMode::None,
             sbuf: Vec::new(),
+            #[cfg(test)]
+            no_batch: false,
             cfg,
         };
         m.mirror.store(m.published);
@@ -477,12 +482,125 @@ impl Machine {
                     continue;
                 }
             }
-            let Some(c) = text[i..].chars().next() else {
+            if text[i..].is_empty() {
                 break;
+            }
+            i += self.print_chars(text, i);
+        }
+    }
+
+    /// Print the characters of `text[i..]` the general way (segmenter, width, wrap), batching
+    /// the cells that land on one row into a single grid call. Returns the bytes consumed (at
+    /// least one character). Same result as calling [`Machine::print_char`] for each
+    /// character; stops early only to let the ASCII fast path take a long run.
+    fn print_chars(&mut self, text: &str, i: usize) -> usize {
+        const BATCH: usize = 32;
+        let rest = &text[i..];
+        let plain = self.autowrap
+            && !self.irm
+            && self.ss.is_none()
+            && self.charsets[self.gl] == Charset::Ascii;
+        #[cfg(test)]
+        let plain = plain && !self.no_batch;
+        if !plain {
+            let Some(c) = rest.chars().next() else {
+                return 0;
             };
             self.print_char(c);
-            i += c.len_utf8();
+            return c.len_utf8();
         }
+        let method = self.width_method();
+        let lim = self.limit();
+        let mut buf = [Glyph { cp: 0, width: 1 }; BATCH];
+        let (mut n, mut bx, mut x_first) = (0usize, self.x, self.x);
+        let mut tail = ('\0', 0u8);
+        let mut used = 0;
+        for (k, ch) in rest.char_indices() {
+            let last_ascii = if n > 0 {
+                tail.0.is_ascii()
+            } else {
+                self.last_ascii
+            };
+            if (0x20..0x7f).contains(&(ch as u32))
+                && (!self.seg.in_cluster() || last_ascii)
+                && rest.as_bytes()[k..]
+                    .iter()
+                    .take(4)
+                    .filter(|b| (0x20..0x7f).contains(*b))
+                    .count()
+                    == 4
+            {
+                break;
+            }
+            used = k + ch.len_utf8();
+            let mut new_cluster = self.seg.push(ch);
+            if !new_cluster
+                && method == WidthMethod::Wcswidth
+                && self.cfg.widths.scalar_width(ch) > 0
+            {
+                self.seg.reset();
+                new_cluster = self.seg.push(ch);
+            }
+            if !new_cluster {
+                self.flush_glyphs(&buf[..n], x_first, tail);
+                n = 0;
+                self.extend_cluster(ch);
+                (bx, x_first) = (self.x, self.x);
+                if self.wrap {
+                    break;
+                }
+                continue;
+            }
+            self.measure.reset();
+            self.measure.push(&self.cfg.widths, ch);
+            let w = self.measure.width(method).min(2) as usize;
+            if w == 0 {
+                continue;
+            }
+            let free = n > 0 || !self.wrap;
+            if free && n < BATCH && bx + w <= lim {
+                buf[n] = Glyph {
+                    cp: ch as u32,
+                    width: w as u8,
+                };
+                n += 1;
+                bx += w;
+                tail = (ch, w as u8);
+                continue;
+            }
+            self.flush_glyphs(&buf[..n], x_first, tail);
+            n = 0;
+            self.place_glyph(ch, w, false);
+            (bx, x_first) = (self.x, self.x);
+            if self.wrap {
+                break;
+            }
+        }
+        self.flush_glyphs(&buf[..n], x_first, tail);
+        if used == 0 {
+            // Never stall: the character the caller chose the general path for is printed.
+            if let Some(c) = rest.chars().next() {
+                self.print_char(c);
+                return c.len_utf8();
+            }
+        }
+        used
+    }
+
+    /// Store a batch of pre-measured glyphs that fit the current row from column `x`, and
+    /// update the cursor and last-character state as printing them one by one would.
+    fn flush_glyphs(&mut self, glyphs: &[Glyph], x: usize, tail: (char, u8)) {
+        if glyphs.is_empty() {
+            return;
+        }
+        let (c, y) = (self.cur, self.y);
+        let attrs = mk_attrs(self.pen, &self.link, self.protected, self.semantic);
+        self.panes[c].grid.print_run(y, x, glyphs, &attrs);
+        let total: usize = glyphs.iter().map(|g| usize::from(g.width)).sum();
+        self.last = Some((y, x + total - usize::from(tail.1), tail.1));
+        self.last_char = Some(tail.0);
+        self.last_ascii = tail.0.is_ascii();
+        self.advance(total);
     }
 
     fn print_ascii(&mut self, mut s: &[u8]) {
@@ -491,14 +609,10 @@ impl Machine {
                 return;
             }
             let lim = self.limit();
-            let n = s.len().min(lim - self.x).min(256);
-            let mut g = [Glyph { cp: 0, width: 1 }; 256];
-            for (d, &b) in g.iter_mut().zip(&s[..n]) {
-                d.cp = u32::from(b);
-            }
+            let n = s.len().min(lim - self.x);
             let (c, y, x) = (self.cur, self.y, self.x);
             let attrs = mk_attrs(self.pen, &self.link, self.protected, self.semantic);
-            self.panes[c].grid.print_run(y, x, &g[..n], &attrs);
+            self.panes[c].grid.print_ascii(y, x, &s[..n], &attrs);
             self.last = Some((y, x + n - 1, 1));
             self.last_char = Some(char::from(s[n - 1]));
             self.advance(n);
@@ -544,6 +658,11 @@ impl Machine {
         if w == 0 {
             return;
         }
+        self.place_glyph(ch, w, mapped);
+    }
+
+    /// Print one measured glyph at the cursor: resolve a pending wrap, make room, store it.
+    fn place_glyph(&mut self, ch: char, w: usize, mapped: bool) {
         if !self.pre_print(w) {
             self.last = None;
             return;
@@ -576,7 +695,7 @@ impl Machine {
 
     fn extend_cluster(&mut self, ch: char) {
         if self.last_ascii {
-            // The ASCII fast path does not feed the measure; seed it with the base.
+            // The fast paths do not feed the measure; seed it with the base.
             if let Some(base) = self.last_char {
                 self.measure.reset();
                 self.measure.push(&self.cfg.widths, base);

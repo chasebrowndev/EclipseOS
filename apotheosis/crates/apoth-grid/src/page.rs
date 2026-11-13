@@ -269,11 +269,18 @@ impl Layout {
     }
 }
 
+fn scalar_wide_bits(w: Wide) -> u64 {
+    Cell::EMPTY.with_wide(w).0
+}
+
 /// A page. See the module documentation.
 pub struct Page {
     buf: Vec<u8>,
     spec: PageSpec,
     lay: Layout,
+    /// The style interned last and its id: a repeat hit skips the hash probe. Cleared when
+    /// dead items are reclaimed (ids may then be reused).
+    last_style: Option<(Style, u16)>,
 }
 
 impl core::fmt::Debug for Page {
@@ -287,11 +294,17 @@ impl core::fmt::Debug for Page {
 }
 
 impl Page {
-    /// A fresh page over `buf`, which must be zeroed and `spec.total_bytes()` long.
+    /// A fresh page over `buf`, which must be `spec.total_bytes()` long and zeroed (or come from
+    /// [`Page::recycle`]: only the cell area may hold old bytes).
     pub fn with_buffer(spec: PageSpec, serial: u64, buf: Vec<u8>) -> Page {
         let lay = Layout::of(&spec);
         assert_eq!(buf.len(), lay.total, "page buffer has the wrong length");
-        let mut p = Page { buf, spec, lay };
+        let mut p = Page {
+            buf,
+            spec,
+            lay,
+            last_style: None,
+        };
         p.wr32(0, MAGIC);
         p.wr64(H_SERIAL, serial);
         p.wr16(H_COLS, spec.cols as u16);
@@ -345,7 +358,12 @@ impl Page {
         if lay.total != buf.len() {
             return Err(PageError::Corrupt);
         }
-        let mut page = Page { buf, spec, lay };
+        let mut page = Page {
+            buf,
+            spec,
+            lay,
+            last_style: None,
+        };
         page.validate()?;
         // The hash indexes are derived data; never trust them from outside (a full or
         // cyclic probe table would hang a lookup).
@@ -420,6 +438,16 @@ impl Page {
 
     /// Give up the allocation (for pooling).
     pub fn into_bytes(self) -> Vec<u8> {
+        self.buf
+    }
+
+    /// Give up the allocation for reuse by [`Page::with_buffer`]: everything but the cells is
+    /// zeroed; [`Page::push_row`] clears a row's cells when it opens the row, so the (large)
+    /// cell area is cleared only as far as it is used again.
+    pub fn recycle(mut self) -> Vec<u8> {
+        let (cells, styles) = (self.lay.cells, self.lay.styles);
+        self.buf[..cells].fill(0);
+        self.buf[styles..].fill(0);
         self.buf
     }
 
@@ -522,6 +550,7 @@ impl Page {
         }
         let rh = self.rh(used);
         let off = self.lay.cells + used * self.spec.cols * 8;
+        self.buf[off..off + self.spec.cols * 8].fill(0);
         self.wr32(rh, off as u32);
         self.wr16(rh + 4, 0);
         self.wr16(rh + 6, 0);
@@ -590,6 +619,15 @@ impl Page {
     pub fn touch(&mut self, r: usize, seq: u64) {
         self.set_row_seq(r, seq);
         self.or_row_flags(r, rf::DIRTY);
+    }
+
+    /// Stamp `seq` on the rows at positions `a..=b` (no dirty flag).
+    pub fn set_row_seqs(&mut self, a: usize, b: usize, seq: u64) {
+        let (s, e) = (self.rh(a), self.rh(b + 1));
+        let bytes = seq.to_le_bytes();
+        for row in self.buf[s..e].chunks_exact_mut(ROW_HEADER_BYTES) {
+            row[16..24].copy_from_slice(&bytes);
+        }
     }
 
     /// Rotate the row handles `a..=b` left by `k` (content moves up). Cells do not move.
@@ -681,6 +719,121 @@ impl Page {
         }
     }
 
+    /// Store `n` width-1 scalars (`cps`, clonable) with the template `proto` (style, protection and
+    /// semantic bits, no link) into `(r, c0..)`. The caller has checked that the run fits the
+    /// row and that every glyph has width 1; the style references (one per glyph) are acquired
+    /// here. Cells that hold nothing needing release or repair take a single word store; the
+    /// rest go through [`Page::put`].
+    pub fn put_narrow_run<I>(&mut self, r: usize, c0: usize, proto: Cell, n: usize, cps: I)
+    where
+        I: Iterator<Item = u32> + Clone,
+    {
+        if n == 0 {
+            return;
+        }
+        self.style_acquire(proto.style_id(), n as u32);
+        let base = self.cell_off(r) + c0 * 8;
+        let cells = &mut self.buf[base..base + n * 8];
+        let mut seen = 0u64;
+        for chunk in cells.chunks_exact(8) {
+            let mut raw = [0u8; 8];
+            raw.copy_from_slice(chunk);
+            seen |= u64::from_le_bytes(raw);
+        }
+        let scalar = proto.with_tag(Tag::Scalar).0;
+        let valid = |cp: u32| {
+            u64::from(if char::from_u32(cp).is_some() {
+                cp
+            } else {
+                0xFFFD
+            })
+        };
+        if seen & Cell::NOT_PLAIN == 0 {
+            for (chunk, cp) in cells.chunks_exact_mut(8).zip(cps) {
+                chunk.copy_from_slice(&(scalar | valid(cp)).to_le_bytes());
+            }
+        } else {
+            for (i, cp) in cps.enumerate() {
+                let c = Cell(scalar | valid(cp));
+                self.put(r, c0 + i, c, None);
+            }
+        }
+        let mut f = rf::DIRTY;
+        if proto.style_id() != 0 {
+            f |= rf::HAS_STYLE;
+        }
+        self.or_row_flags(r, f);
+        if c0 + n > self.row_high_water(r) {
+            self.set_high_water(r, c0 + n);
+        }
+    }
+
+    /// As [`Page::put_narrow_run`] for glyphs of one or two columns, `(scalar, width)` pairs
+    /// covering exactly `cells` columns from `c0`; a width-2 glyph stores its wide cell and a
+    /// spacer tail.
+    pub fn put_glyph_run<I>(&mut self, r: usize, c0: usize, proto: Cell, cells: usize, glyphs: I)
+    where
+        I: Iterator<Item = (u32, u8)> + Clone,
+    {
+        if cells == 0 {
+            return;
+        }
+        self.style_acquire(proto.style_id(), cells as u32);
+        let base = self.cell_off(r) + c0 * 8;
+        let span = &mut self.buf[base..base + cells * 8];
+        let mut seen = 0u64;
+        for chunk in span.chunks_exact(8) {
+            let mut raw = [0u8; 8];
+            raw.copy_from_slice(chunk);
+            seen |= u64::from_le_bytes(raw);
+        }
+        let scalar = proto.with_tag(Tag::Scalar).0;
+        let valid = |cp: u32| {
+            u64::from(if char::from_u32(cp).is_some() {
+                cp
+            } else {
+                0xFFFD
+            })
+        };
+        let wide = scalar_wide_bits(Wide::Wide);
+        let tail = proto.with_wide(Wide::SpacerTail).0.to_le_bytes();
+        if seen & Cell::NOT_PLAIN == 0 {
+            let mut k = 0;
+            for (cp, w) in glyphs {
+                if w >= 2 {
+                    span[k * 8..k * 8 + 8]
+                        .copy_from_slice(&(scalar | wide | valid(cp)).to_le_bytes());
+                    span[k * 8 + 8..k * 8 + 16].copy_from_slice(&tail);
+                    k += 2;
+                } else {
+                    span[k * 8..k * 8 + 8].copy_from_slice(&(scalar | valid(cp)).to_le_bytes());
+                    k += 1;
+                }
+            }
+        } else {
+            let mut k = 0;
+            for (cp, w) in glyphs {
+                if w >= 2 {
+                    let c = Cell(scalar | wide | valid(cp));
+                    self.put(r, c0 + k, c, None);
+                    self.put(r, c0 + k + 1, proto.with_wide(Wide::SpacerTail), None);
+                    k += 2;
+                } else {
+                    self.put(r, c0 + k, Cell(scalar | valid(cp)), None);
+                    k += 1;
+                }
+            }
+        }
+        let mut f = rf::DIRTY;
+        if proto.style_id() != 0 {
+            f |= rf::HAS_STYLE;
+        }
+        self.or_row_flags(r, f);
+        if c0 + cells > self.row_high_water(r) {
+            self.set_high_water(r, c0 + cells);
+        }
+    }
+
     /// Fix the wide characters cut by the boundaries of an erase of `x0..x1` (O(1)).
     pub fn repair_range(&mut self, r: usize, x0: usize, x1: usize) {
         let cols = self.spec.cols;
@@ -699,13 +852,26 @@ impl Page {
         if x0 >= x1 {
             return;
         }
-        let heavy = self.row_flags(r) & rf::HEAVY != 0;
+        let mut heavy = self.row_flags(r) & rf::HEAVY != 0;
         let base = self.cell_off(r);
-        for c in x0..x1 {
-            if heavy {
+        if heavy {
+            // A flagged row often has nothing to release in this span: check in one pass.
+            let mut seen = 0u64;
+            for chunk in self.buf[base + x0 * 8..base + x1 * 8].chunks_exact(8) {
+                let mut raw = [0u8; 8];
+                raw.copy_from_slice(chunk);
+                seen |= u64::from_le_bytes(raw);
+            }
+            heavy = seen & Cell::NOT_PLAIN != 0;
+        }
+        if heavy {
+            for c in x0..x1 {
                 self.release_cell(r, c);
             }
-            self.wr64(base + c * 8, fill.0);
+        }
+        let bytes = fill.0.to_le_bytes();
+        for chunk in self.buf[base + x0 * 8..base + x1 * 8].chunks_exact_mut(8) {
+            chunk.copy_from_slice(&bytes);
         }
         if fill != Cell::EMPTY && x1 > self.row_high_water(r) {
             self.set_high_water(r, x1);
@@ -1211,12 +1377,14 @@ impl Page {
     }
 
     fn style_hash(enc: &[u8; 16]) -> usize {
-        let mut h: u32 = 0x811c_9dc5;
-        for &b in enc {
-            h ^= u32::from(b);
-            h = h.wrapping_mul(0x0100_0193);
-        }
-        h as usize
+        let (mut lo, mut hi) = ([0u8; 8], [0u8; 8]);
+        lo.copy_from_slice(&enc[..8]);
+        hi.copy_from_slice(&enc[8..]);
+        let mut h = (u64::from_le_bytes(lo) ^ u64::from_le_bytes(hi).rotate_left(29))
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        h ^= h >> 32;
+        h = h.wrapping_mul(0xD6E8_FEB8_6659_FD93);
+        (h ^ (h >> 29)) as usize
     }
 
     fn index_insert(&mut self, id: u16, enc: &[u8; 16]) {
@@ -1258,6 +1426,7 @@ impl Page {
             }
         }
         if any {
+            self.last_style = None;
             self.rebuild_index();
         }
         any
@@ -1283,6 +1452,14 @@ impl Page {
         if st.is_default() {
             return Ok(0);
         }
+        if let Some((last, id)) = self.last_style
+            && last == *st
+        {
+            let o = self.si(usize::from(id)) + 16;
+            let refs = self.rd32(o);
+            self.wr32(o, refs + add);
+            return Ok(id);
+        }
         let enc = st.encode();
         let mask = self.lay.index_slots - 1;
         let mut i = Self::style_hash(&enc) & mask;
@@ -1295,6 +1472,7 @@ impl Page {
             if self.buf[o..o + 16] == enc {
                 let refs = self.rd32(o + 16);
                 self.wr32(o + 16, refs + add);
+                self.last_style = Some((*st, id as u16));
                 return Ok(id as u16);
             }
             i = (i + 1) & mask;
@@ -1305,6 +1483,7 @@ impl Page {
         self.wr32(o + 16, add);
         self.wr32(o + 20, 1);
         self.index_insert(id as u16, &enc);
+        self.last_style = Some((*st, id as u16));
         Ok(id as u16)
     }
 
@@ -1769,6 +1948,63 @@ impl Page {
         n.rebuild_link_index();
         n.rebuild_lidx();
         Some(n)
+    }
+
+    /// Grow the table named by `which` in place: the row headers and cells (the bulk of the
+    /// page) stay where they are, only the side tables behind them move. Same result as
+    /// [`Page::grown_with`], without copying every cell. False when the ceiling is reached.
+    pub fn grow_in_place(&mut self, which: Full, ceil: &Ceil) -> bool {
+        let mut spec = self.spec;
+        let up = |v: usize, max: usize| (v * 2).min(max).max(v);
+        match which {
+            Full::Styles => spec.style_cap = up(spec.style_cap, ceil.styles.min(MAX_STYLE_CAP)),
+            Full::Chunks => spec.chunk_cap = up(spec.chunk_cap, ceil.chunks.min(MAX_CHUNK_CAP)),
+            Full::Links => spec.link_cap = up(spec.link_cap, ceil.links.min(MAX_LINK_CAP)),
+            Full::LinkMap => spec.lmap_cap = up(spec.lmap_cap, ceil.lmap.min(MAX_LMAP_CAP)),
+            Full::Strings => spec.str_cap = up(spec.str_cap, ceil.strs.min(MAX_STR_CAP)),
+        }
+        if spec == self.spec {
+            return false;
+        }
+        let (a, b) = (self.lay, Layout::of(&spec));
+        self.buf.resize(b.total, 0);
+        // Content regions (old offset, new offset, old length), highest first so a move never
+        // lands on a region still waiting to move. The three hash indexes are rebuilt.
+        let moves = [
+            (a.strs, b.strs, self.spec.str_cap),
+            (a.lmap, b.lmap, self.spec.lmap_cap * LMAP_ENTRY_BYTES),
+            (a.links, b.links, self.spec.link_cap * LINK_ITEM_BYTES),
+            (a.chunks, b.chunks, self.spec.chunk_cap * CHUNK_BYTES),
+            (a.styles, b.styles, self.spec.style_cap * STYLE_ITEM_BYTES),
+        ];
+        for (from, to, len) in moves {
+            if from != to {
+                self.buf.copy_within(from..from + len, to);
+            }
+        }
+        // Zero everything behind the cells that is not moved content (old bytes may remain
+        // in the gaps and in the index regions).
+        let mut keep: Vec<(usize, usize)> = moves.iter().map(|&(_, to, len)| (to, len)).collect();
+        keep.sort_unstable();
+        let mut at = b.styles;
+        for (to, len) in keep {
+            if to > at {
+                self.buf[at..to].fill(0);
+            }
+            at = at.max(to + len);
+        }
+        self.buf[at..b.total].fill(0);
+        self.spec = spec;
+        self.lay = b;
+        self.wr16(H_STYLE_CAP, spec.style_cap as u16);
+        self.wr32(H_CHUNK_CAP, spec.chunk_cap as u32);
+        self.wr16(H_LINK_CAP, spec.link_cap as u16);
+        self.wr32(H_LMAP_CAP, spec.lmap_cap as u32);
+        self.wr32(H_STR_CAP, spec.str_cap as u32);
+        self.rebuild_index();
+        self.rebuild_link_index();
+        self.rebuild_lidx();
+        true
     }
 
     /// Check every internal invariant: reference counts equal cell counts, no leaked or

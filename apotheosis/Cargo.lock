@@ -178,6 +178,7 @@ dependencies = [
  "alacritty_terminal",
  "apoth-grid",
  "apoth-term",
+ "apoth-vt",
  "vte",
 ]
 
