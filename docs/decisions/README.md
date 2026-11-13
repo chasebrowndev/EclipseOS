@@ -39,7 +39,7 @@ writing a new ADR that says so.
 | 0031 | [Resizing a window over the control socket](0031-resize-over-the-control-socket.md) | accepted |
 | 0032 | [The systemd session handoff lives in the compositor, behind `--session`](0032-session-handoff-in-compositor.md) | accepted |
 | 0033 | [An explicit render-device that does not resolve refuses to start](0033-render-device-override-refuses-on-miss.md) | accepted |
-| 0034 | [Terminal emulator: keep the foot fork, extract the publisher as `cataclysm-pub`](0034-terminal-foot-fork-publisher-crate.md) | accepted |
+| 0034 | [Terminal emulator: keep the foot fork, extract the publisher as `cataclysm-pub`](0034-terminal-foot-fork-publisher-crate.md) | superseded by 0109 |
 | 0035 | [Day-one CI: cloud-only gate, `cargo-deny` interim, mechanized review rules](0035-ci-harness-day-one.md) | accepted |
 | 0036 | [Config writes byte-splice the file; the KDL document model does not](0036-config-writes-byte-splice.md) | accepted |
 | 0037 | [The security surface moves to its own file, `policy.kdl`](0037-abyss-kdl-policy-kdl-split.md) | accepted |
@@ -101,6 +101,23 @@ writing a new ADR that says so.
 | 0106 | [Redacted screen sharing as a desktop feature](0106-redacted-screen-sharing.md) | proposed |
 | 0107 | [A config key's presentation lives beside its schema row](0107-config-schema-single-source.md) | proposed |
 | 0108 | [The compositor owns the lid; logind only suspends](0108-compositor-owns-the-lid.md) | accepted |
+| 0109 | [Apotheosis: a first-party terminal supersedes the foot fork](0109-apotheosis-supersedes-foot-fork.md) | accepted |
+| 0110 | [Apotheosis language rule and system-library allow-list](0110-apotheosis-language-rule.md) | accepted |
+| 0111 | [Apotheosis writes its own parser and grid](0111-apotheosis-own-parser-and-grid.md) | proposed |
+| 0112 | [Prior art is studied, never copied](0112-apotheosis-prior-art-procedure.md) | accepted |
+| 0113 | [`ec-config-schema`: a second product uses the schema types; ec-settings edits the terminal file directly](0113-config-schema-second-source.md) | proposed |
+| 0114 | [`ec-cataclysm-pub` becomes `ec-term-pub`; the C ABI is removed](0114-ec-term-pub-rename.md) | proposed |
+| 0115 | [The credential signal is ECHO off and ICANON on](0115-credential-signal-echo-off-icanon-on.md) | proposed |
+| 0116 | [The terminal's control socket never bypasses seat policy](0116-apotheosis-control-socket-vs-seat-policy.md) | proposed |
+| 0117 | [`apotheosis` joins the terminal app class in the default policy](0117-terminal-app-class-in-policy.md) | proposed |
+| 0118 | [Media: three tiers, audio over the PulseAudio protocol, nasm at build time](0118-apotheosis-media-scope.md) | accepted |
+| 0119 | [Presenter: the wgpu surface only](0119-apotheosis-presenter-wgpu-surface.md) | proposed |
+| 0120 | [One process per instance by default; the daemon is opt-in](0120-apotheosis-single-process.md) | proposed |
+| 0121 | [Scrollback persistence and disk spill are off by default, encrypted, and sensitivity-aware](0121-apotheosis-scrollback-persistence.md) | proposed |
+| 0122 | [No embedded scripting or plugin runtime](0122-apotheosis-no-embedded-scripting.md) | proposed |
+| 0123 | [Mux sync by snapshot plus byte-stream tee](0123-apotheosis-mux-sync.md) | proposed |
+| 0124 | [`TERM=xterm-apotheosis`](0124-apotheosis-term-name.md) | proposed |
+| 0125 | [Pure-Rust XKB backend with libxkbcommon as an optional feature and test oracle](0125-apotheosis-xkb-backend.md) | proposed |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

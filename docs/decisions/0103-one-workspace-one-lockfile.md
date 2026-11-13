@@ -177,7 +177,7 @@ outside.
 The workspace root is the repository root: a virtual `Cargo.toml`, plus one
 `Cargo.lock`, one `deny.toml` and one `rust-toolchain.toml` there.
 - **Members.** The existing crate paths under `abyss/`, `shell/` and
-  `installer/`. No crate directory moves.
+  `installer/`, and `apotheosis/crates/*`. No crate directory moves.
 - **Exclude.** `fog`, `oracle-eyes`, `abyss/vendor` and `shell/vendor`.
 - **`[patch.crates-io]`.** The union of today's entries, with root-relative
   paths.
@@ -215,6 +215,7 @@ installer's lock has no iced_layershell.
 0. **Drift tooling.** Add `ci/lock-drift.sh`, `ci/cargo-update-all.sh` and a
    `lock-drift` gate job, starting in report mode. Land #274 through the script.
    - Check: the script reports zero drift on the watched list after #274.
+   - Coverage includes `apotheosis/` (while it is still its own workspace; T-24 §1).
 1. **Converge the three deny.toml files.** Make abyss, shell and installer
    `deny.toml` byte-identical, using the union of ignores, each ignore keeping
    its comment.
@@ -230,6 +231,10 @@ installer's lock has no iced_layershell.
    - PKGBUILD: one root `cargo build --release --workspace --bins --locked`;
    - `CLAUDE.md` build commands, `docs/ARCHITECTURE.md` layout, BUILDING.md,
      and ADR 0070's status set to "amended by 0103".
+   - If `apotheosis/` exists as its own workspace when the member step runs
+     (T-24 §1), it joins in that step: its own Cargo.lock, deny.toml and
+     rust-toolchain.toml are removed and its deny exceptions are folded into the
+     root.
 
    Seed the root lock from `shell/Cargo.lock` (the largest), then let cargo add
    what is missing. Checks:

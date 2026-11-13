@@ -1,6 +1,6 @@
 # 0034 — Terminal emulator: keep the foot fork, extract the publisher
 
-Status: accepted
+Status: superseded by 0109
 Date: 2026-09-08
 Deciders: owner, Claude (advisory)
 

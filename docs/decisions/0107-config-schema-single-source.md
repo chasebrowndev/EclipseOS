@@ -42,7 +42,7 @@ key. The rows were generated from the old tables, so what Settings shows did not
 change. The Taskbar pages' own row wording is `Meta::pane_label`, and `ec-ctl`
 reads key ownership from the schema (`migrate::is_policy_key`) instead of
 mirroring it. Still outside the table: the bespoke search entries and the
-word-level `SYNONYMS` table. `ec-policy-viewer` now links `ec-abyss-config`.
+word-level `SYNONYMS` table. `ec-policy-viewer` now links `ec-abyss-config`. ADR 0113 moves `Ty`, constraints and `Reload` into `ec-config-schema`; `META` stays per product, and Apotheosis keeps its own paired `apoth_config::meta::META`.
 
 ## Revisit when
 Settings needs per-value presentation (enum pill labels and blurbs) as data,

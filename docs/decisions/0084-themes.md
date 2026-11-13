@@ -103,6 +103,9 @@ selected by `abyss.portal` and `abyss-portals.conf` under
   theme-dependent) are updated in the PRs that land them.
 - A switch is live: no pane restart.
 
+## Amendment: terminal scheme (milestone X5)
+`ec-theme` gains `terminal_scheme(&Seeds) -> TermScheme` (16 ANSI colours, foreground, background, cursor, cursor text, selection foreground/background), contrast-checked by `validate` and consumed by Apotheosis (T-17 §2, milestone X5).
+
 ## Revisit when
 Per-app theme overrides are requested (a window rule). Or a location
 service with its own consent path lands, at which point `auto` could follow
