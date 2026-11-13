@@ -1,0 +1,12 @@
+fixture "edit-il-default" {
+  covers "T03-IL-DL"
+  size rows=4 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\r\nSTUVWX\e[2;1H\e[L"#
+  grid {
+    row "ABCDEF"
+    row ""
+    row "GHIJKL"
+    row "MNOPQR"
+  }
+  cursor row=1 col=0
+}

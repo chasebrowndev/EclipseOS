@@ -1,0 +1,7 @@
+fixture "sgrt-colon-bg-256" {
+  desc "sgrt colon bg 256 (migrated from the apoth-term corpus)"
+  covers "T03-SGR-AMBIG" "T03-SGR-COLOR"
+  size rows=1 cols=4
+  feed #"\e[48:5:9mA"#
+  cell row=0 col=0 bg="p9"
+}

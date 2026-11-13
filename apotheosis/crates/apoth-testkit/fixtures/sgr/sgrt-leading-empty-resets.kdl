@@ -1,0 +1,7 @@
+fixture "sgrt-leading-empty-resets" {
+  desc "sgrt leading empty resets (migrated from the apoth-term corpus)"
+  covers "T03-SGR-AMBIG" "T03-SGR-COLOR"
+  size rows=1 cols=4
+  feed #"\e[1m\e[;3mA"#
+  cell row=0 col=0 attrs="italic"
+}

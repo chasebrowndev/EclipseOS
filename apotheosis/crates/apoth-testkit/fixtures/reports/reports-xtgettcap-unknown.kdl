@@ -1,0 +1,8 @@
+fixture "reports-xtgettcap-unknown" {
+  desc "unknown name: DCS 0 + r, name hex in uppercase"
+  covers "T03-XTGETTCAP" "VTCORE-25"
+  size rows=5 cols=10
+  feed #"\eP+q666f6f\e\\"#
+  grid
+  replies #"\eP0+r666F6F\e\\"#
+}

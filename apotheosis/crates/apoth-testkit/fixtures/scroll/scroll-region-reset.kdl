@@ -1,0 +1,15 @@
+fixture "scroll-region-reset" {
+  desc "CSI r with no parameters resets the region"
+  covers "T03-DECSTBM" "T03-SCROLL-HISTORY"
+  size rows=3 cols=4
+  feed #"\e[2;2r\e[r1\r\n2\r\n3\r\n4"#
+  grid {
+    row "2"
+    row "3"
+    row "4"
+  }
+  cursor row=2 col=1
+  scrollback {
+    row "1"
+  }
+}

@@ -1,0 +1,10 @@
+fixture "cur-hvp" {
+  desc "cur hvp (migrated from the apoth-term corpus)"
+  covers "T03-CUP"
+  size rows=5 cols=10
+  feed #"\e[2;3fx"#
+  grid {
+    row ""
+    row "  x"
+  }
+}

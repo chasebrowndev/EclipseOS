@@ -1,0 +1,7 @@
+fixture "decrqm-dec-2031" {
+  desc "decrqm dec 2031 (migrated from the apoth-term corpus)"
+  covers "T03-DECRQM"
+  size rows=2 cols=4
+  feed #"\e[?2031$p"#
+  replies #"\e[?2031;2$y"#
+}

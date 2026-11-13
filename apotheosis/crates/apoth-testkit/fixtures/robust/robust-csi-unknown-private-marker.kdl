@@ -1,0 +1,9 @@
+fixture "robust-csi-unknown-private-marker" {
+  covers "T03-SEQ-ROBUST"
+  size rows=3 cols=10
+  feed #"\e[<1;2;3MX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+}

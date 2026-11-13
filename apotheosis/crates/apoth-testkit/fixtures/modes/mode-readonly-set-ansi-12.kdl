@@ -1,0 +1,7 @@
+fixture "mode-readonly-set-ansi-12" {
+  desc "mode readonly set ansi 12 (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[12l"#
+  mode "12" 3
+}

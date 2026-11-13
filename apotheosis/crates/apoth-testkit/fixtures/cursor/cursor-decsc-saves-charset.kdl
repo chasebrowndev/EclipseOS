@@ -1,0 +1,10 @@
+fixture "cursor-decsc-saves-charset" {
+  desc "DECSC saves the charset designation"
+  covers "T03-DECSC" "T03-CHARSET"
+  size rows=5 cols=10
+  feed #"\e(0\e7\e(B\e8q"#
+  grid {
+    row "─"
+  }
+  cursor row=0 col=1
+}
