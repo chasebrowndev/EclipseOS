@@ -40,6 +40,14 @@ impl std::fmt::Display for EditError {
 
 impl std::error::Error for EditError {}
 
+/// One row of `config list`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ListEntry {
+    pub path: &'static str,
+    /// The value in the file, or why it does not parse.
+    pub value: Result<Value, String>,
+}
+
 /// A node to descend into before the key: `profile "work"`, or a `when scheme="dark"` block.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeSel {
@@ -356,6 +364,33 @@ impl Editor {
 
     pub fn get(&self, path: &str) -> Result<Option<Value>, EditError> {
         self.get_in(&[], path)
+    }
+
+    /// `config list`: every schema key present at top level of the document, in schema order,
+    /// optionally under a dotted prefix (`font` matches `font.size`). A node that holds a
+    /// value the key's type rejects is listed with its error, never skipped.
+    pub fn list(&self, prefix: Option<&str>) -> Vec<ListEntry> {
+        let mut out = Vec::new();
+        for k in TABLE {
+            if let Some(p) = prefix
+                && k.path != p
+                && !k.path.strip_prefix(p).is_some_and(|r| r.starts_with('.'))
+            {
+                continue;
+            }
+            match self.get(k.path) {
+                Ok(Some(v)) => out.push(ListEntry {
+                    path: k.path,
+                    value: Ok(v),
+                }),
+                Ok(None) => {}
+                Err(e) => out.push(ListEntry {
+                    path: k.path,
+                    value: Err(e.to_string()),
+                }),
+            }
+        }
+        out
     }
 
     /// `config set`: write the key at top level.

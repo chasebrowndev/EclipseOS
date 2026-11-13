@@ -59,6 +59,9 @@ dependencies = [
 [[package]]
 name = "apoth"
 version = "0.1.0"
+dependencies = [
+ "apoth-config",
+]
 
 [[package]]
 name = "apoth-a11y"
@@ -168,6 +171,9 @@ dependencies = [
 [[package]]
 name = "apoth-ui"
 version = "0.1.0"
+dependencies = [
+ "ec-theme",
+]
 
 [[package]]
 name = "apoth-unicode"
@@ -211,8 +217,10 @@ dependencies = [
  "apoth-pty",
  "apoth-render",
  "apoth-term",
+ "apoth-ui",
  "apoth-wl",
  "calloop",
+ "ec-theme",
  "rustix",
  "tracing",
  "tracing-journald",
@@ -456,6 +464,10 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "ec-config-schema"
+version = "0.2.2"
+
+[[package]]
+name = "ec-theme"
 version = "0.2.2"
 
 [[package]]

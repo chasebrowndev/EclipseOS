@@ -9,6 +9,8 @@ outside the `Fs` trait (`RealFs` / `MemFs`), no logging of values.
 - `load.rs` + `collections.rs`: layers 1-8, includes (depth cap 8, cycles), tolerant parse.
 - `edit.rs`: lossless `Editor` (kdl 6), write-target rule, atomic write, `SelfWrites`.
 - `diff.rs`: key and collection diff, strictest reload class.
+- `reload.rs`: watcher-agnostic `Reloader` (diff + affected `Subsystem`s, last-good on parse failure, error-bar diagnostics, watch dirs, own-write check).
+- `import.rs`: `import_foot` (foot.ini -> KDL + per-line report: mapped / approximate / unmapped).
 - `overrides.rs`: `-o` parsing and layer 8, gated by override class (fail-closed).
 
 ## X1 follow-up
@@ -21,7 +23,7 @@ local copies; `Ty::generic` / `Reload::generic` are the bridge until then.
 - Binds, rules, profiles are parsed to local decls (`model.rs`); resolve `ActionCall` against
   the `apoth-action` registry and match/template checks in `lang.rs` still structural. Chord and argv
   validation already delegate to `apoth-action` (`chord.rs`, `lang.rs`).
-- inotify watcher and importers (M15); `DEBOUNCE_MS` / `POLL_FALLBACK_MS` are exported.
+- The inotify watcher itself (integration layer) calls `Reloader::reload`; alacritty/kitty importers (R2) not written.
 - `Dv::Computed` defaults evaluate to `Value::Null` ("Automatic"); the consumer computes them.
 
 ## Limits and spec notes
@@ -30,4 +32,4 @@ local copies; `Ty::generic` / `Reload::generic` are the bridge until then.
   (the runtime engine), chords/argv parsed by `apoth-action`.
 - `remote.clients` keeps the spec's own dotted path, so `remote` is a top-level node; T-10 §3's
   node list and §1.1's security list do not name it (spec gap, reported).
-- Deferred: watcher tests (M15), fuzz target `config_parse`, node-coverage and doc-drift checks.
+- Deferred: fuzz target `config_parse`, node-coverage and doc-drift checks.

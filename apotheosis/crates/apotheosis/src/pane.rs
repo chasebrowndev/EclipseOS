@@ -146,12 +146,23 @@ pub(crate) enum MainMsg {
     Resized((usize, usize)),
     /// `Pty::close` finished.
     Closed(Option<ExitStatus>),
+    /// A worker finished a config load (T-10 §4): main diffs and applies it.
+    Loaded(
+        Box<(
+            apoth_config::reload::Reloader,
+            apoth_config::reload::Outcome,
+        )>,
+    ),
 }
 
 /// Messages to the render thread.
 pub(crate) enum RenderMsg {
     /// Something changed: drain pacer events, check the dirty flag, key stamp and focus.
     Poke,
+    /// Hot reload: new render settings (and a new font configuration when `font.*` changed).
+    Update(Box<crate::render::RenderUpdate>),
+    /// The overlay bar (error bar or restart notice) changed; `None` removes it.
+    Overlay(Option<Box<crate::ui::Overlay>>),
     Stop,
 }
 

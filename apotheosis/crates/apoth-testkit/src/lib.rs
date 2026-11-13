@@ -25,9 +25,11 @@ pub mod escapes;
 pub mod fixture;
 pub mod kdl;
 pub mod oracle;
+pub mod perf;
 pub mod replay;
 pub mod runner;
 pub mod selftest;
+pub mod session;
 pub mod snapshot;
 
 use std::path::{Path, PathBuf};

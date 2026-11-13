@@ -8,8 +8,11 @@ mod app;
 mod glyphs;
 mod hook;
 mod pane;
+mod reload;
 mod render;
 mod settings;
+mod ui;
+mod workers;
 
 use std::io::IsTerminal;
 
@@ -27,6 +30,8 @@ Usage: apotheosis [OPTIONS] [-e COMMAND [ARGS...]]
 Options:
   -e COMMAND [ARGS...]   run COMMAND instead of the shell (consumes the rest)
   -o KEY=VALUE           override a config key for this run (repeatable)
+  --app-id ID            Wayland app id (on Abyss it must start with org.eclipseos.Apotheosis)
+  --class ID             alias of --app-id
   -h, --help             show this help
   -V, --version          show the version
 ";
@@ -36,6 +41,7 @@ enum Cli {
     Run {
         command: Option<Vec<String>>,
         launch: Vec<(String, String)>,
+        app_id: Option<String>,
     },
     Help,
     Version,
@@ -45,6 +51,7 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     let mut it = args.into_iter();
     let mut launch = Vec::new();
     let mut command = None;
+    let mut app_id = None;
     while let Some(a) = it.next() {
         match a.as_str() {
             "-h" | "--help" => return Ok(Cli::Help),
@@ -56,6 +63,9 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 }
                 command = Some(rest);
             }
+            "--app-id" | "--class" => {
+                app_id = Some(it.next().ok_or("--app-id needs a value")?);
+            }
             "-o" => {
                 let kv = it.next().ok_or("-o needs KEY=VALUE")?;
                 let (k, v) = kv.split_once('=').ok_or("-o needs KEY=VALUE")?;
@@ -64,7 +74,11 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
-    Ok(Cli::Run { command, launch })
+    Ok(Cli::Run {
+        command,
+        launch,
+        app_id,
+    })
 }
 
 fn init_logging() {
@@ -102,10 +116,14 @@ fn main() {
                 concat!("apotheosis ", env!("CARGO_PKG_VERSION"), "\n").as_bytes(),
             );
         }
-        Cli::Run { command, launch } => {
+        Cli::Run {
+            command,
+            launch,
+            app_id,
+        } => {
             init_logging();
-            let settings = settings::Settings::load(launch);
-            match app::run(settings, command) {
+            let startup = settings::Settings::load(launch);
+            match app::run(startup, command, app_id) {
                 Ok(code) => std::process::exit(code),
                 Err(e) => {
                     eprintln!("apotheosis: {e}");
@@ -132,8 +150,26 @@ mod tests {
             Ok(Cli::Run {
                 command: Some(vec!["ls".into(), "-l".into()]),
                 launch: vec![("a.b".into(), "c".into())],
+                app_id: None,
             })
         );
+        assert_eq!(
+            p(&["--app-id", "org.eclipseos.Apotheosis.Foo", "-e", "ls"]),
+            Ok(Cli::Run {
+                command: Some(vec!["ls".into()]),
+                launch: vec![],
+                app_id: Some("org.eclipseos.Apotheosis.Foo".into()),
+            })
+        );
+        assert_eq!(
+            p(&["--class", "x"]),
+            Ok(Cli::Run {
+                command: None,
+                launch: vec![],
+                app_id: Some("x".into()),
+            })
+        );
+        assert!(p(&["--app-id"]).is_err());
         assert!(p(&["-e"]).is_err());
         assert!(p(&["-o", "x"]).is_err());
         assert!(p(&["--nope"]).is_err());

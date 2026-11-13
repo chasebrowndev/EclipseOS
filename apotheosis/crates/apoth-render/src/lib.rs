@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)] // BRIEF rule 6; surface handles come from apoth-wl
 
 pub mod atlas;
+pub mod chrome;
 pub mod colour;
 pub mod cursor;
 pub mod damage;
@@ -28,6 +29,7 @@ pub mod reference;
 pub mod renderer;
 pub mod scene;
 pub mod sched;
+pub mod snapshot;
 pub mod surface;
 
 pub use apoth_grid::{Damage, FrameSnapshot, SnapCell, SnapRow};

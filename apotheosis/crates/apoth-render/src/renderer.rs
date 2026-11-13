@@ -31,6 +31,7 @@
 //! behind the scene. Presenters call [`Renderer::invalidate_all`] on every skipped frame and
 //! the next draw redraws every row from the scene.
 
+use crate::chrome::{ChromeList, ChromePass};
 use crate::colour::TextBlending;
 use crate::cursor::CursorScene;
 use crate::damage::{Op, RowRing};
@@ -353,6 +354,8 @@ pub struct Renderer {
     rect_bytes: Vec<u8>,
     bg_bytes: Vec<u8>,
     cursor_bytes: Vec<u8>,
+    chrome_pass: ChromePass,
+    chrome: ChromeList,
 }
 
 impl Renderer {
@@ -562,7 +565,16 @@ impl Renderer {
             rect_bytes: Vec::new(),
             bg_bytes: Vec::new(),
             cursor_bytes: Vec::new(),
+            chrome_pass: ChromePass::new(gpu, cfg.target_format),
+            chrome: ChromeList::new(),
         }
+    }
+
+    /// The glass chrome list drawn over the grid and cursor (T-07 §4 pass 7). It is retained:
+    /// a frame draws whatever it holds, so the owner clears and refills it when the interface
+    /// changes and leaves it alone otherwise.
+    pub fn chrome_mut(&mut self) -> &mut ChromeList {
+        &mut self.chrome
     }
 
     /// The configuration in use.
@@ -750,6 +762,8 @@ impl Renderer {
             self.targets = Some(t);
         }
         self.present_pass(enc, target, target_size, input, have_grid);
+        self.chrome_pass
+            .record(enc, target, target_size, &self.chrome);
         stats
     }
 

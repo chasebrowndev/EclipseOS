@@ -10,6 +10,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::Duration;
 
+use apoth_font::config::Style;
 use apoth_font::system::FontSystem;
 use apoth_grid::{Damage, FrameSnapshot};
 use apoth_render::colour::{Palette, Rgb, TextBlending};
@@ -25,10 +26,45 @@ use apoth_wl::{PaceEvent, Pacer, WlSurfaceHandle};
 
 use crate::glyphs::{COLOR_PAGES, Glyphs, MASK_PAGES, PAGE};
 use crate::pane::{MainMsg, PaneShared, RenderMsg, now_ns};
+use crate::ui::{Overlay, UiRaster, bar_inset_px, build_overlay};
+
+/// Configured default colours. The term's own values win once a program has changed them
+/// (OSC 4/10/11/12): see [`pick`].
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ColorCfg {
+    pub(crate) fg: (u8, u8, u8),
+    pub(crate) bg: (u8, u8, u8),
+    pub(crate) cursor: (u8, u8, u8),
+    pub(crate) ansi: Option<[(u8, u8, u8); 16]>,
+}
+
+/// The colours the `Term` was created with: a value equal to these has not been changed by the
+/// running program, so a configured colour replaces it.
+#[derive(Clone, Debug)]
+pub(crate) struct TermDefaults {
+    pub(crate) fg: (u8, u8, u8),
+    pub(crate) bg: (u8, u8, u8),
+    pub(crate) cursor: (u8, u8, u8),
+    pub(crate) ansi: [(u8, u8, u8); 16],
+}
+
+/// The colour in force: the configured one while the term still holds its startup value, the
+/// term's own once a program has set it.
+pub(crate) fn pick(term: (u8, u8, u8), startup: (u8, u8, u8), cfg: (u8, u8, u8)) -> (u8, u8, u8) {
+    if term == startup { cfg } else { term }
+}
+
+/// A reload for the render thread.
+#[derive(Debug)]
+pub(crate) struct RenderUpdate {
+    pub(crate) settings: RenderSettings,
+    pub(crate) font: Option<apoth_font::config::FontConfig>,
+}
 
 /// Settings the render thread needs.
 #[derive(Clone, Debug)]
 pub(crate) struct RenderSettings {
+    pub(crate) colors: ColorCfg,
     pub(crate) padding: (u32, u32),
     pub(crate) opacity: f32,
     pub(crate) blending: TextBlending,
@@ -38,6 +74,48 @@ pub(crate) struct RenderSettings {
     pub(crate) sync_timeout: Duration,
     pub(crate) cursor_shape: CursorShape,
     pub(crate) unfocused_cursor_hidden: bool,
+    /// `window.alpha-mode`.
+    pub(crate) alpha: AlphaRequest,
+    /// Interface zoom (`interface.font-size` and `interface.scale`).
+    pub(crate) ui_zoom: f32,
+    /// `interface.font`.
+    pub(crate) interface_font: Option<String>,
+    /// The terminal background is light: the interface uses the light palette.
+    pub(crate) light: bool,
+}
+
+impl RenderSettings {
+    /// `blur` is the compositor's blur path for the window: it decides the auto opacity.
+    pub(crate) fn from_settings(
+        s: &crate::settings::Settings,
+        blur: Option<apoth_wl::BlurPath>,
+    ) -> RenderSettings {
+        let lum = ec_theme::Rgba::rgb(
+            (u32::from(s.term.bg.0) << 16) | (u32::from(s.term.bg.1) << 8) | u32::from(s.term.bg.2),
+        )
+        .luminance();
+        RenderSettings {
+            alpha: s.glass.alpha,
+            ui_zoom: s.glass.interface_zoom,
+            interface_font: s.glass.interface_font.clone(),
+            light: lum >= ec_theme::SCHEME_LUMINANCE,
+            colors: ColorCfg {
+                fg: s.term.fg,
+                bg: s.term.bg,
+                cursor: s.term.cursor_color,
+                ansi: s.ansi,
+            },
+            padding: s.padding,
+            opacity: crate::settings::effective_opacity(s.opacity, &s.glass, blur),
+            blending: s.blending,
+            bold_bright: s.bold_bright,
+            allow_software: s.allow_software,
+            echo_window: s.echo_window,
+            sync_timeout: s.sync_timeout,
+            cursor_shape: s.cursor_shape,
+            unfocused_cursor_hidden: s.unfocused_cursor_hidden,
+        }
+    }
 }
 
 /// Consecutive reconfigure or recreate faults before the render thread gives up.
@@ -49,6 +127,7 @@ pub(crate) struct RenderArgs {
     pub(crate) shared: Arc<PaneShared>,
     pub(crate) fonts: FontSystem,
     pub(crate) settings: RenderSettings,
+    pub(crate) term_defaults: TermDefaults,
     pub(crate) scale: f64,
     pub(crate) buffer: (u32, u32),
     pub(crate) rx: mpsc::Receiver<RenderMsg>,
@@ -62,6 +141,35 @@ pub(crate) fn pad_px(padding: u32, scale: f64) -> u32 {
     (f64::from(padding) * scale).round() as u32
 }
 
+fn inset_of(overlay: &Option<Overlay>, scale: f64, rs: &RenderSettings) -> u32 {
+    overlay
+        .as_ref()
+        .map_or(0, |_| bar_inset_px(scale, rs.ui_zoom))
+}
+
+/// A second font system for `interface.font`, over the same discovery index as the terminal's.
+fn build_ui_fonts(family: &str, terminal: &FontSystem) -> Option<FontSystem> {
+    let mut cfg = terminal.config().clone();
+    for st in [Style::Regular, Style::Bold] {
+        cfg.styles[st.index()].family = Some(family.to_owned());
+    }
+    let dirs = apoth_font::discovery::font_dirs(&cfg.directories);
+    let index = match apoth_font::discovery::default_cache_file() {
+        Some(f) => apoth_font::discovery::FontIndex::load_or_build(&dirs, &f).0,
+        None => apoth_font::discovery::FontIndex::build(&dirs, None).0,
+    };
+    let mut fs = FontSystem::new(index, Vec::new(), cfg);
+    fs.cell_metrics(16.0).map(|_| fs)
+}
+
+/// The grid origin: the padding, and below it the overlay bar's inset.
+fn origin_of(padding: (u32, u32), scale: f64, inset: u32) -> (i32, i32) {
+    (
+        pad_px(padding.0, scale) as i32,
+        (pad_px(padding.1, scale) + inset) as i32,
+    )
+}
+
 struct Stack {
     presenter: SurfacePresenter,
     renderer: Renderer,
@@ -73,13 +181,14 @@ fn build_stack(
     rs: &RenderSettings,
     cell: (u32, u32),
     scale: f64,
+    inset: u32,
 ) -> Result<Stack, RenderError> {
     let opts = SurfaceOptions {
         gpu: GpuOptions {
             allow_software: rs.allow_software,
             compositor_hint: None,
         },
-        alpha: AlphaRequest::Auto,
+        alpha: rs.alpha,
     };
     let presenter = SurfacePresenter::new(Arc::clone(surface), size, &opts)?;
     let cfg = RendererConfig {
@@ -89,10 +198,7 @@ fn build_stack(
         mask_pages: MASK_PAGES as u32,
         color_pages: COLOR_PAGES as u32,
         text_blending: rs.blending,
-        origin: (
-            pad_px(rs.padding.0, scale) as i32,
-            pad_px(rs.padding.1, scale) as i32,
-        ),
+        origin: origin_of(rs.padding, scale, inset),
     };
     let renderer = Renderer::new(presenter.gpu(), &cfg);
     Ok(Stack {
@@ -123,7 +229,8 @@ fn run(a: RenderArgs) {
         mut pacer,
         shared,
         mut fonts,
-        settings: rs,
+        settings: mut rs,
+        term_defaults,
         mut scale,
         mut buffer,
         rx,
@@ -142,7 +249,7 @@ fn run(a: RenderArgs) {
     };
     let mut glyphs = Glyphs::new(fonts, m, px);
     let cell = |g: &Glyphs| (g.metrics().width as u32, g.metrics().height as u32);
-    let mut stack = match build_stack(&surface, buffer, &rs, cell(&glyphs), scale) {
+    let mut stack = match build_stack(&surface, buffer, &rs, cell(&glyphs), scale, 0) {
         Ok(s) => s,
         Err(e) => {
             let _ = to_main.send(MainMsg::RenderFailed(e.to_string()));
@@ -171,13 +278,17 @@ fn run(a: RenderArgs) {
     let mut snap = FrameSnapshot::new();
     let mut cscene = CursorScene::default();
     let mut pal = Palette::xterm();
-    let scene_cfg = SceneConfig {
+    let mut scene_cfg = SceneConfig {
         bold_bright: rs.bold_bright,
         bg_alpha: rs.opacity,
         ..SceneConfig::default()
     };
     let (mut seen_key, mut was_hold, mut seen_focus) = (0u64, false, false);
     let mut fault_streak = 0u32;
+    let mut overlay: Option<Overlay> = None;
+    let mut ui_fonts: Option<(String, FontSystem)> = None;
+    let mut raster = UiRaster::new();
+    let mut chrome_dirty = false;
     sched.damage(now_ns());
 
     'outer: loop {
@@ -201,6 +312,7 @@ fn run(a: RenderArgs) {
                     let s = s.as_f64();
                     if b != buffer {
                         buffer = b;
+                        chrome_dirty = true;
                         stack.presenter.resize(b);
                         sched.damage(now);
                     }
@@ -210,10 +322,12 @@ fn run(a: RenderArgs) {
                         if glyphs.set_px(px) {
                             let c = cell(&glyphs);
                             stack.renderer.set_cell(c);
-                            stack.renderer.set_origin((
-                                pad_px(rs.padding.0, scale) as i32,
-                                pad_px(rs.padding.1, scale) as i32,
+                            stack.renderer.set_origin(origin_of(
+                                rs.padding,
+                                scale,
+                                inset_of(&overlay, scale, &rs),
                             ));
+                            chrome_dirty = true;
                             stack.renderer.invalidate_all();
                             scene = GridScene::new();
                             let _ = to_main.send(MainMsg::CellSize(c));
@@ -257,14 +371,22 @@ fn run(a: RenderArgs) {
                     let mut t = shared.lock();
                     let d = t.grid_mut().snapshot_dirty(&mut snap);
                     for i in 0..=255u8 {
-                        let (r, g, b) = t.palette(i);
-                        pal.indexed[usize::from(i)] = Rgb(r, g, b);
+                        let mut c = t.palette(i);
+                        if let Some(a) = &rs.colors.ansi
+                            && i < 16
+                        {
+                            c = pick(c, term_defaults.ansi[usize::from(i)], a[usize::from(i)]);
+                        }
+                        pal.indexed[usize::from(i)] = Rgb(c.0, c.1, c.2);
                     }
                     (d, t.cursor(), t.colors())
                 };
-                pal.fg = Rgb(colors.0.0, colors.0.1, colors.0.2);
-                pal.bg = Rgb(colors.1.0, colors.1.1, colors.1.2);
-                pal.cursor = Some(Rgb(colors.2.0, colors.2.1, colors.2.2));
+                let fg = pick(colors.0, term_defaults.fg, rs.colors.fg);
+                let bg = pick(colors.1, term_defaults.bg, rs.colors.bg);
+                let cc = pick(colors.2, term_defaults.cursor, rs.colors.cursor);
+                pal.fg = Rgb(fg.0, fg.1, fg.2);
+                pal.bg = Rgb(bg.0, bg.1, bg.2);
+                pal.cursor = Some(Rgb(cc.0, cc.1, cc.2));
                 let metrics = glyphs.metrics();
                 let ctx = BuildCtx {
                     cfg: &scene_cfg,
@@ -308,6 +430,34 @@ fn run(a: RenderArgs) {
                 }
                 glyphs.degraded = false;
                 glyphs.flush(&stack.renderer);
+                if chrome_dirty {
+                    chrome_dirty = false;
+                    let fonts = match (&rs.interface_font, overlay.is_some()) {
+                        (Some(fam), true) => {
+                            if ui_fonts.as_ref().is_none_or(|(f, _)| f != fam) {
+                                ui_fonts =
+                                    build_ui_fonts(fam, &glyphs.fonts).map(|f| (fam.clone(), f));
+                            }
+                            ui_fonts.as_mut().map(|(_, f)| f)
+                        }
+                        _ => None,
+                    };
+                    let fonts = fonts.unwrap_or(&mut glyphs.fonts);
+                    let age = overlay
+                        .as_ref()
+                        .map_or(0, |o| o.shown_at.elapsed().as_millis() as u64);
+                    build_overlay(
+                        stack.renderer.chrome_mut(),
+                        overlay.as_ref(),
+                        buffer,
+                        scale,
+                        rs.ui_zoom,
+                        rs.light,
+                        age,
+                        fonts,
+                        &mut raster,
+                    );
+                }
                 let a = rs.opacity;
                 let clear = [
                     f32::from(pal.bg.0) / 255.0 * a,
@@ -368,7 +518,14 @@ fn run(a: RenderArgs) {
                         glyphs.reset();
                         glyphs.flushed = false;
                         scene = GridScene::new();
-                        match build_stack(&surface, buffer, &rs, cell(&glyphs), scale) {
+                        match build_stack(
+                            &surface,
+                            buffer,
+                            &rs,
+                            cell(&glyphs),
+                            scale,
+                            inset_of(&overlay, scale, &rs),
+                        ) {
                             Ok(s) => {
                                 stack = s;
                                 stack
@@ -396,6 +553,62 @@ fn run(a: RenderArgs) {
         match msg {
             Ok(RenderMsg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(RenderMsg::Poke) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(RenderMsg::Overlay(o)) => {
+                let now = now_ns();
+                overlay = o.map(|b| *b);
+                stack.renderer.set_origin(origin_of(
+                    rs.padding,
+                    scale,
+                    inset_of(&overlay, scale, &rs),
+                ));
+                stack.renderer.invalidate_all();
+                scene = GridScene::new();
+                chrome_dirty = true;
+                sched.damage(now);
+            }
+            Ok(RenderMsg::Update(u)) => {
+                let RenderUpdate {
+                    settings: new,
+                    font,
+                } = *u;
+                let now = now_ns();
+                let mut cell_changed = new.padding != rs.padding;
+                if let Some(f) = font {
+                    glyphs.fonts.set_config(f);
+                    let px = glyphs.fonts.config().pixel_size(scale as f32);
+                    cell_changed |= glyphs.set_px(px);
+                }
+                if cell_changed {
+                    let c = cell(&glyphs);
+                    stack.renderer.set_cell(c);
+                    stack.renderer.set_origin(origin_of(
+                        new.padding,
+                        scale,
+                        inset_of(&overlay, scale, &new),
+                    ));
+                    let _ = to_main.send(MainMsg::CellSize(c));
+                }
+                stack.renderer.set_text_blending(new.blending);
+                if new.echo_window != rs.echo_window || new.sync_timeout != rs.sync_timeout {
+                    let pacing = sched.pacing();
+                    sched = Scheduler::new(
+                        SchedConfig {
+                            echo_window: new.echo_window,
+                            sync_timeout: new.sync_timeout,
+                            ..SchedConfig::default()
+                        },
+                        pacing,
+                    );
+                }
+                scene_cfg.bold_bright = new.bold_bright;
+                scene_cfg.bg_alpha = new.opacity;
+                rs = new;
+                chrome_dirty = true;
+                // Colours, opacity and glyph tables all feed the cached rows: rebuild them.
+                stack.renderer.invalidate_all();
+                scene = GridScene::new();
+                sched.damage(now);
+            }
         }
     }
     // Swapchain before the window roles (INTEGRATION-61): dropped here, before main destroys
@@ -406,6 +619,14 @@ fn run(a: RenderArgs) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_colour_yields_to_a_program_set_one() {
+        let startup = (1, 2, 3);
+        let cfg = (9, 9, 9);
+        assert_eq!(pick(startup, startup, cfg), cfg);
+        assert_eq!(pick((7, 7, 7), startup, cfg), (7, 7, 7));
+    }
 
     #[test]
     fn padding_scales_and_rounds() {

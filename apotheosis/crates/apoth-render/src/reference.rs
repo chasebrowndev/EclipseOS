@@ -43,7 +43,7 @@ impl Image {
     }
 
     /// `One, OneMinusSrcAlpha` over a premultiplied source.
-    fn over(&mut self, x: i32, y: i32, src: [u8; 4]) {
+    pub(crate) fn over(&mut self, x: i32, y: i32, src: [u8; 4]) {
         if let Some(d) = self.px(x, y) {
             let inv = 255 - u32::from(src[3]);
             for (dc, sc) in d.iter_mut().zip(src) {

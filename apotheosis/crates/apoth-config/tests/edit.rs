@@ -373,3 +373,28 @@ fn random_edits_never_touch_bytes_outside_the_edited_nodes() {
         }
     }
 }
+
+#[test]
+fn list_reports_present_keys_with_prefix_filter() {
+    let ed = Editor::parse(
+        "version 1\n// c\nfont {\n  size 13\n  family \"Mono\"\n}\ncursor { blink #true }\n",
+    )
+    .unwrap();
+    let all = ed.list(None);
+    let paths: Vec<_> = all.iter().map(|e| e.path).collect();
+    assert_eq!(paths, ["font.family", "font.size", "cursor.blink"]);
+    let f = ed.list(Some("font"));
+    assert_eq!(f.len(), 2);
+    assert_eq!(f[1].value, Ok(Value::Float(13.0)));
+    // `fon` is not a node prefix.
+    assert!(ed.list(Some("fon")).is_empty());
+    assert_eq!(ed.list(Some("font.size")).len(), 1);
+}
+
+#[test]
+fn list_surfaces_invalid_values_instead_of_skipping() {
+    let ed = Editor::parse("font { size \"big\" }\n").unwrap();
+    let l = ed.list(None);
+    assert_eq!(l.len(), 1);
+    assert!(l[0].value.is_err());
+}
