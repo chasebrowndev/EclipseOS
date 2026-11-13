@@ -1,0 +1,13 @@
+fixture "wide-cluster-zwj-family" {
+  desc "a ZWJ sequence is one two-column cluster under width-method unicode"
+  covers "T03-GRAPHEME" "UNICODE-07"
+  size rows=2 cols=10
+  feed #"👨‍👩‍👧"#
+  grid {
+    row "👨‍👩‍👧"
+  }
+  cursor row=0 col=2
+  cell row=0 col=0 wide="wide"
+  cell row=0 col=1 wide="tail"
+  cell row=0 col=2 ch=""
+}

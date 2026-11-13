@@ -1,0 +1,14 @@
+fixture "scroll-su" {
+  covers "T03-SU-SD" "T03-SCROLL-HISTORY"
+  review "SU feeding history is read from 'full-width, top-anchored scrolls feed history'; T-03 names no SU row"
+  size rows=4 cols=4
+  feed #"A\r\nB\r\nC\e[1S"#
+  grid {
+    row "B"
+    row "C"
+  }
+  cursor row=2 col=1
+  scrollback {
+    row "A"
+  }
+}

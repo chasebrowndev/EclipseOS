@@ -1,0 +1,11 @@
+fixture "lrm-decslrm-homes-cursor" {
+  covers "T03-DECLRMM" "VTCORE-31"
+  size rows=3 cols=6
+  feed #"\e[?69h\e[3;5HX\e[2;4s*"#
+  grid {
+    row "*"
+    row ""
+    row "    X"
+  }
+  cursor row=0 col=1
+}

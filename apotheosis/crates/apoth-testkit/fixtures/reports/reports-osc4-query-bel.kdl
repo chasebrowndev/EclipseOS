@@ -1,0 +1,9 @@
+fixture "reports-osc4-query-bel" {
+  desc "a BEL-terminated query gets a BEL-terminated reply"
+  covers "T03-OSC-COLOR" "T03-REPLY-TERMINATOR" "VTCORE-26" "VTCORE-27"
+  review "the reply colour format rgb:rrrr/gggg/bbbb (16-bit, 8-bit value doubled) is the xterm form; T-03 does not spell it"
+  size rows=5 cols=10
+  feed #"\e]4;1;rgb:12/34/56\a\e]4;1;?\a"#
+  grid
+  replies #"\e]4;1;rgb:1212/3434/5656\a"#
+}

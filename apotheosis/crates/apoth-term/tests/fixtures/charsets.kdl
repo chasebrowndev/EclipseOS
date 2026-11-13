@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Character sets, tabs and width (T-03 §3.1, UNICODE-11, VTCORE-14, T-04 §2-3).
+fixture "cs-dec-line-drawing" rows=1 cols=8 { feed "\e(0lqk"; grid "┌─┐" }
+fixture "cs-dec-box" rows=3 cols=4 { feed "\e(0lqk\r\nx x\r\nmqj"; grid "┌─┐" "│ │" "└─┘" }
+fixture "cs-dec-cross-and-checker" rows=1 cols=4 { feed "\e(0na`"; grid "┼▒◆" }
+fixture "cs-ascii-restores" rows=1 cols=4 { feed "\e(0q\e(Bq"; grid "─q" }
+fixture "cs-uk-pound" rows=1 cols=4 { feed "\e(A#a"; grid "£a" }
+fixture "cs-uk-back-to-ascii" rows=1 cols=4 { feed "\e(A#\e(B#"; grid "£#" }
+fixture "cs-g1-with-so" rows=1 cols=4 { feed "\e)0q\x0eq\x0fq"; grid "q─q" }
+fixture "cs-non-ascii-passes-through-dec" rows=1 cols=4 { feed "\e(0é"; grid "é" }
+fixture "cs-decsc-saves-charset" rows=1 cols=4 { feed "\e(0\e7\e(B\e8q"; grid "─" }
+fixture "cs-ris-resets-charset" rows=1 cols=4 { feed "\e(0\ecq"; grid "q" }
+fixture "cs-decstr-resets-charset" rows=1 cols=4 { feed "\e(0\e[!pq"; grid "q" }
+fixture "cs-vertical-bar" rows=1 cols=4 { feed "\e(0x"; grid "│" }
+fixture "cs-dec-underscore-is-blank" rows=1 cols=4 { feed "\e(0a_b"; grid "▒\u{a0}\u{2409}" }
+fixture "cs-ss2-g2" rows=1 cols=4 { feed "\e*0\eNqq"; grid "─q" }
+fixture "tab-default-every-8" rows=1 cols=20 { feed "\tx\tx"; grid "        x       x" }
+fixture "tab-hts-adds-stop" rows=1 cols=20 { feed "\e[1;4H\eH\r\tx"; grid "   x" }
+fixture "tab-tbc-0-clears-current" rows=1 cols=20 { feed "\e[1;9H\e[0g\r\tx"; grid "                x" }
+fixture "tab-tbc-3-clears-all" rows=1 cols=20 { feed "\e[3g\tx"; grid "                   x" }
+fixture "tab-cht-multiple" rows=1 cols=20 { feed "\e[2Ix"; grid "                x" }
+fixture "tab-cbt-multiple" rows=1 cols=20 { feed "\e[1;18H\e[2Zx"; grid "        x" }
+fixture "tab-cbt-stops-at-col0" rows=1 cols=20 { feed "\e[1;4H\e[9Zx"; grid "x" }
+fixture "tab-at-last-stop-goes-to-last-col" rows=1 cols=12 { feed "\e[1;10H\tx"; grid "           x" }
+fixture "tab-stops-survive-sgr" rows=1 cols=12 { feed "\e[1m\tx"; grid "        x" }
+fixture "tab-ris-restores-defaults" rows=1 cols=20 { feed "\e[3g\ec\tx"; grid "        x" }
+fixture "tab-tbc-unknown-ignored" rows=1 cols=20 { feed "\e[7g\tx"; grid "        x" }
+fixture "w-wide-cjk" rows=1 cols=6 { feed "世"; cell 0 0 wide="wide"; cell 0 1 wide="tail"; cursor 0 2 }
+fixture "w-two-wide" rows=1 cols=6 { feed "世界"; cursor 0 4; grid "世界" }
+fixture "w-wide-at-last-column-wraps" rows=2 cols=3 { feed "ab世"; grid "ab" "世"; cursor 1 2 }
+fixture "w-wide-at-last-column-no-autowrap-dropped" rows=1 cols=3 { feed "\e[?7lab世"; grid "ab" }
+fixture "w-combining-is-zero-width" rows=1 cols=4 { feed "e\u{301}x"; grid "e\u{301}x"; cursor 0 2; cell 0 0 ch="e\u{301}" }
+fixture "w-combining-after-wide" rows=1 cols=4 { feed "世\u{301}"; cursor 0 2; cell 0 0 wide="wide" }
+fixture "w-zwj-sequence-one-cluster" rows=1 cols=8 { feed "\u{1F468}\u{200D}\u{1F469}x"; cursor 0 3; cell 0 0 wide="wide" }
+fixture "w-vs16-widens-narrow-base" rows=1 cols=4 { feed "\u{2764}\u{FE0F}x"; cursor 0 3; cell 0 0 wide="wide" }
+fixture "w-flag-pair-is-two-columns" rows=1 cols=6 { feed "\u{1F1FA}\u{1F1F8}x"; cursor 0 3; cell 0 0 wide="wide" }
+fixture "w-emoji-wide" rows=1 cols=4 { feed "\u{1F600}"; cursor 0 2; cell 0 0 wide="wide"; cell 0 1 wide="tail" }
+fixture "w-ambiguous-narrow-by-default" rows=1 cols=4 { feed "\u{b1}x"; cursor 0 2 }
+fixture "w-ambiguous-wide-by-config" rows=1 cols=4 { config ambiguous-wide=#true; feed "\u{b1}x"; cursor 0 3 }
+fixture "w-wcswidth-combining-zero" rows=1 cols=4 { config width-method="wcswidth"; feed "e\u{301}x"; cursor 0 2 }
+fixture "w-wcswidth-zwj-sums-parts" rows=1 cols=8 { config width-method="wcswidth"; feed "\u{1F468}\u{200D}\u{1F469}"; cursor 0 4 }
+fixture "w-rep-wide" rows=1 cols=8 { feed "世\e[2b"; cursor 0 6; grid "世世世" }
+fixture "w-ascii-fast-path-mixed" rows=1 cols=8 { feed "ab世cd"; cursor 0 6; grid "ab世cd" }
+fixture "w-wide-fills-line-exactly" rows=2 cols=4 { feed "世世"; cursor 0 3 wrap=#true }
+fixture "w-wide-after-wrap-pending" rows=2 cols=2 { feed "世世"; grid "世" "世" }
+fixture "w-control-in-text-run" rows=1 cols=8 { feed "a\x07b"; grid "ab"; events "bell 1" }
+fixture "w-irm-wide-insert" rows=1 cols=8 { feed "ab\e[1;1H\e[4h世"; grid "世ab" }
+fixture "w-erase-wide-with-ech" rows=1 cols=6 { feed "世a\e[1;1H\e[2X"; grid "  a" }
+fixture "w-del-wide-with-dch" rows=1 cols=6 { feed "世a\e[1;1H\e[2P"; grid "a" }
+fixture "w-wide-cursor-after-bs" rows=1 cols=6 { feed "世\b\bx"; grid "x" }
+fixture "w-vs15-text-presentation-narrow" rows=1 cols=4 { feed "\u{2764}\u{FE0E}x"; cursor 0 2 }
+fixture "w-keycap-sequence" rows=1 cols=6 { feed "1\u{FE0F}\u{20E3}x"; cursor 0 3 }

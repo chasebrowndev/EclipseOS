@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Scrolling, margins, history (T-03 §3.1, VTCORE-15).
+fixture "scr-lf-at-bottom-scrolls" rows=2 cols=3 { feed "a\r\nb\r\nc"; grid "b" "c"; history 1; history-row 0 "a" }
+fixture "scr-history-accumulates" rows=2 cols=3 { feed "a\r\nb\r\nc\r\nd\r\ne"; history 3; grid "d" "e" }
+fixture "scr-wrap-scrolls" rows=2 cols=3 { feed "abcdefg"; grid "def" "g"; history 1 }
+fixture "scr-decstbm-homes-cursor" rows=4 cols=3 { feed "ab\e[2;3r"; cursor 0 0 }
+fixture "scr-region-scrolls-inside-only" rows=4 cols=3 { feed "a\r\nb\r\nc\r\nd\e[2;3r\e[3;1H\n"; grid "a" "c" "" "d"; history 0; cursor 2 0 }
+fixture "scr-decstbm-reset" rows=4 cols=3 { feed "\e[2;3r\e[r"; feed "a\r\nb\r\nc\r\nd\r\ne"; grid "b" "c" "d" "e"; history 1 }
+fixture "scr-decstbm-invalid-ignored" rows=4 cols=3 { feed "ab\e[3;2rc"; grid "abc" }
+fixture "scr-decstbm-default-bottom" rows=4 cols=3 { feed "a\r\nb\r\nc\r\nd\e[2r\e[4;1H\n"; grid "a" "c" "d" "" }
+fixture "scr-decstbm-origin-homes-to-margin" rows=4 cols=3 { feed "\e[2;3r\e[?6h"; cursor 1 0 }
+fixture "scr-ri-in-region-scrolls-down" rows=4 cols=3 { feed "a\r\nb\r\nc\r\nd\e[2;3r\e[2;1H\eM"; grid "a" "" "b" "d" }
+fixture "scr-ind-at-region-bottom" rows=4 cols=3 { feed "a\r\nb\r\nc\r\nd\e[2;3r\e[3;1H\eD"; grid "a" "c" "" "d" }
+fixture "scr-lf-below-region-no-scroll" rows=4 cols=3 { feed "\e[1;2r\e[4;1H\n"; cursor 3 0 }
+fixture "scr-lf-below-region-moves-down" rows=4 cols=3 { feed "\e[1;2r\e[3;1H\n"; cursor 3 0 }
+fixture "scr-alt-has-no-history" rows=2 cols=3 { feed "\e[?1049ha\r\nb\r\nc"; history 0; alt-history 0; grid "b" "c" }
+fixture "scr-main-history-survives-alt" rows=2 cols=3 { feed "a\r\nb\r\nc\e[?1049hx\e[?1049l"; history 1; grid "b" "c" }
+fixture "scr-bce-scroll-fill" rows=2 cols=3 { feed "a\r\nb\e[41m\n"; cell 1 0 bg="p1" }
+fixture "scr-decaln-fills" rows=2 cols=3 { feed "\e#8"; grid "EEE" "EEE" }
+fixture "scr-lnm-lf-returns" rows=2 cols=3 { feed "\e[20hab\ncd"; grid "ab" "cd" }
+fixture "scr-region-scroll-keeps-cursor-col" rows=3 cols=5 { feed "\e[1;2r\e[2;3H\n"; cursor 1 2 }
+fixture "scr-su-then-history-row" rows=2 cols=3 { feed "a\r\nb\e[S"; history 1; history-row 0 "a" }
+fixture "lr-decslrm-homes-cursor" rows=2 cols=8 { feed "\e[?69h\e[3;5sX"; grid "X" }
+fixture "lr-cup-origin-relative" rows=2 cols=8 { feed "\e[?69h\e[3;6s\e[?6h\e[1;1Hx"; grid "  x" }
+fixture "lr-print-wraps-at-right-margin" rows=2 cols=8 { feed "\e[?69h\e[3;5s\e[?6h\e[1;1Habcd"; grid "  abc" "  d" }
+fixture "lr-cr-goes-to-left-margin" rows=2 cols=8 { feed "\e[?69h\e[3;5s\e[?6h\e[1;1Hab\rX"; grid "  Xb" }
+fixture "lr-ich-inside-margin" rows=1 cols=8 { feed "abcdefgh\e[?69h\e[3;6s\e[?6h\e[1;1H\e[@"; grid "ab cdegh" }
+fixture "lr-dch-inside-margin" rows=1 cols=8 { feed "abcdefgh\e[?69h\e[3;6s\e[?6h\e[1;1H\e[P"; grid "abdef gh" }
+fixture "lr-il-honours-margins" rows=3 cols=6 { feed "abcdef\r\nghijkl\r\nmnopqr\e[?69h\e[2;4s\e[?6h\e[1;1H\e[L"; grid "a   ef" "gbcdkl" "mhijqr" }
+fixture "lr-dl-honours-margins" rows=3 cols=6 { feed "abcdef\r\nghijkl\r\nmnopqr\e[?69h\e[2;4s\e[?6h\e[1;1H\e[M"; grid "ahijef" "gnopkl" "m   qr" }
+fixture "lr-su-honours-margins" rows=3 cols=6 { feed "abcdef\r\nghijkl\r\nmnopqr\e[?69h\e[2;4s\e[?6h\e[1;1H\e[S"; grid "ahijef" "gnopkl" "m   qr" }
+fixture "lr-sd-honours-margins" rows=3 cols=6 { feed "abcdef\r\nghijkl\r\nmnopqr\e[?69h\e[2;4s\e[?6h\e[1;1H\e[T"; grid "a   ef" "gbcdkl" "mhijqr" }
+fixture "lr-decic" rows=2 cols=6 { feed "abcdef\r\nghijkl\e[?69h\e[2;5s\e[?6h\e[1;1H\e[1'}"; grid "a bcdf" "g hijl" }
+fixture "lr-decdc" rows=2 cols=6 { feed "abcdef\r\nghijkl\e[?69h\e[2;5s\e[?6h\e[1;1H\e[1'~"; grid "acde f" "gijk l" }
+fixture "lr-decic-outside-margins-ignored" rows=2 cols=6 { feed "abcdef\r\nghijkl\e[?69h\e[2;5s\e[1;1H\e[1'}"; grid "abcdef" "ghijkl" }
+fixture "lr-reset-69-ignores-margins" rows=1 cols=6 { feed "\e[?69h\e[2;4s\e[?69l\e[1;1Habcdef"; grid "abcdef" }
+fixture "lr-mode-69-reported" rows=1 cols=6 { feed "\e[?69h"; mode "?69" "set"; feed "\e[?69l"; mode "?69" "reset" }
+fixture "lr-ech-ignores-margins" rows=1 cols=8 { feed "abcdefgh\e[?69h\e[3;6s\e[1;1H\e[?6l\e[1;1H\e[3X"; grid "   defgh" }

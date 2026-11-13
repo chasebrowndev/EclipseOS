@@ -1,0 +1,9 @@
+fixture "charset-ss3-single-shift" {
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e+0\eOqq"#
+  grid {
+    row "─q"
+  }
+  cursor row=0 col=2
+}
