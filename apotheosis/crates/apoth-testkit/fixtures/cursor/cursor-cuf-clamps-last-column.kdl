@@ -1,0 +1,10 @@
+fixture "cursor-cuf-clamps-last-column" {
+  desc "CUF stops at the last column and does not wrap"
+  covers "T03-CUX"
+  size rows=5 cols=10
+  feed #"\e[99C*"#
+  grid {
+    row "         *"
+  }
+  cursor row=0 col=9
+}

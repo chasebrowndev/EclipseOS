@@ -1,0 +1,11 @@
+fixture "c0-vt-ff-are-lf" {
+  desc "c0 vt ff are lf (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC"
+  size rows=3 cols=5
+  feed #"a\vb\fc"#
+  grid {
+    row "a"
+    row " b"
+    row "  c"
+  }
+}

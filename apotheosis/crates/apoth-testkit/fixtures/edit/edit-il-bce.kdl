@@ -1,0 +1,7 @@
+fixture "edit-il-bce" {
+  desc "edit il bce (migrated from the apoth-term corpus)"
+  covers "T03-IL-DL"
+  size rows=3 cols=3
+  feed #"a\r\nb\e[41m\e[2;1H\e[L"#
+  cell row=1 col=0 bg="p1"
+}

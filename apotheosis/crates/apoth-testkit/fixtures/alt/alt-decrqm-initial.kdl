@@ -1,0 +1,7 @@
+fixture "alt-decrqm-initial" {
+  covers "T03-ALTSCREEN" "T03-DECRQM"
+  size rows=4 cols=6
+  feed #"\e[?47$p\e[?1047$p\e[?1048$p\e[?1049$p"#
+  grid
+  replies #"\e[?47;2$y\e[?1047;2$y\e[?1048;2$y\e[?1049;2$y"#
+}

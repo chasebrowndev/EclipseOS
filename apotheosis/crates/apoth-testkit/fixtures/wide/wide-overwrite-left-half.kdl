@@ -1,0 +1,12 @@
+fixture "wide-overwrite-left-half" {
+  desc "overwriting a head repairs the tail"
+  covers "T03-WIDE" "VTCORE-08"
+  size rows=2 cols=6
+  feed #"日\e[1;1Hx"#
+  grid {
+    row "x"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="x" wide="narrow"
+  cell row=0 col=1 ch="" wide="narrow"
+}

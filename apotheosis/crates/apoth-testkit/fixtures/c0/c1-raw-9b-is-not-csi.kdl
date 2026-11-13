@@ -1,0 +1,10 @@
+fixture "c1-raw-9b-is-not-csi" {
+  desc "raw 0x9B is malformed UTF-8, never CSI"
+  covers "T03-C1-IGNORED" "VTCORE-13"
+  size rows=3 cols=10
+  feed #"A\x9b2CB"#
+  grid {
+    row "A�2CB"
+  }
+  cursor row=0 col=5
+}

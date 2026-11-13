@@ -1,0 +1,9 @@
+fixture "charset-survives-cursor-move" {
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e(0\e[2Cq"#
+  grid {
+    row "  ─"
+  }
+  cursor row=0 col=3
+}

@@ -1,0 +1,8 @@
+fixture "resize-cursor-clamped" {
+  desc "resize cursor clamped (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=2 cols=6
+  feed #"abcd"#
+  resize rows=2 cols=3
+  cursor row=0 col=2
+}

@@ -1,0 +1,9 @@
+fixture "tabs-ris-restores-defaults" {
+  covers "T03-HTS-TBC" "T03-RIS"
+  size rows=3 cols=20
+  feed #"\e[3g\ec\tX"#
+  grid {
+    row "        X"
+  }
+  cursor row=0 col=9
+}

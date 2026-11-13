@@ -1,0 +1,10 @@
+fixture "edit-ich-cuts-wide-at-edge" {
+  desc "a wide glyph pushed half off the edge is erased (seam repair)"
+  covers "T03-ICH-DCH" "T03-WIDE" "VTCORE-08"
+  size rows=2 cols=6
+  feed #"ABCD日\e[1;1H\e[1@"#
+  grid {
+    row " ABCD"
+  }
+  cursor row=0 col=0
+}

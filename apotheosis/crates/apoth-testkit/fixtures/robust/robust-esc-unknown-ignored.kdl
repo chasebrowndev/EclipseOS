@@ -1,0 +1,10 @@
+fixture "robust-esc-unknown-ignored" {
+  desc "ESC + intermediate + final is consumed whole; so is an unknown ESC final"
+  covers "T03-SEQ-ROBUST"
+  size rows=3 cols=10
+  feed #"\e!X\eqY"#
+  grid {
+    row "Y"
+  }
+  cursor row=0 col=1
+}

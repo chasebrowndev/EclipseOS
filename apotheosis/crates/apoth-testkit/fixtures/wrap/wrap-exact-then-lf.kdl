@@ -1,0 +1,10 @@
+fixture "wrap-exact-then-lf" {
+  covers "T03-AUTOWRAP" "T03-C0-EXEC"
+  size rows=3 cols=5
+  feed #"ABCDE\nF"#
+  grid {
+    row "ABCDE"
+    row "    F"
+  }
+  cursor row=1 col=4
+}
