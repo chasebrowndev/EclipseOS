@@ -1,0 +1,9 @@
+fixture "alt-1048-save-restore-cursor" {
+  desc "alt 1048 save restore cursor (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=5
+  feed #"ab\e[?1048h\e[2;1H\e[?1048lX"#
+  grid {
+    row "abX"
+  }
+}

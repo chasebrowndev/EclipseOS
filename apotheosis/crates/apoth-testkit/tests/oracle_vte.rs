@@ -5,7 +5,8 @@
 //! adapter does model must agree with ours or be listed in `EXCLUSIONS`.
 
 use apoth_testkit::adapter::TermDriver;
-use apoth_testkit::oracle::{Oracle, OracleView, Verdict, compare};
+use apoth_testkit::conformance;
+use apoth_testkit::oracle::{Oracle, OracleView, Verdict, compare, disagreement_report};
 use apoth_testkit::{fixtures_dir, load_fixtures};
 use vte::{Params, Parser, Perform};
 
@@ -171,22 +172,24 @@ impl Oracle for VteOracle {
 #[test]
 fn corpus_agrees_with_vte_where_vte_models_it() {
     let fixtures = load_fixtures(&fixtures_dir()).expect("fixtures load");
+    let table = std::fs::read_to_string(fixtures_dir().join("conformance.kdl")).expect("table");
+    let rows = conformance::parse(&table).expect("table parses");
     let (mut compared, mut skipped, mut fails) = (0usize, 0usize, Vec::new());
     for fx in &fixtures {
         match compare::<TermDriver, _>(fx, &mut VteOracle).expect("well-formed") {
             Verdict::Agree => compared += 1,
             Verdict::Skipped(_) => skipped += 1,
-            Verdict::Disagree(d) => fails.push(format!("{}:\n{d}", fx.id)),
+            Verdict::Disagree(d) => fails.push((fx.id.clone(), d)),
         }
     }
     assert!(
-        compared >= 20,
+        compared >= 150,
         "only {compared} fixtures compared ({skipped} skipped)"
     );
     assert!(
         fails.is_empty(),
-        "{} disagreements:\n{}",
+        "{} disagreements without an exclusion:\n{}",
         fails.len(),
-        fails.join("\n")
+        disagreement_report("vte", &rows, &fails)
     );
 }

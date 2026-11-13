@@ -1,0 +1,9 @@
+fixture "el-0-to-end" {
+  desc "el 0 to end (migrated from the apoth-term corpus)"
+  covers "T03-EL"
+  size rows=1 cols=8
+  feed #"abcdef\e[1;4H\e[K"#
+  grid {
+    row "abc"
+  }
+}

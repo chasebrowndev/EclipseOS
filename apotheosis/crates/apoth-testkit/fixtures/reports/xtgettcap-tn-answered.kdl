@@ -1,0 +1,7 @@
+fixture "xtgettcap-tn-answered" {
+  desc "xtgettcap tn answered (migrated from the apoth-term corpus)"
+  covers "T03-XTGETTCAP"
+  size rows=2 cols=4
+  feed #"\eP+q544e\e\\"#
+  replies #"\eP1+r544E=787465726D2D323536636F6C6F72\e\\"#
+}

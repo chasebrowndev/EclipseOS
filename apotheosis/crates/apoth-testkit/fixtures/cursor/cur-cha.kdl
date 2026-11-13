@@ -1,0 +1,9 @@
+fixture "cur-cha" {
+  desc "cur cha (migrated from the apoth-term corpus)"
+  covers "T03-CUP"
+  size rows=1 cols=10
+  feed #"abc\e[7Gx"#
+  grid {
+    row "abc   x"
+  }
+}

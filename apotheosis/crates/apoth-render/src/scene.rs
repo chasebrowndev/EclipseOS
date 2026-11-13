@@ -402,6 +402,7 @@ pub struct GridScene {
     planner: Planner,
     force: Vec<u32>,
     extra: Vec<u32>,
+    redrawn: Vec<u32>,
     cols: usize,
 }
 
@@ -423,6 +424,13 @@ impl GridScene {
         self.planner.last()
     }
 
+    /// Every logical row the last update rebuilt: the plan's redraw set plus pending rows
+    /// retried. The executor redraws exactly these rows in the retained texture.
+    #[must_use]
+    pub fn redrawn(&self) -> &[u32] {
+        &self.redrawn
+    }
+
     /// Applies one frame's damage: plans, moves per-row ranges with their rows, rebuilds
     /// the rows to redraw (damaged, forced and pending) and reports the work done.
     /// `Damage::None` with nothing pending does no work.
@@ -434,6 +442,7 @@ impl GridScene {
         echo: bool,
         provider: &mut P,
     ) -> FrameWork {
+        self.redrawn.clear();
         let nrows = snap.rows.len();
         let cols = snap.rows.first().map_or(0, |r| r.cells.len());
         let mut damage = damage;
@@ -464,6 +473,7 @@ impl GridScene {
         for &y in &self.planner.last().redraw {
             let y = y as usize;
             build_row(ctx, y, &snap.rows[y], echo, provider, &mut self.rows[y]);
+            self.redrawn.push(y as u32);
             rebuilt += 1;
         }
         // Pending rows (their flags moved with their rows) retry unless just rebuilt.
@@ -477,6 +487,7 @@ impl GridScene {
                     .is_err()
             {
                 build_row(ctx, y, &snap.rows[y], echo, provider, row);
+                self.redrawn.push(y as u32);
                 rebuilt += 1;
             }
         }

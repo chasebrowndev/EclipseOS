@@ -2,9 +2,8 @@
 //! Presentation policy (T-07 §3; RENDERING-59, -61, -62, -63, -68; PERFORMANCE-76).
 //!
 //! The decisions are pure functions over capability lists so they test without a GPU. The
-//! executor maps wgpu's `PresentMode`, `CompositeAlphaMode`, `DeviceType` and
-//! `SurfaceError` onto these enums; wgpu 30 was not readable when this was written, so that
-//! mapping is not here.
+//! presenter (`presenter`) maps wgpu's `PresentMode`, `CompositeAlphaMode` and
+//! `CurrentSurfaceTexture` onto these enums, and `gpu` maps `DeviceType`.
 
 /// Present modes the policy distinguishes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +63,70 @@ pub fn choose_alpha(offered: &[AlphaKind]) -> AlphaChoice {
             opaque_fallback: true,
         }
     }
+}
+
+/// What the caller asks of the composite alpha mode (`render.alpha-mode`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AlphaRequest {
+    /// Substitute: premultiplied if offered, else opaque (reported).
+    #[default]
+    Auto,
+    /// Exactly opaque.
+    Opaque,
+    /// Exactly premultiplied.
+    PreMultiplied,
+}
+
+/// An explicitly requested alpha mode the surface does not offer (RENDERING-62).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnsupportedAlphaMode;
+
+/// Resolves a request against the offered modes. Only `Auto` substitutes; an explicit mode
+/// that is not offered is an error, never a silent fallback (RENDERING-62).
+pub fn resolve_alpha(
+    offered: &[AlphaKind],
+    req: AlphaRequest,
+) -> Result<AlphaChoice, UnsupportedAlphaMode> {
+    let exact = |mode: AlphaKind| {
+        if offered.contains(&mode) {
+            Ok(AlphaChoice {
+                mode,
+                opaque_fallback: false,
+            })
+        } else {
+            Err(UnsupportedAlphaMode)
+        }
+    };
+    match req {
+        // Opaque is the only substitute; `Other` modes (post-multiplied, inherit) would
+        // mis-composite premultiplied output, so with neither offered Auto fails (T-07 §3).
+        AlphaRequest::Auto
+            if !offered.contains(&AlphaKind::PreMultiplied)
+                && !offered.contains(&AlphaKind::Opaque) =>
+        {
+            Err(UnsupportedAlphaMode)
+        }
+        AlphaRequest::Auto => Ok(choose_alpha(offered)),
+        AlphaRequest::Opaque => exact(AlphaKind::Opaque),
+        AlphaRequest::PreMultiplied => exact(AlphaKind::PreMultiplied),
+    }
+}
+
+/// Snaps a pixel extent for a fractional scale (RENDERING-55): returns the logical size to
+/// give the viewport destination and the buffer size, chosen so that
+/// `round(scale * round(px / scale)) == px` holds for the buffer size.
+#[must_use]
+pub fn snap_buffer_px(px: u32, scale: f64) -> (u32, u32) {
+    let logical = (f64::from(px) / scale).round().max(1.0);
+    let buffer = (scale * logical).round().max(1.0);
+    (logical as u32, buffer as u32)
+}
+
+/// The opaque region is the whole surface when the window is fully opaque or fullscreen, and
+/// empty otherwise (RENDERING-57).
+#[must_use]
+pub fn opaque_region_full(window_alpha: f32, fullscreen: bool) -> bool {
+    window_alpha >= 1.0 || fullscreen
 }
 
 /// Adapter classes.
@@ -255,6 +318,51 @@ mod tests {
             "hardware without alpha still beats software"
         );
         assert_eq!(choose_adapter(&[]), None);
+    }
+
+    #[test]
+    fn explicit_alpha_never_substitutes() {
+        let offered = [AlphaKind::Opaque];
+        assert_eq!(
+            resolve_alpha(&offered, AlphaRequest::PreMultiplied),
+            Err(UnsupportedAlphaMode)
+        );
+        let c = resolve_alpha(&offered, AlphaRequest::Auto).unwrap();
+        assert!(c.opaque_fallback && c.mode == AlphaKind::Opaque);
+        assert_eq!(
+            resolve_alpha(&[AlphaKind::Other], AlphaRequest::Auto),
+            Err(UnsupportedAlphaMode),
+            "only post-multiplied offered: no silent substitute"
+        );
+        let both = [AlphaKind::Opaque, AlphaKind::PreMultiplied];
+        let c = resolve_alpha(&both, AlphaRequest::Opaque).unwrap();
+        assert!(!c.opaque_fallback && c.mode == AlphaKind::Opaque);
+        let c = resolve_alpha(&both, AlphaRequest::PreMultiplied).unwrap();
+        assert_eq!(c.mode, AlphaKind::PreMultiplied);
+    }
+
+    #[test]
+    fn snapped_buffer_sizes_are_fixed_points() {
+        for scale in [1.0, 1.25, 1.5, 1.75, 2.0, 3.0] {
+            for px in 100..2000u32 {
+                let (logical, buffer) = snap_buffer_px(px, scale);
+                let back = (scale * f64::from(logical)).round() as u32;
+                assert_eq!(back, buffer);
+                let again = (scale * (f64::from(buffer) / scale).round()).round() as u32;
+                assert_eq!(again, buffer, "scale {scale} px {px}");
+                assert!(
+                    buffer.abs_diff(px) as f64 <= scale,
+                    "stays near the request"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn opaque_region_rules() {
+        assert!(opaque_region_full(1.0, false));
+        assert!(opaque_region_full(0.5, true));
+        assert!(!opaque_region_full(0.9, false));
     }
 
     #[test]

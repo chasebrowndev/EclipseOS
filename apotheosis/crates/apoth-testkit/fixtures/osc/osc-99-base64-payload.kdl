@@ -1,0 +1,7 @@
+fixture "osc-99-base64-payload" {
+  desc "OSC 99 e=1 payload is base64-decoded"
+  covers "T03-OSC99-777"
+  size rows=2 cols=8
+  feed #"\e]99;e=1;aGk=\a"#
+  events "notify:hi"
+}

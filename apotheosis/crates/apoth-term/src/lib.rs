@@ -13,7 +13,9 @@
 //! * Configuration arrives in [`TermConfig`] at construction.
 //! * The title stack is 10 deep and ignores a push when full.
 //! * OSC 52 read (query) is consumed without a reply until the consent path exists.
-//! * XTGETTCAP (`DCS + q`), DECRQCRA outside `esctest`, OSC 99/777 and XTSAVE are consumed.
+//! * XTGETTCAP (`DCS + q`), DECRQCRA outside `esctest` and XTSAVE are consumed.
+//! * OSC 777 `notify;title;body` and OSC 99 (`p=title|body` payloads, optional `e=1` base64) push
+//!   a notification event; other OSC 99 payload kinds and chunked assembly are consumed.
 //! * A wide character at the last column blanks that cell and wraps (the grid has no
 //!   `SpacerHead` writer); with autowrap off it is dropped.
 //! * Hyperlinks are not carried across `ED 3` (grid has no history-clear call yet).

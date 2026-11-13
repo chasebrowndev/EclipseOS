@@ -3,6 +3,10 @@
 //!
 //! Governing spec: T-02 (`docs/ECLIPSEOS_SPECS_APOTHEOSIS.md`).
 //!
+//! M12 adds reflow (`Screen::resize_reflow`), selection geometry and extraction
+//! (`select`) and the logical-line search primitives (`search`); lazy history reflow and
+//! cold-page compression are not yet implemented.
+//!
 //! M3 scope: paged storage with relocatable pages, 8-byte cells, per-page interned styles
 //! and hyperlinks, grapheme arena, rows with wrap flags and sequence numbers, region
 //! scrolling, scrollback limits with a page pool, tracked pins, tab stops and the two
@@ -31,6 +35,8 @@ pub mod cell;
 pub mod page;
 pub mod pin;
 pub mod screen;
+pub mod search;
+pub mod select;
 pub mod snapshot;
 pub mod style;
 pub mod tabs;
@@ -39,11 +45,16 @@ pub use cell::{Cell, Semantic, Tag, Wide};
 pub use page::{MAX_CLUSTER_CPS, MAX_LINK_ID, MAX_URI, PAGE_BYTES, row_flags as flags};
 pub use pin::{MAX_PINS, Pin, PinId, PinKind, PinState};
 pub use screen::{
-    CellAttrs, Glyph, Limits, MAX_CELLS, Region, Resized, Screen, ScreenConfig, Stats,
+    CellAttrs, Glyph, Limits, MAX_CELLS, ReflowOpts, Reflowed, Region, Resized, Screen,
+    ScreenConfig, Stats,
 };
+pub use search::{Dir, LineScratch, LineSpan, MAX_LINE_BYTES, fold_text};
+pub use select::{ExtractOpts, SelKind, SelRange, Selection, Side, WordChars};
 pub use snapshot::{Changes, Damage, FrameSnapshot, RowSnapshot, SeenSet, SnapCell, SnapRow};
 pub use style::{Attrs, Color, Style, Underline};
 pub use tabs::TabStops;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_reflow;

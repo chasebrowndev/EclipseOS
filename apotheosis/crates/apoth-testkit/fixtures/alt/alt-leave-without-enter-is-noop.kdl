@@ -1,0 +1,11 @@
+fixture "alt-leave-without-enter-is-noop" {
+  desc "alt leave without enter is noop (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=5
+  feed #"ab\e[?1047l"#
+  grid {
+    row "ab"
+  }
+  cursor row=0 col=2
+  alt #false
+}

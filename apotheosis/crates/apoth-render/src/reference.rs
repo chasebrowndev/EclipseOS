@@ -152,7 +152,11 @@ pub fn render(
             ));
         }
         for g in &row.glyphs {
-            draw_glyph(&mut img, g, m, atlas, mode);
+            // Rows moved by a scroll keep the cell row they were built at; their position
+            // is the row they now occupy.
+            let mut g = *g;
+            g.cell[1] = y as u16;
+            draw_glyph(&mut img, &g, m, atlas, mode);
         }
         for r in &row.rects {
             img.fill(&RectInstance::new(r.x, r.y + y0, r.w, r.h, r.color));
@@ -243,6 +247,32 @@ impl MemAtlas {
                 self.color[usize::from(page)][at..at + 4].copy_from_slice(&data[s..s + 4]);
             }
         }
+    }
+}
+
+impl MemAtlas {
+    /// Page edge length in pixels.
+    #[must_use]
+    pub fn size(&self) -> u32 {
+        self.size
+    }
+
+    /// Pages held.
+    #[must_use]
+    pub fn pages(&self) -> usize {
+        self.mask.len()
+    }
+
+    /// The whole R8 page, `size * size` bytes (for uploading to a GPU atlas).
+    #[must_use]
+    pub fn mask_page(&self, page: usize) -> &[u8] {
+        &self.mask[page]
+    }
+
+    /// The whole premultiplied RGBA page, `size * size * 4` bytes.
+    #[must_use]
+    pub fn color_page(&self, page: usize) -> &[u8] {
+        &self.color[page]
     }
 }
 

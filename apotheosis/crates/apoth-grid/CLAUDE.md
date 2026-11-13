@@ -46,8 +46,20 @@ Coordinates `(y, x)` are active-area, 0-based; margins/regions are the caller's.
   Both reuse buffer capacity and allocate nothing once warm.
 - Determinism: no clocks, no randomness; same call sequence -> same state.
 
+## M12 additions
+- `screen/reflow.rs`: `Screen::resize_reflow(rows, cols, cursor, ReflowOpts) -> Reflowed`.
+  Eager reflow of primary screen + history as logical lines (wide cells never split,
+  `SpacerHead` via `set_spacer_head`, cursor/pins/blocks/links carried, fresh seqs, `Full`
+  damage). Falls back to `resize_keeping` on alt screen, rows-only change, `reflow:false`.
+  `protect_from` pin: rows from there down are truncated, not re-wrapped. Lazy history
+  conversion and lz4 cold pages are NOT implemented yet.
+- `select.rs`: `Selection` = two pins + sides; `selection_range` resolves
+  simple/word/line/block/semantic; `extract` joins wraps, trims trailing blanks.
+- `search.rs`: `logical_line` (text + byte->cell map), `search(dir, from, fold, scratch, matcher)`
+  returns `(Pin, Pin)`; `find_literal` on top. Regex plugs in as the matcher (app side).
+
 ## Tests
-`src/tests.rs` (naive-model property tests, scroll/eviction/pin/snapshot/overflow/split
+`src/tests_reflow.rs` (reflow/selection/search vs naive logical-line model), `src/tests.rs` (naive-model property tests, scroll/eviction/pin/snapshot/overflow/split
 tests) and `src/page.rs` unit tests (refcounts, link map vs model, seams, from_bytes
 validation and corruption fuzz-by-loop). Run:
 `CARGO_INCREMENTAL=0 cargo test -p apoth-grid -j 2`.

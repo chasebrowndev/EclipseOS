@@ -51,6 +51,12 @@ impl<K: Hash + Eq, V> SharedCache<K, V> {
         Arc::clone(lock(shard).entry(key).or_insert(built))
     }
 
+    /// The entry for `key` if present. Takes the shard lock only for the lookup.
+    #[must_use]
+    pub fn get(&self, key: &K) -> Option<Arc<V>> {
+        lock(self.shard(key)).get(key).map(Arc::clone)
+    }
+
     /// Entries held.
     #[must_use]
     pub fn len(&self) -> usize {

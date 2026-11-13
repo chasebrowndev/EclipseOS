@@ -85,6 +85,8 @@ pub(crate) enum StrMode {
     Clip,
     Mark,
     Notify,
+    Notify777,
+    Notify99,
     Progress,
     Decrqss,
     Tcap,
@@ -649,6 +651,14 @@ impl Machine {
                 self.origin = s.origin;
                 self.charsets = s.charsets;
                 self.gl = s.gl;
+                // DECOM: the restored position is margin-relative (T-03 §3.1, VTCORE-24 CPR),
+                // so margins set since the save clamp it.
+                if self.origin {
+                    self.y = self.y.clamp(self.top, self.bottom);
+                    if self.lrmm {
+                        self.x = self.x.clamp(self.left, self.right);
+                    }
+                }
             }
             None => {
                 self.origin = false;

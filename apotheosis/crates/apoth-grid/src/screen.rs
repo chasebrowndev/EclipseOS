@@ -11,6 +11,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod reflow;
+pub use reflow::{ReflowOpts, Reflowed};
+
 use crate::cell::{Cell, Semantic, Tag, Wide};
 use crate::page::{
     Ceil, Full, LinkError, MAX_CLUSTER_CPS, PAGE_BYTES, Page, PageSpec, ROW_HEADER_BYTES,
@@ -487,6 +490,19 @@ impl Screen {
                 out.extend(buf[..n].iter().map(|&ch| ch as u32));
             }
             _ => {}
+        }
+    }
+
+    /// Mark the last cell of row `y` as a `SpacerHead` (a wide character wrapped to the next
+    /// row, VTCORE-08). Only a blank last cell is replaced; reflow drops it when rejoining.
+    pub fn set_spacer_head(&mut self, y: usize) {
+        if y >= self.rows {
+            return;
+        }
+        let x = self.cols - 1;
+        let (pi, pos) = self.slot_of(y);
+        if self.pages[pi].cell(pos, x) == Cell::EMPTY {
+            self.pages[pi].put(pos, x, Cell::spacer_head(), None);
         }
     }
 
@@ -1387,6 +1403,39 @@ impl Screen {
             wrap_width: p.wrap_width(),
         };
         self.pins.track(pin, kind)
+    }
+
+    /// The pin value for row `abs` (from the oldest retained row) and column `x`. The value
+    /// stays valid across scroll and eviction checks; hand it to [`Screen::track_pin`] to keep
+    /// it across reflow.
+    #[must_use]
+    pub fn pin_at(&self, abs: usize, x: usize) -> Option<Pin> {
+        if x >= self.cols {
+            return None;
+        }
+        let (pi, pos) = self.loc_abs(abs)?;
+        let p = &self.pages[pi];
+        Some(Pin {
+            serial: p.serial(),
+            slot: p.slot_at(pos),
+            col: x as u16,
+            wrap_width: p.wrap_width(),
+        })
+    }
+
+    /// Track an existing pin value (for example a search match).
+    pub fn track_pin(&mut self, pin: Pin, kind: PinKind) -> Option<PinId> {
+        self.pin_abs(&pin)?;
+        self.pins.track(pin, kind)
+    }
+
+    /// `(abs row, col)` of a pin value, if its row still exists.
+    #[must_use]
+    pub fn pin_abs(&self, p: &Pin) -> Option<(usize, usize)> {
+        let pi = self.pages.iter().position(|pg| pg.serial() == p.serial)?;
+        let pos = self.pages[pi].pos_of(p.slot)?;
+        let before: usize = self.pages[..pi].iter().map(Page::used_rows).sum();
+        Some((before + pos, p.col as usize))
     }
 
     /// Current state of a pin; `None` for an unknown or untracked id.

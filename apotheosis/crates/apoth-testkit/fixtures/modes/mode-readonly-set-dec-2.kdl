@@ -1,0 +1,7 @@
+fixture "mode-readonly-set-dec-2" {
+  desc "mode readonly set dec 2 (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?2l"#
+  mode "?2" 3
+}

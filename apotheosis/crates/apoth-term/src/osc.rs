@@ -111,12 +111,14 @@ impl Machine {
                         StrMode::Clip,
                         u32::try_from(self.cfg.osc52_max).unwrap_or(u32::MAX),
                     ),
-                    133 => (StrMode::Mark, CAP_133),
+                    133 | 633 => (StrMode::Mark, CAP_133),
                     9 => match classify_nine(head.osc_selector()) {
                         Nine::Progress => (StrMode::Progress, CAP_PROGRESS),
                         Nine::Silent => return StrRoute::SKIP,
                         Nine::Text => (StrMode::Notify, CAP_NOTIFY),
                     },
+                    777 => (StrMode::Notify777, CAP_NOTIFY),
+                    99 => (StrMode::Notify99, CAP_NOTIFY),
                     _ => return StrRoute::SKIP,
                 };
                 self.strm = mode;
@@ -218,6 +220,51 @@ impl Machine {
             StrMode::Mark => self.osc_mark(buf),
             StrMode::Notify => {
                 let t = sanitize(buf);
+                if !t.is_empty() {
+                    self.events.push_notification(t);
+                }
+            }
+            StrMode::Notify777 => {
+                // `notify;title;body` (T-03 §3.1; text form is a spec gap, see T-03 report).
+                let mut f = buf.splitn(3, |&b| b == b';');
+                if f.next() == Some(b"notify") {
+                    let title = sanitize(f.next().unwrap_or_default());
+                    let body = sanitize(f.next().unwrap_or_default());
+                    let t = match (title.is_empty(), body.is_empty()) {
+                        (false, false) => format!("{title}: {body}"),
+                        (false, true) => title,
+                        _ => body,
+                    };
+                    if !t.is_empty() {
+                        self.events.push_notification(t);
+                    }
+                }
+            }
+            StrMode::Notify99 => {
+                // `metadata;payload`; title and body payloads each become a notification,
+                // every other payload kind (close, query, alive, icon) is consumed.
+                let mut f = buf.splitn(2, |&b| b == b';');
+                let meta = f.next().unwrap_or_default();
+                let Some(payload) = f.next() else { return };
+                let (mut kind_ok, mut b64) = (true, false);
+                for kv in meta.split(|&b| b == b':') {
+                    match kv {
+                        b"e=1" => b64 = true,
+                        [b'p', b'=', v @ ..] => kind_ok = v == b"title" || v == b"body",
+                        _ => {}
+                    }
+                }
+                if !kind_ok {
+                    return;
+                }
+                let t = if b64 {
+                    match b64_decode(payload) {
+                        Some(d) => sanitize(&d),
+                        None => return,
+                    }
+                } else {
+                    sanitize(payload)
+                };
                 if !t.is_empty() {
                     self.events.push_notification(t);
                 }

@@ -1,0 +1,8 @@
+fixture "reply-da-two-queries-two-replies-in-order" {
+  desc "reply da two queries two replies in order (migrated from the apoth-term corpus)"
+  covers "T03-DA1" "T03-DA2"
+  size rows=2 cols=4
+  version "1.4.2"
+  feed #"\e[c\e[>c"#
+  replies #"\e[?62;22c\e[>1;10402;0c"#
+}
