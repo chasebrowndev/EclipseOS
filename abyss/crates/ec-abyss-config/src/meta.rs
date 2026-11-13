@@ -15,53 +15,10 @@
 //! every one does. Whether a key is policy-owned is [`crate::schema::Key::owner`],
 //! not repeated here.
 
-/// One key's presentation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Meta {
-    /// The schema path this row describes.
-    pub path: &'static str,
-    /// The row label in Settings and in its search results.
-    pub label: &'static str,
-    /// The Settings page, as `section/page` (or `section` for a section that
-    /// is one page).
-    pub page: &'static str,
-    /// The group heading on that page.
-    pub group: &'static str,
-    /// The fixed line shown beneath the row, if any. A caption that depends on
-    /// the key's current value (the blur mode's, the interaction mode's) is
-    /// not data and stays with the app.
-    pub caption: Option<&'static str>,
-    /// Words people search for this key by, beyond its label, path and doc.
-    /// Lowercase words joined by single spaces.
-    pub keywords: &'static [&'static str],
-    /// The label on the page's own pane when that pane words it differently
-    /// from search and the generic list (`label`). `None`: same as `label`.
-    pub pane_label: Option<&'static str>,
-}
+pub use ec_config_schema::Meta;
 
 const fn m(path: &'static str, label: &'static str, page: &'static str, group: &'static str) -> Meta {
-    Meta {
-        path,
-        label,
-        page,
-        group,
-        caption: None,
-        keywords: &[],
-        pane_label: None,
-    }
-}
-
-impl Meta {
-    /// This row with its own-pane wording.
-    const fn pane(mut self, label: &'static str) -> Self {
-        self.pane_label = Some(label);
-        self
-    }
-
-    /// The label the page's own pane shows.
-    pub fn pane_label(&self) -> &'static str {
-        self.pane_label.unwrap_or(self.label)
-    }
+    Meta::new(path, label, page, group)
 }
 
 const ADAPTIVE_CAPTION: &str =

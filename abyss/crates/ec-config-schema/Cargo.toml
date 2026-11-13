@@ -1,0 +1,17 @@
+[package]
+name = "ec-config-schema"
+description = "Config schema types shared by abyss and Apotheosis: Ty, Key, Meta, Value (types only, no tables)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lib]
+name = "ec_config_schema"
+path = "src/lib.rs"
+
+# No dependencies at all: abyss-config, apoth-config, ec-settings and ec-ctl all
+# link this, and none of them may drag the others in.
+[dependencies]

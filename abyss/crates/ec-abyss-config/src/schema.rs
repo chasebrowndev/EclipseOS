@@ -22,85 +22,7 @@ use super::{
     AnnotationColors, BarPopupAnchor, BarPosition, BarWeekStart, Config, FloatingPlacement, LayoutKind,
 };
 
-/// The type of a key's value, and whatever constrains it. A GUI maps this
-/// straight onto a control: `Bool` is a toggle, `Int{min,max}` a slider,
-/// `Enum` a row of pills.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Ty {
-    Bool,
-    Int {
-        min: i64,
-        max: i64,
-    },
-    Float {
-        min: f64,
-        max: f64,
-    },
-    Str,
-    Enum(&'static [&'static str]),
-    /// `#rrggbb` / `#rrggbbaa`.
-    Color,
-    /// A single node carrying any number of string arguments.
-    StrList,
-}
-
-/// Which file a key lives in (COMP-13 §1.3). `Policy` keys are the security
-/// surface: the control socket refuses to write them at all, and a GUI shows
-/// them read-only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Owner {
-    Abyss,
-    Policy,
-}
-
-/// Whether a written value takes effect on the next reload or only on restart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reload {
-    Live,
-    NeedsRestart,
-}
-
-/// A key's value, as read back out of a live [`Config`]. `Null` is a key that
-/// is genuinely unset, not an error.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Value {
-    Null,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    Str(String),
-    List(Vec<String>),
-    Color([f32; 4]),
-}
-
-/// A default, in a form that can be written in a `const`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Dv {
-    Null,
-    Bool(bool),
-    Int(i64),
-    Float(f64),
-    Str(&'static str),
-    /// An allow-list defaults to empty; a non-empty default there would be an
-    /// entry nobody asked for.
-    EmptyList,
-    /// A non-empty list default. Only for ordering keys (`bar.widgets.*`),
-    /// never for a policy-owned key; a test below pins that.
-    List(&'static [&'static str]),
-    Color([f32; 4]),
-}
-
-/// One row. `path` is dotted and mirrors the KDL nesting exactly, so
-/// `decoration.blur.size` is `decoration { blur { size … } }`.
-#[derive(Debug, Clone, Copy)]
-pub struct Key {
-    pub path: &'static str,
-    pub ty: Ty,
-    pub default: Dv,
-    pub owner: Owner,
-    pub reload: Reload,
-    pub doc: &'static str,
-}
+pub use ec_config_schema::{Dv, Key, Owner, Reload, Ty, Value};
 
 const fn k(path: &'static str, ty: Ty, default: Dv, owner: Owner, reload: Reload, doc: &'static str) -> Key {
     Key {
@@ -3397,43 +3319,6 @@ fn position_name(p: BarPosition) -> &'static str {
     }
 }
 
-impl Dv {
-    /// The default as a [`Value`], so it can be compared with [`get`].
-    pub fn as_value(self) -> Value {
-        match self {
-            Dv::Null => Value::Null,
-            Dv::Bool(b) => Value::Bool(b),
-            Dv::Int(i) => Value::Int(i),
-            Dv::Float(f) => Value::Float(f),
-            Dv::Str(s) => Value::Str(s.to_string()),
-            Dv::EmptyList => Value::List(Vec::new()),
-            Dv::List(l) => Value::List(l.iter().map(|s| s.to_string()).collect()),
-            Dv::Color(c) => Value::Color(c),
-        }
-    }
-
-    /// The default written as KDL source, for `config describe` and for
-    /// synthesising a config in the drift test.
-    pub fn to_kdl(self) -> Option<String> {
-        Some(match self {
-            Dv::Null => return None,
-            Dv::Bool(b) => format!("#{b}"),
-            Dv::Int(i) => i.to_string(),
-            Dv::Float(f) => format!("{f:?}"),
-            Dv::Str(s) => format!("{s:?}"),
-            Dv::EmptyList => String::new(),
-            Dv::List(l) => l.iter().map(|s| format!("{s:?}")).collect::<Vec<_>>().join(" "),
-            Dv::Color(c) => format!(
-                "\"#{:02x}{:02x}{:02x}{:02x}\"",
-                (c[0] * 255.0).round() as u8,
-                (c[1] * 255.0).round() as u8,
-                (c[2] * 255.0).round() as u8,
-                (c[3] * 255.0).round() as u8
-            ),
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3493,6 +3378,17 @@ mod tests {
             // A list node is not a scalar assignment; covered by its own row on
             // the GUI-coverage exception list, not by the splice path.
             Ty::StrList => return None,
+            // Terminal-only types; abyss's table has none.
+            Ty::Font
+            | Ty::FontFeatures
+            | Ty::KeyChord
+            | Ty::Duration { .. }
+            | Ty::Path
+            | Ty::Palette16
+            | Ty::Action
+            | Ty::Regex
+            | Ty::Template
+            | Ty::Bytes { .. } => return None,
         })
     }
 

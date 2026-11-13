@@ -941,6 +941,7 @@ name = "ec-abyss-config"
 version = "0.2.2"
 dependencies = [
  "blake3",
+ "ec-config-schema",
  "ec-theme",
  "kdl",
  "regex",
@@ -971,6 +972,10 @@ dependencies = [
  "libc",
  "xkbcommon",
 ]
+
+[[package]]
+name = "ec-config-schema"
+version = "0.2.2"
 
 [[package]]
 name = "ec-console"

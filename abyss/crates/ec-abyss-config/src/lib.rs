@@ -498,6 +498,7 @@ impl Config {
         let dest = match owner {
             schema::Owner::Abyss => "abyss.kdl",
             schema::Owner::Policy => "policy.kdl",
+            schema::Owner::Terminal => "apotheosis.kdl",
         };
         // ADR 0064 fail-closed case 2: a misplaced policy key is a protection
         // the owner meant to have; dropping it would silently discard it.

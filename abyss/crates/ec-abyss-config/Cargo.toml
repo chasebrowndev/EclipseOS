@@ -23,6 +23,7 @@ test-hooks = []
 
 [dependencies]
 ec-theme = { path = "../ec-theme" }
+ec-config-schema = { path = "../ec-config-schema" }
 tracing.workspace = true
 xkbcommon.workspace = true
 kdl.workspace = true
