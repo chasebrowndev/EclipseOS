@@ -46,3 +46,8 @@ Flow per frame: `FontSystem` (owns faces/fallback) -> `RowShaper::shape_row` -> 
 - Never log text content. Rasterisation is on the render thread; discovery cache build is not.
 - Tests use `tests/fixtures/FiraMono-Medium.ttf` (SIL OFL 1.1, see `tests/fixtures/README.md`);
   no host-font dependency.
+
+## Embedded fonts
+`embedded::embedded_fonts()` returns JetBrains Mono Regular/Medium and Instrument Sans Regular
+(`include_bytes!` of the repo's `assets/fonts/`, SIL OFL 1.1 data assets, T-06 §1). Pass it to
+`FontSystem::new`; the FiraMono file under `tests/fixtures` is a test fixture only.

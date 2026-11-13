@@ -1,0 +1,7 @@
+fixture "osc-133-prompt-start" {
+  desc "osc 133 prompt start (migrated from the apoth-term corpus)"
+  covers "T03-OSC133"
+  size rows=3 cols=8
+  feed #"ab\r\n\e]133;A\a"#
+  events "mark:A"
+}

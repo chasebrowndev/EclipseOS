@@ -1,0 +1,9 @@
+fixture "osc-color-short-rgb-form" {
+  desc "rgb:r/g/b with 4-bit components scales to 16 bits"
+  covers "T03-OSC-COLOR" "VTCORE-27"
+  review "XParseColor scaling (f -> ffff, 8 -> 8888)"
+  size rows=3 cols=20
+  feed #"\e]10;rgb:f/0/8\a\e]10;?\a"#
+  grid
+  replies #"\e]10;rgb:ffff/0000/8888\a"#
+}

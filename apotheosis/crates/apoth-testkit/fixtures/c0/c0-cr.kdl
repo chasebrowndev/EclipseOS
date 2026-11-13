@@ -1,0 +1,10 @@
+fixture "c0-cr" {
+  desc "c0 cr (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC"
+  size rows=1 cols=5
+  feed #"abc\rX"#
+  grid {
+    row "Xbc"
+  }
+  cursor row=0 col=1
+}

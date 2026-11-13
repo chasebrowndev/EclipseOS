@@ -1,0 +1,7 @@
+fixture "alt-decrqm-reports-set" {
+  desc "alt decrqm reports set (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=5
+  feed #"\e[?1049h\e[?1049$p"#
+  replies #"\e[?1049;1$y"#
+}

@@ -1,0 +1,14 @@
+fixture "mouse-1000-set-reset" {
+  desc "mode 1000 (X10-compatible button reporting) defaults reset, sets and resets"
+  covers "T03-MOUSE"
+  size rows=2 cols=4
+  checkpoint "default" {
+    mode "?1000" 2
+  }
+  feed #"\e[?1000h"#
+  checkpoint "set" {
+    mode "?1000" 1
+  }
+  feed #"\e[?1000l"#
+  mode "?1000" 2
+}

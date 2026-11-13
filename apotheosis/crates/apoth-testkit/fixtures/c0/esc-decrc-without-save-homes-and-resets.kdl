@@ -1,0 +1,10 @@
+fixture "esc-decrc-without-save-homes-and-resets" {
+  desc "esc decrc without save homes and resets (migrated from the apoth-term corpus)"
+  covers "T03-DECSC"
+  size rows=1 cols=3
+  feed #"ab\e[1m\e8X"#
+  grid {
+    row "Xb"
+  }
+  cell row=0 col=0 attrs=""
+}
