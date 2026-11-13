@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 mod config;
+mod ctl;
 
 use apoth_config::fs::RealFs;
 use std::path::PathBuf;
@@ -32,17 +33,60 @@ fn main() {
             };
             config::run(&args[1..], &mut ctx)
         }
-        Some(other) => {
-            eprintln!(
-                "apoth {}: `{other}` is not yet implemented (T-12, M29)",
-                env!("CARGO_PKG_VERSION")
-            );
-            1
+        Some("shell-init") => shell_init(&args[1..]),
+        Some("-h" | "--help" | "help") => {
+            let _ = std::io::Write::write_all(&mut std::io::stdout(), ctl::HELP.as_bytes());
+            0
         }
+        Some(_) => socket(&args),
         None => {
-            eprintln!("usage: apoth config <validate|get|set|unset|list|path|import-foot> ...");
+            let _ = std::io::Write::write_all(&mut std::io::stderr(), ctl::HELP.as_bytes());
             2
         }
     };
     std::process::exit(code);
+}
+
+/// A socket command (global options first).
+fn socket(args: &[String]) -> i32 {
+    let (opts, rest) = match ctl::parse_global(args) {
+        Ok(v) => v,
+        Err(m) => {
+            eprintln!("apoth: {m}");
+            return ctl::USAGE;
+        }
+    };
+    let Some((cmd, rest)) = rest.split_first() else {
+        eprintln!("apoth: missing command\n\n{}", ctl::HELP);
+        return ctl::USAGE;
+    };
+    if ctl::NOT_YET.contains(&cmd.as_str()) {
+        eprintln!(
+            "apoth {}: `{cmd}` is not yet implemented",
+            env!("CARGO_PKG_VERSION")
+        );
+        return ctl::ERROR;
+    }
+    if !ctl::COMMANDS.contains(&cmd.as_str()) {
+        eprintln!("apoth: unknown command `{cmd}`\n\n{}", ctl::HELP);
+        return ctl::USAGE;
+    }
+    let mut out = std::io::stdout().lock();
+    let mut err = std::io::stderr().lock();
+    ctl::run(cmd, rest, opts, &mut out, &mut err)
+}
+
+/// `apoth shell-init <shell>`: the snippet panes get, for manual sourcing (T-14 §2).
+fn shell_init(args: &[String]) -> i32 {
+    let shells = apoth_pty::shell::SHELLS.join("|");
+    let [sh] = args else {
+        eprintln!("usage: apoth shell-init <{shells}>");
+        return ctl::USAGE;
+    };
+    let Some(s) = apoth_pty::shell::snippet(sh) else {
+        eprintln!("apoth shell-init: no snippet for {sh:?} (have {shells})");
+        return ctl::USAGE;
+    };
+    let _ = std::io::Write::write_all(&mut std::io::stdout(), s.as_bytes());
+    ctl::OK
 }

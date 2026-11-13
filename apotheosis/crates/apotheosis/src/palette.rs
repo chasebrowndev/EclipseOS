@@ -269,6 +269,7 @@ impl Palette {
         // A full call with arguments is offered first.
         if q.contains(' ')
             && let Ok(a) = Action::parse(q)
+            && crate::app::handles(a.id())
         {
             rows.push((
                 i32::MAX,
@@ -281,6 +282,10 @@ impl Palette {
             ));
         }
         for (i, info) in REGISTRY.iter().enumerate() {
+            // Actions with no handler yet are hidden until they run (T-11 §1).
+            if !crate::app::handles(info.id) {
+                continue;
+            }
             let s = match (score(q, info.title), score(q, info.id)) {
                 (Some(a), Some(b)) => a.max(b),
                 (Some(a), None) | (None, Some(a)) => a,
@@ -431,10 +436,24 @@ mod tests {
     }
 
     #[test]
-    fn every_action_is_listed_with_its_binding() {
+    fn every_handled_action_is_listed_with_its_binding() {
         let mut p = Palette::new(Mode::Actions, "");
         p.refresh(&km(), &[]);
-        assert_eq!(p.rows.len(), REGISTRY.len());
+        let handled = REGISTRY
+            .iter()
+            .filter(|i| crate::app::handles(i.id))
+            .count();
+        assert_eq!(p.rows.len(), handled);
+        assert!(handled < REGISTRY.len());
+        // Unhandled actions stay hidden, even as a full call.
+        assert!(
+            !p.rows
+                .iter()
+                .any(|r| r.hint.as_deref() == Some("window.new"))
+        );
+        let mut q = Palette::new(Mode::Actions, "font.size-reset now");
+        q.refresh(&km(), &[]);
+        assert!(!q.rows.iter().any(|r| matches!(r.pick, Pick::Run(_))));
         let new_tab = p.rows.iter().find(|r| r.title == "New tab").unwrap();
         assert_eq!(new_tab.hint.as_deref(), Some("ctrl+shift+t"));
         assert_eq!(new_tab.pick, Pick::Run(Action::parse("tab.new").unwrap()));

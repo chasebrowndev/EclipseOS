@@ -15,7 +15,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use apoth_action::key::Mode as BindMode;
-use apoth_action::{Action, MAX_MACRO_DEPTH, PlaceholderValues};
+use apoth_action::{
+    Action, Cause, Event, EventKind, FieldValue, MAX_MACRO_DEPTH, PlaceholderValues,
+};
 use apoth_font::config::Style;
 use apoth_font::discovery::{FontIndex, default_cache_file, font_dirs};
 use apoth_font::system::{EmbeddedFont, FontSystem};
@@ -53,6 +55,11 @@ use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, RegistrationToken};
 
 use rustix::io::Errno;
+
+mod a11y;
+mod serve;
+
+pub(crate) use a11y::A11yMsg;
 
 use crate::binds::{self, KeyState, Keymap, NameBuf, Resolved};
 use crate::hook::{DumpHook, MuxDump};
@@ -202,6 +209,8 @@ struct Pane {
     origin: (i32, i32),
     /// The title the program set (OSC 0/2): drawn on the tab, never logged.
     title: String,
+    /// The working directory the program reported (OSC 7), when local.
+    cwd: Option<PathBuf>,
     /// How the child ended, once reaped.
     exit: Option<ExitStatus>,
     eof: bool,
@@ -247,6 +256,8 @@ enum Spot {
 pub(crate) struct App {
     settings: Settings,
     command: Option<Vec<String>>,
+    /// `--cwd` and `--title` of the first pane.
+    first: FirstPane,
     handle: WlHandle,
     lh: LoopHandle<'static, App>,
     signal: LoopSignal,
@@ -335,6 +346,11 @@ pub(crate) struct App {
     cursor_cell: (usize, usize),
     /// The autoscroll timer; present only while a drag is held past an edge.
     autoscroll: Option<RegistrationToken>,
+    // ---- control socket (T-12) and accessibility (T-20)
+    ctl: Option<serve::Ctl>,
+    /// This host's name (OSC 7 URIs naming it are local).
+    hostname: String,
+    a11y: a11y::A11yState,
 }
 
 /// A paste held back by the guard (T-18 §4). The content is held until answered, never logged.
@@ -345,11 +361,19 @@ struct PendingPaste {
     pane: PaneKey,
 }
 
+/// Command-line choices for the first pane.
+#[derive(Debug, Default)]
+pub(crate) struct FirstPane {
+    pub(crate) cwd: Option<PathBuf>,
+    pub(crate) title: Option<String>,
+}
+
 /// Run to completion; the process exit code.
 pub(crate) fn run(
     startup: Startup,
     command: Option<Vec<String>>,
     app_id: Option<String>,
+    first: FirstPane,
 ) -> Result<i32, String> {
     let Startup {
         settings,
@@ -391,6 +415,7 @@ pub(crate) fn run(
     let mut app = App {
         settings,
         command,
+        first,
         handle,
         lh,
         signal: event_loop.get_signal(),
@@ -449,7 +474,12 @@ pub(crate) fn run(
         ime_on: false,
         cursor_cell: (0, 0),
         autoscroll: None,
+        ctl: None,
+        hostname: crate::ctl::osc7::hostname(),
+        a11y: a11y::A11yState::default(),
     };
+    app.start_ctl();
+    app.start_a11y();
     if app.keymap.dropped > 0 {
         tracing::warn!(binds = app.keymap.dropped, "some binds were not understood");
     }
@@ -513,6 +543,68 @@ fn paste_answer(
         _ => apoth_ui::bar::KeyInput::Other,
     };
     apoth_ui::bar::BarState { shown_at_ms: 0 }.answer_key(spec, age_ms, input)
+}
+
+/// Action ids [`App::run_action`] handles (sorted). The palette lists only these and the
+/// socket answers `unsupported` for the rest; `dispatch` asserts the two agree in debug
+/// builds.
+const HANDLED: &[&str] = &[
+    "app.ignore",
+    "app.quit",
+    "clipboard.copy",
+    "config.reload",
+    "input.paste",
+    "input.paste-selection",
+    "input.send-bytes",
+    "input.send-csi",
+    "input.send-esc",
+    "input.send-keys",
+    "input.send-text",
+    "key-table.clear",
+    "key-table.pop",
+    "key-table.push",
+    "layout.next",
+    "macro.run",
+    "palette.close",
+    "palette.open",
+    "palette.toggle",
+    "pane.break-out",
+    "pane.close",
+    "pane.equalize",
+    "pane.focus",
+    "pane.focus-last",
+    "pane.focus-next",
+    "pane.focus-prev",
+    "pane.move",
+    "pane.resize",
+    "pane.split",
+    "pane.toggle-zoom",
+    "scroll.bottom",
+    "scroll.half-page-down",
+    "scroll.half-page-up",
+    "scroll.line-down",
+    "scroll.line-up",
+    "scroll.page-down",
+    "scroll.page-up",
+    "scroll.top",
+    "selection.clear",
+    "selection.copy",
+    "selection.select-all",
+    "tab.close",
+    "tab.close-others",
+    "tab.last",
+    "tab.move",
+    "tab.new",
+    "tab.next",
+    "tab.prev",
+    "tab.rename",
+    "tab.select",
+    "window.close",
+];
+
+/// Does the dispatcher handle action `id` yet?
+pub(crate) fn handles(id: &str) -> bool {
+    HANDLED.binary_search(&id).is_ok()
 }
 
 fn exit_code_of(s: ExitStatus) -> i32 {
@@ -682,7 +774,13 @@ impl App {
         let (render_tx, render_rx) = mpsc::channel();
         self.render_tx = Some(render_tx.clone());
         let command = self.command.take();
-        let pane = self.spawn_pane(id, dims, command, None)?;
+        let cwd = self.first.cwd.take();
+        let pane = self.spawn_pane(id, dims, command, cwd, Vec::new())?;
+        if let Some(t) = self.first.title.take()
+            && let Some(tid) = self.session.tab_of(id)
+        {
+            let _ = self.session.rename_tab(tid, clip(&t, MAX_TITLE));
+        }
 
         let surface = self
             .handle
@@ -739,6 +837,7 @@ impl App {
         (rows, cols): (usize, usize),
         argv: Option<Vec<String>>,
         cwd: Option<PathBuf>,
+        env_extra: Vec<(String, String)>,
     ) -> Result<Pane, String> {
         let cell = self.cell;
         let mut tc = self.settings.term.clone();
@@ -778,11 +877,19 @@ impl App {
             ("APOTHEOSIS_PANE".into(), id.to_string().into()),
             ("APOTHEOSIS_WINDOW".into(), self.mux_win.to_string().into()),
         ];
+        if let Some(p) = self.ctl_path() {
+            extra.push(("APOTHEOSIS_SOCKET".into(), p.as_os_str().to_owned()));
+        }
         extra.extend(
             self.settings
                 .shell
                 .env
                 .iter()
+                .map(|(k, v)| (OsString::from(k), OsString::from(v))),
+        );
+        extra.extend(
+            env_extra
+                .into_iter()
                 .map(|(k, v)| (OsString::from(k), OsString::from(v))),
         );
         let env = build_env(
@@ -852,15 +959,19 @@ impl App {
             grace: None,
             origin: (0, 0),
             title: String::new(),
+            cwd: None,
             exit: None,
             eof: false,
         })
     }
 
-    /// The working directory a new pane inherits: the focused pane's foreground process cwd
-    /// (T-13 §6), read from `/proc` (no blocking I/O).
+    /// The working directory a new pane inherits (T-13 §6): the focused pane's OSC 7
+    /// directory when it reported a local one, else its foreground process cwd from `/proc`.
     fn inherited_cwd(&self) -> Option<PathBuf> {
         let p = self.panes.get(&self.focused()?)?;
+        if let Some(c) = &p.cwd {
+            return Some(c.clone());
+        }
         p.pty.as_ref()?.foreground_cwd().ok()
     }
 
@@ -1095,6 +1206,12 @@ impl App {
         let old = std::mem::replace(&mut self.focus_pane, now);
         if let Some(o) = old {
             self.report_focus(o, false);
+            if self.panes.contains_key(&o) {
+                self.ctl_emit(Event::new(EventKind::FocusOut, Cause::User), Some(o));
+            }
+        }
+        if now.is_some() {
+            self.ctl_emit(Event::new(EventKind::FocusIn, Cause::User), now);
         }
         if let Some(n) = now {
             if self.win_focused {
@@ -1128,12 +1245,26 @@ impl App {
     // ------------------------------------------------------------------ mux actions
 
     fn new_tab(&mut self, argv: Option<Vec<String>>, cwd: Option<PathBuf>) {
+        let _ = self.new_tab_with(argv, cwd, Vec::new());
+    }
+
+    /// A new tab running `argv` (or the shell) with extra environment; its pane id, if it
+    /// started.
+    fn new_tab_with(
+        &mut self,
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+    ) -> Option<PaneKey> {
         let cwd = cwd.or_else(|| self.inherited_cwd());
         let spec = MuxPaneSpec::default();
-        let Ok((_, id)) = self.session.new_tab(self.mux_win, spec, ()) else {
-            return;
-        };
-        self.finish_new_pane(id, argv, cwd);
+        let (_, id) = self.session.new_tab(self.mux_win, spec, ()).ok()?;
+        self.finish_new_pane(id, argv, cwd, env);
+        if !self.panes.contains_key(&id) {
+            return None;
+        }
+        self.ctl_emit(Event::new(EventKind::TabOpened, Cause::User), Some(id));
+        Some(id)
     }
 
     fn split(&mut self, dir: MuxDir, argv: Option<Vec<String>>, cwd: Option<PathBuf>) {
@@ -1144,7 +1275,7 @@ impl App {
             .session
             .split_pane(target, dir, SplitSize::HALF, spec, ())
         {
-            Ok(id) => self.finish_new_pane(id, argv, cwd),
+            Ok(id) => self.finish_new_pane(id, argv, cwd, Vec::new()),
             Err(e) => {
                 // Too small for another pane (T-13 §3: 2x1 minimum) and the like.
                 tracing::debug!(error = %e, "split refused");
@@ -1154,16 +1285,23 @@ impl App {
     }
 
     /// The session has the pane; start its process, or take it back out if that fails.
-    fn finish_new_pane(&mut self, id: PaneKey, argv: Option<Vec<String>>, cwd: Option<PathBuf>) {
+    fn finish_new_pane(
+        &mut self,
+        id: PaneKey,
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+    ) {
         // The tab may have changed size (a new tab can show the strip): lay out first.
         let (_, buffer) = self.handle.surface_size(self.win).unwrap_or_default();
         let geo = layout::window(&self.metrics(buffer));
         let _ = self.session.resize_window(self.mux_win, geo.size);
         let dims = self.dims_of(id).unwrap_or((1, 1));
-        match self.spawn_pane(id, dims, argv, cwd) {
+        match self.spawn_pane(id, dims, argv, cwd, env) {
             Ok(p) => {
                 self.panes.insert(id, p);
                 self.send_view_settings(id);
+                self.ctl_emit(Event::new(EventKind::PaneOpened, Cause::User), Some(id));
             }
             Err(why) => {
                 tracing::warn!(%why, "cannot start a pane");
@@ -1184,7 +1322,18 @@ impl App {
     /// Take a pane out of the session and the window, and stop its io thread and process on a
     /// close thread. The process exits when the last pane is gone and every close finished.
     fn retire(&mut self, id: PaneKey) {
+        let tab = self.session.tab_of(id);
+        let code = self.panes.get(&id).and_then(|p| p.exit).map(exit_code_of);
+        self.ctl_emit(Event::new(EventKind::PaneClosed, Cause::Child), Some(id));
+        self.ctl_pane_gone(id, code);
         let _ = self.session.close_pane(id);
+        if let Some(t) = tab
+            && self.session.tab(t).is_none()
+        {
+            let mut ev = Event::new(EventKind::TabClosed, Cause::Child);
+            let _ = ev.set("tab", FieldValue::Int(t as i64));
+            self.ctl_emit(ev, None);
+        }
         if self.capture == Some(id) {
             self.capture = None;
         }
@@ -1392,6 +1541,7 @@ impl App {
 
     fn set_focus(&mut self, focused: bool) {
         self.win_focused = focused;
+        self.a11y_window_focus(focused);
         if !focused {
             // Nothing held survives the keyboard leaving: no table, no half-typed sequence.
             self.keys.reset();
@@ -1704,14 +1854,23 @@ impl App {
     /// debug level when not available yet; arguments never are (they can carry user text).
     fn dispatch(&mut self, actions: Vec<Action>, depth: u8) {
         for a in actions {
-            self.run_action(a, depth);
+            let id = a.id();
+            let ran = self.run_action(a, depth);
+            debug_assert_eq!(ran, handles(id), "HANDLED is out of step with run_action");
         }
     }
 
-    fn run_action(&mut self, a: Action, depth: u8) {
+    /// Run one action; `false` when it has no handler yet.
+    fn run_action(&mut self, a: Action, depth: u8) -> bool {
         use Action as A;
         let focus = self.focused();
         match a {
+            A::InputSendKeys { keys } => {
+                if let Some(id) = focus {
+                    self.typed();
+                    let _ = self.send_chords(id, &keys.0);
+                }
+            }
             A::InputSendText { text } => self.send_to_focus(text.into_bytes()),
             A::InputSendBytes { bytes } => self.send_to_focus(bytes.0),
             A::InputSendCsi { body } => {
@@ -1910,8 +2069,59 @@ impl App {
             A::ConfigReload {} => self.start_reload(),
             A::AppQuit { force: _ } | A::WindowClose {} => self.begin_close(),
             A::AppIgnore {} => {}
-            other => tracing::debug!(action = other.id(), "action not available yet"),
+            other => {
+                tracing::debug!(action = other.id(), "action not available yet");
+                return false;
+            }
         }
+        true
+    }
+
+    /// Encode key chords for pane `id` through the key encoder under its current modes
+    /// (T-12 §2: `input.send-keys` never enters bind lookup). An unknown key name fails the
+    /// whole call before anything is sent.
+    fn send_chords(
+        &mut self,
+        id: PaneKey,
+        chords: &[apoth_action::KeyChord],
+    ) -> Result<(), &'static str> {
+        let Some(p) = self.panes.get(&id) else {
+            return Err("no such pane");
+        };
+        let modes = p.shared.mirror.load();
+        let mut bytes = Vec::new();
+        for c in chords {
+            let apoth_action::key::Key::Symbol(name) = &c.key else {
+                return Err("physical keys cannot be sent");
+            };
+            let Some((key, text, shift)) = apoth_input::backend_kbvm::key_of_name(name) else {
+                return Err("unknown key name");
+            };
+            let mut mods = Mods::NONE;
+            for (a, b) in [
+                (apoth_action::Mods::SHIFT, Mods::SHIFT),
+                (apoth_action::Mods::CTRL, Mods::CTRL),
+                (apoth_action::Mods::ALT, Mods::ALT),
+                (apoth_action::Mods::SUPER, Mods::SUPER),
+            ] {
+                if c.mods.contains(a) {
+                    mods = mods | b;
+                }
+            }
+            if shift {
+                mods = mods | Mods::SHIFT;
+            }
+            let mut tbuf = [0u8; 4];
+            let t = text.map_or("", |ch| ch.encode_utf8(&mut tbuf));
+            let ev = apoth_input::KeyEvent::new(key).mods(mods).text(t);
+            let mut out = [0u8; 64];
+            let n = encode_key(&ev, modes, &mut out);
+            bytes.extend_from_slice(&out[..n]);
+        }
+        if !bytes.is_empty() {
+            self.send_unit(id, bytes);
+        }
+        Ok(())
     }
 
     /// Placeholders a pane command may name, from the focused pane (T-11 §5). Expansion
@@ -2656,6 +2866,8 @@ impl App {
     fn on_msg(&mut self, m: MainMsg) {
         match m {
             MainMsg::Reply(id, u) => self.send_unit(id, u),
+            MainMsg::Ctl(cid, r) => self.ctl_send(cid, &r),
+            MainMsg::A11y(m) => self.on_a11y(m),
             MainMsg::Resized(id, d) => self.on_resized(id, d),
             MainMsg::Events(id, e) => self.on_events(id, e),
             MainMsg::Eof(id) => {
@@ -2699,6 +2911,21 @@ impl App {
     }
 
     fn on_events(&mut self, id: PaneKey, e: PaneEvents) {
+        if let Some(uri) = e.cwd {
+            let path = crate::ctl::osc7::local_path(&uri, &self.hostname);
+            if let Some(p) = self.panes.get_mut(&id) {
+                p.cwd = path.clone();
+            }
+            let mut ev = Event::new(EventKind::CwdChanged, Cause::Sequence);
+            if let Some(path) = path {
+                let _ = ev.set("cwd", FieldValue::Str(path.to_string_lossy().into_owned()));
+            }
+            self.ctl_emit(ev, Some(id));
+        }
+        if e.bell > 0 {
+            self.ctl_emit(Event::new(EventKind::Bell, Cause::Child), Some(id));
+            self.a11y_announce("Bell");
+        }
         if let Some(t) = e.title {
             let t = clip(&t, MAX_TITLE).to_owned();
             let focused = self.focused() == Some(id);
@@ -2708,11 +2935,14 @@ impl App {
             if focused {
                 self.handle
                     .set_title(self.win, &self.settings.window_title(&t));
-                self.term_title = t;
+                self.term_title = t.clone();
             }
             if self.geo.is_some_and(|g| g.strip.is_some()) {
                 self.send_layout();
             }
+            let mut ev = Event::new(EventKind::TitleChanged, Cause::Sequence);
+            let _ = ev.set("title", FieldValue::Str(t));
+            self.ctl_emit(ev, Some(id));
         }
         if e.bell > 0 && self.settings.bell_audible {
             self.handle.ring_bell(Some(self.win));
@@ -2894,6 +3124,13 @@ impl App {
             // A new include extends the watch set.
             w.sync(self.reloader.files());
         }
+        let mut ev = Event::new(EventKind::ConfigReloaded, Cause::Config);
+        let _ = ev.set(
+            "ok",
+            FieldValue::Bool(!matches!(outcome, Outcome::Rejected)),
+        );
+        self.ctl_emit(ev, None);
+        self.a11y_reconfigure();
         let mut errors = error_positions(self.reloader.diagnostics());
         if matches!(outcome, Outcome::Rejected) && errors.is_empty() {
             errors.push(ErrorPos {
@@ -3362,6 +3599,21 @@ xkb_keymap {
         assert_eq!(paste_answer(&spec, guard, enter), None);
         assert_eq!(paste_answer(&spec, guard, ch(' ')), None);
         assert_eq!(paste_answer(&spec, guard, ch('x')), None);
+    }
+
+    #[test]
+    fn handled_ids_are_sorted_registry_ids() {
+        let mut sorted = HANDLED.to_vec();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted, HANDLED);
+        for id in HANDLED {
+            assert!(
+                apoth_action::REGISTRY.iter().any(|i| i.id == *id),
+                "{id} is not a registry id"
+            );
+        }
+        assert!(handles("tab.new") && !handles("window.new"));
     }
 
     #[test]

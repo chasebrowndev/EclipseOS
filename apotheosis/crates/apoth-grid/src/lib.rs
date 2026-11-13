@@ -49,7 +49,7 @@ pub use screen::{
     ScreenConfig, Stats,
 };
 pub use search::{Dir, LineScratch, LineSpan, MAX_LINE_BYTES, fold_text};
-pub use select::{ExtractOpts, SelKind, SelRange, Selection, Side, WordChars};
+pub use select::{Class as WordClass, ExtractOpts, SelKind, SelRange, Selection, Side, WordChars};
 pub use snapshot::{Changes, Damage, FrameSnapshot, RowSnapshot, SeenSet, SnapCell, SnapRow};
 pub use style::{Attrs, Color, Style, Underline};
 pub use tabs::TabStops;

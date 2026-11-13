@@ -137,7 +137,12 @@ impl Session {
     pub fn launch(&mut self, bin: &Path, extra_env: &[(&str, &str)]) -> Result<(), SessionError> {
         let home = self.dir.join("home");
         let mut c = Command::new(bin);
-        c.env("XDG_RUNTIME_DIR", &self.dir)
+        c.env_remove("APOTHEOSIS_SOCKET")
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                "unix:path=/nonexistent/apoth-test-bus",
+            )
+            .env("XDG_RUNTIME_DIR", &self.dir)
             .env("WAYLAND_DISPLAY", "wayland-1")
             .env("SHELL", "/bin/sh")
             .env("HOME", &home)

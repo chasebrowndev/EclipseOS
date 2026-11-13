@@ -110,6 +110,11 @@ impl Session {
         let mux = dir.join("mux.txt");
         let term = Guard(
             Command::new(env!("CARGO_BIN_EXE_apotheosis"))
+                .env_remove("APOTHEOSIS_SOCKET")
+                .env(
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "unix:path=/nonexistent/apoth-test-bus",
+                )
                 .env("XDG_RUNTIME_DIR", &dir)
                 .env("WAYLAND_DISPLAY", "wayland-1")
                 .env("SHELL", "/bin/sh")

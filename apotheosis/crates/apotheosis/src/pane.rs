@@ -128,6 +128,8 @@ pub(crate) fn now_ns() -> u64 {
 #[derive(Default)]
 pub(crate) struct PaneEvents {
     pub(crate) title: Option<String>,
+    /// OSC 7 URI (`file://host/path`); user data, never logged.
+    pub(crate) cwd: Option<String>,
     pub(crate) bell: u32,
 }
 
@@ -138,6 +140,10 @@ pub(crate) type PaneKey = u64;
 pub(crate) enum MainMsg {
     /// One reply unit for the pane's PTY, in arrival order.
     Reply(PaneKey, Vec<u8>),
+    /// A control-socket reply computed on a worker, for client `u64`.
+    Ctl(u64, apoth_proto::Reply),
+    /// Accessibility: an adapter request or a finished pane snapshot.
+    A11y(crate::app::A11yMsg),
     Events(PaneKey, PaneEvents),
     /// The pane's io thread saw end of output and exits.
     Eof(PaneKey),
@@ -323,6 +329,7 @@ fn feed(
             let slot = t.events();
             events = Some(PaneEvents {
                 title: slot.title.take(),
+                cwd: slot.cwd.take(),
                 bell: slot.bell,
             });
             slot.clear();
