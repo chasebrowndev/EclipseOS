@@ -819,10 +819,13 @@ mod tests {
                     Ty::Enum(values) => ("enum", json!({ "values": values })),
                     Ty::Color => ("color", Value::Null),
                     Ty::StrList => ("string-list", Value::Null),
+                    // Terminal-only types: abyss's table has none.
+                    _ => ("string", Value::Null),
                 };
                 let file = match k.owner {
                     Owner::Abyss => "abyss",
                     Owner::Policy => "policy",
+                    Owner::Terminal => "terminal",
                 };
                 Row::parse(&json!({
                     "path": k.path, "type": ty, "constraints": c, "file": file, "doc": k.doc,

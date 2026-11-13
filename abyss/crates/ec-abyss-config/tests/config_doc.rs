@@ -28,6 +28,17 @@ fn ty(t: &Ty) -> String {
         Ty::Enum(vs) => vs.join(" \\| "),
         Ty::Color => "colour `#rrggbb[aa]`".into(),
         Ty::StrList => "list of strings".into(),
+        // Terminal-only types never appear in abyss's table.
+        Ty::Font => "font family".into(),
+        Ty::FontFeatures => "list of font features".into(),
+        Ty::KeyChord => "key chord".into(),
+        Ty::Duration { min_ms, max_ms } => format!("duration {min_ms}ms..{max_ms}ms"),
+        Ty::Path => "path".into(),
+        Ty::Palette16 => "16 colours".into(),
+        Ty::Action => "action".into(),
+        Ty::Regex => "regex".into(),
+        Ty::Template => "template".into(),
+        Ty::Bytes { min, max } => format!("bytes {min}..{max}"),
     }
 }
 
@@ -57,6 +68,7 @@ fn file(o: Owner) -> &'static str {
     match o {
         Owner::Abyss => "abyss.kdl",
         Owner::Policy => "policy.kdl",
+        Owner::Terminal => "apotheosis.kdl",
     }
 }
 

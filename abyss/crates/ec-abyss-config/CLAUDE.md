@@ -6,6 +6,10 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-13 §1. **Not TCB.**
   depend on the schema without linking the compositor. **No smithay, no
   calloop, no `AbyssState`** — adding any of them defeats the crate. Keysyms
   are xkbcommon's (smithay re-exports the same type).
+- The schema *types* (`Ty`, `Owner`, `Reload`, `Value`, `Dv`, `Key`, `Meta`) live in `ec-config-schema`
+  (Apache-2.0, shared with the terminal's `apoth-config`) and are `pub use`d from `schema.rs`/`meta.rs`;
+  this crate keeps the TABLE rows, getters and tests. Abyss keys never use `Owner::Terminal` or the
+  terminal `Ty` variants.
 - Holds: `schema.rs` (declarative key table), `lib.rs` (`Config`, parser,
   defaults), `edit.rs` (byte-splice edits), `approvals.rs`, `widget_hash.rs`,
   `catalog.rs` (reader only), plus plain-data types the parser produces:

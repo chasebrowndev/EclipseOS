@@ -2633,6 +2633,7 @@ mod startup_tests {
                     path: PathBuf::from(match owner {
                         schema::Owner::Abyss => "abyss.kdl",
                         schema::Owner::Policy => "policy.kdl",
+                        schema::Owner::Terminal => "apotheosis.kdl",
                     }),
                     owner,
                 },

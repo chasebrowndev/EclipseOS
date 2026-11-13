@@ -29,6 +29,8 @@ fn ty_json(ty: &Ty) -> (&'static str, Value) {
         Ty::Enum(values) => ("enum", json!({ "values": values })),
         Ty::Color => ("color", Value::Null),
         Ty::StrList => ("string-list", Value::Null),
+        // Terminal-only types: abyss's table has none, so nothing reaches here.
+        _ => ("string", Value::Null),
     }
 }
 
