@@ -1,0 +1,7 @@
+fixture "osc7-st" {
+  covers "T03-OSC7"
+  size rows=3 cols=20
+  feed #"\e]7;file://host/tmp\e\\"#
+  grid
+  events "cwd:file://host/tmp"
+}

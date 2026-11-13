@@ -1,0 +1,10 @@
+fixture "sgr-5-colon-wrong-count" {
+  covers "T03-SGR-COLOR" "T03-SGR-AMBIG" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[38:5:1:2mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" fg="default"
+}

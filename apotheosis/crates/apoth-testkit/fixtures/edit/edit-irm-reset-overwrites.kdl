@@ -1,0 +1,9 @@
+fixture "edit-irm-reset-overwrites" {
+  covers "T03-IRM"
+  size rows=2 cols=6
+  feed #"ABCDEF\e[1;3H\e[4h\e[4lXY"#
+  grid {
+    row "ABXYEF"
+  }
+  cursor row=0 col=4
+}

@@ -1,0 +1,9 @@
+fixture "c0-invalid-utf8-0xff" {
+  covers "T03-UTF8-INVALID"
+  size rows=3 cols=10
+  feed #"A\xffB"#
+  grid {
+    row "A�B"
+  }
+  cursor row=0 col=3
+}

@@ -1,0 +1,10 @@
+fixture "cursor-move-clears-pending-wrap" {
+  desc "any cursor movement clears the pending-wrap state"
+  covers "T03-CUX" "T03-AUTOWRAP"
+  size rows=5 cols=10
+  feed #"0123456789\e[C*"#
+  grid {
+    row "012345678*"
+  }
+  cursor row=0 col=9
+}

@@ -1,0 +1,11 @@
+fixture "cursor-cup" {
+  covers "T03-CUP" "VTCORE-15"
+  size rows=5 cols=10
+  feed #"\e[3;4H*"#
+  grid {
+    row ""
+    row ""
+    row "   *"
+  }
+  cursor row=2 col=4
+}

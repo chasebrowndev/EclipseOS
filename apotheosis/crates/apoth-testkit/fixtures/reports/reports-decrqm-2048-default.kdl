@@ -1,0 +1,7 @@
+fixture "reports-decrqm-2048-default" {
+  covers "T03-DECRQM" "VTCORE-19"
+  size rows=5 cols=10
+  feed #"\e[?2048$p"#
+  grid
+  replies #"\e[?2048;2$y"#
+}

@@ -1,0 +1,17 @@
+fixture "sync-legacy-dcs-hold" {
+  desc "DCS = 1 s / = 2 s map to the same hold"
+  covers "T03-SYNC-2026" "VTCORE-17"
+  size rows=3 cols=10
+  feed #"\eP=1s\e\\A"# at=0
+  checkpoint "held" {
+    grid {
+      row "A"
+    }
+    hold #true
+  }
+  feed #"\eP=2s\e\\"# at=0
+  grid {
+    row "A"
+  }
+  hold #false
+}

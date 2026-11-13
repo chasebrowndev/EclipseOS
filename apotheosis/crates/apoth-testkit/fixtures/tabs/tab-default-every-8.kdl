@@ -1,0 +1,9 @@
+fixture "tab-default-every-8" {
+  desc "tab default every 8 (migrated from the apoth-term corpus)"
+  covers "T03-HTS-TBC"
+  size rows=1 cols=20
+  feed #"\tx\tx"#
+  grid {
+    row "        x       x"
+  }
+}

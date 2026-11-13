@@ -1,0 +1,7 @@
+fixture "scr-decstbm-origin-homes-to-margin" {
+  desc "scr decstbm origin homes to margin (migrated from the apoth-term corpus)"
+  covers "T03-DECSTBM"
+  size rows=4 cols=3
+  feed #"\e[2;3r\e[?6h"#
+  cursor row=1 col=0
+}

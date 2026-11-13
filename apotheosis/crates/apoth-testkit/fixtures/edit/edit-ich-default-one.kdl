@@ -1,0 +1,9 @@
+fixture "edit-ich-default-one" {
+  desc "edit ich default one (migrated from the apoth-term corpus)"
+  covers "T03-ICH-DCH"
+  size rows=1 cols=6
+  feed #"abc\e[1;1H\e[@"#
+  grid {
+    row " abc"
+  }
+}

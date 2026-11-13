@@ -1,0 +1,11 @@
+fixture "lrm-decdc" {
+  covers "T03-DECIC-DECDC" "VTCORE-31"
+  size rows=3 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\e[?69h\e[2;5s\e[1;3H\e[1'~"#
+  grid {
+    row "ABDE F"
+    row "GHJK L"
+    row "MNPQ R"
+  }
+  cursor row=0 col=2
+}

@@ -11,6 +11,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod reflow;
+pub use reflow::{ReflowOpts, Reflowed};
+
 use crate::cell::{Cell, Semantic, Tag, Wide};
 use crate::page::{
     Ceil, Full, LinkError, MAX_CLUSTER_CPS, PAGE_BYTES, Page, PageSpec, ROW_HEADER_BYTES,
@@ -177,6 +180,36 @@ pub(crate) struct ScrollRec {
     pub(crate) delta: isize,
 }
 
+/// What [`Screen::resize`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Resized {
+    /// Visible rows after the (clamped) resize.
+    pub rows: usize,
+    /// Columns after the (clamped) resize.
+    pub cols: usize,
+    /// Where the row that was the cursor row is now (active-area row).
+    pub cursor_row: usize,
+    /// Rows that moved from the top of the active area into scrollback.
+    pub pushed: usize,
+}
+
+/// Open a blank row at the end of `pages`, starting a page when the last is full.
+fn open_row(
+    pages: &mut Vec<Page>,
+    pool: &mut PagePool,
+    spec: PageSpec,
+    serial: &mut u64,
+    wrap_width: u16,
+) -> usize {
+    if pages.last().is_none_or(Page::is_full) {
+        let mut p = pool.acquire(spec, *serial);
+        *serial += 1;
+        p.set_wrap_width(wrap_width);
+        pages.push(p);
+    }
+    pages.last_mut().and_then(Page::push_row).unwrap_or(0)
+}
+
 /// A terminal screen (primary with history, or alternate without).
 #[derive(Debug)]
 pub struct Screen {
@@ -189,6 +222,8 @@ pub struct Screen {
     /// Template for new pages.
     spec: PageSpec,
     ceil: Ceil,
+    /// Test-only fixed page row capacity (from `with_page_cap`), kept across resizes.
+    cap: Option<u16>,
     pub(crate) pages: Vec<Page>,
     pool: PagePool,
     next_serial: u64,
@@ -258,7 +293,9 @@ impl Screen {
             // Alternate screen: one fixed page set holding the whole active area.
             spec.rows_cap = spec.rows_cap.max(rows);
         }
-        Screen::build(rows, cols, cfg, spec, Ceil::MAX)
+        let mut s = Screen::build(rows, cols, cfg, spec, Ceil::MAX);
+        s.cap = cap;
+        s
     }
 
     /// Test constructor: explicit page template (including side-table capacities) and
@@ -284,6 +321,7 @@ impl Screen {
             limits: cfg.limits,
             spec,
             ceil,
+            cap: None,
             pages: Vec::new(),
             pool: PagePool::default(),
             next_serial: 1,
@@ -423,6 +461,19 @@ impl Screen {
         self.pages[pi].cell(slot, x)
     }
 
+    /// Hyperlink `(id, uri)` of the cell at `(y, x)`, if it carries one.
+    #[must_use]
+    pub fn link_at(&self, y: usize, x: usize) -> Option<(String, String)> {
+        if y >= self.rows || x >= self.cols {
+            return None;
+        }
+        let (pi, slot) = self.slot_of(y);
+        let page = &self.pages[pi];
+        let item = page.cell_link(slot, x)?;
+        let (id, uri) = page.link_get(item);
+        Some((id.to_string(), uri.to_string()))
+    }
+
     /// Code points of a cluster cell (or the scalar) into `out`.
     pub fn cell_text(&self, y: usize, x: usize, out: &mut Vec<u32>) {
         out.clear();
@@ -439,6 +490,19 @@ impl Screen {
                 out.extend(buf[..n].iter().map(|&ch| ch as u32));
             }
             _ => {}
+        }
+    }
+
+    /// Mark the last cell of row `y` as a `SpacerHead` (a wide character wrapped to the next
+    /// row, VTCORE-08). Only a blank last cell is replaced; reflow drops it when rejoining.
+    pub fn set_spacer_head(&mut self, y: usize) {
+        if y >= self.rows {
+            return;
+        }
+        let x = self.cols - 1;
+        let (pi, pos) = self.slot_of(y);
+        if self.pages[pi].cell(pos, x) == Cell::EMPTY {
+            self.pages[pi].put(pos, x, Cell::spacer_head(), None);
         }
     }
 
@@ -1147,6 +1211,166 @@ impl Screen {
         }
     }
 
+    // ---- resize (no reflow; reflow is M12) ----------------------------------------------
+
+    /// Resize with the cursor assumed on the bottom row: shrinking rows always pushes the
+    /// top rows into scrollback. See [`Screen::resize_keeping`].
+    pub fn resize(&mut self, rows: usize, cols: usize) -> Resized {
+        let cy = self.rows - 1;
+        self.resize_keeping(rows, cols, cy)
+    }
+
+    /// Resize to `rows x cols` without reflow (clamped like [`Screen::new`]); `cursor_row`
+    /// is the active-area row that must stay visible.
+    ///
+    /// * Columns are truncated or padded with blanks; a wide character cut by the new right
+    ///   edge is blanked (a stale `SpacerHead` is blanked when the row widens).
+    /// * Growing rows appends blank rows at the bottom (nothing is pulled from history).
+    /// * Shrinking rows first drops rows below the cursor; the rest leaves from the top into
+    ///   scrollback on the primary screen (xterm style) or is discarded on the alternate
+    ///   screen. Pins on discarded rows become garbage; all others follow their rows.
+    /// * Every row is reported dirty (the next snapshot is `Full`, consumers reset).
+    pub fn resize_keeping(&mut self, rows: usize, cols: usize, cursor_row: usize) -> Resized {
+        let nc = cols.clamp(1, u16::MAX as usize);
+        let mut nr = rows.clamp(1, u16::MAX as usize);
+        if nr * nc > MAX_CELLS {
+            nr = (MAX_CELLS / nc).max(1);
+        }
+        let (or, oc) = (self.rows, self.cols);
+        let cy = cursor_row.min(or - 1);
+        let d = or.saturating_sub(nr);
+        let trim = d.min(or - 1 - cy);
+        let drop_top = d - trim;
+        let append = nr.saturating_sub(or);
+        let out = Resized {
+            rows: nr,
+            cols: nc,
+            cursor_row: cy - drop_top,
+            pushed: if self.history { drop_top } else { 0 },
+        };
+        if nr == or && nc == oc {
+            return out;
+        }
+        if nc == oc && trim == 0 && (self.history || drop_top == 0) {
+            // Rows only, nothing to remove: no page is touched.
+            for _ in 0..append {
+                self.append_row(Color::Default);
+            }
+            self.rows = nr;
+            self.enforce_limits();
+        } else {
+            self.rebuild(nr, nc, trim, drop_top, append);
+        }
+        self.epoch += 1;
+        self.force_full = true;
+        self.pending = None;
+        let seq = self.bump();
+        for y in 0..self.rows {
+            let (pi, slot) = self.slot_of(y);
+            self.pages[pi].touch(slot, seq);
+        }
+        out
+    }
+
+    /// Copy the retained rows into fresh pages of the new width (see `resize_keeping`).
+    fn rebuild(&mut self, nr: usize, nc: usize, trim: usize, drop_top: usize, append: usize) {
+        let (oc, history) = (self.cols, self.history);
+        let mut spec = match self.cap {
+            Some(c) => PageSpec::with_rows(nc, usize::from(c)),
+            None => PageSpec::standard(nc, PAGE_BYTES),
+        };
+        if !history && self.cap.is_none() {
+            spec.rows_cap = spec.rows_cap.max(nr);
+        }
+        let keep_start = if history { 0 } else { drop_top };
+        let keep_end = self.total_rows - trim;
+        let old = std::mem::take(&mut self.pages);
+        let ceil = self.ceil;
+        let mut serial = self.next_serial;
+        let mut fresh: Vec<Page> = Vec::new();
+        let mut degraded = 0;
+        let copy_cols = nc.min(oc);
+        let keep_flags = flags::WRAPPED | flags::WRAP_CONT | flags::PROMPT_START;
+        let seq = self.bump();
+        let mut abs = 0;
+        self.pool.free.clear();
+        for src in &old {
+            for pos in 0..src.used_rows() {
+                let a = abs + pos;
+                if a < keep_start || a >= keep_end {
+                    continue;
+                }
+                let dpos = open_row(
+                    &mut fresh,
+                    &mut self.pool,
+                    spec,
+                    &mut serial,
+                    src.wrap_width(),
+                );
+                let di = fresh.len() - 1;
+                let mut lossy = false;
+                loop {
+                    match fresh[di].import_row(dpos, src, pos, 0, copy_cols - 1, lossy) {
+                        Ok(()) => break,
+                        Err(w) => match fresh[di].grown_with(w, &ceil) {
+                            Some(n) => fresh[di] = n,
+                            None => {
+                                lossy = true;
+                                degraded += 1;
+                            }
+                        },
+                    }
+                }
+                let dst = &mut fresh[di];
+                if nc > oc && dst.cell(dpos, oc - 1).wide() == Wide::SpacerHead {
+                    dst.fill_range(dpos, oc - 1, oc, Cell::EMPTY);
+                }
+                dst.or_row_flags(dpos, src.row_flags(pos) & keep_flags);
+                dst.set_row_block(dpos, src.row_block(pos));
+                dst.touch(dpos, seq);
+            }
+            abs += src.used_rows();
+        }
+        for _ in 0..append {
+            let pos = open_row(&mut fresh, &mut self.pool, spec, &mut serial, 0);
+            if let Some(p) = fresh.last_mut() {
+                p.touch(pos, seq);
+            }
+        }
+        // Pins: old absolute row -> new absolute row (kept rows are contiguous).
+        self.pins.remap(|p| {
+            let pi = old.iter().position(|pg| pg.serial() == p.serial)?;
+            let pos = old[pi].pos_of(p.slot)?;
+            let a = old[..pi].iter().map(Page::used_rows).sum::<usize>() + pos;
+            if a < keep_start || a >= keep_end {
+                return None;
+            }
+            let mut rem = a - keep_start;
+            for q in &fresh {
+                if rem < q.used_rows() {
+                    return Some(Pin {
+                        serial: q.serial(),
+                        slot: q.slot_at(rem),
+                        col: p.col.min((nc - 1) as u16),
+                        wrap_width: q.wrap_width(),
+                    });
+                }
+                rem -= q.used_rows();
+            }
+            None
+        });
+        self.next_serial = serial;
+        self.stats.degraded += degraded;
+        self.rows = nr;
+        self.cols = nc;
+        self.spec = spec;
+        self.total_rows = fresh.iter().map(Page::used_rows).sum();
+        self.pages = fresh;
+        self.bytes_total = self.pages.iter().map(|p| self.page_logical_bytes(p)).sum();
+        drop(old);
+        self.enforce_limits();
+    }
+
     // ---- pins -------------------------------------------------------------------------
 
     /// Track a pin at an active-area position.
@@ -1179,6 +1403,39 @@ impl Screen {
             wrap_width: p.wrap_width(),
         };
         self.pins.track(pin, kind)
+    }
+
+    /// The pin value for row `abs` (from the oldest retained row) and column `x`. The value
+    /// stays valid across scroll and eviction checks; hand it to [`Screen::track_pin`] to keep
+    /// it across reflow.
+    #[must_use]
+    pub fn pin_at(&self, abs: usize, x: usize) -> Option<Pin> {
+        if x >= self.cols {
+            return None;
+        }
+        let (pi, pos) = self.loc_abs(abs)?;
+        let p = &self.pages[pi];
+        Some(Pin {
+            serial: p.serial(),
+            slot: p.slot_at(pos),
+            col: x as u16,
+            wrap_width: p.wrap_width(),
+        })
+    }
+
+    /// Track an existing pin value (for example a search match).
+    pub fn track_pin(&mut self, pin: Pin, kind: PinKind) -> Option<PinId> {
+        self.pin_abs(&pin)?;
+        self.pins.track(pin, kind)
+    }
+
+    /// `(abs row, col)` of a pin value, if its row still exists.
+    #[must_use]
+    pub fn pin_abs(&self, p: &Pin) -> Option<(usize, usize)> {
+        let pi = self.pages.iter().position(|pg| pg.serial() == p.serial)?;
+        let pos = self.pages[pi].pos_of(p.slot)?;
+        let before: usize = self.pages[..pi].iter().map(Page::used_rows).sum();
+        Some((before + pos, p.col as usize))
     }
 
     /// Current state of a pin; `None` for an unknown or untracked id.

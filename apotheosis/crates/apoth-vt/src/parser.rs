@@ -7,7 +7,7 @@ use crate::limits::{HEAD_LEN, MAX_INTERMEDIATES, UTF8_CARRY};
 use crate::params::{Params, StrEnd, StrHead, StrKind, StrRoute};
 use crate::sink::Sink;
 use crate::table::{Act, ST_FINAL, State, TABLE};
-use crate::utf8::{is_ctl, lead_info, scan_ctl};
+use crate::utf8::{is_ctl, lead_info, scan_run};
 
 const REPLACEMENT: &str = "\u{FFFD}";
 
@@ -121,8 +121,15 @@ impl Parser {
                 continue;
             }
             let rest = &bytes[i..];
-            let n = scan_ctl(rest);
-            self.text(&rest[..n], n == rest.len(), sink);
+            let (n, ascii) = scan_run(rest);
+            if ascii {
+                // Pure ASCII: std's validation is a word-wise compare, no dispatch.
+                if let Ok(s) = core::str::from_utf8(&rest[..n]) {
+                    sink.print_run(s);
+                }
+            } else {
+                self.text(&rest[..n], n == rest.len(), sink);
+            }
             i += n;
         }
         i
