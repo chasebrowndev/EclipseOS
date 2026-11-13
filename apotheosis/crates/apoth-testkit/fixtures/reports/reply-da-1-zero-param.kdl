@@ -1,0 +1,7 @@
+fixture "reply-da-1-zero-param" {
+  desc "reply da 1 zero param (migrated from the apoth-term corpus)"
+  covers "T03-DA1"
+  size rows=2 cols=4
+  feed #"\e[0c"#
+  replies #"\e[?62;22c"#
+}

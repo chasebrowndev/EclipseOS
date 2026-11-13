@@ -1063,6 +1063,44 @@ impl Page {
         Ok(())
     }
 
+    /// Copy the single cell `(src_pos, sc)` of `src` to `(dst_pos, dc)` of this page,
+    /// interning its style, cluster and link here. A blank source cell is skipped. `Err`
+    /// and `lossy` as for [`Page::import_row`]; the destination is unchanged on `Err`.
+    pub fn import_cell(
+        &mut self,
+        dst_pos: usize,
+        dc: usize,
+        src: &Page,
+        src_pos: usize,
+        sc: usize,
+        lossy: bool,
+    ) -> Result<(), Full> {
+        if src.cell(src_pos, sc) == Cell::EMPTY {
+            return Ok(());
+        }
+        let (word, link) = self.adopt(Some(src), (src_pos, sc), lossy)?;
+        self.put(dst_pos, dc, word, link);
+        Ok(())
+    }
+
+    /// Remove the last row, releasing everything its cells held. Only valid on a page whose
+    /// row handles were never rotated (a freshly built page); used by reflow to trim blank
+    /// rows. No-op on an empty page.
+    pub fn pop_row(&mut self) {
+        let used = self.used_rows();
+        if used == 0 {
+            return;
+        }
+        let r = used - 1;
+        for c in 0..self.spec.cols {
+            if self.cell(r, c) != Cell::EMPTY {
+                self.blank(r, c);
+            }
+        }
+        self.set_row_flags(r, 0);
+        self.wr16(H_USED, r as u16);
+    }
+
     /// Copy columns `left..=right` of row `src_pos` over the same columns of row `dst_pos`
     /// (two different rows of this page). `Err` and `lossy` as for [`Page::import_row`].
     pub fn move_cells_within(

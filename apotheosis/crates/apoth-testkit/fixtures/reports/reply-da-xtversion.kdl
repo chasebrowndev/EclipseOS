@@ -1,0 +1,8 @@
+fixture "reply-da-xtversion" {
+  desc "reply da xtversion (migrated from the apoth-term corpus)"
+  covers "T03-XTVERSION"
+  size rows=2 cols=4
+  version "1.4.2"
+  feed #"\e[>q"#
+  replies #"\eP>|Apotheosis 1.4.2\e\\"#
+}

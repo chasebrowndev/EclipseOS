@@ -1,0 +1,8 @@
+fixture "reports-da1-pre-m25" {
+  desc "DA1 before sixel lands: VT220 class + ANSI colour, no attribute 4 (T-19 section 4)"
+  covers "T03-DA1" "VTCORE-23"
+  size rows=5 cols=10
+  feed #"\e[c"#
+  grid
+  replies #"\e[?62;22c"#
+}

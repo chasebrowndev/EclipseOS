@@ -1,0 +1,7 @@
+fixture "reply-xtwinops-20-icon-report-is-empty" {
+  desc "reply xtwinops 20 icon report is empty (migrated from the apoth-term corpus)"
+  covers "T03-XTWINOPS"
+  size rows=5 cols=10
+  feed #"\e[20t"#
+  replies #"\e]L\e\\"#
+}

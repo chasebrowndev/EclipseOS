@@ -1,0 +1,7 @@
+fixture "osc-133-output-start" {
+  desc "osc 133 output start (migrated from the apoth-term corpus)"
+  covers "T03-OSC133"
+  size rows=1 cols=8
+  feed #"\e]133;C\a"#
+  events "mark:C"
+}

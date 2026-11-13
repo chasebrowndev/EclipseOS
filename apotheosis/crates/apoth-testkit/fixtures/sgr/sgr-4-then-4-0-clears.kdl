@@ -1,0 +1,11 @@
+fixture "sgr-4-then-4-0-clears" {
+  covers "T03-SGR-UNDERLINE" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[4mA\e[4:0mB"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+  cell row=0 col=0 ch="A" ul="single"
+  cell row=0 col=1 ch="B" ul="none"
+}

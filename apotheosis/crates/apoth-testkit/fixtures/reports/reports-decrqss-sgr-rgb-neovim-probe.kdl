@@ -1,0 +1,8 @@
+fixture "reports-decrqss-sgr-rgb-neovim-probe" {
+  desc "RGB is reported in `;` form so neovim's truecolour probe matches 48[:;]2[:;]R[:;]G[:;]B"
+  covers "T03-DECRQSS" "VTCORE-23"
+  size rows=5 cols=10
+  feed #"\e[48:2::1:2:3m\eP$qm\e\\"#
+  grid
+  replies #"\eP1$r0;48;2;1;2;3m\e\\"#
+}

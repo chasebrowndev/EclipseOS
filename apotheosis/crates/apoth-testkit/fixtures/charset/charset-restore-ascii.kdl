@@ -1,0 +1,9 @@
+fixture "charset-restore-ascii" {
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e(0q\e(Bq"#
+  grid {
+    row "─q"
+  }
+  cursor row=0 col=2
+}

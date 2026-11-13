@@ -1,0 +1,10 @@
+fixture "osc8-id-251-rejected" {
+  covers "T03-OSC8" "VTCORE-29"
+  review "a 251-byte id: assumed to reject the whole link; T-03 does not say"
+  size rows=3 cols=20
+  feed #"\e]8;id=iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii;https://a\aX"#
+  grid {
+    row "X"
+  }
+  cell row=0 col=0 ch="X" link=#null
+}

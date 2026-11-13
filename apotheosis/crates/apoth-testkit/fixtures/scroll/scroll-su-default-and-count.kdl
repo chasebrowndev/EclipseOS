@@ -1,0 +1,15 @@
+fixture "scroll-su-default-and-count" {
+  covers "T03-SU-SD"
+  review "see scroll-su"
+  size rows=4 cols=4
+  feed #"A\r\nB\r\nC\r\nD\e[2S"#
+  grid {
+    row "C"
+    row "D"
+  }
+  cursor row=3 col=1
+  scrollback {
+    row "A"
+    row "B"
+  }
+}

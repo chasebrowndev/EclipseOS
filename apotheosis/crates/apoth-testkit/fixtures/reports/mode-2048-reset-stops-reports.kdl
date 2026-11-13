@@ -1,0 +1,11 @@
+fixture "mode-2048-reset-stops-reports" {
+  desc "after mode 2048 is reset a resize reports nothing"
+  covers "T03-MODE-2048"
+  size rows=3 cols=5
+  feed #"\e[?2048h\e[?2048l"#
+  checkpoint "off" {
+    replies #"\e[48;3;5;48;40t"#
+  }
+  resize rows=4 cols=6
+  replies
+}
