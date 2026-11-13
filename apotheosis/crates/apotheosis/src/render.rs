@@ -18,15 +18,17 @@ use apoth_render::cursor::{self, CursorScene, CursorShape, CursorState};
 use apoth_render::gpu::{GpuOptions, RenderError};
 use apoth_render::presenter::{PresentOutcome, Presenter, SurfaceOptions, SurfacePresenter};
 use apoth_render::renderer::{FrameInput, Renderer, RendererConfig};
-use apoth_render::scene::{BuildCtx, GridScene, SceneConfig};
+use apoth_render::scene::{BuildCtx, GridScene, Highlight, SceneConfig};
 use apoth_render::sched::{Pacing, Poll, SchedConfig, Scheduler};
 use apoth_render::surface::{AlphaRequest, FaultAction, fault_action};
 use apoth_wl::pace::CommitCtl;
 use apoth_wl::{PaceEvent, Pacer, WlSurfaceHandle};
 
 use crate::glyphs::{COLOR_PAGES, Glyphs, MASK_PAGES, PAGE};
+use crate::hook::ViewDump;
 use crate::pane::{MainMsg, PaneShared, RenderMsg, now_ns};
 use crate::ui::{Overlay, UiRaster, bar_inset_px, build_overlay};
+use crate::view::{Source, View, paint};
 
 /// Configured default colours. The term's own values win once a program has changed them
 /// (OSC 4/10/11/12): see [`pick`].
@@ -276,6 +278,10 @@ fn run(a: RenderArgs) {
     );
     let mut scene = GridScene::new();
     let mut snap = FrameSnapshot::new();
+    // Scrollback offset, selection and preedit (T-02 §5-§6): commands arrive from main.
+    let mut view = View::new();
+    let mut hl: Vec<Highlight> = Vec::new();
+    let mut vdump = ViewDump::from_env();
     let mut cscene = CursorScene::default();
     let mut pal = Palette::xterm();
     let mut scene_cfg = SceneConfig {
@@ -284,6 +290,7 @@ fn run(a: RenderArgs) {
         ..SceneConfig::default()
     };
     let (mut seen_key, mut was_hold, mut seen_focus) = (0u64, false, false);
+    let mut last_cursor = (usize::MAX, usize::MAX);
     let mut fault_streak = 0u32;
     let mut overlay: Option<Overlay> = None;
     let mut ui_fonts: Option<(String, FontSystem)> = None;
@@ -367,9 +374,10 @@ fn run(a: RenderArgs) {
         let msg = match sched.poll(now_ns()) {
             Poll::Render(r) => {
                 glyphs.begin_frame();
-                let (damage, cur, colors) = {
+                let (damage, cur, colors, source) = {
                     let mut t = shared.lock();
                     let d = t.grid_mut().snapshot_dirty(&mut snap);
+                    let source = view.sync(&t, &snap, d != Damage::None);
                     for i in 0..=255u8 {
                         let mut c = t.palette(i);
                         if let Some(a) = &rs.colors.ansi
@@ -379,8 +387,33 @@ fn run(a: RenderArgs) {
                         }
                         pal.indexed[usize::from(i)] = Rgb(c.0, c.1, c.2);
                     }
-                    (d, t.cursor(), t.colors())
+                    (d, t.cursor(), t.colors(), source)
                 };
+                // The frame draws the live snapshot, or the composed one while scrolled back or
+                // with a preedit. Highlights are baked into rows, so rows whose highlight
+                // changed are rebuilt, and a region scroll under a highlight is a full redraw.
+                let (damage, disp) = match source {
+                    Source::Live => {
+                        let d = if matches!(damage, Damage::Scroll { .. })
+                            && !view.highlight_rows().is_empty()
+                        {
+                            Damage::Full
+                        } else {
+                            damage
+                        };
+                        (d, &snap)
+                    }
+                    Source::LiveFull => (Damage::Full, &snap),
+                    Source::Composed { full } => (
+                        if full { Damage::Full } else { Damage::None },
+                        view.composed(),
+                    ),
+                };
+                if damage != Damage::Full {
+                    for row in view.changed_rows() {
+                        scene.invalidate(row);
+                    }
+                }
                 let fg = pick(colors.0, term_defaults.fg, rs.colors.fg);
                 let bg = pick(colors.1, term_defaults.bg, rs.colors.bg);
                 let cc = pick(colors.2, term_defaults.cursor, rs.colors.cursor);
@@ -388,13 +421,19 @@ fn run(a: RenderArgs) {
                 pal.bg = Rgb(bg.0, bg.1, bg.2);
                 pal.cursor = Some(Rgb(cc.0, cc.1, cc.2));
                 let metrics = glyphs.metrics();
+                paint(
+                    view.highlights(),
+                    pal.selection_bg,
+                    pal.selection_fg,
+                    &mut hl,
+                );
                 let ctx = BuildCtx {
                     cfg: &scene_cfg,
                     palette: &pal,
                     metrics: &metrics,
-                    highlights: &[],
+                    highlights: &hl,
                 };
-                let mut work = scene.update(&snap, damage, &ctx, r.echo, &mut glyphs);
+                let mut work = scene.update(disp, damage, &ctx, r.echo, &mut glyphs);
                 let mut retries = 0;
                 while std::mem::take(&mut glyphs.flushed) {
                     // An atlas was cleared mid-update: every row must be rebuilt. If the
@@ -403,11 +442,16 @@ fn run(a: RenderArgs) {
                     retries += 1;
                     glyphs.degraded = retries >= 2;
                     stack.renderer.invalidate_all();
-                    work = scene.update(&snap, Damage::Full, &ctx, r.echo, &mut glyphs);
+                    work = scene.update(disp, Damage::Full, &ctx, r.echo, &mut glyphs);
+                }
+                if (cur.y, cur.x) != last_cursor {
+                    last_cursor = (cur.y, cur.x);
+                    let _ = to_main.send(MainMsg::Cursor(last_cursor));
                 }
                 let focused = shared.focused.load(Ordering::Acquire);
                 let show_cursor = cur.visible
-                    && cur.y < snap.rows.len()
+                    && view.offset() == 0
+                    && cur.y < disp.rows.len()
                     && !(rs.unfocused_cursor_hidden && !focused);
                 if show_cursor {
                     // The cursor glyph must not clear an atlas the rows were just built on.
@@ -421,7 +465,7 @@ fn run(a: RenderArgs) {
                     };
                     cursor::build(
                         &st,
-                        &snap.rows[cur.y],
+                        &disp.rows[cur.y],
                         &ctx,
                         r.echo,
                         &mut glyphs,
@@ -429,6 +473,9 @@ fn run(a: RenderArgs) {
                     );
                 }
                 glyphs.degraded = false;
+                if let Some(d) = vdump.as_mut() {
+                    d.write(&disp.rows, view.offset());
+                }
                 glyphs.flush(&stack.renderer);
                 if chrome_dirty {
                     chrome_dirty = false;
@@ -553,6 +600,16 @@ fn run(a: RenderArgs) {
         match msg {
             Ok(RenderMsg::Stop) | Err(RecvTimeoutError::Disconnected) => break,
             Ok(RenderMsg::Poke) | Err(RecvTimeoutError::Timeout) => {}
+            Ok(RenderMsg::View(cmd)) => {
+                let copied = {
+                    let mut t = shared.lock();
+                    view.apply(&mut t, cmd)
+                };
+                if let Some(c) = copied {
+                    let _ = to_main.send(MainMsg::Copied(c));
+                }
+                sched.damage(now_ns());
+            }
             Ok(RenderMsg::Overlay(o)) => {
                 let now = now_ns();
                 overlay = o.map(|b| *b);

@@ -125,6 +125,74 @@ fn percent_decode(s: &[u8]) -> Vec<u8> {
     out
 }
 
+/// POSIX-shell quote one path: bare when every byte is safe, otherwise single-quoted with
+/// `'` written as `'\''`. Newlines survive (inside single quotes).
+pub fn shell_quote(path: &std::path::Path) -> Vec<u8> {
+    use std::os::unix::ffi::OsStrExt;
+    let b = path.as_os_str().as_bytes();
+    let safe = |c: u8| c.is_ascii_alphanumeric() || b"/._-+,:@%=".contains(&c);
+    if !b.is_empty() && b.iter().all(|&c| safe(c)) {
+        return b.to_vec();
+    }
+    let mut out = Vec::with_capacity(b.len() + 2);
+    out.push(b'\'');
+    for &c in b {
+        if c == b'\'' {
+            out.extend_from_slice(b"'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push(b'\'');
+    out
+}
+
+/// What a finished drop carries, ready for the paste path above this crate.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DropContent {
+    /// Dropped text.
+    Text(String),
+    /// Dropped local files, in order.
+    Paths(Vec<PathBuf>),
+}
+
+impl DropContent {
+    /// Translate received bytes by payload type. Text is lossy-decoded UTF-8 (invalid
+    /// bytes become U+FFFD, never an error); a URI list keeps only local `file:` entries.
+    pub fn from_bytes(payload: Payload, bytes: &[u8]) -> DropContent {
+        match payload {
+            Payload::Text => DropContent::Text(String::from_utf8_lossy(bytes).into_owned()),
+            Payload::UriList => DropContent::Paths(parse_uri_list(bytes)),
+        }
+    }
+
+    /// The bytes to send through the paste guard: text as is, files as shell-quoted paths
+    /// separated by single spaces (no trailing space or newline).
+    pub fn paste_bytes(&self) -> Vec<u8> {
+        match self {
+            DropContent::Text(t) => t.as_bytes().to_vec(),
+            DropContent::Paths(ps) => {
+                let mut out = Vec::new();
+                for (i, p) in ps.iter().enumerate() {
+                    if i > 0 {
+                        out.push(b' ');
+                    }
+                    out.extend_from_slice(&shell_quote(p));
+                }
+                out
+            }
+        }
+    }
+
+    /// Nothing to paste.
+    pub fn is_empty(&self) -> bool {
+        match self {
+            DropContent::Text(t) => t.is_empty(),
+            DropContent::Paths(p) => p.is_empty(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -208,5 +276,32 @@ mod tests {
     fn bad_percent_escapes_pass_through() {
         assert_eq!(percent_decode(b"a%zzb%4"), b"a%zzb%4".to_vec());
         assert_eq!(percent_decode(b"%41"), b"A".to_vec());
+    }
+
+    #[test]
+    fn quoting_paths() {
+        let q = |s: &str| String::from_utf8(shell_quote(std::path::Path::new(s))).unwrap();
+        assert_eq!(q("/home/u/a.txt"), "/home/u/a.txt");
+        assert_eq!(q("/home/u/a b.txt"), "'/home/u/a b.txt'");
+        assert_eq!(q("it's"), "'it'\\''s'");
+        assert_eq!(q("$(rm -rf x)"), "'$(rm -rf x)'");
+        assert_eq!(q("a\nb"), "'a\nb'");
+        assert_eq!(q(""), "''");
+    }
+
+    #[test]
+    fn drop_content_translation() {
+        let t = DropContent::from_bytes(Payload::Text, "héllo\n".as_bytes());
+        assert_eq!(t, DropContent::Text("héllo\n".into()));
+        assert_eq!(t.paste_bytes(), "héllo\n".as_bytes());
+        let bad = DropContent::from_bytes(Payload::Text, b"a\xffb");
+        assert_eq!(bad, DropContent::Text("a\u{fffd}b".into()));
+        let f = DropContent::from_bytes(
+            Payload::UriList,
+            b"file:///tmp/a%20b\r\nfile:///tmp/c\r\nhttps://x/\r\n",
+        );
+        assert_eq!(f.paste_bytes(), b"'/tmp/a b' /tmp/c".to_vec());
+        assert!(DropContent::from_bytes(Payload::UriList, b"https://x/\n").is_empty());
+        assert!(DropContent::from_bytes(Payload::Text, b"").is_empty());
     }
 }

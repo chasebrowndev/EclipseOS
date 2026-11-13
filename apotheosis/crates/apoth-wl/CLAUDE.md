@@ -52,3 +52,12 @@ Surface}` on a channel (`Surface` = logical size, buffer size, scale, suspended;
 creation and after every relayout/scale change). The same events still flow through `WlEvent`.
 Keyboard: `InputKind::Keymap(k)` -> `k.text()` -> `KbvmBackend::load_keymap_bytes`;
 `Modifiers{..}` -> `apoth_input::Components`; `Key{key, pressed, repeat, ..}` -> `lookup(key)`.
+
+## Drag and drop in (M16)
+`WlEvent::Dnd(DndEvent::{Enter, Motion, Leave, Dropped})`: the crate accepts text and
+`text/uri-list` offers (copy action) and refuses the rest. After `Dropped`, call
+`WlHandle::receive_drop(seat)` (a `Transfer`, size cap and timeout as for the clipboard; its
+done event has `kind == Clipboard`, track it by id), convert with `DropContent::from_bytes`
+(`paste_bytes()` = text, or shell-quoted paths joined by spaces) and send that through the
+paste guard, then `finish_drop(seat, ok)`. Not covered end to end (needs an input-injecting
+compositor, T-25 §6).

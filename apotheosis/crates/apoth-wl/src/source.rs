@@ -617,6 +617,19 @@ impl WlHandle {
         self.with(|s| s.receive_selection(seat, kind, want))
     }
 
+    /// After `DndEvent::Dropped`: start reading the dropped data. Insert the transfer with
+    /// [`Transfer::insert`]; its done event has `kind == Clipboard`, so track it by id. Turn
+    /// the bytes into paste text with [`crate::DropContent::from_bytes`]. Then call
+    /// [`WlHandle::finish_drop`].
+    pub fn receive_drop(&self, seat: SeatId) -> Result<Transfer, ClipboardError> {
+        self.with(|s| s.receive_drop(seat))
+    }
+
+    /// End a drop session once its transfer finished (`ok`) or failed (`!ok`).
+    pub fn finish_drop(&self, seat: SeatId, ok: bool) {
+        self.with(|s| s.finish_drop(seat, ok));
+    }
+
     // ----- IME -----
 
     /// Enable text-input-v3 on a seat.

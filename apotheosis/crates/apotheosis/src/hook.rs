@@ -45,6 +45,38 @@ impl DumpHook {
     }
 }
 
+/// Test-only dump of what the frame draws (scrolled rows, preedit), as opposed to [`DumpHook`]
+/// which dumps the live screen. `APOTH_TEST_VIEW=<path>`, debug builds only. The first line is
+/// `offset=<rows scrolled back>`, then one line per visible row. Written when it changes.
+pub(crate) struct ViewDump {
+    path: PathBuf,
+    last: String,
+}
+
+impl ViewDump {
+    pub(crate) fn from_env() -> Option<ViewDump> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let p = std::env::var_os("APOTH_TEST_VIEW").filter(|p| !p.is_empty())?;
+        Some(ViewDump {
+            path: PathBuf::from(p),
+            last: String::new(),
+        })
+    }
+
+    pub(crate) fn write(&mut self, rows: &[apoth_grid::SnapRow], offset: usize) {
+        let text = format!("offset={offset}\n{}", crate::view::rows_text(rows));
+        if text == self.last {
+            return;
+        }
+        let tmp = self.path.with_extension("tmp");
+        if std::fs::write(&tmp, &text).is_ok() && std::fs::rename(&tmp, &self.path).is_ok() {
+            self.last = text;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

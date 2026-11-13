@@ -5,13 +5,18 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod binds;
 mod glyphs;
 mod hook;
+mod mousectl;
 mod pane;
+mod paste;
+mod pointer;
 mod reload;
 mod render;
 mod settings;
 mod ui;
+mod view;
 mod workers;
 
 use std::io::IsTerminal;

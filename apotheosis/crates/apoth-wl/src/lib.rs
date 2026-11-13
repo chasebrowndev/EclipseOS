@@ -32,11 +32,12 @@ mod shmbuf;
 pub use caps::{BindState, BlurPath, CapabilityTable};
 pub use clock::Stamp;
 pub use event::{
-    ConfigureEvent, FatalError, ImeEvent, InputEvent, InputKind, Keymap, KeymapFormat, OutputEvent,
-    OutputId, OutputInfo, PresentedEvent, ScrollFrame, SeatId, Secret, SelectionEvent,
+    ConfigureEvent, DndEvent, FatalError, ImeEvent, InputEvent, InputKind, Keymap, KeymapFormat,
+    OutputEvent, OutputId, OutputInfo, PresentedEvent, ScrollFrame, SeatId, Secret, SelectionEvent,
     SelectionKind, WindowId, WlEvent,
 };
 pub use extras::ContentType;
+pub use mime::DropContent;
 pub use pace::{PaceEvent, Pacer};
 pub use rawhandle::WlSurfaceHandle;
 pub use seat::{ClipboardError, CursorError};

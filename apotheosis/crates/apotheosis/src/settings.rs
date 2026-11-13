@@ -12,6 +12,7 @@ use apoth_config::load::default_input;
 use apoth_config::reload::Reloader;
 use apoth_font::config::{FontConfig, Ligatures, Style};
 use apoth_grid::Limits;
+use apoth_input::{Mods, PasteNewline, PasteOptions};
 use apoth_render::colour::TextBlending;
 use apoth_render::cursor::CursorShape;
 use apoth_render::surface::AlphaRequest;
@@ -69,6 +70,8 @@ pub(crate) struct Settings {
     pub(crate) initial_size: (usize, usize),
     pub(crate) repeat_rate: Option<u32>,
     pub(crate) repeat_delay_ms: Option<u32>,
+    /// Selection, mouse and paste keys (T-05 §5-§6, T-18 §4).
+    pub(crate) input: InputSettings,
     /// `-o key=value` pairs and diagnostics counts, for the startup log line.
     pub(crate) diagnostics: usize,
 }
@@ -120,6 +123,151 @@ impl GlassSettings {
                 size / apoth_ui::tokens::size::BODY * scale
             } else {
                 1.0
+            },
+        }
+    }
+}
+
+/// `paste.guard`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Guard {
+    Auto,
+    Always,
+    Never,
+}
+
+/// The `paste.*` keys the binary reads (T-18 §4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PasteSettings {
+    pub(crate) guard: Guard,
+    pub(crate) confirm_bytes: usize,
+    pub(crate) confirm_multiline: bool,
+    pub(crate) opts: PasteOptions,
+}
+
+/// Where a finished selection is copied automatically (T-05 §5, default `primary`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CopyOnSelect {
+    None,
+    Primary,
+    Clipboard,
+    Both,
+}
+
+impl CopyOnSelect {
+    pub(crate) fn primary(self) -> bool {
+        matches!(self, CopyOnSelect::Primary | CopyOnSelect::Both)
+    }
+    pub(crate) fn clipboard(self) -> bool {
+        matches!(self, CopyOnSelect::Clipboard | CopyOnSelect::Both)
+    }
+
+    /// The four-way value, or the legacy bool row (`true` = primary). The schema row
+    /// (`apoth-config`, not this crate) is still a bool defaulting to `false`; while it sits at
+    /// that built-in default the spec default `primary` applies, and an explicit `false` from
+    /// any user layer means `none`.
+    fn of(c: &Config) -> CopyOnSelect {
+        let path = "selection.copy-on-select";
+        match c.str(path) {
+            Some("none") => return CopyOnSelect::None,
+            Some("clipboard") => return CopyOnSelect::Clipboard,
+            Some("both") => return CopyOnSelect::Both,
+            Some(_) => return CopyOnSelect::Primary,
+            None => {}
+        }
+        let builtin = c
+            .origin(path)
+            .is_none_or(|o| o.layer == apoth_config::model::Layer::Default);
+        if c.bool(path) || builtin {
+            CopyOnSelect::Primary
+        } else {
+            CopyOnSelect::None
+        }
+    }
+}
+
+/// The selection, mouse and paste keys. Read at use, so a reload is live.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct InputSettings {
+    /// `selection.copy-on-select` (T-05 §5).
+    pub(crate) copy_on_select: CopyOnSelect,
+    /// `clipboard.primary-selection`.
+    pub(crate) primary: bool,
+    pub(crate) clear_on_copy: bool,
+    pub(crate) clear_on_typing: bool,
+    pub(crate) trim_trailing: bool,
+    /// Extra word characters for `WordChars` (derived from the delimiters in delimiter mode).
+    pub(crate) word_extra: String,
+    /// `selection.triple-click`: `line` selects the logical line.
+    pub(crate) triple_line: bool,
+    pub(crate) multi_click: Duration,
+    pub(crate) scroll_lines: u32,
+    pub(crate) scroll_multiplier: f64,
+    /// `mouse.selection-override`.
+    pub(crate) override_mods: Mods,
+    pub(crate) paste: PasteSettings,
+}
+
+/// Modifier names (`shift`, `ctrl`, `alt`, `super`) to a set.
+pub(crate) fn mods_of(names: &[String]) -> Mods {
+    names.iter().fold(Mods::NONE, |m, n| {
+        m | match n.as_str() {
+            "shift" => Mods::SHIFT,
+            "ctrl" => Mods::CTRL,
+            "alt" => Mods::ALT,
+            "super" => Mods::SUPER,
+            _ => Mods::NONE,
+        }
+    })
+}
+
+/// Word characters implied by a delimiter set: every printable ASCII punctuation character
+/// that is not a delimiter (alphanumerics and `_` are always word characters).
+pub(crate) fn chars_from_delimiters(delims: &str) -> String {
+    ('!'..='~')
+        .filter(|c| !c.is_alphanumeric() && *c != '_' && !delims.contains(*c))
+        .collect()
+}
+
+impl InputSettings {
+    pub(crate) fn from_config(c: &Config) -> InputSettings {
+        let word_extra = match c.str("selection.word-mode") {
+            Some("chars") => c.str("selection.word-chars").unwrap_or("").to_owned(),
+            Some("unicode") => String::new(),
+            _ => chars_from_delimiters(c.str("selection.word-delimiters").unwrap_or("")),
+        };
+        let guard = match c.str("paste.guard") {
+            Some("always") => Guard::Always,
+            Some("never") => Guard::Never,
+            _ => Guard::Auto,
+        };
+        let newline = match c.str("paste.newline") {
+            Some("as-is") => PasteNewline::AsIs,
+            Some("confirm") => PasteNewline::Confirm,
+            _ => PasteNewline::Cr,
+        };
+        let bytes = |p: &str| usize::try_from(c.bytes(p)).unwrap_or(usize::MAX);
+        InputSettings {
+            copy_on_select: CopyOnSelect::of(c),
+            primary: c.bool("clipboard.primary-selection"),
+            clear_on_copy: c.bool("selection.clear-on-copy"),
+            clear_on_typing: c.bool("selection.clear-on-typing"),
+            trim_trailing: c.bool("selection.trim-trailing-spaces"),
+            word_extra,
+            triple_line: c.str("selection.triple-click") != Some("output"),
+            multi_click: Duration::from_millis(c.millis("mouse.multi-click-interval")),
+            scroll_lines: u32::try_from(c.int("mouse.scroll-lines").clamp(1, 50)).unwrap_or(3),
+            scroll_multiplier: c.float("mouse.scroll-multiplier").clamp(0.1, 20.0),
+            override_mods: mods_of(c.list("mouse.selection-override")),
+            paste: PasteSettings {
+                guard,
+                confirm_bytes: bytes("paste.confirm-bytes"),
+                confirm_multiline: c.bool("paste.confirm-multiline"),
+                opts: PasteOptions {
+                    newline,
+                    trim_trailing_newline: c.bool("paste.trim-trailing-newline"),
+                    max_bytes: bytes("paste.max-bytes"),
+                },
             },
         }
     }
@@ -375,6 +523,7 @@ impl Settings {
             ),
             repeat_rate: u32::try_from(rate).ok().filter(|r| *r > 0),
             repeat_delay_ms: u32::try_from(delay).ok().filter(|d| *d > 0),
+            input: InputSettings::from_config(c),
             diagnostics: 0,
         }
     }
@@ -420,6 +569,40 @@ pub(crate) fn parse_passwd_shell(text: &str, uid: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_defaults() {
+        let i = InputSettings::from_config(&Config::defaults());
+        assert!(
+            i.copy_on_select == CopyOnSelect::Primary
+                && i.primary
+                && i.clear_on_typing
+                && i.trim_trailing
+        );
+        assert_eq!(i.scroll_lines, 3);
+        assert_eq!(i.override_mods, Mods::SHIFT);
+        assert_eq!(i.multi_click, Duration::from_millis(400));
+        assert!(i.triple_line);
+        assert_eq!(i.paste.guard, Guard::Auto);
+        assert_eq!(i.paste.confirm_bytes, 4096);
+        assert_eq!(i.paste.opts.max_bytes, 5 * 1024 * 1024);
+        assert_eq!(i.paste.opts.newline, PasteNewline::Cr);
+    }
+
+    #[test]
+    fn delimiter_mode_makes_everything_else_a_word_char() {
+        let w = chars_from_delimiters(" ,;");
+        assert!(w.contains('/') && w.contains('.') && w.contains('-'));
+        assert!(!w.contains(',') && !w.contains(';') && !w.contains(' '));
+        assert!(!w.contains('a') && !w.contains('_'));
+    }
+
+    #[test]
+    fn modifier_names() {
+        let l = vec!["shift".to_owned(), "ctrl".to_owned(), "bogus".to_owned()];
+        assert_eq!(mods_of(&l), Mods::SHIFT | Mods::CTRL);
+        assert_eq!(mods_of(&[]), Mods::NONE);
+    }
 
     #[test]
     fn defaults_load_without_files() {

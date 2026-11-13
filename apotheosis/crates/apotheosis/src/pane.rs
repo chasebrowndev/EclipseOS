@@ -146,6 +146,10 @@ pub(crate) enum MainMsg {
     Resized((usize, usize)),
     /// `Pty::close` finished.
     Closed(Option<ExitStatus>),
+    /// Text the view took from the selection, to offer on the seat (never logged).
+    Copied(crate::view::Copied),
+    /// The cursor cell (row, column) changed: the IME cursor rectangle follows it.
+    Cursor((usize, usize)),
     /// A worker finished a config load (T-10 §4): main diffs and applies it.
     Loaded(
         Box<(
@@ -163,6 +167,8 @@ pub(crate) enum RenderMsg {
     Update(Box<crate::render::RenderUpdate>),
     /// The overlay bar (error bar or restart notice) changed; `None` removes it.
     Overlay(Option<Box<crate::ui::Overlay>>),
+    /// A selection, scroll or preedit command for the view (applied under the frame's lock).
+    View(crate::view::ViewCmd),
     Stop,
 }
 

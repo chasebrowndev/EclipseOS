@@ -369,6 +369,59 @@ pub enum SelectionEvent {
     },
 }
 
+/// Drag-and-drop into a window (T-09 §6). Positions are surface-local logical pixels; hit
+/// testing against panes is the caller's. No content here: after `Dropped`, call
+/// `WlHandle::receive_drop` and `WlHandle::finish_drop`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DndEvent {
+    /// A drag entered a window.
+    Enter {
+        /// Seat.
+        seat: SeatId,
+        /// Window.
+        window: WindowId,
+        /// Surface-local x.
+        x: f64,
+        /// Surface-local y.
+        y: f64,
+        /// What a drop would deliver; `None` = nothing we can read (the drag is refused).
+        payload: Option<crate::mime::Payload>,
+        /// MIME types offered.
+        mimes: Vec<String>,
+    },
+    /// The drag moved.
+    Motion {
+        /// Seat.
+        seat: SeatId,
+        /// Window.
+        window: WindowId,
+        /// Surface-local x.
+        x: f64,
+        /// Surface-local y.
+        y: f64,
+    },
+    /// The drag left (or the session ended without a drop).
+    Leave {
+        /// Seat.
+        seat: SeatId,
+        /// Window.
+        window: WindowId,
+    },
+    /// The user released over the window: read it with `receive_drop`.
+    Dropped {
+        /// Seat.
+        seat: SeatId,
+        /// Window.
+        window: WindowId,
+        /// Surface-local x.
+        x: f64,
+        /// Surface-local y.
+        y: f64,
+        /// What the drop carries.
+        payload: crate::mime::Payload,
+    },
+}
+
 /// A fatal connection error (protocol error or I/O failure). The connection is unusable.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FatalError {
@@ -431,6 +484,8 @@ pub enum WlEvent {
     Input(InputEvent),
     /// Selection ownership.
     Selection(SelectionEvent),
+    /// Drag-and-drop into a window.
+    Dnd(DndEvent),
     /// A client asked for our selection: insert this transfer into the loop.
     Send(Transfer),
     /// An xdg-activation token requested with `request_activation_token` is ready.

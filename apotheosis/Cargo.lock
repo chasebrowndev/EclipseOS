@@ -218,6 +218,7 @@ dependencies = [
  "apoth-render",
  "apoth-term",
  "apoth-ui",
+ "apoth-unicode",
  "apoth-wl",
  "calloop",
  "ec-theme",

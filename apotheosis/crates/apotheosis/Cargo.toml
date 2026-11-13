@@ -20,6 +20,7 @@ apoth-pty.workspace = true
 apoth-render.workspace = true
 apoth-term.workspace = true
 apoth-ui.workspace = true
+apoth-unicode.workspace = true
 apoth-wl.workspace = true
 # ADR 0084: window light/dark is decided by the same luminance crossover as the palette.
 ec-theme = { path = "../../../abyss/crates/ec-theme" }

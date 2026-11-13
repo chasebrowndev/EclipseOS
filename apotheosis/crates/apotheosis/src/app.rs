@@ -14,15 +14,19 @@ use apoth_font::discovery::{FontIndex, default_cache_file, font_dirs};
 use apoth_font::system::{EmbeddedFont, FontSystem};
 use apoth_input::backend::{Components, KeyboardBackend};
 use apoth_input::backend_kbvm::KbvmBackend;
-use apoth_input::{KeyKind, encode_focus, encode_key};
+use apoth_input::modes::bit;
+use apoth_input::{KeyKind, Mods, MouseButton, encode_focus, encode_key, encode_text};
 use apoth_pty::{
     CloseTimings, Enqueue, EnvSpec, ExitStatus, Pty, PtySize, SpawnConfig, build_env, choose_term,
     terminfo_dirs,
 };
 use apoth_term::Term;
+use apoth_wl::mime::Want;
+use apoth_wl::transfer::TransferDirection;
+use apoth_wl::window::Rect;
 use apoth_wl::{
-    ConfigureEvent, InputEvent, InputKind, KeymapFormat, WindowId, WindowSpec, WlConfig, WlEvent,
-    WlHandle,
+    ConfigureEvent, DndEvent, DropContent, ImeEvent, InputEvent, InputKind, KeymapFormat, SeatId,
+    SelectionKind, TransferDone, TransferStatus, WindowId, WindowSpec, WlConfig, WlEvent, WlHandle,
 };
 use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
@@ -30,15 +34,20 @@ use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, Reg
 
 use rustix::io::Errno;
 
+use crate::binds::{self, Act};
 use crate::hook::DumpHook;
+use crate::mousectl::{Mouse, Out};
 use crate::pane::{
     IoArgs, IoThread, MainMsg, PaneEvents, PaneShared, RenderMsg, ResizeReq, WAKE_RESIZE,
     WAKE_STOP, now_ns, spawn_io,
 };
+use crate::paste::{self, Origin};
+use crate::pointer::Geometry;
 use crate::reload::{DEBOUNCE, POLL_PERIOD, WatchMode, Watcher};
 use crate::render::{RenderArgs, RenderSettings, RenderUpdate, TermDefaults, pad_px};
 use crate::settings::{ErrorPos, Settings, Startup, error_positions, load_input, resolve_shell};
 use crate::ui::{Overlay, bar_inset_px, bars_for};
+use crate::view::{Copied, CopyTarget, Preedit, ScrollBy, ViewCmd, ViewSettings};
 use crate::workers::Pool;
 use apoth_config::fs::RealFs;
 use apoth_config::reload::{Applied, Outcome, Reloader, Subsystem};
@@ -47,6 +56,8 @@ use apoth_ui::WidgetId;
 /// Resize coalescing (apoth-pty leaves it to the caller): 25 ms idle.
 const RESIZE_IDLE: Duration = Duration::from_millis(25);
 /// After the child exits, wait this long for the last output before quitting.
+/// Selection autoscroll step while a drag is held past the top or bottom edge.
+const AUTOSCROLL_PERIOD: Duration = Duration::from_millis(50);
 const EXIT_GRACE: Duration = Duration::from_millis(250);
 const MAX_COLS: usize = 1000;
 const MAX_ROWS: usize = 500;
@@ -200,6 +211,34 @@ pub(crate) struct App {
     /// Bumped when binds, key tables or macros change; the key dispatcher reads
     /// `config.binds` and friends and rebuilds its table when this moves.
     binds_generation: u64,
+    // ---- selection, clipboard, pointer (T-05 §5-§6, T-09 §6)
+    mouse: Mouse,
+    /// Held modifiers from the seat's raw masks (depressed and latched; locks excluded).
+    held: Mods,
+    /// The left button is down (the held button of a motion event).
+    left_down: bool,
+    /// The seat the last input came from (selections and IME are per seat).
+    seat: Option<SeatId>,
+    /// Key codes whose press a binding consumed: their release is consumed too.
+    consumed: Vec<u32>,
+    /// A scroll left the view away from the bottom (typing and pasting snap it back).
+    scrolled: bool,
+    /// Receive transfers started by a drop, by id (their done event has kind `Clipboard`).
+    drop_ids: Vec<u64>,
+    /// A paste waiting for the user's answer on the confirm bar.
+    paste: Option<PendingPaste>,
+    /// text-input-v3 is enabled on the seat.
+    ime_on: bool,
+    /// The cursor cell (row, col), kept whether or not the text input is on.
+    cursor_cell: (usize, usize),
+    /// The autoscroll timer; present only while a drag is held past an edge.
+    autoscroll: Option<RegistrationToken>,
+}
+
+/// A paste held back by the guard (T-18 §4). The content is held until answered, never logged.
+struct PendingPaste {
+    bytes: Vec<u8>,
+    stats: paste::Stats,
 }
 
 /// Run to completion; the process exit code.
@@ -273,6 +312,17 @@ pub(crate) fn run(
         auto_family: None,
         term_title: String::new(),
         binds_generation: 0,
+        mouse: Mouse::new(),
+        held: Mods::NONE,
+        left_down: false,
+        seat: None,
+        consumed: Vec::new(),
+        scrolled: false,
+        drop_ids: Vec::new(),
+        paste: None,
+        ime_on: false,
+        cursor_cell: (0, 0),
+        autoscroll: None,
     };
     app.start_watch(&files);
     app.set_config_errors(errors);
@@ -293,6 +343,47 @@ pub(crate) fn run(
         .map_err(|e| e.to_string())?;
     app.shutdown();
     Ok(app.exit_code)
+}
+
+/// The held (non-lock) modifiers under the keymap's current components, resolved by the
+/// keyboard backend from the keymap's modifier names (T-05 §1, INPUT-68): Super, Hyper and Meta
+/// are virtual modifiers and never read from a fixed real-modifier bit. A key whose type
+/// consumes no modifier is probed so nothing is dropped from the reported set.
+fn held_of(kb: &impl KeyboardBackend) -> Mods {
+    // Escape, Return, BackSpace, F1 (evdev codes): one-level keys in every sane keymap.
+    for code in [1u32, 28, 14, 59] {
+        if let Some(l) = kb.lookup(code) {
+            return l.mods.without_locks();
+        }
+    }
+    Mods::NONE
+}
+
+/// The bytes an IME commit sends to the shell. A pending paste confirm owns the keyboard
+/// (T-08 §5), so a commit then is dropped, exactly like a typed key. Commit text is user
+/// content: encoded (kitty flag 16 aware) and never logged; control characters are dropped.
+fn commit_bytes(paste_pending: bool, text: &str, modes: apoth_input::InputModes) -> Vec<u8> {
+    let mut out = Vec::new();
+    if !paste_pending {
+        encode_text(text, modes, &mut out);
+    }
+    out
+}
+
+/// The paste confirm bar's answer to a key: 0 = Paste, 1 = Cancel (Escape too); `None` while the
+/// input guard runs, for Return, Space and any unknown key (the paste stays pending).
+fn paste_answer(
+    spec: &apoth_ui::bar::BarSpec,
+    age_ms: u64,
+    key: apoth_input::Key,
+) -> Option<usize> {
+    let input = match key {
+        apoth_input::Key::Char(c) => apoth_ui::bar::KeyInput::Char(c),
+        apoth_input::Key::Named(apoth_input::Named::Escape) => apoth_ui::bar::KeyInput::Escape,
+        apoth_input::Key::Named(apoth_input::Named::Enter) => apoth_ui::bar::KeyInput::Return,
+        _ => apoth_ui::bar::KeyInput::Other,
+    };
+    apoth_ui::bar::BarState { shown_at_ms: 0 }.answer_key(spec, age_ms, input)
 }
 
 fn exit_code_of(s: ExitStatus) -> i32 {
@@ -480,6 +571,7 @@ impl App {
         });
         // A bar raised by the startup load (or before the pane existed) reaches the renderer now.
         self.send_overlay();
+        self.send_view_settings();
         Ok(())
     }
 
@@ -508,6 +600,15 @@ impl App {
             | WlEvent::Presented(_)
             | WlEvent::PresentationDiscarded { .. } => self.poke(),
             WlEvent::Input(i) => self.on_input(i),
+            WlEvent::Send(t) => {
+                // A client asked for our selection: the transfer runs on the loop.
+                if t.insert(&self.lh, |_: TransferDone, _: &mut App| {})
+                    .is_err()
+                {
+                    tracing::warn!("cannot start a selection send");
+                }
+            }
+            WlEvent::Dnd(DndEvent::Dropped { seat, .. }) => self.start_drop(seat),
             WlEvent::Fatal(f) => {
                 tracing::error!(interface = %f.interface, code = f.code, "wayland protocol error");
                 self.exit_code = 1;
@@ -529,6 +630,7 @@ impl App {
     }
 
     fn on_input(&mut self, i: InputEvent) {
+        self.seat = Some(i.seat);
         match i.kind {
             InputKind::Keymap(km) => {
                 if km.format == KeymapFormat::XkbV1
@@ -542,13 +644,28 @@ impl App {
                 latched,
                 locked,
                 group,
-            } => self.kb.update_modifiers(Components {
-                depressed,
-                latched,
-                locked,
-                group,
-            }),
-            InputKind::ModifiersReset => self.kb.update_modifiers(Components::default()),
+            } => {
+                self.kb.update_modifiers(Components {
+                    depressed,
+                    latched,
+                    locked,
+                    group,
+                });
+                self.held = held_of(&self.kb);
+            }
+            InputKind::ModifiersReset => {
+                self.held = Mods::NONE;
+                self.kb.update_modifiers(Components::default());
+            }
+            InputKind::PointerEnter { x, y, .. } | InputKind::PointerMotion { x, y } => {
+                self.on_pointer_motion(x, y);
+            }
+            InputKind::PointerLeave { .. } => self.mouse.left(),
+            InputKind::PointerButton {
+                button, pressed, ..
+            } => self.on_pointer_button(button, pressed),
+            InputKind::Scroll(f) => self.on_scroll(f.lines_y, f.lines_x),
+            InputKind::Ime(e) => self.on_ime(e),
             InputKind::KeyboardEnter { .. } => self.set_focus(true),
             InputKind::KeyboardLeave { .. } => self.set_focus(false),
             InputKind::Key {
@@ -580,12 +697,42 @@ impl App {
         let Some(look) = self.kb.lookup(key) else {
             return;
         };
+        if !pressed && let Some(i) = self.consumed.iter().position(|k| *k == key) {
+            // The press was a binding's (or the paste bar's): the release is consumed too.
+            self.consumed.swap_remove(i);
+            return;
+        }
+        if self.paste.is_some() {
+            // A paste confirm owns the keyboard until answered (T-08 §5: nothing typed reaches
+            // the shell while the interface asks a question).
+            if pressed && !repeat {
+                self.consumed.push(key);
+                self.answer_paste(look.key);
+            }
+            return;
+        }
         if pressed
             && !repeat
             && look.key == apoth_input::Key::Named(apoth_input::Named::Escape)
             && self.try_dismiss_bar()
         {
             return;
+        }
+        if pressed && let Some(act) = binds::lookup(look.key, self.held) {
+            let alt = self
+                .pane
+                .as_ref()
+                .is_some_and(|p| p.shared.mirror.load().has(bit::ALT_SCREEN));
+            // Scrolling keys fall through on the alternate screen (it has no scrollback).
+            if !(matches!(act, Act::Scroll(_)) && alt) {
+                if !self.consumed.contains(&key) {
+                    self.consumed.push(key);
+                }
+                if !repeat || binds::repeats(act) {
+                    self.run_act(act);
+                }
+                return;
+            }
         }
         let Some(p) = &self.pane else { return };
         let kind = if !pressed {
@@ -603,8 +750,384 @@ impl App {
         }
         if pressed {
             p.shared.last_key_ns.store(now_ns(), Ordering::Release);
+            self.typed();
         }
         self.send_bytes(&buf[..n]);
+    }
+
+    /// Typing (or pasting) drops the selection (`selection.clear-on-typing`) and snaps a
+    /// scrolled view back to the bottom.
+    fn typed(&mut self) {
+        if self.settings.input.clear_on_typing && self.mouse.selection_gone() {
+            self.view(ViewCmd::Clear);
+        }
+        if self.scrolled {
+            self.view(ViewCmd::Scroll(ScrollBy::Bottom));
+        }
+    }
+
+    fn view(&mut self, cmd: ViewCmd) {
+        if let ViewCmd::Scroll(by) = &cmd {
+            self.scrolled = *by != ScrollBy::Bottom;
+        }
+        if let Some(p) = &self.pane {
+            let _ = p.render_tx.send(RenderMsg::View(cmd));
+        }
+    }
+
+    fn send_view_settings(&mut self) {
+        let i = &self.settings.input;
+        let cmd = ViewCmd::Settings(ViewSettings {
+            word_extra: i.word_extra.clone(),
+            trim_trailing: i.trim_trailing,
+        });
+        self.view(cmd);
+    }
+
+    // -------------------------------------------------- selection, clipboard, paste
+
+    fn run_act(&mut self, act: Act) {
+        match act {
+            Act::Copy => self.view(ViewCmd::Copy {
+                target: CopyTarget::Clipboard,
+                clear: self.settings.input.clear_on_copy,
+            }),
+            Act::Paste => self.request_paste(SelectionKind::Clipboard),
+            Act::PasteSelection => {
+                if self.settings.input.primary {
+                    self.request_paste(SelectionKind::Primary);
+                }
+            }
+            Act::SelectAll => {
+                self.mouse.mark_selection();
+                self.view(ViewCmd::All);
+            }
+            Act::Scroll(by) => self.view(ViewCmd::Scroll(by)),
+        }
+    }
+
+    /// Text the view took from the selection goes on the seat as ours.
+    fn on_copied(&mut self, c: Copied) {
+        let Some(seat) = self.seat else { return };
+        let kind = match c.target {
+            CopyTarget::Clipboard => SelectionKind::Clipboard,
+            CopyTarget::Primary => SelectionKind::Primary,
+        };
+        let n = c.text.len();
+        match self.handle.set_selection(seat, kind, c.text.into_bytes()) {
+            Ok(()) => tracing::debug!(bytes = n, ?kind, "selection offered"),
+            Err(e) => tracing::warn!(error = %e, "cannot offer the selection"),
+        }
+    }
+
+    /// Start reading a selection to paste it; the transfer runs on the loop.
+    fn request_paste(&mut self, kind: SelectionKind) {
+        let Some(seat) = self.seat else { return };
+        match self.handle.receive_selection(seat, kind, Want::Text) {
+            Ok(t) => {
+                if t.insert(&self.lh, |d: TransferDone, app: &mut App| {
+                    app.on_transfer(d)
+                })
+                .is_err()
+                {
+                    tracing::warn!("cannot start a paste transfer");
+                }
+            }
+            Err(e) => tracing::debug!(error = %e, "nothing to paste"),
+        }
+    }
+
+    /// A drop was released over the window: read it and send it through the paste path.
+    fn start_drop(&mut self, seat: SeatId) {
+        match self.handle.receive_drop(seat) {
+            Ok(t) => {
+                self.drop_ids.push(t.id());
+                if t.insert(&self.lh, |d: TransferDone, app: &mut App| {
+                    app.on_transfer(d)
+                })
+                .is_err()
+                {
+                    self.handle.finish_drop(seat, false);
+                }
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "drop refused");
+                self.handle.finish_drop(seat, false);
+            }
+        }
+    }
+
+    fn on_transfer(&mut self, d: TransferDone) {
+        let drop = self
+            .drop_ids
+            .iter()
+            .position(|i| *i == d.id)
+            .map(|i| self.drop_ids.swap_remove(i))
+            .is_some();
+        if d.direction != TransferDirection::Receive {
+            return;
+        }
+        let ok = d.status == TransferStatus::Complete;
+        if drop {
+            self.handle.finish_drop(d.seat, ok);
+        }
+        if !ok {
+            tracing::debug!(status = ?d.status, "paste transfer failed");
+            return;
+        }
+        let data = d.data.0;
+        if drop {
+            let content = DropContent::from_bytes(d.payload, &data);
+            if content.is_empty() {
+                return;
+            }
+            let origin = match content {
+                DropContent::Paths(_) => Origin::DropFiles,
+                DropContent::Text(_) => Origin::DropText,
+            };
+            self.do_paste(content.paste_bytes(), origin);
+        } else {
+            self.do_paste(data, Origin::Selection);
+        }
+    }
+
+    /// The paste path (T-18 §4): the guard decides, then one encoded unit goes to the PTY.
+    fn do_paste(&mut self, bytes: Vec<u8>, origin: Origin) {
+        let Some(p) = &self.pane else { return };
+        let modes = p.shared.mirror.load();
+        if bytes.is_empty() || self.paste.is_some() {
+            return;
+        }
+        match paste::needs_confirm(&bytes, origin, modes, &self.settings.input.paste) {
+            None => self.send_paste(&bytes),
+            Some(reason) => {
+                tracing::debug!(?reason, bytes = bytes.len(), "paste needs confirmation");
+                let stats = paste::stats(&bytes);
+                self.paste = Some(PendingPaste { bytes, stats });
+                self.bar_dismissed = false;
+                self.refresh_bar();
+            }
+        }
+    }
+
+    fn send_paste(&mut self, bytes: &[u8]) {
+        let Some(p) = &self.pane else { return };
+        let modes = p.shared.mirror.load();
+        match paste::encode(bytes, modes, &self.settings.input.paste) {
+            Ok(unit) => {
+                self.typed();
+                tracing::debug!(bytes = unit.len(), "paste sent");
+                self.send_unit(unit);
+            }
+            Err(paste::Refused::TooLarge) => {
+                tracing::warn!(bytes = bytes.len(), "paste refused: over paste.max-bytes");
+                self.handle.ring_bell(Some(self.win));
+            }
+            Err(paste::Refused::Empty) => {}
+        }
+    }
+
+    /// A key answers the paste confirm bar: Paste (0) or Cancel (1, also Escape).
+    fn answer_paste(&mut self, key: apoth_input::Key) {
+        let Some(o) = &self.bar else { return };
+        let age = o.shown_at.elapsed().as_millis() as u64;
+        let Some(answer) = paste_answer(&o.spec, age, key) else {
+            return;
+        };
+        let Some(pending) = self.paste.take() else {
+            return;
+        };
+        self.refresh_bar();
+        if answer == 0 {
+            self.send_paste(&pending.bytes);
+        }
+    }
+
+    // ---------------------------------------------------------------- pointer
+
+    fn geometry(&self) -> Option<Geometry> {
+        let p = self.pane.as_ref()?;
+        let scale = self.scale();
+        Some(Geometry {
+            pad: self.pads(scale),
+            cell: p.cell,
+            scale,
+            rows: p.dims.0,
+            cols: p.dims.1,
+        })
+    }
+
+    fn exec(&mut self, outs: Vec<Out>) {
+        for o in outs {
+            match o {
+                Out::Pty(b) => self.send_bytes(&b),
+                Out::View(c) => self.view(c),
+                Out::PastePrimary => self.request_paste(SelectionKind::Primary),
+            }
+        }
+    }
+
+    fn on_pointer_motion(&mut self, x: f64, y: f64) {
+        let (Some(geo), Some(p)) = (self.geometry(), &self.pane) else {
+            return;
+        };
+        let modes = p.shared.mirror.load();
+        let held = self.left_down.then_some(MouseButton::Left);
+        let outs = self
+            .mouse
+            .motion(&geo, x, y, held, self.held, modes, &self.settings.input);
+        self.exec(outs);
+        self.sync_autoscroll();
+    }
+
+    /// Run the autoscroll timer exactly while a drag is held past an edge; no timer otherwise.
+    fn sync_autoscroll(&mut self) {
+        let wanted = self
+            .geometry()
+            .is_some_and(|g| self.mouse.autoscroll_wanted(&g));
+        match (wanted, self.autoscroll) {
+            (true, None) => {
+                self.autoscroll = self
+                    .lh
+                    .insert_source(
+                        Timer::from_duration(AUTOSCROLL_PERIOD),
+                        |_, (), app: &mut App| {
+                            let outs = app
+                                .geometry()
+                                .map(|g| app.mouse.autoscroll_tick(&g))
+                                .unwrap_or_default();
+                            app.exec(outs);
+                            if app
+                                .geometry()
+                                .is_some_and(|g| app.mouse.autoscroll_wanted(&g))
+                            {
+                                TimeoutAction::ToDuration(AUTOSCROLL_PERIOD)
+                            } else {
+                                app.autoscroll = None;
+                                TimeoutAction::Drop
+                            }
+                        },
+                    )
+                    .ok();
+            }
+            (false, Some(t)) => {
+                self.lh.remove(t);
+                self.autoscroll = None;
+            }
+            _ => {}
+        }
+    }
+
+    fn on_pointer_button(&mut self, code: u32, pressed: bool) {
+        if code == 0x110 {
+            self.left_down = pressed;
+        }
+        let (Some(geo), Some(p)) = (self.geometry(), &self.pane) else {
+            return;
+        };
+        let modes = p.shared.mirror.load();
+        let outs = self.mouse.button(
+            &geo,
+            code,
+            pressed,
+            self.held,
+            modes,
+            Instant::now(),
+            &self.settings.input,
+        );
+        self.exec(outs);
+        self.sync_autoscroll();
+    }
+
+    fn on_scroll(&mut self, lines_y: i32, lines_x: i32) {
+        let (Some(geo), Some(p)) = (self.geometry(), &self.pane) else {
+            return;
+        };
+        let modes = p.shared.mirror.load();
+        let outs = self.mouse.scroll(
+            &geo,
+            lines_y,
+            lines_x,
+            self.held,
+            modes,
+            &self.settings.input,
+        );
+        self.exec(outs);
+    }
+
+    // -------------------------------------------------------------------- IME
+
+    fn on_ime(&mut self, e: ImeEvent) {
+        match e {
+            ImeEvent::Enter { .. } => {
+                if let Some(seat) = self.seat {
+                    // The rectangle first: the seat caches it and sends it with the enable.
+                    self.ime_send_rect();
+                    self.handle.ime_enable(seat);
+                    self.ime_on = true;
+                }
+            }
+            ImeEvent::Leave { .. } => {
+                if let Some(seat) = self.seat {
+                    self.handle.ime_disable(seat);
+                }
+                self.ime_on = false;
+                self.view(ViewCmd::Preedit(None));
+            }
+            ImeEvent::Preedit {
+                text,
+                cursor_begin,
+                cursor_end,
+            } => {
+                // A paste confirm owns the keyboard: no composition shows meanwhile.
+                let text = text.filter(|_| self.paste.is_none());
+                let p = text.filter(|t| !t.0.is_empty()).map(|t| Preedit {
+                    text: t.0,
+                    begin: cursor_begin,
+                    end: cursor_end,
+                });
+                self.view(ViewCmd::Preedit(p));
+            }
+            ImeEvent::Commit(t) => {
+                // Committed text is user content: encoded (kitty flag 16 aware) and written,
+                // never logged. Control characters are dropped by the encoder.
+                let Some(p) = &self.pane else { return };
+                let out = commit_bytes(self.paste.is_some(), &t.0, p.shared.mirror.load());
+                if !out.is_empty() {
+                    self.typed();
+                    self.send_unit(out);
+                }
+            }
+            ImeEvent::DeleteSurrounding { .. } => {}
+        }
+    }
+
+    /// The cursor moved: remember it and report the rectangle.
+    fn ime_cursor(&mut self, cell: (usize, usize)) {
+        self.cursor_cell = cell;
+        self.ime_send_rect();
+    }
+
+    /// Report the cursor rectangle in surface-logical pixels (text-input-v3). Called on every
+    /// cursor move, on enable, and after every geometry change (scale, padding, cell size,
+    /// resize). The seat caches it and only sends it while the text input is enabled.
+    fn ime_send_rect(&mut self) {
+        let (Some(seat), Some(geo)) = (self.seat, self.geometry()) else {
+            return;
+        };
+        let (row, col) = self.cursor_cell;
+        let (cw, ch) = (f64::from(geo.cell.0), f64::from(geo.cell.1));
+        let x = (f64::from(geo.pad.0) + col as f64 * cw) / geo.scale;
+        let y = (f64::from(geo.pad.1) + row as f64 * ch) / geo.scale;
+        self.handle.ime_set_cursor_rect(
+            seat,
+            Rect {
+                x: x.round() as i32,
+                y: y.round() as i32,
+                w: (cw / geo.scale).ceil() as i32,
+                h: (ch / geo.scale).ceil() as i32,
+            },
+        );
     }
 
     /// Key and focus bytes: written straight to the master when nothing is queued (no
@@ -706,6 +1229,8 @@ impl App {
                 }
                 self.recompute_dims();
             }
+            MainMsg::Copied(c) => self.on_copied(c),
+            MainMsg::Cursor(c) => self.ime_cursor(c),
             MainMsg::Loaded(r) => self.on_loaded(*r),
             MainMsg::Closed(status) => {
                 if self.exit_code == 0 {
@@ -976,6 +1501,7 @@ impl App {
         if f.render {
             self.send_render_update(f.font);
         }
+        self.send_view_settings();
         if f.title {
             self.handle
                 .set_title(self.win, &self.settings.window_title(&self.term_title));
@@ -1054,7 +1580,14 @@ impl App {
     /// Rebuild the overlay from the current errors and restart keys, tell the render thread,
     /// and make room for it (or give the room back).
     fn refresh_bar(&mut self) {
-        let spec = if self.bar_dismissed {
+        let spec = if let Some(pp) = &self.paste {
+            Some(apoth_ui::bar::BarSpec::paste_confirm(
+                self.windows()[0],
+                pp.stats.bytes,
+                pp.stats.lines,
+                &self.term_title,
+            ))
+        } else if self.bar_dismissed {
             None
         } else {
             bars_for(&self.windows(), &self.config_errors, &self.restart_keys)
@@ -1111,6 +1644,8 @@ impl App {
     // ------------------------------------------------------------------ resize
 
     fn recompute_dims(&mut self) {
+        // Scale, padding, cell size and surface size all arrive here: the IME rectangle follows.
+        self.ime_send_rect();
         let scale = self.scale();
         let pad = self.pads(scale);
         let Some((_, buffer)) = self.handle.surface_size(self.win) else {
@@ -1169,6 +1704,7 @@ impl App {
             }
         }
         tracing::debug!(rows = nr, cols = nc, "resized");
+        self.ime_send_rect();
     }
 }
 
@@ -1291,6 +1827,92 @@ mod tests {
             resolve_app_id(Some("org.eclipseos.ApotheosisEvil"), true),
             d
         );
+    }
+
+    /// A keymap that moves Super to Mod3 (Hyper on Mod4): a fixed Mod4 index would miss it.
+    const MOVED_SUPER: &str = r#"
+xkb_keymap {
+  xkb_keycodes "t" {
+    minimum = 8; maximum = 255;
+    <ESC> = 9; <LCTL> = 37; <LFSH> = 50; <LALT> = 64; <LWIN> = 133; <HYPR> = 207;
+  };
+  xkb_types "t" {
+    type "ONE_LEVEL" { modifiers = None; map[None] = Level1; };
+  };
+  xkb_compat "t" {
+    virtual_modifiers Alt, Super, Hyper;
+    interpret.useModMapMods = AnyLevel;
+    interpret Any + AnyOf(all) { action = SetMods(modifiers = modMapMods, clearLocks); };
+    interpret Alt_L + AnyOf(all) { virtualModifier = Alt; action = SetMods(modifiers = modMapMods); };
+    interpret Super_L + AnyOf(all) { virtualModifier = Super; action = SetMods(modifiers = modMapMods); };
+    interpret Hyper_L + AnyOf(all) { virtualModifier = Hyper; action = SetMods(modifiers = modMapMods); };
+  };
+  xkb_symbols "t" {
+    key <ESC> { type = "ONE_LEVEL", symbols[Group1] = [ Escape ] };
+    key <LCTL> { [ Control_L ] };
+    key <LFSH> { [ Shift_L ] };
+    key <LALT> { [ Alt_L ] };
+    key <LWIN> { [ Super_L ] };
+    key <HYPR> { [ Hyper_L ] };
+    modifier_map Shift { <LFSH> };
+    modifier_map Control { <LCTL> };
+    modifier_map Mod1 { <LALT> };
+    modifier_map Mod3 { <LWIN> };
+    modifier_map Mod4 { <HYPR> };
+  };
+};
+"#;
+
+    fn held_under(kb: &mut KbvmBackend, depressed: u32) -> Mods {
+        kb.update_modifiers(Components {
+            depressed,
+            latched: 0,
+            locked: 0,
+            group: 0,
+        });
+        held_of(kb)
+    }
+
+    #[test]
+    fn held_mods_resolve_by_name_not_bit_index() {
+        let mut kb = KbvmBackend::new();
+        kb.load_keymap(MOVED_SUPER).expect("keymap compiles");
+        assert_eq!(held_under(&mut kb, 0), Mods::NONE);
+        assert_eq!(held_under(&mut kb, 1 | 4), Mods::SHIFT | Mods::CTRL);
+        assert_eq!(held_under(&mut kb, 8), Mods::ALT);
+        // Super sits on Mod3 (0x20) here; Mod4 (0x40) is Hyper, not Super.
+        assert_eq!(held_under(&mut kb, 0x20), Mods::SUPER);
+        assert_eq!(held_under(&mut kb, 0x40), Mods::HYPER);
+        // Lock bits (Caps = 2) are not held modifiers.
+        assert_eq!(held_under(&mut kb, 2), Mods::NONE);
+    }
+
+    #[test]
+    fn ime_commit_is_dropped_while_a_paste_confirm_is_pending() {
+        let m = apoth_input::InputModes::default();
+        assert_eq!(commit_bytes(false, "y", m), b"y");
+        assert_eq!(commit_bytes(false, "\u{4e2d}", m), "\u{4e2d}".as_bytes());
+        assert!(commit_bytes(true, "y", m).is_empty());
+        assert!(commit_bytes(true, "rm -rf x", m).is_empty());
+    }
+
+    #[test]
+    fn paste_bar_answers_keys_after_the_guard_only() {
+        let spec = apoth_ui::bar::BarSpec::paste_confirm(WidgetId(1), 8, 1, "title");
+        let guard = apoth_ui::tokens::motion::CONSENT_GUARD_MS;
+        let ch = |c| apoth_input::Key::Char(c);
+        // Inside the guard nothing answers, so a stray key cannot confirm a paste.
+        assert_eq!(paste_answer(&spec, 0, ch('p')), None);
+        assert_eq!(paste_answer(&spec, guard - 1, ch('p')), None);
+        assert_eq!(paste_answer(&spec, guard, ch('p')), Some(0));
+        assert_eq!(paste_answer(&spec, guard, ch('c')), Some(1));
+        let esc = apoth_input::Key::Named(apoth_input::Named::Escape);
+        assert_eq!(paste_answer(&spec, guard, esc), Some(1));
+        // Return, Space and other keys never answer.
+        let enter = apoth_input::Key::Named(apoth_input::Named::Enter);
+        assert_eq!(paste_answer(&spec, guard, enter), None);
+        assert_eq!(paste_answer(&spec, guard, ch(' ')), None);
+        assert_eq!(paste_answer(&spec, guard, ch('x')), None);
     }
 
     #[test]

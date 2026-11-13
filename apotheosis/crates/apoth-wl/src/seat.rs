@@ -35,11 +35,11 @@ use wayland_protocols::wp::text_input::zv3::client::zwp_text_input_v3::{
 use crate::clock::Stamp;
 use crate::cursor::{CursorShape, CursorStack};
 use crate::event::{
-    ImeEvent, InputKind, Keymap, KeymapFormat, ScrollFrame, SeatId, Secret, SelectionEvent,
-    SelectionKind, WindowId, WlEvent,
+    DndEvent, ImeEvent, InputKind, Keymap, KeymapFormat, ScrollFrame, SeatId, Secret,
+    SelectionEvent, SelectionKind, WindowId, WlEvent,
 };
 use crate::gesture::{AxisAccum, Gesture, TouchTracker};
-use crate::mime::{self, Want};
+use crate::mime::{self, Payload, Want};
 use crate::repeat::{RepeatInfo, Repeater, Tick};
 use crate::state::{WlError, WlState};
 use crate::transfer::Transfer;
@@ -273,6 +273,16 @@ pub(crate) fn clamp_surrounding(text: &str, cursor: i32, anchor: i32) -> (String
     (text[start..end].to_string(), rebase(c), rebase(a))
 }
 
+/// A drag in progress over one of our windows (at most one per seat).
+pub(crate) struct DndSession {
+    pub offer: WlDataOffer,
+    pub window: WindowId,
+    pub pos: (f64, f64),
+    /// The type we accepted and what it carries; `None` = refused.
+    pub accepted: Option<(String, Payload)>,
+    pub dropped: bool,
+}
+
 pub(crate) struct SeatState {
     pub id: SeatId,
     pub seat: WlSeat,
@@ -299,6 +309,7 @@ pub(crate) struct SeatState {
     pub primary_offer: Option<OfferProxy>,
     pub clip_source: Option<OwnedSource>,
     pub primary_source: Option<OwnedSource>,
+    pub dnd: Option<DndSession>,
     /// input-timestamps objects: keyboard, pointer, touch.
     pub ts: [Option<wayland_protocols::wp::input_timestamps::zv1::client::zwp_input_timestamps_v1::ZwpInputTimestampsV1>; 3],
 }
@@ -315,6 +326,9 @@ impl SeatState {
         }
         if self.ime.focus == Some(w) {
             self.ime.focus = None;
+        }
+        if let Some(d) = self.dnd.take_if(|d| d.window == w) {
+            d.offer.destroy();
         }
     }
 }
@@ -365,6 +379,7 @@ pub(crate) fn bind_seat(state: &mut WlState, registry: &WlRegistry, name: u32, v
         primary_offer: None,
         clip_source: None,
         primary_source: None,
+        dnd: None,
         ts: [None, None, None],
     });
 }
@@ -377,6 +392,9 @@ pub(crate) fn remove_seat(state: &mut WlState, name: u32) {
         }
         if let Some(src) = &s.primary_source {
             src.destroy();
+        }
+        if let Some(d) = &s.dnd {
+            d.offer.destroy();
         }
         state.rearm_timer();
     }
@@ -732,6 +750,161 @@ impl WlState {
         };
         *slot = offer;
         self.emit(WlEvent::Selection(ev));
+    }
+
+    // ----- drag and drop in (wl_data_device enter/motion/leave/drop) -------------------------
+
+    fn dnd_enter(
+        &mut self,
+        seat: SeatId,
+        serial: u32,
+        surface: &wayland_client::protocol::wl_surface::WlSurface,
+        x: f64,
+        y: f64,
+        offer: Option<WlDataOffer>,
+    ) {
+        let Some(offer) = offer else { return };
+        let (Some(si), Some(window)) = (self.seat_index(seat), window_of(surface)) else {
+            offer.destroy();
+            return;
+        };
+        if let Some(old) = self.seats[si].dnd.take() {
+            old.offer.destroy();
+        }
+        let mimes = offer
+            .data::<OfferData>()
+            .map(OfferData::list)
+            .unwrap_or_default();
+        let accepted =
+            mime::choose_receive(&mimes, Want::FilesOrText).map(|(m, p)| (m.to_string(), p));
+        // Accept the type (or refuse with None) so the compositor shows the right cursor.
+        offer.accept(serial, accepted.as_ref().map(|a| a.0.clone()));
+        if offer.version() >= 3 {
+            use wayland_client::protocol::wl_data_device_manager::DndAction;
+            if accepted.is_some() {
+                offer.set_actions(DndAction::Copy, DndAction::Copy);
+            } else {
+                offer.set_actions(DndAction::None, DndAction::None);
+            }
+        }
+        let payload = accepted.as_ref().map(|a| a.1);
+        self.seats[si].dnd = Some(DndSession {
+            offer,
+            window,
+            pos: (x, y),
+            accepted,
+            dropped: false,
+        });
+        self.emit(WlEvent::Dnd(DndEvent::Enter {
+            seat,
+            window,
+            x,
+            y,
+            payload,
+            mimes,
+        }));
+    }
+
+    fn dnd_motion(&mut self, seat: SeatId, x: f64, y: f64) {
+        let Some(si) = self.seat_index(seat) else {
+            return;
+        };
+        let Some(d) = self.seats[si].dnd.as_mut().filter(|d| !d.dropped) else {
+            return;
+        };
+        d.pos = (x, y);
+        let window = d.window;
+        self.emit(WlEvent::Dnd(DndEvent::Motion { seat, window, x, y }));
+    }
+
+    fn dnd_leave(&mut self, seat: SeatId) {
+        let Some(si) = self.seat_index(seat) else {
+            return;
+        };
+        // After `drop` the offer lives on for the transfer; `leave` then is not expected.
+        if self.seats[si].dnd.as_ref().is_none_or(|d| d.dropped) {
+            return;
+        }
+        if let Some(d) = self.seats[si].dnd.take() {
+            d.offer.destroy();
+            self.emit(WlEvent::Dnd(DndEvent::Leave {
+                seat,
+                window: d.window,
+            }));
+        }
+    }
+
+    fn dnd_drop(&mut self, seat: SeatId) {
+        let Some(si) = self.seat_index(seat) else {
+            return;
+        };
+        let Some(d) = self.seats[si].dnd.as_mut() else {
+            return;
+        };
+        match d.accepted.as_ref().map(|a| a.1) {
+            Some(payload) => {
+                d.dropped = true;
+                let (window, (x, y)) = (d.window, d.pos);
+                self.emit(WlEvent::Dnd(DndEvent::Dropped {
+                    seat,
+                    window,
+                    x,
+                    y,
+                    payload,
+                }));
+            }
+            None => {
+                // Nothing readable was offered: end the session.
+                if let Some(d) = self.seats[si].dnd.take() {
+                    d.offer.destroy();
+                    self.emit(WlEvent::Dnd(DndEvent::Leave {
+                        seat,
+                        window: d.window,
+                    }));
+                }
+            }
+        }
+    }
+
+    /// Start reading a dropped payload. Insert the transfer in the loop; the done event
+    /// carries `kind == Clipboard` for drops, so match by [`Transfer::id`]. Call
+    /// [`WlState::finish_drop`] when it ends.
+    pub(crate) fn receive_drop(&mut self, seat: SeatId) -> Result<Transfer, ClipboardError> {
+        let si = self.seat_index(seat).ok_or(ClipboardError::NoSeat)?;
+        let d = self.seats[si]
+            .dnd
+            .as_ref()
+            .filter(|d| d.dropped)
+            .ok_or(ClipboardError::NoSelection)?;
+        let (mime, payload) = d.accepted.clone().ok_or(ClipboardError::NoUsableMime)?;
+        let (read_fd, write_fd) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC)
+            .map_err(std::io::Error::from)?;
+        d.offer.receive(mime, write_fd.as_fd());
+        let _ = self.conn.flush();
+        drop(write_fd);
+        let id = self.next_transfer;
+        self.next_transfer += 1;
+        Ok(Transfer::receive(
+            id,
+            seat,
+            SelectionKind::Clipboard,
+            payload,
+            read_fd,
+            self.cfg.transfer_limits,
+        )?)
+    }
+
+    /// End the drop session: `finish` (v3, when `ok`) and destroy the offer.
+    pub(crate) fn finish_drop(&mut self, seat: SeatId, ok: bool) {
+        let Some(si) = self.seat_index(seat) else {
+            return;
+        };
+        if let Some(d) = self.seats[si].dnd.take_if(|d| d.dropped) {
+            if ok && d.offer.version() >= 3 {
+                d.offer.finish();
+            }
+            d.offer.destroy();
+        }
     }
 
     // ----- IME (text-input-v3) -------------------------------------------------------------
@@ -1350,10 +1523,16 @@ impl Dispatch<WlDataDevice, SeatId> for WlState {
             wl_data_device::Event::Selection { id: offer } => {
                 state.set_foreign_offer(*id, SelectionKind::Clipboard, offer.map(OfferProxy::Data));
             }
-            // Drag and drop into a pane is M16: refuse by dropping the offer.
             wl_data_device::Event::Enter {
-                id: Some(offer), ..
-            } => offer.destroy(),
+                serial,
+                surface,
+                x,
+                y,
+                id: offer,
+            } => state.dnd_enter(*id, serial, &surface, x, y, offer),
+            wl_data_device::Event::Motion { x, y, .. } => state.dnd_motion(*id, x, y),
+            wl_data_device::Event::Leave => state.dnd_leave(*id),
+            wl_data_device::Event::Drop => state.dnd_drop(*id),
             _ => {}
         }
     }

@@ -491,8 +491,8 @@ impl Machine {
                 return;
             }
             let lim = self.limit();
-            let n = s.len().min(lim - self.x).min(128);
-            let mut g = [Glyph { cp: 0, width: 1 }; 128];
+            let n = s.len().min(lim - self.x).min(256);
+            let mut g = [Glyph { cp: 0, width: 1 }; 256];
             for (d, &b) in g.iter_mut().zip(&s[..n]) {
                 d.cp = u32::from(b);
             }
