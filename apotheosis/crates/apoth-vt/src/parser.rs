@@ -43,6 +43,9 @@ pub struct Parser {
     sent: u32,
 }
 
+/// Runs up to this many bytes are validated with std (see `Parser::text`).
+const SHORT_RUN: usize = 64;
+
 impl Default for Parser {
     fn default() -> Self {
         Self::new()
@@ -111,6 +114,10 @@ impl Parser {
                 match e.act {
                     Act::Execute => sink.execute(b),
                     Act::Clear => {
+                        if let Some(n) = self.csi_whole(&bytes[i + 1..], sink) {
+                            i += 1 + n;
+                            continue;
+                        }
                         self.clear();
                         self.state = State::Escape;
                         return i + 1;
@@ -135,23 +142,56 @@ impl Parser {
         i
     }
 
+    /// The common sequence in one pass: `rest` (the bytes after ESC) starts with `[`, then
+    /// digits, `;` and `:`, then a final byte, all present. Dispatches it exactly as the table
+    /// would and returns the bytes consumed; `None` leaves everything to the table (private
+    /// markers, intermediates, controls inside, or a sequence cut off by the end of input).
+    #[inline]
+    fn csi_whole<S: Sink>(&mut self, rest: &[u8], sink: &mut S) -> Option<usize> {
+        if rest.first() != Some(&b'[') {
+            return None;
+        }
+        let body = &rest[1..];
+        let n = body
+            .iter()
+            .take_while(|b| (0x30..=0x3B).contains(*b))
+            .count();
+        let fin = *body.get(n)?;
+        if !(0x40..=0x7E).contains(&fin) {
+            return None;
+        }
+        self.clear();
+        for &b in &body[..n] {
+            self.params.feed(b);
+        }
+        self.params.finish();
+        sink.csi(&self.params, &[], 0, fin);
+        Some(n + 2)
+    }
+
     /// Emit a run that contains no C0/DEL. `at_end`: the run ends the input, so an
     /// incomplete trailing sequence is carried instead of replaced.
     fn text<S: Sink>(&mut self, mut run: &[u8], at_end: bool, sink: &mut S) {
         while !run.is_empty() {
-            match simdutf8::compat::from_utf8(run) {
+            // Short runs (the usual case: a word between escapes) validate faster with std
+            // than with the SIMD routine's setup; both give the same verdict and error.
+            let checked = if run.len() <= SHORT_RUN {
+                core::str::from_utf8(run).map_err(|e| (e.valid_up_to(), e.error_len()))
+            } else {
+                simdutf8::compat::from_utf8(run).map_err(|e| (e.valid_up_to(), e.error_len()))
+            };
+            match checked {
                 Ok(s) => {
                     sink.print_run(s);
                     return;
                 }
-                Err(e) => {
-                    let v = e.valid_up_to();
+                Err((v, error_len)) => {
                     if v > 0
                         && let Ok(s) = core::str::from_utf8(&run[..v])
                     {
                         sink.print_run(s);
                     }
-                    match e.error_len() {
+                    match error_len {
                         Some(n) => {
                             sink.print_run(REPLACEMENT);
                             run = &run[(v + n).min(run.len())..];

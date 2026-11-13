@@ -53,10 +53,8 @@ impl PagePool {
     }
 
     fn release(&mut self, page: Page, standard_len: usize) {
-        let mut buf = page.into_bytes();
-        if buf.len() == standard_len && self.free.len() < POOL_KEEP {
-            buf.fill(0);
-            self.free.push(buf);
+        if page.spec().total_bytes() == standard_len && self.free.len() < POOL_KEEP {
+            self.free.push(page.recycle());
         }
     }
 }
@@ -594,13 +592,25 @@ impl Screen {
 
     /// Replace page `pi` by a copy with the `w` table doubled (up to the ceiling).
     fn grow(&mut self, pi: usize, w: Full) -> bool {
-        match self.pages[pi].grown_with(w, &self.ceil) {
-            Some(n) => {
-                self.pages[pi] = n;
-                self.stats.page_growths += 1;
-                true
+        if self.pages[pi].grow_in_place(w, &self.ceil) {
+            self.stats.page_growths += 1;
+            // A page that needed more starts its successors there: growing costs a copy of
+            // the page tail. Bounded so one hot page cannot bloat every later one.
+            if self.cap.is_none() {
+                let spec = *self.pages[pi].spec();
+                match w {
+                    Full::Styles => {
+                        self.spec.style_cap = self.spec.style_cap.max(spec.style_cap.min(8192))
+                    }
+                    Full::Chunks => {
+                        self.spec.chunk_cap = self.spec.chunk_cap.max(spec.chunk_cap.min(4096))
+                    }
+                    _ => {}
+                }
             }
-            None => false,
+            true
+        } else {
+            false
         }
     }
 
@@ -708,6 +718,18 @@ impl Screen {
         }
     }
 
+    /// The common print case: no link, so only the style needs interning, in the row's own
+    /// page. `None` when that page has no room (the caller takes the growing path).
+    #[inline]
+    fn plain_slot(&mut self, y: usize, attrs: &CellAttrs<'_>) -> Option<(usize, usize, u16)> {
+        if attrs.link.is_some() {
+            return None;
+        }
+        let (pi, pos) = self.slot_of(y);
+        let sid = self.pages[pi].style_intern(&attrs.style, 0).ok()?;
+        Some((pi, pos, sid))
+    }
+
     /// Print pre-measured glyphs starting at `(y, x)`. Stops before a glyph that does not
     /// fit in the row and returns how many glyphs were consumed; wrapping is the caller's
     /// (apoth-term) decision. Allocates nothing once the page tables have capacity.
@@ -719,25 +741,44 @@ impl Screen {
         let cols = self.cols;
         let mut cells = 0;
         let mut cx = x;
+        let (mut all_fit, mut no_zero) = (true, true);
         for g in run {
             if g.width == 0 {
+                no_zero = false;
                 continue;
             }
             let w = if g.width >= 2 { 2 } else { 1 };
             if cx + w > cols {
+                all_fit = false;
                 break;
             }
             cx += w;
             cells += w;
         }
-        let (sid, link, _) = self.intern_for(y, attrs, cells, &[]);
-        let (pi, pos) = self.slot_of(y);
+        let (pi, pos, sid, link) = match self.plain_slot(y, attrs) {
+            Some((pi, pos, sid)) => (pi, pos, sid, None),
+            None => {
+                let (sid, link, _) = self.intern_for(y, attrs, cells, &[]);
+                let (pi, pos) = self.slot_of(y);
+                (pi, pos, sid, link)
+            }
+        };
         let page = &mut self.pages[pi];
         let proto = Cell::EMPTY
             .with_style(sid)
             .with_protected(attrs.protected)
             .with_semantic(attrs.semantic)
             .with_link(link.is_some());
+        if link.is_none() && cells == run.len() && run.iter().all(|g| g.width == 1) {
+            page.put_narrow_run(pos, x, proto, run.len(), run.iter().map(|g| g.cp));
+            page.touch(pos, seq);
+            return run.len();
+        }
+        if link.is_none() && all_fit && no_zero {
+            page.put_glyph_run(pos, x, proto, cells, run.iter().map(|g| (g.cp, g.width)));
+            page.touch(pos, seq);
+            return run.len();
+        }
         let mut cx = x;
         let mut n = 0;
         for g in run {
@@ -765,6 +806,46 @@ impl Screen {
             }
             cx += w;
             n += 1;
+        }
+        page.touch(pos, seq);
+        n
+    }
+
+    /// Print printable ASCII (0x20..0x7e) bytes as width-1 cells starting at `(y, x)`: the
+    /// same as [`Screen::print_run`] on one-column glyphs, without building them. Returns the
+    /// bytes consumed (fewer only when the row ends first). Allocates nothing once the page
+    /// tables have capacity.
+    pub fn print_ascii(&mut self, y: usize, x: usize, text: &[u8], attrs: &CellAttrs<'_>) -> usize {
+        if y >= self.rows || x >= self.cols {
+            return 0;
+        }
+        let n = text.len().min(self.cols - x);
+        if n == 0 {
+            return 0;
+        }
+        let seq = self.bump();
+        let (pi, pos, sid, link) = match self.plain_slot(y, attrs) {
+            Some((pi, pos, sid)) => (pi, pos, sid, None),
+            None => {
+                let (sid, link, _) = self.intern_for(y, attrs, n, &[]);
+                let (pi, pos) = self.slot_of(y);
+                (pi, pos, sid, link)
+            }
+        };
+        let page = &mut self.pages[pi];
+        let proto = Cell::EMPTY
+            .with_style(sid)
+            .with_protected(attrs.protected)
+            .with_semantic(attrs.semantic)
+            .with_link(link.is_some());
+        let cps = text[..n].iter().map(|&b| u32::from(b));
+        if link.is_none() {
+            page.put_narrow_run(pos, x, proto, n, cps);
+        } else {
+            for (i, cp) in cps.enumerate() {
+                let c = proto.with_tag(Tag::Scalar).with_payload(cp);
+                put_acquired(page, pos, x + i, c, sid, link);
+            }
         }
         page.touch(pos, seq);
         n
@@ -978,7 +1059,16 @@ impl Screen {
                 let (serial, slot) = (self.pages[pi].serial(), self.pages[pi].slot_at(pos));
                 self.pins.garbage_row(serial, slot);
             }
-            if up {
+            let (pt, post) = self.loc(r.top);
+            let (pb, posb) = self.loc(r.bottom);
+            if pt == pb && n == 1 && h > 1 {
+                // One page holds the whole region: rotate the row handles, no cell moves.
+                if up {
+                    self.pages[pt].rotate_rows_up(post, posb, 1);
+                } else {
+                    self.pages[pt].rotate_rows_down(post, posb, 1);
+                }
+            } else if up {
                 for y in r.top..r.bottom + 1 - n {
                     self.move_row(y + n, y, seq);
                 }
@@ -1119,9 +1209,21 @@ impl Screen {
     fn bump_seq_rows(&mut self, top: usize, bottom: usize, seq: u64) {
         // A row that changes position changed what is shown at both positions, so
         // `snapshot_since` consumers (which key on position) must see a new sequence.
-        for y in top..=bottom {
-            let (pi, slot) = self.slot_of(y);
-            self.pages[pi].set_row_seq(slot, seq);
+        // One address lookup, then a run per page.
+        let (mut pi, mut pos) = self.loc(top);
+        let mut left = bottom + 1 - top;
+        while left > 0 {
+            let Some(page) = self.pages.get_mut(pi) else {
+                return;
+            };
+            let used = page.used_rows();
+            if pos < used {
+                let take = (used - pos).min(left);
+                page.set_row_seqs(pos, pos + take - 1, seq);
+                left -= take;
+            }
+            pi += 1;
+            pos = 0;
         }
     }
 
@@ -1165,6 +1267,7 @@ impl Screen {
         let seq = self.bump();
         let mut opened = false;
         if self.pages.last().is_none_or(Page::is_full) {
+            self.adapt_style_cap();
             let serial = self.next_serial;
             self.next_serial += 1;
             let page = self.pool.acquire(self.spec, serial);
@@ -1186,6 +1289,22 @@ impl Screen {
         self.total_rows += 1;
         if opened {
             self.enforce_limits();
+        }
+    }
+
+    /// Size the style table of the next page: a page that left most of its table idle lets
+    /// the template shrink again (growth raises it, see `grow`).
+    fn adapt_style_cap(&mut self) {
+        if self.cap.is_some() {
+            return;
+        }
+        let Some(last) = self.pages.last() else {
+            return;
+        };
+        let (cap, used) = (last.spec().style_cap, last.style_items());
+        let cur = self.spec.style_cap;
+        if cur > PageSpec::DEFAULT_STYLE_CAP && cap >= cur && used * 8 < cur {
+            self.spec.style_cap = (cur / 2).max(PageSpec::DEFAULT_STYLE_CAP);
         }
     }
 
