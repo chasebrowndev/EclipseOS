@@ -2656,6 +2656,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
 
     let time = state.start_time.elapsed();
     crate::render::send_frames(&state.space, &output, time);
+    crate::protocols::standard::frame_timing::release(state, &output);
     state.space.refresh();
     state.popups.cleanup();
     // Deliberately no `flush_clients()` here. `render_output` is reachable

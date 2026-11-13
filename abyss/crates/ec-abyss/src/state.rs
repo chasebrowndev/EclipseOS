@@ -16,14 +16,17 @@ use smithay::{
     utils::{Clock, Logical, Monotonic, Point},
     wayland::{
         alpha_modifier::AlphaModifierState,
+        commit_timing::CommitTimingManagerState,
         compositor::{CompositorClientState, CompositorState},
         content_type::ContentTypeState,
         cursor_shape::CursorShapeManagerState,
+        fifo::FifoManagerState,
         foreign_toplevel_list::ForeignToplevelListState,
         fractional_scale::FractionalScaleManagerState,
         idle_inhibit::IdleInhibitManagerState,
         idle_notify::IdleNotifierState,
         input_method::{InputMethodManagerState, PopupSurface},
+        keyboard_shortcuts_inhibit::KeyboardShortcutsInhibitState,
         output::OutputManagerState,
         pointer_constraints::PointerConstraintsState,
         pointer_gestures::PointerGesturesState,
@@ -45,6 +48,8 @@ use smithay::{
         viewporter::ViewporterState,
         xdg_activation::XdgActivationState,
         xdg_foreign::XdgForeignState,
+        xdg_system_bell::XdgSystemBellState,
+        xdg_toplevel_icon::XdgToplevelIconManager,
         xwayland_shell::XWaylandShellState,
     },
 };
@@ -359,6 +364,22 @@ pub struct AbyssState {
     pub idle_notifier: IdleNotifierState<Self>,
     #[allow(dead_code)] // holds the zwp_idle_inhibit_manager_v1 global alive
     pub idle_inhibit_state: IdleInhibitManagerState,
+    /// `zwp_keyboard_shortcuts_inhibit_v1` (COMP-04 §5).
+    pub shortcuts_inhibit_state: KeyboardShortcutsInhibitState,
+    /// `xdg_system_bell_v1`: keeps the global alive; `bell_limit` coalesces rings.
+    #[allow(dead_code)]
+    pub bell_state: XdgSystemBellState,
+    pub bell_limit: crate::protocols::standard::system_bell::BellLimiter,
+    /// `xdg_toplevel_icon_v1`: keeps the global alive; icons live on the surface.
+    #[allow(dead_code)]
+    pub toplevel_icon_manager: XdgToplevelIconManager,
+    /// `wp_fifo_v1` and `wp_commit_timing_v1` globals, managed mode.
+    #[allow(dead_code)]
+    pub fifo_state: FifoManagerState,
+    #[allow(dead_code)]
+    pub commit_timing_state: CommitTimingManagerState,
+    /// A one-shot wake-up for a pending commit-timer deadline is queued.
+    pub timing_wakeup_armed: bool,
     /// `zwlr_virtual_pointer_v1`.
     pub virtual_pointer: crate::protocols::standard::virtual_pointer::VirtualPointerState,
     /// `ext_background_effect_v1` (BLUR-03).
@@ -531,6 +552,12 @@ impl AbyssState {
         let session_lock_state = SessionLockManagerState::new::<Self, _>(&dh, |_| true);
         let idle_notifier = IdleNotifierState::<Self>::new(&dh, loop_handle.clone());
         let idle_inhibit_state = IdleInhibitManagerState::new::<Self>(&dh);
+        let shortcuts_inhibit_state = KeyboardShortcutsInhibitState::new::<Self>(&dh);
+        let bell_state = XdgSystemBellState::new::<Self>(&dh);
+        let mut toplevel_icon_manager = XdgToplevelIconManager::new::<Self>(&dh);
+        toplevel_icon_manager.add_icon_size(crate::protocols::standard::toplevel_icon::ICON_SIZE);
+        let fifo_state = FifoManagerState::new::<Self>(&dh);
+        let commit_timing_state = CommitTimingManagerState::new::<Self>(&dh);
         let xwayland_shell_state = XWaylandShellState::new::<Self>(&dh);
         let output_power = crate::protocols::standard::output_power::OutputPowerState::new(&dh);
         let background_effect = crate::protocols::standard::background_effect::BackgroundEffectGlobals::new(
@@ -714,6 +741,13 @@ impl AbyssState {
             idle: Default::default(),
             idle_notifier,
             idle_inhibit_state,
+            shortcuts_inhibit_state,
+            bell_state,
+            bell_limit: Default::default(),
+            toplevel_icon_manager,
+            fifo_state,
+            commit_timing_state,
+            timing_wakeup_armed: false,
             output_power,
             background_effect,
             glass,

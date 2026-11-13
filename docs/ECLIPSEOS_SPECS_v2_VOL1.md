@@ -3747,6 +3747,10 @@ ships with `wl_compositor` (one Smithay global pair) and `xdg_output` with
 | `wlr_screencopy` / `ext_image_copy_capture` | 3 / 1 | screen sharing via portal — **capability- and sensitivity-gated** (§3) |
 | `wlr_gamma_control` | 1 | night light |
 | `content_type`, `wp_alpha_modifier`, `cursor_shape` | 1 | small, expected by modern toolkits |
+| `xdg_system_bell` *(X3)* | 1 | a ring marks the window urgent (never focuses) and emits a `window` event, `change: "bell"`; coalesced to one per 50 ms; abyss plays no sound |
+| `xdg_toplevel_icon` *(X3)* | 1 | icon lives in the surface's committed state; `get_windows` returns its themed name as `icon`; advisory chrome, never identity |
+| `zwp_keyboard_shortcuts_inhibit` *(X4)* | 1 | activated on creation; while the inhibiting surface has keyboard focus every binding goes to the client except `agent-override`, `agent-terminate`, `agent-attention` and VT switch (COMP-04 §6) |
+| `wp_fifo`, `wp_commit_timing` *(X4)* | 1 | smithay managed mode; barriers and due timers are released after each presented frame, a future target arms a one-shot wake-up |
 | `ext_background_effect` *(added BLUR-03, 2026-10-06)* | 1 | client-specified blur region; `blur` advertised only while `decoration.blur.mode` is not `off`; a committed region replaces the compositor's whole-surface backdrop (COMP-02 §9), in captures too; a region that is one box covering the whole window geometry is drawn as the compositor's own backdrop, so in `glass` mode it gets the bezel (C-15) like any other window |
 
 ## 2. Deliberately Not Implemented
