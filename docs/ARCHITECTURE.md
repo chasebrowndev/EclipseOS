@@ -11,56 +11,42 @@ bundle. Once code exists, `docs/` and the code are the source of truth
 
 ## Workspace layout (F-07 §1)
 
-```
-Cargo.toml            workspace
-CLAUDE.md             root invariants + commands
-docs/                 specs and this document
-decisions/            ADRs (F-08 format)
-crates/
-  abyss/             compositor                       [TCB]
-  ec-ctl/        human CLI over the COMP-13 IPC socket
-  ec-ipc/        blocking client for the COMP-13 §2 socket, no async runtime
-  ec-ui/         DE design system: tokens, type, widgets over iced 0.14
-  hyperion/           the taskbar (internal name; users see "taskbar") (DP-4)
-  ec-toasts/     notification toasts, layer-shell (DP-5)
-  ec-center/     notification + status center, layer-shell (DP-5)
-  ec-launcher/   application launcher, layer-shell (DP-5)
-  ec-settings/   settings panes; every write via set_config_value (COMP-17 §3)
-  ec-policy-viewer/  read-only policy.kdl inspector, deliberately powerless
-  ec-secret-prompt/  one-shot wifi passphrase / Bluetooth PIN prompt (ADR 0053)
-  ec-lock/           screen locker, ext_session_lock_v1 client, PAM in-process (ADR 0095)
-  ec-services/   D-Bus services: notifications, tray, status, session (ADR 0038);
-                      lib plus the ec-screensaver (ADR 0051),
-                      ec-pairing (ADR 0066), ec-portal (ADR 0084) and
-                      ec-lock-trigger (ADR 0095) bins
-  ec-abyss-wlcs/         wlcs conformance cdylib, drives the headless backend
-  policyd/            policy + audit daemon            [TCB]
-  ec-policy-eval/        shared evaluator, linked by both [TCB]
-  agentd/             agent gateway                            (not yet)
-  registryd/          perception aggregation                   (not yet)
-  proto-agent/        eclipse_agent_v1 bindings (generated)    (not yet)
-  proto-semantic/     eclipse_semantic_v1 bindings (generated) (not yet)
-  audit/              verify tool + retention; the store itself
-                      lives in policyd/src/audit.rs (ADR 0046)  (not yet)
-  sandbox/            grant → bwrap/Landlock/seccomp compiler  (not yet)
-  sdk-rust/ sdk-python/  agent SDKs (Apache-2.0)               (not yet)
-tests/{golden,wlcs,compat,redteam}/                            (not yet)
-fuzz/                 cargo-fuzz targets                       (not yet)
-bench/                COMP-14 benchmarks: the M9f frame-time harness
-ci/                   wlcs skip list, GUI-coverage exceptions
-packaging/                 session scripts, user units, PKGBUILD, repo, ISO
-```
+Several independent cargo workspaces, each with its own lockfile and CI job
+(`.github/workflows/gate.yml`). Every crate has a `CLAUDE.md` naming its
+governing spec, local invariants and whether it is TCB, and a one-line
+`description` in its `Cargo.toml`. `[TCB]` crates and paths get a line-by-line
+owner review on every change (F-07 §4).
 
-The fifteen crates above without a `(not yet)` marker exist today (plus
-`bench/`, the sixteenth workspace member); everything marked `(not yet)` is
-Phase 2 or later (see `docs/STATUS.md`). All of them are `AGPL-3.0-only` via
-`license.workspace = true` — the Apache-2.0 half of the F-05 §3 split has no
-code yet. None of the DE crates (`ec-ui` through `ec-services`) is
-TCB. TCB crates
-get a line-by-line owner review on every change (F-07 §4).
-
-The DE crates are members of this one workspace, not a separate tree; an
-`EclipseDE/` directory is not part of the layout.
+```
+abyss/          compositor + system daemons (AGPL; protocol crates Apache-2.0)
+  crates/ec-abyss/            the compositor; module map below
+  crates/ec-abyss-render/     state-free render: damage, scanout, sync, blur, effects, annotations
+  crates/ec-abyss-wire/       state-free control-socket types; gate.rs is authz enforcement [TCB]
+  crates/ec-abyss-config/     abyss.kdl schema, parse, validate, edit (no smithay)
+  crates/ec-config-schema/    schema types shared with Apotheosis (Ty, Key, Meta, Value)
+  crates/ec-theme/            seed colours → derived palette, contrast checks (ADR 0084)
+  crates/ec-ipc/ ec-ctl/      control-socket client and CLI
+  crates/ec-protocols/        eclipse_agent_v1 XML + bindings (Apache-2.0)
+  crates/ec-policyd/ ec-policy-eval/   policy daemon + shared evaluator [TCB]
+  crates/ec-agentd/           agent gateway; sandbox.rs [TCB]
+  crates/ec-audit/            verify, trace, query the audit store
+  crates/ec-brokerd/ ec-secret/        secrets broker + owner CLI
+  crates/ec-inferenced/ ec-inference-wire/   inference router + wire contract
+  crates/ec-claude-agent/ ec-ref-agent/      agents
+  crates/ec-cataclysm-pub/    terminal grid publisher (P-04)
+  crates/ec-abyss-wlcs/       WLCS conformance shim
+  bench/ ci/                  frame-time harness; wlcs skip list, doc-refs, GUI-coverage exceptions
+shell/crates/   DE panes and services (iced via ec-ui; none is TCB)
+  ec-ui                       shared theme, tokens, widgets
+  ec-hyperion-bar ec-toasts ec-center ec-launcher ec-settings ec-policy-viewer
+  ec-secret-prompt ec-lock ec-desktop ec-wallpaper ec-cheatsheet ec-console ec-greeter
+  ec-services                 D-Bus: notifications, tray, status, screensaver, portal
+apotheosis/     the terminal (docs/ECLIPSEOS_SPECS_APOTHEOSIS.md)
+portal/ installer/ fog/ oracle-eyes/   own workspaces, own CLAUDE.md
+browser/        firefox-glass extension
+packaging/      session, units, PKGBUILD, repo, ISO, /etc defaults
+docs/           specs, this file, STATUS, KNOWNBUGS, CONFIG, STYLE, design/, decisions/ (ADRs)
+```
 
 ## Licensing split (F-05 §3, ADR 0005)
 
