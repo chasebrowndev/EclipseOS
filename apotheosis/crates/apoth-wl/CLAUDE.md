@@ -42,3 +42,13 @@ T-23 latency series).
 
 ## Limits
 - `repeat_info` rate is clamped to `repeat::MAX_RATE_HZ` (1000 Hz).
+
+## Render-thread link (`pace.rs`, M11)
+`WlHandle::surface_handle(id)` gives a `Send + Sync` `WlSurfaceHandle` (raw-window-handle 0.6;
+the only unsafe pointer wrapping, `rawhandle.rs`) for `wgpu::Instance::create_surface`.
+`WlHandle::pacer(id)` gives a `Send` `Pacer`: it issues `request_frame` /
+`request_presentation_feedback` itself and receives `PaceEvent::{Frame, Presented, Discarded,
+Surface}` on a channel (`Surface` = logical size, buffer size, scale, suspended; sent first on
+creation and after every relayout/scale change). The same events still flow through `WlEvent`.
+Keyboard: `InputKind::Keymap(k)` -> `k.text()` -> `KbvmBackend::load_keymap_bytes`;
+`Modifiers{..}` -> `apoth_input::Components`; `Key{key, pressed, repeat, ..}` -> `lookup(key)`.

@@ -198,6 +198,10 @@ pub(crate) struct Window {
     pub blur_request: Option<BlurRequest>,
     pub blur_path: BlurPath,
     pub extras: crate::extras::WindowExtras,
+    /// Render-thread pacing link, if one was taken.
+    pub pace: Option<crate::pace::PaceTx>,
+    /// Double-buffered state the render thread commits with its frame once a pacer exists.
+    pub slot: std::sync::Arc<crate::pace::CommitSlot>,
 }
 
 pub(crate) struct OutputState {
@@ -596,6 +600,8 @@ impl WlState {
             blur_request: None,
             blur_path: BlurPath::Tint,
             extras: crate::extras::WindowExtras::default(),
+            pace: None,
+            slot: std::sync::Arc::default(),
         });
 
         let wi = self.windows.len() - 1;
@@ -650,26 +656,36 @@ impl WlState {
         if w.frame == FrameKind::Client {
             let layout = csd_layout(on_abyss, w.window_size, &w.csd_metrics, w.states);
             w.logical = layout.surface;
-            w.xdg_surface.set_window_geometry(
-                layout.geometry.x,
-                layout.geometry.y,
-                layout.geometry.w,
-                layout.geometry.h,
-            );
-            let region: WlRegion = self.globals.compositor.create_region(&self.qh, ());
-            region.add(
-                layout.input.x,
-                layout.input.y,
-                layout.input.w,
-                layout.input.h,
-            );
-            w.surface.set_input_region(Some(&region));
-            region.destroy();
+            if w.pace.is_some() {
+                // The render thread applies these just before its commit.
+                w.slot.set_geometry(layout.geometry);
+                w.slot.set_input(Some(layout.input));
+            } else {
+                w.xdg_surface.set_window_geometry(
+                    layout.geometry.x,
+                    layout.geometry.y,
+                    layout.geometry.w,
+                    layout.geometry.h,
+                );
+                let region: WlRegion = self.globals.compositor.create_region(&self.qh, ());
+                region.add(
+                    layout.input.x,
+                    layout.input.y,
+                    layout.input.w,
+                    layout.input.h,
+                );
+                w.surface.set_input_region(Some(&region));
+                region.destroy();
+            }
             w.csd_layout = Some(layout);
         } else {
             w.logical = w.window_size;
             if w.csd_layout.take().is_some() {
-                w.surface.set_input_region(None);
+                if w.pace.is_some() {
+                    w.slot.set_input(None);
+                } else {
+                    w.surface.set_input_region(None);
+                }
             }
         }
         self.apply_scale(wi);
@@ -708,8 +724,18 @@ impl WlState {
                 }
             }
         }
-        if new != w.scale {
-            w.scale = new;
+        let changed = new != w.scale;
+        w.scale = new;
+        if let Some(tx) = &w.pace {
+            tx.send(crate::pace::PaceEvent::Surface {
+                logical: w.logical,
+                buffer: new.to_buffer_size(w.logical),
+                scale: new,
+                suspended: !w.states.should_render(),
+            });
+        }
+        w.slot.set_buffer(new.to_buffer_size(w.logical));
+        if changed {
             let (window, scale, mode) = (w.id, new, w.scale_mode);
             self.events.push_back(WlEvent::ScaleChanged {
                 window,
@@ -845,7 +871,6 @@ impl WlState {
     pub(crate) fn apply_configure(&mut self, wi: usize, serial: u32) -> ConfigureEvent {
         let decoration_global = self.globals.decoration.is_some();
         let w = &mut self.windows[wi];
-        w.xdg_surface.ack_configure(serial);
         w.states = w.pending.states;
         if let Some(sz) = w.pending.size {
             w.window_size = sz;
@@ -863,6 +888,23 @@ impl WlState {
             first,
         };
         self.relayout(wi);
+        // The ack follows the layout so the slot's buffer size is already current. With a
+        // pacer the render thread acks it with the frame that matches; without one nobody
+        // else commits, so ack now.
+        let w = &self.windows[wi];
+        if let Some(tx) = &w.pace {
+            w.slot.set_ack(serial);
+            // The ack is set after the size events: tell the render thread it has one to
+            // carry even when the size did not change.
+            tx.send(crate::pace::PaceEvent::Surface {
+                logical: w.logical,
+                buffer: w.scale.to_buffer_size(w.logical),
+                scale: w.scale,
+                suspended: !w.states.should_render(),
+            });
+        } else {
+            w.xdg_surface.ack_configure(serial);
+        }
         ev
     }
 }

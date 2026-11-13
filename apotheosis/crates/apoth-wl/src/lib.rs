@@ -16,6 +16,7 @@ pub mod event;
 pub mod extras;
 pub mod gesture;
 pub mod mime;
+pub mod pace;
 pub mod rawhandle;
 pub mod repeat;
 pub mod scale;
@@ -36,6 +37,7 @@ pub use event::{
     SelectionKind, WindowId, WlEvent,
 };
 pub use extras::ContentType;
+pub use pace::{PaceEvent, Pacer};
 pub use rawhandle::WlSurfaceHandle;
 pub use seat::{ClipboardError, CursorError};
 pub use source::{WlHandle, WlSource, connect};

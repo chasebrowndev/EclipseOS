@@ -369,14 +369,15 @@ impl Dispatch<WpPresentationFeedback, FeedbackData> for WlState {
             } => {
                 let time: Option<Stamp> =
                     presentation_stamp(state.presentation_clock, tv_sec_hi, tv_sec_lo, tv_nsec);
-                state.emit(WlEvent::Presented(PresentedEvent {
+                let ev = PresentedEvent {
                     window: data.window,
                     feedback: data.id,
                     time,
                     refresh_ns: refresh,
                     seq: crate::clock::join64(seq_hi, seq_lo),
                     flags: u32::from(flags),
-                }));
+                };
+                state.emit(WlEvent::Presented(ev));
             }
             wp_presentation_feedback::Event::Discarded => {
                 state.emit(WlEvent::PresentationDiscarded {

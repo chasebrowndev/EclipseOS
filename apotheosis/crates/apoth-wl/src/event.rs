@@ -77,6 +77,17 @@ impl fmt::Debug for Keymap {
     }
 }
 
+impl Keymap {
+    /// The keymap text for `apoth_input::KbvmBackend::load_keymap_bytes` / `load_keymap`.
+    /// `None` for `NoKeymap` or non-UTF-8 bytes.
+    pub fn text(&self) -> Option<&str> {
+        if self.format != KeymapFormat::XkbV1 {
+            return None;
+        }
+        std::str::from_utf8(&self.bytes).ok()
+    }
+}
+
 /// One pointer-frame worth of scrolling. Positive is down / right (Wayland convention).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ScrollFrame {
@@ -469,6 +480,20 @@ mod tests {
         };
         let s = format!("{k:?}");
         assert!(s.contains("14 bytes") && !s.contains("xkb_keymap"));
+    }
+
+    #[test]
+    fn keymap_text() {
+        let k = Keymap {
+            format: KeymapFormat::XkbV1,
+            bytes: b"xkb_keymap { }".to_vec(),
+        };
+        assert_eq!(k.text(), Some("xkb_keymap { }"));
+        let n = Keymap {
+            format: KeymapFormat::NoKeymap,
+            bytes: vec![],
+        };
+        assert_eq!(n.text(), None);
     }
 
     #[test]

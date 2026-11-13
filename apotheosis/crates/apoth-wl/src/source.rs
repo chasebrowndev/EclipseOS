@@ -730,6 +730,35 @@ impl WlHandle {
         })
     }
 
+    /// Take the render thread's pacing link for a window: frame callbacks, presentation
+    /// feedback and surface size changes arrive on it, and it requests frames itself. A
+    /// second call replaces the first (the old pacer goes quiet). It starts with one
+    /// `Surface` event describing the current size.
+    pub fn pacer(&self, id: WindowId) -> Option<crate::pace::Pacer> {
+        self.win(id, |s, wi| {
+            let (pacer, tx) = crate::pace::Pacer::new(crate::pace::PacerParts {
+                window: id,
+                surface: s.windows[wi].surface.clone(),
+                conn: s.conn.clone(),
+                presentation: s.globals.presentation.clone(),
+                clock: s.presentation_clock,
+                xdg_surface: s.windows[wi].xdg_surface.clone(),
+                compositor: s.globals.compositor.clone(),
+                slot: std::sync::Arc::clone(&s.windows[wi].slot),
+            });
+            let w = &mut s.windows[wi];
+            w.slot.set_buffer(w.scale.to_buffer_size(w.logical));
+            tx.send(crate::pace::PaceEvent::Surface {
+                logical: w.logical,
+                buffer: w.scale.to_buffer_size(w.logical),
+                scale: w.scale,
+                suspended: !w.states.should_render(),
+            });
+            w.pace = Some(tx);
+            pacer
+        })
+    }
+
     /// Flush pending requests now (the source also flushes before every sleep).
     pub fn flush(&self) {
         let _ = self.state.borrow().conn.flush();

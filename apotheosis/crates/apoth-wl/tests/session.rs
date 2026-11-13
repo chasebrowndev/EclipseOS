@@ -322,6 +322,48 @@ fn child() {
         println!("clipboard: skipped, compositor gave no keyboard focus");
     }
 
+    // Render-thread pacing link: Send, starts with the surface size, then a frame callback
+    // after request + commit reaches the pacer from a different thread.
+    let mut pacer = handle.pacer(win).expect("pacer");
+    assert_eq!(pacer.window(), win);
+    match pacer.try_recv() {
+        Some(apoth_wl::PaceEvent::Surface {
+            logical, buffer, ..
+        }) => {
+            assert!(logical.0 > 0 && buffer.0 >= logical.0);
+        }
+        other => panic!("first pacer event was {other:?}"),
+    }
+    let feedback = pacer.request_presentation_feedback();
+    assert_eq!(feedback.is_some(), pacer.has_presentation());
+    pacer.request_frame();
+    handle
+        .attach_solid_buffer(win, buffer, 0x0030_3030)
+        .expect("attach for frame");
+    handle.flush();
+    let t = std::thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            if let Some(apoth_wl::PaceEvent::Frame { .. }) =
+                pacer.recv_timeout(Duration::from_millis(50))
+            {
+                return true;
+            }
+        }
+        false
+    });
+    let got_frame = {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        while !t.is_finished() && Instant::now() < deadline {
+            h.pump_until(50, |_| false);
+        }
+        t.join().unwrap()
+    };
+    assert!(
+        got_frame,
+        "no frame callback reached the render-side pacer within the deadline"
+    );
+
     // Resize storm: 1000 geometry changes and title updates, then dispatches.
     for i in 0..1000u32 {
         handle.set_window_size(win, (400 + i % 300, 300 + i % 200));
