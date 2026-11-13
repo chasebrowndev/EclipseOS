@@ -57,13 +57,11 @@ pub fn focus_inhibits(state: &AbyssState) -> bool {
         .is_some_and(|i| i.is_active())
 }
 
-/// While focus inhibits, may this bound action still run? Only the reserved
-/// chords: everything else goes to the client.
+/// While focus inhibits, may this bound action still run? Only the two
+/// COMP-04 §6 override chords; agent-attention goes to the client like
+/// everything else.
 pub fn survives_inhibit(action: &Action) -> bool {
-    matches!(
-        action,
-        Action::AgentOverride | Action::AgentTerminate | Action::AgentAttention
-    )
+    matches!(action, Action::AgentOverride | Action::AgentTerminate)
 }
 
 #[cfg(test)]
@@ -74,7 +72,7 @@ mod tests {
     fn only_reserved_chords_survive() {
         assert!(survives_inhibit(&Action::AgentOverride));
         assert!(survives_inhibit(&Action::AgentTerminate));
-        assert!(survives_inhibit(&Action::AgentAttention));
+        assert!(!survives_inhibit(&Action::AgentAttention));
         assert!(!survives_inhibit(&Action::ToggleOverview));
     }
 }
