@@ -139,6 +139,12 @@ fn ty_json(path: &str, ty: &schema::Ty) -> (&'static str, Value) {
         Regex => ("regex", Value::Null),
         Template => ("template", Value::Null),
         Bytes { min, max } => ("bytes", json!({"min": min, "max": max})),
+        Argv => ("argv", Value::Null),
+        CodepointRanges => ("codepoint-ranges", Value::Null),
+        Match => ("match", Value::Null),
+        StringSet => ("string-set", Value::Null),
+        Map { .. } => ("map", Value::Null),
+        ThemeRef => ("theme-ref", Value::Null),
     }
 }
 
@@ -157,13 +163,14 @@ fn value_json(v: &schema::Value) -> Value {
         V::Str(s) => json!(s),
         V::List(l) => json!(l),
         V::Color(c) => json!(color_hex(*c)),
+        V::Map(m) => Value::Object(m.iter().map(|(k, v)| (k.clone(), json!(v))).collect()),
     }
 }
 
 fn default_json(d: &schema::Dv) -> Value {
     use schema::Dv as D;
     match d {
-        D::Null => Value::Null,
+        D::Null | D::Computed { .. } => Value::Null,
         D::Bool(b) => json!(b),
         D::Int(i) => json!(i),
         D::Float(f) => json!(f),
@@ -388,7 +395,10 @@ fn get_config(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply 
                 "reload".into(),
                 json!(match key.reload {
                     schema::Reload::Live => "live",
-                    schema::Reload::NeedsRestart => "restart",
+                    // Terminal-only; abyss's table has neither. Served as restart
+                    // (the conservative reading) should one ever appear.
+                    schema::Reload::NewPane | schema::Reload::NewWindow | schema::Reload::NeedsRestart =>
+                        "restart",
                 }),
             );
         }
@@ -1120,7 +1130,13 @@ fn coerce(raw: &Value, ty: &schema::Ty) -> Result<kdl::KdlValue, RpcError> {
         | Action
         | Regex
         | Template
-        | Bytes { .. } => {
+        | Bytes { .. }
+        | Argv
+        | CodepointRanges
+        | Match
+        | StringSet
+        | Map { .. }
+        | ThemeRef => {
             return Err(RpcError::invalid_params(
                 "value type is not writable over this socket",
             ))

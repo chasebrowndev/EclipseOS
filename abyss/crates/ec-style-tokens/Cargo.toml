@@ -1,0 +1,17 @@
+[package]
+name = "ec-style-tokens"
+description = "The non-colour design tokens of docs/STYLE.md (radii, spacing, sizes, durations): plain consts, no GUI dependency"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "ec_style_tokens"
+path = "src/lib.rs"
+
+# No dependencies at all: ec-ui (iced) and apoth-ui (Apotheosis's own renderer)
+# both link this, and neither may drag the other in.
+[dependencies]
