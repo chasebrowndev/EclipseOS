@@ -440,6 +440,7 @@ fn redraw(
     state.stats.maybe_report();
     let time = state.start_time.elapsed();
     send_frames(&state.space, out, time);
+    crate::protocols::standard::frame_timing::release(state, out);
     state.space.refresh();
     state.popups.cleanup();
 }
