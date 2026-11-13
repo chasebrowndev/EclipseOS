@@ -8,6 +8,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("geom.rs", include_str!("geom.rs")),
     ("hit.rs", include_str!("hit.rs")),
     ("motion.rs", include_str!("motion.rs")),
+    ("palette.rs", include_str!("palette.rs")),
     ("pane.rs", include_str!("pane.rs")),
     ("scrollbar.rs", include_str!("scrollbar.rs")),
     ("state.rs", include_str!("state.rs")),

@@ -263,22 +263,38 @@ pub(crate) fn bar_inset_px(scale: f64, zoom: f32) -> u32 {
     (f64::from(metrics::BAR_H + space::SM) * s).round() as u32
 }
 
-/// Lowers the overlay into `chrome` for a `buffer` of physical pixels.
+/// Widget id of the tab strip (its new-tab button is `STRIP_ID.child(u64::MAX)`).
+pub(crate) const STRIP_ID: WidgetId = WidgetId(0x5354_5249_5000);
+/// Widget id of the command palette sheet (rows are `palette::row_id`).
+pub(crate) const PALETTE_ID: WidgetId = WidgetId(0x5041_4c45_5400);
+
+/// Widget id of tab `tab` in the strip (its close button is `.child(0)`).
+pub(crate) fn tab_widget(tab: u64) -> WidgetId {
+    WidgetId(0x7441_0000_0000_0000 ^ tab)
+}
+
+/// Widget id of pane `pane`'s frame.
+pub(crate) fn pane_widget(pane: u64) -> WidgetId {
+    WidgetId(0x7041_0000_0000_0000 ^ pane)
+}
+
+/// Lowers the chrome into `chrome` for a `buffer` of physical pixels at interface scale
+/// `ui` (physical pixels per interface unit). Back to front: pane frames (focus rim, inactive
+/// dim), tab strip, overlay bar, palette sheet (T-08 §5 order).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_overlay(
+pub(crate) fn build_chrome(
     chrome: &mut ChromeList,
     overlay: Option<&Overlay>,
+    model: &crate::render::ChromeModel,
     buffer: (u32, u32),
-    scale: f64,
-    zoom: f32,
+    ui: f32,
     light: bool,
     age_ms: u64,
     fonts: &mut FontSystem,
     raster: &mut UiRaster,
 ) {
     chrome.clear();
-    let Some(o) = overlay else { return };
-    let s = (scale * f64::from(zoom)) as f32;
+    let s = if ui > 0.0 { ui } else { 1.0 };
     let area = Rect::new(0.0, 0.0, buffer.0 as f32 / s, buffer.1 as f32 / s);
     let pal = if light {
         Palette::light()
@@ -288,16 +304,33 @@ pub(crate) fn build_overlay(
     let mut dl = DrawList::new();
     {
         let measure = FontMeasure::new(fonts);
-        let l = bar::layout(area, &o.spec, &measure);
-        bar::draw(
-            &l,
-            &o.spec,
-            &BarState { shown_at_ms: 0 },
-            age_ms,
-            &UiState::default(),
-            &pal,
-            &mut dl,
-        );
+        for f in &model.frames {
+            let l = apoth_ui::pane::layout(f);
+            apoth_ui::pane::draw(f, &l, &pal, &mut dl);
+        }
+        if let Some((strip, tabs)) = &model.strip {
+            let l = apoth_ui::tabs::layout(*strip, STRIP_ID, tabs);
+            apoth_ui::tabs::draw(&l, tabs, model.tab_style, &model.ui, &pal, &mut dl);
+        }
+        if let Some(o) = overlay {
+            let l = bar::layout(area, &o.spec, &measure);
+            bar::draw(
+                &l,
+                &o.spec,
+                &BarState { shown_at_ms: 0 },
+                age_ms,
+                &UiState::default(),
+                &pal,
+                &mut dl,
+            );
+        }
+        if let Some(p) = &model.palette {
+            let l = apoth_ui::palette::layout(area, p);
+            apoth_ui::palette::draw(&l, p, &model.ui, &pal, &measure, &mut dl);
+        }
+    }
+    if dl.cmds.is_empty() {
+        return;
     }
     raster.lower(&dl, s, fonts, chrome);
 }
@@ -417,18 +450,117 @@ mod tests {
             shown_at: std::time::Instant::now(),
         };
         let buf = (480.0 * scale, 90.0 * scale);
-        build_overlay(
+        build_chrome(
             &mut l,
             Some(&o),
+            &crate::render::ChromeModel::empty(),
             (buf.0 as u32, buf.1 as u32),
-            f64::from(scale),
-            1.0,
+            scale,
             light,
             900,
             &mut f,
             &mut r,
         );
         l
+    }
+
+    /// Two tabs, two framed panes (the right one unfocused, so dimmed) and the palette open
+    /// over them with three rows, the second selected.
+    fn chrome_model(scale: f32) -> (crate::render::ChromeModel, (u32, u32)) {
+        use apoth_ui::palette::{Entry, PaletteSpec};
+        use apoth_ui::pane::{FrameMode, PaneSpec};
+        use apoth_ui::tabs::TabSpec;
+        let (w, h) = (640.0, 400.0);
+        let strip = Rect::new(0.0, 0.0, w, crate::layout::strip_px(1.0) as f32);
+        let tabs = vec![
+            TabSpec {
+                id: tab_widget(1),
+                title: TextRun::program("zsh", apoth_ui::tokens::size::BODY),
+                active: true,
+                badges: Vec::new(),
+            },
+            TabSpec {
+                id: tab_widget(2),
+                title: TextRun::program("htop", apoth_ui::tokens::size::BODY),
+                active: false,
+                badges: Vec::new(),
+            },
+        ];
+        let top = strip.bottom() + 4.0;
+        let frame = |id, x: f32, focused| PaneSpec {
+            id: pane_widget(id),
+            rect: Rect::new(x, top, w / 2.0 - 8.0, h - top - 4.0),
+            focused,
+            title: None,
+            mode: FrameMode::Full,
+            inactive_dim: 0.12,
+        };
+        let row = |t: &str, k: Option<&str>| Entry {
+            title: TextRun::interface(t, apoth_ui::tokens::size::BODY),
+            hint: k.map(|k| TextRun::interface(k, apoth_ui::tokens::size::BODY_SMALL)),
+        };
+        let model = crate::render::ChromeModel {
+            strip: Some((strip, tabs)),
+            tab_style: apoth_ui::frame::TabStyle::Floating,
+            frames: vec![frame(10, 4.0, true), frame(11, w / 2.0 + 4.0, false)],
+            palette: Some(PaletteSpec {
+                id: PALETTE_ID,
+                query: "spl".into(),
+                placeholder: TextRun::interface("Run an action", apoth_ui::tokens::size::BODY),
+                entries: vec![
+                    row("Split pane", Some("ctrl+shift+d")),
+                    row("Split pane down", Some("ctrl+shift+e")),
+                    row("Select all", Some("ctrl+shift+a")),
+                ],
+                selected: Some(1),
+                total: 3,
+            }),
+            ui: UiState::default(),
+        };
+        (model, ((w * scale) as u32, (h * scale) as u32))
+    }
+
+    fn lowered_chrome(scale: f32, light: bool) -> ChromeList {
+        let mut f = fonts();
+        let mut r = UiRaster::new();
+        let mut l = ChromeList::new();
+        let (m, buf) = chrome_model(scale);
+        build_chrome(&mut l, None, &m, buf, scale, light, 0, &mut f, &mut r);
+        l
+    }
+
+    #[test]
+    fn chrome_draws_frames_strip_and_palette_in_order() {
+        let l = lowered_chrome(1.0, false);
+        let rects: Vec<_> = l.instances.iter().filter(|i| i.params[2] < 0.5).collect();
+        // Two frame rims, one dim, two tab backgrounds, new-tab, sheet, field, caret, row.
+        assert!(rects.len() >= 9, "{}", rects.len());
+        // The palette sheet comes after (in front of) the frames.
+        let sheet_w = (apoth_ui::tokens::metrics::PALETTE_W).min(640.0 - 2.0 * 24.0);
+        let sheet = rects
+            .iter()
+            .position(|i| (i.rect[2] - sheet_w).abs() < 1.0)
+            .expect("palette sheet");
+        let frame = rects
+            .iter()
+            .position(|i| (i.rect[2] - (320.0 - 8.0)).abs() < 1.0)
+            .expect("pane frame");
+        assert!(frame < sheet);
+        // Nothing is drawn for an empty model.
+        let mut f = fonts();
+        let mut out = ChromeList::new();
+        build_chrome(
+            &mut out,
+            None,
+            &crate::render::ChromeModel::empty(),
+            (100, 100),
+            1.0,
+            false,
+            0,
+            &mut f,
+            &mut UiRaster::new(),
+        );
+        assert!(out.instances.is_empty());
     }
 
     #[test]
@@ -519,6 +651,26 @@ mod tests {
         assert_eq!(want, out, "overlay golden drifted");
     }
 
+    #[test]
+    fn chrome_goldens_dark_light_scale_1_2() {
+        let mut out = String::new();
+        for light in [false, true] {
+            for scale in [1.0_f32, 2.0] {
+                out += &format!("== tabs+frames+palette light={light} scale={scale}\n");
+                out += &digest(&lowered_chrome(scale, light));
+            }
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("golden/chrome.txt");
+        if std::env::var_os("APOTH_BLESS").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &out).unwrap();
+            return;
+        }
+        let want =
+            std::fs::read_to_string(&path).expect("golden/chrome.txt: bless with APOTH_BLESS=1");
+        assert_eq!(want, out, "chrome golden drifted");
+    }
+
     /// Writes PNGs of the overlay over a flat stand-in ground when `APOTH_SHOT=<dir>` is set.
     /// The ground is NOT a compositor blur; it only gives the translucent fills something to
     /// sit on.
@@ -550,6 +702,25 @@ mod tests {
                 }
                 let name = format!(
                     "error-bar-{}-{}x.png",
+                    if light { "light" } else { "dark" },
+                    scale as u32
+                );
+                std::fs::write(dir.join(name), png_rgb(w, h, &rgb)).unwrap();
+                let l = lowered_chrome(scale, light);
+                let (w, h) = ((640.0 * scale) as usize, (400.0 * scale) as usize);
+                let mut img = Image::new(w, h);
+                apoth_render::chrome::reference::render(&l, &mut img);
+                let mut rgb = Vec::with_capacity(w * h * 3);
+                for p in img.data.chunks_exact(4) {
+                    for c in 0..3 {
+                        let g = u32::from(ground[c]);
+                        rgb.push(
+                            (u32::from(p[c]) + g * (255 - u32::from(p[3])) / 255).min(255) as u8,
+                        );
+                    }
+                }
+                let name = format!(
+                    "chrome-{}-{}x.png",
                     if light { "light" } else { "dark" },
                     scale as u32
                 );

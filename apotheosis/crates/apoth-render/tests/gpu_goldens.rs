@@ -15,7 +15,7 @@ use apoth_render::cursor::{self, CursorScene, CursorShape, CursorState};
 use apoth_render::gpu::{Gpu, GpuOptions};
 use apoth_render::presenter::{OffscreenPresenter, PresentOutcome, Presenter};
 use apoth_render::reference::{self, Image, MemAtlas};
-use apoth_render::renderer::{FrameInput, Renderer, RendererConfig};
+use apoth_render::renderer::{FrameInput, PaneDraw, Renderer, RendererConfig};
 use apoth_render::scene::{
     AtlasGlyph, BuildCtx, GlyphLookup, GlyphProvider, GlyphRequest, GridScene, Highlight,
     SceneConfig,
@@ -272,9 +272,9 @@ impl Harness {
                 .upload_mask(0, 0, 0, PAGE, PAGE, self.synth.atlas.mask_page(0));
             self.uploaded = self.synth.next_x;
         }
+        let panes = [PaneDraw::single(&self.scene, cur)];
         let input = FrameInput {
-            scene: &self.scene,
-            cursor: cur,
+            panes: &panes,
             clear: [0.0; 4],
         };
         match self.pres.present(&mut self.renderer, &input) {
@@ -448,4 +448,90 @@ fn a_skipped_frame_is_repaired_by_a_full_redraw() {
     h.renderer.invalidate_all();
     let img = h.frame(rows, vec![], Damage::Rows, None);
     assert_close("after invalidate", &img, &h.reference(None), 2, 0.001);
+}
+
+fn crop(img: &Image, x: usize, w: usize) -> Image {
+    let mut out = Image::new(w, img.h);
+    for y in 0..img.h {
+        let src = (y * img.w + x) * 4;
+        out.data[y * w * 4..(y + 1) * w * 4].copy_from_slice(&img.data[src..src + w * 4]);
+    }
+    out
+}
+
+/// Two panes of one window (T-13): each keyed grid draws at its own origin and matches its
+/// own reference; the gap between them stays the clear colour.
+#[test]
+fn two_panes_draw_side_by_side_at_their_origins() {
+    let Some(gpu) = gpu() else { return };
+    let m = metrics(8, 16);
+    let (cols, rows) = (6usize, 3usize);
+    let pane_w = cols * m.width as usize;
+    let gap = 2 * m.width as usize;
+    let mut h = Harness::new(&gpu, m, 2 * cols + 2, rows, TextBlending::Native);
+    let mut right = GridScene::new();
+    let mut snap = FrameSnapshot::new();
+    snap.rows = vec![
+        text_row(&format!("{:6}", "right"), Style::default()),
+        text_row(&format!("{:6}", "pane"), Style::default()),
+        text_row(&format!("{:6}", "two"), Style::default()),
+    ];
+    snap.changed = vec![0, 1, 2];
+    h.snap.rows = vec![
+        text_row(&format!("{:6}", "left"), Style::default()),
+        text_row(&format!("{:6}", "pane"), Style::default()),
+        text_row(&format!("{:6}", "one"), Style::default()),
+    ];
+    h.snap.changed = vec![0, 1, 2];
+    {
+        let ctx = BuildCtx {
+            cfg: &h.cfg,
+            palette: &h.pal,
+            metrics: &h.m,
+            highlights: &h.hl,
+        };
+        h.scene
+            .update(&h.snap, Damage::Full, &ctx, false, &mut h.synth);
+        right.update(&snap, Damage::Full, &ctx, false, &mut h.synth);
+    }
+    h.renderer
+        .upload_mask(0, 0, 0, PAGE, PAGE, h.synth.atlas.mask_page(0));
+    let panes = [
+        PaneDraw {
+            key: 1,
+            scene: &h.scene,
+            cursor: None,
+            origin: Some((0, 0)),
+        },
+        PaneDraw {
+            key: 2,
+            scene: &right,
+            cursor: None,
+            origin: Some(((pane_w + gap) as i32, 0)),
+        },
+    ];
+    let input = FrameInput {
+        panes: &panes,
+        clear: [0.0; 4],
+    };
+    match h.pres.present(&mut h.renderer, &input) {
+        PresentOutcome::Presented(_) => {}
+        other => panic!("offscreen present failed: {other:?}"),
+    }
+    let got = h.pres.read_pixels();
+    let want_l = reference::render(&h.scene.rows, None, &h.m, &h.synth.atlas, h.mode);
+    let want_r = reference::render(&right.rows, None, &h.m, &h.synth.atlas, h.mode);
+    assert_close("left pane", &crop(&got, 0, pane_w), &want_l, 2, 0.001);
+    assert_close(
+        "right pane",
+        &crop(&got, pane_w + gap, pane_w),
+        &want_r,
+        2,
+        0.001,
+    );
+    let between = crop(&got, pane_w, gap);
+    assert!(
+        between.data.iter().all(|b| *b == 0),
+        "the gap between the panes is not the clear colour"
+    );
 }

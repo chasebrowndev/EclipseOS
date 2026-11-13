@@ -78,13 +78,39 @@ impl Default for RendererConfig {
     }
 }
 
-/// What one frame draws.
+/// One pane of a frame: its retained scene, cursor and where its grid sits.
 #[derive(Clone, Copy, Debug)]
-pub struct FrameInput<'a> {
+pub struct PaneDraw<'a> {
+    /// Stable key of the pane: its retained grid texture lives under this key between frames
+    /// (T-13: one window draws every pane of its shown tab). Keys absent from a frame keep
+    /// their textures until [`Renderer::retain`] drops them.
+    pub key: u64,
     /// The retained grid scene, already updated for this frame.
     pub scene: &'a GridScene,
     /// The cursor, if visible.
     pub cursor: Option<&'a CursorScene>,
+    /// Top-left of the grid in the target, pixels; `None` uses [`RendererConfig::origin`].
+    pub origin: Option<(i32, i32)>,
+}
+
+impl<'a> PaneDraw<'a> {
+    /// The single-pane case: key 0 at the configured origin.
+    #[must_use]
+    pub fn single(scene: &'a GridScene, cursor: Option<&'a CursorScene>) -> Self {
+        PaneDraw {
+            key: 0,
+            scene,
+            cursor,
+            origin: None,
+        }
+    }
+}
+
+/// What one frame draws.
+#[derive(Clone, Copy, Debug)]
+pub struct FrameInput<'a> {
+    /// The panes, back to front (tiled panes do not overlap).
+    pub panes: &'a [PaneDraw<'a>],
     /// Window fill, premultiplied RGBA.
     pub clear: [f32; 4],
 }
@@ -155,6 +181,26 @@ struct Targets {
     bind_grid: wgpu::BindGroup,
     bind_comp: wgpu::BindGroup,
     bind_cursor: wgpu::BindGroup,
+}
+
+/// A pane's retained grid and its own uniforms and instance buffers: every pane of a frame
+/// is recorded into the same encoder, and queue writes land before the whole submission, so
+/// panes cannot share a buffer.
+#[derive(Debug)]
+struct Slot {
+    key: u64,
+    targets: Option<Targets>,
+    invalid: bool,
+    ubo_grid: wgpu::Buffer,
+    ubo_comp: wgpu::Buffer,
+    ubo_cursor: wgpu::Buffer,
+    glyph_vb: DynBuf,
+    rect_vb: DynBuf,
+    cursor_rect_vb: wgpu::Buffer,
+    cursor_glyph_vb: wgpu::Buffer,
+    /// This frame's cursor: rect count and whether a glyph is drawn.
+    cursor_rects: u32,
+    cursor_glyph: bool,
 }
 
 #[derive(Debug)]
@@ -333,20 +379,13 @@ pub struct Renderer {
     cfg: RendererConfig,
     bgl: wgpu::BindGroupLayout,
     pipes: Pipes,
-    ubo_grid: wgpu::Buffer,
-    ubo_comp: wgpu::Buffer,
-    ubo_cursor: wgpu::Buffer,
     mask_tex: wgpu::Texture,
     mask_view: wgpu::TextureView,
     color_tex: wgpu::Texture,
     color_view: wgpu::TextureView,
     dummy_view: wgpu::TextureView,
-    glyph_vb: DynBuf,
-    rect_vb: DynBuf,
-    cursor_rect_vb: wgpu::Buffer,
-    cursor_glyph_vb: wgpu::Buffer,
-    targets: Option<Targets>,
-    invalid: bool,
+    /// One retained grid per pane key (T-13: a window draws every pane of its shown tab).
+    slots: Vec<Slot>,
     rows_scratch: Vec<u32>,
     phys_scratch: Vec<u32>,
     ranges: Vec<RowRange>,
@@ -489,14 +528,6 @@ impl Renderer {
             rect_cursor: pipe("rect-cursor", "vs_rect", "fs_rect", &rect_slot, tf, over),
         };
 
-        let ubo = |label: &str| {
-            device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(label),
-                size: UNIFORM_BYTES as u64,
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            })
-        };
         let atlas_usage = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST;
         let mask_tex = texture(
             &device,
@@ -526,26 +557,8 @@ impl Renderer {
             wgpu::TextureUsages::TEXTURE_BINDING,
         );
         let dummy_view = dummy.create_view(&wgpu::TextureViewDescriptor::default());
-        let vb_usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
 
         Self {
-            glyph_vb: DynBuf::new(&device, "glyph-instances", vb_usage, 4096),
-            rect_vb: DynBuf::new(&device, "rect-instances", vb_usage, 4096),
-            cursor_rect_vb: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("cursor-rects"),
-                size: MAX_CURSOR_RECTS * RECT_STRIDE,
-                usage: vb_usage,
-                mapped_at_creation: false,
-            }),
-            cursor_glyph_vb: device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("cursor-glyph"),
-                size: 64,
-                usage: vb_usage,
-                mapped_at_creation: false,
-            }),
-            ubo_grid: ubo("ubo-grid"),
-            ubo_comp: ubo("ubo-composite"),
-            ubo_cursor: ubo("ubo-cursor"),
             device,
             queue,
             cfg: cfg.clone(),
@@ -556,8 +569,7 @@ impl Renderer {
             color_tex,
             color_view,
             dummy_view,
-            targets: None,
-            invalid: true,
+            slots: Vec::new(),
             rows_scratch: Vec::new(),
             phys_scratch: Vec::new(),
             ranges: Vec::new(),
@@ -587,8 +599,10 @@ impl Renderer {
     /// next draw redraws every row. Atlas contents are the caller's to clear and refill.
     pub fn set_cell(&mut self, cell: (u32, u32)) {
         self.cfg.cell = cell;
-        self.targets = None;
-        self.invalid = true;
+        for s in &mut self.slots {
+            s.targets = None;
+            s.invalid = true;
+        }
     }
 
     /// `render.text-blending` changed.
@@ -604,7 +618,63 @@ impl Renderer {
     /// The next draw redraws every row from the scene. Call after any planned frame that was
     /// not drawn.
     pub fn invalidate_all(&mut self) {
-        self.invalid = true;
+        for s in &mut self.slots {
+            s.invalid = true;
+        }
+    }
+
+    /// The next draw redraws every row of the pane `key` (its scene was rebuilt from scratch).
+    pub fn invalidate(&mut self, key: u64) {
+        if let Some(s) = self.slots.iter_mut().find(|s| s.key == key) {
+            s.invalid = true;
+        }
+    }
+
+    /// Drop the retained grids of every pane key not in `keys` (closed panes).
+    pub fn retain(&mut self, keys: &[u64]) {
+        self.slots.retain(|s| keys.contains(&s.key));
+    }
+
+    /// Retained grids currently held.
+    #[must_use]
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    fn new_slot(&self, key: u64) -> Slot {
+        let ubo = |label: &str| {
+            self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: UNIFORM_BYTES as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let vb_usage = wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST;
+        Slot {
+            key,
+            targets: None,
+            invalid: true,
+            ubo_grid: ubo("ubo-grid"),
+            ubo_comp: ubo("ubo-composite"),
+            ubo_cursor: ubo("ubo-cursor"),
+            glyph_vb: DynBuf::new(&self.device, "glyph-instances", vb_usage, 4096),
+            rect_vb: DynBuf::new(&self.device, "rect-instances", vb_usage, 4096),
+            cursor_rect_vb: self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cursor-rects"),
+                size: MAX_CURSOR_RECTS * RECT_STRIDE,
+                usage: vb_usage,
+                mapped_at_creation: false,
+            }),
+            cursor_glyph_vb: self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("cursor-glyph"),
+                size: 64,
+                usage: vb_usage,
+                mapped_at_creation: false,
+            }),
+            cursor_rects: 0,
+            cursor_glyph: false,
+        }
     }
 
     /// Uploads an R8 coverage rect into mask page `page`.
@@ -690,7 +760,7 @@ impl Renderer {
         })
     }
 
-    fn make_targets(&mut self, cols: u32, rows: u32) {
+    fn make_targets(&self, slot: &mut Slot, cols: u32, rows: u32) {
         let (cw, ch) = self.cfg.cell;
         let (w, h) = (cols * cw, rows * ch);
         let usage = wgpu::TextureUsages::TEXTURE_BINDING
@@ -714,10 +784,10 @@ impl Renderer {
             u64::from(stride) * u64::from(rows),
         );
         // The grid pass renders into the grid texture, so it binds a dummy in its place.
-        let bind_grid = self.bind_group(&self.ubo_grid, &bg_view, &self.dummy_view);
-        let bind_comp = self.bind_group(&self.ubo_comp, &bg_view, &grid_view);
-        let bind_cursor = self.bind_group(&self.ubo_cursor, &bg_view, &grid_view);
-        self.targets = Some(Targets {
+        let bind_grid = self.bind_group(&slot.ubo_grid, &bg_view, &self.dummy_view);
+        let bind_comp = self.bind_group(&slot.ubo_comp, &bg_view, &grid_view);
+        let bind_cursor = self.bind_group(&slot.ubo_cursor, &bg_view, &grid_view);
+        slot.targets = Some(Targets {
             cols,
             rows,
             w,
@@ -732,11 +802,12 @@ impl Renderer {
             bind_comp,
             bind_cursor,
         });
-        self.invalid = true;
+        slot.invalid = true;
     }
 
-    /// Records the frame into `enc`: damaged rows into the retained grid, then the present
-    /// pass into `target`. Nothing is submitted; the presenter owns submission.
+    /// Records the frame into `enc`: each pane's damaged rows into its retained grid, then
+    /// the present pass into `target`. Nothing is submitted; the presenter owns submission.
+    /// The stats are summed over the panes.
     pub fn draw(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
@@ -744,24 +815,42 @@ impl Renderer {
         target_size: (u32, u32),
         input: &FrameInput<'_>,
     ) -> DrawStats {
-        let scene = input.scene;
-        let rows = scene.rows.len() as u32;
-        let cols = scene.rows.first().map_or(0, |r| r.bg.len()) as u32;
-        let have_grid = rows > 0 && cols > 0;
         let mut stats = DrawStats::default();
-        if have_grid
-            && self
+        let mut slots = std::mem::take(&mut self.slots);
+        for p in input.panes {
+            let i = match slots.iter().position(|s| s.key == p.key) {
+                Some(i) => i,
+                None => {
+                    slots.push(self.new_slot(p.key));
+                    slots.len() - 1
+                }
+            };
+            let slot = &mut slots[i];
+            let scene = p.scene;
+            let rows = scene.rows.len() as u32;
+            let cols = scene.rows.first().map_or(0, |r| r.bg.len()) as u32;
+            if rows == 0 || cols == 0 {
+                continue;
+            }
+            if slot
                 .targets
                 .as_ref()
                 .is_none_or(|t| t.cols != cols || t.rows != rows)
-        {
-            self.make_targets(cols, rows);
+            {
+                self.make_targets(slot, cols, rows);
+            }
+            if let Some(mut t) = slot.targets.take() {
+                let st = self.grid_pass(enc, slot, &mut t, scene);
+                slot.targets = Some(t);
+                stats.rows_drawn += st.rows_drawn;
+                stats.glyphs += st.glyphs;
+                stats.rects += st.rects;
+                stats.region_copies += st.region_copies;
+                stats.full |= st.full;
+            }
         }
-        if have_grid && let Some(mut t) = self.targets.take() {
-            stats = self.grid_pass(enc, &mut t, scene);
-            self.targets = Some(t);
-        }
-        self.present_pass(enc, target, target_size, input, have_grid);
+        self.present_pass(enc, target, target_size, input, &mut slots);
+        self.slots = slots;
         self.chrome_pass
             .record(enc, target, target_size, &self.chrome);
         stats
@@ -770,12 +859,13 @@ impl Renderer {
     fn grid_pass(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
+        slot: &mut Slot,
         t: &mut Targets,
         scene: &GridScene,
     ) -> DrawStats {
         let (cw, ch) = self.cfg.cell;
         let ring = scene.ring;
-        let full = std::mem::take(&mut self.invalid);
+        let full = std::mem::take(&mut slot.invalid);
         let mut stats = DrawStats {
             full,
             ..DrawStats::default()
@@ -844,16 +934,16 @@ impl Renderer {
         stats.rects = rn as usize;
 
         if !self.glyph_bytes.is_empty() {
-            self.glyph_vb
+            slot.glyph_vb
                 .ensure(&self.device, self.glyph_bytes.len() as u64);
             self.queue
-                .write_buffer(&self.glyph_vb.buf, 0, &self.glyph_bytes);
+                .write_buffer(&slot.glyph_vb.buf, 0, &self.glyph_bytes);
         }
         if !self.rect_bytes.is_empty() {
-            self.rect_vb
+            slot.rect_vb
                 .ensure(&self.device, self.rect_bytes.len() as u64);
             self.queue
-                .write_buffer(&self.rect_vb.buf, 0, &self.rect_bytes);
+                .write_buffer(&slot.rect_vb.buf, 0, &self.rect_bytes);
         }
         let uni = Uni {
             target: (t.w, t.h),
@@ -865,7 +955,7 @@ impl Renderer {
             flags: 0,
             cursor_dst: [0.0; 4],
         };
-        self.queue.write_buffer(&self.ubo_grid, 0, &uni.bytes());
+        self.queue.write_buffer(&slot.ubo_grid, 0, &uni.bytes());
 
         // Staged background rows into the background ring, one copy per physical run.
         let mut i = 0;
@@ -930,7 +1020,7 @@ impl Renderer {
         }
         if gn > 0 {
             pass.set_pipeline(&self.pipes.glyph_grid);
-            pass.set_vertex_buffer(0, self.glyph_vb.buf.slice(..));
+            pass.set_vertex_buffer(0, slot.glyph_vb.buf.slice(..));
             for r in &self.ranges {
                 if r.g1 > r.g0 {
                     pass.set_scissor_rect(0, r.phys * ch, t.w, ch);
@@ -940,7 +1030,7 @@ impl Renderer {
         }
         if rn > 0 {
             pass.set_pipeline(&self.pipes.rect_grid);
-            pass.set_vertex_buffer(0, self.rect_vb.buf.slice(..));
+            pass.set_vertex_buffer(0, slot.rect_vb.buf.slice(..));
             for r in &self.ranges {
                 if r.r1 > r.r0 {
                     pass.set_scissor_rect(0, r.phys * ch, t.w, ch);
@@ -1038,57 +1128,61 @@ impl Renderer {
         target: &wgpu::TextureView,
         target_size: (u32, u32),
         input: &FrameInput<'_>,
-        have_grid: bool,
+        slots: &mut [Slot],
     ) {
         let (cw, ch) = self.cfg.cell;
-        let scene = input.scene;
-        let ring = scene.ring;
-        let cols = scene.rows.first().map_or(0, |r| r.bg.len()) as u32;
-        let rows = scene.rows.len() as u32;
         let mode = mode_of(self.cfg.text_blending);
-        let base = Uni {
-            target: target_size,
-            cell: (cw, ch),
-            origin: self.cfg.origin,
-            ring: (ring.offset() as u32, ring.rows() as u32),
-            grid: (cols, rows),
-            mode,
-            flags: 0,
-            cursor_dst: [0.0; 4],
-        };
-        self.queue.write_buffer(&self.ubo_comp, 0, &base.bytes());
-
-        // Cursor instances: rects (absolute grid pixels) and the recoloured glyph.
-        let mut n_rects = 0u32;
-        let mut has_glyph = false;
-        let mut cursor_uni = Uni {
-            ring: (0, 0),
-            ..base
-        };
-        if have_grid && let Some(c) = input.cursor {
-            self.cursor_bytes.clear();
-            for r in c.rects.iter().take(MAX_CURSOR_RECTS as usize) {
-                pack_rect(r, 0, &mut self.cursor_bytes);
-                n_rects += 1;
-            }
-            if n_rects > 0 {
-                self.queue
-                    .write_buffer(&self.cursor_rect_vb, 0, &self.cursor_bytes);
-            }
-            if let Some(g) = &c.glyph {
+        // Uniforms and cursor instances first: every write lands before the submission.
+        for p in input.panes {
+            let Some(slot) = slots.iter_mut().find(|s| s.key == p.key) else {
+                continue;
+            };
+            slot.cursor_rects = 0;
+            slot.cursor_glyph = false;
+            let Some(t) = slot.targets.as_ref() else {
+                continue;
+            };
+            let ring = p.scene.ring;
+            let base = Uni {
+                target: target_size,
+                cell: (cw, ch),
+                origin: p.origin.unwrap_or(self.cfg.origin),
+                ring: (ring.offset() as u32, ring.rows() as u32),
+                grid: (t.cols, t.rows),
+                mode,
+                flags: 0,
+                cursor_dst: [0.0; 4],
+            };
+            self.queue.write_buffer(&slot.ubo_comp, 0, &base.bytes());
+            let mut cursor_uni = Uni {
+                ring: (0, 0),
+                ..base
+            };
+            if let Some(c) = p.cursor {
                 self.cursor_bytes.clear();
-                pack_glyph(g, &mut self.cursor_bytes);
-                self.queue
-                    .write_buffer(&self.cursor_glyph_vb, 0, &self.cursor_bytes);
-                has_glyph = true;
-                cursor_uni.flags = 1;
-                if let Some(r) = c.rects.first() {
-                    cursor_uni.cursor_dst = r.color.map(|b| f32::from(b) / 255.0);
+                for r in c.rects.iter().take(MAX_CURSOR_RECTS as usize) {
+                    pack_rect(r, 0, &mut self.cursor_bytes);
+                    slot.cursor_rects += 1;
+                }
+                if slot.cursor_rects > 0 {
+                    self.queue
+                        .write_buffer(&slot.cursor_rect_vb, 0, &self.cursor_bytes);
+                }
+                if let Some(g) = &c.glyph {
+                    self.cursor_bytes.clear();
+                    pack_glyph(g, &mut self.cursor_bytes);
+                    self.queue
+                        .write_buffer(&slot.cursor_glyph_vb, 0, &self.cursor_bytes);
+                    slot.cursor_glyph = true;
+                    cursor_uni.flags = 1;
+                    if let Some(r) = c.rects.first() {
+                        cursor_uni.cursor_dst = r.color.map(|b| f32::from(b) / 255.0);
+                    }
                 }
             }
+            self.queue
+                .write_buffer(&slot.ubo_cursor, 0, &cursor_uni.bytes());
         }
-        self.queue
-            .write_buffer(&self.ubo_cursor, 0, &cursor_uni.bytes());
 
         let [r, g, b, a] = input.clear;
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1109,23 +1203,28 @@ impl Renderer {
             })],
             ..Default::default()
         });
-        let Some(t) = self.targets.as_ref().filter(|_| have_grid) else {
-            return;
-        };
-        pass.set_pipeline(&self.pipes.composite);
-        pass.set_bind_group(0, &t.bind_comp, &[]);
-        pass.draw(0..4, 0..1);
-        if n_rects > 0 {
-            pass.set_pipeline(&self.pipes.rect_cursor);
-            pass.set_bind_group(0, &t.bind_cursor, &[]);
-            pass.set_vertex_buffer(0, self.cursor_rect_vb.slice(..));
-            pass.draw(0..4, 0..n_rects);
-        }
-        if has_glyph {
-            pass.set_pipeline(&self.pipes.glyph_cursor);
-            pass.set_bind_group(0, &t.bind_cursor, &[]);
-            pass.set_vertex_buffer(0, self.cursor_glyph_vb.slice(..));
+        for p in input.panes {
+            let Some(slot) = slots.iter().find(|s| s.key == p.key) else {
+                continue;
+            };
+            let Some(t) = slot.targets.as_ref() else {
+                continue;
+            };
+            pass.set_pipeline(&self.pipes.composite);
+            pass.set_bind_group(0, &t.bind_comp, &[]);
             pass.draw(0..4, 0..1);
+            if slot.cursor_rects > 0 {
+                pass.set_pipeline(&self.pipes.rect_cursor);
+                pass.set_bind_group(0, &t.bind_cursor, &[]);
+                pass.set_vertex_buffer(0, slot.cursor_rect_vb.slice(..));
+                pass.draw(0..4, 0..slot.cursor_rects);
+            }
+            if slot.cursor_glyph {
+                pass.set_pipeline(&self.pipes.glyph_cursor);
+                pass.set_bind_group(0, &t.bind_cursor, &[]);
+                pass.set_vertex_buffer(0, slot.cursor_glyph_vb.slice(..));
+                pass.draw(0..4, 0..1);
+            }
         }
     }
 }

@@ -131,25 +131,28 @@ pub(crate) struct PaneEvents {
     pub(crate) bell: u32,
 }
 
-/// Messages to the main loop.
+/// A pane's id in the mux session (`apoth_mux::PaneId`).
+pub(crate) type PaneKey = u64;
+
+/// Messages to the main loop. Pane messages carry the pane's id: one io thread per pane.
 pub(crate) enum MainMsg {
-    /// One reply unit for the PTY, in arrival order.
-    Reply(Vec<u8>),
-    Events(PaneEvents),
-    /// The io thread saw end of output and exits.
-    Eof,
+    /// One reply unit for the pane's PTY, in arrival order.
+    Reply(PaneKey, Vec<u8>),
+    Events(PaneKey, PaneEvents),
+    /// The pane's io thread saw end of output and exits.
+    Eof(PaneKey),
     /// The render thread could not start or recover (a clear message, no content).
     RenderFailed(String),
     /// The render thread's cell size at the current scale changed.
     CellSize((u32, u32)),
     /// The io thread applied a resize: the grid size the term now has (rows, cols).
-    Resized((usize, usize)),
-    /// `Pty::close` finished.
-    Closed(Option<ExitStatus>),
+    Resized(PaneKey, (usize, usize)),
+    /// `Pty::close` finished for the pane.
+    Closed(PaneKey, Option<ExitStatus>),
     /// Text the view took from the selection, to offer on the seat (never logged).
     Copied(crate::view::Copied),
-    /// The cursor cell (row, column) changed: the IME cursor rectangle follows it.
-    Cursor((usize, usize)),
+    /// The pane's cursor cell (row, column) changed: the IME cursor rectangle follows it.
+    Cursor(PaneKey, (usize, usize)),
     /// A worker finished a config load (T-10 §4): main diffs and applies it.
     Loaded(
         Box<(
@@ -167,8 +170,10 @@ pub(crate) enum RenderMsg {
     Update(Box<crate::render::RenderUpdate>),
     /// The overlay bar (error bar or restart notice) changed; `None` removes it.
     Overlay(Option<Box<crate::ui::Overlay>>),
-    /// A selection, scroll or preedit command for the view (applied under the frame's lock).
-    View(crate::view::ViewCmd),
+    /// The shown tab's panes and the interface chrome around them (T-13, T-08 §4).
+    Layout(Box<crate::render::WindowLayout>),
+    /// A selection, scroll or preedit command for a pane's view (applied under its lock).
+    View(PaneKey, crate::view::ViewCmd),
     Stop,
 }
 
@@ -180,6 +185,7 @@ pub(crate) struct IoThread {
 }
 
 pub(crate) struct IoArgs {
+    pub(crate) id: PaneKey,
     pub(crate) shared: Arc<PaneShared>,
     pub(crate) master: OwnedFd,
     pub(crate) wake_rx: OwnedFd,
@@ -190,13 +196,14 @@ pub(crate) struct IoArgs {
 
 pub(crate) fn spawn_io(a: IoArgs, wake: OwnedFd) -> std::io::Result<IoThread> {
     let join = std::thread::Builder::new()
-        .name("apoth-io".into())
+        .name(format!("apoth-io-{}", a.id))
         .spawn(move || io_main(a))?;
     Ok(IoThread { join, wake })
 }
 
 fn io_main(a: IoArgs) {
     let IoArgs {
+        id,
         shared,
         master,
         wake_rx,
@@ -248,7 +255,7 @@ fn io_main(a: IoArgs) {
                     t.set_cell_px(r.cell.0, r.cell.1);
                     t.resize(r.rows, r.cols)
                 };
-                let _ = to_main.send(MainMsg::Resized(dims));
+                let _ = to_main.send(MainMsg::Resized(id, dims));
                 if !shared.dirty.swap(true, Ordering::AcqRel) {
                     let _ = to_render.send(RenderMsg::Poke);
                 }
@@ -260,7 +267,7 @@ fn io_main(a: IoArgs) {
         if !readable {
             // Timeout: a mode 2026 hold may have expired.
             let wake = shared.lock_io().tick(Instant::now());
-            publish(&shared, &to_main, &to_render, wake, Vec::new(), None);
+            publish(id, &shared, &to_main, &to_render, wake, Vec::new(), None);
             continue;
         }
         let started = Instant::now();
@@ -273,7 +280,7 @@ fn io_main(a: IoArgs) {
                 }
                 Ok(n) => {
                     total += n;
-                    feed(&shared, &to_main, &to_render, &buf[..n]);
+                    feed(id, &shared, &to_main, &to_render, &buf[..n]);
                     if total >= SLICE_BYTES || started.elapsed() >= SLICE_TIME {
                         // The next `feed` yields to any waiting taker (`lock_io`).
                         break;
@@ -294,10 +301,11 @@ fn io_main(a: IoArgs) {
             h.write(&shared.lock_io());
         }
     }
-    let _ = to_main.send(MainMsg::Eof);
+    let _ = to_main.send(MainMsg::Eof(id));
 }
 
 fn feed(
+    id: PaneKey,
     shared: &PaneShared,
     to_main: &calloop::channel::Sender<MainMsg>,
     to_render: &mpsc::Sender<RenderMsg>,
@@ -321,10 +329,11 @@ fn feed(
         }
         wake
     };
-    publish(shared, to_main, to_render, wake, replies, events);
+    publish(id, shared, to_main, to_render, wake, replies, events);
 }
 
 fn publish(
+    id: PaneKey,
     shared: &PaneShared,
     to_main: &calloop::channel::Sender<MainMsg>,
     to_render: &mpsc::Sender<RenderMsg>,
@@ -334,10 +343,10 @@ fn publish(
 ) {
     shared.hold.store(wake.hold, Ordering::Release);
     for r in replies {
-        let _ = to_main.send(MainMsg::Reply(r));
+        let _ = to_main.send(MainMsg::Reply(id, r));
     }
     if let Some(e) = events {
-        let _ = to_main.send(MainMsg::Events(e));
+        let _ = to_main.send(MainMsg::Events(id, e));
     }
     // Edge-triggered: notify render only on the clean to dirty transition.
     if (wake.dirty || !wake.hold) && !shared.dirty.swap(true, Ordering::AcqRel) {
@@ -409,8 +418,8 @@ mod tests {
             dirty: true,
             ..Default::default()
         };
-        publish(&shared, &mtx, &tx, w, Vec::new(), None);
-        publish(&shared, &mtx, &tx, w, Vec::new(), None);
+        publish(1, &shared, &mtx, &tx, w, Vec::new(), None);
+        publish(1, &shared, &mtx, &tx, w, Vec::new(), None);
         assert!(matches!(rx.try_recv(), Ok(RenderMsg::Poke)));
         assert!(rx.try_recv().is_err());
     }

@@ -223,10 +223,12 @@ dependencies = [
 name = "apotheosis"
 version = "0.1.0"
 dependencies = [
+ "apoth-action",
  "apoth-config",
  "apoth-font",
  "apoth-grid",
  "apoth-input",
+ "apoth-mux",
  "apoth-pty",
  "apoth-render",
  "apoth-term",

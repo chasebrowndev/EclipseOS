@@ -3,6 +3,11 @@
 //! release binary) and only when `APOTH_TEST_DUMP=<path>` is set. After each burst of output
 //! the io thread writes the visible rows (trailing blanks trimmed, one per line) to the path
 //! atomically. This is pane content: it is written to the file the test names and never logged.
+//! With several panes the first pane keeps the path and pane `id` writes `<path>.p<id>`.
+//!
+//! [`MuxDump`] (`APOTH_TEST_MUX=<path>`, debug builds only) is the mux state for the headless
+//! tests: tabs, panes, their grid sizes and focus, and the palette. Ids, sizes and the palette
+//! query the test typed; never pane text.
 
 use std::path::PathBuf;
 
@@ -26,6 +31,17 @@ impl DumpHook {
         })
     }
 
+    /// The hook of a pane: the first pane writes the path itself, pane `id` `<path>.p<id>`.
+    pub(crate) fn for_pane(first: bool, id: u64) -> Option<DumpHook> {
+        let mut h = Self::from_env()?;
+        if !first {
+            let mut p = h.path.into_os_string();
+            p.push(format!(".p{id}"));
+            h.path = PathBuf::from(p);
+        }
+        Some(h)
+    }
+
     /// Render the rows to text (the caller holds the term lock only for this).
     pub(crate) fn render(term: &Term) -> String {
         let mut out = String::new();
@@ -38,7 +54,10 @@ impl DumpHook {
 
     pub(crate) fn write(&self, term: &Term) {
         let text = Self::render(term);
-        let tmp = self.path.with_extension("tmp");
+        // Appended, not replaced: `dump.txt.p3` and `dump.txt.p4` must not share a temp file.
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
         if std::fs::write(&tmp, text).is_ok() {
             let _ = std::fs::rename(&tmp, &self.path);
         }
@@ -67,6 +86,35 @@ impl ViewDump {
 
     pub(crate) fn write(&mut self, rows: &[apoth_grid::SnapRow], offset: usize) {
         let text = format!("offset={offset}\n{}", crate::view::rows_text(rows));
+        if text == self.last {
+            return;
+        }
+        let tmp = self.path.with_extension("tmp");
+        if std::fs::write(&tmp, &text).is_ok() && std::fs::rename(&tmp, &self.path).is_ok() {
+            self.last = text;
+        }
+    }
+}
+
+/// Test-only mux state dump (see the module doc). Written by main when the state changes.
+pub(crate) struct MuxDump {
+    path: PathBuf,
+    last: String,
+}
+
+impl MuxDump {
+    pub(crate) fn from_env() -> Option<MuxDump> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let p = std::env::var_os("APOTH_TEST_MUX").filter(|p| !p.is_empty())?;
+        Some(MuxDump {
+            path: PathBuf::from(p),
+            last: String::new(),
+        })
+    }
+
+    pub(crate) fn write(&mut self, text: String) {
         if text == self.last {
             return;
         }

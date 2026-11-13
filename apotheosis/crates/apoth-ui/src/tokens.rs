@@ -190,6 +190,11 @@ pub mod metrics {
     pub const SPLIT_HANDLE: f32 = 6.0;
     pub const PANE_TITLE_H: f32 = 20.0;
     pub const RESIZE_MARGIN: f32 = 4.0;
+    pub const PALETTE_W: f32 = 560.0;
+    pub const PALETTE_FIELD_H: f32 = 36.0;
+    pub const PALETTE_ROW_H: f32 = 30.0;
+    pub const PALETTE_MAX_ROWS: usize = 10;
+    pub const CARET_W: f32 = 1.5;
 }
 
 /// Durations in milliseconds.

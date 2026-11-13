@@ -10,7 +10,7 @@ use apoth_render::chrome::{
 use apoth_render::gpu::{Gpu, GpuOptions};
 use apoth_render::presenter::{OffscreenPresenter, PresentOutcome, Presenter};
 use apoth_render::reference::{self, Image};
-use apoth_render::renderer::{FrameInput, Renderer, RendererConfig};
+use apoth_render::renderer::{FrameInput, PaneDraw, Renderer, RendererConfig};
 use apoth_render::scene::{GridScene, RectInstance};
 use std::path::PathBuf;
 
@@ -267,9 +267,9 @@ fn gpu_chrome_pass_matches_the_reference() {
     let list = scene();
     renderer.chrome_mut().clone_from(&list);
     let scene_grid = GridScene::new();
+    let panes = [PaneDraw::single(&scene_grid, None)];
     let input = FrameInput {
-        scene: &scene_grid,
-        cursor: None,
+        panes: &panes,
         clear: BASE.map(|b| f32::from(b) / 255.0),
     };
     match pres.present(&mut renderer, &input) {

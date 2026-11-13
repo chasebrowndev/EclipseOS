@@ -1084,3 +1084,152 @@ fn restart_notice_is_dismiss_only_and_empty_for_no_keys() {
     assert_eq!(st.answer_key(&b, 600, KeyInput::Escape), Some(0));
     assert_eq!(st.answer_key(&b, 600, KeyInput::Return), None);
 }
+
+// ---- command palette (T-08 §4, T-14 §9) ------------------------------------------------------
+
+fn palette_spec(n: usize, selected: Option<usize>, query: &str) -> crate::palette::PaletteSpec {
+    crate::palette::PaletteSpec {
+        id: WidgetId(900),
+        query: query.into(),
+        placeholder: TextRun::interface("Run an action", size::BODY),
+        entries: (0..n)
+            .map(|i| crate::palette::Entry {
+                title: TextRun::interface(format!("Action {i}"), size::BODY),
+                hint: (i % 2 == 0).then(|| TextRun::interface("ctrl+shift+t", size::BODY_SMALL)),
+            })
+            .collect(),
+        selected,
+        total: n,
+    }
+}
+
+#[test]
+fn palette_layout_centres_and_stacks_rows() {
+    let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+    let spec = palette_spec(4, Some(1), "");
+    let l = crate::palette::layout(area, &spec);
+    assert!((l.sheet.w - metrics::PALETTE_W).abs() < 0.01);
+    assert!(
+        (l.sheet.x + l.sheet.w / 2.0 - 500.0).abs() < 0.01,
+        "centred"
+    );
+    assert_eq!(l.rows.len(), 4);
+    for w in l.rows.windows(2) {
+        assert!(
+            (w[1].2.y - w[0].2.bottom()).abs() < 0.01,
+            "rows are contiguous"
+        );
+    }
+    assert!(l.field.bottom() <= l.rows[0].2.y);
+    assert!(l.rows[3].2.bottom() <= l.sheet.bottom());
+    assert!(l.empty.is_none());
+    // Narrow windows shrink the sheet to the area.
+    let narrow = crate::palette::layout(Rect::new(0.0, 0.0, 300.0, 400.0), &spec);
+    assert!(narrow.sheet.x >= 0.0 && narrow.sheet.right() <= 300.0);
+    // Row picking.
+    let mid = l.rows[2].2;
+    assert_eq!(
+        l.row_at(Point::new(mid.x + 5.0, mid.y + 5.0)),
+        Some(2),
+        "pointer picks the row"
+    );
+    assert_eq!(l.row_at(Point::new(1.0, 1.0)), None);
+    // The sheet is the front hit layer.
+    let mut tree = HitTree::default();
+    l.register(WidgetId(900), &mut tree);
+    let h = tree.hit(Point::new(mid.x + 5.0, mid.y + 5.0)).expect("hit");
+    assert_eq!(h.layer, Layer::Sheet);
+    assert_eq!(h.id, crate::palette::row_id(WidgetId(900), 2));
+}
+
+#[test]
+fn palette_max_rows_is_bounded() {
+    assert_eq!(
+        crate::palette::max_rows(Rect::new(0.0, 0.0, 800.0, 4000.0)),
+        metrics::PALETTE_MAX_ROWS
+    );
+    assert_eq!(
+        crate::palette::max_rows(Rect::new(0.0, 0.0, 800.0, 10.0)),
+        1
+    );
+}
+
+#[test]
+fn palette_draw_selected_row_is_brighter_with_a_rim_and_no_glow() {
+    let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+    let pal = dark();
+    let spec = palette_spec(3, Some(1), "spl");
+    let l = crate::palette::layout(area, &spec);
+    let mut out = DrawList::new();
+    crate::palette::draw(
+        &l,
+        &spec,
+        &UiState::default(),
+        &pal,
+        &FixedAdvance(0.6),
+        &mut out,
+    );
+    // Sheet, field, caret, and exactly one row background (the selected one).
+    let row_rects: Vec<_> = out
+        .cmds
+        .iter()
+        .filter(
+            |c| matches!(c, Cmd::RoundedRect { rect, .. } if l.rows.iter().any(|r| r.2 == *rect)),
+        )
+        .collect();
+    assert_eq!(
+        row_rects.len(),
+        1,
+        "only the selected row has a background at rest"
+    );
+    let Cmd::RoundedRect { fill, rim, .. } = row_rects[0] else {
+        unreachable!()
+    };
+    assert_eq!(*fill, pal.cell_focus, "selected = brighter fill");
+    assert!(rim.is_some(), "selected = crisp rim");
+    // Query text is drawn; the placeholder is not.
+    assert!(
+        out.cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Text { run, .. } if run.text == "spl"))
+    );
+    assert!(
+        !out.cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Text { run, .. } if run.text == "Run an action"))
+    );
+    // Hover lights a second row.
+    let mut ui = UiState::default();
+    ui.set_hover(Some(crate::palette::row_id(WidgetId(900), 2)));
+    let mut out2 = DrawList::new();
+    crate::palette::draw(&l, &spec, &ui, &pal, &FixedAdvance(0.6), &mut out2);
+    let n = out2
+        .cmds
+        .iter()
+        .filter(
+            |c| matches!(c, Cmd::RoundedRect { rect, .. } if l.rows.iter().any(|r| r.2 == *rect)),
+        )
+        .count();
+    assert_eq!(n, 2, "hover has its own state");
+}
+
+#[test]
+fn palette_empty_list_says_so() {
+    let spec = palette_spec(0, None, "zzz");
+    let l = crate::palette::layout(Rect::new(0.0, 0.0, 900.0, 600.0), &spec);
+    assert!(l.empty.is_some());
+    let mut out = DrawList::new();
+    crate::palette::draw(
+        &l,
+        &spec,
+        &UiState::default(),
+        &dark(),
+        &FixedAdvance(0.6),
+        &mut out,
+    );
+    assert!(
+        out.cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Text { run, .. } if run.text == "No matches"))
+    );
+}

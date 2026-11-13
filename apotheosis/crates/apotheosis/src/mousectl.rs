@@ -62,6 +62,11 @@ impl Mouse {
         std::mem::take(&mut self.sel)
     }
 
+    /// A selection may exist (the `has-selection` bind condition).
+    pub(crate) fn has_selection(&self) -> bool {
+        self.sel
+    }
+
     /// A selection was made by other means (select all).
     pub(crate) fn mark_selection(&mut self) {
         self.sel = true;

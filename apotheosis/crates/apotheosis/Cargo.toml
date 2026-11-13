@@ -12,10 +12,12 @@ publish = false
 workspace = true
 
 [dependencies]
+apoth-action.workspace = true
 apoth-config.workspace = true
 apoth-font.workspace = true
 apoth-grid.workspace = true
 apoth-input.workspace = true
+apoth-mux.workspace = true
 apoth-pty.workspace = true
 apoth-render.workspace = true
 apoth-term.workspace = true

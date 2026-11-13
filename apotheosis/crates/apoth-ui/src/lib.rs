@@ -12,6 +12,7 @@ pub mod frame;
 pub mod geom;
 pub mod hit;
 pub mod motion;
+pub mod palette;
 pub mod pane;
 pub mod scrollbar;
 pub mod state;
