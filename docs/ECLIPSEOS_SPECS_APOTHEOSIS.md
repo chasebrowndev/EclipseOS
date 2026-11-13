@@ -395,7 +395,7 @@ pub trait Sink {
     fn csi(&mut self, p: &Params, inter: &[u8], private: u8, fin: u8);
     fn string_start(&mut self, kind: StrKind, head: &StrHead) -> StrRoute;
     fn string_put(&mut self, chunk: &[u8]);
-    fn string_end(&mut self, ok: bool);             // ok=false: aborted or over cap
+    fn string_end(&mut self, end: StrEnd);          // St | Bel | Aborted | OverCap | Rejected
 }
 ```
 `Parser::advance(&mut self, bytes: &[u8], sink: &mut impl Sink)` is the only entry point.
@@ -417,9 +417,9 @@ OSC, DCS, APC, PM and SOS are streamed; the parser buffers nothing beyond the 32
 - The sink answers with a `StrRoute { cap: u32 }`: the maximum payload bytes it will accept.
   `cap = 0` routes the string to a zero-memory skip state (unknown protocols, PM, SOS).
 - Payload arrives as `string_put` slices that borrow from the input; the terminator scan
-  is vectorised. When `cap` is exceeded the parser calls `string_end(false)`, skips to the
+  is vectorised. When `cap` is exceeded the parser calls `string_end(StrEnd::OverCap)`, skips to the
   terminator and returns to `Ground`. A string is terminated by `ST` (`ESC \`), and for
-  OSC also by `BEL`; the terminator used is reported in `string_end` so replies can mirror
+  OSC also by `BEL`; the terminator used (`StrEnd::St` or `StrEnd::Bel`) is reported in `string_end` so replies can mirror
   it (VTCORE-26).
 - The head is a copy for routing only. Payload `string_put` slices carry everything after
   the OSC command's `;` (DCS: after the final byte; APC: from the first byte), selector

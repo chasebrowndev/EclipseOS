@@ -1,0 +1,17 @@
+# Reviewed divergences between apoth-vt and vte (T-01 §6, VTCORE-56).
+# One class per unindented line: `name  reason`. Indented lines continue the reason.
+# tests/vte_oracle.rs must observe every class here and nothing that is not here.
+del-in-ground  vte prints DEL (0x7F) in Ground; ours ignores it (T-01 §3: print_run has no C0/DEL).
+abort-dispatches-osc  vte dispatches an OSC that CAN, SUB or a new ESC aborted (truncated payload);
+  ours reports StrEnd::Aborted and the sink must discard it (T-01 §2.2: CAN/SUB abort).
+abort-dispatches-dcs  Same for DCS: vte unhooks (as if complete) on abort; ours ends with StrEnd::Aborted.
+intermediate-limit  vte allows 2 intermediates (private marker counted) and ignores the sequence beyond;
+  ours allows 4 plus one private marker (T-01 §2.3). Streams exercising this are skipped.
+osc-c0-payload  vte drops C0 controls and DEL inside an OSC body; ours delivers them as payload
+  (T-01 §3.1: every byte but ESC/CAN/SUB/BEL is payload).
+osc-head-not-numeric  OSC with an empty command (`ESC ] ;`) or a non-digit, non-`;` byte after the command
+  digits: ours ends the head there and starts the payload without re-inserting a `;`, so digits and
+  payload reach the sink separately and the original text cannot be rebuilt; vte only splits on `;`.
+dcs-del-payload  vte ignores DEL inside DCS passthrough; ours delivers it as payload (sixel/tmux data is opaque).
+dcs-ignore-st  After an invalid DCS header (DcsIgnore) vte reports the closing `ESC \` as a plain ESC
+  dispatch; ours consumes it as the string's ST. Detected as: equal once every `ESC \` is removed.
