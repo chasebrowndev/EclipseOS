@@ -93,7 +93,7 @@ The agent stack ships separately, as the optional `eclipseos-agents` package, an
 
 ## Status
 
-**0.2.1, early.** The author uses it as their everyday desktop, but expect rough edges. [STATUS.md](docs/STATUS.md) records what is built and verified, and [KNOWNBUGS.md](docs/KNOWNBUGS.md) lists what isn't working yet.
+**0.2.2, early.** The author uses it as their everyday desktop, but expect rough edges. [STATUS.md](docs/STATUS.md) records what is built and verified, and [KNOWNBUGS.md](docs/KNOWNBUGS.md) lists what isn't working yet.
 
 ## Install
 
