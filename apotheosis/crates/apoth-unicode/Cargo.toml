@@ -8,5 +8,13 @@ license = "Apache-2.0"
 repository.workspace = true
 publish = false
 
+[[bin]]
+name = "gen-tables"
+path = "src/bin/gen_tables.rs"
+
+[dev-dependencies]
+# Test oracle only (T-04 §6): MIT OR Apache-2.0, pure Rust.
+unicode-segmentation = "1.13"
+
 [lints]
 workspace = true

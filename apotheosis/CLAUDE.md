@@ -37,5 +37,5 @@ cargo deny check advisories bans licenses sources
 ci/lang-rule.sh
 ```
 Agents build with
-`CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.cache/apotheosis-target nice -n 19 cargo -j 2`
+`CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.cache/apotheosis-target nice -n 19 cargo <cmd> -j 2`
 and only after the orchestrator releases the build barrier.

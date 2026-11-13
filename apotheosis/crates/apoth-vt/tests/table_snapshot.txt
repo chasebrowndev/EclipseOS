@@ -1,0 +1,170 @@
+Ground
+  00-1A Execute -> Ground
+  1B-1B Clear -> Escape
+  1C-1F Execute -> Ground
+  20-7E Print -> Ground
+  7F-7F Ignore -> Ground
+  80-FF Print -> Ground
+Escape
+  00-17 Execute -> Escape
+  18-18 Cancel -> Ground
+  19-19 Execute -> Escape
+  1A-1A Cancel -> Ground
+  1B-1B Clear -> Escape
+  1C-1F Execute -> Escape
+  20-2F Collect -> EscapeIntermediate
+  30-4F EscDispatch -> Ground
+  50-50 Ignore -> DcsEntry
+  51-57 EscDispatch -> Ground
+  58-58 StrStart -> SosString
+  59-5A EscDispatch -> Ground
+  5B-5B Ignore -> CsiEntry
+  5C-5C EscDispatch -> Ground
+  5D-5D StrStart -> OscString
+  5E-5E StrStart -> PmString
+  5F-5F StrStart -> ApcString
+  60-7E EscDispatch -> Ground
+  7F-7F Ignore -> Escape
+  80-FF Abort -> Ground
+EscapeIntermediate
+  00-17 Execute -> EscapeIntermediate
+  18-18 Cancel -> Ground
+  19-19 Execute -> EscapeIntermediate
+  1A-1A Cancel -> Ground
+  1B-1B Clear -> Escape
+  1C-1F Execute -> EscapeIntermediate
+  20-2F Collect -> EscapeIntermediate
+  30-7E EscDispatch -> Ground
+  7F-7F Ignore -> EscapeIntermediate
+  80-FF Abort -> Ground
+CsiEntry
+  00-17 Execute -> CsiEntry
+  18-18 Cancel -> Ground
+  19-19 Execute -> CsiEntry
+  1A-1A Cancel -> Ground
+  1B-1B Clear -> Escape
+  1C-1F Execute -> CsiEntry
+  20-2F Collect -> CsiIntermediate
+  30-3B Param -> CsiParam
+  3C-3F Private -> CsiParam
+  40-7E CsiDispatch -> Ground
+  7F-7F Ignore -> CsiEntry
+  80-FF Abort -> Ground
+CsiParam
+  00-17 Execute -> CsiParam
+  18-18 Cancel -> Ground
+  19-19 Execute -> CsiParam
+  1A-1A Cancel -> Ground
+  1B-1B Clear -> Escape
+  1C-1F Execute -> CsiParam
+  20-2F Collect -> CsiIntermediate
+  30-3B Param -> CsiParam
+  3C-3F Ignore -> CsiIgnore
+  40-7E CsiDispatch -> Ground
+  7F-7F Ignore -> CsiParam
+  80-FF Abort -> Ground
+CsiIntermediate
+  00-17 Execute -> CsiIntermediate
+  18-18 Cancel -> Ground
+  19-19 Execute -> CsiIntermediate
+  1A-1A Cancel -> Ground
+  1B-1B Clear -> Escape
+  1C-1F Execute -> CsiIntermediate
+  20-2F Collect -> CsiIntermediate
+  30-3F Ignore -> CsiIgnore
+  40-7E CsiDispatch -> Ground
+  7F-7F Ignore -> CsiIntermediate
+  80-FF Abort -> Ground
+CsiIgnore
+  00-17 Execute -> CsiIgnore
+  18-18 Cancel -> Ground
+  19-19 Execute -> CsiIgnore
+  1A-1A Cancel -> Ground
+  1B-1B Clear -> Escape
+  1C-1F Execute -> CsiIgnore
+  20-3F Ignore -> CsiIgnore
+  40-7E Ignore -> Ground
+  7F-7F Ignore -> CsiIgnore
+  80-FF Abort -> Ground
+DcsEntry
+  00-17 Ignore -> DcsEntry
+  18-18 Cancel -> Ground
+  19-19 Ignore -> DcsEntry
+  1A-1A Cancel -> Ground
+  1B-1B DcsAbort -> Escape
+  1C-1F Ignore -> DcsEntry
+  20-2F Collect -> DcsIntermediate
+  30-3B Param -> DcsParam
+  3C-3F Private -> DcsParam
+  40-7E DcsHook -> DcsPassthrough
+  7F-7F Ignore -> DcsEntry
+  80-FF Abort -> Ground
+DcsParam
+  00-17 Ignore -> DcsParam
+  18-18 Cancel -> Ground
+  19-19 Ignore -> DcsParam
+  1A-1A Cancel -> Ground
+  1B-1B DcsAbort -> Escape
+  1C-1F Ignore -> DcsParam
+  20-2F Collect -> DcsIntermediate
+  30-3B Param -> DcsParam
+  3C-3F Ignore -> DcsIgnore
+  40-7E DcsHook -> DcsPassthrough
+  7F-7F Ignore -> DcsParam
+  80-FF Abort -> Ground
+DcsIntermediate
+  00-17 Ignore -> DcsIntermediate
+  18-18 Cancel -> Ground
+  19-19 Ignore -> DcsIntermediate
+  1A-1A Cancel -> Ground
+  1B-1B DcsAbort -> Escape
+  1C-1F Ignore -> DcsIntermediate
+  20-2F Collect -> DcsIntermediate
+  30-3F Ignore -> DcsIgnore
+  40-7E DcsHook -> DcsPassthrough
+  7F-7F Ignore -> DcsIntermediate
+  80-FF Abort -> Ground
+DcsPassthrough
+  00-17 StrByte -> DcsPassthrough
+  18-18 Cancel -> Ground
+  19-19 StrByte -> DcsPassthrough
+  1A-1A Cancel -> Ground
+  1B-1B StrEsc -> DcsPassthrough
+  1C-FF StrByte -> DcsPassthrough
+DcsIgnore
+  00-17 StrByte -> DcsIgnore
+  18-18 Cancel -> Ground
+  19-19 StrByte -> DcsIgnore
+  1A-1A Cancel -> Ground
+  1B-1B StrEsc -> DcsIgnore
+  1C-FF StrByte -> DcsIgnore
+OscString
+  00-06 StrByte -> OscString
+  07-07 StrBel -> Ground
+  08-17 StrByte -> OscString
+  18-18 Cancel -> Ground
+  19-19 StrByte -> OscString
+  1A-1A Cancel -> Ground
+  1B-1B StrEsc -> OscString
+  1C-FF StrByte -> OscString
+ApcString
+  00-17 StrByte -> ApcString
+  18-18 Cancel -> Ground
+  19-19 StrByte -> ApcString
+  1A-1A Cancel -> Ground
+  1B-1B StrEsc -> ApcString
+  1C-FF StrByte -> ApcString
+PmString
+  00-17 StrByte -> PmString
+  18-18 Cancel -> Ground
+  19-19 StrByte -> PmString
+  1A-1A Cancel -> Ground
+  1B-1B StrEsc -> PmString
+  1C-FF StrByte -> PmString
+SosString
+  00-17 StrByte -> SosString
+  18-18 Cancel -> Ground
+  19-19 StrByte -> SosString
+  1A-1A Cancel -> Ground
+  1B-1B StrEsc -> SosString
+  1C-FF StrByte -> SosString

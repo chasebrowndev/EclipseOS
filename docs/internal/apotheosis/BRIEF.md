@@ -43,7 +43,7 @@ If the spec is silent or wrong, **stop and report it** — do not pick silently.
   code, report `READY TO BUILD` with a summary, and wait. Builds are serialized across
   agents; the disk is small and the machine is in use.
 - When released, always:
-  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.cache/apotheosis-target nice -n 19 cargo -j 2 …`
+  `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.cache/apotheosis-target nice -n 19 cargo <cmd> -j 2 …` (`-j` goes after the subcommand)
   from `apotheosis/`. `touch` the files you changed before building (the target dir is
   shared and mtimes can lie).
 - Gate order: `cargo fmt --all --check` → `cargo clippy --workspace --all-targets

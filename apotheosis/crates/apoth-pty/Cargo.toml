@@ -8,5 +8,11 @@ license = "AGPL-3.0-only"
 repository.workspace = true
 publish = false
 
+[dependencies]
+# Pure-Rust syscalls (T-00 §3.1). `libc` is used for exactly one raw syscall number
+# (close_range) inside the pre-exec hook; it compiles no C.
+rustix = { version = "1", features = ["std", "process", "pty", "termios", "fs", "event"] }
+libc = "0.2"
+
 [lints]
 workspace = true

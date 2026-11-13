@@ -10,3 +10,12 @@ publish = false
 
 [lints]
 workspace = true
+
+# T-05 §1, ADR 0125: `kbvm` (pure Rust) is the shipped keyboard backend. The
+# `xkbcommon` oracle feature is not built in this crate yet (see backend_kbvm docs).
+[features]
+default = ["kbvm"]
+kbvm = ["dep:kbvm"]
+
+[dependencies]
+kbvm = { version = "0.2", default-features = false, optional = true }
