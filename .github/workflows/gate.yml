@@ -425,7 +425,7 @@ jobs:
         env:
           BODY: ${{ github.event.pull_request.body }}
         run: |
-          if echo "$BODY" | grep -qE '(Implements|Fixes|Amends) ((COMP|S|P|A|F|I|D|X)-[0-9]{2}|FOG §)'; then
+          if echo "$BODY" | grep -qE '(Implements|Fixes|Amends) ((COMP|S|P|A|F|I|D|X|T)-[0-9]{2}|FOG §)'; then
             echo "spec citation found"
           else
             echo "::error title=No spec citation::PR body must cite the spec section it implements, e.g. 'Implements COMP-08 §4' or 'Implements FOG §Milestones' (F-07 §5)"

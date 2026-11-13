@@ -49,7 +49,7 @@ enforcement.
   is that the obligation is printed where it cannot be forgotten.
 - §5 (every PR cites the spec section it implements) becomes a CI job that
   **blocks**. Required format: `(Implements|Fixes|Amends) <ID> §<n>`, where
-  `<ID>` matches `(COMP|S|P|A|F|I|D|X)-[0-9]{2}`. This is the mechanism
+  `<ID>` matches `(COMP|S|P|A|F|I|D|X)-[0-9]{2}` (`T` added by ADR 0109). This is the mechanism
   that keeps the spec→code trail auditable when work is delegated to an
   agent rather than typed by hand, so it is worth a hard failure.
 

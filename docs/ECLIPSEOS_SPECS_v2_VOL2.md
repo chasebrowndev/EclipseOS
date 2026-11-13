@@ -416,6 +416,7 @@ Rules:
    near-universal signal that a human is about to type a credential —
    `sudo`, `ssh`, `gpg`, every password prompt in the base system — and it
    is available to the emulator without inspecting a single keystroke.
+   For Apotheosis panes the raising condition is ECHO off and ICANON on (ADR 0115, T-17 §5).
 
 Latency requirement: recompute + apply ≤ 1 frame at 144 Hz (≤ 6.9 ms) for
 the matcher set compiled from a policy of ≤ 1,000 classify rules. Matchers
@@ -2227,6 +2228,8 @@ Depends on: P-01 §8, COMP-09. Consumed by: P-05, P-07, S-06.
 
 ## 1. The Problem
 
+*Amended for Apotheosis by T-17 §4–§5 (ADRs 0114, 0115).*
+
 Terminals expose nothing useful over AT-SPI. They are also the highest-risk
 surface in the system: the place where an agent can do the most damage
 fastest, and where the content is by definition produced by arbitrary
@@ -2257,6 +2260,8 @@ practical foundation for the one surface where mistakes are worst.
 ---
 
 ## 2. Node Model
+
+*Amended for Apotheosis by T-17 §4–§5 (ADRs 0114, 0115).*
 
 Per P-01 §8, with additions:
 
@@ -2339,6 +2344,8 @@ irreversible) applies here and is the reason the confidence ceiling exists.
 
 ### 6.1 Echo-off means secret
 
+*Amended for Apotheosis by T-17 §4–§5 (ADRs 0114, 0115).*
+
 When the pty has `ECHO` disabled — `sudo` asking for a password, `ssh`
 asking for a passphrase, any `getpass()` — `cataclysm` raises the
 terminal's sensitivity to `secret` for the duration plus
@@ -2389,6 +2396,8 @@ Publishing per-frame would drown `registryd` and the agent.
 
 ## 8. Testing
 
+*Amended for Apotheosis by T-17 §4–§5 (ADRs 0114, 0115).*
+
 - OSC 133 fixture: assert command blocks, exit codes, and prompt detection
   across bash, zsh, and fish integrations.
 - Echo-off fixture: `sudo`, `ssh`, `read -s`; assert the class raises before
@@ -2411,6 +2420,8 @@ Publishing per-frame would drown `registryd` and the agent.
 ---
 
 ## 9. Open Decisions
+
+*Amended for Apotheosis by T-17 §4–§5 (ADRs 0114, 0115).*
 
 1. ~~Which emulator to fork.~~ **Closed by ADR 0034**: fork foot, and factor
    the publisher out *now* rather than later — it is `cataclysm-pub`, a Rust

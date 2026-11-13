@@ -153,6 +153,20 @@ than silently restating it.* | | |
 | X-07 | Documentation plan: user, agent developer, contributor, security | planned | A-06 |
 | X-08 | Community, governance, contribution, security disclosure policy | planned | F-05 |
 
+## Tier T — Terminal (`apotheosis`)
+
+Written in their own volume, `docs/ECLIPSEOS_SPECS_APOTHEOSIS.md` (ADR 0109,
+which supersedes ADR 0034 and the `cataclysm` rows above at milestone M31).
+
+| ID | Document | Status | Depends on |
+|---|---|---|---|
+| T-00 | Apotheosis master: goals, language rule, crate map, release tiers, milestones | written (Draft v0.2) | F-05, F-07, COMP-13 |
+| T-01..T-07 | Parser, grid, terminal semantics, Unicode, input, fonts, renderer | written (Draft v0.2) | T-00 |
+| T-08..T-12 | Glass interface, Wayland client, configuration, actions, control socket | written (Draft v0.2) | T-00, COMP-06, COMP-13, `docs/STYLE.md` |
+| T-13..T-16 | Mux, shell integration and navigation, graphics, media | written (Draft v0.2) | T-02, T-03, T-07 |
+| T-17..T-22 | EclipseOS integration, security, terminfo, accessibility, sessions, remote | written (Draft v0.2) | P-04, COMP-09, COMP-11, S-05, X-03 |
+| T-23..T-25 | Performance budgets, packaging and default switch, test infrastructure | written (Draft v0.2) | F-04, D-01, D-05 |
+
 ## Tier 8 — Deferred (post-v1, tracked so they are not forgotten)
 
 | ID | Document | Depends on |
@@ -1147,7 +1161,7 @@ and the value is the reminder, not the barrier.
 - Every PR body cites the spec section it implements. **CI-enforced and
   blocking** (ADR 0035). Required form:
   `(Implements|Fixes|Amends) <ID> §<n>`, where `<ID>` matches
-  `(COMP|S|P|A|F|I|D|X)-[0-9]{2}` — e.g. `Implements COMP-08 §4`. Several
+  `(COMP|S|P|A|F|I|D|X|T)-[0-9]{2}` — e.g. `Implements COMP-08 §4`. Several
   citations per body are fine; one must match. This is what makes the
   spec→code trail auditable when work is delegated to an agent rather than
   typed by hand, which is why it is a hard failure and not a convention.
@@ -5050,6 +5064,9 @@ The compositor holds the current class and trust for every toplevel:
    no; they finish against their original table, which is bounded by
    `max_frames`).
 
+### Milestone X — Terminal seat-deference query
+On `policyd.sock`, a request `{peer_cgroup, capability ∈ seat.text|seat.key|scene.text|clipboard.read|clipboard.write|launch.shell|seat.action, target_app_id}` from an authenticated session-uid client returns allow|deny. It is evaluated by the same `check()` as agent seat requests and audited (S-04). Consumer: Apotheosis T-12 §4.1. Owner review required (TCB).
+
 ---
 
 # COMP-12 — Audit & Provenance Emission (Draft v0.1)
@@ -6461,7 +6478,7 @@ rule "vision-in-irreversible-apps" prompt {
   app_irreversible_capable true
 }
 rule "untrusted-origin-into-shell" defer {
-  capability "seat.text" "seat.key" target_app_id "foot" "alacritty"
+  capability "seat.text" "seat.key" target_app_id "foot" "alacritty" "kitty" "org.eclipseos.Apotheosis*"
   provenance_contains trust:"untrusted"
 }
 rule "channel-laundering" defer {
