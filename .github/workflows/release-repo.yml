@@ -48,6 +48,11 @@ jobs:
       TAG: ${{ inputs.tag || github.ref_name }}
       GNUPGHOME: /tmp/ec-gnupg
       CARGO_HOME: /home/builder/.cargo
+      # Compiled crates cached between releases; most releases change only a
+      # few of our own crates, so the ~600 dependencies come from here.
+      RUSTC_WRAPPER: sccache
+      SCCACHE_DIR: /home/builder/.cache/sccache
+      SCCACHE_CACHE_SIZE: 4G
       RUSTUP_HOME: /home/builder/.rustup
       ECLIPSEOS_REPO_ROOT: /home/builder/repo
       ECLIPSEOS_GNUPGHOME: /tmp/ec-gnupg
@@ -75,7 +80,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed git github-cli rustup pkgconf sudo gnupg \
             fontconfig freetype2 clang cmake \
-            wayland libxkbcommon libinput libdrm libdisplay-info mesa seatd
+            wayland libxkbcommon libinput libdrm libdisplay-info mesa seatd libpipewire sccache
           useradd -m builder
           # No split -debug package: it is not published, and it doubles the
           # disk the build needs.
@@ -96,6 +101,15 @@ jobs:
             /home/builder/.cargo/git
           key: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: cargo-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
+
+      # A cache entry is immutable, so each run saves under its own key and
+      # restores the newest earlier one.
+      - name: Cache compiled crates
+        uses: actions/cache@v4
+        with:
+          path: /home/builder/.cache/sccache
+          key: sccache-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-${{ github.run_id }}
+          restore-keys: sccache-${{ runner.os }}-${{ env.RUST_TOOLCHAIN }}-
 
       - name: Install pinned Rust toolchain
         run: |
@@ -135,7 +149,8 @@ jobs:
             export PATH="$CARGO_HOME/bin:$PATH"
             export CARGO_BUILD_JOBS="$(nproc)"
             export ECLIPSEOS_KEY_FPR="$PACKAGING_KEY_FPR" ECLIPSEOS_NODEPS=1
-            nice -n 10 packaging/repo/build-repo.sh ci'
+            nice -n 10 packaging/repo/build-repo.sh ci
+            sccache --show-stats'
 
       - name: Publish to the repo-x86_64 release
         env:

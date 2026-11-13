@@ -60,6 +60,16 @@ pub fn from_val(v: &Val) -> Option<Variant<'static>> {
         Val::Bytes(b) => Variant::from(b.clone()),
         Val::Strs(s) => Variant::from(s.clone()),
         Val::Rgb(r, g, b) => Variant::from((*r, *g, *b)),
+        // Homogeneous array of structs (ScreenCast `streams`: `a(ua{sv})`).
+        Val::List(l) if !l.is_empty() && l.iter().all(|x| matches!(x, Val::Struct(_))) => {
+            let items: Vec<Variant<'static>> = l.iter().map(from_val).collect::<Option<_>>()?;
+            let sig = items[0].value_signature().clone();
+            let mut a = zbus::Array::new(&sig);
+            for i in items {
+                a.append(i).ok()?;
+            }
+            Variant::Array(a)
+        }
         Val::List(l) => {
             if l.iter().all(|x| matches!(x, Val::U8(_))) && !l.is_empty() {
                 Variant::from(v.as_bytes()?)
@@ -168,5 +178,21 @@ mod tests {
         let m = results_map(&r);
         assert_eq!(m.len(), 1);
         assert!(m.contains_key("ok"));
+    }
+
+    #[test]
+    fn streams_encode_as_a_ua_sv() {
+        let st = Val::Struct(vec![
+            Val::U32(57),
+            Val::Dict(vec![
+                ("source_type".into(), Val::U32(1)),
+                (
+                    "size".into(),
+                    Val::Struct(vec![Val::I32(1920), Val::I32(1080)]),
+                ),
+            ]),
+        ]);
+        let v = from_val(&Val::List(vec![st])).unwrap();
+        assert_eq!(v.value_signature().to_string(), "a(ua{sv})");
     }
 }

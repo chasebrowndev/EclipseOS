@@ -7,11 +7,13 @@
 mod account;
 mod apps;
 mod bus;
+mod cast;
 mod convert;
 mod email;
 mod error;
 mod filechooser;
 mod ident;
+mod impl_cast;
 mod inhibit;
 mod launch;
 mod notification;

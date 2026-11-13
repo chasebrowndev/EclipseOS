@@ -47,7 +47,7 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 
 [[package]]
 name = "ec-ipc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "libc",
  "serde_json",
@@ -55,7 +55,7 @@ dependencies = [
 
 [[package]]
 name = "ec-oracle-eyes"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "ec-ipc",
  "kdl",

@@ -1167,6 +1167,62 @@ pub fn end_drag_gesture(state: &mut AbyssState, cancelled: bool) {
     }
 }
 
+/// A human press landed on a compositor titlebar: whatever drag state is still
+/// recorded from before that press is stale, and left alone it silently refuses
+/// the bar's own drag (`titlebar::start_drag_if_moved`). The press is the
+/// bar's, so it never reached the seat: nothing real can have begun since.
+///
+/// - a touchpad gesture drag whose end event never arrived (a gate swallowed
+///   the scroll stop, the device went away) is cancelled;
+/// - `pointer_grab_active` with no grab on the pointer is cleared;
+/// - smithay's implicit click grab left by a press whose release never reached
+///   the seat is removed (a client drag or popup grab is left alone).
+///
+/// Top-level only: it takes the pointer's mutex.
+pub fn reclaim_stale_drag_state(state: &mut AbyssState) {
+    if state.gesture_drag.is_some() {
+        tracing::info!("titlebar press: cancelling a gesture drag that never ended");
+        end_drag_gesture(state, true);
+    }
+    let Some(pointer) = state.seat.get_pointer() else {
+        return;
+    };
+    let grabbed = pointer.is_grabbed();
+    if state.pointer_grab_active && !grabbed {
+        tracing::info!("titlebar press: clearing a pointer-grab flag with no grab behind it");
+        state.pointer_grab_active = false;
+    } else if grabbed
+        && !state.pointer_grab_active
+        && !state.touch_grab_active
+        && state.popup_grabs.is_empty()
+        && state.dnd_icon.is_none()
+    {
+        tracing::info!("titlebar press: dropping a stale implicit click grab");
+        let time = state.start_time.elapsed().as_millis() as u32;
+        pointer.unset_grab(state, SERIAL_COUNTER.next_serial(), time);
+    }
+}
+
+/// Which of the conditions behind [`drag_active`] holds, by name, for a log
+/// line that says why a drag was refused. Flag names only.
+pub fn drag_blockers(state: &AbyssState) -> &'static str {
+    if state.pointer_grab_active {
+        "pointer_grab_active"
+    } else if state.touch_grab_active {
+        "touch_grab_active"
+    } else if state.gesture_drag.is_some() {
+        "gesture_drag"
+    } else if !state.popup_grabs.is_empty() {
+        "popup_grab"
+    } else if state.dnd_icon.is_some() {
+        "dnd_icon"
+    } else if state.seat.get_pointer().is_some_and(|p| p.is_grabbed()) {
+        "pointer_grabbed"
+    } else {
+        "none"
+    }
+}
+
 /// The single definition of "a drag is in flight" (COMP-05 §5).
 ///
 /// Focus must not follow the mouse across an output boundary mid-drag, and a

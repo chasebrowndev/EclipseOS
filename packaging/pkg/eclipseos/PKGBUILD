@@ -12,8 +12,8 @@
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
          eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack
-         eclipseos-steam-glass eclipseos-firefox-glass eclipseos-greeter eclipseos-meta)
-pkgver=0.2.0
+         eclipseos-steam-glass eclipseos-firefox-glass eclipseos-greeter eclipseos-portal eclipseos-meta)
+pkgver=0.2.1
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
 arch=(x86_64)
@@ -22,13 +22,13 @@ arch=(x86_64)
 options=(!lto)
 url="https://github.com/chasebrowndev/EclipseOS"
 license=(AGPL-3.0-only)
-makedepends=(git rust cargo pkgconf)
+makedepends=(git rust cargo pkgconf clang libpipewire)
 depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa seatd)
 source=("git+https://github.com/chasebrowndev/EclipseOS.git#tag=v$pkgver")
 sha256sums=('SKIP')
 
 _src="EclipseOS"
-# Five cargo workspaces under one repo: abyss/, shell/, installer/, oracle-eyes/, fog/ (ADR on layout).
+# Six cargo workspaces under one repo: abyss/, shell/, installer/, oracle-eyes/, fog/, portal/ (ADR on layout).
 _fog="EclipseOS/fog"
 
 build() {
@@ -39,11 +39,13 @@ build() {
   done
   cd "$srcdir/$_fog"
   cargo build --release --bins --locked -p ec-fog-daemon -p ec-fog-ui
+  # The desktop portal (D-08): ScreenCast/Screenshot over PipeWire.
+  (cd "$srcdir/$_src/portal" && cargo build --release --bins --locked)
 }
 
 check() {
   export CARGO_TARGET_DIR="$srcdir/target"
-  for ws in abyss shell installer fog; do
+  for ws in abyss shell installer fog portal; do
     (cd "$srcdir/$_src/$ws" && cargo test --workspace --release --locked)
   done
 }
@@ -152,7 +154,7 @@ package_eclipseos-desktop() {
   # eclipseos-fog: abyss-portals.conf routes FileChooser to ec-portal, which
   # opens ec-fog-ui as the picker (ADR 0100). Without it every app's file
   # dialog would answer "other", so it is a hard dependency.
-  depends=(eclipseos-abyss eclipseos-fog wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk polkit pam)
+  depends=(eclipseos-abyss eclipseos-fog eclipseos-portal wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk polkit pam)
   # The locker's PAM service is the admin's to edit (an OTP module, faillock
   # tuning), so pacman keeps their copy.
   backup=(etc/pam.d/ec-lock)
@@ -370,6 +372,31 @@ package_eclipseos-greeter() {
     "$pkgdir/usr/share/polkit-1/actions/org.eclipse.greeter.apply.policy"
   install -Dm0644 "$srcdir/$_src/packaging/greetd/tmpfiles.conf" \
     "$pkgdir/usr/lib/tmpfiles.d/eclipseos-greeter.conf"
+}
+
+# The Eclipse desktop portal (D-08, ADR 0096/0097). eclipseos-desktop pulls it
+# in and its abyss-portals.conf routes ScreenCast/Screenshot here. It runs
+# beside upstream xdg-desktop-portal, which keeps the frontend names, and
+# serves only the ScreenCast and Screenshot backends. No Conflicts/Replaces on
+# xdg-desktop-portal and no default=eclipse until ecl-desktop-portal serves
+# the whole frontend; so portal/dist's org.freedesktop.portal.Desktop and
+# PermissionStore activation files and its portals.conf are NOT installed
+# (they would collide with xdg-desktop-portal's files).
+package_eclipseos-portal() {
+  pkgdesc="EclipseOS portal: screen sharing (ScreenCast, Screenshot) over PipeWire, with abyss's capture confirm"
+  depends=(eclipseos-abyss xdg-desktop-portal libpipewire pipewire wireplumber wayland libxkbcommon mesa)
+
+  _bin ecl-desktop-portal
+  _bin ecl-portal-ui
+  _bin ecl-portal-ctl
+  # Bus-activated through the backend name, so no _want. Type=dbus on
+  # org.freedesktop.impl.portal.desktop.eclipse (the one name it always owns).
+  install -Dm0644 "$srcdir/$_src/portal/dist/ecl-desktop-portal.service" \
+    "$pkgdir/usr/lib/systemd/user/ecl-desktop-portal.service"
+  install -Dm0644 "$srcdir/$_src/portal/dist/org.freedesktop.impl.portal.desktop.eclipse.service" \
+    "$pkgdir/usr/share/dbus-1/services/org.freedesktop.impl.portal.desktop.eclipse.service"
+  install -Dm0644 "$srcdir/$_src/portal/dist/eclipse.portal" \
+    "$pkgdir/usr/share/xdg-desktop-portal/portals/eclipse.portal"
 }
 
 package_eclipseos-meta() {

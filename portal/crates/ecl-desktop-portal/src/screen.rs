@@ -2,8 +2,7 @@
 
 //! Screenshot and ScreenCast frontends. The daemon owns the Request/Session
 //! objects, tokens and identity; every decision and frame comes from the
-//! `ScreenCastBackend` (lane B). With the stub backend all steps answer
-//! response 2.
+//! `ScreenCastBackend` (`cast::CastBackend`). Any failure answers response 2.
 
 use std::sync::Arc;
 

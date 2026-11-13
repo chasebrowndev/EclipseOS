@@ -39,6 +39,9 @@ pub struct TileSpec {
     /// Mono line under the placeholder glyph (the resolution). Ignored once
     /// a thumbnail is present.
     pub well_note: Option<String>,
+    /// Width over height of the thing the tile stands for (an output's
+    /// resolution), so the placeholder screen is drawn in its proportions.
+    pub aspect: Option<f32>,
     pub thumb: Option<Handle>,
     pub well_h: f32,
     pub selected: bool,
@@ -67,6 +70,22 @@ fn outline<'a, M: 'a>(
         .into()
 }
 
+/// A faint body line inside the window glyph, `frac` of the row wide.
+fn line<'a, M: 'a>(ink: iced::Color, frac: f32) -> Element<'a, M, Theme> {
+    container(Space::new())
+        .width(Length::FillPortion((frac * 10.0) as u16))
+        .height(Length::Fixed(metrics::GLYPH_LINE_H))
+        .style(move |_t: &Theme| container::Style {
+            background: Some(Background::Color(iced::Color {
+                a: ink.a * 0.6,
+                ..ink
+            })),
+            border: iced::border::rounded(radius::PILL),
+            ..container::Style::default()
+        })
+        .into()
+}
+
 fn bar<'a, M: 'a>(ink: iced::Color) -> Element<'a, M, Theme> {
     container(Space::new())
         .width(Length::Fill)
@@ -80,27 +99,48 @@ fn bar<'a, M: 'a>(ink: iced::Color) -> Element<'a, M, Theme> {
 
 /// The placeholder glyph for a kind of source: no hand-drawn art, only
 /// rounded rects, as the style spec asks.
-pub fn glyph<'a, M: 'a>(kind: Glyph, ink: iced::Color) -> Element<'a, M, Theme> {
+pub fn glyph<'a, M: 'a>(
+    kind: Glyph,
+    ink: iced::Color,
+    aspect: Option<f32>,
+    k: f32,
+) -> Element<'a, M, Theme> {
     match kind {
-        Glyph::Screen => outline(
-            metrics::GLYPH_SCREEN_W,
-            metrics::GLYPH_SCREEN_H,
-            ink,
-            Space::new().into(),
-        ),
+        Glyph::Screen => {
+            // Drawn in the output's own proportions, so a wide panel and a
+            // 16:10 one are told apart before the caption is read.
+            let a = aspect
+                .filter(|a| a.is_finite() && *a > 0.0)
+                .unwrap_or(metrics::GLYPH_ASPECT)
+                .clamp(metrics::GLYPH_ASPECT_MIN, metrics::GLYPH_ASPECT_MAX);
+            outline(
+                metrics::GLYPH_SCREEN_H * k * a,
+                metrics::GLYPH_SCREEN_H * k,
+                ink,
+                Space::new().into(),
+            )
+        }
         Glyph::Window => outline(
-            metrics::GLYPH_WINDOW_W,
-            metrics::GLYPH_WINDOW_H,
+            metrics::GLYPH_WINDOW_W * k,
+            metrics::GLYPH_WINDOW_H * k,
             ink,
-            bar(ink),
+            column![
+                bar(ink),
+                container(
+                    column![line(ink, 1.0), line(ink, 0.6), line(ink, 0.8)]
+                        .spacing(metrics::GLYPH_LINE_GAP)
+                )
+                .padding(metrics::GLYPH_INSET),
+            ]
+            .into(),
         ),
         Glyph::Area => outline(
-            metrics::GLYPH_SCREEN_W,
-            metrics::GLYPH_SCREEN_H,
+            metrics::GLYPH_SCREEN_H * k * metrics::GLYPH_ASPECT,
+            metrics::GLYPH_SCREEN_H * k,
             ink,
             container(outline(
-                metrics::GLYPH_SCREEN_W * metrics::GLYPH_REGION,
-                metrics::GLYPH_SCREEN_H * metrics::GLYPH_REGION,
+                metrics::GLYPH_SCREEN_H * k * metrics::GLYPH_ASPECT * metrics::GLYPH_REGION,
+                metrics::GLYPH_SCREEN_H * k * metrics::GLYPH_REGION,
                 ink,
                 Space::new().into(),
             ))
@@ -117,12 +157,15 @@ pub fn source_tile<'a, M: Clone + 'a>(spec: TileSpec, on_press: M) -> Element<'a
         title,
         caption,
         well_note,
+        aspect,
         thumb,
         well_h,
         selected,
         cursor,
     } = spec;
 
+    // The placeholder grows with its well, so a tall well is not a small icon in a big box.
+    let k = (well_h / metrics::THUMB_H).clamp(0.9, 1.6);
     let ink = if selected {
         color::text_secondary()
     } else {
@@ -136,7 +179,7 @@ pub fn source_tile<'a, M: Clone + 'a>(spec: TileSpec, on_press: M) -> Element<'a
             .content_fit(iced::ContentFit::Cover)
             .into(),
         None => {
-            let mut col = column![glyph(kind, ink)]
+            let mut col = column![glyph(kind, ink, aspect, k)]
                 .spacing(space::KEY_GAP)
                 .align_x(Alignment::Center);
             if let Some(note) = well_note {

@@ -1174,19 +1174,19 @@ pub mod secret {
 pub mod lock {
     /// The time: the one numeral on the screen, far past `BIG_NUMBER`
     /// because it is read from across a room.
-    pub const CLOCK: f32 = 88.0;
+    pub const CLOCK: f32 = 120.0;
     /// Air between the time and the date under it.
     pub const DATE_GAP: f32 = 2.0;
     /// Air between the clock group and the card.
-    pub const CLOCK_GAP: f32 = 44.0;
-    pub const CARD_W: f32 = 392.0;
-    pub const CARD_PAD: f32 = 22.0;
-    pub const CARD_RADIUS: f32 = 20.0;
+    pub const CLOCK_GAP: f32 = 48.0;
+    pub const CARD_W: f32 = 420.0;
+    pub const CARD_PAD: f32 = 28.0;
+    pub const CARD_RADIUS: f32 = 28.0;
     /// The card's drop: soft and short, a sheet resting on the ground.
     pub const CARD_SHADOW_Y: f32 = 18.0;
     pub const CARD_SHADOW_BLUR: f32 = 44.0;
     /// The account's initial disc.
-    pub const AVATAR: f32 = 40.0;
+    pub const AVATAR: f32 = 64.0;
     /// The field is one height in every state, so nothing moves when it
     /// changes from dots to "Checking" to "Unlocking".
     pub const FIELD_H: f32 = 50.0;

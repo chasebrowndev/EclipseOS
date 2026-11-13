@@ -873,6 +873,20 @@ fn classify(state: &mut AbyssState, window: &Window) {
     }
 }
 
+/// The human raised `window` to `secret` from its menu. Raise-only: the set
+/// is never removed from, so this lasts until the surface is gone. Withdraws
+/// it from the foreign-toplevel list like any other late raise.
+pub fn mark_secret(state: &mut AbyssState, window: &Window) {
+    let Some(surface) = window_surface(window) else {
+        return;
+    };
+    if state.sensitive.insert(surface.clone()) {
+        rules::record_class_source(&surface, rules::CLASS_SOURCE_HUMAN);
+    }
+    crate::protocols::standard::foreign_toplevel::window_updated(state, window);
+    crate::backend::damage_all(state);
+}
+
 /// A brand-new toplevel joins the active workspace, tiled, next to the focus.
 pub fn place_new_window(state: &mut AbyssState, window: Window) {
     // Classify before the window is ever composited (COMP-02 §7). Raise-only.

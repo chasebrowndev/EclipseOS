@@ -60,6 +60,7 @@ packaging/firefox/check-xpi.sh   # signed XPI == browser/firefox-glass (ADR 0079
 packaging/test/update-rollback.sh # update fallback scripts (ADR 0101)
 (cd portal && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace)
 packaging/test/update-rollback.sh  # update fallback scripts, rootless (ADR 0101)
+packaging/test/release-preflight.sh # release-repo build: locks current, makedepends installed
 cargo run -- --backend winit    # nested window under the host session (abyss)
 journalctl --user -t ec-abyss -f  # logs (tracing → journald)
 ```

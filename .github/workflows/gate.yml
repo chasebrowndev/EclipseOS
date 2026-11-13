@@ -234,7 +234,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwayland-dev libxkbcommon-dev libpipewire-0.3-dev pkg-config
+            libwayland-dev libxkbcommon-dev libpipewire-0.3-dev libclang-dev pkg-config
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -399,6 +399,17 @@ jobs:
       # a fake root in a temp dir. Rootless.
       - name: keep + launch tests
         run: packaging/test/update-rollback.sh
+
+  release-preflight:
+    name: release build preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # F-07 §5: what the 25-minute release-repo build needs, in seconds —
+      # current Cargo.locks (it builds --locked) and its package list.
+      - name: locks + build deps
+        run: packaging/test/release-preflight.sh
 
   spec-trail:
     name: PR cites a spec section

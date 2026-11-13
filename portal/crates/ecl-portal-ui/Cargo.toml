@@ -27,3 +27,6 @@ iced = { version = "0.14", default-features = false, features = ["wgpu", "advanc
 ec-ui = { path = "../../../shell/crates/ec-ui" }
 # Fail-soft config reads (blur, rounding, window-open animation), as ec-toasts does.
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
+
+[dev-dependencies]
+ecl-portal-core.workspace = true

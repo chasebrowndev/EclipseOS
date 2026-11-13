@@ -99,13 +99,17 @@ impl RuleIrreversible {
 ///   `i` of the loaded rule list (file order). Indices past
 ///   `255 - CLASS_SOURCE_RULE_BASE` all read 255.
 ///
-/// Values 3..16 are reserved for origins that do not exist yet (an
+/// - [`CLASS_SOURCE_HUMAN`]: the human chose "Hide from capture" in the window menu.
+///
+/// Values 4..16 are reserved for origins that do not exist yet (an
 /// app-declared raise over `eclipse_semantic_v1`, COMP-09).
 pub const CLASS_SOURCE_DEFAULT: u8 = 0;
 /// See [`CLASS_SOURCE_DEFAULT`].
 pub const CLASS_SOURCE_X11: u8 = 1;
 /// See [`CLASS_SOURCE_DEFAULT`].
 pub const CLASS_SOURCE_CAPTURE_POLICY: u8 = 2;
+/// See [`CLASS_SOURCE_DEFAULT`].
+pub const CLASS_SOURCE_HUMAN: u8 = 3;
 /// See [`CLASS_SOURCE_DEFAULT`].
 pub const CLASS_SOURCE_RULE_BASE: u8 = 16;
 

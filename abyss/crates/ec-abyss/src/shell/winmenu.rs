@@ -57,6 +57,8 @@ pub enum Item {
     KeepAbove,
     KeepBelow,
     Sticky,
+    /// Raise the window to `secret` (raise-only, so it stays on once chosen).
+    Secret,
     /// Opens the desktop list.
     MoveTo,
     /// Workspace `n`, 0-based.
@@ -82,6 +84,8 @@ pub struct Flags {
     pub above: bool,
     pub below: bool,
     pub sticky: bool,
+    /// Already withheld from captures.
+    pub secret: bool,
     /// The window is minimized (the taskbar chip opened the menu). Nothing of
     /// it is on screen, so Minimize reads "Unminimize" and Maximize and Shade
     /// are off; the rest act on what it will be when it returns.
@@ -164,6 +168,7 @@ impl MenuModel {
                 add(Item::KeepAbove, row("Keep above", f.above, true));
                 add(Item::KeepBelow, row("Keep below", f.below, true));
                 add(Item::Sticky, row("On all desktops", f.sticky, true));
+                add(Item::Secret, row("Hide from capture", f.secret, !f.secret));
                 add(
                     Item::MoveTo,
                     MenuRow {
@@ -365,6 +370,7 @@ fn flags_of(state: &AbyssState, window: &Window) -> Flags {
         above: band == winops::Band::Above,
         below: band == winops::Band::Below,
         sticky: state.winops.is_sticky(window),
+        secret: super::window_surface(window).is_some_and(|s| state.sensitive.contains(&s)),
         minimized,
         workspace: ws,
     }
@@ -553,6 +559,7 @@ fn run(state: &mut AbyssState, window: &Window, item: Item) {
         Item::Sticky => {
             winops::toggle_sticky(state, window);
         }
+        Item::Secret => super::mark_secret(state, window),
         Item::Desktop(n) => {
             // Choosing a desktop for a sticky window ends its stickiness: it
             // lives on that desktop now.
@@ -605,6 +612,7 @@ mod tests {
             above: false,
             below: false,
             sticky: false,
+            secret: false,
             minimized: false,
             workspace: 2,
         }
@@ -635,6 +643,7 @@ mod tests {
                 "Keep above",
                 "Keep below",
                 "On all desktops",
+                "Hide from capture",
                 "Move to desktop",
                 "Close"
             ]
@@ -650,6 +659,7 @@ mod tests {
             shaded: true,
             above: true,
             sticky: true,
+            secret: false,
             ..flags()
         };
         let m = MenuModel::new(f, Point::from((0, 0)), area());
@@ -789,6 +799,7 @@ mod tests {
         let mut m = MenuModel::new(
             Flags {
                 sticky: true,
+                secret: false,
                 ..flags()
             },
             Point::from((0, 0)),

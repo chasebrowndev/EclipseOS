@@ -63,7 +63,11 @@ DISK="${DISK//[[:space:]]/}"
 read -rp "this ERASES everything on $DISK. type the disk path again to confirm: " CONFIRM
 [[ $CONFIRM == "$DISK" ]] || die "confirmation did not match; nothing was changed"
 
-read -rp $'\nhostname: ' HOSTNAME
+# A unique default, so two machines never both answer to "eclipse" (the GUI
+# installer suggests <user>-<model>; ec-setup-plan suggest_hostname).
+HOST_DEFAULT="eclipse-$(tr -dc 0-9a-f </proc/sys/kernel/random/uuid | head -c4)"
+read -rp $'\nhostname ['"$HOST_DEFAULT"']: ' HOSTNAME
+HOSTNAME=${HOSTNAME:-$HOST_DEFAULT}
 read -rp 'username (added to wheel): ' USERNAME
 [[ -n $HOSTNAME && -n $USERNAME ]] || die "hostname and username are both required"
 
