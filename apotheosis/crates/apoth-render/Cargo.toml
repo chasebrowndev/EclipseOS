@@ -1,6 +1,6 @@
 [package]
 name = "apoth-render"
-description = "wgpu renderer: atlases, cell/image/glass pipelines, frame scheduler, offscreen goldens."
+description = "Renderer core (M10 partial): scene, damage, atlas and surface policy, CPU reference goldens. wgpu executor and lavapipe goldens owed before M11."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +10,11 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+apoth-grid.workspace = true
+apoth-font.workspace = true
+
+[dev-dependencies]
+# Offscreen golden PNGs (pure Rust; MIT OR Apache-2.0). Workspace entry requested.
+png = "0.18.1"

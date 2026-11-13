@@ -1,0 +1,16 @@
+fixture "sgr-underline-styles" {
+  desc "4:0 through 4:5"
+  covers "T03-SGR-UNDERLINE" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[4:1mA\e[4:2mB\e[4:3mC\e[4:4mD\e[4:5mE\e[4:0mF"#
+  grid {
+    row "ABCDEF"
+  }
+  cursor row=0 col=6
+  cell row=0 col=0 ch="A" ul="single"
+  cell row=0 col=1 ch="B" ul="double"
+  cell row=0 col=2 ch="C" ul="curly"
+  cell row=0 col=3 ch="D" ul="dotted"
+  cell row=0 col=4 ch="E" ul="dashed"
+  cell row=0 col=5 ch="F" ul="none"
+}

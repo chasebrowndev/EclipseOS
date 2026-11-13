@@ -18,7 +18,10 @@
 //! * A full page table grows the page (copy into a larger page); a table at its ceiling
 //!   splits the page; only a row that fits no page degrades the item, counted in
 //!   `Stats::degraded`.
-//! * `Screen::new` clamps the active area to `MAX_CELLS`.
+//! * `Screen::new` clamps the active area to `MAX_CELLS`; so does `Screen::resize`.
+//! * `Screen::resize` (no reflow): truncate/pad columns, blank cut wide cells, grow rows at
+//!   the bottom with no history pull, shrink rows by dropping rows below the cursor first and
+//!   then pushing the top into scrollback (primary) or discarding it (alternate).
 //! * A position-changing scroll bumps the sequence number of every row in the region, so
 //!   position-keyed `snapshot_since` consumers see the shift.
 //! * The page byte unit for `scrollback.bytes` is `capacity rows x (cols x 8 + 24)`.
@@ -35,7 +38,9 @@ pub mod tabs;
 pub use cell::{Cell, Semantic, Tag, Wide};
 pub use page::{MAX_CLUSTER_CPS, MAX_LINK_ID, MAX_URI, PAGE_BYTES, row_flags as flags};
 pub use pin::{MAX_PINS, Pin, PinId, PinKind, PinState};
-pub use screen::{CellAttrs, Glyph, Limits, MAX_CELLS, Region, Screen, ScreenConfig, Stats};
+pub use screen::{
+    CellAttrs, Glyph, Limits, MAX_CELLS, Region, Resized, Screen, ScreenConfig, Stats,
+};
 pub use snapshot::{Changes, Damage, FrameSnapshot, RowSnapshot, SeenSet, SnapCell, SnapRow};
 pub use style::{Attrs, Color, Style, Underline};
 pub use tabs::TabStops;

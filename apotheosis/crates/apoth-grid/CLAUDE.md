@@ -18,8 +18,11 @@ Governing spec: T-02 (`docs/ECLIPSEOS_SPECS_APOTHEOSIS.md`). AGPL-3.0-only, not 
 - `cell.rs`: 8-byte `Cell` (T-02 §1.2). `style.rs`: `Style`, `Color`, `Attrs`. `tabs.rs`:
   `TabStops`. `pin.rs`: tracked pins. `snapshot.rs`: the two snapshot APIs.
 - `Screen::new(rows, cols, ScreenConfig)` clamps the active area to `MAX_CELLS` (hostile
-  sizes cannot allocate). There is no in-place `resize`/reflow yet (M12): until then
-  apoth-term builds a new `Screen` and replays/copies as it sees fit.
+  sizes cannot allocate). `Screen::resize(rows, cols)` / `resize_keeping(rows, cols, cursor_row)` resize
+  in place WITHOUT reflow (reflow is M12): columns truncate/pad (cut wide cells blanked), rows
+  grow at the bottom (no history pull), shrink drops rows below the cursor then pushes the top
+  into scrollback (primary) or discards it (alt). Pins follow; discarded rows' pins go garbage;
+  everything is marked dirty (`epoch` bump, next snapshot `Full`; reset `SeenSet`s).
 
 ## How apoth-term uses it
 Coordinates `(y, x)` are active-area, 0-based; margins/regions are the caller's.

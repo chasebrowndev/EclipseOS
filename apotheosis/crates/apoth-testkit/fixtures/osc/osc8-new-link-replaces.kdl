@@ -1,0 +1,10 @@
+fixture "osc8-new-link-replaces" {
+  covers "T03-OSC8" "VTCORE-29"
+  size rows=3 cols=20
+  feed #"\e]8;;https://a\aA\e]8;;https://b\aB\e]8;;\a"#
+  grid {
+    row "AB"
+  }
+  cell row=0 col=0 link="https://a"
+  cell row=0 col=1 link="https://b"
+}

@@ -1,0 +1,11 @@
+fixture "sgr-mixed-separators-following-param" {
+  covers "T03-SGR-COLOR" "T03-SGR-AMBIG" "VTCORE-16"
+  review "after a consumed mixed-separator colour spec, the next parameter (;4) is assumed to apply normally; T-03 says 'consumed' without bounding it"
+  size rows=2 cols=20
+  feed #"\e[38;2:1:2:3;4mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" fg="default" ul="single"
+}

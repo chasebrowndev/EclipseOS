@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// C0 controls and bare-ESC functions (T-03 §3.1, VTCORE-13/14).
+fixture "c0-print" rows=1 cols=5 { feed "abc"; grid "abc"; cursor 0 3 }
+fixture "c0-bs" rows=1 cols=5 { feed "ab\b"; cursor 0 1; feed "X"; grid "aX" }
+fixture "c0-bs-col0" rows=1 cols=5 { feed "\b\b"; cursor 0 0 }
+fixture "c0-cr" rows=1 cols=5 { feed "abc\rX"; grid "Xbc"; cursor 0 1 }
+fixture "c0-lf-keeps-column" rows=3 cols=5 { feed "ab\ncd"; grid "ab" "  cd" }
+fixture "c0-lf-lnm" rows=3 cols=5 { feed "\e[20hab\ncd"; grid "ab" "cd" }
+fixture "c0-vt-ff-are-lf" rows=3 cols=5 { feed "a\x0bb\x0cc"; grid "a" " b" "  c" }
+fixture "c0-ht" rows=1 cols=20 { feed "a\tb"; grid "a       b"; cursor 0 9 }
+fixture "c0-ht-last-column" rows=1 cols=10 { feed "\t\t\tX"; grid "         X"; cursor 0 9 wrap=#true }
+fixture "c0-bel-counts" rows=1 cols=5 { feed "\a\a"; events "bell 2" }
+fixture "c0-bel-terminates-osc-not-bell" rows=1 cols=5 { feed "\e]0;t\a"; events "title t" }
+fixture "c0-so-si" rows=1 cols=8 { feed "\e(0\x0elq\x0fq"; grid "lq─" }
+fixture "c0-enq-answerback-empty" rows=1 cols=5 { feed "\x05"; replies "" }
+fixture "c0-can-cancels-csi" rows=1 cols=5 { feed "\e[1\x18A"; grid "A" }
+fixture "c0-sub-cancels-csi" rows=1 cols=5 { feed "\e[1\x1aA"; grid "A" }
+fixture "c0-del-ignored" rows=1 cols=5 { feed "a\x7fb"; grid "ab" }
+fixture "c0-c1-scalar-is-not-a-control" rows=1 cols=8 { feed "a\u{9b}31mb"; grid "a31mb" }
+fixture "c0-nul-ignored" rows=1 cols=5 { feed "a\0b"; grid "ab" }
+fixture "esc-ind" rows=3 cols=3 { feed "a\eDb"; grid "a" " b" }
+fixture "esc-nel" rows=3 cols=3 { feed "ab\eEc"; grid "ab" "c" }
+fixture "esc-ri-at-top-scrolls-down" rows=3 cols=3 { feed "ab\eMc"; grid "  c" "ab" }
+fixture "esc-ri-mid-moves-up" rows=3 cols=3 { feed "a\nb\eMc"; grid "a c" " b" }
+fixture "esc-hts-sets-a-stop" rows=1 cols=10 { feed "\e[3g\e[1;5H\eH\r\tX"; grid "    X" }
+fixture "esc-decsc-decrc" rows=2 cols=5 { feed "ab\e7\e[2;1Hcd\e8X"; grid "abX" "cd" }
+fixture "esc-decsc-saves-sgr" rows=1 cols=3 { feed "\e[1m\e7\e[0m\e8A"; grid "A"; cell 0 0 bold=#true }
+fixture "esc-decrc-without-save-homes-and-resets" rows=1 cols=3 { feed "ab\e[1m\e8X"; grid "Xb"; cell 0 0 bold=#false }
+fixture "esc-decsc-saves-origin" rows=5 cols=5 { feed "\e[2;4r\e[?6h\e7\e[?6l\e8\e[1;1Hx"; grid "" "x" }
+fixture "esc-decsc-saves-wrap-pending" rows=2 cols=3 { feed "abc\e7\rX\e8Y"; grid "Xbc" "Y" }
+fixture "esc-ris" rows=3 cols=5 { feed "abc\e[1m\e[2;2H\ecX"; grid "X"; cursor 0 1; cell 0 0 bold=#false }
+fixture "esc-ris-resets-modes-and-mirror" rows=2 cols=5 { feed "\e[?25l\e[?1h\ec"; mode "?25" "set"; mode "?1" "reset"; input-clear "decckm" }
+fixture "esc-decaln" rows=2 cols=3 { feed "\e#8"; grid "EEE" "EEE"; cursor 0 0 }
+fixture "esc-ss2-one-shot" rows=1 cols=4 { feed "\e*0\eNqq"; grid "─q" }
+fixture "esc-ss3-one-shot" rows=1 cols=4 { feed "\e+0\eOqq"; grid "─q" }
+fixture "esc-ls2-locking" rows=1 cols=4 { feed "\e*0\enqq"; grid "──" }
+fixture "esc-ls3-locking" rows=1 cols=4 { feed "\e+0\eoqq"; grid "──" }
+fixture "esc-st-alone-ignored" rows=1 cols=4 { feed "a\e\\b"; grid "ab" }
+fixture "esc-unknown-intermediate-ignored" rows=1 cols=4 { feed "a\e%Gb"; grid "ab" }
+fixture "esc-deckpam-deckpnm" rows=1 cols=4 { feed "\e="; input "deckpam"; mode "?66" "set"; feed "\e>"; input-clear "deckpam"; mode "?66" "reset" }
+fixture "esc-s7c1t-ignored" rows=1 cols=4 { feed "\e Fa"; grid "a" }
+fixture "esc-decdhl-ignored" rows=1 cols=4 { feed "\e#3a"; grid "a" }
+fixture "esc-ind-scrolls-at-bottom" rows=2 cols=2 { feed "a\r\nb\eD"; grid "b"; history 1 }
+fixture "esc-nel-at-bottom" rows=2 cols=2 { feed "a\r\nb\eEc"; grid "b" "c" }

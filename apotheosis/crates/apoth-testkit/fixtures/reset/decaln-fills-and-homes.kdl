@@ -1,0 +1,11 @@
+fixture "decaln-fills-and-homes" {
+  covers "T03-DECALN" "VTCORE-14"
+  size rows=3 cols=4
+  feed #"\e[3;3H\e#8"#
+  grid {
+    row "EEEE"
+    row "EEEE"
+    row "EEEE"
+  }
+  cursor row=0 col=0
+}
