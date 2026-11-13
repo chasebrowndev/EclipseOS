@@ -2280,7 +2280,11 @@ Explicit sync is mandatory; there is no implicit-sync fallback path.
 
 - **Lid switch**: via libinput; configurable action (suspend / turn off
   internal output / ignore) with the "external display connected" case
-  handled separately.
+  handled separately. *(amended ADR 0108, 2026-11-12)* The compositor is the
+  only lid handler: logind ignores the lid (`HandleLidSwitch*=ignore`) and only
+  performs the suspend. The default, "turn off internal output", suspends
+  instead when no other output is on, and when the last other output goes away
+  while the lid is closed.
 - **Internal panel identity**: eDP connectors are matched by connector
   name, not EDID hash, since some panels report no serial.
 - **DPMS and idle**: aggressive defaults on battery; `ext_idle_notify`
@@ -2470,8 +2474,10 @@ is testable without a GPU (F-07 §3).
    quiet (small indicator). Proposed: small indicator; a banner trains you
    to ignore banners.
 4. Watchdog interval (proposed: 10 s, ping per loop iteration).
-5. Lid-close default when an external display is connected (proposed:
-   turn off internal output, keep session running).
+5. ~~Lid-close default when an external display is connected (proposed:
+   turn off internal output, keep session running).~~ *Resolved ADR 0108:*
+   turn off the internal output and keep the session running; with no other
+   output, suspend.
 6. Whether battery-aware agent throttling is policy (policyd) or
    compositor-local. Proposed: compositor-local for capture FPS; router
    handles inference (I-02).

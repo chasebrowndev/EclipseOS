@@ -100,6 +100,7 @@ writing a new ADR that says so.
 | 0105 | [Render thread: measure first, then a numeric rule](0105-render-thread-and-frame-baselines.md) | proposed |
 | 0106 | [Redacted screen sharing as a desktop feature](0106-redacted-screen-sharing.md) | proposed |
 | 0107 | [A config key's presentation lives beside its schema row](0107-config-schema-single-source.md) | proposed |
+| 0108 | [The compositor owns the lid; logind only suspends](0108-compositor-owns-the-lid.md) | accepted |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

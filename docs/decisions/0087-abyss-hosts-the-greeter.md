@@ -48,7 +48,9 @@ While `state.kiosk` is set:
   the allowlist.
 
 Lid `suspend` stays. It runs a fixed `systemctl suspend`, and a laptop at the login
-screen should still be able to sleep.
+screen should still be able to sleep. *(Amended ADR 0108: the compositor is the only lid handler, so
+the login screen sleeps through abyss's lid rules. With no compositor running, a
+lid close does nothing.)*
 
 greetd calls `/usr/bin/ec-abyss` by absolute path, and `eclipseos-abyss` provides
 `wayland-compositor`, which `greetd-regreet` depends on. `cage` leaves every

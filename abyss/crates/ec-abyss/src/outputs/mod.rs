@@ -1072,7 +1072,11 @@ pub fn unregister(state: &mut crate::state::AbyssState, id: u64) {
     {
         state.focus = None;
     }
-    ensure_one_enabled(state);
+    // Lid closed and only the internal panel is left: suspend rather than
+    // light it (COMP-01 §4.1, ADR 0108).
+    if !power::removal_suspend(state) {
+        ensure_one_enabled(state);
+    }
     relayout(state);
     crate::protocols::standard::output_management::refresh(state);
     crate::ipc::emit(

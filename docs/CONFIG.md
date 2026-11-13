@@ -450,7 +450,7 @@ Per-output settings: `output "<glob>" { … }`. The glob (`*` only) matches the 
 | `transform "<transform>"` | `transform "90"`<br>`transform "flipped-270"` | Rotation and flip. |
 | `overscan <px> \| top= bottom= left= right=` | `overscan 30`<br>`overscan top=20 left=40` | Per-edge inset in physical px for a panel that crops the signal. Bare applies to all four edges. Wins over saved calibration. |
 | `enabled [<bool>]` / `disabled [<bool>]` | `enabled`<br>`disabled`<br>`enabled #false` | Turn the output on or off. Bare `disabled` is off. |
-| `lid-close "<lid-close>"` | `lid-close "suspend"`<br>`lid-close "ignore"`<br>`lid-close "off"` | On an internal panel: `off` turns the panel off (never the last output), `suspend` runs `systemctl suspend`, `ignore` does nothing. |
+| `lid-close "<lid-close>"` | `lid-close "suspend"`<br>`lid-close "ignore"`<br>`lid-close "off"` | On an internal panel: `off` turns the panel off when another screen is on and suspends otherwise (also when the last other screen goes away with the lid closed), `suspend` always suspends, `ignore` does nothing. |
 | `vrr [<bool>]` / `adaptive-sync [<bool>]` | `vrr`<br>`adaptive-sync #false` | Variable refresh rate. Bare means `#true`. |
 | `number <1..255>` | `number 2` | Display number used by `move-to-output` (ADR 0049). Defaults to connection order. |
 
