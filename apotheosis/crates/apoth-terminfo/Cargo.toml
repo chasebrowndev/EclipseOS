@@ -1,0 +1,12 @@
+[package]
+name = "apoth-terminfo"
+description = "The xterm-apotheosis terminfo entry as a Rust table, its term(5) compiler and the XTGETTCAP table."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

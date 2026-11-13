@@ -1,0 +1,12 @@
+[package]
+name = "apoth-mux"
+description = "Session / workspace / window / tab / pane model and the Domain trait. No Wayland, no GPU."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

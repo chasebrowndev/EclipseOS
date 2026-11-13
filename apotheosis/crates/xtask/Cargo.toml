@@ -1,0 +1,12 @@
+[package]
+name = "xtask"
+description = "Developer tasks: fixture management, binding generation, table generation. Never shipped."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

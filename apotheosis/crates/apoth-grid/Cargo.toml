@@ -1,0 +1,12 @@
+[package]
+name = "apoth-grid"
+description = "Paged grid: cells, interned styles and links, pins, reflow, history, compression, search iteration."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

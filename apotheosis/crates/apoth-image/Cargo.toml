@@ -1,0 +1,12 @@
+[package]
+name = "apoth-image"
+description = "Kitty graphics protocol, sixel, iTerm2 inline images, the per-pane image store and quotas."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

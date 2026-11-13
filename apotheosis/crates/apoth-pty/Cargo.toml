@@ -1,0 +1,12 @@
+[package]
+name = "apoth-pty"
+description = "PTY allocation, child spawn, pidfd exit detection, foreground process info."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

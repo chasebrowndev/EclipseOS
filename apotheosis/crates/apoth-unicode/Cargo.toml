@@ -1,0 +1,12 @@
+[package]
+name = "apoth-unicode"
+description = "Generated Unicode tables: cell width, grapheme cluster break, emoji presentation."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

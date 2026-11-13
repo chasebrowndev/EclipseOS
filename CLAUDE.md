@@ -59,6 +59,7 @@ npx --yes web-ext@10.7.0 lint -s browser/firefox-glass --warnings-as-errors
 packaging/firefox/check-xpi.sh   # signed XPI == browser/firefox-glass (ADR 0079)
 packaging/test/update-rollback.sh # update fallback scripts (ADR 0101)
 (cd portal && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace)
+(cd apotheosis && cargo fmt --all --check && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace && ci/lang-rule.sh)
 packaging/test/update-rollback.sh  # update fallback scripts, rootless (ADR 0101)
 packaging/test/release-preflight.sh # release-repo build: locks current, makedepends installed
 cargo run -- --backend winit    # nested window under the host session (abyss)
