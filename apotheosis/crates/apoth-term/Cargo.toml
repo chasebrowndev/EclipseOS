@@ -1,0 +1,12 @@
+[package]
+name = "apoth-term"
+description = "Deterministic terminal: feed(bytes) -> grid state, PTY replies and events."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

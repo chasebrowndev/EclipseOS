@@ -1,0 +1,61 @@
+# cargo-deny configuration for Apotheosis — the repository policy (F-05 §9, ADR 0035)
+# plus T-24 §4: no GPL-family dependency in a shipped crate. Exceptions need a comment.
+# Run: cargo deny check
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[advisories]
+version = 2
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+ignore = []
+
+# Must be compatible with AGPL-3.0-only distribution. GPLv2-only is
+# incompatible and is rejected by omission.
+[licenses]
+version = 2
+confidence-threshold = 0.93
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "MPL-2.0",
+    "AGPL-3.0-only",
+    "CC0-1.0",
+]
+exceptions = []
+
+[bans]
+# T-24 §3 / ADR 0110: crates that compile C or run bindgen at build time. rav1d's x86-64
+# asm (nasm, av1-asm feature, helper only) is checked by ci/lang-rule.sh, not here.
+deny = [
+    { crate = "bindgen" },
+    { crate = "cmake" },
+    { crate = "pipewire-sys" },
+    { crate = "libspa-sys" },
+    { crate = "khronos-egl" },
+    { crate = "gbm-sys" },
+    { crate = "freetype-sys" },
+    { crate = "servo-fontconfig-sys" },
+    { crate = "yeslogic-fontconfig-sys" },
+]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

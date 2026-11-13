@@ -1,0 +1,12 @@
+[package]
+name = "apoth-action"
+description = "The one Action/Event vocabulary, its registry, the match language and the template language."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

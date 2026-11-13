@@ -1,0 +1,12 @@
+[package]
+name = "apoth-vt"
+description = "Streaming VT parser: ECMA-48/DEC state machine, string sinks with per-protocol byte budgets, bulk printable fast path."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "Apache-2.0"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

@@ -1,0 +1,78 @@
+# Apotheosis — the EclipseOS terminal (docs/ECLIPSEOS_SPECS_APOTHEOSIS.md, T-24 §1).
+# Its own product workspace, like portal/: own lockfile, deny.toml and gate job.
+[workspace]
+resolver = "3"
+members = [
+  "crates/apoth-vt",
+  "crates/apoth-unicode",
+  "crates/apoth-input",
+  "crates/apoth-action",
+  "crates/apoth-proto",
+  "crates/apoth-terminfo",
+  "crates/apoth-grid",
+  "crates/apoth-term",
+  "crates/apoth-pty",
+  "crates/apoth-mux",
+  "crates/apoth-config",
+  "crates/apoth-image",
+  "crates/apoth-media",
+  "crates/apoth-font",
+  "crates/apoth-ui",
+  "crates/apoth-render",
+  "crates/apoth-wl",
+  "crates/apoth-a11y",
+  "crates/apoth-eclipse",
+  "crates/apoth-testkit",
+  "crates/apotheosis",
+  "crates/apoth",
+  "crates/xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+repository = "https://github.com/chasebrowndev/eclipseos"
+
+[workspace.lints.rust]
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+todo = "deny"
+print_stdout = "warn"
+
+[workspace.dependencies]
+apoth-vt = { path = "crates/apoth-vt" }
+apoth-unicode = { path = "crates/apoth-unicode" }
+apoth-input = { path = "crates/apoth-input" }
+apoth-action = { path = "crates/apoth-action" }
+apoth-proto = { path = "crates/apoth-proto" }
+apoth-terminfo = { path = "crates/apoth-terminfo" }
+apoth-grid = { path = "crates/apoth-grid" }
+apoth-term = { path = "crates/apoth-term" }
+apoth-pty = { path = "crates/apoth-pty" }
+apoth-mux = { path = "crates/apoth-mux" }
+apoth-config = { path = "crates/apoth-config" }
+apoth-image = { path = "crates/apoth-image" }
+apoth-media = { path = "crates/apoth-media" }
+apoth-font = { path = "crates/apoth-font" }
+apoth-ui = { path = "crates/apoth-ui" }
+apoth-render = { path = "crates/apoth-render" }
+apoth-wl = { path = "crates/apoth-wl" }
+apoth-a11y = { path = "crates/apoth-a11y" }
+apoth-eclipse = { path = "crates/apoth-eclipse" }
+apoth-testkit = { path = "crates/apoth-testkit" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+debug = "line-tables-only"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

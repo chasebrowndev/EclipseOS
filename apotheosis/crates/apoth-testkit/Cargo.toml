@@ -1,0 +1,12 @@
+[package]
+name = "apoth-testkit"
+description = "Test infrastructure: golden-grid fixtures, oracles, headless driver, benches."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license = "AGPL-3.0-only"
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true

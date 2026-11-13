@@ -18,8 +18,8 @@ concurrency:
   cancel-in-progress: true
 
 # The workflow files must sit at the repository root for GitHub to read them.
-# The repo holds six cargo workspaces (abyss/, shell/, installer/,
-# oracle-eyes/, fog/, portal/), so each job sets its own
+# The repo holds seven cargo workspaces (abyss/, shell/, installer/,
+# oracle-eyes/, fog/, portal/, apotheosis/), so each job sets its own
 # `defaults.run.working-directory` and points any filesystem-touching `uses:` action at its workspace explicitly
 # (actions ignore `defaults`). All of them build into <repo>/target, set by the
 # root .cargo/config.toml.
@@ -252,6 +252,44 @@ jobs:
 
       - run: cargo test --workspace
 
+  apotheosis:
+    name: apotheosis build / fmt / clippy / test / lang-rule
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    # The EclipseOS terminal (docs/ECLIPSEOS_SPECS_APOTHEOSIS.md) is its own cargo workspace.
+    # T-24 §3: ci/lang-rule.sh enforces the language rule (no C, no build-time bindgen,
+    # allow-listed system libraries only). mesa-vulkan-drivers gives lavapipe for the
+    # offscreen render goldens (T-25 §5).
+    defaults:
+      run:
+        working-directory: apotheosis
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev pkg-config mesa-vulkan-drivers libvulkan1
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apotheosis -> ../target
+
+      - run: cargo fmt --all --check
+
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - run: cargo build --workspace --all-targets
+
+      - run: cargo test --workspace
+
+      - run: ci/lang-rule.sh ../target/debug
+
   supply-chain:
     name: ${{ matrix.workspace }} cargo-deny
     runs-on: ubuntu-24.04
@@ -259,7 +297,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        workspace: [abyss, shell, installer, oracle-eyes, fog, portal]
+        workspace: [abyss, shell, installer, oracle-eyes, fog, portal, apotheosis]
     steps:
       - uses: actions/checkout@v4
       # Advisories + license + source checks. This is a down payment on
