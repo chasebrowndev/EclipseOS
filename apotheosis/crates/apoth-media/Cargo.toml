@@ -34,3 +34,7 @@ seccompiler = "0.5"
 rustix = { version = "1", features = ["std", "event", "fs", "mm", "net", "pipe", "process", "thread", "time"] }
 libc = "0.2"
 tracing = "0.1"
+
+[dev-dependencies]
+# Frame dumps for visual checks; already in the lock (apoth-image).
+png = "0.18"
