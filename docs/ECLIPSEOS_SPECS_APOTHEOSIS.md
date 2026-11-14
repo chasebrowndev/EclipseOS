@@ -2423,6 +2423,10 @@ On Abyss, blur through `ext_background_effect_v1` only, with one region box cove
   `ext.echo=true` is sent when the state and its grace end. For Apotheosis, `ext.echo` is
   driven by the credential predicate, not by raw `ECHO`. The reserved `ext.credential`
   key (COMP-09 §2, S-08 §3.2) is not used.
+- **What stays visible.** The `terminal` node hangs under a window node the host owns
+  (ADR 0114). While the credential state holds, agents see that bare window node (role
+  `window`, no text) and nothing beneath it: the terminal subtree and all text are
+  withheld. The window's existence is not secret (owner decision 2026-11-13).
 - **Remote panes.** Inside a remote pane (T-18 §10) the local PTY is raw, so a remote
   `sudo` or `passwd` prompt never shows the credential predicate locally. Remote panes
   are therefore treated as possibly in the credential state for keystroke egress: the
