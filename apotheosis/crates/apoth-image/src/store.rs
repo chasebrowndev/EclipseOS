@@ -50,11 +50,16 @@ impl ProcessBudget {
     }
 }
 
+/// Process-wide blob serials: a renderer keys its texture cache by them, so a serial is never
+/// reused for different pixels.
+static NEXT_SERIAL: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Debug)]
 struct Blob {
     image: Arc<Image>,
     hash: u64,
     refs: usize,
+    serial: u64,
 }
 
 #[derive(Debug)]
@@ -174,6 +179,27 @@ impl ImageStore {
     pub fn get(&self, screen: Screen, id: ImageId) -> Option<Arc<Image>> {
         let e = self.images.get(&(screen, id))?;
         Some(self.blobs[e.blob].as_ref()?.image.clone())
+    }
+
+    /// The image and its blob serial (stable for these pixels for the life of the process).
+    pub fn get_keyed(&self, screen: Screen, id: ImageId) -> Option<(u64, Arc<Image>)> {
+        let e = self.images.get(&(screen, id))?;
+        let b = self.blobs[e.blob].as_ref()?;
+        Some((b.serial, b.image.clone()))
+    }
+
+    pub fn contains(&self, screen: Screen, id: ImageId) -> bool {
+        self.images.contains_key(&(screen, id))
+    }
+
+    /// Reserve an auto id (upper half) before the image exists, e.g. while it decodes.
+    pub fn next_auto_id(&mut self, screen: Screen) -> ImageId {
+        self.alloc_id(screen)
+    }
+
+    /// Free an image, its placements and number mappings.
+    pub fn free_image(&mut self, screen: Screen, id: ImageId) {
+        self.remove_image(screen, id);
     }
 
     pub fn lookup_number(&self, screen: Screen, number: u32) -> Option<ImageId> {
@@ -298,6 +324,7 @@ impl ImageStore {
             image: Arc::new(image),
             hash,
             refs: 0,
+            serial: NEXT_SERIAL.fetch_add(1, Ordering::Relaxed),
         };
         let idx = match self.blobs.iter().position(Option::is_none) {
             Some(i) => {

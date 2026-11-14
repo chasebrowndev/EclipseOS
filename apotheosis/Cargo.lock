@@ -229,9 +229,12 @@ name = "apoth-term"
 version = "0.1.0"
 dependencies = [
  "apoth-grid",
+ "apoth-image",
  "apoth-input",
  "apoth-unicode",
  "apoth-vt",
+ "base64",
+ "png",
 ]
 
 [[package]]

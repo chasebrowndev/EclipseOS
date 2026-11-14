@@ -132,6 +132,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn advance_until_stops_after_the_paused_string_end_and_resumes_losslessly() {
+        let data = b"a\x1b_Gx\x1b\\b\x1b]0;t\x07c\x1bPq#\x1b\\d";
+        let mut whole = Transcript::default();
+        Parser::new().advance(data, &mut whole);
+        let mut paused = Transcript::default();
+        let mut p = Parser::new();
+        let mut rest: &[u8] = data;
+        let mut stops = Vec::new();
+        while !rest.is_empty() {
+            let n = p.advance_until(rest, &mut paused, |t| t.last == b'Z');
+            stops.push(rest[..n].to_vec());
+            rest = &rest[n..];
+            paused.last = 0; // resume: the next pause needs a new end
+        }
+        assert_eq!(
+            stops[0], b"a\x1b_Gx\x1b\\",
+            "stops right after the first ST"
+        );
+        assert!(
+            stops.len() >= 3,
+            "every string end can stop: {}",
+            stops.len()
+        );
+        assert!(whole.out == paused.out, "pausing changed the action stream");
+    }
+
+    #[test]
     fn corpus_seeds_never_panic() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus/vt_parse");
         let mut n = 0;

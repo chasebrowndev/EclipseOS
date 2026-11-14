@@ -1376,7 +1376,7 @@ fn reply_da_1_sixel_advertised() {
         2,
         4,
         |c| {
-            c.sixel_advertised = true;
+            c.graphics.sixel = true;
         },
         |h| {
             h.feed("\u{1b}[c");
@@ -1553,7 +1553,8 @@ fn never_reply_flood_unbounded() {
         "never-reply-flood-unbounded",
         1,
         4,
-        |_| {},
+        // The 10-byte DA1 (no sixel attribute) keeps the dropped count this test pins.
+        |c| c.graphics.sixel = false,
         |h| {
             h.feed_repeat("\u{1b}[c", 10000);
             h.dropped_replies(2719);

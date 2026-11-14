@@ -8,7 +8,10 @@
 //! * a denied class with an observable effect or a reply (T-18 §3, §11);
 //! * a title carrying a control character;
 //! * kitty keyboard flags outside their five bits, or the published mirror disagreeing
-//!   with the term.
+//!   with the term;
+//! * graphics (`kitty_apc`, `sixel`, T-15 §8): a store over its quota, a placement count
+//!   over the cap, an image over the axis cap, or graphics with any effect while
+//!   `graphics-direct` is denied.
 
 use std::time::Instant;
 
@@ -230,6 +233,132 @@ pub fn fuzz_kitty_keyboard(data: &[u8]) {
     }
 }
 
+/// Small caps so the targets reach the limits quickly.
+fn gfx_term(deny_bits: u32) -> Term {
+    let mut cfg = TermConfig {
+        rows: 6,
+        cols: 20,
+        // File media would touch the filesystem (temp files are consumed): always denied.
+        deny: deny_bits | deny::GRAPHICS_FILE,
+        ..TermConfig::default()
+    };
+    let l = &mut cfg.graphics.limits;
+    l.max_axis = 512;
+    l.quota = 2 << 20;
+    l.quota_total = 4 << 20;
+    l.max_decoded_bytes = 1 << 20;
+    l.sixel_max_bytes = 64 << 10;
+    l.sixel_max_pixels = 1 << 18;
+    Term::new(cfg)
+}
+
+fn check_gfx(t: &mut Term) {
+    let st = t.image_store();
+    assert!(st.used() <= 2 << 20, "image store over its quota");
+    assert!(
+        st.placements().len() <= crate::apoth_image::store::MAX_PLACEMENTS,
+        "placement cap broken"
+    );
+    for p in t.placements() {
+        assert!(p.cols >= 1 && p.rows >= 1, "empty placement box");
+    }
+    let mut draws = Vec::new();
+    t.image_draws(t.primary().history_rows(), t.rows(), &mut draws);
+    for d in &draws {
+        assert!(
+            d.image.width <= 512 && d.image.height <= 512,
+            "axis cap broken"
+        );
+        let [x, y, w, h] = d.src;
+        assert!(
+            u64::from(x) + u64::from(w) <= u64::from(d.image.width)
+                && u64::from(y) + u64::from(h) <= u64::from(d.image.height),
+            "source rect outside the image"
+        );
+    }
+    let r = t.replies().take_all();
+    assert!(
+        reply_is_closed(&r),
+        "graphics reply outside the closed grammar"
+    );
+}
+
+/// Strip the bytes that would end a string early.
+fn inside(b: &[u8]) -> Vec<u8> {
+    b.iter()
+        .copied()
+        .filter(|b| !matches!(b, 0x1b | 0x18 | 0x1a))
+        .collect()
+}
+
+/// Input: APC bodies separated by `0xff`; each is sent as `ESC _ G <body> ESC \`, with a
+/// line of text after every third. The same stream runs with `graphics-direct` denied,
+/// which must look exactly like the stream with the APCs removed.
+pub fn fuzz_kitty_apc(data: &[u8]) {
+    let now = Instant::now();
+    let mut stream = Vec::new();
+    let mut plain = Vec::new();
+    for (i, body) in data.split(|&b| b == 0xff).enumerate() {
+        stream.extend_from_slice(b"\x1b_G");
+        stream.extend_from_slice(&inside(body));
+        stream.extend_from_slice(b"\x1b\\");
+        if i % 3 == 2 {
+            stream.extend_from_slice(b"txt\r\n");
+            plain.extend_from_slice(b"txt\r\n");
+        }
+    }
+    let mut t = gfx_term(0);
+    // Arbitrary chunking: split the stream where the input says.
+    let cut = data.first().map_or(1, |&b| usize::from(b) + 1);
+    for c in stream.chunks(cut) {
+        t.feed(c, now);
+        check_gfx(&mut t);
+    }
+    assert!(!t.blocked(), "inline decode never blocks");
+    let mut denied = gfx_term(deny::GRAPHICS_DIRECT);
+    denied.feed(&stream, now);
+    assert!(!denied.has_images(), "denied graphics placed an image");
+    let seen = observe(&mut denied);
+    let mut base = gfx_term(deny::GRAPHICS_DIRECT);
+    base.feed(&plain, now);
+    assert!(seen == observe(&mut base), "denied graphics had an effect");
+}
+
+/// Input: byte 0 picks the DCS parameters and modes (DECSDM, `?1070`, `?8452`), byte 1
+/// the chunk size; the rest is sixel data (string-ending bytes removed), sent twice so
+/// shared registers carry over, with text printed over the result.
+pub fn fuzz_sixel(data: &[u8]) {
+    let [sel, chunk, body @ ..] = data else {
+        return;
+    };
+    let now = Instant::now();
+    let mut stream = Vec::new();
+    for (bit, mode) in [(1u8, 80u16), (2, 1070), (4, 8452)] {
+        let hl = if sel & bit != 0 { 'h' } else { 'l' };
+        stream.extend_from_slice(format!("\x1b[?{mode}{hl}").as_bytes());
+    }
+    let p1 = (sel >> 3) % 10;
+    let p2 = (sel >> 6) % 3;
+    let body = inside(body);
+    for _ in 0..2 {
+        stream.extend_from_slice(format!("\x1bP{p1};{p2};0q").as_bytes());
+        stream.extend_from_slice(&body);
+        stream.extend_from_slice(b"\x1b\\");
+    }
+    stream.extend_from_slice(b"\x1b[1;1Hover\x1b[2K\x1b[3X");
+    let mut t = gfx_term(0);
+    for c in stream.chunks(usize::from(*chunk) + 1) {
+        t.feed(c, now);
+        check_gfx(&mut t);
+    }
+    for p in t.placements() {
+        assert!(p.sixel && p.rows == 1, "sixel stored as cell-row slices");
+    }
+    let mut denied = gfx_term(deny::GRAPHICS_DIRECT);
+    denied.feed(&stream, now);
+    assert!(!denied.has_images(), "denied sixel placed an image");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +378,16 @@ mod tests {
     #[test]
     fn osc_corpus_seeds_hold_the_invariants() {
         assert!(corpus("osc_all", fuzz_osc) >= 8);
+    }
+
+    #[test]
+    fn kitty_apc_corpus_seeds_hold_the_invariants() {
+        assert!(corpus("kitty_apc", fuzz_kitty_apc) >= 8);
+    }
+
+    #[test]
+    fn sixel_corpus_seeds_hold_the_invariants() {
+        assert!(corpus("sixel", fuzz_sixel) >= 6);
     }
 
     #[test]

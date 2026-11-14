@@ -93,6 +93,32 @@ impl Parser {
         }
     }
 
+    /// [`Parser::advance`] that stops right after a string ends when `pause(sink)` is true
+    /// there (the sink raised a barrier at that terminator). Returns the bytes consumed; the
+    /// caller keeps the rest. Costs one check per string end, nothing per byte.
+    pub fn advance_until<S: Sink>(
+        &mut self,
+        bytes: &[u8],
+        sink: &mut S,
+        pause: impl Fn(&S) -> bool,
+    ) -> usize {
+        let mut i = 0;
+        while i < bytes.len() {
+            i = if self.state == State::Ground {
+                self.ground(bytes, i, sink)
+            } else if self.state.is_string() {
+                let j = self.string(bytes, i, sink);
+                if self.state == State::Ground && pause(sink) {
+                    return j;
+                }
+                j
+            } else {
+                self.step(bytes[i], i, sink)
+            };
+        }
+        i
+    }
+
     fn clear(&mut self) {
         self.params.clear();
         self.inter_len = 0;

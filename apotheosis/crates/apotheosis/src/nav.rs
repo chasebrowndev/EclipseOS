@@ -34,6 +34,8 @@ pub(crate) struct PendingConsent {
     pub(crate) class: Class,
     /// OSC 52 selection letters of the read.
     pub(crate) selection: String,
+    /// The term's token for a `graphics-file` question (0 for the clipboard).
+    pub(crate) token: u64,
 }
 
 /// A link waiting for the user to confirm its full URI (it differs from the visible text).

@@ -27,6 +27,7 @@ pub mod config;
 mod csi;
 pub mod events;
 pub mod fuzz;
+pub mod graphics;
 mod machine;
 pub mod modes;
 mod osc;
@@ -48,10 +49,13 @@ pub use color::XTERM_ANSI16;
 pub const USER_VARS_MAX: usize = 64;
 pub const USER_VAR_NAME_MAX: usize = 64;
 pub const USER_VAR_VALUE_MAX: usize = 1024;
+/// The image crate this terminal speaks (decode jobs, store types).
+pub use apoth_image;
 pub use config::{CursorStyle, Rgb, TermConfig, deny};
 pub use events::{
     ClipboardSet, CommandEvent, EventSlot, Mark, Notification, Progress, ReplyQueue, UserVar,
 };
+pub use graphics::{GraphicsConfig, ImageDraw, PlacementInfo};
 pub use modes::{Access, ModeDef, ModeState};
 
 /// What `feed` tells the io thread.
@@ -65,6 +69,8 @@ pub struct Wake {
     pub events: bool,
     /// A synchronized-output presentation hold is in force.
     pub hold: bool,
+    /// Image decode jobs are waiting for [`Term::take_image_jobs`].
+    pub jobs: bool,
 }
 
 /// Cursor state for the renderer and tests.
@@ -86,6 +92,8 @@ pub struct CursorInfo {
 pub struct Term {
     parser: Parser,
     m: machine::Machine,
+    /// Bytes that arrived while an image decode or consent held the stream.
+    held: Vec<u8>,
 }
 
 impl std::fmt::Debug for Term {
@@ -104,22 +112,54 @@ impl Term {
         Term {
             parser: Parser::new(),
             m: machine::Machine::new(cfg, mirror),
+            held: Vec::new(),
         }
     }
 
     /// Apply `bytes` to the screens. `now` is the caller's clock reading.
+    ///
+    /// While an image decode or a file-media consent is outstanding ([`Term::blocked`]) the
+    /// bytes are held, unparsed, and run when [`Term::image_done`] or
+    /// [`Term::graphics_file_decision`] releases the stream; the caller should stop reading
+    /// the PTY meanwhile.
     pub fn feed(&mut self, bytes: &[u8], now: Instant) -> Wake {
         self.m.now = Some(now);
         self.m.expire_sync(now);
-        self.parser.advance(bytes, &mut self.m);
+        if self.m.gfx.blocked() {
+            self.held.extend_from_slice(bytes);
+            return self.wake(false);
+        }
+        self.advance(bytes);
+        self.m.gfx_collect();
         self.wake(!bytes.is_empty())
     }
 
-    /// Timer check without bytes (the sync-output timeout).
+    /// Parse `bytes`, stopping after the string terminator that raised an image barrier and
+    /// holding the rest.
+    fn advance(&mut self, bytes: &[u8]) {
+        let n = self
+            .parser
+            .advance_until(bytes, &mut self.m, |m| m.gfx.blocked());
+        if n < bytes.len() {
+            self.held.extend_from_slice(&bytes[n..]);
+        }
+    }
+
+    /// Run held bytes until the stream blocks again or they are gone.
+    fn release(&mut self) {
+        while !self.m.gfx.blocked() && !self.held.is_empty() {
+            let held = std::mem::take(&mut self.held);
+            self.advance(&held);
+        }
+        self.m.gfx_collect();
+    }
+
+    /// Timer check without bytes (the sync-output timeout, stale chunked transfers).
     pub fn tick(&mut self, now: Instant) -> Wake {
         self.m.now = Some(now);
         let before = self.m.sync.is_some();
         self.m.expire_sync(now);
+        self.m.gfx.expire(now);
         self.wake(before && self.m.sync.is_none())
     }
 
@@ -129,12 +169,68 @@ impl Term {
             replies: !self.m.replies.is_empty(),
             events: !self.m.events.is_empty(),
             hold: self.m.sync.is_some(),
+            jobs: self.m.gfx.has_jobs(),
         }
     }
 
-    /// The earliest timer: the end of the sync-output hold.
+    /// The earliest timer: the end of the sync-output hold, or a half-received chunked
+    /// image going stale.
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.m.sync.map(|s| s + self.m.cfg.sync_timeout_clamped())
+        let sync = self.m.sync.map(|s| s + self.m.cfg.sync_timeout_clamped());
+        match (sync, self.m.gfx.deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    // ---- images (T-15) ------------------------------------------------------------------
+
+    /// The stream is held for an image decode or a file-media consent.
+    pub fn blocked(&self) -> bool {
+        self.m.gfx.blocked()
+    }
+
+    /// Decode jobs for the worker pool (never run them on the io thread).
+    pub fn take_image_jobs(&mut self) -> Vec<apoth_image::kitty::DecodeJob> {
+        self.m.gfx.take_jobs()
+    }
+
+    /// A worker's answer: store and place the image, reply, then run the held bytes.
+    pub fn image_done(&mut self, done: apoth_image::kitty::DecodeDone, now: Instant) -> Wake {
+        self.m.now = Some(now);
+        self.m.gfx_done(done);
+        self.release();
+        self.wake(true)
+    }
+
+    /// Main's answer to [`EventSlot::graphics_file`]; `allow` false has no effect and no
+    /// reply. The held bytes run afterwards.
+    pub fn graphics_file_decision(&mut self, token: u64, allow: bool, now: Instant) -> Wake {
+        self.m.now = Some(now);
+        self.m.gfx_decision(token, allow);
+        self.release();
+        self.wake(true)
+    }
+
+    /// Image quads of the current screen for a viewport whose top is absolute row
+    /// `top_abs` (counted from the oldest retained row), `rows` tall, bottom to top.
+    pub fn image_draws(&self, top_abs: usize, rows: usize, out: &mut Vec<ImageDraw>) {
+        self.m.gfx_draws(top_abs, rows, out);
+    }
+
+    /// Any image is placed on either screen.
+    pub fn has_images(&self) -> bool {
+        self.m.gfx.has_places()
+    }
+
+    /// Placements of the current screen, oldest first (tests, fixtures).
+    pub fn placements(&self) -> Vec<PlacementInfo> {
+        self.m.gfx_placements()
+    }
+
+    /// The pane's image store (quota tests).
+    pub fn image_store(&self) -> &apoth_image::store::ImageStore {
+        self.m.gfx.store()
     }
 
     /// True while the renderer should keep the last completed frame (mode 2026).

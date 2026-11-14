@@ -96,6 +96,7 @@ impl Machine {
     pub(crate) fn str_start(&mut self, kind: StrKind, head: &StrHead) -> StrRoute {
         self.sbuf.clear();
         self.strm = StrMode::None;
+        self.gfx.sixel_abort();
         match kind {
             StrKind::Osc => {
                 let Some(cmd) = head.osc_command() else {
@@ -139,6 +140,12 @@ impl Machine {
                     self.strm = StrMode::Tcap;
                     return StrRoute { cap: CAP_SMALL };
                 }
+                if pr == 0 && inter.is_empty() && fin == Some(b'q') {
+                    return match self.gfx_sixel_start(head.params()) {
+                        Some(cap) => StrRoute { cap },
+                        None => StrRoute::SKIP,
+                    };
+                }
                 if pr == b'=' && inter.is_empty() && fin == Some(b's') {
                     match head.params().get(0) {
                         Some(1) => {
@@ -152,6 +159,10 @@ impl Machine {
                 }
                 StrRoute::SKIP
             }
+            StrKind::Apc if head.bytes().first() == Some(&b'G') => match self.gfx_apc_route() {
+                Some(cap) => StrRoute { cap },
+                None => StrRoute::SKIP,
+            },
             _ => StrRoute::SKIP,
         }
     }
@@ -159,7 +170,11 @@ impl Machine {
     pub(crate) fn str_end(&mut self, end: StrEnd) {
         let mode = std::mem::replace(&mut self.strm, StrMode::None);
         let buf = std::mem::take(&mut self.sbuf);
-        if mode != StrMode::None && end.is_ok() {
+        if mode == StrMode::Kitty {
+            self.gfx_apc_end(&buf, end);
+        } else if mode == StrMode::Sixel {
+            self.gfx_sixel_end(end);
+        } else if mode != StrMode::None && end.is_ok() {
             let term: &[u8] = if end == StrEnd::Bel {
                 b"\x07"
             } else {
@@ -315,7 +330,7 @@ impl Machine {
             }
             StrMode::Decrqss => self.decrqss(buf),
             StrMode::Tcap => self.xtgettcap(buf),
-            StrMode::None => {}
+            StrMode::None | StrMode::Kitty | StrMode::Sixel => {}
         }
     }
 

@@ -217,6 +217,16 @@ impl Policy {
         {
             w |= deny::PRIMARY;
         }
+        // Graphics: one sequence carries the image, so `ask` cannot be answered per
+        // sequence and means deny; file media is asked per transmission (T-15 §5).
+        if ask_or_deny(Class::GraphicsDirect) {
+            w |= deny::GRAPHICS_DIRECT;
+        }
+        match self.decide(Class::GraphicsFile, remote) {
+            Decision::Deny => w |= deny::GRAPHICS_FILE,
+            Decision::Ask => w |= deny::GRAPHICS_FILE_ASK,
+            Decision::Allow => {}
+        }
         w
     }
 }
@@ -412,10 +422,13 @@ mod tests {
         );
         assert_eq!(
             p.deny_word(false),
-            0,
-            "nothing the term enforces is denied locally"
+            deny::GRAPHICS_FILE_ASK,
+            "nothing the term enforces is denied locally; image files are asked"
         );
-        assert_eq!(p.deny_word(true), deny::CLIPBOARD_READ | deny::PRIMARY);
+        assert_eq!(
+            p.deny_word(true),
+            deny::CLIPBOARD_READ | deny::PRIMARY | deny::GRAPHICS_FILE
+        );
     }
 
     #[test]

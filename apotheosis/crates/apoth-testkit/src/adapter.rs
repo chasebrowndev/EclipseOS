@@ -242,14 +242,28 @@ impl Driver for TermDriver {
                 shape: c.style.shape * 2 + if c.style.blink { 1 } else { 2 },
             },
             scrollback,
+            images: self
+                .term
+                .placements()
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{} row={} col={} cols={} rows={} z={}",
+                        if p.sixel { "sixel" } else { "kitty" },
+                        p.row,
+                        p.col,
+                        p.cols,
+                        p.rows,
+                        p.z
+                    )
+                })
+                .collect(),
             alt: self.term.on_alternate(),
             hold: self.term.presentation_hold(),
         }
     }
 
     fn has_feature(&self, name: &str) -> bool {
-        // RECONCILE: wire `sixel` to the milestone that lands it (M25); nothing else exists.
-        let _ = name;
-        false
+        name == "sixel"
     }
 }

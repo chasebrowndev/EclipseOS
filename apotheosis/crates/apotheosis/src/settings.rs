@@ -40,6 +40,25 @@ pub(crate) struct ShellSettings {
     pub(crate) env: Vec<(String, String)>,
 }
 
+/// The `graphics.*` keys (T-15 §4). Every pane's store charges one process budget
+/// (`graphics.quota-total`), and decodes run on the worker pool, not inside `feed`.
+fn graphics_config(c: &Config, g: &mut apoth_term::GraphicsConfig) {
+    static BUDGET: std::sync::OnceLock<apoth_term::apoth_image::store::ProcessBudget> =
+        std::sync::OnceLock::new();
+    const MAX_DECODED: u64 = 400 << 20;
+    g.kitty = c.bool("graphics.kitty");
+    g.sixel = c.bool("graphics.sixel");
+    g.inline_decode = false;
+    g.budget = BUDGET.get_or_init(Default::default).clone();
+    let l = &mut g.limits;
+    l.quota = c.bytes("graphics.quota");
+    l.quota_total = c.bytes("graphics.quota-total");
+    l.animation_quota = c.bytes("graphics.animation-quota");
+    let px = u64::try_from(c.int("graphics.max-pixels")).unwrap_or(0);
+    l.max_decoded_bytes = px.saturating_mul(4).min(MAX_DECODED);
+    l.sixel_max_pixels = px;
+}
+
 /// Everything the binary reads from the configuration.
 #[derive(Clone, Debug)]
 pub(crate) struct Settings {
@@ -86,6 +105,8 @@ pub(crate) struct Settings {
     pub(crate) input: InputSettings,
     /// Navigation and sequence-policy keys (T-14 §5-§7, T-18 §3).
     pub(crate) nav: NavSettings,
+    /// `graphics.file-transmission` is not `off` (T-15 §5).
+    pub(crate) graphics_file: bool,
     /// `-o key=value` pairs and diagnostics counts, for the startup log line.
     pub(crate) diagnostics: usize,
 }
@@ -551,6 +572,7 @@ impl Settings {
             lines: usize::try_from(lines).ok().filter(|n| *n > 0),
         };
         term.cursor = CursorStyle { shape, blink };
+        graphics_config(c, &mut term.graphics);
 
         let env = c
             .get("shell.env")
@@ -614,6 +636,7 @@ impl Settings {
             repeat_delay_ms: u32::try_from(delay).ok().filter(|d| *d > 0),
             input: InputSettings::from_config(c),
             nav: NavSettings::from_config(c),
+            graphics_file: c.str("graphics.file-transmission") != Some("off"),
             diagnostics: 0,
         };
         // Off Abyss (and until detection answers) the stock dark scheme. HOOK(T-10 §7):

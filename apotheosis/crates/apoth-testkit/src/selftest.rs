@@ -214,6 +214,7 @@ impl Driver for MiniTerm {
                 shape: 0,
             },
             scrollback: self.hist.clone(),
+            images: Vec::new(),
             alt: false,
             hold: false,
         }

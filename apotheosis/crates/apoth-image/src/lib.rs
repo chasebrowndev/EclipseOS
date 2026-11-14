@@ -2,14 +2,13 @@
 //! Kitty graphics protocol, sixel, iTerm2 inline images, the per-pane image store and quotas.
 //!
 //! Governing spec: T-15 (`docs/ECLIPSEOS_SPECS_APOTHEOSIS.md`). This is the pure, GPU-free
-//! part (M25a): parsers, decoders, the store and its quotas. Placement into the grid and
-//! rendering belong to M25 proper. Nothing here logs payload or path content.
+//! part: parsers, decoders, the store and its quotas. Placement into the grid lives in
+//! `apoth-term` (`graphics`), drawing in `apoth-render` (`image`). Nothing here logs payload
+//! or path content.
 //!
-//! Fuzz targets owed in `apotheosis/fuzz/` (outside this crate): `kitty_apc` feeds
-//! arbitrary bytes to [`kitty::Assembler::push`] (then decodes any completed transfer with
-//! [`kitty::decode_transfer`]); `sixel` feeds arbitrary bytes, split at arbitrary points, to
-//! [`sixel::SixelDecoder::feed`]. Seeds: the fixtures in `tests/`. Both must never panic and
-//! never exceed the configured [`Limits`].
+//! Fuzz targets: `apoth_term::fuzz::fuzz_kitty_apc` and `fuzz_sixel` drive these parsers
+//! through the terminal (with seed corpora under `apoth-term/corpus/`); both must never panic
+//! and never exceed the configured [`Limits`].
 #![forbid(unsafe_code)]
 
 pub mod error;

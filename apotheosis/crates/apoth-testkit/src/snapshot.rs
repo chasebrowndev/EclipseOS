@@ -100,6 +100,10 @@ pub struct Snapshot {
     pub cursor: CursorInfo,
     /// Primary-screen history, oldest first, text only (right-trimmed).
     pub scrollback: Vec<String>,
+    /// Image placements of the active screen, oldest first, one canonical line each:
+    /// `<kind> row=<r> col=<c> cols=<w> rows=<h> z=<z>` (kind `kitty` or `sixel`; the row
+    /// is negative in history).
+    pub images: Vec<String>,
     /// Alternate screen active.
     pub alt: bool,
     /// Synchronized-output presentation hold active.

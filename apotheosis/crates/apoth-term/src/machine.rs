@@ -91,6 +91,10 @@ pub(crate) enum StrMode {
     UserVar,
     Decrqss,
     Tcap,
+    /// Kitty graphics APC (body starts at `G`).
+    Kitty,
+    /// Sixel DCS: bytes stream into the decoder, not `sbuf`.
+    Sixel,
 }
 
 pub(crate) struct Machine {
@@ -161,6 +165,8 @@ pub(crate) struct Machine {
     pub bp_prompted: bool,
     /// The last accepted OSC 7 URI (a block's cwd).
     pub cwd_uri: Option<String>,
+    /// Images (T-15).
+    pub gfx: Box<crate::graphics::Graphics>,
     /// Tests: print one character at a time, bypassing the batching path.
     #[cfg(test)]
     pub no_batch: bool,
@@ -264,6 +270,7 @@ impl Machine {
             blocks: crate::shell::Blocks::default(),
             bp_prompted: false,
             cwd_uri: None,
+            gfx: Box::new(crate::graphics::Graphics::new(&cfg.graphics)),
             #[cfg(test)]
             no_batch: false,
             cfg,
@@ -615,9 +622,10 @@ impl Machine {
             return;
         }
         let (c, y) = (self.cur, self.y);
+        let total: usize = glyphs.iter().map(|g| usize::from(g.width)).sum();
+        self.gfx_text_over(y, x, x + total);
         let attrs = mk_attrs(self.pen, &self.link, self.protected, self.semantic);
         self.panes[c].grid.print_run(y, x, glyphs, &attrs);
-        let total: usize = glyphs.iter().map(|g| usize::from(g.width)).sum();
         self.last = Some((y, x + total - usize::from(tail.1), tail.1));
         self.last_char = Some(tail.0);
         self.last_ascii = tail.0.is_ascii();
@@ -632,6 +640,7 @@ impl Machine {
             let lim = self.limit();
             let n = s.len().min(lim - self.x);
             let (c, y, x) = (self.cur, self.y, self.x);
+            self.gfx_text_over(y, x, x + n);
             let attrs = mk_attrs(self.pen, &self.link, self.protected, self.semantic);
             self.panes[c].grid.print_ascii(y, x, &s[..n], &attrs);
             self.last = Some((y, x + n - 1, 1));
@@ -689,6 +698,7 @@ impl Machine {
             return;
         }
         let (c, y, x) = (self.cur, self.y, self.x);
+        self.gfx_text_over(y, x, x + w);
         if self.irm {
             let right = if self.lrmm && x <= self.right {
                 self.right
@@ -878,6 +888,7 @@ impl Machine {
         // Command records survive RIS (their ids stay unique; their rows may survive in
         // history).
         fresh.blocks = std::mem::take(&mut self.blocks);
+        fresh.gfx.carry_from(&self.gfx);
         *self = fresh;
     }
 
@@ -1038,6 +1049,7 @@ impl Machine {
             return;
         }
         self.cur = 1;
+        self.gfx_clear_alt();
         if clear {
             let (rows, bg) = (self.rows, Color::Default);
             self.panes[1].grid.erase_rows(0, rows - 1, bg, false);
@@ -1060,6 +1072,7 @@ impl Machine {
                 .erase_rows(0, rows - 1, Color::Default, false);
         }
         self.cur = 0;
+        self.gfx_clear_alt();
         self.panes[0].grid.mark_full();
         self.kitty.switch_screen(false);
         self.set_in(bit::ALT_SCREEN, false);
@@ -1140,7 +1153,9 @@ impl Sink for Machine {
         self.str_start(kind, head)
     }
     fn string_put(&mut self, chunk: &[u8]) {
-        if self.strm != StrMode::None {
+        if self.strm == StrMode::Sixel {
+            self.gfx_sixel_put(chunk);
+        } else if self.strm != StrMode::None {
             self.sbuf.extend_from_slice(chunk);
         }
     }

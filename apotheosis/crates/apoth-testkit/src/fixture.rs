@@ -20,6 +20,7 @@
 //!   events "title:abc" "bell"                 // events since the last check
 //!   mode "?25" 1                              // DECRQM Pm: 0 unknown 1 set 2 reset 3 perm-set 4 perm-reset
 //!   scrollback { row "old line" }             // primary history, oldest first
+//!   images { row "kitty row=0 col=0 cols=2 rows=1 z=0" }  // placements, oldest first
 //!   hold #false                               // synchronized-output presentation hold
 //!   alt #true                                 // alternate screen active
 //! }
@@ -120,6 +121,8 @@ pub struct Expect {
     pub modes: Vec<(String, u8)>,
     /// Primary scrollback text.
     pub scrollback: Option<Vec<String>>,
+    /// Image placements (see [`crate::Snapshot::images`]).
+    pub images: Option<Vec<String>>,
     /// Presentation hold.
     pub hold: Option<bool>,
     /// Alternate screen.
@@ -242,6 +245,7 @@ fn parse_expect_node(n: &Node, e: &mut Expect) -> R<bool> {
     match n.name.as_str() {
         "grid" => e.grid = Some(rows_of(n)?),
         "scrollback" => e.scrollback = Some(rows_of(n)?),
+        "images" => e.images = Some(rows_of(n)?),
         "cursor" => {
             known_props(n, &["row", "col", "visible", "shape"])?;
             e.cursor = Some(CursorExp {
@@ -560,6 +564,9 @@ fn write_expect(o: &mut String, e: &Expect, ind: &str) {
     }
     if let Some(s) = &e.scrollback {
         write_rows(o, "scrollback", s, ind);
+    }
+    if let Some(s) = &e.images {
+        write_rows(o, "images", s, ind);
     }
     if let Some(h) = e.hold {
         o.push_str(&format!("{ind}hold #{h}\n"));

@@ -5,8 +5,10 @@
 //! What it draws, back to front:
 //!
 //! 1. window fill: the clear colour of the present pass (premultiplied);
-//! 2. grid: the retained grid texture, composited through the row ring;
-//! 3. cursor: rects, plus the glyph under a block cursor recoloured.
+//! 2. images with negative z (and the pane backdrop they need), clipped to the pane;
+//! 3. grid: the retained grid texture, composited through the row ring;
+//! 4. images with z >= 0, clipped to the pane (T-15 §6, [`crate::image`]);
+//! 5. cursor: rects, plus the glyph under a block cursor recoloured.
 //!
 //! The grid texture holds the finished cell pixels (backgrounds, glyphs, decorations) of the
 //! whole grid. Only damaged rows are redrawn into it, each inside a scissor of its own row
@@ -36,6 +38,7 @@ use crate::colour::TextBlending;
 use crate::cursor::CursorScene;
 use crate::damage::{Op, RowRing};
 use crate::gpu::Gpu;
+use crate::image::{Band, ImagePass, ImageQuad};
 use crate::scene::{GlyphInstance, GridScene, RectInstance};
 
 const SHADER: &str = include_str!("shaders/grid.wgsl");
@@ -91,6 +94,14 @@ pub struct PaneDraw<'a> {
     pub cursor: Option<&'a CursorScene>,
     /// Top-left of the grid in the target, pixels; `None` uses [`RendererConfig::origin`].
     pub origin: Option<(i32, i32)>,
+    /// Image placements under the text (negative z), bottom to top.
+    pub images_below: &'a [ImageQuad<'a>],
+    /// Image placements over the text, bottom to top.
+    pub images_above: &'a [ImageQuad<'a>],
+    /// Premultiplied fill drawn under `images_below` over the pane's grid rect: a pane with
+    /// below-text images builds its scene with transparent default backgrounds, and this
+    /// puts the window-opacity background back underneath the images.
+    pub backdrop: Option<[f32; 4]>,
 }
 
 impl<'a> PaneDraw<'a> {
@@ -102,6 +113,9 @@ impl<'a> PaneDraw<'a> {
             scene,
             cursor,
             origin: None,
+            images_below: &[],
+            images_above: &[],
+            backdrop: None,
         }
     }
 }
@@ -395,6 +409,7 @@ pub struct Renderer {
     cursor_bytes: Vec<u8>,
     chrome_pass: ChromePass,
     chrome: ChromeList,
+    image_pass: ImagePass,
 }
 
 impl Renderer {
@@ -579,6 +594,7 @@ impl Renderer {
             cursor_bytes: Vec::new(),
             chrome_pass: ChromePass::new(gpu, cfg.target_format),
             chrome: ChromeList::new(),
+            image_pass: ImagePass::new(gpu, cfg.target_format),
         }
     }
 
@@ -587,6 +603,12 @@ impl Renderer {
     /// changes and leaves it alone otherwise.
     pub fn chrome_mut(&mut self) -> &mut ChromeList {
         &mut self.chrome
+    }
+
+    /// Image textures cached on the GPU.
+    #[must_use]
+    pub fn image_textures(&self) -> usize {
+        self.image_pass.cached()
     }
 
     /// The configuration in use.
@@ -1184,6 +1206,32 @@ impl Renderer {
                 .write_buffer(&slot.ubo_cursor, 0, &cursor_uni.bytes());
         }
 
+        // Image quads and textures, per pane in input order (slot-less panes draw nothing).
+        let mut img_panes = Vec::with_capacity(input.panes.len());
+        for p in input.panes {
+            let grid = slots
+                .iter()
+                .find(|s| s.key == p.key)
+                .and_then(|s| s.targets.as_ref())
+                .map_or((0, 0), |t| (t.cols * cw, t.rows * ch));
+            img_panes.push((
+                p.origin.unwrap_or(self.cfg.origin),
+                grid,
+                p.backdrop,
+                p.images_below,
+                p.images_above,
+            ));
+        }
+        self.image_pass.prepare(target_size, &img_panes);
+        let full = (0, 0, target_size.0, target_size.1);
+        let clip = |o: (i32, i32), size: (u32, u32)| {
+            let x0 = o.0.clamp(0, target_size.0 as i32) as u32;
+            let y0 = o.1.clamp(0, target_size.1 as i32) as u32;
+            let x1 = (o.0 + size.0 as i32).clamp(0, target_size.0 as i32) as u32;
+            let y1 = (o.1 + size.1 as i32).clamp(0, target_size.1 as i32) as u32;
+            (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
+        };
+
         let [r, g, b, a] = input.clear;
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("present"),
@@ -1203,16 +1251,32 @@ impl Renderer {
             })],
             ..Default::default()
         });
-        for p in input.panes {
+        for (i, p) in input.panes.iter().enumerate() {
             let Some(slot) = slots.iter().find(|s| s.key == p.key) else {
                 continue;
             };
             let Some(t) = slot.targets.as_ref() else {
                 continue;
             };
+            let (below, above) = (
+                self.image_pass.has(i, Band::Below),
+                self.image_pass.has(i, Band::Above),
+            );
+            let c = clip(img_panes[i].0, img_panes[i].1);
+            let visible = c.2 > 0 && c.3 > 0;
+            if below && visible {
+                pass.set_scissor_rect(c.0, c.1, c.2, c.3);
+                self.image_pass.draw(&mut pass, i, Band::Below);
+                pass.set_scissor_rect(full.0, full.1, full.2, full.3);
+            }
             pass.set_pipeline(&self.pipes.composite);
             pass.set_bind_group(0, &t.bind_comp, &[]);
             pass.draw(0..4, 0..1);
+            if above && visible {
+                pass.set_scissor_rect(c.0, c.1, c.2, c.3);
+                self.image_pass.draw(&mut pass, i, Band::Above);
+                pass.set_scissor_rect(full.0, full.1, full.2, full.3);
+            }
             if slot.cursor_rects > 0 {
                 pass.set_pipeline(&self.pipes.rect_cursor);
                 pass.set_bind_group(0, &t.bind_cursor, &[]);

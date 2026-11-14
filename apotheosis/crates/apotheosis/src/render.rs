@@ -18,12 +18,13 @@ use apoth_grid::{Damage, FrameSnapshot};
 use apoth_render::colour::{Palette, Rgb, TextBlending};
 use apoth_render::cursor::{self, CursorScene, CursorShape, CursorState};
 use apoth_render::gpu::{GpuOptions, RenderError};
+use apoth_render::image::ImageQuad;
 use apoth_render::presenter::{PresentOutcome, Presenter, SurfaceOptions, SurfacePresenter};
 use apoth_render::renderer::{FrameInput, PaneDraw, Renderer, RendererConfig};
 use apoth_render::scene::{BuildCtx, GridScene, Highlight, SceneConfig};
 use apoth_render::sched::{Pacing, Poll, SchedConfig, Scheduler};
 use apoth_render::surface::{AlphaRequest, FaultAction, fault_action};
-use apoth_term::CursorInfo;
+use apoth_term::{CursorInfo, ImageDraw};
 use apoth_ui::frame::TabStyle;
 use apoth_ui::palette::PaletteSpec;
 use apoth_ui::tabs::TabSpec;
@@ -32,7 +33,7 @@ use apoth_wl::pace::CommitCtl;
 use apoth_wl::{PaceEvent, Pacer, WlSurfaceHandle};
 
 use crate::glyphs::{COLOR_PAGES, Glyphs, MASK_PAGES, PAGE};
-use crate::hook::ViewDump;
+use crate::hook::{ImageDump, ViewDump};
 use crate::pane::{MainMsg, PaneKey, PaneShared, RenderMsg, now_ns};
 use crate::ui::{Overlay, UiRaster, build_chrome};
 use crate::view::{Source, View, paint};
@@ -286,11 +287,20 @@ struct PaneR {
     show_cursor: bool,
     last_cursor: (usize, usize),
     vdump: Option<ViewDump>,
+    /// Image placements in view (T-15 §6), taken with the snapshot.
+    draws: Vec<ImageDraw>,
+    /// Some image sits under the text: the scene draws default backgrounds transparent and
+    /// the frame puts the background back under the images ([`PaneDraw::backdrop`]).
+    below: bool,
+    /// `below` flipped: the scene and the retained grid start over.
+    restage: bool,
+    idump: Option<ImageDump>,
 }
 
 impl PaneR {
     fn new(v: PaneView) -> PaneR {
         let vdump = if v.first { ViewDump::from_env() } else { None };
+        let idump = if v.first { ImageDump::from_env() } else { None };
         PaneR {
             v,
             scene: GridScene::new(),
@@ -305,6 +315,10 @@ impl PaneR {
             show_cursor: false,
             last_cursor: (usize::MAX, usize::MAX),
             vdump,
+            draws: Vec::new(),
+            below: false,
+            restage: false,
+            idump,
         }
     }
 
@@ -325,7 +339,21 @@ impl PaneR {
         }
         let colors = t.colors();
         self.cur = Some(t.cursor());
+        if t.has_images() {
+            let top = t.grid().history_rows().saturating_sub(self.view.offset());
+            t.image_draws(top, t.rows(), &mut self.draws);
+        } else {
+            self.draws.clear();
+        }
         drop(t);
+        let below = self.draws.iter().any(|d| d.z < 0);
+        if below != self.below {
+            self.below = below;
+            self.restage = true;
+        }
+        if let Some(d) = self.idump.as_mut() {
+            d.write(&self.draws);
+        }
         let fg = pick(colors.0, def.fg, rs.colors.fg);
         let bg = pick(colors.1, def.bg, rs.colors.bg);
         let cc = pick(colors.2, def.cursor, rs.colors.cursor);
@@ -384,9 +412,50 @@ impl PaneR {
         }
     }
 
+    /// The scene configuration of this pane: transparent default backgrounds while an
+    /// image sits under the text.
+    fn scene_cfg(&self, cfg: &SceneConfig) -> SceneConfig {
+        SceneConfig {
+            bg_alpha: if self.below { 0.0 } else { cfg.bg_alpha },
+            ..*cfg
+        }
+    }
+
+    /// The premultiplied pane background under below-text images.
+    fn backdrop(&self, opacity: f32) -> Option<[f32; 4]> {
+        let c = |v: u8| f32::from(v) / 255.0 * opacity;
+        self.below.then(|| {
+            [
+                c(self.pal.bg.0),
+                c(self.pal.bg.1),
+                c(self.pal.bg.2),
+                opacity,
+            ]
+        })
+    }
+
+    /// The image quads, split under and over the text (z < 0 under).
+    fn quads(&self) -> (Vec<ImageQuad<'_>>, Vec<ImageQuad<'_>>) {
+        fn q(d: &ImageDraw) -> ImageQuad<'_> {
+            ImageQuad {
+                key: d.key,
+                width: d.image.width,
+                height: d.image.height,
+                rgba: &d.image.rgba,
+                dst: d.dst,
+                src: d.src,
+            }
+        }
+        (
+            self.draws.iter().filter(|d| d.z < 0).map(q).collect(),
+            self.draws.iter().filter(|d| d.z >= 0).map(q).collect(),
+        )
+    }
+
     /// Rebuild the damaged rows (`full`: every row). Rows still waiting for a glyph.
     fn build(&mut self, glyphs: &mut Glyphs, cfg: &SceneConfig, echo: bool, full: bool) -> usize {
         let metrics = glyphs.metrics();
+        let cfg = &self.scene_cfg(cfg);
         let ctx = BuildCtx {
             cfg,
             palette: &self.pal,
@@ -426,6 +495,7 @@ impl PaneR {
             return;
         }
         let metrics = glyphs.metrics();
+        let cfg = &self.scene_cfg(cfg);
         let ctx = BuildCtx {
             cfg,
             palette: &self.pal,
@@ -613,6 +683,10 @@ fn run(a: RenderArgs) {
                 let mut pending = 0usize;
                 for p in &mut panes {
                     p.snapshot(&rs);
+                    if std::mem::take(&mut p.restage) {
+                        stack.renderer.invalidate(p.v.id);
+                        p.reset_scene();
+                    }
                     pending += p.build(&mut glyphs, &scene_cfg, r.echo, false);
                     for m in p.view.take_out() {
                         let _ = to_main.send(MainMsg::Nav(p.v.id, m));
@@ -686,13 +760,18 @@ fn run(a: RenderArgs) {
                 // frame that is actually committed.
                 ctl.set_frame(r.request_frame);
                 ctl.set_size(stack.presenter.size());
+                let quads: Vec<_> = panes.iter().map(PaneR::quads).collect();
                 let list: Vec<PaneDraw<'_>> = panes
                     .iter()
-                    .map(|p| PaneDraw {
+                    .zip(&quads)
+                    .map(|(p, (below, above))| PaneDraw {
                         key: p.v.id,
                         scene: &p.scene,
                         cursor: p.show_cursor.then_some(&p.cscene),
                         origin: Some(p.v.origin),
+                        images_below: below,
+                        images_above: above,
+                        backdrop: p.backdrop(a),
                     })
                     .collect();
                 let input = FrameInput {
@@ -701,6 +780,7 @@ fn run(a: RenderArgs) {
                 };
                 let outcome = stack.presenter.present(&mut stack.renderer, &input);
                 drop(list);
+                drop(quads);
                 match outcome {
                     PresentOutcome::Presented(st) => {
                         fault_streak = 0;

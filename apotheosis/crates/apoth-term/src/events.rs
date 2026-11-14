@@ -163,6 +163,10 @@ pub struct EventSlot {
     pub vars: VecDeque<UserVar>,
     /// Command started / finished transitions.
     pub commands: VecDeque<CommandEvent>,
+    /// File-type image media wait for consent (T-18 §3 `ask`): the request token. Main
+    /// answers with [`crate::Term::graphics_file_decision`]; the pane's output is held
+    /// until then.
+    pub graphics_file: Option<u64>,
     /// Drop counters.
     pub dropped: Dropped,
 }
@@ -181,6 +185,7 @@ impl Default for EventSlot {
             colors_changed: false,
             vars: VecDeque::with_capacity(VARS_CAP),
             commands: VecDeque::with_capacity(COMMANDS_CAP),
+            graphics_file: None,
             dropped: Dropped::default(),
         }
     }
@@ -200,6 +205,7 @@ impl EventSlot {
             && !self.colors_changed
             && self.vars.is_empty()
             && self.commands.is_empty()
+            && self.graphics_file.is_none()
     }
     /// Forget everything pending (drop counters persist).
     pub fn clear(&mut self) {
@@ -214,6 +220,7 @@ impl EventSlot {
         self.colors_changed = false;
         self.vars.clear();
         self.commands.clear();
+        self.graphics_file = None;
     }
     pub(crate) fn push_mark(&mut self, m: Mark) {
         if self.marks.len() >= MARKS_CAP {
@@ -300,6 +307,9 @@ impl EventSlot {
         for c in &self.commands {
             let what = if c.finished { "finished" } else { "started" };
             v.push(format!("command {} {what}", c.block));
+        }
+        if self.graphics_file.is_some() {
+            v.push("graphics-file".to_string());
         }
         v
     }

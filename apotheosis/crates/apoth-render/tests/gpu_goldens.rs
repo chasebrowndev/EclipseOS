@@ -13,6 +13,7 @@ use apoth_grid::{Attrs, Color, Damage, FrameSnapshot, SnapCell, SnapRow, Style, 
 use apoth_render::colour::{Palette, Rgb, TextBlending};
 use apoth_render::cursor::{self, CursorScene, CursorShape, CursorState};
 use apoth_render::gpu::{Gpu, GpuOptions};
+use apoth_render::image::ImageQuad;
 use apoth_render::presenter::{OffscreenPresenter, PresentOutcome, Presenter};
 use apoth_render::reference::{self, Image, MemAtlas};
 use apoth_render::renderer::{FrameInput, PaneDraw, Renderer, RendererConfig};
@@ -502,12 +503,18 @@ fn two_panes_draw_side_by_side_at_their_origins() {
             scene: &h.scene,
             cursor: None,
             origin: Some((0, 0)),
+            images_below: &[],
+            images_above: &[],
+            backdrop: None,
         },
         PaneDraw {
             key: 2,
             scene: &right,
             cursor: None,
             origin: Some(((pane_w + gap) as i32, 0)),
+            images_below: &[],
+            images_above: &[],
+            backdrop: None,
         },
     ];
     let input = FrameInput {
@@ -534,4 +541,171 @@ fn two_panes_draw_side_by_side_at_their_origins() {
         between.data.iter().all(|b| *b == 0),
         "the gap between the panes is not the clear colour"
     );
+}
+
+fn solid(w: u32, h: u32, px: [u8; 4]) -> Vec<u8> {
+    px.repeat((w * h) as usize)
+}
+
+fn at(img: &Image, x: usize, y: usize) -> [u8; 4] {
+    let i = (y * img.w + x) * 4;
+    img.data[i..i + 4].try_into().unwrap()
+}
+
+fn near(got: [u8; 4], want: [u8; 4], tol: u8, what: &str) {
+    assert!(
+        got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= tol),
+        "{what}: got {got:?}, want {want:?}"
+    );
+}
+
+/// Writes the readback for a human look when `APOTH_IMAGE_DUMP` names a directory.
+fn dump(name: &str, img: &Image) {
+    let Some(dir) = std::env::var_os("APOTH_IMAGE_DUMP") else {
+        return;
+    };
+    let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+    let f = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    let mut enc = png::Encoder::new(f, img.w as u32, img.h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .unwrap()
+        .write_image_data(&img.to_straight())
+        .unwrap();
+}
+
+/// T-15 §6 (RENDERING-35..37): a negative-z image draws under the text over the backdrop, a
+/// positive one over the text, both on the pixel grid at every scale; 1:1 is pixel exact.
+#[test]
+fn images_draw_under_and_over_the_text_on_the_pixel_grid() {
+    let Some(gpu) = gpu() else { return };
+    let red = solid(4, 4, [255, 0, 0, 255]);
+    let blue = solid(4, 4, [0, 0, 255, 128]);
+    let pair = [255, 0, 0, 255, 0, 255, 0, 255];
+    for (cw, ch) in [(8, 16), (10, 20), (12, 24), (16, 32)] {
+        let (cwu, chu) = (cw as usize, ch as usize);
+        let mut h = Harness::new(&gpu, metrics(cw, ch), 6, 3, TextBlending::Native);
+        h.cfg.bg_alpha = 0.0;
+        h.snap.rows = vec![
+            text_row("ab    ", Style::default()),
+            text_row("      ", Style::default()),
+            text_row("      ", Style::default()),
+        ];
+        h.snap.changed = vec![0, 1, 2];
+        {
+            let ctx = BuildCtx {
+                cfg: &h.cfg,
+                palette: &h.pal,
+                metrics: &h.m,
+                highlights: &h.hl,
+            };
+            h.scene
+                .update(&h.snap, Damage::Full, &ctx, false, &mut h.synth);
+        }
+        h.renderer
+            .upload_mask(0, 0, 0, PAGE, PAGE, h.synth.atlas.mask_page(0));
+        // Under cells 0-1 of row 0; over cell 4 of row 1; a 2x1 pair 1:1 at row 2, col 1.
+        let below = [ImageQuad {
+            key: 1,
+            width: 4,
+            height: 4,
+            rgba: &red,
+            dst: [0, 0, 2 * cw, ch],
+            src: [0, 0, 4, 4],
+        }];
+        let above = [
+            ImageQuad {
+                key: 2,
+                width: 4,
+                height: 4,
+                rgba: &blue,
+                dst: [4 * cw, ch, cw, ch],
+                src: [0, 0, 4, 4],
+            },
+            ImageQuad {
+                key: 3,
+                width: 2,
+                height: 1,
+                rgba: &pair,
+                dst: [cw, 2 * ch, 2, 1],
+                src: [0, 0, 2, 1],
+            },
+        ];
+        let panes = [PaneDraw {
+            backdrop: Some([0.1, 0.1, 0.1, 1.0]),
+            images_below: &below,
+            images_above: &above,
+            ..PaneDraw::single(&h.scene, None)
+        }];
+        let input = FrameInput {
+            panes: &panes,
+            clear: [0.0; 4],
+        };
+        match h.pres.present(&mut h.renderer, &input) {
+            PresentOutcome::Presented(_) => {}
+            other => panic!("offscreen present failed: {other:?}"),
+        }
+        let got = h.pres.read_pixels();
+        dump(&format!("images-{cw}x{ch}"), &got);
+        let what = |s: &str| format!("{s} at cell {cw}x{ch}");
+        let bd = [26, 26, 26, 255];
+        // The image under the text shows beside the 6-px synthetic glyph box...
+        near(
+            at(&got, cwu + 7, 0),
+            [255, 0, 0, 255],
+            1,
+            &what("under, no glyph"),
+        );
+        // ...the text draws over it...
+        let fg = h.pal.fg;
+        let edge = (0..chu)
+            .find(|&y| at(&got, 1, y) != [255, 0, 0, 255])
+            .expect("a glyph column over the image");
+        near(
+            at(&got, 1, edge),
+            [fg.0, fg.1, fg.2, 255],
+            2,
+            &what("text over image"),
+        );
+        // ...and its edges land on the cell grid.
+        near(
+            at(&got, 2 * cwu - 1, chu - 1),
+            [255, 0, 0, 255],
+            1,
+            &what("under, last px"),
+        );
+        near(
+            at(&got, 2 * cwu, chu - 1),
+            bd,
+            1,
+            &what("backdrop right of under"),
+        );
+        near(at(&got, 0, chu), bd, 1, &what("backdrop below under"));
+        // Over the text: half blue over the backdrop, exactly on its cell.
+        let over = [13, 13, 141, 255];
+        near(at(&got, 4 * cwu, chu), over, 2, &what("over, first px"));
+        near(
+            at(&got, 5 * cwu - 1, 2 * chu - 1),
+            over,
+            2,
+            &what("over, last px"),
+        );
+        near(at(&got, 4 * cwu - 1, chu), bd, 1, &what("left of over"));
+        near(at(&got, 5 * cwu, chu), bd, 1, &what("right of over"));
+        // 1:1 samples nearest: two exact pixels.
+        assert_eq!(
+            at(&got, cwu, 2 * chu),
+            [255, 0, 0, 255],
+            "{}",
+            what("1:1 px 0")
+        );
+        assert_eq!(
+            at(&got, cwu + 1, 2 * chu),
+            [0, 255, 0, 255],
+            "{}",
+            what("1:1 px 1")
+        );
+        near(at(&got, cwu + 2, 2 * chu), bd, 1, &what("after 1:1"));
+    }
 }

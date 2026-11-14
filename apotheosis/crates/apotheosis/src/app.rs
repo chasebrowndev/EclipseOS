@@ -69,8 +69,8 @@ use crate::mousectl::{Mouse, Out};
 use crate::nav::{self, Nav, PendingConsent, PendingOpen, SearchUi};
 use crate::palette::{self as pal, Palette, Pick, TabItem};
 use crate::pane::{
-    IoArgs, IoThread, MainMsg, PaneEvents, PaneKey, PaneShared, RenderMsg, ResizeReq, WAKE_RESIZE,
-    WAKE_STOP, now_ns, spawn_io,
+    IoArgs, IoThread, MainMsg, PaneEvents, PaneKey, PaneShared, RenderMsg, ResizeReq,
+    WAKE_GRAPHICS_FILE, WAKE_RESIZE, WAKE_STOP, now_ns, spawn_io,
 };
 use crate::paste::{self, Origin};
 use crate::pointer::Geometry;
@@ -926,9 +926,7 @@ impl App {
         let shared = Arc::new(PaneShared::new(term));
         // The sequence policy's deny word, local column (T-18 §3); main re-checks remote
         // panes itself before every clipboard decision.
-        shared
-            .deny
-            .store(self.settings.nav.policy.deny_word(false), Ordering::Release);
+        shared.deny.store(self.deny_word(), Ordering::Release);
 
         let size = PtySize::from_cells(rows as u16, cols as u16, cell.0, cell.1);
         let (argv, login) = match argv {
@@ -1010,6 +1008,7 @@ impl App {
                 to_main: self.to_main.clone(),
                 to_render,
                 hook: DumpHook::for_pane(first, id),
+                workers: self.workers.spawner(),
             },
             wake_tx,
         )
@@ -3116,11 +3115,67 @@ impl App {
                         pane: id,
                         class: Class::ClipboardRead,
                         selection: sel,
+                        token: 0,
                     });
                     self.bar_dismissed = false;
                     self.refresh_bar();
                 }
             },
+        }
+    }
+
+    /// The pane deny word: the policy's local column plus `graphics.file-transmission = off`.
+    fn deny_word(&self) -> u32 {
+        let mut w = self.settings.nav.policy.deny_word(false);
+        if !self.settings.graphics_file {
+            w |= apoth_term::deny::GRAPHICS_FILE;
+            w &= !apoth_term::deny::GRAPHICS_FILE_ASK;
+        }
+        w
+    }
+
+    /// A kitty transmission asks to read a file (T-15 §5, T-18 §3 `graphics-file`): the
+    /// pane's output waits for the answer, so every path answers (a dropped question is a
+    /// deny). Nothing about the file is logged.
+    fn on_graphics_file(&mut self, id: PaneKey, token: u64) {
+        let remote = self.pane_remote(id);
+        let allow = match self.settings.nav.policy.decide(Class::GraphicsFile, remote) {
+            Decision::Allow => true,
+            Decision::Deny => false,
+            Decision::Ask => match self
+                .nav
+                .consents
+                .ask(id, Class::GraphicsFile, Instant::now())
+            {
+                security::Ask::Granted => true,
+                security::Ask::AutoDeny | security::Ask::Busy => false,
+                security::Ask::Show => {
+                    if self.bar_busy() {
+                        self.nav.consents.cancel(id, Class::GraphicsFile);
+                        false
+                    } else {
+                        self.nav.consent = Some(PendingConsent {
+                            pane: id,
+                            class: Class::GraphicsFile,
+                            selection: String::new(),
+                            token,
+                        });
+                        self.bar_dismissed = false;
+                        self.refresh_bar();
+                        return;
+                    }
+                }
+            },
+        };
+        tracing::debug!(class = Class::GraphicsFile.id(), remote, allow, "decided");
+        self.graphics_file_answer(id, token, allow);
+    }
+
+    fn graphics_file_answer(&self, id: PaneKey, token: u64, allow: bool) {
+        let Some(p) = self.panes.get(&id) else { return };
+        p.shared.post_graphics_file(token, allow);
+        if let Some(io) = &p.io {
+            let _ = rustix::io::write(&io.wake, &[WAKE_GRAPHICS_FILE]);
         }
     }
 
@@ -3176,7 +3231,9 @@ impl App {
             };
             self.nav.consents.answer(c.pane, c.class, a, Instant::now());
             self.refresh_bar();
-            if a != Answer::Deny {
+            if c.class == Class::GraphicsFile {
+                self.graphics_file_answer(c.pane, c.token, a != Answer::Deny);
+            } else if a != Answer::Deny {
                 self.osc52_read(c.pane, c.selection);
             }
         } else if let Some(p) = self.nav.open.take() {
@@ -3898,6 +3955,9 @@ impl App {
         if let Some(sel) = e.clip_read.take() {
             self.on_osc52_read(id, sel);
         }
+        if let Some(token) = e.graphics_file.take() {
+            self.on_graphics_file(id, token);
+        }
         self.auto_pane_events(id, &mut e, uri.as_deref());
     }
 
@@ -4140,7 +4200,7 @@ impl App {
             self.send_render_update(f.font);
         }
         let ids: Vec<PaneKey> = self.panes.keys().copied().collect();
-        let deny = self.settings.nav.policy.deny_word(false);
+        let deny = self.deny_word();
         for id in ids {
             self.send_view_settings(id);
             if let Some(p) = self.panes.get(&id) {

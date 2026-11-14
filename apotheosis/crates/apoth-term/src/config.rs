@@ -35,6 +35,13 @@ pub mod deny {
     pub const PRIMARY: u32 = 1 << 8;
     /// `user-vars`: OSC 1337 SetUserVar.
     pub const USER_VAR: u32 = 1 << 9;
+    /// `graphics-direct`: kitty graphics (all of it) and sixel, XTSMGRAPHICS.
+    pub const GRAPHICS_DIRECT: u32 = 1 << 10;
+    /// `graphics-file` denied: file, temp-file and shm media have no effect, no reply.
+    pub const GRAPHICS_FILE: u32 = 1 << 11;
+    /// `graphics-file` is `ask`: the term raises [`crate::EventSlot::graphics_file`] and
+    /// waits for [`crate::Term::graphics_file_decision`].
+    pub const GRAPHICS_FILE_ASK: u32 = 1 << 12;
 }
 
 /// Cursor shape and blink (DECSCUSR).
@@ -63,8 +70,9 @@ pub struct TermConfig {
     pub widths: Widths,
     /// Application SemVer for DA2 and XTVERSION.
     pub version: (u32, u32, u32),
-    /// DA1 advertises sixel (attribute 4); false until M25.
-    pub sixel_advertised: bool,
+    /// Images: caps, quotas, which protocols are on (`graphics.*`, T-15). DA1 advertises
+    /// sixel (attribute 4) when `graphics.sixel` is on.
+    pub graphics: crate::graphics::GraphicsConfig,
     /// Cell size in physical pixels (`w`, `h`) for `CSI 14/16 t` and mode 2048.
     pub cell_px: (u32, u32),
     /// Scrollback limits of the primary screen.
@@ -106,7 +114,7 @@ impl Default for TermConfig {
             osc52_write: true,
             widths: Widths::default(),
             version,
-            sixel_advertised: false,
+            graphics: crate::graphics::GraphicsConfig::default(),
             cell_px: (8, 16),
             scrollback: Limits::default(),
             title_stack_max: 10,
