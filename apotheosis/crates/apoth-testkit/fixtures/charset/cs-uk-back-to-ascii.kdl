@@ -1,0 +1,9 @@
+fixture "cs-uk-back-to-ascii" {
+  desc "cs uk back to ascii (migrated from the apoth-term corpus)"
+  covers "T03-CHARSET"
+  size rows=1 cols=4
+  feed #"\e(A#\e(B#"#
+  grid {
+    row "£#"
+  }
+}

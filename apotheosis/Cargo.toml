@@ -76,3 +76,9 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# opus-decoder 0.1.1 builds a CELT collapse mask in a u8 with `1 << block` for up to 16
+# blocks (celt/vq.rs). Release wraps silently; overflow checks would abort the helper on
+# ordinary libopus streams. Dev and test builds behave like release for that one crate.
+[profile.dev.package.opus-decoder]
+overflow-checks = false

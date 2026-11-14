@@ -1,0 +1,4 @@
+version 1
+/- disabled { a 1; }
+title r#"a "quoted" \n string"#
+shell { argv "/bin/sh" "-c" "echo ${HOME}"; }

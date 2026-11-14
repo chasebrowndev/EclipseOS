@@ -1,0 +1,10 @@
+fixture "ris-resets-sgr" {
+  covers "T03-RIS" "VTCORE-14"
+  size rows=3 cols=10
+  feed #"\e[1;31;4m\ecX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" fg="default" ul="none" attrs=""
+}

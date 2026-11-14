@@ -1,0 +1,10 @@
+fixture "scr-decaln-fills" {
+  desc "scr decaln fills (migrated from the apoth-term corpus)"
+  covers "T03-DECALN"
+  size rows=2 cols=3
+  feed #"\e#8"#
+  grid {
+    row "EEE"
+    row "EEE"
+  }
+}

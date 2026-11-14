@@ -1,0 +1,11 @@
+fixture "sgr-semicolon-4-3-is-underline-and-italic" {
+  desc "`4;3` is two codes, not a curly underline"
+  covers "T03-SGR-UNDERLINE" "T03-SGR-AMBIG" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[4;3mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" ul="single" attrs="italic"
+}

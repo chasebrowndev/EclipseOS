@@ -1,0 +1,9 @@
+fixture "cap-csi-huge-param-clamped" {
+  desc "cap csi huge param clamped (migrated from the apoth-term corpus)"
+  covers "T03-SEQ-ROBUST"
+  size rows=5 cols=4
+  feed #"\e[3;1H\e[99999999999Ax"#
+  grid {
+    row "x"
+  }
+}

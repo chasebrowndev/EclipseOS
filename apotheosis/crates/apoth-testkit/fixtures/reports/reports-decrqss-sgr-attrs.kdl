@@ -1,0 +1,9 @@
+fixture "reports-decrqss-sgr-attrs" {
+  desc "order: bold dim italic underline blink inverse invisible strike overline fg bg ulc"
+  covers "T03-DECRQSS" "VTCORE-23"
+  review "the underline entry is `4:n`; for a plain single underline that reads `4:1` (T-03 table says `4:n`)"
+  size rows=5 cols=10
+  feed #"\e[1;3;4;7;9;31;42m\eP$qm\e\\"#
+  grid
+  replies #"\eP1$r0;1;3;4:1;7;9;31;42m\e\\"#
+}

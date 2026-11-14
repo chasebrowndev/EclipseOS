@@ -1,0 +1,8 @@
+fixture "osc133-d-without-status" {
+  covers "T03-OSC133" "SHELLINTEGRATION-03"
+  review "see osc133-prompt-marks"
+  size rows=3 cols=20
+  feed #"\e]133;D\a"#
+  grid
+  events "mark:D"
+}

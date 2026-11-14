@@ -1,0 +1,9 @@
+fixture "robust-csi-unknown-final" {
+  covers "T03-SEQ-ROBUST"
+  size rows=3 cols=10
+  feed #"\e[5;5;5zX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+}

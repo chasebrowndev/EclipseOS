@@ -1,0 +1,14 @@
+fixture "scroll-decstbm-region" {
+  desc "LF at the bottom margin scrolls only the region; a region not anchored at the top feeds no history"
+  covers "T03-DECSTBM" "VTCORE-15"
+  size rows=5 cols=4
+  feed #"\e[2;4r\e[2;1HA\r\nB\r\nC\r\nD"#
+  grid {
+    row ""
+    row "B"
+    row "C"
+    row "D"
+  }
+  cursor row=3 col=1
+  scrollback
+}

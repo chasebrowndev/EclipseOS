@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-delete-by-z" {
+  desc "d=z removes placements with that z"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=7,C=1,q=1,z=3;/wAA/wAA\e\\"#
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=8,C=1,q=1;/wAA/wAA\e\\"#
+  feed #"\e_Ga=d,d=z,z=3\e\\"#
+  images {
+    row "kitty row=0 col=0 cols=1 rows=1 z=0"
+  }
+}
