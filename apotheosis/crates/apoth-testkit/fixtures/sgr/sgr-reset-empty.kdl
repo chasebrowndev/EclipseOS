@@ -1,0 +1,7 @@
+fixture "sgr-reset-empty" {
+  desc "sgr reset empty (migrated from the apoth-term corpus)"
+  covers "T03-SGR-BASIC"
+  size rows=1 cols=4
+  feed #"\e[1;31m\e[mA"#
+  cell row=0 col=0 fg="default" attrs=""
+}

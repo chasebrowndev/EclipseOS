@@ -47,7 +47,7 @@ Read the root `CLAUDE.md` first. This file only adds crate-local rules.
   state-free model (raise-only classification, budget, clamping); `mod.rs` is the Wayland side and
   the seams the TCB and agent protocol call (`capture_facts`, `read_tree`, `request_action`). It
   consumes the scene filter's class and never decides one. Tests: `tests.rs` (wire + redaction live-tree
-  arm), `fuzz.rs` (COMP-15 §3 loops), `refclient.rs` (reference client over `ec-cataclysm-pub`).
+  arm), `fuzz.rs` (COMP-15 §3 loops), `refclient.rs` (reference client over `ec-term-pub`).
 - `protocols/protected/`: `eclipse_protected_surface_v1` (COMP-19, public socket). Not TCB. `mod.rs` is the
   registry and the Wayland side, `gate.rs` the input rules (physical only; Enter and the slot rectangle
   belong to the slot), `hooks.rs` the stubs the TCB replaces (`TCB-HOOK`: slot card, arming, commit, audit).

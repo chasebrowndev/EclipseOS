@@ -1,0 +1,7 @@
+fixture "sgrt-24-clears-curly" {
+  desc "sgrt 24 clears curly (migrated from the apoth-term corpus)"
+  covers "T03-SGR-AMBIG" "T03-SGR-UNDERLINE"
+  size rows=1 cols=4
+  feed #"\e[4:3m\e[24mA"#
+  cell row=0 col=0 ul="none"
+}

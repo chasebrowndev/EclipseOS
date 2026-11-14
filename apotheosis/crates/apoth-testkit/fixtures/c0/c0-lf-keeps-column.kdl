@@ -1,0 +1,11 @@
+fixture "c0-lf-keeps-column" {
+  desc "LF without LNM keeps the column"
+  covers "T03-C0-EXEC" "VTCORE-14"
+  size rows=3 cols=10
+  feed #"AB\nC"#
+  grid {
+    row "AB"
+    row "  C"
+  }
+  cursor row=1 col=3
+}

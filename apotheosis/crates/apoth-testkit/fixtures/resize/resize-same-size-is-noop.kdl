@@ -1,0 +1,11 @@
+fixture "resize-same-size-is-noop" {
+  desc "resize same size is noop (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=2 cols=3
+  feed #"ab"#
+  resize rows=2 cols=3
+  grid {
+    row "ab"
+  }
+  cursor row=0 col=2
+}

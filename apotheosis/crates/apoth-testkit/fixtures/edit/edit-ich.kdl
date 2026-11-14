@@ -1,0 +1,13 @@
+fixture "edit-ich" {
+  desc "ICH inserts blanks and pushes cells off the right edge"
+  covers "T03-ICH-DCH" "VTCORE-15"
+  size rows=4 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\r\nSTUVWX\e[1;3H\e[2@"#
+  grid {
+    row "AB  CD"
+    row "GHIJKL"
+    row "MNOPQR"
+    row "STUVWX"
+  }
+  cursor row=0 col=2
+}

@@ -1,0 +1,11 @@
+fixture "edit-sd" {
+  desc "edit sd (migrated from the apoth-term corpus)"
+  covers "T03-SU-SD"
+  size rows=3 cols=3
+  feed #"a\r\nb\r\nc\e[T"#
+  grid {
+    row ""
+    row "a"
+    row "b"
+  }
+}

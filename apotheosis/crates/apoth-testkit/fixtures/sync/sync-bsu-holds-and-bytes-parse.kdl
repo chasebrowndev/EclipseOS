@@ -1,0 +1,11 @@
+fixture "sync-bsu-holds-and-bytes-parse" {
+  desc "bytes always parse; the hold is presentation only"
+  covers "T03-SYNC-2026" "VTCORE-17"
+  size rows=3 cols=10
+  feed #"\e[?2026hAB"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+  hold #true
+}

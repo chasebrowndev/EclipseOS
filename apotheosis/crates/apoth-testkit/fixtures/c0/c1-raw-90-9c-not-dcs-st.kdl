@@ -1,0 +1,9 @@
+fixture "c1-raw-90-9c-not-dcs-st" {
+  covers "T03-C1-IGNORED" "VTCORE-13"
+  size rows=3 cols=10
+  feed #"A\x90qB\x9cC"#
+  grid {
+    row "A�qB�C"
+  }
+  cursor row=0 col=6
+}

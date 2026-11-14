@@ -1,0 +1,12 @@
+fixture "edit-il-outside-margin-ignored" {
+  desc "edit il outside margin ignored (migrated from the apoth-term corpus)"
+  covers "T03-IL-DL"
+  size rows=4 cols=3
+  feed #"a\r\nb\r\nc\r\nd\e[1;2r\e[3;1H\e[L"#
+  grid {
+    row "a"
+    row "b"
+    row "c"
+    row "d"
+  }
+}

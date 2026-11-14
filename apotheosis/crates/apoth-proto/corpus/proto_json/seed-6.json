@@ -1,0 +1,1 @@
+{"id":6,"method":"launch","params":{"argv":["sh"],"env":{"A":"b"},"wait":true}}

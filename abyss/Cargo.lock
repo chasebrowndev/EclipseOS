@@ -610,9 +610,9 @@ dependencies = [
  "ec-abyss-render",
  "ec-abyss-wire",
  "ec-brokerd",
- "ec-cataclysm-pub",
  "ec-policy-eval",
  "ec-protocols",
+ "ec-term-pub",
  "ec-theme",
  "ed25519-dalek",
  "kdl",
@@ -731,10 +731,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ec-cataclysm-pub"
-version = "0.2.2"
-
-[[package]]
 name = "ec-claude-agent"
 version = "0.2.2"
 dependencies = [
@@ -839,6 +835,10 @@ dependencies = [
  "rustix 1.1.6",
  "zeroize",
 ]
+
+[[package]]
+name = "ec-term-pub"
+version = "0.2.2"
 
 [[package]]
 name = "ec-theme"

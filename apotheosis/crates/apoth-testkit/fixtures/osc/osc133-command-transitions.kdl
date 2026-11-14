@@ -1,0 +1,7 @@
+fixture "osc133-command-transitions" {
+  desc "C starts a command, D or a new primary prompt finishes it"
+  covers "T03-OSC133-OPTS" "AUTOMATION-13"
+  size rows=4 cols=20
+  feed #"\e]133;A\a$ \e]133;B\aa\r\n\e]133;C\ao\r\n\e]133;D;1\a\e]133;A\a$ \e]133;B\ab\e]133;C\a\e]133;A\a"#
+  events "mark:A" "mark:B" "mark:C" "mark:D;1" "mark:A" "mark:B" "mark:C" "mark:A" "command:started" "command:finished" "command:started" "command:finished"
+}

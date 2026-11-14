@@ -1,0 +1,11 @@
+fixture "sgr-param-saturates-then-ignored" {
+  covers "T03-SGR-BASIC" "VTCORE-16"
+  review "a parameter beyond u32 saturates (T-01 section 2.3) and is then an unknown SGR code"
+  size rows=2 cols=20
+  feed #"\e[4294967296;1mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" attrs="bold"
+}

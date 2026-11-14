@@ -1,0 +1,12 @@
+fixture "resize-shrink-rows-pushes-to-scrollback" {
+  desc "resize shrink rows pushes to scrollback (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=3 cols=3
+  feed #"a\r\nb\r\nc"#
+  resize rows=2 cols=3
+  grid {
+    row "b"
+    row "c"
+  }
+  cursor row=1 col=1
+}

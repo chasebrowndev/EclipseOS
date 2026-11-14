@@ -1,0 +1,7 @@
+fixture "alt-1049-restores-sgr-pen" {
+  desc "alt 1049 restores sgr pen (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=1 cols=5
+  feed #"\e[1m\e[?1049h\e[0m\e[?1049lX"#
+  cell row=0 col=0 attrs="bold"
+}

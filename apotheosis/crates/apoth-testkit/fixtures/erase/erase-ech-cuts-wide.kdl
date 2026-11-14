@@ -1,0 +1,9 @@
+fixture "erase-ech-cuts-wide" {
+  covers "T03-ECH" "T03-WIDE" "VTCORE-08"
+  size rows=2 cols=6
+  feed #"A日B\e[1;3H\e[1X"#
+  grid {
+    row "A  B"
+  }
+  cursor row=0 col=2
+}
