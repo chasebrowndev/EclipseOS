@@ -36,6 +36,9 @@ const FIRST_CHAR_MULT: i32 = 2;
 pub(crate) enum Mode {
     Actions,
     Tabs,
+    /// The Open menu or the Open-with picker (T-14 §11): rows supplied by the opener, not
+    /// listed under `>`.
+    Open,
 }
 
 impl Mode {
@@ -45,6 +48,7 @@ impl Mode {
         match self {
             Mode::Actions => "actions",
             Mode::Tabs => "tabs",
+            Mode::Open => "open",
         }
     }
 
@@ -52,6 +56,7 @@ impl Mode {
         match self {
             Mode::Actions => "Run an action (> for modes)",
             Mode::Tabs => "Go to tab (> for modes)",
+            Mode::Open => "Open",
         }
     }
 }
@@ -65,6 +70,8 @@ pub(crate) enum Pick {
     /// Show tab `index` (0-based) of the window.
     Tab(usize),
     Mode(Mode),
+    /// A row of the Open menu or picker.
+    Open(crate::open::OpenPick),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,6 +79,8 @@ pub(crate) struct Row {
     pub(crate) title: String,
     pub(crate) hint: Option<String>,
     pub(crate) pick: Pick,
+    /// The title is third-party text (a tab title, an app name): drawn as program text.
+    pub(crate) program: bool,
 }
 
 /// A tab as the palette lists it.
@@ -90,6 +99,9 @@ pub(crate) struct Palette {
     pub(crate) selected: usize,
     /// First row in view.
     pub(crate) scroll: usize,
+    /// `Mode::Open`: rows listed first whatever the query, then the rows the query filters.
+    pub(crate) pinned: Vec<Row>,
+    pub(crate) source: Vec<Row>,
 }
 
 fn lower(b: u8) -> u8 {
@@ -210,6 +222,8 @@ impl Palette {
             rows: Vec::new(),
             selected: 0,
             scroll: 0,
+            pinned: Vec::new(),
+            source: Vec::new(),
         };
         p.query = truncate(query, MAX_QUERY).to_owned();
         p
@@ -230,6 +244,7 @@ impl Palette {
                             title: m.name().to_owned(),
                             hint: (*m == self.mode).then(|| "current".to_owned()),
                             pick: Pick::Mode(*m),
+                            program: false,
                         },
                     ));
                 }
@@ -237,6 +252,24 @@ impl Palette {
         } else {
             match self.mode {
                 Mode::Actions => self.action_rows(q, km, &mut rows),
+                Mode::Open => {
+                    for (i, r) in self.pinned.iter().enumerate() {
+                        rows.push((i32::MAX, i, r.clone()));
+                    }
+                    let base = self.pinned.len();
+                    for (i, r) in self.source.iter().enumerate() {
+                        let hit = match (
+                            score(q, &r.title),
+                            r.hint.as_deref().and_then(|h| score(q, h)),
+                        ) {
+                            (Some(a), Some(b)) => Some(a.max(b)),
+                            (a, b) => a.or(b),
+                        };
+                        if let Some(s) = hit {
+                            rows.push((s, base + i, r.clone()));
+                        }
+                    }
+                }
                 Mode::Tabs => {
                     for (i, t) in tabs.iter().enumerate() {
                         if let Some(s) = score(q, &t.title) {
@@ -251,6 +284,7 @@ impl Palette {
                                         format!("Tab {}", i + 1)
                                     }),
                                     pick: Pick::Tab(i),
+                                    program: true,
                                 },
                             ));
                         }
@@ -278,6 +312,7 @@ impl Palette {
                     title: format!("Run {}", q.trim()),
                     hint: km.binding_of(&a),
                     pick: Pick::Run(a),
+                    program: false,
                 },
             ));
         }
@@ -316,6 +351,7 @@ impl Palette {
                     title: info.title.to_owned(),
                     hint,
                     pick,
+                    program: false,
                 },
             ));
         }
@@ -521,6 +557,35 @@ mod tests {
         assert!(!p.backspace());
         let long = "é".repeat(200);
         assert!(Palette::new(Mode::Actions, &long).query.len() <= MAX_QUERY);
+    }
+
+    #[test]
+    fn open_mode_pins_rows_and_filters_the_rest() {
+        use crate::open::OpenPick;
+        let row = |t: &str, pick| Row {
+            title: t.into(),
+            hint: None,
+            pick: Pick::Open(pick),
+            program: true,
+        };
+        let mut p = Palette::new(Mode::Open, "");
+        p.pinned = vec![row("Remember for image/png", OpenPick::ToggleRemember)];
+        p.source = vec![
+            row("GIMP", OpenPick::Launch(0)),
+            row("Firefox", OpenPick::Launch(1)),
+        ];
+        p.refresh(&km(), &[]);
+        assert_eq!(p.rows.len(), 3);
+        assert_eq!(p.rows[1].title, "GIMP");
+        p.set_query("fox");
+        p.refresh(&km(), &[]);
+        assert_eq!(p.rows.len(), 2);
+        assert_eq!(p.rows[0].pick, Pick::Open(OpenPick::ToggleRemember));
+        assert_eq!(p.rows[1].title, "Firefox");
+        // Open is not a `>` mode.
+        p.set_query(">");
+        p.refresh(&km(), &[]);
+        assert!(!p.rows.iter().any(|r| r.pick == Pick::Mode(Mode::Open)));
     }
 
     #[test]

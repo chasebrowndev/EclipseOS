@@ -66,8 +66,13 @@ pub(crate) struct HlColours {
 pub(crate) enum NavMsg {
     /// Search progress for the bar.
     Search(Status),
-    /// A hint label was typed: run the matcher's action on `text`.
-    Hint { kind: HintKind, text: String },
+    /// A hint label was typed: run the matcher's action on `text`; `menu` when the label was
+    /// typed in upper case (the Open menu instead of the default action, T-14 §11).
+    Hint {
+        kind: HintKind,
+        text: String,
+        menu: bool,
+    },
     /// Hint mode ended (picked, cancelled, nothing to label, or the screen changed).
     HintsEnded,
     /// The hovered hyperlink's URI (the tooltip), or none.
@@ -76,6 +81,14 @@ pub(crate) enum NavMsg {
     Open { uri: String, visible: String },
     /// Copy mode ended without main asking (the screen switched).
     CopyModeEnded,
+    /// The answer to `TakeTarget`: the recognised text (`visible` = the link's visible text),
+    /// or `None` when there is nothing there.
+    OpenTarget {
+        intent: crate::open::Intent,
+        found: Option<(crate::open::RawKind, String, String)>,
+        /// Asked at a cell (a right-click), not for the selection.
+        at_cell: bool,
+    },
 }
 
 struct HintItem {
@@ -89,6 +102,8 @@ struct HintItem {
 struct HintState {
     items: Vec<HintItem>,
     typed: String,
+    /// A label character was typed in upper case.
+    menu: bool,
 }
 
 struct CopyCur {
@@ -381,6 +396,12 @@ pub(crate) enum ViewCmd {
     /// Scroll to the previous (older) or next prompt.
     BlockJump {
         older: bool,
+    },
+    /// Find what an `open.*` action or a right-click opens (T-14 §11): at viewport cell
+    /// `(row, col)` the OSC 8 link, URL or path covering it; with no cell the selection.
+    TakeTarget {
+        at: Option<(usize, usize)>,
+        intent: crate::open::Intent,
     },
 }
 
@@ -741,6 +762,7 @@ impl View {
                     self.hints = Some(HintState {
                         items,
                         typed: String::new(),
+                        menu: false,
                     });
                 }
                 self.dirty = true;
@@ -769,6 +791,49 @@ impl View {
                     let visible = link_text(t, abs, col, &uri);
                     self.out.push(NavMsg::Open { uri, visible });
                 }
+            }
+            ViewCmd::TakeTarget { at, intent } => {
+                use crate::open::RawKind;
+                let found = match at {
+                    None => self.text(t).map(|s| {
+                        let s = s.trim().to_string();
+                        (RawKind::Unknown, s.clone(), s)
+                    }),
+                    Some((row, col)) => {
+                        let top = self.top_abs(t);
+                        let abs = top + row;
+                        if let Some((_, uri)) = t.grid().link_at_abs(abs, col) {
+                            let visible = link_text(t, abs, col, &uri);
+                            Some((RawKind::Link, uri, visible))
+                        } else {
+                            let kinds = [HintKind::Url, HintKind::Path];
+                            find_hints(
+                                t,
+                                top,
+                                t.rows(),
+                                &kinds,
+                                usize::MAX,
+                                "abcdefghijklmnopqrstuvwxyz",
+                            )
+                            .into_iter()
+                            .find(|i| i.start <= (abs, col) && (abs, col) <= i.end)
+                            .map(|i| {
+                                let k = if i.kind == HintKind::Url {
+                                    RawKind::Url
+                                } else {
+                                    RawKind::Path
+                                };
+                                (k, i.text.clone(), i.text)
+                            })
+                        }
+                    }
+                };
+                let found = found.filter(|f| !f.1.is_empty());
+                self.out.push(NavMsg::OpenTarget {
+                    intent,
+                    found,
+                    at_cell: at.is_some(),
+                });
             }
             ViewCmd::BlockJump { older } => {
                 let g = t.grid();
@@ -877,6 +942,10 @@ impl View {
         };
         if c == '\u{8}' {
             h.typed.pop();
+        } else if c.is_uppercase() && !h.items.iter().any(|i| i.label.contains(c)) {
+            // Shift on a lower-case alphabet: the same label, asking for the menu.
+            h.menu = true;
+            h.typed.extend(c.to_lowercase());
         } else {
             h.typed.push(c);
         }
@@ -887,6 +956,7 @@ impl View {
                 self.out.push(NavMsg::Hint {
                     kind: it.kind,
                     text: it.text.clone(),
+                    menu: h.menu,
                 });
                 self.hints = None;
                 self.out.push(NavMsg::HintsEnded);
@@ -1710,7 +1780,8 @@ mod tests {
         let out = v.take_out();
         assert!(out.contains(&NavMsg::Hint {
             kind: HintKind::Url,
-            text: "https://x.org/a".into()
+            text: "https://x.org/a".into(),
+            menu: false,
         }));
         assert!(out.contains(&NavMsg::HintsEnded));
         // A key that matches no label ends hint mode.
@@ -1758,6 +1829,95 @@ mod tests {
         assert_eq!(v.take_out(), vec![NavMsg::Link(None)]);
         v.apply(&mut t, ViewCmd::Activate { row: 0, col: 0 });
         assert!(v.take_out().is_empty(), "no link, nothing to open");
+    }
+
+    #[test]
+    fn upper_case_hint_label_asks_for_the_menu() {
+        let mut t = term(3, 40, "see https://x.org/a, commit 1a2b3c4d\r\n");
+        let mut v = View::new();
+        let hints = ViewCmd::Hints {
+            kinds: Vec::new(),
+            alphabet: "ab".into(),
+            max: 10,
+        };
+        v.apply(&mut t, hints);
+        v.apply(&mut t, ViewCmd::HintKey('B'));
+        assert!(v.take_out().contains(&NavMsg::Hint {
+            kind: HintKind::Url,
+            text: "https://x.org/a".into(),
+            menu: true,
+        }));
+        // An alphabet with upper-case letters keeps them as labels.
+        v.apply(
+            &mut t,
+            ViewCmd::Hints {
+                kinds: Vec::new(),
+                alphabet: "AB".into(),
+                max: 10,
+            },
+        );
+        v.apply(&mut t, ViewCmd::HintKey('B'));
+        assert!(
+            v.take_out()
+                .iter()
+                .any(|m| matches!(m, NavMsg::Hint { menu: false, .. }))
+        );
+    }
+
+    #[test]
+    fn take_target_finds_link_url_path_or_selection() {
+        use crate::open::{Intent, RawKind};
+        let mut t = term(
+            3,
+            60,
+            "\x1b]8;;https://e.example/\x1b\\here\x1b]8;;\x1b\\ https://x.org /tmp/a.png zz",
+        );
+        let mut v = View::new();
+        let at = |v: &mut View, t: &mut Term, col| {
+            v.apply(
+                t,
+                ViewCmd::TakeTarget {
+                    at: Some((0, col)),
+                    intent: Intent::Menu,
+                },
+            );
+            match v.take_out().pop() {
+                Some(NavMsg::OpenTarget { found, at_cell, .. }) => {
+                    assert!(at_cell);
+                    found
+                }
+                other => panic!("{other:?}"),
+            }
+        };
+        assert_eq!(
+            at(&mut v, &mut t, 1),
+            Some((RawKind::Link, "https://e.example/".into(), "here".into()))
+        );
+        assert_eq!(
+            at(&mut v, &mut t, 8).map(|f| (f.0, f.1)),
+            Some((RawKind::Url, "https://x.org".into()))
+        );
+        assert_eq!(
+            at(&mut v, &mut t, 25).map(|f| (f.0, f.1)),
+            Some((RawKind::Path, "/tmp/a.png".into()))
+        );
+        assert_eq!(at(&mut v, &mut t, 31), None);
+        // No cell: the selection, or nothing.
+        v.apply(
+            &mut t,
+            ViewCmd::TakeTarget {
+                at: None,
+                intent: Intent::Default,
+            },
+        );
+        assert_eq!(
+            v.take_out(),
+            vec![NavMsg::OpenTarget {
+                intent: Intent::Default,
+                found: None,
+                at_cell: false
+            }]
+        );
     }
 
     #[test]

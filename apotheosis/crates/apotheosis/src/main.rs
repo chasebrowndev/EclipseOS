@@ -15,6 +15,7 @@ mod layout;
 mod mousectl;
 mod nav;
 mod notify;
+mod open;
 mod palette;
 mod pane;
 mod paste;

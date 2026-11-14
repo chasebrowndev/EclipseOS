@@ -61,15 +61,17 @@ use rustix::io::Errno;
 mod a11y;
 mod automation;
 mod media;
+mod open;
 mod serve;
 
 pub(crate) use a11y::A11yMsg;
+pub(crate) use open::OpenMsg;
 
 use crate::binds::{self, KeyState, Keymap, NameBuf, Resolved};
 use crate::hook::{DumpHook, MuxDump};
 use crate::layout::{self, PanePx, WinLayout, WinMetrics};
 use crate::mousectl::{Mouse, Out};
-use crate::nav::{self, Nav, PendingConsent, PendingOpen, SearchUi};
+use crate::nav::{self, Nav, PendingConsent, SearchUi};
 use crate::palette::{self as pal, Palette, Pick, TabItem};
 use crate::pane::{
     IoArgs, IoThread, MainMsg, PaneEvents, PaneKey, PaneShared, RenderMsg, ResizeReq,
@@ -218,6 +220,8 @@ struct Pane {
     title: String,
     /// The working directory the program reported (OSC 7), when local.
     cwd: Option<PathBuf>,
+    /// The host an OSC 7 directory named when it was not this one (its paths are remote).
+    cwd_host: Option<String>,
     /// How the child ended, once reaped.
     exit: Option<ExitStatus>,
     eof: bool,
@@ -392,6 +396,8 @@ pub(crate) struct App {
     auto: automation::Auto,
     // ---- media windows (`apoth icat --ext`, T-16 §1.1)
     media: media::Media,
+    // ---- "Open with" (T-14 §11)
+    open: open::OpenState,
 }
 
 /// A paste held back by the guard (T-18 §4). The content is held until answered, never logged.
@@ -524,6 +530,7 @@ pub(crate) fn run(
         nav: Nav::default(),
         auto: automation::Auto::default(),
         media: media::Media::default(),
+        open: open::OpenState::default(),
     };
     app.start_ctl();
     app.start_a11y();
@@ -657,6 +664,9 @@ const HANDLED: &[&str] = &[
     "macro.run",
     "notify",
     "open",
+    "open.default",
+    "open.menu",
+    "open.with",
     "palette.close",
     "palette.open",
     "palette.toggle",
@@ -1074,6 +1084,7 @@ impl App {
             origin: (0, 0),
             title: String::new(),
             cwd: None,
+            cwd_host: None,
             exit: None,
             eof: false,
         })
@@ -1238,11 +1249,10 @@ impl App {
         let p = self.palette.as_ref()?;
         let n = apoth_ui::palette::max_rows(area);
         let (rows, selected) = p.window(n);
-        let program = p.mode == pal::Mode::Tabs;
         let entries = rows
             .iter()
             .map(|r| Entry {
-                title: if program {
+                title: if r.program {
                     TextRun::program(&r.title, size::BODY)
                 } else {
                     TextRun::interface(r.title.clone(), size::BODY)
@@ -1256,7 +1266,13 @@ impl App {
         Some(PaletteSpec {
             id: PALETTE_ID,
             query: p.query.clone(),
-            placeholder: TextRun::interface(p.mode.placeholder(), size::BODY),
+            placeholder: match self
+                .open_sheet_title()
+                .filter(|_| p.mode == pal::Mode::Open)
+            {
+                Some(t) => TextRun::program(&t, size::BODY),
+                None => TextRun::interface(p.mode.placeholder(), size::BODY),
+            },
             entries,
             selected,
             total: p.rows.len(),
@@ -1402,6 +1418,11 @@ impl App {
                     p.rows.len(),
                     p.query
                 );
+                if p.mode == pal::Mode::Open
+                    && let Some(r) = p.rows.first()
+                {
+                    let _ = writeln!(s, "palette first {}", r.title);
+                }
             }
             None => s.push_str("palette closed\n"),
         }
@@ -1603,6 +1624,7 @@ impl App {
         let tab = self.session.tab_of(id);
         let code = self.panes.get(&id).and_then(|p| p.exit).map(exit_code_of);
         self.ctl_emit(Event::new(EventKind::PaneClosed, Cause::Child), Some(id));
+        self.open_pane_gone(id, code);
         self.ctl_pane_gone(id, code);
         let _ = self.session.close_pane(id);
         if let Some(t) = tab
@@ -2089,6 +2111,7 @@ impl App {
     }
 
     fn close_palette(&mut self) {
+        self.open_sheet_closed();
         if self.palette.take().is_some() {
             self.ui_state = UiState::default();
             self.send_layout();
@@ -2203,6 +2226,7 @@ impl App {
                 }
                 self.palette_changed();
             }
+            Pick::Open(o) => self.open_pick(o),
         }
     }
 
@@ -2573,6 +2597,11 @@ impl App {
                 }
                 self.spawn_open(&target, argv);
             }
+            A::OpenDefault { target, placement } => {
+                self.open_action(crate::open::Intent::Default, target, placement);
+            }
+            A::OpenWith { target } => self.open_action(crate::open::Intent::Picker, target, None),
+            A::OpenMenu { target } => self.open_action(crate::open::Intent::Menu, target, None),
             A::ConfigReload {} => self.start_reload(),
             A::Notify {
                 title,
@@ -3081,16 +3110,8 @@ impl App {
                     self.send_layout();
                 }
             }
-            NavMsg::Hint { kind, text } => {
-                if kind.opens() {
-                    // A link hint's visible text is not the URI: always show it first.
-                    let visible = if kind == crate::hints::Kind::Link {
-                        ""
-                    } else {
-                        text.as_str()
-                    };
-                    self.open_link(&text, visible);
-                } else {
+            NavMsg::Hint { kind, text, menu } => {
+                if !self.open_hint(id, kind, &text, menu) {
                     self.on_copied(Copied {
                         target: CopyTarget::Clipboard,
                         text,
@@ -3101,6 +3122,7 @@ impl App {
                 if self.nav.hints == Some(id) {
                     self.nav.hints = None;
                 }
+                self.open_hints_ended(id);
             }
             NavMsg::Link(uri) => {
                 if self.focused() == Some(id) && self.nav.link_tip != uri {
@@ -3108,31 +3130,21 @@ impl App {
                     self.send_layout();
                 }
             }
-            NavMsg::Open { uri, visible } => self.open_link(&uri, &visible),
+            NavMsg::Open { uri, visible } => {
+                // An open-modifier click on an OSC 8 link: its default (T-14 §5, §11).
+                let (intent, raw) = (crate::open::Intent::Default, crate::open::RawKind::Link);
+                self.open_request(id, intent, raw, uri, visible, None);
+            }
+            NavMsg::OpenTarget {
+                intent,
+                found,
+                at_cell,
+            } => self.open_target(id, intent, found, at_cell),
             NavMsg::CopyModeEnded => {
                 if self.nav.copy == Some(id) {
                     self.exit_copy();
                 }
             }
-        }
-    }
-
-    /// T-14 §5: allow-listed scheme, no remote `file://`, and the full URI confirmed first
-    /// when it differs from the visible text.
-    fn open_link(&mut self, uri: &str, visible: &str) {
-        match security::check_link(uri, &self.settings.nav.schemes, &self.hostname) {
-            Err(e) => {
-                tracing::info!(reason = e.reason(), "link not opened");
-                self.handle.ring_bell(Some(self.win));
-            }
-            Ok(()) if security::needs_reveal(uri, visible) => {
-                self.nav.open = Some(PendingOpen {
-                    uri: uri.to_string(),
-                });
-                self.bar_dismissed = false;
-                self.refresh_bar();
-            }
-            Ok(()) => self.spawn_open(uri, None),
         }
     }
 
@@ -3400,7 +3412,10 @@ impl App {
         } else if let Some(p) = self.nav.open.take() {
             self.refresh_bar();
             if answer == 0 {
-                self.spawn_open(&p.uri, None);
+                match p.choice {
+                    Some(c) => self.open_confirmed(*c),
+                    None => self.spawn_open(&p.uri, None),
+                }
             }
         }
     }
@@ -4214,6 +4229,7 @@ impl App {
             }
             MainMsg::Loaded(r) => self.on_loaded(*r),
             MainMsg::MediaStopped(id) => self.media_stopped(id),
+            MainMsg::Open(m) => self.on_open(m),
             MainMsg::Closed(id, status) => {
                 self.closing = self.closing.saturating_sub(1);
                 if let Some(i) = self.forced.iter().position(|f| *f == id) {
@@ -4268,6 +4284,14 @@ impl App {
             let path = crate::ctl::osc7::local_path(&uri, &self.hostname);
             if let Some(p) = self.panes.get_mut(&id) {
                 p.cwd = path.clone();
+                p.cwd_host = if path.is_some() {
+                    None
+                } else {
+                    uri.strip_prefix("file://")
+                        .and_then(|r| r.split('/').next())
+                        .filter(|h| !h.is_empty())
+                        .map(crate::open::clean_host)
+                };
             }
             let mut ev = Event::new(EventKind::CwdChanged, Cause::Sequence);
             if let Some(path) = path {

@@ -231,6 +231,8 @@ pub(crate) enum MainMsg {
     /// A worker finished a config load (T-10 §4): main diffs and applies it.
     /// A media window's threads stopped: its surface can be destroyed.
     MediaStopped(u64),
+    /// "Open with" worker results (T-14 §11).
+    Open(crate::app::OpenMsg),
     Loaded(
         Box<(
             apoth_config::reload::Reloader,

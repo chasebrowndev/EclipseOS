@@ -98,6 +98,8 @@ pub(crate) const DEFAULTS: &[DefaultBind] = &[
         &[("repeat", "false")],
     ),
     ("ctrl+shift+o", "hints.start", &[("repeat", "false")]),
+    // "Open with" (T-14 §11): the menu for the selection, else hints for what can open.
+    ("ctrl+shift+m", "open.menu", &[("repeat", "false")]),
     (
         "ctrl+shift+k",
         "block.jump prev",
