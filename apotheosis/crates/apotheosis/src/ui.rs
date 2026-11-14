@@ -16,7 +16,7 @@ use apoth_render::chrome::{ChromeList, ChromeRect, ChromeShadow, ChromeSink};
 use apoth_ui::bar::{self, BarSpec, BarState};
 use apoth_ui::text::{Measure, TextRun, Weight};
 use apoth_ui::tokens::{Palette, Rgba, metrics, space};
-use apoth_ui::{Cmd, DrawList, IconId, Point, Rect, UiState, WidgetId};
+use apoth_ui::{Cmd, DrawList, IconId, Point, Rect, WidgetId};
 
 use crate::settings::ErrorPos;
 
@@ -233,6 +233,8 @@ impl UiRaster {
                         IconId::Plus => ("+", Weight::Regular),
                         IconId::Warning => ("!", Weight::Strong),
                         IconId::Shield => ("i", Weight::Strong),
+                        IconId::ArrowUp => ("\u{2191}", Weight::Regular),
+                        IconId::ArrowDown => ("\u{2193}", Weight::Regular),
                     };
                     let mut run = TextRun::interface(glyph, rect.h * 0.9);
                     run.weight = weight;
@@ -254,6 +256,23 @@ pub(crate) struct Overlay {
     pub(crate) spec: BarSpec,
     /// When the bar appeared: its first 500 ms draw the buttons as inert (the input guard).
     pub(crate) shown_at: std::time::Instant,
+}
+
+impl Overlay {
+    /// A bar takes room at the top of the window; a sheet (a spec with a body) floats over it.
+    pub(crate) fn takes_room(&self) -> bool {
+        self.spec.body.is_none()
+    }
+}
+
+/// Where the search sheet may sit, in interface units: below the overlay bar and the strip.
+pub(crate) fn search_area(window: Rect, strip: Option<Rect>, bar_room: bool) -> Rect {
+    let inset = if bar_room {
+        metrics::BAR_H + space::SM
+    } else {
+        0.0
+    };
+    apoth_ui::searchbar::free_area(window, strip, inset)
 }
 
 /// Physical pixels the bar takes from the top of the pane (it never overlaps the grid, so a
@@ -308,41 +327,53 @@ pub(crate) fn build_chrome(
             let l = apoth_ui::pane::layout(f);
             apoth_ui::pane::draw(f, &l, &pal, &mut dl);
         }
+        if let Some(r) = model.bell {
+            apoth_ui::pane::draw_bell(r, &pal, &mut dl);
+        }
         if let Some((strip, tabs)) = &model.strip {
             let l = apoth_ui::tabs::layout(*strip, STRIP_ID, tabs);
             apoth_ui::tabs::draw(&l, tabs, model.tab_style, &model.ui, &pal, &mut dl);
         }
-        if let Some(o) = overlay {
-            let l = bar::layout(area, &o.spec, &measure);
+        if let Some(o) = overlay.filter(|o| o.takes_room()) {
+            let l = bar::layout(area, &o.spec, &apoth_ui::text::geometry());
             bar::draw(
                 &l,
                 &o.spec,
                 &BarState { shown_at_ms: 0 },
                 age_ms,
-                &UiState::default(),
+                &model.ui,
                 &pal,
                 &mut dl,
             );
         }
-        if let Some(f) = &model.float {
-            // HOOK(apoth-frontend): an interim bottom bar from the bar primitives; the
-            // glass search field and tooltip design are the frontend pass's.
-            let h = metrics::BAR_H + 2.0 * space::SM;
-            let (_, bottom) = area.split_bottom(h);
-            let l = bar::layout(bottom, f, &measure);
-            bar::draw(
-                &l,
-                f,
-                &BarState { shown_at_ms: 0 },
-                u64::MAX,
-                &UiState::default(),
-                &pal,
-                &mut dl,
+        if let Some(sp) = &model.search {
+            let free = search_area(
+                area,
+                model.strip.as_ref().map(|s| s.0),
+                overlay.is_some_and(Overlay::takes_room),
             );
+            let l = apoth_ui::searchbar::layout(free, sp, &apoth_ui::text::geometry());
+            apoth_ui::searchbar::draw(&l, sp, &model.ui, &pal, &measure, &mut dl);
+        }
+        if let Some(t) = &model.tooltip {
+            let r = apoth_ui::tooltip::layout(area, t, &measure);
+            apoth_ui::tooltip::draw(r, t, &pal, &mut dl);
         }
         if let Some(p) = &model.palette {
             let l = apoth_ui::palette::layout(area, p);
             apoth_ui::palette::draw(&l, p, &model.ui, &pal, &measure, &mut dl);
+        }
+        if let Some(o) = overlay.filter(|o| !o.takes_room()) {
+            let l = bar::layout(area, &o.spec, &apoth_ui::text::geometry());
+            bar::draw(
+                &l,
+                &o.spec,
+                &BarState { shown_at_ms: 0 },
+                age_ms,
+                &model.ui,
+                &pal,
+                &mut dl,
+            );
         }
     }
     if dl.cmds.is_empty() {
@@ -398,6 +429,7 @@ mod tests {
     use apoth_font::discovery::FontIndex;
     use apoth_font::system::EmbeddedFont;
     use apoth_render::reference::Image;
+    use apoth_ui::UiState;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -494,12 +526,14 @@ mod tests {
                 title: TextRun::program("zsh", apoth_ui::tokens::size::BODY),
                 active: true,
                 badges: Vec::new(),
+                profile: None,
             },
             TabSpec {
                 id: tab_widget(2),
                 title: TextRun::program("htop", apoth_ui::tokens::size::BODY),
                 active: false,
                 badges: Vec::new(),
+                profile: None,
             },
         ];
         let top = strip.bottom() + 4.0;
@@ -531,7 +565,9 @@ mod tests {
                 selected: Some(1),
                 total: 3,
             }),
-            float: None,
+            search: None,
+            tooltip: None,
+            bell: None,
             ui: UiState::default(),
         };
         (model, ((w * scale) as u32, (h * scale) as u32))

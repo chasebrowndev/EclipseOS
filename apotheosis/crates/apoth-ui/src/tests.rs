@@ -38,6 +38,7 @@ fn tab(n: u64, title: &str, active: bool) -> TabSpec {
         title: TextRun::program(title, size::BODY),
         active,
         badges: vec![],
+        profile: None,
     }
 }
 
@@ -822,10 +823,13 @@ fn bar_draw_guard_disables_then_hover_brightens() {
     let button_fill = |ui: &UiState, now: u64| {
         let mut o = DrawList::new();
         bar::draw(&l, &spec, &st, now, ui, &p, &mut o);
-        match rects(&o)[1] {
-            Cmd::RoundedRect { fill, .. } => *fill,
-            _ => unreachable!(),
-        }
+        o.cmds
+            .iter()
+            .find_map(|c| match c {
+                Cmd::RoundedRect { rect, fill, .. } if *rect == l.buttons[0].rect => Some(*fill),
+                _ => None,
+            })
+            .expect("the first button is drawn")
     };
     assert_eq!(
         button_fill(&hover, 100),
@@ -877,12 +881,19 @@ fn bar_draw_golden_shape() {
         &mut o,
     );
     let dump = o.dump();
-    let mut lines = dump.lines();
-    assert!(lines.next().unwrap().starts_with(&format!(
+    // Frost, the sheet tint, the error tint with its crisp danger rim, the icon disc.
+    assert!(
+        dump.lines()
+            .next()
+            .unwrap()
+            .starts_with("rect [8.0,4.0 784.0x40.0] r10.0")
+    );
+    assert!(dump.contains(&format!(
         "rect [8.0,4.0 784.0x40.0] r10.0 fill {} rim 1.0 {}",
         hex(p.danger_fill),
         hex(p.danger)
     )));
+    let mut lines = dump.lines().skip_while(|l| !l.starts_with("icon Warning"));
     assert!(lines.next().unwrap().starts_with("icon Warning"));
     assert!(
         lines
@@ -890,9 +901,11 @@ fn bar_draw_golden_shape() {
             .unwrap()
             .starts_with("text \"Config error at apoth.kdl:12\" @")
     );
+    // The detail sits in an inset well, in program text.
+    let rest: Vec<&str> = lines.collect();
     assert!(
-        lines.next().unwrap().contains("Program/Regular"),
-        "detail is program text"
+        rest[0].starts_with("rect") && rest[1].contains("Program/Regular"),
+        "{rest:?}"
     );
     // Per button: pill, keycap, key text, label text. The primary button is the brighter one.
     assert!(
@@ -903,7 +916,7 @@ fn bar_draw_golden_shape() {
         )),
         "primary: cell_focus fill + rim"
     );
-    assert_eq!(o.len(), 4 + 4 * 2);
+    assert_eq!(o.len(), 3 + 4 + 1 + 4 * 2);
     assert!(!dump.contains("rim 2.0"), "the bar never steals focus");
 }
 

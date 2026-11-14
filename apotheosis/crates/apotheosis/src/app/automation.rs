@@ -104,8 +104,9 @@ pub(super) fn load_consent() -> HashSet<u64> {
     parse_consent(&s)
 }
 
-/// The confirm-once bar: rule name, trigger and the expanded actions (bounded, program
-/// text); explicit keys only, no Return and no Escape button (Escape dismisses).
+/// The confirm-once sheet (T-11 §5): the rule's name and trigger, then the fully expanded
+/// actions in a bounded monospace box (program text, sanitised); explicit keys only, no
+/// Return and no Escape button (Escape dismisses). A spec with a body draws as a modal sheet.
 pub(super) fn rule_bar_spec(
     id: apoth_ui::WidgetId,
     name: &str,
@@ -124,15 +125,12 @@ pub(super) fn rule_bar_spec(
         id,
         kind: BarKind::Consent,
         headline: TextRun::interface(
-            format!(
-                "Rule \u{201c}{}\u{201d} (on {event}) wants to run",
-                super::clip(name, 128)
-            ),
+            format!("Allow rule \u{201c}{}\u{201d}?", super::clip(name, 128)),
             size::BODY,
         )
         .strong(),
-        detail: Some(TextRun::program(
-            super::clip(actions, 512),
+        detail: Some(TextRun::interface(
+            format!("Triggered by {event}. When allowed it will run:"),
             size::BODY_SMALL,
         )),
         buttons: vec![
@@ -141,6 +139,10 @@ pub(super) fn rule_bar_spec(
             button("Disable rule", 'd'),
         ],
         escape: None,
+        body: Some(TextRun::program(
+            super::clip(actions, 512),
+            size::BODY_SMALL,
+        )),
     }
 }
 
@@ -570,6 +572,13 @@ impl App {
             self.emit_var(Some(id), &v.name, v.value.as_deref(), Cause::Sequence);
         }
         if let Some(p) = e.progress.take() {
+            // The tab's progress line (T-08 §4) follows the pane's latest report.
+            if p.state == 0 {
+                self.status.progress.remove(&id);
+            } else {
+                self.status.progress.insert(id, (p.state, p.value));
+            }
+            self.send_layout();
             let state = match p.state {
                 0 => "remove",
                 1 => "value",

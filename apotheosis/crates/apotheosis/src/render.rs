@@ -134,6 +134,78 @@ impl RenderSettings {
     }
 }
 
+fn rgb_of(c: ec_theme::Rgba) -> Rgb {
+    let b = |v: f32| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+    Rgb(b(c.r()), b(c.g()), b(c.b()))
+}
+
+/// `tint` (straight alpha) over the opaque pane background.
+fn over_bg(tint: apoth_ui::tokens::Rgba, bg: Rgb) -> Rgb {
+    let ground = ec_theme::Rgba::new(
+        f32::from(bg.0) / 255.0,
+        f32::from(bg.1) / 255.0,
+        f32::from(bg.2) / 255.0,
+        1.0,
+    );
+    rgb_of(ec_theme::Rgba(tint.0).over_opaque(ground))
+}
+
+/// Whichever of the theme's two inks reads better on `bg` (at least 4.5:1 against every
+/// background built below, checked by a test).
+fn ink_on(bg: Rgb, text: apoth_ui::tokens::Rgba, base: apoth_ui::tokens::Rgba) -> Rgb {
+    let ground =
+        ec_theme::Rgba::rgb((u32::from(bg.0) << 16) | (u32::from(bg.1) << 8) | u32::from(bg.2));
+    let (t, b) = (
+        ec_theme::contrast(ec_theme::Rgba(text.0), ground),
+        ec_theme::contrast(ec_theme::Rgba(base.0), ground),
+    );
+    if t >= b {
+        rgb_of(ec_theme::Rgba(text.0))
+    } else {
+        rgb_of(ec_theme::Rgba(base.0))
+    }
+}
+
+/// Search, hint and copy-mode colours (T-08, T-14), derived from the theme palette over the
+/// pane's own background so they read on light and dark alike. Matches are a quiet accent
+/// tint; the current match and hint labels are the solid accent with its on-accent ink; the
+/// copy-mode cursor is the theme's ink (never the accent, since it sits on the current
+/// match). Highlighted text is re-inked from the theme so it keeps 4.5:1 whatever its
+/// own colour was.
+pub(crate) fn hl_colours(
+    light: bool,
+    bg: Rgb,
+    sel_bg: Rgb,
+    sel_fg: Option<Rgb>,
+) -> crate::view::HlColours {
+    let pal = if light {
+        apoth_ui::tokens::Palette::light()
+    } else {
+        apoth_ui::tokens::Palette::dark()
+    };
+    let match_bg = over_bg(pal.accent.alpha(MATCH_TINT), bg);
+    let hint_bg = over_bg(pal.accent.alpha(HINT_TINT), bg);
+    let ink = |g| Some(ink_on(g, pal.text, pal.base));
+    crate::view::HlColours {
+        sel_bg,
+        sel_fg,
+        match_bg,
+        match_fg: ink(match_bg),
+        current_bg: rgb_of(ec_theme::Rgba(pal.accent.0)),
+        current_fg: Some(rgb_of(ec_theme::Rgba(pal.on_accent.0))),
+        cursor_bg: rgb_of(ec_theme::Rgba(pal.text.0)),
+        cursor_fg: Some(rgb_of(ec_theme::Rgba(pal.base.0))),
+        hint_bg,
+        hint_fg: ink(hint_bg),
+        label_bg: rgb_of(ec_theme::Rgba(pal.accent.0)),
+        label_fg: Some(rgb_of(ec_theme::Rgba(pal.on_accent.0))),
+    }
+}
+
+/// Accent strength of an ordinary search match, and of the span a hint label sits on.
+const MATCH_TINT: f32 = 0.34;
+const HINT_TINT: f32 = 0.18;
+
 /// One pane of the shown tab as main places it.
 #[derive(Clone)]
 pub(crate) struct PaneView {
@@ -156,8 +228,12 @@ pub(crate) struct ChromeModel {
     pub(crate) tab_style: TabStyle,
     pub(crate) frames: Vec<apoth_ui::pane::PaneSpec>,
     pub(crate) palette: Option<PaletteSpec>,
-    /// The search bar or a link tooltip, floating at the bottom of the window (T-14 §5-§6).
-    pub(crate) float: Option<apoth_ui::bar::BarSpec>,
+    /// The search sheet (T-14 §6).
+    pub(crate) search: Option<apoth_ui::searchbar::SearchSpec>,
+    /// The hovered link's URI by the pointer (T-14 §5).
+    pub(crate) tooltip: Option<apoth_ui::tooltip::TooltipSpec>,
+    /// The pane the visual bell is lighting, as its frame rect (`bell.visual`).
+    pub(crate) bell: Option<Rect>,
     pub(crate) ui: UiState,
 }
 
@@ -168,7 +244,9 @@ impl ChromeModel {
             tab_style: TabStyle::Floating,
             frames: Vec::new(),
             palette: None,
-            float: None,
+            search: None,
+            tooltip: None,
+            bell: None,
             ui: UiState::default(),
         }
     }
@@ -389,19 +467,12 @@ impl PaneR {
                 self.scene.invalidate(row);
             }
         }
-        // Search, hint and copy-mode colours: interim choices from the palette pending the
-        // apoth-frontend pass (gold accent for the current match, T-08).
-        let gold = Rgb(0xd4, 0xa5, 0x37);
-        let colours = crate::view::HlColours {
-            sel_bg: self.pal.selection_bg,
-            sel_fg: self.pal.selection_fg,
-            match_bg: Rgb(0x5c, 0x4b, 0x1a),
-            current_bg: gold,
-            current_fg: Some(Rgb(0x10, 0x10, 0x10)),
-            cursor_bg: self.pal.cursor.unwrap_or(self.pal.fg),
-            cursor_fg: Some(self.pal.bg),
-            hint_bg: Rgb(0x3a, 0x33, 0x22),
-        };
+        let colours = hl_colours(
+            rs.light,
+            self.pal.bg,
+            self.pal.selection_bg,
+            self.pal.selection_fg,
+        );
         paint(self.view.highlights(), &colours, &mut self.hl);
     }
 
@@ -947,6 +1018,38 @@ fn run(a: RenderArgs) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lum(c: Rgb) -> f32 {
+        let l = |v: u8| {
+            let v = f32::from(v) / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * l(c.0) + 0.7152 * l(c.1) + 0.0722 * l(c.2)
+    }
+    fn ratio(a: Rgb, b: Rgb) -> f32 {
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    #[test]
+    fn highlight_colours_keep_contrast_on_both_schemes() {
+        for (light, bg) in [(false, Rgb(12, 11, 8)), (true, Rgb(244, 242, 235))] {
+            let c = hl_colours(light, bg, Rgb(80, 80, 80), None);
+            for (b, f) in [
+                (c.match_bg, c.match_fg),
+                (c.current_bg, c.current_fg),
+                (c.hint_bg, c.hint_fg),
+                (c.label_bg, c.label_fg),
+                (c.cursor_bg, c.cursor_fg),
+            ] {
+                assert!(ratio(b, f.unwrap()) >= 4.5, "light={light} {b:?} {f:?}");
+            }
+        }
+    }
 
     #[test]
     fn configured_colour_yields_to_a_program_set_one() {

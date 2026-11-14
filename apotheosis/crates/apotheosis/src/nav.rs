@@ -9,8 +9,11 @@
 use std::hash::{Hash, Hasher};
 
 use crate::pane::PaneKey;
-use crate::search::{Case, Query, Status};
+#[cfg(test)]
+use crate::search::Case;
+use crate::search::{Query, Status};
 use crate::security::{Class, Consent};
+use apoth_ui::searchbar::CountKind;
 
 /// Typing in the search bar waits this long before the search restarts (T-14 §6).
 pub(crate) const DEBOUNCE_MS: u64 = 150;
@@ -70,7 +73,32 @@ pub(crate) struct Nav {
 }
 
 impl Nav {
-    /// Search bar text: the query plus count, position and mode flags.
+    /// The search sheet's count: "n/m", "No matches", or the refusal, and how it reads.
+    pub(crate) fn search_count(s: &SearchUi) -> (String, CountKind) {
+        if let Some(e) = &s.status.error {
+            return (e.clone(), CountKind::Error);
+        }
+        if s.query.text.is_empty() {
+            return (String::new(), CountKind::Idle);
+        }
+        let n = if s.status.capped {
+            format!("{}+", s.status.count)
+        } else {
+            s.status.count.to_string()
+        };
+        let more = if s.status.done { "" } else { "\u{2026}" };
+        match s.status.current {
+            Some(i) => (format!("{i}/{n}{more}"), CountKind::Found),
+            None if s.status.count == 0 && s.status.done => {
+                ("No matches".to_string(), CountKind::Missing)
+            }
+            None => (format!("{n}{more}"), CountKind::Idle),
+        }
+    }
+
+    /// Search text for the accessibility announcement and the tests: the query, the mode
+    /// flags and the count.
+    #[cfg(test)]
     pub(crate) fn search_line(s: &SearchUi) -> String {
         let mut flags = String::new();
         match s.query.case {
@@ -87,24 +115,11 @@ impl Nav {
         if s.query.scope == crate::search::Scope::Screen {
             flags.push_str(" [screen]");
         }
-        let count = if let Some(e) = &s.status.error {
-            e.clone()
-        } else if s.query.text.is_empty() {
-            String::new()
-        } else {
-            let n = if s.status.capped {
-                format!("{}+", s.status.count)
-            } else {
-                s.status.count.to_string()
-            };
-            let more = if s.status.done { "" } else { "…" };
-            match s.status.current {
-                Some(i) => format!("{i}/{n}{more}"),
-                None if s.status.count == 0 && s.status.done => "No matches".to_string(),
-                None => format!("{n}{more}"),
-            }
-        };
-        format!("Find: {}{flags}   {count}", s.query.text)
+        format!(
+            "Find: {}{flags}   {}",
+            s.query.text,
+            Self::search_count(s).0
+        )
     }
 }
 

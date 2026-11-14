@@ -97,3 +97,13 @@ impl Measure for FixedAdvance {
         }
     }
 }
+
+/// The advance, in ems, every layout that decides a hit rectangle assumes. The main thread
+/// has no shaper, so geometry that main hit-tests (bar buttons, search chips) is computed
+/// from this on both threads and the drawn text is clipped into it.
+pub const GEOMETRY_ADVANCE: f32 = 0.6;
+
+/// The measure for hit geometry (see [`GEOMETRY_ADVANCE`]).
+pub fn geometry() -> FixedAdvance {
+    FixedAdvance(GEOMETRY_ADVANCE)
+}

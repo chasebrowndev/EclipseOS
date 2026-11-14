@@ -195,6 +195,44 @@ pub mod metrics {
     pub const PALETTE_ROW_H: f32 = 30.0;
     pub const PALETTE_MAX_ROWS: usize = 10;
     pub const CARET_W: f32 = 1.5;
+    /// Search sheet: widest it grows, and the height of its row.
+    pub const SEARCH_W: f32 = 540.0;
+    pub const SEARCH_H: f32 = 44.0;
+    pub const SEARCH_FIELD_H: f32 = 28.0;
+    pub const FIELD_MIN_W: f32 = 96.0;
+    pub const CHIP_H: f32 = 24.0;
+    pub const CHIP_MIN_W: f32 = 30.0;
+    pub const ICON_BUTTON: f32 = 24.0;
+    /// Confirm-once sheet: widest it grows, lines its monospace box shows, line pitch.
+    pub const SHEET_W: f32 = 560.0;
+    pub const SHEET_BODY_LINES: usize = 6;
+    pub const SHEET_LINE_H: f32 = 17.0;
+    /// Program-text well under a bar headline.
+    pub const DETAIL_H: f32 = 15.0;
+    pub const DETAIL_GAP: f32 = 2.0;
+    pub const TOOLTIP_MAX_W: f32 = 480.0;
+    pub const TOOLTIP_H: f32 = 24.0;
+    pub const TOOLTIP_OFFSET: f32 = 14.0;
+    /// Widest the profile pill on a tab grows, and its height.
+    pub const PROFILE_MAX_W: f32 = 84.0;
+    pub const PROFILE_H: f32 = 16.0;
+    /// Tab progress line, inset from the tab's bottom edge.
+    pub const PROGRESS_H: f32 = 2.0;
+    pub const PROGRESS_INSET: f32 = 3.0;
+    /// Bell rim around a pane while the visual bell shows.
+    pub const BELL_RIM_W: f32 = 2.0;
+}
+
+/// Alpha steps that are not palette tokens.
+pub mod alpha {
+    /// Frost laid under a floating sheet so the grid beneath cannot ghost through its text.
+    pub const BACKING: f32 = 0.72;
+    /// Dim over the window behind a modal sheet.
+    pub const SCRIM: f32 = 0.28;
+    /// A progress fill with no known value.
+    pub const BUSY: f32 = 0.5;
+    /// The visual bell's rim, against the pane's own.
+    pub const BELL: f32 = 0.85;
 }
 
 /// Durations in milliseconds.

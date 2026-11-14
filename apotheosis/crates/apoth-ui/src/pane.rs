@@ -198,3 +198,17 @@ pub fn register_resize_margin(id: WidgetId, rect: Rect, tree: &mut HitTree) {
         Rect::new(mid.right() - m, mid.y, m, mid.h),
     );
 }
+
+/// The visual bell (`bell.visual`): the pane's rim brightens for a moment. A single pane has
+/// no frame, so the bell draws its own rim; it never moves anything and never glows.
+pub fn draw_bell(rect: Rect, pal: &Palette, out: &mut DrawList) {
+    out.rect(
+        rect,
+        radius::INSET,
+        crate::tokens::Rgba::CLEAR,
+        Some(Rim {
+            width: metrics::BELL_RIM_W,
+            colour: pal.cell_focus_rim_hover.scaled(crate::tokens::alpha::BELL),
+        }),
+    );
+}

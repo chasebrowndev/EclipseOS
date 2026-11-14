@@ -40,6 +40,8 @@ pub(crate) mod hl {
     pub(crate) const CURRENT: u8 = 2;
     pub(crate) const CURSOR: u8 = 3;
     pub(crate) const HINT: u8 = 4;
+    /// The label drawn over the start of a hint match.
+    pub(crate) const LABEL: u8 = 5;
 }
 
 /// Colours per highlight kind.
@@ -48,11 +50,15 @@ pub(crate) struct HlColours {
     pub(crate) sel_bg: Rgb,
     pub(crate) sel_fg: Option<Rgb>,
     pub(crate) match_bg: Rgb,
+    pub(crate) match_fg: Option<Rgb>,
     pub(crate) current_bg: Rgb,
     pub(crate) current_fg: Option<Rgb>,
     pub(crate) cursor_bg: Rgb,
     pub(crate) cursor_fg: Option<Rgb>,
     pub(crate) hint_bg: Rgb,
+    pub(crate) hint_fg: Option<Rgb>,
+    pub(crate) label_bg: Rgb,
+    pub(crate) label_fg: Option<Rgb>,
 }
 
 /// Navigation results for main (sent as `MainMsg::Nav`).
@@ -979,6 +985,7 @@ impl View {
             }
         }
         if let Some(h) = &self.hints {
+            let typed = h.typed.chars().count();
             for it in h.items.iter().filter(|i| i.label.starts_with(&h.typed)) {
                 span(
                     &mut self.highlights,
@@ -989,6 +996,22 @@ impl View {
                     rows,
                     cols,
                 );
+            }
+            // The labels over the matches' first cells, after (so over) the match spans.
+            for it in h.items.iter().filter(|i| i.label.starts_with(&h.typed)) {
+                let n = it.label.chars().count().saturating_sub(typed);
+                if n > 0 {
+                    let from = it.start;
+                    span(
+                        &mut self.highlights,
+                        hl::LABEL,
+                        from,
+                        (from.0, from.1 + n - 1),
+                        top,
+                        rows,
+                        cols,
+                    );
+                }
             }
         }
         if let Some(p) = self.copy_pos(t) {
@@ -1088,8 +1111,9 @@ impl View {
             }
         }
         if let Some(h) = &self.hints {
+            // The label's colours come from its highlight (`hl::LABEL`), not an inversion.
             let style = Style {
-                attrs: Attrs(Attrs::BOLD | Attrs::INVERSE),
+                attrs: Attrs(Attrs::BOLD),
                 ..Style::DEFAULT
             };
             for it in h.items.iter().filter(|i| i.label.starts_with(&h.typed)) {
@@ -1176,10 +1200,11 @@ pub(crate) fn paint(h: &[Highlight], c: &HlColours, out: &mut Vec<Highlight>) {
     out.clear();
     out.extend(h.iter().map(|x| {
         let (bg, fg) = match x.bg.0 {
-            hl::MATCH => (c.match_bg, None),
+            hl::MATCH => (c.match_bg, c.match_fg),
             hl::CURRENT => (c.current_bg, c.current_fg),
             hl::CURSOR => (c.cursor_bg, c.cursor_fg),
-            hl::HINT => (c.hint_bg, None),
+            hl::HINT => (c.hint_bg, c.hint_fg),
+            hl::LABEL => (c.label_bg, c.label_fg),
             _ => (c.sel_bg, c.sel_fg),
         };
         Highlight { bg, fg, ..*x }
@@ -1774,11 +1799,15 @@ mod tests {
             sel_bg: Rgb(1, 2, 3),
             sel_fg: Some(Rgb(9, 9, 9)),
             match_bg: Rgb(4, 4, 4),
+            match_fg: Some(Rgb(8, 8, 8)),
             current_bg: Rgb(5, 5, 5),
             current_fg: None,
             cursor_bg: Rgb(6, 6, 6),
             cursor_fg: None,
             hint_bg: Rgb(7, 7, 7),
+            hint_fg: None,
+            label_bg: Rgb(10, 10, 10),
+            label_fg: Some(Rgb(11, 11, 11)),
         };
         paint(&h, &c, &mut out);
         assert_eq!(out[0].bg, Rgb(1, 2, 3));
@@ -1790,5 +1819,17 @@ mod tests {
         }];
         paint(&m, &c, &mut out);
         assert_eq!(out[0].bg, Rgb(5, 5, 5));
+        for (kind, bg, fg) in [
+            (hl::MATCH, Rgb(4, 4, 4), Some(Rgb(8, 8, 8))),
+            (hl::HINT, Rgb(7, 7, 7), None),
+            (hl::LABEL, Rgb(10, 10, 10), Some(Rgb(11, 11, 11))),
+        ] {
+            let k = [Highlight {
+                bg: Rgb(kind, 0, 0),
+                ..h[0]
+            }];
+            paint(&k, &c, &mut out);
+            assert_eq!((out[0].bg, out[0].fg), (bg, fg), "kind {kind}");
+        }
     }
 }

@@ -8,9 +8,9 @@
 use crate::draw::{DrawList, IconId, Rim};
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
-use crate::state::{ControlState, UiState, WidgetId, label_colour, surface};
-use crate::text::{Measure, TextRun};
-use crate::tokens::{Palette, metrics, motion, radius, size, space};
+use crate::state::{ControlState, UiState, WidgetId, glass, label_colour, surface};
+use crate::text::{Measure, TextOrigin, TextRun};
+use crate::tokens::{Palette, alpha, metrics, motion, radius, size, space};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarKind {
@@ -58,6 +58,9 @@ pub struct BarSpec {
     pub buttons: Vec<ButtonSpec>,
     /// Button answered by Escape (deny / dismiss / cancel).
     pub escape: Option<usize>,
+    /// Program text shown in a bounded monospace box. A spec with a body is drawn as a
+    /// centred modal sheet instead of the bar at the top of the pane (T-11 §5 confirm-once).
+    pub body: Option<TextRun>,
 }
 
 fn button(label: &str, key: Key, primary: bool) -> ButtonSpec {
@@ -82,6 +85,7 @@ impl BarSpec {
                 button("Deny", Key::Char('d'), false),
             ],
             escape: Some(2),
+            body: None,
         }
     }
 
@@ -101,6 +105,7 @@ impl BarSpec {
                 button("Cancel", Key::Char('c'), false),
             ],
             escape: Some(1),
+            body: None,
         }
     }
 
@@ -117,6 +122,7 @@ impl BarSpec {
                 button("Dismiss", Key::Escape, false),
             ],
             escape: Some(1),
+            body: None,
         }
     }
 
@@ -134,6 +140,7 @@ impl BarSpec {
             detail: Some(TextRun::program(&keys.join(", "), size::BODY_SMALL)),
             buttons: vec![button("Dismiss", Key::Escape, false)],
             escape: Some(0),
+            body: None,
         })
     }
 
@@ -185,17 +192,29 @@ pub struct ButtonCell {
     pub rect: Rect,
     pub keycap: Rect,
     pub label_pos: Point,
+    /// Width the label may use before it is clipped.
+    pub label_w: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct BarLayout {
     pub id: WidgetId,
+    /// The bar, or the sheet when the spec has a body.
     pub bar: Rect,
-    /// What remains of the pane for the grid.
+    /// What remains of the pane for the grid (the whole area for a sheet).
     pub rest: Rect,
+    /// A sheet dims the window behind it: the area it covers.
+    pub scrim: Option<Rect>,
     pub icon: Rect,
+    pub head_pos: Point,
     pub text_x: f32,
     pub text_max: f32,
+    /// The detail line's position, and its well when it is program text.
+    pub detail_pos: Option<Point>,
+    pub detail_well: Option<Rect>,
+    /// The monospace box of a sheet, and its wrapped lines.
+    pub body: Option<Rect>,
+    pub body_lines: Vec<String>,
     pub buttons: Vec<ButtonCell>,
 }
 
@@ -206,15 +225,9 @@ fn key_label(k: Key) -> String {
     }
 }
 
-pub fn layout(area: Rect, spec: &BarSpec, measure: &dyn Measure) -> BarLayout {
-    let (outer, rest) = area.split_top(metrics::BAR_H + space::SM);
-    let bar = Rect::new(
-        outer.x + space::SM,
-        outer.y + space::XS,
-        (outer.w - 2.0 * space::SM).max(0.0),
-        metrics::BAR_H,
-    );
-    let mut x = bar.right() - space::MD;
+/// The buttons of `spec`, right-aligned so the last ends at `right`, centred on `row`.
+fn button_cells(spec: &BarSpec, measure: &dyn Measure, right: f32, row: Rect) -> Vec<ButtonCell> {
+    let mut x = right;
     let mut cells = Vec::with_capacity(spec.buttons.len());
     for (i, b) in spec.buttons.iter().enumerate().rev() {
         let lw = measure.width(&TextRun::interface(b.label.clone(), size::BODY_SMALL));
@@ -223,7 +236,7 @@ pub fn layout(area: Rect, spec: &BarSpec, measure: &dyn Measure) -> BarLayout {
             + 2.0 * space::XS)
             .max(metrics::KEYCAP_W);
         let w = metrics::BAR_BUTTON_PAD / 2.0 + kw + space::XS + lw + metrics::BAR_BUTTON_PAD;
-        let rect = bar.centred_y(x - w, w, metrics::BAR_BUTTON_H);
+        let rect = row.centred_y(x - w, w, metrics::BAR_BUTTON_H);
         let keycap = Rect::new(
             rect.x + metrics::BAR_BUTTON_PAD / 2.0,
             rect.y + (rect.h - metrics::KEYCAP_W) / 2.0,
@@ -239,30 +252,204 @@ pub fn layout(area: Rect, spec: &BarSpec, measure: &dyn Measure) -> BarLayout {
             rect,
             keycap,
             label_pos,
+            label_w: lw,
         });
         x = rect.x - space::SM;
     }
     cells.reverse();
+    cells
+}
+
+/// Hard-wrap `run` into at most `max_lines` lines of `max_w`, breaking at a space when one
+/// is in the second half of the line; the last line ends with an ellipsis if text is left.
+pub fn wrap_body(
+    measure: &dyn Measure,
+    run: &TextRun,
+    max_w: f32,
+    max_lines: usize,
+) -> Vec<String> {
+    let chars: Vec<char> = run.text.chars().collect();
+    let width = |c: &[char]| {
+        let mut r = TextRun::interface(c.iter().collect::<String>(), run.size);
+        r.weight = run.weight;
+        measure.width(&r)
+    };
+    let mut lines: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < chars.len() && lines.len() < max_lines {
+        let rest = &chars[i..];
+        let all = width(rest);
+        let mut n = rest.len();
+        if all > max_w && all > 0.0 {
+            n = ((n as f32 * max_w / all) as usize).clamp(1, n);
+            while n > 1 && width(&rest[..n]) > max_w {
+                n -= 1;
+            }
+            if let Some(sp) = rest[..n].iter().rposition(|c| *c == ' ')
+                && sp > n / 2
+                && i + n < chars.len()
+            {
+                n = sp + 1;
+            }
+        }
+        lines.push(rest[..n].iter().collect::<String>().trim_end().to_string());
+        i += n;
+    }
+    if i < chars.len()
+        && let Some(last) = lines.last_mut()
+    {
+        while width(&last.chars().collect::<Vec<_>>()) + width(&['\u{2026}']) > max_w
+            && last.pop().is_some()
+        {}
+        last.push('\u{2026}');
+    }
+    lines
+}
+
+pub fn layout(area: Rect, spec: &BarSpec, measure: &dyn Measure) -> BarLayout {
+    match &spec.body {
+        Some(body) => sheet_layout(area, spec, body, measure),
+        None => bar_layout(area, spec, measure),
+    }
+}
+
+fn bar_layout(area: Rect, spec: &BarSpec, measure: &dyn Measure) -> BarLayout {
+    let (outer, rest) = area.split_top(metrics::BAR_H + space::SM);
+    let bar = Rect::new(
+        outer.x + space::SM,
+        outer.y + space::XS,
+        (outer.w - 2.0 * space::SM).max(0.0),
+        metrics::BAR_H,
+    );
+    let cells = button_cells(spec, measure, bar.right() - space::MD, bar);
     let icon = bar.centred_y(bar.x + space::MD, metrics::TAB_CLOSE, metrics::TAB_CLOSE);
     let text_x = icon.right() + space::SM;
     let text_max = (cells.first().map_or(bar.right(), |c| c.rect.x) - space::MD - text_x).max(0.0);
+    let detail = spec.detail.as_ref().filter(|d| !d.text.is_empty());
+    let total = match detail {
+        Some(_) => size::BODY + metrics::DETAIL_GAP + metrics::DETAIL_H,
+        None => size::BODY,
+    };
+    let y1 = bar.y + (bar.h - total) / 2.0;
+    let (detail_pos, detail_well) = match detail {
+        Some(d) => {
+            let wy = y1 + size::BODY + metrics::DETAIL_GAP;
+            let program = d.origin == TextOrigin::Program;
+            let pad = if program { space::XS } else { 0.0 };
+            let w = (measure.width(d) + 2.0 * pad).min(text_max);
+            let well = Rect::new(text_x, wy, w, metrics::DETAIL_H);
+            (
+                Some(Point::new(
+                    text_x + pad,
+                    wy + (metrics::DETAIL_H - size::BODY_SMALL) / 2.0,
+                )),
+                program.then_some(well),
+            )
+        }
+        None => (None, None),
+    };
     BarLayout {
         id: spec.id,
         bar,
         rest,
+        scrim: None,
         icon,
+        head_pos: Point::new(text_x, y1),
         text_x,
         text_max,
+        detail_pos,
+        detail_well,
+        body: None,
+        body_lines: Vec::new(),
+        buttons: cells,
+    }
+}
+
+fn sheet_layout(area: Rect, spec: &BarSpec, body: &TextRun, measure: &dyn Measure) -> BarLayout {
+    let w = (area.w - 2.0 * space::LG).clamp(0.0, metrics::SHEET_W);
+    let inner_w = (w - 2.0 * space::LG).max(0.0);
+    let box_w = (inner_w - 2.0 * space::SM).max(0.0);
+    let lines = wrap_body(measure, body, box_w, metrics::SHEET_BODY_LINES);
+    let box_h = lines.len().max(1) as f32 * metrics::SHEET_LINE_H + 2.0 * space::SM;
+    let sub_h = spec
+        .detail
+        .as_ref()
+        .map_or(0.0, |_| size::BODY_SMALL + space::XS);
+    let h = space::LG
+        + metrics::TAB_CLOSE
+        + space::XS
+        + sub_h
+        + space::SM
+        + box_h
+        + space::LG
+        + metrics::BAR_BUTTON_H
+        + space::LG;
+    let x = area.x + (area.w - w) / 2.0;
+    let y = area.y + (area.h * 0.12).max(space::LG);
+    let sheet = Rect::new(x, y, w, h.min((area.h - y).max(0.0)));
+    let left = sheet.x + space::LG;
+    let icon = Rect::new(
+        left,
+        sheet.y + space::LG,
+        metrics::TAB_CLOSE,
+        metrics::TAB_CLOSE,
+    );
+    let text_x = icon.right() + space::SM;
+    let text_max = (sheet.right() - space::LG - text_x).max(0.0);
+    let head_pos = Point::new(text_x, icon.y + (icon.h - size::BODY) / 2.0);
+    let detail_pos = spec
+        .detail
+        .as_ref()
+        .map(|_| Point::new(text_x, icon.bottom() + space::XS));
+    let bx = Rect::new(
+        left,
+        icon.bottom() + space::XS + sub_h + space::SM,
+        inner_w,
+        box_h,
+    );
+    let row = Rect::new(
+        left,
+        bx.bottom() + space::LG,
+        inner_w,
+        metrics::BAR_BUTTON_H,
+    );
+    let cells = button_cells(spec, measure, row.right(), row);
+    BarLayout {
+        id: spec.id,
+        bar: sheet,
+        rest: area,
+        scrim: Some(area),
+        icon,
+        head_pos,
+        text_x,
+        text_max,
+        detail_pos,
+        detail_well: None,
+        body: Some(bx),
+        body_lines: lines,
         buttons: cells,
     }
 }
 
 impl BarLayout {
     pub fn register(&self, tree: &mut HitTree) {
-        tree.add(self.id, Layer::Bar, self.bar);
-        for b in &self.buttons {
-            tree.add(b.id, Layer::Bar, b.rect);
+        let layer = if self.scrim.is_some() {
+            Layer::Sheet
+        } else {
+            Layer::Bar
+        };
+        if let Some(s) = self.scrim {
+            tree.add(self.id.child(0), layer, s);
         }
+        tree.add(self.id, layer, self.bar);
+        for b in &self.buttons {
+            tree.add(b.id, layer, b.rect);
+        }
+    }
+
+    /// The button under `p`, whatever the guard says (hover).
+    pub fn button_at(&self, p: Point) -> Option<usize> {
+        self.buttons.iter().position(|b| b.rect.contains(p))
     }
 
     /// Pointer press: the button index under `p`, `None` inside the guard window.
@@ -270,8 +457,26 @@ impl BarLayout {
         if !state.accepts_input(now_ms) {
             return None;
         }
-        self.buttons.iter().position(|b| b.rect.contains(p))
+        self.button_at(p)
     }
+
+    /// The pointer is over the bar or sheet (a modal sheet owns its whole area).
+    pub fn covers(&self, p: Point) -> bool {
+        self.scrim.unwrap_or(self.bar).contains(p)
+    }
+}
+
+/// The program-text well: an inset the text sits in, so it never reads as interface copy.
+fn well(out: &mut DrawList, r: Rect, pal: &Palette) {
+    out.rect(
+        r,
+        radius::KEYCAP,
+        pal.cell,
+        Some(Rim {
+            width: metrics::RIM_W,
+            colour: pal.cell_rim,
+        }),
+    );
 }
 
 pub fn draw(
@@ -284,50 +489,77 @@ pub fn draw(
     out: &mut DrawList,
 ) {
     let live = state.accepts_input(now_ms);
-    let (fill, rim_c, icon, icon_c) = match spec.kind {
+    let (rim_c, icon, icon_fill, icon_c) = match spec.kind {
         BarKind::Consent => (
-            pal.sheet_tint,
-            pal.accent_border,
+            pal.cell_rim,
             IconId::Shield,
+            pal.accent_fill,
             pal.accent_text,
         ),
-        BarKind::Error => (pal.danger_fill, pal.danger, IconId::Warning, pal.danger),
+        BarKind::Error => (pal.danger, IconId::Warning, pal.danger_fill, pal.danger),
         BarKind::Notice => (
-            pal.sheet_tint,
-            pal.accent_border,
+            pal.cell_rim,
             IconId::Warning,
+            pal.accent_fill,
             pal.accent_text,
         ),
     };
-    out.rect(
-        l.bar,
-        radius::INSET,
-        fill,
-        Some(Rim {
-            width: metrics::RIM_W,
-            colour: rim_c,
-        }),
-    );
+    if let Some(s) = l.scrim {
+        out.rect(s, 0.0, pal.dim.alpha(alpha::SCRIM), None);
+    }
+    let radius = if l.scrim.is_some() {
+        radius::CARD
+    } else {
+        radius::INSET
+    };
+    glass(out, l.bar, radius, rim_c, pal);
+    if spec.kind == BarKind::Error {
+        out.rect(
+            l.bar,
+            radius,
+            pal.danger_fill,
+            Some(Rim {
+                width: metrics::RIM_W,
+                colour: pal.danger,
+            }),
+        );
+    }
+    out.rect(l.icon, radius::PILL, icon_fill, None);
     out.icon(icon, l.icon, icon_c);
 
-    let two = spec.detail.is_some();
-    let total = if two {
-        size::BODY + size::BODY_SMALL
-    } else {
-        size::BODY
-    };
-    let y1 = l.bar.y + (l.bar.h - total) / 2.0;
     out.text(
         spec.headline.clone().clipped(l.text_max),
-        Point::new(l.text_x, y1),
+        l.head_pos,
         pal.text,
     );
-    if let Some(d) = &spec.detail {
-        out.text(
-            d.clone().clipped(l.text_max),
-            Point::new(l.text_x, y1 + size::BODY),
-            pal.text_secondary,
-        );
+    if let (Some(d), Some(pos)) = (&spec.detail, l.detail_pos) {
+        if let Some(w) = l.detail_well {
+            well(out, w, pal);
+        }
+        let colour = if d.origin == TextOrigin::Program {
+            pal.text
+        } else {
+            pal.text_secondary
+        };
+        let max = l.detail_well.map_or(l.text_max, |w| w.w - 2.0 * space::XS);
+        out.text(d.clone().clipped(max.max(0.0)), pos, colour);
+    }
+    if let (Some(b), Some(run)) = (l.body, &spec.body) {
+        well(out, b, pal);
+        for (n, line) in l.body_lines.iter().enumerate() {
+            let mut r = run.clone();
+            r.text.clone_from(line);
+            out.text(
+                r.clipped(b.w - 2.0 * space::SM),
+                Point::new(
+                    b.x + space::SM,
+                    b.y + space::SM
+                        + n as f32 * metrics::SHEET_LINE_H
+                        + (metrics::SHEET_LINE_H - run.size) / 2.0,
+                ),
+                pal.text,
+            );
+        }
     }
 
     for (cell, b) in l.buttons.iter().zip(&spec.buttons) {
@@ -354,7 +586,7 @@ pub fn draw(
             label_colour(pal, st),
         );
         out.text(
-            TextRun::interface(b.label.clone(), size::BODY_SMALL),
+            TextRun::interface(b.label.clone(), size::BODY_SMALL).clipped(cell.label_w),
             cell.label_pos,
             label_colour(pal, st),
         );

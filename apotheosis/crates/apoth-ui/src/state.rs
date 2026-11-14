@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Retained per-widget state keyed by stable ids, and the state -> colour mapping.
 
-use crate::draw::Rim;
-use crate::tokens::{Palette, Rgba, metrics};
+use crate::draw::{DrawList, Rim};
+use crate::geom::Rect;
+use crate::tokens::{Palette, Rgba, alpha, metrics};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct WidgetId(pub u64);
@@ -118,4 +119,19 @@ pub fn label_colour(p: &Palette, s: ControlState) -> Rgba {
     } else {
         p.text_secondary
     }
+}
+
+/// A floating glass layer: frost under the sheet tint so the grid beneath cannot ghost
+/// through its text, a hairline `rim` (the compositor draws no rim inside the window).
+pub fn glass(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette) {
+    out.rect(rect, radius, pal.base.alpha(alpha::BACKING), None);
+    out.rect(
+        rect,
+        radius,
+        pal.sheet_tint,
+        Some(Rim {
+            width: metrics::RIM_W,
+            colour: rim,
+        }),
+    );
 }

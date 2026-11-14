@@ -39,9 +39,11 @@ use apoth_term::Term;
 use apoth_ui::frame::TabPosition;
 use apoth_ui::palette::{Entry, PaletteSpec};
 use apoth_ui::pane::FrameMode;
-use apoth_ui::tabs::TabSpec;
+use apoth_ui::searchbar::{Chip, ChipSpec, SearchSpec, SearchTarget};
+use apoth_ui::tabs::{Badge, TabSpec};
 use apoth_ui::text::TextRun;
 use apoth_ui::tokens::size;
+use apoth_ui::tooltip::TooltipSpec;
 use apoth_ui::{Point, UiState};
 use apoth_wl::mime::Want;
 use apoth_wl::transfer::TransferDirection;
@@ -254,8 +256,30 @@ enum Spot {
     Strip,
     /// Over a pane's grid.
     Pane(PaneKey),
+    /// A button of the overlay bar or the rule sheet.
+    BarButton(usize),
+    /// The bar or sheet itself, on no button; and the window around a modal sheet.
+    BarBody,
+    SheetOutside,
+    /// A control of the search sheet, or the sheet on none.
+    Search(SearchTarget),
+    SearchSheet,
     Nothing,
 }
+
+/// What the chrome shows about the panes beyond their geometry.
+#[derive(Debug, Default)]
+struct Status {
+    /// OSC 9;4 per pane: state (1 value, 2 error, 3 indeterminate, 4 paused) and 0..=100.
+    progress: std::collections::HashMap<PaneKey, (u8, u8)>,
+    /// Tabs whose pane rang the bell while the tab was out of sight.
+    bell_tabs: std::collections::HashSet<TabId>,
+    /// The pane the visual bell is lighting, and the timer that puts it out.
+    bell_flash: Option<(PaneKey, RegistrationToken)>,
+}
+
+/// How long the visual bell's rim shows.
+const BELL_FLASH: Duration = Duration::from_millis(180);
 
 pub(crate) struct App {
     settings: Settings,
@@ -318,6 +342,10 @@ pub(crate) struct App {
     bar: Option<Overlay>,
     /// The user dismissed the bar for the current set of errors / keys.
     bar_dismissed: bool,
+    /// Interface-only status per pane/tab (OSC 9;4 progress, bell badges, the visual bell).
+    status: Status,
+    /// The overlay control a pointer press went down on (acts on release over it).
+    overlay_down: Option<Spot>,
     /// The compositor's blur path for the window (decides the auto opacity).
     blur: Option<apoth_wl::BlurPath>,
     /// The Abyss theme's terminal colours while Abyss is detected (T-17 §1, §2).
@@ -467,6 +495,8 @@ pub(crate) fn run(
         restart_keys: Vec::new(),
         bar: None,
         bar_dismissed: false,
+        status: Status::default(),
+        overlay_down: None,
         blur: None,
         abyss_theme: None,
         auto_family: None,
@@ -587,6 +617,7 @@ fn open_bar(id: apoth_ui::WidgetId, uri: &str) -> apoth_ui::bar::BarSpec {
             },
         ],
         escape: Some(1),
+        body: None,
     }
 }
 
@@ -759,7 +790,7 @@ impl App {
 
     /// Physical pixels the overlay bar takes at the top (the grid never sits under it).
     fn bar_px(&self, scale: f64) -> u32 {
-        self.bar.as_ref().map_or(0, |_| {
+        self.bar.as_ref().filter(|o| o.takes_room()).map_or(0, |_| {
             bar_inset_px(scale, self.settings.glass.interface_zoom)
         })
     }
@@ -1059,6 +1090,9 @@ impl App {
         if !self.started {
             return;
         }
+        if let Some(a) = self.active_tab() {
+            self.status.bell_tabs.remove(&a);
+        }
         let Some((_, buffer)) = self.handle.surface_size(self.win) else {
             return;
         };
@@ -1145,13 +1179,50 @@ impl App {
         };
         w.tabs
             .iter()
-            .map(|&tid| TabSpec {
-                id: tab_widget(tid),
-                title: TextRun::program(&self.tab_title(tid), size::BODY),
-                active: Some(tid) == w.active,
-                badges: Vec::new(),
+            .map(|&tid| {
+                let pane = self.session.tab(tid).and_then(|t| t.focused());
+                TabSpec {
+                    id: tab_widget(tid),
+                    title: TextRun::program(&self.tab_title(tid), size::BODY),
+                    active: Some(tid) == w.active,
+                    badges: self.tab_badges(tid),
+                    profile: pane
+                        .and_then(|p| self.pane_profile(p))
+                        .map(|n| TextRun::program(n, apoth_ui::tokens::size::MICRO)),
+                }
             })
             .collect()
+    }
+
+    /// A tab's badges: the bell that rang out of sight, and the OSC 9;4 progress of its panes.
+    fn tab_badges(&self, tid: TabId) -> Vec<Badge> {
+        let mut out = Vec::new();
+        if self.status.bell_tabs.contains(&tid) {
+            out.push(Badge::Bell);
+        }
+        let Some(tab) = self.session.tab(tid) else {
+            return out;
+        };
+        // The focused pane's progress wins, else the first pane that reports one.
+        let panes = tab.panes();
+        let pick = tab
+            .focused()
+            .filter(|p| self.status.progress.contains_key(p))
+            .or_else(|| {
+                panes
+                    .iter()
+                    .copied()
+                    .find(|p| self.status.progress.contains_key(p))
+            });
+        if let Some(&(state, v)) = pick.and_then(|p| self.status.progress.get(&p)) {
+            out.push(match state {
+                2 => Badge::ProgressError(v),
+                3 => Badge::ProgressBusy,
+                4 => Badge::ProgressPaused(v),
+                _ => Badge::Progress(v),
+            });
+        }
+        out
     }
 
     /// The palette's rows in view, as the sheet draws them.
@@ -1218,37 +1289,62 @@ impl App {
             tab_style: style,
             frames,
             palette: self.palette_spec(geo.area),
-            float: self.float_bar(),
+            search: self.search_spec(),
+            tooltip: self.tooltip_spec(),
+            bell: self.bell_rect(geo),
             ui: self.ui_state.clone(),
         }
     }
 
-    /// The search bar, else the hovered link's URI, floating at the bottom of the window.
-    fn float_bar(&self) -> Option<apoth_ui::bar::BarSpec> {
-        use apoth_ui::bar::{BarKind, BarSpec};
-        if let Some(s) = &self.nav.search {
-            let mut head = TextRun::interface(Nav::search_line(s), size::BODY);
-            if s.focused {
-                head = head.strong();
-            }
-            return Some(BarSpec {
-                id: SEARCH_ID,
-                kind: BarKind::Notice,
-                headline: head,
-                detail: None,
-                buttons: Vec::new(),
-                escape: None,
-            });
-        }
-        let uri = self.nav.link_tip.as_ref()?;
-        Some(BarSpec {
+    /// The search sheet's content (T-14 §6): the query, the count and the mode chips.
+    fn search_spec(&self) -> Option<SearchSpec> {
+        let s = self.nav.search.as_ref()?;
+        let (count, count_kind) = Nav::search_count(s);
+        let chip = |chip, label: &str, on| ChipSpec {
+            chip,
+            label: label.to_owned(),
+            on,
+        };
+        Some(SearchSpec {
             id: SEARCH_ID,
-            kind: BarKind::Notice,
-            headline: TextRun::program(uri, size::BODY_SMALL),
-            detail: None,
-            buttons: Vec::new(),
-            escape: None,
+            query: s.query.text.clone(),
+            placeholder: TextRun::interface("Find", size::BODY),
+            count,
+            count_kind,
+            chips: vec![
+                match s.query.case {
+                    Case::Smart => chip(Chip::Case, "Aa", false),
+                    Case::Sensitive => chip(Chip::Case, "Aa", true),
+                    Case::Insensitive => chip(Chip::Case, "aa", true),
+                },
+                chip(Chip::Regex, ".*", s.query.regex),
+                chip(Chip::Word, "\\b", s.query.whole_word),
+                chip(
+                    Chip::Scope,
+                    "Screen",
+                    s.query.scope == crate::search::Scope::Screen,
+                ),
+            ],
+            focused: s.focused,
+            can_step: s.status.count > 0,
         })
+    }
+
+    /// The hovered link's URI by the pointer (T-14 §5): program text, so sanitised and capped.
+    fn tooltip_spec(&self) -> Option<TooltipSpec> {
+        let uri = self.nav.link_tip.as_ref()?;
+        let (x, y) = self.pointer?;
+        Some(TooltipSpec {
+            text: TextRun::program(uri, size::BODY_SMALL),
+            anchor: self.ui_point(x, y)?,
+        })
+    }
+
+    /// The frame of the pane the visual bell is lighting.
+    fn bell_rect(&self, geo: &WinLayout) -> Option<apoth_ui::Rect> {
+        let (id, _) = self.status.bell_flash.as_ref()?;
+        let p = self.placed.iter().find(|p| p.id == *id)?;
+        Some(layout::frame_rect(p, self.cell, geo.ui, geo.area))
     }
 
     /// The test-only mux dump (`APOTH_TEST_MUX`, debug builds): tabs, panes, focus, palette.
@@ -1495,6 +1591,7 @@ impl App {
             self.paste = None;
             self.refresh_bar();
         }
+        self.status.progress.remove(&id);
         if let Some(mut p) = self.panes.remove(&id) {
             for t in [p.pollout.take(), p.grace.take()].into_iter().flatten() {
                 self.lh.remove(t);
@@ -2747,7 +2844,7 @@ impl App {
             Unfocus,
             Step(bool),
             Edited,
-            Toggled,
+            Chip(Chip),
             Nothing,
         }
         let shift = self.held.contains(Mods::SHIFT);
@@ -2769,29 +2866,10 @@ impl App {
             }
             Key::Named(Named::Up) => Op::Step(true),
             Key::Named(Named::Down) => Op::Step(false),
-            Key::Char('c') if alt => {
-                s.query.case = match s.query.case {
-                    Case::Smart => Case::Sensitive,
-                    Case::Sensitive => Case::Insensitive,
-                    Case::Insensitive => Case::Smart,
-                };
-                Op::Toggled
-            }
-            Key::Char('r') if alt => {
-                s.query.regex = !s.query.regex;
-                Op::Toggled
-            }
-            Key::Char('w') if alt => {
-                s.query.whole_word = !s.query.whole_word;
-                Op::Toggled
-            }
-            Key::Char('s') if alt => {
-                s.query.scope = match s.query.scope {
-                    crate::search::Scope::All => crate::search::Scope::Screen,
-                    crate::search::Scope::Screen => crate::search::Scope::All,
-                };
-                Op::Toggled
-            }
+            Key::Char('c') if alt => Op::Chip(Chip::Case),
+            Key::Char('r') if alt => Op::Chip(Chip::Regex),
+            Key::Char('w') if alt => Op::Chip(Chip::Word),
+            Key::Char('s') if alt => Op::Chip(Chip::Scope),
             Key::Char('u') if ctrl => {
                 s.query.text.clear();
                 Op::Edited
@@ -2818,7 +2896,7 @@ impl App {
                 self.send_layout();
             }
             Op::Edited => self.search_changed(),
-            Op::Toggled => self.search_now(),
+            Op::Chip(c) => self.search_chip(c),
             Op::Nothing => {}
         }
     }
@@ -3223,6 +3301,11 @@ impl App {
         let Some(answer) = paste_answer(&o.spec, age, key) else {
             return;
         };
+        self.apply_nav_answer(answer);
+    }
+
+    /// Button `answer` of the consent or link-confirm bar (key or click).
+    fn apply_nav_answer(&mut self, answer: usize) {
         if let Some(c) = self.nav.consent.take() {
             let a = match answer {
                 0 => Answer::Once,
@@ -3268,6 +3351,11 @@ impl App {
         let Some(answer) = paste_answer(&o.spec, age, key) else {
             return;
         };
+        self.apply_paste_answer(answer);
+    }
+
+    /// Button `answer` of the paste confirm bar (key or click): Paste (0) or Cancel (1).
+    fn apply_paste_answer(&mut self, answer: usize) {
         let Some(pending) = self.paste.take() else {
             return;
         };
@@ -3275,6 +3363,115 @@ impl App {
         if answer == 0 {
             self.send_paste(pending.pane, &pending.bytes);
         }
+    }
+
+    /// A click on button `i` of the bar or sheet, whichever question is up. The input guard
+    /// was checked by the caller; Return and Space never reach here.
+    fn bar_click_answer(&mut self, i: usize) {
+        if self.paste.is_some() {
+            self.apply_paste_answer(i);
+        } else if self.nav.consent.is_some() || self.nav.open.is_some() {
+            self.apply_nav_answer(i);
+        } else if self.auto.confirm.is_some() {
+            self.answer_rule(Some(i));
+        } else {
+            // The error bar and the restart notice have one button: dismiss.
+            self.bar_dismissed = true;
+            self.restart_keys.clear();
+            self.refresh_bar();
+        }
+    }
+
+    /// The overlay's pointer handling: the bar's buttons, the rule sheet (modal), and the
+    /// search sheet. A control acts on release over the one it went down on; a press inside
+    /// the 500 ms input guard does nothing at all (T-18 §3). True when the pointer event was
+    /// consumed.
+    fn overlay_pointer(&mut self, spot: Spot, pressed: bool, left: bool) -> bool {
+        let over = matches!(
+            spot,
+            Spot::BarButton(_)
+                | Spot::BarBody
+                | Spot::SheetOutside
+                | Spot::Search(_)
+                | Spot::SearchSheet
+        );
+        if pressed {
+            if !over {
+                return false;
+            }
+            if left {
+                let guarded = matches!(spot, Spot::BarButton(_))
+                    && self.bar.as_ref().is_some_and(|o| {
+                        o.shown_at.elapsed().as_millis()
+                            < u128::from(apoth_ui::tokens::motion::CONSENT_GUARD_MS)
+                    });
+                if !guarded {
+                    self.overlay_down = Some(spot);
+                    if let Some(w) = self.spot_widget(spot) {
+                        self.ui_state.press(w);
+                    }
+                    if spot == Spot::Search(SearchTarget::Field) {
+                        self.search_focus();
+                    }
+                    self.send_layout();
+                }
+            }
+            return true;
+        }
+        let Some(down) = self.overlay_down.take() else {
+            return over;
+        };
+        self.ui_state.release();
+        if left && down == spot {
+            match spot {
+                Spot::BarButton(i) => self.bar_click_answer(i),
+                Spot::Search(SearchTarget::Chip(c)) => self.search_chip(c),
+                Spot::Search(SearchTarget::Prev) => {
+                    self.search_step(false);
+                    self.send_layout();
+                }
+                Spot::Search(SearchTarget::Next) => {
+                    self.search_step(true);
+                    self.send_layout();
+                }
+                Spot::Search(SearchTarget::Close) => self.close_search(),
+                _ => {}
+            }
+        }
+        self.send_layout();
+        true
+    }
+
+    /// The search field takes the keyboard (a click on it).
+    fn search_focus(&mut self) {
+        if let Some(s) = self.nav.search.as_mut() {
+            s.focused = true;
+        }
+    }
+
+    /// Flip one mode chip, exactly as its `Alt` chord does, and search again at once.
+    fn search_chip(&mut self, chip: Chip) {
+        let Some(s) = self.nav.search.as_mut() else {
+            return;
+        };
+        match chip {
+            Chip::Case => {
+                s.query.case = match s.query.case {
+                    Case::Smart => Case::Sensitive,
+                    Case::Sensitive => Case::Insensitive,
+                    Case::Insensitive => Case::Smart,
+                };
+            }
+            Chip::Regex => s.query.regex = !s.query.regex,
+            Chip::Word => s.query.whole_word = !s.query.whole_word,
+            Chip::Scope => {
+                s.query.scope = match s.query.scope {
+                    crate::search::Scope::All => crate::search::Scope::Screen,
+                    crate::search::Scope::Screen => crate::search::Scope::All,
+                };
+            }
+        }
+        self.search_now();
     }
 
     // ---------------------------------------------------------------- pointer
@@ -3298,6 +3495,28 @@ impl App {
                 None if l.sheet.contains(pt) => Spot::PaletteSheet,
                 None => Spot::PaletteOutside,
             };
+        }
+        if let Some(o) = &self.bar {
+            let l = apoth_ui::bar::layout(g.area, &o.spec, &apoth_ui::text::geometry());
+            if !o.takes_room() {
+                // A modal sheet owns the pointer over the whole window.
+                return match l.button_at(pt) {
+                    Some(i) => Spot::BarButton(i),
+                    None if l.bar.contains(pt) => Spot::BarBody,
+                    None => Spot::SheetOutside,
+                };
+            }
+            if l.bar.contains(pt) {
+                return l.button_at(pt).map_or(Spot::BarBody, Spot::BarButton);
+            }
+        }
+        if let Some(sl) = self.search_layout() {
+            if let Some(t) = sl.target_at(pt) {
+                return Spot::Search(t);
+            }
+            if sl.sheet.contains(pt) {
+                return Spot::SearchSheet;
+            }
         }
         if let Some(r) = g.strip
             && r.contains(pt)
@@ -3324,6 +3543,22 @@ impl App {
             .map_or(Spot::Nothing, |p| Spot::Pane(p.id))
     }
 
+    /// The search sheet's layout, when it is open.
+    fn search_layout(&self) -> Option<apoth_ui::searchbar::SearchLayout> {
+        let g = self.geo?;
+        let spec = self.search_spec()?;
+        let area = crate::ui::search_area(
+            g.area,
+            g.strip,
+            self.bar.as_ref().is_some_and(Overlay::takes_room),
+        );
+        Some(apoth_ui::searchbar::layout(
+            area,
+            &spec,
+            &apoth_ui::text::geometry(),
+        ))
+    }
+
     /// The widget a spot highlights on hover.
     fn spot_widget(&self, s: Spot) -> Option<WidgetId> {
         let tab = |i: usize| {
@@ -3337,6 +3572,8 @@ impl App {
             Spot::Tab(i) => tab(i),
             Spot::TabClose(i) => tab(i).map(|t| t.child(0)),
             Spot::NewTab => Some(STRIP_ID.child(u64::MAX)),
+            Spot::BarButton(i) => self.bar.as_ref().map(|o| o.spec.id.child(i as u64 + 1)),
+            Spot::Search(t) => Some(apoth_ui::searchbar::target_id(SEARCH_ID, t)),
             _ => None,
         }
     }
@@ -3481,6 +3718,9 @@ impl App {
                 return;
             }
             _ => {}
+        }
+        if self.overlay_pointer(spot, pressed, code == BTN_LEFT) {
+            return;
         }
         if self.capture.is_none() {
             // Strip controls act on release over the control they went down on.
@@ -3910,6 +4150,37 @@ impl App {
         }
     }
 
+    /// `bell.visual`: a bell in a tab out of sight badges the tab; in the shown tab the
+    /// pane's rim brightens for a moment. Nothing moves; the rim goes out on a timer, so a
+    /// settled window asks for no frames.
+    fn visual_bell(&mut self, id: PaneKey) {
+        if !self.reloader.config().bool("bell.visual") {
+            return;
+        }
+        let tab = self.session.tab_of(id);
+        if tab != self.active_tab() {
+            if let Some(t) = tab {
+                self.status.bell_tabs.insert(t);
+            }
+            self.send_layout();
+            return;
+        }
+        if let Some((_, t)) = self.status.bell_flash.take() {
+            self.lh.remove(t);
+        }
+        let timer =
+            self.lh
+                .insert_source(Timer::from_duration(BELL_FLASH), |_, (), app: &mut App| {
+                    app.status.bell_flash = None;
+                    app.send_layout();
+                    TimeoutAction::Drop
+                });
+        if let Ok(t) = timer {
+            self.status.bell_flash = Some((id, t));
+        }
+        self.send_layout();
+    }
+
     fn on_events(&mut self, id: PaneKey, mut e: PaneEvents) {
         let uri = e.cwd.clone();
         if let Some(uri) = e.cwd.take() {
@@ -3924,6 +4195,7 @@ impl App {
             self.ctl_emit(ev, Some(id));
         }
         if e.bell > 0 {
+            self.visual_bell(id);
             self.ctl_emit(Event::new(EventKind::Bell, Cause::Child), Some(id));
             self.a11y_announce("Bell");
             self.bell_notification(id);
@@ -4394,14 +4666,21 @@ impl App {
                 .into_iter()
                 .find_map(|(_, b)| b)
         };
-        let had = self.bar.is_some();
+        let had = self.bar.as_ref().is_some_and(Overlay::takes_room);
         self.bar = spec.map(|spec| Overlay {
             spec,
             shown_at: Instant::now(),
         });
+        if let Some(o) = &self.bar {
+            // The question is read out once, from interface text only (never the program's).
+            let head = o.spec.headline.text.clone();
+            self.a11y_announce(&head);
+        }
         self.send_overlay();
-        if had != self.bar.is_some() {
+        if had != self.bar.as_ref().is_some_and(Overlay::takes_room) {
             self.relayout();
+        } else {
+            self.send_layout();
         }
         if self.bar.is_some() {
             // Redraw once the 500 ms input guard ends so the buttons stop looking inert.

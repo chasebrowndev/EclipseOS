@@ -15,10 +15,12 @@ pub mod motion;
 pub mod palette;
 pub mod pane;
 pub mod scrollbar;
+pub mod searchbar;
 pub mod state;
 pub mod tabs;
 pub mod text;
 pub mod tokens;
+pub mod tooltip;
 
 pub use draw::{Cmd, DrawList, IconId, Rim};
 pub use geom::{Point, Rect};

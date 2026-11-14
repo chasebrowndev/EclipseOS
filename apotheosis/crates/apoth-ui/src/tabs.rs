@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Tab strip (T-08 §4): floating or flat tabs, badges, close and new-tab buttons.
 
-use crate::draw::{DrawList, IconId};
+use crate::draw::{DrawList, IconId, Rim};
 use crate::frame::TabStyle;
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
 use crate::state::{UiState, WidgetId, label_colour, surface};
-use crate::text::TextRun;
-use crate::tokens::{Palette, Rgba, metrics, radius, size, space};
+use crate::text::{Measure, TextRun, geometry};
+use crate::tokens::{Palette, Rgba, alpha, metrics, radius, size, space};
 
 /// Per-tab status badges (T-08 §4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,8 +15,14 @@ pub enum Badge {
     Unseen,
     Bell,
     Running,
-    /// OSC 9;4 progress, 0..=100.
+    /// OSC 9;4 progress, 0..=100, drawn as a line along the tab's foot.
     Progress(u8),
+    /// OSC 9;4 error state: the line is the danger colour.
+    ProgressError(u8),
+    /// OSC 9;4 paused state: the line is quiet.
+    ProgressPaused(u8),
+    /// OSC 9;4 indeterminate: the line is full and dimmed (a settled surface animates nothing).
+    ProgressBusy,
     /// Exit status of the last command.
     Exit(i32),
 }
@@ -28,6 +34,9 @@ pub struct TabSpec {
     pub title: TextRun,
     pub active: bool,
     pub badges: Vec<Badge>,
+    /// The profile in force when it is not the default (T-11 §6): a small pill before the
+    /// title. Built with [`TextRun::program`]: profile names come from config files.
+    pub profile: Option<TextRun>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -149,12 +158,50 @@ pub fn wheel_switch(active: usize, steps: i32, count: usize) -> usize {
     (active as i64 + steps as i64).clamp(0, count as i64 - 1) as usize
 }
 
+fn is_progress(b: Badge) -> bool {
+    matches!(
+        b,
+        Badge::Progress(_)
+            | Badge::ProgressError(_)
+            | Badge::ProgressPaused(_)
+            | Badge::ProgressBusy
+    )
+}
+
+/// The OSC 9;4 line along the foot of a tab: a track and the fill to `pct`.
+fn progress_line(tab: Rect, b: Badge, pal: &Palette, out: &mut DrawList) {
+    let track = Rect::new(
+        tab.x + space::MD,
+        tab.bottom() - metrics::PROGRESS_INSET - metrics::PROGRESS_H,
+        (tab.w - 2.0 * space::MD).max(0.0),
+        metrics::PROGRESS_H,
+    );
+    out.rect(track, radius::PILL, pal.track, None);
+    let (pct, colour) = match b {
+        Badge::Progress(p) => (f32::from(p.min(100)) / 100.0, pal.accent),
+        Badge::ProgressError(p) => (f32::from(p.min(100)) / 100.0, pal.danger),
+        Badge::ProgressPaused(p) => (f32::from(p.min(100)) / 100.0, pal.text_tertiary),
+        _ => (1.0, pal.accent.scaled(alpha::BUSY)),
+    };
+    let w = track.w * pct;
+    if w > 0.0 {
+        out.rect(
+            Rect::new(track.x, track.y, w.max(metrics::PROGRESS_H), track.h),
+            radius::PILL,
+            colour,
+            None,
+        );
+    }
+}
+
 fn badge_colour(p: &Palette, b: Badge) -> Rgba {
     match b {
         Badge::Unseen => p.accent,
         Badge::Bell => p.accent_text,
         Badge::Running => p.text_secondary,
-        Badge::Progress(_) => p.accent,
+        Badge::Progress(_) | Badge::ProgressBusy => p.accent,
+        Badge::ProgressError(_) => p.danger,
+        Badge::ProgressPaused(_) => p.text_tertiary,
         Badge::Exit(0) => p.ok,
         Badge::Exit(_) => p.danger,
     }
@@ -196,10 +243,13 @@ pub fn draw(
         if show_bg {
             out.rect(c.rect, radius::INSET, fill, Some(rim));
         }
+        if let Some(b) = tab.badges.iter().find(|b| is_progress(**b)) {
+            progress_line(c.rect, *b, pal, out);
+        }
         // Badges, then title, then close.
         let mut x = c.rect.x + space::SM;
         let cy = c.rect.y + c.rect.h / 2.0;
-        for b in &tab.badges {
+        for b in tab.badges.iter().filter(|b| !is_progress(**b)) {
             let d = metrics::BADGE_D;
             out.rect(
                 Rect::new(x, cy - d / 2.0, d, d),
@@ -208,6 +258,29 @@ pub fn draw(
                 None,
             );
             x += d + space::XS;
+        }
+        if let Some(p) = &tab.profile {
+            let m = geometry();
+            let tw = m.width(&TextRun::interface(p.text.clone(), size::MICRO));
+            let w = (tw + 2.0 * space::SM).min(metrics::PROFILE_MAX_W);
+            let pill = Rect::new(x, cy - metrics::PROFILE_H / 2.0, w, metrics::PROFILE_H);
+            out.rect(
+                pill,
+                radius::PILL,
+                pal.cell_hover,
+                Some(Rim {
+                    width: metrics::RIM_W,
+                    colour: pal.cell_rim,
+                }),
+            );
+            let mut run = p.clone();
+            run.size = size::MICRO;
+            out.text(
+                run.clipped((w - 2.0 * space::SM).max(0.0)),
+                Point::new(pill.x + space::SM, pill.y + (pill.h - size::MICRO) / 2.0),
+                pal.text_secondary,
+            );
+            x += w + space::XS;
         }
         let show_close = tab.active || hover_tab || st.focus_kb;
         let title_right = if show_close {

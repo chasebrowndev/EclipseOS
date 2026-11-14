@@ -17,6 +17,8 @@ pub enum IconId {
     Plus,
     Warning,
     Shield,
+    ArrowUp,
+    ArrowDown,
 }
 
 #[derive(Clone, Debug, PartialEq)]
