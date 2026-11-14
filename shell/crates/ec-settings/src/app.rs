@@ -453,6 +453,7 @@ impl App {
         }
         if app.page.is_terminal() {
             app.terminal.reload();
+            crate::terminal::sync_theme(&mut app);
         }
         if app.page == Page::LoginScreen {
             crate::login_screen::load(&mut app);
@@ -892,7 +893,12 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 
 fn update_inner(app: &mut App, message: Message) -> Task<Message> {
     match message {
-        Message::ThemeChanged => return Task::none(),
+        Message::ThemeChanged => {
+            if app.page.is_terminal() {
+                crate::terminal::sync_theme(app);
+            }
+            return Task::none();
+        }
         Message::Section(s) => {
             if app.open == Some(s) && s.expands() {
                 // Folding leaves the page where it is: closing a list is
@@ -970,6 +976,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             app.reload();
             if app.page.is_terminal() {
                 app.terminal.reload();
+                crate::terminal::sync_theme(app);
             }
             if app.page == Page::LoginScreen {
                 return crate::login_screen::reload(app);
@@ -1205,6 +1212,7 @@ fn go(app: &mut App, page: Page) -> Task<Message> {
     app.flash = None;
     if page.is_terminal() {
         app.terminal.reload();
+        crate::terminal::sync_theme(app);
     }
     let pictures = if page == Page::LoginScreen {
         crate::login_screen::reload(app)

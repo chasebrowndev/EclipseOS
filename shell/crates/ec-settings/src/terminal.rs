@@ -49,27 +49,6 @@ use ec_ui::widget::{
 use crate::app::{verdict_row, App, Message};
 use crate::pane::Page;
 
-/// The ANSI 0-15 the terminal draws when `colors.palette` is unset: a mirror of
-/// `apoth-term`'s private `color::ANSI16`, which is not exported. Keep in step.
-const XTERM_ANSI: [(u8, u8, u8); 16] = [
-    (0, 0, 0),
-    (205, 0, 0),
-    (0, 205, 0),
-    (205, 205, 0),
-    (0, 0, 238),
-    (205, 0, 205),
-    (0, 205, 205),
-    (229, 229, 229),
-    (127, 127, 127),
-    (255, 0, 0),
-    (0, 255, 0),
-    (255, 255, 0),
-    (92, 92, 255),
-    (255, 0, 255),
-    (0, 255, 255),
-    (255, 255, 255),
-];
-
 /// Keys whose value is a map: a collection, edited on the M27 pages. Shown
 /// read-only here so the setting is never hidden. `tests/coverage.rs` checks
 /// that this is exactly the set of `Map`-typed rows.
@@ -236,6 +215,8 @@ pub struct Terminal {
     picker: Option<&'static str>,
     filter: String,
     changed_only: bool,
+    /// The active Abyss theme's seeds; `None` until fetched (dark seeds then).
+    seeds: Option<ec_theme::Seeds>,
 }
 
 impl Terminal {
@@ -495,6 +476,18 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
     Task::none()
 }
 
+/// Re-read the active theme's seeds, which the terminal's unset colours follow.
+pub fn sync_theme(app: &mut App) {
+    if let Some(info) = app
+        .conn
+        .call("get_theme", serde_json::json!({}))
+        .ok()
+        .and_then(|v| ec_ui::ipc::parse_theme(&v))
+    {
+        app.terminal.seeds = Some(info.seeds);
+    }
+}
+
 fn msg(m: Msg) -> Message {
     Message::Terminal(m)
 }
@@ -597,37 +590,33 @@ fn tilde(p: &str) -> String {
 }
 
 /// Colors: the palette the terminal draws, over the background it draws it on.
-/// An unset colour is the theme's, so those cells show the theme-neutral
-/// fallbacks and say so.
+/// A colour unset in the file follows the active theme (`ec_theme::terminal_scheme`,
+/// the same derivation the terminal runs); a set `colors.*` key overrides it.
 fn palette_hero(app: &App) -> Element<'_, Message, Theme> {
     let t = &app.terminal;
     let cfg = t.cfg();
     let rgba = |c: [u8; 4]| iced::Color::from_rgba8(c[0], c[1], c[2], f32::from(c[3]) / 255.0);
+    let seeds = t.seeds.unwrap_or(ec_theme::DARK_SEEDS);
+    let scheme = ec_theme::terminal_scheme(&seeds);
     let bg = cfg
         .color("colors.background")
         .map(rgba)
-        .unwrap_or_else(color::surface_0);
+        .unwrap_or_else(|| color::to_iced(scheme.background));
     let fg = cfg
         .color("colors.foreground")
         .map(rgba)
-        .unwrap_or_else(color::text);
-    // The sixteen the terminal draws: the file's palette when it is set and
-    // whole, else the built-in xterm table. Unset does not derive from the
-    // theme: the theme supplies only foreground and background.
+        .unwrap_or_else(|| color::to_iced(scheme.foreground));
     let set: Vec<[u8; 4]> = cfg
         .list("colors.palette")
         .iter()
         .filter_map(|h| apoth_config::lang::parse_color(h))
         .collect();
-    let ansi: Vec<iced::Color> = if set.len() == 16 {
+    let from_file = set.len() == 16;
+    let ansi: Vec<iced::Color> = if from_file {
         set.iter().map(|c| rgba(*c)).collect()
     } else {
-        XTERM_ANSI
-            .iter()
-            .map(|(r, g, b)| iced::Color::from_rgb8(*r, *g, *b))
-            .collect()
+        scheme.ansi.iter().map(|c| color::to_iced(*c)).collect()
     };
-    let from_file = set.len() == 16;
     let mut strip = iced::widget::Row::new().spacing(space::PILL_GAP);
     for c in ansi.iter().copied() {
         strip = strip.push(
@@ -660,7 +649,7 @@ fn palette_hero(app: &App) -> Element<'_, Message, Theme> {
             text(if from_file {
                 "palette from apotheosis.kdl"
             } else {
-                "built-in palette"
+                "follows the active theme"
             })
             .font(font::DATA)
             .size(size::MONO)
