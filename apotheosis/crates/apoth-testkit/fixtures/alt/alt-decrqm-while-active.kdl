@@ -1,0 +1,9 @@
+fixture "alt-decrqm-while-active" {
+  covers "T03-ALTSCREEN" "T03-DECRQM"
+  review "DECRQM 47 while 1049 is active: assumed all four alt-screen modes report the one alt-screen state"
+  size rows=4 cols=6
+  feed #"\e[?1049h\e[?1049$p\e[?47$p"#
+  grid
+  replies #"\e[?1049;1$y\e[?47;1$y"#
+  alt #true
+}

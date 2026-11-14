@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-alt-screen-images-vanish" {
+  desc "alternate-screen images vanish on exit"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e[?1049h"#
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=7,C=1,q=1;/wAA/wAA\e\\"#
+  feed #"\e[?1049l"#
+  images {
+  }
+}

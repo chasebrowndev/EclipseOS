@@ -1,0 +1,11 @@
+fixture "sgr-unknown-code-ignored" {
+  desc "an unknown SGR code changes nothing; later codes still apply"
+  covers "T03-SGR-BASIC" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[200;1mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" attrs="bold"
+}

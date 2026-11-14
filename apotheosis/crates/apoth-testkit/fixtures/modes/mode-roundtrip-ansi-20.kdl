@@ -1,0 +1,11 @@
+fixture "mode-roundtrip-ansi-20" {
+  desc "mode roundtrip ansi 20 (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[20h"#
+  checkpoint "c1" {
+    mode "20" 1
+  }
+  feed #"\e[20l"#
+  mode "20" 2
+}

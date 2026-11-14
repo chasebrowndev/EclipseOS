@@ -1,0 +1,10 @@
+fixture "w-control-in-text-run" {
+  desc "w control in text run (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=1 cols=8
+  feed #"a\ab"#
+  grid {
+    row "ab"
+  }
+  events "bell"
+}

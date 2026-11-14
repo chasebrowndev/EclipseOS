@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-query-never-stores" {
+  desc "a=q answers OK and stores nothing"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e_Ga=q,f=24,s=2,v=1,i=31;/wAA/wAA\e\\"#
+  feed #"\e_Ga=p,i=31\e\\"#
+  replies #"\e_Gi=31;OK\e\\\e_Gi=31;ENOENT:no such image\e\\"#
+  images {
+  }
+}

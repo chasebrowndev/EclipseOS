@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-place-missing-enoent" {
+  desc "placing an unknown id answers ENOENT"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=6
+  feed #"\e_Ga=p,i=42\e\\"#
+  replies #"\e_Gi=42;ENOENT:no such image\e\\"#
+}

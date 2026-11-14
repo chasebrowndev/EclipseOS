@@ -1,0 +1,9 @@
+fixture "tab-at-last-stop-goes-to-last-col" {
+  desc "tab at last stop goes to last col (migrated from the apoth-term corpus)"
+  covers "T03-HTS-TBC"
+  size rows=1 cols=12
+  feed #"\e[1;10H\tx"#
+  grid {
+    row "           x"
+  }
+}

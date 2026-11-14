@@ -1,0 +1,16 @@
+fixture "resize-shrink-rows-content-to-history" {
+  covers "T03-RESIZE"
+  review "T-02 section 3 never says that shrinking rows pushes the top rows into scrollback (primary screen); xterm-style assumed"
+  size rows=4 cols=4
+  feed #"1\r\n2\r\n3\r\n4"#
+  resize rows=2 cols=4
+  grid {
+    row "3"
+    row "4"
+  }
+  cursor row=1 col=1
+  scrollback {
+    row "1"
+    row "2"
+  }
+}

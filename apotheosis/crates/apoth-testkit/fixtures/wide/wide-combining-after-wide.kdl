@@ -1,0 +1,10 @@
+fixture "wide-combining-after-wide" {
+  covers "T03-COMBINING" "T03-WIDE"
+  size rows=2 cols=10
+  feed #"日́"#
+  grid {
+    row "日́"
+  }
+  cursor row=0 col=2
+  cell row=0 col=0 ch="日́" wide="wide"
+}

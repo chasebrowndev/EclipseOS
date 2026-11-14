@@ -1,0 +1,9 @@
+fixture "wrap-tab-at-last-column-stays" {
+  covers "T03-AUTOWRAP" "T03-TAB"
+  size rows=3 cols=5
+  feed #"\e[1;5H\tB"#
+  grid {
+    row "    B"
+  }
+  cursor row=0 col=4
+}

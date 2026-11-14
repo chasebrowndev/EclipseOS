@@ -1,0 +1,8 @@
+fixture "ris-clears-screen-and-homes" {
+  desc "RIS erases the screen and homes the cursor"
+  covers "T03-RIS" "VTCORE-14"
+  size rows=3 cols=10
+  feed #"ABC\r\nDEF\ec"#
+  grid
+  cursor row=0 col=0
+}

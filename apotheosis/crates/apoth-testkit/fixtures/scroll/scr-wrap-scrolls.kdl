@@ -1,0 +1,10 @@
+fixture "scr-wrap-scrolls" {
+  desc "scr wrap scrolls (migrated from the apoth-term corpus)"
+  covers "T03-SCROLL-HISTORY"
+  size rows=2 cols=3
+  feed #"abcdefg"#
+  grid {
+    row "def"
+    row "g"
+  }
+}

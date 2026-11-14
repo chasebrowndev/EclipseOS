@@ -1,0 +1,10 @@
+fixture "wrap-decawm-off-then-on" {
+  desc "re-enabling autowrap does not retroactively set pending wrap"
+  covers "T03-DECAWM"
+  size rows=3 cols=5
+  feed #"\e[?7lABCDEFG\e[?7hH"#
+  grid {
+    row "ABCDH"
+  }
+  cursor row=0 col=4
+}
