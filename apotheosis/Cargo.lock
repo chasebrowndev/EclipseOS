@@ -201,6 +201,7 @@ dependencies = [
  "libc",
  "matroska-demuxer",
  "opus-decoder",
+ "png",
  "pulseaudio",
  "rav1d",
  "rustix",
