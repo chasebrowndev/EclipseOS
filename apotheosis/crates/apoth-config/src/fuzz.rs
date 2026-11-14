@@ -26,14 +26,48 @@ pub fn fuzz_config(data: &[u8]) {
     assert_eq!(a.diagnostics.len(), b.diagnostics.len());
 }
 
-/// Arbitrary text through the match-expression validator.
-pub fn fuzz_match(data: &[u8]) {
-    let _ = crate::lang::validate_match(&String::from_utf8_lossy(data));
+/// Field values the evaluators see: hostile text in every slot.
+struct Hostile<'a>(&'a str);
+
+impl crate::expr::Fields for Hostile<'_> {
+    fn text(&self, _field: &str) -> Option<std::borrow::Cow<'_, str>> {
+        Some(std::borrow::Cow::Borrowed(self.0))
+    }
+    fn state(&self, w: &str) -> bool {
+        self.0.contains(w)
+    }
+    fn var(&self, _n: &str) -> Option<std::borrow::Cow<'_, str>> {
+        Some(std::borrow::Cow::Borrowed(self.0))
+    }
 }
 
-/// Arbitrary text through the template validator.
+/// Arbitrary text as a match expression: parsing never panics, a parsed expression
+/// evaluates (against its own text as every field) without panicking.
+pub fn fuzz_match(data: &[u8]) {
+    let s = String::from_utf8_lossy(data);
+    let ok = crate::lang::validate_match(&s).is_ok();
+    if let Ok(e) = crate::expr::Expr::parse(&s) {
+        assert!(ok, "validator and parser disagree");
+        let _ = e.eval(&Hostile(&s));
+    }
+}
+
+/// Arbitrary text as a template: parsing never panics, rendering stays under the output
+/// cap and carries no control character.
 pub fn fuzz_template(data: &[u8]) {
-    let _ = crate::lang::validate_template(&String::from_utf8_lossy(data));
+    let s = String::from_utf8_lossy(data);
+    if let Ok(t) = crate::template::Template::parse(&s) {
+        let out = t.render(&Hostile(&s));
+        assert!(out.len() <= crate::template::MAX_OUTPUT_BYTES);
+        // Literal text is the user's own; substituted text is filtered. A template with
+        // no literal control characters must render none.
+        if !s.chars().any(char::is_control) {
+            assert!(
+                !out.chars().any(char::is_control),
+                "a control reached the output"
+            );
+        }
+    }
 }
 
 #[cfg(test)]

@@ -57,6 +57,7 @@ use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, Reg
 use rustix::io::Errno;
 
 mod a11y;
+mod automation;
 mod serve;
 
 pub(crate) use a11y::A11yMsg;
@@ -358,6 +359,8 @@ pub(crate) struct App {
     a11y: a11y::A11yState,
     // ---- navigation and consent (T-14 §5-§8, T-18 §3-§4)
     nav: Nav,
+    // ---- rules, variables, notifications, profiles (T-11 §5-§9, T-17 §6)
+    auto: automation::Auto,
 }
 
 /// A paste held back by the guard (T-18 §4). The content is held until answered, never logged.
@@ -486,6 +489,7 @@ pub(crate) fn run(
         hostname: crate::ctl::osc7::hostname(),
         a11y: a11y::A11yState::default(),
         nav: Nav::default(),
+        auto: automation::Auto::default(),
     };
     app.start_ctl();
     app.start_a11y();
@@ -494,6 +498,9 @@ pub(crate) fn run(
         tracing::warn!(binds = app.keymap.dropped, "some binds were not understood");
     }
     app.start_watch(&files);
+    let mut errors = errors;
+    errors.extend(error_positions(&app.recompile_rules()));
+    app.seed_consent(automation::load_consent());
     app.set_config_errors(errors);
     let deadline = Instant::now() + Duration::from_secs(10);
     while !app.started {
@@ -507,6 +514,7 @@ pub(crate) fn run(
             return Err("the compositor never configured the window".into());
         }
     }
+    app.emit_startup();
     event_loop
         .run(None, &mut app, |_| {})
         .map_err(|e| e.to_string())?;
@@ -541,7 +549,7 @@ fn commit_bytes(paste_pending: bool, text: &str, modes: apoth_input::InputModes)
 
 /// The paste confirm bar's answer to a key: 0 = Paste, 1 = Cancel (Escape too); `None` while the
 /// input guard runs, for Return, Space and any unknown key (the paste stays pending).
-fn paste_answer(
+pub(crate) fn paste_answer(
     spec: &apoth_ui::bar::BarSpec,
     age_ms: u64,
     key: apoth_input::Key,
@@ -612,6 +620,7 @@ const HANDLED: &[&str] = &[
     "key-table.push",
     "layout.next",
     "macro.run",
+    "notify",
     "open",
     "palette.close",
     "palette.open",
@@ -654,6 +663,8 @@ const HANDLED: &[&str] = &[
     "tab.prev",
     "tab.rename",
     "tab.select",
+    "var.set",
+    "var.unset",
     "window.close",
 ];
 
@@ -1120,12 +1131,13 @@ impl App {
         if !tab.name().is_empty() {
             return tab.name().to_owned();
         }
-        tab.focused()
+        let pane = tab.focused();
+        let title = pane
             .and_then(|p| self.panes.get(&p))
             .map(|p| p.title.as_str())
             .filter(|t| !t.is_empty())
-            .unwrap_or("shell")
-            .to_owned()
+            .unwrap_or("shell");
+        self.tab_label(pane, title)
     }
 
     fn tab_specs(&self) -> Vec<TabSpec> {
@@ -1318,8 +1330,8 @@ impl App {
                 .get(&n)
                 .map(|p| p.title.clone())
                 .unwrap_or_default();
-            self.handle
-                .set_title(self.win, &self.settings.window_title(&self.term_title));
+            let title = self.window_title_now();
+            self.handle.set_title(self.win, &title);
             // The key-table stack and a half-typed sequence belong to the old pane's context.
             self.keys.reset();
         }
@@ -1363,19 +1375,51 @@ impl App {
         Some(id)
     }
 
-    fn split(&mut self, dir: MuxDir, argv: Option<Vec<String>>, cwd: Option<PathBuf>) {
-        let Some(target) = self.focused() else { return };
+    fn split(
+        &mut self,
+        dir: MuxDir,
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+    ) -> Option<PaneKey> {
+        let target = self.focused()?;
         let cwd = cwd.or_else(|| self.inherited_cwd());
         let spec = MuxPaneSpec::default();
         match self
             .session
             .split_pane(target, dir, SplitSize::HALF, spec, ())
         {
-            Ok(id) => self.finish_new_pane(id, argv, cwd, Vec::new()),
+            Ok(id) => {
+                self.finish_new_pane(id, argv, cwd, env);
+                self.panes.contains_key(&id).then_some(id)
+            }
             Err(e) => {
                 // Too small for another pane (T-13 §3: 2x1 minimum) and the like.
                 tracing::debug!(error = %e, "split refused");
                 self.handle.ring_bell(Some(self.win));
+                None
+            }
+        }
+    }
+
+    /// Resolve a `profile=` for a new pane: its shell, cwd and env under any explicit argv
+    /// and cwd. `None` (with a bell) for an unknown profile.
+    #[allow(clippy::type_complexity)]
+    fn with_profile(
+        &mut self,
+        profile: Option<&str>,
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+    ) -> Option<(Option<Vec<String>>, Option<PathBuf>, Vec<(String, String)>)> {
+        let Some(name) = profile else {
+            return Some((argv, cwd, Vec::new()));
+        };
+        match self.profile_launch(name, argv, cwd) {
+            Ok(r) => Some(r),
+            Err(()) => {
+                tracing::info!("unknown profile");
+                self.handle.ring_bell(Some(self.win));
+                None
             }
         }
     }
@@ -1431,6 +1475,12 @@ impl App {
             self.ctl_emit(ev, None);
         }
         self.nav.consents.forget(id);
+        self.auto_forget(id);
+        if let Some(t) = tab
+            && self.session.tab(t).is_none()
+        {
+            self.auto_forget_tab(t);
+        }
         self.nav.osc52_reads.retain(|r| r.1 != id);
         if self.nav.consent.as_ref().is_some_and(|c| c.pane == id) {
             self.nav.consent = None;
@@ -1676,13 +1726,14 @@ impl App {
                 || self.nav.hints.is_some()
                 || self.nav.consent.is_some()
                 || self.nav.open.is_some()
+                || self.auto.confirm.is_some()
                 || self.nav.search.as_ref().is_some_and(|s| s.focused)
             {
                 return;
             }
         }
-        if self.nav.consent.is_some() || self.nav.open.is_some() {
-            // A consent or link-confirm bar owns the keyboard until answered (T-18 §3).
+        if self.nav.consent.is_some() || self.nav.open.is_some() || self.auto.confirm.is_some() {
+            // A consent, link-confirm or rule bar owns the keyboard until answered (T-18 §3).
             if pressed && !repeat {
                 self.consumed.push(Consumed::plain(key));
                 self.answer_nav_bar(look.key);
@@ -2119,10 +2170,19 @@ impl App {
                 direction,
                 argv,
                 cwd,
-                profile: _,
+                profile,
             } => {
                 let argv = argv.and_then(|a| self.expand_argv(&a));
-                self.split(split_dir(direction), argv, cwd.map(PathBuf::from));
+                let Some((argv, cwd, env)) =
+                    self.with_profile(profile.as_deref(), argv, cwd.map(PathBuf::from))
+                else {
+                    return true;
+                };
+                if let Some(id) = self.split(split_dir(direction), argv, cwd, env)
+                    && let Some(p) = profile
+                {
+                    self.set_explicit_profile(id, &p);
+                }
             }
             A::PaneClose { force: _ } => {
                 // HOOK(close.confirm): the running-process confirmation sheet is not built
@@ -2164,13 +2224,18 @@ impl App {
             A::LayoutNext {} => self.with_tab(|t, _| {
                 let _ = t.next_preset();
             }),
-            A::TabNew {
-                argv,
-                cwd,
-                profile: _,
-            } => {
+            A::TabNew { argv, cwd, profile } => {
                 let argv = argv.and_then(|a| self.expand_argv(&a));
-                self.new_tab(argv, cwd.map(PathBuf::from));
+                let Some((argv, cwd, env)) =
+                    self.with_profile(profile.as_deref(), argv, cwd.map(PathBuf::from))
+                else {
+                    return true;
+                };
+                if let Some(id) = self.new_tab_with(argv, cwd, env)
+                    && let Some(p) = profile
+                {
+                    self.set_explicit_profile(id, &p);
+                }
             }
             A::TabClose {} => {
                 if let Some(t) = self.active_tab() {
@@ -2335,6 +2400,13 @@ impl App {
                 self.spawn_open(&target, argv);
             }
             A::ConfigReload {} => self.start_reload(),
+            A::Notify {
+                title,
+                body,
+                urgency,
+            } => self.notify_action(&title, body.as_deref(), urgency),
+            A::VarSet { name, value, scope } => self.var_action(&name, Some(&value), scope),
+            A::VarUnset { name, scope } => self.var_action(&name, None, scope),
             A::AppQuit { force: _ } | A::WindowClose {} => self.begin_close(),
             A::AppIgnore {} => {}
             other => {
@@ -3035,7 +3107,7 @@ impl App {
                     tracing::debug!(class = Class::ClipboardRead.id(), "consent rate-limited");
                 }
                 security::Ask::Show => {
-                    if self.nav.consent.is_some() || self.paste.is_some() {
+                    if self.bar_busy() {
                         // One question on screen at a time: this one is dropped.
                         self.nav.consents.cancel(id, Class::ClipboardRead);
                         return;
@@ -3081,6 +3153,18 @@ impl App {
     fn answer_nav_bar(&mut self, key: apoth_input::Key) {
         let Some(o) = &self.bar else { return };
         let age = o.shown_at.elapsed().as_millis() as u64;
+        if self.auto.confirm.is_some() && self.nav.consent.is_none() && self.nav.open.is_none() {
+            // The rule sheet has no Escape button: Escape (after the guard) dismisses it.
+            let esc = matches!(key, apoth_input::Key::Named(apoth_input::Named::Escape));
+            match paste_answer(&o.spec, age, key) {
+                Some(a) => self.answer_rule(Some(a)),
+                None if esc && age >= apoth_ui::tokens::motion::CONSENT_GUARD_MS => {
+                    self.answer_rule(None);
+                }
+                None => {}
+            }
+            return;
+        }
         let Some(answer) = paste_answer(&o.spec, age, key) else {
             return;
         };
@@ -3769,8 +3853,9 @@ impl App {
         }
     }
 
-    fn on_events(&mut self, id: PaneKey, e: PaneEvents) {
-        if let Some(uri) = e.cwd {
+    fn on_events(&mut self, id: PaneKey, mut e: PaneEvents) {
+        let uri = e.cwd.clone();
+        if let Some(uri) = e.cwd.take() {
             let path = crate::ctl::osc7::local_path(&uri, &self.hostname);
             if let Some(p) = self.panes.get_mut(&id) {
                 p.cwd = path.clone();
@@ -3784,17 +3869,18 @@ impl App {
         if e.bell > 0 {
             self.ctl_emit(Event::new(EventKind::Bell, Cause::Child), Some(id));
             self.a11y_announce("Bell");
+            self.bell_notification(id);
         }
-        if let Some(t) = e.title {
+        if let Some(t) = e.title.take() {
             let t = clip(&t, MAX_TITLE).to_owned();
             let focused = self.focused() == Some(id);
             if let Some(p) = self.panes.get_mut(&id) {
                 p.title = t.clone();
             }
             if focused {
-                self.handle
-                    .set_title(self.win, &self.settings.window_title(&t));
                 self.term_title = t.clone();
+                let title = self.window_title_now();
+                self.handle.set_title(self.win, &title);
             }
             if self.geo.is_some_and(|g| g.strip.is_some()) {
                 self.send_layout();
@@ -3807,11 +3893,12 @@ impl App {
             self.handle.ring_bell(Some(self.win));
         }
         if !e.clipboard.is_empty() {
-            self.on_osc52_write(id, e.clipboard);
+            self.on_osc52_write(id, std::mem::take(&mut e.clipboard));
         }
-        if let Some(sel) = e.clip_read {
+        if let Some(sel) = e.clip_read.take() {
             self.on_osc52_read(id, sel);
         }
+        self.auto_pane_events(id, &mut e, uri.as_deref());
     }
 
     // --------------------------------------------------------------- lifecycle
@@ -4022,8 +4109,7 @@ impl App {
                 "configuration has errors; bad entries keep their last good value"
             );
         }
-        self.set_config_errors(errors);
-        if let Outcome::Applied(a) = outcome {
+        if let Outcome::Applied(a) = &outcome {
             let mut settings = Settings::from_config(self.reloader.config());
             settings.diagnostics = self.reloader.diagnostics().len();
             tracing::info!(
@@ -4031,8 +4117,10 @@ impl App {
                 collections = a.diff.collections.len(),
                 "configuration reloaded"
             );
-            self.apply_applied(settings, &a);
+            self.apply_applied(settings, a);
+            errors.extend(error_positions(&self.recompile_rules()));
         }
+        self.set_config_errors(errors);
         // The queued reload starts only now, from the config just applied: its baseline is the
         // last good value for any key a bad scalar leaves alone (T-10 §4).
         if std::mem::take(&mut self.reload_queued) {
@@ -4060,8 +4148,8 @@ impl App {
             }
         }
         if f.title {
-            self.handle
-                .set_title(self.win, &self.settings.window_title(&self.term_title));
+            let title = self.window_title_now();
+            self.handle.set_title(self.win, &title);
         }
         // Padding, tabs.* and panes.* all move the geometry or the chrome: lay out again.
         let _ = old_padding;
@@ -4237,6 +4325,8 @@ impl App {
             ))
         } else if let Some(o) = &self.nav.open {
             Some(open_bar(self.windows()[0], &o.uri))
+        } else if self.auto.confirm.is_some() {
+            self.rule_bar()
         } else if self.bar_dismissed {
             None
         } else {

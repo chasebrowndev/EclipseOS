@@ -88,6 +88,7 @@ pub(crate) enum StrMode {
     Notify777,
     Notify99,
     Progress,
+    UserVar,
     Decrqss,
     Tcap,
 }
@@ -139,6 +140,8 @@ pub(crate) struct Machine {
     // outputs
     pub replies: ReplyQueue,
     pub events: EventSlot,
+    /// OSC 1337 user variables (T-11 §9), at most [`crate::USER_VARS_MAX`] names.
+    pub user_vars: std::collections::BTreeMap<String, String>,
     // colours and titles
     pub palette: Box<[Rgb; 256]>,
     pub fg: Rgb,
@@ -246,6 +249,7 @@ impl Machine {
             kitty: KittyState::default(),
             replies: ReplyQueue::default(),
             events: EventSlot::default(),
+            user_vars: std::collections::BTreeMap::new(),
             palette: Box::new(color::default_palette(&cfg.ansi)),
             fg: cfg.fg,
             bg: cfg.bg,

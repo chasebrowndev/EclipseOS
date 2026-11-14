@@ -43,8 +43,15 @@ use apoth_input::InputMirror;
 use apoth_vt::Parser;
 
 pub use color::XTERM_ANSI16;
+
+/// OSC 1337 user variables per pane (T-11 §9): names, name bytes, value bytes.
+pub const USER_VARS_MAX: usize = 64;
+pub const USER_VAR_NAME_MAX: usize = 64;
+pub const USER_VAR_VALUE_MAX: usize = 1024;
 pub use config::{CursorStyle, Rgb, TermConfig, deny};
-pub use events::{ClipboardSet, EventSlot, Mark, Progress, ReplyQueue};
+pub use events::{
+    ClipboardSet, CommandEvent, EventSlot, Mark, Notification, Progress, ReplyQueue, UserVar,
+};
 pub use modes::{Access, ModeDef, ModeState};
 
 /// What `feed` tells the io thread.
@@ -306,6 +313,11 @@ impl Term {
     /// Default foreground, background and cursor colours now in force.
     pub fn colors(&self) -> (Rgb, Rgb, Rgb) {
         (self.m.fg, self.m.bg, self.m.cursor_color)
+    }
+
+    /// OSC 1337 user variables, by name.
+    pub fn user_vars(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.m.user_vars
     }
 
     /// Kitty keyboard flags of the active screen.

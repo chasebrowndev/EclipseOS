@@ -14,12 +14,15 @@ mod hook;
 mod layout;
 mod mousectl;
 mod nav;
+mod notify;
 mod palette;
 mod pane;
 mod paste;
 mod pointer;
+mod profiles;
 mod reload;
 mod render;
+mod rules;
 mod search;
 mod security;
 mod settings;
@@ -50,8 +53,8 @@ Options:
   --new-instance         do not hand the launch to a running instance
   --wait                 when handed to a running instance, wait for the command and exit
                          with its status
-  --hold, --profile NAME, --layout NAME
-                         accepted; not available yet
+  --profile NAME         start with the named profile (T-11 §6)
+  --hold, --layout NAME  accepted; not available yet
   -h, --help             show this help
   -V, --version          show the version
 ";
@@ -180,9 +183,12 @@ fn main() {
         }
         Cli::Run(r) => {
             init_logging();
-            if r.hold || r.profile.is_some() || r.layout.is_some() {
-                eprintln!("apotheosis: --hold, --profile and --layout are not available yet");
+            if r.hold || r.layout.is_some() {
+                eprintln!("apotheosis: --hold and --layout are not available yet");
                 std::process::exit(1);
+            }
+            if let Some(p) = &r.profile {
+                settings::set_launch_profile(p);
             }
             if !r.new_instance
                 && let ctl::launch::Handoff::Done(code) = ctl::launch::hand_off(launch_request(&r))

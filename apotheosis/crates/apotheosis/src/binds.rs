@@ -272,7 +272,7 @@ pub(crate) fn call_of(a: &ActionCall) -> Call {
     c
 }
 
-fn actions_of(calls: &[ActionCall]) -> Option<Vec<Action>> {
+pub(crate) fn actions_of(calls: &[ActionCall]) -> Option<Vec<Action>> {
     calls
         .iter()
         .map(|c| Action::from_call(&call_of(c)).ok())

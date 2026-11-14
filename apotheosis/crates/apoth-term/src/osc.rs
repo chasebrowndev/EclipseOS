@@ -9,7 +9,7 @@ use apoth_vt::{StrEnd, StrHead, StrKind, StrRoute};
 
 use crate::color;
 use crate::config::deny;
-use crate::events::{ClipboardSet, Mark, Progress};
+use crate::events::{ClipboardSet, CommandEvent, Mark, Progress, UserVar};
 use crate::machine::{Machine, StrMode};
 use crate::sgr;
 use crate::shell;
@@ -121,6 +121,7 @@ impl Machine {
                     },
                     777 => (StrMode::Notify777, CAP_NOTIFY),
                     99 => (StrMode::Notify99, CAP_NOTIFY),
+                    1337 => (StrMode::UserVar, CAP_SMALL),
                     _ => return StrRoute::SKIP,
                 };
                 self.strm = mode;
@@ -178,6 +179,7 @@ impl Machine {
             }
             StrMode::Notify | StrMode::Notify777 | StrMode::Notify99 => deny::NOTIFICATION,
             StrMode::Link => deny::HYPERLINK,
+            StrMode::UserVar => deny::USER_VAR,
             _ => 0,
         };
         if self.cfg.deny & class != 0 {
@@ -238,10 +240,11 @@ impl Machine {
             StrMode::Link => self.osc_link(buf),
             StrMode::Clip => self.osc_clip(buf),
             StrMode::Mark => self.osc_mark(buf),
+            StrMode::UserVar => self.osc_user_var(buf),
             StrMode::Notify => {
                 let t = sanitize(buf);
                 if !t.is_empty() {
-                    self.events.push_notification(t);
+                    self.events.push_notification(9, t);
                 }
             }
             StrMode::Notify777 => {
@@ -256,7 +259,7 @@ impl Machine {
                         _ => body,
                     };
                     if !t.is_empty() {
-                        self.events.push_notification(t);
+                        self.events.push_notification(777, t);
                     }
                 }
             }
@@ -286,7 +289,7 @@ impl Machine {
                     sanitize(payload)
                 };
                 if !t.is_empty() {
-                    self.events.push_notification(t);
+                    self.events.push_notification(99, t);
                 }
             }
             StrMode::Progress => {
@@ -491,6 +494,10 @@ impl Machine {
             None
         };
         let mut exit = None;
+        let before = self
+            .blocks
+            .last()
+            .map(|b| (b.id, b.state == shell::BlockState::Running));
         let block = match k {
             b'L' => {
                 // Fresh line: CR LF unless already in column 0; opens no block.
@@ -545,6 +552,7 @@ impl Machine {
                 0
             }
         };
+        self.command_transitions(before);
         if block != 0 {
             self.panes[c].grid.set_row_block(y, block);
         }
@@ -558,6 +566,87 @@ impl Machine {
             col: self.x as u32,
         };
         self.events.push_mark(m);
+    }
+
+    /// Queue the command events one mark caused: the block that was running finished
+    /// (explicitly by `D` or implicitly by a new prompt), and the newest block started.
+    fn command_transitions(&mut self, before: Option<(u32, bool)>) {
+        if let Some((id, true)) = before
+            && self
+                .blocks
+                .get(id)
+                .is_some_and(|b| b.state == shell::BlockState::Done)
+        {
+            self.events.push_command(CommandEvent {
+                block: id,
+                finished: true,
+            });
+        }
+        if let Some(b) = self.blocks.last()
+            && b.state == shell::BlockState::Running
+            && before != Some((b.id, true))
+        {
+            let block = b.id;
+            self.events.push_command(CommandEvent {
+                block,
+                finished: false,
+            });
+        }
+    }
+
+    /// `OSC 1337 ; SetUserVar=<name>=<base64>` (T-11 §9). Names are 1..=64 bytes of
+    /// `[A-Za-z0-9_.-]`; values decode to at most 1 KiB of UTF-8 with no control characters.
+    /// An empty value removes the variable. At most 64 names; a new name past that is
+    /// dropped (and counted). Every other 1337 subcommand is ignored.
+    fn osc_user_var(&mut self, buf: &[u8]) {
+        let Some(rest) = buf.strip_prefix(b"SetUserVar=") else {
+            return;
+        };
+        let (name, b64) = match rest.iter().position(|&b| b == b'=') {
+            Some(i) => (&rest[..i], &rest[i + 1..]),
+            None => (rest, &b""[..]),
+        };
+        let name_ok = (1..=crate::USER_VAR_NAME_MAX).contains(&name.len())
+            && name
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+        if !name_ok {
+            return;
+        }
+        let Ok(name) = String::from_utf8(name.to_vec()) else {
+            return;
+        };
+        let Some(raw) = b64_decode(b64) else {
+            self.events.dropped.bad_base64 += 1;
+            return;
+        };
+        if raw.len() > crate::USER_VAR_VALUE_MAX {
+            return;
+        }
+        let Ok(val) = String::from_utf8(raw) else {
+            return;
+        };
+        if val.chars().any(char::is_control) {
+            return;
+        }
+        if val.is_empty() {
+            if self.user_vars.remove(&name).is_some() {
+                self.events.push_var(UserVar { name, value: None });
+            }
+            return;
+        }
+        if !self.user_vars.contains_key(&name) && self.user_vars.len() >= crate::USER_VARS_MAX {
+            self.events.dropped.vars += 1;
+            return;
+        }
+        if self.user_vars.get(&name) == Some(&val) {
+            return;
+        }
+        self.user_vars.insert(name.clone(), val.clone());
+        self.events.push_var(UserVar {
+            name,
+            value: Some(val),
+        });
     }
 
     fn decrqss(&mut self, pt: &[u8]) {

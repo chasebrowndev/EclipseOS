@@ -61,6 +61,7 @@ const CORPUS: &[(&str, u32)] = &[
     ("\x1b]52;c;?\x07", deny::CLIPBOARD_READ),
     ("\x1b]52;p;aGk=\x07", deny::PRIMARY),
     ("\x1b]52;p;?\x07", deny::PRIMARY),
+    ("\x1b]1337;SetUserVar=k=dg==\x07", deny::USER_VAR),
 ];
 
 #[test]
@@ -251,7 +252,7 @@ fn osc_666_and_unknown_777_subcommands_are_ignored() {
     // A 777 notification is sanitised (controls and bidi overrides stripped) and capped.
     feed(&mut t, "\x1b]777;notify;a\u{202e}b;c\x01d\x07");
     assert_eq!(
-        t.events_ref().notifications.back().map(String::as_str),
+        t.events_ref().notifications.back().map(|n| n.text.as_str()),
         Some("ab: cd")
     );
     let long = "x".repeat(10_000);
@@ -260,6 +261,26 @@ fn osc_666_and_unknown_777_subcommands_are_ignored() {
         t.events_ref().notifications.len(),
         1,
         "an over-cap 777 is dropped whole"
+    );
+}
+
+#[test]
+fn notifications_carry_their_sequence() {
+    let mut t = term_with(0);
+    feed(
+        &mut t,
+        "\x1b]9;plain\x07\x1b]777;notify;t;b\x07\x1b]99;p=body;hello\x07\x1b]9;4;1;50\x07",
+    );
+    let got: Vec<(u16, &str)> = t
+        .events_ref()
+        .notifications
+        .iter()
+        .map(|n| (n.source, n.text.as_str()))
+        .collect();
+    assert_eq!(got, vec![(9, "plain"), (777, "t: b"), (99, "hello")]);
+    assert!(
+        t.events_ref().progress.is_some(),
+        "9;4 is progress, not a notification"
     );
 }
 
@@ -399,4 +420,81 @@ fn block_marks_are_chunking_independent() {
         .collect();
     assert_eq!(a, b);
     assert_eq!(whole.events_ref().render(), bytes.events_ref().render());
+}
+
+#[test]
+fn user_vars_are_bounded_and_raise_events() {
+    let mut t = term_with(0);
+    // "main" in base64.
+    feed(&mut t, "\x1b]1337;SetUserVar=branch=bWFpbg==\x07");
+    assert_eq!(
+        t.user_vars().get("branch").map(String::as_str),
+        Some("main")
+    );
+    assert!(
+        t.events_ref()
+            .render()
+            .contains(&"var branch=main".to_string())
+    );
+    t.events().clear();
+    // Same value again: no event.
+    feed(&mut t, "\x1b]1337;SetUserVar=branch=bWFpbg==\x07");
+    assert!(t.events_ref().vars.is_empty());
+    // Empty value removes it.
+    feed(&mut t, "\x1b]1337;SetUserVar=branch=\x07");
+    assert!(t.user_vars().is_empty());
+    assert_eq!(
+        t.events_ref().render(),
+        vec!["var branch unset".to_string()]
+    );
+    t.events().clear();
+    // Bad names, bad base64, a control in the value, a value over 1 KiB: ignored.
+    let big = "QUFB".repeat(342); // 1026 bytes decoded
+    for s in [
+        "\x1b]1337;SetUserVar=bad name=eA==\x07".to_string(),
+        "\x1b]1337;SetUserVar==eA==\x07".to_string(),
+        "\x1b]1337;SetUserVar=k=!!!!\x07".to_string(),
+        "\x1b]1337;SetUserVar=k=Gw==\x07".to_string(),
+        format!("\x1b]1337;SetUserVar=k={big}\x07"),
+        "\x1b]1337;File=name=eA==:AAAA\x07".to_string(),
+    ] {
+        feed(&mut t, &s);
+    }
+    assert!(t.user_vars().is_empty());
+    assert!(t.events_ref().vars.is_empty());
+    // At most 64 names.
+    for i in 0..70 {
+        feed(&mut t, &format!("\x1b]1337;SetUserVar=v{i}=eA==\x07"));
+    }
+    assert_eq!(t.user_vars().len(), apoth_term::USER_VARS_MAX);
+    assert_eq!(t.replies().take_all(), b"");
+}
+
+#[test]
+fn command_transitions_are_queued_in_order() {
+    let mut t = term_with(0);
+    feed(
+        &mut t,
+        "\x1b]133;A\x07$ \x1b]133;B\x07ls\x1b]133;C;cmdline=ls\x07out\r\n\x1b]133;D;2\x07\
+         \x1b]133;A\x07$ \x1b]133;B\x07x\x1b]133;C\x07\x1b]133;A\x07",
+    );
+    let ev: Vec<String> = t
+        .events_ref()
+        .render()
+        .into_iter()
+        .filter(|e| e.starts_with("command"))
+        .collect();
+    let ids: Vec<u32> = t.blocks().iter().map(|b| b.id).collect();
+    assert_eq!(
+        ev,
+        vec![
+            format!("command {} started", ids[0]),
+            format!("command {} finished", ids[0]),
+            format!("command {} started", ids[1]),
+            // A new prompt ends a running command implicitly.
+            format!("command {} finished", ids[1]),
+        ]
+    );
+    let b = t.blocks().get(ids[0]).unwrap();
+    assert_eq!((b.exit, b.cmdline.as_deref()), (Some(2), Some("ls")));
 }

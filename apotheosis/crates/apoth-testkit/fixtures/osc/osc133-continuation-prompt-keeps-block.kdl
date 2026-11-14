@@ -8,5 +8,5 @@ fixture "osc133-continuation-prompt-keeps-block" {
     row "> end"
     row "ok"
   }
-  events "mark:A" "mark:B" "mark:A" "mark:B" "mark:C" "mark:D;0"
+  events "mark:A" "mark:B" "mark:A" "mark:B" "mark:C" "mark:D;0" "command:started" "command:finished"
 }

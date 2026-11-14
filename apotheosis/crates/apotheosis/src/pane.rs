@@ -145,6 +145,27 @@ pub(crate) struct PaneEvents {
     pub(crate) clipboard: Vec<apoth_term::ClipboardSet>,
     /// An OSC 52 read request (selection letters); main answers under the policy.
     pub(crate) clip_read: Option<String>,
+    /// OSC 9 / 777 / 99 notifications (program content: shown, never logged).
+    pub(crate) notifications: Vec<apoth_term::Notification>,
+    /// OSC 9;4 progress.
+    pub(crate) progress: Option<apoth_term::Progress>,
+    /// OSC 133 `A` marks seen (a prompt started).
+    pub(crate) prompts: u32,
+    /// OSC 1337 SetUserVar changes, in order.
+    pub(crate) vars: Vec<apoth_term::UserVar>,
+    /// Command blocks that started or finished, resolved while the term was locked.
+    pub(crate) commands: Vec<CommandInfo>,
+}
+
+/// A command block's state change with what rules match on (T-11 §5). The command line
+/// and directory are user data: matched and templated, never logged.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CommandInfo {
+    pub(crate) finished: bool,
+    pub(crate) cmdline: Option<String>,
+    pub(crate) exit: Option<i32>,
+    pub(crate) duration_ms: Option<u64>,
+    pub(crate) cwd: Option<String>,
 }
 
 /// A pane's id in the mux session (`apoth_mux::PaneId`).
@@ -354,14 +375,37 @@ fn feed(
         }
         if wake.events {
             let slot = t.events();
-            events = Some(PaneEvents {
+            let mut e = PaneEvents {
                 title: slot.title.take(),
                 cwd: slot.cwd.take(),
                 bell: slot.bell,
                 clipboard: slot.clipboard.drain(..).collect(),
                 clip_read: slot.clip_read.take(),
-            });
+                notifications: slot.notifications.drain(..).collect(),
+                progress: slot.progress.take(),
+                prompts: slot.marks.iter().filter(|m| m.kind == 'A').count() as u32,
+                vars: slot.vars.drain(..).collect(),
+                commands: Vec::new(),
+            };
+            let changes: Vec<apoth_term::CommandEvent> = slot.commands.drain(..).collect();
             slot.clear();
+            e.commands = changes
+                .into_iter()
+                .map(|c| {
+                    let b = t.blocks().get(c.block);
+                    CommandInfo {
+                        finished: c.finished,
+                        cmdline: b.and_then(|b| b.cmdline.clone()),
+                        exit: b.and_then(|b| b.exit),
+                        duration_ms: b.and_then(|b| {
+                            let d = b.ended?.checked_duration_since(b.started?)?;
+                            u64::try_from(d.as_millis()).ok()
+                        }),
+                        cwd: b.and_then(|b| b.cwd.clone()),
+                    }
+                })
+                .collect();
+            events = Some(e);
         }
         wake
     };

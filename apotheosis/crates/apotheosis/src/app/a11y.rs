@@ -260,7 +260,7 @@ impl App {
             }
         });
         Some(WindowModel {
-            title: self.settings.window_title(&self.term_title),
+            title: self.window_title_now(),
             tabs,
             panes,
             palette,

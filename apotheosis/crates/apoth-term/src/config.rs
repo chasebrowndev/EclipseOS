@@ -33,6 +33,8 @@ pub mod deny {
     pub const CLIPBOARD_READ: u32 = 1 << 7;
     /// `primary-selection`: OSC 52 naming `p` or `s`.
     pub const PRIMARY: u32 = 1 << 8;
+    /// `user-vars`: OSC 1337 SetUserVar.
+    pub const USER_VAR: u32 = 1 << 9;
 }
 
 /// Cursor shape and blink (DECSCUSR).

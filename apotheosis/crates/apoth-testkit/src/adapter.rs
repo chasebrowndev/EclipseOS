@@ -94,13 +94,29 @@ fn drain_events(term: &mut Term) -> Vec<String> {
         }
     }
     for n in ev.notifications.drain(..) {
-        v.push(format!("notify:{n}"));
+        v.push(format!("notify:{}", n.text));
     }
     for c in ev.clipboard.drain(..) {
         v.push(format!("clipboard-set:{}:{}", c.selection, c.data.len()));
     }
     if let Some(sel) = ev.clip_read.take() {
         v.push(format!("clipboard-read:{sel}"));
+    }
+    for u in ev.vars.drain(..) {
+        match u.value {
+            Some(val) => v.push(format!("var:{}={val}", u.name)),
+            None => v.push(format!("var:{}", u.name)),
+        }
+    }
+    for c in ev.commands.drain(..) {
+        v.push(
+            if c.finished {
+                "command:finished"
+            } else {
+                "command:started"
+            }
+            .to_string(),
+        );
     }
     ev.colors_changed = false;
     v

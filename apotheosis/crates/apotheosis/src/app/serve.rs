@@ -372,13 +372,9 @@ impl App {
         }
     }
 
-    /// Deliver an event to every subscription that takes it. Content fields are withheld
-    /// from agent peers (T-12 §4).
+    /// Deliver an event to every subscription that takes it, and queue it for the rules
+    /// (T-11 §5). Content fields are withheld from agent peers (T-12 §4).
     pub(super) fn ctl_emit(&mut self, mut ev: Event, pane: Option<PaneKey>) {
-        let Some(ctl) = self.ctl.as_mut() else { return };
-        if ctl.clients.is_empty() {
-            return;
-        }
         if let Some(p) = pane {
             let _ = ev.set("pane", FieldValue::Int(p as i64));
             if let Some(t) = self.session.tab_of(p) {
@@ -386,6 +382,11 @@ impl App {
             }
         }
         let _ = ev.set("window", FieldValue::Int(self.mux_win as i64));
+        self.auto_enqueue(&ev, pane);
+        let Some(ctl) = self.ctl.as_mut() else { return };
+        if ctl.clients.is_empty() {
+            return;
+        }
         let mut out = Vec::new();
         for (&cid, c) in &mut ctl.clients {
             if c.dead || c.conn.proto.is_none() {
@@ -719,18 +720,20 @@ impl App {
         rid: u64,
         l: Launch,
     ) -> Result<Option<serde_json::Value>, WireError> {
-        if l.hold
-            || !l.overrides.is_empty()
-            || l.profile.is_some()
-            || l.layout.is_some()
-            || l.app_id.is_some()
-        {
+        if l.hold || !l.overrides.is_empty() || l.layout.is_some() || l.app_id.is_some() {
             return Err(err(
                 ErrorCode::Unsupported,
-                "hold, overrides, profiles, layouts and app ids are not available yet",
+                "hold, overrides, layouts and app ids are not available yet",
             ));
         }
         let argv = (!l.argv.is_empty()).then_some(l.argv);
+        let cwd = l.cwd.map(PathBuf::from);
+        let (argv, cwd, profile_env) = match l.profile.as_deref() {
+            None => (argv, cwd, Vec::new()),
+            Some(name) => self
+                .profile_launch(name, argv, cwd)
+                .map_err(|()| err(ErrorCode::BadRequest, "unknown profile"))?,
+        };
         // The launcher's environment, less what the pane sets itself (its identity and the
         // terminal it runs in).
         let env: Vec<(String, String)> = l
@@ -743,10 +746,14 @@ impl App {
                         "TERM" | "COLORTERM" | "TERMINFO" | "TERM_PROGRAM" | "TERM_PROGRAM_VERSION"
                     )
             })
+            .chain(profile_env)
             .collect();
-        let Some(id) = self.new_tab_with(argv, l.cwd.map(PathBuf::from), env) else {
+        let Some(id) = self.new_tab_with(argv, cwd, env) else {
             return Err(err(ErrorCode::Internal, "the pane could not start"));
         };
+        if let Some(p) = &l.profile {
+            self.set_explicit_profile(id, p);
+        }
         if let Some(t) = l.title
             && let Some(tid) = self.session.tab_of(id)
         {

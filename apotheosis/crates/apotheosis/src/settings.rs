@@ -55,6 +55,8 @@ pub(crate) struct Settings {
     pub(crate) bold_bright: bool,
     pub(crate) decorations: DecorationPref,
     pub(crate) title_template: String,
+    /// `tabs.title` (T-11 §8).
+    pub(crate) tab_template: String,
     pub(crate) shell: ShellSettings,
     pub(crate) term_name: String,
     pub(crate) term: TermConfig,
@@ -64,6 +66,8 @@ pub(crate) struct Settings {
     pub(crate) echo_window: Duration,
     pub(crate) sync_timeout: Duration,
     pub(crate) bell_audible: bool,
+    /// `notifications.*` and `bell.notify` (T-17 §6).
+    pub(crate) notify: crate::notify::NotifySettings,
     /// The 16 ANSI colours in force: `colors.palette`, else the theme's (T-17 §2).
     pub(crate) ansi: Option<[(u8, u8, u8); 16]>,
     /// Cursor text, selection foreground and background in force (`None`: the cell's own).
@@ -407,6 +411,19 @@ pub(crate) fn error_positions(diags: &[apoth_config::Diagnostic]) -> Vec<ErrorPo
         .collect()
 }
 
+/// `--profile NAME`: applied as layer 6 on the first load and every reload (T-10 §2).
+static LAUNCH_PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record `--profile` (once, before the first load).
+pub(crate) fn set_launch_profile(name: &str) {
+    let _ = LAUNCH_PROFILE.set(name.to_owned());
+}
+
+/// The `--profile` of this process.
+pub(crate) fn launch_profile() -> Option<&'static str> {
+    LAUNCH_PROFILE.get().map(String::as_str)
+}
+
 /// The standard file locations plus the launch overrides (re-applied on every reload).
 pub(crate) fn load_input(launch: &[(String, String)]) -> apoth_config::LoadInput {
     let home = std::env::var_os("HOME")
@@ -417,6 +434,7 @@ pub(crate) fn load_input(launch: &[(String, String)]) -> apoth_config::LoadInput
         .map(PathBuf::from);
     let mut input = default_input(&RealFs, &home, xdg.as_deref());
     input.launch = launch.to_vec();
+    input.active_profiles = launch_profile().map(str::to_owned).into_iter().collect();
     input
 }
 
@@ -569,6 +587,7 @@ impl Settings {
             bold_bright: c.bool("colors.bold-is-bright"),
             decorations,
             title_template: c.str("window.title").unwrap_or("{title}").to_owned(),
+            tab_template: c.str("tabs.title").unwrap_or("{title}").to_owned(),
             shell,
             term_name: c
                 .str("terminal.term")
@@ -581,6 +600,7 @@ impl Settings {
             echo_window: Duration::from_millis(c.millis("render.echo-window")),
             sync_timeout: Duration::from_millis(c.millis("render.sync-timeout")),
             bell_audible: c.bool("bell.audible"),
+            notify: crate::notify::NotifySettings::from_config(c),
             ansi: None,
             cursor_text: None,
             selection: (None, (0, 0, 0)),
@@ -635,14 +655,47 @@ impl Settings {
         self.selection = (sel_fg, sel_bg);
     }
 
-    /// The window title for a terminal-set title (`{title}` is the only placeholder here).
+    /// The window title for a terminal-set title alone.
     pub(crate) fn window_title(&self, title: &str) -> String {
-        let t = if title.is_empty() {
-            "Apotheosis"
-        } else {
-            title
-        };
-        self.title_template.replace("{title}", t)
+        let mut s = crate::rules::Snapshot::default();
+        s.text.insert("title".into(), title.to_owned());
+        self.window_title_with(&s)
+    }
+
+    /// The `window.title` template against pane fields (T-11 §8). An empty `{title}` reads
+    /// "Apotheosis"; an empty result falls back to it too.
+    pub(crate) fn window_title_with(&self, f: &crate::rules::Snapshot) -> String {
+        let mut f = f.clone();
+        let t = f.text.entry("title".into()).or_default();
+        if t.is_empty() {
+            *t = "Apotheosis".into();
+        }
+        render_title(&self.title_template, &f, "Apotheosis")
+    }
+
+    /// The `tabs.title` template against the tab's focused pane.
+    pub(crate) fn tab_title_with(&self, f: &crate::rules::Snapshot) -> String {
+        let fallback = f.text.get("title").cloned().unwrap_or_default();
+        if self.tab_template == "{title}" {
+            return fallback;
+        }
+        render_title(&self.tab_template, f, &fallback)
+    }
+}
+
+/// Render a title template; a template that does not parse (the loader already reported
+/// it) or renders empty gives `fallback`.
+fn render_title(template: &str, f: &crate::rules::Snapshot, fallback: &str) -> String {
+    match apoth_config::template::Template::parse(template) {
+        Ok(t) => {
+            let out = t.render(f);
+            if out.is_empty() {
+                fallback.to_owned()
+            } else {
+                out
+            }
+        }
+        Err(_) => fallback.to_owned(),
     }
 }
 

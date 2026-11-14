@@ -20,9 +20,11 @@ outside the `Fs` trait (`RealFs` / `MemFs`), no logging of values.
 local copies; `Ty::generic` / `Reload::generic` are the bridge until then.
 
 ## Left for integration
-- Binds, rules, profiles are parsed to local decls (`model.rs`); resolve `ActionCall` against
-  the `apoth-action` registry and match/template checks in `lang.rs` still structural. Chord and argv
-  validation already delegate to `apoth-action` (`chord.rs`, `lang.rs`).
+- Binds, rules, profiles are parsed to local decls (`model.rs`); the binary resolves `ActionCall`
+  against the `apoth-action` registry and compiles rules / chooses profiles (`apotheosis/src/
+  rules.rs`, `profiles.rs`). The match language (`expr.rs`) and templates (`template.rs`) are
+  full parsers and evaluators; `lang.rs` validates through them. Chord and argv validation
+  delegate to `apoth-action` (`chord.rs`, `lang.rs`).
 - The inotify watcher itself (integration layer) calls `Reloader::reload`; alacritty/kitty importers (R2) not written.
 - `Dv::Computed` defaults evaluate to `Value::Null` ("Automatic"); the consumer computes them.
 

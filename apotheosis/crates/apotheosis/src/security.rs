@@ -201,6 +201,9 @@ impl Policy {
         if ask_or_deny(Class::Hyperlinks) {
             w |= deny::HYPERLINK;
         }
+        if ask_or_deny(Class::UserVars) {
+            w |= deny::USER_VAR;
+        }
         // Clipboard writes are not asked (a write is not a question the user can judge per
         // sequence); `ask` therefore means deny for the term.
         if ask_or_deny(Class::ClipboardWrite) {

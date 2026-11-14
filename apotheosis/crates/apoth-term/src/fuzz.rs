@@ -44,7 +44,7 @@ const OSCS: &[(u32, u32)] = &[
     (633, 0),
     (666, 0),
     (777, deny::NOTIFICATION),
-    (1337, 0),
+    (1337, deny::USER_VAR),
     (3008, 0),
     (5522, 0),
 ];
@@ -58,7 +58,8 @@ const DENY_ALL: u32 = deny::TITLE_SET
     | deny::HYPERLINK
     | deny::CLIPBOARD_WRITE
     | deny::CLIPBOARD_READ
-    | deny::PRIMARY;
+    | deny::PRIMARY
+    | deny::USER_VAR;
 
 fn term(deny_bits: u32) -> Term {
     Term::new(TermConfig {

@@ -36,6 +36,8 @@ rustix = { version = "1", features = ["std", "event", "fs", "net", "param", "pip
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 tracing = "0.1"
+# T-17 §6: desktop notifications on the session bus; already in the lock (accesskit_unix).
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 tracing-journald = "0.3"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "registry"] }
 

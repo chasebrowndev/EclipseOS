@@ -30,7 +30,9 @@
 //! with no arguments asserts "nothing". Sections that are absent are not asserted.
 //! Event strings: `title:<t>`, `icon:<t>`, `cwd:<uri>`, `progress:<state>:<value>`,
 //! `notify:<text>`, `bell`, `mark:<A|B|C|D[;n]>`, `clipboard-set:<sel>:<bytes>`,
-//! `clipboard-read:<sel>` (a read request main answers under the policy; the term never replies).
+//! `clipboard-read:<sel>` (a read request main answers under the policy; the term never replies),
+//! `var:<name>=<value>` / `var:<name>` (OSC 1337 user variable set / removed),
+//! `command:started` / `command:finished` (OSC 133 block transitions, after the marks).
 
 use std::path::PathBuf;
 

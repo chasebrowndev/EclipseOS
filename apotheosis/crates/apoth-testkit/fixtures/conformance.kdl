@@ -1168,6 +1168,12 @@ conformance {
     fixture "osc133-p-prompt-row-no-mark"
     fixture "osc133-continuation-prompt-keeps-block"
     fixture "osc133-unknown-and-wrong-mark-keys-ignored"
+    fixture "osc133-command-transitions"
+  }
+  row "T03-OSC1337-USERVAR" spec="T-11 §9" matrix="AUTOMATION-17" tier="R1" milestone="M28" desc="OSC 1337 SetUserVar: per-pane variables, bounded, raise user-var-changed" {
+    fixture "osc1337-setuservar-sets"
+    fixture "osc1337-setuservar-empty-removes"
+    fixture "osc1337-setuservar-hostile-ignored"
   }
   row "T03-OSC9-PROGRESS" spec="T-03 §3.1" matrix="INTEGRATION-24,SHELLINTEGRATION-17" tier="R1" milestone="M9" desc="OSC 9;4 progress" {
     fixture "osc9-4-clamps-value"

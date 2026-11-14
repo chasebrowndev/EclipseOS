@@ -108,63 +108,10 @@ pub fn validate_argv(args: &[String]) -> Result<(), String> {
     apoth_action::Argv::from_source(args).map(|_| ())
 }
 
-/// Template structure: balanced `{…}` with `{if …}`, `{else}`, `{end}` properly nested.
+/// A template parses (T-11 §8): balanced `{…}`, known filters, `{if}`/`{else}`/`{end}`
+/// properly nested, conditions in the template condition grammar.
 pub fn validate_template(s: &str) -> Result<(), String> {
-    let mut depth = 0i32;
-    let mut seen_else: Vec<bool> = Vec::new();
-    let b: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            '{' if b.get(i + 1) == Some(&'{') => i += 2,
-            '}' if b.get(i + 1) == Some(&'}') => i += 2,
-            '{' => {
-                let mut j = i + 1;
-                let mut quoted = false;
-                while j < b.len() && (quoted || b[j] != '}') {
-                    if b[j] == '\\' && quoted {
-                        // An escaped character inside a string never closes it.
-                        j += 2;
-                        continue;
-                    }
-                    if b[j] == '"' {
-                        quoted = !quoted;
-                    }
-                    j += 1;
-                }
-                if j >= b.len() {
-                    return Err("unclosed `{` in template".into());
-                }
-                let inner: String = b[i + 1..j].iter().collect();
-                let inner = inner.trim();
-                if inner.is_empty() {
-                    return Err("empty `{}` in template".into());
-                }
-                if inner == "if" || inner.starts_with("if ") {
-                    depth += 1;
-                    seen_else.push(false);
-                } else if inner == "else" {
-                    match seen_else.last_mut() {
-                        Some(e) if !*e => *e = true,
-                        _ => return Err("`{else}` without a matching `{if}`".into()),
-                    }
-                } else if inner == "end" {
-                    if depth == 0 {
-                        return Err("`{end}` without a matching `{if}`".into());
-                    }
-                    depth -= 1;
-                    seen_else.pop();
-                }
-                i = j + 1;
-            }
-            '}' => return Err("stray `}` in template".into()),
-            _ => i += 1,
-        }
-    }
-    if depth != 0 {
-        return Err("`{if}` without `{end}`".into());
-    }
-    Ok(())
+    crate::template::Template::parse(s).map(|_| ())
 }
 
 /// Compile the pattern with the regex engine the runtime uses (`regex-automata`'s meta
@@ -211,140 +158,16 @@ pub const MATCH_FIELDS: &[&str] = &[
     "command",
 ];
 
-#[derive(Debug, PartialEq)]
-enum Tok {
-    LParen,
-    RParen,
-    Word(String),
-}
-
-fn match_tokens(s: &str) -> Result<Vec<Tok>, String> {
-    let mut out = Vec::new();
-    let b: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
-        if c.is_whitespace() {
-            i += 1;
-        } else if c == '(' {
-            out.push(Tok::LParen);
-            i += 1;
-        } else if c == ')' {
-            out.push(Tok::RParen);
-            i += 1;
-        } else {
-            let mut w = String::new();
-            let mut quoted = false;
-            while i < b.len() && (quoted || !(b[i].is_whitespace() || b[i] == '(' || b[i] == ')')) {
-                if b[i] == '\\' && quoted && i + 1 < b.len() {
-                    w.push(b[i]);
-                    i += 1;
-                } else if b[i] == '"' {
-                    quoted = !quoted;
-                }
-                w.push(b[i]);
-                i += 1;
-            }
-            if quoted {
-                return Err("unterminated quote".into());
-            }
-            out.push(Tok::Word(w));
-        }
-    }
-    Ok(out)
-}
-
 /// Bare state words usable as whole terms (`not focused`).
 pub const MATCH_BARE: &[&str] = &["focused", "active", "zoomed", "bell", "running"];
-
-fn match_term(word: &str) -> Result<(), String> {
-    if MATCH_BARE.contains(&word) {
-        return Ok(());
-    }
-    let (field, rest) = word
-        .split_once(':')
-        .ok_or_else(|| format!("`{word}` is not `field:pattern`"))?;
-    if field == "var" || field == "env" {
-        let (name, pat) = rest
-            .split_once(':')
-            .ok_or_else(|| format!("`{field}:` needs `{field}:<name>:pattern`"))?;
-        if name.is_empty() || pat.is_empty() {
-            return Err(format!("empty name or pattern for `{field}`"));
-        }
-        return Ok(());
-    }
-    if !MATCH_FIELDS.contains(&field) {
-        return Err(match crate::diag::suggest(field, MATCH_FIELDS) {
-            Some(s) => format!("unknown match field `{field}` (did you mean `{s}`?)"),
-            None => format!("unknown match field `{field}`"),
-        });
-    }
-    if rest.is_empty() {
-        return Err(format!("empty pattern for `{field}`"));
-    }
-    Ok(())
-}
 
 /// Nesting bound of a match expression (parentheses plus `not`): the parser recurses per
 /// level, so an unbounded depth from a hostile config would overflow the stack (T-18 §5).
 pub const MATCH_MAX_DEPTH: usize = 64;
 
-fn match_expr(t: &[Tok], i: &mut usize, depth: usize) -> Result<(), String> {
-    match_unary(t, i, depth)?;
-    while let Some(Tok::Word(w)) = t.get(*i) {
-        if w == "and" || w == "or" {
-            *i += 1;
-            match_unary(t, i, depth)?;
-        } else {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn match_unary(t: &[Tok], i: &mut usize, depth: usize) -> Result<(), String> {
-    if depth >= MATCH_MAX_DEPTH {
-        return Err(format!(
-            "match expression nests deeper than {MATCH_MAX_DEPTH}"
-        ));
-    }
-    match t.get(*i) {
-        Some(Tok::Word(w)) if w == "not" => {
-            *i += 1;
-            match_unary(t, i, depth + 1)
-        }
-        Some(Tok::LParen) => {
-            *i += 1;
-            match_expr(t, i, depth + 1)?;
-            if t.get(*i) == Some(&Tok::RParen) {
-                *i += 1;
-                Ok(())
-            } else {
-                Err("missing `)`".into())
-            }
-        }
-        Some(Tok::Word(w)) => {
-            match_term(w)?;
-            *i += 1;
-            Ok(())
-        }
-        Some(Tok::RParen) => Err("unexpected `)`".into()),
-        None => Err("expression ends early".into()),
-    }
-}
-
 /// Structure of a match expression: terms `field:pattern` joined by `and`, `or`, `not`, parens.
 pub fn validate_match(s: &str) -> Result<(), String> {
-    let toks = match_tokens(s)?;
-    if toks.is_empty() {
-        return Err("empty match expression".into());
-    }
-    let mut i = 0;
-    match_expr(&toks, &mut i, 0)?;
-    if i != toks.len() {
-        return Err("unexpected trailing input in match expression".into());
-    }
-    Ok(())
+    crate::expr::Expr::parse(s).map(|_| ())
 }
 
 /// Closed action families (T-11 §1). `launch`, `open`, `pipe`, `capture`, `notify` stand alone.

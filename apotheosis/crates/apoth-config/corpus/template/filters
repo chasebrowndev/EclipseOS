@@ -1,0 +1,1 @@
+{command|default:"Command"|truncate:60} in {cwd|basename}{if status != "0"} failed{else} ok{end}

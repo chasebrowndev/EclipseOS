@@ -11,6 +11,9 @@ pub const MARKS_CAP: usize = 256;
 pub const NOTIFY_CAP: usize = 16;
 /// Clipboard sets kept before dropping.
 pub const CLIP_CAP: usize = 4;
+/// User-variable changes and command transitions queued per drain.
+pub const VARS_CAP: usize = 64;
+pub const COMMANDS_CAP: usize = 64;
 
 /// Whole-unit reply queue; the io thread is its producer, main its consumer.
 #[derive(Debug, Default)]
@@ -90,6 +93,31 @@ pub struct ClipboardSet {
     pub program_origin: bool,
 }
 
+/// `OSC 1337 ; SetUserVar=name=<base64>` (T-11 §9): `value` is `None` when the variable
+/// was removed (empty value).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UserVar {
+    pub name: String,
+    pub value: Option<String>,
+}
+
+/// A program notification (T-17 §6). The text is program content: shown, never logged.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notification {
+    /// The OSC number it came from: 9, 777 or 99.
+    pub source: u16,
+    /// Sanitized text (`title: body` for OSC 777).
+    pub text: String,
+}
+
+/// A command block changed state (T-14 §1): it started running, or it finished.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CommandEvent {
+    /// The block id ([`crate::shell::Blocks::get`]).
+    pub block: u32,
+    pub finished: bool,
+}
+
 /// Counters of things dropped (never content).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Dropped {
@@ -99,8 +127,12 @@ pub struct Dropped {
     pub notifications: u64,
     /// Clipboard sets dropped on overflow or policy.
     pub clipboard: u64,
-    /// OSC 52 payloads with invalid base64.
+    /// OSC 52 / 1337 payloads with invalid base64.
     pub bad_base64: u64,
+    /// User-variable changes dropped (queue full or too many names).
+    pub vars: u64,
+    /// Command events dropped on overflow.
+    pub commands: u64,
 }
 
 /// The fixed per-pane slot: latest-wins title, cwd, progress; a bell counter; bounded
@@ -117,8 +149,8 @@ pub struct EventSlot {
     pub bell: u32,
     /// OSC 133 marks.
     pub marks: VecDeque<Mark>,
-    /// Notification texts (OSC 9).
-    pub notifications: VecDeque<String>,
+    /// Notifications (OSC 9, 777, 99), with the sequence they came from.
+    pub notifications: VecDeque<Notification>,
     /// OSC 52 writes.
     pub clipboard: VecDeque<ClipboardSet>,
     /// A pending OSC 52 read request (selection letters, filtered); latest wins. The term
@@ -127,6 +159,10 @@ pub struct EventSlot {
     pub clip_read: Option<String>,
     /// The palette or default colours changed.
     pub colors_changed: bool,
+    /// OSC 1337 user-variable changes.
+    pub vars: VecDeque<UserVar>,
+    /// Command started / finished transitions.
+    pub commands: VecDeque<CommandEvent>,
     /// Drop counters.
     pub dropped: Dropped,
 }
@@ -143,6 +179,8 @@ impl Default for EventSlot {
             clipboard: VecDeque::with_capacity(CLIP_CAP),
             clip_read: None,
             colors_changed: false,
+            vars: VecDeque::with_capacity(VARS_CAP),
+            commands: VecDeque::with_capacity(COMMANDS_CAP),
             dropped: Dropped::default(),
         }
     }
@@ -160,6 +198,8 @@ impl EventSlot {
             && self.clipboard.is_empty()
             && self.clip_read.is_none()
             && !self.colors_changed
+            && self.vars.is_empty()
+            && self.commands.is_empty()
     }
     /// Forget everything pending (drop counters persist).
     pub fn clear(&mut self) {
@@ -172,6 +212,8 @@ impl EventSlot {
         self.clipboard.clear();
         self.clip_read = None;
         self.colors_changed = false;
+        self.vars.clear();
+        self.commands.clear();
     }
     pub(crate) fn push_mark(&mut self, m: Mark) {
         if self.marks.len() >= MARKS_CAP {
@@ -180,11 +222,25 @@ impl EventSlot {
             self.marks.push_back(m);
         }
     }
-    pub(crate) fn push_notification(&mut self, s: String) {
+    pub(crate) fn push_var(&mut self, v: UserVar) {
+        if self.vars.len() >= VARS_CAP {
+            self.dropped.vars += 1;
+        } else {
+            self.vars.push_back(v);
+        }
+    }
+    pub(crate) fn push_command(&mut self, c: CommandEvent) {
+        if self.commands.len() >= COMMANDS_CAP {
+            self.dropped.commands += 1;
+        } else {
+            self.commands.push_back(c);
+        }
+    }
+    pub(crate) fn push_notification(&mut self, source: u16, text: String) {
         if self.notifications.len() >= NOTIFY_CAP {
             self.dropped.notifications += 1;
         } else {
-            self.notifications.push_back(s);
+            self.notifications.push_back(Notification { source, text });
         }
     }
     pub(crate) fn push_clipboard(&mut self, c: ClipboardSet) {
@@ -217,7 +273,7 @@ impl EventSlot {
             }
         }
         for n in &self.notifications {
-            v.push(format!("notify {n}"));
+            v.push(format!("notify {}", n.text));
         }
         for c in &self.clipboard {
             v.push(format!(
@@ -234,6 +290,16 @@ impl EventSlot {
         }
         if self.colors_changed {
             v.push("colors".to_string());
+        }
+        for u in &self.vars {
+            match &u.value {
+                Some(val) => v.push(format!("var {}={val}", u.name)),
+                None => v.push(format!("var {} unset", u.name)),
+            }
+        }
+        for c in &self.commands {
+            let what = if c.finished { "finished" } else { "started" };
+            v.push(format!("command {} {what}", c.block));
         }
         v
     }
