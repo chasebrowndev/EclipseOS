@@ -20,6 +20,9 @@ ignore = [
     { id = "RUSTSEC-2026-0370", reason = "zvariant via accesskit_unix/zbus 5" },
     { id = "RUSTSEC-2026-0371", reason = "zbus_names via accesskit_unix/zbus 5" },
     { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via accesskit_unix/zbus 5" },
+    # Unmaintained compile-time macro crate, not a vulnerability. Pulled in by rav1d
+    # 1.1.0 (ADR 0118). Revisit when rav1d drops paste. Owner decision 2026-11-14.
+    { id = "RUSTSEC-2024-0436", reason = "paste (proc-macro) via rav1d" },
 ]
 
 # Must be compatible with AGPL-3.0-only distribution. GPLv2-only is

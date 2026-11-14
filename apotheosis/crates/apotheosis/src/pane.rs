@@ -31,6 +31,8 @@ pub(crate) const WAKE_RESIZE: u8 = 2;
 const WAKE_IMAGE: u8 = 3;
 /// Wake byte: the user answered a `graphics-file` question ([`PaneShared::post_graphics_file`]).
 pub(crate) const WAKE_GRAPHICS_FILE: u8 = 4;
+/// Wake byte: a media player has events for the term (T-16 §2).
+const WAKE_MEDIA: u8 = 5;
 
 /// Upper bound on the yields the io thread spends letting waiting takers go first.
 const MAX_HANDOFF_YIELDS: u32 = 2_000;
@@ -324,6 +326,8 @@ struct Io<'a> {
     master: &'a OwnedFd,
     /// Pidfds of `apoth icat` sessions opened with `p=` (session id, pidfd).
     watch: std::cell::RefCell<Vec<(u64, OwnedFd)>>,
+    /// The pane's media players.
+    media: std::cell::RefCell<crate::mediahost::MediaHost>,
 }
 
 fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
@@ -348,6 +352,9 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
         poke: &poke,
         master: &master,
         watch: std::cell::RefCell::new(Vec::new()),
+        media: std::cell::RefCell::new(crate::mediahost::MediaHost::new(
+            crate::mediahost::pipe_poke(Arc::clone(&poke), WAKE_MEDIA),
+        )),
     };
     let mut buf = vec![0u8; SLICE_BYTES];
     if let Some(h) = &hook {
@@ -442,6 +449,26 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
                 st = io.step(|t| t.graphics_file_decision(token, allow, Instant::now()));
                 ran = true;
             }
+            let evs = io
+                .media
+                .borrow_mut()
+                .drain(shared.focused.load(Ordering::Acquire));
+            if !evs.is_empty() {
+                st = io.step(|t| {
+                    let now = Instant::now();
+                    let mut w = apoth_term::Wake::default();
+                    for (key, ev) in evs {
+                        let x = t.media_event(key, ev, now);
+                        w.dirty |= x.dirty;
+                        w.replies |= x.replies;
+                        w.events |= x.events;
+                        w.jobs |= x.jobs;
+                        w.media |= x.media;
+                        w.hold = x.hold;
+                    }
+                    w
+                });
+            }
             if let Some(h) = &hook
                 && ran
             {
@@ -501,6 +528,7 @@ impl Io<'_> {
         let mut replies = Vec::new();
         let mut events = None;
         let mut jobs = Vec::new();
+        let media;
         let (wake, st) = {
             let mut t = shared.lock_io();
             let deny = shared.deny.load(Ordering::Acquire);
@@ -544,6 +572,7 @@ impl Io<'_> {
             if wake.jobs {
                 jobs = t.take_image_jobs();
             }
+            media = t.take_media_requests();
             let st = IoState {
                 blocked: t.blocked(),
                 deadline: t.next_deadline(),
@@ -560,11 +589,17 @@ impl Io<'_> {
             replies,
             events,
         );
+        if !media.is_empty() {
+            self.media
+                .borrow_mut()
+                .requests(media, shared.focused.load(Ordering::Acquire));
+        }
         for job in jobs {
             let token = job.token;
             let (tx, poke) = (self.done_tx.clone(), Arc::clone(self.poke));
             let run = Box::new(move || {
-                let _ = tx.send(job.run());
+                let mut dec = crate::mediahost::image_decoder();
+                let _ = tx.send(job.run_with(&mut *dec));
                 let _ = rustix::io::write(&*poke, &[WAKE_IMAGE]);
             });
             let Err(run) = self.workers.submit(run) else {

@@ -705,6 +705,22 @@ impl App {
             Params::MediaWindowOpen(p) => self.media_open(cid, p),
             Params::MediaWindowWrite(p) => self.media_write(cid, p),
             Params::MediaWindowWait(p) => self.media_wait(cid, req.id, p),
+            Params::MediaAttach(_) => {
+                let fd = self
+                    .ctl
+                    .as_mut()
+                    .and_then(|x| x.clients.get_mut(&cid))
+                    .and_then(|c| c.conn.take_fd())
+                    .ok_or_else(|| err(ErrorCode::BadRequest, "no descriptor attached"))?;
+                let token = crate::mediahost::attach(fd)
+                    .ok_or_else(|| err(ErrorCode::BadRequest, "too many attached media"))?;
+                let reply = apoth_proto::results::MediaAttachReply {
+                    token: token.to_string(),
+                };
+                Ok(Some(serde_json::to_value(reply).map_err(|_| {
+                    err(ErrorCode::Internal, "cannot encode the reply")
+                })?))
+            }
             Params::PaneBlocks(_)
             | Params::ConfigEffective(_)
             | Params::KeyboardState(_)

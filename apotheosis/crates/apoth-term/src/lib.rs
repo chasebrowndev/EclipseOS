@@ -29,6 +29,7 @@ pub mod events;
 pub mod fuzz;
 pub mod graphics;
 mod machine;
+pub mod media;
 pub mod modes;
 mod osc;
 mod sgr;
@@ -56,6 +57,7 @@ pub use events::{
     ClipboardSet, CommandEvent, EventSlot, Mark, Notification, Progress, ReplyQueue, UserVar,
 };
 pub use graphics::{GraphicsConfig, ImageDraw, PlacementInfo};
+pub use media::{MediaConfig, MediaCtl, MediaEvent, MediaRequest, MediaSource};
 pub use modes::{Access, ModeDef, ModeState};
 
 /// What `feed` tells the io thread.
@@ -71,6 +73,8 @@ pub struct Wake {
     pub hold: bool,
     /// Image decode jobs are waiting for [`Term::take_image_jobs`].
     pub jobs: bool,
+    /// Media requests are waiting for [`Term::take_media_requests`].
+    pub media: bool,
 }
 
 /// Cursor state for the renderer and tests.
@@ -170,6 +174,7 @@ impl Term {
             events: !self.m.events.is_empty(),
             hold: self.m.sync.is_some(),
             jobs: self.m.gfx.has_jobs(),
+            media: self.m.gfx.media.has_requests(),
         }
     }
 
@@ -282,9 +287,29 @@ impl Term {
         any
     }
 
-    /// Any image is placed on either screen.
+    // ---- media (T-16 §2) ----------------------------------------------------------------
+
+    /// Media commands for the caller to carry out (open players, control, close).
+    pub fn take_media_requests(&mut self) -> Vec<MediaRequest> {
+        self.m.gfx.media.take_requests()
+    }
+
+    /// A player's report for placement `key`: frames, ready/ended/error replies.
+    pub fn media_event(&mut self, key: u64, ev: MediaEvent, now: Instant) -> Wake {
+        self.m.now = Some(now);
+        let frame = matches!(ev, MediaEvent::Frame(_));
+        self.m.media_event(key, ev);
+        self.wake(frame)
+    }
+
+    /// Any media placement exists.
+    pub fn has_media(&self) -> bool {
+        self.m.gfx.media.has_places()
+    }
+
+    /// Any image or media placement is on either screen.
     pub fn has_images(&self) -> bool {
-        self.m.gfx.has_places()
+        self.m.gfx.has_places() || self.m.gfx.media.has_places()
     }
 
     /// Placements of the current screen, oldest first (tests, fixtures).

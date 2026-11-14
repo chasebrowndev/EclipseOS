@@ -7,7 +7,7 @@
 //! [`crate::formats`]; any other payload is `Unsupported`. Multipart transfers
 //! (`MultipartFile`/`FilePart`/`FileEnd`, GRAPHICS-22, a "could") are not implemented.
 
-use crate::formats::{Decoded, decode_any, sniff};
+use crate::formats::{Decoded, sniff};
 use crate::kitty::ENGINE;
 use crate::{ErrCode, Image, Limits};
 use base64::Engine as _;
@@ -118,6 +118,16 @@ pub fn decode_payload(
     b64: &[u8],
     limits: &Limits,
 ) -> Result<Decoded, ITermError> {
+    decode_payload_with(file, b64, limits, &mut crate::decoder::InProcess)
+}
+
+/// [`decode_payload`] with the container decoded by `dec`.
+pub fn decode_payload_with(
+    file: &ITermFile,
+    b64: &[u8],
+    limits: &Limits,
+    dec: &mut dyn crate::decoder::PixelDecoder,
+) -> Result<Decoded, ITermError> {
     let est = (b64.len() / 4 + 1) as u64 * 3;
     if b64.len() > limits.max_transfer_b64
         || est > limits.image_cap().saturating_add(3)
@@ -132,10 +142,11 @@ pub fn decode_payload(
     if sniff(&raw).is_none() {
         return Err(ITermError::Unsupported);
     }
-    decode_any(&raw, limits, limits.animation_quota).map_err(|e| match e {
-        ErrCode::Efbig => ITermError::TooLarge,
-        _ => ITermError::BadData,
-    })
+    dec.any(&raw, limits, limits.animation_quota)
+        .map_err(|e| match e {
+            ErrCode::Efbig => ITermError::TooLarge,
+            _ => ITermError::BadData,
+        })
 }
 
 /// [`decode_payload`], first frame only.

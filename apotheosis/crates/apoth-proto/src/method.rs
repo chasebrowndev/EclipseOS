@@ -40,6 +40,7 @@ pub enum Method {
     MediaWindowOpen,
     MediaWindowWrite,
     MediaWindowWait,
+    MediaAttach,
 }
 
 /// One row of the method table.
@@ -332,6 +333,17 @@ pub const METHODS: &[MethodInfo] = &[
         false,
         false,
     ),
+    // `apoth play` (T-16 §2): hand the server a file descriptor sent with this request
+    // (SCM_RIGHTS) and get back a single-use token the media APC names with `s=f,t=`.
+    row(
+        Method::MediaAttach,
+        "media.attach",
+        &[Layout],
+        false,
+        false,
+        false,
+        false,
+    ),
 ];
 
 impl Method {
@@ -382,7 +394,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), METHODS.len());
-        assert_eq!(METHODS.len(), 29);
+        assert_eq!(METHODS.len(), 30);
         for r in METHODS {
             assert_eq!(Method::parse(r.name), Some(r.method));
             assert_eq!(r.method.info().name, r.name);

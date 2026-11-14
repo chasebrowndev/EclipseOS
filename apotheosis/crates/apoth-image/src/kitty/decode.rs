@@ -26,6 +26,16 @@ pub fn decode_transfer(
     data: Vec<u8>,
     limits: &Limits,
 ) -> Result<Image, ErrCode> {
+    decode_transfer_with(spec, data, limits, &mut crate::decoder::InProcess)
+}
+
+/// [`decode_transfer`] with PNG decoding done by `dec`.
+pub fn decode_transfer_with(
+    spec: &TransmitSpec,
+    data: Vec<u8>,
+    limits: &Limits,
+    dec: &mut dyn crate::decoder::PixelDecoder,
+) -> Result<Image, ErrCode> {
     let cap = usize::try_from(limits.image_cap()).unwrap_or(usize::MAX);
     match spec.format {
         Format::Png => {
@@ -34,7 +44,7 @@ pub fn decode_transfer(
             } else {
                 data
             };
-            decode_png(&raw, limits)
+            dec.png(&raw, limits)
         }
         Format::Rgb24 | Format::Rgba32 => {
             let bpp: usize = if spec.format == Format::Rgb24 { 3 } else { 4 };

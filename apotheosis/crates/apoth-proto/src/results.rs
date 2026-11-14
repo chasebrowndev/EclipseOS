@@ -147,3 +147,11 @@ pub struct ProcessesReply {
     /// Processes in the pane's session.
     pub processes: Vec<ProcessInfo>,
 }
+
+/// Reply to `media.attach`: the token a media APC names with `s=f,t=<token>` (single use,
+/// expires unclaimed after a few seconds; a decimal string so no JSON number rounds it).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MediaAttachReply {
+    /// The token.
+    pub token: String,
+}

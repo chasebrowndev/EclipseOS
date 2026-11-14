@@ -168,7 +168,11 @@ impl Machine {
             }
             StrKind::Apc if head.bytes().first() == Some(&b'M') => {
                 self.strm = StrMode::Session;
-                StrRoute { cap: CAP_SMALL }
+                // Room for an `s=d` chunk (T-16 §2), as for a kitty chunk.
+                let cap = self.cfg.graphics.limits.max_chunk_b64 + CAP_SMALL as usize;
+                StrRoute {
+                    cap: u32::try_from(cap).unwrap_or(u32::MAX),
+                }
             }
             StrKind::Apc if head.bytes().first() == Some(&b'G') => match self.gfx_apc_route() {
                 Some(cap) => StrRoute { cap },
@@ -268,7 +272,7 @@ impl Machine {
             StrMode::Mark => self.osc_mark(buf),
             StrMode::UserVar => self.osc_user_var(buf),
             StrMode::ITerm => self.gfx_iterm(buf),
-            StrMode::Session => self.gfx_session(buf),
+            StrMode::Session => self.media_apc(buf),
             StrMode::Notify => {
                 let t = sanitize(buf);
                 if !t.is_empty() {

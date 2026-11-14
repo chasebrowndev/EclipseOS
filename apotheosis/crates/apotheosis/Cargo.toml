@@ -19,6 +19,7 @@ apoth-eclipse.workspace = true
 apoth-font.workspace = true
 apoth-grid.workspace = true
 apoth-input.workspace = true
+apoth-media.workspace = true
 apoth-mux.workspace = true
 apoth-proto.workspace = true
 apoth-pty.workspace = true

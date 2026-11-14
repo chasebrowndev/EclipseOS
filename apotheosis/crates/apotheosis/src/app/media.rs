@@ -28,6 +28,8 @@ use crate::render::{
 const MAX_WINDOWS: usize = 8;
 /// Bytes queued for a window's feeder before writes are refused.
 const MAX_QUEUED: usize = 64 << 20;
+/// How often a media window with a playing placement collects its frames.
+const MEDIA_POLL: std::time::Duration = std::time::Duration::from_millis(8);
 /// evdev codes that close a focused media window.
 const KEY_ESC: u32 = 1;
 const KEY_Q: u32 = 16;
@@ -75,7 +77,14 @@ fn feeder(
     poke: mpsc::Sender<RenderMsg>,
 ) {
     let mut deadline: Option<Instant> = None;
+    // `apoth play --ext` (T-16 §2): players here report by polling while any plays (the
+    // feed channel cannot carry a poke without keeping itself open).
+    let mut host = crate::mediahost::MediaHost::new(Arc::new(|| {}));
     loop {
+        if !host.is_empty() {
+            let poll = Instant::now() + MEDIA_POLL;
+            deadline = Some(deadline.map_or(poll, |d| d.min(poll)));
+        }
         let msg = match deadline {
             Some(d) => match rx.recv_timeout(d.saturating_duration_since(Instant::now())) {
                 Ok(b) => Some(b),
@@ -87,8 +96,14 @@ fn feeder(
                 Err(_) => return,
             },
         };
+        // The window was opened by an explicit command: its audio counts as focused.
+        let evs = host.drain(true);
         let mut jobs = {
             let mut t = shared.lock_io();
+            let now = Instant::now();
+            for (key, ev) in evs {
+                t.media_event(key, ev, now);
+            }
             match &msg {
                 Some(b) => {
                     queued.fetch_sub(b.len(), Ordering::AcqRel);
@@ -103,7 +118,7 @@ fn feeder(
         while !jobs.is_empty() {
             let mut next = Vec::new();
             for job in jobs {
-                let done = job.run();
+                let done = job.run_with(&mut *crate::mediahost::image_decoder());
                 let mut t = shared.lock_io();
                 t.image_done(done, Instant::now());
                 next.extend(t.take_image_jobs());
@@ -116,6 +131,11 @@ fn feeder(
             while t.replies().pop().is_some() {}
             let _ = crate::pane::take_events(&mut t);
             deadline = t.next_deadline();
+            let reqs = t.take_media_requests();
+            drop(t);
+            if !reqs.is_empty() {
+                host.requests(reqs, true);
+            }
         }
         if !shared.dirty.swap(true, Ordering::AcqRel) {
             let _ = poke.send(RenderMsg::Poke);

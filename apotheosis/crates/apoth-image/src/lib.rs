@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod anim;
+pub mod decoder;
 pub mod error;
 pub mod formats;
 pub mod iterm;

@@ -58,6 +58,9 @@ fn graphics_config(c: &Config, g: &mut apoth_term::GraphicsConfig) {
     let px = u64::try_from(c.int("graphics.max-pixels")).unwrap_or(0);
     l.max_decoded_bytes = px.saturating_mul(4).min(MAX_DECODED);
     l.sixel_max_pixels = px;
+    g.media.enabled = c.bool("media.enabled");
+    g.media.offscreen_stop = c.str("media.offscreen") == Some("stop");
+    crate::mediahost::configure(c);
 }
 
 /// Everything the binary reads from the configuration.

@@ -326,6 +326,90 @@ pub fn fuzz_kitty_apc(data: &[u8]) {
     assert!(seen == observe(&mut base), "denied graphics had an effect");
 }
 
+/// Input: media APC bodies separated by `0xff` (T-16 §2), each sent as `ESC _ M <body>
+/// ESC \`, text after every third. Every open is answered with `ready` and a frame, every
+/// fourth with an error. Requests only ever name placements the term announced, the
+/// per-pane cap holds, and with `graphics-direct` denied the stream has no effect.
+pub fn fuzz_media_apc(data: &[u8]) {
+    use crate::{MediaEvent, MediaRequest};
+    let now = Instant::now();
+    let mut stream = Vec::new();
+    let mut plain = Vec::new();
+    for (i, body) in data.split(|&b| b == 0xff).enumerate() {
+        stream.extend_from_slice(b"\x1b_M");
+        stream.extend_from_slice(&inside(body));
+        stream.extend_from_slice(b"\x1b\\");
+        if i % 3 == 2 {
+            stream.extend_from_slice(b"txt\r\n");
+            plain.extend_from_slice(b"txt\r\n");
+        }
+    }
+    let mut t = gfx_term(0);
+    let cut = data.first().map_or(1, |&b| usize::from(b) + 1);
+    let mut open: Vec<u64> = Vec::new();
+    let mut n = 0u64;
+    for c in stream.chunks(cut) {
+        t.feed(c, now);
+        for r in t.take_media_requests() {
+            match r {
+                MediaRequest::Open { key, box_px, .. } => {
+                    assert!(!open.contains(&key), "key reused");
+                    assert!(
+                        box_px.0 <= 20 * 8 && box_px.1 <= 6 * 16,
+                        "box past the screen"
+                    );
+                    open.push(key);
+                    n += 1;
+                    let img = std::sync::Arc::new(crate::apoth_image::Image {
+                        width: 2,
+                        height: 2,
+                        rgba: vec![255; 16],
+                    });
+                    if n.is_multiple_of(4) {
+                        t.media_event(key, MediaEvent::Error("decode"), now);
+                    } else {
+                        let ready = MediaEvent::Ready {
+                            width: 2,
+                            height: 2,
+                            duration_ms: 1,
+                        };
+                        t.media_event(key, ready, now);
+                        t.media_event(key, MediaEvent::Frame(img), now);
+                    }
+                }
+                MediaRequest::Control { key, .. } => {
+                    assert!(open.contains(&key), "control for an unknown key")
+                }
+                MediaRequest::Close { key } => {
+                    assert!(open.contains(&key), "close for an unknown key");
+                    open.retain(|&k| k != key);
+                }
+            }
+        }
+        assert!(open.len() <= 2, "per-pane media cap broken");
+        let mut draws = Vec::new();
+        t.image_draws(t.primary().history_rows(), t.rows(), now, &mut draws);
+        for d in &draws {
+            assert!(
+                d.dst[2] <= 20 * 8 && d.dst[3] <= 6 * 16,
+                "media drawn past its box"
+            );
+        }
+        t.replies().take_all();
+    }
+    let mut denied = gfx_term(deny::GRAPHICS_DIRECT);
+    denied.feed(&stream, now);
+    assert!(!denied.has_media(), "denied media placed");
+    assert!(
+        denied.take_media_requests().is_empty(),
+        "denied media asked for playback"
+    );
+    let seen = observe(&mut denied);
+    let mut base = gfx_term(deny::GRAPHICS_DIRECT);
+    base.feed(&plain, now);
+    assert!(seen == observe(&mut base), "denied media had an effect");
+}
+
 /// Input: byte 0 picks the DCS parameters and modes (DECSDM, `?1070`, `?8452`), byte 1
 /// the chunk size; the rest is sixel data (string-ending bytes removed), sent twice so
 /// shared registers carry over, with text printed over the result.
@@ -507,6 +591,11 @@ mod tests {
     #[test]
     fn kitty_apc_corpus_seeds_hold_the_invariants() {
         assert!(corpus("kitty_apc", fuzz_kitty_apc) >= 8);
+    }
+
+    #[test]
+    fn media_apc_corpus_seeds_hold_the_invariants() {
+        assert!(corpus("media_apc", fuzz_media_apc) >= 6);
     }
 
     #[test]

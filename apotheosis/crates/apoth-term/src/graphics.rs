@@ -76,6 +76,8 @@ pub struct GraphicsConfig {
     /// Decode inside `feed` instead of handing jobs to the caller. The binary sets this
     /// false and runs [`crate::Term::take_image_jobs`] on its worker pool.
     pub inline_decode: bool,
+    /// Media placements (T-16 §2, `media.*`).
+    pub media: crate::media::MediaConfig,
 }
 
 impl Default for GraphicsConfig {
@@ -87,6 +89,7 @@ impl Default for GraphicsConfig {
             sixel: true,
             iterm2: true,
             inline_decode: true,
+            media: crate::media::MediaConfig::default(),
         }
     }
 }
@@ -254,6 +257,8 @@ pub(crate) struct Graphics {
     sixel_geom: (u32, u32),
     /// Any sixel slice is placed (gates the text-overwrite checks).
     pub sixel_live: bool,
+    /// Media placements (T-16 §2).
+    pub(crate) media: crate::media::MediaState,
 }
 
 impl Graphics {
@@ -276,6 +281,7 @@ impl Graphics {
             sixel_reg_count: l.sixel_max_registers,
             sixel_geom: (l.max_axis, l.max_axis),
             sixel_live: false,
+            media: crate::media::MediaState::default(),
         }
     }
 
@@ -283,6 +289,7 @@ impl Graphics {
     pub(crate) fn carry_from(&mut self, old: &Graphics) {
         self.next_token = old.next_token;
         self.epoch = old.epoch;
+        self.media.carry_from(&old.media);
     }
 
     /// A new string started while a sixel was open (it ended without `string_end`).
@@ -368,6 +375,11 @@ impl Graphics {
         self.sessions.last().map_or(0, |s| s.id)
     }
 
+    /// The session new placements belong to (0: none).
+    pub(crate) fn current_session(&self) -> u64 {
+        self.session()
+    }
+
     /// The pane clock (ms) at `now` without starting it.
     fn ms_at(&self, now: Instant) -> u64 {
         self.epoch
@@ -396,11 +408,11 @@ impl Graphics {
     }
 }
 
-fn part_of(cur: usize) -> Part {
+pub(crate) fn part_of(cur: usize) -> Part {
     if cur == 1 { Part::Alt } else { Part::Main }
 }
 
-fn grid_of(part: Part) -> usize {
+pub(crate) fn grid_of(part: Part) -> usize {
     match part {
         Part::Main => 0,
         Part::Alt => 1,
@@ -1015,6 +1027,7 @@ impl Machine {
             return;
         }
         self.gfx.sessions.retain(|s| s.id != id);
+        self.media_session_end(id);
         let store = &self.gfx.store;
         let animated =
             |part: Part, image: u32| store.frame_count(part, image).is_some_and(|n| n > 1);
@@ -1764,7 +1777,7 @@ impl Machine {
     /// After each feed: placements whose rows left history (or a region scrolled them
     /// away) are dropped.
     pub(crate) fn gfx_collect(&mut self) {
-        if self.gfx.places.iter().all(|p| p.pin.is_none()) {
+        if self.gfx.places.iter().all(|p| p.pin.is_none()) && !self.gfx.media.has_places() {
             // Still drain so the grids' garbage lists do not grow.
             let mut sink = Vec::new();
             self.panes[0].grid.take_garbage(&mut sink);
@@ -1781,6 +1794,9 @@ impl Machine {
             .collect();
         if !dead.is_empty() {
             self.remove_places(|q| q.pin.is_some_and(|p| dead.contains(&p)));
+        }
+        if self.gfx.media.has_places() {
+            self.media_collect(&dead);
         }
     }
 
@@ -1953,6 +1969,11 @@ impl Machine {
                     }
                 }
             }
+        }
+        if self.gfx.media.has_places() {
+            self.media_draws(top_abs, rows, out);
+            // Bottom to top by z; equal z keeps images under media.
+            out.sort_by_key(|d| d.z);
         }
         let e = self.gfx.epoch?;
         due.map(|d| e + std::time::Duration::from_millis(d))

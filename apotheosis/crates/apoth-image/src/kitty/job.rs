@@ -7,10 +7,11 @@
 
 use std::sync::Arc;
 
-use super::{MediaPolicy, MediaResult, Medium, TransmitSpec, decode_transfer, load_media};
+use super::{MediaPolicy, MediaResult, Medium, TransmitSpec, decode_transfer_with, load_media};
 use crate::anim::{composite, diff_bbox, rect_inside};
+use crate::decoder::{InProcess, PixelDecoder};
 use crate::formats::Decoded;
-use crate::iterm::{ITermError, ITermFile, decode_payload};
+use crate::iterm::{ITermError, ITermFile, decode_payload_with};
 use crate::{ErrCode, Image, Limits};
 
 /// The canvas an `a=f` frame is drawn on.
@@ -91,14 +92,19 @@ pub struct DecodeDone {
 impl DecodeJob {
     /// Blocking: file reads, pixel decoding, frame composition.
     pub fn run(self) -> DecodeDone {
+        self.run_with(&mut InProcess)
+    }
+
+    /// [`DecodeJob::run`] with container decoding done by `dec` (the sandboxed helper).
+    pub fn run_with(self, dec: &mut dyn PixelDecoder) -> DecodeDone {
         let token = self.token;
-        let outcome = self.outcome();
+        let outcome = self.outcome(dec);
         DecodeDone { token, outcome }
     }
 
-    fn outcome(self) -> Outcome {
+    fn outcome(self, dec: &mut dyn PixelDecoder) -> Outcome {
         if let Work::ITerm(file) = &self.work {
-            return match decode_payload(file, &self.payload, &self.limits) {
+            return match decode_payload_with(file, &self.payload, &self.limits, dec) {
                 Ok(d) => Outcome::Decoded(d),
                 Err(ITermError::TooLarge) => Outcome::Failed(ErrCode::Efbig),
                 Err(_) => Outcome::Failed(ErrCode::Einval),
@@ -123,7 +129,7 @@ impl DecodeJob {
                 MediaResult::Failed => return Outcome::Failed(ErrCode::EnoentFile),
             }
         };
-        let img = match decode_transfer(&self.spec, data, &self.limits) {
+        let img = match decode_transfer_with(&self.spec, data, &self.limits, dec) {
             Ok(img) => img,
             Err(e) => return Outcome::Failed(e),
         };

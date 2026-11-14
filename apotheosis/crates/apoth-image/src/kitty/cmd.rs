@@ -265,7 +265,9 @@ pub fn parse_apc(apc: &[u8]) -> Result<(Header, &[u8]), ParseError> {
         Header {
             ids,
             quiet: k.quiet,
-            more: k.more == 1,
+            // Chunking is a direct-transmission feature: `m=1` on a file, temp-file or
+            // shm transmission is ignored (mpv's kitty output sets it on every shm frame).
+            more: k.more == 1 && matches!(k.medium, None | Some(b'd')),
             chunk_keys_only,
             probe: k.probe,
             command,

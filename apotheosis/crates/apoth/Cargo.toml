@@ -15,7 +15,7 @@ apoth-image.workspace = true
 apoth-proto.workspace = true
 apoth-pty.workspace = true
 miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
-rustix = { version = "1", features = ["std", "event", "termios"] }
+rustix = { version = "1", features = ["std", "event", "net", "process", "termios"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 
 [lints]

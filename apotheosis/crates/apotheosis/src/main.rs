@@ -12,6 +12,7 @@ mod glyphs;
 mod hints;
 mod hook;
 mod layout;
+mod mediahost;
 mod mousectl;
 mod nav;
 mod notify;

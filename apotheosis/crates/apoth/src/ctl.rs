@@ -33,7 +33,6 @@ pub(crate) const NOT_YET: &[&str] = &[
     "notify",
     "set",
     "reset",
-    "play",
     "ssh",
     "terminfo",
     "fonts",
@@ -74,6 +73,7 @@ Commands:
   subscribe EVENT...         print events until interrupted
   version                    client and instance versions
   icat [OPTIONS] FILE...     show images in the pane (apoth icat --help)
+  play [OPTIONS] FILE        play video or audio in the pane (apoth play --help)
   shell-init bash|zsh|fish   print the shell-integration snippet (defines `ap`)
   config ...                 edit or read the config file (no socket)
 
@@ -570,6 +570,42 @@ impl Client {
             )
         })?;
         Ok(id)
+    }
+
+    /// One request with `fd` attached (`SCM_RIGHTS` on its first byte), and its reply.
+    pub(crate) fn call_fd(
+        &mut self,
+        params: Params,
+        fd: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<Value, WireError> {
+        use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags};
+        let id = self.next_id;
+        self.next_id += 1;
+        let line = Request { id, params }.to_line()?;
+        let broken = |e: io::Error| {
+            WireError::new(
+                ErrorCode::NoInstance,
+                format!("cannot write to the instance: {}", e.kind()),
+            )
+        };
+        let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(1))];
+        let mut cmsg = SendAncillaryBuffer::new(&mut space);
+        let fds = [fd];
+        cmsg.push(SendAncillaryMessage::ScmRights(&fds));
+        let sent = loop {
+            match rustix::net::sendmsg(
+                &self.stream,
+                &[io::IoSlice::new(&line)],
+                &mut cmsg,
+                SendFlags::NOSIGNAL,
+            ) {
+                Ok(n) => break n,
+                Err(rustix::io::Errno::INTR) => {}
+                Err(e) => return Err(broken(e.into())),
+            }
+        };
+        self.stream.write_all(&line[sent..]).map_err(broken)?;
+        self.reply(id)
     }
 
     /// The socket, to poll for a deferred reply alongside another fd.

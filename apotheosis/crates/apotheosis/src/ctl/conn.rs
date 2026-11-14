@@ -4,8 +4,13 @@
 //! never interleave inside a reply). A reader that falls past the high-water mark is
 //! disconnected rather than buffered without bound.
 
-use std::io::{self, Read, Write};
+use std::collections::VecDeque;
+use std::io::{self, IoSliceMut, Write};
+use std::mem::MaybeUninit;
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
+
+use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags};
 
 use apoth_action::EventKind;
 use apoth_proto::{LineDecoder, WireError};
@@ -16,6 +21,8 @@ pub(crate) const HIGH_WATER: usize = 4 * 1024 * 1024;
 const READ_BUDGET: usize = 256 * 1024;
 /// Subscriptions per connection.
 pub(crate) const MAX_SUBS: usize = 64;
+/// Descriptors (`SCM_RIGHTS`) a connection may hold unclaimed; extras are closed.
+pub(crate) const MAX_FDS: usize = 4;
 
 /// A subscription.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,6 +58,8 @@ pub(crate) struct Conn {
     next_sub: u64,
     /// Event sequence number on this connection.
     pub(crate) seq: u64,
+    /// Descriptors received with the stream (`media.attach` claims the oldest).
+    fds: VecDeque<OwnedFd>,
 }
 
 impl Conn {
@@ -66,6 +75,7 @@ impl Conn {
             subs: Vec::new(),
             next_sub: 1,
             seq: 0,
+            fds: VecDeque::new(),
         }
     }
 
@@ -81,7 +91,27 @@ impl Conn {
         let mut buf = [0u8; 16 * 1024];
         let mut total = 0;
         while total < READ_BUDGET {
-            match self.stream.read(&mut buf) {
+            let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FDS))];
+            let mut cmsg = RecvAncillaryBuffer::new(&mut space);
+            let got = rustix::net::recvmsg(
+                &self.stream,
+                &mut [IoSliceMut::new(&mut buf)],
+                &mut cmsg,
+                RecvFlags::CMSG_CLOEXEC | RecvFlags::DONTWAIT,
+            )
+            .map(|m| m.bytes)
+            .map_err(io::Error::from);
+            for msg in cmsg.drain() {
+                if let RecvAncillaryMessage::ScmRights(fds) = msg {
+                    for fd in fds {
+                        // Past the cap the descriptor drops (closes) here.
+                        if self.fds.len() < MAX_FDS {
+                            self.fds.push_back(fd);
+                        }
+                    }
+                }
+            }
+            match got {
                 Ok(0) => {
                     input.eof = true;
                     break;
@@ -99,6 +129,11 @@ impl Conn {
             }
         }
         Ok(input)
+    }
+
+    /// The oldest descriptor the client sent and nothing has claimed.
+    pub(crate) fn take_fd(&mut self) -> Option<OwnedFd> {
+        self.fds.pop_front()
     }
 
     /// The decoder hit an oversize line: nothing more is read from this client.
@@ -176,11 +211,40 @@ impl Conn {
 mod tests {
     use super::*;
     use apoth_proto::{ErrorCode, MAX_LINE_BYTES};
+    use std::io::Read;
 
     fn pair() -> (Conn, UnixStream) {
         let (a, b) = UnixStream::pair().unwrap();
         a.set_nonblocking(true).unwrap();
         (Conn::new(a), b)
+    }
+
+    #[test]
+    fn descriptors_queue_with_the_line_and_extras_close() {
+        use rustix::net::{SendAncillaryBuffer, SendAncillaryMessage, SendFlags};
+        use std::os::fd::AsFd;
+        let (mut c, peer) = pair();
+        let pipes: Vec<_> = (0..MAX_FDS + 1)
+            .map(|_| rustix::pipe::pipe().unwrap().0)
+            .collect();
+        let fds: Vec<_> = pipes.iter().map(AsFd::as_fd).collect();
+        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FDS + 1))];
+        let mut cmsg = SendAncillaryBuffer::new(&mut space);
+        assert!(cmsg.push(SendAncillaryMessage::ScmRights(&fds)));
+        let line = b"{\"id\":1,\"method\":\"media.attach\"}\n";
+        rustix::net::sendmsg(
+            &peer,
+            &[io::IoSlice::new(line)],
+            &mut cmsg,
+            SendFlags::empty(),
+        )
+        .unwrap();
+        let i = c.read().unwrap();
+        assert_eq!(i.lines.len(), 1);
+        for _ in 0..MAX_FDS {
+            assert!(c.take_fd().is_some());
+        }
+        assert!(c.take_fd().is_none());
     }
 
     #[test]

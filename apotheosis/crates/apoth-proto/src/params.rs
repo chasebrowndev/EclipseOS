@@ -321,6 +321,8 @@ pub enum Params {
     MediaWindowOpen(MediaWindowOpen),
     MediaWindowWrite(MediaWindowWrite),
     MediaWindowWait(MediaWindowWait),
+    /// `media.attach {}` with one descriptor in `SCM_RIGHTS`.
+    MediaAttach(Empty),
 }
 
 fn de<T: DeserializeOwned>(v: Value) -> Result<T, WireError> {
@@ -427,6 +429,7 @@ impl Params {
             Method::MediaWindowOpen => Params::MediaWindowOpen(de(v)?),
             Method::MediaWindowWrite => Params::MediaWindowWrite(de(v)?),
             Method::MediaWindowWait => Params::MediaWindowWait(de(v)?),
+            Method::MediaAttach => Params::MediaAttach(de(v)?),
         };
         p.validate()?;
         Ok(p)
@@ -464,6 +467,7 @@ impl Params {
             Params::MediaWindowOpen(_) => Method::MediaWindowOpen,
             Params::MediaWindowWrite(_) => Method::MediaWindowWrite,
             Params::MediaWindowWait(_) => Method::MediaWindowWait,
+            Params::MediaAttach(_) => Method::MediaAttach,
         }
     }
 
@@ -505,6 +509,7 @@ impl Params {
             | Params::WaylandInfo(p)
             | Params::RenderStatus(p)
             | Params::Version(p)
+            | Params::MediaAttach(p)
             | Params::ConfigReload(p) => serde_json::to_value(p),
             Params::Subscribe(p) => serde_json::to_value(p),
             Params::Unsubscribe(p) => serde_json::to_value(p),
@@ -599,7 +604,7 @@ impl Params {
                     return Err(bad("data is not base64"));
                 }
             }
-            Params::MediaWindowWait(_) => {}
+            Params::MediaWindowWait(_) | Params::MediaAttach(_) => {}
             Params::Tree(_)
             | Params::PaneInfo(_)
             | Params::PaneProcesses(_)

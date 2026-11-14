@@ -216,6 +216,10 @@ fn golden_every_request_kind() {
         r#"{"id":29,"method":"media.window-wait","params":{"window":1}}"#,
         Params::MediaWindowWait(MediaWindowWait { window: 1 }),
     );
+    golden(
+        r#"{"id":30,"method":"media.attach","params":{}}"#,
+        Params::MediaAttach(Empty {}),
+    );
 }
 
 #[test]
@@ -231,8 +235,8 @@ fn media_window_params_are_bounded() {
 
 #[test]
 fn every_method_has_a_golden_request() {
-    // 29 golden cases above, one per table row.
-    assert_eq!(METHODS.len(), 29);
+    // 30 golden cases above, one per table row.
+    assert_eq!(METHODS.len(), 30);
 }
 
 #[test]

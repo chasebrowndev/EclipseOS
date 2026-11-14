@@ -288,6 +288,22 @@ fn unterminated_single_chunk_without_m_completes() {
 }
 
 #[test]
+fn more_is_ignored_on_a_shared_memory_transmission() {
+    // mpv's `--vo=kitty --vo-kitty-use-shm=yes` sends `m=1` on every shm frame and never a
+    // final chunk; chunking only applies to direct data, so each one is a whole transfer.
+    let mut a = Assembler::new(Limits::default());
+    for _ in 0..2 {
+        let Event::Transfer(t) = a.push(
+            &apc("a=T,t=s,f=24,s=1,v=1,q=2,m=1", &b64(b"mpv-kitty-1")),
+            0,
+        ) else {
+            panic!("an shm transmission with m=1 is complete")
+        };
+        assert_eq!(t.payload, b"mpv-kitty-1");
+    }
+}
+
+#[test]
 fn bad_chunks() {
     let lim = Limits {
         max_chunk_b64: 8,

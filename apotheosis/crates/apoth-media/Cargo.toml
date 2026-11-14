@@ -10,3 +10,34 @@ publish = false
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "apoth-media-helper"
+path = "src/bin/apoth-media-helper.rs"
+
+[features]
+# T-16 §3, ADR 0118: rav1d's x86-64 assembly (nasm at build time only). On in packaging,
+# off in dev and default CI. Never enables an arm64 asm feature; see the target table below.
+av1-asm = ["dep:rav1d-asm"]
+
+[dependencies]
+apoth-image.workspace = true
+# T-16 §3: no default features (they enable `asm`, forbidden outside the nasm exception).
+rav1d = { version = "=1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
+matroska-demuxer = "0.8"
+symphonia = { version = "0.6", default-features = false, features = ["aac", "vorbis", "flac", "mp3", "ogg", "wav", "pcm"] }
+opus-decoder = "0.1"
+pulseaudio = "0.3"
+landlock = "0.4"
+seccompiler = "0.5"
+rustix = { version = "1", features = ["std", "event", "fs", "mm", "net", "pipe", "process", "thread", "time"] }
+libc = "0.2"
+tracing = "0.1"
+
+# The asm family on x86_64 only (T-16 §3, T-24 §3).
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+rav1d-asm = { package = "rav1d", version = "=1.1.0", default-features = false, features = ["asm"], optional = true }
+
+[dev-dependencies]
+# Frame dumps for visual checks; already in the lock (apoth-image).
+png = "0.18"
