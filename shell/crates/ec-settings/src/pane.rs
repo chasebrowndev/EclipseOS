@@ -90,6 +90,9 @@ pub enum Page {
     TermScrollback,
     TermInput,
     TermShell,
+    TermBinds,
+    TermProfiles,
+    TermRules,
     TermSecurity,
     TermMedia,
 }
@@ -222,6 +225,9 @@ impl Page {
             | Page::TermScrollback
             | Page::TermInput
             | Page::TermShell
+            | Page::TermBinds
+            | Page::TermProfiles
+            | Page::TermRules
             | Page::TermSecurity
             | Page::TermMedia => Section::Terminal,
         }
@@ -268,6 +274,9 @@ impl Page {
             Page::TermScrollback => "Scrollback & selection",
             Page::TermInput => "Input & alerts",
             Page::TermShell => "Shell & automation",
+            Page::TermBinds => "Key binds",
+            Page::TermProfiles => "Profiles",
+            Page::TermRules => "Rules",
             Page::TermSecurity => "Paste & security",
             Page::TermMedia => "Media & render",
             single => single.section().title(),
@@ -321,6 +330,13 @@ impl Page {
             Page::TermShell => {
                 "The program that starts, sessions, and defaults for binds, rules and profiles."
             }
+            Page::TermBinds => "Keys that run actions, in key tables and modes, and the defaults you unbind.",
+            Page::TermProfiles => {
+                "Settings that follow a process, host or folder, picked by how well it matches."
+            }
+            Page::TermRules => {
+                "When something happens in a pane, run actions, if the match expression holds."
+            }
             Page::TermSecurity => "Clipboard, paste guard, links, remote hosts and the control socket.",
             Page::TermMedia => "Inline images and video, frame pacing and accessibility.",
             Page::Addons => "Optional packages, and the hooks they switch on.",
@@ -337,6 +353,9 @@ impl Page {
         Page::TermScrollback,
         Page::TermInput,
         Page::TermShell,
+        Page::TermBinds,
+        Page::TermProfiles,
+        Page::TermRules,
         Page::TermSecurity,
         Page::TermMedia,
     ];
@@ -615,7 +634,7 @@ mod tests {
             assert_eq!(owners, 1, "{page:?}");
             assert!(page.section().pages().contains(&page));
         }
-        assert_eq!(Page::all().count(), 45);
+        assert_eq!(Page::all().count(), 48);
     }
 
     #[test]

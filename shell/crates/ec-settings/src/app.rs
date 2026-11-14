@@ -1363,6 +1363,9 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
             subs.push(iced::window::frames().map(|t| Message::Bar(crate::taskbar::Msg::Frame(t))));
         }
     }
+    if app.terminal.lists.recording() {
+        subs.push(crate::term_lists::record_keys());
+    }
     if app.page == Page::Animations {
         subs.push(iced::window::frames().map(|t| Message::Anim(crate::animations::Msg::Frame(t))));
     }
