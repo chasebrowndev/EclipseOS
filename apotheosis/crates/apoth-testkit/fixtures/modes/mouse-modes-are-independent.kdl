@@ -1,0 +1,10 @@
+fixture "mouse-modes-are-independent" {
+  desc "mouse reporting modes and encodings are set and reset independently"
+  covers "T03-MOUSE"
+  size rows=2 cols=4
+  feed #"\e[?1000h\e[?1006h\e[?1002h\e[?1000l"#
+  mode "?1000" 2
+  mode "?1002" 1
+  mode "?1006" 1
+  mode "?1003" 2
+}

@@ -1,0 +1,9 @@
+fixture "c0-nul-ignored" {
+  covers "T03-C0-EXEC"
+  size rows=3 cols=10
+  feed #"A\0B"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+}

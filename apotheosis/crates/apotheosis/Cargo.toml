@@ -10,3 +10,29 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+apoth-a11y.workspace = true
+apoth-action.workspace = true
+apoth-config.workspace = true
+apoth-eclipse.workspace = true
+apoth-font.workspace = true
+apoth-grid.workspace = true
+apoth-input.workspace = true
+apoth-mux.workspace = true
+apoth-proto.workspace = true
+apoth-pty.workspace = true
+apoth-render.workspace = true
+apoth-term.workspace = true
+apoth-ui.workspace = true
+apoth-unicode.workspace = true
+apoth-wl.workspace = true
+# ADR 0084: window light/dark is decided by the same luminance crossover as the palette.
+ec-theme = { path = "../../../abyss/crates/ec-theme" }
+calloop = "0.14"
+rustix = { version = "1", features = ["std", "event", "fs", "net", "param", "pipe", "process", "time"] }
+serde = { version = "1", default-features = false, features = ["std", "derive"] }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+tracing = "0.1"
+tracing-journald = "0.3"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "registry"] }

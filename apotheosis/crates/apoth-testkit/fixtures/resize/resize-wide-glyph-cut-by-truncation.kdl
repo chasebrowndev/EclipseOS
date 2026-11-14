@@ -1,0 +1,12 @@
+fixture "resize-wide-glyph-cut-by-truncation" {
+  desc "a wide glyph cut at the new edge is repaired"
+  covers "T03-RESIZE" "T03-WIDE" "VTCORE-08"
+  review "interactive resize truncates (T-02 section 3); once reflow lands (M12) a wide glyph on a non-wrapped row may wrap instead"
+  size rows=2 cols=6
+  feed #"ABCD日"#
+  resize rows=2 cols=5
+  grid {
+    row "ABCD"
+  }
+  cursor row=0 col=4
+}

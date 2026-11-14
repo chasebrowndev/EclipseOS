@@ -124,7 +124,30 @@ where
         .filter_map(|row| Some(entry_for(row, &place(row)?)))
         .collect();
     out.extend(bespoke());
+    out.extend(terminal_entries());
     out
+}
+
+/// Path prefix of a Terminal key's entry: `term:font.size`. Not a `BESPOKE`
+/// place; `app::locate` resolves it through `terminal::page_of_key`.
+pub const TERMINAL: &str = "term:";
+
+/// One entry per `apoth-config` key, from its own presentation row.
+fn terminal_entries() -> Vec<SearchEntry> {
+    apoth_config::schema::TABLE
+        .iter()
+        .zip(apoth_config::meta::META.iter())
+        .filter_map(|(k, m)| {
+            let page = crate::terminal::page_for(m.page)?;
+            Some(SearchEntry::new(
+                format!("{TERMINAL}{}", k.path),
+                m.label.to_owned(),
+                format!("Terminal \u{203a} {}", page.title()),
+                k.doc.to_owned(),
+                m.keywords.iter().map(|w| (*w).to_owned()).collect(),
+            ))
+        })
+        .collect()
 }
 
 fn entry_for(row: &Row, place: &Place) -> SearchEntry {
@@ -835,7 +858,16 @@ mod tests {
     }
 
     fn entries() -> Vec<SearchEntry> {
-        index(&rows(), crate::search_ui::place)
+        let mut e = index(&rows(), crate::search_ui::place);
+        // These tests rank the compositor's keys; Terminal's have their own.
+        e.retain(|x| !x.path.starts_with(TERMINAL));
+        e
+    }
+
+    #[test]
+    fn terminal_keys_are_found() {
+        let e = index(&rows(), crate::search_ui::place);
+        assert_top3(&e, "scrollback lines", "term:scrollback.lines");
     }
 
     fn top<'e>(entries: &'e [SearchEntry], q: &str, n: usize) -> Vec<&'e str> {

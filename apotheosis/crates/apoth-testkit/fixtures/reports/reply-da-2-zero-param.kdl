@@ -1,0 +1,8 @@
+fixture "reply-da-2-zero-param" {
+  desc "reply da 2 zero param (migrated from the apoth-term corpus)"
+  covers "T03-DA2"
+  size rows=2 cols=4
+  version "1.4.2"
+  feed #"\e[>0c"#
+  replies #"\e[>1;10402;0c"#
+}

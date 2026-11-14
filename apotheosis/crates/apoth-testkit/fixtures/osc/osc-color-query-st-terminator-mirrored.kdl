@@ -1,0 +1,7 @@
+fixture "osc-color-query-st-terminator-mirrored" {
+  desc "osc color query st terminator mirrored (migrated from the apoth-term corpus)"
+  covers "T03-OSC-COLOR" "T03-REPLY-TERMINATOR"
+  size rows=1 cols=8
+  feed #"\e]10;?\e\\"#
+  replies #"\e]10;rgb:e5e5/e5e5/e5e5\e\\"#
+}

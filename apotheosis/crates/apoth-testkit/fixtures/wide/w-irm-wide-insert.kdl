@@ -1,0 +1,9 @@
+fixture "w-irm-wide-insert" {
+  desc "w irm wide insert (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=1 cols=8
+  feed #"ab\e[1;1H\e[4h世"#
+  grid {
+    row "世ab"
+  }
+}
