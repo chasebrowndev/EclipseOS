@@ -77,8 +77,6 @@ pub(crate) enum NavMsg {
     HintsEnded,
     /// The hovered hyperlink's URI (the tooltip), or none.
     Link(Option<String>),
-    /// The media placement under the pointer changed: its key, or none (T-08 §4).
-    MediaHover(Option<u64>),
     /// The link under an open-modifier click: main checks and opens it.
     Open { uri: String, visible: String },
     /// Copy mode ended without main asking (the screen switched).
@@ -537,10 +535,7 @@ impl View {
         let hit = self
             .hover_cell
             .and_then(|(r, c)| media_at(places, top + r, c));
-        if hit != self.media_hover {
-            self.media_hover = hit;
-            self.out.push(NavMsg::MediaHover(hit));
-        }
+        self.media_hover = hit;
     }
 
     #[cfg(test)]

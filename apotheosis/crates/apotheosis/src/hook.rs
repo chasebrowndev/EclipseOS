@@ -178,6 +178,48 @@ impl MuxDump {
     }
 }
 
+/// Test-only dump of the media placements' playback state and position (T-16 §2, T-08 §4):
+/// `APOTH_TEST_MEDIA=<path>`, debug builds only. One line per placement of the screen,
+/// `<state> pos=<ms>`; the first pane writes `<path>`, a `--ext` window `<path>.ext`.
+pub(crate) struct MediaDump {
+    path: PathBuf,
+    last: Option<String>,
+}
+
+impl MediaDump {
+    pub(crate) fn from_env(ext: bool) -> Option<MediaDump> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let p = std::env::var_os("APOTH_TEST_MEDIA").filter(|p| !p.is_empty())?;
+        let path = PathBuf::from(p);
+        Some(MediaDump {
+            path: if ext {
+                path.with_extension("ext")
+            } else {
+                path
+            },
+            last: None,
+        })
+    }
+
+    pub(crate) fn write(&mut self, places: &[apoth_term::MediaPlacement]) {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for p in places {
+            let _ = writeln!(text, "{:?} pos={}", p.state, p.pos_ms);
+        }
+        if self.last.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        if std::fs::write(&tmp, &text).is_ok() && std::fs::rename(&tmp, &self.path).is_ok() {
+            self.last = Some(text);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

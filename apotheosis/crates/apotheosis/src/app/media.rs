@@ -125,6 +125,7 @@ fn feeder(
     // `apoth play --ext` (T-16 §2): players here report by polling while any plays (the
     // feed channel cannot carry a poke without keeping itself open).
     let mut host = crate::mediahost::MediaHost::new(Arc::new(|| {}));
+    let mut mdump = crate::hook::MediaDump::from_env(true);
     loop {
         if !host.is_empty() {
             let poll = Instant::now() + MEDIA_POLL;
@@ -185,6 +186,9 @@ fn feeder(
             deadline = t.next_deadline();
             let reqs = t.take_media_requests();
             let want = shown_box(&t);
+            if let Some(d) = mdump.as_mut() {
+                d.write(&t.media_placements());
+            }
             drop(t);
             if want.is_some() && want != boxed {
                 boxed = want;

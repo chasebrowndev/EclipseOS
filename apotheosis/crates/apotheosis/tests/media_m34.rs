@@ -87,6 +87,7 @@ struct Session {
     sock: PathBuf,
     dump: PathBuf,
     images: PathBuf,
+    media: PathBuf,
     id: u32,
 }
 
@@ -145,6 +146,7 @@ impl Session {
         }
         let dump = dir.join("dump.txt");
         let images = dir.join("images.txt");
+        let media = dir.join("media.txt");
         if let Some(c) = config {
             std::fs::create_dir_all(dir.join("home/.config/apotheosis")).unwrap();
             std::fs::write(dir.join("home/.config/apotheosis/apotheosis.kdl"), c).unwrap();
@@ -166,6 +168,7 @@ impl Session {
                 .env("XDG_CONFIG_HOME", dir.join("home/.config"))
                 .env("APOTH_TEST_DUMP", &dump)
                 .env("APOTH_TEST_IMAGES", &images)
+                .env("APOTH_TEST_MEDIA", &media)
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()
@@ -178,6 +181,7 @@ impl Session {
             dir,
             dump,
             images,
+            media,
             id: 0,
         };
         let t0 = Instant::now();
@@ -203,9 +207,14 @@ impl Session {
     }
 
     fn rpc(&mut self, method: &str, params: &str) {
+        self.rpc_reply(method, params);
+    }
+
+    /// The raw reply line (empty when the socket is gone).
+    fn rpc_reply(&mut self, method: &str, params: &str) -> String {
         self.id += 1;
         let Ok(mut s) = UnixStream::connect(&self.sock) else {
-            return;
+            return String::new();
         };
         let line = format!(
             "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"{method}\",\"params\":{params}}}\n",
@@ -213,11 +222,90 @@ impl Session {
         );
         let _ = s.write_all(line.as_bytes());
         let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
-        let _ = s.read(&mut [0u8; 512]);
+        let mut b = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = s.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            b.extend_from_slice(&chunk[..n]);
+            if b.ends_with(b"\n") {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&b).into_owned()
+    }
+
+    /// The centre of the compositor window titled `title`, compositor-logical.
+    fn window_centre(&mut self, title: &str) -> (f64, f64) {
+        let t0 = Instant::now();
+        loop {
+            let reply = self.rpc_reply("get_windows", "{}");
+            let v: serde_json::Value = serde_json::from_str(&reply).unwrap_or_default();
+            let found = v["result"].as_array().and_then(|ws| {
+                ws.iter().find(|w| w["title"] == title).map(|w| {
+                    let r = &w["rect"];
+                    let f = |k: &str| r[k].as_f64().unwrap_or(0.0);
+                    (f("x") + f("w") / 2.0, f("y") + f("h") / 2.0)
+                })
+            });
+            if let Some(c) = found {
+                return c;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(20), "no window {title}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn type_text(&mut self, text: &str) {
         self.rpc("type_text", &format!("{{\"text\":{}}}", json_str(text)));
+    }
+
+    /// A scripted left click at compositor-logical `(x, y)`.
+    fn click(&mut self, x: f64, y: f64) {
+        self.rpc(
+            "click_at",
+            &format!("{{\"x\":{x},\"y\":{y},\"button\":\"left\"}}"),
+        );
+    }
+
+    /// The single media placement's state and position from `path` (`APOTH_TEST_MEDIA`),
+    /// once `pred` holds for its state.
+    fn media_state(&mut self, path: &Path, what: &str, pred: impl Fn(&str) -> bool) -> u64 {
+        let t = self.wait_file(path, what, |t| {
+            let l: Vec<&str> = t.lines().collect();
+            l.len() == 1 && l[0].split(' ').next().is_some_and(&pred)
+        });
+        t.trim()
+            .rsplit("pos=")
+            .next()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// The position (ms) a paused placement holds still at: unchanged over `ms`.
+    fn holds_still(&mut self, path: &Path, what: &str) -> u64 {
+        let a = self.media_state(path, what, |s| s == "Paused");
+        std::thread::sleep(Duration::from_millis(1200));
+        let b = self.media_state(path, what, |s| s == "Paused");
+        assert_eq!(a, b, "{what}: the position moved while paused");
+        b
+    }
+
+    /// Wait until the playing placement's position passes `ms`.
+    fn advances_past(&mut self, path: &Path, what: &str, ms: u64) {
+        let t0 = Instant::now();
+        loop {
+            let p = self.media_state(path, what, |s| s == "Playing");
+            if p > ms {
+                return;
+            }
+            assert!(
+                t0.elapsed() < Duration::from_secs(20),
+                "{what}: stuck at {p}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn ctrl_c(&mut self) {
@@ -480,4 +568,50 @@ fn tier_a_mpv_kitty_shm_1080p30() {
     let (vo, dec, n) = (v[0], v[1], v[2]);
     assert!(n >= 250, "only {n} frames played");
     assert!((vo + dec) * 100 < n, "{vo}+{dec} of {n} frames dropped");
+}
+
+/// A left click on a playing placement pauses it (its position stops advancing) and a second
+/// click resumes it (T-08 §4), inline in the pane and in a `--ext` window. The click comes
+/// with no prior pointer motion over the picture.
+#[test]
+fn click_pauses_and_resumes() {
+    if !have_apoth("click_pauses_and_resumes") {
+        return;
+    }
+    let Some(mut s) = Session::start("click") else {
+        return;
+    };
+    s.run("echo UP$((1+1))", "UP2");
+    let clip = fixture(&s);
+    let inline = s.media.clone();
+
+    // Inline: the box sits at the pane's top left after `clear`.
+    s.type_text(&format!(
+        "clear; apoth play --loop --size 16x5 {}\n",
+        clip.display()
+    ));
+    s.advances_past(&inline, "inline plays", 200);
+    s.click(60.0, 40.0);
+    let at = s.holds_still(&inline, "inline paused by a click");
+    s.click(60.0, 40.0);
+    s.advances_past(&inline, "inline resumed by a click", at);
+    s.ctrl_c();
+    s.run("clear; echo C$?C", "C0C");
+
+    // `--ext`: the first click lands in the window (focusing it) and toggles too.
+    let ext = s.media.with_extension("ext");
+    s.type_text(&format!(
+        "apoth play -x --loop --size 16x5 {}; echo X$?X\n",
+        clip.display()
+    ));
+    s.advances_past(&ext, "ext plays", 200);
+    let (x, y) = s.window_centre("apoth play");
+    s.click(x, y);
+    let at = s.holds_still(&ext, "ext paused by a click");
+    s.click(x, y);
+    s.advances_past(&ext, "ext resumed by a click", at);
+    s.rpc("press_key", "{\"key\":\"Escape\",\"modifiers\":[]}");
+    s.wait_file(&s.dump.clone(), "Escape exit", |t| {
+        t.lines().any(|l| l.trim() == "X0X")
+    });
 }

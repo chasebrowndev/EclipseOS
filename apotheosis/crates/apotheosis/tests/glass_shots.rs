@@ -269,9 +269,14 @@ impl Shots {
     }
 
     fn rpc(&mut self, method: &str, params: &str) {
+        self.rpc_reply(method, params);
+    }
+
+    /// The raw reply line (empty when the socket is gone).
+    fn rpc_reply(&mut self, method: &str, params: &str) -> String {
         self.id += 1;
         let Ok(mut s) = UnixStream::connect(&self.sock) else {
-            return;
+            return String::new();
         };
         let line = format!(
             "{{\"jsonrpc\":\"2.0\",\"id\":{},\"method\":\"{method}\",\"params\":{params}}}\n",
@@ -279,7 +284,39 @@ impl Shots {
         );
         let _ = s.write_all(line.as_bytes());
         let _ = s.set_read_timeout(Some(Duration::from_millis(500)));
-        let _ = s.read(&mut [0u8; 512]);
+        let mut b = Vec::new();
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = s.read(&mut chunk) {
+            if n == 0 {
+                break;
+            }
+            b.extend_from_slice(&chunk[..n]);
+            if b.ends_with(b"\n") {
+                break;
+            }
+        }
+        String::from_utf8_lossy(&b).into_owned()
+    }
+
+    /// The centre of the compositor window titled `title`, compositor-logical.
+    fn window_centre(&mut self, title: &str) -> (f64, f64) {
+        let t0 = Instant::now();
+        loop {
+            let reply = self.rpc_reply("get_windows", "{}");
+            let v: serde_json::Value = serde_json::from_str(&reply).unwrap_or_default();
+            let found = v["result"].as_array().and_then(|ws| {
+                ws.iter().find(|w| w["title"] == title).map(|w| {
+                    let r = &w["rect"];
+                    let f = |k: &str| r[k].as_f64().unwrap_or(0.0);
+                    (f("x") + f("w") / 2.0, f("y") + f("h") / 2.0)
+                })
+            });
+            if let Some(c) = found {
+                return c;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(20), "no window {title}");
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 
     fn type_text(&mut self, text: &str) {
@@ -313,13 +350,17 @@ impl Shots {
     }
 
     fn click_with(&mut self, x: f64, y: f64, button: &str, mods: &[&str]) {
+        // `click_at` takes no `modifiers` key and rejects the call when one is sent: only
+        // a click with modifiers names them (and still does not land; see link-confirm).
         let m: Vec<String> = mods.iter().map(|m| json_str(m)).collect();
+        let mods = if m.is_empty() {
+            String::new()
+        } else {
+            format!(",\"modifiers\":[{}]", m.join(","))
+        };
         self.rpc(
             "click_at",
-            &format!(
-                "{{\"x\":{x},\"y\":{y},\"button\":\"{button}\",\"modifiers\":[{}]}}",
-                m.join(",")
-            ),
+            &format!("{{\"x\":{x},\"y\":{y},\"button\":\"{button}\"{mods}}}"),
         );
     }
 
@@ -470,6 +511,10 @@ fn run_cases(s: &mut Shots) {
         s.hover(120.0, 90.0);
         s.pause(600);
         s.shot("play-inline-hover");
+        // A click on the picture pauses it: the paused controls under the pointer.
+        s.click(120.0, 90.0, "left");
+        s.pause(600);
+        s.shot("play-inline-paused");
         s.nudge = (3.0, 3.0);
         s.hover(3.0, 3.0);
         s.key("c", &["ctrl"]);
@@ -488,11 +533,16 @@ fn run_cases(s: &mut Shots) {
         s.sh("clear; apoth play --ext --loop --size 56x16 \"$HOME/out/clip.webm\"");
         s.pause(3500);
         s.shot("play-ext");
-        // Pointer over the picture: focus rim, hover close button and the hint.
-        s.nudge = (400.0, 200.0);
-        s.click(400.0, 200.0, "left");
+        // Pointer over the picture: hover controls and the hint.
+        let (x, y) = s.window_centre("apoth play");
+        s.nudge = (x, y);
+        s.hover(x, y);
         s.pause(600);
         s.shot("play-ext-hover");
+        // A click on the picture focuses the window and pauses the clip.
+        s.click(x, y, "left");
+        s.pause(600);
+        s.shot("play-ext-paused");
         s.nudge = (3.0, 3.0);
         s.key("Escape", &[]);
         s.pause(800);

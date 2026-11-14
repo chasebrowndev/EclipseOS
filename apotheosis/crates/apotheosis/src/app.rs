@@ -1375,8 +1375,11 @@ impl App {
     /// A left press over a media placement with mouse reporting off toggles its playback
     /// (T-08 §4): the toggle goes to the pane's io thread, which owns the term. True when
     /// the press was taken.
+    ///
+    /// The press is hit-tested here against the placements the pane last drew, not against
+    /// the pointer's last hover report: a click may come with no motion before it.
     fn media_click(&mut self, id: PaneKey) -> bool {
-        let Some(key) = self.nav.media_hover.filter(|h| h.0 == id).map(|h| h.1) else {
+        let (Some(geo), Some((x, y))) = (self.geometry_of(id), self.pointer) else {
             return false;
         };
         let Some(p) = self.panes.get(&id) else {
@@ -1385,6 +1388,13 @@ impl App {
         if p.shared.mirror.load().mouse_mode() != apoth_input::MouseMode::None {
             return false;
         }
+        let h = geo.hit(x, y);
+        let hit = (!h.above && !h.below)
+            .then(|| p.shared.media_shown_at(h.row, h.col))
+            .flatten();
+        let Some(key) = hit else {
+            return false;
+        };
         p.shared.post_media_toggle(key);
         if let Some(io) = &p.io {
             let _ = rustix::io::write(&io.wake, &[crate::pane::WAKE_MEDIA_CLICK]);
@@ -3194,12 +3204,6 @@ impl App {
                     self.nav.hints = None;
                 }
                 self.open_hints_ended(id);
-            }
-            NavMsg::MediaHover(key) => {
-                let h = key.map(|k| (id, k));
-                if key.is_some() || self.nav.media_hover.is_some_and(|m| m.0 == id) {
-                    self.nav.media_hover = h;
-                }
             }
             NavMsg::Link(uri) => {
                 if self.focused() == Some(id) && self.nav.link_tip != uri {

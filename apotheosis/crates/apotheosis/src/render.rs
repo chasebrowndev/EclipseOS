@@ -34,7 +34,7 @@ use apoth_wl::pace::CommitCtl;
 use apoth_wl::{PaceEvent, Pacer, WlSurfaceHandle};
 
 use crate::glyphs::{COLOR_PAGES, Glyphs, MASK_PAGES, PAGE};
-use crate::hook::{ImageDump, ViewDump};
+use crate::hook::{ImageDump, MediaDump, ViewDump};
 use crate::pane::{MainMsg, PaneKey, PaneShared, RenderMsg, now_ns};
 use crate::ui::{Overlay, UiRaster, build_chrome};
 use crate::view::{Source, View, paint};
@@ -542,6 +542,7 @@ struct PaneR {
     /// `below` flipped: the scene and the retained grid start over.
     restage: bool,
     idump: Option<ImageDump>,
+    mdump: Option<MediaDump>,
     /// The next animation frame of an image in view (T-15 §1: the frame scheduler wakes
     /// for it; nothing else does).
     due: Option<Instant>,
@@ -551,6 +552,11 @@ impl PaneR {
     fn new(v: PaneView) -> PaneR {
         let vdump = if v.first { ViewDump::from_env() } else { None };
         let idump = if v.first { ImageDump::from_env() } else { None };
+        let mdump = if v.first {
+            MediaDump::from_env(false)
+        } else {
+            None
+        };
         PaneR {
             v,
             scene: GridScene::new(),
@@ -571,6 +577,7 @@ impl PaneR {
             below: false,
             restage: false,
             idump,
+            mdump,
             due: None,
         }
     }
@@ -603,6 +610,10 @@ impl PaneR {
             self.media = t.media_placements();
             self.media_top = t.grid().history_rows().saturating_sub(self.view.offset());
             self.view.sync_media_hover(&t, &self.media);
+            self.v.shared.set_media_shown(self.media_top, &self.media);
+            if let Some(d) = self.mdump.as_mut() {
+                d.write(&self.media);
+            }
         }
         drop(t);
         let below = self.draws.iter().any(|d| d.z < 0);

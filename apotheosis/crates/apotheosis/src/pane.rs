@@ -62,6 +62,9 @@ pub(crate) struct PaneShared {
     graphics_file: Mutex<Vec<(u64, bool)>>,
     /// Media placements the user clicked (play/pause toggles, by key), for the io thread.
     media_clicks: Mutex<Vec<u64>>,
+    /// The media placements of the frame render last drew, with that frame's top row
+    /// (absolute): main hit-tests a press against them at press time (T-08 §4).
+    media_shown: Mutex<(usize, Vec<apoth_term::MediaPlacement>)>,
     /// Lock-free mode mirror: main encodes keys from this and never locks `term`.
     pub(crate) mirror: Arc<InputMirror>,
     /// Set by io on output; cleared by render when it wakes (edge-triggered wake).
@@ -90,6 +93,7 @@ impl PaneShared {
             resize: Mutex::new(None),
             graphics_file: Mutex::new(Vec::new()),
             media_clicks: Mutex::new(Vec::new()),
+            media_shown: Mutex::new((0, Vec::new())),
             mirror,
             dirty: AtomicBool::new(false),
             hold: AtomicBool::new(false),
@@ -162,6 +166,26 @@ impl PaneShared {
         if q.len() < 16 {
             q.push(key);
         }
+    }
+
+    /// Render: the media placements it just drew, `top` being the frame's first row.
+    pub(crate) fn set_media_shown(&self, top: usize, places: &[apoth_term::MediaPlacement]) {
+        let mut s = self
+            .media_shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        s.0 = top;
+        s.1.clear();
+        s.1.extend_from_slice(places);
+    }
+
+    /// The drawn media placement at viewport cell `(row, col)`, if any (its key).
+    pub(crate) fn media_shown_at(&self, row: usize, col: usize) -> Option<u64> {
+        let s = self
+            .media_shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::view::media_at(&s.1, s.0 + row, col)
     }
 
     pub(crate) fn take_media_toggles(&self) -> Vec<u64> {
@@ -756,6 +780,38 @@ fn publish(
 mod tests {
     use super::*;
     use apoth_term::TermConfig;
+
+    /// A press is hit-tested against the placements render last drew, offset by that
+    /// frame's top row: no hover report is needed before the click (T-08 §4).
+    #[test]
+    fn a_press_hits_the_drawn_placement() {
+        let shared = PaneShared::new(Term::new(TermConfig::default()));
+        assert_eq!(shared.media_shown_at(0, 0), None);
+        let place = apoth_term::MediaPlacement {
+            key: 7,
+            id: 1,
+            row: 12,
+            col: 3,
+            cols: 4,
+            rows: 2,
+            state: apoth_term::MediaPlay::Playing,
+            pos_ms: 0,
+            duration_ms: None,
+            video: None,
+        };
+        shared.set_media_shown(10, std::slice::from_ref(&place));
+        assert_eq!(shared.media_shown_at(2, 3), Some(7));
+        assert_eq!(shared.media_shown_at(3, 6), Some(7));
+        assert_eq!(shared.media_shown_at(1, 3), None);
+        assert_eq!(shared.media_shown_at(4, 3), None);
+        assert_eq!(shared.media_shown_at(2, 7), None);
+        // Scrolled back one row: the box sits a row lower in the viewport.
+        shared.set_media_shown(9, &[place]);
+        assert_eq!(shared.media_shown_at(2, 3), None);
+        assert_eq!(shared.media_shown_at(3, 3), Some(7));
+        shared.set_media_shown(9, &[]);
+        assert_eq!(shared.media_shown_at(3, 3), None);
+    }
 
     /// A term with one playing media placement (key, 4x2 cells at the origin).
     fn playing() -> (Term, u64) {
