@@ -1,0 +1,12 @@
+fixture "scroll-decstbm-invalid-ignored" {
+  desc "top >= bottom is ignored: no region change, no cursor move"
+  covers "T03-DECSTBM"
+  size rows=5 cols=10
+  feed #"\e[3;3H\e[4;2r*"#
+  grid {
+    row ""
+    row ""
+    row "  *"
+  }
+  cursor row=2 col=3
+}

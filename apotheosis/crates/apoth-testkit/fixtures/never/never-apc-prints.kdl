@@ -1,0 +1,9 @@
+fixture "never-apc-prints" {
+  desc "never apc prints (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=1 cols=4
+  feed #"\e_Gi=1;data\e\\x"#
+  grid {
+    row "x"
+  }
+}

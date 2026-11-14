@@ -1,0 +1,12 @@
+fixture "resize-grow-cols-pads" {
+  desc "new columns are blank"
+  covers "T03-RESIZE" "T-02-3"
+  size rows=3 cols=5
+  feed #"ABC"#
+  resize rows=3 cols=8
+  feed #"\e[1;8H*"#
+  grid {
+    row "ABC    *"
+  }
+  cursor row=0 col=7
+}

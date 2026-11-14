@@ -1,0 +1,11 @@
+fixture "osc8-spans-wrap" {
+  covers "T03-OSC8" "VTCORE-29"
+  size rows=3 cols=4
+  feed #"\e]8;;https://a\aABCDEF\e]8;;\a"#
+  grid {
+    row "ABCD"
+    row "EF"
+  }
+  cell row=0 col=3 link="https://a"
+  cell row=1 col=1 link="https://a"
+}

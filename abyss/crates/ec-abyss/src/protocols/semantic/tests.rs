@@ -7,10 +7,10 @@
 
 use std::time::{Duration, Instant};
 
-use ec_cataclysm_pub::{Config, Publisher};
 use ec_policy_eval::scope::SCENE_LIST;
 use ec_policy_eval::{Capability, Class, Constraints, Grant, SceneView, Ulid};
 use ec_protocols::semantic::client::eclipse_semantic_surface_v1::EclipseSemanticSurfaceV1;
+use ec_term_pub::{Config, NodeIds, Publisher, PANE_IDS};
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 use super::refclient::{array, forward, Ref, Win, WIN};
@@ -271,9 +271,15 @@ fn rects_are_clamped_to_the_surface_and_flagged() {
 }
 
 #[test]
-fn a_cataclysm_publisher_round_trips_through_the_server() {
+fn a_terminal_publisher_round_trips_through_the_server() {
     let mut r = rig();
-    let mut p = Publisher::new(Config::default(), 4, 20).unwrap();
+    // The caller owns the surface root (ADR 0114): a window, the terminal under it.
+    let mut ids = NodeIds::new();
+    let window = ids.alloc().unwrap();
+    r.sem.set_root(window);
+    r.sem.set_role(window, ROLE_WINDOW);
+    let mut p = Publisher::new(Config::default(), ids.range(PANE_IDS).unwrap(), window, 0, 4, 20).unwrap();
+    let term = p.terminal_id();
     p.set_line(0, b"$ make").unwrap();
     p.set_line(1, b"cc main.c").unwrap();
     {
@@ -283,9 +289,10 @@ fn a_cataclysm_publisher_round_trips_through_the_server() {
     r.pump();
     assert_eq!(r.c.error(), None);
     let v = r.view();
-    assert_eq!(v.node(1).unwrap().role, ROLE_TERMINAL);
+    assert_eq!(v.node(window).unwrap().children, [term]);
+    assert_eq!(v.node(term).unwrap().role, ROLE_TERMINAL);
     let lines: Vec<_> = v
-        .node(1)
+        .node(term)
         .unwrap()
         .children
         .iter()
@@ -319,7 +326,7 @@ fn a_cataclysm_publisher_round_trips_through_the_server() {
     r.pump();
     assert_eq!(r.c.error(), None);
     assert!(r.view().generation > g);
-    assert!(r.view().len() > 5, "a group node arrived");
+    assert!(r.view().len() > 6, "a group node arrived");
 }
 
 // ------------------------------------------------------------ protocol errors
@@ -919,7 +926,11 @@ fn live_arm_a_secret_beyond_the_node_budget_covers_the_whole_surface() {
 #[test]
 fn live_arm_echo_off_from_the_terminal_publisher_covers_the_terminal() {
     let mut r = rig();
-    let mut p = Publisher::new(Config::default(), 3, 20).unwrap();
+    let mut ids = NodeIds::new();
+    let window = ids.alloc().unwrap();
+    r.sem.set_root(window);
+    r.sem.set_role(window, ROLE_WINDOW);
+    let mut p = Publisher::new(Config::default(), ids.range(PANE_IDS).unwrap(), window, 0, 3, 20).unwrap();
     p.set_line(0, b"$ sudo ls").unwrap();
     {
         let b = p.poll(0).unwrap();
@@ -939,12 +950,20 @@ fn live_arm_echo_off_from_the_terminal_publisher_covers_the_terminal() {
         r.verdict(),
         NodeVerdict::WholeSurface(RedactReason::UnplacedSecret)
     );
-    // The agent reads nothing of it: the terminal root is secret.
+    // The agent reads nothing of the terminal: its subtree is secret. Only the
+    // caller's own window node (no text) stays (ADR 0114: the terminal is no
+    // longer the surface root; raising the whole toplevel is ADR 0115's).
     let (view, handle) = r.agent(Class::Normal);
     let ReadOutcome::Tree(t) = read_tree(&r.h.state, &view, handle, Instant::now()) else {
         panic!("tree");
     };
-    assert!(t.nodes.is_empty(), "no tree, no text, for agents while raised");
+    let seen: Vec<_> = t.nodes.iter().map(|n| (n.id, n.role)).collect();
+    assert_eq!(
+        seen,
+        [(window, ROLE_WINDOW)],
+        "no terminal node, no text, for agents while raised"
+    );
+    assert!(!p.ids().contains(window));
     // Echo back on: the raise holds through the grace, then the publisher
     // resumes. The compositor's hold is the same grace.
     p.set_echo(true, 20_000_000);

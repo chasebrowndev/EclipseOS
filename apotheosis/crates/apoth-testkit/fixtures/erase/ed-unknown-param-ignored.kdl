@@ -1,0 +1,9 @@
+fixture "ed-unknown-param-ignored" {
+  desc "ed unknown param ignored (migrated from the apoth-term corpus)"
+  covers "T03-ED"
+  size rows=1 cols=4
+  feed #"xyz\e[9J"#
+  grid {
+    row "xyz"
+  }
+}

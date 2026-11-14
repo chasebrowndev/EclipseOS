@@ -1,0 +1,11 @@
+fixture "charset-dec-special-all" {
+  desc "the full 0x60..0x7E mapping"
+  covers "T03-CHARSET" "UNICODE-11"
+  review "DEC Special Graphics: U+2424 for 'h' (NL symbol) and U+23BA..23BD for o/p/r/s follow the xterm/VT100 Unicode mapping; T-03 does not list the table"
+  size rows=3 cols=40
+  feed #"\e(0`abcdefghijklmnopqrstuvwxyz{|}~\e(B"#
+  grid {
+    row "◆▒␉␌␍␊°±␤␋┘┐┌└┼⎺⎻─⎼⎽├┤┴┬│≤≥π≠£·"
+  }
+  cursor row=0 col=31
+}

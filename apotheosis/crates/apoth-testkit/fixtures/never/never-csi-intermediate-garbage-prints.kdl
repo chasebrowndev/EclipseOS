@@ -1,0 +1,9 @@
+fixture "never-csi-intermediate-garbage-prints" {
+  desc "never csi intermediate garbage prints (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=1 cols=4
+  feed #"\e[1;2;3$$$zx"#
+  grid {
+    row "x"
+  }
+}

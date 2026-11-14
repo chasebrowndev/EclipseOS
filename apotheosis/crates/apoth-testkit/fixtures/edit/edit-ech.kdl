@@ -1,0 +1,9 @@
+fixture "edit-ech" {
+  desc "edit ech (migrated from the apoth-term corpus)"
+  covers "T03-ECH"
+  size rows=1 cols=8
+  feed #"abcdef\e[1;3H\e[2X"#
+  grid {
+    row "ab  ef"
+  }
+}

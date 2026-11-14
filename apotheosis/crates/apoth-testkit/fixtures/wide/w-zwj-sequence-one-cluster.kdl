@@ -1,0 +1,8 @@
+fixture "w-zwj-sequence-one-cluster" {
+  desc "w zwj sequence one cluster (migrated from the apoth-term corpus)"
+  covers "T03-GRAPHEME"
+  size rows=1 cols=8
+  feed #"👨‍👩x"#
+  cursor row=0 col=3
+  cell row=0 col=0 wide="wide"
+}
