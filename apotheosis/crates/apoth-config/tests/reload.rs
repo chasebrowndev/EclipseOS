@@ -185,3 +185,96 @@ fn watch_dirs_are_parents_of_main_file_and_includes() {
     assert_eq!(d, vec![PathBuf::from("/home/u/later")]);
     assert!(fs.exists(Path::new(P)));
 }
+
+#[test]
+fn runtime_override_survives_a_file_reload_and_reset_restores_the_file() {
+    use apoth_config::model::Layer;
+    let fs = MemFs::new().with(P, "version 1\nfont { size 12 }\n");
+    let mut r = Reloader::start(&fs, &input());
+    let c = r.set_runtime("font.size", "20").unwrap();
+    assert_eq!(c.previous, None);
+    let a = c.applied.expect("font.size changed");
+    assert!(a.diff.keys.iter().any(|k| k.path == "font.size"));
+    assert_eq!(r.config().float("font.size"), 20.0);
+    assert_eq!(
+        r.config().origin("font.size").unwrap().layer,
+        Layer::Runtime
+    );
+
+    // The file changes under the override: the base follows, the override stays on top.
+    fs.set(P, "version 1\nfont { size 13 }\ncursor { style \"bar\" }\n");
+    let a = applied(r.reload(&fs, &input()));
+    assert!(a.diff.keys.iter().any(|k| k.path == "cursor.style"));
+    assert!(!a.diff.keys.iter().any(|k| k.path == "font.size"));
+    assert_eq!(r.config().float("font.size"), 20.0);
+    assert_eq!(r.base().float("font.size"), 13.0);
+    assert_eq!(r.config().str("cursor.style"), Some("bar"));
+
+    // Setting again reports the previous override; the same value changes nothing.
+    let c = r.set_runtime("font.size", "21").unwrap();
+    assert_eq!(c.previous, Some(Value::Float(20.0)));
+    assert!(r.set_runtime("font.size", "21").unwrap().applied.is_none());
+
+    let c = r.reset_runtime("font.size").unwrap();
+    assert_eq!(c.previous, Some(Value::Float(21.0)));
+    assert!(c.applied.is_some());
+    assert_eq!(r.config().float("font.size"), 13.0);
+    assert_eq!(r.config().origin("font.size").unwrap().layer, Layer::User);
+    // Resetting a key with no override is not an error and changes nothing.
+    let again = r.reset_runtime("font.size").unwrap();
+    assert_eq!((again.previous, again.applied.is_none()), (None, true));
+}
+
+#[test]
+fn runtime_override_refuses_security_grant_unknown_and_bad_values() {
+    let fs = MemFs::new().with(P, "version 1\n");
+    let mut r = Reloader::start(&fs, &input());
+    for (k, v) in [
+        ("bell.command", "true"),
+        ("socket.key-stream", "true"),
+        ("font.sise", "12"),
+        ("font.size", "9999"),
+        ("font.size", "huge"),
+    ] {
+        assert!(r.set_runtime(k, v).is_err(), "{k}={v}");
+    }
+    assert!(r.reset_runtime("bell.command").is_err());
+    assert!(
+        r.runtime()
+            .entries_at(apoth_config::overrides::ScopeKey {
+                scope: apoth_config::types::Scope::Global,
+                id: 0
+            })
+            .is_empty()
+    );
+}
+
+#[test]
+fn a_reload_on_a_copy_adopts_the_live_overrides() {
+    let fs = MemFs::new().with(P, "version 1\n");
+    let mut live = Reloader::start(&fs, &input());
+    let mut copy = live.clone();
+    live.set_runtime("font.size", "18").unwrap();
+    fs.set(P, "version 1\ncursor { style \"bar\" }\n");
+    copy.reload(&fs, &input());
+    copy.adopt_runtime(live.runtime());
+    assert_eq!(copy.config().float("font.size"), 18.0);
+    assert_eq!(copy.config().str("cursor.style"), Some("bar"));
+}
+
+#[test]
+fn value_arg_text_round_trips_through_the_parser() {
+    use apoth_config::overrides::{parse_override_value, value_arg_text};
+    for (k, text) in [
+        ("font.size", "14.5"),
+        ("cursor.style", "bar"),
+        ("font.family", "JetBrains Mono"),
+        ("window.padding-x", "8"),
+        ("window.padding-balance", "true"),
+    ] {
+        let key = apoth_config::schema::key(k).unwrap();
+        let v = parse_override_value(key, text).unwrap();
+        let back = value_arg_text(key, &v).unwrap();
+        assert_eq!(parse_override_value(key, &back).unwrap(), v, "{k}: {back}");
+    }
+}

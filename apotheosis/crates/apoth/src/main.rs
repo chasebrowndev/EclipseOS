@@ -16,25 +16,7 @@ use std::path::PathBuf;
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
-        Some("config") => {
-            let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-                eprintln!("apoth: HOME is not set");
-                std::process::exit(1);
-            };
-            let xdg = std::env::var_os("XDG_CONFIG_HOME")
-                .map(PathBuf::from)
-                .filter(|p| p.is_absolute());
-            let mut out = std::io::stdout().lock();
-            let mut err = std::io::stderr().lock();
-            let mut ctx = config::Ctx {
-                fs: &RealFs,
-                home,
-                xdg,
-                out: &mut out,
-                err: &mut err,
-            };
-            config::run(&args[1..], &mut ctx)
-        }
+        Some("config") => config_cmd(&args[1..]),
         Some("shell-init") => shell_init(&args[1..]),
         Some("icat") => icat::run(&args[1..]),
         Some("play") => play::run(&args[1..]),
@@ -64,6 +46,19 @@ fn socket(args: &[String]) -> i32 {
         eprintln!("apoth: missing command\n\n{}", ctl::HELP);
         return ctl::USAGE;
     };
+    // `apoth set` saves to the file like `apoth config set`; `--temp` is the socket form.
+    if cmd == "set" && !ctl::is_temp(rest) {
+        if opts.target.is_some() || opts.socket.is_some() {
+            eprintln!("apoth set: --match and --socket apply only to `set --temp`");
+            return ctl::USAGE;
+        }
+        let mut a = vec!["set".to_owned()];
+        if opts.json {
+            a.push("--json".into());
+        }
+        a.extend(rest.iter().cloned());
+        return config_cmd(&a);
+    }
     if ctl::NOT_YET.contains(&cmd.as_str()) {
         eprintln!(
             "apoth {}: `{cmd}` is not yet implemented",
@@ -78,6 +73,27 @@ fn socket(args: &[String]) -> i32 {
     let mut out = std::io::stdout().lock();
     let mut err = std::io::stderr().lock();
     ctl::run(cmd, rest, opts, &mut out, &mut err)
+}
+
+/// `apoth config …` on the real file system.
+fn config_cmd(args: &[String]) -> i32 {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        eprintln!("apoth: HOME is not set");
+        return 1;
+    };
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute());
+    let mut out = std::io::stdout().lock();
+    let mut err = std::io::stderr().lock();
+    let mut ctx = config::Ctx {
+        fs: &RealFs,
+        home,
+        xdg,
+        out: &mut out,
+        err: &mut err,
+    };
+    config::run(args, &mut ctx)
 }
 
 /// `apoth shell-init <shell>`: the snippet panes get, for manual sourcing (T-14 §2).

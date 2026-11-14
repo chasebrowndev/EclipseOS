@@ -9,7 +9,7 @@ use apoth_config::edit::{Editor, NodeSel, write_target};
 use apoth_config::fs::Fs;
 use apoth_config::load::{LoadResult, default_input, load};
 use apoth_config::model::{Config, Layer};
-use apoth_config::overrides::parse_override_value;
+use apoth_config::overrides::{parse_override_value, value_fits};
 use apoth_config::schema::{self, TABLE};
 use apoth_config::types::{Key, Value};
 use apoth_config::value::render_node;
@@ -156,7 +156,17 @@ fn usage(ctx: &mut Ctx, json: bool, msg: &str) -> i32 {
     fail(ctx, json, USAGE, msg)
 }
 
-fn lookup(name: &str) -> Result<&'static Key, String> {
+/// `_`, `-` and `.` are one separator for key aliases (`font_size`, `font-size`).
+fn fold(name: &str) -> String {
+    name.chars()
+        .map(|c| if matches!(c, '_' | '-') { '.' } else { c })
+        .collect()
+}
+
+/// A key by its schema path or an alias of it: `_` and `-` match any separator of the path
+/// (`font_size` and `font-size` are `font.size`). An alias must match exactly one key. An
+/// unknown name gets the nearest key as a suggestion.
+pub(crate) fn lookup(name: &str) -> Result<&'static Key, String> {
     if let Some(k) = schema::key(name) {
         return Ok(k);
     }
@@ -165,11 +175,101 @@ fn lookup(name: &str) -> Result<&'static Key, String> {
             "`{name}` is a section, not a key; use `list {name}`"
         ));
     }
-    let all: Vec<&str> = TABLE.iter().map(|k| k.path).collect();
-    Err(match suggest(name, &all) {
+    let folded = fold(name);
+    let hits: Vec<&'static Key> = TABLE.iter().filter(|k| fold(k.path) == folded).collect();
+    match hits.as_slice() {
+        [k] => return Ok(k),
+        [] => {}
+        many => {
+            let names: Vec<&str> = many.iter().map(|k| k.path).collect();
+            return Err(format!(
+                "`{name}` is ambiguous: it could be `{}`",
+                names.join("`, `")
+            ));
+        }
+    }
+    let all: Vec<String> = TABLE.iter().map(|k| fold(k.path)).collect();
+    let near = suggest(&folded, &all)
+        .and_then(|f| TABLE.iter().find(|k| fold(k.path) == f))
+        .map(|k| k.path);
+    Err(match near {
         Some(s) => format!("unknown key `{name}` (did you mean `{s}`?)"),
         None => format!("unknown key `{name}`"),
     })
+}
+
+/// The `key=value` pairs of `apoth set` / `apoth config set`: every argument is `key=value`,
+/// or the single-pair form `key value...` (the rest joined by spaces). The split is at the
+/// first `=`, so a value may hold `=`. A key named twice is an error.
+pub(crate) fn parse_pairs(pos: &[String]) -> Result<Vec<(String, String)>, String> {
+    let Some(first) = pos.first() else {
+        return Err("needs key=value".into());
+    };
+    let pairs: Vec<(String, String)> = if first.contains('=') {
+        let mut v = Vec::with_capacity(pos.len());
+        for a in pos {
+            let Some((k, val)) = a.split_once('=') else {
+                return Err(format!(
+                    "`{a}` is not key=value (quote a value that has spaces)"
+                ));
+            };
+            v.push((k.to_owned(), val.to_owned()));
+        }
+        v
+    } else if pos.len() >= 2 {
+        vec![(first.clone(), pos[1..].join(" "))]
+    } else {
+        return Err(format!("`{first}` needs a value: {first}=VALUE"));
+    };
+    for (i, (k, _)) in pairs.iter().enumerate() {
+        if k.is_empty() {
+            return Err("a pair has an empty key".into());
+        }
+        if pairs[..i].iter().any(|(p, _)| p == k) {
+            return Err(format!("`{k}` is given twice"));
+        }
+    }
+    Ok(pairs)
+}
+
+/// One pair checked against the schema.
+#[derive(Debug)]
+pub(crate) struct Checked {
+    pub(crate) key: &'static Key,
+    pub(crate) text: String,
+    pub(crate) value: Value,
+}
+
+/// Check every pair before anything is written: the key resolves, the value parses and fits
+/// the key's type. All problems are returned, one line each.
+pub(crate) fn check_pairs(pairs: &[(String, String)]) -> Result<Vec<Checked>, Vec<String>> {
+    let mut ok = Vec::with_capacity(pairs.len());
+    let mut bad = Vec::new();
+    for (name, text) in pairs {
+        let key = match lookup(name) {
+            Ok(k) => k,
+            Err(m) => {
+                bad.push(m);
+                continue;
+            }
+        };
+        if ok.iter().any(|c: &Checked| c.key.path == key.path) {
+            bad.push(format!("`{}` is given twice", key.path));
+            continue;
+        }
+        match parse_override_value(key, text) {
+            Ok(v) if v != Value::Null && !value_fits(&key.ty, &v) => {
+                bad.push(format!("{}: value out of range", key.path));
+            }
+            Ok(value) => ok.push(Checked {
+                key,
+                text: text.clone(),
+                value,
+            }),
+            Err(m) => bad.push(format!("{}: {m}", key.path)),
+        }
+    }
+    if bad.is_empty() { Ok(ok) } else { Err(bad) }
 }
 
 fn user_path(ctx: &Ctx) -> PathBuf {
@@ -454,23 +554,114 @@ fn report_edit(
     }
 }
 
+/// `apoth set` / `apoth config set` (T-10 §5, T-12 §5): save `key=value` pairs to the
+/// user file. Every pair is checked and every edit made in memory before any file is
+/// written, so a bad pair writes nothing. The running instance picks the file up through
+/// its hot reload.
 fn cmd_set(ctx: &mut Ctx, o: &Opts) -> i32 {
-    if o.pos.len() < 2 {
-        return usage(ctx, o.json, "usage: apoth config set <key> <value>");
-    }
-    let key = match lookup(&o.pos[0]) {
-        Ok(k) => k,
-        Err(m) => return fail(ctx, o.json, ERROR, &m),
+    let pairs = match parse_pairs(&o.pos) {
+        Ok(p) => p,
+        Err(m) => {
+            let msg = format!("{m}\nusage: apoth set KEY=VALUE [KEY=VALUE...] | KEY VALUE");
+            return usage(ctx, o.json, &msg);
+        }
     };
-    let text = o.pos[1..].join(" ");
-    let value = match parse_override_value(key, &text) {
-        Ok(v) => v,
-        Err(m) => return fail(ctx, o.json, ERROR, &format!("{}: {m}", key.path)),
+    let checked = match check_pairs(&pairs) {
+        Ok(c) => c,
+        Err(errs) => return fail(ctx, o.json, ERROR, &errs.join("\n")),
     };
     let cfg = load_cfg(ctx).config;
     let user = user_path(ctx);
-    let r = edit_file(ctx, &cfg, &user, &scope_of(o), key.path, Some(&value));
-    report_edit(ctx, o, key.path, r, "set")
+    let scope = scope_of(o);
+    // One editor per target file; nothing is written until every edit succeeded.
+    let mut files: Vec<(PathBuf, String, Editor)> = Vec::new();
+    let mut targets = Vec::with_capacity(checked.len());
+    for c in &checked {
+        let target = if scope.is_empty() {
+            write_target(&cfg, &user, c.key.path)
+        } else {
+            user.clone()
+        };
+        let i = match files.iter().position(|(p, _, _)| *p == target) {
+            Some(i) => i,
+            None => {
+                let old = match ctx.fs.read_to_string(&target) {
+                    Ok(t) => t,
+                    Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+                    Err(e) => {
+                        let msg = format!("cannot read {}: {:?}", target.display(), e.kind());
+                        return fail(ctx, o.json, ERROR, &msg);
+                    }
+                };
+                let mut ed = match Editor::parse(&old) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        return fail(ctx, o.json, ERROR, &format!("{}: {e}", target.display()));
+                    }
+                };
+                if old.trim().is_empty()
+                    && let Err(e) = ed.ensure_version()
+                {
+                    return fail(ctx, o.json, ERROR, &e.to_string());
+                }
+                files.push((target, old, ed));
+                files.len() - 1
+            }
+        };
+        if let Err(e) = files[i].2.set_in(&scope, c.key.path, &c.value) {
+            return fail(ctx, o.json, ERROR, &format!("{}: {e}", c.key.path));
+        }
+        targets.push(i);
+    }
+    let mut changed_files = vec![false; files.len()];
+    for (i, (target, old, ed)) in files.iter().enumerate() {
+        let new = ed.text();
+        if new == *old {
+            continue;
+        }
+        if let Err(e) = ctx.fs.write_atomic(target, &new) {
+            let msg = format!("cannot write {}: {:?}", target.display(), e.kind());
+            return fail(ctx, o.json, ERROR, &msg);
+        }
+        changed_files[i] = true;
+    }
+    // A key changed when its file changed and did not already hold that value there.
+    let changes: Vec<(&str, &Path, bool)> = checked
+        .iter()
+        .zip(&targets)
+        .map(|(c, i)| {
+            let (target, old, _) = &files[*i];
+            let held = scope.is_empty()
+                && Editor::parse(old)
+                    .ok()
+                    .and_then(|e| e.get(c.key.path).ok().flatten())
+                    .is_some_and(|v| v == c.value);
+            (c.key.path, target.as_path(), changed_files[*i] && !held)
+        })
+        .collect();
+    if o.json {
+        let items: Vec<String> = changes
+            .iter()
+            .map(|(k, f, ch)| {
+                format!(
+                    "{{\"key\":{},\"file\":{},\"changed\":{ch}}}",
+                    jstr(k),
+                    jstr(&f.display().to_string())
+                )
+            })
+            .collect();
+        let line = format!("{{\"ok\":true,\"changes\":[{}]}}", items.join(","));
+        say(ctx, &line);
+    } else {
+        for (k, f, ch) in &changes {
+            if *ch {
+                say(ctx, &format!("set {k} in {}", f.display()));
+            } else {
+                say(ctx, &format!("{k}: no change"));
+            }
+        }
+    }
+    OK
 }
 
 fn cmd_unset(ctx: &mut Ctx, o: &Opts) -> i32 {
@@ -1136,6 +1327,109 @@ mod tests {
     fn import_foot_missing_file_errors() {
         let fs = MemFs::new();
         assert_eq!(run_with(&fs, &["import-foot"]).code, ERROR);
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn pairs_parse_in_both_forms() {
+        assert_eq!(
+            parse_pairs(&strs(&["font.size=12", "cursor.style=bar"])).unwrap(),
+            [
+                ("font.size".to_string(), "12".to_string()),
+                ("cursor.style".to_string(), "bar".to_string())
+            ]
+        );
+        assert_eq!(
+            parse_pairs(&strs(&["font.family", "JetBrains", "Mono"])).unwrap(),
+            [("font.family".to_string(), "JetBrains Mono".to_string())]
+        );
+        // The split is at the first `=`; the value may hold more.
+        assert_eq!(
+            parse_pairs(&strs(&["links.regex=a=b"])).unwrap(),
+            [("links.regex".to_string(), "a=b".to_string())]
+        );
+        assert_eq!(
+            parse_pairs(&strs(&["k="])).unwrap(),
+            [("k".to_string(), String::new())]
+        );
+        for bad in [
+            &[][..],
+            &["font.size"],
+            &["font.size=12", "cursor.style"],
+            &["=12"],
+            &["font.size=1", "font.size=2"],
+        ] {
+            assert!(parse_pairs(&strs(bad)).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn key_aliases_resolve_only_when_unambiguous() {
+        for alias in ["font_size", "font-size", "font.size", "FONT_SIZE"] {
+            let r = lookup(alias);
+            if alias == "FONT_SIZE" {
+                assert!(r.is_err(), "case is not folded");
+            } else {
+                assert_eq!(r.unwrap().path, "font.size", "{alias}");
+            }
+        }
+        assert_eq!(lookup("window_padding_x").unwrap().path, "window.padding-x");
+        assert_eq!(lookup("window.padding.x").unwrap().path, "window.padding-x");
+        let e = lookup("font_sise").unwrap_err();
+        assert!(e.contains("`font.size`"), "{e}");
+        // Every key is reachable by its underscore alias, or the alias is reported ambiguous.
+        for k in TABLE {
+            let alias = k.path.replace(['.', '-'], "_");
+            match lookup(&alias) {
+                Ok(found) => assert_eq!(found.path, k.path),
+                Err(m) => assert!(m.contains("ambiguous"), "{alias}: {m}"),
+            }
+        }
+    }
+
+    #[test]
+    fn set_many_pairs_with_aliases_preserves_comments() {
+        let fs = MemFs::new().with(USER, "// mine\nversion 1\nfont {\n    size 12 // keep\n}\n");
+        let r = run_with(&fs, &["set", "font_size=14", "cursor-style=bar", "--json"]);
+        assert_eq!(r.code, OK, "{}{}", r.out, r.err);
+        assert!(r.out.starts_with("{\"ok\":true,\"changes\":["), "{}", r.out);
+        assert!(r.out.contains("\"key\":\"font.size\""), "{}", r.out);
+        let t = fs.get(USER).unwrap();
+        assert!(t.contains("// mine") && t.contains("// keep"), "{t}");
+        assert!(t.contains("size 14") && t.contains("bar"), "{t}");
+        // Only the edited bytes moved.
+        assert!(t.starts_with("// mine\nversion 1\nfont {\n"), "{t}");
+    }
+
+    #[test]
+    fn set_is_all_or_nothing() {
+        let before = "version 1\n// mine\nfont {\n    size 12\n}\n";
+        let fs = MemFs::new().with(USER, before);
+        for args in [
+            &["set", "cursor.style=bar", "font.size=9999"][..],
+            &["set", "cursor.style=bar", "font.sise=13"],
+            &["set", "cursor.style=bar", "font.size=huge"],
+            &["set", "cursor.style=bar", "font_size=13", "font.size=14"],
+        ] {
+            let r = run_with(&fs, args);
+            assert_eq!(r.code, ERROR, "{args:?}: {}", r.err);
+            assert_eq!(fs.get(USER).unwrap(), before, "{args:?} wrote the file");
+        }
+        // Every problem is named, not only the first.
+        let r = run_with(&fs, &["set", "font.sise=1", "cursor.style=round"]);
+        assert!(
+            r.err.contains("font.size") && r.err.contains("cursor.style"),
+            "{}",
+            r.err
+        );
+        let j = run_with(&fs, &["set", "font.size=huge", "--json"]);
+        assert!(j.out.starts_with("{\"ok\":false"), "{}", j.out);
+        // Malformed pairs are usage errors.
+        assert_eq!(run_with(&fs, &["set", "font.size=1", "bar"]).code, USAGE);
+        assert_eq!(fs.get(USER).unwrap(), before);
     }
 
     #[test]

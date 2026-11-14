@@ -91,7 +91,7 @@ use crate::ui::{Overlay, PALETTE_ID, STRIP_ID, bar_inset_px, bars_for, pane_widg
 use crate::view::{Copied, CopyTarget, NavMsg, Preedit, ScrollBy, ViewCmd, ViewSettings};
 use crate::workers::Pool;
 use apoth_config::fs::RealFs;
-use apoth_config::reload::{Applied, Outcome, Reloader, Subsystem};
+use apoth_config::reload::{Applied, Outcome, Reloader, RuntimeChange, Subsystem};
 use apoth_config::types::Reload;
 use apoth_ui::WidgetId;
 
@@ -641,6 +641,8 @@ const HANDLED: &[&str] = &[
     "block.jump",
     "clipboard.copy",
     "config.reload",
+    "config.reset",
+    "config.set",
     "copy-mode.enter",
     "copy-mode.exit",
     "copy-mode.move",
@@ -2617,6 +2619,16 @@ impl App {
             A::OpenWith { target } => self.open_action(crate::open::Intent::Picker, target, None),
             A::OpenMenu { target } => self.open_action(crate::open::Intent::Menu, target, None),
             A::ConfigReload {} => self.start_reload(),
+            A::ConfigSet { key, value } => {
+                if self.runtime_override(&key, Some(&value)).is_err() {
+                    tracing::info!(key = %key, "runtime override refused");
+                }
+            }
+            A::ConfigReset { key } => {
+                if self.runtime_override(&key, None).is_err() {
+                    tracing::info!(key = %key, "runtime override reset refused");
+                }
+            }
             A::Notify {
                 title,
                 body,
@@ -4523,7 +4535,9 @@ impl App {
 
     fn on_loaded(&mut self, r: (Reloader, Outcome)) {
         self.loading = false;
-        let (rl, outcome) = r;
+        let (mut rl, outcome) = r;
+        // An override set while the worker parsed is the live one (T-10 §2 layer 8).
+        rl.adopt_runtime(self.reloader.runtime());
         self.reloader = rl;
         if let Some(w) = self.watcher.as_mut() {
             // A new include extends the watch set.
@@ -4579,6 +4593,27 @@ impl App {
         if std::mem::take(&mut self.reload_queued) {
             self.start_reload();
         }
+    }
+
+    /// `config.set` (`value`) or `config.reset` (`None`) of the instance-wide runtime override
+    /// layer (T-10 §2 layer 8). It sits above the files, so a reload keeps it; it is never
+    /// written to disk. The override class gate is `Reloader::set_runtime`'s.
+    pub(crate) fn runtime_override(
+        &mut self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<RuntimeChange, apoth_config::overrides::Refusal> {
+        let change = match value {
+            Some(v) => self.reloader.set_runtime(key, v)?,
+            None => self.reloader.reset_runtime(key)?,
+        };
+        if let Some(a) = &change.applied {
+            let mut settings = Settings::from_config(self.reloader.config());
+            settings.diagnostics = self.reloader.diagnostics().len();
+            tracing::info!(key, keys = a.diff.keys.len(), "runtime override applied");
+            self.apply_applied(settings, a);
+        }
+        Ok(change)
     }
 
     /// Tell each subsystem what changed. Every settings reader below the loop either gets a

@@ -1539,8 +1539,9 @@ Security additions: a `security { <class> allow|ask|deny }` child block under `d
 ## 5. Editing
 - `apoth-config::edit` operates on a lossless KDL document (comments, ordering, unknown
   nodes preserved), changing only the affected nodes; writes are temp + fsync + rename.
-- Three editors use it: `apoth config set|unset|add|remove` (edits the file locally, no
-  socket), ec-settings, and the in-terminal `config.save-override` Action (T-11 §1).
+- Three editors use it: `apoth config set|unset|add|remove` and `apoth set` (edit the file
+  locally, no socket; T-12 §5), ec-settings, and the in-terminal `config.save-override`
+  Action (T-11 §1).
 - **Write target.** A write goes to the main user file at top level, unless (a) the
   control was opened in a scoped context — a profile page writes that profile's node, a
   `when` variant selector writes that `when` block — or (b) the key's winning value
@@ -1579,8 +1580,10 @@ change emits the mode-2031 report where enabled (T-03).
 `apoth config validate|show|get|set|unset|explain|diff|migrate|import|path|edit`:
 `validate` exits non-zero with line-numbered diagnostics; `show` prints the effective
 merged config (`--origin`, `--changed-only`, `--json`); `explain <key>` prints the doc
-row; `diff` compares against defaults. These edit or read the file locally; runtime
-overrides are `apoth set`/`reset` (T-12 §5).
+row; `diff` compares against defaults. These edit or read the file locally. `apoth set`
+is the short form of `config set`; runtime overrides (layer 8) are `apoth set --temp` and
+`apoth reset` (T-12 §5). `config set` takes the same `key=value` pairs and key aliases as
+`apoth set`.
 
 ## 9. Test Plan
 Table-driven round-trip tests for every key (default → KDL → parse → equal); comment
@@ -1837,6 +1840,19 @@ sgr, wrap}`, `pane.blocks` (command records), `config.get`, `config.effective`,
 `version`. Streams: `subscribe {events:[…], match}` / `unsubscribe`; `pane.watch`
 (rendered-row deltas, R2).
 
+Runtime overrides (T-10 §2 layer 8), instance-wide, not targeted:
+- `config.set {key, value}` sets the override of one key; `value` is config text (what
+  follows the key in the file). Its class follows the key's override class (T-10 §1.1,
+  §4 below): `appearance` → `appearance`, `behaviour` → `config-write`; a `security` or
+  `grant` key is refused (`denied`). A value that does not fit the key is `bad-request`.
+- `config.reset {key}` drops that override; same classes. Resetting a key with no
+  override succeeds and changes nothing.
+- Both reply `{key, changed, previous}`: `changed` is whether the effective config
+  changed; `previous` is the override the key had before, in config text form, or `null`.
+  A client undoes a change by setting `previous` again, or resetting when it is `null`.
+- The override layer lives in the instance above the files: a reload replaces the file
+  layers and keeps it; nothing is written to disk; a restart drops it.
+
 Media windows (`apoth icat --ext`, T-16 §1.1), class `layout`, not targeted:
 - `media.window-open {cols, rows, title?}` opens a borderless glass window with one grid
   of `cols` × `rows` cells (each 1..500) and returns `{window}`. It has no PTY. It belongs
@@ -1911,12 +1927,29 @@ user-run `ssh -R` forward of the socket is treated as an ordinary client.
 ## 5. CLI
 `apoth <group> <verb>`; every group maps to methods above: `apoth ls`, `launch`, `split`,
 `focus`, `close`, `send-text`, `send-keys`, `get-text`, `do '<action>; <action>'`
-(textual action syntax identical to KDL `do` bodies), `subscribe`, `notify`, `set`/`reset`
-(runtime overrides: `config.set`/`config.reset` over the socket, class per the key's
-override class), `config …` (T-10 §8: edits or reads the file locally, no socket), `icat` (foreground,
+(textual action syntax identical to KDL `do` bodies), `subscribe`, `notify`, `set`,
+`reset`, `config …` (T-10 §8: edits or reads the file locally, no socket), `icat` (foreground,
 inline by default, `--ext` for a separate window; lifetime rules in T-16 §1.1), `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
 (`list`, `explain <char>`), `doctor` (capability and environment report), `completions`.
 `--json` everywhere; exit codes: 0 ok, 1 error, 2 usage, 3 denied, 4 no instance.
+
+`set` and `reset`:
+- `apoth set key=value [key=value …]` (or the one-pair form `apoth set key value…`)
+  saves to the user file exactly as `apoth config set` does (T-10 §5: lossless edit,
+  comments kept, temp + rename). It needs no socket; a running instance picks the file
+  up through its hot reload (T-10 §4).
+- `apoth set --temp key=value …` changes only the running instance: one `config.set`
+  per pair (§2). The file is not touched and the change is lost on restart.
+- `apoth reset key …` drops `--temp` overrides (`config.reset`).
+- Keys are schema paths or aliases of them: `_` and `-` stand for any separator, so
+  `font_size` and `font-size` are `font.size`. An alias must match exactly one key; an
+  unknown key is an error naming the nearest key.
+- A set is all-or-nothing. Every pair is checked against the schema (key, type, range,
+  and for `--temp` the override class) before anything is written or sent; a bad pair is
+  exit 1, a `security`/`grant` key under `--temp` exit 3, a malformed pair exit 2. If the
+  instance refuses a `--temp` pair part-way, the client undoes the pairs already applied
+  from their `previous` (§2) and exits with the refusal's code.
+
 Inside Apotheosis panes the shell-integration snippets (T-14 §2) define `ap` as a short
 alias of `apoth`; nothing is installed system-wide, and no other short names are defined.
 `apotheosis` itself (the GUI binary) accepts `-e argv…`, `--cwd`, `--title`, `--app-id`,
