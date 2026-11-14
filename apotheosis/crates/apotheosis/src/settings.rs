@@ -10,6 +10,7 @@ use apoth_config::Config;
 use apoth_config::fs::RealFs;
 use apoth_config::load::default_input;
 use apoth_config::reload::Reloader;
+use apoth_eclipse::TermColors;
 use apoth_font::config::{FontConfig, Ligatures, Style};
 use apoth_grid::Limits;
 use apoth_input::{Mods, PasteNewline, PasteOptions};
@@ -63,8 +64,15 @@ pub(crate) struct Settings {
     pub(crate) echo_window: Duration,
     pub(crate) sync_timeout: Duration,
     pub(crate) bell_audible: bool,
-    /// `colors.palette`: the 16 ANSI colours when set.
+    /// The 16 ANSI colours in force: `colors.palette`, else the theme's (T-17 §2).
     pub(crate) ansi: Option<[(u8, u8, u8); 16]>,
+    /// Cursor text, selection foreground and background in force (`None`: the cell's own).
+    pub(crate) cursor_text: Option<(u8, u8, u8)>,
+    pub(crate) selection: SelectionColors,
+    /// The `colors.*` the file sets; every unset one takes the theme.
+    pub(crate) color_keys: ColorKeys,
+    /// `theme` is `system` or unset: on Abyss the compositor's seeds supply the colours.
+    pub(crate) theme_system: bool,
     /// Initial grid `(rows, cols)`: `window.rows` / `window.columns` when the schema has
     /// them (it does not yet: spec gap), else 24x80.
     pub(crate) initial_size: (usize, usize),
@@ -74,6 +82,38 @@ pub(crate) struct Settings {
     pub(crate) input: InputSettings,
     /// `-o key=value` pairs and diagnostics counts, for the startup log line.
     pub(crate) diagnostics: usize,
+}
+
+type Rgb = (u8, u8, u8);
+
+/// Selection foreground (`None`: the cell's own) and background.
+pub(crate) type SelectionColors = (Option<Rgb>, Rgb);
+
+/// The `colors.*` keys the configuration sets (T-10 §7: unset takes the theme).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ColorKeys {
+    pub(crate) fg: Option<Rgb>,
+    pub(crate) bg: Option<Rgb>,
+    pub(crate) cursor: Option<Rgb>,
+    pub(crate) cursor_text: Option<Rgb>,
+    pub(crate) selection_fg: Option<Rgb>,
+    pub(crate) selection_bg: Option<Rgb>,
+    pub(crate) ansi: Option<[Rgb; 16]>,
+}
+
+impl ColorKeys {
+    fn from_config(c: &Config) -> ColorKeys {
+        let col = |k: &str| c.color(k).map(rgb3);
+        ColorKeys {
+            fg: col("colors.foreground"),
+            bg: col("colors.background"),
+            cursor: col("colors.cursor"),
+            cursor_text: col("colors.cursor-text"),
+            selection_fg: col("colors.selection-foreground"),
+            selection_bg: col("colors.selection-background"),
+            ansi: parse_ansi(c.list("colors.palette")),
+        }
+    }
 }
 
 /// The glass keys (T-08 §3-§4, T-09 §5): window material and the interface's own look.
@@ -457,17 +497,6 @@ impl Settings {
             lines: usize::try_from(lines).ok().filter(|n| *n > 0),
         };
         term.cursor = CursorStyle { shape, blink };
-        if let Some(fg) = c.color("colors.foreground") {
-            term.fg = rgb3(fg);
-        }
-        if let Some(bg) = c.color("colors.background") {
-            term.bg = rgb3(bg);
-        }
-        if let Some(cc) = c.color("colors.cursor") {
-            term.cursor_color = rgb3(cc);
-        } else {
-            term.cursor_color = term.fg;
-        }
 
         let env = c
             .get("shell.env")
@@ -494,7 +523,7 @@ impl Settings {
             .map(|f| f as f32);
         let rate = c.int("keyboard.repeat-rate");
         let delay = c.millis("keyboard.repeat-delay");
-        Settings {
+        let mut s = Settings {
             font,
             family_named,
             padding: (px("window.padding-x"), px("window.padding-y")),
@@ -516,7 +545,11 @@ impl Settings {
             echo_window: Duration::from_millis(c.millis("render.echo-window")),
             sync_timeout: Duration::from_millis(c.millis("render.sync-timeout")),
             bell_audible: c.bool("bell.audible"),
-            ansi: parse_ansi(c.list("colors.palette")),
+            ansi: None,
+            cursor_text: None,
+            selection: (None, (0, 0, 0)),
+            color_keys: ColorKeys::from_config(c),
+            theme_system: matches!(c.str("theme"), None | Some("system")),
             initial_size: (
                 initial_dim(c, "window.rows", INITIAL_ROWS),
                 initial_dim(c, "window.columns", INITIAL_COLS),
@@ -525,7 +558,44 @@ impl Settings {
             repeat_delay_ms: u32::try_from(delay).ok().filter(|d| *d > 0),
             input: InputSettings::from_config(c),
             diagnostics: 0,
-        }
+        };
+        // Off Abyss (and until detection answers) the stock dark scheme. HOOK(T-10 §7):
+        // named schemes and `light=… dark=…` pairs (theme files, the portal colour-scheme)
+        // are not loaded yet and also take the stock dark scheme.
+        s.apply_theme(&TermColors::stock(true));
+        s
+    }
+
+    /// Fill every colour the file leaves unset from `t` (T-17 §2, T-10 §7).
+    pub(crate) fn apply_theme(&mut self, t: &TermColors) {
+        let k = self.color_keys;
+        self.term.fg = k.fg.unwrap_or(t.foreground);
+        self.term.bg = k.bg.unwrap_or(t.background);
+        self.term.cursor_color = k.cursor.unwrap_or(t.cursor);
+        let ansi = k.ansi.unwrap_or(t.ansi);
+        self.term.ansi = ansi;
+        self.ansi = Some(ansi);
+        // An explicit background decides light/dark (answers `CSI ? 996 n`).
+        self.term.dark = match k.bg {
+            Some(bg) => {
+                let lum = ec_theme::Rgba::rgb(
+                    (u32::from(bg.0) << 16) | (u32::from(bg.1) << 8) | u32::from(bg.2),
+                )
+                .luminance();
+                lum < ec_theme::SCHEME_LUMINANCE
+            }
+            None => t.dark,
+        };
+        // A colour set by hand keeps its partner from the cell, not from a theme built for
+        // another colour: the theme's text colour is only paired with the theme's own fill.
+        self.cursor_text = k
+            .cursor_text
+            .or_else(|| k.cursor.is_none().then_some(t.cursor_text));
+        let sel_bg = k.selection_bg.unwrap_or(t.selection_background);
+        let sel_fg = k
+            .selection_fg
+            .or_else(|| k.selection_bg.is_none().then_some(t.selection_foreground));
+        self.selection = (sel_fg, sel_bg);
     }
 
     /// The window title for a terminal-set title (`{title}` is the only placeholder here).
@@ -616,7 +686,47 @@ mod tests {
         assert_eq!(s.window_title("x"), "x");
         assert_eq!(s.term.scrollback.lines, None);
         assert_eq!(s.initial_size, (INITIAL_ROWS, INITIAL_COLS));
-        assert_eq!(s.ansi, None);
+        let stock = TermColors::stock(true);
+        assert_eq!(s.ansi, Some(stock.ansi));
+        assert_eq!(s.term.ansi, stock.ansi);
+        assert_eq!(s.term.bg, stock.background);
+        assert_eq!(s.term.cursor_color, stock.cursor);
+        assert!(s.theme_system && s.term.dark);
+    }
+
+    /// T-10 §7: every `colors.*` key the file leaves unset follows the theme; set ones
+    /// stay, and a hand-set fill keeps the cell's own text colour.
+    #[test]
+    fn unset_colours_follow_the_theme() {
+        use apoth_config::Value;
+        use apoth_config::model::Origin;
+        let mut c = Config::defaults();
+        assert!(c.set_at(
+            "colors.background",
+            Value::Color([0xfa, 0xfa, 0xfa, 0xff]),
+            Origin::builtin()
+        ));
+        assert!(c.set_at(
+            "colors.cursor",
+            Value::Color([0xff, 0, 0, 0xff]),
+            Origin::builtin()
+        ));
+        let mut s = Settings::from_config(&c);
+        let light = TermColors::stock(false);
+        s.apply_theme(&light);
+        assert_eq!(s.term.bg, (0xfa, 0xfa, 0xfa));
+        assert_eq!(s.term.fg, light.foreground);
+        assert_eq!(s.term.cursor_color, (0xff, 0, 0));
+        assert_eq!(s.cursor_text, None);
+        assert_eq!(s.ansi, Some(light.ansi));
+        assert_eq!(
+            s.selection,
+            (Some(light.selection_foreground), light.selection_background)
+        );
+        assert!(!s.term.dark, "the explicit light background decides");
+        let mut c = Config::defaults();
+        assert!(c.set_at("theme", Value::Str("my-scheme".into()), Origin::builtin()));
+        assert!(!Settings::from_config(&c).theme_system);
     }
 
     #[test]

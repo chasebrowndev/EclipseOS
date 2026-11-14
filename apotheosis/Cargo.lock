@@ -148,6 +148,12 @@ dependencies = [
 [[package]]
 name = "apoth-eclipse"
 version = "0.1.0"
+dependencies = [
+ "ec-ipc",
+ "ec-theme",
+ "serde_json",
+ "tracing",
+]
 
 [[package]]
 name = "apoth-font"
@@ -288,6 +294,7 @@ dependencies = [
  "apoth-a11y",
  "apoth-action",
  "apoth-config",
+ "apoth-eclipse",
  "apoth-font",
  "apoth-grid",
  "apoth-input",
@@ -728,6 +735,14 @@ checksum = "75b325c5dbd37f80359721ad39aca5a29fb04c89279657cffdda8736d0c0b9d2"
 [[package]]
 name = "ec-config-schema"
 version = "0.2.2"
+
+[[package]]
+name = "ec-ipc"
+version = "0.2.2"
+dependencies = [
+ "libc",
+ "serde_json",
+]
 
 [[package]]
 name = "ec-theme"

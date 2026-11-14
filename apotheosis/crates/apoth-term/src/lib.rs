@@ -39,6 +39,7 @@ use apoth_grid::{Screen, SnapRow, Tag, Wide};
 use apoth_input::InputMirror;
 use apoth_vt::Parser;
 
+pub use color::XTERM_ANSI16;
 pub use config::{CursorStyle, Rgb, TermConfig};
 pub use events::{ClipboardSet, EventSlot, Mark, Progress, ReplyQueue};
 pub use modes::{Access, ModeDef, ModeState};
@@ -230,6 +231,47 @@ impl Term {
     /// Palette entry.
     pub fn palette(&self, i: u8) -> Rgb {
         self.m.palette[usize::from(i)]
+    }
+
+    /// Change the default colours (a theme change, T-17 §2). A colour the running program
+    /// has not changed (it still equals the old default) follows; one it set (OSC 4/10-12)
+    /// keeps its value. When the light/dark class changes and mode 2031 is set, the
+    /// `CSI ? 997 ; 1|2 n` report is queued (T-10 §7).
+    pub fn set_default_colors(
+        &mut self,
+        fg: Rgb,
+        bg: Rgb,
+        cursor: Rgb,
+        ansi: [Rgb; 16],
+        dark: bool,
+    ) {
+        let m = &mut self.m;
+        let c = &m.cfg;
+        if (c.fg, c.bg, c.cursor_color, c.ansi, c.dark) == (fg, bg, cursor, ansi, dark) {
+            return;
+        }
+        let follow = |cur: &mut Rgb, old: Rgb, new: Rgb| {
+            if *cur == old {
+                *cur = new;
+            }
+        };
+        follow(&mut m.fg, m.cfg.fg, fg);
+        follow(&mut m.bg, m.cfg.bg, bg);
+        follow(&mut m.cursor_color, m.cfg.cursor_color, cursor);
+        for (i, new) in ansi.iter().enumerate() {
+            follow(&mut m.palette[i], m.cfg.ansi[i], *new);
+        }
+        let flipped = m.cfg.dark != dark;
+        m.cfg.fg = fg;
+        m.cfg.bg = bg;
+        m.cfg.cursor_color = cursor;
+        m.cfg.ansi = ansi;
+        m.cfg.dark = dark;
+        m.events.colors_changed = true;
+        if flipped && m.mode_on(false, 2031) {
+            let v = if dark { 1 } else { 2 };
+            m.reply_str(format!("\x1b[?997;{v}n"));
+        }
     }
 
     /// Default foreground, background and cursor colours now in force.

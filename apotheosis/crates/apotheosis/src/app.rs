@@ -316,6 +316,8 @@ pub(crate) struct App {
     bar_dismissed: bool,
     /// The compositor's blur path for the window (decides the auto opacity).
     blur: Option<apoth_wl::BlurPath>,
+    /// The Abyss theme's terminal colours while Abyss is detected (T-17 §1, §2).
+    abyss_theme: Option<apoth_eclipse::TermColors>,
     auto_family: AutoFamily,
     /// The focused pane's terminal-set title, to re-render the title template on reload.
     term_title: String,
@@ -458,6 +460,7 @@ pub(crate) fn run(
         bar: None,
         bar_dismissed: false,
         blur: None,
+        abyss_theme: None,
         auto_family: None,
         term_title: String::new(),
         mouse: Mouse::new(),
@@ -480,6 +483,7 @@ pub(crate) fn run(
     };
     app.start_ctl();
     app.start_a11y();
+    app.start_abyss();
     if app.keymap.dropped > 0 {
         tracing::warn!(binds = app.keymap.dropped, "some binds were not understood");
     }
@@ -2866,6 +2870,7 @@ impl App {
     fn on_msg(&mut self, m: MainMsg) {
         match m {
             MainMsg::Reply(id, u) => self.send_unit(id, u),
+            MainMsg::Abyss(a) => self.on_abyss(a),
             MainMsg::Ctl(cid, r) => self.ctl_send(cid, &r),
             MainMsg::A11y(m) => self.on_a11y(m),
             MainMsg::Resized(id, d) => self.on_resized(id, d),
@@ -3181,6 +3186,8 @@ impl App {
         let f = flags_of(a);
         let old_padding = self.settings.padding;
         self.settings = settings;
+        self.settings.apply_theme(&self.theme_colors());
+        self.push_term_colors();
         if f.render {
             self.send_render_update(f.font);
         }
@@ -3225,6 +3232,84 @@ impl App {
             tracing::info!(keys = ?self.restart_keys, "restart required for some changes");
             self.bar_dismissed = false;
             self.refresh_bar();
+        }
+    }
+
+    // ------------------------------------------------------------------ theme (T-17)
+
+    /// Detect Abyss on a thread of its own; it reports here (T-17 §1).
+    fn start_abyss(&mut self) {
+        let tx = self.to_main.clone();
+        if let Err(e) = apoth_eclipse::detect::spawn(move |a| {
+            let _ = tx.send(MainMsg::Abyss(a));
+        }) {
+            tracing::warn!(error = %e, "could not start Abyss detection");
+        }
+    }
+
+    /// The theme colours in force: Abyss's under `theme "system"`, else the stock scheme.
+    fn theme_colors(&self) -> apoth_eclipse::TermColors {
+        match self.abyss_theme {
+            Some(t) if self.settings.theme_system => t,
+            _ => apoth_eclipse::TermColors::stock(true),
+        }
+    }
+
+    /// Abyss came, changed its theme, or went: re-derive, re-check, repaint, and let the
+    /// panes' programs know (mode 2031). A theme that fails the contrast check is refused
+    /// and the colours in force stay.
+    fn on_abyss(&mut self, a: apoth_eclipse::Abyss) {
+        self.abyss_theme = match a {
+            apoth_eclipse::Abyss::Theme(seeds) => {
+                match apoth_eclipse::TermColors::checked(&seeds) {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        tracing::warn!(error = ?e, "Abyss theme refused: it fails the contrast check");
+                        return;
+                    }
+                }
+            }
+            apoth_eclipse::Abyss::Gone => None,
+        };
+        let colours = |s: &crate::settings::Settings| {
+            let t = &s.term;
+            (
+                t.fg,
+                t.bg,
+                t.cursor_color,
+                t.ansi,
+                t.dark,
+                s.cursor_text,
+                s.selection,
+            )
+        };
+        let before = colours(&self.settings);
+        self.settings.apply_theme(&self.theme_colors());
+        if colours(&self.settings) == before {
+            return;
+        }
+        self.push_term_colors();
+        self.send_render_update(false);
+    }
+
+    /// Hand the default colours in force to every running term (OSC queries, OSC 104/110
+    /// resets and the mode-2031 report follow them; T-03), and send any report it queued.
+    fn push_term_colors(&mut self) {
+        let t = &self.settings.term;
+        let (fg, bg, cursor, ansi, dark) = (t.fg, t.bg, t.cursor_color, t.ansi, t.dark);
+        let ids: Vec<PaneKey> = self.panes.keys().copied().collect();
+        for id in ids {
+            let mut units = Vec::new();
+            {
+                let mut term = self.panes[&id].shared.lock();
+                term.set_default_colors(fg, bg, cursor, ansi, dark);
+                while let Some(u) = term.replies().pop() {
+                    units.push(u);
+                }
+            }
+            for u in units {
+                self.send_unit(id, u);
+            }
         }
     }
 

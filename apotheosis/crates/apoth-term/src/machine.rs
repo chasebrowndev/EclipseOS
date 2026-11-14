@@ -240,7 +240,7 @@ impl Machine {
             kitty: KittyState::default(),
             replies: ReplyQueue::default(),
             events: EventSlot::default(),
-            palette: Box::new(color::default_palette()),
+            palette: Box::new(color::default_palette(&cfg.ansi)),
             fg: cfg.fg,
             bg: cfg.bg,
             cursor_color: cfg.cursor_color,

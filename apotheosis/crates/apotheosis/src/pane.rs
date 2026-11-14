@@ -159,6 +159,8 @@ pub(crate) enum MainMsg {
     Copied(crate::view::Copied),
     /// The pane's cursor cell (row, column) changed: the IME cursor rectangle follows it.
     Cursor(PaneKey, (usize, usize)),
+    /// The Abyss detection thread: a theme, or the connection lost (T-17 §1).
+    Abyss(apoth_eclipse::Abyss),
     /// A worker finished a config load (T-10 §4): main diffs and applies it.
     Loaded(
         Box<(

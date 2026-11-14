@@ -15,6 +15,7 @@ workspace = true
 apoth-a11y.workspace = true
 apoth-action.workspace = true
 apoth-config.workspace = true
+apoth-eclipse.workspace = true
 apoth-font.workspace = true
 apoth-grid.workspace = true
 apoth-input.workspace = true

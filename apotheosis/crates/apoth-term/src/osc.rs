@@ -183,7 +183,7 @@ impl Machine {
             StrMode::Palette => self.osc_palette(buf, term),
             StrMode::Dyn(cmd) => self.osc_dynamic(cmd, buf, term),
             StrMode::ResetPalette => {
-                let def = color::default_palette();
+                let def = color::default_palette(&self.cfg.ansi);
                 let s = String::from_utf8_lossy(buf);
                 if s.is_empty() {
                     *self.palette = def;

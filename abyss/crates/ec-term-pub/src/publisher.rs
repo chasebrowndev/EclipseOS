@@ -10,15 +10,21 @@
 //!
 //! # Node model
 //!
-//! - `terminal` root, id [`ROOT_ID`], carrying `ext` `rows`, `cols`,
-//!   `cursor`, `alt_screen`, `echo`.
-//! - One `terminal_line` per **screen row**, id `SLOT_BASE + row`. A line node
+//! Ids come from the publisher's [`IdRange`] (ADR 0114): a range drawn from
+//! the surface's [`crate::NodeIds`], disjoint from every other publisher's
+//! and the caller's own nodes, never reused.
+//!
+//! - `terminal` node, the range's first id, attached under the parent the
+//!   caller names (a `tab`, ADR 0114; T-17 §4), carrying `ext` `rows`,
+//!   `cols`, `cursor`, `alt_screen`, `echo`.
+//! - One `terminal_line` per **screen row**, the next [`MAX_ROWS`] ids. A line node
 //!   is a row slot, so a scrolling log rewrites values (a `value_rev` bump)
 //!   and never adds or removes nodes: P-04 §7 "a scrolling log does not
 //!   invalidate node ids", P-07 §2 "value text change → value_rev only".
-//! - One `group` per OSC 133 command block, ids from [`GROUP_BASE`], never
-//!   reused. Each screen row is a child of the block that owns its line, or
-//!   of the root. Rows move between parents only when a block boundary
+//! - One `group` per OSC 133 command block, ids from the rest of the range,
+//!   never reused (once the range is spent, new blocks go untracked). Each
+//!   screen row is a child of the block that owns its line, or of the
+//!   `terminal` node. Rows move between parents only when a block boundary
 //!   crosses the screen, so `yes` in one command bumps no generation after
 //!   the first screenful.
 //!
@@ -32,17 +38,11 @@
 //! dropped: the next due publish diffs the whole model.
 
 use std::collections::VecDeque;
-use std::ffi::CStr;
 use std::fmt::{self, Write as _};
 
+use crate::ids::IdRange;
 use crate::semantic::{OpKind, Role};
 
-/// Root `terminal` node id.
-pub const ROOT_ID: u32 = 1;
-/// Screen row `r` is node `SLOT_BASE + r`.
-pub const SLOT_BASE: u32 = 0x100;
-/// First command-block `group` id. Ids increase and are never reused.
-pub const GROUP_BASE: u32 = 0x1_0000;
 /// Largest accepted grid.
 pub const MAX_ROWS: u16 = 1024;
 pub const MAX_COLS: u16 = 4096;
@@ -103,7 +103,8 @@ impl Config {
 /// A rejected call. Nothing is mutated when one is returned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// Row, column or grid size outside the accepted range.
+    /// Row, column or grid size outside the accepted range, or an id range
+    /// too small for the `terminal` node and its [`MAX_ROWS`] row slots.
     Range,
 }
 
@@ -123,7 +124,7 @@ pub struct Op {
     pub sel_start: i32,
     pub sel_end: i32,
     /// `set_ext` key (bare: the `ext.` namespace is the request itself).
-    pub key: Option<&'static CStr>,
+    pub key: Option<&'static str>,
     str_off: u32,
     str_len: u32,
     has_str: bool,
@@ -166,17 +167,13 @@ impl<'a> Batch<'a> {
 
     /// The string argument of `op` (`set_value_text` text, `set_ext` value).
     pub fn str_of(&self, op: &Op) -> Option<&'a str> {
-        self.bytes_with_nul(op)
-            .map(|b| std::str::from_utf8(&b[..b.len() - 1]).unwrap_or(""))
-    }
-
-    /// The string argument including its NUL terminator.
-    pub(crate) fn bytes_with_nul(&self, op: &Op) -> Option<&'a [u8]> {
         if !op.has_str {
             return None;
         }
         let start = op.str_off as usize;
-        self.arena.get(start..start + op.str_len as usize + 1)
+        self.arena
+            .get(start..start + op.str_len as usize)
+            .map(|b| std::str::from_utf8(b).unwrap_or(""))
     }
 }
 
@@ -316,14 +313,13 @@ impl Out {
         let start = self.arena.len();
         let _ = ArenaWriter(&mut self.arena).write_fmt(args);
         let len = self.arena.len() - start;
-        self.arena.push(0);
         op.str_off = start as u32;
         op.str_len = len as u32;
         op.has_str = true;
         self.op(op);
     }
 
-    fn ext(&mut self, node: u32, key: &'static CStr, args: fmt::Arguments<'_>) {
+    fn ext(&mut self, node: u32, key: &'static str, args: fmt::Arguments<'_>) {
         let mut op = Op::new(OpKind::SetExt, node);
         op.key = Some(key);
         self.with_str(op, args);
@@ -342,10 +338,6 @@ fn bool_str(b: bool) -> &'static str {
     } else {
         "false"
     }
-}
-
-fn slot_id(row: usize) -> u32 {
-    SLOT_BASE + row as u32
 }
 
 /// Cut `s` to at most `max` bytes on a char boundary. True if anything went.
@@ -407,9 +399,17 @@ fn reconcile(out: &mut Out, parent: u32, desired: &[u32], published: &mut Vec<u3
     !lost_only
 }
 
-/// The publisher for one terminal toplevel.
+/// The publisher for one terminal (one pane of a surface).
 pub struct Publisher {
     cfg: Config,
+    ids: IdRange,
+    /// The `terminal` node: the range's first id.
+    term: u32,
+    /// Screen row `r` is node `slot_base + r`.
+    slot_base: u32,
+    /// The node the `terminal` attaches under, and its index there.
+    parent: u32,
+    index: u32,
     rows: u16,
     cols: u16,
     /// `[primary, alternate]`.
@@ -453,18 +453,37 @@ pub struct Publisher {
 }
 
 impl Publisher {
-    /// A publisher for a `rows`×`cols` grid. The first poll publishes the
-    /// initial tree.
-    pub fn new(cfg: Config, rows: u16, cols: u16) -> Result<Self, Error> {
+    /// A publisher for a `rows`×`cols` grid whose nodes are `ids` and whose
+    /// `terminal` node is added under `parent` at `index` (ADR 0114). The
+    /// first poll publishes the initial subtree.
+    pub fn new(
+        cfg: Config,
+        ids: IdRange,
+        parent: u32,
+        index: u32,
+        rows: u16,
+        cols: u16,
+    ) -> Result<Self, Error> {
         if !(1..=MAX_ROWS).contains(&rows) || !(1..=MAX_COLS).contains(&cols) {
             return Err(Error::Range);
         }
+        let slots = 1 + u32::from(MAX_ROWS);
+        if ids.len() < slots || parent == 0 || ids.contains(parent) {
+            return Err(Error::Range);
+        }
+        let term = ids.start();
+        let first_group = term + slots;
         let screen = || Screen {
             lines: (0..rows).map(|_| String::new()).collect(),
             top: 0,
         };
         Ok(Self {
             cfg: cfg.clamped(),
+            ids,
+            term,
+            slot_base: term + 1,
+            parent,
+            index,
             rows,
             cols,
             screens: [screen(), screen()],
@@ -476,7 +495,7 @@ impl Publisher {
             echo_on_since: None,
             blocks: VecDeque::new(),
             dead: Vec::new(),
-            next_group: Some(GROUP_BASE),
+            next_group: ids.contains(first_group).then_some(first_group),
             root_published: false,
             root_children: Vec::new(),
             slots: Vec::new(),
@@ -499,6 +518,16 @@ impl Publisher {
             scratch_keys: Vec::new(),
             scratch_ids: Vec::new(),
         })
+    }
+
+    /// The `terminal` node's id (the caller moves or removes it).
+    pub fn terminal_id(&self) -> u32 {
+        self.term
+    }
+
+    /// The ids this publisher owns.
+    pub fn ids(&self) -> IdRange {
+        self.ids
     }
 
     fn screen(&mut self) -> &mut Screen {
@@ -662,7 +691,7 @@ impl Publisher {
         let Some(id) = self.next_group else {
             return;
         };
-        self.next_group = id.checked_add(1);
+        self.next_group = id.checked_add(1).filter(|&n| self.ids.contains(n));
         // Close the previous block above the new prompt; a block that
         // started at or below it was overwritten (`clear`) and goes.
         while let Some(prev) = self.blocks.back_mut() {
@@ -850,8 +879,9 @@ impl Publisher {
         if self.root_published {
             return false;
         }
-        self.out.op(Op::new(OpKind::SetRoot, ROOT_ID));
-        self.out.role(ROOT_ID, Role::Terminal);
+        let (term, parent, index) = (self.term, self.parent, self.index as usize);
+        self.out.tree(OpKind::AddNode, term, parent, index);
+        self.out.role(term, Role::Terminal);
         self.root_published = true;
         true
     }
@@ -861,7 +891,7 @@ impl Publisher {
     fn build_raise(&mut self) -> u32 {
         self.out.clear();
         let structural = self.publish_root();
-        self.out.ext(ROOT_ID, c"echo", format_args!("false"));
+        self.out.ext(self.term, "echo", format_args!("false"));
         self.pub_echo = Some(false);
         if structural {
             BATCH_URGENT | BATCH_STRUCTURAL
@@ -874,6 +904,9 @@ impl Publisher {
     fn build(&mut self) -> u32 {
         self.out.clear();
         let mut structural = self.publish_root();
+        let root = self.term;
+        let slot_base = self.slot_base;
+        let slot_id = |row: usize| slot_base + row as u32;
         let rows = usize::from(self.rows);
         let top = self.screens[0].top;
         let cursor_line = top + u64::from(self.cursor.0);
@@ -897,7 +930,7 @@ impl Publisher {
             let slot = self.slots.pop().expect("non-empty");
             let id = slot_id(self.slots.len());
             self.out.tree(OpKind::RemoveNode, id, 0, 0);
-            let list = if slot.pub_parent == ROOT_ID {
+            let list = if slot.pub_parent == root {
                 Some(&mut self.root_children)
             } else {
                 self.blocks
@@ -914,34 +947,33 @@ impl Publisher {
         while self.slots.len() < rows {
             let row = self.slots.len();
             let id = slot_id(row);
-            self.out
-                .tree(OpKind::AddNode, id, ROOT_ID, self.root_children.len());
+            self.out.tree(OpKind::AddNode, id, root, self.root_children.len());
             self.out.role(id, Role::TerminalLine);
-            self.out.ext(id, c"row", format_args!("{row}"));
-            self.out.ext(id, c"scrollback", format_args!("false"));
-            self.out.ext(id, c"is_prompt", format_args!("false"));
+            self.out.ext(id, "row", format_args!("{row}"));
+            self.out.ext(id, "scrollback", format_args!("false"));
+            self.out.ext(id, "is_prompt", format_args!("false"));
             self.root_children.push(id);
             self.slots.push(Slot {
                 pub_text: String::new(),
                 pub_cursor: -1,
-                pub_parent: ROOT_ID,
+                pub_parent: root,
                 pub_is_prompt: false,
             });
             structural = true;
         }
         if self.pub_rows != self.rows {
-            self.out.ext(ROOT_ID, c"rows", format_args!("{}", self.rows));
+            self.out.ext(root, "rows", format_args!("{}", self.rows));
             self.pub_rows = self.rows;
         }
         if self.pub_cols != self.cols {
-            self.out.ext(ROOT_ID, c"cols", format_args!("{}", self.cols));
+            self.out.ext(root, "cols", format_args!("{}", self.cols));
             self.pub_cols = self.cols;
         }
 
         // New command blocks.
         for b in self.blocks.iter_mut().filter(|b| !b.published) {
             self.out
-                .tree(OpKind::AddNode, b.id, ROOT_ID, self.root_children.len());
+                .tree(OpKind::AddNode, b.id, root, self.root_children.len());
             self.out.role(b.id, Role::Group);
             self.root_children.push(b.id);
             b.published = true;
@@ -952,14 +984,14 @@ impl Publisher {
         self.scratch_owner.clear();
         for r in 0..rows {
             let owner = if self.alt {
-                ROOT_ID
+                root
             } else {
                 let line = top + r as u64;
                 self.blocks
                     .iter()
                     .rev()
                     .find(|b| b.covers(line, cursor_line))
-                    .map_or(ROOT_ID, |b| b.id)
+                    .map_or(root, |b| b.id)
             };
             self.scratch_owner.push(owner);
         }
@@ -971,7 +1003,7 @@ impl Publisher {
             self.scratch_keys.push((line, 0, b.id));
         }
         for (r, &owner) in self.scratch_owner.iter().enumerate() {
-            if owner == ROOT_ID {
+            if owner == root {
                 let line = if self.alt { 1 } else { top + r as u64 };
                 self.scratch_keys.push((line, 1, slot_id(r)));
             }
@@ -979,7 +1011,7 @@ impl Publisher {
         self.scratch_keys.sort_unstable();
         self.scratch_ids.clear();
         self.scratch_ids.extend(self.scratch_keys.iter().map(|k| k.2));
-        structural |= reconcile(&mut self.out, ROOT_ID, &self.scratch_ids, &mut self.root_children);
+        structural |= reconcile(&mut self.out, root, &self.scratch_ids, &mut self.root_children);
 
         for b in &mut self.blocks {
             self.scratch_ids.clear();
@@ -1009,26 +1041,26 @@ impl Publisher {
             let is_prompt = b.is_prompt();
             if b.pub_is_prompt != Some(is_prompt) {
                 self.out
-                    .ext(b.id, c"is_prompt", format_args!("{}", bool_str(is_prompt)));
+                    .ext(b.id, "is_prompt", format_args!("{}", bool_str(is_prompt)));
                 b.pub_is_prompt = Some(is_prompt);
             }
             if b.command_set && !b.pub_command {
-                self.out.ext(b.id, c"command", format_args!("{}", b.command));
+                self.out.ext(b.id, "command", format_args!("{}", b.command));
                 if b.command_truncated {
-                    self.out.ext(b.id, c"command_truncated", format_args!("true"));
+                    self.out.ext(b.id, "command_truncated", format_args!("true"));
                 }
                 b.pub_command = true;
             }
             if let Some(t) = b.started_ns.filter(|_| !b.pub_started) {
-                self.out.ext(b.id, c"started", format_args!("{t}"));
+                self.out.ext(b.id, "started", format_args!("{t}"));
                 b.pub_started = true;
             }
             if let Some(t) = b.ended_ns.filter(|_| !b.pub_ended) {
-                self.out.ext(b.id, c"ended", format_args!("{t}"));
+                self.out.ext(b.id, "ended", format_args!("{t}"));
                 b.pub_ended = true;
             }
             if let Some(code) = b.exit_code.filter(|_| !b.pub_exit) {
-                self.out.ext(b.id, c"exit_code", format_args!("{code}"));
+                self.out.ext(b.id, "exit_code", format_args!("{code}"));
                 b.pub_exit = true;
             }
         }
@@ -1037,10 +1069,10 @@ impl Publisher {
         let screen = &self.screens[usize::from(self.alt)];
         for (r, slot) in self.slots.iter_mut().enumerate() {
             let owner = self.scratch_owner[r];
-            let is_prompt = owner != ROOT_ID && self.blocks.iter().any(|b| b.id == owner && b.is_prompt());
+            let is_prompt = owner != root && self.blocks.iter().any(|b| b.id == owner && b.is_prompt());
             if slot.pub_is_prompt != is_prompt {
                 self.out
-                    .ext(slot_id(r), c"is_prompt", format_args!("{}", bool_str(is_prompt)));
+                    .ext(slot_id(r), "is_prompt", format_args!("{}", bool_str(is_prompt)));
                 slot.pub_is_prompt = is_prompt;
             }
             let text = &screen.lines[r];
@@ -1060,21 +1092,18 @@ impl Publisher {
         // Root fields.
         if self.pub_cursor != Some(self.cursor) {
             let (row, col) = self.cursor;
-            self.out.ext(
-                ROOT_ID,
-                c"cursor",
-                format_args!("{{\"row\":{row},\"col\":{col}}}"),
-            );
+            self.out
+                .ext(root, "cursor", format_args!("{{\"row\":{row},\"col\":{col}}}"));
             self.pub_cursor = Some(self.cursor);
         }
         if self.pub_alt != Some(self.alt) {
             self.out
-                .ext(ROOT_ID, c"alt_screen", format_args!("{}", bool_str(self.alt)));
+                .ext(root, "alt_screen", format_args!("{}", bool_str(self.alt)));
             self.pub_alt = Some(self.alt);
         }
         if self.pub_echo != Some(self.echo) {
             self.out
-                .ext(ROOT_ID, c"echo", format_args!("{}", bool_str(self.echo)));
+                .ext(root, "echo", format_args!("{}", bool_str(self.echo)));
             self.pub_echo = Some(self.echo);
         }
 
@@ -1089,6 +1118,21 @@ impl Publisher {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ids::{NodeIds, PANE_IDS};
+
+    fn publisher(rows: u16, cols: u16) -> Publisher {
+        let mut ids = NodeIds::new();
+        let tab = ids.alloc().unwrap();
+        Publisher::new(
+            Config::default(),
+            ids.range(PANE_IDS).unwrap(),
+            tab,
+            0,
+            rows,
+            cols,
+        )
+        .unwrap()
+    }
 
     fn kinds(p: &mut Publisher, now: u64) -> Option<Vec<OpKind>> {
         p.poll(now).map(|b| b.ops().iter().map(|o| o.kind).collect())
@@ -1096,13 +1140,18 @@ mod tests {
 
     #[test]
     fn first_poll_publishes_the_tree() {
-        let mut p = Publisher::new(Config::default(), 3, 10).unwrap();
+        let mut p = publisher(3, 10);
         let b = p.poll(0).expect("initial publish");
-        assert_eq!(b.ops()[0].kind, OpKind::SetRoot);
+        assert_eq!(b.ops()[0].kind, OpKind::AddNode);
+        assert_eq!(
+            (b.ops()[0].node, b.ops()[0].parent),
+            (2, 1),
+            "terminal under its tab"
+        );
         assert_eq!(b.ops().last().unwrap().kind, OpKind::Commit);
         assert!(b.flags & BATCH_STRUCTURAL != 0);
         let adds = b.ops().iter().filter(|o| o.kind == OpKind::AddNode).count();
-        assert_eq!(adds, 3);
+        assert_eq!(adds, 4, "the terminal and three rows");
         assert!(p.poll(1).is_none());
     }
 
@@ -1117,7 +1166,7 @@ mod tests {
 
     #[test]
     fn output_is_limited_to_5hz() {
-        let mut p = Publisher::new(Config::default(), 2, 10).unwrap();
+        let mut p = publisher(2, 10);
         p.poll(0).unwrap();
         // Output keeps arriving, so idle never fires: only the 5 Hz limit.
         for (t, text) in [(50, &b"x"[..]), (120, b"xy"), (190, b"xyz")] {
@@ -1146,8 +1195,38 @@ mod tests {
     }
 
     #[test]
+    fn ids_must_hold_the_rows_and_stay_off_the_parent() {
+        let mut ids = NodeIds::new();
+        let tab = ids.alloc().unwrap();
+        let small = ids.range(u32::from(MAX_ROWS)).unwrap();
+        assert_eq!(
+            Publisher::new(Config::default(), small, tab, 0, 3, 10).err(),
+            Some(Error::Range)
+        );
+        let r = ids.range(PANE_IDS).unwrap();
+        assert_eq!(
+            Publisher::new(Config::default(), r, r.start(), 0, 3, 10).err(),
+            Some(Error::Range)
+        );
+        assert_eq!(
+            Publisher::new(Config::default(), r, 0, 0, 3, 10).err(),
+            Some(Error::Range)
+        );
+        // Exactly the terminal and its rows: publishes, but tracks no blocks.
+        let exact = ids.range(1 + u32::from(MAX_ROWS)).unwrap();
+        let mut p = Publisher::new(Config::default(), exact, tab, 0, 3, 10).unwrap();
+        p.osc133(b"A", 0);
+        assert!(p.blocks.is_empty());
+        let b = p.poll(0).unwrap();
+        assert!(b
+            .ops()
+            .iter()
+            .all(|o| o.kind == OpKind::Commit || exact.contains(o.node)));
+    }
+
+    #[test]
     fn prompt_redraw_does_not_open_a_block() {
-        let mut p = Publisher::new(Config::default(), 4, 20).unwrap();
+        let mut p = publisher(4, 20);
         p.osc133(b"A", 0);
         p.osc133(b"133;A;aid=1", 0);
         assert_eq!(p.blocks.len(), 1);
@@ -1155,7 +1234,7 @@ mod tests {
 
     #[test]
     fn malformed_osc133_is_ignored() {
-        let mut p = Publisher::new(Config::default(), 4, 20).unwrap();
+        let mut p = publisher(4, 20);
         for junk in [&b""[..], b"133;", b"Ax", b"Z", b"D;notanumber", b"\xff\xfe"] {
             p.osc133(junk, 0);
         }

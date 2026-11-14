@@ -3,8 +3,7 @@
 //!
 //! COMP-09 passes `role` as "uint — enum per P-01 §1.1" without assigning
 //! numbers. The codes here are the P-01 §1.1 listing order, starting at 0.
-//! This crate is the one place that numbering is written down (ADR 0034:
-//! protocol-shaped things live here, not in C).
+//! Publishers take the numbering from here, never write it themselves.
 
 /// P-01 §1.1 role, wire code = discriminant.
 #[repr(u32)]
@@ -71,7 +70,7 @@ pub enum Role {
 }
 
 /// COMP-09 §2 requests, one variant per request this publisher emits.
-/// Wire code = discriminant; the C header mirrors these as `ECPUB_OP_*`.
+/// Wire code = discriminant.
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpKind {

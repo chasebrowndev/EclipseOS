@@ -50,6 +50,8 @@ pub struct TermConfig {
     pub bg: Rgb,
     /// Cursor colour.
     pub cursor_color: Rgb,
+    /// ANSI 0-15 at power-on and after OSC 104 (the theme's, T-17 §2; xterm's by default).
+    pub ansi: [Rgb; 16],
     /// Dark colour scheme (answers `CSI ? 996 n`).
     pub dark: bool,
     /// Cursor style at power-on.
@@ -82,6 +84,7 @@ impl Default for TermConfig {
             fg: (0xe5, 0xe5, 0xe5),
             bg: (0, 0, 0),
             cursor_color: (0xe5, 0xe5, 0xe5),
+            ansi: crate::color::XTERM_ANSI16,
             dark: true,
             cursor: CursorStyle {
                 shape: 0,

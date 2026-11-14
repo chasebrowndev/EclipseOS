@@ -3,7 +3,8 @@
 
 use crate::config::Rgb;
 
-const ANSI16: [Rgb; 16] = [
+/// xterm's 16 ANSI colours: the `TermConfig::ansi` default when no theme supplies them.
+pub const XTERM_ANSI16: [Rgb; 16] = [
     (0x00, 0x00, 0x00),
     (0xcd, 0x00, 0x00),
     (0x00, 0xcd, 0x00),
@@ -22,10 +23,10 @@ const ANSI16: [Rgb; 16] = [
     (0xff, 0xff, 0xff),
 ];
 
-/// The default 256-colour palette (16 ANSI, 6x6x6 cube, 24 greys).
-pub(crate) fn default_palette() -> [Rgb; 256] {
+/// The default 256-colour palette: `ansi16`, then the 6x6x6 cube and 24 greys.
+pub(crate) fn default_palette(ansi16: &[Rgb; 16]) -> [Rgb; 256] {
     let mut p = [(0u8, 0u8, 0u8); 256];
-    p[..16].copy_from_slice(&ANSI16);
+    p[..16].copy_from_slice(ansi16);
     let lvl = [0u8, 0x5f, 0x87, 0xaf, 0xd7, 0xff];
     for i in 0..216usize {
         p[16 + i] = (lvl[i / 36], lvl[i / 6 % 6], lvl[i % 6]);
@@ -105,7 +106,8 @@ mod tests {
 
     #[test]
     fn palette_shape() {
-        let p = default_palette();
+        let p = default_palette(&XTERM_ANSI16);
+        assert_eq!(p[1], (0xcd, 0, 0));
         assert_eq!(p[16], (0, 0, 0));
         assert_eq!(p[231], (255, 255, 255));
         assert_eq!(p[232], (8, 8, 8));

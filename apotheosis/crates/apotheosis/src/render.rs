@@ -45,6 +45,10 @@ pub(crate) struct ColorCfg {
     pub(crate) bg: (u8, u8, u8),
     pub(crate) cursor: (u8, u8, u8),
     pub(crate) ansi: Option<[(u8, u8, u8); 16]>,
+    /// Glyph under a block cursor; `None` uses the cell background.
+    pub(crate) cursor_text: Option<(u8, u8, u8)>,
+    /// Selection foreground (`None`: the cell's own) and background.
+    pub(crate) selection: crate::settings::SelectionColors,
 }
 
 /// The colours the `Term` was created with: a value equal to these has not been changed by the
@@ -113,6 +117,8 @@ impl RenderSettings {
                 bg: s.term.bg,
                 cursor: s.term.cursor_color,
                 ansi: s.ansi,
+                cursor_text: s.cursor_text,
+                selection: s.selection,
             },
             padding: s.padding,
             opacity: crate::settings::effective_opacity(s.opacity, &s.glass, blur),
@@ -323,6 +329,10 @@ impl PaneR {
         self.pal.fg = Rgb(fg.0, fg.1, fg.2);
         self.pal.bg = Rgb(bg.0, bg.1, bg.2);
         self.pal.cursor = Some(Rgb(cc.0, cc.1, cc.2));
+        let rgb = |c: (u8, u8, u8)| Rgb(c.0, c.1, c.2);
+        self.pal.cursor_text = rs.colors.cursor_text.map(rgb);
+        self.pal.selection_fg = rs.colors.selection.0.map(rgb);
+        self.pal.selection_bg = rgb(rs.colors.selection.1);
         // The frame draws the live snapshot, or the composed one while scrolled back or with
         // a preedit. Highlights are baked into rows, so rows whose highlight changed are
         // rebuilt, and a region scroll under a highlight is a full redraw.
