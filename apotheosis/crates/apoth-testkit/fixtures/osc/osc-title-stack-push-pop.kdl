@@ -1,0 +1,13 @@
+fixture "osc-title-stack-push-pop" {
+  covers "T03-TITLE-STACK" "VTCORE-22" "VTCORE-28"
+  review "popping the title stack is assumed to emit a title event; T-03 does not say"
+  size rows=3 cols=20
+  feed #"\e]2;one\a\e[22t\e]2;two\a"#
+  checkpoint "two" {
+    events "title:two"
+  }
+  feed #"\e[23t"#
+  checkpoint "one" {
+    events "title:one"
+  }
+}

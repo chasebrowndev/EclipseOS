@@ -1,0 +1,10 @@
+fixture "edit-irm-insert" {
+  desc "IRM: printing inserts and pushes cells off the right edge"
+  covers "T03-IRM"
+  size rows=2 cols=6
+  feed #"ABCDEF\e[1;3H\e[4hXY"#
+  grid {
+    row "ABXYCD"
+  }
+  cursor row=0 col=4
+}

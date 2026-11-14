@@ -1,0 +1,10 @@
+fixture "reports-xtwinops-window-ops-ignored" {
+  desc "window-manipulating operations are ignored"
+  covers "T03-XTWINOPS"
+  size rows=5 cols=10
+  feed #"\e[1t\e[2t\e[3;10;10t\e[4;100;100t\e[8;50;50t\e[9;1t\e[10;1t\e[5t\e[6tX"#
+  grid {
+    row "X"
+  }
+  replies
+}

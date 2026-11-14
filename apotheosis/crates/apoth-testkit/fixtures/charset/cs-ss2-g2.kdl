@@ -1,0 +1,9 @@
+fixture "cs-ss2-g2" {
+  desc "cs ss2 g2 (migrated from the apoth-term corpus)"
+  covers "T03-CHARSET"
+  size rows=1 cols=4
+  feed #"\e*0\eNqq"#
+  grid {
+    row "─q"
+  }
+}

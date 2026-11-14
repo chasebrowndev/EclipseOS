@@ -1,0 +1,10 @@
+fixture "osc52-invalid-base64-dropped" {
+  covers "T03-OSC52"
+  review "invalid base64 is assumed to drop the write silently; the spec gap is noted in the M9 report"
+  size rows=3 cols=20
+  feed #"\e]52;c;!!!!\aX"#
+  grid {
+    row "X"
+  }
+  events
+}

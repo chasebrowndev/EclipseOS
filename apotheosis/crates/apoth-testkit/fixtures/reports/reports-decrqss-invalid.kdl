@@ -1,0 +1,8 @@
+fixture "reports-decrqss-invalid" {
+  desc "an unknown request gets DCS 0 $ r and never echoes the request (T-18 section 2)"
+  covers "T03-DECRQSS"
+  size rows=5 cols=10
+  feed #"\eP$qzzz\e\\\eP$qx\e\\"#
+  grid
+  replies #"\eP0$r\e\\\eP0$r\e\\"#
+}

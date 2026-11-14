@@ -1,0 +1,11 @@
+fixture "resize-tab-stops-extend" {
+  covers "T03-RESIZE" "T03-HTS-TBC"
+  review "default tab stops beyond the old width after a grow are xterm behaviour; T-03 does not say"
+  size rows=2 cols=10
+  resize rows=2 cols=20
+  feed #"\t\tX"#
+  grid {
+    row "                X"
+  }
+  cursor row=0 col=17
+}

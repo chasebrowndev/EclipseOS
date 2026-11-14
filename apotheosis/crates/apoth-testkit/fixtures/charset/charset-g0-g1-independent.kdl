@@ -1,0 +1,9 @@
+fixture "charset-g0-g1-independent" {
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e(0\e)B\x0eq\x0fq"#
+  grid {
+    row "q─"
+  }
+  cursor row=0 col=2
+}

@@ -1,0 +1,1 @@
+status:!0 and duration:>=60s and not (state:focused or title:~"^vim\\b")

@@ -1,0 +1,7 @@
+fixture "edit-su-cursor-unmoved" {
+  desc "edit su cursor unmoved (migrated from the apoth-term corpus)"
+  covers "T03-SU-SD"
+  size rows=3 cols=3
+  feed #"a\r\nb\e[2;2H\e[S"#
+  cursor row=1 col=1
+}

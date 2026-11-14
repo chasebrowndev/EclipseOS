@@ -1,0 +1,10 @@
+fixture "esc-nel-at-bottom" {
+  desc "esc nel at bottom (migrated from the apoth-term corpus)"
+  covers "T03-IND-NEL-RI"
+  size rows=2 cols=2
+  feed #"a\r\nb\eEc"#
+  grid {
+    row "b"
+    row "c"
+  }
+}

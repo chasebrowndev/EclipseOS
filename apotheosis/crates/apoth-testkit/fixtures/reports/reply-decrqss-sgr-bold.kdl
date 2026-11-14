@@ -1,0 +1,7 @@
+fixture "reply-decrqss-sgr-bold" {
+  desc "reply decrqss sgr bold (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=2 cols=4
+  feed #"\e[1m\eP$qm\e\\"#
+  replies #"\eP1$r0;1m\e\\"#
+}

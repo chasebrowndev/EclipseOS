@@ -1,0 +1,7 @@
+fixture "sync-ris-releases" {
+  covers "T03-SYNC-2026" "VTCORE-17" "T03-RIS"
+  size rows=3 cols=10
+  feed #"\e[?2026h\ec"#
+  grid
+  hold #false
+}

@@ -1,0 +1,13 @@
+fixture "sgr-bright-fg-bg" {
+  covers "T03-SGR-BASIC" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[90mA\e[97mB\e[100mC\e[107mD"#
+  grid {
+    row "ABCD"
+  }
+  cursor row=0 col=4
+  cell row=0 col=0 ch="A" fg="p8"
+  cell row=0 col=1 ch="B" fg="p15"
+  cell row=0 col=2 ch="C" bg="p8"
+  cell row=0 col=3 ch="D" bg="p15"
+}

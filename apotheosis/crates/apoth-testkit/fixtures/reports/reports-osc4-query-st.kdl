@@ -1,0 +1,9 @@
+fixture "reports-osc4-query-st" {
+  desc "an ST-terminated query gets an ST-terminated reply"
+  covers "T03-OSC-COLOR" "T03-REPLY-TERMINATOR" "VTCORE-26" "VTCORE-27"
+  review "see reports-osc4-query-bel"
+  size rows=5 cols=10
+  feed #"\e]4;1;rgb:12/34/56\a\e]4;1;?\e\\"#
+  grid
+  replies #"\e]4;1;rgb:1212/3434/5656\e\\"#
+}

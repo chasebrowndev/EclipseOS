@@ -1,0 +1,12 @@
+block
+  RectInstance { x: 16, y: 0, w: 8, h: 16, color: [229, 229, 229, 255] }
+  GlyphInstance { cell: [2, 0], offset: [1, 2], atlas_xy: [14, 0], size: [6, 10], page: 0, flags: 4, color: [0, 0, 0, 255] }
+beam
+  RectInstance { x: 16, y: 0, w: 2, h: 16, color: [229, 229, 229, 255] }
+underline
+  RectInstance { x: 16, y: 14, w: 8, h: 2, color: [229, 229, 229, 255] }
+hollow
+  RectInstance { x: 16, y: 0, w: 8, h: 2, color: [229, 229, 229, 255] }
+  RectInstance { x: 16, y: 14, w: 8, h: 2, color: [229, 229, 229, 255] }
+  RectInstance { x: 16, y: 2, w: 2, h: 12, color: [229, 229, 229, 255] }
+  RectInstance { x: 22, y: 2, w: 2, h: 12, color: [229, 229, 229, 255] }

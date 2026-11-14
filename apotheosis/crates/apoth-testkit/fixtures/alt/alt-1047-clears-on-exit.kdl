@@ -1,0 +1,9 @@
+fixture "alt-1047-clears-on-exit" {
+  desc "1047 clears the alt screen when leaving it"
+  covers "T03-ALTSCREEN"
+  size rows=4 cols=6
+  feed #"\e[?1047hX\e[?1047l\e[?1047h"#
+  grid
+  cursor row=0 col=1
+  alt #true
+}

@@ -1,0 +1,7 @@
+fixture "sgr-fg-bright" {
+  desc "sgr fg bright (migrated from the apoth-term corpus)"
+  covers "T03-SGR-BASIC"
+  size rows=1 cols=4
+  feed #"\e[91mA"#
+  cell row=0 col=0 fg="p9"
+}

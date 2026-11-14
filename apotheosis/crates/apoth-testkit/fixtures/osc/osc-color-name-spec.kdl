@@ -1,0 +1,10 @@
+fixture "osc-color-name-spec" {
+  requires "x11-color-names"
+  desc "colour set by X11 name"
+  covers "T03-OSC-COLOR" "VTCORE-27"
+  review "the name table (red = ff0000) is the X11 one; T-03 says 'by name or rgb spec' only"
+  size rows=3 cols=20
+  feed #"\e]10;red\a\e]10;?\a"#
+  grid
+  replies #"\e]10;rgb:ffff/0000/0000\a"#
+}
