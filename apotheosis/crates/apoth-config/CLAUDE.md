@@ -7,7 +7,7 @@ outside the `Fs` trait (`RealFs` / `MemFs`), no logging of values.
 - `rows.rs`: the one `rows!` table that generates `TABLE` and `META` in the same order.
 - `types.rs`, `schema.rs`, `meta.rs`: key types, lookups, presentation rows.
 - `load.rs` + `collections.rs`: layers 1-8, includes (depth cap 8, cycles), tolerant parse.
-- `edit.rs`: lossless `Editor` (kdl 6), write-target rule, atomic write, `SelfWrites`.
+- `edit.rs`: `Editor`: byte-range splices on the original text (kdl 6 only locates spans; unedited bytes stay identical), write-target rule, atomic write, `SelfWrites`.
 - `diff.rs`: key and collection diff, strictest reload class.
 - `reload.rs`: watcher-agnostic `Reloader` (diff + affected `Subsystem`s, last-good on parse failure, error-bar diagnostics, watch dirs, own-write check).
 - `import.rs`: `import_foot` (foot.ini -> KDL + per-line report: mapped / approximate / unmapped).

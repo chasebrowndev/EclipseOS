@@ -9,6 +9,7 @@ use crate::schema::{self, TABLE};
 use crate::types::{Key, Value};
 use crate::value::{kdl_str, parse_key_value, render_node};
 use kdl::{KdlDocument, KdlNode};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -93,211 +94,355 @@ impl NodeSel {
             n.entry(k.as_str()).and_then(|e| e.value().as_string()) == Some(v.as_str())
         })
     }
-
-    fn text(&self, indent: usize) -> String {
-        let pad = " ".repeat(indent);
-        let mut s = format!("{pad}{}", kdl_str(&self.name));
-        if let Some(a) = &self.arg {
-            s.push(' ');
-            s.push_str(&kdl_str(a));
-        }
-        for (k, v) in &self.props {
-            s.push_str(&format!(" {}={}", kdl_str(k), kdl_str(v)));
-        }
-        s.push_str(" {\n");
-        s.push_str(&pad);
-        s.push_str("}\n");
-        s
-    }
 }
 
-/// A lossless KDL document.
+/// A lossless KDL document. Edits are byte-range splices on the original text; the `kdl`
+/// crate only locates node spans, so everything outside the edited node is byte-identical.
 #[derive(Debug, Clone)]
 pub struct Editor {
+    text: String,
     doc: KdlDocument,
 }
 
-fn append_node(doc: &mut KdlDocument, node: KdlNode) {
-    if let Some(last) = doc.nodes_mut().last_mut()
-        && let Some(f) = last.format_mut()
-        && !f.terminator.ends_with('\n')
-    {
-        f.terminator.push('\n');
-    }
-    doc.nodes_mut().push(node);
-}
+type Splice = (Range<usize>, String);
 
-fn parse_node(text: &str) -> Result<KdlNode, EditError> {
-    KdlNode::parse(text).map_err(|e| {
-        EditError::Invalid(format!(
-            "cannot render node: {}",
+fn parse_doc(text: &str) -> Result<KdlDocument, EditError> {
+    KdlDocument::parse(text).map_err(|e| {
+        EditError::Parse(
             e.diagnostics
                 .first()
                 .and_then(|d| d.message.clone())
-                .unwrap_or_default()
-        ))
+                .unwrap_or_default(),
+        )
     })
 }
 
-fn render_chain(segs: &[&str], key: &Key, value: &Value, base: usize) -> Result<String, EditError> {
-    let (leaf, parents) = segs.split_last().ok_or(EditError::NullValue)?;
+fn apply_splices(text: &str, mut splices: Vec<Splice>) -> String {
+    splices.sort_by_key(|s| std::cmp::Reverse(s.0.start));
+    let mut out = text.to_string();
+    for (r, s) in splices {
+        out.replace_range(r, &s);
+    }
+    out
+}
+
+/// The node's own bytes: from its name (or type annotation) to its last non-blank byte.
+fn tight(text: &str, n: &KdlNode) -> (usize, usize) {
+    let sp = n.span();
+    let s = sp.offset().min(text.len());
+    let e = (sp.offset() + sp.len()).min(text.len());
+    (s, s + text[s..e].trim_end().len())
+}
+
+fn tight_entry(text: &str, off: usize, len: usize) -> (usize, usize) {
+    let s = off.min(text.len());
+    let e = (off + len).min(text.len());
+    (s, s + text[s..e].trim_end().len())
+}
+
+fn line_start(text: &str, pos: usize) -> usize {
+    text[..pos].rfind('\n').map_or(0, |i| i + 1)
+}
+
+/// Width of the leading blanks of the line holding `pos`.
+fn indent_of(text: &str, pos: usize) -> usize {
+    let ls = line_start(text, pos);
+    text[ls..pos]
+        .chars()
+        .take_while(|c| *c == ' ' || *c == '\t')
+        .count()
+}
+
+/// Byte offset of a node's `{` (only called for nodes with children).
+fn open_brace(text: &str, n: &KdlNode) -> Option<usize> {
+    let (s, e) = tight(text, n);
+    let mut origin = {
+        let sp = n.name().span();
+        sp.offset() + sp.len()
+    };
+    for en in n.entries() {
+        let sp = en.span();
+        origin = origin.max(sp.offset() + sp.len());
+    }
+    let origin = origin.clamp(s, e);
+    text[origin..e].find('{').map(|i| origin + i)
+}
+
+fn blanks(s: &str) -> usize {
+    s.len() - s.trim_start_matches([' ', '\t']).len()
+}
+
+/// The bytes to cut to remove a node: its own lines when it has them to itself (a trailing
+/// comment on its last line goes with it), else just the node and its `;`.
+fn removal_range(text: &str, n: &KdlNode) -> Range<usize> {
+    let (s, e) = tight(text, n);
+    let ls = line_start(text, s);
+    let own_start = text[ls..s].chars().all(|c| c == ' ' || c == '\t');
+    let mut p = e + blanks(&text[e..]);
+    let semi = text[p..].starts_with(';');
+    if semi {
+        p += 1;
+        p += blanks(&text[p..]);
+    }
+    if own_start {
+        let rest = &text[p..];
+        if rest.is_empty() {
+            return ls..p;
+        }
+        if rest.starts_with("\r\n") {
+            return ls..p + 2;
+        }
+        if rest.starts_with('\n') {
+            return ls..p + 1;
+        }
+        if rest.starts_with("//") {
+            let end = rest.find('\n').map_or(text.len(), |i| p + i + 1);
+            return ls..end;
+        }
+    }
+    if semi { s..p } else { s..e }
+}
+
+fn sel_header(sel: &NodeSel) -> String {
+    let mut s = kdl_str(&sel.name);
+    if let Some(a) = &sel.arg {
+        s.push(' ');
+        s.push_str(&kdl_str(a));
+    }
+    for (k, v) in &sel.props {
+        s.push_str(&format!(" {}={}", kdl_str(k), kdl_str(v)));
+    }
+    s
+}
+
+fn render_chain(
+    headers: &[String],
+    leaf: &str,
+    key: &Key,
+    value: &Value,
+    base: usize,
+) -> Result<String, EditError> {
     let mut out = String::new();
-    for (i, p) in parents.iter().enumerate() {
+    for (i, h) in headers.iter().enumerate() {
         out.push_str(&" ".repeat(base + 4 * i));
-        out.push_str(&kdl_str(p));
+        out.push_str(h);
         out.push_str(" {\n");
     }
     let leaf_text =
-        render_node(leaf, &key.ty, value, base + 4 * parents.len()).ok_or(EditError::NullValue)?;
+        render_node(leaf, &key.ty, value, base + 4 * headers.len()).ok_or(EditError::NullValue)?;
     out.push_str(&leaf_text);
-    for i in (0..parents.len()).rev() {
+    for i in (0..headers.len()).rev() {
         out.push_str(&" ".repeat(base + 4 * i));
         out.push_str("}\n");
     }
     Ok(out)
 }
 
-fn set_in_doc(
-    doc: &mut KdlDocument,
+enum Cont<'a> {
+    Root,
+    Node(&'a KdlNode),
+}
+
+impl Cont<'_> {
+    fn indent(&self, text: &str) -> usize {
+        match self {
+            Cont::Root => 0,
+            Cont::Node(n) => {
+                let own = indent_of(text, tight(text, n).0);
+                if let Some(c) = n.children()
+                    && let Some(last) = c.nodes().last()
+                {
+                    let (s, _) = tight(text, last);
+                    if text[line_start(text, s)..s]
+                        .chars()
+                        .all(|c| c == ' ' || c == '\t')
+                    {
+                        return indent_of(text, s);
+                    }
+                }
+                own + 4
+            }
+        }
+    }
+}
+
+/// Insert whole lines (`body`, ending in a newline) as the last children of `cont`.
+fn insert_lines(text: &str, cont: &Cont, body: &str) -> Splice {
+    match cont {
+        Cont::Root => {
+            let mut b = String::new();
+            if !text.is_empty() && !text.ends_with('\n') {
+                b.push('\n');
+            }
+            b.push_str(body);
+            (text.len()..text.len(), b)
+        }
+        Cont::Node(n) => {
+            let (s, e) = tight(text, n);
+            let pad = " ".repeat(indent_of(text, s));
+            let Some(open) = (if n.children().is_some() {
+                open_brace(text, n)
+            } else {
+                None
+            }) else {
+                return (e..e, format!(" {{\n{body}{pad}}}"));
+            };
+            let close = e - 1;
+            let ls = line_start(text, close);
+            let own_line = ls > open && text[ls..close].chars().all(|c| c == ' ' || c == '\t');
+            if own_line {
+                (ls..ls, body.to_string())
+            } else {
+                let inner = text[open + 1..close].trim_end().len();
+                let from = open + 1 + inner;
+                (from..e, format!("\n{body}{pad}}}"))
+            }
+        }
+    }
+}
+
+fn nodes_of<'a>(c: &Cont<'a>, doc: &'a KdlDocument) -> &'a [KdlNode] {
+    match *c {
+        Cont::Root => doc.nodes(),
+        Cont::Node(n) => n.children().map_or(&[], |d| d.nodes()),
+    }
+}
+
+/// Edit an existing leaf node in place. Empty when the value already is the wanted one.
+fn replace_leaf(
+    text: &str,
+    node: &KdlNode,
+    key: &Key,
+    name: &str,
+    value: &Value,
+) -> Result<Vec<Splice>, EditError> {
+    if parse_key_value(key, node).as_ref() == Ok(value) {
+        return Ok(Vec::new());
+    }
+    let (s, e) = tight(text, node);
+    let rendered = render_node(name, &key.ty, value, 0).ok_or(EditError::NullValue)?;
+    if let Ok(nd) = KdlDocument::parse(&rendered)
+        && let [new] = nd.nodes()
+        && node.children().is_none()
+        && new.children().is_none()
+        && node.entries().len() == new.entries().len()
+        && node
+            .entries()
+            .iter()
+            .zip(new.entries())
+            .all(|(a, b)| a.name().map(|x| x.value()) == b.name().map(|x| x.value()))
+    {
+        let mut out = Vec::new();
+        for (a, b) in node.entries().iter().zip(new.entries()) {
+            if a.value() != b.value() {
+                let (as_, ae) = tight_entry(text, a.span().offset(), a.span().len());
+                let (bs, be) = tight_entry(&rendered, b.span().offset(), b.span().len());
+                out.push((as_..ae, rendered[bs..be].to_string()));
+            }
+        }
+        if !out.is_empty() {
+            return Ok(out);
+        }
+    }
+    let indent = indent_of(text, s);
+    let full = render_node(name, &key.ty, value, indent).ok_or(EditError::NullValue)?;
+    let body = full[indent..].trim_end_matches('\n');
+    Ok(vec![(s..e, body.to_string())])
+}
+
+fn plan_set(
+    text: &str,
+    doc: &KdlDocument,
+    scope: &[NodeSel],
     segs: &[&str],
     key: &Key,
     value: &Value,
-    level: usize,
-) -> Result<(), EditError> {
-    let name = segs[0];
-    // The loader lets the last node win, so edit the last one (for a block: the last that
-    // already holds the key, else the last block).
-    let pos = if segs.len() == 1 {
-        doc.nodes().iter().rposition(|n| n.name().value() == name)
-    } else {
-        doc.nodes()
+) -> Result<Vec<Splice>, EditError> {
+    let mut cont = Cont::Root;
+    let mut headers: Vec<String> = Vec::new();
+    let mut missing = false;
+    for s in scope {
+        if !missing {
+            match nodes_of(&cont, doc).iter().rposition(|n| s.matches(n)) {
+                Some(i) => {
+                    cont = Cont::Node(&nodes_of(&cont, doc)[i]);
+                    continue;
+                }
+                None => missing = true,
+            }
+        }
+        headers.push(sel_header(s));
+    }
+    let (parents, leaf) = segs.split_at(segs.len() - 1);
+    let leaf = leaf[0];
+    for (i, p) in parents.iter().enumerate() {
+        if !missing {
+            let nodes = nodes_of(&cont, doc);
+            let pos = nodes
+                .iter()
+                .rposition(|n| {
+                    n.name().value() == *p
+                        && n.children()
+                            .is_some_and(|c| find_in(c, &segs[i + 1..]).is_some())
+                })
+                .or_else(|| nodes.iter().rposition(|n| n.name().value() == *p));
+            match pos {
+                Some(j) => {
+                    cont = Cont::Node(&nodes_of(&cont, doc)[j]);
+                    continue;
+                }
+                None => missing = true,
+            }
+        }
+        headers.push(kdl_str(p));
+    }
+    if !missing
+        && let Some(n) = nodes_of(&cont, doc)
             .iter()
-            .rposition(|n| {
-                n.name().value() == name
-                    && n.children()
-                        .is_some_and(|c| find_in(c, &segs[1..]).is_some())
-            })
-            .or_else(|| doc.nodes().iter().rposition(|n| n.name().value() == name))
-    };
-    if segs.len() == 1 {
-        let text = render_node(name, &key.ty, value, level * 4).ok_or(EditError::NullValue)?;
-        let mut new_node = parse_node(&text)?;
-        match pos {
-            Some(i) => {
-                let old = &mut doc.nodes_mut()[i];
-                if let Some(mut f) = old.format().cloned() {
-                    if old.children().is_none() && new_node.children().is_some() {
-                        f.before_children = " ".into();
-                    }
-                    new_node.set_format(f);
-                }
-                *old = new_node;
-            }
-            None => append_node(doc, new_node),
-        }
-        return Ok(());
+            .rfind(|n| n.name().value() == leaf)
+    {
+        return replace_leaf(text, n, key, leaf, value);
     }
-    match pos {
-        Some(i) => {
-            let node = &mut doc.nodes_mut()[i];
-            if node.children().is_none() {
-                node.set_children(KdlDocument::new());
-                if let Some(f) = node.format_mut() {
-                    f.before_children = " ".into();
-                }
-            }
-            match node.children_mut().as_mut() {
-                Some(child) => set_in_doc(child, &segs[1..], key, value, level + 1),
-                None => Err(EditError::Invalid("cannot open block".into())),
-            }
-        }
-        None => {
-            let text = render_chain(segs, key, value, level * 4)?;
-            append_node(doc, parse_node(&text)?);
-            Ok(())
-        }
-    }
+    let base = cont.indent(text);
+    let body = render_chain(&headers, leaf, key, value, base)?;
+    Ok(vec![insert_lines(text, &cont, &body)])
 }
 
-fn only_space(s: Option<&kdl::KdlDocumentFormat>) -> bool {
-    s.map(|f| f.leading.trim().is_empty() && f.trailing.trim().is_empty())
-        .unwrap_or(true)
-}
-
-fn unset_in(doc: &mut KdlDocument, segs: &[&str]) -> bool {
+fn plan_unset(text: &str, nodes: &[KdlNode], segs: &[&str]) -> Vec<Range<usize>> {
     // Every node of that name goes: the loader resolves duplicates, so leaving one behind
     // would keep the key set.
-    let mut any = false;
-    let mut i = doc.nodes().len();
-    while i > 0 {
-        i -= 1;
-        if doc.nodes()[i].name().value() != segs[0] {
-            continue;
-        }
+    let mut out = Vec::new();
+    for n in nodes.iter().filter(|n| n.name().value() == segs[0]) {
         if segs.len() == 1 {
-            let removed = doc.nodes_mut().remove(i);
-            any = true;
-            // A document header comment lives in the first node's leading text; keep it.
-            if i == 0
-                && let Some(f) = removed.format()
-                && !f.leading.trim().is_empty()
-            {
-                let lead = f.leading.clone();
-                if let Some(next) = doc.nodes_mut().first_mut() {
-                    if let Some(nf) = next.format_mut() {
-                        nf.leading = format!("{lead}{}", nf.leading);
-                    }
-                } else if let Some(df) = doc.format_mut() {
-                    df.trailing = format!("{lead}{}", df.trailing);
-                }
-            }
+            out.push(removal_range(text, n));
             continue;
         }
-        let removed = match doc.nodes_mut()[i].children_mut().as_mut() {
-            Some(c) => unset_in(c, &segs[1..]),
-            None => false,
-        };
-        if removed {
-            any = true;
-            let empty = doc.nodes()[i]
-                .children()
-                .map(|c| c.nodes().is_empty() && only_space(c.format()))
-                .unwrap_or(false);
-            if empty {
-                doc.nodes_mut().remove(i);
+        let Some(c) = n.children() else { continue };
+        let sub = plan_unset(text, c.nodes(), &segs[1..]);
+        if sub.is_empty() {
+            continue;
+        }
+        // The block goes with its last child, unless something (a comment) else is inside.
+        let (_, e) = tight(text, n);
+        let empties = open_brace(text, n).is_some_and(|open| {
+            let (lo, hi) = (open + 1, e - 1);
+            let mut rest = String::new();
+            let mut at = lo;
+            for r in &sub {
+                let (a, b) = (r.start.clamp(lo, hi), r.end.clamp(lo, hi));
+                rest.push_str(&text[at..a]);
+                at = b.max(at);
             }
+            rest.push_str(&text[at..hi]);
+            rest.trim().is_empty()
+        });
+        if empties {
+            out.push(removal_range(text, n));
+        } else {
+            out.extend(sub);
         }
     }
-    any
-}
-
-fn descend<'a>(
-    doc: &'a mut KdlDocument,
-    sels: &[NodeSel],
-    level: usize,
-) -> Result<(&'a mut KdlDocument, usize), EditError> {
-    let Some((first, rest)) = sels.split_first() else {
-        return Ok((doc, level));
-    };
-    let idx = match doc.nodes().iter().rposition(|n| first.matches(n)) {
-        Some(i) => i,
-        None => {
-            let node = parse_node(&first.text(level * 4))?;
-            append_node(doc, node);
-            doc.nodes().len() - 1
-        }
-    };
-    let node = &mut doc.nodes_mut()[idx];
-    if node.children().is_none() {
-        node.set_children(KdlDocument::new());
-        if let Some(f) = node.format_mut() {
-            f.before_children = " ".into();
-        }
-    }
-    match node.children_mut().as_mut() {
-        Some(child) => descend(child, rest, level + 1),
-        None => Err(EditError::Invalid("cannot open block".into())),
-    }
+    out
 }
 
 fn find_in<'a>(doc: &'a KdlDocument, segs: &[&str]) -> Option<&'a KdlNode> {
@@ -321,21 +466,24 @@ fn key_of(path: &str) -> Result<&'static Key, EditError> {
 
 impl Editor {
     pub fn parse(text: &str) -> Result<Editor, EditError> {
-        KdlDocument::parse(text)
-            .map(|doc| Editor { doc })
-            .map_err(|e| {
-                EditError::Parse(
-                    e.diagnostics
-                        .first()
-                        .and_then(|d| d.message.clone())
-                        .unwrap_or_default(),
-                )
-            })
+        Ok(Editor {
+            doc: parse_doc(text)?,
+            text: text.to_string(),
+        })
     }
 
-    /// The edited text. Unedited nodes are byte-identical to the input.
+    fn commit(&mut self, text: String) -> Result<(), EditError> {
+        if text == self.text {
+            return Ok(());
+        }
+        self.doc = parse_doc(&text)?;
+        self.text = text;
+        Ok(())
+    }
+
+    /// The edited text. Bytes outside the edited nodes are identical to the input.
     pub fn text(&self) -> String {
-        self.doc.to_string()
+        self.text.clone()
     }
 
     /// Read a key's current value from the document (top level, or under `scope`).
@@ -414,8 +562,9 @@ impl Editor {
         }
         crate::overrides::map_entries_ok(path, value).map_err(EditError::Invalid)?;
         let segs: Vec<&str> = path.split('.').collect();
-        let (doc, level) = descend(&mut self.doc, scope, 0)?;
-        set_in_doc(doc, &segs, key, value, level)
+        let splices = plan_set(&self.text, &self.doc, scope, &segs, key, value)?;
+        let new = apply_splices(&self.text, splices);
+        self.commit(new)
     }
 
     /// `config unset`. True if a node was removed.
@@ -427,20 +576,27 @@ impl Editor {
         key_of(path)?;
         let segs: Vec<&str> = path.split('.').collect();
         // Do not create scope nodes just to remove from them.
-        let mut doc = &self.doc;
-        for s in scope {
-            match doc
-                .nodes()
+        let mut nodes = self.doc.nodes();
+        for sel in scope {
+            match nodes
                 .iter()
-                .rfind(|n| s.matches(n))
+                .rfind(|n| sel.matches(n))
                 .and_then(|n| n.children())
             {
-                Some(c) => doc = c,
+                Some(c) => nodes = c.nodes(),
                 None => return Ok(false),
             }
         }
-        let (doc, _) = descend(&mut self.doc, scope, 0)?;
-        Ok(unset_in(doc, &segs))
+        let ranges = plan_unset(&self.text, nodes, &segs);
+        if ranges.is_empty() {
+            return Ok(false);
+        }
+        let new = apply_splices(
+            &self.text,
+            ranges.into_iter().map(|r| (r, String::new())).collect(),
+        );
+        self.commit(new)?;
+        Ok(true)
     }
 
     /// `config add`: append an item to a list key (no-op when present).
@@ -520,9 +676,8 @@ impl Editor {
         {
             return Ok(());
         }
-        let node = parse_node(&format!("version {}\n", crate::version::CURRENT_VERSION))?;
-        self.doc.nodes_mut().insert(0, node);
-        Ok(())
+        let new = format!("version {}\n{}", crate::version::CURRENT_VERSION, self.text);
+        self.commit(new)
     }
 }
 

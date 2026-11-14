@@ -398,3 +398,148 @@ fn list_surfaces_invalid_values_instead_of_skipping() {
     assert_eq!(l.len(), 1);
     assert!(l[0].value.is_err());
 }
+
+// ---- byte-exact splice edits ----
+
+const DOC: &str = "// top\nversion 1\n\nfont {\n    size 12\n    family \"Mono\"\n} // after font\n\n// cursor next\ncursor {\n    style bar\n}\n\ntheme light=\"a\" dark=\"b\"\nscrollback {\n    lines 15\n}\nempty-ish {}\n";
+
+#[test]
+fn trailing_comment_after_brace_and_blank_lines_survive_edits_elsewhere() {
+    let mut ed = Editor::parse(DOC).unwrap();
+    ed.set("scrollback.lines", &Value::Int(99)).unwrap();
+    assert_eq!(ed.text(), DOC.replace("lines 15", "lines 99"));
+    ed.set("cursor.style", &Value::Str("block".into())).unwrap();
+    assert_eq!(
+        ed.text(),
+        DOC.replace("lines 15", "lines 99")
+            .replace("style bar", "style block")
+    );
+    assert!(ed.text().contains("} // after font\n\n// cursor next\n"));
+}
+
+#[test]
+fn set_then_unset_returns_the_original_exactly() {
+    for (path, v) in [
+        ("window.padding-x", Value::Int(9)),
+        ("tabs.max-title-width", Value::Int(30)),
+        ("font.family", Value::Str("Other".into())),
+        ("cursor.blink", Value::Bool(true)),
+    ] {
+        let mut ed = Editor::parse(DOC).unwrap();
+        let had = ed.get(path).unwrap().is_some();
+        ed.set(path, &v).unwrap();
+        assert_ne!(ed.text(), DOC, "{path}");
+        if !had {
+            assert!(ed.unset(path).unwrap());
+            assert_eq!(ed.text(), DOC, "{path}");
+        }
+    }
+    let mut ed = Editor::parse("version 1\n").unwrap();
+    ed.set("window.padding-x", &Value::Int(3)).unwrap();
+    ed.unset("window.padding-x").unwrap();
+    assert_eq!(ed.text(), "version 1\n");
+}
+
+#[test]
+fn integers_stay_integers_and_equal_values_are_noops() {
+    let mut ed = Editor::parse(DOC).unwrap();
+    ed.set("scrollback.lines", &Value::Int(15)).unwrap();
+    assert_eq!(ed.text(), DOC);
+    ed.set("font.size", &Value::Float(12.0)).unwrap();
+    assert_eq!(ed.text(), DOC, "unchanged value keeps its spelling");
+    ed.set("scrollback.lines", &Value::Int(16)).unwrap();
+    assert!(ed.text().contains("lines 16\n"), "{}", ed.text());
+}
+
+#[test]
+fn nested_child_insertion_indents_and_opens_one_line_blocks() {
+    let mut ed = Editor::parse(DOC).unwrap();
+    ed.set("cursor.blink", &Value::Bool(true)).unwrap();
+    assert!(
+        ed.text()
+            .contains("cursor {\n    style bar\n    blink #true\n}\n"),
+        "{}",
+        ed.text()
+    );
+    let mut ed = Editor::parse("cursor {}\nx 1\n").unwrap();
+    ed.set("cursor.blink", &Value::Bool(true)).unwrap();
+    assert_eq!(ed.text(), "cursor {\n    blink #true\n}\nx 1\n");
+    let mut ed = Editor::parse("cursor { style bar }\n").unwrap();
+    ed.set("cursor.blink", &Value::Bool(true)).unwrap();
+    let t = ed.text();
+    assert_eq!(
+        Editor::parse(&t).unwrap().get("cursor.blink").unwrap(),
+        Some(Value::Bool(true))
+    );
+    assert_eq!(
+        Editor::parse(&t).unwrap().get("cursor.style").unwrap(),
+        Some(Value::Str("bar".into()))
+    );
+    // Deeper nesting under an indented parent.
+    let mut ed = Editor::parse("profile work {\n    font {\n        size 9\n    }\n}\n").unwrap();
+    ed.set_in(
+        &[NodeSel::profile("work")],
+        "cursor.blink",
+        &Value::Bool(true),
+    )
+    .unwrap();
+    assert_eq!(
+        ed.text(),
+        "profile work {\n    font {\n        size 9\n    }\n    cursor {\n        blink #true\n    }\n}\n"
+    );
+}
+
+#[test]
+fn argument_and_property_forms_edit_in_place() {
+    let mut ed = Editor::parse(DOC).unwrap();
+    ed.set("font.family", &Value::Str("Sans".into())).unwrap();
+    assert_eq!(ed.text(), DOC.replace("\"Mono\"", "Sans"));
+    let mut ed = Editor::parse(DOC).unwrap();
+    ed.set("theme", &Value::Str("light=a dark=zz".into()))
+        .unwrap();
+    assert_eq!(ed.text(), DOC.replace("dark=\"b\"", "dark=zz"));
+}
+
+#[test]
+fn unset_removes_own_lines_and_leaves_neighbouring_comments() {
+    let mut ed = Editor::parse(DOC).unwrap();
+    assert!(ed.unset("font.size").unwrap());
+    assert_eq!(ed.text(), DOC.replace("    size 12\n", ""));
+    assert!(ed.unset("cursor.style").unwrap());
+    assert!(!ed.text().contains("cursor {"));
+    assert!(ed.text().contains("// cursor next\n"));
+    assert!(ed.text().contains("} // after font\n"));
+}
+
+#[test]
+fn random_splices_change_only_the_targeted_span() {
+    let mut rng = Rng(0xD1B5_4A32_D192_ED03);
+    let paths = [
+        "font.size",
+        "scrollback.lines",
+        "cursor.style",
+        "font.family",
+    ];
+    for _ in 0..200 {
+        let p = paths[rng.below(paths.len())];
+        let mut ed = Editor::parse(DOC).unwrap();
+        let v = match p {
+            "font.size" => Value::Float(4.0 + rng.below(60) as f64 + 0.5),
+            "scrollback.lines" => Value::Int(100 + rng.below(9000) as i64),
+            "cursor.style" => Value::Str("underline".into()),
+            _ => Value::Str(format!("F{}", rng.below(99))),
+        };
+        ed.set(p, &v).unwrap();
+        let (a, b) = (DOC.as_bytes(), ed.text().into_bytes());
+        let pre = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+        let suf = a[pre..]
+            .iter()
+            .rev()
+            .zip(b[pre..].iter().rev())
+            .take_while(|(x, y)| x == y)
+            .count();
+        // The differing middle sits on a single line of the original.
+        let mid = &DOC[pre..a.len() - suf];
+        assert!(!mid.contains('\n'), "{p}: multi-line change {mid:?}");
+    }
+}
