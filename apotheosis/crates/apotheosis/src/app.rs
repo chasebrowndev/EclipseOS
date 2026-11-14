@@ -4689,6 +4689,8 @@ impl App {
                 .lh
                 .insert_source(Timer::from_duration(guard), |_, (), app: &mut App| {
                     app.send_overlay();
+                    // The accessible buttons were inert for the guard too.
+                    app.a11y_snapshot();
                     TimeoutAction::Drop
                 });
         }

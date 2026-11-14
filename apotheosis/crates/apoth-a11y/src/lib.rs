@@ -14,4 +14,7 @@ pub mod tree;
 pub use accesskit;
 pub use adapter::{Adapter, Notify, Request};
 pub use text::RowText;
-pub use tree::{Builder, PaletteModel, PaneModel, TabModel, TextModel, WindowModel};
+pub use tree::{
+    BarButtonModel, BarModel, Builder, ChipModel, PaletteModel, PaneModel, ProgressKind,
+    ProgressModel, SearchModel, TabModel, TextModel, TooltipModel, WindowModel,
+};

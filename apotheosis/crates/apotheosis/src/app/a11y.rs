@@ -7,14 +7,19 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use apoth_a11y::accesskit::Rect as AkRect;
 use apoth_a11y::accesskit::{Action as AkAction, ActionRequest};
 use apoth_a11y::ids::{self, Target};
 use apoth_a11y::{
-    Adapter, Builder, Notify, PaletteModel, PaneModel, Request, RowText, TabModel, TextModel,
+    Adapter, BarButtonModel, BarModel, Builder, ChipModel, Notify, PaletteModel, PaneModel,
+    ProgressKind, ProgressModel, Request, RowText, SearchModel, TabModel, TextModel, TooltipModel,
     WindowModel,
 };
 use apoth_grid::{SnapRow, WordChars};
 use apoth_mux::TabTarget;
+use apoth_ui::bar::{BarKind, Key as BarKey};
+use apoth_ui::searchbar::{Chip, CountKind};
+use apoth_ui::tabs::Badge;
 use calloop::RegistrationToken;
 use calloop::timer::{TimeoutAction, Timer};
 
@@ -155,7 +160,7 @@ impl App {
     }
 
     /// Snapshot the shown panes on a worker.
-    fn a11y_snapshot(&mut self) {
+    pub(super) fn a11y_snapshot(&mut self) {
         if self.a11y.builder.is_none() || self.a11y.inflight {
             return;
         }
@@ -212,14 +217,39 @@ impl App {
 
     fn a11y_model(&self, snaps: Vec<Snap>) -> Option<WindowModel> {
         let w = self.session.window(self.mux_win)?;
+        let geo = self.geo;
+        // Interface units to the logical window units the panes use.
+        let k = geo.map_or(1.0, |g| f64::from(g.ui) / self.scale().max(0.1));
+        let rect = |r: apoth_ui::Rect| AkRect {
+            x0: f64::from(r.x) * k,
+            y0: f64::from(r.y) * k,
+            x1: f64::from(r.right()) * k,
+            y1: f64::from(r.bottom()) * k,
+        };
+        let specs = self.tab_specs();
+        let strip = geo.and_then(|g| g.strip);
+        let strip_l = strip.map(|r| apoth_ui::tabs::layout(r, crate::ui::STRIP_ID, &specs));
         let tabs = w
             .tabs
             .iter()
-            .map(|&tid| TabModel {
-                id: tid,
-                label: self.tab_title(tid),
-                selected: Some(tid) == w.active,
-                description: None,
+            .enumerate()
+            .map(|(i, &tid)| {
+                let cell = strip_l
+                    .as_ref()
+                    .and_then(|l| l.cells.iter().find(|c| c.index == i));
+                let badges = self.tab_badges(tid);
+                let words = badge_words(&badges);
+                let pane = self.session.tab(tid).and_then(|t| t.focused());
+                TabModel {
+                    id: tid,
+                    label: self.tab_title(tid),
+                    selected: Some(tid) == w.active,
+                    description: (!words.is_empty()).then(|| words.join(", ")),
+                    bounds: cell.map(|c| rect(c.rect)),
+                    close: cell.map(|c| rect(c.close)),
+                    progress: badges.iter().find_map(|b| badge_progress(*b)),
+                    profile: pane.and_then(|p| self.pane_profile(p)).map(str::to_owned),
+                }
             })
             .collect();
         let focus = self.focused();
@@ -259,21 +289,101 @@ impl App {
                 selected,
             }
         });
+        let bar = self.bar.as_ref().map(|o| {
+            let l =
+                geo.map(|g| apoth_ui::bar::layout(g.area, &o.spec, &apoth_ui::text::geometry()));
+            let guard = o.shown_at.elapsed().as_millis()
+                < u128::from(apoth_ui::tokens::motion::CONSENT_GUARD_MS);
+            BarModel {
+                headline: o.spec.headline.text.clone(),
+                detail: o.spec.detail.as_ref().map(|d| d.text.clone()),
+                body: o.spec.body.as_ref().map(|b| b.text.clone()),
+                alert: o.spec.kind == BarKind::Error,
+                buttons: o
+                    .spec
+                    .buttons
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| BarButtonModel {
+                        label: b.label.clone(),
+                        key: match b.key {
+                            BarKey::Char(c) => c.to_ascii_uppercase().to_string(),
+                            BarKey::Escape => "Escape".to_owned(),
+                        },
+                        disabled: guard,
+                        bounds: l
+                            .as_ref()
+                            .and_then(|l| l.buttons.get(i))
+                            .map(|c| rect(c.rect)),
+                    })
+                    .collect(),
+                bounds: l.as_ref().map(|l| rect(l.bar)),
+                body_bounds: l.as_ref().and_then(|l| l.body).map(rect),
+            }
+        });
+        let search = self.search_spec().map(|sp| {
+            let l = self.search_layout();
+            SearchModel {
+                query: sp.query.clone(),
+                placeholder: "Find".to_owned(),
+                count: sp.count.clone(),
+                error: sp.count_kind == CountKind::Error,
+                focused: sp.focused,
+                can_step: sp.can_step,
+                chips: sp
+                    .chips
+                    .iter()
+                    .map(|c| {
+                        let (name, description) = chip_words(c.chip, &c.label, c.on);
+                        ChipModel {
+                            name,
+                            description,
+                            on: c.on,
+                            bounds: l.as_ref().and_then(|l| {
+                                l.chips.iter().find(|x| x.0 == c.chip).map(|x| rect(x.2))
+                            }),
+                        }
+                    })
+                    .collect(),
+                bounds: l.as_ref().map(|l| rect(l.sheet)),
+                field: l.as_ref().map(|l| rect(l.field)),
+                prev: l.as_ref().map(|l| rect(l.prev)),
+                next: l.as_ref().map(|l| rect(l.next)),
+                close: l.as_ref().map(|l| rect(l.close)),
+            }
+        });
+        let tooltip = self.tooltip_spec().map(|t| TooltipModel {
+            bounds: geo
+                .map(|g| apoth_ui::tooltip::layout(g.area, &t, &apoth_ui::text::geometry()))
+                .map(rect),
+            text: t.text.text,
+        });
         Some(WindowModel {
             title: self.window_title_now(),
             tabs,
             panes,
             palette,
             announcement: self.a11y.announcement.clone(),
+            strip: strip.map(rect),
+            new_tab: strip_l.as_ref().map(|l| rect(l.new_tab)),
+            bar,
+            search,
+            tooltip,
         })
     }
 
-    /// An AT asked for an action.
+    /// An AT asked for an action. Every action runs the handler the mouse click runs; a
+    /// modal sheet owns the interface, as it owns the pointer.
     fn a11y_action(&mut self, r: &ActionRequest) {
         if self.a11y.builder.is_none() || !matches!(r.action, AkAction::Click | AkAction::Focus) {
             return;
         }
-        match ids::target(r.target_node) {
+        let target = ids::target(r.target_node);
+        let modal = self.bar.as_ref().is_some_and(|o| !o.takes_room());
+        if modal && !matches!(target, Target::BarButton(_)) {
+            return;
+        }
+        match target {
             Target::Tab(tid) => {
                 let i = self
                     .session
@@ -283,6 +393,46 @@ impl App {
                     self.focus_tab(TabTarget::Index(i));
                 }
             }
+            Target::TabClose(tid) if r.action == AkAction::Click => {
+                if self
+                    .session
+                    .window(self.mux_win)
+                    .is_some_and(|w| w.tabs.contains(&tid))
+                {
+                    self.close_tab(tid);
+                }
+            }
+            Target::NewTab if r.action == AkAction::Click => self.new_tab(None, None),
+            Target::BarButton(i) if r.action == AkAction::Click => {
+                // The 500 ms input guard applies to an accessible click exactly as to a press.
+                let ready = self.bar.as_ref().is_some_and(|o| {
+                    i < o.spec.buttons.len()
+                        && o.shown_at.elapsed().as_millis()
+                            >= u128::from(apoth_ui::tokens::motion::CONSENT_GUARD_MS)
+                });
+                if ready {
+                    self.bar_click_answer(i);
+                }
+            }
+            Target::SearchField => {
+                self.search_focus();
+                self.send_layout();
+            }
+            Target::SearchChip(i) if r.action == AkAction::Click => {
+                let chip = self
+                    .search_spec()
+                    .and_then(|s| s.chips.get(i).map(|c| c.chip));
+                if let Some(c) = chip {
+                    self.search_chip(c);
+                }
+            }
+            Target::SearchPrev | Target::SearchNext if r.action == AkAction::Click => {
+                if self.nav.search.is_some() {
+                    self.search_step(target == Target::SearchNext);
+                    self.send_layout();
+                }
+            }
+            Target::SearchClose if r.action == AkAction::Click => self.close_search(),
             Target::Pane(id) => {
                 // Run and line ids carry the low 32 bits of the pane id.
                 let key = self
@@ -307,7 +457,7 @@ impl App {
                     self.send_layout();
                 }
             }
-            Target::Window | Target::Other => {}
+            _ => {}
         }
         self.a11y_snapshot();
     }
@@ -333,5 +483,93 @@ impl App {
         if let Some(a) = self.a11y.adapter.as_mut() {
             a.window_focus(focused);
         }
+    }
+}
+
+/// The badges as words for the tab's description (progress has its own node).
+fn badge_words(badges: &[Badge]) -> Vec<String> {
+    badges
+        .iter()
+        .filter_map(|b| match b {
+            Badge::Unseen => Some("new output".to_owned()),
+            Badge::Bell => Some("bell".to_owned()),
+            Badge::Running => Some("running".to_owned()),
+            Badge::Exit(0) => Some("last command succeeded".to_owned()),
+            Badge::Exit(n) => Some(format!("last command exited {n}")),
+            _ => None,
+        })
+        .collect()
+}
+
+fn badge_progress(b: Badge) -> Option<ProgressModel> {
+    let (kind, value) = match b {
+        Badge::Progress(v) => (ProgressKind::Normal, v),
+        Badge::ProgressError(v) => (ProgressKind::Error, v),
+        Badge::ProgressPaused(v) => (ProgressKind::Paused, v),
+        Badge::ProgressBusy => (ProgressKind::Busy, 0),
+        _ => return None,
+    };
+    Some(ProgressModel { kind, value })
+}
+
+/// The spoken name of a search chip, and its state in words when on/off is not enough.
+fn chip_words(chip: Chip, label: &str, on: bool) -> (String, Option<String>) {
+    match chip {
+        Chip::Case => (
+            "Match case".to_owned(),
+            Some(
+                match (on, label) {
+                    (false, _) => "smart case",
+                    (true, "aa") => "case insensitive",
+                    (true, _) => "case sensitive",
+                }
+                .to_owned(),
+            ),
+        ),
+        Chip::Regex => ("Regular expression".to_owned(), None),
+        Chip::Word => ("Whole word".to_owned(), None),
+        Chip::Scope => ("Screen only".to_owned(), None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chips_have_spoken_names() {
+        assert_eq!(chip_words(Chip::Regex, ".*", true).0, "Regular expression");
+        assert_eq!(chip_words(Chip::Word, "\\b", false).0, "Whole word");
+        assert_eq!(chip_words(Chip::Scope, "Screen", true).0, "Screen only");
+        let d = |l, on| chip_words(Chip::Case, l, on).1;
+        assert_eq!(d("Aa", false).as_deref(), Some("smart case"));
+        assert_eq!(d("Aa", true).as_deref(), Some("case sensitive"));
+        assert_eq!(d("aa", true).as_deref(), Some("case insensitive"));
+    }
+
+    #[test]
+    fn badges_become_words_and_progress() {
+        let b = [
+            Badge::Bell,
+            Badge::ProgressError(40),
+            Badge::Exit(2),
+            Badge::Exit(0),
+        ];
+        assert_eq!(
+            badge_words(&b),
+            ["bell", "last command exited 2", "last command succeeded"]
+        );
+        assert_eq!(
+            b.iter().find_map(|x| badge_progress(*x)),
+            Some(ProgressModel {
+                kind: ProgressKind::Error,
+                value: 40
+            })
+        );
+        assert_eq!(badge_progress(Badge::Bell), None);
+        assert_eq!(
+            badge_progress(Badge::ProgressBusy).map(|p| p.kind),
+            Some(ProgressKind::Busy)
+        );
     }
 }
