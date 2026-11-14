@@ -1,0 +1,6 @@
+fixture "modes-bracketed-paste-2004" {
+  covers "T03-DECRQM" "T03-INPUT-MODES"
+  size rows=3 cols=10
+  feed #"\e[?2004h"#
+  mode "?2004" 1
+}

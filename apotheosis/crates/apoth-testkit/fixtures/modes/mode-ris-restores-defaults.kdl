@@ -1,0 +1,9 @@
+fixture "mode-ris-restores-defaults" {
+  desc "mode ris restores defaults (migrated from the apoth-term corpus)"
+  covers "T03-RIS" "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?7l\e[?25l\e[4h\ec"#
+  mode "?7" 1
+  mode "?25" 1
+  mode "4" 2
+}

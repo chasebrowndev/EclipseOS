@@ -1,0 +1,11 @@
+fixture "sgr-21-is-double-underline" {
+  desc "21 is double underline, never 'normal intensity' (T-03 section 3.1)"
+  covers "T03-SGR-UNDERLINE" "T03-SGR-AMBIG" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[21mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" ul="double" attrs=""
+}

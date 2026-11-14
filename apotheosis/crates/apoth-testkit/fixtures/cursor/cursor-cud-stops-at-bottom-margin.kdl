@@ -1,0 +1,12 @@
+fixture "cursor-cud-stops-at-bottom-margin" {
+  covers "T03-CUX" "T03-DECSTBM"
+  size rows=5 cols=10
+  feed #"\e[2;4r\e[3;1H\e[9B*"#
+  grid {
+    row ""
+    row ""
+    row ""
+    row "*"
+  }
+  cursor row=3 col=1
+}

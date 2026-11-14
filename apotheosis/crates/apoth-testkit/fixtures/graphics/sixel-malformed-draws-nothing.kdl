@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "sixel-malformed-draws-nothing" {
+  desc "a malformed sixel draws nothing and prints nothing"
+  covers "T03-GRAPHICS-SIXEL"
+  size rows=4 cols=6
+  feed #"\eP0;1;0q"1;1;0;0\e\\"#
+  feed #"ok"#
+  images {
+  }
+  grid {
+    row "ok"
+  }
+}

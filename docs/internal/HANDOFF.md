@@ -19,7 +19,7 @@ file is only "where are we, what next".
   M13 agent seats; M14 batches, dedupe, generations, `wait_for`,
   `compat_lock`; M15 consent prompt, batch prompt, emergency panel, phrase,
   commit slot; M16 enforcement; M17 classification; M19 `brokerd` and
-  `ec-secret`; M21 `ec-cataclysm-pub`; M22 `eclipse_semantic_v1` server;
+  `ec-secret`; M21 `ec-term-pub` (was `ec-cataclysm-pub`, ADR 0114); M22 `eclipse_semantic_v1` server;
   M25 `agentd`, the console, the inference router (ADR 0076) and
   `ec-claude-agent`.
 - **DE**: wallpaper, Display page, settings tree and search, pinned taskbar

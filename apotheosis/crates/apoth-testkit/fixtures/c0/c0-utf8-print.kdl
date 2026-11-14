@@ -1,0 +1,10 @@
+fixture "c0-utf8-print" {
+  desc "multi-byte UTF-8 and wide characters"
+  covers "T03-PRINT" "UNICODE-01"
+  size rows=3 cols=20
+  feed #"héllo日本"#
+  grid {
+    row "héllo日本"
+  }
+  cursor row=0 col=9
+}

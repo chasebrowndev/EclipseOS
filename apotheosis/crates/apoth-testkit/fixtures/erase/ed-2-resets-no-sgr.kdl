@@ -1,0 +1,8 @@
+fixture "ed-2-resets-no-sgr" {
+  desc "ed 2 resets no sgr (migrated from the apoth-term corpus)"
+  covers "T03-ED"
+  size rows=1 cols=3
+  feed #"\e[1m\e[2J"#
+  feed #"x"#
+  cell row=0 col=0 attrs="bold"
+}

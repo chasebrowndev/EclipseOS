@@ -1,0 +1,7 @@
+fixture "reply-da-1-nonzero-param-ignored" {
+  desc "reply da 1 nonzero param ignored (migrated from the apoth-term corpus)"
+  covers "T03-DA1"
+  size rows=2 cols=4
+  feed #"\e[1c"#
+  replies
+}

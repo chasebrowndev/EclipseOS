@@ -1,0 +1,7 @@
+fixture "osc133-unknown-and-wrong-mark-keys-ignored" {
+  desc "unknown keys, wrong-mark keys and malformed values are ignored"
+  covers "T03-OSC133-OPTS" "SHELLINTEGRATION-05"
+  size rows=2 cols=20
+  feed #"\e]133;A;bogus=1;cmdline=x;redraw=9\a\e]133;D;1;cmdline=y\a"#
+  events "mark:A" "mark:D;1"
+}

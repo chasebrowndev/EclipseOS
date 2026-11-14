@@ -1,0 +1,7 @@
+fixture "reply-xtwinops-19-screen-chars" {
+  desc "reply xtwinops 19 screen chars (migrated from the apoth-term corpus)"
+  covers "T03-XTWINOPS"
+  size rows=5 cols=10
+  feed #"\e[19t"#
+  replies #"\e[9;5;10t"#
+}

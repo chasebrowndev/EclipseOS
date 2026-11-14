@@ -13,7 +13,14 @@ feature-depth = 1
 version = 2
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = []
+ignore = [
+    # Unmaintained (folded into zbus 6), not vulnerabilities. Pulled in by
+    # accesskit_unix 0.24.1 -> atspi 0.29 -> zbus 5, the newest accesskit_unix.
+    # Revisit when accesskit_unix moves to zbus 6. Owner decision 2026-11-13.
+    { id = "RUSTSEC-2026-0370", reason = "zvariant via accesskit_unix/zbus 5" },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names via accesskit_unix/zbus 5" },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive via accesskit_unix/zbus 5" },
+]
 
 # Must be compatible with AGPL-3.0-only distribution. GPLv2-only is
 # incompatible and is rejected by omission.

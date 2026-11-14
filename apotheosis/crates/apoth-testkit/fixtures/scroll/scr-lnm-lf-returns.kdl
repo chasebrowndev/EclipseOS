@@ -1,0 +1,10 @@
+fixture "scr-lnm-lf-returns" {
+  desc "scr lnm lf returns (migrated from the apoth-term corpus)"
+  covers "T03-LNM"
+  size rows=2 cols=3
+  feed #"\e[20hab\ncd"#
+  grid {
+    row "ab"
+    row "cd"
+  }
+}

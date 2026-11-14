@@ -1,0 +1,10 @@
+fixture "lr-decic" {
+  desc "lr decic (migrated from the apoth-term corpus)"
+  covers "T03-DECIC-DECDC"
+  size rows=2 cols=6
+  feed #"abcdef\r\nghijkl\e[?69h\e[2;5s\e[?6h\e[1;1H\e[1'}"#
+  grid {
+    row "a bcdf"
+    row "g hijl"
+  }
+}
