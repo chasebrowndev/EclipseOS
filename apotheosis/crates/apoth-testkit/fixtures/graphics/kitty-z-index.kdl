@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-z-index" {
+  desc "z is kept; negative draws under text"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=8
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=7,z=-5,C=1,q=1;/wAA/wAA\e\\"#
+  images {
+    row "kitty row=0 col=0 cols=1 rows=1 z=-5"
+  }
+}

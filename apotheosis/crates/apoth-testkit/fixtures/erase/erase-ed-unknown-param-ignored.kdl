@@ -1,0 +1,12 @@
+fixture "erase-ed-unknown-param-ignored" {
+  covers "T03-ED"
+  size rows=4 cols=6
+  feed #"AAAAAA\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\e[9J"#
+  grid {
+    row "AAAAAA"
+    row "BBBBBB"
+    row "CCCCCC"
+    row "DDDDDD"
+  }
+  cursor row=3 col=5
+}

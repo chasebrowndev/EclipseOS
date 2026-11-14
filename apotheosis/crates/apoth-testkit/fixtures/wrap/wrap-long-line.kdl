@@ -1,0 +1,11 @@
+fixture "wrap-long-line" {
+  covers "T03-AUTOWRAP"
+  size rows=3 cols=10
+  feed #"abcdefghijabcdefghijabcdefghij"#
+  grid {
+    row "abcdefghij"
+    row "abcdefghij"
+    row "abcdefghij"
+  }
+  cursor row=2 col=9
+}

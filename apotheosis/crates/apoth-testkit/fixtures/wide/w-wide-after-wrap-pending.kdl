@@ -1,0 +1,10 @@
+fixture "w-wide-after-wrap-pending" {
+  desc "w wide after wrap pending (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=2 cols=2
+  feed #"世世"#
+  grid {
+    row "世"
+    row "世"
+  }
+}

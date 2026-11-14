@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "xtsmgraphics-geometry" {
+  desc "XTSMGRAPHICS geometry is bounded by the screen; ReGIS is an error"
+  covers "T03-GRAPHICS-SIXEL"
+  size rows=2 cols=6
+  feed #"\e[?2;1S\e[?2;4S\e[?3;1S"#
+  replies #"\e[?2;0;48;32S\e[?2;0;10000;10000S\e[?3;1;0S"#
+}

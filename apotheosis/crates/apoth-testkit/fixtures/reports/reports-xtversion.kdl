@@ -1,0 +1,8 @@
+fixture "reports-xtversion" {
+  covers "T03-XTVERSION" "VTCORE-23"
+  version "1.4.2"
+  size rows=5 cols=10
+  feed #"\e[>q"#
+  grid
+  replies #"\eP>|Apotheosis 1.4.2\e\\"#
+}

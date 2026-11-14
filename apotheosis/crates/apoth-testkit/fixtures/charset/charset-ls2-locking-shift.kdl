@@ -1,0 +1,10 @@
+fixture "charset-ls2-locking-shift" {
+  desc "ESC n locks G2 into GL until SI"
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e*0\enqq\x0fq"#
+  grid {
+    row "──q"
+  }
+  cursor row=0 col=3
+}

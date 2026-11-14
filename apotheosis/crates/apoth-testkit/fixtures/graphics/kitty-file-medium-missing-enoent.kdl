@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-file-medium-missing-enoent" {
+  desc "a missing file answers the one ENOENT"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e_Ga=t,t=f,f=100,i=7;L25vbmV4aXN0ZW50L2Fwb3RoLWZpeHR1cmUucG5n\e\\"#
+  replies #"\e_Gi=7;ENOENT:file not readable\e\\"#
+}
