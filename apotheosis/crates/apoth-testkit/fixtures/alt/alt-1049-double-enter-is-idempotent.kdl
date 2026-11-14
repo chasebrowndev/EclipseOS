@@ -1,0 +1,14 @@
+fixture "alt-1049-double-enter-is-idempotent" {
+  desc "alt 1049 double enter is idempotent (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=5
+  feed #"ab\e[?1049hxy\e[?1049h"#
+  checkpoint "c1" {
+    alt #true
+  }
+  feed #"\e[?1049l"#
+  grid {
+    row "ab"
+  }
+  alt #false
+}

@@ -1,0 +1,7 @@
+fixture "w-ambiguous-narrow-by-default" {
+  desc "w ambiguous narrow by default (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=1 cols=4
+  feed #"±x"#
+  cursor row=0 col=2
+}

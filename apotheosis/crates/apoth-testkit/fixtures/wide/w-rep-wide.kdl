@@ -1,0 +1,10 @@
+fixture "w-rep-wide" {
+  desc "w rep wide (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=1 cols=8
+  feed #"世\e[2b"#
+  grid {
+    row "世世世"
+  }
+  cursor row=0 col=6
+}

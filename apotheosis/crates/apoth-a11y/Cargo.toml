@@ -10,3 +10,11 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+accesskit = "0.25"
+accesskit_unix = "0.24"
+apoth-grid.workspace = true
+
+[dev-dependencies]
+accesskit_consumer = "0.39"

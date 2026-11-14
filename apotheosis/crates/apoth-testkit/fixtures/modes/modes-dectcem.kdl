@@ -1,0 +1,11 @@
+fixture "modes-dectcem" {
+  desc "DECTCEM hides and shows the cursor"
+  covers "T03-DECTCEM"
+  size rows=3 cols=10
+  feed #"\e[?25l"#
+  checkpoint "hidden" {
+    cursor visible=#false
+  }
+  feed #"\e[?25h"#
+  cursor visible=#true
+}

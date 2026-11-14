@@ -1,0 +1,10 @@
+fixture "never-vt52-mode-ignored" {
+  desc "DECANM reset does not enter VT52 mode; ESC A is an ignored escape"
+  covers "T03-NEVER"
+  size rows=3 cols=10
+  feed #"\e[?2lAB\eAC"#
+  grid {
+    row "ABC"
+  }
+  cursor row=0 col=3
+}

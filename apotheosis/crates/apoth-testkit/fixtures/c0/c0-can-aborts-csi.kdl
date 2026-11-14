@@ -1,0 +1,10 @@
+fixture "c0-can-aborts-csi" {
+  desc "CAN aborts a CSI"
+  covers "T03-C0-ABORT"
+  size rows=3 cols=10
+  feed #"A\e[3\x18B"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+}

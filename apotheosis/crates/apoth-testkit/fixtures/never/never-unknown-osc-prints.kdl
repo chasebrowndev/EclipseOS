@@ -1,0 +1,9 @@
+fixture "never-unknown-osc-prints" {
+  desc "never unknown osc prints (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=1 cols=4
+  feed #"\e]9999;x\ay"#
+  grid {
+    row "y"
+  }
+}

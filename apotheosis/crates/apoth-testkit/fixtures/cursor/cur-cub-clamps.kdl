@@ -1,0 +1,9 @@
+fixture "cur-cub-clamps" {
+  desc "cur cub clamps (migrated from the apoth-term corpus)"
+  covers "T03-CUX"
+  size rows=1 cols=10
+  feed #"ab\e[99Dx"#
+  grid {
+    row "xb"
+  }
+}

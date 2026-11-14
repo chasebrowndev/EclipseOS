@@ -1,0 +1,7 @@
+fixture "osc9-4-set" {
+  covers "T03-OSC9-PROGRESS" "INTEGRATION-24"
+  size rows=3 cols=20
+  feed #"\e]9;4;1;50\a"#
+  grid
+  events "progress:1:50"
+}

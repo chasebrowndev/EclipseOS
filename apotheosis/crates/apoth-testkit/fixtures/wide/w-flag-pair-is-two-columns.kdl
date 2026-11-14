@@ -1,0 +1,8 @@
+fixture "w-flag-pair-is-two-columns" {
+  desc "w flag pair is two columns (migrated from the apoth-term corpus)"
+  covers "T03-GRAPHEME"
+  size rows=1 cols=6
+  feed #"🇺🇸x"#
+  cursor row=0 col=3
+  cell row=0 col=0 wide="wide"
+}

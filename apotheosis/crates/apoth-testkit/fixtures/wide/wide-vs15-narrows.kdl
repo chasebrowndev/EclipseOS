@@ -1,0 +1,12 @@
+fixture "wide-vs15-narrows" {
+  desc "VS15 on a default-wide emoji narrows it to 1 (T-04 section 3)"
+  covers "T03-GRAPHEME" "UNICODE-07"
+  size rows=2 cols=10
+  feed #"⌚︎X"#
+  grid {
+    row "⌚︎X"
+  }
+  cursor row=0 col=2
+  cell row=0 col=0 wide="narrow"
+  cell row=0 col=1 ch="X"
+}

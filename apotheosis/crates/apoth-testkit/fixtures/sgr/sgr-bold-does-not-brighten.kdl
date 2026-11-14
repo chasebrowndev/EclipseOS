@@ -1,0 +1,11 @@
+fixture "sgr-bold-does-not-brighten" {
+  desc "bold keeps the palette index; brightening is a render decision"
+  covers "T03-SGR-BASIC" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[1;31mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" fg="p1" attrs="bold"
+}

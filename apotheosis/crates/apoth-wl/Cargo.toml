@@ -10,3 +10,16 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+# T-09 §1: wayland-client on the system libwayland backend (the Vulkan WSI needs a real
+# wl_display*), exactly one backend active. No winit, no xkbcommon.
+wayland-client = { version = "0.31", features = ["system"] }
+wayland-backend = { version = "0.3", features = ["client_system"] }
+wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
+wayland-protocols-plasma = { version = "0.3", features = ["client"] }
+calloop = "0.14"
+raw-window-handle = "0.6"
+rustix = { version = "1", features = ["std", "fs", "pipe", "time"] }
+tracing = "0.1"
+thiserror = "2"

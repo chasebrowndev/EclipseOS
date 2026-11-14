@@ -1,0 +1,7 @@
+fixture "reply-decrqss-neovim-probe" {
+  desc "reply decrqss neovim probe (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=2 cols=4
+  feed #"\eP$qm\e\\\e[?2026$p\e[c"#
+  replies #"\eP1$r0m\e\\\e[?2026;2$y\e[?62;22c"#
+}

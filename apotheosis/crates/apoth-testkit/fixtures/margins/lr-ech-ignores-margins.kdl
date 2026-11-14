@@ -1,0 +1,9 @@
+fixture "lr-ech-ignores-margins" {
+  desc "lr ech ignores margins (migrated from the apoth-term corpus)"
+  covers "T03-DECLRMM"
+  size rows=1 cols=8
+  feed #"abcdefgh\e[?69h\e[3;6s\e[1;1H\e[?6l\e[1;1H\e[3X"#
+  grid {
+    row "   defgh"
+  }
+}
