@@ -167,6 +167,9 @@ pub struct EventSlot {
     /// answers with [`crate::Term::graphics_file_decision`]; the pane's output is held
     /// until then.
     pub graphics_file: Option<u64>,
+    /// A media placement asked for audio but no sound server took it: it plays muted
+    /// (T-16 §3). Main shows a transient muted notice (T-08); latest wins.
+    pub audio_unavailable: bool,
     /// Drop counters.
     pub dropped: Dropped,
 }
@@ -186,6 +189,7 @@ impl Default for EventSlot {
             vars: VecDeque::with_capacity(VARS_CAP),
             commands: VecDeque::with_capacity(COMMANDS_CAP),
             graphics_file: None,
+            audio_unavailable: false,
             dropped: Dropped::default(),
         }
     }
@@ -206,6 +210,7 @@ impl EventSlot {
             && self.vars.is_empty()
             && self.commands.is_empty()
             && self.graphics_file.is_none()
+            && !self.audio_unavailable
     }
     /// Forget everything pending (drop counters persist).
     pub fn clear(&mut self) {
@@ -221,6 +226,7 @@ impl EventSlot {
         self.vars.clear();
         self.commands.clear();
         self.graphics_file = None;
+        self.audio_unavailable = false;
     }
     pub(crate) fn push_mark(&mut self, m: Mark) {
         if self.marks.len() >= MARKS_CAP {

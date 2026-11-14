@@ -281,10 +281,15 @@ struct Status {
     bell_tabs: std::collections::HashSet<TabId>,
     /// The pane the visual bell is lighting, and the timer that puts it out.
     bell_flash: Option<(PaneKey, RegistrationToken)>,
+    /// A media placement in this pane plays muted (no sound server, T-16 §3): the muted
+    /// notice shows over the pane until the timer clears it (T-08 §4). Never a window.
+    media_muted: Option<(PaneKey, RegistrationToken)>,
 }
 
 /// How long the visual bell's rim shows.
 const BELL_FLASH: Duration = Duration::from_millis(180);
+/// How long the muted notice shows.
+const MEDIA_MUTED_NOTICE: Duration = Duration::from_secs(4);
 
 pub(crate) struct App {
     settings: Settings,
@@ -364,6 +369,8 @@ pub(crate) struct App {
     held: Mods,
     /// The left button is down (the held button of a motion event).
     left_down: bool,
+    /// The left press went to a media placement (play/pause): its release is taken too.
+    media_pressed: bool,
     /// Last pointer position, surface-logical.
     pointer: Option<(f64, f64)>,
     /// The pane a held button went down in: motion and release go there.
@@ -513,6 +520,7 @@ pub(crate) fn run(
         mouse: Mouse::new(),
         held: Mods::NONE,
         left_down: false,
+        media_pressed: false,
         pointer: None,
         capture: None,
         mouse_pane: None,
@@ -1331,8 +1339,57 @@ impl App {
             tooltip: self.tooltip_spec(),
             bell: self.bell_rect(geo),
             media: None,
+            media_muted: self.media_muted_rect(geo),
+            media_huds: Vec::new(),
             ui: self.ui_state.clone(),
         }
+    }
+
+    /// The frame rect of the pane showing the muted notice, while it shows.
+    fn media_muted_rect(&self, geo: &WinLayout) -> Option<apoth_ui::Rect> {
+        let (id, _) = self.status.media_muted.as_ref()?;
+        let p = self.placed.iter().find(|p| p.id == *id)?;
+        Some(layout::frame_rect(p, self.cell, geo.ui, geo.area))
+    }
+
+    /// Show the muted notice over pane `id` for [`MEDIA_MUTED_NOTICE`] (a later one in any
+    /// pane replaces it). Only the timer that clears it runs; nothing opens.
+    fn media_muted_notice(&mut self, id: PaneKey) {
+        if let Some((_, t)) = self.status.media_muted.take() {
+            self.lh.remove(t);
+        }
+        let timer = self.lh.insert_source(
+            Timer::from_duration(MEDIA_MUTED_NOTICE),
+            |_, (), app: &mut App| {
+                app.status.media_muted = None;
+                app.send_layout();
+                TimeoutAction::Drop
+            },
+        );
+        if let Ok(t) = timer {
+            self.status.media_muted = Some((id, t));
+        }
+        self.send_layout();
+    }
+
+    /// A left press over a media placement with mouse reporting off toggles its playback
+    /// (T-08 §4): the toggle goes to the pane's io thread, which owns the term. True when
+    /// the press was taken.
+    fn media_click(&mut self, id: PaneKey) -> bool {
+        let Some(key) = self.nav.media_hover.filter(|h| h.0 == id).map(|h| h.1) else {
+            return false;
+        };
+        let Some(p) = self.panes.get(&id) else {
+            return false;
+        };
+        if p.shared.mirror.load().mouse_mode() != apoth_input::MouseMode::None {
+            return false;
+        }
+        p.shared.post_media_toggle(key);
+        if let Some(io) = &p.io {
+            let _ = rustix::io::write(&io.wake, &[crate::pane::WAKE_MEDIA_CLICK]);
+        }
+        true
     }
 
     /// The search sheet's content (T-14 §6): the query, the count and the mode chips.
@@ -3138,6 +3195,12 @@ impl App {
                 }
                 self.open_hints_ended(id);
             }
+            NavMsg::MediaHover(key) => {
+                let h = key.map(|k| (id, k));
+                if key.is_some() || self.nav.media_hover.is_some_and(|m| m.0 == id) {
+                    self.nav.media_hover = h;
+                }
+            }
             NavMsg::Link(uri) => {
                 if self.focused() == Some(id) && self.nav.link_tip != uri {
                     self.nav.link_tip = uri;
@@ -3892,6 +3955,11 @@ impl App {
                 }
                 self.mouse.selection_gone();
             }
+            if code == BTN_LEFT && !self.open_modifier_held() && self.media_click(id) {
+                // The release belongs to the click too: no selection starts or ends.
+                self.media_pressed = true;
+                return;
+            }
             if code == BTN_LEFT && self.open_modifier_held() {
                 // Open-modifier click activates the link under the pointer (T-14 §5).
                 if let (Some(geo), Some((x, y))) = (self.geometry_of(id), self.pointer) {
@@ -3912,6 +3980,9 @@ impl App {
             }
             id
         } else {
+            if code == BTN_LEFT && std::mem::take(&mut self.media_pressed) {
+                return;
+            }
             let Some(id) = self.capture.take().or(self.mouse_pane) else {
                 return;
             };
@@ -4244,6 +4315,7 @@ impl App {
             }
             MainMsg::Loaded(r) => self.on_loaded(*r),
             MainMsg::MediaStopped(id) => self.media_stopped(id),
+            MainMsg::MediaBox(id, b) => self.media_box(id, b),
             MainMsg::Open(m) => self.on_open(m),
             MainMsg::Closed(id, status) => {
                 self.closing = self.closing.saturating_sub(1);
@@ -4349,6 +4421,9 @@ impl App {
         }
         if let Some(token) = e.graphics_file.take() {
             self.on_graphics_file(id, token);
+        }
+        if e.audio_unavailable {
+            self.media_muted_notice(id);
         }
         self.auto_pane_events(id, &mut e, uri.as_deref());
     }

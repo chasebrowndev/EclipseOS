@@ -465,6 +465,11 @@ fn run_cases(s: &mut Shots) {
         s.sh("clear; echo 'Inline video:'; apoth play --loop \"$HOME/out/clip.webm\"");
         s.pause(2500);
         s.shot("play-inline");
+        // Pointer over the picture: the hover controls (T-08 §4).
+        s.hover(120.0, 90.0);
+        s.pause(600);
+        s.shot("play-inline-hover");
+        s.hover(3.0, 3.0);
         s.key("c", &["ctrl"]);
         s.pause(500);
     }

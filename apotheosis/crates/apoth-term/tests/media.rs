@@ -6,7 +6,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use apoth_term::apoth_image::Image;
-use apoth_term::{MediaCtl, MediaEvent, MediaRequest, MediaSource, Term, TermConfig};
+use apoth_term::{
+    MediaCtl, MediaEvent, MediaPlacement, MediaPlay, MediaRequest, MediaSource, Term, TermConfig,
+};
 
 fn term() -> Term {
     Term::new(TermConfig {
@@ -59,16 +61,24 @@ fn open_ready_frame_and_end() {
         width: 160,
         height: 90,
         duration_ms: 2000,
+        video_w: 160,
+        video_h: 90,
+        dar: None,
     };
     t.media_event(key, ready, now);
-    assert_eq!(replies(&mut t), "\x1b_Mi=5;ready,w=160,h=90,d=2000\x1b\\");
+    assert_eq!(
+        replies(&mut t),
+        "\x1b_Mi=5;ready,w=160,h=90,d=2000,vw=160,vh=90\x1b\\"
+    );
     let w = t.media_event(key, frame(160, 90), now);
     assert!(w.dirty);
     let mut d = Vec::new();
     t.image_draws(t.primary().history_rows(), t.rows(), now, &mut d);
     assert_eq!(d.len(), 1);
-    // A 16:9 frame in a 160x64 box: full height, centred.
-    assert_eq!(d[0].dst, [23, 0, 113, 64]);
+    // A 16:9 video in a 20x4 cell box: the box shrinks to 15x4 cells (120x64 px) and the
+    // frame fills its height, centred in the last part-cell.
+    assert_eq!(t.media_placements()[0].cols, 15);
+    assert_eq!(d[0].dst, [3, 0, 113, 64]);
     let first = d[0].key;
     t.media_event(key, frame(160, 90), now);
     t.image_draws(t.primary().history_rows(), t.rows(), now, &mut d);
@@ -195,6 +205,9 @@ fn scrolling_off_the_screen_pauses_and_history_loss_closes() {
             width: 4,
             height: 2,
             duration_ms: 0,
+            video_w: 4,
+            video_h: 2,
+            dar: None,
         },
         now,
     );
@@ -246,4 +259,147 @@ fn denied_graphics_ignore_media_silently() {
     t.feed(b"\x1b_Ma=o,s=f,t=1,i=1\x1b\\", now);
     assert!(t.take_media_requests().is_empty());
     assert!(replies(&mut t).is_empty());
+}
+
+fn ready(vw: u32, vh: u32, dar: Option<(u32, u32)>, duration_ms: u64) -> MediaEvent {
+    MediaEvent::Ready {
+        width: vw,
+        height: vh,
+        duration_ms,
+        video_w: vw,
+        video_h: vh,
+        dar,
+    }
+}
+
+#[test]
+fn ready_reports_the_source_and_fits_the_box_to_the_display_aspect() {
+    let now = Instant::now();
+    let mut t = term();
+    // 20x8 cells = 160x128 px.
+    t.feed(b"\x1b_Ma=o,s=f,t=1,i=3,c=20,r=8\x1b\\", now);
+    let (key, ..) = open_key(&mut t);
+    assert_eq!((t.cursor().y, t.cursor().x), (8, 0));
+    // Anamorphic 720x480 shown at 16:9: 160x90 px in the box, so 20x6 cells.
+    t.media_event(key, ready(720, 480, Some((16, 9)), 5000), now);
+    assert_eq!(
+        replies(&mut t),
+        "\x1b_Mi=3;ready,w=720,h=480,d=5000,vw=720,vh=480,dar=16:9\x1b\\"
+    );
+    let p = &t.media_placements()[0];
+    assert_eq!((p.row, p.col, p.cols, p.rows), (0, 0, 20, 6));
+    // The cursor was directly below the box: it follows the box up.
+    assert_eq!((t.cursor().y, t.cursor().x), (6, 0));
+    // A square-pixel video of the box's own aspect keeps the box.
+    t.feed(b"\x1b_Ma=o,s=f,t=1,i=4,c=8,r=2\x1b\\", now);
+    let (k2, ..) = open_key(&mut t);
+    let y = t.cursor().y;
+    t.media_event(k2, ready(64, 32, None, 0), now);
+    assert_eq!(t.media_placements()[1].rows, 2);
+    assert_eq!(t.cursor().y, y);
+}
+
+#[test]
+fn the_cursor_stays_when_output_moved_it_before_ready() {
+    let now = Instant::now();
+    let mut t = term();
+    t.feed(b"\x1b_Ma=o,s=f,t=1,i=3,c=20,r=8\x1b\\ok", now);
+    let (key, ..) = open_key(&mut t);
+    t.media_event(key, ready(160, 90, None, 0), now);
+    assert_eq!(t.media_placements()[0].rows, 6);
+    assert_eq!((t.cursor().y, t.cursor().x), (8, 2));
+}
+
+#[test]
+fn media_placements_report_state_position_and_video() {
+    let now = Instant::now();
+    let mut t = term();
+    t.feed(b"\x1b_Ma=o,s=f,t=1,i=9,c=10,r=3,pause\x1b\\", now);
+    let (key, ..) = open_key(&mut t);
+    let want = |state, pos_ms, duration_ms, video, rows| MediaPlacement {
+        key,
+        id: 9,
+        row: 0,
+        col: 0,
+        cols: 10,
+        rows,
+        state,
+        pos_ms,
+        duration_ms,
+        video,
+    };
+    assert_eq!(
+        t.media_placements(),
+        vec![want(MediaPlay::Opening, 0, None, None, 3)]
+    );
+    // 80x48 px box, 5:3 video: the box is already that aspect.
+    t.media_event(key, ready(80, 48, None, 2000), now);
+    replies(&mut t);
+    t.media_event(key, MediaEvent::Position(1234), now);
+    assert_eq!(
+        t.media_placements(),
+        vec![want(MediaPlay::Paused, 1234, Some(2000), Some((80, 48)), 3)]
+    );
+    t.feed(b"\x1b_Ma=q,i=9\x1b\\", now);
+    assert_eq!(
+        replies(&mut t),
+        "\x1b_Mi=9;state=paused,pos=1234,dur=2000\x1b\\"
+    );
+    t.media_event(key, MediaEvent::Ended, now);
+    assert_eq!(t.media_placements()[0].state, MediaPlay::Ended);
+    // The alternate screen has none; back on the primary they are there again.
+    t.feed(b"\x1b[?1049h", now);
+    assert!(t.media_placements().is_empty());
+    t.feed(b"\x1b[?1049l", now);
+    assert_eq!(t.media_placements().len(), 1);
+}
+
+#[test]
+fn media_control_is_the_click_path() {
+    let now = Instant::now();
+    let mut t = term();
+    t.feed(b"\x1b_Ma=o,s=f,t=1,i=2,c=4,r=2\x1b\\", now);
+    let (key, ..) = open_key(&mut t);
+    t.media_event(key, ready(32, 32, None, 0), now);
+    replies(&mut t);
+    assert_eq!(t.media_placements()[0].state, MediaPlay::Playing);
+    let w = t.media_control(key, MediaCtl::Pause);
+    assert!(w.media && w.dirty);
+    assert_eq!(
+        t.take_media_requests(),
+        vec![MediaRequest::Control {
+            key,
+            ctl: MediaCtl::Pause
+        }]
+    );
+    assert_eq!(t.media_placements()[0].state, MediaPlay::Paused);
+    // Play after the end restarts.
+    t.media_event(key, MediaEvent::Ended, now);
+    t.media_control(key, MediaCtl::Play);
+    assert_eq!(t.media_placements()[0].state, MediaPlay::Playing);
+    assert_eq!(
+        t.take_media_requests(),
+        vec![MediaRequest::Control {
+            key,
+            ctl: MediaCtl::Play
+        }]
+    );
+    // No reply goes to the client for an interface control, and an unknown key is a no-op.
+    assert_eq!(replies(&mut t), "\x1b_Mi=2;ended\x1b\\");
+    let w = t.media_control(key + 100, MediaCtl::Play);
+    assert!(!w.media && !w.dirty);
+}
+
+#[test]
+fn audio_unavailable_raises_the_event_flag() {
+    let now = Instant::now();
+    let mut t = term();
+    t.feed(b"\x1b_Ma=o,s=f,t=1,i=2,c=4,r=2\x1b\\", now);
+    let (key, ..) = open_key(&mut t);
+    assert!(!t.events().audio_unavailable);
+    let w = t.media_event(key, MediaEvent::AudioUnavailable, now);
+    assert!(w.events);
+    assert!(t.events().audio_unavailable);
+    t.events().clear();
+    assert!(t.events().is_empty());
 }

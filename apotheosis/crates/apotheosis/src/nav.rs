@@ -65,6 +65,9 @@ pub(crate) struct Nav {
     pub(crate) link_tip: Option<String>,
     /// The cell the pointer was last reported over (hover is sent only when it changes).
     pub(crate) hover_cell: Option<(PaneKey, Option<(usize, usize)>)>,
+    /// The media placement under the pointer (pane, placement key), as the pane's view
+    /// hit-tested it (`NavMsg::MediaHover`): a left click there toggles play/pause.
+    pub(crate) media_hover: Option<(PaneKey, u64)>,
     pub(crate) consent: Option<PendingConsent>,
     pub(crate) consents: Consent,
     pub(crate) open: Option<PendingOpen>,

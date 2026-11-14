@@ -33,6 +33,8 @@ const WAKE_IMAGE: u8 = 3;
 pub(crate) const WAKE_GRAPHICS_FILE: u8 = 4;
 /// Wake byte: a media player has events for the term (T-16 §2).
 const WAKE_MEDIA: u8 = 5;
+/// Wake byte: the user clicked a media placement ([`PaneShared::post_media_toggle`]).
+pub(crate) const WAKE_MEDIA_CLICK: u8 = 6;
 
 /// Upper bound on the yields the io thread spends letting waiting takers go first.
 const MAX_HANDOFF_YIELDS: u32 = 2_000;
@@ -58,6 +60,8 @@ pub(crate) struct PaneShared {
     resize: Mutex<Option<ResizeReq>>,
     /// Answers to `graphics-file` questions (token, allow), for the io thread.
     graphics_file: Mutex<Vec<(u64, bool)>>,
+    /// Media placements the user clicked (play/pause toggles, by key), for the io thread.
+    media_clicks: Mutex<Vec<u64>>,
     /// Lock-free mode mirror: main encodes keys from this and never locks `term`.
     pub(crate) mirror: Arc<InputMirror>,
     /// Set by io on output; cleared by render when it wakes (edge-triggered wake).
@@ -85,6 +89,7 @@ impl PaneShared {
             waiters: AtomicUsize::new(0),
             resize: Mutex::new(None),
             graphics_file: Mutex::new(Vec::new()),
+            media_clicks: Mutex::new(Vec::new()),
             mirror,
             dirty: AtomicBool::new(false),
             hold: AtomicBool::new(false),
@@ -144,6 +149,30 @@ impl PaneShared {
             .push((token, allow));
     }
 
+    /// Leave a play/pause toggle of media placement `key` for the io thread (a click with
+    /// mouse reporting off, T-08 §4); the caller then writes [`WAKE_MEDIA_CLICK`] to the io
+    /// wake pipe. Main never takes the term lock; the io thread resolves the toggle against
+    /// the placement's state when it runs.
+    pub(crate) fn post_media_toggle(&self, key: u64) {
+        let mut q = self
+            .media_clicks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Bounded: a click storm faster than the io thread is a few toggles, not a queue.
+        if q.len() < 16 {
+            q.push(key);
+        }
+    }
+
+    pub(crate) fn take_media_toggles(&self) -> Vec<u64> {
+        std::mem::take(
+            &mut *self
+                .media_clicks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     fn take_graphics_file(&self) -> Vec<(u64, bool)> {
         std::mem::take(
             &mut *self
@@ -186,6 +215,8 @@ pub(crate) struct PaneEvents {
     /// A `graphics-file` question (T-15 §5, T-18 §3): the token main answers with
     /// [`PaneShared::post_graphics_file`]. The pane's output waits until then.
     pub(crate) graphics_file: Option<u64>,
+    /// A media placement plays muted: no sound server took its audio (T-16 §3).
+    pub(crate) audio_unavailable: bool,
 }
 
 /// A command block's state change with what rules match on (T-11 §5). The command line
@@ -233,6 +264,8 @@ pub(crate) enum MainMsg {
     /// A worker finished a config load (T-10 §4): main diffs and applies it.
     /// A media window's threads stopped: its surface can be destroyed.
     MediaStopped(u64),
+    /// A media window's placements need these rows and columns (spare row included).
+    MediaBox(u64, (usize, usize)),
     /// "Open with" worker results (T-14 §11).
     Open(crate::app::OpenMsg),
     Loaded(
@@ -451,6 +484,10 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
                 st = io.step(|t| t.graphics_file_decision(token, allow, Instant::now()));
                 ran = true;
             }
+            let clicks = shared.take_media_toggles();
+            if !clicks.is_empty() {
+                st = io.step(|t| media_toggles(t, &clicks));
+            }
             let evs = io
                 .media
                 .borrow_mut()
@@ -627,6 +664,35 @@ impl Io<'_> {
     }
 }
 
+/// The control a click on a placement means: pause while it plays, play otherwise (an
+/// ended placement restarts, an opening one starts when ready).
+pub(crate) fn toggle_ctl(p: &apoth_term::MediaPlacement) -> apoth_term::MediaCtl {
+    match p.state {
+        apoth_term::MediaPlay::Playing => apoth_term::MediaCtl::Pause,
+        _ => apoth_term::MediaCtl::Play,
+    }
+}
+
+/// Apply clicked toggles (by key) to the term; a key whose placement went is dropped.
+pub(crate) fn media_toggles(t: &mut Term, keys: &[u64]) -> apoth_term::Wake {
+    let mut w = apoth_term::Wake::default();
+    for &key in keys {
+        let Some(ctl) = t
+            .media_placements()
+            .iter()
+            .find(|p| p.key == key)
+            .map(toggle_ctl)
+        else {
+            continue;
+        };
+        let x = t.media_control(key, ctl);
+        w.dirty |= x.dirty;
+        w.media |= x.media;
+        w.hold = x.hold;
+    }
+    w
+}
+
 pub(crate) fn take_events(t: &mut Term) -> PaneEvents {
     let slot = t.events();
     let mut e = PaneEvents {
@@ -641,6 +707,7 @@ pub(crate) fn take_events(t: &mut Term) -> PaneEvents {
         vars: slot.vars.drain(..).collect(),
         commands: Vec::new(),
         graphics_file: slot.graphics_file.take(),
+        audio_unavailable: slot.audio_unavailable,
     };
     let changes: Vec<apoth_term::CommandEvent> = slot.commands.drain(..).collect();
     slot.clear();
@@ -689,6 +756,54 @@ fn publish(
 mod tests {
     use super::*;
     use apoth_term::TermConfig;
+
+    /// A term with one playing media placement (key, 4x2 cells at the origin).
+    fn playing() -> (Term, u64) {
+        let now = std::time::Instant::now();
+        let mut t = Term::new(TermConfig {
+            rows: 10,
+            cols: 40,
+            ..TermConfig::default()
+        });
+        t.feed(b"\x1b_Ma=o,s=f,t=1,i=2,c=4,r=2\x1b\\", now);
+        let key = match t.take_media_requests().as_slice() {
+            [apoth_term::MediaRequest::Open { key, .. }] => *key,
+            other => panic!("{other:?}"),
+        };
+        let ready = apoth_term::MediaEvent::Ready {
+            width: 32,
+            height: 32,
+            duration_ms: 0,
+            video_w: 32,
+            video_h: 32,
+            dar: None,
+        };
+        t.media_event(key, ready, now);
+        (t, key)
+    }
+
+    #[test]
+    fn a_click_toggles_play_and_pause() {
+        use apoth_term::{MediaCtl, MediaPlay, MediaRequest};
+        let (mut t, key) = playing();
+        assert_eq!(toggle_ctl(&t.media_placements()[0]), MediaCtl::Pause);
+        let w = media_toggles(&mut t, &[key]);
+        assert!(w.dirty && w.media);
+        assert_eq!(t.media_placements()[0].state, MediaPlay::Paused);
+        assert_eq!(
+            t.take_media_requests(),
+            vec![MediaRequest::Control {
+                key,
+                ctl: MediaCtl::Pause
+            }]
+        );
+        assert_eq!(toggle_ctl(&t.media_placements()[0]), MediaCtl::Play);
+        media_toggles(&mut t, &[key]);
+        assert_eq!(t.media_placements()[0].state, MediaPlay::Playing);
+        // A key whose placement went is dropped.
+        let w = media_toggles(&mut t, &[key + 9]);
+        assert!(!w.dirty && !w.media);
+    }
 
     #[test]
     fn now_is_monotonic_and_nonzero() {

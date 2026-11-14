@@ -301,6 +301,72 @@ pub(crate) fn pane_widget(pane: u64) -> WidgetId {
 /// Lowers the chrome into `chrome` for a `buffer` of physical pixels at interface scale
 /// `ui` (physical pixels per interface unit). Back to front: pane frames (focus rim, inactive
 /// dim), tab strip, overlay bar, palette sheet (T-08 §5 order).
+/// Interface copy of the muted notice.
+pub(crate) const MEDIA_MUTED_TEXT: &str = "No audio output \u{2014} playing muted";
+
+/// PLACEHOLDER draw hook for the media controls and the muted notice (T-08 §4): plain
+/// token shapes that prove the state reaches the renderer. The glass treatment (hover
+/// play/pause button, progress track, muted pill) is the frontend pass's, here.
+fn draw_media_placeholder(
+    huds: &[crate::render::MediaHud],
+    muted: Option<Rect>,
+    pal: &Palette,
+    measure: &dyn Measure,
+    dl: &mut DrawList,
+) {
+    use apoth_ui::tokens::{radius, size};
+    for h in huds.iter().filter(|h| h.hovered) {
+        let r = h.rect;
+        dl.rect(
+            r,
+            radius::INSET,
+            Rgba::CLEAR,
+            Some(apoth_ui::draw::Rim {
+                width: metrics::RIM_W,
+                colour: pal.cell_focus_rim_hover,
+            }),
+        );
+        // The play/pause target: a square in the middle, brighter while playing.
+        let d = (r.w.min(r.h) / 3.0).clamp(1.0, 48.0);
+        let fill = if h.state == apoth_term::MediaPlay::Playing {
+            pal.cell_focus_hover
+        } else {
+            pal.cell_hover
+        };
+        let b = Rect::new(r.x + (r.w - d) / 2.0, r.y + (r.h - d) / 2.0, d, d);
+        dl.rect(b, radius::PILL, fill, None);
+        if let Some(f) = h.progress {
+            let t = Rect::new(
+                r.x + space::SM,
+                r.bottom() - space::SM - 3.0,
+                r.w - 2.0 * space::SM,
+                3.0,
+            );
+            if t.w > 0.0 {
+                dl.rect(t, radius::PILL, pal.track, None);
+                dl.rect(
+                    Rect::new(t.x, t.y, t.w * f, t.h),
+                    radius::PILL,
+                    pal.accent,
+                    None,
+                );
+            }
+        }
+    }
+    if let Some(r) = muted {
+        let run = TextRun::interface(MEDIA_MUTED_TEXT, size::BODY_SMALL);
+        let w = measure.width(&run) + 2.0 * space::MD;
+        let h = size::BODY_SMALL + 2.0 * space::SM;
+        let pill = Rect::new(r.right() - w - space::SM, r.y + space::SM, w, h);
+        apoth_ui::state::glass(dl, pill, radius::PILL, pal.cell_rim, pal);
+        dl.text(
+            run,
+            Point::new(pill.x + space::MD, pill.y + (h - size::BODY_SMALL) / 2.0),
+            pal.text,
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_chrome(
     chrome: &mut ChromeList,
@@ -339,6 +405,13 @@ pub(crate) fn build_chrome(
         if let Some(m) = &model.media {
             apoth_ui::mediawin::draw(area, m, &pal, &measure, &mut dl);
         }
+        draw_media_placeholder(
+            &model.media_huds,
+            model.media_muted,
+            &pal,
+            &measure,
+            &mut dl,
+        );
         if let Some((strip, tabs)) = &model.strip {
             let l = apoth_ui::tabs::layout(*strip, STRIP_ID, tabs);
             apoth_ui::tabs::draw(&l, tabs, model.tab_style, &model.ui, &pal, &mut dl);
@@ -585,6 +658,8 @@ mod tests {
             tooltip: None,
             bell: None,
             media: None,
+            media_muted: None,
+            media_huds: Vec::new(),
             ui: UiState::default(),
         };
         (model, ((w * scale) as u32, (h * scale) as u32))
@@ -827,6 +902,8 @@ mod tests {
             tooltip: None,
             bell: None,
             media: None,
+            media_muted: None,
+            media_huds: Vec::new(),
             ui: UiState::default(),
         };
         let shot = std::env::var_os("APOTH_SHOT").map(PathBuf::from);

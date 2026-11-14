@@ -54,7 +54,7 @@ struct MediaWin {
     grid: (usize, usize),
     shared: Arc<PaneShared>,
     defaults: TermDefaults,
-    feed: Option<mpsc::SyncSender<Vec<u8>>>,
+    feed: Option<mpsc::SyncSender<Feed>>,
     queued: Arc<std::sync::atomic::AtomicUsize>,
     feeder: Option<JoinHandle<()>>,
     render_tx: mpsc::Sender<RenderMsg>,
@@ -69,6 +69,19 @@ struct MediaWin {
     pad: (i32, i32),
     size_ui: (f32, f32),
     chrome: MediaWinSpec,
+    /// The cell size (physical px) once running, the rows and columns the window shows
+    /// (spare row included: `grid` until a placement's box is known, T-16 §2), and the
+    /// pointer (logical px) while over it.
+    cell: (u32, u32),
+    shown: (usize, usize),
+    ptr_at: Option<(f64, f64)>,
+}
+
+/// What the feeder thread takes, in order.
+enum Feed {
+    Bytes(Vec<u8>),
+    /// A primary click at viewport cell (row, column): play/pause the placement there.
+    Click(usize, usize),
 }
 
 /// The window's logical size for `grid` rows and columns of `cell`-px cells at `scale`. The
@@ -100,12 +113,15 @@ fn err(code: ErrorCode, msg: &str) -> WireError {
 /// The feeder: bytes in arrival order through the term, image decodes inline (this thread is
 /// the window's own), then one poke for the render thread.
 fn feeder(
+    id: u64,
     shared: Arc<PaneShared>,
-    rx: mpsc::Receiver<Vec<u8>>,
+    rx: mpsc::Receiver<Feed>,
     queued: Arc<std::sync::atomic::AtomicUsize>,
     poke: mpsc::Sender<RenderMsg>,
+    to_main: calloop::channel::Sender<MainMsg>,
 ) {
     let mut deadline: Option<Instant> = None;
+    let mut boxed: Option<(usize, usize)> = None;
     // `apoth play --ext` (T-16 §2): players here report by polling while any plays (the
     // feed channel cannot carry a poke without keeping itself open).
     let mut host = crate::mediahost::MediaHost::new(Arc::new(|| {}));
@@ -134,9 +150,16 @@ fn feeder(
                 t.media_event(key, ev, now);
             }
             match &msg {
-                Some(b) => {
+                Some(Feed::Bytes(b)) => {
                     queued.fetch_sub(b.len(), Ordering::AcqRel);
                     t.feed(b, Instant::now());
+                }
+                Some(Feed::Click(row, col)) => {
+                    let top = t.grid().history_rows();
+                    let places = t.media_placements();
+                    if let Some(key) = crate::view::media_at(&places, top + row, *col) {
+                        crate::pane::media_toggles(&mut t, &[key]);
+                    }
                 }
                 None => {
                     t.tick(Instant::now());
@@ -161,7 +184,14 @@ fn feeder(
             let _ = crate::pane::take_events(&mut t);
             deadline = t.next_deadline();
             let reqs = t.take_media_requests();
+            let want = shown_box(&t);
             drop(t);
+            if want.is_some() && want != boxed {
+                boxed = want;
+                if let Some(b) = want {
+                    let _ = to_main.send(MainMsg::MediaBox(id, b));
+                }
+            }
             if !reqs.is_empty() {
                 host.requests(reqs, true);
             }
@@ -170,6 +200,20 @@ fn feeder(
             let _ = poke.send(RenderMsg::Poke);
         }
     }
+}
+
+/// The rows and columns (spare row included) that show every media placement of the
+/// window's screen, at most its grid: a `--ext` box shrunk to the display aspect (T-16 §2)
+/// shrinks the window with it. `None` while there is none.
+fn shown_box(t: &Term) -> Option<(usize, usize)> {
+    let top = t.grid().history_rows();
+    let places = t.media_placements();
+    let rows = places
+        .iter()
+        .map(|p| p.row.saturating_sub(top) + p.rows as usize)
+        .max()?;
+    let cols = places.iter().map(|p| p.col + p.cols as usize).max()?;
+    Some(((rows + 1).min(t.rows()), cols.min(t.cols()).max(1)))
 }
 
 impl App {
@@ -196,18 +240,21 @@ impl App {
         let shared = Arc::new(PaneShared::new(term));
         shared.deny.store(self.deny_word(), Ordering::Release);
         let (render_tx, render_rx) = mpsc::channel();
-        let (feed, rx) = mpsc::sync_channel::<Vec<u8>>(256);
+        self.media.next += 1;
+        let id = self.media.next;
+        let (feed, rx) = mpsc::sync_channel::<Feed>(256);
         // No cursor: the window shows images, not a prompt (counted like any write).
         const HIDE_CURSOR: &[u8] = b"\x1b[?25l";
         let queued = Arc::new(std::sync::atomic::AtomicUsize::new(HIDE_CURSOR.len()));
         let feeder = {
             let (s, q, poke) = (Arc::clone(&shared), Arc::clone(&queued), render_tx.clone());
+            let to_main = self.to_main.clone();
             std::thread::Builder::new()
                 .name("apoth-media".into())
-                .spawn(move || feeder(s, rx, q, poke))
+                .spawn(move || feeder(id, s, rx, q, poke, to_main))
                 .map_err(|_| err(ErrorCode::Internal, "cannot start the media window"))?
         };
-        let _ = feed.send(HIDE_CURSOR.to_vec());
+        let _ = feed.send(Feed::Bytes(HIDE_CURSOR.to_vec()));
         let title = p.title.as_deref().map_or_else(
             || "Apotheosis media".to_owned(),
             |t| super::clip(t, 256).to_owned(),
@@ -225,8 +272,6 @@ impl App {
         self.handle.set_min_size(win, Some((lw, lh)));
         self.handle.set_max_size(win, Some((lw, lh)));
         self.handle.flush();
-        self.media.next += 1;
-        let id = self.media.next;
         self.media.windows.insert(
             id,
             MediaWin {
@@ -247,6 +292,9 @@ impl App {
                 pad: (0, 0),
                 size_ui: (0.0, 0.0),
                 chrome: MediaWinSpec::default(),
+                cell: self.cell,
+                shown: grid,
+                ptr_at: None,
             },
         );
         tracing::debug!(id, rows = grid.0, cols = grid.1, "media window opened");
@@ -274,7 +322,10 @@ impl App {
         }
         let n = bytes.len();
         w.queued.fetch_add(n, Ordering::AcqRel);
-        let sent = w.feed.as_ref().is_some_and(|f| f.try_send(bytes).is_ok());
+        let sent = w
+            .feed
+            .as_ref()
+            .is_some_and(|f| f.try_send(Feed::Bytes(bytes)).is_ok());
         if !sent {
             w.queued.fetch_sub(n, Ordering::AcqRel);
             return Err(err(ErrorCode::Internal, "the media window is behind"));
@@ -317,11 +368,20 @@ impl App {
             return;
         };
         if w.render.is_some() || w.closing {
+            // A later configure (the box shrank, the scale changed): the chrome follows.
+            let zoom = self.settings.glass.interface_zoom.max(0.01);
+            if let Some((l, _)) = self.handle.surface_size(w.win) {
+                let size_ui = (l.0 as f32 / zoom, l.1 as f32 / zoom);
+                if size_ui != w.size_ui && !w.closing {
+                    w.size_ui = size_ui;
+                    Self::media_layout(id, w);
+                }
+            }
             let _ = w.render_tx.send(RenderMsg::Poke);
             return;
         }
         let Some(rx) = w.render_rx.take() else { return };
-        let (win, grid) = (w.win, w.grid);
+        let (win, grid) = (w.win, w.shown);
         let scale = self.handle.scale(win).map_or(1.0, |s| s.as_f64());
         let started = (|| -> Result<(), String> {
             let (fonts, m, _) = build_fonts(&self.settings, scale)?;
@@ -363,6 +423,7 @@ impl App {
             let logical = self.handle.surface_size(win).map_or((0, 0), |(l, _)| l);
             let w = self.media.windows.get_mut(&id).ok_or("gone")?;
             w.pad = (pad.0 as i32, pad.1 as i32);
+            w.cell = cell;
             w.size_ui = (logical.0 as f32 / zoom, logical.1 as f32 / zoom);
             w.chan = Some(token);
             {
@@ -389,6 +450,32 @@ impl App {
             tracing::warn!(id, %why, "a media window could not start");
             self.media_close(id);
         }
+    }
+
+    /// The feeder found the rows and columns its placements need (T-16 §2): the window
+    /// shrinks to them (never grows past the grid it was opened with).
+    pub(super) fn media_box(&mut self, id: u64, b: (usize, usize)) {
+        let Some(w) = self.media.windows.get_mut(&id) else {
+            return;
+        };
+        let b = (b.0.min(w.grid.0), b.1.min(w.grid.1));
+        if w.closing || b == w.shown {
+            return;
+        }
+        w.shown = b;
+        if w.render.is_none() {
+            // Not configured yet: the first configure sizes it from `shown`.
+            return;
+        }
+        let win = w.win;
+        let cell = w.cell;
+        let scale = self.handle.scale(win).map_or(1.0, |s| s.as_f64());
+        let (lw, lh) = media_size(b, cell, &self.settings, scale);
+        self.handle.set_min_size(win, Some((lw, lh)));
+        self.handle.set_max_size(win, Some((lw, lh)));
+        self.handle.set_window_size(win, (lw, lh));
+        self.handle.flush();
+        tracing::debug!(id, rows = b.0, cols = b.1, "media window fits its box");
     }
 
     /// Send the window's layout and chrome to its render thread.
@@ -516,7 +603,9 @@ impl App {
                         .is_some_and(|w| w.chrome.close.hover);
                     if over && *pressed {
                         self.media_chrome(id, |w| w.chrome.close.pressed = true);
-                    } else if !*pressed {
+                    } else if *pressed {
+                        self.media_window_click(id);
+                    } else {
                         let was = self
                             .media
                             .windows
@@ -535,10 +624,37 @@ impl App {
         }
     }
 
+    /// A primary press in window `id` off the close button: the feeder plays or pauses the
+    /// placement under it (T-08 §4).
+    fn media_window_click(&mut self, id: u64) {
+        let Some(w) = self.media.windows.get(&id) else {
+            return;
+        };
+        let (Some((x, y)), Some(feed)) = (w.ptr_at, w.feed.as_ref()) else {
+            return;
+        };
+        if w.render.is_none() || w.cell.0 == 0 || w.cell.1 == 0 {
+            return;
+        }
+        let scale = self.handle.scale(w.win).map_or(1.0, |s| s.as_f64());
+        let px = x * scale - f64::from(w.pad.0);
+        let py = y * scale - f64::from(w.pad.1);
+        if px < 0.0 || py < 0.0 {
+            return;
+        }
+        let cell = (
+            (py / f64::from(w.cell.1)) as usize,
+            (px / f64::from(w.cell.0)) as usize,
+        );
+        // A full queue drops the click rather than block the main thread.
+        let _ = feed.try_send(Feed::Click(cell.0, cell.1));
+    }
+
     /// The pointer entered, moved (interface units after the zoom) or left window `id`.
     fn media_pointer(&mut self, id: u64, at: Option<(f64, f64)>) {
         let zoom = self.settings.glass.interface_zoom.max(0.01);
         self.media_chrome(id, |w| {
+            w.ptr_at = at;
             let Some((x, y)) = at else {
                 w.chrome.hovered = false;
                 w.chrome.close = apoth_ui::ControlState::default();

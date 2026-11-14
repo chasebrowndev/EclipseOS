@@ -1291,6 +1291,7 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
 | Error bar | R1 | Config errors with file:line; "open config", "dismiss" |
 | Close confirmation | R1 | Modal sheet listing running foreground jobs |
 | Toasts | R1 | Copy confirmation, "reloaded", size overlay while resizing (cols × rows) |
+| Media controls | R1 | Over a media placement (T-16 §2) while the pointer is on its box: a play/pause button and a progress track (position over duration, when the container gives one). A primary click on the box plays or pauses it (an ended one restarts) unless the pane's program has mouse reporting on or the open modifier is held; the click is not passed to selection. In an `--ext` media window the same click applies, off its close button. A placement that plays muted because there is no audio output (`audio-unavailable`) raises a notice in its pane for 4 s, never a window or a modal |
 | Command-block chrome | R1 (copy) / R2 (sticky header) | Exit-status bar in the gutter, duration, hover actions copy command / copy output |
 | Context menu | R2 | KDL-defined (UI-16) |
 | Pane select labels | R2 | UI-13 |
@@ -2377,8 +2378,20 @@ in the style of the graphics protocol:
   `apoth play` over the control socket, the default), `s=d` (chunked bytes, small clips
   and remote panes); placement `c,r` cells, `i` id, `z`.
 - `a=c` control: `play`, `pause`, `seek=<ms>`, `rate`, `loop`, `volume`, `mute`.
-- `a=q` query: position, duration, state, tracks. `a=x` close.
+- `a=q` query: position (ms), duration, state, tracks. `a=x` close.
 - Events back to the client: `ready`, `ended`, `error=<code>`, position ticks on request.
+  `ready` is `ready,w=<px>,h=<px>,d=<ms>,vw=<px>,vh=<px>[,dar=<W>:<H>]`: the output size
+  the picture is scaled to inside the box, the duration, the coded video size and, when
+  the container declares a display aspect other than the pixel aspect (anamorphic
+  sources), that aspect in lowest terms. Clients read the fields by name and ignore ones
+  they do not know.
+- **Box fit.** On `ready` the box shrinks (never grows) to the picture's display aspect,
+  so a placement takes the cells it shows: the columns or rows it does not need are freed.
+  When the cursor sits on the row just below the box (the client wrote nothing since the
+  open), it moves up by the rows freed; output that already moved the cursor keeps it
+  where it is. An `--ext` window shrinks with its box.
+- The interface plays and pauses a placement on click (T-08 §4) as if its client had sent
+  `a=c` `play`/`pause`; the client gets no reply for it and sees the state in `a=q`.
 A media placement is a tracked-pin placement like an image (T-15 §4); it scrolls with
 text and is stopped and freed when its rows leave the screen (playback never continues in
 history: `media.offscreen` `pause` (default) or `stop`).
@@ -2447,6 +2460,12 @@ that TCB file.
    *terminal* process, so the helper needs no audio socket. The terminal accepts only the
    sample rate and channel count negotiated at open (rate ≤ 192 kHz, ≤ 8 channels) and at
    most 1.1 × the negotiated byte rate averaged over 1 s; excess kills the helper.
+6. **Failure reports.** The helper's `Info` carries the output size, the coded video size
+   and the declared display aspect (0:0 for none). Every exit other than a protocol
+   violation by the terminal sends `Failed(<code>)` first — a demux, decode, seek or
+   frame-ring write failure is reported as its code, and audio packets that fail to
+   decode are skipped (32 in a row fail the stream as `decode`) — so `helper-crashed`
+   means the process died without a word (a signal or a panic).
 
 ## 5. Policy
 - Audio never starts without a user gesture or an explicit `apoth play` invocation in the

@@ -238,7 +238,57 @@ pub(crate) struct ChromeModel {
     pub(crate) bell: Option<Rect>,
     /// A media window's focus rim and hover controls.
     pub(crate) media: Option<apoth_ui::mediawin::MediaWinSpec>,
+    /// The pane frame the muted notice shows over (T-16 §3 `audio-unavailable`), from main.
+    pub(crate) media_muted: Option<Rect>,
+    /// Media placements in view with their state, interface units. Filled by the render
+    /// thread from its own snapshot (main never sees placement geometry).
+    pub(crate) media_huds: Vec<MediaHud>,
     pub(crate) ui: UiState,
+}
+
+/// One media placement as the interface draws its controls (T-08 §4).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct MediaHud {
+    /// The placement's box, interface units.
+    pub(crate) rect: Rect,
+    /// The pointer is over it (a click toggles play/pause).
+    pub(crate) hovered: bool,
+    pub(crate) state: apoth_term::MediaPlay,
+    /// Position / duration in 0..=1; `None` without a known duration.
+    pub(crate) progress: Option<f32>,
+}
+
+/// The HUD entries of `panes` at `cell` px per cell and `ui` px per interface unit.
+fn media_huds(panes: &[PaneR], cell: (u32, u32), ui: f32) -> Vec<MediaHud> {
+    let ui = if ui > 0.0 { ui } else { 1.0 };
+    let (cw, ch) = (cell.0.max(1) as f32, cell.1.max(1) as f32);
+    let mut out = Vec::new();
+    for p in panes {
+        let hovered = p.view.media_hover();
+        let rows = p.snap.rows.len();
+        for m in &p.media {
+            let vrow = m.row as i64 - p.media_top as i64;
+            if vrow >= rows as i64 || vrow + i64::from(m.rows) <= 0 {
+                continue;
+            }
+            let x = p.v.origin.0 as f32 + m.col as f32 * cw;
+            let y = p.v.origin.1 as f32 + vrow as f32 * ch;
+            out.push(MediaHud {
+                rect: Rect::new(
+                    x / ui,
+                    y / ui,
+                    m.cols as f32 * cw / ui,
+                    m.rows as f32 * ch / ui,
+                ),
+                hovered: hovered == Some(m.key),
+                state: m.state,
+                progress: m
+                    .duration_ms
+                    .map(|d| (m.pos_ms as f32 / d.max(1) as f32).clamp(0.0, 1.0)),
+            });
+        }
+    }
+    out
 }
 
 impl ChromeModel {
@@ -252,6 +302,8 @@ impl ChromeModel {
             tooltip: None,
             bell: None,
             media: None,
+            media_muted: None,
+            media_huds: Vec::new(),
             ui: UiState::default(),
         }
     }
@@ -372,6 +424,10 @@ struct PaneR {
     vdump: Option<ViewDump>,
     /// Image placements in view (T-15 §6), taken with the snapshot.
     draws: Vec<ImageDraw>,
+    /// Media placements of the shown screen and the absolute row at the view's top, taken
+    /// with the snapshot (hover controls and progress, T-08 §4).
+    media: Vec<apoth_term::MediaPlacement>,
+    media_top: usize,
     /// Some image sits under the text: the scene draws default backgrounds transparent and
     /// the frame puts the background back under the images ([`PaneDraw::backdrop`]).
     below: bool,
@@ -402,6 +458,8 @@ impl PaneR {
             last_cursor: (usize::MAX, usize::MAX),
             vdump,
             draws: Vec::new(),
+            media: Vec::new(),
+            media_top: 0,
             below: false,
             restage: false,
             idump,
@@ -432,6 +490,11 @@ impl PaneR {
         } else {
             self.draws.clear();
             self.due = None;
+        }
+        if t.has_media() || !self.media.is_empty() {
+            self.media = t.media_placements();
+            self.media_top = t.grid().history_rows().saturating_sub(self.view.offset());
+            self.view.sync_media_hover(&t, &self.media);
         }
         drop(t);
         let below = self.draws.iter().any(|d| d.z < 0);
@@ -779,6 +842,15 @@ fn run(a: RenderArgs) {
                         pending += 1;
                     }
                 }
+                let huds = media_huds(
+                    &panes,
+                    cell(&glyphs),
+                    (scale * f64::from(rs.ui_zoom)) as f32,
+                );
+                if huds != chrome.media_huds {
+                    chrome.media_huds = huds;
+                    chrome_dirty = true;
+                }
                 let mut retries = 0;
                 while std::mem::take(&mut glyphs.flushed) {
                     // An atlas was cleared mid-update: every row of every pane must be
@@ -990,7 +1062,10 @@ fn run(a: RenderArgs) {
                 panes = next;
                 let keys: Vec<u64> = panes.iter().map(|p| p.v.id).collect();
                 stack.renderer.retain(&keys);
+                // The media controls are this thread's: they outlive main's layout.
+                let huds = std::mem::take(&mut chrome.media_huds);
                 chrome = c;
+                chrome.media_huds = huds;
                 chrome_dirty = true;
                 sched.damage(now_ns());
             }

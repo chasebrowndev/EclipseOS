@@ -57,7 +57,9 @@ pub use events::{
     ClipboardSet, CommandEvent, EventSlot, Mark, Notification, Progress, ReplyQueue, UserVar,
 };
 pub use graphics::{GraphicsConfig, ImageDraw, PlacementInfo};
-pub use media::{MediaConfig, MediaCtl, MediaEvent, MediaRequest, MediaSource};
+pub use media::{
+    MediaConfig, MediaCtl, MediaEvent, MediaPlacement, MediaPlay, MediaRequest, MediaSource,
+};
 pub use modes::{Access, ModeDef, ModeState};
 
 /// What `feed` tells the io thread.
@@ -297,9 +299,26 @@ impl Term {
     /// A player's report for placement `key`: frames, ready/ended/error replies.
     pub fn media_event(&mut self, key: u64, ev: MediaEvent, now: Instant) -> Wake {
         self.m.now = Some(now);
-        let frame = matches!(ev, MediaEvent::Frame(_));
+        // A new frame redraws; a position or state change too (progress, hover controls).
+        let frame = !matches!(ev, MediaEvent::AudioUnavailable);
         self.m.media_event(key, ev);
         self.wake(frame)
+    }
+
+    /// Placement `key` takes control `ctl` as if its client had sent it with `a=c` (no reply
+    /// is sent): the interface's play/pause click. `Play` on an ended placement restarts
+    /// it. An unknown `key` (the placement just went) does nothing. `Wake::media` says a
+    /// request waits for [`Term::take_media_requests`].
+    pub fn media_control(&mut self, key: u64, ctl: MediaCtl) -> Wake {
+        let found = self.m.media_control(key, ctl);
+        self.wake(found)
+    }
+
+    /// The media placements of the current screen in creation order, for the interface
+    /// (hover hit-testing, play/pause, progress). Deterministic: a function of the fed
+    /// bytes and the media events only.
+    pub fn media_placements(&self) -> Vec<MediaPlacement> {
+        self.m.media_placements()
     }
 
     /// Any media placement exists.

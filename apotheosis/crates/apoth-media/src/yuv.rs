@@ -19,6 +19,25 @@ pub fn fit(sw: u32, sh: u32, bw: u32, bh: u32) -> (u32, u32) {
     (w as u32, h as u32)
 }
 
+/// [`fit`] for a source shown at display aspect `dar` (anamorphic video): the source is
+/// first stretched to that aspect along one axis (never shrunk), then fitted into the box.
+/// `None` is square pixels.
+pub fn fit_aspect(sw: u32, sh: u32, dar: Option<(u32, u32)>, bw: u32, bh: u32) -> (u32, u32) {
+    let Some((dw, dh)) = dar.filter(|d| d.0 > 0 && d.1 > 0) else {
+        return fit(sw, sh, bw, bh);
+    };
+    let (sw64, sh64) = (u64::from(sw.max(1)), u64::from(sh.max(1)));
+    let (dw, dh) = (u64::from(dw), u64::from(dh));
+    // Wider than the pixels: widen; taller: heighten.
+    let (nw, nh) = if dw * sh64 >= dh * sw64 {
+        ((sh64 * dw / dh).max(1), sh64)
+    } else {
+        (sw64, (sw64 * dh / dw).max(1))
+    };
+    let cap = |v: u64| v.min(u64::from(u16::MAX)) as u32;
+    fit(cap(nw), cap(nh), bw, bh)
+}
+
 /// Converts pictures to RGBA at one output size; caches the sample maps.
 #[derive(Debug, Default)]
 pub struct Converter {
@@ -150,6 +169,12 @@ mod tests {
         assert_eq!(fit(1920, 1080, 4000, 300), (533, 300));
         assert_eq!(fit(320, 240, 4000, 4000), (320, 240));
         assert_eq!(fit(10, 1000, 5, 5), (1, 5));
+        // Anamorphic: 720x480 at 16:9 shows 853x480, fitted into the box.
+        assert_eq!(fit_aspect(720, 480, Some((16, 9)), 4000, 4000), (853, 480));
+        assert_eq!(fit_aspect(720, 480, Some((16, 9)), 400, 400), (400, 225));
+        // Taller than the pixels.
+        assert_eq!(fit_aspect(640, 480, Some((1, 1)), 4000, 4000), (640, 640));
+        assert_eq!(fit_aspect(160, 90, None, 80, 80), fit(160, 90, 80, 80));
     }
 
     #[test]

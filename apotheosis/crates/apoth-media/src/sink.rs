@@ -492,7 +492,13 @@ impl AudioSink for FakeSink {
         if s.byte_rate == 0 {
             return 0;
         }
-        let played = s.realtime_us().unwrap_or(0) * s.byte_rate / 1_000_000;
+        let ran = s.realtime_us().unwrap_or(0);
+        // Played to the end counts every byte: the µs round trip must not leave a byte queued
+        // for ever (the player waits for an empty sink before it reports the end).
+        if ran >= s.written * 1_000_000 / s.byte_rate {
+            return 0;
+        }
+        let played = ran * s.byte_rate / 1_000_000;
         s.written.saturating_sub(played) as usize
     }
     fn played_us(&self) -> Option<u64> {

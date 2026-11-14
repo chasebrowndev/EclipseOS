@@ -12,6 +12,10 @@
 //! out in `Pcm` messages within the audio credit the terminal grants with `Want`. Slots
 //! come back with `Release`. `Seek` restarts from a keyframe; `Quit` or a closed socket ends
 //! the process.
+//!
+//! Every exit but a protocol break or a closed socket first sends `Failed` with its code
+//! (`bad-input`, `decode`, ...), so the terminal never has to guess from a vanished peer;
+//! `helper-crashed` on the terminal side is then a real crash (a signal or a panic).
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -26,7 +30,7 @@ use crate::chan::Chan;
 use crate::demux::{Packet, Source};
 use crate::sandbox::{self, Knobs};
 use crate::wire::{self, Fail, FromHelper, ImageFrame, ImageKind, ToHelper};
-use crate::yuv::{Converter, fit};
+use crate::yuv::{Converter, fit_aspect};
 
 /// Exit statuses.
 pub const EXIT_OK: i32 = 0;
@@ -207,7 +211,16 @@ struct Media {
     /// Bytes per PCM frame.
     audio_frame: usize,
     ended: bool,
+    /// Audio packets in a row that did not decode.
+    audio_bad: u32,
+    /// Seeks done: a packet in flight across one is dropped, not sent after `Seeked`.
+    seeks: u64,
 }
+
+/// Audio packets in a row that may fail to decode before the stream counts as broken.
+/// One corrupt packet is skipped (as a video frame is); a decoder that never recovers is
+/// a `decode` failure, not silent playback.
+const AUDIO_BAD_MAX: u32 = 32;
 
 /// Converted frames the helper holds beyond the ring before it stops demuxing.
 const READY_MAX: usize = 12;
@@ -248,11 +261,14 @@ impl Media {
         };
         let mut video = None;
         let (mut ow, mut oh) = (0, 0);
+        let (mut vw, mut vh, mut dar) = (0, 0, (0, 0));
         if let Some(v) = src.video {
             if v.width > max_w || v.height > max_h {
                 return Err(fail(&chan, Fail::TooLarge, EXIT_FAILED));
             }
-            (ow, oh) = fit(v.width, v.height, bw, bh);
+            (ow, oh) = fit_aspect(v.width, v.height, v.dar, bw, bh);
+            (vw, vh) = (v.width, v.height);
+            dar = v.dar.unwrap_or((0, 0));
             let d = Decoder::new(threads).map_err(|_| fail(&chan, Fail::Decode, EXIT_FAILED))?;
             video = Some((d, ow, oh));
         }
@@ -270,6 +286,10 @@ impl Media {
             rate,
             channels,
             duration_ms: src.duration_ms,
+            video_w: vw,
+            video_h: vh,
+            dar_w: dar.0,
+            dar_h: dar.1,
         };
         chan.send(&info.encode(), None).map_err(|_| EXIT_PROTOCOL)?;
         let mut m = Media {
@@ -285,6 +305,8 @@ impl Media {
             pcm: Vec::new(),
             audio_frame: usize::from(channels) * 2,
             ended: false,
+            audio_bad: 0,
+            seeks: 0,
         };
         if m.video.is_some() {
             // The ring comes next.
@@ -323,6 +345,16 @@ impl Media {
         m.pump()
     }
 
+    /// Report `f` and give the exit status for it.
+    fn fail(&self, f: Fail) -> i32 {
+        let _ = self.chan.send(&FromHelper::Failed(f).encode(), None);
+        if f == Fail::Protocol {
+            EXIT_PROTOCOL
+        } else {
+            EXIT_FAILED
+        }
+    }
+
     /// Block for one message and apply it.
     fn wait(&mut self) -> Result<Step, i32> {
         let (tag, body) = match self.chan.recv() {
@@ -357,7 +389,9 @@ impl Media {
             }
             ToHelper::Want { bytes } => self.credit = self.credit.saturating_add(u64::from(bytes)),
             ToHelper::Seek { ms } => {
-                self.src.seek(ms).map_err(|_| EXIT_FAILED)?;
+                if let Err(f) = self.src.seek(ms) {
+                    return Err(self.fail(f));
+                }
                 if let Some(v) = &mut self.video {
                     v.0.flush();
                 }
@@ -368,6 +402,7 @@ impl Media {
                     self.spare.push(b);
                 }
                 self.ended = false;
+                self.seeks += 1;
                 self.chan
                     .send(&FromHelper::Seeked.encode(), None)
                     .map_err(|_| EXIT_PROTOCOL)?;
@@ -405,8 +440,15 @@ impl Media {
             let mut done = 0;
             while done < px.len() {
                 match rustix::io::pwrite(&ring.fd, &px[done..], off + done as u64) {
-                    Ok(0) | Err(_) => return Err(EXIT_FAILED),
-                    Ok(n) => done += n,
+                    Ok(n) if n > 0 => done += n,
+                    Err(rustix::io::Errno::INTR) => {}
+                    // The ring is not what the terminal announced (too small, not writable).
+                    _ => {
+                        let _ = self
+                            .chan
+                            .send(&FromHelper::Failed(Fail::Protocol).encode(), None);
+                        return Err(EXIT_PROTOCOL);
+                    }
                 }
             }
             let msg = FromHelper::Frame {
@@ -467,10 +509,17 @@ impl Media {
             return Ok(Step::Go);
         };
         self.pcm.clear();
-        dec.decode(&p.data, &mut self.pcm)
-            .map_err(|_| EXIT_FAILED)?;
+        if dec.decode(&p.data, &mut self.pcm).is_err() {
+            self.audio_bad += 1;
+            if self.audio_bad >= AUDIO_BAD_MAX {
+                return Err(self.fail(Fail::Decode));
+            }
+            return Ok(Step::Go);
+        }
+        self.audio_bad = 0;
         let bytes: Vec<u8> = self.pcm.iter().flat_map(|s| s.to_le_bytes()).collect();
         let frame = self.audio_frame.max(2);
+        let seeks = self.seeks;
         let mut sent = 0;
         while sent < bytes.len() {
             // Within the terminal's credit only (T-16 §4.5: the terminal enforces the rate),
@@ -479,6 +528,10 @@ impl Media {
                 self.flush_frames()?;
                 if let Step::Quit = self.wait()? {
                     return Ok(Step::Quit);
+                }
+                if self.seeks != seeks {
+                    // The rest of this packet predates the seek.
+                    return Ok(Step::Go);
                 }
             }
             let n = (bytes.len() - sent)
@@ -533,10 +586,7 @@ impl Media {
                     self.ended = true;
                     continue;
                 }
-                Err(f) => {
-                    let _ = self.chan.send(&FromHelper::Failed(f).encode(), None);
-                    return Err(EXIT_FAILED);
-                }
+                Err(f) => return Err(self.fail(f)),
             };
             if p.video {
                 self.video_packet(&p)?;

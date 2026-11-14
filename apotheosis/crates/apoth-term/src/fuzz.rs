@@ -372,6 +372,9 @@ pub fn fuzz_media_apc(data: &[u8]) {
                             width: 2,
                             height: 2,
                             duration_ms: 1,
+                            video_w: 2,
+                            video_h: 2,
+                            dar: n.is_multiple_of(3).then_some((16, 9)),
                         };
                         t.media_event(key, ready, now);
                         t.media_event(key, MediaEvent::Frame(img), now);

@@ -77,6 +77,8 @@ pub(crate) enum NavMsg {
     HintsEnded,
     /// The hovered hyperlink's URI (the tooltip), or none.
     Link(Option<String>),
+    /// The media placement under the pointer changed: its key, or none (T-08 §4).
+    MediaHover(Option<u64>),
     /// The link under an open-modifier click: main checks and opens it.
     Open { uri: String, visible: String },
     /// Copy mode ended without main asking (the screen switched).
@@ -89,6 +91,23 @@ pub(crate) enum NavMsg {
         /// Asked at a cell (a right-click), not for the selection.
         at_cell: bool,
     },
+}
+
+/// The media placement covering absolute row `row`, column `col`: the newest wins where
+/// boxes overlap (it draws last).
+pub(crate) fn media_at(
+    places: &[apoth_term::MediaPlacement],
+    row: usize,
+    col: usize,
+) -> Option<u64> {
+    places
+        .iter()
+        .rev()
+        .find(|p| {
+            (p.row..p.row + p.rows as usize).contains(&row)
+                && (p.col..p.col + p.cols as usize).contains(&col)
+        })
+        .map(|p| p.key)
 }
 
 struct HintItem {
@@ -450,6 +469,9 @@ pub(crate) struct View {
     hints: Option<HintState>,
     /// The hovered link: viewport position and URI.
     hover: Option<String>,
+    /// The pointer's viewport cell, and the media placement under it (by key).
+    hover_cell: Option<(usize, usize)>,
+    media_hover: Option<u64>,
     out: Vec<NavMsg>,
     busy: bool,
 }
@@ -476,6 +498,8 @@ impl View {
             copy: None,
             hints: None,
             hover: None,
+            hover_cell: None,
+            media_hover: None,
             out: Vec::new(),
             busy: false,
         }
@@ -499,6 +523,24 @@ impl View {
 
     pub(crate) fn offset(&self) -> usize {
         self.offset
+    }
+
+    /// The media placement under the pointer (its key), for the hover controls.
+    pub(crate) fn media_hover(&self) -> Option<u64> {
+        self.media_hover
+    }
+
+    /// Re-run the media hit test against `places` (the term's current placements, under
+    /// its lock): the pointer may sit still while a placement scrolls, opens or goes.
+    pub(crate) fn sync_media_hover(&mut self, t: &Term, places: &[apoth_term::MediaPlacement]) {
+        let top = self.top_abs(t);
+        let hit = self
+            .hover_cell
+            .and_then(|(r, c)| media_at(places, top + r, c));
+        if hit != self.media_hover {
+            self.media_hover = hit;
+            self.out.push(NavMsg::MediaHover(hit));
+        }
     }
 
     #[cfg(test)]
@@ -775,6 +817,11 @@ impl View {
                 }
             }
             ViewCmd::Hover(pos) => {
+                self.hover_cell = pos;
+                if t.has_media() || self.media_hover.is_some() {
+                    let places = t.media_placements();
+                    self.sync_media_hover(t, &places);
+                }
                 let top = self.top_abs(t);
                 let uri = pos
                     .and_then(|(r, c)| t.grid().link_at_abs(top + r, c))
@@ -1295,6 +1342,29 @@ mod tests {
         });
         t.feed(input.as_bytes(), Instant::now());
         t
+    }
+
+    #[test]
+    fn media_hit_test_takes_the_newest_box() {
+        let p = |key, row, col, cols, rows| apoth_term::MediaPlacement {
+            key,
+            id: 1,
+            row,
+            col,
+            cols,
+            rows,
+            state: apoth_term::MediaPlay::Playing,
+            pos_ms: 0,
+            duration_ms: None,
+            video: None,
+        };
+        let places = [p(1, 5, 0, 10, 4), p(2, 7, 8, 4, 2)];
+        assert_eq!(media_at(&places, 5, 0), Some(1));
+        assert_eq!(media_at(&places, 8, 9), Some(2));
+        assert_eq!(media_at(&places, 8, 11), Some(2));
+        assert_eq!(media_at(&places, 9, 0), None);
+        assert_eq!(media_at(&places, 5, 10), None);
+        assert_eq!(media_at(&[], 0, 0), None);
     }
 
     fn live(t: &mut Term) -> FrameSnapshot {
