@@ -1,0 +1,9 @@
+fixture "edit-ech-bce" {
+  desc "edit ech bce (migrated from the apoth-term corpus)"
+  covers "T03-ECH"
+  size rows=1 cols=4
+  feed #"abcd\e[43m\e[1;2H\e[2X"#
+  cell row=0 col=1 bg="p3"
+  cell row=0 col=2 bg="p3"
+  cell row=0 col=3 bg="default"
+}

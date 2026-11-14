@@ -1,0 +1,6 @@
+version 1
+font {
+    family "JetBrains Mono"
+    size 11.5
+}
+scrollback { lines 10000; }

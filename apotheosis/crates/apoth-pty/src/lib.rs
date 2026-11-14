@@ -12,6 +12,7 @@
 mod env;
 mod outq;
 mod procinfo;
+pub mod shell;
 mod spawn;
 
 pub use env::{EnvSpec, build_env, choose_term, terminfo_dirs, terminfo_exists};

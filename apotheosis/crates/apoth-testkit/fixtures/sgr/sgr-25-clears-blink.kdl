@@ -1,0 +1,7 @@
+fixture "sgr-25-clears-blink" {
+  desc "sgr 25 clears blink (migrated from the apoth-term corpus)"
+  covers "T03-SGR-BASIC"
+  size rows=1 cols=4
+  feed #"\e[5m\e[25mA"#
+  cell row=0 col=0 attrs=""
+}

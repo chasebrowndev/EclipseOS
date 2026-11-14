@@ -1,0 +1,7 @@
+fixture "scr-region-scroll-keeps-cursor-col" {
+  desc "scr region scroll keeps cursor col (migrated from the apoth-term corpus)"
+  covers "T03-DECSTBM"
+  size rows=3 cols=5
+  feed #"\e[1;2r\e[2;3H\n"#
+  cursor row=1 col=2
+}

@@ -1,0 +1,13 @@
+fixture "scroll-sd-in-region" {
+  covers "T03-SU-SD" "T03-DECSTBM"
+  size rows=4 cols=4
+  feed #"A\r\nB\r\nC\r\nD\e[2;3r\e[1T"#
+  grid {
+    row "A"
+    row ""
+    row "B"
+    row "D"
+  }
+  cursor row=0 col=0
+  scrollback
+}

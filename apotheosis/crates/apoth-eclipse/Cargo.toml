@@ -10,3 +10,9 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
+ec-theme = { path = "../../../abyss/crates/ec-theme" }
+serde_json = { version = "1", default-features = false, features = ["std"] }
+tracing = "0.1"

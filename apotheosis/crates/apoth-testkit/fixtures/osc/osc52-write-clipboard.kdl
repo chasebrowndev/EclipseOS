@@ -1,0 +1,9 @@
+fixture "osc52-write-clipboard" {
+  desc "write is allowed by default; event carries selection and byte count, never the text"
+  covers "T03-OSC52"
+  review "event text form is this harness's vocabulary; the real clipboard-set event is T-18/T-11"
+  size rows=3 cols=20
+  feed #"\e]52;c;SGVsbG8=\a"#
+  grid
+  events "clipboard-set:c:5"
+}

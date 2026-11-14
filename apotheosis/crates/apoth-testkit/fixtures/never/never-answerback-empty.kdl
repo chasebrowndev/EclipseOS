@@ -1,0 +1,7 @@
+fixture "never-answerback-empty" {
+  desc "never answerback empty (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=2 cols=4
+  feed #"\x05"#
+  replies
+}

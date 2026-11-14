@@ -1,0 +1,10 @@
+fixture "wide-awm-off-at-last-column" {
+  covers "T03-WIDE" "T03-DECAWM"
+  review "a wide glyph at the last column with autowrap off: T-02/T-04 do not say; assuming it is not printed"
+  size rows=3 cols=6
+  feed #"\e[?7lABCDE日"#
+  grid {
+    row "ABCDE"
+  }
+  cursor row=0 col=5
+}
