@@ -1,0 +1,14 @@
+fixture "mouse-1016-set-reset" {
+  desc "mode 1016 (pixel coordinates) defaults reset, sets and resets"
+  covers "T03-MOUSE"
+  size rows=2 cols=4
+  checkpoint "default" {
+    mode "?1016" 2
+  }
+  feed #"\e[?1016h"#
+  checkpoint "set" {
+    mode "?1016" 1
+  }
+  feed #"\e[?1016l"#
+  mode "?1016" 2
+}

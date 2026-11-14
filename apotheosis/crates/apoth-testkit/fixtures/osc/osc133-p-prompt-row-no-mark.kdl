@@ -1,0 +1,10 @@
+fixture "osc133-p-prompt-row-no-mark" {
+  desc "OSC 133 P marks a prompt row without an event"
+  covers "T03-OSC133-OPTS" "SHELLINTEGRATION-05"
+  size rows=2 cols=20
+  feed #"\e]133;P;k=i\a> "#
+  grid {
+    row ">"
+  }
+  events
+}

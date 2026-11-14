@@ -1,0 +1,9 @@
+fixture "edit-ich-pushes-off-edge" {
+  desc "edit ich pushes off edge (migrated from the apoth-term corpus)"
+  covers "T03-ICH-DCH"
+  size rows=1 cols=6
+  feed #"abcdef\e[1;3H\e[2@"#
+  grid {
+    row "ab  cd"
+  }
+}

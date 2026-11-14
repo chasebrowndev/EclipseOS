@@ -1,0 +1,7 @@
+fixture "w-wide-fills-line-exactly" {
+  desc "w wide fills line exactly (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=2 cols=4
+  feed #"世世"#
+  cursor row=0 col=3
+}

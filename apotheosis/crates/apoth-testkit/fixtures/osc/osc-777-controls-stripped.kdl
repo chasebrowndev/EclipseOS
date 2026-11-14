@@ -1,0 +1,7 @@
+fixture "osc-777-controls-stripped" {
+  desc "OSC 777 text is sanitised like every notification"
+  covers "T03-OSC99-777"
+  size rows=2 cols=8
+  feed #"\e]777;notify;a\u{202e}b;c\a"#
+  events "notify:ab: c"
+}

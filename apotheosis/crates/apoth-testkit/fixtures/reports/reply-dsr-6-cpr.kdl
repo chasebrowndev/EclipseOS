@@ -1,0 +1,7 @@
+fixture "reply-dsr-6-cpr" {
+  desc "reply dsr 6 cpr (migrated from the apoth-term corpus)"
+  covers "T03-DSR"
+  size rows=3 cols=6
+  feed #"\e[2;5H\e[6n"#
+  replies #"\e[2;5R"#
+}

@@ -1,0 +1,9 @@
+fixture "alt-main-grid-untouched-by-alt-edit" {
+  desc "alt main grid untouched by alt edit (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=5
+  feed #"ab\e[?1049h\e[2J\e[H123\e[?1049l"#
+  grid {
+    row "ab"
+  }
+}

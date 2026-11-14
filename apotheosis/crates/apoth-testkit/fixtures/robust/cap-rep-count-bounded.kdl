@@ -1,0 +1,9 @@
+fixture "cap-rep-count-bounded" {
+  desc "cap rep count bounded (migrated from the apoth-term corpus)"
+  covers "T03-SEQ-ROBUST"
+  size rows=1 cols=4
+  feed #"a\e[99999999b"#
+  grid {
+    row "a"
+  }
+}

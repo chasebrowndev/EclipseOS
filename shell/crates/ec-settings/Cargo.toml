@@ -47,3 +47,13 @@ serde_json.workspace = true
 # different table than the one abyss runs. `tests/coverage.rs` also walks
 # its schema.
 ec-abyss-config = { path = "../../../abyss/crates/ec-abyss-config" }
+# The Terminal pages (Apotheosis T-10 §5, M26): the schema/meta tables and the
+# comment-preserving editor for ~/.config/eclipse/apotheosis.kdl. No Abyss
+# round trip (ADR 0113). ec-config-schema formats durations and sizes.
+apoth-config = { path = "../../../apotheosis/crates/apoth-config" }
+ec-config-schema = { path = "../../../abyss/crates/ec-config-schema" }
+# The Terminal collection editors (M27): the action registry the picker reads and
+# validates against, and the KDL document the bind, rule and profile nodes are
+# spliced into (the same major `apoth-config`'s lossless editor uses).
+apoth-action = { path = "../../../apotheosis/crates/apoth-action" }
+kdl = "6"

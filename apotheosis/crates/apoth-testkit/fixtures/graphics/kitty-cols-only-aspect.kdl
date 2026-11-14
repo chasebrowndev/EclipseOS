@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-cols-only-aspect" {
+  desc "c alone derives rows from the aspect ratio"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=8
+  feed #"\e_Ga=T,f=100,i=7,c=2,C=1,q=1;iVBORw0KGgoAAAANSUhEUgAAAAQAAAAICAIAAABRUclSAAAAEElEQVR4nGNgZGKGIwbacQAnKADBiur2NwAAAABJRU5ErkJggg==\e\\"#
+  images {
+    row "kitty row=0 col=0 cols=2 rows=2 z=0"
+  }
+}

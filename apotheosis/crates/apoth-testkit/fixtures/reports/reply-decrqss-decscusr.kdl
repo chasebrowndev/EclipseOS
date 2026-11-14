@@ -1,0 +1,7 @@
+fixture "reply-decrqss-decscusr" {
+  desc "reply decrqss decscusr (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=2 cols=4
+  feed #"\e[3 q\eP$q q\e\\"#
+  replies #"\eP1$r3 q\e\\"#
+}
