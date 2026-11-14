@@ -423,6 +423,9 @@ impl App {
             let logical = self.handle.surface_size(win).map_or((0, 0), |(l, _)| l);
             let w = self.media.windows.get_mut(&id).ok_or("gone")?;
             w.pad = (pad.0 as i32, pad.1 as i32);
+            // The padding in interface units: the hover controls sit on the picture.
+            let ui = (scale as f32 * zoom).max(0.01);
+            w.chrome.inset = (pad.0 as f32 / ui, pad.1 as f32 / ui);
             w.cell = cell;
             w.size_ui = (logical.0 as f32 / zoom, logical.1 as f32 / zoom);
             w.chan = Some(token);
@@ -663,7 +666,8 @@ impl App {
             let area = apoth_ui::Rect::new(0.0, 0.0, w.size_ui.0, w.size_ui.1);
             let p = apoth_ui::Point::new(x as f32 / zoom, y as f32 / zoom);
             w.chrome.hovered = true;
-            w.chrome.close.hover = mediawin::close_rect(area).contains(p);
+            w.chrome.close.hover =
+                mediawin::close_rect(mediawin::content(area, &w.chrome)).contains(p);
         });
     }
 

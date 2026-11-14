@@ -104,6 +104,142 @@ impl Measure for FontMeasure<'_> {
     }
 }
 
+/// A convex polygon in physical pixels.
+type Poly = Vec<(f32, f32)>;
+
+/// A play triangle in physical rect `[x, y, w, h]`: as tall as the rect, as wide as an
+/// equilateral one, its centroid on the rect's centre (optical centring in a disc).
+fn play_shape(r: [f32; 4]) -> Vec<Poly> {
+    let h = r[3];
+    let w = h * 0.866;
+    let cx = r[0] + r[2] / 2.0;
+    let left = cx - w / 3.0;
+    vec![vec![
+        (left, r[1]),
+        (left + w, r[1] + h / 2.0),
+        (left, r[1] + h),
+    ]]
+}
+
+/// A speaker (body and cone) with a cross beside it, in physical rect `[x, y, s, s]`.
+fn speaker_muted_shape(r: [f32; 4]) -> Vec<Poly> {
+    let s = r[2].min(r[3]);
+    let (x, y) = (r[0], r[1] + (r[3] - s) / 2.0);
+    let p = |u: f32, v: f32| (x + u * s, y + v * s);
+    let (c, arm, t) = ((0.80, 0.5), 0.15, 0.11 * s);
+    vec![
+        vec![p(0.02, 0.36), p(0.24, 0.36), p(0.24, 0.64), p(0.02, 0.64)],
+        vec![p(0.22, 0.36), p(0.52, 0.12), p(0.52, 0.88), p(0.22, 0.64)],
+        stroke(p(c.0 - arm, c.1 - arm), p(c.0 + arm, c.1 + arm), t),
+        stroke(p(c.0 - arm, c.1 + arm), p(c.0 + arm, c.1 - arm), t),
+    ]
+}
+
+/// A cross filling physical rect `[x, y, s, s]`, strokes an eighth of it thick.
+fn cross_shape(r: [f32; 4]) -> Vec<Poly> {
+    let s = r[2].min(r[3]);
+    let (x, y) = (r[0] + (r[2] - s) / 2.0, r[1] + (r[3] - s) / 2.0);
+    let t = (s * 0.125).max(1.5);
+    let i = t / 2.0;
+    vec![
+        stroke((x + i, y + i), (x + s - i, y + s - i), t),
+        stroke((x + i, y + s - i), (x + s - i, y + i), t),
+    ]
+}
+
+/// A stroke from `a` to `b`, `t` thick, as a quad.
+fn stroke(a: (f32, f32), b: (f32, f32), t: f32) -> Poly {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = dx.hypot(dy).max(1e-3);
+    let (nx, ny) = (-dy / len * t / 2.0, dx / len * t / 2.0);
+    vec![
+        (a.0 + nx, a.1 + ny),
+        (b.0 + nx, b.1 + ny),
+        (b.0 - nx, b.1 - ny),
+        (a.0 - nx, a.1 - ny),
+    ]
+}
+
+/// Fills the union of convex `polys` (physical px) in `colour` as flat coverage rects:
+/// four sub-rows per pixel row, exact horizontal coverage, summed and clamped so shapes that
+/// touch or overlap leave no seam.
+fn shapes<S: ChromeSink>(polys: &[Poly], colour: [u8; 4], sink: &mut S) {
+    const SUB: usize = 4;
+    let pts = polys.iter().flatten();
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for &(x, y) in pts {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    }
+    if x0 > x1 || y0 > y1 {
+        return;
+    }
+    let (ox, oy) = (x0.floor() as i32, y0.floor() as i32);
+    let w = (x1.ceil() as i32 - ox).max(1) as usize;
+    let h = (y1.ceil() as i32 - oy).max(1) as usize;
+    if w * h > 1 << 20 {
+        return;
+    }
+    let mut cov = vec![0.0f32; w * h];
+    for poly in polys {
+        let n = poly.len();
+        if n < 3 {
+            continue;
+        }
+        for row in 0..h {
+            for sub in 0..SUB {
+                let yy = (oy + row as i32) as f32 + (sub as f32 + 0.5) / SUB as f32;
+                let (mut l, mut r) = (f32::MAX, f32::MIN);
+                for i in 0..n {
+                    let (a, b) = (poly[i], poly[(i + 1) % n]);
+                    if (a.1 <= yy && b.1 > yy) || (b.1 <= yy && a.1 > yy) {
+                        let x = a.0 + (yy - a.1) / (b.1 - a.1) * (b.0 - a.0);
+                        l = l.min(x);
+                        r = r.max(x);
+                    }
+                }
+                if l >= r {
+                    continue;
+                }
+                let line = &mut cov[row * w..(row + 1) * w];
+                let first = ((l.floor() as i32 - ox).max(0)) as usize;
+                let last = ((r.ceil() as i32 - ox).max(0) as usize).min(w);
+                for (c, v) in line.iter_mut().enumerate().take(last).skip(first) {
+                    let px = (ox + c as i32) as f32;
+                    let o = (r.min(px + 1.0) - l.max(px)).max(0.0);
+                    *v += o / SUB as f32;
+                }
+            }
+        }
+    }
+    for row in 0..h {
+        let line = &cov[row * w..(row + 1) * w];
+        let q = |v: f32| (u32::from(colour[3]) * (v.min(1.0) * 255.0).round() as u32 + 127) / 255;
+        let mut c = 0;
+        while c < w {
+            let a = q(line[c]);
+            let start = c;
+            while c < w && q(line[c]) == a {
+                c += 1;
+            }
+            if a == 0 {
+                continue;
+            }
+            sink.flat(
+                [
+                    (ox + start as i32) as f32,
+                    (oy + row as i32) as f32,
+                    (c - start) as f32,
+                    1.0,
+                ],
+                [colour[0], colour[1], colour[2], a as u8],
+            );
+        }
+    }
+}
+
 /// Rasterises text runs; owns the swash context.
 pub(crate) struct UiRaster {
     rast: Rasterizer,
@@ -228,6 +364,21 @@ impl UiRaster {
                 Cmd::Text { run, pos, colour } => {
                     self.text(fonts, run, *pos, *colour, scale, sink);
                 }
+                Cmd::Icon {
+                    icon: IconId::Play,
+                    rect,
+                    colour,
+                } => shapes(&play_shape(sc(*rect)), bytes(*colour), sink),
+                Cmd::Icon {
+                    icon: IconId::SpeakerMuted,
+                    rect,
+                    colour,
+                } => shapes(&speaker_muted_shape(sc(*rect)), bytes(*colour), sink),
+                Cmd::Icon {
+                    icon: IconId::Cross,
+                    rect,
+                    colour,
+                } => shapes(&cross_shape(sc(*rect)), bytes(*colour), sink),
                 Cmd::Icon { icon, rect, colour } => {
                     let (glyph, weight) = match icon {
                         IconId::Close => ("\u{00d7}", Weight::Regular),
@@ -236,6 +387,8 @@ impl UiRaster {
                         IconId::Shield => ("i", Weight::Strong),
                         IconId::ArrowUp => ("\u{2191}", Weight::Regular),
                         IconId::ArrowDown => ("\u{2193}", Weight::Regular),
+                        // Lowered as shapes above.
+                        IconId::Play | IconId::SpeakerMuted | IconId::Cross => continue,
                     };
                     let mut run = TextRun::interface(glyph, rect.h * 0.9);
                     run.weight = weight;
@@ -298,75 +451,37 @@ pub(crate) fn pane_widget(pane: u64) -> WidgetId {
     WidgetId(0x7041_0000_0000_0000 ^ pane)
 }
 
-/// Lowers the chrome into `chrome` for a `buffer` of physical pixels at interface scale
-/// `ui` (physical pixels per interface unit). Back to front: pane frames (focus rim, inactive
-/// dim), tab strip, overlay bar, palette sheet (T-08 §5 order).
-/// Interface copy of the muted notice.
-pub(crate) const MEDIA_MUTED_TEXT: &str = "No audio output \u{2014} playing muted";
-
-/// PLACEHOLDER draw hook for the media controls and the muted notice (T-08 §4): plain
-/// token shapes that prove the state reaches the renderer. The glass treatment (hover
-/// play/pause button, progress track, muted pill) is the frontend pass's, here.
-fn draw_media_placeholder(
-    huds: &[crate::render::MediaHud],
-    muted: Option<Rect>,
+/// The media controls over each placement in view, and the muted notice (T-08 §4), at the
+/// fade levels the render thread worked out.
+fn draw_media(
+    fx: &crate::render::MediaFx,
     pal: &Palette,
     measure: &dyn Measure,
     dl: &mut DrawList,
 ) {
-    use apoth_ui::tokens::{radius, size};
-    for h in huds.iter().filter(|h| h.hovered) {
-        let r = h.rect;
-        dl.rect(
-            r,
-            radius::INSET,
-            Rgba::CLEAR,
-            Some(apoth_ui::draw::Rim {
-                width: metrics::RIM_W,
-                colour: pal.cell_focus_rim_hover,
-            }),
-        );
-        // The play/pause target: a square in the middle, brighter while playing.
-        let d = (r.w.min(r.h) / 3.0).clamp(1.0, 48.0);
-        let fill = if h.state == apoth_term::MediaPlay::Playing {
-            pal.cell_focus_hover
-        } else {
-            pal.cell_hover
+    use apoth_term::MediaPlay;
+    for h in fx.huds.iter().filter(|h| h.state != MediaPlay::Opening) {
+        let spec = apoth_ui::mediactl::HudSpec {
+            rect: h.rect,
+            playing: h.state == MediaPlay::Playing,
+            progress: h.progress,
+            alpha: h.alpha,
+            // The whole box is the click target: the pointer on it is the disc's hover.
+            control: apoth_ui::ControlState {
+                hover: true,
+                ..Default::default()
+            },
         };
-        let b = Rect::new(r.x + (r.w - d) / 2.0, r.y + (r.h - d) / 2.0, d, d);
-        dl.rect(b, radius::PILL, fill, None);
-        if let Some(f) = h.progress {
-            let t = Rect::new(
-                r.x + space::SM,
-                r.bottom() - space::SM - 3.0,
-                r.w - 2.0 * space::SM,
-                3.0,
-            );
-            if t.w > 0.0 {
-                dl.rect(t, radius::PILL, pal.track, None);
-                dl.rect(
-                    Rect::new(t.x, t.y, t.w * f, t.h),
-                    radius::PILL,
-                    pal.accent,
-                    None,
-                );
-            }
-        }
+        apoth_ui::mediactl::draw(&spec, pal, dl);
     }
-    if let Some(r) = muted {
-        let run = TextRun::interface(MEDIA_MUTED_TEXT, size::BODY_SMALL);
-        let w = measure.width(&run) + 2.0 * space::MD;
-        let h = size::BODY_SMALL + 2.0 * space::SM;
-        let pill = Rect::new(r.right() - w - space::SM, r.y + space::SM, w, h);
-        apoth_ui::state::glass(dl, pill, radius::PILL, pal.cell_rim, pal);
-        dl.text(
-            run,
-            Point::new(pill.x + space::MD, pill.y + (h - size::BODY_SMALL) / 2.0),
-            pal.text,
-        );
+    if let Some((r, a)) = fx.muted {
+        apoth_ui::mediactl::draw_muted(r, a, pal, measure, dl);
     }
 }
 
+/// Lowers the chrome into `chrome` for a `buffer` of physical pixels at interface scale
+/// `ui` (physical pixels per interface unit). Back to front: pane frames (focus rim, inactive
+/// dim), tab strip, overlay bar, palette sheet (T-08 §5 order).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_chrome(
     chrome: &mut ChromeList,
@@ -402,16 +517,10 @@ pub(crate) fn build_chrome(
         if let Some(r) = model.bell {
             apoth_ui::pane::draw_bell(r, &pal, &mut dl);
         }
+        draw_media(&model.media_fx, &pal, &measure, &mut dl);
         if let Some(m) = &model.media {
-            apoth_ui::mediawin::draw(area, m, &pal, &measure, &mut dl);
+            apoth_ui::mediawin::draw(area, m, model.media_fx.win_alpha, &pal, &measure, &mut dl);
         }
-        draw_media_placeholder(
-            &model.media_huds,
-            model.media_muted,
-            &pal,
-            &measure,
-            &mut dl,
-        );
         if let Some((strip, tabs)) = &model.strip {
             let l = apoth_ui::tabs::layout(*strip, STRIP_ID, tabs);
             apoth_ui::tabs::draw(&l, tabs, model.tab_style, &model.ui, &pal, &mut dl);
@@ -659,7 +768,7 @@ mod tests {
             bell: None,
             media: None,
             media_muted: None,
-            media_huds: Vec::new(),
+            media_fx: crate::render::MediaFx::default(),
             ui: UiState::default(),
         };
         (model, ((w * scale) as u32, (h * scale) as u32))
@@ -729,6 +838,36 @@ mod tests {
             flats(&a)
         );
         assert!(flats(&b) > flats(&a));
+    }
+
+    #[test]
+    fn media_marks_are_shapes_not_glyphs() {
+        // A play mark lowers to coverage rects inside its square, centroid on the centre.
+        let mut dl = DrawList::new();
+        let sq = Rect::new(10.0, 10.0, 20.0, 20.0);
+        dl.icon(IconId::Play, sq, Rgba::hex(0xffffff));
+        let mut f = fonts();
+        let mut l = ChromeList::new();
+        UiRaster::new().lower(&dl, 2.0, &mut f, &mut l);
+        assert!(!l.instances.is_empty());
+        let (mut sx, mut n) = (0.0, 0.0);
+        for i in &l.instances {
+            assert!(i.params[2] > 1.5, "flat coverage only");
+            // Centring the centroid puts the apex a little past the square's right edge
+            // (the disc around it has the room).
+            assert!(i.rect[0] >= 20.0 - 1.0 && i.rect[0] + i.rect[2] <= 60.0 + 8.0);
+            assert!(i.rect[1] >= 20.0 - 1.0 && i.rect[1] < 60.0 + 1.0);
+            let a = f32::from(i.fill[3]) * i.rect[2];
+            sx += (i.rect[0] + i.rect[2] / 2.0) * a;
+            n += a;
+        }
+        assert!((sx / n - 40.0).abs() < 1.0, "centroid {}", sx / n);
+        // The muted speaker and the media controls lower without a font.
+        let mut dl = DrawList::new();
+        dl.icon(IconId::SpeakerMuted, sq, Rgba::hex(0xffffff));
+        let mut l = ChromeList::new();
+        UiRaster::new().lower(&dl, 1.0, &mut f, &mut l);
+        assert!(!l.instances.is_empty());
     }
 
     #[test]
@@ -874,6 +1013,76 @@ mod tests {
         }
     }
 
+    /// The media controls paused (play mark) and the muted pill over a flat stand-in ground,
+    /// as PNGs with `APOTH_SHOT=<dir>` (the live shots cover the playing state on real blur).
+    #[test]
+    fn media_hud_paused_shots_when_asked() {
+        let Some(dir) = std::env::var_os("APOTH_SHOT").map(PathBuf::from) else {
+            return;
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, h) = (480.0_f32, 300.0_f32);
+        let mut model = crate::render::ChromeModel::empty();
+        model.media_fx = crate::render::MediaFx {
+            huds: vec![crate::render::MediaHud {
+                key: 1,
+                rect: Rect::new(16.0, 16.0, w - 32.0, h - 32.0),
+                hovered: true,
+                state: apoth_term::MediaPlay::Paused,
+                progress: Some(0.4),
+                alpha: 1.0,
+            }],
+            win_alpha: 0.0,
+            muted: Some((Rect::new(0.0, 0.0, w, h), 1.0)),
+        };
+        for light in [false, true] {
+            for scale in [1.0_f32, 2.0] {
+                let mut f = fonts();
+                let mut l = ChromeList::new();
+                let buf = ((w * scale) as u32, (h * scale) as u32);
+                build_chrome(
+                    &mut l,
+                    None,
+                    &model,
+                    buf,
+                    scale,
+                    light,
+                    0,
+                    &mut f,
+                    &mut UiRaster::new(),
+                );
+                let (pw, ph) = (buf.0 as usize, buf.1 as usize);
+                let mut img = Image::new(pw, ph);
+                apoth_render::chrome::reference::render(&l, &mut img);
+                let mut rgb = Vec::with_capacity(pw * ph * 3);
+                for (i, p) in img.data.chunks_exact(4).enumerate() {
+                    // A loud stand-in picture: colour bars, the worst case for the glass.
+                    let x = (i % pw) * 6 / pw;
+                    let bars: [[u32; 3]; 6] = [
+                        [235, 40, 40],
+                        [40, 220, 60],
+                        [245, 235, 40],
+                        [30, 40, 230],
+                        [240, 40, 230],
+                        [40, 240, 240],
+                    ];
+                    for c in 0..3 {
+                        let g = bars[x][c];
+                        rgb.push(
+                            (u32::from(p[c]) + g * (255 - u32::from(p[3])) / 255).min(255) as u8,
+                        );
+                    }
+                }
+                let name = format!(
+                    "media-hud-paused-{}-{}x.png",
+                    if light { "light" } else { "dark" },
+                    scale as u32
+                );
+                std::fs::write(dir.join(name), png_rgb(pw, ph, &rgb)).unwrap();
+            }
+        }
+    }
+
     /// A float (MUX-18) over a tiled pane at scales 1, 1.25, 1.5 and 2: its backing and
     /// shadow sit inside the float's frame layer. PNGs with `APOTH_SHOT=<dir>`; always checks
     /// that the backing lands on whole pixels at every scale.
@@ -903,7 +1112,7 @@ mod tests {
             bell: None,
             media: None,
             media_muted: None,
-            media_huds: Vec::new(),
+            media_fx: crate::render::MediaFx::default(),
             ui: UiState::default(),
         };
         let shot = std::env::var_os("APOTH_SHOT").map(PathBuf::from);

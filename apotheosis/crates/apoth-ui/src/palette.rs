@@ -313,16 +313,18 @@ pub fn draw(
                 Point::new(tx, ty),
                 pal.text_tertiary,
             );
-            tx
+            // As native search fields: the caret stands just before the placeholder, in the
+            // field's leading pad, so it never strikes through the first letter.
+            tx - metrics::CARET_GAP - metrics::CARET_W
         } else {
             let run = TextRun::interface(spec.query.clone(), size::BODY).clipped(text_w);
             let w = measure.width(&run);
             out.text(run, Point::new(tx, ty), pal.text);
-            tx + w
+            tx + w + metrics::CARET_GAP
         };
         out.rect(
             Rect::new(
-                (caret_x + 1.0).min(l.field.right() - space::MD),
+                caret_x.min(l.field.right() - space::MD),
                 ty,
                 metrics::CARET_W,
                 size::BODY,

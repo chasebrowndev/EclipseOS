@@ -466,12 +466,23 @@ fn run_cases(s: &mut Shots) {
         s.pause(2500);
         s.shot("play-inline");
         // Pointer over the picture: the hover controls (T-08 §4).
+        s.nudge = (120.0, 90.0);
         s.hover(120.0, 90.0);
         s.pause(600);
         s.shot("play-inline-hover");
+        s.nudge = (3.0, 3.0);
         s.hover(3.0, 3.0);
         s.key("c", &["ctrl"]);
         s.pause(500);
+    }
+    if wanted("play-muted") {
+        // The session has no audio output: the player plays muted and says so, for 4 s,
+        // in a pill at the pane's top right (T-08 §4, T-16 §3).
+        s.sh("clear; echo 'Inline video:'; apoth play --loop \"$HOME/out/clip.webm\"");
+        s.pause(900);
+        s.shot("play-muted");
+        s.key("c", &["ctrl"]);
+        s.pause(4500);
     }
     if wanted("play-ext") {
         s.sh("clear; apoth play --ext --loop --size 56x16 \"$HOME/out/clip.webm\"");

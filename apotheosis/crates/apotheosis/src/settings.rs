@@ -198,6 +198,9 @@ pub(crate) struct GlassSettings {
     pub(crate) interface_font: Option<String>,
     /// `interface.font-size` over the 13 px body token, times `interface.scale`.
     pub(crate) interface_zoom: f32,
+    /// `interface.motion`. `system` reads as `full`: the portal's reduce-motion setting is
+    /// not read yet.
+    pub(crate) motion: apoth_ui::motion::MotionMode,
 }
 
 impl GlassSettings {
@@ -224,6 +227,10 @@ impl GlassSettings {
             },
             scrollbar_marks: c.bool("scrollbar.marks"),
             interface_font: nonempty(c.str("interface.font")),
+            motion: apoth_ui::motion::MotionMode::resolve(
+                c.str("interface.motion").unwrap_or("system"),
+                false,
+            ),
             interface_zoom: if size > 0.0 && scale > 0.0 {
                 size / apoth_ui::tokens::size::BODY * scale
             } else {

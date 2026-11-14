@@ -11,6 +11,7 @@ pub mod draw;
 pub mod frame;
 pub mod geom;
 pub mod hit;
+pub mod mediactl;
 pub mod mediawin;
 pub mod motion;
 pub mod palette;

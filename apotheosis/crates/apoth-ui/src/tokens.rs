@@ -260,9 +260,21 @@ pub mod metrics {
     pub const TOGGLE_KNOB_INSET: f32 = 2.0;
     /// A media window's hover close button.
     pub const MEDIA_CLOSE: f32 = 28.0;
+    /// Media hover controls (T-08 §4): the centred play/pause disc at its largest and
+    /// smallest, its glyph as a share of the disc, the bottom scrub pill, the track in it.
+    pub const MEDIA_PLAY: f32 = 52.0;
+    pub const MEDIA_PLAY_MIN: f32 = 28.0;
+    pub const MEDIA_GLYPH: f32 = 0.36;
+    pub const MEDIA_SCRUB_H: f32 = 14.0;
+    pub const MEDIA_TRACK_H: f32 = 4.0;
+    /// The muted notice pill and its speaker mark.
+    pub const MUTED_H: f32 = 28.0;
+    pub const MUTED_ICON: f32 = 16.0;
     /// The "default" tag on a picker row.
     pub const TAG_H: f32 = 16.0;
     pub const CARET_W: f32 = 1.5;
+    /// Air between the caret and the text beside it (before a placeholder, after a query).
+    pub const CARET_GAP: f32 = 2.0;
     /// Search sheet: widest it grows, and the height of its row.
     pub const SEARCH_W: f32 = 540.0;
     pub const SEARCH_H: f32 = 44.0;

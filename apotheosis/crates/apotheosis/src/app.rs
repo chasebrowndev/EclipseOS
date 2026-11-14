@@ -1340,7 +1340,7 @@ impl App {
             bell: self.bell_rect(geo),
             media: None,
             media_muted: self.media_muted_rect(geo),
-            media_huds: Vec::new(),
+            media_fx: crate::render::MediaFx::default(),
             ui: self.ui_state.clone(),
         }
     }

@@ -19,6 +19,12 @@ pub enum IconId {
     Shield,
     ArrowUp,
     ArrowDown,
+    /// A play triangle, centred on its centroid. Lowered as a shape, never a font glyph.
+    Play,
+    /// A speaker with a cross beside it (muted). Lowered as shapes.
+    SpeakerMuted,
+    /// A close cross drawn as two strokes (the media window's close button).
+    Cross,
 }
 
 #[derive(Clone, Debug, PartialEq)]

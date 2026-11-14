@@ -94,6 +94,63 @@ impl Spring {
     }
 }
 
+/// A hover fade: an opacity easing toward 1 while shown and toward 0 while hidden. A reversal
+/// mid-way continues from the current level, so a pointer flicking in and out never jumps.
+/// Times are milliseconds on any monotonic clock the caller keeps.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fader {
+    shown: bool,
+    /// When the current fade started; `None` once settled (or never moved).
+    start_ms: Option<u64>,
+}
+
+impl Fader {
+    /// Hidden and settled.
+    pub const fn hidden() -> Fader {
+        Fader {
+            shown: false,
+            start_ms: None,
+        }
+    }
+
+    /// Fade toward shown or hidden from `now_ms`.
+    pub fn set(&mut self, shown: bool, now_ms: u64, mode: MotionMode) {
+        if shown == self.shown {
+            if !self.animating(now_ms, mode) {
+                self.start_ms = None;
+            }
+            return;
+        }
+        let level = self.level(now_ms, mode);
+        self.shown = shown;
+        if mode.instant() {
+            self.start_ms = None;
+            return;
+        }
+        // The eased progress that gives the current level on the new curve, inverted.
+        let eased = if shown { level } else { 1.0 - level };
+        let p = 1.0 - (1.0 - eased.clamp(0.0, 1.0)).cbrt();
+        let back = (p * tok::FADE_MS as f32) as u64;
+        self.start_ms = Some(now_ms.saturating_sub(back));
+    }
+
+    /// Opacity in `0..=1` at `now_ms`.
+    pub fn level(&self, now_ms: u64, mode: MotionMode) -> f32 {
+        let e = self
+            .start_ms
+            .map_or(1.0, |s| fade(now_ms.saturating_sub(s), mode));
+        if self.shown { e } else { 1.0 - e }
+    }
+
+    /// Whether the owner must request another frame.
+    pub fn animating(&self, now_ms: u64, mode: MotionMode) -> bool {
+        !mode.instant()
+            && self
+                .start_ms
+                .is_some_and(|s| now_ms.saturating_sub(s) < tok::FADE_MS)
+    }
+}
+
 /// A 0..1 fade used by the auto-hide scrollbar and hover transitions.
 /// `elapsed_ms` since the fade started; `None` mode is a hard cut.
 pub fn fade(elapsed_ms: u64, mode: MotionMode) -> f32 {

@@ -26,6 +26,7 @@ use apoth_render::sched::{Pacing, Poll, SchedConfig, Scheduler};
 use apoth_render::surface::{AlphaRequest, FaultAction, fault_action};
 use apoth_term::{CursorInfo, ImageDraw};
 use apoth_ui::frame::TabStyle;
+use apoth_ui::motion::{Fader, MotionMode};
 use apoth_ui::palette::PaletteSpec;
 use apoth_ui::tabs::TabSpec;
 use apoth_ui::{Rect, UiState};
@@ -96,6 +97,8 @@ pub(crate) struct RenderSettings {
     pub(crate) interface_font: Option<String>,
     /// The terminal background is light: the interface uses the light palette.
     pub(crate) light: bool,
+    /// `interface.motion`: the interface's fades and springs.
+    pub(crate) motion: MotionMode,
 }
 
 impl RenderSettings {
@@ -112,6 +115,7 @@ impl RenderSettings {
             alpha: s.glass.alpha,
             ui_zoom: s.glass.interface_zoom,
             interface_font: s.glass.interface_font.clone(),
+            motion: s.glass.motion,
             light: lum >= ec_theme::SCHEME_LUMINANCE,
             colors: ColorCfg {
                 fg: s.term.fg,
@@ -240,15 +244,28 @@ pub(crate) struct ChromeModel {
     pub(crate) media: Option<apoth_ui::mediawin::MediaWinSpec>,
     /// The pane frame the muted notice shows over (T-16 §3 `audio-unavailable`), from main.
     pub(crate) media_muted: Option<Rect>,
-    /// Media placements in view with their state, interface units. Filled by the render
-    /// thread from its own snapshot (main never sees placement geometry).
-    pub(crate) media_huds: Vec<MediaHud>,
+    /// The media controls, their fades and the muted notice as drawn. The render thread's
+    /// own (main never sees placement geometry): it outlives main's layouts.
+    pub(crate) media_fx: MediaFx,
     pub(crate) ui: UiState,
+}
+
+/// What the render thread draws for media (T-08 §4), fades applied.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct MediaFx {
+    /// Media placements in view with their state, interface units.
+    pub(crate) huds: Vec<MediaHud>,
+    /// A media window's hover chrome fade level (close button, hint).
+    pub(crate) win_alpha: f32,
+    /// The muted notice: its pane frame and fade level, while it shows or fades out.
+    pub(crate) muted: Option<(Rect, f32)>,
 }
 
 /// One media placement as the interface draws its controls (T-08 §4).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MediaHud {
+    /// The placement's key (its fade is tracked by it).
+    pub(crate) key: u64,
     /// The placement's box, interface units.
     pub(crate) rect: Rect,
     /// The pointer is over it (a click toggles play/pause).
@@ -256,6 +273,92 @@ pub(crate) struct MediaHud {
     pub(crate) state: apoth_term::MediaPlay,
     /// Position / duration in 0..=1; `None` without a known duration.
     pub(crate) progress: Option<f32>,
+    /// The controls' fade level in `0..=1`.
+    pub(crate) alpha: f32,
+}
+
+/// The render thread's media fades: one per placement key, the media window's, the muted
+/// notice's (with the last pane it showed over, so it can fade out after main drops it).
+#[derive(Default)]
+struct MediaFades {
+    huds: Vec<(u64, Fader)>,
+    win: Option<Fader>,
+    muted: Option<(Rect, Fader)>,
+}
+
+impl MediaFades {
+    /// Applies the fades at `now_ms` to `huds` (raw hover state from the snapshot), the media
+    /// window's hover and the muted notice. Returns what to draw and whether a fade still runs
+    /// (another frame is needed); settled, it requests none.
+    fn apply(
+        &mut self,
+        mut huds: Vec<MediaHud>,
+        win_hover: Option<bool>,
+        muted: Option<Rect>,
+        now_ms: u64,
+        mode: MotionMode,
+    ) -> (MediaFx, bool) {
+        let mut running = false;
+        // In a media window the whole window is the placement: its hover shows the controls.
+        let win = win_hover.unwrap_or(false);
+        for h in &mut huds {
+            let i = match self.huds.iter().position(|(k, _)| *k == h.key) {
+                Some(i) => i,
+                None => {
+                    self.huds.push((h.key, Fader::hidden()));
+                    self.huds.len() - 1
+                }
+            };
+            let f = &mut self.huds[i].1;
+            f.set(h.hovered || win, now_ms, mode);
+            h.alpha = f.level(now_ms, mode);
+            running |= f.animating(now_ms, mode);
+        }
+        self.huds.retain(|(k, _)| huds.iter().any(|h| h.key == *k));
+        let win_alpha = match win_hover {
+            Some(hov) => {
+                let f = self.win.get_or_insert(Fader::hidden());
+                f.set(hov, now_ms, mode);
+                running |= f.animating(now_ms, mode);
+                f.level(now_ms, mode)
+            }
+            None => 0.0,
+        };
+        let shown = match (muted, self.muted.as_mut()) {
+            (Some(r), Some((at, f))) => {
+                *at = r;
+                f.set(true, now_ms, mode);
+                true
+            }
+            (Some(r), None) => {
+                let mut f = Fader::hidden();
+                f.set(true, now_ms, mode);
+                self.muted = Some((r, f));
+                true
+            }
+            (None, Some((_, f))) => {
+                f.set(false, now_ms, mode);
+                false
+            }
+            (None, None) => false,
+        };
+        let muted = self.muted.and_then(|(r, f)| {
+            running |= f.animating(now_ms, mode);
+            let a = f.level(now_ms, mode);
+            (shown || a > 0.0).then_some((r, a))
+        });
+        if muted.is_none() {
+            self.muted = None;
+        }
+        (
+            MediaFx {
+                huds,
+                win_alpha,
+                muted,
+            },
+            running,
+        )
+    }
 }
 
 /// The HUD entries of `panes` at `cell` px per cell and `ui` px per interface unit.
@@ -264,7 +367,10 @@ fn media_huds(panes: &[PaneR], cell: (u32, u32), ui: f32) -> Vec<MediaHud> {
     let (cw, ch) = (cell.0.max(1) as f32, cell.1.max(1) as f32);
     let mut out = Vec::new();
     for p in panes {
-        let hovered = p.view.media_hover();
+        // With mouse reporting on, a click goes to the program, not to play/pause: no
+        // controls promise a toggle that will not happen.
+        let reporting = p.v.shared.mirror.load().mouse_mode() != apoth_input::MouseMode::None;
+        let hovered = p.view.media_hover().filter(|_| !reporting);
         let rows = p.snap.rows.len();
         for m in &p.media {
             let vrow = m.row as i64 - p.media_top as i64;
@@ -280,11 +386,13 @@ fn media_huds(panes: &[PaneR], cell: (u32, u32), ui: f32) -> Vec<MediaHud> {
                     m.cols as f32 * cw / ui,
                     m.rows as f32 * ch / ui,
                 ),
+                key: m.key,
                 hovered: hovered == Some(m.key),
                 state: m.state,
                 progress: m
                     .duration_ms
                     .map(|d| (m.pos_ms as f32 / d.max(1) as f32).clamp(0.0, 1.0)),
+                alpha: 0.0,
             });
         }
     }
@@ -303,7 +411,7 @@ impl ChromeModel {
             bell: None,
             media: None,
             media_muted: None,
-            media_huds: Vec::new(),
+            media_fx: MediaFx::default(),
             ui: UiState::default(),
         }
     }
@@ -747,6 +855,9 @@ fn run(a: RenderArgs) {
     let mut ui_cache: Option<(String, FontSystem)> = None;
     let mut raster = UiRaster::new();
     let mut chrome_dirty = false;
+    // Media control fades (T-08 §4) on this thread's clock.
+    let mut fades = MediaFades::default();
+    let t0 = Instant::now();
     sched.damage(now_ns());
 
     'outer: loop {
@@ -847,8 +958,15 @@ fn run(a: RenderArgs) {
                     cell(&glyphs),
                     (scale * f64::from(rs.ui_zoom)) as f32,
                 );
-                if huds != chrome.media_huds {
-                    chrome.media_huds = huds;
+                let (fx, fading) = fades.apply(
+                    huds,
+                    chrome.media.as_ref().map(|m| m.hovered),
+                    chrome.media_muted,
+                    t0.elapsed().as_millis() as u64,
+                    rs.motion,
+                );
+                if fx != chrome.media_fx {
+                    chrome.media_fx = fx;
                     chrome_dirty = true;
                 }
                 let mut retries = 0;
@@ -1012,7 +1130,7 @@ fn run(a: RenderArgs) {
                         }
                     }
                 }
-                if pending > 0 {
+                if pending > 0 || fading {
                     sched.damage(now_ns());
                 }
                 continue;
@@ -1063,9 +1181,9 @@ fn run(a: RenderArgs) {
                 let keys: Vec<u64> = panes.iter().map(|p| p.v.id).collect();
                 stack.renderer.retain(&keys);
                 // The media controls are this thread's: they outlive main's layout.
-                let huds = std::mem::take(&mut chrome.media_huds);
+                let fx = std::mem::take(&mut chrome.media_fx);
                 chrome = c;
-                chrome.media_huds = huds;
+                chrome.media_fx = fx;
                 chrome_dirty = true;
                 sched.damage(now_ns());
             }
@@ -1120,6 +1238,51 @@ fn run(a: RenderArgs) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hud(key: u64, hovered: bool) -> MediaHud {
+        MediaHud {
+            key,
+            rect: Rect::new(0.0, 0.0, 160.0, 90.0),
+            hovered,
+            state: apoth_term::MediaPlay::Playing,
+            progress: Some(0.25),
+            alpha: 0.0,
+        }
+    }
+
+    #[test]
+    fn media_fades_run_then_settle_and_request_no_frames() {
+        let full = MotionMode::Full;
+        let fade = apoth_ui::tokens::motion::FADE_MS;
+        let mut f = MediaFades::default();
+        // At rest: nothing shows, nothing runs.
+        let (fx, run) = f.apply(vec![hud(1, false)], None, None, 0, full);
+        assert_eq!(fx.huds[0].alpha, 0.0);
+        assert!(!run && fx.muted.is_none());
+        // Hover: the controls fade in over FADE_MS, then settle.
+        let (fx, run) = f.apply(vec![hud(1, true)], None, None, 10, full);
+        assert!(run && fx.huds[0].alpha < 0.5);
+        let (fx, run) = f.apply(vec![hud(1, true)], None, None, 10 + fade, full);
+        assert!(!run && (fx.huds[0].alpha - 1.0).abs() < 1e-6);
+        // The muted notice fades in, and out after main drops it, then is gone.
+        let pane = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let (fx, _) = f.apply(vec![], None, Some(pane), 1000, full);
+        assert_eq!(fx.muted.map(|m| m.0), Some(pane));
+        let (fx, run) = f.apply(vec![], None, None, 1000 + fade, full);
+        assert!(run && fx.muted.is_some(), "fading out from where it was");
+        let (fx, run) = f.apply(vec![], None, None, 1000 + 3 * fade, full);
+        assert!(!run && fx.muted.is_none());
+        // A media window's hover shows every placement's controls and its own chrome.
+        let (fx, _) = f.apply(
+            vec![hud(2, false)],
+            Some(true),
+            None,
+            5000,
+            MotionMode::None,
+        );
+        assert_eq!(fx.huds[0].alpha, 1.0);
+        assert_eq!(fx.win_alpha, 1.0);
+    }
 
     fn lum(c: Rgb) -> f32 {
         let l = |v: u8| {

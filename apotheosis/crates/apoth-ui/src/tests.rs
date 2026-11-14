@@ -1300,6 +1300,7 @@ fn media_window_chrome_is_hover_only() {
     crate::mediawin::draw(
         area,
         &crate::mediawin::MediaWinSpec::default(),
+        0.0,
         &pal,
         &M,
         &mut rest,
@@ -1313,7 +1314,7 @@ fn media_window_chrome_is_hover_only() {
         hovered: true,
         ..Default::default()
     };
-    crate::mediawin::draw(area, &spec, &pal, &M, &mut hover);
+    crate::mediawin::draw(area, &spec, 1.0, &pal, &M, &mut hover);
     assert!(!hover.cmds.is_empty());
     let c = crate::mediawin::close_rect(area);
     assert!(area.contains(Point::new(c.x, c.y)) && c.right() <= area.right());
@@ -1322,6 +1323,148 @@ fn media_window_chrome_is_hover_only() {
         focused: true,
         ..Default::default()
     };
-    crate::mediawin::draw(area, &spec, &pal, &M, &mut focus);
+    crate::mediawin::draw(area, &spec, 0.0, &pal, &M, &mut focus);
     assert!(focus.cmds.len() == 1);
+}
+
+fn hud(rect: Rect, playing: bool, progress: Option<f32>, alpha: f32) -> crate::mediactl::HudSpec {
+    crate::mediactl::HudSpec {
+        rect,
+        playing,
+        progress,
+        alpha,
+        control: ControlState {
+            hover: true,
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn media_hud_centres_the_disc_and_keeps_the_scrub_clear() {
+    let r = Rect::new(10.0, 20.0, 320.0, 180.0);
+    let l = crate::mediactl::layout(r);
+    let b = l.button.expect("a disc");
+    assert!((b.w - metrics::MEDIA_PLAY).abs() < 1e-3 && b.w == b.h);
+    assert!(((b.x + b.w / 2.0) - (r.x + r.w / 2.0)).abs() < 1e-3);
+    assert!(((b.y + b.h / 2.0) - (r.y + r.h / 2.0)).abs() < 1e-3);
+    let (scrub, track) = l.scrub.expect("a scrub pill");
+    assert!(scrub.y >= b.bottom() && scrub.bottom() <= r.bottom());
+    assert!(track.x > scrub.x && track.right() < scrub.right());
+    assert!(track.y > scrub.y && track.bottom() < scrub.bottom());
+    // A short box keeps the disc and drops the track rather than overlap them.
+    let l = crate::mediactl::layout(Rect::new(0.0, 0.0, 200.0, 60.0));
+    assert!(l.button.is_some() && l.scrub.is_none());
+    // A sliver gets nothing.
+    let l = crate::mediactl::layout(Rect::new(0.0, 0.0, 200.0, 12.0));
+    assert!(l.button.is_none());
+}
+
+#[test]
+fn media_hud_draws_shapes_and_fades() {
+    let pal = dark();
+    let r = Rect::new(0.0, 0.0, 320.0, 180.0);
+    let mut none = DrawList::new();
+    crate::mediactl::draw(&hud(r, true, Some(0.5), 0.0), &pal, &mut none);
+    assert!(
+        none.cmds.is_empty(),
+        "a settled, unhovered placement draws nothing"
+    );
+    // Playing offers pause: two bars, no icon glyph. Paused offers the play shape.
+    let mut playing = DrawList::new();
+    crate::mediactl::draw(&hud(r, true, Some(0.5), 1.0), &pal, &mut playing);
+    assert!(
+        !playing
+            .cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Icon { .. } | Cmd::Text { .. }))
+    );
+    let mut paused = DrawList::new();
+    crate::mediactl::draw(&hud(r, false, Some(0.5), 1.0), &pal, &mut paused);
+    assert!(paused.cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Icon {
+            icon: IconId::Play,
+            ..
+        }
+    )));
+    // The track fill is the one accent, half the track.
+    let (_, track) = crate::mediactl::layout(r).scrub.unwrap();
+    let fill = playing
+        .cmds
+        .iter()
+        .find_map(|c| match c {
+            Cmd::RoundedRect { rect, fill, .. } if *fill == pal.accent => Some(*rect),
+            _ => None,
+        })
+        .expect("accent fill");
+    assert!((fill.w - track.w / 2.0).abs() < 1e-3);
+    // No duration: no scrub.
+    let mut bare = DrawList::new();
+    crate::mediactl::draw(&hud(r, true, None, 1.0), &pal, &mut bare);
+    assert!(bare.len() < playing.len());
+    // Half faded: every colour at half its alpha.
+    let mut half = DrawList::new();
+    crate::mediactl::draw(&hud(r, true, Some(0.5), 0.5), &pal, &mut half);
+    assert_eq!(half.len(), playing.len());
+    for (a, b) in half.cmds.iter().zip(&playing.cmds) {
+        if let (Cmd::RoundedRect { fill: fa, .. }, Cmd::RoundedRect { fill: fb, .. }) = (a, b) {
+            assert!((fa.a() - fb.a() / 2.0).abs() < 1e-4);
+        }
+    }
+}
+
+#[test]
+fn muted_pill_sits_top_right_and_is_drawn_only() {
+    let pal = dark();
+    let pane = Rect::new(0.0, 40.0, 600.0, 300.0);
+    let r = crate::mediactl::muted_rect(pane, &M);
+    assert!(r.right() <= pane.right() - crate::tokens::space::SM);
+    assert!(r.y >= pane.y && r.y < pane.y + 20.0);
+    let mut dl = DrawList::new();
+    crate::mediactl::draw_muted(pane, 1.0, &pal, &M, &mut dl);
+    assert!(dl.cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Icon {
+            icon: IconId::SpeakerMuted,
+            ..
+        }
+    )));
+    assert!(dl.cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Text { run, .. } if run.text == crate::mediactl::MUTED_TEXT
+            && run.origin == TextOrigin::Interface
+    )));
+    // A narrow pane clips the copy, never the pane.
+    let narrow = Rect::new(0.0, 0.0, 120.0, 80.0);
+    let n = crate::mediactl::muted_rect(narrow, &M);
+    assert!(n.x >= narrow.x);
+    let mut gone = DrawList::new();
+    crate::mediactl::draw_muted(pane, 0.0, &pal, &M, &mut gone);
+    assert!(gone.cmds.is_empty());
+}
+
+#[test]
+fn fader_eases_reverses_without_a_jump_and_settles() {
+    use crate::motion::Fader;
+    let full = MotionMode::Full;
+    let mut f = Fader::hidden();
+    assert_eq!(f.level(0, full), 0.0);
+    assert!(!f.animating(0, full));
+    f.set(true, 1000, full);
+    assert!(f.animating(1000, full));
+    let mid = f.level(1000 + tok_motion::FADE_MS / 2, full);
+    assert!(mid > 0.5 && mid < 1.0, "{mid}");
+    // Reverse half-way: the level carries on from where it was.
+    f.set(false, 1000 + tok_motion::FADE_MS / 2, full);
+    let back = f.level(1000 + tok_motion::FADE_MS / 2, full);
+    assert!((back - mid).abs() < 0.02, "{back} vs {mid}");
+    let end = 1000 + 2 * tok_motion::FADE_MS;
+    assert_eq!(f.level(end, full), 0.0);
+    assert!(!f.animating(end, full), "a settled fade requests no frames");
+    // `none` cuts.
+    let mut c = Fader::hidden();
+    c.set(true, 5, MotionMode::None);
+    assert_eq!(c.level(5, MotionMode::None), 1.0);
+    assert!(!c.animating(5, MotionMode::None));
 }

@@ -124,17 +124,22 @@ pub fn label_colour(p: &Palette, s: ControlState) -> Rgba {
 /// A floating glass layer: frost under the sheet tint so the grid beneath cannot ghost
 /// through its text, a hairline `rim` (the compositor draws no rim inside the window).
 pub fn glass(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette) {
-    out.rect(rect, radius, pal.base.alpha(alpha::BACKING), None);
-    out.rect(rect, radius, pal.sheet_tint, None);
+    glass_faded(out, rect, radius, rim, pal, 1.0);
+}
+
+/// [`glass`] at opacity `k` in `0..=1` (a fading layer): every alpha is scaled by `k`.
+pub fn glass_faded(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette, k: f32) {
+    out.rect(rect, radius, pal.base.alpha(alpha::BACKING).scaled(k), None);
+    out.rect(rect, radius, pal.sheet_tint.scaled(k), None);
     // The light catches the layer: one cell step of lift, so it reads as a pane above the
     // window and not as a hole in it.
     out.rect(
         rect,
         radius,
-        pal.cell,
+        pal.cell.scaled(k),
         Some(Rim {
             width: metrics::RIM_W,
-            colour: rim,
+            colour: rim.scaled(k),
         }),
     );
 }
