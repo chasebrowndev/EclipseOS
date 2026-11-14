@@ -346,10 +346,17 @@ impl RuleForm {
     }
 
     pub fn problems(&self) -> Problems {
+        self.problems_among(&[])
+    }
+
+    /// `others` is every other rule's name; a rule's name is its identity.
+    pub fn problems_among(&self, others: &[String]) -> Problems {
         let mut p = Problems::default();
         let name = self.name.trim();
         if name.is_empty() || name.len() > 128 || name.chars().any(char::is_control) {
             p.push("name", "a short name, not empty");
+        } else if others.iter().any(|o| o == name) {
+            p.push("name", "a rule with this name exists");
         }
         if self.event.is_empty() {
             p.push("event", "pick the event that fires the rule");
@@ -839,31 +846,104 @@ fn node_of(text: &str) -> Result<KdlNode, String> {
     })
 }
 
-/// A node appended after the last one, which must end its line first.
-fn append(nodes: &mut Vec<KdlNode>, node: KdlNode) {
-    if let Some(f) = nodes.last_mut().and_then(KdlNode::format_mut) {
-        if !f.terminator.ends_with('\n') {
-            f.terminator.push('\n');
+// The file is edited as text. The `kdl` document is read only to find where a
+// node sits (its span): a document written back out would drop the comment
+// after a node's closing brace and the blank line behind it, on nodes the edit
+// never touched. So an edit is a list of byte ranges and their replacements.
+
+/// One replacement: `text[from..to]` becomes the string.
+type Splice = (usize, usize, String);
+
+fn splice(text: &str, mut edits: Vec<Splice>) -> String {
+    edits.sort_by_key(|e| std::cmp::Reverse(e.0));
+    let mut out = text.to_owned();
+    for (from, to, with) in edits {
+        out.replace_range(from..to, &with);
+    }
+    out
+}
+
+/// Where the node's own text starts and ends (no leading comments, no trailing blanks).
+fn span_of(text: &str, n: &KdlNode) -> (usize, usize) {
+    let s = n.span();
+    let from = s.offset();
+    let to = (from + s.len()).min(text.len());
+    (from, from + text[from..to].trim_end().len())
+}
+
+/// The node's lines: from the start of its first line to just past its last
+/// line's newline (or the end of the file).
+fn lines_of(text: &str, n: &KdlNode) -> (usize, usize) {
+    let (s, e) = span_of(text, n);
+    let from = text[..s].rfind('\n').map_or(0, |i| i + 1);
+    let to = text[e..].find('\n').map_or(text.len(), |i| e + i + 1);
+    (from, to)
+}
+
+/// `lines_of`, widened up over the `//` comment lines written right above.
+fn block_of(text: &str, n: &KdlNode) -> (usize, usize) {
+    let (mut from, to) = lines_of(text, n);
+    while from > 0 {
+        let end = from - 1;
+        let start = text[..end].rfind('\n').map_or(0, |i| i + 1);
+        if text[start..end].trim_start().starts_with("//") {
+            from = start;
+        } else {
+            break;
         }
     }
-    nodes.push(node);
+    (from, to)
 }
 
-/// `node` takes the place of `old`, keeping the comments written above `old`.
-fn replace(old: &mut KdlNode, mut node: KdlNode) {
-    if let (Some(of), Some(nf)) = (old.format(), node.format_mut()) {
-        nf.leading = of.leading.clone();
+fn line_text(text: &str, (from, to): (usize, usize)) -> String {
+    let mut s = text[from..to].to_owned();
+    if !s.ends_with('\n') {
+        s.push('\n');
     }
-    *old = node;
+    s
 }
 
-fn swap(nodes: &mut [KdlNode], a: usize, down: bool) -> Result<(), String> {
-    let b = if down { a + 1 } else { a.wrapping_sub(1) };
-    if b >= nodes.len() {
-        return Err("already at the end".to_owned());
+/// `node` at the end of the file, after a blank line.
+fn append_top(text: &str, node: &str) -> String {
+    let mut out = text.to_owned();
+    if !out.trim().is_empty() {
+        if !out.ends_with('\n') {
+            out.push('\n');
+        }
+        if !out.ends_with("\n\n") {
+            out.push('\n');
+        }
     }
-    nodes.swap(a, b);
-    Ok(())
+    out.push_str(node);
+    out
+}
+
+/// `child` (indented, ending its line) as the last child of `container`.
+fn push_child(text: &str, container: &KdlNode, child: &str) -> Splice {
+    let (s, e) = span_of(text, container);
+    let brace = s + text[s..e].rfind('}').unwrap_or(e - s - 1);
+    let line = text[..brace].rfind('\n').map_or(0, |i| i + 1);
+    if text[line..brace].trim().is_empty() {
+        return (line, line, child.to_owned());
+    }
+    // `binds { }` on one line: open it up.
+    let head = text[..brace].trim_end().len();
+    let at = text[..s].rfind('\n').map_or(0, |i| i + 1);
+    let indent = &text[at..s];
+    (head, brace, format!("\n{child}{indent}"))
+}
+
+/// Swap two nodes' blocks, each keeping the comments written above it.
+fn swap_blocks(text: &str, a: &KdlNode, b: &KdlNode) -> Vec<Splice> {
+    let (ra, rb) = (block_of(text, a), block_of(text, b));
+    vec![
+        (ra.0, ra.1, line_text(text, rb)),
+        (rb.0, rb.1, line_text(text, ra)),
+    ]
+}
+
+fn children_of(n: &KdlNode) -> &[KdlNode] {
+    n.children().map(KdlDocument::nodes).unwrap_or_default()
 }
 
 /// The `k`th top-level node called `name`.
@@ -877,69 +957,72 @@ fn nth(doc: &KdlDocument, name: &str, k: usize) -> Result<usize, String> {
         .ok_or_else(|| format!("the file changed: no {name} number {}", k.saturating_add(1)))
 }
 
-/// Move the `k`th `name` node past the next (or before the previous) one of the
-/// same name, so file order, which decides rule order, changes by one place.
-fn move_named(doc: &mut KdlDocument, name: &str, k: usize, down: bool) -> Result<(), String> {
+/// The two top-level `name` nodes numbered `k` and its neighbour, so file
+/// order, which decides rule order, changes by one place.
+fn neighbour<'d>(
+    doc: &'d KdlDocument,
+    name: &str,
+    k: usize,
+    down: bool,
+) -> Result<(&'d KdlNode, &'d KdlNode), String> {
     let a = nth(doc, name, k)?;
     let other = if down { k + 1 } else { k.wrapping_sub(1) };
     let b = nth(doc, name, other).map_err(|_| "already at the end".to_owned())?;
-    let nodes = doc.nodes_mut();
-    // Keep each node's own leading comment with it; the line endings stay put.
-    let (lo, hi) = (a.min(b), a.max(b));
-    nodes.swap(lo, hi);
-    if let Some(f) = nodes.get_mut(hi).and_then(KdlNode::format_mut) {
-        if !f.terminator.ends_with('\n') {
-            f.terminator.push('\n');
-        }
-    }
-    Ok(())
+    Ok((&doc.nodes()[a], &doc.nodes()[b]))
 }
 
-fn bind_children(doc: &mut KdlDocument, c: usize) -> &mut Vec<KdlNode> {
-    let node = &mut doc.nodes_mut()[c];
-    if node.children().is_none() {
-        node.set_children(KdlDocument::new());
-        if let Some(f) = node.format_mut() {
-            f.before_children = " ".into();
-        }
-    }
-    node.children_mut()
-        .as_mut()
-        .map(KdlDocument::nodes_mut)
-        .expect("children were just set")
+fn names_of(doc: &KdlDocument, node: &str) -> Vec<String> {
+    doc.nodes()
+        .iter()
+        .filter(|n| n.name().value() == node)
+        .filter_map(first_arg)
+        .collect()
 }
 
-fn apply_doc(doc: &mut KdlDocument, op: &Op) -> Result<(), String> {
-    match op {
+fn container_text(scope: &Scope, child: &str) -> String {
+    match scope {
+        Scope::Global => format!("binds {{\n{child}}}\n"),
+        Scope::Table(n) => format!("key-table {} {{\n{child}}}\n", quoted(n)),
+    }
+}
+
+/// The edits for `op`, or the whole new text when it adds a node at the end.
+enum Outcome {
+    Edits(Vec<Splice>),
+    Text(String),
+}
+
+fn plan(text: &str, doc: &KdlDocument, op: &Op) -> Result<Outcome, String> {
+    use Outcome::{Edits, Text};
+    Ok(match op {
         Op::BindAdd(scope, form) => {
-            let text = form.node_text(4)?;
-            let c = match containers(doc, scope).last() {
-                Some(&c) => c,
-                None => {
-                    let head = match scope {
-                        Scope::Global => "binds {\n}\n".to_owned(),
-                        Scope::Table(n) => format!("key-table {} {{\n}}\n", quoted(n)),
-                    };
-                    append(doc.nodes_mut(), node_of(&head)?);
-                    doc.nodes().len() - 1
-                }
-            };
-            append(bind_children(doc, c), node_of(&text)?);
+            let child = form.node_text(4)?;
+            node_of(&child)?;
+            match containers(doc, scope).last() {
+                Some(&c) => Edits(vec![push_child(text, &doc.nodes()[c], &child)]),
+                None => Text(append_top(text, &container_text(scope, &child))),
+            }
         }
         Op::BindSet(scope, k, form) => {
             let (c, j) = item_pos(doc, scope, *k).ok_or("the file changed: that bind is gone")?;
-            let node = node_of(&form.node_text(4)?)?;
-            replace(&mut bind_children(doc, c)[j], node);
+            let child = form.node_text(4)?;
+            node_of(&child)?;
+            let (from, to) = lines_of(text, &children_of(&doc.nodes()[c])[j]);
+            Edits(vec![(from, to, child)])
         }
         Op::BindRemove(scope, k) => {
             let (c, j) = item_pos(doc, scope, *k).ok_or("the file changed: that bind is gone")?;
-            bind_children(doc, c).remove(j);
+            let (from, to) = lines_of(text, &children_of(&doc.nodes()[c])[j]);
+            Edits(vec![(from, to, String::new())])
         }
         Op::BindMove(scope, k, down) => {
             let (c, j) = item_pos(doc, scope, *k).ok_or("the file changed: that bind is gone")?;
             let next = item_pos(doc, scope, if *down { k + 1 } else { k.wrapping_sub(1) });
             match next {
-                Some((c2, j2)) if c2 == c => swap(bind_children(doc, c), j, j2 > j)?,
+                Some((c2, j2)) if c2 == c => {
+                    let kids = children_of(&doc.nodes()[c]);
+                    Edits(swap_blocks(text, &kids[j], &kids[j2]))
+                }
                 _ => return Err("already at the end".to_owned()),
             }
         }
@@ -951,96 +1034,191 @@ fn apply_doc(doc: &mut KdlDocument, op: &Op) -> Result<(), String> {
             if !containers(doc, &Scope::Table(name.to_owned())).is_empty() {
                 return Err("a key table with this name exists".to_owned());
             }
-            append(
-                doc.nodes_mut(),
-                node_of(&format!("key-table {} {{\n}}\n", quoted(name)))?,
-            );
+            Text(append_top(text, &format!("key-table {} {{\n}}\n", quoted(name))))
         }
         Op::TableRemove(name) => {
-            let nodes = doc.nodes_mut();
-            let before = nodes.len();
-            nodes.retain(|n| !(n.name().value() == "key-table" && first_arg(n).as_deref() == Some(name)));
-            if nodes.len() == before {
+            let edits: Vec<Splice> = doc
+                .nodes()
+                .iter()
+                .filter(|n| n.name().value() == "key-table" && first_arg(n).as_deref() == Some(name))
+                .map(|n| {
+                    let (from, to) = lines_of(text, n);
+                    (from, to, String::new())
+                })
+                .collect();
+            if edits.is_empty() {
                 return Err("the file changed: that table is gone".to_owned());
             }
+            Edits(edits)
         }
-        Op::RuleAdd(form) => append(doc.nodes_mut(), node_of(&form.node_text(0)?)?),
+        Op::RuleAdd(form) => {
+            let name = form.name.trim();
+            if names_of(doc, "rule").iter().any(|n| n == name) {
+                return Err("a rule with this name exists".to_owned());
+            }
+            Text(append_top(text, &form.node_text(0)?))
+        }
         Op::RuleSet(k, form) => {
             let i = nth(doc, "rule", *k)?;
-            let node = node_of(&form.node_text(0)?)?;
-            replace(&mut doc.nodes_mut()[i], node);
+            let name = form.name.trim();
+            let taken = doc
+                .nodes()
+                .iter()
+                .filter(|n| n.name().value() == "rule")
+                .enumerate()
+                .any(|(j, n)| j != *k && first_arg(n).as_deref() == Some(name));
+            if taken {
+                return Err("a rule with this name exists".to_owned());
+            }
+            let node = form.node_text(0)?;
+            node_of(&node)?;
+            let (from, to) = lines_of(text, &doc.nodes()[i]);
+            Edits(vec![(from, to, node)])
         }
         Op::RuleRemove(k) => {
             let i = nth(doc, "rule", *k)?;
-            doc.nodes_mut().remove(i);
+            let (from, to) = lines_of(text, &doc.nodes()[i]);
+            Edits(vec![(from, to, String::new())])
         }
-        Op::RuleMove(k, down) => move_named(doc, "rule", *k, *down)?,
+        Op::RuleMove(k, down) => {
+            let (a, b) = neighbour(doc, "rule", *k, *down)?;
+            Edits(swap_blocks(text, a, b))
+        }
         Op::ProfileSet(at, form, _) => {
             let head = form.head_text(4);
             match at {
                 None => {
-                    let text = format!("profile {} {{\n{head}}}\n", quoted(form.name.trim()));
-                    append(doc.nodes_mut(), node_of(&text)?);
+                    let t = format!("profile {} {{\n{head}}}\n", quoted(form.name.trim()));
+                    node_of(&t)?;
+                    Text(append_top(text, &t))
                 }
                 Some(k) => {
-                    let i = nth(doc, "profile", *k)?;
-                    let node = &mut doc.nodes_mut()[i];
-                    if node.children().is_none() {
-                        node.set_children(KdlDocument::new());
-                        if let Some(f) = node.format_mut() {
-                            f.before_children = " ".into();
-                        }
-                    }
-                    let kids = node
-                        .children_mut()
-                        .as_mut()
-                        .expect("children were just set")
-                        .nodes_mut();
-                    kids.retain(|c| !PROFILE_NODES.contains(&c.name().value()));
-                    let fresh =
-                        KdlDocument::parse(&head).map_err(|_| "cannot write that profile".to_owned())?;
-                    for (n, new) in fresh.nodes().iter().cloned().enumerate() {
-                        kids.insert(n, new);
-                    }
+                    let node = &doc.nodes()[nth(doc, "profile", *k)?];
+                    profile_head(text, node, &head)?
                 }
             }
         }
         Op::ProfileRemove(k) => {
             let i = nth(doc, "profile", *k)?;
-            doc.nodes_mut().remove(i);
+            let (from, to) = lines_of(text, &doc.nodes()[i]);
+            Edits(vec![(from, to, String::new())])
         }
-        Op::ProfileMove(k, down) => move_named(doc, "profile", *k, *down)?,
+        Op::ProfileMove(k, down) => {
+            let (a, b) = neighbour(doc, "profile", *k, *down)?;
+            Edits(swap_blocks(text, a, b))
+        }
+    })
+}
+
+/// A profile's `inherits`, `sticky` and `match` children become `head`, in the
+/// place the first of them held (or last, when it had none); every other child
+/// and its comments stay as written.
+fn profile_head(text: &str, node: &KdlNode, head: &str) -> Result<Outcome, String> {
+    let kids = children_of(node);
+    let own = |c: &&KdlNode| PROFILE_NODES.contains(&c.name().value());
+    let (ns, _) = span_of(text, node);
+    let tidy = node.children().is_some()
+        && kids.iter().all(|c| {
+            let (s, e) = span_of(text, c);
+            let (ls, le) = lines_of(text, c);
+            let rest = text[e..le].trim();
+            text[ls..s].trim().is_empty() && (rest.is_empty() || rest.starts_with("//")) && ls > ns
+        });
+    if tidy {
+        let mut edits = Vec::new();
+        let mut put = false;
+        for c in kids.iter().filter(own) {
+            let (from, to) = lines_of(text, c);
+            let with = if put { String::new() } else { head.to_owned() };
+            put = true;
+            edits.push((from, to, with));
+        }
+        if !put && !head.is_empty() {
+            edits.push(push_child(text, node, head));
+        }
+        return Ok(Outcome::Edits(edits));
     }
-    Ok(())
+    // One-line or otherwise cramped: write the node out again.
+    let mut body = head.to_owned();
+    for c in kids.iter().filter(|c| !own(c)) {
+        body.push_str("    ");
+        body.push_str(c.to_string().trim());
+        body.push('\n');
+    }
+    let name = first_arg(node).unwrap_or_default();
+    let t = format!("profile {} {{\n{body}}}\n", quoted(&name));
+    node_of(&t)?;
+    let (from, to) = lines_of(text, node);
+    Ok(Outcome::Edits(vec![(from, to, t)]))
 }
 
 /// `text` with `op` applied, or why not. A profile's keys are written last,
-/// through the lossless editor.
+/// through the lossless editor, on the profile's own text.
 pub fn apply(text: &str, op: &Op) -> Result<String, String> {
-    let mut doc = parse(text).map_err(|e| format!("apotheosis.kdl is not valid KDL: {e}"))?;
-    apply_doc(&mut doc, op)?;
-    let mut out = doc.to_string();
-    if let Op::ProfileSet(_, form, removed) = op {
-        let mut ed = Editor::parse(&out).map_err(|e| e.to_string())?;
-        let scope = [NodeSel::profile(form.name.trim())];
-        for path in removed {
-            ed.unset_in(&scope, path).map_err(|e| e.to_string())?;
-        }
-        for (path, typed) in &form.keys {
-            let key = apoth_config::schema::key(path).ok_or_else(|| format!("unknown key `{path}`"))?;
-            let value = typed_value(key, typed)?;
-            match value {
-                Some(v) => ed.set_in(&scope, path, &v).map_err(|e| e.to_string())?,
-                None => {
-                    ed.unset_in(&scope, path).map_err(|e| e.to_string())?;
-                }
-            }
-        }
-        out = ed.text();
+    let doc = parse(text).map_err(|e| format!("apotheosis.kdl is not valid KDL: {e}"))?;
+    let mut out = match plan(text, &doc, op)? {
+        Outcome::Edits(e) => splice(text, e),
+        Outcome::Text(t) => t,
+    };
+    if let Op::ProfileSet(at, form, removed) = op {
+        out = profile_keys(&out, *at, form, removed)?;
     }
-    let mut ed = Editor::parse(&out).map_err(|e| e.to_string())?;
-    ed.ensure_version().map_err(|e| e.to_string())?;
-    Ok(ed.text())
+    let doc = parse(&out).map_err(|e| e.to_string())?;
+    if !doc.nodes().iter().any(|n| n.name().value() == "version") {
+        out.insert_str(
+            0,
+            &format!("version {}\n", apoth_config::version::CURRENT_VERSION),
+        );
+    }
+    Ok(out)
+}
+
+/// The profile's overridden keys, written into the profile node alone. A key
+/// whose value is already what the field shows is left as written, so `15` does
+/// not become `15.0`.
+fn profile_keys(
+    text: &str,
+    at: Option<usize>,
+    form: &ProfileForm,
+    removed: &[String],
+) -> Result<String, String> {
+    let doc = parse(text)?;
+    let k = match at {
+        Some(k) => k,
+        None => names_of(&doc, "profile").len().saturating_sub(1),
+    };
+    let node = &doc.nodes()[nth(&doc, "profile", k)?];
+    let (from, to) = lines_of(text, node);
+    let mut ed = Editor::parse(&text[from..to]).map_err(|e| e.to_string())?;
+    let scope = [NodeSel::profile(form.name.trim())];
+    let mut changed = false;
+    for path in removed {
+        changed |= ed.unset_in(&scope, path).map_err(|e| e.to_string())?;
+    }
+    for (path, typed) in &form.keys {
+        let key = apoth_config::schema::key(path).ok_or_else(|| format!("unknown key `{path}`"))?;
+        let value = typed_value(key, typed)?;
+        let cur = ed.get_in(&scope, path).map_err(|e| e.to_string())?;
+        match value {
+            Some(v) if cur.as_ref() == Some(&v) => {}
+            Some(v) => {
+                ed.set_in(&scope, path, &v).map_err(|e| e.to_string())?;
+                changed = true;
+            }
+            None if cur.is_some() => {
+                ed.unset_in(&scope, path).map_err(|e| e.to_string())?;
+                changed = true;
+            }
+            None => {}
+        }
+    }
+    if !changed {
+        return Ok(text.to_owned());
+    }
+    Ok(splice(
+        text,
+        vec![(from, to, line_text(&ed.text(), (0, ed.text().len())))],
+    ))
 }
 
 /// A filesystem that reads `path` as `text` and everything else from the disk.
@@ -1275,5 +1453,103 @@ mod tests {
         // An error the file already had is not the edit's.
         let broken = "rule \"x\" {\n}\n";
         assert!(gate(&user, broken, &format!("{broken}{FILE}")).is_ok());
+    }
+
+    const MESSY: &str = "version 1\nfont { size 15 }   // trailing comment\n\nbinds {\n    bind \"ctrl+shift+c\" {\n        selection.copy\n    }\n    // paste\n    bind \"ctrl+shift+v\" {\n        tab.new\n    }\n}\n\n// a rule\nrule \"one\" {\n    on \"command-finished\"\n    do {\n        notify title=\"x\"\n    }\n}\n\nprofile \"work\" {\n    inherits \"plain\"\n    font { size 15 }\n}\n\nprofile \"plain\" {\n    sticky #true\n}\n";
+
+    fn bind(chord: &str, action: &str) -> BindForm {
+        BindForm {
+            chord: chord.into(),
+            actions: vec![action.into()],
+            ..BindForm::default()
+        }
+    }
+
+    #[test]
+    fn an_add_changes_only_the_new_node_byte_for_byte() {
+        let new = "    bind \"ctrl+shift+t\" {\n        tab.new\n    }\n";
+        let out = apply(
+            MESSY,
+            &Op::BindAdd(Scope::Global, bind("ctrl+shift+t", "tab.new")),
+        )
+        .unwrap();
+        let at = MESSY.find("}\n\n// a rule").unwrap();
+        assert_eq!(out, format!("{}{new}{}", &MESSY[..at], &MESSY[at..]));
+        assert!(out.contains("font { size 15 }   // trailing comment\n\nbinds"));
+        let back = apply(&out, &Op::BindRemove(Scope::Global, 2)).unwrap();
+        assert_eq!(back, MESSY);
+        let rule = RuleForm {
+            name: "two".into(),
+            event: "bell".into(),
+            actions: vec!["notify title=\"y\"".into()],
+            ..RuleForm::default()
+        };
+        let out = apply(MESSY, &Op::RuleAdd(rule)).unwrap();
+        assert!(out.starts_with(MESSY));
+        assert!(out.ends_with(
+            "}\n\nrule \"two\" {\n    on \"bell\"\n    do {\n        notify title=\"y\"\n    }\n}\n"
+        ));
+        let one = apply(MESSY, &Op::RuleRemove(0)).unwrap();
+        assert!(one.contains("font { size 15 }   // trailing comment\n\nbinds"));
+        assert!(one.contains("// a rule\n"), "comments above a removed node stay");
+    }
+
+    #[test]
+    fn a_set_or_move_leaves_the_first_child_on_its_own_line() {
+        let mut f = list_binds(MESSY, &Scope::Global).remove(1).form;
+        f.performable = true;
+        let out = apply(MESSY, &Op::BindSet(Scope::Global, 1, f)).unwrap();
+        assert!(out.contains(
+            "    // paste\n    bind \"ctrl+shift+v\" performable=#true {\n        tab.new\n    }\n}\n"
+        ));
+        let moved = apply(MESSY, &Op::BindMove(Scope::Global, 1, false)).unwrap();
+        assert!(moved.contains(
+            "binds {\n    // paste\n    bind \"ctrl+shift+v\" {\n        tab.new\n    }\n    bind \"ctrl+shift+c\" {\n        selection.copy\n    }\n}\n"
+        ));
+        let back = apply(&moved, &Op::BindMove(Scope::Global, 0, true)).unwrap();
+        assert_eq!(back, MESSY);
+        let mut p = list_profiles(MESSY).remove(0).form;
+        p.inherits = String::new();
+        let out = apply(MESSY, &Op::ProfileSet(Some(0), p, Vec::new())).unwrap();
+        assert!(
+            out.contains("profile \"work\" {\n    font { size 15 }\n}\n"),
+            "{out}"
+        );
+        let mut p = list_profiles(MESSY).remove(1).form;
+        p.inherits = "work".into();
+        let out = apply(MESSY, &Op::ProfileSet(Some(1), p, Vec::new())).unwrap();
+        assert!(
+            out.contains("profile \"plain\" {\n    inherits \"work\"\n    sticky #true\n}\n"),
+            "{out}"
+        );
+        let swapped = apply(MESSY, &Op::ProfileMove(0, true)).unwrap();
+        assert!(swapped.contains(
+            "profile \"plain\" {\n    sticky #true\n}\n\nprofile \"work\" {\n    inherits \"plain\"\n"
+        ));
+        let one = "profile \"x\" { sticky #true }\n";
+        let mut p = list_profiles(one).remove(0).form;
+        p.sticky = false;
+        let out = apply(one, &Op::ProfileSet(Some(0), p, Vec::new())).unwrap();
+        assert!(out.ends_with("profile \"x\" {\n}\n"), "{out}");
+    }
+
+    #[test]
+    fn an_integer_stays_an_integer_when_a_profile_is_saved() {
+        let form = list_profiles(MESSY).remove(0).form;
+        assert!(form.keys.iter().any(|(k, _)| k == "font.size"));
+        let again = apply(MESSY, &Op::ProfileSet(Some(0), form, Vec::new())).unwrap();
+        assert_eq!(again, MESSY);
+    }
+
+    #[test]
+    fn a_rule_name_is_not_written_twice() {
+        let mut f = list_rules(MESSY).remove(0).form;
+        assert!(apply(MESSY, &Op::RuleAdd(f.clone()))
+            .unwrap_err()
+            .contains("exists"));
+        assert!(f.problems_among(&["one".to_owned()]).get("name").is_some());
+        assert!(f.problems_among(&[]).get("name").is_none());
+        f.when = "status:!0".into();
+        assert!(apply(MESSY, &Op::RuleSet(0, f)).is_ok());
     }
 }

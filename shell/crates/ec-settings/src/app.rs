@@ -1343,7 +1343,12 @@ pub fn subscription(app: &App) -> Subscription<Message> {
 }
 
 fn subscription_inner(app: &App) -> Subscription<Message> {
-    let mut subs = vec![blur(), events(), crate::search_ui::keys(&app.search)];
+    let mut subs = vec![blur(), events()];
+    // While the chord recorder listens every key is its own, so the sidebar's
+    // type-to-search hears none.
+    if !app.terminal.lists.recording() {
+        subs.push(crate::search_ui::keys(&app.search));
+    }
     subs.push(ec_ui::glass::xdg_window().map(Message::GlassWindow));
     if app.nav_moving() {
         subs.push(iced::window::frames().map(Message::NavFrame));

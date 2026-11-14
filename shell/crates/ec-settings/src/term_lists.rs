@@ -163,6 +163,33 @@ impl Lists {
         self.key_query.clear();
     }
 
+    /// The names of the rules in the user's file, but for the `except`th.
+    fn rule_names(&self, except: Option<usize>) -> Vec<String> {
+        self.rules
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| Some(*i) != except)
+            .map(|(_, r)| r.form.name.clone())
+            .collect()
+    }
+
+    /// May the profile move a place? Not past the profile it inherits, and not
+    /// before one that inherits it: a parent is declared first.
+    pub fn can_move_profile(&self, i: usize, down: bool) -> bool {
+        let Some(me) = self.profiles.get(i) else {
+            return false;
+        };
+        let Some(other) = self.profiles.get(if down { i + 1 } else { i.wrapping_sub(1) }) else {
+            return false;
+        };
+        let (a, b) = (&me.form, &other.form);
+        if down {
+            b.inherits != a.name
+        } else {
+            a.inherits != b.name
+        }
+    }
+
     fn profile_names(&self, cfg: &apoth_config::Config, except: Option<usize>) -> Vec<String> {
         let mut out: Vec<String> = self
             .profiles
@@ -356,8 +383,20 @@ fn save(t: &mut Terminal) {
     let op = match edit {
         Edit::Bind(scope, At::New, f) => Op::BindAdd(scope, f),
         Edit::Bind(scope, At::Item(i), f) => Op::BindSet(scope, i, f),
-        Edit::Rule(At::New, f) => Op::RuleAdd(f),
-        Edit::Rule(At::Item(i), f) => Op::RuleSet(i, f),
+        Edit::Rule(at, f) => {
+            let except = match at {
+                At::Item(i) => Some(i),
+                At::New => None,
+            };
+            if let Some(why) = f.problems_among(&t.lists.rule_names(except)).first() {
+                t.lists.error = Some(why.to_owned());
+                return;
+            }
+            match at {
+                At::Item(i) => Op::RuleSet(i, f),
+                At::New => Op::RuleAdd(f),
+            }
+        }
         Edit::Profile(at, f, orig) => {
             let except = match at {
                 At::Item(i) => Some(i),
@@ -710,10 +749,10 @@ fn summary(actions: &[String]) -> String {
 fn item_row<'a>(
     page: Page,
     i: usize,
-    last: usize,
     open: bool,
     main: Element<'a, Message, Theme>,
     editable: bool,
+    can_move: (bool, bool),
 ) -> Element<'a, Message, Theme> {
     let body = button(
         container(main)
@@ -730,8 +769,8 @@ fn item_row<'a>(
     };
     row![
         body,
-        verb("Up", (i > 0).then(|| m(Msg::Move(page, i, false)))),
-        verb("Down", (i < last).then(|| m(Msg::Move(page, i, true)))),
+        verb("Up", can_move.0.then(|| m(Msg::Move(page, i, false)))),
+        verb("Down", can_move.1.then(|| m(Msg::Move(page, i, true)))),
         verb(
             if open { "Close" } else { "Edit" },
             editable.then(|| m(Msg::Edit(page, i)))
@@ -934,7 +973,10 @@ fn bind_form<'a>(l: &'a Lists, at: At, f: &'a BindForm) -> Element<'a, Message, 
 }
 
 fn rule_form<'a>(l: &'a Lists, at: At, f: &'a RuleForm) -> Element<'a, Message, Theme> {
-    let p = f.problems();
+    let p = f.problems_among(&l.rule_names(match at {
+        At::Item(i) => Some(i),
+        At::New => None,
+    }));
     let events: Vec<String> = RULE_EVENTS
         .iter()
         .chain(MEDIA_EVENTS)
@@ -1274,7 +1316,14 @@ pub fn blocks(app: &App, page: Page) -> Vec<Element<'_, Message, Theme>> {
                 }
                 body = body.push(mono_text(&summary(&f.actions)));
                 col = col.push(hairline());
-                col = col.push(item_row(page, i, l.rules.len() - 1, open, body.into(), !e.opaque));
+                col = col.push(item_row(
+                    page,
+                    i,
+                    open,
+                    body.into(),
+                    !e.opaque,
+                    (i > 0, i + 1 < l.rules.len()),
+                ));
                 col = push_form(col, l, &cfg, At::Item(i));
             }
             let sys: Vec<_> = cfg
@@ -1385,7 +1434,14 @@ pub fn blocks(app: &App, page: Page) -> Vec<Element<'_, Message, Theme>> {
                     when.join("  or  ")
                 }));
                 col = col.push(hairline());
-                col = col.push(item_row(page, i, l.profiles.len() - 1, open, body.into(), true));
+                col = col.push(item_row(
+                    page,
+                    i,
+                    open,
+                    body.into(),
+                    true,
+                    (l.can_move_profile(i, false), l.can_move_profile(i, true)),
+                ));
                 col = push_form(col, l, &cfg, At::Item(i));
             }
             out.push(panel(app.glass_radius, app.hairline_cards, col));
@@ -1498,7 +1554,14 @@ pub fn blocks(app: &App, page: Page) -> Vec<Element<'_, Message, Theme>> {
                     head = head.push(badge("performable"));
                 }
                 col = col.push(hairline());
-                col = col.push(item_row(page, i, l.binds.len() - 1, open, head.into(), !e.opaque));
+                col = col.push(item_row(
+                    page,
+                    i,
+                    open,
+                    head.into(),
+                    !e.opaque,
+                    (i > 0, i + 1 < l.binds.len()),
+                ));
                 col = push_form(col, l, &cfg, At::Item(i));
             }
             if scope == Scope::Global && sys_binds > 0 {
@@ -1566,5 +1629,44 @@ mod tests {
             Heard::Cancel
         );
         assert_eq!(chord(Key::Unidentified, Modifiers::empty()), Heard::Ignore);
+    }
+
+    #[test]
+    fn a_profile_does_not_move_past_its_parent() {
+        let text = "profile \"plain\" {\n}\n\nprofile \"work\" {\n    inherits \"plain\"\n}\n\nprofile \"solo\" {\n}\n";
+        let l = Lists {
+            profiles: crate::term_edit::list_profiles(text),
+            ..Lists::default()
+        };
+        // plain (0) cannot go below work (1): work would then precede its parent.
+        assert!(!l.can_move_profile(0, true));
+        assert!(!l.can_move_profile(1, false));
+        assert!(l.can_move_profile(1, true));
+        assert!(l.can_move_profile(2, false));
+        assert!(!l.can_move_profile(0, false) && !l.can_move_profile(2, true));
+    }
+
+    #[test]
+    fn the_window_search_is_deaf_while_a_chord_is_recorded() {
+        let mut l = Lists::default();
+        assert!(!l.recording());
+        l.recording = Some(true);
+        assert!(l.recording());
+        // `subscription_inner` leaves the type-to-search listener out whenever
+        // `recording()` holds, so a plain key is the recorder's alone.
+        l.close();
+        assert!(!l.recording());
+    }
+
+    #[test]
+    fn a_rule_name_taken_by_another_rule_is_named() {
+        let l = Lists {
+            rules: crate::term_edit::list_rules(
+                "rule \"a\" {\n    on \"bell\"\n    do {\n        tab.new\n    }\n}\n",
+            ),
+            ..Lists::default()
+        };
+        assert_eq!(l.rule_names(None), vec!["a".to_owned()]);
+        assert!(l.rule_names(Some(0)).is_empty());
     }
 }
