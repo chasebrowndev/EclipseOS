@@ -1,0 +1,10 @@
+fixture "reports-dsr-6-cpr" {
+  covers "T03-DSR" "VTCORE-24"
+  size rows=5 cols=10
+  feed #"ab\e[6n"#
+  grid {
+    row "ab"
+  }
+  cursor row=0 col=2
+  replies #"\e[1;3R"#
+}

@@ -1,0 +1,9 @@
+fixture "cap-osc9-notification-under-cap-accepted" {
+  desc "cap osc9 notification under cap accepted (migrated from the apoth-term corpus)"
+  covers "T03-OSC9-NOTIFY" "T03-OSC-CAPS"
+  size rows=1 cols=4
+  feed #"\e]9;"#
+  feed #"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"#
+  feed #"\a"#
+  events "notify:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn"
+}

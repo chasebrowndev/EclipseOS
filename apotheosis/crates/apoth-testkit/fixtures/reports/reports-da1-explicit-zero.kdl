@@ -1,0 +1,7 @@
+fixture "reports-da1-explicit-zero" {
+  covers "T03-DA1" "VTCORE-23"
+  size rows=5 cols=10
+  feed #"\e[0c"#
+  grid
+  replies #"\e[?62;4;22c"#
+}

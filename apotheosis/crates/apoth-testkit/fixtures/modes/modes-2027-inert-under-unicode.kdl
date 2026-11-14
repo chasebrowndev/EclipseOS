@@ -1,0 +1,6 @@
+fixture "modes-2027-inert-under-unicode" {
+  covers "T03-MODE-2027" "T03-DECRQM"
+  size rows=3 cols=10
+  feed #"\e[?2027l"#
+  mode "?2027" 3
+}

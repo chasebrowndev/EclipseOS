@@ -1,0 +1,7 @@
+fixture "c0-bel-counts" {
+  desc "c0 bel counts (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC"
+  size rows=1 cols=5
+  feed #"\a\a"#
+  events "bell" "bell"
+}

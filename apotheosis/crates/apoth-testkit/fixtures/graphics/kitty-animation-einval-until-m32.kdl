@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-animation-einval-until-m32" {
+  desc "a=a (animation, R2) answers EINVAL"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e_Ga=a,i=7,s=3\e\\"#
+  replies #"\e_Gi=7;EINVAL:invalid request\e\\"#
+}

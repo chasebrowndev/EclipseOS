@@ -1,0 +1,11 @@
+fixture "cur-blink-mode-12" {
+  desc "cur blink mode 12 (migrated from the apoth-term corpus)"
+  covers "T03-BLINK12"
+  size rows=2 cols=4
+  feed #"\e[2 q\e[?12h"#
+  checkpoint "c1" {
+    cursor row=0 col=0 shape=1
+  }
+  feed #"\e[?12l"#
+  cursor row=0 col=0 shape=2
+}

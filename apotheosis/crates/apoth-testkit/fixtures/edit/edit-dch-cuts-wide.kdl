@@ -1,0 +1,10 @@
+fixture "edit-dch-cuts-wide" {
+  desc "deleting a head leaves an orphan tail, which is repaired"
+  covers "T03-ICH-DCH" "T03-WIDE" "VTCORE-08"
+  size rows=2 cols=6
+  feed #"A日B\e[1;1H\e[2P"#
+  grid {
+    row " B"
+  }
+  cursor row=0 col=0
+}

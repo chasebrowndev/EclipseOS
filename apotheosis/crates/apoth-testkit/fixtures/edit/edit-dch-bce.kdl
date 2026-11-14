@@ -1,0 +1,16 @@
+fixture "edit-dch-bce" {
+  covers "T03-ICH-DCH" "VTCORE-03"
+  review "BCE on the cells exposed by DCH; not stated in T-03"
+  size rows=4 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\r\nSTUVWX\e[44m\e[1;3H\e[2P"#
+  grid {
+    row "ABEF"
+    row "GHIJKL"
+    row "MNOPQR"
+    row "STUVWX"
+  }
+  cursor row=0 col=2
+  cell row=0 col=3 ch="F"
+  cell row=0 col=4 ch="" bg="p4"
+  cell row=0 col=5 ch="" bg="p4"
+}

@@ -1,0 +1,7 @@
+fixture "reports-da3" {
+  covers "T03-DA3" "VTCORE-23"
+  size rows=5 cols=10
+  feed #"\e[=c"#
+  grid
+  replies #"\eP!|00000000\e\\"#
+}

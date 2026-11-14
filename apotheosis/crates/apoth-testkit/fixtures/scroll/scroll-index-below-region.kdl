@@ -1,0 +1,14 @@
+fixture "scroll-index-below-region" {
+  desc "IND below the region moves down normally"
+  covers "T03-DECSTBM" "T03-IND-NEL-RI"
+  size rows=5 cols=10
+  feed #"\e[1;2r\e[4;1HA\eDB"#
+  grid {
+    row ""
+    row ""
+    row ""
+    row "A"
+    row " B"
+  }
+  cursor row=4 col=2
+}

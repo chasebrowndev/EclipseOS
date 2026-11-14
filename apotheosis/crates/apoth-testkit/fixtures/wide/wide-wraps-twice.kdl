@@ -1,0 +1,12 @@
+fixture "wide-wraps-twice" {
+  requires "spacer-head-writer"
+  covers "T03-WIDE" "T03-AUTOWRAP"
+  size rows=3 cols=5
+  feed #"日日日"#
+  grid {
+    row "日日"
+    row "日"
+  }
+  cursor row=1 col=2
+  cell row=0 col=4 wide="head"
+}

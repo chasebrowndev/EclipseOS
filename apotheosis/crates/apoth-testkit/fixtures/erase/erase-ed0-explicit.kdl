@@ -1,0 +1,10 @@
+fixture "erase-ed0-explicit" {
+  covers "T03-ED"
+  size rows=4 cols=6
+  feed #"AAAAAA\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\e[2;3H\e[0J"#
+  grid {
+    row "AAAAAA"
+    row "BB"
+  }
+  cursor row=1 col=2
+}

@@ -1,0 +1,7 @@
+fixture "reply-xtwinops-16-cell-size" {
+  desc "reply xtwinops 16 cell size (migrated from the apoth-term corpus)"
+  covers "T03-XTWINOPS" "T03-PIXEL-REPORTS"
+  size rows=5 cols=10
+  feed #"\e[16t"#
+  replies #"\e[6;16;8t"#
+}
