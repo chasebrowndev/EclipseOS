@@ -1,0 +1,7 @@
+fixture "reply-dsr-cpr-wrap-pending-reports-last-col" {
+  desc "reply dsr cpr wrap pending reports last col (migrated from the apoth-term corpus)"
+  covers "T03-DSR"
+  size rows=2 cols=3
+  feed #"abc\e[6n"#
+  replies #"\e[1;3R"#
+}

@@ -1,0 +1,12 @@
+fixture "wide-combining-after-cursor-move" {
+  desc "a combining mark after any cursor move starts a new cell (T-04 section 2)"
+  covers "T03-COMBINING" "UNICODE-03"
+  size rows=2 cols=10
+  feed #"e\e[Ć"#
+  grid {
+    row "e ́"
+  }
+  cursor row=0 col=3
+  cell row=0 col=1 ch=""
+  cell row=0 col=2 ch="́"
+}

@@ -1,0 +1,9 @@
+fixture "c0-print-spaces-advance" {
+  covers "T03-PRINT"
+  size rows=2 cols=10
+  feed #"A B  C"#
+  grid {
+    row "A B  C"
+  }
+  cursor row=0 col=6
+}

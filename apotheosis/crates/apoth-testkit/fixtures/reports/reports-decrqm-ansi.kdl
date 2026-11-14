@@ -1,0 +1,8 @@
+fixture "reports-decrqm-ansi" {
+  desc "ANSI modes IRM, LNM reset; unknown mode = 0"
+  covers "T03-DECRQM" "VTCORE-19"
+  size rows=5 cols=10
+  feed #"\e[4$p\e[20$p\e[99$p"#
+  grid
+  replies #"\e[4;2$y\e[20;2$y\e[99;0$y"#
+}

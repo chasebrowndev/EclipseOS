@@ -1,0 +1,9 @@
+fixture "osc-title-0" {
+  desc "OSC 0 sets title and icon name"
+  covers "T03-OSC-TITLE" "VTCORE-28"
+  review "OSC 0 is assumed to emit one title event; T-03 does not say whether the icon name is tracked or evented separately"
+  size rows=3 cols=20
+  feed #"\e]0;hello\a"#
+  grid
+  events "title:hello"
+}

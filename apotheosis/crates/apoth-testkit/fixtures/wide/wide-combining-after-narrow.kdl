@@ -1,0 +1,11 @@
+fixture "wide-combining-after-narrow" {
+  desc "a combining mark joins the previous cell"
+  covers "T03-COMBINING" "UNICODE-03"
+  size rows=2 cols=10
+  feed #"é"#
+  grid {
+    row "é"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="é"
+}

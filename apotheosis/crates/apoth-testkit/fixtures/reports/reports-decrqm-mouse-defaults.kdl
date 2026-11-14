@@ -1,0 +1,8 @@
+fixture "reports-decrqm-mouse-defaults" {
+  covers "T03-DECRQM" "T03-MODES-TABLE" "VTCORE-19"
+  review "mode 1001 (highlight tracking) is Never in T-03 section 3.3; its DECRQM value (4, permanently reset) is assumed"
+  size rows=5 cols=10
+  feed #"\e[?9$p\e[?1000$p\e[?1001$p\e[?1002$p\e[?1003$p\e[?1005$p\e[?1006$p\e[?1015$p\e[?1016$p"#
+  grid
+  replies #"\e[?9;2$y\e[?1000;2$y\e[?1001;4$y\e[?1002;2$y\e[?1003;2$y\e[?1005;2$y\e[?1006;2$y\e[?1015;2$y\e[?1016;2$y"#
+}
