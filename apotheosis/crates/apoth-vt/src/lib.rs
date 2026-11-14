@@ -19,6 +19,7 @@
 #![forbid(unsafe_code)]
 
 pub mod bench;
+mod fuzz;
 pub mod limits;
 mod params;
 mod parser;
@@ -26,6 +27,7 @@ mod sink;
 mod table;
 mod utf8;
 
+pub use fuzz::fuzz_parse;
 pub use params::{Params, StrEnd, StrHead, StrKind, StrRoute};
 pub use parser::Parser;
 pub use sink::Sink;

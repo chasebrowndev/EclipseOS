@@ -1,0 +1,10 @@
+fixture "c1-utf8-encoded-c1-discarded" {
+  desc "UTF-8 encoded U+009B is data that T-03 discards (T-01 section 2.2)"
+  covers "T03-C1-IGNORED" "VTCORE-13"
+  size rows=3 cols=10
+  feed #"A\u{9b}B"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+}

@@ -1,0 +1,12 @@
+fixture "erase-el0" {
+  covers "T03-EL" "VTCORE-15"
+  size rows=4 cols=6
+  feed #"AAAAAA\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\e[2;3H\e[K"#
+  grid {
+    row "AAAAAA"
+    row "BB"
+    row "CCCCCC"
+    row "DDDDDD"
+  }
+  cursor row=1 col=2
+}

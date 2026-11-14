@@ -1,0 +1,10 @@
+fixture "wide-overwrite-straddling" {
+  desc "a wide glyph over two half-covered wide glyphs repairs both seams"
+  covers "T03-WIDE" "VTCORE-08"
+  size rows=2 cols=6
+  feed #"日日\e[1;2H本"#
+  grid {
+    row " 本"
+  }
+  cursor row=0 col=3
+}

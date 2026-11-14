@@ -10,3 +10,7 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+# ADR 0084: state-free, no dependencies. The palette is derived, never copied.
+ec-theme = { path = "../../../abyss/crates/ec-theme" }

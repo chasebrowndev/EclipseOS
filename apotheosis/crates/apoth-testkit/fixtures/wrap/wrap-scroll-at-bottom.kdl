@@ -1,0 +1,13 @@
+fixture "wrap-scroll-at-bottom" {
+  covers "T03-AUTOWRAP" "T03-SCROLL-HISTORY"
+  size rows=2 cols=3
+  feed #"ABCDEFG"#
+  grid {
+    row "DEF"
+    row "G"
+  }
+  cursor row=1 col=1
+  scrollback {
+    row "ABC"
+  }
+}

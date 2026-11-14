@@ -121,6 +121,10 @@ impl Cell {
         Cell((Wide::SpacerHead as u64) << WIDE_SHIFT)
     }
 
+    /// Bits that make a cell non-plain (overwriting needs no release or repair: style, link, cluster or background payload, wide part).
+    pub(crate) const NOT_PLAIN: u64 =
+        (0xffff << STYLE_SHIFT) | (3 << WIDE_SHIFT) | LINK | (1 << 22);
+
     /// What the cell holds.
     pub fn tag(self) -> Tag {
         match (self.0 >> TAG_SHIFT) & 3 {

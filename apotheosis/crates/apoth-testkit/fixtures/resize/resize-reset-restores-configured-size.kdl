@@ -1,0 +1,9 @@
+fixture "resize-reset-restores-configured-size" {
+  desc "resize reset restores configured size (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=2 cols=3
+  resize rows=4 cols=6
+  feed #"\ec"#
+  feed #"\e[18t"#
+  replies #"\e[8;4;6t"#
+}

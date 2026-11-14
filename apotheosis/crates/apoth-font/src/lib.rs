@@ -10,6 +10,7 @@ mod builtin_tables;
 mod colr;
 pub mod config;
 pub mod discovery;
+pub mod embedded;
 pub mod face;
 pub mod metrics;
 pub mod ranges;
