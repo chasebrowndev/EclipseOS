@@ -29,7 +29,8 @@
 //! is caught). Row text skips spacer cells and is right-trimmed. A `replies`/`events` node
 //! with no arguments asserts "nothing". Sections that are absent are not asserted.
 //! Event strings: `title:<t>`, `icon:<t>`, `cwd:<uri>`, `progress:<state>:<value>`,
-//! `notify:<text>`, `bell`, `mark:<A|B|C|D[;n]>`, `clipboard-set:<sel>:<bytes>`.
+//! `notify:<text>`, `bell`, `mark:<A|B|C|D[;n]>`, `clipboard-set:<sel>:<bytes>`,
+//! `clipboard-read:<sel>` (a read request main answers under the policy; the term never replies).
 
 use std::path::PathBuf;
 

@@ -416,10 +416,22 @@ impl Machine {
         self.reply_str(format!("\x1b[{q}{n};{st}$y"));
     }
 
+    /// XTWINOPS safe subset (T-18 §3): size and cell reports (14, 16, 18, 19) and the title
+    /// stack (22, 23) are `window-ops-report`; title reports (20, 21) always answer empty;
+    /// move, resize, raise, iconify, fullscreen and every other op are consumed.
     fn xtwinops(&mut self, p: &Params) {
         let (r, c) = (self.rows, self.cols);
         let (cw, ch) = self.cfg.cell_px;
-        match p.get(0) {
+        let op = p.get(0);
+        let class = match op {
+            Some(20 | 21) => crate::deny::TITLE_REPORT,
+            Some(14 | 16 | 18 | 19 | 22 | 23) => crate::deny::WINDOW_REPORT,
+            _ => 0,
+        };
+        if self.cfg.deny & class != 0 {
+            return;
+        }
+        match op {
             Some(14) => self.reply_str(format!("\x1b[4;{};{}t", r as u32 * ch, c as u32 * cw)),
             Some(16) => self.reply_str(format!("\x1b[6;{ch};{cw}t")),
             Some(18) => self.reply_str(format!("\x1b[8;{r};{c}t")),
@@ -434,6 +446,9 @@ impl Machine {
             }
             Some(23) => {
                 if let Some((t, i)) = self.title_stack.pop() {
+                    if self.cfg.deny & crate::deny::TITLE_SET != 0 {
+                        return;
+                    }
                     let which = p.get_or(1, 0);
                     if which == 0 || which == 2 {
                         self.title = t;

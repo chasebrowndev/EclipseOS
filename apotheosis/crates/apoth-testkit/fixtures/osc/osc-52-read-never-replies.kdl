@@ -1,8 +1,8 @@
 fixture "osc-52-read-never-replies" {
-  desc "osc 52 read never replies (migrated from the apoth-term corpus)"
-  covers "T03-OSC52-READ"
+  desc "osc 52 read never replies from the term; it raises a read request for main's policy decision"
+  covers "T03-OSC52-READ" "SECURITY-03" "T18-REPLY"
   size rows=1 cols=8
   feed #"\e]52;c;?\a"#
   replies
-  events
+  events "clipboard-read:c"
 }

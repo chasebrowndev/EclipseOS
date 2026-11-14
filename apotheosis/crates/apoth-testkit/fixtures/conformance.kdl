@@ -1162,6 +1162,13 @@ conformance {
     fixture "osc-133-prompt-start" src="apoth-term"
     fixture "osc-133-unknown-kind-ignored" src="apoth-term"
   }
+  row "T03-OSC133-OPTS" spec="T-14 §1" matrix="SHELLINTEGRATION-05,SHELLINTEGRATION-07" tier="R1" milestone="M23" desc="OSC 133 options, L, P, continuation prompts" {
+    fixture "osc133-l-fresh-line"
+    fixture "osc133-l-column-zero-noop"
+    fixture "osc133-p-prompt-row-no-mark"
+    fixture "osc133-continuation-prompt-keeps-block"
+    fixture "osc133-unknown-and-wrong-mark-keys-ignored"
+  }
   row "T03-OSC9-PROGRESS" spec="T-03 §3.1" matrix="INTEGRATION-24,SHELLINTEGRATION-17" tier="R1" milestone="M9" desc="OSC 9;4 progress" {
     fixture "osc9-4-clamps-value"
     fixture "osc9-4-missing-value"

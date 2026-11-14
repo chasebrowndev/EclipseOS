@@ -6,17 +6,22 @@
 
 mod app;
 mod binds;
+mod copymode;
 mod ctl;
 mod glyphs;
+mod hints;
 mod hook;
 mod layout;
 mod mousectl;
+mod nav;
 mod palette;
 mod pane;
 mod paste;
 mod pointer;
 mod reload;
 mod render;
+mod search;
+mod security;
 mod settings;
 mod ui;
 mod view;

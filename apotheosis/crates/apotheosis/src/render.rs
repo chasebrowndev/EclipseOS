@@ -155,6 +155,8 @@ pub(crate) struct ChromeModel {
     pub(crate) tab_style: TabStyle,
     pub(crate) frames: Vec<apoth_ui::pane::PaneSpec>,
     pub(crate) palette: Option<PaletteSpec>,
+    /// The search bar or a link tooltip, floating at the bottom of the window (T-14 §5-§6).
+    pub(crate) float: Option<apoth_ui::bar::BarSpec>,
     pub(crate) ui: UiState,
 }
 
@@ -165,6 +167,7 @@ impl ChromeModel {
             tab_style: TabStyle::Floating,
             frames: Vec::new(),
             palette: None,
+            float: None,
             ui: UiState::default(),
         }
     }
@@ -358,12 +361,20 @@ impl PaneR {
                 self.scene.invalidate(row);
             }
         }
-        paint(
-            self.view.highlights(),
-            self.pal.selection_bg,
-            self.pal.selection_fg,
-            &mut self.hl,
-        );
+        // Search, hint and copy-mode colours: interim choices from the palette pending the
+        // apoth-frontend pass (gold accent for the current match, T-08).
+        let gold = Rgb(0xd4, 0xa5, 0x37);
+        let colours = crate::view::HlColours {
+            sel_bg: self.pal.selection_bg,
+            sel_fg: self.pal.selection_fg,
+            match_bg: Rgb(0x5c, 0x4b, 0x1a),
+            current_bg: gold,
+            current_fg: Some(Rgb(0x10, 0x10, 0x10)),
+            cursor_bg: self.pal.cursor.unwrap_or(self.pal.fg),
+            cursor_fg: Some(self.pal.bg),
+            hint_bg: Rgb(0x3a, 0x33, 0x22),
+        };
+        paint(self.view.highlights(), &colours, &mut self.hl);
     }
 
     fn disp(&self) -> &FrameSnapshot {
@@ -603,6 +614,13 @@ fn run(a: RenderArgs) {
                 for p in &mut panes {
                     p.snapshot(&rs);
                     pending += p.build(&mut glyphs, &scene_cfg, r.echo, false);
+                    for m in p.view.take_out() {
+                        let _ = to_main.send(MainMsg::Nav(p.v.id, m));
+                    }
+                    if p.view.busy() {
+                        // The search still has history to scan: another frame continues it.
+                        pending += 1;
+                    }
                 }
                 let mut retries = 0;
                 while std::mem::take(&mut glyphs.flushed) {
@@ -765,6 +783,9 @@ fn run(a: RenderArgs) {
                     };
                     if let Some(c) = copied {
                         let _ = to_main.send(MainMsg::Copied(c));
+                    }
+                    for m in p.view.take_out() {
+                        let _ = to_main.send(MainMsg::Nav(p.v.id, m));
                     }
                     sched.damage(now_ns());
                 }

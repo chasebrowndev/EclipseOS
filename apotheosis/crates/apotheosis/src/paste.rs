@@ -30,6 +30,19 @@ pub(crate) enum Reason {
     Size,
     Files,
     Newline2,
+    /// (e): clipboard content last set by OSC 52 from a pane, into a shell prompt.
+    Program,
+}
+
+/// What main knows about the target pane and the content's provenance (T-18 §4 (a), (e)).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Target {
+    /// The pane is at an OSC 133 prompt.
+    pub(crate) at_prompt: bool,
+    /// Mode 2004 is set and a prompt mark followed it ("in force").
+    pub(crate) bracketed_ok: bool,
+    /// The content is what an OSC 52 write last put on the clipboard.
+    pub(crate) osc52: bool,
 }
 
 /// Bytes and lines of a paste, for the confirm bar.
@@ -58,19 +71,33 @@ fn has_controls(src: &[u8]) -> bool {
             .unwrap_or(false)
 }
 
-/// The guard (T-18 §4): `None` pastes at once, `Some(reason)` asks first.
-///
-/// Rule (a) uses "bracketed paste is set" as the in-force test: the binary does not see OSC 133
-/// prompt marks on the main thread, so 2004 counts as in force whenever it is set (a spec gap,
-/// reported). Rule (e) (OSC 52 provenance) needs the mux's tagging and is not reachable here.
+/// The guard with no prompt or provenance facts (tests of rules (b)-(d)).
+#[cfg(test)]
 pub(crate) fn needs_confirm(
     src: &[u8],
     origin: Origin,
     modes: InputModes,
     s: &PasteSettings,
 ) -> Option<Reason> {
+    needs_confirm_at(src, origin, modes, s, Target::default())
+}
+
+/// The guard (T-18 §4): `None` pastes at once, `Some(reason)` asks first.
+///
+/// (a) a newline into a pane at an OSC 133 prompt confirms unless bracketed paste is in
+/// force (2004 set *and* a prompt mark seen since); outside a prompt the older
+/// `paste.confirm-multiline` rule (newline without 2004) still applies. (e) content an
+/// OSC 52 write put on the clipboard confirms at a prompt even under `never`.
+pub(crate) fn needs_confirm_at(
+    src: &[u8],
+    origin: Origin,
+    modes: InputModes,
+    s: &PasteSettings,
+    t: Target,
+) -> Option<Reason> {
+    let program = t.osc52 && t.at_prompt;
     match s.guard {
-        Guard::Never => return None,
+        Guard::Never => return program.then_some(Reason::Program),
         Guard::Always => return Some(Reason::Always),
         Guard::Auto => {}
     }
@@ -79,6 +106,9 @@ pub(crate) fn needs_confirm(
         return Some(Reason::Files);
     }
     let multiline = src.iter().any(|&b| b == b'\n' || b == b'\r');
+    if multiline && t.at_prompt && !(bracketed && t.bracketed_ok) {
+        return Some(Reason::Newline);
+    }
     if multiline && !bracketed && s.confirm_multiline {
         return Some(Reason::Newline);
     }
@@ -91,6 +121,9 @@ pub(crate) fn needs_confirm(
     }
     if src.len() > s.confirm_bytes {
         return Some(Reason::Size);
+    }
+    if program {
+        return Some(Reason::Program);
     }
     None
 }
@@ -145,6 +178,67 @@ mod tests {
         assert_eq!(stats(b"a\nb"), Stats { bytes: 3, lines: 2 });
         assert_eq!(stats(b""), Stats { bytes: 0, lines: 0 });
         assert_eq!(stats(b"one"), Stats { bytes: 3, lines: 1 });
+    }
+
+    /// T-18 §12: the paste-guard table, cases (a)-(e) and the 2004 rule.
+    #[test]
+    fn guard_table_a_to_e_and_the_2004_rule() {
+        let auto = settings(Guard::Auto);
+        let never = settings(Guard::Never);
+        let prompt = Target {
+            at_prompt: true,
+            ..Target::default()
+        };
+        let in_force = Target {
+            at_prompt: true,
+            bracketed_ok: true,
+            osc52: false,
+        };
+        let osc52 = Target {
+            at_prompt: true,
+            bracketed_ok: true,
+            osc52: true,
+        };
+        let sel = Origin::Selection;
+        type Row<'a> = (
+            &'a [u8],
+            Origin,
+            InputModes,
+            &'a PasteSettings,
+            Target,
+            Option<Reason>,
+        );
+        #[rustfmt::skip]
+        let table: &[Row] = &[
+            // (a) newline at a prompt, 2004 off.
+            (b"a\nb", sel, plain(), &auto, prompt, Some(Reason::Newline)),
+            // (a) 2004 set but no prompt mark since: not in force.
+            (b"a\nb", sel, bracketed(), &auto, prompt, Some(Reason::Newline)),
+            // (a) 2004 in force: no question.
+            (b"a\nb", sel, bracketed(), &auto, in_force, None),
+            // (a) not at a prompt with 2004 set (an editor): no question.
+            (b"a\nb", sel, bracketed(), &auto, Target::default(), None),
+            // (b) controls before sanitising.
+            (b"a\x1bb", sel, bracketed(), &auto, in_force, Some(Reason::Controls)),
+            // (c) over confirm-bytes.
+            (&[b'x'; 17], sel, bracketed(), &auto, in_force, Some(Reason::Size)),
+            // (d) a uri-list drop.
+            (b"/tmp/x", Origin::DropFiles, bracketed(), &auto, in_force, Some(Reason::Files)),
+            // (e) OSC 52 content into a prompt, even under `never`.
+            (b"ls", sel, bracketed(), &auto, osc52, Some(Reason::Program)),
+            (b"ls", sel, bracketed(), &never, osc52, Some(Reason::Program)),
+            // (e) OSC 52 content not at a prompt.
+            (b"ls", sel, bracketed(), &never, Target { at_prompt: false, ..osc52 }, None),
+            // `never` asks nothing else.
+            (b"a\nb", sel, plain(), &never, prompt, None),
+        ];
+        for (i, (src, origin, modes, s, t, want)) in table.iter().enumerate() {
+            assert_eq!(
+                needs_confirm_at(src, *origin, *modes, s, *t),
+                *want,
+                "row {i}"
+            );
+        }
     }
 
     #[test]

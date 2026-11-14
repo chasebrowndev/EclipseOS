@@ -74,6 +74,22 @@ crate::string_enum! {
         Bottom = "bottom",
         PageUp = "page-up",
         PageDown = "page-down",
+        WordEnd = "word-end",
+        BigWordForward = "big-word-forward",
+        BigWordBack = "big-word-back",
+        BigWordEnd = "big-word-end",
+        FirstNonBlank = "first-non-blank",
+        ScreenTop = "screen-top",
+        ScreenMiddle = "screen-middle",
+        ScreenBottom = "screen-bottom",
+        HalfPageUp = "half-page-up",
+        HalfPageDown = "half-page-down",
+        ParagraphBack = "paragraph-back",
+        ParagraphForward = "paragraph-forward",
+        PromptPrev = "prompt-prev",
+        PromptNext = "prompt-next",
+        SearchNext = "search-next",
+        SearchPrev = "search-prev",
     }
 }
 

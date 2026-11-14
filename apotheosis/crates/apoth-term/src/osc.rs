@@ -8,9 +8,11 @@ use apoth_grid::Semantic;
 use apoth_vt::{StrEnd, StrHead, StrKind, StrRoute};
 
 use crate::color;
+use crate::config::deny;
 use crate::events::{ClipboardSet, Mark, Progress};
 use crate::machine::{Machine, StrMode};
 use crate::sgr;
+use crate::shell;
 
 const CAP_SMALL: u32 = 4096;
 const CAP_133: u32 = 8192;
@@ -169,6 +171,23 @@ impl Machine {
     }
 
     fn osc_dispatch(&mut self, mode: StrMode, buf: &[u8], term: &[u8]) {
+        let class = match mode {
+            StrMode::Title(_) => deny::TITLE_SET,
+            StrMode::Palette | StrMode::Dyn(_) | StrMode::ResetPalette | StrMode::ResetDyn(_) => {
+                deny::COLOUR
+            }
+            StrMode::Notify | StrMode::Notify777 | StrMode::Notify99 => deny::NOTIFICATION,
+            StrMode::Link => deny::HYPERLINK,
+            _ => 0,
+        };
+        if self.cfg.deny & class != 0 {
+            // Denied: no observable effect and no reply (T-18 §11). A denied hyperlink
+            // still closes any open one so later text is not linked by a stale URI.
+            if mode == StrMode::Link {
+                self.link = None;
+            }
+            return;
+        }
         match mode {
             StrMode::Title(cmd) => {
                 let t = sanitize(buf);
@@ -212,6 +231,7 @@ impl Machine {
                     && s.starts_with("file://")
                     && !s.chars().any(char::is_control)
                 {
+                    self.cwd_uri = Some(s.clone());
                     self.events.cwd = Some(s);
                 }
             }
@@ -409,19 +429,6 @@ impl Machine {
             return;
         };
         let (sel, data) = (&buf[..pos], &buf[pos + 1..]);
-        if data == b"?" {
-            // Read path: policy is ask locally / deny remotely and needs the consent
-            // path (not in M9); consumed.
-            return;
-        }
-        if !self.cfg.osc52_write {
-            self.events.dropped.clipboard += 1;
-            return;
-        }
-        let Some(bytes) = b64_decode(data) else {
-            self.events.dropped.bad_base64 += 1;
-            return;
-        };
         let mut selection: String = sel
             .iter()
             .filter(|b| matches!(b, b'c' | b'p' | b'q' | b's' | b'0'..=b'7'))
@@ -431,6 +438,29 @@ impl Machine {
         if selection.is_empty() {
             selection.push('c');
         }
+        // `primary-selection` follows the clipboard classes and may be denied on its own.
+        let primary = selection.contains(['p', 's']);
+        let deny = self.cfg.deny;
+        if data == b"?" {
+            // Read: the term never answers. Main decides under the sequence policy (ask
+            // locally, deny remotely, T-18 §3) and queues an encoded reply when allowed.
+            if deny & deny::CLIPBOARD_READ != 0 || (primary && deny & deny::PRIMARY != 0) {
+                return;
+            }
+            self.events.clip_read = Some(selection);
+            return;
+        }
+        if !self.cfg.osc52_write
+            || deny & deny::CLIPBOARD_WRITE != 0
+            || (primary && deny & deny::PRIMARY != 0)
+        {
+            self.events.dropped.clipboard += 1;
+            return;
+        }
+        let Some(bytes) = b64_decode(data) else {
+            self.events.dropped.bad_base64 += 1;
+            return;
+        };
         self.events.push_clipboard(ClipboardSet {
             selection,
             data: bytes,
@@ -438,35 +468,91 @@ impl Machine {
         });
     }
 
+    /// OSC 133 / 633 marks (T-14 §1). `A`-`D` raise a mark event; `L` and `P` do not.
     fn osc_mark(&mut self, buf: &[u8]) {
         let Some(&k) = buf.first() else {
             return;
         };
-        if !matches!(k, b'A' | b'B' | b'C' | b'D') || (buf.len() > 1 && buf[1] != b';') {
+        if !matches!(k, b'A' | b'B' | b'C' | b'D' | b'L' | b'P')
+            || (buf.len() > 1 && buf[1] != b';')
+        {
             return;
         }
-        let kind = char::from(k);
-        let exit = if k == b'D' {
-            std::str::from_utf8(buf.get(2..).unwrap_or(&[]))
-                .ok()
-                .and_then(|s| s.split(';').next())
-                .and_then(|s| s.parse::<i32>().ok())
+        let rest = std::str::from_utf8(buf.get(2..).unwrap_or(&[])).unwrap_or("");
+        let (c, y) = (self.cur, self.y);
+        let now = self.now;
+        // Blocks are recorded on the primary screen (the one with history); marks on the
+        // alternate screen only set the semantic class.
+        let primary = c == 0;
+        let at = if primary {
+            let g = &self.panes[0].grid;
+            g.pin_at(g.history_rows() + y, self.x.min(self.cols - 1))
         } else {
             None
         };
-        self.semantic = match k {
-            b'A' => Semantic::Prompt,
-            b'B' => Semantic::Input,
-            _ => Semantic::Output,
+        let mut exit = None;
+        let block = match k {
+            b'L' => {
+                // Fresh line: CR LF unless already in column 0; opens no block.
+                if self.x != 0 || self.wrap {
+                    self.cursor_moved();
+                    self.cr();
+                    self.index();
+                }
+                return;
+            }
+            b'A' | b'P' => {
+                let o = shell::parse_opts(k, rest);
+                self.semantic = Semantic::Prompt;
+                match o.kind.unwrap_or(shell::PromptKind::Primary) {
+                    shell::PromptKind::Continuation | shell::PromptKind::Right => {
+                        self.blocks.current_id()
+                    }
+                    shell::PromptKind::Primary if k == b'P' => self.blocks.current_id(),
+                    shell::PromptKind::Primary => {
+                        self.panes[c]
+                            .grid
+                            .set_row_flag(y, apoth_grid::flags::PROMPT_START, true);
+                        self.bp_prompted = true;
+                        if primary {
+                            self.blocks.prompt(at, now)
+                        } else {
+                            0
+                        }
+                    }
+                }
+            }
+            b'B' => {
+                self.semantic = Semantic::Input;
+                if primary { self.blocks.input(at) } else { 0 }
+            }
+            b'C' => {
+                self.semantic = Semantic::Output;
+                let o = shell::parse_opts(k, rest);
+                if primary {
+                    let cwd = self.cwd_uri.clone();
+                    self.blocks.output(at, now, cwd.as_deref(), o.cmdline)
+                } else {
+                    0
+                }
+            }
+            _ => {
+                self.semantic = Semantic::Output;
+                exit = rest.split(';').next().and_then(|s| s.parse::<i32>().ok());
+                if primary {
+                    self.blocks.end(at, now, exit);
+                }
+                0
+            }
         };
-        if k == b'A' {
-            let (c, y) = (self.cur, self.y);
-            self.panes[c]
-                .grid
-                .set_row_flag(y, apoth_grid::flags::PROMPT_START, true);
+        if block != 0 {
+            self.panes[c].grid.set_row_block(y, block);
+        }
+        if k == b'P' {
+            return;
         }
         let m = Mark {
-            kind,
+            kind: char::from(k),
             exit,
             row: self.y as u32,
             col: self.x as u32,

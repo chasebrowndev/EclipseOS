@@ -4,7 +4,7 @@
 //! replies and events, and never writes the PTY and never touches Wayland or wgpu.
 
 use std::os::fd::OwnedFd;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
@@ -59,6 +59,13 @@ pub(crate) struct PaneShared {
     pub(crate) focused: AtomicBool,
     /// Nanoseconds (process clock) of the last local key press; 0 = never.
     pub(crate) last_key_ns: AtomicU64,
+    /// The sequence policy's deny word (`apoth_term::deny`), stored by main; io installs it
+    /// before each feed (T-18 §3: a denied class has no effect and no reply).
+    pub(crate) deny: AtomicU32,
+    /// The term is at an OSC 133 prompt (T-18 §4 paste rules (a) and (e)); stored by io.
+    pub(crate) at_prompt: AtomicBool,
+    /// Mode 2004 is set and a prompt mark followed it (T-18 §4 "in force"); stored by io.
+    pub(crate) bracketed_ok: AtomicBool,
 }
 
 impl PaneShared {
@@ -73,6 +80,9 @@ impl PaneShared {
             hold: AtomicBool::new(false),
             focused: AtomicBool::new(false),
             last_key_ns: AtomicU64::new(0),
+            deny: AtomicU32::new(0),
+            at_prompt: AtomicBool::new(false),
+            bracketed_ok: AtomicBool::new(false),
         }
     }
 
@@ -131,6 +141,10 @@ pub(crate) struct PaneEvents {
     /// OSC 7 URI (`file://host/path`); user data, never logged.
     pub(crate) cwd: Option<String>,
     pub(crate) bell: u32,
+    /// OSC 52 writes the term allowed (program-origin content, never logged).
+    pub(crate) clipboard: Vec<apoth_term::ClipboardSet>,
+    /// An OSC 52 read request (selection letters); main answers under the policy.
+    pub(crate) clip_read: Option<String>,
 }
 
 /// A pane's id in the mux session (`apoth_mux::PaneId`).
@@ -157,6 +171,9 @@ pub(crate) enum MainMsg {
     Closed(PaneKey, Option<ExitStatus>),
     /// Text the view took from the selection, to offer on the seat (never logged).
     Copied(crate::view::Copied),
+    /// Navigation results from the pane's view (search progress, hints, links); content is
+    /// never logged.
+    Nav(PaneKey, crate::view::NavMsg),
     /// The pane's cursor cell (row, column) changed: the IME cursor rectangle follows it.
     Cursor(PaneKey, (usize, usize)),
     /// The Abyss detection thread: a theme, or the connection lost (T-17 §1).
@@ -323,7 +340,15 @@ fn feed(
     let mut events = None;
     let wake = {
         let mut t = shared.lock_io();
+        let deny = shared.deny.load(Ordering::Acquire);
+        if t.deny_bits() != deny {
+            t.set_deny(deny);
+        }
         let wake = t.feed(bytes, Instant::now());
+        shared.at_prompt.store(t.at_prompt(), Ordering::Release);
+        shared
+            .bracketed_ok
+            .store(t.bracketed_in_force(), Ordering::Release);
         while let Some(u) = t.replies().pop() {
             replies.push(u);
         }
@@ -333,6 +358,8 @@ fn feed(
                 title: slot.title.take(),
                 cwd: slot.cwd.take(),
                 bell: slot.bell,
+                clipboard: slot.clipboard.drain(..).collect(),
+                clip_read: slot.clip_read.take(),
             });
             slot.clear();
         }

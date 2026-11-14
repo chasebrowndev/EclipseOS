@@ -99,6 +99,9 @@ fn drain_events(term: &mut Term) -> Vec<String> {
     for c in ev.clipboard.drain(..) {
         v.push(format!("clipboard-set:{}:{}", c.selection, c.data.len()));
     }
+    if let Some(sel) = ev.clip_read.take() {
+        v.push(format!("clipboard-read:{sel}"));
+    }
     ev.colors_changed = false;
     v
 }

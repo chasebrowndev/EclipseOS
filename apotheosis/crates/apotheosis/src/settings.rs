@@ -80,8 +80,44 @@ pub(crate) struct Settings {
     pub(crate) repeat_delay_ms: Option<u32>,
     /// Selection, mouse and paste keys (T-05 §5-§6, T-18 §4).
     pub(crate) input: InputSettings,
+    /// Navigation and sequence-policy keys (T-14 §5-§7, T-18 §3).
+    pub(crate) nav: NavSettings,
     /// `-o key=value` pairs and diagnostics counts, for the startup log line.
     pub(crate) diagnostics: usize,
+}
+
+/// `links.*`, `hints.*` and `security.sequence`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NavSettings {
+    pub(crate) policy: crate::security::Policy,
+    pub(crate) schemes: Vec<String>,
+    pub(crate) open_command: Vec<String>,
+    /// `links.open-modifier` (`ctrl`, `shift`, `alt`, `super`, …).
+    pub(crate) open_modifier: String,
+    pub(crate) hint_alphabet: String,
+    pub(crate) hint_max: usize,
+}
+
+impl NavSettings {
+    pub(crate) fn from_config(c: &Config) -> NavSettings {
+        let entries: Vec<(String, Vec<String>)> = c
+            .get("security.sequence")
+            .and_then(|v| v.as_map())
+            .map(<[_]>::to_vec)
+            .unwrap_or_default();
+        NavSettings {
+            policy: crate::security::Policy::from_entries(
+                entries.iter().map(|(k, v)| (k.as_str(), v.as_slice())),
+            ),
+            schemes: c.list("links.schemes").to_vec(),
+            open_command: c.list("links.open-command").to_vec(),
+            open_modifier: c.str("links.open-modifier").unwrap_or("ctrl").to_string(),
+            hint_alphabet: c.str("hints.alphabet").unwrap_or("").to_string(),
+            hint_max: usize::try_from(c.int("hints.max-matches"))
+                .unwrap_or(100)
+                .max(1),
+        }
+    }
 }
 
 type Rgb = (u8, u8, u8);
@@ -557,6 +593,7 @@ impl Settings {
             repeat_rate: u32::try_from(rate).ok().filter(|r| *r > 0),
             repeat_delay_ms: u32::try_from(delay).ok().filter(|d| *d > 0),
             input: InputSettings::from_config(c),
+            nav: NavSettings::from_config(c),
             diagnostics: 0,
         };
         // Off Abyss (and until detection answers) the stock dark scheme. HOOK(T-10 §7):

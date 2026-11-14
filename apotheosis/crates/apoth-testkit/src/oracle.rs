@@ -70,6 +70,13 @@ pub struct Exclusion {
 /// each one tied to a row of `fixtures/conformance.kdl`.
 pub const EXCLUSIONS: &[Exclusion] = &[
     Exclusion {
+        oracle: "alacritty_terminal",
+        fixture_prefix: "osc133-l-fresh-line",
+        row: "T03-OSC133-OPTS",
+        class: Class::OursRight,
+        reason: "OSC 133;L (fresh line) is shell-integration behaviour the oracle ignores (T-14 section 8)",
+    },
+    Exclusion {
         oracle: "*",
         fixture_prefix: "c1-",
         row: "T03-C1-IGNORED",

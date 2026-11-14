@@ -90,7 +90,134 @@ pub(crate) const DEFAULTS: &[DefaultBind] = &[
     ("ctrl+shift+z", "pane.toggle-zoom", &[("repeat", "false")]),
     // Command palette (T-14 §9).
     ("ctrl+shift+p", "palette.toggle", &[("repeat", "false")]),
+    // Navigation (T-14 §6-§8, §4).
+    ("ctrl+shift+f", "search.start", &[("repeat", "false")]),
+    (
+        "ctrl+shift+space",
+        "copy-mode.toggle",
+        &[("repeat", "false")],
+    ),
+    ("ctrl+shift+o", "hints.start", &[("repeat", "false")]),
+    (
+        "ctrl+shift+k",
+        "block.jump prev",
+        &[("performable", "true")],
+    ),
+    (
+        "ctrl+shift+j",
+        "block.jump next",
+        &[("performable", "true")],
+    ),
 ];
+
+/// A built-in key table row: chord and the actions it runs.
+pub(crate) type TableBind = (&'static str, &'static [&'static str]);
+
+/// The default `copy-mode` key table, vi style (T-14 §8). An ordinary key table: a user
+/// `key-table "copy-mode"` adds to, rebinds or unbinds these keys.
+pub(crate) const COPY_MODE_VI: &[TableBind] = &[
+    ("h", &["copy-mode.move left"]),
+    ("Left", &["copy-mode.move left"]),
+    ("j", &["copy-mode.move down"]),
+    ("Down", &["copy-mode.move down"]),
+    ("k", &["copy-mode.move up"]),
+    ("Up", &["copy-mode.move up"]),
+    ("l", &["copy-mode.move right"]),
+    ("Right", &["copy-mode.move right"]),
+    ("w", &["copy-mode.move word-forward"]),
+    ("b", &["copy-mode.move word-back"]),
+    ("e", &["copy-mode.move word-end"]),
+    ("shift+w", &["copy-mode.move big-word-forward"]),
+    ("shift+b", &["copy-mode.move big-word-back"]),
+    ("shift+e", &["copy-mode.move big-word-end"]),
+    ("0", &["copy-mode.move line-start"]),
+    ("Home", &["copy-mode.move line-start"]),
+    ("shift+4", &["copy-mode.move line-end"]),
+    ("End", &["copy-mode.move line-end"]),
+    ("shift+6", &["copy-mode.move first-non-blank"]),
+    ("g>g", &["copy-mode.move top"]),
+    ("shift+g", &["copy-mode.move bottom"]),
+    ("shift+h", &["copy-mode.move screen-top"]),
+    ("shift+m", &["copy-mode.move screen-middle"]),
+    ("shift+l", &["copy-mode.move screen-bottom"]),
+    ("ctrl+b", &["copy-mode.move page-up"]),
+    ("Prior", &["copy-mode.move page-up"]),
+    ("ctrl+f", &["copy-mode.move page-down"]),
+    ("Next", &["copy-mode.move page-down"]),
+    ("ctrl+u", &["copy-mode.move half-page-up"]),
+    ("ctrl+d", &["copy-mode.move half-page-down"]),
+    ("shift+bracketleft", &["copy-mode.move paragraph-back"]),
+    ("shift+bracketright", &["copy-mode.move paragraph-forward"]),
+    ("bracketleft>bracketleft", &["copy-mode.move prompt-prev"]),
+    ("bracketright>bracketright", &["copy-mode.move prompt-next"]),
+    ("f", &["cursor.jump-char"]),
+    ("shift+f", &["cursor.jump-char backward=true"]),
+    ("t", &["cursor.jump-char till=true"]),
+    ("shift+t", &["cursor.jump-char backward=true till=true"]),
+    ("semicolon", &["cursor.jump-repeat"]),
+    ("comma", &["cursor.jump-repeat reverse=true"]),
+    ("slash", &["search.start"]),
+    ("shift+slash", &["search.start"]),
+    ("n", &["copy-mode.move search-next"]),
+    ("shift+n", &["copy-mode.move search-prev"]),
+    ("v", &["copy-mode.toggle-selection"]),
+    ("shift+v", &["copy-mode.toggle-selection unit=line"]),
+    ("ctrl+v", &["copy-mode.toggle-selection unit=block"]),
+    ("y", &["selection.copy", "copy-mode.exit"]),
+    ("Return", &["selection.copy", "copy-mode.exit"]),
+    ("q", &["copy-mode.exit"]),
+    ("Escape", &["copy-mode.exit"]),
+];
+
+/// The emacs-style copy-mode table, `copy-mode-emacs`: bind `copy-mode.enter` after a
+/// `key-table.push copy-mode-emacs`, or copy its rows into `copy-mode`.
+pub(crate) const COPY_MODE_EMACS: &[TableBind] = &[
+    ("ctrl+b", &["copy-mode.move left"]),
+    ("Left", &["copy-mode.move left"]),
+    ("ctrl+f", &["copy-mode.move right"]),
+    ("Right", &["copy-mode.move right"]),
+    ("ctrl+p", &["copy-mode.move up"]),
+    ("Up", &["copy-mode.move up"]),
+    ("ctrl+n", &["copy-mode.move down"]),
+    ("Down", &["copy-mode.move down"]),
+    ("alt+f", &["copy-mode.move word-forward"]),
+    ("alt+b", &["copy-mode.move word-back"]),
+    ("ctrl+a", &["copy-mode.move line-start"]),
+    ("ctrl+e", &["copy-mode.move line-end"]),
+    ("alt+v", &["copy-mode.move page-up"]),
+    ("ctrl+v", &["copy-mode.move page-down"]),
+    ("alt+shift+comma", &["copy-mode.move top"]),
+    ("alt+shift+period", &["copy-mode.move bottom"]),
+    ("ctrl+space", &["copy-mode.toggle-selection"]),
+    ("alt+w", &["selection.copy", "copy-mode.exit"]),
+    ("ctrl+s", &["search.start"]),
+    ("ctrl+r", &["search.start"]),
+    ("ctrl+g", &["copy-mode.exit"]),
+    ("Escape", &["copy-mode.exit"]),
+];
+
+/// Built-in key tables (name, rows).
+pub(crate) const BUILTIN_TABLES: &[(&str, &[TableBind])] = &[
+    ("copy-mode", COPY_MODE_VI),
+    ("copy-mode-emacs", COPY_MODE_EMACS),
+];
+
+fn builtin_table(rows: &[TableBind]) -> Vec<KeyBind> {
+    rows.iter()
+        .filter_map(|(chord, actions)| {
+            let b = Bind::parse(chord, &[]).ok()?;
+            let actions = actions
+                .iter()
+                .map(|a| Action::parse(a).ok())
+                .collect::<Option<Vec<_>>>()?;
+            Some(KeyBind {
+                seq: canon(b.sequence),
+                actions,
+                opts: b.opts,
+            })
+        })
+        .collect()
+}
 
 /// One compiled key bind.
 #[derive(Clone, Debug)]
@@ -256,9 +383,16 @@ impl Keymap {
                 None => dropped += 1,
             }
         }
-        let mut tables = Vec::new();
+        let mut tables: Vec<(String, Vec<KeyBind>)> = BUILTIN_TABLES
+            .iter()
+            .map(|(n, rows)| ((*n).to_string(), builtin_table(rows)))
+            .collect();
         for t in &c.key_tables {
-            let mut list = Vec::new();
+            // A user table of a built-in name edits it (adds, rebinds, unbinds).
+            let mut list = match tables.iter().position(|(n, _)| *n == t.value.name) {
+                Some(i) => tables.remove(i).1,
+                None => Vec::new(),
+            };
             for d in &t.value.binds {
                 match decl_bind(d) {
                     Some(b) => insert(&mut list, b),
@@ -405,6 +539,12 @@ impl KeyState {
     pub(crate) fn pop(&mut self) {
         self.pending = None;
         self.stack.pop();
+    }
+
+    /// Deactivate every instance of `table` wherever it sits in the stack (copy mode's exit).
+    pub(crate) fn remove(&mut self, table: usize) {
+        self.pending = None;
+        self.stack.retain(|a| a.table != table);
     }
 
     pub(crate) fn clear(&mut self) {
@@ -907,6 +1047,43 @@ mod tests {
         }
         let t = Action::parse("tab.new").unwrap();
         assert_eq!(km.binding_of(&t).as_deref(), Some("ctrl+shift+t"));
+    }
+
+    #[test]
+    fn builtin_tables_compile_and_resolve_shifted_symbols() {
+        for (name, rows) in BUILTIN_TABLES {
+            assert_eq!(builtin_table(rows).len(), rows.len(), "table {name}");
+        }
+        let km = Keymap::from_config(&apoth_config::Config::defaults());
+        let vi = km.table_index("copy-mode").expect("copy-mode table");
+        let mut st = KeyState::default();
+        let now = Instant::now();
+        st.push(vi, false, None, now);
+        let mut b = NameBuf::default();
+        let e = ev(&mut b, Key::Char('4'), Some('$'), 5, BMods::SHIFT);
+        assert_eq!(
+            fired(&st.press(&km, &e, now, &none)),
+            Some("copy-mode.move")
+        );
+        let mut b = NameBuf::default();
+        let e = ev(&mut b, Key::Char('g'), Some('G'), 34, BMods::NONE);
+        assert_eq!(st.press(&km, &e, now, &none), Resolved::Prefix);
+        let mut b = NameBuf::default();
+        let e = ev(&mut b, Key::Char('g'), Some('G'), 34, BMods::NONE);
+        assert_eq!(
+            fired(&st.press(&km, &e, now, &none)),
+            Some("copy-mode.move")
+        );
+        let mut b = NameBuf::default();
+        let e = ev(&mut b, Key::Char('y'), Some('Y'), 21, BMods::NONE);
+        match st.press(&km, &e, now, &none) {
+            Resolved::Fire { actions, .. } => assert_eq!(actions.len(), 2),
+            r => panic!("y: {r:?}"),
+        }
+        st.remove(vi);
+        let mut b = NameBuf::default();
+        let e = ev(&mut b, Key::Char('y'), Some('Y'), 21, BMods::NONE);
+        assert_eq!(st.press(&km, &e, now, &none), Resolved::None);
     }
 
     #[test]

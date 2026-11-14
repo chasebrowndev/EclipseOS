@@ -65,6 +65,7 @@ use crate::binds::{self, KeyState, Keymap, NameBuf, Resolved};
 use crate::hook::{DumpHook, MuxDump};
 use crate::layout::{self, PanePx, WinLayout, WinMetrics};
 use crate::mousectl::{Mouse, Out};
+use crate::nav::{self, Nav, PendingConsent, PendingOpen, SearchUi};
 use crate::palette::{self as pal, Palette, Pick, TabItem};
 use crate::pane::{
     IoArgs, IoThread, MainMsg, PaneEvents, PaneKey, PaneShared, RenderMsg, ResizeReq, WAKE_RESIZE,
@@ -77,9 +78,11 @@ use crate::render::{
     ChromeModel, PaneView, RenderArgs, RenderSettings, RenderUpdate, TermDefaults, WindowLayout,
     pad_px,
 };
+use crate::search::{Case, Query};
+use crate::security::{self, Answer, Class, Decision};
 use crate::settings::{ErrorPos, Settings, Startup, error_positions, load_input, resolve_shell};
 use crate::ui::{Overlay, PALETTE_ID, STRIP_ID, bar_inset_px, bars_for, pane_widget, tab_widget};
-use crate::view::{Copied, CopyTarget, Preedit, ScrollBy, ViewCmd, ViewSettings};
+use crate::view::{Copied, CopyTarget, NavMsg, Preedit, ScrollBy, ViewCmd, ViewSettings};
 use crate::workers::Pool;
 use apoth_config::fs::RealFs;
 use apoth_config::reload::{Applied, Outcome, Reloader, Subsystem};
@@ -353,6 +356,8 @@ pub(crate) struct App {
     /// This host's name (OSC 7 URIs naming it are local).
     hostname: String,
     a11y: a11y::A11yState,
+    // ---- navigation and consent (T-14 §5-§8, T-18 §3-§4)
+    nav: Nav,
 }
 
 /// A paste held back by the guard (T-18 §4). The content is held until answered, never logged.
@@ -480,6 +485,7 @@ pub(crate) fn run(
         ctl: None,
         hostname: crate::ctl::osc7::hostname(),
         a11y: a11y::A11yState::default(),
+        nav: Nav::default(),
     };
     app.start_ctl();
     app.start_a11y();
@@ -549,14 +555,51 @@ fn paste_answer(
     apoth_ui::bar::BarState { shown_at_ms: 0 }.answer_key(spec, age_ms, input)
 }
 
+/// Widget id of the floating search bar / link tooltip.
+const SEARCH_ID: apoth_ui::WidgetId = apoth_ui::WidgetId(0x5345_4152_4300);
+
+/// The link-confirm bar (T-14 §5): the full URI as program text, Open or Cancel.
+fn open_bar(id: apoth_ui::WidgetId, uri: &str) -> apoth_ui::bar::BarSpec {
+    use apoth_ui::bar::{BarKind, BarSpec, ButtonSpec, Key as BarKey};
+    BarSpec {
+        id,
+        kind: BarKind::Consent,
+        headline: TextRun::interface("Open this link?", size::BODY).strong(),
+        detail: Some(TextRun::program(uri, size::BODY_SMALL)),
+        buttons: vec![
+            ButtonSpec {
+                label: "Open".into(),
+                key: BarKey::Char('o'),
+                primary: false,
+            },
+            ButtonSpec {
+                label: "Cancel".into(),
+                key: BarKey::Char('c'),
+                primary: false,
+            },
+        ],
+        escape: Some(1),
+    }
+}
+
 /// Action ids [`App::run_action`] handles (sorted). The palette lists only these and the
 /// socket answers `unsupported` for the rest; `dispatch` asserts the two agree in debug
 /// builds.
 const HANDLED: &[&str] = &[
     "app.ignore",
     "app.quit",
+    "block.jump",
     "clipboard.copy",
     "config.reload",
+    "copy-mode.enter",
+    "copy-mode.exit",
+    "copy-mode.move",
+    "copy-mode.toggle",
+    "copy-mode.toggle-selection",
+    "cursor.jump-char",
+    "cursor.jump-repeat",
+    "hints.cancel",
+    "hints.start",
     "input.paste",
     "input.paste-selection",
     "input.send-bytes",
@@ -569,6 +612,7 @@ const HANDLED: &[&str] = &[
     "key-table.push",
     "layout.next",
     "macro.run",
+    "open",
     "palette.close",
     "palette.open",
     "palette.toggle",
@@ -591,6 +635,13 @@ const HANDLED: &[&str] = &[
     "scroll.page-down",
     "scroll.page-up",
     "scroll.top",
+    "search.cancel",
+    "search.next",
+    "search.previous",
+    "search.set",
+    "search.start",
+    "search.toggle-case",
+    "search.toggle-regex",
     "selection.clear",
     "selection.copy",
     "selection.select-all",
@@ -640,14 +691,20 @@ fn split_dir(d: apoth_action::enums::SplitDir) -> MuxDir {
 }
 
 /// `mode=` conditions from a pane's mirror (T-11 §3).
-fn mode_holds(m: BindMode, modes: InputModes, has_selection: bool) -> bool {
+fn mode_holds(
+    m: BindMode,
+    modes: InputModes,
+    has_selection: bool,
+    copy: bool,
+    searching: bool,
+) -> bool {
     match m {
         BindMode::AltScreen => modes.has(bit::ALT_SCREEN),
         BindMode::AppCursor => modes.has(bit::DECCKM),
         BindMode::KittyKeyboard => modes.kitty_flags() != 0,
         BindMode::HasSelection => has_selection,
-        // No copy mode or search yet: those conditions never hold.
-        BindMode::CopyMode | BindMode::Searching => false,
+        BindMode::CopyMode => copy,
+        BindMode::Searching => searching,
     }
 }
 
@@ -856,6 +913,11 @@ impl App {
             ansi: std::array::from_fn(|i| term.palette(i as u8)),
         };
         let shared = Arc::new(PaneShared::new(term));
+        // The sequence policy's deny word, local column (T-18 §3); main re-checks remote
+        // panes itself before every clipboard decision.
+        shared
+            .deny
+            .store(self.settings.nav.policy.deny_word(false), Ordering::Release);
 
         let size = PtySize::from_cells(rows as u16, cols as u16, cell.0, cell.1);
         let (argv, login) = match argv {
@@ -1145,8 +1207,37 @@ impl App {
             tab_style: style,
             frames,
             palette: self.palette_spec(geo.area),
+            float: self.float_bar(),
             ui: self.ui_state.clone(),
         }
+    }
+
+    /// The search bar, else the hovered link's URI, floating at the bottom of the window.
+    fn float_bar(&self) -> Option<apoth_ui::bar::BarSpec> {
+        use apoth_ui::bar::{BarKind, BarSpec};
+        if let Some(s) = &self.nav.search {
+            let mut head = TextRun::interface(Nav::search_line(s), size::BODY);
+            if s.focused {
+                head = head.strong();
+            }
+            return Some(BarSpec {
+                id: SEARCH_ID,
+                kind: BarKind::Notice,
+                headline: head,
+                detail: None,
+                buttons: Vec::new(),
+                escape: None,
+            });
+        }
+        let uri = self.nav.link_tip.as_ref()?;
+        Some(BarSpec {
+            id: SEARCH_ID,
+            kind: BarKind::Notice,
+            headline: TextRun::program(uri, size::BODY_SMALL),
+            detail: None,
+            buttons: Vec::new(),
+            escape: None,
+        })
     }
 
     /// The test-only mux dump (`APOTH_TEST_MUX`, debug builds): tabs, panes, focus, palette.
@@ -1209,6 +1300,7 @@ impl App {
         }
         let old = std::mem::replace(&mut self.focus_pane, now);
         if let Some(o) = old {
+            self.end_nav(o);
             self.report_focus(o, false);
             if self.panes.contains_key(&o) {
                 self.ctl_emit(Event::new(EventKind::FocusOut, Cause::User), Some(o));
@@ -1337,6 +1429,12 @@ impl App {
             let mut ev = Event::new(EventKind::TabClosed, Cause::Child);
             let _ = ev.set("tab", FieldValue::Int(t as i64));
             self.ctl_emit(ev, None);
+        }
+        self.nav.consents.forget(id);
+        self.nav.osc52_reads.retain(|r| r.1 != id);
+        if self.nav.consent.as_ref().is_some_and(|c| c.pane == id) {
+            self.nav.consent = None;
+            self.refresh_bar();
         }
         if self.capture == Some(id) {
             self.capture = None;
@@ -1573,9 +1671,23 @@ impl App {
                 }
                 return;
             }
-            if self.palette.is_some() || self.paste.is_some() {
+            if self.palette.is_some()
+                || self.paste.is_some()
+                || self.nav.hints.is_some()
+                || self.nav.consent.is_some()
+                || self.nav.open.is_some()
+                || self.nav.search.as_ref().is_some_and(|s| s.focused)
+            {
                 return;
             }
+        }
+        if self.nav.consent.is_some() || self.nav.open.is_some() {
+            // A consent or link-confirm bar owns the keyboard until answered (T-18 §3).
+            if pressed && !repeat {
+                self.consumed.push(Consumed::plain(key));
+                self.answer_nav_bar(look.key);
+            }
+            return;
         }
         if self.paste.is_some() {
             // A paste confirm owns the keyboard until answered (T-08 §5: nothing typed reaches
@@ -1593,6 +1705,43 @@ impl App {
                     self.consumed.push(Consumed::plain(key));
                 }
                 self.palette_key(&look, key);
+            }
+            return;
+        }
+        if self.nav.hints.is_some() {
+            // Hint mode owns the keyboard: typed keys pick a label (T-14 §7).
+            if pressed {
+                if !repeat {
+                    self.consumed.push(Consumed::plain(key));
+                }
+                self.hint_key(&look);
+            }
+            return;
+        }
+        if self.nav.search.as_ref().is_some_and(|s| s.focused) {
+            // The search bar owns the keyboard while focused (T-14 §6).
+            if pressed {
+                if !repeat {
+                    self.consumed.push(Consumed::plain(key));
+                }
+                self.search_key(&look);
+            }
+            return;
+        }
+        if pressed
+            && !repeat
+            && let Some((backward, till)) = self.nav.await_jump.take()
+        {
+            // `cursor.jump-char` with no character: this key names it.
+            self.consumed.push(Consumed::plain(key));
+            if let Some(c) = look
+                .text
+                .as_str()
+                .chars()
+                .next()
+                .filter(|c| !c.is_control())
+            {
+                self.jump(c, backward, till);
             }
             return;
         }
@@ -1621,8 +1770,10 @@ impl App {
             let mut names = NameBuf::default();
             let ev = binds::bind_event(&look, key, bm, self.keymap.layout_independent, &mut names);
             let sel = self.mouse.has_selection();
+            let copy = self.nav.copy == Some(focus);
+            let searching = self.nav.search.is_some();
             let r = self.keys.press(&self.keymap, &ev, Instant::now(), &|m| {
-                mode_holds(m, modes, sel)
+                mode_holds(m, modes, sel, copy, searching)
             });
             match r {
                 Resolved::None => {}
@@ -1650,6 +1801,13 @@ impl App {
                     }
                 }
             }
+        }
+        if self.nav.copy == Some(focus) {
+            // Copy mode: keys its table does not bind go nowhere (never to the program).
+            if pressed && !repeat {
+                self.consumed.push(Consumed::plain(key));
+            }
+            return;
         }
         let kind = if !pressed {
             KeyKind::Release
@@ -2070,6 +2228,112 @@ impl App {
                     self.dispatch(members, depth + 1);
                 }
             }
+            A::SearchStart { query } => self.open_search(query),
+            A::SearchSet { query } => self.open_search(Some(query)),
+            A::SearchNext {} => self.search_step(true),
+            A::SearchPrevious {} => self.search_step(false),
+            A::SearchCancel {} => self.close_search(),
+            A::SearchToggleCase {} => {
+                if let Some(s) = self.nav.search.as_mut() {
+                    s.query.case = match s.query.case {
+                        Case::Smart => Case::Sensitive,
+                        Case::Sensitive => Case::Insensitive,
+                        Case::Insensitive => Case::Smart,
+                    };
+                    self.search_now();
+                }
+            }
+            A::SearchToggleRegex {} => {
+                if let Some(s) = self.nav.search.as_mut() {
+                    s.query.regex = !s.query.regex;
+                    self.search_now();
+                }
+            }
+            A::CopyModeEnter {} => self.enter_copy(),
+            A::CopyModeExit {} => self.exit_copy(),
+            A::CopyModeToggle {} => {
+                if self.nav.copy.is_some() {
+                    self.exit_copy();
+                } else {
+                    self.enter_copy();
+                }
+            }
+            A::CopyModeMove { motion, count } => {
+                if let Some(id) = self.nav.copy {
+                    self.view_of(
+                        id,
+                        ViewCmd::CopyMove {
+                            motion,
+                            count: count.unwrap_or(1),
+                        },
+                    );
+                }
+            }
+            A::CopyModeToggleSelection { unit } => {
+                use apoth_action::enums::SelectUnit;
+                if let Some(id) = self.nav.copy {
+                    let kind = match unit {
+                        Some(SelectUnit::Word) => apoth_grid::SelKind::Word,
+                        Some(SelectUnit::Line) => apoth_grid::SelKind::Line,
+                        Some(SelectUnit::Block) => apoth_grid::SelKind::Block,
+                        Some(SelectUnit::Cell) | None => apoth_grid::SelKind::Simple,
+                    };
+                    self.mouse.mark_selection();
+                    self.view_of(id, ViewCmd::CopySelect(kind));
+                }
+            }
+            A::CursorJumpChar { ch, backward, till } => {
+                if self.nav.copy.is_some() {
+                    match ch {
+                        Some(c) => self.jump(c, backward, till),
+                        None => self.nav.await_jump = Some((backward, till)),
+                    }
+                }
+            }
+            A::CursorJumpRepeat { reverse } => {
+                if let Some((c, backward, till)) = self.nav.last_jump
+                    && let Some(id) = self.nav.copy
+                {
+                    self.view_of(
+                        id,
+                        ViewCmd::CopyJump {
+                            ch: c,
+                            backward: backward ^ reverse,
+                            till,
+                        },
+                    );
+                }
+            }
+            A::HintsStart { hint } => self.start_hints(hint.as_deref()),
+            A::HintsCancel {} => {
+                if let Some(id) = self.nav.hints {
+                    self.view_of(id, ViewCmd::HintsCancel);
+                }
+            }
+            A::BlockJump { direction } => {
+                self.scrolled = true;
+                self.view(ViewCmd::BlockJump {
+                    older: direction == apoth_action::enums::Order::Prev,
+                });
+            }
+            A::Open { target, argv } => {
+                let argv = match argv {
+                    Some(a) => match self.expand_argv(&a) {
+                        Some(v) => Some(v),
+                        None => return true,
+                    },
+                    None => None,
+                };
+                // A URI is held to the link rules; a bare path opens as given.
+                if (target.contains("://") || target.starts_with("mailto:"))
+                    && let Err(e) =
+                        security::check_link(&target, &self.settings.nav.schemes, &self.hostname)
+                {
+                    tracing::info!(reason = e.reason(), "open refused");
+                    return true;
+                }
+                self.spawn_open(&target, argv);
+            }
             A::ConfigReload {} => self.start_reload(),
             A::AppQuit { force: _ } | A::WindowClose {} => self.begin_close(),
             A::AppIgnore {} => {}
@@ -2170,6 +2434,10 @@ impl App {
             CopyTarget::Primary => SelectionKind::Primary,
         };
         let n = c.text.len();
+        if kind == SelectionKind::Clipboard {
+            // The clipboard now holds what the user copied, not program content.
+            self.nav.osc52_tag = None;
+        }
         match self.handle.set_selection(seat, kind, c.text.into_bytes()) {
             Ok(()) => tracing::debug!(bytes = n, ?kind, "selection offered"),
             Err(e) => tracing::warn!(error = %e, "cannot offer the selection"),
@@ -2223,6 +2491,19 @@ impl App {
         if d.direction != TransferDirection::Receive {
             return;
         }
+        if let Some(i) = self.nav.osc52_reads.iter().position(|r| r.0 == d.id) {
+            // A permitted OSC 52 read: answer with the content as one reply unit.
+            let (_, pane, sel) = self.nav.osc52_reads.swap_remove(i);
+            let data = if d.status == TransferStatus::Complete {
+                d.data.0
+            } else {
+                Vec::new()
+            };
+            let unit = nav::osc52_reply(&sel, &data, self.settings.term.osc52_max);
+            tracing::debug!(bytes = data.len(), "osc 52 read answered");
+            self.send_unit(pane, unit);
+            return;
+        }
         let ok = d.status == TransferStatus::Complete;
         if drop {
             self.handle.finish_drop(d.seat, ok);
@@ -2256,7 +2537,16 @@ impl App {
         if bytes.is_empty() || self.paste.is_some() {
             return;
         }
-        match paste::needs_confirm(&bytes, origin, modes, &self.settings.input.paste) {
+        let target = paste::Target {
+            at_prompt: p.shared.at_prompt.load(Ordering::Acquire),
+            bracketed_ok: p.shared.bracketed_ok.load(Ordering::Acquire),
+            osc52: origin == Origin::Selection
+                && self
+                    .nav
+                    .osc52_tag
+                    .is_some_and(|(h, _)| h == nav::content_hash(&bytes)),
+        };
+        match paste::needs_confirm_at(&bytes, origin, modes, &self.settings.input.paste, target) {
             None => self.send_paste(id, &bytes),
             Some(reason) => {
                 tracing::debug!(?reason, bytes = bytes.len(), "paste needs confirmation");
@@ -2268,6 +2558,547 @@ impl App {
                 });
                 self.bar_dismissed = false;
                 self.refresh_bar();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ navigation
+
+    /// End search, hints and copy mode of pane `id` (focus left it or it closed).
+    fn end_nav(&mut self, id: PaneKey) {
+        if self.nav.copy == Some(id) {
+            self.exit_copy();
+        }
+        if self.nav.hints == Some(id) {
+            self.nav.hints = None;
+            self.view_of(id, ViewCmd::HintsCancel);
+        }
+        if self.nav.search.as_ref().is_some_and(|s| s.pane == id) {
+            self.close_search();
+        }
+        if self.nav.link_tip.take().is_some() {
+            self.send_layout();
+        }
+        self.nav.hover_cell = None;
+    }
+
+    fn open_search(&mut self, query: Option<String>) {
+        let Some(pane) = self.focused() else { return };
+        let fire = query.is_some();
+        match self.nav.search.as_mut() {
+            Some(s) if s.pane == pane => {
+                s.focused = true;
+                if let Some(q) = query {
+                    s.query.text = q;
+                }
+            }
+            _ => {
+                if let Some(old) = self.nav.search.take() {
+                    self.view_of(old.pane, ViewCmd::Search(None));
+                }
+                self.nav.search = Some(SearchUi {
+                    pane,
+                    query: Query {
+                        text: query.unwrap_or_default(),
+                        ..Query::default()
+                    },
+                    status: crate::search::Status::default(),
+                    focused: true,
+                    generation: 0,
+                });
+            }
+        }
+        if fire {
+            self.search_now();
+        } else {
+            self.send_layout();
+        }
+    }
+
+    fn close_search(&mut self) {
+        if let Some(s) = self.nav.search.take() {
+            self.view_of(s.pane, ViewCmd::Search(None));
+            self.send_layout();
+        }
+    }
+
+    fn search_step(&mut self, older: bool) {
+        if let Some(pane) = self.nav.search.as_ref().map(|s| s.pane) {
+            self.scrolled = true;
+            self.view_of(pane, ViewCmd::SearchStep { older });
+        }
+    }
+
+    /// Restart the search with the current query at once (mode toggles, `search.set`).
+    fn search_now(&mut self) {
+        let Some(s) = self.nav.search.as_mut() else {
+            return;
+        };
+        s.generation += 1;
+        let generation = s.generation;
+        self.send_layout();
+        self.search_fire(generation);
+    }
+
+    /// The query was typed: restart the search after the debounce (T-14 §6: 150 ms).
+    fn search_changed(&mut self) {
+        let Some(s) = self.nav.search.as_mut() else {
+            return;
+        };
+        s.generation += 1;
+        let generation = s.generation;
+        self.send_layout();
+        let _ = self.lh.insert_source(
+            Timer::from_duration(Duration::from_millis(nav::DEBOUNCE_MS)),
+            move |_, (), app: &mut App| {
+                app.search_fire(generation);
+                TimeoutAction::Drop
+            },
+        );
+    }
+
+    fn search_fire(&mut self, generation: u64) {
+        let Some(s) = self.nav.search.as_ref() else {
+            return;
+        };
+        if s.generation != generation {
+            return;
+        }
+        let (pane, q) = (s.pane, s.query.clone());
+        self.scrolled = true;
+        self.view_of(pane, ViewCmd::Search(Some(q)));
+    }
+
+    /// A key while the search bar has the keyboard.
+    fn search_key(&mut self, look: &KeyLookup) {
+        enum Op {
+            Close,
+            Unfocus,
+            Step(bool),
+            Edited,
+            Toggled,
+            Nothing,
+        }
+        let shift = self.held.contains(Mods::SHIFT);
+        let alt = self.held.contains(Mods::ALT);
+        let ctrl = self.held.contains(Mods::CTRL) || self.held.contains(Mods::SUPER);
+        let copy = self.nav.copy;
+        let Some(s) = self.nav.search.as_mut() else {
+            return;
+        };
+        let in_copy = copy == Some(s.pane);
+        let op = match look.key {
+            Key::Named(Named::Escape) if in_copy => Op::Unfocus,
+            Key::Named(Named::Escape) => Op::Close,
+            Key::Named(Named::Enter | Named::Kp(apoth_input::Kp::Enter)) => {
+                if in_copy {
+                    s.focused = false;
+                }
+                Op::Step(!shift)
+            }
+            Key::Named(Named::Up) => Op::Step(true),
+            Key::Named(Named::Down) => Op::Step(false),
+            Key::Char('c') if alt => {
+                s.query.case = match s.query.case {
+                    Case::Smart => Case::Sensitive,
+                    Case::Sensitive => Case::Insensitive,
+                    Case::Insensitive => Case::Smart,
+                };
+                Op::Toggled
+            }
+            Key::Char('r') if alt => {
+                s.query.regex = !s.query.regex;
+                Op::Toggled
+            }
+            Key::Char('w') if alt => {
+                s.query.whole_word = !s.query.whole_word;
+                Op::Toggled
+            }
+            Key::Char('s') if alt => {
+                s.query.scope = match s.query.scope {
+                    crate::search::Scope::All => crate::search::Scope::Screen,
+                    crate::search::Scope::Screen => crate::search::Scope::All,
+                };
+                Op::Toggled
+            }
+            Key::Char('u') if ctrl => {
+                s.query.text.clear();
+                Op::Edited
+            }
+            _ if alt || ctrl => Op::Nothing,
+            k => {
+                if nav::edit_query(&mut s.query.text, k, Some(look.text.as_str())) {
+                    Op::Edited
+                } else {
+                    Op::Nothing
+                }
+            }
+        };
+        match op {
+            Op::Close => self.close_search(),
+            Op::Unfocus => {
+                if let Some(s) = self.nav.search.as_mut() {
+                    s.focused = false;
+                }
+                self.send_layout();
+            }
+            Op::Step(older) => {
+                self.search_step(older);
+                self.send_layout();
+            }
+            Op::Edited => self.search_changed(),
+            Op::Toggled => self.search_now(),
+            Op::Nothing => {}
+        }
+    }
+
+    fn enter_copy(&mut self) {
+        let Some(pane) = self.focused() else { return };
+        if self.nav.copy.is_some() {
+            return;
+        }
+        self.nav.copy = Some(pane);
+        if let Some(i) = self.keymap.table_index("copy-mode") {
+            self.keys.push(i, false, None, Instant::now());
+        }
+        self.scrolled = true;
+        self.view_of(pane, ViewCmd::CopyEnter);
+        self.write_mux_dump();
+    }
+
+    fn exit_copy(&mut self) {
+        let Some(pane) = self.nav.copy.take() else {
+            return;
+        };
+        self.nav.await_jump = None;
+        for name in ["copy-mode", "copy-mode-emacs"] {
+            if let Some(i) = self.keymap.table_index(name) {
+                self.keys.remove(i);
+            }
+        }
+        self.view_of(pane, ViewCmd::CopyExit);
+        if self
+            .nav
+            .search
+            .as_ref()
+            .is_some_and(|s| s.pane == pane && !s.focused)
+        {
+            self.close_search();
+        }
+        self.view_of(pane, ViewCmd::Scroll(ScrollBy::Bottom));
+        self.write_mux_dump();
+    }
+
+    fn jump(&mut self, ch: char, backward: bool, till: bool) {
+        self.nav.last_jump = Some((ch, backward, till));
+        if let Some(id) = self.nav.copy {
+            self.view_of(id, ViewCmd::CopyJump { ch, backward, till });
+        }
+    }
+
+    /// `hints.start [set]`: `set` names built-in matchers, comma separated.
+    fn start_hints(&mut self, set: Option<&str>) {
+        let Some(pane) = self.focused() else { return };
+        let kinds: Vec<crate::hints::Kind> = match set {
+            Some(s) => {
+                let k: Vec<_> = s
+                    .split(',')
+                    .filter_map(|n| crate::hints::Kind::parse(n.trim()))
+                    .collect();
+                if k.is_empty() {
+                    // HOOK(T-14 §7): user regex matcher sets from KDL are not loaded yet.
+                    tracing::debug!("hints.start names no built-in matcher");
+                    return;
+                }
+                k
+            }
+            None => Vec::new(),
+        };
+        self.nav.hints = Some(pane);
+        self.view_of(
+            pane,
+            ViewCmd::Hints {
+                kinds,
+                alphabet: self.settings.nav.hint_alphabet.clone(),
+                max: self.settings.nav.hint_max,
+            },
+        );
+    }
+
+    fn hint_key(&mut self, look: &KeyLookup) {
+        let Some(pane) = self.nav.hints else { return };
+        let cmd = match look.key {
+            Key::Named(Named::Escape) => ViewCmd::HintsCancel,
+            Key::Named(Named::Backspace) => ViewCmd::HintKey('\u{8}'),
+            _ => match look
+                .text
+                .as_str()
+                .chars()
+                .next()
+                .filter(|c| !c.is_control())
+            {
+                Some(c) => ViewCmd::HintKey(c),
+                None => return,
+            },
+        };
+        self.view_of(pane, cmd);
+    }
+
+    fn on_nav(&mut self, id: PaneKey, m: NavMsg) {
+        match m {
+            NavMsg::Search(st) => {
+                if let Some(s) = self.nav.search.as_mut()
+                    && s.pane == id
+                {
+                    s.status = st;
+                    self.send_layout();
+                }
+            }
+            NavMsg::Hint { kind, text } => {
+                if kind.opens() {
+                    // A link hint's visible text is not the URI: always show it first.
+                    let visible = if kind == crate::hints::Kind::Link {
+                        ""
+                    } else {
+                        text.as_str()
+                    };
+                    self.open_link(&text, visible);
+                } else {
+                    self.on_copied(Copied {
+                        target: CopyTarget::Clipboard,
+                        text,
+                    });
+                }
+            }
+            NavMsg::HintsEnded => {
+                if self.nav.hints == Some(id) {
+                    self.nav.hints = None;
+                }
+            }
+            NavMsg::Link(uri) => {
+                if self.focused() == Some(id) && self.nav.link_tip != uri {
+                    self.nav.link_tip = uri;
+                    self.send_layout();
+                }
+            }
+            NavMsg::Open { uri, visible } => self.open_link(&uri, &visible),
+            NavMsg::CopyModeEnded => {
+                if self.nav.copy == Some(id) {
+                    self.exit_copy();
+                }
+            }
+        }
+    }
+
+    /// T-14 §5: allow-listed scheme, no remote `file://`, and the full URI confirmed first
+    /// when it differs from the visible text.
+    fn open_link(&mut self, uri: &str, visible: &str) {
+        match security::check_link(uri, &self.settings.nav.schemes, &self.hostname) {
+            Err(e) => {
+                tracing::info!(reason = e.reason(), "link not opened");
+                self.handle.ring_bell(Some(self.win));
+            }
+            Ok(()) if security::needs_reveal(uri, visible) => {
+                self.nav.open = Some(PendingOpen {
+                    uri: uri.to_string(),
+                });
+                self.bar_dismissed = false;
+                self.refresh_bar();
+            }
+            Ok(()) => self.spawn_open(uri, None),
+        }
+    }
+
+    /// Run the opener argv (`links.open-command`, `{url}` substituted as one argument) on a
+    /// worker; a reaper thread waits for it so the pool is never held by a long-lived opener.
+    fn spawn_open(&mut self, target: &str, argv: Option<Vec<String>>) {
+        let template = argv.unwrap_or_else(|| self.settings.nav.open_command.clone());
+        let Some(argv) = security::open_argv(&template, target) else {
+            tracing::info!("open: no opener command");
+            return;
+        };
+        let job = move || {
+            let mut c = std::process::Command::new(&argv[0]);
+            c.args(&argv[1..])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .env_remove("XDG_ACTIVATION_TOKEN")
+                .env_remove("DESKTOP_STARTUP_ID");
+            match c.spawn() {
+                Ok(mut child) => {
+                    let _ = std::thread::Builder::new()
+                        .name("apoth-open-reap".into())
+                        .spawn(move || {
+                            let _ = child.wait();
+                        });
+                }
+                Err(e) => tracing::warn!(error = %e.kind(), "opener did not start"),
+            }
+        };
+        if self.workers.submit(Box::new(job)).is_err() {
+            tracing::warn!("worker queue full: open dropped");
+        }
+    }
+
+    fn open_modifier_held(&self) -> bool {
+        let want = self
+            .settings
+            .nav
+            .open_modifier
+            .split('+')
+            .fold(Mods::NONE, |m, k| {
+                m | match k.trim() {
+                    "shift" => Mods::SHIFT,
+                    "alt" => Mods::ALT,
+                    "super" => Mods::SUPER,
+                    _ => Mods::CTRL,
+                }
+            });
+        self.held.contains(want)
+    }
+
+    /// Remote test (T-18 §10, process detection): a pane without a live PTY counts as
+    /// remote (tighten only).
+    fn pane_remote(&self, id: PaneKey) -> bool {
+        self.panes
+            .get(&id)
+            .and_then(|p| p.pty.as_ref())
+            .is_none_or(|pty| pty.foreground_is_remote(&[]))
+    }
+
+    /// OSC 52 writes the term let through: the policy decides per pane (remote re-checked
+    /// here), and allowed content is offered on the seat and tagged for paste rule (e).
+    fn on_osc52_write(&mut self, id: PaneKey, sets: Vec<apoth_term::ClipboardSet>) {
+        let remote = self.pane_remote(id);
+        let Some(seat) = self.seat else { return };
+        for c in sets {
+            let primary = c.selection.contains(['p', 's']);
+            let d = if primary {
+                self.settings.nav.policy.decide_primary(false, remote)
+            } else {
+                self.settings
+                    .nav
+                    .policy
+                    .decide(Class::ClipboardWrite, remote)
+            };
+            if d != Decision::Allow || (primary && !self.settings.input.primary) {
+                tracing::debug!(
+                    class = Class::ClipboardWrite.id(),
+                    remote,
+                    "osc 52 write denied"
+                );
+                continue;
+            }
+            let kind = if primary {
+                SelectionKind::Primary
+            } else {
+                SelectionKind::Clipboard
+            };
+            let n = c.data.len();
+            let tag = nav::content_hash(&c.data);
+            match self.handle.set_selection(seat, kind, c.data) {
+                Ok(()) => {
+                    if !primary {
+                        self.nav.osc52_tag = Some((tag, remote));
+                    }
+                    tracing::debug!(bytes = n, "osc 52 write offered");
+                }
+                Err(e) => tracing::debug!(error = %e, "osc 52 write not offered"),
+            }
+        }
+    }
+
+    /// An OSC 52 read request: allow answers, ask shows the consent bar (rate limited),
+    /// deny does nothing at all.
+    fn on_osc52_read(&mut self, id: PaneKey, sel: String) {
+        let remote = self.pane_remote(id);
+        let primary = sel.contains(['p', 's']);
+        let d = if primary {
+            self.settings.nav.policy.decide_primary(true, remote)
+        } else {
+            self.settings
+                .nav
+                .policy
+                .decide(Class::ClipboardRead, remote)
+        };
+        match d {
+            Decision::Deny => tracing::debug!(class = Class::ClipboardRead.id(), remote, "denied"),
+            Decision::Allow => self.osc52_read(id, sel),
+            Decision::Ask => match self
+                .nav
+                .consents
+                .ask(id, Class::ClipboardRead, Instant::now())
+            {
+                security::Ask::Granted => self.osc52_read(id, sel),
+                security::Ask::AutoDeny | security::Ask::Busy => {
+                    tracing::debug!(class = Class::ClipboardRead.id(), "consent rate-limited");
+                }
+                security::Ask::Show => {
+                    if self.nav.consent.is_some() || self.paste.is_some() {
+                        // One question on screen at a time: this one is dropped.
+                        self.nav.consents.cancel(id, Class::ClipboardRead);
+                        return;
+                    }
+                    self.nav.consent = Some(PendingConsent {
+                        pane: id,
+                        class: Class::ClipboardRead,
+                        selection: sel,
+                    });
+                    self.bar_dismissed = false;
+                    self.refresh_bar();
+                }
+            },
+        }
+    }
+
+    /// Read the seat selection to answer an OSC 52 query; nothing to read answers empty.
+    fn osc52_read(&mut self, id: PaneKey, sel: String) {
+        let kind = if sel.contains(['p', 's']) {
+            SelectionKind::Primary
+        } else {
+            SelectionKind::Clipboard
+        };
+        let started = self.seat.and_then(|seat| {
+            let t = self.handle.receive_selection(seat, kind, Want::Text).ok()?;
+            let tid = t.id();
+            t.insert(&self.lh, |d: TransferDone, app: &mut App| {
+                app.on_transfer(d)
+            })
+            .ok()?;
+            Some(tid)
+        });
+        match started {
+            Some(tid) => self.nav.osc52_reads.push((tid, id, sel)),
+            None => {
+                let unit = nav::osc52_reply(&sel, b"", self.settings.term.osc52_max);
+                self.send_unit(id, unit);
+            }
+        }
+    }
+
+    /// A key answers the consent or link-confirm bar (explicit keys only, after the guard).
+    fn answer_nav_bar(&mut self, key: apoth_input::Key) {
+        let Some(o) = &self.bar else { return };
+        let age = o.shown_at.elapsed().as_millis() as u64;
+        let Some(answer) = paste_answer(&o.spec, age, key) else {
+            return;
+        };
+        if let Some(c) = self.nav.consent.take() {
+            let a = match answer {
+                0 => Answer::Once,
+                1 => Answer::Always,
+                _ => Answer::Deny,
+            };
+            self.nav.consents.answer(c.pane, c.class, a, Instant::now());
+            self.refresh_bar();
+            if a != Answer::Deny {
+                self.osc52_read(c.pane, c.selection);
+            }
+        } else if let Some(p) = self.nav.open.take() {
+            self.refresh_bar();
+            if answer == 0 {
+                self.spawn_open(&p.uri, None);
             }
         }
     }
@@ -2428,6 +3259,15 @@ impl App {
             return;
         };
         let modes = p.shared.mirror.load();
+        if self.capture.is_none() && !self.left_down {
+            // Hyperlink hover (T-14 §5): the view underlines the link and reports its URI.
+            let h = geo.hit(x, y);
+            let cell = (!h.above && !h.below).then_some((h.row, h.col));
+            if self.nav.hover_cell != Some((target, cell)) {
+                self.nav.hover_cell = Some((target, cell));
+                self.view_of(target, ViewCmd::Hover(cell));
+            }
+        }
         let held = self.left_down.then_some(MouseButton::Left);
         let outs = self
             .mouse
@@ -2560,6 +3400,19 @@ impl App {
                     self.view_of(old, ViewCmd::Clear);
                 }
                 self.mouse.selection_gone();
+            }
+            if code == BTN_LEFT && self.open_modifier_held() {
+                // Open-modifier click activates the link under the pointer (T-14 §5).
+                if let (Some(geo), Some((x, y))) = (self.geometry_of(id), self.pointer) {
+                    let h = geo.hit(x, y);
+                    self.view_of(
+                        id,
+                        ViewCmd::Activate {
+                            row: h.row,
+                            col: h.col,
+                        },
+                    );
+                }
             }
             self.capture = Some(id);
             self.mouse_pane = Some(id);
@@ -2892,6 +3745,7 @@ impl App {
                 self.relayout();
             }
             MainMsg::Copied(c) => self.on_copied(c),
+            MainMsg::Nav(id, m) => self.on_nav(id, m),
             MainMsg::Cursor(id, c) => {
                 if self.focused() == Some(id) {
                     self.ime_cursor(c);
@@ -2951,6 +3805,12 @@ impl App {
         }
         if e.bell > 0 && self.settings.bell_audible {
             self.handle.ring_bell(Some(self.win));
+        }
+        if !e.clipboard.is_empty() {
+            self.on_osc52_write(id, e.clipboard);
+        }
+        if let Some(sel) = e.clip_read {
+            self.on_osc52_read(id, sel);
         }
     }
 
@@ -3192,8 +4052,12 @@ impl App {
             self.send_render_update(f.font);
         }
         let ids: Vec<PaneKey> = self.panes.keys().copied().collect();
+        let deny = self.settings.nav.policy.deny_word(false);
         for id in ids {
             self.send_view_settings(id);
+            if let Some(p) = self.panes.get(&id) {
+                p.shared.deny.store(deny, Ordering::Release);
+            }
         }
         if f.title {
             self.handle
@@ -3361,6 +4225,18 @@ impl App {
                 pp.stats.lines,
                 &self.term_title,
             ))
+        } else if let Some(c) = &self.nav.consent {
+            let title = self
+                .panes
+                .get(&c.pane)
+                .map_or(String::new(), |p| p.title.clone());
+            Some(apoth_ui::bar::BarSpec::consent(
+                self.windows()[0],
+                c.class.label(),
+                &title,
+            ))
+        } else if let Some(o) = &self.nav.open {
+            Some(open_bar(self.windows()[0], &o.uri))
         } else if self.bar_dismissed {
             None
         } else {
@@ -3684,6 +4560,30 @@ xkb_keymap {
         assert_eq!(paste_answer(&spec, guard, enter), None);
         assert_eq!(paste_answer(&spec, guard, ch(' ')), None);
         assert_eq!(paste_answer(&spec, guard, ch('x')), None);
+    }
+
+    #[test]
+    fn consent_and_open_bars_ignore_keys_inside_the_guard() {
+        // T-18 §12: keys typed within 500 ms of a consent bar appearing do not answer it.
+        let guard = apoth_ui::tokens::motion::CONSENT_GUARD_MS;
+        assert_eq!(guard, 500);
+        let ch = |c| apoth_input::Key::Char(c);
+        let spec = apoth_ui::bar::BarSpec::consent(
+            WidgetId(1),
+            crate::security::Class::ClipboardRead.label(),
+            "t",
+        );
+        for k in ['o', 'a', 'd'] {
+            assert_eq!(paste_answer(&spec, 0, ch(k)), None);
+            assert_eq!(paste_answer(&spec, guard - 1, ch(k)), None);
+        }
+        assert_eq!(paste_answer(&spec, guard, ch('o')), Some(0));
+        assert_eq!(paste_answer(&spec, guard, ch('a')), Some(1));
+        assert_eq!(paste_answer(&spec, guard, ch('d')), Some(2));
+        let enter = apoth_input::Key::Named(apoth_input::Named::Enter);
+        assert_eq!(paste_answer(&spec, guard, enter), None);
+        let open = open_bar(WidgetId(2), "https://e.example/");
+        assert_eq!(paste_answer(&open, guard - 1, ch('o')), None);
     }
 
     #[test]

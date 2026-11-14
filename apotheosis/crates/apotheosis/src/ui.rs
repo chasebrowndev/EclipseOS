@@ -324,6 +324,22 @@ pub(crate) fn build_chrome(
                 &mut dl,
             );
         }
+        if let Some(f) = &model.float {
+            // HOOK(apoth-frontend): an interim bottom bar from the bar primitives; the
+            // glass search field and tooltip design are the frontend pass's.
+            let h = metrics::BAR_H + 2.0 * space::SM;
+            let (_, bottom) = area.split_bottom(h);
+            let l = bar::layout(bottom, f, &measure);
+            bar::draw(
+                &l,
+                f,
+                &BarState { shown_at_ms: 0 },
+                u64::MAX,
+                &UiState::default(),
+                &pal,
+                &mut dl,
+            );
+        }
         if let Some(p) = &model.palette {
             let l = apoth_ui::palette::layout(area, p);
             apoth_ui::palette::draw(&l, p, &model.ui, &pal, &measure, &mut dl);
@@ -515,6 +531,7 @@ mod tests {
                 selected: Some(1),
                 total: 3,
             }),
+            float: None,
             ui: UiState::default(),
         };
         (model, ((w * scale) as u32, (h * scale) as u32))

@@ -121,6 +121,10 @@ pub struct EventSlot {
     pub notifications: VecDeque<String>,
     /// OSC 52 writes.
     pub clipboard: VecDeque<ClipboardSet>,
+    /// A pending OSC 52 read request (selection letters, filtered); latest wins. The term
+    /// never answers it: main decides under the sequence policy (T-18 §3: ask locally,
+    /// deny remotely) and, when allowed, queues the base64 reply itself.
+    pub clip_read: Option<String>,
     /// The palette or default colours changed.
     pub colors_changed: bool,
     /// Drop counters.
@@ -137,6 +141,7 @@ impl Default for EventSlot {
             marks: VecDeque::with_capacity(MARKS_CAP),
             notifications: VecDeque::with_capacity(NOTIFY_CAP),
             clipboard: VecDeque::with_capacity(CLIP_CAP),
+            clip_read: None,
             colors_changed: false,
             dropped: Dropped::default(),
         }
@@ -153,6 +158,7 @@ impl EventSlot {
             && self.marks.is_empty()
             && self.notifications.is_empty()
             && self.clipboard.is_empty()
+            && self.clip_read.is_none()
             && !self.colors_changed
     }
     /// Forget everything pending (drop counters persist).
@@ -164,6 +170,7 @@ impl EventSlot {
         self.marks.clear();
         self.notifications.clear();
         self.clipboard.clear();
+        self.clip_read = None;
         self.colors_changed = false;
     }
     pub(crate) fn push_mark(&mut self, m: Mark) {
@@ -188,7 +195,7 @@ impl EventSlot {
         }
     }
     /// Canonical text form, one line per pending event, for fixtures. Order: title, cwd,
-    /// progress, bell, marks, notifications, clipboard, colors.
+    /// progress, bell, marks, notifications, clipboard, clipboard read, colors.
     pub fn render(&self) -> Vec<String> {
         let mut v = Vec::new();
         if let Some(t) = &self.title {
@@ -221,6 +228,9 @@ impl EventSlot {
                     .map(|b| format!("{b:02x}"))
                     .collect::<String>()
             ));
+        }
+        if let Some(s) = &self.clip_read {
+            v.push(format!("clip-read {s}"));
         }
         if self.colors_changed {
             v.push("colors".to_string());

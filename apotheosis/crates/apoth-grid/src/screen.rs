@@ -472,6 +472,28 @@ impl Screen {
         Some((id.to_string(), uri.to_string()))
     }
 
+    /// Hyperlink `(id, uri)` of the cell at absolute row `abs` (from the oldest retained
+    /// row) and column `x`, if it carries one (T-14 §5 hover and open).
+    #[must_use]
+    pub fn link_at_abs(&self, abs: usize, x: usize) -> Option<(String, String)> {
+        if x >= self.cols {
+            return None;
+        }
+        let (pi, pos) = self.loc_abs(abs)?;
+        let page = &self.pages[pi];
+        let item = page.cell_link(pos, x)?;
+        let (id, uri) = page.link_get(item);
+        Some((id.to_string(), uri.to_string()))
+    }
+
+    /// Row flags of absolute row `abs` (from the oldest retained row): prompt and wrap
+    /// marks for navigation over history.
+    #[must_use]
+    pub fn row_flags_abs(&self, abs: usize) -> Option<u16> {
+        let (pi, pos) = self.loc_abs(abs)?;
+        Some(self.pages[pi].row_flags(pos))
+    }
+
     /// Code points of a cluster cell (or the scalar) into `out`.
     pub fn cell_text(&self, y: usize, x: usize, out: &mut Vec<u32>) {
         out.clear();

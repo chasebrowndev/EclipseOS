@@ -308,6 +308,8 @@ dependencies = [
  "apoth-wl",
  "calloop",
  "ec-theme",
+ "proptest",
+ "regex-automata",
  "rustix",
  "serde",
  "serde_json",

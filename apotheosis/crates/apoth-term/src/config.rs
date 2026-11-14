@@ -10,6 +10,31 @@ use apoth_unicode::Widths;
 /// 8-bit RGB.
 pub type Rgb = (u8, u8, u8);
 
+/// Sequence classes the pane's policy denies (T-18 §3). A denied class has no observable
+/// effect and produces no reply (T-18 §11 policy conformance). Main computes the word from
+/// the sequence policy table and the pane's remote state; the io thread installs it with
+/// [`crate::Term::set_deny`] between feeds, so `feed` stays deterministic for a given word.
+pub mod deny {
+    /// `title-set`: OSC 0/1/2 and the title stack pop.
+    pub const TITLE_SET: u32 = 1 << 0;
+    /// `title-report`: `CSI 20/21 t` (the reply is always empty when allowed).
+    pub const TITLE_REPORT: u32 = 1 << 1;
+    /// `window-ops-report`: `CSI 14/16/18/19 t`, title stack 22/23.
+    pub const WINDOW_REPORT: u32 = 1 << 2;
+    /// `colour`: OSC 4, 10-19, 104, 110-119 set and query.
+    pub const COLOUR: u32 = 1 << 3;
+    /// `notification`: OSC 9, 99, 777.
+    pub const NOTIFICATION: u32 = 1 << 4;
+    /// `hyperlink`: OSC 8.
+    pub const HYPERLINK: u32 = 1 << 5;
+    /// `clipboard-write`: OSC 52 set.
+    pub const CLIPBOARD_WRITE: u32 = 1 << 6;
+    /// `clipboard-read`: OSC 52 query (no request event is raised).
+    pub const CLIPBOARD_READ: u32 = 1 << 7;
+    /// `primary-selection`: OSC 52 naming `p` or `s`.
+    pub const PRIMARY: u32 = 1 << 8;
+}
+
 /// Cursor shape and blink (DECSCUSR).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CursorStyle {
@@ -56,6 +81,8 @@ pub struct TermConfig {
     pub dark: bool,
     /// Cursor style at power-on.
     pub cursor: CursorStyle,
+    /// Denied sequence classes ([`deny`] bits; 0 = everything allowed).
+    pub deny: u32,
 }
 
 impl Default for TermConfig {
@@ -90,6 +117,7 @@ impl Default for TermConfig {
                 shape: 0,
                 blink: false,
             },
+            deny: 0,
         }
     }
 }

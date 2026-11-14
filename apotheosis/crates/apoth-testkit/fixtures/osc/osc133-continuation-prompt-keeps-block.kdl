@@ -1,0 +1,12 @@
+fixture "osc133-continuation-prompt-keeps-block" {
+  desc "fish/kitty-style trace: A;k=s continuation prompts mid-input keep the primary block"
+  covers "T03-OSC133-OPTS" "SHELLINTEGRATION-05" "SHELLINTEGRATION-07" "T14-133-CONT"
+  size rows=4 cols=20
+  feed #"\e]133;A\a$ \e]133;B\afor x\r\n\e]133;A;k=s\a> \e]133;B\aend\r\n\e]133;C;cmdline=for\aok\r\n\e]133;D;0\a"#
+  grid {
+    row "$ for x"
+    row "> end"
+    row "ok"
+  }
+  events "mark:A" "mark:B" "mark:A" "mark:B" "mark:C" "mark:D;0"
+}

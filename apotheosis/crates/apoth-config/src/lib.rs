@@ -14,6 +14,7 @@ pub mod diag;
 pub mod diff;
 pub mod edit;
 pub mod fs;
+pub mod fuzz;
 pub mod import;
 pub mod lang;
 pub mod load;

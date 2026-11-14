@@ -285,12 +285,16 @@ fn match_term(word: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn match_expr(t: &[Tok], i: &mut usize) -> Result<(), String> {
-    match_unary(t, i)?;
+/// Nesting bound of a match expression (parentheses plus `not`): the parser recurses per
+/// level, so an unbounded depth from a hostile config would overflow the stack (T-18 §5).
+pub const MATCH_MAX_DEPTH: usize = 64;
+
+fn match_expr(t: &[Tok], i: &mut usize, depth: usize) -> Result<(), String> {
+    match_unary(t, i, depth)?;
     while let Some(Tok::Word(w)) = t.get(*i) {
         if w == "and" || w == "or" {
             *i += 1;
-            match_unary(t, i)?;
+            match_unary(t, i, depth)?;
         } else {
             break;
         }
@@ -298,15 +302,20 @@ fn match_expr(t: &[Tok], i: &mut usize) -> Result<(), String> {
     Ok(())
 }
 
-fn match_unary(t: &[Tok], i: &mut usize) -> Result<(), String> {
+fn match_unary(t: &[Tok], i: &mut usize, depth: usize) -> Result<(), String> {
+    if depth >= MATCH_MAX_DEPTH {
+        return Err(format!(
+            "match expression nests deeper than {MATCH_MAX_DEPTH}"
+        ));
+    }
     match t.get(*i) {
         Some(Tok::Word(w)) if w == "not" => {
             *i += 1;
-            match_unary(t, i)
+            match_unary(t, i, depth + 1)
         }
         Some(Tok::LParen) => {
             *i += 1;
-            match_expr(t, i)?;
+            match_expr(t, i, depth + 1)?;
             if t.get(*i) == Some(&Tok::RParen) {
                 *i += 1;
                 Ok(())
@@ -331,7 +340,7 @@ pub fn validate_match(s: &str) -> Result<(), String> {
         return Err("empty match expression".into());
     }
     let mut i = 0;
-    match_expr(&toks, &mut i)?;
+    match_expr(&toks, &mut i, 0)?;
     if i != toks.len() {
         return Err("unexpected trailing input in match expression".into());
     }

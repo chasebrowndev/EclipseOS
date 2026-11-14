@@ -449,8 +449,8 @@ define_actions! {
 
     // ---- cursor.* ------------------------------------------------------------------
     CursorJumpChar = "cursor.jump-char" [Layout] "Jump to character"
-        "Move the copy-mode cursor to the next occurrence of a character on the line."
-        { ch("char"): char, backward: bool };
+        "Move the copy-mode cursor to a character on the line; with none, the next typed key."
+        { ch("char"): Option<char>, backward: bool, till: bool };
     CursorJumpRepeat = "cursor.jump-repeat" [Layout] "Repeat jump"
         "Repeat the last jump-char, optionally reversed."
         { reverse: bool };

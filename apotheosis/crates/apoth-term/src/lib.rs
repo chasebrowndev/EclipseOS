@@ -12,7 +12,8 @@
 //!   out an `Arc` of it ([`Term::input_mirror`]).
 //! * Configuration arrives in [`TermConfig`] at construction.
 //! * The title stack is 10 deep and ignores a push when full.
-//! * OSC 52 read (query) is consumed without a reply until the consent path exists.
+//! * OSC 52 read (query) never replies from the term: it raises `EventSlot::clip_read` and
+//!   main answers under the sequence policy (T-18 §3).
 //! * XTGETTCAP (`DCS + q`), DECRQCRA outside `esctest` and XTSAVE are consumed.
 //! * OSC 777 `notify;title;body` and OSC 99 (`p=title|body` payloads, optional `e=1` base64) push
 //!   a notification event; other OSC 99 payload kinds and chunked assembly are consumed.
@@ -25,10 +26,12 @@ mod color;
 pub mod config;
 mod csi;
 pub mod events;
+pub mod fuzz;
 mod machine;
 pub mod modes;
 mod osc;
 mod sgr;
+pub mod shell;
 #[cfg(test)]
 mod tests_batch;
 
@@ -40,7 +43,7 @@ use apoth_input::InputMirror;
 use apoth_vt::Parser;
 
 pub use color::XTERM_ANSI16;
-pub use config::{CursorStyle, Rgb, TermConfig};
+pub use config::{CursorStyle, Rgb, TermConfig, deny};
 pub use events::{ClipboardSet, EventSlot, Mark, Progress, ReplyQueue};
 pub use modes::{Access, ModeDef, ModeState};
 
@@ -221,6 +224,32 @@ impl Term {
     /// The lock-free mirror main loads with `Acquire` (T-00 §4.2).
     pub fn input_mirror(&self) -> Arc<InputMirror> {
         self.m.mirror.clone()
+    }
+
+    /// Command blocks of the primary screen (T-14 §1).
+    pub fn blocks(&self) -> &shell::Blocks {
+        &self.m.blocks
+    }
+
+    /// The cursor is in an OSC 133 prompt or input zone (T-18 §4 (a), (e)).
+    pub fn at_prompt(&self) -> bool {
+        self.m.blocks.at_prompt()
+    }
+
+    /// Bracketed paste is set and counts as in force: a primary prompt mark has been seen
+    /// since it was last set (T-18 §4).
+    pub fn bracketed_in_force(&self) -> bool {
+        self.m.mode_on(false, 2004) && self.m.bp_prompted
+    }
+
+    /// Install the denied sequence classes ([`deny`] bits, T-18 §3). Called between feeds.
+    pub fn set_deny(&mut self, bits: u32) {
+        self.m.cfg.deny = bits;
+    }
+
+    /// Denied sequence classes now in force.
+    pub fn deny_bits(&self) -> u32 {
+        self.m.cfg.deny
     }
 
     /// Current title (sanitised).

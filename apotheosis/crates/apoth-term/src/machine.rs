@@ -152,6 +152,12 @@ pub(crate) struct Machine {
     pub now: Option<Instant>,
     pub strm: StrMode,
     pub sbuf: Vec<u8>,
+    // shell integration (T-14 §1, T-18 §4)
+    pub blocks: crate::shell::Blocks,
+    /// A primary OSC 133 prompt was seen since mode 2004 was last set.
+    pub bp_prompted: bool,
+    /// The last accepted OSC 7 URI (a block's cwd).
+    pub cwd_uri: Option<String>,
     /// Tests: print one character at a time, bypassing the batching path.
     #[cfg(test)]
     pub no_batch: bool,
@@ -251,6 +257,9 @@ impl Machine {
             now: None,
             strm: StrMode::None,
             sbuf: Vec::new(),
+            blocks: crate::shell::Blocks::default(),
+            bp_prompted: false,
+            cwd_uri: None,
             #[cfg(test)]
             no_batch: false,
             cfg,
@@ -341,6 +350,14 @@ impl Machine {
             }
         } else if self.y + 1 < self.rows {
             self.y += 1;
+        }
+        // Rows a command block reaches carry its id (T-14 §1).
+        if self.cur == 0 {
+            let id = self.blocks.current_id();
+            if id != 0 {
+                let y = self.y;
+                self.panes[0].grid.set_row_block(y, id);
+            }
         }
     }
 
@@ -854,6 +871,9 @@ impl Machine {
         fresh.events = std::mem::take(&mut self.events);
         fresh.now = self.now;
         fresh.sbuf = std::mem::take(&mut self.sbuf);
+        // Command records survive RIS (their ids stay unique; their rows may survive in
+        // history).
+        fresh.blocks = std::mem::take(&mut self.blocks);
         *self = fresh;
     }
 
@@ -932,6 +952,10 @@ impl Machine {
         }
         if def.input_bit != 0 {
             self.set_in(def.input_bit, on);
+        }
+        if !ansi && num == 2004 && on {
+            // T-18 §4: 2004 counts as in force only once a prompt mark follows it.
+            self.bp_prompted = false;
         }
         match (ansi, num) {
             (true, 4) => self.irm = on,
