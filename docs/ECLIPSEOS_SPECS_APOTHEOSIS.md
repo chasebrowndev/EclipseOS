@@ -2176,10 +2176,17 @@ Never automatic: nothing opens on output.
   `<desktop>-mimeapps.list` before `mimeapps.list`; Default Applications only from the
   desktop-specific files; Added/Removed Associations apply to their directory and below; a
   default must be installed (`TryExec`) and not hidden; a type is settled before its
-  parents); else `links.open-command`.
+  parents); else, for a URL, `links.open-command`. A local file with no default after that
+  opens in the **default browser** (`x-scheme-handler/https`, then `http`; its `Exec` gets
+  the percent-encoded absolute `file://` URL as one argv element through `%u`/`%U`), but
+  only for types a browser renders: `image/{png,jpeg,gif,webp,avif,svg+xml,bmp}`,
+  `video/{webm,mp4,ogg}`, `audio/{mpeg,ogg,opus,flac,wav,webm,aac}`, `application/pdf`,
+  `application/xhtml+xml`, `text/html`, `text/plain`. Any other type has no default, and
+  `open.default` shows the Open-with picker instead of doing nothing. The menu names the
+  effective default ("Open with Firefox" when the browser is the fallback).
 - **`apoth play` fallback.** `apoth play` exits 69 (`EX_UNAVAILABLE`) for media it cannot
   play; a build without `play` exits 2 (usage). On either, the opener launches the
-  freedesktop default (else `links.open-command`) instead: from a pane when the pane
+  freedesktop default (else the browser for a renderable type, else nothing) instead: from a pane when the pane
   closes, from a `--ext` launch when the process exits.
 - **Launch.** Always an argv, never a shell. Desktop `Exec` lines are unquoted and
   unescaped per the Desktop Entry spec, then field codes expanded: `%f`/`%u` one target,

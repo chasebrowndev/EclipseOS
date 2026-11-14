@@ -236,6 +236,8 @@ pub(crate) struct ChromeModel {
     pub(crate) tooltip: Option<apoth_ui::tooltip::TooltipSpec>,
     /// The pane the visual bell is lighting, as its frame rect (`bell.visual`).
     pub(crate) bell: Option<Rect>,
+    /// A media window's focus rim and hover controls.
+    pub(crate) media: Option<apoth_ui::mediawin::MediaWinSpec>,
     pub(crate) ui: UiState,
 }
 
@@ -249,6 +251,7 @@ impl ChromeModel {
             search: None,
             tooltip: None,
             bell: None,
+            media: None,
             ui: UiState::default(),
         }
     }

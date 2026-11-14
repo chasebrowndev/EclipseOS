@@ -11,6 +11,7 @@ pub mod draw;
 pub mod frame;
 pub mod geom;
 pub mod hit;
+pub mod mediawin;
 pub mod motion;
 pub mod palette;
 pub mod pane;
@@ -19,6 +20,7 @@ pub mod searchbar;
 pub mod state;
 pub mod tabs;
 pub mod text;
+pub mod toggle;
 pub mod tokens;
 pub mod tooltip;
 

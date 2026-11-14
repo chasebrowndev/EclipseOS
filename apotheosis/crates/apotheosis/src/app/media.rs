@@ -18,6 +18,8 @@ use apoth_wl::window::DecorationPref;
 use apoth_wl::{ConfigureEvent, WindowId, WindowSpec};
 use calloop::RegistrationToken;
 
+use apoth_ui::mediawin::{self, MediaWinSpec};
+
 use super::{App, build_fonts};
 use crate::pane::{MainMsg, PaneShared, RenderMsg};
 use crate::render::{
@@ -62,6 +64,33 @@ struct MediaWin {
     /// `media.window-wait` replies owed: (client, request id).
     waits: Vec<(u64, u64)>,
     closing: bool,
+    /// Pad (physical px) once running, the window's size in interface units, and the
+    /// chrome it shows (focus rim, hover close and hint).
+    pad: (i32, i32),
+    size_ui: (f32, f32),
+    chrome: MediaWinSpec,
+}
+
+/// The window's logical size for `grid` rows and columns of `cell`-px cells at `scale`. The
+/// grid keeps one spare row below the picture (the cursor's move after a placement must not
+/// scroll it): the window is cut above it.
+fn media_size(
+    grid: (usize, usize),
+    cell: (u32, u32),
+    settings: &crate::settings::Settings,
+    scale: f64,
+) -> (u32, u32) {
+    let pad = (
+        pad_px(settings.padding.0, scale),
+        pad_px(settings.padding.1, scale),
+    );
+    let shown = grid.0.saturating_sub(1).max(1) as u32;
+    let pw = grid.1 as u32 * cell.0 + 2 * pad.0;
+    let ph = shown * cell.1 + 2 * pad.1;
+    (
+        (f64::from(pw) / scale).ceil() as u32,
+        (f64::from(ph) / scale).ceil() as u32,
+    )
 }
 
 fn err(code: ErrorCode, msg: &str) -> WireError {
@@ -189,6 +218,12 @@ impl App {
             decorations: DecorationPref::None,
             ..WindowSpec::default()
         });
+        // A fixed size before the first commit, so the compositor floats the window rather
+        // than tiling it (the main window's scale stands in until the first configure).
+        let scale = self.scale();
+        let (lw, lh) = media_size(grid, self.cell, &self.settings, scale);
+        self.handle.set_min_size(win, Some((lw, lh)));
+        self.handle.set_max_size(win, Some((lw, lh)));
         self.handle.flush();
         self.media.next += 1;
         let id = self.media.next;
@@ -209,6 +244,9 @@ impl App {
                 chan: None,
                 waits: Vec::new(),
                 closing: false,
+                pad: (0, 0),
+                size_ui: (0.0, 0.0),
+                chrome: MediaWinSpec::default(),
             },
         );
         tracing::debug!(id, rows = grid.0, cols = grid.1, "media window opened");
@@ -293,11 +331,13 @@ impl App {
                 pad_px(self.settings.padding.1, scale),
             );
             if c.size.is_none() {
-                let pw = grid.1 as u32 * cell.0 + 2 * pad.0;
-                let ph = grid.0 as u32 * cell.1 + 2 * pad.1;
-                let lw = (f64::from(pw) / scale).ceil() as u32;
-                let lh = (f64::from(ph) / scale).ceil() as u32;
+                // The grid keeps one spare row below the picture (the cursor's move after
+                // a placement must not scroll it): the window is cut above it.
+                let (lw, lh) = media_size(grid, cell, &self.settings, scale);
                 self.handle.set_window_size(win, (lw, lh));
+                // A fixed size: the compositor floats it instead of tiling it.
+                self.handle.set_min_size(win, Some((lw, lh)));
+                self.handle.set_max_size(win, Some((lw, lh)));
             }
             let (_, buffer) = self
                 .handle
@@ -319,7 +359,11 @@ impl App {
                     }
                 })
                 .map_err(|e| e.error.to_string())?;
+            let zoom = self.settings.glass.interface_zoom.max(0.01);
+            let logical = self.handle.surface_size(win).map_or((0, 0), |(l, _)| l);
             let w = self.media.windows.get_mut(&id).ok_or("gone")?;
+            w.pad = (pad.0 as i32, pad.1 as i32);
+            w.size_ui = (logical.0 as f32 / zoom, logical.1 as f32 / zoom);
             w.chan = Some(token);
             {
                 let mut t = w.shared.lock();
@@ -338,24 +382,43 @@ impl App {
             })
             .map_err(|e| e.to_string())?;
             w.render = Some(render);
-            let view = PaneView {
-                id,
-                shared: Arc::clone(&w.shared),
-                defaults: w.defaults.clone(),
-                origin: (pad.0 as i32, pad.1 as i32),
-                focused: false,
-                first: false,
-                floating: false,
-            };
-            let _ = w.render_tx.send(RenderMsg::Layout(Box::new(WindowLayout {
-                panes: vec![view],
-                chrome: ChromeModel::empty(),
-            })));
+            Self::media_layout(id, w);
             Ok(())
         })();
         if let Err(why) = started {
             tracing::warn!(id, %why, "a media window could not start");
             self.media_close(id);
+        }
+    }
+
+    /// Send the window's layout and chrome to its render thread.
+    fn media_layout(id: u64, w: &MediaWin) {
+        let view = PaneView {
+            id,
+            shared: Arc::clone(&w.shared),
+            defaults: w.defaults.clone(),
+            origin: w.pad,
+            focused: false,
+            first: false,
+            floating: false,
+        };
+        let mut chrome = ChromeModel::empty();
+        chrome.media = Some(w.chrome.clone());
+        let _ = w.render_tx.send(RenderMsg::Layout(Box::new(WindowLayout {
+            panes: vec![view],
+            chrome,
+        })));
+    }
+
+    /// Recompute the chrome state from the focus and pointer; resend when it changed.
+    fn media_chrome(&mut self, id: u64, f: impl FnOnce(&mut MediaWin)) {
+        let Some(w) = self.media.windows.get_mut(&id) else {
+            return;
+        };
+        let before = w.chrome.clone();
+        f(w);
+        if w.chrome != before && w.render.is_some() && !w.closing {
+            Self::media_layout(id, w);
         }
     }
 
@@ -394,22 +457,30 @@ impl App {
         match kind {
             K::KeyboardEnter { window, .. } => {
                 self.media.kb = self.media_of(*window);
+                if let Some(id) = self.media.kb {
+                    self.media_chrome(id, |w| w.chrome.focused = true);
+                }
                 self.media.kb.is_some()
             }
             K::KeyboardLeave { window } => {
-                if self.media_of(*window).is_some() {
+                if let Some(id) = self.media_of(*window) {
                     self.media.kb = None;
+                    self.media_chrome(id, |w| w.chrome.focused = false);
                     return true;
                 }
                 false
             }
-            K::PointerEnter { window, .. } => {
+            K::PointerEnter { window, x, y, .. } => {
                 self.media.ptr = self.media_of(*window);
+                if let Some(id) = self.media.ptr {
+                    self.media_pointer(id, Some((*x, *y)));
+                }
                 self.media.ptr.is_some()
             }
             K::PointerLeave { window } => {
-                if self.media_of(*window).is_some() {
+                if let Some(id) = self.media_of(*window) {
                     self.media.ptr = None;
+                    self.media_pointer(id, None);
                     return true;
                 }
                 false
@@ -423,11 +494,61 @@ impl App {
                 }
                 true
             }
-            K::PointerMotion { .. } | K::PointerButton { .. } | K::Scroll(_) => {
-                self.media.ptr.is_some()
+            K::PointerMotion { x, y } => {
+                let Some(id) = self.media.ptr else {
+                    return false;
+                };
+                self.media_pointer(id, Some((*x, *y)));
+                true
             }
+            K::PointerButton {
+                button, pressed, ..
+            } => {
+                const BTN_LEFT: u32 = 0x110;
+                let Some(id) = self.media.ptr else {
+                    return false;
+                };
+                if *button == BTN_LEFT {
+                    let over = self
+                        .media
+                        .windows
+                        .get(&id)
+                        .is_some_and(|w| w.chrome.close.hover);
+                    if over && *pressed {
+                        self.media_chrome(id, |w| w.chrome.close.pressed = true);
+                    } else if !*pressed {
+                        let was = self
+                            .media
+                            .windows
+                            .get(&id)
+                            .is_some_and(|w| w.chrome.close.pressed);
+                        self.media_chrome(id, |w| w.chrome.close.pressed = false);
+                        if was && over {
+                            self.media_close(id);
+                        }
+                    }
+                }
+                true
+            }
+            K::Scroll(_) => self.media.ptr.is_some(),
             _ => false,
         }
+    }
+
+    /// The pointer entered, moved (interface units after the zoom) or left window `id`.
+    fn media_pointer(&mut self, id: u64, at: Option<(f64, f64)>) {
+        let zoom = self.settings.glass.interface_zoom.max(0.01);
+        self.media_chrome(id, |w| {
+            let Some((x, y)) = at else {
+                w.chrome.hovered = false;
+                w.chrome.close = apoth_ui::ControlState::default();
+                return;
+            };
+            let area = apoth_ui::Rect::new(0.0, 0.0, w.size_ui.0, w.size_ui.1);
+            let p = apoth_ui::Point::new(x as f32 / zoom, y as f32 / zoom);
+            w.chrome.hovered = true;
+            w.chrome.close.hover = mediawin::close_rect(area).contains(p);
+        });
     }
 
     /// Close a media window: answer its waits, stop its threads off the loop, then destroy

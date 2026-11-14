@@ -11,7 +11,11 @@
 //! Handler order for the default: an `open.handlers` rule (exact type, then `type/*`, then
 //! the same for each parent type); the built-ins (`image/*` → `apoth icat`, `video/*` and
 //! `audio/*` → `apoth play` with the desktop default as its fallback, local files only); for a
-//! URL a user-set `links.open-command`; the freedesktop default; `links.open-command`.
+//! URL a user-set `links.open-command`; the freedesktop default; for a URL `links.open-command`.
+//! A local file with no desktop default (after the parent-type chain) opens in the default
+//! browser (`x-scheme-handler/https`, then `http`) as a `file://` URL when its type is one a
+//! browser renders ([`browser_renders`]); otherwise there is no default and the opener shows
+//! the Open-with picker instead of doing nothing.
 //!
 //! Security (T-18): a path from a remote pane is never opened locally; a link passes
 //! `check_link` first; every launch is an argv (desktop `Exec` expanded by [`exec`]).
@@ -121,6 +125,32 @@ impl Term {
 /// launches the desktop default instead (T-14 §11).
 pub(crate) const PLAY_UNSUPPORTED: [i32; 2] = [2, 69];
 
+/// Types a browser shows inline (the last-resort default for a local file, T-14 §11).
+pub(crate) fn browser_renders(mime: &str) -> bool {
+    let m = mime
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    match m.split_once('/') {
+        Some(("image", sub)) => matches!(
+            sub,
+            "png" | "jpeg" | "gif" | "webp" | "avif" | "svg+xml" | "bmp"
+        ),
+        Some(("video", sub)) => matches!(sub, "webm" | "mp4" | "ogg"),
+        Some(("audio", sub)) => {
+            matches!(
+                sub,
+                "mpeg" | "ogg" | "opus" | "flac" | "wav" | "webm" | "aac"
+            )
+        }
+        Some(("application", sub)) => matches!(sub, "pdf" | "xhtml+xml"),
+        Some(("text", sub)) => matches!(sub, "html" | "plain"),
+        _ => false,
+    }
+}
+
 /// Who opens a target.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Handler {
@@ -135,6 +165,9 @@ pub(crate) enum Handler {
     },
     /// `links.open-command` with the target substituted.
     Opener { argv: Vec<String> },
+    /// Not an app: the Open-with picker for a target nothing could open (the end of the
+    /// `apoth play` fallback chain). `stash` names the kept [`Resolved`].
+    Picker { stash: u64 },
 }
 
 /// A handler and where it shows (placement matters for terminal handlers and `Terminal=true`
@@ -156,6 +189,7 @@ impl Choice {
                     || "the opener".to_string(),
                     |n| n.to_string_lossy().into_owned(),
                 ),
+            Handler::Picker { .. } => "Open with\u{2026}".to_string(),
         }
     }
 
@@ -166,7 +200,7 @@ impl Choice {
                 vec![term.rule_name().into(), self.placement.name().into()]
             }
             Handler::Desktop { id, .. } => vec![id.clone()],
-            Handler::Opener { .. } => vec!["opener".into()],
+            Handler::Opener { .. } | Handler::Picker { .. } => vec!["opener".into()],
         }
     }
 
@@ -657,7 +691,8 @@ pub(crate) fn resolve_with(req: &Request, dbs: &Dbs) -> Resolved {
         path: &req.env.path,
     };
     let local_file = kind == Some(Kind::File);
-    let desktop = |id: &str| -> Option<Choice> {
+    // `as_url`: hand the app the `file://` URL, not the path (the browser fallback).
+    let desktop_with = |id: &str, as_url: bool| -> Option<Choice> {
         let e = dbs.index.get(id)?;
         if e.try_exec
             .as_deref()
@@ -669,7 +704,7 @@ pub(crate) fn resolve_with(req: &Request, dbs: &Dbs) -> Resolved {
         let argv = exec::expand(
             &e.exec,
             &exec::ExecTarget {
-                path: path.as_deref(),
+                path: path.as_deref().filter(|_| !as_url),
                 url: &url,
             },
             &exec::ExecEntry {
@@ -690,6 +725,7 @@ pub(crate) fn resolve_with(req: &Request, dbs: &Dbs) -> Resolved {
             placement: req.placement,
         })
     };
+    let desktop = |id: &str| desktop_with(id, false);
     let opener = || -> Option<Choice> {
         let target = path
             .as_ref()
@@ -755,8 +791,22 @@ pub(crate) fn resolve_with(req: &Request, dbs: &Dbs) -> Resolved {
     if default.is_none() {
         default = desktop_default.clone();
     }
+    // 5. A URL: the opener. A local file: the default browser for a type it renders; else
+    // nothing (the picker opens).
+    let browser = || -> Option<Choice> {
+        if !(local_file && browser_renders(&mime)) {
+            return None;
+        }
+        let schemes = [
+            "x-scheme-handler/https".to_string(),
+            "x-scheme-handler/http".to_string(),
+        ];
+        resolver
+            .default_through(&schemes)
+            .and_then(|id| desktop_with(&id, true))
+    };
     if default.is_none() {
-        default = opener();
+        default = if path.is_none() { opener() } else { browser() };
     }
     let fallback = match &default {
         Some(Choice {
@@ -764,7 +814,7 @@ pub(crate) fn resolve_with(req: &Request, dbs: &Dbs) -> Resolved {
                 term: Term::Play, ..
             },
             ..
-        }) => desktop_default.clone().or_else(opener),
+        }) => desktop_default.clone().or_else(browser),
         _ => None,
     };
     // Picker lists.
@@ -846,7 +896,6 @@ fn row(title: String, hint: Option<String>, pick: OpenPick, program: bool) -> Me
 pub(crate) fn menu_rows(r: &Resolved) -> (Vec<MenuRow>, Vec<Choice>) {
     let mut rows = Vec::new();
     let mut choices = Vec::new();
-    let mime = r.mime.clone();
     match (&r.refusal, &r.default) {
         (None, Some(d)) => {
             choices.push(d.clone());
@@ -855,7 +904,7 @@ pub(crate) fn menu_rows(r: &Resolved) -> (Vec<MenuRow>, Vec<Choice>) {
             } else {
                 format!("Open with {}", d.title())
             };
-            rows.push(row(title, mime.clone(), OpenPick::Launch(0), true));
+            rows.push(row(title, None, OpenPick::Launch(0), true));
             rows.push(row(
                 "Open with\u{2026}".into(),
                 Some("choose an app".into()),
@@ -891,7 +940,7 @@ pub(crate) fn menu_rows(r: &Resolved) -> (Vec<MenuRow>, Vec<Choice>) {
             ));
         }
     }
-    let is_path = r.copy_path.is_some();
+    let is_path = r.copy_path.is_some() || !r.copy.contains("://");
     rows.push(row(
         if is_path { "Copy" } else { "Copy link" }.into(),
         None,
@@ -915,13 +964,13 @@ pub(crate) fn menu_rows(r: &Resolved) -> (Vec<MenuRow>, Vec<Choice>) {
 /// declare the type, the rest.
 pub(crate) fn picker_rows(
     r: &Resolved,
-    remember: bool,
+    _remember: bool,
 ) -> (Vec<MenuRow>, Vec<MenuRow>, Vec<Choice>) {
     let mut pinned = Vec::new();
     if let Some(k) = r.remember_key() {
         pinned.push(row(
             format!("Remember for {k}"),
-            Some(if remember { "on" } else { "off" }.into()),
+            None,
             OpenPick::ToggleRemember,
             false,
         ));
@@ -933,11 +982,6 @@ pub(crate) fn picker_rows(
         let title = match c.handler {
             Handler::Term { .. } => format!("{} {}", c.title(), c.placement.phrase()),
             _ => c.title(),
-        };
-        let hint = if r.default.as_ref() == Some(c) {
-            format!("{hint} \u{b7} default")
-        } else {
-            hint
         };
         rows.push(row(
             title,

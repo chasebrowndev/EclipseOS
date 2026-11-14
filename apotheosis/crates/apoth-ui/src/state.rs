@@ -125,10 +125,13 @@ pub fn label_colour(p: &Palette, s: ControlState) -> Rgba {
 /// through its text, a hairline `rim` (the compositor draws no rim inside the window).
 pub fn glass(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette) {
     out.rect(rect, radius, pal.base.alpha(alpha::BACKING), None);
+    out.rect(rect, radius, pal.sheet_tint, None);
+    // The light catches the layer: one cell step of lift, so it reads as a pane above the
+    // window and not as a hole in it.
     out.rect(
         rect,
         radius,
-        pal.sheet_tint,
+        pal.cell,
         Some(Rim {
             width: metrics::RIM_W,
             colour: rim,

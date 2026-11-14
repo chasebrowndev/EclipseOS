@@ -918,7 +918,8 @@ fn bar_draw_golden_shape() {
         )),
         "primary: cell_focus fill + rim"
     );
-    assert_eq!(o.len(), 3 + 4 + 1 + 4 * 2);
+    // Glass is three layers (frost, tint, rim), then the rest of the bar.
+    assert_eq!(o.len(), 3 + 4 + 1 + 4 * 2 + 1);
     assert!(!dump.contains("rim 2.0"), "the bar never steals focus");
 }
 
@@ -1108,13 +1109,19 @@ fn palette_spec(n: usize, selected: Option<usize>, query: &str) -> crate::palett
         query: query.into(),
         placeholder: TextRun::interface("Run an action", size::BODY),
         entries: (0..n)
-            .map(|i| crate::palette::Entry {
-                title: TextRun::interface(format!("Action {i}"), size::BODY),
-                hint: (i % 2 == 0).then(|| TextRun::interface("ctrl+shift+t", size::BODY_SMALL)),
+            .map(|i| {
+                crate::palette::Entry::new(
+                    TextRun::interface(format!("Action {i}"), size::BODY),
+                    (i % 2 == 0).then(|| TextRun::interface("ctrl+shift+t", size::BODY_SMALL)),
+                )
             })
             .collect(),
         selected,
         total: n,
+        header: None,
+        anchor: None,
+        pinned: 0,
+        field: true,
     }
 }
 
@@ -1247,4 +1254,74 @@ fn palette_empty_list_says_so() {
             .iter()
             .any(|c| matches!(c, Cmd::Text { run, .. } if run.text == "No matches"))
     );
+}
+
+#[test]
+fn truncate_middle_keeps_both_ends_and_fits() {
+    let run = TextRun::program(
+        "/home/user/projects/very/long/path/to/report-final.png",
+        size::BODY,
+    );
+    let full = crate::text::Measure::width(&M, &run);
+    assert_eq!(crate::text::truncate_middle(&run, full + 1.0, &M), run);
+    let short = crate::text::truncate_middle(&run, full / 2.0, &M);
+    assert!(crate::text::Measure::width(&M, &short) <= full / 2.0 + 0.01);
+    assert!(short.text.starts_with("/home") && short.text.ends_with(".png"));
+    assert!(short.text.contains('\u{2026}'));
+}
+
+#[test]
+fn srgb_blend_lifts_linear_alphas_and_keeps_opaque() {
+    let ground = crate::tokens::Rgba([0.05, 0.04, 0.03, 1.0]);
+    let faint = crate::tokens::Rgba([1.0, 1.0, 1.0, 0.05]);
+    let b = crate::tokens::srgb_blend(faint, ground);
+    assert!(
+        b.0[3] > faint.0[3] * 2.0,
+        "sRGB alpha reaches the linear mix: {b:?}"
+    );
+    assert_eq!(crate::tokens::srgb_blend(ground, ground), ground);
+}
+
+#[test]
+fn toggle_knob_sits_at_the_ends_and_track_is_trailing() {
+    let r = Rect::new(0.0, 0.0, 200.0, 30.0);
+    let (t_off, k_off) = crate::toggle::parts(r, false);
+    let (t_on, k_on) = crate::toggle::parts(r, true);
+    assert_eq!(t_off, t_on);
+    assert_eq!(t_on.right(), r.right());
+    assert!(k_off.x < k_on.x && k_on.right() <= t_on.right());
+}
+
+#[test]
+fn media_window_chrome_is_hover_only() {
+    let area = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let pal = dark();
+    let mut rest = DrawList::new();
+    crate::mediawin::draw(
+        area,
+        &crate::mediawin::MediaWinSpec::default(),
+        &pal,
+        &M,
+        &mut rest,
+    );
+    assert!(
+        rest.cmds.is_empty(),
+        "a settled, unfocused window draws nothing"
+    );
+    let mut hover = DrawList::new();
+    let spec = crate::mediawin::MediaWinSpec {
+        hovered: true,
+        ..Default::default()
+    };
+    crate::mediawin::draw(area, &spec, &pal, &M, &mut hover);
+    assert!(!hover.cmds.is_empty());
+    let c = crate::mediawin::close_rect(area);
+    assert!(area.contains(Point::new(c.x, c.y)) && c.right() <= area.right());
+    let mut focus = DrawList::new();
+    let spec = crate::mediawin::MediaWinSpec {
+        focused: true,
+        ..Default::default()
+    };
+    crate::mediawin::draw(area, &spec, &pal, &M, &mut focus);
+    assert!(focus.cmds.len() == 1);
 }

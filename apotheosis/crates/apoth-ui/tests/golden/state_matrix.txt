@@ -1,221 +1,231 @@
 == bar-error rest dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 e0553fff
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 e0553fff
 rect [8.0,4.0 624.0x40.0] r10.0 fill e0553f24 rim 1.0 e0553fff
 rect [20.0,15.0 18.0x18.0] r99.0 fill e0553f24
 icon Warning [20.0,15.0 18.0x18.0] e0553fff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "bad value" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff04 rim 1.0 ffffff0a
-rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff1b rim 1.0 ffffff33
+rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @431.0,19.0 Interface/Regular sz10.0 ffffffff
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 ffffffff
-rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 ffffffa3
 == bar-error hover dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 e0553fff
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 e0553fff
 rect [8.0,4.0 624.0x40.0] r10.0 fill e0553f24 rim 1.0 e0553fff
 rect [20.0,15.0 18.0x18.0] r99.0 fill e0553f24
 icon Warning [20.0,15.0 18.0x18.0] e0553fff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "bad value" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff05 rim 1.0 ffffff0e
-rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff22 rim 1.0 ffffff3d
+rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @431.0,19.0 Interface/Regular sz10.0 ffffffff
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 ffffffff
-rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 ffffffa3
 == bar-error pressed dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 e0553fff
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 e0553fff
 rect [8.0,4.0 624.0x40.0] r10.0 fill e0553f24 rim 1.0 e0553fff
 rect [20.0,15.0 18.0x18.0] r99.0 fill e0553f24
 icon Warning [20.0,15.0 18.0x18.0] e0553fff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "bad value" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff07 rim 1.0 ffffff0a
-rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff2a rim 1.0 ffffff33
+rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @431.0,19.0 Interface/Regular sz10.0 ffffffff
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 ffffffff
-rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 ffffffa3
 == bar-error focused dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 e0553fff
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 e0553fff
 rect [8.0,4.0 624.0x40.0] r10.0 fill e0553f24 rim 1.0 e0553fff
 rect [20.0,15.0 18.0x18.0] r99.0 fill e0553f24
 icon Warning [20.0,15.0 18.0x18.0] e0553fff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "bad value" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff04 rim 2.0 f2c33cff
-rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff1b rim 2.0 f2c33cff
+rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @431.0,19.0 Interface/Regular sz10.0 ffffffff
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 ffffffff
-rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 ffffffa3
 == bar-error disabled dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 e0553fff
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 e0553fff
 rect [8.0,4.0 624.0x40.0] r10.0 fill e0553f24 rim 1.0 e0553fff
 rect [20.0,15.0 18.0x18.0] r99.0 fill e0553f24
 icon Warning [20.0,15.0 18.0x18.0] e0553fff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 62.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "bad value" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff04 rim 1.0 ffffff0e
-rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff1b rim 1.0 ffffff0e
+rect [427.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @431.0,19.0 Interface/Regular sz10.0 ffffff66
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 ffffff66
-rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff0e
-rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [533.0,11.0 87.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff0e
+rect [539.0,16.0 23.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 ffffff66
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 ffffff66
 == bar-consent rest dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 ffffff04
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c17
 icon Shield [20.0,15.0 18.0x18.0] f5cf5cff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "vim" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @296.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 ffffffa3
-rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "A" @402.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 ffffffa3
-rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "D" @568.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 ffffffa3
 == bar-consent hover dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 ffffff04
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c17
 icon Shield [20.0,15.0 18.0x18.0] f5cf5cff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "vim" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff03 rim 1.0 ffffff07
-rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff18 rim 1.0 ffffff28
+rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @296.0,19.0 Interface/Regular sz10.0 ffffffff
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 ffffffff
-rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "A" @402.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 ffffffa3
-rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "D" @568.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 ffffffa3
 == bar-consent pressed dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 ffffff04
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c17
 icon Shield [20.0,15.0 18.0x18.0] f5cf5cff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "vim" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff05 rim 1.0 ffffff04
-rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff22 rim 1.0 ffffff1d
+rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @296.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 ffffffa3
-rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "A" @402.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 ffffffa3
-rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "D" @568.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 ffffffa3
 == bar-consent focused dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 ffffff04
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c17
 icon Shield [20.0,15.0 18.0x18.0] f5cf5cff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "vim" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff04 rim 2.0 f2c33cff
-rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff1b rim 2.0 f2c33cff
+rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @296.0,19.0 Interface/Regular sz10.0 ffffffff
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 ffffffff
-rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "A" @402.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 ffffffa3
-rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff04
-rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff1d
+rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "D" @568.0,19.0 Interface/Regular sz10.0 ffffffa3
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 ffffffa3
 == bar-consent disabled dark
 rect [8.0,4.0 624.0x40.0] r10.0 fill 0b0906b8
-rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57 rim 1.0 ffffff04
+rect [8.0,4.0 624.0x40.0] r10.0 fill 17140f57
+rect [8.0,4.0 624.0x40.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c17
 icon Shield [20.0,15.0 18.0x18.0] f5cf5cff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 ffffffff
-rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff02 rim 1.0 ffffff04
+rect [46.0,24.0 26.0x15.0] r5.0 fill ffffff0f rim 1.0 ffffff1d
 text "vim" @50.0,25.5 Program/Regular sz12.0 ffffffff
-rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff0e
-rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [286.0,11.0 98.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff0e
+rect [292.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "O" @296.0,19.0 Interface/Regular sz10.0 ffffff66
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 ffffff66
-rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff0e
-rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [392.0,11.0 158.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff0e
+rect [398.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "A" @402.0,19.0 Interface/Regular sz10.0 ffffff66
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 ffffff66
-rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff02 rim 1.0 ffffff0e
-rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff03 rim 1.0 ffffff04
+rect [558.0,11.0 62.0x26.0] r99.0 fill ffffff0f rim 1.0 ffffff0e
+rect [564.0,16.0 16.0x16.0] r5.0 fill ffffff18 rim 1.0 ffffff1d
 text "D" @568.0,19.0 Interface/Regular sz10.0 ffffff66
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 ffffff66
 == tabs rest dark
-rect [8.0,4.0 214.0x32.0] r10.0 fill ffffff04 rim 1.0 ffffff0a
+rect [8.0,4.0 214.0x32.0] r10.0 fill ffffff1b rim 1.0 ffffff33
 text "one" @16.0,13.5 Program/Regular sz13.0 ffffffff
 icon Close [200.0,15.0 10.0x10.0] ffffffa3
-rect [226.0,4.0 214.0x32.0] r10.0 fill ffffff02 rim 1.0 ffffff04
+rect [226.0,4.0 214.0x32.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 text "two" @234.0,13.5 Program/Regular sz13.0 ffffffa3
-rect [444.0,6.0 28.0x28.0] r10.0 fill ffffff02 rim 1.0 ffffff04
+rect [444.0,6.0 28.0x28.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 icon Plus [452.0,14.0 12.0x12.0] ffffffa3
 == tabs hover dark
-rect [8.0,4.0 214.0x32.0] r10.0 fill ffffff04 rim 1.0 ffffff0a
+rect [8.0,4.0 214.0x32.0] r10.0 fill ffffff1b rim 1.0 ffffff33
 text "one" @16.0,13.5 Program/Regular sz13.0 ffffffff
 icon Close [200.0,15.0 10.0x10.0] ffffffa3
-rect [226.0,4.0 214.0x32.0] r10.0 fill ffffff03 rim 1.0 ffffff07
+rect [226.0,4.0 214.0x32.0] r10.0 fill ffffff18 rim 1.0 ffffff28
 text "two" @234.0,13.5 Program/Regular sz13.0 ffffffff
 icon Close [418.0,15.0 10.0x10.0] ffffffa3
-rect [444.0,6.0 28.0x28.0] r10.0 fill ffffff02 rim 1.0 ffffff04
+rect [444.0,6.0 28.0x28.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 icon Plus [452.0,14.0 12.0x12.0] ffffffa3
 == tabs pressed dark
-rect [8.0,4.0 214.0x32.0] r10.0 fill ffffff04 rim 1.0 ffffff0a
+rect [8.0,4.0 214.0x32.0] r10.0 fill ffffff1b rim 1.0 ffffff33
 text "one" @16.0,13.5 Program/Regular sz13.0 ffffffff
 icon Close [200.0,15.0 10.0x10.0] ffffffa3
-rect [226.0,4.0 214.0x32.0] r10.0 fill ffffff05 rim 1.0 ffffff04
+rect [226.0,4.0 214.0x32.0] r10.0 fill ffffff22 rim 1.0 ffffff1d
 text "two" @234.0,13.5 Program/Regular sz13.0 ffffffa3
-rect [444.0,6.0 28.0x28.0] r10.0 fill ffffff02 rim 1.0 ffffff04
+rect [444.0,6.0 28.0x28.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 icon Plus [452.0,14.0 12.0x12.0] ffffffa3
 == tabs focused dark
-rect [8.0,4.0 214.0x32.0] r10.0 fill ffffff04 rim 1.0 ffffff0a
+rect [8.0,4.0 214.0x32.0] r10.0 fill ffffff1b rim 1.0 ffffff33
 text "one" @16.0,13.5 Program/Regular sz13.0 ffffffff
 icon Close [200.0,15.0 10.0x10.0] ffffffa3
-rect [226.0,4.0 214.0x32.0] r10.0 fill ffffff04 rim 2.0 f2c33cff
+rect [226.0,4.0 214.0x32.0] r10.0 fill ffffff1b rim 2.0 f2c33cff
 text "two" @234.0,13.5 Program/Regular sz13.0 ffffffff
 icon Close [418.0,15.0 10.0x10.0] ffffffa3
-rect [444.0,6.0 28.0x28.0] r10.0 fill ffffff02 rim 1.0 ffffff04
+rect [444.0,6.0 28.0x28.0] r10.0 fill ffffff0f rim 1.0 ffffff1d
 icon Plus [452.0,14.0 12.0x12.0] ffffffa3
 == scrollbar rest dark
 rect [91.0,3.0 6.0x38.8] r99.0 fill ffffff21
@@ -227,222 +237,232 @@ rect [89.0,3.0 8.0x194.0] r99.0 fill ffffff1f
 rect [89.0,3.0 8.0x38.8] r99.0 fill ffffff38
 == bar-error rest light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 bd3a26ff
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 bd3a26ff
 rect [8.0,4.0 624.0x40.0] r10.0 fill bd3a263a rim 1.0 bd3a26ff
 rect [20.0,15.0 18.0x18.0] r99.0 fill bd3a263a
 icon Warning [20.0,15.0 18.0x18.0] bd3a26ff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "bad value" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffffb0 rim 1.0 1a161055
-rect [427.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffffb3 rim 1.0 1a16102e
+rect [427.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @431.0,19.0 Interface/Regular sz10.0 1a1610ff
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 1a1610ff
-rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [539.0,16.0 23.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [539.0,16.0 23.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 1a1610d8
 == bar-error hover light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 bd3a26ff
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 bd3a26ff
 rect [8.0,4.0 624.0x40.0] r10.0 fill bd3a263a rim 1.0 bd3a26ff
 rect [20.0,15.0 18.0x18.0] r99.0 fill bd3a263a
 icon Warning [20.0,15.0 18.0x18.0] bd3a26ff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "bad value" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff91 rim 1.0 1a16106e
-rect [427.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff94 rim 1.0 1a16103d
+rect [427.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @431.0,19.0 Interface/Regular sz10.0 1a1610ff
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 1a1610ff
-rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [539.0,16.0 23.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [539.0,16.0 23.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 1a1610d8
 == bar-error pressed light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 bd3a26ff
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 bd3a26ff
 rect [8.0,4.0 624.0x40.0] r10.0 fill bd3a263a rim 1.0 bd3a26ff
 rect [20.0,15.0 18.0x18.0] r99.0 fill bd3a263a
 icon Warning [20.0,15.0 18.0x18.0] bd3a26ff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "bad value" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff73 rim 1.0 1a161055
-rect [427.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffff76 rim 1.0 1a16102e
+rect [427.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @431.0,19.0 Interface/Regular sz10.0 1a1610ff
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 1a1610ff
-rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [539.0,16.0 23.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [539.0,16.0 23.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 1a1610d8
 == bar-error focused light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 bd3a26ff
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 bd3a26ff
 rect [8.0,4.0 624.0x40.0] r10.0 fill bd3a263a rim 1.0 bd3a26ff
 rect [20.0,15.0 18.0x18.0] r99.0 fill bd3a263a
 icon Warning [20.0,15.0 18.0x18.0] bd3a26ff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "bad value" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffffb0 rim 2.0 f2c33cff
-rect [427.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffffb3 rim 2.0 f2c33cff
+rect [427.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @431.0,19.0 Interface/Regular sz10.0 1a1610ff
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 1a1610ff
-rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [539.0,16.0 23.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [539.0,16.0 23.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 1a1610d8
 == bar-error disabled light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 bd3a26ff
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 bd3a26ff
 rect [8.0,4.0 624.0x40.0] r10.0 fill bd3a263a rim 1.0 bd3a26ff
 rect [20.0,15.0 18.0x18.0] r99.0 fill bd3a263a
 icon Warning [20.0,15.0 18.0x18.0] bd3a26ff
 text "Config error at a.kdl:3" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 62.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "bad value" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [421.0,11.0 104.0x26.0] r99.0 fill ffffffb0 rim 1.0 1a161024
-rect [427.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [421.0,11.0 104.0x26.0] r99.0 fill ffffffb3 rim 1.0 1a161024
+rect [427.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @431.0,19.0 Interface/Regular sz10.0 1a1610aa
 text "Open config" @447.0,18.0 Interface/Regular sz12.0 1a1610aa
-rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161024 rim 1.0 1a161024
-rect [539.0,16.0 23.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [533.0,11.0 87.0x26.0] r99.0 fill 1a161012 rim 1.0 1a161024
+rect [539.0,16.0 23.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "Esc" @543.0,19.0 Interface/Regular sz10.0 1a1610aa
 text "Dismiss" @566.0,18.0 Interface/Regular sz12.0 1a1610aa
 == bar-consent rest light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 1a16103b
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c43
 icon Shield [20.0,15.0 18.0x18.0] 856000ff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "vim" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [286.0,11.0 98.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [292.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [286.0,11.0 98.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [292.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @296.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 1a1610d8
-rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [398.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [398.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "A" @402.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 1a1610d8
-rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [564.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [564.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "D" @568.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 1a1610d8
 == bar-consent hover light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 1a16103b
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c43
 icon Shield [20.0,15.0 18.0x18.0] 856000ff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "vim" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [286.0,11.0 98.0x26.0] r99.0 fill 1a161037 rim 1.0 1a161055
-rect [292.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [286.0,11.0 98.0x26.0] r99.0 fill 1a16101c rim 1.0 1a16102e
+rect [292.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @296.0,19.0 Interface/Regular sz10.0 1a1610ff
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 1a1610ff
-rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [398.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [398.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "A" @402.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 1a1610d8
-rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [564.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [564.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "D" @568.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 1a1610d8
 == bar-consent pressed light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 1a16103b
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c43
 icon Shield [20.0,15.0 18.0x18.0] 856000ff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "vim" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [286.0,11.0 98.0x26.0] r99.0 fill 1a161049 rim 1.0 1a16103b
-rect [292.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [286.0,11.0 98.0x26.0] r99.0 fill 1a161026 rim 1.0 1a16101f
+rect [292.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @296.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 1a1610d8
-rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [398.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [398.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "A" @402.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 1a1610d8
-rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [564.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [564.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "D" @568.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 1a1610d8
 == bar-consent focused light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 1a16103b
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c43
 icon Shield [20.0,15.0 18.0x18.0] 856000ff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "vim" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [286.0,11.0 98.0x26.0] r99.0 fill ffffffb0 rim 2.0 f2c33cff
-rect [292.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [286.0,11.0 98.0x26.0] r99.0 fill ffffffb3 rim 2.0 f2c33cff
+rect [292.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @296.0,19.0 Interface/Regular sz10.0 1a1610ff
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 1a1610ff
-rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [398.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [398.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "A" @402.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 1a1610d8
-rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161024 rim 1.0 1a16103b
-rect [564.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161012 rim 1.0 1a16101f
+rect [564.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "D" @568.0,19.0 Interface/Regular sz10.0 1a1610d8
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 1a1610d8
 == bar-consent disabled light
 rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1eab8
-rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f rim 1.0 1a16103b
+rect [8.0,4.0 624.0x40.0] r10.0 fill f4f1ea1f
+rect [8.0,4.0 624.0x40.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 rect [20.0,15.0 18.0x18.0] r99.0 fill f2c33c43
 icon Shield [20.0,15.0 18.0x18.0] 856000ff
 text "Allow clipboard write?" @46.0,9.0 Interface/Strong sz13.0 1a1610ff
-rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161024 rim 1.0 1a16103b
+rect [46.0,24.0 26.0x15.0] r5.0 fill 1a161012 rim 1.0 1a16101f
 text "vim" @50.0,25.5 Program/Regular sz12.0 1a1610ff
-rect [286.0,11.0 98.0x26.0] r99.0 fill 1a161024 rim 1.0 1a161024
-rect [292.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [286.0,11.0 98.0x26.0] r99.0 fill 1a161012 rim 1.0 1a161024
+rect [292.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "O" @296.0,19.0 Interface/Regular sz10.0 1a1610aa
 text "Allow once" @312.0,18.0 Interface/Regular sz12.0 1a1610aa
-rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161024 rim 1.0 1a161024
-rect [398.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [392.0,11.0 158.0x26.0] r99.0 fill 1a161012 rim 1.0 1a161024
+rect [398.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "A" @402.0,19.0 Interface/Regular sz10.0 1a1610aa
 text "Always for this pane" @418.0,18.0 Interface/Regular sz12.0 1a1610aa
-rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161024 rim 1.0 1a161024
-rect [564.0,16.0 16.0x16.0] r5.0 fill 1a161037 rim 1.0 1a16103b
+rect [558.0,11.0 62.0x26.0] r99.0 fill 1a161012 rim 1.0 1a161024
+rect [564.0,16.0 16.0x16.0] r5.0 fill 1a16101c rim 1.0 1a16101f
 text "D" @568.0,19.0 Interface/Regular sz10.0 1a1610aa
 text "Deny" @584.0,18.0 Interface/Regular sz12.0 1a1610aa
 == tabs rest light
-rect [8.0,4.0 214.0x32.0] r10.0 fill ffffffb0 rim 1.0 1a161055
+rect [8.0,4.0 214.0x32.0] r10.0 fill ffffffb3 rim 1.0 1a16102e
 text "one" @16.0,13.5 Program/Regular sz13.0 1a1610ff
 icon Close [200.0,15.0 10.0x10.0] 1a1610d8
-rect [226.0,4.0 214.0x32.0] r10.0 fill 1a161024 rim 1.0 1a16103b
+rect [226.0,4.0 214.0x32.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 text "two" @234.0,13.5 Program/Regular sz13.0 1a1610d8
-rect [444.0,6.0 28.0x28.0] r10.0 fill 1a161024 rim 1.0 1a16103b
+rect [444.0,6.0 28.0x28.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 icon Plus [452.0,14.0 12.0x12.0] 1a1610d8
 == tabs hover light
-rect [8.0,4.0 214.0x32.0] r10.0 fill ffffffb0 rim 1.0 1a161055
+rect [8.0,4.0 214.0x32.0] r10.0 fill ffffffb3 rim 1.0 1a16102e
 text "one" @16.0,13.5 Program/Regular sz13.0 1a1610ff
 icon Close [200.0,15.0 10.0x10.0] 1a1610d8
-rect [226.0,4.0 214.0x32.0] r10.0 fill 1a161037 rim 1.0 1a161055
+rect [226.0,4.0 214.0x32.0] r10.0 fill 1a16101c rim 1.0 1a16102e
 text "two" @234.0,13.5 Program/Regular sz13.0 1a1610ff
 icon Close [418.0,15.0 10.0x10.0] 1a1610d8
-rect [444.0,6.0 28.0x28.0] r10.0 fill 1a161024 rim 1.0 1a16103b
+rect [444.0,6.0 28.0x28.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 icon Plus [452.0,14.0 12.0x12.0] 1a1610d8
 == tabs pressed light
-rect [8.0,4.0 214.0x32.0] r10.0 fill ffffffb0 rim 1.0 1a161055
+rect [8.0,4.0 214.0x32.0] r10.0 fill ffffffb3 rim 1.0 1a16102e
 text "one" @16.0,13.5 Program/Regular sz13.0 1a1610ff
 icon Close [200.0,15.0 10.0x10.0] 1a1610d8
-rect [226.0,4.0 214.0x32.0] r10.0 fill 1a161049 rim 1.0 1a16103b
+rect [226.0,4.0 214.0x32.0] r10.0 fill 1a161026 rim 1.0 1a16101f
 text "two" @234.0,13.5 Program/Regular sz13.0 1a1610d8
-rect [444.0,6.0 28.0x28.0] r10.0 fill 1a161024 rim 1.0 1a16103b
+rect [444.0,6.0 28.0x28.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 icon Plus [452.0,14.0 12.0x12.0] 1a1610d8
 == tabs focused light
-rect [8.0,4.0 214.0x32.0] r10.0 fill ffffffb0 rim 1.0 1a161055
+rect [8.0,4.0 214.0x32.0] r10.0 fill ffffffb3 rim 1.0 1a16102e
 text "one" @16.0,13.5 Program/Regular sz13.0 1a1610ff
 icon Close [200.0,15.0 10.0x10.0] 1a1610d8
-rect [226.0,4.0 214.0x32.0] r10.0 fill ffffffb0 rim 2.0 f2c33cff
+rect [226.0,4.0 214.0x32.0] r10.0 fill ffffffb3 rim 2.0 f2c33cff
 text "two" @234.0,13.5 Program/Regular sz13.0 1a1610ff
 icon Close [418.0,15.0 10.0x10.0] 1a1610d8
-rect [444.0,6.0 28.0x28.0] r10.0 fill 1a161024 rim 1.0 1a16103b
+rect [444.0,6.0 28.0x28.0] r10.0 fill 1a161012 rim 1.0 1a16101f
 icon Plus [452.0,14.0 12.0x12.0] 1a1610d8
 == scrollbar rest light
 rect [91.0,3.0 6.0x38.8] r99.0 fill 1a16107d

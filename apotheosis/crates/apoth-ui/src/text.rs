@@ -79,6 +79,37 @@ fn is_unsafe_char(c: char) -> bool {
         || matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
 }
 
+/// `run` shortened with an ellipsis in the middle to fit `max_w` (a path keeps its start and
+/// its file name). Returned unchanged when it already fits.
+pub fn truncate_middle(run: &TextRun, max_w: f32, m: &dyn Measure) -> TextRun {
+    let mut r = run.clone();
+    r.max_width = None;
+    if m.width(&r) <= max_w {
+        return r;
+    }
+    let chars: Vec<char> = run.text.chars().collect();
+    let build = |keep: usize| -> String {
+        let head = keep.div_ceil(2);
+        let tail = keep / 2;
+        let mut s: String = chars[..head].iter().collect();
+        s.push('\u{2026}');
+        s.extend(&chars[chars.len() - tail..]);
+        s
+    };
+    let (mut lo, mut hi) = (0usize, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        r.text = build(mid);
+        if m.width(&r) <= max_w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    r.text = build(lo);
+    r
+}
+
 /// Width of a run in logical pixels.
 pub trait Measure {
     fn width(&self, run: &TextRun) -> f32;

@@ -69,11 +69,13 @@ impl PaneLayout {
 
 pub fn draw(s: &PaneSpec, l: &PaneLayout, pal: &Palette, out: &mut DrawList) {
     if s.mode == FrameMode::Full {
-        // Focused pane = brighter rim.
-        let colour = if s.focused {
-            pal.cell_focus_rim
-        } else {
-            pal.cell_rim
+        // Focused pane = brighter rim. A float stands alone over other panes, so its rim runs
+        // a step brighter than a tiled pane's.
+        let colour = match (s.focused, s.floating) {
+            (true, true) => pal.cell_focus_rim_hover,
+            (true, false) => pal.cell_focus_rim,
+            (false, true) => pal.cell_rim_hover,
+            (false, false) => pal.cell_rim,
         };
         out.rect(
             s.rect,
@@ -114,11 +116,17 @@ pub fn draw(s: &PaneSpec, l: &PaneLayout, pal: &Palette, out: &mut DrawList) {
 /// Its rim and dim come from [`draw`], over the grid.
 pub fn draw_float_backing(s: &PaneSpec, pal: &Palette, out: &mut DrawList) {
     out.cmds.push(crate::draw::Cmd::Shadow {
-        rect: s.rect,
+        rect: Rect::new(s.rect.x, s.rect.y + metrics::FLOAT_DROP, s.rect.w, s.rect.h),
         radius: radius::INSET,
-        spread: space::MD,
-        alpha: pal.shadow.a(),
+        spread: space::LG,
+        alpha: pal.float_shadow,
     });
+    out.rect(
+        s.rect,
+        radius::INSET,
+        pal.base.alpha(crate::tokens::alpha::FLOAT_BACKING),
+        None,
+    );
     crate::state::glass(out, s.rect, radius::INSET, crate::tokens::Rgba::CLEAR, pal);
 }
 

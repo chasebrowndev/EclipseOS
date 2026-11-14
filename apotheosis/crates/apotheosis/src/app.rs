@@ -1155,6 +1155,7 @@ impl App {
         let panes: Vec<PaneView> = self
             .placed
             .iter()
+            .filter(|p| !self.open_veiled(p.id))
             .filter_map(|p| {
                 let pane = self.panes.get(&p.id)?;
                 Some(PaneView {
@@ -1249,33 +1250,44 @@ impl App {
         let p = self.palette.as_ref()?;
         let n = apoth_ui::palette::max_rows(area);
         let (rows, selected) = p.window(n);
-        let entries = rows
+        let entries: Vec<Entry> = rows
             .iter()
-            .map(|r| Entry {
-                title: if r.program {
-                    TextRun::program(&r.title, size::BODY)
-                } else {
-                    TextRun::interface(r.title.clone(), size::BODY)
-                },
-                hint: r
-                    .hint
-                    .as_ref()
-                    .map(|h| TextRun::interface(h.clone(), size::BODY_SMALL)),
+            .map(|r| {
+                let mut e = Entry::new(
+                    if r.program {
+                        TextRun::program(&r.title, size::BODY)
+                    } else {
+                        TextRun::interface(r.title.clone(), size::BODY)
+                    },
+                    r.hint
+                        .as_ref()
+                        .map(|h| TextRun::interface(h.clone(), size::BODY_SMALL)),
+                );
+                if p.mode == pal::Mode::Open {
+                    (e.disabled, e.marker) = self.open_entry(r);
+                }
+                e
             })
             .collect();
+        let view = self.open_view().filter(|_| p.mode == pal::Mode::Open);
+        let pinned = view
+            .as_ref()
+            .map_or(0, |_| self.open_pinned(p.scroll, entries.len()));
         Some(PaletteSpec {
             id: PALETTE_ID,
             query: p.query.clone(),
-            placeholder: match self
-                .open_sheet_title()
-                .filter(|_| p.mode == pal::Mode::Open)
-            {
-                Some(t) => TextRun::program(&t, size::BODY),
-                None => TextRun::interface(p.mode.placeholder(), size::BODY),
-            },
+            placeholder: TextRun::interface(
+                view.as_ref()
+                    .map_or_else(|| p.mode.placeholder(), |v| v.placeholder),
+                size::BODY,
+            ),
             entries,
             selected,
             total: p.rows.len(),
+            pinned,
+            field: view.as_ref().is_none_or(|v| v.field),
+            anchor: view.as_ref().and_then(|v| v.anchor),
+            header: view.map(|v| v.header),
         })
     }
 
@@ -1298,6 +1310,7 @@ impl App {
         let frames = self
             .placed
             .iter()
+            .filter(|p| !self.open_veiled(p.id))
             .filter(|p| p.floating || (tiled > 1 && mode != FrameMode::None))
             .map(|p| apoth_ui::pane::PaneSpec {
                 id: pane_widget(p.id),
@@ -1317,6 +1330,7 @@ impl App {
             search: self.search_spec(),
             tooltip: self.tooltip_spec(),
             bell: self.bell_rect(geo),
+            media: None,
             ui: self.ui_state.clone(),
         }
     }
@@ -3634,6 +3648,7 @@ impl App {
         self.placed
             .iter()
             .rev()
+            .filter(|p| !self.open_veiled(p.id))
             .find(|p| p.contains(self.cell, px, py))
             .map_or(Spot::Nothing, |p| Spot::Pane(p.id))
     }

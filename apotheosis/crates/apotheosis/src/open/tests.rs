@@ -247,10 +247,7 @@ fn image_defaults_to_icat_in_a_float() {
     assert_eq!(prow.len(), 5);
     assert!(matches!(pchoices[3].handler, Handler::Desktop { .. }));
     assert!(matches!(pchoices[4].handler, Handler::Opener { .. }));
-    assert_eq!(
-        prow[0].hint.as_deref(),
-        Some("in the terminal \u{b7} default")
-    );
+    assert_eq!(prow[0].hint.as_deref(), Some("in the terminal"));
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -501,4 +498,90 @@ fn env_defaults() {
         e.app_dirs()[0],
         PathBuf::from("/h/.local/share/applications")
     );
+}
+
+fn firefox() -> desktop::Entry {
+    entry(
+        "firefox.desktop",
+        "Firefox",
+        "firefox %u",
+        &["x-scheme-handler/https", "text/html"],
+        false,
+    )
+}
+
+const FF_DEFAULT: &str = "[Default Applications]\nx-scheme-handler/https=firefox.desktop\n";
+
+#[test]
+fn no_desktop_default_falls_back_to_the_browser_for_renderable_types() {
+    let d = tmpdir("browser");
+    std::fs::write(d.join("a b.pdf"), b"%PDF-1.4\n").unwrap();
+    let r = resolve_with(
+        &req("a b.pdf", RawKind::Path, Some(&d)),
+        &dbs(vec![firefox()], FF_DEFAULT),
+    );
+    let def = r.default.clone().unwrap();
+    assert_eq!(def.title(), "Firefox");
+    let Handler::Desktop { argv, .. } = &def.handler else {
+        panic!()
+    };
+    assert_eq!(argv[0], "firefox");
+    assert!(
+        argv[1].starts_with("file:///") && argv[1].ends_with("/a%20b.pdf"),
+        "{argv:?}"
+    );
+    assert_eq!(menu_rows(&r).0[0].title, "Open with Firefox");
+    // A video's `apoth play` falls back to the browser when no app handles the type.
+    std::fs::write(d.join("v.webm"), b"\x1aE\xdf\xa3").unwrap();
+    let r = resolve_with(
+        &req("v.webm", RawKind::Path, Some(&d)),
+        &dbs(vec![firefox()], FF_DEFAULT),
+    );
+    assert!(matches!(
+        r.default.unwrap().handler,
+        Handler::Term {
+            term: Term::Play,
+            ..
+        }
+    ));
+    assert_eq!(r.fallback.unwrap().title(), "Firefox");
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn no_default_and_not_renderable_has_no_default_so_the_picker_opens() {
+    let d = tmpdir("nodef");
+    std::fs::write(d.join("blob.xyz"), b"\0\xff\xfe\0\x01\x02").unwrap();
+    let r = resolve_with(
+        &req("blob.xyz", RawKind::Path, Some(&d)),
+        &dbs(vec![firefox()], FF_DEFAULT),
+    );
+    assert!(r.refusal.is_none());
+    assert!(r.default.is_none(), "{:?} {:?}", r.mime, r.default);
+    assert!(!browser_renders("application/octet-stream"));
+    assert!(browser_renders("image/svg+xml") && browser_renders("text/plain"));
+    assert!(!browser_renders("image/tiff") && !browser_renders("video/x-matroska"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
+#[test]
+fn a_desktop_default_beats_the_browser() {
+    let d = tmpdir("deskwins");
+    std::fs::write(d.join("a.pdf"), b"%PDF-1.4\n").unwrap();
+    let viewer = entry(
+        "v.desktop",
+        "Viewer",
+        "viewer %f",
+        &["application/pdf"],
+        false,
+    );
+    let r = resolve_with(
+        &req("a.pdf", RawKind::Path, Some(&d)),
+        &dbs(
+            vec![firefox(), viewer],
+            &format!("{FF_DEFAULT}application/pdf=v.desktop\n"),
+        ),
+    );
+    assert_eq!(r.default.unwrap().title(), "Viewer");
+    let _ = std::fs::remove_dir_all(&d);
 }

@@ -69,6 +69,28 @@ impl Notify for ToMain {
 }
 
 impl App {
+    /// A palette row's accessible name: the title, then what a sighted user reads off the
+    /// row (why it is disabled, the default tag, a switch's state).
+    fn palette_row_label(&self, r: &crate::palette::Row) -> String {
+        let (disabled, marker) = self.open_entry(r);
+        let mut label = r.title.clone();
+        if let Some(h) = r.hint.as_ref().filter(|h| !h.is_empty()) {
+            label.push_str(", ");
+            label.push_str(h);
+        }
+        match marker {
+            apoth_ui::palette::Marker::Default => label.push_str(", default"),
+            apoth_ui::palette::Marker::Switch(on) => {
+                label.push_str(if on { ", on" } else { ", off" });
+            }
+            apoth_ui::palette::Marker::None => {}
+        }
+        if disabled {
+            label.push_str(", unavailable");
+        }
+        label
+    }
+
     fn a11y_wanted(&self) -> bool {
         // `on` cannot force a tree on: accesskit_unix builds one only once an AT asks.
         self.reloader.config().str("accessibility.enabled") != Some("off")
@@ -285,7 +307,7 @@ impl App {
             PaletteModel {
                 query: p.query.clone(),
                 placeholder: p.mode.placeholder().to_owned(),
-                rows: rows.iter().map(|r| r.title.clone()).collect(),
+                rows: rows.iter().map(|r| self.palette_row_label(r)).collect(),
                 selected,
             }
         });

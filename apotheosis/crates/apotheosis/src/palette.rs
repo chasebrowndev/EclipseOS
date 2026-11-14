@@ -102,6 +102,8 @@ pub(crate) struct Palette {
     /// `Mode::Open`: rows listed first whatever the query, then the rows the query filters.
     pub(crate) pinned: Vec<Row>,
     pub(crate) source: Vec<Row>,
+    /// The query takes typed text (the Open menu has no field: it filters nothing).
+    pub(crate) typing: bool,
 }
 
 fn lower(b: u8) -> u8 {
@@ -224,6 +226,7 @@ impl Palette {
             scroll: 0,
             pinned: Vec::new(),
             source: Vec::new(),
+            typing: true,
         };
         p.query = truncate(query, MAX_QUERY).to_owned();
         p
@@ -360,6 +363,9 @@ impl Palette {
     /// Type text into the query (control characters dropped, the byte budget kept).
     pub(crate) fn type_text(&mut self, text: &str) -> bool {
         let mut changed = false;
+        if !self.typing {
+            return false;
+        }
         for c in text.chars() {
             if c.is_control() || self.query.len() + c.len_utf8() > MAX_QUERY {
                 continue;
@@ -371,11 +377,14 @@ impl Palette {
     }
 
     pub(crate) fn backspace(&mut self) -> bool {
-        self.query.pop().is_some()
+        self.typing && self.query.pop().is_some()
     }
 
     /// Delete the last word (and the separators after it).
     pub(crate) fn delete_word(&mut self) -> bool {
+        if !self.typing {
+            return false;
+        }
         let t = self.query.trim_end_matches([' ', '.', '-']);
         let cut = t.rfind([' ', '.', '-']).map_or(0, |i| i + 1);
         let changed = cut != self.query.len();

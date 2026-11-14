@@ -336,6 +336,9 @@ pub(crate) fn build_chrome(
         if let Some(r) = model.bell {
             apoth_ui::pane::draw_bell(r, &pal, &mut dl);
         }
+        if let Some(m) = &model.media {
+            apoth_ui::mediawin::draw(area, m, &pal, &measure, &mut dl);
+        }
         if let Some((strip, tabs)) = &model.strip {
             let l = apoth_ui::tabs::layout(*strip, STRIP_ID, tabs);
             apoth_ui::tabs::draw(&l, tabs, model.tab_style, &model.ui, &pal, &mut dl);
@@ -552,9 +555,11 @@ mod tests {
             inactive_dim: 0.12,
             floating: false,
         };
-        let row = |t: &str, k: Option<&str>| Entry {
-            title: TextRun::interface(t, apoth_ui::tokens::size::BODY),
-            hint: k.map(|k| TextRun::interface(k, apoth_ui::tokens::size::BODY_SMALL)),
+        let row = |t: &str, k: Option<&str>| {
+            Entry::new(
+                TextRun::interface(t, apoth_ui::tokens::size::BODY),
+                k.map(|k| TextRun::interface(k, apoth_ui::tokens::size::BODY_SMALL)),
+            )
         };
         let model = crate::render::ChromeModel {
             strip: Some((strip, tabs)),
@@ -571,10 +576,15 @@ mod tests {
                 ],
                 selected: Some(1),
                 total: 3,
+                header: None,
+                anchor: None,
+                pinned: 0,
+                field: true,
             }),
             search: None,
             tooltip: None,
             bell: None,
+            media: None,
             ui: UiState::default(),
         };
         (model, ((w * scale) as u32, (h * scale) as u32))
@@ -816,6 +826,7 @@ mod tests {
             search: None,
             tooltip: None,
             bell: None,
+            media: None,
             ui: UiState::default(),
         };
         let shot = std::env::var_os("APOTH_SHOT").map(PathBuf::from);

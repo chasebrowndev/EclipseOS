@@ -23,6 +23,10 @@ use crate::palette::{self as pal, Palette, Pick, Row};
 use crate::pane::{MainMsg, PaneKey};
 use crate::settings::load_input;
 use crate::view::{Copied, CopyTarget, ViewCmd};
+use apoth_ui::palette::{Header, Marker};
+use apoth_ui::tokens::size;
+use apoth_ui::{Point, TextRun};
+use calloop::timer::{TimeoutAction, Timer};
 
 /// Worker results for the opener.
 #[derive(Debug)]
@@ -42,6 +46,16 @@ struct Sheet {
     picker: bool,
     remember: bool,
     pane: PaneKey,
+    /// Opened by a right click: at the pointer, not centred.
+    anchor: Option<Point>,
+}
+
+/// What the interface adds to the palette sheet while the Open menu or picker is up.
+pub(super) struct OpenView {
+    pub(super) header: Header,
+    pub(super) anchor: Option<Point>,
+    pub(super) field: bool,
+    pub(super) placeholder: &'static str,
 }
 
 #[derive(Debug, Default)]
@@ -49,6 +63,11 @@ pub(crate) struct OpenState {
     sheet: Option<Sheet>,
     /// Hint mode started by an `open.*` action with nothing selected.
     hint_intent: Option<(PaneKey, Intent)>,
+    /// `apoth play` floats not yet shown: a float for media the helper cannot play would flash
+    /// before the fallback replaces it, so it is drawn only after a short delay.
+    veiled: Vec<PaneKey>,
+    /// Where the right click that asked for the next sheet was (interface units).
+    anchor_next: Option<Point>,
     /// An `open.default placement=` waiting for the selection answer.
     placement: Option<Placement>,
     /// `apoth play` panes and what runs if they exit "unsupported".
@@ -56,7 +75,12 @@ pub(crate) struct OpenState {
     /// Detached `apoth play --ext` launches by token.
     detached: Vec<(u64, Choice)>,
     next_token: u64,
+    /// Resolved targets whose `apoth play` fallback chain ends in the picker.
+    stashed: Vec<(u64, Resolved)>,
 }
+
+/// How long an `apoth play` float stays unseen.
+const VEIL: std::time::Duration = std::time::Duration::from_millis(350);
 
 /// At most this many fallbacks wait at once (older ones are dropped).
 const MAX_FALLBACKS: usize = 32;
@@ -86,6 +110,33 @@ pub(crate) fn term_argv(
     v.push("--".into());
     v.push(file.to_string_lossy().into_owned());
     v
+}
+
+/// The tile label and the type line for a detected MIME type.
+pub(crate) fn type_label(mime: Option<&str>) -> (String, String) {
+    let Some(m) = mime else {
+        return ("?".into(), "Type unknown".into());
+    };
+    let tile = if m.starts_with("x-scheme-handler/") {
+        "URL".to_string()
+    } else if m == "inode/directory" {
+        "DIR".to_string()
+    } else {
+        let sub = m.rsplit('/').next().unwrap_or(m);
+        let sub = sub.split('+').next().unwrap_or(sub);
+        let sub = sub.rsplit('.').next().unwrap_or(sub);
+        let sub = sub.strip_prefix("x-").unwrap_or(sub);
+        match sub {
+            "plain" => "TXT".to_string(),
+            "octet-stream" => "BIN".to_string(),
+            "markdown" => "MD".to_string(),
+            "jpeg" => "JPG".to_string(),
+            "shellscript" => "SH".to_string(),
+            "javascript" => "JS".to_string(),
+            other => other.chars().take(4).collect::<String>().to_uppercase(),
+        }
+    };
+    (tile, m.to_string())
 }
 
 /// The `open.handlers` map with `key` set to `value` (replacing an earlier entry).
@@ -135,6 +186,12 @@ impl App {
         at_cell: bool,
     ) {
         let placement = self.open.placement.take();
+        // A right click anchors the menu at the pointer; any other way centres it.
+        self.open.anchor_next = if at_cell {
+            self.pointer.and_then(|(x, y)| self.ui_point(x, y))
+        } else {
+            None
+        };
         match found {
             Some((kind, text, visible)) => {
                 self.open_request(pane, intent, kind, text, visible, placement);
@@ -277,7 +334,7 @@ impl App {
             OpenMsg::Unsupported(token) => {
                 if let Some(i) = self.open.detached.iter().position(|d| d.0 == token) {
                     let (_, c) = self.open.detached.swap_remove(i);
-                    tracing::info!("apoth play: unsupported, opening with the desktop default");
+                    tracing::info!("apoth play: unsupported, opening with the fallback handler");
                     self.open_launch(c, None, None);
                 }
             }
@@ -298,29 +355,45 @@ impl App {
                     return;
                 }
                 let Some(choice) = r.default.clone() else {
-                    tracing::info!("open: no handler");
-                    self.handle.ring_bell(Some(self.win));
+                    // Never a dead end: no default handler shows the picker.
+                    tracing::info!("open: no default handler, showing the picker");
+                    let at = self.open.anchor_next.take();
+                    self.open_sheet(pane, r, true, at);
                     return;
                 };
                 if r.reveal {
                     // T-14 §5: the full URI is confirmed before a link opens.
                     self.nav.open = Some(PendingOpen {
                         uri: r.shown.clone(),
-                        choice: Some(Box::new((choice, r.fallback.clone(), pane))),
+                        choice: Some(Box::new((choice, self.open_fallback(&r), pane))),
                     });
                     self.bar_dismissed = false;
                     self.refresh_bar();
                     return;
                 }
-                self.open_launch(choice, r.fallback.clone(), Some(pane));
+                let fb = self.open_fallback(&r);
+                self.open_launch(choice, fb, Some(pane));
             }
-            Intent::Menu => self.open_sheet(pane, r, false),
-            Intent::Picker => self.open_sheet(pane, r, true),
+            Intent::Menu => {
+                let at = self.open.anchor_next.take();
+                self.open_sheet(pane, r, false, at);
+            }
+            Intent::Picker => {
+                let at = self.open.anchor_next.take();
+                self.open_sheet(pane, r, true, at);
+            }
         }
     }
 
-    fn open_sheet(&mut self, pane: PaneKey, resolved: Resolved, picker: bool) {
+    fn open_sheet(
+        &mut self,
+        pane: PaneKey,
+        resolved: Resolved,
+        picker: bool,
+        anchor: Option<Point>,
+    ) {
         let mut p = Palette::new(pal::Mode::Open, "");
+        p.typing = picker;
         let to_row = |r: open::MenuRow| Row {
             title: r.title,
             hint: r.hint,
@@ -345,16 +418,63 @@ impl App {
             picker,
             remember: false,
             pane,
+            anchor,
         });
         self.ui_state = apoth_ui::UiState::default();
         self.send_layout();
     }
 
-    /// The sheet's placeholder: the target, as program text.
-    pub(super) fn open_sheet_title(&self) -> Option<String> {
+    /// The header, anchor and field of the open sheet.
+    pub(super) fn open_view(&self) -> Option<OpenView> {
         let s = self.open.sheet.as_ref()?;
-        let prefix = if s.picker { "Open with: " } else { "" };
-        Some(format!("{prefix}{}", s.resolved.shown))
+        let (tile, mut kind) = type_label(s.resolved.mime.as_deref());
+        let refused = s.resolved.refusal.is_some() && s.resolved.mime.is_none();
+        if let Some(why) = s.resolved.refusal.as_ref().filter(|_| refused) {
+            // A refused target has no type: say why it cannot be opened instead.
+            kind = why.clone();
+        }
+        Some(OpenView {
+            header: Header {
+                target: TextRun::program(&s.resolved.shown, size::BODY_SMALL),
+                // A refusal names a host from the program: program text, sanitised.
+                kind: if refused {
+                    TextRun::program(&kind, size::MICRO)
+                } else {
+                    TextRun::interface(kind, size::MICRO)
+                },
+                tile: TextRun::interface(tile, size::MICRO),
+            },
+            anchor: s.anchor,
+            field: s.picker,
+            placeholder: "Filter apps",
+        })
+    }
+
+    /// Whether a row of the open sheet is disabled, and what it carries at its trailing edge.
+    pub(super) fn open_entry(&self, r: &Row) -> (bool, Marker) {
+        let (Some(s), Pick::Open(p)) = (self.open.sheet.as_ref(), &r.pick) else {
+            return (false, Marker::None);
+        };
+        match p {
+            OpenPick::Disabled => (true, Marker::None),
+            OpenPick::ToggleRemember => (false, Marker::Switch(s.remember)),
+            OpenPick::Launch(i)
+                if s.picker
+                    && s.resolved.default.is_some()
+                    && s.choices.get(*i) == s.resolved.default.as_ref() =>
+            {
+                (false, Marker::Default)
+            }
+            _ => (false, Marker::None),
+        }
+    }
+
+    /// Rows pinned above the list that are in view at `scroll`.
+    pub(super) fn open_pinned(&self, scroll: usize, shown: usize) -> usize {
+        let Some(p) = self.palette.as_ref() else {
+            return 0;
+        };
+        p.pinned.len().saturating_sub(scroll).min(shown)
     }
 
     /// The palette closed: the sheet goes with it.
@@ -371,10 +491,13 @@ impl App {
                 let Some(c) = s.choices.get(i).cloned() else {
                     return;
                 };
-                let fallback = (Some(&c) == s.resolved.default.as_ref())
-                    .then(|| s.resolved.fallback.clone())
-                    .flatten();
+                let is_default = Some(&c) == s.resolved.default.as_ref();
+                let resolved = is_default.then(|| s.resolved.clone());
                 let pane = s.pane;
+                let fallback = resolved.and_then(|r| self.open_fallback(&r));
+                let Some(s) = self.open.sheet.as_ref() else {
+                    return;
+                };
                 if s.picker
                     && s.remember
                     && let Some(key) = s.resolved.remember_key()
@@ -387,7 +510,7 @@ impl App {
             OpenPick::Picker => {
                 self.close_palette();
                 if let Some(s) = self.open.sheet.take() {
-                    self.open_sheet(s.pane, s.resolved, true);
+                    self.open_sheet(s.pane, s.resolved, true, s.anchor);
                 }
             }
             OpenPick::Copy(text) => {
@@ -451,6 +574,12 @@ impl App {
                     }
                     p => {
                         let id = self.open_in_pane(argv, p);
+                        if let Some(id) = id
+                            && term == open::Term::Play
+                            && p == Placement::Float
+                        {
+                            self.open_veil(id);
+                        }
                         if let (Some(id), Some(f)) = (id, fb) {
                             if self.open.pane_fallbacks.len() >= MAX_FALLBACKS {
                                 self.open.pane_fallbacks.remove(0);
@@ -474,7 +603,73 @@ impl App {
             Handler::Desktop { argv, .. } | Handler::Opener { argv } => {
                 self.open_detached(argv, None);
             }
+            Handler::Picker { stash } => {
+                if let Some(i) = self.open.stashed.iter().position(|s| s.0 == stash) {
+                    let (_, r) = self.open.stashed.swap_remove(i);
+                    if let Some(p) = pane
+                        .filter(|p| self.panes.contains_key(p))
+                        .or_else(|| self.focused())
+                    {
+                        self.open_sheet(p, r, true, None);
+                    }
+                }
+            }
         }
+    }
+
+    /// Whether the float is still held back (not drawn, not hit).
+    pub(super) fn open_veiled(&self, id: PaneKey) -> bool {
+        self.open.veiled.contains(&id)
+    }
+
+    fn open_veil(&mut self, id: PaneKey) {
+        if self.open.veiled.len() >= MAX_FALLBACKS {
+            self.open.veiled.remove(0);
+        }
+        self.open.veiled.push(id);
+        let r = self
+            .lh
+            .insert_source(Timer::from_duration(VEIL), move |_, (), app: &mut App| {
+                if let Some(i) = app.open.veiled.iter().position(|v| *v == id) {
+                    app.open.veiled.swap_remove(i);
+                    app.send_layout();
+                }
+                TimeoutAction::Drop
+            });
+        if r.is_err() {
+            self.open.veiled.retain(|v| *v != id);
+        }
+        self.send_layout();
+    }
+
+    /// The fallback for launching `r`'s default: its own, or for `apoth play` with nothing
+    /// to fall back on, the picker (never a dead end).
+    fn open_fallback(&mut self, r: &Resolved) -> Option<Choice> {
+        if r.fallback.is_some() {
+            return r.fallback.clone();
+        }
+        let play = matches!(
+            r.default.as_ref().map(|c| &c.handler),
+            Some(Handler::Term {
+                term: open::Term::Play,
+                ..
+            })
+        );
+        if !play {
+            return None;
+        }
+        self.open.next_token += 1;
+        let stash = self.open.next_token;
+        if self.open.stashed.len() >= MAX_FALLBACKS {
+            self.open.stashed.remove(0);
+        }
+        let mut kept = r.clone();
+        kept.intent = Intent::Picker;
+        self.open.stashed.push((stash, kept));
+        Some(Choice {
+            handler: Handler::Picker { stash },
+            placement: r.default.as_ref().map_or(Placement::Float, |c| c.placement),
+        })
     }
 
     fn open_track_detached(&mut self, f: Choice) -> u64 {
@@ -532,12 +727,13 @@ impl App {
 
     /// A pane went: an `apoth play` that could not play hands over to its fallback.
     pub(super) fn open_pane_gone(&mut self, id: PaneKey, code: Option<i32>) {
+        self.open.veiled.retain(|v| *v != id);
         let Some(i) = self.open.pane_fallbacks.iter().position(|f| f.0 == id) else {
             return;
         };
         let (_, f) = self.open.pane_fallbacks.swap_remove(i);
         if code.is_some_and(|c| PLAY_UNSUPPORTED.contains(&c)) {
-            tracing::info!("apoth play: unsupported, opening with the desktop default");
+            tracing::info!("apoth play: unsupported, opening with the fallback handler");
             self.open_launch(f, None, None);
         }
     }
@@ -588,6 +784,17 @@ pub(crate) fn remember_write(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn type_labels() {
+        assert_eq!(type_label(Some("image/png")).0, "PNG");
+        assert_eq!(type_label(Some("text/plain")).0, "TXT");
+        assert_eq!(type_label(Some("image/svg+xml")).0, "SVG");
+        assert_eq!(type_label(Some("x-scheme-handler/https")).0, "URL");
+        assert_eq!(type_label(Some("inode/directory")).0, "DIR");
+        assert_eq!(type_label(Some("video/webm")).1, "video/webm");
+        assert_eq!(type_label(None).0, "?");
+    }
 
     #[test]
     fn terminal_handler_argv() {
