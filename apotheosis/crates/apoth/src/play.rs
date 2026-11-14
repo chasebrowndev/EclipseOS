@@ -8,7 +8,7 @@
 //! Lifetime (T-16 §1.1). play opens a session (`a=b,i=<pid>,p=<pid>`) so the terminal
 //! removes the placement if play dies without cleaning up, and stays in the foreground while
 //! the file plays: Space pauses and resumes, `q` stops, Ctrl+C (a byte: the tty's signal
-//! keys are off) stops and exits 130. It exits 0 at the end of the file, 1 on an error the
+//! keys are off) stops and exits 130. It exits 0 at the end of the file, 69 when the terminal cannot play the media, 1 on another error the
 //! terminal reports (`error=<code>`).
 //!
 //! `--ext` (`-x`): the placement goes to a borderless glass window instead (as `apoth icat
@@ -430,7 +430,8 @@ fn wait(tty: &mut Tty, o: &Opts) -> i32 {
                 Said::Ended => return OK,
                 Said::Error(code) => {
                     eprintln!("\rapoth play: {code}");
-                    return ERROR;
+                    // T-16 §1.1: 69 (EX_UNAVAILABLE) lets Open with fall back.
+                    return if code == "unsupported" { 69 } else { ERROR };
                 }
                 Said::AudioUnavailable => {
                     eprintln!("\rapoth play: no sound server; playing muted");
