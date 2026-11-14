@@ -114,6 +114,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "apoth-action"
+version = "0.1.0"
+
+[[package]]
+name = "apoth-config"
+version = "0.1.0"
+dependencies = [
+ "apoth-action",
+ "ec-config-schema",
+ "kdl",
+ "regex-automata",
+]
+
+[[package]]
 name = "arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1129,7 +1143,9 @@ dependencies = [
 name = "ec-settings"
 version = "0.2.2"
 dependencies = [
+ "apoth-config",
  "ec-abyss-config",
+ "ec-config-schema",
  "ec-greeter",
  "ec-ipc",
  "ec-policy-viewer",
