@@ -513,6 +513,29 @@ impl Screen {
         }
     }
 
+    /// The code points (into `text`) and style of the cell at absolute row `abs` (from the
+    /// oldest retained row) and column `x`; `None` past the grid. Kitty Unicode
+    /// placeholders read their image id and coordinates from both (T-15 §1).
+    pub fn cell_abs(&self, abs: usize, x: usize, text: &mut Vec<u32>) -> Option<Style> {
+        text.clear();
+        if x >= self.cols {
+            return None;
+        }
+        let (pi, pos) = self.loc_abs(abs)?;
+        let page = &self.pages[pi];
+        let c = page.cell(pos, x);
+        match c.tag() {
+            Tag::Scalar => text.push(c.payload()),
+            Tag::Cluster => {
+                let mut buf = ['\0'; MAX_CLUSTER_CPS];
+                let n = page.cluster_read(c.payload(), &mut buf);
+                text.extend(buf[..n].iter().map(|&ch| ch as u32));
+            }
+            _ => return Some(Style::DEFAULT),
+        }
+        Some(page.style_get(c.style_id()))
+    }
+
     /// Mark the last cell of row `y` as a `SpacerHead` (a wide character wrapped to the next
     /// row, VTCORE-08). Only a blank last cell is replaced; reflow drops it when rejoining.
     pub fn set_spacer_head(&mut self, y: usize) {

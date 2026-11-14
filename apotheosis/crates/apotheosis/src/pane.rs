@@ -299,6 +299,8 @@ struct Io<'a> {
     workers: &'a Spawner,
     done_tx: &'a mpsc::Sender<apoth_term::apoth_image::kitty::DecodeDone>,
     poke: &'a Arc<OwnedFd>,
+    /// The pty master: its foreground process group owns `apoth icat` sessions.
+    master: &'a OwnedFd,
 }
 
 fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
@@ -321,6 +323,7 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
         workers: &workers,
         done_tx: &done_tx,
         poke: &poke,
+        master: &master,
     };
     let mut buf = vec![0u8; SLICE_BYTES];
     if let Some(h) = &hook {
@@ -447,7 +450,16 @@ impl Io<'_> {
             if t.deny_bits() != deny {
                 t.set_deny(deny);
             }
-            let wake = f(&mut t);
+            let mut wake = f(&mut t);
+            // `apoth icat` sessions (T-16 §1.1): bind new ones to the foreground group, end
+            // the ones whose group lost the terminal (killed without cleaning up). One
+            // `tcgetpgrp` per step, only while a session is open.
+            if t.has_image_sessions()
+                && let Ok(fg) = rustix::termios::tcgetpgrp(self.master)
+                && t.bind_image_sessions(fg.as_raw_nonzero().get())
+            {
+                wake.dirty = true;
+            }
             shared.at_prompt.store(t.at_prompt(), Ordering::Release);
             shared
                 .bracketed_ok

@@ -48,6 +48,7 @@ fn graphics_config(c: &Config, g: &mut apoth_term::GraphicsConfig) {
     const MAX_DECODED: u64 = 400 << 20;
     g.kitty = c.bool("graphics.kitty");
     g.sixel = c.bool("graphics.sixel");
+    g.iterm2 = c.bool("graphics.iterm2");
     g.inline_decode = false;
     g.budget = BUDGET.get_or_init(Default::default).clone();
     let l = &mut g.limits;

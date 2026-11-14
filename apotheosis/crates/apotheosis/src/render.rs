@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use apoth_font::config::Style;
 use apoth_font::system::FontSystem;
@@ -373,6 +373,9 @@ struct PaneR {
     /// `below` flipped: the scene and the retained grid start over.
     restage: bool,
     idump: Option<ImageDump>,
+    /// The next animation frame of an image in view (T-15 §1: the frame scheduler wakes
+    /// for it; nothing else does).
+    due: Option<Instant>,
 }
 
 impl PaneR {
@@ -397,6 +400,7 @@ impl PaneR {
             below: false,
             restage: false,
             idump,
+            due: None,
         }
     }
 
@@ -419,9 +423,10 @@ impl PaneR {
         self.cur = Some(t.cursor());
         if t.has_images() {
             let top = t.grid().history_rows().saturating_sub(self.view.offset());
-            t.image_draws(top, t.rows(), &mut self.draws);
+            self.due = t.image_draws(top, t.rows(), Instant::now(), &mut self.draws);
         } else {
             self.draws.clear();
+            self.due = None;
         }
         drop(t);
         let below = self.draws.iter().any(|d| d.z < 0);
@@ -515,6 +520,8 @@ impl PaneR {
                 rgba: &d.image.rgba,
                 dst: d.dst,
                 src: d.src,
+                replaces: d.replaces,
+                dirty: d.dirty,
             }
         }
         (
@@ -856,6 +863,14 @@ fn run(a: RenderArgs) {
                     PresentOutcome::Presented(st) => {
                         fault_streak = 0;
                         sched.rendered();
+                        let due = panes.iter().filter_map(|p| p.due).min();
+                        sched.animate(due.map(|d| {
+                            now_ns()
+                                + u64::try_from(
+                                    d.saturating_duration_since(Instant::now()).as_nanos(),
+                                )
+                                .unwrap_or(u64::MAX / 2)
+                        }));
                         tracing::trace!(
                             panes = panes.len(),
                             rows = st.draw.rows_drawn,

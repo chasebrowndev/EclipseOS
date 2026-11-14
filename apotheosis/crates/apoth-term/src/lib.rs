@@ -213,9 +213,39 @@ impl Term {
     }
 
     /// Image quads of the current screen for a viewport whose top is absolute row
-    /// `top_abs` (counted from the oldest retained row), `rows` tall, bottom to top.
-    pub fn image_draws(&self, top_abs: usize, rows: usize, out: &mut Vec<ImageDraw>) {
-        self.m.gfx_draws(top_abs, rows, out);
+    /// `top_abs` (counted from the oldest retained row), `rows` tall, bottom to top, showing
+    /// the animation frames current at `now`. Returns when an animation frame is due next
+    /// (hand it to the frame scheduler; nothing else wakes for it).
+    pub fn image_draws(
+        &self,
+        top_abs: usize,
+        rows: usize,
+        now: Instant,
+        out: &mut Vec<ImageDraw>,
+    ) -> Option<Instant> {
+        self.m.gfx_draws(top_abs, rows, now, out)
+    }
+
+    /// Any `apoth icat` session is open (T-16 §1.1): the caller then compares the pty's
+    /// foreground process group after each feed and calls [`Term::bind_image_sessions`].
+    pub fn has_image_sessions(&self) -> bool {
+        !self.m.gfx.sessions_empty()
+    }
+
+    /// Bind sessions opened since the last call to the foreground process group `fg`, and
+    /// end (removing every placement) the bound sessions whose group is no longer `fg`.
+    /// Returns true when a placement went (redraw).
+    pub fn bind_image_sessions(&mut self, fg: i32) -> bool {
+        let unbound: Vec<u64> = self.m.gfx.unbound_sessions().collect();
+        for id in unbound {
+            self.m.gfx.bind_session(id, fg);
+        }
+        let gone: Vec<u64> = self.m.gfx.sessions_not_in(fg).collect();
+        let any = !gone.is_empty();
+        for id in gone {
+            self.m.session_end(id, true);
+        }
+        any
     }
 
     /// Any image is placed on either screen.
@@ -231,6 +261,11 @@ impl Term {
     /// The pane's image store (quota tests).
     pub fn image_store(&self) -> &apoth_image::store::ImageStore {
         self.m.gfx.store()
+    }
+
+    /// The graphics caps and quotas in force (fuzz invariants).
+    pub fn image_store_limits(&self) -> &apoth_image::Limits {
+        &self.m.cfg.graphics.limits
     }
 
     /// True while the renderer should keep the last completed frame (mode 2026).

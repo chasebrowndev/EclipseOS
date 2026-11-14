@@ -611,6 +611,12 @@ impl Renderer {
         self.image_pass.cached()
     }
 
+    /// Image uploads that rewrote a previous frame's texture in place (RENDERING-37).
+    #[must_use]
+    pub fn image_reuses(&self) -> u64 {
+        self.image_pass.reused()
+    }
+
     /// The configuration in use.
     #[must_use]
     pub fn config(&self) -> &RendererConfig {

@@ -314,7 +314,8 @@ pub fn build_row<P: GlyphProvider>(
             Wide::SpacerTail | Wide::SpacerHead => (None, Half::Whole),
             Wide::Narrow => (Some(cell), Half::Whole),
         };
-        if let Some(s) = src.filter(|s| s.cp != 0 && s.cp != 0x20 && !hidden) {
+        // U+10EEEE is a kitty Unicode placeholder: the image pass draws it (T-15 §1).
+        if let Some(s) = src.filter(|s| s.cp != 0 && s.cp != 0x20 && s.cp != 0x10EEEE && !hidden) {
             let cluster: &[u32] = if s.cluster_len > 0 {
                 row.cluster(s)
             } else {

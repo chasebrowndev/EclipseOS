@@ -57,7 +57,7 @@ fn async_decode_holds_the_stream_until_the_worker_answers() {
     let jobs = t.take_image_jobs();
     assert_eq!(jobs.len(), 1);
     let done = jobs.into_iter().next().unwrap().run();
-    assert!(matches!(done.outcome, Outcome::Image(_)));
+    assert!(matches!(done.outcome, Outcome::Image(..)));
     t.image_done(done, now);
     assert!(!t.blocked());
     assert_eq!(t.replies().take_all(), b"\x1b_Gi=7;OK\x1b\\");
@@ -275,7 +275,12 @@ fn draws_scale_with_the_cell_size_and_snap_to_pixels() {
     ] {
         t.set_cell_px(cell.0, cell.1);
         let mut d = Vec::new();
-        t.image_draws(t.primary().history_rows(), t.rows(), &mut d);
+        t.image_draws(
+            t.primary().history_rows(),
+            t.rows(),
+            std::time::Instant::now(),
+            &mut d,
+        );
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].dst, want, "cell {cell:?}");
     }
@@ -292,9 +297,9 @@ fn scrolled_back_viewports_see_history_images() {
     t.feed(b"\n\n\n\n\n", now);
     let mut d = Vec::new();
     let hist = t.primary().history_rows();
-    t.image_draws(hist, t.rows(), &mut d);
+    t.image_draws(hist, t.rows(), std::time::Instant::now(), &mut d);
     assert!(d.is_empty(), "off the top of the live view");
-    t.image_draws(0, t.rows(), &mut d);
+    t.image_draws(0, t.rows(), std::time::Instant::now(), &mut d);
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].dst[1], 0);
 }

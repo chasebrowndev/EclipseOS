@@ -102,6 +102,10 @@ impl ViewDump {
 pub(crate) struct ImageDump {
     path: PathBuf,
     last: Option<String>,
+    /// Frames whose texture keys differed from the previous frame's (animation frames
+    /// shown), written to `<path>.frames` (T-16 §6 CI-N count).
+    keys: Vec<u64>,
+    shown: u64,
 }
 
 impl ImageDump {
@@ -113,11 +117,19 @@ impl ImageDump {
         Some(ImageDump {
             path: PathBuf::from(p),
             last: None,
+            keys: Vec::new(),
+            shown: 0,
         })
     }
 
     pub(crate) fn write(&mut self, draws: &[apoth_term::ImageDraw]) {
         use std::fmt::Write as _;
+        if !draws.is_empty() && !draws.iter().map(|d| d.key).eq(self.keys.iter().copied()) {
+            self.keys.clear();
+            self.keys.extend(draws.iter().map(|d| d.key));
+            self.shown += 1;
+            let _ = std::fs::write(self.path.with_extension("frames"), self.shown.to_string());
+        }
         let mut text = String::new();
         for d in draws {
             let [x, y, w, h] = d.dst;

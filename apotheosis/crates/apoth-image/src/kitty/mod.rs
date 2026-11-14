@@ -13,6 +13,6 @@ pub(crate) use chunk::ENGINE;
 pub use chunk::{Assembler, Event, Failure, Transfer};
 pub use cmd::*;
 pub use decode::{decode_png, decode_transfer};
-pub use job::{DecodeDone, DecodeJob, Outcome};
+pub use job::{Canvas, DecodeDone, DecodeJob, FrameJob, Outcome, Work};
 pub use media::{Decision, MediaPolicy, MediaResult, load_media};
 pub use reply::{ReplyQueue, format_reply};

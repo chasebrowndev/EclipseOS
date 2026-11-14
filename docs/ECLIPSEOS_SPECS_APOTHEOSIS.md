@@ -1892,7 +1892,8 @@ user-run `ssh -R` forward of the socket is treated as an ordinary client.
 `focus`, `close`, `send-text`, `send-keys`, `get-text`, `do '<action>; <action>'`
 (textual action syntax identical to KDL `do` bodies), `subscribe`, `notify`, `set`/`reset`
 (runtime overrides: `config.set`/`config.reset` over the socket, class per the key's
-override class), `config …` (T-10 §8: edits or reads the file locally, no socket), `icat`, `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
+override class), `config …` (T-10 §8: edits or reads the file locally, no socket), `icat` (foreground,
+inline by default, `--ext` for a separate window; lifetime rules in T-16 §1.1), `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
 (`list`, `explain <char>`), `doctor` (capability and environment report), `completions`.
 `--json` everywhere; exit codes: 0 ok, 1 error, 2 usage, 3 denied, 4 no instance.
 Inside Apotheosis panes the shell-integration snippets (T-14 §2) define `ap` as a short
@@ -2226,6 +2227,29 @@ side in `apotheosis`. Implements MEDIA-01..03, -05, -07..-10, -13, -15..-17, -20
 Software H.264 via a pure-Rust decoder (MEDIA-31) is admitted only after it passes the
 helper fuzz and conformance gates; software VP9 and HEVC are not planned. Without VA-API,
 those codecs play through Tier A (mpv decodes).
+
+### 1.1 `apoth icat` and `apoth play` lifetime
+Owner requirement (recorded at M32 for `icat`, binding on `play` at M34):
+- **Inline by default.** The command runs in the foreground of the pane it was started
+  in. Animations (and, for `play`, video) stay live while it runs. Ctrl+C deletes the
+  command's own placements, restores the tty and exits 130. A still image from a normal
+  exit stays in the scrollback; animations and video are removed when the command ends,
+  however it ends.
+- **Terminal-side cleanup.** A placement must never outlive a command that died without
+  cleaning up (SIGKILL: no frozen frame is left). The command opens a session in-band,
+  `ESC _ M a=b,i=<n> ESC \` (`n`: a per-invocation id, the pid), before its first image
+  and closes it with `a=e,i=<n>` on a normal exit. Placements made while a session is
+  open belong to it. The terminal binds an open session to the pty's foreground process
+  group and, whenever that group no longer holds the foreground with the session still
+  open, deletes every placement of the session. A clean `a=e` keeps the session's still
+  images and deletes its animated ones. The check is one `tcgetpgrp` per io step and only
+  while a session is open (no timer). Other `M` commands are the §2 protocol.
+- **`--ext` / `-x`.** Asks the instance over the control socket to open a separate
+  borderless glass window showing only the media. The command stays in the foreground
+  until that window closes; Ctrl+C in the origin pane closes the window, and closing the
+  window ends the command.
+- Tests: Ctrl+C cleanup and SIGKILL cleanup on the headless session (no placement left,
+  exit 130 for Ctrl+C); `--ext` opens and closes its window headlessly.
 
 ## 2. Media placement protocol
 An APC namespace of our own, `ESC _ M <keys> ; <payload> ESC \`, key=value control data

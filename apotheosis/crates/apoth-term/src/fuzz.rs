@@ -263,7 +263,9 @@ fn check_gfx(t: &mut Term) {
         assert!(p.cols >= 1 && p.rows >= 1, "empty placement box");
     }
     let mut draws = Vec::new();
-    t.image_draws(t.primary().history_rows(), t.rows(), &mut draws);
+    let now = std::time::Instant::now();
+    t.image_draws(t.primary().history_rows(), t.rows(), now, &mut draws);
+    assert!(st_anim_ok(t), "animation quota broken");
     for d in &draws {
         assert!(
             d.image.width <= 512 && d.image.height <= 512,
@@ -359,6 +361,128 @@ pub fn fuzz_sixel(data: &[u8]) {
     assert!(!denied.has_images(), "denied sixel placed an image");
 }
 
+fn st_anim_ok(t: &Term) -> bool {
+    t.image_store().anim_used() <= t.image_store_limits().animation_quota
+}
+
+/// Input: byte 0 picks the virtual placement's cell box, byte 1 the chunk size; the rest is
+/// a cell script: each byte pair is (kind, value) printing a placeholder with 0-3 marks
+/// taken from the value, a bare placeholder, a plain letter, a colour change (id or
+/// placement through the foreground / underline colour), a cursor jump or a newline. Every
+/// quad's source rect must stay inside its image and the run count below the cell count.
+pub fn fuzz_placeholder(data: &[u8]) {
+    use crate::apoth_image::placeholder::{DIACRITICS, PLACEHOLDER};
+    let [boxsel, chunk, script @ ..] = data else {
+        return;
+    };
+    let now = Instant::now();
+    let (c, r) = (u32::from(boxsel & 7), u32::from((boxsel >> 3) & 7));
+    let mut stream = format!(
+        "\x1b_Ga=T,U=1,f=24,s=5,v=7,i=1,c={c},r={r},q=2;{}\x1b\\\x1b_Ga=T,U=1,f=24,s=3,v=2,i=2,p=4,q=2;{}\x1b\\",
+        b64_encode(&[0x40; 5 * 7 * 3]),
+        b64_encode(&[0x80; 3 * 2 * 3]),
+    )
+    .into_bytes();
+    let ph = char::from_u32(PLACEHOLDER).unwrap_or(' ');
+    for pair in script.chunks(2) {
+        let (k, v) = (pair[0], pair.get(1).copied().unwrap_or(0));
+        let d =
+            |i: u8| char::from_u32(DIACRITICS[usize::from(i) % DIACRITICS.len()]).unwrap_or(' ');
+        let s = match k % 8 {
+            0 => format!("{ph}{}{}", d(v & 15), d(v >> 4)),
+            1 => format!("{ph}{}", d(v)),
+            2 => format!("{ph}{}{}{}", d(v & 7), d(v >> 3), d(v)),
+            3 => ph.to_string(),
+            4 => "x".to_string(),
+            5 => format!("\x1b[38;5;{v}m\x1b[58;5;{}m", v % 5),
+            6 => format!("\x1b[{};{}H", v % 7 + 1, v / 7 % 21 + 1),
+            _ => "\r\n".to_string(),
+        };
+        stream.extend_from_slice(s.as_bytes());
+    }
+    let mut t = gfx_term(0);
+    for ch in stream.chunks(usize::from(*chunk) + 1) {
+        t.feed(ch, now);
+    }
+    check_gfx(&mut t);
+    let mut draws = Vec::new();
+    t.image_draws(t.primary().history_rows(), t.rows(), now, &mut draws);
+    assert!(
+        draws.len() <= t.rows() * t.cols() + 64,
+        "more runs than cells"
+    );
+}
+
+/// Input: byte 0 picks the `File=` arguments, the rest is the file (base64-encoded here),
+/// so every container decoder sees arbitrary bytes through the OSC 1337 path.
+pub fn fuzz_iterm(data: &[u8]) {
+    let [sel, body @ ..] = data else {
+        return;
+    };
+    let args = [
+        "inline=1",
+        "inline=1;width=3;height=2",
+        "inline=1;width=50%;preserveAspectRatio=0",
+        "inline=1;width=20px;height=auto",
+        "inline=0",
+        "inline=1;size=7",
+        "inline=1;name=YQ==;width=999999999",
+        "inline=1;height=100%",
+    ][usize::from(sel % 8)];
+    let now = Instant::now();
+    let s = format!("\x1b]1337;File={args}:{}\x07after", b64_encode(body));
+    let mut t = gfx_term(0);
+    t.feed(s.as_bytes(), now);
+    check_gfx(&mut t);
+    let mut denied = gfx_term(deny::GRAPHICS_DIRECT);
+    denied.feed(s.as_bytes(), now);
+    assert!(!denied.has_images(), "denied iTerm2 image placed");
+}
+
+/// The container decoders straight (PNG/APNG, GIF, JPEG, WebP): never panic, never exceed
+/// the axis, decoded-size and animation caps.
+pub fn fuzz_image_formats(data: &[u8]) {
+    let limits = crate::apoth_image::Limits {
+        max_axis: 512,
+        max_decoded_bytes: 1 << 20,
+        ..Default::default()
+    };
+    let quota = 4 << 20;
+    if let Ok(d) = crate::apoth_image::formats::decode_any(data, &limits, quota) {
+        let mut extra = 0u64;
+        for (i, (img, _)) in d.frames.iter().enumerate() {
+            assert!(img.width <= 512 && img.height <= 512, "axis cap broken");
+            assert_eq!(
+                img.rgba.len() as u64,
+                u64::from(img.width) * u64::from(img.height) * 4
+            );
+            if i > 0 {
+                extra += img.bytes();
+            }
+        }
+        assert!(extra <= quota, "animation quota broken");
+        assert!(d.frames.len() <= crate::apoth_image::anim::MAX_FRAMES);
+    }
+}
+
+fn b64_encode(b: &[u8]) -> String {
+    const A: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let v = u32::from(c[0]) << 16
+            | u32::from(c.get(1).copied().unwrap_or(0)) << 8
+            | u32::from(c.get(2).copied().unwrap_or(0));
+        for i in 0..4 {
+            if i <= c.len() {
+                out.push(char::from(A[(v >> (18 - 6 * i) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,6 +512,21 @@ mod tests {
     #[test]
     fn sixel_corpus_seeds_hold_the_invariants() {
         assert!(corpus("sixel", fuzz_sixel) >= 6);
+    }
+
+    #[test]
+    fn placeholder_corpus_seeds_hold_the_invariants() {
+        assert!(corpus("placeholder", fuzz_placeholder) >= 4);
+    }
+
+    #[test]
+    fn iterm_corpus_seeds_hold_the_invariants() {
+        assert!(corpus("iterm", fuzz_iterm) >= 4);
+    }
+
+    #[test]
+    fn image_formats_corpus_seeds_hold_the_invariants() {
+        assert!(corpus("image_formats", fuzz_image_formats) >= 4);
     }
 
     #[test]

@@ -122,6 +122,13 @@ impl Machine {
                     },
                     777 => (StrMode::Notify777, CAP_NOTIFY),
                     99 => (StrMode::Notify99, CAP_NOTIFY),
+                    1337 if self.cfg.graphics.iterm2
+                        && self.cfg.deny & crate::config::deny::GRAPHICS_DIRECT == 0
+                        && head.osc_selector() == b"File" =>
+                    {
+                        let cap = self.cfg.graphics.limits.max_transfer_b64 + 4096;
+                        (StrMode::ITerm, u32::try_from(cap).unwrap_or(u32::MAX))
+                    }
                     1337 => (StrMode::UserVar, CAP_SMALL),
                     _ => return StrRoute::SKIP,
                 };
@@ -158,6 +165,10 @@ impl Machine {
                     }
                 }
                 StrRoute::SKIP
+            }
+            StrKind::Apc if head.bytes().first() == Some(&b'M') => {
+                self.strm = StrMode::Session;
+                StrRoute { cap: CAP_SMALL }
             }
             StrKind::Apc if head.bytes().first() == Some(&b'G') => match self.gfx_apc_route() {
                 Some(cap) => StrRoute { cap },
@@ -256,6 +267,8 @@ impl Machine {
             StrMode::Clip => self.osc_clip(buf),
             StrMode::Mark => self.osc_mark(buf),
             StrMode::UserVar => self.osc_user_var(buf),
+            StrMode::ITerm => self.gfx_iterm(buf),
+            StrMode::Session => self.gfx_session(buf),
             StrMode::Notify => {
                 let t = sanitize(buf);
                 if !t.is_empty() {

@@ -99,8 +99,8 @@ pub enum DeleteTarget {
     Number { number: u32, placement: u32 },
     /// `c`: placements intersecting the cursor cell.
     Cursor,
-    /// `f`: animation frames.
-    Frames,
+    /// `f`: animation frames of image `id` (or number), or of every image when both are 0.
+    Frames { id: u32, number: u32 },
     /// `p`: placements intersecting cell (x, y), 1-based.
     Cell { x: u32, y: u32 },
     /// `q`: as `p`, restricted to z-index.
@@ -122,25 +122,26 @@ pub struct DeleteSpec {
     pub free: bool,
 }
 
-/// `a=f` frame load. Parsed only (R2).
+/// `a=f` frame load (R2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameSpec {
     pub transmit: TransmitSpec,
+    /// `x=`, `y=`: where the sent rectangle lands in the frame.
     pub x: u32,
     pub y: u32,
-    /// `c=` base frame.
+    /// `c=` base frame (1-based; 0 = none).
     pub base_frame: u32,
-    /// `r=` frame to edit.
+    /// `r=` frame to edit (1-based; 0 = append a new frame).
     pub edit_frame: u32,
-    /// `z=` gap in ms.
-    pub gap_ms: i32,
+    /// `z=` gap in ms; `None` when absent or 0 (ignored: a new frame gets 40 ms).
+    pub gap_ms: Option<i32>,
     /// `X=` composition mode (0 blend, 1 overwrite).
     pub composition: u32,
     /// `Y=` background colour (RGBA).
     pub background: u32,
 }
 
-/// `a=a` animation control. Parsed only (R2).
+/// `a=a` animation control (R2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AnimSpec {
     /// `s=` state: 1 stop, 2 wait, 3 loop.
@@ -154,13 +155,14 @@ pub struct AnimSpec {
     pub gap_ms: i32,
 }
 
-/// `a=c` frame composition. Parsed only (R2).
+/// `a=c` frame composition (R2): `r` source frame, `c` destination frame, source origin
+/// `X,Y`, destination origin `x,y`, size `w,h` (0 = the whole frame).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ComposeSpec {
     pub src_frame: u32,
     pub dst_frame: u32,
-    pub x: u32,
-    pub y: u32,
+    pub src_x: u32,
+    pub src_y: u32,
     pub w: u32,
     pub h: u32,
     pub dst_x: u32,
@@ -279,6 +281,9 @@ pub fn supported_keys(action: u8) -> &'static str {
         b'q' => "a,t,f,o,i,I,s,v,S,O",
         b'p' => "a,i,I,p,x,y,w,h,c,r,X,Y,z,C,U,P,Q,H,V",
         b'd' => "a,d,i,I,p,x,y,z,q",
+        b'f' => "a,t,f,o,m,q,i,I,s,v,S,O,x,y,c,r,z,X,Y",
+        b'a' => "a,i,I,q,s,v,r,z,c",
+        b'c' => "a,i,I,q,r,c,x,y,w,h,X,Y,C",
         _ => "",
     }
 }
@@ -469,7 +474,10 @@ impl Keys {
                 placement: self.placement,
             },
             b'c' => DeleteTarget::Cursor,
-            b'f' => DeleteTarget::Frames,
+            b'f' => DeleteTarget::Frames {
+                id: self.id,
+                number: self.number,
+            },
             b'p' => DeleteTarget::Cell {
                 x: self.x,
                 y: self.y,
@@ -509,7 +517,7 @@ impl Keys {
                 y: self.y,
                 base_frame: self.c,
                 edit_frame: self.r,
-                gap_ms: if self.z_raw { self.z } else { 40 },
+                gap_ms: (self.z_raw && self.z != 0).then_some(self.z),
                 composition: self.xo,
                 background: self.yo,
             }),
@@ -523,12 +531,12 @@ impl Keys {
             b'c' => Command::Compose(ComposeSpec {
                 src_frame: self.r,
                 dst_frame: self.c,
-                x: self.x,
-                y: self.y,
+                src_x: self.xo,
+                src_y: self.yo,
                 w: self.w,
                 h: self.h,
-                dst_x: self.xo,
-                dst_y: self.yo,
+                dst_x: self.x,
+                dst_y: self.y,
                 replace: self.cursor_keep == 1,
             }),
             _ => return Err(ErrCode::Einval),

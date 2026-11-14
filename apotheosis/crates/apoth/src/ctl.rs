@@ -33,7 +33,6 @@ pub(crate) const NOT_YET: &[&str] = &[
     "notify",
     "set",
     "reset",
-    "icat",
     "play",
     "ssh",
     "terminfo",
@@ -74,6 +73,7 @@ Commands:
   do 'ACTION; ACTION'        run actions (KDL `do` syntax)
   subscribe EVENT...         print events until interrupted
   version                    client and instance versions
+  icat [OPTIONS] FILE...     show images in the pane (apoth icat --help)
   shell-init bash|zsh|fish   print the shell-integration snippet (defines `ap`)
   config ...                 edit or read the config file (no socket)
 

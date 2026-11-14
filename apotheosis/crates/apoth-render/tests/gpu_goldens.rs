@@ -613,6 +613,8 @@ fn images_draw_under_and_over_the_text_on_the_pixel_grid() {
             rgba: &red,
             dst: [0, 0, 2 * cw, ch],
             src: [0, 0, 4, 4],
+            replaces: None,
+            dirty: None,
         }];
         let above = [
             ImageQuad {
@@ -622,6 +624,8 @@ fn images_draw_under_and_over_the_text_on_the_pixel_grid() {
                 rgba: &blue,
                 dst: [4 * cw, ch, cw, ch],
                 src: [0, 0, 4, 4],
+                replaces: None,
+                dirty: None,
             },
             ImageQuad {
                 key: 3,
@@ -630,6 +634,8 @@ fn images_draw_under_and_over_the_text_on_the_pixel_grid() {
                 rgba: &pair,
                 dst: [cw, 2 * ch, 2, 1],
                 src: [0, 0, 2, 1],
+                replaces: None,
+                dirty: None,
             },
         ];
         let panes = [PaneDraw {
@@ -707,5 +713,100 @@ fn images_draw_under_and_over_the_text_on_the_pixel_grid() {
             what("1:1 px 1")
         );
         near(at(&got, cwu + 2, 2 * chu), bd, 1, &what("after 1:1"));
+    }
+}
+
+/// RENDERING-37: an animation frame that names the frame it follows takes over its texture
+/// and writes only the changed rect; pixels outside the rect are the old frame's. One
+/// texture stays cached and the draw is pixel exact at every cell size.
+#[test]
+fn animation_frames_reuse_one_texture_and_upload_only_the_changed_rect() {
+    let Some(gpu) = gpu() else { return };
+    let red = solid(4, 4, [255, 0, 0, 255]);
+    // The second frame's full pixels: green on the left half. Only that half is "dirty";
+    // its right half is deliberately blue to prove it is never uploaded.
+    let mut next = Vec::new();
+    for _y in 0..4 {
+        for x in 0..4 {
+            next.extend_from_slice(if x < 2 {
+                &[0, 255, 0, 255]
+            } else {
+                &[0, 0, 255, 255]
+            });
+        }
+    }
+    for (cw, ch) in [(8, 16), (10, 20), (12, 24), (16, 32)] {
+        let mut h = Harness::new(&gpu, metrics(cw, ch), 6, 3, TextBlending::Native);
+        h.cfg.bg_alpha = 0.0;
+        h.snap.rows = vec![
+            text_row("      ", Style::default()),
+            text_row("      ", Style::default()),
+            text_row("      ", Style::default()),
+        ];
+        h.snap.changed = vec![0, 1, 2];
+        {
+            let ctx = BuildCtx {
+                cfg: &h.cfg,
+                palette: &h.pal,
+                metrics: &h.m,
+                highlights: &h.hl,
+            };
+            h.scene
+                .update(&h.snap, Damage::Full, &ctx, false, &mut h.synth);
+        }
+        let frames = [
+            (10u64, None, None, &red),
+            (11, Some(10), Some([0, 0, 2, 4]), &next),
+        ];
+        let mut got = None;
+        for (key, replaces, dirty, px) in frames {
+            let above = [ImageQuad {
+                key,
+                width: 4,
+                height: 4,
+                rgba: px,
+                dst: [cw, 0, 4, 4],
+                src: [0, 0, 4, 4],
+                replaces,
+                dirty,
+            }];
+            let panes = [PaneDraw {
+                images_above: &above,
+                ..PaneDraw::single(&h.scene, None)
+            }];
+            let input = FrameInput {
+                panes: &panes,
+                clear: [0.0; 4],
+            };
+            match h.pres.present(&mut h.renderer, &input) {
+                PresentOutcome::Presented(_) => {}
+                other => panic!("offscreen present failed: {other:?}"),
+            }
+            got = Some(h.pres.read_pixels());
+        }
+        let got = got.unwrap();
+        dump(&format!("anim-reuse-{cw}x{ch}"), &got);
+        assert_eq!(
+            h.renderer.image_textures(),
+            1,
+            "one texture for both frames"
+        );
+        assert_eq!(h.renderer.image_reuses(), 1);
+        let cwu = cw as usize;
+        for y in 0..4 {
+            assert_eq!(
+                at(&got, cwu, y),
+                [0, 255, 0, 255],
+                "new left half, {cw}x{ch}"
+            );
+            assert_eq!(at(&got, cwu + 1, y), [0, 255, 0, 255]);
+            assert_eq!(
+                at(&got, cwu + 2, y),
+                [255, 0, 0, 255],
+                "old right half kept, {cw}x{ch}"
+            );
+            assert_eq!(at(&got, cwu + 3, y), [255, 0, 0, 255]);
+        }
+        assert_ne!(at(&got, cwu + 4, 0), [255, 0, 0, 255], "exactly 4 px wide");
     }
 }

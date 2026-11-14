@@ -11,10 +11,13 @@
 //! and never exceed the configured [`Limits`].
 #![forbid(unsafe_code)]
 
+pub mod anim;
 pub mod error;
+pub mod formats;
 pub mod iterm;
 pub mod kitty;
 pub mod limits;
+pub mod placeholder;
 pub mod sixel;
 pub mod store;
 
@@ -43,6 +46,23 @@ impl Image {
     /// Byte size of the pixel data, charged against the quota.
     pub fn bytes(&self) -> u64 {
         self.rgba.len() as u64
+    }
+
+    /// Content hash for sharing identical images (PERFORMANCE-52); only a bucket key,
+    /// equality is checked bytewise. Eight bytes per step so a video frame hashes in well
+    /// under a millisecond on the worker that decoded it.
+    pub fn content_hash(&self) -> u64 {
+        const K: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut h = (u64::from(self.width) << 32 | u64::from(self.height)) ^ K;
+        let mut chunks = self.rgba.chunks_exact(8);
+        for c in &mut chunks {
+            let v = u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
+            h = (h ^ v).wrapping_mul(K).rotate_left(29);
+        }
+        for &b in chunks.remainder() {
+            h = (h ^ u64::from(b)).wrapping_mul(K);
+        }
+        h ^ (h >> 31)
     }
 
     /// Pixel-row ranges of the image cut into terminal cell rows (`cell_h` physical px).

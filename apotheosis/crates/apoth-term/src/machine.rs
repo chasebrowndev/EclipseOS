@@ -95,6 +95,10 @@ pub(crate) enum StrMode {
     Kitty,
     /// Sixel DCS: bytes stream into the decoder, not `sbuf`.
     Sixel,
+    /// OSC 1337 `File=` (iTerm2 inline image).
+    ITerm,
+    /// `ESC _ M`: session markers (T-16 §1.1).
+    Session,
 }
 
 pub(crate) struct Machine {

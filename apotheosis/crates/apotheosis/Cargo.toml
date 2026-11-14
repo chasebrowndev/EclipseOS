@@ -32,7 +32,7 @@ ec-theme = { path = "../../../abyss/crates/ec-theme" }
 calloop = "0.14"
 # T-14 §6: search and hint matchers run on the lazy (hybrid) DFA; already in the lock.
 regex-automata = { version = "0.4", default-features = false, features = ["std", "syntax", "hybrid", "perf", "unicode"] }
-rustix = { version = "1", features = ["std", "event", "fs", "net", "param", "pipe", "process", "time"] }
+rustix = { version = "1", features = ["std", "event", "fs", "net", "param", "pipe", "process", "termios", "time"] }
 serde = { version = "1", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1", default-features = false, features = ["std"] }
 tracing = "0.1"
