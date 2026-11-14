@@ -48,6 +48,7 @@ const OFF_ON: &[&str] = &["off", "on"];
 const RESTORE: &[&str] = &["ask", "always", "never"];
 const QT_ANIM: &[&str] = &["slide", "fade", "none"];
 const QT_POS: &[&str] = &["top", "bottom", "left", "right"];
+const OPEN_PLACEMENT: &[&str] = &["float", "inline", "window"];
 
 const MAP_RANGE_FONT: Ty = Ty::Map {
     key: &Ty::CodepointRanges,
@@ -64,6 +65,10 @@ const MAP_STR_STR: Ty = Ty::Map {
 const MAP_STR_STRSET: Ty = Ty::Map {
     key: &Ty::Str,
     value: &Ty::StringSet,
+};
+const MAP_STR_STRLIST: Ty = Ty::Map {
+    key: &Ty::Str,
+    value: &Ty::StrList,
 };
 const MAP_PATH_STRSET: Ty = Ty::Map {
     key: &Ty::Path,
@@ -287,6 +292,8 @@ rows! {
     ("links.schemes", Ty::StringSet, Dv::List(&["http", "https", "mailto", "ftp", "file"]), Window, false, Live, Security, "Allowed URL schemes."; "Allowed schemes", &[]),
     ("links.explicit-precedence", Ty::Bool, Dv::Bool(true), Pane, true, Live, Security, "OSC 8 links win over detected ones."; "OSC 8 precedence", &[]),
     ("links.open-command", Ty::Argv, Dv::List(&["xdg-open", "{url}"]), Window, false, Live, Security, "argv that opens a link."; "Open command", &[]),
+    ("open.placement", Ty::Enum(OPEN_PLACEMENT), Dv::Str("float"), Window, false, Live, Behaviour, "Where a terminal handler (apoth icat, apoth play) shows when its rule names no placement: float, inline (a split pane) or window (--ext)."; "Terminal handler placement", &["open with","icat","play"]),
+    ("open.handlers", MAP_STR_STRLIST, Dv::Empty, Global, false, Live, Security, "Open-with rules: MIME type or type/* (x-scheme-handler/<scheme> for URLs) to a handler (apoth-icat, apoth-play, <id>.desktop or opener) and an optional placement. Unlisted types: image/* apoth-icat, video/* and audio/* apoth-play, else the freedesktop default."; "Open-with rules", &["open with","mime","default app","mimeapps"]),
     ("accessibility.enabled", Ty::Enum(A11Y), Dv::Str("auto"), Global, false, Live, Behaviour, "Accessibility tree: auto, on or off."; "Accessibility", &[]),
     ("accessibility.announce", Ty::Bool, Dv::Bool(true), Global, false, Live, Behaviour, "Announce output and events."; "Announcements", &[]),
     ("accessibility.semantic", Ty::Bool, Dv::Bool(true), Global, false, Live, Behaviour, "Expose prompt and block structure."; "Semantic structure", &[]),

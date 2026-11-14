@@ -102,6 +102,9 @@ fn spec_examples_exist() {
         "cursor.jump-char",
         "hints.start",
         "hints.cancel",
+        "open.default",
+        "open.with",
+        "open.menu",
         "block.jump",
         "block.select-output",
         "block.copy-output",
@@ -428,6 +431,10 @@ fn class_table_matches_spec() {
         ("launch tab", &[Spawn]),
         ("launch tab -- sh", &[Spawn]),
         ("open http://x", &[Spawn]),
+        ("open.default", &[Spawn]),
+        ("open.default target=/tmp/a.png placement=window", &[Spawn]),
+        ("open.with", &[Layout]),
+        ("open.menu target=https://x", &[Layout]),
         ("coprocess.run -- cat", &[Spawn, ReadContent, Input]),
         ("notify hello", &[Layout]),
         ("media.play", &[Layout]),
@@ -624,4 +631,22 @@ fn palette_and_socket_reach_every_action() {
     let hits = search("split");
     assert!(hits.iter().any(|i| i.id == "pane.split"));
     assert!(search("zzzzqqq").is_empty());
+}
+
+#[test]
+fn open_targets_are_bounded() {
+    assert!(Action::parse("open.default target=/tmp/x").is_ok());
+    assert!(Action::parse("open.menu").is_ok());
+    let long = format!(
+        "open.with target={}",
+        "a".repeat(apoth_action::action::MAX_OPEN_TARGET_BYTES + 1)
+    );
+    assert_eq!(Action::parse(&long).unwrap_err().kind, ErrorKind::Invalid);
+    assert_eq!(
+        Action::parse("open.default target=\"a\\nb\"")
+            .unwrap_err()
+            .kind,
+        ErrorKind::Invalid
+    );
+    assert!(Action::parse("open.default placement=sideways").is_err());
 }

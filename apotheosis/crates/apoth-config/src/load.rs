@@ -805,8 +805,11 @@ pub(crate) type MapFilter = fn(&str, &[String], &[String]) -> Result<(), String>
 
 /// The per-entry checks of the policy-carrying map keys. Shared with the runtime-override
 /// and editor gate so what they accept is what the next load accepts.
-pub(crate) fn map_filters() -> [(&'static str, MapFilter); 3] {
+pub(crate) fn map_filters() -> [(&'static str, MapFilter); 4] {
     [
+        ("open.handlers", |k, v, _| {
+            crate::lang::validate_open_handler(k, v)
+        }),
         ("socket.grants", |k, v, extra| {
             if !k.starts_with('/') {
                 return Err(format!("grant path `{k}` must be absolute"));

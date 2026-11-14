@@ -290,3 +290,82 @@ pub const SEQUENCE_CLASSES: &[&str] = &[
 
 /// `allow`, `ask`, `deny`.
 pub const DECISIONS: &[&str] = &["allow", "ask", "deny"];
+
+/// Built-in terminal handlers an `open.handlers` rule may name (T-14 §11).
+pub const OPEN_TERMINAL_HANDLERS: &[&str] = &["apoth-icat", "apoth-play"];
+/// Placements a terminal-handler rule may name (T-14 §11).
+pub const OPEN_PLACEMENTS: &[&str] = &["float", "inline", "window"];
+/// Longest MIME pattern (RFC 6838: 127 + `/` + 127).
+const MAX_MIME: usize = 255;
+
+/// One `open.handlers` entry: `"<type>/<subtype>"` or `"<type>/*"` to `handler [placement]`,
+/// where the handler is a built-in terminal handler, a desktop file id (`<id>.desktop`) or
+/// `opener` (`links.open-command`). Only terminal handlers take a placement.
+pub fn validate_open_handler(pattern: &str, args: &[String]) -> Result<(), String> {
+    let token = |s: &str| {
+        !s.is_empty()
+            && s.bytes().all(|b| {
+                b.is_ascii_alphanumeric()
+                    || matches!(
+                        b,
+                        b'-' | b'+' | b'.' | b'_' | b'!' | b'#' | b'$' | b'&' | b'^'
+                    )
+            })
+    };
+    let ok = pattern.len() <= MAX_MIME
+        && pattern
+            .split_once('/')
+            .is_some_and(|(t, s)| token(t) && (s == "*" || token(s)));
+    if !ok {
+        return Err(format!(
+            "`{pattern}` is not a MIME type or type/* (x-scheme-handler/<scheme> for URLs)"
+        ));
+    }
+    let Some(handler) = args.first() else {
+        return Err(format!("`{pattern}` needs a handler"));
+    };
+    let terminal = OPEN_TERMINAL_HANDLERS.contains(&handler.as_str());
+    let desktop = handler.len() > ".desktop".len()
+        && handler.len() <= 255
+        && handler.ends_with(".desktop")
+        && !handler.contains('/')
+        && !handler.chars().any(char::is_control);
+    if !(terminal || desktop || handler == "opener") {
+        return Err(format!(
+            "unknown handler `{handler}` (apoth-icat, apoth-play, <id>.desktop or opener)"
+        ));
+    }
+    match &args[1..] {
+        [] => Ok(()),
+        [p] if terminal && OPEN_PLACEMENTS.contains(&p.as_str()) => Ok(()),
+        [p] if terminal => Err(format!("unknown placement `{p}` (float, inline or window)")),
+        _ if terminal => Err(format!("`{pattern}` takes `handler [placement]`")),
+        _ => Err("only apoth-icat and apoth-play take a placement".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::validate_open_handler as v;
+
+    fn a(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| (*x).to_string()).collect()
+    }
+
+    #[test]
+    fn open_handler_entries() {
+        assert!(v("image/*", &a(&["apoth-icat", "float"])).is_ok());
+        assert!(v("video/mp4", &a(&["apoth-play"])).is_ok());
+        assert!(v("text/html", &a(&["firefox.desktop"])).is_ok());
+        assert!(v("x-scheme-handler/https", &a(&["opener"])).is_ok());
+        assert!(v("image/svg+xml", &a(&["org.inkscape.Inkscape.desktop"])).is_ok());
+        assert!(v("image", &a(&["apoth-icat"])).is_err());
+        assert!(v("*/*", &a(&["apoth-icat"])).is_err());
+        assert!(v("image/png", &a(&[])).is_err());
+        assert!(v("image/png", &a(&["sh"])).is_err());
+        assert!(v("image/png", &a(&["../x.desktop"])).is_err());
+        assert!(v("image/png", &a(&["apoth-icat", "sideways"])).is_err());
+        assert!(v("text/html", &a(&["firefox.desktop", "float"])).is_err());
+        assert!(v("image/png", &a(&["apoth-icat", "float", "x"])).is_err());
+    }
+}

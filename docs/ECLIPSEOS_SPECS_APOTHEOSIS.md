@@ -1503,7 +1503,7 @@ per key. Off EclipseOS the paths are `$XDG_CONFIG_HOME/apotheosis/apotheosis.kdl
 ## 3. Shape of the file
 Top-level nodes: `version`, `font`, `colors`, `theme`, `unicode`, `window`, `interface`,
 `tabs`, `panes`, `close`, `scrollbar`, `cursor`, `scrollback`, `blocks`, `mouse`, `touch`,
-`keyboard`, `selection`, `clipboard`, `paste`, `links`, `hints`, `shell`,
+`keyboard`, `selection`, `clipboard`, `paste`, `links`, `open`, `hints`, `shell`,
 `shell-integration`, `terminal`, `bell`, `notifications`, `progress`, `graphics`, `media`,
 `render`, `security`, `accessibility`, `socket`, `sessions`, `domain`, `quick-terminal`,
 `binds`, `mouse-binds`, `key-table`, `macro`, `rule`, `profile`, `layout`, `menu`,
@@ -1511,6 +1511,15 @@ Top-level nodes: `version`, `font`, `colors`, `theme`, `unicode`, `window`, `int
 predicates (`compositor`, `host`, `scheme`, `on-battery`, `scale`) and wraps any nodes.
 Runtime mode conditions on binds are a different option, `mode=` (T-11 §3). The complete
 key list is the generated reference; the spec does not duplicate it.
+
+`open` (T-14 §11): `open.placement` enum `float|inline|window`, default `float` (where a
+terminal handler shows); `open.handlers` map, default empty, `<type> <handler>
+[placement]` per entry, where `<type>` is `type/subtype` or `type/*` (a URL's type is
+`x-scheme-handler/<scheme>`) and `<handler>` is `apoth-icat`, `apoth-play`,
+`<id>.desktop` or `opener` (`links.open-command`); only the two terminal handlers take a
+placement. An entry that does not parse is dropped with a diagnostic. "Remember for
+<type>" in the picker writes one entry through the editor (§5). Both keys have GUI rows
+(Settings → Security → Links, "Open with").
 
 Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10).
 
@@ -1640,6 +1649,8 @@ carries pane text is `read-content` in addition to its listed class.
 | | destination file, pager, editor or command argv | `read-content` + `spawn` |
 | `pipe` | | `spawn` + `read-content` |
 | `launch`, `open` | | `spawn` |
+| `open.*` (T-14 §11) | `open.default {target?, placement?}` | `spawn` |
+| | `open.with {target?}`, `open.menu {target?}` | `layout`; the launch is the user's pick on the sheet (real seat input, like a consent answer) |
 | `coprocess.run` | | `spawn` + `read-content` + `input` |
 | `macro.run` | | union of its members' classes (§4) |
 | `notify` | | `layout` |
@@ -2084,7 +2095,7 @@ OSC 8 links: hover underline and URI tooltip; activation requires the open modif
 (`links.schemes`, default `http https mailto ftp file`); `file://` with a non-local host is
 refused; the full URI is shown before opening when it differs from the visible text
 (T-18). Opening goes through the `open` Action with an argv template (default
-`xdg-open {url}`).
+`xdg-open {url}`); a link's default handler, the Open menu and the picker are §11.
 
 ## 6. Search
 - Overlay search bar (glass, T-08). Modes: smart-case (default), case-sensitive,
@@ -2124,16 +2135,81 @@ binding. Scoring is an fzf-v2-class algorithm implemented from its published des
 (`clipboard|file|pager|editor|command argv`), with or without SGR. Class `read-content`
 plus `clipboard` for the clipboard destination and `spawn` for every other (T-11 §1).
 
-## 11. Test Plan
+## 11. Open with
+Anything the terminal recognises as a path or URL can be opened with a chosen app: hint
+targets (`path`, `url`, `link`), OSC 8 links, a right click on a recognised path or URL
+(`menu.context-menu`, when nothing is selected), a selection (copy mode included) and the
+`open.*` Actions, which the socket, binds and palette reach like any other (T-11 §1).
+Never automatic: nothing opens on output.
+- **Actions.** `open.default {target?, placement?}` launches the default handler;
+  `open.menu {target?}` shows the Open menu; `open.with {target?}` shows the picker. A
+  target is at most 4096 bytes with no control characters. With no target the selection
+  is the target; with nothing selected, hint mode starts with the `link`, `url` and `path`
+  matchers and the picked label carries the Action's intent. A hint label typed in upper
+  case (Shift, with a lower-case alphabet) opens the menu for that target instead of the
+  matcher's default; the URL and link defaults open through the default handler, the path
+  default still copies. Default bind: `ctrl+shift+m` → `open.menu`.
+- **Menu.** On the palette sheet: "Open with <default>" (the handler named, e.g. "Open
+  with Firefox", "Open with apoth icat in a float"), "Open with…" (the picker), for a
+  terminal handler the other placements (inline split, float, separate window via
+  `--ext`), then "Copy" / "Copy link" and "Copy path" (the absolute path when it differs
+  from the text). The target is shown as program text.
+- **Picker.** The terminal handlers for the type, then the desktop apps that declare the
+  type (or a parent type), then `links.open-command`, then every other shown desktop
+  app, fuzzy-filtered by the palette's scorer (§9). A pinned "Remember for <type>" toggle
+  writes an `open.handlers` entry for the exact type of the target on the pick (T-10 §3)
+  and reloads.
+- **Type.** URLs: `x-scheme-handler/<scheme>`; a `file://` URL naming this host is its
+  path. Paths: `~` and relative paths (against the pane's OSC 7 directory) made absolute;
+  a `:line[:col]` suffix is dropped when the full text does not exist. A directory is
+  `inode/directory`; a FIFO, socket or device is never opened for reading. A regular file
+  is typed by the shared-mime-info database (`globs2`, `magic`, `subclasses`, `aliases`
+  under `$XDG_DATA_HOME/mime` and `$XDG_DATA_DIRS/*/mime`, read in Rust; a built-in table
+  when none is installed): the first 8 KiB sniffed, magic winning over a weaker or
+  conflicting glob, text vs binary by content.
+- **Default handler**, first that applies: an `open.handlers` entry (exact type, then
+  `type/*`, then the same along the parent types); the built-ins for local files,
+  `image/*` → `apoth icat` and `video/*`, `audio/*` → `apoth play`, shown at
+  `open.placement`; for a URL, `links.open-command` when the user set it; the
+  freedesktop default (`mimeapps.list` per the XDG MIME Applications spec:
+  `$XDG_CONFIG_HOME`, `$XDG_CONFIG_DIRS`, then `applications/` under the data dirs, each
+  `<desktop>-mimeapps.list` before `mimeapps.list`; Default Applications only from the
+  desktop-specific files; Added/Removed Associations apply to their directory and below; a
+  default must be installed (`TryExec`) and not hidden; a type is settled before its
+  parents); else `links.open-command`.
+- **`apoth play` fallback.** `apoth play` exits 69 (`EX_UNAVAILABLE`) for media it cannot
+  play; a build without `play` exits 2 (usage). On either, the opener launches the
+  freedesktop default (else `links.open-command`) instead: from a pane when the pane
+  closes, from a `--ext` launch when the process exits.
+- **Launch.** Always an argv, never a shell. Desktop `Exec` lines are unquoted and
+  unescaped per the Desktop Entry spec, then field codes expanded: `%f`/`%u` one target,
+  `%F`/`%U` the list (alone as an argument), `%i` the `--icon` pair, `%c` the name, `%k`
+  the entry's path, `%%`; deprecated codes dropped. A field code inside quotes, an unknown
+  code, two file codes or a list code not standing alone makes the entry unusable; an
+  `Exec` without a file code gets the target appended; `%f` with a non-`file` URL is
+  unusable (nothing is downloaded). Paths passed are absolute, so they never read as
+  options. Terminal handlers and `Terminal=true` apps run in a new pane (split or float);
+  other apps detached, without the activation token variables.
+- **Security (T-18).** A link target passes the §5 checks first. A path from a remote
+  pane (T-18 §10, or an OSC 7 directory naming another host) is never opened locally: the
+  menu shows Open and Open with… disabled with "path is on <host>"; Copy stays. Paths, URLs
+  and file contents are never logged; the host label is program text, filtered to
+  `[A-Za-z0-9.-]`, at most 64 bytes.
+- Tests: type detection (globs, magic, subclass chain, text/binary), `mimeapps.list`
+  precedence (user over system, Added/Removed, desktop-specific files), `Exec` expansion
+  and escaping, remote-path refusal, the remember write, and a headless gate opening an
+  image path's hint into an `apoth icat` float.
+
+## 12. Test Plan
 Corpus fixtures for the OSC 133 machine including sloppy-shell traces recorded from bash,
 zsh and fish, and a fish/kitty-style trace with `A;k=s` continuation prompts mid-input
 (the primary block survives); option-parsing tests (per-mark keys, unknown and
 wrong-mark keys ignored, `L` in and out of column 0); search correctness over wrapped lines and across page seams; regex budget
 test (catastrophic pattern returns an error within 50 ms); label allocation property test
 (prefix-free, minimal length); copy-mode motion table tests; headless gates for search bar,
-hints and palette.
+hints and palette; the §11 tests.
 
-## 12. Open Decisions
+## 13. Open Decisions
 - Whether the per-cell semantic bits are worth their cost is settled by M12 measurements;
   the bits are reserved either way.
 
@@ -2280,6 +2356,9 @@ Owner requirement (recorded at M32 for `icat`, binding on `play` at M34):
   in the window, or the compositor's close, ends the command with 0. Ctrl+C in the origin
   pane drops the connection, which closes the window, and exits 130. The window belongs
   to the connection that opened it, so a killed command takes its window with it.
+- **Unsupported media.** `apoth play` exits 69 (`EX_UNAVAILABLE`) for a file it cannot
+  play, before drawing anything; "Open with" then falls back to the desktop default
+  (T-14 §11).
 - Tests: Ctrl+C cleanup and SIGKILL cleanup on the headless session (no placement left,
   exit 130 for Ctrl+C), SIGKILL of a background command; `--ext` opens and closes its
   window headlessly (Escape, and SIGKILL of the command).

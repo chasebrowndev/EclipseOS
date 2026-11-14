@@ -311,6 +311,9 @@ pub(crate) struct InputSettings {
     /// `mouse.selection-override`.
     pub(crate) override_mods: Mods,
     pub(crate) paste: PasteSettings,
+    /// `menu.context-menu`: a right click with no selection opens the Open menu for the
+    /// link, URL or path under the pointer (T-14 §11).
+    pub(crate) context_menu: bool,
 }
 
 /// Modifier names (`shift`, `ctrl`, `alt`, `super`) to a set.
@@ -364,6 +367,7 @@ impl InputSettings {
             scroll_lines: u32::try_from(c.int("mouse.scroll-lines").clamp(1, 50)).unwrap_or(3),
             scroll_multiplier: c.float("mouse.scroll-multiplier").clamp(0.1, 20.0),
             override_mods: mods_of(c.list("mouse.selection-override")),
+            context_menu: c.bool("menu.context-menu"),
             paste: PasteSettings {
                 guard,
                 confirm_bytes: bytes("paste.confirm-bytes"),

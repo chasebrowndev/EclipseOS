@@ -80,7 +80,7 @@ pub fn subsystem_of(path: &str) -> Subsystem {
         "shell" | "terminal" => Subsystem::Pty,
         "scrollback" | "blocks" | "bell" | "notifications" | "progress" | "shell-integration"
         | "hints" | "links" => Subsystem::Term,
-        "clipboard" | "paste" | "security" | "remote" | "socket" => Subsystem::Security,
+        "clipboard" | "paste" | "security" | "remote" | "socket" | "open" => Subsystem::Security,
         "graphics" | "media" => Subsystem::Media,
         "tabs" | "panes" | "close" | "profile" | "layout" | "menu" | "sessions" | "domain"
         | "quick-terminal" | "rule" => Subsystem::Mux,
