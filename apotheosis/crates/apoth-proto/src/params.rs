@@ -211,6 +211,45 @@ pub struct Notify {
     pub urgency: Option<String>,
 }
 
+/// Largest media window grid in cells (`media.window-open`).
+pub const MAX_MEDIA_CELLS: u32 = 500;
+/// Largest `media.window-write` payload, base64 characters (inside one line).
+pub const MAX_MEDIA_WRITE_B64: usize = 768 * 1024;
+
+/// `media.window-open {cols, rows, title}` (T-16 §1.1): a borderless glass window of
+/// `cols` x `rows` cells showing only what `media.window-write` sends it. It belongs to the
+/// connection: it closes when the connection does.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaWindowOpen {
+    /// Columns.
+    pub cols: u32,
+    /// Rows.
+    pub rows: u32,
+    /// Window title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+/// `media.window-write {window, data}`: terminal output for the window's grid, base64. Only
+/// the kitty graphics protocol and cursor motion are meaningful there.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaWindowWrite {
+    /// The window `media.window-open` returned.
+    pub window: u64,
+    /// Base64 bytes.
+    pub data: String,
+}
+
+/// `media.window-wait {window}`: answered once the window has closed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MediaWindowWait {
+    /// The window.
+    pub window: u64,
+}
+
 /// `launch`: the second-launch hand-off (T-12 §5), one request.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -279,6 +318,9 @@ pub enum Params {
     ConfigSaveOverride(ConfigSaveOverride),
     Notify(Notify),
     Launch(Box<Launch>),
+    MediaWindowOpen(MediaWindowOpen),
+    MediaWindowWrite(MediaWindowWrite),
+    MediaWindowWait(MediaWindowWait),
 }
 
 fn de<T: DeserializeOwned>(v: Value) -> Result<T, WireError> {
@@ -382,6 +424,9 @@ impl Params {
             Method::ConfigSaveOverride => Params::ConfigSaveOverride(de(v)?),
             Method::Notify => Params::Notify(de(v)?),
             Method::Launch => Params::Launch(Box::new(de(v)?)),
+            Method::MediaWindowOpen => Params::MediaWindowOpen(de(v)?),
+            Method::MediaWindowWrite => Params::MediaWindowWrite(de(v)?),
+            Method::MediaWindowWait => Params::MediaWindowWait(de(v)?),
         };
         p.validate()?;
         Ok(p)
@@ -416,6 +461,9 @@ impl Params {
             Params::ConfigSaveOverride(_) => Method::ConfigSaveOverride,
             Params::Notify(_) => Method::Notify,
             Params::Launch(_) => Method::Launch,
+            Params::MediaWindowOpen(_) => Method::MediaWindowOpen,
+            Params::MediaWindowWrite(_) => Method::MediaWindowWrite,
+            Params::MediaWindowWait(_) => Method::MediaWindowWait,
         }
     }
 
@@ -466,6 +514,9 @@ impl Params {
             Params::ConfigSaveOverride(p) => serde_json::to_value(p),
             Params::Notify(p) => serde_json::to_value(p),
             Params::Launch(p) => serde_json::to_value(p),
+            Params::MediaWindowOpen(p) => serde_json::to_value(p),
+            Params::MediaWindowWrite(p) => serde_json::to_value(p),
+            Params::MediaWindowWait(p) => serde_json::to_value(p),
         };
         // Plain derived structs of strings, numbers and maps cannot fail to serialise.
         r.unwrap_or(Value::Null)
@@ -530,6 +581,25 @@ impl Params {
                 self.to_action().transpose().map_err(parse_error)?;
             }
             Params::Launch(p) => p.validate()?,
+            Params::MediaWindowOpen(p) => {
+                if !(1..=MAX_MEDIA_CELLS).contains(&p.cols)
+                    || !(1..=MAX_MEDIA_CELLS).contains(&p.rows)
+                {
+                    return Err(bad(format!("cols and rows must be 1..={MAX_MEDIA_CELLS}")));
+                }
+                check_opt("title", &p.title, MAX_SHORT_BYTES)?;
+            }
+            Params::MediaWindowWrite(p) => {
+                check_len("data", &p.data, MAX_MEDIA_WRITE_B64)?;
+                if !p
+                    .data
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'/' | b'='))
+                {
+                    return Err(bad("data is not base64"));
+                }
+            }
+            Params::MediaWindowWait(_) => {}
             Params::Tree(_)
             | Params::PaneInfo(_)
             | Params::PaneProcesses(_)

@@ -60,6 +60,7 @@ use rustix::io::Errno;
 
 mod a11y;
 mod automation;
+mod media;
 mod serve;
 
 pub(crate) use a11y::A11yMsg;
@@ -389,6 +390,8 @@ pub(crate) struct App {
     nav: Nav,
     // ---- rules, variables, notifications, profiles (T-11 §5-§9, T-17 §6)
     auto: automation::Auto,
+    // ---- media windows (`apoth icat --ext`, T-16 §1.1)
+    media: media::Media,
 }
 
 /// A paste held back by the guard (T-18 §4). The content is held until answered, never logged.
@@ -520,6 +523,7 @@ pub(crate) fn run(
         a11y: a11y::A11yState::default(),
         nav: Nav::default(),
         auto: automation::Auto::default(),
+        media: media::Media::default(),
     };
     app.start_ctl();
     app.start_a11y();
@@ -659,6 +663,7 @@ const HANDLED: &[&str] = &[
     "pane.break-out",
     "pane.close",
     "pane.equalize",
+    "pane.float",
     "pane.focus",
     "pane.focus-last",
     "pane.focus-next",
@@ -666,6 +671,9 @@ const HANDLED: &[&str] = &[
     "pane.move",
     "pane.resize",
     "pane.split",
+    "pane.toggle-float",
+    "pane.toggle-floats",
+    "pane.toggle-pin",
     "pane.toggle-zoom",
     "scroll.bottom",
     "scroll.half-page-down",
@@ -925,11 +933,10 @@ impl App {
     fn dims_of(&self, id: PaneKey) -> Option<(usize, usize)> {
         let tid = self.session.tab_of(id)?;
         let tab = self.session.tab(tid)?;
-        let size = tab.size();
-        layout::panes(&tab.layout(), size, (0, 0), self.cell)
+        layout::all_dims(tab, self.cell)
             .into_iter()
-            .find(|p| p.id == id)
-            .map(|p| p.dims)
+            .find(|p| p.0 == id)
+            .map(|p| p.1)
     }
 
     /// Start a pane's shell (or `argv`) on a PTY with its io thread. `cwd` falls back to
@@ -1108,10 +1115,10 @@ impl App {
             let Some(tab) = self.session.tab(tid) else {
                 continue;
             };
-            let placed = layout::panes(&tab.layout(), tab.size(), geo.origin, self.cell);
-            wanted.extend(placed.iter().map(|p| (p.id, p.dims)));
+            wanted.extend(layout::all_dims(tab, self.cell));
             if Some(tid) == active {
-                shown = placed;
+                shown = layout::panes(&tab.layout(), tab.size(), geo.origin, self.cell);
+                shown.extend(layout::floats(tab, geo.origin, self.cell));
             }
         }
         for p in &shown {
@@ -1146,6 +1153,7 @@ impl App {
                     origin: p.origin,
                     focused: Some(p.id) == focus,
                     first: p.id == self.first_pane,
+                    floating: p.floating,
                 })
             })
             .collect();
@@ -1268,22 +1276,23 @@ impl App {
             _ => FrameMode::Full,
         };
         let dim = c.float("panes.inactive-dim").clamp(0.0, 1.0) as f32;
-        // Frames only matter when there is more than one pane to tell apart.
-        let frames = if self.placed.len() > 1 && mode != FrameMode::None {
-            self.placed
-                .iter()
-                .map(|p| apoth_ui::pane::PaneSpec {
-                    id: pane_widget(p.id),
-                    rect: layout::frame_rect(p, self.cell, geo.ui, geo.area),
-                    focused: Some(p.id) == focus,
-                    title: None,
-                    mode,
-                    inactive_dim: dim,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // Tiled frames only matter when there is more than one pane to tell apart; a float
+        // always stands on its own glass (MUX-18), whatever `panes.frame` says.
+        let tiled = self.placed.iter().filter(|p| !p.floating).count();
+        let frames = self
+            .placed
+            .iter()
+            .filter(|p| p.floating || (tiled > 1 && mode != FrameMode::None))
+            .map(|p| apoth_ui::pane::PaneSpec {
+                id: pane_widget(p.id),
+                rect: layout::frame_rect(p, self.cell, geo.ui, geo.area),
+                focused: Some(p.id) == focus,
+                title: None,
+                mode: if p.floating { FrameMode::Full } else { mode },
+                inactive_dim: dim,
+                floating: p.floating,
+            })
+            .collect();
         ChromeModel {
             strip: geo.strip.map(|r| (r, self.tab_specs())),
             tab_style: style,
@@ -1374,8 +1383,13 @@ impl App {
             let dims = self.panes.get(&p.id).map_or((0, 0), |x| x.dims);
             let _ = writeln!(
                 s,
-                "pane {} rows {} cols {} at {},{}",
-                p.id, dims.0, dims.1, p.origin.0, p.origin.1
+                "pane {} rows {} cols {} at {},{}{}",
+                p.id,
+                dims.0,
+                dims.1,
+                p.origin.0,
+                p.origin.1,
+                if p.floating { " float" } else { "" }
             );
         }
         let _ = writeln!(s, "focus {}", focus.unwrap_or(0));
@@ -1393,6 +1407,7 @@ impl App {
         }
         let tables = self.keys.active(&self.keymap).join(",");
         let _ = writeln!(s, "tables {tables}");
+        self.media_dump(&mut s);
         if let Some(d) = self.mux_dump.as_mut() {
             d.write(s);
         }
@@ -1491,6 +1506,34 @@ impl App {
             Err(e) => {
                 // Too small for another pane (T-13 §3: 2x1 minimum) and the like.
                 tracing::debug!(error = %e, "split refused");
+                self.handle.ring_bell(Some(self.win));
+                None
+            }
+        }
+    }
+
+    /// `pane.float`: a new floating pane, half the tab, placed by the MUX-19 search.
+    fn float(
+        &mut self,
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+    ) -> Option<PaneKey> {
+        let target = self.focused()?;
+        let cwd = cwd.or_else(|| self.inherited_cwd());
+        let tab = self.session.tab(self.session.tab_of(target)?)?;
+        let s = tab.size();
+        let rect = tab.place_float(s.cols / 2, s.rows / 2);
+        match self
+            .session
+            .float_pane(target, rect, MuxPaneSpec::default(), ())
+        {
+            Ok(id) => {
+                self.finish_new_pane(id, argv, cwd, env);
+                self.panes.contains_key(&id).then_some(id)
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "float refused");
                 self.handle.ring_bell(Some(self.win));
                 None
             }
@@ -1683,6 +1726,9 @@ impl App {
     // ------------------------------------------------------------------ wayland
 
     fn on_wl(&mut self, ev: WlEvent) {
+        if self.media_wl(&ev) {
+            return;
+        }
         match ev {
             WlEvent::Configure(c) => {
                 if self.started {
@@ -1736,6 +1782,9 @@ impl App {
 
     fn on_input(&mut self, i: InputEvent) {
         self.seat = Some(i.seat);
+        if self.media_input(&i.kind) {
+            return;
+        }
         match i.kind {
             InputKind::Keymap(km) => {
                 if km.format == KeymapFormat::XkbV1
@@ -2317,6 +2366,35 @@ impl App {
                     self.relayout();
                 }
             }
+            A::PaneFloat { argv, cwd, profile } => {
+                let argv = argv.and_then(|a| self.expand_argv(&a));
+                let Some((argv, cwd, env)) =
+                    self.with_profile(profile.as_deref(), argv, cwd.map(PathBuf::from))
+                else {
+                    return true;
+                };
+                if let Some(id) = self.float(argv, cwd, env)
+                    && let Some(p) = profile
+                {
+                    self.set_explicit_profile(id, &p);
+                }
+            }
+            A::PaneToggleFloat {} => self.with_tab(|t, f| {
+                if t.is_float(f) {
+                    let _ = t.embed(f, None, apoth_mux::Dir::Right);
+                } else {
+                    let s = t.size();
+                    let r = t.place_float(s.cols / 2, s.rows / 2);
+                    let _ = t.to_float(f, r);
+                }
+            }),
+            A::PaneToggleFloats {} => self.with_tab(|t, _| {
+                t.toggle_floats();
+            }),
+            A::PaneTogglePin {} => self.with_tab(|t, f| {
+                let pinned = t.floats().iter().any(|x| x.pane == f && x.pinned);
+                let _ = t.set_float_pinned(f, !pinned);
+            }),
             A::LayoutNext {} => self.with_tab(|t, _| {
                 let _ = t.next_preset();
             }),
@@ -3537,8 +3615,10 @@ impl App {
             return Spot::Strip;
         }
         let (px, py) = (x * self.scale(), y * self.scale());
+        // Floats are last (on top): the topmost pane under the pointer wins.
         self.placed
             .iter()
+            .rev()
             .find(|p| p.contains(self.cell, px, py))
             .map_or(Spot::Nothing, |p| Spot::Pane(p.id))
     }
@@ -4133,6 +4213,7 @@ impl App {
                 }
             }
             MainMsg::Loaded(r) => self.on_loaded(*r),
+            MainMsg::MediaStopped(id) => self.media_stopped(id),
             MainMsg::Closed(id, status) => {
                 self.closing = self.closing.saturating_sub(1);
                 if let Some(i) = self.forced.iter().position(|f| *f == id) {
@@ -4280,6 +4361,7 @@ impl App {
     }
 
     fn shutdown(&mut self) {
+        self.media_shutdown();
         let panes = std::mem::take(&mut self.panes);
         for (_, mut p) in panes {
             if let Some(io) = p.io.take() {

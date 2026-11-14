@@ -1826,6 +1826,16 @@ sgr, wrap}`, `pane.blocks` (command records), `config.get`, `config.effective`,
 `version`. Streams: `subscribe {events:[…], match}` / `unsubscribe`; `pane.watch`
 (rendered-row deltas, R2).
 
+Media windows (`apoth icat --ext`, T-16 §1.1), class `layout`, not targeted:
+- `media.window-open {cols, rows, title?}` opens a borderless glass window with one grid
+  of `cols` × `rows` cells (each 1..500) and returns `{window}`. It has no PTY. It belongs
+  to the connection: it closes when the connection closes. At most 8 are open at once.
+- `media.window-write {window, data}` feeds base64 `data` (at most 768 KiB of base64 per
+  request) to the window's grid. Only the owning connection may write. The grid parses and
+  decodes off the main loop. A window more than 64 MiB behind refuses writes.
+- `media.window-wait {window}` is answered with `{closed: true}` once the window has
+  closed (Escape or `q` in it, the compositor's close, or a render failure).
+
 ## 3. Targeting and environment
 Targets use the T-11 §7 match language; default target is `self` when the client runs
 inside a pane. Each pane exports `APOTHEOSIS_SOCKET`, `APOTHEOSIS_PANE`,
@@ -1953,6 +1963,16 @@ domain (`docker exec`, `distrobox enter`, `kubectl exec`); no callback (MUX-32).
   one-line headers.
 - **Floating layer** (R2, MUX-18..20): per-tab ordered floats with show/hide, pin,
   raise-on-focus, embed/float toggle, placement search.
+  - Actions: `pane.float` (cwd, profile, command — class `spawn` when `command` is given)
+    opens a float. `pane.toggle-float` floats the focused tile or embeds the focused float.
+    `pane.toggle-floats` shows or hides every float of the tab. `pane.toggle-pin` pins a
+    float, keeping it shown when the floats are hidden.
+  - Placement: a new float is half the tab, centred. If that spot is taken by a shown
+    float, it tries the top-left and top-right corners in (2, 1)-cell steps, then staggers
+    from the top left.
+  - A float takes no room from the tree. It is always framed and draws over the tiles on
+    its own glass backing and shadow layer. Floats are hit-tested before the tiles, top
+    float first.
 - **Layout presets** (MUX-13): `even-h`, `even-v`, `main-h`, `main-v`, `tall`, `grid`,
   `stack` applied over the pane list; `layout.next` cycles. The free tree is the default.
 - New panes inherit the focused pane's cwd (OSC 7, else `/proc/<fg>/cwd`).
@@ -2237,19 +2257,32 @@ Owner requirement (recorded at M32 for `icat`, binding on `play` at M34):
   however it ends.
 - **Terminal-side cleanup.** A placement must never outlive a command that died without
   cleaning up (SIGKILL: no frozen frame is left). The command opens a session in-band,
-  `ESC _ M a=b,i=<n> ESC \` (`n`: a per-invocation id, the pid), before its first image
-  and closes it with `a=e,i=<n>` on a normal exit. Placements made while a session is
-  open belong to it. The terminal binds an open session to the pty's foreground process
-  group and, whenever that group no longer holds the foreground with the session still
-  open, deletes every placement of the session. A clean `a=e` keeps the session's still
-  images and deletes its animated ones. The check is one `tcgetpgrp` per io step and only
-  while a session is open (no timer). Other `M` commands are the §2 protocol.
+  `ESC _ M a=b,i=<n>,p=<pid> ESC \` (`n`: a per-invocation id; `p`: the command's pid),
+  before its first image and closes it with `a=e,i=<n>` on a normal exit. Placements made
+  while a session is open belong to it. A clean `a=e` keeps the session's still images and
+  deletes its animated ones. Other `M` commands are the §2 protocol.
+  - With `p=`, the terminal binds the session to that process when it is in the pane's
+    session (`getsid(pid) == tcgetsid(pty)`): it opens a pidfd and polls it with the PTY.
+    When the process exits with the session still open, every placement of the session
+    is deleted at once, with no further output needed. This holds for a command started
+    in the background (its own process group) as well.
+  - Without `p=`, or when the pid cannot be watched (another session, already gone, no
+    pidfd), the session binds to the pty's foreground process group. Whenever that group
+    no longer holds the foreground with the session still open, the session's placements
+    are deleted. The check is one `tcgetpgrp` per io step. While such a session is open
+    the io thread also rechecks every 250 ms, so a SIGKILL is seen without further
+    output. That timer exists only while a group-bound session is open (T-23 `IDLE`).
 - **`--ext` / `-x`.** Asks the instance over the control socket to open a separate
-  borderless glass window showing only the media. The command stays in the foreground
-  until that window closes; Ctrl+C in the origin pane closes the window, and closing the
-  window ends the command.
+  borderless glass window showing only the media (`media.window-open`, T-12 §2). The
+  bytes the command would have written to the pane go to the window instead
+  (`media.window-write`). The window has one grid of the size the media needs, no PTY and
+  no cursor. The command stays in the foreground until that window closes: Escape or `q`
+  in the window, or the compositor's close, ends the command with 0. Ctrl+C in the origin
+  pane drops the connection, which closes the window, and exits 130. The window belongs
+  to the connection that opened it, so a killed command takes its window with it.
 - Tests: Ctrl+C cleanup and SIGKILL cleanup on the headless session (no placement left,
-  exit 130 for Ctrl+C); `--ext` opens and closes its window headlessly.
+  exit 130 for Ctrl+C), SIGKILL of a background command; `--ext` opens and closes its
+  window headlessly (Escape, and SIGKILL of the command).
 
 ## 2. Media placement protocol
 An APC namespace of our own, `ESC _ M <keys> ; <payload> ESC \`, key=value control data

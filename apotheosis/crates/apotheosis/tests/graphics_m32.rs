@@ -477,3 +477,37 @@ fn icat_lifetime() {
     });
     s.quads("no quads after SIGKILL", |l| l.is_empty());
 }
+
+/// A background icat (its own process group, not the pane's foreground) is bound to its
+/// pid (`p=`): SIGKILL removes its placements at once, with no further output.
+#[test]
+fn background_icat_is_cleaned_up_on_sigkill() {
+    if !have_apoth("background_icat_is_cleaned_up_on_sigkill") {
+        return;
+    }
+    let Some(mut s) = Session::start("icatbg") else {
+        return;
+    };
+    s.run("echo UP$((1+1))", "UP2");
+    let out = s.out();
+    std::fs::write(out.join("anim.gif"), gif()).unwrap();
+    let pid = out.join("pid");
+    s.run(
+        &format!(
+            "apoth icat {} & echo $! > {}; echo B$((1+2))B",
+            out.join("anim.gif").display(),
+            pid.display()
+        ),
+        "B3B",
+    );
+    s.quads("the background animation", |l| {
+        l.len() == 1 && l[0].starts_with("2x2 ")
+    });
+    let pid = std::fs::read_to_string(&pid).unwrap();
+    let st = Command::new("kill")
+        .args(["-KILL", pid.trim()])
+        .status()
+        .unwrap();
+    assert!(st.success());
+    s.quads("no quads after SIGKILL", |l| l.is_empty());
+}

@@ -224,6 +224,7 @@ impl UiRaster {
                 }),
                 Cmd::PushClip { rect, .. } => sink.push_clip(sc(*rect)),
                 Cmd::PopClip => sink.pop_clip(),
+                Cmd::Layer => sink.layer(),
                 Cmd::Text { run, pos, colour } => {
                     self.text(fonts, run, *pos, *colour, scale, sink);
                 }
@@ -325,6 +326,11 @@ pub(crate) fn build_chrome(
         let measure = FontMeasure::new(fonts);
         for f in &model.frames {
             let l = apoth_ui::pane::layout(f);
+            if f.floating {
+                // Its glass goes under its grid; its rim and dim over it (T-07 §4 layering).
+                apoth_ui::pane::draw_float_backing(f, &pal, &mut dl);
+                dl.layer();
+            }
             apoth_ui::pane::draw(f, &l, &pal, &mut dl);
         }
         if let Some(r) = model.bell {
@@ -544,6 +550,7 @@ mod tests {
             title: None,
             mode: FrameMode::Full,
             inactive_dim: 0.12,
+            floating: false,
         };
         let row = |t: &str, k: Option<&str>| Entry {
             title: TextRun::interface(t, apoth_ui::tokens::size::BODY),
@@ -779,6 +786,63 @@ mod tests {
                 );
                 std::fs::write(dir.join(name), png_rgb(w, h, &rgb)).unwrap();
             }
+        }
+    }
+
+    /// A float (MUX-18) over a tiled pane at scales 1, 1.25, 1.5 and 2: its backing and
+    /// shadow sit inside the float's frame layer. PNGs with `APOTH_SHOT=<dir>`; always checks
+    /// that the backing lands on whole pixels at every scale.
+    #[test]
+    fn float_chrome_at_fractional_scales() {
+        use apoth_ui::pane::{FrameMode, PaneSpec};
+        let (w, h) = (480.0_f32, 300.0_f32);
+        let frame = |id, rect, floating| PaneSpec {
+            id: pane_widget(id),
+            rect,
+            focused: floating,
+            title: None,
+            mode: FrameMode::Full,
+            inactive_dim: 0.12,
+            floating,
+        };
+        let model = crate::render::ChromeModel {
+            strip: None,
+            tab_style: apoth_ui::frame::TabStyle::Floating,
+            frames: vec![
+                frame(1, Rect::new(4.0, 4.0, w - 8.0, h - 8.0), false),
+                frame(2, Rect::new(120.0, 75.0, 240.0, 150.0), true),
+            ],
+            palette: None,
+            search: None,
+            tooltip: None,
+            bell: None,
+            ui: UiState::default(),
+        };
+        let shot = std::env::var_os("APOTH_SHOT").map(PathBuf::from);
+        for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+            let mut f = fonts();
+            let mut r = UiRaster::new();
+            let mut l = ChromeList::new();
+            let buf = ((w * scale) as u32, (h * scale) as u32);
+            build_chrome(&mut l, None, &model, buf, scale, false, 0, &mut f, &mut r);
+            assert_eq!(l.marks.len(), 1, "one layer mark before the float");
+            let Some(dir) = &shot else { continue };
+            std::fs::create_dir_all(dir).unwrap();
+            let (pw, ph) = (buf.0 as usize, buf.1 as usize);
+            let mut img = Image::new(pw, ph);
+            apoth_render::chrome::reference::render(&l, &mut img);
+            let ground = [0x24u32, 0x2a, 0x33];
+            let mut rgb = Vec::with_capacity(pw * ph * 3);
+            for p in img.data.chunks_exact(4) {
+                for c in 0..3 {
+                    rgb.push(
+                        (u32::from(p[c]) + ground[c] * (255 - u32::from(p[3])) / 255).min(255)
+                            as u8,
+                    );
+                }
+            }
+            let name = format!("float-dark-{}x.png", (scale * 100.0) as u32);
+            std::fs::write(dir.join(name), png_rgb(pw, ph, &rgb)).unwrap();
         }
     }
 

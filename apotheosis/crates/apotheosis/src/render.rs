@@ -218,6 +218,8 @@ pub(crate) struct PaneView {
     pub(crate) focused: bool,
     /// The first pane of the window: it owns the `APOTH_TEST_VIEW` dump.
     pub(crate) first: bool,
+    /// A float (MUX-18): the chrome layer before it holds its glass.
+    pub(crate) floating: bool,
 }
 
 /// The interface chrome around the panes, in interface units (T-08 §4). Main lays the same
@@ -852,8 +854,15 @@ fn run(a: RenderArgs) {
                         backdrop: p.backdrop(a),
                     })
                     .collect();
+                let floats: Vec<usize> = panes
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.v.floating)
+                    .map(|(i, _)| i)
+                    .collect();
                 let input = FrameInput {
                     panes: &list,
+                    chrome_before: &floats,
                     clear,
                 };
                 let outcome = stack.presenter.present(&mut stack.renderer, &input);

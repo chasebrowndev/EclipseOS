@@ -51,6 +51,9 @@ pub enum Cmd {
         spread: f32,
         alpha: f32,
     },
+    /// Ends a layer: what follows is drawn over the next floating pane's grid, what came
+    /// before under it (a float's glass backing is the last thing before its mark).
+    Layer,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -86,6 +89,11 @@ impl DrawList {
 
     pub fn pop_clip(&mut self) {
         self.cmds.push(Cmd::PopClip);
+    }
+
+    /// See [`Cmd::Layer`].
+    pub fn layer(&mut self) {
+        self.cmds.push(Cmd::Layer);
     }
 
     pub fn len(&self) -> usize {
@@ -130,6 +138,7 @@ impl DrawList {
                 }
                 Cmd::PushClip { rect, radius } => s += &format!("clip {} r{:.1}", r(rect), radius),
                 Cmd::PopClip => s += "unclip",
+                Cmd::Layer => s += "layer",
                 Cmd::Shadow {
                     rect,
                     radius,

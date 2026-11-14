@@ -123,8 +123,12 @@ impl<'a> PaneDraw<'a> {
 /// What one frame draws.
 #[derive(Clone, Copy, Debug)]
 pub struct FrameInput<'a> {
-    /// The panes, back to front (tiled panes do not overlap).
+    /// The panes, back to front (tiled panes do not overlap; floats come after them).
     pub panes: &'a [PaneDraw<'a>],
+    /// Chrome layering (MUX-18 floats): chrome layer `k` (see `ChromeList::marks`) is drawn
+    /// right before pane `chrome_before[k]`, the last layer after every pane. Empty: the
+    /// whole chrome list is drawn over every pane.
+    pub chrome_before: &'a [usize],
     /// Window fill, premultiplied RGBA.
     pub clear: [f32; 4],
 }
@@ -879,8 +883,6 @@ impl Renderer {
         }
         self.present_pass(enc, target, target_size, input, &mut slots);
         self.slots = slots;
-        self.chrome_pass
-            .record(enc, target, target_size, &self.chrome);
         stats
     }
 
@@ -1238,6 +1240,13 @@ impl Renderer {
             (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
         };
 
+        // The chrome goes into the same pass, layered between the panes (T-07 §4 pass 7).
+        let chrome = self.chrome_pass.upload(target_size, &self.chrome);
+        let layers = if chrome {
+            input.chrome_before.len().min(self.chrome.marks.len())
+        } else {
+            0
+        };
         let [r, g, b, a] = input.clear;
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("present"),
@@ -1257,7 +1266,13 @@ impl Renderer {
             })],
             ..Default::default()
         });
+        let mut layer = 0;
         for (i, p) in input.panes.iter().enumerate() {
+            while layer < layers && input.chrome_before[layer] <= i {
+                self.chrome_pass
+                    .draw_range(&mut pass, self.chrome.layer_range(layer));
+                layer += 1;
+            }
             let Some(slot) = slots.iter().find(|s| s.key == p.key) else {
                 continue;
             };
@@ -1295,6 +1310,12 @@ impl Renderer {
                 pass.set_vertex_buffer(0, slot.cursor_glyph_vb.slice(..));
                 pass.draw(0..4, 0..1);
             }
+        }
+        if chrome {
+            // Layers whose pane never came, then the top layer (bars, strip, sheets).
+            let start = self.chrome.layer_range(layer).start;
+            let end = self.chrome.instances.len() as u32;
+            self.chrome_pass.draw_range(&mut pass, start..end);
         }
     }
 }

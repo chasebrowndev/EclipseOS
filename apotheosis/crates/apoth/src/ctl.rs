@@ -554,6 +554,12 @@ impl Client {
 
     /// One request, its reply. Events that arrive meanwhile are kept for [`Client::event`].
     pub(crate) fn call(&mut self, params: Params) -> Result<Value, WireError> {
+        let id = self.send(params)?;
+        self.reply(id)
+    }
+
+    /// Write one request; its id for [`Client::reply`].
+    pub(crate) fn send(&mut self, params: Params) -> Result<u64, WireError> {
         let id = self.next_id;
         self.next_id += 1;
         let line = Request { id, params }.to_line()?;
@@ -563,6 +569,21 @@ impl Client {
                 format!("cannot write to the instance: {}", e.kind()),
             )
         })?;
+        Ok(id)
+    }
+
+    /// The socket, to poll for a deferred reply alongside another fd.
+    pub(crate) fn stream(&self) -> &UnixStream {
+        &self.stream
+    }
+
+    /// Lines already read but not yet taken (poll would not see them).
+    pub(crate) fn buffered(&self) -> bool {
+        !self.lines.is_empty()
+    }
+
+    /// The reply to request `id`.
+    pub(crate) fn reply(&mut self, id: u64) -> Result<Value, WireError> {
         loop {
             match self.read_message()? {
                 ServerMessage::Reply(Reply::Ok { id: rid, ok }) if rid == id => return Ok(ok),

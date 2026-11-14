@@ -250,6 +250,10 @@ struct Mux {
     panes: Vec<PaneLine>,
     focus: u64,
     palette: bool,
+    /// Placed floats (MUX-18).
+    floats: Vec<u64>,
+    /// Open media windows: (id, rows, cols).
+    media: Vec<(u64, u32, u32)>,
 }
 
 fn parse(t: &str) -> Mux {
@@ -259,6 +263,8 @@ fn parse(t: &str) -> Mux {
         panes: Vec::new(),
         focus: 0,
         palette: false,
+        floats: Vec::new(),
+        media: Vec::new(),
     };
     for l in t.lines() {
         let w: Vec<&str> = l.split_whitespace().collect();
@@ -267,16 +273,27 @@ fn parse(t: &str) -> Mux {
                 m.tabs = n.parse().unwrap_or(0);
                 m.active = a.parse().unwrap_or(0);
             }
-            ["pane", id, "rows", r, "cols", c, "at", xy] => m.panes.push(PaneLine {
-                id: id.parse().unwrap_or(0),
-                rows: r.parse().unwrap_or(0),
-                cols: c.parse().unwrap_or(0),
-                x: xy
-                    .split(',')
-                    .next()
-                    .and_then(|x| x.parse().ok())
-                    .unwrap_or(0),
-            }),
+            ["pane", id, "rows", r, "cols", c, "at", xy, rest @ ..] => {
+                let id = id.parse().unwrap_or(0);
+                if rest == ["float"] {
+                    m.floats.push(id);
+                }
+                m.panes.push(PaneLine {
+                    id,
+                    rows: r.parse().unwrap_or(0),
+                    cols: c.parse().unwrap_or(0),
+                    x: xy
+                        .split(',')
+                        .next()
+                        .and_then(|x| x.parse().ok())
+                        .unwrap_or(0),
+                });
+            }
+            ["media", id, "rows", r, "cols", c] => m.media.push((
+                id.parse().unwrap_or(0),
+                r.parse().unwrap_or(0),
+                c.parse().unwrap_or(0),
+            )),
             ["focus", f] => m.focus = f.parse().unwrap_or(0),
             ["palette", "open", ..] => m.palette = true,
             _ => {}
@@ -351,14 +368,25 @@ impl Client {
 
     /// One request; the reply object (`ok` or `error`), events skipped.
     fn call(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        let id = self.send(method, params);
+        self.reply(id)
+    }
+
+    /// Write one request without reading; its id.
+    fn send(&mut self, method: &str, params: serde_json::Value) -> u64 {
         self.id += 1;
         let line = serde_json::json!({"id": self.id, "method": method, "params": params});
         self.s.write_all(format!("{line}\n").as_bytes()).unwrap();
+        self.id
+    }
+
+    /// The reply to request `id`.
+    fn reply(&mut self, id: u64) -> serde_json::Value {
         loop {
             while let Some(n) = self.buf.iter().position(|b| *b == b'\n') {
                 let l: Vec<u8> = self.buf.drain(..=n).collect();
                 let v: serde_json::Value = serde_json::from_slice(&l).expect("reply is JSON");
-                if v.get("id") == Some(&serde_json::json!(self.id)) {
+                if v.get("id") == Some(&serde_json::json!(id)) {
                     return v;
                 }
             }
@@ -518,5 +546,268 @@ fn in_pane_cli() {
         "apoth --socket /nonexistent ls; echo NI$?",
         "NI4",
     );
+    s.exit_shell();
+}
+
+fn b64(b: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut o = String::new();
+    for c in b.chunks(3) {
+        let n = (u32::from(c[0]) << 16)
+            | (u32::from(*c.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..4 {
+            if i <= c.len() {
+                o.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+            } else {
+                o.push('=');
+            }
+        }
+    }
+    o
+}
+
+fn crc32(bytes: &[u8]) -> u32 {
+    let mut c = !0u32;
+    for &b in bytes {
+        c ^= u32::from(b);
+        for _ in 0..8 {
+            c = if c & 1 == 1 {
+                0xedb8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+    }
+    !c
+}
+
+/// A stored-deflate RGB PNG (no compressor needed).
+fn png(w: u32, h: u32, rgb: &[u8]) -> Vec<u8> {
+    let chunk = |out: &mut Vec<u8>, kind: &[u8], data: &[u8]| {
+        out.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        let mut body = kind.to_vec();
+        body.extend_from_slice(data);
+        out.extend_from_slice(&body);
+        out.extend_from_slice(&crc32(&body).to_be_bytes());
+    };
+    let mut raw = Vec::new();
+    for row in rgb.chunks((w * 3) as usize) {
+        raw.push(0);
+        raw.extend_from_slice(row);
+    }
+    let (mut a, mut b) = (1u32, 0u32);
+    for &x in &raw {
+        a = (a + u32::from(x)) % 65521;
+        b = (b + a) % 65521;
+    }
+    let len = raw.len() as u16;
+    let mut z = vec![0x78, 0x01, 0x01];
+    z.extend_from_slice(&len.to_le_bytes());
+    z.extend_from_slice(&(!len).to_le_bytes());
+    z.extend_from_slice(&raw);
+    z.extend_from_slice(&((b << 16) | a).to_be_bytes());
+    let mut ihdr = Vec::new();
+    ihdr.extend_from_slice(&w.to_be_bytes());
+    ihdr.extend_from_slice(&h.to_be_bytes());
+    ihdr.extend_from_slice(&[8, 2, 0, 0, 0]);
+    let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+    chunk(&mut out, b"IHDR", &ihdr);
+    chunk(&mut out, b"IDAT", &z);
+    chunk(&mut out, b"IEND", &[]);
+    out
+}
+
+/// Floats (MUX-18/19) from the socket: `pane.float` opens a framed float over the tile,
+/// `pane.toggle-floats` hides and shows every float, and closing it gives the tile focus.
+#[test]
+fn floats_open_hide_and_close() {
+    let Some(mut s) = Session::start("floats") else {
+        return;
+    };
+    let m0 = s.mux_until("the first pane", |m| m.tabs == 1 && m.panes.len() == 1);
+    let first = m0.panes[0];
+    let path = s.ctl_socket();
+    let mut c = Client::new(&path);
+    c.call("hello", serde_json::json!({"proto": 1, "client": "test"}));
+    let target = format!("id:{}", first.id);
+    let r = c.call(
+        "action.run",
+        serde_json::json!({"action": "pane.float", "target": target}),
+    );
+    assert_eq!(r.get("ok"), Some(&serde_json::Value::Null), "{r}");
+    let m = s.mux_until("a float", |m| m.panes.len() == 2 && m.floats.len() == 1);
+    let float = m.floats[0];
+    assert_ne!(float, first.id);
+    assert_eq!(m.focus, float, "the new float has the focus");
+    let fl = *m.panes.iter().find(|p| p.id == float).unwrap();
+    assert!(
+        fl.cols < first.cols && fl.x > first.x,
+        "{fl:?} over {first:?}"
+    );
+    // The tile keeps its size: a float takes no room from the tree.
+    let tile = *m.panes.iter().find(|p| p.id == first.id).unwrap();
+    assert_eq!((tile.rows, tile.cols), (first.rows, first.cols));
+    s.run_in(float, first.id, "echo FL$((2+3))", "FL5");
+    let r = c.call(
+        "action.run",
+        serde_json::json!({"action": "pane.toggle-floats", "target": target}),
+    );
+    assert_eq!(r.get("ok"), Some(&serde_json::Value::Null), "{r}");
+    s.mux_until("floats hidden", |m| {
+        m.panes.len() == 1 && m.floats.is_empty()
+    });
+    c.call(
+        "action.run",
+        serde_json::json!({"action": "pane.toggle-floats", "target": target}),
+    );
+    s.mux_until("floats shown", |m| m.floats == [float]);
+    let r = c.call(
+        "action.run",
+        serde_json::json!({"action": "pane.close", "target": format!("id:{float}")}),
+    );
+    assert_eq!(r.get("ok"), Some(&serde_json::Value::Null), "{r}");
+    s.mux_until("the float to close", |m| {
+        m.panes.len() == 1 && m.floats.is_empty() && m.focus == first.id
+    });
+    drop(c);
+    s.exit_shell();
+}
+
+/// `media.window-*` (T-12 §2, T-16 §1.1): a borderless media window opens for the
+/// connection, takes kitty graphics, refuses other clients, and closes on Escape (answering
+/// `media.window-wait`) or when its connection goes.
+#[test]
+fn media_window_belongs_to_its_connection() {
+    let Some(mut s) = Session::start("media") else {
+        return;
+    };
+    let m0 = s.mux_until("the first pane", |m| m.panes.len() == 1);
+    let first = m0.panes[0].id;
+    s.run_in(first, first, "echo UP$((1+1))", "UP2");
+    let path = s.ctl_socket();
+    let mut c = Client::new(&path);
+    c.call("hello", serde_json::json!({"proto": 1, "client": "test"}));
+    let r = c.call(
+        "media.window-open",
+        serde_json::json!({"cols": 0, "rows": 2}),
+    );
+    assert_eq!(code(&r), Some("bad-request"), "{r}");
+    let r = c.call(
+        "media.window-open",
+        serde_json::json!({"cols": 6, "rows": 3}),
+    );
+    let w = r.pointer("/ok/window").and_then(serde_json::Value::as_u64);
+    let w = w.unwrap_or_else(|| panic!("no window: {r}"));
+    s.mux_until("the media window", |m| m.media == [(w, 3, 6)]);
+    let rgba: Vec<u8> = [200u8, 40, 40, 255].repeat(16);
+    let apc = format!(
+        "\x1b_Ga=T,f=32,s=4,v=4,i=5,c=2,r=1,q=2;{}\x1b\\",
+        b64(&rgba)
+    );
+    let r = c.call(
+        "media.window-write",
+        serde_json::json!({"window": w, "data": b64(apc.as_bytes())}),
+    );
+    assert_eq!(r.get("ok"), Some(&serde_json::Value::Null), "{r}");
+    let r = c.call(
+        "media.window-write",
+        serde_json::json!({"window": w, "data": "not base64!"}),
+    );
+    assert_eq!(code(&r), Some("bad-request"), "{r}");
+    // Another connection cannot write to or wait on it.
+    let mut other = Client::new(&path);
+    other.call("hello", serde_json::json!({"proto": 1, "client": "other"}));
+    let r = other.call(
+        "media.window-write",
+        serde_json::json!({"window": w, "data": ""}),
+    );
+    assert_eq!(code(&r), Some("bad-request"), "{r}");
+    drop(other);
+    // Closing the connection closes the window; the terminal carries on.
+    drop(c);
+    s.mux_until("the window to close with its connection", |m| {
+        m.media.is_empty()
+    });
+    s.run_in(first, first, "echo ON$((3+4))", "ON7");
+
+    // Escape in the window closes it and answers the wait.
+    let mut c = Client::new(&path);
+    c.call("hello", serde_json::json!({"proto": 1, "client": "test"}));
+    let r = c.call(
+        "media.window-open",
+        serde_json::json!({"cols": 4, "rows": 2}),
+    );
+    let w = r
+        .pointer("/ok/window")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap();
+    s.mux_until("the second media window", |m| m.media.len() == 1);
+    let wait = c.send("media.window-wait", serde_json::json!({"window": w}));
+    // The compositor gives the new toplevel the keyboard; give it a moment to map.
+    std::thread::sleep(Duration::from_millis(500));
+    s.chord("Escape", &[]);
+    let r = c.reply(wait);
+    assert_eq!(
+        r.pointer("/ok/closed"),
+        Some(&serde_json::json!(true)),
+        "{r}"
+    );
+    s.mux_until("no media window", |m| m.media.is_empty());
+    drop(c);
+    s.exit_shell();
+}
+
+/// `apoth icat --ext`: the command stays in the foreground until its window closes (exit
+/// 0), and a SIGKILLed icat takes its window with it.
+#[test]
+fn icat_ext_waits_for_its_window() {
+    if !have_apoth("icat_ext_waits_for_its_window") {
+        return;
+    }
+    let Some(mut s) = Session::start("icatx") else {
+        return;
+    };
+    let m0 = s.mux_until("the first pane", |m| m.panes.len() == 1);
+    let first = m0.panes[0].id;
+    s.run_in(first, first, "echo UP$((1+1))", "UP2");
+    let _ = s.ctl_socket();
+    let rgb: Vec<u8> = (0..64u8).flat_map(|i| [i * 4, 255 - i * 4, 90]).collect();
+    let img = s.dir.join("still.png");
+    std::fs::write(&img, png(8, 8, &rgb)).unwrap();
+    s.type_text(&format!("apoth icat -x {}; echo X$?X\n", img.display()));
+    s.mux_until("the icat window", |m| m.media.len() == 1);
+    // Still in the foreground: no marker yet.
+    std::thread::sleep(Duration::from_millis(500));
+    let text = std::fs::read_to_string(&s.dump).unwrap_or_default();
+    assert!(
+        !text.lines().any(|l| l.trim() == "X0X"),
+        "icat returned early"
+    );
+    s.chord("Escape", &[]);
+    s.mux_until("the window to close", |m| m.media.is_empty());
+    let path = s.dump.clone();
+    s.wait_file(&path, "icat to exit 0", |t| {
+        t.lines().any(|l| l.trim() == "X0X")
+    });
+
+    // SIGKILL: the connection drops and the window goes with it.
+    let pid = s.dir.join("pid");
+    s.type_text(&format!(
+        "sh -c 'echo $$ > {}; exec apoth icat -x {}'; echo K$?K; stty sane\n",
+        pid.display(),
+        img.display()
+    ));
+    s.mux_until("the second icat window", |m| m.media.len() == 1);
+    let pid = std::fs::read_to_string(&pid).unwrap();
+    let st = Command::new("kill")
+        .args(["-KILL", pid.trim()])
+        .status()
+        .unwrap();
+    assert!(st.success());
+    s.mux_until("the killed icat's window to close", |m| m.media.is_empty());
+    s.wait_file(&path, "the shell after SIGKILL", |t| {
+        t.lines().any(|l| l.trim() == "K137K")
+    });
     s.exit_shell();
 }

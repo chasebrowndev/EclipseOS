@@ -424,3 +424,50 @@ fn a_session_whose_process_left_the_foreground_loses_every_placement() {
     assert!(t.placements().is_empty());
     assert!(!t.has_image_sessions());
 }
+
+#[test]
+fn a_session_with_a_pid_ignores_the_foreground_and_ends_when_told() {
+    let mut t = term();
+    let now = Instant::now();
+    t.feed(b"\x1b_Ma=b,i=5,p=31337\x1b\\", now);
+    assert_eq!(t.take_image_session_pids(), vec![(5, 31337)]);
+    assert!(t.take_image_session_pids().is_empty(), "handed out once");
+    assert!(!t.has_group_image_sessions());
+    t.feed(
+        format!(
+            "\x1b_Ga=T,f=32,s=8,v=16,i=1,q=2;{}\x1b\\",
+            rgba(8, 16, [1, 1, 1, 255])
+        )
+        .as_bytes(),
+        now,
+    );
+    // Started in the background: the foreground changing does not end it.
+    assert!(!t.bind_image_sessions(100));
+    assert!(!t.bind_image_sessions(200));
+    assert_eq!(t.placements().len(), 1);
+    // Its pidfd turned readable.
+    assert!(t.end_image_session(5));
+    assert!(t.placements().is_empty());
+    assert!(!t.end_image_session(5));
+}
+
+#[test]
+fn an_unwatchable_pid_falls_back_to_the_process_group_rule() {
+    let mut t = term();
+    let now = Instant::now();
+    t.feed(b"\x1b_Ma=b,i=6,p=1\x1b\\", now);
+    let _ = t.take_image_session_pids();
+    t.unwatch_image_session(6);
+    assert!(t.has_group_image_sessions());
+    t.bind_image_sessions(4242);
+    t.feed(
+        format!(
+            "\x1b_Ga=T,f=32,s=8,v=16,i=1,q=2;{}\x1b\\",
+            rgba(8, 16, [1, 1, 1, 255])
+        )
+        .as_bytes(),
+        now,
+    );
+    assert!(t.bind_image_sessions(100));
+    assert!(t.placements().is_empty());
+}

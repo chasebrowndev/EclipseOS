@@ -95,6 +95,8 @@ pub(crate) struct PanePx {
     pub(crate) origin: (i32, i32),
     /// Its grid (rows, cols).
     pub(crate) dims: (usize, usize),
+    /// A float (MUX-18): drawn over the tiled panes on its own glass.
+    pub(crate) floating: bool,
 }
 
 impl PanePx {
@@ -146,9 +148,42 @@ pub(crate) fn panes(
                     origin.1 + (r.y * cell.1) as i32,
                 ),
                 dims: (h.max(1) as usize, w.max(1) as usize),
+                floating: false,
             }
         })
         .collect()
+}
+
+/// Place the tab's shown floats, bottom to top (pinned above unpinned). A float's grid is
+/// its whole cell rect: it has no divider to give up.
+pub(crate) fn floats(tab: &apoth_mux::Tab, origin: (i32, i32), cell: (u32, u32)) -> Vec<PanePx> {
+    tab.floats_render_order()
+        .iter()
+        .filter(|f| f.visible)
+        .map(|f| PanePx {
+            id: f.pane,
+            origin: (
+                origin.0 + (f.rect.x * cell.0) as i32,
+                origin.1 + (f.rect.y * cell.1) as i32,
+            ),
+            dims: (f.rect.h.max(1) as usize, f.rect.w.max(1) as usize),
+            floating: true,
+        })
+        .collect()
+}
+
+/// Every pane's grid in the tab, shown or not (hidden floats keep their size).
+pub(crate) fn all_dims(tab: &apoth_mux::Tab, cell: (u32, u32)) -> Vec<(PaneId, (usize, usize))> {
+    let mut v: Vec<_> = panes(&tab.layout(), tab.size(), (0, 0), cell)
+        .into_iter()
+        .map(|p| (p.id, p.dims))
+        .collect();
+    v.extend(
+        tab.floats()
+            .iter()
+            .map(|f| (f.pane, (f.rect.h.max(1) as usize, f.rect.w.max(1) as usize))),
+    );
+    v
 }
 
 /// A pane's frame in interface units: its grid outset by a few units, inside the window.
@@ -266,10 +301,31 @@ mod tests {
             id: 1,
             origin: (0, 0),
             dims: (10, 10),
+            floating: false,
         };
         let area = Rect::new(0.0, 0.0, 100.0, 200.0);
         let f = frame_rect(&p, (10, 20), 1.0, area);
         assert_eq!((f.x, f.y), (0.0, 0.0));
         assert_eq!((f.w, f.h), (100.0, 200.0));
+    }
+
+    #[test]
+    fn floats_sit_on_their_cell_rect_over_the_tiles() {
+        let mut t = apoth_mux::Tab::new(1, "t", Size { cols: 80, rows: 24 }, 1);
+        t.add_float(2, CellRect::new(10, 4, 30, 8)).unwrap();
+        t.add_float(3, CellRect::new(0, 0, 4, 2)).unwrap();
+        t.set_float_pinned(2, true).unwrap();
+        let f = floats(&t, (4, 4), (10, 20));
+        assert_eq!(
+            f.iter().map(|p| p.id).collect::<Vec<_>>(),
+            [3, 2],
+            "pinned on top"
+        );
+        assert_eq!(f[1].origin, (104, 84));
+        assert_eq!(f[1].dims, (8, 30));
+        assert!(f.iter().all(|p| p.floating));
+        t.set_float_visible(3, false).unwrap();
+        assert_eq!(floats(&t, (0, 0), (10, 20)).len(), 1);
+        assert_eq!(all_dims(&t, (10, 20)).len(), 3, "hidden floats keep a size");
     }
 }

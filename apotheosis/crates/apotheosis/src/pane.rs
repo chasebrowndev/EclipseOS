@@ -229,6 +229,8 @@ pub(crate) enum MainMsg {
     /// The Abyss detection thread: a theme, or the connection lost (T-17 §1).
     Abyss(apoth_eclipse::Abyss),
     /// A worker finished a config load (T-10 §4): main diffs and applies it.
+    /// A media window's threads stopped: its surface can be destroyed.
+    MediaStopped(u64),
     Loaded(
         Box<(
             apoth_config::reload::Reloader,
@@ -288,6 +290,25 @@ struct IoState {
     blocked: bool,
     /// The term's next timer (mode 2026 hold, half-received image transfers).
     deadline: Option<Instant>,
+    /// An `apoth icat` session relies on the process group rule: re-check it every
+    /// [`GROUP_RECHECK`] even without output (T-16 §1.1).
+    group_watch: bool,
+}
+
+/// How often an open process-group-bound image session is re-checked while the pane is
+/// quiet. Only while such a session is open.
+const GROUP_RECHECK: Duration = Duration::from_millis(250);
+
+/// Watch `pid` of an image session for exit: it must be in the pane's session (the pty's
+/// session leader), so a program cannot tie its placements to an unrelated process.
+fn watch_pid(pid: i32, master: &OwnedFd) -> Option<OwnedFd> {
+    use rustix::process::{Pid, PidfdFlags, getsid, pidfd_open};
+    let pid = Pid::from_raw(pid)?;
+    let sid = rustix::termios::tcgetsid(master).ok()?;
+    if getsid(Some(pid)).ok()? != sid {
+        return None;
+    }
+    pidfd_open(pid, PidfdFlags::NONBLOCK).ok()
 }
 
 /// What the io thread needs to run a locked step and publish its results.
@@ -301,6 +322,8 @@ struct Io<'a> {
     poke: &'a Arc<OwnedFd>,
     /// The pty master: its foreground process group owns `apoth icat` sessions.
     master: &'a OwnedFd,
+    /// Pidfds of `apoth icat` sessions opened with `p=` (session id, pidfd).
+    watch: std::cell::RefCell<Vec<(u64, OwnedFd)>>,
 }
 
 fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
@@ -324,6 +347,7 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
         done_tx: &done_tx,
         poke: &poke,
         master: &master,
+        watch: std::cell::RefCell::new(Vec::new()),
     };
     let mut buf = vec![0u8; SLICE_BYTES];
     if let Some(h) = &hook {
@@ -332,7 +356,13 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
     let mut st = IoState::default();
     let mut eof = false;
     while !eof {
-        let timeout = st.deadline.map(|d| {
+        let deadline = if st.group_watch {
+            let recheck = Instant::now() + GROUP_RECHECK;
+            Some(st.deadline.map_or(recheck, |d| d.min(recheck)))
+        } else {
+            st.deadline
+        };
+        let timeout = deadline.map(|d| {
             let left = d.saturating_duration_since(Instant::now());
             Timespec {
                 tv_sec: i64::try_from(left.as_secs()).unwrap_or(i64::MAX),
@@ -346,11 +376,38 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
                 PollFd::new(&master, PollFlags::IN),
             ];
             let n = if st.blocked { 1 } else { 2 };
-            match poll(&mut fds[..n], timeout.as_ref()) {
-                Ok(_) => (
-                    n == 2 && !fds[1].revents().is_empty(),
-                    !fds[0].revents().is_empty(),
-                ),
+            let watch = io.watch.borrow();
+            let r = if watch.is_empty() {
+                poll(&mut fds[..n], timeout.as_ref())
+                    .map(|_| (fds[0].revents(), fds[1].revents(), None))
+            } else {
+                // An image session's command is watched: its pidfd turns readable on exit.
+                let mut all: Vec<PollFd<'_>> = fds[..n].to_vec();
+                all.extend(watch.iter().map(|(_, fd)| PollFd::new(fd, PollFlags::IN)));
+                poll(&mut all, timeout.as_ref()).map(|_| {
+                    let gone = all[n..]
+                        .iter()
+                        .position(|f| !f.revents().is_empty())
+                        .map(|i| watch[i].0);
+                    (
+                        all[0].revents(),
+                        all.get(1).map_or(PollFlags::empty(), |f| f.revents()),
+                        gone,
+                    )
+                })
+            };
+            drop(watch);
+            match r {
+                Ok((w, m, gone)) => {
+                    if let Some(sid) = gone {
+                        // Killed without `a=e`: its placements go now, not at the next output.
+                        st = io.step(|t| apoth_term::Wake {
+                            dirty: t.end_image_session(sid),
+                            ..apoth_term::Wake::default()
+                        });
+                    }
+                    (n == 2 && !m.is_empty(), !w.is_empty())
+                }
                 Err(Errno::INTR) => continue,
                 Err(e) => {
                     tracing::error!(errno = e.raw_os_error(), "io poll failed");
@@ -451,14 +508,28 @@ impl Io<'_> {
                 t.set_deny(deny);
             }
             let mut wake = f(&mut t);
-            // `apoth icat` sessions (T-16 §1.1): bind new ones to the foreground group, end
-            // the ones whose group lost the terminal (killed without cleaning up). One
-            // `tcgetpgrp` per step, only while a session is open.
-            if t.has_image_sessions()
-                && let Ok(fg) = rustix::termios::tcgetpgrp(self.master)
-                && t.bind_image_sessions(fg.as_raw_nonzero().get())
-            {
-                wake.dirty = true;
+            // `apoth icat` sessions (T-16 §1.1): a session with `p=` is watched through a
+            // pidfd; the others bind to the foreground group and end when it loses the
+            // terminal (killed without cleaning up). Only while a session is open.
+            let mut group_watch = false;
+            if t.has_image_sessions() {
+                let mut watch = self.watch.borrow_mut();
+                for (sid, pid) in t.take_image_session_pids() {
+                    match watch_pid(pid, self.master) {
+                        Some(fd) => watch.push((sid, fd)),
+                        None => t.unwatch_image_session(sid),
+                    }
+                }
+                watch.retain(|(sid, _)| t.has_image_session(*sid));
+                if t.has_group_image_sessions()
+                    && let Ok(fg) = rustix::termios::tcgetpgrp(self.master)
+                    && t.bind_image_sessions(fg.as_raw_nonzero().get())
+                {
+                    wake.dirty = true;
+                }
+                group_watch = t.has_group_image_sessions();
+            } else {
+                self.watch.borrow_mut().clear();
             }
             shared.at_prompt.store(t.at_prompt(), Ordering::Release);
             shared
@@ -476,6 +547,7 @@ impl Io<'_> {
             let st = IoState {
                 blocked: t.blocked(),
                 deadline: t.next_deadline(),
+                group_watch,
             };
             (wake, st)
         };
@@ -518,7 +590,7 @@ impl Io<'_> {
     }
 }
 
-fn take_events(t: &mut Term) -> PaneEvents {
+pub(crate) fn take_events(t: &mut Term) -> PaneEvents {
     let slot = t.events();
     let mut e = PaneEvents {
         title: slot.title.take(),

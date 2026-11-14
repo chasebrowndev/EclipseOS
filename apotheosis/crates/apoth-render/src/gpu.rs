@@ -93,11 +93,19 @@ pub(crate) fn class_of(t: wgpu::DeviceType) -> AdapterClass {
     }
 }
 
-/// A Vulkan-only instance (no GL, no other backend is compiled in anyway).
+/// The process's Vulkan-only instance (no GL, no other backend is compiled in anyway). One
+/// for every window and offscreen device, created once and never destroyed: a second
+/// window's device must not take the instance down under the first (the NVIDIA driver
+/// faults in the surviving window's swapchain when a sibling instance is destroyed).
 pub(crate) fn new_instance() -> wgpu::Instance {
-    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
-    desc.backends = wgpu::Backends::VULKAN;
-    wgpu::Instance::new(desc)
+    static INSTANCE: std::sync::OnceLock<wgpu::Instance> = std::sync::OnceLock::new();
+    INSTANCE
+        .get_or_init(|| {
+            let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            desc.backends = wgpu::Backends::VULKAN;
+            wgpu::Instance::new(desc)
+        })
+        .clone()
 }
 
 struct ThreadWaker(Thread);

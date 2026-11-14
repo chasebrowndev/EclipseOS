@@ -130,6 +130,7 @@ impl ActionInfo {
                 | "block.open-output"
                 | "coprocess.run"
                 | "pane.split"
+                | "pane.float"
                 | "tab.new"
                 | "window.new"
         )
@@ -532,6 +533,15 @@ define_actions! {
         "Make all splits in the tab equal." { };
     PaneBreakOut = "pane.break-out" [Layout] "Break pane out"
         "Move the pane into its own tab." { };
+    PaneFloat = "pane.float" [Layout] "New floating pane"
+        "Open a floating pane over the tab; spawn-class when a command argv is given."
+        { argv: Option<Argv>, cwd: Option<String>, profile: Option<String> };
+    PaneToggleFloat = "pane.toggle-float" [Layout] "Float or embed pane"
+        "Move the pane between the tiled and the floating layer." { };
+    PaneToggleFloats = "pane.toggle-floats" [Layout] "Show or hide floating panes"
+        "Show or hide the tab's floating layer." { };
+    PaneTogglePin = "pane.toggle-pin" [Layout] "Pin floating pane"
+        "Keep the floating pane above unpinned floats." { };
     PaneSetTitle = "pane.set-title" [Layout] "Set pane title"
         "Set or clear (no argument) a pinned pane title."
         { title: Option<String> };
@@ -847,6 +857,7 @@ impl Action {
         }
         match self {
             Action::PaneSplit { argv, .. }
+            | Action::PaneFloat { argv, .. }
             | Action::TabNew { argv, .. }
             | Action::WindowNew { argv, .. } => opt_argv_spawn(&mut c, argv),
             Action::LayoutApply { name } => {

@@ -458,6 +458,7 @@ fn pane_layouts() {
         title: Some(TextRun::program("vim", size::BODY_SMALL)),
         mode: FrameMode::Full,
         inactive_dim: 0.0,
+        floating: false,
     };
     let l = pane::layout(&s);
     assert_eq!(l.title_row, Some(Rect::new(1.0, 1.0, 398.0, 20.0)));
@@ -483,6 +484,7 @@ fn pane_draw_focus_and_dim() {
         title: None,
         mode: FrameMode::Full,
         inactive_dim: 0.3,
+        floating: false,
     };
     let rim_of = |s: &PaneSpec| {
         let mut o = DrawList::new();

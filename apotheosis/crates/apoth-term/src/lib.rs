@@ -232,6 +232,40 @@ impl Term {
         !self.m.gfx.sessions_empty()
     }
 
+    /// Sessions opened with `p=<pid>` since the last call (T-16 §1.1): the caller watches
+    /// each pid for exit and calls [`Term::end_image_session`] when it goes, or
+    /// [`Term::unwatch_image_session`] when it cannot watch it.
+    pub fn take_image_session_pids(&mut self) -> Vec<(u64, i32)> {
+        self.m.gfx.take_session_pids()
+    }
+
+    /// The pid of session `id` cannot be watched: the foreground process group rule of
+    /// [`Term::bind_image_sessions`] applies to it instead.
+    pub fn unwatch_image_session(&mut self, id: u64) {
+        self.m.gfx.unwatch_session(id);
+    }
+
+    /// Session `id` is still open.
+    pub fn has_image_session(&self, id: u64) -> bool {
+        self.m.gfx.has_session(id)
+    }
+
+    /// An open session relies on the process group rule: the caller re-checks it on a
+    /// timer while this holds, so a killed command is noticed without further output.
+    pub fn has_group_image_sessions(&self) -> bool {
+        self.m.gfx.has_group_sessions()
+    }
+
+    /// The process of session `id` exited without `a=e`: delete every placement it made.
+    /// Returns true when the session was open.
+    pub fn end_image_session(&mut self, id: u64) -> bool {
+        if !self.m.gfx.has_session(id) {
+            return false;
+        }
+        self.m.session_end(id, true);
+        true
+    }
+
     /// Bind sessions opened since the last call to the foreground process group `fg`, and
     /// end (removing every placement) the bound sessions whose group is no longer `fg`.
     /// Returns true when a placement went (redraw).

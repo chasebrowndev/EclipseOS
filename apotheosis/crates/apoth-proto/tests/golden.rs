@@ -197,12 +197,42 @@ fn golden_every_request_kind() {
             wait: true,
         })),
     );
+    golden(
+        r#"{"id":27,"method":"media.window-open","params":{"cols":40,"rows":10,"title":"t"}}"#,
+        Params::MediaWindowOpen(MediaWindowOpen {
+            cols: 40,
+            rows: 10,
+            title: Some("t".into()),
+        }),
+    );
+    golden(
+        r#"{"id":28,"method":"media.window-write","params":{"window":1,"data":"aGkh"}}"#,
+        Params::MediaWindowWrite(MediaWindowWrite {
+            window: 1,
+            data: "aGkh".into(),
+        }),
+    );
+    golden(
+        r#"{"id":29,"method":"media.window-wait","params":{"window":1}}"#,
+        Params::MediaWindowWait(MediaWindowWait { window: 1 }),
+    );
+}
+
+#[test]
+fn media_window_params_are_bounded() {
+    for bad in [
+        r#"{"id":1,"method":"media.window-open","params":{"cols":0,"rows":10}}"#,
+        r#"{"id":1,"method":"media.window-open","params":{"cols":10,"rows":501}}"#,
+        r#"{"id":1,"method":"media.window-write","params":{"window":1,"data":"a b"}}"#,
+    ] {
+        assert_eq!(rej(bad).1, ErrorCode::BadRequest, "{bad}");
+    }
 }
 
 #[test]
 fn every_method_has_a_golden_request() {
-    // 26 golden cases above, one per table row.
-    assert_eq!(METHODS.len(), 26);
+    // 29 golden cases above, one per table row.
+    assert_eq!(METHODS.len(), 29);
 }
 
 #[test]

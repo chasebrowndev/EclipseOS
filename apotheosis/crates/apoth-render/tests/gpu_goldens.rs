@@ -276,6 +276,7 @@ impl Harness {
         let panes = [PaneDraw::single(&self.scene, cur)];
         let input = FrameInput {
             panes: &panes,
+            chrome_before: &[],
             clear: [0.0; 4],
         };
         match self.pres.present(&mut self.renderer, &input) {
@@ -519,6 +520,7 @@ fn two_panes_draw_side_by_side_at_their_origins() {
     ];
     let input = FrameInput {
         panes: &panes,
+        chrome_before: &[],
         clear: [0.0; 4],
     };
     match h.pres.present(&mut h.renderer, &input) {
@@ -646,6 +648,7 @@ fn images_draw_under_and_over_the_text_on_the_pixel_grid() {
         }];
         let input = FrameInput {
             panes: &panes,
+            chrome_before: &[],
             clear: [0.0; 4],
         };
         match h.pres.present(&mut h.renderer, &input) {
@@ -776,6 +779,7 @@ fn animation_frames_reuse_one_texture_and_upload_only_the_changed_rect() {
             }];
             let input = FrameInput {
                 panes: &panes,
+                chrome_before: &[],
                 clear: [0.0; 4],
             };
             match h.pres.present(&mut h.renderer, &input) {
@@ -808,5 +812,98 @@ fn animation_frames_reuse_one_texture_and_upload_only_the_changed_rect() {
             assert_eq!(at(&got, cwu + 3, y), [255, 0, 0, 255]);
         }
         assert_ne!(at(&got, cwu + 4, 0), [255, 0, 0, 255], "exactly 4 px wide");
+    }
+}
+
+/// Floats (MUX-18): chrome layer 0 (a float's glass) lands over the tiled pane and under the
+/// float's grid; the next layer (its rim) lands over the float; an unmarked list still draws
+/// over every pane.
+#[test]
+fn chrome_layers_interleave_with_floating_panes() {
+    use apoth_render::chrome::{ChromeRect, ChromeSink};
+    let Some(gpu) = gpu() else { return };
+    let m = metrics(8, 16);
+    let (w, hh) = (m.width as usize, m.height as usize);
+    let mut h = Harness::new(&gpu, m, 12, 3, TextBlending::Native);
+    h.snap.rows = (0..3)
+        .map(|_| text_row(&" ".repeat(12), Style::default()))
+        .collect();
+    h.snap.changed = vec![0, 1, 2];
+    let mut float = GridScene::new();
+    let mut fsnap = FrameSnapshot::new();
+    fsnap.rows = vec![text_row("    ", Style::default())];
+    fsnap.changed = vec![0];
+    {
+        let ctx = BuildCtx {
+            cfg: &h.cfg,
+            palette: &h.pal,
+            metrics: &h.m,
+            highlights: &h.hl,
+        };
+        h.scene
+            .update(&h.snap, Damage::Full, &ctx, false, &mut h.synth);
+        float.update(&fsnap, Damage::Full, &ctx, false, &mut h.synth);
+    }
+    let flat = |r: [f32; 4], c: [u8; 4]| ChromeRect {
+        rect: r,
+        radii: [0.0; 4],
+        fill: c,
+        rim: [0; 4],
+        rim_width: 0.0,
+    };
+    let (green, blue) = ([0, 255, 0, 255], [0, 0, 255, 255]);
+    {
+        let c = h.renderer.chrome_mut();
+        c.clear();
+        c.rounded_rect(&flat([0.0, 0.0, (12 * w) as f32, (3 * hh) as f32], green));
+        c.layer();
+        c.rounded_rect(&flat(
+            [(2 * w) as f32, hh as f32, w as f32, hh as f32],
+            blue,
+        ));
+    }
+    let origin = ((2 * w) as i32, hh as i32);
+    let draw = |scene, key, origin| PaneDraw {
+        key,
+        scene,
+        cursor: None,
+        origin: Some(origin),
+        images_below: &[],
+        images_above: &[],
+        backdrop: None,
+    };
+    let panes = [draw(&h.scene, 1, (0, 0)), draw(&float, 2, origin)];
+    let bg = h.pal.bg;
+    let bg = [bg.0, bg.1, bg.2, 255];
+    for (layers, what) in [(&[1usize][..], "layered"), (&[][..], "unlayered")] {
+        let input = FrameInput {
+            panes: &panes,
+            chrome_before: layers,
+            clear: [0.0; 4],
+        };
+        match h.pres.present(&mut h.renderer, &input) {
+            PresentOutcome::Presented(_) => {}
+            other => panic!("offscreen present failed: {other:?}"),
+        }
+        let got = h.pres.read_pixels();
+        near(
+            at(&got, w / 2, hh / 2),
+            green,
+            2,
+            "glass over the tiled pane",
+        );
+        near(
+            at(&got, 2 * w + w / 2, hh + hh / 2),
+            blue,
+            2,
+            "rim layer over the float",
+        );
+        let inside = at(&got, 5 * w + w / 2, hh + hh / 2);
+        if layers.is_empty() {
+            near(inside, green, 2, "unlayered: all chrome over every pane");
+        } else {
+            near(inside, bg, 2, "the float's grid over its glass");
+        }
+        let _ = what;
     }
 }

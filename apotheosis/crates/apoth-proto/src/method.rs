@@ -37,6 +37,9 @@ pub enum Method {
     ConfigSaveOverride,
     Notify,
     Launch,
+    MediaWindowOpen,
+    MediaWindowWrite,
+    MediaWindowWait,
 }
 
 /// One row of the method table.
@@ -301,6 +304,34 @@ pub const METHODS: &[MethodInfo] = &[
         false,
         false,
     ),
+    // `apoth icat --ext` (T-16 §1.1): a borderless media window owned by the connection.
+    row(
+        Method::MediaWindowOpen,
+        "media.window-open",
+        &[Layout],
+        false,
+        false,
+        false,
+        false,
+    ),
+    row(
+        Method::MediaWindowWrite,
+        "media.window-write",
+        &[Layout],
+        false,
+        false,
+        false,
+        false,
+    ),
+    row(
+        Method::MediaWindowWait,
+        "media.window-wait",
+        &[Layout],
+        false,
+        false,
+        false,
+        false,
+    ),
 ];
 
 impl Method {
@@ -351,7 +382,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), METHODS.len());
-        assert_eq!(METHODS.len(), 26);
+        assert_eq!(METHODS.len(), 29);
         for r in METHODS {
             assert_eq!(Method::parse(r.name), Some(r.method));
             assert_eq!(r.method.info().name, r.name);

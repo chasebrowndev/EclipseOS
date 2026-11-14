@@ -12,6 +12,12 @@
 //! (read as a byte: the tty's signal keys are off while icat waits) deletes its placements,
 //! restores the tty and exits 130; a finite `--loop` ends the same way with 0 once played.
 //!
+//! `--ext` (T-16 §1.1, T-12 §2): the same bytes go to a borderless glass window instead,
+//! through the control socket (`media.window-open`, `media.window-write`). icat stays in the
+//! foreground until the window closes (Escape or `q` in it, or the compositor's close), then
+//! exits 0; Ctrl+C in the pane drops the connection, which closes the window, and exits 130.
+//! The window belongs to the connection, so a killed icat takes its window with it.
+//!
 //! Nothing here logs file content or paths.
 
 use std::io::{Read, Write};
@@ -42,13 +48,14 @@ Show images in the pane (kitty graphics). PNG, APNG, GIF, JPEG, WebP; `-` reads 
   --unicode-placeholder  draw through Unicode placeholder cells (tmux-safe)
   --image-id N           use image id N (1..16777215)
   --clear                delete every image on the screen and exit
-  -x, --ext              show in a separate window (not in this build)
+  -x, --ext              show in a separate glass window; icat waits until it closes
 
 Animations play while icat runs; Ctrl+C removes them and exits 130.
+With --ext, Escape or q closes the window; Ctrl+C in the pane closes it and exits 130.
 ";
 
 /// Parsed options.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Opts {
     pub(crate) place: Option<(u32, u32, u32, u32)>,
     pub(crate) z: i32,
@@ -343,6 +350,37 @@ impl Tty {
     }
 }
 
+impl Tty {
+    /// Wait until Ctrl+C on the tty (true) or `other` becomes readable or hangs up (false).
+    /// Other keys are read and dropped.
+    fn key_or(&mut self, other: std::os::fd::BorrowedFd<'_>) -> bool {
+        use rustix::event::{PollFd, PollFlags, poll};
+        loop {
+            let mut fds = [
+                PollFd::new(&self.file, PollFlags::IN),
+                PollFd::from_borrowed_fd(other, PollFlags::IN),
+            ];
+            match poll(&mut fds, None) {
+                Ok(_) => {
+                    if !fds[1].revents().is_empty() {
+                        return false;
+                    }
+                    if !fds[0].revents().is_empty() {
+                        let mut b = [0u8; 64];
+                        match self.file.read(&mut b) {
+                            Ok(0) | Err(_) => return true,
+                            Ok(n) if b[..n].contains(&3) => return true,
+                            Ok(_) => {}
+                        }
+                    }
+                }
+                Err(rustix::io::Errno::INTR) => {}
+                Err(_) => return false,
+            }
+        }
+    }
+}
+
 impl Drop for Tty {
     fn drop(&mut self) {
         if let Some(t) = self.saved.take() {
@@ -383,8 +421,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
         }
     };
     if o.ext {
-        eprintln!("apoth icat: --ext (a separate media window) is not in this build");
-        return ERROR;
+        return ext(&o);
     }
     let Some(mut tty) = Tty::open() else {
         eprintln!("apoth icat: not in a terminal");
@@ -403,7 +440,7 @@ pub(crate) fn run(args: &[String]) -> i32 {
     let base = o
         .image_id
         .unwrap_or_else(|| (session.wrapping_mul(2_654_435_761) >> 8 & 0xFF_FF00) | 1);
-    let mut out = format!("\x1b_Ma=b,i={session}\x1b\\").into_bytes();
+    let mut out = format!("\x1b_Ma=b,i={session},p={session}\x1b\\").into_bytes();
     let mut animated: Vec<(u32, u64)> = Vec::new();
     let mut failed = false;
     for (n, f) in o.files.iter().enumerate() {
@@ -469,6 +506,143 @@ pub(crate) fn run(args: &[String]) -> i32 {
         ERROR
     } else {
         OK
+    }
+}
+
+/// Widest media window, in cells.
+const EXT_MAX_COLS: u32 = 160;
+/// Raw bytes per `media.window-write` (its base64 stays well inside one wire line).
+const EXT_WRITE: usize = 384 * 1024;
+
+/// A file's bytes and its decoded frames (with their delays).
+pub(crate) type Decoded = (Vec<u8>, Vec<(apoth_image::Image, i32)>);
+
+/// Place every decoded file under the previous one, at column 0 of a fresh grid.
+/// Returns the bytes and the grid (cols, rows) they need.
+pub(crate) fn ext_layout(files: &[Decoded], o: &Opts, cell: (u32, u32)) -> (Vec<u8>, (u32, u32)) {
+    let mut out = b"\x1b[?25l".to_vec();
+    let (mut cols, mut top) = (1u32, 0u32);
+    let base = o.image_id.unwrap_or(1);
+    for (n, (raw, frames)) in files.iter().enumerate() {
+        let Some((root, _)) = frames.first() else {
+            continue;
+        };
+        let (c, r) = fit(root.width, root.height, cell, EXT_MAX_COLS);
+        if top + r > apoth_proto::params::MAX_MEDIA_CELLS {
+            break;
+        }
+        let one = Opts {
+            place: Some((c, r, 0, top)),
+            unicode: false,
+            ..o.clone()
+        };
+        let id = (base + n as u32) & 0xFF_FFFF;
+        render(&mut out, id.max(1), raw, frames, &one, cell, c);
+        cols = cols.max(c);
+        top += r;
+    }
+    (out, (cols, top.max(1)))
+}
+
+fn ext(o: &Opts) -> i32 {
+    use apoth_proto::Params;
+    use apoth_proto::params::{Hello, MediaWindowOpen, MediaWindowWait, MediaWindowWrite};
+    let limits = Limits::default();
+    let mut files = Vec::new();
+    let mut failed = false;
+    for (n, f) in o.files.iter().enumerate() {
+        let decoded = read_file(f)
+            .map_err(|e| format!("cannot read file {}: {}", n + 1, e.kind()))
+            .and_then(|raw| {
+                decode_any(&raw, &limits, limits.animation_quota)
+                    .map(|d| (raw, d.frames))
+                    .map_err(|e| format!("file {} is not a supported image ({e:?})", n + 1))
+            });
+        match decoded {
+            Ok(d) => files.push(d),
+            Err(m) => {
+                eprintln!("apoth icat: {m}");
+                failed = true;
+            }
+        }
+    }
+    if files.is_empty() {
+        return ERROR;
+    }
+    let mut tty = Tty::open();
+    let cell = tty.as_ref().map_or((10, 20), |t| t.cells().0);
+    let (bytes, (cols, rows)) = ext_layout(&files, o, cell);
+    let stream = match crate::ctl::connect(None) {
+        Ok(s) => s,
+        Err(crate::ctl::NoInstance(m)) => {
+            eprintln!("apoth icat: {m}");
+            return ERROR;
+        }
+    };
+    let Ok(mut c) = crate::ctl::Client::new(stream) else {
+        return ERROR;
+    };
+    let hello = Params::Hello(Hello {
+        proto: apoth_proto::message::PROTO_VERSION,
+        client: "apoth icat".into(),
+        want: Vec::new(),
+    });
+    let opened = c.call(hello).and_then(|_| {
+        c.call(Params::MediaWindowOpen(MediaWindowOpen {
+            cols,
+            rows,
+            title: Some("apoth icat".into()),
+        }))
+    });
+    let window = match opened {
+        Ok(v) => v
+            .get("window")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0),
+        Err(e) => {
+            eprintln!("apoth icat: {}", e.message);
+            return ERROR;
+        }
+    };
+    for chunk in bytes.chunks(EXT_WRITE) {
+        let w = Params::MediaWindowWrite(MediaWindowWrite {
+            window,
+            data: b64(chunk),
+        });
+        if let Err(e) = c.call(w) {
+            eprintln!("apoth icat: {}", e.message);
+            return ERROR;
+        }
+    }
+    let Ok(wait) = c.send(Params::MediaWindowWait(MediaWindowWait { window })) else {
+        return ERROR;
+    };
+    if c.unbounded().is_err() {
+        return ERROR;
+    }
+    // Ctrl+C is a byte while we wait; the window's close is the reply.
+    let interrupted = match tty.as_mut() {
+        Some(t) => {
+            t.keys_raw();
+            !c.buffered() && t.key_or(c.stream().as_fd())
+        }
+        None => false,
+    };
+    if interrupted {
+        // Dropping the connection closes the window.
+        drop(c);
+        drop(tty);
+        return INTERRUPTED;
+    }
+    let closed = c.reply(wait);
+    drop(tty);
+    match closed {
+        Ok(_) if failed => ERROR,
+        Ok(_) => OK,
+        Err(e) => {
+            eprintln!("apoth icat: {}", e.message);
+            ERROR
+        }
     }
 }
 
@@ -545,5 +719,33 @@ mod tests {
         let mut out = Vec::new();
         assert!(!render(&mut out, 9, b"GIF89a", &frames, &o, (8, 16), 80));
         assert!(!String::from_utf8(out).unwrap().contains("a=f"));
+    }
+
+    #[test]
+    fn ext_stacks_files_in_a_grid_that_fits_them() {
+        let img = |w: u32, h: u32| apoth_image::Image {
+            width: w,
+            height: h,
+            rgba: vec![9; (w * h * 4) as usize],
+        };
+        let files = vec![
+            (b"GIF89a".to_vec(), vec![(img(16, 32), 0)]),
+            (b"GIF89a".to_vec(), vec![(img(24, 16), 0)]),
+        ];
+        let (out, grid) = ext_layout(&files, &Opts::default(), (8, 16));
+        // 2x2 cells, then 3x1 under it: 3 columns, 3 rows.
+        assert_eq!(grid, (3, 3));
+        let t = String::from_utf8(out).unwrap();
+        assert!(t.starts_with("\x1b[?25l"));
+        assert!(t.contains("\x1b7\x1b[1;1H"), "{t:?}");
+        assert!(t.contains("\x1b7\x1b[3;1H"), "{t:?}");
+        assert!(t.contains("c=2,r=2,z=0,C=1"));
+        assert!(t.contains("c=3,r=1,z=0,C=1"));
+        // A grid as wide as an image is never wider than the window cap.
+        let wide = vec![(b"GIF89a".to_vec(), vec![(img(8000, 8), 0)])];
+        assert_eq!(
+            ext_layout(&wide, &Opts::default(), (8, 16)).1.0,
+            EXT_MAX_COLS
+        );
     }
 }

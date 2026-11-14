@@ -245,11 +245,15 @@ impl App {
     fn ctl_drop(&mut self, cid: u64) {
         let Some(ctl) = self.ctl.as_mut() else { return };
         ctl.waits.retain(|w| w.0 != cid);
+        let had = ctl.clients.contains_key(&cid);
         if let Some(c) = ctl.clients.remove(&cid) {
             for t in c.tokens.into_iter().chain(c.write) {
                 self.lh.remove(t);
             }
             tracing::debug!(pid = c.peer.pid, "socket client disconnected");
+        }
+        if had {
+            self.media_drop_client(cid);
         }
     }
 
@@ -698,6 +702,9 @@ impl App {
                 Ok(Some(serde_json::Value::Null))
             }
             Params::Launch(l) => self.ctl_launch(cid, req.id, *l),
+            Params::MediaWindowOpen(p) => self.media_open(cid, p),
+            Params::MediaWindowWrite(p) => self.media_write(cid, p),
+            Params::MediaWindowWait(p) => self.media_wait(cid, req.id, p),
             Params::PaneBlocks(_)
             | Params::ConfigEffective(_)
             | Params::KeyboardState(_)

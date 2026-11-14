@@ -315,6 +315,7 @@ dependencies = [
  "apoth-ui",
  "apoth-unicode",
  "apoth-wl",
+ "base64",
  "calloop",
  "ec-theme",
  "proptest",

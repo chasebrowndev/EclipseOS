@@ -170,8 +170,14 @@ type VirtOrigin = (Part, u32, u32, i64, i64);
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Session {
     id: u64,
-    /// Foreground process group bound by the caller (0: not yet bound).
+    /// Foreground process group bound by the caller (0: not yet bound). Only for a
+    /// session without a watched pid.
     pgid: i32,
+    /// `p=`: the command's pid, which the caller watches for exit (0: none, or the caller
+    /// could not watch it and fell back to the process group rule).
+    pid: i32,
+    /// The caller has taken `pid` to watch.
+    watched: bool,
 }
 
 #[derive(Debug)]
@@ -302,7 +308,40 @@ impl Graphics {
 
     /// Sessions opened but not yet bound to a process group (the caller binds them).
     pub(crate) fn unbound_sessions(&self) -> impl Iterator<Item = u64> + '_ {
-        self.sessions.iter().filter(|s| s.pgid == 0).map(|s| s.id)
+        self.sessions
+            .iter()
+            .filter(|s| s.pgid == 0 && s.pid == 0)
+            .map(|s| s.id)
+    }
+
+    /// Sessions with a `p=` pid nobody watches yet; marks them watched.
+    pub(crate) fn take_session_pids(&mut self) -> Vec<(u64, i32)> {
+        let mut out = Vec::new();
+        for s in &mut self.sessions {
+            if s.pid != 0 && !s.watched {
+                s.watched = true;
+                out.push((s.id, s.pid));
+            }
+        }
+        out
+    }
+
+    /// The caller cannot watch session `id`'s pid: the process group rule applies.
+    pub(crate) fn unwatch_session(&mut self, id: u64) {
+        for s in &mut self.sessions {
+            if s.id == id {
+                s.pid = 0;
+            }
+        }
+    }
+
+    pub(crate) fn has_session(&self, id: u64) -> bool {
+        self.sessions.iter().any(|s| s.id == id)
+    }
+
+    /// A session relies on the process group rule (the caller re-checks it on a timer).
+    pub(crate) fn has_group_sessions(&self) -> bool {
+        self.sessions.iter().any(|s| s.pid == 0)
     }
 
     pub(crate) fn sessions_empty(&self) -> bool {
@@ -313,7 +352,7 @@ impl Graphics {
     pub(crate) fn sessions_not_in(&self, fg: i32) -> impl Iterator<Item = u64> + '_ {
         self.sessions
             .iter()
-            .filter(move |s| s.pgid != 0 && s.pgid != fg)
+            .filter(move |s| s.pid == 0 && s.pgid != 0 && s.pgid != fg)
             .map(|s| s.id)
     }
 
@@ -928,10 +967,17 @@ impl Machine {
         let Some(body) = buf.strip_prefix(b"M") else {
             return;
         };
-        let (mut verb, mut id) = (0u8, 0u64);
+        let (mut verb, mut id, mut pid) = (0u8, 0u64, 0i32);
         for kv in body.split(|&b| b == b',') {
             match kv {
                 [b'a', b'=', v] => verb = *v,
+                [b'p', b'=', rest @ ..] if !rest.is_empty() && rest.len() <= 10 => {
+                    pid = std::str::from_utf8(rest)
+                        .ok()
+                        .and_then(|t| t.parse().ok())
+                        .filter(|&p: &i32| p > 0)
+                        .unwrap_or(0);
+                }
                 [b'i', b'=', rest @ ..] if !rest.is_empty() && rest.len() <= 10 => {
                     id = std::str::from_utf8(rest)
                         .ok()
@@ -950,7 +996,12 @@ impl Machine {
                 if self.gfx.sessions.len() >= 16 {
                     self.gfx.sessions.remove(0);
                 }
-                self.gfx.sessions.push(Session { id, pgid: 0 });
+                self.gfx.sessions.push(Session {
+                    id,
+                    pgid: 0,
+                    pid,
+                    watched: false,
+                });
             }
             b'e' => self.session_end(id, false),
             _ => {}

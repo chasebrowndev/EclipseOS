@@ -75,6 +75,9 @@ pub trait ChromeSink {
     /// An unantialiased rect of one straight-alpha colour: glyph coverage from the text
     /// bridge.
     fn flat(&mut self, rect: Rect, colour: [u8; 4]);
+    /// Ends a layer: the items so far draw under the next floating pane (see
+    /// [`ChromeList::marks`]). Sinks without layers ignore it.
+    fn layer(&mut self) {}
 }
 
 /// Straight to premultiplied RGBA8.
@@ -138,6 +141,11 @@ pub struct ChromeList {
     /// Instances in paint order.
     pub instances: Vec<ChromeInstance>,
     clips: Vec<[f32; 4]>,
+    /// Layer ends, as instance counts: layer `k` is `marks[k-1]..marks[k]` (from 0), the
+    /// last layer runs to the end. The renderer draws layer `k < marks.len()` right before
+    /// the pane [`crate::renderer::FrameInput::chrome_before`] names, the last after every
+    /// pane.
+    pub marks: Vec<u32>,
 }
 
 impl ChromeList {
@@ -151,6 +159,23 @@ impl ChromeList {
     pub fn clear(&mut self) {
         self.instances.clear();
         self.clips.clear();
+        self.marks.clear();
+    }
+
+    /// Instance range of layer `k` (see [`ChromeList::marks`]).
+    #[must_use]
+    pub fn layer_range(&self, k: usize) -> std::ops::Range<u32> {
+        let start = if k == 0 {
+            0
+        } else {
+            self.marks.get(k - 1).copied().unwrap_or(0)
+        };
+        let end = self
+            .marks
+            .get(k)
+            .copied()
+            .unwrap_or(self.instances.len() as u32);
+        start.min(end)..end
     }
 
     /// No items.
@@ -222,6 +247,10 @@ impl ChromeSink for ChromeList {
 
     fn pop_clip(&mut self) {
         self.clips.pop();
+    }
+
+    fn layer(&mut self) {
+        self.marks.push(self.instances.len() as u32);
     }
 }
 
@@ -437,6 +466,41 @@ impl ChromePass {
             cap,
             bytes: Vec::new(),
         }
+    }
+
+    /// Uploads the list's instances and the target size for [`ChromePass::draw_range`]
+    /// inside a pass the caller owns. False for an empty list (nothing to draw).
+    pub fn upload(&mut self, target_size: (u32, u32), list: &ChromeList) -> bool {
+        if list.is_empty() {
+            return false;
+        }
+        self.bytes.clear();
+        for i in &list.instances {
+            i.pack(&mut self.bytes);
+        }
+        let need = self.bytes.len() as u64;
+        if need > self.cap {
+            self.cap = need.next_power_of_two();
+            self.vb = vertex_buffer(&self.device, self.cap);
+        }
+        self.queue.write_buffer(&self.vb, 0, &self.bytes);
+        let mut u = [0u8; UNIFORM_BYTES as usize];
+        u[0..4].copy_from_slice(&(target_size.0 as f32).to_le_bytes());
+        u[4..8].copy_from_slice(&(target_size.1 as f32).to_le_bytes());
+        self.queue.write_buffer(&self.ubo, 0, &u);
+        true
+    }
+
+    /// Draws instances `range` of the last [`ChromePass::upload`] into `pass`.
+    pub fn draw_range(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        if range.is_empty() {
+            return;
+        }
+        let need = self.bytes.len() as u64;
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind, &[]);
+        pass.set_vertex_buffer(0, self.vb.slice(..need));
+        pass.draw(0..4, range);
     }
 
     /// Records the list into `enc` over `target` (existing contents kept). Does nothing for an

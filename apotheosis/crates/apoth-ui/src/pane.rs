@@ -26,6 +26,8 @@ pub struct PaneSpec {
     pub mode: FrameMode,
     /// `panes.inactive-dim`, 0 disables.
     pub inactive_dim: f32,
+    /// A floating pane (MUX-18): stands on its own glass ([`draw_float_backing`]).
+    pub floating: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -105,6 +107,19 @@ pub fn draw(s: &PaneSpec, l: &PaneLayout, pal: &Palette, out: &mut DrawList) {
             None,
         );
     }
+}
+
+/// The glass a floating pane stands on, drawn before (under) its grid: a soft shadow for
+/// depth and the frost + tint layer, so the panes beneath cannot ghost through its text.
+/// Its rim and dim come from [`draw`], over the grid.
+pub fn draw_float_backing(s: &PaneSpec, pal: &Palette, out: &mut DrawList) {
+    out.cmds.push(crate::draw::Cmd::Shadow {
+        rect: s.rect,
+        radius: radius::INSET,
+        spread: space::MD,
+        alpha: pal.shadow.a(),
+    });
+    crate::state::glass(out, s.rect, radius::INSET, crate::tokens::Rgba::CLEAR, pal);
 }
 
 /// A draggable divider between panes.
