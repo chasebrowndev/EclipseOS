@@ -1,0 +1,11 @@
+fixture "sgr-underline-single" {
+  desc "SGR 4 alone is 4:1"
+  covers "T03-SGR-BASIC" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[4mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" ul="single" attrs=""
+}

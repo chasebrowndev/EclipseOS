@@ -1,0 +1,11 @@
+fixture "cur-dectcem-hide-show" {
+  desc "cur dectcem hide show (migrated from the apoth-term corpus)"
+  covers "T03-DECTCEM"
+  size rows=2 cols=4
+  feed #"\e[?25l"#
+  checkpoint "c1" {
+    cursor row=0 col=0 visible=#false
+  }
+  feed #"\e[?25h"#
+  cursor row=0 col=0 visible=#true
+}

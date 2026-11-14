@@ -1,0 +1,10 @@
+fixture "scroll-lnm-reset" {
+  covers "T03-LNM"
+  size rows=3 cols=10
+  feed #"\e[20h\e[20lAB\nC"#
+  grid {
+    row "AB"
+    row "  C"
+  }
+  cursor row=1 col=3
+}

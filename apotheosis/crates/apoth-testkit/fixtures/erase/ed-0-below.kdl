@@ -1,0 +1,11 @@
+fixture "ed-0-below" {
+  desc "ed 0 below (migrated from the apoth-term corpus)"
+  covers "T03-ED"
+  size rows=3 cols=4
+  feed #"aaaa\r\nbbbb\r\ncccc\e[2;3H\e[J"#
+  grid {
+    row "aaaa"
+    row "bb"
+    row ""
+  }
+}

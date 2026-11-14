@@ -1,0 +1,9 @@
+fixture "esc-ls3-locking" {
+  desc "esc ls3 locking (migrated from the apoth-term corpus)"
+  covers "T03-CHARSET"
+  size rows=1 cols=4
+  feed #"\e+0\eoqq"#
+  grid {
+    row "──"
+  }
+}

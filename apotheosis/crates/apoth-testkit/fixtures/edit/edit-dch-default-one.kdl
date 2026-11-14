@@ -1,0 +1,9 @@
+fixture "edit-dch-default-one" {
+  desc "edit dch default one (migrated from the apoth-term corpus)"
+  covers "T03-ICH-DCH"
+  size rows=1 cols=8
+  feed #"abcdef\e[1;3H\e[P"#
+  grid {
+    row "abdef"
+  }
+}

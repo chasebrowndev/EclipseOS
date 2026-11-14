@@ -1,0 +1,8 @@
+fixture "cur-erase-keeps-cursor" {
+  desc "cur erase keeps cursor (migrated from the apoth-term corpus)"
+  covers "T03-ED"
+  size rows=2 cols=5
+  feed #"ab\e[2J"#
+  grid
+  cursor row=0 col=2
+}

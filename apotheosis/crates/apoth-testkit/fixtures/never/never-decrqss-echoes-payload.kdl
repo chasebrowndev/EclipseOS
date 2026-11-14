@@ -1,0 +1,7 @@
+fixture "never-decrqss-echoes-payload" {
+  desc "never decrqss echoes payload (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=2 cols=4
+  feed #"\eP$qHELLO\e\\"#
+  replies #"\eP0$r\e\\"#
+}

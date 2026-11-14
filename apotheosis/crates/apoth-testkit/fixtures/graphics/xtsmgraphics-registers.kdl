@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "xtsmgraphics-registers" {
+  desc "XTSMGRAPHICS reads, sets (clamped) and resets colour registers"
+  covers "T03-GRAPHICS-SIXEL"
+  size rows=2 cols=6
+  feed #"\e[?1;1S\e[?1;3;5000S\e[?1;2S\e[?1;4S"#
+  replies #"\e[?1;0;1024S\e[?1;0;1024S\e[?1;0;1024S\e[?1;0;1024S"#
+}

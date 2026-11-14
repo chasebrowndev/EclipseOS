@@ -1,0 +1,10 @@
+fixture "charset-so-si-g1" {
+  desc "SO selects G1 into GL, SI selects G0"
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e)0\x0eq\x0fq"#
+  grid {
+    row "─q"
+  }
+  cursor row=0 col=2
+}

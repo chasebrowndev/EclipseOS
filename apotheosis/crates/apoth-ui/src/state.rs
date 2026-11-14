@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//! Retained per-widget state keyed by stable ids, and the state -> colour mapping.
+
+use crate::draw::{DrawList, Rim};
+use crate::geom::Rect;
+use crate::tokens::{Palette, Rgba, alpha, metrics};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct WidgetId(pub u64);
+
+impl WidgetId {
+    /// A stable child id: same parent and index always give the same id.
+    pub fn child(self, n: u64) -> WidgetId {
+        WidgetId(self.0.wrapping_mul(0x0000_0100_0000_01b3).rotate_left(7) ^ n.wrapping_add(1))
+    }
+}
+
+/// Pointer and keyboard interaction state for the whole interface.
+#[derive(Clone, Debug, Default)]
+pub struct UiState {
+    pub hover: Option<WidgetId>,
+    pub pressed: Option<WidgetId>,
+    pub focus: Option<WidgetId>,
+    /// Focus arrived by keyboard: only then is a focus rim drawn (T-08 §5).
+    pub focus_from_keyboard: bool,
+}
+
+impl UiState {
+    pub fn set_hover(&mut self, id: Option<WidgetId>) {
+        self.hover = id;
+    }
+
+    pub fn press(&mut self, id: WidgetId) {
+        self.pressed = Some(id);
+        self.focus = Some(id);
+        self.focus_from_keyboard = false;
+    }
+
+    pub fn release(&mut self) -> Option<WidgetId> {
+        self.pressed.take()
+    }
+
+    pub fn focus_by_keyboard(&mut self, id: WidgetId) {
+        self.focus = Some(id);
+        self.focus_from_keyboard = true;
+    }
+
+    /// The five visual states of one control.
+    pub fn control(&self, id: WidgetId, disabled: bool, selected: bool) -> ControlState {
+        ControlState {
+            hover: self.hover == Some(id),
+            pressed: self.pressed == Some(id),
+            focus_kb: self.focus == Some(id) && self.focus_from_keyboard,
+            disabled,
+            selected,
+        }
+    }
+}
+
+/// Rest / hover / pressed / keyboard-focused / disabled, plus `selected` (active tab,
+/// primary button), which uses the brighter "focus" fill family.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ControlState {
+    pub hover: bool,
+    pub pressed: bool,
+    pub focus_kb: bool,
+    pub disabled: bool,
+    pub selected: bool,
+}
+
+/// Fill and rim for a control: focus and selection are a brighter fill plus a crisp rim.
+pub fn surface(p: &Palette, s: ControlState) -> (Rgba, Rim) {
+    let bright = s.selected || s.focus_kb;
+    let active = !s.disabled;
+    let fill = match (bright, active && s.pressed, active && s.hover) {
+        (true, true, _) => p.cell_focus_press,
+        (true, _, true) => p.cell_focus_hover,
+        (true, _, _) => p.cell_focus,
+        (false, true, _) => p.cell_press,
+        (false, _, true) => p.cell_hover,
+        _ => p.cell,
+    };
+    let rim = if s.focus_kb && active {
+        Rim {
+            width: metrics::FOCUS_RIM_W,
+            colour: p.accent,
+        }
+    } else {
+        let colour = match (bright, active && s.hover) {
+            (true, true) => p.cell_focus_rim_hover,
+            (true, false) => p.cell_focus_rim,
+            (false, true) => p.cell_rim_hover,
+            (false, false) => p.cell_rim,
+        };
+        Rim {
+            width: metrics::RIM_W,
+            colour,
+        }
+    };
+    if s.disabled {
+        (
+            fill,
+            Rim {
+                width: rim.width,
+                colour: p.hairline,
+            },
+        )
+    } else {
+        (fill, rim)
+    }
+}
+
+/// Label colour for a control state.
+pub fn label_colour(p: &Palette, s: ControlState) -> Rgba {
+    if s.disabled {
+        p.text_tertiary
+    } else if s.selected || s.hover || s.focus_kb {
+        p.text
+    } else {
+        p.text_secondary
+    }
+}
+
+/// A floating glass layer: frost under the sheet tint so the grid beneath cannot ghost
+/// through its text, a hairline `rim` (the compositor draws no rim inside the window).
+pub fn glass(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette) {
+    glass_faded(out, rect, radius, rim, pal, 1.0);
+}
+
+/// [`glass`] at opacity `k` in `0..=1` (a fading layer): every alpha is scaled by `k`.
+pub fn glass_faded(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette, k: f32) {
+    out.rect(rect, radius, pal.base.alpha(alpha::BACKING).scaled(k), None);
+    out.rect(rect, radius, pal.sheet_tint.scaled(k), None);
+    // The light catches the layer: one cell step of lift, so it reads as a pane above the
+    // window and not as a hole in it.
+    out.rect(
+        rect,
+        radius,
+        pal.cell.scaled(k),
+        Some(Rim {
+            width: metrics::RIM_W,
+            colour: rim.scaled(k),
+        }),
+    );
+}

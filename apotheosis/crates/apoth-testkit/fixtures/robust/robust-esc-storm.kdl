@@ -1,0 +1,10 @@
+fixture "robust-esc-storm" {
+  desc "ESC restarts a sequence, so a stream of ESC [ pairs consumes nothing"
+  covers "T03-SEQ-ROBUST" "T03-C0-ABORT"
+  size rows=3 cols=10
+  feed #"\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\e[\x18X"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+}

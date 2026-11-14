@@ -1,0 +1,10 @@
+fixture "robust-csi-intermediate-overflow" {
+  desc "more than 4 intermediates: the sequence is ignored"
+  covers "T03-SEQ-ROBUST"
+  size rows=3 cols=10
+  feed ##"\e[ !"#$%mX"##
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+}

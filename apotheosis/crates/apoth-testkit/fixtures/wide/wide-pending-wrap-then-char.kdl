@@ -1,0 +1,10 @@
+fixture "wide-pending-wrap-then-char" {
+  covers "T03-WIDE" "T03-AUTOWRAP"
+  size rows=3 cols=6
+  feed #"ABCD日E"#
+  grid {
+    row "ABCD日"
+    row "E"
+  }
+  cursor row=1 col=1
+}

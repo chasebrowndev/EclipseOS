@@ -1,0 +1,11 @@
+fixture "cur-autowrap-text-wraps" {
+  desc "cur autowrap text wraps (migrated from the apoth-term corpus)"
+  covers "T03-DECAWM"
+  size rows=3 cols=3
+  feed #"abcdefg"#
+  grid {
+    row "abc"
+    row "def"
+    row "g"
+  }
+}

@@ -1,0 +1,9 @@
+fixture "osc-title-ris-clears-stack" {
+  desc "RIS resets the title stack (T-03 section 3.1)"
+  covers "T03-TITLE-STACK" "T03-RIS"
+  review "RIS may also emit a title-reset event; T-03 does not say"
+  size rows=3 cols=20
+  feed #"\e]2;a\a\e[22t\ec\e[23t"#
+  grid
+  events "title:a"
+}

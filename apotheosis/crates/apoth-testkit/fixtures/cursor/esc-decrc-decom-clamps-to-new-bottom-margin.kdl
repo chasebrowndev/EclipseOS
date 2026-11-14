@@ -1,0 +1,8 @@
+fixture "esc-decrc-decom-clamps-to-new-bottom-margin" {
+  desc "DECRC under DECOM clamps to a margin set after the save; CPR is margin-relative"
+  covers "T03-DECOM" "T03-DECSC" "T03-DSR"
+  size rows=6 cols=10
+  feed #"\e[2;5r\e[?6h\e[4;3H\e7\e[2;3r\e8\e[6n"#
+  cursor row=2 col=2
+  replies #"\e[2;3R"#
+}

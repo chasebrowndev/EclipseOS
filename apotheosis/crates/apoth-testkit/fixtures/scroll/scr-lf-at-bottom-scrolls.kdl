@@ -1,0 +1,10 @@
+fixture "scr-lf-at-bottom-scrolls" {
+  desc "scr lf at bottom scrolls (migrated from the apoth-term corpus)"
+  covers "T03-SCROLL-HISTORY"
+  size rows=2 cols=3
+  feed #"a\r\nb\r\nc"#
+  grid {
+    row "b"
+    row "c"
+  }
+}

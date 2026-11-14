@@ -1,0 +1,10 @@
+fixture "charset-dec-special-only-0x5f-0x7e" {
+  desc "only 0x5F..0x7E are translated"
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e(0AB1#q\e(B"#
+  grid {
+    row "AB1#─"
+  }
+  cursor row=0 col=5
+}
