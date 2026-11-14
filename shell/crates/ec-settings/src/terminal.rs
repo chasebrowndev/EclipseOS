@@ -58,6 +58,7 @@ pub const COLLECTION_KEYS: &[&str] = &[
     "shell.env",
     "security.sequence",
     "socket.grants",
+    crate::term_open::HANDLERS,
 ];
 
 /// The widget a key is edited with, chosen from its type alone.
@@ -193,6 +194,7 @@ pub enum Msg {
     ChangedOnly,
     Reload,
     Lists(crate::term_lists::Msg),
+    Open(crate::term_open::Msg),
 }
 
 /// The pages' state: the loaded config and what is being typed.
@@ -207,6 +209,8 @@ pub struct Terminal {
     write_error: Option<String>,
     /// The collection editors (M27): binds, profiles, rules.
     pub(crate) lists: crate::term_lists::Lists,
+    /// The Open-with rules editor (`open.handlers`).
+    pub(crate) open: crate::term_open::Open,
     drafts: HashMap<&'static str, String>,
     invalid: HashMap<&'static str, String>,
     /// A held slider's position.
@@ -250,6 +254,7 @@ impl Terminal {
         self.user_main = input.user.unwrap_or_default();
         self.cfg = Some(result.config);
         self.lists.refresh(&self.user_main);
+        self.open.refresh(&self.user_main);
     }
 
     pub(crate) fn cfg(&self) -> Config {
@@ -478,6 +483,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
         Msg::ChangedOnly => t.changed_only = !t.changed_only,
         Msg::Reload => t.reload(),
         Msg::Lists(m) => return crate::term_lists::update(app, m),
+        Msg::Open(m) => return crate::term_open::update(app, m),
     }
     Task::none()
 }
@@ -776,6 +782,9 @@ fn key_row<'a>(
     m: &'static Meta,
 ) -> Element<'a, Message, Theme> {
     let path = key.path;
+    if path == crate::term_open::HANDLERS {
+        return crate::term_open::view(t, cfg, m.label);
+    }
     let Some(control) = control_for(&key.ty) else {
         let n = cfg.get(path).and_then(Value::as_map).map_or(0, <[_]>::len);
         return list_row(

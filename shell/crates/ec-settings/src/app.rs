@@ -454,6 +454,8 @@ impl App {
         if app.page.is_terminal() {
             app.terminal.reload();
             crate::terminal::sync_theme(&mut app);
+            #[cfg(debug_assertions)]
+            crate::term_open::preview_env(&mut app);
         }
         if app.page == Page::LoginScreen {
             crate::login_screen::load(&mut app);
