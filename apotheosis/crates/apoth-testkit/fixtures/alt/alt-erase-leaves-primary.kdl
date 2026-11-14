@@ -1,0 +1,10 @@
+fixture "alt-erase-leaves-primary" {
+  covers "T03-ALTSCREEN" "T03-ED"
+  size rows=4 cols=6
+  feed #"AB\e[?1049h\e[2J\e[?1049l"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+  alt #false
+}

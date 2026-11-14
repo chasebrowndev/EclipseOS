@@ -1,0 +1,9 @@
+fixture "c0-can-cancels-csi" {
+  desc "c0 can cancels csi (migrated from the apoth-term corpus)"
+  covers "T03-C0-ABORT"
+  size rows=1 cols=5
+  feed #"\e[1\x18A"#
+  grid {
+    row "A"
+  }
+}

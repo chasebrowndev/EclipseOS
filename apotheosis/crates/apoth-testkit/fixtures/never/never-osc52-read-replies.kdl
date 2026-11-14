@@ -1,0 +1,7 @@
+fixture "never-osc52-read-replies" {
+  desc "never osc52 read replies (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=2 cols=4
+  feed #"\e]52;c;?\a"#
+  replies
+}

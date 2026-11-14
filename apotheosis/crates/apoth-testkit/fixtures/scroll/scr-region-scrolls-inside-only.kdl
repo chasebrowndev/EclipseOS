@@ -1,0 +1,13 @@
+fixture "scr-region-scrolls-inside-only" {
+  desc "scr region scrolls inside only (migrated from the apoth-term corpus)"
+  covers "T03-DECSTBM"
+  size rows=4 cols=3
+  feed #"a\r\nb\r\nc\r\nd\e[2;3r\e[3;1H\n"#
+  grid {
+    row "a"
+    row "c"
+    row ""
+    row "d"
+  }
+  cursor row=2 col=0
+}

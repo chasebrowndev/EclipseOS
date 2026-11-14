@@ -1,0 +1,9 @@
+fixture "wrap-cup-clears-pending" {
+  covers "T03-AUTOWRAP" "T03-CUP"
+  size rows=3 cols=5
+  feed #"ABCDE\e[1;5HF"#
+  grid {
+    row "ABCDF"
+  }
+  cursor row=0 col=4
+}

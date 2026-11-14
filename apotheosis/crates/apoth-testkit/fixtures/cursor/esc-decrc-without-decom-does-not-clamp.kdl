@@ -1,0 +1,7 @@
+fixture "esc-decrc-without-decom-does-not-clamp" {
+  desc "DECRC with DECOM off restores the absolute position whatever the margins"
+  covers "T03-DECOM" "T03-DECSC"
+  size rows=6 cols=10
+  feed #"\e[6;10H\e7\e[2;3r\e8"#
+  cursor row=5 col=9
+}

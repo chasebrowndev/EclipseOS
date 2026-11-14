@@ -182,6 +182,28 @@ impl PinTable {
         }
     }
 
+    /// Re-point every live pin through `f`; `None` discards the pin (it becomes garbage).
+    pub(crate) fn remap(&mut self, mut f: impl FnMut(&Pin) -> Option<Pin>) {
+        for (i, e) in self.entries.iter_mut().enumerate() {
+            if let Slot::Live(p, k) = &mut e.slot {
+                match f(p) {
+                    Some(n) => *p = n,
+                    None => {
+                        let k = *k;
+                        e.slot = Slot::Garbage;
+                        self.garbage.push((
+                            PinId {
+                                index: i as u32,
+                                genr: e.genr,
+                            },
+                            k,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     pub(crate) fn take_garbage(&mut self, out: &mut Vec<(PinId, PinKind)>) {
         out.append(&mut self.garbage);
     }

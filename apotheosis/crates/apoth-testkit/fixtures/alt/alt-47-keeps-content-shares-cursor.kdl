@@ -1,0 +1,18 @@
+fixture "alt-47-keeps-content-shares-cursor" {
+  desc "47 neither clears nor saves the cursor"
+  covers "T03-ALTSCREEN"
+  size rows=4 cols=6
+  feed #"\e[?47hX\e[?47lY"#
+  checkpoint "back-on-primary" {
+    grid {
+      row " Y"
+    }
+    alt #false
+  }
+  feed #"\e[?47h"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=2
+  alt #true
+}

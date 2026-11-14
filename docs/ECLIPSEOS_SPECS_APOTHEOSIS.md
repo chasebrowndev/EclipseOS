@@ -1892,9 +1892,12 @@ user-run `ssh -R` forward of the socket is treated as an ordinary client.
 `focus`, `close`, `send-text`, `send-keys`, `get-text`, `do '<action>; <action>'`
 (textual action syntax identical to KDL `do` bodies), `subscribe`, `notify`, `set`/`reset`
 (runtime overrides: `config.set`/`config.reset` over the socket, class per the key's
-override class), `config …` (T-10 §8: edits or reads the file locally, no socket), `icat`, `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
+override class), `config …` (T-10 §8: edits or reads the file locally, no socket), `icat` (foreground,
+inline by default, `--ext` for a separate window; lifetime rules in T-16 §1.1), `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
 (`list`, `explain <char>`), `doctor` (capability and environment report), `completions`.
 `--json` everywhere; exit codes: 0 ok, 1 error, 2 usage, 3 denied, 4 no instance.
+Inside Apotheosis panes the shell-integration snippets (T-14 §2) define `ap` as a short
+alias of `apoth`; nothing is installed system-wide, and no other short names are defined.
 `apotheosis` itself (the GUI binary) accepts `-e argv…`, `--cwd`, `--title`, `--app-id`,
 `--profile`, `--layout`, `--hold`, `-o key=value`, `--new-instance`, `--wait`. A second
 launch sends one `launch` request (cwd, env, argv, activation token, overrides) to the
@@ -2038,6 +2041,8 @@ user's value; bash by `--rcfile` shim / `PROMPT_COMMAND`; fish and nushell throu
 `XDG_DATA_DIRS`. `shell-integration.enabled` `auto|off`; feature flags `cursor`, `title`,
 `cwd`, `marks`, `sudo-terminfo`. Shells that emit OSC 133 natively need nothing.
 `apoth shell-init <shell>` prints the snippet for manual use.
+Each snippet defines `ap` as an alias of `apoth` (T-12 §5), only when `APOTHEOSIS_PANE`
+is set, so a manually sourced snippet has no effect outside a pane.
 
 ## 3. Working directory and process
 OSC 7 (`file://host/path`, percent-decoded; non-local host ignored for local spawns) is
@@ -2222,6 +2227,29 @@ side in `apotheosis`. Implements MEDIA-01..03, -05, -07..-10, -13, -15..-17, -20
 Software H.264 via a pure-Rust decoder (MEDIA-31) is admitted only after it passes the
 helper fuzz and conformance gates; software VP9 and HEVC are not planned. Without VA-API,
 those codecs play through Tier A (mpv decodes).
+
+### 1.1 `apoth icat` and `apoth play` lifetime
+Owner requirement (recorded at M32 for `icat`, binding on `play` at M34):
+- **Inline by default.** The command runs in the foreground of the pane it was started
+  in. Animations (and, for `play`, video) stay live while it runs. Ctrl+C deletes the
+  command's own placements, restores the tty and exits 130. A still image from a normal
+  exit stays in the scrollback; animations and video are removed when the command ends,
+  however it ends.
+- **Terminal-side cleanup.** A placement must never outlive a command that died without
+  cleaning up (SIGKILL: no frozen frame is left). The command opens a session in-band,
+  `ESC _ M a=b,i=<n> ESC \` (`n`: a per-invocation id, the pid), before its first image
+  and closes it with `a=e,i=<n>` on a normal exit. Placements made while a session is
+  open belong to it. The terminal binds an open session to the pty's foreground process
+  group and, whenever that group no longer holds the foreground with the session still
+  open, deletes every placement of the session. A clean `a=e` keeps the session's still
+  images and deletes its animated ones. The check is one `tcgetpgrp` per io step and only
+  while a session is open (no timer). Other `M` commands are the §2 protocol.
+- **`--ext` / `-x`.** Asks the instance over the control socket to open a separate
+  borderless glass window showing only the media. The command stays in the foreground
+  until that window closes; Ctrl+C in the origin pane closes the window, and closing the
+  window ends the command.
+- Tests: Ctrl+C cleanup and SIGKILL cleanup on the headless session (no placement left,
+  exit 130 for Ctrl+C); `--ext` opens and closes its window headlessly.
 
 ## 2. Media placement protocol
 An APC namespace of our own, `ESC _ M <keys> ; <payload> ESC \`, key=value control data
@@ -2419,6 +2447,10 @@ On Abyss, blur through `ext_background_effect_v1` only, with one region box cove
   `ext.echo=true` is sent when the state and its grace end. For Apotheosis, `ext.echo` is
   driven by the credential predicate, not by raw `ECHO`. The reserved `ext.credential`
   key (COMP-09 §2, S-08 §3.2) is not used.
+- **What stays visible.** The `terminal` node hangs under a window node the host owns
+  (ADR 0114). While the credential state holds, agents see that bare window node (role
+  `window`, no text) and nothing beneath it: the terminal subtree and all text are
+  withheld. The window's existence is not secret (owner decision 2026-11-13).
 - **Remote panes.** Inside a remote pane (T-18 §10) the local PTY is raw, so a remote
   `sudo` or `passwd` prompt never shows the credential predicate locally. Remote panes
   are therefore treated as possibly in the credential state for keystroke egress: the

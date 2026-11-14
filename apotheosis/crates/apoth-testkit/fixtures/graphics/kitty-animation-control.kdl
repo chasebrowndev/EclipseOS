@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-animation-control" {
+  desc "a=a on a missing image is ENOENT; on a loaded one OK (M32)"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e_Ga=a,i=7,s=3\e\\\e_Ga=t,f=24,s=2,v=1,i=8,q=1;/wAA/wAA\e\\\e_Ga=a,i=8,s=3\e\\"#
+  replies #"\e_Gi=7;ENOENT:no such image\e\\\e_Gi=8;OK\e\\"#
+}
