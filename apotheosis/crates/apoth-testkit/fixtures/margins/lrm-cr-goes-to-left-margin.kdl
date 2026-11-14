@@ -1,0 +1,9 @@
+fixture "lrm-cr-goes-to-left-margin" {
+  covers "T03-DECLRMM" "VTCORE-31"
+  size rows=3 cols=8
+  feed #"\e[?69h\e[3;6s\e[1;5HX\rY"#
+  grid {
+    row "  Y X"
+  }
+  cursor row=0 col=3
+}

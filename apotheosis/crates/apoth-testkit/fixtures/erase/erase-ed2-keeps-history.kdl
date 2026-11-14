@@ -1,0 +1,12 @@
+fixture "erase-ed2-keeps-history" {
+  desc "ED 2 does not touch the saved lines"
+  covers "T03-ED3-HISTORY" "T03-ED"
+  size rows=3 cols=4
+  feed #"1\r\n2\r\n3\r\n4\r\n5\e[2J"#
+  grid
+  cursor row=2 col=1
+  scrollback {
+    row "1"
+    row "2"
+  }
+}

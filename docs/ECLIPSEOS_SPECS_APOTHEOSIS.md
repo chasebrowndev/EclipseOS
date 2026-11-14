@@ -1503,7 +1503,7 @@ per key. Off EclipseOS the paths are `$XDG_CONFIG_HOME/apotheosis/apotheosis.kdl
 ## 3. Shape of the file
 Top-level nodes: `version`, `font`, `colors`, `theme`, `unicode`, `window`, `interface`,
 `tabs`, `panes`, `close`, `scrollbar`, `cursor`, `scrollback`, `blocks`, `mouse`, `touch`,
-`keyboard`, `selection`, `clipboard`, `paste`, `links`, `hints`, `shell`,
+`keyboard`, `selection`, `clipboard`, `paste`, `links`, `open`, `hints`, `shell`,
 `shell-integration`, `terminal`, `bell`, `notifications`, `progress`, `graphics`, `media`,
 `render`, `security`, `accessibility`, `socket`, `sessions`, `domain`, `quick-terminal`,
 `binds`, `mouse-binds`, `key-table`, `macro`, `rule`, `profile`, `layout`, `menu`,
@@ -1511,6 +1511,15 @@ Top-level nodes: `version`, `font`, `colors`, `theme`, `unicode`, `window`, `int
 predicates (`compositor`, `host`, `scheme`, `on-battery`, `scale`) and wraps any nodes.
 Runtime mode conditions on binds are a different option, `mode=` (T-11 §3). The complete
 key list is the generated reference; the spec does not duplicate it.
+
+`open` (T-14 §11): `open.placement` enum `float|inline|window`, default `float` (where a
+terminal handler shows); `open.handlers` map, default empty, `<type> <handler>
+[placement]` per entry, where `<type>` is `type/subtype` or `type/*` (a URL's type is
+`x-scheme-handler/<scheme>`) and `<handler>` is `apoth-icat`, `apoth-play`,
+`<id>.desktop` or `opener` (`links.open-command`); only the two terminal handlers take a
+placement. An entry that does not parse is dropped with a diagnostic. "Remember for
+<type>" in the picker writes one entry through the editor (§5). Both keys have GUI rows
+(Settings → Security → Links, "Open with").
 
 Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10).
 
@@ -1530,8 +1539,9 @@ Security additions: a `security { <class> allow|ask|deny }` child block under `d
 ## 5. Editing
 - `apoth-config::edit` operates on a lossless KDL document (comments, ordering, unknown
   nodes preserved), changing only the affected nodes; writes are temp + fsync + rename.
-- Three editors use it: `apoth config set|unset|add|remove` (edits the file locally, no
-  socket), ec-settings, and the in-terminal `config.save-override` Action (T-11 §1).
+- Three editors use it: `apoth config set|unset|add|remove` and `apoth set` (edit the file
+  locally, no socket; T-12 §5), ec-settings, and the in-terminal `config.save-override`
+  Action (T-11 §1).
 - **Write target.** A write goes to the main user file at top level, unless (a) the
   control was opened in a scoped context — a profile page writes that profile's node, a
   `when` variant selector writes that `when` block — or (b) the key's winning value
@@ -1570,8 +1580,10 @@ change emits the mode-2031 report where enabled (T-03).
 `apoth config validate|show|get|set|unset|explain|diff|migrate|import|path|edit`:
 `validate` exits non-zero with line-numbered diagnostics; `show` prints the effective
 merged config (`--origin`, `--changed-only`, `--json`); `explain <key>` prints the doc
-row; `diff` compares against defaults. These edit or read the file locally; runtime
-overrides are `apoth set`/`reset` (T-12 §5).
+row; `diff` compares against defaults. These edit or read the file locally. `apoth set`
+is the short form of `config set`; runtime overrides (layer 8) are `apoth set --temp` and
+`apoth reset` (T-12 §5). `config set` takes the same `key=value` pairs and key aliases as
+`apoth set`.
 
 ## 9. Test Plan
 Table-driven round-trip tests for every key (default → KDL → parse → equal); comment
@@ -1640,6 +1652,8 @@ carries pane text is `read-content` in addition to its listed class.
 | | destination file, pager, editor or command argv | `read-content` + `spawn` |
 | `pipe` | | `spawn` + `read-content` |
 | `launch`, `open` | | `spawn` |
+| `open.*` (T-14 §11) | `open.default {target?, placement?}` | `spawn` |
+| | `open.with {target?}`, `open.menu {target?}` | `layout`; the launch is the user's pick on the sheet (real seat input, like a consent answer) |
 | `coprocess.run` | | `spawn` + `read-content` + `input` |
 | `macro.run` | | union of its members' classes (§4) |
 | `notify` | | `layout` |
@@ -1826,6 +1840,29 @@ sgr, wrap}`, `pane.blocks` (command records), `config.get`, `config.effective`,
 `version`. Streams: `subscribe {events:[…], match}` / `unsubscribe`; `pane.watch`
 (rendered-row deltas, R2).
 
+Runtime overrides (T-10 §2 layer 8), instance-wide, not targeted:
+- `config.set {key, value}` sets the override of one key; `value` is config text (what
+  follows the key in the file). Its class follows the key's override class (T-10 §1.1,
+  §4 below): `appearance` → `appearance`, `behaviour` → `config-write`; a `security` or
+  `grant` key is refused (`denied`). A value that does not fit the key is `bad-request`.
+- `config.reset {key}` drops that override; same classes. Resetting a key with no
+  override succeeds and changes nothing.
+- Both reply `{key, changed, previous}`: `changed` is whether the effective config
+  changed; `previous` is the override the key had before, in config text form, or `null`.
+  A client undoes a change by setting `previous` again, or resetting when it is `null`.
+- The override layer lives in the instance above the files: a reload replaces the file
+  layers and keeps it; nothing is written to disk; a restart drops it.
+
+Media windows (`apoth icat --ext`, T-16 §1.1), class `layout`, not targeted:
+- `media.window-open {cols, rows, title?}` opens a borderless glass window with one grid
+  of `cols` × `rows` cells (each 1..500) and returns `{window}`. It has no PTY. It belongs
+  to the connection: it closes when the connection closes. At most 8 are open at once.
+- `media.window-write {window, data}` feeds base64 `data` (at most 768 KiB of base64 per
+  request) to the window's grid. Only the owning connection may write. The grid parses and
+  decodes off the main loop. A window more than 64 MiB behind refuses writes.
+- `media.window-wait {window}` is answered with `{closed: true}` once the window has
+  closed (Escape or `q` in it, the compositor's close, or a render failure).
+
 ## 3. Targeting and environment
 Targets use the T-11 §7 match language; default target is `self` when the client runs
 inside a pane. Each pane exports `APOTHEOSIS_SOCKET`, `APOTHEOSIS_PANE`,
@@ -1890,11 +1927,31 @@ user-run `ssh -R` forward of the socket is treated as an ordinary client.
 ## 5. CLI
 `apoth <group> <verb>`; every group maps to methods above: `apoth ls`, `launch`, `split`,
 `focus`, `close`, `send-text`, `send-keys`, `get-text`, `do '<action>; <action>'`
-(textual action syntax identical to KDL `do` bodies), `subscribe`, `notify`, `set`/`reset`
-(runtime overrides: `config.set`/`config.reset` over the socket, class per the key's
-override class), `config …` (T-10 §8: edits or reads the file locally, no socket), `icat`, `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
+(textual action syntax identical to KDL `do` bodies), `subscribe`, `notify`, `set`,
+`reset`, `config …` (T-10 §8: edits or reads the file locally, no socket), `icat` (foreground,
+inline by default, `--ext` for a separate window; lifetime rules in T-16 §1.1), `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
 (`list`, `explain <char>`), `doctor` (capability and environment report), `completions`.
 `--json` everywhere; exit codes: 0 ok, 1 error, 2 usage, 3 denied, 4 no instance.
+
+`set` and `reset`:
+- `apoth set key=value [key=value …]` (or the one-pair form `apoth set key value…`)
+  saves to the user file exactly as `apoth config set` does (T-10 §5: lossless edit,
+  comments kept, temp + rename). It needs no socket; a running instance picks the file
+  up through its hot reload (T-10 §4).
+- `apoth set --temp key=value …` changes only the running instance: one `config.set`
+  per pair (§2). The file is not touched and the change is lost on restart.
+- `apoth reset key …` drops `--temp` overrides (`config.reset`).
+- Keys are schema paths or aliases of them: `_` and `-` stand for any separator, so
+  `font_size` and `font-size` are `font.size`. An alias must match exactly one key; an
+  unknown key is an error naming the nearest key.
+- A set is all-or-nothing. Every pair is checked against the schema (key, type, range,
+  and for `--temp` the override class) before anything is written or sent; a bad pair is
+  exit 1, a `security`/`grant` key under `--temp` exit 3, a malformed pair exit 2. If the
+  instance refuses a `--temp` pair part-way, the client undoes the pairs already applied
+  from their `previous` (§2) and exits with the refusal's code.
+
+Inside Apotheosis panes the shell-integration snippets (T-14 §2) define `ap` as a short
+alias of `apoth`; nothing is installed system-wide, and no other short names are defined.
 `apotheosis` itself (the GUI binary) accepts `-e argv…`, `--cwd`, `--title`, `--app-id`,
 `--profile`, `--layout`, `--hold`, `-o key=value`, `--new-instance`, `--wait`. A second
 launch sends one `launch` request (cwd, env, argv, activation token, overrides) to the
@@ -1950,6 +2007,16 @@ domain (`docker exec`, `distrobox enter`, `kubectl exec`); no callback (MUX-32).
   one-line headers.
 - **Floating layer** (R2, MUX-18..20): per-tab ordered floats with show/hide, pin,
   raise-on-focus, embed/float toggle, placement search.
+  - Actions: `pane.float` (cwd, profile, command — class `spawn` when `command` is given)
+    opens a float. `pane.toggle-float` floats the focused tile or embeds the focused float.
+    `pane.toggle-floats` shows or hides every float of the tab. `pane.toggle-pin` pins a
+    float, keeping it shown when the floats are hidden.
+  - Placement: a new float is half the tab, centred. If that spot is taken by a shown
+    float, it tries the top-left and top-right corners in (2, 1)-cell steps, then staggers
+    from the top left.
+  - A float takes no room from the tree. It is always framed and draws over the tiles on
+    its own glass backing and shadow layer. Floats are hit-tested before the tiles, top
+    float first.
 - **Layout presets** (MUX-13): `even-h`, `even-v`, `main-h`, `main-v`, `tall`, `grid`,
   `stack` applied over the pane list; `layout.next` cycles. The free tree is the default.
 - New panes inherit the focused pane's cwd (OSC 7, else `/proc/<fg>/cwd`).
@@ -2038,6 +2105,8 @@ user's value; bash by `--rcfile` shim / `PROMPT_COMMAND`; fish and nushell throu
 `XDG_DATA_DIRS`. `shell-integration.enabled` `auto|off`; feature flags `cursor`, `title`,
 `cwd`, `marks`, `sudo-terminfo`. Shells that emit OSC 133 natively need nothing.
 `apoth shell-init <shell>` prints the snippet for manual use.
+Each snippet defines `ap` as an alias of `apoth` (T-12 §5), only when `APOTHEOSIS_PANE`
+is set, so a manually sourced snippet has no effect outside a pane.
 
 ## 3. Working directory and process
 OSC 7 (`file://host/path`, percent-decoded; non-local host ignored for local spawns) is
@@ -2059,7 +2128,7 @@ OSC 8 links: hover underline and URI tooltip; activation requires the open modif
 (`links.schemes`, default `http https mailto ftp file`); `file://` with a non-local host is
 refused; the full URI is shown before opening when it differs from the visible text
 (T-18). Opening goes through the `open` Action with an argv template (default
-`xdg-open {url}`).
+`xdg-open {url}`); a link's default handler, the Open menu and the picker are §11.
 
 ## 6. Search
 - Overlay search bar (glass, T-08). Modes: smart-case (default), case-sensitive,
@@ -2099,16 +2168,88 @@ binding. Scoring is an fzf-v2-class algorithm implemented from its published des
 (`clipboard|file|pager|editor|command argv`), with or without SGR. Class `read-content`
 plus `clipboard` for the clipboard destination and `spawn` for every other (T-11 §1).
 
-## 11. Test Plan
+## 11. Open with
+Anything the terminal recognises as a path or URL can be opened with a chosen app: hint
+targets (`path`, `url`, `link`), OSC 8 links, a right click on a recognised path or URL
+(`menu.context-menu`, when nothing is selected), a selection (copy mode included) and the
+`open.*` Actions, which the socket, binds and palette reach like any other (T-11 §1).
+Never automatic: nothing opens on output.
+- **Actions.** `open.default {target?, placement?}` launches the default handler;
+  `open.menu {target?}` shows the Open menu; `open.with {target?}` shows the picker. A
+  target is at most 4096 bytes with no control characters. With no target the selection
+  is the target; with nothing selected, hint mode starts with the `link`, `url` and `path`
+  matchers and the picked label carries the Action's intent. A hint label typed in upper
+  case (Shift, with a lower-case alphabet) opens the menu for that target instead of the
+  matcher's default; the URL and link defaults open through the default handler, the path
+  default still copies. Default bind: `ctrl+shift+m` → `open.menu`.
+- **Menu.** On the palette sheet: "Open with <default>" (the handler named, e.g. "Open
+  with Firefox", "Open with apoth icat in a float"), "Open with…" (the picker), for a
+  terminal handler the other placements (inline split, float, separate window via
+  `--ext`), then "Copy" / "Copy link" and "Copy path" (the absolute path when it differs
+  from the text). The target is shown as program text.
+- **Picker.** The terminal handlers for the type, then the desktop apps that declare the
+  type (or a parent type), then `links.open-command`, then every other shown desktop
+  app, fuzzy-filtered by the palette's scorer (§9). A pinned "Remember for <type>" toggle
+  writes an `open.handlers` entry for the exact type of the target on the pick (T-10 §3)
+  and reloads.
+- **Type.** URLs: `x-scheme-handler/<scheme>`; a `file://` URL naming this host is its
+  path. Paths: `~` and relative paths (against the pane's OSC 7 directory) made absolute;
+  a `:line[:col]` suffix is dropped when the full text does not exist. A directory is
+  `inode/directory`; a FIFO, socket or device is never opened for reading. A regular file
+  is typed by the shared-mime-info database (`globs2`, `magic`, `subclasses`, `aliases`
+  under `$XDG_DATA_HOME/mime` and `$XDG_DATA_DIRS/*/mime`, read in Rust; a built-in table
+  when none is installed): the first 8 KiB sniffed, magic winning over a weaker or
+  conflicting glob, text vs binary by content.
+- **Default handler**, first that applies: an `open.handlers` entry (exact type, then
+  `type/*`, then the same along the parent types); the built-ins for local files,
+  `image/*` → `apoth icat` and `video/*`, `audio/*` → `apoth play`, shown at
+  `open.placement`; for a URL, `links.open-command` when the user set it; the
+  freedesktop default (`mimeapps.list` per the XDG MIME Applications spec:
+  `$XDG_CONFIG_HOME`, `$XDG_CONFIG_DIRS`, then `applications/` under the data dirs, each
+  `<desktop>-mimeapps.list` before `mimeapps.list`; Default Applications only from the
+  desktop-specific files; Added/Removed Associations apply to their directory and below; a
+  default must be installed (`TryExec`) and not hidden; a type is settled before its
+  parents); else, for a URL, `links.open-command`. A local file with no default after that
+  opens in the **default browser** (`x-scheme-handler/https`, then `http`; its `Exec` gets
+  the percent-encoded absolute `file://` URL as one argv element through `%u`/`%U`), but
+  only for types a browser renders: `image/{png,jpeg,gif,webp,avif,svg+xml,bmp}`,
+  `video/{webm,mp4,ogg}`, `audio/{mpeg,ogg,opus,flac,wav,webm,aac}`, `application/pdf`,
+  `application/xhtml+xml`, `text/html`, `text/plain`. Any other type has no default, and
+  `open.default` shows the Open-with picker instead of doing nothing. The menu names the
+  effective default ("Open with Firefox" when the browser is the fallback).
+- **`apoth play` fallback.** `apoth play` exits 69 (`EX_UNAVAILABLE`) for media it cannot
+  play; a build without `play` exits 2 (usage). On either, the opener launches the
+  freedesktop default (else the browser for a renderable type, else nothing) instead: from a pane when the pane
+  closes, from a `--ext` launch when the process exits.
+- **Launch.** Always an argv, never a shell. Desktop `Exec` lines are unquoted and
+  unescaped per the Desktop Entry spec, then field codes expanded: `%f`/`%u` one target,
+  `%F`/`%U` the list (alone as an argument), `%i` the `--icon` pair, `%c` the name, `%k`
+  the entry's path, `%%`; deprecated codes dropped. A field code inside quotes, an unknown
+  code, two file codes or a list code not standing alone makes the entry unusable; an
+  `Exec` without a file code gets the target appended; `%f` with a non-`file` URL is
+  unusable (nothing is downloaded). Paths passed are absolute, so they never read as
+  options. Terminal handlers and `Terminal=true` apps run in a new pane (split or float);
+  other apps detached, without the activation token variables.
+- **Security (T-18).** A link target passes the §5 checks first. A path from a remote
+  pane (T-18 §10, or an OSC 7 directory naming another host) is never opened locally: the
+  menu shows Open and Open with… disabled with "path is on <host>"; Copy stays. Paths, URLs
+  and file contents are never logged; the host label is program text, filtered to
+  `[A-Za-z0-9.-]`, at most 64 bytes.
+- Tests: type detection (globs, magic, subclass chain, text/binary), `mimeapps.list`
+  precedence (user over system, Added/Removed, desktop-specific files), `Exec` expansion
+  and escaping, remote-path refusal, the remember write, and a headless gate opening an
+  image path's hint into an `apoth icat` float.
+
+## 12. Test Plan
 Corpus fixtures for the OSC 133 machine including sloppy-shell traces recorded from bash,
 zsh and fish, and a fish/kitty-style trace with `A;k=s` continuation prompts mid-input
 (the primary block survives); option-parsing tests (per-mark keys, unknown and
 wrong-mark keys ignored, `L` in and out of column 0); search correctness over wrapped lines and across page seams; regex budget
 test (catastrophic pattern returns an error within 50 ms); label allocation property test
 (prefix-free, minimal length); copy-mode motion table tests; headless gates for search bar,
-hints and palette.
+hints and palette; the §11 tests.
 
-## 12. Open Decisions
+## 13. Open Decisions
 - Whether the per-cell semantic bits are worth their cost is settled by M12 measurements;
   the bits are reserved either way.
 
@@ -2222,6 +2363,45 @@ side in `apotheosis`. Implements MEDIA-01..03, -05, -07..-10, -13, -15..-17, -20
 Software H.264 via a pure-Rust decoder (MEDIA-31) is admitted only after it passes the
 helper fuzz and conformance gates; software VP9 and HEVC are not planned. Without VA-API,
 those codecs play through Tier A (mpv decodes).
+
+### 1.1 `apoth icat` and `apoth play` lifetime
+Owner requirement (recorded at M32 for `icat`, binding on `play` at M34):
+- **Inline by default.** The command runs in the foreground of the pane it was started
+  in. Animations (and, for `play`, video) stay live while it runs. Ctrl+C deletes the
+  command's own placements, restores the tty and exits 130. A still image from a normal
+  exit stays in the scrollback; animations and video are removed when the command ends,
+  however it ends.
+- **Terminal-side cleanup.** A placement must never outlive a command that died without
+  cleaning up (SIGKILL: no frozen frame is left). The command opens a session in-band,
+  `ESC _ M a=b,i=<n>,p=<pid> ESC \` (`n`: a per-invocation id; `p`: the command's pid),
+  before its first image and closes it with `a=e,i=<n>` on a normal exit. Placements made
+  while a session is open belong to it. A clean `a=e` keeps the session's still images and
+  deletes its animated ones. Other `M` commands are the §2 protocol.
+  - With `p=`, the terminal binds the session to that process when it is in the pane's
+    session (`getsid(pid) == tcgetsid(pty)`): it opens a pidfd and polls it with the PTY.
+    When the process exits with the session still open, every placement of the session
+    is deleted at once, with no further output needed. This holds for a command started
+    in the background (its own process group) as well.
+  - Without `p=`, or when the pid cannot be watched (another session, already gone, no
+    pidfd), the session binds to the pty's foreground process group. Whenever that group
+    no longer holds the foreground with the session still open, the session's placements
+    are deleted. The check is one `tcgetpgrp` per io step. While such a session is open
+    the io thread also rechecks every 250 ms, so a SIGKILL is seen without further
+    output. That timer exists only while a group-bound session is open (T-23 `IDLE`).
+- **`--ext` / `-x`.** Asks the instance over the control socket to open a separate
+  borderless glass window showing only the media (`media.window-open`, T-12 §2). The
+  bytes the command would have written to the pane go to the window instead
+  (`media.window-write`). The window has one grid of the size the media needs, no PTY and
+  no cursor. The command stays in the foreground until that window closes: Escape or `q`
+  in the window, or the compositor's close, ends the command with 0. Ctrl+C in the origin
+  pane drops the connection, which closes the window, and exits 130. The window belongs
+  to the connection that opened it, so a killed command takes its window with it.
+- **Unsupported media.** `apoth play` exits 69 (`EX_UNAVAILABLE`) for a file it cannot
+  play, before drawing anything; "Open with" then falls back to the desktop default
+  (T-14 §11).
+- Tests: Ctrl+C cleanup and SIGKILL cleanup on the headless session (no placement left,
+  exit 130 for Ctrl+C), SIGKILL of a background command; `--ext` opens and closes its
+  window headlessly (Escape, and SIGKILL of the command).
 
 ## 2. Media placement protocol
 An APC namespace of our own, `ESC _ M <keys> ; <payload> ESC \`, key=value control data
@@ -2419,6 +2599,10 @@ On Abyss, blur through `ext_background_effect_v1` only, with one region box cove
   `ext.echo=true` is sent when the state and its grace end. For Apotheosis, `ext.echo` is
   driven by the credential predicate, not by raw `ECHO`. The reserved `ext.credential`
   key (COMP-09 §2, S-08 §3.2) is not used.
+- **What stays visible.** The `terminal` node hangs under a window node the host owns
+  (ADR 0114). While the credential state holds, agents see that bare window node (role
+  `window`, no text) and nothing beneath it: the terminal subtree and all text are
+  withheld. The window's existence is not secret (owner decision 2026-11-13).
 - **Remote panes.** Inside a remote pane (T-18 §10) the local PTY is raw, so a remote
   `sudo` or `passwd` prompt never shows the credential predicate locally. Remote panes
   are therefore treated as possibly in the credential state for keystroke egress: the

@@ -1,0 +1,11 @@
+fixture "mode-roundtrip-dec-2026" {
+  desc "mode roundtrip dec 2026 (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?2026h"#
+  checkpoint "c1" {
+    mode "?2026" 1
+  }
+  feed #"\e[?2026l"#
+  mode "?2026" 2
+}

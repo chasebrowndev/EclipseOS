@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-png-zlib" {
+  desc "f=100 with o=z"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=6
+  feed #"\e_Ga=T,f=100,o=z,i=5,C=1;eJzrDPBz5+WS4mJgYOD19HAJAtJMIMwBIv9emVUMpPg8XRxDKuYkP2BhZuNgZWBmYsgV11wKUsrg6ernss4poQkAwBQOBg==\e\\"#
+  replies #"\e_Gi=5;OK\e\\"#
+  images {
+    row "kitty row=0 col=0 cols=1 rows=1 z=0"
+  }
+}

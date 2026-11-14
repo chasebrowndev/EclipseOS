@@ -1,0 +1,14 @@
+fixture "mouse-1011-set-reset" {
+  desc "mode 1011 (scroll on key) defaults reset, sets and resets"
+  covers "T03-MOUSE"
+  size rows=2 cols=4
+  checkpoint "default" {
+    mode "?1011" 2
+  }
+  feed #"\e[?1011h"#
+  checkpoint "set" {
+    mode "?1011" 1
+  }
+  feed #"\e[?1011l"#
+  mode "?1011" 2
+}

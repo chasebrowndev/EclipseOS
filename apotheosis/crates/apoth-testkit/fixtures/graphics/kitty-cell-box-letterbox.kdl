@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-cell-box-letterbox" {
+  desc "c and r size the box (letterboxed inside)"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=8
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=7,c=4,r=2,C=1,q=1;/wAA/wAA\e\\"#
+  images {
+    row "kitty row=0 col=0 cols=4 rows=2 z=0"
+  }
+}

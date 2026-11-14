@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "sixel-cursor-right-8452" {
+  desc "with ?8452 the cursor stays on the last row, right of the image"
+  covers "T03-GRAPHICS-SIXEL"
+  size rows=4 cols=6
+  feed #"\e[?8452h\eP0;1;0q"1;1;8;18#1;2;100;0;0#1!8~-!8~-!8~\e\\"#
+  cursor row=1 col=1
+}

@@ -1,0 +1,12 @@
+fixture "erase-el2" {
+  covers "T03-EL"
+  size rows=4 cols=6
+  feed #"AAAAAA\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\e[2;3H\e[2K"#
+  grid {
+    row "AAAAAA"
+    row ""
+    row "CCCCCC"
+    row "DDDDDD"
+  }
+  cursor row=1 col=2
+}

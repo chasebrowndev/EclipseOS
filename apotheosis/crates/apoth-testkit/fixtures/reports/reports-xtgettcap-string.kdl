@@ -1,0 +1,8 @@
+fixture "reports-xtgettcap-string" {
+  desc "Co = 256"
+  covers "T03-XTGETTCAP" "VTCORE-25"
+  size rows=5 cols=10
+  feed #"\eP+q436F\e\\"#
+  grid
+  replies #"\eP1+r436F=323536\e\\"#
+}

@@ -1,0 +1,9 @@
+fixture "esc-st-alone-ignored" {
+  desc "esc st alone ignored (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC"
+  size rows=1 cols=4
+  feed #"a\e\\b"#
+  grid {
+    row "ab"
+  }
+}

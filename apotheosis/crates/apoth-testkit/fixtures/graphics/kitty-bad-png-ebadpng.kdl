@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-bad-png-ebadpng" {
+  desc "a corrupt PNG answers EBADPNG"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=6
+  feed #"\e_Ga=T,f=100,i=5;bm90IGEgcG5nIGF0IGFsbA==\e\\"#
+  replies #"\e_Gi=5;EBADPNG:png decode failed\e\\"#
+  images {
+  }
+}

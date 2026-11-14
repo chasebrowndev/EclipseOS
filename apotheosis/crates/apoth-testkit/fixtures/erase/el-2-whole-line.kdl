@@ -1,0 +1,10 @@
+fixture "el-2-whole-line" {
+  desc "el 2 whole line (migrated from the apoth-term corpus)"
+  covers "T03-EL"
+  size rows=2 cols=8
+  feed #"abcdef\r\nxy\e[1;4H\e[2K"#
+  grid {
+    row ""
+    row "xy"
+  }
+}
