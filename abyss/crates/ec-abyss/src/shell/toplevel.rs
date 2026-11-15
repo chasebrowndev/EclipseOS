@@ -7,6 +7,25 @@ use super::*;
 /// Marker: this window has had its map-time configure sent (see `handle_commit`).
 struct MapConfigured;
 
+/// The min/max size hints a toplevel's window had at its last commit, so a
+/// commit that changes them is told apart from one that does not.
+struct SeenHints(Cell<(Size<i32, Logical>, Size<i32, Logical>)>);
+
+/// True when this commit changed `surface`'s committed min/max size since the
+/// last commit `window` saw. The first look compares against unset hints.
+/// No allocation after the first call: one cached-state read, one cell swap.
+fn hints_changed(window: &Window, surface: &WlSurface) -> bool {
+    let now = with_states(surface, |states| {
+        let mut guard = states.cached_state.get::<SurfaceCachedState>();
+        let d = guard.current();
+        (d.min_size, d.max_size)
+    });
+    let data = window.user_data();
+    data.insert_if_missing(|| SeenHints(Cell::new(Default::default())));
+    data.get::<SeenHints>()
+        .is_some_and(|seen| seen.0.replace(now) != now)
+}
+
 /// True once `surface` has a committed buffer, i.e. the window is mapped.
 pub(super) fn has_buffer(surface: &WlSurface) -> bool {
     smithay::backend::renderer::utils::with_renderer_surface_state(surface, |s| s.buffer().is_some())
@@ -339,6 +358,12 @@ pub fn handle_commit(state: &mut AbyssState, surface: &WlSurface) {
                 .map(|d| d.lock().unwrap().initial_configure_sent)
                 .unwrap_or(true)
         });
+        // A floating window learns its new size from a configure only, and
+        // nothing else arranges on a commit: a client that changed its min/max
+        // (min == max to fit its content) is refitted here, on that commit.
+        if hints_changed(&window, surface) && initial_sent {
+            refit_to_hints(state, &window);
+        }
         if !initial_sent {
             if let Some(t) = window.toplevel() {
                 t.send_configure();
