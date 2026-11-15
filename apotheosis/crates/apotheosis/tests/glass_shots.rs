@@ -600,7 +600,9 @@ fn run_cases(s: &mut Shots) {
         s.pause(800);
     }
     if wanted("palette") {
-        s.sh("clear");
+        // Text under the sheet: it must show through, frosted, not be erased.
+        s.sh("clear; ls -la /usr/bin | head -40");
+        s.pause(500);
         s.sh("apoth do palette.open");
         s.until("the palette", |s| s.mux_has("palette open"));
         s.type_text("tab");

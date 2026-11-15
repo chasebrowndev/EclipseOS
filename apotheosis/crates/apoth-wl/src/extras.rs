@@ -72,6 +72,7 @@ pub(crate) struct WindowExtras {
     pub content_type: Option<WpContentTypeV1>,
     pub inhibitor: Option<ZwpIdleInhibitorV1>,
     pub glass: Option<crate::glass::GlassPanes>,
+    pub overlay: Option<crate::overlay::OverlaySurface>,
 }
 
 /// What an activation token is for.
@@ -353,6 +354,9 @@ pub(crate) fn destroy_window_extras(w: &mut WindowExtras) {
     }
     if let Some(c) = w.content_type.take() {
         c.destroy();
+    }
+    if let Some(o) = w.overlay.take() {
+        o.destroy();
     }
     if let Some(g) = w.glass.take() {
         g.destroy();

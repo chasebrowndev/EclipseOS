@@ -17,6 +17,7 @@ pub mod extras;
 pub mod gesture;
 pub mod glass;
 pub mod mime;
+pub mod overlay;
 pub mod pace;
 pub mod rawhandle;
 pub mod repeat;
@@ -40,6 +41,7 @@ pub use event::{
 pub use extras::ContentType;
 pub use glass::{GlassPanes, Pane, Tone};
 pub use mime::DropContent;
+pub use overlay::OverlaySurface;
 pub use pace::{PaceEvent, Pacer};
 pub use rawhandle::WlSurfaceHandle;
 pub use seat::{ClipboardError, CursorError};

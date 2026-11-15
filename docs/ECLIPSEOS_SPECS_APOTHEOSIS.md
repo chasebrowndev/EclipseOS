@@ -1277,9 +1277,13 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
   token table and a 1 px hairline rim. While blur is on, layers carry **no** drop shadow
   and no top-edge highlight (STYLE.md: cards inside a window are fill + hairline only;
   the compositor's rim lights the edge). **On Abyss with `eclipse_glass_manager_v1`**
-  advertised, chips and sheets (palette, search bar, menus, tabs, bar buttons, media
-  controls, float backing) draw no ground — neither fill nor rim; each is sent as an
-  `eclipse_glass_v1` pane (ADR 0081 "microglass") and the client erases the grid under it.
+  advertised, chips and sheets draw no ground — neither fill nor rim; each is sent as an
+  `eclipse_glass_v1` pane (ADR 0081 "microglass"). Sheets (palette, search bar, context
+  menu, prompt sheets, tooltip) are drawn on one synchronised overlay subsurface above
+  the root, with an empty input region and its own glass object, so their panes blur the
+  terminal text beneath as a second, stacked sheet of glass; the root draws nothing under
+  them. Tabs, bar buttons, media controls and the float backing stay on the root surface,
+  where the client erases the grid under each pane.
   The keyboard-focus rim, wells, keycaps and the danger rim stay client-drawn. The
   `capability` event, not the bind, switches between this and the client-drawn ground at
   run time. The inner top highlight and the analytic
@@ -1411,7 +1415,8 @@ Bind `ext_background_effect_manager_v1`, track its `capabilities` (blur bit), cr
 effect object per surface, and set the blur region, committed with the frame that draws
 it. On Abyss the region is one box covering the window geometry (T-08 §3); interface
 chips and sheets are `eclipse_glass_v1` panes (optional global `eclipse_glass_manager_v1`;
-absent → client-drawn glass; T-08 §3, ADR 0081). Off Abyss the region is the glass rects and the
+absent → client-drawn glass; T-08 §3, ADR 0081). Sheets go on an overlay `wl_subsurface`
+(sync, empty input region, own `get_glass`), created only while the glass global is bound. Off Abyss the region is the glass rects and the
 ladder is ext effect → `org_kde_kwin_blur` → tint/opaque. Capabilities can change at
 runtime; the ladder is re-evaluated.
 

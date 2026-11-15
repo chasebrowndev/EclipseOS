@@ -198,9 +198,11 @@ pub struct RowScene {
     pub glyphs: Vec<GlyphInstance>,
     /// Decoration rects.
     pub rects: Vec<RectInstance>,
-    /// Rects drawn after the backgrounds and before the glyphs: the rounded corners and
-    /// rim of a [`Highlight`] with `round` set (corner pixels repaint the cell's own
-    /// background at partial alpha over the span's fill).
+    /// Rects drawn after the backgrounds and before the glyphs: the fill and rim of a
+    /// [`Highlight`] with `round` set. The fill is drawn here, not folded into `bg`, in the
+    /// cells that have a rounded corner: their background texel keeps the cell's own
+    /// colour, so the antialiased corner pixels blend the fill over the real background
+    /// (which may be translucent) instead of over a square of fill that cannot be undone.
     pub under: Vec<RectInstance>,
     /// A glyph was still pending: the row stays in the pending set.
     pub pending: bool,
@@ -279,21 +281,6 @@ impl RowScene {
     }
 }
 
-/// The premultiplied background a cell has before any highlight (the repaint colour of a
-/// rounded corner).
-fn base_bg(ctx: &BuildCtx<'_>, cell: &apoth_grid::SnapCell, default_alpha: u8) -> [u8; 4] {
-    let st = &cell.style;
-    let mut bg = ctx.palette.resolve_bg(st.bg);
-    let mut opaque = st.bg != Color::Default;
-    if st.attrs.contains(Attrs::INVERSE) {
-        bg = ctx
-            .palette
-            .resolve_fg(st.fg, ctx.cfg.bold_bright && st.attrs.contains(Attrs::BOLD));
-        opaque = true;
-    }
-    bg.premul(if opaque { 255 } else { default_alpha })
-}
-
 /// `c` scaled by `k` in `0..=1`.
 fn scaled(c: [u8; 4], k: f32) -> [u8; 4] {
     c.map(|v| (f32::from(v) * k + 0.5) as u8)
@@ -306,15 +293,42 @@ fn arc_cover(px: f32, py: f32, cx: f32, cy: f32, r: f32, grow: f32) -> f32 {
     (0.5 - d).clamp(0.0, 1.0)
 }
 
-/// Builds the corner and rim rects of a rounded highlight span into `out.under`.
-fn round_span(
-    ctx: &BuildCtx<'_>,
-    y: usize,
-    row: &SnapRow,
-    h: &Highlight,
-    default_alpha: u8,
-    out: &mut RowScene,
-) {
+/// Which corners of a rounded span are rounded: top-left, top-right, bottom-left,
+/// bottom-right. A corner is square where the row above or below carries the same colour
+/// under the span's end column.
+fn round_corners(ctx: &BuildCtx<'_>, y: usize, h: &Highlight, row_len: usize) -> [bool; 4] {
+    let end = h.end.min(row_len);
+    if h.start >= end {
+        return [false; 4];
+    }
+    let covers = |yy: usize, col: usize| {
+        ctx.highlights
+            .iter()
+            .any(|o| o.round && o.row == yy && o.bg == h.bg && col >= o.start && col < o.end)
+    };
+    let square = |yy: Option<usize>, col: usize| yy.is_some_and(|yy| covers(yy, col));
+    let (up, down) = (y.checked_sub(1), Some(y + 1));
+    [
+        !square(up, h.start),
+        !square(up, end - 1),
+        !square(down, h.start),
+        !square(down, end - 1),
+    ]
+}
+
+/// Whether column `col` of `h` has a rounded corner (its texel then keeps the cell's own
+/// background; see [`RowScene::under`]).
+fn corner_cell(ctx: &BuildCtx<'_>, y: usize, h: &Highlight, col: usize, row_len: usize) -> bool {
+    if !h.round {
+        return false;
+    }
+    let end = h.end.min(row_len);
+    let [tl, tr, bl, br] = round_corners(ctx, y, h, row_len);
+    (col == h.start && (tl || bl)) || (col + 1 == end && (tr || br))
+}
+
+/// Builds the fill, corner and rim rects of a rounded highlight span into `out.under`.
+fn round_span(ctx: &BuildCtx<'_>, y: usize, row: &SnapRow, h: &Highlight, out: &mut RowScene) {
     let m = ctx.metrics;
     let (cw, ch) = (m.width, m.height);
     let end = h.end.min(row.cells.len());
@@ -327,11 +341,7 @@ fn round_span(
             .any(|o| o.round && o.row == yy && o.bg == h.bg && col >= o.start && col < o.end)
     };
     let (up, down) = (y.checked_sub(1), y + 1);
-    let square = |yy: Option<usize>, col: usize| yy.is_some_and(|yy| covers(yy, col));
-    let tl = !square(up, h.start);
-    let tr = !square(up, end - 1);
-    let bl = !square(Some(down), h.start);
-    let br = !square(Some(down), end - 1);
+    let [tl, tr, bl, br] = round_corners(ctx, y, h, row.cells.len());
     let (x0, x1) = (h.start as i32 * cw, end as i32 * cw);
     let r = ((ch as f32 * 0.2).round() as i32)
         .clamp(1, 6)
@@ -340,34 +350,61 @@ fn round_span(
     let rim = h.rim.map(|c| c.premul(255));
     let rim_px = m.cursor_thickness.max(1).min(ch / 2);
     let rf = r as f32;
-    // Corners: (rounded, corner x, corner y, direction in x, direction in y, cell column).
+    // Corners: (rounded, corner x, corner y, direction in x, direction in y).
     let corners = [
-        (tl, x0, 0, 1, 1, h.start),
-        (tr, x1, 0, -1, 1, end - 1),
-        (bl, x0, ch, 1, -1, h.start),
-        (br, x1, ch, -1, -1, end - 1),
+        (tl, x0, 0, 1, 1),
+        (tr, x1, 0, -1, 1),
+        (bl, x0, ch, 1, -1),
+        (br, x1, ch, -1, -1),
     ];
-    // Repaint what lies outside each arc with the cell's own background.
-    for &(round, cx, cy, dx, dy, col) in &corners {
+    let inset = |round: bool| if round { r } else { 0 };
+    // The fill: the middle band, then the two end strips short of their rounded corners.
+    let fill = h.bg.premul(255);
+    out.under.push(RectInstance::new(
+        x0 + r,
+        0,
+        (x1 - x0 - 2 * r).max(0),
+        ch,
+        fill,
+    ));
+    let (t, b) = (inset(tl), ch - inset(bl));
+    out.under.push(RectInstance::new(x0, t, r, b - t, fill));
+    let (t, b) = (inset(tr), ch - inset(br));
+    out.under.push(RectInstance::new(x1 - r, t, r, b - t, fill));
+    // The rounded corner squares: per row of the square, the solid run, then the
+    // antialiased edge pixels.
+    for &(round, cx, cy, dx, dy) in &corners {
         if !round {
             continue;
         }
-        let base = base_bg(ctx, &row.cells[col], default_alpha);
         for j in 0..r {
+            let py = if dy > 0 { cy + j } else { cy - 1 - j };
+            let mut solid_from = r;
             for i in 0..r {
-                let px = if dx > 0 { cx + i } else { cx - 1 - i };
-                let py = if dy > 0 { cy + j } else { cy - 1 - j };
-                let k = 1.0 - arc_cover(i as f32, j as f32, rf, rf, rf, 0.0);
-                if k * 255.0 >= 0.5 {
-                    out.under
-                        .push(RectInstance::new(px, py, 1, 1, scaled(base, k)));
+                let k = arc_cover(i as f32, j as f32, rf, rf, rf, 0.0);
+                if k >= 0.999 {
+                    solid_from = i;
+                    break;
                 }
+                if k * 255.0 >= 0.5 {
+                    let px = if dx > 0 { cx + i } else { cx - 1 - i };
+                    out.under
+                        .push(RectInstance::new(px, py, 1, 1, scaled(fill, k)));
+                }
+            }
+            if solid_from < r {
+                let n = r - solid_from;
+                let px = if dx > 0 {
+                    cx + solid_from
+                } else {
+                    cx - solid_from - n
+                };
+                out.under.push(RectInstance::new(px, py, n, 1, fill));
             }
         }
     }
     let Some(rim) = rim else { return };
     // The rim along the straight edges, then through each rounded corner.
-    let inset = |round: bool| if round { r } else { 0 };
     let (above, below) = (
         up.is_some_and(|yy| (h.start..end).all(|c| covers(yy, c))),
         (h.start..end).all(|c| covers(down, c)),
@@ -394,7 +431,7 @@ fn round_span(
         out.under
             .push(RectInstance::new(x1 - rim_px, t, rim_px, b - t, rim));
     }
-    for &(round, cx, cy, dx, dy, _) in &corners {
+    for &(round, cx, cy, dx, dy) in &corners {
         if !round {
             // A square corner: the two edges above stop short of it by nothing, but the
             // corner pixels themselves belong to the vertical edge already.
@@ -432,7 +469,7 @@ pub fn build_row<P: GlyphProvider>(
     let default_alpha = (ctx.cfg.bg_alpha.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
     let min_target = ctx.cfg.min_contrast.target();
     for h in ctx.highlights.iter().filter(|h| h.round && h.row == y) {
-        round_span(ctx, y, row, h, default_alpha, out);
+        round_span(ctx, y, row, h, out);
     }
 
     for (col, cell) in row.cells.iter().enumerate() {
@@ -449,6 +486,8 @@ pub fn build_row<P: GlyphProvider>(
         if st.attrs.contains(Attrs::FAINT) {
             fg = dim(fg, bg);
         }
+        let base_px = bg.premul(if opaque { 255 } else { default_alpha });
+        let mut keep_base = false;
         for h in ctx.highlights {
             if h.row == y && col >= h.start && col < h.end {
                 bg = h.bg;
@@ -456,9 +495,14 @@ pub fn build_row<P: GlyphProvider>(
                     fg = f;
                 }
                 opaque = true;
+                keep_base = corner_cell(ctx, y, h, col, cols);
             }
         }
-        out.bg[col] = bg.premul(if opaque { 255 } else { default_alpha });
+        out.bg[col] = if keep_base {
+            base_px
+        } else {
+            bg.premul(if opaque { 255 } else { default_alpha })
+        };
 
         let x0 = col as i32 * m.width;
         let mut text_fg = fg;
@@ -819,6 +863,78 @@ mod tests {
             &mut out2,
         );
         assert_eq!(out2.bg[1], [0, 0, 0, 255]);
+    }
+
+    fn at(img: &crate::reference::Image, x: usize, y: usize) -> [u8; 4] {
+        let i = (y * img.w + x) * 4;
+        img.data[i..i + 4].try_into().unwrap()
+    }
+
+    /// Composites a row the way the renderer does: bg texels, then `under` rects.
+    fn composite(out: &RowScene, m: &CellMetrics) -> crate::reference::Image {
+        let mut img =
+            crate::reference::Image::new(out.bg.len() * m.width as usize, m.height as usize);
+        for (x, bg) in out.bg.iter().enumerate() {
+            img.fill(&RectInstance::new(
+                x as i32 * m.width,
+                0,
+                m.width,
+                m.height,
+                *bg,
+            ));
+        }
+        for r in &out.under {
+            img.fill(r);
+        }
+        img
+    }
+
+    #[test]
+    fn round_highlight_corners_show_the_translucent_background() {
+        // A translucent window: the repaint cannot undo a square of fill, so the fill must
+        // be drawn rounded over the cell's own background.
+        let cfg = SceneConfig {
+            bg_alpha: 0.5,
+            ..SceneConfig::default()
+        };
+        let (pal, m) = (Palette::xterm(), test_metrics());
+        let h = [Highlight {
+            row: 0,
+            start: 1,
+            end: 4,
+            bg: Rgb(200, 150, 20),
+            fg: None,
+            round: true,
+            rim: None,
+        }];
+        let mut out = RowScene::default();
+        build_row(
+            &ctx(&cfg, &pal, &m, &h),
+            0,
+            &row("abcde", Style::DEFAULT),
+            false,
+            &mut Fake::default(),
+            &mut out,
+        );
+        let img = composite(&out, &m);
+        let base = at(&img, 0, 0);
+        assert_eq!(base[3], 128, "the window ground stays translucent");
+        let (x0, x1, y1) = (
+            m.width as usize,
+            4 * m.width as usize,
+            m.height as usize - 1,
+        );
+        for (x, y) in [(x0, 0), (x1 - 1, 0), (x0, y1), (x1 - 1, y1)] {
+            assert_eq!(
+                at(&img, x, y),
+                base,
+                "square corner pixel at {x},{y}: the fill must not reach it"
+            );
+        }
+        let mid = at(&img, (x0 + x1) / 2, y1 / 2);
+        assert_eq!(mid[3], 255, "the interior is opaque fill");
+        // The cell next to a corner is covered along its edge.
+        assert_eq!(at(&img, x0 + 4, 0)[3], 255);
     }
 
     #[test]

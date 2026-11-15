@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use apoth_font::config::Style;
 use apoth_font::system::FontSystem;
 use apoth_grid::{Damage, FrameSnapshot};
+use apoth_render::chrome::{ChromeList, ChromePass};
 use apoth_render::colour::{Palette, Rgb, TextBlending};
 use apoth_render::cursor::{self, CursorScene, CursorShape, CursorState};
 use apoth_render::gpu::{GpuOptions, RenderError};
@@ -23,7 +24,7 @@ use apoth_render::presenter::{PresentOutcome, Presenter, SurfaceOptions, Surface
 use apoth_render::renderer::{FrameInput, PaneDraw, Renderer, RendererConfig};
 use apoth_render::scene::{BuildCtx, GridScene, Highlight, SceneConfig};
 use apoth_render::sched::{Pacing, Poll, SchedConfig, Scheduler};
-use apoth_render::surface::{AlphaRequest, FaultAction, fault_action};
+use apoth_render::surface::{AlphaKind, AlphaRequest, FaultAction, fault_action};
 use apoth_term::{CursorInfo, ImageDraw};
 use apoth_ui::frame::TabStyle;
 use apoth_ui::motion::{Fader, MotionMode};
@@ -456,6 +457,9 @@ pub(crate) struct RenderArgs {
     pub(crate) to_main: calloop::channel::Sender<MainMsg>,
     /// Compositor glass panes (`eclipse_glass_v1`) for this window, when bound.
     pub(crate) glass: Option<apoth_wl::GlassPanes>,
+    /// The overlay subsurface that stacks the sheets' glass over the window's own (bound
+    /// with the glass global; `None` without it).
+    pub(crate) overlay: Option<apoth_wl::OverlaySurface>,
 }
 
 /// Padding in physical pixels at `scale`; main uses the same rule for the grid size.
@@ -481,6 +485,43 @@ fn build_ui_fonts(family: &str, terminal: &FontSystem) -> Option<FontSystem> {
 struct Stack {
     presenter: SurfacePresenter,
     renderer: Renderer,
+}
+
+/// The overlay subsurface's own swapchain, chrome pass and glass object. It draws only the
+/// sheets, over a transparent clear; it is built when the first sheet opens.
+struct OverStack {
+    presenter: SurfacePresenter,
+    pass: ChromePass,
+    glass: apoth_wl::GlassPanes,
+    /// The compositor currently holds sheet content (so one more clearing frame is due when
+    /// the last sheet closes).
+    shown: bool,
+}
+
+/// The overlay stack on the main device, or `None` when it cannot be transparent.
+fn build_over(
+    src: &apoth_wl::OverlaySurface,
+    main: &Stack,
+    size: (u32, u32),
+    rs: &RenderSettings,
+) -> Option<OverStack> {
+    let opts = SurfaceOptions {
+        gpu: GpuOptions::default(),
+        alpha: rs.alpha,
+    };
+    let presenter =
+        SurfacePresenter::with_gpu(main.presenter.gpu(), Arc::new(src.handle()), size, &opts)
+            .ok()?;
+    if presenter.info().alpha != AlphaKind::PreMultiplied {
+        return None;
+    }
+    let pass = ChromePass::new(presenter.gpu(), presenter.format());
+    Some(OverStack {
+        presenter,
+        pass,
+        glass: src.glass(),
+        shown: false,
+    })
 }
 
 fn build_stack(
@@ -882,6 +923,7 @@ fn run(a: RenderArgs) {
         poke,
         to_main,
         glass,
+        overlay: over_src,
     } = a;
     pacer.set_wake(move || {
         let _ = poke.send(RenderMsg::Poke);
@@ -932,6 +974,12 @@ fn run(a: RenderArgs) {
     let mut overlay: Option<Overlay> = None;
     let mut ui_cache: Option<(String, FontSystem)> = None;
     let mut raster = UiRaster::new();
+    let mut over_list = ChromeList::new();
+    let mut ostack: Option<OverStack> = None;
+    // The overlay could not be built (no premultiplied alpha, device refused): sheets are
+    // drawn on the root surface with their erase, as off Abyss.
+    let mut over_off = false;
+    let mut geom = ((0u32, 0u32), apoth_wl::scale::Scale::ONE);
     let mut chrome_dirty = false;
     // Whether the compositor draws the interface's ground (it may start or stop at runtime).
     let mut glass_seen = false;
@@ -957,12 +1005,16 @@ fn run(a: RenderArgs) {
                 }
                 PaceEvent::Discarded { .. } => {}
                 PaceEvent::Surface {
+                    logical,
                     buffer: b,
                     scale: s,
                     suspended,
-                    ..
                 } => {
                     surface_event = true;
+                    geom = (logical, s);
+                    if ostack.as_ref().is_some_and(|o| o.shown) {
+                        chrome_dirty = true;
+                    }
                     sched.set_suspended(suspended, now);
                     let s = s.as_f64();
                     if b != buffer {
@@ -1100,7 +1152,8 @@ fn run(a: RenderArgs) {
                     let fonts = ui_fonts(&rs, &mut ui_cache, &mut glyphs.fonts);
                     // Logical pixels per interface unit: the zoom (the output scale is the
                     // surface's own).
-                    let panes_out = build_chrome_glass(
+                    let split = glass_seen && over_src.is_some() && !over_off;
+                    let (panes_out, over_panes) = build_chrome_glass(
                         stack.renderer.chrome_mut(),
                         overlay.as_ref(),
                         &chrome,
@@ -1111,7 +1164,28 @@ fn run(a: RenderArgs) {
                         fonts,
                         &mut raster,
                         glass_seen.then_some(rs.ui_zoom),
+                        split.then_some(&mut over_list),
                     );
+                    // The sheets' frame goes first. The subsurface is synced: its commit is
+                    // cached and applied with the main commit below, so sheet and grid land
+                    // together (see apoth_wl::overlay).
+                    let want = !over_list.is_empty() || !over_panes.is_empty();
+                    if split
+                        && want
+                        && ostack.is_none()
+                        && let Some(src) = &over_src
+                    {
+                        ostack = build_over(src, &stack, buffer, &rs);
+                        over_off = ostack.is_none();
+                    }
+                    if let (Some(o), Some(src)) = (ostack.as_mut(), &over_src)
+                        && (want || o.shown)
+                    {
+                        src.configure(geom.0, geom.1);
+                        o.presenter.resize(buffer);
+                        o.glass.set(&over_panes);
+                        o.shown = o.presenter.present_chrome(&mut o.pass, &over_list) && want;
+                    }
                     // Sent before the present below, which commits the surface: the
                     // compositor latches panes and buffer together. Unchanged sends nothing.
                     if let Some(g) = &glass {
@@ -1214,6 +1288,7 @@ fn run(a: RenderArgs) {
                         tracing::warn!("device lost; rebuilding the renderer");
                         glyphs.reset();
                         glyphs.flushed = false;
+                        ostack = None;
                         panes.iter_mut().for_each(PaneR::reset_scene);
                         match build_stack(&surface, buffer, &rs, cell(&glyphs), scale) {
                             Ok(s) => {

@@ -523,7 +523,7 @@ pub(crate) fn build_chrome(
     raster: &mut UiRaster,
 ) {
     build_chrome_glass(
-        chrome, overlay, model, buffer, ui, light, age_ms, fonts, raster, None,
+        chrome, overlay, model, buffer, ui, light, age_ms, fonts, raster, None, None,
     );
 }
 
@@ -574,6 +574,11 @@ pub(crate) fn glass_panes(dl: &DrawList, to_logical: f32) -> Vec<apoth_wl::Pane>
 /// factor when `eclipse_glass_v1` is drawing panes (the interface then paints no ground of
 /// its own under chips, sheets and menus), and the panes come back. `None` is the
 /// client-drawn look and no panes.
+///
+/// `over` is the overlay subsurface's list (stacked glass): the search sheet, the tooltip,
+/// the palette and sheet-bars go there and their panes come back as the second list, so the
+/// root surface keeps its text under them and the compositor frosts it. `None` draws
+/// everything on the root surface.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_chrome_glass(
     chrome: &mut ChromeList,
@@ -586,8 +591,12 @@ pub(crate) fn build_chrome_glass(
     fonts: &mut FontSystem,
     raster: &mut UiRaster,
     glass: Option<f32>,
-) -> Vec<apoth_wl::Pane> {
+    mut over: Option<&mut ChromeList>,
+) -> (Vec<apoth_wl::Pane>, Vec<apoth_wl::Pane>) {
     chrome.clear();
+    if let Some(o) = over.as_deref_mut() {
+        o.clear();
+    }
     let s = if ui > 0.0 { ui } else { 1.0 };
     let area = Rect::new(0.0, 0.0, buffer.0 as f32 / s, buffer.1 as f32 / s);
     let pal = if light {
@@ -596,6 +605,7 @@ pub(crate) fn build_chrome_glass(
         Palette::dark()
     };
     let mut dl = DrawList::with_glass(glass.is_some());
+    let mut od = DrawList::with_glass(glass.is_some());
     {
         let measure = FontMeasure::new(fonts);
         for f in &model.frames {
@@ -630,6 +640,7 @@ pub(crate) fn build_chrome_glass(
                 &mut dl,
             );
         }
+        let top: &mut DrawList = if over.is_some() { &mut od } else { &mut dl };
         if let Some(sp) = &model.search {
             let free = search_area(
                 area,
@@ -637,15 +648,15 @@ pub(crate) fn build_chrome_glass(
                 overlay.is_some_and(Overlay::takes_room),
             );
             let l = apoth_ui::searchbar::layout(free, sp, &apoth_ui::text::geometry());
-            apoth_ui::searchbar::draw(&l, sp, &model.ui, &pal, &measure, &mut dl);
+            apoth_ui::searchbar::draw(&l, sp, &model.ui, &pal, &measure, top);
         }
         if let Some(t) = &model.tooltip {
             let r = apoth_ui::tooltip::layout(area, t, &measure);
-            apoth_ui::tooltip::draw(r, t, &pal, &mut dl);
+            apoth_ui::tooltip::draw(r, t, &pal, top);
         }
         if let Some(p) = &model.palette {
             let l = apoth_ui::palette::layout(area, p);
-            apoth_ui::palette::draw(&l, p, &model.ui, &pal, &measure, &mut dl);
+            apoth_ui::palette::draw(&l, p, &model.ui, &pal, &measure, top);
         }
         if let Some(o) = overlay.filter(|o| !o.takes_room()) {
             let l = bar::layout(area, &o.spec, &apoth_ui::text::geometry());
@@ -656,15 +667,18 @@ pub(crate) fn build_chrome_glass(
                 age_ms,
                 &model.ui,
                 &pal,
-                &mut dl,
+                top,
             );
         }
     }
-    if dl.cmds.is_empty() {
-        return Vec::new();
+    if let Some(o) = over {
+        raster.lower(&od, s, fonts, o);
     }
     raster.lower(&dl, s, fonts, chrome);
-    glass.map_or_else(Vec::new, |k| glass_panes(&dl, k))
+    glass.map_or_else(
+        || (Vec::new(), Vec::new()),
+        |k| (glass_panes(&dl, k), glass_panes(&od, k)),
+    )
 }
 
 /// The bar a window shows for the current configuration errors, or `None` when the file is
@@ -875,6 +889,58 @@ mod tests {
         let (m, buf) = chrome_model(scale);
         build_chrome(&mut l, None, &m, buf, scale, light, 0, &mut f, &mut r);
         l
+    }
+
+    #[test]
+    fn stacked_glass_puts_the_palette_on_the_overlay_list() {
+        let (m, buf) = chrome_model(1.0);
+        let (mut f, mut r) = (fonts(), UiRaster::new());
+        let (mut root, mut over) = (ChromeList::new(), ChromeList::new());
+        let (root_panes, over_panes) = build_chrome_glass(
+            &mut root,
+            None,
+            &m,
+            buf,
+            1.0,
+            false,
+            0,
+            &mut f,
+            &mut r,
+            Some(1.0),
+            Some(&mut over),
+        );
+        assert!(!over.is_empty(), "the palette is lowered to the overlay");
+        assert!(!over_panes.is_empty(), "sheet panes go to the subsurface");
+        assert!(
+            !root_panes.is_empty(),
+            "the tab chips stay on the root surface"
+        );
+        // Nothing on the root erases the grid under the sheet.
+        let sheet = over_panes
+            .iter()
+            .min_by_key(|p| (p.x, p.y))
+            .copied()
+            .unwrap();
+        let erases_sheet = root.instances.iter().any(|i| {
+            i.params[2] >= 2.5 && i.rect[0] >= sheet.x as f32 && i.rect[1] >= sheet.y as f32
+        });
+        assert!(!erases_sheet, "the root keeps its text under the sheet");
+        // Without an overlay list everything stays on the root, as off Abyss.
+        let mut all = ChromeList::new();
+        let (p0, p1) = build_chrome_glass(
+            &mut all,
+            None,
+            &m,
+            buf,
+            1.0,
+            false,
+            0,
+            &mut f,
+            &mut r,
+            Some(1.0),
+            None,
+        );
+        assert!(p1.is_empty() && p0.len() == root_panes.len() + over_panes.len());
     }
 
     #[test]

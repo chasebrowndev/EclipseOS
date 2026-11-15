@@ -988,6 +988,7 @@ impl App {
             poke: render_tx.clone(),
             to_main: self.to_main.clone(),
             glass: self.handle.glass_panes(self.win),
+            overlay: self.handle.overlay_surface(self.win),
         })
         .map_err(|e| e.to_string())?;
         self.render = Some(render);
