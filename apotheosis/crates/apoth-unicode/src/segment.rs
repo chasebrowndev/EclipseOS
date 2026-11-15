@@ -264,6 +264,20 @@ impl Segmenter {
         self.state = state::START;
     }
 
+    /// The rule state as one byte (a mux snapshot carries it, T-21 §3).
+    pub const fn to_raw(self) -> u8 {
+        self.state
+    }
+
+    /// Inverse of [`Segmenter::to_raw`]; `None` for a byte that names no state.
+    pub const fn from_raw(state: u8) -> Option<Self> {
+        if (state as usize) < NUM_STATES {
+            Some(Segmenter { state })
+        } else {
+            None
+        }
+    }
+
     /// True when at least one scalar has been pushed since the last reset.
     pub fn in_cluster(&self) -> bool {
         self.state != state::START
@@ -320,6 +334,16 @@ impl<'a> Iterator for Graphemes<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_state_round_trips() {
+        let mut s = Segmenter::new();
+        for c in ['a', '\u{1F1E6}', '\u{1F1E6}', '\r'] {
+            s.push(c);
+            assert_eq!(Segmenter::from_raw(s.to_raw()), Some(s));
+        }
+        assert_eq!(Segmenter::from_raw(NUM_STATES as u8), None);
+    }
 
     #[test]
     fn crlf_is_one_cluster() {

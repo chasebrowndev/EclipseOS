@@ -58,6 +58,14 @@ Coordinates `(y, x)` are active-area, 0-based; margins/regions are the caller's.
 - `search.rs`: `logical_line` (text + byte->cell map), `search(dir, from, fold, scratch, matcher)`
   returns `(Pin, Pin)`; `find_literal` on top. Regex plugs in as the matcher (app side).
 
+## M35 addition (session daemon, T-21 §3)
+- `screen/image.rs`: `Screen::image_meta()` / `image_pages()` give a screen as data (its pages
+  as they are, plus template, change seq and next serial); `Screen::from_image` rebuilds one
+  from another process's bytes, trusting nothing (`Page::from_bytes` per page,
+  `PageSpec::is_valid`, serials unique and below `next_serial`, rows add up). Pins are not
+  carried. Rebuilt pages are equal in content, not byte for byte (hash indexes are rebuilt).
+  `Style::to_bytes` / `from_bytes` is the 16-byte pen form `apoth-term`'s snapshot uses.
+
 ## Tests
 `src/tests_reflow.rs` (reflow/selection/search vs naive logical-line model), `src/tests.rs` (naive-model property tests, scroll/eviction/pin/snapshot/overflow/split
 tests) and `src/page.rs` unit tests (refcounts, link map vs model, seams, from_bytes

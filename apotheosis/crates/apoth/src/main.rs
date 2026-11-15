@@ -9,6 +9,7 @@ mod config;
 mod ctl;
 mod icat;
 mod play;
+mod server;
 
 use apoth_config::fs::RealFs;
 use std::path::PathBuf;
@@ -20,6 +21,9 @@ fn main() {
         Some("shell-init") => shell_init(&args[1..]),
         Some("icat") => icat::run(&args[1..]),
         Some("play") => play::run(&args[1..]),
+        Some("server") => server::server(&args[1..]),
+        Some("attach") => server::attach(&args[1..]),
+        Some("detach") => server::detach(&args[1..]),
         Some("-h" | "--help" | "help") => {
             let _ = std::io::Write::write_all(&mut std::io::stdout(), ctl::HELP.as_bytes());
             0

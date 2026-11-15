@@ -79,6 +79,9 @@ Commands:
   reset KEY...               drop --temp changes
   icat [OPTIONS] FILE...     show images in the pane (apoth icat --help)
   play [OPTIONS] FILE        play video or audio in the pane (apoth play --help)
+  server ls                  list the session daemons and their panes (T-21)
+  attach [SESSION]           open a window on a session daemon (default: default)
+  detach [SESSION]           detach every window from a session daemon; panes keep running
   shell-init bash|zsh|fish   print the shell-integration snippet (defines `ap`)
   config ...                 edit or read the config file (no socket)
 
@@ -671,6 +674,12 @@ pub(crate) fn candidates(dir: &Path) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "sock"))
+        // `server-<session>.sock` is a session daemon (T-21 §3), not a control socket.
+        .filter(|p| {
+            !p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("server-"))
+        })
         .filter_map(|p| {
             let t = std::fs::symlink_metadata(&p).ok()?.modified().ok()?;
             Some((t, p))
@@ -1374,9 +1383,11 @@ mod tests {
         std::fs::write(d.join("note.txt"), b"").unwrap();
         std::thread::sleep(Duration::from_millis(20));
         let b = std::os::unix::net::UnixListener::bind(d.join("2.sock")).unwrap();
+        // A session daemon's socket is never a control-socket candidate.
+        let s = std::os::unix::net::UnixListener::bind(d.join("server-x.sock")).unwrap();
         let c = candidates(&d);
         assert_eq!(c, [d.join("2.sock"), d.join("1.sock")]);
-        drop((a, b));
+        drop((a, b, s));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

@@ -34,6 +34,7 @@ pub mod modes;
 mod osc;
 mod sgr;
 pub mod shell;
+pub mod snapshot;
 #[cfg(test)]
 mod tests_batch;
 
@@ -61,6 +62,7 @@ pub use media::{
     MediaConfig, MediaCtl, MediaEvent, MediaPlacement, MediaPlay, MediaRequest, MediaSource,
 };
 pub use modes::{Access, ModeDef, ModeState};
+pub use snapshot::{SNAPSHOT_VERSION, SnapError, TermImage};
 
 /// What `feed` tells the io thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -362,6 +364,13 @@ impl Term {
         if self.m.mode_on(false, 2048) {
             self.m.size_report();
         }
+    }
+
+    /// Publish input modes to `mirror` from now on (a view swapping in a restored term keeps
+    /// the mirror its main thread already reads, T-21 §3).
+    pub fn set_input_mirror(&mut self, mirror: Arc<InputMirror>) {
+        mirror.store(self.m.published);
+        self.m.mirror = mirror;
     }
 
     /// Full reset (RIS).

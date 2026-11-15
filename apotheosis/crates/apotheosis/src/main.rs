@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod attach;
 mod binds;
 mod copymode;
 mod ctl;
@@ -27,6 +28,7 @@ mod render;
 mod rules;
 mod search;
 mod security;
+mod server;
 mod settings;
 mod ui;
 mod view;
@@ -56,6 +58,9 @@ Options:
   --wait                 when handed to a running instance, wait for the command and exit
                          with its status
   --profile NAME         start with the named profile (T-11 §6)
+  --server               run the session daemon: panes outlive the window (T-21)
+  --attach               open a window on the session daemon's panes
+  --session NAME         the daemon session for --server / --attach (default: default)
   --hold, --layout NAME  accepted; not available yet
   -h, --help             show this help
   -V, --version          show the version
@@ -74,6 +79,9 @@ struct Run {
     hold: bool,
     profile: Option<String>,
     layout: Option<String>,
+    server: bool,
+    attach: bool,
+    session: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -104,6 +112,9 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             "--profile" => r.profile = Some(val("--profile")?),
             "--layout" => r.layout = Some(val("--layout")?),
             "--new-instance" => r.new_instance = true,
+            "--server" => r.server = true,
+            "--attach" => r.attach = true,
+            "--session" => r.session = Some(val("--session")?),
             "--wait" => r.wait = true,
             "--hold" => r.hold = true,
             "-o" => {
@@ -113,6 +124,9 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             }
             other => return Err(format!("unknown argument {other:?}")),
         }
+    }
+    if r.server && r.attach {
+        return Err("--server and --attach exclude each other".into());
     }
     Ok(Cli::Run(r))
 }
@@ -192,17 +206,58 @@ fn main() {
             if let Some(p) = &r.profile {
                 settings::set_launch_profile(p);
             }
+            if r.server {
+                let startup = settings::Settings::load(r.launch);
+                let interpreters = startup
+                    .reloader
+                    .config()
+                    .list("socket.interpreters")
+                    .to_vec();
+                let opts = server::Options {
+                    session: r.session.unwrap_or_else(|| server::DEFAULT_SESSION.into()),
+                    command: r.command,
+                    cwd: r.cwd.as_deref().map(absolute),
+                };
+                std::process::exit(server::run(startup.settings, interpreters, opts));
+            }
+            // `--attach` opens its own window on the session, never a tab elsewhere.
             if !r.new_instance
+                && !r.attach
                 && let ctl::launch::Handoff::Done(code) = ctl::launch::hand_off(launch_request(&r))
             {
                 std::process::exit(code);
             }
             let startup = settings::Settings::load(r.launch);
+            let session = r
+                .session
+                .clone()
+                .unwrap_or_else(|| server::DEFAULT_SESSION.into());
+            let attach = if r.attach {
+                match attach::connect(&session) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        eprintln!("apotheosis: cannot attach to session {session:?}: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if startup.settings.server_mode {
+                // `sessions.server on` (T-21 §3): the window is a view; a refusal (this
+                // process runs inside one of the server's panes, say) falls back to local panes.
+                match attach::ensure_server(&session).and_then(|()| attach::connect(&session)) {
+                    Ok(h) => Some(h),
+                    Err(e) => {
+                        tracing::warn!("session server unavailable, using local panes: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let first = app::FirstPane {
                 cwd: r.cwd.as_deref().map(absolute),
                 title: r.title,
             };
-            match app::run(startup, r.command, r.app_id, first) {
+            match app::run(startup, r.command, r.app_id, first, attach) {
                 Ok(code) => std::process::exit(code),
                 Err(e) => {
                     eprintln!("apotheosis: {e}");
@@ -271,6 +326,17 @@ mod tests {
         assert!(p(&["-e"]).is_err());
         assert!(p(&["-o", "x"]).is_err());
         assert!(p(&["--nope"]).is_err());
+        assert!(p(&["--server", "--attach"]).is_err());
+        assert!(p(&["--session"]).is_err());
+        assert_eq!(
+            p(&["--server", "--session", "w", "-e", "sh"]),
+            Ok(Cli::Run(Run {
+                command: Some(vec!["sh".into()]),
+                server: true,
+                session: Some("w".into()),
+                ..Run::default()
+            }))
+        );
     }
 
     #[test]

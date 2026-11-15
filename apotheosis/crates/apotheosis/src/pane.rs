@@ -292,6 +292,8 @@ pub(crate) enum MainMsg {
     MediaBox(u64, (usize, usize)),
     /// "Open with" worker results (T-14 §11).
     Open(crate::app::OpenMsg),
+    /// The session daemon's stream (T-21 §3).
+    Remote(crate::attach::Event),
     Loaded(
         Box<(
             apoth_config::reload::Reloader,
@@ -332,7 +334,13 @@ pub(crate) struct IoArgs {
     pub(crate) hook: Option<DumpHook>,
     /// Image decodes run here (T-15 §5); a refused job runs inline.
     pub(crate) workers: Spawner,
+    /// A session-daemon pane (T-21 §3): `master` is the view's packet socket from the
+    /// attach demultiplexer ([`crate::attach`]), not a PTY, and restored terms arrive here.
+    pub(crate) remote: Option<Mailbox>,
 }
+
+/// Where the attach demultiplexer leaves a pane's restored term for its io thread.
+pub(crate) type Mailbox = Arc<Mutex<Option<Term>>>;
 
 pub(crate) fn spawn_io(a: IoArgs, wake: OwnedFd) -> std::io::Result<IoThread> {
     // Workers wake the io thread through their own copy of the pipe's write end.
@@ -399,6 +407,7 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
         to_render,
         hook,
         workers,
+        remote,
     } = a;
     let (done_tx, done_rx) = mpsc::channel();
     let io = Io {
@@ -415,7 +424,8 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
             crate::mediahost::pipe_poke(Arc::clone(&poke), WAKE_MEDIA),
         )),
     };
-    let mut buf = vec![0u8; SLICE_BYTES];
+    // A remote packet is a tag byte plus up to one slice.
+    let mut buf = vec![0u8; SLICE_BYTES + 16];
     if let Some(h) = &hook {
         h.write(&shared.lock_io());
     }
@@ -555,6 +565,13 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
                     eof = true;
                     break;
                 }
+                Ok(n) if remote.is_some() => {
+                    total += n;
+                    st = io.remote_packet(&buf[..n], remote.as_ref().expect("checked"));
+                    if total >= SLICE_BYTES || started.elapsed() >= SLICE_TIME {
+                        break;
+                    }
+                }
                 Ok(n) => {
                     total += n;
                     let bytes = &buf[..n];
@@ -583,6 +600,56 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
 }
 
 impl Io<'_> {
+    /// One packet from the attach demultiplexer: output, a resize at its place in the
+    /// stream, or a fresh snapshot to swap in (T-21 §3). The term the view holds then
+    /// matches the server's at every point of the stream.
+    fn remote_packet(&self, pkt: &[u8], mailbox: &Mailbox) -> IoState {
+        match pkt.split_first() {
+            Some((&crate::attach::PKT_OUTPUT, bytes)) => {
+                self.step(|t| t.feed(bytes, Instant::now()))
+            }
+            Some((&crate::attach::PKT_RESIZE, b)) if b.len() == 4 => {
+                let rows = usize::from(u16::from_le_bytes([b[0], b[1]]));
+                let cols = usize::from(u16::from_le_bytes([b[2], b[3]]));
+                let dims = self.shared.lock_io().resize(rows, cols);
+                let _ = self.to_main.send(MainMsg::Resized(self.id, dims));
+                self.step(|_| apoth_term::Wake {
+                    dirty: true,
+                    ..apoth_term::Wake::default()
+                })
+            }
+            Some((&crate::attach::PKT_SNAPSHOT, _)) => {
+                let Some(mut new) = mailbox
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                else {
+                    return self.step(|_| apoth_term::Wake::default());
+                };
+                new.set_input_mirror(Arc::clone(&self.shared.mirror));
+                // The server's sequence policy: the view must refuse exactly what it refused.
+                self.shared.deny.store(new.deny_bits(), Ordering::Release);
+                // The title the program set before this view attached shows on the tab.
+                let title = new.title().to_owned();
+                if !title.is_empty() {
+                    new.events().title = Some(title);
+                }
+                let dims = {
+                    let mut t = self.shared.lock_io();
+                    *t = new;
+                    (t.rows(), t.cols())
+                };
+                let _ = self.to_main.send(MainMsg::Resized(self.id, dims));
+                self.step(|_| apoth_term::Wake {
+                    dirty: true,
+                    events: true,
+                    ..apoth_term::Wake::default()
+                })
+            }
+            _ => self.step(|_| apoth_term::Wake::default()),
+        }
+    }
+
     /// One locked step on the term (feed, tick, a decode result, a consent answer): installs
     /// the deny word, runs `f`, collects replies, events and image jobs, then publishes and
     /// hands the jobs to the workers outside the lock.

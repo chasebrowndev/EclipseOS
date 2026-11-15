@@ -57,6 +57,12 @@ fn candidates(dir: &Path) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "sock"))
+        // `server-<session>.sock` is a session daemon (T-21 §3), not a control socket.
+        .filter(|p| {
+            !p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("server-"))
+        })
         .filter_map(|p| Some((std::fs::symlink_metadata(&p).ok()?.modified().ok()?, p)))
         .collect();
     v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));

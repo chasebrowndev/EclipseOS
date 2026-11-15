@@ -111,6 +111,8 @@ pub(crate) struct Settings {
     pub(crate) nav: NavSettings,
     /// `graphics.file-transmission` is not `off` (T-15 §5).
     pub(crate) graphics_file: bool,
+    /// `sessions.server` is `on`: windows are views of the session daemon (T-21 §3).
+    pub(crate) server_mode: bool,
     /// `-o key=value` pairs and diagnostics counts, for the startup log line.
     pub(crate) diagnostics: usize,
 }
@@ -652,6 +654,7 @@ impl Settings {
             input: InputSettings::from_config(c),
             nav: NavSettings::from_config(c),
             graphics_file: c.str("graphics.file-transmission") != Some("off"),
+            server_mode: c.str("sessions.server") == Some("on"),
             diagnostics: 0,
         };
         // Off Abyss (and until detection answers) the stock dark scheme. HOOK(T-10 §7):
