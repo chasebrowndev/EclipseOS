@@ -776,6 +776,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-style-tokens"
+version = "0.2.2"
+
+[[package]]
 name = "ec-theme"
 version = "0.2.2"
 
@@ -785,6 +789,7 @@ version = "0.2.2"
 dependencies = [
  "ec-ipc",
  "ec-protocols",
+ "ec-style-tokens",
  "ec-theme",
  "iced",
  "raw-window-handle",

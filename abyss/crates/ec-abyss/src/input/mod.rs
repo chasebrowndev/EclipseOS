@@ -276,7 +276,16 @@ impl AbyssState {
                         sym, chord,
                     )));
                 }
+                // The focused client holds a shortcuts inhibitor: every binding
+                // but the reserved chords goes to it (COMP-04 §5, §6).
+                let inhibited = crate::protocols::standard::shortcuts_inhibit::focus_inhibits(state);
                 match state.config.action_for(&held, sym) {
+                    Some(a)
+                        if inhibited
+                            && !crate::protocols::standard::shortcuts_inhibit::survives_inhibit(a) =>
+                    {
+                        FilterResult::Forward
+                    }
                     // Shipped add-on chords only take the key while their hook
                     // is on, so a stock install without the add-on loses nothing.
                     Some(Action::AnnotationSelect) if !state.addons.hooks.is_on(Hook::RegionSelect) => {
