@@ -715,6 +715,9 @@ void main() {
 }
 "#;
 
+/// Largest share of a glass shape's shorter side its bevel may span.
+const GLASS_BEVEL_FRACTION: f32 = 0.3;
+
 /// The frost program's uniforms, in the order [`frost_uniforms`] sets them.
 const FROST_UNIFORMS: [(&str, UniformType); 12] = [
     ("win_rect", UniformType::_4f),
@@ -905,6 +908,16 @@ pub fn glass_uniforms_lifted(
                 bar.max(0) as f32,
             )
         });
+    // The configured bevel/strength are ceilings: a thin shape (a bar) gets a
+    // bevel of at most GLASS_BEVEL_FRACTION of its shorter side, and the bend
+    // shrinks with it, so it keeps a clear centre and the same slope.
+    let (strength, bevel) = if inner > 0.0 || bevel <= 0.0 {
+        (strength, bevel)
+    } else {
+        let short = rect.size.w.min(rect.size.h).max(1) as f32;
+        let capped = bevel.min(short * GLASS_BEVEL_FRACTION);
+        (strength * capped / bevel, capped)
+    };
     let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
     u.extend([
         Uniform::new(
