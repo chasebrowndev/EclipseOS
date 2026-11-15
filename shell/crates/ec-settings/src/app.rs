@@ -1348,8 +1348,13 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
     let mut subs = vec![blur(), events()];
     // While the chord recorder listens every key is its own, so the sidebar's
     // type-to-search hears none.
-    if !app.terminal.lists.recording() {
+    // While the chord recorder listens, or an Open-with form is open, keys
+    // belong to that form: the sidebar's type-to-search hears none.
+    if !app.terminal.lists.recording() && !app.terminal.open.editing() {
         subs.push(crate::search_ui::keys(&app.search));
+    }
+    if app.terminal.open.editing() {
+        subs.push(crate::term_open::keys());
     }
     subs.push(ec_ui::glass::xdg_window().map(Message::GlassWindow));
     if app.nav_moving() {

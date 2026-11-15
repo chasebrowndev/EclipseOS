@@ -27,7 +27,7 @@ use apoth_config::model::{Config, Layer};
 use apoth_config::types::Value;
 use apoth_config::value::kdl_str;
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Column, Space};
-use iced::{Element, Length, Task, Theme};
+use iced::{Element, Length, Subscription, Task, Theme};
 
 use ec_ui::theme;
 use ec_ui::tokens::{font, size, space};
@@ -111,25 +111,44 @@ impl Rule {
         a
     }
 
-    /// Why this rule cannot be saved, or `None`. `taken` are the types other
-    /// rules already have.
-    pub fn problem(&self, taken: &[String]) -> Option<String> {
-        let mime = self.mime.trim();
+    /// The type as it is written: MIME types are case-insensitive, and the
+    /// opener compares them so (`eq_ignore_ascii_case`), so a rule is saved in
+    /// lower case and `Image/PNG` is the same rule as `image/png`.
+    pub fn mime_key(&self) -> String {
+        self.mime.trim().to_ascii_lowercase()
+    }
+
+    /// What is wrong with the type alone, or `None` (an empty type is not yet
+    /// wrong). `taken` are the other rules' types, lower case.
+    pub fn mime_problem(&self, taken: &[String]) -> Option<String> {
+        let mime = self.mime_key();
         if mime.is_empty() {
+            return None;
+        }
+        if taken.contains(&mime) {
+            return Some(format!("{mime} already has a rule. Edit that one instead."));
+        }
+        validate_open_handler(&mime, &["opener".to_owned()]).err()
+    }
+
+    /// Why this rule cannot be saved, or `None`.
+    pub fn problem(&self, taken: &[String]) -> Option<String> {
+        if self.mime_key().is_empty() {
             return Some("Name a type, such as image/png or video/*.".to_owned());
         }
-        if taken.iter().any(|t| t == mime) {
-            return Some(format!("{mime} already has a rule."));
+        if let Some(why) = self.mime_problem(taken) {
+            return Some(why);
         }
         if self.handler.trim().is_empty() {
             return Some("Pick what opens it.".to_owned());
         }
-        validate_open_handler(mime, &self.args()).err()
+        validate_open_handler(&self.mime_key(), &self.args()).err()
     }
 
     /// The entry exactly as the editor writes it into the file.
     pub fn kdl(&self) -> String {
-        let mime = self.mime.trim();
+        let mime = self.mime_key();
+        let mime = mime.as_str();
         edited("", None, Some(self))
             .ok()
             .and_then(|t| {
@@ -170,6 +189,42 @@ pub enum Msg {
     Placement(String),
     Picker,
     Query(String),
+    /// Enter in the picker's search: take the first handler it lists.
+    PickFirst,
+    Undo,
+    Dismiss,
+    Key(Key),
+}
+
+/// A key the open form answers (`keys`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Key {
+    /// Tab; `true` with Shift.
+    Tab(bool),
+    Enter,
+    Escape,
+}
+
+/// The form's text fields, in Tab order.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Field {
+    #[default]
+    Type,
+    Find,
+}
+
+const TYPE_FIELD: &str = "open-with:type";
+const FIND_FIELD: &str = "open-with:find";
+
+/// A rule just removed: what Undo puts back. `before` is the file as it was;
+/// while the file is still exactly `after`, Undo restores it byte for byte
+/// (the rule, its place and its comments), otherwise it adds the rule again.
+#[derive(Debug, Clone)]
+struct Removed {
+    rule: Rule,
+    at: usize,
+    before: String,
+    after: String,
 }
 
 /// The editor's state: the user file's rules and the open form.
@@ -183,6 +238,8 @@ pub struct Open {
     apps: Option<Vec<DesktopApp>>,
     error: Option<String>,
     user: PathBuf,
+    focus: Field,
+    removed: Option<Removed>,
 }
 
 /// The `open.handlers` entries in a file's text, in file order.
@@ -196,20 +253,18 @@ pub fn list(text: &str) -> Vec<Rule> {
     }
 }
 
-/// `text` with the rule at `at` (by its old type) replaced by `rule`, or with
-/// `remove` dropped; the rest of the file is byte-for-byte as it was.
-pub fn edited(text: &str, remove: Option<&str>, rule: Option<&Rule>) -> Result<String, String> {
+/// `text` with the entry `old` replaced in place by `rule` (both given), `rule`
+/// appended (no `old`), or `old` removed (no `rule`). Only that entry's bytes
+/// change; an unchanged rule leaves the text identical.
+pub fn edited(text: &str, old: Option<&str>, rule: Option<&Rule>) -> Result<String, String> {
     let mut ed = Editor::parse(text).map_err(|e| e.to_string())?;
-    if let Some(old) = remove {
-        ed.map_remove(HANDLERS, old).map_err(|e| e.to_string())?;
+    match (old, rule) {
+        (Some(o), Some(r)) => ed.map_replace(HANDLERS, o, &r.mime_key(), &r.args()),
+        (None, Some(r)) => ed.map_set(HANDLERS, &r.mime_key(), &r.args()),
+        (Some(o), None) => ed.map_remove(HANDLERS, o).map(|_| ()),
+        (None, None) => Ok(()),
     }
-    if let Some(r) = rule {
-        ed.map_set(HANDLERS, r.mime.trim(), &r.args())
-            .map_err(|e| e.to_string())?;
-    }
-    if matches!(ed.get(HANDLERS), Ok(Some(Value::Map(m))) if m.is_empty()) {
-        ed.unset(HANDLERS).map_err(|e| e.to_string())?;
-    }
+    .map_err(|e| e.to_string())?;
     Ok(ed.text())
 }
 
@@ -293,14 +348,22 @@ impl Open {
         self.edit = None;
         self.picker = false;
         self.query.clear();
+        self.focus = Field::Type;
     }
 
+    /// Is a form open? The window's type-to-search is off while it is, and
+    /// the form hears Tab, Enter and Escape (`keys`).
+    pub fn editing(&self) -> bool {
+        self.edit.is_some()
+    }
+
+    /// The other rules' types, lower case.
     fn taken(&self, except: At) -> Vec<String> {
         self.rules
             .iter()
             .enumerate()
             .filter(|(i, _)| except != At::Item(*i))
-            .map(|(_, r)| r.mime.clone())
+            .map(|(_, r)| r.mime.trim().to_ascii_lowercase())
             .collect()
     }
 
@@ -323,12 +386,11 @@ fn m(x: Msg) -> Message {
     Message::Terminal(crate::terminal::Msg::Open(x))
 }
 
-/// Build, gate, write, re-read; `false` leaves the file as it was.
-fn commit(t: &mut Terminal, remove: Option<&str>, rule: Option<&Rule>) -> bool {
+/// Check `new` loads, write it, re-read; `false` leaves the file as it was.
+fn put(t: &mut Terminal, old: &str, new: Result<String, String>) -> bool {
     let user = t.user_main.clone();
-    let old = read(&user);
-    let result = edited(&old, remove, rule)
-        .and_then(|new| gate(&user, &old, &new).map(|()| new))
+    let result = new
+        .and_then(|new| gate(&user, old, &new).map(|()| new))
         .and_then(|new| if new == old { Ok(()) } else { write(&user, &new) });
     match result {
         Ok(()) => {
@@ -343,29 +405,85 @@ fn commit(t: &mut Terminal, remove: Option<&str>, rule: Option<&Rule>) -> bool {
     }
 }
 
+/// Apply one edit (see [`edited`]) to the user file.
+fn commit(t: &mut Terminal, old: Option<&str>, rule: Option<&Rule>) -> bool {
+    let text = read(&t.user_main);
+    let ok = put(t, &text, edited(&text, old, rule));
+    if ok {
+        t.open.removed = None;
+    }
+    ok
+}
+
+/// Focus a form field.
+fn focus(o: &mut Open, f: Field) -> Task<Message> {
+    o.focus = f;
+    iced::widget::operation::focus(match f {
+        Field::Type => TYPE_FIELD,
+        Field::Find => FIND_FIELD,
+    })
+}
+
 pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
+    let links = links_command(&app.terminal.cfg());
     let t = &mut app.terminal;
     let o = &mut t.open;
     match msg {
         Msg::New => {
-            o.close();
+            // Add rule toggles the new-rule form; it never resets a draft.
+            if matches!(o.edit, Some((At::New, _))) {
+                o.close();
+                return Task::none();
+            }
+            if o.edit.is_some() {
+                return Task::none();
+            }
             o.error = None;
             o.edit = Some((At::New, Rule::default()));
+            return focus(o, Field::Type);
         }
         Msg::Edit(i) => {
             let was = matches!(o.edit, Some((At::Item(j), _)) if j == i);
-            o.close();
-            o.error = None;
-            if !was {
-                o.edit = o.rules.get(i).cloned().map(|r| (At::Item(i), r));
+            if was {
+                o.close();
+                return Task::none();
             }
+            if o.edit.is_some() {
+                return Task::none();
+            }
+            o.error = None;
+            o.edit = o.rules.get(i).cloned().map(|r| (At::Item(i), r));
+            return focus(o, Field::Type);
         }
         Msg::Remove(i) => {
-            o.close();
-            if let Some(r) = o.rules.get(i).cloned() {
-                commit(t, Some(&r.mime), None);
+            if o.edit.is_some() {
+                return Task::none();
+            }
+            let Some(r) = o.rules.get(i).cloned() else {
+                return Task::none();
+            };
+            let before = read(&t.user_main);
+            if commit(t, Some(&r.mime), None) {
+                t.open.removed = Some(Removed {
+                    rule: r,
+                    at: i,
+                    before,
+                    after: read(&t.user_main),
+                });
             }
         }
+        Msg::Undo => {
+            let Some(gone) = o.removed.take() else {
+                return Task::none();
+            };
+            let now = read(&t.user_main);
+            if now == gone.after {
+                put(t, &now, Ok(gone.before));
+            } else {
+                commit(t, None, Some(&gone.rule));
+            }
+        }
+        Msg::Dismiss => o.removed = None,
         Msg::Cancel => {
             o.close();
             o.error = None;
@@ -374,8 +492,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             let Some((at, rule)) = o.edit.clone() else {
                 return Task::none();
             };
-            if let Some(why) = rule.problem(&o.taken(at)) {
-                o.error = Some(why);
+            if rule.problem(&o.taken(at)).is_some() {
                 return Task::none();
             }
             let old = match at {
@@ -391,13 +508,25 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             o.query.clear();
             if o.picker {
                 o.apps();
+                return focus(o, Field::Find);
+            }
+            return focus(o, Field::Type);
+        }
+        Msg::Query(q) => {
+            o.query = q;
+            o.focus = Field::Find;
+        }
+        Msg::PickFirst => {
+            let mime = o.edit.as_ref().map(|(_, r)| r.mime_key()).unwrap_or_default();
+            if let Some(c) = choices(o, &mime, &links).into_iter().next() {
+                return update(app, Msg::Handler(c.id));
             }
         }
-        Msg::Query(q) => o.query = q,
         Msg::Mime(s) => {
             if let Some((_, r)) = o.edit.as_mut() {
                 r.mime = s;
             }
+            o.focus = Field::Type;
         }
         Msg::Handler(h) => {
             if let Some((_, r)) = o.edit.as_mut() {
@@ -408,18 +537,67 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             }
             o.picker = false;
             o.query.clear();
+            return focus(o, Field::Type);
         }
         Msg::Placement(p) => {
             if let Some((_, r)) = o.edit.as_mut() {
                 r.placement = p;
             }
         }
+        Msg::Key(k) => {
+            match k {
+                Key::Escape if o.picker => {
+                    o.picker = false;
+                    o.query.clear();
+                    return focus(o, Field::Type);
+                }
+                Key::Escape => {
+                    o.close();
+                    o.error = None;
+                }
+                // Type, then the handler's search (opening the picker), and round.
+                Key::Tab(_) => {
+                    let next = match o.focus {
+                        Field::Type => Field::Find,
+                        Field::Find => Field::Type,
+                    };
+                    if next == Field::Find && !o.picker {
+                        o.picker = true;
+                        o.query.clear();
+                        o.apps();
+                    }
+                    return focus(o, next);
+                }
+                Key::Enter => return update(app, Msg::Save),
+            }
+        }
     }
     Task::none()
 }
 
-/// Debug builds: `SETTINGS_PREVIEW_OPEN=new|picker|edit` opens the form (and
-/// the picker) so each state can be screenshotted without injected input.
+/// Tab, Shift+Tab, Enter and Escape while a form is open. Enter inside a field
+/// is that field's own submit, so only an Enter no widget took counts here.
+pub fn keys() -> Subscription<Message> {
+    use iced::keyboard::{key::Named, Event, Key as K};
+    iced::event::listen_with(|event, status, _window| {
+        let iced::Event::Keyboard(Event::KeyPressed { key, modifiers, .. }) = event else {
+            return None;
+        };
+        let k = match key {
+            K::Named(Named::Tab) if !modifiers.control() && !modifiers.alt() => Key::Tab(modifiers.shift()),
+            K::Named(Named::Escape) if modifiers.is_empty() => Key::Escape,
+            K::Named(Named::Enter) if modifiers.is_empty() && status == iced::event::Status::Ignored => {
+                Key::Enter
+            }
+            _ => return None,
+        };
+        Some(m(Msg::Key(k)))
+    })
+}
+
+/// Debug builds: `SETTINGS_PREVIEW_OPEN=new|picker|edit|dup|bad|remove` opens
+/// the form (with the picker, a duplicate or a malformed type) or removes the
+/// first rule, so each state can be screenshotted without injected input.
 #[cfg(debug_assertions)]
 pub fn preview_env(app: &mut App) {
     let Some(v) = std::env::var("SETTINGS_PREVIEW_OPEN")
@@ -428,10 +606,29 @@ pub fn preview_env(app: &mut App) {
     else {
         return;
     };
-    let _ = update(app, if v == "edit" { Msg::Edit(0) } else { Msg::New });
-    if v == "picker" {
-        let _ = update(app, Msg::Mime("image/png".to_owned()));
-        let _ = update(app, Msg::Picker);
+    match v.as_str() {
+        "remove" => {
+            let _ = update(app, Msg::Remove(0));
+        }
+        "edit" => {
+            let _ = update(app, Msg::Edit(0));
+        }
+        _ => {
+            let _ = update(app, Msg::New);
+        }
+    }
+    match v.as_str() {
+        "picker" => {
+            let _ = update(app, Msg::Mime("image/png".to_owned()));
+            let _ = update(app, Msg::Picker);
+        }
+        "dup" => {
+            let _ = update(app, Msg::Mime("Image/*".to_owned()));
+        }
+        "bad" => {
+            let _ = update(app, Msg::Mime("image".to_owned()));
+        }
+        _ => {}
     }
 }
 
@@ -468,10 +665,12 @@ pub fn view<'a>(t: &'a Terminal, cfg: &Config, label: &str) -> Element<'a, Messa
             1 => "1 rule".to_owned(),
             n => format!("{n} rules"),
         }),
+        // A toggle for the new-rule form; inert while another rule is open,
+        // so a draft is never thrown away by a stray click.
         pick_pill(
             "Add rule",
             matches!(o.edit, Some((At::New, _))),
-            Some(m(Msg::New))
+            (!matches!(o.edit, Some((At::Item(_), _)))).then(|| m(Msg::New))
         ),
     ]
     .spacing(space::CONTROL_GAP)
@@ -496,7 +695,11 @@ pub fn view<'a>(t: &'a Terminal, cfg: &Config, label: &str) -> Element<'a, Messa
     if let Some((At::New, r)) = &o.edit {
         col = col.push(form(o, cfg, At::New, r));
     }
+    let busy = o.edit.is_some();
     for (i, r) in o.rules.iter().enumerate() {
+        if let Some(gone) = o.removed.as_ref().filter(|g| g.at == i) {
+            col = col.push(hairline()).push(removed_row(o, gone));
+        }
         let open = matches!(o.edit, Some((At::Item(j), _)) if j == i);
         let mut line = row![
             container(mono_text(&r.mime)).width(Length::Fixed(space::FIELD_W)),
@@ -516,16 +719,25 @@ pub fn view<'a>(t: &'a Terminal, cfg: &Config, label: &str) -> Element<'a, Messa
                 &r.placement
             }));
         }
+        // While a form is open only its own row answers: a draft is never
+        // dropped by opening or removing another rule.
+        let live = open || !busy;
         let body = button(container(line).width(Length::Fill))
             .width(Length::Fill)
             .padding(tight())
-            .on_press(m(Msg::Edit(i)))
+            .on_press_maybe(live.then(|| m(Msg::Edit(i))))
             .style(theme::fleet_row(open));
         col = col.push(hairline()).push(
             row![
                 body,
-                verb(if open { "Close" } else { "Edit" }, Some(m(Msg::Edit(i)))),
-                verb("Remove", Some(m(Msg::Remove(i)))),
+                // One slot for Edit and Close, so the placement badge stays put.
+                container(verb(
+                    if open { "Close" } else { "Edit" },
+                    live.then(|| m(Msg::Edit(i)))
+                ))
+                .width(Length::Fixed(space::NUMBER_W))
+                .align_x(iced::Alignment::Center),
+                verb("Remove", (!busy).then(|| m(Msg::Remove(i)))),
             ]
             .spacing(space::PILL_GAP)
             .align_y(iced::Alignment::Center),
@@ -533,6 +745,9 @@ pub fn view<'a>(t: &'a Terminal, cfg: &Config, label: &str) -> Element<'a, Messa
         if open {
             col = col.push(form(o, cfg, At::Item(i), r_open(o).unwrap_or(r)));
         }
+    }
+    if let Some(gone) = o.removed.as_ref().filter(|g| g.at >= o.rules.len()) {
+        col = col.push(hairline()).push(removed_row(o, gone));
     }
     // Entries from /etc or an include the user does not own.
     let user_types: Vec<&str> = o.rules.iter().map(|r| r.mime.as_str()).collect();
@@ -596,6 +811,26 @@ pub fn view<'a>(t: &'a Terminal, cfg: &Config, label: &str) -> Element<'a, Messa
         .into()
 }
 
+/// Where a removed rule was: what went, and the way back.
+fn removed_row<'a>(o: &Open, gone: &Removed) -> Element<'a, Message, Theme> {
+    container(
+        row![
+            mono_dim(&format!(
+                "Removed {} \u{2192} {}",
+                gone.rule.mime,
+                o.name_of(&gone.rule.handler)
+            )),
+            Space::new().width(Length::Fill),
+            verb("Undo", Some(m(Msg::Undo))),
+            verb("Dismiss", Some(m(Msg::Dismiss))),
+        ]
+        .spacing(space::PILL_GAP)
+        .align_y(iced::Alignment::Center),
+    )
+    .padding(tight())
+    .into()
+}
+
 fn r_open(o: &Open) -> Option<&Rule> {
     o.edit.as_ref().map(|(_, r)| r)
 }
@@ -605,11 +840,13 @@ fn r_open(o: &Open) -> Option<&Rule> {
 fn form<'a>(o: &'a Open, cfg: &Config, at: At, r: &'a Rule) -> Element<'a, Message, Theme> {
     let taken = o.taken(at);
     let why = r.problem(&taken);
-    let mime_bad = !r.mime.trim().is_empty()
-        && (taken.iter().any(|t| t == r.mime.trim())
-            || validate_open_handler(r.mime.trim(), &["opener".to_owned()]).is_err());
+    // The type is judged as soon as it is typed; the handler once one is chosen.
+    let mime_why = r.mime_problem(&taken);
+    let mime_bad = mime_why.is_some();
     let mime = text_input("image/png, video/* or x-scheme-handler/https", &r.mime)
+        .id(TYPE_FIELD)
         .on_input(|s| m(Msg::Mime(s)))
+        .on_submit(m(Msg::Save))
         .font(font::DATA)
         .size(size::MONO)
         .style(if mime_bad {
@@ -618,7 +855,7 @@ fn form<'a>(o: &'a Open, cfg: &Config, at: At, r: &'a Rule) -> Element<'a, Messa
             theme::eclipse_input
         });
     let mut col = Column::new().spacing(space::PILL_GAP);
-    col = col.push(field("Type", mime.into(), None));
+    col = col.push(field("Type", mime.into(), mime_why.as_deref()));
     let typed = r.mime.trim().to_lowercase();
     let hints: Vec<Element<'a, Message, Theme>> = COMMON_TYPES
         .iter()
@@ -678,8 +915,9 @@ fn form<'a>(o: &'a Open, cfg: &Config, at: At, r: &'a Rule) -> Element<'a, Messa
         }
         col = col.push(field("Shows in", pill_group(pills), None));
     }
-    // A Security key: the entry is shown exactly as it will be written.
-    if !r.mime.trim().is_empty() && !r.handler.is_empty() {
+    // A Security key: the entry is shown exactly as it will be written, and
+    // only when it can be.
+    if why.is_none() {
         col = col.push(hairline());
         col = col.push(
             row![
@@ -690,10 +928,12 @@ fn form<'a>(o: &'a Open, cfg: &Config, at: At, r: &'a Rule) -> Element<'a, Messa
             .align_y(iced::Alignment::Center),
         );
     }
-    // Silent until both halves are filled in: an untouched form is not wrong.
+    // A handler that does not fit the rule (a placement on a desktop app);
+    // the type's own problems are under its field, and an unchosen handler
+    // only leaves Add inert.
     if let Some(w) = why
         .as_deref()
-        .filter(|_| !r.mime.trim().is_empty() && !r.handler.is_empty())
+        .filter(|_| mime_why.is_none() && !r.mime_key().is_empty() && !r.handler.is_empty())
     {
         col = col.push(
             text(w.to_owned())
@@ -717,98 +957,114 @@ fn form<'a>(o: &'a Open, cfg: &Config, at: At, r: &'a Rule) -> Element<'a, Messa
     glass_inset(container(col).padding(space::CARD))
 }
 
-/// The handler picker (T-14 §11 order): the terminal handlers, the apps that
-/// declare the type, the link command, then every other app; filtered by the
-/// search.
-fn picker<'a>(o: &'a Open, cfg: &Config, r: &'a Rule) -> Element<'a, Message, Theme> {
+/// One handler the picker lists.
+#[derive(Debug, Clone)]
+struct Choice {
+    section: String,
+    name: String,
+    id: String,
+    note: String,
+}
+
+/// `links.open-command` as one line, for the picker's note.
+fn links_command(cfg: &Config) -> String {
+    match cfg.get("links.open-command") {
+        Some(Value::List(l)) => l.join(" "),
+        _ => "xdg-open {url}".to_owned(),
+    }
+}
+
+/// The handlers the picker lists, in T-14 §11 order: the terminal handlers,
+/// the apps that declare the type, the link command, then every other app;
+/// filtered by the picker's search.
+fn choices(o: &Open, mime: &str, links: &str) -> Vec<Choice> {
     let q = o.query.trim().to_lowercase();
     let hit = |name: &str, id: &str| {
         q.is_empty() || name.to_lowercase().contains(&q) || id.to_lowercase().contains(&q)
     };
-    let choice = |name: String, id: String, note: String| -> Element<'a, Message, Theme> {
-        let selected = r.handler == id;
-        button(
-            row![
-                text(name)
-                    .font(font::UI)
-                    .size(size::BODY_SMALL)
-                    .style(theme::text_primary),
-                Space::new().width(Length::Fill),
-                text(note)
-                    .font(font::DATA)
-                    .size(size::MONO)
-                    .style(theme::text_tertiary),
-            ]
-            .spacing(space::CONTROL_GAP),
-        )
-        .width(Length::Fill)
-        .padding([space::BADGE_Y, space::CARD])
-        .on_press(m(Msg::Handler(id)))
-        .style(theme::fleet_row(selected))
-        .into()
-    };
-    let section = |label: String| -> Element<'a, Message, Theme> {
-        container(micro_label(&label))
-            .padding(iced::Padding::ZERO.left(space::CARD).top(space::PILL_GAP))
-            .into()
-    };
-    let mut list = Column::new();
-    let mut shown = 0usize;
-    let terms: Vec<_> = [
-        ("apoth icat", "apoth-icat", "images, in the terminal"),
-        ("apoth play", "apoth-play", "video and audio, in the terminal"),
-    ]
-    .into_iter()
-    .filter(|(n, id, _)| hit(n, id))
-    .collect();
-    if !terms.is_empty() {
-        list = list.push(section("In the terminal".to_owned()));
-        for (n, id, note) in terms {
-            list = list.push(choice(n.to_owned(), id.to_owned(), note.to_owned()));
-            shown += 1;
+    let mut out = Vec::new();
+    let mut push = |section: &str, name: &str, id: &str, note: &str| {
+        if hit(name, id) {
+            out.push(Choice {
+                section: section.to_owned(),
+                name: name.to_owned(),
+                id: id.to_owned(),
+                note: note.to_owned(),
+            });
         }
-    }
+    };
+    push(
+        "In the terminal",
+        "apoth icat",
+        "apoth-icat",
+        "images, in the terminal",
+    );
+    push(
+        "In the terminal",
+        "apoth play",
+        "apoth-play",
+        "video and audio, in the terminal",
+    );
     let apps = o.apps.as_deref().unwrap_or_default();
-    let (fit, rest): (Vec<&DesktopApp>, Vec<&DesktopApp>) = apps
-        .iter()
-        .filter(|a| hit(&a.name, &a.id))
-        .partition(|a| declares(&a.mimes, &r.mime));
-    if !fit.is_empty() {
-        list = list.push(section(format!("Apps for {}", r.mime.trim())));
-        for a in fit {
-            list = list.push(choice(a.name.clone(), a.id.clone(), a.id.clone()));
-            shown += 1;
+    let fits = format!("Apps for {mime}");
+    for a in apps.iter().filter(|a| declares(&a.mimes, mime)) {
+        push(&fits, &a.name, &a.id, &a.id);
+    }
+    push("Link command", "Link open command", "opener", links);
+    for a in apps.iter().filter(|a| !declares(&a.mimes, mime)) {
+        push("Other apps", &a.name, &a.id, &a.id);
+    }
+    out
+}
+
+/// The handler picker: a search (Enter takes the first hit), then the
+/// choices under their section labels.
+fn picker<'a>(o: &'a Open, cfg: &Config, r: &'a Rule) -> Element<'a, Message, Theme> {
+    let all = choices(o, &r.mime_key(), &links_command(cfg));
+    let mut list = Column::new();
+    let mut section = String::new();
+    for c in &all {
+        if c.section != section {
+            section = c.section.clone();
+            list = list.push(
+                container(micro_label(&section))
+                    .padding(iced::Padding::ZERO.left(space::CARD).top(space::PILL_GAP)),
+            );
         }
+        list = list.push(
+            button(
+                row![
+                    text(c.name.clone())
+                        .font(font::UI)
+                        .size(size::BODY_SMALL)
+                        .style(theme::text_primary),
+                    Space::new().width(Length::Fill),
+                    text(c.note.clone())
+                        .font(font::DATA)
+                        .size(size::MONO)
+                        .style(theme::text_tertiary),
+                ]
+                .spacing(space::CONTROL_GAP),
+            )
+            .width(Length::Fill)
+            .padding([space::BADGE_Y, space::CARD])
+            .on_press(m(Msg::Handler(c.id.clone())))
+            .style(theme::fleet_row(r.handler == c.id)),
+        );
     }
-    if hit("link open command", "opener") {
-        let cmd = cfg
-            .get("links.open-command")
-            .and_then(|v| match v {
-                Value::List(l) => Some(l.join(" ")),
-                _ => None,
-            })
-            .unwrap_or_else(|| "xdg-open {url}".to_owned());
-        list = list.push(section("Link command".to_owned()));
-        list = list.push(choice("Link open command".to_owned(), "opener".to_owned(), cmd));
-        shown += 1;
-    }
-    if !rest.is_empty() {
-        list = list.push(section("Other apps".to_owned()));
-        for a in rest {
-            list = list.push(choice(a.name.clone(), a.id.clone(), a.id.clone()));
-            shown += 1;
-        }
-    }
+    let apps = o.apps.as_deref().map_or(0, <[_]>::len);
     column![
         text_input("Search handlers and apps", &o.query)
+            .id(FIND_FIELD)
             .on_input(|s| m(Msg::Query(s)))
+            .on_submit(m(Msg::PickFirst))
             .font(font::UI)
             .size(size::BODY)
             .style(theme::eclipse_input),
         container(scrollable(list).style(theme::eclipse_scrollable)).height(Length::Fixed(space::FIELD_W)),
         row_caption(&format!(
-            "{shown} handlers \u{b7} {} desktop apps installed",
-            apps.len()
+            "{} handlers \u{b7} {apps} desktop apps installed \u{b7} Enter takes the first, Escape closes",
+            all.len()
         )),
     ]
     .spacing(space::PILL_GAP)
@@ -858,6 +1114,47 @@ mod tests {
         );
         let user = std::env::temp_dir().join("ec-settings-open-handlers.kdl");
         gate(&user, "", &b).unwrap();
+    }
+
+    const SEED: &str = "// mine\nopen {\n    handlers {\n        // images in term\n        \"image/*\" \"apoth-icat\" \"inline\"\n        // docs\n        \"application/pdf\" \"org.gnome.Evince.desktop\"\n    }\n}\n";
+
+    #[test]
+    fn saves_keep_comments_quotes_and_order() {
+        // An unchanged save is a byte-for-byte no-op.
+        let same = edited(
+            SEED,
+            Some("image/*"),
+            Some(&rule("image/*", "apoth-icat", "inline")),
+        )
+        .unwrap();
+        assert_eq!(same, SEED);
+        // An edit rewrites only that entry, in its place, under its comment.
+        let e = edited(SEED, Some("image/*"), Some(&rule("Image/PNG", "apoth-icat", ""))).unwrap();
+        assert_eq!(
+            e,
+            SEED.replace(
+                "\"image/*\" \"apoth-icat\" \"inline\"",
+                "\"image/png\" \"apoth-icat\""
+            )
+        );
+        assert_eq!(list(&e)[0].mime, "image/png");
+        // An add appends and leaves the others alone.
+        let a = edited(SEED, None, Some(&rule("x-scheme-handler/https", "opener", ""))).unwrap();
+        assert!(a.starts_with(&SEED[..SEED.find("    }\n}").unwrap()]), "{a}");
+        assert_eq!(list(&a).len(), 3);
+        assert_eq!(list(&a)[2].mime, "x-scheme-handler/https");
+        // A remove cuts that entry's line only.
+        let r = edited(SEED, Some("application/pdf"), None).unwrap();
+        assert!(r.contains("// images in term") && r.contains("// docs") && !r.contains("Evince"));
+    }
+
+    #[test]
+    fn types_are_compared_without_case() {
+        let taken = vec!["image/png".to_owned()];
+        assert!(rule("Image/PNG", "apoth-icat", "").mime_problem(&taken).is_some());
+        assert_eq!(rule(" Video/MP4 ", "apoth-play", "").mime_key(), "video/mp4");
+        assert!(rule("image", "", "").mime_problem(&[]).is_some());
+        assert!(rule("", "", "").mime_problem(&[]).is_none());
     }
 
     #[test]

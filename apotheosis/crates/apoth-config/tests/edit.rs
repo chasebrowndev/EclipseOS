@@ -543,3 +543,102 @@ fn random_splices_change_only_the_targeted_span() {
         assert!(!mid.contains('\n'), "{p}: multi-line change {mid:?}");
     }
 }
+
+const HANDLERS: &str = "// mine\nopen {\n    handlers {\n        // images in term\n        \"image/*\" \"apoth-icat\" \"inline\"\n        // docs\n        \"application/pdf\" \"org.gnome.Evince.desktop\" // viewer\n    }\n}\n";
+
+fn args(a: &[&str]) -> Vec<String> {
+    a.iter().map(|s| (*s).to_string()).collect()
+}
+
+#[test]
+fn an_unchanged_map_entry_is_a_byte_for_byte_no_op() {
+    let mut ed = Editor::parse(HANDLERS).unwrap();
+    ed.map_set("open.handlers", "image/*", &args(&["apoth-icat", "inline"]))
+        .unwrap();
+    assert_eq!(ed.text(), HANDLERS);
+    ed.map_replace(
+        "open.handlers",
+        "image/*",
+        "image/*",
+        &args(&["apoth-icat", "inline"]),
+    )
+    .unwrap();
+    assert_eq!(ed.text(), HANDLERS);
+}
+
+#[test]
+fn a_map_edit_replaces_only_that_entry_in_place() {
+    let mut ed = Editor::parse(HANDLERS).unwrap();
+    ed.map_set("open.handlers", "image/*", &args(&["apoth-icat", "float"]))
+        .unwrap();
+    assert_eq!(
+        ed.text(),
+        HANDLERS.replace("\"apoth-icat\" \"inline\"", "\"apoth-icat\" \"float\"")
+    );
+    // A renamed entry keeps its place and the comment above it.
+    let mut ed = Editor::parse(HANDLERS).unwrap();
+    ed.map_replace(
+        "open.handlers",
+        "image/*",
+        "image/png",
+        &args(&["apoth-icat"]),
+    )
+    .unwrap();
+    assert_eq!(
+        ed.text(),
+        HANDLERS.replace(
+            "\"image/*\" \"apoth-icat\" \"inline\"",
+            "\"image/png\" \"apoth-icat\""
+        )
+    );
+    // Renaming onto another entry is refused.
+    assert!(
+        ed.map_replace(
+            "open.handlers",
+            "image/png",
+            "application/pdf",
+            &args(&["opener"])
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn a_map_add_appends_and_a_remove_cuts_one_line() {
+    let mut ed = Editor::parse(HANDLERS).unwrap();
+    ed.map_set(
+        "open.handlers",
+        "x-scheme-handler/https",
+        &args(&["opener"]),
+    )
+    .unwrap();
+    let added = ed.text();
+    assert_eq!(
+        added,
+        HANDLERS.replace(
+            "// viewer\n    }",
+            "// viewer\n        \"x-scheme-handler/https\" \"opener\"\n    }"
+        )
+    );
+    assert!(
+        ed.map_remove("open.handlers", "x-scheme-handler/https")
+            .unwrap()
+    );
+    assert_eq!(ed.text(), HANDLERS);
+    // The last entry goes, its comment above stays, so the block stays.
+    assert!(ed.map_remove("open.handlers", "image/*").unwrap());
+    assert!(ed.map_remove("open.handlers", "application/pdf").unwrap());
+    let t = ed.text();
+    assert!(
+        t.contains("// images in term") && t.contains("// docs") && t.contains("handlers {"),
+        "{t}"
+    );
+    assert_eq!(ed.get("open.handlers").unwrap(), Some(Value::Map(vec![])));
+    // A block with nothing left in it goes with its last entry.
+    let mut ed =
+        Editor::parse("open {\n    handlers {\n        \"image/png\" apoth-icat\n    }\n}\n")
+            .unwrap();
+    assert!(ed.map_remove("open.handlers", "image/png").unwrap());
+    assert_eq!(ed.text(), "");
+    assert!(!ed.map_remove("open.handlers", "image/png").unwrap());
+}
