@@ -841,6 +841,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-style-tokens"
+version = "0.2.2"
+
+[[package]]
 name = "ec-theme"
 version = "0.2.2"
 
