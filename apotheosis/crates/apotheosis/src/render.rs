@@ -541,11 +541,23 @@ struct PaneR {
     below: bool,
     /// `below` flipped: the scene and the retained grid start over.
     restage: bool,
+    /// A tiled pane on the window's own background: the clear already paints it at the
+    /// window opacity, so default backgrounds draw transparent instead of a second layer.
+    flat: bool,
     idump: Option<ImageDump>,
     mdump: Option<MediaDump>,
     /// The next animation frame of an image in view (T-15 §1: the frame scheduler wakes
     /// for it; nothing else does).
     due: Option<Instant>,
+}
+
+/// The window's background: the focused pane's, painted by the clear at the window opacity.
+fn window_bg(panes: &[PaneR]) -> Rgb {
+    panes
+        .iter()
+        .find(|p| p.v.focused)
+        .or(panes.first())
+        .map_or(Rgb(0, 0, 0), |p| p.pal.bg)
 }
 
 impl PaneR {
@@ -576,6 +588,7 @@ impl PaneR {
             media_top: 0,
             below: false,
             restage: false,
+            flat: false,
             idump,
             mdump,
             due: None,
@@ -679,7 +692,11 @@ impl PaneR {
     /// image sits under the text.
     fn scene_cfg(&self, cfg: &SceneConfig) -> SceneConfig {
         SceneConfig {
-            bg_alpha: if self.below { 0.0 } else { cfg.bg_alpha },
+            bg_alpha: if self.below || self.flat {
+                0.0
+            } else {
+                cfg.bg_alpha
+            },
             ..*cfg
         }
     }
@@ -687,7 +704,7 @@ impl PaneR {
     /// The premultiplied pane background under below-text images.
     fn backdrop(&self, opacity: f32) -> Option<[f32; 4]> {
         let c = |v: u8| f32::from(v) / 255.0 * opacity;
-        self.below.then(|| {
+        (self.below && !self.flat).then(|| {
             [
                 c(self.pal.bg.0),
                 c(self.pal.bg.1),
@@ -951,6 +968,14 @@ fn run(a: RenderArgs) {
                 let mut pending = 0usize;
                 for p in &mut panes {
                     p.snapshot(&rs);
+                }
+                let clear_bg = window_bg(&panes);
+                for p in &mut panes {
+                    let flat = !p.v.floating && p.pal.bg == clear_bg;
+                    if flat != p.flat {
+                        p.flat = flat;
+                        p.restage = true;
+                    }
                     if std::mem::take(&mut p.restage) {
                         stack.renderer.invalidate(p.v.id);
                         p.reset_scene();
@@ -1029,11 +1054,7 @@ fn run(a: RenderArgs) {
                 }
                 let a = rs.opacity;
                 // The clear is the focused pane's background (dividers and padding show it).
-                let bg = panes
-                    .iter()
-                    .find(|p| p.v.focused)
-                    .or(panes.first())
-                    .map_or(Rgb(0, 0, 0), |p| p.pal.bg);
+                let bg = window_bg(&panes);
                 let clear = [
                     f32::from(bg.0) / 255.0 * a,
                     f32::from(bg.1) / 255.0 * a,
