@@ -406,8 +406,29 @@ fn put(t: &mut Terminal, old: &str, new: Result<String, String>) -> bool {
 }
 
 /// Apply one edit (see [`edited`]) to the user file.
+/// The pane does not watch the file, so the edit is checked against the text
+/// as it is now: a rule removed outside Settings is not "removed" again, and
+/// one added outside is not silently overwritten. Either way the list reloads.
 fn commit(t: &mut Terminal, old: Option<&str>, rule: Option<&Rule>) -> bool {
     let text = read(&t.user_main);
+    let fresh = list(&text);
+    let has = |m: &str| fresh.iter().any(|r| r.mime.trim().eq_ignore_ascii_case(m.trim()));
+    let stale = match (old, rule) {
+        (Some(o), _) if !has(o) => Some(format!("{o} was changed outside Settings.")),
+        (o, Some(r)) if o.is_none_or(|o| !o.eq_ignore_ascii_case(&r.mime)) && has(&r.mime) => {
+            Some(format!("{} already has a rule in the file.", r.mime))
+        }
+        _ => None,
+    };
+    if let Some(why) = stale {
+        t.read();
+        if old.is_some() {
+            // Row indices may have shifted; an open edit form would point at the wrong rule.
+            t.open.close();
+        }
+        t.open.error = Some(format!("{why} The list has been reloaded."));
+        return false;
+    }
     let ok = put(t, &text, edited(&text, old, rule));
     if ok {
         t.open.removed = None;
