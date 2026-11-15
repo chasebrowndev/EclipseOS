@@ -991,6 +991,8 @@ impl App {
             cols = dims.1,
             scale,
             app_id = %self.app_id,
+            blur = ?self.blur,
+            opacity = crate::settings::effective_opacity(self.settings.opacity, &self.settings.glass, self.blur),
             workers = self.workers.threads(),
             watch = ?self.watch_mode,
             "window started"
