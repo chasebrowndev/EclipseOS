@@ -1305,10 +1305,11 @@ impl App {
                 link.sids.insert(sid, token);
                 if let Some(r) = p.remote.as_mut() {
                     r.sid = Some(sid);
-                    let early = std::mem::take(&mut r.early);
+                    let mut early = std::mem::take(&mut r.early);
                     if !early.is_empty() {
                         link.input(sid, &early);
                     }
+                    apoth_proto::askpass::wipe(&mut early);
                 }
                 // A size asked before the answer goes now.
                 if let Some(want) = p.pending.or(Some(p.dims)) {
@@ -1325,10 +1326,11 @@ impl App {
                 if let Some(p) = self.panes.get_mut(&id) {
                     if let Some(r) = p.remote.as_mut() {
                         r.sid = Some(sid);
-                        let early = std::mem::take(&mut r.early);
+                        let mut early = std::mem::take(&mut r.early);
                         if !early.is_empty() {
                             link.input(sid, &early);
                         }
+                        apoth_proto::askpass::wipe(&mut early);
                     }
                     link.resize(sid, p.pending.unwrap_or(p.dims), self.cell);
                 }
@@ -4585,7 +4587,9 @@ impl App {
         self.send_unit(id, bytes.to_vec());
     }
 
-    fn send_unit(&mut self, id: PaneKey, unit: Vec<u8>) {
+    /// Send one whole unit to the pane's PTY or remote link. The unit may carry a typed
+    /// password: every local copy on the remote paths is wiped; the PTY queue scrubs its own.
+    fn send_unit(&mut self, id: PaneKey, mut unit: Vec<u8>) {
         let Some(p) = self.panes.get_mut(&id) else {
             return;
         };
@@ -4598,6 +4602,7 @@ impl App {
                 }
                 _ => {}
             }
+            apoth_proto::askpass::wipe(&mut unit);
             return;
         }
         let Some(pty) = p.pty.as_mut() else { return };

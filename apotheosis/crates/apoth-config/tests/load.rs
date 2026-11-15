@@ -316,3 +316,29 @@ fn ssh_domains_parse_and_refuse_option_like_destinations() {
         assert!(r.config.domains.is_empty(), "{bad}");
     }
 }
+
+#[test]
+fn two_string_bind_is_the_block_form() {
+    // `bind "chord" "action"` means the block holding that one action, nothing else.
+    let short = user("binds {\n bind \"ctrl+shift+y\" \"new-tab\"\n}\n");
+    let block = user("binds {\n bind \"ctrl+shift+y\" {\n  new-tab\n }\n}\n");
+    assert!(short.is_valid(), "{}", short.render());
+    assert!(block.is_valid(), "{}", block.render());
+    assert_eq!(short.config.binds, block.config.binds);
+    assert!(
+        short.config.binds.iter().any(|b| {
+            b.actions.len() == 1 && b.actions[0].id == "new-tab" && b.actions[0].args.is_empty()
+        }),
+        "the bind is in the config"
+    );
+}
+
+#[test]
+fn two_string_bind_rejects_bad_action_and_mixed_forms() {
+    let bad_id = user("binds {\n bind \"ctrl+shift+y\" \"no such/action\"\n}\n");
+    assert!(!bad_id.is_valid());
+    let both = user("binds {\n bind \"ctrl+shift+y\" \"new-tab\" {\n  new-tab\n }\n}\n");
+    assert!(!both.is_valid());
+    let non_string = user("binds {\n bind \"ctrl+shift+y\" 3\n}\n");
+    assert!(!non_string.is_valid());
+}

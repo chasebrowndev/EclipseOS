@@ -1702,7 +1702,9 @@ There is no action that passes a string to `sh -c`; a user who wants a shell wri
 parameters, not interpolated.
 
 ## 3. Key binds
-- Grammar: `bind "<mods>+<key>" { <action> … }`; modifiers in any order; key is a keysym
+- Grammar: `bind "<mods>+<key>" { <action> … }`, or `bind "<mods>+<key>" "<action>"` for one
+  action with no arguments (the same as the block holding that action; both forms at once
+  are refused); modifiers in any order; key is a keysym
   name (layout-dependent, matched on the produced symbol, then on the unshifted symbol)
   or `physical:<name>` (position-dependent, wins when both match).
 - Options: `repeat=#false`, `mode="<mode-condition>"` (`alt-screen`, `app-cursor`,

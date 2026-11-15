@@ -88,11 +88,17 @@ impl Secret {
     }
 }
 
-impl Drop for Secret {
-    fn drop(&mut self) {
-        // Wipe the whole allocation, not only the live part.
+impl Secret {
+    /// Zero the whole allocation, not only the live part (the bytes stay in place).
+    fn wipe_all(&mut self) {
         self.0.resize(self.0.capacity(), 0);
         wipe(&mut self.0);
+    }
+}
+
+impl Drop for Secret {
+    fn drop(&mut self) {
+        self.wipe_all();
         self.0.clear();
     }
 }
@@ -455,6 +461,15 @@ mod tests {
         assert!(!descends_from(99, 5, parents));
         // A cycle cannot loop forever.
         assert!(!descends_from(3, 9, |_| Some(3)));
+    }
+
+    #[test]
+    fn secret_wipe_zeroes_the_whole_allocation() {
+        let mut s = Secret::new();
+        assert!(s.push_str("hunter2"));
+        s.wipe_all();
+        assert_eq!(s.0.len(), s.0.capacity());
+        assert!(s.0.iter().all(|&b| b == 0));
     }
 
     #[test]

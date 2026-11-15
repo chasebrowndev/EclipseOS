@@ -257,6 +257,38 @@ impl Client {
         }
     }
 
+    /// Pump two views until both hold `pred` and have applied the same stream prefix.
+    /// Views at the same sequence must hold the same state, so this compares states at a
+    /// point both reached, never at whatever point the prompt happened to be drawn.
+    fn until_same(
+        secs: u64,
+        what: &str,
+        a: &mut Client,
+        b: &mut Client,
+        pred: impl Fn(&Client) -> bool,
+    ) {
+        let t0 = Instant::now();
+        loop {
+            let same = a.panes.get(&1).map(|p| p.next) == b.panes.get(&1).map(|p| p.next);
+            if same && pred(a) && pred(b) && a.screen(1) == b.screen(1) {
+                return;
+            }
+            assert!(!a.eof && !b.eof, "stream ended waiting for {what}");
+            assert!(
+                t0.elapsed() < Duration::from_secs(secs),
+                "timed out waiting for {what}; screens:\n{}\n---\n{}",
+                a.screen(1),
+                b.screen(1)
+            );
+            if let Some(m) = a.next_msg() {
+                a.apply(m);
+            }
+            if let Some(m) = b.next_msg() {
+                b.apply(m);
+            }
+        }
+    }
+
     fn screen(&self, pane: u64) -> String {
         let Some(t) = self.panes.get(&pane).and_then(|p| p.term.as_ref()) else {
             return String::new();
@@ -349,8 +381,7 @@ fn late_views_hold_the_same_state_as_early_ones() {
         1,
         r"printf '\033[?1049h\033[2;5Halt-screen\n'; echo mark-$((10+2))",
     );
-    a.until(10, "the second burst", |c| c.shows(1, "mark-12\nsh-"));
-    b.until(10, "the second burst on b", |c| c.shows(1, "mark-12\nsh-"));
+    until_same(10, "the second burst", &mut a, &mut b, |c| c.shows(1, "mark-12"));
     let now = Instant::now();
     let ia = a.panes[&1].term.as_ref().unwrap().snapshot(now).unwrap();
     let ib = b.panes[&1].term.as_ref().unwrap().snapshot(now).unwrap();
@@ -364,8 +395,12 @@ fn late_views_hold_the_same_state_as_early_ones() {
     assert_eq!(ia.state, ib.state, "views disagree on the terminal state");
     // And a third, fresh view agrees with both.
     let mut c = Client::attach(&srv.sock);
-    c.until(10, "a third snapshot", |c| c.shows(1, "mark-12\nsh-"));
+    c.until(10, "a third snapshot", |c| c.shows(1, "mark-12"));
+    until_same(10, "the third view to catch up", &mut a, &mut c, |c| {
+        c.shows(1, "mark-12")
+    });
     let ic = c.panes[&1].term.as_ref().unwrap().snapshot(now).unwrap();
+    let ia = a.panes[&1].term.as_ref().unwrap().snapshot(now).unwrap();
     assert_eq!(a.screen(1), c.screen(1));
     assert_eq!(ia.state, ic.state);
 }
@@ -386,12 +421,9 @@ fn a_slow_view_is_resynced_from_a_fresh_snapshot() {
         1,
         "head -c 40000000 /dev/zero | tr '\\0' x; echo; echo flood-$((5*5))",
     );
-    fast.until(120, "the flood on the fast view", |c| {
-        c.shows(1, "flood-25\nsh-")
-    });
-    slow.until(120, "the flood on the slow view", |c| {
-        c.shows(1, "flood-25\nsh-")
-    });
+    // Waits on the marker line, never on a prompt: the shell behind /bin/sh decides it.
+    fast.until(300, "the flood on the fast view", |c| c.shows(1, "flood-25"));
+    slow.until(300, "the flood on the slow view", |c| c.shows(1, "flood-25"));
     assert!(
         slow.panes[&1].snapshots >= 2,
         "the slow view was not resynced ({} snapshots)",
