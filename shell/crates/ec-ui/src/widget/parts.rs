@@ -2388,6 +2388,52 @@ pub fn surface<'a, Message: 'a>(
     }
 }
 
+/// A pick list in the inset's look: a quiet pill-shaped field with a drawn
+/// chevron and a hover state, opening a rounded glass list ([`theme::eclipse_pick_menu`]).
+///
+/// A widget and not a styled `pick_list` at each call site: iced's own handle
+/// is a font glyph this design system does not ship, so the chevron is drawn
+/// ([`chevron_turn`]) over the field, and every dropdown in every pane needs the
+/// same padding, height and chevron or the pane's pills and its fields stop
+/// agreeing. `placeholder` shows while nothing is chosen.
+pub fn dropdown<'a, T, L, V, Message>(
+    options: L,
+    selected: Option<V>,
+    on_select: impl Fn(T) -> Message + 'a,
+    placeholder: Option<&'a str>,
+    width: Length,
+) -> Element<'a, Message, Theme>
+where
+    T: ToString + PartialEq + Clone + 'a,
+    L: std::borrow::Borrow<[T]> + 'a,
+    V: std::borrow::Borrow<T> + 'a,
+    Message: Clone + 'a,
+{
+    let mut field = iced::widget::pick_list(options, selected, on_select)
+        .width(width)
+        .padding(
+            iced::Padding::from([space::PILL_Y, space::PILL_X])
+                .right(space::PILL_X + space::PICK_CHEVRON + space::PICK_CHEVRON_INSET),
+        )
+        .text_size(size::BODY)
+        .font(font::UI)
+        .handle(iced::widget::pick_list::Handle::None)
+        .style(theme::eclipse_pick_list)
+        .menu_style(theme::eclipse_pick_menu);
+    if let Some(p) = placeholder {
+        field = field.placeholder(p);
+    }
+    let chevron = container(chevron_turn(1.0, color::text_secondary()))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Alignment::End)
+        .align_y(Alignment::Center)
+        .padding(iced::Padding::ZERO.right(space::PICK_CHEVRON_INSET));
+    // The field's own width reserves the chevron's slot: right padding on the
+    // text would not, the pick list lays its label across the full box.
+    stack![field, chevron].into()
+}
+
 /// A battery gauge: a hard-edged cell with a fill proportional to charge, and
 /// a nub on its right the way every battery pictogram has had since 1995.
 ///
@@ -2863,11 +2909,7 @@ fn nav_glyph<'a, Message: 'a>(active: bool) -> Element<'a, Message, Theme> {
         .width(space::NAV_GLYPH)
         .height(space::NAV_GLYPH)
         .style(move |_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(if active {
-                color::accent_fill()
-            } else {
-                color::highlight_soft()
-            })),
+            background: Some(iced::Background::Color(color::highlight_soft())),
             border: iced::Border {
                 color: if active {
                     color::accent_border()
@@ -3651,7 +3693,7 @@ pub fn glyph_disc<'a, Message: 'a>(
 /// A widget and not a [`chip`] or a [`badge`]: a chip is picked and a badge
 /// classifies an object, while this states a provenance and is never pressed.
 /// Fully round so it reads as a seal beside the sheet's square-ish cells.
-/// `warn` is the unchecked case: the accent tint, fill, rim and ink — then it is
+/// `warn` is the unchecked case: the inset cell with a gold label and rim, no gold fill — then it is
 /// the sheet's one yellow, and the caller must not light a pill as well. The
 /// checked case is the plain glass cell with an `ok` mark.
 pub fn provenance_chip<'a, Message: Clone + 'a>(
@@ -3684,21 +3726,9 @@ pub fn provenance_chip<'a, Message: Clone + 'a>(
         r,
         move |t: &Theme, status| {
             if warn {
-                let hot = matches!(status, button::Status::Hovered | button::Status::Pressed);
-                button::Style {
-                    background: Some(iced::Background::Color(if hot {
-                        color::accent_fill().scale_alpha(color::SELECTED_HOVER_FILL)
-                    } else {
-                        color::accent_fill()
-                    })),
-                    text_color: color::accent_text(),
-                    border: iced::Border {
-                        color: color::accent_border(),
-                        width: space::HAIRLINE,
-                        radius: radius::PILL.into(),
-                    },
-                    ..button::Style::default()
-                }
+                let mut s = theme::inset_cell_default(true)(t, status);
+                s.border.radius = radius::PILL.into();
+                s
             } else {
                 let mut s = theme::glass_cell(theme::CellTone::Plain, radius::PILL)(t, status);
                 s.text_color = if matches!(status, button::Status::Active) {
@@ -3791,8 +3821,8 @@ pub fn chevron_turn<'a, Message: 'a>(turn: f32, ink: Color) -> Element<'a, Messa
 ///
 /// A sibling of [`pill`] rather than a change to it: `pill` sits in scrolled
 /// settings pages that place no panes, while a floating sheet's pills are its
-/// glass. `lit` is the pane's yellow — a gold fill the client keeps over the
-/// pane, since the compositor draws no colour. Falls back to [`pill`]'s look
+/// glass. `lit` is the pane's yellow — a gold label and rim the client keeps
+/// over the pane, since the compositor draws no colour. Falls back to [`pill`]'s look
 /// when glass is off.
 pub fn sheet_pill<'a, Message: Clone + 'a>(
     label: &str,
@@ -4003,7 +4033,7 @@ pub fn choice_row<'a, Message: 'a>(
 
     if selected {
         body.style(|_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(color::accent_fill())),
+            background: Some(iced::Background::Color(color::highlight_soft())),
             ..container::Style::default()
         })
         .into()
@@ -4096,9 +4126,15 @@ impl<'a, Message: Clone + 'a> NumericSlider<'a, Message> {
 
 impl<'a, Message: Clone + 'a> From<NumericSlider<'a, Message>> for Element<'a, Message, Theme> {
     fn from(n: NumericSlider<'a, Message>) -> Self {
+        let span = n.range.end() - n.range.start();
+        let frac = if span > 0.0 {
+            ((n.value - n.range.start()) / span) as f32
+        } else {
+            0.0
+        };
         let mut track = iced::widget::slider(n.range, n.value, n.on_slide)
             .step(n.step)
-            .style(theme::eclipse_slider)
+            .style(theme::eclipse_slider(frac))
             .width(Length::Fixed(space::SLIDER_W));
         if let Some(release) = n.on_release {
             track = track.on_release(release);
@@ -4323,7 +4359,7 @@ pub fn widget_tile<'a, Message: Clone + 'a>(
     .width(Length::Fixed(width))
     .height(Length::Fixed(canvas::TILE_H))
     .style(move |_t: &Theme| container::Style {
-        background: selected.then_some(iced::Background::Color(color::accent_wash())),
+        background: selected.then_some(iced::Background::Color(color::lift_soft())),
         border: iced::Border {
             color: if selected {
                 color::accent_border()

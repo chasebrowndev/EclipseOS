@@ -13,7 +13,7 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{column, pick_list, row, scrollable, text_input, Column, Space};
+use iced::widget::{column, row, scrollable, text_input, Column, Space};
 use iced::{Element, Length, Subscription, Task, Theme};
 use serde_json::{json, Value};
 
@@ -22,9 +22,10 @@ use ec_ui::motion::{Animated, Motion};
 use ec_ui::theme;
 use ec_ui::tokens::{color, font, radius, size, space};
 use ec_ui::widget::{
-    color_picker, content_at, dimmed_at, edge_note, glass_panel as panel, hairline, header, list_row,
-    list_row_at, micro_label, nav_item_at, nav_page_at, nav_section_at, pill, pill_group, row_caption,
-    sidebar_at, status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider, Toggle,
+    color_picker, content_at, dimmed_at, dropdown, edge_note, glass_panel as panel, hairline, header,
+    list_row, list_row_at, micro_label, nav_item_at, nav_page_at, nav_section_at, pill, pill_group,
+    row_caption, sidebar_at, status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider,
+    Toggle,
 };
 
 mod display;
@@ -2091,12 +2092,13 @@ pub(crate) fn control<'a>(app: &'a App, key: &'a Key) -> Element<'a, Message, Th
             )
         }
 
-        Control::Dropdown(values) => {
-            pick_list(values.clone(), key.value.as_str().map(str::to_owned), move |v| {
-                Message::Chose(path.clone(), v)
-            })
-            .into()
-        }
+        Control::Dropdown(values) => dropdown(
+            values.clone(),
+            key.value.as_str().map(str::to_owned),
+            move |v| Message::Chose(path.clone(), v),
+            None,
+            Length::Shrink,
+        ),
 
         Control::Text { color } => {
             let draft = app.drafts.get(&key.path);

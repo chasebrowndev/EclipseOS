@@ -8,14 +8,14 @@
 //! An id with no desktop entry stays in the list and reads as "not
 //! installed": the taskbar skips it, and the app may come back.
 
-use iced::widget::{column, pick_list, row, text, Column};
-use iced::{Alignment, Element, Theme};
+use iced::widget::{column, row, text, Column};
+use iced::{Alignment, Element, Length, Theme};
 use serde_json::{json, Value};
 
 use ec_services::apps::Entry;
 use ec_ui::theme;
 use ec_ui::tokens::{font, size, space};
-use ec_ui::widget::{glass_panel as panel, hairline, list_row, list_row_at, micro_label, pill};
+use ec_ui::widget::{dropdown, glass_panel as panel, hairline, list_row, list_row_at, micro_label, pill};
 
 use crate::app::{row_id, App, Message};
 
@@ -178,10 +178,13 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
             .push(list_row_at(name.unwrap_or(id), value, name.is_none()));
     }
     let options: Vec<Choice> = addable(&app.installed, &list).into_iter().cloned().collect();
-    let add = pick_list(options, None::<Choice>, |c: Choice| {
-        Message::Pinned(Msg::Add(c.id))
-    })
-    .placeholder("Add an app");
+    let add = dropdown(
+        options,
+        None::<Choice>,
+        |c: Choice| Message::Pinned(Msg::Add(c.id)),
+        Some("Add an app"),
+        Length::Shrink,
+    );
     body = body.push(hairline()).push(list_row("Add", add));
     iced::widget::container(column![panel(app.glass_radius, app.hairline_cards, body)])
         .id(row_id(PATH))

@@ -13,14 +13,16 @@
 //! Both keys only act under `mode "de"`; the block is drawn in every mode
 //! and says so in a line.
 
-use iced::widget::{column, pick_list, row, text, Column};
-use iced::{Alignment, Element, Theme};
+use iced::widget::{column, row, text, Column};
+use iced::{Alignment, Element, Length, Theme};
 use serde_json::json;
 
 use ec_services::apps::Entry;
 use ec_ui::theme;
 use ec_ui::tokens::{font, size, space};
-use ec_ui::widget::{dimmed_at, glass_panel as panel, hairline, list_row_at, micro_label, pill, row_caption};
+use ec_ui::widget::{
+    dimmed_at, dropdown, glass_panel as panel, hairline, list_row_at, micro_label, pill, row_caption,
+};
 
 use crate::app::{row_id, setting_row_at, App, Message};
 use crate::pinned::{addable, edited, list_of, name_of, Choice, Msg};
@@ -139,10 +141,13 @@ pub fn view(app: &App) -> Option<Element<'_, Message, Theme>> {
         exempt = exempt.push(list_row_at(name.unwrap_or(id), value, dim));
     }
     let options: Vec<Choice> = addable(&app.wm_apps, &list).into_iter().cloned().collect();
-    let add = pick_list(options, None::<Choice>, |c: Choice| {
-        Message::Exempt(Msg::Add(c.id))
-    })
-    .placeholder("Add an app");
+    let add = dropdown(
+        options,
+        None::<Choice>,
+        |c: Choice| Message::Exempt(Msg::Add(c.id)),
+        Some("Add an app"),
+        Length::Shrink,
+    );
     exempt = exempt.push(list_row_at("Add app", add, dim));
     rows = rows.push(dimmed_at(exempt, dim, app.blur));
 

@@ -2,18 +2,18 @@
 //! The 44×25 toggle pill.
 //!
 //! iced ships a `toggler`, but its geometry is its own and the spec's is exact:
-//! a 44×25 pill whose knob is the *window base colour* when on, so that the
-//! accent reads as a filled area rather than as a coloured outline. That is one
-//! `fill_quad` for the track and one for the knob; a style function could not
-//! have produced it.
+//! a 44×25 pill on the quiet inset ([`theme::inset_colors`]) whose "on" is a
+//! gold rim and a gold knob, never a filled track. That is one `fill_quad` for
+//! the track and one for the knob; a style function could not have produced it.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::renderer;
 use iced::advanced::widget::{tree, Tree, Widget};
 use iced::advanced::{mouse, Shell};
 use iced::touch;
-use iced::{border, Color, Element, Event, Length, Rectangle, Size};
+use iced::{border, Border, Color, Element, Event, Length, Rectangle, Size};
 
+use crate::theme;
 use crate::tokens::color;
 
 const WIDTH: f32 = 44.0;
@@ -133,30 +133,39 @@ where
         // value, and the value is what the user came to see.
         let alpha = if live { 1.0 } else { 0.45 };
 
-        let track = if self.is_on {
+        // The track is the quiet inset, never filled gold: "on" is a gold
+        // rim and a gold knob, "off" the neutral rim and a pale knob.
+        let (ground, rim) = theme::inset_colors();
+        let ground = if state.hovered && live {
             Color {
-                a: alpha,
-                ..color::accent()
+                a: (ground.a * color::INSET_HOVER_FILL).min(1.0),
+                ..ground
             }
         } else {
-            let off = if state.hovered && live {
-                color::control_off_hover()
-            } else {
-                color::control_off()
-            };
-            Color {
-                a: off.a * alpha,
-                ..off
-            }
+            ground
         };
+        let rim = if self.is_on {
+            color::accent_border().scale_alpha(if state.hovered && live {
+                color::SELECTED_HOVER_RIM
+            } else {
+                1.0
+            })
+        } else {
+            rim
+        };
+        let fade = |c: Color| Color { a: c.a * alpha, ..c };
 
         renderer.fill_quad(
             renderer::Quad {
                 bounds,
-                border: border::rounded(HEIGHT / 2.0),
+                border: Border {
+                    color: fade(rim),
+                    width: 1.0,
+                    radius: (HEIGHT / 2.0).into(),
+                },
                 ..renderer::Quad::default()
             },
-            track,
+            fade(ground),
         );
 
         let d = HEIGHT - PAD * 2.0;
@@ -177,17 +186,11 @@ where
                 border: border::rounded(d / 2.0),
                 ..renderer::Quad::default()
             },
-            if self.is_on {
-                Color {
-                    a: alpha,
-                    ..color::on_accent()
-                }
+            fade(if self.is_on {
+                color::accent()
             } else {
-                Color {
-                    a: color::knob_off().a * alpha,
-                    ..color::knob_off()
-                }
-            },
+                color::knob_off()
+            }),
         );
     }
 }
