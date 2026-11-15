@@ -381,7 +381,9 @@ fn late_views_hold_the_same_state_as_early_ones() {
         1,
         r"printf '\033[?1049h\033[2;5Halt-screen\n'; echo mark-$((10+2))",
     );
-    until_same(10, "the second burst", &mut a, &mut b, |c| c.shows(1, "mark-12"));
+    until_same(10, "the second burst", &mut a, &mut b, |c| {
+        c.shows(1, "mark-12")
+    });
     let now = Instant::now();
     let ia = a.panes[&1].term.as_ref().unwrap().snapshot(now).unwrap();
     let ib = b.panes[&1].term.as_ref().unwrap().snapshot(now).unwrap();
@@ -422,8 +424,12 @@ fn a_slow_view_is_resynced_from_a_fresh_snapshot() {
         "head -c 40000000 /dev/zero | tr '\\0' x; echo; echo flood-$((5*5))",
     );
     // Waits on the marker line, never on a prompt: the shell behind /bin/sh decides it.
-    fast.until(300, "the flood on the fast view", |c| c.shows(1, "flood-25"));
-    slow.until(300, "the flood on the slow view", |c| c.shows(1, "flood-25"));
+    fast.until(300, "the flood on the fast view", |c| {
+        c.shows(1, "flood-25")
+    });
+    slow.until(300, "the flood on the slow view", |c| {
+        c.shows(1, "flood-25")
+    });
     assert!(
         slow.panes[&1].snapshots >= 2,
         "the slow view was not resynced ({} snapshots)",

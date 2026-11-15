@@ -255,7 +255,10 @@ mod tests {
             cap: 64,
             budget: 64,
         };
-        assert_eq!(q.send(b"pw\r".to_vec(), &mut s.w()).unwrap(), Enqueue::Written);
+        assert_eq!(
+            q.send(b"pw\r".to_vec(), &mut s.w()).unwrap(),
+            Enqueue::Written
+        );
         assert_eq!(s.out, b"pw\r");
         assert_eq!(q.pending_bytes(), 0);
     }

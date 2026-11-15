@@ -552,7 +552,10 @@ fn two_string_bind_survives_an_unrelated_settings_edit() {
     let mut ed = Editor::parse(src).unwrap();
     ed.set("font.size", &Value::Float(14.0)).unwrap();
     let t = ed.text();
-    assert!(t.contains("bind \"ctrl+shift+y\" \"new-tab\" // keep"), "{t}");
+    assert!(
+        t.contains("bind \"ctrl+shift+y\" \"new-tab\" // keep"),
+        "{t}"
+    );
     assert_eq!(ed.text().matches("bind").count(), 1);
     let before = ed.text();
     assert_eq!(Editor::parse(&before).unwrap().text(), before);
