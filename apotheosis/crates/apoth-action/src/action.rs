@@ -526,6 +526,9 @@ define_actions! {
         "Focus the previous pane." { };
     PaneFocusLast = "pane.focus-last" [Layout] "Focus last pane"
         "Focus the previously focused pane." { };
+    PaneReconnect = "pane.reconnect" [Input] "Reconnect pane"
+        "Start a fresh ssh in a pane whose `apoth ssh --hold` link was lost (types Enter there)."
+        { };
     PaneMove = "pane.move" [Layout] "Move pane" "Swap the pane with its neighbour."
         { direction: Dir };
     PaneResize = "pane.resize" [Layout] "Resize pane" "Move a pane edge by cells."

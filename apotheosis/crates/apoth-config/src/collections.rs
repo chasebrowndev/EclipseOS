@@ -964,12 +964,20 @@ pub(crate) fn parse_domain(cx: &mut Cx, node: &KdlNode, out: &mut Out) {
                     }
                     None => ok = false,
                 },
-                "mux" => match single_bool_child(cx, n) {
-                    Some(b) => d.mux = Some(b),
+                "persist" => match single_str_child(cx, n) {
+                    Some(v) if crate::rows::PERSIST.contains(&v) => d.persist = Some(v.to_owned()),
+                    Some(_) => {
+                        cx.err(
+                            n.span().offset(),
+                            None,
+                            "`persist` is one of \"off\", \"auto\", \"always\"",
+                        );
+                        ok = false;
+                    }
                     None => ok = false,
                 },
                 other => {
-                    let sug = suggest(other, &["remote", "security", "ssh", "mux"]);
+                    let sug = suggest(other, &["remote", "security", "ssh", "persist"]);
                     cx.err_sug(
                         n.span().offset(),
                         None,
@@ -981,11 +989,11 @@ pub(crate) fn parse_domain(cx: &mut Cx, node: &KdlNode, out: &mut Out) {
             }
         }
     }
-    if d.mux == Some(true) && d.ssh.is_none() {
+    if d.persist.is_some() && d.ssh.is_none() {
         cx.err(
             node.span().offset(),
             None,
-            "`mux #true` needs an `ssh` destination in the same domain",
+            "`persist` needs an `ssh` destination in the same domain",
         );
         ok = false;
     }

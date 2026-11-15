@@ -45,6 +45,8 @@ const GUARD: &[&str] = &["auto", "always", "never"];
 const PASTE_NL: &[&str] = &["as-is", "cr", "confirm"];
 const A11Y: &[&str] = &["auto", "on", "off"];
 const OFF_ON: &[&str] = &["off", "on"];
+/// `remote.persist` and a domain's `persist` (T-22 §5).
+pub(crate) const PERSIST: &[&str] = &["off", "auto", "always"];
 const RESTORE: &[&str] = &["ask", "always", "never"];
 const QT_ANIM: &[&str] = &["slide", "fade", "none"];
 const QT_POS: &[&str] = &["top", "bottom", "left", "right"];
@@ -167,7 +169,7 @@ rows! {
     ("panes.inactive-dim", Ty::float(0.0, 1.0), Dv::Float(0.12), Window, true, Live, Appearance, "Dim amount of unfocused panes; 0 disables."; "Dim inactive panes", &[]),
     ("panes.remain-on-exit", Ty::Enum(REMAIN), Dv::Str("never"), Pane, true, Live, Behaviour, "Keep a pane open after its process exits."; "Remain on exit", &[]),
     ("panes.split-handle-size", Ty::int(1, 16), Dv::Int(4), Window, true, Live, Appearance, "Split handle thickness in pixels."; "Split handle size", &[]),
-    ("panes.focus-follows-mouse", Ty::Bool, Dv::Bool(false), Window, true, Live, Behaviour, "Focus the pane under the pointer."; "Focus follows mouse", &[]),
+    ("panes.focus-follows-mouse", Ty::Bool, Dv::Bool(true), Window, true, Live, Behaviour, "Focus the pane under the pointer."; "Focus follows mouse", &[]),
     ("panes.zoom-indicator", Ty::Bool, Dv::Bool(true), Window, true, Live, Appearance, "Show an indicator on a zoomed pane."; "Zoom indicator", &[]),
     ("close.confirm", Ty::Enum(CLOSE_CONFIRM), Dv::Str("if-running"), Window, true, Live, Behaviour, "When closing asks first."; "Confirm close", &[]),
     ("close.undo-timeout", Ty::dur(0, 600000), Dv::Int(5000), Window, false, Live, Behaviour, "How long a closed tab or pane can be restored."; "Undo close window", &[]),
@@ -276,6 +278,7 @@ rows! {
     ("security.remote-keys", Ty::Bool, Dv::Bool(false), Pane, true, Live, Security, "Deliver key-stream events to socket clients in remote panes."; "Remote key stream", &[]),
     ("security.sequence", MAP_STR_STRSET, Dv::Empty, Global, false, Live, Security, "Sequence policy overrides: class local remote, each allow, ask or deny."; "Sequence policy", &["osc52","consent"]),
     ("remote.clients", Ty::StringSet, Dv::List(&["ssh", "mosh-client", "telnet", "docker", "podman", "kubectl", "tmux", "screen"]), Global, false, Live, Security, "Foreground programs that mark a pane remote (extends the default)."; "Remote clients", &[]),
+    ("remote.persist", Ty::Enum(PERSIST), Dv::Str("auto"), Global, false, Live, Behaviour, "Where an ssh domain's panes live: auto uses the host's session daemon (apoth proxy) when apoth is on its PATH and the local daemon otherwise, always requires the host's daemon, off never uses it. A domain's `persist` overrides it."; "Remote session daemon", &["ssh","persist","mux","proxy"]),
     ("clipboard.osc52", Ty::Bool, Dv::Bool(true), Pane, true, Live, Security, "Accept OSC 52."; "OSC 52", &[]),
     ("clipboard.osc52-max", Ty::bytes(1024, 67108864), Dv::Int(1048576), Pane, true, Live, Security, "Largest OSC 52 payload."; "OSC 52 size limit", &[]),
     ("clipboard.buffer-limit", Ty::int(1, 1000), Dv::Int(50), Window, false, Live, Security, "Paste buffers kept."; "Paste buffers", &[]),

@@ -119,6 +119,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "rustix",
  "serde_json",
+ "signal-hook",
 ]
 
 [[package]]

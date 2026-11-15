@@ -1,17 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! M37 gates: remote domains (T-22 §3, §5) and the tmux-model session kill (T-21 §3).
+//! M37 gates: remote domains (T-22 §3–§5) and the tmux-model session kill (T-21 §3).
 //!
 //! No sshd is started or configured: a fake `ssh` (a shell script first on `PATH`) skips
-//! the options, answers `-O check` with "no master", and runs the remote command here, so
-//! the remote end is this host's `apoth proxy` and session daemon. The wire is tested over a
-//! socket pair given to `apoth proxy` as stdio; the window test runs `apotheosis --domain`
-//! on a hidden headless compositor, asks for a password on the askpass sheet, drops the link
-//! by killing the fake ssh (pid it recorded itself) and checks the pane and its background
-//! process are still there after the reconnect.
+//! the options, answers `-O check` with "no master", answers the `command -v apoth` probe
+//! (present, or absent when `no-apoth` exists) and runs the remote command here, so the
+//! remote end is this host's `apoth proxy` and session daemon. The wire is tested over a
+//! socket pair given to `apoth proxy` as stdio; the window tests run `apotheosis --domain`
+//! on a hidden headless compositor.
 //!
 //! `apoth` (the CLI) is a sibling binary of this crate's; without it the tests skip. The
-//! server pre-grants it through the debug-build hook `APOTH_TEST_ATTACH_EXE` (T-21 §3
-//! refuses `apoth proxy` otherwise; reported).
+//! daemon pre-grants it while it runs `proxy` (T-21 §3), so no test hook is set here.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use std::collections::BTreeMap;
@@ -83,11 +81,12 @@ fn base_env(c: &mut Command, dir: &Path) {
         .env("ENV", "/dev/null")
         .env_remove("APOTHEOSIS_SOCKET")
         .env_remove("APOTHEOSIS_ASKPASS_SOCK")
-        .env_remove("APOTHEOSIS_ASKPASS_TOKEN");
+        .env_remove("APOTHEOSIS_ASKPASS_TOKEN")
+        .env_remove("APOTH_TEST_ATTACH_EXE");
 }
 
-/// A session daemon `t` that pre-grants `grant` (the `apoth` binary for proxy tests).
-fn start_server(dir: &Path, grant: Option<&Path>) -> Server {
+/// A session daemon `t`.
+fn start_server(dir: &Path) -> Server {
     let mut c = Command::new(env!("CARGO_BIN_EXE_apotheosis"));
     base_env(&mut c, dir);
     c.env_remove("WAYLAND_DISPLAY")
@@ -95,10 +94,6 @@ fn start_server(dir: &Path, grant: Option<&Path>) -> Server {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    match grant {
-        Some(g) => c.env("APOTH_TEST_ATTACH_EXE", g),
-        None => c.env_remove("APOTH_TEST_ATTACH_EXE"),
-    };
     let child = c.spawn().expect("spawn the server");
     let sock = dir.join("apotheosis/server-t.sock");
     let t0 = Instant::now();
@@ -294,7 +289,7 @@ fn proxy(apoth: &Path, dir: &Path, extra: &[&str]) -> (Guard, UnixStream) {
 fn the_mux_wire_crosses_apoth_proxy_stdio() {
     let Some(apoth) = apoth_bin() else { return };
     let dir = temp_dir("wire");
-    let srv = start_server(&dir, Some(&apoth));
+    let srv = start_server(&dir);
     let (_p, s) = proxy(&apoth, &dir, &["--no-start"]);
     let mut v = View::new(s);
     assert!(
@@ -326,7 +321,7 @@ fn the_mux_wire_crosses_apoth_proxy_stdio() {
 }
 
 #[test]
-fn apoth_proxy_is_refused_without_the_grant_and_without_a_daemon() {
+fn apoth_proxy_is_refused_from_inside_a_server_pane_and_without_a_daemon() {
     let Some(apoth) = apoth_bin() else { return };
     let dir = temp_dir("refuse");
     // No daemon and --no-start: exit 4, nothing started.
@@ -341,15 +336,58 @@ fn apoth_proxy_is_refused_without_the_grant_and_without_a_daemon() {
         .unwrap();
     assert_eq!(st.code(), Some(4));
     assert!(!dir.join("apotheosis/server-t.sock").exists());
-    // A daemon that does not pre-grant `apoth`: attach is refused (T-21 §3).
-    let srv = start_server(&dir, None);
+    // The same `apoth proxy`, run by a shell in one of the daemon's panes: refused (T-21 §3
+    // refuses pane descendants before any pre-grant).
+    let srv = start_server(&dir);
     let (_p, s) = proxy(&apoth, &dir, &["--no-start"]);
     let mut v = View::new(s);
     assert!(matches!(v.hello(), Some(ServerMsg::Welcome { .. })));
     v.send(&ViewMsg::Attach);
-    v.until(10, "the refusal", |v| v.refused.is_some() || v.eof);
-    assert!(v.refused.is_some(), "attach through apoth proxy is refused");
-    assert!(v.panes.values().all(|p| p.term.is_none()), "no content");
+    v.until(10, "the snapshot", |v| {
+        v.panes.get(&1).is_some_and(|p| p.term.is_some())
+    });
+    let mut req = ViewMsg::Hello {
+        major: MUX_MAJOR,
+        minor: MUX_MINOR,
+        caps: Vec::new(),
+        client: "inner".into(),
+    }
+    .encode();
+    req.extend(ViewMsg::Attach.encode());
+    std::fs::write(dir.join("in.bin"), req).unwrap();
+    let (inb, outb) = (dir.join("in.bin"), dir.join("out.bin"));
+    v.send(&ViewMsg::Input {
+        pane: 1,
+        bytes: format!(
+            "(cat {}; sleep 3) | {} proxy --session t --no-start > {}.part; mv {}.part {}\r",
+            inb.display(),
+            apoth.display(),
+            outb.display(),
+            outb.display(),
+            outb.display()
+        )
+        .into_bytes(),
+    });
+    assert!(wait_file(&outb, 20), "the inner proxy never finished");
+    let mut dec = RecordDecoder::new();
+    dec.feed(&std::fs::read(&outb).unwrap());
+    let mut msgs = Vec::new();
+    while let Some(r) = dec.next_record() {
+        if let Ok(Decoded::Msg(m)) = ServerMsg::decode(r.expect("well-formed record")) {
+            msgs.push(m);
+        }
+    }
+    assert!(
+        msgs.iter().any(|m| matches!(m, ServerMsg::Refused { .. })),
+        "attach from inside a pane is refused"
+    );
+    assert!(
+        !msgs
+            .iter()
+            .any(|m| matches!(m, ServerMsg::SnapBegin { .. })),
+        "no content reaches a pane's proxy"
+    );
+    drop(v);
     drop(srv);
 }
 
@@ -357,7 +395,7 @@ fn apoth_proxy_is_refused_without_the_grant_and_without_a_daemon() {
 fn server_kill_closes_every_pane_and_ends_the_daemon() {
     let Some(apoth) = apoth_bin() else { return };
     let dir = temp_dir("kill");
-    let mut srv = start_server(&dir, Some(&apoth));
+    let mut srv = start_server(&dir);
     let run = |args: &[&str]| {
         let mut c = Command::new(&apoth);
         base_env(&mut c, &dir);
@@ -454,21 +492,30 @@ fn askpass_without_an_armed_channel_exits_3() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ---- the window on a mux domain, on a hidden headless compositor ------------------------
+// ---- the window on a domain, on a hidden headless compositor ----------------------------
 
 fn find_abyss() -> Option<PathBuf> {
     if let Some(p) = std::env::var_os("APOTH_EC_ABYSS") {
         return Some(PathBuf::from(p));
     }
-    std::env::var_os("PATH").and_then(|path| {
+    let found = std::env::var_os("PATH").and_then(|path| {
         std::env::split_paths(&path)
             .map(|d| d.join("ec-abyss"))
             .find(|p| p.is_file())
-    })
+    });
+    if found.is_none() {
+        assert!(
+            std::env::var_os("APOTH_REQUIRE_SESSION").is_none(),
+            "ec-abyss not found (required by APOTH_REQUIRE_SESSION)"
+        );
+        eprintln!("skipping: ec-abyss not found");
+    }
+    found
 }
 
-/// The fake `ssh`: records the pid that runs the remote command (it `exec`s it), asks
-/// askpass once when `askpass.want` exists, and runs the command here.
+/// The fake `ssh`: answers the `apoth` probe (logging it to `probes`), marks a remote
+/// `apoth proxy` in `proxied`, records the pid that runs the remote command (it `exec`s it),
+/// asks askpass once when `askpass.want` exists, and runs the command here.
 const SHIM: &str = r#"#!/bin/sh
 d=$(dirname "$0")/..
 while [ $# -gt 0 ]; do
@@ -482,6 +529,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 dest=$1; shift
+case "$*" in
+  *"command -v apoth"*) echo probe >> "$d/probes"; [ -e "$d/no-apoth" ] && exit 1; exit 0 ;;
+  *"apoth proxy"*) [ -e "$d/no-apoth" ] && exit 127; : > "$d/proxied" ;;
+esac
 if [ -e "$d/askpass.want" ]; then
   rm -f "$d/askpass.want"
   : > "$d/askpass.asked"
@@ -493,6 +544,103 @@ echo $$ >> "$d/ssh.pids"
 [ $# -eq 0 ] && exec sh -i
 exec sh -c "$*"
 "#;
+
+/// `dir/bin` with the fake `ssh` and `apoth`; the `PATH` putting it first.
+fn shim_path(dir: &Path, apoth: &Path) -> String {
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::fs::write(bin.join("ssh"), SHIM).unwrap();
+    std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink(apoth, bin.join("apoth")).unwrap();
+    format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+fn write_config(dir: &Path, kdl: &str) {
+    std::fs::write(dir.join("home/.config/eclipse/apotheosis.kdl"), kdl).unwrap();
+}
+
+/// `me@box` already answered (no terminfo, no environment): `apoth ssh` asks nothing.
+fn pre_consent(dir: &Path) {
+    let st = dir.join("home/.state/apotheosis");
+    std::fs::create_dir_all(&st).unwrap();
+    std::fs::write(
+        st.join("ssh-hosts.kdl"),
+        "host \"me@box\" terminfo=#false env=#false\n",
+    )
+    .unwrap();
+}
+
+/// `apotheosis ARGS` with the shim on `PATH`, no display unless `wayland` is given.
+fn gui(dir: &Path, path: &str, args: &[&str], wayland: bool) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_apotheosis"));
+    base_env(&mut c, dir);
+    c.args(args)
+        .env("PATH", path)
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            "unix:path=/nonexistent/apoth-test-bus",
+        )
+        .env("ECLIPSE_SOCKET_DIR", dir.join("sock"))
+        .env("APOTH_TEST_DUMP", dir.join("dump.txt"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if wayland {
+        c.env("WAYLAND_DISPLAY", "wayland-1");
+    } else {
+        c.env_remove("WAYLAND_DISPLAY");
+    }
+    c
+}
+
+/// A hidden headless compositor on `dir`, with scripted input allowed.
+fn start_abyss(abyss: &Path, dir: &Path) -> Guard {
+    std::fs::create_dir_all(dir.join("sock")).unwrap();
+    std::fs::create_dir_all(dir.join("cfg/eclipse")).unwrap();
+    std::fs::write(
+        dir.join("cfg/eclipse/policy.kdl"),
+        "misc { scripted-input #true }\n",
+    )
+    .unwrap();
+    let g = Guard(
+        Command::new(abyss)
+            .args(["--backend", "headless", "--size", "800x600"])
+            .env("XDG_RUNTIME_DIR", dir)
+            .env("ECLIPSE_SOCKET_DIR", dir.join("sock"))
+            .env("XDG_CONFIG_HOME", dir.join("cfg"))
+            .env_remove("WAYLAND_DISPLAY")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn ec-abyss"),
+    );
+    let t0 = Instant::now();
+    while !dir.join("wayland-1").exists() {
+        assert!(
+            t0.elapsed() < Duration::from_secs(20),
+            "compositor never came up"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    g
+}
+
+/// `apoth server kill NAME` (the session daemons the windows started on their own).
+fn kill_session(apoth: &Path, dir: &Path, name: &str) -> Option<i32> {
+    let mut k = Command::new(apoth);
+    base_env(&mut k, dir);
+    k.args(["server", "kill", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .code()
+}
 
 fn rpc_line(s: &mut BufReader<UnixStream>, id: u32, method: &str, params: &str) -> String {
     let line = format!(
@@ -552,84 +700,88 @@ fn dump_shows(g: &mut Guard, dump: &Path, text: &str, secs: u64) -> Option<bool>
     }
 }
 
+/// Type `cmd` until the dump shows `want` (the first lines may land before the prompt).
+fn type_until(g: &mut Guard, dir: &Path, cmd: &str, want: &str) -> Option<bool> {
+    let sock = dir.join("sock/abyss.sock");
+    let text = format!("{{\"text\":\"{}\\n\"}}", cmd.replace('"', "\\\""));
+    let mut shown = Some(false);
+    for _ in 0..10 {
+        abyss_rpc(&sock, "type_text", &text);
+        shown = dump_shows(g, &dir.join("dump.txt"), want, 3);
+        if shown != Some(false) {
+            break;
+        }
+    }
+    shown
+}
+
+#[test]
+fn persist_always_without_apoth_on_the_host_says_why_and_off_never_asks() {
+    let Some(apoth) = apoth_bin() else { return };
+    let dir = temp_dir("modes");
+    let path = shim_path(&dir, &apoth);
+    std::fs::write(dir.join("no-apoth"), b"").unwrap();
+    // always: the host must run the session daemon; it does not, so the window says why.
+    write_config(
+        &dir,
+        "domain \"box\" {\n  ssh \"me@box\"\n  persist \"always\"\n}\n",
+    );
+    let o = gui(&dir, &path, &["--domain", "box"], false)
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{err}");
+    assert!(
+        err.contains("me@box") && err.contains("apoth") && err.contains("persist \"always\""),
+        "{err}"
+    );
+    assert!(dir.join("probes").exists(), "always asks the host");
+    assert!(!dir.join("proxied").exists() && pids(&dir).is_empty());
+
+    // off (the key; the domain says nothing): never probed, never the host's daemon. With
+    // the daemon on, the pane is its: `apoth ssh` runs there even though no window opens.
+    let _ = std::fs::remove_file(dir.join("probes"));
+    pre_consent(&dir);
+    write_config(
+        &dir,
+        "remote {\n  persist \"off\"\n}\nsessions {\n  server \"on\"\n}\ndomain \"box\" {\n  ssh \"me@box\"\n}\n",
+    );
+    let _ = gui(&dir, &path, &["--domain", "box"], false)
+        .status()
+        .unwrap();
+    assert!(
+        wait_file(&dir.join("ssh.pids"), 20),
+        "the local daemon's pane never ran ssh"
+    );
+    assert!(!dir.join("probes").exists(), "off never asks the host");
+    assert!(!dir.join("proxied").exists());
+    assert!(dir.join("apotheosis/server-ssh-box.sock").exists());
+    assert_eq!(kill_session(&apoth, &dir, "ssh-box"), Some(0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn a_mux_domain_window_asks_on_the_sheet_and_survives_a_dropped_link() {
-    let Some(abyss) = find_abyss() else {
-        assert!(
-            std::env::var_os("APOTH_REQUIRE_SESSION").is_none(),
-            "ec-abyss not found (required by APOTH_REQUIRE_SESSION)"
-        );
-        eprintln!("skipping: ec-abyss not found");
-        return;
-    };
+    let Some(abyss) = find_abyss() else { return };
     let Some(apoth) = apoth_bin() else { return };
     let dir = temp_dir("gui");
-    // The fake ssh and `apoth` on PATH (the "remote" runs `apoth proxy` by name).
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(bin.join("ssh"), SHIM).unwrap();
-    std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::os::unix::fs::symlink(&apoth, bin.join("apoth")).unwrap();
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    std::fs::write(
-        dir.join("home/.config/eclipse/apotheosis.kdl"),
-        "domain \"box\" { ssh \"me@box\"; mux #true }\n",
-    )
-    .unwrap();
+    let path = shim_path(&dir, &apoth);
+    // auto (the default) and the host has `apoth`: the host's session daemon.
+    write_config(&dir, "domain \"box\" { ssh \"me@box\" }\n");
     std::fs::write(dir.join("askpass.want"), b"").unwrap();
-    let srv = start_server(&dir, Some(&apoth));
-
-    std::fs::create_dir_all(dir.join("sock")).unwrap();
-    std::fs::create_dir_all(dir.join("cfg/eclipse")).unwrap();
-    std::fs::write(
-        dir.join("cfg/eclipse/policy.kdl"),
-        "misc { scripted-input #true }\n",
-    )
-    .unwrap();
-    let _abyss = Guard(
-        Command::new(abyss)
-            .args(["--backend", "headless", "--size", "800x600"])
-            .env("XDG_RUNTIME_DIR", &dir)
-            .env("ECLIPSE_SOCKET_DIR", dir.join("sock"))
-            .env("XDG_CONFIG_HOME", dir.join("cfg"))
-            .env_remove("WAYLAND_DISPLAY")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn ec-abyss"),
-    );
-    let t0 = Instant::now();
-    while !dir.join("wayland-1").exists() {
-        assert!(
-            t0.elapsed() < Duration::from_secs(20),
-            "compositor never came up"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let _abyss = start_abyss(&abyss, &dir);
     let dump = dir.join("dump.txt");
-    let mut c = Command::new(env!("CARGO_BIN_EXE_apotheosis"));
-    base_env(&mut c, &dir);
-    c.args(["--domain", "box"])
-        .env("PATH", &path)
-        .env(
-            "DBUS_SESSION_BUS_ADDRESS",
-            "unix:path=/nonexistent/apoth-test-bus",
-        )
-        .env("ECLIPSE_SOCKET_DIR", dir.join("sock"))
-        .env("WAYLAND_DISPLAY", "wayland-1")
-        .env("APOTH_TEST_DUMP", &dump)
-        .env("APOTH_TEST_ATTACH_EXE", &apoth)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut g = Guard(c.spawn().expect("spawn apotheosis --domain"));
+    let mut g = Guard(
+        gui(&dir, &path, &["--domain", "box"], true)
+            .spawn()
+            .expect("spawn apotheosis --domain"),
+    );
     let abyss_sock = dir.join("sock/abyss.sock");
 
     // The fake ssh asks for a password: the sheet takes it from the seat.
     assert!(wait_file(&dir.join("askpass.asked"), 30), "ssh never asked");
+    assert!(dir.join("probes").exists(), "auto asked the host first");
     std::thread::sleep(Duration::from_millis(1500));
     if let Ok(Some(st)) = g.0.try_wait()
         && st.code() == Some(69)
@@ -645,6 +797,7 @@ fn a_mux_domain_window_asks_on_the_sheet_and_survives_a_dropped_link() {
         dir.join("askpass.bad").exists(),
         dir.join("askpass.cancelled").exists()
     );
+    assert!(dir.join("proxied").exists(), "the link runs apoth proxy");
 
     // The JSON socket never arms askpass for a process outside the panes.
     let gui_sock = dir.join(format!("apotheosis/{}.sock", g.0.id()));
@@ -657,24 +810,15 @@ fn a_mux_domain_window_asks_on_the_sheet_and_survives_a_dropped_link() {
     assert!(r.contains("\"error\"") && !r.contains("token"), "{r}");
     drop(s);
 
-    // Through the link: the pane is the remote server's.
+    // Through the link: the pane is the host's daemon's (the proxy pre-grant, no hook).
     let bgfile = dir.join("bg.pid");
-    let mut shown = None;
-    for _ in 0..10 {
-        abyss_rpc(
-            &abyss_sock,
-            "type_text",
-            &format!(
-                "{{\"text\":\"sleep 300 & echo $! > {}; echo m37-$((6*7))\\n\"}}",
-                bgfile.display()
-            ),
-        );
-        shown = dump_shows(&mut g, &dump, "m37-42", 4);
-        if shown != Some(false) {
-            break;
-        }
-    }
-    let Some(shown) = shown else { return };
+    let cmd = format!(
+        "sleep 300 & echo $! > {}; echo m37-$((6*7))",
+        bgfile.display()
+    );
+    let Some(shown) = type_until(&mut g, &dir, &cmd, "m37-42") else {
+        return;
+    };
     assert!(shown, "the remote pane never echoed");
     let bg: i32 = std::fs::read_to_string(&bgfile)
         .unwrap()
@@ -694,18 +838,12 @@ fn a_mux_domain_window_asks_on_the_sheet_and_survives_a_dropped_link() {
         std::thread::sleep(Duration::from_millis(100));
     }
     // The process and the output are still there after the reconnect.
-    let mut alive = Some(false);
-    for _ in 0..10 {
-        abyss_rpc(
-            &abyss_sock,
-            "type_text",
-            &format!("{{\"text\":\"kill -0 {bg} && echo alive-$((40+2))\\n\"}}"),
-        );
-        alive = dump_shows(&mut g, &dump, "alive-42", 3);
-        if alive != Some(false) {
-            break;
-        }
-    }
+    let alive = type_until(
+        &mut g,
+        &dir,
+        &format!("kill -0 {bg} && echo alive-$((40+2))"),
+        "alive-42",
+    );
     assert_eq!(alive, Some(true), "the pane's job did not survive the drop");
     assert!(
         std::fs::read_to_string(&dump).is_ok_and(|t| t.contains("m37-42")),
@@ -713,16 +851,7 @@ fn a_mux_domain_window_asks_on_the_sheet_and_survives_a_dropped_link() {
     );
 
     // End the session (tmux kill-session): every pane goes, the daemon exits.
-    let mut k = Command::new(&apoth);
-    base_env(&mut k, &dir);
-    let st = k
-        .args(["server", "kill", "t"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .unwrap();
-    assert_eq!(st.code(), Some(0));
+    assert_eq!(kill_session(&apoth, &dir, "default"), Some(0));
     // A background job of an interactive shell may outlive its hang-up (as under tmux):
     // ours is removed by the pid it reported.
     std::thread::sleep(Duration::from_millis(300));
@@ -730,78 +859,83 @@ fn a_mux_domain_window_asks_on_the_sheet_and_survives_a_dropped_link() {
         let _ = Command::new("kill").arg(bg.to_string()).status();
     }
     drop(g);
-    drop(srv);
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn an_ssh_domain_runs_apoth_ssh_with_askpass_armed_from_the_pane() {
-    let Some(abyss) = find_abyss() else {
-        assert!(
-            std::env::var_os("APOTH_REQUIRE_SESSION").is_none(),
-            "ec-abyss not found (required by APOTH_REQUIRE_SESSION)"
-        );
-        eprintln!("skipping: ec-abyss not found");
+fn without_apoth_on_the_host_the_local_daemon_keeps_the_ssh_pane_past_a_window_kill() {
+    let Some(abyss) = find_abyss() else { return };
+    let Some(apoth) = apoth_bin() else { return };
+    let dir = temp_dir("local");
+    let path = shim_path(&dir, &apoth);
+    std::fs::write(dir.join("no-apoth"), b"").unwrap();
+    pre_consent(&dir);
+    write_config(
+        &dir,
+        "sessions {\n  server \"on\"\n}\ndomain \"box\" {\n  ssh \"me@box\"\n}\n",
+    );
+    let _abyss = start_abyss(&abyss, &dir);
+    let dump = dir.join("dump.txt");
+    let mut g = Guard(
+        gui(&dir, &path, &["--domain", "box"], true)
+            .spawn()
+            .expect("spawn apotheosis --domain"),
+    );
+    let Some(shown) = type_until(&mut g, &dir, "echo local-$((8*8))", "local-64") else {
         return;
     };
+    assert!(shown, "the ssh pane never answered");
+    assert!(dir.join("probes").exists(), "auto asked the host");
+    assert!(
+        !dir.join("proxied").exists(),
+        "no apoth on the host: no proxy"
+    );
+    assert!(dir.join("apotheosis/server-ssh-box.sock").exists());
+    let ssh = pids(&dir);
+    assert_eq!(ssh.len(), 1);
+
+    // The window dies; the daemon's pane (and its ssh) does not.
+    drop(g);
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(Path::new(&format!("/proc/{}", ssh[0])).exists(), "ssh died");
+    let _ = std::fs::remove_file(&dump);
+    let mut g = Guard(
+        gui(&dir, &path, &["--domain", "box"], true)
+            .spawn()
+            .expect("spawn apotheosis --domain again"),
+    );
+    match dump_shows(&mut g, &dump, "local-64", 30) {
+        None => return,
+        Some(s) => assert!(s, "the new window does not show the pane's earlier output"),
+    }
+    assert_eq!(
+        pids(&dir).len(),
+        1,
+        "the pane was reattached, not restarted"
+    );
+    drop(g);
+    assert_eq!(kill_session(&apoth, &dir, "ssh-box"), Some(0));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn an_ssh_domain_runs_apoth_ssh_with_askpass_armed_and_reconnects_after_a_drop() {
+    let Some(abyss) = find_abyss() else { return };
     let Some(apoth) = apoth_bin() else { return };
     let dir = temp_dir("plain");
-    let bin = dir.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::write(bin.join("ssh"), SHIM).unwrap();
-    std::fs::set_permissions(bin.join("ssh"), std::fs::Permissions::from_mode(0o755)).unwrap();
-    std::os::unix::fs::symlink(&apoth, bin.join("apoth")).unwrap();
-    let path = format!(
-        "{}:{}",
-        bin.display(),
-        std::env::var("PATH").unwrap_or_default()
+    let path = shim_path(&dir, &apoth);
+    std::fs::write(dir.join("no-apoth"), b"").unwrap();
+    write_config(
+        &dir,
+        "binds {\n  bind \"ctrl+shift+r\" { pane.reconnect }\n}\ndomain \"plain\" {\n  ssh \"me@box\"\n}\n",
     );
-    std::fs::write(
-        dir.join("home/.config/eclipse/apotheosis.kdl"),
-        "domain \"plain\" { ssh \"me@box\" }\n",
-    )
-    .unwrap();
-    std::fs::create_dir_all(dir.join("sock")).unwrap();
-    std::fs::create_dir_all(dir.join("cfg/eclipse")).unwrap();
-    std::fs::write(
-        dir.join("cfg/eclipse/policy.kdl"),
-        "misc { scripted-input #true }\n",
-    )
-    .unwrap();
-    let _abyss = Guard(
-        Command::new(abyss)
-            .args(["--backend", "headless", "--size", "800x600"])
-            .env("XDG_RUNTIME_DIR", &dir)
-            .env("ECLIPSE_SOCKET_DIR", dir.join("sock"))
-            .env("XDG_CONFIG_HOME", dir.join("cfg"))
-            .env_remove("WAYLAND_DISPLAY")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn ec-abyss"),
-    );
-    let t0 = Instant::now();
-    while !dir.join("wayland-1").exists() {
-        assert!(
-            t0.elapsed() < Duration::from_secs(20),
-            "compositor never came up"
-        );
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    let _abyss = start_abyss(&abyss, &dir);
     let dump = dir.join("dump.txt");
-    let mut c = Command::new(env!("CARGO_BIN_EXE_apotheosis"));
-    base_env(&mut c, &dir);
-    c.args(["--domain", "plain", "--new-instance"])
-        .env("PATH", &path)
-        .env(
-            "DBUS_SESSION_BUS_ADDRESS",
-            "unix:path=/nonexistent/apoth-test-bus",
-        )
-        .env("ECLIPSE_SOCKET_DIR", dir.join("sock"))
-        .env("WAYLAND_DISPLAY", "wayland-1")
-        .env("APOTH_TEST_DUMP", &dump)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-    let mut g = Guard(c.spawn().expect("spawn apotheosis --domain"));
+    let mut g = Guard(
+        gui(&dir, &path, &["--domain", "plain", "--new-instance"], true)
+            .spawn()
+            .expect("spawn apotheosis --domain"),
+    );
     let abyss_sock = dir.join("sock/abyss.sock");
     // `apoth ssh` asks once per host on the terminal whether to carry the environment.
     match dump_shows(&mut g, &dump, "send COLORTERM", 40) {
@@ -814,25 +948,46 @@ fn an_ssh_domain_runs_apoth_ssh_with_askpass_armed_from_the_pane() {
         dir.join("askpass.armed").exists(),
         "askpass is armed for a process in the pane"
     );
+    assert!(!dir.join("proxied").exists());
     let consent = std::fs::read_to_string(dir.join("home/.state/apotheosis/ssh-hosts.kdl"))
         .expect("the answer is recorded");
     assert!(
         consent.contains("me@box") && consent.contains("env=#false"),
         "{consent}"
     );
-    let mut shown = Some(false);
-    for _ in 0..10 {
-        abyss_rpc(
-            &abyss_sock,
-            "type_text",
-            "{\"text\":\"echo plain-$((5*5))\\n\"}",
+    assert_eq!(
+        type_until(&mut g, &dir, "echo plain-$((5*5))", "plain-25"),
+        Some(true),
+        "the domain's shell never answered"
+    );
+
+    // The link drops (ssh exits 255): the pane holds, says so, and Reconnect starts a
+    // fresh ssh in it.
+    abyss_rpc(&abyss_sock, "type_text", "{\"text\":\"exit 255\\n\"}");
+    assert_eq!(
+        dump_shows(&mut g, &dump, "was lost", 15),
+        Some(true),
+        "the pane never said the link was lost"
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    abyss_rpc(
+        &abyss_sock,
+        "press_key",
+        "{\"key\":\"r\",\"modifiers\":[\"ctrl\",\"shift\"]}",
+    );
+    let t0 = Instant::now();
+    while pids(&dir).len() < 2 {
+        assert!(
+            t0.elapsed() < Duration::from_secs(15),
+            "Reconnect never started a new ssh"
         );
-        shown = dump_shows(&mut g, &dump, "plain-25", 3);
-        if shown != Some(false) {
-            break;
-        }
+        std::thread::sleep(Duration::from_millis(100));
     }
-    assert_eq!(shown, Some(true), "the domain's shell never answered");
+    assert_eq!(
+        type_until(&mut g, &dir, "echo again-$((6*6))", "again-36"),
+        Some(true),
+        "the reconnected shell never answered"
+    );
     drop(g);
     let _ = std::fs::remove_dir_all(&dir);
 }

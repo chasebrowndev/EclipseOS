@@ -177,6 +177,39 @@ pub fn probe_master(ssh: &OsStr, master: &[OsString], dest: &str, timeout: Durat
     }
 }
 
+/// Whether the host has `apoth` on its PATH (`remote.persist auto|always`, T-22 §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HasApoth {
+    Yes,
+    No,
+    /// ssh could not answer without a prompt (no master, password auth), failed, or timed out.
+    Unknown,
+}
+
+/// The probe's remote command.
+pub const PROBE_APOTH: &str = "command -v apoth >/dev/null 2>&1";
+
+/// What the probe's exit status means: 0 present, 255 (ssh's own failure) or none unknown,
+/// anything else absent.
+#[must_use]
+pub fn has_apoth(code: Option<i32>) -> HasApoth {
+    match code {
+        Some(0) => HasApoth::Yes,
+        Some(255) | None => HasApoth::Unknown,
+        Some(_) => HasApoth::No,
+    }
+}
+
+/// Ask `dest` over the shared master (`BatchMode=yes`: never a prompt) whether `apoth` is on
+/// its PATH, bounded by `timeout`. Nothing is installed or downloaded.
+#[must_use]
+pub fn probe_apoth(ssh: &OsStr, master: &[OsString], dest: &str, timeout: Duration) -> HasApoth {
+    let mut c = Command::new(ssh);
+    c.args(master)
+        .args(["-o", "BatchMode=yes", "-T", "--", dest, PROBE_APOTH]);
+    has_apoth(bounded(c, timeout).and_then(|s| s.code()))
+}
+
 /// POSIX single-quoting for a remote command word.
 #[must_use]
 pub fn sh_quote(s: &str) -> String {
@@ -336,6 +369,23 @@ mod tests {
                 .any(|x| x.to_string_lossy().starts_with("Control"))
         );
         assert_eq!(carry_args().len(), 2 * CARRY_ENV.len());
+    }
+
+    #[test]
+    fn the_apoth_probe_reads_exit_codes_and_never_prompts() {
+        assert_eq!(has_apoth(Some(0)), HasApoth::Yes);
+        assert_eq!(has_apoth(Some(1)), HasApoth::No);
+        assert_eq!(has_apoth(Some(127)), HasApoth::No);
+        assert_eq!(has_apoth(Some(255)), HasApoth::Unknown);
+        assert_eq!(has_apoth(None), HasApoth::Unknown);
+        // A missing ssh binary is "unknown", not "absent".
+        let r = probe_apoth(
+            OsStr::new("/nonexistent/ssh"),
+            &[],
+            "h",
+            Duration::from_millis(200),
+        );
+        assert_eq!(r, HasApoth::Unknown);
     }
 
     #[test]

@@ -735,6 +735,7 @@ const HANDLED: &[&str] = &[
     "pane.focus-next",
     "pane.focus-prev",
     "pane.move",
+    "pane.reconnect",
     "pane.resize",
     "pane.split",
     "pane.toggle-float",
@@ -916,6 +917,10 @@ impl App {
     }
 
     fn start_window(&mut self, c: &ConfigureEvent) -> Result<(), String> {
+        // T-08 §3: one blur box over the window geometry; apoth-wl keeps it across resizes
+        // and blur-path changes, and drops it on the tint path.
+        self.handle
+            .set_blur(self.win, Some(apoth_wl::BlurRequest::WindowGeometry));
         self.blur = self.handle.blur_path(self.win);
         let scale = self.scale();
         let (fonts, metrics, auto_family) = build_fonts(&self.settings, scale)?;
@@ -1017,13 +1022,13 @@ impl App {
         cwd: Option<PathBuf>,
         env_extra: Vec<(String, String)>,
     ) -> Result<Pane, String> {
-        if self.remote.is_some() {
-            return self.spawn_remote(id, (rows, cols), argv, cwd);
-        }
         let argv = match (&self.first.ssh_domain, argv) {
             (Some(dest), None) => Some(self.ssh_domain_argv(dest)),
             (_, a) => a,
         };
+        if self.remote.is_some() {
+            return self.spawn_remote(id, (rows, cols), argv, cwd);
+        }
         let cell = self.cell;
         let mut tc = self.settings.term.clone();
         tc.rows = rows;
@@ -1344,24 +1349,14 @@ impl App {
         }
     }
 
-    /// An ssh domain's shell (T-22 §4): `apoth ssh [--cwd DIR] DEST`, the directory the
+    /// An ssh domain's shell (T-22 §4): `apoth ssh --hold [--cwd DIR] DEST`, the directory the
     /// focused pane last reported over OSC 7 on that host.
     fn ssh_domain_argv(&self, dest: &str) -> Vec<String> {
-        let apoth = std::env::current_exe()
-            .ok()
-            .and_then(|e| Some(e.parent()?.join("apoth")))
-            .filter(|p| p.is_file())
-            .map_or_else(|| "apoth".to_owned(), |p| p.to_string_lossy().into_owned());
-        let mut v = vec![apoth, "ssh".to_owned()];
-        if let Some(d) = self
+        let cwd = self
             .focused()
             .and_then(|f| self.panes.get(&f))
-            .and_then(|p| p.cwd_remote.clone())
-        {
-            v.extend(["--cwd".to_owned(), d]);
-        }
-        v.push(dest.to_owned());
-        v
+            .and_then(|p| p.cwd_remote.clone());
+        crate::domain::pane_argv(dest, cwd)
     }
 
     /// The working directory a new pane inherits (T-13 §6): the focused pane's OSC 7
@@ -2995,6 +2990,12 @@ impl App {
             A::AppQuit { force: _ } | A::WindowClose {} => self.begin_close(),
             A::SessionDetach {} => self.session_detach(),
             A::SessionKill {} => self.session_kill(),
+            A::PaneReconnect {} => {
+                let focus = self.focused();
+                if !self.reconnect_pane(focus) {
+                    tracing::info!("pane.reconnect: no pane lost its ssh connection");
+                }
+            }
             A::AppIgnore {} => {}
             other => {
                 tracing::debug!(action = other.id(), "action not available yet");
@@ -3853,7 +3854,7 @@ impl App {
             self.apply_nav_answer(i);
         } else if self.auto.confirm.is_some() {
             self.answer_rule(Some(i));
-        } else if !self.dismiss_reconnect() {
+        } else if !self.remote_notice_click(Some(i)) {
             // The error bar and the restart notice have one button: dismiss.
             self.bar_dismissed = true;
             self.restart_keys.clear();
@@ -5279,7 +5280,8 @@ impl App {
             .is_some_and(|b| b.headline.text == o.spec.headline.text)
         {
             let age = o.shown_at.elapsed().as_millis() as u64;
-            return age >= apoth_ui::tokens::motion::CONSENT_GUARD_MS && self.dismiss_reconnect();
+            return age >= apoth_ui::tokens::motion::CONSENT_GUARD_MS
+                && self.remote_notice_click(None);
         }
         let age = o.shown_at.elapsed().as_millis() as u64;
         let st = apoth_ui::bar::BarState { shown_at_ms: 0 };

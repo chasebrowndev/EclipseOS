@@ -10,7 +10,10 @@
 //!   consent on an already-attached view's glass sheet; that sheet does not exist yet, so
 //!   it is refused, which is what the spec prescribes with no view to ask on;
 //! - only the GUI binary itself — the executable this server runs from, which is the path
-//!   the package installs — started outside our panes is pre-granted.
+//!   the package installs — started outside our panes is pre-granted, and the installed
+//!   `apoth` (next to it) while it runs `apoth proxy` (its argv, read from `/proc` and
+//!   confirmed against the pidfd): the remote end of a mux domain (T-22 §5, owner decision
+//!   2026-11-14). The agent, pane-descendant and interpreter refusals come first for both.
 //!
 //! Lister requests (`List`) are `observe`: ids, sizes and liveness only, no content.
 //! `DetachAll` changes no content and starts nothing (`layout`): any same-uid, non-agent
@@ -59,10 +62,46 @@ pub(crate) fn strip_deleted(p: PathBuf) -> PathBuf {
     }
 }
 
-/// The attach grant for one pane (the same rule for every pane today; it is evaluated per
-/// pane, at attach and again for every pane added afterwards, T-21 §3).
+/// The `apoth` the package installs next to this server's binary (`apoth proxy` runs it).
+pub(crate) fn proxy_exe() -> Option<PathBuf> {
+    let p = own_exe()?.parent()?.join("apoth");
+    p.is_file().then_some(p)
+}
+
+/// `argv` (NUL-separated, as `/proc/<pid>/cmdline`) is `apoth proxy …`.
 #[must_use]
-pub(crate) fn attach_grant(peer: &PeerFacts, exe: Option<&Path>, allowed: &[PathBuf]) -> Grant {
+pub(crate) fn argv_is_proxy(cmdline: &[u8]) -> bool {
+    let mut it = cmdline.split(|&b| b == 0);
+    it.next().is_some_and(|a0| !a0.is_empty()) && it.next() == Some(b"proxy")
+}
+
+/// The peer `pid` runs `apoth proxy`: its argv says so and the pidfd shows the process
+/// still alive after the read (so the pid was not recycled in between).
+pub(crate) fn runs_proxy(pid: i32, pidfd: &impl std::os::fd::AsFd) -> bool {
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+    let Ok(cmd) = std::fs::read(format!("/proc/{pid}/cmdline")) else {
+        return false;
+    };
+    let mut fds = [PollFd::new(pidfd, PollFlags::IN)];
+    let zero = Timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    let exited = matches!(poll(&mut fds, Some(&zero)), Ok(n) if n > 0);
+    !exited && argv_is_proxy(&cmd)
+}
+
+/// The attach grant for one pane (the same rule for every pane today; it is evaluated per
+/// pane, at attach and again for every pane added afterwards, T-21 §3). `proxy` is the
+/// installed `apoth`; `runs_proxy` is asked only when the peer's executable is that one.
+#[must_use]
+pub(crate) fn attach_grant(
+    peer: &PeerFacts,
+    exe: Option<&Path>,
+    allowed: &[PathBuf],
+    proxy: Option<&Path>,
+    runs_proxy: impl FnOnce() -> bool,
+) -> Grant {
     if peer.agent {
         return Grant::None("agent sessions cannot attach: no policy service answers for them");
     }
@@ -76,7 +115,8 @@ pub(crate) fn attach_grant(peer: &PeerFacts, exe: Option<&Path>, allowed: &[Path
     }
     match exe.map(|e| strip_deleted(e.to_path_buf())) {
         Some(e) if allowed.contains(&e) => Grant::Full,
-        _ => Grant::None("only the Apotheosis interface may attach without consent"),
+        Some(e) if proxy == Some(e.as_path()) && runs_proxy() => Grant::Full,
+        _ => Grant::None("only the Apotheosis interface or apoth proxy may attach without consent"),
     }
 }
 
@@ -115,8 +155,53 @@ mod tests {
         }
     }
 
+    const APOTH: &str = "/usr/bin/apoth";
+
     fn grant(f: &PeerFacts, exe: &str) -> Grant {
-        attach_grant(f, Some(Path::new(exe)), &[PathBuf::from(GUI)])
+        attach_grant(f, Some(Path::new(exe)), &[PathBuf::from(GUI)], None, || {
+            false
+        })
+    }
+
+    fn proxy(f: &PeerFacts, exe: &str, runs: bool) -> Grant {
+        attach_grant(
+            f,
+            Some(Path::new(exe)),
+            &[PathBuf::from(GUI)],
+            Some(Path::new(APOTH)),
+            || runs,
+        )
+    }
+
+    #[test]
+    fn apoth_is_pre_granted_only_while_it_runs_proxy() {
+        let outside = facts(None, false, false);
+        assert_eq!(proxy(&outside, APOTH, true), Grant::Full);
+        // `apoth` doing anything else, or another binary claiming to be a proxy.
+        assert!(matches!(proxy(&outside, APOTH, false), Grant::None(_)));
+        assert!(matches!(
+            proxy(&outside, "/tmp/apoth", true),
+            Grant::None(_)
+        ));
+        // The refusals that come first: inside a server pane, agents, interpreters.
+        assert!(matches!(
+            proxy(&facts(Some(2), false, false), APOTH, true),
+            Grant::None(_)
+        ));
+        assert!(matches!(
+            proxy(&facts(None, true, false), APOTH, true),
+            Grant::None(_)
+        ));
+        assert!(matches!(
+            proxy(&facts(None, false, true), APOTH, true),
+            Grant::None(_)
+        ));
+        assert!(argv_is_proxy(b"/usr/bin/apoth\0proxy\0--session\0t\0"));
+        assert!(argv_is_proxy(b"apoth\0proxy"));
+        assert!(!argv_is_proxy(b"/usr/bin/apoth\0ssh\0h\0"));
+        assert!(!argv_is_proxy(b"/usr/bin/apoth\0proxyx\0"));
+        assert!(!argv_is_proxy(b"\0proxy\0"));
+        assert!(!argv_is_proxy(b""));
     }
 
     #[test]
@@ -144,11 +229,23 @@ mod tests {
         ));
         // Unknown executables on either side refuse.
         assert!(matches!(
-            attach_grant(&facts(None, false, false), None, &[PathBuf::from(GUI)]),
+            attach_grant(
+                &facts(None, false, false),
+                None,
+                &[PathBuf::from(GUI)],
+                None,
+                || true
+            ),
             Grant::None(_)
         ));
         assert!(matches!(
-            attach_grant(&facts(None, false, false), Some(Path::new(GUI)), &[]),
+            attach_grant(
+                &facts(None, false, false),
+                Some(Path::new(GUI)),
+                &[],
+                None,
+                || true
+            ),
             Grant::None(_)
         ));
         assert!(matches!(

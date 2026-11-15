@@ -295,17 +295,21 @@ fn include_fanout_is_budgeted_and_dir_globs_are_diagnosed() {
 
 #[test]
 fn ssh_domains_parse_and_refuse_option_like_destinations() {
-    let r = user("domain \"box\" { ssh \"me@box\"; mux #true }\ndomain \"plain\" { ssh \"h\" }\n");
+    let r = user(
+        "domain \"box\" { ssh \"me@box\"; persist \"always\" }\ndomain \"plain\" { ssh \"h\" }\n",
+    );
     assert!(r.is_valid(), "{}", r.render());
     let d: Vec<_> = r.config.domains.iter().map(|d| &d.value).collect();
     assert_eq!(d[0].ssh.as_deref(), Some("me@box"));
-    assert_eq!(d[0].mux, Some(true));
-    assert_eq!(d[1].mux, None);
+    assert_eq!(d[0].persist.as_deref(), Some("always"));
+    assert_eq!(d[1].persist, None);
     for bad in [
         "domain \"x\" { ssh \"-oProxyCommand=sh\" }\n",
         "domain \"x\" { ssh \"a b\" }\n",
         "domain \"x\" { ssh 3 }\n",
-        "domain \"x\" { mux #true }\n",
+        "domain \"x\" { persist \"auto\" }\n",
+        "domain \"x\" { ssh \"h\"; persist \"sometimes\" }\n",
+        "domain \"x\" { ssh \"h\"; mux #true }\n",
     ] {
         let r = user(bad);
         assert!(!r.is_valid(), "{bad}");

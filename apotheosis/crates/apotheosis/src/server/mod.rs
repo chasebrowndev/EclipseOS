@@ -270,6 +270,8 @@ struct Server {
     listener: UnixListener,
     session: String,
     allowed: Vec<PathBuf>,
+    /// The installed `apoth`, pre-granted while it runs `apoth proxy` (T-22 §5).
+    proxy: Option<PathBuf>,
     panes: Vec<SPane>,
     views: Vec<View>,
     next_pane: u64,
@@ -324,6 +326,7 @@ impl Server {
             listener,
             session,
             allowed: auth::pre_granted(),
+            proxy: auth::proxy_exe(),
             panes: Vec::new(),
             views: Vec::new(),
             next_pane: 1,
@@ -783,7 +786,14 @@ impl Server {
                 if v.attached {
                     return;
                 }
-                let grant = auth::attach_grant(&v.peer.facts, v.peer.exe.as_deref(), &self.allowed);
+                let (pid, pidfd) = (v.peer.pid, &v.peer.pidfd);
+                let grant = auth::attach_grant(
+                    &v.peer.facts,
+                    v.peer.exe.as_deref(),
+                    &self.allowed,
+                    self.proxy.as_deref(),
+                    || auth::runs_proxy(pid, pidfd),
+                );
                 if let Grant::None(reason) = grant {
                     tracing::info!(view = v.id, pid = v.peer.pid, "attach refused");
                     v.refuse(reason);

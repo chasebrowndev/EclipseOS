@@ -76,9 +76,10 @@ Commands:
   server kill [SESSION]      end a session: close every pane, the daemon exits
   attach [SESSION]           open a window on a session daemon (default: default)
   detach [SESSION]           detach every window from a session daemon; panes keep running
-  ssh [--cwd DIR] [SSH-OPTIONS...] DESTINATION [COMMAND...]
+  ssh [--hold] [--cwd DIR] [SSH-OPTIONS...] DESTINATION [COMMAND...]
                              system ssh with a shared master, askpass sheet and per-host
                              terminfo / environment (each asked once per host) (T-22)
+                             --hold: offer a reconnect in the pane when the link drops
   proxy [--session NAME] [--no-start]
                              the remote end of a mux domain: relay stdio to the session
                              daemon (run by ssh, not by hand)

@@ -13,7 +13,7 @@
 //! Replies the view's terms produce are dropped: the server answered them. Nothing here
 //! logs input or pane content.
 //!
-//! A mux domain (T-22 §5, `domain { ssh "host"; mux #true }`) reaches a remote daemon the
+//! A mux domain (T-22 §5: `persist` resolved to the host's daemon, §4) reaches a remote daemon the
 //! same way: the system `ssh` runs `apoth proxy` on the host with its stdin and stdout on one
 //! end of a socket pair, so the records cross ssh stdio with no listener and no port. Its
 //! handshake runs on the demultiplexer thread (a password may be asked on the askpass sheet,
@@ -467,16 +467,21 @@ fn reap(child: &mut Child, within: Duration) -> Option<i32> {
 }
 
 /// Make sure the session's server runs (`sessions.server on`): start this binary as one
-/// when nobody listens, and wait for its socket (bounded).
-pub(crate) fn ensure_server(session: &str) -> Result<(), String> {
+/// when nobody listens, and wait for its socket (bounded). A new server's first pane runs
+/// `command` when given (an ssh domain's `apoth ssh --hold`, T-22 §4).
+pub(crate) fn ensure_server(session: &str, command: Option<&[String]>) -> Result<(), String> {
     use std::os::unix::process::CommandExt;
     let path = socket(session).ok_or("XDG_RUNTIME_DIR is not set")?;
     if UnixStream::connect(&path).is_ok() {
         return Ok(());
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let mut child = std::process::Command::new(exe)
-        .args(["--server", "--session", session])
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(["--server", "--session", session]);
+    if let Some(argv) = command {
+        cmd.arg("-e").args(argv);
+    }
+    let mut child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

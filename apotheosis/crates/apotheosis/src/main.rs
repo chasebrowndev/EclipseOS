@@ -10,6 +10,7 @@ mod attach;
 mod binds;
 mod copymode;
 mod ctl;
+mod domain;
 mod glyphs;
 mod hints;
 mod hook;
@@ -242,17 +243,20 @@ fn main() {
                 .session
                 .clone()
                 .unwrap_or_else(|| server::DEFAULT_SESSION.into());
-            // `--domain NAME` (T-22 §4, §5): the config's `domain "NAME" { ssh ...; mux ... }`.
+            // `--domain NAME` (T-22 §4, §5): the config's `domain "NAME" { ssh ...; persist ... }`.
             let domain = r.domain.as_deref().map(|n| {
-                let found = startup
-                    .reloader
-                    .config()
+                let cfg = startup.reloader.config();
+                let found = cfg
                     .domains
                     .iter()
                     .find(|d| d.value.name == n)
-                    .map(|d| (d.value.ssh.clone(), d.value.mux == Some(true)));
+                    .map(|d| (d.value.ssh.clone(), d.value.persist.clone()));
                 match found {
-                    Some((Some(dest), mux)) => (dest, mux),
+                    Some((Some(dest), persist)) => {
+                        let mode =
+                            domain::Persist::resolve(persist.as_deref(), cfg.str("remote.persist"));
+                        (n.to_owned(), dest, mode)
+                    }
                     Some((None, _)) => {
                         eprintln!("apotheosis: domain {n:?} names no ssh host");
                         std::process::exit(EX_USAGE);
@@ -264,15 +268,41 @@ fn main() {
                 }
             });
             let mut ssh_domain = None;
-            let attach = if let Some((dest, mux)) = domain {
-                if mux {
-                    Some(attach::Attach::Ssh(attach::SshTarget {
+            let attach = if let Some((name, dest, mode)) = domain {
+                match domain::use_remote(mode, || domain::probe(&dest), &dest) {
+                    Ok(true) => Some(attach::Attach::Ssh(attach::SshTarget {
                         dest,
                         session: session.clone(),
-                    }))
-                } else {
-                    ssh_domain = Some(dest);
-                    None
+                    })),
+                    Ok(false) => {
+                        // Local panes running ssh; with the daemon on they are its panes
+                        // (session `ssh-<domain>`), so they outlive this window.
+                        let argv = domain::pane_argv(&dest, None);
+                        ssh_domain = Some(dest);
+                        if startup.settings.server_mode {
+                            let s = r
+                                .session
+                                .clone()
+                                .unwrap_or_else(|| domain::local_session(&name));
+                            match attach::ensure_server(&s, Some(&argv))
+                                .and_then(|()| attach::connect(&s))
+                            {
+                                Ok(h) => Some(attach::Attach::Local(h)),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "session server unavailable, using local panes: {e}"
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    Err(m) => {
+                        eprintln!("apotheosis: {m}");
+                        std::process::exit(1);
+                    }
                 }
             } else if r.attach {
                 match attach::connect(&session) {
@@ -285,7 +315,8 @@ fn main() {
             } else if startup.settings.server_mode {
                 // `sessions.server on` (T-21 §3): the window is a view; a refusal (this
                 // process runs inside one of the server's panes, say) falls back to local panes.
-                match attach::ensure_server(&session).and_then(|()| attach::connect(&session)) {
+                match attach::ensure_server(&session, None).and_then(|()| attach::connect(&session))
+                {
                     Ok(h) => Some(attach::Attach::Local(h)),
                     Err(e) => {
                         tracing::warn!("session server unavailable, using local panes: {e}");

@@ -32,4 +32,5 @@ No logger, never logs content. `Debug` of `SpawnConfig` and `OutQueue` prints co
 - `ssh` (T-22 §2, §4, §5): system-ssh argument building only (no protocol, REMOTE-28):
   `prepare_control_dir` (`$XDG_RUNTIME_DIR/apotheosis/ssh`, `0700`, or the `/tmp` short link
   when `%C` would overflow `sun_path`), `master_args`, `probe_master` (`-O check`, 5 s),
-  `destination_index`, `sh_quote`/`shell_in`, `compiled_entry` + `terminfo_install_command`.
+  `probe_apoth` (`BatchMode`, bounded: `HasApoth`), `destination_index`, `sh_quote`/`shell_in`,
+  `compiled_entry` + `terminfo_install_command`.

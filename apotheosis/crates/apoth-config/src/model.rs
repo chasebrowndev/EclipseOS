@@ -192,8 +192,8 @@ pub struct DomainDecl {
     /// `ssh "user@host"` (T-22 §4): spawns in the domain run a remote shell over the
     /// shared master. Validated: no leading `-`, no whitespace or controls, <= 255 bytes.
     pub ssh: Option<String>,
-    /// `mux #true` (T-22 §5): attach to the remote session daemon through `apoth proxy`.
-    pub mux: Option<bool>,
+    /// `persist "off|auto|always"` (T-22 §5): this domain's `remote.persist`.
+    pub persist: Option<String>,
     pub security: Vec<(String, String)>,
     pub body: Vec<ActionCall>,
 }

@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Remote domains in the window (T-22 §3, §5; T-21 §3): the askpass sheet, the
-//! reconnecting notice of a mux domain, and the `session.detach` / `session.kill` actions.
+//! reconnecting notice of a mux domain, the "connection lost" notice of an ssh domain's
+//! pane (`apoth ssh --hold` sets the user variable `apoth_ssh_lost`; Reconnect types Enter
+//! there, which starts a fresh ssh in the same pane), and the `session.detach` /
+//! `session.kill` / `pane.reconnect` actions.
 //!
 //! The askpass sheet shows the armed host as interface text, the remote's prompt as
 //! sanitised program text and, for a host-key question, the whole prompt (with the
@@ -10,7 +13,7 @@
 //! on the sheet (T-12 §1: sheet answers are not Actions). Nothing here logs the prompt or
 //! the secret.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use apoth_input::backend::KeyLookup;
 use apoth_input::{Key, Mods, Named};
@@ -21,6 +24,7 @@ use apoth_ui::tokens::size;
 
 use super::App;
 use crate::askpass::{Answer, Ask, Event, MAX_ARMED, Secret};
+use crate::pane::PaneKey;
 
 /// The keycap of the askpass submit button: Return answers it (the field has the letters).
 const RETURN_CAP: char = '\u{23ce}';
@@ -47,6 +51,10 @@ pub(super) struct Remote {
     pub(super) link_down: bool,
     /// The user dismissed the reconnecting notice for this drop.
     notice_dismissed: bool,
+    /// Panes whose `apoth ssh --hold` lost its link: the host it named (program text).
+    lost: BTreeMap<PaneKey, String>,
+    /// Lost panes whose notice the user dismissed.
+    lost_dismissed: BTreeSet<PaneKey>,
 }
 
 impl Remote {
@@ -162,6 +170,31 @@ fn kill_spec(id: apoth_ui::WidgetId, session: &str, remote: bool) -> BarSpec {
     }
 }
 
+/// The user variable `apoth ssh --hold` sets while its link is down.
+pub(super) const LOST_VAR: &str = "apoth_ssh_lost";
+
+/// The "connection lost" notice of an ssh domain pane (T-22 §4).
+fn lost_spec(id: apoth_ui::WidgetId, host: &str) -> BarSpec {
+    BarSpec {
+        id,
+        kind: BarKind::Notice,
+        headline: TextRun::interface("Connection lost", size::BODY).strong(),
+        detail: Some(TextRun::program(
+            &format!(
+                "{} \u{2014} the remote shell has ended.",
+                super::clip(host, 255)
+            ),
+            size::BODY_SMALL,
+        )),
+        buttons: vec![
+            button("Reconnect", BarKey::Char('r')),
+            button("Dismiss", BarKey::Escape),
+        ],
+        escape: Some(1),
+        body: None,
+    }
+}
+
 /// The reconnecting notice of a mux domain.
 fn reconnect_spec(id: apoth_ui::WidgetId, host: &str) -> BarSpec {
     BarSpec {
@@ -199,9 +232,59 @@ impl App {
 
     /// The reconnecting notice, below every question and above the config bars.
     pub(super) fn reconnect_bar(&self) -> Option<BarSpec> {
-        let host = self.remote.as_ref()?.host.as_deref()?;
-        (self.remote_ui.link_down && !self.remote_ui.notice_dismissed)
-            .then(|| reconnect_spec(self.windows()[0], host))
+        if let Some(host) = self.remote.as_ref().and_then(|l| l.host.as_deref())
+            && self.remote_ui.link_down
+            && !self.remote_ui.notice_dismissed
+        {
+            return Some(reconnect_spec(self.windows()[0], host));
+        }
+        let (_, host) = self.lost_pane()?;
+        Some(lost_spec(self.windows()[0], host))
+    }
+
+    /// The lost pane the notice is about: the focused one, else the first.
+    fn lost_pane(&self) -> Option<(PaneKey, &str)> {
+        let shown = |id: &PaneKey| {
+            self.panes.contains_key(id) && !self.remote_ui.lost_dismissed.contains(id)
+        };
+        let f = self.focused();
+        f.and_then(|f| self.remote_ui.lost.get_key_value(&f))
+            .filter(|(id, _)| shown(id))
+            .or_else(|| self.remote_ui.lost.iter().find(|(id, _)| shown(id)))
+            .map(|(id, h)| (*id, h.as_str()))
+    }
+
+    /// `apoth_ssh_lost` changed in pane `id` (set: the link dropped; cleared: reconnecting).
+    pub(super) fn ssh_lost(&mut self, id: PaneKey, host: Option<&str>) {
+        match host {
+            Some(h) => {
+                tracing::info!(pane = id, "ssh connection lost");
+                self.remote_ui.lost.insert(id, h.to_owned());
+                self.remote_ui.lost_dismissed.remove(&id);
+            }
+            None => {
+                self.remote_ui.lost.remove(&id);
+                self.remote_ui.lost_dismissed.remove(&id);
+            }
+        }
+        self.refresh_bar();
+    }
+
+    /// `pane.reconnect` / the notice's Reconnect: Enter on the lost pane's "press Enter"
+    /// line starts a fresh ssh there. False when no pane lost its link.
+    pub(super) fn reconnect_pane(&mut self, id: Option<PaneKey>) -> bool {
+        let id = match id.filter(|i| self.remote_ui.lost.contains_key(i)) {
+            Some(i) => i,
+            None => match self.lost_pane() {
+                Some((i, _)) => i,
+                None => return false,
+            },
+        };
+        tracing::info!(pane = id, "ssh reconnect");
+        self.remote_ui.lost.remove(&id);
+        self.send_unit(id, b"\r".to_vec());
+        self.refresh_bar();
+        true
     }
 
     /// The askpass broker's events.
@@ -384,14 +467,33 @@ impl App {
         self.send_overlay();
     }
 
-    /// The reconnect notice's Dismiss.
-    pub(super) fn dismiss_reconnect(&mut self) -> bool {
-        if self.reconnect_bar().is_some() {
-            self.remote_ui.notice_dismissed = true;
-            self.refresh_bar();
-            return true;
+    /// A button of the reconnecting or connection-lost notice (`None`: Escape). False when
+    /// neither is the bar shown.
+    pub(super) fn remote_notice_click(&mut self, i: Option<usize>) -> bool {
+        let Some(b) = self.reconnect_bar() else {
+            return false;
+        };
+        if self
+            .bar
+            .as_ref()
+            .is_none_or(|o| o.spec.headline.text != b.headline.text)
+        {
+            return false;
         }
-        false
+        let link = self.remote.as_ref().is_some_and(|l| l.host.is_some())
+            && self.remote_ui.link_down
+            && !self.remote_ui.notice_dismissed;
+        if link {
+            self.remote_ui.notice_dismissed = true;
+        } else if i == Some(0) {
+            let focus = self.focused();
+            self.reconnect_pane(focus);
+            return true;
+        } else if let Some((id, _)) = self.lost_pane() {
+            self.remote_ui.lost_dismissed.insert(id);
+        }
+        self.refresh_bar();
+        true
     }
 
     fn kill_key(&mut self, key: Key) {
@@ -499,5 +601,9 @@ mod tests {
         assert_eq!(k.escape, Some(1));
         let r = reconnect_spec(apoth_ui::WidgetId(1), "h");
         assert_eq!(r.kind, BarKind::Notice);
+        let l = lost_spec(apoth_ui::WidgetId(1), "me@h\u{1b}[2J");
+        assert_eq!(l.kind, BarKind::Notice);
+        assert_eq!(l.buttons[0].label, "Reconnect");
+        assert!(!l.detail.unwrap().text.contains('\u{1b}'));
     }
 }

@@ -1522,7 +1522,11 @@ placement. An entry that does not parse is dropped with a diagnostic. "Remember 
 <type>" in the picker writes one entry through the editor (§5). Both keys have GUI rows
 (Settings → Security → Links, "Open with").
 
-Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10).
+Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10). Remote additions: `remote.persist` enum `off|auto|always`, default `auto`,
+global, override class `behaviour`, live (T-22 §4); a `domain`'s `persist` child
+overrides it for that domain (validated against the same values, and only beside an
+`ssh` destination). The key has a GUI row (Settings → Security → Remote, "Remote session
+daemon").
 
 ## 4. Load, validate, apply
 - Parse into a fresh model; collect **all** diagnostics (file, line, column, key,
@@ -3084,14 +3088,18 @@ survive GUI and compositor restarts; detach/attach; several views of one session
     that pane read-only; a pane with neither is omitted from the snapshot and tee.
   - Pre-granted only: a peer whose pidfd resolves to the installed `apotheosis` GUI
     binary (the path the package installs, checked through `/proc/<pid>/exe` on the
-    pidfd) started by the user, not as a descendant of any pane or agent session. Every
-    other peer — including `apoth` and any binary started from inside a pane — goes
-    through consent (a glass sheet in an already-attached view; with no view attached,
-    refuse).
+    pidfd) started by the user, not as a descendant of any pane or agent session; and
+    the installed `apoth` next to it while it runs `apoth proxy` (argv 1 is `proxy`,
+    read from `/proc/<pid>/cmdline` and confirmed live on the pidfd; owner decision
+    2026-11-14), so a mux domain's remote end attaches without a sheet. The agent,
+    pane-descendant and interpreter refusals apply first to both. Every other peer —
+    including `apoth` for any other verb and any binary started from inside a pane,
+    `apoth proxy` included — goes through consent (a glass sheet in an already-attached
+    view; with no view attached, refuse).
   - Grants are rechecked on every pane added to the session after attach.
   - `apoth proxy` (T-22 §5) is a peer of the remote server's socket and is subject to
-    the same check there; its consent is asked on the remote session's attached views or
-    refused.
+    the same check there: pre-granted as above when started by the user's ssh session,
+    refused (or asked on an attached view) from inside a pane or an agent session.
 - **Lifetime: the tmux model** (owner decision 2026-11-14). Closing a view's window (or
   `window.close`, `app.quit`) detaches that view; the panes keep running and the server
   keeps running with no view attached. The server exits when its last pane exits and
@@ -3122,7 +3130,7 @@ byte-identical after a replayed corpus with random attach points); slow-view res
 version-refusal test; attach-authority tests (socket mode/owner, foreign uid refused,
 agent-descendant attach refused with a stub policy service for allow, deny and
 unreachable ⇒ refuse, `read-content`-only view cannot send input, GUI binary
-pre-granted, `apoth`-from-a-pane asks); spill survives a GUI restart and is deleted
+pre-granted, `apoth proxy` pre-granted by argv, `apoth`-from-a-pane asks); spill survives a GUI restart and is deleted
 unread after a daemon restart; soak: 24 h scripted session with periodic attach/detach.
 
 ## 7. Open Decisions
@@ -3152,7 +3160,17 @@ Features, each consented once per host and recorded in KDL:
   the compiled entry);
 - inject shell integration for the remote shell for that session only;
 - carry selected environment (`COLORTERM`, `TERM_PROGRAM*`).
-Falls back to plain `ssh` semantics when any step fails; never downloads binaries.
+Falls back to plain `ssh` semantics when any step fails. Nothing is ever installed on a
+remote host (owner decision 2026-11-14): no binary push, no download; the terminfo entry
+above is the only file written, and only with that host's recorded consent.
+
+`apoth ssh --hold` (what domain panes run) keeps the pane when the link drops: when ssh
+exits 255 it sets the user variable `apoth_ssh_lost` (OSC 1337 `SetUserVar`, the host
+base64-encoded; cleared on reconnect), prints that the connection was lost, and waits:
+Enter starts a fresh ssh in the same pane, Ctrl-D closes it. Ctrl-C and Ctrl-\ do not end
+the wrapper while ssh runs. The window shows a "Connection lost" notice bar for the pane
+(program text: the host) with Reconnect and Dismiss; Reconnect and the `pane.reconnect`
+action type Enter into the pane. Any other ssh exit status ends the pane with it.
 
 ## 3. Askpass
 `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` point at `apoth askpass`. Askpass is armed
@@ -3187,15 +3205,32 @@ On Abyss the sheet is superseded by `ec-secret-prompt` when that service is avai
 the token and ancestry checks are the same.
 
 ## 4. `SshDomain`
-`domain "name" { ssh "user@host" }` makes spawn/split in that domain run a remote shell
-through the shared master, with cwd inheritance from OSC 7. Hosts can be imported from
-`~/.ssh/config` (non-wildcard `Host` entries) as suggestions in the palette.
+`domain "name" { ssh "user@host"; persist "off|auto|always" }` makes spawn/split in that
+domain run a remote shell through the shared master, with cwd inheritance from OSC 7.
+Hosts can be imported from `~/.ssh/config` (non-wildcard `Host` entries) as suggestions
+in the palette.
+
+Where the domain's panes live is `remote.persist` (T-10), default `auto`, overridden per
+domain by its `persist` child (owner decision 2026-11-14):
+- `off`: local panes running `apoth ssh --hold DEST` (§2). With `sessions.server on`
+  they are panes of the local session daemon (T-21 §3, session `ssh-<domain>` unless
+  `--session` names one), so they outlive the window and its crash like any server pane;
+  without it they are the window's own.
+- `auto`: before the first window, ask the host over the shared master whether it has
+  `apoth` (`command -v apoth`, BatchMode, 5 s). Present ⇒ remote mux (§5); absent or no
+  answer ⇒ `off`, silently.
+- `always`: remote mux, with no probe fallback: a host that answers that it has no `apoth`
+  fails the window with a message naming the host, the missing `apoth`, the setting and
+  the way out (install it with the host's package manager, or `persist "auto"`/`"off"`).
+  No answer (no master yet, a password host) proceeds to the mux link, whose own error
+  is the message.
 
 ## 5. Remote mux
-With the daemon (T-21 §3) installed on the remote by the user's package manager,
-`domain { ssh "host"; mux #true }` runs `apoth proxy` over ssh stdio and attaches with
-the T-21 sync protocol — no listener, no extra port. Version skew rules apply. We do not
-install or download the remote binary.
+With the daemon (T-21 §3) installed on the remote by the user's package manager, a
+domain resolved to remote mux (§4) runs `apoth proxy` over ssh stdio and attaches with
+the T-21 sync protocol — no listener, no extra port; the remote daemon pre-grants
+`apoth proxy` by argv (T-21 §3). Version skew rules apply. We do not install or download
+the remote binary.
 
 ## 6. Test Plan
 Integration tests against a local `sshd` in a container-free user-mode setup

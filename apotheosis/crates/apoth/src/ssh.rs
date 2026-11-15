@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `apoth ssh [--cwd DIR] [SSH-OPTIONS...] DESTINATION [COMMAND...]` (T-22 §2-§3): the
+//! `apoth ssh [--hold] [--cwd DIR] [SSH-OPTIONS...] DESTINATION [COMMAND...]` (T-22 §2-§4): the
 //! system `ssh` with a private shared master, a stale-master probe, the per-host features
 //! (terminfo entry, environment carry; each consented once per host and recorded in KDL),
 //! and the armed askpass channel when run inside an Apotheosis pane.
 //!
 //! The process `exec`s ssh at the end, so the process the instance armed askpass for *is*
-//! the ssh process (its pid, its pidfd, its lifetime; T-22 §3). Every step before that
+//! the ssh process (its pid, its pidfd, its lifetime; T-22 §3). With `--hold` (what an ssh
+//! domain's panes run, T-22 §4) it stays as ssh's parent instead: when the link drops (ssh
+//! exit 255) the pane keeps its process, says "connection lost", sets the user variable
+//! `apoth_ssh_lost` (OSC 1337, the host) for the window's Reconnect notice, and starts a
+//! fresh ssh on Enter (Ctrl-D closes). ssh descends from the armed process, so askpass
+//! keeps working across reconnects. Every step before that
 //! falls back to plain ssh semantics on failure; nothing is downloaded (T-22 §2). Nothing
 //! here logs the command line, the token or a secret.
 
@@ -34,6 +39,8 @@ const MAX_HOSTS: usize = 1024;
 /// What the command line says.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Args {
+    /// Stay as ssh's parent and offer a reconnect when the link drops.
+    pub(crate) hold: bool,
     pub(crate) cwd: Option<String>,
     /// Everything for ssh, unchanged.
     pub(crate) ssh: Vec<String>,
@@ -45,11 +52,19 @@ pub(crate) struct Args {
 pub(crate) fn parse(args: &[String]) -> Result<Args, String> {
     let mut rest = args;
     let mut cwd = None;
-    if let [flag, v, tail @ ..] = rest
-        && flag == "--cwd"
-    {
-        cwd = Some(v.clone());
-        rest = tail;
+    let mut hold = false;
+    loop {
+        match rest {
+            [flag, v, tail @ ..] if flag == "--cwd" => {
+                cwd = Some(v.clone());
+                rest = tail;
+            }
+            [flag, tail @ ..] if flag == "--hold" => {
+                hold = true;
+                rest = tail;
+            }
+            _ => break,
+        }
     }
     let i = sshx::destination_index(rest).ok_or("missing DESTINATION")?;
     let dest = rest[i].clone();
@@ -57,6 +72,7 @@ pub(crate) fn parse(args: &[String]) -> Result<Args, String> {
         return Err("DESTINATION must be 1-255 bytes, without a leading `-` or spaces".into());
     }
     Ok(Args {
+        hold,
         cwd,
         ssh: rest.to_vec(),
         dest,
@@ -284,19 +300,108 @@ pub(crate) fn run(args: &[String]) -> i32 {
             eprintln!("apoth ssh: the terminfo entry could not be installed; continuing");
         }
     }
-    let mut c = Command::new(&ssh);
-    c.args(&base);
-    if a.cwd.is_some() && !a.has_command {
-        c.arg("-t");
+    let build = || {
+        let mut c = Command::new(&ssh);
+        c.args(&base);
+        if a.cwd.is_some() && !a.has_command {
+            c.arg("-t");
+        }
+        c.args(&a.ssh);
+        if let (Some(d), false) = (&a.cwd, a.has_command) {
+            c.arg(sshx::shell_in(d));
+        }
+        set_askpass(&mut c);
+        c
+    };
+    if a.hold {
+        return hold(build, &a.dest);
     }
-    c.args(&a.ssh);
-    if let (Some(d), false) = (&a.cwd, a.has_command) {
-        c.arg(sshx::shell_in(d));
-    }
-    set_askpass(&mut c);
-    let e = c.exec();
+    let e = build().exec();
     eprintln!("apoth ssh: cannot run ssh: {e}");
     ERROR
+}
+
+/// ssh's exit status when the connection failed or dropped.
+const LOST: i32 = 255;
+/// The user variable the window's "connection lost" notice follows (T-22 §4).
+pub(crate) const LOST_VAR: &str = "apoth_ssh_lost";
+
+/// `OSC 1337 ; SetUserVar=apoth_ssh_lost=<base64 host>` (empty host: cleared).
+pub(crate) fn lost_var(host: &str) -> String {
+    format!(
+        "\x1b]1337;SetUserVar={LOST_VAR}={}\x07",
+        crate::icat::b64(host.as_bytes())
+    )
+}
+
+/// What a key typed at the "connection lost" line means.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Typed {
+    Reconnect,
+    Close,
+    Other,
+}
+
+pub(crate) fn typed(b: u8) -> Typed {
+    match b {
+        b'\r' | b'\n' => Typed::Reconnect,
+        0x04 => Typed::Close,
+        _ => Typed::Other,
+    }
+}
+
+/// Run ssh as a child until it ends for a reason other than a lost link (its status is
+/// ours), offering a fresh connection each time the link drops.
+fn hold(build: impl Fn() -> Command, dest: &str) -> i32 {
+    use std::io::Read;
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+    // Ctrl-C and Ctrl-\ while ssh connects are ssh's; this parent stays (the handlers are
+    // reset to the default in ssh by exec).
+    let flag = Arc::new(AtomicBool::new(false));
+    for sig in [signal_hook::consts::SIGINT, signal_hook::consts::SIGQUIT] {
+        let _ = signal_hook::flag::register(sig, Arc::clone(&flag));
+    }
+    loop {
+        let st = match build().status() {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("apoth ssh: cannot run ssh: {e}");
+                return ERROR;
+            }
+        };
+        if st.code() != Some(LOST) {
+            return st.code().unwrap_or(ERROR);
+        }
+        let mut out = std::io::stdout().lock();
+        let _ = write!(
+            out,
+            "{}\r\napoth ssh: the connection to {dest} was lost. Press Enter to reconnect, Ctrl-D to close.\r\n",
+            lost_var(dest)
+        );
+        let _ = out.flush();
+        drop(out);
+        // Byte by byte: a crashed ssh may leave the terminal raw (Enter is then CR).
+        let mut b = [0u8; 1];
+        let again = loop {
+            match std::io::stdin().lock().read(&mut b) {
+                Ok(0) => break false,
+                Ok(_) => match typed(b[0]) {
+                    Typed::Reconnect => break true,
+                    Typed::Close => break false,
+                    Typed::Other => {}
+                },
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => break false,
+            }
+        };
+        let mut out = std::io::stdout().lock();
+        let _ = write!(out, "{}", lost_var(""));
+        let _ = out.flush();
+        if !again {
+            return LOST;
+        }
+    }
 }
 
 /// Ship the compiled terminfo entry through the master (stdin → `~/.terminfo`), bounded.
@@ -349,6 +454,25 @@ mod tests {
         assert!(parse(&v(&[])).is_err());
         assert!(parse(&v(&["-p", "22"])).is_err());
         assert!(parse(&v(&["--", "-oProxyCommand=x"])).is_err());
+        let a = parse(&v(&["--hold", "--cwd", "/w", "me@h"])).unwrap();
+        assert!(a.hold && a.cwd.as_deref() == Some("/w") && a.ssh == ["me@h"]);
+        assert!(!a.has_command);
+        assert!(parse(&v(&["--cwd", "/w", "--hold", "h"])).unwrap().hold);
+        assert!(!parse(&v(&["h"])).unwrap().hold);
+    }
+
+    #[test]
+    fn the_lost_line_and_its_variable() {
+        assert_eq!(
+            lost_var("me@h"),
+            "\x1b]1337;SetUserVar=apoth_ssh_lost=bWVAaA==\x07"
+        );
+        // An empty value removes the variable (T-11 §9).
+        assert_eq!(lost_var(""), "\x1b]1337;SetUserVar=apoth_ssh_lost=\x07");
+        assert_eq!(typed(b'\r'), Typed::Reconnect);
+        assert_eq!(typed(b'\n'), Typed::Reconnect);
+        assert_eq!(typed(4), Typed::Close);
+        assert_eq!(typed(b'x'), Typed::Other);
     }
 
     #[test]
