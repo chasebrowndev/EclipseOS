@@ -34,7 +34,7 @@ use apoth_wl::pace::CommitCtl;
 use apoth_wl::{PaceEvent, Pacer, WlSurfaceHandle};
 
 use crate::glyphs::{COLOR_PAGES, Glyphs, MASK_PAGES, PAGE};
-use crate::hook::{ImageDump, MediaDump, ViewDump};
+use crate::hook::{FrameCount, ImageDump, MediaDump, ViewDump};
 use crate::pane::{MainMsg, PaneKey, PaneShared, RenderMsg, now_ns};
 use crate::ui::{Overlay, UiRaster, build_chrome};
 use crate::view::{Source, View, paint};
@@ -869,6 +869,7 @@ fn run(a: RenderArgs) {
     // Media control fades (T-08 §4) on this thread's clock.
     let mut fades = MediaFades::default();
     let t0 = Instant::now();
+    let mut fcount = FrameCount::from_env();
     sched.damage(now_ns());
 
     'outer: loop {
@@ -1075,6 +1076,9 @@ fn run(a: RenderArgs) {
                 match outcome {
                     PresentOutcome::Presented(st) => {
                         fault_streak = 0;
+                        if let Some(f) = fcount.as_mut() {
+                            f.presented();
+                        }
                         sched.rendered();
                         let due = panes.iter().filter_map(|p| p.due).min();
                         sched.animate(due.map(|d| {

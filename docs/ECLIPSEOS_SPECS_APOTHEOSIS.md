@@ -298,7 +298,7 @@ checklist. "Heavy" = needs a serialized build slot. `X` milestones change `abyss
 | M35 | Mux daemon: server mode, snapshot + tee, attach/detach | T-21 | M22, M29 | CI-N |
 | M36 | Media tier C: VA-API | T-16 §3 | M34 | M |
 | M37 | Remote domains: `apoth ssh`, askpass, `SshDomain`, remote mux | T-22 | M35 | CI-N |
-| M38 | Presentation refinements: pacing ladder step 5 (explicit present timing) and partial-damage present, each only if wgpu exposes the API (ADR 0119 Revisit when), PGO decision | T-07, T-23 | M17, X4 | CI-N + M |
+| M38 | Presentation refinements: pacing ladder step 5 (explicit present timing) and partial-damage present, each only if wgpu exposes the API (ADR 0119 Revisit when), PGO decision. Presenter item closed at M38, not built: wgpu 30.0.2 exposes neither partial present nor present timing (only `VK_GOOGLE_display_timing` through `as_hal`); the compositor's own damage tracking covers it. Tier A: covered-placement eviction (T-15 §4) | T-07, T-23 | M17, X4 | CI-N + M |
 | M39 | R2 remainder: OSC 66, BiDi, OSC 5522, fragments, output-match rules | T-04, T-06, T-11, T-18 | M31 | CI |
 
 M2–M7 are one parallel wave (six writers; pure crates). M31's gate list is fixed;
@@ -2316,7 +2316,16 @@ OSC 1337 `File=` with `inline=1` only: `name`, `size`, `width`, `height`
   320 MiB per pane) and `graphics.quota-total` (default 1 GiB per process); animation
   frames have a separate `graphics.animation-quota`. Eviction is tiered: unreferenced
   first, then off-screen placements oldest first; a referenced on-screen image is never
-  evicted — the transmit fails with `ENOSPC` instead.
+  evicted — the transmit fails with `ENOSPC` instead. A placement fully covered by a newer
+  opaque placement at the same z (same or larger rect; the image a still one with every
+  alpha 255, e.g. `f=24`) does not count as on-screen: its image is evictable in the second
+  tier, and it is not drawn. The pre-read quota check of file, temp-file and shm media
+  counts the bytes eviction could free, so it fails only when eviction cannot make room
+  (owner decision at M38: `mpv --vo=kitty` sends every frame as a new anonymous image at the
+  same cell and never deletes, so without this the quota fills and the picture freezes).
+- Shared memory (`t=s`) is read when the transmission completes, on the io thread (memory,
+  no blocking I/O), because a client may reuse the object's name for its next frame;
+  decoding stays on the workers (§5).
 - Per-axis cap 10 000 px; decoded-size cap enforced before allocation.
 - Placements are anchored to buffer rows (tracked pins), scroll with text, reflow by
   re-anchoring, and are freed when their rows leave history.

@@ -220,6 +220,35 @@ impl MediaDump {
     }
 }
 
+/// Test-only count of presented frames (T-07 §2 "no frame without damage", T-23 `IDLE`):
+/// `APOTH_TEST_FRAMES=<path>`, debug builds only. The render thread writes the number of
+/// frames it has presented since start after each present. A count, never content.
+pub(crate) struct FrameCount {
+    path: PathBuf,
+    n: u64,
+}
+
+impl FrameCount {
+    pub(crate) fn from_env() -> Option<FrameCount> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let p = std::env::var_os("APOTH_TEST_FRAMES").filter(|p| !p.is_empty())?;
+        Some(FrameCount {
+            path: PathBuf::from(p),
+            n: 0,
+        })
+    }
+
+    pub(crate) fn presented(&mut self) {
+        self.n += 1;
+        let tmp = self.path.with_extension("tmp");
+        if std::fs::write(&tmp, self.n.to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, &self.path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

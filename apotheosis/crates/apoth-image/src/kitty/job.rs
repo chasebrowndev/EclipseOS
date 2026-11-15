@@ -7,7 +7,9 @@
 
 use std::sync::Arc;
 
-use super::{MediaPolicy, MediaResult, Medium, TransmitSpec, decode_transfer_with, load_media};
+use super::{
+    Format, MediaPolicy, MediaResult, Medium, TransmitSpec, decode_transfer_with, load_media,
+};
 use crate::anim::{composite, diff_bbox, rect_inside};
 use crate::decoder::{InProcess, PixelDecoder};
 use crate::formats::Decoded;
@@ -65,13 +67,15 @@ pub struct DecodeJob {
     pub policy: Option<MediaPolicy>,
     pub limits: Limits,
     pub work: Work,
+    /// The medium already read by [`DecodeJob::read_shm_now`].
+    pub preread: Option<MediaResult>,
 }
 
 /// What a job produced.
 #[derive(Debug)]
 pub enum Outcome {
-    /// A still image and its content hash.
-    Image(Image, u64),
+    /// A still image, its content hash and whether every pixel is opaque.
+    Image(Image, u64, bool),
     /// A composed animation frame and the rect that differs from the frame it follows
     /// (or the edited rect); `None` = all of it.
     Frame(Image, Option<[u32; 4]>),
@@ -102,6 +106,28 @@ impl DecodeJob {
         DecodeDone { token, outcome }
     }
 
+    /// Read a shared-memory medium now, on the caller's thread, instead of on the worker.
+    /// A shm object is memory (no blocking I/O), and a client may reuse its name for the
+    /// next frame as soon as it has sent this one (`mpv --vo=kitty --vo-kitty-use-shm`):
+    /// read late, the object holds the next frame and that frame's own read fails. Pixel
+    /// decoding still runs on the worker (T-15 §5). Other media are left to the worker.
+    pub fn read_shm_now(&mut self) {
+        if self.spec.medium != Medium::Shm || self.preread.is_some() {
+            return;
+        }
+        let Some(policy) = self.policy.as_ref() else {
+            return;
+        };
+        self.preread = Some(load_media(
+            self.spec.medium,
+            &self.payload,
+            self.spec.size,
+            self.spec.offset,
+            policy,
+            &self.limits,
+        ));
+    }
+
     fn outcome(self, dec: &mut dyn PixelDecoder) -> Outcome {
         if let Work::ITerm(file) = &self.work {
             return match decode_payload_with(file, &self.payload, &self.limits, dec) {
@@ -116,14 +142,18 @@ impl DecodeJob {
             let Some(policy) = self.policy.as_ref() else {
                 return Outcome::Denied;
             };
-            match load_media(
-                self.spec.medium,
-                &self.payload,
-                self.spec.size,
-                self.spec.offset,
-                policy,
-                &self.limits,
-            ) {
+            let read = match self.preread {
+                Some(r) => r,
+                None => load_media(
+                    self.spec.medium,
+                    &self.payload,
+                    self.spec.size,
+                    self.spec.offset,
+                    policy,
+                    &self.limits,
+                ),
+            };
+            match read {
                 MediaResult::Data(d) => d,
                 MediaResult::Denied => return Outcome::Denied,
                 MediaResult::Failed => return Outcome::Failed(ErrCode::EnoentFile),
@@ -140,7 +170,9 @@ impl DecodeJob {
             },
             _ => {
                 let h = img.content_hash();
-                Outcome::Image(img, h)
+                // RGB carries no alpha: opaque without a scan.
+                let opaque = self.spec.format == Format::Rgb24 || img.is_opaque();
+                Outcome::Image(img, h, opaque)
             }
         }
     }
