@@ -92,6 +92,43 @@ mod tests {
         );
     }
 
+    /// The daemon's real writer into the pane's real reader over a socketpair,
+    /// with a request carrying a source list, and the reply back.
+    #[test]
+    fn a_request_crosses_a_socketpair_from_the_daemon() {
+        use ecl_portal_proto::Source;
+        use std::os::unix::net::UnixStream;
+        let (mut daemon, mut pane) = UnixStream::pair().unwrap();
+        let q = PaneRequest::PickSource {
+            requester: Requester {
+                app_id: "com.obsproject.Studio".into(),
+                display_name: Some("OBS Studio".into()),
+                icon: None,
+                source: IdentitySource::Host,
+            },
+            sources: Vec::<Source>::new(),
+            allow_multiple: false,
+            allow_audio: false,
+            allow_window: false,
+            allow_monitor: true,
+            remembered: None,
+        };
+        daemon
+            .write_all(&ecl_portal_core::frame::encode(&q).unwrap())
+            .unwrap();
+        assert_eq!(read_request(&mut pane).unwrap(), q);
+        write_reply(&mut pane, &PaneReply::Cancelled).unwrap();
+        let mut hdr = [0u8; 4];
+        daemon.read_exact(&mut hdr).unwrap();
+        let n = ecl_portal_core::frame::check_len(hdr).unwrap();
+        let mut body = vec![0u8; n];
+        daemon.read_exact(&mut body).unwrap();
+        assert_eq!(
+            ecl_portal_core::frame::decode::<PaneReply>(&body).unwrap(),
+            PaneReply::Cancelled
+        );
+    }
+
     #[test]
     fn a_reply_is_length_prefixed_big_endian() {
         let mut out = Vec::new();
