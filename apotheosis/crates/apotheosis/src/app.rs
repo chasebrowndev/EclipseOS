@@ -62,6 +62,7 @@ mod a11y;
 mod automation;
 mod media;
 mod open;
+mod password;
 mod remote;
 mod serve;
 
@@ -339,6 +340,8 @@ pub(crate) struct App {
     remote_early: Vec<crate::attach::Event>,
     /// The askpass sheet, the session-kill confirm and the reconnect notice (T-22).
     remote_ui: remote::Remote,
+    /// `ec-secret-prompt` prompts: routed askpass requests and auto-opened pane prompts.
+    passwords: password::Passwords,
     render_tx: Option<mpsc::Sender<RenderMsg>>,
     render: Option<JoinHandle<()>>,
     /// Cell size in physical pixels.
@@ -528,6 +531,7 @@ pub(crate) fn run(
         adopt,
         remote_early: Vec::new(),
         remote_ui: remote::Remote::default(),
+        passwords: password::Passwords::default(),
         render_tx: None,
         render: None,
         cell: (1, 1),
@@ -1075,6 +1079,18 @@ impl App {
         if let Some(p) = self.ctl_path() {
             extra.push(("APOTHEOSIS_SOCKET".into(), p.as_os_str().to_owned()));
         }
+        // `security.sudo-askpass` (T-22 §3): this pane's child is armed, `sudo -A` asks
+        // through it. The variables are set before any user `shell.env`, which may unset
+        // nothing of ours but may add its own.
+        let sudo_arm = self.arm_pane(id);
+        if let Some((a, exe)) = &sudo_arm {
+            extra.push(("SUDO_ASKPASS".into(), exe.as_os_str().to_owned()));
+            extra.push((
+                apoth_proto::askpass::ENV_SOCK.into(),
+                a.socket().as_os_str().to_owned(),
+            ));
+            extra.push((apoth_proto::askpass::ENV_TOKEN.into(), a.token_hex().into()));
+        }
         extra.extend(
             self.settings
                 .shell
@@ -1104,6 +1120,18 @@ impl App {
             iutf8: true,
         })
         .map_err(|e| format!("cannot start the shell: {e}"))?;
+        if let Some((a, _)) = sudo_arm {
+            let tx = self.to_main.clone();
+            match a.start(
+                pty.pid(),
+                Box::new(move |e| {
+                    let _ = tx.send(MainMsg::Askpass(e));
+                }),
+            ) {
+                Ok(()) => tracing::debug!(pane = id, "askpass armed for the pane"),
+                Err(e) => tracing::warn!(pane = id, error = %e, "askpass not armed for the pane"),
+            }
+        }
         let master = pty
             .master_fd()
             .try_clone_to_owned()
@@ -2218,6 +2246,7 @@ impl App {
 
     fn set_focus(&mut self, focused: bool) {
         self.win_focused = focused;
+        self.password_focus(focused);
         self.a11y_window_focus(focused);
         if !focused {
             // Nothing held survives the keyboard leaving: no table, no half-typed sequence.
@@ -2412,6 +2441,10 @@ impl App {
         if pressed {
             p.shared.last_key_ns.store(now_ns(), Ordering::Release);
             self.typed();
+        }
+        // A password prompt is mapping for this pane: the key is its (T-22 §3).
+        if self.hold_key(focus, &buf[..n]) {
+            return;
         }
         self.send_bytes(focus, &buf[..n]);
     }
@@ -4623,6 +4656,8 @@ impl App {
             }
             MainMsg::Remote(e) => self.on_remote(e),
             MainMsg::Askpass(e) => self.on_askpass(e),
+            MainMsg::Credential(id, on) => self.on_credential(id, on),
+            MainMsg::Prompt(id, a) => self.on_prompt(id, a),
             MainMsg::Abyss(a) => self.on_abyss(a),
             MainMsg::Ctl(cid, r) => self.ctl_send(cid, &r),
             MainMsg::A11y(m) => self.on_a11y(m),
@@ -4632,6 +4667,7 @@ impl App {
                 if let Some(p) = self.panes.get_mut(&id) {
                     p.eof = true;
                 }
+                self.password_pane_gone(id);
                 self.maybe_finish(id);
             }
             MainMsg::RenderFailed(why) => {

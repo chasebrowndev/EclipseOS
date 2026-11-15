@@ -45,6 +45,7 @@ const GUARD: &[&str] = &["auto", "always", "never"];
 const PASTE_NL: &[&str] = &["as-is", "cr", "confirm"];
 const A11Y: &[&str] = &["auto", "on", "off"];
 const OFF_ON: &[&str] = &["off", "on"];
+const AUTO_OFF: &[&str] = &["auto", "off"];
 /// `remote.persist` and a domain's `persist` (T-22 §5).
 pub(crate) const PERSIST: &[&str] = &["off", "auto", "always"];
 const RESTORE: &[&str] = &["ask", "always", "never"];
@@ -276,6 +277,8 @@ rows! {
     ("render.max-fps", Ty::int(0, 1000), Dv::Int(0), Global, false, Live, Behaviour, "Frame cap; 0 follows the display."; "Frame cap", &[]),
     ("render.power-preference", Ty::Enum(POWER), Dv::Str("auto"), Global, false, Live, Behaviour, "GPU selection preference."; "GPU preference", &[]),
     ("security.remote-keys", Ty::Bool, Dv::Bool(false), Pane, true, Live, Security, "Deliver key-stream events to socket clients in remote panes."; "Remote key stream", &[]),
+    ("security.password-prompt", Ty::Enum(AUTO_OFF), Dv::Str("auto"), Global, false, Live, Security, "On Eclipse, open the system password prompt by itself when the focused pane's program you just ran reads a password (echo off, line mode); the answer is typed into the pane. off keeps typing in the terminal."; "Password prompt", &["password","sudo","secret","prompt"]),
+    ("security.sudo-askpass", Ty::Bool, Dv::Bool(false), Global, false, Live, Security, "Ask for sudo passwords through the terminal's password prompt (sudo -A in interactive shells); applies to panes started afterwards."; "sudo password prompt", &["sudo","askpass","password"]),
     ("security.sequence", MAP_STR_STRSET, Dv::Empty, Global, false, Live, Security, "Sequence policy overrides: class local remote, each allow, ask or deny."; "Sequence policy", &["osc52","consent"]),
     ("remote.clients", Ty::StringSet, Dv::List(&["ssh", "mosh-client", "telnet", "docker", "podman", "kubectl", "tmux", "screen"]), Global, false, Live, Security, "Foreground programs that mark a pane remote (extends the default)."; "Remote clients", &[]),
     ("remote.persist", Ty::Enum(PERSIST), Dv::Str("auto"), Global, false, Live, Behaviour, "Where an ssh domain's panes live: auto uses the host's session daemon (apoth proxy) when apoth is on its PATH and the local daemon otherwise, always requires the host's daemon, off never uses it. A domain's `persist` overrides it."; "Remote session daemon", &["ssh","persist","mux","proxy"]),

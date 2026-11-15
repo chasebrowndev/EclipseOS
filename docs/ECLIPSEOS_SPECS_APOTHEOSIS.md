@@ -1522,7 +1522,7 @@ placement. An entry that does not parse is dropped with a diagnostic. "Remember 
 <type>" in the picker writes one entry through the editor (§5). Both keys have GUI rows
 (Settings → Security → Links, "Open with").
 
-Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10). Remote additions: `remote.persist` enum `off|auto|always`, default `auto`,
+Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); `security.sudo-askpass` bool, default #false, global (T-22 §3); `security.password-prompt` enum `auto|off`, default `auto`, global (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10). Remote additions: `remote.persist` enum `off|auto|always`, default `auto`,
 global, override class `behaviour`, live (T-22 §4); a `domain`'s `persist` child
 overrides it for that domain (validated against the same values, and only beside an
 `ssh` destination). The key has a GUI row (Settings → Security → Remote, "Remote session
@@ -2642,6 +2642,32 @@ On Abyss, blur through `ext_background_effect_v1` only, with one region box cove
   a remote pane requires a confirmation per broadcast session, unless the pane's profile
   sets `security { remote-keys #true }`. Sensitivity raise and publishing are not
   changed by this rule (there is no reliable signal; T-22 §7).
+- **Password prompt (auto-open).** Owner decision, 2026-11-15. With
+  `security.password-prompt auto` (enum `auto|off`, default `auto`, global; GUI row
+  Settings → Security → "Password prompt"), Apotheosis on Abyss opens `ec-secret-prompt`'s
+  Terminal target (T-22 §3) by itself when all of these hold:
+  - the credential predicate goes from false to true in the **focused** pane of a window
+    that has the keyboard;
+  - the foreground job is a command the user ran: an OSC 133 command is running (`C` seen,
+    no `D`), or the pane's foreground process group (`tcgetpgrp`) is not the pane's shell;
+  - no askpass request is pending for the pane.
+  Rules for the prompt:
+  - It opens auto-focused. The answer is typed into the PTY followed by `\r`. Esc or
+    Cancel closes it, focus returns to the pane, and typing works as before.
+  - It opens once per read: the predicate must go false before it can open again. If the
+    predicate goes false while the prompt is up, the prompt closes and nothing is typed.
+  - It never opens for an unfocused window or pane, a background job, or a session-daemon
+    pane. Remote panes never show the predicate (above), so it never opens for them.
+  - Askpass wins. A request arriving for a pane that has an auto-opened prompt closes that
+    prompt first, so there is never a second prompt.
+  - Keys typed between the decision and the prompt taking the keyboard are held, not sent.
+    They are typed ahead of the answer, or alone on a cancel, so the line discipline
+    applies erase and kill to them as if they had been typed. An Enter among them answers
+    the read from the terminal, as typing would have, and closes the prompt. If the
+    keyboard has not left the window within 3 s, the held keys go to the PTY.
+  - Off Abyss, without `ec-secret-prompt`, or with `off`, nothing changes.
+  This uses the predicate locally only. The sensitivity raise and publishing above are
+  separate (S-05, P-04; their own owner-reviewed change).
 - Keystroke content is never logged anywhere, in any state.
 
 ## 6. Notifications, bell, progress
@@ -3201,8 +3227,63 @@ per `apoth ssh` session, following the SECURITY-30 template:
   socket, never logged, never stored; the sheet's text field is a protected field (not
   published, not accessible-readable).
 - Plain `ssh` (not through `apoth ssh`) gets no askpass from Apotheosis.
-On Abyss the sheet is superseded by `ec-secret-prompt` when that service is available;
-the token and ancestry checks are the same.
+- **sudo, opt-in.** With `security.sudo-askpass` on (bool, default `#false`, global,
+  restart-free: it applies to panes started after the change; GUI row Settings →
+  Security → "sudo password prompt"), the instance arms askpass for each local pane's
+  child when it spawns it. The pane is bound the same way an `apoth ssh` process is: same
+  token, same socket rules, ended when the pane's child exits. The pane gets
+  `SUDO_ASKPASS` (the `apoth` binary), `APOTHEOSIS_ASKPASS_SOCK` and
+  `APOTHEOSIS_ASKPASS_TOKEN` in its environment. Shell integration then aliases `sudo` to
+  `sudo -A` in interactive shells only, and only when that environment is present.
+  Scripts, and a `sudo` with no such environment, are untouched. A nested `apoth ssh` or
+  mux link replaces the variables for its own child. Session-daemon panes (T-21) are not
+  armed.
+
+**Routing on Abyss** (ADR 0053, amendment of 2026-11-15). When Abyss is detected (T-17
+§1) and `ec-secret-prompt` is on `PATH`, an accepted request of kind `secret` that is
+not a host-key question goes to `ec-secret-prompt`'s Terminal target instead of the
+sheet. The token and ancestry checks above run first and are unchanged. Host-key
+questions, `confirm` and `none` stay on the sheet. If the prompt cannot be started, the
+sheet is shown.
+- The instance spawns `ec-secret-prompt terminal` directly, so the prompt's parent is the
+  instance. It writes one JSON object of at most 64 KiB to the prompt's stdin and closes
+  it:
+  `{"v":1,"via","verified":{"window","tab","pane","pane_id","in_foreground","ancestry",
+  "pid","exe","uid","euid"},"unverified":{"argv","cwd","prompt","host"}}`.
+  - *Verified* fields are kernel facts the instance read.
+    - `window`, `tab` and `pane` are the titles as the window shows them.
+    - `pane_id` is the pane, or `null` when the armed process is a mux link with no
+      pane.
+    - `in_foreground` is whether the requester's process group is the pane's
+      `tcgetpgrp`.
+    - `ancestry` is the pid chain from the requester to the armed process.
+    - `pid`, `exe` (`null` when the link is unreadable, as for setuid `sudo`), `uid` and
+      `euid` are the requester's. The requester is the askpass client's parent, which is
+      the program that ran it.
+  - *Unverified* fields are what the program supplied. These are its argv from
+    `/proc/<pid>/cmdline` (at most 64 entries and 4096 bytes), its cwd (`null` when
+    unreadable), the prompt (at most 4096 bytes), and the host an `apoth ssh` named
+    (`null` for a pane arming).
+  - Strings are UTF-8 with invalid bytes replaced. The prompt renders them as program
+    text (T-18 §6).
+  - Argv is never logged, persisted or audited.
+- The prompt marks the verified block as verified only when its parent is a live
+  Apotheosis. It holds a pidfd on `getppid()`, reads `/proc/<ppid>/exe` and compares it
+  with `/usr/bin/apotheosis` (in debug builds, an `apotheosis` beside its own binary also
+  passes), and then confirms the pidfd is not yet readable. Otherwise it shows the same
+  facts in the unverified block, with a note that they did not come from Apotheosis.
+- The prompt answers on stdout: one status byte (`0` answered, `1` cancelled), then for
+  `0` the secret (at most 1024 bytes, no newline), then EOF. EOF with no byte means
+  cancelled. The instance forwards the answer to the waiting `apoth askpass` over the
+  armed socket, and it is never stored. When the request is withdrawn (the client or the
+  armed process exits), the instance kills the prompt by the pid it spawned.
+- The prompt shows one `*` per typed character. It opens focused because the user's own
+  command asked for it. The only triggers are an askpass request and the T-17 §5
+  auto-open. `via` (`askpass` or `pty`) tells the prompt which one it is. For `pty` the
+  requester is the pane's foreground group leader, the ancestry ends at the pane's
+  child, `in_foreground` is true by construction, and the prompt text is the cursor's row
+  up to the cursor. That answer is typed into the pane (T-17 §5), not relayed to an
+  askpass client.
 
 ## 4. `SshDomain`
 `domain "name" { ssh "user@host"; persist "off|auto|always" }` makes spawn/split in that

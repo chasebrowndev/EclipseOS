@@ -757,13 +757,15 @@ impl App {
             ));
         }
         let pid = c.peer.pid;
+        let pane = c.peer.facts.pane;
         let dir = self
             .ctl_path()
             .and_then(std::path::Path::parent)
             .ok_or_else(|| err(ErrorCode::Internal, "no socket directory"))?
             .to_owned();
         let prep = crate::askpass::Prepared::new(&dir, host)
-            .map_err(|e| WireError::new(ErrorCode::Internal, format!("cannot arm askpass: {e}")))?;
+            .map_err(|e| WireError::new(ErrorCode::Internal, format!("cannot arm askpass: {e}")))?
+            .in_pane(pane);
         let reply = apoth_proto::results::AskpassArmReply {
             socket: prep.socket().to_string_lossy().into_owned(),
             token: prep.token_hex(),

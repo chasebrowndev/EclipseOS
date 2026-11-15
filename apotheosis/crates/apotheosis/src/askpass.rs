@@ -57,6 +57,16 @@ impl Secret {
         true
     }
 
+    /// Append raw bytes (a relayed answer, held keystrokes); false (and unchanged) past the
+    /// budget.
+    pub(crate) fn push_bytes(&mut self, b: &[u8]) -> bool {
+        if self.0.len() + b.len() > MAX_SECRET {
+            return false;
+        }
+        self.0.extend_from_slice(b);
+        true
+    }
+
     /// Drop the last character.
     pub(crate) fn pop(&mut self) {
         let Ok(s) = std::str::from_utf8(&self.0) else {
@@ -73,7 +83,7 @@ impl Secret {
         std::str::from_utf8(&self.0).map_or(0, |s| s.chars().count())
     }
 
-    fn bytes(&self) -> &[u8] {
+    pub(crate) fn bytes(&self) -> &[u8] {
         &self.0
     }
 }
@@ -111,6 +121,12 @@ pub(crate) struct Ask {
     /// The remote's prompt: program text, sanitised by the sheet.
     pub(crate) prompt: String,
     pub(crate) answer: mpsc::Sender<Answer>,
+    /// The pane the channel was armed in (`None`: a mux link's ssh).
+    pub(crate) pane: Option<crate::pane::PaneKey>,
+    /// The requester: the askpass client's parent, the program that ran it (ssh, sudo).
+    pub(crate) pid: i32,
+    /// The armed process (the requester's ancestry ends there).
+    pub(crate) armed: i32,
 }
 
 /// What the broker tells main.
@@ -137,6 +153,7 @@ pub(crate) struct Prepared {
     path: PathBuf,
     token: [u8; TOKEN_BYTES],
     host: String,
+    pane: Option<crate::pane::PaneKey>,
 }
 
 impl std::fmt::Debug for Prepared {
@@ -148,6 +165,8 @@ impl std::fmt::Debug for Prepared {
 impl Drop for Prepared {
     fn drop(&mut self) {
         wipe(&mut self.token);
+        // Never started (the child did not spawn) or done serving: the socket goes too.
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 
@@ -172,7 +191,14 @@ impl Prepared {
             path,
             token: random::<TOKEN_BYTES>()?,
             host: host.chars().take(wire::MAX_HOST).collect(),
+            pane: None,
         })
+    }
+
+    /// The pane this channel serves (shown with the request, checked for a pending ask).
+    pub(crate) fn in_pane(mut self, pane: Option<crate::pane::PaneKey>) -> Prepared {
+        self.pane = pane;
+        self
     }
 
     pub(crate) fn socket(&self) -> &Path {
@@ -332,6 +358,9 @@ fn handle(p: &Prepared, armed: i32, pidfd: &OwnedFd, s: UnixStream, sink: &Sink)
         kind: r.kind,
         prompt: String::from_utf8_lossy(r.prompt).into_owned(),
         answer: tx,
+        pane: p.pane,
+        pid: ppid(peer).filter(|&pp| pp > 1).unwrap_or(peer),
+        armed,
     }));
     drop(req);
     // Wait for the sheet; refuse every other request meanwhile (one sheet at a time).

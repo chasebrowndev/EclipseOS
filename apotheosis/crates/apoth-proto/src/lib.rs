@@ -26,6 +26,7 @@ pub mod method;
 pub mod mux;
 pub mod params;
 pub mod results;
+pub mod secret_prompt;
 
 pub use caps::{Cap, Class};
 pub use error::{

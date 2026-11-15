@@ -28,3 +28,9 @@ ec-ui = { path = "../ec-ui" }
 ec-services = { path = "../ec-services" }
 # The pairing door on the session bus. Same version ec-services pins.
 zbus = "5.19"
+# The Terminal target's request on stdin (ADR 0053 amendment, T-22 §3). Same versions
+# the workspace already locks.
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }
+# pidfd on the parent for the Terminal target's "verified" check.
+rustix = { version = "1", features = ["std", "process", "event"] }

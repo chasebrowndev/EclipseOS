@@ -441,7 +441,7 @@ fn spawn_ssh(
 }
 
 /// The `apoth` binary next to ours, else by `PATH`.
-fn apoth_exe() -> Option<PathBuf> {
+pub(crate) fn apoth_exe() -> Option<PathBuf> {
     let sib = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|d| d.join("apoth")))

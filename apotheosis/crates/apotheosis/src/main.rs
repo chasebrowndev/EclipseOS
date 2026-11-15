@@ -29,6 +29,7 @@ mod reload;
 mod render;
 mod rules;
 mod search;
+mod secret_prompt;
 mod security;
 mod server;
 mod settings;

@@ -82,6 +82,9 @@ pub(crate) struct PaneShared {
     pub(crate) at_prompt: AtomicBool,
     /// Mode 2004 is set and a prompt mark followed it (T-18 §4 "in force"); stored by io.
     pub(crate) bracketed_ok: AtomicBool,
+    /// An OSC 133 command is running (`C` seen, no `D` yet); stored by io. One of the
+    /// "the user just ran it" tests of the password prompt (T-17 §5).
+    pub(crate) running: AtomicBool,
 }
 
 impl PaneShared {
@@ -102,6 +105,7 @@ impl PaneShared {
             deny: AtomicU32::new(0),
             at_prompt: AtomicBool::new(false),
             bracketed_ok: AtomicBool::new(false),
+            running: AtomicBool::new(false),
         }
     }
 
@@ -296,6 +300,12 @@ pub(crate) enum MainMsg {
     Remote(crate::attach::Event),
     /// The askpass broker: a sheet to show or withdraw (T-22 §3; never carries a secret).
     Askpass(crate::askpass::Event),
+    /// The pane's PTY entered (`true`) or left the credential state, ECHO off and ICANON
+    /// on (ADR 0115), sampled by its io thread on output-idle edges.
+    Credential(PaneKey, bool),
+    /// An `ec-secret-prompt` ended (T-22 §3). The answer is `Some` for a pane prompt (main
+    /// types it); an askpass prompt's answer already went to its client.
+    Prompt(u64, Option<crate::askpass::Answer>),
     Loaded(
         Box<(
             apoth_config::reload::Reloader,
@@ -433,12 +443,20 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
     }
     let mut st = IoState::default();
     let mut eof = false;
+    // The credential predicate (ADR 0115), local PTYs only: sampled when output goes idle
+    // and once more a moment later (a program may print its prompt before it turns echo
+    // off). Only a change is sent.
+    let mut cred = Credential::default();
     while !eof {
         let deadline = if st.group_watch {
             let recheck = Instant::now() + GROUP_RECHECK;
             Some(st.deadline.map_or(recheck, |d| d.min(recheck)))
         } else {
             st.deadline
+        };
+        let deadline = match (deadline, cred.recheck) {
+            (Some(d), Some(r)) => Some(d.min(r)),
+            (d, r) => d.or(r),
         };
         let timeout = deadline.map(|d| {
             let left = d.saturating_duration_since(Instant::now());
@@ -555,6 +573,10 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
             }
         }
         if !readable {
+            if cred.recheck.is_some_and(|r| Instant::now() >= r) {
+                cred.recheck = None;
+                cred.sample(&master, id, &to_main);
+            }
             // Timeout: a mode 2026 hold or a half-received image transfer may have expired.
             st = io.step(|t| t.tick(Instant::now()));
             continue;
@@ -597,8 +619,46 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
         {
             h.write(&shared.lock_io());
         }
+        if total > 0 && remote.is_none() && !eof {
+            cred.sample(&master, id, &to_main);
+            cred.recheck = Some(Instant::now() + CREDENTIAL_RECHECK);
+        }
     }
     let _ = to_main.send(MainMsg::Eof(id));
+}
+
+/// The second look after output goes idle.
+const CREDENTIAL_RECHECK: Duration = Duration::from_millis(50);
+
+/// The io thread's view of the credential predicate.
+#[derive(Default)]
+struct Credential {
+    on: bool,
+    recheck: Option<Instant>,
+}
+
+impl Credential {
+    /// Read the line discipline and report a change. No allocation; one syscall.
+    fn sample(
+        &mut self,
+        master: &OwnedFd,
+        id: PaneKey,
+        to_main: &calloop::channel::Sender<MainMsg>,
+    ) {
+        let Ok(t) = rustix::termios::tcgetattr(master) else {
+            return;
+        };
+        let lm = t.local_modes;
+        let on = apoth_pty::TermiosState {
+            echo: lm.contains(rustix::termios::LocalModes::ECHO),
+            icanon: lm.contains(rustix::termios::LocalModes::ICANON),
+        }
+        .is_credential();
+        if on != self.on {
+            self.on = on;
+            let _ = to_main.send(MainMsg::Credential(id, on));
+        }
+    }
 }
 
 impl Io<'_> {
@@ -692,6 +752,12 @@ impl Io<'_> {
                 self.watch.borrow_mut().clear();
             }
             shared.at_prompt.store(t.at_prompt(), Ordering::Release);
+            shared.running.store(
+                t.blocks()
+                    .last()
+                    .is_some_and(|b| b.state == apoth_term::shell::BlockState::Running),
+                Ordering::Release,
+            );
             shared
                 .bracketed_ok
                 .store(t.bracketed_in_force(), Ordering::Release);

@@ -10,6 +10,7 @@
 
 pub mod app;
 pub mod service;
+pub mod terminal;
 
 use std::fmt;
 
@@ -66,6 +67,10 @@ pub enum Target {
     ApiKey {
         account: String,
     },
+    /// A password a program in an Apotheosis pane asks for (ADR 0053 amendment of
+    /// 2026-11-15). The request comes on stdin, never argv; the answer goes back on
+    /// stdout. `Debug` of the model prints counts only.
+    Terminal(Box<terminal::TerminalAsk>),
 }
 
 /// Longest account name (ADR 0077): 1–32 of `[A-Za-z0-9_-]`.
@@ -89,7 +94,8 @@ const PIN_MAX: usize = 16;
 const PASSKEY_DIGITS: usize = 6;
 
 const USAGE: &str = "usage: ec-secret-prompt wifi <ssid> | bt <addr> pin|passkey|authorize \
-                     | bt <addr> confirm <passkey> | bt <addr> show <code> | api-key <account>";
+                     | bt <addr> confirm <passkey> | bt <addr> show <code> | api-key <account> \
+                     | terminal (request on stdin)";
 
 /// One to six ASCII digits, as a passkey.
 fn passkey(value: &str) -> Option<u32> {
@@ -189,6 +195,7 @@ impl Target {
                 code: Code::Show(_), ..
             } => "Pairing code",
             Target::ApiKey { .. } => "Add API key",
+            Target::Terminal(_) => "Terminal password",
             _ => "Enter password",
         }
     }
@@ -213,6 +220,7 @@ impl Target {
                 code: Code::Show(_), ..
             } => "Type this on the device",
             Target::ApiKey { .. } => "API key",
+            Target::Terminal(_) => "Terminal password",
         }
     }
 
@@ -221,6 +229,7 @@ impl Target {
             Target::Wifi { ssid } => ssid,
             Target::Bluetooth { addr, .. } => addr,
             Target::ApiKey { account } => account,
+            Target::Terminal(t) => t.program(),
         }
     }
 
@@ -229,6 +238,7 @@ impl Target {
     pub fn heading(&self) -> String {
         match self {
             Target::ApiKey { account } => format!("Add API key for {account}"),
+            Target::Terminal(t) => format!("{} asks for a password", t.program()),
             other => other.name().to_owned(),
         }
     }
@@ -238,6 +248,7 @@ impl Target {
         match self {
             Target::Wifi { .. } => "Join",
             Target::ApiKey { .. } => "Save",
+            Target::Terminal(_) => "Send",
             Target::Bluetooth {
                 code: Code::Show(_), ..
             } => "Done",
@@ -251,6 +262,7 @@ impl Target {
             Target::Wifi { .. } => "Joining…",
             Target::Bluetooth { .. } => "Pairing…",
             Target::ApiKey { .. } => "Saving…",
+            Target::Terminal(_) => "Sending…",
         }
     }
 
@@ -269,6 +281,7 @@ impl Target {
                 code: Code::Show(_), ..
             } => "Then press Enter on the device.",
             Target::ApiKey { .. } => "Kept by the secret broker only.",
+            Target::Terminal(_) => "Sent to the program, never stored.",
             _ => "Sent to the service, never stored.",
         }
     }
@@ -279,6 +292,7 @@ impl Target {
         match self {
             Target::Wifi { .. } => "8 to 63 characters",
             Target::ApiKey { .. } => "paste the key",
+            Target::Terminal(_) => "password",
             Target::Bluetooth { code: Code::Pin, .. } => "up to 16 characters",
             Target::Bluetooth {
                 code: Code::Passkey, ..
@@ -294,6 +308,7 @@ impl Target {
         match self {
             Target::Wifi { .. } => true,
             Target::ApiKey { .. } => typed.len() <= KEY_MAX,
+            Target::Terminal(_) => typed.len() <= terminal::MAX_SECRET,
             Target::Bluetooth { code: Code::Pin, .. } => typed.chars().count() <= PIN_MAX,
             Target::Bluetooth {
                 code: Code::Passkey, ..
@@ -310,6 +325,8 @@ impl Target {
             // A paste often carries a stray space or newline; the key is sent
             // trimmed, so only what is left counts.
             Target::ApiKey { .. } => !typed.trim().is_empty(),
+            // An empty password is the program's to refuse, not ours.
+            Target::Terminal(_) => true,
             Target::Bluetooth {
                 code: Code::Pin | Code::Passkey,
                 ..

@@ -62,10 +62,18 @@ impl Remote {
     pub(super) fn asking(&self) -> bool {
         self.sheet.is_some() || self.kill_confirm
     }
+
+    /// An askpass request for `pane` is on the sheet or queued for it.
+    pub(super) fn has_ask_for(&self, pane: PaneKey) -> bool {
+        self.sheet
+            .as_ref()
+            .is_some_and(|s| s.ask.pane == Some(pane))
+            || self.queue.iter().any(|a| a.pane == Some(pane))
+    }
 }
 
 /// OpenSSH's unknown-host question (asked through askpass as an echoed prompt).
-fn is_hostkey_prompt(p: &str) -> bool {
+pub(super) fn is_hostkey_prompt(p: &str) -> bool {
     p.contains("fingerprint") && p.contains("(yes/no")
 }
 
@@ -291,6 +299,10 @@ impl App {
     pub(super) fn on_askpass(&mut self, e: Event) {
         match e {
             Event::Ask(a) => {
+                // On Abyss the secret prompt answers it instead of the sheet (T-22 §3).
+                let Err(a) = self.route_ask(a) else {
+                    return;
+                };
                 tracing::info!(request = a.id, "askpass sheet requested");
                 if self.remote_ui.sheet.is_none() && self.started {
                     self.show_ask(a);
@@ -301,6 +313,9 @@ impl App {
                 }
             }
             Event::Withdrawn(id) => {
+                if self.withdraw_routed(id) {
+                    return;
+                }
                 self.remote_ui.queue.retain(|a| a.id != id);
                 if self
                     .remote_ui
@@ -557,6 +572,9 @@ mod tests {
                 kind,
                 prompt: prompt.into(),
                 answer: tx,
+                pane: None,
+                pid: 1,
+                armed: 1,
             },
             field: Secret::new(),
         }

@@ -113,6 +113,12 @@ pub(crate) struct Settings {
     pub(crate) graphics_file: bool,
     /// `sessions.server` is `on`: windows are views of the session daemon (T-21 §3).
     pub(crate) server_mode: bool,
+    /// `security.sudo-askpass`: arm askpass for every local pane so `sudo -A` asks through
+    /// it (T-22 §3). Read when a pane starts.
+    pub(crate) sudo_askpass: bool,
+    /// `security.password-prompt` is `auto` (T-17 §5): a getpass-style read in the focused
+    /// pane opens `ec-secret-prompt` on Abyss.
+    pub(crate) password_prompt: bool,
     /// `-o key=value` pairs and diagnostics counts, for the startup log line.
     pub(crate) diagnostics: usize,
 }
@@ -645,6 +651,8 @@ impl Settings {
             selection: (None, (0, 0, 0)),
             color_keys: ColorKeys::from_config(c),
             theme_system: matches!(c.str("theme"), None | Some("system")),
+            sudo_askpass: c.bool("security.sudo-askpass"),
+            password_prompt: c.str("security.password-prompt") != Some("off"),
             initial_size: (
                 initial_dim(c, "window.rows", INITIAL_ROWS),
                 initial_dim(c, "window.columns", INITIAL_COLS),
