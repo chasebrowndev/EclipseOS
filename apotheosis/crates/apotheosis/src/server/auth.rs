@@ -86,6 +86,13 @@ pub(crate) fn may_detach_all(peer: &PeerFacts) -> bool {
     !peer.agent
 }
 
+/// `KillSession` (`layout` class, like `pane.close` for every pane, T-12 §4): any same-uid,
+/// non-agent peer, as for `DetachAll` — the tmux model (`kill-session` from any client).
+#[must_use]
+pub(crate) fn may_kill_session(peer: &PeerFacts) -> bool {
+    !peer.agent
+}
+
 /// `Spawn` from an attached view: the pre-granted interface is the user's own terminal
 /// opening a tab (class `spawn`, T-12 §4); nothing else reaches it.
 #[must_use]
@@ -154,6 +161,9 @@ mod tests {
     fn listing_detach_and_spawn_rules() {
         assert!(may_detach_all(&facts(Some(1), false, false)));
         assert!(!may_detach_all(&facts(None, true, false)));
+        assert!(may_kill_session(&facts(Some(1), false, false)));
+        assert!(may_kill_session(&facts(None, false, true)));
+        assert!(!may_kill_session(&facts(None, true, false)));
         assert!(may_spawn(Grant::Full));
         assert!(!may_spawn(Grant::ReadOnly));
         assert!(!may_spawn(Grant::None("x")));

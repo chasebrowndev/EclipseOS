@@ -921,6 +921,14 @@ fn profile_key(cx: &mut Cx, n: &KdlNode, path: &str, p: &mut ProfileDecl, _out: 
     }
 }
 
+/// An ssh destination the config may name (same rule as `apoth_pty::ssh::valid_destination`;
+/// this crate stays I/O-free and does not depend on it).
+fn valid_ssh_destination(s: &str) -> bool {
+    (1..=255).contains(&s.len())
+        && !s.starts_with('-')
+        && !s.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
 pub(crate) fn parse_domain(cx: &mut Cx, node: &KdlNode, out: &mut Out) {
     let Some(name) = pos_str(cx, node, "domain name") else {
         return;
@@ -944,8 +952,24 @@ pub(crate) fn parse_domain(cx: &mut Cx, node: &KdlNode, out: &mut Out) {
                     Some(s) => d.security = s,
                     None => ok = false,
                 },
+                "ssh" => match single_str_child(cx, n) {
+                    Some(h) if valid_ssh_destination(h) => d.ssh = Some(h.to_owned()),
+                    Some(_) => {
+                        cx.err(
+                            n.span().offset(),
+                            None,
+                            "`ssh` takes a destination: 1-255 bytes, no leading `-`, no spaces",
+                        );
+                        ok = false;
+                    }
+                    None => ok = false,
+                },
+                "mux" => match single_bool_child(cx, n) {
+                    Some(b) => d.mux = Some(b),
+                    None => ok = false,
+                },
                 other => {
-                    let sug = suggest(other, &["remote", "security"]);
+                    let sug = suggest(other, &["remote", "security", "ssh", "mux"]);
                     cx.err_sug(
                         n.span().offset(),
                         None,
@@ -956,6 +980,14 @@ pub(crate) fn parse_domain(cx: &mut Cx, node: &KdlNode, out: &mut Out) {
                 }
             }
         }
+    }
+    if d.mux == Some(true) && d.ssh.is_none() {
+        cx.err(
+            node.span().offset(),
+            None,
+            "`mux #true` needs an `ssh` destination in the same domain",
+        );
+        ok = false;
     }
     if !ok {
         return;

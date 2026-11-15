@@ -220,6 +220,41 @@ fn golden_every_request_kind() {
         r#"{"id":30,"method":"media.attach","params":{}}"#,
         Params::MediaAttach(Empty {}),
     );
+    golden(
+        r#"{"id":31,"method":"askpass.arm","params":{"host":"me@box"}}"#,
+        Params::AskpassArm(AskpassArm {
+            host: "me@box".into(),
+        }),
+    );
+}
+
+#[test]
+fn askpass_arm_is_bounded_and_there_is_no_askpass_request_method() {
+    for bad in [
+        r#"{"id":1,"method":"askpass.arm","params":{"host":""}}"#,
+        r#"{"id":1,"method":"askpass.arm","params":{"host":"a\u001bb"}}"#,
+    ] {
+        assert_eq!(rej(bad).1, ErrorCode::BadRequest, "{bad}");
+    }
+    let long = format!(
+        r#"{{"id":1,"method":"askpass.arm","params":{{"host":"{}"}}}}"#,
+        "h".repeat(256)
+    );
+    assert_eq!(rej(&long).1, ErrorCode::BadRequest);
+    // The secret never travels on this socket: no method asks for or answers one.
+    for n in [
+        "askpass",
+        "askpass.request",
+        "askpass.answer",
+        "askpass.secret",
+    ] {
+        assert!(Method::parse(n).is_none(), "{n}");
+    }
+    let r = AskpassArmReply {
+        socket: "/run/x.sock".into(),
+        token: "f".repeat(64),
+    };
+    assert!(!format!("{r:?}").contains("ffff"));
 }
 
 #[test]
@@ -235,8 +270,8 @@ fn media_window_params_are_bounded() {
 
 #[test]
 fn every_method_has_a_golden_request() {
-    // 30 golden cases above, one per table row.
-    assert_eq!(METHODS.len(), 30);
+    // 31 golden cases above, one per table row.
+    assert_eq!(METHODS.len(), 31);
 }
 
 #[test]

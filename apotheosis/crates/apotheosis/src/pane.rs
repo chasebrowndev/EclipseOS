@@ -294,6 +294,8 @@ pub(crate) enum MainMsg {
     Open(crate::app::OpenMsg),
     /// The session daemon's stream (T-21 §3).
     Remote(crate::attach::Event),
+    /// The askpass broker: a sheet to show or withdraw (T-22 §3; never carries a secret).
+    Askpass(crate::askpass::Event),
     Loaded(
         Box<(
             apoth_config::reload::Reloader,

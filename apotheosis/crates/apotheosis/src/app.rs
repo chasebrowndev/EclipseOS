@@ -62,6 +62,7 @@ mod a11y;
 mod automation;
 mod media;
 mod open;
+mod remote;
 mod serve;
 
 pub(crate) use a11y::A11yMsg;
@@ -222,6 +223,8 @@ struct Pane {
     cwd: Option<PathBuf>,
     /// The host an OSC 7 directory named when it was not this one (its paths are remote).
     cwd_host: Option<String>,
+    /// The OSC 7 path when it names another host (an ssh domain's new panes start there).
+    cwd_remote: Option<String>,
     /// How the child ended, once reaped.
     exit: Option<ExitStatus>,
     eof: bool,
@@ -334,6 +337,8 @@ pub(crate) struct App {
     adopt: Option<crate::attach::NewPane>,
     /// Stream events that came before the window: handled once it exists.
     remote_early: Vec<crate::attach::Event>,
+    /// The askpass sheet, the session-kill confirm and the reconnect notice (T-22).
+    remote_ui: remote::Remote,
     render_tx: Option<mpsc::Sender<RenderMsg>>,
     render: Option<JoinHandle<()>>,
     /// Cell size in physical pixels.
@@ -437,6 +442,9 @@ struct PendingPaste {
 pub(crate) struct FirstPane {
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) title: Option<String>,
+    /// An ssh domain without `mux` (T-22 §4): every shell of the window is
+    /// `apoth ssh DEST` through the shared master (kept for the window's lifetime).
+    pub(crate) ssh_domain: Option<String>,
 }
 
 /// Run to completion; the process exit code.
@@ -445,7 +453,7 @@ pub(crate) fn run(
     command: Option<Vec<String>>,
     app_id: Option<String>,
     first: FirstPane,
-    attach: Option<crate::attach::Handshake>,
+    attach: Option<crate::attach::Attach>,
 ) -> Result<i32, String> {
     let Startup {
         settings,
@@ -519,6 +527,7 @@ pub(crate) fn run(
         remote,
         adopt,
         remote_early: Vec::new(),
+        remote_ui: remote::Remote::default(),
         render_tx: None,
         render: None,
         cell: (1, 1),
@@ -600,6 +609,7 @@ pub(crate) fn run(
     for e in std::mem::take(&mut app.remote_early) {
         app.on_remote(e);
     }
+    app.remote_started();
     event_loop
         .run(None, &mut app, |_| {})
         .map_err(|e| e.to_string())?;
@@ -749,6 +759,8 @@ const HANDLED: &[&str] = &[
     "selection.clear",
     "selection.copy",
     "selection.select-all",
+    "session.detach",
+    "session.kill",
     "tab.close",
     "tab.close-others",
     "tab.last",
@@ -1008,6 +1020,10 @@ impl App {
         if self.remote.is_some() {
             return self.spawn_remote(id, (rows, cols), argv, cwd);
         }
+        let argv = match (&self.first.ssh_domain, argv) {
+            (Some(dest), None) => Some(self.ssh_domain_argv(dest)),
+            (_, a) => a,
+        };
         let cell = self.cell;
         let mut tc = self.settings.term.clone();
         tc.rows = rows;
@@ -1135,6 +1151,7 @@ impl App {
             title: String::new(),
             cwd: None,
             cwd_host: None,
+            cwd_remote: None,
             exit: None,
             eof: false,
             remote: None,
@@ -1212,6 +1229,7 @@ impl App {
             title: String::new(),
             cwd: None,
             cwd_host: None,
+            cwd_remote: None,
             exit: None,
             eof: false,
             remote: Some(RemotePane {
@@ -1258,6 +1276,37 @@ impl App {
                     link.resize(sid, want, self.cell);
                 }
             }
+            Event::FirstBound { sid } => {
+                // A mux domain's window: its first pane is now the server's pane `sid`.
+                let id = self.first_pane;
+                let Some(link) = self.remote.as_mut() else {
+                    return;
+                };
+                link.sids.insert(sid, id);
+                if let Some(p) = self.panes.get_mut(&id) {
+                    if let Some(r) = p.remote.as_mut() {
+                        r.sid = Some(sid);
+                        let early = std::mem::take(&mut r.early);
+                        if !early.is_empty() {
+                            link.input(sid, &early);
+                        }
+                    }
+                    link.resize(sid, p.pending.unwrap_or(p.dims), self.cell);
+                }
+            }
+            Event::Reconnecting(down) => {
+                if !down {
+                    // The server's sizes may be stale: every pane says its size again.
+                    if let Some(link) = self.remote.as_ref() {
+                        for p in self.panes.values() {
+                            if let Some(sid) = p.remote.as_ref().and_then(|r| r.sid) {
+                                link.resize(sid, p.pending.unwrap_or(p.dims), self.cell);
+                            }
+                        }
+                    }
+                }
+                self.link_state(down);
+            }
             Event::SpawnFailed { token } => {
                 tracing::warn!(pane = token, "the session server could not start a pane");
                 if let Some(p) = self.panes.get_mut(&token) {
@@ -1293,6 +1342,26 @@ impl App {
                 self.begin_close();
             }
         }
+    }
+
+    /// An ssh domain's shell (T-22 §4): `apoth ssh [--cwd DIR] DEST`, the directory the
+    /// focused pane last reported over OSC 7 on that host.
+    fn ssh_domain_argv(&self, dest: &str) -> Vec<String> {
+        let apoth = std::env::current_exe()
+            .ok()
+            .and_then(|e| Some(e.parent()?.join("apoth")))
+            .filter(|p| p.is_file())
+            .map_or_else(|| "apoth".to_owned(), |p| p.to_string_lossy().into_owned());
+        let mut v = vec![apoth, "ssh".to_owned()];
+        if let Some(d) = self
+            .focused()
+            .and_then(|f| self.panes.get(&f))
+            .and_then(|p| p.cwd_remote.clone())
+        {
+            v.extend(["--cwd".to_owned(), d]);
+        }
+        v.push(dest.to_owned());
+        v
     }
 
     /// The working directory a new pane inherits (T-13 §6): the focused pane's OSC 7
@@ -2181,6 +2250,7 @@ impl App {
                 return;
             }
             if self.palette.is_some()
+                || self.remote_ui.asking()
                 || self.paste.is_some()
                 || self.nav.hints.is_some()
                 || self.nav.consent.is_some()
@@ -2190,6 +2260,16 @@ impl App {
             {
                 return;
             }
+        }
+        if self.remote_ui.asking() {
+            // The askpass sheet or the session-kill confirm owns the keyboard (T-22 §3).
+            if pressed {
+                if !repeat {
+                    self.consumed.push(Consumed::plain(key));
+                }
+                self.remote_key(&look, repeat);
+            }
+            return;
         }
         if self.nav.consent.is_some() || self.nav.open.is_some() || self.auto.confirm.is_some() {
             // A consent, link-confirm or rule bar owns the keyboard until answered (T-18 §3).
@@ -2913,6 +2993,8 @@ impl App {
             A::VarSet { name, value, scope } => self.var_action(&name, Some(&value), scope),
             A::VarUnset { name, scope } => self.var_action(&name, None, scope),
             A::AppQuit { force: _ } | A::WindowClose {} => self.begin_close(),
+            A::SessionDetach {} => self.session_detach(),
+            A::SessionKill {} => self.session_kill(),
             A::AppIgnore {} => {}
             other => {
                 tracing::debug!(action = other.id(), "action not available yet");
@@ -3763,13 +3845,15 @@ impl App {
     /// A click on button `i` of the bar or sheet, whichever question is up. The input guard
     /// was checked by the caller; Return and Space never reach here.
     fn bar_click_answer(&mut self, i: usize) {
-        if self.paste.is_some() {
+        if self.remote_ui.asking() {
+            self.remote_click(i);
+        } else if self.paste.is_some() {
             self.apply_paste_answer(i);
         } else if self.nav.consent.is_some() || self.nav.open.is_some() {
             self.apply_nav_answer(i);
         } else if self.auto.confirm.is_some() {
             self.answer_rule(Some(i));
-        } else {
+        } else if !self.dismiss_reconnect() {
             // The error bar and the restart notice have one button: dismiss.
             self.bar_dismissed = true;
             self.restart_keys.clear();
@@ -4363,7 +4447,8 @@ impl App {
                 cursor_end,
             } => {
                 // A paste confirm or the palette owns the keyboard: no composition shows.
-                let owned = self.paste.is_some() || self.palette.is_some();
+                let owned =
+                    self.paste.is_some() || self.palette.is_some() || self.remote_ui.asking();
                 let text = text.filter(|_| !owned);
                 let p = text.filter(|t| !t.0.is_empty()).map(|t| Preedit {
                     text: t.0,
@@ -4373,6 +4458,10 @@ impl App {
                 self.view(ViewCmd::Preedit(p));
             }
             ImeEvent::Commit(t) => {
+                if self.remote_ui.asking() {
+                    // A remote question owns the keyboard; composed text is not taken there.
+                    return;
+                }
                 if self.palette.is_some() {
                     // Composed text goes into the palette query (never logged).
                     if let Some(p) = self.palette.as_mut()
@@ -4530,6 +4619,7 @@ impl App {
                 }
             }
             MainMsg::Remote(e) => self.on_remote(e),
+            MainMsg::Askpass(e) => self.on_askpass(e),
             MainMsg::Abyss(a) => self.on_abyss(a),
             MainMsg::Ctl(cid, r) => self.ctl_send(cid, &r),
             MainMsg::A11y(m) => self.on_a11y(m),
@@ -4616,13 +4706,20 @@ impl App {
             let path = crate::ctl::osc7::local_path(&uri, &self.hostname);
             if let Some(p) = self.panes.get_mut(&id) {
                 p.cwd = path.clone();
+                let host = uri
+                    .strip_prefix("file://")
+                    .and_then(|r| r.split('/').next())
+                    .filter(|h| !h.is_empty());
                 p.cwd_host = if path.is_some() {
                     None
                 } else {
-                    uri.strip_prefix("file://")
-                        .and_then(|r| r.split('/').next())
-                        .filter(|h| !h.is_empty())
-                        .map(crate::open::clean_host)
+                    host.map(crate::open::clean_host)
+                };
+                // The other host's path, decoded as that host would (T-22 §4 cwd inheritance).
+                p.cwd_remote = match (&path, host) {
+                    (None, Some(h)) => crate::ctl::osc7::local_path(&uri, h)
+                        .and_then(|p| p.into_os_string().into_string().ok()),
+                    _ => None,
                 };
             }
             let mut ev = Event::new(EventKind::CwdChanged, Cause::Sequence);
@@ -5105,7 +5202,9 @@ impl App {
     /// Rebuild the overlay from the current errors and restart keys, tell the render thread,
     /// and make room for it (or give the room back).
     fn refresh_bar(&mut self) {
-        let spec = if let Some(pp) = &self.paste {
+        let spec = if let Some(b) = self.remote_bar() {
+            Some(b)
+        } else if let Some(pp) = &self.paste {
             Some(apoth_ui::bar::BarSpec::paste_confirm(
                 self.windows()[0],
                 pp.stats.bytes,
@@ -5126,6 +5225,8 @@ impl App {
             Some(open_bar(self.windows()[0], &o.uri))
         } else if self.auto.confirm.is_some() {
             self.rule_bar()
+        } else if let Some(b) = self.reconnect_bar() {
+            Some(b)
         } else if self.bar_dismissed {
             None
         } else {
@@ -5173,6 +5274,13 @@ impl App {
     /// key was consumed (never forwarded to the shell).
     fn try_dismiss_bar(&mut self) -> bool {
         let Some(o) = &self.bar else { return false };
+        if self
+            .reconnect_bar()
+            .is_some_and(|b| b.headline.text == o.spec.headline.text)
+        {
+            let age = o.shown_at.elapsed().as_millis() as u64;
+            return age >= apoth_ui::tokens::motion::CONSENT_GUARD_MS && self.dismiss_reconnect();
+        }
         let age = o.shown_at.elapsed().as_millis() as u64;
         let st = apoth_ui::bar::BarState { shown_at_ms: 0 };
         if st

@@ -292,3 +292,23 @@ fn include_fanout_is_budgeted_and_dir_globs_are_diagnosed() {
         r.render()
     );
 }
+
+#[test]
+fn ssh_domains_parse_and_refuse_option_like_destinations() {
+    let r = user("domain \"box\" { ssh \"me@box\"; mux #true }\ndomain \"plain\" { ssh \"h\" }\n");
+    assert!(r.is_valid(), "{}", r.render());
+    let d: Vec<_> = r.config.domains.iter().map(|d| &d.value).collect();
+    assert_eq!(d[0].ssh.as_deref(), Some("me@box"));
+    assert_eq!(d[0].mux, Some(true));
+    assert_eq!(d[1].mux, None);
+    for bad in [
+        "domain \"x\" { ssh \"-oProxyCommand=sh\" }\n",
+        "domain \"x\" { ssh \"a b\" }\n",
+        "domain \"x\" { ssh 3 }\n",
+        "domain \"x\" { mux #true }\n",
+    ] {
+        let r = user(bad);
+        assert!(!r.is_valid(), "{bad}");
+        assert!(r.config.domains.is_empty(), "{bad}");
+    }
+}

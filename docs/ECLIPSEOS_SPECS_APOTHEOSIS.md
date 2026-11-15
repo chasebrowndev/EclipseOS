@@ -1934,6 +1934,14 @@ inline by default, `--ext` for a separate window; lifetime rules in T-16 §1.1),
 (`list`, `explain <char>`), `doctor` (capability and environment report), `completions`.
 `--json` everywhere; exit codes: 0 ok, 1 error, 2 usage, 3 denied, 4 no instance.
 
+Session-daemon commands (T-21 §3, tmux model): `apoth server ls` (sessions, pane ids,
+sizes and view counts; no content), `apoth server kill [SESSION]` (end the session; exits
+0 once the server is gone, 4 with no such session), `apoth attach [SESSION]` (runs
+`apotheosis --attach`), `apoth detach [SESSION]` (detach every view, panes keep running).
+`SESSION` defaults to `default`. `apoth proxy [--session NAME] [--no-start]` is the remote
+end of a mux domain (T-22 §5) and `apoth askpass` the `SSH_ASKPASS` helper (T-22 §3);
+neither is meant to be typed.
+
 `set` and `reset`:
 - `apoth set key=value [key=value …]` (or the one-pair form `apoth set key value…`)
   saves to the user file exactly as `apoth config set` does (T-10 §5: lossless edit,
@@ -1954,7 +1962,8 @@ inline by default, `--ext` for a separate window; lifetime rules in T-16 §1.1),
 Inside Apotheosis panes the shell-integration snippets (T-14 §2) define `ap` as a short
 alias of `apoth`; nothing is installed system-wide, and no other short names are defined.
 `apotheosis` itself (the GUI binary) accepts `-e argv…`, `--cwd`, `--title`, `--app-id`,
-`--profile`, `--layout`, `--hold`, `-o key=value`, `--new-instance`, `--wait`. A second
+`--profile`, `--layout`, `--hold`, `-o key=value`, `--new-instance`, `--wait`, and for
+sessions (T-21 §3, T-22) `--server`, `--attach`, `--session NAME`, `--domain NAME`. A second
 launch sends one `launch` request (cwd, env, argv, activation token, overrides) to the
 running instance and, with `--wait`, relays the child's exit code.
 
@@ -3083,6 +3092,15 @@ survive GUI and compositor restarts; detach/attach; several views of one session
   - `apoth proxy` (T-22 §5) is a peer of the remote server's socket and is subject to
     the same check there; its consent is asked on the remote session's attached views or
     refused.
+- **Lifetime: the tmux model** (owner decision 2026-11-14). Closing a view's window (or
+  `window.close`, `app.quit`) detaches that view; the panes keep running and the server
+  keeps running with no view attached. The server exits when its last pane exits and
+  removes its socket; there is no idle timeout. `session.detach` (action, `layout`) detaches
+  the window it runs in; `apoth detach [SESSION]` detaches every view of a session.
+  `session.kill` (action, `layout`, confirmed on the window's consent bar: Kill / Cancel)
+  and `apoth server kill [SESSION]` end the session: the server closes every pane with
+  the HUP, TERM, KILL escalation (T-18 §7), refuses new spawns while it does, and exits
+  once the last pane is gone. Kill and detach-all are refused to agent-descendant peers.
 - systemd user unit with socket activation is shipped but not enabled by default; the
   daemon mode is opt-in (`sessions.server` `off|on`) until it has a release of soak.
 

@@ -14,6 +14,7 @@
 //! `action.run` of such a name is `unknown-action`.
 #![forbid(unsafe_code)]
 
+pub mod askpass;
 pub mod caps;
 pub mod error;
 pub mod event;

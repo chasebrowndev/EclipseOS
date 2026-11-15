@@ -694,6 +694,12 @@ define_actions! {
     SessionRestore = "session.restore" [Spawn] "Restore session"
         "Restore a saved session, respawning its commands suspended."
         { name: Option<String> };
+    SessionDetach = "session.detach" [Layout] "Detach session"
+        "Detach this window from its session daemon; the panes keep running (tmux prefix d)."
+        { };
+    SessionKill = "session.kill" [Layout] "Kill session"
+        "Close every pane of this window's session daemon and end it (tmux kill-session)."
+        { };
     ScrollbackClear = "scrollback.clear" [Layout] "Clear scrollback" "Discard the scrollback." { };
     ScrollbackSave = "scrollback.save" [ReadContent, Spawn] "Save scrollback"
         "Write the scrollback to a file."
