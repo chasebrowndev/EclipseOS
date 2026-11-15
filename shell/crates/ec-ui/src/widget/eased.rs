@@ -46,6 +46,7 @@ pub struct EasedCell<'a, Message> {
     padding: Padding,
     ease: Duration,
     keep_fill: bool,
+    keep_rim: bool,
 }
 
 impl<'a, Message: Clone + 'a> EasedCell<'a, Message> {
@@ -64,6 +65,7 @@ impl<'a, Message: Clone + 'a> EasedCell<'a, Message> {
             padding: Padding::ZERO,
             ease: Duration::ZERO,
             keep_fill: false,
+            keep_rim: false,
         }
     }
 
@@ -87,6 +89,13 @@ impl<'a, Message: Clone + 'a> EasedCell<'a, Message> {
     /// pill or a warning chip.
     pub fn keep_fill(mut self, keep: bool) -> Self {
         self.keep_fill = keep;
+        self
+    }
+
+    /// Keep the client's rim over the compositor's pane: a gold-tinted rim
+    /// that marks the default action (the compositor draws no colour).
+    pub fn keep_rim(mut self, keep: bool) -> Self {
+        self.keep_rim = keep;
         self
     }
 }
@@ -304,12 +313,13 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for EasedCell<'_, Me
             }
             crate::glass::push_in(pane, viewport);
         }
-        if !glass || self.keep_fill {
+        let (with_fill, with_rim) = (!glass || self.keep_fill, !glass || self.keep_rim);
+        if with_fill || with_rim {
             renderer.fill_quad(
                 renderer::Quad {
                     bounds,
                     border: Border {
-                        color: if glass { Color::TRANSPARENT } else { rim },
+                        color: if with_rim { rim } else { Color::TRANSPARENT },
                         width: rest.border.width,
                         radius: r.into(),
                     },
@@ -320,7 +330,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for EasedCell<'_, Me
                     },
                     ..renderer::Quad::default()
                 },
-                Background::Color(ground),
+                Background::Color(if with_fill { ground } else { Color::TRANSPARENT }),
             );
         }
         self.content.as_widget().draw(

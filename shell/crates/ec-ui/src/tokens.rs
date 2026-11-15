@@ -168,6 +168,13 @@ pub mod color {
     pub const SELECTED_HOVER_FILL: f32 = 1.7;
     pub const SELECTED_PRESS_FILL: f32 = 2.4;
     pub const SELECTED_HOVER_RIM: f32 = 1.6;
+    /// A cell cut from the inset material ([`crate::theme::inset_cell`]):
+    /// hover and press are small steps up its fill and rim, not a jump to a
+    /// pill's slab; a focused inset field is the rim alone, one step crisper.
+    pub const INSET_HOVER_FILL: f32 = 1.35;
+    pub const INSET_PRESS_FILL: f32 = 1.7;
+    pub const INSET_HOVER_RIM: f32 = 1.3;
+    pub const INSET_FOCUS_RIM: f32 = 1.8;
 
     /// A colour that arrives as data -- a calendar's own `0xRRGGBB` -- rather
     /// than a choice of ours. A provider's palette is never mistaken for a token.

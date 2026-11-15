@@ -468,18 +468,20 @@ fn actions(app: &App) -> Element<'_, Message, Theme> {
     let verb = if app.pending { t.working() } else { t.verb() };
     // An unchecked Terminal request spends the yellow on its chip, not here.
     let lit = !matches!(t, Target::Terminal(a) if !a.verified);
+    // Nothing to send yet (or already sent): the default action's label dims.
+    let ready = !app.pending && t.ready(app.typed.as_str());
     let mut actions = row![container(note).width(Length::Fill)]
         .spacing(space::CONTROL_GAP)
         .align_y(Alignment::Center);
     if app.saved {
         // Done is the only thing left to say; the window is already going.
-        actions = actions.push(sheet_pill("Done", false, Message::Close, app.hover));
+        actions = actions.push(sheet_pill("Done", false, Some(Message::Close), app.hover));
     } else if t.answers() {
         actions = actions
-            .push(sheet_pill("Cancel", false, Message::Cancel, app.hover))
-            .push(sheet_pill(verb, lit, Message::Submit, app.hover));
+            .push(sheet_pill("Cancel", false, Some(Message::Cancel), app.hover))
+            .push(sheet_pill(verb, lit, ready.then_some(Message::Submit), app.hover));
     } else {
-        actions = actions.push(sheet_pill(verb, false, Message::Submit, app.hover));
+        actions = actions.push(sheet_pill(verb, false, Some(Message::Submit), app.hover));
     }
     actions.into()
 }
@@ -602,14 +604,47 @@ fn tilde(path: &str) -> String {
     }
 }
 
-/// Who a uid is, from where the human sits. No numbers: those are one level
-/// further in.
-fn who(uid: u32) -> &'static str {
-    match uid {
-        0 => "root",
-        u if u == rustix::process::getuid().as_raw() => "you",
-        _ => "another user",
+/// The account a uid is, as `whoami` names it: its passwd entry, or the
+/// number when there is none.
+fn user_name(uid: u32) -> String {
+    std::fs::read_to_string("/etc/passwd")
+        .ok()
+        .and_then(|p| {
+            p.lines().find_map(|l| {
+                let mut f = l.split(':');
+                let name = f.next()?;
+                let id = f.nth(1)?.parse::<u32>().ok()?;
+                (id == uid).then(|| name.to_owned())
+            })
+        })
+        .unwrap_or_else(|| uid.to_string())
+}
+
+/// Who the program will run as. For `sudo`, its target user when the command
+/// names one (`-u name`, `--user=name`; program text, cleaned and capped),
+/// else the effective uid's account.
+fn runs_as(ask: &TerminalAsk) -> String {
+    let argv = &ask.claims.argv;
+    if argv.first().and_then(|a| a.rsplit('/').next()) == Some("sudo") {
+        let mut it = argv.iter().skip(1);
+        while let Some(a) = it.next() {
+            if a == "--" || !a.starts_with('-') {
+                break;
+            }
+            let named = match a.as_str() {
+                "-u" | "--user" => it.next().cloned(),
+                _ => a
+                    .strip_prefix("--user=")
+                    .or_else(|| a.strip_prefix("-u"))
+                    .filter(|v| !v.is_empty())
+                    .map(str::to_owned),
+            };
+            if let Some(u) = named {
+                return clean(&u, VALUE_MAX);
+            }
+        }
     }
+    user_name(ask.facts.euid)
 }
 
 /// One detail: what it is, and its value. `Warn` reads as a caution, `Mono`
@@ -635,7 +670,7 @@ fn facts(ask: &TerminalAsk, more: bool) -> Vec<(&'static str, String, Ink)> {
         _ => clean(ask.program(), VALUE_MAX),
     };
     rows.push(("Program", program, Ink::Plain));
-    rows.push(("Runs as", who(f.euid).to_owned(), Ink::Plain));
+    rows.push(("Runs as", runs_as(ask), Ink::Plain));
     rows.push(if f.in_foreground {
         ("Foreground", "Yes".to_owned(), Ink::Plain)
     } else {

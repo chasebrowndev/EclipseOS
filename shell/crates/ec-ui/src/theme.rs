@@ -191,6 +191,69 @@ pub fn inset(_t: &Theme) -> container::Style {
     }
 }
 
+/// A pressable cell of the [`inset`] material: the same quiet fill, thin rim
+/// and radius, its hover and press a small step up both (never the pill's
+/// slab). The ink stays secondary, brightening under the pointer.
+pub fn inset_cell(t: &Theme, status: button::Status) -> button::Style {
+    let base = inset(t);
+    let (f, r) = match status {
+        button::Status::Pressed => (color::INSET_PRESS_FILL, color::INSET_HOVER_RIM),
+        button::Status::Hovered => (color::INSET_HOVER_FILL, color::INSET_HOVER_RIM),
+        _ => (1.0, 1.0),
+    };
+    let fill = match base.background {
+        Some(Background::Color(c)) => c.scale_alpha(f),
+        _ => Color::TRANSPARENT,
+    };
+    button::Style {
+        background: Some(Background::Color(fill)),
+        text_color: if matches!(status, button::Status::Active | button::Status::Disabled) {
+            color::text_secondary()
+        } else {
+            color::text()
+        },
+        border: Border {
+            color: base.border.color.scale_alpha(r),
+            radius: radius::PILL.into(),
+            ..base.border
+        },
+        ..button::Style::default()
+    }
+}
+
+/// [`inset_cell`] as the sheet's default action: the same box, marked by a
+/// gold label and a gold-tinted rim, never a gold fill. `enabled` false dims
+/// the label only.
+pub fn inset_cell_default(enabled: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
+    move |t: &Theme, status: button::Status| {
+        let status = if enabled { status } else { button::Status::Active };
+        let mut s = inset_cell(t, status);
+        let r = match status {
+            button::Status::Hovered | button::Status::Pressed => color::SELECTED_HOVER_RIM,
+            _ => 1.0,
+        };
+        s.border.color = color::accent_border().scale_alpha(r);
+        s.text_color = if enabled {
+            color::accent_text()
+        } else {
+            color::text_tertiary()
+        };
+        s
+    }
+}
+
+/// An [`inset`] field: the inset's fill and rim, its focus the rim alone one
+/// step crisper ([`color::INSET_FOCUS_RIM`]) — glassy, not glowy, no halo.
+pub fn inset_field(focused: bool) -> impl Fn(&Theme) -> container::Style {
+    move |t: &Theme| {
+        let mut s = inset(t);
+        if focused {
+            s.border.color = s.border.color.scale_alpha(color::INSET_FOCUS_RIM);
+        }
+        s
+    }
+}
+
 /// The ground a dimmed run is veiled with, blur off: the same inset fill and
 /// rim as [`inset`], with the content faded by [`color::veil()`]. Live with
 /// `decoration.surface.inset-fill`, like [`inset`].

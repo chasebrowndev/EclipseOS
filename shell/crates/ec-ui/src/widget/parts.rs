@@ -3525,37 +3525,33 @@ pub fn secret_field<'a, Message: 'a>(
     prompt_cell(marker, body, trailing).style(ground)
 }
 
-/// [`secret_field`] as a compositor glass pane: the field's ground is drawn
-/// by abyss (focused while it takes keys), and the client keeps only the
-/// refusal's danger rim. The client-drawn field when glass is off.
+/// [`secret_field`] in the [`theme::inset`] material, as a compositor glass
+/// pane of the inset's tone when abyss draws one. The client-drawn inset when
+/// glass is off.
 pub fn secret_field_pane<'a, Message: 'a>(
     state: FieldState,
     marker: &str,
     body: impl Into<Element<'a, Message, Theme>>,
     trailing: Option<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
-    let field = secret_field(state, marker, body, trailing);
-    let field = field.style(move |t: &Theme| {
-        let tone = if state == FieldState::Resting {
-            theme::CellTone::Plain
-        } else {
-            theme::CellTone::Focused
-        };
-        let mut s = theme::bare_container_if_glass(glass_ground(tone, radius::INSET)(t));
+    // The inset's material, as the sheet's details are: focus is the rim
+    // alone, one step crisper; a refusal is the danger rim.
+    let field = secret_field(state, marker, body, trailing).style(move |t: &Theme| {
+        let mut s = theme::inset_field(state != FieldState::Resting)(t);
         if state == FieldState::Refused {
             s.border.color = color::danger().scale_alpha(crate::tokens::lock::FAIL_RIM);
         }
+        if crate::glass::available() {
+            // The pane is the ground; the client keeps only a rim that says
+            // something (focus, refusal).
+            s.background = None;
+            if state == FieldState::Resting {
+                s.border.color = Color::TRANSPARENT;
+            }
+        }
         s
     });
-    crate::widget::glass_card(
-        field,
-        if state == FieldState::Resting {
-            theme::CellTone::Plain
-        } else {
-            theme::CellTone::Focused
-        },
-        radius::INSET,
-    )
+    crate::widget::glass_card(field, theme::CellTone::Plain, radius::INSET)
 }
 
 /// A secret's length as a run of discs, then a still caret: the only thing a
@@ -3788,7 +3784,10 @@ pub fn chevron_turn<'a, Message: 'a>(turn: f32, ink: Color) -> Element<'a, Messa
 }
 
 /// A sheet's committing or dismissing pill as a compositor glass pane, its
-/// hover and pressed tones easing over `ease`.
+/// hover and pressed tones easing over `ease`. Cut from the inset material
+/// ([`theme::inset_cell`]), the same quiet box as the sheet's field and
+/// details; `lit` (the default action) adds a gold label and gold-tinted rim,
+/// kept over the pane. `on_press` `None` is disabled: the label dims.
 ///
 /// A sibling of [`pill`] rather than a change to it: `pill` sits in scrolled
 /// settings pages that place no panes, while a floating sheet's pills are its
@@ -3798,26 +3797,31 @@ pub fn chevron_turn<'a, Message: 'a>(turn: f32, ink: Color) -> Element<'a, Messa
 pub fn sheet_pill<'a, Message: Clone + 'a>(
     label: &str,
     lit: bool,
-    on_press: Message,
+    on_press: Option<Message>,
     ease: std::time::Duration,
 ) -> Element<'a, Message, Theme> {
-    crate::widget::EasedCell::new(
+    let enabled = on_press.is_some();
+    let mut cell = crate::widget::EasedCell::new(
         text(label.to_string())
             .font(font::UI_MEDIUM)
             .size(size::BODY_SMALL),
-        theme::pill(lit),
-        if lit {
-            theme::CellTone::Focused
-        } else {
-            theme::CellTone::Plain
+        move |t: &Theme, st| {
+            if lit {
+                theme::inset_cell_default(enabled)(t, st)
+            } else {
+                theme::inset_cell(t, st)
+            }
         },
+        theme::CellTone::Plain,
         radius::PILL,
     )
     .padding([space::PILL_Y, space::PILL_X])
-    .on_press(on_press)
     .ease(ease)
-    .keep_fill(lit)
-    .into()
+    .keep_rim(lit);
+    if let Some(m) = on_press {
+        cell = cell.on_press(m);
+    }
+    cell.into()
 }
 
 /// Machine text (a command line) that wraps between its words, and inside a
