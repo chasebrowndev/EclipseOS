@@ -15,6 +15,6 @@ pub use accesskit;
 pub use adapter::{Adapter, Notify, Request};
 pub use text::RowText;
 pub use tree::{
-    BarButtonModel, BarModel, Builder, ChipModel, PaletteModel, PaneModel, ProgressKind,
-    ProgressModel, SearchModel, TabModel, TextModel, TooltipModel, WindowModel,
+    BarButtonModel, BarModel, Builder, ChipModel, MediaModel, MediaState, PaletteModel, PaneModel,
+    ProgressKind, ProgressModel, SearchModel, TabModel, TextModel, TooltipModel, WindowModel,
 };

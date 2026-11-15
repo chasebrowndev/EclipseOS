@@ -46,6 +46,7 @@ const PASTE_NL: &[&str] = &["as-is", "cr", "confirm"];
 const A11Y: &[&str] = &["auto", "on", "off"];
 const OFF_ON: &[&str] = &["off", "on"];
 const RESTORE: &[&str] = &["ask", "always", "never"];
+const RESIZE: &[&str] = &["smallest", "latest", "largest"];
 const QT_ANIM: &[&str] = &["slide", "fade", "none"];
 const QT_POS: &[&str] = &["top", "bottom", "left", "right"];
 const OPEN_PLACEMENT: &[&str] = &["float", "inline", "window"];
@@ -305,6 +306,7 @@ rows! {
     ("socket.interpreters", Ty::StringSet, Dv::Empty, Global, false, Live, Grant, "Extra interpreter names refused as grant paths (extends the built-in list)."; "Extra interpreters", &[]),
     ("sessions.server", Ty::Enum(OFF_ON), Dv::Str("off"), Global, false, Restart, Behaviour, "Run the session daemon."; "Session daemon", &[]),
     ("sessions.restore", Ty::Enum(RESTORE), Dv::Str("ask"), Global, false, Live, Behaviour, "Restore the last session at start."; "Restore session", &[]),
+    ("sessions.resize", Ty::Enum(RESIZE), Dv::Str("latest"), Global, false, Live, Behaviour, "Pane size when several views of a daemon session differ (T-21 §3): the smallest, the latest view's, or the largest. Applies from the next attach."; "Resize policy", &["views", "attach", "daemon"]),
     ("quick-terminal.animation", Ty::Enum(QT_ANIM), Dv::Str("slide"), Global, false, Live, Appearance, "Show/hide animation."; "Quick terminal animation", &[]),
     ("quick-terminal.autohide", Ty::Bool, Dv::Bool(true), Global, false, Live, Behaviour, "Hide on focus loss."; "Autohide", &[]),
     ("quick-terminal.position", Ty::Enum(QT_POS), Dv::Str("top"), Global, false, Live, Appearance, "Screen edge."; "Position", &[]),

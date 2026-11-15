@@ -11,9 +11,9 @@ use apoth_a11y::accesskit::Rect as AkRect;
 use apoth_a11y::accesskit::{Action as AkAction, ActionRequest};
 use apoth_a11y::ids::{self, Target};
 use apoth_a11y::{
-    Adapter, BarButtonModel, BarModel, Builder, ChipModel, Notify, PaletteModel, PaneModel,
-    ProgressKind, ProgressModel, Request, RowText, SearchModel, TabModel, TextModel, TooltipModel,
-    WindowModel,
+    Adapter, BarButtonModel, BarModel, Builder, ChipModel, MediaModel, MediaState, Notify,
+    PaletteModel, PaneModel, ProgressKind, ProgressModel, Request, RowText, SearchModel, TabModel,
+    TextModel, TooltipModel, WindowModel,
 };
 use apoth_grid::{SnapRow, WordChars};
 use apoth_mux::TabTarget;
@@ -41,6 +41,43 @@ pub(crate) struct Snap {
     id: PaneKey,
     rows: Vec<RowText>,
     cursor: Option<(usize, usize)>,
+    /// The media placements the pane last drew, by viewport row (T-20 §5).
+    media: Vec<(usize, apoth_term::MediaPlacement)>,
+}
+
+/// The accessible media nodes of a pane (T-20 §5): boxes in window units, cut to the grid.
+fn media_models(
+    shown: &[(usize, apoth_term::MediaPlacement)],
+    origin: (i32, i32),
+    cell: (f64, f64),
+    scale: f64,
+    dims: (usize, usize),
+) -> Vec<MediaModel> {
+    let (ox, oy) = (f64::from(origin.0) / scale, f64::from(origin.1) / scale);
+    shown
+        .iter()
+        .filter(|(row, _)| *row < dims.0)
+        .map(|(row, m)| {
+            let bottom = (row + m.rows as usize).min(dims.0);
+            let right = (m.col + m.cols as usize).min(dims.1);
+            MediaModel {
+                key: m.key,
+                video: m.video.is_some(),
+                state: match m.state {
+                    apoth_term::MediaPlay::Opening => MediaState::Opening,
+                    apoth_term::MediaPlay::Playing => MediaState::Playing,
+                    apoth_term::MediaPlay::Paused => MediaState::Paused,
+                    apoth_term::MediaPlay::Ended => MediaState::Ended,
+                },
+                bounds: AkRect {
+                    x0: ox + m.col as f64 * cell.0,
+                    y0: oy + *row as f64 * cell.1,
+                    x1: ox + right as f64 * cell.0,
+                    y1: oy + bottom as f64 * cell.1,
+                },
+            }
+        })
+        .collect()
 }
 
 /// Accessibility state on main.
@@ -210,6 +247,7 @@ impl App {
                         id: *id,
                         rows,
                         cursor: c.visible.then_some((c.y, c.x)),
+                        media: s.media_shown_list(),
                     }
                 })
                 .collect();
@@ -299,6 +337,7 @@ impl App {
                     cursor: s.cursor,
                     // No credential signal reaches the terminal yet (reported gap).
                     credential: false,
+                    media: media_models(&s.media, p.origin, cell, scale, p.dims),
                 })
             })
             .collect();
@@ -455,6 +494,31 @@ impl App {
                 }
             }
             Target::SearchClose if r.action == AkAction::Click => self.close_search(),
+            Target::Media { pane, key } => {
+                let pane = self
+                    .panes
+                    .keys()
+                    .copied()
+                    .find(|k| *k == pane || (*k & 0xffff_ffff) == pane);
+                let Some(pane) = pane else {
+                    return;
+                };
+                if r.action == AkAction::Click {
+                    // The same toggle a click on the box sends (T-08 §4).
+                    let full = self.panes.get(&pane).and_then(|p| {
+                        p.shared
+                            .media_shown_list()
+                            .into_iter()
+                            .map(|(_, m)| m.key)
+                            .find(|k| k & ids::MEDIA_KEY_MASK == key)
+                    });
+                    if let Some(k) = full {
+                        self.toggle_media(pane, k);
+                    }
+                } else {
+                    self.reveal(pane);
+                }
+            }
             Target::Pane(id) => {
                 // Run and line ids carry the low 32 bits of the pane id.
                 let key = self
@@ -557,6 +621,43 @@ fn chip_words(chip: Chip, label: &str, on: bool) -> (String, Option<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Media nodes sit on their box in window units, cut to the grid; rows off the grid are
+    /// left out; the state maps one to one (T-20 §5).
+    #[test]
+    fn media_nodes_follow_the_drawn_boxes() {
+        let m = |key, row, state| {
+            (
+                row,
+                apoth_term::MediaPlacement {
+                    key,
+                    id: 1,
+                    row: 0,
+                    col: 2,
+                    cols: 10,
+                    rows: 4,
+                    state,
+                    pos_ms: 0,
+                    duration_ms: None,
+                    video: Some((64, 48)),
+                },
+            )
+        };
+        use apoth_term::MediaPlay as P;
+        let shown = [m(1, 1, P::Playing), m(2, 22, P::Ended), m(3, 3, P::Opening)];
+        let out = media_models(&shown, (20, 40), (8.0, 16.0), 2.0, (5, 8));
+        assert_eq!(out.len(), 2, "the row-22 box is off a 5-row grid");
+        assert_eq!(out[0].state, MediaState::Playing);
+        assert!(out[0].video);
+        let b = out[0].bounds;
+        assert_eq!((b.x0, b.y0, b.x1, b.y1), (26.0, 36.0, 74.0, 100.0));
+        assert_eq!(out[1].state, MediaState::Opening);
+        assert_eq!(
+            out[1].bounds.y1,
+            20.0 + 5.0 * 16.0,
+            "cut at the grid's last row"
+        );
+    }
 
     #[test]
     fn chips_have_spoken_names() {

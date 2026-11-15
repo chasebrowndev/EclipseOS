@@ -669,7 +669,7 @@ fn version_negotiation() {
 
 #[test]
 fn corpus_seeds_never_panic() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus/proto_json");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/proto_json");
     let mut n = 0;
     for entry in std::fs::read_dir(dir).unwrap() {
         let data = std::fs::read(entry.unwrap().path()).unwrap();

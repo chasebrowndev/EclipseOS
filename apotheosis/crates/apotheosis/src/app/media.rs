@@ -35,6 +35,9 @@ const MEDIA_POLL: std::time::Duration = std::time::Duration::from_millis(8);
 /// evdev codes that close a focused media window.
 const KEY_ESC: u32 = 1;
 const KEY_Q: u32 = 16;
+/// evdev Space: plays or pauses the focused media window's placement (T-08 §5). The window
+/// has no program reading the keyboard, so nothing else claims it.
+const KEY_SPACE: u32 = 57;
 
 #[derive(Default)]
 pub(super) struct Media {
@@ -82,6 +85,8 @@ enum Feed {
     Bytes(Vec<u8>),
     /// A primary click at viewport cell (row, column): play/pause the placement there.
     Click(usize, usize),
+    /// Space in the focused window: play/pause its frontmost placement.
+    Toggle,
 }
 
 /// The window's logical size for `grid` rows and columns of `cell`-px cells at `scale`. The
@@ -159,6 +164,12 @@ fn feeder(
                     let top = t.grid().history_rows();
                     let places = t.media_placements();
                     if let Some(key) = crate::view::media_at(&places, top + row, *col) {
+                        crate::pane::media_toggles(&mut t, &[key]);
+                    }
+                }
+                Some(Feed::Toggle) => {
+                    let front = t.media_placements().last().map(|p| p.key);
+                    if let Some(key) = front {
                         crate::pane::media_toggles(&mut t, &[key]);
                     }
                 }
@@ -579,12 +590,22 @@ impl App {
                 }
                 false
             }
-            K::Key { key, pressed, .. } => {
+            K::Key {
+                key,
+                pressed,
+                repeat,
+                ..
+            } => {
                 let Some(id) = self.media.kb else {
                     return false;
                 };
                 if *pressed && (*key == KEY_ESC || *key == KEY_Q) {
                     self.media_close(id);
+                } else if *pressed && !*repeat && *key == KEY_SPACE {
+                    // A full queue drops the key rather than block the main thread.
+                    if let Some(feed) = self.media.windows.get(&id).and_then(|w| w.feed.as_ref()) {
+                        let _ = feed.try_send(Feed::Toggle);
+                    }
                 }
                 true
             }

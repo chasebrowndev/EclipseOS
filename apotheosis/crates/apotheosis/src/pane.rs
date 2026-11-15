@@ -188,6 +188,20 @@ impl PaneShared {
         crate::view::media_at(&s.1, s.0 + row, col)
     }
 
+    /// The drawn placements with the viewport row of their top (clamped to 0 for a box
+    /// cut by the frame's first row), front last. For the keyboard and accessibility
+    /// targets (T-08 §5, T-20 §5); main never takes the term lock.
+    pub(crate) fn media_shown_list(&self) -> Vec<(usize, apoth_term::MediaPlacement)> {
+        let s = self
+            .media_shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        s.1.iter()
+            .filter(|p| p.row + p.rows as usize > s.0)
+            .map(|p| (p.row.saturating_sub(s.0), p.clone()))
+            .collect()
+    }
+
     pub(crate) fn take_media_toggles(&self) -> Vec<u64> {
         std::mem::take(
             &mut *self
@@ -285,6 +299,8 @@ pub(crate) enum MainMsg {
     Cursor(PaneKey, (usize, usize)),
     /// The Abyss detection thread: a theme, or the connection lost (T-17 §1).
     Abyss(apoth_eclipse::Abyss),
+    /// The settings portal's reduce-motion preference (T-08 §2).
+    ReducedMotion(bool),
     /// A worker finished a config load (T-10 §4): main diffs and applies it.
     /// A media window's threads stopped: its surface can be destroyed.
     MediaStopped(u64),
@@ -764,6 +780,34 @@ pub(crate) fn toggle_ctl(p: &apoth_term::MediaPlacement) -> apoth_term::MediaCtl
     }
 }
 
+/// What a keyboard media action asks for (T-08 §5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MediaWant {
+    Toggle,
+    Play,
+    Pause,
+}
+
+/// The placement a keyboard media action applies to, when it changes anything: the one
+/// under the pointer (`hovered`), else the frontmost drawn one; `None` when there is none or
+/// it is already in the wanted state (`Play` on a playing one, `Pause` on one not playing).
+pub(crate) fn media_key_target(
+    shown: &[(usize, apoth_term::MediaPlacement)],
+    hovered: Option<u64>,
+    want: MediaWant,
+) -> Option<u64> {
+    let p = hovered
+        .and_then(|k| shown.iter().find(|(_, p)| p.key == k))
+        .or_else(|| shown.last())
+        .map(|(_, p)| p)?;
+    let playing = p.state == apoth_term::MediaPlay::Playing;
+    match want {
+        MediaWant::Toggle => Some(p.key),
+        MediaWant::Play => (!playing).then_some(p.key),
+        MediaWant::Pause => playing.then_some(p.key),
+    }
+}
+
 /// Apply clicked toggles (by key) to the term; a key whose placement went is dropped.
 pub(crate) fn media_toggles(t: &mut Term, keys: &[u64]) -> apoth_term::Wake {
     let mut w = apoth_term::Wake::default();
@@ -878,6 +922,65 @@ mod tests {
         assert_eq!(shared.media_shown_at(3, 3), Some(7));
         shared.set_media_shown(9, &[]);
         assert_eq!(shared.media_shown_at(3, 3), None);
+    }
+
+    fn placed(key: u64, row: usize, state: apoth_term::MediaPlay) -> apoth_term::MediaPlacement {
+        apoth_term::MediaPlacement {
+            key,
+            id: 1,
+            row,
+            col: 0,
+            cols: 4,
+            rows: 2,
+            state,
+            pos_ms: 0,
+            duration_ms: None,
+            video: None,
+        }
+    }
+
+    /// The drawn list keeps boxes the frame's first row cuts (row clamped) and drops those
+    /// wholly above it (T-08 §5, T-20 §5 targets).
+    #[test]
+    fn drawn_list_is_in_viewport_rows() {
+        use apoth_term::MediaPlay::Playing;
+        let shared = PaneShared::new(Term::new(TermConfig::default()));
+        shared.set_media_shown(
+            10,
+            &[
+                placed(1, 7, Playing),
+                placed(2, 9, Playing),
+                placed(3, 14, Playing),
+            ],
+        );
+        let l = shared.media_shown_list();
+        let rows: Vec<(u64, usize)> = l.iter().map(|(r, p)| (p.key, *r)).collect();
+        assert_eq!(rows, [(2, 0), (3, 4)]);
+    }
+
+    /// A keyboard action takes the hovered placement, else the frontmost; play and pause
+    /// leave one already in that state alone.
+    #[test]
+    fn keyboard_media_target() {
+        use apoth_term::MediaPlay::{Ended, Paused, Playing};
+        let shown = [(0, placed(1, 0, Playing)), (3, placed(2, 3, Paused))];
+        assert_eq!(media_key_target(&shown, None, MediaWant::Toggle), Some(2));
+        assert_eq!(
+            media_key_target(&shown, Some(1), MediaWant::Toggle),
+            Some(1)
+        );
+        // A stale hover (that placement went) falls back to the frontmost.
+        assert_eq!(
+            media_key_target(&shown, Some(9), MediaWant::Toggle),
+            Some(2)
+        );
+        assert_eq!(media_key_target(&shown, None, MediaWant::Play), Some(2));
+        assert_eq!(media_key_target(&shown, None, MediaWant::Pause), None);
+        assert_eq!(media_key_target(&shown, Some(1), MediaWant::Pause), Some(1));
+        assert_eq!(media_key_target(&shown, Some(1), MediaWant::Play), None);
+        let ended = [(0, placed(4, 0, Ended))];
+        assert_eq!(media_key_target(&ended, None, MediaWant::Play), Some(4));
+        assert_eq!(media_key_target(&[], None, MediaWant::Toggle), None);
     }
 
     /// A term with one playing media placement (key, 4x2 cells at the origin).

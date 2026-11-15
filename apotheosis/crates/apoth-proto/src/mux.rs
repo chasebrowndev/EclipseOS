@@ -962,7 +962,7 @@ mod tests {
 
     #[test]
     fn the_seed_corpus_decodes_and_holds() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/corpus/mux_wire");
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../fuzz/corpus/mux_wire");
         let mut n = 0;
         for e in std::fs::read_dir(dir).unwrap() {
             let data = std::fs::read(e.unwrap().path()).unwrap();

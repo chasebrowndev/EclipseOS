@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# The fuzz workspace's dated nightly (T-18 §11, T-24 §1): `-Zsanitizer` needs nightly.
+# The sole toolchain exception in apotheosis/; bumping it is its own PR.
+[toolchain]
+channel = "nightly-2026-11-01"

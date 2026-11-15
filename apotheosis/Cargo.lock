@@ -266,7 +266,10 @@ name = "apoth-testkit"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "apoth-config",
  "apoth-grid",
+ "apoth-media",
+ "apoth-proto",
  "apoth-term",
  "apoth-vt",
  "vte",

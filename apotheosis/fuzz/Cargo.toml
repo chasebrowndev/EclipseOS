@@ -1,0 +1,166 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Apotheosis fuzz workspace (T-18 §11, T-25 §4, ADR 0110). Not shipped, not a member of
+# the apotheosis workspace (its own `[workspace]` below), skipped by `ci/lang-rule.sh`:
+# libfuzzer-sys compiles libFuzzer's C++ runtime in its build script, the one place the
+# T-00 §3.1 language rule is waived. `rust-toolchain.toml` here pins a dated nightly for
+# `-Zsanitizer`.
+#
+# Targets are thin wrappers over stable bodies in the shipping crates. Seed corpora are
+# `corpus/<target>/`; `apoth-testkit/tests/fuzz_corpus.rs` replays every one of them on
+# the stable toolchain in the normal `cargo test --workspace` run, and checks that every
+# target here has a `[[bin]]`, a corpus and a replay.
+#
+# CI smoke (T-25 §8), from this directory with cargo-fuzz installed: `./smoke.sh` runs
+# each target for 60 s (`cargo fuzz run <t> corpus/<t> -- -max_total_time=60`). Without
+# cargo-fuzz, `cargo build` here still compiles and links every target (no sanitizer
+# instrumentation), and each binary replays given corpus files: `target/debug/<t> corpus/<t>/*`.
+
+[package]
+name = "apoth-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+apoth-vt = { path = "../crates/apoth-vt" }
+apoth-term = { path = "../crates/apoth-term" }
+apoth-proto = { path = "../crates/apoth-proto" }
+apoth-config = { path = "../crates/apoth-config" }
+apoth-media = { path = "../crates/apoth-media" }
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "av1_obu"
+path = "fuzz_targets/av1_obu.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_parse"
+path = "fuzz_targets/config_parse.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "helper_wire"
+path = "fuzz_targets/helper_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "image_formats"
+path = "fuzz_targets/image_formats.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "iterm"
+path = "fuzz_targets/iterm.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kitty_apc"
+path = "fuzz_targets/kitty_apc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kitty_keyboard_decode"
+path = "fuzz_targets/kitty_keyboard_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "match_lang"
+path = "fuzz_targets/match_lang.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "media_apc"
+path = "fuzz_targets/media_apc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mkv_demux"
+path = "fuzz_targets/mkv_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "mux_wire"
+path = "fuzz_targets/mux_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "osc_all"
+path = "fuzz_targets/osc_all.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "placeholder"
+path = "fuzz_targets/placeholder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "proto_json"
+path = "fuzz_targets/proto_json.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "sixel"
+path = "fuzz_targets/sixel.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "template"
+path = "fuzz_targets/template.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "term_feed"
+path = "fuzz_targets/term_feed.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vt_parse"
+path = "fuzz_targets/vt_parse.rs"
+test = false
+doc = false
+bench = false
