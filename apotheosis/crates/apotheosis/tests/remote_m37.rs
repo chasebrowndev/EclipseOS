@@ -767,13 +767,20 @@ fn a_mux_domain_window_asks_on_the_sheet_and_survives_a_dropped_link() {
     let Some(apoth) = apoth_bin() else { return };
     let dir = temp_dir("gui");
     let path = shim_path(&dir, &apoth);
-    // auto (the default) and the host has `apoth`: the host's session daemon.
-    write_config(&dir, "domain \"box\" { ssh \"me@box\" }\n");
+    // auto (the default) and the host has `apoth`: the host's session daemon. The
+    // in-window sheet is what this test drives. On Abyss an installed ec-secret-prompt
+    // takes a secret askpass request (T-22 §3; `security.password-prompt` only governs the
+    // auto-open), so point it at a binary that is not there: the spawn fails, the sheet asks.
+    write_config(
+        &dir,
+        "domain \"box\" { ssh \"me@box\" }\nsecurity {\n  password-prompt \"off\"\n}\n",
+    );
     std::fs::write(dir.join("askpass.want"), b"").unwrap();
     let _abyss = start_abyss(&abyss, &dir);
     let dump = dir.join("dump.txt");
     let mut g = Guard(
         gui(&dir, &path, &["--domain", "box"], true)
+            .env("APOTH_SECRET_PROMPT", dir.join("no-secret-prompt"))
             .spawn()
             .expect("spawn apotheosis --domain"),
     );
