@@ -223,26 +223,29 @@ impl Shots {
         let dump = dir.join("dump.txt");
         let mux = dir.join("mux.txt");
         let term = Guard(
-            Command::new(env!("CARGO_BIN_EXE_apotheosis"))
-                .env_remove("APOTHEOSIS_SOCKET")
-                .env(
-                    "DBUS_SESSION_BUS_ADDRESS",
-                    "unix:path=/nonexistent/apoth-test-bus",
-                )
-                .env("ECLIPSE_SOCKET_DIR", dir.join("sock"))
-                .env("XDG_RUNTIME_DIR", &dir)
-                .env("WAYLAND_DISPLAY", "wayland-1")
-                .env("SHELL", "/bin/sh")
-                .env("PATH", std::env::join_paths(path).unwrap())
-                .env("HOME", dir.join("home"))
-                .env("XDG_CACHE_HOME", dir.join("home/.cache"))
-                .env("XDG_CONFIG_HOME", dir.join("home/.config"))
-                .env("APOTH_TEST_DUMP", &dump)
-                .env("APOTH_TEST_MUX", &mux)
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn apotheosis"),
+            Command::new(
+                std::env::var_os("APOTH_TERM_BIN")
+                    .unwrap_or_else(|| env!("CARGO_BIN_EXE_apotheosis").into()),
+            )
+            .env_remove("APOTHEOSIS_SOCKET")
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                "unix:path=/nonexistent/apoth-test-bus",
+            )
+            .env("ECLIPSE_SOCKET_DIR", dir.join("sock"))
+            .env("XDG_RUNTIME_DIR", &dir)
+            .env("WAYLAND_DISPLAY", "wayland-1")
+            .env("SHELL", "/bin/sh")
+            .env("PATH", std::env::join_paths(path).unwrap())
+            .env("HOME", dir.join("home"))
+            .env("XDG_CACHE_HOME", dir.join("home/.cache"))
+            .env("XDG_CONFIG_HOME", dir.join("home/.config"))
+            .env("APOTH_TEST_DUMP", &dump)
+            .env("APOTH_TEST_MUX", &mux)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn apotheosis"),
         );
         let mut s = Shots {
             nudge: (3.0, 3.0),
@@ -317,6 +320,14 @@ impl Shots {
             assert!(t0.elapsed() < Duration::from_secs(20), "no window {title}");
             std::thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    /// Where the first tab's close button or the new-tab button sits, from the layout env
+    /// `APOTH_SHOT_CLOSE` / `APOTH_SHOT_PLUS` as `x,y` (compositor-logical).
+    fn tab_hot(&self, which: &str) -> (f64, f64) {
+        let v = std::env::var(format!("APOTH_SHOT_{}", which.to_uppercase())).unwrap_or_default();
+        let mut it = v.split(',').filter_map(|n| n.trim().parse::<f64>().ok());
+        (it.next().unwrap_or(209.0), it.next().unwrap_or(20.0))
     }
 
     fn type_text(&mut self, text: &str) {
@@ -574,6 +585,16 @@ fn run_cases(s: &mut Shots) {
         s.hover(120.0, 25.0);
         s.pause(500);
         s.shot("tabs-hover");
+        let (cx, cy) = s.tab_hot("close");
+        s.nudge = (cx, cy);
+        s.hover(cx, cy);
+        s.pause(500);
+        s.shot("tabs-hover-close");
+        let (px, py) = s.tab_hot("plus");
+        s.nudge = (px, py);
+        s.hover(px, py);
+        s.pause(500);
+        s.shot("tabs-hover-plus");
         s.nudge = (3.0, 3.0);
         s.sh("exit");
         s.pause(800);

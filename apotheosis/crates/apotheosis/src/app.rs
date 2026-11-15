@@ -987,6 +987,7 @@ impl App {
             rx: render_rx,
             poke: render_tx.clone(),
             to_main: self.to_main.clone(),
+            glass: self.handle.glass_panes(self.win),
         })
         .map_err(|e| e.to_string())?;
         self.render = Some(render);
@@ -2152,6 +2153,9 @@ impl App {
                 self.relayout();
                 self.poke();
             }
+            // `eclipse_glass_v1` started or stopped drawing panes: the render thread reads
+            // the flag on its next pass and redraws the interface's ground.
+            WlEvent::CapabilitiesChanged => self.poke(),
             WlEvent::BlurPathChanged { path, .. } => {
                 self.blur = Some(path);
                 self.send_render_update(false);

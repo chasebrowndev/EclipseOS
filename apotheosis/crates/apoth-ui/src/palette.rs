@@ -11,10 +11,12 @@
 //! hairline; a switch row carries a real toggle; the default handler carries a quiet tag. An
 //! anchored sheet (a right click) opens at the pointer, clamped into the window.
 
-use crate::draw::{DrawList, Rim};
+use crate::draw::{DrawList, PaneState, PaneTone, Rim};
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
-use crate::state::{UiState, WidgetId, accent_label, accent_surface, glass, label_colour, surface};
+use crate::state::{
+    UiState, WidgetId, accent_label, accent_surface, chip, glass, label_colour, surface,
+};
 use crate::text::{Measure, TextRun, truncate_middle};
 use crate::tokens::{Palette, metrics, radius, size, space};
 
@@ -241,15 +243,19 @@ fn draw_header(r: Rect, h: &Header, pal: &Palette, measure: &dyn Measure, out: &
         metrics::TILE_W,
         metrics::TILE_H,
     );
-    out.rect(
-        tile,
-        radius::INSET,
-        pal.cell,
-        Some(Rim {
-            width: metrics::RIM_W,
-            colour: pal.cell_rim,
-        }),
-    );
+    if out.glass {
+        out.glass_pane(tile, radius::INSET, PaneTone::Plain, PaneState::Rest, 1.0);
+    } else {
+        out.rect(
+            tile,
+            radius::INSET,
+            pal.cell,
+            Some(Rim {
+                width: metrics::RIM_W,
+                colour: pal.cell_rim,
+            }),
+        );
+    }
     let label = h.tile.clone().strong().clipped(tile.w - space::SM);
     let lw = measure.width(&label);
     out.text(
@@ -301,15 +307,25 @@ pub fn draw(
     }
     if spec.field {
         // The field: an inset well that always has keyboard focus while the sheet is open.
-        out.rect(
-            l.field,
-            radius::INSET,
-            pal.cell,
-            Some(Rim {
-                width: metrics::RIM_W,
-                colour: pal.cell_focus_rim,
-            }),
-        );
+        if out.glass {
+            out.glass_pane(
+                l.field,
+                radius::INSET,
+                PaneTone::Focused,
+                PaneState::Rest,
+                1.0,
+            );
+        } else {
+            out.rect(
+                l.field,
+                radius::INSET,
+                pal.cell,
+                Some(Rim {
+                    width: metrics::RIM_W,
+                    colour: pal.cell_focus_rim,
+                }),
+            );
+        }
         let tx = l.field.x + space::MD;
         let ty = l.field.y + (l.field.h - size::BODY) / 2.0;
         let text_w = (l.field.w - 2.0 * space::MD).max(0.0);
@@ -361,7 +377,7 @@ pub fn draw(
             } else {
                 surface(pal, st)
             };
-            out.rect(*r, radius::INSET, fill, Some(rim));
+            chip(out, *r, radius::INSET, st, (fill, rim));
         }
         let mut right = r.right() - space::MD;
         match e.marker {

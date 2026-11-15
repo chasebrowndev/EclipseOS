@@ -18,6 +18,8 @@ wayland-client = { version = "0.31", features = ["system"] }
 wayland-backend = { version = "0.3", features = ["client_system"] }
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
 wayland-protocols-plasma = { version = "0.3", features = ["client"] }
+# eclipse_glass_v1 client bindings (ADR 0081, Apache-2.0, ours).
+ec-protocols = { path = "../../../abyss/crates/ec-protocols", features = ["client"] }
 calloop = "0.14"
 raw-window-handle = "0.6"
 rustix = { version = "1", features = ["std", "fs", "pipe", "time"] }

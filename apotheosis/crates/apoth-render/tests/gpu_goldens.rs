@@ -319,6 +319,8 @@ fn decorations_match_the_reference() {
             end: 11,
             bg: Rgb(60, 60, 140),
             fg: Some(Rgb(255, 255, 255)),
+            round: false,
+            rim: None,
         }];
         let got = h.frame(decoration_rows(), vec![0, 1, 2], Damage::Full, None);
         let want = h.reference(None);

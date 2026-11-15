@@ -61,6 +61,9 @@ pub(crate) struct Extras {
     pub content_type: Option<WpContentTypeManagerV1>,
     pub idle_inhibit: Option<ZwpIdleInhibitManagerV1>,
     pub timestamps: Option<ZwpInputTimestampsManagerV1>,
+    /// `eclipse_glass_manager_v1` (ADR 0081), and whether it says it draws panes right now.
+    pub glass: Option<crate::glass::EclipseGlassManagerV1>,
+    pub glass_available: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// Per-window objects, created on first use.
@@ -68,6 +71,7 @@ pub(crate) struct Extras {
 pub(crate) struct WindowExtras {
     pub content_type: Option<WpContentTypeV1>,
     pub inhibitor: Option<ZwpIdleInhibitorV1>,
+    pub glass: Option<crate::glass::GlassPanes>,
 }
 
 /// What an activation token is for.
@@ -110,6 +114,7 @@ impl Extras {
             "wp_content_type_manager_v1" => b!(content_type, WpContentTypeManagerV1),
             "zwp_idle_inhibit_manager_v1" => b!(idle_inhibit, ZwpIdleInhibitManagerV1),
             "zwp_input_timestamps_manager_v1" => b!(timestamps, ZwpInputTimestampsManagerV1),
+            "eclipse_glass_manager_v1" => b!(glass, crate::glass::EclipseGlassManagerV1),
             _ => None,
         }
     }
@@ -124,6 +129,11 @@ impl Extras {
             "wp_content_type_manager_v1" => self.content_type = None,
             "zwp_idle_inhibit_manager_v1" => self.idle_inhibit = None,
             "zwp_input_timestamps_manager_v1" => self.timestamps = None,
+            "eclipse_glass_manager_v1" => {
+                self.glass = None;
+                self.glass_available
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
             _ => {}
         }
     }
@@ -343,6 +353,9 @@ pub(crate) fn destroy_window_extras(w: &mut WindowExtras) {
     }
     if let Some(c) = w.content_type.take() {
         c.destroy();
+    }
+    if let Some(g) = w.glass.take() {
+        g.destroy();
     }
 }
 

@@ -228,8 +228,13 @@ pub mod metrics {
     pub const TAB_MIN_W: f32 = 96.0;
     pub const TAB_MAX_W: f32 = 220.0;
     pub const TAB_GAP: f32 = 4.0;
-    pub const TAB_CLOSE: f32 = 18.0;
-    pub const NEW_TAB: f32 = 28.0;
+    /// The tab's close button and the new-tab button: their hit targets, and the shape
+    /// drawn in each.
+    pub const TAB_CLOSE: f32 = 22.0;
+    pub const NEW_TAB: f32 = 24.0;
+    /// The icon disc and close button of a bar.
+    pub const BAR_ICON: f32 = 18.0;
+    pub const TAB_ICON: f32 = 12.0;
     pub const BADGE_D: f32 = 6.0;
     pub const BAR_H: f32 = 40.0;
     pub const BAR_BUTTON_H: f32 = 26.0;

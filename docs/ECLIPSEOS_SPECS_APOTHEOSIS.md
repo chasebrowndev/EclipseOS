@@ -1154,16 +1154,21 @@ Passes per frame, back to front:
    (`copy_texture_to_texture`, never overlapping in place). Per-row instance ranges move
    with their rows. Only the rows listed in the damage are redrawn. Within it:
    a. backgrounds — one full-grid quad sampling a `cols × rows` RGBA8 texture; selection,
-      search highlight, inverse and dim are folded in on the CPU before upload;
+      search highlight, inverse and dim are folded in on the CPU before upload; then a
+      rounded-rect pass over selection runs and search matches (radius 0.2 × cell height,
+      clamped to 1–6 px; a corner rounds only where the rows above and below leave its
+      column uncovered); the current search match also gets a `cursor_thickness` rim;
    b. glyphs — one instance per glyph (grid position, pixel offset, atlas rect, colour,
       flags), persistent per-row instance ranges rebuilt only for damaged rows;
    c. decorations — underline styles, strikethrough, overline as procedural rects/sprites
       with integer period arithmetic so patterns join across cells.
 4. Images with z ≥ 0, media placements.
-5. Cursor (block, beam, underline, hollow when unfocused); glyph under a block cursor is
+5. Cursor (block, beam, underline, hollow when unfocused); block and beam are rounded
+   rects, underline and hollow stay square; glyph under a block cursor is
    recoloured; optional smooth cursor motion, default off.
 6. IME preedit.
-7. Glass interface draw list (T-08): rounded rects (SDF), images, text.
+7. Glass interface draw list (T-08): rounded rects (SDF), images, text, and an erase
+   kind (Zero/OneMinusSrcAlpha) that cuts grid content out under a compositor glass pane.
 8. Overlays.
 
 **Atlases** are per window, owned by that window's render thread; no lock is taken on an
@@ -1271,7 +1276,13 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
 - Interface layers sit above the grid: each is a rounded rect with fill alpha from the
   token table and a 1 px hairline rim. While blur is on, layers carry **no** drop shadow
   and no top-edge highlight (STYLE.md: cards inside a window are fill + hairline only;
-  the compositor's rim lights the edge). The inner top highlight and the analytic
+  the compositor's rim lights the edge). **On Abyss with `eclipse_glass_manager_v1`**
+  advertised, chips and sheets (palette, search bar, menus, tabs, bar buttons, media
+  controls, float backing) draw no ground — neither fill nor rim; each is sent as an
+  `eclipse_glass_v1` pane (ADR 0081 "microglass") and the client erases the grid under it.
+  The keyboard-focus rim, wells, keycaps and the danger rim stay client-drawn. The
+  `capability` event, not the bind, switches between this and the client-drawn ground at
+  run time. The inner top highlight and the analytic
   rounded-rect shadow (no blur pass) are drawn only in the blur-off fallback and, for the
   window shadow, only for CSD off Abyss (T-09 §4).
 - Text over glass meets a minimum contrast of 4.5:1 against the *worst-case* backdrop
@@ -1281,7 +1292,9 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
 | Surface | Release | Notes |
 |---|---|---|
 | Window frame | R1 | On Abyss server-side decorations are requested (COMP-06 `xdg_decoration` prefers server-side) and the title row collapses to the tab strip, hidden when one tab unless `tabs.show` is `always`. CSD (off Abyss, or `window.decorations client`): title bar merged with the tab strip; buttons per `wm_capabilities`; shadow as a transparent margin with `set_window_geometry`; input region trimmed. `window.hide-chrome` (set of `tiled|maximized|fullscreen`, default `fullscreen`) hides the chrome in those states |
-| Tab strip | R1 | `tabs.style` `floating|flat|hidden`; `tabs.position` `top|bottom`; title from the tab template (T-11 §8); badges: unseen output, bell, running, progress (OSC 9;4), exit status of last command; close and new-tab buttons; middle-click close; wheel switch; drag reorder (drag between windows is R3, needs xdg-toplevel-drag) |
+| Tab strip | R1 | `tabs.style` `floating|flat|hidden`; `tabs.position` `top|bottom`; title from the tab template (T-11 §8); badges: unseen output, bell, running, progress (OSC 9;4), exit status of last command; close and new-tab buttons (hit targets 22 and 24 px, 12 px glyphs drawn as shapes, each
+with a chip-family hover pane; new-tab sits right after the rightmost tab, at the left
+edge with no tabs, and stays at the end of the visible strip on overflow); middle-click close; wheel switch; drag reorder (drag between windows is R3, needs xdg-toplevel-drag) |
 | Pane frame | R1 | Rim and optional title per pane; `panes.frame` `full|titles|none`; focused pane = brighter rim; inactive dim `panes.inactive-dim` (T-13 §3, 0 disables); split handles draggable, double-click equalises |
 | Scrollbar | R1 | Overlay; `scrollbar.mode` `auto-hide|always|never`; `scrollbar.marks` (set of `prompts|search|bells`, default all) — prompts coloured by exit status |
 | Search bar | R1 | T-14 §6 |
@@ -1358,6 +1371,7 @@ fatal for the connection and logged with interface and code. Main reads `CLOCK_M
 | primary-selection-v1 | primary selection | disabled |
 | cursor-shape-v1 | named shapes (incl. OSC 22) | themed cursor via shm |
 | xdg-activation-v1 | urgency, focus hand-off from `apoth` launches | no urgency |
+| eclipse_glass_manager_v1 | interface chips and sheets as compositor glass panes on Abyss (T-08 §3); its `capability` event switches mode at run time | client-drawn glass |
 | zwp_input_timestamps_v1 | optional: nanosecond input times recorded as an informative latency series (T-23 §1 Clocks); never a gate input | client-side stamps only |
 | presentation-time | latency measurement, frame scheduling phase | frame callbacks only |
 | fifo-v1, commit-timing-v1 | informational only: used by the WSI under Fifo; Apotheosis never creates these objects on its surfaces (T-07 §2) | — |
@@ -1395,10 +1409,11 @@ exposed by the `wayland-info` Action and IPC (AUTOMATION-38).
 ## 5. Blur
 Bind `ext_background_effect_manager_v1`, track its `capabilities` (blur bit), create one
 effect object per surface, and set the blur region, committed with the frame that draws
-it. On Abyss the region is one box covering the window geometry (T-08 §3) and only
-`ext_background_effect_v1` is used. Off Abyss the region is the glass rects and the
+it. On Abyss the region is one box covering the window geometry (T-08 §3); interface
+chips and sheets are `eclipse_glass_v1` panes (optional global `eclipse_glass_manager_v1`;
+absent → client-drawn glass; T-08 §3, ADR 0081). Off Abyss the region is the glass rects and the
 ladder is ext effect → `org_kde_kwin_blur` → tint/opaque. Capabilities can change at
-runtime; the ladder is re-evaluated. No private Eclipse protocol is used (ADR 0109).
+runtime; the ladder is re-evaluated.
 
 ## 6. Seat
 - Keyboard: keymap fd → the XKB backend (T-05); repeat is timed by us from
@@ -2576,7 +2591,8 @@ needed or added. Detection runs once at start on the pool and again on socket lo
   re-implements either and holds no seed → colour mapping of its own.
 
 ## 3. Glass
-On Abyss, blur through `ext_background_effect_v1` only, with one region box covering the window geometry so the compositor draws backdrop, rim, bezel and shadow (COMP-06 §1, COMP-02 C-14/C-15); server-side decorations are requested; the client lays only the tint (STYLE.md §Colour; T-08 §3). Off Abyss the T-09 §5 ladder applies (ext → `org_kde_kwin_blur` → tint). Apotheosis asks for no entry in any compositor allow-list and has no private glass protocol.
+On Abyss, blur through `ext_background_effect_v1` only, with one region box covering the window geometry so the compositor draws backdrop, rim, bezel and shadow (COMP-06 §1, COMP-02 C-14/C-15); server-side decorations are requested; the client lays only the tint (STYLE.md §Colour; T-08 §3). Off Abyss the T-09 §5 ladder applies (ext → `org_kde_kwin_blur` → tint). Interface chips and sheets are `eclipse_glass_v1` panes; `apotheosis` is on the Abyss
+glass allow-list (`protocols/standard/glass.rs` DEFAULT_ALLOW; ADR 0081, amending ADR 0109).
 
 ## 4. Semantic publishing
 - `abyss/crates/ec-cataclysm-pub` is renamed `ec-term-pub` and its C ABI removed

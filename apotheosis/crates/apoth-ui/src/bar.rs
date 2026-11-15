@@ -9,7 +9,8 @@ use crate::draw::{DrawList, IconId, Rim};
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
 use crate::state::{
-    ControlState, UiState, WidgetId, accent_label, accent_surface, glass, label_colour, surface,
+    ControlState, UiState, WidgetId, accent_label, accent_surface, chip, glass, label_colour,
+    surface,
 };
 use crate::text::{Measure, TextOrigin, TextRun};
 use crate::tokens::{Palette, alpha, metrics, motion, radius, size, space};
@@ -324,7 +325,7 @@ fn bar_layout(area: Rect, spec: &BarSpec, measure: &dyn Measure) -> BarLayout {
         metrics::BAR_H,
     );
     let cells = button_cells(spec, measure, bar.right() - space::MD, bar);
-    let icon = bar.centred_y(bar.x + space::MD, metrics::TAB_CLOSE, metrics::TAB_CLOSE);
+    let icon = bar.centred_y(bar.x + space::MD, metrics::BAR_ICON, metrics::BAR_ICON);
     let text_x = icon.right() + space::SM;
     let text_max = (cells.first().map_or(bar.right(), |c| c.rect.x) - space::MD - text_x).max(0.0);
     let detail = spec.detail.as_ref().filter(|d| !d.text.is_empty());
@@ -378,7 +379,7 @@ fn sheet_layout(area: Rect, spec: &BarSpec, body: &TextRun, measure: &dyn Measur
         .as_ref()
         .map_or(0.0, |_| size::BODY_SMALL + space::XS);
     let h = space::LG
-        + metrics::TAB_CLOSE
+        + metrics::BAR_ICON
         + space::XS
         + sub_h
         + space::SM
@@ -393,8 +394,8 @@ fn sheet_layout(area: Rect, spec: &BarSpec, body: &TextRun, measure: &dyn Measur
     let icon = Rect::new(
         left,
         sheet.y + space::LG,
-        metrics::TAB_CLOSE,
-        metrics::TAB_CLOSE,
+        metrics::BAR_ICON,
+        metrics::BAR_ICON,
     );
     let text_x = icon.right() + space::SM;
     let text_max = (sheet.right() - space::LG - text_x).max(0.0);
@@ -594,7 +595,7 @@ pub fn draw(
         } else {
             label_colour(pal, st)
         };
-        out.rect(cell.rect, radius::PILL, bf, Some(br));
+        chip(out, cell.rect, radius::PILL, st, (bf, br));
         out.rect(
             cell.keycap,
             radius::KEYCAP,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Retained per-widget state keyed by stable ids, and the state -> colour mapping.
 
-use crate::draw::{DrawList, Rim};
+use crate::draw::{DrawList, PaneState, PaneTone, Rim};
 use crate::geom::Rect;
 use crate::tokens::{Palette, Rgba, alpha, metrics};
 
@@ -162,6 +162,70 @@ pub fn label_colour(p: &Palette, s: ControlState) -> Rgba {
     }
 }
 
+/// The pane tone and state of a control (the chip family): selected or keyboard-focused is
+/// the clearer tone; hover and pressed lift the rim.
+pub fn pane_of(s: ControlState) -> (PaneTone, PaneState) {
+    let active = !s.disabled;
+    let tone = if s.selected || (s.focus_kb && active) {
+        PaneTone::Focused
+    } else {
+        PaneTone::Plain
+    };
+    let state = if active && s.pressed {
+        PaneState::Pressed
+    } else if active && s.hover {
+        PaneState::Hover
+    } else {
+        PaneState::Rest
+    };
+    (tone, state)
+}
+
+/// A control's ground from [`surface`] or [`accent_surface`]. In glass mode the compositor
+/// draws the fill and hairline as a pane; only the keyboard focus rim (a crisp gold ring)
+/// stays client-drawn.
+pub fn chip(out: &mut DrawList, rect: Rect, radius: f32, s: ControlState, ground: (Rgba, Rim)) {
+    if out.glass {
+        let (tone, state) = pane_of(s);
+        out.glass_pane(rect, radius, tone, state, 1.0);
+        if s.focus_kb && !s.disabled {
+            out.rect(rect, radius, Rgba::CLEAR, Some(ground.1));
+        }
+    } else {
+        out.rect(rect, radius, ground.0, Some(ground.1));
+    }
+}
+
+/// A faded floating control (a media disc or close button): [`glass_faded`] under the
+/// control's state fill; in glass mode one pane that carries the state itself.
+pub fn chip_faded(
+    out: &mut DrawList,
+    rect: Rect,
+    radius: f32,
+    s: ControlState,
+    pal: &Palette,
+    k: f32,
+) {
+    let (fill, rim) = surface(pal, s);
+    if out.glass {
+        let (tone, state) = pane_of(s);
+        out.glass_pane(rect, radius, tone, state, k);
+        return;
+    }
+    glass_faded(out, rect, radius, rim.colour, pal, k);
+    if fill != pal.cell && fill != Rgba::CLEAR {
+        out.rect(
+            rect,
+            radius,
+            fill.scaled(k),
+            Some(Rim {
+                width: rim.width,
+                colour: rim.colour.scaled(k),
+            }),
+        );
+    }
+}
+
 /// A floating glass layer: frost under the sheet tint so the grid beneath cannot ghost
 /// through its text, a hairline `rim` (the compositor draws no rim inside the window).
 pub fn glass(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette) {
@@ -170,6 +234,10 @@ pub fn glass(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palet
 
 /// [`glass`] at opacity `k` in `0..=1` (a fading layer): every alpha is scaled by `k`.
 pub fn glass_faded(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette, k: f32) {
+    if out.glass {
+        out.glass_pane(rect, radius, PaneTone::Plain, PaneState::Rest, k);
+        return;
+    }
     out.rect(rect, radius, pal.base.alpha(alpha::BACKING).scaled(k), None);
     out.rect(rect, radius, pal.sheet_tint.scaled(k), None);
     // The light catches the layer: one cell step of lift, so it reads as a pane above the

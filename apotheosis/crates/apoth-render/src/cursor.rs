@@ -45,11 +45,26 @@ pub struct CursorState {
     pub alpha: u8,
 }
 
+/// A block or beam caret with slightly rounded corners, drawn by the renderer's rounded-rect
+/// pass in place of its `rects` (which keep the same square geometry for the tests and the
+/// CPU reference).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundCaret {
+    /// x, y, w, h in grid pixels.
+    pub rect: [i32; 4],
+    /// Corner radius in pixels.
+    pub radius: f32,
+    /// Straight-alpha RGBA8; alpha is the eased blink level.
+    pub colour: [u8; 4],
+}
+
 /// The cursor's instances for one frame.
 #[derive(Clone, Debug, Default)]
 pub struct CursorScene {
     /// Cursor rects (0, 1 or 4).
     pub rects: Vec<RectInstance>,
+    /// The rounded form of a block or beam caret.
+    pub round: Option<RoundCaret>,
     /// The glyph redrawn over a block cursor in the cursor text colour.
     pub glyph: Option<GlyphInstance>,
 }
@@ -74,6 +89,7 @@ pub fn build<P: GlyphProvider>(
     out: &mut CursorScene,
 ) {
     out.rects.clear();
+    out.round = None;
     out.glyph = None;
     if !st.visible || st.alpha == 0 {
         return;
@@ -107,9 +123,25 @@ pub fn build<P: GlyphProvider>(
     let h = m.height;
     let t = m.cursor_thickness.max(1);
 
+    let straight = [colour.0, colour.1, colour.2, st.alpha];
     match effective_shape(st.shape, st.focused) {
-        CursorShape::Block => out.rects.push(RectInstance::new(x, y, w, h, c)),
-        CursorShape::Beam => out.rects.push(RectInstance::new(x, y, t.min(w), h, c)),
+        CursorShape::Block => {
+            out.rects.push(RectInstance::new(x, y, w, h, c));
+            out.round = Some(RoundCaret {
+                rect: [x, y, w, h],
+                radius: (h as f32 * 0.125).max(1.5).min(w as f32 / 2.0),
+                colour: straight,
+            });
+        }
+        CursorShape::Beam => {
+            let bw = t.min(w);
+            out.rects.push(RectInstance::new(x, y, bw, h, c));
+            out.round = Some(RoundCaret {
+                rect: [x, y, bw, h],
+                radius: bw as f32 / 2.0,
+                colour: straight,
+            });
+        }
         CursorShape::Underline => {
             let t = t.min(h);
             out.rects.push(RectInstance::new(x, y + h - t, w, t, c));

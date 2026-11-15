@@ -369,6 +369,13 @@ impl WlHandle {
             .unwrap_or(false)
     }
 
+    /// The window's compositor-glass pane handle (`eclipse_glass_v1`, ADR 0081), `None`
+    /// while the global is not bound. The handle is `Send`: the render thread sends panes
+    /// with it just before it presents.
+    pub fn glass_panes(&self, id: WindowId) -> Option<crate::GlassPanes> {
+        self.win(id, |s, wi| s.glass_panes(wi)).flatten()
+    }
+
     /// Inhibit or release screen idle for the window (`media.inhibit-idle`).
     pub fn set_idle_inhibit(&self, id: WindowId, on: bool) -> bool {
         self.win(id, |s, wi| s.set_idle_inhibit(wi, on))

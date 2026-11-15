@@ -36,7 +36,7 @@ use apoth_wl::{PaceEvent, Pacer, WlSurfaceHandle};
 use crate::glyphs::{COLOR_PAGES, Glyphs, MASK_PAGES, PAGE};
 use crate::hook::{ImageDump, MediaDump, ViewDump};
 use crate::pane::{MainMsg, PaneKey, PaneShared, RenderMsg, now_ns};
-use crate::ui::{Overlay, UiRaster, build_chrome};
+use crate::ui::{Overlay, UiRaster, build_chrome_glass};
 use crate::view::{Source, View, paint};
 
 /// Configured default colours. The term's own values win once a program has changed them
@@ -209,6 +209,7 @@ pub(crate) fn hl_colours(
         match_fg: ink(match_bg),
         current_bg: current_bg_c,
         current_fg: ink(current_bg_c),
+        current_rim: over_bg(pal.accent_border, bg),
         cursor_bg: rgb_of(ec_theme::Rgba(pal.text.0)),
         cursor_fg: Some(rgb_of(ec_theme::Rgba(pal.base.0))),
         hint_bg,
@@ -453,6 +454,8 @@ pub(crate) struct RenderArgs {
     /// A sender into `rx`: the pacer's wake-up for events that arrive on the render queue.
     pub(crate) poke: mpsc::Sender<RenderMsg>,
     pub(crate) to_main: calloop::channel::Sender<MainMsg>,
+    /// Compositor glass panes (`eclipse_glass_v1`) for this window, when bound.
+    pub(crate) glass: Option<apoth_wl::GlassPanes>,
 }
 
 /// Padding in physical pixels at `scale`; main uses the same rule for the grid size.
@@ -878,6 +881,7 @@ fn run(a: RenderArgs) {
         rx,
         poke,
         to_main,
+        glass,
     } = a;
     pacer.set_wake(move || {
         let _ = poke.send(RenderMsg::Poke);
@@ -929,6 +933,8 @@ fn run(a: RenderArgs) {
     let mut ui_cache: Option<(String, FontSystem)> = None;
     let mut raster = UiRaster::new();
     let mut chrome_dirty = false;
+    // Whether the compositor draws the interface's ground (it may start or stop at runtime).
+    let mut glass_seen = false;
     // Media control fades (T-08 §4) on this thread's clock.
     let mut fades = MediaFades::default();
     let t0 = Instant::now();
@@ -936,6 +942,12 @@ fn run(a: RenderArgs) {
 
     'outer: loop {
         let now = now_ns();
+        let glass_now = glass.as_ref().is_some_and(apoth_wl::GlassPanes::available);
+        if glass_now != glass_seen {
+            glass_seen = glass_now;
+            chrome_dirty = true;
+            sched.damage(now);
+        }
         let mut surface_event = false;
         while let Some(ev) = pacer.try_recv() {
             match ev {
@@ -1086,7 +1098,9 @@ fn run(a: RenderArgs) {
                         .map_or(0, |o| o.shown_at.elapsed().as_millis() as u64);
                     let ui_scale = (scale * f64::from(rs.ui_zoom)) as f32;
                     let fonts = ui_fonts(&rs, &mut ui_cache, &mut glyphs.fonts);
-                    build_chrome(
+                    // Logical pixels per interface unit: the zoom (the output scale is the
+                    // surface's own).
+                    let panes_out = build_chrome_glass(
                         stack.renderer.chrome_mut(),
                         overlay.as_ref(),
                         &chrome,
@@ -1096,7 +1110,13 @@ fn run(a: RenderArgs) {
                         age,
                         fonts,
                         &mut raster,
+                        glass_seen.then_some(rs.ui_zoom),
                     );
+                    // Sent before the present below, which commits the surface: the
+                    // compositor latches panes and buffer together. Unchanged sends nothing.
+                    if let Some(g) = &glass {
+                        g.set(&panes_out);
+                    }
                 }
                 let a = rs.opacity;
                 // The clear is the focused pane's background (dividers and padding show it).
