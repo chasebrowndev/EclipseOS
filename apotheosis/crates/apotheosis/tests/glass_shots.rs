@@ -475,6 +475,19 @@ fn run_cases(s: &mut Shots) {
         s.key("Escape", &[]);
         s.until("menu closed", |s| s.mux_has("palette closed"));
     }
+    if wanted("context-menu") {
+        s.sh("clear; echo $HOME/out/pic.png");
+        s.pause(600);
+        s.click(120.0, 24.0, "right");
+        s.until("the context menu", |s| s.mux_has("palette open mode Open"));
+        s.shot("context-menu");
+        s.key("Down", &[]);
+        s.key("Return", &[]);
+        s.pause(600);
+        s.shot("context-submenu");
+        s.key("Escape", &[]);
+        s.until("menu closed", |s| s.mux_has("palette closed"));
+    }
     if wanted("open-picker") {
         s.sh("clear");
         s.sh("apoth do \"open.with $HOME/out/pic.png\"");
@@ -558,8 +571,67 @@ fn run_cases(s: &mut Shots) {
         s.sh("printf '\\033]9;4;1;45\\033\\\\'");
         s.pause(500);
         s.shot("tab-profile-progress");
+        s.hover(120.0, 25.0);
+        s.pause(500);
+        s.shot("tabs-hover");
+        s.nudge = (3.0, 3.0);
         s.sh("exit");
         s.pause(800);
+    }
+    if wanted("palette") {
+        s.sh("clear");
+        s.sh("apoth do palette.open");
+        s.until("the palette", |s| s.mux_has("palette open"));
+        s.type_text("tab");
+        s.pause(500);
+        s.shot("palette");
+        s.key("Escape", &[]);
+        s.until("palette closed", |s| s.mux_has("palette closed"));
+    }
+    if wanted("search") {
+        s.sh("clear; echo alpha beta alpha; echo gamma alpha delta");
+        s.pause(500);
+        s.sh("apoth do search.start");
+        s.pause(400);
+        s.type_text("alpha");
+        s.pause(300);
+        s.click(645.0, 38.0, "left");
+        s.hover(700.0, 38.0);
+        s.pause(600);
+        s.shot("search");
+        s.key("Escape", &[]);
+        s.pause(400);
+    }
+    if wanted("selection") {
+        s.sh("clear; echo alpha beta gamma; echo delta alpha");
+        s.pause(500);
+        s.click(85.0, 24.0, "left");
+        s.click(85.0, 24.0, "left");
+        s.pause(300);
+        s.shot("selection");
+        s.click(300.0, 300.0, "left");
+        s.pause(300);
+    }
+    if wanted("hints") {
+        s.sh("clear; echo https://example.net/a and https://example.org/b");
+        s.pause(500);
+        s.sh("apoth do hints.start");
+        s.pause(600);
+        s.shot("hints");
+        s.key("Escape", &[]);
+        s.pause(400);
+    }
+    if wanted("config-error") {
+        let kdl = s.dir.join("home/.config/eclipse/apotheosis.kdl");
+        std::fs::create_dir_all(kdl.parent().unwrap()).unwrap();
+        let good = std::fs::read_to_string(&kdl).unwrap();
+        std::fs::write(&kdl, "version 1\nnonsense-key 12 {\n").unwrap();
+        s.sh("clear; apoth do config.reload");
+        s.pause(1200);
+        s.shot("config-error");
+        std::fs::write(&kdl, good).unwrap();
+        s.key("Escape", &[]);
+        s.pause(500);
     }
     if wanted("rule-confirm") {
         s.sh("clear");

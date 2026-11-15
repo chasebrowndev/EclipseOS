@@ -345,6 +345,7 @@ fn cursor_shapes_match_the_reference() {
             shape,
             visible: true,
             focused,
+            alpha: 255,
         };
         // Build the glyph request before the frame so the atlas holds the glyph.
         let ctx = BuildCtx {

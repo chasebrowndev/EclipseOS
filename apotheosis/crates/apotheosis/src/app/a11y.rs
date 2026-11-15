@@ -83,6 +83,7 @@ impl App {
             apoth_ui::palette::Marker::Switch(on) => {
                 label.push_str(if on { ", on" } else { ", off" });
             }
+            apoth_ui::palette::Marker::Submenu => label.push_str(", submenu"),
             apoth_ui::palette::Marker::None => {}
         }
         if disabled {

@@ -172,7 +172,7 @@ fn ink_on(bg: Rgb, text: apoth_ui::tokens::Rgba, base: apoth_ui::tokens::Rgba) -
 
 /// Search, hint and copy-mode colours (T-08, T-14), derived from the theme palette over the
 /// pane's own background so they read on light and dark alike. Matches are a quiet accent
-/// tint; the current match and hint labels are the solid accent with its on-accent ink; the
+/// tint; the current match and hint labels are the inset ground (a cell step over the pane) with gold text (a grid cell has no rim); the
 /// copy-mode cursor is the theme's ink (never the accent, since it sits on the current
 /// match). Highlighted text is re-inked from the theme so it keeps 4.5:1 whatever its
 /// own colour was.
@@ -189,26 +189,42 @@ pub(crate) fn hl_colours(
     };
     let match_bg = over_bg(pal.accent.alpha(MATCH_TINT), bg);
     let hint_bg = over_bg(pal.accent.alpha(HINT_TINT), bg);
+    let current_bg_c = over_bg(pal.accent.alpha(CURRENT_TINT), bg);
+    // The inset ground on dark; on light the pane itself, since an ink tint under the gold
+    // text would drop it below 4.5:1.
+    let label_bg_c = if light { bg } else { over_bg(pal.cell, bg) };
     let ink = |g| Some(ink_on(g, pal.text, pal.base));
+    // Selection: the chosen colour as a soft tint over the pane, not a slab.
+    let sel_soft = over_bg(
+        apoth_ui::tokens::Rgba::hex(
+            (u32::from(sel_bg.0) << 16) | (u32::from(sel_bg.1) << 8) | u32::from(sel_bg.2),
+        )
+        .alpha(SEL_TINT),
+        bg,
+    );
     crate::view::HlColours {
-        sel_bg,
+        sel_bg: sel_soft,
         sel_fg,
         match_bg,
         match_fg: ink(match_bg),
-        current_bg: rgb_of(ec_theme::Rgba(pal.accent.0)),
-        current_fg: Some(rgb_of(ec_theme::Rgba(pal.on_accent.0))),
+        current_bg: current_bg_c,
+        current_fg: ink(current_bg_c),
         cursor_bg: rgb_of(ec_theme::Rgba(pal.text.0)),
         cursor_fg: Some(rgb_of(ec_theme::Rgba(pal.base.0))),
         hint_bg,
         hint_fg: ink(hint_bg),
-        label_bg: rgb_of(ec_theme::Rgba(pal.accent.0)),
-        label_fg: Some(rgb_of(ec_theme::Rgba(pal.on_accent.0))),
+        label_bg: label_bg_c,
+        label_fg: Some(rgb_of(ec_theme::Rgba(pal.accent_text.0))),
     }
 }
 
 /// Accent strength of an ordinary search match, and of the span a hint label sits on.
 const MATCH_TINT: f32 = 0.34;
 const HINT_TINT: f32 = 0.18;
+/// The current match: a brighter tint of the same family, never a solid slab.
+const CURRENT_TINT: f32 = 0.78;
+/// How much of the selection colour shows over the pane.
+const SEL_TINT: f32 = 0.55;
 
 /// One pane of the shown tab as main places it.
 #[derive(Clone)]
@@ -529,6 +545,12 @@ struct PaneR {
     cur: Option<CursorInfo>,
     show_cursor: bool,
     last_cursor: (usize, usize),
+    /// The caret's blink: when the cursor last moved or took focus, the next hold's end and
+    /// whether a fade runs (the scheduler's inputs).
+    blink_epoch: Instant,
+    blink_focused: bool,
+    blink_due: Option<Instant>,
+    blink_fading: bool,
     vdump: Option<ViewDump>,
     /// Image placements in view (T-15 §6), taken with the snapshot.
     draws: Vec<ImageDraw>,
@@ -582,6 +604,10 @@ impl PaneR {
             cur: None,
             show_cursor: false,
             last_cursor: (usize::MAX, usize::MAX),
+            blink_epoch: Instant::now(),
+            blink_focused: false,
+            blink_due: None,
+            blink_fading: false,
             vdump,
             draws: Vec::new(),
             media: Vec::new(),
@@ -762,12 +788,18 @@ impl PaneR {
         to_main: &calloop::channel::Sender<MainMsg>,
     ) {
         self.show_cursor = false;
+        self.blink_due = None;
+        self.blink_fading = false;
         let Some(cur) = self.cur else { return };
+        let focused = self.v.focused && self.v.shared.focused.load(Ordering::Acquire);
+        if (cur.y, cur.x) != self.last_cursor || focused != self.blink_focused {
+            self.blink_epoch = Instant::now();
+            self.blink_focused = focused;
+        }
         if (cur.y, cur.x) != self.last_cursor {
             self.last_cursor = (cur.y, cur.x);
             let _ = to_main.send(MainMsg::Cursor(self.v.id, self.last_cursor));
         }
-        let focused = self.v.focused && self.v.shared.focused.load(Ordering::Acquire);
         let rows = self.disp().rows.len();
         self.show_cursor = cur.visible
             && self.view.offset() == 0
@@ -784,12 +816,26 @@ impl PaneR {
             metrics: &metrics,
             highlights: &self.hl,
         };
+        let level = if cur.style.blink && focused {
+            let c = apoth_ui::motion::caret_blink(
+                self.blink_epoch.elapsed().as_millis() as u64,
+                rs.motion,
+            );
+            self.blink_fading = c.fading;
+            self.blink_due = c
+                .next_ms
+                .map(|ms| Instant::now() + Duration::from_millis(ms));
+            c.alpha
+        } else {
+            1.0
+        };
         let st = CursorState {
             col: cur.x,
             row: cur.y,
             shape: shape_of(cur.style.shape, rs.cursor_shape),
             visible: true,
             focused,
+            alpha: (level * 255.0 + 0.5) as u8,
         };
         let disp = match self.source {
             Source::Composed { .. } => self.view.composed(),
@@ -1097,7 +1143,10 @@ fn run(a: RenderArgs) {
                     PresentOutcome::Presented(st) => {
                         fault_streak = 0;
                         sched.rendered();
-                        let due = panes.iter().filter_map(|p| p.due).min();
+                        let due = panes
+                            .iter()
+                            .flat_map(|p| p.due.into_iter().chain(p.blink_due))
+                            .min();
                         sched.animate(due.map(|d| {
                             now_ns()
                                 + u64::try_from(
@@ -1162,7 +1211,7 @@ fn run(a: RenderArgs) {
                         }
                     }
                 }
-                if pending > 0 || fading {
+                if pending > 0 || fading || panes.iter().any(|p| p.blink_fading) {
                     sched.damage(now_ns());
                 }
                 continue;

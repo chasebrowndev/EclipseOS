@@ -357,6 +357,7 @@ fn cursor_shapes_scene_and_pixels() {
             shape,
             visible: true,
             focused,
+            alpha: 255,
         };
         let mut cs = CursorScene::default();
         cursor::build(&st, &snap_row, &ctx, false, &mut synth, &mut cs);

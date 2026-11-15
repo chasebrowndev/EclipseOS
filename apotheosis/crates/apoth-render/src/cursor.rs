@@ -41,6 +41,8 @@ pub struct CursorState {
     pub visible: bool,
     /// The window and pane have focus.
     pub focused: bool,
+    /// Blink fade level, `0..=255` (255 = solid). The caller eases it; no timer here.
+    pub alpha: u8,
 }
 
 /// The cursor's instances for one frame.
@@ -73,7 +75,7 @@ pub fn build<P: GlyphProvider>(
 ) {
     out.rects.clear();
     out.glyph = None;
-    if !st.visible {
+    if !st.visible || st.alpha == 0 {
         return;
     }
     let Some(cell) = row.cells.get(st.col) else {
@@ -93,7 +95,7 @@ pub fn build<P: GlyphProvider>(
     }
     let colour: Rgb = pal.cursor.unwrap_or(fg);
     let text: Rgb = pal.cursor_text.unwrap_or(bg);
-    let c = colour.premul(255);
+    let c = colour.premul(st.alpha);
 
     let x = st.col as i32 * m.width;
     let y = st.row as i32 * m.height;
@@ -174,7 +176,7 @@ pub fn build<P: GlyphProvider>(
             color: if g.color {
                 [255, 255, 255, 255]
             } else {
-                text.premul(255)
+                text.premul(st.alpha)
             },
         });
     }
@@ -236,6 +238,7 @@ mod tests {
             shape,
             visible,
             focused,
+            alpha: 255,
         };
         let mut out = CursorScene::default();
         build(&st, &row(), &ctx, false, &mut Ready, &mut out);
@@ -316,6 +319,7 @@ mod tests {
             shape: CursorShape::Block,
             visible: true,
             focused: true,
+            alpha: 255,
         };
         let mut out = CursorScene::default();
         build(&st, &r, &ctx, false, &mut Ready, &mut out);
@@ -339,6 +343,7 @@ mod tests {
             shape: CursorShape::Block,
             visible: true,
             focused: true,
+            alpha: 255,
         };
         let mut out = CursorScene::default();
         build(&st, &row(), &ctx, false, &mut Ready, &mut out);

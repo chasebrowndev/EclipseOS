@@ -14,7 +14,7 @@
 use crate::draw::{DrawList, Rim};
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
-use crate::state::{ControlState, UiState, WidgetId, glass, label_colour, surface};
+use crate::state::{UiState, WidgetId, accent_label, accent_surface, glass, label_colour, surface};
 use crate::text::{Measure, TextRun, truncate_middle};
 use crate::tokens::{Palette, metrics, radius, size, space};
 
@@ -27,6 +27,8 @@ pub enum Marker {
     Default,
     /// A switch, on or off.
     Switch(bool),
+    /// Opens a submenu: a trailing chevron.
+    Submenu,
 }
 
 /// One entry. Titles are interface text (registry titles, tab titles are sanitised by the
@@ -111,7 +113,16 @@ pub fn row_id(id: WidgetId, i: usize) -> WidgetId {
 }
 
 pub fn layout(area: Rect, spec: &PaletteSpec) -> PaletteLayout {
-    let full = if spec.anchor.is_some() {
+    // A right-click menu (anchored, no field) is compact; an anchored picker is not.
+    let compact = !spec.field && spec.header.is_none();
+    let row_h = if compact {
+        metrics::CONTEXT_ROW_H
+    } else {
+        metrics::PALETTE_ROW_H
+    };
+    let full = if compact {
+        metrics::CONTEXT_MENU_W
+    } else if spec.anchor.is_some() {
         metrics::MENU_W
     } else {
         metrics::PALETTE_W
@@ -125,9 +136,9 @@ pub fn layout(area: Rect, spec: &PaletteSpec) -> PaletteLayout {
         0.0
     };
     let list_h = if n == 0 {
-        metrics::PALETTE_ROW_H
+        row_h
     } else {
-        n as f32 * metrics::PALETTE_ROW_H + gap
+        n as f32 * row_h + gap
     };
     let header_h = if spec.header.is_some() {
         metrics::MENU_HEADER_H + space::SM
@@ -182,12 +193,7 @@ pub fn layout(area: Rect, spec: &PaletteSpec) -> PaletteLayout {
     let rows: Vec<_> = (0..n)
         .map(|i| {
             let lift = if pinned > 0 && i >= pinned { gap } else { 0.0 };
-            let r = Rect::new(
-                list.x,
-                list.y + i as f32 * metrics::PALETTE_ROW_H + lift,
-                list.w,
-                metrics::PALETTE_ROW_H,
-            );
+            let r = Rect::new(list.x, list.y + i as f32 * row_h + lift, list.w, row_h);
             (i, row_id(spec.id, i), r)
         })
         .collect();
@@ -350,7 +356,11 @@ pub fn draw(
         let st = ui.control(*id, e.disabled, selected);
         // A disabled row lights only when the keyboard is on it.
         if selected || (!e.disabled && (st.hover || st.pressed)) {
-            let (fill, rim) = surface(pal, st);
+            let (fill, rim) = if selected {
+                accent_surface(pal, st)
+            } else {
+                surface(pal, st)
+            };
             out.rect(*r, radius::INSET, fill, Some(rim));
         }
         let mut right = r.right() - space::MD;
@@ -372,7 +382,7 @@ pub fn draw(
                 out.rect(
                     tag,
                     radius::PILL,
-                    pal.accent_fill,
+                    pal.cell,
                     Some(Rim {
                         width: metrics::RIM_W,
                         colour: pal.accent_border,
@@ -384,6 +394,16 @@ pub fn draw(
                     pal.accent_text,
                 );
                 right = tag.x - space::SM;
+            }
+            Marker::Submenu => {
+                let run = TextRun::interface("\u{203a}", size::BODY);
+                let tw = measure.width(&run);
+                out.text(
+                    run,
+                    Point::new(right - tw, r.y + (r.h - size::BODY) / 2.0),
+                    label_colour(pal, st),
+                );
+                right -= tw + space::SM;
             }
             Marker::None => {}
         }
@@ -405,7 +425,11 @@ pub fn draw(
         out.text(
             e.title.clone().clipped(title_w),
             Point::new(r.x + space::MD, r.y + (r.h - size::BODY) / 2.0),
-            label_colour(pal, ControlState { selected, ..st }),
+            if selected {
+                accent_label(pal, st)
+            } else {
+                label_colour(pal, st)
+            },
         );
     }
 }

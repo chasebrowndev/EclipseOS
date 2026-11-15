@@ -916,7 +916,7 @@ fn bar_draw_golden_shape() {
             hex(p.cell_focus),
             hex(p.cell_focus_rim)
         )),
-        "primary: cell_focus fill + rim"
+        "primary: inset fill + gold-tinted rim"
     );
     // Glass is three layers (frost, tint, rim), then the rest of the bar.
     assert_eq!(o.len(), 3 + 4 + 1 + 4 * 2 + 1);
@@ -1207,7 +1207,7 @@ fn palette_draw_selected_row_is_brighter_with_a_rim_and_no_glow() {
     let Cmd::RoundedRect { fill, rim, .. } = row_rects[0] else {
         unreachable!()
     };
-    assert_eq!(*fill, pal.cell_focus, "selected = brighter fill");
+    assert_eq!(*fill, pal.cell_focus, "selected = inset fill");
     assert!(rim.is_some(), "selected = crisp rim");
     // Query text is drawn; the placeholder is not.
     assert!(

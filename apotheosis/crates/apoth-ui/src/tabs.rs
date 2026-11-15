@@ -5,7 +5,7 @@ use crate::draw::{DrawList, IconId, Rim};
 use crate::frame::TabStyle;
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
-use crate::state::{UiState, WidgetId, label_colour, surface};
+use crate::state::{UiState, WidgetId, accent_label, accent_surface, label_colour, surface};
 use crate::text::{Measure, TextRun, geometry};
 use crate::tokens::{Palette, Rgba, alpha, metrics, radius, size, space};
 
@@ -237,7 +237,11 @@ pub fn draw(
         let hover_tab = ui.hover == Some(c.id) || ui.hover == Some(c.close_id);
         let mut st = ui.control(c.id, false, tab.active);
         st.hover = hover_tab;
-        let (fill, rim) = surface(pal, st);
+        let (fill, rim) = if tab.active {
+            accent_surface(pal, st)
+        } else {
+            surface(pal, st)
+        };
         let show_bg =
             style == TabStyle::Floating || tab.active || st.hover || st.focus_kb || st.pressed;
         if show_bg {
@@ -293,7 +297,11 @@ pub fn draw(
         out.text(
             run,
             Point::new(x, c.rect.y + (c.rect.h - size::BODY) / 2.0),
-            label_colour(pal, st),
+            if tab.active {
+                accent_label(pal, st)
+            } else {
+                label_colour(pal, st)
+            },
         );
         if show_close {
             let cst = ui.control(c.close_id, false, false);

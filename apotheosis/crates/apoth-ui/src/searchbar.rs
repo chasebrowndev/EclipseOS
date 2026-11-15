@@ -13,7 +13,9 @@
 use crate::draw::{DrawList, IconId, Rim};
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
-use crate::state::{ControlState, UiState, WidgetId, glass, label_colour, surface};
+use crate::state::{
+    ControlState, UiState, WidgetId, accent_label, accent_surface, glass, label_colour, surface,
+};
 use crate::text::{Measure, TextRun};
 use crate::tokens::{Palette, metrics, radius, size, space};
 
@@ -260,7 +262,11 @@ pub fn draw(
             continue;
         };
         let st = ui.control(*id, false, cs.on);
-        let (fill, rim) = surface(pal, st);
+        let (fill, rim) = if cs.on {
+            accent_surface(pal, st)
+        } else {
+            surface(pal, st)
+        };
         if cs.on || st.hover || st.pressed || st.focus_kb {
             out.rect(*r, radius::INSET, fill, Some(rim));
         } else {
@@ -275,7 +281,7 @@ pub fn draw(
             );
         }
         let colour = if cs.on {
-            pal.accent_text
+            accent_label(pal, st)
         } else {
             label_colour(pal, st)
         };

@@ -110,6 +110,47 @@ pub fn surface(p: &Palette, s: ControlState) -> (Rgba, Rim) {
     }
 }
 
+/// The accent treatment (the Send button of `ec-secret-prompt`): the neutral inset's own quiet
+/// fill and rim step, marked by a clearer neutral fill and rim and a gold label, never a gold fill or rim. Hover
+/// and press are a small step up the neutral ladder and the rim; keyboard focus is the crisp
+/// accent rim over the hover fill. Disabled ignores the pointer and loses the gold rim.
+pub fn accent_surface(p: &Palette, s: ControlState) -> (Rgba, Rim) {
+    // STYLE.md bar cells: the marked cell is the same glass a step clearer, a neutral
+    // hairline, gold on the label only.
+    let active = !s.disabled;
+    let (fill, rim_c) = match (active && s.pressed, active && s.hover) {
+        (true, _) => (p.cell_focus_press, p.cell_focus_rim),
+        (_, true) => (p.cell_focus_hover, p.cell_focus_rim_hover),
+        _ => (p.cell_focus, p.cell_focus_rim),
+    };
+    let rim = if s.disabled {
+        Rim {
+            width: metrics::RIM_W,
+            colour: p.hairline,
+        }
+    } else if s.focus_kb {
+        Rim {
+            width: metrics::FOCUS_RIM_W,
+            colour: p.accent,
+        }
+    } else {
+        Rim {
+            width: metrics::RIM_W,
+            colour: rim_c,
+        }
+    };
+    (if s.disabled { p.cell } else { fill }, rim)
+}
+
+/// Label (or glyph) colour on an [`accent_surface`]: gold, tertiary when disabled.
+pub fn accent_label(p: &Palette, s: ControlState) -> Rgba {
+    if s.disabled {
+        p.text_tertiary
+    } else {
+        p.accent_text
+    }
+}
+
 /// Label colour for a control state.
 pub fn label_colour(p: &Palette, s: ControlState) -> Rgba {
     if s.disabled {

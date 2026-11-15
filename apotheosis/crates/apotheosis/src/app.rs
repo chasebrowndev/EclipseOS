@@ -505,6 +505,8 @@ pub(crate) fn run(
         decorations: settings.decorations,
         ..WindowSpec::default()
     });
+    // xdg-toplevel-icon by name; the SVG ships in packaging/ (no-op without the global).
+    let _ = handle.set_icon_name(win, Some("org.eclipseos.Apotheosis"));
     handle.flush();
     let keymap = Keymap::from_config(reloader.config());
     let mut app = App {
@@ -1586,7 +1588,7 @@ impl App {
             pinned,
             field: view.as_ref().is_none_or(|v| v.field),
             anchor: view.as_ref().and_then(|v| v.anchor),
-            header: view.map(|v| v.header),
+            header: view.and_then(|v| v.header),
         })
     }
 
