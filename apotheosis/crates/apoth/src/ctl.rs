@@ -24,6 +24,7 @@ use serde_json::Value;
 pub(crate) const OK: i32 = 0;
 pub(crate) const ERROR: i32 = 1;
 pub(crate) const USAGE: i32 = 2;
+pub(crate) const DENIED: i32 = 3;
 
 /// How long a connect or a reply may take before the instance counts as not answering.
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -31,8 +32,6 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Commands T-12 §5 names that this build does not have yet.
 pub(crate) const NOT_YET: &[&str] = &[
     "notify",
-    "set",
-    "reset",
     "ssh",
     "terminfo",
     "fonts",
@@ -53,6 +52,8 @@ pub(crate) const COMMANDS: &[&str] = &[
     "do",
     "subscribe",
     "version",
+    "set",
+    "reset",
 ];
 
 pub(crate) const HELP: &str = "\
@@ -72,6 +73,10 @@ Commands:
   do 'ACTION; ACTION'        run actions (KDL `do` syntax)
   subscribe EVENT...         print events until interrupted
   version                    client and instance versions
+  set KEY=VALUE...           save settings to the config file; the instance reloads it
+                             (also `set KEY VALUE`; font_size and font-size mean font.size)
+  set --temp KEY=VALUE...    change the running instance only, lost on restart
+  reset KEY...               drop --temp changes
   icat [OPTIONS] FILE...     show images in the pane (apoth icat --help)
   play [OPTIONS] FILE        play video or audio in the pane (apoth play --help)
   shell-init bash|zsh|fish   print the shell-integration snippet (defines `ap`)
@@ -450,6 +455,207 @@ fn absolute(p: &str) -> String {
         .unwrap_or_else(|_| p.to_owned())
 }
 
+// ------------------------------------------------------------------ runtime overrides
+
+/// Does `apoth set …` ask for the runtime-only form? Flags end at `--`.
+pub(crate) fn is_temp(args: &[String]) -> bool {
+    args.iter()
+        .take_while(|a| *a != "--")
+        .any(|a| a == "--temp")
+}
+
+/// The requests for `apoth set --temp KEY=VALUE…` or `apoth reset KEY…` (T-12 §5), each
+/// pair checked here first so that a set is all-or-nothing before anything is sent: the key
+/// resolves (aliases as `apoth config set`), the value fits, and the key's override class
+/// takes a runtime override (T-10 §1.1). `Err((exit code, message))`.
+pub(crate) fn plan_runtime(
+    cmd: &str,
+    args: &[String],
+    o: &mut Opts,
+) -> Result<Vec<Params>, (i32, String)> {
+    use apoth_config::overrides::check_runtime_override;
+    use apoth_config::types::Scope;
+    use apoth_proto::params::{ConfigReset, ConfigSet};
+    let usage = |m: String| (USAGE, m);
+    let no_match =
+        || usage("runtime changes apply to the whole instance; --match is not supported".into());
+    if o.target.is_some() {
+        return Err(no_match());
+    }
+    let mut pos = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--temp" => {}
+            "--json" => o.json = true,
+            "-m" | "--match" => return Err(no_match()),
+            "--" => {
+                pos.extend(it.by_ref().cloned());
+                break;
+            }
+            f if f.starts_with("--") => return Err(usage(format!("unexpected {f:?}"))),
+            _ => pos.push(a.clone()),
+        }
+    }
+    // Refusals by class are denials (exit 3); a bad key or value is an error (exit 1).
+    let refuse = |path: &str, problems: &mut Vec<String>, denied: &mut bool| {
+        if let Err(r) = check_runtime_override(path, Scope::Global) {
+            *denied |= r.class.is_some_and(|c| c.runtime_socket_class().is_none());
+            problems.push(r.message);
+        }
+    };
+    let mut problems = Vec::new();
+    let mut denied = false;
+    let mut reqs = Vec::new();
+    if cmd == "set" {
+        let pairs = crate::config::parse_pairs(&pos).map_err(|m| {
+            usage(format!(
+                "{m}\nusage: apoth set --temp KEY=VALUE [KEY=VALUE...] | KEY VALUE"
+            ))
+        })?;
+        // The class first: a key that takes no runtime override is denied whatever its value.
+        for (name, _) in &pairs {
+            if let Ok(k) = crate::config::lookup(name) {
+                refuse(k.path, &mut problems, &mut denied);
+            }
+        }
+        if denied {
+            return Err((DENIED, problems.join("\n")));
+        }
+        let checked = crate::config::check_pairs(&pairs).map_err(|e| (ERROR, e.join("\n")))?;
+        for c in checked {
+            reqs.push(Params::ConfigSet(ConfigSet {
+                key: c.key.path.to_owned(),
+                value: c.text,
+            }));
+        }
+    } else {
+        if pos.is_empty() {
+            return Err(usage("usage: apoth reset KEY [KEY...]".into()));
+        }
+        for name in &pos {
+            match crate::config::lookup(name) {
+                Ok(k) => {
+                    refuse(k.path, &mut problems, &mut denied);
+                    reqs.push(Params::ConfigReset(ConfigReset {
+                        key: k.path.to_owned(),
+                    }));
+                }
+                Err(m) => problems.push(m),
+            }
+        }
+    }
+    if !problems.is_empty() {
+        return Err((if denied { DENIED } else { ERROR }, problems.join("\n")));
+    }
+    Ok(reqs)
+}
+
+/// The request that puts a key back as it was before `reply` (`config.set`/`config.reset`
+/// answer `{key, changed, previous}`).
+fn undo(reply: &Value) -> Option<Params> {
+    use apoth_proto::params::{ConfigReset, ConfigSet};
+    let key = reply.get("key")?.as_str()?.to_owned();
+    Some(match reply.get("previous").and_then(Value::as_str) {
+        Some(prev) => Params::ConfigSet(ConfigSet {
+            key,
+            value: prev.to_owned(),
+        }),
+        None => Params::ConfigReset(ConfigReset { key }),
+    })
+}
+
+/// Print what a runtime set or reset did.
+fn render_runtime(cmd: &str, replies: &[Value], json: bool, out: &mut dyn Write) -> io::Result<()> {
+    if json {
+        let v = serde_json::json!({"ok": true, "changes": replies});
+        return writeln!(out, "{v}");
+    }
+    for r in replies {
+        let key = r.get("key").and_then(Value::as_str).unwrap_or("?");
+        let changed = r.get("changed") == Some(&Value::Bool(true));
+        match (cmd, changed) {
+            ("set", true) => writeln!(out, "set {key} (this instance only)")?,
+            ("reset", true) => writeln!(out, "reset {key}")?,
+            _ => writeln!(out, "{key}: no change")?,
+        }
+    }
+    Ok(())
+}
+
+/// `apoth set --temp` / `apoth reset`: every request in order; if one fails, the ones
+/// before it are undone (their replies carry the previous override), so a set is
+/// all-or-nothing on the instance too.
+fn run_runtime(
+    cmd: &str,
+    args: &[String],
+    mut o: Opts,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> i32 {
+    let reqs = match plan_runtime(cmd, args, &mut o) {
+        Ok(r) => r,
+        Err((code, m)) => {
+            if o.json && code != USAGE {
+                let e = serde_json::json!({"ok": false, "error": m});
+                let _ = writeln!(out, "{e}");
+            } else {
+                for l in m.lines() {
+                    let _ = writeln!(err, "apoth {cmd}: {l}");
+                }
+            }
+            return code;
+        }
+    };
+    let mut c = match connect(o.socket.as_deref()) {
+        Ok(s) => match Client::new(s) {
+            Ok(c) => c,
+            Err(e) => {
+                let _ = writeln!(err, "apoth: {e}");
+                return ERROR;
+            }
+        },
+        Err(NoInstance(m)) => {
+            return fail(&WireError::new(ErrorCode::NoInstance, m), o.json, out, err);
+        }
+    };
+    let hello = Params::Hello(apoth_proto::params::Hello {
+        proto: apoth_proto::message::PROTO_VERSION,
+        client: "apoth".into(),
+        want: Vec::new(),
+    });
+    if let Err(e) = c.call(hello) {
+        return fail(&e, o.json, out, err);
+    }
+    let mut replies: Vec<Value> = Vec::with_capacity(reqs.len());
+    for req in reqs {
+        match c.call(req) {
+            Ok(v) => replies.push(v),
+            Err(e) => {
+                let mut undone = 0;
+                for r in replies.iter().rev() {
+                    if let Some(u) = undo(r)
+                        && c.call(u).is_ok()
+                    {
+                        undone += 1;
+                    }
+                }
+                if undone > 0 && !o.json {
+                    let _ = writeln!(err, "apoth {cmd}: undid {undone} earlier change(s)");
+                }
+                return fail(&e, o.json, out, err);
+            }
+        }
+    }
+    match render_runtime(cmd, &replies, o.json, out) {
+        Ok(()) => OK,
+        Err(e) => {
+            let _ = writeln!(err, "apoth: {e}");
+            ERROR
+        }
+    }
+}
+
 // ------------------------------------------------------------------ transport
 
 /// Why no instance was reached.
@@ -770,6 +976,9 @@ pub(crate) fn run(
     out: &mut dyn Write,
     err: &mut dyn Write,
 ) -> i32 {
+    if matches!(cmd, "set" | "reset") {
+        return run_runtime(cmd, args, o, out, err);
+    }
     let p = match plan(cmd, args, &mut o) {
         Ok(p) => p,
         Err(m) => {
@@ -927,6 +1136,112 @@ mod tests {
             let got = wire(args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
             assert_eq!(got, *want, "{args:?}");
         }
+    }
+
+    fn runtime(args: &[&str]) -> Result<Vec<String>, (i32, String)> {
+        let args = s(args);
+        let (mut o, rest) = parse_global(&args).map_err(|m| (USAGE, m))?;
+        let (cmd, rest) = rest.split_first().ok_or((USAGE, "no command".into()))?;
+        Ok(plan_runtime(cmd, rest, &mut o)?
+            .into_iter()
+            .map(|params| {
+                let l = Request { id: 1, params }.to_line().unwrap();
+                String::from_utf8(l).unwrap().trim_end().to_owned()
+            })
+            .collect())
+    }
+
+    #[test]
+    fn runtime_set_and_reset_requests() {
+        assert!(is_temp(&s(&["--temp", "font.size=1"])));
+        assert!(is_temp(&s(&["font.size=1", "--temp"])));
+        assert!(!is_temp(&s(&["font.size=1"])));
+        assert!(!is_temp(&s(&["--", "--temp"])));
+        assert_eq!(
+            runtime(&["set", "--temp", "font_size=12", "cursor-style=bar"]).unwrap(),
+            [
+                r#"{"id":1,"method":"config.set","params":{"key":"font.size","value":"12"}}"#,
+                r#"{"id":1,"method":"config.set","params":{"key":"cursor.style","value":"bar"}}"#,
+            ]
+        );
+        assert_eq!(
+            runtime(&[
+                "--json",
+                "set",
+                "--temp",
+                "font.family",
+                "JetBrains",
+                "Mono"
+            ])
+            .unwrap(),
+            [
+                r#"{"id":1,"method":"config.set","params":{"key":"font.family","value":"JetBrains Mono"}}"#
+            ]
+        );
+        assert_eq!(
+            runtime(&["reset", "font-size", "cursor.style"]).unwrap(),
+            [
+                r#"{"id":1,"method":"config.reset","params":{"key":"font.size"}}"#,
+                r#"{"id":1,"method":"config.reset","params":{"key":"cursor.style"}}"#,
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_set_checks_every_pair_before_sending() {
+        let code = |a: &[&str]| runtime(a).map(|_| OK).unwrap_or_else(|(c, _)| c);
+        // A bad value or an unknown key anywhere: nothing is sent, exit 1.
+        assert_eq!(
+            code(&["set", "--temp", "font.size=12", "font.size2=1"]),
+            ERROR
+        );
+        assert_eq!(
+            code(&["set", "--temp", "font.size=12", "cursor.style=round"]),
+            ERROR
+        );
+        // A security or grant key takes no runtime override: denied, exit 3.
+        assert_eq!(
+            code(&["set", "--temp", "font.size=12", "bell.command=true"]),
+            DENIED
+        );
+        assert_eq!(code(&["set", "--temp", "socket.key-stream=true"]), DENIED);
+        assert_eq!(code(&["reset", "bell.command"]), DENIED);
+        let (_, m) = runtime(&["set", "--temp", "font_sise=12"]).unwrap_err();
+        assert!(m.contains("`font.size`"), "{m}");
+        // Usage.
+        assert_eq!(code(&["set", "--temp"]), USAGE);
+        assert_eq!(code(&["set", "--temp", "font.size"]), USAGE);
+        assert_eq!(code(&["set", "--temp", "-m", "id:1", "font.size=3"]), USAGE);
+        assert_eq!(code(&["reset"]), USAGE);
+    }
+
+    #[test]
+    fn runtime_undo_and_output() {
+        let set = serde_json::json!({"key":"font.size","changed":true,"previous":"20.0"});
+        let fresh = serde_json::json!({"key":"cursor.style","changed":true,"previous":null});
+        let line = |p: Params| {
+            let l = Request { id: 1, params: p }.to_line().unwrap();
+            String::from_utf8(l).unwrap().trim_end().to_owned()
+        };
+        assert_eq!(
+            line(undo(&set).unwrap()),
+            r#"{"id":1,"method":"config.set","params":{"key":"font.size","value":"20.0"}}"#
+        );
+        assert_eq!(
+            line(undo(&fresh).unwrap()),
+            r#"{"id":1,"method":"config.reset","params":{"key":"cursor.style"}}"#
+        );
+        let same = serde_json::json!({"key":"font.size","changed":false,"previous":"20.0"});
+        let mut out = Vec::new();
+        render_runtime("set", &[set.clone(), same], false, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "set font.size (this instance only)\nfont.size: no change\n"
+        );
+        let mut out = Vec::new();
+        render_runtime("reset", std::slice::from_ref(&set), true, &mut out).unwrap();
+        let v: Value = serde_json::from_slice(&out).unwrap();
+        assert_eq!(v, serde_json::json!({"ok": true, "changes": [set]}));
     }
 
     #[test]

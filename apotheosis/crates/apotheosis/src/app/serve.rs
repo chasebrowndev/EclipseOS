@@ -642,6 +642,8 @@ impl App {
                 self.start_reload();
                 Ok(Some(serde_json::Value::Null))
             }
+            Params::ConfigSet(p) => self.ctl_runtime(&p.key, Some(&p.value)),
+            Params::ConfigReset(p) => self.ctl_runtime(&p.key, None),
             Params::Subscribe(s) => {
                 let kinds: Vec<EventKind> = s
                     .events
@@ -729,12 +731,39 @@ impl App {
             | Params::WaylandInfo(_)
             | Params::RenderStatus(_)
             | Params::PaneWatch(_)
-            | Params::ConfigSet(_)
-            | Params::ConfigReset(_)
             | Params::ConfigPersist(_)
             | Params::ConfigSaveOverride(_)
             | Params::Notify(_) => Err(err(ErrorCode::Unsupported, "not available yet")),
         }
+    }
+
+    /// `config.set` / `config.reset` (T-12 §2): the class gate has already run. Replies
+    /// `{key, changed, previous}`; `previous` is the override the key had before, in config
+    /// text form (`null`: none), so a client can undo a batch that failed part-way.
+    fn ctl_runtime(
+        &mut self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, WireError> {
+        let change = self.runtime_override(key, value).map_err(|r| {
+            // A key whose class takes no runtime override is a denial; a bad value or an
+            // unknown key is a bad request.
+            let refused = r.class.is_some_and(|c| c.runtime_socket_class().is_none());
+            let code = if refused {
+                ErrorCode::Denied
+            } else {
+                ErrorCode::BadRequest
+            };
+            WireError::new(code, r.message)
+        })?;
+        let previous = apoth_config::schema::key(key)
+            .zip(change.previous.as_ref())
+            .and_then(|(k, v)| apoth_config::overrides::value_arg_text(k, v));
+        Ok(Some(serde_json::json!({
+            "key": key,
+            "changed": change.applied.is_some(),
+            "previous": previous,
+        })))
     }
 
     fn ctl_launch(

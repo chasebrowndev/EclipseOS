@@ -549,6 +549,152 @@ fn in_pane_cli() {
     s.exit_shell();
 }
 
+/// Runtime overrides (T-10 §2 layer 8, T-12 §2): `config.set` of an `appearance` key is
+/// granted to an outside client, survives a file reload and is dropped by `config.reset`;
+/// a `behaviour` key needs consent and a `security` key is refused. In a pane, `apoth set`
+/// saves to the file and `apoth set --temp` changes only the instance.
+#[test]
+fn runtime_overrides_over_the_socket() {
+    if !have_apoth("runtime_overrides_over_the_socket") {
+        return;
+    }
+    let Some(mut s) = Session::start("rtset") else {
+        return;
+    };
+    let m0 = s.mux_until("the first pane", |m| m.tabs == 1 && m.panes.len() == 1);
+    let first = m0.panes[0].id;
+    s.run_in(first, first, "echo UP$((1+1))", "UP2");
+    let path = s.ctl_socket();
+    let mut c = Client::new(&path);
+    c.call("hello", serde_json::json!({"proto": 1, "client": "test"}));
+    let get = |c: &mut Client, k: &str| c.call("config.get", serde_json::json!({"key": k}));
+
+    let r = c.call(
+        "config.set",
+        serde_json::json!({"key": "font.size", "value": "20"}),
+    );
+    assert_eq!(
+        r.pointer("/ok/changed"),
+        Some(&serde_json::json!(true)),
+        "{r}"
+    );
+    assert_eq!(
+        r.pointer("/ok/previous"),
+        Some(&serde_json::Value::Null),
+        "{r}"
+    );
+    assert_eq!(
+        get(&mut c, "font.size").get("ok"),
+        Some(&serde_json::json!(20.0))
+    );
+    let r = c.call(
+        "config.set",
+        serde_json::json!({"key": "font.size", "value": "21"}),
+    );
+    assert_eq!(
+        r.pointer("/ok/previous"),
+        Some(&serde_json::json!("20.0")),
+        "{r}"
+    );
+    for (k, v) in [("bell.command", "true"), ("scrollback.lines", "10")] {
+        let r = c.call("config.set", serde_json::json!({"key": k, "value": v}));
+        assert_eq!(code(&r), Some("denied"), "{k}: {r}");
+    }
+
+    // A file change reloads under the override; the override stays on top.
+    let cfg = s.dir.join("home/.config/eclipse");
+    std::fs::create_dir_all(&cfg).unwrap();
+    std::fs::write(
+        cfg.join("apotheosis.kdl"),
+        "version 1\n// mine\ncursor {\n    style \"bar\"\n}\n",
+    )
+    .unwrap();
+    c.call("config.reload", serde_json::json!({}));
+    let t0 = Instant::now();
+    while get(&mut c, "cursor.style").get("ok") != Some(&serde_json::json!("bar")) {
+        assert!(
+            t0.elapsed() < Duration::from_secs(10),
+            "the reload never applied"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert_eq!(
+        get(&mut c, "font.size").get("ok"),
+        Some(&serde_json::json!(21.0))
+    );
+
+    let r = c.call("config.reset", serde_json::json!({"key": "font.size"}));
+    assert_eq!(
+        r.pointer("/ok/previous"),
+        Some(&serde_json::json!("21.0")),
+        "{r}"
+    );
+    assert_eq!(
+        get(&mut c, "font.size").get("ok"),
+        Some(&serde_json::json!(12.0))
+    );
+
+    // The pane still draws after its font changed and changed back.
+    s.run_in(first, first, "echo FS$((2+2))", "FS4");
+
+    // The CLI in the pane: --temp goes to the instance, plain set to the file.
+    s.run_in(
+        first,
+        first,
+        "apoth set --temp cursor_thickness=0.5 cursor-style=underline; echo ST$?",
+        "ST0",
+    );
+    assert_eq!(
+        get(&mut c, "cursor.thickness").get("ok"),
+        Some(&serde_json::json!(0.5))
+    );
+    assert_eq!(
+        get(&mut c, "cursor.style").get("ok"),
+        Some(&serde_json::json!("underline"))
+    );
+    let file = std::fs::read_to_string(cfg.join("apotheosis.kdl")).unwrap();
+    assert!(!file.contains("thickness"), "--temp wrote the file: {file}");
+    // All-or-nothing: one bad pair and nothing changes.
+    s.run_in(
+        first,
+        first,
+        "apoth set --temp cursor.thickness=0.25 bell.command=true; echo SD$?",
+        "SD3",
+    );
+    assert_eq!(
+        get(&mut c, "cursor.thickness").get("ok"),
+        Some(&serde_json::json!(0.5))
+    );
+    s.run_in(
+        first,
+        first,
+        "apoth reset cursor.thickness cursor.style; echo RS$?",
+        "RS0",
+    );
+    assert_eq!(
+        get(&mut c, "cursor.thickness").get("ok"),
+        Some(&serde_json::json!(0.15))
+    );
+    assert_eq!(
+        get(&mut c, "cursor.style").get("ok"),
+        Some(&serde_json::json!("bar")),
+        "reset falls back to the file value"
+    );
+    s.run_in(
+        first,
+        first,
+        "apoth set window.padding_x=9; echo SF$?",
+        "SF0",
+    );
+    let file = std::fs::read_to_string(cfg.join("apotheosis.kdl")).unwrap();
+    assert!(
+        file.contains("// mine") && file.contains("padding-x 9"),
+        "{file}"
+    );
+    drop(c);
+    s.exit_shell();
+}
+
 fn b64(b: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut o = String::new();

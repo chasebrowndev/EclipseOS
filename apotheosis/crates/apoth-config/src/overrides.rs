@@ -46,6 +46,16 @@ pub fn parse_override_value(key: &Key, text: &str) -> Result<Value, String> {
     }
 }
 
+/// The value as it is typed after the key (`14.0`, `bar`, `"JetBrains Mono"`): the text
+/// form [`parse_override_value`] reads back. `None` for a null or a map.
+pub fn value_arg_text(key: &Key, v: &Value) -> Option<String> {
+    if matches!(v, Value::Null | Value::Map(_)) {
+        return None;
+    }
+    let s = crate::value::render_node("k", &key.ty, v, 0)?;
+    s.trim_end().strip_prefix("k ").map(str::to_string)
+}
+
 /// Why a write was refused. The message names the override class (T-10 §2 layer 8).
 #[derive(Debug, Clone, PartialEq)]
 pub struct Refusal {
@@ -239,7 +249,7 @@ impl RuntimeOverrides {
         Ok(true)
     }
 
-    /// `config.set` with text (`apoth set font.size 14`).
+    /// `config.set` with text (`apoth set --temp font.size=14`).
     pub fn set_text(&mut self, at: ScopeKey, path: &str, text: &str) -> Result<bool, Refusal> {
         check_runtime_override(path, at.scope)?;
         let key = schema::key(path).ok_or_else(|| unknown(path))?;
@@ -248,6 +258,12 @@ impl RuntimeOverrides {
             class: Some(key.class),
         })?;
         self.set(at, path, v)
+    }
+
+    /// The override of one key at one scope, if any.
+    pub fn get(&self, at: ScopeKey, path: &str) -> Option<&Value> {
+        let idx = schema::index_of(path)?;
+        self.map.get(&at)?.get(&idx)
     }
 
     /// `config.reset` of one key at one scope. True if something was cleared.

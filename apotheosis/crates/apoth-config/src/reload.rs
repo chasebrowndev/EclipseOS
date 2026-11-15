@@ -13,7 +13,8 @@ use crate::diff::{Collection, ConfigDiff, KeyChange, diff};
 use crate::fs::{Fs, SelfWrites};
 use crate::load::{LoadInput, load};
 use crate::model::Config;
-use crate::types::Reload;
+use crate::overrides::{Refusal, RuntimeOverrides, ScopeKey, check_runtime_override};
+use crate::types::{Reload, Scope, Value};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -146,18 +147,40 @@ pub enum Outcome {
 }
 
 /// The live config plus the last diagnostics, for the glass error bar.
+///
+/// The live config is the files (layers 1–7, `base`) with the global runtime overrides
+/// (layer 8, `config.set`) on top. A reload replaces `base` and keeps the overrides.
 #[derive(Debug, Clone)]
 pub struct Reloader {
+    base: Config,
+    runtime: RuntimeOverrides,
     current: Config,
     diagnostics: Vec<Diagnostic>,
     files: Vec<PathBuf>,
 }
+
+/// What one `config.set` / `config.reset` did.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RuntimeChange {
+    /// The override the key had before (`None`: it had none).
+    pub previous: Option<Value>,
+    /// The change to apply; `None` when the effective config did not change.
+    pub applied: Option<Box<Applied>>,
+}
+
+/// Runtime overrides from the socket and the CLI are instance-wide.
+const GLOBAL: ScopeKey = ScopeKey {
+    scope: Scope::Global,
+    id: 0,
+};
 
 impl Reloader {
     /// First start. A broken file runs on defaults (plus whatever loaded) and the error bar.
     pub fn start(fs: &dyn Fs, input: &LoadInput) -> Reloader {
         let r = load(fs, input, None);
         Reloader {
+            base: r.config.clone(),
+            runtime: RuntimeOverrides::new(),
             current: r.config,
             diagnostics: r.diagnostics,
             files: r.files,
@@ -167,6 +190,49 @@ impl Reloader {
     /// The config consumers read.
     pub fn config(&self) -> &Config {
         &self.current
+    }
+
+    /// The config the files give, without runtime overrides.
+    pub fn base(&self) -> &Config {
+        &self.base
+    }
+
+    /// The runtime override layer (layer 8).
+    pub fn runtime(&self) -> &RuntimeOverrides {
+        &self.runtime
+    }
+
+    /// Take over `live`'s runtime overrides: a reload that ran on a copy must not drop an
+    /// override set while it ran. The effective config is recomputed.
+    pub fn adopt_runtime(&mut self, live: &RuntimeOverrides) {
+        self.runtime = live.clone();
+        self.current = self.runtime.effective(&self.base, &[GLOBAL]);
+    }
+
+    /// `config.set` (layer 8): override `path` with `text` for this instance. Refused for a
+    /// `security` or `grant` key, an unknown key, or a value that does not fit (T-10 §1.1).
+    pub fn set_runtime(&mut self, path: &str, text: &str) -> Result<RuntimeChange, Refusal> {
+        let previous = self.runtime.get(GLOBAL, path).cloned();
+        self.runtime.set_text(GLOBAL, path, text)?;
+        Ok(self.recompute(previous))
+    }
+
+    /// `config.reset` (layer 8): drop the override of `path`. Refused as `config.set` is.
+    pub fn reset_runtime(&mut self, path: &str) -> Result<RuntimeChange, Refusal> {
+        check_runtime_override(path, Scope::Global)?;
+        let previous = self.runtime.get(GLOBAL, path).cloned();
+        self.runtime.unset(GLOBAL, path);
+        Ok(self.recompute(previous))
+    }
+
+    fn recompute(&mut self, previous: Option<Value>) -> RuntimeChange {
+        let next = self.runtime.effective(&self.base, &[GLOBAL]);
+        let d = diff(&self.current, &next);
+        self.current = next;
+        RuntimeChange {
+            previous,
+            applied: (!d.is_empty()).then(|| Box::new(plan(d, self.diagnostics.clone()))),
+        }
     }
 
     /// Findings of the last attempt, errors and warnings, in file order.
@@ -211,14 +277,17 @@ impl Reloader {
     /// that did parse are tolerated as T-10 §4 says: the bad bind is dropped and a bad
     /// scalar keeps its previous value, both reported in the diagnostics.
     pub fn reload(&mut self, fs: &dyn Fs, input: &LoadInput) -> Outcome {
-        let r = load(fs, input, Some(&self.current));
+        // The baseline for a bad scalar is the last good file value, not an override.
+        let r = load(fs, input, Some(&self.base));
         self.diagnostics = r.diagnostics;
         self.files = r.files;
         if r.rejected {
             return Outcome::Rejected;
         }
-        let d = diff(&self.current, &r.config);
-        self.current = r.config;
+        let next = self.runtime.effective(&r.config, &[GLOBAL]);
+        self.base = r.config;
+        let d = diff(&self.current, &next);
+        self.current = next;
         if d.is_empty() {
             return Outcome::Unchanged;
         }
