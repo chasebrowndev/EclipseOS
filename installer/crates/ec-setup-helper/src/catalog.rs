@@ -14,7 +14,6 @@ pub enum Slot {
     Bar,
     Launcher,
     Notifications,
-    ControlCenter,
     /// Optional applications: any number may be chosen, none exclude another.
     App,
 }
@@ -51,12 +50,6 @@ const BUILTIN: &[Entry] = &[
         id: "ec-toasts",
         slot: Slot::Notifications,
         packages: &["eclipseos-toasts"],
-        system_units: &[],
-    },
-    Entry {
-        id: "ec-center",
-        slot: Slot::ControlCenter,
-        packages: &["eclipseos-center"],
         system_units: &[],
     },
     Entry {

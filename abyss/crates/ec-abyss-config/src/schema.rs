@@ -55,7 +55,6 @@ pub const MODES: &[&str] = &["wm", "hybrid", "de"];
 pub const COMPONENT_BARS: &[&str] = &["ec-hyperion-bar", "waybar", "quickshell", "none"];
 pub const COMPONENT_LAUNCHERS: &[&str] = &["ec-launcher", "fuzzel", "none"];
 pub const COMPONENT_NOTIFICATIONS: &[&str] = &["ec-toasts", "mako", "none"];
-pub const COMPONENT_CONTROL_CENTERS: &[&str] = &["ec-center", "none"];
 
 /// Pre-`ec-` component ids (ADR 0070), still accepted on read for one release
 /// so an existing `abyss.kdl` keeps loading. Reads normalise to the new id.
@@ -63,7 +62,6 @@ pub const LEGACY_COMPONENT_IDS: &[(&str, &str)] = &[
     ("hyperion", "ec-hyperion-bar"),
     ("eclipse-launcher", "ec-launcher"),
     ("eclipse-toasts", "ec-toasts"),
-    ("eclipse-center", "ec-center"),
 ];
 
 /// `wallpaper.mode` values (the compositor and `ec-wallpaper` agree on them).
@@ -203,14 +201,6 @@ pub const TABLE: &[Key] = &[
         Abyss,
         Live,
         "Which notification daemon `abyss-session` runs (COMP-17 §2.2).",
-    ),
-    k(
-        "components.control-center",
-        Ty::Enum(COMPONENT_CONTROL_CENTERS),
-        Str("ec-center"),
-        Abyss,
-        Live,
-        "Which control center `abyss-session` runs (COMP-17 §2.2).",
     ),
     // wallpaper: drawn by the compositor (ADR 0104); `ec-wallpaper` reads the same keys
     k(
@@ -3069,7 +3059,6 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "components.bar" => V::Str(c.components.bar.clone()),
         "components.launcher" => V::Str(c.components.launcher.clone()),
         "components.notifications" => V::Str(c.components.notifications.clone()),
-        "components.control-center" => V::Str(c.components.control_center.clone()),
         "wallpaper.path" => s(&c.wallpaper.path),
         "wallpaper.mode" => V::Str(c.wallpaper.mode.clone()),
         "wallpaper.color" => V::Color(c.wallpaper.color),

@@ -30,7 +30,7 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 root=$(CDPATH= cd -- "$here/.." && pwd)
 
-BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-center ec-launcher
+BINS='ec-abyss ec-hyperion-bar ec-toasts ec-wallpaper ec-desktop ec-launcher
       ec-settings ec-policy-viewer ec-console ec-cheatsheet ec-ctl ec-screensaver ec-secret-prompt
       ec-pairing ec-polkit-agent ec-portal ec-lock ec-lock-trigger'
 UNITS='ec-hyperion-bar.service ec-toasts.service ec-screensaver.service ec-pairing.service ec-polkit-agent.service ec-lock-trigger.service'
@@ -76,7 +76,6 @@ if [ "$uninstall" -eq 1 ]; then
                $(for u in $UNITS $DESKTOP_UNIT; do printf '/usr/lib/systemd/user/%s ' "$u"; done) \
                /usr/lib/systemd/user/abyss-session.target \
                /usr/share/eclipse/addons/hyperion.kdl \
-               /usr/share/applications/ec-center.desktop \
                /usr/share/applications/ec-policy-viewer.desktop \
                /usr/share/applications/ec-settings.desktop
     sudo rm -rf /usr/share/eclipse/widgets "$REF_AGENT" "$CLAUDE_AGENT"

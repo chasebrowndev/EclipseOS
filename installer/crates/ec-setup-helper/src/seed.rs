@@ -48,7 +48,7 @@ enum Verdict {
 /// The allowlist, and the whole of it: `input.kb-*`, `general.{layout,color-scheme}`,
 /// `decoration.rounding`, `decoration.blur.{mode,enabled}`, `animations.preset` (and the legacy
 /// `animations.enabled|animation`, which still load),
-/// `bar.position`, `mode`, `components.{bar,launcher,notifications,control-center}`,
+/// `bar.position`, `mode`, `components.{bar,launcher,notifications}`,
 /// `setup.{complete,profile}`.
 /// Anything not named here is dropped, so a key added to the schema later (an
 /// exec-style one included) is dropped until someone decides otherwise. That
@@ -67,7 +67,7 @@ fn verdict(path: &[&str]) -> Verdict {
         | ["bar", "position"] => Verdict::Full,
         ["decoration", "blur"] => Verdict::Partial,
         ["decoration", "blur", "enabled" | "mode"] => Verdict::Full,
-        ["components", "bar" | "launcher" | "notifications" | "control-center"] => Verdict::Full,
+        ["components", "bar" | "launcher" | "notifications"] => Verdict::Full,
         ["setup", "complete" | "profile"] => Verdict::Full,
         _ => Verdict::Drop,
     }

@@ -40,7 +40,6 @@ Four packages, split so the repo can move pieces independently (D-02, and
 | `eclipseos-abyss` | `abyss`, `ec-ctl`, the session entry, `abyss-session`, the user units | AGPL-3.0-only |
 | `eclipseos-hyperion` | `hyperion` (the taskbar) and `ec-hyperion-bar.service` | AGPL-3.0-only |
 | `eclipseos-toasts` | `ec-toasts` and its user unit | AGPL-3.0-only |
-| `eclipseos-center` | `ec-center` and its `.desktop` file | AGPL-3.0-only |
 | `eclipseos-launcher` | `ec-launcher` | AGPL-3.0-only |
 | `eclipseos-desktop` | `ec-settings`, `ec-policy-viewer`, `ec-screensaver`, their `.desktop` files and user units | AGPL-3.0-only |
 | `eclipseos-agents` | The agent stack add-on (ADR 0069): `ec-policyd`, its user unit and the `agents` manifest. Not in the floor; the Agentic profile installs it. Replaces `eclipseos-policyd` | AGPL-3.0-only |

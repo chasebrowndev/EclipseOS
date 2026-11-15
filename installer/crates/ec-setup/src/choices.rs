@@ -163,7 +163,7 @@ pub struct Slot {
 /// A slot with nothing in it. Never sent to the helper.
 pub const NONE: &str = "none";
 
-pub const SLOTS: [Slot; 4] = [
+pub const SLOTS: [Slot; 3] = [
     Slot {
         key: "components.bar",
         label: "Bar",
@@ -178,11 +178,6 @@ pub const SLOTS: [Slot; 4] = [
         key: "components.notifications",
         label: "Notifications",
         choices: &["ec-toasts", "mako", NONE],
-    },
-    Slot {
-        key: "components.control-center",
-        label: "Control center",
-        choices: &["ec-center", NONE],
     },
 ];
 
@@ -254,7 +249,7 @@ pub struct Choices {
     pub mode: Mode,
     pub tiling: Tiling,
     /// One entry per [`SLOTS`] row: a member of that slot's `choices`.
-    pub slots: [&'static str; 4],
+    pub slots: [&'static str; 3],
     pub rounded: bool,
     pub blur: Blur,
     pub animations: bool,
@@ -283,7 +278,6 @@ impl Choices {
                 // A session with no launcher cannot start anything.
                 "ec-launcher",
                 native("ec-toasts"),
-                native("ec-center"),
             ],
             rounded: true,
             blur: Blur::Blur,
@@ -361,13 +355,12 @@ pub const BAR_POSITION: &str = "bar.position";
 pub const COLOR_SCHEME: &str = "general.color-scheme";
 
 /// Every key the choice steps write, for the writer's allowlist.
-pub const SEED_KEYS: [&str; 11] = [
+pub const SEED_KEYS: [&str; 10] = [
     MODE,
     LAYOUT,
     "components.bar",
     "components.launcher",
     "components.notifications",
-    "components.control-center",
     ROUNDING,
     BLUR,
     ANIMATIONS,
@@ -384,15 +377,12 @@ mod tests {
         let std = Choices::for_profile(Profile::Standard);
         assert_eq!(std.mode, Mode::Hybrid);
         assert_eq!(std.tiling, Tiling::Radiant);
-        assert_eq!(
-            std.slots,
-            ["ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center"]
-        );
+        assert_eq!(std.slots, ["ec-hyperion-bar", "ec-launcher", "ec-toasts"]);
         assert_eq!(std.app_count(), 0);
 
         let min = Choices::for_profile(Profile::Minimal);
         assert_eq!(min.mode, Mode::Wm);
-        assert_eq!(min.slots, [NONE, "ec-launcher", NONE, NONE]);
+        assert_eq!(min.slots, [NONE, "ec-launcher", NONE]);
         assert_eq!(min.app_count(), 0);
 
         let full = Choices::for_profile(Profile::Full);

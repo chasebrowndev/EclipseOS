@@ -23,7 +23,6 @@ Ten crates: seven programs, two libraries, and `ec-services`, which is both.
 |---|---|---|---|
 | `hyperion` | `hyperion` | layer-shell, `Top`, one per output | `eclipseos-hyperion` (add-on) |
 | `ec-toasts` | `ec-toasts` | layer-shell, `Overlay`, top-right | `eclipseos-toasts` |
-| `ec-center` | `ec-center` | layer-shell, `Overlay` | `eclipseos-center` |
 | `ec-launcher` | `ec-launcher` | layer-shell, `Overlay`, exclusive keyboard | `eclipseos-launcher` |
 | `ec-settings` | `ec-settings` | xdg_toplevel | `eclipseos-desktop` |
 | `ec-policy-viewer` | `ec-policy-viewer` | xdg_toplevel | `eclipseos-desktop` |
@@ -78,11 +77,6 @@ holds a password.
 `org.freedesktop.Notifications` in-process via `ec_services::notifications`.
 Bodies are never logged; only `Critical` may pin itself on screen.
 
-**ec-center** — the control center: status readout plus lock, log out,
-suspend, hibernate, reboot, power off, each greyed out when logind's `Can*`
-says no, and a refusal shown rather than worked around. A menu: it exits after
-one action.
-
 **ec-launcher** — filters `.desktop` entries (`ec_services::apps`)
 and spawns one, detached. `Terminal=true` entries run as `$term -e <argv>`
 when `misc.terminal-command` is set and are **hidden**, not refused, when it is
@@ -124,7 +118,6 @@ nothing listening renders empty, never crashes.
 | ec-pairing | — | — | system: BlueZ `org.bluez.Agent1`. session: serves `org.eclipse.Services.Pairing` |
 | ec-polkit-agent | — | — | system: polkit `AuthenticationAgent`, logind `User.Display`. Own socket: `polkit.sock` (COMP-10 §3.14) |
 | ec-toasts | `get_config` (`decoration.rounding`, startup) | — | session: serves `org.freedesktop.Notifications` |
-| ec-center | `get_config` (`decoration.rounding`, startup) | — | system: NetworkManager, BlueZ, UPower (read), logind `login1.Manager` / `login1.Session` |
 | ec-launcher | `get_config` (`misc.terminal-command`, `decoration.rounding`, startup) | — | — |
 | ec-settings | `get_config {schema: true}`, `set_config_value`, `set_config_collection` (`widget`, `bar.widgets.*`), `review_widget` (re-show a withheld command widget's approval prompt; ADR 0067), `get_outputs`, `set_output`, `calibrate_output` | `output`, `config_error`, `config` | system: NetworkManager, BlueZ (Network pane only). session: SNI host via `tray::observe` (Taskbar pane only; never serves the watcher, cannot click) |
 | ec-policy-viewer | `get_config` (`decoration.rounding`, startup) | — | — |
@@ -168,7 +161,6 @@ stays closed in `ipc/gate.rs`, which is why the viewer reads the file itself.
 | ec-toasts | `ec-toasts.service` | ordinary client |
 | ec-screensaver | `ec-screensaver.service` | ordinary client |
 | ec-launcher | `Super+E` / `Super+R` default binds; hyperion's launcher button | ordinary client |
-| ec-center | `Super+N` default bind; `ec-center.desktop` | ordinary client |
 | ec-settings | `ec-settings.desktop`; hyperion drawer links | ordinary client |
 | ec-policy-viewer | `ec-policy-viewer.desktop` | ordinary client |
 | ec-secret-prompt | hyperion (wifi), ec-pairing (bluetooth) | ordinary client, surface classified `secret` |
@@ -258,9 +250,8 @@ it holds to the four §3 limits:
    §5's fixed `.wants/` links.
 3. **Packaging `ec-secret-prompt`** (§5): which package carries it. It
    belongs with hyperion's actions but is reusable by any bar (ADR 0053).
-4. **Center from the taskbar.** ADR 0052 says hyperion spawns `ec-center`
-   by name; as built it spawns only the launcher, settings and the secret
-   prompt. Either the ADR is stale or a button is missing.
+4. **Center from the taskbar.** Resolved 2026-11-15: `ec-center` was removed;
+   its status and session actions live in the bar's widgets and power drawer.
 
 ## 9. Third-party app themes
 

@@ -614,10 +614,12 @@ impl Config {
                     schema::COMPONENT_NOTIFICATIONS,
                     &mut self.components.notifications,
                 ),
-                "control-center" => (
-                    schema::COMPONENT_CONTROL_CENTERS,
-                    &mut self.components.control_center,
-                ),
+                // Retired with the `ec-center` pane: accepted and ignored so an
+                // existing abyss.kdl keeps loading (`ec-ctl config migrate` drops it).
+                "control-center" => {
+                    tracing::warn!("deprecated: components.control-center is ignored");
+                    continue;
+                }
                 _ => {
                     self.unknown_key(n, "components", "components key");
                     continue;

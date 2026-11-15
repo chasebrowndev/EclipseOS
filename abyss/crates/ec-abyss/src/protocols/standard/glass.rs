@@ -41,10 +41,9 @@ const VERSION: u32 = 1;
 
 /// The shell binaries that may bind the global. `ec-secret-prompt` is left out
 /// on purpose: it has no glass need.
-pub const DEFAULT_ALLOW: [&str; 6] = [
+pub const DEFAULT_ALLOW: [&str; 5] = [
     "ec-hyperion-bar",
     "ec-launcher",
-    "ec-center",
     "ec-toasts",
     "ec-settings",
     "ec-policy-viewer",

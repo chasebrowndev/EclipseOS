@@ -23,7 +23,6 @@ crates/
   ec-ui/         DE design system: tokens, type, widgets over iced 0.14
   hyperion/           the taskbar (internal name; users see "taskbar") (DP-4)
   ec-toasts/     notification toasts, layer-shell (DP-5)
-  ec-center/     notification + status center, layer-shell (DP-5)
   ec-launcher/   application launcher, layer-shell (DP-5)
   ec-settings/   settings panes; every write via set_config_value (COMP-17 §3)
   ec-policy-viewer/  read-only policy.kdl inspector, deliberately powerless

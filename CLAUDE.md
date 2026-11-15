@@ -79,7 +79,7 @@ justification.
 **The main agent never writes frontend.** Every single piece of user-facing UI
 — a new view, a redesign, a tweak to an existing one, anywhere under
 `shell/crates/ec-ui/`, `shell/crates/ec-hyperion-bar/`, `shell/crates/ec-toasts/`,
-`shell/crates/ec-center/`, `shell/crates/ec-launcher/`, `shell/crates/ec-settings/`,
+`shell/crates/ec-launcher/`, `shell/crates/ec-settings/`,
 `shell/crates/ec-policy-viewer/` or `shell/crates/ec-secret-prompt/` — goes to the `eclipse-frontend` agent. It is
 the only thing here that produces usable frontend: it screenshots its own
 output and iterates against `docs/STYLE.md`, which is exactly the loop the main
@@ -196,7 +196,7 @@ abyss/crates/ec-ctl/           CLI over the control socket, config migrate
 abyss/crates/ec-abyss-wlcs/            WLCS conformance shim
 shell/crates/ec-services/      D-Bus services: notifications, tray, status, screensaver, portal settings
 shell/crates/ec-ui/            shared iced theme/tokens/widgets
-shell/crates/{ec-hyperion-bar,ec-toasts,ec-center,ec-launcher,
+shell/crates/{ec-hyperion-bar,ec-toasts,ec-launcher,
         ec-settings,ec-policy-viewer,ec-secret-prompt}/  DE panes
 abyss/bench/                   COMP-16 M9f frame-time harness
 abyss/ci/                      wlcs skip list, GUI-coverage exceptions

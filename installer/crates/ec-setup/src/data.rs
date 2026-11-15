@@ -585,12 +585,11 @@ pub fn status_word(p: Profile) -> Option<&'static str> {
 }
 
 /// What Standard seeds, in the config file's words (COMP-17 §2.1 table).
-pub const STANDARD_SEEDS: [(&str, &str); 8] = [
+pub const STANDARD_SEEDS: [(&str, &str); 7] = [
     ("mode", "hybrid"),
     ("components.bar", "ec-hyperion-bar"),
     ("components.launcher", "ec-launcher"),
     ("components.notifications", "ec-toasts"),
-    ("components.control-center", "ec-center"),
     ("terminal", "foot"),
     ("agent stack", "off"),
     ("policy starting point", "locked down"),
@@ -598,10 +597,10 @@ pub const STANDARD_SEEDS: [(&str, &str); 8] = [
 
 /// What `p` seeds: Standard's table, with the agent stack on for Agentic
 /// (Standard plus the `eclipseos-agents` add-on; policy stays locked down).
-pub fn seeds(p: Profile) -> [(&'static str, &'static str); 8] {
+pub fn seeds(p: Profile) -> [(&'static str, &'static str); 7] {
     let mut s = STANDARD_SEEDS;
     if p.agents_default() {
-        s[6].1 = "on";
+        s[5].1 = "on";
     }
     s
 }
@@ -737,14 +736,13 @@ mod tests {
             "ec-hyperion-bar",
             "ec-launcher",
             "ec-toasts",
-            "ec-center",
             "waybar",
             "quickshell",
             "fuzzel",
             "mako",
         ];
         catalog.extend(APPS.iter().map(|a| a.id));
-        assert_eq!(catalog.len(), 17);
+        assert_eq!(catalog.len(), 16);
         assert!(catalog.contains(&"app-bluetooth-ui") && catalog.contains(&"app-browser"));
 
         // Every slot choice but `none` is a catalog id, and nothing else is.
@@ -779,7 +777,7 @@ mod tests {
         );
         assert_eq!(
             Choices::for_profile(Profile::Standard).candidates(),
-            ["ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center"]
+            ["ec-hyperion-bar", "ec-launcher", "ec-toasts"]
         );
     }
 

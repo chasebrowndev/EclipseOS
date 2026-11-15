@@ -458,6 +458,26 @@ fn migrate_blur_mode(doc: &mut KdlDocument) -> bool {
     changed
 }
 
+/// Drop `components { control-center ... }`: the `ec-center` pane is gone and
+/// the parser only tolerates the key. Returns whether anything changed.
+fn migrate_control_center(doc: &mut KdlDocument) -> bool {
+    let mut changed = false;
+    for comps in doc
+        .nodes_mut()
+        .iter_mut()
+        .filter(|n| n.name().value() == "components")
+    {
+        if let Some(children) = comps.children_mut().as_mut() {
+            let before = children.nodes().len();
+            children
+                .nodes_mut()
+                .retain(|n| n.name().value() != "control-center");
+            changed |= children.nodes().len() != before;
+        }
+    }
+    changed
+}
+
 /// Bare `enabled` means true, as the parser reads it.
 fn flag_of(n: &KdlNode) -> Option<bool> {
     match n.entries().iter().find(|e| e.name().is_none()) {
@@ -777,12 +797,13 @@ fn run_in(dir: &Path, state: &Path, dry_run: bool, only_widget_order: bool) -> R
     let state_changed = first_run || !added.is_empty();
     let blur = !only_widget_order && migrate_blur_mode(&mut doc);
     let anims = !only_widget_order && migrate_animations(&mut doc);
+    let cc = !only_widget_order && migrate_control_center(&mut doc);
     let (split_abyss, mut new_policy, moved) = if only_widget_order {
         (String::new(), String::new(), false)
     } else {
         split(&doc, &existing)
     };
-    if !widgets && !blur && !anims && !moved && added.is_empty() {
+    if !widgets && !blur && !anims && !cc && !moved && added.is_empty() {
         if state_changed && !dry_run {
             write(state, &render_offered(&offered))?;
         }
@@ -1017,6 +1038,15 @@ mod tests {
         let text = "bar {\n    tray {\n        pinned \"org.kde.x\"\n    }\n}\n";
         assert_eq!(widgets(text), (false, text.to_string()));
         assert!(!widgets("general {\n    gaps-in 5\n}\n").0);
+    }
+
+    #[test]
+    fn control_center_key_is_dropped() {
+        let mut doc = parse("components {\n    bar \"waybar\"\n    control-center \"ec-center\"\n}\n");
+        assert!(migrate_control_center(&mut doc));
+        let out = doc.to_string();
+        assert!(!out.contains("control-center") && out.contains("waybar"), "{out}");
+        assert!(!migrate_control_center(&mut doc));
     }
 
     fn blur(text: &str) -> (bool, String) {

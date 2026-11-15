@@ -122,10 +122,9 @@ fn mode_and_components_parse_default_and_refuse() {
         (
             d.components.bar.as_str(),
             d.components.launcher.as_str(),
-            d.components.notifications.as_str(),
-            d.components.control_center.as_str()
+            d.components.notifications.as_str()
         ),
-        ("ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center")
+        ("ec-hyperion-bar", "ec-launcher", "ec-toasts")
     );
     for (m, want) in [("wm", Mode::Wm), ("hybrid", Mode::Hybrid), ("de", Mode::De)] {
         let doc: KdlDocument = format!("mode \"{m}\"\n").parse().unwrap();
@@ -134,7 +133,8 @@ fn mode_and_components_parse_default_and_refuse() {
         assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
         assert_eq!(cfg.mode, want);
     }
-    let doc: KdlDocument = "components {\n    bar \"waybar\"\n    launcher \"fuzzel\"\n    notifications \"mako\"\n    control-center \"none\"\n}\n"
+    let doc: KdlDocument =
+        "components {\n    bar \"waybar\"\n    launcher \"fuzzel\"\n    notifications \"mako\"\n}\n"
             .parse()
             .unwrap();
     let mut cfg = Config::default();
@@ -143,14 +143,13 @@ fn mode_and_components_parse_default_and_refuse() {
     assert_eq!(cfg.components.bar, "waybar");
     assert_eq!(cfg.components.launcher, "fuzzel");
     assert_eq!(cfg.components.notifications, "mako");
-    assert_eq!(cfg.components.control_center, "none");
     assert_eq!(
         schema::get(&cfg, "components.bar"),
         Some(schema::Value::Str("waybar".into()))
     );
 
     // Pre-`ec-` ids load as their new names (ADR 0070).
-    let doc: KdlDocument = "components {\n    bar \"hyperion\"\n    launcher \"eclipse-launcher\"\n    notifications \"eclipse-toasts\"\n    control-center \"eclipse-center\"\n}\n"
+    let doc: KdlDocument = "components {\n    bar \"hyperion\"\n    launcher \"eclipse-launcher\"\n    notifications \"eclipse-toasts\"\n}\n"
             .parse()
             .unwrap();
     let mut cfg = Config::default();
@@ -160,20 +159,28 @@ fn mode_and_components_parse_default_and_refuse() {
         (
             cfg.components.bar.as_str(),
             cfg.components.launcher.as_str(),
-            cfg.components.notifications.as_str(),
-            cfg.components.control_center.as_str()
+            cfg.components.notifications.as_str()
         ),
-        ("ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center")
+        ("ec-hyperion-bar", "ec-launcher", "ec-toasts")
     );
 
-    let text = "mode \"tiling\"\ncomponents {\n    bar \"polybar\"\n    launcher \"ec-toasts\"\n    control-center \"mako\"\n    notifications 3\n    dock \"x\"\n}\n";
+    // The retired control-center slot still loads, and is ignored.
+    let doc: KdlDocument = "components {\n    bar \"waybar\"\n    control-center \"ec-center\"\n}\n"
+        .parse()
+        .unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(cfg.components.bar, "waybar");
+
+    let text = "mode \"tiling\"\ncomponents {\n    bar \"polybar\"\n    launcher \"ec-toasts\"\n    notifications 3\n    dock \"x\"\n}\n";
     let doc: KdlDocument = text.parse().unwrap();
     let mut cfg = Config {
         cur: Some((abyss_src("/etc/eclipse/abyss.kdl"), text.to_owned())),
         ..Config::default()
     };
     cfg.apply(&doc, &mut Vec::new());
-    assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
+    assert_eq!(cfg.errors.len(), 5, "{:?}", cfg.errors);
     assert!(
         cfg.errors[0].message.contains("mode"),
         "{}",
@@ -181,8 +188,7 @@ fn mode_and_components_parse_default_and_refuse() {
     );
     assert!(cfg.errors[1].message.contains("components.bar"));
     assert!(cfg.errors[2].message.contains("components.launcher"));
-    assert!(cfg.errors[3].message.contains("components.control-center"));
-    assert!(cfg.errors[4].message.contains("components.notifications"));
+    assert!(cfg.errors[3].message.contains("components.notifications"));
     assert_eq!(cfg.mode, Mode::Hybrid, "a refused value must not land");
     assert_eq!(cfg.components.bar, "ec-hyperion-bar");
 
@@ -206,7 +212,6 @@ fn mode_and_components_are_live() {
         "components.bar",
         "components.launcher",
         "components.notifications",
-        "components.control-center",
     ] {
         let k = schema::get_key(p).expect(p);
         assert_eq!(k.reload, schema::Reload::Live, "{p}");

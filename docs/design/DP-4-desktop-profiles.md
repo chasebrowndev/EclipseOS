@@ -223,8 +223,8 @@ restart.
 Taskbar with a real window list, tray, clock, launcher, notifications. It began
 as an extension of the `eclipse` Quickshell config. ADR 0038 moved it to native
 Rust/iced, and ADR 0052 split it into one crate per component: `hyperion` (the
-taskbar; users see "taskbar"), `ec-toasts`, `ec-center`,
-`ec-launcher`. Each is its own package, so any one of them can run under a
+taskbar; users see "taskbar"), `ec-toasts`,
+`ec-launcher` (`ec-center` was removed 2026-11-15). Each is its own package, so any one of them can run under a
 third-party bar or shell.
 
 **This is D-05 default-userland work, not compositor work.** It is tracked as
@@ -278,7 +278,7 @@ exception of whatever background-layer support abyss has to provide.
 
 ## DP-7 — Component slots and the setup floor *(COMP-17 §2.2, ADR 0060)*
 
-`components { bar …; launcher …; notifications …; control-center … }` in the
+`components { bar …; launcher …; notifications … }` in the
 schema, validated against the root-owned candidate catalog
 (`/usr/share/eclipse/setup/catalog.kdl`). `abyss-session` starts what it names
 and swaps a slot on hot reload, replacing the fixed `.wants/` links D-05 §5

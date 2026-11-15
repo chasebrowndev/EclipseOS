@@ -45,12 +45,6 @@ pub const META: &[Meta] = &[
         "desktop/components",
         "components",
     ),
-    m(
-        "components.control-center",
-        "Control center",
-        "desktop/components",
-        "components",
-    ),
     // wallpaper
     m("wallpaper.path", "Path", "desktop/wallpaper", "wallpaper"),
     m("wallpaper.mode", "Mode", "desktop/wallpaper", "wallpaper"),
