@@ -161,6 +161,14 @@ pub mod color {
     /// spec's tertiary text value.
     pub const DIM: f32 = 0.40;
 
+    /// A selected pill under the pointer, then pressed: the same accent tint a
+    /// step and two steps clearer, its rim crisper. Scales on `accent_fill` and
+    /// `accent_border`, so a user accent keeps them. Glassy, not glowy: the rim
+    /// stays a 1px edge and nothing lights past it.
+    pub const SELECTED_HOVER_FILL: f32 = 1.7;
+    pub const SELECTED_PRESS_FILL: f32 = 2.4;
+    pub const SELECTED_HOVER_RIM: f32 = 1.6;
+
     /// A colour that arrives as data -- a calendar's own `0xRRGGBB` -- rather
     /// than a choice of ours. A provider's palette is never mistaken for a token.
     pub const fn data(hex: u32) -> Color {
@@ -1157,15 +1165,50 @@ pub mod drawer {
     pub const CAL_TIME_W: f32 = 52.0;
 }
 
-/// The secret prompt: one field in a fixed-size toplevel. Fixed because
-/// abyss floats a toplevel whose min and max size agree (ADR 0053), and a
-/// password box has nothing to show a user who resizes it.
+/// The secret prompt: one glass sheet in a toplevel that is not
+/// user-resizable (min == max, so abyss floats it, ADR 0053) and is sized to
+/// its content.
 pub mod secret {
-    pub const W: f32 = 404.0;
-    /// Tall enough for heading, band and a pill row at `PANE_Y` padding.
-    pub const H: f32 = 228.0;
-    /// Air between the heading's kind label and the target's name.
+    /// Air between the heading and its second line.
     pub const TITLE_GAP: f32 = 4.0;
+    /// The password sheet (macOS-auth shaped): a glyph disc, one sentence,
+    /// the field and the pills, centred. Not user-resizable; sized to content:
+    /// the window is fitted to the sheet's measured height on every change
+    /// (min == max each time), up to [`SHEET_MAX_H`], past which it scrolls.
+    pub const SHEET_W: f32 = 392.0;
+    pub const SHEET_MAX_H: f32 = 640.0;
+    /// The height a sheet opens at, before its first measure, matched to the
+    /// measured heights so the first fit is usually a no-op: a field sheet
+    /// (Wi-Fi, Bluetooth, API key), a folded Terminal sheet with its chip, and
+    /// one whose details open from the start.
+    pub const SHEET_H_EST: f32 = 276.0;
+    pub const SHEET_H_EST_CHIP: f32 = 318.0;
+    pub const SHEET_H_EST_OPEN: f32 = 519.0;
+    /// Air between the heading group and the field.
+    pub const FIELD_GAP: f32 = 22.0;
+    /// The glass disc at the sheet's head, and the glyph inside it.
+    pub const DISC: f32 = 52.0;
+    pub const DISC_GLYPH: f32 = 24.0;
+    /// Air under the disc, and between the sheet's groups.
+    pub const DISC_GAP: f32 = 14.0;
+    pub const GROUP_GAP: f32 = 16.0;
+    /// The open details: padding, row gap and label column.
+    pub const DETAILS_PAD: f32 = 12.0;
+    pub const DETAILS_ROW_GAP: f32 = 5.0;
+    pub const FACT_LABEL_W: f32 = 84.0;
+    /// How far the sheet's content rises as it fades in on open.
+    pub const RISE: f32 = 6.0;
+    /// The open: content fades and rises. Quick and soft, an ease-out.
+    pub const IN_MS: u64 = 200;
+    /// Details and More unfold and fold.
+    pub const UNFOLD_MS: u64 = 180;
+    /// A pill, chip or disclosure easing to and from its hover and pressed
+    /// tones.
+    pub const HOVER_MS: u64 = 120;
+    /// The disclosure chevron's slot: square, so the quarter turn never
+    /// moves the label, and the V's stroke.
+    pub const CHEVRON_SLOT: f32 = 9.0;
+    pub const CHEVRON_STROKE: f32 = 1.25;
 }
 
 /// The lock screen (`ec-lock`, ADR 0095): a clock over one card on an opaque

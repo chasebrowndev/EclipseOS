@@ -329,8 +329,13 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 pub fn pill(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_t, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let pressed = matches!(status, button::Status::Pressed);
         button::Style {
-            background: Some(Background::Color(if selected {
+            background: Some(Background::Color(if selected && pressed {
+                color::accent_fill().scale_alpha(color::SELECTED_PRESS_FILL)
+            } else if selected && hovered {
+                color::accent_fill().scale_alpha(color::SELECTED_HOVER_FILL)
+            } else if selected {
                 color::accent_fill()
             } else if hovered {
                 color::pill_hover()
@@ -343,10 +348,10 @@ pub fn pill(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style 
                 color::text_secondary()
             },
             border: Border {
-                color: if selected {
-                    color::accent_border()
-                } else {
-                    color::border()
+                color: match (selected, hovered) {
+                    (true, true) => color::accent_border().scale_alpha(color::SELECTED_HOVER_RIM),
+                    (true, false) => color::accent_border(),
+                    (false, _) => color::border(),
                 },
                 width: 1.0,
                 radius: radius::PILL.into(),

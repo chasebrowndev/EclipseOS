@@ -88,6 +88,17 @@ pub fn fetch_glass() -> (Option<f32>, Option<bool>) {
     }
 }
 
+/// `animations.reduce-motion`, over one short-lived connection like
+/// [`fetch_glass`]. `None` when the socket or the key is not there; callers
+/// then animate.
+pub fn fetch_reduce_motion() -> Option<bool> {
+    let mut client = ec_ipc::Client::connect().ok()?;
+    let reply = client
+        .call("get_config", json!({ "path": "animations.reduce-motion" }))
+        .ok()?;
+    reply.get("keys")?.as_array()?.first()?.get("value")?.as_bool()
+}
+
 /// `ui.show-key-hints` over a connection the caller already holds. `None` on
 /// any failure — no such key on an older compositor, or not a bool.
 pub fn fetch_key_hints(client: &mut ec_ipc::Client) -> Option<bool> {

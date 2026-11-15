@@ -73,6 +73,80 @@ pub enum Target {
     Terminal(Box<terminal::TerminalAsk>),
 }
 
+/// Program text made safe to draw: terminal escape sequences, control
+/// characters and bidi overrides go (a reversed run could make `rm` read as
+/// something else), whitespace runs fold to one space, and past `max`
+/// characters it ends in an ellipsis.
+pub fn clean(s: &str, max: usize) -> String {
+    let bidi =
+        |c: char| matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    let mut out: Vec<char> = Vec::new();
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            match chars.next() {
+                // CSI: parameters up to a final byte in @..~.
+                Some('[') => while chars.next().is_some_and(|b| !('@'..='~').contains(&b)) {},
+                // OSC, DCS and friends: up to BEL or ST.
+                Some(']' | 'P' | '_' | '^' | 'X') => {
+                    while let Some(b) = chars.next() {
+                        if b == '\u{7}' || (b == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        let c = if c.is_whitespace() { ' ' } else { c };
+        if (c.is_control() || bidi(c)) || (c == ' ' && out.last().is_none_or(|l| *l == ' ')) {
+            continue;
+        }
+        out.push(c);
+    }
+    while out.last() == Some(&' ') {
+        out.pop();
+    }
+    if out.len() > max {
+        out.truncate(max.saturating_sub(1));
+        out.push('…');
+    }
+    out.into_iter().collect()
+}
+
+/// [`clean`], but past `max` it keeps the end and starts with an ellipsis: a
+/// path's tail names the thing.
+pub fn clean_tail(s: &str, max: usize) -> String {
+    let full = clean(s, usize::MAX);
+    let n = full.chars().count();
+    if n <= max {
+        return full;
+    }
+    let keep = max.saturating_sub(1);
+    std::iter::once('…').chain(full.chars().skip(n - keep)).collect()
+}
+
+/// Longest network, device or account name under the heading.
+const SUBJECT_MAX: usize = 36;
+
+/// Longest program name in a heading: it has to stay one line.
+const PROGRAM_MAX: usize = 32;
+
+/// The program's name as the heading may say it. It is program text (argv[0]
+/// when unchecked), so it is cleaned, cut at its first word and capped: a name
+/// cannot forge a second line, write a sentence of its own into the heading,
+/// or run off the window. The whole argv is still shown, as reported.
+fn program_name(t: &terminal::TerminalAsk) -> String {
+    let full = clean(t.program(), usize::MAX);
+    let word = full.split(' ').next().unwrap_or_default();
+    if word.is_empty() {
+        "A program".to_owned()
+    } else {
+        clean(word, PROGRAM_MAX)
+    }
+}
+
 /// Longest account name (ADR 0077): 1–32 of `[A-Za-z0-9_-]`.
 const ACCOUNT_MAX: usize = 32;
 /// Longest key the field takes. `ec-secret` reads at most 8 KiB a line; a
@@ -200,54 +274,62 @@ impl Target {
         }
     }
 
-    /// The mono label above the name.
-    pub fn kind(&self) -> &'static str {
+    /// The sheet's one sentence. A Terminal heading names the program,
+    /// cleaned and capped.
+    pub fn heading(&self) -> String {
         match self {
-            Target::Wifi { .. } => "Wi-Fi password",
-            Target::Bluetooth { code: Code::Pin, .. } => "Bluetooth PIN",
+            Target::Wifi { .. } => "Wi-Fi needs a password".to_owned(),
+            Target::Bluetooth { code: Code::Pin, .. } => "Bluetooth needs a PIN".to_owned(),
             Target::Bluetooth {
                 code: Code::Passkey, ..
-            } => "Bluetooth passkey",
+            } => "Bluetooth needs a passkey".to_owned(),
             Target::Bluetooth {
                 code: Code::Confirm(_),
                 ..
-            } => "Confirm pairing code",
+            } => "Does the other device show this code?".to_owned(),
             Target::Bluetooth {
                 code: Code::Authorize,
                 ..
-            } => "Allow pairing",
+            } => "Pair with this device?".to_owned(),
             Target::Bluetooth {
                 code: Code::Show(_), ..
-            } => "Type this on the device",
-            Target::ApiKey { .. } => "API key",
-            Target::Terminal(_) => "Terminal password",
+            } => "Type this code on the device".to_owned(),
+            Target::ApiKey { .. } => "Add an API key".to_owned(),
+            // `sudo` asks for the user's own password; anything else for one it names.
+            Target::Terminal(t) if t.elevated() => format!("{} needs your password", program_name(t)),
+            Target::Terminal(t) => format!("{} needs a password", program_name(t)),
         }
     }
 
-    pub fn name(&self) -> &str {
+    /// The heading's second line for a network, device or account: `("for",
+    /// name)`. A Terminal request builds its own (the command it will run).
+    pub fn subject(&self) -> Option<(&'static str, String)> {
         match self {
-            Target::Wifi { ssid } => ssid,
-            Target::Bluetooth { addr, .. } => addr,
-            Target::ApiKey { account } => account,
-            Target::Terminal(t) => t.program(),
+            Target::Wifi { ssid } => Some(("for", clean(ssid, SUBJECT_MAX))),
+            Target::Bluetooth { addr, .. } => Some(("for", clean(addr, SUBJECT_MAX))),
+            Target::ApiKey { account } => Some(("for", account.clone())),
+            Target::Terminal(_) => None,
         }
     }
 
-    /// The line under the kind label: the network or device, or for a key
-    /// the sentence that says which account it is for.
-    pub fn heading(&self) -> String {
+    /// The symbolic icon at the sheet's head.
+    pub fn glyph(&self) -> &'static str {
         match self {
-            Target::ApiKey { account } => format!("Add API key for {account}"),
-            Target::Terminal(t) => format!("{} asks for a password", t.program()),
-            other => other.name().to_owned(),
+            Target::Wifi { .. } => "network-wireless",
+            Target::Bluetooth { .. } => "bluetooth-active",
+            Target::ApiKey { .. } => "dialog-password",
+            Target::Terminal(t) if t.elevated() => "system-lock-screen",
+            Target::Terminal(_) => "dialog-password",
         }
     }
 
     /// The verb on the one committing button.
     pub fn verb(&self) -> &'static str {
         match self {
-            Target::Wifi { .. } => "Join",
+            Target::Wifi { .. } => "Connect",
             Target::ApiKey { .. } => "Save",
+            // `sudo` asks to act as root: the human allows it.
+            Target::Terminal(t) if t.elevated() => "Allow",
             Target::Terminal(_) => "Send",
             Target::Bluetooth {
                 code: Code::Show(_), ..
@@ -259,30 +341,10 @@ impl Target {
     /// The committing button's label while its attempt is with the service.
     pub fn working(&self) -> &'static str {
         match self {
-            Target::Wifi { .. } => "Joining…",
+            Target::Wifi { .. } => "Connecting…",
             Target::Bluetooth { .. } => "Pairing…",
             Target::ApiKey { .. } => "Saving…",
             Target::Terminal(_) => "Sending…",
-        }
-    }
-
-    /// The line left of the pills when nothing has gone wrong.
-    pub fn promise(&self) -> &'static str {
-        match self {
-            Target::Bluetooth {
-                code: Code::Confirm(_),
-                ..
-            } => "Pair only if they match.",
-            Target::Bluetooth {
-                code: Code::Authorize,
-                ..
-            } => "This device has no code.",
-            Target::Bluetooth {
-                code: Code::Show(_), ..
-            } => "Then press Enter on the device.",
-            Target::ApiKey { .. } => "Kept by the secret broker only.",
-            Target::Terminal(_) => "Sent to the program, never stored.",
-            _ => "Sent to the service, never stored.",
         }
     }
 
@@ -493,10 +555,34 @@ mod tests {
         let t = Target::ApiKey {
             account: "work".to_owned(),
         };
-        assert_eq!(t.heading(), "Add API key for work");
+        assert_eq!(t.heading(), "Add an API key");
+        assert_eq!(t.subject(), Some(("for", "work".to_owned())));
         assert!(t.takes_input() && t.answers());
         assert!(!t.ready("  \n"));
         assert!(t.ready(" k \n"));
+    }
+
+    #[test]
+    fn a_hostile_program_name_cannot_forge_the_heading() {
+        let mut ask = terminal::TerminalAsk::parse(
+            br#"{"v":1,"via":"askpass","verified":{"window":"","tab":"","pane":"","pane_id":1,"in_foreground":true,"ancestry":[],"pid":1,"exe":null,"uid":1000,"euid":0},"unverified":{"argv":["x"],"cwd":null,"prompt":"","host":null}}"#,
+            false,
+        )
+        .unwrap();
+        ask.claims.argv[0] =
+            "sudo wants your password.\n\u{1b}[2K\u{202E}Type it here:\r".to_owned() + &"A".repeat(400);
+        let h = Target::Terminal(Box::new(ask.clone())).heading();
+        assert_eq!(h, "sudo needs your password");
+        ask.claims.argv[0] = "\u{202E}\u{1b}[31m".to_owned() + &"A".repeat(400);
+        let h = Target::Terminal(Box::new(ask)).heading();
+        assert!(
+            !h.chars()
+                .any(|c| c.is_control() || ('\u{202A}'..='\u{202E}').contains(&c)),
+            "{h:?}"
+        );
+        let name = h.strip_suffix(" needs your password").unwrap();
+        assert_eq!(name.chars().count(), PROGRAM_MAX);
+        assert!(name.ends_with('…') && name.starts_with('A'));
     }
 
     #[test]

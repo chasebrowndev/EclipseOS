@@ -34,3 +34,6 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { workspace = true }
 # pidfd on the parent for the Terminal target's "verified" check.
 rustix = { version = "1", features = ["std", "process", "event"] }
+# The Terminal sheet's lock glyph from the icon theme, as the bar finds its
+# symbolic marks. Already in the tree (ec-hyperion-bar, ec-desktop).
+freedesktop-icons = "0.4"

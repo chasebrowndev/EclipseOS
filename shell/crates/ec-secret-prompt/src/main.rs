@@ -9,7 +9,6 @@
 
 use ec_secret_prompt::app::{self, App};
 use ec_secret_prompt::{Target, APP_ID};
-use ec_ui::tokens::secret;
 use iced::window;
 
 fn main() -> iced::Result {
@@ -32,10 +31,14 @@ fn main() -> iced::Result {
         }
     };
 
-    let size = iced::Size::new(secret::W, secret::H);
+    let size = app::window_size(&target);
     let mut builder = iced::application(move || App::new(target.clone()), app::update, app::view)
         .title(|app: &App| app.title().to_owned())
         .theme(|_: &App| ec_ui::theme::theme())
+        // Transparent, so the compositor's blur shows through; the view tints
+        // it, opaque only when blur is off (`app::view`).
+        .transparent(true)
+        .style(ec_ui::theme::clear_window)
         .subscription(app::subscription)
         .window(window::Settings {
             size,
