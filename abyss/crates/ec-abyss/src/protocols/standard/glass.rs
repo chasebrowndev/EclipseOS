@@ -41,7 +41,7 @@ const VERSION: u32 = 1;
 
 /// The shell binaries that may bind the global. The glass is drawn under the
 /// client's surface, so `ec-secret-prompt` gains no access to what is typed.
-pub const DEFAULT_ALLOW: [&str; 7] = [
+pub const DEFAULT_ALLOW: [&str; 8] = [
     "ec-hyperion-bar",
     "ec-launcher",
     "ec-center",
@@ -49,6 +49,7 @@ pub const DEFAULT_ALLOW: [&str; 7] = [
     "ec-settings",
     "ec-policy-viewer",
     "ec-secret-prompt",
+    "apotheosis",
 ];
 
 /// On a surface's data map: whether it already has a glass object, which is
