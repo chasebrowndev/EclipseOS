@@ -837,7 +837,6 @@ fn add_connector(
         size: (mode.size().0 as i32, mode.size().1 as i32).into(),
         refresh: refresh_mhz(&mode),
     };
-    let global = output.create_global::<AbyssState>(&dh);
     output.change_current_state(Some(wl_mode), Some(Transform::Normal), None, Some((0, 0).into()));
     output.set_preferred(wl_mode);
 
@@ -1037,6 +1036,12 @@ fn add_connector(
     let vrr_config = state.config.output_rule(&name, &identity).vrr.unwrap_or(false)
         && matches!(vrr_support, VrrSupport::Supported);
 
+    // Advertise the output only once nothing above can fail: every early
+    // return (no DRM master yet, a refused mode, no shared format) used to
+    // leave a global naming no output. Clients bind each one, and a layer
+    // surface on a dead output lands on the focused one: a bar and a
+    // stretched wallpaper per failed attempt.
+    let global = output.create_global::<AbyssState>(&dh);
     let id = crate::outputs::register(
         state,
         identity,
