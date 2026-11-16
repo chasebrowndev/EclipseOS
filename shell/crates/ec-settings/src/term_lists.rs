@@ -632,13 +632,13 @@ fn drop_slot(slots: &mut Vec<String>, i: usize) {
 /// The inherit choice that names no parent.
 const NOTHING: &str = "Nothing";
 
-fn tight() -> iced::Padding {
+pub(crate) fn tight() -> iced::Padding {
     iced::Padding::from([space::PILL_Y, space::CARD])
 }
 
 /// A quiet verb in a row: lifts to primary ink under the pointer; absent
 /// (greyed, inert) when `msg` is `None`.
-fn verb<'a>(label: &str, msg: Option<Message>) -> Element<'a, Message, Theme> {
+pub(crate) fn verb<'a>(label: &str, msg: Option<Message>) -> Element<'a, Message, Theme> {
     let t = text(label.to_owned())
         .font(font::UI_MEDIUM)
         .size(size::BODY_SMALL);
@@ -688,7 +688,7 @@ fn input<'a>(
 }
 
 /// A labelled field with its reason under it.
-fn field<'a>(
+pub(crate) fn field<'a>(
     label: &str,
     control: Element<'a, Message, Theme>,
     why: Option<&str>,
@@ -782,7 +782,7 @@ fn item_row<'a>(
     .into()
 }
 
-fn mono_dim<'a>(s: &str) -> Element<'a, Message, Theme> {
+pub(crate) fn mono_dim<'a>(s: &str) -> Element<'a, Message, Theme> {
     text(s.to_owned())
         .font(font::DATA)
         .size(size::MONO)
@@ -790,7 +790,7 @@ fn mono_dim<'a>(s: &str) -> Element<'a, Message, Theme> {
         .into()
 }
 
-fn mono_text<'a>(s: &str) -> Element<'a, Message, Theme> {
+pub(crate) fn mono_text<'a>(s: &str) -> Element<'a, Message, Theme> {
     text(s.to_owned())
         .font(font::DATA)
         .size(size::MONO)

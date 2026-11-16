@@ -460,6 +460,36 @@ fn find_in<'a>(doc: &'a KdlDocument, segs: &[&str]) -> Option<&'a KdlNode> {
         })
 }
 
+/// One map entry as a child line: the entry, then its arguments. `quoted` writes every
+/// token as a string, so an entry beside quoted neighbours matches them.
+fn map_line(ty: &crate::types::Ty, entry: &str, args: &[String], quoted: bool) -> String {
+    let int_map = matches!(
+        ty,
+        crate::types::Ty::Map {
+            value: crate::types::Ty::Int { .. },
+            ..
+        }
+    );
+    let tok = |t: &str| {
+        let k = kdl_str(t);
+        if quoted && !k.starts_with('"') {
+            format!("\"{t}\"")
+        } else {
+            k
+        }
+    };
+    let mut out = tok(entry);
+    for a in args {
+        out.push(' ');
+        if int_map && a.parse::<i64>().is_ok() {
+            out.push_str(&a.parse::<i64>().unwrap_or_default().to_string());
+        } else {
+            out.push_str(&tok(a));
+        }
+    }
+    out
+}
+
 fn key_of(path: &str) -> Result<&'static Key, EditError> {
     schema::key(path).ok_or_else(|| EditError::UnknownKey(path.to_string()))
 }
@@ -637,32 +667,106 @@ impl Editor {
         Ok(true)
     }
 
-    /// Set one entry of a map key (a grant, an env var, a symbol-map range).
+    /// Set one entry of a map key (a grant, an env var, a symbol-map range). Only that
+    /// entry's bytes change: an existing entry is rewritten in place (or left alone when it
+    /// already holds `args`), a new one is appended as the map's last child. Comments and the
+    /// other entries are byte-identical.
     pub fn map_set(&mut self, path: &str, entry: &str, args: &[String]) -> Result<(), EditError> {
+        self.map_replace(path, entry, entry, args)
+    }
+
+    /// Replace the entry `old` with `entry` (`args`) at the same place in the map, or append
+    /// it when `old` is absent. Fails when `entry` differs from `old` and is already in the map.
+    pub fn map_replace(
+        &mut self,
+        path: &str,
+        old: &str,
+        entry: &str,
+        args: &[String],
+    ) -> Result<(), EditError> {
         let key = key_of(path)?;
+        if !matches!(key.ty, crate::types::Ty::Map { .. }) {
+            return Err(EditError::Invalid(format!("`{path}` is not a map")));
+        }
         let mut map = match self.get(path)? {
             Some(Value::Map(m)) => m,
             _ => Vec::new(),
         };
-        map.retain(|(k, _)| k != entry);
-        map.push((entry.to_string(), args.to_vec()));
-        if !matches!(key.ty, crate::types::Ty::Map { .. }) {
-            return Err(EditError::Invalid(format!("`{path}` is not a map")));
+        if entry != old && map.iter().any(|(k, _)| k == entry) {
+            return Err(EditError::Invalid(format!(
+                "`{entry}` is already in `{path}`"
+            )));
         }
-        self.set(path, &Value::Map(map))
+        match map.iter().rposition(|(k, _)| k == old) {
+            Some(i) if map[i].0 == entry && map[i].1 == args => return Ok(()),
+            Some(i) => map[i] = (entry.to_string(), args.to_vec()),
+            None => map.push((entry.to_string(), args.to_vec())),
+        }
+        let value = Value::Map(map);
+        if !crate::overrides::value_fits(&key.ty, &value) {
+            return Err(EditError::Invalid(format!("value does not fit `{path}`")));
+        }
+        crate::overrides::map_entries_ok(path, &value).map_err(EditError::Invalid)?;
+        let segs: Vec<&str> = path.split('.').collect();
+        let Some(node) = find_in(&self.doc, &segs).filter(|n| n.children().is_some()) else {
+            // No block yet (or a bare node): write the whole map.
+            return self.set(path, &value);
+        };
+        let children = node.children().map_or(&[][..], |d| d.nodes());
+        let splice = match children.iter().rposition(|c| c.name().value() == old) {
+            Some(i) => {
+                let c = &children[i];
+                let (s, e) = tight(&self.text, c);
+                let quoted = self.text[s..].starts_with('"');
+                (s..e, map_line(&key.ty, entry, args, quoted))
+            }
+            None => {
+                let cont = Cont::Node(node);
+                let quoted = children
+                    .last()
+                    .is_some_and(|c| self.text[tight(&self.text, c).0..].starts_with('"'));
+                let pad = " ".repeat(cont.indent(&self.text));
+                let line = map_line(&key.ty, entry, args, quoted);
+                insert_lines(&self.text, &cont, &format!("{pad}{line}\n"))
+            }
+        };
+        let new = apply_splices(&self.text, vec![splice]);
+        self.commit(new)
     }
 
-    /// Remove one entry of a map key.
+    /// Remove one entry of a map key: its own line goes (a comment on that line with it),
+    /// the rest of the block stays byte-identical. When the map is left with no entries and
+    /// nothing else (no comment) in its block, the block goes too.
     pub fn map_remove(&mut self, path: &str, entry: &str) -> Result<bool, EditError> {
-        let Some(Value::Map(mut map)) = self.get(path)? else {
+        key_of(path)?;
+        let segs: Vec<&str> = path.split('.').collect();
+        let Some(node) = find_in(&self.doc, &segs) else {
             return Ok(false);
         };
-        let before = map.len();
-        map.retain(|(k, _)| k != entry);
-        if map.len() == before {
+        let ranges: Vec<Range<usize>> = node
+            .children()
+            .map_or(&[][..], |d| d.nodes())
+            .iter()
+            .filter(|c| c.name().value() == entry)
+            .map(|c| removal_range(&self.text, c))
+            .collect();
+        if ranges.is_empty() {
             return Ok(false);
         }
-        self.set(path, &Value::Map(map))?;
+        let new = apply_splices(
+            &self.text,
+            ranges.into_iter().map(|r| (r, String::new())).collect(),
+        );
+        self.commit(new)?;
+        let bare = find_in(&self.doc, &segs).is_some_and(|n| {
+            let (_, e) = tight(&self.text, n);
+            n.children().is_some_and(|c| c.nodes().is_empty())
+                && open_brace(&self.text, n)
+                    .is_some_and(|o| self.text[o + 1..e - 1].trim().is_empty())
+        });
+        if bare {
+            self.unset(path)?;
+        }
         Ok(true)
     }
 
