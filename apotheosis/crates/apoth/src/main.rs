@@ -30,6 +30,7 @@ fn main() {
     let code = match args.first().map(String::as_str) {
         Some("config") => config_cmd(&args[1..]),
         Some("shell-init") => shell_init(&args[1..]),
+        Some("terminfo") => terminfo_source(),
         Some("icat") => icat::run(&args[1..]),
         Some("play") => play::run(&args[1..]),
         Some("server") => server::server(&args[1..]),
@@ -58,6 +59,7 @@ fn is_command(a: &str) -> bool {
             a,
             "config"
                 | "shell-init"
+                | "terminfo"
                 | "icat"
                 | "play"
                 | "server"
@@ -133,6 +135,17 @@ fn config_cmd(args: &[String]) -> i32 {
         err: &mut err,
     };
     config::run(args, &mut ctx)
+}
+
+/// `apoth terminfo`: both shipped entries as terminfo source, for `tic -x` at package time
+/// (T-19 §1).
+fn terminfo_source() -> i32 {
+    let mut out = String::new();
+    for v in apoth_terminfo::Variant::ALL {
+        out.push_str(&apoth_terminfo::source(&apoth_terminfo::entry(v)));
+    }
+    let _ = std::io::Write::write_all(&mut std::io::stdout(), out.as_bytes());
+    ctl::OK
 }
 
 /// `apoth shell-init <shell>`: the snippet panes get, for manual sourcing (T-14 §2).

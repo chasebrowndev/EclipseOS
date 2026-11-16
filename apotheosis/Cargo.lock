@@ -116,6 +116,7 @@ dependencies = [
  "apoth-image",
  "apoth-proto",
  "apoth-pty",
+ "apoth-terminfo",
  "miniz_oxide 0.8.9",
  "rustix",
  "serde_json",

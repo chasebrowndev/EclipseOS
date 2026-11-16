@@ -30,7 +30,7 @@ pub(crate) const DENIED: i32 = 3;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Commands T-12 §5 names that this build does not have yet.
-pub(crate) const NOT_YET: &[&str] = &["notify", "terminfo", "fonts", "doctor", "completions"];
+pub(crate) const NOT_YET: &[&str] = &["notify", "fonts", "doctor", "completions"];
 
 /// Socket commands.
 pub(crate) const COMMANDS: &[&str] = &[
