@@ -845,16 +845,24 @@ impl Machine {
     }
 
     fn gfx_submit(&mut self, p: Pending, payload: Vec<u8>, work: Work) {
-        let policy = (p.spec.medium != Medium::Direct)
-            .then(|| MediaPolicy::local_allow(self.gfx.store.remaining()));
-        let job = DecodeJob {
+        // The pre-read quota check counts what eviction could free (T-15 §4), so the
+        // covered flags must be current.
+        let policy = (p.spec.medium != Medium::Direct).then(|| {
+            self.sync_visible();
+            MediaPolicy::local_allow(self.gfx.store.available())
+        });
+        let mut job = DecodeJob {
             token: p.token,
             spec: p.spec.clone(),
             payload,
             policy,
             limits: self.cfg.graphics.limits.clone(),
             work,
+            preread: None,
         };
+        // Shared memory is read at once (no blocking I/O; a client may reuse the name for
+        // its next frame); decoding stays on the worker (T-15 §5).
+        job.read_shm_now();
         if self.cfg.graphics.inline_decode {
             let done = job.run();
             self.gfx_complete(p, done.outcome);
@@ -895,7 +903,7 @@ impl Machine {
     }
 
     fn gfx_complete(&mut self, p: Pending, outcome: Outcome) {
-        let (img, hash) = match outcome {
+        let (img, hash, opaque) = match outcome {
             Outcome::Denied => return,
             Outcome::Failed(e) => {
                 self.gfx_reply(p.reply, Err(e), p.quiet);
@@ -911,7 +919,7 @@ impl Machine {
                 self.iterm_done(p, d);
                 return;
             }
-            Outcome::Image(img, hash) => (img, hash),
+            Outcome::Image(img, hash, opaque) => (img, hash, opaque),
         };
         if p.query {
             self.gfx_reply(p.reply, Ok(()), p.quiet);
@@ -928,6 +936,7 @@ impl Machine {
         {
             Err(e) => Err(e.code()),
             Ok(ins) => {
+                self.gfx.store.set_opaque(p.part, ins.id, opaque);
                 for (s, id) in ins.evicted {
                     self.remove_places(|q| q.part == s && q.image == id);
                     self.remove_virt(|v| v.part == s && v.image == id);
@@ -1540,6 +1549,49 @@ impl Machine {
         for (part, image, pid, on) in vis {
             self.gfx.store.set_visible(part, image, pid, on);
         }
+        // Covered by a newer opaque placement at the same z (T-15 §4): evictable.
+        let mut on: Vec<(Layer, u32, u32)> = self
+            .gfx
+            .places
+            .iter()
+            .filter(|p| p.part == cur)
+            .filter_map(|p| {
+                let (abs, col) = self.place_origin(p, None, 0)?;
+                let layer = Layer {
+                    order: (p.z, p.image, p.seq),
+                    rect: self.place_px(p, abs, col),
+                    opaque: self.gfx.store.is_opaque(p.part, p.image),
+                    cullable: true,
+                };
+                Some((layer, p.image, p.pid))
+            })
+            .collect();
+        on.sort_by_key(|l| l.0.order);
+        let layers: Vec<Layer> = on.iter().map(|l| l.0).collect();
+        let flags = covered(&layers);
+        let hidden: HashSet<(u32, u32)> = on
+            .iter()
+            .zip(flags)
+            .filter(|(_, c)| *c)
+            .map(|((_, image, pid), _)| (*image, *pid))
+            .collect();
+        // One pass over the store's placements (a stream can hold thousands).
+        self.gfx.store.mark_covered(cur, &hidden);
+    }
+
+    /// Pixel rect (x0, y0, x1, y1) of a placement whose anchor cell is at absolute
+    /// (row, col), at the current cell size (the arithmetic of [`Self::gfx_draws`]).
+    fn place_px(&self, p: &Place, abs: i64, col: i64) -> [i64; 4] {
+        let (cw, ch) = self.cfg.cell_px;
+        let (cw, ch) = (i64::from(cw.max(1)), i64::from(ch.max(1)));
+        let g = &p.geom;
+        let (c0w, c0h) = (i64::from(g.cell.0.max(1)), i64::from(g.cell.1.max(1)));
+        let sc = |v: i32, num: i64, den: i64| (i64::from(v) * num + den / 2).div_euclid(den);
+        let x = col * cw + sc(g.dst[0], cw, c0w);
+        let y = abs * ch + sc(g.dst[1], ch, c0h);
+        let w = sc(g.dst[2], cw, c0w).max(1);
+        let h = sc(g.dst[3], ch, c0h).max(1);
+        [x, y, x + w, y + h]
     }
 
     fn kitty_delete(&mut self, d: apoth_image::kitty::DeleteSpec) {
@@ -1921,10 +1973,12 @@ impl Machine {
         }
         order.sort_by_key(|o| (o.0, o.1, o.2));
         let c = |v: i64| i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX });
-        for (z, image, _, src, vrow, col) in order {
+        let mut layers: Vec<Layer> = Vec::with_capacity(order.len());
+        for (z, image, seq, src, vrow, col) in order {
             let Some(view) = self.gfx.store.view(part, image, ms) else {
                 continue;
             };
+            let before = out.len();
             if let Some(d) = view.due {
                 due = Some(due.map_or(d, |x| x.min(d)));
             }
@@ -1940,6 +1994,12 @@ impl Machine {
                     let y = vrow * ch + sc(g.dst[1], ch, c0h);
                     let w = sc(g.dst[2], cw, c0w).max(1);
                     let h = sc(g.dst[3], ch, c0h).max(1);
+                    layers.push(Layer {
+                        order: (z, image, seq),
+                        rect: [x, y, x + w, y + h],
+                        opaque: self.gfx.store.is_opaque(part, image),
+                        cullable: true,
+                    });
                     out.push(ImageDraw {
                         key: view.key,
                         image: view.image,
@@ -1969,6 +2029,23 @@ impl Machine {
                     }
                 }
             }
+            if out.len() > before && layers.len() < out.len() {
+                layers.push(Layer {
+                    order: (z, image, seq),
+                    rect: [0; 4],
+                    opaque: false,
+                    cullable: false,
+                });
+            }
+        }
+        // Placements hidden under a newer opaque one are not drawn (stacked video frames).
+        let hidden = covered(&layers);
+        if hidden.iter().any(|h| *h) {
+            let mut i = 0;
+            out.retain(|_| {
+                i += 1;
+                !hidden[i - 1]
+            });
         }
         if self.gfx.media.has_places() {
             self.media_draws(top_abs, rows, out);
@@ -2076,6 +2153,51 @@ impl Machine {
     }
 }
 
+/// One drawn layer for the coverage sweep: draw order (z, image id, age), pixel rect
+/// (x0, y0, x1, y1), whether its image is opaque, and whether it may be culled or cover
+/// (placeholder runs do neither).
+#[derive(Clone, Copy, Debug)]
+struct Layer {
+    order: (i32, u32, u64),
+    rect: [i64; 4],
+    opaque: bool,
+    cullable: bool,
+}
+
+/// Coverers kept per z during the sweep: the newest ones, which is where a stream of
+/// frames at one cell puts its cover. Bounds the sweep at O(layers * COVERERS).
+const COVERERS: usize = 16;
+
+/// For layers sorted bottom to top: which are hidden under a later opaque layer at the
+/// same z whose rect contains theirs (T-15 §4). Such a placement is not on screen for
+/// eviction and is not drawn.
+fn covered(layers: &[Layer]) -> Vec<bool> {
+    let mut out = vec![false; layers.len()];
+    let mut tops: Vec<[i64; 4]> = Vec::with_capacity(COVERERS);
+    let mut z = None;
+    for (i, l) in layers.iter().enumerate().rev() {
+        if z != Some(l.order.0) {
+            z = Some(l.order.0);
+            tops.clear();
+        }
+        if !l.cullable {
+            continue;
+        }
+        let r = l.rect;
+        if tops
+            .iter()
+            .any(|t| t[0] <= r[0] && t[1] <= r[1] && t[2] >= r[2] && t[3] >= r[3])
+        {
+            out[i] = true;
+            continue;
+        }
+        if l.opaque && tops.len() < COVERERS {
+            tops.push(r);
+        }
+    }
+    out
+}
+
 /// The quad for a run of placeholder cells: the image fits the placement's `c x r` cell box
 /// (aspect kept, centred; the natural size when the box is unset), and the run shows the
 /// part of it under its cells. `dst` is relative to the run's top-left cell.
@@ -2157,6 +2279,51 @@ fn crop(img: &Image, w: u32, h: u32) -> Image {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn layer(z: i32, image: u32, rect: [i64; 4], opaque: bool) -> Layer {
+        Layer {
+            order: (z, image, u64::from(image)),
+            rect,
+            opaque,
+            cullable: true,
+        }
+    }
+
+    #[test]
+    fn coverage_needs_a_later_opaque_containing_layer_at_the_same_z() {
+        let r = [0, 0, 10, 10];
+        // Same z, later, opaque, same rect: covered.
+        assert_eq!(
+            covered(&[layer(0, 1, r, true), layer(0, 2, r, true)]),
+            [true, false]
+        );
+        // A larger later rect covers; a smaller one does not.
+        assert_eq!(
+            covered(&[layer(0, 1, r, true), layer(0, 2, [-1, -1, 11, 11], true)]),
+            [true, false]
+        );
+        assert_eq!(
+            covered(&[layer(0, 1, r, true), layer(0, 2, [0, 0, 9, 10], true)]),
+            [false, false]
+        );
+        // Translucent above: nothing hidden. Other z: nothing hidden.
+        assert_eq!(
+            covered(&[layer(0, 1, r, true), layer(0, 2, r, false)]),
+            [false, false]
+        );
+        assert_eq!(
+            covered(&[layer(0, 1, r, true), layer(1, 2, r, true)]),
+            [false, false]
+        );
+        // A stream: all but the top are covered; placeholder runs neither cover nor hide.
+        let mut v: Vec<Layer> = (1..=40).map(|i| layer(0, i, r, true)).collect();
+        v.push(Layer {
+            cullable: false,
+            ..layer(0, 41, r, true)
+        });
+        let c = covered(&v);
+        assert!(c[..39].iter().all(|x| *x) && !c[39] && !c[40]);
+    }
 
     fn spec() -> PlaceSpec {
         PlaceSpec {
