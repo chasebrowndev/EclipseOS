@@ -24,6 +24,7 @@ mod palette;
 mod pane;
 mod paste;
 mod pointer;
+mod portal;
 mod profiles;
 mod reload;
 mod render;

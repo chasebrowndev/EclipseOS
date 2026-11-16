@@ -7,8 +7,8 @@
 //! or path content.
 //!
 //! Fuzz targets: `apoth_term::fuzz::fuzz_kitty_apc` and `fuzz_sixel` drive these parsers
-//! through the terminal (with seed corpora under `apoth-term/corpus/`); both must never panic
-//! and never exceed the configured [`Limits`].
+//! through the terminal (seed corpora under `apotheosis/fuzz/corpus/`); both must never
+//! panic and never exceed the configured [`Limits`].
 #![forbid(unsafe_code)]
 
 pub mod anim;

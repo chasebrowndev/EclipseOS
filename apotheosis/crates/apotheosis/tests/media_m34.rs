@@ -618,3 +618,95 @@ fn click_pauses_and_resumes() {
         t.lines().any(|l| l.trim() == "X0X")
     });
 }
+
+impl Session {
+    /// Compositor windows as (title, focused, centre).
+    fn windows(&mut self) -> Vec<(String, bool, (f64, f64))> {
+        let reply = self.rpc_reply("get_windows", "{}");
+        let v: serde_json::Value = serde_json::from_str(&reply).unwrap_or_default();
+        v["result"]
+            .as_array()
+            .map(|ws| {
+                ws.iter()
+                    .map(|w| {
+                        let r = &w["rect"];
+                        let f = |k: &str| r[k].as_f64().unwrap_or(0.0);
+                        (
+                            w["title"].as_str().unwrap_or("").to_owned(),
+                            w["focused"].as_bool().unwrap_or(false),
+                            (f("x") + f("w") / 2.0, f("y") + f("h") / 2.0),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Wait until the window titled `title` has (or has not) the focus.
+    fn focused_is(&mut self, title: &str, want: bool, what: &str) {
+        let t0 = Instant::now();
+        loop {
+            let ws = self.windows();
+            if ws.iter().any(|w| w.0 == title && w.1 == want) {
+                return;
+            }
+            assert!(
+                t0.elapsed() < Duration::from_secs(10),
+                "{what}: windows {:?}",
+                ws
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+/// An `--ext` media window takes the keyboard focus when clicked after another window had
+/// it (verified with `get_windows`), and Space in it plays and pauses (T-08 §5).
+#[test]
+fn ext_window_focus_on_click_and_space_toggles() {
+    if !have_apoth("ext_window_focus_on_click_and_space_toggles") {
+        return;
+    }
+    let Some(mut s) = Session::start("extfocus") else {
+        return;
+    };
+    s.run("echo UP$((1+1))", "UP2");
+    let clip = fixture(&s);
+    let ext = s.media.with_extension("ext");
+    s.type_text(&format!(
+        "apoth play -x --loop --size 16x5 {}; echo X$?X\n",
+        clip.display()
+    ));
+    s.advances_past(&ext, "ext plays", 200);
+    let (ex, ey) = s.window_centre("apoth play");
+    // Give the focus back to the terminal's window by clicking it.
+    let term = s
+        .windows()
+        .into_iter()
+        .find(|w| w.0 != "apoth play")
+        .expect("the terminal window");
+    let (tx, ty) = term.2;
+    // A point of the terminal window away from the media window.
+    let (cx, cy) = if (tx - ex).abs() < 50.0 && (ty - ey).abs() < 50.0 {
+        (tx, 20.0)
+    } else {
+        (tx, ty)
+    };
+    s.click(cx, cy);
+    s.focused_is(&term.0, true, "terminal focused by a click");
+    s.focused_is("apoth play", false, "media window lost the focus");
+    // The click also toggles; it lands in the window and takes the focus.
+    // Re-read the centre: under load the window may still have been settling.
+    let (ex, ey) = s.window_centre("apoth play");
+    s.click(ex, ey);
+    s.focused_is("apoth play", true, "media window focused by a click");
+    let at = s.holds_still(&ext, "ext paused by the focusing click");
+    s.rpc("press_key", "{\"key\":\"space\",\"modifiers\":[]}");
+    s.advances_past(&ext, "ext resumed by Space", at);
+    s.rpc("press_key", "{\"key\":\"space\",\"modifiers\":[]}");
+    s.holds_still(&ext, "ext paused by Space");
+    s.rpc("press_key", "{\"key\":\"Escape\",\"modifiers\":[]}");
+    s.wait_file(&s.dump.clone(), "Escape exit", |t| {
+        t.lines().any(|l| l.trim() == "X0X")
+    });
+}

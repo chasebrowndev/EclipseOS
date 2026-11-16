@@ -2911,8 +2911,8 @@ that workspace alone may build libfuzzer's C++ runtime in a build script; it is 
 dependency of a shipping crate, `lang-rule.sh` skips it entirely, and T-24 §3 asserts no
 shipping crate depends on it (ADR 0110). Structure-aware generators and differential
 tests against the `vte` oracle run in the normal stable test suite. Targets: `vt_parse`, `term_feed`, `kitty_apc`, `sixel`,
-`osc_all`, `kitty_keyboard_decode`, `config_parse`, `proto_json`, `match_lang`,
-`template`, `compose`, plus the helper targets (T-16). Each has a seed corpus in-tree and
+`osc_all`, `kitty_keyboard_decode`, `config_parse`, `proto_json`, `mux_wire` (T-21 §3),
+`askpass` (the T-22 §3 askpass-socket request), `match_lang`, `template`, `compose`, plus the helper targets (T-16). Each has a seed corpus in-tree and
 a CI smoke run (60 s each, on the fuzz workspace's pinned nightly); longer runs are a
 scheduled job. Policy conformance tests run
 the sequence corpus twice — allowed and denied — asserting that denied means *no
@@ -3127,7 +3127,7 @@ survive GUI and compositor restarts; detach/attach; several views of one session
   the PTY byte stream with sequence numbers; the view runs its own `apoth-term` over the
   same bytes, so rendering is identical by construction and there is no cell-diff
   protocol to keep correct. History pages are fetched on demand. Input goes view →
-  server → PTY. Resize policy across views: `smallest|latest|largest` (default `latest`).
+  server → PTY. Resize policy across views: `sessions.resize` `smallest|latest|largest` (default `latest`; applies from the next attach).
 - Flow control: per-view bounded tee buffer; a slow view is resynchronised from a fresh
   snapshot instead of blocking the PTY.
 - Local views pass shm and dmabuf-free image data by memfd; remote views (T-22) get

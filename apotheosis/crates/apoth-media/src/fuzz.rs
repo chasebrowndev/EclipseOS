@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Fuzz bodies (T-16 §6): `helper_wire` (both directions of the helper protocol),
 //! `mkv_demux` (the container readers) and `av1_obu` (the rav1d wrapper). Each must never
-//! panic. The cargo-fuzz wrappers live next to `Cargo.toml` (`fuzz_*.rs`, not compiled by
-//! the workspace); the seed corpora are under `corpus/`. A wrapper may call
-//! [`crate::sandbox::enter`] once at start to run under the helper's own profile; the
-//! default leaves it off because sanitizer runtimes need address space past `RLIMIT_AS`.
+//! panic. The cargo-fuzz wrappers are in `apotheosis/fuzz/fuzz_targets/`, the seed corpora
+//! in `apotheosis/fuzz/corpus/`. A wrapper may call [`crate::sandbox::enter`] once at start
+//! to run under the helper's own profile; the default leaves it off because sanitizer
+//! runtimes need address space past `RLIMIT_AS`.
 
 use std::io::Cursor;
 
@@ -82,7 +82,7 @@ mod tests {
 
     fn corpus(name: &str, f: fn(&[u8])) -> usize {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("corpus")
+            .join("../../fuzz/corpus")
             .join(name);
         let mut n = 0;
         for e in std::fs::read_dir(dir).unwrap() {

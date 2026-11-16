@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# T-18 §11, T-25 §4: dated nightly for -Zsanitizer; bumping it is its own PR.
-# The main apotheosis/rust-toolchain.toml stays on 1.97.0.
+# The fuzz workspace's dated nightly (T-18 §11, T-24 §1): `-Zsanitizer` needs nightly.
+# The sole toolchain exception in apotheosis/; bumping it is its own PR.
 [toolchain]
 channel = "nightly-2026-11-01"
-profile = "minimal"

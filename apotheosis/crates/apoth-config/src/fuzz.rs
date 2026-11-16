@@ -76,7 +76,7 @@ mod tests {
 
     fn corpus(name: &str, f: fn(&[u8])) -> usize {
         let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("corpus")
+            .join("../../fuzz/corpus")
             .join(name);
         let mut n = 0;
         for entry in std::fs::read_dir(dir).unwrap() {

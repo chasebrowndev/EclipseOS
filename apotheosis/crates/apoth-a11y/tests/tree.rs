@@ -20,6 +20,7 @@ fn pane(id: u64, rows: &[(&str, bool)], cursor: (usize, usize), focused: bool) -
         rows: rows.iter().map(|(s, w)| RowText::plain(s, *w)).collect(),
         cursor: Some(cursor),
         credential: false,
+        media: Vec::new(),
     }
 }
 
@@ -268,4 +269,62 @@ fn credential_state_is_protected() {
     let tree = Tree::new(b.full(&window(vec![p])), true);
     let f = tree.state().focus().expect("focus");
     assert!(f.is_password_input());
+}
+
+/// A media placement is a node of its pane (T-20 §5): video or audio by role, a name that
+/// carries no content, its state toggled and in words, and Click to play or pause.
+#[test]
+fn media_placements_have_role_state_and_a_toggle() {
+    use accesskit::{Action, Rect, Toggled};
+    use apoth_a11y::{MediaModel, MediaState};
+    let mut p = pane(3, &[("", false), ("", false)], (1, 0), true);
+    let bounds = Rect {
+        x0: 10.0,
+        y0: 20.0,
+        x1: 42.0,
+        y1: 52.0,
+    };
+    p.media = vec![
+        MediaModel {
+            key: 5,
+            video: true,
+            state: MediaState::Playing,
+            bounds,
+        },
+        MediaModel {
+            key: 6,
+            video: false,
+            state: MediaState::Paused,
+            bounds,
+        },
+    ];
+    let mut m = window(vec![p]);
+    for model in [TextModel::Runs, TextModel::Lines] {
+        let mut b = builder(model);
+        let tree = Tree::new(b.full(&m), true);
+        let root = tree.state().root();
+        let v = find(root, ids::media(3, 5)).expect("video node");
+        assert_eq!(v.role(), Role::Video);
+        assert_eq!(v.label().as_deref(), Some("Video"));
+        assert_eq!(v.toggled(), Some(Toggled::True));
+        assert_eq!(v.data().state_description(), Some("playing"));
+        assert!(v.data().supports_action(Action::Click));
+        assert_eq!(v.data().bounds(), Some(bounds));
+        assert_eq!(v.parent().map(|n| n.locate().0), Some(ids::pane(3)));
+        let a = find(root, ids::media(3, 6)).expect("audio node");
+        assert_eq!(a.role(), Role::Audio);
+        assert_eq!(a.toggled(), Some(Toggled::False));
+        assert_eq!(a.data().state_description(), Some("paused"));
+        assert_eq!(
+            ids::target(ids::media(3, 6)),
+            ids::Target::Media { pane: 3, key: 6 }
+        );
+    }
+    // A pause updates only that node.
+    let mut b = builder(TextModel::Runs);
+    let _ = b.full(&m);
+    m.panes[0].media[0].state = MediaState::Paused;
+    let u = b.update(&m).expect("update");
+    assert_eq!(u.nodes.len(), 1);
+    assert_eq!(u.nodes[0].0, ids::media(3, 5));
 }

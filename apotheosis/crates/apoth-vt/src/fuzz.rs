@@ -160,7 +160,8 @@ mod tests {
 
     #[test]
     fn corpus_seeds_never_panic() {
-        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("corpus/vt_parse");
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fuzz/corpus/vt_parse");
         let mut n = 0;
         for entry in std::fs::read_dir(dir).unwrap() {
             fuzz_parse(&std::fs::read(entry.unwrap().path()).unwrap());
