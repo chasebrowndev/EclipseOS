@@ -6,11 +6,11 @@
 # --release --workspace` once per package over the same tree.
 #
 # Each swappable DE component is its own package (ADR 0052): the taskbar,
-# toasts, notification center and launcher install independently, so a user
+# toasts and launcher install independently, so a user
 # can run our toasts under another bar, or another bar under abyss.
 
 pkgbase=eclipseos
-pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper eclipseos-center
+pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper
          eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack
          eclipseos-steam-glass eclipseos-firefox-glass eclipseos-greeter eclipseos-portal eclipseos-meta)
 pkgver=0.2.2
@@ -130,14 +130,6 @@ package_eclipseos-wallpaper() {
   _bin ec-wallpaper
   _unit ec-wallpaper.service
   # Not wanted by abyss-session.target: abyss draws the wallpaper (ADR 0104).
-}
-
-package_eclipseos-center() {
-  pkgdesc="EclipseOS notification and status center"
-  depends=(wayland libxkbcommon mesa networkmanager bluez upower)
-
-  _bin ec-center
-  _app ec-center.desktop
 }
 
 package_eclipseos-launcher() {
@@ -402,12 +394,12 @@ package_eclipseos-portal() {
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
   arch=(any)  # config and dependencies only, no ELF
-  depends=(eclipseos-abyss eclipseos-toasts eclipseos-wallpaper eclipseos-center
+  depends=(eclipseos-abyss eclipseos-toasts eclipseos-wallpaper
            eclipseos-launcher eclipseos-desktop eclipseos-fog eclipseos-greeter
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
            foot xdg-user-dirs brightnessctl playerctl)
   # Add-ons (ADR 0066): suggested, not required. The session starts without
-  # them; Super+E/R/N reach the launcher and center through built-in binds.
+  # them; Super+E/R reach the launcher through built-in binds.
   optdepends=('eclipseos-hyperion: the taskbar add-on (workspaces, window chips, widgets, tray)'
               'eclipseos-agents: the agent stack add-on (ADR 0069)'
               'eclipseos-firefox-glass: Glass for Firefox theme add-on (ADR 0079)')

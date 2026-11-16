@@ -34,8 +34,7 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 - **A shipped bind must name a binary in `eclipseos-meta`'s dependency
   closure** (was HW-04). `default_binds()` spawns `foot` (Super+Q,
-  Super+Return), `ec-launcher` (Super+E, Super+R) and `ec-center`
-  (Super+N). `default_bind_spawns_name_shipped_binaries` enforces it against
+  Super+Return), and `ec-launcher` (Super+E, Super+R). `default_bind_spawns_name_shipped_binaries` enforces it against
   `packaging/pkg/eclipseos/PKGBUILD`.
 - **User units are enabled by `abyss-session.target.wants/` symlinks the
   packages ship** (was HW-02), not by a user-preset, which only takes effect
@@ -193,7 +192,6 @@ fields next to glass:
 - **Settings dropdowns.** iced `pick_list` in `ec-settings` (`app.rs`,
   `taskbar.rs`, `animations.rs`, `pinned.rs`), the "pop"/"glide" pickers.
   The picker's overlay menu is a separate popup surface.
-- **ec-center** text rows outside the System/Session blocks.
 - **`prompt_cell`** and **`list_row`** in `ec-ui` (`list_row` has no
   ground at all).
 - **ec-policy-viewer.** It is on the bind allowlist, but none of its views

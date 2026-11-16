@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Step 8: desktop components (D-07 §4.1).
 //!
-//! Hero: a 2x2 status grid, one cell per slot (bar, launcher, notifications,
-//! control center) reading what is chosen. On the happy path that is all there
-//! is: the profile already picked all four. Swapping a slot for another
+//! Hero: a status grid, one cell per slot (bar, launcher, notifications)
+//! reading what is chosen. On the happy path that is all there
+//! is: the profile already picked all three. Swapping a slot for another
 //! candidate is under "More options", one row of choices per slot.
 //! The accented value: none. Every reading is settled, and the choosers under
 //! More options mark their selection in white.
@@ -32,7 +32,7 @@ pub fn body(m: &Model) -> Body<'_> {
         .enumerate()
         .map(|(i, s)| (s.label, shown(m.choices.slots[i])))
         .collect();
-    let mut blocks: Vec<El<'_, Message>> = vec![parts::stat_grid(cells, 2)];
+    let mut blocks: Vec<El<'_, Message>> = vec![parts::stat_grid(cells, 3)];
 
     // A non-native bar is a real choice with a real cost (D-07 §4.1).
     if matches!(m.choices.slots[BAR], "waybar" | "quickshell") {

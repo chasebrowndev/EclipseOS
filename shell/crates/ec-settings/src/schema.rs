@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(row("general.gaps-in").label(), "Between windows");
         assert_eq!(row("bar.eye").label(), "Eye indicator");
         assert_eq!(row("mode").label(), "Interaction mode");
-        assert_eq!(row("components.control-center").label(), "Control center");
+        assert_eq!(row("components.notifications").label(), "Notifications");
         assert_eq!(row("decoration.blur.glass.rim").label(), "Glass rim light");
         assert_eq!(row("decoration.blur.frost.tint").label(), "Frost tint");
         assert_eq!(row("general.col-active-border").label(), "Active border colour");

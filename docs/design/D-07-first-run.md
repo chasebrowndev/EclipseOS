@@ -129,7 +129,6 @@ bluetooth-ui) are a slot of their own that any number may fill. *(ADR 0062)*
 | bar | `hyperion`, `waybar`, `quickshell`, `none` |
 | launcher | `ec-launcher`, `fuzzel`, `none` |
 | notifications | `ec-toasts`, `mako`, `none` |
-| control center | `ec-center`, `none` |
 | terminal | `foot`, `kitty`, `alacritty` (`cataclysm` when P-04 exists) |
 | browser | `firefox`, `chromium`, `none` |
 | office | `libreoffice-fresh`, `none` |
@@ -277,7 +276,7 @@ they get. That file is written by a same-uid process and is therefore
   not intent. The helper keeps only presentation and preference keys
   (`input.kb-*`, `general.layout`, `general.color-scheme`, `decoration.rounding`,
   `decoration.blur.enabled`, `animations.enabled|animation`, `bar.position`,
-  `mode`, `components.{bar,launcher,notifications,control-center}`,
+  `mode`, `components.{bar,launcher,notifications}`,
   `setup.{complete,profile}`: exactly the keys the wizard writes, leaf by leaf) and **drops every command-bearing key**:
   `bind` actions that spawn or exec, `idle.lock-command`, `misc.terminal-command`,
   and any exec-style key added later (an unknown key is dropped, never kept).

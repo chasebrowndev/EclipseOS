@@ -38,7 +38,7 @@ abyss/          compositor + system daemons (AGPL; protocol crates Apache-2.0)
   bench/ ci/                  frame-time harness; wlcs skip list, doc-refs, GUI-coverage exceptions
 shell/crates/   DE panes and services (iced via ec-ui; none is TCB)
   ec-ui                       shared theme, tokens, widgets
-  ec-hyperion-bar ec-toasts ec-center ec-launcher ec-settings ec-policy-viewer
+  ec-hyperion-bar ec-toasts ec-launcher ec-settings ec-policy-viewer
   ec-secret-prompt ec-lock ec-desktop ec-wallpaper ec-cheatsheet ec-console ec-greeter
   ec-services                 D-Bus: notifications, tray, status, screensaver, portal
 apotheosis/     the terminal (docs/ECLIPSEOS_SPECS_APOTHEOSIS.md)

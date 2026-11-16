@@ -63,7 +63,7 @@ Run: `cargo run -- --backend winit`. Logs: `journalctl --user -t ec-abyss -f`.
 ## Who writes what
 - **Frontend always goes to `eclipse-frontend`.** That means any change to what
   the user sees in `shell/crates/` panes (ec-ui, ec-hyperion-bar, ec-toasts,
-  ec-center, ec-launcher, ec-settings, ec-policy-viewer, ec-secret-prompt, and
+  ec-launcher, ec-settings, ec-policy-viewer, ec-secret-prompt, and
   the rest). No change is too small. It screenshots and iterates against
   `docs/STYLE.md`; the main thread can't. Non-visual code in those crates (IPC,
   parsing, message flow) stays with main.

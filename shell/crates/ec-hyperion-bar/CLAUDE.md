@@ -1,8 +1,8 @@
 # hyperion — the taskbar
 
 Internal name only: users see it as "the taskbar", and every user-facing
-string says so. Toasts, the control center and the launcher are their own
-crates (`ec-toasts`, `ec-center`, `ec-launcher`) and must
+string says so. Toasts and the launcher are their own
+crates (`ec-toasts`, `ec-launcher`) and must
 never depend on this one (ADR 0052).
 
 Read the root `CLAUDE.md` first. Governing spec: DP-4 (`docs/design/DP-4-desktop-profiles.md`), ADR 0038.

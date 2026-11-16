@@ -1,6 +1,6 @@
 # Starts the screen locker when logind asks for a lock (ADR 0095): Session.Lock
 # on the display session (loginctl lock-session: the Super+Shift+L bind, the
-# bar, the center) and PrepareForSleep, holding a bounded sleep delay until
+# bar) and PrepareForSleep, holding a bounded sleep delay until
 # ec-lock is up. Installed to /usr/lib/systemd/user/ec-lock-trigger.service.
 #
 # Each ec-lock runs in its own app-*.scope, so stopping or restarting this

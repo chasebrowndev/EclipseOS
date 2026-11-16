@@ -1700,7 +1700,6 @@ mod tests {
             Message::SetSlot(0, "waybar"),
             Message::SetSlot(1, "fuzzel"),
             Message::SetSlot(2, "none"),
-            Message::SetSlot(3, "none"),
             Message::SetRounded(false),
             Message::SetBlur(Blur::Glass),
             Message::SetAnimations(true),
@@ -1718,7 +1717,6 @@ mod tests {
                 ("components.bar", json!("waybar")),
                 ("components.launcher", json!("fuzzel")),
                 ("components.notifications", json!("none")),
-                ("components.control-center", json!("none")),
                 ("decoration.rounding", json!(0)),
                 ("decoration.blur.mode", json!("glass")),
                 ("animations.preset", json!("smooth")),
@@ -1727,9 +1725,9 @@ mod tests {
             "applications are packages, so toggling one writes nothing"
         );
         // A choice the slot does not offer is refused.
-        assert!(m.update(Message::SetSlot(3, "waybar")).is_empty());
+        assert!(m.update(Message::SetSlot(2, "waybar")).is_empty());
         assert!(m.update(Message::SetSlot(9, "waybar")).is_empty());
-        assert_eq!(m.choices.slots[3], "none");
+        assert_eq!(m.choices.slots[2], "none");
 
         let fx = m.update(Message::Apply);
         let plan = fx
@@ -1831,10 +1829,7 @@ mod tests {
         assert_eq!(r.plan.timezone, "Europe/Berlin");
         assert_eq!(r.plan.username, "chase");
         // The plan carries catalog ids, never a package or a unit.
-        assert_eq!(
-            r.plan.candidates,
-            ["ec-hyperion-bar", "ec-launcher", "ec-toasts", "ec-center"]
-        );
+        assert_eq!(r.plan.candidates, ["ec-hyperion-bar", "ec-launcher", "ec-toasts"]);
 
         // The config writes come first, and only the wizard's own keys: the
         // whole seed, then the two `setup.` records.

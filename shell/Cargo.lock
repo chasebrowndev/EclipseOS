@@ -965,17 +965,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ec-center"
-version = "0.2.2"
-dependencies = [
- "ec-ipc",
- "ec-services",
- "ec-ui",
- "iced",
- "iced_layershell",
-]
-
-[[package]]
 name = "ec-cheatsheet"
 version = "0.2.2"
 dependencies = [

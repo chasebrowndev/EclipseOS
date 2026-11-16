@@ -1793,7 +1793,7 @@ machine-readable — but no work is spent on it now.
 *(amended C-06, 2026-09-23)* Superseded in part. B-03 added a DE mode
 (COMP-17), and ADR 0038 pulled part of Z-01 forward: the default userland is
 native Rust (iced), one crate per swappable component (ADR 0052) — `hyperion`
-(bar), `ec-toasts`, `ec-center`, `ec-launcher`,
+(bar), `ec-toasts`, `ec-launcher`,
 `ec-settings`, `ec-policy-viewer`, `ec-secret-prompt`. They are
 ordinary Wayland clients of the human IPC; none is trusted UI (§10).
 
@@ -7259,7 +7259,6 @@ from the file, against CHARTER §4.
 | `components.bar` | `none` | `hyperion` | `hyperion` | `hyperion` |
 | `components.launcher` | `ec-launcher` | `ec-launcher` | `ec-launcher` | `ec-launcher` |
 | `components.notifications` | `none` | `ec-toasts` | `ec-toasts` | `ec-toasts` |
-| `components.control-center` | `none` | `ec-center` | `ec-center` | `ec-center` |
 | terminal | `foot` | `foot` | `foot` | `foot` (`cataclysm` once P-04 exists) |
 | browser, office, image editor, file manager, media player | none | asked, none preselected | `firefox`, `libreoffice-fresh`, `gimp`, `nautilus`, `mpv` | asked, none preselected |
 | agent stack | off | off | off | on (`agentd`, `brokerd`, egress proxy) |
@@ -7287,7 +7286,6 @@ components {
     bar "hyperion"              // hyperion | waybar | quickshell | none
     launcher "ec-launcher"
     notifications "ec-toasts"
-    control-center "ec-center"
 }
 ```
 

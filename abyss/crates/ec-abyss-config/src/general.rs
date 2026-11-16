@@ -630,7 +630,6 @@ pub struct Components {
     pub bar: String,
     pub launcher: String,
     pub notifications: String,
-    pub control_center: String,
 }
 
 impl Default for Components {
@@ -639,7 +638,6 @@ impl Default for Components {
             bar: "ec-hyperion-bar".into(),
             launcher: "ec-launcher".into(),
             notifications: "ec-toasts".into(),
-            control_center: "ec-center".into(),
         }
     }
 }

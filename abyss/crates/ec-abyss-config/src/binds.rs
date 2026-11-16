@@ -260,19 +260,12 @@ pub fn default_binds() -> Vec<Bind> {
             key: Keysym::slash,
             action: Action::Spawn("ec-console".into()),
         },
-        // The desktop's own surfaces. Hyprland reaches these through
-        // `qs -c eclipse ipc call ui toggle ...`; ours are separate binaries,
-        // and each exits on Escape, so a second press of the bind is not a
-        // toggle. Only the two that exist are bound.
+        // The launcher is a separate binary that exits on Escape, so a second
+        // press of the bind is not a toggle.
         Bind {
             mods: sup,
             key: Keysym::r,
             action: Action::Spawn("ec-launcher".into()),
-        },
-        Bind {
-            mods: sup,
-            key: Keysym::n,
-            action: Action::Spawn("ec-center".into()),
         },
         // The keybind cheat sheet: the chords in force, read from the live
         // config. Super+slash is the agent console, so this takes Super+F1.

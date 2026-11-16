@@ -45,7 +45,6 @@ prompt (ADR 0067); see `widget` below and the `review_widget` method.
 | `components.bar` | ec-hyperion-bar \| waybar \| quickshell \| none | `"ec-hyperion-bar"` | live | Which bar `abyss-session` runs (COMP-17 §2.2). A change on hot reload stops the old candidate and starts the new one. |
 | `components.launcher` | ec-launcher \| fuzzel \| none | `"ec-launcher"` | live | Which launcher `abyss-session` runs (COMP-17 §2.2). |
 | `components.notifications` | ec-toasts \| mako \| none | `"ec-toasts"` | live | Which notification daemon `abyss-session` runs (COMP-17 §2.2). |
-| `components.control-center` | ec-center \| none | `"ec-center"` | live | Which control center `abyss-session` runs (COMP-17 §2.2). |
 
 ### `wallpaper`
 

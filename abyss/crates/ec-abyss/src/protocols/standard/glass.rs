@@ -41,10 +41,9 @@ const VERSION: u32 = 1;
 
 /// The shell binaries that may bind the global. The glass is drawn under the
 /// client's surface, so `ec-secret-prompt` gains no access to what is typed.
-pub const DEFAULT_ALLOW: [&str; 8] = [
+pub const DEFAULT_ALLOW: [&str; 7] = [
     "ec-hyperion-bar",
     "ec-launcher",
-    "ec-center",
     "ec-toasts",
     "ec-settings",
     "ec-policy-viewer",

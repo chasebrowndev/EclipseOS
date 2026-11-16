@@ -71,7 +71,7 @@ SCREENS = ("welcome", "language", "keyboard", "timezone", "network", "disk", "id
 # + ec-setup-helper catalog.rs). The floor list is read from the medium's package list.
 PROFILE_COMPONENTS = {
     "minimal": ["eclipseos-launcher"],
-    "standard": ["eclipseos-hyperion", "eclipseos-launcher", "eclipseos-toasts", "eclipseos-center"],
+    "standard": ["eclipseos-hyperion", "eclipseos-launcher", "eclipseos-toasts"],
 }
 PROFILE_COMPONENTS["full"] = PROFILE_COMPONENTS["standard"] + [
     "firefox", "micro", "thunar", "mpv", "imv", "zathura", "zathura-pdf-mupdf"]
