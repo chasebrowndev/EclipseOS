@@ -217,7 +217,9 @@ fn format_param(cfg: &ProducerConfig) -> Vec<u8> {
     ))
 }
 
-/// Buffers param: memfd, 3..8 buffers, one block, `stride * height`.
+/// Buffers param: memfd or memptr, 3..8 buffers, one block, `stride * height`. The data types
+/// are a flags choice: a consumer that asks for a set (OBS sends a plain bitmask) intersects
+/// with it, where a plain int only matches the identical value.
 fn buffers_param(w: u32, h: u32) -> Vec<u8> {
     use spa::sys::*;
     let stride = (w * 4) as i32;
@@ -230,6 +232,14 @@ fn buffers_param(w: u32, h: u32) -> Vec<u8> {
             max: 8,
         },
     )));
+    let memfd = 1 << SPA_DATA_MemFd;
+    let data_types = Value::Choice(ChoiceValue::Int(Choice(
+        ChoiceFlags::empty(),
+        ChoiceEnum::Flags {
+            default: memfd,
+            flags: vec![memfd, 1 << SPA_DATA_MemPtr],
+        },
+    )));
     pod_bytes(pod::Object {
         type_: SpaTypes::ObjectParamBuffers.as_raw(),
         id: ParamType::Buffers.as_raw(),
@@ -239,7 +249,7 @@ fn buffers_param(w: u32, h: u32) -> Vec<u8> {
             Property::new(SPA_PARAM_BUFFERS_size, Value::Int(size)),
             Property::new(SPA_PARAM_BUFFERS_stride, Value::Int(stride)),
             Property::new(SPA_PARAM_BUFFERS_align, Value::Int(16)),
-            Property::new(SPA_PARAM_BUFFERS_dataType, Value::Int(1 << SPA_DATA_MemFd)),
+            Property::new(SPA_PARAM_BUFFERS_dataType, data_types),
         ],
     })
 }
