@@ -381,7 +381,7 @@ fn late_views_hold_the_same_state_as_early_ones() {
         1,
         r"printf '\033[?1049h\033[2;5Halt-screen\n'; echo mark-$((10+2))",
     );
-    until_same(10, "the second burst", &mut a, &mut b, |c| {
+    Client::until_same(10, "the second burst", &mut a, &mut b, |c| {
         c.shows(1, "mark-12")
     });
     let now = Instant::now();
@@ -398,7 +398,7 @@ fn late_views_hold_the_same_state_as_early_ones() {
     // And a third, fresh view agrees with both.
     let mut c = Client::attach(&srv.sock);
     c.until(10, "a third snapshot", |c| c.shows(1, "mark-12"));
-    until_same(10, "the third view to catch up", &mut a, &mut c, |c| {
+    Client::until_same(10, "the third view to catch up", &mut a, &mut c, |c| {
         c.shows(1, "mark-12")
     });
     let ic = c.panes[&1].term.as_ref().unwrap().snapshot(now).unwrap();

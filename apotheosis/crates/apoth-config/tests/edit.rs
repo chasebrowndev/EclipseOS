@@ -556,7 +556,7 @@ fn two_string_bind_survives_an_unrelated_settings_edit() {
         t.contains("bind \"ctrl+shift+y\" \"new-tab\" // keep"),
         "{t}"
     );
-    assert_eq!(ed.text().matches("bind").count(), 1);
+    assert_eq!(ed.text().matches("bind \"").count(), 1);
     let before = ed.text();
     assert_eq!(Editor::parse(&before).unwrap().text(), before);
 }
