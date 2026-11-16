@@ -41,6 +41,21 @@ pub struct CursorState {
     pub visible: bool,
     /// The window and pane have focus.
     pub focused: bool,
+    /// Blink fade level, `0..=255` (255 = solid). The caller eases it; no timer here.
+    pub alpha: u8,
+}
+
+/// A block or beam caret with slightly rounded corners, drawn by the renderer's rounded-rect
+/// pass in place of its `rects` (which keep the same square geometry for the tests and the
+/// CPU reference).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RoundCaret {
+    /// x, y, w, h in grid pixels.
+    pub rect: [i32; 4],
+    /// Corner radius in pixels.
+    pub radius: f32,
+    /// Straight-alpha RGBA8; alpha is the eased blink level.
+    pub colour: [u8; 4],
 }
 
 /// The cursor's instances for one frame.
@@ -48,6 +63,8 @@ pub struct CursorState {
 pub struct CursorScene {
     /// Cursor rects (0, 1 or 4).
     pub rects: Vec<RectInstance>,
+    /// The rounded form of a block or beam caret.
+    pub round: Option<RoundCaret>,
     /// The glyph redrawn over a block cursor in the cursor text colour.
     pub glyph: Option<GlyphInstance>,
 }
@@ -72,8 +89,9 @@ pub fn build<P: GlyphProvider>(
     out: &mut CursorScene,
 ) {
     out.rects.clear();
+    out.round = None;
     out.glyph = None;
-    if !st.visible {
+    if !st.visible || st.alpha == 0 {
         return;
     }
     let Some(cell) = row.cells.get(st.col) else {
@@ -93,7 +111,7 @@ pub fn build<P: GlyphProvider>(
     }
     let colour: Rgb = pal.cursor.unwrap_or(fg);
     let text: Rgb = pal.cursor_text.unwrap_or(bg);
-    let c = colour.premul(255);
+    let c = colour.premul(st.alpha);
 
     let x = st.col as i32 * m.width;
     let y = st.row as i32 * m.height;
@@ -105,9 +123,25 @@ pub fn build<P: GlyphProvider>(
     let h = m.height;
     let t = m.cursor_thickness.max(1);
 
+    let straight = [colour.0, colour.1, colour.2, st.alpha];
     match effective_shape(st.shape, st.focused) {
-        CursorShape::Block => out.rects.push(RectInstance::new(x, y, w, h, c)),
-        CursorShape::Beam => out.rects.push(RectInstance::new(x, y, t.min(w), h, c)),
+        CursorShape::Block => {
+            out.rects.push(RectInstance::new(x, y, w, h, c));
+            out.round = Some(RoundCaret {
+                rect: [x, y, w, h],
+                radius: (h as f32 * 0.125).max(1.5).min(w as f32 / 2.0),
+                colour: straight,
+            });
+        }
+        CursorShape::Beam => {
+            let bw = t.min(w);
+            out.rects.push(RectInstance::new(x, y, bw, h, c));
+            out.round = Some(RoundCaret {
+                rect: [x, y, bw, h],
+                radius: bw as f32 / 2.0,
+                colour: straight,
+            });
+        }
         CursorShape::Underline => {
             let t = t.min(h);
             out.rects.push(RectInstance::new(x, y + h - t, w, t, c));
@@ -174,7 +208,7 @@ pub fn build<P: GlyphProvider>(
             color: if g.color {
                 [255, 255, 255, 255]
             } else {
-                text.premul(255)
+                text.premul(st.alpha)
             },
         });
     }
@@ -236,6 +270,7 @@ mod tests {
             shape,
             visible,
             focused,
+            alpha: 255,
         };
         let mut out = CursorScene::default();
         build(&st, &row(), &ctx, false, &mut Ready, &mut out);
@@ -316,6 +351,7 @@ mod tests {
             shape: CursorShape::Block,
             visible: true,
             focused: true,
+            alpha: 255,
         };
         let mut out = CursorScene::default();
         build(&st, &r, &ctx, false, &mut Ready, &mut out);
@@ -339,6 +375,7 @@ mod tests {
             shape: CursorShape::Block,
             visible: true,
             focused: true,
+            alpha: 255,
         };
         let mut out = CursorScene::default();
         build(&st, &row(), &ctx, false, &mut Ready, &mut out);

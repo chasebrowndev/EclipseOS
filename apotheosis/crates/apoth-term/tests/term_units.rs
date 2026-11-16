@@ -161,13 +161,12 @@ fn golden_da2_versions() {
 fn da1_both_forms() {
     let mut t = term(2, 4);
     feed(&mut t, "\x1b[c");
-    assert_eq!(t.replies().take_all(), b"\x1b[?62;22c");
-    let mut t = Term::new(TermConfig {
-        sixel_advertised: true,
-        ..TermConfig::default()
-    });
-    feed(&mut t, "\x1b[c");
     assert_eq!(t.replies().take_all(), b"\x1b[?62;4;22c");
+    let mut cfg = TermConfig::default();
+    cfg.graphics.sixel = false;
+    let mut t = Term::new(cfg);
+    feed(&mut t, "\x1b[c");
+    assert_eq!(t.replies().take_all(), b"\x1b[?62;22c");
 }
 
 #[test]

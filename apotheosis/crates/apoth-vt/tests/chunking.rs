@@ -140,3 +140,33 @@ fn bench_corpora_are_invariant_and_parse() {
     Parser::new().advance(&corpus_csi(4096), &mut s);
     assert!(s.csis > 100);
 }
+
+/// The whole-sequence CSI path (one chunk holds ESC, parameters and final) must match the
+/// table path (any split point, or byte at a time) for every parameter shape, including
+/// overflowing lists, huge numbers, private markers, intermediates and embedded controls.
+#[test]
+fn csi_whole_sequence_matches_table_path() {
+    let mut rng = Rng(0xC51_C51);
+    let params = b"0123456789;:";
+    let tails = b"@AHJKmhlrsu?<>=!$ \"'";
+    for _ in 0..600 {
+        let mut s = Vec::new();
+        for _ in 0..1 + rng.below(4) {
+            s.extend_from_slice(b"\x1b[");
+            for _ in 0..rng.below(80) {
+                s.push(params[rng.below(params.len())]);
+            }
+            match rng.below(6) {
+                0 => s.push(0x07),
+                1 => s.push(tails[rng.below(tails.len())]),
+                _ => {}
+            }
+            s.push(0x40 + rng.below(0x3F) as u8);
+            if rng.below(3) == 0 {
+                s.extend_from_slice(b"text");
+            }
+        }
+        check_all_splits(&s, &Rec::default());
+        check_all_splits(&s, &Rec::with_caps(6, 5, 4));
+    }
+}

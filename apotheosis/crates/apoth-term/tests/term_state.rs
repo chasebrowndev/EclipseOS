@@ -1376,7 +1376,7 @@ fn reply_da_1_sixel_advertised() {
         2,
         4,
         |c| {
-            c.sixel_advertised = true;
+            c.graphics.sixel = true;
         },
         |h| {
             h.feed("\u{1b}[c");
@@ -1553,7 +1553,8 @@ fn never_reply_flood_unbounded() {
         "never-reply-flood-unbounded",
         1,
         4,
-        |_| {},
+        // The 10-byte DA1 (no sixel attribute) keeps the dropped count this test pins.
+        |c| c.graphics.sixel = false,
         |h| {
             h.feed_repeat("\u{1b}[c", 10000);
             h.dropped_replies(2719);
@@ -1766,4 +1767,49 @@ fn scr_alt_has_no_history() {
             h.grid(&["b", "c"]);
         },
     );
+}
+
+/// T-17 §2 / T-10 §7: a theme change moves the defaults a program has not overridden,
+/// keeps the ones it set, follows OSC 104 to the new table, and reports a light/dark flip
+/// only while mode 2031 is set.
+#[test]
+fn theme_change_follows_defaults_and_reports_2031() {
+    let now = Instant::now();
+    let mut ansi = apoth_term::XTERM_ANSI16;
+    ansi[1] = (1, 2, 3);
+    let mut t = Term::new(TermConfig {
+        ansi,
+        ..TermConfig::default()
+    });
+    assert_eq!(t.palette(1), (1, 2, 3));
+    // The program sets fg and ANSI 2; the theme then changes everything.
+    t.feed(b"\x1b]10;#102030\x07\x1b]4;2;#405060\x07", now);
+    let mut new = [(9u8, 9u8, 9u8); 16];
+    new[0] = (7, 7, 7);
+    t.set_default_colors((11, 11, 11), (22, 22, 22), (33, 33, 33), new, true);
+    assert_eq!(t.colors(), ((0x10, 0x20, 0x30), (22, 22, 22), (33, 33, 33)));
+    assert_eq!(t.palette(2), (0x40, 0x50, 0x60));
+    assert_eq!(t.palette(0), (7, 7, 7));
+    assert_eq!(t.palette(1), (9, 9, 9));
+    assert_eq!(t.palette(16), (0, 0, 0), "the cube is not the theme's");
+    t.feed(b"\x1b]104;2\x07\x1b]110\x07", now);
+    assert_eq!(t.palette(2), (9, 9, 9));
+    assert_eq!(t.colors().0, (11, 11, 11));
+    // Same class: no report even with 2031 set.
+    while t.replies().pop().is_some() {}
+    t.feed(b"\x1b[?2031h", now);
+    t.set_default_colors((1, 1, 1), (2, 2, 2), (3, 3, 3), new, true);
+    assert!(t.replies().pop().is_none());
+    t.set_default_colors((200, 200, 200), (250, 250, 250), (3, 3, 3), new, false);
+    assert_eq!(t.replies().pop().as_deref(), Some(&b"\x1b[?997;2n"[..]));
+    t.feed(b"\x1b[?996n", now);
+    assert_eq!(t.replies().pop().as_deref(), Some(&b"\x1b[?997;2n"[..]));
+    // 2031 reset: a flip is silent.
+    t.feed(b"\x1b[?2031l", now);
+    t.set_default_colors((1, 1, 1), (2, 2, 2), (3, 3, 3), new, true);
+    assert!(t.replies().pop().is_none());
+    // RIS keeps the current theme.
+    t.feed(b"\x1bc", now);
+    assert_eq!(t.palette(5), (9, 9, 9));
+    assert_eq!(t.colors().1, (2, 2, 2));
 }

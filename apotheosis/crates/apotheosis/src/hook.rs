@@ -3,6 +3,11 @@
 //! release binary) and only when `APOTH_TEST_DUMP=<path>` is set. After each burst of output
 //! the io thread writes the visible rows (trailing blanks trimmed, one per line) to the path
 //! atomically. This is pane content: it is written to the file the test names and never logged.
+//! With several panes the first pane keeps the path and pane `id` writes `<path>.p<id>`.
+//!
+//! [`MuxDump`] (`APOTH_TEST_MUX=<path>`, debug builds only) is the mux state for the headless
+//! tests: tabs, panes, their grid sizes and focus, and the palette. Ids, sizes and the palette
+//! query the test typed; never pane text.
 
 use std::path::PathBuf;
 
@@ -26,6 +31,17 @@ impl DumpHook {
         })
     }
 
+    /// The hook of a pane: the first pane writes the path itself, pane `id` `<path>.p<id>`.
+    pub(crate) fn for_pane(first: bool, id: u64) -> Option<DumpHook> {
+        let mut h = Self::from_env()?;
+        if !first {
+            let mut p = h.path.into_os_string();
+            p.push(format!(".p{id}"));
+            h.path = PathBuf::from(p);
+        }
+        Some(h)
+    }
+
     /// Render the rows to text (the caller holds the term lock only for this).
     pub(crate) fn render(term: &Term) -> String {
         let mut out = String::new();
@@ -38,7 +54,10 @@ impl DumpHook {
 
     pub(crate) fn write(&self, term: &Term) {
         let text = Self::render(term);
-        let tmp = self.path.with_extension("tmp");
+        // Appended, not replaced: `dump.txt.p3` and `dump.txt.p4` must not share a temp file.
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        let tmp = PathBuf::from(tmp);
         if std::fs::write(&tmp, text).is_ok() {
             let _ = std::fs::rename(&tmp, &self.path);
         }
@@ -73,6 +92,130 @@ impl ViewDump {
         let tmp = self.path.with_extension("tmp");
         if std::fs::write(&tmp, &text).is_ok() && std::fs::rename(&tmp, &self.path).is_ok() {
             self.last = text;
+        }
+    }
+}
+
+/// Test-only dump of the image quads the frame draws (T-15 §6): `APOTH_TEST_IMAGES=<path>`,
+/// debug builds only, first pane only. One line per quad, bottom to top:
+/// `<width>x<height> dst=<x>,<y>,<w>,<h> z=<z>` (pixel sizes and geometry, never pixels).
+pub(crate) struct ImageDump {
+    path: PathBuf,
+    last: Option<String>,
+    /// Frames whose texture keys differed from the previous frame's (animation frames
+    /// shown), written to `<path>.frames` (T-16 §6 CI-N count).
+    keys: Vec<u64>,
+    shown: u64,
+}
+
+impl ImageDump {
+    pub(crate) fn from_env() -> Option<ImageDump> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let p = std::env::var_os("APOTH_TEST_IMAGES").filter(|p| !p.is_empty())?;
+        Some(ImageDump {
+            path: PathBuf::from(p),
+            last: None,
+            keys: Vec::new(),
+            shown: 0,
+        })
+    }
+
+    pub(crate) fn write(&mut self, draws: &[apoth_term::ImageDraw]) {
+        use std::fmt::Write as _;
+        if !draws.is_empty() && !draws.iter().map(|d| d.key).eq(self.keys.iter().copied()) {
+            self.keys.clear();
+            self.keys.extend(draws.iter().map(|d| d.key));
+            self.shown += 1;
+            let _ = std::fs::write(self.path.with_extension("frames"), self.shown.to_string());
+        }
+        let mut text = String::new();
+        for d in draws {
+            let [x, y, w, h] = d.dst;
+            let _ = writeln!(
+                text,
+                "{}x{} dst={x},{y},{w},{h} z={}",
+                d.image.width, d.image.height, d.z
+            );
+        }
+        if self.last.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        let tmp = self.path.with_extension("tmp");
+        if std::fs::write(&tmp, &text).is_ok() && std::fs::rename(&tmp, &self.path).is_ok() {
+            self.last = Some(text);
+        }
+    }
+}
+
+/// Test-only mux state dump (see the module doc). Written by main when the state changes.
+pub(crate) struct MuxDump {
+    path: PathBuf,
+    last: String,
+}
+
+impl MuxDump {
+    pub(crate) fn from_env() -> Option<MuxDump> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let p = std::env::var_os("APOTH_TEST_MUX").filter(|p| !p.is_empty())?;
+        Some(MuxDump {
+            path: PathBuf::from(p),
+            last: String::new(),
+        })
+    }
+
+    pub(crate) fn write(&mut self, text: String) {
+        if text == self.last {
+            return;
+        }
+        let tmp = self.path.with_extension("tmp");
+        if std::fs::write(&tmp, &text).is_ok() && std::fs::rename(&tmp, &self.path).is_ok() {
+            self.last = text;
+        }
+    }
+}
+
+/// Test-only dump of the media placements' playback state and position (T-16 §2, T-08 §4):
+/// `APOTH_TEST_MEDIA=<path>`, debug builds only. One line per placement of the screen,
+/// `<state> pos=<ms>`; the first pane writes `<path>`, a `--ext` window `<path>.ext`.
+pub(crate) struct MediaDump {
+    path: PathBuf,
+    last: Option<String>,
+}
+
+impl MediaDump {
+    pub(crate) fn from_env(ext: bool) -> Option<MediaDump> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let p = std::env::var_os("APOTH_TEST_MEDIA").filter(|p| !p.is_empty())?;
+        let path = PathBuf::from(p);
+        Some(MediaDump {
+            path: if ext {
+                path.with_extension("ext")
+            } else {
+                path
+            },
+            last: None,
+        })
+    }
+
+    pub(crate) fn write(&mut self, places: &[apoth_term::MediaPlacement]) {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for p in places {
+            let _ = writeln!(text, "{:?} pos={}", p.state, p.pos_ms);
+        }
+        if self.last.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        if std::fs::write(&tmp, &text).is_ok() && std::fs::rename(&tmp, &self.path).is_ok() {
+            self.last = Some(text);
         }
     }
 }

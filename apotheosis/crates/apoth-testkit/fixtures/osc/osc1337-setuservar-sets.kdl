@@ -1,0 +1,8 @@
+fixture "osc1337-setuservar-sets" {
+  desc "OSC 1337 SetUserVar decodes base64 and raises a user-var change; no reply"
+  covers "T03-OSC1337-USERVAR" "AUTOMATION-17"
+  size rows=1 cols=8
+  feed #"\e]1337;SetUserVar=branch=bWFpbg==\a\e]1337;SetUserVar=branch=bWFpbg==\e\\"#
+  replies
+  events "var:branch=main"
+}

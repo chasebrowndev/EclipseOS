@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-png" {
+  desc "f=100 decodes a PNG; size comes from its header"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=6
+  feed #"\e_Ga=T,f=100,i=5;iVBORw0KGgoAAAANSUhEUgAAABQAAAAUCAIAAAAC64paAAAAGUlEQVR4nGNgYPhPARrVPKp5VPOo5gHVDAAUwI6AVu8gqwAAAABJRU5ErkJggg==\e\\"#
+  replies #"\e_Gi=5;OK\e\\"#
+  images {
+    row "kitty row=0 col=0 cols=3 rows=2 z=0"
+  }
+  cursor row=2 col=3
+}

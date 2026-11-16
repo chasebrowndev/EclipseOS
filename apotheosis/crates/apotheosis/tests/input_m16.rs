@@ -111,6 +111,13 @@ impl Session {
         let view = dir.join("view.txt");
         let term = Guard(
             Command::new(env!("CARGO_BIN_EXE_apotheosis"))
+                .env_remove("APOTHEOSIS_SOCKET")
+                .env(
+                    "DBUS_SESSION_BUS_ADDRESS",
+                    "unix:path=/nonexistent/apoth-test-bus",
+                )
+                // The nested compositor's socket, never the host's (T-17 §1 detection).
+                .env("ECLIPSE_SOCKET_DIR", dir.join("sock"))
                 .env("XDG_RUNTIME_DIR", &dir)
                 .env("WAYLAND_DISPLAY", "wayland-1")
                 .env("SHELL", "/bin/sh")

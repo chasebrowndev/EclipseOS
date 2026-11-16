@@ -65,6 +65,27 @@ pub enum Ty {
         min: u64,
         max: u64,
     },
+    /// An argv array with the T-11 §2 typed placeholders. GUI: argv editor.
+    /// Carried as `Value::List`.
+    Argv,
+    /// A list of codepoint ranges (`U+E0A0-E0A3`, `U+F000`). GUI: range list
+    /// editor. Carried as `Value::List`.
+    CodepointRanges,
+    /// A T-11 §7 match expression. GUI: match editor. Carried as `Value::Str`.
+    Match,
+    /// An unordered set of strings, duplicates dropped. GUI: chip set.
+    /// Carried as `Value::List`.
+    StringSet,
+    /// Child nodes: node name is the key, arguments the value(s). GUI:
+    /// key/value editor. Carried as `Value::Map`. The element types are
+    /// `&'static` so `Ty` stays `Copy` and usable in a `const` table.
+    Map {
+        key: &'static Ty,
+        value: &'static Ty,
+    },
+    /// One scheme (`system` or a name) or a `light=… dark=…` pair. GUI: theme
+    /// picker. Carried as `Value::Str` in canonical text form.
+    ThemeRef,
 }
 
 /// Which file a key lives in (COMP-13 §1.3). `Policy` keys are the security
@@ -83,6 +104,10 @@ pub enum Owner {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reload {
     Live,
+    /// Applies to panes created after the change (terminal only).
+    NewPane,
+    /// Applies to windows created after the change (terminal only).
+    NewWindow,
     NeedsRestart,
 }
 
@@ -97,6 +122,8 @@ pub enum Value {
     Str(String),
     List(Vec<String>),
     Color([f32; 4]),
+    /// Node name -> argument strings (`Ty::Map`).
+    Map(Vec<(String, Vec<String>)>),
 }
 
 /// A default, in a form that can be written in a `const`.
@@ -114,6 +141,14 @@ pub enum Dv {
     /// never for a policy-owned key; a test pins that in abyss.
     List(&'static [&'static str]),
     Color([f32; 4]),
+    /// A named function of the runtime environment (blur capability, portal
+    /// settings, compositor). Shown as "Automatic (currently X)"; reset
+    /// restores it and `config diff` compares against it, not its current
+    /// value. [`Dv::as_value`] is `Null`: the consumer fills it in.
+    Computed {
+        id: &'static str,
+        doc: &'static str,
+    },
 }
 
 /// One row. `path` is dotted and mirrors the KDL nesting exactly, so
@@ -132,7 +167,7 @@ impl Dv {
     /// The default as a [`Value`].
     pub fn as_value(self) -> Value {
         match self {
-            Dv::Null => Value::Null,
+            Dv::Null | Dv::Computed { .. } => Value::Null,
             Dv::Bool(b) => Value::Bool(b),
             Dv::Int(i) => Value::Int(i),
             Dv::Float(f) => Value::Float(f),
@@ -147,7 +182,7 @@ impl Dv {
     /// synthesising a config in a drift test.
     pub fn to_kdl(self) -> Option<String> {
         Some(match self {
-            Dv::Null => return None,
+            Dv::Null | Dv::Computed { .. } => return None,
             Dv::Bool(b) => format!("#{b}"),
             Dv::Int(i) => i.to_string(),
             Dv::Float(f) => format!("{f:?}"),

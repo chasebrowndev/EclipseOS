@@ -225,6 +225,13 @@ struct PaneRequest {
     /// (same splice index, inserted after them), as do a shaped layer's above
     /// its sheet; an unshaped layer's replace its glass.
     over: bool,
+    /// The window's own glass fills what the panes sample (it has a backdrop
+    /// that is not an opaque window's ring): they sample it too and take the
+    /// stacked look (`glass::STACKED_SMOKE`). Never for a layer.
+    stacked: bool,
+    /// The set sits on a subsurface, directly below that surface's elements:
+    /// it samples everything from `index` down, parent surface included.
+    sub: bool,
     /// The window's animation scale about its pivot (output-local physical),
     /// applied to every pane box; `None` at rest and for layers.
     scaled: Option<(Point<i32, Physical>, Scale<f64>)>,
@@ -255,6 +262,20 @@ impl PaneRequest {
     fn before(&self, index: usize) -> bool {
         self.index > index || (self.index == index && !self.over)
     }
+
+    /// Where in the element list the backdrop these panes blur starts. A
+    /// window's own backdrop sits at `index` (the panes were spliced after
+    /// it): stacked and subsurface panes sample it and everything under it,
+    /// the rest skip it, or they re-smoke to a slab.
+    fn behind_start(&self) -> usize {
+        self.index + usize::from(self.over && !self.stacked && !self.sub)
+    }
+}
+
+/// Whether a window's panes sit on its own glass: it has a backdrop, and that
+/// is not just the ring of an opaque window (`bezel_opaque`).
+fn panes_stacked(bezel_opaque: Option<bool>) -> bool {
+    bezel_opaque != Some(true)
 }
 
 /// Whether a window with a backdrop draws its `eclipse_glass_v1` panes: only
@@ -271,6 +292,73 @@ fn committed_panes(surface: &WlSurface) -> Option<glass::PaneSet> {
         let mut cached = states.cached_state.get::<glass::GlassState>();
         cached.current().panes.clone().filter(|p| !p.is_empty())
     })
+}
+
+/// One subsurface's committed pane list, with where its elements sit in the
+/// window's surface list and the surface origin they are placed against.
+struct SubPanes {
+    surface: WlSurface,
+    /// Position of the subsurface's own element in the surface list, front
+    /// to back.
+    at: usize,
+    set: glass::PaneSet,
+    size: Size<i32, Logical>,
+    loc: Point<i32, Physical>,
+}
+
+/// The subsurfaces of `root` that carry `eclipse_glass_v1` panes, front to
+/// back, found among `surfaces` (the window's surface elements). A subsurface
+/// with no element yet (unmapped, no buffer) has nothing to sit under and is
+/// skipped.
+fn subsurface_panes(
+    root: &WlSurface,
+    surfaces: &[WaylandSurfaceRenderElement<GlesRenderer>],
+    scale: Scale<f64>,
+) -> Vec<SubPanes> {
+    use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
+    use smithay::wayland::compositor::{with_surface_tree_downward, TraversalAction};
+    let mut found = Vec::new();
+    with_surface_tree_downward(
+        root,
+        (),
+        |_, _, _| TraversalAction::DoChildren(()),
+        |surface, states, _| {
+            if surface == root {
+                return;
+            }
+            let set = {
+                let mut cached = states.cached_state.get::<glass::GlassState>();
+                cached.current().panes.clone().filter(|p| !p.is_empty())
+            };
+            let Some(set) = set else { return };
+            let id = smithay::backend::renderer::element::Id::from_wayland_resource(surface);
+            let Some(at) = surfaces.iter().position(|e| *e.id() == id) else {
+                return;
+            };
+            let size = states
+                .data_map
+                .get::<RendererSurfaceStateUserData>()
+                .and_then(|d| d.lock().unwrap().surface_size());
+            let Some(size) = size else { return };
+            found.push(SubPanes {
+                surface: surface.clone(),
+                at,
+                set,
+                size,
+                loc: surfaces[at].location(scale),
+            });
+        },
+        |_, _, _| true,
+    );
+    found.sort_by_key(|s| s.at);
+    found
+}
+
+/// The element-list index a subsurface's panes splice at: directly below its
+/// own element, which sits at `base + at` (`base` is where the window's
+/// surfaces start in the list).
+fn sub_index(base: usize, at: usize) -> usize {
+    base + at + 1
 }
 
 /// The `ext_background_effect_v1` blur area `surface` has committed, or `None`
@@ -893,6 +981,8 @@ pub fn collect_elements(
                         loc,
                         crop,
                         over,
+                        stacked: false,
+                        sub: false,
                         scaled: None,
                         alpha: 1.0,
                     });
@@ -1279,9 +1369,9 @@ fn insert_panes(
     let reach = effects::glass_reach(cfg.glass.refraction.min(BEZEL_REFRACTION as i32), upscale);
     let mut blurs = std::mem::take(&mut store.pane_scratch);
     blurs.clear();
-    // A window's own backdrop sits at `req.index`; panes sample what is
-    // behind it, not the already-smoked glass, or they re-smoke to a slab.
-    let behind = &elements[req.index + usize::from(req.over)..];
+    // A bare window's panes skip its glass; stacked ones sample it and take a
+    // lighter smoke (`PaneRequest::behind_start`).
+    let behind = &elements[req.behind_start()..];
     store.gpu.blur.entry(output.clone()).or_default().pane_elements(
         renderer,
         output,
@@ -1296,7 +1386,7 @@ fn insert_panes(
         req.alpha,
         |i| {
             let pane = &panes[i];
-            let look = glass::look(pane, light > 0.0)?;
+            let look = glass::look_on(pane, light > 0.0, req.stacked)?;
             let rect = rect_of(pane)?;
             let mut tuned = cfg.glass.clone();
             tuned.dispersion = 0.0;
@@ -1315,6 +1405,7 @@ fn insert_panes(
                     rim,
                     look.lift,
                     look.shade,
+                    look.smoke,
                     light,
                     cfg.adaptive.effective(),
                     2.0,
@@ -2374,6 +2465,29 @@ fn window_elements(
                 popups.extend(els);
             }
         }
+        // Subsurface panes (`eclipse_glass_v1` on a subsurface) are placed by
+        // where their element lands in `out`, so they are collected here on
+        // the raw surface list and used only when every element of the tree
+        // was pushed as is (no crop dropped one, a single band, no keyed
+        // strip). Anything else leaves the subsurface without glass.
+        let sub_panes: Vec<SubPanes> = (bands.len() == 1 && keyed_on.is_none() && backdrop.is_some())
+            .then(|| {
+                window_takes_panes(
+                    mode,
+                    false,
+                    strip.is_some(),
+                    fills_area(&window),
+                    effects::fb_y_mirrored(output.current_transform()).is_some(),
+                )
+                .then(|| smithay::wayland::seat::WaylandFocus::wl_surface(&window))
+                .flatten()
+                .map(|root| subsurface_panes(&root, &bands[0].0, scale))
+            })
+            .flatten()
+            .unwrap_or_default();
+        let pushed_from = out.len();
+        let pushed_expected = popups.len() + bands.iter().map(|(s, _)| s.len()).sum::<usize>();
+        let surface_count: usize = bands.iter().map(|(s, _)| s.len()).sum();
         match (scaled, &rounding, geo) {
             // Tint-keyed strip (ADR 0079): the popups, then the whole surface
             // tree, each through the keyed program; only key-coloured pixels
@@ -2517,6 +2631,7 @@ fn window_elements(
             }
         }
 
+        let surfaces_base = (out.len() - pushed_from == pushed_expected).then(|| out.len() - surface_count);
         let Some(geo) = geo else {
             continue;
         };
@@ -2651,6 +2766,27 @@ fn window_elements(
                 ensure_glass(renderer, store).then_some(())?;
                 Some((surface, set))
             });
+            let stacked = panes_stacked(bezel.as_ref().map(|b| b.opaque));
+            if let Some(base) =
+                surfaces_base.filter(|_| !sub_panes.is_empty() && ensure_glass(renderer, store))
+            {
+                for sub in sub_panes {
+                    pane_requests.push(PaneRequest {
+                        key: blur::BlurKey::SubPanes(window.clone(), sub.surface),
+                        index: sub_index(base, sub.at),
+                        set: sub.set,
+                        size: sub.size,
+                        loc: sub.loc,
+                        crop: deco_crop,
+                        // Ties with the window's backdrop go above it.
+                        over: true,
+                        stacked,
+                        sub: true,
+                        scaled,
+                        alpha: t.alpha,
+                    });
+                }
+            }
             if let Some((surface, set)) = panes {
                 use smithay::backend::renderer::utils::RendererSurfaceStateUserData;
                 let size = with_states(&surface, |states| {
@@ -2671,6 +2807,8 @@ fn window_elements(
                     loc: phys(render_loc, scale),
                     crop: deco_crop,
                     over: true,
+                    stacked,
+                    sub: false,
                     scaled,
                     alpha: t.alpha,
                 });
@@ -3408,6 +3546,8 @@ mod tests {
             loc,
             crop: None,
             over,
+            stacked: false,
+            sub: false,
             scaled,
             alpha: 1.0,
         }
@@ -3457,6 +3597,43 @@ mod tests {
         assert!(at(8, true).before(7));
         assert!(!at(6, true).before(7));
         assert!(!at(6, false).before(7));
+    }
+
+    /// A subsurface's panes go directly below its own element; a tie with the
+    /// window's backdrop goes above the backdrop; they sample from their own
+    /// index so the window's glass and the parent surface are both behind.
+    #[test]
+    fn subsurface_panes_sit_below_their_element_and_sample_everything_under() {
+        assert_eq!(sub_index(4, 0), 5);
+        assert_eq!(sub_index(4, 2), 7);
+        let mut sub = window_request(sub_index(4, 1), true, (0, 0).into(), None);
+        sub.sub = true;
+        sub.stacked = true;
+        assert_eq!(
+            sub.behind_start(),
+            6,
+            "from its own index: glass and parent under it"
+        );
+        // The window's backdrop at the same index goes first (tie, `over`).
+        assert!(!sub.before(6));
+        assert!(sub.before(5), "a backdrop further front goes after");
+        // A bare window's root panes skip its glass; stacked ones sample it.
+        let bare = window_request(3, true, (0, 0).into(), None);
+        assert_eq!(bare.behind_start(), 4);
+        let mut stacked = window_request(3, true, (0, 0).into(), None);
+        stacked.stacked = true;
+        assert_eq!(stacked.behind_start(), 3);
+        // A layer's sheet panes keep skipping it.
+        assert_eq!(window_request(3, true, (0, 0).into(), None).behind_start(), 4);
+        assert_eq!(window_request(3, false, (0, 0).into(), None).behind_start(), 3);
+    }
+
+    /// Stacked unless the window's glass is only the ring of an opaque window.
+    #[test]
+    fn panes_stack_on_a_window_that_draws_glass_inside() {
+        assert!(panes_stacked(None));
+        assert!(panes_stacked(Some(false)));
+        assert!(!panes_stacked(Some(true)));
     }
 
     /// Panes change only a glass-mode window that nothing else claims.

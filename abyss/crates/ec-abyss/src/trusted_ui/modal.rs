@@ -55,9 +55,9 @@ pub struct Colors {
     /// The entry field's caret. The accent where it reads on the well; the
     /// accent's text tint where it would not.
     caret: Rgba,
-    /// The personal secret's frame: a gold tint over the ground, a gold rim and
-    /// the accent's text tint. The only gold-tinted ground on any trusted
-    /// surface, so it reads as the anchor and not one more box.
+    /// The personal secret's frame: the neutral button inset, a gold rim and
+    /// the accent's text tint. No gold ground anywhere on a trusted surface
+    /// (STYLE.md): the gold rim and text make it the anchor.
     pub(super) phrase_ground: Rgba,
     pub(super) phrase_rim: Rgba,
     pub(super) phrase_text: Rgba,
@@ -67,14 +67,12 @@ pub struct Colors {
     well_edge: Rgba,
     well_text: Rgba,
     /// The secret-entry field's rim while it takes the keyboard.
-    entry_edge: Rgba,
-    /// Text on the gold control.
-    pub(super) ink: Rgba,
+    pub(super) entry_edge: Rgba,
     /// Buttons: glass lozenges, a step clearer when focused (STYLE.md, "the
     /// focused chip"), gold on the label only.
     btn: Rgba,
     btn_line: Rgba,
-    btn_focus: Rgba,
+    pub(super) btn_focus: Rgba,
     btn_focus_line: Rgba,
 }
 
@@ -88,14 +86,13 @@ pub const DARK: Colors = Colors {
     warn: [1.0, 0.48, 0.35, 1.0],
     gold: [0.949, 0.765, 0.235, 1.0],
     caret: [0.949, 0.765, 0.235, 1.0],
-    phrase_ground: [0.150, 0.126, 0.060, 1.0],
+    phrase_ground: [0.118, 0.110, 0.090, 1.0],
     phrase_rim: [0.333, 0.275, 0.102, 1.0],
     phrase_text: [0.961, 0.812, 0.361, 1.0],
     well: [0.035, 0.031, 0.024, 1.0],
     well_edge: [0.110, 0.106, 0.098, 1.0],
     well_text: [0.80, 0.78, 0.75, 1.0],
     entry_edge: [0.470, 0.390, 0.140, 1.0],
-    ink: [0.071, 0.063, 0.043, 1.0],
     btn: [0.118, 0.110, 0.090, 1.0],
     btn_line: [0.180, 0.175, 0.157, 1.0],
     btn_focus: [0.180, 0.175, 0.157, 1.0],
@@ -115,14 +112,13 @@ pub const LIGHT: Colors = Colors {
     warn: [0.722, 0.204, 0.110, 1.0],
     gold: [0.949, 0.765, 0.235, 1.0],
     caret: [0.522, 0.376, 0.0, 1.0],
-    phrase_ground: [0.955, 0.913, 0.795, 1.0],
+    phrase_ground: [0.980, 0.975, 0.960, 1.0],
     phrase_rim: [0.953, 0.864, 0.611, 1.0],
     phrase_text: [0.522, 0.376, 0.0, 1.0],
     well: [0.902, 0.882, 0.839, 1.0],
     well_edge: [0.792, 0.776, 0.745, 1.0],
     well_text: [0.29, 0.27, 0.24, 1.0],
     entry_edge: [0.62, 0.47, 0.08, 1.0],
-    ink: [0.102, 0.086, 0.063, 1.0],
     btn: [0.980, 0.975, 0.960, 1.0],
     btn_line: [0.800, 0.790, 0.760, 1.0],
     btn_focus: [1.0, 1.0, 1.0, 1.0],
@@ -926,7 +922,7 @@ mod tests {
             ("no-phrase warning", l.warn, l.phrase_ground),
             ("button", l.value, l.btn),
             ("focused button", l.phrase_text, l.btn_focus),
-            ("armed control", l.ink, l.gold),
+            ("armed control", l.phrase_text, l.btn_focus),
         ] {
             let got = c(fg, bg);
             assert!(got >= 4.5, "{what}: {got:.2}:1");

@@ -34,6 +34,23 @@ struct Unit {
     paste: bool,
 }
 
+impl Unit {
+    /// Zero the whole allocation (a unit can carry a typed password). Keeps the length: the
+    /// caller decides whether the bytes stay. Dropping a unit runs this.
+    fn scrub(&mut self) {
+        self.buf.resize(self.buf.capacity(), 0);
+        self.buf.fill(0);
+        std::hint::black_box(&self.buf);
+    }
+}
+
+impl Drop for Unit {
+    fn drop(&mut self) {
+        self.scrub();
+        self.buf.clear();
+    }
+}
+
 /// The FIFO. The writer is passed per call so the queue stays fd-free and testable.
 pub struct OutQueue {
     units: VecDeque<Unit>,
@@ -122,41 +139,42 @@ impl OutQueue {
     where
         W: FnMut(&[u8]) -> io::Result<usize>,
     {
-        if unit.is_empty() {
+        // Owned by a `Unit` from here: every exit (written, dropped, queued, error) scrubs it.
+        let mut u = Unit {
+            buf: unit,
+            off: 0,
+            paste,
+        };
+        let len = u.buf.len();
+        if len == 0 {
             return Ok(Enqueue::Written);
         }
         let admitted = if self.units.is_empty() {
             // It becomes the unit in flight: only a paste may exceed the bound.
-            paste || unit.len() <= self.bound
+            paste || len <= self.bound
         } else {
-            self.counted().saturating_add(unit.len()) <= self.bound
+            self.counted().saturating_add(len) <= self.bound
         };
         if !admitted {
             self.dropped += 1;
             return Ok(Enqueue::Dropped);
         }
-        let mut off = 0;
         if self.units.is_empty() {
-            while off < unit.len() {
-                match write(&unit[off..]) {
+            while u.off < len {
+                match write(&u.buf[u.off..]) {
                     Ok(0) => break,
-                    Ok(n) => off += n,
+                    Ok(n) => u.off += n,
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
                     Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
                     Err(e) => return Err(e),
                 }
             }
-            if off == unit.len() {
+            if u.off == len {
                 return Ok(Enqueue::Written);
             }
         }
-        let left = unit.len() - off;
-        self.pending += left;
-        self.units.push_back(Unit {
-            buf: unit,
-            off,
-            paste,
-        });
+        self.pending += len - u.off;
+        self.units.push_back(u);
         Ok(Enqueue::Queued)
     }
 
@@ -212,6 +230,37 @@ mod tests {
                 Ok(n)
             }
         }
+    }
+
+    #[test]
+    fn scrub_zeroes_the_whole_allocation() {
+        // A unit that carried typed bytes: after the scrub no byte of its buffer is left.
+        let mut u = Unit {
+            buf: Vec::with_capacity(64),
+            off: 0,
+            paste: false,
+        };
+        u.buf.extend_from_slice(b"hunter2\r");
+        u.scrub();
+        assert_eq!(u.buf.len(), u.buf.capacity());
+        assert!(u.buf.iter().all(|&b| b == 0));
+    }
+
+    #[test]
+    fn a_written_unit_is_scrubbed_before_it_is_released() {
+        // The immediate path: the bytes reached the writer, the unit is gone, nothing queued.
+        let mut q = OutQueue::new(64);
+        let mut s = Sink {
+            out: Vec::new(),
+            cap: 64,
+            budget: 64,
+        };
+        assert_eq!(
+            q.send(b"pw\r".to_vec(), &mut s.w()).unwrap(),
+            Enqueue::Written
+        );
+        assert_eq!(s.out, b"pw\r");
+        assert_eq!(q.pending_bytes(), 0);
     }
 
     #[test]

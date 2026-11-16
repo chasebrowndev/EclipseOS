@@ -10,6 +10,7 @@ use apoth_config::Config;
 use apoth_config::fs::RealFs;
 use apoth_config::load::default_input;
 use apoth_config::reload::Reloader;
+use apoth_eclipse::TermColors;
 use apoth_font::config::{FontConfig, Ligatures, Style};
 use apoth_grid::Limits;
 use apoth_input::{Mods, PasteNewline, PasteOptions};
@@ -39,6 +40,29 @@ pub(crate) struct ShellSettings {
     pub(crate) env: Vec<(String, String)>,
 }
 
+/// The `graphics.*` keys (T-15 §4). Every pane's store charges one process budget
+/// (`graphics.quota-total`), and decodes run on the worker pool, not inside `feed`.
+fn graphics_config(c: &Config, g: &mut apoth_term::GraphicsConfig) {
+    static BUDGET: std::sync::OnceLock<apoth_term::apoth_image::store::ProcessBudget> =
+        std::sync::OnceLock::new();
+    const MAX_DECODED: u64 = 400 << 20;
+    g.kitty = c.bool("graphics.kitty");
+    g.sixel = c.bool("graphics.sixel");
+    g.iterm2 = c.bool("graphics.iterm2");
+    g.inline_decode = false;
+    g.budget = BUDGET.get_or_init(Default::default).clone();
+    let l = &mut g.limits;
+    l.quota = c.bytes("graphics.quota");
+    l.quota_total = c.bytes("graphics.quota-total");
+    l.animation_quota = c.bytes("graphics.animation-quota");
+    let px = u64::try_from(c.int("graphics.max-pixels")).unwrap_or(0);
+    l.max_decoded_bytes = px.saturating_mul(4).min(MAX_DECODED);
+    l.sixel_max_pixels = px;
+    g.media.enabled = c.bool("media.enabled");
+    g.media.offscreen_stop = c.str("media.offscreen") == Some("stop");
+    crate::mediahost::configure(c);
+}
+
 /// Everything the binary reads from the configuration.
 #[derive(Clone, Debug)]
 pub(crate) struct Settings {
@@ -54,6 +78,8 @@ pub(crate) struct Settings {
     pub(crate) bold_bright: bool,
     pub(crate) decorations: DecorationPref,
     pub(crate) title_template: String,
+    /// `tabs.title` (T-11 §8).
+    pub(crate) tab_template: String,
     pub(crate) shell: ShellSettings,
     pub(crate) term_name: String,
     pub(crate) term: TermConfig,
@@ -63,8 +89,17 @@ pub(crate) struct Settings {
     pub(crate) echo_window: Duration,
     pub(crate) sync_timeout: Duration,
     pub(crate) bell_audible: bool,
-    /// `colors.palette`: the 16 ANSI colours when set.
+    /// `notifications.*` and `bell.notify` (T-17 §6).
+    pub(crate) notify: crate::notify::NotifySettings,
+    /// The 16 ANSI colours in force: `colors.palette`, else the theme's (T-17 §2).
     pub(crate) ansi: Option<[(u8, u8, u8); 16]>,
+    /// Cursor text, selection foreground and background in force (`None`: the cell's own).
+    pub(crate) cursor_text: Option<(u8, u8, u8)>,
+    pub(crate) selection: SelectionColors,
+    /// The `colors.*` the file sets; every unset one takes the theme.
+    pub(crate) color_keys: ColorKeys,
+    /// `theme` is `system` or unset: on Abyss the compositor's seeds supply the colours.
+    pub(crate) theme_system: bool,
     /// Initial grid `(rows, cols)`: `window.rows` / `window.columns` when the schema has
     /// them (it does not yet: spec gap), else 24x80.
     pub(crate) initial_size: (usize, usize),
@@ -72,8 +107,86 @@ pub(crate) struct Settings {
     pub(crate) repeat_delay_ms: Option<u32>,
     /// Selection, mouse and paste keys (T-05 §5-§6, T-18 §4).
     pub(crate) input: InputSettings,
+    /// Navigation and sequence-policy keys (T-14 §5-§7, T-18 §3).
+    pub(crate) nav: NavSettings,
+    /// `graphics.file-transmission` is not `off` (T-15 §5).
+    pub(crate) graphics_file: bool,
+    /// `sessions.server` is `on`: windows are views of the session daemon (T-21 §3).
+    pub(crate) server_mode: bool,
+    /// `security.sudo-askpass`: arm askpass for every local pane so `sudo -A` asks through
+    /// it (T-22 §3). Read when a pane starts.
+    pub(crate) sudo_askpass: bool,
+    /// `security.password-prompt` is `auto` (T-17 §5): a getpass-style read in the focused
+    /// pane opens `ec-secret-prompt` on Abyss.
+    pub(crate) password_prompt: bool,
     /// `-o key=value` pairs and diagnostics counts, for the startup log line.
     pub(crate) diagnostics: usize,
+}
+
+/// `links.*`, `hints.*` and `security.sequence`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct NavSettings {
+    pub(crate) policy: crate::security::Policy,
+    pub(crate) schemes: Vec<String>,
+    pub(crate) open_command: Vec<String>,
+    /// `links.open-modifier` (`ctrl`, `shift`, `alt`, `super`, …).
+    pub(crate) open_modifier: String,
+    pub(crate) hint_alphabet: String,
+    pub(crate) hint_max: usize,
+}
+
+impl NavSettings {
+    pub(crate) fn from_config(c: &Config) -> NavSettings {
+        let entries: Vec<(String, Vec<String>)> = c
+            .get("security.sequence")
+            .and_then(|v| v.as_map())
+            .map(<[_]>::to_vec)
+            .unwrap_or_default();
+        NavSettings {
+            policy: crate::security::Policy::from_entries(
+                entries.iter().map(|(k, v)| (k.as_str(), v.as_slice())),
+            ),
+            schemes: c.list("links.schemes").to_vec(),
+            open_command: c.list("links.open-command").to_vec(),
+            open_modifier: c.str("links.open-modifier").unwrap_or("ctrl").to_string(),
+            hint_alphabet: c.str("hints.alphabet").unwrap_or("").to_string(),
+            hint_max: usize::try_from(c.int("hints.max-matches"))
+                .unwrap_or(100)
+                .max(1),
+        }
+    }
+}
+
+type Rgb = (u8, u8, u8);
+
+/// Selection foreground (`None`: the cell's own) and background.
+pub(crate) type SelectionColors = (Option<Rgb>, Rgb);
+
+/// The `colors.*` keys the configuration sets (T-10 §7: unset takes the theme).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct ColorKeys {
+    pub(crate) fg: Option<Rgb>,
+    pub(crate) bg: Option<Rgb>,
+    pub(crate) cursor: Option<Rgb>,
+    pub(crate) cursor_text: Option<Rgb>,
+    pub(crate) selection_fg: Option<Rgb>,
+    pub(crate) selection_bg: Option<Rgb>,
+    pub(crate) ansi: Option<[Rgb; 16]>,
+}
+
+impl ColorKeys {
+    fn from_config(c: &Config) -> ColorKeys {
+        let col = |k: &str| c.color(k).map(rgb3);
+        ColorKeys {
+            fg: col("colors.foreground"),
+            bg: col("colors.background"),
+            cursor: col("colors.cursor"),
+            cursor_text: col("colors.cursor-text"),
+            selection_fg: col("colors.selection-foreground"),
+            selection_bg: col("colors.selection-background"),
+            ansi: parse_ansi(c.list("colors.palette")),
+        }
+    }
 }
 
 /// The glass keys (T-08 §3-§4, T-09 §5): window material and the interface's own look.
@@ -93,6 +206,9 @@ pub(crate) struct GlassSettings {
     pub(crate) interface_font: Option<String>,
     /// `interface.font-size` over the 13 px body token, times `interface.scale`.
     pub(crate) interface_zoom: f32,
+    /// `interface.motion`. `system` reads as `full`: the portal's reduce-motion setting is
+    /// not read yet.
+    pub(crate) motion: apoth_ui::motion::MotionMode,
 }
 
 impl GlassSettings {
@@ -119,6 +235,10 @@ impl GlassSettings {
             },
             scrollbar_marks: c.bool("scrollbar.marks"),
             interface_font: nonempty(c.str("interface.font")),
+            motion: apoth_ui::motion::MotionMode::resolve(
+                c.str("interface.motion").unwrap_or("system"),
+                false,
+            ),
             interface_zoom: if size > 0.0 && scale > 0.0 {
                 size / apoth_ui::tokens::size::BODY * scale
             } else {
@@ -206,6 +326,9 @@ pub(crate) struct InputSettings {
     /// `mouse.selection-override`.
     pub(crate) override_mods: Mods,
     pub(crate) paste: PasteSettings,
+    /// `menu.context-menu`: a right click with no selection opens the Open menu for the
+    /// link, URL or path under the pointer (T-14 §11).
+    pub(crate) context_menu: bool,
 }
 
 /// Modifier names (`shift`, `ctrl`, `alt`, `super`) to a set.
@@ -259,6 +382,7 @@ impl InputSettings {
             scroll_lines: u32::try_from(c.int("mouse.scroll-lines").clamp(1, 50)).unwrap_or(3),
             scroll_multiplier: c.float("mouse.scroll-multiplier").clamp(0.1, 20.0),
             override_mods: mods_of(c.list("mouse.selection-override")),
+            context_menu: c.bool("menu.context-menu"),
             paste: PasteSettings {
                 guard,
                 confirm_bytes: bytes("paste.confirm-bytes"),
@@ -331,6 +455,19 @@ pub(crate) fn error_positions(diags: &[apoth_config::Diagnostic]) -> Vec<ErrorPo
         .collect()
 }
 
+/// `--profile NAME`: applied as layer 6 on the first load and every reload (T-10 §2).
+static LAUNCH_PROFILE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Record `--profile` (once, before the first load).
+pub(crate) fn set_launch_profile(name: &str) {
+    let _ = LAUNCH_PROFILE.set(name.to_owned());
+}
+
+/// The `--profile` of this process.
+pub(crate) fn launch_profile() -> Option<&'static str> {
+    LAUNCH_PROFILE.get().map(String::as_str)
+}
+
 /// The standard file locations plus the launch overrides (re-applied on every reload).
 pub(crate) fn load_input(launch: &[(String, String)]) -> apoth_config::LoadInput {
     let home = std::env::var_os("HOME")
@@ -341,6 +478,7 @@ pub(crate) fn load_input(launch: &[(String, String)]) -> apoth_config::LoadInput
         .map(PathBuf::from);
     let mut input = default_input(&RealFs, &home, xdg.as_deref());
     input.launch = launch.to_vec();
+    input.active_profiles = launch_profile().map(str::to_owned).into_iter().collect();
     input
 }
 
@@ -457,17 +595,7 @@ impl Settings {
             lines: usize::try_from(lines).ok().filter(|n| *n > 0),
         };
         term.cursor = CursorStyle { shape, blink };
-        if let Some(fg) = c.color("colors.foreground") {
-            term.fg = rgb3(fg);
-        }
-        if let Some(bg) = c.color("colors.background") {
-            term.bg = rgb3(bg);
-        }
-        if let Some(cc) = c.color("colors.cursor") {
-            term.cursor_color = rgb3(cc);
-        } else {
-            term.cursor_color = term.fg;
-        }
+        graphics_config(c, &mut term.graphics);
 
         let env = c
             .get("shell.env")
@@ -494,7 +622,7 @@ impl Settings {
             .map(|f| f as f32);
         let rate = c.int("keyboard.repeat-rate");
         let delay = c.millis("keyboard.repeat-delay");
-        Settings {
+        let mut s = Settings {
             font,
             family_named,
             padding: (px("window.padding-x"), px("window.padding-y")),
@@ -504,6 +632,7 @@ impl Settings {
             bold_bright: c.bool("colors.bold-is-bright"),
             decorations,
             title_template: c.str("window.title").unwrap_or("{title}").to_owned(),
+            tab_template: c.str("tabs.title").unwrap_or("{title}").to_owned(),
             shell,
             term_name: c
                 .str("terminal.term")
@@ -516,7 +645,14 @@ impl Settings {
             echo_window: Duration::from_millis(c.millis("render.echo-window")),
             sync_timeout: Duration::from_millis(c.millis("render.sync-timeout")),
             bell_audible: c.bool("bell.audible"),
-            ansi: parse_ansi(c.list("colors.palette")),
+            notify: crate::notify::NotifySettings::from_config(c),
+            ansi: None,
+            cursor_text: None,
+            selection: (None, (0, 0, 0)),
+            color_keys: ColorKeys::from_config(c),
+            theme_system: matches!(c.str("theme"), None | Some("system")),
+            sudo_askpass: c.bool("security.sudo-askpass"),
+            password_prompt: c.str("security.password-prompt") != Some("off"),
             initial_size: (
                 initial_dim(c, "window.rows", INITIAL_ROWS),
                 initial_dim(c, "window.columns", INITIAL_COLS),
@@ -524,18 +660,91 @@ impl Settings {
             repeat_rate: u32::try_from(rate).ok().filter(|r| *r > 0),
             repeat_delay_ms: u32::try_from(delay).ok().filter(|d| *d > 0),
             input: InputSettings::from_config(c),
+            nav: NavSettings::from_config(c),
+            graphics_file: c.str("graphics.file-transmission") != Some("off"),
+            server_mode: c.str("sessions.server") == Some("on"),
             diagnostics: 0,
-        }
+        };
+        // Off Abyss (and until detection answers) the stock dark scheme. HOOK(T-10 §7):
+        // named schemes and `light=… dark=…` pairs (theme files, the portal colour-scheme)
+        // are not loaded yet and also take the stock dark scheme.
+        s.apply_theme(&TermColors::stock(true));
+        s
     }
 
-    /// The window title for a terminal-set title (`{title}` is the only placeholder here).
-    pub(crate) fn window_title(&self, title: &str) -> String {
-        let t = if title.is_empty() {
-            "Apotheosis"
-        } else {
-            title
+    /// Fill every colour the file leaves unset from `t` (T-17 §2, T-10 §7).
+    pub(crate) fn apply_theme(&mut self, t: &TermColors) {
+        let k = self.color_keys;
+        self.term.fg = k.fg.unwrap_or(t.foreground);
+        self.term.bg = k.bg.unwrap_or(t.background);
+        self.term.cursor_color = k.cursor.unwrap_or(t.cursor);
+        let ansi = k.ansi.unwrap_or(t.ansi);
+        self.term.ansi = ansi;
+        self.ansi = Some(ansi);
+        // An explicit background decides light/dark (answers `CSI ? 996 n`).
+        self.term.dark = match k.bg {
+            Some(bg) => {
+                let lum = ec_theme::Rgba::rgb(
+                    (u32::from(bg.0) << 16) | (u32::from(bg.1) << 8) | u32::from(bg.2),
+                )
+                .luminance();
+                lum < ec_theme::SCHEME_LUMINANCE
+            }
+            None => t.dark,
         };
-        self.title_template.replace("{title}", t)
+        // A colour set by hand keeps its partner from the cell, not from a theme built for
+        // another colour: the theme's text colour is only paired with the theme's own fill.
+        self.cursor_text = k
+            .cursor_text
+            .or_else(|| k.cursor.is_none().then_some(t.cursor_text));
+        let sel_bg = k.selection_bg.unwrap_or(t.selection_background);
+        let sel_fg = k
+            .selection_fg
+            .or_else(|| k.selection_bg.is_none().then_some(t.selection_foreground));
+        self.selection = (sel_fg, sel_bg);
+    }
+
+    /// The window title for a terminal-set title alone.
+    pub(crate) fn window_title(&self, title: &str) -> String {
+        let mut s = crate::rules::Snapshot::default();
+        s.text.insert("title".into(), title.to_owned());
+        self.window_title_with(&s)
+    }
+
+    /// The `window.title` template against pane fields (T-11 §8). An empty `{title}` reads
+    /// "Apotheosis"; an empty result falls back to it too.
+    pub(crate) fn window_title_with(&self, f: &crate::rules::Snapshot) -> String {
+        let mut f = f.clone();
+        let t = f.text.entry("title".into()).or_default();
+        if t.is_empty() {
+            *t = "Apotheosis".into();
+        }
+        render_title(&self.title_template, &f, "Apotheosis")
+    }
+
+    /// The `tabs.title` template against the tab's focused pane.
+    pub(crate) fn tab_title_with(&self, f: &crate::rules::Snapshot) -> String {
+        let fallback = f.text.get("title").cloned().unwrap_or_default();
+        if self.tab_template == "{title}" {
+            return fallback;
+        }
+        render_title(&self.tab_template, f, &fallback)
+    }
+}
+
+/// Render a title template; a template that does not parse (the loader already reported
+/// it) or renders empty gives `fallback`.
+fn render_title(template: &str, f: &crate::rules::Snapshot, fallback: &str) -> String {
+    match apoth_config::template::Template::parse(template) {
+        Ok(t) => {
+            let out = t.render(f);
+            if out.is_empty() {
+                fallback.to_owned()
+            } else {
+                out
+            }
+        }
+        Err(_) => fallback.to_owned(),
     }
 }
 
@@ -616,7 +825,47 @@ mod tests {
         assert_eq!(s.window_title("x"), "x");
         assert_eq!(s.term.scrollback.lines, None);
         assert_eq!(s.initial_size, (INITIAL_ROWS, INITIAL_COLS));
-        assert_eq!(s.ansi, None);
+        let stock = TermColors::stock(true);
+        assert_eq!(s.ansi, Some(stock.ansi));
+        assert_eq!(s.term.ansi, stock.ansi);
+        assert_eq!(s.term.bg, stock.background);
+        assert_eq!(s.term.cursor_color, stock.cursor);
+        assert!(s.theme_system && s.term.dark);
+    }
+
+    /// T-10 §7: every `colors.*` key the file leaves unset follows the theme; set ones
+    /// stay, and a hand-set fill keeps the cell's own text colour.
+    #[test]
+    fn unset_colours_follow_the_theme() {
+        use apoth_config::Value;
+        use apoth_config::model::Origin;
+        let mut c = Config::defaults();
+        assert!(c.set_at(
+            "colors.background",
+            Value::Color([0xfa, 0xfa, 0xfa, 0xff]),
+            Origin::builtin()
+        ));
+        assert!(c.set_at(
+            "colors.cursor",
+            Value::Color([0xff, 0, 0, 0xff]),
+            Origin::builtin()
+        ));
+        let mut s = Settings::from_config(&c);
+        let light = TermColors::stock(false);
+        s.apply_theme(&light);
+        assert_eq!(s.term.bg, (0xfa, 0xfa, 0xfa));
+        assert_eq!(s.term.fg, light.foreground);
+        assert_eq!(s.term.cursor_color, (0xff, 0, 0));
+        assert_eq!(s.cursor_text, None);
+        assert_eq!(s.ansi, Some(light.ansi));
+        assert_eq!(
+            s.selection,
+            (Some(light.selection_foreground), light.selection_background)
+        );
+        assert!(!s.term.dark, "the explicit light background decides");
+        let mut c = Config::defaults();
+        assert!(c.set_at("theme", Value::Str("my-scheme".into()), Origin::builtin()));
+        assert!(!Settings::from_config(&c).theme_system);
     }
 
     #[test]

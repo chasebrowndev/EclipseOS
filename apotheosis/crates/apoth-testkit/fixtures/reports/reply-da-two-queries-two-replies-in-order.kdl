@@ -4,5 +4,5 @@ fixture "reply-da-two-queries-two-replies-in-order" {
   size rows=2 cols=4
   version "1.4.2"
   feed #"\e[c\e[>c"#
-  replies #"\e[?62;22c\e[>1;10402;0c"#
+  replies #"\e[?62;4;22c\e[>1;10402;0c"#
 }

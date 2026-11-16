@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! `ec-secret-prompt wifi <ssid>` | `bt <addr> pin|passkey|authorize`
-//! | `bt <addr> confirm <passkey>` | `bt <addr> show <code>` | `api-key <account>`.
+//! | `bt <addr> confirm <passkey>` | `bt <addr> show <code>` | `api-key <account>`
+//! | `terminal` (request on stdin).
 //!
 //! A plain xdg_toplevel, not a layer surface: windowrules — and with them the
 //! `secret` sensitivity class — only match toplevels (ADR 0053). Fixed size,
@@ -8,14 +9,19 @@
 
 use ec_secret_prompt::app::{self, App};
 use ec_secret_prompt::{Target, APP_ID};
-use ec_ui::tokens::secret;
 use iced::window;
 
 fn main() -> iced::Result {
     // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
     ec_ui::ipc::sync_theme_now();
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let target = match Target::parse(&args) {
+    // `terminal`: the request is on stdin, from Apotheosis (ADR 0053, T-22 §3).
+    let parsed = if args.len() == 1 && args[0] == "terminal" {
+        ec_secret_prompt::terminal::TerminalAsk::from_stdin().map(|t| Target::Terminal(Box::new(t)))
+    } else {
+        Target::parse(&args)
+    };
+    let target = match parsed {
         Ok(t) => t,
         Err(usage) => {
             // The arguments name a network, a device or an account, never the secret, so
@@ -25,10 +31,14 @@ fn main() -> iced::Result {
         }
     };
 
-    let size = iced::Size::new(secret::W, secret::H);
+    let size = app::window_size(&target);
     let mut builder = iced::application(move || App::new(target.clone()), app::update, app::view)
         .title(|app: &App| app.title().to_owned())
         .theme(|_: &App| ec_ui::theme::theme())
+        // Transparent, so the compositor's blur shows through; the view tints
+        // it, opaque only when blur is off (`app::view`).
+        .transparent(true)
+        .style(ec_ui::theme::clear_window)
         .subscription(app::subscription)
         .window(window::Settings {
             size,

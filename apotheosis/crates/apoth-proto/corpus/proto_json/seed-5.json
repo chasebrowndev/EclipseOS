@@ -1,0 +1,1 @@
+{"id":5,"method":"subscribe","params":{"events":["bell"],"match":"pane:1"}}

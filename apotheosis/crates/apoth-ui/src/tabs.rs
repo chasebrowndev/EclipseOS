@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Tab strip (T-08 §4): floating or flat tabs, badges, close and new-tab buttons.
 
-use crate::draw::{DrawList, IconId};
+use crate::draw::{DrawList, IconId, PaneState, PaneTone, Rim};
 use crate::frame::TabStyle;
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
-use crate::state::{UiState, WidgetId, label_colour, surface};
-use crate::text::TextRun;
-use crate::tokens::{Palette, Rgba, metrics, radius, size, space};
+use crate::state::{UiState, WidgetId, accent_label, accent_surface, chip, label_colour, surface};
+use crate::text::{Measure, TextRun, geometry};
+use crate::tokens::{Palette, Rgba, alpha, metrics, radius, size, space};
 
 /// Per-tab status badges (T-08 §4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -15,8 +15,14 @@ pub enum Badge {
     Unseen,
     Bell,
     Running,
-    /// OSC 9;4 progress, 0..=100.
+    /// OSC 9;4 progress, 0..=100, drawn as a line along the tab's foot.
     Progress(u8),
+    /// OSC 9;4 error state: the line is the danger colour.
+    ProgressError(u8),
+    /// OSC 9;4 paused state: the line is quiet.
+    ProgressPaused(u8),
+    /// OSC 9;4 indeterminate: the line is full and dimmed (a settled surface animates nothing).
+    ProgressBusy,
     /// Exit status of the last command.
     Exit(i32),
 }
@@ -28,6 +34,9 @@ pub struct TabSpec {
     pub title: TextRun,
     pub active: bool,
     pub badges: Vec<Badge>,
+    /// The profile in force when it is not the default (T-11 §6): a small pill before the
+    /// title. Built with [`TextRun::program`]: profile names come from config files.
+    pub profile: Option<TextRun>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -54,16 +63,20 @@ pub struct TabStripLayout {
 pub fn layout(strip: Rect, strip_id: WidgetId, tabs: &[TabSpec]) -> TabStripLayout {
     let h = (strip.h - 2.0 * space::XS).max(0.0);
     let y = strip.y + space::XS;
-    let new_tab = Rect::new(
-        strip.right() - space::SM - metrics::NEW_TAB,
-        y + (h - metrics::NEW_TAB) / 2.0,
-        metrics::NEW_TAB,
-        metrics::NEW_TAB,
-    );
     let new_tab_id = strip_id.child(u64::MAX);
     let left = strip.x + space::SM;
-    let limit = new_tab.x - metrics::TAB_GAP;
+    // The tabs stop one button short of the right edge: the new-tab button follows the last
+    // visible tab, so it is always on screen, overflow or not.
+    let limit = strip.right() - space::SM - metrics::NEW_TAB - metrics::TAB_GAP;
     let span = (limit - left).max(0.0);
+    let new_tab_at = |x: f32| {
+        Rect::new(
+            x,
+            y + (h - metrics::NEW_TAB) / 2.0,
+            metrics::NEW_TAB,
+            metrics::NEW_TAB,
+        )
+    };
     let n = tabs.len();
     let mut cells = Vec::new();
     if n == 0 {
@@ -72,7 +85,7 @@ pub fn layout(strip: Rect, strip_id: WidgetId, tabs: &[TabSpec]) -> TabStripLayo
             strip_id,
             cells,
             new_tab_id,
-            new_tab,
+            new_tab: new_tab_at(left),
             overflow: 0,
         };
     }
@@ -103,6 +116,11 @@ pub fn layout(strip: Rect, strip_id: WidgetId, tabs: &[TabSpec]) -> TabStripLayo
             close,
         });
     }
+    let new_tab = new_tab_at(
+        cells
+            .last()
+            .map_or(left, |c| c.rect.right() + metrics::TAB_GAP),
+    );
     TabStripLayout {
         strip,
         strip_id,
@@ -149,15 +167,64 @@ pub fn wheel_switch(active: usize, steps: i32, count: usize) -> usize {
     (active as i64 + steps as i64).clamp(0, count as i64 - 1) as usize
 }
 
+fn is_progress(b: Badge) -> bool {
+    matches!(
+        b,
+        Badge::Progress(_)
+            | Badge::ProgressError(_)
+            | Badge::ProgressPaused(_)
+            | Badge::ProgressBusy
+    )
+}
+
+/// The OSC 9;4 line along the foot of a tab: a track and the fill to `pct`.
+fn progress_line(tab: Rect, b: Badge, pal: &Palette, out: &mut DrawList) {
+    let track = Rect::new(
+        tab.x + space::MD,
+        tab.bottom() - metrics::PROGRESS_INSET - metrics::PROGRESS_H,
+        (tab.w - 2.0 * space::MD).max(0.0),
+        metrics::PROGRESS_H,
+    );
+    out.rect(track, radius::PILL, pal.track, None);
+    let (pct, colour) = match b {
+        Badge::Progress(p) => (f32::from(p.min(100)) / 100.0, pal.accent),
+        Badge::ProgressError(p) => (f32::from(p.min(100)) / 100.0, pal.danger),
+        Badge::ProgressPaused(p) => (f32::from(p.min(100)) / 100.0, pal.text_tertiary),
+        _ => (1.0, pal.accent.scaled(alpha::BUSY)),
+    };
+    let w = track.w * pct;
+    if w > 0.0 {
+        out.rect(
+            Rect::new(track.x, track.y, w.max(metrics::PROGRESS_H), track.h),
+            radius::PILL,
+            colour,
+            None,
+        );
+    }
+}
+
 fn badge_colour(p: &Palette, b: Badge) -> Rgba {
     match b {
         Badge::Unseen => p.accent,
         Badge::Bell => p.accent_text,
         Badge::Running => p.text_secondary,
-        Badge::Progress(_) => p.accent,
+        Badge::Progress(_) | Badge::ProgressBusy => p.accent,
+        Badge::ProgressError(_) => p.danger,
+        Badge::ProgressPaused(_) => p.text_tertiary,
         Badge::Exit(0) => p.ok,
         Badge::Exit(_) => p.danger,
     }
+}
+
+/// The square the close and plus marks are drawn in, centred in their hit target.
+fn icon_box(target: Rect) -> Rect {
+    let d = metrics::TAB_ICON;
+    Rect::new(
+        target.x + (target.w - d) / 2.0,
+        target.y + (target.h - d) / 2.0,
+        d,
+        d,
+    )
 }
 
 pub fn draw(
@@ -172,34 +239,45 @@ pub fn draw(
         return;
     }
     if style == TabStyle::Flat {
-        out.rect(l.strip, 0.0, pal.bar_tint, None);
-        out.rect(
-            Rect::new(
-                l.strip.x,
-                l.strip.bottom() - metrics::RIM_W,
-                l.strip.w,
-                metrics::RIM_W,
-            ),
-            0.0,
-            pal.hairline,
-            None,
-        );
+        if out.glass {
+            out.glass_pane(l.strip, 0.0, PaneTone::Plain, PaneState::Rest, 1.0);
+        } else {
+            out.rect(l.strip, 0.0, pal.bar_tint, None);
+            out.rect(
+                Rect::new(
+                    l.strip.x,
+                    l.strip.bottom() - metrics::RIM_W,
+                    l.strip.w,
+                    metrics::RIM_W,
+                ),
+                0.0,
+                pal.hairline,
+                None,
+            );
+        }
     }
     for c in &l.cells {
         let tab = &tabs[c.index];
         let hover_tab = ui.hover == Some(c.id) || ui.hover == Some(c.close_id);
         let mut st = ui.control(c.id, false, tab.active);
         st.hover = hover_tab;
-        let (fill, rim) = surface(pal, st);
+        let (fill, rim) = if tab.active {
+            accent_surface(pal, st)
+        } else {
+            surface(pal, st)
+        };
         let show_bg =
             style == TabStyle::Floating || tab.active || st.hover || st.focus_kb || st.pressed;
         if show_bg {
-            out.rect(c.rect, radius::INSET, fill, Some(rim));
+            chip(out, c.rect, radius::INSET, st, (fill, rim));
+        }
+        if let Some(b) = tab.badges.iter().find(|b| is_progress(**b)) {
+            progress_line(c.rect, *b, pal, out);
         }
         // Badges, then title, then close.
         let mut x = c.rect.x + space::SM;
         let cy = c.rect.y + c.rect.h / 2.0;
-        for b in &tab.badges {
+        for b in tab.badges.iter().filter(|b| !is_progress(**b)) {
             let d = metrics::BADGE_D;
             out.rect(
                 Rect::new(x, cy - d / 2.0, d, d),
@@ -208,6 +286,29 @@ pub fn draw(
                 None,
             );
             x += d + space::XS;
+        }
+        if let Some(p) = &tab.profile {
+            let m = geometry();
+            let tw = m.width(&TextRun::interface(p.text.clone(), size::MICRO));
+            let w = (tw + 2.0 * space::SM).min(metrics::PROFILE_MAX_W);
+            let pill = Rect::new(x, cy - metrics::PROFILE_H / 2.0, w, metrics::PROFILE_H);
+            out.rect(
+                pill,
+                radius::PILL,
+                pal.cell_hover,
+                Some(Rim {
+                    width: metrics::RIM_W,
+                    colour: pal.cell_rim,
+                }),
+            );
+            let mut run = p.clone();
+            run.size = size::MICRO;
+            out.text(
+                run.clipped((w - 2.0 * space::SM).max(0.0)),
+                Point::new(pill.x + space::SM, pill.y + (pill.h - size::MICRO) / 2.0),
+                pal.text_secondary,
+            );
+            x += w + space::XS;
         }
         let show_close = tab.active || hover_tab || st.focus_kb;
         let title_right = if show_close {
@@ -220,26 +321,26 @@ pub fn draw(
         out.text(
             run,
             Point::new(x, c.rect.y + (c.rect.h - size::BODY) / 2.0),
-            label_colour(pal, st),
+            if tab.active {
+                accent_label(pal, st)
+            } else {
+                label_colour(pal, st)
+            },
         );
         if show_close {
             let cst = ui.control(c.close_id, false, false);
             if cst.hover || cst.pressed || cst.focus_kb {
                 let (cf, cr) = surface(pal, cst);
-                out.rect(c.close, radius::INSET, cf, Some(cr));
+                chip(out, c.close, radius::INSET, cst, (cf, cr));
             }
-            let ic = c.close.inset(space::XS);
+            let ic = icon_box(c.close);
             out.icon(IconId::Close, ic, label_colour(pal, cst));
         }
     }
     let nst = ui.control(l.new_tab_id, false, false);
     let (nf, nr) = surface(pal, nst);
     if style == TabStyle::Floating || nst.hover || nst.pressed || nst.focus_kb {
-        out.rect(l.new_tab, radius::INSET, nf, Some(nr));
+        chip(out, l.new_tab, radius::INSET, nst, (nf, nr));
     }
-    out.icon(
-        IconId::Plus,
-        l.new_tab.inset(space::SM),
-        label_colour(pal, nst),
-    );
+    out.icon(IconId::Plus, icon_box(l.new_tab), label_colour(pal, nst));
 }

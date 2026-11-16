@@ -239,6 +239,26 @@ impl KeyboardBackend for KbvmBackend {
     }
 }
 
+/// A key named by its XKB keysym (`Return`, `a`, `A`, `asciitilde`), resolved without a
+/// keyboard for `input.send-keys` (T-12 §2): the logical key, the text it types, and whether
+/// Shift is implied (an upper-case letter is its lower-case key plus Shift). Dead keys and
+/// unknown names are `None`. With no keymap there is no base or shifted symbol, so a shifted
+/// symbol is reported as itself (`asciitilde` is `~`, not Shift+`grave`).
+#[must_use]
+pub fn key_of_name(name: &str) -> Option<(Key, Option<char>, bool)> {
+    let sym = Keysym::from_str(name)?;
+    if is_dead(sym) {
+        return None;
+    }
+    if let Some((named, add_shift)) = named_of(sym) {
+        return Some((Key::Named(named), None, add_shift));
+    }
+    let c = sym.char().filter(|c| !c.is_control())?;
+    let lower = sym.to_lowercase().char().unwrap_or(c);
+    let shift = lower != c;
+    Some((Key::Char(lower), Some(c), shift))
+}
+
 /// `dead_*` keysyms and Multi_key: never emitted (INPUT-08).
 fn is_dead(s: Keysym) -> bool {
     matches!(s.0, 0xfe50..=0xfe93 | 0xff20)
@@ -325,6 +345,26 @@ fn named_of(s: Keysym) -> Option<(Named, bool)> {
 mod tests {
     use super::*;
     use crate::{InputModes, KeyKind, encode_key};
+
+    #[test]
+    fn keys_by_keysym_name() {
+        assert_eq!(
+            key_of_name("Return"),
+            Some((Key::Named(Named::Enter), None, false))
+        );
+        assert_eq!(key_of_name("a"), Some((Key::Char('a'), Some('a'), false)));
+        assert_eq!(key_of_name("A"), Some((Key::Char('a'), Some('A'), true)));
+        assert_eq!(
+            key_of_name("asciitilde"),
+            Some((Key::Char('~'), Some('~'), false))
+        );
+        assert_eq!(
+            key_of_name("ISO_Left_Tab"),
+            Some((Key::Named(Named::Tab), None, true))
+        );
+        assert_eq!(key_of_name("dead_acute"), None);
+        assert_eq!(key_of_name("NoSuchKey"), None);
+    }
 
     /// A self-contained keymap: group 1 us, group 2 de, group 3 ru on the keys the tests
     /// use. Keycodes are xkb codes (evdev + 8). No host files are involved.

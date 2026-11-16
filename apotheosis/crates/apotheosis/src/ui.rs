@@ -16,7 +16,7 @@ use apoth_render::chrome::{ChromeList, ChromeRect, ChromeShadow, ChromeSink};
 use apoth_ui::bar::{self, BarSpec, BarState};
 use apoth_ui::text::{Measure, TextRun, Weight};
 use apoth_ui::tokens::{Palette, Rgba, metrics, space};
-use apoth_ui::{Cmd, DrawList, IconId, Point, Rect, UiState, WidgetId};
+use apoth_ui::{Cmd, DrawList, IconId, Point, Rect, WidgetId};
 
 use crate::settings::ErrorPos;
 
@@ -101,6 +101,154 @@ impl<'a> FontMeasure<'a> {
 impl Measure for FontMeasure<'_> {
     fn width(&self, run: &TextRun) -> f32 {
         place(&mut self.0.borrow_mut(), run).1
+    }
+}
+
+/// A convex polygon in physical pixels.
+type Poly = Vec<(f32, f32)>;
+
+/// A play triangle in physical rect `[x, y, w, h]`: as tall as the rect, as wide as an
+/// equilateral one, its centroid on the rect's centre (optical centring in a disc).
+fn play_shape(r: [f32; 4]) -> Vec<Poly> {
+    let h = r[3];
+    let w = h * 0.866;
+    let cx = r[0] + r[2] / 2.0;
+    let left = cx - w / 3.0;
+    vec![vec![
+        (left, r[1]),
+        (left + w, r[1] + h / 2.0),
+        (left, r[1] + h),
+    ]]
+}
+
+/// A speaker (body and cone) with a cross beside it, in physical rect `[x, y, s, s]`.
+fn speaker_muted_shape(r: [f32; 4]) -> Vec<Poly> {
+    let s = r[2].min(r[3]);
+    let (x, y) = (r[0], r[1] + (r[3] - s) / 2.0);
+    let p = |u: f32, v: f32| (x + u * s, y + v * s);
+    let (c, arm, t) = ((0.80, 0.5), 0.15, 0.11 * s);
+    vec![
+        vec![p(0.02, 0.36), p(0.24, 0.36), p(0.24, 0.64), p(0.02, 0.64)],
+        vec![p(0.22, 0.36), p(0.52, 0.12), p(0.52, 0.88), p(0.22, 0.64)],
+        stroke(p(c.0 - arm, c.1 - arm), p(c.0 + arm, c.1 + arm), t),
+        stroke(p(c.0 - arm, c.1 + arm), p(c.0 + arm, c.1 - arm), t),
+    ]
+}
+
+/// A cross filling physical rect `[x, y, s, s]`, strokes an eighth of it thick.
+fn cross_shape(r: [f32; 4]) -> Vec<Poly> {
+    let s = r[2].min(r[3]);
+    let (x, y) = (r[0] + (r[2] - s) / 2.0, r[1] + (r[3] - s) / 2.0);
+    let t = (s * 0.125).max(1.5);
+    let i = t / 2.0;
+    vec![
+        stroke((x + i, y + i), (x + s - i, y + s - i), t),
+        stroke((x + i, y + s - i), (x + s - i, y + i), t),
+    ]
+}
+
+/// A plus filling physical rect `[x, y, s, s]`, strokes an eighth of it thick.
+fn plus_shape(r: [f32; 4]) -> Vec<Poly> {
+    let s = r[2].min(r[3]);
+    let (x, y) = (r[0] + (r[2] - s) / 2.0, r[1] + (r[3] - s) / 2.0);
+    let t = (s * 0.125).max(1.5);
+    let c = (x + s / 2.0, y + s / 2.0);
+    vec![
+        stroke((x, c.1), (x + s, c.1), t),
+        stroke((c.0, y), (c.0, y + s), t),
+    ]
+}
+
+/// A stroke from `a` to `b`, `t` thick, as a quad.
+fn stroke(a: (f32, f32), b: (f32, f32), t: f32) -> Poly {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let len = dx.hypot(dy).max(1e-3);
+    let (nx, ny) = (-dy / len * t / 2.0, dx / len * t / 2.0);
+    vec![
+        (a.0 + nx, a.1 + ny),
+        (b.0 + nx, b.1 + ny),
+        (b.0 - nx, b.1 - ny),
+        (a.0 - nx, a.1 - ny),
+    ]
+}
+
+/// Fills the union of convex `polys` (physical px) in `colour` as flat coverage rects:
+/// four sub-rows per pixel row, exact horizontal coverage, summed and clamped so shapes that
+/// touch or overlap leave no seam.
+fn shapes<S: ChromeSink>(polys: &[Poly], colour: [u8; 4], sink: &mut S) {
+    const SUB: usize = 4;
+    let pts = polys.iter().flatten();
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    for &(x, y) in pts {
+        x0 = x0.min(x);
+        y0 = y0.min(y);
+        x1 = x1.max(x);
+        y1 = y1.max(y);
+    }
+    if x0 > x1 || y0 > y1 {
+        return;
+    }
+    let (ox, oy) = (x0.floor() as i32, y0.floor() as i32);
+    let w = (x1.ceil() as i32 - ox).max(1) as usize;
+    let h = (y1.ceil() as i32 - oy).max(1) as usize;
+    if w * h > 1 << 20 {
+        return;
+    }
+    let mut cov = vec![0.0f32; w * h];
+    for poly in polys {
+        let n = poly.len();
+        if n < 3 {
+            continue;
+        }
+        for row in 0..h {
+            for sub in 0..SUB {
+                let yy = (oy + row as i32) as f32 + (sub as f32 + 0.5) / SUB as f32;
+                let (mut l, mut r) = (f32::MAX, f32::MIN);
+                for i in 0..n {
+                    let (a, b) = (poly[i], poly[(i + 1) % n]);
+                    if (a.1 <= yy && b.1 > yy) || (b.1 <= yy && a.1 > yy) {
+                        let x = a.0 + (yy - a.1) / (b.1 - a.1) * (b.0 - a.0);
+                        l = l.min(x);
+                        r = r.max(x);
+                    }
+                }
+                if l >= r {
+                    continue;
+                }
+                let line = &mut cov[row * w..(row + 1) * w];
+                let first = ((l.floor() as i32 - ox).max(0)) as usize;
+                let last = ((r.ceil() as i32 - ox).max(0) as usize).min(w);
+                for (c, v) in line.iter_mut().enumerate().take(last).skip(first) {
+                    let px = (ox + c as i32) as f32;
+                    let o = (r.min(px + 1.0) - l.max(px)).max(0.0);
+                    *v += o / SUB as f32;
+                }
+            }
+        }
+    }
+    for row in 0..h {
+        let line = &cov[row * w..(row + 1) * w];
+        let q = |v: f32| (u32::from(colour[3]) * (v.min(1.0) * 255.0).round() as u32 + 127) / 255;
+        let mut c = 0;
+        while c < w {
+            let a = q(line[c]);
+            let start = c;
+            while c < w && q(line[c]) == a {
+                c += 1;
+            }
+            if a == 0 {
+                continue;
+            }
+            sink.flat(
+                [
+                    (ox + start as i32) as f32,
+                    (oy + row as i32) as f32,
+                    (c - start) as f32,
+                    1.0,
+                ],
+                [colour[0], colour[1], colour[2], a as u8],
+            );
+        }
     }
 }
 
@@ -222,17 +370,52 @@ impl UiRaster {
                     spread: spread * scale,
                     alpha: *alpha,
                 }),
+                // The pane itself goes to the compositor ([`glass_panes`]); here the grid and
+                // window ground under it are erased so its glass shows.
+                Cmd::Glass {
+                    rect,
+                    radius,
+                    alpha,
+                    ..
+                } => sink.erase(sc(*rect), [radius * scale; 4], *alpha),
                 Cmd::PushClip { rect, .. } => sink.push_clip(sc(*rect)),
                 Cmd::PopClip => sink.pop_clip(),
+                Cmd::Layer => sink.layer(),
                 Cmd::Text { run, pos, colour } => {
                     self.text(fonts, run, *pos, *colour, scale, sink);
                 }
+                Cmd::Icon {
+                    icon: IconId::Play,
+                    rect,
+                    colour,
+                } => shapes(&play_shape(sc(*rect)), bytes(*colour), sink),
+                Cmd::Icon {
+                    icon: IconId::SpeakerMuted,
+                    rect,
+                    colour,
+                } => shapes(&speaker_muted_shape(sc(*rect)), bytes(*colour), sink),
+                Cmd::Icon {
+                    icon: IconId::Cross | IconId::Close,
+                    rect,
+                    colour,
+                } => shapes(&cross_shape(sc(*rect)), bytes(*colour), sink),
+                Cmd::Icon {
+                    icon: IconId::Plus,
+                    rect,
+                    colour,
+                } => shapes(&plus_shape(sc(*rect)), bytes(*colour), sink),
                 Cmd::Icon { icon, rect, colour } => {
                     let (glyph, weight) = match icon {
-                        IconId::Close => ("\u{00d7}", Weight::Regular),
-                        IconId::Plus => ("+", Weight::Regular),
                         IconId::Warning => ("!", Weight::Strong),
                         IconId::Shield => ("i", Weight::Strong),
+                        IconId::ArrowUp => ("\u{2191}", Weight::Regular),
+                        IconId::ArrowDown => ("\u{2193}", Weight::Regular),
+                        // Lowered as shapes above.
+                        IconId::Play
+                        | IconId::SpeakerMuted
+                        | IconId::Cross
+                        | IconId::Close
+                        | IconId::Plus => continue,
                     };
                     let mut run = TextRun::interface(glyph, rect.h * 0.9);
                     run.weight = weight;
@@ -256,6 +439,23 @@ pub(crate) struct Overlay {
     pub(crate) shown_at: std::time::Instant,
 }
 
+impl Overlay {
+    /// A bar takes room at the top of the window; a sheet (a spec with a body) floats over it.
+    pub(crate) fn takes_room(&self) -> bool {
+        self.spec.body.is_none()
+    }
+}
+
+/// Where the search sheet may sit, in interface units: below the overlay bar and the strip.
+pub(crate) fn search_area(window: Rect, strip: Option<Rect>, bar_room: bool) -> Rect {
+    let inset = if bar_room {
+        metrics::BAR_H + space::SM
+    } else {
+        0.0
+    };
+    apoth_ui::searchbar::free_area(window, strip, inset)
+}
+
 /// Physical pixels the bar takes from the top of the pane (it never overlaps the grid, so a
 /// program cannot draw under or imitate it, T-08 §5).
 pub(crate) fn bar_inset_px(scale: f64, zoom: f32) -> u32 {
@@ -263,43 +463,222 @@ pub(crate) fn bar_inset_px(scale: f64, zoom: f32) -> u32 {
     (f64::from(metrics::BAR_H + space::SM) * s).round() as u32
 }
 
-/// Lowers the overlay into `chrome` for a `buffer` of physical pixels.
+/// Widget id of the tab strip (its new-tab button is `STRIP_ID.child(u64::MAX)`).
+pub(crate) const STRIP_ID: WidgetId = WidgetId(0x5354_5249_5000);
+/// Widget id of the command palette sheet (rows are `palette::row_id`).
+pub(crate) const PALETTE_ID: WidgetId = WidgetId(0x5041_4c45_5400);
+
+/// Widget id of tab `tab` in the strip (its close button is `.child(0)`).
+pub(crate) fn tab_widget(tab: u64) -> WidgetId {
+    WidgetId(0x7441_0000_0000_0000 ^ tab)
+}
+
+/// Widget id of pane `pane`'s frame.
+pub(crate) fn pane_widget(pane: u64) -> WidgetId {
+    WidgetId(0x7041_0000_0000_0000 ^ pane)
+}
+
+/// The media controls over each placement in view, and the muted notice (T-08 §4), at the
+/// fade levels the render thread worked out.
+fn draw_media(
+    fx: &crate::render::MediaFx,
+    pal: &Palette,
+    measure: &dyn Measure,
+    dl: &mut DrawList,
+) {
+    use apoth_term::MediaPlay;
+    for h in fx.huds.iter().filter(|h| h.state != MediaPlay::Opening) {
+        let spec = apoth_ui::mediactl::HudSpec {
+            rect: h.rect,
+            playing: h.state == MediaPlay::Playing,
+            progress: h.progress,
+            alpha: h.alpha,
+            // The whole box is the click target: the pointer on it is the disc's hover.
+            control: apoth_ui::ControlState {
+                hover: true,
+                ..Default::default()
+            },
+        };
+        apoth_ui::mediactl::draw(&spec, pal, dl);
+    }
+    if let Some((r, a)) = fx.muted {
+        apoth_ui::mediactl::draw_muted(r, a, pal, measure, dl);
+    }
+}
+
+/// Lowers the chrome into `chrome` for a `buffer` of physical pixels at interface scale
+/// `ui` (physical pixels per interface unit). Back to front: pane frames (focus rim, inactive
+/// dim), tab strip, overlay bar, palette sheet (T-08 §5 order).
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn build_overlay(
+#[cfg(test)]
+pub(crate) fn build_chrome(
     chrome: &mut ChromeList,
     overlay: Option<&Overlay>,
+    model: &crate::render::ChromeModel,
     buffer: (u32, u32),
-    scale: f64,
-    zoom: f32,
+    ui: f32,
     light: bool,
     age_ms: u64,
     fonts: &mut FontSystem,
     raster: &mut UiRaster,
 ) {
+    build_chrome_glass(
+        chrome, overlay, model, buffer, ui, light, age_ms, fonts, raster, None, None,
+    );
+}
+
+/// The glass panes of a draw list as the compositor takes them: surface-local logical
+/// pixels, `to_logical` being logical pixels per interface unit.
+pub(crate) fn glass_panes(dl: &DrawList, to_logical: f32) -> Vec<apoth_wl::Pane> {
+    use apoth_ui::{PaneState, PaneTone};
+    dl.panes()
+        .filter_map(|c| {
+            let Cmd::Glass {
+                rect,
+                radius,
+                tone,
+                state,
+                alpha,
+            } = c
+            else {
+                return None;
+            };
+            let (x0, y0) = ((rect.x * to_logical).round(), (rect.y * to_logical).round());
+            let (x1, y1) = (
+                (rect.right() * to_logical).round(),
+                (rect.bottom() * to_logical).round(),
+            );
+            let bits = match state {
+                PaneState::Rest => 0,
+                PaneState::Hover => apoth_wl::glass::HOVERED,
+                PaneState::Pressed => apoth_wl::glass::HOVERED | apoth_wl::glass::PRESSED,
+            };
+            Some(apoth_wl::Pane {
+                x: x0 as i32,
+                y: y0 as i32,
+                w: (x1 - x0) as i32,
+                h: (y1 - y0) as i32,
+                radius: (radius * to_logical).round().max(0.0) as u32,
+                tone: match tone {
+                    PaneTone::Plain => apoth_wl::Tone::Plain,
+                    PaneTone::Focused => apoth_wl::Tone::Focused,
+                },
+                state: bits,
+                alpha: (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+            })
+        })
+        .collect()
+}
+
+/// [`build_chrome`] with compositor glass: `glass` is the logical-pixels-per-interface-unit
+/// factor when `eclipse_glass_v1` is drawing panes (the interface then paints no ground of
+/// its own under chips, sheets and menus), and the panes come back. `None` is the
+/// client-drawn look and no panes.
+///
+/// `over` is the overlay subsurface's list (stacked glass): the search sheet, the tooltip,
+/// the palette and sheet-bars go there and their panes come back as the second list, so the
+/// root surface keeps its text under them and the compositor frosts it. `None` draws
+/// everything on the root surface.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_chrome_glass(
+    chrome: &mut ChromeList,
+    overlay: Option<&Overlay>,
+    model: &crate::render::ChromeModel,
+    buffer: (u32, u32),
+    ui: f32,
+    light: bool,
+    age_ms: u64,
+    fonts: &mut FontSystem,
+    raster: &mut UiRaster,
+    glass: Option<f32>,
+    mut over: Option<&mut ChromeList>,
+) -> (Vec<apoth_wl::Pane>, Vec<apoth_wl::Pane>) {
     chrome.clear();
-    let Some(o) = overlay else { return };
-    let s = (scale * f64::from(zoom)) as f32;
+    if let Some(o) = over.as_deref_mut() {
+        o.clear();
+    }
+    let s = if ui > 0.0 { ui } else { 1.0 };
     let area = Rect::new(0.0, 0.0, buffer.0 as f32 / s, buffer.1 as f32 / s);
     let pal = if light {
         Palette::light()
     } else {
         Palette::dark()
     };
-    let mut dl = DrawList::new();
+    let mut dl = DrawList::with_glass(glass.is_some());
+    let mut od = DrawList::with_glass(glass.is_some());
     {
         let measure = FontMeasure::new(fonts);
-        let l = bar::layout(area, &o.spec, &measure);
-        bar::draw(
-            &l,
-            &o.spec,
-            &BarState { shown_at_ms: 0 },
-            age_ms,
-            &UiState::default(),
-            &pal,
-            &mut dl,
-        );
+        for f in &model.frames {
+            let l = apoth_ui::pane::layout(f);
+            if f.floating {
+                // Its glass goes under its grid; its rim and dim over it (T-07 §4 layering).
+                apoth_ui::pane::draw_float_backing(f, &pal, &mut dl);
+                dl.layer();
+            }
+            apoth_ui::pane::draw(f, &l, &pal, &mut dl);
+        }
+        if let Some(r) = model.bell {
+            apoth_ui::pane::draw_bell(r, &pal, &mut dl);
+        }
+        draw_media(&model.media_fx, &pal, &measure, &mut dl);
+        if let Some(m) = &model.media {
+            apoth_ui::mediawin::draw(area, m, model.media_fx.win_alpha, &pal, &measure, &mut dl);
+        }
+        if let Some((strip, tabs)) = &model.strip {
+            let l = apoth_ui::tabs::layout(*strip, STRIP_ID, tabs);
+            apoth_ui::tabs::draw(&l, tabs, model.tab_style, &model.ui, &pal, &mut dl);
+        }
+        if let Some(o) = overlay.filter(|o| o.takes_room()) {
+            let l = bar::layout(area, &o.spec, &apoth_ui::text::geometry());
+            bar::draw(
+                &l,
+                &o.spec,
+                &BarState { shown_at_ms: 0 },
+                age_ms,
+                &model.ui,
+                &pal,
+                &mut dl,
+            );
+        }
+        let top: &mut DrawList = if over.is_some() { &mut od } else { &mut dl };
+        if let Some(sp) = &model.search {
+            let free = search_area(
+                area,
+                model.strip.as_ref().map(|s| s.0),
+                overlay.is_some_and(Overlay::takes_room),
+            );
+            let l = apoth_ui::searchbar::layout(free, sp, &apoth_ui::text::geometry());
+            apoth_ui::searchbar::draw(&l, sp, &model.ui, &pal, &measure, top);
+        }
+        if let Some(t) = &model.tooltip {
+            let r = apoth_ui::tooltip::layout(area, t, &measure);
+            apoth_ui::tooltip::draw(r, t, &pal, top);
+        }
+        if let Some(p) = &model.palette {
+            let l = apoth_ui::palette::layout(area, p);
+            apoth_ui::palette::draw(&l, p, &model.ui, &pal, &measure, top);
+        }
+        if let Some(o) = overlay.filter(|o| !o.takes_room()) {
+            let l = bar::layout(area, &o.spec, &apoth_ui::text::geometry());
+            bar::draw(
+                &l,
+                &o.spec,
+                &BarState { shown_at_ms: 0 },
+                age_ms,
+                &model.ui,
+                &pal,
+                top,
+            );
+        }
+    }
+    if let Some(o) = over {
+        raster.lower(&od, s, fonts, o);
     }
     raster.lower(&dl, s, fonts, chrome);
+    glass.map_or_else(
+        || (Vec::new(), Vec::new()),
+        |k| (glass_panes(&dl, k), glass_panes(&od, k)),
+    )
 }
 
 /// The bar a window shows for the current configuration errors, or `None` when the file is
@@ -349,6 +728,7 @@ mod tests {
     use apoth_font::discovery::FontIndex;
     use apoth_font::system::EmbeddedFont;
     use apoth_render::reference::Image;
+    use apoth_ui::UiState;
     use std::path::PathBuf;
     use std::sync::Arc;
 
@@ -417,18 +797,184 @@ mod tests {
             shown_at: std::time::Instant::now(),
         };
         let buf = (480.0 * scale, 90.0 * scale);
-        build_overlay(
+        build_chrome(
             &mut l,
             Some(&o),
+            &crate::render::ChromeModel::empty(),
             (buf.0 as u32, buf.1 as u32),
-            f64::from(scale),
-            1.0,
+            scale,
             light,
             900,
             &mut f,
             &mut r,
         );
         l
+    }
+
+    /// Two tabs, two framed panes (the right one unfocused, so dimmed) and the palette open
+    /// over them with three rows, the second selected.
+    fn chrome_model(scale: f32) -> (crate::render::ChromeModel, (u32, u32)) {
+        use apoth_ui::palette::{Entry, PaletteSpec};
+        use apoth_ui::pane::{FrameMode, PaneSpec};
+        use apoth_ui::tabs::TabSpec;
+        let (w, h) = (640.0, 400.0);
+        let strip = Rect::new(0.0, 0.0, w, crate::layout::strip_px(1.0) as f32);
+        let tabs = vec![
+            TabSpec {
+                id: tab_widget(1),
+                title: TextRun::program("zsh", apoth_ui::tokens::size::BODY),
+                active: true,
+                badges: Vec::new(),
+                profile: None,
+            },
+            TabSpec {
+                id: tab_widget(2),
+                title: TextRun::program("htop", apoth_ui::tokens::size::BODY),
+                active: false,
+                badges: Vec::new(),
+                profile: None,
+            },
+        ];
+        let top = strip.bottom() + 4.0;
+        let frame = |id, x: f32, focused| PaneSpec {
+            id: pane_widget(id),
+            rect: Rect::new(x, top, w / 2.0 - 8.0, h - top - 4.0),
+            focused,
+            title: None,
+            mode: FrameMode::Full,
+            inactive_dim: 0.12,
+            floating: false,
+        };
+        let row = |t: &str, k: Option<&str>| {
+            Entry::new(
+                TextRun::interface(t, apoth_ui::tokens::size::BODY),
+                k.map(|k| TextRun::interface(k, apoth_ui::tokens::size::BODY_SMALL)),
+            )
+        };
+        let model = crate::render::ChromeModel {
+            strip: Some((strip, tabs)),
+            tab_style: apoth_ui::frame::TabStyle::Floating,
+            frames: vec![frame(10, 4.0, true), frame(11, w / 2.0 + 4.0, false)],
+            palette: Some(PaletteSpec {
+                id: PALETTE_ID,
+                query: "spl".into(),
+                placeholder: TextRun::interface("Run an action", apoth_ui::tokens::size::BODY),
+                entries: vec![
+                    row("Split pane", Some("ctrl+shift+d")),
+                    row("Split pane down", Some("ctrl+shift+e")),
+                    row("Select all", Some("ctrl+shift+a")),
+                ],
+                selected: Some(1),
+                total: 3,
+                header: None,
+                anchor: None,
+                pinned: 0,
+                field: true,
+            }),
+            search: None,
+            tooltip: None,
+            bell: None,
+            media: None,
+            media_muted: None,
+            media_fx: crate::render::MediaFx::default(),
+            ui: UiState::default(),
+        };
+        (model, ((w * scale) as u32, (h * scale) as u32))
+    }
+
+    fn lowered_chrome(scale: f32, light: bool) -> ChromeList {
+        let mut f = fonts();
+        let mut r = UiRaster::new();
+        let mut l = ChromeList::new();
+        let (m, buf) = chrome_model(scale);
+        build_chrome(&mut l, None, &m, buf, scale, light, 0, &mut f, &mut r);
+        l
+    }
+
+    #[test]
+    fn stacked_glass_puts_the_palette_on_the_overlay_list() {
+        let (m, buf) = chrome_model(1.0);
+        let (mut f, mut r) = (fonts(), UiRaster::new());
+        let (mut root, mut over) = (ChromeList::new(), ChromeList::new());
+        let (root_panes, over_panes) = build_chrome_glass(
+            &mut root,
+            None,
+            &m,
+            buf,
+            1.0,
+            false,
+            0,
+            &mut f,
+            &mut r,
+            Some(1.0),
+            Some(&mut over),
+        );
+        assert!(!over.is_empty(), "the palette is lowered to the overlay");
+        assert!(!over_panes.is_empty(), "sheet panes go to the subsurface");
+        assert!(
+            !root_panes.is_empty(),
+            "the tab chips stay on the root surface"
+        );
+        // Nothing on the root erases the grid under the sheet.
+        let sheet = over_panes
+            .iter()
+            .min_by_key(|p| (p.x, p.y))
+            .copied()
+            .unwrap();
+        let erases_sheet = root.instances.iter().any(|i| {
+            i.params[2] >= 2.5 && i.rect[0] >= sheet.x as f32 && i.rect[1] >= sheet.y as f32
+        });
+        assert!(!erases_sheet, "the root keeps its text under the sheet");
+        // Without an overlay list everything stays on the root, as off Abyss.
+        let mut all = ChromeList::new();
+        let (p0, p1) = build_chrome_glass(
+            &mut all,
+            None,
+            &m,
+            buf,
+            1.0,
+            false,
+            0,
+            &mut f,
+            &mut r,
+            Some(1.0),
+            None,
+        );
+        assert!(p1.is_empty() && p0.len() == root_panes.len() + over_panes.len());
+    }
+
+    #[test]
+    fn chrome_draws_frames_strip_and_palette_in_order() {
+        let l = lowered_chrome(1.0, false);
+        let rects: Vec<_> = l.instances.iter().filter(|i| i.params[2] < 0.5).collect();
+        // Two frame rims, one dim, two tab backgrounds, new-tab, sheet, field, caret, row.
+        assert!(rects.len() >= 9, "{}", rects.len());
+        // The palette sheet comes after (in front of) the frames.
+        let sheet_w = (apoth_ui::tokens::metrics::PALETTE_W).min(640.0 - 2.0 * 24.0);
+        let sheet = rects
+            .iter()
+            .position(|i| (i.rect[2] - sheet_w).abs() < 1.0)
+            .expect("palette sheet");
+        let frame = rects
+            .iter()
+            .position(|i| (i.rect[2] - (320.0 - 8.0)).abs() < 1.0)
+            .expect("pane frame");
+        assert!(frame < sheet);
+        // Nothing is drawn for an empty model.
+        let mut f = fonts();
+        let mut out = ChromeList::new();
+        build_chrome(
+            &mut out,
+            None,
+            &crate::render::ChromeModel::empty(),
+            (100, 100),
+            1.0,
+            false,
+            0,
+            &mut f,
+            &mut UiRaster::new(),
+        );
+        assert!(out.instances.is_empty());
     }
 
     #[test]
@@ -452,6 +998,36 @@ mod tests {
             flats(&a)
         );
         assert!(flats(&b) > flats(&a));
+    }
+
+    #[test]
+    fn media_marks_are_shapes_not_glyphs() {
+        // A play mark lowers to coverage rects inside its square, centroid on the centre.
+        let mut dl = DrawList::new();
+        let sq = Rect::new(10.0, 10.0, 20.0, 20.0);
+        dl.icon(IconId::Play, sq, Rgba::hex(0xffffff));
+        let mut f = fonts();
+        let mut l = ChromeList::new();
+        UiRaster::new().lower(&dl, 2.0, &mut f, &mut l);
+        assert!(!l.instances.is_empty());
+        let (mut sx, mut n) = (0.0, 0.0);
+        for i in &l.instances {
+            assert!(i.params[2] > 1.5, "flat coverage only");
+            // Centring the centroid puts the apex a little past the square's right edge
+            // (the disc around it has the room).
+            assert!(i.rect[0] >= 20.0 - 1.0 && i.rect[0] + i.rect[2] <= 60.0 + 8.0);
+            assert!(i.rect[1] >= 20.0 - 1.0 && i.rect[1] < 60.0 + 1.0);
+            let a = f32::from(i.fill[3]) * i.rect[2];
+            sx += (i.rect[0] + i.rect[2] / 2.0) * a;
+            n += a;
+        }
+        assert!((sx / n - 40.0).abs() < 1.0, "centroid {}", sx / n);
+        // The muted speaker and the media controls lower without a font.
+        let mut dl = DrawList::new();
+        dl.icon(IconId::SpeakerMuted, sq, Rgba::hex(0xffffff));
+        let mut l = ChromeList::new();
+        UiRaster::new().lower(&dl, 1.0, &mut f, &mut l);
+        assert!(!l.instances.is_empty());
     }
 
     #[test]
@@ -519,6 +1095,26 @@ mod tests {
         assert_eq!(want, out, "overlay golden drifted");
     }
 
+    #[test]
+    fn chrome_goldens_dark_light_scale_1_2() {
+        let mut out = String::new();
+        for light in [false, true] {
+            for scale in [1.0_f32, 2.0] {
+                out += &format!("== tabs+frames+palette light={light} scale={scale}\n");
+                out += &digest(&lowered_chrome(scale, light));
+            }
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("golden/chrome.txt");
+        if std::env::var_os("APOTH_BLESS").is_some() {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, &out).unwrap();
+            return;
+        }
+        let want =
+            std::fs::read_to_string(&path).expect("golden/chrome.txt: bless with APOTH_BLESS=1");
+        assert_eq!(want, out, "chrome golden drifted");
+    }
+
     /// Writes PNGs of the overlay over a flat stand-in ground when `APOTH_SHOT=<dir>` is set.
     /// The ground is NOT a compositor blur; it only gives the translucent fills something to
     /// sit on.
@@ -554,7 +1150,156 @@ mod tests {
                     scale as u32
                 );
                 std::fs::write(dir.join(name), png_rgb(w, h, &rgb)).unwrap();
+                let l = lowered_chrome(scale, light);
+                let (w, h) = ((640.0 * scale) as usize, (400.0 * scale) as usize);
+                let mut img = Image::new(w, h);
+                apoth_render::chrome::reference::render(&l, &mut img);
+                let mut rgb = Vec::with_capacity(w * h * 3);
+                for p in img.data.chunks_exact(4) {
+                    for c in 0..3 {
+                        let g = u32::from(ground[c]);
+                        rgb.push(
+                            (u32::from(p[c]) + g * (255 - u32::from(p[3])) / 255).min(255) as u8,
+                        );
+                    }
+                }
+                let name = format!(
+                    "chrome-{}-{}x.png",
+                    if light { "light" } else { "dark" },
+                    scale as u32
+                );
+                std::fs::write(dir.join(name), png_rgb(w, h, &rgb)).unwrap();
             }
+        }
+    }
+
+    /// The media controls paused (play mark) and the muted pill over a flat stand-in ground,
+    /// as PNGs with `APOTH_SHOT=<dir>` (the live shots cover the playing state on real blur).
+    #[test]
+    fn media_hud_paused_shots_when_asked() {
+        let Some(dir) = std::env::var_os("APOTH_SHOT").map(PathBuf::from) else {
+            return;
+        };
+        std::fs::create_dir_all(&dir).unwrap();
+        let (w, h) = (480.0_f32, 300.0_f32);
+        let mut model = crate::render::ChromeModel::empty();
+        model.media_fx = crate::render::MediaFx {
+            huds: vec![crate::render::MediaHud {
+                key: 1,
+                rect: Rect::new(16.0, 16.0, w - 32.0, h - 32.0),
+                hovered: true,
+                state: apoth_term::MediaPlay::Paused,
+                progress: Some(0.4),
+                alpha: 1.0,
+            }],
+            win_alpha: 0.0,
+            muted: Some((Rect::new(0.0, 0.0, w, h), 1.0)),
+        };
+        for light in [false, true] {
+            for scale in [1.0_f32, 2.0] {
+                let mut f = fonts();
+                let mut l = ChromeList::new();
+                let buf = ((w * scale) as u32, (h * scale) as u32);
+                build_chrome(
+                    &mut l,
+                    None,
+                    &model,
+                    buf,
+                    scale,
+                    light,
+                    0,
+                    &mut f,
+                    &mut UiRaster::new(),
+                );
+                let (pw, ph) = (buf.0 as usize, buf.1 as usize);
+                let mut img = Image::new(pw, ph);
+                apoth_render::chrome::reference::render(&l, &mut img);
+                let mut rgb = Vec::with_capacity(pw * ph * 3);
+                for (i, p) in img.data.chunks_exact(4).enumerate() {
+                    // A loud stand-in picture: colour bars, the worst case for the glass.
+                    let x = (i % pw) * 6 / pw;
+                    let bars: [[u32; 3]; 6] = [
+                        [235, 40, 40],
+                        [40, 220, 60],
+                        [245, 235, 40],
+                        [30, 40, 230],
+                        [240, 40, 230],
+                        [40, 240, 240],
+                    ];
+                    for c in 0..3 {
+                        let g = bars[x][c];
+                        rgb.push(
+                            (u32::from(p[c]) + g * (255 - u32::from(p[3])) / 255).min(255) as u8,
+                        );
+                    }
+                }
+                let name = format!(
+                    "media-hud-paused-{}-{}x.png",
+                    if light { "light" } else { "dark" },
+                    scale as u32
+                );
+                std::fs::write(dir.join(name), png_rgb(pw, ph, &rgb)).unwrap();
+            }
+        }
+    }
+
+    /// A float (MUX-18) over a tiled pane at scales 1, 1.25, 1.5 and 2: its backing and
+    /// shadow sit inside the float's frame layer. PNGs with `APOTH_SHOT=<dir>`; always checks
+    /// that the backing lands on whole pixels at every scale.
+    #[test]
+    fn float_chrome_at_fractional_scales() {
+        use apoth_ui::pane::{FrameMode, PaneSpec};
+        let (w, h) = (480.0_f32, 300.0_f32);
+        let frame = |id, rect, floating| PaneSpec {
+            id: pane_widget(id),
+            rect,
+            focused: floating,
+            title: None,
+            mode: FrameMode::Full,
+            inactive_dim: 0.12,
+            floating,
+        };
+        let model = crate::render::ChromeModel {
+            strip: None,
+            tab_style: apoth_ui::frame::TabStyle::Floating,
+            frames: vec![
+                frame(1, Rect::new(4.0, 4.0, w - 8.0, h - 8.0), false),
+                frame(2, Rect::new(120.0, 75.0, 240.0, 150.0), true),
+            ],
+            palette: None,
+            search: None,
+            tooltip: None,
+            bell: None,
+            media: None,
+            media_muted: None,
+            media_fx: crate::render::MediaFx::default(),
+            ui: UiState::default(),
+        };
+        let shot = std::env::var_os("APOTH_SHOT").map(PathBuf::from);
+        for scale in [1.0_f32, 1.25, 1.5, 2.0] {
+            let mut f = fonts();
+            let mut r = UiRaster::new();
+            let mut l = ChromeList::new();
+            let buf = ((w * scale) as u32, (h * scale) as u32);
+            build_chrome(&mut l, None, &model, buf, scale, false, 0, &mut f, &mut r);
+            assert_eq!(l.marks.len(), 1, "one layer mark before the float");
+            let Some(dir) = &shot else { continue };
+            std::fs::create_dir_all(dir).unwrap();
+            let (pw, ph) = (buf.0 as usize, buf.1 as usize);
+            let mut img = Image::new(pw, ph);
+            apoth_render::chrome::reference::render(&l, &mut img);
+            let ground = [0x24u32, 0x2a, 0x33];
+            let mut rgb = Vec::with_capacity(pw * ph * 3);
+            for p in img.data.chunks_exact(4) {
+                for c in 0..3 {
+                    rgb.push(
+                        (u32::from(p[c]) + ground[c] * (255 - u32::from(p[3])) / 255).min(255)
+                            as u8,
+                    );
+                }
+            }
+            let name = format!("float-dark-{}x.png", (scale * 100.0) as u32);
+            std::fs::write(dir.join(name), png_rgb(pw, ph, &rgb)).unwrap();
         }
     }
 

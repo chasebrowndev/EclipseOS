@@ -94,10 +94,29 @@ fn drain_events(term: &mut Term) -> Vec<String> {
         }
     }
     for n in ev.notifications.drain(..) {
-        v.push(format!("notify:{n}"));
+        v.push(format!("notify:{}", n.text));
     }
     for c in ev.clipboard.drain(..) {
         v.push(format!("clipboard-set:{}:{}", c.selection, c.data.len()));
+    }
+    if let Some(sel) = ev.clip_read.take() {
+        v.push(format!("clipboard-read:{sel}"));
+    }
+    for u in ev.vars.drain(..) {
+        match u.value {
+            Some(val) => v.push(format!("var:{}={val}", u.name)),
+            None => v.push(format!("var:{}", u.name)),
+        }
+    }
+    for c in ev.commands.drain(..) {
+        v.push(
+            if c.finished {
+                "command:finished"
+            } else {
+                "command:started"
+            }
+            .to_string(),
+        );
     }
     ev.colors_changed = false;
     v
@@ -223,14 +242,28 @@ impl Driver for TermDriver {
                 shape: c.style.shape * 2 + if c.style.blink { 1 } else { 2 },
             },
             scrollback,
+            images: self
+                .term
+                .placements()
+                .iter()
+                .map(|p| {
+                    format!(
+                        "{} row={} col={} cols={} rows={} z={}",
+                        if p.sixel { "sixel" } else { "kitty" },
+                        p.row,
+                        p.col,
+                        p.cols,
+                        p.rows,
+                        p.z
+                    )
+                })
+                .collect(),
             alt: self.term.on_alternate(),
             hold: self.term.presentation_hold(),
         }
     }
 
     fn has_feature(&self, name: &str) -> bool {
-        // RECONCILE: wire `sixel` to the milestone that lands it (M25); nothing else exists.
-        let _ = name;
-        false
+        name == "sixel"
     }
 }

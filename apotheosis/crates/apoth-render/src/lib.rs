@@ -24,6 +24,7 @@ pub mod damage;
 pub mod decor;
 pub mod glyph_cache;
 pub mod gpu;
+pub mod image;
 pub mod presenter;
 pub mod reference;
 pub mod renderer;

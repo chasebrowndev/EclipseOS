@@ -108,63 +108,10 @@ pub fn validate_argv(args: &[String]) -> Result<(), String> {
     apoth_action::Argv::from_source(args).map(|_| ())
 }
 
-/// Template structure: balanced `{…}` with `{if …}`, `{else}`, `{end}` properly nested.
+/// A template parses (T-11 §8): balanced `{…}`, known filters, `{if}`/`{else}`/`{end}`
+/// properly nested, conditions in the template condition grammar.
 pub fn validate_template(s: &str) -> Result<(), String> {
-    let mut depth = 0i32;
-    let mut seen_else: Vec<bool> = Vec::new();
-    let b: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < b.len() {
-        match b[i] {
-            '{' if b.get(i + 1) == Some(&'{') => i += 2,
-            '}' if b.get(i + 1) == Some(&'}') => i += 2,
-            '{' => {
-                let mut j = i + 1;
-                let mut quoted = false;
-                while j < b.len() && (quoted || b[j] != '}') {
-                    if b[j] == '\\' && quoted {
-                        // An escaped character inside a string never closes it.
-                        j += 2;
-                        continue;
-                    }
-                    if b[j] == '"' {
-                        quoted = !quoted;
-                    }
-                    j += 1;
-                }
-                if j >= b.len() {
-                    return Err("unclosed `{` in template".into());
-                }
-                let inner: String = b[i + 1..j].iter().collect();
-                let inner = inner.trim();
-                if inner.is_empty() {
-                    return Err("empty `{}` in template".into());
-                }
-                if inner == "if" || inner.starts_with("if ") {
-                    depth += 1;
-                    seen_else.push(false);
-                } else if inner == "else" {
-                    match seen_else.last_mut() {
-                        Some(e) if !*e => *e = true,
-                        _ => return Err("`{else}` without a matching `{if}`".into()),
-                    }
-                } else if inner == "end" {
-                    if depth == 0 {
-                        return Err("`{end}` without a matching `{if}`".into());
-                    }
-                    depth -= 1;
-                    seen_else.pop();
-                }
-                i = j + 1;
-            }
-            '}' => return Err("stray `}` in template".into()),
-            _ => i += 1,
-        }
-    }
-    if depth != 0 {
-        return Err("`{if}` without `{end}`".into());
-    }
-    Ok(())
+    crate::template::Template::parse(s).map(|_| ())
 }
 
 /// Compile the pattern with the regex engine the runtime uses (`regex-automata`'s meta
@@ -211,131 +158,16 @@ pub const MATCH_FIELDS: &[&str] = &[
     "command",
 ];
 
-#[derive(Debug, PartialEq)]
-enum Tok {
-    LParen,
-    RParen,
-    Word(String),
-}
-
-fn match_tokens(s: &str) -> Result<Vec<Tok>, String> {
-    let mut out = Vec::new();
-    let b: Vec<char> = s.chars().collect();
-    let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
-        if c.is_whitespace() {
-            i += 1;
-        } else if c == '(' {
-            out.push(Tok::LParen);
-            i += 1;
-        } else if c == ')' {
-            out.push(Tok::RParen);
-            i += 1;
-        } else {
-            let mut w = String::new();
-            let mut quoted = false;
-            while i < b.len() && (quoted || !(b[i].is_whitespace() || b[i] == '(' || b[i] == ')')) {
-                if b[i] == '\\' && quoted && i + 1 < b.len() {
-                    w.push(b[i]);
-                    i += 1;
-                } else if b[i] == '"' {
-                    quoted = !quoted;
-                }
-                w.push(b[i]);
-                i += 1;
-            }
-            if quoted {
-                return Err("unterminated quote".into());
-            }
-            out.push(Tok::Word(w));
-        }
-    }
-    Ok(out)
-}
-
 /// Bare state words usable as whole terms (`not focused`).
 pub const MATCH_BARE: &[&str] = &["focused", "active", "zoomed", "bell", "running"];
 
-fn match_term(word: &str) -> Result<(), String> {
-    if MATCH_BARE.contains(&word) {
-        return Ok(());
-    }
-    let (field, rest) = word
-        .split_once(':')
-        .ok_or_else(|| format!("`{word}` is not `field:pattern`"))?;
-    if field == "var" || field == "env" {
-        let (name, pat) = rest
-            .split_once(':')
-            .ok_or_else(|| format!("`{field}:` needs `{field}:<name>:pattern`"))?;
-        if name.is_empty() || pat.is_empty() {
-            return Err(format!("empty name or pattern for `{field}`"));
-        }
-        return Ok(());
-    }
-    if !MATCH_FIELDS.contains(&field) {
-        return Err(match crate::diag::suggest(field, MATCH_FIELDS) {
-            Some(s) => format!("unknown match field `{field}` (did you mean `{s}`?)"),
-            None => format!("unknown match field `{field}`"),
-        });
-    }
-    if rest.is_empty() {
-        return Err(format!("empty pattern for `{field}`"));
-    }
-    Ok(())
-}
-
-fn match_expr(t: &[Tok], i: &mut usize) -> Result<(), String> {
-    match_unary(t, i)?;
-    while let Some(Tok::Word(w)) = t.get(*i) {
-        if w == "and" || w == "or" {
-            *i += 1;
-            match_unary(t, i)?;
-        } else {
-            break;
-        }
-    }
-    Ok(())
-}
-
-fn match_unary(t: &[Tok], i: &mut usize) -> Result<(), String> {
-    match t.get(*i) {
-        Some(Tok::Word(w)) if w == "not" => {
-            *i += 1;
-            match_unary(t, i)
-        }
-        Some(Tok::LParen) => {
-            *i += 1;
-            match_expr(t, i)?;
-            if t.get(*i) == Some(&Tok::RParen) {
-                *i += 1;
-                Ok(())
-            } else {
-                Err("missing `)`".into())
-            }
-        }
-        Some(Tok::Word(w)) => {
-            match_term(w)?;
-            *i += 1;
-            Ok(())
-        }
-        Some(Tok::RParen) => Err("unexpected `)`".into()),
-        None => Err("expression ends early".into()),
-    }
-}
+/// Nesting bound of a match expression (parentheses plus `not`): the parser recurses per
+/// level, so an unbounded depth from a hostile config would overflow the stack (T-18 §5).
+pub const MATCH_MAX_DEPTH: usize = 64;
 
 /// Structure of a match expression: terms `field:pattern` joined by `and`, `or`, `not`, parens.
 pub fn validate_match(s: &str) -> Result<(), String> {
-    let toks = match_tokens(s)?;
-    if toks.is_empty() {
-        return Err("empty match expression".into());
-    }
-    let mut i = 0;
-    match_expr(&toks, &mut i)?;
-    if i != toks.len() {
-        return Err("unexpected trailing input in match expression".into());
-    }
-    Ok(())
+    crate::expr::Expr::parse(s).map(|_| ())
 }
 
 /// Closed action families (T-11 §1). `launch`, `open`, `pipe`, `capture`, `notify` stand alone.
@@ -458,3 +290,82 @@ pub const SEQUENCE_CLASSES: &[&str] = &[
 
 /// `allow`, `ask`, `deny`.
 pub const DECISIONS: &[&str] = &["allow", "ask", "deny"];
+
+/// Built-in terminal handlers an `open.handlers` rule may name (T-14 §11).
+pub const OPEN_TERMINAL_HANDLERS: &[&str] = &["apoth-icat", "apoth-play"];
+/// Placements a terminal-handler rule may name (T-14 §11).
+pub const OPEN_PLACEMENTS: &[&str] = &["float", "inline", "window"];
+/// Longest MIME pattern (RFC 6838: 127 + `/` + 127).
+const MAX_MIME: usize = 255;
+
+/// One `open.handlers` entry: `"<type>/<subtype>"` or `"<type>/*"` to `handler [placement]`,
+/// where the handler is a built-in terminal handler, a desktop file id (`<id>.desktop`) or
+/// `opener` (`links.open-command`). Only terminal handlers take a placement.
+pub fn validate_open_handler(pattern: &str, args: &[String]) -> Result<(), String> {
+    let token = |s: &str| {
+        !s.is_empty()
+            && s.bytes().all(|b| {
+                b.is_ascii_alphanumeric()
+                    || matches!(
+                        b,
+                        b'-' | b'+' | b'.' | b'_' | b'!' | b'#' | b'$' | b'&' | b'^'
+                    )
+            })
+    };
+    let ok = pattern.len() <= MAX_MIME
+        && pattern
+            .split_once('/')
+            .is_some_and(|(t, s)| token(t) && (s == "*" || token(s)));
+    if !ok {
+        return Err(format!(
+            "`{pattern}` is not a MIME type or type/* (x-scheme-handler/<scheme> for URLs)"
+        ));
+    }
+    let Some(handler) = args.first() else {
+        return Err(format!("`{pattern}` needs a handler"));
+    };
+    let terminal = OPEN_TERMINAL_HANDLERS.contains(&handler.as_str());
+    let desktop = handler.len() > ".desktop".len()
+        && handler.len() <= 255
+        && handler.ends_with(".desktop")
+        && !handler.contains('/')
+        && !handler.chars().any(char::is_control);
+    if !(terminal || desktop || handler == "opener") {
+        return Err(format!(
+            "unknown handler `{handler}` (apoth-icat, apoth-play, <id>.desktop or opener)"
+        ));
+    }
+    match &args[1..] {
+        [] => Ok(()),
+        [p] if terminal && OPEN_PLACEMENTS.contains(&p.as_str()) => Ok(()),
+        [p] if terminal => Err(format!("unknown placement `{p}` (float, inline or window)")),
+        _ if terminal => Err(format!("`{pattern}` takes `handler [placement]`")),
+        _ => Err("only apoth-icat and apoth-play take a placement".to_string()),
+    }
+}
+
+#[cfg(test)]
+mod open_tests {
+    use super::validate_open_handler as v;
+
+    fn a(s: &[&str]) -> Vec<String> {
+        s.iter().map(|x| (*x).to_string()).collect()
+    }
+
+    #[test]
+    fn open_handler_entries() {
+        assert!(v("image/*", &a(&["apoth-icat", "float"])).is_ok());
+        assert!(v("video/mp4", &a(&["apoth-play"])).is_ok());
+        assert!(v("text/html", &a(&["firefox.desktop"])).is_ok());
+        assert!(v("x-scheme-handler/https", &a(&["opener"])).is_ok());
+        assert!(v("image/svg+xml", &a(&["org.inkscape.Inkscape.desktop"])).is_ok());
+        assert!(v("image", &a(&["apoth-icat"])).is_err());
+        assert!(v("*/*", &a(&["apoth-icat"])).is_err());
+        assert!(v("image/png", &a(&[])).is_err());
+        assert!(v("image/png", &a(&["sh"])).is_err());
+        assert!(v("image/png", &a(&["../x.desktop"])).is_err());
+        assert!(v("image/png", &a(&["apoth-icat", "sideways"])).is_err());
+        assert!(v("text/html", &a(&["firefox.desktop", "float"])).is_err());
+        assert!(v("image/png", &a(&["apoth-icat", "float", "x"])).is_err());
+    }
+}

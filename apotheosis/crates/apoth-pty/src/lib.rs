@@ -12,7 +12,9 @@
 mod env;
 mod outq;
 mod procinfo;
+pub mod shell;
 mod spawn;
+pub mod ssh;
 
 pub use env::{EnvSpec, build_env, choose_term, terminfo_dirs, terminfo_exists};
 pub use outq::{Enqueue, OUT_QUEUE_BOUND, OutQueue};

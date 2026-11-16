@@ -15,8 +15,34 @@ pub(crate) type Job = Box<dyn FnOnce() + Send + 'static>;
 const QUEUE: usize = 64;
 
 pub(crate) struct Pool {
-    tx: Option<SyncSender<Job>>,
+    tx: Queue,
     threads: Vec<JoinHandle<()>>,
+}
+
+/// The queue's sender, shared with [`Spawner`]s; `None` once the pool is dropped (or when no
+/// worker started), so a spawner never keeps the workers alive.
+type Queue = Arc<Mutex<Option<SyncSender<Job>>>>;
+
+/// A handle other threads submit through (the io threads' image decodes, T-15 §5).
+#[derive(Clone)]
+pub(crate) struct Spawner(Queue);
+
+impl Spawner {
+    /// Queue `job`. Returns it back when the queue is full or the pool is gone.
+    pub(crate) fn submit(&self, job: Job) -> Result<(), Job> {
+        try_send(&self.0, job)
+    }
+}
+
+fn try_send(q: &Queue, job: Job) -> Result<(), Job> {
+    let g = q.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(tx) = g.as_ref() else {
+        return Err(job);
+    };
+    match tx.try_send(job) {
+        Ok(()) => Ok(()),
+        Err(TrySendError::Full(j) | TrySendError::Disconnected(j)) => Err(j),
+    }
 }
 
 /// Worker count for `cpus` logical CPUs: 2 or 3 (T-00 §4.2).
@@ -51,8 +77,9 @@ impl Pool {
                 Err(e) => tracing::warn!(error = %e, "cannot start a worker thread"),
             }
         }
+        let tx = (!threads.is_empty()).then_some(tx);
         Pool {
-            tx: Some(tx),
+            tx: Arc::new(Mutex::new(tx)),
             threads,
         }
     }
@@ -69,20 +96,20 @@ impl Pool {
 
     /// Queue `job`. Returns it back when the queue is full or no worker exists.
     pub(crate) fn submit(&self, job: Job) -> Result<(), Job> {
-        if self.threads.is_empty() {
-            return Err(job);
-        }
-        let Some(tx) = &self.tx else { return Err(job) };
-        match tx.try_send(job) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(j) | TrySendError::Disconnected(j)) => Err(j),
-        }
+        try_send(&self.tx, job)
+    }
+
+    pub(crate) fn spawner(&self) -> Spawner {
+        Spawner(Arc::clone(&self.tx))
     }
 }
 
 impl Drop for Pool {
     fn drop(&mut self) {
-        self.tx = None;
+        self.tx
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
@@ -157,5 +184,21 @@ mod tests {
         }
         assert!(refused);
         let _ = gate_tx.send(());
+    }
+
+    #[test]
+    fn a_spawner_does_not_outlive_the_pool() {
+        let pool = Pool::new(1);
+        let sp = pool.spawner();
+        let (tx, rx) = mpsc::channel();
+        assert!(
+            sp.submit(Box::new(move || {
+                let _ = tx.send(1);
+            }))
+            .is_ok()
+        );
+        assert_eq!(rx.recv_timeout(Duration::from_secs(5)).unwrap(), 1);
+        drop(pool); // joins: the spawner holds no sender of its own
+        assert!(sp.submit(Box::new(|| {})).is_err());
     }
 }

@@ -7,7 +7,7 @@ outside the `Fs` trait (`RealFs` / `MemFs`), no logging of values.
 - `rows.rs`: the one `rows!` table that generates `TABLE` and `META` in the same order.
 - `types.rs`, `schema.rs`, `meta.rs`: key types, lookups, presentation rows.
 - `load.rs` + `collections.rs`: layers 1-8, includes (depth cap 8, cycles), tolerant parse.
-- `edit.rs`: lossless `Editor` (kdl 6), write-target rule, atomic write, `SelfWrites`.
+- `edit.rs`: `Editor`: byte-range splices on the original text (kdl 6 only locates spans; unedited bytes stay identical), write-target rule, atomic write, `SelfWrites`.
 - `diff.rs`: key and collection diff, strictest reload class.
 - `reload.rs`: watcher-agnostic `Reloader` (diff + affected `Subsystem`s, last-good on parse failure, error-bar diagnostics, watch dirs, own-write check).
 - `import.rs`: `import_foot` (foot.ini -> KDL + per-line report: mapped / approximate / unmapped).
@@ -20,9 +20,11 @@ outside the `Fs` trait (`RealFs` / `MemFs`), no logging of values.
 local copies; `Ty::generic` / `Reload::generic` are the bridge until then.
 
 ## Left for integration
-- Binds, rules, profiles are parsed to local decls (`model.rs`); resolve `ActionCall` against
-  the `apoth-action` registry and match/template checks in `lang.rs` still structural. Chord and argv
-  validation already delegate to `apoth-action` (`chord.rs`, `lang.rs`).
+- Binds, rules, profiles are parsed to local decls (`model.rs`); the binary resolves `ActionCall`
+  against the `apoth-action` registry and compiles rules / chooses profiles (`apotheosis/src/
+  rules.rs`, `profiles.rs`). The match language (`expr.rs`) and templates (`template.rs`) are
+  full parsers and evaluators; `lang.rs` validates through them. Chord and argv validation
+  delegate to `apoth-action` (`chord.rs`, `lang.rs`).
 - The inotify watcher itself (integration layer) calls `Reloader::reload`; alacritty/kitty importers (R2) not written.
 - `Dv::Computed` defaults evaluate to `Value::Null` ("Automatic"); the consumer computes them.
 

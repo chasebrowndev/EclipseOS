@@ -3,5 +3,5 @@ fixture "reply-da-1-zero-param" {
   covers "T03-DA1"
   size rows=2 cols=4
   feed #"\e[0c"#
-  replies #"\e[?62;22c"#
+  replies #"\e[?62;4;22c"#
 }

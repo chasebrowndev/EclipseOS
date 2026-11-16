@@ -70,6 +70,27 @@ pub struct Exclusion {
 /// each one tied to a row of `fixtures/conformance.kdl`.
 pub const EXCLUSIONS: &[Exclusion] = &[
     Exclusion {
+        oracle: "alacritty_terminal",
+        fixture_prefix: "osc133-l-fresh-line",
+        row: "T03-OSC133-OPTS",
+        class: Class::OursRight,
+        reason: "OSC 133;L (fresh line) is shell-integration behaviour the oracle ignores (T-14 section 8)",
+    },
+    Exclusion {
+        oracle: "*",
+        fixture_prefix: "kitty-",
+        row: "T03-GRAPHICS-KITTY",
+        class: Class::OursRight,
+        reason: "oracles without kitty graphics ignore the APC; a placement moves the cursor (T-15 section 1)",
+    },
+    Exclusion {
+        oracle: "*",
+        fixture_prefix: "sixel-",
+        row: "T03-GRAPHICS-SIXEL",
+        class: Class::OursRight,
+        reason: "oracles without sixel skip the DCS; an image moves the cursor (T-15 section 2)",
+    },
+    Exclusion {
         oracle: "*",
         fixture_prefix: "c1-",
         row: "T03-C1-IGNORED",

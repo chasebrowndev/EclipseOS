@@ -137,7 +137,14 @@ impl Session {
     pub fn launch(&mut self, bin: &Path, extra_env: &[(&str, &str)]) -> Result<(), SessionError> {
         let home = self.dir.join("home");
         let mut c = Command::new(bin);
-        c.env("XDG_RUNTIME_DIR", &self.dir)
+        c.env_remove("APOTHEOSIS_SOCKET")
+            .env(
+                "DBUS_SESSION_BUS_ADDRESS",
+                "unix:path=/nonexistent/apoth-test-bus",
+            )
+            // The nested compositor's socket, never the host's (T-17 §1 detection).
+            .env("ECLIPSE_SOCKET_DIR", self.dir.join("sock"))
+            .env("XDG_RUNTIME_DIR", &self.dir)
             .env("WAYLAND_DISPLAY", "wayland-1")
             .env("SHELL", "/bin/sh")
             .env("HOME", &home)

@@ -8,9 +8,11 @@ use apoth_grid::Semantic;
 use apoth_vt::{StrEnd, StrHead, StrKind, StrRoute};
 
 use crate::color;
-use crate::events::{ClipboardSet, Mark, Progress};
+use crate::config::deny;
+use crate::events::{ClipboardSet, CommandEvent, Mark, Progress, UserVar};
 use crate::machine::{Machine, StrMode};
 use crate::sgr;
+use crate::shell;
 
 const CAP_SMALL: u32 = 4096;
 const CAP_133: u32 = 8192;
@@ -94,6 +96,7 @@ impl Machine {
     pub(crate) fn str_start(&mut self, kind: StrKind, head: &StrHead) -> StrRoute {
         self.sbuf.clear();
         self.strm = StrMode::None;
+        self.gfx.sixel_abort();
         match kind {
             StrKind::Osc => {
                 let Some(cmd) = head.osc_command() else {
@@ -119,6 +122,14 @@ impl Machine {
                     },
                     777 => (StrMode::Notify777, CAP_NOTIFY),
                     99 => (StrMode::Notify99, CAP_NOTIFY),
+                    1337 if self.cfg.graphics.iterm2
+                        && self.cfg.deny & crate::config::deny::GRAPHICS_DIRECT == 0
+                        && head.osc_selector() == b"File" =>
+                    {
+                        let cap = self.cfg.graphics.limits.max_transfer_b64 + 4096;
+                        (StrMode::ITerm, u32::try_from(cap).unwrap_or(u32::MAX))
+                    }
+                    1337 => (StrMode::UserVar, CAP_SMALL),
                     _ => return StrRoute::SKIP,
                 };
                 self.strm = mode;
@@ -136,6 +147,12 @@ impl Machine {
                     self.strm = StrMode::Tcap;
                     return StrRoute { cap: CAP_SMALL };
                 }
+                if pr == 0 && inter.is_empty() && fin == Some(b'q') {
+                    return match self.gfx_sixel_start(head.params()) {
+                        Some(cap) => StrRoute { cap },
+                        None => StrRoute::SKIP,
+                    };
+                }
                 if pr == b'=' && inter.is_empty() && fin == Some(b's') {
                     match head.params().get(0) {
                         Some(1) => {
@@ -149,6 +166,18 @@ impl Machine {
                 }
                 StrRoute::SKIP
             }
+            StrKind::Apc if head.bytes().first() == Some(&b'M') => {
+                self.strm = StrMode::Session;
+                // Room for an `s=d` chunk (T-16 §2), as for a kitty chunk.
+                let cap = self.cfg.graphics.limits.max_chunk_b64 + CAP_SMALL as usize;
+                StrRoute {
+                    cap: u32::try_from(cap).unwrap_or(u32::MAX),
+                }
+            }
+            StrKind::Apc if head.bytes().first() == Some(&b'G') => match self.gfx_apc_route() {
+                Some(cap) => StrRoute { cap },
+                None => StrRoute::SKIP,
+            },
             _ => StrRoute::SKIP,
         }
     }
@@ -156,7 +185,11 @@ impl Machine {
     pub(crate) fn str_end(&mut self, end: StrEnd) {
         let mode = std::mem::replace(&mut self.strm, StrMode::None);
         let buf = std::mem::take(&mut self.sbuf);
-        if mode != StrMode::None && end.is_ok() {
+        if mode == StrMode::Kitty {
+            self.gfx_apc_end(&buf, end);
+        } else if mode == StrMode::Sixel {
+            self.gfx_sixel_end(end);
+        } else if mode != StrMode::None && end.is_ok() {
             let term: &[u8] = if end == StrEnd::Bel {
                 b"\x07"
             } else {
@@ -169,6 +202,24 @@ impl Machine {
     }
 
     fn osc_dispatch(&mut self, mode: StrMode, buf: &[u8], term: &[u8]) {
+        let class = match mode {
+            StrMode::Title(_) => deny::TITLE_SET,
+            StrMode::Palette | StrMode::Dyn(_) | StrMode::ResetPalette | StrMode::ResetDyn(_) => {
+                deny::COLOUR
+            }
+            StrMode::Notify | StrMode::Notify777 | StrMode::Notify99 => deny::NOTIFICATION,
+            StrMode::Link => deny::HYPERLINK,
+            StrMode::UserVar => deny::USER_VAR,
+            _ => 0,
+        };
+        if self.cfg.deny & class != 0 {
+            // Denied: no observable effect and no reply (T-18 §11). A denied hyperlink
+            // still closes any open one so later text is not linked by a stale URI.
+            if mode == StrMode::Link {
+                self.link = None;
+            }
+            return;
+        }
         match mode {
             StrMode::Title(cmd) => {
                 let t = sanitize(buf);
@@ -183,7 +234,7 @@ impl Machine {
             StrMode::Palette => self.osc_palette(buf, term),
             StrMode::Dyn(cmd) => self.osc_dynamic(cmd, buf, term),
             StrMode::ResetPalette => {
-                let def = color::default_palette();
+                let def = color::default_palette(&self.cfg.ansi);
                 let s = String::from_utf8_lossy(buf);
                 if s.is_empty() {
                     *self.palette = def;
@@ -212,16 +263,20 @@ impl Machine {
                     && s.starts_with("file://")
                     && !s.chars().any(char::is_control)
                 {
+                    self.cwd_uri = Some(s.clone());
                     self.events.cwd = Some(s);
                 }
             }
             StrMode::Link => self.osc_link(buf),
             StrMode::Clip => self.osc_clip(buf),
             StrMode::Mark => self.osc_mark(buf),
+            StrMode::UserVar => self.osc_user_var(buf),
+            StrMode::ITerm => self.gfx_iterm(buf),
+            StrMode::Session => self.media_apc(buf),
             StrMode::Notify => {
                 let t = sanitize(buf);
                 if !t.is_empty() {
-                    self.events.push_notification(t);
+                    self.events.push_notification(9, t);
                 }
             }
             StrMode::Notify777 => {
@@ -236,7 +291,7 @@ impl Machine {
                         _ => body,
                     };
                     if !t.is_empty() {
-                        self.events.push_notification(t);
+                        self.events.push_notification(777, t);
                     }
                 }
             }
@@ -266,7 +321,7 @@ impl Machine {
                     sanitize(payload)
                 };
                 if !t.is_empty() {
-                    self.events.push_notification(t);
+                    self.events.push_notification(99, t);
                 }
             }
             StrMode::Progress => {
@@ -292,7 +347,7 @@ impl Machine {
             }
             StrMode::Decrqss => self.decrqss(buf),
             StrMode::Tcap => self.xtgettcap(buf),
-            StrMode::None => {}
+            StrMode::None | StrMode::Kitty | StrMode::Sixel => {}
         }
     }
 
@@ -409,19 +464,6 @@ impl Machine {
             return;
         };
         let (sel, data) = (&buf[..pos], &buf[pos + 1..]);
-        if data == b"?" {
-            // Read path: policy is ask locally / deny remotely and needs the consent
-            // path (not in M9); consumed.
-            return;
-        }
-        if !self.cfg.osc52_write {
-            self.events.dropped.clipboard += 1;
-            return;
-        }
-        let Some(bytes) = b64_decode(data) else {
-            self.events.dropped.bad_base64 += 1;
-            return;
-        };
         let mut selection: String = sel
             .iter()
             .filter(|b| matches!(b, b'c' | b'p' | b'q' | b's' | b'0'..=b'7'))
@@ -431,6 +473,29 @@ impl Machine {
         if selection.is_empty() {
             selection.push('c');
         }
+        // `primary-selection` follows the clipboard classes and may be denied on its own.
+        let primary = selection.contains(['p', 's']);
+        let deny = self.cfg.deny;
+        if data == b"?" {
+            // Read: the term never answers. Main decides under the sequence policy (ask
+            // locally, deny remotely, T-18 §3) and queues an encoded reply when allowed.
+            if deny & deny::CLIPBOARD_READ != 0 || (primary && deny & deny::PRIMARY != 0) {
+                return;
+            }
+            self.events.clip_read = Some(selection);
+            return;
+        }
+        if !self.cfg.osc52_write
+            || deny & deny::CLIPBOARD_WRITE != 0
+            || (primary && deny & deny::PRIMARY != 0)
+        {
+            self.events.dropped.clipboard += 1;
+            return;
+        }
+        let Some(bytes) = b64_decode(data) else {
+            self.events.dropped.bad_base64 += 1;
+            return;
+        };
         self.events.push_clipboard(ClipboardSet {
             selection,
             data: bytes,
@@ -438,40 +503,182 @@ impl Machine {
         });
     }
 
+    /// OSC 133 / 633 marks (T-14 §1). `A`-`D` raise a mark event; `L` and `P` do not.
     fn osc_mark(&mut self, buf: &[u8]) {
         let Some(&k) = buf.first() else {
             return;
         };
-        if !matches!(k, b'A' | b'B' | b'C' | b'D') || (buf.len() > 1 && buf[1] != b';') {
+        if !matches!(k, b'A' | b'B' | b'C' | b'D' | b'L' | b'P')
+            || (buf.len() > 1 && buf[1] != b';')
+        {
             return;
         }
-        let kind = char::from(k);
-        let exit = if k == b'D' {
-            std::str::from_utf8(buf.get(2..).unwrap_or(&[]))
-                .ok()
-                .and_then(|s| s.split(';').next())
-                .and_then(|s| s.parse::<i32>().ok())
+        let rest = std::str::from_utf8(buf.get(2..).unwrap_or(&[])).unwrap_or("");
+        let (c, y) = (self.cur, self.y);
+        let now = self.now;
+        // Blocks are recorded on the primary screen (the one with history); marks on the
+        // alternate screen only set the semantic class.
+        let primary = c == 0;
+        let at = if primary {
+            let g = &self.panes[0].grid;
+            g.pin_at(g.history_rows() + y, self.x.min(self.cols - 1))
         } else {
             None
         };
-        self.semantic = match k {
-            b'A' => Semantic::Prompt,
-            b'B' => Semantic::Input,
-            _ => Semantic::Output,
+        let mut exit = None;
+        let before = self
+            .blocks
+            .last()
+            .map(|b| (b.id, b.state == shell::BlockState::Running));
+        let block = match k {
+            b'L' => {
+                // Fresh line: CR LF unless already in column 0; opens no block.
+                if self.x != 0 || self.wrap {
+                    self.cursor_moved();
+                    self.cr();
+                    self.index();
+                }
+                return;
+            }
+            b'A' | b'P' => {
+                let o = shell::parse_opts(k, rest);
+                self.semantic = Semantic::Prompt;
+                match o.kind.unwrap_or(shell::PromptKind::Primary) {
+                    shell::PromptKind::Continuation | shell::PromptKind::Right => {
+                        self.blocks.current_id()
+                    }
+                    shell::PromptKind::Primary if k == b'P' => self.blocks.current_id(),
+                    shell::PromptKind::Primary => {
+                        self.panes[c]
+                            .grid
+                            .set_row_flag(y, apoth_grid::flags::PROMPT_START, true);
+                        self.bp_prompted = true;
+                        if primary {
+                            self.blocks.prompt(at, now)
+                        } else {
+                            0
+                        }
+                    }
+                }
+            }
+            b'B' => {
+                self.semantic = Semantic::Input;
+                if primary { self.blocks.input(at) } else { 0 }
+            }
+            b'C' => {
+                self.semantic = Semantic::Output;
+                let o = shell::parse_opts(k, rest);
+                if primary {
+                    let cwd = self.cwd_uri.clone();
+                    self.blocks.output(at, now, cwd.as_deref(), o.cmdline)
+                } else {
+                    0
+                }
+            }
+            _ => {
+                self.semantic = Semantic::Output;
+                exit = rest.split(';').next().and_then(|s| s.parse::<i32>().ok());
+                if primary {
+                    self.blocks.end(at, now, exit);
+                }
+                0
+            }
         };
-        if k == b'A' {
-            let (c, y) = (self.cur, self.y);
-            self.panes[c]
-                .grid
-                .set_row_flag(y, apoth_grid::flags::PROMPT_START, true);
+        self.command_transitions(before);
+        if block != 0 {
+            self.panes[c].grid.set_row_block(y, block);
+        }
+        if k == b'P' {
+            return;
         }
         let m = Mark {
-            kind,
+            kind: char::from(k),
             exit,
             row: self.y as u32,
             col: self.x as u32,
         };
         self.events.push_mark(m);
+    }
+
+    /// Queue the command events one mark caused: the block that was running finished
+    /// (explicitly by `D` or implicitly by a new prompt), and the newest block started.
+    fn command_transitions(&mut self, before: Option<(u32, bool)>) {
+        if let Some((id, true)) = before
+            && self
+                .blocks
+                .get(id)
+                .is_some_and(|b| b.state == shell::BlockState::Done)
+        {
+            self.events.push_command(CommandEvent {
+                block: id,
+                finished: true,
+            });
+        }
+        if let Some(b) = self.blocks.last()
+            && b.state == shell::BlockState::Running
+            && before != Some((b.id, true))
+        {
+            let block = b.id;
+            self.events.push_command(CommandEvent {
+                block,
+                finished: false,
+            });
+        }
+    }
+
+    /// `OSC 1337 ; SetUserVar=<name>=<base64>` (T-11 §9). Names are 1..=64 bytes of
+    /// `[A-Za-z0-9_.-]`; values decode to at most 1 KiB of UTF-8 with no control characters.
+    /// An empty value removes the variable. At most 64 names; a new name past that is
+    /// dropped (and counted). Every other 1337 subcommand is ignored.
+    fn osc_user_var(&mut self, buf: &[u8]) {
+        let Some(rest) = buf.strip_prefix(b"SetUserVar=") else {
+            return;
+        };
+        let (name, b64) = match rest.iter().position(|&b| b == b'=') {
+            Some(i) => (&rest[..i], &rest[i + 1..]),
+            None => (rest, &b""[..]),
+        };
+        let name_ok = (1..=crate::USER_VAR_NAME_MAX).contains(&name.len())
+            && name
+                .iter()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'));
+        if !name_ok {
+            return;
+        }
+        let Ok(name) = String::from_utf8(name.to_vec()) else {
+            return;
+        };
+        let Some(raw) = b64_decode(b64) else {
+            self.events.dropped.bad_base64 += 1;
+            return;
+        };
+        if raw.len() > crate::USER_VAR_VALUE_MAX {
+            return;
+        }
+        let Ok(val) = String::from_utf8(raw) else {
+            return;
+        };
+        if val.chars().any(char::is_control) {
+            return;
+        }
+        if val.is_empty() {
+            if self.user_vars.remove(&name).is_some() {
+                self.events.push_var(UserVar { name, value: None });
+            }
+            return;
+        }
+        if !self.user_vars.contains_key(&name) && self.user_vars.len() >= crate::USER_VARS_MAX {
+            self.events.dropped.vars += 1;
+            return;
+        }
+        if self.user_vars.get(&name) == Some(&val) {
+            return;
+        }
+        self.user_vars.insert(name.clone(), val.clone());
+        self.events.push_var(UserVar {
+            name,
+            value: Some(val),
+        });
     }
 
     fn decrqss(&mut self, pt: &[u8]) {

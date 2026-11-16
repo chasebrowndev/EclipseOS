@@ -38,6 +38,7 @@ fn tab(n: u64, title: &str, active: bool) -> TabSpec {
         title: TextRun::program(title, size::BODY),
         active,
         badges: vec![],
+        profile: None,
     }
 }
 
@@ -246,12 +247,12 @@ fn tab_layout_three_tabs() {
     let strip = Rect::new(0.0, 0.0, 800.0, 40.0);
     let tabs = [tab(0, "a", true), tab(1, "b", false), tab(2, "c", false)];
     let l = tabs::layout(strip, WidgetId(1), &tabs);
-    assert_eq!(l.new_tab, Rect::new(764.0, 6.0, 28.0, 28.0));
+    assert_eq!(l.new_tab, Rect::new(680.0, 8.0, 24.0, 24.0));
     assert_eq!(l.overflow, 0);
     let xs: Vec<f32> = l.cells.iter().map(|c| c.rect.x).collect();
     assert_eq!(xs, vec![8.0, 232.0, 456.0]);
     assert_eq!(l.cells[0].rect.w, metrics::TAB_MAX_W);
-    assert_eq!(l.cells[0].close, Rect::new(202.0, 11.0, 18.0, 18.0));
+    assert_eq!(l.cells[0].close, Rect::new(198.0, 9.0, 22.0, 22.0));
 }
 
 #[test]
@@ -457,6 +458,7 @@ fn pane_layouts() {
         title: Some(TextRun::program("vim", size::BODY_SMALL)),
         mode: FrameMode::Full,
         inactive_dim: 0.0,
+        floating: false,
     };
     let l = pane::layout(&s);
     assert_eq!(l.title_row, Some(Rect::new(1.0, 1.0, 398.0, 20.0)));
@@ -482,6 +484,7 @@ fn pane_draw_focus_and_dim() {
         title: None,
         mode: FrameMode::Full,
         inactive_dim: 0.3,
+        floating: false,
     };
     let rim_of = |s: &PaneSpec| {
         let mut o = DrawList::new();
@@ -822,10 +825,13 @@ fn bar_draw_guard_disables_then_hover_brightens() {
     let button_fill = |ui: &UiState, now: u64| {
         let mut o = DrawList::new();
         bar::draw(&l, &spec, &st, now, ui, &p, &mut o);
-        match rects(&o)[1] {
-            Cmd::RoundedRect { fill, .. } => *fill,
-            _ => unreachable!(),
-        }
+        o.cmds
+            .iter()
+            .find_map(|c| match c {
+                Cmd::RoundedRect { rect, fill, .. } if *rect == l.buttons[0].rect => Some(*fill),
+                _ => None,
+            })
+            .expect("the first button is drawn")
     };
     assert_eq!(
         button_fill(&hover, 100),
@@ -877,12 +883,19 @@ fn bar_draw_golden_shape() {
         &mut o,
     );
     let dump = o.dump();
-    let mut lines = dump.lines();
-    assert!(lines.next().unwrap().starts_with(&format!(
+    // Frost, the sheet tint, the error tint with its crisp danger rim, the icon disc.
+    assert!(
+        dump.lines()
+            .next()
+            .unwrap()
+            .starts_with("rect [8.0,4.0 784.0x40.0] r10.0")
+    );
+    assert!(dump.contains(&format!(
         "rect [8.0,4.0 784.0x40.0] r10.0 fill {} rim 1.0 {}",
         hex(p.danger_fill),
         hex(p.danger)
     )));
+    let mut lines = dump.lines().skip_while(|l| !l.starts_with("icon Warning"));
     assert!(lines.next().unwrap().starts_with("icon Warning"));
     assert!(
         lines
@@ -890,9 +903,11 @@ fn bar_draw_golden_shape() {
             .unwrap()
             .starts_with("text \"Config error at apoth.kdl:12\" @")
     );
+    // The detail sits in an inset well, in program text.
+    let rest: Vec<&str> = lines.collect();
     assert!(
-        lines.next().unwrap().contains("Program/Regular"),
-        "detail is program text"
+        rest[0].starts_with("rect") && rest[1].contains("Program/Regular"),
+        "{rest:?}"
     );
     // Per button: pill, keycap, key text, label text. The primary button is the brighter one.
     assert!(
@@ -901,9 +916,10 @@ fn bar_draw_golden_shape() {
             hex(p.cell_focus),
             hex(p.cell_focus_rim)
         )),
-        "primary: cell_focus fill + rim"
+        "primary: inset fill + gold-tinted rim"
     );
-    assert_eq!(o.len(), 4 + 4 * 2);
+    // Glass is three layers (frost, tint, rim), then the rest of the bar.
+    assert_eq!(o.len(), 3 + 4 + 1 + 4 * 2 + 1);
     assert!(!dump.contains("rim 2.0"), "the bar never steals focus");
 }
 
@@ -1083,4 +1099,482 @@ fn restart_notice_is_dismiss_only_and_empty_for_no_keys() {
     let st = bar::BarState { shown_at_ms: 0 };
     assert_eq!(st.answer_key(&b, 600, KeyInput::Escape), Some(0));
     assert_eq!(st.answer_key(&b, 600, KeyInput::Return), None);
+}
+
+// ---- command palette (T-08 §4, T-14 §9) ------------------------------------------------------
+
+fn palette_spec(n: usize, selected: Option<usize>, query: &str) -> crate::palette::PaletteSpec {
+    crate::palette::PaletteSpec {
+        id: WidgetId(900),
+        query: query.into(),
+        placeholder: TextRun::interface("Run an action", size::BODY),
+        entries: (0..n)
+            .map(|i| {
+                crate::palette::Entry::new(
+                    TextRun::interface(format!("Action {i}"), size::BODY),
+                    (i % 2 == 0).then(|| TextRun::interface("ctrl+shift+t", size::BODY_SMALL)),
+                )
+            })
+            .collect(),
+        selected,
+        total: n,
+        header: None,
+        anchor: None,
+        pinned: 0,
+        field: true,
+    }
+}
+
+#[test]
+fn palette_layout_centres_and_stacks_rows() {
+    let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+    let spec = palette_spec(4, Some(1), "");
+    let l = crate::palette::layout(area, &spec);
+    assert!((l.sheet.w - metrics::PALETTE_W).abs() < 0.01);
+    assert!(
+        (l.sheet.x + l.sheet.w / 2.0 - 500.0).abs() < 0.01,
+        "centred"
+    );
+    assert_eq!(l.rows.len(), 4);
+    for w in l.rows.windows(2) {
+        assert!(
+            (w[1].2.y - w[0].2.bottom()).abs() < 0.01,
+            "rows are contiguous"
+        );
+    }
+    assert!(l.field.bottom() <= l.rows[0].2.y);
+    assert!(l.rows[3].2.bottom() <= l.sheet.bottom());
+    assert!(l.empty.is_none());
+    // Narrow windows shrink the sheet to the area.
+    let narrow = crate::palette::layout(Rect::new(0.0, 0.0, 300.0, 400.0), &spec);
+    assert!(narrow.sheet.x >= 0.0 && narrow.sheet.right() <= 300.0);
+    // Row picking.
+    let mid = l.rows[2].2;
+    assert_eq!(
+        l.row_at(Point::new(mid.x + 5.0, mid.y + 5.0)),
+        Some(2),
+        "pointer picks the row"
+    );
+    assert_eq!(l.row_at(Point::new(1.0, 1.0)), None);
+    // The sheet is the front hit layer.
+    let mut tree = HitTree::default();
+    l.register(WidgetId(900), &mut tree);
+    let h = tree.hit(Point::new(mid.x + 5.0, mid.y + 5.0)).expect("hit");
+    assert_eq!(h.layer, Layer::Sheet);
+    assert_eq!(h.id, crate::palette::row_id(WidgetId(900), 2));
+}
+
+#[test]
+fn palette_max_rows_is_bounded() {
+    assert_eq!(
+        crate::palette::max_rows(Rect::new(0.0, 0.0, 800.0, 4000.0)),
+        metrics::PALETTE_MAX_ROWS
+    );
+    assert_eq!(
+        crate::palette::max_rows(Rect::new(0.0, 0.0, 800.0, 10.0)),
+        1
+    );
+}
+
+#[test]
+fn palette_draw_selected_row_is_brighter_with_a_rim_and_no_glow() {
+    let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+    let pal = dark();
+    let spec = palette_spec(3, Some(1), "spl");
+    let l = crate::palette::layout(area, &spec);
+    let mut out = DrawList::new();
+    crate::palette::draw(
+        &l,
+        &spec,
+        &UiState::default(),
+        &pal,
+        &FixedAdvance(0.6),
+        &mut out,
+    );
+    // Sheet, field, caret, and exactly one row background (the selected one).
+    let row_rects: Vec<_> = out
+        .cmds
+        .iter()
+        .filter(
+            |c| matches!(c, Cmd::RoundedRect { rect, .. } if l.rows.iter().any(|r| r.2 == *rect)),
+        )
+        .collect();
+    assert_eq!(
+        row_rects.len(),
+        1,
+        "only the selected row has a background at rest"
+    );
+    let Cmd::RoundedRect { fill, rim, .. } = row_rects[0] else {
+        unreachable!()
+    };
+    assert_eq!(*fill, pal.cell_focus, "selected = inset fill");
+    assert!(rim.is_some(), "selected = crisp rim");
+    // Query text is drawn; the placeholder is not.
+    assert!(
+        out.cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Text { run, .. } if run.text == "spl"))
+    );
+    assert!(
+        !out.cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Text { run, .. } if run.text == "Run an action"))
+    );
+    // Hover lights a second row.
+    let mut ui = UiState::default();
+    ui.set_hover(Some(crate::palette::row_id(WidgetId(900), 2)));
+    let mut out2 = DrawList::new();
+    crate::palette::draw(&l, &spec, &ui, &pal, &FixedAdvance(0.6), &mut out2);
+    let n = out2
+        .cmds
+        .iter()
+        .filter(
+            |c| matches!(c, Cmd::RoundedRect { rect, .. } if l.rows.iter().any(|r| r.2 == *rect)),
+        )
+        .count();
+    assert_eq!(n, 2, "hover has its own state");
+}
+
+#[test]
+fn palette_empty_list_says_so() {
+    let spec = palette_spec(0, None, "zzz");
+    let l = crate::palette::layout(Rect::new(0.0, 0.0, 900.0, 600.0), &spec);
+    assert!(l.empty.is_some());
+    let mut out = DrawList::new();
+    crate::palette::draw(
+        &l,
+        &spec,
+        &UiState::default(),
+        &dark(),
+        &FixedAdvance(0.6),
+        &mut out,
+    );
+    assert!(
+        out.cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Text { run, .. } if run.text == "No matches"))
+    );
+}
+
+#[test]
+fn truncate_middle_keeps_both_ends_and_fits() {
+    let run = TextRun::program(
+        "/home/user/projects/very/long/path/to/report-final.png",
+        size::BODY,
+    );
+    let full = crate::text::Measure::width(&M, &run);
+    assert_eq!(crate::text::truncate_middle(&run, full + 1.0, &M), run);
+    let short = crate::text::truncate_middle(&run, full / 2.0, &M);
+    assert!(crate::text::Measure::width(&M, &short) <= full / 2.0 + 0.01);
+    assert!(short.text.starts_with("/home") && short.text.ends_with(".png"));
+    assert!(short.text.contains('\u{2026}'));
+}
+
+#[test]
+fn srgb_blend_lifts_linear_alphas_and_keeps_opaque() {
+    let ground = crate::tokens::Rgba([0.05, 0.04, 0.03, 1.0]);
+    let faint = crate::tokens::Rgba([1.0, 1.0, 1.0, 0.05]);
+    let b = crate::tokens::srgb_blend(faint, ground);
+    assert!(
+        b.0[3] > faint.0[3] * 2.0,
+        "sRGB alpha reaches the linear mix: {b:?}"
+    );
+    assert_eq!(crate::tokens::srgb_blend(ground, ground), ground);
+}
+
+#[test]
+fn toggle_knob_sits_at_the_ends_and_track_is_trailing() {
+    let r = Rect::new(0.0, 0.0, 200.0, 30.0);
+    let (t_off, k_off) = crate::toggle::parts(r, false);
+    let (t_on, k_on) = crate::toggle::parts(r, true);
+    assert_eq!(t_off, t_on);
+    assert_eq!(t_on.right(), r.right());
+    assert!(k_off.x < k_on.x && k_on.right() <= t_on.right());
+}
+
+#[test]
+fn media_window_chrome_is_hover_only() {
+    let area = Rect::new(0.0, 0.0, 400.0, 300.0);
+    let pal = dark();
+    let mut rest = DrawList::new();
+    crate::mediawin::draw(
+        area,
+        &crate::mediawin::MediaWinSpec::default(),
+        0.0,
+        &pal,
+        &M,
+        &mut rest,
+    );
+    assert!(
+        rest.cmds.is_empty(),
+        "a settled, unfocused window draws nothing"
+    );
+    let mut hover = DrawList::new();
+    let spec = crate::mediawin::MediaWinSpec {
+        hovered: true,
+        ..Default::default()
+    };
+    crate::mediawin::draw(area, &spec, 1.0, &pal, &M, &mut hover);
+    assert!(!hover.cmds.is_empty());
+    let c = crate::mediawin::close_rect(area);
+    assert!(area.contains(Point::new(c.x, c.y)) && c.right() <= area.right());
+    let mut focus = DrawList::new();
+    let spec = crate::mediawin::MediaWinSpec {
+        focused: true,
+        ..Default::default()
+    };
+    crate::mediawin::draw(area, &spec, 0.0, &pal, &M, &mut focus);
+    assert!(focus.cmds.len() == 1);
+}
+
+fn hud(rect: Rect, playing: bool, progress: Option<f32>, alpha: f32) -> crate::mediactl::HudSpec {
+    crate::mediactl::HudSpec {
+        rect,
+        playing,
+        progress,
+        alpha,
+        control: ControlState {
+            hover: true,
+            ..Default::default()
+        },
+    }
+}
+
+#[test]
+fn media_hud_centres_the_disc_and_keeps_the_scrub_clear() {
+    let r = Rect::new(10.0, 20.0, 320.0, 180.0);
+    let l = crate::mediactl::layout(r);
+    let b = l.button.expect("a disc");
+    assert!((b.w - metrics::MEDIA_PLAY).abs() < 1e-3 && b.w == b.h);
+    assert!(((b.x + b.w / 2.0) - (r.x + r.w / 2.0)).abs() < 1e-3);
+    assert!(((b.y + b.h / 2.0) - (r.y + r.h / 2.0)).abs() < 1e-3);
+    let (scrub, track) = l.scrub.expect("a scrub pill");
+    assert!(scrub.y >= b.bottom() && scrub.bottom() <= r.bottom());
+    assert!(track.x > scrub.x && track.right() < scrub.right());
+    assert!(track.y > scrub.y && track.bottom() < scrub.bottom());
+    // A short box keeps the disc and drops the track rather than overlap them.
+    let l = crate::mediactl::layout(Rect::new(0.0, 0.0, 200.0, 60.0));
+    assert!(l.button.is_some() && l.scrub.is_none());
+    // A sliver gets nothing.
+    let l = crate::mediactl::layout(Rect::new(0.0, 0.0, 200.0, 12.0));
+    assert!(l.button.is_none());
+}
+
+#[test]
+fn media_hud_draws_shapes_and_fades() {
+    let pal = dark();
+    let r = Rect::new(0.0, 0.0, 320.0, 180.0);
+    let mut none = DrawList::new();
+    crate::mediactl::draw(&hud(r, true, Some(0.5), 0.0), &pal, &mut none);
+    assert!(
+        none.cmds.is_empty(),
+        "a settled, unhovered placement draws nothing"
+    );
+    // Playing offers pause: two bars, no icon glyph. Paused offers the play shape.
+    let mut playing = DrawList::new();
+    crate::mediactl::draw(&hud(r, true, Some(0.5), 1.0), &pal, &mut playing);
+    assert!(
+        !playing
+            .cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::Icon { .. } | Cmd::Text { .. }))
+    );
+    let mut paused = DrawList::new();
+    crate::mediactl::draw(&hud(r, false, Some(0.5), 1.0), &pal, &mut paused);
+    assert!(paused.cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Icon {
+            icon: IconId::Play,
+            ..
+        }
+    )));
+    // The track fill is the one accent, half the track.
+    let (_, track) = crate::mediactl::layout(r).scrub.unwrap();
+    let fill = playing
+        .cmds
+        .iter()
+        .find_map(|c| match c {
+            Cmd::RoundedRect { rect, fill, .. } if *fill == pal.accent => Some(*rect),
+            _ => None,
+        })
+        .expect("accent fill");
+    assert!((fill.w - track.w / 2.0).abs() < 1e-3);
+    // No duration: no scrub.
+    let mut bare = DrawList::new();
+    crate::mediactl::draw(&hud(r, true, None, 1.0), &pal, &mut bare);
+    assert!(bare.len() < playing.len());
+    // Half faded: every colour at half its alpha.
+    let mut half = DrawList::new();
+    crate::mediactl::draw(&hud(r, true, Some(0.5), 0.5), &pal, &mut half);
+    assert_eq!(half.len(), playing.len());
+    for (a, b) in half.cmds.iter().zip(&playing.cmds) {
+        if let (Cmd::RoundedRect { fill: fa, .. }, Cmd::RoundedRect { fill: fb, .. }) = (a, b) {
+            assert!((fa.a() - fb.a() / 2.0).abs() < 1e-4);
+        }
+    }
+}
+
+#[test]
+fn muted_pill_sits_top_right_and_is_drawn_only() {
+    let pal = dark();
+    let pane = Rect::new(0.0, 40.0, 600.0, 300.0);
+    let r = crate::mediactl::muted_rect(pane, &M);
+    assert!(r.right() <= pane.right() - crate::tokens::space::SM);
+    assert!(r.y >= pane.y && r.y < pane.y + 20.0);
+    let mut dl = DrawList::new();
+    crate::mediactl::draw_muted(pane, 1.0, &pal, &M, &mut dl);
+    assert!(dl.cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Icon {
+            icon: IconId::SpeakerMuted,
+            ..
+        }
+    )));
+    assert!(dl.cmds.iter().any(|c| matches!(
+        c,
+        Cmd::Text { run, .. } if run.text == crate::mediactl::MUTED_TEXT
+            && run.origin == TextOrigin::Interface
+    )));
+    // A narrow pane clips the copy, never the pane.
+    let narrow = Rect::new(0.0, 0.0, 120.0, 80.0);
+    let n = crate::mediactl::muted_rect(narrow, &M);
+    assert!(n.x >= narrow.x);
+    let mut gone = DrawList::new();
+    crate::mediactl::draw_muted(pane, 0.0, &pal, &M, &mut gone);
+    assert!(gone.cmds.is_empty());
+}
+
+#[test]
+fn fader_eases_reverses_without_a_jump_and_settles() {
+    use crate::motion::Fader;
+    let full = MotionMode::Full;
+    let mut f = Fader::hidden();
+    assert_eq!(f.level(0, full), 0.0);
+    assert!(!f.animating(0, full));
+    f.set(true, 1000, full);
+    assert!(f.animating(1000, full));
+    let mid = f.level(1000 + tok_motion::FADE_MS / 2, full);
+    assert!(mid > 0.5 && mid < 1.0, "{mid}");
+    // Reverse half-way: the level carries on from where it was.
+    f.set(false, 1000 + tok_motion::FADE_MS / 2, full);
+    let back = f.level(1000 + tok_motion::FADE_MS / 2, full);
+    assert!((back - mid).abs() < 0.02, "{back} vs {mid}");
+    let end = 1000 + 2 * tok_motion::FADE_MS;
+    assert_eq!(f.level(end, full), 0.0);
+    assert!(!f.animating(end, full), "a settled fade requests no frames");
+    // `none` cuts.
+    let mut c = Fader::hidden();
+    c.set(true, 5, MotionMode::None);
+    assert_eq!(c.level(5, MotionMode::None), 1.0);
+    assert!(!c.animating(5, MotionMode::None));
+}
+
+// ---- compositor glass (ADR 0081) -------------------------------------------------------------
+
+fn glass_panes_of(out: &DrawList) -> Vec<(Rect, crate::PaneTone, crate::PaneState)> {
+    out.cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Glass {
+                rect, tone, state, ..
+            } => Some((*rect, *tone, *state)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn palette_in_glass_mode_pushes_panes_and_draws_no_ground() {
+    use crate::{PaneState, PaneTone};
+    let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+    let pal = dark();
+    let spec = palette_spec(3, Some(1), "spl");
+    let l = crate::palette::layout(area, &spec);
+    let mut ui = UiState::default();
+    ui.set_hover(Some(l.rows[2].1));
+    let mut out = DrawList::with_glass(true);
+    crate::palette::draw(&l, &spec, &ui, &pal, &FixedAdvance(0.6), &mut out);
+    let panes = glass_panes_of(&out);
+    // Sheet, field, selected row, hovered row.
+    assert_eq!(panes.len(), 4, "{}", out.dump());
+    assert_eq!(panes[0].0, l.sheet);
+    assert_eq!(
+        (panes[2].1, panes[2].2),
+        (PaneTone::Focused, PaneState::Rest)
+    );
+    assert_eq!(
+        (panes[3].1, panes[3].2),
+        (PaneTone::Plain, PaneState::Hover)
+    );
+    // No client frost or fill under the sheet or rows: the only rects left are the caret and
+    // the field is a pane too.
+    for c in &out.cmds {
+        if let Cmd::RoundedRect { rect, fill, .. } = c {
+            assert!(
+                *rect != l.sheet && !l.rows.iter().any(|r| r.2 == *rect),
+                "ground drawn under a pane: {fill:?}"
+            );
+        }
+    }
+    // The same spec without glass keeps the look and pushes none.
+    let mut plain = DrawList::new();
+    crate::palette::draw(&l, &spec, &ui, &pal, &FixedAdvance(0.6), &mut plain);
+    assert!(glass_panes_of(&plain).is_empty());
+    assert!(plain.len() > out.len());
+}
+
+#[test]
+fn tab_chips_are_panes_and_keep_labels_and_the_keyboard_ring() {
+    use crate::{PaneState, PaneTone};
+    let pal = dark();
+    let strip = Rect::new(0.0, 0.0, 800.0, 40.0);
+    let tabs = [tab(0, "a", true), tab(1, "b", false)];
+    let l = tabs::layout(strip, WidgetId(1), &tabs);
+    let mut ui = UiState::default();
+    ui.set_hover(Some(l.cells[1].close_id));
+    let mut out = DrawList::with_glass(true);
+    tabs::draw(&l, &tabs, TabStyle::Floating, &ui, &pal, &mut out);
+    let panes = glass_panes_of(&out);
+    // Two tabs, the hovered close button, the new-tab button.
+    assert_eq!(panes.len(), 4, "{}", out.dump());
+    assert_eq!(panes[0].1, PaneTone::Focused);
+    assert_eq!(panes[1].1, PaneTone::Plain);
+    assert_eq!(
+        (panes[2].0, panes[2].2),
+        (l.cells[1].close, PaneState::Hover)
+    );
+    assert!(out.cmds.iter().any(|c| matches!(c, Cmd::Text { .. })));
+    assert!(
+        !out.cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::RoundedRect { fill, .. } if fill.a() > 0.0)),
+        "{}",
+        out.dump()
+    );
+    // Keyboard focus keeps its crisp gold ring, with no fill.
+    let mut kb = UiState::default();
+    kb.focus_by_keyboard(l.cells[1].id);
+    let mut out = DrawList::with_glass(true);
+    tabs::draw(&l, &tabs, TabStyle::Floating, &kb, &pal, &mut out);
+    assert!(out.cmds.iter().any(|c| matches!(
+        c,
+        Cmd::RoundedRect { rim: Some(r), fill, .. } if r.colour == pal.accent && fill.a() == 0.0
+    )));
+}
+
+#[test]
+fn new_tab_button_follows_the_last_tab_and_stays_visible_on_overflow() {
+    let strip = Rect::new(0.0, 0.0, 800.0, 40.0);
+    let tabs = [tab(0, "a", true), tab(1, "b", false)];
+    let l = tabs::layout(strip, WidgetId(1), &tabs);
+    let last = l.cells.last().unwrap().rect;
+    assert_eq!(l.new_tab.x, last.right() + metrics::TAB_GAP);
+    assert!(l.new_tab.w >= 22.0 && l.cells[0].close.w >= 22.0);
+    let none = tabs::layout(strip, WidgetId(1), &[]);
+    assert_eq!(none.new_tab.x, strip.x + crate::tokens::space::SM);
+    let many: Vec<TabSpec> = (0..30).map(|i| tab(i, "t", i == 3)).collect();
+    let l = tabs::layout(strip, WidgetId(1), &many);
+    assert!(l.overflow > 0);
+    assert!(l.new_tab.right() <= strip.right() - crate::tokens::space::SM + 0.01);
+    assert!(l.new_tab.x >= l.cells.last().unwrap().rect.right());
 }

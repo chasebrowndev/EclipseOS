@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "sixel-scrolls-at-bottom" {
+  desc "DECSDM reset scrolls as needed"
+  covers "T03-GRAPHICS-SIXEL"
+  size rows=2 cols=6
+  feed #"\e[2;1H\eP0;1;0q"1;1;8;18#1;2;100;0;0#1!8~-!8~-!8~\e\\"#
+  images {
+    row "sixel row=-1 col=0 cols=1 rows=1 z=0"
+    row "sixel row=0 col=0 cols=1 rows=1 z=0"
+  }
+  cursor row=1 col=0
+}

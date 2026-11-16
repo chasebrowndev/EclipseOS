@@ -5,15 +5,33 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod askpass;
+mod attach;
 mod binds;
+mod copymode;
+mod ctl;
+mod domain;
 mod glyphs;
+mod hints;
 mod hook;
+mod layout;
+mod mediahost;
 mod mousectl;
+mod nav;
+mod notify;
+mod open;
+mod palette;
 mod pane;
 mod paste;
 mod pointer;
+mod profiles;
 mod reload;
 mod render;
+mod rules;
+mod search;
+mod secret_prompt;
+mod security;
+mod server;
 mod settings;
 mod ui;
 mod view;
@@ -35,29 +53,56 @@ Usage: apotheosis [OPTIONS] [-e COMMAND [ARGS...]]
 Options:
   -e COMMAND [ARGS...]   run COMMAND instead of the shell (consumes the rest)
   -o KEY=VALUE           override a config key for this run (repeatable)
+  --cwd DIR              start in DIR
+  --title TITLE          title of the first tab
   --app-id ID            Wayland app id (on Abyss it must start with org.eclipseos.Apotheosis)
   --class ID             alias of --app-id
+  --new-instance         do not hand the launch to a running instance
+  --wait                 when handed to a running instance, wait for the command and exit
+                         with its status
+  --profile NAME         start with the named profile (T-11 §6)
+  --server               run the session daemon: panes outlive the window (T-21)
+  --attach               open a window on the session daemon's panes
+  --session NAME         the daemon session for --server / --attach (default: default)
+  --domain NAME          open a window in the config's ssh domain NAME (T-22 §4, §5)
+  --hold, --layout NAME  accepted; not available yet
   -h, --help             show this help
   -V, --version          show the version
 ";
 
+/// A run's command line.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Run {
+    command: Option<Vec<String>>,
+    launch: Vec<(String, String)>,
+    app_id: Option<String>,
+    cwd: Option<String>,
+    title: Option<String>,
+    new_instance: bool,
+    wait: bool,
+    hold: bool,
+    profile: Option<String>,
+    layout: Option<String>,
+    server: bool,
+    attach: bool,
+    session: Option<String>,
+    domain: Option<String>,
+}
+
+// Parsed once at startup: the size of `Run` does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq, Eq)]
 enum Cli {
-    Run {
-        command: Option<Vec<String>>,
-        launch: Vec<(String, String)>,
-        app_id: Option<String>,
-    },
+    Run(Run),
     Help,
     Version,
 }
 
 fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     let mut it = args.into_iter();
-    let mut launch = Vec::new();
-    let mut command = None;
-    let mut app_id = None;
+    let mut r = Run::default();
     while let Some(a) = it.next() {
+        let mut val = |flag: &str| it.next().ok_or(format!("{flag} needs a value"));
         match a.as_str() {
             "-h" | "--help" => return Ok(Cli::Help),
             "-V" | "--version" => return Ok(Cli::Version),
@@ -66,24 +111,66 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 if rest.is_empty() {
                     return Err("-e needs a command".into());
                 }
-                command = Some(rest);
+                r.command = Some(rest);
             }
-            "--app-id" | "--class" => {
-                app_id = Some(it.next().ok_or("--app-id needs a value")?);
-            }
+            "--app-id" | "--class" => r.app_id = Some(val("--app-id")?),
+            "--cwd" => r.cwd = Some(val("--cwd")?),
+            "--title" => r.title = Some(val("--title")?),
+            "--profile" => r.profile = Some(val("--profile")?),
+            "--layout" => r.layout = Some(val("--layout")?),
+            "--new-instance" => r.new_instance = true,
+            "--server" => r.server = true,
+            "--attach" => r.attach = true,
+            "--session" => r.session = Some(val("--session")?),
+            "--domain" => r.domain = Some(val("--domain")?),
+            "--wait" => r.wait = true,
+            "--hold" => r.hold = true,
             "-o" => {
-                let kv = it.next().ok_or("-o needs KEY=VALUE")?;
+                let kv = val("-o")?;
                 let (k, v) = kv.split_once('=').ok_or("-o needs KEY=VALUE")?;
-                launch.push((k.to_owned(), v.to_owned()));
+                r.launch.push((k.to_owned(), v.to_owned()));
             }
             other => return Err(format!("unknown argument {other:?}")),
         }
     }
-    Ok(Cli::Run {
-        command,
-        launch,
-        app_id,
-    })
+    if r.server && r.attach {
+        return Err("--server and --attach exclude each other".into());
+    }
+    if r.domain.is_some() && (r.server || r.attach) {
+        return Err("--domain excludes --server and --attach".into());
+    }
+    Ok(Cli::Run(r))
+}
+
+/// `--cwd`, made absolute against ours.
+fn absolute(p: &str) -> std::path::PathBuf {
+    let path = std::path::Path::new(p);
+    if path.is_absolute() {
+        return path.to_owned();
+    }
+    std::env::current_dir().map_or_else(|_| path.to_owned(), |d| d.join(path))
+}
+
+/// The `launch` a second launch sends (T-12 §5).
+fn launch_request(r: &Run) -> apoth_proto::params::Launch {
+    let cwd = r
+        .cwd
+        .as_deref()
+        .map(absolute)
+        .or_else(|| std::env::current_dir().ok());
+    apoth_proto::params::Launch {
+        argv: r.command.clone().unwrap_or_default(),
+        cwd: cwd.map(|p| p.to_string_lossy().into_owned()),
+        env: ctl::launch::launch_env(),
+        activation_token: std::env::var("XDG_ACTIVATION_TOKEN").ok(),
+        overrides: r.launch.iter().cloned().collect(),
+        title: r.title.clone(),
+        app_id: r.app_id.clone(),
+        profile: r.profile.clone(),
+        layout: r.layout.clone(),
+        hold: r.hold,
+        wait: r.wait,
+    }
 }
 
 fn init_logging() {
@@ -121,14 +208,131 @@ fn main() {
                 concat!("apotheosis ", env!("CARGO_PKG_VERSION"), "\n").as_bytes(),
             );
         }
-        Cli::Run {
-            command,
-            launch,
-            app_id,
-        } => {
+        Cli::Run(r) => {
             init_logging();
-            let startup = settings::Settings::load(launch);
-            match app::run(startup, command, app_id) {
+            if r.hold || r.layout.is_some() {
+                eprintln!("apotheosis: --hold and --layout are not available yet");
+                std::process::exit(1);
+            }
+            if let Some(p) = &r.profile {
+                settings::set_launch_profile(p);
+            }
+            if r.server {
+                let startup = settings::Settings::load(r.launch);
+                let interpreters = startup
+                    .reloader
+                    .config()
+                    .list("socket.interpreters")
+                    .to_vec();
+                let opts = server::Options {
+                    session: r.session.unwrap_or_else(|| server::DEFAULT_SESSION.into()),
+                    command: r.command,
+                    cwd: r.cwd.as_deref().map(absolute),
+                };
+                std::process::exit(server::run(startup.settings, interpreters, opts));
+            }
+            // `--attach` opens its own window on the session, never a tab elsewhere.
+            if !r.new_instance
+                && !r.attach
+                && r.domain.is_none()
+                && let ctl::launch::Handoff::Done(code) = ctl::launch::hand_off(launch_request(&r))
+            {
+                std::process::exit(code);
+            }
+            let startup = settings::Settings::load(r.launch);
+            let session = r
+                .session
+                .clone()
+                .unwrap_or_else(|| server::DEFAULT_SESSION.into());
+            // `--domain NAME` (T-22 §4, §5): the config's `domain "NAME" { ssh ...; persist ... }`.
+            let domain = r.domain.as_deref().map(|n| {
+                let cfg = startup.reloader.config();
+                let found = cfg
+                    .domains
+                    .iter()
+                    .find(|d| d.value.name == n)
+                    .map(|d| (d.value.ssh.clone(), d.value.persist.clone()));
+                match found {
+                    Some((Some(dest), persist)) => {
+                        let mode =
+                            domain::Persist::resolve(persist.as_deref(), cfg.str("remote.persist"));
+                        (n.to_owned(), dest, mode)
+                    }
+                    Some((None, _)) => {
+                        eprintln!("apotheosis: domain {n:?} names no ssh host");
+                        std::process::exit(EX_USAGE);
+                    }
+                    None => {
+                        eprintln!("apotheosis: no domain {n:?} in the config");
+                        std::process::exit(EX_USAGE);
+                    }
+                }
+            });
+            let mut ssh_domain = None;
+            let attach = if let Some((name, dest, mode)) = domain {
+                match domain::use_remote(mode, || domain::probe(&dest), &dest) {
+                    Ok(true) => Some(attach::Attach::Ssh(attach::SshTarget {
+                        dest,
+                        session: session.clone(),
+                    })),
+                    Ok(false) => {
+                        // Local panes running ssh; with the daemon on they are its panes
+                        // (session `ssh-<domain>`), so they outlive this window.
+                        let argv = domain::pane_argv(&dest, None);
+                        ssh_domain = Some(dest);
+                        if startup.settings.server_mode {
+                            let s = r
+                                .session
+                                .clone()
+                                .unwrap_or_else(|| domain::local_session(&name));
+                            match attach::ensure_server(&s, Some(&argv))
+                                .and_then(|()| attach::connect(&s))
+                            {
+                                Ok(h) => Some(attach::Attach::Local(h)),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "session server unavailable, using local panes: {e}"
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    Err(m) => {
+                        eprintln!("apotheosis: {m}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if r.attach {
+                match attach::connect(&session) {
+                    Ok(h) => Some(attach::Attach::Local(h)),
+                    Err(e) => {
+                        eprintln!("apotheosis: cannot attach to session {session:?}: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if startup.settings.server_mode {
+                // `sessions.server on` (T-21 §3): the window is a view; a refusal (this
+                // process runs inside one of the server's panes, say) falls back to local panes.
+                match attach::ensure_server(&session, None).and_then(|()| attach::connect(&session))
+                {
+                    Ok(h) => Some(attach::Attach::Local(h)),
+                    Err(e) => {
+                        tracing::warn!("session server unavailable, using local panes: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
+            let first = app::FirstPane {
+                cwd: r.cwd.as_deref().map(absolute),
+                title: r.title,
+                ssh_domain,
+            };
+            match app::run(startup, r.command, r.app_id, first, attach) {
                 Ok(code) => std::process::exit(code),
                 Err(e) => {
                     eprintln!("apotheosis: {e}");
@@ -152,31 +356,87 @@ mod tests {
         assert_eq!(p(&["--version"]), Ok(Cli::Version));
         assert_eq!(
             p(&["-o", "a.b=c", "-e", "ls", "-l"]),
-            Ok(Cli::Run {
+            Ok(Cli::Run(Run {
                 command: Some(vec!["ls".into(), "-l".into()]),
                 launch: vec![("a.b".into(), "c".into())],
-                app_id: None,
-            })
+                ..Run::default()
+            }))
         );
         assert_eq!(
             p(&["--app-id", "org.eclipseos.Apotheosis.Foo", "-e", "ls"]),
-            Ok(Cli::Run {
+            Ok(Cli::Run(Run {
                 command: Some(vec!["ls".into()]),
-                launch: vec![],
                 app_id: Some("org.eclipseos.Apotheosis.Foo".into()),
-            })
+                ..Run::default()
+            }))
         );
         assert_eq!(
             p(&["--class", "x"]),
-            Ok(Cli::Run {
-                command: None,
-                launch: vec![],
+            Ok(Cli::Run(Run {
                 app_id: Some("x".into()),
-            })
+                ..Run::default()
+            }))
+        );
+        assert_eq!(
+            p(&[
+                "--cwd",
+                "/tmp",
+                "--title",
+                "t",
+                "--new-instance",
+                "--wait",
+                "--hold"
+            ]),
+            Ok(Cli::Run(Run {
+                cwd: Some("/tmp".into()),
+                title: Some("t".into()),
+                new_instance: true,
+                wait: true,
+                hold: true,
+                ..Run::default()
+            }))
         );
         assert!(p(&["--app-id"]).is_err());
+        assert!(p(&["--cwd"]).is_err());
         assert!(p(&["-e"]).is_err());
         assert!(p(&["-o", "x"]).is_err());
         assert!(p(&["--nope"]).is_err());
+        assert!(p(&["--server", "--attach"]).is_err());
+        assert!(p(&["--session"]).is_err());
+        assert!(p(&["--domain", "h", "--attach"]).is_err());
+        assert_eq!(
+            p(&["--domain", "h"]),
+            Ok(Cli::Run(Run {
+                domain: Some("h".into()),
+                ..Run::default()
+            }))
+        );
+        assert_eq!(
+            p(&["--server", "--session", "w", "-e", "sh"]),
+            Ok(Cli::Run(Run {
+                command: Some(vec!["sh".into()]),
+                server: true,
+                session: Some("w".into()),
+                ..Run::default()
+            }))
+        );
+    }
+
+    #[test]
+    fn second_launch_request() {
+        let r = Run {
+            command: Some(vec!["make".into()]),
+            launch: vec![("font.size".into(), "12".into())],
+            cwd: Some("/srv".into()),
+            title: Some("build".into()),
+            wait: true,
+            ..Run::default()
+        };
+        let l = launch_request(&r);
+        assert_eq!(l.argv, ["make"]);
+        assert_eq!(l.cwd.as_deref(), Some("/srv"));
+        assert_eq!(l.title.as_deref(), Some("build"));
+        assert_eq!(l.overrides.get("font.size").map(String::as_str), Some("12"));
+        assert!(l.wait && !l.hold);
     }
 }

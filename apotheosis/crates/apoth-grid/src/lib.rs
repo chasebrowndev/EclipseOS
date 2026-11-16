@@ -42,19 +42,24 @@ pub mod style;
 pub mod tabs;
 
 pub use cell::{Cell, Semantic, Tag, Wide};
-pub use page::{MAX_CLUSTER_CPS, MAX_LINK_ID, MAX_URI, PAGE_BYTES, row_flags as flags};
+pub use page::{
+    MAX_CLUSTER_CPS, MAX_LINK_ID, MAX_SPEC_BYTES, MAX_URI, PAGE_BYTES, Page, PageSpec,
+    row_flags as flags,
+};
 pub use pin::{MAX_PINS, Pin, PinId, PinKind, PinState};
 pub use screen::{
-    CellAttrs, Glyph, Limits, MAX_CELLS, ReflowOpts, Reflowed, Region, Resized, Screen,
-    ScreenConfig, Stats,
+    CellAttrs, Glyph, ImageError, Limits, MAX_CELLS, ReflowOpts, Reflowed, Region, Resized, Screen,
+    ScreenConfig, ScreenMeta, Stats,
 };
 pub use search::{Dir, LineScratch, LineSpan, MAX_LINE_BYTES, fold_text};
-pub use select::{ExtractOpts, SelKind, SelRange, Selection, Side, WordChars};
+pub use select::{Class as WordClass, ExtractOpts, SelKind, SelRange, Selection, Side, WordChars};
 pub use snapshot::{Changes, Damage, FrameSnapshot, RowSnapshot, SeenSet, SnapCell, SnapRow};
 pub use style::{Attrs, Color, Style, Underline};
 pub use tabs::TabStops;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_fast;
 #[cfg(test)]
 mod tests_reflow;

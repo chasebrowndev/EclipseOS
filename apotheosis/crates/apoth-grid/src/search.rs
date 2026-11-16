@@ -43,6 +43,23 @@ pub struct LineScratch {
     matches: Vec<(usize, usize)>,
 }
 
+impl LineScratch {
+    /// The cell holding byte `byte` of [`LineScratch::text`]: `(abs row, column, cells)`
+    /// where `cells` is 2 for a wide character. `None` past the end.
+    #[must_use]
+    pub fn locate(&self, byte: usize) -> Option<(usize, usize, usize)> {
+        if self.map.is_empty() || byte >= self.text.len() {
+            return None;
+        }
+        let i = self
+            .map
+            .partition_point(|e| e.off as usize <= byte)
+            .saturating_sub(1);
+        let e = self.map[i];
+        Some((e.abs as usize, usize::from(e.col), usize::from(e.cells)))
+    }
+}
+
 /// Where a logical line starts and where the next one begins (absolute rows).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LineSpan {

@@ -47,10 +47,10 @@ use ec_abyss_config::{BlurMode, Config};
 use crate::{
     bar_depth, bezel_ready, bezel_width, blur, border_frame, committed_panes, effects, ensure_glass,
     explicit_bezel, explicit_blur, explicit_window_backdrop, fills_area, glow_colors, glow_program,
-    insert_blur, is_scrim, layer_radius, layer_shape, layer_shows, opaque_of, phys, push_border, push_dim,
-    push_glow, push_popups, push_shadow, shadow_program, strip_backdrop, strip_crops, strip_rect,
-    union_with_bar, userdata, window_backdrop, window_takes_panes, AbyssRenderElement, Bezel, BlurRequest,
-    BorderFrame, BorderStore, PaneRequest, BEZEL_DIM,
+    insert_blur, is_scrim, layer_radius, layer_shape, layer_shows, opaque_of, panes_stacked, phys,
+    push_border, push_dim, push_glow, push_popups, push_shadow, shadow_program, strip_backdrop, strip_crops,
+    strip_rect, union_with_bar, userdata, window_backdrop, window_takes_panes, AbyssRenderElement, Bezel,
+    BlurRequest, BorderFrame, BorderStore, PaneRequest, BEZEL_DIM,
 };
 
 /// The capture pass's own effect store. Kept between captures so a
@@ -638,6 +638,8 @@ impl Frame<'_> {
                 loc: render_loc,
                 crop: None,
                 over: true,
+                stacked: panes_stacked(backdrop.as_ref().and_then(|b| b.2.as_ref()).map(|b| b.opaque)),
+                sub: false,
                 scaled: None,
                 alpha: 1.0,
             });
@@ -721,6 +723,8 @@ impl Frame<'_> {
                 loc,
                 crop,
                 over,
+                stacked: false,
+                sub: false,
                 scaled: None,
                 alpha: 1.0,
             });

@@ -63,10 +63,15 @@ pub struct WordChars {
     extra: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Class {
+/// The word class of a character: a word is a run of one class other than `Space`. Public so
+/// screen-reader word boundaries use the same rules as double-click (T-20 §3).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Class {
+    /// Blank (or an empty cell).
     Space,
+    /// Alphanumerics, `_` and `selection.word-chars`.
     Word,
+    /// Everything else (punctuation and symbols).
     Other,
 }
 
@@ -79,7 +84,9 @@ impl WordChars {
         }
     }
 
-    fn class(&self, c: Option<char>) -> Class {
+    /// The class of `c`; `None` (an empty cell) is a space.
+    #[must_use]
+    pub fn class(&self, c: Option<char>) -> Class {
         match c {
             None | Some(' ') => Class::Space,
             Some(c) if c.is_alphanumeric() || c == '_' || self.extra.contains(c) => Class::Word,
