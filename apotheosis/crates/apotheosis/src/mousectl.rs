@@ -256,6 +256,13 @@ impl Mouse {
                 self.selecting = true;
             }
             MouseButton::Middle if cfg.primary => out.push(Out::PastePrimary),
+            // With no selection: the Open menu for what is under the pointer (T-14 §11).
+            MouseButton::Right if cfg.context_menu => {
+                out.push(Out::View(ViewCmd::TakeTarget {
+                    at: Some((hit.row, hit.col)),
+                    intent: crate::open::Intent::Menu,
+                }));
+            }
             _ => {}
         }
         out
@@ -363,6 +370,7 @@ mod tests {
             scroll_lines: 3,
             scroll_multiplier: 1.0,
             override_mods: Mods::SHIFT,
+            context_menu: true,
             paste: PasteSettings {
                 guard: Guard::Auto,
                 confirm_bytes: 4096,
@@ -544,11 +552,25 @@ mod tests {
         let c = cfg();
         let t = Instant::now();
         at(&mut m, 12.0, 5.0, modes(0));
-        // No selection yet: a right click does nothing.
+        // No selection yet: a right click asks for the Open menu there, or does nothing
+        // with `menu.context-menu` off.
+        assert!(matches!(
+            m.button(&geo(), RIGHT, true, Mods::NONE, modes(0), t, &c)[..],
+            [Out::View(ViewCmd::TakeTarget {
+                at: Some(_),
+                intent: crate::open::Intent::Menu
+            })]
+        ));
+        m.button(&geo(), RIGHT, false, Mods::NONE, modes(0), t, &c);
+        let off = InputSettings {
+            context_menu: false,
+            ..cfg()
+        };
         assert!(
-            m.button(&geo(), RIGHT, true, Mods::NONE, modes(0), t, &c)
+            m.button(&geo(), RIGHT, true, Mods::NONE, modes(0), t, &off)
                 .is_empty()
         );
+        m.button(&geo(), RIGHT, false, Mods::NONE, modes(0), t, &off);
         m.button(&geo(), LEFT, true, Mods::NONE, modes(0), t, &c);
         m.button(&geo(), LEFT, false, Mods::NONE, modes(0), t, &c);
         at(&mut m, 55.0, 25.0, modes(0));

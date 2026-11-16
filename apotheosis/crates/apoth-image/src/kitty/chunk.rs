@@ -133,6 +133,20 @@ impl Assembler {
         self.sync_budget();
     }
 
+    /// Drop every half-received transfer (any delete command aborts a chunked upload).
+    pub fn abort(&mut self) {
+        self.pending.clear();
+        self.sync_budget();
+    }
+
+    /// When the oldest half-received transfer goes stale, in the caller's milliseconds.
+    pub fn next_expiry(&self) -> Option<u64> {
+        self.pending
+            .iter()
+            .map(|p| p.touched_ms.saturating_add(self.limits.chunk_stale_ms + 1))
+            .min()
+    }
+
     /// Feed one APC body (starting at `G`).
     pub fn push(&mut self, apc: &[u8], now_ms: u64) -> Event {
         let ev = self.push_inner(apc, now_ms);

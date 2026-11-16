@@ -53,6 +53,16 @@ impl Image {
         }
     }
 
+    /// `Zero, OneMinusSrcAlpha`: scales the pixel by `1 - a` (the chrome erase blend).
+    pub(crate) fn erase(&mut self, x: i32, y: i32, a: u8) {
+        if let Some(d) = self.px(x, y) {
+            let inv = 255 - u32::from(a);
+            for dc in d.iter_mut() {
+                *dc = ((u32::from(*dc) * inv + 127) / 255) as u8;
+            }
+        }
+    }
+
     /// Fills a rect (clipped) with `over`.
     pub fn fill(&mut self, r: &RectInstance) {
         for y in r.y..r.y + r.h {
@@ -151,6 +161,9 @@ pub fn render(
                 *bg,
             ));
         }
+        for r in &row.under {
+            img.fill(&RectInstance::new(r.x, r.y + y0, r.w, r.h, r.color));
+        }
         for g in &row.glyphs {
             // Rows moved by a scroll keep the cell row they were built at; their position
             // is the row they now occupy.
@@ -163,8 +176,21 @@ pub fn render(
         }
     }
     if let Some(c) = cursor {
-        for r in &c.rects {
-            img.fill(r);
+        if let Some(rc) = &c.round {
+            use crate::chrome::{ChromeList, ChromeRect, ChromeSink, reference as chrome_ref};
+            let mut list = ChromeList::new();
+            list.rounded_rect(&ChromeRect {
+                rect: rc.rect.map(|v| v as f32),
+                radii: [rc.radius; 4],
+                fill: rc.colour,
+                rim: [0; 4],
+                rim_width: 0.0,
+            });
+            chrome_ref::render(&list, &mut img);
+        } else {
+            for r in &c.rects {
+                img.fill(r);
+            }
         }
         if let Some(g) = &c.glyph {
             draw_glyph(&mut img, g, m, atlas, mode);

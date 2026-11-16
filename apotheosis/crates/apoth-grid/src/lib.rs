@@ -42,11 +42,14 @@ pub mod style;
 pub mod tabs;
 
 pub use cell::{Cell, Semantic, Tag, Wide};
-pub use page::{MAX_CLUSTER_CPS, MAX_LINK_ID, MAX_URI, PAGE_BYTES, row_flags as flags};
+pub use page::{
+    MAX_CLUSTER_CPS, MAX_LINK_ID, MAX_SPEC_BYTES, MAX_URI, PAGE_BYTES, Page, PageSpec,
+    row_flags as flags,
+};
 pub use pin::{MAX_PINS, Pin, PinId, PinKind, PinState};
 pub use screen::{
-    CellAttrs, Glyph, Limits, MAX_CELLS, ReflowOpts, Reflowed, Region, Resized, Screen,
-    ScreenConfig, Stats,
+    CellAttrs, Glyph, ImageError, Limits, MAX_CELLS, ReflowOpts, Reflowed, Region, Resized, Screen,
+    ScreenConfig, ScreenMeta, Stats,
 };
 pub use search::{Dir, LineScratch, LineSpan, MAX_LINE_BYTES, fold_text};
 pub use select::{Class as WordClass, ExtractOpts, SelKind, SelRange, Selection, Side, WordChars};

@@ -2,20 +2,23 @@
 //! Kitty graphics protocol, sixel, iTerm2 inline images, the per-pane image store and quotas.
 //!
 //! Governing spec: T-15 (`docs/ECLIPSEOS_SPECS_APOTHEOSIS.md`). This is the pure, GPU-free
-//! part (M25a): parsers, decoders, the store and its quotas. Placement into the grid and
-//! rendering belong to M25 proper. Nothing here logs payload or path content.
+//! part: parsers, decoders, the store and its quotas. Placement into the grid lives in
+//! `apoth-term` (`graphics`), drawing in `apoth-render` (`image`). Nothing here logs payload
+//! or path content.
 //!
-//! Fuzz targets owed in `apotheosis/fuzz/` (outside this crate): `kitty_apc` feeds
-//! arbitrary bytes to [`kitty::Assembler::push`] (then decodes any completed transfer with
-//! [`kitty::decode_transfer`]); `sixel` feeds arbitrary bytes, split at arbitrary points, to
-//! [`sixel::SixelDecoder::feed`]. Seeds: the fixtures in `tests/`. Both must never panic and
-//! never exceed the configured [`Limits`].
+//! Fuzz targets: `apoth_term::fuzz::fuzz_kitty_apc` and `fuzz_sixel` drive these parsers
+//! through the terminal (with seed corpora under `apoth-term/corpus/`); both must never panic
+//! and never exceed the configured [`Limits`].
 #![forbid(unsafe_code)]
 
+pub mod anim;
+pub mod decoder;
 pub mod error;
+pub mod formats;
 pub mod iterm;
 pub mod kitty;
 pub mod limits;
+pub mod placeholder;
 pub mod sixel;
 pub mod store;
 
@@ -44,6 +47,23 @@ impl Image {
     /// Byte size of the pixel data, charged against the quota.
     pub fn bytes(&self) -> u64 {
         self.rgba.len() as u64
+    }
+
+    /// Content hash for sharing identical images (PERFORMANCE-52); only a bucket key,
+    /// equality is checked bytewise. Eight bytes per step so a video frame hashes in well
+    /// under a millisecond on the worker that decoded it.
+    pub fn content_hash(&self) -> u64 {
+        const K: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut h = (u64::from(self.width) << 32 | u64::from(self.height)) ^ K;
+        let mut chunks = self.rgba.chunks_exact(8);
+        for c in &mut chunks {
+            let v = u64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]);
+            h = (h ^ v).wrapping_mul(K).rotate_left(29);
+        }
+        for &b in chunks.remainder() {
+            h = (h ^ u64::from(b)).wrapping_mul(K);
+        }
+        h ^ (h >> 31)
     }
 
     /// Pixel-row ranges of the image cut into terminal cell rows (`cell_h` physical px).

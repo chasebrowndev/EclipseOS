@@ -1,5 +1,6 @@
 # 0053 — The status service gains actions; secrets go through their own prompt process
 Status: accepted; amended by 0066 (the pairing agent moves out of hyperion to `ec-pairing`)
+and by the 2026-11-15 amendment below (the Terminal target)
 Date: 2026-09-21
 Deciders: chase (owner), Claude (advisory)
 
@@ -74,3 +75,72 @@ the deliberately empty shipped `abyss.kdl`.
 - The tray host (`ec-services::tray`) shares this shape. It is a
   StatusNotifierWatcher and host on the service's own runtime, and it reports
   items and menus back as updates. Activate and menu clicks are actions.
+
+## Amendment (2026-11-15): the Terminal target
+
+Owner decision. A password a program asks for from a terminal pane (`sudo -A`,
+ssh through `apoth ssh`) goes to `ec-secret-prompt`, under a new **Terminal**
+target, when Apotheosis runs on Abyss. The wire and the checks are T-22 §3.
+
+**Option 3, extended.** This is the option chosen above: a separate client
+process whose whole surface is `secret`. Terminal is a fourth target beside
+wifi, bluetooth and API key. It is not a new option. The app-id stays
+`ec-secret-prompt`, so the owner windowrule covers it unchanged. Option 1 (a
+compositor prompt) stays rejected for this use, and more firmly: COMP-10 §3.14
+forbids a compositor prompt's secret from ever going to the requester, and a
+terminal password has to reach the program that asked for it.
+
+**Apotheosis is a relay, not a recipient.** The value goes from the field to
+`ec-secret-prompt`'s stdout pipe, then to Apotheosis, then over the armed askpass
+socket to `apoth askpass`, and from there over ssh's or sudo's own pipe to the
+program that verifies it. That program is the verifying authority. The E-04
+reading of the root invariant ("delivered" means delivered to anything except
+the verifying authority) holds. Each relay hop carries the value once, keeps
+no copy, wipes every buffer it owns, never logs it and never shows it in
+`Debug`. The semantic tree, audit and the compositor never see it.
+
+**Input.** `ec-secret-prompt terminal` takes no other argument. The request
+context comes on stdin as one JSON object, and the answer goes out on stdout.
+Argv is never used, because argv is world-readable in `/proc`. Apotheosis is the
+only intended spawner, and it spawns the prompt directly so that it is the
+prompt's parent.
+
+**Verified and unverified blocks.** The request carries two blocks:
+- *Verified*: facts Apotheosis read from the kernel. These are the window, tab
+  and pane titles; whether the requester is in the pane's foreground process
+  group (`tcgetpgrp`); its ancestry chain to the pane; its `exe` link; and its
+  real and effective uid.
+- *Unverified*: what the program says about itself. These are its argv, its cwd,
+  the prompt text and, for `apoth ssh`, the host it named.
+
+The prompt shows the verified block as verified only after checking that its
+own parent is a live Apotheosis. The check is a pidfd on the parent, the
+parent's `/proc/<ppid>/exe` equal to the installed `/usr/bin/apotheosis` (in
+debug builds, an `apotheosis` beside the prompt's own binary also passes), and
+the pidfd still not readable after the `exe` link was read. If the check fails,
+the prompt shows the same facts as unverified, with a plain note that they did
+not come from Apotheosis. Argv is never persisted or audited.
+
+**Spoofing, accepted.** A client prompt can be imitated. Any process of the same
+uid can spawn `ec-secret-prompt terminal`, or draw a lookalike window. The
+parent check stops a forged "verified" block. It cannot stop a lookalike, and
+neither can anything else a same-uid client could use. The owner accepts this
+for terminal passwords, `sudo` included. D-07 §6 was narrowed the same day to
+match: its "never a client prompt" rule covers polkit `auth_admin` only.
+
+**Masking.** Each typed character shows as one `*`. The value itself is never
+drawn, measured for display or published.
+
+**Focus.** The prompt opens with keyboard focus in its field, because the user's
+own command asked for it. Abyss focuses a newly mapped toplevel, and the prompt
+focuses its field when it opens. Nothing opens it on an unrelated event. There
+are two triggers. One is an askpass request from a process in a pane. The other
+is the T-17 §5 auto-open: a getpass-style read (ADR 0115) in the focused pane by
+a command the user just ran, whose answer is typed into the pane. A
+click-to-enter path was considered and dropped, because it costs more clicks
+than plain `sudo`.
+
+**Off Abyss**, or when `ec-secret-prompt` is not installed, Apotheosis's
+in-window askpass sheet answers as before. Host-key questions, confirmations
+and notices (`SSH_ASKPASS_PROMPT=confirm|none`) also stay on the sheet. Only a
+secret is routed.

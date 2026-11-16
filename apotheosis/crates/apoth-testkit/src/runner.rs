@@ -354,6 +354,11 @@ pub fn verify(expect: &Expect, p: &Point) -> String {
             out.push_str(&d);
         }
     }
+    if let Some(want) = &expect.images
+        && let Some(d) = diff_rows("images", want, &snap.images)
+    {
+        out.push_str(&d);
+    }
     if expect.hold.is_some_and(|h| h != snap.hold) {
         let _ = writeln!(
             out,
@@ -523,6 +528,9 @@ fn blessed(e: &Expect, p: &Point, default_all: bool) -> Expect {
     o.modes = p.modes.clone();
     if e.scrollback.is_some() {
         o.scrollback = Some(p.snap.scrollback.clone());
+    }
+    if e.images.is_some() {
+        o.images = Some(p.snap.images.clone());
     }
     o.hold = e.hold.map(|_| p.snap.hold);
     o.alt = e.alt.map(|_| p.snap.alt);

@@ -160,6 +160,7 @@ impl Machine {
             b'X' => {
                 let (y, x) = (self.y, self.x);
                 let x1 = (x + num(p, 0)).min(self.cols);
+                self.gfx_text_over(y, x, x1);
                 self.panes[c].grid.erase_cells(y, x, x1, bg, false);
             }
             b'L' | b'M' => {
@@ -196,7 +197,7 @@ impl Machine {
             }
             b'c' => {
                 if p.get_or(0, 0) == 0 {
-                    let attrs = if self.cfg.sixel_advertised {
+                    let attrs = if self.cfg.graphics.sixel {
                         "62;4;22"
                     } else {
                         "62;22"
@@ -291,6 +292,7 @@ impl Machine {
                 let f = self.kitty.current();
                 self.reply_str(format!("\x1b[?{f}u"));
             }
+            b'S' => self.xtsmgraphics(p),
             _ => {}
         }
     }
@@ -416,10 +418,22 @@ impl Machine {
         self.reply_str(format!("\x1b[{q}{n};{st}$y"));
     }
 
+    /// XTWINOPS safe subset (T-18 §3): size and cell reports (14, 16, 18, 19) and the title
+    /// stack (22, 23) are `window-ops-report`; title reports (20, 21) always answer empty;
+    /// move, resize, raise, iconify, fullscreen and every other op are consumed.
     fn xtwinops(&mut self, p: &Params) {
         let (r, c) = (self.rows, self.cols);
         let (cw, ch) = self.cfg.cell_px;
-        match p.get(0) {
+        let op = p.get(0);
+        let class = match op {
+            Some(20 | 21) => crate::deny::TITLE_REPORT,
+            Some(14 | 16 | 18 | 19 | 22 | 23) => crate::deny::WINDOW_REPORT,
+            _ => 0,
+        };
+        if self.cfg.deny & class != 0 {
+            return;
+        }
+        match op {
             Some(14) => self.reply_str(format!("\x1b[4;{};{}t", r as u32 * ch, c as u32 * cw)),
             Some(16) => self.reply_str(format!("\x1b[6;{ch};{cw}t")),
             Some(18) => self.reply_str(format!("\x1b[8;{r};{c}t")),
@@ -434,6 +448,9 @@ impl Machine {
             }
             Some(23) => {
                 if let Some((t, i)) = self.title_stack.pop() {
+                    if self.cfg.deny & crate::deny::TITLE_SET != 0 {
+                        return;
+                    }
                     let which = p.get_or(1, 0);
                     if which == 0 || which == 2 {
                         self.title = t;
@@ -451,6 +468,14 @@ impl Machine {
     fn erase_display(&mut self, mode: u32) {
         let (y, x, rows, cols) = (self.y, self.x, self.rows, self.cols);
         let (c, bg) = (self.cur, self.pen.bg);
+        if self.gfx.sixel_live && mode <= 1 {
+            let (a, b) = if mode == 0 { (y + 1, rows) } else { (0, y) };
+            for r in a..b {
+                self.gfx_text_over(r, 0, cols);
+            }
+            let (x0, x1) = if mode == 0 { (x, cols) } else { (0, x + 1) };
+            self.gfx_text_over(y, x0, x1);
+        }
         match mode {
             0 => {
                 self.panes[c].grid.erase_cells(y, x, cols, bg, false);
@@ -467,7 +492,10 @@ impl Machine {
                     .grid
                     .erase_cells(y, 0, (x + 1).min(cols), bg, false);
             }
-            2 => self.panes[c].grid.erase_rows(0, rows - 1, bg, false),
+            2 => {
+                self.gfx_erase_screen();
+                self.panes[c].grid.erase_rows(0, rows - 1, bg, false);
+            }
             3 => self.clear_history(),
             _ => {}
         }
@@ -475,6 +503,12 @@ impl Machine {
 
     fn erase_line(&mut self, mode: u32) {
         let (y, x, cols) = (self.y, self.x, self.cols);
+        match mode {
+            0 => self.gfx_text_over(y, x, cols),
+            1 => self.gfx_text_over(y, 0, x + 1),
+            2 => self.gfx_text_over(y, 0, cols),
+            _ => {}
+        }
         let (c, bg) = (self.cur, self.pen.bg);
         match mode {
             0 => {
@@ -496,6 +530,7 @@ impl Machine {
     /// fresh primary screen (hyperlinks are not carried over).
     fn clear_history(&mut self) {
         let (rows, cols) = (self.rows, self.cols);
+        let kept = self.gfx_before_history_clear();
         let mut new = apoth_grid::Screen::new(
             rows,
             cols,
@@ -512,6 +547,7 @@ impl Machine {
             cont = row.wrapped;
         }
         self.panes[0].grid = new;
+        self.gfx_after_history_clear(kept);
     }
 
     #[cfg(feature = "esctest")]

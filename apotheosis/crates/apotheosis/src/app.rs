@@ -39,9 +39,11 @@ use apoth_term::Term;
 use apoth_ui::frame::TabPosition;
 use apoth_ui::palette::{Entry, PaletteSpec};
 use apoth_ui::pane::FrameMode;
-use apoth_ui::tabs::TabSpec;
+use apoth_ui::searchbar::{Chip, ChipSpec, SearchSpec, SearchTarget};
+use apoth_ui::tabs::{Badge, TabSpec};
 use apoth_ui::text::TextRun;
 use apoth_ui::tokens::size;
+use apoth_ui::tooltip::TooltipSpec;
 use apoth_ui::{Point, UiState};
 use apoth_wl::mime::Want;
 use apoth_wl::transfer::TransferDirection;
@@ -57,18 +59,25 @@ use calloop::{EventLoop, Interest, LoopHandle, LoopSignal, Mode, PostAction, Reg
 use rustix::io::Errno;
 
 mod a11y;
+mod automation;
+mod media;
+mod open;
+mod password;
+mod remote;
 mod serve;
 
 pub(crate) use a11y::A11yMsg;
+pub(crate) use open::OpenMsg;
 
 use crate::binds::{self, KeyState, Keymap, NameBuf, Resolved};
 use crate::hook::{DumpHook, MuxDump};
 use crate::layout::{self, PanePx, WinLayout, WinMetrics};
 use crate::mousectl::{Mouse, Out};
+use crate::nav::{self, Nav, PendingConsent, SearchUi};
 use crate::palette::{self as pal, Palette, Pick, TabItem};
 use crate::pane::{
-    IoArgs, IoThread, MainMsg, PaneEvents, PaneKey, PaneShared, RenderMsg, ResizeReq, WAKE_RESIZE,
-    WAKE_STOP, now_ns, spawn_io,
+    IoArgs, IoThread, MainMsg, PaneEvents, PaneKey, PaneShared, RenderMsg, ResizeReq,
+    WAKE_GRAPHICS_FILE, WAKE_RESIZE, WAKE_STOP, now_ns, spawn_io,
 };
 use crate::paste::{self, Origin};
 use crate::pointer::Geometry;
@@ -77,12 +86,14 @@ use crate::render::{
     ChromeModel, PaneView, RenderArgs, RenderSettings, RenderUpdate, TermDefaults, WindowLayout,
     pad_px,
 };
+use crate::search::{Case, Query};
+use crate::security::{self, Answer, Class, Decision};
 use crate::settings::{ErrorPos, Settings, Startup, error_positions, load_input, resolve_shell};
 use crate::ui::{Overlay, PALETTE_ID, STRIP_ID, bar_inset_px, bars_for, pane_widget, tab_widget};
-use crate::view::{Copied, CopyTarget, Preedit, ScrollBy, ViewCmd, ViewSettings};
+use crate::view::{Copied, CopyTarget, NavMsg, Preedit, ScrollBy, ViewCmd, ViewSettings};
 use crate::workers::Pool;
 use apoth_config::fs::RealFs;
-use apoth_config::reload::{Applied, Outcome, Reloader, Subsystem};
+use apoth_config::reload::{Applied, Outcome, Reloader, RuntimeChange, Subsystem};
 use apoth_config::types::Reload;
 use apoth_ui::WidgetId;
 
@@ -211,9 +222,24 @@ struct Pane {
     title: String,
     /// The working directory the program reported (OSC 7), when local.
     cwd: Option<PathBuf>,
+    /// The host an OSC 7 directory named when it was not this one (its paths are remote).
+    cwd_host: Option<String>,
+    /// The OSC 7 path when it names another host (an ssh domain's new panes start there).
+    cwd_remote: Option<String>,
     /// How the child ended, once reaped.
     exit: Option<ExitStatus>,
     eof: bool,
+    /// A session-daemon pane (T-21 §3): no local PTY; input and sizes go to the server.
+    remote: Option<RemotePane>,
+}
+
+/// A pane the session daemon runs.
+#[derive(Default)]
+struct RemotePane {
+    /// The server's pane id (`None` until a spawn is answered).
+    sid: Option<u64>,
+    /// Input typed before the spawn was answered (bounded: one queue's worth).
+    early: Vec<u8>,
 }
 
 /// A key whose press a bind or the interface took: its repeats and release are taken too, and
@@ -250,8 +276,35 @@ enum Spot {
     Strip,
     /// Over a pane's grid.
     Pane(PaneKey),
+    /// A button of the overlay bar or the rule sheet.
+    BarButton(usize),
+    /// The bar or sheet itself, on no button; and the window around a modal sheet.
+    BarBody,
+    SheetOutside,
+    /// A control of the search sheet, or the sheet on none.
+    Search(SearchTarget),
+    SearchSheet,
     Nothing,
 }
+
+/// What the chrome shows about the panes beyond their geometry.
+#[derive(Debug, Default)]
+struct Status {
+    /// OSC 9;4 per pane: state (1 value, 2 error, 3 indeterminate, 4 paused) and 0..=100.
+    progress: std::collections::HashMap<PaneKey, (u8, u8)>,
+    /// Tabs whose pane rang the bell while the tab was out of sight.
+    bell_tabs: std::collections::HashSet<TabId>,
+    /// The pane the visual bell is lighting, and the timer that puts it out.
+    bell_flash: Option<(PaneKey, RegistrationToken)>,
+    /// A media placement in this pane plays muted (no sound server, T-16 §3): the muted
+    /// notice shows over the pane until the timer clears it (T-08 §4). Never a window.
+    media_muted: Option<(PaneKey, RegistrationToken)>,
+}
+
+/// How long the visual bell's rim shows.
+const BELL_FLASH: Duration = Duration::from_millis(180);
+/// How long the muted notice shows.
+const MEDIA_MUTED_NOTICE: Duration = Duration::from_secs(4);
 
 pub(crate) struct App {
     settings: Settings,
@@ -279,6 +332,16 @@ pub(crate) struct App {
     /// Panes main closed (their exit status does not decide the exit code).
     forced: Vec<PaneKey>,
     started: bool,
+    /// Attached to a session daemon (T-21 §3): every pane is the server's.
+    remote: Option<crate::attach::Link>,
+    /// The server pane the next `spawn_pane` takes instead of starting one.
+    adopt: Option<crate::attach::NewPane>,
+    /// Stream events that came before the window: handled once it exists.
+    remote_early: Vec<crate::attach::Event>,
+    /// The askpass sheet, the session-kill confirm and the reconnect notice (T-22).
+    remote_ui: remote::Remote,
+    /// `ec-secret-prompt` prompts: routed askpass requests and auto-opened pane prompts.
+    passwords: password::Passwords,
     render_tx: Option<mpsc::Sender<RenderMsg>>,
     render: Option<JoinHandle<()>>,
     /// Cell size in physical pixels.
@@ -314,6 +377,10 @@ pub(crate) struct App {
     bar: Option<Overlay>,
     /// The user dismissed the bar for the current set of errors / keys.
     bar_dismissed: bool,
+    /// Interface-only status per pane/tab (OSC 9;4 progress, bell badges, the visual bell).
+    status: Status,
+    /// The overlay control a pointer press went down on (acts on release over it).
+    overlay_down: Option<Spot>,
     /// The compositor's blur path for the window (decides the auto opacity).
     blur: Option<apoth_wl::BlurPath>,
     /// The Abyss theme's terminal colours while Abyss is detected (T-17 §1, §2).
@@ -327,6 +394,8 @@ pub(crate) struct App {
     held: Mods,
     /// The left button is down (the held button of a motion event).
     left_down: bool,
+    /// The left press went to a media placement (play/pause): its release is taken too.
+    media_pressed: bool,
     /// Last pointer position, surface-logical.
     pointer: Option<(f64, f64)>,
     /// The pane a held button went down in: motion and release go there.
@@ -353,6 +422,14 @@ pub(crate) struct App {
     /// This host's name (OSC 7 URIs naming it are local).
     hostname: String,
     a11y: a11y::A11yState,
+    // ---- navigation and consent (T-14 §5-§8, T-18 §3-§4)
+    nav: Nav,
+    // ---- rules, variables, notifications, profiles (T-11 §5-§9, T-17 §6)
+    auto: automation::Auto,
+    // ---- media windows (`apoth icat --ext`, T-16 §1.1)
+    media: media::Media,
+    // ---- "Open with" (T-14 §11)
+    open: open::OpenState,
 }
 
 /// A paste held back by the guard (T-18 §4). The content is held until answered, never logged.
@@ -368,6 +445,9 @@ struct PendingPaste {
 pub(crate) struct FirstPane {
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) title: Option<String>,
+    /// An ssh domain without `mux` (T-22 §4): every shell of the window is
+    /// `apoth ssh DEST` through the shared master (kept for the window's lifetime).
+    pub(crate) ssh_domain: Option<String>,
 }
 
 /// Run to completion; the process exit code.
@@ -376,6 +456,7 @@ pub(crate) fn run(
     command: Option<Vec<String>>,
     app_id: Option<String>,
     first: FirstPane,
+    attach: Option<crate::attach::Attach>,
 ) -> Result<i32, String> {
     let Startup {
         settings,
@@ -406,12 +487,26 @@ pub(crate) fn run(
         }
     })
     .map_err(|e| e.error.to_string())?;
+    // A view of the session daemon: the first pane is the server's first, unless a command
+    // was given (then it runs as a new server pane and the others open as tabs).
+    let (remote, adopt) = match attach {
+        Some(h) => {
+            let adopt_first = command.is_none();
+            let (link, first) =
+                crate::attach::start(h, settings.term.clone(), tx.clone(), adopt_first)
+                    .map_err(|e| format!("cannot attach: {e}"))?;
+            (Some(link), first)
+        }
+        None => (None, None),
+    };
     let win = handle.create_window(WindowSpec {
         title: settings.window_title(""),
         app_id: Some(app_id.clone()),
         decorations: settings.decorations,
         ..WindowSpec::default()
     });
+    // xdg-toplevel-icon by name; the SVG ships in packaging/ (no-op without the global).
+    let _ = handle.set_icon_name(win, Some("org.eclipseos.Apotheosis"));
     handle.flush();
     let keymap = Keymap::from_config(reloader.config());
     let mut app = App {
@@ -434,6 +529,11 @@ pub(crate) fn run(
         closing: 0,
         forced: Vec::new(),
         started: false,
+        remote,
+        adopt,
+        remote_early: Vec::new(),
+        remote_ui: remote::Remote::default(),
+        passwords: password::Passwords::default(),
         render_tx: None,
         render: None,
         cell: (1, 1),
@@ -459,6 +559,8 @@ pub(crate) fn run(
         restart_keys: Vec::new(),
         bar: None,
         bar_dismissed: false,
+        status: Status::default(),
+        overlay_down: None,
         blur: None,
         abyss_theme: None,
         auto_family: None,
@@ -466,6 +568,7 @@ pub(crate) fn run(
         mouse: Mouse::new(),
         held: Mods::NONE,
         left_down: false,
+        media_pressed: false,
         pointer: None,
         capture: None,
         mouse_pane: None,
@@ -480,6 +583,10 @@ pub(crate) fn run(
         ctl: None,
         hostname: crate::ctl::osc7::hostname(),
         a11y: a11y::A11yState::default(),
+        nav: Nav::default(),
+        auto: automation::Auto::default(),
+        media: media::Media::default(),
+        open: open::OpenState::default(),
     };
     app.start_ctl();
     app.start_a11y();
@@ -488,6 +595,9 @@ pub(crate) fn run(
         tracing::warn!(binds = app.keymap.dropped, "some binds were not understood");
     }
     app.start_watch(&files);
+    let mut errors = errors;
+    errors.extend(error_positions(&app.recompile_rules()));
+    app.seed_consent(automation::load_consent());
     app.set_config_errors(errors);
     let deadline = Instant::now() + Duration::from_secs(10);
     while !app.started {
@@ -501,6 +611,11 @@ pub(crate) fn run(
             return Err("the compositor never configured the window".into());
         }
     }
+    app.emit_startup();
+    for e in std::mem::take(&mut app.remote_early) {
+        app.on_remote(e);
+    }
+    app.remote_started();
     event_loop
         .run(None, &mut app, |_| {})
         .map_err(|e| e.to_string())?;
@@ -535,7 +650,7 @@ fn commit_bytes(paste_pending: bool, text: &str, modes: apoth_input::InputModes)
 
 /// The paste confirm bar's answer to a key: 0 = Paste, 1 = Cancel (Escape too); `None` while the
 /// input guard runs, for Return, Space and any unknown key (the paste stays pending).
-fn paste_answer(
+pub(crate) fn paste_answer(
     spec: &apoth_ui::bar::BarSpec,
     age_ms: u64,
     key: apoth_input::Key,
@@ -549,14 +664,54 @@ fn paste_answer(
     apoth_ui::bar::BarState { shown_at_ms: 0 }.answer_key(spec, age_ms, input)
 }
 
+/// Widget id of the floating search bar / link tooltip.
+const SEARCH_ID: apoth_ui::WidgetId = apoth_ui::WidgetId(0x5345_4152_4300);
+
+/// The link-confirm bar (T-14 §5): the full URI as program text, Open or Cancel.
+fn open_bar(id: apoth_ui::WidgetId, uri: &str) -> apoth_ui::bar::BarSpec {
+    use apoth_ui::bar::{BarKind, BarSpec, ButtonSpec, Key as BarKey};
+    BarSpec {
+        id,
+        kind: BarKind::Consent,
+        headline: TextRun::interface("Open this link?", size::BODY).strong(),
+        detail: Some(TextRun::program(uri, size::BODY_SMALL)),
+        buttons: vec![
+            ButtonSpec {
+                label: "Open".into(),
+                key: BarKey::Char('o'),
+                primary: false,
+            },
+            ButtonSpec {
+                label: "Cancel".into(),
+                key: BarKey::Char('c'),
+                primary: false,
+            },
+        ],
+        escape: Some(1),
+        body: None,
+    }
+}
+
 /// Action ids [`App::run_action`] handles (sorted). The palette lists only these and the
 /// socket answers `unsupported` for the rest; `dispatch` asserts the two agree in debug
 /// builds.
 const HANDLED: &[&str] = &[
     "app.ignore",
     "app.quit",
+    "block.jump",
     "clipboard.copy",
     "config.reload",
+    "config.reset",
+    "config.set",
+    "copy-mode.enter",
+    "copy-mode.exit",
+    "copy-mode.move",
+    "copy-mode.toggle",
+    "copy-mode.toggle-selection",
+    "cursor.jump-char",
+    "cursor.jump-repeat",
+    "hints.cancel",
+    "hints.start",
     "input.paste",
     "input.paste-selection",
     "input.send-bytes",
@@ -569,19 +724,29 @@ const HANDLED: &[&str] = &[
     "key-table.push",
     "layout.next",
     "macro.run",
+    "notify",
+    "open",
+    "open.default",
+    "open.menu",
+    "open.with",
     "palette.close",
     "palette.open",
     "palette.toggle",
     "pane.break-out",
     "pane.close",
     "pane.equalize",
+    "pane.float",
     "pane.focus",
     "pane.focus-last",
     "pane.focus-next",
     "pane.focus-prev",
     "pane.move",
+    "pane.reconnect",
     "pane.resize",
     "pane.split",
+    "pane.toggle-float",
+    "pane.toggle-floats",
+    "pane.toggle-pin",
     "pane.toggle-zoom",
     "scroll.bottom",
     "scroll.half-page-down",
@@ -591,9 +756,18 @@ const HANDLED: &[&str] = &[
     "scroll.page-down",
     "scroll.page-up",
     "scroll.top",
+    "search.cancel",
+    "search.next",
+    "search.previous",
+    "search.set",
+    "search.start",
+    "search.toggle-case",
+    "search.toggle-regex",
     "selection.clear",
     "selection.copy",
     "selection.select-all",
+    "session.detach",
+    "session.kill",
     "tab.close",
     "tab.close-others",
     "tab.last",
@@ -603,6 +777,8 @@ const HANDLED: &[&str] = &[
     "tab.prev",
     "tab.rename",
     "tab.select",
+    "var.set",
+    "var.unset",
     "window.close",
 ];
 
@@ -640,14 +816,20 @@ fn split_dir(d: apoth_action::enums::SplitDir) -> MuxDir {
 }
 
 /// `mode=` conditions from a pane's mirror (T-11 §3).
-fn mode_holds(m: BindMode, modes: InputModes, has_selection: bool) -> bool {
+fn mode_holds(
+    m: BindMode,
+    modes: InputModes,
+    has_selection: bool,
+    copy: bool,
+    searching: bool,
+) -> bool {
     match m {
         BindMode::AltScreen => modes.has(bit::ALT_SCREEN),
         BindMode::AppCursor => modes.has(bit::DECCKM),
         BindMode::KittyKeyboard => modes.kitty_flags() != 0,
         BindMode::HasSelection => has_selection,
-        // No copy mode or search yet: those conditions never hold.
-        BindMode::CopyMode | BindMode::Searching => false,
+        BindMode::CopyMode => copy,
+        BindMode::Searching => searching,
     }
 }
 
@@ -691,7 +873,7 @@ impl App {
 
     /// Physical pixels the overlay bar takes at the top (the grid never sits under it).
     fn bar_px(&self, scale: f64) -> u32 {
-        self.bar.as_ref().map_or(0, |_| {
+        self.bar.as_ref().filter(|o| o.takes_room()).map_or(0, |_| {
             bar_inset_px(scale, self.settings.glass.interface_zoom)
         })
     }
@@ -741,6 +923,10 @@ impl App {
     }
 
     fn start_window(&mut self, c: &ConfigureEvent) -> Result<(), String> {
+        // T-08 §3: one blur box over the window geometry; apoth-wl keeps it across resizes
+        // and blur-path changes, and drops it on the tint path.
+        self.handle
+            .set_blur(self.win, Some(apoth_wl::BlurRequest::WindowGeometry));
         self.blur = self.handle.blur_path(self.win);
         let scale = self.scale();
         let (fonts, metrics, auto_family) = build_fonts(&self.settings, scale)?;
@@ -801,6 +987,8 @@ impl App {
             rx: render_rx,
             poke: render_tx.clone(),
             to_main: self.to_main.clone(),
+            glass: self.handle.glass_panes(self.win),
+            overlay: self.handle.overlay_surface(self.win),
         })
         .map_err(|e| e.to_string())?;
         self.render = Some(render);
@@ -811,6 +999,8 @@ impl App {
             cols = dims.1,
             scale,
             app_id = %self.app_id,
+            blur = ?self.blur,
+            opacity = crate::settings::effective_opacity(self.settings.opacity, &self.settings.glass, self.blur),
             workers = self.workers.threads(),
             watch = ?self.watch_mode,
             "window started"
@@ -826,11 +1016,10 @@ impl App {
     fn dims_of(&self, id: PaneKey) -> Option<(usize, usize)> {
         let tid = self.session.tab_of(id)?;
         let tab = self.session.tab(tid)?;
-        let size = tab.size();
-        layout::panes(&tab.layout(), size, (0, 0), self.cell)
+        layout::all_dims(tab, self.cell)
             .into_iter()
-            .find(|p| p.id == id)
-            .map(|p| p.dims)
+            .find(|p| p.0 == id)
+            .map(|p| p.1)
     }
 
     /// Start a pane's shell (or `argv`) on a PTY with its io thread. `cwd` falls back to
@@ -843,6 +1032,13 @@ impl App {
         cwd: Option<PathBuf>,
         env_extra: Vec<(String, String)>,
     ) -> Result<Pane, String> {
+        let argv = match (&self.first.ssh_domain, argv) {
+            (Some(dest), None) => Some(self.ssh_domain_argv(dest)),
+            (_, a) => a,
+        };
+        if self.remote.is_some() {
+            return self.spawn_remote(id, (rows, cols), argv, cwd);
+        }
         let cell = self.cell;
         let mut tc = self.settings.term.clone();
         tc.rows = rows;
@@ -856,6 +1052,9 @@ impl App {
             ansi: std::array::from_fn(|i| term.palette(i as u8)),
         };
         let shared = Arc::new(PaneShared::new(term));
+        // The sequence policy's deny word, local column (T-18 §3); main re-checks remote
+        // panes itself before every clipboard decision.
+        shared.deny.store(self.deny_word(), Ordering::Release);
 
         let size = PtySize::from_cells(rows as u16, cols as u16, cell.0, cell.1);
         let (argv, login) = match argv {
@@ -883,6 +1082,18 @@ impl App {
         ];
         if let Some(p) = self.ctl_path() {
             extra.push(("APOTHEOSIS_SOCKET".into(), p.as_os_str().to_owned()));
+        }
+        // `security.sudo-askpass` (T-22 §3): this pane's child is armed, `sudo -A` asks
+        // through it. The variables are set before any user `shell.env`, which may unset
+        // nothing of ours but may add its own.
+        let sudo_arm = self.arm_pane(id);
+        if let Some((a, exe)) = &sudo_arm {
+            extra.push(("SUDO_ASKPASS".into(), exe.as_os_str().to_owned()));
+            extra.push((
+                apoth_proto::askpass::ENV_SOCK.into(),
+                a.socket().as_os_str().to_owned(),
+            ));
+            extra.push((apoth_proto::askpass::ENV_TOKEN.into(), a.token_hex().into()));
         }
         extra.extend(
             self.settings
@@ -913,6 +1124,18 @@ impl App {
             iutf8: true,
         })
         .map_err(|e| format!("cannot start the shell: {e}"))?;
+        if let Some((a, _)) = sudo_arm {
+            let tx = self.to_main.clone();
+            match a.start(
+                pty.pid(),
+                Box::new(move |e| {
+                    let _ = tx.send(MainMsg::Askpass(e));
+                }),
+            ) {
+                Ok(()) => tracing::debug!(pane = id, "askpass armed for the pane"),
+                Err(e) => tracing::warn!(pane = id, error = %e, "askpass not armed for the pane"),
+            }
+        }
         let master = pty
             .master_fd()
             .try_clone_to_owned()
@@ -937,6 +1160,8 @@ impl App {
                 to_main: self.to_main.clone(),
                 to_render,
                 hook: DumpHook::for_pane(first, id),
+                workers: self.workers.spawner(),
+                remote: None,
             },
             wake_tx,
         )
@@ -964,9 +1189,210 @@ impl App {
             origin: (0, 0),
             title: String::new(),
             cwd: None,
+            cwd_host: None,
+            cwd_remote: None,
             exit: None,
             eof: false,
+            remote: None,
         })
+    }
+
+    /// A session-daemon pane (T-21 §3): adopt the server pane waiting in `adopt`, or ask the
+    /// server for a new one. The term here is a placeholder until the snapshot arrives; the
+    /// io thread reads the pane's stream from the attach demultiplexer. `env` extras of a
+    /// launch are not carried to the server (reported).
+    fn spawn_remote(
+        &mut self,
+        id: PaneKey,
+        (rows, cols): (usize, usize),
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+    ) -> Result<Pane, String> {
+        let link = self.remote.as_mut().ok_or("not attached")?;
+        let np = match self.adopt.take() {
+            Some(np) => np,
+            None => link
+                .spawn(id, argv.unwrap_or_default(), cwd.as_deref(), (rows, cols))
+                .map_err(|e| format!("cannot open a pane stream: {e}"))?,
+        };
+        if let Some(sid) = np.sid {
+            link.sids.insert(sid, id);
+        }
+        let mut tc = self.settings.term.clone();
+        tc.rows = rows.max(1);
+        tc.cols = cols.max(1);
+        tc.cell_px = self.cell;
+        let term = Term::new(tc);
+        let defaults = TermDefaults {
+            fg: term.colors().0,
+            bg: term.colors().1,
+            cursor: term.colors().2,
+            ansi: std::array::from_fn(|i| term.palette(i as u8)),
+        };
+        let shared = Arc::new(PaneShared::new(term));
+        shared.deny.store(self.deny_word(), Ordering::Release);
+        let (wake_rx, wake_tx) =
+            rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).map_err(|e| e.to_string())?;
+        let to_render = self
+            .render_tx
+            .clone()
+            .ok_or("the render channel is not set up")?;
+        let first = self.first_pane == id;
+        let io = spawn_io(
+            IoArgs {
+                id,
+                shared: Arc::clone(&shared),
+                master: np.rx,
+                wake_rx,
+                to_main: self.to_main.clone(),
+                to_render,
+                hook: DumpHook::for_pane(first, id),
+                workers: self.workers.spawner(),
+                remote: Some(np.mailbox),
+            },
+            wake_tx,
+        )
+        .map_err(|e| e.to_string())?;
+        tracing::debug!(pane = id, adopted = np.sid.is_some(), "remote pane started");
+        Ok(Pane {
+            shared,
+            defaults,
+            pty: None,
+            io: Some(io),
+            dims: (rows, cols),
+            pending: None,
+            inflight: None,
+            pollout: None,
+            grace: None,
+            origin: (0, 0),
+            title: String::new(),
+            cwd: None,
+            cwd_host: None,
+            cwd_remote: None,
+            exit: None,
+            eof: false,
+            remote: Some(RemotePane {
+                sid: np.sid,
+                early: Vec::new(),
+            }),
+        })
+    }
+
+    /// The session daemon's stream told main something (T-21 §3).
+    fn on_remote(&mut self, e: crate::attach::Event) {
+        use crate::attach::Event;
+        if !self.started {
+            self.remote_early.push(e);
+            return;
+        }
+        match e {
+            Event::Added(np) => {
+                self.adopt = Some(np);
+                let id = self.new_tab_with(None, None, Vec::new());
+                // The pane could not be made: its stream end goes with `adopt`.
+                if id.is_none() {
+                    self.adopt = None;
+                }
+            }
+            Event::Bound { token, sid } => {
+                let Some(link) = self.remote.as_mut() else {
+                    return;
+                };
+                let Some(p) = self.panes.get_mut(&token) else {
+                    link.close(sid);
+                    return;
+                };
+                link.sids.insert(sid, token);
+                if let Some(r) = p.remote.as_mut() {
+                    r.sid = Some(sid);
+                    let mut early = std::mem::take(&mut r.early);
+                    if !early.is_empty() {
+                        link.input(sid, &early);
+                    }
+                    apoth_proto::askpass::wipe(&mut early);
+                }
+                // A size asked before the answer goes now.
+                if let Some(want) = p.pending.or(Some(p.dims)) {
+                    link.resize(sid, want, self.cell);
+                }
+            }
+            Event::FirstBound { sid } => {
+                // A mux domain's window: its first pane is now the server's pane `sid`.
+                let id = self.first_pane;
+                let Some(link) = self.remote.as_mut() else {
+                    return;
+                };
+                link.sids.insert(sid, id);
+                if let Some(p) = self.panes.get_mut(&id) {
+                    if let Some(r) = p.remote.as_mut() {
+                        r.sid = Some(sid);
+                        let mut early = std::mem::take(&mut r.early);
+                        if !early.is_empty() {
+                            link.input(sid, &early);
+                        }
+                        apoth_proto::askpass::wipe(&mut early);
+                    }
+                    link.resize(sid, p.pending.unwrap_or(p.dims), self.cell);
+                }
+            }
+            Event::Reconnecting(down) => {
+                if !down {
+                    // The server's sizes may be stale: every pane says its size again.
+                    if let Some(link) = self.remote.as_ref() {
+                        for p in self.panes.values() {
+                            if let Some(sid) = p.remote.as_ref().and_then(|r| r.sid) {
+                                link.resize(sid, p.pending.unwrap_or(p.dims), self.cell);
+                            }
+                        }
+                    }
+                }
+                self.link_state(down);
+            }
+            Event::SpawnFailed { token } => {
+                tracing::warn!(pane = token, "the session server could not start a pane");
+                if let Some(p) = self.panes.get_mut(&token) {
+                    p.exit = Some(ExitStatus::Code(1));
+                }
+                self.maybe_finish(token);
+            }
+            Event::Exited { sid, status } => {
+                let Some(id) = self.remote.as_mut().and_then(|l| l.sids.remove(&sid)) else {
+                    return;
+                };
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.exit = Some(ExitStatus::Code(status.unwrap_or(0)));
+                }
+                self.maybe_finish(id);
+            }
+            Event::Lost(why) => {
+                let Some(att) = self.remote.as_mut() else {
+                    return;
+                };
+                if att.detaching {
+                    return;
+                }
+                att.detaching = true;
+                let session = att.session.clone();
+                if why == "detached" {
+                    tracing::info!(%session, "detached from the session server");
+                } else {
+                    tracing::warn!(%session, "session server stream ended: {why}");
+                    eprintln!("apotheosis: {why}");
+                    self.exit_code = 1;
+                }
+                self.begin_close();
+            }
+        }
+    }
+
+    /// An ssh domain's shell (T-22 §4): `apoth ssh --hold [--cwd DIR] DEST`, the directory the
+    /// focused pane last reported over OSC 7 on that host.
+    fn ssh_domain_argv(&self, dest: &str) -> Vec<String> {
+        let cwd = self
+            .focused()
+            .and_then(|f| self.panes.get(&f))
+            .and_then(|p| p.cwd_remote.clone());
+        crate::domain::pane_argv(dest, cwd)
     }
 
     /// The working directory a new pane inherits (T-13 §6): the focused pane's OSC 7
@@ -987,6 +1413,9 @@ impl App {
         if !self.started {
             return;
         }
+        if let Some(a) = self.active_tab() {
+            self.status.bell_tabs.remove(&a);
+        }
         let Some((_, buffer)) = self.handle.surface_size(self.win) else {
             return;
         };
@@ -1002,10 +1431,10 @@ impl App {
             let Some(tab) = self.session.tab(tid) else {
                 continue;
             };
-            let placed = layout::panes(&tab.layout(), tab.size(), geo.origin, self.cell);
-            wanted.extend(placed.iter().map(|p| (p.id, p.dims)));
+            wanted.extend(layout::all_dims(tab, self.cell));
             if Some(tid) == active {
-                shown = placed;
+                shown = layout::panes(&tab.layout(), tab.size(), geo.origin, self.cell);
+                shown.extend(layout::floats(tab, geo.origin, self.cell));
             }
         }
         for p in &shown {
@@ -1031,6 +1460,7 @@ impl App {
         let panes: Vec<PaneView> = self
             .placed
             .iter()
+            .filter(|p| !self.open_veiled(p.id))
             .filter_map(|p| {
                 let pane = self.panes.get(&p.id)?;
                 Some(PaneView {
@@ -1040,6 +1470,7 @@ impl App {
                     origin: p.origin,
                     focused: Some(p.id) == focus,
                     first: p.id == self.first_pane,
+                    floating: p.floating,
                 })
             })
             .collect();
@@ -1058,12 +1489,13 @@ impl App {
         if !tab.name().is_empty() {
             return tab.name().to_owned();
         }
-        tab.focused()
+        let pane = tab.focused();
+        let title = pane
             .and_then(|p| self.panes.get(&p))
             .map(|p| p.title.as_str())
             .filter(|t| !t.is_empty())
-            .unwrap_or("shell")
-            .to_owned()
+            .unwrap_or("shell");
+        self.tab_label(pane, title)
     }
 
     fn tab_specs(&self) -> Vec<TabSpec> {
@@ -1072,13 +1504,50 @@ impl App {
         };
         w.tabs
             .iter()
-            .map(|&tid| TabSpec {
-                id: tab_widget(tid),
-                title: TextRun::program(&self.tab_title(tid), size::BODY),
-                active: Some(tid) == w.active,
-                badges: Vec::new(),
+            .map(|&tid| {
+                let pane = self.session.tab(tid).and_then(|t| t.focused());
+                TabSpec {
+                    id: tab_widget(tid),
+                    title: TextRun::program(&self.tab_title(tid), size::BODY),
+                    active: Some(tid) == w.active,
+                    badges: self.tab_badges(tid),
+                    profile: pane
+                        .and_then(|p| self.pane_profile(p))
+                        .map(|n| TextRun::program(n, apoth_ui::tokens::size::MICRO)),
+                }
             })
             .collect()
+    }
+
+    /// A tab's badges: the bell that rang out of sight, and the OSC 9;4 progress of its panes.
+    fn tab_badges(&self, tid: TabId) -> Vec<Badge> {
+        let mut out = Vec::new();
+        if self.status.bell_tabs.contains(&tid) {
+            out.push(Badge::Bell);
+        }
+        let Some(tab) = self.session.tab(tid) else {
+            return out;
+        };
+        // The focused pane's progress wins, else the first pane that reports one.
+        let panes = tab.panes();
+        let pick = tab
+            .focused()
+            .filter(|p| self.status.progress.contains_key(p))
+            .or_else(|| {
+                panes
+                    .iter()
+                    .copied()
+                    .find(|p| self.status.progress.contains_key(p))
+            });
+        if let Some(&(state, v)) = pick.and_then(|p| self.status.progress.get(&p)) {
+            out.push(match state {
+                2 => Badge::ProgressError(v),
+                3 => Badge::ProgressBusy,
+                4 => Badge::ProgressPaused(v),
+                _ => Badge::Progress(v),
+            });
+        }
+        out
     }
 
     /// The palette's rows in view, as the sheet draws them.
@@ -1086,28 +1555,44 @@ impl App {
         let p = self.palette.as_ref()?;
         let n = apoth_ui::palette::max_rows(area);
         let (rows, selected) = p.window(n);
-        let program = p.mode == pal::Mode::Tabs;
-        let entries = rows
+        let entries: Vec<Entry> = rows
             .iter()
-            .map(|r| Entry {
-                title: if program {
-                    TextRun::program(&r.title, size::BODY)
-                } else {
-                    TextRun::interface(r.title.clone(), size::BODY)
-                },
-                hint: r
-                    .hint
-                    .as_ref()
-                    .map(|h| TextRun::interface(h.clone(), size::BODY_SMALL)),
+            .map(|r| {
+                let mut e = Entry::new(
+                    if r.program {
+                        TextRun::program(&r.title, size::BODY)
+                    } else {
+                        TextRun::interface(r.title.clone(), size::BODY)
+                    },
+                    r.hint
+                        .as_ref()
+                        .map(|h| TextRun::interface(h.clone(), size::BODY_SMALL)),
+                );
+                if p.mode == pal::Mode::Open {
+                    (e.disabled, e.marker) = self.open_entry(r);
+                }
+                e
             })
             .collect();
+        let view = self.open_view().filter(|_| p.mode == pal::Mode::Open);
+        let pinned = view
+            .as_ref()
+            .map_or(0, |_| self.open_pinned(p.scroll, entries.len()));
         Some(PaletteSpec {
             id: PALETTE_ID,
             query: p.query.clone(),
-            placeholder: TextRun::interface(p.mode.placeholder(), size::BODY),
+            placeholder: TextRun::interface(
+                view.as_ref()
+                    .map_or_else(|| p.mode.placeholder(), |v| v.placeholder),
+                size::BODY,
+            ),
             entries,
             selected,
             total: p.rows.len(),
+            pinned,
+            field: view.as_ref().is_none_or(|v| v.field),
+            anchor: view.as_ref().and_then(|v| v.anchor),
+            header: view.and_then(|v| v.header),
         })
     }
 
@@ -1124,29 +1609,145 @@ impl App {
             _ => FrameMode::Full,
         };
         let dim = c.float("panes.inactive-dim").clamp(0.0, 1.0) as f32;
-        // Frames only matter when there is more than one pane to tell apart.
-        let frames = if self.placed.len() > 1 && mode != FrameMode::None {
-            self.placed
-                .iter()
-                .map(|p| apoth_ui::pane::PaneSpec {
-                    id: pane_widget(p.id),
-                    rect: layout::frame_rect(p, self.cell, geo.ui, geo.area),
-                    focused: Some(p.id) == focus,
-                    title: None,
-                    mode,
-                    inactive_dim: dim,
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+        // Tiled frames only matter when there is more than one pane to tell apart; a float
+        // always stands on its own glass (MUX-18), whatever `panes.frame` says.
+        let tiled = self.placed.iter().filter(|p| !p.floating).count();
+        let frames = self
+            .placed
+            .iter()
+            .filter(|p| !self.open_veiled(p.id))
+            .filter(|p| p.floating || (tiled > 1 && mode != FrameMode::None))
+            .map(|p| apoth_ui::pane::PaneSpec {
+                id: pane_widget(p.id),
+                rect: layout::frame_rect(p, self.cell, geo.ui, geo.area),
+                focused: Some(p.id) == focus,
+                title: None,
+                mode: if p.floating { FrameMode::Full } else { mode },
+                inactive_dim: dim,
+                floating: p.floating,
+            })
+            .collect();
         ChromeModel {
             strip: geo.strip.map(|r| (r, self.tab_specs())),
             tab_style: style,
             frames,
             palette: self.palette_spec(geo.area),
+            search: self.search_spec(),
+            tooltip: self.tooltip_spec(),
+            bell: self.bell_rect(geo),
+            media: None,
+            media_muted: self.media_muted_rect(geo),
+            media_fx: crate::render::MediaFx::default(),
             ui: self.ui_state.clone(),
         }
+    }
+
+    /// The frame rect of the pane showing the muted notice, while it shows.
+    fn media_muted_rect(&self, geo: &WinLayout) -> Option<apoth_ui::Rect> {
+        let (id, _) = self.status.media_muted.as_ref()?;
+        let p = self.placed.iter().find(|p| p.id == *id)?;
+        Some(layout::frame_rect(p, self.cell, geo.ui, geo.area))
+    }
+
+    /// Show the muted notice over pane `id` for [`MEDIA_MUTED_NOTICE`] (a later one in any
+    /// pane replaces it). Only the timer that clears it runs; nothing opens.
+    fn media_muted_notice(&mut self, id: PaneKey) {
+        if let Some((_, t)) = self.status.media_muted.take() {
+            self.lh.remove(t);
+        }
+        let timer = self.lh.insert_source(
+            Timer::from_duration(MEDIA_MUTED_NOTICE),
+            |_, (), app: &mut App| {
+                app.status.media_muted = None;
+                app.send_layout();
+                TimeoutAction::Drop
+            },
+        );
+        if let Ok(t) = timer {
+            self.status.media_muted = Some((id, t));
+        }
+        self.send_layout();
+    }
+
+    /// A left press over a media placement with mouse reporting off toggles its playback
+    /// (T-08 §4): the toggle goes to the pane's io thread, which owns the term. True when
+    /// the press was taken.
+    ///
+    /// The press is hit-tested here against the placements the pane last drew, not against
+    /// the pointer's last hover report: a click may come with no motion before it.
+    fn media_click(&mut self, id: PaneKey) -> bool {
+        let (Some(geo), Some((x, y))) = (self.geometry_of(id), self.pointer) else {
+            return false;
+        };
+        let Some(p) = self.panes.get(&id) else {
+            return false;
+        };
+        if p.shared.mirror.load().mouse_mode() != apoth_input::MouseMode::None {
+            return false;
+        }
+        let h = geo.hit(x, y);
+        let hit = (!h.above && !h.below)
+            .then(|| p.shared.media_shown_at(h.row, h.col))
+            .flatten();
+        let Some(key) = hit else {
+            return false;
+        };
+        p.shared.post_media_toggle(key);
+        if let Some(io) = &p.io {
+            let _ = rustix::io::write(&io.wake, &[crate::pane::WAKE_MEDIA_CLICK]);
+        }
+        true
+    }
+
+    /// The search sheet's content (T-14 §6): the query, the count and the mode chips.
+    fn search_spec(&self) -> Option<SearchSpec> {
+        let s = self.nav.search.as_ref()?;
+        let (count, count_kind) = Nav::search_count(s);
+        let chip = |chip, label: &str, on| ChipSpec {
+            chip,
+            label: label.to_owned(),
+            on,
+        };
+        Some(SearchSpec {
+            id: SEARCH_ID,
+            query: s.query.text.clone(),
+            placeholder: TextRun::interface("Find", size::BODY),
+            count,
+            count_kind,
+            chips: vec![
+                match s.query.case {
+                    Case::Smart => chip(Chip::Case, "Aa", false),
+                    Case::Sensitive => chip(Chip::Case, "Aa", true),
+                    Case::Insensitive => chip(Chip::Case, "aa", true),
+                },
+                chip(Chip::Regex, ".*", s.query.regex),
+                chip(Chip::Word, "\\b", s.query.whole_word),
+                chip(
+                    Chip::Scope,
+                    "Screen",
+                    s.query.scope == crate::search::Scope::Screen,
+                ),
+            ],
+            focused: s.focused,
+            can_step: s.status.count > 0,
+        })
+    }
+
+    /// The hovered link's URI by the pointer (T-14 §5): program text, so sanitised and capped.
+    fn tooltip_spec(&self) -> Option<TooltipSpec> {
+        let uri = self.nav.link_tip.as_ref()?;
+        let (x, y) = self.pointer?;
+        Some(TooltipSpec {
+            text: TextRun::program(uri, size::BODY_SMALL),
+            anchor: self.ui_point(x, y)?,
+        })
+    }
+
+    /// The frame of the pane the visual bell is lighting.
+    fn bell_rect(&self, geo: &WinLayout) -> Option<apoth_ui::Rect> {
+        let (id, _) = self.status.bell_flash.as_ref()?;
+        let p = self.placed.iter().find(|p| p.id == *id)?;
+        Some(layout::frame_rect(p, self.cell, geo.ui, geo.area))
     }
 
     /// The test-only mux dump (`APOTH_TEST_MUX`, debug builds): tabs, panes, focus, palette.
@@ -1176,8 +1777,13 @@ impl App {
             let dims = self.panes.get(&p.id).map_or((0, 0), |x| x.dims);
             let _ = writeln!(
                 s,
-                "pane {} rows {} cols {} at {},{}",
-                p.id, dims.0, dims.1, p.origin.0, p.origin.1
+                "pane {} rows {} cols {} at {},{}{}",
+                p.id,
+                dims.0,
+                dims.1,
+                p.origin.0,
+                p.origin.1,
+                if p.floating { " float" } else { "" }
             );
         }
         let _ = writeln!(s, "focus {}", focus.unwrap_or(0));
@@ -1190,11 +1796,17 @@ impl App {
                     p.rows.len(),
                     p.query
                 );
+                if p.mode == pal::Mode::Open
+                    && let Some(r) = p.rows.first()
+                {
+                    let _ = writeln!(s, "palette first {}", r.title);
+                }
             }
             None => s.push_str("palette closed\n"),
         }
         let tables = self.keys.active(&self.keymap).join(",");
         let _ = writeln!(s, "tables {tables}");
+        self.media_dump(&mut s);
         if let Some(d) = self.mux_dump.as_mut() {
             d.write(s);
         }
@@ -1209,6 +1821,7 @@ impl App {
         }
         let old = std::mem::replace(&mut self.focus_pane, now);
         if let Some(o) = old {
+            self.end_nav(o);
             self.report_focus(o, false);
             if self.panes.contains_key(&o) {
                 self.ctl_emit(Event::new(EventKind::FocusOut, Cause::User), Some(o));
@@ -1226,8 +1839,8 @@ impl App {
                 .get(&n)
                 .map(|p| p.title.clone())
                 .unwrap_or_default();
-            self.handle
-                .set_title(self.win, &self.settings.window_title(&self.term_title));
+            let title = self.window_title_now();
+            self.handle.set_title(self.win, &title);
             // The key-table stack and a half-typed sequence belong to the old pane's context.
             self.keys.reset();
         }
@@ -1271,19 +1884,79 @@ impl App {
         Some(id)
     }
 
-    fn split(&mut self, dir: MuxDir, argv: Option<Vec<String>>, cwd: Option<PathBuf>) {
-        let Some(target) = self.focused() else { return };
+    fn split(
+        &mut self,
+        dir: MuxDir,
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+    ) -> Option<PaneKey> {
+        let target = self.focused()?;
         let cwd = cwd.or_else(|| self.inherited_cwd());
         let spec = MuxPaneSpec::default();
         match self
             .session
             .split_pane(target, dir, SplitSize::HALF, spec, ())
         {
-            Ok(id) => self.finish_new_pane(id, argv, cwd, Vec::new()),
+            Ok(id) => {
+                self.finish_new_pane(id, argv, cwd, env);
+                self.panes.contains_key(&id).then_some(id)
+            }
             Err(e) => {
                 // Too small for another pane (T-13 §3: 2x1 minimum) and the like.
                 tracing::debug!(error = %e, "split refused");
                 self.handle.ring_bell(Some(self.win));
+                None
+            }
+        }
+    }
+
+    /// `pane.float`: a new floating pane, half the tab, placed by the MUX-19 search.
+    fn float(
+        &mut self,
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+        env: Vec<(String, String)>,
+    ) -> Option<PaneKey> {
+        let target = self.focused()?;
+        let cwd = cwd.or_else(|| self.inherited_cwd());
+        let tab = self.session.tab(self.session.tab_of(target)?)?;
+        let s = tab.size();
+        let rect = tab.place_float(s.cols / 2, s.rows / 2);
+        match self
+            .session
+            .float_pane(target, rect, MuxPaneSpec::default(), ())
+        {
+            Ok(id) => {
+                self.finish_new_pane(id, argv, cwd, env);
+                self.panes.contains_key(&id).then_some(id)
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, "float refused");
+                self.handle.ring_bell(Some(self.win));
+                None
+            }
+        }
+    }
+
+    /// Resolve a `profile=` for a new pane: its shell, cwd and env under any explicit argv
+    /// and cwd. `None` (with a bell) for an unknown profile.
+    #[allow(clippy::type_complexity)]
+    fn with_profile(
+        &mut self,
+        profile: Option<&str>,
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+    ) -> Option<(Option<Vec<String>>, Option<PathBuf>, Vec<(String, String)>)> {
+        let Some(name) = profile else {
+            return Some((argv, cwd, Vec::new()));
+        };
+        match self.profile_launch(name, argv, cwd) {
+            Ok(r) => Some(r),
+            Err(()) => {
+                tracing::info!("unknown profile");
+                self.handle.ring_bell(Some(self.win));
+                None
             }
         }
     }
@@ -1329,6 +2002,7 @@ impl App {
         let tab = self.session.tab_of(id);
         let code = self.panes.get(&id).and_then(|p| p.exit).map(exit_code_of);
         self.ctl_emit(Event::new(EventKind::PaneClosed, Cause::Child), Some(id));
+        self.open_pane_gone(id, code);
         self.ctl_pane_gone(id, code);
         let _ = self.session.close_pane(id);
         if let Some(t) = tab
@@ -1337,6 +2011,18 @@ impl App {
             let mut ev = Event::new(EventKind::TabClosed, Cause::Child);
             let _ = ev.set("tab", FieldValue::Int(t as i64));
             self.ctl_emit(ev, None);
+        }
+        self.nav.consents.forget(id);
+        self.auto_forget(id);
+        if let Some(t) = tab
+            && self.session.tab(t).is_none()
+        {
+            self.auto_forget_tab(t);
+        }
+        self.nav.osc52_reads.retain(|r| r.1 != id);
+        if self.nav.consent.as_ref().is_some_and(|c| c.pane == id) {
+            self.nav.consent = None;
+            self.refresh_bar();
         }
         if self.capture == Some(id) {
             self.capture = None;
@@ -1347,6 +2033,17 @@ impl App {
         if self.paste.as_ref().is_some_and(|p| p.pane == id) {
             self.paste = None;
             self.refresh_bar();
+        }
+        self.status.progress.remove(&id);
+        if let Some(link) = self.remote.as_mut()
+            && let Some(p) = self.panes.get(&id)
+            && let Some(sid) = p.remote.as_ref().and_then(|r| r.sid)
+        {
+            link.sids.remove(&sid);
+            // Closing a pane closes the server's; closing the window only detaches.
+            if p.exit.is_none() && !link.detaching {
+                link.close(sid);
+            }
         }
         if let Some(mut p) = self.panes.remove(&id) {
             for t in [p.pollout.take(), p.grace.take()].into_iter().flatten() {
@@ -1395,6 +2092,10 @@ impl App {
 
     /// Close every pane (window close, `app.quit`).
     fn begin_close(&mut self) {
+        if let Some(link) = self.remote.as_mut() {
+            // The window goes; the session's panes keep running on the server.
+            link.detach();
+        }
         if !self.started {
             self.quit();
             return;
@@ -1439,6 +2140,9 @@ impl App {
     // ------------------------------------------------------------------ wayland
 
     fn on_wl(&mut self, ev: WlEvent) {
+        if self.media_wl(&ev) {
+            return;
+        }
         match ev {
             WlEvent::Configure(c) => {
                 if self.started {
@@ -1452,6 +2156,9 @@ impl App {
                 self.relayout();
                 self.poke();
             }
+            // `eclipse_glass_v1` started or stopped drawing panes: the render thread reads
+            // the flag on its next pass and redraws the interface's ground.
+            WlEvent::CapabilitiesChanged => self.poke(),
             WlEvent::BlurPathChanged { path, .. } => {
                 self.blur = Some(path);
                 self.send_render_update(false);
@@ -1492,6 +2199,9 @@ impl App {
 
     fn on_input(&mut self, i: InputEvent) {
         self.seat = Some(i.seat);
+        if self.media_input(&i.kind) {
+            return;
+        }
         match i.kind {
             InputKind::Keymap(km) => {
                 if km.format == KeymapFormat::XkbV1
@@ -1545,6 +2255,7 @@ impl App {
 
     fn set_focus(&mut self, focused: bool) {
         self.win_focused = focused;
+        self.password_focus(focused);
         self.a11y_window_focus(focused);
         if !focused {
             // Nothing held survives the keyboard leaving: no table, no half-typed sequence.
@@ -1573,9 +2284,35 @@ impl App {
                 }
                 return;
             }
-            if self.palette.is_some() || self.paste.is_some() {
+            if self.palette.is_some()
+                || self.remote_ui.asking()
+                || self.paste.is_some()
+                || self.nav.hints.is_some()
+                || self.nav.consent.is_some()
+                || self.nav.open.is_some()
+                || self.auto.confirm.is_some()
+                || self.nav.search.as_ref().is_some_and(|s| s.focused)
+            {
                 return;
             }
+        }
+        if self.remote_ui.asking() {
+            // The askpass sheet or the session-kill confirm owns the keyboard (T-22 §3).
+            if pressed {
+                if !repeat {
+                    self.consumed.push(Consumed::plain(key));
+                }
+                self.remote_key(&look, repeat);
+            }
+            return;
+        }
+        if self.nav.consent.is_some() || self.nav.open.is_some() || self.auto.confirm.is_some() {
+            // A consent, link-confirm or rule bar owns the keyboard until answered (T-18 §3).
+            if pressed && !repeat {
+                self.consumed.push(Consumed::plain(key));
+                self.answer_nav_bar(look.key);
+            }
+            return;
         }
         if self.paste.is_some() {
             // A paste confirm owns the keyboard until answered (T-08 §5: nothing typed reaches
@@ -1593,6 +2330,43 @@ impl App {
                     self.consumed.push(Consumed::plain(key));
                 }
                 self.palette_key(&look, key);
+            }
+            return;
+        }
+        if self.nav.hints.is_some() {
+            // Hint mode owns the keyboard: typed keys pick a label (T-14 §7).
+            if pressed {
+                if !repeat {
+                    self.consumed.push(Consumed::plain(key));
+                }
+                self.hint_key(&look);
+            }
+            return;
+        }
+        if self.nav.search.as_ref().is_some_and(|s| s.focused) {
+            // The search bar owns the keyboard while focused (T-14 §6).
+            if pressed {
+                if !repeat {
+                    self.consumed.push(Consumed::plain(key));
+                }
+                self.search_key(&look);
+            }
+            return;
+        }
+        if pressed
+            && !repeat
+            && let Some((backward, till)) = self.nav.await_jump.take()
+        {
+            // `cursor.jump-char` with no character: this key names it.
+            self.consumed.push(Consumed::plain(key));
+            if let Some(c) = look
+                .text
+                .as_str()
+                .chars()
+                .next()
+                .filter(|c| !c.is_control())
+            {
+                self.jump(c, backward, till);
             }
             return;
         }
@@ -1621,8 +2395,10 @@ impl App {
             let mut names = NameBuf::default();
             let ev = binds::bind_event(&look, key, bm, self.keymap.layout_independent, &mut names);
             let sel = self.mouse.has_selection();
+            let copy = self.nav.copy == Some(focus);
+            let searching = self.nav.search.is_some();
             let r = self.keys.press(&self.keymap, &ev, Instant::now(), &|m| {
-                mode_holds(m, modes, sel)
+                mode_holds(m, modes, sel, copy, searching)
             });
             match r {
                 Resolved::None => {}
@@ -1651,6 +2427,13 @@ impl App {
                 }
             }
         }
+        if self.nav.copy == Some(focus) {
+            // Copy mode: keys its table does not bind go nowhere (never to the program).
+            if pressed && !repeat {
+                self.consumed.push(Consumed::plain(key));
+            }
+            return;
+        }
         let kind = if !pressed {
             KeyKind::Release
         } else if repeat {
@@ -1667,6 +2450,10 @@ impl App {
         if pressed {
             p.shared.last_key_ns.store(now_ns(), Ordering::Release);
             self.typed();
+        }
+        // A password prompt is mapping for this pane: the key is its (T-22 §3).
+        if self.hold_key(focus, &buf[..n]) {
+            return;
         }
         self.send_bytes(focus, &buf[..n]);
     }
@@ -1735,6 +2522,7 @@ impl App {
     }
 
     fn close_palette(&mut self) {
+        self.open_sheet_closed();
         if self.palette.take().is_some() {
             self.ui_state = UiState::default();
             self.send_layout();
@@ -1849,6 +2637,7 @@ impl App {
                 }
                 self.palette_changed();
             }
+            Pick::Open(o) => self.open_pick(o),
         }
     }
 
@@ -1961,10 +2750,19 @@ impl App {
                 direction,
                 argv,
                 cwd,
-                profile: _,
+                profile,
             } => {
                 let argv = argv.and_then(|a| self.expand_argv(&a));
-                self.split(split_dir(direction), argv, cwd.map(PathBuf::from));
+                let Some((argv, cwd, env)) =
+                    self.with_profile(profile.as_deref(), argv, cwd.map(PathBuf::from))
+                else {
+                    return true;
+                };
+                if let Some(id) = self.split(split_dir(direction), argv, cwd, env)
+                    && let Some(p) = profile
+                {
+                    self.set_explicit_profile(id, &p);
+                }
             }
             A::PaneClose { force: _ } => {
                 // HOOK(close.confirm): the running-process confirmation sheet is not built
@@ -2003,16 +2801,50 @@ impl App {
                     self.relayout();
                 }
             }
+            A::PaneFloat { argv, cwd, profile } => {
+                let argv = argv.and_then(|a| self.expand_argv(&a));
+                let Some((argv, cwd, env)) =
+                    self.with_profile(profile.as_deref(), argv, cwd.map(PathBuf::from))
+                else {
+                    return true;
+                };
+                if let Some(id) = self.float(argv, cwd, env)
+                    && let Some(p) = profile
+                {
+                    self.set_explicit_profile(id, &p);
+                }
+            }
+            A::PaneToggleFloat {} => self.with_tab(|t, f| {
+                if t.is_float(f) {
+                    let _ = t.embed(f, None, apoth_mux::Dir::Right);
+                } else {
+                    let s = t.size();
+                    let r = t.place_float(s.cols / 2, s.rows / 2);
+                    let _ = t.to_float(f, r);
+                }
+            }),
+            A::PaneToggleFloats {} => self.with_tab(|t, _| {
+                t.toggle_floats();
+            }),
+            A::PaneTogglePin {} => self.with_tab(|t, f| {
+                let pinned = t.floats().iter().any(|x| x.pane == f && x.pinned);
+                let _ = t.set_float_pinned(f, !pinned);
+            }),
             A::LayoutNext {} => self.with_tab(|t, _| {
                 let _ = t.next_preset();
             }),
-            A::TabNew {
-                argv,
-                cwd,
-                profile: _,
-            } => {
+            A::TabNew { argv, cwd, profile } => {
                 let argv = argv.and_then(|a| self.expand_argv(&a));
-                self.new_tab(argv, cwd.map(PathBuf::from));
+                let Some((argv, cwd, env)) =
+                    self.with_profile(profile.as_deref(), argv, cwd.map(PathBuf::from))
+                else {
+                    return true;
+                };
+                if let Some(id) = self.new_tab_with(argv, cwd, env)
+                    && let Some(p) = profile
+                {
+                    self.set_explicit_profile(id, &p);
+                }
             }
             A::TabClose {} => {
                 if let Some(t) = self.active_tab() {
@@ -2070,8 +2902,144 @@ impl App {
                     self.dispatch(members, depth + 1);
                 }
             }
+            A::SearchStart { query } => self.open_search(query),
+            A::SearchSet { query } => self.open_search(Some(query)),
+            A::SearchNext {} => self.search_step(true),
+            A::SearchPrevious {} => self.search_step(false),
+            A::SearchCancel {} => self.close_search(),
+            A::SearchToggleCase {} => {
+                if let Some(s) = self.nav.search.as_mut() {
+                    s.query.case = match s.query.case {
+                        Case::Smart => Case::Sensitive,
+                        Case::Sensitive => Case::Insensitive,
+                        Case::Insensitive => Case::Smart,
+                    };
+                    self.search_now();
+                }
+            }
+            A::SearchToggleRegex {} => {
+                if let Some(s) = self.nav.search.as_mut() {
+                    s.query.regex = !s.query.regex;
+                    self.search_now();
+                }
+            }
+            A::CopyModeEnter {} => self.enter_copy(),
+            A::CopyModeExit {} => self.exit_copy(),
+            A::CopyModeToggle {} => {
+                if self.nav.copy.is_some() {
+                    self.exit_copy();
+                } else {
+                    self.enter_copy();
+                }
+            }
+            A::CopyModeMove { motion, count } => {
+                if let Some(id) = self.nav.copy {
+                    self.view_of(
+                        id,
+                        ViewCmd::CopyMove {
+                            motion,
+                            count: count.unwrap_or(1),
+                        },
+                    );
+                }
+            }
+            A::CopyModeToggleSelection { unit } => {
+                use apoth_action::enums::SelectUnit;
+                if let Some(id) = self.nav.copy {
+                    let kind = match unit {
+                        Some(SelectUnit::Word) => apoth_grid::SelKind::Word,
+                        Some(SelectUnit::Line) => apoth_grid::SelKind::Line,
+                        Some(SelectUnit::Block) => apoth_grid::SelKind::Block,
+                        Some(SelectUnit::Cell) | None => apoth_grid::SelKind::Simple,
+                    };
+                    self.mouse.mark_selection();
+                    self.view_of(id, ViewCmd::CopySelect(kind));
+                }
+            }
+            A::CursorJumpChar { ch, backward, till } => {
+                if self.nav.copy.is_some() {
+                    match ch {
+                        Some(c) => self.jump(c, backward, till),
+                        None => self.nav.await_jump = Some((backward, till)),
+                    }
+                }
+            }
+            A::CursorJumpRepeat { reverse } => {
+                if let Some((c, backward, till)) = self.nav.last_jump
+                    && let Some(id) = self.nav.copy
+                {
+                    self.view_of(
+                        id,
+                        ViewCmd::CopyJump {
+                            ch: c,
+                            backward: backward ^ reverse,
+                            till,
+                        },
+                    );
+                }
+            }
+            A::HintsStart { hint } => self.start_hints(hint.as_deref()),
+            A::HintsCancel {} => {
+                if let Some(id) = self.nav.hints {
+                    self.view_of(id, ViewCmd::HintsCancel);
+                }
+            }
+            A::BlockJump { direction } => {
+                self.scrolled = true;
+                self.view(ViewCmd::BlockJump {
+                    older: direction == apoth_action::enums::Order::Prev,
+                });
+            }
+            A::Open { target, argv } => {
+                let argv = match argv {
+                    Some(a) => match self.expand_argv(&a) {
+                        Some(v) => Some(v),
+                        None => return true,
+                    },
+                    None => None,
+                };
+                // A URI is held to the link rules; a bare path opens as given.
+                if (target.contains("://") || target.starts_with("mailto:"))
+                    && let Err(e) =
+                        security::check_link(&target, &self.settings.nav.schemes, &self.hostname)
+                {
+                    tracing::info!(reason = e.reason(), "open refused");
+                    return true;
+                }
+                self.spawn_open(&target, argv);
+            }
+            A::OpenDefault { target, placement } => {
+                self.open_action(crate::open::Intent::Default, target, placement);
+            }
+            A::OpenWith { target } => self.open_action(crate::open::Intent::Picker, target, None),
+            A::OpenMenu { target } => self.open_action(crate::open::Intent::Menu, target, None),
             A::ConfigReload {} => self.start_reload(),
+            A::ConfigSet { key, value } => {
+                if self.runtime_override(&key, Some(&value)).is_err() {
+                    tracing::info!(key = %key, "runtime override refused");
+                }
+            }
+            A::ConfigReset { key } => {
+                if self.runtime_override(&key, None).is_err() {
+                    tracing::info!(key = %key, "runtime override reset refused");
+                }
+            }
+            A::Notify {
+                title,
+                body,
+                urgency,
+            } => self.notify_action(&title, body.as_deref(), urgency),
+            A::VarSet { name, value, scope } => self.var_action(&name, Some(&value), scope),
+            A::VarUnset { name, scope } => self.var_action(&name, None, scope),
             A::AppQuit { force: _ } | A::WindowClose {} => self.begin_close(),
+            A::SessionDetach {} => self.session_detach(),
+            A::SessionKill {} => self.session_kill(),
+            A::PaneReconnect {} => {
+                let focus = self.focused();
+                if !self.reconnect_pane(focus) {
+                    tracing::info!("pane.reconnect: no pane lost its ssh connection");
+                }
+            }
             A::AppIgnore {} => {}
             other => {
                 tracing::debug!(action = other.id(), "action not available yet");
@@ -2170,6 +3138,10 @@ impl App {
             CopyTarget::Primary => SelectionKind::Primary,
         };
         let n = c.text.len();
+        if kind == SelectionKind::Clipboard {
+            // The clipboard now holds what the user copied, not program content.
+            self.nav.osc52_tag = None;
+        }
         match self.handle.set_selection(seat, kind, c.text.into_bytes()) {
             Ok(()) => tracing::debug!(bytes = n, ?kind, "selection offered"),
             Err(e) => tracing::warn!(error = %e, "cannot offer the selection"),
@@ -2223,6 +3195,19 @@ impl App {
         if d.direction != TransferDirection::Receive {
             return;
         }
+        if let Some(i) = self.nav.osc52_reads.iter().position(|r| r.0 == d.id) {
+            // A permitted OSC 52 read: answer with the content as one reply unit.
+            let (_, pane, sel) = self.nav.osc52_reads.swap_remove(i);
+            let data = if d.status == TransferStatus::Complete {
+                d.data.0
+            } else {
+                Vec::new()
+            };
+            let unit = nav::osc52_reply(&sel, &data, self.settings.term.osc52_max);
+            tracing::debug!(bytes = data.len(), "osc 52 read answered");
+            self.send_unit(pane, unit);
+            return;
+        }
         let ok = d.status == TransferStatus::Complete;
         if drop {
             self.handle.finish_drop(d.seat, ok);
@@ -2256,7 +3241,16 @@ impl App {
         if bytes.is_empty() || self.paste.is_some() {
             return;
         }
-        match paste::needs_confirm(&bytes, origin, modes, &self.settings.input.paste) {
+        let target = paste::Target {
+            at_prompt: p.shared.at_prompt.load(Ordering::Acquire),
+            bracketed_ok: p.shared.bracketed_ok.load(Ordering::Acquire),
+            osc52: origin == Origin::Selection
+                && self
+                    .nav
+                    .osc52_tag
+                    .is_some_and(|(h, _)| h == nav::content_hash(&bytes)),
+        };
+        match paste::needs_confirm_at(&bytes, origin, modes, &self.settings.input.paste, target) {
             None => self.send_paste(id, &bytes),
             Some(reason) => {
                 tracing::debug!(?reason, bytes = bytes.len(), "paste needs confirmation");
@@ -2268,6 +3262,589 @@ impl App {
                 });
                 self.bar_dismissed = false;
                 self.refresh_bar();
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ navigation
+
+    /// End search, hints and copy mode of pane `id` (focus left it or it closed).
+    fn end_nav(&mut self, id: PaneKey) {
+        if self.nav.copy == Some(id) {
+            self.exit_copy();
+        }
+        if self.nav.hints == Some(id) {
+            self.nav.hints = None;
+            self.view_of(id, ViewCmd::HintsCancel);
+        }
+        if self.nav.search.as_ref().is_some_and(|s| s.pane == id) {
+            self.close_search();
+        }
+        if self.nav.link_tip.take().is_some() {
+            self.send_layout();
+        }
+        self.nav.hover_cell = None;
+    }
+
+    fn open_search(&mut self, query: Option<String>) {
+        let Some(pane) = self.focused() else { return };
+        let fire = query.is_some();
+        match self.nav.search.as_mut() {
+            Some(s) if s.pane == pane => {
+                s.focused = true;
+                if let Some(q) = query {
+                    s.query.text = q;
+                }
+            }
+            _ => {
+                if let Some(old) = self.nav.search.take() {
+                    self.view_of(old.pane, ViewCmd::Search(None));
+                }
+                self.nav.search = Some(SearchUi {
+                    pane,
+                    query: Query {
+                        text: query.unwrap_or_default(),
+                        ..Query::default()
+                    },
+                    status: crate::search::Status::default(),
+                    focused: true,
+                    generation: 0,
+                });
+            }
+        }
+        if fire {
+            self.search_now();
+        } else {
+            self.send_layout();
+        }
+    }
+
+    fn close_search(&mut self) {
+        if let Some(s) = self.nav.search.take() {
+            self.view_of(s.pane, ViewCmd::Search(None));
+            self.send_layout();
+        }
+    }
+
+    fn search_step(&mut self, older: bool) {
+        if let Some(pane) = self.nav.search.as_ref().map(|s| s.pane) {
+            self.scrolled = true;
+            self.view_of(pane, ViewCmd::SearchStep { older });
+        }
+    }
+
+    /// Restart the search with the current query at once (mode toggles, `search.set`).
+    fn search_now(&mut self) {
+        let Some(s) = self.nav.search.as_mut() else {
+            return;
+        };
+        s.generation += 1;
+        let generation = s.generation;
+        self.send_layout();
+        self.search_fire(generation);
+    }
+
+    /// The query was typed: restart the search after the debounce (T-14 §6: 150 ms).
+    fn search_changed(&mut self) {
+        let Some(s) = self.nav.search.as_mut() else {
+            return;
+        };
+        s.generation += 1;
+        let generation = s.generation;
+        self.send_layout();
+        let _ = self.lh.insert_source(
+            Timer::from_duration(Duration::from_millis(nav::DEBOUNCE_MS)),
+            move |_, (), app: &mut App| {
+                app.search_fire(generation);
+                TimeoutAction::Drop
+            },
+        );
+    }
+
+    fn search_fire(&mut self, generation: u64) {
+        let Some(s) = self.nav.search.as_ref() else {
+            return;
+        };
+        if s.generation != generation {
+            return;
+        }
+        let (pane, q) = (s.pane, s.query.clone());
+        self.scrolled = true;
+        self.view_of(pane, ViewCmd::Search(Some(q)));
+    }
+
+    /// A key while the search bar has the keyboard.
+    fn search_key(&mut self, look: &KeyLookup) {
+        enum Op {
+            Close,
+            Unfocus,
+            Step(bool),
+            Edited,
+            Chip(Chip),
+            Nothing,
+        }
+        let shift = self.held.contains(Mods::SHIFT);
+        let alt = self.held.contains(Mods::ALT);
+        let ctrl = self.held.contains(Mods::CTRL) || self.held.contains(Mods::SUPER);
+        let copy = self.nav.copy;
+        let Some(s) = self.nav.search.as_mut() else {
+            return;
+        };
+        let in_copy = copy == Some(s.pane);
+        let op = match look.key {
+            Key::Named(Named::Escape) if in_copy => Op::Unfocus,
+            Key::Named(Named::Escape) => Op::Close,
+            Key::Named(Named::Enter | Named::Kp(apoth_input::Kp::Enter)) => {
+                if in_copy {
+                    s.focused = false;
+                }
+                Op::Step(!shift)
+            }
+            Key::Named(Named::Up) => Op::Step(true),
+            Key::Named(Named::Down) => Op::Step(false),
+            Key::Char('c') if alt => Op::Chip(Chip::Case),
+            Key::Char('r') if alt => Op::Chip(Chip::Regex),
+            Key::Char('w') if alt => Op::Chip(Chip::Word),
+            Key::Char('s') if alt => Op::Chip(Chip::Scope),
+            Key::Char('u') if ctrl => {
+                s.query.text.clear();
+                Op::Edited
+            }
+            _ if alt || ctrl => Op::Nothing,
+            k => {
+                if nav::edit_query(&mut s.query.text, k, Some(look.text.as_str())) {
+                    Op::Edited
+                } else {
+                    Op::Nothing
+                }
+            }
+        };
+        match op {
+            Op::Close => self.close_search(),
+            Op::Unfocus => {
+                if let Some(s) = self.nav.search.as_mut() {
+                    s.focused = false;
+                }
+                self.send_layout();
+            }
+            Op::Step(older) => {
+                self.search_step(older);
+                self.send_layout();
+            }
+            Op::Edited => self.search_changed(),
+            Op::Chip(c) => self.search_chip(c),
+            Op::Nothing => {}
+        }
+    }
+
+    fn enter_copy(&mut self) {
+        let Some(pane) = self.focused() else { return };
+        if self.nav.copy.is_some() {
+            return;
+        }
+        self.nav.copy = Some(pane);
+        if let Some(i) = self.keymap.table_index("copy-mode") {
+            self.keys.push(i, false, None, Instant::now());
+        }
+        self.scrolled = true;
+        self.view_of(pane, ViewCmd::CopyEnter);
+        self.write_mux_dump();
+    }
+
+    fn exit_copy(&mut self) {
+        let Some(pane) = self.nav.copy.take() else {
+            return;
+        };
+        self.nav.await_jump = None;
+        for name in ["copy-mode", "copy-mode-emacs"] {
+            if let Some(i) = self.keymap.table_index(name) {
+                self.keys.remove(i);
+            }
+        }
+        self.view_of(pane, ViewCmd::CopyExit);
+        if self
+            .nav
+            .search
+            .as_ref()
+            .is_some_and(|s| s.pane == pane && !s.focused)
+        {
+            self.close_search();
+        }
+        self.view_of(pane, ViewCmd::Scroll(ScrollBy::Bottom));
+        self.write_mux_dump();
+    }
+
+    fn jump(&mut self, ch: char, backward: bool, till: bool) {
+        self.nav.last_jump = Some((ch, backward, till));
+        if let Some(id) = self.nav.copy {
+            self.view_of(id, ViewCmd::CopyJump { ch, backward, till });
+        }
+    }
+
+    /// `hints.start [set]`: `set` names built-in matchers, comma separated.
+    fn start_hints(&mut self, set: Option<&str>) {
+        let Some(pane) = self.focused() else { return };
+        let kinds: Vec<crate::hints::Kind> = match set {
+            Some(s) => {
+                let k: Vec<_> = s
+                    .split(',')
+                    .filter_map(|n| crate::hints::Kind::parse(n.trim()))
+                    .collect();
+                if k.is_empty() {
+                    // HOOK(T-14 §7): user regex matcher sets from KDL are not loaded yet.
+                    tracing::debug!("hints.start names no built-in matcher");
+                    return;
+                }
+                k
+            }
+            None => Vec::new(),
+        };
+        self.nav.hints = Some(pane);
+        self.view_of(
+            pane,
+            ViewCmd::Hints {
+                kinds,
+                alphabet: self.settings.nav.hint_alphabet.clone(),
+                max: self.settings.nav.hint_max,
+            },
+        );
+    }
+
+    fn hint_key(&mut self, look: &KeyLookup) {
+        let Some(pane) = self.nav.hints else { return };
+        let cmd = match look.key {
+            Key::Named(Named::Escape) => ViewCmd::HintsCancel,
+            Key::Named(Named::Backspace) => ViewCmd::HintKey('\u{8}'),
+            _ => match look
+                .text
+                .as_str()
+                .chars()
+                .next()
+                .filter(|c| !c.is_control())
+            {
+                Some(c) => ViewCmd::HintKey(c),
+                None => return,
+            },
+        };
+        self.view_of(pane, cmd);
+    }
+
+    fn on_nav(&mut self, id: PaneKey, m: NavMsg) {
+        match m {
+            NavMsg::Search(st) => {
+                if let Some(s) = self.nav.search.as_mut()
+                    && s.pane == id
+                {
+                    s.status = st;
+                    self.send_layout();
+                }
+            }
+            NavMsg::Hint { kind, text, menu } => {
+                if !self.open_hint(id, kind, &text, menu) {
+                    self.on_copied(Copied {
+                        target: CopyTarget::Clipboard,
+                        text,
+                    });
+                }
+            }
+            NavMsg::HintsEnded => {
+                if self.nav.hints == Some(id) {
+                    self.nav.hints = None;
+                }
+                self.open_hints_ended(id);
+            }
+            NavMsg::Link(uri) => {
+                if self.focused() == Some(id) && self.nav.link_tip != uri {
+                    self.nav.link_tip = uri;
+                    self.send_layout();
+                }
+            }
+            NavMsg::Open { uri, visible } => {
+                // An open-modifier click on an OSC 8 link: its default (T-14 §5, §11).
+                let (intent, raw) = (crate::open::Intent::Default, crate::open::RawKind::Link);
+                self.open_request(id, intent, raw, uri, visible, None);
+            }
+            NavMsg::OpenTarget {
+                intent,
+                found,
+                at_cell,
+            } => self.open_target(id, intent, found, at_cell),
+            NavMsg::CopyModeEnded => {
+                if self.nav.copy == Some(id) {
+                    self.exit_copy();
+                }
+            }
+        }
+    }
+
+    /// Run the opener argv (`links.open-command`, `{url}` substituted as one argument) on a
+    /// worker; a reaper thread waits for it so the pool is never held by a long-lived opener.
+    fn spawn_open(&mut self, target: &str, argv: Option<Vec<String>>) {
+        let template = argv.unwrap_or_else(|| self.settings.nav.open_command.clone());
+        let Some(argv) = security::open_argv(&template, target) else {
+            tracing::info!("open: no opener command");
+            return;
+        };
+        let job = move || {
+            let mut c = std::process::Command::new(&argv[0]);
+            c.args(&argv[1..])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .env_remove("XDG_ACTIVATION_TOKEN")
+                .env_remove("DESKTOP_STARTUP_ID");
+            match c.spawn() {
+                Ok(mut child) => {
+                    let _ = std::thread::Builder::new()
+                        .name("apoth-open-reap".into())
+                        .spawn(move || {
+                            let _ = child.wait();
+                        });
+                }
+                Err(e) => tracing::warn!(error = %e.kind(), "opener did not start"),
+            }
+        };
+        if self.workers.submit(Box::new(job)).is_err() {
+            tracing::warn!("worker queue full: open dropped");
+        }
+    }
+
+    fn open_modifier_held(&self) -> bool {
+        let want = self
+            .settings
+            .nav
+            .open_modifier
+            .split('+')
+            .fold(Mods::NONE, |m, k| {
+                m | match k.trim() {
+                    "shift" => Mods::SHIFT,
+                    "alt" => Mods::ALT,
+                    "super" => Mods::SUPER,
+                    _ => Mods::CTRL,
+                }
+            });
+        self.held.contains(want)
+    }
+
+    /// Remote test (T-18 §10, process detection): a pane without a live PTY counts as
+    /// remote (tighten only).
+    fn pane_remote(&self, id: PaneKey) -> bool {
+        self.panes
+            .get(&id)
+            .and_then(|p| p.pty.as_ref())
+            .is_none_or(|pty| pty.foreground_is_remote(&[]))
+    }
+
+    /// OSC 52 writes the term let through: the policy decides per pane (remote re-checked
+    /// here), and allowed content is offered on the seat and tagged for paste rule (e).
+    fn on_osc52_write(&mut self, id: PaneKey, sets: Vec<apoth_term::ClipboardSet>) {
+        let remote = self.pane_remote(id);
+        let Some(seat) = self.seat else { return };
+        for c in sets {
+            let primary = c.selection.contains(['p', 's']);
+            let d = if primary {
+                self.settings.nav.policy.decide_primary(false, remote)
+            } else {
+                self.settings
+                    .nav
+                    .policy
+                    .decide(Class::ClipboardWrite, remote)
+            };
+            if d != Decision::Allow || (primary && !self.settings.input.primary) {
+                tracing::debug!(
+                    class = Class::ClipboardWrite.id(),
+                    remote,
+                    "osc 52 write denied"
+                );
+                continue;
+            }
+            let kind = if primary {
+                SelectionKind::Primary
+            } else {
+                SelectionKind::Clipboard
+            };
+            let n = c.data.len();
+            let tag = nav::content_hash(&c.data);
+            match self.handle.set_selection(seat, kind, c.data) {
+                Ok(()) => {
+                    if !primary {
+                        self.nav.osc52_tag = Some((tag, remote));
+                    }
+                    tracing::debug!(bytes = n, "osc 52 write offered");
+                }
+                Err(e) => tracing::debug!(error = %e, "osc 52 write not offered"),
+            }
+        }
+    }
+
+    /// An OSC 52 read request: allow answers, ask shows the consent bar (rate limited),
+    /// deny does nothing at all.
+    fn on_osc52_read(&mut self, id: PaneKey, sel: String) {
+        let remote = self.pane_remote(id);
+        let primary = sel.contains(['p', 's']);
+        let d = if primary {
+            self.settings.nav.policy.decide_primary(true, remote)
+        } else {
+            self.settings
+                .nav
+                .policy
+                .decide(Class::ClipboardRead, remote)
+        };
+        match d {
+            Decision::Deny => tracing::debug!(class = Class::ClipboardRead.id(), remote, "denied"),
+            Decision::Allow => self.osc52_read(id, sel),
+            Decision::Ask => match self
+                .nav
+                .consents
+                .ask(id, Class::ClipboardRead, Instant::now())
+            {
+                security::Ask::Granted => self.osc52_read(id, sel),
+                security::Ask::AutoDeny | security::Ask::Busy => {
+                    tracing::debug!(class = Class::ClipboardRead.id(), "consent rate-limited");
+                }
+                security::Ask::Show => {
+                    if self.bar_busy() {
+                        // One question on screen at a time: this one is dropped.
+                        self.nav.consents.cancel(id, Class::ClipboardRead);
+                        return;
+                    }
+                    self.nav.consent = Some(PendingConsent {
+                        pane: id,
+                        class: Class::ClipboardRead,
+                        selection: sel,
+                        token: 0,
+                    });
+                    self.bar_dismissed = false;
+                    self.refresh_bar();
+                }
+            },
+        }
+    }
+
+    /// The pane deny word: the policy's local column plus `graphics.file-transmission = off`.
+    fn deny_word(&self) -> u32 {
+        let mut w = self.settings.nav.policy.deny_word(false);
+        if !self.settings.graphics_file {
+            w |= apoth_term::deny::GRAPHICS_FILE;
+            w &= !apoth_term::deny::GRAPHICS_FILE_ASK;
+        }
+        w
+    }
+
+    /// A kitty transmission asks to read a file (T-15 §5, T-18 §3 `graphics-file`): the
+    /// pane's output waits for the answer, so every path answers (a dropped question is a
+    /// deny). Nothing about the file is logged.
+    fn on_graphics_file(&mut self, id: PaneKey, token: u64) {
+        let remote = self.pane_remote(id);
+        let allow = match self.settings.nav.policy.decide(Class::GraphicsFile, remote) {
+            Decision::Allow => true,
+            Decision::Deny => false,
+            Decision::Ask => match self
+                .nav
+                .consents
+                .ask(id, Class::GraphicsFile, Instant::now())
+            {
+                security::Ask::Granted => true,
+                security::Ask::AutoDeny | security::Ask::Busy => false,
+                security::Ask::Show => {
+                    if self.bar_busy() {
+                        self.nav.consents.cancel(id, Class::GraphicsFile);
+                        false
+                    } else {
+                        self.nav.consent = Some(PendingConsent {
+                            pane: id,
+                            class: Class::GraphicsFile,
+                            selection: String::new(),
+                            token,
+                        });
+                        self.bar_dismissed = false;
+                        self.refresh_bar();
+                        return;
+                    }
+                }
+            },
+        };
+        tracing::debug!(class = Class::GraphicsFile.id(), remote, allow, "decided");
+        self.graphics_file_answer(id, token, allow);
+    }
+
+    fn graphics_file_answer(&self, id: PaneKey, token: u64, allow: bool) {
+        let Some(p) = self.panes.get(&id) else { return };
+        p.shared.post_graphics_file(token, allow);
+        if let Some(io) = &p.io {
+            let _ = rustix::io::write(&io.wake, &[WAKE_GRAPHICS_FILE]);
+        }
+    }
+
+    /// Read the seat selection to answer an OSC 52 query; nothing to read answers empty.
+    fn osc52_read(&mut self, id: PaneKey, sel: String) {
+        let kind = if sel.contains(['p', 's']) {
+            SelectionKind::Primary
+        } else {
+            SelectionKind::Clipboard
+        };
+        let started = self.seat.and_then(|seat| {
+            let t = self.handle.receive_selection(seat, kind, Want::Text).ok()?;
+            let tid = t.id();
+            t.insert(&self.lh, |d: TransferDone, app: &mut App| {
+                app.on_transfer(d)
+            })
+            .ok()?;
+            Some(tid)
+        });
+        match started {
+            Some(tid) => self.nav.osc52_reads.push((tid, id, sel)),
+            None => {
+                let unit = nav::osc52_reply(&sel, b"", self.settings.term.osc52_max);
+                self.send_unit(id, unit);
+            }
+        }
+    }
+
+    /// A key answers the consent or link-confirm bar (explicit keys only, after the guard).
+    fn answer_nav_bar(&mut self, key: apoth_input::Key) {
+        let Some(o) = &self.bar else { return };
+        let age = o.shown_at.elapsed().as_millis() as u64;
+        if self.auto.confirm.is_some() && self.nav.consent.is_none() && self.nav.open.is_none() {
+            // The rule sheet has no Escape button: Escape (after the guard) dismisses it.
+            let esc = matches!(key, apoth_input::Key::Named(apoth_input::Named::Escape));
+            match paste_answer(&o.spec, age, key) {
+                Some(a) => self.answer_rule(Some(a)),
+                None if esc && age >= apoth_ui::tokens::motion::CONSENT_GUARD_MS => {
+                    self.answer_rule(None);
+                }
+                None => {}
+            }
+            return;
+        }
+        let Some(answer) = paste_answer(&o.spec, age, key) else {
+            return;
+        };
+        self.apply_nav_answer(answer);
+    }
+
+    /// Button `answer` of the consent or link-confirm bar (key or click).
+    fn apply_nav_answer(&mut self, answer: usize) {
+        if let Some(c) = self.nav.consent.take() {
+            let a = match answer {
+                0 => Answer::Once,
+                1 => Answer::Always,
+                _ => Answer::Deny,
+            };
+            self.nav.consents.answer(c.pane, c.class, a, Instant::now());
+            self.refresh_bar();
+            if c.class == Class::GraphicsFile {
+                self.graphics_file_answer(c.pane, c.token, a != Answer::Deny);
+            } else if a != Answer::Deny {
+                self.osc52_read(c.pane, c.selection);
+            }
+        } else if let Some(p) = self.nav.open.take() {
+            self.refresh_bar();
+            if answer == 0 {
+                match p.choice {
+                    Some(c) => self.open_confirmed(*c),
+                    None => self.spawn_open(&p.uri, None),
+                }
             }
         }
     }
@@ -2296,6 +3873,11 @@ impl App {
         let Some(answer) = paste_answer(&o.spec, age, key) else {
             return;
         };
+        self.apply_paste_answer(answer);
+    }
+
+    /// Button `answer` of the paste confirm bar (key or click): Paste (0) or Cancel (1).
+    fn apply_paste_answer(&mut self, answer: usize) {
         let Some(pending) = self.paste.take() else {
             return;
         };
@@ -2303,6 +3885,117 @@ impl App {
         if answer == 0 {
             self.send_paste(pending.pane, &pending.bytes);
         }
+    }
+
+    /// A click on button `i` of the bar or sheet, whichever question is up. The input guard
+    /// was checked by the caller; Return and Space never reach here.
+    fn bar_click_answer(&mut self, i: usize) {
+        if self.remote_ui.asking() {
+            self.remote_click(i);
+        } else if self.paste.is_some() {
+            self.apply_paste_answer(i);
+        } else if self.nav.consent.is_some() || self.nav.open.is_some() {
+            self.apply_nav_answer(i);
+        } else if self.auto.confirm.is_some() {
+            self.answer_rule(Some(i));
+        } else if !self.remote_notice_click(Some(i)) {
+            // The error bar and the restart notice have one button: dismiss.
+            self.bar_dismissed = true;
+            self.restart_keys.clear();
+            self.refresh_bar();
+        }
+    }
+
+    /// The overlay's pointer handling: the bar's buttons, the rule sheet (modal), and the
+    /// search sheet. A control acts on release over the one it went down on; a press inside
+    /// the 500 ms input guard does nothing at all (T-18 §3). True when the pointer event was
+    /// consumed.
+    fn overlay_pointer(&mut self, spot: Spot, pressed: bool, left: bool) -> bool {
+        let over = matches!(
+            spot,
+            Spot::BarButton(_)
+                | Spot::BarBody
+                | Spot::SheetOutside
+                | Spot::Search(_)
+                | Spot::SearchSheet
+        );
+        if pressed {
+            if !over {
+                return false;
+            }
+            if left {
+                let guarded = matches!(spot, Spot::BarButton(_))
+                    && self.bar.as_ref().is_some_and(|o| {
+                        o.shown_at.elapsed().as_millis()
+                            < u128::from(apoth_ui::tokens::motion::CONSENT_GUARD_MS)
+                    });
+                if !guarded {
+                    self.overlay_down = Some(spot);
+                    if let Some(w) = self.spot_widget(spot) {
+                        self.ui_state.press(w);
+                    }
+                    if spot == Spot::Search(SearchTarget::Field) {
+                        self.search_focus();
+                    }
+                    self.send_layout();
+                }
+            }
+            return true;
+        }
+        let Some(down) = self.overlay_down.take() else {
+            return over;
+        };
+        self.ui_state.release();
+        if left && down == spot {
+            match spot {
+                Spot::BarButton(i) => self.bar_click_answer(i),
+                Spot::Search(SearchTarget::Chip(c)) => self.search_chip(c),
+                Spot::Search(SearchTarget::Prev) => {
+                    self.search_step(false);
+                    self.send_layout();
+                }
+                Spot::Search(SearchTarget::Next) => {
+                    self.search_step(true);
+                    self.send_layout();
+                }
+                Spot::Search(SearchTarget::Close) => self.close_search(),
+                _ => {}
+            }
+        }
+        self.send_layout();
+        true
+    }
+
+    /// The search field takes the keyboard (a click on it).
+    fn search_focus(&mut self) {
+        if let Some(s) = self.nav.search.as_mut() {
+            s.focused = true;
+        }
+    }
+
+    /// Flip one mode chip, exactly as its `Alt` chord does, and search again at once.
+    fn search_chip(&mut self, chip: Chip) {
+        let Some(s) = self.nav.search.as_mut() else {
+            return;
+        };
+        match chip {
+            Chip::Case => {
+                s.query.case = match s.query.case {
+                    Case::Smart => Case::Sensitive,
+                    Case::Sensitive => Case::Insensitive,
+                    Case::Insensitive => Case::Smart,
+                };
+            }
+            Chip::Regex => s.query.regex = !s.query.regex,
+            Chip::Word => s.query.whole_word = !s.query.whole_word,
+            Chip::Scope => {
+                s.query.scope = match s.query.scope {
+                    crate::search::Scope::All => crate::search::Scope::Screen,
+                    crate::search::Scope::Screen => crate::search::Scope::All,
+                };
+            }
+        }
+        self.search_now();
     }
 
     // ---------------------------------------------------------------- pointer
@@ -2327,6 +4020,28 @@ impl App {
                 None => Spot::PaletteOutside,
             };
         }
+        if let Some(o) = &self.bar {
+            let l = apoth_ui::bar::layout(g.area, &o.spec, &apoth_ui::text::geometry());
+            if !o.takes_room() {
+                // A modal sheet owns the pointer over the whole window.
+                return match l.button_at(pt) {
+                    Some(i) => Spot::BarButton(i),
+                    None if l.bar.contains(pt) => Spot::BarBody,
+                    None => Spot::SheetOutside,
+                };
+            }
+            if l.bar.contains(pt) {
+                return l.button_at(pt).map_or(Spot::BarBody, Spot::BarButton);
+            }
+        }
+        if let Some(sl) = self.search_layout() {
+            if let Some(t) = sl.target_at(pt) {
+                return Spot::Search(t);
+            }
+            if sl.sheet.contains(pt) {
+                return Spot::SearchSheet;
+            }
+        }
         if let Some(r) = g.strip
             && r.contains(pt)
         {
@@ -2346,10 +4061,29 @@ impl App {
             return Spot::Strip;
         }
         let (px, py) = (x * self.scale(), y * self.scale());
+        // Floats are last (on top): the topmost pane under the pointer wins.
         self.placed
             .iter()
+            .rev()
+            .filter(|p| !self.open_veiled(p.id))
             .find(|p| p.contains(self.cell, px, py))
             .map_or(Spot::Nothing, |p| Spot::Pane(p.id))
+    }
+
+    /// The search sheet's layout, when it is open.
+    fn search_layout(&self) -> Option<apoth_ui::searchbar::SearchLayout> {
+        let g = self.geo?;
+        let spec = self.search_spec()?;
+        let area = crate::ui::search_area(
+            g.area,
+            g.strip,
+            self.bar.as_ref().is_some_and(Overlay::takes_room),
+        );
+        Some(apoth_ui::searchbar::layout(
+            area,
+            &spec,
+            &apoth_ui::text::geometry(),
+        ))
     }
 
     /// The widget a spot highlights on hover.
@@ -2365,6 +4099,8 @@ impl App {
             Spot::Tab(i) => tab(i),
             Spot::TabClose(i) => tab(i).map(|t| t.child(0)),
             Spot::NewTab => Some(STRIP_ID.child(u64::MAX)),
+            Spot::BarButton(i) => self.bar.as_ref().map(|o| o.spec.id.child(i as u64 + 1)),
+            Spot::Search(t) => Some(apoth_ui::searchbar::target_id(SEARCH_ID, t)),
             _ => None,
         }
     }
@@ -2428,6 +4164,15 @@ impl App {
             return;
         };
         let modes = p.shared.mirror.load();
+        if self.capture.is_none() && !self.left_down {
+            // Hyperlink hover (T-14 §5): the view underlines the link and reports its URI.
+            let h = geo.hit(x, y);
+            let cell = (!h.above && !h.below).then_some((h.row, h.col));
+            if self.nav.hover_cell != Some((target, cell)) {
+                self.nav.hover_cell = Some((target, cell));
+                self.view_of(target, ViewCmd::Hover(cell));
+            }
+        }
         let held = self.left_down.then_some(MouseButton::Left);
         let outs = self
             .mouse
@@ -2501,6 +4246,9 @@ impl App {
             }
             _ => {}
         }
+        if self.overlay_pointer(spot, pressed, code == BTN_LEFT) {
+            return;
+        }
         if self.capture.is_none() {
             // Strip controls act on release over the control they went down on.
             let w = self.spot_widget(spot);
@@ -2561,6 +4309,24 @@ impl App {
                 }
                 self.mouse.selection_gone();
             }
+            if code == BTN_LEFT && !self.open_modifier_held() && self.media_click(id) {
+                // The release belongs to the click too: no selection starts or ends.
+                self.media_pressed = true;
+                return;
+            }
+            if code == BTN_LEFT && self.open_modifier_held() {
+                // Open-modifier click activates the link under the pointer (T-14 §5).
+                if let (Some(geo), Some((x, y))) = (self.geometry_of(id), self.pointer) {
+                    let h = geo.hit(x, y);
+                    self.view_of(
+                        id,
+                        ViewCmd::Activate {
+                            row: h.row,
+                            col: h.col,
+                        },
+                    );
+                }
+            }
             self.capture = Some(id);
             self.mouse_pane = Some(id);
             if self.mouse_bind(code, true) {
@@ -2568,6 +4334,9 @@ impl App {
             }
             id
         } else {
+            if code == BTN_LEFT && std::mem::take(&mut self.media_pressed) {
+                return;
+            }
             let Some(id) = self.capture.take().or(self.mouse_pane) else {
                 return;
             };
@@ -2723,7 +4492,8 @@ impl App {
                 cursor_end,
             } => {
                 // A paste confirm or the palette owns the keyboard: no composition shows.
-                let owned = self.paste.is_some() || self.palette.is_some();
+                let owned =
+                    self.paste.is_some() || self.palette.is_some() || self.remote_ui.asking();
                 let text = text.filter(|_| !owned);
                 let p = text.filter(|t| !t.0.is_empty()).map(|t| Preedit {
                     text: t.0,
@@ -2733,6 +4503,10 @@ impl App {
                 self.view(ViewCmd::Preedit(p));
             }
             ImeEvent::Commit(t) => {
+                if self.remote_ui.asking() {
+                    // A remote question owns the keyboard; composed text is not taken there.
+                    return;
+                }
                 if self.palette.is_some() {
                     // Composed text goes into the palette query (never logged).
                     if let Some(p) = self.palette.as_mut()
@@ -2795,6 +4569,9 @@ impl App {
         let Some(p) = self.panes.get_mut(&id) else {
             return;
         };
+        if p.remote.is_some() {
+            return self.send_unit(id, bytes.to_vec());
+        }
         let Some(pty) = p.pty.as_mut() else { return };
         if !pty.wants_pollout() {
             match rustix::io::write(pty.master_fd(), bytes) {
@@ -2810,10 +4587,24 @@ impl App {
         self.send_unit(id, bytes.to_vec());
     }
 
-    fn send_unit(&mut self, id: PaneKey, unit: Vec<u8>) {
+    /// Send one whole unit to the pane's PTY or remote link. The unit may carry a typed
+    /// password: every local copy on the remote paths is wiped; the PTY queue scrubs its own.
+    fn send_unit(&mut self, id: PaneKey, mut unit: Vec<u8>) {
         let Some(p) = self.panes.get_mut(&id) else {
             return;
         };
+        if let Some(r) = p.remote.as_mut() {
+            match (r.sid, self.remote.as_ref()) {
+                (Some(sid), Some(link)) => link.input(sid, &unit),
+                // Before the spawn is answered: kept, up to the PTY queue's bound.
+                (None, _) if r.early.len() + unit.len() <= apoth_pty::OUT_QUEUE_BOUND => {
+                    r.early.extend_from_slice(&unit);
+                }
+                _ => {}
+            }
+            apoth_proto::askpass::wipe(&mut unit);
+            return;
+        }
         let Some(pty) = p.pty.as_mut() else { return };
         match pty.send(unit) {
             Ok(Enqueue::Written) => {}
@@ -2869,7 +4660,16 @@ impl App {
 
     fn on_msg(&mut self, m: MainMsg) {
         match m {
-            MainMsg::Reply(id, u) => self.send_unit(id, u),
+            // A session-daemon pane's replies were the server's to send (T-21 §3).
+            MainMsg::Reply(id, u) => {
+                if self.panes.get(&id).is_some_and(|p| p.remote.is_none()) {
+                    self.send_unit(id, u);
+                }
+            }
+            MainMsg::Remote(e) => self.on_remote(e),
+            MainMsg::Askpass(e) => self.on_askpass(e),
+            MainMsg::Credential(id, on) => self.on_credential(id, on),
+            MainMsg::Prompt(id, a) => self.on_prompt(id, a),
             MainMsg::Abyss(a) => self.on_abyss(a),
             MainMsg::Ctl(cid, r) => self.ctl_send(cid, &r),
             MainMsg::A11y(m) => self.on_a11y(m),
@@ -2879,6 +4679,7 @@ impl App {
                 if let Some(p) = self.panes.get_mut(&id) {
                     p.eof = true;
                 }
+                self.password_pane_gone(id);
                 self.maybe_finish(id);
             }
             MainMsg::RenderFailed(why) => {
@@ -2892,12 +4693,16 @@ impl App {
                 self.relayout();
             }
             MainMsg::Copied(c) => self.on_copied(c),
+            MainMsg::Nav(id, m) => self.on_nav(id, m),
             MainMsg::Cursor(id, c) => {
                 if self.focused() == Some(id) {
                     self.ime_cursor(c);
                 }
             }
             MainMsg::Loaded(r) => self.on_loaded(*r),
+            MainMsg::MediaStopped(id) => self.media_stopped(id),
+            MainMsg::MediaBox(id, b) => self.media_box(id, b),
+            MainMsg::Open(m) => self.on_open(m),
             MainMsg::Closed(id, status) => {
                 self.closing = self.closing.saturating_sub(1);
                 if let Some(i) = self.forced.iter().position(|f| *f == id) {
@@ -2915,11 +4720,58 @@ impl App {
         }
     }
 
-    fn on_events(&mut self, id: PaneKey, e: PaneEvents) {
-        if let Some(uri) = e.cwd {
+    /// `bell.visual`: a bell in a tab out of sight badges the tab; in the shown tab the
+    /// pane's rim brightens for a moment. Nothing moves; the rim goes out on a timer, so a
+    /// settled window asks for no frames.
+    fn visual_bell(&mut self, id: PaneKey) {
+        if !self.reloader.config().bool("bell.visual") {
+            return;
+        }
+        let tab = self.session.tab_of(id);
+        if tab != self.active_tab() {
+            if let Some(t) = tab {
+                self.status.bell_tabs.insert(t);
+            }
+            self.send_layout();
+            return;
+        }
+        if let Some((_, t)) = self.status.bell_flash.take() {
+            self.lh.remove(t);
+        }
+        let timer =
+            self.lh
+                .insert_source(Timer::from_duration(BELL_FLASH), |_, (), app: &mut App| {
+                    app.status.bell_flash = None;
+                    app.send_layout();
+                    TimeoutAction::Drop
+                });
+        if let Ok(t) = timer {
+            self.status.bell_flash = Some((id, t));
+        }
+        self.send_layout();
+    }
+
+    fn on_events(&mut self, id: PaneKey, mut e: PaneEvents) {
+        let uri = e.cwd.clone();
+        if let Some(uri) = e.cwd.take() {
             let path = crate::ctl::osc7::local_path(&uri, &self.hostname);
             if let Some(p) = self.panes.get_mut(&id) {
                 p.cwd = path.clone();
+                let host = uri
+                    .strip_prefix("file://")
+                    .and_then(|r| r.split('/').next())
+                    .filter(|h| !h.is_empty());
+                p.cwd_host = if path.is_some() {
+                    None
+                } else {
+                    host.map(crate::open::clean_host)
+                };
+                // The other host's path, decoded as that host would (T-22 §4 cwd inheritance).
+                p.cwd_remote = match (&path, host) {
+                    (None, Some(h)) => crate::ctl::osc7::local_path(&uri, h)
+                        .and_then(|p| p.into_os_string().into_string().ok()),
+                    _ => None,
+                };
             }
             let mut ev = Event::new(EventKind::CwdChanged, Cause::Sequence);
             if let Some(path) = path {
@@ -2928,19 +4780,21 @@ impl App {
             self.ctl_emit(ev, Some(id));
         }
         if e.bell > 0 {
+            self.visual_bell(id);
             self.ctl_emit(Event::new(EventKind::Bell, Cause::Child), Some(id));
             self.a11y_announce("Bell");
+            self.bell_notification(id);
         }
-        if let Some(t) = e.title {
+        if let Some(t) = e.title.take() {
             let t = clip(&t, MAX_TITLE).to_owned();
             let focused = self.focused() == Some(id);
             if let Some(p) = self.panes.get_mut(&id) {
                 p.title = t.clone();
             }
             if focused {
-                self.handle
-                    .set_title(self.win, &self.settings.window_title(&t));
                 self.term_title = t.clone();
+                let title = self.window_title_now();
+                self.handle.set_title(self.win, &title);
             }
             if self.geo.is_some_and(|g| g.strip.is_some()) {
                 self.send_layout();
@@ -2952,6 +4806,19 @@ impl App {
         if e.bell > 0 && self.settings.bell_audible {
             self.handle.ring_bell(Some(self.win));
         }
+        if !e.clipboard.is_empty() {
+            self.on_osc52_write(id, std::mem::take(&mut e.clipboard));
+        }
+        if let Some(sel) = e.clip_read.take() {
+            self.on_osc52_read(id, sel);
+        }
+        if let Some(token) = e.graphics_file.take() {
+            self.on_graphics_file(id, token);
+        }
+        if e.audio_unavailable {
+            self.media_muted_notice(id);
+        }
+        self.auto_pane_events(id, &mut e, uri.as_deref());
     }
 
     // --------------------------------------------------------------- lifecycle
@@ -3001,6 +4868,7 @@ impl App {
     }
 
     fn shutdown(&mut self) {
+        self.media_shutdown();
         let panes = std::mem::take(&mut self.panes);
         for (_, mut p) in panes {
             if let Some(io) = p.io.take() {
@@ -3123,7 +4991,9 @@ impl App {
 
     fn on_loaded(&mut self, r: (Reloader, Outcome)) {
         self.loading = false;
-        let (rl, outcome) = r;
+        let (mut rl, outcome) = r;
+        // An override set while the worker parsed is the live one (T-10 §2 layer 8).
+        rl.adopt_runtime(self.reloader.runtime());
         self.reloader = rl;
         if let Some(w) = self.watcher.as_mut() {
             // A new include extends the watch set.
@@ -3162,8 +5032,7 @@ impl App {
                 "configuration has errors; bad entries keep their last good value"
             );
         }
-        self.set_config_errors(errors);
-        if let Outcome::Applied(a) = outcome {
+        if let Outcome::Applied(a) = &outcome {
             let mut settings = Settings::from_config(self.reloader.config());
             settings.diagnostics = self.reloader.diagnostics().len();
             tracing::info!(
@@ -3171,13 +5040,36 @@ impl App {
                 collections = a.diff.collections.len(),
                 "configuration reloaded"
             );
-            self.apply_applied(settings, &a);
+            self.apply_applied(settings, a);
+            errors.extend(error_positions(&self.recompile_rules()));
         }
+        self.set_config_errors(errors);
         // The queued reload starts only now, from the config just applied: its baseline is the
         // last good value for any key a bad scalar leaves alone (T-10 §4).
         if std::mem::take(&mut self.reload_queued) {
             self.start_reload();
         }
+    }
+
+    /// `config.set` (`value`) or `config.reset` (`None`) of the instance-wide runtime override
+    /// layer (T-10 §2 layer 8). It sits above the files, so a reload keeps it; it is never
+    /// written to disk. The override class gate is `Reloader::set_runtime`'s.
+    pub(crate) fn runtime_override(
+        &mut self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<RuntimeChange, apoth_config::overrides::Refusal> {
+        let change = match value {
+            Some(v) => self.reloader.set_runtime(key, v)?,
+            None => self.reloader.reset_runtime(key)?,
+        };
+        if let Some(a) = &change.applied {
+            let mut settings = Settings::from_config(self.reloader.config());
+            settings.diagnostics = self.reloader.diagnostics().len();
+            tracing::info!(key, keys = a.diff.keys.len(), "runtime override applied");
+            self.apply_applied(settings, a);
+        }
+        Ok(change)
     }
 
     /// Tell each subsystem what changed. Every settings reader below the loop either gets a
@@ -3192,12 +5084,19 @@ impl App {
             self.send_render_update(f.font);
         }
         let ids: Vec<PaneKey> = self.panes.keys().copied().collect();
+        let deny = self.deny_word();
         for id in ids {
             self.send_view_settings(id);
+            // A session-daemon pane keeps the server's word (it rode in the snapshot).
+            if let Some(p) = self.panes.get(&id)
+                && p.remote.is_none()
+            {
+                p.shared.deny.store(deny, Ordering::Release);
+            }
         }
         if f.title {
-            self.handle
-                .set_title(self.win, &self.settings.window_title(&self.term_title));
+            let title = self.window_title_now();
+            self.handle.set_title(self.win, &title);
         }
         // Padding, tabs.* and panes.* all move the geometry or the chrome: lay out again.
         let _ = old_padding;
@@ -3354,13 +5253,31 @@ impl App {
     /// Rebuild the overlay from the current errors and restart keys, tell the render thread,
     /// and make room for it (or give the room back).
     fn refresh_bar(&mut self) {
-        let spec = if let Some(pp) = &self.paste {
+        let spec = if let Some(b) = self.remote_bar() {
+            Some(b)
+        } else if let Some(pp) = &self.paste {
             Some(apoth_ui::bar::BarSpec::paste_confirm(
                 self.windows()[0],
                 pp.stats.bytes,
                 pp.stats.lines,
                 &self.term_title,
             ))
+        } else if let Some(c) = &self.nav.consent {
+            let title = self
+                .panes
+                .get(&c.pane)
+                .map_or(String::new(), |p| p.title.clone());
+            Some(apoth_ui::bar::BarSpec::consent(
+                self.windows()[0],
+                c.class.label(),
+                &title,
+            ))
+        } else if let Some(o) = &self.nav.open {
+            Some(open_bar(self.windows()[0], &o.uri))
+        } else if self.auto.confirm.is_some() {
+            self.rule_bar()
+        } else if let Some(b) = self.reconnect_bar() {
+            Some(b)
         } else if self.bar_dismissed {
             None
         } else {
@@ -3368,14 +5285,21 @@ impl App {
                 .into_iter()
                 .find_map(|(_, b)| b)
         };
-        let had = self.bar.is_some();
+        let had = self.bar.as_ref().is_some_and(Overlay::takes_room);
         self.bar = spec.map(|spec| Overlay {
             spec,
             shown_at: Instant::now(),
         });
+        if let Some(o) = &self.bar {
+            // The question is read out once, from interface text only (never the program's).
+            let head = o.spec.headline.text.clone();
+            self.a11y_announce(&head);
+        }
         self.send_overlay();
-        if had != self.bar.is_some() {
+        if had != self.bar.as_ref().is_some_and(Overlay::takes_room) {
             self.relayout();
+        } else {
+            self.send_layout();
         }
         if self.bar.is_some() {
             // Redraw once the 500 ms input guard ends so the buttons stop looking inert.
@@ -3384,6 +5308,8 @@ impl App {
                 .lh
                 .insert_source(Timer::from_duration(guard), |_, (), app: &mut App| {
                     app.send_overlay();
+                    // The accessible buttons were inert for the guard too.
+                    app.a11y_snapshot();
                     TimeoutAction::Drop
                 });
         }
@@ -3399,6 +5325,14 @@ impl App {
     /// key was consumed (never forwarded to the shell).
     fn try_dismiss_bar(&mut self) -> bool {
         let Some(o) = &self.bar else { return false };
+        if self
+            .reconnect_bar()
+            .is_some_and(|b| b.headline.text == o.spec.headline.text)
+        {
+            let age = o.shown_at.elapsed().as_millis() as u64;
+            return age >= apoth_ui::tokens::motion::CONSENT_GUARD_MS
+                && self.remote_notice_click(None);
+        }
         let age = o.shown_at.elapsed().as_millis() as u64;
         let st = apoth_ui::bar::BarState { shown_at_ms: 0 };
         if st
@@ -3448,6 +5382,16 @@ impl App {
     fn apply_resizes(&mut self) {
         let cell = self.cell;
         for p in self.panes.values_mut() {
+            if let Some(r) = &p.remote {
+                // The server sizes its panes (T-21 §3 resize policy); the term follows the
+                // `Resized` record in the stream. Unanswered spawns send theirs when bound.
+                if let (Some(sid), Some(link)) = (r.sid, self.remote.as_ref())
+                    && let Some(want) = p.pending.take()
+                {
+                    link.resize(sid, want, cell);
+                }
+                continue;
+            }
             let Some((rows, cols)) = p.pending.take() else {
                 continue;
             };
@@ -3472,9 +5416,15 @@ impl App {
             }
         }
         tracing::debug!(pane = id, rows = nr, cols = nc, "resized");
+        let remote = p.remote.is_some();
         self.write_mux_dump();
         if self.focused() == Some(id) {
             self.ime_send_rect();
+        }
+        if remote {
+            // The server's size may not be this window's (a snapshot, another view's
+            // resize): ask for ours again; the policy decides.
+            self.relayout();
         }
     }
 }
@@ -3684,6 +5634,30 @@ xkb_keymap {
         assert_eq!(paste_answer(&spec, guard, enter), None);
         assert_eq!(paste_answer(&spec, guard, ch(' ')), None);
         assert_eq!(paste_answer(&spec, guard, ch('x')), None);
+    }
+
+    #[test]
+    fn consent_and_open_bars_ignore_keys_inside_the_guard() {
+        // T-18 §12: keys typed within 500 ms of a consent bar appearing do not answer it.
+        let guard = apoth_ui::tokens::motion::CONSENT_GUARD_MS;
+        assert_eq!(guard, 500);
+        let ch = |c| apoth_input::Key::Char(c);
+        let spec = apoth_ui::bar::BarSpec::consent(
+            WidgetId(1),
+            crate::security::Class::ClipboardRead.label(),
+            "t",
+        );
+        for k in ['o', 'a', 'd'] {
+            assert_eq!(paste_answer(&spec, 0, ch(k)), None);
+            assert_eq!(paste_answer(&spec, guard - 1, ch(k)), None);
+        }
+        assert_eq!(paste_answer(&spec, guard, ch('o')), Some(0));
+        assert_eq!(paste_answer(&spec, guard, ch('a')), Some(1));
+        assert_eq!(paste_answer(&spec, guard, ch('d')), Some(2));
+        let enter = apoth_input::Key::Named(apoth_input::Named::Enter);
+        assert_eq!(paste_answer(&spec, guard, enter), None);
+        let open = open_bar(WidgetId(2), "https://e.example/");
+        assert_eq!(paste_answer(&open, guard - 1, ch('o')), None);
     }
 
     #[test]

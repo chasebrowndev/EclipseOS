@@ -3,5 +3,5 @@ fixture "osc-133-output-start" {
   covers "T03-OSC133"
   size rows=1 cols=8
   feed #"\e]133;C\a"#
-  events "mark:C"
+  events "mark:C" "command:started"
 }

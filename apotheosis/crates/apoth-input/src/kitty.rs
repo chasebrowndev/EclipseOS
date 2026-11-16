@@ -466,6 +466,21 @@ impl KittyFlagStack {
     pub fn clear(&mut self) {
         self.len = 0;
     }
+    /// The entries, oldest first (a mux snapshot carries them, T-21 §3).
+    pub fn entries(&self) -> &[u8] {
+        &self.entries[..self.len as usize]
+    }
+    /// A stack holding `entries`, oldest first; `None` past [`STACK_DEPTH`] or for a flag
+    /// outside [`flags::ALL`].
+    pub fn from_entries(entries: &[u8]) -> Option<Self> {
+        if entries.len() > STACK_DEPTH || entries.iter().any(|&e| u32::from(e) & !flags::ALL != 0) {
+            return None;
+        }
+        let mut s = KittyFlagStack::default();
+        s.entries[..entries.len()].copy_from_slice(entries);
+        s.len = entries.len() as u8;
+        Some(s)
+    }
 }
 
 /// Main and alternate stacks, swapped on screen switch.
@@ -493,6 +508,14 @@ impl KittyState {
     pub fn switch_screen(&mut self, alt: bool) {
         self.on_alt = alt;
     }
+    /// The parts: main stack, alternate stack, alternate active (a mux snapshot, T-21 §3).
+    pub fn parts(&self) -> (&KittyFlagStack, &KittyFlagStack, bool) {
+        (&self.main, &self.alt, self.on_alt)
+    }
+    /// Inverse of [`KittyState::parts`].
+    pub fn from_parts(main: KittyFlagStack, alt: KittyFlagStack, on_alt: bool) -> Self {
+        KittyState { main, alt, on_alt }
+    }
     /// Flags to publish to the mirror.
     pub fn current(&self) -> u32 {
         self.active().current()
@@ -512,6 +535,21 @@ mod tests {
     use super::*;
     use crate::encode_key;
     use crate::key::KeyKind::{Press, Release, Repeat};
+
+    #[test]
+    fn stack_entries_round_trip() {
+        let mut st = KittyFlagStack::default();
+        for f in [1, 3, 31] {
+            st.push(f);
+        }
+        assert_eq!(KittyFlagStack::from_entries(st.entries()), Some(st));
+        assert_eq!(KittyFlagStack::from_entries(&[0; STACK_DEPTH + 1]), None);
+        assert_eq!(KittyFlagStack::from_entries(&[0x80]), None);
+        let k = KittyState::from_parts(st, KittyFlagStack::default(), true);
+        let (m, a, on) = k.parts();
+        assert_eq!(KittyState::from_parts(*m, *a, on), k);
+        assert_eq!(k.current(), 0);
+    }
 
     fn enc(ev: KeyEvent<'_>, f: u32) -> String {
         let mut out = [0u8; 64];

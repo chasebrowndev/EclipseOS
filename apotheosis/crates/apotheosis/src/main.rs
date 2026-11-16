@@ -5,18 +5,33 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod askpass;
+mod attach;
 mod binds;
+mod copymode;
 mod ctl;
+mod domain;
 mod glyphs;
+mod hints;
 mod hook;
 mod layout;
+mod mediahost;
 mod mousectl;
+mod nav;
+mod notify;
+mod open;
 mod palette;
 mod pane;
 mod paste;
 mod pointer;
+mod profiles;
 mod reload;
 mod render;
+mod rules;
+mod search;
+mod secret_prompt;
+mod security;
+mod server;
 mod settings;
 mod ui;
 mod view;
@@ -45,8 +60,12 @@ Options:
   --new-instance         do not hand the launch to a running instance
   --wait                 when handed to a running instance, wait for the command and exit
                          with its status
-  --hold, --profile NAME, --layout NAME
-                         accepted; not available yet
+  --profile NAME         start with the named profile (T-11 §6)
+  --server               run the session daemon: panes outlive the window (T-21)
+  --attach               open a window on the session daemon's panes
+  --session NAME         the daemon session for --server / --attach (default: default)
+  --domain NAME          open a window in the config's ssh domain NAME (T-22 §4, §5)
+  --hold, --layout NAME  accepted; not available yet
   -h, --help             show this help
   -V, --version          show the version
 ";
@@ -64,8 +83,14 @@ struct Run {
     hold: bool,
     profile: Option<String>,
     layout: Option<String>,
+    server: bool,
+    attach: bool,
+    session: Option<String>,
+    domain: Option<String>,
 }
 
+// Parsed once at startup: the size of `Run` does not matter.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq, Eq)]
 enum Cli {
     Run(Run),
@@ -94,6 +119,10 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             "--profile" => r.profile = Some(val("--profile")?),
             "--layout" => r.layout = Some(val("--layout")?),
             "--new-instance" => r.new_instance = true,
+            "--server" => r.server = true,
+            "--attach" => r.attach = true,
+            "--session" => r.session = Some(val("--session")?),
+            "--domain" => r.domain = Some(val("--domain")?),
             "--wait" => r.wait = true,
             "--hold" => r.hold = true,
             "-o" => {
@@ -103,6 +132,12 @@ fn parse_args<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             }
             other => return Err(format!("unknown argument {other:?}")),
         }
+    }
+    if r.server && r.attach {
+        return Err("--server and --attach exclude each other".into());
+    }
+    if r.domain.is_some() && (r.server || r.attach) {
+        return Err("--domain excludes --server and --attach".into());
     }
     Ok(Cli::Run(r))
 }
@@ -175,21 +210,129 @@ fn main() {
         }
         Cli::Run(r) => {
             init_logging();
-            if r.hold || r.profile.is_some() || r.layout.is_some() {
-                eprintln!("apotheosis: --hold, --profile and --layout are not available yet");
+            if r.hold || r.layout.is_some() {
+                eprintln!("apotheosis: --hold and --layout are not available yet");
                 std::process::exit(1);
             }
+            if let Some(p) = &r.profile {
+                settings::set_launch_profile(p);
+            }
+            if r.server {
+                let startup = settings::Settings::load(r.launch);
+                let interpreters = startup
+                    .reloader
+                    .config()
+                    .list("socket.interpreters")
+                    .to_vec();
+                let opts = server::Options {
+                    session: r.session.unwrap_or_else(|| server::DEFAULT_SESSION.into()),
+                    command: r.command,
+                    cwd: r.cwd.as_deref().map(absolute),
+                };
+                std::process::exit(server::run(startup.settings, interpreters, opts));
+            }
+            // `--attach` opens its own window on the session, never a tab elsewhere.
             if !r.new_instance
+                && !r.attach
+                && r.domain.is_none()
                 && let ctl::launch::Handoff::Done(code) = ctl::launch::hand_off(launch_request(&r))
             {
                 std::process::exit(code);
             }
             let startup = settings::Settings::load(r.launch);
+            let session = r
+                .session
+                .clone()
+                .unwrap_or_else(|| server::DEFAULT_SESSION.into());
+            // `--domain NAME` (T-22 §4, §5): the config's `domain "NAME" { ssh ...; persist ... }`.
+            let domain = r.domain.as_deref().map(|n| {
+                let cfg = startup.reloader.config();
+                let found = cfg
+                    .domains
+                    .iter()
+                    .find(|d| d.value.name == n)
+                    .map(|d| (d.value.ssh.clone(), d.value.persist.clone()));
+                match found {
+                    Some((Some(dest), persist)) => {
+                        let mode =
+                            domain::Persist::resolve(persist.as_deref(), cfg.str("remote.persist"));
+                        (n.to_owned(), dest, mode)
+                    }
+                    Some((None, _)) => {
+                        eprintln!("apotheosis: domain {n:?} names no ssh host");
+                        std::process::exit(EX_USAGE);
+                    }
+                    None => {
+                        eprintln!("apotheosis: no domain {n:?} in the config");
+                        std::process::exit(EX_USAGE);
+                    }
+                }
+            });
+            let mut ssh_domain = None;
+            let attach = if let Some((name, dest, mode)) = domain {
+                match domain::use_remote(mode, || domain::probe(&dest), &dest) {
+                    Ok(true) => Some(attach::Attach::Ssh(attach::SshTarget {
+                        dest,
+                        session: session.clone(),
+                    })),
+                    Ok(false) => {
+                        // Local panes running ssh; with the daemon on they are its panes
+                        // (session `ssh-<domain>`), so they outlive this window.
+                        let argv = domain::pane_argv(&dest, None);
+                        ssh_domain = Some(dest);
+                        if startup.settings.server_mode {
+                            let s = r
+                                .session
+                                .clone()
+                                .unwrap_or_else(|| domain::local_session(&name));
+                            match attach::ensure_server(&s, Some(&argv))
+                                .and_then(|()| attach::connect(&s))
+                            {
+                                Ok(h) => Some(attach::Attach::Local(h)),
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "session server unavailable, using local panes: {e}"
+                                    );
+                                    None
+                                }
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    Err(m) => {
+                        eprintln!("apotheosis: {m}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if r.attach {
+                match attach::connect(&session) {
+                    Ok(h) => Some(attach::Attach::Local(h)),
+                    Err(e) => {
+                        eprintln!("apotheosis: cannot attach to session {session:?}: {e}");
+                        std::process::exit(1);
+                    }
+                }
+            } else if startup.settings.server_mode {
+                // `sessions.server on` (T-21 §3): the window is a view; a refusal (this
+                // process runs inside one of the server's panes, say) falls back to local panes.
+                match attach::ensure_server(&session, None).and_then(|()| attach::connect(&session))
+                {
+                    Ok(h) => Some(attach::Attach::Local(h)),
+                    Err(e) => {
+                        tracing::warn!("session server unavailable, using local panes: {e}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
             let first = app::FirstPane {
                 cwd: r.cwd.as_deref().map(absolute),
                 title: r.title,
+                ssh_domain,
             };
-            match app::run(startup, r.command, r.app_id, first) {
+            match app::run(startup, r.command, r.app_id, first, attach) {
                 Ok(code) => std::process::exit(code),
                 Err(e) => {
                     eprintln!("apotheosis: {e}");
@@ -258,6 +401,25 @@ mod tests {
         assert!(p(&["-e"]).is_err());
         assert!(p(&["-o", "x"]).is_err());
         assert!(p(&["--nope"]).is_err());
+        assert!(p(&["--server", "--attach"]).is_err());
+        assert!(p(&["--session"]).is_err());
+        assert!(p(&["--domain", "h", "--attach"]).is_err());
+        assert_eq!(
+            p(&["--domain", "h"]),
+            Ok(Cli::Run(Run {
+                domain: Some("h".into()),
+                ..Run::default()
+            }))
+        );
+        assert_eq!(
+            p(&["--server", "--session", "w", "-e", "sh"]),
+            Ok(Cli::Run(Run {
+                command: Some(vec!["sh".into()]),
+                server: true,
+                session: Some("w".into()),
+                ..Run::default()
+            }))
+        );
     }
 
     #[test]

@@ -8,5 +8,5 @@ fixture "osc133-prompt-marks" {
     row "$ ls"
     row "out"
   }
-  events "mark:A" "mark:B" "mark:C" "mark:D;0"
+  events "mark:A" "mark:B" "mark:C" "mark:D;0" "command:started" "command:finished"
 }

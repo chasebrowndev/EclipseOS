@@ -12,7 +12,7 @@ ADR 0034 chose a foot fork (`cataclysm`) for v1 and deferred a from-scratch emul
 3. Write our own, in Rust, with its own Wayland client and wgpu renderer, to the T-NN spec volume.
 
 ## Decision
-Option 3. Binary `apotheosis`, CLI `apoth`, crates `apoth-*`, workspace `apotheosis/`, spec family T-NN in `docs/ECLIPSEOS_SPECS_APOTHEOSIS.md`. Wayland-only, any compositor; EclipseOS integration lights up on Abyss. On Abyss glass uses `ext_background_effect_v1` only; off Abyss the T-09 §5 ladder applies (ext → KDE blur → tint). No private Eclipse glass protocol and no allow-list entry. ADR 0034 is superseded; the name `cataclysm` is retired; `ec-cataclysm-pub` is renamed by ADR 0114.
+Option 3. Binary `apotheosis`, CLI `apoth`, crates `apoth-*`, workspace `apotheosis/`, spec family T-NN in `docs/ECLIPSEOS_SPECS_APOTHEOSIS.md`. Wayland-only, any compositor; EclipseOS integration lights up on Abyss. On Abyss glass uses `ext_background_effect_v1` only; off Abyss the T-09 §5 ladder applies (ext → KDE blur → tint). No private Eclipse glass protocol and no allow-list entry (amended 2026-11-15: interface chips and sheets use `eclipse_glass_v1` panes per ADR 0081, and `apotheosis` joins the glass allow-list; the window body stays `ext_background_effect_v1`). ADR 0034 is superseded; the name `cataclysm` is retired; `ec-cataclysm-pub` is renamed by ADR 0114.
 
 ## Consequences
 A large build (T-00 §7, forty milestones) instead of a patch set. foot remains the default terminal until milestone M31 and an optional dependency for one release after. The spec-trail job accepts `T-NN`. D-01, D-05 and D-07 are amended at the default switch (T-24 §5), not before.

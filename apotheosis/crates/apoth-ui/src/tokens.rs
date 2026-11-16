@@ -72,6 +72,10 @@ pub struct Palette {
     pub text_secondary: Rgba,
     pub text_tertiary: Rgba,
     pub track: Rgba,
+    /// A toggle's track when off, at rest and hovered, and its knob.
+    pub control_off: Rgba,
+    pub control_off_hover: Rgba,
+    pub knob_off: Rgba,
     pub scroller: Rgba,
     pub scroller_hover: Rgba,
     pub danger: Rgba,
@@ -81,6 +85,45 @@ pub struct Palette {
     pub dim: Rgba,
     /// Soft shadow colour (blur-off fallback only).
     pub shadow: Rgba,
+    /// Alpha of a floating pane's contact shadow.
+    pub float_shadow: f32,
+}
+
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
+fn linear_to_srgb(c: f32) -> f32 {
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
+
+/// The desktop's palette alphas are linear-light (iced blends in linear light). The chrome
+/// pass blends encoded sRGB, so the same token drawn as is reads far fainter. This is the
+/// alpha that puts the same colour on screen over `ground` when blended in sRGB (the inverse
+/// of `ec_theme::linear_alpha`: per channel the linear-light mix is the target, the sRGB
+/// alpha that reaches it is solved, averaged by how far the colour is from the ground).
+pub fn srgb_blend(c: Rgba, ground: Rgba) -> Rgba {
+    let a = c.0[3];
+    let (mut num, mut den) = (0.0, 0.0);
+    for ch in 0..3 {
+        let (s, g) = (c.0[ch], ground.0[ch]);
+        let mix = linear_to_srgb(srgb_to_linear(g) * (1.0 - a) + srgb_to_linear(s) * a);
+        num += (mix - g) * (s - g);
+        den += (s - g) * (s - g);
+    }
+    if den < 1e-6 {
+        c
+    } else {
+        c.alpha((num / den).clamp(0.0, 1.0))
+    }
 }
 
 impl From<ec_theme::Rgba> for Rgba {
@@ -93,6 +136,10 @@ impl Palette {
     /// The terminal's slice of a derived desktop palette (ADR 0084, T-08 §1). Nothing is
     /// copied by hand: every colour is an `ec_theme::derive` token.
     pub fn from_theme(p: &ec_theme::Palette) -> Palette {
+        let base: Rgba = p.base.into();
+        // Cell fills and rims are the translucent family the chrome draws; each is brought
+        // to the alpha this pass needs (see [`srgb_blend`]).
+        let cell = |c: ec_theme::Rgba| srgb_blend(c.into(), base);
         Palette {
             scheme: match p.scheme {
                 ec_theme::Scheme::Dark => Scheme::Dark,
@@ -101,16 +148,16 @@ impl Palette {
             base: p.base.into(),
             bar_tint: p.bar_tint.into(),
             sheet_tint: p.sheet_tint.into(),
-            cell: p.cell.into(),
-            cell_hover: p.cell_hover.into(),
-            cell_press: p.cell_press.into(),
-            cell_rim: p.cell_rim.into(),
-            cell_rim_hover: p.cell_rim_hover.into(),
-            cell_focus: p.cell_focus.into(),
-            cell_focus_hover: p.cell_focus_hover.into(),
-            cell_focus_press: p.cell_focus_press.into(),
-            cell_focus_rim: p.cell_focus_rim.into(),
-            cell_focus_rim_hover: p.cell_focus_rim_hover.into(),
+            cell: cell(p.cell),
+            cell_hover: cell(p.cell_hover),
+            cell_press: cell(p.cell_press),
+            cell_rim: cell(p.cell_rim),
+            cell_rim_hover: cell(p.cell_rim_hover),
+            cell_focus: cell(p.cell_focus),
+            cell_focus_hover: cell(p.cell_focus_hover),
+            cell_focus_press: cell(p.cell_focus_press),
+            cell_focus_rim: cell(p.cell_focus_rim),
+            cell_focus_rim_hover: cell(p.cell_focus_rim_hover),
             hairline: p.hairline.into(),
             accent: p.accent.into(),
             accent_text: p.accent_text.into(),
@@ -121,6 +168,9 @@ impl Palette {
             text_secondary: p.text_secondary.into(),
             text_tertiary: p.text_tertiary.into(),
             track: p.track.into(),
+            control_off: p.control_off.into(),
+            control_off_hover: p.control_off_hover.into(),
+            knob_off: p.knob_off.into(),
             scroller: p.scroller.into(),
             scroller_hover: p.scroller_hover.into(),
             danger: p.danger.into(),
@@ -128,6 +178,10 @@ impl Palette {
             ok: p.ok.into(),
             dim: p.base.into(),
             shadow: p.cell_shadow.into(),
+            float_shadow: match p.scheme {
+                ec_theme::Scheme::Dark => alpha::FLOAT_SHADOW_DARK,
+                ec_theme::Scheme::Light => alpha::FLOAT_SHADOW_LIGHT,
+            },
         }
     }
 
@@ -174,8 +228,13 @@ pub mod metrics {
     pub const TAB_MIN_W: f32 = 96.0;
     pub const TAB_MAX_W: f32 = 220.0;
     pub const TAB_GAP: f32 = 4.0;
-    pub const TAB_CLOSE: f32 = 18.0;
-    pub const NEW_TAB: f32 = 28.0;
+    /// The tab's close button and the new-tab button: their hit targets, and the shape
+    /// drawn in each.
+    pub const TAB_CLOSE: f32 = 22.0;
+    pub const NEW_TAB: f32 = 24.0;
+    /// The icon disc and close button of a bar.
+    pub const BAR_ICON: f32 = 18.0;
+    pub const TAB_ICON: f32 = 12.0;
     pub const BADGE_D: f32 = 6.0;
     pub const BAR_H: f32 = 40.0;
     pub const BAR_BUTTON_H: f32 = 26.0;
@@ -194,7 +253,84 @@ pub mod metrics {
     pub const PALETTE_FIELD_H: f32 = 36.0;
     pub const PALETTE_ROW_H: f32 = 30.0;
     pub const PALETTE_MAX_ROWS: usize = 10;
+    /// Open menu anchored at the pointer: its width, and the gap kept to the window edge.
+    pub const MENU_W: f32 = 400.0;
+    /// A right-click context menu (anchored, no field): compact width and row height.
+    pub const CONTEXT_MENU_W: f32 = 232.0;
+    pub const CONTEXT_ROW_H: f32 = 26.0;
+    /// Open menu header: its height, the type tile's width and height.
+    pub const MENU_HEADER_H: f32 = 52.0;
+    pub const TILE_W: f32 = 40.0;
+    pub const TILE_H: f32 = 32.0;
+    /// A switch: track and knob.
+    pub const TOGGLE_W: f32 = 30.0;
+    pub const TOGGLE_H: f32 = 18.0;
+    pub const TOGGLE_KNOB_INSET: f32 = 2.0;
+    /// A media window's hover close button.
+    pub const MEDIA_CLOSE: f32 = 28.0;
+    /// Media hover controls (T-08 §4): the centred play/pause disc at its largest and
+    /// smallest, its glyph as a share of the disc, the bottom scrub pill, the track in it.
+    pub const MEDIA_PLAY: f32 = 52.0;
+    pub const MEDIA_PLAY_MIN: f32 = 28.0;
+    pub const MEDIA_GLYPH: f32 = 0.36;
+    pub const MEDIA_SCRUB_H: f32 = 14.0;
+    pub const MEDIA_TRACK_H: f32 = 4.0;
+    /// The muted notice pill and its speaker mark.
+    pub const MUTED_H: f32 = 28.0;
+    pub const MUTED_ICON: f32 = 16.0;
+    /// The "default" tag on a picker row.
+    pub const TAG_H: f32 = 16.0;
     pub const CARET_W: f32 = 1.5;
+    /// Air between the caret and the text beside it (before a placeholder, after a query).
+    pub const CARET_GAP: f32 = 2.0;
+    /// Search sheet: widest it grows, and the height of its row.
+    pub const SEARCH_W: f32 = 540.0;
+    pub const SEARCH_H: f32 = 44.0;
+    pub const SEARCH_FIELD_H: f32 = 28.0;
+    pub const FIELD_MIN_W: f32 = 96.0;
+    pub const CHIP_H: f32 = 24.0;
+    pub const CHIP_MIN_W: f32 = 30.0;
+    pub const ICON_BUTTON: f32 = 24.0;
+    /// Confirm-once sheet: widest it grows, lines its monospace box shows, line pitch.
+    pub const SHEET_W: f32 = 560.0;
+    pub const SHEET_BODY_LINES: usize = 6;
+    pub const SHEET_LINE_H: f32 = 17.0;
+    /// Program-text well under a bar headline.
+    pub const DETAIL_H: f32 = 15.0;
+    pub const DETAIL_GAP: f32 = 2.0;
+    pub const TOOLTIP_MAX_W: f32 = 480.0;
+    pub const TOOLTIP_H: f32 = 24.0;
+    pub const TOOLTIP_OFFSET: f32 = 14.0;
+    /// Widest the profile pill on a tab grows, and its height.
+    pub const PROFILE_MAX_W: f32 = 84.0;
+    pub const PROFILE_H: f32 = 16.0;
+    /// Tab progress line, inset from the tab's bottom edge.
+    pub const PROGRESS_H: f32 = 2.0;
+    pub const PROGRESS_INSET: f32 = 3.0;
+    /// How far a floating pane's contact shadow sits below it.
+    pub const FLOAT_DROP: f32 = 3.0;
+    /// Bell rim around a pane while the visual bell shows.
+    pub const BELL_RIM_W: f32 = 2.0;
+}
+
+/// Alpha steps that are not palette tokens.
+pub mod alpha {
+    /// Frost laid under a floating sheet so the grid beneath cannot ghost through its text.
+    pub const BACKING: f32 = 0.72;
+    /// Extra backing under a float so the pane beneath never reads through its text.
+    pub const FLOAT_BACKING: f32 = 0.6;
+    /// A floating pane's contact shadow at its edge, on dark and on light (black either way,
+    /// so light stays softer).
+    pub const FLOAT_SHADOW_DARK: f32 = 0.50;
+    pub const FLOAT_SHADOW_LIGHT: f32 = 0.20;
+    /// Dim over the window behind a modal sheet.
+    pub const SCRIM: f32 = 0.28;
+    /// A progress fill with no known value.
+    pub const BUSY: f32 = 0.5;
+    /// The visual bell's rim, against the pane's own.
+    pub const BELL: f32 = 0.85;
+    /// A gold-tinted rim under the pointer: one small step up from its rest strength.
+    pub const ACCENT_RIM_HOVER: f32 = 1.4;
 }
 
 /// Durations in milliseconds.
@@ -205,6 +341,13 @@ pub mod motion {
     pub const SCROLLBAR_HOLD_MS: u64 = 1000;
     /// A consent bar or sheet ignores input this long after appearing (T-08 §5, T-18 §3).
     pub const CONSENT_GUARD_MS: u64 = 500;
+    /// The caret's blink: solid, eased out, dark, eased in.
+    pub const CARET_ON_MS: u64 = 500;
+    pub const CARET_FADE_MS: u64 = 150;
+    pub const CARET_OFF_MS: u64 = 400;
+    /// After this long without the cursor moving the caret stops blinking and rests solid, so
+    /// an idle terminal requests no frames.
+    pub const CARET_IDLE_MS: u64 = 15_000;
 }
 
 /// Caps on program-supplied text shown in the interface (T-18 §6).

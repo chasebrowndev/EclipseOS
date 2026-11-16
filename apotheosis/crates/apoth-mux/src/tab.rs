@@ -13,7 +13,7 @@
 //! - Structural operations that would make the tree need more cells than the tab has (and
 //!   more than it needed before) fail with [`TabError::TooSmall`] and change nothing.
 
-use crate::geom::{Dir, Orient, Rect, Size};
+use crate::geom::{Dir, MIN_COLS, MIN_ROWS, Orient, Rect, Size};
 use crate::preset::{self, Preset};
 use crate::tree::{Node, PaneId, Placed, RATIO_ONE, StackStyle, ratio_of};
 
@@ -143,9 +143,13 @@ impl Tab {
     pub fn size(&self) -> Size {
         self.size
     }
-    /// Resize the tab. Never fails; the tree degrades per the tree sizing rule.
+    /// Resize the tab. Never fails; the tree degrades per the tree sizing rule. Floats are
+    /// moved (then shrunk) to stay inside it.
     pub fn set_size(&mut self, size: Size) {
         self.size = size;
+        for f in &mut self.floats {
+            f.rect = clamp_rect(f.rect, size);
+        }
     }
     /// The tiled tree.
     pub fn root(&self) -> Option<&Node> {
@@ -619,6 +623,62 @@ impl Tab {
 
     // ---- floating layer (MUX-18) ----
 
+    /// MUX-19 placement search for a new `w`x`h` float (clamped to the tab): centred first,
+    /// then from the top-left, then from the top-right corner, stepping by (2, 1) cells, until
+    /// the rect avoids every shown float. When nothing avoids them all, the first position
+    /// whose top-left no float shares (a stagger); else the centre.
+    pub fn place_float(&self, w: u32, h: u32) -> Rect {
+        let (vw, vh) = (self.size.cols.max(MIN_COLS), self.size.rows.max(MIN_ROWS));
+        let (w, h) = (w.clamp(MIN_COLS, vw), h.clamp(MIN_ROWS, vh));
+        let centre = Rect::new((vw - w) / 2, (vh - h) / 2, w, h);
+        let shown: Vec<Rect> = self
+            .floats
+            .iter()
+            .filter(|f| f.visible)
+            .map(|f| f.rect)
+            .collect();
+        let mut cands = vec![centre];
+        let steps = (vw - w) / 2 + (vh - h) + 1;
+        for k in 0..=steps.min(256) {
+            let (dx, dy) = (2 * k, k);
+            if dx <= vw - w && dy <= vh - h {
+                cands.push(Rect::new(dx, dy, w, h));
+                cands.push(Rect::new(vw - w - dx, dy, w, h));
+            }
+        }
+        if let Some(r) = cands.iter().find(|r| !shown.iter().any(|s| s.overlaps(r))) {
+            return *r;
+        }
+        cands
+            .iter()
+            .find(|r| !shown.iter().any(|s| s.x == r.x && s.y == r.y))
+            .copied()
+            .unwrap_or(centre)
+    }
+
+    /// Show or hide the floating layer: hides every unpinned float when any is shown
+    /// (pinned floats stay), else shows them all and focuses the top one. Returns true when
+    /// the layer is now shown.
+    pub fn toggle_floats(&mut self) -> bool {
+        if self.floats.is_empty() {
+            return false;
+        }
+        let show = !self.floats.iter().any(|f| f.visible && !f.pinned);
+        let panes: Vec<PaneId> = self
+            .floats
+            .iter()
+            .filter(|f| show || !f.pinned)
+            .map(|f| f.pane)
+            .collect();
+        for p in panes {
+            let _ = self.set_float_visible(p, show);
+        }
+        if show && let Some(top) = self.floats_render_order().last().map(|f| f.pane) {
+            let _ = self.focus(top);
+        }
+        show
+    }
+
     /// Add a floating pane on top; it takes focus.
     pub fn add_float(&mut self, pane: PaneId, rect: Rect) -> Result<(), TabError> {
         if self.contains(pane) {
@@ -1011,5 +1071,90 @@ mod tests {
         t.raise_float(10).unwrap();
         t.lower_float(10).unwrap();
         assert_eq!(t.raise_float(1), Err(TabError::NotFloating));
+    }
+}
+
+/// `r` moved, then shrunk, to lie inside `size` (at least the 2x1 minimum).
+fn clamp_rect(r: Rect, size: Size) -> Rect {
+    let (vw, vh) = (size.cols.max(MIN_COLS), size.rows.max(MIN_ROWS));
+    let w = r.w.clamp(MIN_COLS, vw);
+    let h = r.h.clamp(MIN_ROWS, vh);
+    Rect::new(r.x.min(vw - w), r.y.min(vh - h), w, h)
+}
+
+#[cfg(test)]
+mod float_tests {
+    use super::*;
+
+    fn tab() -> Tab {
+        Tab::new(1, "t", Size { cols: 80, rows: 24 }, 1)
+    }
+
+    #[test]
+    fn placement_centres_then_staggers_from_the_corners() {
+        let mut t = tab();
+        let a = t.place_float(40, 12);
+        assert_eq!(a, Rect::new(20, 6, 40, 12), "centred half size");
+        t.add_float(2, a).unwrap();
+        // No free 40x12 spot beside a centred one: the next takes the top-left corner.
+        let b = t.place_float(40, 12);
+        assert_eq!(b, Rect::new(0, 0, 40, 12));
+        t.add_float(3, b).unwrap();
+        // Room for two side by side only: the third staggers off both origins.
+        let c = t.place_float(40, 12);
+        assert!(Rect::from_size(t.size()).contains_rect(&c));
+        t.add_float(4, c).unwrap();
+        let origins: Vec<(u32, u32)> = t.floats().iter().map(|f| (f.rect.x, f.rect.y)).collect();
+        let mut d = origins.clone();
+        d.dedup();
+        assert_eq!(d.len(), origins.len(), "{origins:?}");
+        // Where a free spot exists it is taken: a small float clears the others.
+        let mut u = tab();
+        let first = u.place_float(20, 6);
+        u.add_float(2, first).unwrap();
+        let next = u.place_float(20, 6);
+        assert!(!next.overlaps(&first), "{next:?} over {first:?}");
+        assert_eq!(next, Rect::new(0, 0, 20, 6));
+        // Oversized requests clamp to the tab.
+        assert_eq!(t.place_float(500, 500), Rect::new(0, 0, 80, 24));
+    }
+
+    #[test]
+    fn the_layer_hides_and_shows_as_one_and_focus_follows() {
+        let mut t = tab();
+        t.add_float(2, Rect::new(1, 1, 10, 5)).unwrap();
+        t.add_float(3, Rect::new(5, 5, 10, 5)).unwrap();
+        assert_eq!(t.focused(), Some(3));
+        assert!(!t.toggle_floats());
+        assert!(t.floats().iter().all(|f| !f.visible));
+        assert_eq!(t.focused(), Some(1), "back to the tiled pane");
+        assert!(t.toggle_floats());
+        assert!(t.floats().iter().all(|f| f.visible));
+        assert_eq!(t.focused(), Some(3), "the top float");
+        // A pinned float stays when the layer hides.
+        t.set_float_pinned(2, true).unwrap();
+        assert!(!t.toggle_floats());
+        let shown: Vec<PaneId> = t
+            .floats()
+            .iter()
+            .filter(|f| f.visible)
+            .map(|f| f.pane)
+            .collect();
+        assert_eq!(shown, [2]);
+        assert!(t.toggle_floats());
+        assert!(t.floats().iter().all(|f| f.visible));
+        t.check_invariants().unwrap();
+    }
+
+    #[test]
+    fn floats_stay_inside_a_shrinking_tab() {
+        let mut t = tab();
+        t.add_float(2, Rect::new(60, 20, 20, 4)).unwrap();
+        t.set_size(Size { cols: 30, rows: 10 });
+        let r = t.floats()[0].rect;
+        assert!(Rect::from_size(t.size()).contains_rect(&r), "{r:?}");
+        assert_eq!((r.w, r.h), (20, 4));
+        t.set_size(Size { cols: 10, rows: 3 });
+        assert_eq!(t.floats()[0].rect, Rect::new(0, 0, 10, 3));
     }
 }

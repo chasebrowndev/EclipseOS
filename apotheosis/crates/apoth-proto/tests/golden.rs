@@ -197,12 +197,81 @@ fn golden_every_request_kind() {
             wait: true,
         })),
     );
+    golden(
+        r#"{"id":27,"method":"media.window-open","params":{"cols":40,"rows":10,"title":"t"}}"#,
+        Params::MediaWindowOpen(MediaWindowOpen {
+            cols: 40,
+            rows: 10,
+            title: Some("t".into()),
+        }),
+    );
+    golden(
+        r#"{"id":28,"method":"media.window-write","params":{"window":1,"data":"aGkh"}}"#,
+        Params::MediaWindowWrite(MediaWindowWrite {
+            window: 1,
+            data: "aGkh".into(),
+        }),
+    );
+    golden(
+        r#"{"id":29,"method":"media.window-wait","params":{"window":1}}"#,
+        Params::MediaWindowWait(MediaWindowWait { window: 1 }),
+    );
+    golden(
+        r#"{"id":30,"method":"media.attach","params":{}}"#,
+        Params::MediaAttach(Empty {}),
+    );
+    golden(
+        r#"{"id":31,"method":"askpass.arm","params":{"host":"me@box"}}"#,
+        Params::AskpassArm(AskpassArm {
+            host: "me@box".into(),
+        }),
+    );
+}
+
+#[test]
+fn askpass_arm_is_bounded_and_there_is_no_askpass_request_method() {
+    for bad in [
+        r#"{"id":1,"method":"askpass.arm","params":{"host":""}}"#,
+        r#"{"id":1,"method":"askpass.arm","params":{"host":"a\u001bb"}}"#,
+    ] {
+        assert_eq!(rej(bad).1, ErrorCode::BadRequest, "{bad}");
+    }
+    let long = format!(
+        r#"{{"id":1,"method":"askpass.arm","params":{{"host":"{}"}}}}"#,
+        "h".repeat(256)
+    );
+    assert_eq!(rej(&long).1, ErrorCode::BadRequest);
+    // The secret never travels on this socket: no method asks for or answers one.
+    for n in [
+        "askpass",
+        "askpass.request",
+        "askpass.answer",
+        "askpass.secret",
+    ] {
+        assert!(Method::parse(n).is_none(), "{n}");
+    }
+    let r = AskpassArmReply {
+        socket: "/run/x.sock".into(),
+        token: "f".repeat(64),
+    };
+    assert!(!format!("{r:?}").contains("ffff"));
+}
+
+#[test]
+fn media_window_params_are_bounded() {
+    for bad in [
+        r#"{"id":1,"method":"media.window-open","params":{"cols":0,"rows":10}}"#,
+        r#"{"id":1,"method":"media.window-open","params":{"cols":10,"rows":501}}"#,
+        r#"{"id":1,"method":"media.window-write","params":{"window":1,"data":"a b"}}"#,
+    ] {
+        assert_eq!(rej(bad).1, ErrorCode::BadRequest, "{bad}");
+    }
 }
 
 #[test]
 fn every_method_has_a_golden_request() {
-    // 26 golden cases above, one per table row.
-    assert_eq!(METHODS.len(), 26);
+    // 31 golden cases above, one per table row.
+    assert_eq!(METHODS.len(), 31);
 }
 
 #[test]

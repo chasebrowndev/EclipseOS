@@ -245,11 +245,15 @@ impl App {
     fn ctl_drop(&mut self, cid: u64) {
         let Some(ctl) = self.ctl.as_mut() else { return };
         ctl.waits.retain(|w| w.0 != cid);
+        let had = ctl.clients.contains_key(&cid);
         if let Some(c) = ctl.clients.remove(&cid) {
             for t in c.tokens.into_iter().chain(c.write) {
                 self.lh.remove(t);
             }
             tracing::debug!(pid = c.peer.pid, "socket client disconnected");
+        }
+        if had {
+            self.media_drop_client(cid);
         }
     }
 
@@ -372,13 +376,9 @@ impl App {
         }
     }
 
-    /// Deliver an event to every subscription that takes it. Content fields are withheld
-    /// from agent peers (T-12 §4).
+    /// Deliver an event to every subscription that takes it, and queue it for the rules
+    /// (T-11 §5). Content fields are withheld from agent peers (T-12 §4).
     pub(super) fn ctl_emit(&mut self, mut ev: Event, pane: Option<PaneKey>) {
-        let Some(ctl) = self.ctl.as_mut() else { return };
-        if ctl.clients.is_empty() {
-            return;
-        }
         if let Some(p) = pane {
             let _ = ev.set("pane", FieldValue::Int(p as i64));
             if let Some(t) = self.session.tab_of(p) {
@@ -386,6 +386,11 @@ impl App {
             }
         }
         let _ = ev.set("window", FieldValue::Int(self.mux_win as i64));
+        self.auto_enqueue(&ev, pane);
+        let Some(ctl) = self.ctl.as_mut() else { return };
+        if ctl.clients.is_empty() {
+            return;
+        }
         let mut out = Vec::new();
         for (&cid, c) in &mut ctl.clients {
             if c.dead || c.conn.proto.is_none() {
@@ -637,6 +642,8 @@ impl App {
                 self.start_reload();
                 Ok(Some(serde_json::Value::Null))
             }
+            Params::ConfigSet(p) => self.ctl_runtime(&p.key, Some(&p.value)),
+            Params::ConfigReset(p) => self.ctl_runtime(&p.key, None),
             Params::Subscribe(s) => {
                 let kinds: Vec<EventKind> = s
                     .events
@@ -697,6 +704,26 @@ impl App {
                 Ok(Some(serde_json::Value::Null))
             }
             Params::Launch(l) => self.ctl_launch(cid, req.id, *l),
+            Params::AskpassArm(p) => self.askpass_arm(cid, &p.host),
+            Params::MediaWindowOpen(p) => self.media_open(cid, p),
+            Params::MediaWindowWrite(p) => self.media_write(cid, p),
+            Params::MediaWindowWait(p) => self.media_wait(cid, req.id, p),
+            Params::MediaAttach(_) => {
+                let fd = self
+                    .ctl
+                    .as_mut()
+                    .and_then(|x| x.clients.get_mut(&cid))
+                    .and_then(|c| c.conn.take_fd())
+                    .ok_or_else(|| err(ErrorCode::BadRequest, "no descriptor attached"))?;
+                let token = crate::mediahost::attach(fd)
+                    .ok_or_else(|| err(ErrorCode::BadRequest, "too many attached media"))?;
+                let reply = apoth_proto::results::MediaAttachReply {
+                    token: token.to_string(),
+                };
+                Ok(Some(serde_json::to_value(reply).map_err(|_| {
+                    err(ErrorCode::Internal, "cannot encode the reply")
+                })?))
+            }
             Params::PaneBlocks(_)
             | Params::ConfigEffective(_)
             | Params::KeyboardState(_)
@@ -705,12 +732,83 @@ impl App {
             | Params::WaylandInfo(_)
             | Params::RenderStatus(_)
             | Params::PaneWatch(_)
-            | Params::ConfigSet(_)
-            | Params::ConfigReset(_)
             | Params::ConfigPersist(_)
             | Params::ConfigSaveOverride(_)
             | Params::Notify(_) => Err(err(ErrorCode::Unsupported, "not available yet")),
         }
+    }
+
+    /// `askpass.arm` (T-22 §3, SECURITY-30): only a process in one of this instance's panes,
+    /// and not an agent session's, may arm; the channel is bound to that process (which then
+    /// `exec`s ssh) and ends with it. The reply carries the socket and the token to the
+    /// arming process only; neither is logged.
+    fn askpass_arm(
+        &mut self,
+        cid: u64,
+        host: &str,
+    ) -> Result<Option<serde_json::Value>, WireError> {
+        let Some(c) = self.client(cid) else {
+            return Err(err(ErrorCode::Internal, "no client"));
+        };
+        if c.peer.facts.pane.is_none() || c.peer.facts.agent {
+            return Err(err(
+                ErrorCode::Denied,
+                "askpass is armed only for a process in one of this terminal's panes",
+            ));
+        }
+        let pid = c.peer.pid;
+        let pane = c.peer.facts.pane;
+        let dir = self
+            .ctl_path()
+            .and_then(std::path::Path::parent)
+            .ok_or_else(|| err(ErrorCode::Internal, "no socket directory"))?
+            .to_owned();
+        let prep = crate::askpass::Prepared::new(&dir, host)
+            .map_err(|e| WireError::new(ErrorCode::Internal, format!("cannot arm askpass: {e}")))?
+            .in_pane(pane);
+        let reply = apoth_proto::results::AskpassArmReply {
+            socket: prep.socket().to_string_lossy().into_owned(),
+            token: prep.token_hex(),
+        };
+        let tx = self.to_main.clone();
+        prep.start(
+            pid,
+            Box::new(move |e| {
+                let _ = tx.send(MainMsg::Askpass(e));
+            }),
+        )
+        .map_err(|e| WireError::new(ErrorCode::Internal, format!("cannot arm askpass: {e}")))?;
+        tracing::info!(pid, "askpass armed");
+        json(&reply)
+    }
+
+    /// `config.set` / `config.reset` (T-12 §2): the class gate has already run. Replies
+    /// `{key, changed, previous}`; `previous` is the override the key had before, in config
+    /// text form (`null`: none), so a client can undo a batch that failed part-way.
+    fn ctl_runtime(
+        &mut self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, WireError> {
+        let change = self.runtime_override(key, value).map_err(|r| {
+            // A key whose class takes no runtime override is a denial; a bad value or an
+            // unknown key is a bad request.
+            let refused = r.class.is_some_and(|c| c.runtime_socket_class().is_none());
+            let code = if refused {
+                ErrorCode::Denied
+            } else {
+                ErrorCode::BadRequest
+            };
+            WireError::new(code, r.message)
+        })?;
+        let previous = apoth_config::schema::key(key)
+            .zip(change.previous.as_ref())
+            .and_then(|(k, v)| apoth_config::overrides::value_arg_text(k, v));
+        Ok(Some(serde_json::json!({
+            "key": key,
+            "changed": change.applied.is_some(),
+            "previous": previous,
+        })))
     }
 
     fn ctl_launch(
@@ -719,18 +817,20 @@ impl App {
         rid: u64,
         l: Launch,
     ) -> Result<Option<serde_json::Value>, WireError> {
-        if l.hold
-            || !l.overrides.is_empty()
-            || l.profile.is_some()
-            || l.layout.is_some()
-            || l.app_id.is_some()
-        {
+        if l.hold || !l.overrides.is_empty() || l.layout.is_some() || l.app_id.is_some() {
             return Err(err(
                 ErrorCode::Unsupported,
-                "hold, overrides, profiles, layouts and app ids are not available yet",
+                "hold, overrides, layouts and app ids are not available yet",
             ));
         }
         let argv = (!l.argv.is_empty()).then_some(l.argv);
+        let cwd = l.cwd.map(PathBuf::from);
+        let (argv, cwd, profile_env) = match l.profile.as_deref() {
+            None => (argv, cwd, Vec::new()),
+            Some(name) => self
+                .profile_launch(name, argv, cwd)
+                .map_err(|()| err(ErrorCode::BadRequest, "unknown profile"))?,
+        };
         // The launcher's environment, less what the pane sets itself (its identity and the
         // terminal it runs in).
         let env: Vec<(String, String)> = l
@@ -743,10 +843,14 @@ impl App {
                         "TERM" | "COLORTERM" | "TERMINFO" | "TERM_PROGRAM" | "TERM_PROGRAM_VERSION"
                     )
             })
+            .chain(profile_env)
             .collect();
-        let Some(id) = self.new_tab_with(argv, l.cwd.map(PathBuf::from), env) else {
+        let Some(id) = self.new_tab_with(argv, cwd, env) else {
             return Err(err(ErrorCode::Internal, "the pane could not start"));
         };
+        if let Some(p) = &l.profile {
+            self.set_explicit_profile(id, p);
+        }
         if let Some(t) = l.title
             && let Some(tid) = self.session.tab_of(id)
         {

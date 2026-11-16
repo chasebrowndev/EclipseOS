@@ -13,6 +13,7 @@ use apoth_grid::{Attrs, Color, Damage, FrameSnapshot, SnapCell, SnapRow, Style, 
 use apoth_render::colour::{Palette, Rgb, TextBlending};
 use apoth_render::cursor::{self, CursorScene, CursorShape, CursorState};
 use apoth_render::gpu::{Gpu, GpuOptions};
+use apoth_render::image::ImageQuad;
 use apoth_render::presenter::{OffscreenPresenter, PresentOutcome, Presenter};
 use apoth_render::reference::{self, Image, MemAtlas};
 use apoth_render::renderer::{FrameInput, PaneDraw, Renderer, RendererConfig};
@@ -275,6 +276,7 @@ impl Harness {
         let panes = [PaneDraw::single(&self.scene, cur)];
         let input = FrameInput {
             panes: &panes,
+            chrome_before: &[],
             clear: [0.0; 4],
         };
         match self.pres.present(&mut self.renderer, &input) {
@@ -317,6 +319,8 @@ fn decorations_match_the_reference() {
             end: 11,
             bg: Rgb(60, 60, 140),
             fg: Some(Rgb(255, 255, 255)),
+            round: false,
+            rim: None,
         }];
         let got = h.frame(decoration_rows(), vec![0, 1, 2], Damage::Full, None);
         let want = h.reference(None);
@@ -343,6 +347,7 @@ fn cursor_shapes_match_the_reference() {
             shape,
             visible: true,
             focused,
+            alpha: 255,
         };
         // Build the glyph request before the frame so the atlas holds the glyph.
         let ctx = BuildCtx {
@@ -502,16 +507,23 @@ fn two_panes_draw_side_by_side_at_their_origins() {
             scene: &h.scene,
             cursor: None,
             origin: Some((0, 0)),
+            images_below: &[],
+            images_above: &[],
+            backdrop: None,
         },
         PaneDraw {
             key: 2,
             scene: &right,
             cursor: None,
             origin: Some(((pane_w + gap) as i32, 0)),
+            images_below: &[],
+            images_above: &[],
+            backdrop: None,
         },
     ];
     let input = FrameInput {
         panes: &panes,
+        chrome_before: &[],
         clear: [0.0; 4],
     };
     match h.pres.present(&mut h.renderer, &input) {
@@ -534,4 +546,367 @@ fn two_panes_draw_side_by_side_at_their_origins() {
         between.data.iter().all(|b| *b == 0),
         "the gap between the panes is not the clear colour"
     );
+}
+
+fn solid(w: u32, h: u32, px: [u8; 4]) -> Vec<u8> {
+    px.repeat((w * h) as usize)
+}
+
+fn at(img: &Image, x: usize, y: usize) -> [u8; 4] {
+    let i = (y * img.w + x) * 4;
+    img.data[i..i + 4].try_into().unwrap()
+}
+
+fn near(got: [u8; 4], want: [u8; 4], tol: u8, what: &str) {
+    assert!(
+        got.iter().zip(want).all(|(g, w)| g.abs_diff(w) <= tol),
+        "{what}: got {got:?}, want {want:?}"
+    );
+}
+
+/// Writes the readback for a human look when `APOTH_IMAGE_DUMP` names a directory.
+fn dump(name: &str, img: &Image) {
+    let Some(dir) = std::env::var_os("APOTH_IMAGE_DUMP") else {
+        return;
+    };
+    let path = std::path::Path::new(&dir).join(format!("{name}.png"));
+    let f = std::io::BufWriter::new(std::fs::File::create(path).unwrap());
+    let mut enc = png::Encoder::new(f, img.w as u32, img.h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header()
+        .unwrap()
+        .write_image_data(&img.to_straight())
+        .unwrap();
+}
+
+/// T-15 §6 (RENDERING-35..37): a negative-z image draws under the text over the backdrop, a
+/// positive one over the text, both on the pixel grid at every scale; 1:1 is pixel exact.
+#[test]
+fn images_draw_under_and_over_the_text_on_the_pixel_grid() {
+    let Some(gpu) = gpu() else { return };
+    let red = solid(4, 4, [255, 0, 0, 255]);
+    let blue = solid(4, 4, [0, 0, 255, 128]);
+    let pair = [255, 0, 0, 255, 0, 255, 0, 255];
+    for (cw, ch) in [(8, 16), (10, 20), (12, 24), (16, 32)] {
+        let (cwu, chu) = (cw as usize, ch as usize);
+        let mut h = Harness::new(&gpu, metrics(cw, ch), 6, 3, TextBlending::Native);
+        h.cfg.bg_alpha = 0.0;
+        h.snap.rows = vec![
+            text_row("ab    ", Style::default()),
+            text_row("      ", Style::default()),
+            text_row("      ", Style::default()),
+        ];
+        h.snap.changed = vec![0, 1, 2];
+        {
+            let ctx = BuildCtx {
+                cfg: &h.cfg,
+                palette: &h.pal,
+                metrics: &h.m,
+                highlights: &h.hl,
+            };
+            h.scene
+                .update(&h.snap, Damage::Full, &ctx, false, &mut h.synth);
+        }
+        h.renderer
+            .upload_mask(0, 0, 0, PAGE, PAGE, h.synth.atlas.mask_page(0));
+        // Under cells 0-1 of row 0; over cell 4 of row 1; a 2x1 pair 1:1 at row 2, col 1.
+        let below = [ImageQuad {
+            key: 1,
+            width: 4,
+            height: 4,
+            rgba: &red,
+            dst: [0, 0, 2 * cw, ch],
+            src: [0, 0, 4, 4],
+            replaces: None,
+            dirty: None,
+        }];
+        let above = [
+            ImageQuad {
+                key: 2,
+                width: 4,
+                height: 4,
+                rgba: &blue,
+                dst: [4 * cw, ch, cw, ch],
+                src: [0, 0, 4, 4],
+                replaces: None,
+                dirty: None,
+            },
+            ImageQuad {
+                key: 3,
+                width: 2,
+                height: 1,
+                rgba: &pair,
+                dst: [cw, 2 * ch, 2, 1],
+                src: [0, 0, 2, 1],
+                replaces: None,
+                dirty: None,
+            },
+        ];
+        let panes = [PaneDraw {
+            backdrop: Some([0.1, 0.1, 0.1, 1.0]),
+            images_below: &below,
+            images_above: &above,
+            ..PaneDraw::single(&h.scene, None)
+        }];
+        let input = FrameInput {
+            panes: &panes,
+            chrome_before: &[],
+            clear: [0.0; 4],
+        };
+        match h.pres.present(&mut h.renderer, &input) {
+            PresentOutcome::Presented(_) => {}
+            other => panic!("offscreen present failed: {other:?}"),
+        }
+        let got = h.pres.read_pixels();
+        dump(&format!("images-{cw}x{ch}"), &got);
+        let what = |s: &str| format!("{s} at cell {cw}x{ch}");
+        let bd = [26, 26, 26, 255];
+        // The image under the text shows beside the 6-px synthetic glyph box...
+        near(
+            at(&got, cwu + 7, 0),
+            [255, 0, 0, 255],
+            1,
+            &what("under, no glyph"),
+        );
+        // ...the text draws over it...
+        let fg = h.pal.fg;
+        let edge = (0..chu)
+            .find(|&y| at(&got, 1, y) != [255, 0, 0, 255])
+            .expect("a glyph column over the image");
+        near(
+            at(&got, 1, edge),
+            [fg.0, fg.1, fg.2, 255],
+            2,
+            &what("text over image"),
+        );
+        // ...and its edges land on the cell grid.
+        near(
+            at(&got, 2 * cwu - 1, chu - 1),
+            [255, 0, 0, 255],
+            1,
+            &what("under, last px"),
+        );
+        near(
+            at(&got, 2 * cwu, chu - 1),
+            bd,
+            1,
+            &what("backdrop right of under"),
+        );
+        near(at(&got, 0, chu), bd, 1, &what("backdrop below under"));
+        // Over the text: half blue over the backdrop, exactly on its cell.
+        let over = [13, 13, 141, 255];
+        near(at(&got, 4 * cwu, chu), over, 2, &what("over, first px"));
+        near(
+            at(&got, 5 * cwu - 1, 2 * chu - 1),
+            over,
+            2,
+            &what("over, last px"),
+        );
+        near(at(&got, 4 * cwu - 1, chu), bd, 1, &what("left of over"));
+        near(at(&got, 5 * cwu, chu), bd, 1, &what("right of over"));
+        // 1:1 samples nearest: two exact pixels.
+        assert_eq!(
+            at(&got, cwu, 2 * chu),
+            [255, 0, 0, 255],
+            "{}",
+            what("1:1 px 0")
+        );
+        assert_eq!(
+            at(&got, cwu + 1, 2 * chu),
+            [0, 255, 0, 255],
+            "{}",
+            what("1:1 px 1")
+        );
+        near(at(&got, cwu + 2, 2 * chu), bd, 1, &what("after 1:1"));
+    }
+}
+
+/// RENDERING-37: an animation frame that names the frame it follows takes over its texture
+/// and writes only the changed rect; pixels outside the rect are the old frame's. One
+/// texture stays cached and the draw is pixel exact at every cell size.
+#[test]
+fn animation_frames_reuse_one_texture_and_upload_only_the_changed_rect() {
+    let Some(gpu) = gpu() else { return };
+    let red = solid(4, 4, [255, 0, 0, 255]);
+    // The second frame's full pixels: green on the left half. Only that half is "dirty";
+    // its right half is deliberately blue to prove it is never uploaded.
+    let mut next = Vec::new();
+    for _y in 0..4 {
+        for x in 0..4 {
+            next.extend_from_slice(if x < 2 {
+                &[0, 255, 0, 255]
+            } else {
+                &[0, 0, 255, 255]
+            });
+        }
+    }
+    for (cw, ch) in [(8, 16), (10, 20), (12, 24), (16, 32)] {
+        let mut h = Harness::new(&gpu, metrics(cw, ch), 6, 3, TextBlending::Native);
+        h.cfg.bg_alpha = 0.0;
+        h.snap.rows = vec![
+            text_row("      ", Style::default()),
+            text_row("      ", Style::default()),
+            text_row("      ", Style::default()),
+        ];
+        h.snap.changed = vec![0, 1, 2];
+        {
+            let ctx = BuildCtx {
+                cfg: &h.cfg,
+                palette: &h.pal,
+                metrics: &h.m,
+                highlights: &h.hl,
+            };
+            h.scene
+                .update(&h.snap, Damage::Full, &ctx, false, &mut h.synth);
+        }
+        let frames = [
+            (10u64, None, None, &red),
+            (11, Some(10), Some([0, 0, 2, 4]), &next),
+        ];
+        let mut got = None;
+        for (key, replaces, dirty, px) in frames {
+            let above = [ImageQuad {
+                key,
+                width: 4,
+                height: 4,
+                rgba: px,
+                dst: [cw, 0, 4, 4],
+                src: [0, 0, 4, 4],
+                replaces,
+                dirty,
+            }];
+            let panes = [PaneDraw {
+                images_above: &above,
+                ..PaneDraw::single(&h.scene, None)
+            }];
+            let input = FrameInput {
+                panes: &panes,
+                chrome_before: &[],
+                clear: [0.0; 4],
+            };
+            match h.pres.present(&mut h.renderer, &input) {
+                PresentOutcome::Presented(_) => {}
+                other => panic!("offscreen present failed: {other:?}"),
+            }
+            got = Some(h.pres.read_pixels());
+        }
+        let got = got.unwrap();
+        dump(&format!("anim-reuse-{cw}x{ch}"), &got);
+        assert_eq!(
+            h.renderer.image_textures(),
+            1,
+            "one texture for both frames"
+        );
+        assert_eq!(h.renderer.image_reuses(), 1);
+        let cwu = cw as usize;
+        for y in 0..4 {
+            assert_eq!(
+                at(&got, cwu, y),
+                [0, 255, 0, 255],
+                "new left half, {cw}x{ch}"
+            );
+            assert_eq!(at(&got, cwu + 1, y), [0, 255, 0, 255]);
+            assert_eq!(
+                at(&got, cwu + 2, y),
+                [255, 0, 0, 255],
+                "old right half kept, {cw}x{ch}"
+            );
+            assert_eq!(at(&got, cwu + 3, y), [255, 0, 0, 255]);
+        }
+        assert_ne!(at(&got, cwu + 4, 0), [255, 0, 0, 255], "exactly 4 px wide");
+    }
+}
+
+/// Floats (MUX-18): chrome layer 0 (a float's glass) lands over the tiled pane and under the
+/// float's grid; the next layer (its rim) lands over the float; an unmarked list still draws
+/// over every pane.
+#[test]
+fn chrome_layers_interleave_with_floating_panes() {
+    use apoth_render::chrome::{ChromeRect, ChromeSink};
+    let Some(gpu) = gpu() else { return };
+    let m = metrics(8, 16);
+    let (w, hh) = (m.width as usize, m.height as usize);
+    let mut h = Harness::new(&gpu, m, 12, 3, TextBlending::Native);
+    h.snap.rows = (0..3)
+        .map(|_| text_row(&" ".repeat(12), Style::default()))
+        .collect();
+    h.snap.changed = vec![0, 1, 2];
+    let mut float = GridScene::new();
+    let mut fsnap = FrameSnapshot::new();
+    fsnap.rows = vec![text_row("    ", Style::default())];
+    fsnap.changed = vec![0];
+    {
+        let ctx = BuildCtx {
+            cfg: &h.cfg,
+            palette: &h.pal,
+            metrics: &h.m,
+            highlights: &h.hl,
+        };
+        h.scene
+            .update(&h.snap, Damage::Full, &ctx, false, &mut h.synth);
+        float.update(&fsnap, Damage::Full, &ctx, false, &mut h.synth);
+    }
+    let flat = |r: [f32; 4], c: [u8; 4]| ChromeRect {
+        rect: r,
+        radii: [0.0; 4],
+        fill: c,
+        rim: [0; 4],
+        rim_width: 0.0,
+    };
+    let (green, blue) = ([0, 255, 0, 255], [0, 0, 255, 255]);
+    {
+        let c = h.renderer.chrome_mut();
+        c.clear();
+        c.rounded_rect(&flat([0.0, 0.0, (12 * w) as f32, (3 * hh) as f32], green));
+        c.layer();
+        c.rounded_rect(&flat(
+            [(2 * w) as f32, hh as f32, w as f32, hh as f32],
+            blue,
+        ));
+    }
+    let origin = ((2 * w) as i32, hh as i32);
+    let draw = |scene, key, origin| PaneDraw {
+        key,
+        scene,
+        cursor: None,
+        origin: Some(origin),
+        images_below: &[],
+        images_above: &[],
+        backdrop: None,
+    };
+    let panes = [draw(&h.scene, 1, (0, 0)), draw(&float, 2, origin)];
+    let bg = h.pal.bg;
+    let bg = [bg.0, bg.1, bg.2, 255];
+    for (layers, what) in [(&[1usize][..], "layered"), (&[][..], "unlayered")] {
+        let input = FrameInput {
+            panes: &panes,
+            chrome_before: layers,
+            clear: [0.0; 4],
+        };
+        match h.pres.present(&mut h.renderer, &input) {
+            PresentOutcome::Presented(_) => {}
+            other => panic!("offscreen present failed: {other:?}"),
+        }
+        let got = h.pres.read_pixels();
+        near(
+            at(&got, w / 2, hh / 2),
+            green,
+            2,
+            "glass over the tiled pane",
+        );
+        near(
+            at(&got, 2 * w + w / 2, hh + hh / 2),
+            blue,
+            2,
+            "rim layer over the float",
+        );
+        let inside = at(&got, 5 * w + w / 2, hh + hh / 2);
+        if layers.is_empty() {
+            near(inside, green, 2, "unlayered: all chrome over every pane");
+        } else {
+            near(inside, bg, 2, "the float's grid over its glass");
+        }
+        let _ = what;
+    }
 }

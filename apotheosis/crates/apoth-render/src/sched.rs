@@ -24,6 +24,10 @@
 //!   `performance { sync-timeout-ms }`), whichever is first. Release renders at once (gate
 //!   permitting).
 //! * Occluded or suspended surfaces render nothing ([`Scheduler::set_suspended`]).
+//! * Animation (T-15 §1 GRAPHICS-12): the frame that drew an animated image reports when
+//!   its next frame is due ([`Scheduler::animate`]); that instant is one more deadline of
+//!   the same timer, and firing it is damage. Ignored while suspended, so an occluded
+//!   window's animations wake nothing (they resume at the frame the clock has reached).
 //!
 //! DELIBERATE READING of "the gate is off under Fifo": with `Fifo` the gate is off even when
 //! the compositor offers frame callbacks, because the WSI paces and the render thread blocks in
@@ -189,6 +193,7 @@ pub struct Scheduler {
     hold: Option<Ns>,
     hold_timed_out: bool,
     suspended: bool,
+    anim: Option<Ns>,
 }
 
 impl Scheduler {
@@ -208,6 +213,7 @@ impl Scheduler {
             hold: None,
             hold_timed_out: false,
             suspended: false,
+            anim: None,
         }
     }
 
@@ -315,10 +321,28 @@ impl Scheduler {
         }
     }
 
+    /// The last rendered frame shows an animation whose next frame is due at `due`
+    /// (`None`: nothing animates). Replaces the previous deadline.
+    pub fn animate(&mut self, due: Option<Ns>) {
+        self.anim = due;
+    }
+
     /// What to do at `now`.
     pub fn poll(&mut self, now: Ns) -> Poll {
-        if self.suspended || !self.dirty {
+        if self.suspended {
             return Poll::Idle;
+        }
+        if let Some(a) = self.anim
+            && now >= a
+        {
+            self.anim = None;
+            self.dirty = true;
+            if self.upper.is_none() {
+                self.upper = Some(now);
+            }
+        }
+        if !self.dirty {
+            return self.anim.map_or(Poll::Idle, |a| Poll::Wait(Some(a)));
         }
         if let Some(deadline) = self.hold {
             if now < deadline {
@@ -339,7 +363,7 @@ impl Scheduler {
                 sync_timed_out: self.hold_timed_out,
             });
         }
-        let next = [self.upper, self.lower]
+        let next = [self.upper, self.lower, self.anim]
             .into_iter()
             .flatten()
             .filter(|t| *t > now)
@@ -375,6 +399,27 @@ mod tests {
     use super::*;
 
     const MS: Ns = 1_000_000;
+
+    #[test]
+    fn an_animation_deadline_is_the_only_wakeup_and_sleeps_while_suspended() {
+        let mut s = Scheduler::new(
+            SchedConfig::default(),
+            Pacing::choose(false, PresentKind::Mailbox),
+        );
+        assert_eq!(s.poll(0), Poll::Idle);
+        s.animate(Some(40 * MS));
+        assert_eq!(s.poll(10 * MS), Poll::Wait(Some(40 * MS)));
+        assert!(matches!(s.poll(40 * MS), Poll::Render(_)));
+        s.rendered();
+        s.animate(Some(80 * MS));
+        s.set_suspended(true, 50 * MS);
+        assert_eq!(s.poll(90 * MS), Poll::Idle, "occluded: no wakeup");
+        s.set_suspended(false, 100 * MS);
+        assert!(matches!(s.poll(100 * MS), Poll::Render(_)));
+        s.rendered();
+        s.animate(None);
+        assert_eq!(s.poll(200 * MS), Poll::Idle);
+    }
 
     fn sched(p: Pacing) -> Scheduler {
         Scheduler::new(SchedConfig::default(), p)

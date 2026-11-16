@@ -71,7 +71,7 @@ fn relative_and_animation_parse_only() {
     };
     assert_eq!(
         (f.base_frame, f.edit_frame, f.gap_ms, f.composition),
-        (2, 3, 100, 1)
+        (2, 3, Some(100), 1)
     );
     let Command::Animate(a) = parse("Ga=a,i=1,s=3,v=2,r=1,z=50,c=4").command else {
         panic!()
@@ -84,8 +84,8 @@ fn relative_and_animation_parse_only() {
         panic!()
     };
     assert_eq!(
-        (c.src_frame, c.dst_frame, c.w, c.dst_y, c.replace),
-        (1, 2, 3, 6, true)
+        (c.src_frame, c.dst_frame, c.w, c.dst_y, c.src_x, c.replace),
+        (1, 2, 3, 2, 5, true)
     );
 }
 
@@ -120,7 +120,7 @@ fn delete_selectors_cover_the_set() {
             false,
         ),
         ("Ga=d,d=c", Cursor, false),
-        ("Ga=d,d=f", Frames, false),
+        ("Ga=d,d=f,i=3", Frames { id: 3, number: 0 }, false),
         ("Ga=d,d=p,x=3,y=4", Cell { x: 3, y: 4 }, false),
         ("Ga=d,d=Q,x=3,y=4,z=-2", CellZ { x: 3, y: 4, z: -2 }, true),
         ("Ga=d,d=r,x=10,y=20", IdRange { lo: 10, hi: 20 }, false),
@@ -285,6 +285,22 @@ fn unterminated_single_chunk_without_m_completes() {
         panic!()
     };
     assert_eq!(t.payload, [1, 2, 3]);
+}
+
+#[test]
+fn more_is_ignored_on_a_shared_memory_transmission() {
+    // mpv's `--vo=kitty --vo-kitty-use-shm=yes` sends `m=1` on every shm frame and never a
+    // final chunk; chunking only applies to direct data, so each one is a whole transfer.
+    let mut a = Assembler::new(Limits::default());
+    for _ in 0..2 {
+        let Event::Transfer(t) = a.push(
+            &apc("a=T,t=s,f=24,s=1,v=1,q=2,m=1", &b64(b"mpv-kitty-1")),
+            0,
+        ) else {
+            panic!("an shm transmission with m=1 is complete")
+        };
+        assert_eq!(t.payload, b"mpv-kitty-1");
+    }
 }
 
 #[test]

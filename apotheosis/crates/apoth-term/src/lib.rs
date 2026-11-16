@@ -12,7 +12,8 @@
 //!   out an `Arc` of it ([`Term::input_mirror`]).
 //! * Configuration arrives in [`TermConfig`] at construction.
 //! * The title stack is 10 deep and ignores a push when full.
-//! * OSC 52 read (query) is consumed without a reply until the consent path exists.
+//! * OSC 52 read (query) never replies from the term: it raises `EventSlot::clip_read` and
+//!   main answers under the sequence policy (T-18 §3).
 //! * XTGETTCAP (`DCS + q`), DECRQCRA outside `esctest` and XTSAVE are consumed.
 //! * OSC 777 `notify;title;body` and OSC 99 (`p=title|body` payloads, optional `e=1` base64) push
 //!   a notification event; other OSC 99 payload kinds and chunked assembly are consumed.
@@ -25,10 +26,15 @@ mod color;
 pub mod config;
 mod csi;
 pub mod events;
+pub mod fuzz;
+pub mod graphics;
 mod machine;
+pub mod media;
 pub mod modes;
 mod osc;
 mod sgr;
+pub mod shell;
+pub mod snapshot;
 #[cfg(test)]
 mod tests_batch;
 
@@ -40,9 +46,23 @@ use apoth_input::InputMirror;
 use apoth_vt::Parser;
 
 pub use color::XTERM_ANSI16;
-pub use config::{CursorStyle, Rgb, TermConfig};
-pub use events::{ClipboardSet, EventSlot, Mark, Progress, ReplyQueue};
+
+/// OSC 1337 user variables per pane (T-11 §9): names, name bytes, value bytes.
+pub const USER_VARS_MAX: usize = 64;
+pub const USER_VAR_NAME_MAX: usize = 64;
+pub const USER_VAR_VALUE_MAX: usize = 1024;
+/// The image crate this terminal speaks (decode jobs, store types).
+pub use apoth_image;
+pub use config::{CursorStyle, Rgb, TermConfig, deny};
+pub use events::{
+    ClipboardSet, CommandEvent, EventSlot, Mark, Notification, Progress, ReplyQueue, UserVar,
+};
+pub use graphics::{GraphicsConfig, ImageDraw, PlacementInfo};
+pub use media::{
+    MediaConfig, MediaCtl, MediaEvent, MediaPlacement, MediaPlay, MediaRequest, MediaSource,
+};
 pub use modes::{Access, ModeDef, ModeState};
+pub use snapshot::{SNAPSHOT_VERSION, SnapError, TermImage};
 
 /// What `feed` tells the io thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -55,6 +75,10 @@ pub struct Wake {
     pub events: bool,
     /// A synchronized-output presentation hold is in force.
     pub hold: bool,
+    /// Image decode jobs are waiting for [`Term::take_image_jobs`].
+    pub jobs: bool,
+    /// Media requests are waiting for [`Term::take_media_requests`].
+    pub media: bool,
 }
 
 /// Cursor state for the renderer and tests.
@@ -76,6 +100,8 @@ pub struct CursorInfo {
 pub struct Term {
     parser: Parser,
     m: machine::Machine,
+    /// Bytes that arrived while an image decode or consent held the stream.
+    held: Vec<u8>,
 }
 
 impl std::fmt::Debug for Term {
@@ -94,22 +120,54 @@ impl Term {
         Term {
             parser: Parser::new(),
             m: machine::Machine::new(cfg, mirror),
+            held: Vec::new(),
         }
     }
 
     /// Apply `bytes` to the screens. `now` is the caller's clock reading.
+    ///
+    /// While an image decode or a file-media consent is outstanding ([`Term::blocked`]) the
+    /// bytes are held, unparsed, and run when [`Term::image_done`] or
+    /// [`Term::graphics_file_decision`] releases the stream; the caller should stop reading
+    /// the PTY meanwhile.
     pub fn feed(&mut self, bytes: &[u8], now: Instant) -> Wake {
         self.m.now = Some(now);
         self.m.expire_sync(now);
-        self.parser.advance(bytes, &mut self.m);
+        if self.m.gfx.blocked() {
+            self.held.extend_from_slice(bytes);
+            return self.wake(false);
+        }
+        self.advance(bytes);
+        self.m.gfx_collect();
         self.wake(!bytes.is_empty())
     }
 
-    /// Timer check without bytes (the sync-output timeout).
+    /// Parse `bytes`, stopping after the string terminator that raised an image barrier and
+    /// holding the rest.
+    fn advance(&mut self, bytes: &[u8]) {
+        let n = self
+            .parser
+            .advance_until(bytes, &mut self.m, |m| m.gfx.blocked());
+        if n < bytes.len() {
+            self.held.extend_from_slice(&bytes[n..]);
+        }
+    }
+
+    /// Run held bytes until the stream blocks again or they are gone.
+    fn release(&mut self) {
+        while !self.m.gfx.blocked() && !self.held.is_empty() {
+            let held = std::mem::take(&mut self.held);
+            self.advance(&held);
+        }
+        self.m.gfx_collect();
+    }
+
+    /// Timer check without bytes (the sync-output timeout, stale chunked transfers).
     pub fn tick(&mut self, now: Instant) -> Wake {
         self.m.now = Some(now);
         let before = self.m.sync.is_some();
         self.m.expire_sync(now);
+        self.m.gfx.expire(now);
         self.wake(before && self.m.sync.is_none())
     }
 
@@ -119,12 +177,175 @@ impl Term {
             replies: !self.m.replies.is_empty(),
             events: !self.m.events.is_empty(),
             hold: self.m.sync.is_some(),
+            jobs: self.m.gfx.has_jobs(),
+            media: self.m.gfx.media.has_requests(),
         }
     }
 
-    /// The earliest timer: the end of the sync-output hold.
+    /// The earliest timer: the end of the sync-output hold, or a half-received chunked
+    /// image going stale.
     pub fn next_deadline(&self) -> Option<Instant> {
-        self.m.sync.map(|s| s + self.m.cfg.sync_timeout_clamped())
+        let sync = self.m.sync.map(|s| s + self.m.cfg.sync_timeout_clamped());
+        match (sync, self.m.gfx.deadline()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
+
+    // ---- images (T-15) ------------------------------------------------------------------
+
+    /// The stream is held for an image decode or a file-media consent.
+    pub fn blocked(&self) -> bool {
+        self.m.gfx.blocked()
+    }
+
+    /// Decode jobs for the worker pool (never run them on the io thread).
+    pub fn take_image_jobs(&mut self) -> Vec<apoth_image::kitty::DecodeJob> {
+        self.m.gfx.take_jobs()
+    }
+
+    /// A worker's answer: store and place the image, reply, then run the held bytes.
+    pub fn image_done(&mut self, done: apoth_image::kitty::DecodeDone, now: Instant) -> Wake {
+        self.m.now = Some(now);
+        self.m.gfx_done(done);
+        self.release();
+        self.wake(true)
+    }
+
+    /// Main's answer to [`EventSlot::graphics_file`]; `allow` false has no effect and no
+    /// reply. The held bytes run afterwards.
+    pub fn graphics_file_decision(&mut self, token: u64, allow: bool, now: Instant) -> Wake {
+        self.m.now = Some(now);
+        self.m.gfx_decision(token, allow);
+        self.release();
+        self.wake(true)
+    }
+
+    /// Image quads of the current screen for a viewport whose top is absolute row
+    /// `top_abs` (counted from the oldest retained row), `rows` tall, bottom to top, showing
+    /// the animation frames current at `now`. Returns when an animation frame is due next
+    /// (hand it to the frame scheduler; nothing else wakes for it).
+    pub fn image_draws(
+        &self,
+        top_abs: usize,
+        rows: usize,
+        now: Instant,
+        out: &mut Vec<ImageDraw>,
+    ) -> Option<Instant> {
+        self.m.gfx_draws(top_abs, rows, now, out)
+    }
+
+    /// Any `apoth icat` session is open (T-16 §1.1): the caller then compares the pty's
+    /// foreground process group after each feed and calls [`Term::bind_image_sessions`].
+    pub fn has_image_sessions(&self) -> bool {
+        !self.m.gfx.sessions_empty()
+    }
+
+    /// Sessions opened with `p=<pid>` since the last call (T-16 §1.1): the caller watches
+    /// each pid for exit and calls [`Term::end_image_session`] when it goes, or
+    /// [`Term::unwatch_image_session`] when it cannot watch it.
+    pub fn take_image_session_pids(&mut self) -> Vec<(u64, i32)> {
+        self.m.gfx.take_session_pids()
+    }
+
+    /// The pid of session `id` cannot be watched: the foreground process group rule of
+    /// [`Term::bind_image_sessions`] applies to it instead.
+    pub fn unwatch_image_session(&mut self, id: u64) {
+        self.m.gfx.unwatch_session(id);
+    }
+
+    /// Session `id` is still open.
+    pub fn has_image_session(&self, id: u64) -> bool {
+        self.m.gfx.has_session(id)
+    }
+
+    /// An open session relies on the process group rule: the caller re-checks it on a
+    /// timer while this holds, so a killed command is noticed without further output.
+    pub fn has_group_image_sessions(&self) -> bool {
+        self.m.gfx.has_group_sessions()
+    }
+
+    /// The process of session `id` exited without `a=e`: delete every placement it made.
+    /// Returns true when the session was open.
+    pub fn end_image_session(&mut self, id: u64) -> bool {
+        if !self.m.gfx.has_session(id) {
+            return false;
+        }
+        self.m.session_end(id, true);
+        true
+    }
+
+    /// Bind sessions opened since the last call to the foreground process group `fg`, and
+    /// end (removing every placement) the bound sessions whose group is no longer `fg`.
+    /// Returns true when a placement went (redraw).
+    pub fn bind_image_sessions(&mut self, fg: i32) -> bool {
+        let unbound: Vec<u64> = self.m.gfx.unbound_sessions().collect();
+        for id in unbound {
+            self.m.gfx.bind_session(id, fg);
+        }
+        let gone: Vec<u64> = self.m.gfx.sessions_not_in(fg).collect();
+        let any = !gone.is_empty();
+        for id in gone {
+            self.m.session_end(id, true);
+        }
+        any
+    }
+
+    // ---- media (T-16 §2) ----------------------------------------------------------------
+
+    /// Media commands for the caller to carry out (open players, control, close).
+    pub fn take_media_requests(&mut self) -> Vec<MediaRequest> {
+        self.m.gfx.media.take_requests()
+    }
+
+    /// A player's report for placement `key`: frames, ready/ended/error replies.
+    pub fn media_event(&mut self, key: u64, ev: MediaEvent, now: Instant) -> Wake {
+        self.m.now = Some(now);
+        // A new frame redraws; a position or state change too (progress, hover controls).
+        let frame = !matches!(ev, MediaEvent::AudioUnavailable);
+        self.m.media_event(key, ev);
+        self.wake(frame)
+    }
+
+    /// Placement `key` takes control `ctl` as if its client had sent it with `a=c` (no reply
+    /// is sent): the interface's play/pause click. `Play` on an ended placement restarts
+    /// it. An unknown `key` (the placement just went) does nothing. `Wake::media` says a
+    /// request waits for [`Term::take_media_requests`].
+    pub fn media_control(&mut self, key: u64, ctl: MediaCtl) -> Wake {
+        let found = self.m.media_control(key, ctl);
+        self.wake(found)
+    }
+
+    /// The media placements of the current screen in creation order, for the interface
+    /// (hover hit-testing, play/pause, progress). Deterministic: a function of the fed
+    /// bytes and the media events only.
+    pub fn media_placements(&self) -> Vec<MediaPlacement> {
+        self.m.media_placements()
+    }
+
+    /// Any media placement exists.
+    pub fn has_media(&self) -> bool {
+        self.m.gfx.media.has_places()
+    }
+
+    /// Any image or media placement is on either screen.
+    pub fn has_images(&self) -> bool {
+        self.m.gfx.has_places() || self.m.gfx.media.has_places()
+    }
+
+    /// Placements of the current screen, oldest first (tests, fixtures).
+    pub fn placements(&self) -> Vec<PlacementInfo> {
+        self.m.gfx_placements()
+    }
+
+    /// The pane's image store (quota tests).
+    pub fn image_store(&self) -> &apoth_image::store::ImageStore {
+        self.m.gfx.store()
+    }
+
+    /// The graphics caps and quotas in force (fuzz invariants).
+    pub fn image_store_limits(&self) -> &apoth_image::Limits {
+        &self.m.cfg.graphics.limits
     }
 
     /// True while the renderer should keep the last completed frame (mode 2026).
@@ -143,6 +364,13 @@ impl Term {
         if self.m.mode_on(false, 2048) {
             self.m.size_report();
         }
+    }
+
+    /// Publish input modes to `mirror` from now on (a view swapping in a restored term keeps
+    /// the mirror its main thread already reads, T-21 §3).
+    pub fn set_input_mirror(&mut self, mirror: Arc<InputMirror>) {
+        mirror.store(self.m.published);
+        self.m.mirror = mirror;
     }
 
     /// Full reset (RIS).
@@ -223,6 +451,32 @@ impl Term {
         self.m.mirror.clone()
     }
 
+    /// Command blocks of the primary screen (T-14 §1).
+    pub fn blocks(&self) -> &shell::Blocks {
+        &self.m.blocks
+    }
+
+    /// The cursor is in an OSC 133 prompt or input zone (T-18 §4 (a), (e)).
+    pub fn at_prompt(&self) -> bool {
+        self.m.blocks.at_prompt()
+    }
+
+    /// Bracketed paste is set and counts as in force: a primary prompt mark has been seen
+    /// since it was last set (T-18 §4).
+    pub fn bracketed_in_force(&self) -> bool {
+        self.m.mode_on(false, 2004) && self.m.bp_prompted
+    }
+
+    /// Install the denied sequence classes ([`deny`] bits, T-18 §3). Called between feeds.
+    pub fn set_deny(&mut self, bits: u32) {
+        self.m.cfg.deny = bits;
+    }
+
+    /// Denied sequence classes now in force.
+    pub fn deny_bits(&self) -> u32 {
+        self.m.cfg.deny
+    }
+
     /// Current title (sanitised).
     pub fn title(&self) -> &str {
         &self.m.title
@@ -277,6 +531,11 @@ impl Term {
     /// Default foreground, background and cursor colours now in force.
     pub fn colors(&self) -> (Rgb, Rgb, Rgb) {
         (self.m.fg, self.m.bg, self.m.cursor_color)
+    }
+
+    /// OSC 1337 user variables, by name.
+    pub fn user_vars(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.m.user_vars
     }
 
     /// Kitty keyboard flags of the active screen.

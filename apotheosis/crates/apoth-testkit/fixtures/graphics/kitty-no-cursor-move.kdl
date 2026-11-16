@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-no-cursor-move" {
+  desc "C=1 leaves the cursor"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=6
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=7,C=1;/wAA/wAA\e\\"#
+  replies #"\e_Gi=7;OK\e\\"#
+  cursor row=0 col=0
+  images {
+    row "kitty row=0 col=0 cols=1 rows=1 z=0"
+  }
+}

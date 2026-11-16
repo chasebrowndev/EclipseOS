@@ -32,17 +32,20 @@ fn window(panes: Vec<PaneModel>) -> WindowModel {
                 label: "one".into(),
                 selected: true,
                 description: None,
+                ..TabModel::default()
             },
             TabModel {
                 id: 2,
                 label: "two".into(),
                 selected: false,
                 description: Some("bell".into()),
+                ..TabModel::default()
             },
         ],
         panes,
         palette: None,
         announcement: String::new(),
+        ..WindowModel::default()
     }
 }
 
