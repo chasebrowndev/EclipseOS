@@ -1,0 +1,9 @@
+fixture "alt-ris-returns-to-primary" {
+  desc "RIS leaves the alternate screen"
+  covers "T03-ALTSCREEN" "T03-RIS"
+  size rows=4 cols=6
+  feed #"\e[?1049hX\ec"#
+  grid
+  cursor row=0 col=0
+  alt #false
+}

@@ -1,0 +1,7 @@
+fixture "mode-multi-param-mixed-unknown" {
+  desc "mode multi param mixed unknown (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?9999;2004h"#
+  mode "?2004" 1
+}

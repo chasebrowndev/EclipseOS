@@ -1,0 +1,7 @@
+fixture "sgr-blank-cell-has-default-style" {
+  desc "sgr blank cell has default style (migrated from the apoth-term corpus)"
+  covers "T03-SGR-BASIC"
+  size rows=1 cols=4
+  feed #"A"#
+  cell row=0 col=3 bg="default" fg="default"
+}

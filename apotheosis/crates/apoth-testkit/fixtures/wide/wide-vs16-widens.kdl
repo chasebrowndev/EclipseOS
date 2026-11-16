@@ -1,0 +1,13 @@
+fixture "wide-vs16-widens" {
+  desc "VS16 on an emoji-capable base widens it to 2 (T-04 section 3)"
+  covers "T03-GRAPHEME" "UNICODE-07"
+  size rows=2 cols=10
+  feed #"❤️X"#
+  grid {
+    row "❤️X"
+  }
+  cursor row=0 col=3
+  cell row=0 col=0 wide="wide"
+  cell row=0 col=1 wide="tail"
+  cell row=0 col=2 ch="X"
+}

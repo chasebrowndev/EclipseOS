@@ -1,0 +1,12 @@
+fixture "wide-cluster-flag" {
+  desc "two regional indicators form one wide cluster"
+  covers "T03-GRAPHEME" "UNICODE-07"
+  size rows=2 cols=10
+  feed #"🇺🇸"#
+  grid {
+    row "🇺🇸"
+  }
+  cursor row=0 col=2
+  cell row=0 col=0 wide="wide"
+  cell row=0 col=1 wide="tail"
+}

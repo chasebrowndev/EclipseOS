@@ -1,0 +1,7 @@
+fixture "edit-ech-cursor-unmoved" {
+  desc "edit ech cursor unmoved (migrated from the apoth-term corpus)"
+  covers "T03-ECH"
+  size rows=1 cols=8
+  feed #"abcdef\e[1;3H\e[2X"#
+  cursor row=0 col=2
+}

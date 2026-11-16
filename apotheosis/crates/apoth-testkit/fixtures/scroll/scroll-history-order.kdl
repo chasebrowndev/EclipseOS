@@ -1,0 +1,16 @@
+fixture "scroll-history-order" {
+  desc "history is oldest first"
+  covers "T03-SCROLL-HISTORY"
+  size rows=3 cols=4
+  feed #"1\r\n2\r\n3\r\n4\r\n5"#
+  grid {
+    row "3"
+    row "4"
+    row "5"
+  }
+  cursor row=2 col=1
+  scrollback {
+    row "1"
+    row "2"
+  }
+}

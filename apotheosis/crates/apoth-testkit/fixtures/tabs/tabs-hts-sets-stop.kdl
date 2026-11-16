@@ -1,0 +1,9 @@
+fixture "tabs-hts-sets-stop" {
+  covers "T03-HTS-TBC" "VTCORE-14"
+  size rows=3 cols=20
+  feed #"\e[1;4H\eH\r\tX"#
+  grid {
+    row "   X"
+  }
+  cursor row=0 col=4
+}

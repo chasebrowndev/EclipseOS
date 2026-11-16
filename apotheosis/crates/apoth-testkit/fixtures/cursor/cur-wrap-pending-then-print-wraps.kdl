@@ -1,0 +1,14 @@
+fixture "cur-wrap-pending-then-print-wraps" {
+  desc "cur wrap pending then print wraps (migrated from the apoth-term corpus)"
+  covers "T03-AUTOWRAP"
+  size rows=2 cols=3
+  feed #"abc"#
+  checkpoint "c1" {
+    cursor row=0 col=2
+  }
+  feed #"d"#
+  grid {
+    row "abc"
+    row "d"
+  }
+}

@@ -1,0 +1,7 @@
+fixture "reply-decrqss-decstbm-set" {
+  desc "reply decrqss decstbm set (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=5 cols=10
+  feed #"\e[2;4r\eP$qr\e\\"#
+  replies #"\eP1$r2;4r\e\\"#
+}

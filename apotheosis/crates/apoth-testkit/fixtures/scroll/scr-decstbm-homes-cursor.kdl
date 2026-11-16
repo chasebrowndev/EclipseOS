@@ -1,0 +1,7 @@
+fixture "scr-decstbm-homes-cursor" {
+  desc "scr decstbm homes cursor (migrated from the apoth-term corpus)"
+  covers "T03-DECSTBM"
+  size rows=4 cols=3
+  feed #"ab\e[2;3r"#
+  cursor row=0 col=0
+}

@@ -1,0 +1,13 @@
+fixture "scroll-bce-new-row" {
+  covers "T03-SCROLL-HISTORY" "VTCORE-03"
+  review "BCE on the row exposed by a scroll; not stated in T-03"
+  size rows=2 cols=3
+  feed #"A\r\n\e[44m\n"#
+  grid
+  cursor row=1 col=0
+  cell row=0 col=0 bg="default"
+  cell row=1 col=0 bg="p4"
+  scrollback {
+    row "A"
+  }
+}

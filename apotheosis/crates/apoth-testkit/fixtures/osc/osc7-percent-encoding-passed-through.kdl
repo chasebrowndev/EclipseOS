@@ -1,0 +1,8 @@
+fixture "osc7-percent-encoding-passed-through" {
+  covers "T03-OSC7"
+  review "the event carries the URI as received; decoding belongs to the consumer (T-14), T-03 does not say"
+  size rows=3 cols=20
+  feed #"\e]7;file://host/a%20b\a"#
+  grid
+  events "cwd:file://host/a%20b"
+}

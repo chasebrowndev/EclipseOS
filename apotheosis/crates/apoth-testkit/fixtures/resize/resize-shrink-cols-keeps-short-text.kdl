@@ -1,0 +1,12 @@
+fixture "resize-shrink-cols-keeps-short-text" {
+  desc "resize shrink cols keeps short text (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=2 cols=6
+  feed #"ab"#
+  resize rows=2 cols=3
+  feed #"\e[18t"#
+  grid {
+    row "ab"
+  }
+  replies #"\e[8;2;3t"#
+}

@@ -1,0 +1,10 @@
+fixture "c0-lf-lnm" {
+  desc "c0 lf lnm (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC"
+  size rows=3 cols=5
+  feed #"\e[20hab\ncd"#
+  grid {
+    row "ab"
+    row "cd"
+  }
+}

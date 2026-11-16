@@ -1,0 +1,9 @@
+fixture "ed-0-last-cell" {
+  desc "ed 0 last cell (migrated from the apoth-term corpus)"
+  covers "T03-ED"
+  size rows=1 cols=3
+  feed #"abc\e[1;3H\e[J"#
+  grid {
+    row "ab"
+  }
+}

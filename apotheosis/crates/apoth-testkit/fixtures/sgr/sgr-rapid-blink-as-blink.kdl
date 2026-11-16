@@ -1,0 +1,11 @@
+fixture "sgr-rapid-blink-as-blink" {
+  covers "T03-SGR-BASIC" "VTCORE-16"
+  review "SGR 6 (rapid blink) folded into blink: the cell format has one blink bit; T-03 does not say"
+  size rows=2 cols=20
+  feed #"\e[6mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" attrs="blink"
+}

@@ -1,0 +1,11 @@
+fixture "cur-scosc-scorc" {
+  desc "cur scosc scorc (migrated from the apoth-term corpus)"
+  covers "T03-DECSC"
+  size rows=5 cols=10
+  feed #"\e[3;3H\e[s\e[1;1H\e[ux"#
+  grid {
+    row ""
+    row ""
+    row "  x"
+  }
+}

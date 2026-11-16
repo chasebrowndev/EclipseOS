@@ -1,0 +1,12 @@
+fixture "cursor-vpa" {
+  covers "T03-CUP"
+  size rows=5 cols=10
+  feed #"\e[2;5H\e[4d*"#
+  grid {
+    row ""
+    row ""
+    row ""
+    row "    *"
+  }
+  cursor row=3 col=5
+}

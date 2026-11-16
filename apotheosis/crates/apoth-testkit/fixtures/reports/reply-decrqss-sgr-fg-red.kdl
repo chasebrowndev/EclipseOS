@@ -1,0 +1,7 @@
+fixture "reply-decrqss-sgr-fg-red" {
+  desc "reply decrqss sgr fg red (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=2 cols=4
+  feed #"\e[31m\eP$qm\e\\"#
+  replies #"\eP1$r0;31m\e\\"#
+}

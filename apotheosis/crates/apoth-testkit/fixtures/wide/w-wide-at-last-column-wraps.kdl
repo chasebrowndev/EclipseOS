@@ -1,0 +1,11 @@
+fixture "w-wide-at-last-column-wraps" {
+  desc "w wide at last column wraps (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=2 cols=3
+  feed #"ab世"#
+  grid {
+    row "ab"
+    row "世"
+  }
+  cursor row=1 col=2
+}

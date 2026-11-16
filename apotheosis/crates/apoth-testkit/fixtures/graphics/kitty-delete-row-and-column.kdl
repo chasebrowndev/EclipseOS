@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-delete-row-and-column" {
+  desc "d=y and d=x select by row and column"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=7,C=1,q=1;/wAA/wAA\e\\"#
+  feed #"\e[2;4H"#
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=8,C=1,q=1;/wAA/wAA\e\\"#
+  feed #"\e_Ga=d,d=y,y=2\e\\"#
+  feed #"\e_Ga=d,d=x,x=1\e\\"#
+  images {
+  }
+}

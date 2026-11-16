@@ -1,0 +1,7 @@
+fixture "reports-decrqss-sgr-default" {
+  covers "T03-DECRQSS" "VTCORE-23"
+  size rows=5 cols=10
+  feed #"\eP$qm\e\\"#
+  grid
+  replies #"\eP1$r0m\e\\"#
+}

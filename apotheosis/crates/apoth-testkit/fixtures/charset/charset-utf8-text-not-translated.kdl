@@ -1,0 +1,10 @@
+fixture "charset-utf8-text-not-translated" {
+  desc "non-ASCII characters bypass the charset"
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e(0éq\e(B"#
+  grid {
+    row "é─"
+  }
+  cursor row=0 col=2
+}

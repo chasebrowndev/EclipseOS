@@ -1,0 +1,10 @@
+fixture "esc-decsc-decrc" {
+  desc "esc decsc decrc (migrated from the apoth-term corpus)"
+  covers "T03-DECSC"
+  size rows=2 cols=5
+  feed #"ab\e7\e[2;1Hcd\e8X"#
+  grid {
+    row "abX"
+    row "cd"
+  }
+}

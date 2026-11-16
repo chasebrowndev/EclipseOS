@@ -1,0 +1,8 @@
+fixture "osc-color-10-11-12-set-and-query" {
+  covers "T03-OSC-COLOR" "VTCORE-27"
+  review "reply format, see reports-osc4-query-bel"
+  size rows=3 cols=20
+  feed #"\e]10;#ffffff\a\e]11;#000000\a\e]12;#ff0000\a\e]10;?\a\e]11;?\a\e]12;?\a"#
+  grid
+  replies #"\e]10;rgb:ffff/ffff/ffff\a\e]11;rgb:0000/0000/0000\a\e]12;rgb:ffff/0000/0000\a"#
+}

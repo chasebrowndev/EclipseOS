@@ -1,0 +1,14 @@
+fixture "mouse-1006-set-reset" {
+  desc "mode 1006 (SGR encoding) defaults reset, sets and resets"
+  covers "T03-MOUSE"
+  size rows=2 cols=4
+  checkpoint "default" {
+    mode "?1006" 2
+  }
+  feed #"\e[?1006h"#
+  checkpoint "set" {
+    mode "?1006" 1
+  }
+  feed #"\e[?1006l"#
+  mode "?1006" 2
+}

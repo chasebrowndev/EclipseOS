@@ -1,0 +1,7 @@
+fixture "sgrt-colon-bg-truecolor" {
+  desc "sgrt colon bg truecolor (migrated from the apoth-term corpus)"
+  covers "T03-SGR-AMBIG" "T03-SGR-COLOR"
+  size rows=1 cols=4
+  feed #"\e[48:2::4:5:6mA"#
+  cell row=0 col=0 bg="#040506"
+}

@@ -1,0 +1,7 @@
+fixture "mode-decrqm-after-reset-reports-reset" {
+  desc "mode decrqm after reset reports reset (migrated from the apoth-term corpus)"
+  covers "T03-DECRQM"
+  size rows=2 cols=4
+  feed #"\e[?7l\e[?7$p"#
+  replies #"\e[?7;2$y"#
+}

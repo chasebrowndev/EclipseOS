@@ -1,0 +1,13 @@
+fixture "cursor-ri-at-top-scrolls-down" {
+  desc "RI at the top margin scrolls the region down"
+  covers "T03-IND-NEL-RI"
+  size rows=5 cols=10
+  feed #"A\r\nB\e[H\eMC"#
+  grid {
+    row "C"
+    row "A"
+    row "B"
+  }
+  cursor row=0 col=1
+  scrollback
+}

@@ -1,0 +1,13 @@
+fixture "sgr-58-underline-colour" {
+  desc "58/59 underline colour"
+  covers "T03-SGR-UNDERLINE" "T03-SGR-COLOR" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[4:3;58:2::255:0:0mA\e[58;5;9mB\e[59mC"#
+  grid {
+    row "ABC"
+  }
+  cursor row=0 col=3
+  cell row=0 col=0 ch="A" ulc="#ff0000" ul="curly"
+  cell row=0 col=1 ch="B" ulc="p9"
+  cell row=0 col=2 ch="C" ulc="default"
+}

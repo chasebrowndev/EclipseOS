@@ -1,0 +1,7 @@
+fixture "decrqm-ansi-2" {
+  desc "decrqm ansi 2 (migrated from the apoth-term corpus)"
+  covers "T03-DECRQM"
+  size rows=2 cols=4
+  feed #"\e[2$p"#
+  replies #"\e[2;4$y"#
+}

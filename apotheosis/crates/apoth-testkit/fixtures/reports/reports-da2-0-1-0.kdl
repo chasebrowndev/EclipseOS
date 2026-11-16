@@ -1,0 +1,9 @@
+fixture "reports-da2-0-1-0" {
+  desc "Pv = major*10000 + minor*100 + patch"
+  covers "T03-DA2" "VTCORE-23"
+  version "0.1.0"
+  size rows=5 cols=10
+  feed #"\e[>c"#
+  grid
+  replies #"\e[>1;100;0c"#
+}

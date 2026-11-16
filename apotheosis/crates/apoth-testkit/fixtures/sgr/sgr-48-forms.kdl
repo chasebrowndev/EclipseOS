@@ -1,0 +1,13 @@
+fixture "sgr-48-forms" {
+  covers "T03-SGR-COLOR" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[48:2::1:2:3mA\e[48;5;17mB\e[48:5:18mC\e[48;2;4;5;6mD"#
+  grid {
+    row "ABCD"
+  }
+  cursor row=0 col=4
+  cell row=0 col=0 ch="A" bg="#010203"
+  cell row=0 col=1 ch="B" bg="p17"
+  cell row=0 col=2 ch="C" bg="p18"
+  cell row=0 col=3 ch="D" bg="#040506"
+}

@@ -1,0 +1,7 @@
+fixture "osc-99-plain-payload-is-a-title" {
+  desc "OSC 99 payload with no p key is notification text"
+  covers "T03-OSC99-777"
+  size rows=2 cols=8
+  feed #"\e]99;i=1;hello\a"#
+  events "notify:hello"
+}

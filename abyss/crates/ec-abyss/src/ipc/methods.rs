@@ -539,6 +539,10 @@ fn get_windows(state: &mut AbyssState) -> Reply {
             "handle": handle,
             "app_id": app_id,
             "title": title,
+            // The themed icon name the client set through xdg-toplevel-icon,
+            // else null. Advisory chrome, never identity (COMP-06 §1).
+            "icon": crate::shell::window_surface(&w)
+                .and_then(|s| crate::protocols::standard::toplevel_icon::icon_name(&s)),
             "output": output,
             "workspace": workspace,
             "floating": is_floating(state, &w),

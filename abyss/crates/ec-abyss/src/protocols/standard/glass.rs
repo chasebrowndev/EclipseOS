@@ -39,14 +39,16 @@ use crate::{
 
 const VERSION: u32 = 1;
 
-/// The shell binaries that may bind the global. `ec-secret-prompt` is left out
-/// on purpose: it has no glass need.
-pub const DEFAULT_ALLOW: [&str; 5] = [
+/// The shell binaries that may bind the global. The glass is drawn under the
+/// client's surface, so `ec-secret-prompt` gains no access to what is typed.
+pub const DEFAULT_ALLOW: [&str; 7] = [
     "ec-hyperion-bar",
     "ec-launcher",
     "ec-toasts",
     "ec-settings",
     "ec-policy-viewer",
+    "ec-secret-prompt",
+    "apotheosis",
 ];
 
 /// On a surface's data map: whether it already has a glass object, which is
@@ -261,7 +263,10 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use wayland_client::{
         delegate_noop,
-        protocol::{wl_compositor::WlCompositor, wl_registry, wl_surface::WlSurface as CWlSurface},
+        protocol::{
+            wl_compositor::WlCompositor, wl_registry, wl_subcompositor::WlSubcompositor,
+            wl_subsurface::WlSubsurface, wl_surface::WlSurface as CWlSurface,
+        },
         Connection, Dispatch as CDispatch, EventQueue, Proxy, QueueHandle,
     };
 
@@ -307,6 +312,8 @@ mod tests {
     }
 
     delegate_noop!(Seen: WlCompositor);
+    delegate_noop!(Seen: WlSubcompositor);
+    delegate_noop!(Seen: ignore WlSubsurface);
     delegate_noop!(Seen: ignore CWlSurface);
     delegate_noop!(Seen: ignore CSurface);
 
@@ -316,6 +323,7 @@ mod tests {
         queue: EventQueue<Seen>,
         seen: Seen,
         compositor: Option<WlCompositor>,
+        subcompositor: Option<WlSubcompositor>,
         manager: Option<CManager>,
     }
 
@@ -356,6 +364,7 @@ mod tests {
                 queue,
                 seen: Seen::default(),
                 compositor: None,
+                subcompositor: None,
                 manager: None,
             };
             c.pump(h);
@@ -368,6 +377,8 @@ mod tests {
             };
             let (n, v) = find(&c, "wl_compositor").unwrap();
             c.compositor = Some(registry.bind(n, v.min(5), &qh, ()));
+            let (n, v) = find(&c, "wl_subcompositor").unwrap();
+            c.subcompositor = Some(registry.bind(n, v.min(1), &qh, ()));
             if let Some((n, _)) = find(&c, "eclipse_glass_manager_v1") {
                 c.manager = Some(registry.bind(n, 1, &qh, ()));
             }
@@ -517,5 +528,48 @@ mod tests {
         surface.commit();
         c.pump(&mut h);
         assert_eq!(current(&c.server_surface(&h, &surface)), None);
+    }
+
+    /// COMP-02 §9: a subsurface may carry its own glass object. Its panes
+    /// latch like any other surface state: a synchronized subsurface holds
+    /// them until the parent commits, so a sheet and the frame under it land
+    /// together; a desynchronized one latches on its own commit.
+    #[test]
+    fn a_subsurface_takes_glass_and_latches_with_its_mode() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h, true);
+        let qh = c.queue.handle();
+        let parent = c.compositor.as_ref().unwrap().create_surface(&qh, ());
+        let child = c.compositor.as_ref().unwrap().create_surface(&qh, ());
+        let sub = c
+            .subcompositor
+            .clone()
+            .unwrap()
+            .get_subsurface(&child, &parent, &qh, ());
+        let glass = c.manager.clone().unwrap().get_glass(&child, &qh, ());
+        glass.set_panes(rec(0, 0));
+        c.pump(&mut h);
+        assert_eq!(c.error(), None);
+        let server = c.server_surface(&h, &child);
+
+        // Synchronized (the default): held until the parent commits.
+        child.commit();
+        c.pump(&mut h);
+        assert_eq!(
+            current(&server),
+            None,
+            "a synchronized child waits for its parent"
+        );
+        parent.commit();
+        c.pump(&mut h);
+        assert_eq!(current(&server), Some(1));
+
+        // Desynchronized: its own commit latches.
+        sub.set_desync();
+        glass.set_panes([rec(0, 0), rec(30, 1)].concat());
+        child.commit();
+        c.pump(&mut h);
+        assert_eq!(current(&server), Some(2));
+        assert_eq!(c.error(), None);
     }
 }

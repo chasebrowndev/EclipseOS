@@ -1,0 +1,9 @@
+fixture "esc-ss2-one-shot" {
+  desc "esc ss2 one shot (migrated from the apoth-term corpus)"
+  covers "T03-CHARSET"
+  size rows=1 cols=4
+  feed #"\e*0\eNqq"#
+  grid {
+    row "─q"
+  }
+}

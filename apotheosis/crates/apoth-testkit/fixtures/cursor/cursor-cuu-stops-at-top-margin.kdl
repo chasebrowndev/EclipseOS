@@ -1,0 +1,10 @@
+fixture "cursor-cuu-stops-at-top-margin" {
+  covers "T03-CUX" "T03-DECSTBM"
+  size rows=5 cols=10
+  feed #"\e[2;4r\e[3;1H\e[9A*"#
+  grid {
+    row ""
+    row "*"
+  }
+  cursor row=1 col=1
+}

@@ -31,6 +31,7 @@ pub enum Section {
     Accounts,
     Addons,
     OracleEyes,
+    Terminal,
 }
 
 /// One short page of settings: what the content column shows.
@@ -82,6 +83,18 @@ pub enum Page {
     // Oracle Eyes
     OeGeneral,
     OeColours,
+    // Terminal (Apotheosis)
+    TermFont,
+    TermColors,
+    TermWindow,
+    TermScrollback,
+    TermInput,
+    TermShell,
+    TermBinds,
+    TermProfiles,
+    TermRules,
+    TermSecurity,
+    TermMedia,
 }
 
 impl Section {
@@ -101,6 +114,7 @@ impl Section {
         Section::Accounts,
         Section::Addons,
         Section::OracleEyes,
+        Section::Terminal,
     ];
 
     pub fn title(self) -> &'static str {
@@ -119,6 +133,7 @@ impl Section {
             Section::Accounts => "Accounts",
             Section::Addons => "Add-ons",
             Section::OracleEyes => "Oracle Eyes",
+            Section::Terminal => "Terminal",
         }
     }
 
@@ -152,6 +167,7 @@ impl Section {
             Section::Accounts => &[Page::Accounts],
             Section::Addons => &[Page::Addons],
             Section::OracleEyes => &[Page::OeGeneral, Page::OeColours],
+            Section::Terminal => Page::TERMINAL,
         }
     }
 
@@ -203,6 +219,17 @@ impl Page {
             Page::Accounts => Section::Accounts,
             Page::Addons => Section::Addons,
             Page::OeGeneral | Page::OeColours => Section::OracleEyes,
+            Page::TermFont
+            | Page::TermColors
+            | Page::TermWindow
+            | Page::TermScrollback
+            | Page::TermInput
+            | Page::TermShell
+            | Page::TermBinds
+            | Page::TermProfiles
+            | Page::TermRules
+            | Page::TermSecurity
+            | Page::TermMedia => Section::Terminal,
         }
     }
 
@@ -241,6 +268,17 @@ impl Page {
             Page::General => "General",
             Page::OeGeneral => "Model & capture",
             Page::OeColours => "Colours",
+            Page::TermFont => "Font & text",
+            Page::TermColors => "Colors & cursor",
+            Page::TermWindow => "Window & tabs",
+            Page::TermScrollback => "Scrollback & selection",
+            Page::TermInput => "Input & alerts",
+            Page::TermShell => "Shell & automation",
+            Page::TermBinds => "Key binds",
+            Page::TermProfiles => "Profiles",
+            Page::TermRules => "Rules",
+            Page::TermSecurity => "Paste & security",
+            Page::TermMedia => "Media & render",
             single => single.section().title(),
         }
     }
@@ -284,10 +322,51 @@ impl Page {
             Page::Accounts => {
                 "The Claude accounts a task can sign in as. Names only; values stay in the store."
             }
+            Page::TermFont => "Typeface, size, ligatures, cell metrics and Unicode widths.",
+            Page::TermColors => "Theme, the sixteen ANSI colors and the cursor.",
+            Page::TermWindow => "Opacity, padding, tabs, split panes and the quick terminal.",
+            Page::TermScrollback => "History kept, copy on select and word boundaries.",
+            Page::TermInput => "Mouse, keyboard protocols, bell and notifications.",
+            Page::TermShell => {
+                "The program that starts, sessions, and defaults for binds, rules and profiles."
+            }
+            Page::TermBinds => "Keys that run actions, in key tables and modes, and the defaults you unbind.",
+            Page::TermProfiles => {
+                "Settings that follow a process, host or folder, picked by how well it matches."
+            }
+            Page::TermRules => {
+                "When something happens in a pane, run actions, if the match expression holds."
+            }
+            Page::TermSecurity => "Clipboard, paste guard, links, remote hosts and the control socket.",
+            Page::TermMedia => "Inline images and video, frame pacing and accessibility.",
             Page::Addons => "Optional packages, and the hooks they switch on.",
             Page::OeGeneral => "What the add-on may see, the model it asks, and how long answers stay.",
             Page::OeColours => "The colours the compositor draws answers and the region selector in.",
         }
+    }
+
+    /// The Terminal section's pages, in sidebar order.
+    pub const TERMINAL: &'static [Page] = &[
+        Page::TermFont,
+        Page::TermColors,
+        Page::TermWindow,
+        Page::TermScrollback,
+        Page::TermInput,
+        Page::TermShell,
+        Page::TermBinds,
+        Page::TermProfiles,
+        Page::TermRules,
+        Page::TermSecurity,
+        Page::TermMedia,
+    ];
+
+    pub fn terminal_pages() -> &'static [Page] {
+        Page::TERMINAL
+    }
+
+    /// A page of the Terminal section: keys of `apoth-config`, not of abyss.
+    pub fn is_terminal(self) -> bool {
+        Page::TERMINAL.contains(&self)
     }
 
     /// Pages whose content is not a list of schema keys.
@@ -305,7 +384,7 @@ impl Page {
                 | Page::Animations
                 | Page::Accounts
                 | Page::LoginScreen
-        )
+        ) || self.is_terminal()
     }
 
     /// The page named on the command line: `section`, `section/page` or a
@@ -555,7 +634,7 @@ mod tests {
             assert_eq!(owners, 1, "{page:?}");
             assert!(page.section().pages().contains(&page));
         }
-        assert_eq!(Page::all().count(), 37);
+        assert_eq!(Page::all().count(), 48);
     }
 
     #[test]

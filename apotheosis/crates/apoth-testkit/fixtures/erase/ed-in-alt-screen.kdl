@@ -1,0 +1,9 @@
+fixture "ed-in-alt-screen" {
+  desc "ed in alt screen (migrated from the apoth-term corpus)"
+  covers "T03-ED"
+  size rows=2 cols=3
+  feed #"ab\e[?1049h\e[2Jc\e[?1049l"#
+  grid {
+    row "ab"
+  }
+}

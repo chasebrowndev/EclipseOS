@@ -1,0 +1,7 @@
+fixture "reply-da-3" {
+  desc "reply da 3 (migrated from the apoth-term corpus)"
+  covers "T03-DA3"
+  size rows=2 cols=4
+  feed #"\e[=c"#
+  replies #"\eP!|00000000\e\\"#
+}

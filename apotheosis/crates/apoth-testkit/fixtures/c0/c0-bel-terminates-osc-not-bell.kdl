@@ -1,0 +1,7 @@
+fixture "c0-bel-terminates-osc-not-bell" {
+  desc "c0 bel terminates osc not bell (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC"
+  size rows=1 cols=5
+  feed #"\e]0;t\a"#
+  events "title:t"
+}

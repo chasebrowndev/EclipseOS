@@ -1,0 +1,8 @@
+fixture "reports-osc11-query-st" {
+  covers "T03-OSC-COLOR" "T03-REPLY-TERMINATOR" "VTCORE-26" "VTCORE-27"
+  review "see reports-osc4-query-bel"
+  size rows=5 cols=10
+  feed #"\e]11;#102030\a\e]11;?\e\\"#
+  grid
+  replies #"\e]11;rgb:1010/2020/3030\e\\"#
+}

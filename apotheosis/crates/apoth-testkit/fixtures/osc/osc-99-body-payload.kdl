@@ -1,0 +1,7 @@
+fixture "osc-99-body-payload" {
+  desc "OSC 99 p=body payload is notification text"
+  covers "T03-OSC99-777"
+  size rows=2 cols=8
+  feed #"\e]99;i=1:p=body;hi there\e\\"#
+  events "notify:hi there"
+}

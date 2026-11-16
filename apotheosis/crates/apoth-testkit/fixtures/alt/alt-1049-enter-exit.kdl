@@ -1,0 +1,19 @@
+fixture "alt-1049-enter-exit" {
+  desc "1049 saves the cursor, enters a cleared alt screen where the cursor is, restores on exit"
+  covers "T03-ALTSCREEN" "SCROLLBACKSEARCH-23"
+  size rows=4 cols=6
+  feed #"AB\e[?1049hXY"#
+  checkpoint "in-alt" {
+    grid {
+      row "  XY"
+    }
+    cursor row=0 col=4
+    alt #true
+  }
+  feed #"\e[?1049l"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+  alt #false
+}

@@ -1,0 +1,11 @@
+fixture "wide-exactly-fits" {
+  covers "T03-WIDE"
+  size rows=3 cols=6
+  feed #"ABCD日"#
+  grid {
+    row "ABCD日"
+  }
+  cursor row=0 col=5
+  cell row=0 col=4 wide="wide"
+  cell row=0 col=5 wide="tail"
+}

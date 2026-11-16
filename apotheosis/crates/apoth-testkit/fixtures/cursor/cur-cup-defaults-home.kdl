@@ -1,0 +1,9 @@
+fixture "cur-cup-defaults-home" {
+  desc "cur cup defaults home (migrated from the apoth-term corpus)"
+  covers "T03-CUP"
+  size rows=5 cols=10
+  feed #"\e[5;5H\e[HX"#
+  grid {
+    row "X"
+  }
+}

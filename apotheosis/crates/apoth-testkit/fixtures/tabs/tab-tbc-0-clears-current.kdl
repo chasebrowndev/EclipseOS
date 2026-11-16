@@ -1,0 +1,9 @@
+fixture "tab-tbc-0-clears-current" {
+  desc "tab tbc 0 clears current (migrated from the apoth-term corpus)"
+  covers "T03-HTS-TBC"
+  size rows=1 cols=20
+  feed #"\e[1;9H\e[0g\r\tx"#
+  grid {
+    row "                x"
+  }
+}

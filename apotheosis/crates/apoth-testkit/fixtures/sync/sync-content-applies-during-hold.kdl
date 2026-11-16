@@ -1,0 +1,10 @@
+fixture "sync-content-applies-during-hold" {
+  desc "sync content applies during hold (migrated from the apoth-term corpus)"
+  covers "T03-SYNC-2026"
+  size rows=2 cols=4
+  feed #"\e[?2026hab"#
+  grid {
+    row "ab"
+  }
+  hold #true
+}

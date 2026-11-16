@@ -1,0 +1,8 @@
+fixture "reports-da2-12-34-56" {
+  covers "T03-DA2" "VTCORE-23"
+  version "12.34.56"
+  size rows=5 cols=10
+  feed #"\e[>c"#
+  grid
+  replies #"\e[>1;123456;0c"#
+}

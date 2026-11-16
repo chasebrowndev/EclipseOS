@@ -1,0 +1,8 @@
+version 1
+security {
+    sequences {
+        clipboard-read "ask"
+        title-report "deny"
+    }
+}
+paste { confirm "multi-line"; }

@@ -1,0 +1,9 @@
+fixture "cs-ris-resets-charset" {
+  desc "cs ris resets charset (migrated from the apoth-term corpus)"
+  covers "T03-CHARSET" "T03-RIS"
+  size rows=1 cols=4
+  feed #"\e(0\ecq"#
+  grid {
+    row "q"
+  }
+}

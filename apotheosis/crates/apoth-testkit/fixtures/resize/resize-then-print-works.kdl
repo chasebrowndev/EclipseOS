@@ -1,0 +1,10 @@
+fixture "resize-then-print-works" {
+  desc "resize then print works (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=2 cols=3
+  resize rows=2 cols=6
+  feed #"abcdef"#
+  grid {
+    row "abcdef"
+  }
+}

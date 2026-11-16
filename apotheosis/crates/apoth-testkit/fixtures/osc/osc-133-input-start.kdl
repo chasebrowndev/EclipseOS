@@ -1,0 +1,7 @@
+fixture "osc-133-input-start" {
+  desc "osc 133 input start (migrated from the apoth-term corpus)"
+  covers "T03-OSC133"
+  size rows=1 cols=8
+  feed #"\e]133;B\a"#
+  events "mark:B"
+}

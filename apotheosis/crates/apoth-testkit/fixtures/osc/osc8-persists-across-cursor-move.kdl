@@ -1,0 +1,10 @@
+fixture "osc8-persists-across-cursor-move" {
+  covers "T03-OSC8" "VTCORE-29"
+  size rows=3 cols=20
+  feed #"\e]8;;u\aA\e[3CB"#
+  grid {
+    row "A   B"
+  }
+  cell row=0 col=0 link="u"
+  cell row=0 col=4 ch="B" link="u"
+}

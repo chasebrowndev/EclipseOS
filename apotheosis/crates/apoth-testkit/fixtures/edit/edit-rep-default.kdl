@@ -1,0 +1,9 @@
+fixture "edit-rep-default" {
+  covers "T03-REP"
+  size rows=2 cols=10
+  feed #"A\e[b"#
+  grid {
+    row "AA"
+  }
+  cursor row=0 col=2
+}

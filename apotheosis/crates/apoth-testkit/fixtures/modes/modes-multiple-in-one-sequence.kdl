@@ -1,0 +1,10 @@
+fixture "modes-multiple-in-one-sequence" {
+  desc "several modes in one DECRST"
+  covers "T03-DECRQM" "T03-MODES-TABLE"
+  size rows=3 cols=10
+  feed #"\e[?1;7;25l"#
+  cursor visible=#false
+  mode "?1" 2
+  mode "?7" 2
+  mode "?25" 2
+}

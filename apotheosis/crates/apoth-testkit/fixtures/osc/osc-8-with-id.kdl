@@ -1,0 +1,7 @@
+fixture "osc-8-with-id" {
+  desc "osc 8 with id (migrated from the apoth-term corpus)"
+  covers "T03-OSC8"
+  size rows=1 cols=8
+  feed #"\e]8;id=1;https://x.org\aA\e]8;;\a"#
+  cell row=0 col=0 link="https://x.org"
+}

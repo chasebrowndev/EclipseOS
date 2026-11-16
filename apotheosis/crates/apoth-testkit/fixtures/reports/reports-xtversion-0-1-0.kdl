@@ -1,0 +1,8 @@
+fixture "reports-xtversion-0-1-0" {
+  covers "T03-XTVERSION"
+  version "0.1.0"
+  size rows=5 cols=10
+  feed #"\e[>0q"#
+  grid
+  replies #"\eP>|Apotheosis 0.1.0\e\\"#
+}

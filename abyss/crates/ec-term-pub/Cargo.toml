@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "ec-term-pub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+# Apache-2.0, not the workspace AGPL: protocol-shaped (eclipse_semantic_v1 types
+# and the publish policy), the F-05 §3 permissive tier (ADR 0114 keeps it).
+license = "Apache-2.0"
+repository.workspace = true
+description = "Terminal grid publisher for eclipse_semantic_v1: P-04 node model, line diffing, publish-rate policy (ADR 0114)."
+
+[dependencies]

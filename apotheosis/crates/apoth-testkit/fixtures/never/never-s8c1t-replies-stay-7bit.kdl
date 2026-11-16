@@ -1,0 +1,8 @@
+fixture "never-s8c1t-replies-stay-7bit" {
+  desc "S8C1T and DECSCL 8-bit requests are parsed and ignored; replies stay 7-bit"
+  covers "T03-NEVER" "T03-C1-IGNORED" "VTCORE-13"
+  size rows=3 cols=10
+  feed #"\e G\e[62;1"p\e[c"#
+  grid
+  replies #"\e[?62;4;22c"#
+}

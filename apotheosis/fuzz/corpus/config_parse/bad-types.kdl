@@ -1,0 +1,5 @@
+version 1
+font { size "huge"; }
+scrollback { lines -1; }
+unknown-key 3
+colors { foreground "#zzzzzz"; }

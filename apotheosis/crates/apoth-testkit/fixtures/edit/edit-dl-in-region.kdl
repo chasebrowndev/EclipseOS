@@ -1,0 +1,12 @@
+fixture "edit-dl-in-region" {
+  covers "T03-IL-DL" "T03-DECSTBM"
+  size rows=4 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\r\nSTUVWX\e[2;3r\e[2;1H\e[M"#
+  grid {
+    row "ABCDEF"
+    row "MNOPQR"
+    row ""
+    row "STUVWX"
+  }
+  cursor row=1 col=0
+}

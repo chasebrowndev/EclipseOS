@@ -1,0 +1,9 @@
+fixture "el-0-explicit" {
+  desc "el 0 explicit (migrated from the apoth-term corpus)"
+  covers "T03-EL"
+  size rows=1 cols=8
+  feed #"abcdef\e[1;4H\e[0K"#
+  grid {
+    row "abc"
+  }
+}

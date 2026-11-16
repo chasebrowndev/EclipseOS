@@ -1,0 +1,11 @@
+fixture "sync-dcs-begin-end" {
+  desc "sync dcs begin end (migrated from the apoth-term corpus)"
+  covers "T03-SYNC-2026"
+  size rows=2 cols=4
+  feed #"\eP=1s\e\\"#
+  checkpoint "c1" {
+    hold #true
+  }
+  feed #"\eP=2s\e\\"#
+  hold #false
+}

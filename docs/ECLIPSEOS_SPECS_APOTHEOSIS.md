@@ -298,7 +298,7 @@ checklist. "Heavy" = needs a serialized build slot. `X` milestones change `abyss
 | M35 | Mux daemon: server mode, snapshot + tee, attach/detach | T-21 | M22, M29 | CI-N |
 | M36 | Media tier C: VA-API | T-16 §3 | M34 | M |
 | M37 | Remote domains: `apoth ssh`, askpass, `SshDomain`, remote mux | T-22 | M35 | CI-N |
-| M38 | Presentation refinements: pacing ladder step 5 (explicit present timing) and partial-damage present, each only if wgpu exposes the API (ADR 0119 Revisit when), PGO decision | T-07, T-23 | M17, X4 | CI-N + M |
+| M38 | Presentation refinements: pacing ladder step 5 (explicit present timing) and partial-damage present, each only if wgpu exposes the API (ADR 0119 Revisit when), PGO decision. Presenter item closed at M38, not built: wgpu 30.0.2 exposes neither partial present nor present timing (only `VK_GOOGLE_display_timing` through `as_hal`); the compositor's own damage tracking covers it. Tier A: covered-placement eviction (T-15 §4) | T-07, T-23 | M17, X4 | CI-N + M |
 | M39 | R2 remainder: OSC 66, BiDi, OSC 5522, fragments, output-match rules | T-04, T-06, T-11, T-18 | M31 | CI |
 
 M2–M7 are one parallel wave (six writers; pure crates). M31's gate list is fixed;
@@ -1154,16 +1154,21 @@ Passes per frame, back to front:
    (`copy_texture_to_texture`, never overlapping in place). Per-row instance ranges move
    with their rows. Only the rows listed in the damage are redrawn. Within it:
    a. backgrounds — one full-grid quad sampling a `cols × rows` RGBA8 texture; selection,
-      search highlight, inverse and dim are folded in on the CPU before upload;
+      search highlight, inverse and dim are folded in on the CPU before upload; then a
+      rounded-rect pass over selection runs and search matches (radius 0.2 × cell height,
+      clamped to 1–6 px; a corner rounds only where the rows above and below leave its
+      column uncovered); the current search match also gets a `cursor_thickness` rim;
    b. glyphs — one instance per glyph (grid position, pixel offset, atlas rect, colour,
       flags), persistent per-row instance ranges rebuilt only for damaged rows;
    c. decorations — underline styles, strikethrough, overline as procedural rects/sprites
       with integer period arithmetic so patterns join across cells.
 4. Images with z ≥ 0, media placements.
-5. Cursor (block, beam, underline, hollow when unfocused); glyph under a block cursor is
+5. Cursor (block, beam, underline, hollow when unfocused); block and beam are rounded
+   rects, underline and hollow stay square; glyph under a block cursor is
    recoloured; optional smooth cursor motion, default off.
 6. IME preedit.
-7. Glass interface draw list (T-08): rounded rects (SDF), images, text.
+7. Glass interface draw list (T-08): rounded rects (SDF), images, text, and an erase
+   kind (Zero/OneMinusSrcAlpha) that cuts grid content out under a compositor glass pane.
 8. Overlays.
 
 **Atlases** are per window, owned by that window's render thread; no lock is taken on an
@@ -1271,7 +1276,17 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
 - Interface layers sit above the grid: each is a rounded rect with fill alpha from the
   token table and a 1 px hairline rim. While blur is on, layers carry **no** drop shadow
   and no top-edge highlight (STYLE.md: cards inside a window are fill + hairline only;
-  the compositor's rim lights the edge). The inner top highlight and the analytic
+  the compositor's rim lights the edge). **On Abyss with `eclipse_glass_manager_v1`**
+  advertised, chips and sheets draw no ground — neither fill nor rim; each is sent as an
+  `eclipse_glass_v1` pane (ADR 0081 "microglass"). Sheets (palette, search bar, context
+  menu, prompt sheets, tooltip) are drawn on one synchronised overlay subsurface above
+  the root, with an empty input region and its own glass object, so their panes blur the
+  terminal text beneath as a second, stacked sheet of glass; the root draws nothing under
+  them. Tabs, bar buttons, media controls and the float backing stay on the root surface,
+  where the client erases the grid under each pane.
+  The keyboard-focus rim, wells, keycaps and the danger rim stay client-drawn. The
+  `capability` event, not the bind, switches between this and the client-drawn ground at
+  run time. The inner top highlight and the analytic
   rounded-rect shadow (no blur pass) are drawn only in the blur-off fallback and, for the
   window shadow, only for CSD off Abyss (T-09 §4).
 - Text over glass meets a minimum contrast of 4.5:1 against the *worst-case* backdrop
@@ -1281,7 +1296,9 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
 | Surface | Release | Notes |
 |---|---|---|
 | Window frame | R1 | On Abyss server-side decorations are requested (COMP-06 `xdg_decoration` prefers server-side) and the title row collapses to the tab strip, hidden when one tab unless `tabs.show` is `always`. CSD (off Abyss, or `window.decorations client`): title bar merged with the tab strip; buttons per `wm_capabilities`; shadow as a transparent margin with `set_window_geometry`; input region trimmed. `window.hide-chrome` (set of `tiled|maximized|fullscreen`, default `fullscreen`) hides the chrome in those states |
-| Tab strip | R1 | `tabs.style` `floating|flat|hidden`; `tabs.position` `top|bottom`; title from the tab template (T-11 §8); badges: unseen output, bell, running, progress (OSC 9;4), exit status of last command; close and new-tab buttons; middle-click close; wheel switch; drag reorder (drag between windows is R3, needs xdg-toplevel-drag) |
+| Tab strip | R1 | `tabs.style` `floating|flat|hidden`; `tabs.position` `top|bottom`; title from the tab template (T-11 §8); badges: unseen output, bell, running, progress (OSC 9;4), exit status of last command; close and new-tab buttons (hit targets 22 and 24 px, 12 px glyphs drawn as shapes, each
+with a chip-family hover pane; new-tab sits right after the rightmost tab, at the left
+edge with no tabs, and stays at the end of the visible strip on overflow); middle-click close; wheel switch; drag reorder (drag between windows is R3, needs xdg-toplevel-drag) |
 | Pane frame | R1 | Rim and optional title per pane; `panes.frame` `full|titles|none`; focused pane = brighter rim; inactive dim `panes.inactive-dim` (T-13 §3, 0 disables); split handles draggable, double-click equalises |
 | Scrollbar | R1 | Overlay; `scrollbar.mode` `auto-hide|always|never`; `scrollbar.marks` (set of `prompts|search|bells`, default all) — prompts coloured by exit status |
 | Search bar | R1 | T-14 §6 |
@@ -1291,6 +1308,7 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
 | Error bar | R1 | Config errors with file:line; "open config", "dismiss" |
 | Close confirmation | R1 | Modal sheet listing running foreground jobs |
 | Toasts | R1 | Copy confirmation, "reloaded", size overlay while resizing (cols × rows) |
+| Media controls | R1 | Over a media placement (T-16 §2) while the pointer is on its box, fading in and out with the hover (`interface.motion`): a centred glass disc with a play or pause mark (drawn as shapes) and, along the bottom, a glass scrub pill holding the progress track (position over duration in the accent, when the container gives one; dropped when the box is too short to clear the disc). Nothing is drawn at rest, nor while the pane's program has mouse reporting on (the click is the program's then). A primary click on the box plays or pauses it (an ended one restarts) unless the pane's program has mouse reporting on or the open modifier is held; the click is not passed to selection. In an `--ext` media window the same controls show while the pointer is on the window, with the close button at the top right and an "Esc to close" hint at the top left; the same click applies, off its close button. A placement that plays muted because there is no audio output (`audio-unavailable`) raises a notice in its pane for 4 s: a glass pill at the pane's top right with a muted-speaker mark, drawn only (no hit target, no focus), never a window or a modal |
 | Command-block chrome | R1 (copy) / R2 (sticky header) | Exit-status bar in the gutter, duration, hover actions copy command / copy output |
 | Context menu | R2 | KDL-defined (UI-16) |
 | Pane select labels | R2 | UI-13 |
@@ -1357,6 +1375,7 @@ fatal for the connection and logged with interface and code. Main reads `CLOCK_M
 | primary-selection-v1 | primary selection | disabled |
 | cursor-shape-v1 | named shapes (incl. OSC 22) | themed cursor via shm |
 | xdg-activation-v1 | urgency, focus hand-off from `apoth` launches | no urgency |
+| eclipse_glass_manager_v1 | interface chips and sheets as compositor glass panes on Abyss (T-08 §3); its `capability` event switches mode at run time | client-drawn glass |
 | zwp_input_timestamps_v1 | optional: nanosecond input times recorded as an informative latency series (T-23 §1 Clocks); never a gate input | client-side stamps only |
 | presentation-time | latency measurement, frame scheduling phase | frame callbacks only |
 | fifo-v1, commit-timing-v1 | informational only: used by the WSI under Fifo; Apotheosis never creates these objects on its surfaces (T-07 §2) | — |
@@ -1394,10 +1413,12 @@ exposed by the `wayland-info` Action and IPC (AUTOMATION-38).
 ## 5. Blur
 Bind `ext_background_effect_manager_v1`, track its `capabilities` (blur bit), create one
 effect object per surface, and set the blur region, committed with the frame that draws
-it. On Abyss the region is one box covering the window geometry (T-08 §3) and only
-`ext_background_effect_v1` is used. Off Abyss the region is the glass rects and the
+it. On Abyss the region is one box covering the window geometry (T-08 §3); interface
+chips and sheets are `eclipse_glass_v1` panes (optional global `eclipse_glass_manager_v1`;
+absent → client-drawn glass; T-08 §3, ADR 0081). Sheets go on an overlay `wl_subsurface`
+(sync, empty input region, own `get_glass`), created only while the glass global is bound. Off Abyss the region is the glass rects and the
 ladder is ext effect → `org_kde_kwin_blur` → tint/opaque. Capabilities can change at
-runtime; the ladder is re-evaluated. No private Eclipse protocol is used (ADR 0109).
+runtime; the ladder is re-evaluated.
 
 ## 6. Seat
 - Keyboard: keymap fd → the XKB backend (T-05); repeat is timed by us from
@@ -1503,7 +1524,7 @@ per key. Off EclipseOS the paths are `$XDG_CONFIG_HOME/apotheosis/apotheosis.kdl
 ## 3. Shape of the file
 Top-level nodes: `version`, `font`, `colors`, `theme`, `unicode`, `window`, `interface`,
 `tabs`, `panes`, `close`, `scrollbar`, `cursor`, `scrollback`, `blocks`, `mouse`, `touch`,
-`keyboard`, `selection`, `clipboard`, `paste`, `links`, `hints`, `shell`,
+`keyboard`, `selection`, `clipboard`, `paste`, `links`, `open`, `hints`, `shell`,
 `shell-integration`, `terminal`, `bell`, `notifications`, `progress`, `graphics`, `media`,
 `render`, `security`, `accessibility`, `socket`, `sessions`, `domain`, `quick-terminal`,
 `binds`, `mouse-binds`, `key-table`, `macro`, `rule`, `profile`, `layout`, `menu`,
@@ -1512,7 +1533,20 @@ predicates (`compositor`, `host`, `scheme`, `on-battery`, `scale`) and wraps any
 Runtime mode conditions on binds are a different option, `mode=` (T-11 §3). The complete
 key list is the generated reference; the spec does not duplicate it.
 
-Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10).
+`open` (T-14 §11): `open.placement` enum `float|inline|window`, default `float` (where a
+terminal handler shows); `open.handlers` map, default empty, `<type> <handler>
+[placement]` per entry, where `<type>` is `type/subtype` or `type/*` (a URL's type is
+`x-scheme-handler/<scheme>`) and `<handler>` is `apoth-icat`, `apoth-play`,
+`<id>.desktop` or `opener` (`links.open-command`); only the two terminal handlers take a
+placement. An entry that does not parse is dropped with a diagnostic. "Remember for
+<type>" in the picker writes one entry through the editor (§5). Both keys have GUI rows
+(Settings → Security → Links, "Open with").
+
+Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); `security.sudo-askpass` bool, default #false, global (T-22 §3); `security.password-prompt` enum `auto|off`, default `auto`, global (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10). Remote additions: `remote.persist` enum `off|auto|always`, default `auto`,
+global, override class `behaviour`, live (T-22 §4); a `domain`'s `persist` child
+overrides it for that domain (validated against the same values, and only beside an
+`ssh` destination). The key has a GUI row (Settings → Security → Remote, "Remote session
+daemon").
 
 ## 4. Load, validate, apply
 - Parse into a fresh model; collect **all** diagnostics (file, line, column, key,
@@ -1530,8 +1564,9 @@ Security additions: a `security { <class> allow|ask|deny }` child block under `d
 ## 5. Editing
 - `apoth-config::edit` operates on a lossless KDL document (comments, ordering, unknown
   nodes preserved), changing only the affected nodes; writes are temp + fsync + rename.
-- Three editors use it: `apoth config set|unset|add|remove` (edits the file locally, no
-  socket), ec-settings, and the in-terminal `config.save-override` Action (T-11 §1).
+- Three editors use it: `apoth config set|unset|add|remove` and `apoth set` (edit the file
+  locally, no socket; T-12 §5), ec-settings, and the in-terminal `config.save-override`
+  Action (T-11 §1).
 - **Write target.** A write goes to the main user file at top level, unless (a) the
   control was opened in a scoped context — a profile page writes that profile's node, a
   `when` variant selector writes that `when` block — or (b) the key's winning value
@@ -1570,8 +1605,10 @@ change emits the mode-2031 report where enabled (T-03).
 `apoth config validate|show|get|set|unset|explain|diff|migrate|import|path|edit`:
 `validate` exits non-zero with line-numbered diagnostics; `show` prints the effective
 merged config (`--origin`, `--changed-only`, `--json`); `explain <key>` prints the doc
-row; `diff` compares against defaults. These edit or read the file locally; runtime
-overrides are `apoth set`/`reset` (T-12 §5).
+row; `diff` compares against defaults. These edit or read the file locally. `apoth set`
+is the short form of `config set`; runtime overrides (layer 8) are `apoth set --temp` and
+`apoth reset` (T-12 §5). `config set` takes the same `key=value` pairs and key aliases as
+`apoth set`.
 
 ## 9. Test Plan
 Table-driven round-trip tests for every key (default → KDL → parse → equal); comment
@@ -1640,6 +1677,8 @@ carries pane text is `read-content` in addition to its listed class.
 | | destination file, pager, editor or command argv | `read-content` + `spawn` |
 | `pipe` | | `spawn` + `read-content` |
 | `launch`, `open` | | `spawn` |
+| `open.*` (T-14 §11) | `open.default {target?, placement?}` | `spawn` |
+| | `open.with {target?}`, `open.menu {target?}` | `layout`; the launch is the user's pick on the sheet (real seat input, like a consent answer) |
 | `coprocess.run` | | `spawn` + `read-content` + `input` |
 | `macro.run` | | union of its members' classes (§4) |
 | `notify` | | `layout` |
@@ -1663,7 +1702,9 @@ There is no action that passes a string to `sh -c`; a user who wants a shell wri
 parameters, not interpolated.
 
 ## 3. Key binds
-- Grammar: `bind "<mods>+<key>" { <action> … }`; modifiers in any order; key is a keysym
+- Grammar: `bind "<mods>+<key>" { <action> … }`, or `bind "<mods>+<key>" "<action>"` for one
+  action with no arguments (the same as the block holding that action; both forms at once
+  are refused); modifiers in any order; key is a keysym
   name (layout-dependent, matched on the produced symbol, then on the unshifted symbol)
   or `physical:<name>` (position-dependent, wins when both match).
 - Options: `repeat=#false`, `mode="<mode-condition>"` (`alt-screen`, `app-cursor`,
@@ -1826,6 +1867,29 @@ sgr, wrap}`, `pane.blocks` (command records), `config.get`, `config.effective`,
 `version`. Streams: `subscribe {events:[…], match}` / `unsubscribe`; `pane.watch`
 (rendered-row deltas, R2).
 
+Runtime overrides (T-10 §2 layer 8), instance-wide, not targeted:
+- `config.set {key, value}` sets the override of one key; `value` is config text (what
+  follows the key in the file). Its class follows the key's override class (T-10 §1.1,
+  §4 below): `appearance` → `appearance`, `behaviour` → `config-write`; a `security` or
+  `grant` key is refused (`denied`). A value that does not fit the key is `bad-request`.
+- `config.reset {key}` drops that override; same classes. Resetting a key with no
+  override succeeds and changes nothing.
+- Both reply `{key, changed, previous}`: `changed` is whether the effective config
+  changed; `previous` is the override the key had before, in config text form, or `null`.
+  A client undoes a change by setting `previous` again, or resetting when it is `null`.
+- The override layer lives in the instance above the files: a reload replaces the file
+  layers and keeps it; nothing is written to disk; a restart drops it.
+
+Media windows (`apoth icat --ext`, T-16 §1.1), class `layout`, not targeted:
+- `media.window-open {cols, rows, title?}` opens a borderless glass window with one grid
+  of `cols` × `rows` cells (each 1..500) and returns `{window}`. It has no PTY. It belongs
+  to the connection: it closes when the connection closes. At most 8 are open at once.
+- `media.window-write {window, data}` feeds base64 `data` (at most 768 KiB of base64 per
+  request) to the window's grid. Only the owning connection may write. The grid parses and
+  decodes off the main loop. A window more than 64 MiB behind refuses writes.
+- `media.window-wait {window}` is answered with `{closed: true}` once the window has
+  closed (Escape or `q` in it, the compositor's close, or a render failure).
+
 ## 3. Targeting and environment
 Targets use the T-11 §7 match language; default target is `self` when the client runs
 inside a pane. Each pane exports `APOTHEOSIS_SOCKET`, `APOTHEOSIS_PANE`,
@@ -1890,13 +1954,42 @@ user-run `ssh -R` forward of the socket is treated as an ordinary client.
 ## 5. CLI
 `apoth <group> <verb>`; every group maps to methods above: `apoth ls`, `launch`, `split`,
 `focus`, `close`, `send-text`, `send-keys`, `get-text`, `do '<action>; <action>'`
-(textual action syntax identical to KDL `do` bodies), `subscribe`, `notify`, `set`/`reset`
-(runtime overrides: `config.set`/`config.reset` over the socket, class per the key's
-override class), `config …` (T-10 §8: edits or reads the file locally, no socket), `icat`, `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
+(textual action syntax identical to KDL `do` bodies), `subscribe`, `notify`, `set`,
+`reset`, `config …` (T-10 §8: edits or reads the file locally, no socket), `icat` (foreground,
+inline by default, `--ext` for a separate window; lifetime rules in T-16 §1.1), `play`, `ssh` (R2), `shell-init`, `terminfo`, `fonts`
 (`list`, `explain <char>`), `doctor` (capability and environment report), `completions`.
 `--json` everywhere; exit codes: 0 ok, 1 error, 2 usage, 3 denied, 4 no instance.
+
+Session-daemon commands (T-21 §3, tmux model): `apoth server ls` (sessions, pane ids,
+sizes and view counts; no content), `apoth server kill [SESSION]` (end the session; exits
+0 once the server is gone, 4 with no such session), `apoth attach [SESSION]` (runs
+`apotheosis --attach`), `apoth detach [SESSION]` (detach every view, panes keep running).
+`SESSION` defaults to `default`. `apoth proxy [--session NAME] [--no-start]` is the remote
+end of a mux domain (T-22 §5) and `apoth askpass` the `SSH_ASKPASS` helper (T-22 §3);
+neither is meant to be typed.
+
+`set` and `reset`:
+- `apoth set key=value [key=value …]` (or the one-pair form `apoth set key value…`)
+  saves to the user file exactly as `apoth config set` does (T-10 §5: lossless edit,
+  comments kept, temp + rename). It needs no socket; a running instance picks the file
+  up through its hot reload (T-10 §4).
+- `apoth set --temp key=value …` changes only the running instance: one `config.set`
+  per pair (§2). The file is not touched and the change is lost on restart.
+- `apoth reset key …` drops `--temp` overrides (`config.reset`).
+- Keys are schema paths or aliases of them: `_` and `-` stand for any separator, so
+  `font_size` and `font-size` are `font.size`. An alias must match exactly one key; an
+  unknown key is an error naming the nearest key.
+- A set is all-or-nothing. Every pair is checked against the schema (key, type, range,
+  and for `--temp` the override class) before anything is written or sent; a bad pair is
+  exit 1, a `security`/`grant` key under `--temp` exit 3, a malformed pair exit 2. If the
+  instance refuses a `--temp` pair part-way, the client undoes the pairs already applied
+  from their `previous` (§2) and exits with the refusal's code.
+
+Inside Apotheosis panes the shell-integration snippets (T-14 §2) define `ap` as a short
+alias of `apoth`; nothing is installed system-wide, and no other short names are defined.
 `apotheosis` itself (the GUI binary) accepts `-e argv…`, `--cwd`, `--title`, `--app-id`,
-`--profile`, `--layout`, `--hold`, `-o key=value`, `--new-instance`, `--wait`. A second
+`--profile`, `--layout`, `--hold`, `-o key=value`, `--new-instance`, `--wait`, and for
+sessions (T-21 §3, T-22) `--server`, `--attach`, `--session NAME`, `--domain NAME`. A second
 launch sends one `launch` request (cwd, env, argv, activation token, overrides) to the
 running instance and, with `--wait`, relays the child's exit code.
 
@@ -1950,6 +2043,16 @@ domain (`docker exec`, `distrobox enter`, `kubectl exec`); no callback (MUX-32).
   one-line headers.
 - **Floating layer** (R2, MUX-18..20): per-tab ordered floats with show/hide, pin,
   raise-on-focus, embed/float toggle, placement search.
+  - Actions: `pane.float` (cwd, profile, command — class `spawn` when `command` is given)
+    opens a float. `pane.toggle-float` floats the focused tile or embeds the focused float.
+    `pane.toggle-floats` shows or hides every float of the tab. `pane.toggle-pin` pins a
+    float, keeping it shown when the floats are hidden.
+  - Placement: a new float is half the tab, centred. If that spot is taken by a shown
+    float, it tries the top-left and top-right corners in (2, 1)-cell steps, then staggers
+    from the top left.
+  - A float takes no room from the tree. It is always framed and draws over the tiles on
+    its own glass backing and shadow layer. Floats are hit-tested before the tiles, top
+    float first.
 - **Layout presets** (MUX-13): `even-h`, `even-v`, `main-h`, `main-v`, `tall`, `grid`,
   `stack` applied over the pane list; `layout.next` cycles. The free tree is the default.
 - New panes inherit the focused pane's cwd (OSC 7, else `/proc/<fg>/cwd`).
@@ -2038,6 +2141,8 @@ user's value; bash by `--rcfile` shim / `PROMPT_COMMAND`; fish and nushell throu
 `XDG_DATA_DIRS`. `shell-integration.enabled` `auto|off`; feature flags `cursor`, `title`,
 `cwd`, `marks`, `sudo-terminfo`. Shells that emit OSC 133 natively need nothing.
 `apoth shell-init <shell>` prints the snippet for manual use.
+Each snippet defines `ap` as an alias of `apoth` (T-12 §5), only when `APOTHEOSIS_PANE`
+is set, so a manually sourced snippet has no effect outside a pane.
 
 ## 3. Working directory and process
 OSC 7 (`file://host/path`, percent-decoded; non-local host ignored for local spawns) is
@@ -2059,7 +2164,7 @@ OSC 8 links: hover underline and URI tooltip; activation requires the open modif
 (`links.schemes`, default `http https mailto ftp file`); `file://` with a non-local host is
 refused; the full URI is shown before opening when it differs from the visible text
 (T-18). Opening goes through the `open` Action with an argv template (default
-`xdg-open {url}`).
+`xdg-open {url}`); a link's default handler, the Open menu and the picker are §11.
 
 ## 6. Search
 - Overlay search bar (glass, T-08). Modes: smart-case (default), case-sensitive,
@@ -2099,16 +2204,88 @@ binding. Scoring is an fzf-v2-class algorithm implemented from its published des
 (`clipboard|file|pager|editor|command argv`), with or without SGR. Class `read-content`
 plus `clipboard` for the clipboard destination and `spawn` for every other (T-11 §1).
 
-## 11. Test Plan
+## 11. Open with
+Anything the terminal recognises as a path or URL can be opened with a chosen app: hint
+targets (`path`, `url`, `link`), OSC 8 links, a right click on a recognised path or URL
+(`menu.context-menu`, when nothing is selected), a selection (copy mode included) and the
+`open.*` Actions, which the socket, binds and palette reach like any other (T-11 §1).
+Never automatic: nothing opens on output.
+- **Actions.** `open.default {target?, placement?}` launches the default handler;
+  `open.menu {target?}` shows the Open menu; `open.with {target?}` shows the picker. A
+  target is at most 4096 bytes with no control characters. With no target the selection
+  is the target; with nothing selected, hint mode starts with the `link`, `url` and `path`
+  matchers and the picked label carries the Action's intent. A hint label typed in upper
+  case (Shift, with a lower-case alphabet) opens the menu for that target instead of the
+  matcher's default; the URL and link defaults open through the default handler, the path
+  default still copies. Default bind: `ctrl+shift+m` → `open.menu`.
+- **Menu.** On the palette sheet: "Open with <default>" (the handler named, e.g. "Open
+  with Firefox", "Open with apoth icat in a float"), "Open with…" (the picker), for a
+  terminal handler the other placements (inline split, float, separate window via
+  `--ext`), then "Copy" / "Copy link" and "Copy path" (the absolute path when it differs
+  from the text). The target is shown as program text.
+- **Picker.** The terminal handlers for the type, then the desktop apps that declare the
+  type (or a parent type), then `links.open-command`, then every other shown desktop
+  app, fuzzy-filtered by the palette's scorer (§9). A pinned "Remember for <type>" toggle
+  writes an `open.handlers` entry for the exact type of the target on the pick (T-10 §3)
+  and reloads.
+- **Type.** URLs: `x-scheme-handler/<scheme>`; a `file://` URL naming this host is its
+  path. Paths: `~` and relative paths (against the pane's OSC 7 directory) made absolute;
+  a `:line[:col]` suffix is dropped when the full text does not exist. A directory is
+  `inode/directory`; a FIFO, socket or device is never opened for reading. A regular file
+  is typed by the shared-mime-info database (`globs2`, `magic`, `subclasses`, `aliases`
+  under `$XDG_DATA_HOME/mime` and `$XDG_DATA_DIRS/*/mime`, read in Rust; a built-in table
+  when none is installed): the first 8 KiB sniffed, magic winning over a weaker or
+  conflicting glob, text vs binary by content.
+- **Default handler**, first that applies: an `open.handlers` entry (exact type, then
+  `type/*`, then the same along the parent types); the built-ins for local files,
+  `image/*` → `apoth icat` and `video/*`, `audio/*` → `apoth play`, shown at
+  `open.placement`; for a URL, `links.open-command` when the user set it; the
+  freedesktop default (`mimeapps.list` per the XDG MIME Applications spec:
+  `$XDG_CONFIG_HOME`, `$XDG_CONFIG_DIRS`, then `applications/` under the data dirs, each
+  `<desktop>-mimeapps.list` before `mimeapps.list`; Default Applications only from the
+  desktop-specific files; Added/Removed Associations apply to their directory and below; a
+  default must be installed (`TryExec`) and not hidden; a type is settled before its
+  parents); else, for a URL, `links.open-command`. A local file with no default after that
+  opens in the **default browser** (`x-scheme-handler/https`, then `http`; its `Exec` gets
+  the percent-encoded absolute `file://` URL as one argv element through `%u`/`%U`), but
+  only for types a browser renders: `image/{png,jpeg,gif,webp,avif,svg+xml,bmp}`,
+  `video/{webm,mp4,ogg}`, `audio/{mpeg,ogg,opus,flac,wav,webm,aac}`, `application/pdf`,
+  `application/xhtml+xml`, `text/html`, `text/plain`. Any other type has no default, and
+  `open.default` shows the Open-with picker instead of doing nothing. The menu names the
+  effective default ("Open with Firefox" when the browser is the fallback).
+- **`apoth play` fallback.** `apoth play` exits 69 (`EX_UNAVAILABLE`) for media it cannot
+  play; a build without `play` exits 2 (usage). On either, the opener launches the
+  freedesktop default (else the browser for a renderable type, else nothing) instead: from a pane when the pane
+  closes, from a `--ext` launch when the process exits.
+- **Launch.** Always an argv, never a shell. Desktop `Exec` lines are unquoted and
+  unescaped per the Desktop Entry spec, then field codes expanded: `%f`/`%u` one target,
+  `%F`/`%U` the list (alone as an argument), `%i` the `--icon` pair, `%c` the name, `%k`
+  the entry's path, `%%`; deprecated codes dropped. A field code inside quotes, an unknown
+  code, two file codes or a list code not standing alone makes the entry unusable; an
+  `Exec` without a file code gets the target appended; `%f` with a non-`file` URL is
+  unusable (nothing is downloaded). Paths passed are absolute, so they never read as
+  options. Terminal handlers and `Terminal=true` apps run in a new pane (split or float);
+  other apps detached, without the activation token variables.
+- **Security (T-18).** A link target passes the §5 checks first. A path from a remote
+  pane (T-18 §10, or an OSC 7 directory naming another host) is never opened locally: the
+  menu shows Open and Open with… disabled with "path is on <host>"; Copy stays. Paths, URLs
+  and file contents are never logged; the host label is program text, filtered to
+  `[A-Za-z0-9.-]`, at most 64 bytes.
+- Tests: type detection (globs, magic, subclass chain, text/binary), `mimeapps.list`
+  precedence (user over system, Added/Removed, desktop-specific files), `Exec` expansion
+  and escaping, remote-path refusal, the remember write, and a headless gate opening an
+  image path's hint into an `apoth icat` float.
+
+## 12. Test Plan
 Corpus fixtures for the OSC 133 machine including sloppy-shell traces recorded from bash,
 zsh and fish, and a fish/kitty-style trace with `A;k=s` continuation prompts mid-input
 (the primary block survives); option-parsing tests (per-mark keys, unknown and
 wrong-mark keys ignored, `L` in and out of column 0); search correctness over wrapped lines and across page seams; regex budget
 test (catastrophic pattern returns an error within 50 ms); label allocation property test
 (prefix-free, minimal length); copy-mode motion table tests; headless gates for search bar,
-hints and palette.
+hints and palette; the §11 tests.
 
-## 12. Open Decisions
+## 13. Open Decisions
 - Whether the per-cell semantic bits are worth their cost is settled by M12 measurements;
   the bits are reserved either way.
 
@@ -2174,7 +2351,16 @@ OSC 1337 `File=` with `inline=1` only: `name`, `size`, `width`, `height`
   320 MiB per pane) and `graphics.quota-total` (default 1 GiB per process); animation
   frames have a separate `graphics.animation-quota`. Eviction is tiered: unreferenced
   first, then off-screen placements oldest first; a referenced on-screen image is never
-  evicted — the transmit fails with `ENOSPC` instead.
+  evicted — the transmit fails with `ENOSPC` instead. A placement fully covered by a newer
+  opaque placement at the same z (same or larger rect; the image a still one with every
+  alpha 255, e.g. `f=24`) does not count as on-screen: its image is evictable in the second
+  tier, and it is not drawn. The pre-read quota check of file, temp-file and shm media
+  counts the bytes eviction could free, so it fails only when eviction cannot make room
+  (owner decision at M38: `mpv --vo=kitty` sends every frame as a new anonymous image at the
+  same cell and never deletes, so without this the quota fills and the picture freezes).
+- Shared memory (`t=s`) is read when the transmission completes, on the io thread (memory,
+  no blocking I/O), because a client may reuse the object's name for its next frame;
+  decoding stays on the workers (§5).
 - Per-axis cap 10 000 px; decoded-size cap enforced before allocation.
 - Placements are anchored to buffer rows (tracked pins), scroll with text, reflow by
   re-anchoring, and are freed when their rows leave history.
@@ -2223,6 +2409,45 @@ Software H.264 via a pure-Rust decoder (MEDIA-31) is admitted only after it pass
 helper fuzz and conformance gates; software VP9 and HEVC are not planned. Without VA-API,
 those codecs play through Tier A (mpv decodes).
 
+### 1.1 `apoth icat` and `apoth play` lifetime
+Owner requirement (recorded at M32 for `icat`, binding on `play` at M34):
+- **Inline by default.** The command runs in the foreground of the pane it was started
+  in. Animations (and, for `play`, video) stay live while it runs. Ctrl+C deletes the
+  command's own placements, restores the tty and exits 130. A still image from a normal
+  exit stays in the scrollback; animations and video are removed when the command ends,
+  however it ends.
+- **Terminal-side cleanup.** A placement must never outlive a command that died without
+  cleaning up (SIGKILL: no frozen frame is left). The command opens a session in-band,
+  `ESC _ M a=b,i=<n>,p=<pid> ESC \` (`n`: a per-invocation id; `p`: the command's pid),
+  before its first image and closes it with `a=e,i=<n>` on a normal exit. Placements made
+  while a session is open belong to it. A clean `a=e` keeps the session's still images and
+  deletes its animated ones. Other `M` commands are the §2 protocol.
+  - With `p=`, the terminal binds the session to that process when it is in the pane's
+    session (`getsid(pid) == tcgetsid(pty)`): it opens a pidfd and polls it with the PTY.
+    When the process exits with the session still open, every placement of the session
+    is deleted at once, with no further output needed. This holds for a command started
+    in the background (its own process group) as well.
+  - Without `p=`, or when the pid cannot be watched (another session, already gone, no
+    pidfd), the session binds to the pty's foreground process group. Whenever that group
+    no longer holds the foreground with the session still open, the session's placements
+    are deleted. The check is one `tcgetpgrp` per io step. While such a session is open
+    the io thread also rechecks every 250 ms, so a SIGKILL is seen without further
+    output. That timer exists only while a group-bound session is open (T-23 `IDLE`).
+- **`--ext` / `-x`.** Asks the instance over the control socket to open a separate
+  borderless glass window showing only the media (`media.window-open`, T-12 §2). The
+  bytes the command would have written to the pane go to the window instead
+  (`media.window-write`). The window has one grid of the size the media needs, no PTY and
+  no cursor. The command stays in the foreground until that window closes: Escape or `q`
+  in the window, or the compositor's close, ends the command with 0. Ctrl+C in the origin
+  pane drops the connection, which closes the window, and exits 130. The window belongs
+  to the connection that opened it, so a killed command takes its window with it.
+- **Unsupported media.** `apoth play` exits 69 (`EX_UNAVAILABLE`) for a file it cannot
+  play, before drawing anything; "Open with" then falls back to the desktop default
+  (T-14 §11).
+- Tests: Ctrl+C cleanup and SIGKILL cleanup on the headless session (no placement left,
+  exit 130 for Ctrl+C), SIGKILL of a background command; `--ext` opens and closes its
+  window headlessly (Escape, and SIGKILL of the command).
+
 ## 2. Media placement protocol
 An APC namespace of our own, `ESC _ M <keys> ; <payload> ESC \`, key=value control data
 in the style of the graphics protocol:
@@ -2230,8 +2455,20 @@ in the style of the graphics protocol:
   `apoth play` over the control socket, the default), `s=d` (chunked bytes, small clips
   and remote panes); placement `c,r` cells, `i` id, `z`.
 - `a=c` control: `play`, `pause`, `seek=<ms>`, `rate`, `loop`, `volume`, `mute`.
-- `a=q` query: position, duration, state, tracks. `a=x` close.
+- `a=q` query: position (ms), duration, state, tracks. `a=x` close.
 - Events back to the client: `ready`, `ended`, `error=<code>`, position ticks on request.
+  `ready` is `ready,w=<px>,h=<px>,d=<ms>,vw=<px>,vh=<px>[,dar=<W>:<H>]`: the output size
+  the picture is scaled to inside the box, the duration, the coded video size and, when
+  the container declares a display aspect other than the pixel aspect (anamorphic
+  sources), that aspect in lowest terms. Clients read the fields by name and ignore ones
+  they do not know.
+- **Box fit.** On `ready` the box shrinks (never grows) to the picture's display aspect,
+  so a placement takes the cells it shows: the columns or rows it does not need are freed.
+  When the cursor sits on the row just below the box (the client wrote nothing since the
+  open), it moves up by the rows freed; output that already moved the cursor keeps it
+  where it is. An `--ext` window shrinks with its box.
+- The interface plays and pauses a placement on click (T-08 §4) as if its client had sent
+  `a=c` `play`/`pause`; the client gets no reply for it and sees the state in `a=q`.
 A media placement is a tracked-pin placement like an image (T-15 §4); it scrolls with
 text and is stopped and freed when its rows leave the screen (playback never continues in
 history: `media.offscreen` `pause` (default) or `stop`).
@@ -2300,6 +2537,12 @@ that TCB file.
    *terminal* process, so the helper needs no audio socket. The terminal accepts only the
    sample rate and channel count negotiated at open (rate ≤ 192 kHz, ≤ 8 channels) and at
    most 1.1 × the negotiated byte rate averaged over 1 s; excess kills the helper.
+6. **Failure reports.** The helper's `Info` carries the output size, the coded video size
+   and the declared display aspect (0:0 for none). Every exit other than a protocol
+   violation by the terminal sends `Failed(<code>)` first — a demux, decode, seek or
+   frame-ring write failure is reported as its code, and audio packets that fail to
+   decode are skipped (32 in a row fail the stream as `decode`) — so `helper-crashed`
+   means the process died without a word (a signal or a panic).
 
 ## 5. Policy
 - Audio never starts without a user gesture or an explicit `apoth play` invocation in the
@@ -2364,7 +2607,8 @@ needed or added. Detection runs once at start on the pool and again on socket lo
   re-implements either and holds no seed → colour mapping of its own.
 
 ## 3. Glass
-On Abyss, blur through `ext_background_effect_v1` only, with one region box covering the window geometry so the compositor draws backdrop, rim, bezel and shadow (COMP-06 §1, COMP-02 C-14/C-15); server-side decorations are requested; the client lays only the tint (STYLE.md §Colour; T-08 §3). Off Abyss the T-09 §5 ladder applies (ext → `org_kde_kwin_blur` → tint). Apotheosis asks for no entry in any compositor allow-list and has no private glass protocol.
+On Abyss, blur through `ext_background_effect_v1` only, with one region box covering the window geometry so the compositor draws backdrop, rim, bezel and shadow (COMP-06 §1, COMP-02 C-14/C-15); server-side decorations are requested; the client lays only the tint (STYLE.md §Colour; T-08 §3). Off Abyss the T-09 §5 ladder applies (ext → `org_kde_kwin_blur` → tint). Interface chips and sheets are `eclipse_glass_v1` panes; `apotheosis` is on the Abyss
+glass allow-list (`protocols/standard/glass.rs` DEFAULT_ALLOW; ADR 0081, amending ADR 0109).
 
 ## 4. Semantic publishing
 - `abyss/crates/ec-cataclysm-pub` is renamed `ec-term-pub` and its C ABI removed
@@ -2419,6 +2663,10 @@ On Abyss, blur through `ext_background_effect_v1` only, with one region box cove
   `ext.echo=true` is sent when the state and its grace end. For Apotheosis, `ext.echo` is
   driven by the credential predicate, not by raw `ECHO`. The reserved `ext.credential`
   key (COMP-09 §2, S-08 §3.2) is not used.
+- **What stays visible.** The `terminal` node hangs under a window node the host owns
+  (ADR 0114). While the credential state holds, agents see that bare window node (role
+  `window`, no text) and nothing beneath it: the terminal subtree and all text are
+  withheld. The window's existence is not secret (owner decision 2026-11-13).
 - **Remote panes.** Inside a remote pane (T-18 §10) the local PTY is raw, so a remote
   `sudo` or `passwd` prompt never shows the credential predicate locally. Remote panes
   are therefore treated as possibly in the credential state for keystroke egress: the
@@ -2426,6 +2674,32 @@ On Abyss, blur through `ext_background_effect_v1` only, with one region box cove
   a remote pane requires a confirmation per broadcast session, unless the pane's profile
   sets `security { remote-keys #true }`. Sensitivity raise and publishing are not
   changed by this rule (there is no reliable signal; T-22 §7).
+- **Password prompt (auto-open).** Owner decision, 2026-11-15. With
+  `security.password-prompt auto` (enum `auto|off`, default `auto`, global; GUI row
+  Settings → Security → "Password prompt"), Apotheosis on Abyss opens `ec-secret-prompt`'s
+  Terminal target (T-22 §3) by itself when all of these hold:
+  - the credential predicate goes from false to true in the **focused** pane of a window
+    that has the keyboard;
+  - the foreground job is a command the user ran: an OSC 133 command is running (`C` seen,
+    no `D`), or the pane's foreground process group (`tcgetpgrp`) is not the pane's shell;
+  - no askpass request is pending for the pane.
+  Rules for the prompt:
+  - It opens auto-focused. The answer is typed into the PTY followed by `\r`. Esc or
+    Cancel closes it, focus returns to the pane, and typing works as before.
+  - It opens once per read: the predicate must go false before it can open again. If the
+    predicate goes false while the prompt is up, the prompt closes and nothing is typed.
+  - It never opens for an unfocused window or pane, a background job, or a session-daemon
+    pane. Remote panes never show the predicate (above), so it never opens for them.
+  - Askpass wins. A request arriving for a pane that has an auto-opened prompt closes that
+    prompt first, so there is never a second prompt.
+  - Keys typed between the decision and the prompt taking the keyboard are held, not sent.
+    They are typed ahead of the answer, or alone on a cancel, so the line discipline
+    applies erase and kill to them as if they had been typed. An Enter among them answers
+    the read from the terminal, as typing would have, and closes the prompt. If the
+    keyboard has not left the window within 3 s, the held keys go to the PTY.
+  - Off Abyss, without `ec-secret-prompt`, or with `off`, nothing changes.
+  This uses the predicate locally only. The sensitivity raise and publishing above are
+  separate (S-05, P-04; their own owner-reviewed change).
 - Keystroke content is never logged anywhere, in any state.
 
 ## 6. Notifications, bell, progress
@@ -2637,8 +2911,8 @@ that workspace alone may build libfuzzer's C++ runtime in a build script; it is 
 dependency of a shipping crate, `lang-rule.sh` skips it entirely, and T-24 §3 asserts no
 shipping crate depends on it (ADR 0110). Structure-aware generators and differential
 tests against the `vte` oracle run in the normal stable test suite. Targets: `vt_parse`, `term_feed`, `kitty_apc`, `sixel`,
-`osc_all`, `kitty_keyboard_decode`, `config_parse`, `proto_json`, `match_lang`,
-`template`, `compose`, plus the helper targets (T-16). Each has a seed corpus in-tree and
+`osc_all`, `kitty_keyboard_decode`, `config_parse`, `proto_json`, `mux_wire` (T-21 §3),
+`askpass` (the T-22 §3 askpass-socket request), `match_lang`, `template`, `compose`, plus the helper targets (T-16). Each has a seed corpus in-tree and
 a CI smoke run (60 s each, on the fuzz workspace's pinned nightly); longer runs are a
 scheduled job. Policy conformance tests run
 the sequence corpus twice — allowed and denied — asserting that denied means *no
@@ -2853,7 +3127,7 @@ survive GUI and compositor restarts; detach/attach; several views of one session
   the PTY byte stream with sequence numbers; the view runs its own `apoth-term` over the
   same bytes, so rendering is identical by construction and there is no cell-diff
   protocol to keep correct. History pages are fetched on demand. Input goes view →
-  server → PTY. Resize policy across views: `smallest|latest|largest` (default `latest`).
+  server → PTY. Resize policy across views: `sessions.resize` `smallest|latest|largest` (default `latest`; applies from the next attach).
 - Flow control: per-view bounded tee buffer; a slow view is resynchronised from a fresh
   snapshot instead of blocking the PTY.
 - Local views pass shm and dmabuf-free image data by memfd; remote views (T-22) get
@@ -2872,14 +3146,27 @@ survive GUI and compositor restarts; detach/attach; several views of one session
     that pane read-only; a pane with neither is omitted from the snapshot and tee.
   - Pre-granted only: a peer whose pidfd resolves to the installed `apotheosis` GUI
     binary (the path the package installs, checked through `/proc/<pid>/exe` on the
-    pidfd) started by the user, not as a descendant of any pane or agent session. Every
-    other peer — including `apoth` and any binary started from inside a pane — goes
-    through consent (a glass sheet in an already-attached view; with no view attached,
-    refuse).
+    pidfd) started by the user, not as a descendant of any pane or agent session; and
+    the installed `apoth` next to it while it runs `apoth proxy` (argv 1 is `proxy`,
+    read from `/proc/<pid>/cmdline` and confirmed live on the pidfd; owner decision
+    2026-11-14), so a mux domain's remote end attaches without a sheet. The agent,
+    pane-descendant and interpreter refusals apply first to both. Every other peer —
+    including `apoth` for any other verb and any binary started from inside a pane,
+    `apoth proxy` included — goes through consent (a glass sheet in an already-attached
+    view; with no view attached, refuse).
   - Grants are rechecked on every pane added to the session after attach.
   - `apoth proxy` (T-22 §5) is a peer of the remote server's socket and is subject to
-    the same check there; its consent is asked on the remote session's attached views or
-    refused.
+    the same check there: pre-granted as above when started by the user's ssh session,
+    refused (or asked on an attached view) from inside a pane or an agent session.
+- **Lifetime: the tmux model** (owner decision 2026-11-14). Closing a view's window (or
+  `window.close`, `app.quit`) detaches that view; the panes keep running and the server
+  keeps running with no view attached. The server exits when its last pane exits and
+  removes its socket; there is no idle timeout. `session.detach` (action, `layout`) detaches
+  the window it runs in; `apoth detach [SESSION]` detaches every view of a session.
+  `session.kill` (action, `layout`, confirmed on the window's consent bar: Kill / Cancel)
+  and `apoth server kill [SESSION]` end the session: the server closes every pane with
+  the HUP, TERM, KILL escalation (T-18 §7), refuses new spawns while it does, and exits
+  once the last pane is gone. Kill and detach-all are refused to agent-descendant peers.
 - systemd user unit with socket activation is shipped but not enabled by default; the
   daemon mode is opt-in (`sessions.server` `off|on`) until it has a release of soak.
 
@@ -2901,7 +3188,7 @@ byte-identical after a replayed corpus with random attach points); slow-view res
 version-refusal test; attach-authority tests (socket mode/owner, foreign uid refused,
 agent-descendant attach refused with a stub policy service for allow, deny and
 unreachable ⇒ refuse, `read-content`-only view cannot send input, GUI binary
-pre-granted, `apoth`-from-a-pane asks); spill survives a GUI restart and is deleted
+pre-granted, `apoth proxy` pre-granted by argv, `apoth`-from-a-pane asks); spill survives a GUI restart and is deleted
 unread after a daemon restart; soak: 24 h scripted session with periodic attach/detach.
 
 ## 7. Open Decisions
@@ -2931,7 +3218,17 @@ Features, each consented once per host and recorded in KDL:
   the compiled entry);
 - inject shell integration for the remote shell for that session only;
 - carry selected environment (`COLORTERM`, `TERM_PROGRAM*`).
-Falls back to plain `ssh` semantics when any step fails; never downloads binaries.
+Falls back to plain `ssh` semantics when any step fails. Nothing is ever installed on a
+remote host (owner decision 2026-11-14): no binary push, no download; the terminfo entry
+above is the only file written, and only with that host's recorded consent.
+
+`apoth ssh --hold` (what domain panes run) keeps the pane when the link drops: when ssh
+exits 255 it sets the user variable `apoth_ssh_lost` (OSC 1337 `SetUserVar`, the host
+base64-encoded; cleared on reconnect), prints that the connection was lost, and waits:
+Enter starts a fresh ssh in the same pane, Ctrl-D closes it. Ctrl-C and Ctrl-\ do not end
+the wrapper while ssh runs. The window shows a "Connection lost" notice bar for the pane
+(program text: the host) with Reconnect and Dismiss; Reconnect and the `pane.reconnect`
+action type Enter into the pane. Any other ssh exit status ends the pane with it.
 
 ## 3. Askpass
 `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` point at `apoth askpass`. Askpass is armed
@@ -2962,19 +3259,91 @@ per `apoth ssh` session, following the SECURITY-30 template:
   socket, never logged, never stored; the sheet's text field is a protected field (not
   published, not accessible-readable).
 - Plain `ssh` (not through `apoth ssh`) gets no askpass from Apotheosis.
-On Abyss the sheet is superseded by `ec-secret-prompt` when that service is available;
-the token and ancestry checks are the same.
+- **sudo, opt-in.** With `security.sudo-askpass` on (bool, default `#false`, global,
+  restart-free: it applies to panes started after the change; GUI row Settings →
+  Security → "sudo password prompt"), the instance arms askpass for each local pane's
+  child when it spawns it. The pane is bound the same way an `apoth ssh` process is: same
+  token, same socket rules, ended when the pane's child exits. The pane gets
+  `SUDO_ASKPASS` (the `apoth` binary), `APOTHEOSIS_ASKPASS_SOCK` and
+  `APOTHEOSIS_ASKPASS_TOKEN` in its environment. Shell integration then aliases `sudo` to
+  `sudo -A` in interactive shells only, and only when that environment is present.
+  Scripts, and a `sudo` with no such environment, are untouched. A nested `apoth ssh` or
+  mux link replaces the variables for its own child. Session-daemon panes (T-21) are not
+  armed.
+
+**Routing on Abyss** (ADR 0053, amendment of 2026-11-15). When Abyss is detected (T-17
+§1) and `ec-secret-prompt` is on `PATH`, an accepted request of kind `secret` that is
+not a host-key question goes to `ec-secret-prompt`'s Terminal target instead of the
+sheet. The token and ancestry checks above run first and are unchanged. Host-key
+questions, `confirm` and `none` stay on the sheet. If the prompt cannot be started, the
+sheet is shown.
+- The instance spawns `ec-secret-prompt terminal` directly, so the prompt's parent is the
+  instance. It writes one JSON object of at most 64 KiB to the prompt's stdin and closes
+  it:
+  `{"v":1,"via","verified":{"window","tab","pane","pane_id","in_foreground","ancestry",
+  "pid","exe","uid","euid"},"unverified":{"argv","cwd","prompt","host"}}`.
+  - *Verified* fields are kernel facts the instance read.
+    - `window`, `tab` and `pane` are the titles as the window shows them.
+    - `pane_id` is the pane, or `null` when the armed process is a mux link with no
+      pane.
+    - `in_foreground` is whether the requester's process group is the pane's
+      `tcgetpgrp`.
+    - `ancestry` is the pid chain from the requester to the armed process.
+    - `pid`, `exe` (`null` when the link is unreadable, as for setuid `sudo`), `uid` and
+      `euid` are the requester's. The requester is the askpass client's parent, which is
+      the program that ran it.
+  - *Unverified* fields are what the program supplied. These are its argv from
+    `/proc/<pid>/cmdline` (at most 64 entries and 4096 bytes), its cwd (`null` when
+    unreadable), the prompt (at most 4096 bytes), and the host an `apoth ssh` named
+    (`null` for a pane arming).
+  - Strings are UTF-8 with invalid bytes replaced. The prompt renders them as program
+    text (T-18 §6).
+  - Argv is never logged, persisted or audited.
+- The prompt marks the verified block as verified only when its parent is a live
+  Apotheosis. It holds a pidfd on `getppid()`, reads `/proc/<ppid>/exe` and compares it
+  with `/usr/bin/apotheosis` (in debug builds, an `apotheosis` beside its own binary also
+  passes), and then confirms the pidfd is not yet readable. Otherwise it shows the same
+  facts in the unverified block, with a note that they did not come from Apotheosis.
+- The prompt answers on stdout: one status byte (`0` answered, `1` cancelled), then for
+  `0` the secret (at most 1024 bytes, no newline), then EOF. EOF with no byte means
+  cancelled. The instance forwards the answer to the waiting `apoth askpass` over the
+  armed socket, and it is never stored. When the request is withdrawn (the client or the
+  armed process exits), the instance kills the prompt by the pid it spawned.
+- The prompt shows one `*` per typed character. It opens focused because the user's own
+  command asked for it. The only triggers are an askpass request and the T-17 §5
+  auto-open. `via` (`askpass` or `pty`) tells the prompt which one it is. For `pty` the
+  requester is the pane's foreground group leader, the ancestry ends at the pane's
+  child, `in_foreground` is true by construction, and the prompt text is the cursor's row
+  up to the cursor. That answer is typed into the pane (T-17 §5), not relayed to an
+  askpass client.
 
 ## 4. `SshDomain`
-`domain "name" { ssh "user@host" }` makes spawn/split in that domain run a remote shell
-through the shared master, with cwd inheritance from OSC 7. Hosts can be imported from
-`~/.ssh/config` (non-wildcard `Host` entries) as suggestions in the palette.
+`domain "name" { ssh "user@host"; persist "off|auto|always" }` makes spawn/split in that
+domain run a remote shell through the shared master, with cwd inheritance from OSC 7.
+Hosts can be imported from `~/.ssh/config` (non-wildcard `Host` entries) as suggestions
+in the palette.
+
+Where the domain's panes live is `remote.persist` (T-10), default `auto`, overridden per
+domain by its `persist` child (owner decision 2026-11-14):
+- `off`: local panes running `apoth ssh --hold DEST` (§2). With `sessions.server on`
+  they are panes of the local session daemon (T-21 §3, session `ssh-<domain>` unless
+  `--session` names one), so they outlive the window and its crash like any server pane;
+  without it they are the window's own.
+- `auto`: before the first window, ask the host over the shared master whether it has
+  `apoth` (`command -v apoth`, BatchMode, 5 s). Present ⇒ remote mux (§5); absent or no
+  answer ⇒ `off`, silently.
+- `always`: remote mux, with no probe fallback: a host that answers that it has no `apoth`
+  fails the window with a message naming the host, the missing `apoth`, the setting and
+  the way out (install it with the host's package manager, or `persist "auto"`/`"off"`).
+  No answer (no master yet, a password host) proceeds to the mux link, whose own error
+  is the message.
 
 ## 5. Remote mux
-With the daemon (T-21 §3) installed on the remote by the user's package manager,
-`domain { ssh "host"; mux #true }` runs `apoth proxy` over ssh stdio and attaches with
-the T-21 sync protocol — no listener, no extra port. Version skew rules apply. We do not
-install or download the remote binary.
+With the daemon (T-21 §3) installed on the remote by the user's package manager, a
+domain resolved to remote mux (§4) runs `apoth proxy` over ssh stdio and attaches with
+the T-21 sync protocol — no listener, no extra port; the remote daemon pre-grants
+`apoth proxy` by argv (T-21 §3). Version skew rules apply. We do not install or download
+the remote binary.
 
 ## 6. Test Plan
 Integration tests against a local `sshd` in a container-free user-mode setup

@@ -1,0 +1,10 @@
+fixture "w-ascii-fast-path-mixed" {
+  desc "w ascii fast path mixed (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=1 cols=8
+  feed #"ab世cd"#
+  grid {
+    row "ab世cd"
+  }
+  cursor row=0 col=6
+}

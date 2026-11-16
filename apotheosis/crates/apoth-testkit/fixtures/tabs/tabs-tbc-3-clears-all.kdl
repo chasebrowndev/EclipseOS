@@ -1,0 +1,9 @@
+fixture "tabs-tbc-3-clears-all" {
+  covers "T03-HTS-TBC"
+  size rows=3 cols=20
+  feed #"\e[3g\tX"#
+  grid {
+    row "                   X"
+  }
+  cursor row=0 col=19
+}

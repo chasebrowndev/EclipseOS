@@ -1,0 +1,14 @@
+fixture "mouse-ris-restores-defaults" {
+  desc "RIS returns the mouse and scroll modes to their defaults"
+  covers "T03-MOUSE" "T03-RIS"
+  size rows=2 cols=4
+  feed #"\e[?1000h\e[?1002h\e[?1003h\e[?1006h\e[?1016h\e[?1007l\e[?1010h\e[?1011h\ec"#
+  mode "?1000" 2
+  mode "?1002" 2
+  mode "?1003" 2
+  mode "?1006" 2
+  mode "?1016" 2
+  mode "?1007" 1
+  mode "?1010" 2
+  mode "?1011" 2
+}

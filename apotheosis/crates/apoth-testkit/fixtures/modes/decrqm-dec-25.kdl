@@ -1,0 +1,7 @@
+fixture "decrqm-dec-25" {
+  desc "decrqm dec 25 (migrated from the apoth-term corpus)"
+  covers "T03-DECRQM"
+  size rows=2 cols=4
+  feed #"\e[?25$p"#
+  replies #"\e[?25;1$y"#
+}

@@ -1,0 +1,11 @@
+fixture "decaln-resets-scroll-region" {
+  covers "T03-DECALN" "T03-DECSTBM" "T03-DECRQSS"
+  size rows=3 cols=4
+  feed #"\e[2;3r\e#8\eP$qr\e\\"#
+  grid {
+    row "EEEE"
+    row "EEEE"
+    row "EEEE"
+  }
+  replies #"\eP1$r1;3r\e\\"#
+}

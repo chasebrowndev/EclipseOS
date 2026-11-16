@@ -1,0 +1,8 @@
+fixture "reports-xtgettcap-stops-at-unknown" {
+  desc "names after an unknown one are not processed"
+  covers "T03-XTGETTCAP" "VTCORE-25"
+  size rows=5 cols=10
+  feed #"\eP+q436F;666f6f;5463\e\\"#
+  grid
+  replies #"\eP1+r436F=323536\e\\\eP0+r666F6F\e\\"#
+}

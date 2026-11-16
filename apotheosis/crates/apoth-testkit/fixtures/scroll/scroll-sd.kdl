@@ -1,0 +1,14 @@
+fixture "scroll-sd" {
+  desc "SD scrolls down and feeds no history"
+  covers "T03-SU-SD"
+  size rows=4 cols=4
+  feed #"A\r\nB\r\nC\e[H\e[1T"#
+  grid {
+    row ""
+    row "A"
+    row "B"
+    row "C"
+  }
+  cursor row=0 col=0
+  scrollback
+}

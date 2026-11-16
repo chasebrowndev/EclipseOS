@@ -1,0 +1,11 @@
+fixture "lrm-ri-scrolls-down-within-margins" {
+  covers "T03-DECLRMM" "T03-IND-NEL-RI" "VTCORE-31"
+  size rows=3 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\e[?69h\e[2;4s\e[1;2H\eM"#
+  grid {
+    row "A   EF"
+    row "GBCDKL"
+    row "MHIJQR"
+  }
+  cursor row=0 col=1
+}

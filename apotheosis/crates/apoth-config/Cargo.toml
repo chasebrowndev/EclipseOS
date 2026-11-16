@@ -8,5 +8,19 @@ license = "AGPL-3.0-only"
 repository.workspace = true
 publish = false
 
+[dependencies]
+# Shared schema types (Apache-2.0, no deps). Path dependency into the abyss tree (T-10 §1, ADR 0113).
+ec-config-schema = { path = "../../../abyss/crates/ec-config-schema" }
+# Same major abyss uses (`kdl = "6"`); lossless document model with spans.
+kdl = "6"
+# The Action vocabulary (T-11 §1). Binds, macros, rules and profiles keep their action
+# bodies as `ActionCall`s here; the adapter that resolves them against the registry is the
+# integration step (see CLAUDE.md "Left for integration").
+apoth-action = { path = "../apoth-action" }
+
+# The regex engine the runtime matches with (T-14 §4): config validation compiles each
+# pattern with the same builder so what loads clean also compiles. Pure Rust, no std-only extras.
+regex-automata = { version = "0.4", default-features = false, features = ["std", "syntax", "meta", "unicode"] }
+
 [lints]
 workspace = true

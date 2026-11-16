@@ -1,0 +1,7 @@
+fixture "c0-bs-col0" {
+  desc "c0 bs col0 (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC"
+  size rows=1 cols=5
+  feed #"\b\b"#
+  cursor row=0 col=0
+}

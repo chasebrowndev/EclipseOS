@@ -1,0 +1,9 @@
+fixture "tab-ris-restores-defaults" {
+  desc "tab ris restores defaults (migrated from the apoth-term corpus)"
+  covers "T03-HTS-TBC" "T03-RIS"
+  size rows=1 cols=20
+  feed #"\e[3g\ec\tx"#
+  grid {
+    row "        x"
+  }
+}

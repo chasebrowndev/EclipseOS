@@ -1,0 +1,9 @@
+fixture "w-wide-cursor-after-bs" {
+  desc "w wide cursor after bs (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=1 cols=6
+  feed #"世\b\bx"#
+  grid {
+    row "x"
+  }
+}

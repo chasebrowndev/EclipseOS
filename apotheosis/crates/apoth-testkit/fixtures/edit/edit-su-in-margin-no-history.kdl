@@ -1,0 +1,12 @@
+fixture "edit-su-in-margin-no-history" {
+  desc "edit su in margin no history (migrated from the apoth-term corpus)"
+  covers "T03-SU-SD"
+  size rows=4 cols=3
+  feed #"a\r\nb\r\nc\r\nd\e[2;3r\e[S"#
+  grid {
+    row "a"
+    row "c"
+    row ""
+    row "d"
+  }
+}

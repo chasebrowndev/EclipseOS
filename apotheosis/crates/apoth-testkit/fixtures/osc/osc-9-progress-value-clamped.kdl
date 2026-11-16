@@ -1,0 +1,7 @@
+fixture "osc-9-progress-value-clamped" {
+  desc "osc 9 progress value clamped (migrated from the apoth-term corpus)"
+  covers "T03-OSC9-PROGRESS"
+  size rows=1 cols=8
+  feed #"\e]9;4;1;200\a"#
+  events "progress:1:100"
+}

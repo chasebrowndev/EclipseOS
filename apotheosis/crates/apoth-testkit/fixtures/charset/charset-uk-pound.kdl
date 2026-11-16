@@ -1,0 +1,10 @@
+fixture "charset-uk-pound" {
+  desc "UK national set maps # to a pound sign"
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e(A#\e(B#"#
+  grid {
+    row "£#"
+  }
+  cursor row=0 col=2
+}

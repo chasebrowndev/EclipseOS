@@ -1,0 +1,7 @@
+fixture "osc-99-invalid-base64-dropped" {
+  desc "OSC 99 e=1 with invalid base64 is dropped"
+  covers "T03-OSC99-777"
+  size rows=2 cols=8
+  feed #"\e]99;e=1;!!\a"#
+  events
+}

@@ -1,0 +1,19 @@
+fixture "mode-2048-reports-on-every-resize" {
+  desc "mode 2048 reports after each real resize and not after a no-op resize"
+  covers "T03-MODE-2048"
+  size rows=3 cols=5
+  feed #"\e[?2048h"#
+  checkpoint "set" {
+    replies #"\e[48;3;5;48;40t"#
+  }
+  resize rows=4 cols=6
+  checkpoint "grown" {
+    replies #"\e[48;4;6;64;48t"#
+  }
+  resize rows=4 cols=6
+  checkpoint "same" {
+    replies
+  }
+  resize rows=2 cols=3
+  replies #"\e[48;2;3;32;24t"#
+}

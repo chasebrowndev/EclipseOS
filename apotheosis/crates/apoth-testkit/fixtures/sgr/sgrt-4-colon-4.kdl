@@ -1,0 +1,7 @@
+fixture "sgrt-4-colon-4" {
+  desc "sgrt 4 colon 4 (migrated from the apoth-term corpus)"
+  covers "T03-SGR-AMBIG" "T03-SGR-UNDERLINE"
+  size rows=1 cols=4
+  feed #"\e[4:4mA"#
+  cell row=0 col=0 ul="dotted"
+}

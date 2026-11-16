@@ -1,0 +1,8 @@
+fixture "osc-title-stack-pop-empty" {
+  desc "popping an empty stack does nothing"
+  covers "T03-TITLE-STACK" "VTCORE-22"
+  size rows=3 cols=20
+  feed #"\e[23t\e[23;2t"#
+  grid
+  events
+}

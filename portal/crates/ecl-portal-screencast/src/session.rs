@@ -230,11 +230,13 @@ impl Session {
     }
 
     /// `SelectSources`. Valid once, in `Created`. Defaults follow upstream:
-    /// types = monitor, cursor = hidden, persist = none.
+    /// types = monitor (the request is masked to what the backend supports), cursor = hidden, persist = none.
     pub fn select_sources(&mut self, o: SelectOptions) -> Result<&Selection, SessionError> {
         self.expect(State::Created)?;
-        let types = o.types.unwrap_or(SOURCE_MONITOR);
-        if types == 0 || types & !self.caps.source_types != 0 {
+        // Upstream backends intersect the request with what they can offer
+        // (OBS asks for monitor|window) and refuse only an empty result.
+        let types = o.types.unwrap_or(SOURCE_MONITOR) & self.caps.source_types;
+        if types == 0 {
             return Err(SessionError::InvalidArgument("unsupported source type"));
         }
         let cursor = match o.cursor_mode {
@@ -430,6 +432,10 @@ mod tests {
                 ..Default::default()
             },
             SelectOptions {
+                types: Some(SOURCE_WINDOW | SOURCE_VIRTUAL),
+                ..Default::default()
+            },
+            SelectOptions {
                 cursor_mode: Some(CURSOR_METADATA),
                 ..Default::default()
             },
@@ -448,6 +454,18 @@ mod tests {
             ));
             assert_eq!(s.state(), State::Created, "failed select must not advance");
         }
+    }
+
+    #[test]
+    fn requested_types_are_masked_to_what_is_supported() {
+        let mut s = sess();
+        let sel = s
+            .select_sources(SelectOptions {
+                types: Some(SOURCE_MONITOR | SOURCE_WINDOW),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(sel.types, SOURCE_MONITOR);
     }
 
     #[test]

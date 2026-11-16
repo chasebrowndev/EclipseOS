@@ -66,7 +66,7 @@ wayland-client = "0.31"
 ec-protocols = { path = "../ec-protocols", features = ["client", "server"] }
 # The reference client for eclipse_semantic_v1 publishes through the real
 # publisher (COMP-16 M22).
-ec-cataclysm-pub = { path = "../ec-cataclysm-pub" }
+ec-term-pub = { path = "../ec-term-pub" }
 # Signs test grants for the policy/ tests; abyss itself only verifies.
 ed25519-dalek = "3.0.0"
 wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }

@@ -1,0 +1,9 @@
+fixture "edit-rep-wide" {
+  covers "T03-REP" "T03-WIDE"
+  size rows=2 cols=10
+  feed #"日\e[2b"#
+  grid {
+    row "日日日"
+  }
+  cursor row=0 col=6
+}

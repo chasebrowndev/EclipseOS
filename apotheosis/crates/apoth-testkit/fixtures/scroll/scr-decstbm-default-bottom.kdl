@@ -1,0 +1,12 @@
+fixture "scr-decstbm-default-bottom" {
+  desc "scr decstbm default bottom (migrated from the apoth-term corpus)"
+  covers "T03-DECSTBM"
+  size rows=4 cols=3
+  feed #"a\r\nb\r\nc\r\nd\e[2r\e[4;1H\n"#
+  grid {
+    row "a"
+    row "c"
+    row "d"
+    row ""
+  }
+}

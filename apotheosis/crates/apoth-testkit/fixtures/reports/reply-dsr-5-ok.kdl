@@ -1,0 +1,7 @@
+fixture "reply-dsr-5-ok" {
+  desc "reply dsr 5 ok (migrated from the apoth-term corpus)"
+  covers "T03-DSR"
+  size rows=2 cols=4
+  feed #"\e[5n"#
+  replies #"\e[0n"#
+}

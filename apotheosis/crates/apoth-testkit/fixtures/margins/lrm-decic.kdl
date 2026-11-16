@@ -1,0 +1,12 @@
+fixture "lrm-decic" {
+  desc "DECIC inserts a column in every row of the region"
+  covers "T03-DECIC-DECDC" "VTCORE-31"
+  size rows=3 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\e[?69h\e[2;5s\e[1;3H\e[1'}"#
+  grid {
+    row "AB CDF"
+    row "GH IJL"
+    row "MN OPR"
+  }
+  cursor row=0 col=2
+}

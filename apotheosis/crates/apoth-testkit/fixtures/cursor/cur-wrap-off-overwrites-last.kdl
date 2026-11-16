@@ -1,0 +1,10 @@
+fixture "cur-wrap-off-overwrites-last" {
+  desc "cur wrap off overwrites last (migrated from the apoth-term corpus)"
+  covers "T03-AUTOWRAP"
+  size rows=1 cols=3
+  feed #"\e[?7labcdef"#
+  grid {
+    row "abf"
+  }
+  cursor row=0 col=2
+}

@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-placeholder-virtual" {
+  desc "U=1 makes a virtual placement: OK, no cell box, cursor unchanged (M32)"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e[2;3H\e_Ga=T,f=24,s=2,v=1,i=7,U=1;/wAA/wAA\e\\"#
+  replies #"\e_Gi=7;OK\e\\"#
+  images {
+  }
+  cursor row=1 col=2
+}

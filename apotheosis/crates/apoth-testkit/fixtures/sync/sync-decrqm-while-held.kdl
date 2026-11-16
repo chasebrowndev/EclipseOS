@@ -1,0 +1,7 @@
+fixture "sync-decrqm-while-held" {
+  desc "sync decrqm while held (migrated from the apoth-term corpus)"
+  covers "T03-SYNC-2026"
+  size rows=2 cols=4
+  feed #"\e[?2026h\e[?2026$p"#
+  replies #"\e[?2026;1$y"#
+}

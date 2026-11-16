@@ -1,0 +1,7 @@
+fixture "ris-resets-scroll-region" {
+  covers "T03-RIS" "T03-DECSTBM" "T03-DECRQSS"
+  size rows=5 cols=10
+  feed #"\e[2;3r\ec\eP$qr\e\\"#
+  grid
+  replies #"\eP1$r1;5r\e\\"#
+}

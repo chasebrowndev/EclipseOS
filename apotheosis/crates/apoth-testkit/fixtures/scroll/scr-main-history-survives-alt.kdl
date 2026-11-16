@@ -1,0 +1,10 @@
+fixture "scr-main-history-survives-alt" {
+  desc "scr main history survives alt (migrated from the apoth-term corpus)"
+  covers "T03-SCROLL-HISTORY"
+  size rows=2 cols=3
+  feed #"a\r\nb\r\nc\e[?1049hx\e[?1049l"#
+  grid {
+    row "b"
+    row "c"
+  }
+}

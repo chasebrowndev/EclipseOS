@@ -1,0 +1,9 @@
+fixture "scr-decstbm-invalid-ignored" {
+  desc "scr decstbm invalid ignored (migrated from the apoth-term corpus)"
+  covers "T03-DECSTBM"
+  size rows=4 cols=3
+  feed #"ab\e[3;2rc"#
+  grid {
+    row "abc"
+  }
+}

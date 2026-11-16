@@ -1,0 +1,7 @@
+fixture "sgr-fg-default" {
+  desc "sgr fg default (migrated from the apoth-term corpus)"
+  covers "T03-SGR-BASIC"
+  size rows=1 cols=4
+  feed #"\e[31m\e[39mA"#
+  cell row=0 col=0 fg="default"
+}

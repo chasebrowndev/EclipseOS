@@ -1,0 +1,9 @@
+fixture "cursor-cuu-clamps-top" {
+  covers "T03-CUX"
+  size rows=5 cols=10
+  feed #"\e[2;1H\e[99A*"#
+  grid {
+    row "*"
+  }
+  cursor row=0 col=1
+}

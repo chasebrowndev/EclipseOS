@@ -1,0 +1,12 @@
+fixture "charset-dec-special-box" {
+  desc "DEC Special Graphics box drawing"
+  covers "T03-CHARSET" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e(0lqqk\r\nx  x\r\nmqqj\e(B"#
+  grid {
+    row "┌──┐"
+    row "│  │"
+    row "└──┘"
+  }
+  cursor row=2 col=4
+}

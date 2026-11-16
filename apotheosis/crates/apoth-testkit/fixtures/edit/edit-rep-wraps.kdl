@@ -1,0 +1,10 @@
+fixture "edit-rep-wraps" {
+  covers "T03-REP" "T03-AUTOWRAP"
+  size rows=3 cols=4
+  feed #"A\e[5b"#
+  grid {
+    row "AAAA"
+    row "AA"
+  }
+  cursor row=1 col=2
+}

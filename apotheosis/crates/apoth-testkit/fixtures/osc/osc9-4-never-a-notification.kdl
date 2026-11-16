@@ -1,0 +1,10 @@
+fixture "osc9-4-never-a-notification" {
+  desc "progress is never also shown as notification text"
+  covers "T03-OSC9-PROGRESS" "INTEGRATION-24"
+  size rows=3 cols=20
+  feed #"\e]9;4;1;5\aX"#
+  grid {
+    row "X"
+  }
+  events "progress:1:5"
+}

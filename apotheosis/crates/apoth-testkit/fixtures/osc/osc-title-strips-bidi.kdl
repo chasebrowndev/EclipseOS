@@ -1,0 +1,8 @@
+fixture "osc-title-strips-bidi" {
+  desc "bidi controls are stripped"
+  covers "T03-OSC-TITLE" "VTCORE-28"
+  size rows=3 cols=20
+  feed #"\e]2;a‮b⁦c‏d؜e\a"#
+  grid
+  events "title:abcde"
+}

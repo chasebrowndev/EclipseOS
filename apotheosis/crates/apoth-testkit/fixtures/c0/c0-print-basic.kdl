@@ -1,0 +1,10 @@
+fixture "c0-print-basic" {
+  desc "ASCII run prints and advances the cursor"
+  covers "T03-PRINT" "VTCORE-12"
+  size rows=3 cols=10
+  feed #"Hello"#
+  grid {
+    row "Hello"
+  }
+  cursor row=0 col=5
+}

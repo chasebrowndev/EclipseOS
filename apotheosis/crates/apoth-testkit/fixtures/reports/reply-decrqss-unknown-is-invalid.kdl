@@ -1,0 +1,7 @@
+fixture "reply-decrqss-unknown-is-invalid" {
+  desc "reply decrqss unknown is invalid (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=2 cols=4
+  feed #"\eP$qzz\e\\"#
+  replies #"\eP0$r\e\\"#
+}

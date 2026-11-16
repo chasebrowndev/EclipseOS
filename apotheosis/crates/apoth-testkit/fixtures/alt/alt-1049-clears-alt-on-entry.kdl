@@ -1,0 +1,8 @@
+fixture "alt-1049-clears-alt-on-entry" {
+  covers "T03-ALTSCREEN"
+  size rows=4 cols=6
+  feed #"\e[?1049hX\e[?1049l\e[?1049h"#
+  grid
+  cursor row=0 col=0
+  alt #true
+}

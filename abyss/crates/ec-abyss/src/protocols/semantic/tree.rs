@@ -60,7 +60,7 @@ pub const FALLBACK_SIZE: (i32, i32) = (16_384, 16_384);
 /// S-05 §5 `downgrade_grace`, from the TCB constant.
 pub const GRACE: Duration = crate::policy::classes::DOWNGRADE_GRACE;
 
-/// P-01 §1.1 codes (the order in the protocol XML and in `ec-cataclysm-pub`).
+/// P-01 §1.1 codes (the order in the protocol XML and in `ec-term-pub`).
 pub const ROLE_PASSWORD: u32 = 30;
 pub const ROLE_UNKNOWN: u32 = 57;
 /// P-01 §1.2: 23 states; bit `n` is state code `n`.

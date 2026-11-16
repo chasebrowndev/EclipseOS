@@ -1,0 +1,8 @@
+fixture "reports-xtgettcap-rgb" {
+  desc "RGB = 8/8/8"
+  covers "T03-XTGETTCAP" "VTCORE-25"
+  size rows=5 cols=10
+  feed #"\eP+q524742\e\\"#
+  grid
+  replies #"\eP1+r524742=382F382F38\e\\"#
+}

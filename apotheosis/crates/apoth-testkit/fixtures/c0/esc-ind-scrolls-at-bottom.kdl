@@ -1,0 +1,9 @@
+fixture "esc-ind-scrolls-at-bottom" {
+  desc "esc ind scrolls at bottom (migrated from the apoth-term corpus)"
+  covers "T03-IND-NEL-RI"
+  size rows=2 cols=2
+  feed #"a\r\nb\eD"#
+  grid {
+    row "b"
+  }
+}

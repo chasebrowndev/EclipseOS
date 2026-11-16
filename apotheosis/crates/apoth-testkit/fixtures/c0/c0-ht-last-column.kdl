@@ -1,0 +1,10 @@
+fixture "c0-ht-last-column" {
+  desc "c0 ht last column (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC"
+  size rows=1 cols=10
+  feed #"\t\t\tX"#
+  grid {
+    row "         X"
+  }
+  cursor row=0 col=9
+}

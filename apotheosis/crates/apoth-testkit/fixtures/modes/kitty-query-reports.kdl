@@ -1,0 +1,7 @@
+fixture "kitty-query-reports" {
+  desc "kitty query reports (migrated from the apoth-term corpus)"
+  covers "T03-KITTY-KBD-STACK"
+  size rows=2 cols=4
+  feed #"\e[>5u\e[?u"#
+  replies #"\e[?5u"#
+}

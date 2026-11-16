@@ -1,0 +1,13 @@
+fixture "sync-timeout-from-first-bsu" {
+  desc "a repeated BSU does not restart the timer"
+  covers "T03-SYNC-2026" "VTCORE-17"
+  size rows=3 cols=10
+  feed #"\e[?2026h"# at=0
+  feed #"\e[?2026h"# at=800
+  checkpoint "still-held" {
+    hold #true
+  }
+  feed #""# at=1001
+  grid
+  hold #false
+}

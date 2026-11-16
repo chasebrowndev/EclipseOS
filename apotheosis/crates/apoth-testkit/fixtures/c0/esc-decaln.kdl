@@ -1,0 +1,11 @@
+fixture "esc-decaln" {
+  desc "esc decaln (migrated from the apoth-term corpus)"
+  covers "T03-DECALN"
+  size rows=2 cols=3
+  feed #"\e#8"#
+  grid {
+    row "EEE"
+    row "EEE"
+  }
+  cursor row=0 col=0
+}

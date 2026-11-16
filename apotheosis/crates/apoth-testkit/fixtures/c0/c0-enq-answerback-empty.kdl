@@ -1,0 +1,11 @@
+fixture "c0-enq-answerback-empty" {
+  desc "ENQ answerback is empty (T-18 section 2)"
+  covers "T03-C0-ENQ" "VTCORE-14"
+  size rows=3 cols=10
+  feed #"A\x05B"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+  replies
+}

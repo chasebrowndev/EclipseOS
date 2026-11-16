@@ -1,0 +1,13 @@
+fixture "edit-il-outside-region-ignored" {
+  desc "IL with the cursor outside the region does nothing and does not move the cursor"
+  covers "T03-IL-DL" "T03-DECSTBM"
+  size rows=4 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\r\nSTUVWX\e[2;3r\e[4;1H\e[L"#
+  grid {
+    row "ABCDEF"
+    row "GHIJKL"
+    row "MNOPQR"
+    row "STUVWX"
+  }
+  cursor row=3 col=0
+}

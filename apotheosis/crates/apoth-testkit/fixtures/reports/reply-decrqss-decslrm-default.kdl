@@ -1,0 +1,7 @@
+fixture "reply-decrqss-decslrm-default" {
+  desc "reply decrqss decslrm default (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=5 cols=10
+  feed #"\eP$qs\e\\"#
+  replies #"\eP1$r1;10s\e\\"#
+}

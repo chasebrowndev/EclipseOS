@@ -1,0 +1,10 @@
+fixture "c0-print-all-printable-ascii" {
+  desc "every printable ASCII character prints as itself"
+  covers "T03-PRINT" "VTCORE-12"
+  size rows=2 cols=100
+  feed ##" !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"##
+  grid {
+    row " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
+  }
+  cursor row=0 col=95
+}

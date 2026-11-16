@@ -1,0 +1,11 @@
+fixture "cur-cnl" {
+  desc "cur cnl (migrated from the apoth-term corpus)"
+  covers "T03-CUX"
+  size rows=5 cols=10
+  feed #"ab\e[2Ex"#
+  grid {
+    row "ab"
+    row ""
+    row "x"
+  }
+}

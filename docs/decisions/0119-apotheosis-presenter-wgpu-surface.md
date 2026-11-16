@@ -18,3 +18,5 @@ Full-surface damage is reported for frames that are presented; the `IDLE`, `IDLE
 
 ## Revisit when
 The power budgets cannot be met, wgpu stabilises a damage-aware present, or wgpu exposes explicit present timing or damage/partial present (M38).
+
+M38 (2026-11-15): checked against wgpu 30.0.2. It exposes neither partial present nor present timing (only `VK_GOOGLE_display_timing` through the hal escape hatch, not `VK_EXT_present_timing`), so no second presenter was built; the compositor's own damage tracking covers it. Revisit on the next wgpu bump.

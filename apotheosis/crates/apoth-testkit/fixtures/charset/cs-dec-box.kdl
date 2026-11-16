@@ -1,0 +1,11 @@
+fixture "cs-dec-box" {
+  desc "cs dec box (migrated from the apoth-term corpus)"
+  covers "T03-CHARSET"
+  size rows=3 cols=4
+  feed #"\e(0lqk\r\nx x\r\nmqj"#
+  grid {
+    row "┌─┐"
+    row "│ │"
+    row "└─┘"
+  }
+}

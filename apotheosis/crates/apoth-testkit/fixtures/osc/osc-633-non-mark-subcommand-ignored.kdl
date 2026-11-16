@@ -1,0 +1,7 @@
+fixture "osc-633-non-mark-subcommand-ignored" {
+  desc "osc 633 E (command line) is not a mark and is ignored"
+  covers "T03-OSC133"
+  size rows=3 cols=8
+  feed #"\e]633;E;ls\a"#
+  events
+}

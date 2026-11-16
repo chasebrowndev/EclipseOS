@@ -1,0 +1,10 @@
+fixture "esc-decsc-saves-origin" {
+  desc "esc decsc saves origin (migrated from the apoth-term corpus)"
+  covers "T03-DECSC"
+  size rows=5 cols=5
+  feed #"\e[2;4r\e[?6h\e7\e[?6l\e8\e[1;1Hx"#
+  grid {
+    row ""
+    row "x"
+  }
+}

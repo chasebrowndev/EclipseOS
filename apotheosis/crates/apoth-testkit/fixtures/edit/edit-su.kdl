@@ -1,0 +1,11 @@
+fixture "edit-su" {
+  desc "edit su (migrated from the apoth-term corpus)"
+  covers "T03-SU-SD"
+  size rows=3 cols=3
+  feed #"a\r\nb\r\nc\e[S"#
+  grid {
+    row "b"
+    row "c"
+    row ""
+  }
+}

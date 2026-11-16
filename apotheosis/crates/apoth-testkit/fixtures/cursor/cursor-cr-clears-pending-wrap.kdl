@@ -1,0 +1,9 @@
+fixture "cursor-cr-clears-pending-wrap" {
+  covers "T03-AUTOWRAP" "T03-C0-EXEC"
+  size rows=5 cols=10
+  feed #"0123456789\rX"#
+  grid {
+    row "X123456789"
+  }
+  cursor row=0 col=1
+}

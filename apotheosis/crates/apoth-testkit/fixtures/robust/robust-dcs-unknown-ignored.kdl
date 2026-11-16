@@ -1,0 +1,10 @@
+fixture "robust-dcs-unknown-ignored" {
+  covers "T03-SEQ-ROBUST"
+  size rows=3 cols=10
+  feed #"\eP1;2;3zpayload\e\\X"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  replies
+}

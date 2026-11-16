@@ -1,0 +1,7 @@
+fixture "erase-el1-cuts-wide-at-edge" {
+  covers "T03-EL" "T03-WIDE" "VTCORE-08"
+  size rows=2 cols=6
+  feed #"ABCD日\e[1;5H\e[1K"#
+  grid
+  cursor row=0 col=4
+}

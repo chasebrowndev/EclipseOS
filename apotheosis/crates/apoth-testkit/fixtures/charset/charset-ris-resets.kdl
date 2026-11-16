@@ -1,0 +1,9 @@
+fixture "charset-ris-resets" {
+  covers "T03-CHARSET" "T03-RIS" "UNICODE-11"
+  size rows=3 cols=40
+  feed #"\e(0\ecq"#
+  grid {
+    row "q"
+  }
+  cursor row=0 col=1
+}

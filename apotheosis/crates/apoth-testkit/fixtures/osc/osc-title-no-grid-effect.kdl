@@ -1,0 +1,9 @@
+fixture "osc-title-no-grid-effect" {
+  covers "T03-OSC-TITLE" "VTCORE-28"
+  size rows=3 cols=20
+  feed #"\e]2;t\aX"#
+  grid {
+    row "X"
+  }
+  events "title:t"
+}

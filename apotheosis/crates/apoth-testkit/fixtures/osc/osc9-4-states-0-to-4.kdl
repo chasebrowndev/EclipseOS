@@ -1,0 +1,25 @@
+fixture "osc9-4-states-0-to-4" {
+  desc "states 0..4"
+  covers "T03-OSC9-PROGRESS" "INTEGRATION-24"
+  size rows=3 cols=20
+  feed #"\e]9;4;0;0\a"#
+  checkpoint "s0" {
+    events "progress:0:0"
+  }
+  feed #"\e]9;4;1;10\a"#
+  checkpoint "s1" {
+    events "progress:1:10"
+  }
+  feed #"\e]9;4;2;20\a"#
+  checkpoint "s2" {
+    events "progress:2:20"
+  }
+  feed #"\e]9;4;3;0\a"#
+  checkpoint "s3" {
+    events "progress:3:0"
+  }
+  feed #"\e]9;4;4;30\a"#
+  checkpoint "s4" {
+    events "progress:4:30"
+  }
+}

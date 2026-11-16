@@ -1,0 +1,9 @@
+fixture "resize-resets-margins" {
+  desc "resize resets margins (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=4 cols=3
+  feed #"\e[2;3r"#
+  resize rows=5 cols=3
+  feed #"\eP$qr\e\\"#
+  replies #"\eP1$r1;5r\e\\"#
+}

@@ -1,0 +1,9 @@
+fixture "c0-so-si" {
+  desc "c0 so si (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC" "T03-CHARSET"
+  size rows=1 cols=8
+  feed #"\e(0\x0elq\x0fq"#
+  grid {
+    row "lq─"
+  }
+}

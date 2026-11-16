@@ -1,0 +1,11 @@
+fixture "c1-osc-not-ended-by-raw-9c" {
+  covers "T03-C1-IGNORED" "T03-OSC-TITLE"
+  review "title text of a raw 0x9C inside an OSC payload: lossy U+FFFD assumed; T-03 section 3.1 does not say how invalid UTF-8 in a title is decoded"
+  size rows=3 cols=10
+  feed #"\e]2;t\x9cX\aY"#
+  grid {
+    row "Y"
+  }
+  cursor row=0 col=1
+  events "title:t�X"
+}

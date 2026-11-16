@@ -1,0 +1,12 @@
+fixture "osc133-l-fresh-line" {
+  desc "OSC 133 L outside column 0 performs CR LF and raises no mark"
+  covers "T03-OSC133-OPTS" "SHELLINTEGRATION-05" "T14-133-L"
+  size rows=3 cols=20
+  feed #"abc\e]133;L\aX"#
+  grid {
+    row "abc"
+    row "X"
+  }
+  cursor row=1 col=1
+  events
+}

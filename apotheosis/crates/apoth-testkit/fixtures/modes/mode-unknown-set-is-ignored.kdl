@@ -1,0 +1,7 @@
+fixture "mode-unknown-set-is-ignored" {
+  desc "mode unknown set is ignored (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?9999h"#
+  mode "?9999" 0
+}

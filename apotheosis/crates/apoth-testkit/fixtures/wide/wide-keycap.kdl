@@ -1,0 +1,11 @@
+fixture "wide-keycap" {
+  desc "digit + VS16 + combining enclosing keycap"
+  covers "T03-GRAPHEME" "UNICODE-07"
+  review "keycap sequence width (2) follows the common emoji-presentation reading; T-04 gives no keycap row"
+  size rows=2 cols=10
+  feed #"1️⃣X"#
+  grid {
+    row "1️⃣X"
+  }
+  cursor row=0 col=3
+}

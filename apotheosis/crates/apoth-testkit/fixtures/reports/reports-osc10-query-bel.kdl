@@ -1,0 +1,8 @@
+fixture "reports-osc10-query-bel" {
+  covers "T03-OSC-COLOR" "T03-REPLY-TERMINATOR" "VTCORE-26" "VTCORE-27"
+  review "see reports-osc4-query-bel"
+  size rows=5 cols=10
+  feed #"\e]10;rgb:ff/00/00\a\e]10;?\a"#
+  grid
+  replies #"\e]10;rgb:ffff/0000/0000\a"#
+}

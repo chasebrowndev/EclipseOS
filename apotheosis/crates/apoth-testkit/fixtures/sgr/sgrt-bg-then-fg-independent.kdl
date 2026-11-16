@@ -1,0 +1,7 @@
+fixture "sgrt-bg-then-fg-independent" {
+  desc "sgrt bg then fg independent (migrated from the apoth-term corpus)"
+  covers "T03-SGR-AMBIG" "T03-SGR-COLOR"
+  size rows=1 cols=4
+  feed #"\e[48;5;1;38;5;2mA"#
+  cell row=0 col=0 bg="p1" fg="p2"
+}

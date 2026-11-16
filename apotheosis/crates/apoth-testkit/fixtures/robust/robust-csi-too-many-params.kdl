@@ -1,0 +1,10 @@
+fixture "robust-csi-too-many-params" {
+  desc "more than 64 parameters: no crash, the text after still prints"
+  covers "T03-SEQ-ROBUST" "VTCORE-58"
+  size rows=3 cols=10
+  feed #"\e[1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1;1mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+}

@@ -1,0 +1,8 @@
+fixture "el-bce" {
+  desc "el bce (migrated from the apoth-term corpus)"
+  covers "T03-EL"
+  size rows=1 cols=4
+  feed #"\e[42m\e[2K"#
+  cell row=0 col=0 bg="p2"
+  cell row=0 col=3 bg="p2"
+}

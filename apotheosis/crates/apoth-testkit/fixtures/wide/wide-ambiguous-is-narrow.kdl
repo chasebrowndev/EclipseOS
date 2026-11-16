@@ -1,0 +1,10 @@
+fixture "wide-ambiguous-is-narrow" {
+  desc "East Asian Ambiguous is narrow by default (T-04 section 3)"
+  covers "T03-WIDE" "UNICODE-07"
+  size rows=2 cols=10
+  feed #"±★─"#
+  grid {
+    row "±★─"
+  }
+  cursor row=0 col=3
+}

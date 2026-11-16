@@ -1,0 +1,9 @@
+fixture "lrm-dch-within-margins" {
+  covers "T03-DECLRMM" "T03-ICH-DCH" "VTCORE-31"
+  size rows=2 cols=6
+  feed #"ABCDEF\e[?69h\e[2;5s\e[1;2H\e[P"#
+  grid {
+    row "ACDE F"
+  }
+  cursor row=0 col=1
+}

@@ -1,0 +1,7 @@
+fixture "reply-decrqss-decsca-is-invalid" {
+  desc "reply decrqss decsca is invalid (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=2 cols=4
+  feed #"\eP$q\"q\e\\"#
+  replies #"\eP0$r\e\\"#
+}

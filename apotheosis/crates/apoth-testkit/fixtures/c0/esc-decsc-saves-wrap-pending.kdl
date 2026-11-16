@@ -1,0 +1,10 @@
+fixture "esc-decsc-saves-wrap-pending" {
+  desc "esc decsc saves wrap pending (migrated from the apoth-term corpus)"
+  covers "T03-DECSC"
+  size rows=2 cols=3
+  feed #"abc\e7\rX\e8Y"#
+  grid {
+    row "Xbc"
+    row "Y"
+  }
+}

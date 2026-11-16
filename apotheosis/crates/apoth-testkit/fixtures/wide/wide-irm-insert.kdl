@@ -1,0 +1,9 @@
+fixture "wide-irm-insert" {
+  covers "T03-WIDE" "T03-IRM"
+  size rows=2 cols=6
+  feed #"AB\e[1;1H\e[4h日"#
+  grid {
+    row "日AB"
+  }
+  cursor row=0 col=2
+}

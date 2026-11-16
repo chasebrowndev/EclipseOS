@@ -1,0 +1,9 @@
+fixture "reports-decrqm-never-modes" {
+  desc "DECSCLM (smooth scroll) is a Never item"
+  covers "T03-DECRQM" "T03-NEVER"
+  review "DECRQM answer for a Never mode (4, permanently reset) is assumed; T-03 only says consumed and ignored"
+  size rows=5 cols=10
+  feed #"\e[?4$p"#
+  grid
+  replies #"\e[?4;4$y"#
+}

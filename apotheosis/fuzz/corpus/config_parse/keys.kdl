@@ -1,0 +1,8 @@
+version 1
+keys {
+    bind "ctrl+shift+f" "search.start"
+    bind "ctrl+shift+o" "hints.start" kinds="url"
+}
+key-table "copy-mode" {
+    bind "y" "copy-mode.copy"
+}

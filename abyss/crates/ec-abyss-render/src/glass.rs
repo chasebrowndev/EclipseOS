@@ -213,6 +213,40 @@ pub struct Look {
     pub rim: f32,
     pub lift: f32,
     pub shade: f32,
+    /// Weight of the glass smoke and adaptive tint; 1.0 except when stacked.
+    pub smoke: f32,
+}
+
+/// Stacked glass: a pane whose backdrop already holds a window's own smoked
+/// glass (a sheet over a glass window, a chip on its bezel). Smoking it again
+/// at full weight darkens two layers into one slab, and the text under it
+/// disappears. So it keeps the blur, takes a fraction of the smoke and
+/// adaptive tint, and reads as raised by a small white lift, a firmer rim
+/// and the contact shadow instead of by being darker.
+pub const STACKED_SMOKE: f32 = 0.45;
+/// Light glass is a veil already; it thins further so the frosted text under
+/// the sheet stays readable against the window's own whitening.
+pub const STACKED_SMOKE_LIGHT: f32 = 0.35;
+/// White lift added on dark glass (light glass takes none: white on frost
+/// lifts nothing, STYLE.md Light).
+pub const STACKED_LIFT: f32 = 0.018;
+/// Rim multiplier: the hairline is what separates the two layers.
+pub const STACKED_RIM: f32 = 1.3;
+
+impl Look {
+    /// This look on glass laid over a window's own glass.
+    pub fn stacked(self, light: bool, alpha: u8) -> Look {
+        Look {
+            rim: self.rim * STACKED_RIM,
+            lift: if light {
+                self.lift
+            } else {
+                self.lift + STACKED_LIFT * alpha as f32 / 255.0
+            },
+            shade: self.shade,
+            smoke: if light { STACKED_SMOKE_LIGHT } else { STACKED_SMOKE },
+        }
+    }
 }
 
 /// The look of `pane`, or `None` when it draws nothing (latent at rest, or
@@ -264,7 +298,15 @@ pub fn look(pane: &Pane, light: bool) -> Option<Look> {
         rim: rim * a,
         lift: lift * a,
         shade: shade * a,
+        smoke: 1.0,
     })
+}
+
+/// [`look`] for a pane on glass that is already a window's (see
+/// [`STACKED_SMOKE`]), or on bare backdrop when `stacked` is false.
+pub fn look_on(pane: &Pane, light: bool, stacked: bool) -> Option<Look> {
+    let l = look(pane, light)?;
+    Some(if stacked { l.stacked(light, pane.alpha) } else { l })
 }
 
 /// The pane's box in output-local physical pixels, clipped to the surface
@@ -615,5 +657,30 @@ mod tests {
         let [r, g, b] = light.shadow_rgb();
         assert!(r > g && g > b && r < 0.3, "{:?}", [r, g, b]);
         assert_eq!(ec_abyss_config::Appearance::default().shadow_rgb(), [0.0; 3]);
+    }
+
+    #[test]
+    fn stacked_glass_keeps_the_rim_and_thins_the_smoke() {
+        for light in [false, true] {
+            let p = pane(Tone::Plain, 0, 255);
+            let flat = look_on(&p, light, false).unwrap();
+            assert_eq!(flat, look(&p, light).unwrap());
+            assert_eq!(flat.smoke, 1.0);
+            let st = look_on(&p, light, true).unwrap();
+            assert!(st.smoke < 0.6 && st.smoke > 0.0, "weaker, not gone");
+            assert!(st.rim > flat.rim, "the rim separates the two layers");
+            assert_eq!(st.shade, flat.shade);
+            assert_eq!(st.lift > flat.lift, !light, "white lift on dark only");
+        }
+    }
+
+    #[test]
+    fn stacked_look_follows_alpha_and_never_draws_latent_panes() {
+        let half = pane(Tone::Plain, 0, 128);
+        let a = look_on(&half, false, true).unwrap();
+        let full = look_on(&pane(Tone::Plain, 0, 255), false, true).unwrap();
+        assert!(a.lift < full.lift && a.lift > 0.0);
+        assert_eq!(look_on(&pane(Tone::Latent, 0, 255), false, true), None);
+        assert_eq!(look_on(&pane(Tone::Plain, 0, 0), false, true), None);
     }
 }

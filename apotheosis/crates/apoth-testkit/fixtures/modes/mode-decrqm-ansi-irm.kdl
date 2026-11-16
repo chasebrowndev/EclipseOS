@@ -1,0 +1,7 @@
+fixture "mode-decrqm-ansi-irm" {
+  desc "mode decrqm ansi irm (migrated from the apoth-term corpus)"
+  covers "T03-DECRQM"
+  size rows=2 cols=4
+  feed #"\e[4h\e[4$p"#
+  replies #"\e[4;1$y"#
+}

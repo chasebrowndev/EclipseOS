@@ -1,0 +1,7 @@
+fixture "osc-9-notification" {
+  desc "osc 9 notification (migrated from the apoth-term corpus)"
+  covers "T03-OSC9-NOTIFY"
+  size rows=1 cols=8
+  feed #"\e]9;hello\a"#
+  events "notify:hello"
+}

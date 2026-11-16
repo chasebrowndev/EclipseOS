@@ -1,0 +1,10 @@
+fixture "wrap-exact-fit-no-wrap" {
+  desc "filling the row does not wrap until the next print (pending wrap)"
+  covers "T03-AUTOWRAP" "T03-DECAWM"
+  size rows=3 cols=5
+  feed #"ABCDE"#
+  grid {
+    row "ABCDE"
+  }
+  cursor row=0 col=4
+}

@@ -1,0 +1,14 @@
+fixture "wide-basic" {
+  desc "a wide glyph is a head cell and a spacer tail"
+  covers "T03-WIDE" "VTCORE-08"
+  size rows=3 cols=10
+  feed #"日本"#
+  grid {
+    row "日本"
+  }
+  cursor row=0 col=4
+  cell row=0 col=0 ch="日" wide="wide"
+  cell row=0 col=1 ch="" wide="tail"
+  cell row=0 col=2 ch="本" wide="wide"
+  cell row=0 col=3 wide="tail"
+}

@@ -1,0 +1,11 @@
+fixture "esc-ris" {
+  desc "esc ris (migrated from the apoth-term corpus)"
+  covers "T03-IND-NEL-RI"
+  size rows=3 cols=5
+  feed #"abc\e[1m\e[2;2H\ecX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 attrs=""
+}

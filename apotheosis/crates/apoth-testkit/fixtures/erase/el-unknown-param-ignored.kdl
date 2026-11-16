@@ -1,0 +1,9 @@
+fixture "el-unknown-param-ignored" {
+  desc "el unknown param ignored (migrated from the apoth-term corpus)"
+  covers "T03-EL"
+  size rows=1 cols=4
+  feed #"xyz\e[7K"#
+  grid {
+    row "xyz"
+  }
+}

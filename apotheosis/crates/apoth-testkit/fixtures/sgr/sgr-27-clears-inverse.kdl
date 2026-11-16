@@ -1,0 +1,7 @@
+fixture "sgr-27-clears-inverse" {
+  desc "sgr 27 clears inverse (migrated from the apoth-term corpus)"
+  covers "T03-SGR-BASIC"
+  size rows=1 cols=4
+  feed #"\e[7m\e[27mA"#
+  cell row=0 col=0 attrs=""
+}

@@ -1,0 +1,11 @@
+fixture "lr-il-honours-margins" {
+  desc "lr il honours margins (migrated from the apoth-term corpus)"
+  covers "T03-DECLRMM"
+  size rows=3 cols=6
+  feed #"abcdef\r\nghijkl\r\nmnopqr\e[?69h\e[2;4s\e[?6h\e[1;1H\e[L"#
+  grid {
+    row "a   ef"
+    row "gbcdkl"
+    row "mhijqr"
+  }
+}

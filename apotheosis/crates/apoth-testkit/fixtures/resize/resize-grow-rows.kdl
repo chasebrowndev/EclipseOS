@@ -1,0 +1,15 @@
+fixture "resize-grow-rows" {
+  covers "T03-RESIZE"
+  size rows=3 cols=5
+  feed #"A\r\nB\r\nC"#
+  resize rows=5 cols=5
+  feed #"\e[5;1H*"#
+  grid {
+    row "A"
+    row "B"
+    row "C"
+    row ""
+    row "*"
+  }
+  cursor row=4 col=1
+}

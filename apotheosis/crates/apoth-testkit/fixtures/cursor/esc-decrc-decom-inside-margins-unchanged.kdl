@@ -1,0 +1,7 @@
+fixture "esc-decrc-decom-inside-margins-unchanged" {
+  desc "DECRC under DECOM inside the margins restores the saved position exactly"
+  covers "T03-DECOM" "T03-DECSC"
+  size rows=6 cols=10
+  feed #"\e[2;5r\e[?6h\e[2;4H\e7\e[1;1H\e8"#
+  cursor row=2 col=3
+}

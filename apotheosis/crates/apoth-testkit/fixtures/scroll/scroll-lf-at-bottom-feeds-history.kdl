@@ -1,0 +1,14 @@
+fixture "scroll-lf-at-bottom-feeds-history" {
+  covers "T03-SCROLL-HISTORY" "VTCORE-15"
+  size rows=3 cols=4
+  feed #"1\r\n2\r\n3\r\n4"#
+  grid {
+    row "2"
+    row "3"
+    row "4"
+  }
+  cursor row=2 col=1
+  scrollback {
+    row "1"
+  }
+}

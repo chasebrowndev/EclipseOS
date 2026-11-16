@@ -1,0 +1,12 @@
+fixture "alt-1048-save-restore" {
+  desc "1048 only saves and restores the cursor"
+  covers "T03-ALTSCREEN"
+  size rows=4 cols=6
+  feed #"\e[2;3H\e[?1048h\e[4;5H\e[?1048l*"#
+  grid {
+    row ""
+    row "  *"
+  }
+  cursor row=1 col=3
+  alt #false
+}

@@ -1,0 +1,9 @@
+fixture "osc-color-two-queries-in-one-osc4" {
+  desc "several index;spec pairs in one OSC 4"
+  covers "T03-OSC-COLOR" "VTCORE-27"
+  review "one reply per queried index is assumed; T-03 does not say"
+  size rows=3 cols=20
+  feed #"\e]4;1;rgb:ff/00/00;2;#00ff00\a\e]4;1;?;2;?\a"#
+  grid
+  replies #"\e]4;1;rgb:ffff/0000/0000\a\e]4;2;rgb:0000/ffff/0000\a"#
+}

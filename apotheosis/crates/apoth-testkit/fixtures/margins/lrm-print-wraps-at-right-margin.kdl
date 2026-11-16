@@ -1,0 +1,11 @@
+fixture "lrm-print-wraps-at-right-margin" {
+  desc "autowrap goes to the left margin of the next row"
+  covers "T03-DECLRMM" "VTCORE-31"
+  size rows=3 cols=8
+  feed #"\e[?69h\e[3;6s\e[1;3HABCDEF"#
+  grid {
+    row "  ABCD"
+    row "  EF"
+  }
+  cursor row=1 col=4
+}
