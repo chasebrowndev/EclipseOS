@@ -12,7 +12,7 @@
 pkgbase=eclipseos
 pkgname=(eclipseos-abyss eclipseos-hyperion eclipseos-toasts eclipseos-wallpaper
          eclipseos-launcher eclipseos-desktop eclipseos-agents eclipseos-setup eclipseos-fog eclipseos-anim-pack
-         eclipseos-steam-glass eclipseos-firefox-glass eclipseos-greeter eclipseos-portal eclipseos-meta)
+         eclipseos-steam-glass eclipseos-firefox-glass eclipseos-greeter eclipseos-portal eclipseos-apotheosis eclipseos-meta)
 pkgver=0.2.2
 pkgrel=1
 pkgdesc="EclipseOS — agent-first Wayland desktop"
@@ -22,7 +22,9 @@ arch=(x86_64)
 options=(!lto)
 url="https://github.com/chasebrowndev/EclipseOS"
 license=(AGPL-3.0-only)
-makedepends=(git rust cargo pkgconf clang libpipewire)
+# nasm assembles rav1d's x86-64 asm for apoth-media (ADR 0118): build time only.
+# ncurses brings tic, which compiles Apotheosis's terminfo entries.
+makedepends=(git rust cargo pkgconf clang libpipewire nasm ncurses)
 depends=(wayland libxkbcommon libinput libdrm libdisplay-info mesa seatd)
 source=("git+https://github.com/chasebrowndev/EclipseOS.git#tag=v$pkgver")
 sha256sums=('SKIP')
@@ -41,6 +43,10 @@ build() {
   cargo build --release --bins --locked -p ec-fog-daemon -p ec-fog-ui
   # The desktop portal (D-08): ScreenCast/Screenshot over PipeWire.
   (cd "$srcdir/$_src/portal" && cargo build --release --bins --locked)
+  # Apotheosis (T-24): the terminal, its CLI and the sandboxed media helper. av1-asm is
+  # on here and nowhere else.
+  (cd "$srcdir/$_src/apotheosis" && cargo build --release --bins --locked \
+    -p apotheosis -p apoth -p apoth-media --features apoth-media/av1-asm)
 }
 
 check() {
@@ -130,6 +136,21 @@ package_eclipseos-wallpaper() {
   _bin ec-wallpaper
   _unit ec-wallpaper.service
   # Not wanted by abyss-session.target: abyss draws the wallpaper (ADR 0104).
+}
+
+package_eclipseos-apotheosis() {
+  pkgdesc="Apotheosis, the EclipseOS glass terminal"
+  depends=(wayland libxkbcommon vulkan-icd-loader mesa pipewire-pulse)
+  optdepends=('eclipseos-abyss: glass, theme and semantic publishing on EclipseOS')
+
+  for b in apotheosis apoth apoth-media-helper; do _bin "$b"; done
+  install -Dm0644 "$srcdir/$_src/apotheosis/packaging/org.eclipseos.Apotheosis.desktop" \
+    "$pkgdir/usr/share/applications/org.eclipseos.Apotheosis.desktop"
+  install -Dm0644 "$srcdir/$_src/apotheosis/packaging/org.eclipseos.Apotheosis.svg" \
+    "$pkgdir/usr/share/icons/hicolor/scalable/apps/org.eclipseos.Apotheosis.svg"
+  # xterm-apotheosis and xterm-apotheosis-direct (T-19 §1), compiled from the Rust table.
+  install -d "$pkgdir/usr/share/terminfo"
+  "$srcdir/target/release/apoth" terminfo | tic -x -o "$pkgdir/usr/share/terminfo" -
 }
 
 package_eclipseos-launcher() {
@@ -393,9 +414,10 @@ package_eclipseos-portal() {
 
 package_eclipseos-meta() {
   pkgdesc="EclipseOS base system (D-01 §1)"
+  replaces=(eclipseos-center)  # the notification centre was removed in 0.3.0
   arch=(any)  # config and dependencies only, no ELF
   depends=(eclipseos-abyss eclipseos-toasts eclipseos-wallpaper
-           eclipseos-launcher eclipseos-desktop eclipseos-fog eclipseos-greeter
+           eclipseos-launcher eclipseos-desktop eclipseos-fog eclipseos-greeter eclipseos-apotheosis
            networkmanager bluez bluez-utils upower pipewire pipewire-pulse wireplumber
            foot xdg-user-dirs brightnessctl playerctl)
   # Add-ons (ADR 0066): suggested, not required. The session starts without
