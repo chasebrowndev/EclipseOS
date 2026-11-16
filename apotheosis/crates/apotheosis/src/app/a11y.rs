@@ -83,6 +83,7 @@ impl App {
             apoth_ui::palette::Marker::Switch(on) => {
                 label.push_str(if on { ", on" } else { ", off" });
             }
+            apoth_ui::palette::Marker::Submenu => label.push_str(", submenu"),
             apoth_ui::palette::Marker::None => {}
         }
         if disabled {
@@ -319,7 +320,12 @@ impl App {
             BarModel {
                 headline: o.spec.headline.text.clone(),
                 detail: o.spec.detail.as_ref().map(|d| d.text.clone()),
-                body: o.spec.body.as_ref().map(|b| b.text.clone()),
+                // The askpass field is protected: not published (T-22 §3).
+                body: if self.remote_ui.sheet.is_some() {
+                    None
+                } else {
+                    o.spec.body.as_ref().map(|b| b.text.clone())
+                },
                 alert: o.spec.kind == BarKind::Error,
                 buttons: o
                     .spec

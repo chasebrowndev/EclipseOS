@@ -256,3 +256,168 @@ fn sandboxed_pixel_decoder_matches_in_process_and_fails_closed() {
         Sandboxed::with_helper(bin().to_path_buf(), vec!["--test-partial-landlock".into()]);
     assert!(broken.png(PNG, &l).is_err());
 }
+
+/// `bytes` in a memfd at offset 0.
+fn memfd_of(bytes: &[u8], seal: bool) -> OwnedFd {
+    use rustix::fs::MemfdFlags;
+    let flags = if seal {
+        MemfdFlags::CLOEXEC | MemfdFlags::ALLOW_SEALING
+    } else {
+        MemfdFlags::CLOEXEC
+    };
+    let fd: OwnedFd = rustix::fs::memfd_create("m", flags).unwrap();
+    let mut off = 0;
+    while off < bytes.len() {
+        off += rustix::io::write(&fd, &bytes[off..]).unwrap();
+    }
+    rustix::fs::seek(&fd, rustix::fs::SeekFrom::Start(0)).unwrap();
+    fd
+}
+
+/// The 160x90 fixture declared anamorphic: `DisplayWidth` 4, `DisplayHeight` 3 added to its
+/// Video element, paid for out of the Void element that follows in the same TrackEntry (so
+/// no parent size moves).
+fn anamorphic_4_3() -> Vec<u8> {
+    let d = std::fs::read(fixture("av1-opus-160x90.webm")).unwrap();
+    // Video: ID 0xE0, size 16 (PixelWidth 160, PixelHeight 90, FlagInterlaced, Colour).
+    assert_eq!(&d[322..324], &[0xe0, 0x90]);
+    // MaxBlockAdditionID, then a Void of 2 data bytes behind an 8-byte size.
+    assert_eq!(&d[340..344], &[0x55, 0xee, 0x81, 0x00]);
+    assert_eq!(&d[344..355], &[0xec, 1, 0, 0, 0, 0, 0, 0, 2, 0, 0]);
+    let mut out = d[..322].to_vec();
+    out.extend_from_slice(&[0xe0, 0x98]);
+    out.extend_from_slice(&d[324..340]);
+    out.extend_from_slice(&[0x54, 0xb0, 0x81, 4, 0x54, 0xba, 0x81, 3]);
+    out.extend_from_slice(&d[340..344]);
+    out.extend_from_slice(&[0xec, 0x81, 0x00]);
+    out.extend_from_slice(&d[355..]);
+    assert_eq!(out.len(), d.len());
+    out
+}
+
+fn open_info(input: &OwnedFd, box_px: (u32, u32), audio: bool) -> (Helper, FromHelper) {
+    let mut h = Helper::start_at(bin(), Mode::Media, &[], 64 << 20).unwrap();
+    let open = ToHelper::Open {
+        audio,
+        box_w: box_px.0,
+        box_h: box_px.1,
+        max_w: 3840,
+        max_h: 2160,
+    };
+    h.tx.send(&open.encode(), Some(input.as_fd())).unwrap();
+    let info = recv(&mut h);
+    (h, info)
+}
+
+#[test]
+fn info_carries_the_source_size_and_display_aspect() {
+    let f = OwnedFd::from(File::open(fixture("av1-opus-160x90.webm")).unwrap());
+    let (_h, info) = open_info(&f, (80, 80), false);
+    let FromHelper::Info {
+        width,
+        height,
+        video_w,
+        video_h,
+        dar_w,
+        dar_h,
+        ..
+    } = info
+    else {
+        panic!("{info:?}");
+    };
+    // Square pixels: no aspect, the output fits the box at 16:9.
+    assert_eq!((width, height, video_w, video_h), (80, 45, 160, 90));
+    assert_eq!((dar_w, dar_h), (0, 0));
+    // Declared 4:3: the 160x90 pixels show at 4:3, fitted into the 160x90 box.
+    let a = memfd_of(&anamorphic_4_3(), false);
+    let (_h, info) = open_info(&a, (160, 90), false);
+    let FromHelper::Info {
+        width,
+        height,
+        video_w,
+        video_h,
+        dar_w,
+        dar_h,
+        ..
+    } = info
+    else {
+        panic!("{info:?}");
+    };
+    assert_eq!((video_w, video_h, dar_w, dar_h), (160, 90, 4, 3));
+    assert_eq!((width, height), (120, 90));
+}
+
+/// Wait for the socket to close; the message before must be `Failed(want)`.
+fn fails_with(mut h: Helper, want: Fail) {
+    let mut last = None;
+    loop {
+        if !h.rx.readable(10_000) {
+            panic!("helper went quiet; last {last:?}");
+        }
+        match h.rx.recv() {
+            Ok(Some((tag, body))) => {
+                let m = FromHelper::decode(tag, &body).unwrap();
+                if let FromHelper::Frame { slot, .. } = m {
+                    let _ = h.tx.send(&ToHelper::Release { slot }.encode(), None);
+                }
+                last = Some(m);
+            }
+            _ => break,
+        }
+    }
+    assert_eq!(last, Some(FromHelper::Failed(want)));
+    assert_ne!(
+        h.proc.finish(5_000).unwrap(),
+        Some(apoth_media::helper::EXIT_OK)
+    );
+}
+
+#[test]
+fn an_unwritable_ring_is_reported_before_exit() {
+    let f = OwnedFd::from(File::open(fixture("av1-opus-160x90.webm")).unwrap());
+    let (h, info) = open_info(&f, (160, 90), false);
+    let FromHelper::Info { width, height, .. } = info else {
+        panic!("{info:?}");
+    };
+    let slot = width as usize * height as usize * 4;
+    let ring = memfd_of(&vec![0; slot * 4], true);
+    rustix::fs::fcntl_add_seals(&ring, rustix::fs::SealFlags::WRITE).unwrap();
+    let r = ToHelper::Ring {
+        slots: 4,
+        slot_bytes: slot as u32,
+    };
+    h.tx.send(&r.encode(), Some(ring.as_fd())).unwrap();
+    fails_with(h, Fail::Protocol);
+}
+
+#[test]
+fn a_seek_into_a_truncated_input_is_reported_before_exit() {
+    let data = std::fs::read(fixture("av1-opus-160x90.webm")).unwrap();
+    let input = memfd_of(&data, false);
+    let (mut h, info) = open_info(&input, (160, 90), false);
+    let FromHelper::Info { width, height, .. } = info else {
+        panic!("{info:?}");
+    };
+    let slot = width as usize * height as usize * 4;
+    let ring = memfd_of(&vec![0; slot * 4], false);
+    let r = ToHelper::Ring {
+        slots: 4,
+        slot_bytes: slot as u32,
+    };
+    h.tx.send(&r.encode(), Some(ring.as_fd())).unwrap();
+    // Play to the end, as a loop does before it seeks back.
+    loop {
+        match recv(&mut h) {
+            FromHelper::Frame { slot, .. } => {
+                h.tx.send(&ToHelper::Release { slot }.encode(), None)
+                    .unwrap();
+            }
+            FromHelper::End => break,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    // The file shrinks under the player (the helper shares the open file description).
+    rustix::fs::ftruncate(&input, 64).unwrap();
+    h.tx.send(&ToHelper::Seek { ms: 0 }.encode(), None).unwrap();
+    fails_with(h, Fail::BadInput);
+}

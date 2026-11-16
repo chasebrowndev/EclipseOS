@@ -10,8 +10,13 @@
 //! `d` data; payload base64, `m=1` for more chunks), `c`,`r` cells, `z`, `q` quiet (1: no
 //! success replies, 2: none). Controls (`a=c`, and on `a=o`): `play`, `pause`, `seek=<ms>`,
 //! `loop=0|1`, `volume=0..100`, `mute=0|1`; `rate` other than 1 is `error=unsupported`.
-//! Replies: `ESC _ M i=<id>;<msg> ESC \` with `ready,w=,h=,d=`, `ended`, `error=<code>`,
-//! `audio-unavailable`, and for `a=q` `state=<s>,pos=<ms>,dur=<ms>`.
+//! Replies: `ESC _ M i=<id>;<msg> ESC \` with `ready,w=,h=,d=,vw=,vh=[,dar=W:H]`, `ended`,
+//! `error=<code>`, `audio-unavailable`, and for `a=q` `state=<s>,pos=<ms>,dur=<ms>`.
+//!
+//! At `ready` a video placement's box shrinks to the video's display aspect inside the box
+//! it was given (never grows), and the cursor follows it up when it still sits directly
+//! below the box. [`crate::Term::media_placements`] is the read side for the interface
+//! (hover controls, progress); [`crate::Term::media_control`] is the input side (a click).
 //!
 //! Spec gaps decided here (reported): a placement is fitted inside its `c`x`r` cell box,
 //! centred; without `c`/`r` it spans the screen width and up to the rows below the cursor
@@ -112,13 +117,19 @@ pub enum MediaRequest {
 /// The caller's answers.
 #[derive(Debug, Clone)]
 pub enum MediaEvent {
+    /// The stream is open: the decoded output size (0x0: audio only), the duration (0:
+    /// unknown), the coded video size, and the declared display aspect when the pixels are
+    /// not square.
     Ready {
         width: u32,
         height: u32,
         duration_ms: u64,
+        video_w: u32,
+        video_h: u32,
+        dar: Option<(u32, u32)>,
     },
     Frame(Arc<Image>),
-    /// Whole seconds played.
+    /// Milliseconds played.
     Position(u64),
     AudioUnavailable,
     Ended,
@@ -126,13 +137,54 @@ pub enum MediaEvent {
     Error(&'static str),
 }
 
+/// A placement's playback state as the client and the interface see it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum State {
+pub enum MediaPlay {
+    /// Waiting for the player's `ready`.
     Opening,
     Playing,
+    /// Paused (also: playing but held while its rows are off the screen).
     Paused,
+    /// Played to the end (not looping).
     Ended,
 }
+
+impl MediaPlay {
+    /// The `a=q` word.
+    pub fn word(self) -> &'static str {
+        match self {
+            MediaPlay::Opening => "opening",
+            MediaPlay::Playing => "playing",
+            MediaPlay::Paused => "paused",
+            MediaPlay::Ended => "ended",
+        }
+    }
+}
+
+/// One media placement of the current screen ([`crate::Term::media_placements`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MediaPlacement {
+    /// The term-unique key ([`MediaRequest`], [`crate::Term::media_control`]).
+    pub key: u64,
+    /// The client's id (`i=`).
+    pub id: u32,
+    /// Top-left cell of the box: an absolute grid row (history included, the coordinate
+    /// of `Screen::pin_pos`) and a column.
+    pub row: usize,
+    pub col: usize,
+    /// Box size in cells.
+    pub cols: u32,
+    pub rows: u32,
+    pub state: MediaPlay,
+    /// Position in milliseconds.
+    pub pos_ms: u64,
+    /// Duration, when the container gives one.
+    pub duration_ms: Option<u64>,
+    /// Coded video size once ready; `None` before, and for audio only.
+    pub video: Option<(u32, u32)>,
+}
+
+use MediaPlay as State;
 
 #[derive(Debug)]
 struct Place {
@@ -153,7 +205,20 @@ struct Place {
     /// The frame before, when the same size: its texture may be overwritten.
     prev: Option<u64>,
     duration_ms: u64,
-    pos_s: u64,
+    pos_ms: u64,
+    /// Coded size and declared display aspect, from `ready` (video only).
+    video: Option<(u32, u32)>,
+    dar: Option<(u32, u32)>,
+}
+
+impl Place {
+    /// The state a client or the interface sees: playing but held offscreen is paused.
+    fn shown_state(&self) -> State {
+        match self.state {
+            State::Playing if self.offscreen => State::Paused,
+            s => s,
+        }
+    }
 }
 
 /// A half-received `s=d` open.
@@ -377,38 +442,7 @@ impl Machine {
                     return;
                 };
                 for c in k.ctl {
-                    let p = &mut self.gfx.media.places[i];
-                    match c {
-                        MediaCtl::Play => {
-                            p.want_play = true;
-                            if p.state != State::Opening {
-                                p.state = State::Playing;
-                            }
-                        }
-                        MediaCtl::Pause => {
-                            p.want_play = false;
-                            if p.state == State::Playing {
-                                p.state = State::Paused;
-                            }
-                        }
-                        MediaCtl::Seek(_) if p.state == State::Ended => {
-                            p.state = if p.want_play {
-                                State::Playing
-                            } else {
-                                State::Paused
-                            };
-                        }
-                        _ => {}
-                    }
-                    let key = p.key;
-                    // Offscreen: remember the wish, do not resume playback.
-                    let held = p.offscreen && c == MediaCtl::Play;
-                    if !held {
-                        self.gfx
-                            .media
-                            .requests
-                            .push(MediaRequest::Control { key, ctl: c });
-                    }
+                    self.media_ctl_at(i, c);
                 }
             }
             b'q' => {
@@ -417,16 +451,10 @@ impl Machine {
                     return;
                 };
                 let p = &self.gfx.media.places[i];
-                let st = match p.state {
-                    State::Opening => "opening",
-                    State::Playing if p.offscreen => "paused",
-                    State::Playing => "playing",
-                    State::Paused => "paused",
-                    State::Ended => "ended",
-                };
                 let msg = format!(
-                    "state={st},pos={},dur={}",
-                    p.pos_s.saturating_mul(1000),
+                    "state={},pos={},dur={}",
+                    p.shown_state().word(),
+                    p.pos_ms,
                     p.duration_ms
                 );
                 // A query answers unless q=2.
@@ -558,7 +586,9 @@ impl Machine {
             frame: None,
             prev: None,
             duration_ms: 0,
-            pos_s: 0,
+            pos_ms: 0,
+            video: None,
+            dar: None,
         });
         self.gfx.media.requests.push(MediaRequest::Open {
             key,
@@ -577,6 +607,125 @@ impl Machine {
         self.cursor_moved();
         self.x = 0;
         self.wrap = false;
+    }
+
+    /// Apply one control to placement `i` (`a=c`, or a click through
+    /// [`crate::Term::media_control`]).
+    fn media_ctl_at(&mut self, i: usize, c: MediaCtl) {
+        let p = &mut self.gfx.media.places[i];
+        match c {
+            MediaCtl::Play => {
+                p.want_play = true;
+                if p.state != State::Opening {
+                    p.state = State::Playing;
+                }
+            }
+            MediaCtl::Pause => {
+                p.want_play = false;
+                if p.state == State::Playing {
+                    p.state = State::Paused;
+                }
+            }
+            MediaCtl::Seek(_) if p.state == State::Ended => {
+                p.state = if p.want_play {
+                    State::Playing
+                } else {
+                    State::Paused
+                };
+            }
+            _ => {}
+        }
+        let key = p.key;
+        // Offscreen: remember the wish, do not resume playback.
+        let held = p.offscreen && c == MediaCtl::Play;
+        if !held {
+            self.gfx
+                .media
+                .requests
+                .push(MediaRequest::Control { key, ctl: c });
+        }
+    }
+
+    /// [`crate::Term::media_control`]: false when no placement has `key`.
+    pub(crate) fn media_control(&mut self, key: u64, c: MediaCtl) -> bool {
+        let Some(i) = self.gfx.media.places.iter().position(|p| p.key == key) else {
+            return false;
+        };
+        // Play on an ended placement restarts it (the player seeks to 0).
+        self.media_ctl_at(i, c);
+        true
+    }
+
+    /// [`crate::Term::media_placements`].
+    pub(crate) fn media_placements(&self) -> Vec<MediaPlacement> {
+        let part = crate::graphics::part_of(self.cur);
+        let g = &self.panes[crate::graphics::grid_of(part)].grid;
+        self.gfx
+            .media
+            .places
+            .iter()
+            .filter(|p| p.part == part)
+            .filter_map(|p| {
+                let (row, col) = g.pin_pos(p.pin)?;
+                Some(MediaPlacement {
+                    key: p.key,
+                    id: p.id,
+                    row,
+                    col,
+                    cols: p.cols,
+                    rows: p.rows,
+                    state: p.shown_state(),
+                    pos_ms: p.pos_ms,
+                    duration_ms: (p.duration_ms > 0).then_some(p.duration_ms),
+                    video: p.video,
+                })
+            })
+            .collect()
+    }
+
+    /// At `ready`: shrink placement `i`'s box to the video's display aspect inside it (the
+    /// draw fits the picture into the box either way; this gives the unused cells back),
+    /// and bring the cursor up with it when the cursor still sits directly below the box.
+    fn media_fit(&mut self, i: usize) {
+        let p = &self.gfx.media.places[i];
+        let Some((vw, vh)) = p.video else {
+            return;
+        };
+        let (aw, ah) = p.dar.unwrap_or((vw, vh));
+        let (cw, ch) = self.cfg.cell_px;
+        let (cw, ch) = (u64::from(cw.max(1)), u64::from(ch.max(1)));
+        let (aw, ah) = (u64::from(aw.max(1)), u64::from(ah.max(1)));
+        let (bw, bh) = (u64::from(p.cols) * cw, u64::from(p.rows) * ch);
+        let (w, h) = if aw * bh <= ah * bw {
+            (bh * aw / ah, bh)
+        } else {
+            (bw, bw * ah / aw)
+        };
+        let cols = (w.div_ceil(cw) as u32).clamp(1, p.cols.max(1));
+        let rows = (h.div_ceil(ch) as u32).clamp(1, p.rows.max(1));
+        if (cols, rows) == (p.cols, p.rows) {
+            return;
+        }
+        let (old_rows, part, pin) = (p.rows, p.part, p.pin);
+        let p = &mut self.gfx.media.places[i];
+        p.cols = cols;
+        p.rows = rows;
+        let gi = crate::graphics::grid_of(part);
+        let g = &mut self.panes[gi].grid;
+        g.mark_full();
+        if part != crate::graphics::part_of(self.cur) || self.x != 0 {
+            return;
+        }
+        let Some((abs, _)) = g.pin_pos(pin) else {
+            return;
+        };
+        let below = abs + old_rows as usize;
+        if g.history_rows() + self.y == below {
+            let up = (old_rows - rows) as usize;
+            self.y = self.y.saturating_sub(up);
+            self.wrap = false;
+            self.cursor_moved();
+        }
     }
 
     fn media_remove(&mut self, i: usize) {
@@ -646,6 +795,9 @@ impl Machine {
                 width,
                 height,
                 duration_ms,
+                video_w,
+                video_h,
+                dar,
             } => {
                 let p = &mut self.gfx.media.places[i];
                 p.duration_ms = duration_ms;
@@ -654,12 +806,15 @@ impl Machine {
                 } else {
                     State::Paused
                 };
-                self.media_reply(
-                    id,
-                    quiet,
-                    true,
-                    &format!("ready,w={width},h={height},d={duration_ms}"),
-                );
+                p.video = (video_w > 0 && video_h > 0).then_some((video_w, video_h));
+                p.dar = dar.filter(|d| d.0 > 0 && d.1 > 0);
+                let mut msg =
+                    format!("ready,w={width},h={height},d={duration_ms},vw={video_w},vh={video_h}");
+                if let Some((a, b)) = p.dar {
+                    msg.push_str(&format!(",dar={a}:{b}"));
+                }
+                self.media_reply(id, quiet, true, &msg);
+                self.media_fit(i);
             }
             MediaEvent::Frame(img) => {
                 let p = &mut self.gfx.media.places[i];
@@ -672,8 +827,11 @@ impl Machine {
                 let gi = crate::graphics::grid_of(p.part);
                 self.panes[gi].grid.mark_full();
             }
-            MediaEvent::Position(s) => self.gfx.media.places[i].pos_s = s,
-            MediaEvent::AudioUnavailable => self.media_reply(id, quiet, false, "audio-unavailable"),
+            MediaEvent::Position(ms) => self.gfx.media.places[i].pos_ms = ms,
+            MediaEvent::AudioUnavailable => {
+                self.events.audio_unavailable = true;
+                self.media_reply(id, quiet, false, "audio-unavailable");
+            }
             MediaEvent::Ended => {
                 self.gfx.media.places[i].state = State::Ended;
                 self.media_reply(id, quiet, true, "ended");

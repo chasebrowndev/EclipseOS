@@ -7,6 +7,7 @@
 //     id: "M2", title: "apoth-vt", spec: "T-01",          // spec: sections, e.g. "T-04, T-02 §1-§4"
 //     units: [{ dir: "apotheosis/crates/apoth-vt", agent: "apoth-core", task: "what to build, scope, exit tests" }]
 //   }, ...],
+//   (milestone may set gui: true to add the headless prober to Verify)
 //   dryRun: false        // true: every agent only states what it would do (cheap wiring test)
 // }})
 //
@@ -15,13 +16,12 @@
 // The script never commits. The orchestrator reads the diff, integrates, gates, commits, opens the PR.
 export const meta = {
   name: 'apoth-wave',
-  description: 'Apotheosis implementation wave: rules -> parallel writers -> serialized build -> verify -> fix',
+  description: 'Apotheosis implementation wave: parallel writers -> serialized build -> verify -> fix',
   phases: [
-    { title: 'Rules', detail: 'spec-oracle extracts the binding rules per milestone' },
     { title: 'Write', detail: 'one agent per unit, parallel, disjoint dirs, no cargo', model: 'sonnet' },
     { title: 'Build', detail: 'serialized gate per milestone; fix inside own dirs', model: 'sonnet' },
-    { title: 'Verify', detail: 'read-only reviewers and prober, parallel', model: 'sonnet' },
-    { title: 'Fix', detail: 'serialized, at most two rounds', model: 'sonnet' },
+    { title: 'Verify', detail: 'spec + adversarial reviewers (haiku); prober on gui milestones', model: 'haiku' },
+    { title: 'Fix', detail: 'one serialized round', model: 'sonnet' },
   ],
 }
 
@@ -37,7 +37,7 @@ const M = DRY ? 'haiku' : 'sonnet'
 const DRYNOTE = DRY ? '\nDRY RUN: do not read, write or run anything. Reply with one sentence saying what you would do.\n' : ''
 const SPEC = `${ROOT}/docs/ECLIPSEOS_SPECS_APOTHEOSIS.md`
 const BRIEF = `${ROOT}/docs/internal/apotheosis/BRIEF.md`
-const CARGO = 'CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.cache/apotheosis-target nice -n 19 cargo -j 2'
+const CARGO = `CARGO_INCREMENTAL=0 CARGO_TARGET_DIR=$HOME/.cache/apotheosis-target-${ROOT.split('/').pop()} nice -n 19 cargo`
 const HEAD = `Repository worktree: ${ROOT} (work only here; never cd to another checkout).
 Read ${BRIEF} first; it binds you. Spec volume: ${SPEC}.${DRYNOTE}`
 
@@ -52,24 +52,19 @@ const FINDINGS = {
   required: ['findings'],
 }
 
-// 1. Rules — one oracle per milestone, parallel.
-phase('Rules')
-const rules = await parallel(MS.map(m => () => agent(
-  `${HEAD}\nFor Apotheosis milestone ${m.id} (${m.title}), governed by ${m.spec} of ${SPEC}: list every binding rule an
-implementer must satisfy — behaviours, limits, defaults, named budgets, test-plan items due at this milestone, and the
-feature-matrix row ids involved (${ROOT}/docs/internal/apotheosis/research/FEATURE-MATRIX.md). Also list anything the
-spec leaves open that this milestone will hit. Return rules with citations, no excerpts. Units in scope:\n` +
-  m.units.map(u => `- ${u.dir}: ${u.task}`).join('\n'),
-  { label: `rules:${m.id}`, phase: 'Rules', agentType: 'spec-oracle', model: DRY ? 'haiku' : 'sonnet' })))
+// Cost cuts (owner, 2026-11-13): no per-milestone rules phase (writers ask spec-oracle themselves),
+// two haiku reviewers (spec+invariants, adversarial), prober only when a milestone sets gui: true,
+// one fix round.
 
 // 2. Write — every unit in parallel; barrier, because the build must not start until all are ready.
 phase('Write')
-const units = MS.flatMap((m, mi) => m.units.map(u => ({ ...u, m, rules: rules[mi] || '(oracle unavailable: read the section yourself)' })))
+const units = MS.flatMap(m => m.units.map(u => ({ ...u, m })))
 const written = await parallel(units.map(u => () => agent(
   `${HEAD}\nMilestone ${u.m.id} — ${u.m.title}. Governing spec: ${u.m.spec}.
 YOUR DIRECTORY (touch nothing else): ${ROOT}/${u.dir}
 TASK: ${u.task}
-BINDING RULES from the spec oracle:\n${u.rules}\n
+Before writing, read the governing sections yourself (targeted reads, not the whole volume). For a narrow
+"what does the spec require for X" question, ask the spec-oracle agent (model haiku) rather than reading widely.
 Write the code and its tests. DO NOT run cargo or any build — other agents are writing in the same workspace.
 End with "READY TO BUILD" and: files changed, rows implemented, dependencies you need added to the workspace,
 spec gaps found, anything left undone.`,
@@ -98,24 +93,25 @@ phase('Verify')
 const scope = `Milestones: ${MS.map(m => `${m.id} (${m.spec})`).join(', ')}. Changed dirs: ${dirs.join(', ')}. Inspect with
 git -C ${ROOT} status --short and git -C ${ROOT} diff. Read-only: change nothing.`
 const lenses = [
-  { key: 'invariants', type: 'invariant-review', p: `Review the uncommitted diff against the repository root invariants and the Apotheosis rules in ${BRIEF}
-(language rule, SPDX headers, no content in logs, unsafe confinement, no allocation on named hot paths).` },
   { key: 'spec', type: 'general-purpose', p: `Spec conformance: for each rule the governing sections state for this milestone, find the code and the test that
-proves it. Report rules with no implementation, behaviour that contradicts the section, and tests that assert the wrong thing.` },
+proves it. Report rules with no implementation, behaviour that contradicts the section, and tests that assert the wrong thing.
+Also check the diff against the Apotheosis rules in ${BRIEF}: language rule, SPDX headers, no content in logs, unsafe
+confinement, no allocation on named hot paths.` },
   { key: 'correctness', type: 'general-purpose', p: `Adversarial correctness: hunt for real bugs — off-by-one at grid edges, wide-cell seams, integer overflow on
 parameters, unbounded growth, lock order, chunk-boundary dependence in parsers, panics on hostile input. Each finding needs a concrete input.` },
-  { key: 'probe', type: 'apoth-prober', p: `Exercise what was built: run the crate tests and fixtures for the changed dirs (use the cargo prefix in ${BRIEF};
+].concat(MS.some(m => m.gui) ? [
+  { key: 'probe', type: 'apoth-prober', p: `Exercise what was built: run the crate tests and fixtures for the changed dirs (use the cargo prefix "${CARGO} <cmd> -j 2";
 you are cleared to build, alone, now) and, if a binary exists, drive it headlessly. Report anything not proven working.` },
-]
+] : [])
 const reviews = DRY ? [] : await parallel(lenses.map(l => () => agent(`${HEAD}\n${scope}\n${l.p}`,
-  { label: `verify:${l.key}`, phase: 'Verify', agentType: l.type, schema: FINDINGS, model: 'sonnet' })))
+  { label: `verify:${l.key}`, phase: 'Verify', agentType: l.type, schema: FINDINGS, model: l.key === 'probe' ? 'sonnet' : 'haiku' })))
 let open = reviews.filter(Boolean).flatMap((r, i) => r.findings.map(f => ({ lens: lenses[i].key, ...f })))
 log(`${open.length} findings from verification`)
 
-// 5. Fix — serialized, at most two rounds; minors are left for the orchestrator.
+// 5. Fix — one serialized round; minors and leftovers go to the orchestrator.
 phase('Fix')
 const fixes = []
-for (let round = 1; round <= 2; round++) {
+for (let round = 1; round <= 1; round++) {
   const todo = open.filter(f => f.severity !== 'minor')
   if (!todo.length) break
   const report = await agent(
@@ -136,7 +132,7 @@ fixed / refuted (why) / not fixed (why), plus final gate status.`,
 
 return {
   milestones: MS.map(m => m.id),
-  rules, written, builds, fixes,
+  written, builds, fixes,
   openFindings: open,
   prBodyDraft: `Implements ${MS.map(m => m.spec).join('; ')}\n\nMilestones: ${MS.map(m => `${m.id} ${m.title}`).join(', ')}.\n` +
     `Open findings carried: ${open.length}.`,

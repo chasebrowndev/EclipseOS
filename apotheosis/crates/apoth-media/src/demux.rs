@@ -6,7 +6,7 @@
 
 use std::io::BufReader;
 
-use matroska_demuxer::{Frame, MatroskaFile, TrackType};
+use matroska_demuxer::{DisplayUnit, Frame, MatroskaFile, TrackType};
 use symphonia::core::codecs::CodecParameters;
 use symphonia::core::codecs::audio::AudioCodecParameters;
 use symphonia::core::formats::probe::Hint;
@@ -44,8 +44,66 @@ pub struct Packet {
 /// The video stream (AV1 only in tier B).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VideoInfo {
+    /// Coded size in pixels.
     pub width: u32,
     pub height: u32,
+    /// The display aspect ratio the container declares (reduced), when it differs from the
+    /// pixel aspect (anamorphic video). `None`: square pixels.
+    pub dar: Option<(u32, u32)>,
+}
+
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
+/// `w`:`h` in lowest terms (both at least 1).
+pub fn reduce(w: u64, h: u64) -> (u32, u32) {
+    let (w, h) = (w.max(1), h.max(1));
+    let g = gcd(w, h);
+    let (mut w, mut h) = (w / g, h / g);
+    // Keep the ratio representable on the wire; precision past 1/65536 is invisible.
+    while w > 0xffff || h > 0xffff {
+        w = (w / 2).max(1);
+        h = (h / 2).max(1);
+    }
+    (w as u32, h as u32)
+}
+
+/// The display aspect of a `w` x `h` Matroska video from its `DisplayWidth`,
+/// `DisplayHeight` and `DisplayUnit` (all units give a ratio; `Unknown` is ignored), or
+/// `None` when it is the pixel aspect, absent, or absurd (beyond 16:1 either way, or more
+/// than 4x off the pixel aspect).
+pub fn display_aspect(
+    w: u64,
+    h: u64,
+    dw: Option<u64>,
+    dh: Option<u64>,
+    unit: Option<DisplayUnit>,
+) -> Option<(u32, u32)> {
+    if matches!(unit, Some(DisplayUnit::Unknown)) {
+        return None;
+    }
+    let (dw, dh) = (dw?, dh?);
+    if dw == 0 || dh == 0 || w == 0 || h == 0 {
+        return None;
+    }
+    let dar = reduce(dw, dh);
+    if dar == reduce(w, h) {
+        return None;
+    }
+    let (a, b) = (u128::from(dar.0), u128::from(dar.1));
+    if a > 16 * b || b > 16 * a {
+        return None;
+    }
+    // dar / par within 1/4..4.
+    let (x, y) = (a * u128::from(h), b * u128::from(w));
+    if x > 4 * y || y > 4 * x {
+        return None;
+    }
+    Some(dar)
 }
 
 /// The audio codec of the chosen audio track.
@@ -173,6 +231,13 @@ impl Source {
                     video = Some(VideoInfo {
                         width: w as u32,
                         height: h as u32,
+                        dar: display_aspect(
+                            w,
+                            h,
+                            v.display_width().map(|d| d.get()),
+                            v.display_height().map(|d| d.get()),
+                            v.display_unit(),
+                        ),
                     });
                     vtrack = t.track_number().get();
                 }
@@ -342,5 +407,46 @@ impl Source {
                 .map(|_| ())
                 .map_err(|_| Fail::BadInput),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_aspect_is_declared_and_sane() {
+        // Anamorphic DVD: 720x480 coded, 16:9 shown.
+        assert_eq!(
+            display_aspect(
+                720,
+                480,
+                Some(16),
+                Some(9),
+                Some(DisplayUnit::DisplayAspectRatio)
+            ),
+            Some((16, 9))
+        );
+        // Display size in pixels, no unit (default pixels): ratio only.
+        assert_eq!(
+            display_aspect(720, 576, Some(1024), Some(576), None),
+            Some((16, 9))
+        );
+        // Square pixels, absent fields, an unknown unit, or nonsense: none.
+        assert_eq!(
+            display_aspect(1920, 1080, Some(1920), Some(1080), None),
+            None
+        );
+        assert_eq!(display_aspect(1920, 1080, Some(16), Some(9), None), None);
+        assert_eq!(display_aspect(160, 90, None, None, None), None);
+        assert_eq!(
+            display_aspect(720, 480, Some(16), Some(9), Some(DisplayUnit::Unknown)),
+            None
+        );
+        assert_eq!(display_aspect(720, 480, Some(1000), Some(1), None), None);
+        assert_eq!(display_aspect(100, 100, Some(9), Some(1), None), None);
+        let (a, b) = reduce(1 << 40, 3);
+        assert!(a <= 0xffff && b >= 1 && a > 1000 * b, "{a}:{b}");
+        assert_eq!(reduce(1920, 1080), (16, 9));
     }
 }

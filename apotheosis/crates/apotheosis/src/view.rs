@@ -53,6 +53,8 @@ pub(crate) struct HlColours {
     pub(crate) match_fg: Option<Rgb>,
     pub(crate) current_bg: Rgb,
     pub(crate) current_fg: Option<Rgb>,
+    /// The crisp 1 px rim round the current match.
+    pub(crate) current_rim: Rgb,
     pub(crate) cursor_bg: Rgb,
     pub(crate) cursor_fg: Option<Rgb>,
     pub(crate) hint_bg: Rgb,
@@ -89,6 +91,23 @@ pub(crate) enum NavMsg {
         /// Asked at a cell (a right-click), not for the selection.
         at_cell: bool,
     },
+}
+
+/// The media placement covering absolute row `row`, column `col`: the newest wins where
+/// boxes overlap (it draws last).
+pub(crate) fn media_at(
+    places: &[apoth_term::MediaPlacement],
+    row: usize,
+    col: usize,
+) -> Option<u64> {
+    places
+        .iter()
+        .rev()
+        .find(|p| {
+            (p.row..p.row + p.rows as usize).contains(&row)
+                && (p.col..p.col + p.cols as usize).contains(&col)
+        })
+        .map(|p| p.key)
 }
 
 struct HintItem {
@@ -141,6 +160,8 @@ fn span(
                 end: b,
                 bg: Rgb(kind, 0, 0),
                 fg: None,
+                round: kind != hl::CURSOR && kind != hl::LABEL,
+                rim: None,
             });
         }
     }
@@ -450,6 +471,9 @@ pub(crate) struct View {
     hints: Option<HintState>,
     /// The hovered link: viewport position and URI.
     hover: Option<String>,
+    /// The pointer's viewport cell, and the media placement under it (by key).
+    hover_cell: Option<(usize, usize)>,
+    media_hover: Option<u64>,
     out: Vec<NavMsg>,
     busy: bool,
 }
@@ -476,6 +500,8 @@ impl View {
             copy: None,
             hints: None,
             hover: None,
+            hover_cell: None,
+            media_hover: None,
             out: Vec::new(),
             busy: false,
         }
@@ -499,6 +525,21 @@ impl View {
 
     pub(crate) fn offset(&self) -> usize {
         self.offset
+    }
+
+    /// The media placement under the pointer (its key), for the hover controls.
+    pub(crate) fn media_hover(&self) -> Option<u64> {
+        self.media_hover
+    }
+
+    /// Re-run the media hit test against `places` (the term's current placements, under
+    /// its lock): the pointer may sit still while a placement scrolls, opens or goes.
+    pub(crate) fn sync_media_hover(&mut self, t: &Term, places: &[apoth_term::MediaPlacement]) {
+        let top = self.top_abs(t);
+        let hit = self
+            .hover_cell
+            .and_then(|(r, c)| media_at(places, top + r, c));
+        self.media_hover = hit;
     }
 
     #[cfg(test)]
@@ -775,6 +816,11 @@ impl View {
                 }
             }
             ViewCmd::Hover(pos) => {
+                self.hover_cell = pos;
+                if t.has_media() || self.media_hover.is_some() {
+                    let places = t.media_placements();
+                    self.sync_media_hover(t, &places);
+                }
                 let top = self.top_abs(t);
                 let uri = pos
                     .and_then(|(r, c)| t.grid().link_at_abs(top + r, c))
@@ -1043,6 +1089,8 @@ impl View {
                         end,
                         bg: Rgb(hl::SELECTION, 0, 0),
                         fg: None,
+                        round: true,
+                        rim: None,
                     });
                 }
             }
@@ -1277,7 +1325,8 @@ pub(crate) fn paint(h: &[Highlight], c: &HlColours, out: &mut Vec<Highlight>) {
             hl::LABEL => (c.label_bg, c.label_fg),
             _ => (c.sel_bg, c.sel_fg),
         };
-        Highlight { bg, fg, ..*x }
+        let rim = (x.bg.0 == hl::CURRENT).then_some(c.current_rim);
+        Highlight { bg, fg, rim, ..*x }
     }));
 }
 
@@ -1295,6 +1344,29 @@ mod tests {
         });
         t.feed(input.as_bytes(), Instant::now());
         t
+    }
+
+    #[test]
+    fn media_hit_test_takes_the_newest_box() {
+        let p = |key, row, col, cols, rows| apoth_term::MediaPlacement {
+            key,
+            id: 1,
+            row,
+            col,
+            cols,
+            rows,
+            state: apoth_term::MediaPlay::Playing,
+            pos_ms: 0,
+            duration_ms: None,
+            video: None,
+        };
+        let places = [p(1, 5, 0, 10, 4), p(2, 7, 8, 4, 2)];
+        assert_eq!(media_at(&places, 5, 0), Some(1));
+        assert_eq!(media_at(&places, 8, 9), Some(2));
+        assert_eq!(media_at(&places, 8, 11), Some(2));
+        assert_eq!(media_at(&places, 9, 0), None);
+        assert_eq!(media_at(&places, 5, 10), None);
+        assert_eq!(media_at(&[], 0, 0), None);
     }
 
     fn live(t: &mut Term) -> FrameSnapshot {
@@ -1953,6 +2025,8 @@ mod tests {
             end: 4,
             bg: Rgb(0, 0, 0),
             fg: None,
+            round: false,
+            rim: None,
         }];
         let mut out = Vec::new();
         let c = HlColours {
@@ -1962,6 +2036,7 @@ mod tests {
             match_fg: Some(Rgb(8, 8, 8)),
             current_bg: Rgb(5, 5, 5),
             current_fg: None,
+            current_rim: Rgb(12, 12, 12),
             cursor_bg: Rgb(6, 6, 6),
             cursor_fg: None,
             hint_bg: Rgb(7, 7, 7),

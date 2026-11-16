@@ -558,6 +558,9 @@ impl App {
             self.emit_command(id, c);
         }
         for v in std::mem::take(&mut e.vars) {
+            if v.name == super::remote::LOST_VAR {
+                self.ssh_lost(id, v.value.as_deref());
+            }
             let m = self.auto.pane_vars.entry(id).or_default();
             match &v.value {
                 Some(val) => {

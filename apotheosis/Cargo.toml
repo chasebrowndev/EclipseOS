@@ -82,3 +82,11 @@ opt-level = 3
 # ordinary libopus streams. Dev and test builds behave like release for that one crate.
 [profile.dev.package.opus-decoder]
 overflow-checks = false
+
+# rav1d 1.1.0 compiles a borrow-overlap tracker into `DisjointMut` under debug assertions
+# (disjoint_mut.rs). With frame threads its CDEF pass trips it ("overlapping
+# DisjointMut", cdef_apply.rs vs cdef.rs); the panic crosses the dav1d `extern "C"` API
+# and aborts the helper, which the terminal sees as `helper-crashed`. Release has no
+# tracker; dev and test builds decode like release for that one crate.
+[profile.dev.package.rav1d]
+debug-assertions = false

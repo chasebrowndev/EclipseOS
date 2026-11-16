@@ -172,6 +172,38 @@ impl ClusterMeasure {
         *self = Self::new();
     }
 
+    /// The measure as five bytes (a mux snapshot carries it, T-21 §3): seven flags, the
+    /// first scalar's width, and the width sum.
+    pub const fn to_raw(self) -> [u8; 5] {
+        let f = self.started as u8
+            | (self.first_control as u8) << 1
+            | (self.first_forced as u8) << 2
+            | (self.first_emoji as u8) << 3
+            | (self.vs15 as u8) << 4
+            | (self.vs16 as u8) << 5
+            | (self.modifier as u8) << 6;
+        let s = self.sum.to_le_bytes();
+        [f, self.first_width, s[0], s[1], 0]
+    }
+
+    /// Inverse of [`ClusterMeasure::to_raw`]; `None` for bytes no measure produces.
+    pub const fn from_raw(b: [u8; 5]) -> Option<Self> {
+        if b[0] & 0x80 != 0 || b[4] != 0 {
+            return None;
+        }
+        Some(ClusterMeasure {
+            started: b[0] & 1 != 0,
+            first_control: b[0] & 2 != 0,
+            first_forced: b[0] & 4 != 0,
+            first_emoji: b[0] & 8 != 0,
+            first_width: b[1],
+            vs15: b[0] & 16 != 0,
+            vs16: b[0] & 32 != 0,
+            modifier: b[0] & 64 != 0,
+            sum: u16::from_le_bytes([b[2], b[3]]),
+        })
+    }
+
     /// Account for the next scalar of the cluster.
     pub fn push(&mut self, w: &Widths, c: char) {
         let sw = w.scalar_width(c);
@@ -225,6 +257,19 @@ mod tests {
 
     fn w(s: &str) -> u8 {
         Widths::default().cluster_width(s)
+    }
+
+    #[test]
+    fn measure_raw_round_trips() {
+        let wd = Widths::default();
+        let mut m = ClusterMeasure::new();
+        assert_eq!(ClusterMeasure::from_raw(m.to_raw()), Some(m));
+        for c in ['\u{2764}', '\u{FE0F}', '\u{1F3FB}', '\u{FE0E}'] {
+            m.push(&wd, c);
+            assert_eq!(ClusterMeasure::from_raw(m.to_raw()), Some(m));
+        }
+        assert_eq!(ClusterMeasure::from_raw([0x80, 0, 0, 0, 0]), None);
+        assert_eq!(ClusterMeasure::from_raw([0, 0, 0, 0, 1]), None);
     }
 
     #[test]

@@ -62,6 +62,8 @@ mod a11y;
 mod automation;
 mod media;
 mod open;
+mod password;
+mod remote;
 mod serve;
 
 pub(crate) use a11y::A11yMsg;
@@ -222,9 +224,22 @@ struct Pane {
     cwd: Option<PathBuf>,
     /// The host an OSC 7 directory named when it was not this one (its paths are remote).
     cwd_host: Option<String>,
+    /// The OSC 7 path when it names another host (an ssh domain's new panes start there).
+    cwd_remote: Option<String>,
     /// How the child ended, once reaped.
     exit: Option<ExitStatus>,
     eof: bool,
+    /// A session-daemon pane (T-21 §3): no local PTY; input and sizes go to the server.
+    remote: Option<RemotePane>,
+}
+
+/// A pane the session daemon runs.
+#[derive(Default)]
+struct RemotePane {
+    /// The server's pane id (`None` until a spawn is answered).
+    sid: Option<u64>,
+    /// Input typed before the spawn was answered (bounded: one queue's worth).
+    early: Vec<u8>,
 }
 
 /// A key whose press a bind or the interface took: its repeats and release are taken too, and
@@ -281,10 +296,15 @@ struct Status {
     bell_tabs: std::collections::HashSet<TabId>,
     /// The pane the visual bell is lighting, and the timer that puts it out.
     bell_flash: Option<(PaneKey, RegistrationToken)>,
+    /// A media placement in this pane plays muted (no sound server, T-16 §3): the muted
+    /// notice shows over the pane until the timer clears it (T-08 §4). Never a window.
+    media_muted: Option<(PaneKey, RegistrationToken)>,
 }
 
 /// How long the visual bell's rim shows.
 const BELL_FLASH: Duration = Duration::from_millis(180);
+/// How long the muted notice shows.
+const MEDIA_MUTED_NOTICE: Duration = Duration::from_secs(4);
 
 pub(crate) struct App {
     settings: Settings,
@@ -312,6 +332,16 @@ pub(crate) struct App {
     /// Panes main closed (their exit status does not decide the exit code).
     forced: Vec<PaneKey>,
     started: bool,
+    /// Attached to a session daemon (T-21 §3): every pane is the server's.
+    remote: Option<crate::attach::Link>,
+    /// The server pane the next `spawn_pane` takes instead of starting one.
+    adopt: Option<crate::attach::NewPane>,
+    /// Stream events that came before the window: handled once it exists.
+    remote_early: Vec<crate::attach::Event>,
+    /// The askpass sheet, the session-kill confirm and the reconnect notice (T-22).
+    remote_ui: remote::Remote,
+    /// `ec-secret-prompt` prompts: routed askpass requests and auto-opened pane prompts.
+    passwords: password::Passwords,
     render_tx: Option<mpsc::Sender<RenderMsg>>,
     render: Option<JoinHandle<()>>,
     /// Cell size in physical pixels.
@@ -364,6 +394,8 @@ pub(crate) struct App {
     held: Mods,
     /// The left button is down (the held button of a motion event).
     left_down: bool,
+    /// The left press went to a media placement (play/pause): its release is taken too.
+    media_pressed: bool,
     /// Last pointer position, surface-logical.
     pointer: Option<(f64, f64)>,
     /// The pane a held button went down in: motion and release go there.
@@ -413,6 +445,9 @@ struct PendingPaste {
 pub(crate) struct FirstPane {
     pub(crate) cwd: Option<PathBuf>,
     pub(crate) title: Option<String>,
+    /// An ssh domain without `mux` (T-22 §4): every shell of the window is
+    /// `apoth ssh DEST` through the shared master (kept for the window's lifetime).
+    pub(crate) ssh_domain: Option<String>,
 }
 
 /// Run to completion; the process exit code.
@@ -421,6 +456,7 @@ pub(crate) fn run(
     command: Option<Vec<String>>,
     app_id: Option<String>,
     first: FirstPane,
+    attach: Option<crate::attach::Attach>,
 ) -> Result<i32, String> {
     let Startup {
         settings,
@@ -451,12 +487,26 @@ pub(crate) fn run(
         }
     })
     .map_err(|e| e.error.to_string())?;
+    // A view of the session daemon: the first pane is the server's first, unless a command
+    // was given (then it runs as a new server pane and the others open as tabs).
+    let (remote, adopt) = match attach {
+        Some(h) => {
+            let adopt_first = command.is_none();
+            let (link, first) =
+                crate::attach::start(h, settings.term.clone(), tx.clone(), adopt_first)
+                    .map_err(|e| format!("cannot attach: {e}"))?;
+            (Some(link), first)
+        }
+        None => (None, None),
+    };
     let win = handle.create_window(WindowSpec {
         title: settings.window_title(""),
         app_id: Some(app_id.clone()),
         decorations: settings.decorations,
         ..WindowSpec::default()
     });
+    // xdg-toplevel-icon by name; the SVG ships in packaging/ (no-op without the global).
+    let _ = handle.set_icon_name(win, Some("org.eclipseos.Apotheosis"));
     handle.flush();
     let keymap = Keymap::from_config(reloader.config());
     let mut app = App {
@@ -479,6 +529,11 @@ pub(crate) fn run(
         closing: 0,
         forced: Vec::new(),
         started: false,
+        remote,
+        adopt,
+        remote_early: Vec::new(),
+        remote_ui: remote::Remote::default(),
+        passwords: password::Passwords::default(),
         render_tx: None,
         render: None,
         cell: (1, 1),
@@ -513,6 +568,7 @@ pub(crate) fn run(
         mouse: Mouse::new(),
         held: Mods::NONE,
         left_down: false,
+        media_pressed: false,
         pointer: None,
         capture: None,
         mouse_pane: None,
@@ -556,6 +612,10 @@ pub(crate) fn run(
         }
     }
     app.emit_startup();
+    for e in std::mem::take(&mut app.remote_early) {
+        app.on_remote(e);
+    }
+    app.remote_started();
     event_loop
         .run(None, &mut app, |_| {})
         .map_err(|e| e.to_string())?;
@@ -681,6 +741,7 @@ const HANDLED: &[&str] = &[
     "pane.focus-next",
     "pane.focus-prev",
     "pane.move",
+    "pane.reconnect",
     "pane.resize",
     "pane.split",
     "pane.toggle-float",
@@ -705,6 +766,8 @@ const HANDLED: &[&str] = &[
     "selection.clear",
     "selection.copy",
     "selection.select-all",
+    "session.detach",
+    "session.kill",
     "tab.close",
     "tab.close-others",
     "tab.last",
@@ -860,6 +923,10 @@ impl App {
     }
 
     fn start_window(&mut self, c: &ConfigureEvent) -> Result<(), String> {
+        // T-08 §3: one blur box over the window geometry; apoth-wl keeps it across resizes
+        // and blur-path changes, and drops it on the tint path.
+        self.handle
+            .set_blur(self.win, Some(apoth_wl::BlurRequest::WindowGeometry));
         self.blur = self.handle.blur_path(self.win);
         let scale = self.scale();
         let (fonts, metrics, auto_family) = build_fonts(&self.settings, scale)?;
@@ -920,6 +987,8 @@ impl App {
             rx: render_rx,
             poke: render_tx.clone(),
             to_main: self.to_main.clone(),
+            glass: self.handle.glass_panes(self.win),
+            overlay: self.handle.overlay_surface(self.win),
         })
         .map_err(|e| e.to_string())?;
         self.render = Some(render);
@@ -930,6 +999,8 @@ impl App {
             cols = dims.1,
             scale,
             app_id = %self.app_id,
+            blur = ?self.blur,
+            opacity = crate::settings::effective_opacity(self.settings.opacity, &self.settings.glass, self.blur),
             workers = self.workers.threads(),
             watch = ?self.watch_mode,
             "window started"
@@ -961,6 +1032,13 @@ impl App {
         cwd: Option<PathBuf>,
         env_extra: Vec<(String, String)>,
     ) -> Result<Pane, String> {
+        let argv = match (&self.first.ssh_domain, argv) {
+            (Some(dest), None) => Some(self.ssh_domain_argv(dest)),
+            (_, a) => a,
+        };
+        if self.remote.is_some() {
+            return self.spawn_remote(id, (rows, cols), argv, cwd);
+        }
         let cell = self.cell;
         let mut tc = self.settings.term.clone();
         tc.rows = rows;
@@ -1005,6 +1083,18 @@ impl App {
         if let Some(p) = self.ctl_path() {
             extra.push(("APOTHEOSIS_SOCKET".into(), p.as_os_str().to_owned()));
         }
+        // `security.sudo-askpass` (T-22 §3): this pane's child is armed, `sudo -A` asks
+        // through it. The variables are set before any user `shell.env`, which may unset
+        // nothing of ours but may add its own.
+        let sudo_arm = self.arm_pane(id);
+        if let Some((a, exe)) = &sudo_arm {
+            extra.push(("SUDO_ASKPASS".into(), exe.as_os_str().to_owned()));
+            extra.push((
+                apoth_proto::askpass::ENV_SOCK.into(),
+                a.socket().as_os_str().to_owned(),
+            ));
+            extra.push((apoth_proto::askpass::ENV_TOKEN.into(), a.token_hex().into()));
+        }
         extra.extend(
             self.settings
                 .shell
@@ -1034,6 +1124,18 @@ impl App {
             iutf8: true,
         })
         .map_err(|e| format!("cannot start the shell: {e}"))?;
+        if let Some((a, _)) = sudo_arm {
+            let tx = self.to_main.clone();
+            match a.start(
+                pty.pid(),
+                Box::new(move |e| {
+                    let _ = tx.send(MainMsg::Askpass(e));
+                }),
+            ) {
+                Ok(()) => tracing::debug!(pane = id, "askpass armed for the pane"),
+                Err(e) => tracing::warn!(pane = id, error = %e, "askpass not armed for the pane"),
+            }
+        }
         let master = pty
             .master_fd()
             .try_clone_to_owned()
@@ -1059,6 +1161,7 @@ impl App {
                 to_render,
                 hook: DumpHook::for_pane(first, id),
                 workers: self.workers.spawner(),
+                remote: None,
             },
             wake_tx,
         )
@@ -1087,9 +1190,209 @@ impl App {
             title: String::new(),
             cwd: None,
             cwd_host: None,
+            cwd_remote: None,
             exit: None,
             eof: false,
+            remote: None,
         })
+    }
+
+    /// A session-daemon pane (T-21 §3): adopt the server pane waiting in `adopt`, or ask the
+    /// server for a new one. The term here is a placeholder until the snapshot arrives; the
+    /// io thread reads the pane's stream from the attach demultiplexer. `env` extras of a
+    /// launch are not carried to the server (reported).
+    fn spawn_remote(
+        &mut self,
+        id: PaneKey,
+        (rows, cols): (usize, usize),
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+    ) -> Result<Pane, String> {
+        let link = self.remote.as_mut().ok_or("not attached")?;
+        let np = match self.adopt.take() {
+            Some(np) => np,
+            None => link
+                .spawn(id, argv.unwrap_or_default(), cwd.as_deref(), (rows, cols))
+                .map_err(|e| format!("cannot open a pane stream: {e}"))?,
+        };
+        if let Some(sid) = np.sid {
+            link.sids.insert(sid, id);
+        }
+        let mut tc = self.settings.term.clone();
+        tc.rows = rows.max(1);
+        tc.cols = cols.max(1);
+        tc.cell_px = self.cell;
+        let term = Term::new(tc);
+        let defaults = TermDefaults {
+            fg: term.colors().0,
+            bg: term.colors().1,
+            cursor: term.colors().2,
+            ansi: std::array::from_fn(|i| term.palette(i as u8)),
+        };
+        let shared = Arc::new(PaneShared::new(term));
+        shared.deny.store(self.deny_word(), Ordering::Release);
+        let (wake_rx, wake_tx) =
+            rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).map_err(|e| e.to_string())?;
+        let to_render = self
+            .render_tx
+            .clone()
+            .ok_or("the render channel is not set up")?;
+        let first = self.first_pane == id;
+        let io = spawn_io(
+            IoArgs {
+                id,
+                shared: Arc::clone(&shared),
+                master: np.rx,
+                wake_rx,
+                to_main: self.to_main.clone(),
+                to_render,
+                hook: DumpHook::for_pane(first, id),
+                workers: self.workers.spawner(),
+                remote: Some(np.mailbox),
+            },
+            wake_tx,
+        )
+        .map_err(|e| e.to_string())?;
+        tracing::debug!(pane = id, adopted = np.sid.is_some(), "remote pane started");
+        Ok(Pane {
+            shared,
+            defaults,
+            pty: None,
+            io: Some(io),
+            dims: (rows, cols),
+            pending: None,
+            inflight: None,
+            pollout: None,
+            grace: None,
+            origin: (0, 0),
+            title: String::new(),
+            cwd: None,
+            cwd_host: None,
+            cwd_remote: None,
+            exit: None,
+            eof: false,
+            remote: Some(RemotePane {
+                sid: np.sid,
+                early: Vec::new(),
+            }),
+        })
+    }
+
+    /// The session daemon's stream told main something (T-21 §3).
+    fn on_remote(&mut self, e: crate::attach::Event) {
+        use crate::attach::Event;
+        if !self.started {
+            self.remote_early.push(e);
+            return;
+        }
+        match e {
+            Event::Added(np) => {
+                self.adopt = Some(np);
+                let id = self.new_tab_with(None, None, Vec::new());
+                // The pane could not be made: its stream end goes with `adopt`.
+                if id.is_none() {
+                    self.adopt = None;
+                }
+            }
+            Event::Bound { token, sid } => {
+                let Some(link) = self.remote.as_mut() else {
+                    return;
+                };
+                let Some(p) = self.panes.get_mut(&token) else {
+                    link.close(sid);
+                    return;
+                };
+                link.sids.insert(sid, token);
+                if let Some(r) = p.remote.as_mut() {
+                    r.sid = Some(sid);
+                    let mut early = std::mem::take(&mut r.early);
+                    if !early.is_empty() {
+                        link.input(sid, &early);
+                    }
+                    apoth_proto::askpass::wipe(&mut early);
+                }
+                // A size asked before the answer goes now.
+                if let Some(want) = p.pending.or(Some(p.dims)) {
+                    link.resize(sid, want, self.cell);
+                }
+            }
+            Event::FirstBound { sid } => {
+                // A mux domain's window: its first pane is now the server's pane `sid`.
+                let id = self.first_pane;
+                let Some(link) = self.remote.as_mut() else {
+                    return;
+                };
+                link.sids.insert(sid, id);
+                if let Some(p) = self.panes.get_mut(&id) {
+                    if let Some(r) = p.remote.as_mut() {
+                        r.sid = Some(sid);
+                        let mut early = std::mem::take(&mut r.early);
+                        if !early.is_empty() {
+                            link.input(sid, &early);
+                        }
+                        apoth_proto::askpass::wipe(&mut early);
+                    }
+                    link.resize(sid, p.pending.unwrap_or(p.dims), self.cell);
+                }
+            }
+            Event::Reconnecting(down) => {
+                if !down {
+                    // The server's sizes may be stale: every pane says its size again.
+                    if let Some(link) = self.remote.as_ref() {
+                        for p in self.panes.values() {
+                            if let Some(sid) = p.remote.as_ref().and_then(|r| r.sid) {
+                                link.resize(sid, p.pending.unwrap_or(p.dims), self.cell);
+                            }
+                        }
+                    }
+                }
+                self.link_state(down);
+            }
+            Event::SpawnFailed { token } => {
+                tracing::warn!(pane = token, "the session server could not start a pane");
+                if let Some(p) = self.panes.get_mut(&token) {
+                    p.exit = Some(ExitStatus::Code(1));
+                }
+                self.maybe_finish(token);
+            }
+            Event::Exited { sid, status } => {
+                let Some(id) = self.remote.as_mut().and_then(|l| l.sids.remove(&sid)) else {
+                    return;
+                };
+                if let Some(p) = self.panes.get_mut(&id) {
+                    p.exit = Some(ExitStatus::Code(status.unwrap_or(0)));
+                }
+                self.maybe_finish(id);
+            }
+            Event::Lost(why) => {
+                let Some(att) = self.remote.as_mut() else {
+                    return;
+                };
+                if att.detaching {
+                    return;
+                }
+                att.detaching = true;
+                let session = att.session.clone();
+                if why == "detached" {
+                    tracing::info!(%session, "detached from the session server");
+                } else {
+                    tracing::warn!(%session, "session server stream ended: {why}");
+                    eprintln!("apotheosis: {why}");
+                    self.exit_code = 1;
+                }
+                self.begin_close();
+            }
+        }
+    }
+
+    /// An ssh domain's shell (T-22 §4): `apoth ssh --hold [--cwd DIR] DEST`, the directory the
+    /// focused pane last reported over OSC 7 on that host.
+    fn ssh_domain_argv(&self, dest: &str) -> Vec<String> {
+        let cwd = self
+            .focused()
+            .and_then(|f| self.panes.get(&f))
+            .and_then(|p| p.cwd_remote.clone());
+        crate::domain::pane_argv(dest, cwd)
     }
 
     /// The working directory a new pane inherits (T-13 §6): the focused pane's OSC 7
@@ -1289,7 +1592,7 @@ impl App {
             pinned,
             field: view.as_ref().is_none_or(|v| v.field),
             anchor: view.as_ref().and_then(|v| v.anchor),
-            header: view.map(|v| v.header),
+            header: view.and_then(|v| v.header),
         })
     }
 
@@ -1333,8 +1636,67 @@ impl App {
             tooltip: self.tooltip_spec(),
             bell: self.bell_rect(geo),
             media: None,
+            media_muted: self.media_muted_rect(geo),
+            media_fx: crate::render::MediaFx::default(),
             ui: self.ui_state.clone(),
         }
+    }
+
+    /// The frame rect of the pane showing the muted notice, while it shows.
+    fn media_muted_rect(&self, geo: &WinLayout) -> Option<apoth_ui::Rect> {
+        let (id, _) = self.status.media_muted.as_ref()?;
+        let p = self.placed.iter().find(|p| p.id == *id)?;
+        Some(layout::frame_rect(p, self.cell, geo.ui, geo.area))
+    }
+
+    /// Show the muted notice over pane `id` for [`MEDIA_MUTED_NOTICE`] (a later one in any
+    /// pane replaces it). Only the timer that clears it runs; nothing opens.
+    fn media_muted_notice(&mut self, id: PaneKey) {
+        if let Some((_, t)) = self.status.media_muted.take() {
+            self.lh.remove(t);
+        }
+        let timer = self.lh.insert_source(
+            Timer::from_duration(MEDIA_MUTED_NOTICE),
+            |_, (), app: &mut App| {
+                app.status.media_muted = None;
+                app.send_layout();
+                TimeoutAction::Drop
+            },
+        );
+        if let Ok(t) = timer {
+            self.status.media_muted = Some((id, t));
+        }
+        self.send_layout();
+    }
+
+    /// A left press over a media placement with mouse reporting off toggles its playback
+    /// (T-08 §4): the toggle goes to the pane's io thread, which owns the term. True when
+    /// the press was taken.
+    ///
+    /// The press is hit-tested here against the placements the pane last drew, not against
+    /// the pointer's last hover report: a click may come with no motion before it.
+    fn media_click(&mut self, id: PaneKey) -> bool {
+        let (Some(geo), Some((x, y))) = (self.geometry_of(id), self.pointer) else {
+            return false;
+        };
+        let Some(p) = self.panes.get(&id) else {
+            return false;
+        };
+        if p.shared.mirror.load().mouse_mode() != apoth_input::MouseMode::None {
+            return false;
+        }
+        let h = geo.hit(x, y);
+        let hit = (!h.above && !h.below)
+            .then(|| p.shared.media_shown_at(h.row, h.col))
+            .flatten();
+        let Some(key) = hit else {
+            return false;
+        };
+        p.shared.post_media_toggle(key);
+        if let Some(io) = &p.io {
+            let _ = rustix::io::write(&io.wake, &[crate::pane::WAKE_MEDIA_CLICK]);
+        }
+        true
     }
 
     /// The search sheet's content (T-14 §6): the query, the count and the mode chips.
@@ -1673,6 +2035,16 @@ impl App {
             self.refresh_bar();
         }
         self.status.progress.remove(&id);
+        if let Some(link) = self.remote.as_mut()
+            && let Some(p) = self.panes.get(&id)
+            && let Some(sid) = p.remote.as_ref().and_then(|r| r.sid)
+        {
+            link.sids.remove(&sid);
+            // Closing a pane closes the server's; closing the window only detaches.
+            if p.exit.is_none() && !link.detaching {
+                link.close(sid);
+            }
+        }
         if let Some(mut p) = self.panes.remove(&id) {
             for t in [p.pollout.take(), p.grace.take()].into_iter().flatten() {
                 self.lh.remove(t);
@@ -1720,6 +2092,10 @@ impl App {
 
     /// Close every pane (window close, `app.quit`).
     fn begin_close(&mut self) {
+        if let Some(link) = self.remote.as_mut() {
+            // The window goes; the session's panes keep running on the server.
+            link.detach();
+        }
         if !self.started {
             self.quit();
             return;
@@ -1780,6 +2156,9 @@ impl App {
                 self.relayout();
                 self.poke();
             }
+            // `eclipse_glass_v1` started or stopped drawing panes: the render thread reads
+            // the flag on its next pass and redraws the interface's ground.
+            WlEvent::CapabilitiesChanged => self.poke(),
             WlEvent::BlurPathChanged { path, .. } => {
                 self.blur = Some(path);
                 self.send_render_update(false);
@@ -1876,6 +2255,7 @@ impl App {
 
     fn set_focus(&mut self, focused: bool) {
         self.win_focused = focused;
+        self.password_focus(focused);
         self.a11y_window_focus(focused);
         if !focused {
             // Nothing held survives the keyboard leaving: no table, no half-typed sequence.
@@ -1905,6 +2285,7 @@ impl App {
                 return;
             }
             if self.palette.is_some()
+                || self.remote_ui.asking()
                 || self.paste.is_some()
                 || self.nav.hints.is_some()
                 || self.nav.consent.is_some()
@@ -1914,6 +2295,16 @@ impl App {
             {
                 return;
             }
+        }
+        if self.remote_ui.asking() {
+            // The askpass sheet or the session-kill confirm owns the keyboard (T-22 §3).
+            if pressed {
+                if !repeat {
+                    self.consumed.push(Consumed::plain(key));
+                }
+                self.remote_key(&look, repeat);
+            }
+            return;
         }
         if self.nav.consent.is_some() || self.nav.open.is_some() || self.auto.confirm.is_some() {
             // A consent, link-confirm or rule bar owns the keyboard until answered (T-18 §3).
@@ -2059,6 +2450,10 @@ impl App {
         if pressed {
             p.shared.last_key_ns.store(now_ns(), Ordering::Release);
             self.typed();
+        }
+        // A password prompt is mapping for this pane: the key is its (T-22 §3).
+        if self.hold_key(focus, &buf[..n]) {
+            return;
         }
         self.send_bytes(focus, &buf[..n]);
     }
@@ -2637,6 +3032,14 @@ impl App {
             A::VarSet { name, value, scope } => self.var_action(&name, Some(&value), scope),
             A::VarUnset { name, scope } => self.var_action(&name, None, scope),
             A::AppQuit { force: _ } | A::WindowClose {} => self.begin_close(),
+            A::SessionDetach {} => self.session_detach(),
+            A::SessionKill {} => self.session_kill(),
+            A::PaneReconnect {} => {
+                let focus = self.focused();
+                if !self.reconnect_pane(focus) {
+                    tracing::info!("pane.reconnect: no pane lost its ssh connection");
+                }
+            }
             A::AppIgnore {} => {}
             other => {
                 tracing::debug!(action = other.id(), "action not available yet");
@@ -3487,13 +3890,15 @@ impl App {
     /// A click on button `i` of the bar or sheet, whichever question is up. The input guard
     /// was checked by the caller; Return and Space never reach here.
     fn bar_click_answer(&mut self, i: usize) {
-        if self.paste.is_some() {
+        if self.remote_ui.asking() {
+            self.remote_click(i);
+        } else if self.paste.is_some() {
             self.apply_paste_answer(i);
         } else if self.nav.consent.is_some() || self.nav.open.is_some() {
             self.apply_nav_answer(i);
         } else if self.auto.confirm.is_some() {
             self.answer_rule(Some(i));
-        } else {
+        } else if !self.remote_notice_click(Some(i)) {
             // The error bar and the restart notice have one button: dismiss.
             self.bar_dismissed = true;
             self.restart_keys.clear();
@@ -3904,6 +4309,11 @@ impl App {
                 }
                 self.mouse.selection_gone();
             }
+            if code == BTN_LEFT && !self.open_modifier_held() && self.media_click(id) {
+                // The release belongs to the click too: no selection starts or ends.
+                self.media_pressed = true;
+                return;
+            }
             if code == BTN_LEFT && self.open_modifier_held() {
                 // Open-modifier click activates the link under the pointer (T-14 §5).
                 if let (Some(geo), Some((x, y))) = (self.geometry_of(id), self.pointer) {
@@ -3924,6 +4334,9 @@ impl App {
             }
             id
         } else {
+            if code == BTN_LEFT && std::mem::take(&mut self.media_pressed) {
+                return;
+            }
             let Some(id) = self.capture.take().or(self.mouse_pane) else {
                 return;
             };
@@ -4079,7 +4492,8 @@ impl App {
                 cursor_end,
             } => {
                 // A paste confirm or the palette owns the keyboard: no composition shows.
-                let owned = self.paste.is_some() || self.palette.is_some();
+                let owned =
+                    self.paste.is_some() || self.palette.is_some() || self.remote_ui.asking();
                 let text = text.filter(|_| !owned);
                 let p = text.filter(|t| !t.0.is_empty()).map(|t| Preedit {
                     text: t.0,
@@ -4089,6 +4503,10 @@ impl App {
                 self.view(ViewCmd::Preedit(p));
             }
             ImeEvent::Commit(t) => {
+                if self.remote_ui.asking() {
+                    // A remote question owns the keyboard; composed text is not taken there.
+                    return;
+                }
                 if self.palette.is_some() {
                     // Composed text goes into the palette query (never logged).
                     if let Some(p) = self.palette.as_mut()
@@ -4151,6 +4569,9 @@ impl App {
         let Some(p) = self.panes.get_mut(&id) else {
             return;
         };
+        if p.remote.is_some() {
+            return self.send_unit(id, bytes.to_vec());
+        }
         let Some(pty) = p.pty.as_mut() else { return };
         if !pty.wants_pollout() {
             match rustix::io::write(pty.master_fd(), bytes) {
@@ -4166,10 +4587,24 @@ impl App {
         self.send_unit(id, bytes.to_vec());
     }
 
-    fn send_unit(&mut self, id: PaneKey, unit: Vec<u8>) {
+    /// Send one whole unit to the pane's PTY or remote link. The unit may carry a typed
+    /// password: every local copy on the remote paths is wiped; the PTY queue scrubs its own.
+    fn send_unit(&mut self, id: PaneKey, mut unit: Vec<u8>) {
         let Some(p) = self.panes.get_mut(&id) else {
             return;
         };
+        if let Some(r) = p.remote.as_mut() {
+            match (r.sid, self.remote.as_ref()) {
+                (Some(sid), Some(link)) => link.input(sid, &unit),
+                // Before the spawn is answered: kept, up to the PTY queue's bound.
+                (None, _) if r.early.len() + unit.len() <= apoth_pty::OUT_QUEUE_BOUND => {
+                    r.early.extend_from_slice(&unit);
+                }
+                _ => {}
+            }
+            apoth_proto::askpass::wipe(&mut unit);
+            return;
+        }
         let Some(pty) = p.pty.as_mut() else { return };
         match pty.send(unit) {
             Ok(Enqueue::Written) => {}
@@ -4225,7 +4660,16 @@ impl App {
 
     fn on_msg(&mut self, m: MainMsg) {
         match m {
-            MainMsg::Reply(id, u) => self.send_unit(id, u),
+            // A session-daemon pane's replies were the server's to send (T-21 §3).
+            MainMsg::Reply(id, u) => {
+                if self.panes.get(&id).is_some_and(|p| p.remote.is_none()) {
+                    self.send_unit(id, u);
+                }
+            }
+            MainMsg::Remote(e) => self.on_remote(e),
+            MainMsg::Askpass(e) => self.on_askpass(e),
+            MainMsg::Credential(id, on) => self.on_credential(id, on),
+            MainMsg::Prompt(id, a) => self.on_prompt(id, a),
             MainMsg::Abyss(a) => self.on_abyss(a),
             MainMsg::Ctl(cid, r) => self.ctl_send(cid, &r),
             MainMsg::A11y(m) => self.on_a11y(m),
@@ -4235,6 +4679,7 @@ impl App {
                 if let Some(p) = self.panes.get_mut(&id) {
                     p.eof = true;
                 }
+                self.password_pane_gone(id);
                 self.maybe_finish(id);
             }
             MainMsg::RenderFailed(why) => {
@@ -4256,6 +4701,7 @@ impl App {
             }
             MainMsg::Loaded(r) => self.on_loaded(*r),
             MainMsg::MediaStopped(id) => self.media_stopped(id),
+            MainMsg::MediaBox(id, b) => self.media_box(id, b),
             MainMsg::Open(m) => self.on_open(m),
             MainMsg::Closed(id, status) => {
                 self.closing = self.closing.saturating_sub(1);
@@ -4311,13 +4757,20 @@ impl App {
             let path = crate::ctl::osc7::local_path(&uri, &self.hostname);
             if let Some(p) = self.panes.get_mut(&id) {
                 p.cwd = path.clone();
+                let host = uri
+                    .strip_prefix("file://")
+                    .and_then(|r| r.split('/').next())
+                    .filter(|h| !h.is_empty());
                 p.cwd_host = if path.is_some() {
                     None
                 } else {
-                    uri.strip_prefix("file://")
-                        .and_then(|r| r.split('/').next())
-                        .filter(|h| !h.is_empty())
-                        .map(crate::open::clean_host)
+                    host.map(crate::open::clean_host)
+                };
+                // The other host's path, decoded as that host would (T-22 §4 cwd inheritance).
+                p.cwd_remote = match (&path, host) {
+                    (None, Some(h)) => crate::ctl::osc7::local_path(&uri, h)
+                        .and_then(|p| p.into_os_string().into_string().ok()),
+                    _ => None,
                 };
             }
             let mut ev = Event::new(EventKind::CwdChanged, Cause::Sequence);
@@ -4361,6 +4814,9 @@ impl App {
         }
         if let Some(token) = e.graphics_file.take() {
             self.on_graphics_file(id, token);
+        }
+        if e.audio_unavailable {
+            self.media_muted_notice(id);
         }
         self.auto_pane_events(id, &mut e, uri.as_deref());
     }
@@ -4631,7 +5087,10 @@ impl App {
         let deny = self.deny_word();
         for id in ids {
             self.send_view_settings(id);
-            if let Some(p) = self.panes.get(&id) {
+            // A session-daemon pane keeps the server's word (it rode in the snapshot).
+            if let Some(p) = self.panes.get(&id)
+                && p.remote.is_none()
+            {
                 p.shared.deny.store(deny, Ordering::Release);
             }
         }
@@ -4794,7 +5253,9 @@ impl App {
     /// Rebuild the overlay from the current errors and restart keys, tell the render thread,
     /// and make room for it (or give the room back).
     fn refresh_bar(&mut self) {
-        let spec = if let Some(pp) = &self.paste {
+        let spec = if let Some(b) = self.remote_bar() {
+            Some(b)
+        } else if let Some(pp) = &self.paste {
             Some(apoth_ui::bar::BarSpec::paste_confirm(
                 self.windows()[0],
                 pp.stats.bytes,
@@ -4815,6 +5276,8 @@ impl App {
             Some(open_bar(self.windows()[0], &o.uri))
         } else if self.auto.confirm.is_some() {
             self.rule_bar()
+        } else if let Some(b) = self.reconnect_bar() {
+            Some(b)
         } else if self.bar_dismissed {
             None
         } else {
@@ -4862,6 +5325,14 @@ impl App {
     /// key was consumed (never forwarded to the shell).
     fn try_dismiss_bar(&mut self) -> bool {
         let Some(o) = &self.bar else { return false };
+        if self
+            .reconnect_bar()
+            .is_some_and(|b| b.headline.text == o.spec.headline.text)
+        {
+            let age = o.shown_at.elapsed().as_millis() as u64;
+            return age >= apoth_ui::tokens::motion::CONSENT_GUARD_MS
+                && self.remote_notice_click(None);
+        }
         let age = o.shown_at.elapsed().as_millis() as u64;
         let st = apoth_ui::bar::BarState { shown_at_ms: 0 };
         if st
@@ -4911,6 +5382,16 @@ impl App {
     fn apply_resizes(&mut self) {
         let cell = self.cell;
         for p in self.panes.values_mut() {
+            if let Some(r) = &p.remote {
+                // The server sizes its panes (T-21 §3 resize policy); the term follows the
+                // `Resized` record in the stream. Unanswered spawns send theirs when bound.
+                if let (Some(sid), Some(link)) = (r.sid, self.remote.as_ref())
+                    && let Some(want) = p.pending.take()
+                {
+                    link.resize(sid, want, cell);
+                }
+                continue;
+            }
             let Some((rows, cols)) = p.pending.take() else {
                 continue;
             };
@@ -4935,9 +5416,15 @@ impl App {
             }
         }
         tracing::debug!(pane = id, rows = nr, cols = nc, "resized");
+        let remote = p.remote.is_some();
         self.write_mux_dump();
         if self.focused() == Some(id) {
             self.ime_send_rect();
+        }
+        if remote {
+            // The server's size may not be this window's (a snapshot, another view's
+            // resize): ask for ours again; the policy decides.
+            self.relayout();
         }
     }
 }

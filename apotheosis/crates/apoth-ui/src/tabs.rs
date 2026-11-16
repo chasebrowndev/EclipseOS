@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Tab strip (T-08 §4): floating or flat tabs, badges, close and new-tab buttons.
 
-use crate::draw::{DrawList, IconId, Rim};
+use crate::draw::{DrawList, IconId, PaneState, PaneTone, Rim};
 use crate::frame::TabStyle;
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
-use crate::state::{UiState, WidgetId, label_colour, surface};
+use crate::state::{UiState, WidgetId, accent_label, accent_surface, chip, label_colour, surface};
 use crate::text::{Measure, TextRun, geometry};
 use crate::tokens::{Palette, Rgba, alpha, metrics, radius, size, space};
 
@@ -63,16 +63,20 @@ pub struct TabStripLayout {
 pub fn layout(strip: Rect, strip_id: WidgetId, tabs: &[TabSpec]) -> TabStripLayout {
     let h = (strip.h - 2.0 * space::XS).max(0.0);
     let y = strip.y + space::XS;
-    let new_tab = Rect::new(
-        strip.right() - space::SM - metrics::NEW_TAB,
-        y + (h - metrics::NEW_TAB) / 2.0,
-        metrics::NEW_TAB,
-        metrics::NEW_TAB,
-    );
     let new_tab_id = strip_id.child(u64::MAX);
     let left = strip.x + space::SM;
-    let limit = new_tab.x - metrics::TAB_GAP;
+    // The tabs stop one button short of the right edge: the new-tab button follows the last
+    // visible tab, so it is always on screen, overflow or not.
+    let limit = strip.right() - space::SM - metrics::NEW_TAB - metrics::TAB_GAP;
     let span = (limit - left).max(0.0);
+    let new_tab_at = |x: f32| {
+        Rect::new(
+            x,
+            y + (h - metrics::NEW_TAB) / 2.0,
+            metrics::NEW_TAB,
+            metrics::NEW_TAB,
+        )
+    };
     let n = tabs.len();
     let mut cells = Vec::new();
     if n == 0 {
@@ -81,7 +85,7 @@ pub fn layout(strip: Rect, strip_id: WidgetId, tabs: &[TabSpec]) -> TabStripLayo
             strip_id,
             cells,
             new_tab_id,
-            new_tab,
+            new_tab: new_tab_at(left),
             overflow: 0,
         };
     }
@@ -112,6 +116,11 @@ pub fn layout(strip: Rect, strip_id: WidgetId, tabs: &[TabSpec]) -> TabStripLayo
             close,
         });
     }
+    let new_tab = new_tab_at(
+        cells
+            .last()
+            .map_or(left, |c| c.rect.right() + metrics::TAB_GAP),
+    );
     TabStripLayout {
         strip,
         strip_id,
@@ -207,6 +216,17 @@ fn badge_colour(p: &Palette, b: Badge) -> Rgba {
     }
 }
 
+/// The square the close and plus marks are drawn in, centred in their hit target.
+fn icon_box(target: Rect) -> Rect {
+    let d = metrics::TAB_ICON;
+    Rect::new(
+        target.x + (target.w - d) / 2.0,
+        target.y + (target.h - d) / 2.0,
+        d,
+        d,
+    )
+}
+
 pub fn draw(
     l: &TabStripLayout,
     tabs: &[TabSpec],
@@ -219,29 +239,37 @@ pub fn draw(
         return;
     }
     if style == TabStyle::Flat {
-        out.rect(l.strip, 0.0, pal.bar_tint, None);
-        out.rect(
-            Rect::new(
-                l.strip.x,
-                l.strip.bottom() - metrics::RIM_W,
-                l.strip.w,
-                metrics::RIM_W,
-            ),
-            0.0,
-            pal.hairline,
-            None,
-        );
+        if out.glass {
+            out.glass_pane(l.strip, 0.0, PaneTone::Plain, PaneState::Rest, 1.0);
+        } else {
+            out.rect(l.strip, 0.0, pal.bar_tint, None);
+            out.rect(
+                Rect::new(
+                    l.strip.x,
+                    l.strip.bottom() - metrics::RIM_W,
+                    l.strip.w,
+                    metrics::RIM_W,
+                ),
+                0.0,
+                pal.hairline,
+                None,
+            );
+        }
     }
     for c in &l.cells {
         let tab = &tabs[c.index];
         let hover_tab = ui.hover == Some(c.id) || ui.hover == Some(c.close_id);
         let mut st = ui.control(c.id, false, tab.active);
         st.hover = hover_tab;
-        let (fill, rim) = surface(pal, st);
+        let (fill, rim) = if tab.active {
+            accent_surface(pal, st)
+        } else {
+            surface(pal, st)
+        };
         let show_bg =
             style == TabStyle::Floating || tab.active || st.hover || st.focus_kb || st.pressed;
         if show_bg {
-            out.rect(c.rect, radius::INSET, fill, Some(rim));
+            chip(out, c.rect, radius::INSET, st, (fill, rim));
         }
         if let Some(b) = tab.badges.iter().find(|b| is_progress(**b)) {
             progress_line(c.rect, *b, pal, out);
@@ -293,26 +321,26 @@ pub fn draw(
         out.text(
             run,
             Point::new(x, c.rect.y + (c.rect.h - size::BODY) / 2.0),
-            label_colour(pal, st),
+            if tab.active {
+                accent_label(pal, st)
+            } else {
+                label_colour(pal, st)
+            },
         );
         if show_close {
             let cst = ui.control(c.close_id, false, false);
             if cst.hover || cst.pressed || cst.focus_kb {
                 let (cf, cr) = surface(pal, cst);
-                out.rect(c.close, radius::INSET, cf, Some(cr));
+                chip(out, c.close, radius::INSET, cst, (cf, cr));
             }
-            let ic = c.close.inset(space::XS);
+            let ic = icon_box(c.close);
             out.icon(IconId::Close, ic, label_colour(pal, cst));
         }
     }
     let nst = ui.control(l.new_tab_id, false, false);
     let (nf, nr) = surface(pal, nst);
     if style == TabStyle::Floating || nst.hover || nst.pressed || nst.focus_kb {
-        out.rect(l.new_tab, radius::INSET, nf, Some(nr));
+        chip(out, l.new_tab, radius::INSET, nst, (nf, nr));
     }
-    out.icon(
-        IconId::Plus,
-        l.new_tab.inset(space::SM),
-        label_colour(pal, nst),
-    );
+    out.icon(IconId::Plus, icon_box(l.new_tab), label_colour(pal, nst));
 }

@@ -178,6 +178,77 @@ impl MuxDump {
     }
 }
 
+/// Test-only dump of the media placements' playback state and position (T-16 §2, T-08 §4):
+/// `APOTH_TEST_MEDIA=<path>`, debug builds only. One line per placement of the screen,
+/// `<state> pos=<ms>`; the first pane writes `<path>`, a `--ext` window `<path>.ext`.
+pub(crate) struct MediaDump {
+    path: PathBuf,
+    last: Option<String>,
+}
+
+impl MediaDump {
+    pub(crate) fn from_env(ext: bool) -> Option<MediaDump> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let p = std::env::var_os("APOTH_TEST_MEDIA").filter(|p| !p.is_empty())?;
+        let path = PathBuf::from(p);
+        Some(MediaDump {
+            path: if ext {
+                path.with_extension("ext")
+            } else {
+                path
+            },
+            last: None,
+        })
+    }
+
+    pub(crate) fn write(&mut self, places: &[apoth_term::MediaPlacement]) {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for p in places {
+            let _ = writeln!(text, "{:?} pos={}", p.state, p.pos_ms);
+        }
+        if self.last.as_deref() == Some(text.as_str()) {
+            return;
+        }
+        let mut tmp = self.path.clone().into_os_string();
+        tmp.push(".tmp");
+        if std::fs::write(&tmp, &text).is_ok() && std::fs::rename(&tmp, &self.path).is_ok() {
+            self.last = Some(text);
+        }
+    }
+}
+
+/// Test-only count of presented frames (T-07 §2 "no frame without damage", T-23 `IDLE`):
+/// `APOTH_TEST_FRAMES=<path>`, debug builds only. The render thread writes the number of
+/// frames it has presented since start after each present. A count, never content.
+pub(crate) struct FrameCount {
+    path: PathBuf,
+    n: u64,
+}
+
+impl FrameCount {
+    pub(crate) fn from_env() -> Option<FrameCount> {
+        if !cfg!(debug_assertions) {
+            return None;
+        }
+        let p = std::env::var_os("APOTH_TEST_FRAMES").filter(|p| !p.is_empty())?;
+        Some(FrameCount {
+            path: PathBuf::from(p),
+            n: 0,
+        })
+    }
+
+    pub(crate) fn presented(&mut self) {
+        self.n += 1;
+        let tmp = self.path.with_extension("tmp");
+        if std::fs::write(&tmp, self.n.to_string()).is_ok() {
+            let _ = std::fs::rename(&tmp, &self.path);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

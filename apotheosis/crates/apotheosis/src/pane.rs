@@ -33,6 +33,8 @@ const WAKE_IMAGE: u8 = 3;
 pub(crate) const WAKE_GRAPHICS_FILE: u8 = 4;
 /// Wake byte: a media player has events for the term (T-16 §2).
 const WAKE_MEDIA: u8 = 5;
+/// Wake byte: the user clicked a media placement ([`PaneShared::post_media_toggle`]).
+pub(crate) const WAKE_MEDIA_CLICK: u8 = 6;
 
 /// Upper bound on the yields the io thread spends letting waiting takers go first.
 const MAX_HANDOFF_YIELDS: u32 = 2_000;
@@ -58,6 +60,11 @@ pub(crate) struct PaneShared {
     resize: Mutex<Option<ResizeReq>>,
     /// Answers to `graphics-file` questions (token, allow), for the io thread.
     graphics_file: Mutex<Vec<(u64, bool)>>,
+    /// Media placements the user clicked (play/pause toggles, by key), for the io thread.
+    media_clicks: Mutex<Vec<u64>>,
+    /// The media placements of the frame render last drew, with that frame's top row
+    /// (absolute): main hit-tests a press against them at press time (T-08 §4).
+    media_shown: Mutex<(usize, Vec<apoth_term::MediaPlacement>)>,
     /// Lock-free mode mirror: main encodes keys from this and never locks `term`.
     pub(crate) mirror: Arc<InputMirror>,
     /// Set by io on output; cleared by render when it wakes (edge-triggered wake).
@@ -75,6 +82,9 @@ pub(crate) struct PaneShared {
     pub(crate) at_prompt: AtomicBool,
     /// Mode 2004 is set and a prompt mark followed it (T-18 §4 "in force"); stored by io.
     pub(crate) bracketed_ok: AtomicBool,
+    /// An OSC 133 command is running (`C` seen, no `D` yet); stored by io. One of the
+    /// "the user just ran it" tests of the password prompt (T-17 §5).
+    pub(crate) running: AtomicBool,
 }
 
 impl PaneShared {
@@ -85,6 +95,8 @@ impl PaneShared {
             waiters: AtomicUsize::new(0),
             resize: Mutex::new(None),
             graphics_file: Mutex::new(Vec::new()),
+            media_clicks: Mutex::new(Vec::new()),
+            media_shown: Mutex::new((0, Vec::new())),
             mirror,
             dirty: AtomicBool::new(false),
             hold: AtomicBool::new(false),
@@ -93,6 +105,7 @@ impl PaneShared {
             deny: AtomicU32::new(0),
             at_prompt: AtomicBool::new(false),
             bracketed_ok: AtomicBool::new(false),
+            running: AtomicBool::new(false),
         }
     }
 
@@ -144,6 +157,50 @@ impl PaneShared {
             .push((token, allow));
     }
 
+    /// Leave a play/pause toggle of media placement `key` for the io thread (a click with
+    /// mouse reporting off, T-08 §4); the caller then writes [`WAKE_MEDIA_CLICK`] to the io
+    /// wake pipe. Main never takes the term lock; the io thread resolves the toggle against
+    /// the placement's state when it runs.
+    pub(crate) fn post_media_toggle(&self, key: u64) {
+        let mut q = self
+            .media_clicks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Bounded: a click storm faster than the io thread is a few toggles, not a queue.
+        if q.len() < 16 {
+            q.push(key);
+        }
+    }
+
+    /// Render: the media placements it just drew, `top` being the frame's first row.
+    pub(crate) fn set_media_shown(&self, top: usize, places: &[apoth_term::MediaPlacement]) {
+        let mut s = self
+            .media_shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        s.0 = top;
+        s.1.clear();
+        s.1.extend_from_slice(places);
+    }
+
+    /// The drawn media placement at viewport cell `(row, col)`, if any (its key).
+    pub(crate) fn media_shown_at(&self, row: usize, col: usize) -> Option<u64> {
+        let s = self
+            .media_shown
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::view::media_at(&s.1, s.0 + row, col)
+    }
+
+    pub(crate) fn take_media_toggles(&self) -> Vec<u64> {
+        std::mem::take(
+            &mut *self
+                .media_clicks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
     fn take_graphics_file(&self) -> Vec<(u64, bool)> {
         std::mem::take(
             &mut *self
@@ -186,6 +243,8 @@ pub(crate) struct PaneEvents {
     /// A `graphics-file` question (T-15 §5, T-18 §3): the token main answers with
     /// [`PaneShared::post_graphics_file`]. The pane's output waits until then.
     pub(crate) graphics_file: Option<u64>,
+    /// A media placement plays muted: no sound server took its audio (T-16 §3).
+    pub(crate) audio_unavailable: bool,
 }
 
 /// A command block's state change with what rules match on (T-11 §5). The command line
@@ -233,8 +292,20 @@ pub(crate) enum MainMsg {
     /// A worker finished a config load (T-10 §4): main diffs and applies it.
     /// A media window's threads stopped: its surface can be destroyed.
     MediaStopped(u64),
+    /// A media window's placements need these rows and columns (spare row included).
+    MediaBox(u64, (usize, usize)),
     /// "Open with" worker results (T-14 §11).
     Open(crate::app::OpenMsg),
+    /// The session daemon's stream (T-21 §3).
+    Remote(crate::attach::Event),
+    /// The askpass broker: a sheet to show or withdraw (T-22 §3; never carries a secret).
+    Askpass(crate::askpass::Event),
+    /// The pane's PTY entered (`true`) or left the credential state, ECHO off and ICANON
+    /// on (ADR 0115), sampled by its io thread on output-idle edges.
+    Credential(PaneKey, bool),
+    /// An `ec-secret-prompt` ended (T-22 §3). The answer is `Some` for a pane prompt (main
+    /// types it); an askpass prompt's answer already went to its client.
+    Prompt(u64, Option<crate::askpass::Answer>),
     Loaded(
         Box<(
             apoth_config::reload::Reloader,
@@ -275,7 +346,13 @@ pub(crate) struct IoArgs {
     pub(crate) hook: Option<DumpHook>,
     /// Image decodes run here (T-15 §5); a refused job runs inline.
     pub(crate) workers: Spawner,
+    /// A session-daemon pane (T-21 §3): `master` is the view's packet socket from the
+    /// attach demultiplexer ([`crate::attach`]), not a PTY, and restored terms arrive here.
+    pub(crate) remote: Option<Mailbox>,
 }
+
+/// Where the attach demultiplexer leaves a pane's restored term for its io thread.
+pub(crate) type Mailbox = Arc<Mutex<Option<Term>>>;
 
 pub(crate) fn spawn_io(a: IoArgs, wake: OwnedFd) -> std::io::Result<IoThread> {
     // Workers wake the io thread through their own copy of the pipe's write end.
@@ -342,6 +419,7 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
         to_render,
         hook,
         workers,
+        remote,
     } = a;
     let (done_tx, done_rx) = mpsc::channel();
     let io = Io {
@@ -358,18 +436,27 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
             crate::mediahost::pipe_poke(Arc::clone(&poke), WAKE_MEDIA),
         )),
     };
-    let mut buf = vec![0u8; SLICE_BYTES];
+    // A remote packet is a tag byte plus up to one slice.
+    let mut buf = vec![0u8; SLICE_BYTES + 16];
     if let Some(h) = &hook {
         h.write(&shared.lock_io());
     }
     let mut st = IoState::default();
     let mut eof = false;
+    // The credential predicate (ADR 0115), local PTYs only: sampled when output goes idle
+    // and once more a moment later (a program may print its prompt before it turns echo
+    // off). Only a change is sent.
+    let mut cred = Credential::default();
     while !eof {
         let deadline = if st.group_watch {
             let recheck = Instant::now() + GROUP_RECHECK;
             Some(st.deadline.map_or(recheck, |d| d.min(recheck)))
         } else {
             st.deadline
+        };
+        let deadline = match (deadline, cred.recheck) {
+            (Some(d), Some(r)) => Some(d.min(r)),
+            (d, r) => d.or(r),
         };
         let timeout = deadline.map(|d| {
             let left = d.saturating_duration_since(Instant::now());
@@ -451,6 +538,10 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
                 st = io.step(|t| t.graphics_file_decision(token, allow, Instant::now()));
                 ran = true;
             }
+            let clicks = shared.take_media_toggles();
+            if !clicks.is_empty() {
+                st = io.step(|t| media_toggles(t, &clicks));
+            }
             let evs = io
                 .media
                 .borrow_mut()
@@ -482,6 +573,10 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
             }
         }
         if !readable {
+            if cred.recheck.is_some_and(|r| Instant::now() >= r) {
+                cred.recheck = None;
+                cred.sample(&master, id, &to_main);
+            }
             // Timeout: a mode 2026 hold or a half-received image transfer may have expired.
             st = io.step(|t| t.tick(Instant::now()));
             continue;
@@ -493,6 +588,13 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
                 Ok(0) => {
                     eof = true;
                     break;
+                }
+                Ok(n) if remote.is_some() => {
+                    total += n;
+                    st = io.remote_packet(&buf[..n], remote.as_ref().expect("checked"));
+                    if total >= SLICE_BYTES || started.elapsed() >= SLICE_TIME {
+                        break;
+                    }
                 }
                 Ok(n) => {
                     total += n;
@@ -517,11 +619,99 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
         {
             h.write(&shared.lock_io());
         }
+        if total > 0 && remote.is_none() && !eof {
+            cred.sample(&master, id, &to_main);
+            cred.recheck = Some(Instant::now() + CREDENTIAL_RECHECK);
+        }
     }
     let _ = to_main.send(MainMsg::Eof(id));
 }
 
+/// The second look after output goes idle.
+const CREDENTIAL_RECHECK: Duration = Duration::from_millis(50);
+
+/// The io thread's view of the credential predicate.
+#[derive(Default)]
+struct Credential {
+    on: bool,
+    recheck: Option<Instant>,
+}
+
+impl Credential {
+    /// Read the line discipline and report a change. No allocation; one syscall.
+    fn sample(
+        &mut self,
+        master: &OwnedFd,
+        id: PaneKey,
+        to_main: &calloop::channel::Sender<MainMsg>,
+    ) {
+        let Ok(t) = rustix::termios::tcgetattr(master) else {
+            return;
+        };
+        let lm = t.local_modes;
+        let on = apoth_pty::TermiosState {
+            echo: lm.contains(rustix::termios::LocalModes::ECHO),
+            icanon: lm.contains(rustix::termios::LocalModes::ICANON),
+        }
+        .is_credential();
+        if on != self.on {
+            self.on = on;
+            let _ = to_main.send(MainMsg::Credential(id, on));
+        }
+    }
+}
+
 impl Io<'_> {
+    /// One packet from the attach demultiplexer: output, a resize at its place in the
+    /// stream, or a fresh snapshot to swap in (T-21 §3). The term the view holds then
+    /// matches the server's at every point of the stream.
+    fn remote_packet(&self, pkt: &[u8], mailbox: &Mailbox) -> IoState {
+        match pkt.split_first() {
+            Some((&crate::attach::PKT_OUTPUT, bytes)) => {
+                self.step(|t| t.feed(bytes, Instant::now()))
+            }
+            Some((&crate::attach::PKT_RESIZE, b)) if b.len() == 4 => {
+                let rows = usize::from(u16::from_le_bytes([b[0], b[1]]));
+                let cols = usize::from(u16::from_le_bytes([b[2], b[3]]));
+                let dims = self.shared.lock_io().resize(rows, cols);
+                let _ = self.to_main.send(MainMsg::Resized(self.id, dims));
+                self.step(|_| apoth_term::Wake {
+                    dirty: true,
+                    ..apoth_term::Wake::default()
+                })
+            }
+            Some((&crate::attach::PKT_SNAPSHOT, _)) => {
+                let Some(mut new) = mailbox
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take()
+                else {
+                    return self.step(|_| apoth_term::Wake::default());
+                };
+                new.set_input_mirror(Arc::clone(&self.shared.mirror));
+                // The server's sequence policy: the view must refuse exactly what it refused.
+                self.shared.deny.store(new.deny_bits(), Ordering::Release);
+                // The title the program set before this view attached shows on the tab.
+                let title = new.title().to_owned();
+                if !title.is_empty() {
+                    new.events().title = Some(title);
+                }
+                let dims = {
+                    let mut t = self.shared.lock_io();
+                    *t = new;
+                    (t.rows(), t.cols())
+                };
+                let _ = self.to_main.send(MainMsg::Resized(self.id, dims));
+                self.step(|_| apoth_term::Wake {
+                    dirty: true,
+                    events: true,
+                    ..apoth_term::Wake::default()
+                })
+            }
+            _ => self.step(|_| apoth_term::Wake::default()),
+        }
+    }
+
     /// One locked step on the term (feed, tick, a decode result, a consent answer): installs
     /// the deny word, runs `f`, collects replies, events and image jobs, then publishes and
     /// hands the jobs to the workers outside the lock.
@@ -562,6 +752,12 @@ impl Io<'_> {
                 self.watch.borrow_mut().clear();
             }
             shared.at_prompt.store(t.at_prompt(), Ordering::Release);
+            shared.running.store(
+                t.blocks()
+                    .last()
+                    .is_some_and(|b| b.state == apoth_term::shell::BlockState::Running),
+                Ordering::Release,
+            );
             shared
                 .bracketed_ok
                 .store(t.bracketed_in_force(), Ordering::Release);
@@ -627,6 +823,35 @@ impl Io<'_> {
     }
 }
 
+/// The control a click on a placement means: pause while it plays, play otherwise (an
+/// ended placement restarts, an opening one starts when ready).
+pub(crate) fn toggle_ctl(p: &apoth_term::MediaPlacement) -> apoth_term::MediaCtl {
+    match p.state {
+        apoth_term::MediaPlay::Playing => apoth_term::MediaCtl::Pause,
+        _ => apoth_term::MediaCtl::Play,
+    }
+}
+
+/// Apply clicked toggles (by key) to the term; a key whose placement went is dropped.
+pub(crate) fn media_toggles(t: &mut Term, keys: &[u64]) -> apoth_term::Wake {
+    let mut w = apoth_term::Wake::default();
+    for &key in keys {
+        let Some(ctl) = t
+            .media_placements()
+            .iter()
+            .find(|p| p.key == key)
+            .map(toggle_ctl)
+        else {
+            continue;
+        };
+        let x = t.media_control(key, ctl);
+        w.dirty |= x.dirty;
+        w.media |= x.media;
+        w.hold = x.hold;
+    }
+    w
+}
+
 pub(crate) fn take_events(t: &mut Term) -> PaneEvents {
     let slot = t.events();
     let mut e = PaneEvents {
@@ -641,6 +866,7 @@ pub(crate) fn take_events(t: &mut Term) -> PaneEvents {
         vars: slot.vars.drain(..).collect(),
         commands: Vec::new(),
         graphics_file: slot.graphics_file.take(),
+        audio_unavailable: slot.audio_unavailable,
     };
     let changes: Vec<apoth_term::CommandEvent> = slot.commands.drain(..).collect();
     slot.clear();
@@ -689,6 +915,86 @@ fn publish(
 mod tests {
     use super::*;
     use apoth_term::TermConfig;
+
+    /// A press is hit-tested against the placements render last drew, offset by that
+    /// frame's top row: no hover report is needed before the click (T-08 §4).
+    #[test]
+    fn a_press_hits_the_drawn_placement() {
+        let shared = PaneShared::new(Term::new(TermConfig::default()));
+        assert_eq!(shared.media_shown_at(0, 0), None);
+        let place = apoth_term::MediaPlacement {
+            key: 7,
+            id: 1,
+            row: 12,
+            col: 3,
+            cols: 4,
+            rows: 2,
+            state: apoth_term::MediaPlay::Playing,
+            pos_ms: 0,
+            duration_ms: None,
+            video: None,
+        };
+        shared.set_media_shown(10, std::slice::from_ref(&place));
+        assert_eq!(shared.media_shown_at(2, 3), Some(7));
+        assert_eq!(shared.media_shown_at(3, 6), Some(7));
+        assert_eq!(shared.media_shown_at(1, 3), None);
+        assert_eq!(shared.media_shown_at(4, 3), None);
+        assert_eq!(shared.media_shown_at(2, 7), None);
+        // Scrolled back one row: the box sits a row lower in the viewport.
+        shared.set_media_shown(9, &[place]);
+        assert_eq!(shared.media_shown_at(2, 3), None);
+        assert_eq!(shared.media_shown_at(3, 3), Some(7));
+        shared.set_media_shown(9, &[]);
+        assert_eq!(shared.media_shown_at(3, 3), None);
+    }
+
+    /// A term with one playing media placement (key, 4x2 cells at the origin).
+    fn playing() -> (Term, u64) {
+        let now = std::time::Instant::now();
+        let mut t = Term::new(TermConfig {
+            rows: 10,
+            cols: 40,
+            ..TermConfig::default()
+        });
+        t.feed(b"\x1b_Ma=o,s=f,t=1,i=2,c=4,r=2\x1b\\", now);
+        let key = match t.take_media_requests().as_slice() {
+            [apoth_term::MediaRequest::Open { key, .. }] => *key,
+            other => panic!("{other:?}"),
+        };
+        let ready = apoth_term::MediaEvent::Ready {
+            width: 32,
+            height: 32,
+            duration_ms: 0,
+            video_w: 32,
+            video_h: 32,
+            dar: None,
+        };
+        t.media_event(key, ready, now);
+        (t, key)
+    }
+
+    #[test]
+    fn a_click_toggles_play_and_pause() {
+        use apoth_term::{MediaCtl, MediaPlay, MediaRequest};
+        let (mut t, key) = playing();
+        assert_eq!(toggle_ctl(&t.media_placements()[0]), MediaCtl::Pause);
+        let w = media_toggles(&mut t, &[key]);
+        assert!(w.dirty && w.media);
+        assert_eq!(t.media_placements()[0].state, MediaPlay::Paused);
+        assert_eq!(
+            t.take_media_requests(),
+            vec![MediaRequest::Control {
+                key,
+                ctl: MediaCtl::Pause
+            }]
+        );
+        assert_eq!(toggle_ctl(&t.media_placements()[0]), MediaCtl::Play);
+        media_toggles(&mut t, &[key]);
+        assert_eq!(t.media_placements()[0].state, MediaPlay::Playing);
+        // A key whose placement went is dropped.
+        let w = media_toggles(&mut t, &[key + 9]);
+        assert!(!w.dirty && !w.media);
+    }
 
     #[test]
     fn now_is_monotonic_and_nonzero() {

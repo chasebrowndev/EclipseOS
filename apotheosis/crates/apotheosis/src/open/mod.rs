@@ -900,24 +900,19 @@ pub(crate) fn menu_rows(r: &Resolved) -> (Vec<MenuRow>, Vec<Choice>) {
         (None, Some(d)) => {
             choices.push(d.clone());
             let title = if d.shows_in_terminal() && matches!(d.handler, Handler::Term { .. }) {
-                format!("Open with {} {}", d.title(), d.placement.phrase())
+                format!("Open {}", d.placement.phrase())
             } else {
-                format!("Open with {}", d.title())
+                "Open".to_string()
             };
-            rows.push(row(title, None, OpenPick::Launch(0), true));
-            rows.push(row(
-                "Open with\u{2026}".into(),
-                Some("choose an app".into()),
-                OpenPick::Picker,
-                false,
-            ));
+            rows.push(row(title, None, OpenPick::Launch(0), false));
+            rows.push(row("Open with".into(), None, OpenPick::Picker, false));
             for c in &r.terminal {
                 if c == d {
                     continue;
                 }
                 choices.push(c.clone());
                 rows.push(row(
-                    format!("Open with {} {}", c.title(), c.placement.phrase()),
+                    format!("Open {}", c.placement.phrase()),
                     None,
                     OpenPick::Launch(choices.len() - 1),
                     false,
@@ -933,7 +928,7 @@ pub(crate) fn menu_rows(r: &Resolved) -> (Vec<MenuRow>, Vec<Choice>) {
                 false,
             ));
             rows.push(row(
-                "Open with\u{2026}".into(),
+                "Open with".into(),
                 Some(why),
                 OpenPick::Disabled,
                 false,
@@ -942,7 +937,14 @@ pub(crate) fn menu_rows(r: &Resolved) -> (Vec<MenuRow>, Vec<Choice>) {
     }
     let is_path = r.copy_path.is_some() || !r.copy.contains("://");
     rows.push(row(
-        if is_path { "Copy" } else { "Copy link" }.into(),
+        if !is_path {
+            "Copy link"
+        } else if r.copy_path.as_ref().is_some_and(|p| p != &r.copy) {
+            "Copy"
+        } else {
+            "Copy path"
+        }
+        .into(),
         None,
         OpenPick::Copy(r.copy.clone()),
         false,

@@ -11,7 +11,9 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+mod image;
 mod reflow;
+pub use image::{ImageError, ScreenMeta};
 pub use reflow::{ReflowOpts, Reflowed};
 
 use crate::cell::{Cell, Semantic, Tag, Wide};

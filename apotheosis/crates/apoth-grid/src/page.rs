@@ -200,7 +200,26 @@ impl PageSpec {
     pub fn total_bytes(&self) -> usize {
         Layout::of(self).total
     }
+
+    /// A spec from outside (a mux snapshot, T-21 §3) is usable: every capacity is within the
+    /// limits [`Page::from_bytes`] accepts and a page of it is at most [`MAX_SPEC_BYTES`].
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        (1..=65_535).contains(&self.cols)
+            && (1..=65_535).contains(&self.rows_cap)
+            && (1..=MAX_STYLE_CAP).contains(&self.style_cap)
+            && self.chunk_cap <= MAX_CHUNK_CAP
+            && self.link_cap <= MAX_LINK_CAP
+            && self.lmap_cap <= MAX_LMAP_CAP
+            && self.str_cap <= MAX_STR_CAP
+            && self.rows_cap.saturating_mul(self.cols) <= crate::screen::MAX_CELLS
+            && self.total_bytes() <= MAX_SPEC_BYTES
+    }
 }
+
+/// Largest page a spec from outside may describe (a full [`crate::MAX_CELLS`] alternate
+/// screen plus its tables fits).
+pub const MAX_SPEC_BYTES: usize = 64 << 20;
 
 fn align8(v: usize) -> usize {
     (v + 7) & !7

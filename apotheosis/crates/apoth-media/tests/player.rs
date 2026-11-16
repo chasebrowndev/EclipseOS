@@ -268,3 +268,32 @@ fn frames_are_pictures() {
             .unwrap();
     }
 }
+
+/// Three looping players at once, no sound server (the `glass_shots` load): none of their
+/// helpers dies. rav1d's debug-build overlap tracker used to abort a frame-threaded helper
+/// within a few loops (`helper-crashed`); dev builds now decode rav1d like release.
+#[test]
+fn three_loopers_stay_up() {
+    let ps: Vec<_> = (0..3)
+        .map(|_| {
+            let mut o = opts(SinkKind::Off);
+            o.looping = true;
+            spawn("av1-opus-160x90.webm", o)
+        })
+        .collect();
+    let deadline = Instant::now() + Duration::from_secs(8);
+    let mut n = [0usize; 3];
+    while Instant::now() < deadline {
+        for (i, (_, rx)) in ps.iter().enumerate() {
+            for (_, e) in rx.try_iter() {
+                assert!(
+                    !matches!(e, Event::Ended | Event::Error(_)),
+                    "player {i}: {e:?}"
+                );
+                n[i] += usize::from(matches!(e, Event::Frame(_)));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(n.iter().all(|&f| f > 120), "{n:?} frames");
+}

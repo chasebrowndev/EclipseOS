@@ -40,6 +40,8 @@ const STALL: Duration = Duration::from_secs(10);
 const INFO_MS: i32 = 10_000;
 /// Largest message the terminal accepts from a media helper: a PCM chunk, framing aside.
 const MAX_IN: usize = wire::MAX_PCM + 64;
+/// Position reports while playing: at most one per this many milliseconds of media time.
+pub const POSITION_MS: u64 = 100;
 
 /// Where audio goes.
 #[derive(Debug, Clone)]
@@ -104,18 +106,23 @@ pub enum Control {
 /// What a player reports. After `Error` nothing more comes.
 #[derive(Debug, Clone)]
 pub enum Event {
-    /// The stream is open: output size (0x0 for audio only), duration, whether audio plays.
+    /// The stream is open: output size (0x0 for audio only), duration, whether audio plays,
+    /// the coded video size (0x0 for audio only) and the declared display aspect when the
+    /// pixels are not square. The output size already has the display aspect.
     Ready {
         width: u32,
         height: u32,
         duration_ms: u64,
         audio: bool,
+        video_w: u32,
+        video_h: u32,
+        dar: Option<(u32, u32)>,
     },
     /// Audio was asked for but no sound server is reachable: playback continues muted.
     AudioUnavailable,
     /// The frame to show now.
     Frame(Arc<Image>),
-    /// Whole seconds played (once per change).
+    /// Milliseconds played: on each [`POSITION_MS`] step while playing, and after a seek.
     Position(u64),
     /// Played to the end (not looping). A `Seek` restarts.
     Ended,
@@ -391,19 +398,42 @@ fn run(
         Ok(Some((tag, body))) => FromHelper::decode(tag, &body).map_err(|_| "helper-protocol")?,
         _ => return Err("helper-protocol"),
     };
-    let (width, height, rate, channels, duration_ms) = match info {
+    let (width, height, rate, channels, duration_ms, video_w, video_h, dar) = match info {
         FromHelper::Info {
             width,
             height,
             rate,
             channels,
             duration_ms,
-        } => (width, height, rate, channels, duration_ms),
+            video_w,
+            video_h,
+            dar_w,
+            dar_h,
+        } => (
+            width,
+            height,
+            rate,
+            channels,
+            duration_ms,
+            video_w,
+            video_h,
+            (dar_w, dar_h),
+        ),
         FromHelper::Failed(f) => return Err(f.code()),
         _ => return Err("helper-protocol"),
     };
     // The helper may only shrink into the box, and send audio only when asked.
-    let bad_video = width > opts.box_w || height > opts.box_h || (width == 0) != (height == 0);
+    let bad_video = width > opts.box_w
+        || height > opts.box_h
+        || (width == 0) != (height == 0)
+        || (video_w == 0) != (width == 0)
+        || (video_h == 0) != (width == 0)
+        || video_w > opts.max_w
+        || video_h > opts.max_h
+        || (dar.0 == 0) != (dar.1 == 0)
+        || dar.0 > 0xffff
+        || dar.1 > 0xffff
+        || (width == 0 && dar.0 != 0);
     let bad_audio = if rate == 0 {
         channels != 0
     } else {
@@ -460,6 +490,9 @@ fn run(
         height,
         duration_ms,
         audio: sink.is_some(),
+        video_w,
+        video_h,
+        dar: (dar.0 > 0).then_some(dar),
     });
     if rate > 0 && sink.is_none() {
         on_event(Event::AudioUnavailable);
@@ -479,7 +512,8 @@ fn run(
         started: false,
         granted_target: byte_rate * AUDIO_AHEAD_MS / 1000,
         last_progress: Instant::now(),
-        last_second: None,
+        last_pos: None,
+        first_shown: false,
         volume: (opts.volume, opts.muted),
         rate: rate > 0,
         has_video: width > 0,
@@ -525,7 +559,10 @@ struct Play {
     started: bool,
     granted_target: u64,
     last_progress: Instant,
-    last_second: Option<u64>,
+    /// The last position reported, in [`POSITION_MS`] steps.
+    last_pos: Option<u64>,
+    /// The paused first frame has been shown.
+    first_shown: bool,
     volume: (f32, bool),
     /// The stream has audio (whether or not it plays).
     rate: bool,
@@ -595,6 +632,9 @@ impl Play {
         self.started = self.clock.audio_master() || !self.has_video();
         self.pcm_rx = 0;
         self.pcm_base_us = at;
+        // Report the new position, and show its frame, even while paused.
+        self.last_pos = None;
+        self.first_shown = false;
         Ok(())
     }
 
@@ -706,18 +746,32 @@ impl Play {
         Ok(())
     }
 
+    /// Report the position when it moved to another [`POSITION_MS`] step (or was reset).
+    fn position(&mut self, on_event: &mut OnEvent) {
+        let ms = (self.now().max(0) / 1000) as u64;
+        let step = ms / POSITION_MS;
+        if self.last_pos != Some(step) {
+            self.last_pos = Some(step);
+            on_event(Event::Position(ms));
+        }
+    }
+
     fn tick(&mut self, on_event: &mut OnEvent) -> Result<(), &'static str> {
         if !self.playing {
             // Paused before anything showed: show the first frame.
             if let Some(q) = self.queue.front()
                 && !self.ended_sent
-                && self.last_second.is_none()
+                && !self.first_shown
             {
                 on_event(Event::Frame(Arc::clone(&q.image)));
-                self.last_second = Some(0);
+                self.first_shown = true;
+            }
+            if !self.ended_sent {
+                self.position(on_event);
             }
             return Ok(());
         }
+        self.first_shown = true;
         let now = self.now();
         let pts: Vec<i64> = self.queue.iter().map(|q| q.pts).collect();
         let (show, mut used) = pick(&pts, now);
@@ -737,11 +791,7 @@ impl Play {
         if let Some(img) = shown {
             on_event(Event::Frame(img));
         }
-        let sec = (now.max(0) / 1_000_000) as u64;
-        if self.last_second != Some(sec) {
-            self.last_second = Some(sec);
-            on_event(Event::Position(sec));
-        }
+        self.position(on_event);
         self.grant();
         let drained = self.sink.as_ref().is_none_or(|s| s.queued() == 0);
         if self.helper_ended && self.queue.is_empty() && drained && !self.ended_sent {

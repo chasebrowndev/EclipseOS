@@ -125,13 +125,18 @@ pub enum FromHelper {
     Ready,
     /// The helper stops with this error.
     Failed(Fail),
-    /// Stream info after open: output size (0x0: no video), audio format (rate 0: none).
+    /// Stream info after open: output size (0x0: no video), audio format (rate 0: none),
+    /// the coded video size, and the declared display aspect (`0:0`: square pixels).
     Info {
         width: u32,
         height: u32,
         rate: u32,
         channels: u8,
         duration_ms: u64,
+        video_w: u32,
+        video_h: u32,
+        dar_w: u32,
+        dar_h: u32,
     },
     /// A frame in a ring slot: RGBA, `stride` bytes per row, `len` bytes used.
     Frame {
@@ -359,12 +364,20 @@ impl FromHelper {
                 rate,
                 channels,
                 duration_ms,
+                video_w,
+                video_h,
+                dar_w,
+                dar_h,
             } => W::new(3)
                 .u32(*width)
                 .u32(*height)
                 .u32(*rate)
                 .u8(*channels)
                 .u64(*duration_ms)
+                .u32(*video_w)
+                .u32(*video_h)
+                .u32(*dar_w)
+                .u32(*dar_h)
                 .done(),
             FromHelper::Frame {
                 slot,
@@ -410,6 +423,10 @@ impl FromHelper {
                 rate: r.u32()?,
                 channels: r.u8()?,
                 duration_ms: r.u64()?,
+                video_w: r.u32()?,
+                video_h: r.u32()?,
+                dar_w: r.u32()?,
+                dar_h: r.u32()?,
             },
             4 => FromHelper::Frame {
                 slot: r.u8()?,
@@ -505,6 +522,10 @@ mod tests {
             rate: 48_000,
             channels: 2,
             duration_ms: 1000,
+            video_w: 720,
+            video_h: 480,
+            dar_w: 16,
+            dar_h: 9,
         });
         round_from(FromHelper::Frame {
             slot: 1,

@@ -216,6 +216,20 @@ impl Default for Blocks {
 }
 
 impl Blocks {
+    /// Next id and evicted count (a mux snapshot carries them with the records, T-21 §3).
+    pub(crate) fn counters(&self) -> (u32, u64) {
+        (self.next_id, self.evicted)
+    }
+
+    /// Rebuild from snapshot parts; the caller has bounded `list` by [`BLOCKS_CAP`].
+    pub(crate) fn from_parts(list: VecDeque<Block>, next_id: u32, evicted: u64) -> Blocks {
+        Blocks {
+            list,
+            next_id,
+            evicted,
+        }
+    }
+
     /// Records, oldest first.
     pub fn iter(&self) -> impl DoubleEndedIterator<Item = &Block> + ExactSizeIterator {
         self.list.iter()

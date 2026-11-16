@@ -11,6 +11,7 @@ pub mod draw;
 pub mod frame;
 pub mod geom;
 pub mod hit;
+pub mod mediactl;
 pub mod mediawin;
 pub mod motion;
 pub mod palette;
@@ -24,7 +25,7 @@ pub mod toggle;
 pub mod tokens;
 pub mod tooltip;
 
-pub use draw::{Cmd, DrawList, IconId, Rim};
+pub use draw::{Cmd, DrawList, IconId, PaneState, PaneTone, Rim};
 pub use geom::{Point, Rect};
 pub use hit::{HitTree, Layer};
 pub use state::{ControlState, UiState, WidgetId};

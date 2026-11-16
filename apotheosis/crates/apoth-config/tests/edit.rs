@@ -642,3 +642,20 @@ fn a_map_add_appends_and_a_remove_cuts_one_line() {
     assert_eq!(ed.text(), "");
     assert!(!ed.map_remove("open.handlers", "image/png").unwrap());
 }
+
+#[test]
+fn two_string_bind_survives_an_unrelated_settings_edit() {
+    // A hand-written `bind "chord" "action"` is kept byte for byte by the editor, and the
+    // edited file still loads with the same bind.
+    let src = "binds {\n    bind \"ctrl+shift+y\" \"new-tab\" // keep\n}\nfont {\n    size 12\n}\n";
+    let mut ed = Editor::parse(src).unwrap();
+    ed.set("font.size", &Value::Float(14.0)).unwrap();
+    let t = ed.text();
+    assert!(
+        t.contains("bind \"ctrl+shift+y\" \"new-tab\" // keep"),
+        "{t}"
+    );
+    assert_eq!(ed.text().matches("bind \"").count(), 1);
+    let before = ed.text();
+    assert_eq!(Editor::parse(&before).unwrap().text(), before);
+}

@@ -49,6 +49,12 @@ impl Image {
         self.rgba.len() as u64
     }
 
+    /// Every pixel has alpha 255 (or the image is empty): it hides whatever it covers.
+    /// O(pixels); run it where the pixels were decoded, never on the io thread.
+    pub fn is_opaque(&self) -> bool {
+        self.rgba.chunks_exact(4).all(|p| p[3] == 255)
+    }
+
     /// Content hash for sharing identical images (PERFORMANCE-52); only a bucket key,
     /// equality is checked bytewise. Eight bytes per step so a video frame hashes in well
     /// under a millisecond on the worker that decoded it.

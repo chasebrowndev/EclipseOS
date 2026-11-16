@@ -5,21 +5,39 @@
 //! 0 ok, 1 error, 2 usage, 3 denied, 4 no instance.
 #![forbid(unsafe_code)]
 
+mod askpass;
 mod config;
 mod ctl;
 mod icat;
 mod play;
+mod proxy;
+mod server;
+mod ssh;
 
 use apoth_config::fs::RealFs;
 use std::path::PathBuf;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // ssh runs `$SSH_ASKPASS PROMPT` (T-22 §3): one argument that is no command of ours,
+    // only on the ssh child `apoth ssh` armed.
+    if args.len() == 1
+        && std::env::var_os(apoth_proto::askpass::ENV_SOCK).is_some()
+        && !is_command(&args[0])
+    {
+        std::process::exit(askpass::run(&args));
+    }
     let code = match args.first().map(String::as_str) {
         Some("config") => config_cmd(&args[1..]),
         Some("shell-init") => shell_init(&args[1..]),
         Some("icat") => icat::run(&args[1..]),
         Some("play") => play::run(&args[1..]),
+        Some("server") => server::server(&args[1..]),
+        Some("attach") => server::attach(&args[1..]),
+        Some("detach") => server::detach(&args[1..]),
+        Some("ssh") => ssh::run(&args[1..]),
+        Some("proxy") => proxy::run(&args[1..]),
+        Some("askpass") => askpass::run(&args[1..]),
         Some("-h" | "--help" | "help") => {
             let _ = std::io::Write::write_all(&mut std::io::stdout(), ctl::HELP.as_bytes());
             0
@@ -31,6 +49,27 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// A first argument this binary treats as a command (or a global option).
+fn is_command(a: &str) -> bool {
+    a.starts_with('-')
+        || matches!(
+            a,
+            "config"
+                | "shell-init"
+                | "icat"
+                | "play"
+                | "server"
+                | "attach"
+                | "detach"
+                | "ssh"
+                | "proxy"
+                | "askpass"
+                | "help"
+        )
+        || ctl::COMMANDS.contains(&a)
+        || ctl::NOT_YET.contains(&a)
 }
 
 /// A socket command (global options first).

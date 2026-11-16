@@ -148,6 +148,25 @@ pub struct ProcessesReply {
     pub processes: Vec<ProcessInfo>,
 }
 
+/// Reply to `askpass.arm` (T-22 §3): the armed socket and the one-time token, which the
+/// caller passes to its ssh child only through the environment. Never logged; no `Debug`
+/// shows the token.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AskpassArmReply {
+    /// `$XDG_RUNTIME_DIR/apotheosis/askpass-<random>.sock`.
+    pub socket: String,
+    /// 64 lowercase hex digits.
+    pub token: String,
+}
+
+impl std::fmt::Debug for AskpassArmReply {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AskpassArmReply")
+            .field("socket", &self.socket)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Reply to `media.attach`: the token a media APC names with `s=f,t=<token>` (single use,
 /// expires unclaimed after a few seconds; a decimal string so no JSON number rounds it).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
