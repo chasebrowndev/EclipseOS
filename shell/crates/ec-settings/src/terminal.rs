@@ -140,15 +140,11 @@ pub fn page_for(meta_page: &str) -> Option<Page> {
         }
         "behaviour/scrollback" | "behaviour/selection" => Page::TermScrollback,
         "behaviour/mouse-keyboard" | "behaviour/notifications" => Page::TermInput,
-        "behaviour/shell"
-        | "behaviour/sessions"
-        | "keys/binds"
-        | "automation/macros"
-        | "automation/rules"
-        | "automation/profiles"
-        | "automation/layouts"
-        | "automation/menus"
-        | "advanced/files" => Page::TermShell,
+        "behaviour/shell" | "behaviour/sessions" | "automation/macros" | "automation/layouts"
+        | "automation/menus" | "advanced/files" => Page::TermShell,
+        "keys/binds" => Page::TermBinds,
+        "automation/profiles" => Page::TermProfiles,
+        "automation/rules" => Page::TermRules,
         "security/clipboard" | "security/links" | "security/policy" | "security/socket" => Page::TermSecurity,
         "media/graphics" | "media/playback" | "advanced/rendering" | "accessibility" => Page::TermMedia,
         _ => return None,
@@ -196,18 +192,21 @@ pub enum Msg {
     Filter(String),
     ChangedOnly,
     Reload,
+    Lists(crate::term_lists::Msg),
 }
 
 /// The pages' state: the loaded config and what is being typed.
 #[derive(Debug, Default)]
 pub struct Terminal {
-    cfg: Option<Config>,
-    user_main: PathBuf,
+    pub(crate) cfg: Option<Config>,
+    pub(crate) user_main: PathBuf,
     /// Errors from the last load, first message kept for the banner.
     errors: usize,
     first_error: Option<String>,
     /// A write that failed, in the editor's own words.
     write_error: Option<String>,
+    /// The collection editors (M27): binds, profiles, rules.
+    pub(crate) lists: crate::term_lists::Lists,
     drafts: HashMap<&'static str, String>,
     invalid: HashMap<&'static str, String>,
     /// A held slider's position.
@@ -236,7 +235,7 @@ impl Terminal {
     }
 
     /// Re-read the layers, leaving what is being typed alone.
-    fn read(&mut self) {
+    pub(crate) fn read(&mut self) {
         let fs = RealFs;
         let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
         let xdg = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from);
@@ -250,9 +249,10 @@ impl Terminal {
             .map(|d| d.render());
         self.user_main = input.user.unwrap_or_default();
         self.cfg = Some(result.config);
+        self.lists.refresh(&self.user_main);
     }
 
-    fn cfg(&self) -> Config {
+    pub(crate) fn cfg(&self) -> Config {
         self.cfg.clone().unwrap_or_default()
     }
 
@@ -361,6 +361,11 @@ fn parse_draft(key: &Key, text: &str) -> Result<Option<Value>, String> {
         .or_else(|_| attempt(&kdl_str(text)))
         .map(Some)
         .map_err(|why| clean_reason(key, &why))
+}
+
+/// A typed value checked and parsed as the settings pages do; `None` when empty.
+pub fn check_value(key: &Key, text: &str) -> Result<Option<Value>, String> {
+    parse_draft(key, text)
 }
 
 /// Split on whitespace outside double quotes and quote every bare word.
@@ -472,6 +477,7 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
         Msg::Filter(f) => t.filter = f,
         Msg::ChangedOnly => t.changed_only = !t.changed_only,
         Msg::Reload => t.reload(),
+        Msg::Lists(m) => return crate::term_lists::update(app, m),
     }
     Task::none()
 }
@@ -494,6 +500,9 @@ fn msg(m: Msg) -> Message {
 
 /// The header chip: how much of the file this page holds.
 pub fn status(app: &App, page: Page) -> (String, String) {
+    if matches!(page, Page::TermBinds | Page::TermProfiles | Page::TermRules) {
+        return crate::term_lists::status(app, page);
+    }
     let t = &app.terminal;
     let n = t.changed_on(page);
     let state = match n {
@@ -510,6 +519,9 @@ pub fn status(app: &App, page: Page) -> (String, String) {
 }
 
 pub fn blocks(app: &App, page: Page) -> Vec<Element<'_, Message, Theme>> {
+    if matches!(page, Page::TermBinds | Page::TermProfiles | Page::TermRules) {
+        return crate::term_lists::blocks(app, page);
+    }
     let t = &app.terminal;
     let mut out: Vec<Element<'_, Message, Theme>> = Vec::new();
     if t.errors > 0 {
@@ -946,7 +958,7 @@ fn key_row<'a>(
 
 /// A dropdown field: the text input's glass fill and rim, brighter on hover
 /// and while open. No accent fill.
-fn dropdown_style(_t: &Theme, status: pick_list::Status) -> pick_list::Style {
+pub(crate) fn dropdown_style(_t: &Theme, status: pick_list::Status) -> pick_list::Style {
     let (fill, rim) = match status {
         pick_list::Status::Active => (color::cell(), color::cell_rim()),
         pick_list::Status::Hovered => (color::cell_hover(), color::cell_rim_hover()),
@@ -966,7 +978,7 @@ fn dropdown_style(_t: &Theme, status: pick_list::Status) -> pick_list::Style {
 }
 
 /// The popup: the menu material, rows brighten with a crisp rim, never gold.
-fn menu_style(_t: &Theme) -> iced::overlay::menu::Style {
+pub(crate) fn menu_style(_t: &Theme) -> iced::overlay::menu::Style {
     iced::overlay::menu::Style {
         background: iced::Background::Color(color::menu_ground()),
         border: iced::Border {

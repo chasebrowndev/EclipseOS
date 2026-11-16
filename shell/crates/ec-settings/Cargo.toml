@@ -52,3 +52,8 @@ ec-abyss-config = { path = "../../../abyss/crates/ec-abyss-config" }
 # round trip (ADR 0113). ec-config-schema formats durations and sizes.
 apoth-config = { path = "../../../apotheosis/crates/apoth-config" }
 ec-config-schema = { path = "../../../abyss/crates/ec-config-schema" }
+# The Terminal collection editors (M27): the action registry the picker reads and
+# validates against, and the KDL document the bind, rule and profile nodes are
+# spliced into (the same major `apoth-config`'s lossless editor uses).
+apoth-action = { path = "../../../apotheosis/crates/apoth-action" }
+kdl = "6"

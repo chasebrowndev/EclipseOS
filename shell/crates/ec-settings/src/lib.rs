@@ -32,6 +32,8 @@ pub mod schema;
 pub mod search;
 pub mod search_ui;
 pub mod taskbar;
+pub mod term_edit;
+pub mod term_lists;
 pub mod terminal;
 pub mod tray;
 pub mod undo;

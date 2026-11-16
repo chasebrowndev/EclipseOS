@@ -1147,6 +1147,7 @@ dependencies = [
 name = "ec-settings"
 version = "0.2.2"
 dependencies = [
+ "apoth-action",
  "apoth-config",
  "ec-abyss-config",
  "ec-config-schema",
@@ -1159,6 +1160,7 @@ dependencies = [
  "freedesktop-icons",
  "iced",
  "image",
+ "kdl",
  "serde_json",
  "zbus",
 ]

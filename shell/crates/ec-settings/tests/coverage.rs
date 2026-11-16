@@ -121,3 +121,136 @@ fn every_apotheosis_key_has_a_control_or_is_a_collection() {
         );
     }
 }
+
+/// The M27 editors (T-11 §3, §5, §6): every option of a bind, every node of a
+/// rule, every part of a profile and every profilable key has a place in a
+/// form, and what a form writes loads without a new error and reads back equal.
+#[test]
+fn every_bind_rule_and_profile_field_is_in_a_form() {
+    use apoth_config::schema::TABLE as APOTH;
+    use ec_settings::term_edit::{
+        apply, gate, list_binds, list_profiles, list_rules, BindForm, MatchForm, Op, ProfileForm, RuleForm,
+        Scope, BIND_OPTIONS, MATCH_FIELDS, PROFILE_NODES, RULE_NODES,
+    };
+    let user = std::env::temp_dir().join("ec-settings-coverage-m27.kdl");
+
+    let bind = BindForm {
+        unbind: false,
+        chord: "ctrl+a>c".into(),
+        actions: vec!["tab.new".into(), "pane.split direction=right".into()],
+        repeat: false,
+        mode: "alt-screen,!copy-mode".into(),
+        release: true,
+        global: true,
+        performable: true,
+    };
+    // One option per name the loader accepts on `bind`.
+    assert_eq!(
+        BIND_OPTIONS,
+        ["repeat", "mode", "release", "global", "performable"]
+    );
+    let text = apply("", &Op::BindAdd(Scope::Global, bind.clone())).unwrap();
+    gate(&user, "", &text).unwrap();
+    let got = &list_binds(&text, &Scope::Global)[0].form;
+    assert_eq!(got.mode, bind.mode);
+    assert!(!got.repeat && got.release && got.global && got.performable);
+    let unbind = BindForm {
+        unbind: true,
+        chord: "ctrl+shift+c".into(),
+        ..BindForm::default()
+    };
+    let text = apply(&text, &Op::BindAdd(Scope::Global, unbind)).unwrap();
+    gate(&user, "", &text).unwrap();
+    assert!(list_binds(&text, &Scope::Global)[1].form.unbind);
+
+    assert_eq!(RULE_NODES, ["on", "where", "do", "allow-input", "allow-spawn"]);
+    let rule = RuleForm {
+        name: "all".into(),
+        event: "output-idle".into(),
+        when: "not focused and process:ssh".into(),
+        actions: vec!["notify title=idle".into(), "input.send-text text=x".into()],
+        allow_input: true,
+        allow_spawn: true,
+    };
+    let text = apply("", &Op::RuleAdd(rule.clone())).unwrap();
+    gate(&user, "", &text).unwrap();
+    assert_eq!(list_rules(&text)[0].form.when, rule.when);
+    assert!(list_rules(&text)[0].form.allow_input && list_rules(&text)[0].form.allow_spawn);
+    // Every event the loader knows is selectable.
+    for e in apoth_config::RULE_EVENTS.iter().chain(apoth_config::MEDIA_EVENTS) {
+        let r = RuleForm {
+            event: (*e).to_owned(),
+            ..rule.clone()
+        };
+        assert!(r.problems().get("event").is_none(), "{e}");
+    }
+
+    assert_eq!(PROFILE_NODES, ["inherits", "sticky", "match"]);
+    assert_eq!(MATCH_FIELDS, ["host", "job", "user", "path"]);
+    let base = ProfileForm {
+        name: "base".into(),
+        ..ProfileForm::default()
+    };
+    let text = apply("", &Op::ProfileSet(None, base, vec![])).unwrap();
+    let full = ProfileForm {
+        name: "work".into(),
+        inherits: "base".into(),
+        sticky: true,
+        matches: vec![MatchForm {
+            host: "*.corp".into(),
+            job: "ssh".into(),
+            user: "me".into(),
+            path: "~/work".into(),
+        }],
+        keys: vec![],
+    };
+    let text = apply(&text, &Op::ProfileSet(None, full, vec![])).unwrap();
+    gate(&user, "", &text).unwrap();
+    let work = &list_profiles(&text)[1].form;
+    assert!(work.sticky && work.inherits == "base" && work.matches[0].path == "~/work");
+
+    // Every profilable key can be typed into a profile, and writes back.
+    let mut text = text;
+    for k in APOTH.iter().filter(|k| k.profilable) {
+        let v = k.default_value();
+        let v = if matches!(v, apoth_config::types::Value::Map(_)) {
+            apoth_config::types::Value::Map(vec![("A".to_owned(), vec!["1".to_owned()])])
+        } else {
+            v
+        };
+        let typed = ec_settings::term_edit::typed_of(k, &v);
+        if typed.is_empty() {
+            continue;
+        }
+        let form = ProfileForm {
+            keys: vec![(k.path.to_owned(), typed.clone())],
+            ..list_profiles(&text)[1].form.clone()
+        };
+        assert!(
+            form.problems(&["base".to_owned()], &Default::default())
+                .get("key:0")
+                .is_none(),
+            "{}: `{typed}` is refused",
+            k.path
+        );
+        text = apply(&text, &Op::ProfileSet(Some(1), form, vec![])).unwrap();
+        let back = list_profiles(&text);
+        assert!(
+            back[1].form.keys.iter().any(|(p, _)| p == k.path),
+            "{} did not land",
+            k.path
+        );
+        text = apply(
+            &text,
+            &Op::ProfileSet(
+                Some(1),
+                ProfileForm {
+                    keys: vec![],
+                    ..back[1].form.clone()
+                },
+                vec![k.path.to_owned()],
+            ),
+        )
+        .unwrap();
+    }
+}
