@@ -292,3 +292,55 @@ fn include_fanout_is_budgeted_and_dir_globs_are_diagnosed() {
         r.render()
     );
 }
+
+#[test]
+fn ssh_domains_parse_and_refuse_option_like_destinations() {
+    let r = user(
+        "domain \"box\" { ssh \"me@box\"; persist \"always\" }\ndomain \"plain\" { ssh \"h\" }\n",
+    );
+    assert!(r.is_valid(), "{}", r.render());
+    let d: Vec<_> = r.config.domains.iter().map(|d| &d.value).collect();
+    assert_eq!(d[0].ssh.as_deref(), Some("me@box"));
+    assert_eq!(d[0].persist.as_deref(), Some("always"));
+    assert_eq!(d[1].persist, None);
+    for bad in [
+        "domain \"x\" { ssh \"-oProxyCommand=sh\" }\n",
+        "domain \"x\" { ssh \"a b\" }\n",
+        "domain \"x\" { ssh 3 }\n",
+        "domain \"x\" { persist \"auto\" }\n",
+        "domain \"x\" { ssh \"h\"; persist \"sometimes\" }\n",
+        "domain \"x\" { ssh \"h\"; mux #true }\n",
+    ] {
+        let r = user(bad);
+        assert!(!r.is_valid(), "{bad}");
+        assert!(r.config.domains.is_empty(), "{bad}");
+    }
+}
+
+#[test]
+fn two_string_bind_is_the_block_form() {
+    // `bind "chord" "action"` means the block holding that one action, nothing else.
+    let short = user("binds {\n bind \"ctrl+shift+y\" \"tab.new\"\n}\n");
+    let block = user("binds {\n bind \"ctrl+shift+y\" {\n  tab.new\n }\n}\n");
+    assert!(short.is_valid(), "{}", short.render());
+    assert!(block.is_valid(), "{}", block.render());
+    assert_eq!(short.config.binds, block.config.binds);
+    assert!(
+        short.config.binds.iter().any(|b| {
+            b.value.actions.len() == 1
+                && b.value.actions[0].id == "tab.new"
+                && b.value.actions[0].args.is_empty()
+        }),
+        "the bind is in the config"
+    );
+}
+
+#[test]
+fn two_string_bind_rejects_bad_action_and_mixed_forms() {
+    let bad_id = user("binds {\n bind \"ctrl+shift+y\" \"no such/action\"\n}\n");
+    assert!(!bad_id.is_valid());
+    let both = user("binds {\n bind \"ctrl+shift+y\" \"tab.new\" {\n  tab.new\n }\n}\n");
+    assert!(!both.is_valid());
+    let non_string = user("binds {\n bind \"ctrl+shift+y\" 3\n}\n");
+    assert!(!non_string.is_valid());
+}

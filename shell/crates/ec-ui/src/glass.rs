@@ -261,6 +261,9 @@ thread_local! {
     // The process is going away; the compositor reaps the objects with the socket.
     static SHARED: RefCell<Option<ManuallyDrop<Shared>>> = const { RefCell::new(None) };
     static FRAME: RefCell<GlassPanes> = RefCell::new(GlassPanes::default());
+    // The fade and lift of the subtree being drawn ([`with_fade`]): ground
+    // opacity scale and vertical offset, applied to every pane pushed.
+    static FADE: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((1.0, 0.0)) };
     // Visible bounds (surface-local) of the scroll region being drawn, if any.
     static CLIP: std::cell::Cell<Option<Rectangle>> = const { std::cell::Cell::new(None) };
 }
@@ -352,11 +355,28 @@ pub fn surface_created(id: window::Id, surface: &WlSurface) {
 }
 
 /// Add a pane to the frame being drawn. A no-op while glass is unavailable.
-pub fn push(pane: Pane) {
+pub fn push(mut pane: Pane) {
     if !available() {
         return;
     }
+    let (alpha, dy) = FADE.with(|f| f.get());
+    if alpha <= 0.0 {
+        return;
+    }
+    pane.alpha = (f32::from(pane.alpha) * alpha.min(1.0)).round() as u8;
+    pane.rect.y += dy;
     FRAME.with(|f| f.borrow_mut().push(&pane));
+}
+
+/// Run `draw` with every pane it pushes faded to `alpha` (`0.0..=1.0`) and
+/// moved down by `dy`, nested fades multiplying: the compositor's half of a
+/// subtree that fades or rises in ([`crate::widget::Fade`]).
+pub fn with_fade<R>(alpha: f32, dy: f32, draw: impl FnOnce() -> R) -> R {
+    let prev = FADE.with(|f| f.get());
+    FADE.with(|f| f.set((prev.0 * alpha.clamp(0.0, 1.0), prev.1 + dy)));
+    let out = draw();
+    FADE.with(|f| f.set(prev));
+    out
 }
 
 fn begin() {

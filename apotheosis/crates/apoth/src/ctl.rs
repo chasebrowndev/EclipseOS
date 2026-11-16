@@ -30,14 +30,7 @@ pub(crate) const DENIED: i32 = 3;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Commands T-12 §5 names that this build does not have yet.
-pub(crate) const NOT_YET: &[&str] = &[
-    "notify",
-    "ssh",
-    "terminfo",
-    "fonts",
-    "doctor",
-    "completions",
-];
+pub(crate) const NOT_YET: &[&str] = &["notify", "terminfo", "fonts", "doctor", "completions"];
 
 /// Socket commands.
 pub(crate) const COMMANDS: &[&str] = &[
@@ -80,8 +73,17 @@ Commands:
   icat [OPTIONS] FILE...     show images in the pane (apoth icat --help)
   play [OPTIONS] FILE        play video or audio in the pane (apoth play --help)
   server ls                  list the session daemons and their panes (T-21)
+  server kill [SESSION]      end a session: close every pane, the daemon exits
   attach [SESSION]           open a window on a session daemon (default: default)
   detach [SESSION]           detach every window from a session daemon; panes keep running
+  ssh [--hold] [--cwd DIR] [SSH-OPTIONS...] DESTINATION [COMMAND...]
+                             system ssh with a shared master, askpass sheet and per-host
+                             terminfo / environment (each asked once per host) (T-22)
+                             --hold: offer a reconnect in the pane when the link drops
+  proxy [--session NAME] [--no-start]
+                             the remote end of a mux domain: relay stdio to the session
+                             daemon (run by ssh, not by hand)
+  askpass PROMPT             ssh's askpass for `apoth ssh` sessions (exits 3 elsewhere)
   shell-init bash|zsh|fish   print the shell-integration snippet (defines `ap`)
   config ...                 edit or read the config file (no socket)
 
@@ -674,11 +676,12 @@ pub(crate) fn candidates(dir: &Path) -> Vec<PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "sock"))
-        // `server-<session>.sock` is a session daemon (T-21 §3), not a control socket.
+        // `server-<session>.sock` is a session daemon (T-21 §3) and `askpass-<random>.sock`
+        // an armed askpass channel (T-22 §3), not control sockets.
         .filter(|p| {
             !p.file_name()
                 .and_then(|n| n.to_str())
-                .is_some_and(|n| n.starts_with("server-"))
+                .is_some_and(|n| n.starts_with("server-") || n.starts_with("askpass-"))
         })
         .filter_map(|p| {
             let t = std::fs::symlink_metadata(&p).ok()?.modified().ok()?;
@@ -1385,9 +1388,11 @@ mod tests {
         let b = std::os::unix::net::UnixListener::bind(d.join("2.sock")).unwrap();
         // A session daemon's socket is never a control-socket candidate.
         let s = std::os::unix::net::UnixListener::bind(d.join("server-x.sock")).unwrap();
+        // Nor is an armed askpass channel.
+        let k = std::os::unix::net::UnixListener::bind(d.join("askpass-0f.sock")).unwrap();
         let c = candidates(&d);
         assert_eq!(c, [d.join("2.sock"), d.join("1.sock")]);
-        drop((a, b, s));
+        drop((a, b, s, k));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

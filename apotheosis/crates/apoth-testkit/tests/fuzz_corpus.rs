@@ -12,6 +12,18 @@ use std::path::{Path, PathBuf};
 /// Target name, the body path its wrapper calls, and the body.
 type Target = (&'static str, &'static str, fn(&[u8]));
 
+/// Targets whose body lives in the wrapper itself (the stack's first fuzz targets): wired
+/// and seeded like the rest, but not replayed here.
+const INLINE: &[&str] = &[
+    "vt_advance",
+    "vt_utf8_parity",
+    "grid_ops",
+    "input_paste",
+    "input_key",
+    "unicode_segment",
+    "xtgettcap",
+];
+
 const TARGETS: &[Target] = &[
     ("vt_parse", "apoth_vt::fuzz_parse", apoth_vt::fuzz_parse),
     (
@@ -136,8 +148,17 @@ fn every_seed_holds_its_targets_invariants() {
 
 #[test]
 fn targets_wrappers_bins_and_corpora_agree() {
-    let table: BTreeSet<String> = TARGETS.iter().map(|t| t.0.to_owned()).collect();
-    assert_eq!(table.len(), TARGETS.len(), "a target is listed twice");
+    let table: BTreeSet<String> = TARGETS
+        .iter()
+        .map(|t| t.0)
+        .chain(INLINE.iter().copied())
+        .map(str::to_owned)
+        .collect();
+    assert_eq!(
+        table.len(),
+        TARGETS.len() + INLINE.len(),
+        "a target is listed twice"
+    );
     let wrappers = names_in(&fuzz_dir().join("fuzz_targets"), ".rs");
     let corpora = names_in(&fuzz_dir().join("corpus"), "");
     assert_eq!(wrappers, table, "fuzz_targets/ vs the replay table");

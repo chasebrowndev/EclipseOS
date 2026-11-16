@@ -11,11 +11,11 @@
 //! The marks are shapes ([`IconId::Play`], two rounded bars for pause,
 //! [`IconId::SpeakerMuted`]), never font glyphs. All copy here is interface text.
 
-use crate::draw::{DrawList, IconId, Rim};
+use crate::draw::{DrawList, IconId};
 use crate::geom::{Point, Rect};
-use crate::state::{ControlState, glass_faded, label_colour, surface};
+use crate::state::{ControlState, chip_faded, glass_faded, label_colour};
 use crate::text::{Measure, TextRun};
-use crate::tokens::{Palette, Rgba, metrics, radius, size, space};
+use crate::tokens::{Palette, metrics, radius, size, space};
 
 /// Interface copy of the muted notice.
 pub const MUTED_TEXT: &str = "No audio output \u{2014} playing muted";
@@ -101,19 +101,7 @@ pub fn draw(s: &HudSpec, pal: &Palette, out: &mut DrawList) {
     }
     let l = layout(s.rect);
     if let Some(b) = l.button {
-        let (fill, rim) = surface(pal, s.control);
-        glass_faded(out, b, radius::PILL, rim.colour, pal, k);
-        if fill != pal.cell && fill != Rgba::CLEAR {
-            out.rect(
-                b,
-                radius::PILL,
-                fill.scaled(k),
-                Some(Rim {
-                    width: rim.width,
-                    colour: rim.colour.scaled(k),
-                }),
-            );
-        }
+        chip_faded(out, b, radius::PILL, s.control, pal, k);
         let ink = label_colour(pal, s.control).scaled(k);
         let g = glyph(b);
         if s.playing {

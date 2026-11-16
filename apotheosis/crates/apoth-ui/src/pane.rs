@@ -121,12 +121,14 @@ pub fn draw_float_backing(s: &PaneSpec, pal: &Palette, out: &mut DrawList) {
         spread: space::LG,
         alpha: pal.float_shadow,
     });
-    out.rect(
-        s.rect,
-        radius::INSET,
-        pal.base.alpha(crate::tokens::alpha::FLOAT_BACKING),
-        None,
-    );
+    if !out.glass {
+        out.rect(
+            s.rect,
+            radius::INSET,
+            pal.base.alpha(crate::tokens::alpha::FLOAT_BACKING),
+            None,
+        );
+    }
     crate::state::glass(out, s.rect, radius::INSET, crate::tokens::Rgba::CLEAR, pal);
 }
 

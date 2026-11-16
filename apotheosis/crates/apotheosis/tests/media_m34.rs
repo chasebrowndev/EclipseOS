@@ -489,7 +489,8 @@ fn play_ext_exits_on_escape_and_sigkill() {
 }
 
 /// Tier A gate (T-16 §1, ADR 0118): `mpv --vo=kitty --vo-kitty-use-shm=yes` plays a 1080p30
-/// clip in the pane with under 1% of frames dropped. Manual: needs mpv and a clip, named by
+/// clip in the pane with under 1% of frames dropped, by mpv and by the terminal (the pane
+/// shows at least 99 % of what mpv played). Manual: needs mpv and a clip, named by
 /// `APOTH_TIER_A_CLIP` (the test makes none; `ffmpeg -f lavfi -i testsrc2=size=1920x1080:
 /// rate=30 -t 12 -c:v libx264 -preset ultrafast clip.mkv`). Shared memory needs the
 /// `graphics-file` class allowed locally, which the session's config does.
@@ -568,6 +569,8 @@ fn tier_a_mpv_kitty_shm_1080p30() {
     let (vo, dec, n) = (v[0], v[1], v[2]);
     assert!(n >= 250, "only {n} frames played");
     assert!((vo + dec) * 100 < n, "{vo}+{dec} of {n} frames dropped");
+    // What the pane showed, not only what mpv sent (T-16 §1: < 1 % dropped end to end).
+    assert!(shown * 100 >= n * 99, "{shown} of {n} frames shown");
 }
 
 /// A left click on a playing placement pauses it (its position stops advancing) and a second

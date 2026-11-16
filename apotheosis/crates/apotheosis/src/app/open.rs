@@ -52,7 +52,8 @@ struct Sheet {
 
 /// What the interface adds to the palette sheet while the Open menu or picker is up.
 pub(super) struct OpenView {
-    pub(super) header: Header,
+    /// The picker's header; the right-click menu has none.
+    pub(super) header: Option<Header>,
     pub(super) anchor: Option<Point>,
     pub(super) field: bool,
     pub(super) placeholder: &'static str,
@@ -407,7 +408,11 @@ impl App {
             choices
         } else {
             let (rows, choices) = open::menu_rows(&resolved);
-            p.source = rows.into_iter().map(to_row).collect();
+            // Open and Open with are the first group, parted from the rest by a separator.
+            let mut rows: Vec<Row> = rows.into_iter().map(to_row).collect();
+            let rest = rows.split_off(2.min(rows.len()));
+            p.pinned = rows;
+            p.source = rest;
             choices
         };
         p.refresh(&self.keymap, &[]);
@@ -434,7 +439,7 @@ impl App {
             kind = why.clone();
         }
         Some(OpenView {
-            header: Header {
+            header: s.picker.then(|| Header {
                 target: TextRun::program(&s.resolved.shown, size::BODY_SMALL),
                 // A refusal names a host from the program: program text, sanitised.
                 kind: if refused {
@@ -443,7 +448,7 @@ impl App {
                     TextRun::interface(kind, size::MICRO)
                 },
                 tile: TextRun::interface(tile, size::MICRO),
-            },
+            }),
             anchor: s.anchor,
             field: s.picker,
             placeholder: "Filter apps",
@@ -457,6 +462,7 @@ impl App {
         };
         match p {
             OpenPick::Disabled => (true, Marker::None),
+            OpenPick::Picker => (false, Marker::Submenu),
             OpenPick::ToggleRemember => (false, Marker::Switch(s.remember)),
             OpenPick::Launch(i)
                 if s.picker
@@ -508,9 +514,17 @@ impl App {
                 self.open_launch(c, fallback, Some(pane));
             }
             OpenPick::Picker => {
+                let sheet = self.open.sheet.take();
                 self.close_palette();
-                if let Some(s) = self.open.sheet.take() {
-                    self.open_sheet(s.pane, s.resolved, true, s.anchor);
+                if let Some(s) = sheet {
+                    // The app list opens beside the menu it came from.
+                    let at = s.anchor.map(|a| {
+                        apoth_ui::geom::Point::new(
+                            a.x + apoth_ui::tokens::metrics::CONTEXT_MENU_W - 8.0,
+                            a.y,
+                        )
+                    });
+                    self.open_sheet(s.pane, s.resolved, true, at);
                 }
             }
             OpenPick::Copy(text) => {

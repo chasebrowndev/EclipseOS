@@ -704,6 +704,7 @@ impl App {
                 Ok(Some(serde_json::Value::Null))
             }
             Params::Launch(l) => self.ctl_launch(cid, req.id, *l),
+            Params::AskpassArm(p) => self.askpass_arm(cid, &p.host),
             Params::MediaWindowOpen(p) => self.media_open(cid, p),
             Params::MediaWindowWrite(p) => self.media_write(cid, p),
             Params::MediaWindowWait(p) => self.media_wait(cid, req.id, p),
@@ -735,6 +736,50 @@ impl App {
             | Params::ConfigSaveOverride(_)
             | Params::Notify(_) => Err(err(ErrorCode::Unsupported, "not available yet")),
         }
+    }
+
+    /// `askpass.arm` (T-22 §3, SECURITY-30): only a process in one of this instance's panes,
+    /// and not an agent session's, may arm; the channel is bound to that process (which then
+    /// `exec`s ssh) and ends with it. The reply carries the socket and the token to the
+    /// arming process only; neither is logged.
+    fn askpass_arm(
+        &mut self,
+        cid: u64,
+        host: &str,
+    ) -> Result<Option<serde_json::Value>, WireError> {
+        let Some(c) = self.client(cid) else {
+            return Err(err(ErrorCode::Internal, "no client"));
+        };
+        if c.peer.facts.pane.is_none() || c.peer.facts.agent {
+            return Err(err(
+                ErrorCode::Denied,
+                "askpass is armed only for a process in one of this terminal's panes",
+            ));
+        }
+        let pid = c.peer.pid;
+        let pane = c.peer.facts.pane;
+        let dir = self
+            .ctl_path()
+            .and_then(std::path::Path::parent)
+            .ok_or_else(|| err(ErrorCode::Internal, "no socket directory"))?
+            .to_owned();
+        let prep = crate::askpass::Prepared::new(&dir, host)
+            .map_err(|e| WireError::new(ErrorCode::Internal, format!("cannot arm askpass: {e}")))?
+            .in_pane(pane);
+        let reply = apoth_proto::results::AskpassArmReply {
+            socket: prep.socket().to_string_lossy().into_owned(),
+            token: prep.token_hex(),
+        };
+        let tx = self.to_main.clone();
+        prep.start(
+            pid,
+            Box::new(move |e| {
+                let _ = tx.send(MainMsg::Askpass(e));
+            }),
+        )
+        .map_err(|e| WireError::new(ErrorCode::Internal, format!("cannot arm askpass: {e}")))?;
+        tracing::info!(pid, "askpass armed");
+        json(&reply)
     }
 
     /// `config.set` / `config.reset` (T-12 §2): the class gate has already run. Replies

@@ -3251,6 +3251,10 @@ pub fn sidebar<'a, Message: 'a>(
     sidebar_at(Density::Regular, false, items, footer)
 }
 
+/// The widget id of the sidebar's scrolling nav, for apps that scroll the
+/// active entry into view.
+pub const SIDEBAR_NAV: &str = "ec-sidebar-nav";
+
 /// [`sidebar`] at a [`Density`]: [`space::SIDEBAR_W`] regular,
 /// [`space::SIDEBAR_W_COMPACT`] compact. Build its items with
 /// [`nav_item_at`] at the same density. `blur` is whether the compositor's
@@ -3288,15 +3292,24 @@ pub fn sidebar_at<'a, Message: 'a>(
         );
     }
 
-    let rail = container(
-        column![nav, Space::new().height(Length::Fill), foot]
-            .spacing(space::BLOCK)
-            .width(Length::Fill),
-    )
-    .width(width)
-    .height(Length::Fill)
-    .padding([space::PANE_Y, pad_x])
-    .style(theme::window_pane(blur));
+    // The nav scrolls when the tree is taller than the window; the footer
+    // stays put under it. A thin rail like the content column's.
+    let nav = iced::widget::scrollable(nav)
+        .id(SIDEBAR_NAV)
+        .direction(iced::widget::scrollable::Direction::Vertical(
+            iced::widget::scrollable::Scrollbar::new()
+                .width(space::SCROLLBAR_W)
+                .scroller_width(space::SCROLLBAR_W)
+                .margin(3),
+        ))
+        .style(theme::eclipse_scrollable)
+        .width(Length::Fill)
+        .height(Length::Fill);
+    let rail = container(column![nav, foot].spacing(space::BLOCK).width(Length::Fill))
+        .width(width)
+        .height(Length::Fill)
+        .padding([space::PANE_Y, pad_x])
+        .style(theme::window_pane(blur));
     // The one line between the rail and the content: both are the same
     // window material ([`theme::window_pane`]), so the edge is a hairline,
     // not a slab meeting a slab.
@@ -3525,6 +3538,35 @@ pub fn secret_field<'a, Message: 'a>(
     prompt_cell(marker, body, trailing).style(ground)
 }
 
+/// [`secret_field`] in the [`theme::inset`] material, as a compositor glass
+/// pane of the inset's tone when abyss draws one. The client-drawn inset when
+/// glass is off.
+pub fn secret_field_pane<'a, Message: 'a>(
+    state: FieldState,
+    marker: &str,
+    body: impl Into<Element<'a, Message, Theme>>,
+    trailing: Option<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    // The inset's material, as the sheet's details are: focus is the rim
+    // alone, one step crisper; a refusal is the danger rim.
+    let field = secret_field(state, marker, body, trailing).style(move |t: &Theme| {
+        let mut s = theme::inset_field(state != FieldState::Resting)(t);
+        if state == FieldState::Refused {
+            s.border.color = color::danger().scale_alpha(crate::tokens::lock::FAIL_RIM);
+        }
+        if crate::glass::available() {
+            // The pane is the ground; the client keeps only a rim that says
+            // something (focus, refusal).
+            s.background = None;
+            if state == FieldState::Resting {
+                s.border.color = Color::TRANSPARENT;
+            }
+        }
+        s
+    });
+    crate::widget::glass_card(field, theme::CellTone::Plain, radius::INSET)
+}
+
 /// A secret's length as a run of discs, then a still caret: the only thing a
 /// password field may show.
 ///
@@ -3553,6 +3595,23 @@ pub fn dot_run<'a, Message: 'a>(count: usize, ink: Color) -> Element<'a, Message
     .into()
 }
 
+/// A password field that shows one `*` per typed character, with its own
+/// caret and selection ([`crate::widget::Starred`]).
+///
+/// A widget, not a styled `text_input`, because iced's secure mode hardcodes
+/// `•` and inks its caret in the value colour; see the module for how the stars
+/// keep step with the input's cursor and scroll. The widget sets the input's
+/// font, size, padding and style; the caller sets its id, placeholder, value
+/// and handlers. `count` is the value's character count, `live` whether keys
+/// reach the field now (no caret while not).
+pub fn starred_input<'a, Message: Clone + 'a>(
+    input: iced::widget::TextInput<'a, Message, Theme>,
+    count: usize,
+    live: bool,
+) -> Element<'a, Message, Theme> {
+    crate::widget::Starred::new(input, count, live).into()
+}
+
 /// An account's mark: its initial in a glass disc.
 ///
 /// A widget because the desktop loads no account pictures — an initial is
@@ -3574,6 +3633,237 @@ pub fn avatar<'a, Message: 'a>(name: &str, side: f32) -> Element<'a, Message, Th
     .center(Length::Fixed(side))
     .style(glass_ground(theme::CellTone::Plain, radius::PILL))
     .into()
+}
+
+/// A themed glyph in a glass disc: the mark at the head of a sheet that asks
+/// for something (a lock over a password prompt).
+///
+/// A widget for [`avatar`]'s reason — it is the same disc, and wherever a
+/// sheet is headed by a mark it should be that disc, not a per-app circle —
+/// with a themed icon ([`mark`], placeholder included) where the avatar has an
+/// initial. Never accented: the mark says what kind of sheet this is, not what
+/// is true now.
+pub fn glyph_disc<'a, Message: 'a>(
+    icon: Option<std::path::PathBuf>,
+    side: f32,
+    glyph_side: f32,
+) -> Element<'a, Message, Theme> {
+    // Compositor glass when abyss draws it; the client's cell otherwise.
+    crate::widget::glass_card(
+        container(mark(icon, glyph_side, color::text_secondary()))
+            .center(Length::Fixed(side))
+            .style(|t| theme::bare_container_if_glass(glass_ground(theme::CellTone::Plain, radius::PILL)(t))),
+        theme::CellTone::Plain,
+        radius::PILL,
+    )
+}
+
+/// Where a request came from, as one capsule: a mark and a line —
+/// "✓ From your zsh pane", or, when it could not be checked, "Not from …".
+///
+/// A widget and not a [`chip`] or a [`badge`]: a chip is picked and a badge
+/// classifies an object, while this states a provenance and is never pressed.
+/// Fully round so it reads as a seal beside the sheet's square-ish cells.
+/// `warn` is the unchecked case: the accent tint, fill, rim and ink — then it is
+/// the sheet's one yellow, and the caller must not light a pill as well. The
+/// checked case is the plain glass cell with an `ok` mark.
+pub fn provenance_chip<'a, Message: Clone + 'a>(
+    mark: &str,
+    label: &str,
+    warn: bool,
+    ease: std::time::Duration,
+) -> Element<'a, Message, Theme> {
+    let mut r = Row::new()
+        .spacing(space::CHIP_ORDINAL_GAP)
+        .align_y(Alignment::Center);
+    if !mark.is_empty() {
+        r = r.push(
+            text(mark.to_string())
+                .font(font::UI_MEDIUM)
+                .size(size::BODY_SMALL)
+                .color(if warn { color::accent_text() } else { color::ok() }),
+        );
+    }
+    // The label takes the cell's eased ink.
+    r = r.push(
+        text(label.to_string())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL)
+            .wrapping(text::Wrapping::None),
+    );
+    // Never pressed, but it answers the pointer like every glass cell; the
+    // gold of the warning is the client's (the compositor draws no colour).
+    crate::widget::EasedCell::new(
+        r,
+        move |t: &Theme, status| {
+            if warn {
+                let hot = matches!(status, button::Status::Hovered | button::Status::Pressed);
+                button::Style {
+                    background: Some(iced::Background::Color(if hot {
+                        color::accent_fill().scale_alpha(color::SELECTED_HOVER_FILL)
+                    } else {
+                        color::accent_fill()
+                    })),
+                    text_color: color::accent_text(),
+                    border: iced::Border {
+                        color: color::accent_border(),
+                        width: space::HAIRLINE,
+                        radius: radius::PILL.into(),
+                    },
+                    ..button::Style::default()
+                }
+            } else {
+                let mut s = theme::glass_cell(theme::CellTone::Plain, radius::PILL)(t, status);
+                s.text_color = if matches!(status, button::Status::Active) {
+                    color::text_secondary()
+                } else {
+                    color::text()
+                };
+                s
+            }
+        },
+        if warn {
+            theme::CellTone::Focused
+        } else {
+            theme::CellTone::Plain
+        },
+        radius::PILL,
+    )
+    .padding([space::CHIP_Y, space::CHIP_X])
+    .ease(ease)
+    .keep_fill(warn)
+    .into()
+}
+
+/// A quiet text button that opens or closes a run of detail: "Details ›".
+///
+/// A widget because a disclosure is neither a pill (it commits nothing) nor a
+/// link to elsewhere: it is text at rest and the latent glass cell under the
+/// pointer — a fill and a crisp rim, nothing lit past its edge — and its
+/// chevron turns a quarter, right to down, as it opens. `turn` is how far
+/// open it is (`0.0..=1.0`, the caller's eased value); `ease` how long the
+/// hover takes. Every sheet that folds detail away should fold it the same
+/// way.
+pub fn disclosure<'a, Message: Clone + 'a>(
+    label: &str,
+    turn: f32,
+    on_press: Message,
+    ease: std::time::Duration,
+) -> Element<'a, Message, Theme> {
+    crate::widget::EasedCell::new(
+        row![
+            text(label.to_string())
+                .font(font::UI_MEDIUM)
+                .size(size::BODY_SMALL)
+                .wrapping(text::Wrapping::None),
+            chevron_turn(turn, color::text_secondary()),
+        ]
+        .spacing(space::LINE_GAP)
+        .align_y(Alignment::Center),
+        |t: &Theme, status| {
+            let mut s = theme::glass_cell(theme::CellTone::Latent, radius::PILL)(t, status);
+            s.text_color = if matches!(status, button::Status::Hovered | button::Status::Pressed) {
+                color::text()
+            } else {
+                color::text_secondary()
+            };
+            s
+        },
+        theme::CellTone::Latent,
+        radius::PILL,
+    )
+    .padding([space::CHIP_Y, space::CHIP_X])
+    .on_press(on_press)
+    .ease(ease)
+    .into()
+}
+
+/// A drawn chevron `turn` of the way from right (folded) to down (open).
+///
+/// A widget and not [`chevron`] / [`chevron_right`]: those are staircases of
+/// quads that can only point one way, and a disclosure's arrow turns through
+/// the angles between.
+pub fn chevron_turn<'a, Message: 'a>(turn: f32, ink: Color) -> Element<'a, Message, Theme> {
+    use crate::tokens::secret::{CHEVRON_SLOT, CHEVRON_STROKE};
+    iced::widget::canvas(crate::widget::Turn {
+        turn,
+        side: CHEVRON_SLOT,
+        stroke: CHEVRON_STROKE,
+        ink,
+    })
+    .width(Length::Fixed(CHEVRON_SLOT))
+    .height(Length::Fixed(CHEVRON_SLOT))
+    .into()
+}
+
+/// A sheet's committing or dismissing pill as a compositor glass pane, its
+/// hover and pressed tones easing over `ease`. Cut from the inset material
+/// ([`theme::inset_cell`]), the same quiet box as the sheet's field and
+/// details; `lit` (the default action) adds a gold label and gold-tinted rim,
+/// kept over the pane. `on_press` `None` is disabled: the label dims.
+///
+/// A sibling of [`pill`] rather than a change to it: `pill` sits in scrolled
+/// settings pages that place no panes, while a floating sheet's pills are its
+/// glass. `lit` is the pane's yellow — a gold fill the client keeps over the
+/// pane, since the compositor draws no colour. Falls back to [`pill`]'s look
+/// when glass is off.
+pub fn sheet_pill<'a, Message: Clone + 'a>(
+    label: &str,
+    lit: bool,
+    on_press: Option<Message>,
+    ease: std::time::Duration,
+) -> Element<'a, Message, Theme> {
+    let enabled = on_press.is_some();
+    let mut cell = crate::widget::EasedCell::new(
+        text(label.to_string())
+            .font(font::UI_MEDIUM)
+            .size(size::BODY_SMALL),
+        move |t: &Theme, st| {
+            if lit {
+                theme::inset_cell_default(enabled)(t, st)
+            } else {
+                theme::inset_cell(t, st)
+            }
+        },
+        theme::CellTone::Plain,
+        radius::PILL,
+    )
+    .padding([space::PILL_Y, space::PILL_X])
+    .ease(ease)
+    .keep_rim(lit);
+    if let Some(m) = on_press {
+        cell = cell.on_press(m);
+    }
+    cell.into()
+}
+
+/// Machine text (a command line) that wraps between its words, and inside a
+/// word only when the word alone is longer than the line.
+///
+/// A widget because text shaping breaks at any break opportunity — after a
+/// hyphen, inside `deploy@build-01.lan` — while a command reads in whole
+/// tokens. Each token is its own run in a wrapping row; a token wider than
+/// the line wraps inside itself.
+pub fn mono_words<'a, Message: 'a>(
+    line: &str,
+    ink: fn(&Theme) -> text::Style,
+) -> Element<'a, Message, Theme> {
+    let words: Vec<&str> = line.split(' ').filter(|w| !w.is_empty()).collect();
+    let last = words.len().saturating_sub(1);
+    let mut r = Row::new();
+    for (i, w) in words.into_iter().enumerate() {
+        // The space rides on the word before it, so a line never starts
+        // with one.
+        let w = if i < last { format!("{w} ") } else { w.to_owned() };
+        r = r.push(
+            text(w)
+                .font(font::DATA)
+                .size(size::MONO)
+                .style(ink)
+                .wrapping(text::Wrapping::WordOrGlyph),
+        );
+    }
+    r.width(Length::Fill).wrap().into()
 }
 
 /// A key and what it does: `esc close`, with the key in a small glass cap.

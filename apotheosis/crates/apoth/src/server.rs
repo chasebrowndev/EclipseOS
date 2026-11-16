@@ -2,8 +2,9 @@
 //! The session daemon from the command line (T-21 §3): `apoth server ls` lists the running
 //! sessions (ids, sizes and view counts: `observe`, no content), `apoth detach [SESSION]`
 //! detaches every view of a session (the panes keep running), `apoth attach [SESSION]`
-//! opens a window on it (runs `apotheosis --attach`). T-12 §5 does not name these yet
-//! (reported).
+//! opens a window on it (runs `apotheosis --attach`), `apoth server kill [SESSION]` ends the
+//! session: every pane is closed (HUP, TERM, KILL) and the server exits (the tmux model,
+//! owner decision 2026-11-14; T-12 §5).
 
 use std::io::{self, Read, Write};
 use std::os::unix::net::UnixStream;
@@ -139,10 +140,73 @@ fn session_arg(args: &[String]) -> Result<String, String> {
     }
 }
 
-/// `apoth server ls`.
+/// How long `apoth server kill` waits for the server to go (the close escalation is 2 s
+/// plus the bounded reap).
+const KILL_WITHIN: Duration = Duration::from_secs(10);
+
+/// `apoth server kill [SESSION]`: exit 0 once the server is gone.
+fn kill(args: &[String]) -> i32 {
+    let session = match session_arg(args) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("apoth server kill: {e}");
+            return USAGE;
+        }
+    };
+    let Some(path) = dir().map(|d| d.join(format!("server-{session}.sock"))) else {
+        eprintln!("apoth server kill: XDG_RUNTIME_DIR is not set");
+        return NO_SERVER;
+    };
+    let mut c = match Conn::open(&path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("apoth server kill: no session {session:?}: {e}");
+            return NO_SERVER;
+        }
+    };
+    if let Err(e) = c.send(&ViewMsg::KillSession) {
+        eprintln!("apoth server kill: {e}");
+        return ERROR;
+    }
+    let until = Instant::now() + KILL_WITHIN;
+    let mut b = [0u8; 4096];
+    let _ = c.s.set_read_timeout(Some(Duration::from_millis(200)));
+    loop {
+        match c.s.read(&mut b) {
+            Ok(0) => return OK,
+            Ok(n) => {
+                c.dec.feed(&b[..n]);
+                while let Some(Ok(rec)) = c.dec.next_record() {
+                    if let Ok(Decoded::Msg(ServerMsg::Refused { reason })) = ServerMsg::decode(rec)
+                    {
+                        eprintln!("apoth server kill: {reason}");
+                        return ERROR;
+                    }
+                }
+            }
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::WouldBlock
+                        | io::ErrorKind::TimedOut
+                        | io::ErrorKind::Interrupted
+                ) => {}
+            Err(_) => return OK,
+        }
+        if Instant::now() > until {
+            eprintln!("apoth server kill: session {session:?} is still closing");
+            return ERROR;
+        }
+    }
+}
+
+/// `apoth server ls`, `apoth server kill [SESSION]`.
 pub(crate) fn server(args: &[String]) -> i32 {
+    if args.first().map(String::as_str) == Some("kill") {
+        return kill(&args[1..]);
+    }
     if args != ["ls"] {
-        eprintln!("apoth server: usage: apoth server ls");
+        eprintln!("apoth server: usage: apoth server ls | apoth server kill [SESSION]");
         return USAGE;
     }
     let Some(dir) = dir() else {

@@ -53,6 +53,8 @@ pub(crate) struct HlColours {
     pub(crate) match_fg: Option<Rgb>,
     pub(crate) current_bg: Rgb,
     pub(crate) current_fg: Option<Rgb>,
+    /// The crisp 1 px rim round the current match.
+    pub(crate) current_rim: Rgb,
     pub(crate) cursor_bg: Rgb,
     pub(crate) cursor_fg: Option<Rgb>,
     pub(crate) hint_bg: Rgb,
@@ -158,6 +160,8 @@ fn span(
                 end: b,
                 bg: Rgb(kind, 0, 0),
                 fg: None,
+                round: kind != hl::CURSOR && kind != hl::LABEL,
+                rim: None,
             });
         }
     }
@@ -1085,6 +1089,8 @@ impl View {
                         end,
                         bg: Rgb(hl::SELECTION, 0, 0),
                         fg: None,
+                        round: true,
+                        rim: None,
                     });
                 }
             }
@@ -1319,7 +1325,8 @@ pub(crate) fn paint(h: &[Highlight], c: &HlColours, out: &mut Vec<Highlight>) {
             hl::LABEL => (c.label_bg, c.label_fg),
             _ => (c.sel_bg, c.sel_fg),
         };
-        Highlight { bg, fg, ..*x }
+        let rim = (x.bg.0 == hl::CURRENT).then_some(c.current_rim);
+        Highlight { bg, fg, rim, ..*x }
     }));
 }
 
@@ -2018,6 +2025,8 @@ mod tests {
             end: 4,
             bg: Rgb(0, 0, 0),
             fg: None,
+            round: false,
+            rim: None,
         }];
         let mut out = Vec::new();
         let c = HlColours {
@@ -2027,6 +2036,7 @@ mod tests {
             match_fg: Some(Rgb(8, 8, 8)),
             current_bg: Rgb(5, 5, 5),
             current_fg: None,
+            current_rim: Rgb(12, 12, 12),
             cursor_bg: Rgb(6, 6, 6),
             cursor_fg: None,
             hint_bg: Rgb(7, 7, 7),

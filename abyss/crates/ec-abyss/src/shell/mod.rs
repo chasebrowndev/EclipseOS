@@ -862,6 +862,39 @@ pub fn place_at(state: &mut AbyssState, window: &Window, geo: Rectangle<i32, Log
     }
 }
 
+/// Re-clamp a free-floating `window`'s stored rectangle to the client's
+/// current min/max ([`clamp_size`]) and arrange, which configures it at the
+/// new size. The content's top-left stays put, as `arrange_output` already
+/// anchors a clamped window. Tiled, maximized, Quick Tiled and fullscreen
+/// windows are sized by their placement, not their hints, and are left alone,
+/// as is a window whose rectangle already fits (no configure is sent).
+fn refit_to_hints(state: &mut AbyssState, window: &Window) {
+    if state.fullscreen.contains_key(window) {
+        return;
+    }
+    let border = state.config.general.border_size;
+    let bar = titlebar::bar_height(state, window);
+    let Some(f) = state
+        .outputs
+        .iter_mut()
+        .flat_map(|e| e.workspaces.iter_mut())
+        .flat_map(|ws| ws.floating.iter_mut())
+        .find(|f| &f.window == window)
+    else {
+        return;
+    };
+    if f.placement != Placement::Free {
+        return;
+    }
+    let content = content_of_outer(f.rect, border, bar);
+    let size = clamp_size(window, content.size, false);
+    if size == content.size {
+        return;
+    }
+    f.rect = outer_of_content(Rectangle::new(content.loc, size), border, bar);
+    arrange(state);
+}
+
 /// Run the capture-policy classifier (COMP-02 §7, raise-only) and, when it is
 /// what raised the window, record it as the `class_source` (COMP-05 §1).
 fn classify(state: &mut AbyssState, window: &Window) {
@@ -1041,7 +1074,10 @@ fn install(state: &mut AbyssState, window: &Window, placement: &rules::Placement
             .size
             .map(Size::from)
             .or_else(|| x11_request.map(|r| x11_outer_size(r.size, x11_min, area.size, border)))
-            .or_else(|| geometry.map(|g| g.size))
+            // Held to the client's min/max before it is centred, so a window
+            // that pinned its size (min == max) is placed at that size, not
+            // at the stale one it drew and is then clamped from.
+            .or_else(|| geometry.map(|g| clamp_size(&window, g.size, false)))
             .unwrap_or_else(|| Size::from((area.size.w / 2, area.size.h / 2)));
         // The rect is the frame. A size a rule, an X11 request or the client's
         // own geometry names is the content's, so the bar goes on top of it,

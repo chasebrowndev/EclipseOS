@@ -5,4 +5,10 @@
 if [ -n "${APOTHEOSIS_PANE-}" ]; then
     # T-12 §5: `ap` is the short form of `apoth`.
     alias ap='apoth'
+    # T-22 §3: `security.sudo-askpass` armed this pane; interactive shells only.
+    case $- in
+        *i*) if [ -n "${SUDO_ASKPASS-}" ] && [ -n "${APOTHEOSIS_ASKPASS_SOCK-}" ]; then
+                alias sudo='sudo -A'
+            fi ;;
+    esac
 fi
