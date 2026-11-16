@@ -1161,8 +1161,8 @@ pub const TABLE: &[Key] = &[
     ),
     k(
         "decoration.blur.glass.refraction",
-        int(0, 64),
-        Int(4),
+        Ty::Float { min: 0.0, max: 64.0 },
+        Float(1.5),
         Abyss,
         Live,
         "`glass`: how far the bevel bends the blurred backdrop, logical px at \
@@ -3193,7 +3193,7 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "decoration.inactive-opacity" => V::Float(widen(c.decoration.inactive_opacity)),
         "decoration.dim-inactive" => V::Float(widen(c.decoration.dim_inactive)),
         "decoration.blur.mode" => V::Str(c.decoration.blur.mode.name().into()),
-        "decoration.blur.glass.refraction" => V::Int(c.decoration.blur.glass.refraction as i64),
+        "decoration.blur.glass.refraction" => V::Float(widen(c.decoration.blur.glass.refraction)),
         "decoration.blur.glass.bevel" => V::Int(c.decoration.blur.glass.bevel as i64),
         "decoration.blur.glass.dispersion" => V::Float(widen(c.decoration.blur.glass.dispersion)),
         "decoration.blur.glass.rim" => V::Float(widen(c.decoration.blur.glass.rim)),

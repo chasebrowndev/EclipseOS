@@ -49,6 +49,7 @@ use smithay::{
     wayland::compositor::{Cacheable, RectangleKind, RegionAttributes},
 };
 
+use crate::glass_profile::{GlassProfile, Rebuild};
 use ec_abyss_config::Blur;
 
 /// The offscreen chain is rendered in the same format the capture path uses.
@@ -721,6 +722,8 @@ pub struct BlurStore {
     frame: u64,
     /// First-time backdrops built this frame.
     started: usize,
+    /// Profiling counters (`EC_GLASS_PROFILE`).
+    profile: GlassProfile,
 }
 
 impl std::fmt::Debug for BlurStore {
@@ -741,6 +744,7 @@ impl BlurStore {
     pub fn retain(&mut self, keep: &[BlurKey]) {
         self.frame = self.frame.wrapping_add(1);
         self.started = 0;
+        self.profile.frame(keep.len());
         self.surfaces.retain(|key, _| keep.contains(key));
     }
 
@@ -793,10 +797,13 @@ impl BlurStore {
             renderer, output, key, region, behind, blur, scale, reach, ring, shape,
         )?;
         let entry = self.surfaces.get_mut(key)?;
-        let (program, uniforms) = match rounding {
+        let (program, mut uniforms) = match rounding {
             Some((program, uniforms)) => (Some(program), uniforms),
             None => (None, Vec::new()),
         };
+        // The element samples `result`, which spans `crop`: one physical px is
+        // 1/crop in its UV, not 1/output.
+        crate::effects::set_px_uv(&mut uniforms, (crop.size.w, crop.size.h));
         if entry.look != uniforms {
             entry.look.clone_from(&uniforms);
             entry.commit.increment();
@@ -862,9 +869,10 @@ impl BlurStore {
         entry.panes.truncate(count);
         let backdrop = entry.commit;
         for (i, slot) in entry.panes.iter_mut().enumerate() {
-            let Some((rect, uniforms)) = pane(i) else {
+            let Some((rect, mut uniforms)) = pane(i) else {
                 continue;
             };
+            crate::effects::set_px_uv(&mut uniforms, (crop.size.w, crop.size.h));
             if slot.seen != backdrop {
                 slot.seen = backdrop;
                 slot.commit.increment();
@@ -954,8 +962,9 @@ impl BlurStore {
                     }
                     (None, None) => invalidates(region, radius, rects),
                 },
-                // `None` means the tracker could not reason about damage; the
-                // fail-safe answer is "everything changed".
+                // smithay returns `None` when there is no damage at all (an
+                // empty damage set), not "everything changed": the only reason
+                // left to rebuild is a backdrop that was never built.
                 None => entry.result.is_none(),
             }
         };
@@ -990,6 +999,7 @@ impl BlurStore {
                 chain,
                 backdrop,
                 surfaces,
+                profile,
                 ..
             } = self;
             if chain.len() >= MAX_CHAINS && !chain.contains_key(&(crop.size.w, crop.size.h)) {
@@ -1032,7 +1042,12 @@ impl BlurStore {
                 entry.result.take(),
                 orient,
             ) {
-                Ok(texture) => {
+                Ok((texture, ran)) => {
+                    profile.rebuilt(Rebuild {
+                        crop_texels: crop.size.w as u64 * crop.size.h as u64,
+                        cleared_texels: fb_size.w as u64 * fb_size.h as u64,
+                        passes: ran,
+                    });
                     entry.result = Some(texture);
                     entry.crop = Some(crop);
                     entry.commit.increment();
@@ -1152,7 +1167,7 @@ fn render_chain<E>(
     blur: &Blur,
     reuse: Option<GlesTexture>,
     orient: Transform,
-) -> Result<GlesTexture, GlesError>
+) -> Result<(GlesTexture, u32), GlesError>
 where
     E: Element + RenderElement<GlesRenderer>,
 {
@@ -1213,7 +1228,9 @@ where
         let src = mid[0].clone();
         blit(renderer, &src, &mut result, None, offset, orient, None)?;
     }
-    Ok(result)
+    // Down passes, up passes (levels `passes..=2`), then the final write.
+    let ran = passes + passes.saturating_sub(2) + 1;
+    Ok((result, ran as u32))
 }
 
 /// `reuse` if it is already `size`, else a fresh offscreen texture of `size`.
@@ -1418,20 +1435,56 @@ mod tests {
         }
     }
 
+    /// The glass element samples the blur result, which spans the crop, so a
+    /// bend of `strength` px is `strength / crop` in UV whatever the output
+    /// size, never `strength / output`.
+    #[test]
+    fn px_uv_follows_the_crop_not_the_output() {
+        use crate::effects::{px_uv_for, set_px_uv};
+        use smithay::backend::renderer::gles::UniformValue;
+        let blur = blur(8, 3);
+        let window = r(400, 200, 800, 600);
+        let strength = 12.0f32;
+        for fb_w in [1920, 2880] {
+            let fb: Size<i32, Physical> = (fb_w, fb_w * 9 / 16).into();
+            let (_, crop) = crop_rects(window, kernel_radius(&blur), fb, 3, false).unwrap();
+            assert!(crop.size.w < fb.w, "the crop is a part of the output");
+            let mut u = vec![Uniform::new("px_uv", px_uv_for((fb.w, fb.h)))];
+            set_px_uv(&mut u, (crop.size.w, crop.size.h));
+            let UniformValue::_2f(x, y) = u[0].value else {
+                panic!("px_uv is a vec2")
+            };
+            assert_eq!(x, 1.0 / crop.size.w as f32);
+            assert_eq!(y, 1.0 / crop.size.h as f32);
+            assert!((strength * x - strength / crop.size.w as f32).abs() < 1e-9);
+            assert!((strength * x - strength / fb.w as f32).abs() > 1e-6);
+        }
+        // Same window, bigger output: the crop (so the scale) does not change.
+        let crop_at = |w: i32| {
+            crop_rects(window, kernel_radius(&blur), (w, w * 9 / 16).into(), 3, false)
+                .unwrap()
+                .1
+                .size
+        };
+        assert_eq!(crop_at(1920), crop_at(2880));
+    }
+
     /// COMP-02 §3: the glass refraction widens the invalidation reach by its
     /// displacement (with the dispersion margin), scaled to physical px;
     /// flat glass adds nothing.
     #[test]
     fn glass_refraction_widens_the_invalidation_reach() {
         use crate::effects::glass_reach;
-        assert_eq!(glass_reach(0, 1.5), 0);
-        assert_eq!(glass_reach(12, 1.0), 13);
-        assert_eq!(glass_reach(12, 2.0), 26);
+        assert_eq!(glass_reach(0.0, 1.5), 0);
+        assert_eq!(glass_reach(12.0, 1.0), 13);
+        assert_eq!(glass_reach(12.0, 2.0), 26);
+        // A fractional default still reserves whole pixels (ceil).
+        assert_eq!(glass_reach(1.5, 1.0), 2);
         let region = r(100, 100, 200, 200);
         let k = kernel_radius(&blur(8, 2));
         let just_outside = [r(100 - k - 5, 150, 2, 2)];
         assert!(!invalidates(region, k, &just_outside));
-        assert!(invalidates(region, k + glass_reach(12, 1.0), &just_outside));
+        assert!(invalidates(region, k + glass_reach(12.0, 1.0), &just_outside));
     }
 
     /// An opaque window's bezel: the strips cover the ring and its corners,

@@ -412,10 +412,13 @@ float grain(vec2 p) {
 }
 
 // Adaptive glass (ADR 0092). Mirrors `adaptive_amount` below.
-const float ADAPT_SPAN = 0.5;
-const float ADAPT_STEP = 48.0;     // cross arm cap, physical px
-const float ADAPT_INSET = 24.0;    // taps stay this far inside the rect, physical px
-const float ADAPT_MIN_STEP = 6.0;  // below this one tap is enough
+// The lengths below were tuned while `px_uv` was 1/output instead of 1/crop
+// and so read ~0.37x as far as written (800 px window, 2880 px output); they
+// carry that factor so the adaptive tint reads the same patch as before.
+const float ADAPT_SPAN = 0.19;
+const float ADAPT_STEP = 18.0;     // cross arm cap, physical px
+const float ADAPT_INSET = 9.0;     // taps stay this far inside the rect, physical px
+const float ADAPT_MIN_STEP = 2.2;  // below this one tap is enough
 const float ADAPT_TEXT_DARK = 1.0;
 const float ADAPT_TEXT_LIGHT = 0.01;
 const float ADAPT_C_OK = 7.0;
@@ -427,7 +430,7 @@ const float ADAPT_EASE = 1.5;      // exponent of the response curve
 const float ADAPT_GHOST = 0.22;    // share of the backdrop's own deviation kept through the correction
 const float ADAPT_GRAIN = 0.03;    // faint frost, scaled by the correction
 const float ADAPT_WORST = 0.75;    // weight of the worst tap over the mean
-uniform vec2 px_uv;         // 1 / backdrop texture size
+uniform vec2 px_uv;         // 1 physical px in the sampled texture's UV (1 / crop size)
 uniform float y_sign;       // -1 when the framebuffer is y-mirrored
 uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
 uniform float adapt;        // effective adaptive strength; 0 off
@@ -809,9 +812,29 @@ pub fn compile_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gles
     renderer.compile_custom_texture_shader(format!("{BACKDROP_HEAD}{GLASS_BODY}"), &names)
 }
 
+/// `px_uv` for a texture that spans `size` physical px: one physical pixel in
+/// that texture's normalised UV space. The glass/frost element samples the
+/// blur result, which covers the chain's crop (not the whole output) at any
+/// resolution, so `size` is the crop, never the framebuffer.
+pub fn px_uv_for(size: (i32, i32)) -> [f32; 2] {
+    [1.0 / size.0.max(1) as f32, 1.0 / size.1.max(1) as f32]
+}
+
+/// Point the `px_uv` uniform (if `uniforms` has one) at a texture spanning
+/// `size` physical px. The builders cannot know the crop: it is only fixed
+/// once the backdrop is refreshed, so the blur store applies it here.
+pub fn set_px_uv(uniforms: &mut [Uniform<'static>], size: (i32, i32)) {
+    let [x, y] = px_uv_for(size);
+    for u in uniforms.iter_mut().filter(|u| u.name == "px_uv") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_2f(x, y);
+    }
+}
+
 /// [`rounding_uniforms`] plus the frost tint (straight alpha, as configured)
 /// and a window bezel's `(width, opaque, premultiplied hairline colour)`;
-/// `None` is plain frost, no hairline. `tex_size` is the backdrop texture,
+/// `None` is plain frost, no hairline. `tex_size` is a placeholder for the
+/// size the backdrop texture spans (the blur store re-points `px_uv` at the
+/// chain's crop, see [`set_px_uv`]),
 /// `light` is `Appearance::glass_light()` and `adapt` the effective adaptive
 /// strength ([`ec_abyss_config::AdaptiveBlur::effective`]).
 #[allow(clippy::too_many_arguments)]
@@ -843,10 +866,7 @@ pub fn frost_uniforms(
         Uniform::new("inner", inner),
         Uniform::new("opaque", opaque),
         Uniform::new("bar", bar),
-        Uniform::new(
-            "px_uv",
-            [1.0 / tex_size.0.max(1) as f32, 1.0 / tex_size.1.max(1) as f32],
-        ),
+        Uniform::new("px_uv", px_uv_for(tex_size)),
         Uniform::new("scheme_light", light),
         Uniform::new("adapt", adapt),
     ]);
@@ -854,7 +874,8 @@ pub fn frost_uniforms(
 }
 
 /// [`rounding_uniforms`] plus the glass parameters. `tex_size` is the
-/// backdrop texture (the whole output, physical px); `strength` and `bevel`
+/// size the backdrop texture spans, physical px (a placeholder: the blur store
+/// re-points `px_uv` at the chain's crop, see [`set_px_uv`]); `strength` and `bevel`
 /// are physical px. `bezel` is a window bezel's width (physical px), whether
 /// the window inside it is opaque, and its premultiplied hairline colour;
 /// `None` is plain glass with the neutral white hairline. `light` is
@@ -924,10 +945,7 @@ pub fn glass_uniforms_lifted(
     };
     let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
     u.extend([
-        Uniform::new(
-            "px_uv",
-            [1.0 / tex_size.0.max(1) as f32, 1.0 / tex_size.1.max(1) as f32],
-        ),
+        Uniform::new("px_uv", px_uv_for(tex_size)),
         Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
         Uniform::new("strength", strength),
         Uniform::new("bevel", bevel),
@@ -1022,8 +1040,8 @@ pub fn adaptive_tint(tint: [f32; 3], luma: f32, light: f32, strength: f32) -> [f
 /// How far past the blurred region the glass program samples, physical px:
 /// its displacement, with a margin for the widest dispersion (up to 5%
 /// further). Zero for every other mode.
-pub fn glass_reach(refraction: i32, scale: f64) -> i32 {
-    (refraction.max(0) as f64 * scale * 1.05).ceil() as i32
+pub fn glass_reach(refraction: f32, scale: f64) -> i32 {
+    (refraction.max(0.0) as f64 * scale * 1.05).ceil() as i32
 }
 
 /// How the output's physical space maps onto `gl_FragCoord` for a frame

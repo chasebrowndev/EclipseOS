@@ -80,9 +80,9 @@ impl Config {
         for n in children.nodes() {
             let glass = &mut self.decoration.blur.glass;
             match n.name().value() {
-                "refraction" => match arg(n).and_then(KdlValue::as_integer) {
-                    Some(v) if (0..=64).contains(&v) => glass.refraction = v as i32,
-                    _ => self.reject(n, "glass refraction must be an integer 0..=64"),
+                "refraction" => match arg(n).and_then(as_f64) {
+                    Some(v) if (0.0..=64.0).contains(&v) => glass.refraction = v as f32,
+                    _ => self.reject(n, "glass refraction must be 0..=64 (a whole number or a decimal)"),
                 },
                 "bevel" => match arg(n).and_then(KdlValue::as_integer) {
                     Some(v) if (1..=128).contains(&v) => glass.bevel = v as i32,

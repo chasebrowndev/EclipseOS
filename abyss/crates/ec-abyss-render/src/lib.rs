@@ -19,6 +19,7 @@ pub mod drop;
 pub mod effects;
 pub mod font;
 pub mod glass;
+pub mod glass_profile;
 pub mod glyphs;
 pub mod hud;
 pub mod hud_font;
@@ -1366,7 +1367,7 @@ fn insert_panes(
         return;
     };
     let strength = (cfg.glass.refraction as f64 * upscale).min(BEZEL_REFRACTION * upscale) as f32;
-    let reach = effects::glass_reach(cfg.glass.refraction.min(BEZEL_REFRACTION as i32), upscale);
+    let reach = effects::glass_reach(cfg.glass.refraction.min(BEZEL_REFRACTION as f32), upscale);
     let mut blurs = std::mem::take(&mut store.pane_scratch);
     blurs.clear();
     // A bare window's panes skip its glass; stacked ones sample it and take a
