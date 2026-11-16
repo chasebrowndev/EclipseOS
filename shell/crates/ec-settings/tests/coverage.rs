@@ -80,3 +80,44 @@ fn the_exception_file_only_names_things_that_exist() {
         assert!(known, "{entry} is excused from a schema it is not in");
     }
 }
+
+/// The Terminal pages (Apotheosis T-10 §9, M26): every `apoth-config` key
+/// either has a control on a Terminal page, or is a `Map` collection that the
+/// M27 editors own and `COLLECTION_KEYS` names. A key the table grows with
+/// neither fails here.
+#[test]
+fn every_apotheosis_key_has_a_control_or_is_a_collection() {
+    use apoth_config::meta::META;
+    use apoth_config::schema::TABLE as APOTH;
+    use apoth_config::types::Ty as ATy;
+    use ec_settings::terminal::{control_for, page_for, COLLECTION_KEYS};
+
+    assert_eq!(APOTH.len(), META.len(), "TABLE and META are paired");
+    for (key, meta) in APOTH.iter().zip(META.iter()) {
+        assert_eq!(key.path, meta.path, "META is out of order at {}", key.path);
+        let is_map = matches!(key.ty, ATy::Map { .. });
+        if is_map {
+            assert!(
+                COLLECTION_KEYS.contains(&key.path),
+                "{} is a collection with no M27 editor listed",
+                key.path
+            );
+            continue;
+        }
+        assert!(control_for(&key.ty).is_some(), "{} has no control", key.path);
+        assert!(
+            page_for(meta.page).is_some(),
+            "{} is on {:?}, a page the Terminal section does not have",
+            key.path,
+            meta.page
+        );
+    }
+    for c in COLLECTION_KEYS {
+        assert!(
+            APOTH
+                .iter()
+                .any(|k| k.path == *c && matches!(k.ty, ATy::Map { .. })),
+            "{c} is listed as a collection but is not a Map key"
+        );
+    }
+}
