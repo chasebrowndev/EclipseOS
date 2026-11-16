@@ -33,7 +33,7 @@
 //! behind the scene. Presenters call [`Renderer::invalidate_all`] on every skipped frame and
 //! the next draw redraws every row from the scene.
 
-use crate::chrome::{ChromeList, ChromePass};
+use crate::chrome::{ChromeList, ChromePass, ChromeRect, ChromeSink};
 use crate::colour::TextBlending;
 use crate::cursor::CursorScene;
 use crate::damage::{Op, RowRing};
@@ -123,8 +123,12 @@ impl<'a> PaneDraw<'a> {
 /// What one frame draws.
 #[derive(Clone, Copy, Debug)]
 pub struct FrameInput<'a> {
-    /// The panes, back to front (tiled panes do not overlap).
+    /// The panes, back to front (tiled panes do not overlap; floats come after them).
     pub panes: &'a [PaneDraw<'a>],
+    /// Chrome layering (MUX-18 floats): chrome layer `k` (see `ChromeList::marks`) is drawn
+    /// right before pane `chrome_before[k]`, the last layer after every pane. Empty: the
+    /// whole chrome list is drawn over every pane.
+    pub chrome_before: &'a [usize],
     /// Window fill, premultiplied RGBA.
     pub clear: [f32; 4],
 }
@@ -215,6 +219,8 @@ struct Slot {
     /// This frame's cursor: rect count and whether a glyph is drawn.
     cursor_rects: u32,
     cursor_glyph: bool,
+    /// This frame's rounded caret: its instance in the caret list.
+    caret: Option<u32>,
 }
 
 #[derive(Debug)]
@@ -230,6 +236,8 @@ struct Pipes {
 #[derive(Clone, Copy, Debug)]
 struct RowRange {
     phys: u32,
+    u0: u32,
+    u1: u32,
     g0: u32,
     g1: u32,
     r0: u32,
@@ -409,6 +417,9 @@ pub struct Renderer {
     cursor_bytes: Vec<u8>,
     chrome_pass: ChromePass,
     chrome: ChromeList,
+    /// The rounded block and beam carets of the frame, one instance per pane that has one.
+    caret_pass: ChromePass,
+    caret: ChromeList,
     image_pass: ImagePass,
 }
 
@@ -594,6 +605,8 @@ impl Renderer {
             cursor_bytes: Vec::new(),
             chrome_pass: ChromePass::new(gpu, cfg.target_format),
             chrome: ChromeList::new(),
+            caret_pass: ChromePass::new(gpu, cfg.target_format),
+            caret: ChromeList::new(),
             image_pass: ImagePass::new(gpu, cfg.target_format),
         }
     }
@@ -609,6 +622,12 @@ impl Renderer {
     #[must_use]
     pub fn image_textures(&self) -> usize {
         self.image_pass.cached()
+    }
+
+    /// Image uploads that rewrote a previous frame's texture in place (RENDERING-37).
+    #[must_use]
+    pub fn image_reuses(&self) -> u64 {
+        self.image_pass.reused()
     }
 
     /// The configuration in use.
@@ -696,6 +715,7 @@ impl Renderer {
             }),
             cursor_rects: 0,
             cursor_glyph: false,
+            caret: None,
         }
     }
 
@@ -873,8 +893,6 @@ impl Renderer {
         }
         self.present_pass(enc, target, target_size, input, &mut slots);
         self.slots = slots;
-        self.chrome_pass
-            .record(enc, target, target_size, &self.chrome);
         stats
     }
 
@@ -932,6 +950,12 @@ impl Renderer {
                 u64::from(phys) * u64::from(t.stride),
                 &self.bg_bytes,
             );
+            let u0 = rn;
+            for r in &row.under {
+                pack_rect(r, phys as i32 * ch as i32, &mut self.rect_bytes);
+                rn += 1;
+            }
+            let u1 = rn;
             let (g0, r0) = (gn, rn);
             for g in &row.glyphs {
                 pack_glyph(g, &mut self.glyph_bytes);
@@ -943,6 +967,8 @@ impl Renderer {
             }
             self.ranges.push(RowRange {
                 phys,
+                u0,
+                u1,
                 g0,
                 g1: gn,
                 r0,
@@ -1039,6 +1065,17 @@ impl Renderer {
         for &(start, n) in &bg_runs {
             pass.set_scissor_rect(0, start * ch, t.w, n * ch);
             pass.draw(0..4, 0..1);
+        }
+        // Rounded highlight corners and rims: after the backgrounds, before the glyphs.
+        if self.ranges.iter().any(|r| r.u1 > r.u0) {
+            pass.set_pipeline(&self.pipes.rect_grid);
+            pass.set_vertex_buffer(0, slot.rect_vb.buf.slice(..));
+            for r in &self.ranges {
+                if r.u1 > r.u0 {
+                    pass.set_scissor_rect(0, r.phys * ch, t.w, ch);
+                    pass.draw(0..4, r.u0..r.u1);
+                }
+            }
         }
         if gn > 0 {
             pass.set_pipeline(&self.pipes.glyph_grid);
@@ -1155,12 +1192,14 @@ impl Renderer {
         let (cw, ch) = self.cfg.cell;
         let mode = mode_of(self.cfg.text_blending);
         // Uniforms and cursor instances first: every write lands before the submission.
+        self.caret.clear();
         for p in input.panes {
             let Some(slot) = slots.iter_mut().find(|s| s.key == p.key) else {
                 continue;
             };
             slot.cursor_rects = 0;
             slot.cursor_glyph = false;
+            slot.caret = None;
             let Some(t) = slot.targets.as_ref() else {
                 continue;
             };
@@ -1182,9 +1221,26 @@ impl Renderer {
             };
             if let Some(c) = p.cursor {
                 self.cursor_bytes.clear();
-                for r in c.rects.iter().take(MAX_CURSOR_RECTS as usize) {
-                    pack_rect(r, 0, &mut self.cursor_bytes);
-                    slot.cursor_rects += 1;
+                let origin = p.origin.unwrap_or(self.cfg.origin);
+                if let Some(rc) = &c.round {
+                    slot.caret = Some(self.caret.instances.len() as u32);
+                    self.caret.rounded_rect(&ChromeRect {
+                        rect: [
+                            (rc.rect[0] + origin.0) as f32,
+                            (rc.rect[1] + origin.1) as f32,
+                            rc.rect[2] as f32,
+                            rc.rect[3] as f32,
+                        ],
+                        radii: [rc.radius; 4],
+                        fill: rc.colour,
+                        rim: [0; 4],
+                        rim_width: 0.0,
+                    });
+                } else {
+                    for r in c.rects.iter().take(MAX_CURSOR_RECTS as usize) {
+                        pack_rect(r, 0, &mut self.cursor_bytes);
+                        slot.cursor_rects += 1;
+                    }
                 }
                 if slot.cursor_rects > 0 {
                     self.queue
@@ -1232,6 +1288,14 @@ impl Renderer {
             (x0, y0, x1.saturating_sub(x0), y1.saturating_sub(y0))
         };
 
+        let carets = self.caret_pass.upload(target_size, &self.caret);
+        // The chrome goes into the same pass, layered between the panes (T-07 §4 pass 7).
+        let chrome = self.chrome_pass.upload(target_size, &self.chrome);
+        let layers = if chrome {
+            input.chrome_before.len().min(self.chrome.marks.len())
+        } else {
+            0
+        };
         let [r, g, b, a] = input.clear;
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("present"),
@@ -1251,7 +1315,13 @@ impl Renderer {
             })],
             ..Default::default()
         });
+        let mut layer = 0;
         for (i, p) in input.panes.iter().enumerate() {
+            while layer < layers && input.chrome_before[layer] <= i {
+                self.chrome_pass
+                    .draw_range(&mut pass, self.chrome.layer_range(layer));
+                layer += 1;
+            }
             let Some(slot) = slots.iter().find(|s| s.key == p.key) else {
                 continue;
             };
@@ -1277,6 +1347,9 @@ impl Renderer {
                 self.image_pass.draw(&mut pass, i, Band::Above);
                 pass.set_scissor_rect(full.0, full.1, full.2, full.3);
             }
+            if let (true, Some(c)) = (carets, slot.caret) {
+                self.caret_pass.draw_range(&mut pass, c..c + 1);
+            }
             if slot.cursor_rects > 0 {
                 pass.set_pipeline(&self.pipes.rect_cursor);
                 pass.set_bind_group(0, &t.bind_cursor, &[]);
@@ -1289,6 +1362,12 @@ impl Renderer {
                 pass.set_vertex_buffer(0, slot.cursor_glyph_vb.slice(..));
                 pass.draw(0..4, 0..1);
             }
+        }
+        if chrome {
+            // Layers whose pane never came, then the top layer (bars, strip, sheets).
+            let start = self.chrome.layer_range(layer).start;
+            let end = self.chrome.instances.len() as u32;
+            self.chrome_pass.draw_range(&mut pass, start..end);
         }
     }
 }

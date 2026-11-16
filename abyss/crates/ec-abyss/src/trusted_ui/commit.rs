@@ -952,13 +952,29 @@ fn rasterize(
     let _ = y;
     let cy = h - BORDER - PAD - CONTROL_H;
     if matches!(look, Look::Armed) {
-        c.round(x0, cy, inner, CONTROL_H, modal::PILL, p.gold, None);
+        // The armed control is the focused button's inset with a gold rim and
+        // a gold label (STYLE.md: no gold grounds), not a gold slab.
+        c.round(
+            x0,
+            cy,
+            inner,
+            CONTROL_H,
+            modal::PILL,
+            p.btn_focus,
+            Some((1, p.entry_edge)),
+        );
         let label = if kind == Kind::TaskUnpause {
             "Enter: let it act again"
         } else {
             "Enter: start this task"
         };
-        c.text(x0 + 16, cy + (CONTROL_H - GLYPH_H) / 2 + 1, label, p.ink, true);
+        c.text(
+            x0 + 16,
+            cy + (CONTROL_H - GLYPH_H) / 2 + 1,
+            label,
+            p.phrase_text,
+            true,
+        );
     } else {
         c.text(
             x0,

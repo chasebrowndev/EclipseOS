@@ -471,6 +471,7 @@ const NODE_PAGES: &[(&str, &str, &str)] = &[
     ("clipboard", "security/clipboard", "Clipboard"),
     ("paste", "security/clipboard", "Paste"),
     ("links", "security/links", "Links"),
+    ("open", "security/links", "Open with"),
     ("security", "security/policy", "Policy"),
     ("remote", "security/policy", "Remote"),
     ("socket", "security/socket", "Control socket"),
@@ -515,7 +516,7 @@ pub const fn page_of(path: &str) -> (&'static str, &'static str) {
 }
 
 /// The closed set of top-level nodes (T-10 §3), plus `remote` (spec gap: `remote.clients` is
-/// named by T-10 §3 but `remote` is not in its node list).
+/// named by T-10 §3 but `remote` is not in its node list). `open` is T-14 §11.
 pub const TOP_LEVEL_NODES: &[&str] = &[
     "version",
     "font",
@@ -565,4 +566,5 @@ pub const TOP_LEVEL_NODES: &[&str] = &[
     "include",
     "when",
     "remote",
+    "open",
 ];

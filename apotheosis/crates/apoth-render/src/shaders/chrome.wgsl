@@ -20,7 +20,7 @@ struct InstanceIn {
     @location(1) radii: vec4<f32>,
     // clip x0, y0, x1, y1
     @location(2) clip: vec4<f32>,
-    // x = rim width, y = shadow spread, z = kind (0 rect, 1 shadow, 2 flat)
+    // x = rim width, y = shadow spread, z = kind (0 rect, 1 shadow, 2 flat, 3 erase)
     @location(3) params: vec4<f32>,
     // premultiplied
     @location(4) fill: vec4<f32>,
@@ -45,9 +45,9 @@ fn corner(vi: u32) -> vec2<f32> {
 fn vs_chrome(@builtin(vertex_index) vi: u32, i: InstanceIn) -> VsOut {
     // kind: 0 rect (1 px antialias margin), 1 shadow (spread margin), 2 flat (none)
     var margin = 1.0;
-    if (i.params.z > 1.5) {
+    if (i.params.z > 1.5 && i.params.z < 2.5) {
         margin = 0.0;
-    } else if (i.params.z > 0.5) {
+    } else if (i.params.z > 0.5 && i.params.z < 1.5) {
         margin = i.params.y + 1.0;
     }
     let lo = i.rect.xy - vec2<f32>(margin);
@@ -89,7 +89,7 @@ fn fs_chrome(i: VsOut) -> @location(0) vec4<f32> {
     if (f.x < i.clip.x || f.y < i.clip.y || f.x >= i.clip.z || f.y >= i.clip.w) {
         return vec4<f32>(0.0);
     }
-    if (i.params.z > 1.5) {
+    if (i.params.z > 1.5 && i.params.z < 2.5) {
         // Flat: the fill inside the rect (glyph coverage rows from the text bridge).
         let inside = f.x >= i.rect.x && f.y >= i.rect.y
             && f.x < i.rect.x + i.rect.z && f.y < i.rect.y + i.rect.w;
@@ -97,13 +97,18 @@ fn fs_chrome(i: VsOut) -> @location(0) vec4<f32> {
     }
     let half = i.rect.zw * 0.5;
     let d = sd_round(f - (i.rect.xy + half), half, i.radii);
-    if (i.params.z > 0.5) {
+    if (i.params.z > 0.5 && i.params.z < 1.5) {
         // Shadow: only outside the rect, falling off over `spread` pixels.
         let fall = 1.0 - smoothstep(0.0, i.params.y, d);
         let outside = clamp(d + 0.5, 0.0, 1.0);
         return i.fill * (fall * outside);
     }
     let cov = clamp(0.5 - d, 0.0, 1.0);
+    if (i.params.z > 2.5) {
+        // Erase: coverage times strength in every channel; the pipeline's blend scales the
+        // destination by one minus alpha, leaving a hole the compositor's glass shows in.
+        return vec4<f32>(cov * i.fill.a);
+    }
     var t = clamp(d + i.params.x + 0.5, 0.0, 1.0);
     if (i.params.x <= 0.0) {
         t = 0.0;

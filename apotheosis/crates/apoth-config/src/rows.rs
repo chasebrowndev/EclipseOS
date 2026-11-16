@@ -45,9 +45,13 @@ const GUARD: &[&str] = &["auto", "always", "never"];
 const PASTE_NL: &[&str] = &["as-is", "cr", "confirm"];
 const A11Y: &[&str] = &["auto", "on", "off"];
 const OFF_ON: &[&str] = &["off", "on"];
+const AUTO_OFF: &[&str] = &["auto", "off"];
+/// `remote.persist` and a domain's `persist` (T-22 §5).
+pub(crate) const PERSIST: &[&str] = &["off", "auto", "always"];
 const RESTORE: &[&str] = &["ask", "always", "never"];
 const QT_ANIM: &[&str] = &["slide", "fade", "none"];
 const QT_POS: &[&str] = &["top", "bottom", "left", "right"];
+const OPEN_PLACEMENT: &[&str] = &["float", "inline", "window"];
 
 const MAP_RANGE_FONT: Ty = Ty::Map {
     key: &Ty::CodepointRanges,
@@ -64,6 +68,10 @@ const MAP_STR_STR: Ty = Ty::Map {
 const MAP_STR_STRSET: Ty = Ty::Map {
     key: &Ty::Str,
     value: &Ty::StringSet,
+};
+const MAP_STR_STRLIST: Ty = Ty::Map {
+    key: &Ty::Str,
+    value: &Ty::StrList,
 };
 const MAP_PATH_STRSET: Ty = Ty::Map {
     key: &Ty::Path,
@@ -162,7 +170,7 @@ rows! {
     ("panes.inactive-dim", Ty::float(0.0, 1.0), Dv::Float(0.12), Window, true, Live, Appearance, "Dim amount of unfocused panes; 0 disables."; "Dim inactive panes", &[]),
     ("panes.remain-on-exit", Ty::Enum(REMAIN), Dv::Str("never"), Pane, true, Live, Behaviour, "Keep a pane open after its process exits."; "Remain on exit", &[]),
     ("panes.split-handle-size", Ty::int(1, 16), Dv::Int(4), Window, true, Live, Appearance, "Split handle thickness in pixels."; "Split handle size", &[]),
-    ("panes.focus-follows-mouse", Ty::Bool, Dv::Bool(false), Window, true, Live, Behaviour, "Focus the pane under the pointer."; "Focus follows mouse", &[]),
+    ("panes.focus-follows-mouse", Ty::Bool, Dv::Bool(true), Window, true, Live, Behaviour, "Focus the pane under the pointer."; "Focus follows mouse", &[]),
     ("panes.zoom-indicator", Ty::Bool, Dv::Bool(true), Window, true, Live, Appearance, "Show an indicator on a zoomed pane."; "Zoom indicator", &[]),
     ("close.confirm", Ty::Enum(CLOSE_CONFIRM), Dv::Str("if-running"), Window, true, Live, Behaviour, "When closing asks first."; "Confirm close", &[]),
     ("close.undo-timeout", Ty::dur(0, 600000), Dv::Int(5000), Window, false, Live, Behaviour, "How long a closed tab or pane can be restored."; "Undo close window", &[]),
@@ -269,8 +277,11 @@ rows! {
     ("render.max-fps", Ty::int(0, 1000), Dv::Int(0), Global, false, Live, Behaviour, "Frame cap; 0 follows the display."; "Frame cap", &[]),
     ("render.power-preference", Ty::Enum(POWER), Dv::Str("auto"), Global, false, Live, Behaviour, "GPU selection preference."; "GPU preference", &[]),
     ("security.remote-keys", Ty::Bool, Dv::Bool(false), Pane, true, Live, Security, "Deliver key-stream events to socket clients in remote panes."; "Remote key stream", &[]),
+    ("security.password-prompt", Ty::Enum(AUTO_OFF), Dv::Str("auto"), Global, false, Live, Security, "On Eclipse, open the system password prompt by itself when the focused pane's program you just ran reads a password (echo off, line mode); the answer is typed into the pane. off keeps typing in the terminal."; "Password prompt", &["password","sudo","secret","prompt"]),
+    ("security.sudo-askpass", Ty::Bool, Dv::Bool(false), Global, false, Live, Security, "Ask for sudo passwords through the terminal's password prompt (sudo -A in interactive shells); applies to panes started afterwards."; "sudo password prompt", &["sudo","askpass","password"]),
     ("security.sequence", MAP_STR_STRSET, Dv::Empty, Global, false, Live, Security, "Sequence policy overrides: class local remote, each allow, ask or deny."; "Sequence policy", &["osc52","consent"]),
     ("remote.clients", Ty::StringSet, Dv::List(&["ssh", "mosh-client", "telnet", "docker", "podman", "kubectl", "tmux", "screen"]), Global, false, Live, Security, "Foreground programs that mark a pane remote (extends the default)."; "Remote clients", &[]),
+    ("remote.persist", Ty::Enum(PERSIST), Dv::Str("auto"), Global, false, Live, Behaviour, "Where an ssh domain's panes live: auto uses the host's session daemon (apoth proxy) when apoth is on its PATH and the local daemon otherwise, always requires the host's daemon, off never uses it. A domain's `persist` overrides it."; "Remote session daemon", &["ssh","persist","mux","proxy"]),
     ("clipboard.osc52", Ty::Bool, Dv::Bool(true), Pane, true, Live, Security, "Accept OSC 52."; "OSC 52", &[]),
     ("clipboard.osc52-max", Ty::bytes(1024, 67108864), Dv::Int(1048576), Pane, true, Live, Security, "Largest OSC 52 payload."; "OSC 52 size limit", &[]),
     ("clipboard.buffer-limit", Ty::int(1, 1000), Dv::Int(50), Window, false, Live, Security, "Paste buffers kept."; "Paste buffers", &[]),
@@ -287,6 +298,8 @@ rows! {
     ("links.schemes", Ty::StringSet, Dv::List(&["http", "https", "mailto", "ftp", "file"]), Window, false, Live, Security, "Allowed URL schemes."; "Allowed schemes", &[]),
     ("links.explicit-precedence", Ty::Bool, Dv::Bool(true), Pane, true, Live, Security, "OSC 8 links win over detected ones."; "OSC 8 precedence", &[]),
     ("links.open-command", Ty::Argv, Dv::List(&["xdg-open", "{url}"]), Window, false, Live, Security, "argv that opens a link."; "Open command", &[]),
+    ("open.placement", Ty::Enum(OPEN_PLACEMENT), Dv::Str("float"), Window, false, Live, Behaviour, "Where a terminal handler (apoth icat, apoth play) shows when its rule names no placement: float, inline (a split pane) or window (--ext)."; "Terminal handler placement", &["open with","icat","play"]),
+    ("open.handlers", MAP_STR_STRLIST, Dv::Empty, Global, false, Live, Security, "Open-with rules: MIME type or type/* (x-scheme-handler/<scheme> for URLs) to a handler (apoth-icat, apoth-play, <id>.desktop or opener) and an optional placement. Unlisted types: image/* apoth-icat, video/* and audio/* apoth-play, else the freedesktop default."; "Open-with rules", &["open with","mime","default app","mimeapps"]),
     ("accessibility.enabled", Ty::Enum(A11Y), Dv::Str("auto"), Global, false, Live, Behaviour, "Accessibility tree: auto, on or off."; "Accessibility", &[]),
     ("accessibility.announce", Ty::Bool, Dv::Bool(true), Global, false, Live, Behaviour, "Announce output and events."; "Announcements", &[]),
     ("accessibility.semantic", Ty::Bool, Dv::Bool(true), Global, false, Live, Behaviour, "Expose prompt and block structure."; "Semantic structure", &[]),

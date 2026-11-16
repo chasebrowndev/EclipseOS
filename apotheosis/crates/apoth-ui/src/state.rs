@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Retained per-widget state keyed by stable ids, and the state -> colour mapping.
 
-use crate::draw::{DrawList, Rim};
+use crate::draw::{DrawList, PaneState, PaneTone, Rim};
 use crate::geom::Rect;
 use crate::tokens::{Palette, Rgba, alpha, metrics};
 
@@ -110,6 +110,47 @@ pub fn surface(p: &Palette, s: ControlState) -> (Rgba, Rim) {
     }
 }
 
+/// The accent treatment (the Send button of `ec-secret-prompt`): the neutral inset's own quiet
+/// fill and rim step, marked by a clearer neutral fill and rim and a gold label, never a gold fill or rim. Hover
+/// and press are a small step up the neutral ladder and the rim; keyboard focus is the crisp
+/// accent rim over the hover fill. Disabled ignores the pointer and loses the gold rim.
+pub fn accent_surface(p: &Palette, s: ControlState) -> (Rgba, Rim) {
+    // STYLE.md bar cells: the marked cell is the same glass a step clearer, a neutral
+    // hairline, gold on the label only.
+    let active = !s.disabled;
+    let (fill, rim_c) = match (active && s.pressed, active && s.hover) {
+        (true, _) => (p.cell_focus_press, p.cell_focus_rim),
+        (_, true) => (p.cell_focus_hover, p.cell_focus_rim_hover),
+        _ => (p.cell_focus, p.cell_focus_rim),
+    };
+    let rim = if s.disabled {
+        Rim {
+            width: metrics::RIM_W,
+            colour: p.hairline,
+        }
+    } else if s.focus_kb {
+        Rim {
+            width: metrics::FOCUS_RIM_W,
+            colour: p.accent,
+        }
+    } else {
+        Rim {
+            width: metrics::RIM_W,
+            colour: rim_c,
+        }
+    };
+    (if s.disabled { p.cell } else { fill }, rim)
+}
+
+/// Label (or glyph) colour on an [`accent_surface`]: gold, tertiary when disabled.
+pub fn accent_label(p: &Palette, s: ControlState) -> Rgba {
+    if s.disabled {
+        p.text_tertiary
+    } else {
+        p.accent_text
+    }
+}
+
 /// Label colour for a control state.
 pub fn label_colour(p: &Palette, s: ControlState) -> Rgba {
     if s.disabled {
@@ -121,17 +162,93 @@ pub fn label_colour(p: &Palette, s: ControlState) -> Rgba {
     }
 }
 
+/// The pane tone and state of a control (the chip family): selected or keyboard-focused is
+/// the clearer tone; hover and pressed lift the rim.
+pub fn pane_of(s: ControlState) -> (PaneTone, PaneState) {
+    let active = !s.disabled;
+    let tone = if s.selected || (s.focus_kb && active) {
+        PaneTone::Focused
+    } else {
+        PaneTone::Plain
+    };
+    let state = if active && s.pressed {
+        PaneState::Pressed
+    } else if active && s.hover {
+        PaneState::Hover
+    } else {
+        PaneState::Rest
+    };
+    (tone, state)
+}
+
+/// A control's ground from [`surface`] or [`accent_surface`]. In glass mode the compositor
+/// draws the fill and hairline as a pane; only the keyboard focus rim (a crisp gold ring)
+/// stays client-drawn.
+pub fn chip(out: &mut DrawList, rect: Rect, radius: f32, s: ControlState, ground: (Rgba, Rim)) {
+    if out.glass {
+        let (tone, state) = pane_of(s);
+        out.glass_pane(rect, radius, tone, state, 1.0);
+        if s.focus_kb && !s.disabled {
+            out.rect(rect, radius, Rgba::CLEAR, Some(ground.1));
+        }
+    } else {
+        out.rect(rect, radius, ground.0, Some(ground.1));
+    }
+}
+
+/// A faded floating control (a media disc or close button): [`glass_faded`] under the
+/// control's state fill; in glass mode one pane that carries the state itself.
+pub fn chip_faded(
+    out: &mut DrawList,
+    rect: Rect,
+    radius: f32,
+    s: ControlState,
+    pal: &Palette,
+    k: f32,
+) {
+    let (fill, rim) = surface(pal, s);
+    if out.glass {
+        let (tone, state) = pane_of(s);
+        out.glass_pane(rect, radius, tone, state, k);
+        return;
+    }
+    glass_faded(out, rect, radius, rim.colour, pal, k);
+    if fill != pal.cell && fill != Rgba::CLEAR {
+        out.rect(
+            rect,
+            radius,
+            fill.scaled(k),
+            Some(Rim {
+                width: rim.width,
+                colour: rim.colour.scaled(k),
+            }),
+        );
+    }
+}
+
 /// A floating glass layer: frost under the sheet tint so the grid beneath cannot ghost
 /// through its text, a hairline `rim` (the compositor draws no rim inside the window).
 pub fn glass(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette) {
-    out.rect(rect, radius, pal.base.alpha(alpha::BACKING), None);
+    glass_faded(out, rect, radius, rim, pal, 1.0);
+}
+
+/// [`glass`] at opacity `k` in `0..=1` (a fading layer): every alpha is scaled by `k`.
+pub fn glass_faded(out: &mut DrawList, rect: Rect, radius: f32, rim: Rgba, pal: &Palette, k: f32) {
+    if out.glass {
+        out.glass_pane(rect, radius, PaneTone::Plain, PaneState::Rest, k);
+        return;
+    }
+    out.rect(rect, radius, pal.base.alpha(alpha::BACKING).scaled(k), None);
+    out.rect(rect, radius, pal.sheet_tint.scaled(k), None);
+    // The light catches the layer: one cell step of lift, so it reads as a pane above the
+    // window and not as a hole in it.
     out.rect(
         rect,
         radius,
-        pal.sheet_tint,
+        pal.cell.scaled(k),
         Some(Rim {
             width: metrics::RIM_W,
-            colour: rim,
+            colour: rim.scaled(k),
         }),
     );
 }

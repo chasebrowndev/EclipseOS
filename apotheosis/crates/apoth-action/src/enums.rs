@@ -140,3 +140,9 @@ crate::string_enum! {
     /// Notification urgency.
     Urgency { Low = "low", Normal = "normal", Critical = "critical" }
 }
+
+crate::string_enum! {
+    /// Where a terminal handler of `open.default` shows (T-14 §11): a split pane next to the
+    /// source pane, a floating pane, or a separate glass window (`--ext`).
+    OpenPlacement { Inline = "inline", Float = "float", Window = "window" }
+}

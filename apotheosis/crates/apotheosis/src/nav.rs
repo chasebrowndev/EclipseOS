@@ -45,6 +45,9 @@ pub(crate) struct PendingConsent {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PendingOpen {
     pub(crate) uri: String,
+    /// What opens it once confirmed (the resolved default, its fallback, the source pane);
+    /// `None` = `links.open-command`.
+    pub(crate) choice: Option<Box<(crate::open::Choice, Option<crate::open::Choice>, u64)>>,
 }
 
 #[derive(Debug, Default)]

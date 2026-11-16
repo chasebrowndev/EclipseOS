@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: AGPL-3.0-only -->
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <title>Apotheosis</title>
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="#14110b"/>
+  <rect x="8" y="8" width="112" height="56" rx="28" fill="#ffffff" fill-opacity="0.05"/>
+  <rect x="8.75" y="8.75" width="110.5" height="110.5" rx="27.25" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="1.5"/>
+  <!-- prompt chevron rising to a caret: ascent -->
+  <path d="M40 44 L66 64 L40 84" fill="none" stroke="#e0b441" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+  <rect x="74" y="80" width="22" height="9" rx="4.5" fill="#e0b441" fill-opacity="0.55"/>
+</svg>

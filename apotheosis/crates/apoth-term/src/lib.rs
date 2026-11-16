@@ -29,10 +29,12 @@ pub mod events;
 pub mod fuzz;
 pub mod graphics;
 mod machine;
+pub mod media;
 pub mod modes;
 mod osc;
 mod sgr;
 pub mod shell;
+pub mod snapshot;
 #[cfg(test)]
 mod tests_batch;
 
@@ -56,7 +58,11 @@ pub use events::{
     ClipboardSet, CommandEvent, EventSlot, Mark, Notification, Progress, ReplyQueue, UserVar,
 };
 pub use graphics::{GraphicsConfig, ImageDraw, PlacementInfo};
+pub use media::{
+    MediaConfig, MediaCtl, MediaEvent, MediaPlacement, MediaPlay, MediaRequest, MediaSource,
+};
 pub use modes::{Access, ModeDef, ModeState};
+pub use snapshot::{SNAPSHOT_VERSION, SnapError, TermImage};
 
 /// What `feed` tells the io thread.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -71,6 +77,8 @@ pub struct Wake {
     pub hold: bool,
     /// Image decode jobs are waiting for [`Term::take_image_jobs`].
     pub jobs: bool,
+    /// Media requests are waiting for [`Term::take_media_requests`].
+    pub media: bool,
 }
 
 /// Cursor state for the renderer and tests.
@@ -170,6 +178,7 @@ impl Term {
             events: !self.m.events.is_empty(),
             hold: self.m.sync.is_some(),
             jobs: self.m.gfx.has_jobs(),
+            media: self.m.gfx.media.has_requests(),
         }
     }
 
@@ -213,14 +222,115 @@ impl Term {
     }
 
     /// Image quads of the current screen for a viewport whose top is absolute row
-    /// `top_abs` (counted from the oldest retained row), `rows` tall, bottom to top.
-    pub fn image_draws(&self, top_abs: usize, rows: usize, out: &mut Vec<ImageDraw>) {
-        self.m.gfx_draws(top_abs, rows, out);
+    /// `top_abs` (counted from the oldest retained row), `rows` tall, bottom to top, showing
+    /// the animation frames current at `now`. Returns when an animation frame is due next
+    /// (hand it to the frame scheduler; nothing else wakes for it).
+    pub fn image_draws(
+        &self,
+        top_abs: usize,
+        rows: usize,
+        now: Instant,
+        out: &mut Vec<ImageDraw>,
+    ) -> Option<Instant> {
+        self.m.gfx_draws(top_abs, rows, now, out)
     }
 
-    /// Any image is placed on either screen.
+    /// Any `apoth icat` session is open (T-16 §1.1): the caller then compares the pty's
+    /// foreground process group after each feed and calls [`Term::bind_image_sessions`].
+    pub fn has_image_sessions(&self) -> bool {
+        !self.m.gfx.sessions_empty()
+    }
+
+    /// Sessions opened with `p=<pid>` since the last call (T-16 §1.1): the caller watches
+    /// each pid for exit and calls [`Term::end_image_session`] when it goes, or
+    /// [`Term::unwatch_image_session`] when it cannot watch it.
+    pub fn take_image_session_pids(&mut self) -> Vec<(u64, i32)> {
+        self.m.gfx.take_session_pids()
+    }
+
+    /// The pid of session `id` cannot be watched: the foreground process group rule of
+    /// [`Term::bind_image_sessions`] applies to it instead.
+    pub fn unwatch_image_session(&mut self, id: u64) {
+        self.m.gfx.unwatch_session(id);
+    }
+
+    /// Session `id` is still open.
+    pub fn has_image_session(&self, id: u64) -> bool {
+        self.m.gfx.has_session(id)
+    }
+
+    /// An open session relies on the process group rule: the caller re-checks it on a
+    /// timer while this holds, so a killed command is noticed without further output.
+    pub fn has_group_image_sessions(&self) -> bool {
+        self.m.gfx.has_group_sessions()
+    }
+
+    /// The process of session `id` exited without `a=e`: delete every placement it made.
+    /// Returns true when the session was open.
+    pub fn end_image_session(&mut self, id: u64) -> bool {
+        if !self.m.gfx.has_session(id) {
+            return false;
+        }
+        self.m.session_end(id, true);
+        true
+    }
+
+    /// Bind sessions opened since the last call to the foreground process group `fg`, and
+    /// end (removing every placement) the bound sessions whose group is no longer `fg`.
+    /// Returns true when a placement went (redraw).
+    pub fn bind_image_sessions(&mut self, fg: i32) -> bool {
+        let unbound: Vec<u64> = self.m.gfx.unbound_sessions().collect();
+        for id in unbound {
+            self.m.gfx.bind_session(id, fg);
+        }
+        let gone: Vec<u64> = self.m.gfx.sessions_not_in(fg).collect();
+        let any = !gone.is_empty();
+        for id in gone {
+            self.m.session_end(id, true);
+        }
+        any
+    }
+
+    // ---- media (T-16 §2) ----------------------------------------------------------------
+
+    /// Media commands for the caller to carry out (open players, control, close).
+    pub fn take_media_requests(&mut self) -> Vec<MediaRequest> {
+        self.m.gfx.media.take_requests()
+    }
+
+    /// A player's report for placement `key`: frames, ready/ended/error replies.
+    pub fn media_event(&mut self, key: u64, ev: MediaEvent, now: Instant) -> Wake {
+        self.m.now = Some(now);
+        // A new frame redraws; a position or state change too (progress, hover controls).
+        let frame = !matches!(ev, MediaEvent::AudioUnavailable);
+        self.m.media_event(key, ev);
+        self.wake(frame)
+    }
+
+    /// Placement `key` takes control `ctl` as if its client had sent it with `a=c` (no reply
+    /// is sent): the interface's play/pause click. `Play` on an ended placement restarts
+    /// it. An unknown `key` (the placement just went) does nothing. `Wake::media` says a
+    /// request waits for [`Term::take_media_requests`].
+    pub fn media_control(&mut self, key: u64, ctl: MediaCtl) -> Wake {
+        let found = self.m.media_control(key, ctl);
+        self.wake(found)
+    }
+
+    /// The media placements of the current screen in creation order, for the interface
+    /// (hover hit-testing, play/pause, progress). Deterministic: a function of the fed
+    /// bytes and the media events only.
+    pub fn media_placements(&self) -> Vec<MediaPlacement> {
+        self.m.media_placements()
+    }
+
+    /// Any media placement exists.
+    pub fn has_media(&self) -> bool {
+        self.m.gfx.media.has_places()
+    }
+
+    /// Any image or media placement is on either screen.
     pub fn has_images(&self) -> bool {
-        self.m.gfx.has_places()
+        self.m.gfx.has_places() || self.m.gfx.media.has_places()
     }
 
     /// Placements of the current screen, oldest first (tests, fixtures).
@@ -231,6 +341,11 @@ impl Term {
     /// The pane's image store (quota tests).
     pub fn image_store(&self) -> &apoth_image::store::ImageStore {
         self.m.gfx.store()
+    }
+
+    /// The graphics caps and quotas in force (fuzz invariants).
+    pub fn image_store_limits(&self) -> &apoth_image::Limits {
+        &self.m.cfg.graphics.limits
     }
 
     /// True while the renderer should keep the last completed frame (mode 2026).
@@ -249,6 +364,13 @@ impl Term {
         if self.m.mode_on(false, 2048) {
             self.m.size_report();
         }
+    }
+
+    /// Publish input modes to `mirror` from now on (a view swapping in a restored term keeps
+    /// the mirror its main thread already reads, T-21 §3).
+    pub fn set_input_mirror(&mut self, mirror: Arc<InputMirror>) {
+        mirror.store(self.m.published);
+        self.m.mirror = mirror;
     }
 
     /// Full reset (RIS).

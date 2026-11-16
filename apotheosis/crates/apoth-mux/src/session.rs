@@ -11,7 +11,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::geom::{Dir, Size};
+use crate::geom::{Dir, Rect, Size};
 use crate::tab::{SplitSize, Tab, TabError, TabId};
 use crate::tree::{PaneId, RATIO_ONE};
 
@@ -461,6 +461,25 @@ impl<P> Session<P> {
             .get_mut(&tid)
             .ok_or(MuxError::NoSuchTab)?
             .split(target, id, dir, size)?;
+        self.panes.insert(id, PaneMeta { spec, payload });
+        Ok(id)
+    }
+
+    /// A new floating pane in the tab of `target` at `rect` (see [`Tab::place_float`]); it
+    /// takes focus (MUX-18).
+    pub fn float_pane(
+        &mut self,
+        target: PaneId,
+        rect: Rect,
+        spec: PaneSpec,
+        payload: P,
+    ) -> Result<PaneId, MuxError> {
+        let tid = self.tab_of(target).ok_or(MuxError::NoSuchPane)?;
+        let id = self.alloc();
+        self.tabs
+            .get_mut(&tid)
+            .ok_or(MuxError::NoSuchTab)?
+            .add_float(id, rect)?;
         self.panes.insert(id, PaneMeta { spec, payload });
         Ok(id)
     }

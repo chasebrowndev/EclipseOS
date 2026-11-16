@@ -270,6 +270,7 @@ fn gpu_chrome_pass_matches_the_reference() {
     let panes = [PaneDraw::single(&scene_grid, None)];
     let input = FrameInput {
         panes: &panes,
+        chrome_before: &[],
         clear: BASE.map(|b| f32::from(b) / 255.0),
     };
     match pres.present(&mut renderer, &input) {

@@ -245,11 +245,15 @@ impl App {
     fn ctl_drop(&mut self, cid: u64) {
         let Some(ctl) = self.ctl.as_mut() else { return };
         ctl.waits.retain(|w| w.0 != cid);
+        let had = ctl.clients.contains_key(&cid);
         if let Some(c) = ctl.clients.remove(&cid) {
             for t in c.tokens.into_iter().chain(c.write) {
                 self.lh.remove(t);
             }
             tracing::debug!(pid = c.peer.pid, "socket client disconnected");
+        }
+        if had {
+            self.media_drop_client(cid);
         }
     }
 
@@ -638,6 +642,8 @@ impl App {
                 self.start_reload();
                 Ok(Some(serde_json::Value::Null))
             }
+            Params::ConfigSet(p) => self.ctl_runtime(&p.key, Some(&p.value)),
+            Params::ConfigReset(p) => self.ctl_runtime(&p.key, None),
             Params::Subscribe(s) => {
                 let kinds: Vec<EventKind> = s
                     .events
@@ -698,6 +704,26 @@ impl App {
                 Ok(Some(serde_json::Value::Null))
             }
             Params::Launch(l) => self.ctl_launch(cid, req.id, *l),
+            Params::AskpassArm(p) => self.askpass_arm(cid, &p.host),
+            Params::MediaWindowOpen(p) => self.media_open(cid, p),
+            Params::MediaWindowWrite(p) => self.media_write(cid, p),
+            Params::MediaWindowWait(p) => self.media_wait(cid, req.id, p),
+            Params::MediaAttach(_) => {
+                let fd = self
+                    .ctl
+                    .as_mut()
+                    .and_then(|x| x.clients.get_mut(&cid))
+                    .and_then(|c| c.conn.take_fd())
+                    .ok_or_else(|| err(ErrorCode::BadRequest, "no descriptor attached"))?;
+                let token = crate::mediahost::attach(fd)
+                    .ok_or_else(|| err(ErrorCode::BadRequest, "too many attached media"))?;
+                let reply = apoth_proto::results::MediaAttachReply {
+                    token: token.to_string(),
+                };
+                Ok(Some(serde_json::to_value(reply).map_err(|_| {
+                    err(ErrorCode::Internal, "cannot encode the reply")
+                })?))
+            }
             Params::PaneBlocks(_)
             | Params::ConfigEffective(_)
             | Params::KeyboardState(_)
@@ -706,12 +732,83 @@ impl App {
             | Params::WaylandInfo(_)
             | Params::RenderStatus(_)
             | Params::PaneWatch(_)
-            | Params::ConfigSet(_)
-            | Params::ConfigReset(_)
             | Params::ConfigPersist(_)
             | Params::ConfigSaveOverride(_)
             | Params::Notify(_) => Err(err(ErrorCode::Unsupported, "not available yet")),
         }
+    }
+
+    /// `askpass.arm` (T-22 §3, SECURITY-30): only a process in one of this instance's panes,
+    /// and not an agent session's, may arm; the channel is bound to that process (which then
+    /// `exec`s ssh) and ends with it. The reply carries the socket and the token to the
+    /// arming process only; neither is logged.
+    fn askpass_arm(
+        &mut self,
+        cid: u64,
+        host: &str,
+    ) -> Result<Option<serde_json::Value>, WireError> {
+        let Some(c) = self.client(cid) else {
+            return Err(err(ErrorCode::Internal, "no client"));
+        };
+        if c.peer.facts.pane.is_none() || c.peer.facts.agent {
+            return Err(err(
+                ErrorCode::Denied,
+                "askpass is armed only for a process in one of this terminal's panes",
+            ));
+        }
+        let pid = c.peer.pid;
+        let pane = c.peer.facts.pane;
+        let dir = self
+            .ctl_path()
+            .and_then(std::path::Path::parent)
+            .ok_or_else(|| err(ErrorCode::Internal, "no socket directory"))?
+            .to_owned();
+        let prep = crate::askpass::Prepared::new(&dir, host)
+            .map_err(|e| WireError::new(ErrorCode::Internal, format!("cannot arm askpass: {e}")))?
+            .in_pane(pane);
+        let reply = apoth_proto::results::AskpassArmReply {
+            socket: prep.socket().to_string_lossy().into_owned(),
+            token: prep.token_hex(),
+        };
+        let tx = self.to_main.clone();
+        prep.start(
+            pid,
+            Box::new(move |e| {
+                let _ = tx.send(MainMsg::Askpass(e));
+            }),
+        )
+        .map_err(|e| WireError::new(ErrorCode::Internal, format!("cannot arm askpass: {e}")))?;
+        tracing::info!(pid, "askpass armed");
+        json(&reply)
+    }
+
+    /// `config.set` / `config.reset` (T-12 §2): the class gate has already run. Replies
+    /// `{key, changed, previous}`; `previous` is the override the key had before, in config
+    /// text form (`null`: none), so a client can undo a batch that failed part-way.
+    fn ctl_runtime(
+        &mut self,
+        key: &str,
+        value: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, WireError> {
+        let change = self.runtime_override(key, value).map_err(|r| {
+            // A key whose class takes no runtime override is a denial; a bad value or an
+            // unknown key is a bad request.
+            let refused = r.class.is_some_and(|c| c.runtime_socket_class().is_none());
+            let code = if refused {
+                ErrorCode::Denied
+            } else {
+                ErrorCode::BadRequest
+            };
+            WireError::new(code, r.message)
+        })?;
+        let previous = apoth_config::schema::key(key)
+            .zip(change.previous.as_ref())
+            .and_then(|(k, v)| apoth_config::overrides::value_arg_text(k, v));
+        Ok(Some(serde_json::json!({
+            "key": key,
+            "changed": change.applied.is_some(),
+            "previous": previous,
+        })))
     }
 
     fn ctl_launch(

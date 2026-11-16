@@ -26,6 +26,8 @@ pub struct PaneSpec {
     pub mode: FrameMode,
     /// `panes.inactive-dim`, 0 disables.
     pub inactive_dim: f32,
+    /// A floating pane (MUX-18): stands on its own glass ([`draw_float_backing`]).
+    pub floating: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -67,11 +69,13 @@ impl PaneLayout {
 
 pub fn draw(s: &PaneSpec, l: &PaneLayout, pal: &Palette, out: &mut DrawList) {
     if s.mode == FrameMode::Full {
-        // Focused pane = brighter rim.
-        let colour = if s.focused {
-            pal.cell_focus_rim
-        } else {
-            pal.cell_rim
+        // Focused pane = brighter rim. A float stands alone over other panes, so its rim runs
+        // a step brighter than a tiled pane's.
+        let colour = match (s.focused, s.floating) {
+            (true, true) => pal.cell_focus_rim_hover,
+            (true, false) => pal.cell_focus_rim,
+            (false, true) => pal.cell_rim_hover,
+            (false, false) => pal.cell_rim,
         };
         out.rect(
             s.rect,
@@ -105,6 +109,27 @@ pub fn draw(s: &PaneSpec, l: &PaneLayout, pal: &Palette, out: &mut DrawList) {
             None,
         );
     }
+}
+
+/// The glass a floating pane stands on, drawn before (under) its grid: a soft shadow for
+/// depth and the frost + tint layer, so the panes beneath cannot ghost through its text.
+/// Its rim and dim come from [`draw`], over the grid.
+pub fn draw_float_backing(s: &PaneSpec, pal: &Palette, out: &mut DrawList) {
+    out.cmds.push(crate::draw::Cmd::Shadow {
+        rect: Rect::new(s.rect.x, s.rect.y + metrics::FLOAT_DROP, s.rect.w, s.rect.h),
+        radius: radius::INSET,
+        spread: space::LG,
+        alpha: pal.float_shadow,
+    });
+    if !out.glass {
+        out.rect(
+            s.rect,
+            radius::INSET,
+            pal.base.alpha(crate::tokens::alpha::FLOAT_BACKING),
+            None,
+        );
+    }
+    crate::state::glass(out, s.rect, radius::INSET, crate::tokens::Rgba::CLEAR, pal);
 }
 
 /// A draggable divider between panes.

@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 
 use accesskit::{
-    Action, Live, Node, NodeId, Rect, Role, TextPosition, TextSelection, TreeId, TreeInfo,
-    TreeUpdate,
+    Action, Invalid, Live, Node, NodeId, Rect, Role, TextPosition, TextSelection, Toggled, TreeId,
+    TreeInfo, TreeUpdate,
 };
 use apoth_grid::{WordChars, WordClass};
 
@@ -42,6 +42,120 @@ pub struct TabModel {
     pub selected: bool,
     /// Badges (bell, activity) as words.
     pub description: Option<String>,
+    /// The tab's cell from the strip layout used for hit-testing; `None` when it did not fit.
+    pub bounds: Option<Rect>,
+    /// Its close button's cell.
+    pub close: Option<Rect>,
+    /// OSC 9;4 progress, when reported.
+    pub progress: Option<ProgressModel>,
+    /// The profile in force when not the default (program-supplied name).
+    pub profile: Option<String>,
+}
+
+/// How a tab's progress line reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ProgressKind {
+    /// Running normally.
+    #[default]
+    Normal,
+    /// The reporting program signalled an error.
+    Error,
+    /// Paused.
+    Paused,
+    /// Indeterminate: no value.
+    Busy,
+}
+
+/// A tab's progress (OSC 9;4).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ProgressModel {
+    /// State.
+    pub kind: ProgressKind,
+    /// 0..=100 (ignored when busy).
+    pub value: u8,
+}
+
+/// A button of the bar or sheet.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BarButtonModel {
+    /// Its label.
+    pub label: String,
+    /// The explicit answer key ("O", "Esc").
+    pub key: String,
+    /// The 500 ms input guard is running: the button is inert.
+    pub disabled: bool,
+    /// Its cell from the bar layout used for hit-testing.
+    pub bounds: Option<Rect>,
+}
+
+/// The consent, link-confirm, error or notice bar, or the confirm-once sheet.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BarModel {
+    /// Interface-owned headline.
+    pub headline: String,
+    /// The detail line (program text for consent and link bars).
+    pub detail: Option<String>,
+    /// The sheet's program-text body; a spec with one is a modal sheet.
+    pub body: Option<String>,
+    /// Errors read as an alert.
+    pub alert: bool,
+    /// The buttons, in layout order.
+    pub buttons: Vec<BarButtonModel>,
+    /// The bar or sheet rectangle.
+    pub bounds: Option<Rect>,
+    /// The body box rectangle.
+    pub body_bounds: Option<Rect>,
+}
+
+/// A search mode chip.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ChipModel {
+    /// Spoken name ("Whole word").
+    pub name: String,
+    /// The state in words when it adds to on/off ("case insensitive").
+    pub description: Option<String>,
+    /// Toggled on.
+    pub on: bool,
+    /// Its cell from the search layout.
+    pub bounds: Option<Rect>,
+}
+
+/// The search bar.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchModel {
+    /// The query as typed (the AT reads it; never logged).
+    pub query: String,
+    /// Placeholder of the empty field.
+    pub placeholder: String,
+    /// "3/12", "No matches" or the refusal message.
+    pub count: String,
+    /// The pattern is refused.
+    pub error: bool,
+    /// The field has the keyboard.
+    pub focused: bool,
+    /// Previous and next have somewhere to go.
+    pub can_step: bool,
+    /// The mode chips.
+    pub chips: Vec<ChipModel>,
+    /// The sheet.
+    pub bounds: Option<Rect>,
+    /// The field.
+    pub field: Option<Rect>,
+    /// Previous.
+    pub prev: Option<Rect>,
+    /// Next.
+    pub next: Option<Rect>,
+    /// Close.
+    pub close: Option<Rect>,
+}
+
+/// The link tooltip.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TooltipModel {
+    /// The sanitised program text.
+    pub text: String,
+    /// Where it is drawn.
+    pub bounds: Option<Rect>,
 }
 
 /// A pane of the shown tab.
@@ -93,6 +207,16 @@ pub struct WindowModel {
     pub palette: Option<PaletteModel>,
     /// The latest polite announcement (bell, notification, command finished).
     pub announcement: String,
+    /// The tab strip rectangle.
+    pub strip: Option<Rect>,
+    /// The new-tab button, when the strip is shown.
+    pub new_tab: Option<Rect>,
+    /// The bar or modal sheet, when up.
+    pub bar: Option<BarModel>,
+    /// The search bar, when open.
+    pub search: Option<SearchModel>,
+    /// The link tooltip, when shown.
+    pub tooltip: Option<TooltipModel>,
 }
 
 /// Builds full and incremental updates; remembers what it last sent.
@@ -190,19 +314,18 @@ impl Builder {
 
         let mut list = Node::new(Role::TabList);
         list.set_label("Tabs");
-        let mut tabs = Vec::with_capacity(m.tabs.len());
+        if let Some(b) = m.strip {
+            list.set_bounds(b);
+        }
+        let mut tabs = Vec::with_capacity(m.tabs.len() + 1);
         for t in &m.tabs {
             let id = ids::tab(t.id);
             tabs.push(id);
-            let mut n = Node::new(Role::Tab);
-            n.set_label(t.label.as_str());
-            n.set_selected(t.selected);
-            if let Some(d) = &t.description {
-                n.set_description(d.as_str());
-            }
-            n.add_action(Action::Click);
-            n.add_action(Action::Focus);
-            out.push((id, n));
+            tab(t, id, &mut out);
+        }
+        if let Some(b) = m.new_tab {
+            tabs.push(ids::NEW_TAB);
+            button("New tab", b, &mut out, ids::NEW_TAB);
         }
         list.set_children(tabs);
         out.push((ids::TAB_LIST, list));
@@ -214,10 +337,37 @@ impl Builder {
             }
         }
 
+        if let Some(se) = &m.search {
+            kids.push(ids::SEARCH);
+            if se.focused {
+                focus = ids::SEARCH_FIELD;
+            }
+            search(se, &mut out);
+        }
+
+        if let Some(b) = &m.bar {
+            kids.push(ids::BAR);
+            if b.body.is_some() {
+                // A modal sheet takes the screen reader's focus.
+                focus = ids::BAR;
+            }
+            bar(b, &mut out);
+        }
+
         if let Some(pal) = &m.palette {
             kids.push(ids::PALETTE);
             focus = ids::PALETTE_INPUT;
             palette(pal, &mut out);
+        }
+
+        if let Some(t) = &m.tooltip {
+            kids.push(ids::TOOLTIP);
+            let mut n = Node::new(Role::Tooltip);
+            n.set_label(t.text.as_str());
+            if let Some(b) = t.bounds {
+                n.set_bounds(b);
+            }
+            out.push((ids::TOOLTIP, n));
         }
 
         kids.push(ids::TOAST);
@@ -448,4 +598,191 @@ fn palette(p: &PaletteModel, out: &mut Vec<(NodeId, Node)>) {
     }
     list.set_children(kids);
     out.push((ids::PALETTE_LIST, list));
+}
+
+/// A plain labelled button with a click action.
+fn button(label: &str, bounds: Rect, out: &mut Vec<(NodeId, Node)>, id: NodeId) {
+    let mut n = Node::new(Role::Button);
+    n.set_label(label);
+    n.set_bounds(bounds);
+    n.add_action(Action::Click);
+    out.push((id, n));
+}
+
+fn tab(t: &TabModel, id: NodeId, out: &mut Vec<(NodeId, Node)>) {
+    let mut n = Node::new(Role::Tab);
+    n.set_label(t.label.as_str());
+    n.set_selected(t.selected);
+    if let Some(d) = &t.description {
+        n.set_description(d.as_str());
+    }
+    if let Some(b) = t.bounds {
+        n.set_bounds(b);
+    }
+    n.add_action(Action::Click);
+    n.add_action(Action::Focus);
+    let mut kids = Vec::new();
+    if let Some(p) = t.progress {
+        let pid = ids::tab_progress(t.id);
+        kids.push(pid);
+        let mut pn = Node::new(Role::ProgressIndicator);
+        pn.set_label("Progress");
+        match p.kind {
+            ProgressKind::Busy => pn.set_description("in progress"),
+            k => {
+                let v = f64::from(p.value.min(100));
+                pn.set_min_numeric_value(0.0);
+                pn.set_max_numeric_value(100.0);
+                pn.set_numeric_value(v);
+                match k {
+                    ProgressKind::Error => pn.set_description("error"),
+                    ProgressKind::Paused => pn.set_description("paused"),
+                    _ => {}
+                }
+            }
+        }
+        if let Some(b) = t.bounds {
+            pn.set_bounds(b);
+        }
+        out.push((pid, pn));
+    }
+    if let Some(name) = &t.profile {
+        let pid = ids::tab_profile(t.id);
+        kids.push(pid);
+        let mut pn = Node::new(Role::Label);
+        pn.set_label("Profile");
+        pn.set_value(name.as_str());
+        pn.set_read_only();
+        if let Some(b) = t.bounds {
+            pn.set_bounds(b);
+        }
+        out.push((pid, pn));
+    }
+    if let Some(c) = t.close {
+        let cid = ids::tab_close(t.id);
+        kids.push(cid);
+        button("Close tab", c, out, cid);
+    }
+    n.set_children(kids);
+    out.push((id, n));
+}
+
+fn bar(b: &BarModel, out: &mut Vec<(NodeId, Node)>) {
+    let modal = b.body.is_some();
+    let mut n = Node::new(if modal {
+        Role::Dialog
+    } else if b.alert {
+        Role::Alert
+    } else {
+        Role::Group
+    });
+    n.set_label(b.headline.as_str());
+    if let Some(d) = &b.detail {
+        n.set_description(d.as_str());
+    }
+    if modal {
+        n.set_modal();
+        n.add_action(Action::Focus);
+    }
+    if let Some(r) = b.bounds {
+        n.set_bounds(r);
+    }
+    let mut kids = Vec::with_capacity(b.buttons.len() + 1);
+    if let Some(body) = &b.body {
+        kids.push(ids::BAR_BODY);
+        let mut t = Node::new(Role::Label);
+        t.set_label("Actions");
+        t.set_value(body.as_str());
+        t.set_read_only();
+        if let Some(r) = b.body_bounds {
+            t.set_bounds(r);
+        }
+        out.push((ids::BAR_BODY, t));
+    }
+    for (i, bt) in b.buttons.iter().enumerate() {
+        let id = ids::bar_button(i);
+        kids.push(id);
+        let mut x = Node::new(Role::Button);
+        x.set_label(bt.label.as_str());
+        if !bt.key.is_empty() {
+            x.set_keyboard_shortcut(bt.key.as_str());
+        }
+        if let Some(r) = bt.bounds {
+            x.set_bounds(r);
+        }
+        if bt.disabled {
+            x.set_disabled();
+        }
+        x.add_action(Action::Click);
+        out.push((id, x));
+    }
+    n.set_children(kids);
+    out.push((ids::BAR, n));
+}
+
+fn search(s: &SearchModel, out: &mut Vec<(NodeId, Node)>) {
+    let mut g = Node::new(Role::Search);
+    g.set_label("Find");
+    if let Some(r) = s.bounds {
+        g.set_bounds(r);
+    }
+    let mut kids = vec![ids::SEARCH_FIELD, ids::SEARCH_COUNT];
+
+    let mut f = Node::new(Role::SearchInput);
+    f.set_label("Find");
+    f.set_value(s.query.as_str());
+    f.set_placeholder(s.placeholder.as_str());
+    if s.error {
+        f.set_invalid(Invalid::True);
+    }
+    if let Some(r) = s.field {
+        f.set_bounds(r);
+    }
+    f.add_action(Action::Focus);
+    f.add_action(Action::Click);
+    out.push((ids::SEARCH_FIELD, f));
+
+    let mut c = Node::new(Role::Label);
+    c.set_label("Matches");
+    c.set_value(s.count.as_str());
+    c.set_read_only();
+    if let Some(r) = s.field {
+        c.set_bounds(r);
+    }
+    out.push((ids::SEARCH_COUNT, c));
+
+    for (i, chip) in s.chips.iter().enumerate() {
+        let id = ids::chip(i);
+        kids.push(id);
+        let mut n = Node::new(Role::Button);
+        n.set_label(chip.name.as_str());
+        n.set_toggled(Toggled::from(chip.on));
+        if let Some(d) = &chip.description {
+            n.set_description(d.as_str());
+        }
+        if let Some(r) = chip.bounds {
+            n.set_bounds(r);
+        }
+        n.add_action(Action::Click);
+        out.push((id, n));
+    }
+    for (id, label, r) in [
+        (ids::SEARCH_PREV, "Previous match", s.prev),
+        (ids::SEARCH_NEXT, "Next match", s.next),
+        (ids::SEARCH_CLOSE, "Close search", s.close),
+    ] {
+        kids.push(id);
+        let mut n = Node::new(Role::Button);
+        n.set_label(label);
+        if let Some(r) = r {
+            n.set_bounds(r);
+        }
+        if !s.can_step && id != ids::SEARCH_CLOSE {
+            n.set_disabled();
+        }
+        n.add_action(Action::Click);
+        out.push((id, n));
+    }
+    g.set_children(kids);
+    out.push((ids::SEARCH, g));
 }

@@ -65,7 +65,11 @@ ec-ctl — control the abyss compositor
   ec-ctl config list [--changed] every setting, its value and its file
   ec-ctl config describe PATH    one setting: type, range, default, doc
   ec-ctl config get PATH         one setting's value, bare
-  ec-ctl config set PATH VALUE   write a setting (abyss.kdl only)
+  ec-ctl config set KEY=VALUE [KEY=VALUE...] | KEY VALUE
+                                      write settings (abyss.kdl only); several pairs
+                                      are one atomic write. `ec-ctl set` / `ec-ctl get`
+                                      are shorthands. Errors exit 1, usage errors 2;
+                                      --json prints {ok:false,error} on failure
   ec-ctl config validate         check a config file without applying it
   ec-ctl config migrate          split a legacy abyss.kdl into two files
                                       (--only widget-order: just append new built-in
@@ -187,8 +191,12 @@ fn main() -> ExitCode {
     let (method, params, table) = match parse(&args, &flags) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("ec-ctl: {e}");
-            return ExitCode::FAILURE;
+            if raw {
+                println!("{}", json!({"ok": false, "error": e}));
+            } else {
+                eprintln!("ec-ctl: {e}");
+            }
+            return ExitCode::from(2);
         }
     };
 
@@ -214,7 +222,11 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("ec-ctl: {e}");
+            if raw {
+                println!("{}", json!({"ok": false, "error": e}));
+            } else {
+                eprintln!("ec-ctl: {e}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -240,7 +252,7 @@ struct Flags {
 }
 
 /// Which columns a listing prints. Anything not here falls back to JSON.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum Table {
     Outputs,
     Workspaces,
@@ -260,6 +272,16 @@ enum Table {
 type Parsed = (String, Value, Option<Table>);
 
 fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
+    // `ec-ctl set|get|unset …` is `ec-ctl config set|get|unset …`, as `apoth set` is.
+    let aliased: Vec<String>;
+    let args = if matches!(args.first().map(String::as_str), Some("set" | "get" | "unset")) {
+        aliased = std::iter::once("config".to_owned())
+            .chain(args.iter().cloned())
+            .collect();
+        &aliased[..]
+    } else {
+        args
+    };
     let a = |i: usize| args.get(i).map(String::as_str).unwrap_or_default();
     let num = |i: usize| -> Result<u64, String> {
         a(i).parse::<u64>()
@@ -355,21 +377,14 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
                     json!({"schema": false, "path": need_path("get")?}),
                     Some(Table::ConfigValue),
                 ),
-                "set" => {
-                    let path = need_path("set")?;
-                    let raw = args.get(3).ok_or("config set needs a value")?;
-                    (
-                        "set_config_value".into(),
-                        json!({
-                            "path": path,
-                            // Sent as a JSON string unless it is plainly a
-                            // number or a bool; the compositor coerces per the
-                            // key's type, which is the only place that knows it.
-                            "value": scalar(raw),
-                            "dry_run": flags.dry_run,
-                        }),
-                        None,
-                    )
+                "set" => config_set(&args[2..], flags)?,
+                "unset" => {
+                    need_path("unset")?;
+                    return Err(
+                        "unset is not available: the control socket has no reset-to-default method; \
+                         edit the file, or `set KEY=VALUE` with the default"
+                            .into(),
+                    );
                 }
                 "validate" => {
                     // `config validate [FILE]` — the positional is the same
@@ -634,6 +649,55 @@ fn overscan_spec(raw: &str) -> Result<Value, String> {
         obj.insert(edge.into(), json!(px));
     }
     Ok(Value::Object(obj))
+}
+
+/// `config set` arguments (after `set`), as the apoth grammar: every word is `key=value`
+/// (split at the first `=`), or the legacy single pair `key value...` (rest joined by
+/// spaces). One pair is `set_config_value`; several are one atomic `set_config_values`, so a
+/// rejected pair writes nothing.
+fn config_set(words: &[String], flags: &Flags) -> Result<(String, Value, Option<Table>), String> {
+    const USE: &str = "usage: ec-ctl set KEY=VALUE [KEY=VALUE...] | KEY VALUE";
+    let pairs = parse_pairs(words).map_err(|m| format!("{m}\n{USE}"))?;
+    if let [(k, v)] = pairs.as_slice() {
+        let p = json!({"path": k, "value": scalar(v), "dry_run": flags.dry_run});
+        return Ok(("set_config_value".into(), p, None));
+    }
+    let edits: Vec<Value> = pairs
+        .iter()
+        .map(|(k, v)| json!({"path": k, "value": scalar(v)}))
+        .collect();
+    let p = json!({"edits": edits, "dry_run": flags.dry_run});
+    Ok(("set_config_values".into(), p, None))
+}
+
+/// Mirrors `apoth`'s `parse_pairs`: same split, same wording, same duplicate check.
+fn parse_pairs(pos: &[String]) -> Result<Vec<(String, String)>, String> {
+    let Some(first) = pos.first() else {
+        return Err("needs key=value".into());
+    };
+    let pairs: Vec<(String, String)> = if first.contains('=') {
+        let mut v = Vec::with_capacity(pos.len());
+        for a in pos {
+            let Some((k, val)) = a.split_once('=') else {
+                return Err(format!("`{a}` is not key=value (quote a value that has spaces)"));
+            };
+            v.push((k.to_owned(), val.to_owned()));
+        }
+        v
+    } else if pos.len() >= 2 {
+        vec![(first.clone(), pos[1..].join(" "))]
+    } else {
+        return Err(format!("`{first}` needs a value: {first}=VALUE"));
+    };
+    for (i, (k, _)) in pairs.iter().enumerate() {
+        if k.is_empty() {
+            return Err("a pair has an empty key".into());
+        }
+        if pairs[..i].iter().any(|(p, _)| p == k) {
+            return Err(format!("`{k}` is given twice"));
+        }
+    }
+    Ok(pairs)
 }
 
 /// A `config set` value, as JSON. Bare `true`/`false` and numbers go over the
@@ -1070,6 +1134,66 @@ mod tests {
     fn run(args: &[&str]) -> Result<Parsed, String> {
         let args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         parse(&args, &Flags::default())
+    }
+
+    #[test]
+    fn config_set_forms() {
+        let want = json!({"path": "font.size", "value": 12, "dry_run": false});
+        for a in [
+            &["config", "set", "font.size=12"][..],
+            &["set", "font.size=12"],
+            &["config", "set", "font.size", "12"],
+            &["set", "font.size", "12"],
+        ] {
+            let (m, p, _) = run(a).unwrap();
+            assert_eq!((m.as_str(), p), ("set_config_value", want.clone()), "{a:?}");
+        }
+        let (_, p, _) = run(&["set", "font.family", "JetBrains", "Mono"]).unwrap();
+        assert_eq!(p["value"], json!("JetBrains Mono"));
+        let (_, p, _) = run(&["set", "a.b=x=y"]).unwrap();
+        assert_eq!(p["value"], json!("x=y"));
+        let (m, p, _) = run(&["set", "a.b=1", "c.d=true", "e.f=hi there"]).unwrap();
+        assert_eq!(m, "set_config_values");
+        assert_eq!(
+            p,
+            json!({"edits": [
+                {"path": "a.b", "value": 1},
+                {"path": "c.d", "value": true},
+                {"path": "e.f", "value": "hi there"},
+            ], "dry_run": false})
+        );
+        let dry = Flags {
+            dry_run: true,
+            ..Flags::default()
+        };
+        let args: Vec<String> = ["set", "a=1", "b=2"].iter().map(|s| (*s).to_string()).collect();
+        assert_eq!(parse(&args, &dry).unwrap().1["dry_run"], json!(true));
+    }
+
+    #[test]
+    fn config_set_errors_and_aliases() {
+        assert!(run(&["set"]).unwrap_err().starts_with("needs key=value"));
+        assert!(run(&["set", "font.size"])
+            .unwrap_err()
+            .contains("needs a value: font.size=VALUE"));
+        assert!(run(&["set", "a=1", "b"])
+            .unwrap_err()
+            .contains("`b` is not key=value"));
+        assert!(run(&["set", "a=1", "a=2"])
+            .unwrap_err()
+            .contains("`a` is given twice"));
+        assert!(run(&["set", "=1"]).unwrap_err().contains("empty key"));
+        assert!(run(&["config", "set"]).is_err());
+        assert!(run(&["unset", "font.size"])
+            .unwrap_err()
+            .contains("no reset-to-default"));
+        assert!(run(&["unset"]).is_err());
+        let (m, p, _) = run(&["get", "font.size"]).unwrap();
+        assert_eq!(
+            (m.as_str(), p),
+            ("get_config", json!({"schema": false, "path": "font.size"}))
+        );
+        assert!(run(&["get"]).is_err());
     }
 
     #[test]

@@ -87,8 +87,12 @@ fn hostile_payloads() {
         ITermError::BadData
     );
     assert_eq!(
-        decode_file(&f, b64(b"GIF89a....").as_bytes(), &lim).unwrap_err(),
+        decode_file(&f, b64(b"BM........").as_bytes(), &lim).unwrap_err(),
         ITermError::Unsupported
+    );
+    assert_eq!(
+        decode_file(&f, b64(b"GIF89a....").as_bytes(), &lim).unwrap_err(),
+        ITermError::BadData
     );
     let small = Limits {
         max_decoded_bytes: 16,
@@ -106,4 +110,19 @@ fn hostile_payloads() {
         decode_file(&huge, b"", &lim).unwrap_err(),
         ITermError::TooLarge
     );
+}
+
+#[test]
+fn cell_box_follows_units_and_aspect() {
+    let (f, _) = parse_file(&body("inline=1", "")).unwrap();
+    assert_eq!(cell_box(&f, 20, 32, (10, 16), (80, 24)), (2, 2));
+    let (f, _) = parse_file(&body("inline=1;width=4", "")).unwrap();
+    // 40 px wide, aspect kept: 64 px tall = 4 rows.
+    assert_eq!(cell_box(&f, 20, 32, (10, 16), (80, 24)), (4, 4));
+    let (f, _) = parse_file(&body(
+        "inline=1;width=50%;height=10px;preserveAspectRatio=0",
+        "",
+    ))
+    .unwrap();
+    assert_eq!(cell_box(&f, 20, 32, (10, 16), (80, 24)), (40, 1));
 }

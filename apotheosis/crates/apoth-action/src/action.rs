@@ -19,8 +19,8 @@ use crate::arg::{ArgType, Bytes, Dur, ParamKind};
 use crate::argv::Argv;
 use crate::class::{Class, ClassContext, Classification, NoContext, OverrideClass, Refusal};
 use crate::enums::{
-    Board, BroadcastMode, CaptureDest, CwdPolicy, Dir, LaunchType, LayoutVerb, Motion, Order,
-    Scope, SelectUnit, Signal, Source, SplitDir, Urgency,
+    Board, BroadcastMode, CaptureDest, CwdPolicy, Dir, LaunchType, LayoutVerb, Motion,
+    OpenPlacement, Order, Scope, SelectUnit, Signal, Source, SplitDir, Urgency,
 };
 use crate::error::{ErrorKind, ParseError, suggest};
 use crate::key::ChordList;
@@ -32,6 +32,9 @@ pub const MAX_VAR_VALUE_BYTES: usize = 1024;
 pub const MAX_VAR_NAME_BYTES: usize = 128;
 /// Longest object name (macro, layout, workspace, key table, bookmark, theme).
 pub const MAX_NAME_BYTES: usize = 128;
+/// Longest `open.*` target (a path: PATH_MAX; a URI is held to its own 2083-byte cap where
+/// it is checked as a link).
+pub const MAX_OPEN_TARGET_BYTES: usize = 4096;
 /// Macro expansion depth cap (macros cannot recurse, so this is a backstop).
 pub const MAX_MACRO_DEPTH: u8 = 8;
 
@@ -130,6 +133,7 @@ impl ActionInfo {
                 | "block.open-output"
                 | "coprocess.run"
                 | "pane.split"
+                | "pane.float"
                 | "tab.new"
                 | "window.new"
         )
@@ -522,6 +526,9 @@ define_actions! {
         "Focus the previous pane." { };
     PaneFocusLast = "pane.focus-last" [Layout] "Focus last pane"
         "Focus the previously focused pane." { };
+    PaneReconnect = "pane.reconnect" [Input] "Reconnect pane"
+        "Start a fresh ssh in a pane whose `apoth ssh --hold` link was lost (types Enter there)."
+        { };
     PaneMove = "pane.move" [Layout] "Move pane" "Swap the pane with its neighbour."
         { direction: Dir };
     PaneResize = "pane.resize" [Layout] "Resize pane" "Move a pane edge by cells."
@@ -532,6 +539,15 @@ define_actions! {
         "Make all splits in the tab equal." { };
     PaneBreakOut = "pane.break-out" [Layout] "Break pane out"
         "Move the pane into its own tab." { };
+    PaneFloat = "pane.float" [Layout] "New floating pane"
+        "Open a floating pane over the tab; spawn-class when a command argv is given."
+        { argv: Option<Argv>, cwd: Option<String>, profile: Option<String> };
+    PaneToggleFloat = "pane.toggle-float" [Layout] "Float or embed pane"
+        "Move the pane between the tiled and the floating layer." { };
+    PaneToggleFloats = "pane.toggle-floats" [Layout] "Show or hide floating panes"
+        "Show or hide the tab's floating layer." { };
+    PaneTogglePin = "pane.toggle-pin" [Layout] "Pin floating pane"
+        "Keep the floating pane above unpinned floats." { };
     PaneSetTitle = "pane.set-title" [Layout] "Set pane title"
         "Set or clear (no argument) a pinned pane title."
         { title: Option<String> };
@@ -681,6 +697,12 @@ define_actions! {
     SessionRestore = "session.restore" [Spawn] "Restore session"
         "Restore a saved session, respawning its commands suspended."
         { name: Option<String> };
+    SessionDetach = "session.detach" [Layout] "Detach session"
+        "Detach this window from its session daemon; the panes keep running (tmux prefix d)."
+        { };
+    SessionKill = "session.kill" [Layout] "Kill session"
+        "Close every pane of this window's session daemon and end it (tmux kill-session)."
+        { };
     ScrollbackClear = "scrollback.clear" [Layout] "Clear scrollback" "Discard the scrollback." { };
     ScrollbackSave = "scrollback.save" [ReadContent, Spawn] "Save scrollback"
         "Write the scrollback to a file."
@@ -711,6 +733,15 @@ define_actions! {
     Open = "open" [Spawn] "Open"
         "Open a file or URL with an argv opener (default opener if none)."
         { target: String, argv: Option<Argv> };
+    OpenDefault = "open.default" [Spawn] "Open with the default app"
+        "Open a path or URL with its handler; without a target: the selection, else hints."
+        { target: Option<String>, placement: Option<OpenPlacement> };
+    OpenWith = "open.with" [Layout] "Open with…"
+        "Pick the app that opens a path or URL; the launch is the user's pick on the sheet."
+        { target: Option<String> };
+    OpenMenu = "open.menu" [Layout] "Open menu"
+        "Open, Open with…, placements and Copy for a path or URL; without a target: hints."
+        { target: Option<String> };
     CoprocessRun = "coprocess.run" [Spawn, ReadContent, Input] "Run coprocess"
         "Run a command connected to the pane: its output is typed in, pane text is fed to it."
         { argv: Argv, source: Option<Source> };
@@ -847,6 +878,7 @@ impl Action {
         }
         match self {
             Action::PaneSplit { argv, .. }
+            | Action::PaneFloat { argv, .. }
             | Action::TabNew { argv, .. }
             | Action::WindowNew { argv, .. } => opt_argv_spawn(&mut c, argv),
             Action::LayoutApply { name } => {
@@ -954,6 +986,21 @@ impl Action {
             | Action::BookmarkRemove { name }
             | Action::BookmarkJump { name } => check_name("bookmark", name),
             Action::ThemeSet { name } => check_name("theme", name),
+            Action::OpenDefault {
+                target: Some(t), ..
+            }
+            | Action::OpenWith { target: Some(t) }
+            | Action::OpenMenu { target: Some(t) } => {
+                if t.is_empty()
+                    || t.len() > MAX_OPEN_TARGET_BYTES
+                    || t.chars().any(char::is_control)
+                {
+                    return Err(invalid(format!(
+                        "open target must be 1..={MAX_OPEN_TARGET_BYTES} bytes without controls"
+                    )));
+                }
+                Ok(())
+            }
             Action::InputSendCsi { body } | Action::InputSendEsc { body } => {
                 check_sequence_body(body)
             }

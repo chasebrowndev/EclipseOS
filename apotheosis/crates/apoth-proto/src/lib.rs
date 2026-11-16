@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Control-socket wire types (newline-delimited JSON).
+//! Control-socket wire types (newline-delimited JSON) and the mux attach protocol
+//! ([`mux`], binary records, T-21 §3).
 //!
 //! Governing spec: T-12 (`docs/ECLIPSEOS_SPECS_APOTHEOSIS.md`).
 //!
@@ -13,6 +14,7 @@
 //! `action.run` of such a name is `unknown-action`.
 #![forbid(unsafe_code)]
 
+pub mod askpass;
 pub mod caps;
 pub mod error;
 pub mod event;
@@ -21,8 +23,10 @@ pub mod fuzz;
 pub mod limits;
 pub mod message;
 pub mod method;
+pub mod mux;
 pub mod params;
 pub mod results;
+pub mod secret_prompt;
 
 pub use caps::{Cap, Class};
 pub use error::{

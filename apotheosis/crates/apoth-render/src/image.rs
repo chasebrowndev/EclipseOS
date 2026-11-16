@@ -6,6 +6,11 @@
 //! equal pixels): uploaded once, premultiplied on the way, downscaled when an axis exceeds
 //! the device limit, and dropped after [`IDLE_FRAMES`] frames unused or when the cache
 //! passes [`CACHE_BYTES`]. A 1:1 quad samples nearest (pixel exact), a scaled one linear.
+//!
+//! Animation frames and same-size retransmits (video through the kitty protocol) name the
+//! key they follow in [`ImageQuad::replaces`]: when that texture was not drawn this frame
+//! it is taken over and only [`ImageQuad::dirty`] is written (RENDERING-37), so a playing
+//! animation keeps one texture and uploads only its changed rectangle.
 
 use std::collections::HashMap;
 
@@ -32,11 +37,16 @@ pub struct ImageQuad<'a> {
     pub dst: [i32; 4],
     /// Source rect in image pixels: x, y, w, h.
     pub src: [u32; 4],
+    /// A same-size texture these pixels may overwrite (the previous frame)...
+    pub replaces: Option<u64>,
+    /// ...in this rect only (`None`: all of it).
+    pub dirty: Option<[u32; 4]>,
 }
 
 #[derive(Debug)]
 struct Tex {
-    _tex: wgpu::Texture,
+    tex: wgpu::Texture,
+    size: (u32, u32),
     nearest: wgpu::BindGroup,
     linear: wgpu::BindGroup,
     bytes: u64,
@@ -76,6 +86,7 @@ pub(crate) struct ImagePass {
     frame: u64,
     panes: Vec<PaneRanges>,
     max_dim: u32,
+    reused: u64,
 }
 
 fn vertex_buffer(device: &wgpu::Device, cap: u64) -> wgpu::Buffer {
@@ -240,6 +251,7 @@ impl ImagePass {
             frame: 0,
             panes: Vec::new(),
             max_dim,
+            reused: 0,
         }
     }
 
@@ -248,9 +260,17 @@ impl ImagePass {
         self.cache.len()
     }
 
+    /// Texture uploads that rewrote a reused texture in place (tests, diagnostics).
+    pub(crate) fn reused(&self) -> u64 {
+        self.reused
+    }
+
     fn upload(&mut self, q: &ImageQuad<'_>) {
         if let Some(t) = self.cache.get_mut(&q.key) {
             t.used = self.frame;
+            return;
+        }
+        if self.take_over(q) {
             return;
         }
         let (w, h, px) = prepare_pixels(q.width, q.height, q.rgba, self.max_dim);
@@ -264,6 +284,63 @@ impl ImagePass {
         );
         t.used = self.frame;
         self.cache.insert(q.key, t);
+    }
+
+    /// Reuse the texture of `q.replaces` (same size, not drawn this frame): write only the
+    /// dirty rect and re-key it.
+    fn take_over(&mut self, q: &ImageQuad<'_>) -> bool {
+        let Some(old) = q.replaces else {
+            return false;
+        };
+        let frame = self.frame;
+        let fits = q.width <= self.max_dim && q.height <= self.max_dim;
+        let ok = self
+            .cache
+            .get(&old)
+            .is_some_and(|t| t.used != frame && t.size == (q.width, q.height));
+        if !fits || !ok || q.rgba.len() < q.width as usize * q.height as usize * 4 {
+            return false;
+        }
+        let Some(mut t) = self.cache.remove(&old) else {
+            return false;
+        };
+        let [x, y, w, h] = q.dirty.unwrap_or([0, 0, q.width, q.height]);
+        let (x, y) = (x.min(q.width), y.min(q.height));
+        let (w, h) = (w.min(q.width - x), h.min(q.height - y));
+        if w > 0 && h > 0 {
+            let mut px = Vec::with_capacity(w as usize * h as usize * 4);
+            for row in y..y + h {
+                let at = (row as usize * q.width as usize + x as usize) * 4;
+                for p in q.rgba[at..at + w as usize * 4].chunks_exact(4) {
+                    let a = u32::from(p[3]);
+                    let pm = |c: u8| ((u32::from(c) * a + 127) / 255) as u8;
+                    px.extend_from_slice(&[pm(p[0]), pm(p[1]), pm(p[2]), p[3]]);
+                }
+            }
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &t.tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d { x, y, z: 0 },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &px,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(h),
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
+        t.used = frame;
+        self.cache.insert(q.key, t);
+        self.reused += 1;
+        true
     }
 
     fn push(&mut self, dst: [f32; 4], uv: [f32; 4], tint: [f32; 4]) -> u32 {
@@ -467,7 +544,8 @@ impl Tex {
         Tex {
             nearest: bind(samplers.0),
             linear: bind(samplers.1),
-            _tex: tex,
+            tex,
+            size,
             bytes: u64::from(size.0) * u64::from(size.1) * 4,
             used: 0,
         }

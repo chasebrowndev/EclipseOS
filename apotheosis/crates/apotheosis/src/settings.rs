@@ -48,6 +48,7 @@ fn graphics_config(c: &Config, g: &mut apoth_term::GraphicsConfig) {
     const MAX_DECODED: u64 = 400 << 20;
     g.kitty = c.bool("graphics.kitty");
     g.sixel = c.bool("graphics.sixel");
+    g.iterm2 = c.bool("graphics.iterm2");
     g.inline_decode = false;
     g.budget = BUDGET.get_or_init(Default::default).clone();
     let l = &mut g.limits;
@@ -57,6 +58,9 @@ fn graphics_config(c: &Config, g: &mut apoth_term::GraphicsConfig) {
     let px = u64::try_from(c.int("graphics.max-pixels")).unwrap_or(0);
     l.max_decoded_bytes = px.saturating_mul(4).min(MAX_DECODED);
     l.sixel_max_pixels = px;
+    g.media.enabled = c.bool("media.enabled");
+    g.media.offscreen_stop = c.str("media.offscreen") == Some("stop");
+    crate::mediahost::configure(c);
 }
 
 /// Everything the binary reads from the configuration.
@@ -107,6 +111,14 @@ pub(crate) struct Settings {
     pub(crate) nav: NavSettings,
     /// `graphics.file-transmission` is not `off` (T-15 §5).
     pub(crate) graphics_file: bool,
+    /// `sessions.server` is `on`: windows are views of the session daemon (T-21 §3).
+    pub(crate) server_mode: bool,
+    /// `security.sudo-askpass`: arm askpass for every local pane so `sudo -A` asks through
+    /// it (T-22 §3). Read when a pane starts.
+    pub(crate) sudo_askpass: bool,
+    /// `security.password-prompt` is `auto` (T-17 §5): a getpass-style read in the focused
+    /// pane opens `ec-secret-prompt` on Abyss.
+    pub(crate) password_prompt: bool,
     /// `-o key=value` pairs and diagnostics counts, for the startup log line.
     pub(crate) diagnostics: usize,
 }
@@ -194,6 +206,9 @@ pub(crate) struct GlassSettings {
     pub(crate) interface_font: Option<String>,
     /// `interface.font-size` over the 13 px body token, times `interface.scale`.
     pub(crate) interface_zoom: f32,
+    /// `interface.motion`. `system` reads as `full`: the portal's reduce-motion setting is
+    /// not read yet.
+    pub(crate) motion: apoth_ui::motion::MotionMode,
 }
 
 impl GlassSettings {
@@ -220,6 +235,10 @@ impl GlassSettings {
             },
             scrollbar_marks: c.bool("scrollbar.marks"),
             interface_font: nonempty(c.str("interface.font")),
+            motion: apoth_ui::motion::MotionMode::resolve(
+                c.str("interface.motion").unwrap_or("system"),
+                false,
+            ),
             interface_zoom: if size > 0.0 && scale > 0.0 {
                 size / apoth_ui::tokens::size::BODY * scale
             } else {
@@ -307,6 +326,9 @@ pub(crate) struct InputSettings {
     /// `mouse.selection-override`.
     pub(crate) override_mods: Mods,
     pub(crate) paste: PasteSettings,
+    /// `menu.context-menu`: a right click with no selection opens the Open menu for the
+    /// link, URL or path under the pointer (T-14 §11).
+    pub(crate) context_menu: bool,
 }
 
 /// Modifier names (`shift`, `ctrl`, `alt`, `super`) to a set.
@@ -360,6 +382,7 @@ impl InputSettings {
             scroll_lines: u32::try_from(c.int("mouse.scroll-lines").clamp(1, 50)).unwrap_or(3),
             scroll_multiplier: c.float("mouse.scroll-multiplier").clamp(0.1, 20.0),
             override_mods: mods_of(c.list("mouse.selection-override")),
+            context_menu: c.bool("menu.context-menu"),
             paste: PasteSettings {
                 guard,
                 confirm_bytes: bytes("paste.confirm-bytes"),
@@ -628,6 +651,8 @@ impl Settings {
             selection: (None, (0, 0, 0)),
             color_keys: ColorKeys::from_config(c),
             theme_system: matches!(c.str("theme"), None | Some("system")),
+            sudo_askpass: c.bool("security.sudo-askpass"),
+            password_prompt: c.str("security.password-prompt") != Some("off"),
             initial_size: (
                 initial_dim(c, "window.rows", INITIAL_ROWS),
                 initial_dim(c, "window.columns", INITIAL_COLS),
@@ -637,6 +662,7 @@ impl Settings {
             input: InputSettings::from_config(c),
             nav: NavSettings::from_config(c),
             graphics_file: c.str("graphics.file-transmission") != Some("off"),
+            server_mode: c.str("sessions.server") == Some("on"),
             diagnostics: 0,
         };
         // Off Abyss (and until detection answers) the stock dark scheme. HOOK(T-10 §7):

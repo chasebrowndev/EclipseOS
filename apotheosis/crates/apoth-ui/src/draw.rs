@@ -19,10 +19,43 @@ pub enum IconId {
     Shield,
     ArrowUp,
     ArrowDown,
+    /// A play triangle, centred on its centroid. Lowered as a shape, never a font glyph.
+    Play,
+    /// A speaker with a cross beside it (muted). Lowered as shapes.
+    SpeakerMuted,
+    /// A close cross drawn as two strokes (the media window's close button).
+    Cross,
+}
+
+/// How clear a glass pane is (the chip family, T-08 §3): the same material a step clearer
+/// for the focused or selected one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneTone {
+    Plain,
+    Focused,
+}
+
+/// Pointer state of a glass pane: rest, hover or pressed (the compositor lifts the rim).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PaneState {
+    Rest,
+    Hover,
+    Pressed,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Cmd {
+    /// A glass pane the compositor draws under the window (`eclipse_glass_v1`, ADR 0081).
+    /// Emitted only when the draw list is in glass mode. The client paints nothing for the
+    /// ground: the renderer erases what the grid drew under the pane so the glass shows.
+    /// `alpha` is the pane's opacity in `0..=1` (a fading layer).
+    Glass {
+        rect: Rect,
+        radius: f32,
+        tone: PaneTone,
+        state: PaneState,
+        alpha: f32,
+    },
     RoundedRect {
         rect: Rect,
         radius: f32,
@@ -51,16 +84,53 @@ pub enum Cmd {
         spread: f32,
         alpha: f32,
     },
+    /// Ends a layer: what follows is drawn over the next floating pane's grid, what came
+    /// before under it (a float's glass backing is the last thing before its mark).
+    Layer,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DrawList {
     pub cmds: Vec<Cmd>,
+    /// The compositor draws glass panes under the window: surfaces push [`Cmd::Glass`]
+    /// instead of their own frost, fill and hairline. Off, the client-drawn look.
+    pub glass: bool,
 }
 
 impl DrawList {
     pub fn new() -> DrawList {
         DrawList::default()
+    }
+
+    /// A list in glass mode (see [`DrawList::glass`]).
+    pub fn with_glass(glass: bool) -> DrawList {
+        DrawList {
+            cmds: Vec::new(),
+            glass,
+        }
+    }
+
+    /// A compositor glass pane. The caller checks [`DrawList::glass`] first.
+    pub fn glass_pane(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        tone: PaneTone,
+        state: PaneState,
+        alpha: f32,
+    ) {
+        self.cmds.push(Cmd::Glass {
+            rect,
+            radius,
+            tone,
+            state,
+            alpha,
+        });
+    }
+
+    /// The glass panes in paint order.
+    pub fn panes(&self) -> impl Iterator<Item = &Cmd> {
+        self.cmds.iter().filter(|c| matches!(c, Cmd::Glass { .. }))
     }
 
     pub fn rect(&mut self, rect: Rect, radius: f32, fill: Rgba, rim: Option<Rim>) {
@@ -88,6 +158,11 @@ impl DrawList {
         self.cmds.push(Cmd::PopClip);
     }
 
+    /// See [`Cmd::Layer`].
+    pub fn layer(&mut self) {
+        self.cmds.push(Cmd::Layer);
+    }
+
     pub fn len(&self) -> usize {
         self.cmds.len()
     }
@@ -102,6 +177,22 @@ impl DrawList {
         let mut s = String::new();
         for c in &self.cmds {
             match c {
+                Cmd::Glass {
+                    rect,
+                    radius,
+                    tone,
+                    state,
+                    alpha,
+                } => {
+                    s += &format!(
+                        "glass {} r{:.1} {:?}/{:?} a{:.2}",
+                        r(rect),
+                        radius,
+                        tone,
+                        state,
+                        alpha
+                    );
+                }
                 Cmd::RoundedRect {
                     rect,
                     radius,
@@ -130,6 +221,7 @@ impl DrawList {
                 }
                 Cmd::PushClip { rect, radius } => s += &format!("clip {} r{:.1}", r(rect), radius),
                 Cmd::PopClip => s += "unclip",
+                Cmd::Layer => s += "layer",
                 Cmd::Shadow {
                     rect,
                     radius,

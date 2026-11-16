@@ -40,6 +40,26 @@ mod tests {
         assert_eq!(snippet("tcsh"), None);
     }
 
+    /// `security.sudo-askpass` (T-22 §3): `sudo` becomes `sudo -A` only in an interactive
+    /// shell of an armed pane.
+    #[test]
+    fn sudo_is_aliased_only_when_armed_and_interactive() {
+        for sh in SHELLS {
+            let s = snippet(sh).unwrap();
+            assert!(s.contains("sudo -A"), "{sh}");
+            assert!(
+                s.contains("SUDO_ASKPASS") && s.contains("APOTHEOSIS_ASKPASS_SOCK"),
+                "{sh}: no armed guard"
+            );
+            let interactive = match *sh {
+                "fish" => "status is-interactive",
+                "zsh" => "-o interactive",
+                _ => "*i*",
+            };
+            assert!(s.contains(interactive), "{sh}: no interactive guard");
+        }
+    }
+
     /// Run `shell -c` with the snippet sourced and report what `ap` is. `None` when the
     /// shell is not installed (the static test above still covers the snippet).
     fn ap_after_sourcing(shell: &str, pane: bool) -> Option<String> {
