@@ -113,6 +113,10 @@ pub(crate) struct Settings {
     pub(crate) graphics_file: bool,
     /// `sessions.server` is `on`: windows are views of the session daemon (T-21 §3).
     pub(crate) server_mode: bool,
+    /// `sessions.resize`: how the session daemon sizes a pane its views disagree on (T-21 §3).
+    pub(crate) resize_policy: crate::server::ResizePolicy,
+    /// The `-o key=value` launch overrides, so a later re-read sees the same layers.
+    pub(crate) launch: Vec<(String, String)>,
     /// `security.sudo-askpass`: arm askpass for every local pane so `sudo -A` asks through
     /// it (T-22 §3). Read when a pane starts.
     pub(crate) sudo_askpass: bool,
@@ -206,12 +210,22 @@ pub(crate) struct GlassSettings {
     pub(crate) interface_font: Option<String>,
     /// `interface.font-size` over the 13 px body token, times `interface.scale`.
     pub(crate) interface_zoom: f32,
-    /// `interface.motion`. `system` reads as `full`: the portal's reduce-motion setting is
-    /// not read yet.
+    /// `interface.motion` in force. Under `system` it is `full` until the settings portal
+    /// reports reduce-motion ([`GlassSettings::system_motion`], `crate::portal`).
     pub(crate) motion: apoth_ui::motion::MotionMode,
+    /// `interface.motion` is `system`: the portal's reduce-motion setting decides.
+    pub(crate) motion_system: bool,
 }
 
 impl GlassSettings {
+    /// The portal's reduce-motion setting changed (or a reload rebuilt these settings):
+    /// `system` follows it; an explicit `interface.motion` ignores it (T-08 §2).
+    pub(crate) fn system_motion(&mut self, reduced: bool) {
+        if self.motion_system {
+            self.motion = apoth_ui::motion::MotionMode::resolve("system", reduced);
+        }
+    }
+
     pub(crate) fn from_config(c: &Config) -> GlassSettings {
         let alpha = match c.str("window.alpha-mode") {
             Some("opaque") => AlphaRequest::Opaque,
@@ -239,6 +253,7 @@ impl GlassSettings {
                 c.str("interface.motion").unwrap_or("system"),
                 false,
             ),
+            motion_system: !matches!(c.str("interface.motion"), Some("full" | "reduced" | "none")),
             interface_zoom: if size > 0.0 && scale > 0.0 {
                 size / apoth_ui::tokens::size::BODY * scale
             } else {
@@ -482,6 +497,29 @@ pub(crate) fn load_input(launch: &[(String, String)]) -> apoth_config::LoadInput
     input
 }
 
+/// `sessions.resize`; anything unrecognised is `latest`.
+fn resize_policy_of(c: &Config) -> crate::server::ResizePolicy {
+    match c.str("sessions.resize") {
+        Some("smallest") => crate::server::ResizePolicy::Smallest,
+        Some("largest") => crate::server::ResizePolicy::Largest,
+        _ => crate::server::ResizePolicy::Latest,
+    }
+}
+
+/// `sessions.resize` read from `fs` through the startup load path (layers 1-7).
+pub(crate) fn resize_policy_in(
+    fs: &dyn apoth_config::fs::Fs,
+    input: &apoth_config::LoadInput,
+) -> crate::server::ResizePolicy {
+    resize_policy_of(Reloader::start(fs, input).config())
+}
+
+/// `sessions.resize` as the config files say now: the session daemon reads it on every
+/// attach, so a change applies from the next attach (T-21 §3).
+pub(crate) fn resize_policy_now(launch: &[(String, String)]) -> crate::server::ResizePolicy {
+    resize_policy_in(&RealFs, &load_input(launch))
+}
+
 fn parse_ansi(list: &[String]) -> Option<[(u8, u8, u8); 16]> {
     if list.len() != 16 {
         return None;
@@ -529,6 +567,7 @@ impl Settings {
         }
         let mut settings = Settings::from_config(reloader.config());
         settings.diagnostics = diagnostics;
+        settings.launch = launch.clone();
         Startup {
             settings,
             files: reloader.files().to_vec(),
@@ -663,6 +702,8 @@ impl Settings {
             nav: NavSettings::from_config(c),
             graphics_file: c.str("graphics.file-transmission") != Some("off"),
             server_mode: c.str("sessions.server") == Some("on"),
+            resize_policy: resize_policy_of(c),
+            launch: Vec::new(),
             diagnostics: 0,
         };
         // Off Abyss (and until detection answers) the stock dark scheme. HOOK(T-10 §7):
@@ -892,6 +933,88 @@ mod tests {
         g.blur_fallback_opaque = true;
         assert!((effective_opacity(s.opacity, &g, Some(BlurPath::Tint)) - 1.0).abs() < 1e-6);
         assert!((effective_opacity(s.opacity, &g, Some(BlurPath::Ext)) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sessions_resize_selects_the_daemon_policy() {
+        use crate::server::ResizePolicy as R;
+        use apoth_config::Value;
+        use apoth_config::model::Origin;
+        assert_eq!(
+            Settings::from_config(&Config::defaults()).resize_policy,
+            R::Latest
+        );
+        for (v, want) in [
+            ("smallest", R::Smallest),
+            ("latest", R::Latest),
+            ("largest", R::Largest),
+        ] {
+            let mut c = Config::defaults();
+            assert!(c.set_at("sessions.resize", Value::Str(v.into()), Origin::builtin()));
+            assert_eq!(Settings::from_config(&c).resize_policy, want, "{v}");
+        }
+        // A value the validator would refuse never reaches here; if one did, `latest`.
+        let mut c = Config::defaults();
+        let _ = c.set_at(
+            "sessions.resize",
+            Value::Str("widest".into()),
+            Origin::builtin(),
+        );
+        assert_eq!(Settings::from_config(&c).resize_policy, R::Latest);
+    }
+
+    #[test]
+    fn sessions_resize_is_re_read_from_the_files_with_the_launch_layer() {
+        use crate::server::ResizePolicy as R;
+        use apoth_config::fs::MemFs;
+        let input = |fs: &MemFs, launch: &[(&str, &str)]| {
+            let mut i = default_input(fs, Path::new("/h"), None);
+            i.launch = launch
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect();
+            i
+        };
+        let user = "/h/.config/eclipse/apotheosis.kdl";
+        let none = MemFs::new();
+        assert_eq!(resize_policy_in(&none, &input(&none, &[])), R::Latest);
+        let small = MemFs::new().with(user, "version 1\nsessions { resize \"smallest\" }\n");
+        assert_eq!(resize_policy_in(&small, &input(&small, &[])), R::Smallest);
+        // The file changed since startup: the next read sees the new value.
+        let large = MemFs::new().with(user, "version 1\nsessions { resize \"largest\" }\n");
+        assert_eq!(resize_policy_in(&large, &input(&large, &[])), R::Largest);
+        // `-o` still wins over the file, as at startup.
+        assert_eq!(
+            resize_policy_in(&large, &input(&large, &[("sessions.resize", "smallest")])),
+            R::Smallest
+        );
+    }
+
+    #[test]
+    fn motion_system_follows_the_portal_and_explicit_values_do_not() {
+        use apoth_config::Value;
+        use apoth_config::model::Origin;
+        use apoth_ui::motion::MotionMode;
+        // Default `system`: full without a portal, reduced while it says so, live both ways.
+        let mut g = Settings::from_config(&Config::defaults()).glass;
+        assert!(g.motion_system);
+        assert_eq!(g.motion, MotionMode::Full);
+        g.system_motion(true);
+        assert_eq!(g.motion, MotionMode::Reduced);
+        g.system_motion(false);
+        assert_eq!(g.motion, MotionMode::Full);
+        for (v, want) in [
+            ("full", MotionMode::Full),
+            ("reduced", MotionMode::Reduced),
+            ("none", MotionMode::None),
+        ] {
+            let mut c = Config::defaults();
+            assert!(c.set_at("interface.motion", Value::Str(v.into()), Origin::builtin()));
+            let mut g = Settings::from_config(&c).glass;
+            assert!(!g.motion_system, "{v}");
+            g.system_motion(!matches!(want, MotionMode::Reduced));
+            assert_eq!(g.motion, want, "{v} ignores the portal");
+        }
     }
 
     #[test]

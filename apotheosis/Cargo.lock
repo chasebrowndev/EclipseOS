@@ -267,7 +267,10 @@ name = "apoth-testkit"
 version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
+ "apoth-config",
  "apoth-grid",
+ "apoth-media",
+ "apoth-proto",
  "apoth-term",
  "apoth-vt",
  "vte",
@@ -301,6 +304,7 @@ name = "apoth-wl"
 version = "0.1.0"
 dependencies = [
  "calloop",
+ "ec-protocols",
  "raw-window-handle",
  "rustix",
  "thiserror 2.0.21",
@@ -809,6 +813,16 @@ version = "0.2.2"
 dependencies = [
  "libc",
  "serde_json",
+]
+
+[[package]]
+name = "ec-protocols"
+version = "0.2.2"
+dependencies = [
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-scanner",
 ]
 
 [[package]]

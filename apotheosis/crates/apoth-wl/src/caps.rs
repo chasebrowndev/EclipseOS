@@ -110,6 +110,11 @@ pub const TABLE: &[CapSpec] = &[
     ),
     row!("org_kde_kwin_blur_manager", Requirement::Optional, "tint"),
     row!(
+        "eclipse_glass_manager_v1",
+        Requirement::Optional,
+        "client-drawn glass"
+    ),
+    row!(
         "xdg_system_bell_v1",
         Requirement::Optional,
         "no audible bell"

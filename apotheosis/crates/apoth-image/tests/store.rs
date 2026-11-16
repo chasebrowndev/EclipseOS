@@ -122,6 +122,31 @@ fn tiered_eviction() {
     assert_eq!(r.evicted, vec![(M, 3)]);
 }
 
+/// T-15 §4 (owner decision, M38): a visible placement the grid marks covered (by a newer
+/// opaque one at the same z) no longer protects its image; `available` counts what eviction
+/// could free, and opacity is per still image.
+#[test]
+fn covered_placements_are_evictable() {
+    let mut s = store(2000, 1 << 30);
+    s.insert(M, 1, 0, img(1)).unwrap();
+    s.insert(M, 2, 0, img(2)).unwrap();
+    s.place(M, 1, 1, spec(0)).unwrap();
+    s.place(M, 2, 1, spec(0)).unwrap();
+    assert_eq!(s.available(), 0, "both visible: nothing to free");
+    assert_eq!(s.insert(M, 3, 0, img(3)).unwrap_err(), StoreError::NoSpace);
+    s.mark_covered(M, &[(1, 1)].into_iter().collect());
+    assert_eq!(s.available(), 1000);
+    assert!(s.placements().iter().any(|p| p.image == 1 && p.visible));
+    let r = s.insert(M, 3, 0, img(3)).unwrap();
+    assert_eq!(r.evicted, vec![(M, 1)]);
+    assert!(s.get(M, 2).is_some(), "the uncovered visible image stays");
+    // Opacity.
+    assert!(!s.is_opaque(M, 2));
+    s.set_opaque(M, 2, true);
+    assert!(s.is_opaque(M, 2));
+    assert!(img(255).is_opaque() && !img(7).is_opaque());
+}
+
 #[test]
 fn replacing_an_id_reclaims_its_bytes() {
     let mut s = store(1000, 1 << 30);

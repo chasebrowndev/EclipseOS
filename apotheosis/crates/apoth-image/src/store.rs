@@ -72,6 +72,9 @@ struct Entry {
     /// The pixels this id showed before a same-size retransmission: the renderer reuses
     /// that texture for the new pixels (a video stream retransmitting one id).
     replaces: Option<u64>,
+    /// Every pixel has alpha 255 ([`ImageStore::set_opaque`], from the decoding worker).
+    /// Only a still image counts: an animated one is never opaque here.
+    opaque: bool,
 }
 
 /// What to draw for an image at an instant.
@@ -97,6 +100,9 @@ pub struct Placement {
     pub spec: PlaceSpec,
     /// On screen right now (set by the grid). Referenced and visible images are never evicted.
     pub visible: bool,
+    /// Fully covered by a newer opaque placement at the same z (set by the grid): not
+    /// on screen for eviction, though still visible for `d=a` (T-15 §4).
+    pub covered: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,12 +242,13 @@ impl ImageStore {
             .find(|&i| self.blobs[i].as_ref().is_some_and(|b| *b.image == *img))
     }
 
-    /// One pass over the placements: which images have any, and which have a visible one.
+    /// One pass over the placements: which images have any, and which have one on screen
+    /// (visible and not covered).
     fn placement_index(&self) -> HashMap<(Screen, ImageId), bool> {
         let mut m: HashMap<(Screen, ImageId), bool> = HashMap::new();
         for p in &self.placements {
             let v = m.entry((p.screen, p.image)).or_insert(false);
-            *v |= p.visible;
+            *v |= p.visible && !p.covered;
         }
         m
     }
@@ -342,6 +349,7 @@ impl ImageStore {
                 last_use,
                 anim: None,
                 replaces,
+                opaque: false,
             },
         );
         if number != 0 {
@@ -464,6 +472,7 @@ impl ImageStore {
             id: pid,
             spec,
             visible: true,
+            covered: false,
         });
         Ok(pid)
     }
@@ -475,6 +484,55 @@ impl ImageStore {
                 p.visible = visible;
             }
         }
+    }
+
+    /// The grid reports which placements of `screen` are covered by a newer opaque one
+    /// (T-15 §4), as (image, placement) pairs; every other placement is uncovered.
+    pub fn mark_covered(
+        &mut self,
+        screen: Screen,
+        covered: &std::collections::HashSet<(ImageId, u32)>,
+    ) {
+        for p in &mut self.placements {
+            p.covered = p.screen == screen && covered.contains(&(p.image, p.id));
+        }
+    }
+
+    /// Mark a still image fully opaque (every alpha 255). The worker that decoded it checks
+    /// the pixels ([`Image::is_opaque`]); the io thread never scans them.
+    pub fn set_opaque(&mut self, screen: Screen, id: ImageId, opaque: bool) {
+        if let Some(e) = self.images.get_mut(&(screen, id)) {
+            e.opaque = opaque;
+        }
+    }
+
+    /// The image is a still image marked opaque: a placement of it hides what it covers.
+    pub fn is_opaque(&self, screen: Screen, id: ImageId) -> bool {
+        self.images
+            .get(&(screen, id))
+            .is_some_and(|e| e.opaque && e.anim.is_none())
+    }
+
+    /// Bytes a new image may take: the free pane quota plus what eviction could free
+    /// (unreferenced images, then images with no placement on screen). The pre-read check
+    /// of file, temp-file and shm transmissions uses this, so a transmit fails only when
+    /// eviction cannot make room either (T-15 §4).
+    pub fn available(&self) -> u64 {
+        let idx = self.placement_index();
+        let mut seen: HashMap<usize, usize> = HashMap::new();
+        for (&(s, id), e) in &self.images {
+            if idx.get(&(s, id)) != Some(&true) {
+                *seen.entry(e.blob).or_insert(0) += 1;
+            }
+        }
+        let freeable: u64 = seen
+            .into_iter()
+            .filter_map(|(b, n)| {
+                let bl = self.blobs[b].as_ref()?;
+                (bl.refs <= n).then(|| bl.image.bytes())
+            })
+            .sum();
+        self.remaining().saturating_add(freeable)
     }
 
     /// A placement's rows left history: drop it (the image stays, now evictable if unreferenced).
@@ -659,6 +717,7 @@ impl ImageStore {
             self.release_blob(old);
             if let Some(e) = self.images.get_mut(&(screen, id)) {
                 e.blob = b;
+                e.opaque = false;
             }
             let a = self.anim_mut(screen, id).ok_or(ErrCode::Enoent)?;
             a.replace(

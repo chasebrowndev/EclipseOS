@@ -147,6 +147,18 @@ fn cross_shape(r: [f32; 4]) -> Vec<Poly> {
     ]
 }
 
+/// A plus filling physical rect `[x, y, s, s]`, strokes an eighth of it thick.
+fn plus_shape(r: [f32; 4]) -> Vec<Poly> {
+    let s = r[2].min(r[3]);
+    let (x, y) = (r[0] + (r[2] - s) / 2.0, r[1] + (r[3] - s) / 2.0);
+    let t = (s * 0.125).max(1.5);
+    let c = (x + s / 2.0, y + s / 2.0);
+    vec![
+        stroke((x, c.1), (x + s, c.1), t),
+        stroke((c.0, y), (c.0, y + s), t),
+    ]
+}
+
 /// A stroke from `a` to `b`, `t` thick, as a quad.
 fn stroke(a: (f32, f32), b: (f32, f32), t: f32) -> Poly {
     let (dx, dy) = (b.0 - a.0, b.1 - a.1);
@@ -358,6 +370,14 @@ impl UiRaster {
                     spread: spread * scale,
                     alpha: *alpha,
                 }),
+                // The pane itself goes to the compositor ([`glass_panes`]); here the grid and
+                // window ground under it are erased so its glass shows.
+                Cmd::Glass {
+                    rect,
+                    radius,
+                    alpha,
+                    ..
+                } => sink.erase(sc(*rect), [radius * scale; 4], *alpha),
                 Cmd::PushClip { rect, .. } => sink.push_clip(sc(*rect)),
                 Cmd::PopClip => sink.pop_clip(),
                 Cmd::Layer => sink.layer(),
@@ -375,20 +395,27 @@ impl UiRaster {
                     colour,
                 } => shapes(&speaker_muted_shape(sc(*rect)), bytes(*colour), sink),
                 Cmd::Icon {
-                    icon: IconId::Cross,
+                    icon: IconId::Cross | IconId::Close,
                     rect,
                     colour,
                 } => shapes(&cross_shape(sc(*rect)), bytes(*colour), sink),
+                Cmd::Icon {
+                    icon: IconId::Plus,
+                    rect,
+                    colour,
+                } => shapes(&plus_shape(sc(*rect)), bytes(*colour), sink),
                 Cmd::Icon { icon, rect, colour } => {
                     let (glyph, weight) = match icon {
-                        IconId::Close => ("\u{00d7}", Weight::Regular),
-                        IconId::Plus => ("+", Weight::Regular),
                         IconId::Warning => ("!", Weight::Strong),
                         IconId::Shield => ("i", Weight::Strong),
                         IconId::ArrowUp => ("\u{2191}", Weight::Regular),
                         IconId::ArrowDown => ("\u{2193}", Weight::Regular),
                         // Lowered as shapes above.
-                        IconId::Play | IconId::SpeakerMuted | IconId::Cross => continue,
+                        IconId::Play
+                        | IconId::SpeakerMuted
+                        | IconId::Cross
+                        | IconId::Close
+                        | IconId::Plus => continue,
                     };
                     let mut run = TextRun::interface(glyph, rect.h * 0.9);
                     run.weight = weight;
@@ -483,6 +510,7 @@ fn draw_media(
 /// `ui` (physical pixels per interface unit). Back to front: pane frames (focus rim, inactive
 /// dim), tab strip, overlay bar, palette sheet (T-08 §5 order).
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn build_chrome(
     chrome: &mut ChromeList,
     overlay: Option<&Overlay>,
@@ -494,7 +522,81 @@ pub(crate) fn build_chrome(
     fonts: &mut FontSystem,
     raster: &mut UiRaster,
 ) {
+    build_chrome_glass(
+        chrome, overlay, model, buffer, ui, light, age_ms, fonts, raster, None, None,
+    );
+}
+
+/// The glass panes of a draw list as the compositor takes them: surface-local logical
+/// pixels, `to_logical` being logical pixels per interface unit.
+pub(crate) fn glass_panes(dl: &DrawList, to_logical: f32) -> Vec<apoth_wl::Pane> {
+    use apoth_ui::{PaneState, PaneTone};
+    dl.panes()
+        .filter_map(|c| {
+            let Cmd::Glass {
+                rect,
+                radius,
+                tone,
+                state,
+                alpha,
+            } = c
+            else {
+                return None;
+            };
+            let (x0, y0) = ((rect.x * to_logical).round(), (rect.y * to_logical).round());
+            let (x1, y1) = (
+                (rect.right() * to_logical).round(),
+                (rect.bottom() * to_logical).round(),
+            );
+            let bits = match state {
+                PaneState::Rest => 0,
+                PaneState::Hover => apoth_wl::glass::HOVERED,
+                PaneState::Pressed => apoth_wl::glass::HOVERED | apoth_wl::glass::PRESSED,
+            };
+            Some(apoth_wl::Pane {
+                x: x0 as i32,
+                y: y0 as i32,
+                w: (x1 - x0) as i32,
+                h: (y1 - y0) as i32,
+                radius: (radius * to_logical).round().max(0.0) as u32,
+                tone: match tone {
+                    PaneTone::Plain => apoth_wl::Tone::Plain,
+                    PaneTone::Focused => apoth_wl::Tone::Focused,
+                },
+                state: bits,
+                alpha: (alpha.clamp(0.0, 1.0) * 255.0).round() as u8,
+            })
+        })
+        .collect()
+}
+
+/// [`build_chrome`] with compositor glass: `glass` is the logical-pixels-per-interface-unit
+/// factor when `eclipse_glass_v1` is drawing panes (the interface then paints no ground of
+/// its own under chips, sheets and menus), and the panes come back. `None` is the
+/// client-drawn look and no panes.
+///
+/// `over` is the overlay subsurface's list (stacked glass): the search sheet, the tooltip,
+/// the palette and sheet-bars go there and their panes come back as the second list, so the
+/// root surface keeps its text under them and the compositor frosts it. `None` draws
+/// everything on the root surface.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_chrome_glass(
+    chrome: &mut ChromeList,
+    overlay: Option<&Overlay>,
+    model: &crate::render::ChromeModel,
+    buffer: (u32, u32),
+    ui: f32,
+    light: bool,
+    age_ms: u64,
+    fonts: &mut FontSystem,
+    raster: &mut UiRaster,
+    glass: Option<f32>,
+    mut over: Option<&mut ChromeList>,
+) -> (Vec<apoth_wl::Pane>, Vec<apoth_wl::Pane>) {
     chrome.clear();
+    if let Some(o) = over.as_deref_mut() {
+        o.clear();
+    }
     let s = if ui > 0.0 { ui } else { 1.0 };
     let area = Rect::new(0.0, 0.0, buffer.0 as f32 / s, buffer.1 as f32 / s);
     let pal = if light {
@@ -502,7 +604,8 @@ pub(crate) fn build_chrome(
     } else {
         Palette::dark()
     };
-    let mut dl = DrawList::new();
+    let mut dl = DrawList::with_glass(glass.is_some());
+    let mut od = DrawList::with_glass(glass.is_some());
     {
         let measure = FontMeasure::new(fonts);
         for f in &model.frames {
@@ -537,6 +640,7 @@ pub(crate) fn build_chrome(
                 &mut dl,
             );
         }
+        let top: &mut DrawList = if over.is_some() { &mut od } else { &mut dl };
         if let Some(sp) = &model.search {
             let free = search_area(
                 area,
@@ -544,15 +648,15 @@ pub(crate) fn build_chrome(
                 overlay.is_some_and(Overlay::takes_room),
             );
             let l = apoth_ui::searchbar::layout(free, sp, &apoth_ui::text::geometry());
-            apoth_ui::searchbar::draw(&l, sp, &model.ui, &pal, &measure, &mut dl);
+            apoth_ui::searchbar::draw(&l, sp, &model.ui, &pal, &measure, top);
         }
         if let Some(t) = &model.tooltip {
             let r = apoth_ui::tooltip::layout(area, t, &measure);
-            apoth_ui::tooltip::draw(r, t, &pal, &mut dl);
+            apoth_ui::tooltip::draw(r, t, &pal, top);
         }
         if let Some(p) = &model.palette {
             let l = apoth_ui::palette::layout(area, p);
-            apoth_ui::palette::draw(&l, p, &model.ui, &pal, &measure, &mut dl);
+            apoth_ui::palette::draw(&l, p, &model.ui, &pal, &measure, top);
         }
         if let Some(o) = overlay.filter(|o| !o.takes_room()) {
             let l = bar::layout(area, &o.spec, &apoth_ui::text::geometry());
@@ -563,14 +667,18 @@ pub(crate) fn build_chrome(
                 age_ms,
                 &model.ui,
                 &pal,
-                &mut dl,
+                top,
             );
         }
     }
-    if dl.cmds.is_empty() {
-        return;
+    if let Some(o) = over {
+        raster.lower(&od, s, fonts, o);
     }
     raster.lower(&dl, s, fonts, chrome);
+    glass.map_or_else(
+        || (Vec::new(), Vec::new()),
+        |k| (glass_panes(&dl, k), glass_panes(&od, k)),
+    )
 }
 
 /// The bar a window shows for the current configuration errors, or `None` when the file is
@@ -781,6 +889,58 @@ mod tests {
         let (m, buf) = chrome_model(scale);
         build_chrome(&mut l, None, &m, buf, scale, light, 0, &mut f, &mut r);
         l
+    }
+
+    #[test]
+    fn stacked_glass_puts_the_palette_on_the_overlay_list() {
+        let (m, buf) = chrome_model(1.0);
+        let (mut f, mut r) = (fonts(), UiRaster::new());
+        let (mut root, mut over) = (ChromeList::new(), ChromeList::new());
+        let (root_panes, over_panes) = build_chrome_glass(
+            &mut root,
+            None,
+            &m,
+            buf,
+            1.0,
+            false,
+            0,
+            &mut f,
+            &mut r,
+            Some(1.0),
+            Some(&mut over),
+        );
+        assert!(!over.is_empty(), "the palette is lowered to the overlay");
+        assert!(!over_panes.is_empty(), "sheet panes go to the subsurface");
+        assert!(
+            !root_panes.is_empty(),
+            "the tab chips stay on the root surface"
+        );
+        // Nothing on the root erases the grid under the sheet.
+        let sheet = over_panes
+            .iter()
+            .min_by_key(|p| (p.x, p.y))
+            .copied()
+            .unwrap();
+        let erases_sheet = root.instances.iter().any(|i| {
+            i.params[2] >= 2.5 && i.rect[0] >= sheet.x as f32 && i.rect[1] >= sheet.y as f32
+        });
+        assert!(!erases_sheet, "the root keeps its text under the sheet");
+        // Without an overlay list everything stays on the root, as off Abyss.
+        let mut all = ChromeList::new();
+        let (p0, p1) = build_chrome_glass(
+            &mut all,
+            None,
+            &m,
+            buf,
+            1.0,
+            false,
+            0,
+            &mut f,
+            &mut r,
+            Some(1.0),
+            None,
+        );
+        assert!(p1.is_empty() && p0.len() == root_panes.len() + over_panes.len());
     }
 
     #[test]

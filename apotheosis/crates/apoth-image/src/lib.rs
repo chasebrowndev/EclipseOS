@@ -7,8 +7,8 @@
 //! or path content.
 //!
 //! Fuzz targets: `apoth_term::fuzz::fuzz_kitty_apc` and `fuzz_sixel` drive these parsers
-//! through the terminal (with seed corpora under `apoth-term/corpus/`); both must never panic
-//! and never exceed the configured [`Limits`].
+//! through the terminal (seed corpora under `apotheosis/fuzz/corpus/`); both must never
+//! panic and never exceed the configured [`Limits`].
 #![forbid(unsafe_code)]
 
 pub mod anim;
@@ -47,6 +47,12 @@ impl Image {
     /// Byte size of the pixel data, charged against the quota.
     pub fn bytes(&self) -> u64 {
         self.rgba.len() as u64
+    }
+
+    /// Every pixel has alpha 255 (or the image is empty): it hides whatever it covers.
+    /// O(pixels); run it where the pixels were decoded, never on the io thread.
+    pub fn is_opaque(&self) -> bool {
+        self.rgba.chunks_exact(4).all(|p| p[3] == 255)
     }
 
     /// Content hash for sharing identical images (PERFORMANCE-52); only a bucket key,

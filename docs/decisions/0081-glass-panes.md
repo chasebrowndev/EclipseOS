@@ -52,6 +52,16 @@ We take **3**.
   into the glass; the focused label keeps it.
 - **Panes replace the surface's whole-layer glass.** A surface with no glass
   object renders exactly as before.
+- **Stacked panes** *(amended 2026-11-15)*. A glass object on a window's
+  subsurface is honoured: its panes are drawn directly below that subsurface
+  and blur everything composited beneath it — the window's backdrop, bezel and
+  the parent surface's content. A window's root-surface panes likewise sample
+  the window's own glass rather than skipping it. Because such a pane sits on
+  glass already, it takes the *stacked* look (`STACKED_*` in
+  `ec-abyss-render/src/glass.rs`): weaker smoke so two layers do not darken into
+  a slab, a small lift and a stronger rim so it reads raised. Layer-shell panes
+  are unchanged. Subsurface panes are skipped when the window's surface tree is
+  cropped (a tiled window overhanging its tile) or keyed/strip/multi-band.
 
 ## Consequences
 - **One material.** Windows and DE cells now share it, so a chip and a window

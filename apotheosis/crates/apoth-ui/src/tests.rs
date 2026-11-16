@@ -247,12 +247,12 @@ fn tab_layout_three_tabs() {
     let strip = Rect::new(0.0, 0.0, 800.0, 40.0);
     let tabs = [tab(0, "a", true), tab(1, "b", false), tab(2, "c", false)];
     let l = tabs::layout(strip, WidgetId(1), &tabs);
-    assert_eq!(l.new_tab, Rect::new(764.0, 6.0, 28.0, 28.0));
+    assert_eq!(l.new_tab, Rect::new(680.0, 8.0, 24.0, 24.0));
     assert_eq!(l.overflow, 0);
     let xs: Vec<f32> = l.cells.iter().map(|c| c.rect.x).collect();
     assert_eq!(xs, vec![8.0, 232.0, 456.0]);
     assert_eq!(l.cells[0].rect.w, metrics::TAB_MAX_W);
-    assert_eq!(l.cells[0].close, Rect::new(202.0, 11.0, 18.0, 18.0));
+    assert_eq!(l.cells[0].close, Rect::new(198.0, 9.0, 22.0, 22.0));
 }
 
 #[test]
@@ -916,7 +916,7 @@ fn bar_draw_golden_shape() {
             hex(p.cell_focus),
             hex(p.cell_focus_rim)
         )),
-        "primary: cell_focus fill + rim"
+        "primary: inset fill + gold-tinted rim"
     );
     // Glass is three layers (frost, tint, rim), then the rest of the bar.
     assert_eq!(o.len(), 3 + 4 + 1 + 4 * 2 + 1);
@@ -1207,7 +1207,7 @@ fn palette_draw_selected_row_is_brighter_with_a_rim_and_no_glow() {
     let Cmd::RoundedRect { fill, rim, .. } = row_rects[0] else {
         unreachable!()
     };
-    assert_eq!(*fill, pal.cell_focus, "selected = brighter fill");
+    assert_eq!(*fill, pal.cell_focus, "selected = inset fill");
     assert!(rim.is_some(), "selected = crisp rim");
     // Query text is drawn; the placeholder is not.
     assert!(
@@ -1467,4 +1467,114 @@ fn fader_eases_reverses_without_a_jump_and_settles() {
     c.set(true, 5, MotionMode::None);
     assert_eq!(c.level(5, MotionMode::None), 1.0);
     assert!(!c.animating(5, MotionMode::None));
+}
+
+// ---- compositor glass (ADR 0081) -------------------------------------------------------------
+
+fn glass_panes_of(out: &DrawList) -> Vec<(Rect, crate::PaneTone, crate::PaneState)> {
+    out.cmds
+        .iter()
+        .filter_map(|c| match c {
+            Cmd::Glass {
+                rect, tone, state, ..
+            } => Some((*rect, *tone, *state)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn palette_in_glass_mode_pushes_panes_and_draws_no_ground() {
+    use crate::{PaneState, PaneTone};
+    let area = Rect::new(0.0, 0.0, 1000.0, 700.0);
+    let pal = dark();
+    let spec = palette_spec(3, Some(1), "spl");
+    let l = crate::palette::layout(area, &spec);
+    let mut ui = UiState::default();
+    ui.set_hover(Some(l.rows[2].1));
+    let mut out = DrawList::with_glass(true);
+    crate::palette::draw(&l, &spec, &ui, &pal, &FixedAdvance(0.6), &mut out);
+    let panes = glass_panes_of(&out);
+    // Sheet, field, selected row, hovered row.
+    assert_eq!(panes.len(), 4, "{}", out.dump());
+    assert_eq!(panes[0].0, l.sheet);
+    assert_eq!(
+        (panes[2].1, panes[2].2),
+        (PaneTone::Focused, PaneState::Rest)
+    );
+    assert_eq!(
+        (panes[3].1, panes[3].2),
+        (PaneTone::Plain, PaneState::Hover)
+    );
+    // No client frost or fill under the sheet or rows: the only rects left are the caret and
+    // the field is a pane too.
+    for c in &out.cmds {
+        if let Cmd::RoundedRect { rect, fill, .. } = c {
+            assert!(
+                *rect != l.sheet && !l.rows.iter().any(|r| r.2 == *rect),
+                "ground drawn under a pane: {fill:?}"
+            );
+        }
+    }
+    // The same spec without glass keeps the look and pushes none.
+    let mut plain = DrawList::new();
+    crate::palette::draw(&l, &spec, &ui, &pal, &FixedAdvance(0.6), &mut plain);
+    assert!(glass_panes_of(&plain).is_empty());
+    assert!(plain.len() > out.len());
+}
+
+#[test]
+fn tab_chips_are_panes_and_keep_labels_and_the_keyboard_ring() {
+    use crate::{PaneState, PaneTone};
+    let pal = dark();
+    let strip = Rect::new(0.0, 0.0, 800.0, 40.0);
+    let tabs = [tab(0, "a", true), tab(1, "b", false)];
+    let l = tabs::layout(strip, WidgetId(1), &tabs);
+    let mut ui = UiState::default();
+    ui.set_hover(Some(l.cells[1].close_id));
+    let mut out = DrawList::with_glass(true);
+    tabs::draw(&l, &tabs, TabStyle::Floating, &ui, &pal, &mut out);
+    let panes = glass_panes_of(&out);
+    // Two tabs, the hovered close button, the new-tab button.
+    assert_eq!(panes.len(), 4, "{}", out.dump());
+    assert_eq!(panes[0].1, PaneTone::Focused);
+    assert_eq!(panes[1].1, PaneTone::Plain);
+    assert_eq!(
+        (panes[2].0, panes[2].2),
+        (l.cells[1].close, PaneState::Hover)
+    );
+    assert!(out.cmds.iter().any(|c| matches!(c, Cmd::Text { .. })));
+    assert!(
+        !out.cmds
+            .iter()
+            .any(|c| matches!(c, Cmd::RoundedRect { fill, .. } if fill.a() > 0.0)),
+        "{}",
+        out.dump()
+    );
+    // Keyboard focus keeps its crisp gold ring, with no fill.
+    let mut kb = UiState::default();
+    kb.focus_by_keyboard(l.cells[1].id);
+    let mut out = DrawList::with_glass(true);
+    tabs::draw(&l, &tabs, TabStyle::Floating, &kb, &pal, &mut out);
+    assert!(out.cmds.iter().any(|c| matches!(
+        c,
+        Cmd::RoundedRect { rim: Some(r), fill, .. } if r.colour == pal.accent && fill.a() == 0.0
+    )));
+}
+
+#[test]
+fn new_tab_button_follows_the_last_tab_and_stays_visible_on_overflow() {
+    let strip = Rect::new(0.0, 0.0, 800.0, 40.0);
+    let tabs = [tab(0, "a", true), tab(1, "b", false)];
+    let l = tabs::layout(strip, WidgetId(1), &tabs);
+    let last = l.cells.last().unwrap().rect;
+    assert_eq!(l.new_tab.x, last.right() + metrics::TAB_GAP);
+    assert!(l.new_tab.w >= 22.0 && l.cells[0].close.w >= 22.0);
+    let none = tabs::layout(strip, WidgetId(1), &[]);
+    assert_eq!(none.new_tab.x, strip.x + crate::tokens::space::SM);
+    let many: Vec<TabSpec> = (0..30).map(|i| tab(i, "t", i == 3)).collect();
+    let l = tabs::layout(strip, WidgetId(1), &many);
+    assert!(l.overflow > 0);
+    assert!(l.new_tab.right() <= strip.right() - crate::tokens::space::SM + 0.01);
+    assert!(l.new_tab.x >= l.cells.last().unwrap().rect.right());
 }

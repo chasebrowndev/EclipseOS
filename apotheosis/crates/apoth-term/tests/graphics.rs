@@ -206,6 +206,83 @@ fn on_screen_images_are_never_evicted_enospc_instead() {
     assert_eq!(t.placements().len(), 1);
 }
 
+/// One anonymous frame at the top-left cell, as `mpv --vo=kitty` sends them (no id, no
+/// placement id, cursor not moved). `f=32` with `alpha` gives a translucent frame.
+fn stream_frame(t: &mut Term, n: u32, alpha: Option<u8>, now: Instant) {
+    let (f, data) = match alpha {
+        None => (24, rgbf(4, 4, n as u8)),
+        Some(a) => (32, b64(&[n as u8, 1, 2, a].repeat(16))),
+    };
+    t.feed(
+        format!("\x1b[1;1H\x1b_Ga=T,f={f},s=4,v=4,C=1;{data}\x1b\\").as_bytes(),
+        now,
+    );
+}
+
+/// T-15 §4 (owner decision, M38): a placement fully covered by a newer opaque placement at
+/// the same z is not on screen, so a stream of anonymous opaque frames at one cell plays
+/// past the quota, and only the top frame is drawn.
+#[test]
+fn covered_opaque_frames_are_evicted_and_not_drawn() {
+    // 4x4 RGBA is 64 bytes: the quota holds three frames.
+    let mut t = term(|c| c.graphics.limits.quota = 200);
+    let now = Instant::now();
+    let mut draws = Vec::new();
+    let mut last = None;
+    for n in 1..=50 {
+        stream_frame(&mut t, n, None, now);
+        t.image_draws(t.grid().history_rows(), t.rows(), now, &mut draws);
+        assert_eq!(draws.len(), 1, "frame {n}: only the top frame is drawn");
+        assert_ne!(Some(draws[0].key), last, "frame {n} is shown");
+        last = Some(draws[0].key);
+    }
+    assert!(t.image_store().used() <= 200);
+    assert!(t.placements().len() <= 3);
+}
+
+/// Translucent frames hide nothing: every one stays on screen and protected, so the quota
+/// still refuses frames past it (`ENOSPC`; anonymous transmits get no reply): visible
+/// images are never evicted.
+#[test]
+fn translucent_frames_stay_protected() {
+    let mut t = term(|c| c.graphics.limits.quota = 200);
+    let now = Instant::now();
+    for n in 1..=5 {
+        stream_frame(&mut t, n, Some(128), now);
+    }
+    assert_eq!(t.placements().len(), 3, "frames past the quota are refused");
+    let mut draws = Vec::new();
+    t.image_draws(t.grid().history_rows(), t.rows(), now, &mut draws);
+    assert_eq!(draws.len(), 3, "every translucent frame is drawn");
+}
+
+/// An opaque frame at another z, or a smaller one, covers nothing.
+#[test]
+fn a_smaller_or_other_z_frame_covers_nothing() {
+    let mut t = term(|c| c.graphics.limits.quota = 1 << 20);
+    let now = Instant::now();
+    stream_frame(&mut t, 1, None, now);
+    t.feed(
+        format!(
+            "\x1b[1;1H\x1b_Ga=T,f=24,s=4,v=4,C=1,z=5;{}\x1b\\",
+            rgbf(4, 4, 9)
+        )
+        .as_bytes(),
+        now,
+    );
+    t.feed(
+        format!(
+            "\x1b[1;1H\x1b_Ga=T,f=24,s=2,v=2,C=1;{}\x1b\\",
+            rgbf(2, 2, 7)
+        )
+        .as_bytes(),
+        now,
+    );
+    let mut draws = Vec::new();
+    t.image_draws(t.grid().history_rows(), t.rows(), now, &mut draws);
+    assert_eq!(draws.len(), 3);
+}
+
 #[test]
 fn placements_leave_with_their_history_rows() {
     let mut t = term(|c| c.scrollback.lines = Some(10));
@@ -302,4 +379,47 @@ fn scrolled_back_viewports_see_history_images() {
     t.image_draws(0, t.rows(), std::time::Instant::now(), &mut d);
     assert_eq!(d.len(), 1);
     assert_eq!(d[0].dst[1], 0);
+}
+
+/// The mpv `--vo=kitty --vo-kitty-use-shm=yes` stream over shared memory past the quota:
+/// the pre-read quota check counts covered frames as freeable (T-15 §4, M38).
+#[test]
+fn shm_stream_past_the_quota_keeps_playing() {
+    let mut t = term(|c| {
+        c.rows = 30;
+        c.cols = 80;
+        c.cell_px = (9, 18);
+        // 21 frames and less than one more RGB payload: after each eviction the free
+        // quota alone is too small for the pre-read check.
+        c.graphics.limits.quota = 21 * 160 * 90 * 4 + 10_000;
+        c.graphics.inline_decode = false;
+    });
+    let now = Instant::now();
+    let mut draws = Vec::new();
+    let mut last = None;
+    for n in 0..60u32 {
+        let name = format!("apothterm-shm-{}-{n}", std::process::id());
+        std::fs::write(
+            std::path::Path::new("/dev/shm").join(&name),
+            vec![n as u8; 160 * 90 * 3],
+        )
+        .unwrap();
+        t.feed(
+            format!(
+                "\x1b[3;1H\x1b_Ga=T,t=s,f=24,s=160,v=90,C=1,q=2;{}\x1b\\",
+                b64(name.as_bytes())
+            )
+            .as_bytes(),
+            now,
+        );
+        // The decode runs on a worker in the terminal: answer it the same way.
+        for job in t.take_image_jobs() {
+            t.image_done(job.run(), now);
+        }
+        let _ = std::fs::remove_file(std::path::Path::new("/dev/shm").join(&name));
+        t.image_draws(t.grid().history_rows(), t.rows(), now, &mut draws);
+        assert_eq!(draws.len(), 1, "frame {n}");
+        assert_ne!(Some(draws[0].key), last, "frame {n} shown");
+        last = Some(draws[0].key);
+    }
 }

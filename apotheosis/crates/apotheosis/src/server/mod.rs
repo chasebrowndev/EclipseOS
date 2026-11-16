@@ -64,18 +64,14 @@ const READS_PER_TURN: usize = 4;
 /// Grace between the close signals (T-18 §7, SECURITY-28).
 const CLOSE_STEP: Duration = Duration::from_secs(1);
 
-/// How the server sizes a pane several views ask different sizes for (T-21 §3). No config
-/// key names it yet (spec gap, reported): the default, `latest`, is in force.
+/// How the server sizes a pane several views ask different sizes for (T-21 §3):
+/// `sessions.resize` (`Settings::resize_policy`), default `latest`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ResizePolicy {
-    #[allow(dead_code)] // selectable once the config key exists
     Smallest,
     Latest,
-    #[allow(dead_code)] // selectable once the config key exists
     Largest,
 }
-
-const RESIZE_POLICY: ResizePolicy = ResizePolicy::Latest;
 
 /// The size a pane takes: `asks` are the attached views' current requests, `latest` the
 /// one just received.
@@ -803,6 +799,9 @@ impl Server {
                 v.grant = grant;
                 tracing::info!(view = v.id, "view attached");
                 let id = v.id;
+                // `sessions.resize` is live: it applies from the next attach (T-21 §3).
+                self.settings.resize_policy =
+                    crate::settings::resize_policy_now(&self.settings.launch);
                 let list = ServerMsg::Panes(self.pane_list());
                 self.views[i].send(&list);
                 for p in &mut self.panes {
@@ -923,7 +922,7 @@ impl Server {
         p.asks.retain(|a| a.0 != view);
         p.asks.push((view, rows, cols));
         let asks: Vec<(u16, u16)> = p.asks.iter().map(|a| (a.1, a.2)).collect();
-        let Some((r, c)) = pick_size(RESIZE_POLICY, &asks, Some((rows, cols))) else {
+        let Some((r, c)) = pick_size(self.settings.resize_policy, &asks, Some((rows, cols))) else {
             return;
         };
         if cell.0 > 0 && cell.1 > 0 {
@@ -1135,7 +1134,10 @@ mod tests {
             Some((50, 120))
         );
         assert_eq!(pick_size(ResizePolicy::Smallest, &[], None), None);
-        assert_eq!(pick_size(RESIZE_POLICY, &[], Some((5, 6))), Some((5, 6)));
+        assert_eq!(
+            pick_size(ResizePolicy::Latest, &[], Some((5, 6))),
+            Some((5, 6))
+        );
     }
 
     #[test]

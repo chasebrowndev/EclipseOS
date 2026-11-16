@@ -179,6 +179,43 @@ pub struct PaneModel {
     pub cursor: Option<(usize, usize)>,
     /// The credential state (T-17 §5): exposed as protected.
     pub credential: bool,
+    /// Media placements in view (T-20 §5), back to front.
+    pub media: Vec<MediaModel>,
+}
+
+/// A media placement's playback state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MediaState {
+    /// Waiting for the player.
+    #[default]
+    Opening,
+    Playing,
+    Paused,
+    Ended,
+}
+
+impl MediaState {
+    fn word(self) -> &'static str {
+        match self {
+            MediaState::Opening => "loading",
+            MediaState::Playing => "playing",
+            MediaState::Paused => "paused",
+            MediaState::Ended => "ended",
+        }
+    }
+}
+
+/// A media placement in a pane (T-16 §2): one node with its state and a play/pause action.
+/// No content: the name is the kind of media, never the file or the program's text.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MediaModel {
+    /// The term's placement key ([`ids::media`]).
+    pub key: u64,
+    /// Has a video track (else audio only, or not known yet).
+    pub video: bool,
+    pub state: MediaState,
+    /// The box, window-relative.
+    pub bounds: Rect,
 }
 
 /// The open command palette.
@@ -397,10 +434,17 @@ impl Builder {
         group.set_bounds(bounds);
         group.add_action(Action::Focus);
         let mut focus = None;
+        let media_ids: Vec<NodeId> = p.media.iter().map(|m| media(p.id, m, out)).collect();
+        let with_media = |first: NodeId| {
+            let mut v = Vec::with_capacity(1 + media_ids.len());
+            v.push(first);
+            v.extend_from_slice(&media_ids);
+            v
+        };
         match self.model {
             TextModel::Runs => {
                 let tid = ids::terminal(p.id);
-                group.set_children(vec![tid]);
+                group.set_children(with_media(tid));
                 let mut term = Node::new(if p.credential {
                     Role::PasswordInput
                 } else {
@@ -457,7 +501,7 @@ impl Builder {
                 list.set_bounds(bounds);
                 list.set_children(kids);
                 out.push((lid, list));
-                group.set_children(vec![lid]);
+                group.set_children(with_media(lid));
                 if p.focused {
                     let row = p.cursor.map_or(0, |c| c.0).min(rows.saturating_sub(1));
                     focus = Some(if rows == 0 { lid } else { ids::line(p.id, row) });
@@ -598,6 +642,25 @@ fn palette(p: &PaletteModel, out: &mut Vec<(NodeId, Node)>) {
     }
     list.set_children(kids);
     out.push((ids::PALETTE_LIST, list));
+}
+
+/// A media placement's node: video or audio, its state as a toggled flag (pressed while
+/// playing) and in words, and Click = play or pause, as the mouse click (T-20 §5, T-08 §4).
+fn media(pane: u64, m: &MediaModel, out: &mut Vec<(NodeId, Node)>) -> NodeId {
+    let id = ids::media(pane, m.key);
+    let mut n = Node::new(if m.video { Role::Video } else { Role::Audio });
+    n.set_label(if m.video { "Video" } else { "Audio" });
+    n.set_state_description(m.state.word());
+    n.set_toggled(if m.state == MediaState::Playing {
+        Toggled::True
+    } else {
+        Toggled::False
+    });
+    n.set_bounds(m.bounds);
+    n.add_action(Action::Click);
+    n.add_action(Action::Focus);
+    out.push((id, n));
+    id
 }
 
 /// A plain labelled button with a click action.

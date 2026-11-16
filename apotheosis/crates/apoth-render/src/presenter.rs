@@ -33,6 +33,7 @@
 //! `LAT-ECHO` (T-23). The caller emits the tracing span (sizes and durations only); this crate
 //! has no tracing dependency.
 
+use crate::chrome::{ChromeList, ChromePass};
 use crate::gpu::{AdapterReport, Gpu, GpuOptions, RenderError, new_instance};
 use crate::reference::Image;
 use crate::renderer::{DrawStats, FrameInput, Renderer};
@@ -347,6 +348,35 @@ impl SurfacePresenter {
             .create_surface(Arc::clone(&target))
             .map_err(|e| RenderError::Surface(format!("{e:?}")))?;
         let gpu = Gpu::from_instance(instance, &opts.gpu, Some(&surface))?;
+        Self::build(gpu, target, surface, size, opts)
+    }
+
+    /// A second surface on the device of `gpu` (the overlay subsurface of a window): no new
+    /// adapter or device, pipelines built on it share the queue.
+    ///
+    /// # Errors
+    /// As [`SurfacePresenter::new`].
+    pub fn with_gpu<W: WindowTarget>(
+        gpu: &Gpu,
+        target: Arc<W>,
+        size: (u32, u32),
+        opts: &SurfaceOptions,
+    ) -> Result<Self, RenderError> {
+        let target: Arc<dyn WindowTarget> = target;
+        let surface = gpu
+            .instance
+            .create_surface(Arc::clone(&target))
+            .map_err(|e| RenderError::Surface(format!("{e:?}")))?;
+        Self::build(gpu.clone(), target, surface, size, opts)
+    }
+
+    fn build(
+        gpu: Gpu,
+        target: Arc<dyn WindowTarget>,
+        surface: wgpu::Surface<'static>,
+        size: (u32, u32),
+        opts: &SurfaceOptions,
+    ) -> Result<Self, RenderError> {
         let caps = surface.get_capabilities(&gpu.adapter);
         let format = caps
             .formats
@@ -526,6 +556,63 @@ impl Presenter for SurfacePresenter {
             present_call: returned_at.duration_since(t1),
             returned_at,
         })
+    }
+}
+
+impl SurfacePresenter {
+    /// Draws and presents a chrome-only frame: the target cleared to transparent, then
+    /// `list` over it. This is the overlay subsurface's frame; it has no grid. Returns false
+    /// when the frame was skipped (device lost, surface outdated or occluded). No pre-present
+    /// hook runs: the frame callback and feedback belong to the main surface's commit.
+    pub fn present_chrome(&mut self, pass: &mut ChromePass, list: &ChromeList) -> bool {
+        if self.gpu.is_lost() {
+            return false;
+        }
+        if self.needs_reconfigure {
+            self.configure();
+        }
+        let frame = match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(t) => t,
+            wgpu::CurrentSurfaceTexture::Suboptimal(t) => {
+                self.needs_reconfigure = true;
+                t
+            }
+            wgpu::CurrentSurfaceTexture::Outdated => {
+                self.configure();
+                return false;
+            }
+            wgpu::CurrentSurfaceTexture::Lost => {
+                self.recreate_surface();
+                return false;
+            }
+            _ => return false,
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut enc = self
+            .gpu
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("overlay"),
+            });
+        drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("overlay-clear"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        }));
+        pass.record(&mut enc, &view, self.size, list);
+        self.gpu.queue.submit(std::iter::once(enc.finish()));
+        self.gpu.queue.present(frame);
+        true
     }
 }
 

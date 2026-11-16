@@ -235,7 +235,7 @@ fn image_defaults_to_icat_in_a_float() {
     assert!(r.fallback.is_none());
     // Menu: named default, the picker, the other two placements, copy rows.
     let (rows, choices) = menu_rows(&r);
-    assert_eq!(rows[0].title, "Open with apoth icat in a float");
+    assert_eq!(rows[0].title, "Open in a float");
     assert_eq!(rows[1].pick, OpenPick::Picker);
     assert_eq!(choices.len(), 3);
     assert!(rows.iter().any(|r| r.title.ends_with("in a window")));
@@ -354,7 +354,7 @@ fn urls_go_through_the_scheme_handler() {
         argv,
         &vec!["firefox".to_string(), "https://example.org/a?b=1".into()]
     );
-    assert_eq!(menu_rows(&r).0[0].title, "Open with Firefox");
+    assert_eq!(menu_rows(&r).0[0].title, "Open");
     assert!(r.copy_path.is_none());
     // A user-set opener wins for URLs.
     let mut q2 = q.clone();
@@ -530,7 +530,7 @@ fn no_desktop_default_falls_back_to_the_browser_for_renderable_types() {
         argv[1].starts_with("file:///") && argv[1].ends_with("/a%20b.pdf"),
         "{argv:?}"
     );
-    assert_eq!(menu_rows(&r).0[0].title, "Open with Firefox");
+    assert_eq!(menu_rows(&r).0[0].title, "Open");
     // A video's `apoth play` falls back to the browser when no app handles the type.
     std::fs::write(d.join("v.webm"), b"\x1aE\xdf\xa3").unwrap();
     let r = resolve_with(

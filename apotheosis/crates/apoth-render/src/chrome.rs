@@ -28,6 +28,9 @@ const KIND_SHADOW: f32 = 1.0;
 /// A flat axis-aligned rect: premultiplied fill, no edge antialiasing. The glyph bridge
 /// (T-08 §2, text via the T-06 path) emits one per run of equal coverage in a glyph row.
 const KIND_FLAT: f32 = 2.0;
+/// A rounded rect that erases what is under it, in proportion to its coverage and fill
+/// alpha: the hole a compositor-drawn glass pane shows through (ADR 0081).
+const KIND_ERASE: f32 = 3.0;
 const UNBOUNDED: [f32; 4] = [-1.0e9, -1.0e9, 1.0e9, 1.0e9];
 
 /// A pixel rectangle: x, y, width, height (target pixels, y down).
@@ -75,6 +78,10 @@ pub trait ChromeSink {
     /// An unantialiased rect of one straight-alpha colour: glyph coverage from the text
     /// bridge.
     fn flat(&mut self, rect: Rect, colour: [u8; 4]);
+    /// Erases the pixels under a rounded rect (`strength` 0..=1, antialiased edge) so the
+    /// compositor's glass pane behind the window shows through. Sinks that cannot erase
+    /// ignore it.
+    fn erase(&mut self, _rect: Rect, _radii: [f32; 4], _strength: f32) {}
     /// Ends a layer: the items so far draw under the next floating pane (see
     /// [`ChromeList::marks`]). Sinks without layers ignore it.
     fn layer(&mut self) {}
@@ -111,7 +118,11 @@ impl ChromeInstance {
     }
 
     fn is_flat(&self) -> bool {
-        self.params[2] >= 1.5
+        self.params[2] >= 1.5 && self.params[2] < 2.5
+    }
+
+    fn is_erase(&self) -> bool {
+        self.params[2] >= 2.5
     }
 
     /// Appends the 72 packed bytes (little endian).
@@ -234,6 +245,21 @@ impl ChromeSink for ChromeList {
         });
     }
 
+    fn erase(&mut self, rect: Rect, radii: [f32; 4], strength: f32) {
+        let a = (strength.clamp(0.0, 1.0) * 255.0 + 0.5) as u8;
+        if rect[2] <= 0.0 || rect[3] <= 0.0 || a == 0 {
+            return;
+        }
+        self.instances.push(ChromeInstance {
+            rect,
+            radii: clamp_radii(rect, radii),
+            clip: self.clip(),
+            params: [0.0, 0.0, KIND_ERASE, 0.0],
+            fill: [0, 0, 0, a],
+            rim: [0; 4],
+        });
+    }
+
     fn push_clip(&mut self, rect: Rect) {
         let cur = self.clip();
         let c = [
@@ -307,6 +333,9 @@ pub mod reference {
         }
         let rim = unorm(i.rim);
         let cov = (0.5 - d).clamp(0.0, 1.0);
+        if i.is_erase() {
+            return [cov * fill[3]; 4];
+        }
         let t = if i.params[0] <= 0.0 {
             0.0
         } else {
@@ -341,7 +370,9 @@ pub mod reference {
                     }
                     let c = shade(i, fx, fy);
                     let q = c.map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
-                    if q[3] != 0 || q[0] != 0 || q[1] != 0 || q[2] != 0 {
+                    if i.is_erase() {
+                        img.erase(px, py, q[3]);
+                    } else if q[3] != 0 || q[0] != 0 || q[1] != 0 || q[2] != 0 {
                         img.over(px, py, q);
                     }
                 }
@@ -358,6 +389,10 @@ pub struct ChromePass {
     device: wgpu::Device,
     queue: wgpu::Queue,
     pipeline: wgpu::RenderPipeline,
+    /// Same shader, blending `dst * (1 - src.a)`: the erase kind.
+    erase_pipeline: wgpu::RenderPipeline,
+    /// Whether each uploaded instance is an erase, to split draws by pipeline.
+    erases: Vec<bool>,
     ubo: wgpu::Buffer,
     bind: wgpu::BindGroup,
     vb: wgpu::Buffer,
@@ -413,34 +448,49 @@ impl ChromePass {
             step_mode: wgpu::VertexStepMode::Instance,
             attributes: &attrs,
         })];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("chrome"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &module,
-                entry_point: Some("vs_chrome"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                buffers: &buffers,
+        let build = |label: &'static str, blend: wgpu::BlendState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &module,
+                    entry_point: Some("vs_chrome"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    buffers: &buffers,
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleStrip,
+                    ..Default::default()
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &module,
+                    entry_point: Some("fs_chrome"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format,
+                        blend: Some(blend),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = build("chrome", wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let erase = wgpu::BlendComponent {
+            src_factor: wgpu::BlendFactor::Zero,
+            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+            operation: wgpu::BlendOperation::Add,
+        };
+        let erase_pipeline = build(
+            "chrome-erase",
+            wgpu::BlendState {
+                color: erase,
+                alpha: erase,
             },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &module,
-                entry_point: Some("fs_chrome"),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+        );
         let ubo = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("chrome-ubo"),
             size: UNIFORM_BYTES,
@@ -461,6 +511,8 @@ impl ChromePass {
             device,
             queue,
             pipeline,
+            erase_pipeline,
+            erases: Vec::new(),
             ubo,
             bind,
             cap,
@@ -475,8 +527,10 @@ impl ChromePass {
             return false;
         }
         self.bytes.clear();
+        self.erases.clear();
         for i in &list.instances {
             i.pack(&mut self.bytes);
+            self.erases.push(i.is_erase());
         }
         let need = self.bytes.len() as u64;
         if need > self.cap {
@@ -497,10 +551,29 @@ impl ChromePass {
             return;
         }
         let need = self.bytes.len() as u64;
-        pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind, &[]);
         pass.set_vertex_buffer(0, self.vb.slice(..need));
-        pass.draw(0..4, range);
+        self.draw_runs(pass, range);
+    }
+
+    /// Draws `range` in runs of one kind, so erases use their own blend.
+    fn draw_runs(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<u32>) {
+        let erase_at = |n: u32| self.erases.get(n as usize).copied().unwrap_or(false);
+        let mut at = range.start;
+        while at < range.end {
+            let erase = erase_at(at);
+            let mut end = at + 1;
+            while end < range.end && erase_at(end) == erase {
+                end += 1;
+            }
+            pass.set_pipeline(if erase {
+                &self.erase_pipeline
+            } else {
+                &self.pipeline
+            });
+            pass.draw(0..4, at..end);
+            at = end;
+        }
     }
 
     /// Records the list into `enc` over `target` (existing contents kept). Does nothing for an
@@ -516,8 +589,10 @@ impl ChromePass {
             return;
         }
         self.bytes.clear();
+        self.erases.clear();
         for i in &list.instances {
             i.pack(&mut self.bytes);
+            self.erases.push(i.is_erase());
         }
         let need = self.bytes.len() as u64;
         if need > self.cap {
@@ -543,10 +618,9 @@ impl ChromePass {
             })],
             ..Default::default()
         });
-        pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.bind, &[]);
         pass.set_vertex_buffer(0, self.vb.slice(..need));
-        pass.draw(0..4, 0..list.instances.len() as u32);
+        self.draw_runs(&mut pass, 0..list.instances.len() as u32);
     }
 }
 

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Stable entry points for the `osc_all` and `kitty_keyboard_decode` fuzz targets (T-18
-//! §11). They panic only when a security invariant breaks:
+//! Stable entry points for the `apoth-term` fuzz targets (T-18 §11; wrappers in
+//! `apotheosis/fuzz/fuzz_targets/`): `osc_all`, `kitty_keyboard_decode`, the graphics and
+//! media targets, and `term_feed` (chunking independence). They panic only when a security
+//! invariant breaks:
 //!
 //! * a reply that is not in the closed reply grammar (T-18 §2): every reply is a run of
 //!   `CSI <printable> <final>`, `OSC|DCS|APC <printable> (BEL | ESC \)`; no payload byte
@@ -570,13 +572,80 @@ fn b64_encode(b: &[u8]) -> String {
     out
 }
 
+/// Scrollback lines kept by the `term_feed` configuration; history above this is a bug.
+const FEED_HISTORY_LINES: usize = 64;
+/// Per-feed bound on queued replies. The reply queue itself is capped (T-03 §5); this is a
+/// loose ceiling that catches unbounded growth.
+const FEED_REPLY_CEILING: usize = 1 << 20;
+
+fn feed_term(rows: usize, cols: usize) -> Term {
+    Term::new(TermConfig {
+        rows,
+        cols,
+        scrollback: apoth_grid::Limits {
+            bytes: 1 << 20,
+            lines: Some(FEED_HISTORY_LINES),
+        },
+        ..TermConfig::default()
+    })
+}
+
+/// Body of the `term_feed` target (T-25 §4, T-03 §5): arbitrary bytes into [`Term::feed`]
+/// never panic, memory stays bounded, and the result does not depend on how the bytes are
+/// chunked. Input layout: byte 0 = rows (1..=40), byte 1 = cols (1..=120), byte 2 = chunk
+/// size (0 = a split derived from the data), the rest is the stream.
+pub fn fuzz_term_feed(data: &[u8]) {
+    let [r, c, k, stream @ ..] = data else {
+        return;
+    };
+    let rows = usize::from(*r % 40) + 1;
+    let cols = usize::from(*c % 120) + 1;
+    let now = Instant::now();
+
+    let mut whole = feed_term(rows, cols);
+    let _ = whole.feed(stream, now);
+    let whole_replies = whole.replies().take_all();
+    assert!(
+        whole_replies.len() <= FEED_REPLY_CEILING,
+        "unbounded reply queue"
+    );
+    assert!(
+        whole.primary().history_rows() <= FEED_HISTORY_LINES,
+        "history over its limit"
+    );
+
+    // Same bytes in another chunking: same replies and same history length.
+    let mut split = feed_term(rows, cols);
+    let mut rest = stream;
+    while !rest.is_empty() {
+        let take = if *k == 0 {
+            usize::from(rest[0] % 16) + 1
+        } else {
+            usize::from(*k)
+        };
+        let (head, tail) = rest.split_at(take.min(rest.len()));
+        let _ = split.feed(head, now);
+        rest = tail;
+    }
+    assert_eq!(
+        whole_replies,
+        split.replies().take_all(),
+        "chunking changed the replies"
+    );
+    assert_eq!(
+        whole.primary().history_rows(),
+        split.primary().history_rows(),
+        "chunking changed the history"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn corpus(name: &str, f: fn(&[u8])) -> usize {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("corpus")
+            .join("../../fuzz/corpus")
             .join(name);
         let mut n = 0;
         for entry in std::fs::read_dir(dir).unwrap() {

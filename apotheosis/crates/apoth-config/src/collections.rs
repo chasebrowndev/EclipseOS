@@ -276,9 +276,12 @@ fn parse_actions(
 
 fn parse_bind(cx: &mut Cx, node: &KdlNode) -> Option<BindDecl> {
     let args = pos_args(node);
-    let chord_text = match args.as_slice() {
-        [v] => v.as_string(),
-        _ => None,
+    // Two forms: `bind "chord" { action… }` and `bind "chord" "action"`, one action with no
+    // arguments, the same as a block holding just that action.
+    let (chord_text, string_action) = match args.as_slice() {
+        [v] => (v.as_string(), None),
+        [v, a] => (v.as_string(), a.as_string()),
+        _ => (None, None),
     };
     let Some(chord_text) = chord_text else {
         cx.err(
@@ -288,6 +291,14 @@ fn parse_bind(cx: &mut Cx, node: &KdlNode) -> Option<BindDecl> {
         );
         return None;
     };
+    if args.len() == 2 && string_action.is_none() {
+        cx.err(
+            node.span().offset(),
+            None,
+            "`bind` takes an action string or a block of actions, e.g. bind \"ctrl+t\" \"new-tab\"",
+        );
+        return None;
+    }
     let chords = match parse_chord_seq(chord_text) {
         Ok(c) => c,
         Err(m) => {
@@ -322,7 +333,29 @@ fn parse_bind(cx: &mut Cx, node: &KdlNode) -> Option<BindDecl> {
             }
         },
     };
-    let actions = parse_actions(cx, node.children(), node)?;
+    let actions = match string_action {
+        Some(id) => {
+            if node.children().is_some() {
+                cx.err(
+                    node.span().offset(),
+                    None,
+                    "`bind` takes either an action string or a block, not both",
+                );
+                return None;
+            }
+            if let Err(m) = lang::validate_action_id(id) {
+                cx.err(node.span().offset(), None, m);
+                return None;
+            }
+            vec![ActionCall {
+                id: id.to_string(),
+                args: Vec::new(),
+                props: Vec::new(),
+                children: Vec::new(),
+            }]
+        }
+        None => parse_actions(cx, node.children(), node)?,
+    };
     Some(BindDecl {
         chords,
         actions,

@@ -49,6 +49,7 @@ const K_CHIP: u64 = 8;
 const K_TAB_PROGRESS: u64 = 9;
 const K_TAB_PROFILE: u64 = 10;
 const K_TAB_CLOSE: u64 = 11;
+const K_MEDIA: u64 = 12;
 const LOW: u64 = (1 << KIND_SHIFT) - 1;
 /// Pane ids that fit in a text-run id.
 const PANE_BITS: u32 = 32;
@@ -159,9 +160,24 @@ pub enum Target {
     TabClose(u64),
     /// The new-tab button.
     NewTab,
+    /// A media placement: the pane id's low 32 bits and the key's low 24 ([`media`]).
+    Media { pane: u64, key: u64 },
     /// Something else (palette field, toast, labels).
     Other,
 }
+
+/// A media placement of a pane (T-20 §5), by the term's placement key. The id carries the
+/// low 32 bits of the pane id and the low 24 of the key.
+#[must_use]
+pub fn media(pane: u64, key: u64) -> NodeId {
+    make(
+        K_MEDIA,
+        ((pane & ((1 << PANE_BITS) - 1)) << 24) | (key & MEDIA_KEY_MASK),
+    )
+}
+
+/// The bits of a placement key a [`media`] id keeps.
+pub const MEDIA_KEY_MASK: u64 = (1 << 24) - 1;
 
 /// Decode a node id.
 #[must_use]
@@ -183,6 +199,10 @@ pub fn target(id: NodeId) -> Target {
         K_PANE | K_TERM => Target::Pane(v),
         K_RUN | K_LINE => Target::Pane(v >> 24),
         K_PALETTE_ROW => Target::PaletteRow(v as usize),
+        K_MEDIA => Target::Media {
+            pane: v >> 24,
+            key: v & MEDIA_KEY_MASK,
+        },
         _ => Target::Other,
     }
 }
@@ -225,6 +245,9 @@ mod tests {
             run(7, 1, 0),
             line(7, 0),
             palette_row(0),
+            media(7, 0),
+            media(7, 1),
+            media(8, 1),
         ];
         let mut v: Vec<u64> = all.iter().map(|n| n.0).collect();
         v.sort_unstable();
@@ -246,5 +269,11 @@ mod tests {
         assert_eq!(target(SEARCH_CLOSE), Target::SearchClose);
         assert_eq!(target(NEW_TAB), Target::NewTab);
         assert_eq!(target(TOOLTIP), Target::Other);
+        assert_eq!(target(media(9, 5)), Target::Media { pane: 9, key: 5 });
+        assert_eq!(
+            target(media(0x1_0000_0009, 0x0100_0005)),
+            Target::Media { pane: 9, key: 5 },
+            "high bits are dropped"
+        );
     }
 }

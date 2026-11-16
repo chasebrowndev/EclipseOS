@@ -157,6 +157,8 @@ pub enum Message {
     Accounts(crate::accounts::Msg),
     /// The Login screen page's own messages.
     LoginScreen(crate::login_screen::Msg),
+    /// The Terminal pages' own messages.
+    Terminal(crate::terminal::Msg),
 }
 
 /// Somewhere to take the user: a page, and optionally a row on it by its
@@ -179,6 +181,12 @@ pub fn locate(target: &str) -> Option<Locus> {
     if let Some(place) = target.strip_prefix(BESPOKE) {
         let path = place.replacen('.', "/", 1);
         return Page::from_arg(&path).map(|page| Locus { page, row: None });
+    }
+    if let Some(key) = target.strip_prefix(crate::search::TERMINAL) {
+        return crate::terminal::page_of_key(key).map(|page| Locus {
+            page,
+            row: Some(key.to_owned()),
+        });
     }
     if let Some(place) = place_for(target) {
         let row = if place.page == Page::Animations {
@@ -352,6 +360,8 @@ pub struct App {
     pub(crate) accounts: crate::accounts::Accounts,
     /// The Login screen page: what the machine has, and the pending choices.
     pub(crate) login: crate::login_screen::LoginScreen,
+    /// The Terminal pages: `apotheosis.kdl`, loaded when one is shown.
+    pub(crate) terminal: crate::terminal::Terminal,
 }
 
 /// How long "Cleared" stands in for the button.
@@ -425,6 +435,7 @@ impl App {
             anim: crate::animations::Anim::default(),
             accounts: crate::accounts::Accounts::default(),
             login: crate::login_screen::LoginScreen::default(),
+            terminal: crate::terminal::Terminal::default(),
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -440,6 +451,12 @@ impl App {
         crate::accounts::preview_env(&mut app.accounts);
         if app.page == Page::Animations {
             crate::animations::sync(&mut app);
+        }
+        if app.page.is_terminal() {
+            app.terminal.reload();
+            crate::terminal::sync_theme(&mut app);
+            #[cfg(debug_assertions)]
+            crate::term_open::preview_env(&mut app);
         }
         if app.page == Page::LoginScreen {
             crate::login_screen::load(&mut app);
@@ -860,7 +877,7 @@ fn boot_inner(page: Page) -> (App, Task<Message>) {
             Task::batch([pictures, iced::widget::operation::scroll_to(SCROLL, to)]),
         );
     }
-    (app, pictures)
+    (app, Task::batch([pictures, nav_into_view(page)]))
 }
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -879,7 +896,12 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
 
 fn update_inner(app: &mut App, message: Message) -> Task<Message> {
     match message {
-        Message::ThemeChanged => return Task::none(),
+        Message::ThemeChanged => {
+            if app.page.is_terminal() {
+                crate::terminal::sync_theme(app);
+            }
+            return Task::none();
+        }
         Message::Section(s) => {
             if app.open == Some(s) && s.expands() {
                 // Folding leaves the page where it is: closing a list is
@@ -894,6 +916,9 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::Open(p) => return go(app, p),
         Message::Reveal(Locus { page, row }) => {
+            if page.is_terminal() {
+                app.terminal.clear_filter();
+            }
             let top = go(app, page);
             let Some(path) = row else { return top };
             app.flash = Some((path.clone(), Instant::now()));
@@ -952,6 +977,10 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::Reload => {
             app.reload();
+            if app.page.is_terminal() {
+                app.terminal.reload();
+                crate::terminal::sync_theme(app);
+            }
             if app.page == Page::LoginScreen {
                 return crate::login_screen::reload(app);
             }
@@ -1168,6 +1197,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::Search(m) => return crate::search_ui::update(app, m),
         Message::Anim(m) => return crate::animations::update(app, m),
         Message::Accounts(m) => return crate::accounts::update(app, m),
+        Message::Terminal(m) => return crate::terminal::update(app, m),
         Message::LoginScreen(m) => return crate::login_screen::update(app, m),
     }
     Task::none()
@@ -1183,6 +1213,10 @@ fn go(app: &mut App, page: Page) -> Task<Message> {
         return Task::none();
     }
     app.flash = None;
+    if page.is_terminal() {
+        app.terminal.reload();
+        crate::terminal::sync_theme(app);
+    }
     let pictures = if page == Page::LoginScreen {
         crate::login_screen::reload(app)
     } else {
@@ -1191,7 +1225,22 @@ fn go(app: &mut App, page: Page) -> Task<Message> {
     Task::batch([
         pictures,
         iced::widget::operation::snap_to(SCROLL, iced::widget::scrollable::RelativeOffset::START),
+        nav_into_view(page),
     ])
+}
+
+/// Scroll the sidebar so the page's section is in view: it is a tree that can
+/// be taller than the window, and the section sits proportionally down it.
+fn nav_into_view(page: Page) -> Task<Message> {
+    let at = Section::ALL
+        .iter()
+        .position(|s| *s == page.section())
+        .unwrap_or(0);
+    let y = at as f32 / (Section::ALL.len() - 1) as f32;
+    iced::widget::operation::snap_to(
+        iced::widget::Id::new(ec_ui::widget::SIDEBAR_NAV),
+        iced::widget::scrollable::RelativeOffset { x: 0.0, y },
+    )
 }
 
 impl App {
@@ -1297,7 +1346,17 @@ pub fn subscription(app: &App) -> Subscription<Message> {
 }
 
 fn subscription_inner(app: &App) -> Subscription<Message> {
-    let mut subs = vec![blur(), events(), crate::search_ui::keys(&app.search)];
+    let mut subs = vec![blur(), events()];
+    // While the chord recorder listens every key is its own, so the sidebar's
+    // type-to-search hears none.
+    // While the chord recorder listens, or an Open-with form is open, keys
+    // belong to that form: the sidebar's type-to-search hears none.
+    if !app.terminal.lists.recording() && !app.terminal.open.editing() {
+        subs.push(crate::search_ui::keys(&app.search));
+    }
+    if app.terminal.open.editing() {
+        subs.push(crate::term_open::keys());
+    }
     subs.push(ec_ui::glass::xdg_window().map(Message::GlassWindow));
     if app.nav_moving() {
         subs.push(iced::window::frames().map(Message::NavFrame));
@@ -1316,6 +1375,9 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
         if app.bar.animating() {
             subs.push(iced::window::frames().map(|t| Message::Bar(crate::taskbar::Msg::Frame(t))));
         }
+    }
+    if app.terminal.lists.recording() {
+        subs.push(crate::term_lists::record_keys());
     }
     if app.page == Page::Animations {
         subs.push(iced::window::frames().map(|t| Message::Anim(crate::animations::Msg::Frame(t))));
@@ -1501,6 +1563,10 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
             let (state, measure) = crate::accounts::status(app);
             controls.push(status_chip(&state, &measure));
         }
+        _ if app.page.is_terminal() => {
+            let (state, measure) = crate::terminal::status(app, app.page);
+            controls.push(status_chip(&state, &measure));
+        }
         _ if app.page == Page::LoginScreen => {
             let (state, measure) = crate::login_screen::status(app);
             controls.push(status_chip(&state, &measure));
@@ -1539,6 +1605,7 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         Page::Animations => blocks.extend(crate::animations::blocks(app)),
         Page::Accounts => blocks.extend(crate::accounts::blocks(app)),
         Page::LoginScreen => blocks.extend(crate::login_screen::blocks(app)),
+        p if p.is_terminal() => blocks.extend(crate::terminal::blocks(app, p)),
         p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
         _ => blocks.push(schema_page(app)),
     }
@@ -2251,7 +2318,7 @@ fn argv_field<'a>(app: &'a App, key: &'a Key, line: String) -> Element<'a, Messa
 /// A text field and the slot that says whether its draft is refused. The
 /// slot is always in the tree and always `VERDICT_W` wide, so the widget
 /// tree is the same shape in both states and iced keeps the input's focus.
-fn verdict_row<'a>(
+pub(crate) fn verdict_row<'a>(
     input: iced::widget::TextInput<'a, Message, Theme>,
     invalid: bool,
 ) -> Element<'a, Message, Theme> {

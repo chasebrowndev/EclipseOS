@@ -385,6 +385,8 @@ pub(crate) struct App {
     blur: Option<apoth_wl::BlurPath>,
     /// The Abyss theme's terminal colours while Abyss is detected (T-17 §1, §2).
     abyss_theme: Option<apoth_eclipse::TermColors>,
+    /// The settings portal's reduce-motion preference (T-08 §2); `false` without a portal.
+    system_reduced_motion: bool,
     auto_family: AutoFamily,
     /// The focused pane's terminal-set title, to re-render the title template on reload.
     term_title: String,
@@ -505,6 +507,8 @@ pub(crate) fn run(
         decorations: settings.decorations,
         ..WindowSpec::default()
     });
+    // xdg-toplevel-icon by name; the SVG ships in packaging/ (no-op without the global).
+    let _ = handle.set_icon_name(win, Some("org.eclipseos.Apotheosis"));
     handle.flush();
     let keymap = Keymap::from_config(reloader.config());
     let mut app = App {
@@ -561,6 +565,7 @@ pub(crate) fn run(
         overlay_down: None,
         blur: None,
         abyss_theme: None,
+        system_reduced_motion: false,
         auto_family: None,
         term_title: String::new(),
         mouse: Mouse::new(),
@@ -589,6 +594,7 @@ pub(crate) fn run(
     app.start_ctl();
     app.start_a11y();
     app.start_abyss();
+    app.start_portal();
     if app.keymap.dropped > 0 {
         tracing::warn!(binds = app.keymap.dropped, "some binds were not understood");
     }
@@ -722,6 +728,9 @@ const HANDLED: &[&str] = &[
     "key-table.push",
     "layout.next",
     "macro.run",
+    "media.pause",
+    "media.play",
+    "media.toggle-play",
     "notify",
     "open",
     "open.default",
@@ -985,6 +994,8 @@ impl App {
             rx: render_rx,
             poke: render_tx.clone(),
             to_main: self.to_main.clone(),
+            glass: self.handle.glass_panes(self.win),
+            overlay: self.handle.overlay_surface(self.win),
         })
         .map_err(|e| e.to_string())?;
         self.render = Some(render);
@@ -1301,10 +1312,11 @@ impl App {
                 link.sids.insert(sid, token);
                 if let Some(r) = p.remote.as_mut() {
                     r.sid = Some(sid);
-                    let early = std::mem::take(&mut r.early);
+                    let mut early = std::mem::take(&mut r.early);
                     if !early.is_empty() {
                         link.input(sid, &early);
                     }
+                    apoth_proto::askpass::wipe(&mut early);
                 }
                 // A size asked before the answer goes now.
                 if let Some(want) = p.pending.or(Some(p.dims)) {
@@ -1321,10 +1333,11 @@ impl App {
                 if let Some(p) = self.panes.get_mut(&id) {
                     if let Some(r) = p.remote.as_mut() {
                         r.sid = Some(sid);
-                        let early = std::mem::take(&mut r.early);
+                        let mut early = std::mem::take(&mut r.early);
                         if !early.is_empty() {
                             link.input(sid, &early);
                         }
+                        apoth_proto::askpass::wipe(&mut early);
                     }
                     link.resize(sid, p.pending.unwrap_or(p.dims), self.cell);
                 }
@@ -1586,7 +1599,7 @@ impl App {
             pinned,
             field: view.as_ref().is_none_or(|v| v.field),
             anchor: view.as_ref().and_then(|v| v.anchor),
-            header: view.map(|v| v.header),
+            header: view.and_then(|v| v.header),
         })
     }
 
@@ -1663,6 +1676,48 @@ impl App {
         self.send_layout();
     }
 
+    /// `media.toggle-play` / `media.play` / `media.pause` from the keyboard, the palette or
+    /// the control socket (T-08 §5): the focused pane's placement under the pointer, else
+    /// its frontmost drawn one. The action is the user's explicit choice, so mouse
+    /// reporting does not matter; a placement already in the wanted state is left alone.
+    fn media_key(&mut self, want: crate::pane::MediaWant) {
+        let Some(id) = self.focused() else {
+            return;
+        };
+        let hovered = match (self.geometry_of(id), self.pointer) {
+            (Some(geo), Some((x, y))) => {
+                let h = geo.hit(x, y);
+                (!h.above && !h.below)
+                    .then(|| {
+                        self.panes
+                            .get(&id)
+                            .and_then(|p| p.shared.media_shown_at(h.row, h.col))
+                    })
+                    .flatten()
+            }
+            _ => None,
+        };
+        let Some(p) = self.panes.get(&id) else {
+            return;
+        };
+        let shown = p.shared.media_shown_list();
+        let Some(key) = crate::pane::media_key_target(&shown, hovered, want) else {
+            return;
+        };
+        self.toggle_media(id, key);
+    }
+
+    /// Leave a toggle of placement `key` for pane `id`'s io thread and wake it.
+    pub(super) fn toggle_media(&self, id: PaneKey, key: u64) {
+        let Some(p) = self.panes.get(&id) else {
+            return;
+        };
+        p.shared.post_media_toggle(key);
+        if let Some(io) = &p.io {
+            let _ = rustix::io::write(&io.wake, &[crate::pane::WAKE_MEDIA_CLICK]);
+        }
+    }
+
     /// A left press over a media placement with mouse reporting off toggles its playback
     /// (T-08 §4): the toggle goes to the pane's io thread, which owns the term. True when
     /// the press was taken.
@@ -1686,10 +1741,7 @@ impl App {
         let Some(key) = hit else {
             return false;
         };
-        p.shared.post_media_toggle(key);
-        if let Some(io) = &p.io {
-            let _ = rustix::io::write(&io.wake, &[crate::pane::WAKE_MEDIA_CLICK]);
-        }
+        self.toggle_media(id, key);
         true
     }
 
@@ -2150,6 +2202,9 @@ impl App {
                 self.relayout();
                 self.poke();
             }
+            // `eclipse_glass_v1` started or stopped drawing panes: the render thread reads
+            // the flag on its next pass and redraws the interface's ground.
+            WlEvent::CapabilitiesChanged => self.poke(),
             WlEvent::BlurPathChanged { path, .. } => {
                 self.blur = Some(path);
                 self.send_render_update(false);
@@ -3032,6 +3087,9 @@ impl App {
                 }
             }
             A::AppIgnore {} => {}
+            A::MediaTogglePlay {} => self.media_key(crate::pane::MediaWant::Toggle),
+            A::MediaPlay {} => self.media_key(crate::pane::MediaWant::Play),
+            A::MediaPause {} => self.media_key(crate::pane::MediaWant::Pause),
             other => {
                 tracing::debug!(action = other.id(), "action not available yet");
                 return false;
@@ -4578,7 +4636,9 @@ impl App {
         self.send_unit(id, bytes.to_vec());
     }
 
-    fn send_unit(&mut self, id: PaneKey, unit: Vec<u8>) {
+    /// Send one whole unit to the pane's PTY or remote link. The unit may carry a typed
+    /// password: every local copy on the remote paths is wiped; the PTY queue scrubs its own.
+    fn send_unit(&mut self, id: PaneKey, mut unit: Vec<u8>) {
         let Some(p) = self.panes.get_mut(&id) else {
             return;
         };
@@ -4591,6 +4651,7 @@ impl App {
                 }
                 _ => {}
             }
+            apoth_proto::askpass::wipe(&mut unit);
             return;
         }
         let Some(pty) = p.pty.as_mut() else { return };
@@ -4659,6 +4720,7 @@ impl App {
             MainMsg::Credential(id, on) => self.on_credential(id, on),
             MainMsg::Prompt(id, a) => self.on_prompt(id, a),
             MainMsg::Abyss(a) => self.on_abyss(a),
+            MainMsg::ReducedMotion(r) => self.on_reduced_motion(r),
             MainMsg::Ctl(cid, r) => self.ctl_send(cid, &r),
             MainMsg::A11y(m) => self.on_a11y(m),
             MainMsg::Resized(id, d) => self.on_resized(id, d),
@@ -5067,6 +5129,9 @@ impl App {
         let old_padding = self.settings.padding;
         self.settings = settings;
         self.settings.apply_theme(&self.theme_colors());
+        self.settings
+            .glass
+            .system_motion(self.system_reduced_motion);
         self.push_term_colors();
         if f.render {
             self.send_render_update(f.font);
@@ -5131,6 +5196,26 @@ impl App {
             let _ = tx.send(MainMsg::Abyss(a));
         }) {
             tracing::warn!(error = %e, "could not start Abyss detection");
+        }
+    }
+
+    /// Follow the settings portal's reduce-motion preference on a thread of its own.
+    fn start_portal(&mut self) {
+        let tx = self.to_main.clone();
+        crate::portal::spawn(move |r| {
+            let _ = tx.send(MainMsg::ReducedMotion(r));
+        });
+    }
+
+    /// The portal's reduce-motion preference came or changed: `interface.motion system`
+    /// follows it live.
+    fn on_reduced_motion(&mut self, reduced: bool) {
+        self.system_reduced_motion = reduced;
+        let before = self.settings.glass.motion;
+        self.settings.glass.system_motion(reduced);
+        if self.settings.glass.motion != before {
+            tracing::info!(reduced, "interface motion follows the portal");
+            self.send_render_update(false);
         }
     }
 

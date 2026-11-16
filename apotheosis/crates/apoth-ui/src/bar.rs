@@ -8,7 +8,10 @@
 use crate::draw::{DrawList, IconId, Rim};
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
-use crate::state::{ControlState, UiState, WidgetId, glass, label_colour, surface};
+use crate::state::{
+    ControlState, UiState, WidgetId, accent_label, accent_surface, chip, glass, label_colour,
+    surface,
+};
 use crate::text::{Measure, TextOrigin, TextRun};
 use crate::tokens::{Palette, alpha, metrics, motion, radius, size, space};
 
@@ -322,7 +325,7 @@ fn bar_layout(area: Rect, spec: &BarSpec, measure: &dyn Measure) -> BarLayout {
         metrics::BAR_H,
     );
     let cells = button_cells(spec, measure, bar.right() - space::MD, bar);
-    let icon = bar.centred_y(bar.x + space::MD, metrics::TAB_CLOSE, metrics::TAB_CLOSE);
+    let icon = bar.centred_y(bar.x + space::MD, metrics::BAR_ICON, metrics::BAR_ICON);
     let text_x = icon.right() + space::SM;
     let text_max = (cells.first().map_or(bar.right(), |c| c.rect.x) - space::MD - text_x).max(0.0);
     let detail = spec.detail.as_ref().filter(|d| !d.text.is_empty());
@@ -376,7 +379,7 @@ fn sheet_layout(area: Rect, spec: &BarSpec, body: &TextRun, measure: &dyn Measur
         .as_ref()
         .map_or(0.0, |_| size::BODY_SMALL + space::XS);
     let h = space::LG
-        + metrics::TAB_CLOSE
+        + metrics::BAR_ICON
         + space::XS
         + sub_h
         + space::SM
@@ -391,8 +394,8 @@ fn sheet_layout(area: Rect, spec: &BarSpec, body: &TextRun, measure: &dyn Measur
     let icon = Rect::new(
         left,
         sheet.y + space::LG,
-        metrics::TAB_CLOSE,
-        metrics::TAB_CLOSE,
+        metrics::BAR_ICON,
+        metrics::BAR_ICON,
     );
     let text_x = icon.right() + space::SM;
     let text_max = (sheet.right() - space::LG - text_x).max(0.0);
@@ -489,19 +492,27 @@ pub fn draw(
     out: &mut DrawList,
 ) {
     let live = state.accepts_input(now_ms);
-    let (rim_c, icon, icon_fill, icon_c) = match spec.kind {
+    let (rim_c, icon, icon_fill, icon_c, icon_rim) = match spec.kind {
         BarKind::Consent => (
             pal.cell_rim,
             IconId::Shield,
-            pal.accent_fill,
+            pal.cell,
             pal.accent_text,
+            Some(pal.accent_border),
         ),
-        BarKind::Error => (pal.danger, IconId::Warning, pal.danger_fill, pal.danger),
+        BarKind::Error => (
+            pal.danger,
+            IconId::Warning,
+            pal.danger_fill,
+            pal.danger,
+            None,
+        ),
         BarKind::Notice => (
             pal.cell_rim,
             IconId::Warning,
-            pal.accent_fill,
+            pal.cell,
             pal.accent_text,
+            Some(pal.accent_border),
         ),
     };
     if let Some(s) = l.scrim {
@@ -524,7 +535,15 @@ pub fn draw(
             }),
         );
     }
-    out.rect(l.icon, radius::PILL, icon_fill, None);
+    out.rect(
+        l.icon,
+        radius::PILL,
+        icon_fill,
+        icon_rim.map(|colour| Rim {
+            width: metrics::RIM_W,
+            colour,
+        }),
+    );
     out.icon(icon, l.icon, icon_c);
 
     out.text(
@@ -566,8 +585,17 @@ pub fn draw(
         let mut st: ControlState = ui.control(cell.id, !live, b.primary);
         // The bar never takes focus by itself: keyboard rim only if focus was moved here.
         st.focus_kb &= live;
-        let (bf, br) = surface(pal, st);
-        out.rect(cell.rect, radius::PILL, bf, Some(br));
+        let (bf, br) = if b.primary {
+            accent_surface(pal, st)
+        } else {
+            surface(pal, st)
+        };
+        let ink = if b.primary {
+            accent_label(pal, st)
+        } else {
+            label_colour(pal, st)
+        };
+        chip(out, cell.rect, radius::PILL, st, (bf, br));
         out.rect(
             cell.keycap,
             radius::KEYCAP,
@@ -583,12 +611,12 @@ pub fn draw(
                 cell.keycap.x + space::XS,
                 cell.keycap.y + (cell.keycap.h - size::MICRO) / 2.0,
             ),
-            label_colour(pal, st),
+            ink,
         );
         out.text(
             TextRun::interface(b.label.clone(), size::BODY_SMALL).clipped(cell.label_w),
             cell.label_pos,
-            label_colour(pal, st),
+            ink,
         );
     }
 }

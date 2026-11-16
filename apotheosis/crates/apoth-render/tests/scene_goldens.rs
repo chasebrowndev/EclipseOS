@@ -306,6 +306,8 @@ fn decorations_scene_and_pixels() {
         end: 11,
         bg: Rgb(60, 60, 140),
         fg: Some(Rgb(255, 255, 255)),
+        round: false,
+        rim: None,
     }];
     let rows = build_all(&decoration_rows(), &hl, &mut synth);
     let mut text = String::new();
@@ -357,6 +359,7 @@ fn cursor_shapes_scene_and_pixels() {
             shape,
             visible: true,
             focused,
+            alpha: 255,
         };
         let mut cs = CursorScene::default();
         cursor::build(&st, &snap_row, &ctx, false, &mut synth, &mut cs);
