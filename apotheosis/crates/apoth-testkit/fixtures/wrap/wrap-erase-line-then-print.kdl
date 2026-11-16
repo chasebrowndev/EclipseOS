@@ -1,0 +1,11 @@
+fixture "wrap-erase-line-then-print" {
+  covers "T03-AUTOWRAP" "T03-EL"
+  review "printing after EL with pending wrap: whether erase clears the pending-wrap flag is not stated; if it does not, F wraps to row 2"
+  size rows=3 cols=5
+  feed #"ABCDE\e[2KF"#
+  grid {
+    row ""
+    row "F"
+  }
+  cursor row=1 col=1
+}

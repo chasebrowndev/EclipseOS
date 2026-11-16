@@ -1,0 +1,10 @@
+fixture "tabs-default-stops" {
+  desc "default stops every 8 columns; past the last stop HT goes to the last column"
+  covers "T03-TAB" "T03-HTS-TBC"
+  size rows=3 cols=20
+  feed #"\tA\tB\tC"#
+  grid {
+    row "        A       B  C"
+  }
+  cursor row=0 col=19
+}

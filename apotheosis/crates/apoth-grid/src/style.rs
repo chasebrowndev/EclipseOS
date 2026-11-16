@@ -171,6 +171,18 @@ impl Style {
         o
     }
 
+    /// The 16-byte page encoding (a mux snapshot carries the pen this way, T-21 §3).
+    #[must_use]
+    pub fn to_bytes(&self) -> [u8; 16] {
+        self.encode()
+    }
+
+    /// Inverse of [`Style::to_bytes`]; any bytes give some style (unknown kinds are default).
+    #[must_use]
+    pub fn from_bytes(b: &[u8; 16]) -> Style {
+        Style::decode(b)
+    }
+
     pub(crate) fn decode(b: &[u8]) -> Style {
         let c = |i: usize| Color::decode([b[i], b[i + 1], b[i + 2], b[i + 3]]);
         Style {

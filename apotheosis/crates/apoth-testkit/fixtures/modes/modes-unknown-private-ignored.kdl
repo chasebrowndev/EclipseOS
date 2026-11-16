@@ -1,0 +1,7 @@
+fixture "modes-unknown-private-ignored" {
+  covers "T03-DECRQM" "T03-MODES-TABLE"
+  size rows=3 cols=10
+  feed #"\e[?9999h"#
+  grid
+  mode "?9999" 0
+}

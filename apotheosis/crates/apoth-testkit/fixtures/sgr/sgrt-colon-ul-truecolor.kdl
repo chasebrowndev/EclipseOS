@@ -1,0 +1,7 @@
+fixture "sgrt-colon-ul-truecolor" {
+  desc "sgrt colon ul truecolor (migrated from the apoth-term corpus)"
+  covers "T03-SGR-AMBIG" "T03-SGR-COLOR"
+  size rows=1 cols=4
+  feed #"\e[58:2::9:8:7mA"#
+  cell row=0 col=0 ulc="#090807"
+}

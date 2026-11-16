@@ -1,0 +1,10 @@
+fixture "esc-ri-at-top-scrolls-down" {
+  desc "esc ri at top scrolls down (migrated from the apoth-term corpus)"
+  covers "T03-IND-NEL-RI"
+  size rows=3 cols=3
+  feed #"ab\eMc"#
+  grid {
+    row "  c"
+    row "ab"
+  }
+}

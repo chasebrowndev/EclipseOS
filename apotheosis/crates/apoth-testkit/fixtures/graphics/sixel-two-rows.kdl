@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "sixel-two-rows" {
+  desc "an image taller than a cell is two slices on consecutive rows"
+  covers "T03-GRAPHICS-SIXEL"
+  size rows=4 cols=6
+  feed #"\eP0;1;0q"1;1;8;18#1;2;100;0;0#1!8~-!8~-!8~\e\\"#
+  images {
+    row "sixel row=0 col=0 cols=1 rows=1 z=0"
+    row "sixel row=1 col=0 cols=1 rows=1 z=0"
+  }
+  cursor row=2 col=0
+}

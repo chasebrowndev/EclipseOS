@@ -1,0 +1,12 @@
+fixture "scr-ri-in-region-scrolls-down" {
+  desc "scr ri in region scrolls down (migrated from the apoth-term corpus)"
+  covers "T03-IND-NEL-RI"
+  size rows=4 cols=3
+  feed #"a\r\nb\r\nc\r\nd\e[2;3r\e[2;1H\eM"#
+  grid {
+    row "a"
+    row ""
+    row "b"
+    row "d"
+  }
+}

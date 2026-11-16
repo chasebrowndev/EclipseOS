@@ -1,0 +1,9 @@
+fixture "cur-cbt" {
+  desc "cur cbt (migrated from the apoth-term corpus)"
+  covers "T03-TAB"
+  size rows=1 cols=10
+  feed #"\e[1;10H\e[Zx"#
+  grid {
+    row "        x"
+  }
+}

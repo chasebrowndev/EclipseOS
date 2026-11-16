@@ -1,0 +1,7 @@
+fixture "alt-1049-enter-clears-alt" {
+  desc "alt 1049 enter clears alt (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=5
+  feed #"\e[?1049hxyz\e[?1049l\e[?1049h"#
+  grid
+}

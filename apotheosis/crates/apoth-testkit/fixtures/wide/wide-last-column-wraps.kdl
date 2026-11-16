@@ -1,0 +1,14 @@
+fixture "wide-last-column-wraps" {
+  requires "spacer-head-writer"
+  desc "a wide glyph that does not fit leaves a spacer head and wraps"
+  covers "T03-WIDE" "VTCORE-08"
+  size rows=3 cols=6
+  feed #"ABCDE日"#
+  grid {
+    row "ABCDE"
+    row "日"
+  }
+  cursor row=1 col=2
+  cell row=0 col=5 wide="head"
+  cell row=1 col=0 ch="日" wide="wide"
+}

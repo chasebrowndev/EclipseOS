@@ -1,0 +1,12 @@
+fixture "c0-vt-ff-as-lf" {
+  desc "VT and FF act as LF"
+  covers "T03-C0-EXEC"
+  size rows=4 cols=10
+  feed #"A\vB\fC"#
+  grid {
+    row "A"
+    row " B"
+    row "  C"
+  }
+  cursor row=2 col=3
+}

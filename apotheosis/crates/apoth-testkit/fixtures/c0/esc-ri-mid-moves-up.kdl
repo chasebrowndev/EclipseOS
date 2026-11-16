@@ -1,0 +1,10 @@
+fixture "esc-ri-mid-moves-up" {
+  desc "esc ri mid moves up (migrated from the apoth-term corpus)"
+  covers "T03-IND-NEL-RI"
+  size rows=3 cols=3
+  feed #"a\nb\eMc"#
+  grid {
+    row "a c"
+    row " b"
+  }
+}

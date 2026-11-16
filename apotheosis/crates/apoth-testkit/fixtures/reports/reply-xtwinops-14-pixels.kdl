@@ -1,0 +1,7 @@
+fixture "reply-xtwinops-14-pixels" {
+  desc "reply xtwinops 14 pixels (migrated from the apoth-term corpus)"
+  covers "T03-XTWINOPS" "T03-PIXEL-REPORTS"
+  size rows=5 cols=10
+  feed #"\e[14t"#
+  replies #"\e[4;80;80t"#
+}

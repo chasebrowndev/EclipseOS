@@ -1,0 +1,10 @@
+fixture "osc8-basic" {
+  covers "T03-OSC8" "VTCORE-29"
+  size rows=3 cols=20
+  feed #"\e]8;;https://a.example/\aX\e]8;;\aY"#
+  grid {
+    row "XY"
+  }
+  cell row=0 col=0 ch="X" link="https://a.example/"
+  cell row=0 col=1 ch="Y" link=#null
+}

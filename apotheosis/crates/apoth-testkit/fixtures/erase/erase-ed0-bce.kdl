@@ -1,0 +1,14 @@
+fixture "erase-ed0-bce" {
+  desc "erased cells take the current background"
+  covers "T03-ED" "VTCORE-03"
+  review "background-colour erase (BCE) is implied by the BgOnly cell (T-02 1.2) but T-03 never states it"
+  size rows=4 cols=6
+  feed #"AAAAAA\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\e[44m\e[2;1H\e[J"#
+  grid {
+    row "AAAAAA"
+  }
+  cursor row=1 col=0
+  cell row=0 col=0 ch="A" bg="default"
+  cell row=1 col=0 ch="" bg="p4"
+  cell row=3 col=5 ch="" bg="p4"
+}

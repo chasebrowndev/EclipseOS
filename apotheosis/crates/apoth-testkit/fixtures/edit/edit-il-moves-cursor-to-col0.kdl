@@ -1,0 +1,7 @@
+fixture "edit-il-moves-cursor-to-col0" {
+  desc "edit il moves cursor to col0 (migrated from the apoth-term corpus)"
+  covers "T03-IL-DL"
+  size rows=3 cols=5
+  feed #"a\r\nbcd\e[2;3H\e[L"#
+  cursor row=1 col=0
+}

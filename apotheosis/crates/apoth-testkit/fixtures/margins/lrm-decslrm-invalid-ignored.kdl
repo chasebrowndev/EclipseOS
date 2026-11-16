@@ -1,0 +1,10 @@
+fixture "lrm-decslrm-invalid-ignored" {
+  desc "left >= right is ignored"
+  covers "T03-DECLRMM" "VTCORE-31"
+  size rows=2 cols=6
+  feed #"\e[?69h\e[4;4s\e[1;1HABCDEF"#
+  grid {
+    row "ABCDEF"
+  }
+  cursor row=0 col=5
+}

@@ -1,0 +1,14 @@
+fixture "mouse-1002-set-reset" {
+  desc "mode 1002 (button-event tracking) defaults reset, sets and resets"
+  covers "T03-MOUSE"
+  size rows=2 cols=4
+  checkpoint "default" {
+    mode "?1002" 2
+  }
+  feed #"\e[?1002h"#
+  checkpoint "set" {
+    mode "?1002" 1
+  }
+  feed #"\e[?1002l"#
+  mode "?1002" 2
+}

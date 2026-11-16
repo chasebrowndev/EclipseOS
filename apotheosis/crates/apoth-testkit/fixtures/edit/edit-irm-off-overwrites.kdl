@@ -1,0 +1,9 @@
+fixture "edit-irm-off-overwrites" {
+  desc "edit irm off overwrites (migrated from the apoth-term corpus)"
+  covers "T03-IRM"
+  size rows=1 cols=8
+  feed #"abc\e[1;1H\e[4h\e[4lX"#
+  grid {
+    row "Xbc"
+  }
+}

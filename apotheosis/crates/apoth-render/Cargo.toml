@@ -1,6 +1,6 @@
 [package]
 name = "apoth-render"
-description = "wgpu renderer: atlases, cell/image/glass pipelines, frame scheduler, offscreen goldens."
+description = "Renderer: scene, damage, atlas and surface policy, the wgpu executor, presenters, frame scheduler, CPU reference and GPU goldens."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,3 +10,14 @@ publish = false
 
 [lints]
 workspace = true
+
+[dependencies]
+apoth-grid.workspace = true
+apoth-font.workspace = true
+# The only crate that compiles wgpu (T-07). Exact pin; Vulkan + WGSL only, never gles, webgl
+# or angle (T-24 §3, lang-rule.sh §3.5). Workspace entry requested.
+wgpu = { version = "=30.0.2", default-features = false, features = ["std", "vulkan", "wgsl"] }
+
+[dev-dependencies]
+# Offscreen golden PNGs (pure Rust; MIT OR Apache-2.0). Workspace entry requested.
+png = "0.18.1"

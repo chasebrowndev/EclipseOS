@@ -1,0 +1,11 @@
+fixture "edit-il-bottom-lost" {
+  desc "edit il bottom lost (migrated from the apoth-term corpus)"
+  covers "T03-IL-DL"
+  size rows=3 cols=3
+  feed #"a\r\nb\r\nc\e[1;1H\e[L"#
+  grid {
+    row ""
+    row "a"
+    row "b"
+  }
+}

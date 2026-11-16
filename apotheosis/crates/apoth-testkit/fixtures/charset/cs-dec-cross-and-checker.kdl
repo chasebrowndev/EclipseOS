@@ -1,0 +1,9 @@
+fixture "cs-dec-cross-and-checker" {
+  desc "cs dec cross and checker (migrated from the apoth-term corpus)"
+  covers "T03-CHARSET"
+  size rows=1 cols=4
+  feed #"\e(0na`"#
+  grid {
+    row "┼▒◆"
+  }
+}

@@ -1,0 +1,9 @@
+fixture "never-pm-sos-print" {
+  desc "never pm sos print (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=1 cols=4
+  feed #"\e^abc\e\\\eXdef\e\\x"#
+  grid {
+    row "x"
+  }
+}

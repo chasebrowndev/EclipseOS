@@ -1,0 +1,17 @@
+fixture "osc-title-stack-lifo" {
+  covers "T03-TITLE-STACK" "VTCORE-22"
+  review "the event slot is latest-wins (T-00 section 4.3), so each pop is checked in its own checkpoint"
+  size rows=3 cols=20
+  feed #"\e]2;a\a\e[22;2t\e]2;b\a\e[22;2t\e]2;c\a"#
+  checkpoint "c" {
+    events "title:c"
+  }
+  feed #"\e[23;2t"#
+  checkpoint "b" {
+    events "title:b"
+  }
+  feed #"\e[23;2t"#
+  checkpoint "a" {
+    events "title:a"
+  }
+}

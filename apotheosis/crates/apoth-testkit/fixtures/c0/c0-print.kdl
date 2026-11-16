@@ -1,0 +1,10 @@
+fixture "c0-print" {
+  desc "c0 print (migrated from the apoth-term corpus)"
+  covers "T03-C0-EXEC"
+  size rows=1 cols=5
+  feed #"abc"#
+  grid {
+    row "abc"
+  }
+  cursor row=0 col=3
+}

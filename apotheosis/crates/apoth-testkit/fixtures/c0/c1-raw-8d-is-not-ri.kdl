@@ -1,0 +1,10 @@
+fixture "c1-raw-8d-is-not-ri" {
+  desc "raw 0x8D is never RI"
+  covers "T03-C1-IGNORED" "VTCORE-13"
+  size rows=3 cols=10
+  feed #"AB\r\x8dC"#
+  grid {
+    row "�C"
+  }
+  cursor row=0 col=2
+}

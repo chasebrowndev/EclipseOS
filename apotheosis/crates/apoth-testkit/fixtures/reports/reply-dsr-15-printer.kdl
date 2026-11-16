@@ -1,0 +1,7 @@
+fixture "reply-dsr-15-printer" {
+  desc "reply dsr 15 printer (migrated from the apoth-term corpus)"
+  covers "T03-DSR"
+  size rows=2 cols=4
+  feed #"\e[?15n"#
+  replies #"\e[?13n"#
+}

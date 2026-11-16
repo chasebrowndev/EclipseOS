@@ -1,0 +1,8 @@
+fixture "osc8-erase-clears-link" {
+  covers "T03-OSC8" "VTCORE-29"
+  size rows=3 cols=20
+  feed #"\e]8;;https://a\aXY\e]8;;\a\e[1;1H\e[K"#
+  grid
+  cell row=0 col=0 link=#null
+  cell row=0 col=1 link=#null
+}

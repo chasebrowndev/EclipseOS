@@ -1,0 +1,80 @@
+row 0
+  bg 0..10=000000ff
+  glyph cell=0,0 off=1,2 atlas=0,0 6x10 page=0 flags=0 color=00cd00ff
+  glyph cell=1,0 off=1,2 atlas=7,0 6x10 page=0 flags=0 color=00cd00ff
+  glyph cell=2,0 off=1,2 atlas=0,0 6x10 page=0 flags=0 color=00cd00ff
+  glyph cell=3,0 off=1,2 atlas=7,0 6x10 page=0 flags=0 color=00cd00ff
+  glyph cell=4,0 off=1,2 atlas=0,0 6x10 page=0 flags=0 color=00cd00ff
+  glyph cell=5,0 off=1,2 atlas=7,0 6x10 page=0 flags=0 color=00cd00ff
+  glyph cell=6,0 off=1,2 atlas=0,0 6x10 page=0 flags=0 color=00cd00ff
+  glyph cell=7,0 off=1,2 atlas=7,0 6x10 page=0 flags=0 color=00cd00ff
+  glyph cell=8,0 off=1,2 atlas=0,0 6x10 page=0 flags=0 color=00cd00ff
+  glyph cell=9,0 off=1,2 atlas=7,0 6x10 page=0 flags=0 color=00cd00ff
+  rect 0,13 8x1 color=00cd00ff
+  rect 8,13 8x1 color=00cd00ff
+  rect 16,13 8x1 color=00cd00ff
+  rect 16,15 8x1 color=00cd00ff
+  rect 24,13 8x1 color=00cd00ff
+  rect 24,15 8x1 color=00cd00ff
+  rect 32,13 1x1 color=00cd00ff
+  rect 33,14 2x1 color=00cd00ff
+  rect 35,15 3x1 color=00cd00ff
+  rect 38,14 2x1 color=00cd00ff
+  rect 40,13 1x1 color=00cd00ff
+  rect 41,14 2x1 color=00cd00ff
+  rect 43,15 3x1 color=00cd00ff
+  rect 46,14 2x1 color=00cd00ff
+  rect 48,13 1x1 color=00cd00ff
+  rect 50,13 1x1 color=00cd00ff
+  rect 52,13 1x1 color=00cd00ff
+  rect 54,13 1x1 color=00cd00ff
+  rect 56,13 1x1 color=00cd00ff
+  rect 58,13 1x1 color=00cd00ff
+  rect 60,13 1x1 color=00cd00ff
+  rect 62,13 1x1 color=00cd00ff
+  rect 64,13 2x1 color=00cd00ff
+  rect 68,13 2x1 color=00cd00ff
+  rect 72,13 2x1 color=00cd00ff
+  rect 76,13 2x1 color=00cd00ff
+row 1
+  bg 0..6=000000ff 6..8=0000eeff 8..12=000000ff
+  glyph cell=0,1 off=1,2 atlas=14,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=1,1 off=1,2 atlas=21,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=2,1 off=1,2 atlas=28,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=3,1 off=1,2 atlas=35,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=4,1 off=1,2 atlas=42,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=5,1 off=1,2 atlas=49,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=6,1 off=1,2 atlas=56,0 6x10 page=0 flags=0 color=000000ff
+  glyph cell=7,1 off=1,2 atlas=63,0 6x10 page=0 flags=0 color=000000ff
+  glyph cell=8,1 off=1,2 atlas=70,0 6x10 page=0 flags=0 color=737373ff
+  glyph cell=9,1 off=1,2 atlas=77,0 6x10 page=0 flags=0 color=737373ff
+  glyph cell=10,1 off=1,2 atlas=84,0 6x10 page=0 flags=0 color=ff0000ff
+  glyph cell=11,1 off=1,2 atlas=91,0 6x10 page=0 flags=0 color=ff0000ff
+  rect 0,8 8x1 color=e5e5e5ff
+  rect 8,8 8x1 color=e5e5e5ff
+  rect 16,0 8x1 color=e5e5e5ff
+  rect 24,0 8x1 color=e5e5e5ff
+  rect 32,13 1x1 color=ff5050ff
+  rect 33,14 2x1 color=ff5050ff
+  rect 35,15 3x1 color=ff5050ff
+  rect 38,14 2x1 color=ff5050ff
+  rect 40,13 1x1 color=ff5050ff
+  rect 41,14 2x1 color=ff5050ff
+  rect 43,15 3x1 color=ff5050ff
+  rect 46,14 2x1 color=ff5050ff
+row 2
+  bg 0..7=000000ff 7..11=3c3c8cff 11..16=000000ff
+  glyph cell=0,2 off=1,2 atlas=14,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=1,2 off=1,2 atlas=98,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=2,2 off=1,2 atlas=105,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=3,2 off=1,2 atlas=98,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=4,2 off=1,2 atlas=42,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=5,2 off=1,2 atlas=21,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=7,2 off=1,2 atlas=21,0 6x10 page=0 flags=0 color=ffffffff
+  glyph cell=8,2 off=1,2 atlas=112,0 6x10 page=0 flags=0 color=ffffffff
+  glyph cell=9,2 off=1,2 atlas=56,0 6x10 page=0 flags=0 color=ffffffff
+  glyph cell=10,2 off=1,2 atlas=14,0 6x10 page=0 flags=0 color=ffffffff
+  glyph cell=12,2 off=1,2 atlas=21,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=13,2 off=1,2 atlas=98,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=14,2 off=1,2 atlas=119,0 6x10 page=0 flags=0 color=e5e5e5ff
+  glyph cell=15,2 off=1,2 atlas=21,0 6x10 page=0 flags=0 color=e5e5e5ff

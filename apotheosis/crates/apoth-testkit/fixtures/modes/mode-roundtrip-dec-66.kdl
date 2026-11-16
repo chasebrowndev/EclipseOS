@@ -1,0 +1,11 @@
+fixture "mode-roundtrip-dec-66" {
+  desc "mode roundtrip dec 66 (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?66h"#
+  checkpoint "c1" {
+    mode "?66" 1
+  }
+  feed #"\e[?66l"#
+  mode "?66" 2
+}

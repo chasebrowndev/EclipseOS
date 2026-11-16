@@ -597,6 +597,7 @@ uniform float opaque;     // 1 when the window inside the bezel is opaque
 uniform float bar;        // titlebar depth from the region's top, physical px; 0 none
 uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
 uniform float shade;      // 0..1 mix toward ink (light only: a pane's depth step); 0 elsewhere
+uniform float smoke;      // 0..1 weight of the smoke and adaptive tint; 1 normal, less on stacked glass
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
 const float SATURATE = 1.7;
@@ -690,8 +691,8 @@ void main() {
     vec3 c = color.rgb;
     c = max(mix(vec3(dot(c, LUMA)), c, mix(SATURATE, SATURATE_L, scheme_light)), 0.0);
     c = c / (1.0 + mix(COMPRESS, COMPRESS_L, scheme_light) * dot(c, LUMA));
-    c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light));
-    c = adapt_tint(c);
+    c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light) * smoke);
+    c = mix(c, adapt_tint(c), smoke);
     c = mix(c, vec3(1.0), lift);
     c = mix(c, LIFT_L, shade);
 
@@ -778,7 +779,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 17] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 18] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -793,6 +794,7 @@ const GLASS_UNIFORMS: [(&str, UniformType); 17] = [
     ("bar", UniformType::_1f),
     ("lift", UniformType::_1f),
     ("shade", UniformType::_1f),
+    ("smoke", UniformType::_1f),
     ("scheme_light", UniformType::_1f),
     ("adapt", UniformType::_1f),
     ("adapt_layers", UniformType::_1f),
@@ -873,8 +875,8 @@ pub fn glass_uniforms(
     adapt: f32,
 ) -> Vec<Uniform<'static>> {
     glass_uniforms_lifted(
-        rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, 0.0, light, adapt,
-        1.0,
+        rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, 0.0, 1.0, light,
+        adapt, 1.0,
     )
 }
 
@@ -882,6 +884,7 @@ pub fn glass_uniforms(
 /// `shade` (a mix toward ink, light only): a glass pane's hover/press/focus
 /// fill (`eclipse_glass_v1`). `layers` is how many glass layers stack on the
 /// sampled backdrop for adaptive glass: 1 a window, 2 a pane on a window.
+/// `smoke` scales the smoke and adaptive tint (1.0 normal; stacked glass less).
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms_lifted(
     rect: Rectangle<i32, Physical>,
@@ -895,6 +898,7 @@ pub fn glass_uniforms_lifted(
     bezel: Option<(i32, bool, [f32; 4], i32)>,
     lift: f32,
     shade: f32,
+    smoke: f32,
     light: f32,
     adapt: f32,
     layers: f32,
@@ -935,6 +939,7 @@ pub fn glass_uniforms_lifted(
         Uniform::new("bar", bar),
         Uniform::new("lift", lift),
         Uniform::new("shade", shade),
+        Uniform::new("smoke", smoke),
         Uniform::new("scheme_light", light),
         Uniform::new("adapt", adapt),
         Uniform::new("adapt_layers", layers),

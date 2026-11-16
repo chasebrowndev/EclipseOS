@@ -1,0 +1,11 @@
+fixture "sgr-unknown-underline-style" {
+  covers "T03-SGR-UNDERLINE" "VTCORE-16"
+  review "4:9 (unknown style): assumed consumed with no change; T-03 says only 'unknown sub-parameter forms are consumed'"
+  size rows=2 cols=20
+  feed #"\e[4:9mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" ul="none"
+}

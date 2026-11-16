@@ -1,0 +1,10 @@
+fixture "reports-dsr-6-pending-wrap" {
+  desc "CPR in the pending-wrap state reports the last column"
+  covers "T03-DSR" "T03-AUTOWRAP"
+  size rows=5 cols=5
+  feed #"ABCDE\e[6n"#
+  grid {
+    row "ABCDE"
+  }
+  replies #"\e[1;5R"#
+}

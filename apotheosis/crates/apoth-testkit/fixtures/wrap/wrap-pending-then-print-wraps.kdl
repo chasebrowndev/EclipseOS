@@ -1,0 +1,11 @@
+fixture "wrap-pending-then-print-wraps" {
+  desc "the sixth character wraps to the next row"
+  covers "T03-AUTOWRAP" "T03-DECAWM"
+  size rows=3 cols=5
+  feed #"ABCDEF"#
+  grid {
+    row "ABCDE"
+    row "F"
+  }
+  cursor row=1 col=1
+}

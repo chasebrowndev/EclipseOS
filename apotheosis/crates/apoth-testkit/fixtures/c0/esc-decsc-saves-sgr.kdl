@@ -1,0 +1,10 @@
+fixture "esc-decsc-saves-sgr" {
+  desc "esc decsc saves sgr (migrated from the apoth-term corpus)"
+  covers "T03-DECSC"
+  size rows=1 cols=3
+  feed #"\e[1m\e7\e[0m\e8A"#
+  grid {
+    row "A"
+  }
+  cell row=0 col=0 attrs="bold"
+}

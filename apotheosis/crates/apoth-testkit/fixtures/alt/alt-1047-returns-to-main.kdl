@@ -1,0 +1,10 @@
+fixture "alt-1047-returns-to-main" {
+  desc "alt 1047 returns to main (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=5
+  feed #"ab\e[?1047hxy\e[?1047l"#
+  grid {
+    row "ab"
+  }
+  alt #false
+}

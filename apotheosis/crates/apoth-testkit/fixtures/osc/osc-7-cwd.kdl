@@ -1,0 +1,7 @@
+fixture "osc-7-cwd" {
+  desc "osc 7 cwd (migrated from the apoth-term corpus)"
+  covers "T03-OSC7"
+  size rows=1 cols=8
+  feed #"\e]7;file://host/tmp/x\a"#
+  events "cwd:file://host/tmp/x"
+}

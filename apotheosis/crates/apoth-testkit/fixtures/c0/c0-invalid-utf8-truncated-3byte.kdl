@@ -1,0 +1,10 @@
+fixture "c0-invalid-utf8-truncated-3byte" {
+  desc "maximal-subpart rule: a truncated 3-byte sequence is one U+FFFD (T-01 section 2.2)"
+  covers "T03-UTF8-INVALID"
+  size rows=3 cols=10
+  feed #"A\xe2\x82B"#
+  grid {
+    row "A�B"
+  }
+  cursor row=0 col=3
+}

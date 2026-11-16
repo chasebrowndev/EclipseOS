@@ -1,0 +1,7 @@
+fixture "reports-decrqss-decslrm" {
+  covers "T03-DECRQSS" "T03-DECLRMM"
+  size rows=5 cols=8
+  feed #"\e[?69h\e[2;5s\eP$qs\e\\"#
+  grid
+  replies #"\eP1$r2;5s\e\\"#
+}

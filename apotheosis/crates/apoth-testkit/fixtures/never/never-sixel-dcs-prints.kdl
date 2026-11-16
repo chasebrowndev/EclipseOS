@@ -1,0 +1,9 @@
+fixture "never-sixel-dcs-prints" {
+  desc "never sixel dcs prints (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=1 cols=4
+  feed #"\eP0;0;0q#0;2;0;0;0~-\e\\x"#
+  grid {
+    row "x"
+  }
+}

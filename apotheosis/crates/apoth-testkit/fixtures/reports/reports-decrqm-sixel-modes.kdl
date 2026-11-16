@@ -1,0 +1,8 @@
+fixture "reports-decrqm-sixel-modes" {
+  desc "sixel modes are in the table with their defaults (T-03 section 2)"
+  covers "T03-DECRQM" "T03-MODES-TABLE" "VTCORE-19"
+  size rows=5 cols=10
+  feed #"\e[?80$p\e[?1070$p\e[?8452$p"#
+  grid
+  replies #"\e[?80;2$y\e[?1070;1$y\e[?8452;2$y"#
+}

@@ -1,0 +1,12 @@
+fixture "edit-dch-default" {
+  covers "T03-ICH-DCH"
+  size rows=4 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\r\nSTUVWX\e[1;3H\e[P"#
+  grid {
+    row "ABDEF"
+    row "GHIJKL"
+    row "MNOPQR"
+    row "STUVWX"
+  }
+  cursor row=0 col=2
+}

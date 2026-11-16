@@ -1,0 +1,10 @@
+fixture "osc8-ris-clears-hyperlink-state" {
+  desc "RIS resets hyperlink state"
+  covers "T03-OSC8" "VTCORE-29" "T03-RIS"
+  size rows=3 cols=20
+  feed #"\e]8;;https://a\a\ecX"#
+  grid {
+    row "X"
+  }
+  cell row=0 col=0 ch="X" link=#null
+}

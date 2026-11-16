@@ -1,0 +1,10 @@
+fixture "osc-aborted-by-can" {
+  desc "CAN aborts an OSC: no title is set"
+  covers "T03-OSC-UNKNOWN" "T03-OSC-CAPS" "T03-C0-ABORT"
+  size rows=3 cols=20
+  feed #"\e]2;abc\x18X"#
+  grid {
+    row "X"
+  }
+  events
+}

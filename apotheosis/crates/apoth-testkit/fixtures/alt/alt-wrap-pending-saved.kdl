@@ -1,0 +1,10 @@
+fixture "alt-wrap-pending-saved" {
+  desc "alt wrap pending saved (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=3
+  feed #"abc\e[?1049h\e[?1049lX"#
+  grid {
+    row "abc"
+    row "X"
+  }
+}

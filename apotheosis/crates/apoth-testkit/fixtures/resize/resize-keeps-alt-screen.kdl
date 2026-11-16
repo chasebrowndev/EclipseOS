@@ -1,0 +1,12 @@
+fixture "resize-keeps-alt-screen" {
+  desc "resize keeps alt screen (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=2 cols=4
+  feed #"\e[?1049h"#
+  resize rows=3 cols=5
+  checkpoint "c1" {
+    alt #true
+  }
+  feed #"\e[18t"#
+  replies #"\e[8;3;5t"#
+}

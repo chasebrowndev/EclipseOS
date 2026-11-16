@@ -1,0 +1,7 @@
+fixture "kitty-query-default" {
+  desc "kitty query default (migrated from the apoth-term corpus)"
+  covers "T03-KITTY-KBD-STACK"
+  size rows=2 cols=4
+  feed #"\e[?u"#
+  replies #"\e[?0u"#
+}

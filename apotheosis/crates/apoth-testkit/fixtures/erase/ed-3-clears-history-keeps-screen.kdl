@@ -1,0 +1,13 @@
+fixture "ed-3-clears-history-keeps-screen" {
+  desc "ed 3 clears history keeps screen (migrated from the apoth-term corpus)"
+  covers "T03-ED3-HISTORY"
+  size rows=2 cols=3
+  feed #"a\r\nb\r\nc\r\nd"#
+  checkpoint "c1" {
+  }
+  feed #"\e[3J"#
+  grid {
+    row "c"
+    row "d"
+  }
+}

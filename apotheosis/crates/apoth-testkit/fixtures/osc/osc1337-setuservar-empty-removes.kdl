@@ -1,0 +1,7 @@
+fixture "osc1337-setuservar-empty-removes" {
+  desc "an empty value removes the variable; removing an unknown one raises nothing"
+  covers "T03-OSC1337-USERVAR" "AUTOMATION-17"
+  size rows=1 cols=8
+  feed #"\e]1337;SetUserVar=k=eA==\a\e]1337;SetUserVar=k=\a\e]1337;SetUserVar=gone\a"#
+  events "var:k=x" "var:k"
+}

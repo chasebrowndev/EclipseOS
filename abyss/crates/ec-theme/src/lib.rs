@@ -14,6 +14,11 @@
 //! history); they are not the CSS figures in STYLE.md.
 
 pub mod bar_mark;
+mod terminal;
+
+pub use terminal::{
+    terminal_scheme, TermScheme, MIN_ANSI_BRIGHT_CONTRAST, MIN_ANSI_CONTRAST, MIN_ANSI_FLOOR,
+};
 
 use std::fmt;
 
@@ -701,7 +706,8 @@ pub const MIN_TEXT_CONTRAST: f32 = 4.5;
 pub const MIN_SECONDARY_CONTRAST: f32 = 3.0;
 
 /// Accept a seed set: every value finite and in range, and the derived text
-/// (4.5:1), accent text (4.5:1) and secondary text (3:1) readable on the base.
+/// (4.5:1), accent text (4.5:1) and secondary text (3:1) readable on the base, and the
+/// [`terminal_scheme`] readable on its background.
 pub fn validate(seeds: &Seeds) -> Result<(), ThemeError> {
     let named: [(&'static str, Rgba); 4] = [
         ("base", seeds.base),
@@ -742,6 +748,10 @@ pub fn validate(seeds: &Seeds) -> Result<(), ThemeError> {
         if ratio < min {
             return Err(ThemeError::LowContrast { what, ratio, min });
         }
+    }
+    // The terminal scheme (ADR 0084 amendment, X5) must read too.
+    if let Some((what, ratio, min)) = terminal::check(&terminal_scheme(seeds)) {
+        return Err(ThemeError::LowContrast { what, ratio, min });
     }
     Ok(())
 }

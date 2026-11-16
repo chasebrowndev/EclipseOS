@@ -1,0 +1,7 @@
+fixture "modes-decscusr-default-param" {
+  desc "CSI SP q with no parameter is 0"
+  covers "T03-DECSCUSR"
+  size rows=3 cols=10
+  feed #"\e[5 q\e[ q"#
+  cursor shape=1
+}

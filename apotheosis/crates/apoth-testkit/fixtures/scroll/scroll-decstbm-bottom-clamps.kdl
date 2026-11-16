@@ -1,0 +1,14 @@
+fixture "scroll-decstbm-bottom-clamps" {
+  desc "a bottom beyond the screen clamps to the last row"
+  covers "T03-DECSTBM"
+  size rows=4 cols=4
+  feed #"\e[2;99r\e[4;1HX\nY"#
+  grid {
+    row ""
+    row ""
+    row "X"
+    row " Y"
+  }
+  cursor row=3 col=2
+  scrollback
+}

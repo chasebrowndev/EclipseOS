@@ -1,0 +1,7 @@
+fixture "osc-52-invalid-base64-dropped" {
+  desc "osc 52 invalid base64 dropped (migrated from the apoth-term corpus)"
+  covers "T03-OSC52"
+  size rows=1 cols=8
+  feed #"\e]52;c;!!!\a"#
+  events
+}

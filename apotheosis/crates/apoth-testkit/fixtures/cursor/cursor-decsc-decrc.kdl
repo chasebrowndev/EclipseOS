@@ -1,0 +1,10 @@
+fixture "cursor-decsc-decrc" {
+  covers "T03-DECSC" "VTCORE-14"
+  size rows=5 cols=10
+  feed #"\e[2;3H\e7\e[5;5H\e8*"#
+  grid {
+    row ""
+    row "  *"
+  }
+  cursor row=1 col=3
+}

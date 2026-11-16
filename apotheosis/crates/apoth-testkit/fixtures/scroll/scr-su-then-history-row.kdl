@@ -1,0 +1,6 @@
+fixture "scr-su-then-history-row" {
+  desc "scr su then history row (migrated from the apoth-term corpus)"
+  covers "T03-SU-SD"
+  size rows=2 cols=3
+  feed #"a\r\nb\e[S"#
+}

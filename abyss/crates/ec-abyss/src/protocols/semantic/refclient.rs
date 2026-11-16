@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The reference client for `eclipse_semantic_v1` (COMP-09 §6, COMP-16 M22):
 //! a real `wayland-client` on the in-process harness. It maps an xdg
-//! toplevel, attaches a semantic surface and forwards a
-//! [`ec_cataclysm_pub::Batch`] to the wire verbatim, which is exactly what
-//! the foot fork does over the C ABI (ADR 0034): the publisher decides the
-//! requests, the client only sends them.
+//! toplevel, attaches a semantic surface and forwards an
+//! [`ec_term_pub::Batch`] to the wire verbatim, which is exactly what
+//! Apotheosis does (ADR 0114): the publisher decides the requests, the
+//! client only sends them.
 //!
 //! Test-only. A client for a toolkit bridge lives with its toolkit (P-03).
 
 use std::os::fd::{AsFd, FromRawFd};
 use std::os::unix::net::UnixStream;
 
-use ec_cataclysm_pub::semantic::OpKind;
-use ec_cataclysm_pub::Batch;
 use ec_protocols::semantic::client::{
     eclipse_semantic_manager_v1::{self, EclipseSemanticManagerV1},
     eclipse_semantic_surface_v1::{self, EclipseSemanticSurfaceV1},
 };
+use ec_term_pub::semantic::OpKind;
+use ec_term_pub::Batch;
 use wayland_client::{
     delegate_noop,
     protocol::{
@@ -300,9 +300,7 @@ pub fn forward(sem: &EclipseSemanticSurfaceV1, batch: &Batch<'_>) {
             ),
             OpKind::SetExt => sem.set_ext(
                 op.node,
-                op.key
-                    .map(|k| k.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                op.key.unwrap_or_default().to_owned(),
                 batch.str_of(op).unwrap_or("").to_owned(),
             ),
             OpKind::Commit => sem.commit(),

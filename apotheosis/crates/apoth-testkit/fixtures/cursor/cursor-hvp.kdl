@@ -1,0 +1,10 @@
+fixture "cursor-hvp" {
+  covers "T03-CUP"
+  size rows=5 cols=10
+  feed #"\e[2;3f*"#
+  grid {
+    row ""
+    row "  *"
+  }
+  cursor row=1 col=3
+}

@@ -1,0 +1,7 @@
+fixture "osc-633-command-end-exit" {
+  desc "osc 633 (VS Code shell integration) command end routes to the same mark as 133"
+  covers "T03-OSC133"
+  size rows=3 cols=8
+  feed #"\e]633;D;3\a"#
+  events "mark:D;3"
+}

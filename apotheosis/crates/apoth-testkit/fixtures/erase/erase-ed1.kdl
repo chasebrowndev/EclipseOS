@@ -1,0 +1,13 @@
+fixture "erase-ed1" {
+  desc "ED 1 erases from the start to the cursor, inclusive"
+  covers "T03-ED"
+  size rows=4 cols=6
+  feed #"AAAAAA\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\e[3;3H\e[1J"#
+  grid {
+    row ""
+    row ""
+    row "   CCC"
+    row "DDDDDD"
+  }
+  cursor row=2 col=2
+}

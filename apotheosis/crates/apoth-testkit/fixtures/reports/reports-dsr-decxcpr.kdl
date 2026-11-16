@@ -1,0 +1,8 @@
+fixture "reports-dsr-decxcpr" {
+  covers "T03-DECXCPR" "VTCORE-24"
+  review "DECXCPR page number (1) is the xterm form; T-03 names DECXCPR without its bytes"
+  size rows=5 cols=10
+  feed #"\e[2;3H\e[?6n"#
+  grid
+  replies #"\e[?2;3;1R"#
+}

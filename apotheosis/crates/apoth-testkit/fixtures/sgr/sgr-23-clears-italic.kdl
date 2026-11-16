@@ -1,0 +1,7 @@
+fixture "sgr-23-clears-italic" {
+  desc "sgr 23 clears italic (migrated from the apoth-term corpus)"
+  covers "T03-SGR-BASIC"
+  size rows=1 cols=4
+  feed #"\e[3m\e[23mA"#
+  cell row=0 col=0 attrs=""
+}

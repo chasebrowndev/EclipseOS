@@ -1,0 +1,13 @@
+fixture "resize-grow-cols" {
+  desc "resize grow cols (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=2 cols=3
+  feed #"ab"#
+  resize rows=2 cols=6
+  feed #"\e[18t"#
+  grid {
+    row "ab"
+  }
+  cursor row=0 col=2
+  replies #"\e[8;2;6t"#
+}

@@ -1,0 +1,8 @@
+fixture "w-combining-after-wide" {
+  desc "w combining after wide (migrated from the apoth-term corpus)"
+  covers "T03-COMBINING"
+  size rows=1 cols=4
+  feed #"世́"#
+  cursor row=0 col=2
+  cell row=0 col=0 wide="wide"
+}

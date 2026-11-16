@@ -1,5 +1,5 @@
 # 0115 — The credential signal is ECHO off and ICANON on
-Status: proposed
+Status: accepted (owner, 2026-11-15)
 Date: 2026-11-12
 Deciders: chase (owner), Claude (advisory)
 

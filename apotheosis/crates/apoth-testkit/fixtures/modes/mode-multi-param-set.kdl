@@ -1,0 +1,9 @@
+fixture "mode-multi-param-set" {
+  desc "mode multi param set (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?7;25;2004l"#
+  mode "?7" 2
+  mode "?25" 2
+  mode "?2004" 2
+}

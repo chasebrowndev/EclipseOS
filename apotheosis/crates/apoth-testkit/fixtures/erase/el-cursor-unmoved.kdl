@@ -1,0 +1,7 @@
+fixture "el-cursor-unmoved" {
+  desc "el cursor unmoved (migrated from the apoth-term corpus)"
+  covers "T03-EL"
+  size rows=1 cols=8
+  feed #"abcdef\e[1;4H\e[K"#
+  cursor row=0 col=3
+}

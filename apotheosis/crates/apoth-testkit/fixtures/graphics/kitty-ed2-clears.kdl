@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-ed2-clears" {
+  desc "ED 2 removes images on the screen"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=7,C=1,q=1;/wAA/wAA\e\\"#
+  feed #"\e[2J"#
+  images {
+  }
+}

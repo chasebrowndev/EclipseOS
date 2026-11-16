@@ -1,0 +1,11 @@
+fixture "sgr-24-clears-any-underline" {
+  covers "T03-SGR-UNDERLINE" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[4:3mA\e[24mB"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+  cell row=0 col=0 ch="A" ul="curly"
+  cell row=0 col=1 ch="B" ul="none"
+}

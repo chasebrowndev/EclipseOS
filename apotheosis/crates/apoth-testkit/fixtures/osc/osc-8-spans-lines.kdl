@@ -1,0 +1,7 @@
+fixture "osc-8-spans-lines" {
+  desc "osc 8 spans lines (migrated from the apoth-term corpus)"
+  covers "T03-OSC8"
+  size rows=2 cols=3
+  feed #"\e]8;;u://x\aabcd"#
+  cell row=1 col=0 link="u://x"
+}

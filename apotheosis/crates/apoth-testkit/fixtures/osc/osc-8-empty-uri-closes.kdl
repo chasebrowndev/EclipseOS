@@ -1,0 +1,7 @@
+fixture "osc-8-empty-uri-closes" {
+  desc "osc 8 empty uri closes (migrated from the apoth-term corpus)"
+  covers "T03-OSC8"
+  size rows=1 cols=8
+  feed #"\e]8;;u://x\aA\e]8;;\aB"#
+  cell row=0 col=1 link=#null
+}

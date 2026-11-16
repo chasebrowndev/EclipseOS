@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Apotheosis
+GenericName=Terminal
+Comment=Glass terminal emulator
+Exec=apotheosis
+Icon=org.eclipseos.Apotheosis
+StartupWMClass=org.eclipseos.Apotheosis
+Terminal=false
+Categories=System;TerminalEmulator;
+Keywords=terminal;shell;console;apotheosis;

@@ -1,0 +1,11 @@
+fixture "mode-roundtrip-ansi-4" {
+  desc "mode roundtrip ansi 4 (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[4h"#
+  checkpoint "c1" {
+    mode "4" 1
+  }
+  feed #"\e[4l"#
+  mode "4" 2
+}

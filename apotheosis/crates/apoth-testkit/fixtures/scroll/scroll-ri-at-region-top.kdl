@@ -1,0 +1,11 @@
+fixture "scroll-ri-at-region-top" {
+  covers "T03-DECSTBM" "T03-IND-NEL-RI"
+  size rows=5 cols=10
+  feed #"\e[2;4r\e[2;1HA\eMB"#
+  grid {
+    row ""
+    row " B"
+    row "A"
+  }
+  cursor row=1 col=2
+}

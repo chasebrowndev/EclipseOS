@@ -1,0 +1,7 @@
+fixture "cur-decscusr-blinking-underline" {
+  desc "cur decscusr blinking underline (migrated from the apoth-term corpus)"
+  covers "T03-DECSCUSR"
+  size rows=2 cols=4
+  feed #"\e[3 q"#
+  cursor row=0 col=0 shape=3
+}

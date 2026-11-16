@@ -1,0 +1,10 @@
+fixture "robust-csi-param-saturates" {
+  desc "parameters saturate instead of wrapping"
+  covers "T03-SEQ-ROBUST" "VTCORE-58"
+  size rows=5 cols=10
+  feed #"\e[3;1H\e[99999999999999999999AX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+}

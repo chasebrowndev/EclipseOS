@@ -1,0 +1,14 @@
+fixture "mouse-1007-default-set" {
+  desc "mode 1007 (alternate scroll) defaults set and resets"
+  covers "T03-MOUSE"
+  size rows=2 cols=4
+  checkpoint "default" {
+    mode "?1007" 1
+  }
+  feed #"\e[?1007l"#
+  checkpoint "reset" {
+    mode "?1007" 2
+  }
+  feed #"\e[?1007h"#
+  mode "?1007" 1
+}

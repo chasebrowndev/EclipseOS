@@ -1,0 +1,16 @@
+fixture "erase-el-bce" {
+  covers "T03-EL" "VTCORE-03"
+  review "BCE, see erase-ed0-bce"
+  size rows=4 cols=6
+  feed #"AAAAAA\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\e[43m\e[1;1H\e[2K"#
+  grid {
+    row ""
+    row "BBBBBB"
+    row "CCCCCC"
+    row "DDDDDD"
+  }
+  cursor row=0 col=0
+  cell row=0 col=0 bg="p3"
+  cell row=0 col=5 bg="p3"
+  cell row=1 col=0 ch="B" bg="default"
+}

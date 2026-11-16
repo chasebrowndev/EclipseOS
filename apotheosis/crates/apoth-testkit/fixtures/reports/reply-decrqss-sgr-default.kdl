@@ -1,0 +1,7 @@
+fixture "reply-decrqss-sgr-default" {
+  desc "reply decrqss sgr default (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=2 cols=4
+  feed #"\eP$qm\e\\"#
+  replies #"\eP1$r0m\e\\"#
+}

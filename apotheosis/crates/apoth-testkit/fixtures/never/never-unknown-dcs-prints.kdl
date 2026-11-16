@@ -1,0 +1,9 @@
+fixture "never-unknown-dcs-prints" {
+  desc "never unknown dcs prints (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=1 cols=4
+  feed #"\eP1;2|data\e\\x"#
+  grid {
+    row "x"
+  }
+}

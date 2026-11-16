@@ -1,0 +1,9 @@
+fixture "edit-ech-clamps" {
+  desc "edit ech clamps (migrated from the apoth-term corpus)"
+  covers "T03-ECH"
+  size rows=1 cols=8
+  feed #"abcdef\e[1;3H\e[99X"#
+  grid {
+    row "ab"
+  }
+}

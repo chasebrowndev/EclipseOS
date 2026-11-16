@@ -1,0 +1,9 @@
+fixture "cs-uk-pound" {
+  desc "cs uk pound (migrated from the apoth-term corpus)"
+  covers "T03-CHARSET"
+  size rows=1 cols=4
+  feed #"\e(A#a"#
+  grid {
+    row "£a"
+  }
+}

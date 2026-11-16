@@ -1,0 +1,12 @@
+fixture "edit-il-count" {
+  desc "edit il count (migrated from the apoth-term corpus)"
+  covers "T03-IL-DL"
+  size rows=4 cols=3
+  feed #"a\r\nb\r\nc\e[2;1H\e[2L"#
+  grid {
+    row "a"
+    row ""
+    row ""
+    row "b"
+  }
+}

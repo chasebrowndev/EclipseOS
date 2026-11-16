@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-delete-aborts-chunked" {
+  desc "any delete aborts a half-received chunked upload"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=3 cols=6
+  feed #"\e_Ga=T,f=24,s=2,v=1,i=7,m=1;/wAA\e\\"#
+  feed #"\e_Ga=d,d=a\e\\"#
+  feed #"\e_Gm=0;/wAA\e\\"#
+  images {
+  }
+}

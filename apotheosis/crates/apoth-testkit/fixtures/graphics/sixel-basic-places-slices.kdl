@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "sixel-basic-places-slices" {
+  desc "a sixel lands at the cursor as cell-row slices; cursor goes below it, start column"
+  covers "T03-GRAPHICS-SIXEL"
+  size rows=4 cols=6
+  feed #"ab\eP0;1;0q"1;1;8;12#1;2;100;0;0#1!8~-#1!8~\e\\"#
+  images {
+    row "sixel row=0 col=2 cols=1 rows=1 z=0"
+  }
+  cursor row=1 col=2
+}

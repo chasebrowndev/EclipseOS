@@ -1,0 +1,7 @@
+fixture "mode-2048-is-not-sent-by-query" {
+  desc "DECRQM 2048 answers with the mode state only, no size report"
+  covers "T03-MODE-2048"
+  size rows=3 cols=5
+  feed #"\e[?2048$p"#
+  replies #"\e[?2048;2$y"#
+}

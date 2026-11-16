@@ -1,0 +1,10 @@
+fixture "edit-dch-bce-fills-right" {
+  desc "edit dch bce fills right (migrated from the apoth-term corpus)"
+  covers "T03-ICH-DCH"
+  size rows=1 cols=4
+  feed #"abcd\e[41m\e[1;1H\e[2P"#
+  grid {
+    row "cd"
+  }
+  cell row=0 col=3 bg="p1"
+}

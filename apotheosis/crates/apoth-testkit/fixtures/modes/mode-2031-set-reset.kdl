@@ -1,0 +1,15 @@
+fixture "mode-2031-set-reset" {
+  desc "mode 2031 (colour-scheme report) defaults reset, sets and resets"
+  covers "T03-MODE-2031"
+  size rows=2 cols=4
+  checkpoint "default" {
+    mode "?2031" 2
+  }
+  feed #"\e[?2031h"#
+  checkpoint "set" {
+    mode "?2031" 1
+    replies
+  }
+  feed #"\e[?2031l"#
+  mode "?2031" 2
+}

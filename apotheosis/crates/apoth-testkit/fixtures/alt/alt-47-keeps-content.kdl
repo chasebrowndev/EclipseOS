@@ -1,0 +1,9 @@
+fixture "alt-47-keeps-content" {
+  desc "alt 47 keeps content (migrated from the apoth-term corpus)"
+  covers "T03-ALTSCREEN"
+  size rows=2 cols=5
+  feed #"\e[?47hxy\e[?47l\e[?47h"#
+  grid {
+    row "xy"
+  }
+}

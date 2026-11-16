@@ -1,0 +1,9 @@
+fixture "cursor-cup-default-home" {
+  covers "T03-CUP"
+  size rows=5 cols=10
+  feed #"\e[3;4H\e[H*"#
+  grid {
+    row "*"
+  }
+  cursor row=0 col=1
+}

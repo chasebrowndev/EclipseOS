@@ -1,0 +1,10 @@
+fixture "sgr-bold" {
+  covers "T03-SGR-BASIC" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[1mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" fg="default" bg="default" ul="none" attrs="bold"
+}

@@ -1,0 +1,8 @@
+fixture "osc-title-1-icon" {
+  covers "T03-OSC-TITLE" "VTCORE-28"
+  review "OSC 1 icon-name event is assumed to exist; T-03 only lists OSC 0/1/2 titles"
+  size rows=3 cols=20
+  feed #"\e]1;icon\a"#
+  grid
+  events
+}

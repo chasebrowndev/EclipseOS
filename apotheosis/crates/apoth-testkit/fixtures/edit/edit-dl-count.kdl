@@ -1,0 +1,12 @@
+fixture "edit-dl-count" {
+  desc "edit dl count (migrated from the apoth-term corpus)"
+  covers "T03-IL-DL"
+  size rows=4 cols=3
+  feed #"a\r\nb\r\nc\r\nd\e[2;1H\e[2M"#
+  grid {
+    row "a"
+    row "d"
+    row ""
+    row ""
+  }
+}

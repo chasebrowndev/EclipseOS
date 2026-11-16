@@ -1,0 +1,9 @@
+fixture "tabs-cht" {
+  covers "T03-TAB"
+  size rows=3 cols=20
+  feed #"\e[2IX"#
+  grid {
+    row "                X"
+  }
+  cursor row=0 col=17
+}

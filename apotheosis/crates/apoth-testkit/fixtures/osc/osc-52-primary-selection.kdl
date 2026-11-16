@@ -1,0 +1,7 @@
+fixture "osc-52-primary-selection" {
+  desc "osc 52 primary selection (migrated from the apoth-term corpus)"
+  covers "T03-OSC52"
+  size rows=1 cols=8
+  feed #"\e]52;p;aGk=\a"#
+  events "clipboard-set:p:2"
+}

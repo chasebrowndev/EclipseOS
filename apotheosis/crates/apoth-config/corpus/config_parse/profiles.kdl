@@ -1,0 +1,5 @@
+version 1
+profile "ssh" {
+    match "foreground:ssh and not title:local"
+    colors { background "#101010"; }
+}

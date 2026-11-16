@@ -1,0 +1,7 @@
+fixture "never-mode-query-without-private-misread" {
+  desc "never mode query without private misread (migrated from the apoth-term corpus)"
+  covers "T03-NEVER"
+  size rows=2 cols=4
+  feed #"\e[$p"#
+  replies #"\e[0;0$y"#
+}

@@ -1,0 +1,11 @@
+fixture "w-combining-is-zero-width" {
+  desc "w combining is zero width (migrated from the apoth-term corpus)"
+  covers "T03-COMBINING"
+  size rows=1 cols=4
+  feed #"éx"#
+  grid {
+    row "éx"
+  }
+  cursor row=0 col=2
+  cell row=0 col=0 ch="é"
+}

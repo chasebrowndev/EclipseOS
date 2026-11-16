@@ -1,0 +1,12 @@
+fixture "sgr-39-49-default" {
+  covers "T03-SGR-BASIC" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[31;41mA\e[39mB\e[49mC"#
+  grid {
+    row "ABC"
+  }
+  cursor row=0 col=3
+  cell row=0 col=0 ch="A" fg="p1" bg="p1"
+  cell row=0 col=1 ch="B" fg="default" bg="p1"
+  cell row=0 col=2 ch="C" fg="default" bg="default"
+}

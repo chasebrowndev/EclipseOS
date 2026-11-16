@@ -1,0 +1,8 @@
+fixture "reports-xtgettcap-invalid-hex" {
+  desc "nothing received is echoed"
+  covers "T03-XTGETTCAP" "VTCORE-25"
+  size rows=5 cols=10
+  feed #"\eP+qzz\e\\"#
+  grid
+  replies #"\eP0+r\e\\"#
+}

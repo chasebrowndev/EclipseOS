@@ -1,0 +1,11 @@
+fixture "cursor-cup-row-only" {
+  covers "T03-CUP"
+  size rows=5 cols=10
+  feed #"\e[3H*"#
+  grid {
+    row ""
+    row ""
+    row "*"
+  }
+  cursor row=2 col=1
+}

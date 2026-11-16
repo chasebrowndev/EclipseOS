@@ -1,0 +1,8 @@
+fixture "osc-title-strips-utf8-c1" {
+  desc "UTF-8 encoded C1 controls are stripped"
+  covers "T03-OSC-TITLE" "VTCORE-28"
+  size rows=3 cols=20
+  feed #"\e]2;a\u{85}b\u{9b}c\a"#
+  grid
+  events "title:abc"
+}

@@ -1,0 +1,15 @@
+fixture "sync-timeout-releases-hold" {
+  desc "1000 ms default, measured from the first BSU"
+  covers "T03-SYNC-2026" "VTCORE-17"
+  size rows=3 cols=10
+  feed #"\e[?2026hA"# at=0
+  feed #""# at=999
+  checkpoint "before-timeout" {
+    hold #true
+  }
+  feed #""# at=1001
+  grid {
+    row "A"
+  }
+  hold #false
+}

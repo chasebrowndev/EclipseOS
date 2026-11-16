@@ -1,0 +1,9 @@
+fixture "osc-unknown-ignored" {
+  covers "T03-OSC-UNKNOWN" "T03-OSC-CAPS"
+  size rows=3 cols=20
+  feed #"\e]9999;whatever\aX"#
+  grid {
+    row "X"
+  }
+  events
+}

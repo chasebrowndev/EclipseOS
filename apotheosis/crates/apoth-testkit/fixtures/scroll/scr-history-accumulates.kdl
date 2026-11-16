@@ -1,0 +1,10 @@
+fixture "scr-history-accumulates" {
+  desc "scr history accumulates (migrated from the apoth-term corpus)"
+  covers "T03-SCROLL-HISTORY"
+  size rows=2 cols=3
+  feed #"a\r\nb\r\nc\r\nd\r\ne"#
+  grid {
+    row "d"
+    row "e"
+  }
+}

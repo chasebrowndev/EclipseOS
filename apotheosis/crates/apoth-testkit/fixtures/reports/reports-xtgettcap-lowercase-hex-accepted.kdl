@@ -1,0 +1,7 @@
+fixture "reports-xtgettcap-lowercase-hex-accepted" {
+  covers "T03-XTGETTCAP"
+  size rows=5 cols=10
+  feed #"\eP+q436f\e\\"#
+  grid
+  replies #"\eP1+r436F=323536\e\\"#
+}

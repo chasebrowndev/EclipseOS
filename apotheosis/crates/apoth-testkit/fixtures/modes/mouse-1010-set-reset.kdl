@@ -1,0 +1,14 @@
+fixture "mouse-1010-set-reset" {
+  desc "mode 1010 (scroll on output) defaults reset, sets and resets"
+  covers "T03-MOUSE"
+  size rows=2 cols=4
+  checkpoint "default" {
+    mode "?1010" 2
+  }
+  feed #"\e[?1010h"#
+  checkpoint "set" {
+    mode "?1010" 1
+  }
+  feed #"\e[?1010l"#
+  mode "?1010" 2
+}

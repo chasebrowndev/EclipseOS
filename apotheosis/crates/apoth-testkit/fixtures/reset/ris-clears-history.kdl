@@ -1,0 +1,8 @@
+fixture "ris-clears-history" {
+  covers "T03-RIS" "T03-SCROLL-HISTORY"
+  review "whether RIS also clears the saved lines is not stated in T-03 section 3.1 (xterm does)"
+  size rows=3 cols=4
+  feed #"1\r\n2\r\n3\r\n4\ec"#
+  grid
+  scrollback
+}

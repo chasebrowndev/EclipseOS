@@ -1,0 +1,9 @@
+fixture "tab-tbc-3-clears-all" {
+  desc "tab tbc 3 clears all (migrated from the apoth-term corpus)"
+  covers "T03-HTS-TBC"
+  size rows=1 cols=20
+  feed #"\e[3g\tx"#
+  grid {
+    row "                   x"
+  }
+}

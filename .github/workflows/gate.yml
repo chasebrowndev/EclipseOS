@@ -270,7 +270,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libwayland-dev pkg-config mesa-vulkan-drivers libvulkan1
+            libwayland-dev pkg-config mesa-vulkan-drivers libvulkan1 nasm
 
       - uses: dtolnay/rust-toolchain@stable
         with:

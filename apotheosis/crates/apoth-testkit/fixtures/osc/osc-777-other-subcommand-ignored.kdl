@@ -1,0 +1,10 @@
+fixture "osc-777-other-subcommand-ignored" {
+  desc "OSC 777 with a sub-command other than notify is consumed silently"
+  covers "T03-OSC99-777"
+  size rows=2 cols=8
+  feed #"\e]777;preexec;ls\ax"#
+  grid {
+    row "x"
+  }
+  events
+}

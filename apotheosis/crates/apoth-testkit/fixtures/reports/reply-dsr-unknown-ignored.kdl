@@ -1,0 +1,7 @@
+fixture "reply-dsr-unknown-ignored" {
+  desc "reply dsr unknown ignored (migrated from the apoth-term corpus)"
+  covers "T03-DSR"
+  size rows=2 cols=4
+  feed #"\e[99n"#
+  replies
+}

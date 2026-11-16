@@ -1,0 +1,10 @@
+fixture "wrap-decawm-off-overwrites-last" {
+  desc "autowrap off: later characters overwrite the last column"
+  covers "T03-DECAWM"
+  size rows=3 cols=5
+  feed #"\e[?7lABCDEFG"#
+  grid {
+    row "ABCDG"
+  }
+  cursor row=0 col=4
+}

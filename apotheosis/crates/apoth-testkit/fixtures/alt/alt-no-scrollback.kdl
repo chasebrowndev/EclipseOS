@@ -1,0 +1,12 @@
+fixture "alt-no-scrollback" {
+  desc "scrolling on the alternate screen feeds no history"
+  covers "T03-ALTSCREEN" "SCROLLBACKSEARCH-23"
+  size rows=2 cols=4
+  feed #"P\e[?1049h1\r\n2\r\n3\r\n4\e[?1049l"#
+  grid {
+    row "P"
+  }
+  cursor row=0 col=1
+  scrollback
+  alt #false
+}

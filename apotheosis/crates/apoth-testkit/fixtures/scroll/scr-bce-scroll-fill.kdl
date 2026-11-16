@@ -1,0 +1,7 @@
+fixture "scr-bce-scroll-fill" {
+  desc "scr bce scroll fill (migrated from the apoth-term corpus)"
+  covers "T03-SCROLL-HISTORY"
+  size rows=2 cols=3
+  feed #"a\r\nb\e[41m\n"#
+  cell row=1 col=0 bg="p1"
+}

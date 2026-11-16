@@ -1,0 +1,7 @@
+fixture "sgr-underline-colour-reset" {
+  desc "sgr underline colour reset (migrated from the apoth-term corpus)"
+  covers "T03-SGR-UNDERLINE"
+  size rows=1 cols=4
+  feed #"\e[58;5;3m\e[59mA"#
+  cell row=0 col=0 ulc="default"
+}

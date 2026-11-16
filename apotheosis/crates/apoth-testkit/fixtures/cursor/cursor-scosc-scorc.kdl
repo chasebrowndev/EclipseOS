@@ -1,0 +1,11 @@
+fixture "cursor-scosc-scorc" {
+  desc "CSI s / CSI u when DECLRMM is off"
+  covers "T03-DECSC"
+  size rows=5 cols=10
+  feed #"\e[2;3H\e[s\e[5;5H\e[u*"#
+  grid {
+    row ""
+    row "  *"
+  }
+  cursor row=1 col=3
+}

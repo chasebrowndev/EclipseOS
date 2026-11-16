@@ -1,0 +1,9 @@
+fixture "sync-esu-releases" {
+  covers "T03-SYNC-2026" "VTCORE-17"
+  size rows=3 cols=10
+  feed #"\e[?2026hAB\e[?2026l"#
+  grid {
+    row "AB"
+  }
+  hold #false
+}

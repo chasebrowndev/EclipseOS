@@ -8,5 +8,21 @@ license = "AGPL-3.0-only"
 repository.workspace = true
 publish = false
 
+[features]
+# Test-only: DECRQCRA for esctest2 (T-03 §3.3). Never enabled in a release or package build.
+esctest = []
+
+[dependencies]
+apoth-vt = { workspace = true }
+apoth-grid = { workspace = true }
+apoth-unicode = { workspace = true }
+apoth-image = { workspace = true }
+# Only the `InputModes` mirror types and the kitty flag stack; no keyboard backend.
+apoth-input = { path = "../apoth-input", default-features = false }
+
+[dev-dependencies]
+base64 = "0.22"
+png = "0.18"
+
 [lints]
 workspace = true

@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-i-and-I-einval" {
+  desc "i= with I= is invalid"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=6
+  feed #"\e_Ga=t,f=24,s=2,v=1,i=5,I=6;/wAA/wAA\e\\"#
+  replies #"\e_Gi=5,I=6;EINVAL:invalid request\e\\"#
+}

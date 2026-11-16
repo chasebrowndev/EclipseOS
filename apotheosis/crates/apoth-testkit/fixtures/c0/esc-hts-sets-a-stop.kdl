@@ -1,0 +1,9 @@
+fixture "esc-hts-sets-a-stop" {
+  desc "esc hts sets a stop (migrated from the apoth-term corpus)"
+  covers "T03-HTS-TBC"
+  size rows=1 cols=10
+  feed #"\e[3g\e[1;5H\eH\r\tX"#
+  grid {
+    row "    X"
+  }
+}

@@ -1,0 +1,9 @@
+fixture "lr-cr-goes-to-left-margin" {
+  desc "lr cr goes to left margin (migrated from the apoth-term corpus)"
+  covers "T03-DECLRMM"
+  size rows=2 cols=8
+  feed #"\e[?69h\e[3;5s\e[?6h\e[1;1Hab\rX"#
+  grid {
+    row "  Xb"
+  }
+}

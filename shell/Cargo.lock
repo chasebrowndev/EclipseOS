@@ -1106,7 +1106,11 @@ version = "0.2.2"
 dependencies = [
  "ec-services",
  "ec-ui",
+ "freedesktop-icons",
  "iced",
+ "rustix 1.1.6",
+ "serde",
+ "serde_json",
  "zbus",
 ]
 

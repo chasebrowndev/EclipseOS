@@ -1,0 +1,8 @@
+fixture "mode-2048-set-reports-size" {
+  desc "setting mode 2048 reports the size at once (default 8x16 cells)"
+  covers "T03-MODE-2048"
+  size rows=3 cols=5
+  feed #"\e[?2048h"#
+  replies #"\e[48;3;5;48;40t"#
+  mode "?2048" 1
+}

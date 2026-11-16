@@ -1,0 +1,14 @@
+fixture "alt-primary-history-survives" {
+  covers "T03-ALTSCREEN" "T03-SCROLL-HISTORY"
+  size rows=2 cols=4
+  feed #"1\r\n2\r\n3\e[?1049hZ\e[?1049l"#
+  grid {
+    row "2"
+    row "3"
+  }
+  cursor row=1 col=1
+  scrollback {
+    row "1"
+  }
+  alt #false
+}

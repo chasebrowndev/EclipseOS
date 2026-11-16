@@ -1,0 +1,13 @@
+fixture "cur-cud-below-margin-goes-to-screen-bottom" {
+  desc "cur cud below margin goes to screen bottom (migrated from the apoth-term corpus)"
+  covers "T03-CUX"
+  size rows=5 cols=10
+  feed #"\e[1;2r\e[4;1H\e[5Bx"#
+  grid {
+    row ""
+    row ""
+    row ""
+    row ""
+    row "x"
+  }
+}

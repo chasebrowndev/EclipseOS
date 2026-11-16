@@ -1,0 +1,11 @@
+fixture "mode-roundtrip-dec-7" {
+  desc "mode roundtrip dec 7 (migrated from the apoth-term corpus)"
+  covers "T03-MODES-TABLE"
+  size rows=2 cols=4
+  feed #"\e[?7h"#
+  checkpoint "c1" {
+    mode "?7" 1
+  }
+  feed #"\e[?7l"#
+  mode "?7" 2
+}

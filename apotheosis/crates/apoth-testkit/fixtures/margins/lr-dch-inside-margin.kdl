@@ -1,0 +1,9 @@
+fixture "lr-dch-inside-margin" {
+  desc "lr dch inside margin (migrated from the apoth-term corpus)"
+  covers "T03-DECLRMM"
+  size rows=1 cols=8
+  feed #"abcdefgh\e[?69h\e[3;6s\e[?6h\e[1;1H\e[P"#
+  grid {
+    row "abdef gh"
+  }
+}

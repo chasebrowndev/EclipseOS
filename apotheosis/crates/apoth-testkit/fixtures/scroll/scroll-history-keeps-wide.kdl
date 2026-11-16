@@ -1,0 +1,13 @@
+fixture "scroll-history-keeps-wide" {
+  covers "T03-SCROLL-HISTORY" "T03-WIDE"
+  size rows=2 cols=4
+  feed #"日a\r\nb\r\nc"#
+  grid {
+    row "b"
+    row "c"
+  }
+  cursor row=1 col=1
+  scrollback {
+    row "日a"
+  }
+}

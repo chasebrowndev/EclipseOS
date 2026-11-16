@@ -1,0 +1,9 @@
+fixture "cur-cup-zero-is-one" {
+  desc "cur cup zero is one (migrated from the apoth-term corpus)"
+  covers "T03-CUP"
+  size rows=5 cols=10
+  feed #"\e[0;0Hx"#
+  grid {
+    row "x"
+  }
+}

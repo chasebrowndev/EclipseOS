@@ -1,0 +1,9 @@
+fixture "w-emoji-wide" {
+  desc "w emoji wide (migrated from the apoth-term corpus)"
+  covers "T03-GRAPHEME"
+  size rows=1 cols=4
+  feed #"😀"#
+  cursor row=0 col=2
+  cell row=0 col=0 wide="wide"
+  cell row=0 col=1 wide="tail"
+}

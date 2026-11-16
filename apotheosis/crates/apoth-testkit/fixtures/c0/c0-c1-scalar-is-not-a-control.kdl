@@ -1,0 +1,9 @@
+fixture "c0-c1-scalar-is-not-a-control" {
+  desc "c0 c1 scalar is not a control (migrated from the apoth-term corpus)"
+  covers "T03-C1-IGNORED"
+  size rows=1 cols=8
+  feed #"a\u{9b}31mb"#
+  grid {
+    row "a31mb"
+  }
+}

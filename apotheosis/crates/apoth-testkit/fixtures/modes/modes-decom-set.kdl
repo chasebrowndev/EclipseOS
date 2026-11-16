@@ -1,0 +1,6 @@
+fixture "modes-decom-set" {
+  covers "T03-DECOM" "T03-DECRQM"
+  size rows=3 cols=10
+  feed #"\e[?6h"#
+  mode "?6" 1
+}

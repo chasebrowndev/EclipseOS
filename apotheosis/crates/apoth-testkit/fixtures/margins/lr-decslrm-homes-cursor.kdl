@@ -1,0 +1,9 @@
+fixture "lr-decslrm-homes-cursor" {
+  desc "lr decslrm homes cursor (migrated from the apoth-term corpus)"
+  covers "T03-DECLRMM"
+  size rows=2 cols=8
+  feed #"\e[?69h\e[3;5sX"#
+  grid {
+    row "X"
+  }
+}

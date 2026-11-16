@@ -1,0 +1,7 @@
+fixture "cur-decxcpr" {
+  desc "cur decxcpr (migrated from the apoth-term corpus)"
+  covers "T03-DECXCPR"
+  size rows=5 cols=10
+  feed #"\e[3;4H\e[?6n"#
+  replies #"\e[?3;4;1R"#
+}

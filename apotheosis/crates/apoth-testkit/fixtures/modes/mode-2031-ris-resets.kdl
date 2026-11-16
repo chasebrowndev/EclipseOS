@@ -1,0 +1,7 @@
+fixture "mode-2031-ris-resets" {
+  desc "RIS resets mode 2031"
+  covers "T03-MODE-2031" "T03-RIS"
+  size rows=2 cols=4
+  feed #"\e[?2031h\ec"#
+  mode "?2031" 2
+}

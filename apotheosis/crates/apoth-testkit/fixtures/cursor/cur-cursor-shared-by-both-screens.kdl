@@ -1,0 +1,14 @@
+fixture "cur-cursor-shared-by-both-screens" {
+  desc "cur cursor shared by both screens (migrated from the apoth-term corpus)"
+  covers "T03-CUP"
+  size rows=3 cols=5
+  feed #"ab\e[?47hc"#
+  checkpoint "c1" {
+    grid {
+      row "  c"
+    }
+    alt #true
+  }
+  feed #"\e[?47l"#
+  cursor row=0 col=3
+}

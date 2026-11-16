@@ -1,0 +1,12 @@
+fixture "resize-shrink-cols-short-lines" {
+  desc "narrowing keeps lines that still fit (reflow is M12)"
+  covers "T03-RESIZE"
+  size rows=3 cols=10
+  feed #"AB\r\nCD"#
+  resize rows=3 cols=4
+  grid {
+    row "AB"
+    row "CD"
+  }
+  cursor row=1 col=2
+}

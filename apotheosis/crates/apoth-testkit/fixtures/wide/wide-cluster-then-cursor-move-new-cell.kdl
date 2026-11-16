@@ -1,0 +1,12 @@
+fixture "wide-cluster-then-cursor-move-new-cell" {
+  desc "no clustering across cursor movement"
+  covers "T03-GRAPHEME" "T03-COMBINING" "UNICODE-03"
+  review "a cluster never extends across a cursor movement (T-04 section 2): the second regional indicator starts its own wide cell; exact placement assumed"
+  size rows=2 cols=10
+  feed #"🇺\e[D\e[C🇸"#
+  grid {
+    row "🇺🇸"
+  }
+  cell row=0 col=2 ch="🇸" wide="wide"
+  cursor row=0 col=4
+}

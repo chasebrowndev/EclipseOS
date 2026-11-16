@@ -1,0 +1,14 @@
+fixture "lrm-lf-scrolls-within-margins" {
+  desc "scroll confined to the margin columns, no history"
+  covers "T03-DECLRMM" "T03-SCROLL-HISTORY" "VTCORE-31"
+  review "LF at the bottom with left/right margins set scrolls only the margin columns; history stays empty because the scroll is not full width"
+  size rows=3 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\e[?69h\e[2;4s\e[3;2H\n"#
+  grid {
+    row "AHIJEF"
+    row "GNOPKL"
+    row "M   QR"
+  }
+  cursor row=2 col=1
+  scrollback
+}

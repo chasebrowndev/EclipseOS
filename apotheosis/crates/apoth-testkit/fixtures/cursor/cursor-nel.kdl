@@ -1,0 +1,10 @@
+fixture "cursor-nel" {
+  covers "T03-IND-NEL-RI" "VTCORE-14"
+  size rows=5 cols=10
+  feed #"A\eEB"#
+  grid {
+    row "A"
+    row "B"
+  }
+  cursor row=1 col=1
+}

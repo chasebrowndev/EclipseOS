@@ -1,0 +1,7 @@
+fixture "osc-title-st-terminator" {
+  covers "T03-OSC-TITLE" "VTCORE-28"
+  size rows=3 cols=20
+  feed #"\e]2;hello\e\\"#
+  grid
+  events "title:hello"
+}

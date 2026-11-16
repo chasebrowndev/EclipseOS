@@ -40,6 +40,8 @@ pub fn submit(target: &Target, secret: String) -> Result<(), String> {
             sent
         }
         Target::ApiKey { account } => add_key(account, secret),
+        // Back to Apotheosis on stdout, which relays it to the program (T-22 §3).
+        Target::Terminal(_) => crate::terminal::answer(secret),
     }
 }
 
@@ -113,6 +115,10 @@ fn refusal(stderr: &str) -> String {
 /// nobody is looking at.
 pub fn reject(target: &Target) {
     if !target.answers() {
+        return;
+    }
+    if let Target::Terminal(_) = target {
+        crate::terminal::cancel();
         return;
     }
     if let Target::Bluetooth { addr, .. } = target {

@@ -1,0 +1,12 @@
+fixture "resize-shrink-rows-blank-bottom" {
+  desc "blank rows below the cursor are dropped"
+  covers "T03-RESIZE"
+  size rows=5 cols=5
+  feed #"A\r\nB"#
+  resize rows=3 cols=5
+  grid {
+    row "A"
+    row "B"
+  }
+  cursor row=1 col=1
+}

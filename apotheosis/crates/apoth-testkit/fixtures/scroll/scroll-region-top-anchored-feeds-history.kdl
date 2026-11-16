@@ -1,0 +1,16 @@
+fixture "scroll-region-top-anchored-feeds-history" {
+  requires "spec-open-partial-region-history"
+  covers "T03-DECSTBM" "T03-SCROLL-HISTORY"
+  review "a full-width region anchored at row 1 but ending above the last row: T-03 says 'full-width, top-anchored scrolls feed history'; reading that as including this case"
+  size rows=5 cols=4
+  feed #"\e[1;3r1\r\n2\r\n3\r\n4"#
+  grid {
+    row "2"
+    row "3"
+    row "4"
+  }
+  cursor row=2 col=1
+  scrollback {
+    row "1"
+  }
+}

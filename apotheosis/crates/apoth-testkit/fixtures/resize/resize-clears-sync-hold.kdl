@@ -1,0 +1,11 @@
+fixture "resize-clears-sync-hold" {
+  desc "resize clears sync hold (migrated from the apoth-term corpus)"
+  covers "T03-RESIZE"
+  size rows=2 cols=4
+  feed #"\e[?2026h"#
+  checkpoint "c1" {
+    hold #true
+  }
+  resize rows=3 cols=4
+  hold #false
+}

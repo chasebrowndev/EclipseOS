@@ -1,0 +1,9 @@
+fixture "osc-title-does-not-print" {
+  desc "osc title does not print (migrated from the apoth-term corpus)"
+  covers "T03-OSC-TITLE"
+  size rows=1 cols=8
+  feed #"a\e]0;zzz\ab"#
+  grid {
+    row "ab"
+  }
+}

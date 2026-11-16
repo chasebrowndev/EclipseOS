@@ -1,0 +1,8 @@
+fixture "reports-xtwinops-18-19" {
+  desc "text area size in characters"
+  covers "T03-XTWINOPS" "VTCORE-38"
+  size rows=5 cols=10
+  feed #"\e[18t\e[19t"#
+  grid
+  replies #"\e[8;5;10t\e[9;5;10t"#
+}

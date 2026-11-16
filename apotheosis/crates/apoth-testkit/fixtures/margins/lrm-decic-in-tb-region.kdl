@@ -1,0 +1,12 @@
+fixture "lrm-decic-in-tb-region" {
+  desc "DECIC honours the top/bottom margins: row 1 is untouched"
+  covers "T03-DECIC-DECDC" "T03-DECSTBM" "VTCORE-31"
+  size rows=3 cols=6
+  feed #"ABCDEF\r\nGHIJKL\r\nMNOPQR\e[2;3r\e[2;2H\e[1'}"#
+  grid {
+    row "ABCDEF"
+    row "G HIJK"
+    row "M NOPQ"
+  }
+  cursor row=1 col=1
+}

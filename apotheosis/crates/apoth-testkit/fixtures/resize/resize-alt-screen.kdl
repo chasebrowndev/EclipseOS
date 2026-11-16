@@ -1,0 +1,10 @@
+fixture "resize-alt-screen" {
+  covers "T03-RESIZE" "T03-ALTSCREEN"
+  size rows=3 cols=6
+  feed #"\e[?1049hX"#
+  resize rows=4 cols=8
+  grid {
+    row "X"
+  }
+  alt #true
+}

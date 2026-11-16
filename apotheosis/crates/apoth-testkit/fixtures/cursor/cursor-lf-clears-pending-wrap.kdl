@@ -1,0 +1,11 @@
+fixture "cursor-lf-clears-pending-wrap" {
+  desc "LF clears pending wrap and keeps the column"
+  covers "T03-AUTOWRAP" "T03-C0-EXEC"
+  size rows=5 cols=10
+  feed #"0123456789\nX"#
+  grid {
+    row "0123456789"
+    row "         X"
+  }
+  cursor row=1 col=9
+}

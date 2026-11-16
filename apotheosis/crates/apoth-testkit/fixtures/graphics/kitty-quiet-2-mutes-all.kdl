@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+fixture "kitty-quiet-2-mutes-all" {
+  desc "q=2 mutes errors too"
+  covers "T03-GRAPHICS-KITTY"
+  size rows=4 cols=6
+  feed #"\e_Ga=p,i=99,q=2\e\\"#
+  replies
+}

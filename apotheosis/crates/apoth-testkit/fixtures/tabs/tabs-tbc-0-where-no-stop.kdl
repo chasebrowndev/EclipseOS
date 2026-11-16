@@ -1,0 +1,9 @@
+fixture "tabs-tbc-0-where-no-stop" {
+  covers "T03-HTS-TBC"
+  size rows=3 cols=20
+  feed #"\e[1;4H\e[g\r\tX"#
+  grid {
+    row "        X"
+  }
+  cursor row=0 col=9
+}

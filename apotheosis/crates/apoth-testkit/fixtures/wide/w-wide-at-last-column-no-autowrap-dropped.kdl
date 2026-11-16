@@ -1,0 +1,9 @@
+fixture "w-wide-at-last-column-no-autowrap-dropped" {
+  desc "w wide at last column no autowrap dropped (migrated from the apoth-term corpus)"
+  covers "T03-WIDE"
+  size rows=1 cols=3
+  feed #"\e[?7lab世"#
+  grid {
+    row "ab"
+  }
+}

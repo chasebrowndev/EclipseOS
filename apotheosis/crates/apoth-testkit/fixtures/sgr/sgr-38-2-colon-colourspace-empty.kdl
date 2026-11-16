@@ -1,0 +1,11 @@
+fixture "sgr-38-2-colon-colourspace-empty" {
+  desc "`:2:CS:R:G:B` with CS empty"
+  covers "T03-SGR-COLOR" "T03-SGR-AMBIG" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[38:2::10:20:30mX"#
+  grid {
+    row "X"
+  }
+  cursor row=0 col=1
+  cell row=0 col=0 ch="X" fg="#0a141e"
+}

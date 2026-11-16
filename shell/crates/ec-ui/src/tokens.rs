@@ -147,6 +147,21 @@ pub mod color {
     /// spec's tertiary text value.
     pub const DIM: f32 = 0.40;
 
+    /// A selected pill under the pointer, then pressed: the same accent tint a
+    /// step and two steps clearer, its rim crisper. Scales on `accent_fill` and
+    /// `accent_border`, so a user accent keeps them. Glassy, not glowy: the rim
+    /// stays a 1px edge and nothing lights past it.
+    pub const SELECTED_HOVER_FILL: f32 = 1.7;
+    pub const SELECTED_PRESS_FILL: f32 = 2.4;
+    pub const SELECTED_HOVER_RIM: f32 = 1.6;
+    /// A cell cut from the inset material ([`crate::theme::inset_cell`]):
+    /// hover and press are small steps up its fill and rim, not a jump to a
+    /// pill's slab; a focused inset field is the rim alone, one step crisper.
+    pub const INSET_HOVER_FILL: f32 = 1.35;
+    pub const INSET_PRESS_FILL: f32 = 1.7;
+    pub const INSET_HOVER_RIM: f32 = 1.3;
+    pub const INSET_FOCUS_RIM: f32 = 1.8;
+
     /// A colour that arrives as data -- a calendar's own `0xRRGGBB` -- rather
     /// than a choice of ours. A provider's palette is never mistaken for a token.
     pub const fn data(hex: u32) -> Color {

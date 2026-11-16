@@ -1,0 +1,9 @@
+fixture "osc9-non-selector-digits-are-text" {
+  desc "only a decimal first field 1..12 is a ConEmu selector"
+  covers "T03-OSC9-NOTIFY" "INTEGRATION-24"
+  review "'4x' and '13;hi' are taken as notification text because their first field is not a decimal number in 1..12"
+  size rows=3 cols=20
+  feed #"\e]9;13;hi\a\e]9;4x\a"#
+  grid
+  events "notify:13;hi" "notify:4x"
+}

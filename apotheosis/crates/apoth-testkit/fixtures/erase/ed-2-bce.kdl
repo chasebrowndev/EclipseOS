@@ -1,0 +1,8 @@
+fixture "ed-2-bce" {
+  desc "ed 2 bce (migrated from the apoth-term corpus)"
+  covers "T03-ED"
+  size rows=2 cols=3
+  feed #"\e[44m\e[2J"#
+  cell row=0 col=0 bg="p4"
+  cell row=1 col=2 bg="p4"
+}

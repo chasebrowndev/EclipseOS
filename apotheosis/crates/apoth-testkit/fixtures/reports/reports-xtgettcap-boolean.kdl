@@ -1,0 +1,8 @@
+fixture "reports-xtgettcap-boolean" {
+  desc "Tc is a boolean: no `=`"
+  covers "T03-XTGETTCAP" "VTCORE-25"
+  size rows=5 cols=10
+  feed #"\eP+q5463\e\\"#
+  grid
+  replies #"\eP1+r5463\e\\"#
+}

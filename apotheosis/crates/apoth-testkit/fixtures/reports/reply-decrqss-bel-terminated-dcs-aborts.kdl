@@ -1,0 +1,7 @@
+fixture "reply-decrqss-bel-terminated-dcs-aborts" {
+  desc "reply decrqss bel terminated dcs aborts (migrated from the apoth-term corpus)"
+  covers "T03-DECRQSS"
+  size rows=2 cols=4
+  feed #"\eP$qm\a"#
+  replies
+}

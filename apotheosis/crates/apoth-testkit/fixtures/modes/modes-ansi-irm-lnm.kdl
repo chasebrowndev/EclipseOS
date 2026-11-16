@@ -1,0 +1,7 @@
+fixture "modes-ansi-irm-lnm" {
+  covers "T03-IRM" "T03-LNM" "T03-DECRQM"
+  size rows=3 cols=10
+  feed #"\e[4;20h"#
+  mode "4" 1
+  mode "20" 1
+}

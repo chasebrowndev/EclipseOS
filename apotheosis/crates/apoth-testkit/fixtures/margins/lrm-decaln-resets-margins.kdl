@@ -1,0 +1,12 @@
+fixture "lrm-decaln-resets-margins" {
+  desc "DECALN fills the screen with E and resets margins"
+  covers "T03-DECALN" "T03-DECLRMM" "VTCORE-14"
+  size rows=3 cols=6
+  feed #"\e[?69h\e[2;4s\e#8"#
+  grid {
+    row "EEEEEE"
+    row "EEEEEE"
+    row "EEEEEE"
+  }
+  cursor row=0 col=0
+}

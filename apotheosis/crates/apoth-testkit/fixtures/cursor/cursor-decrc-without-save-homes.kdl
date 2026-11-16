@@ -1,0 +1,10 @@
+fixture "cursor-decrc-without-save-homes" {
+  desc "DECRC with nothing saved homes the cursor"
+  covers "T03-DECSC"
+  size rows=5 cols=10
+  feed #"\e[3;3H\e8*"#
+  grid {
+    row "*"
+  }
+  cursor row=0 col=1
+}

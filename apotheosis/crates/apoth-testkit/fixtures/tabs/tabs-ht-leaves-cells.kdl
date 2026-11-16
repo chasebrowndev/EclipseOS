@@ -1,0 +1,10 @@
+fixture "tabs-ht-leaves-cells" {
+  desc "HT only moves the cursor"
+  covers "T03-TAB"
+  size rows=3 cols=20
+  feed #"AB\r\tC"#
+  grid {
+    row "AB      C"
+  }
+  cursor row=0 col=9
+}

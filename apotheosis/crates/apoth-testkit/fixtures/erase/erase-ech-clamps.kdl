@@ -1,0 +1,12 @@
+fixture "erase-ech-clamps" {
+  covers "T03-ECH"
+  size rows=4 cols=6
+  feed #"AAAAAA\r\nBBBBBB\r\nCCCCCC\r\nDDDDDD\e[2;5H\e[99X"#
+  grid {
+    row "AAAAAA"
+    row "BBBB"
+    row "CCCCCC"
+    row "DDDDDD"
+  }
+  cursor row=1 col=4
+}

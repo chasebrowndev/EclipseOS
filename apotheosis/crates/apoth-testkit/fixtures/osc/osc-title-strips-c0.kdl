@@ -1,0 +1,9 @@
+fixture "osc-title-strips-c0" {
+  desc "C0 controls are stripped"
+  covers "T03-OSC-TITLE" "VTCORE-28"
+  review "how a stray C0 byte inside an OSC payload reaches the sanitiser depends on the parser; the stripped result is what T-03 requires"
+  size rows=3 cols=20
+  feed #"\e]2;a\x01b\tc\a"#
+  grid
+  events "title:abc"
+}

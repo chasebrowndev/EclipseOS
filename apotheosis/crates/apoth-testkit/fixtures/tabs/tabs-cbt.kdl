@@ -1,0 +1,9 @@
+fixture "tabs-cbt" {
+  covers "T03-TAB"
+  size rows=3 cols=20
+  feed #"\e[1;18H\e[ZX"#
+  grid {
+    row "                X"
+  }
+  cursor row=0 col=17
+}

@@ -1,0 +1,12 @@
+fixture "sgr-23-24-25-27-28-29-clear" {
+  desc "paired resets"
+  covers "T03-SGR-BASIC" "VTCORE-16"
+  size rows=2 cols=20
+  feed #"\e[3;4;5;7;8;9mA\e[23;24;25;27;28;29mB"#
+  grid {
+    row "AB"
+  }
+  cursor row=0 col=2
+  cell row=0 col=0 ch="A" ul="single" attrs="blink,inverse,invisible,italic,strike"
+  cell row=0 col=1 ch="B" ul="none" attrs=""
+}

@@ -1,0 +1,20 @@
+fixture "erase-ed3-clears-history" {
+  desc "ED 3 clears the saved lines and leaves the screen"
+  covers "T03-ED3-HISTORY" "VTCORE-15"
+  size rows=3 cols=4
+  feed #"1\r\n2\r\n3\r\n4\r\n5"#
+  checkpoint "before" {
+    scrollback {
+      row "1"
+      row "2"
+    }
+  }
+  feed #"\e[3J"#
+  grid {
+    row "3"
+    row "4"
+    row "5"
+  }
+  cursor row=2 col=1
+  scrollback
+}

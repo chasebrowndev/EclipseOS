@@ -1,0 +1,9 @@
+fixture "cursor-cpl-clamps" {
+  covers "T03-CUX"
+  size rows=5 cols=10
+  feed #"\e[3;1H\e[99F*"#
+  grid {
+    row "*"
+  }
+  cursor row=0 col=1
+}

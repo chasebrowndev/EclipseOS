@@ -1,0 +1,8 @@
+fixture "reports-dsr-5" {
+  covers "T03-DSR" "VTCORE-24"
+  review "DSR 5 reply `CSI 0 n` (device OK) is the xterm form; T-03 does not spell it"
+  size rows=5 cols=10
+  feed #"\e[5n"#
+  grid
+  replies #"\e[0n"#
+}

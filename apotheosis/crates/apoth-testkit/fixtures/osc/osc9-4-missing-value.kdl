@@ -1,0 +1,8 @@
+fixture "osc9-4-missing-value" {
+  covers "T03-OSC9-PROGRESS" "INTEGRATION-24"
+  review "a missing value is assumed to be 0; T-03 says only 'value 0-100 clamped'"
+  size rows=3 cols=20
+  feed #"\e]9;4;1\a"#
+  grid
+  events "progress:1:0"
+}

@@ -1,0 +1,8 @@
+fixture "osc-color-invalid-spec-ignored" {
+  desc "an unparseable spec changes nothing"
+  covers "T03-OSC-COLOR" "VTCORE-27"
+  size rows=3 cols=20
+  feed #"\e]10;#ffffff\a\e]10;notacolor\a\e]10;?\a"#
+  grid
+  replies #"\e]10;rgb:ffff/ffff/ffff\a"#
+}

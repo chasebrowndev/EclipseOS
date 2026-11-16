@@ -1,0 +1,10 @@
+fixture "c0-invalid-utf8-invalid-lead" {
+  desc "C0 is never a valid lead byte; each byte is its own U+FFFD"
+  covers "T03-UTF8-INVALID"
+  size rows=3 cols=10
+  feed #"\xc0\x80X"#
+  grid {
+    row "��X"
+  }
+  cursor row=0 col=3
+}

@@ -1,0 +1,8 @@
+fixture "reply-da-2-version-12-34-56" {
+  desc "reply da 2 version 12 34 56 (migrated from the apoth-term corpus)"
+  covers "T03-DA2"
+  size rows=2 cols=4
+  version "12.34.56"
+  feed #"\e[>c"#
+  replies #"\e[>1;123456;0c"#
+}

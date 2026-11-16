@@ -1,0 +1,7 @@
+fixture "sync-set-holds" {
+  desc "sync set holds (migrated from the apoth-term corpus)"
+  covers "T03-SYNC-2026"
+  size rows=2 cols=4
+  feed #"\e[?2026h"#
+  hold #true
+}
