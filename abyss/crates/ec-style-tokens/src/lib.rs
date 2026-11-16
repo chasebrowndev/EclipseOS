@@ -118,6 +118,17 @@ pub mod space {
     pub const NAV_CHEVRON_STROKE: f32 = 1.0;
     /// One device-independent pixel: a border, a rule, an edge highlight.
     pub const HAIRLINE: f32 = 1.0;
+    /// A settings slider's rail (the 1px rim included), its handle's radius
+    /// at rest and while dragged.
+    pub const SLIDER_RAIL: f32 = 7.0;
+    pub const SLIDER_KNOB: f32 = 8.5;
+    pub const SLIDER_KNOB_DRAG: f32 = 9.5;
+    /// A pick list's chevron slot and its right inset, and the open menu's
+    /// drop and blur.
+    pub const PICK_CHEVRON: f32 = 9.0;
+    pub const PICK_CHEVRON_INSET: f32 = 12.0;
+    pub const MENU_DROP: f32 = 6.0;
+    pub const MENU_BLUR: f32 = 18.0;
     /// The drag track of a numeric control in a settings row.
     pub const SLIDER_W: f32 = 180.0;
     /// The typed-entry box beside that track: wide enough for a signed

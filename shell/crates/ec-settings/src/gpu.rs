@@ -9,13 +9,13 @@
 //! is the same shape: a string list of desktop ids, written whole. Both
 //! controls exist only where a discrete GPU does (`App::discrete_gpu`).
 
-use iced::widget::{column, pick_list, row, text, Column};
-use iced::{Alignment, Element, Theme};
+use iced::widget::{column, row, text, Column};
+use iced::{Alignment, Element, Length, Theme};
 use serde_json::json;
 
 use ec_ui::theme;
 use ec_ui::tokens::{font, size, space};
-use ec_ui::widget::{glass_panel as panel, hairline, list_row, list_row_at, micro_label, pill};
+use ec_ui::widget::{dropdown, glass_panel as panel, hairline, list_row, list_row_at, micro_label, pill};
 
 use crate::app::{row_id, App, Message};
 use crate::pinned::{addable, edited, list_of, name_of, Choice, Msg};
@@ -95,10 +95,13 @@ pub fn view(app: &App) -> Option<Element<'_, Message, Theme>> {
             .push(list_row_at(name.unwrap_or(id), value, name.is_none()));
     }
     let options: Vec<Choice> = addable(&app.installed, &list).into_iter().cloned().collect();
-    let add = pick_list(options, None::<Choice>, |c: Choice| {
-        Message::GpuApps(Msg::Add(c.id))
-    })
-    .placeholder("Add an app");
+    let add = dropdown(
+        options,
+        None::<Choice>,
+        |c: Choice| Message::GpuApps(Msg::Add(c.id)),
+        Some("Add an app"),
+        Length::Shrink,
+    );
     body = body.push(hairline()).push(list_row("Add", add));
     Some(
         iced::widget::container(column![panel(app.glass_radius, app.hairline_cards, body)])

@@ -21,7 +21,7 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use iced::widget::{button, column, container, pick_list, row, text, Column, Space};
+use iced::widget::{button, column, container, row, text, Column, Space};
 use iced::{Alignment, Element, Length, Task, Theme};
 use serde_json::{json, Value};
 
@@ -32,8 +32,8 @@ use ec_ui::motion::{Animated, Curve, Motion};
 use ec_ui::theme::{self, CellTone};
 use ec_ui::tokens::{canvas, color, font, motion as tmotion, radius, size, space};
 use ec_ui::widget::{
-    badge, big_value, glass_panel as panel, hairline, micro_label, motion_stage, pill, value as mono,
-    StageFrame,
+    badge, big_value, dropdown, glass_panel as panel, hairline, micro_label, motion_stage, pill,
+    value as mono, StageFrame,
 };
 
 use crate::app::{App, Message};
@@ -903,11 +903,13 @@ fn event_row<'a>(
             .style(theme::inset)
             .into()
     } else {
-        pick_list(curves, Some(b.curve.key().to_owned()), move |v| {
-            Message::Chose(curve_path.clone(), v)
-        })
-        .width(Length::Fixed(canvas::EVENT_PICK_W))
-        .into()
+        dropdown(
+            curves,
+            Some(b.curve.key().to_owned()),
+            move |v| Message::Chose(curve_path.clone(), v),
+            None,
+            Length::Fixed(canvas::EVENT_PICK_W),
+        )
     };
     let lit = app.lit(&style_path);
     container(
@@ -928,10 +930,13 @@ fn event_row<'a>(
             .width(Length::Fixed(canvas::EVENT_NAME_W)),
             Space::new().width(Length::Fill),
             marks,
-            pick_list(list, Some(b.style.clone()), move |v| {
-                Message::Chose(style_path.clone(), v)
-            })
-            .width(Length::Fixed(canvas::EVENT_PICK_W)),
+            dropdown(
+                list,
+                Some(b.style.clone()),
+                move |v| Message::Chose(style_path.clone(), v),
+                None,
+                Length::Fixed(canvas::EVENT_PICK_W),
+            ),
             stepper,
             curve_pick,
         ]

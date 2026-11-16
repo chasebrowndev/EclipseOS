@@ -82,7 +82,7 @@ impl Tone {
 
     fn ground(self) -> Color {
         match self {
-            Tone::Accent => color::accent_fill(),
+            Tone::Accent => color::lift(),
             Tone::Danger => color::danger_fill(),
             Tone::Quiet => color::glass(),
         }
@@ -217,7 +217,7 @@ pub fn pick<'a, M: Clone + 'a>(
         .style(move |_t: &Theme, status: button::Status| {
             let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
             let ground = match (selected, accent, hovered) {
-                (true, true, _) => color::accent_fill(),
+                (true, true, _) => color::lift(),
                 (true, false, _) => color::lift(),
                 (false, _, true) => color::lift_soft(),
                 (false, _, false) => Color::TRANSPARENT,
@@ -619,7 +619,7 @@ pub fn card<'a, M: Clone + 'a>(
         .style(move |_t: &Theme, status: button::Status| {
             let hovered = enabled && matches!(status, button::Status::Hovered | button::Status::Pressed);
             let (ground, edge) = match (selected, hovered) {
-                (true, _) => (color::accent_fill(), color::accent_border()),
+                (true, _) => (color::lift(), color::accent_border()),
                 (false, true) => (color::lift_soft(), color::border_strong()),
                 (false, false) => (color::glass(), color::border()),
             };

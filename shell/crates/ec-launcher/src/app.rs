@@ -112,7 +112,7 @@ impl App {
     pub fn with(cfg: crate::conn::LauncherConfig) -> Self {
         let term = crate::conn::fetch_terminal_command();
         let (radius, blur) = crate::conn::fetch_glass();
-        let glass_radius = radius.unwrap_or(ec_ui::tokens::radius::CARD);
+        let glass_radius = radius.unwrap_or(ec_ui::tokens::radius::WINDOW);
         let blur = blur.unwrap_or(false);
         let mut app = App {
             entries: apps::scan_with(term.as_deref(), &cfg.search),
@@ -366,7 +366,7 @@ mod tests {
             selected: 0,
             problem: None,
             term: None,
-            glass_radius: ec_ui::tokens::radius::CARD,
+            glass_radius: ec_ui::tokens::radius::WINDOW,
             blur: false,
             show_key_hints: true,
             width: crate::WIDTH,

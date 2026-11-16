@@ -17,9 +17,7 @@ use std::time::{Duration, Instant};
 
 use iced::advanced::widget::operation::{Focusable, Operation, Outcome};
 use iced::advanced::widget::Id;
-use iced::widget::{
-    button, column, container, pick_list, row, sensor, text, text_input, Column, Row, Space, Stack,
-};
+use iced::widget::{button, column, container, row, sensor, text, text_input, Column, Row, Space, Stack};
 use iced::{Alignment, Element, Length, Point, Rectangle, Size, Task, Theme};
 use serde_json::{json, Value};
 
@@ -29,9 +27,10 @@ use ec_ui::theme;
 use ec_ui::tokens::{bar, canvas, color, font, motion as pace, size, space};
 use ec_ui::widget::{
     arg_chip, art_mark, art_thumb, badge, bar_cell_frame, bar_sheet, battery_gauge, big_value, config_error,
-    drag_bar, drag_ghost, draggable, drop_well, drop_zone, edge_note, edge_quad, elide, glass_inset as inset,
-    glass_panel as panel, glide_track, hairline, list_row, mark, micro_label, mini_meter, outline, pill, pin,
-    placed, ring, track_label, viz_bars, widget_shell_rounded, Art, Grip, NumericSlider, Toggle, Well,
+    drag_bar, drag_ghost, draggable, drop_well, drop_zone, dropdown, edge_note, edge_quad, elide,
+    glass_inset as inset, glass_panel as panel, glide_track, hairline, list_row, mark, micro_label,
+    mini_meter, outline, pill, pin, placed, ring, track_label, viz_bars, widget_shell_rounded, Art, Grip,
+    NumericSlider, Toggle, Well,
 };
 
 use crate::app::{App, Message};

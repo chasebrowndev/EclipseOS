@@ -108,9 +108,7 @@ pub mod color {
         content_backed,
         accent,
         accent_text,
-        accent_fill,
         accent_border,
-        accent_wash,
         text,
         text_secondary,
         text_tertiary,
@@ -147,13 +145,16 @@ pub mod color {
     /// spec's tertiary text value.
     pub const DIM: f32 = 0.40;
 
-    /// A selected pill under the pointer, then pressed: the same accent tint a
-    /// step and two steps clearer, its rim crisper. Scales on `accent_fill` and
-    /// `accent_border`, so a user accent keeps them. Glassy, not glowy: the rim
-    /// stays a 1px edge and nothing lights past it.
-    pub const SELECTED_HOVER_FILL: f32 = 1.7;
-    pub const SELECTED_PRESS_FILL: f32 = 2.4;
+    /// A selected pill's gold rim under the pointer: the same tint a step
+    /// crisper. Scales `accent_border`, so a user accent keeps it. Glassy, not
+    /// glowy: the rim stays a 1px edge and nothing lights past it.
     pub const SELECTED_HOVER_RIM: f32 = 1.6;
+    /// A slider's gold: the rim at full value is `accent_border` this many
+    /// steps crisper (its rim runs from the neutral inset rim at 0 to here at
+    /// 1), and the filled run starts this faint at 0 and is the accent itself
+    /// at 1.
+    pub const SLIDER_RIM_MAX: f32 = 2.4;
+    pub const SLIDER_RUN_MIN: f32 = 0.18;
     /// A cell cut from the inset material ([`crate::theme::inset_cell`]):
     /// hover and press are small steps up its fill and rim, not a jump to a
     /// pill's slab; a focused inset field is the rim alone, one step crisper.

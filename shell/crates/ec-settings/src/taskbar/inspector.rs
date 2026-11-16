@@ -476,9 +476,13 @@ fn editor_view<'a>(app: &App, ed: &'a Editor) -> Element<'a, Message, Theme> {
             col = col
                 .push(list_row(
                     "Reading",
-                    pick_list(&SOURCES[..], current, |s: &str| {
-                        bar_msg(Msg::Source(s.to_owned()))
-                    }),
+                    dropdown(
+                        &SOURCES[..],
+                        current,
+                        |s: &str| bar_msg(Msg::Source(s.to_owned())),
+                        None,
+                        Length::Shrink,
+                    ),
                 ))
                 .push(errors_for(ed, Field::Source))
                 .push(list_row(

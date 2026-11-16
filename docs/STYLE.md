@@ -74,8 +74,12 @@ the same rules (ADR 0084).
 - Shadow: warm and soft, rgba(60,45,20,.18-.28). A light window must not sit in a black halo.
   Compositor pane glass casts the cell's contact shadow (a pixel down, 6 px fall-off) at rest,
   on hover and on focus; none pressed, none minimized or latent at rest
-- Accent: #f2c33c for fills, toggles, slider fill and marks; knob and glyph ink on it #1a1610.
-  Accent *text* is #856000 (≥ 4.5:1 on the base and on a selected `accent_fill` pill). Tints: rgba(242,195,60,.18) fill, .45 border
+- Accent: #f2c33c for marks, rims, knobs and slider handles. **Nothing has a gold ground**
+  (owner, 2026-11-15): a selected pill, chip, row or default action is the neutral inset (the
+  same fill and rim as any inset cell) with a gold label and a gold-tinted rim, a step crisper
+  on hover. A toggle is an inset track; on is a gold rim and gold knob. A slider is an inset
+  rail whose filled run and rim ramp from faint to full accent as the value nears max.
+  Accent *text* is #856000 (≥ 4.5:1 on the base and on the inset). Rim tint: rgba(242,195,60,.45)
 - Text: #1a1610 primary, rgba(26,22,16,.62) secondary, rgba(26,22,16,.42) tertiary
 - Settings content column: rgba(255,255,255,.12) tint on the shared blur (the light twin
   of the dark .28 black)

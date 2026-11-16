@@ -8,7 +8,10 @@
 
 use iced::{
     border,
-    widget::{button, container, radio, rule, scrollable, slider, text, text_editor, text_input},
+    widget::{
+        button, container, overlay::menu, pick_list, radio, rule, scrollable, slider, text, text_editor,
+        text_input,
+    },
     Background, Border, Color, Shadow, Theme, Vector,
 };
 
@@ -175,20 +178,27 @@ pub fn bar_folded(radius: f32, blur: bool, rim: f32) -> impl Fn(&Theme) -> conta
 /// `decoration.surface.inset-fill` (white on dark, the ink step on light), its rim [`crate::surface::RIM_PER_FILL`]
 /// times that.
 pub fn inset(_t: &Theme) -> container::Style {
-    let fill = crate::surface::current().inset_fill;
+    let (fill, rim) = inset_colors();
     container::Style {
-        background: Some(Background::Color(crate::surface::group_fill(
-            fill,
-            color::palette().cell,
-            crate::surface::DEFAULT.inset_fill,
-        ))),
+        background: Some(Background::Color(fill)),
         border: Border {
-            color: crate::surface::group_rim(fill),
+            color: rim,
             width: 1.0,
             radius: radius::INSET.into(),
         },
         ..container::Style::default()
     }
+}
+
+/// The [`inset`] material's fill and rim, for a control that draws its own
+/// quads (the toggle) or composes a state on top (the slider, the pick list):
+/// one source, so every quiet box in a pane is the same box.
+pub fn inset_colors() -> (Color, Color) {
+    let fill = crate::surface::current().inset_fill;
+    (
+        crate::surface::group_fill(fill, color::palette().cell, crate::surface::DEFAULT.inset_fill),
+        crate::surface::group_rim(fill),
+    )
 }
 
 /// A pressable cell of the [`inset`] material: the same quiet fill, thin rim
@@ -369,9 +379,10 @@ pub fn clear_window<S>(_state: &S, theme: &Theme) -> iced::theme::Style {
 pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_t, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
+        let (fill, rim) = inset_colors();
         button::Style {
             background: Some(Background::Color(match (active, hovered) {
-                (true, _) => color::nav_active(),
+                (true, _) => fill,
                 (false, true) => color::nav_hover(),
                 (false, false) => Color::TRANSPARENT,
             })),
@@ -380,7 +391,11 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             } else {
                 color::text_secondary()
             },
-            border: border::rounded(radius::INSET),
+            border: Border {
+                color: if active { rim } else { Color::TRANSPARENT },
+                width: if active { 1.0 } else { 0.0 },
+                radius: radius::INSET.into(),
+            },
             ..button::Style::default()
         }
     }
@@ -388,52 +403,33 @@ pub fn nav(active: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
 
 /// A pill control. `selected` is the one accent state — segmented choices use
 /// this, and only one member of a group may be selected at a time, which is
-/// what keeps a pane from showing two competing yellows.
+/// what keeps a pane from showing two competing yellows. The selected pill is
+/// [`inset_cell_default`] in the pill's shape: the quiet inset fill, a gold
+/// label and a gold-tinted rim, never a gold fill.
 pub fn pill(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |_t, status| {
-        let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-        let pressed = matches!(status, button::Status::Pressed);
-        button::Style {
-            background: Some(Background::Color(if selected && pressed {
-                color::accent_fill().scale_alpha(color::SELECTED_PRESS_FILL)
-            } else if selected && hovered {
-                color::accent_fill().scale_alpha(color::SELECTED_HOVER_FILL)
-            } else if selected {
-                color::accent_fill()
-            } else if hovered {
-                color::pill_hover()
-            } else {
-                color::pill()
-            })),
-            text_color: if selected {
-                color::accent_text()
-            } else {
-                color::text_secondary()
-            },
-            border: Border {
-                color: match (selected, hovered) {
-                    (true, true) => color::accent_border().scale_alpha(color::SELECTED_HOVER_RIM),
-                    (true, false) => color::accent_border(),
-                    (false, _) => color::border(),
-                },
-                width: 1.0,
-                radius: radius::PILL.into(),
-            },
-            ..button::Style::default()
+    move |t, status| {
+        if selected {
+            let mut s = inset_cell_default(true)(t, status);
+            s.border.radius = radius::PILL.into();
+            return s;
         }
+        // The same quiet inset as the selected pill, minus the gold: an
+        // unselected segment must not read as a grey slab.
+        inset_cell(t, status)
     }
 }
 
 /// A chip on a spatial canvas: an object, not a verb. `selected` is the
-/// pane's one yellow when a canvas is its hero.
+/// pane's one yellow when a canvas is its hero: a gold label and rim on the
+/// same lift ground, never a gold fill.
 pub fn chip(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
     move |_t, status| {
         let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
         button::Style {
-            background: Some(Background::Color(match (selected, hovered) {
-                (true, _) => color::accent_fill(),
-                (false, true) => color::lift(),
-                (false, false) => color::lift_soft(),
+            background: Some(Background::Color(if hovered {
+                color::lift()
+            } else {
+                color::lift_soft()
             })),
             text_color: if selected {
                 color::accent_text()
@@ -653,27 +649,49 @@ pub fn hairline(_t: &Theme) -> rule::Style {
     }
 }
 
-pub fn eclipse_slider(_t: &Theme, status: slider::Status) -> slider::Style {
-    let knob = if matches!(status, slider::Status::Dragged) {
-        9.0
+/// A slider on the quiet inset: the rail is the inset's own fill, its rim and
+/// the filled run go from faint to strong gold as `frac` (the value's place in
+/// its range, 0..=1) approaches the end, and the handle is gold. At 0 the rim
+/// is the neutral inset rim; at 1 it is the crisp accent rim
+/// ([`color::SLIDER_RIM_MAX`] steps of `accent_border`). No halo.
+pub fn eclipse_slider(frac: f32) -> impl Fn(&Theme, slider::Status) -> slider::Style {
+    let f = if frac.is_finite() {
+        frac.clamp(0.0, 1.0)
     } else {
-        8.5
+        0.0
     };
-    slider::Style {
-        rail: slider::Rail {
-            backgrounds: (
-                Background::Color(color::accent()),
-                Background::Color(color::track()),
-            ),
-            width: 5.0,
-            border: border::rounded(radius::PILL),
-        },
-        handle: slider::Handle {
-            shape: slider::HandleShape::Circle { radius: knob },
-            background: Background::Color(color::accent()),
-            border_color: Color::TRANSPARENT,
-            border_width: 0.0,
-        },
+    move |_t: &Theme, status: slider::Status| {
+        let (ground, neutral) = inset_colors();
+        let gold = color::accent_border().scale_alpha(color::SLIDER_RIM_MAX);
+        let rim = Color {
+            r: neutral.r + (gold.r - neutral.r) * f,
+            g: neutral.g + (gold.g - neutral.g) * f,
+            b: neutral.b + (gold.b - neutral.b) * f,
+            a: neutral.a + (gold.a - neutral.a) * f,
+        };
+        let run = color::accent().scale_alpha(color::SLIDER_RUN_MIN + (1.0 - color::SLIDER_RUN_MIN) * f);
+        let knob = if matches!(status, slider::Status::Dragged) {
+            space::SLIDER_KNOB_DRAG
+        } else {
+            space::SLIDER_KNOB
+        };
+        slider::Style {
+            rail: slider::Rail {
+                backgrounds: (Background::Color(run), Background::Color(ground)),
+                width: space::SLIDER_RAIL,
+                border: Border {
+                    color: rim,
+                    width: 1.0,
+                    radius: radius::PILL.into(),
+                },
+            },
+            handle: slider::Handle {
+                shape: slider::HandleShape::Circle { radius: knob },
+                background: Background::Color(color::accent()),
+                border_color: Color::TRANSPARENT,
+                border_width: 0.0,
+            },
+        }
     }
 }
 
@@ -696,13 +714,15 @@ pub fn eclipse_radio(_t: &Theme, status: radio::Status) -> radio::Style {
 
 pub fn eclipse_input(_t: &Theme, status: text_input::Status) -> text_input::Style {
     let focused = matches!(status, text_input::Status::Focused { .. });
+    let (fill, rim) = inset_colors();
     text_input::Style {
-        background: Background::Color(color::input_fill()),
+        background: Background::Color(fill),
         border: Border {
+            // The inset's focus is its rim one step crisper, never gold.
             color: if focused {
-                color::accent_border()
+                rim.scale_alpha(color::INSET_FOCUS_RIM)
             } else {
-                color::border()
+                rim
             },
             width: 1.0,
             radius: radius::INSET.into(),
@@ -951,6 +971,53 @@ pub fn send(ready: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
             border: border::rounded(radius::PILL),
             ..button::Style::default()
         }
+    }
+}
+
+/// A closed pick list: the [`inset_cell`] box (quiet fill and rim, a step up
+/// under the pointer), its rim crisper while the menu is open.
+pub fn eclipse_pick_list(t: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let (look, open) = match status {
+        pick_list::Status::Active => (inset_cell(t, button::Status::Active), false),
+        pick_list::Status::Hovered => (inset_cell(t, button::Status::Hovered), false),
+        pick_list::Status::Opened { .. } => (inset_cell(t, button::Status::Hovered), true),
+    };
+    let mut border = look.border;
+    if open {
+        border.color = border
+            .color
+            .scale_alpha(color::INSET_FOCUS_RIM / color::INSET_HOVER_RIM);
+    }
+    pick_list::Style {
+        text_color: color::text(),
+        placeholder_color: color::text_tertiary(),
+        handle_color: color::text_secondary(),
+        background: look.background.unwrap_or(Background::Color(Color::TRANSPARENT)),
+        border,
+    }
+}
+
+/// The open list of a pick list: a rounded glass sheet (the menu ground, the
+/// inset's rim, a soft drop), the row under the pointer one step up and
+/// wearing a gold label. iced's menu has one "selected" look for hover and
+/// choice both, so the two share it.
+pub fn eclipse_pick_menu(_t: &Theme) -> menu::Style {
+    let (_, rim) = inset_colors();
+    menu::Style {
+        background: Background::Color(color::menu_ground()),
+        border: Border {
+            color: rim,
+            width: 1.0,
+            radius: radius::INSET.into(),
+        },
+        text_color: color::text_secondary(),
+        selected_text_color: color::accent_text(),
+        selected_background: Background::Color(color::highlight()),
+        shadow: Shadow {
+            color: color::cell_shadow(),
+            offset: Vector::new(0.0, space::MENU_DROP),
+            blur_radius: space::MENU_BLUR,
+        },
     }
 }
 
