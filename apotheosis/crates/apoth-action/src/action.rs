@@ -526,6 +526,9 @@ define_actions! {
         "Focus the previous pane." { };
     PaneFocusLast = "pane.focus-last" [Layout] "Focus last pane"
         "Focus the previously focused pane." { };
+    PaneReconnect = "pane.reconnect" [Input] "Reconnect pane"
+        "Start a fresh ssh in a pane whose `apoth ssh --hold` link was lost (types Enter there)."
+        { };
     PaneMove = "pane.move" [Layout] "Move pane" "Swap the pane with its neighbour."
         { direction: Dir };
     PaneResize = "pane.resize" [Layout] "Resize pane" "Move a pane edge by cells."
@@ -694,6 +697,12 @@ define_actions! {
     SessionRestore = "session.restore" [Spawn] "Restore session"
         "Restore a saved session, respawning its commands suspended."
         { name: Option<String> };
+    SessionDetach = "session.detach" [Layout] "Detach session"
+        "Detach this window from its session daemon; the panes keep running (tmux prefix d)."
+        { };
+    SessionKill = "session.kill" [Layout] "Kill session"
+        "Close every pane of this window's session daemon and end it (tmux kill-session)."
+        { };
     ScrollbackClear = "scrollback.clear" [Layout] "Clear scrollback" "Discard the scrollback." { };
     ScrollbackSave = "scrollback.save" [ReadContent, Spawn] "Save scrollback"
         "Write the scrollback to a file."

@@ -449,6 +449,53 @@ mod initial_commit_placement {
         );
     }
 
+    /// A floating window that sizes itself to its content pins min == max on
+    /// every change (the secret prompt). The commit that changes the hints is
+    /// answered with a configure at the new size, on the first try, keeping
+    /// the window's top-left; a commit that leaves them alone sends nothing.
+    #[test]
+    fn a_floating_window_that_changes_its_size_hints_is_refitted_at_once() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let (n, _) = neighbour(&mut h, &mut c);
+
+        let t = c.create_toplevel(&mut h);
+        t.toplevel.set_parent(Some(&n.toplevel));
+        c.commit(&mut h, &t.surface);
+        c.attach(&mut h, &t.surface);
+        let window = window_of(&h, &t).expect("placed");
+        assert!(floats(&h, &window), "a dialog floats");
+        let loc = stored_content(&h.state, &window).expect("floating").loc;
+
+        t.toplevel.set_min_size(320, 140);
+        t.toplevel.set_max_size(320, 140);
+        c.commit(&mut h, &t.surface);
+        assert_eq!(c.configured_sizes(&t.toplevel).last(), Some(&(320, 140)));
+        let content = stored_content(&h.state, &window).expect("floating");
+        assert_eq!(
+            (content.size.w, content.size.h),
+            (320, 140),
+            "stored rect refitted"
+        );
+        assert_eq!(content.loc, loc, "top-left kept");
+
+        let sent = c.configured_sizes(&t.toplevel).len();
+        c.attach_sized(&mut h, &t.surface, 320, 140);
+        c.commit(&mut h, &t.surface);
+        assert_eq!(
+            c.configured_sizes(&t.toplevel).len(),
+            sent,
+            "unchanged hints send no configure"
+        );
+
+        // Grows (a details pane opened): straight to the new height.
+        t.toplevel.set_min_size(320, 260);
+        t.toplevel.set_max_size(320, 260);
+        c.commit(&mut h, &t.surface);
+        assert_eq!(c.configured_sizes(&t.toplevel).last(), Some(&(320, 260)));
+        assert_eq!(stored_content(&h.state, &window).expect("floating").loc, loc);
+    }
+
     /// `set_fullscreen` before the initial commit has no window to act on
     /// yet; it is parked and honoured when the commit places the window.
     #[test]

@@ -14,6 +14,7 @@
 //! `action.run` of such a name is `unknown-action`.
 #![forbid(unsafe_code)]
 
+pub mod askpass;
 pub mod caps;
 pub mod error;
 pub mod event;
@@ -25,6 +26,7 @@ pub mod method;
 pub mod mux;
 pub mod params;
 pub mod results;
+pub mod secret_prompt;
 
 pub use caps::{Cap, Class};
 pub use error::{

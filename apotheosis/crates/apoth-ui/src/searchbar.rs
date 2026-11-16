@@ -13,7 +13,10 @@
 use crate::draw::{DrawList, IconId, Rim};
 use crate::geom::{Point, Rect};
 use crate::hit::{HitTree, Layer};
-use crate::state::{ControlState, UiState, WidgetId, glass, label_colour, surface};
+use crate::state::{
+    ControlState, UiState, WidgetId, accent_label, accent_surface, chip, glass, label_colour,
+    surface,
+};
 use crate::text::{Measure, TextRun};
 use crate::tokens::{Palette, metrics, radius, size, space};
 
@@ -198,14 +201,11 @@ pub fn draw(
 
     // The field: an inset well; keyboard focus is the brighter fill and the crisp rim.
     let fst = ui.control(l.id_of(SearchTarget::Field), false, spec.focused);
-    let (ff, fr) = surface(
-        pal,
-        ControlState {
-            focus_kb: false,
-            ..fst
-        },
-    );
-    out.rect(l.field, radius::INSET, ff, Some(fr));
+    let fst = ControlState {
+        focus_kb: false,
+        ..fst
+    };
+    chip(out, l.field, radius::INSET, fst, surface(pal, fst));
     let tx = l.field.x + space::MD;
     let ty = l.field.y + (l.field.h - size::BODY) / 2.0;
     let count_w = if spec.count.is_empty() {
@@ -260,22 +260,22 @@ pub fn draw(
             continue;
         };
         let st = ui.control(*id, false, cs.on);
-        let (fill, rim) = surface(pal, st);
-        if cs.on || st.hover || st.pressed || st.focus_kb {
-            out.rect(*r, radius::INSET, fill, Some(rim));
+        let (fill, rim) = if cs.on {
+            accent_surface(pal, st)
         } else {
-            out.rect(
-                *r,
-                radius::INSET,
-                pal.cell,
-                Some(Rim {
-                    width: metrics::RIM_W,
-                    colour: pal.cell_rim,
-                }),
-            );
+            surface(pal, st)
+        };
+        if cs.on || st.hover || st.pressed || st.focus_kb {
+            chip(out, *r, radius::INSET, st, (fill, rim));
+        } else {
+            let rest = Rim {
+                width: metrics::RIM_W,
+                colour: pal.cell_rim,
+            };
+            chip(out, *r, radius::INSET, st, (pal.cell, rest));
         }
         let colour = if cs.on {
-            pal.accent_text
+            accent_label(pal, st)
         } else {
             label_colour(pal, st)
         };
@@ -302,7 +302,7 @@ pub fn draw(
         let st = ui.control(l.id_of(t), disabled, false);
         if !disabled && (st.hover || st.pressed || st.focus_kb) {
             let (f, rm) = surface(pal, st);
-            out.rect(r, radius::INSET, f, Some(rm));
+            chip(out, r, radius::INSET, st, (f, rm));
         }
         out.icon(icon, r.inset(space::XS), label_colour(pal, st));
     }

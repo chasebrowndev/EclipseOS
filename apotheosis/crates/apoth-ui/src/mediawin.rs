@@ -7,7 +7,7 @@
 
 use crate::draw::{DrawList, IconId, Rim};
 use crate::geom::{Point, Rect};
-use crate::state::{ControlState, glass_faded, label_colour, surface};
+use crate::state::{ControlState, chip_faded, glass_faded, label_colour};
 use crate::text::{Measure, TextRun};
 use crate::tokens::{Palette, Rgba, metrics, radius, size, space};
 
@@ -71,19 +71,7 @@ pub fn draw(
     if k > 0.0 {
         let pic = content(area, s);
         let r = close_rect(pic);
-        let (fill, rim) = surface(pal, s.close);
-        glass_faded(out, r, radius::PILL, rim.colour, pal, k);
-        if fill != pal.cell && fill != Rgba::CLEAR {
-            out.rect(
-                r,
-                radius::PILL,
-                fill.scaled(k),
-                Some(Rim {
-                    width: rim.width,
-                    colour: rim.colour.scaled(k),
-                }),
-            );
-        }
+        chip_faded(out, r, radius::PILL, s.close, pal, k);
         out.icon(
             IconId::Cross,
             r.inset(r.w * (1.0 - metrics::MEDIA_GLYPH) / 2.0),

@@ -41,6 +41,7 @@ pub enum Method {
     MediaWindowWrite,
     MediaWindowWait,
     MediaAttach,
+    AskpassArm,
 }
 
 /// One row of the method table.
@@ -344,6 +345,18 @@ pub const METHODS: &[MethodInfo] = &[
         false,
         false,
     ),
+    // `apoth ssh` (T-22 §3): arm the one-time askpass channel for this ssh process. No
+    // class: the rule is its own (a descendant of one of our panes, never an agent's), and
+    // the server applies it before anything else.
+    row(
+        Method::AskpassArm,
+        "askpass.arm",
+        &[],
+        false,
+        false,
+        false,
+        false,
+    ),
 ];
 
 impl Method {
@@ -394,7 +407,7 @@ mod tests {
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), METHODS.len());
-        assert_eq!(METHODS.len(), 30);
+        assert_eq!(METHODS.len(), 31);
         for r in METHODS {
             assert_eq!(Method::parse(r.name), Some(r.method));
             assert_eq!(r.method.info().name, r.name);

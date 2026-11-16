@@ -16,8 +16,10 @@
 //! that need a view to answer or show something the server cannot (clipboard reads,
 //! graphics) are denied here and so in every view (the deny word rides in the snapshot).
 //!
-//! Lifetime: the server keeps running with no view attached (T-21 is silent: reported) and
-//! exits when its last pane exits, removing its socket. Nothing here logs pane content,
+//! Lifetime (the tmux model, owner decision 2026-11-14): closing a window detaches it; the
+//! server keeps running with no view attached and exits when its last pane exits, removing
+//! its socket. `KillSession` (`apoth server kill`, the `session.kill` action) closes every
+//! pane with the HUP, TERM, KILL escalation, so the server then ends. Nothing here logs pane content,
 //! input, command lines or working directories.
 
 pub(crate) mod auth;
@@ -268,11 +270,15 @@ struct Server {
     listener: UnixListener,
     session: String,
     allowed: Vec<PathBuf>,
+    /// The installed `apoth`, pre-granted while it runs `apoth proxy` (T-22 §5).
+    proxy: Option<PathBuf>,
     panes: Vec<SPane>,
     views: Vec<View>,
     next_pane: u64,
     next_view: u64,
     buf: Vec<u8>,
+    /// `KillSession` arrived: every pane is closing, nothing new starts.
+    killing: bool,
 }
 
 /// What a poll turn saw.
@@ -320,11 +326,13 @@ impl Server {
             listener,
             session,
             allowed: auth::pre_granted(),
+            proxy: auth::proxy_exe(),
             panes: Vec::new(),
             views: Vec::new(),
             next_pane: 1,
             next_view: 1,
             buf: vec![0; MAX_CHUNK],
+            killing: false,
         }
     }
 
@@ -778,7 +786,14 @@ impl Server {
                 if v.attached {
                     return;
                 }
-                let grant = auth::attach_grant(&v.peer.facts, v.peer.exe.as_deref(), &self.allowed);
+                let (pid, pidfd) = (v.peer.pid, &v.peer.pidfd);
+                let grant = auth::attach_grant(
+                    &v.peer.facts,
+                    v.peer.exe.as_deref(),
+                    &self.allowed,
+                    self.proxy.as_deref(),
+                    || auth::runs_proxy(pid, pidfd),
+                );
                 if let Grant::None(reason) = grant {
                     tracing::info!(view = v.id, pid = v.peer.pid, "attach refused");
                     v.refuse(reason);
@@ -829,7 +844,7 @@ impl Server {
                 rows,
                 cols,
             } => {
-                if !(v.sees() && auth::may_spawn(v.grant)) {
+                if self.killing || !(v.sees() && auth::may_spawn(v.grant)) {
                     v.send(&ServerMsg::Spawned { token, pane: None });
                     return;
                 }
@@ -865,6 +880,21 @@ impl Server {
             ViewMsg::Detach => {
                 tracing::info!(view = v.id, "view detached");
                 v.dead = true;
+            }
+            ViewMsg::KillSession => {
+                if !auth::may_kill_session(&v.peer.facts) {
+                    v.refuse("agent sessions cannot kill a session");
+                    return;
+                }
+                tracing::info!(view = v.id, panes = self.panes.len(), "session kill");
+                self.killing = true;
+                let now = Instant::now();
+                for p in &mut self.panes {
+                    if p.closing.is_none() && p.status.is_none() {
+                        let _ = p.pty.signal_group(Signal::HUP);
+                        p.closing = Some((now, 0));
+                    }
+                }
             }
             ViewMsg::DetachAll => {
                 if !auth::may_detach_all(&v.peer.facts) {

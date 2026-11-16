@@ -364,6 +364,10 @@ compositor-drawn polkit authentication agent** (trusted UI), never by a client
 such as `ec-secret-prompt`, since it is an admin-equivalent secret and a
 client prompt is spoofable. That agent is `ec-polkit-agent` and COMP-10 §3.14
 (ADR 0088).
+The rule is about polkit `auth_admin` only (owner amendment, 2026-11-15). A
+password a program asks for from a terminal pane, `sudo -A` included, may be
+collected by `ec-secret-prompt`'s Terminal target. That prompt's spoofability
+is recorded as an accepted risk (ADR 0053, amendment of 2026-11-15; T-22 §3).
 
 Agent sandboxes must not reach the system bus at all. That is S-03's to
 guarantee, and until S-03 says so it is an assumption this section depends on.

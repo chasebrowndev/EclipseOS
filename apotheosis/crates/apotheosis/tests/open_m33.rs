@@ -401,10 +401,7 @@ fn image_hint_opens_into_a_float() {
     let t = s.wait_file(&path, "the Open menu", |t| {
         t.contains("palette open mode Open") && t.contains("palette first ")
     });
-    assert!(
-        t.contains("palette first Open with apoth icat in a float"),
-        "{t}"
-    );
+    assert!(t.contains("palette first Open in a float"), "{t}");
     s.chord("Return", &[]);
     let t = s.wait_file(&path, "the icat float", |t| {
         t.contains("palette closed") && !floats(t).is_empty()

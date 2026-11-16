@@ -1154,16 +1154,21 @@ Passes per frame, back to front:
    (`copy_texture_to_texture`, never overlapping in place). Per-row instance ranges move
    with their rows. Only the rows listed in the damage are redrawn. Within it:
    a. backgrounds — one full-grid quad sampling a `cols × rows` RGBA8 texture; selection,
-      search highlight, inverse and dim are folded in on the CPU before upload;
+      search highlight, inverse and dim are folded in on the CPU before upload; then a
+      rounded-rect pass over selection runs and search matches (radius 0.2 × cell height,
+      clamped to 1–6 px; a corner rounds only where the rows above and below leave its
+      column uncovered); the current search match also gets a `cursor_thickness` rim;
    b. glyphs — one instance per glyph (grid position, pixel offset, atlas rect, colour,
       flags), persistent per-row instance ranges rebuilt only for damaged rows;
    c. decorations — underline styles, strikethrough, overline as procedural rects/sprites
       with integer period arithmetic so patterns join across cells.
 4. Images with z ≥ 0, media placements.
-5. Cursor (block, beam, underline, hollow when unfocused); glyph under a block cursor is
+5. Cursor (block, beam, underline, hollow when unfocused); block and beam are rounded
+   rects, underline and hollow stay square; glyph under a block cursor is
    recoloured; optional smooth cursor motion, default off.
 6. IME preedit.
-7. Glass interface draw list (T-08): rounded rects (SDF), images, text.
+7. Glass interface draw list (T-08): rounded rects (SDF), images, text, and an erase
+   kind (Zero/OneMinusSrcAlpha) that cuts grid content out under a compositor glass pane.
 8. Overlays.
 
 **Atlases** are per window, owned by that window's render thread; no lock is taken on an
@@ -1271,7 +1276,17 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
 - Interface layers sit above the grid: each is a rounded rect with fill alpha from the
   token table and a 1 px hairline rim. While blur is on, layers carry **no** drop shadow
   and no top-edge highlight (STYLE.md: cards inside a window are fill + hairline only;
-  the compositor's rim lights the edge). The inner top highlight and the analytic
+  the compositor's rim lights the edge). **On Abyss with `eclipse_glass_manager_v1`**
+  advertised, chips and sheets draw no ground — neither fill nor rim; each is sent as an
+  `eclipse_glass_v1` pane (ADR 0081 "microglass"). Sheets (palette, search bar, context
+  menu, prompt sheets, tooltip) are drawn on one synchronised overlay subsurface above
+  the root, with an empty input region and its own glass object, so their panes blur the
+  terminal text beneath as a second, stacked sheet of glass; the root draws nothing under
+  them. Tabs, bar buttons, media controls and the float backing stay on the root surface,
+  where the client erases the grid under each pane.
+  The keyboard-focus rim, wells, keycaps and the danger rim stay client-drawn. The
+  `capability` event, not the bind, switches between this and the client-drawn ground at
+  run time. The inner top highlight and the analytic
   rounded-rect shadow (no blur pass) are drawn only in the blur-off fallback and, for the
   window shadow, only for CSD off Abyss (T-09 §4).
 - Text over glass meets a minimum contrast of 4.5:1 against the *worst-case* backdrop
@@ -1281,7 +1296,9 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
 | Surface | Release | Notes |
 |---|---|---|
 | Window frame | R1 | On Abyss server-side decorations are requested (COMP-06 `xdg_decoration` prefers server-side) and the title row collapses to the tab strip, hidden when one tab unless `tabs.show` is `always`. CSD (off Abyss, or `window.decorations client`): title bar merged with the tab strip; buttons per `wm_capabilities`; shadow as a transparent margin with `set_window_geometry`; input region trimmed. `window.hide-chrome` (set of `tiled|maximized|fullscreen`, default `fullscreen`) hides the chrome in those states |
-| Tab strip | R1 | `tabs.style` `floating|flat|hidden`; `tabs.position` `top|bottom`; title from the tab template (T-11 §8); badges: unseen output, bell, running, progress (OSC 9;4), exit status of last command; close and new-tab buttons; middle-click close; wheel switch; drag reorder (drag between windows is R3, needs xdg-toplevel-drag) |
+| Tab strip | R1 | `tabs.style` `floating|flat|hidden`; `tabs.position` `top|bottom`; title from the tab template (T-11 §8); badges: unseen output, bell, running, progress (OSC 9;4), exit status of last command; close and new-tab buttons (hit targets 22 and 24 px, 12 px glyphs drawn as shapes, each
+with a chip-family hover pane; new-tab sits right after the rightmost tab, at the left
+edge with no tabs, and stays at the end of the visible strip on overflow); middle-click close; wheel switch; drag reorder (drag between windows is R3, needs xdg-toplevel-drag) |
 | Pane frame | R1 | Rim and optional title per pane; `panes.frame` `full|titles|none`; focused pane = brighter rim; inactive dim `panes.inactive-dim` (T-13 §3, 0 disables); split handles draggable, double-click equalises |
 | Scrollbar | R1 | Overlay; `scrollbar.mode` `auto-hide|always|never`; `scrollbar.marks` (set of `prompts|search|bells`, default all) — prompts coloured by exit status |
 | Search bar | R1 | T-14 §6 |
@@ -1358,6 +1375,7 @@ fatal for the connection and logged with interface and code. Main reads `CLOCK_M
 | primary-selection-v1 | primary selection | disabled |
 | cursor-shape-v1 | named shapes (incl. OSC 22) | themed cursor via shm |
 | xdg-activation-v1 | urgency, focus hand-off from `apoth` launches | no urgency |
+| eclipse_glass_manager_v1 | interface chips and sheets as compositor glass panes on Abyss (T-08 §3); its `capability` event switches mode at run time | client-drawn glass |
 | zwp_input_timestamps_v1 | optional: nanosecond input times recorded as an informative latency series (T-23 §1 Clocks); never a gate input | client-side stamps only |
 | presentation-time | latency measurement, frame scheduling phase | frame callbacks only |
 | fifo-v1, commit-timing-v1 | informational only: used by the WSI under Fifo; Apotheosis never creates these objects on its surfaces (T-07 §2) | — |
@@ -1395,10 +1413,12 @@ exposed by the `wayland-info` Action and IPC (AUTOMATION-38).
 ## 5. Blur
 Bind `ext_background_effect_manager_v1`, track its `capabilities` (blur bit), create one
 effect object per surface, and set the blur region, committed with the frame that draws
-it. On Abyss the region is one box covering the window geometry (T-08 §3) and only
-`ext_background_effect_v1` is used. Off Abyss the region is the glass rects and the
+it. On Abyss the region is one box covering the window geometry (T-08 §3); interface
+chips and sheets are `eclipse_glass_v1` panes (optional global `eclipse_glass_manager_v1`;
+absent → client-drawn glass; T-08 §3, ADR 0081). Sheets go on an overlay `wl_subsurface`
+(sync, empty input region, own `get_glass`), created only while the glass global is bound. Off Abyss the region is the glass rects and the
 ladder is ext effect → `org_kde_kwin_blur` → tint/opaque. Capabilities can change at
-runtime; the ladder is re-evaluated. No private Eclipse protocol is used (ADR 0109).
+runtime; the ladder is re-evaluated.
 
 ## 6. Seat
 - Keyboard: keymap fd → the XKB backend (T-05); repeat is timed by us from
@@ -1522,7 +1542,11 @@ placement. An entry that does not parse is dropped with a diagnostic. "Remember 
 <type>" in the picker writes one entry through the editor (§5). Both keys have GUI rows
 (Settings → Security → Links, "Open with").
 
-Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10).
+Security additions: a `security { <class> allow|ask|deny }` child block under `domain` and `profile` (T-18 §3; profile wins over domain; it never loosens a pane that is remote only by process detection); `security.remote-keys` bool, default #false (T-17 §5); `security.sudo-askpass` bool, default #false, global (T-22 §3); `security.password-prompt` enum `auto|off`, default `auto`, global (T-17 §5); and `remote.clients` list (extend-only), default [ssh, mosh-client, telnet, docker, podman, kubectl, tmux, screen] (T-18 §10). Remote additions: `remote.persist` enum `off|auto|always`, default `auto`,
+global, override class `behaviour`, live (T-22 §4); a `domain`'s `persist` child
+overrides it for that domain (validated against the same values, and only beside an
+`ssh` destination). The key has a GUI row (Settings → Security → Remote, "Remote session
+daemon").
 
 ## 4. Load, validate, apply
 - Parse into a fresh model; collect **all** diagnostics (file, line, column, key,
@@ -1678,7 +1702,9 @@ There is no action that passes a string to `sh -c`; a user who wants a shell wri
 parameters, not interpolated.
 
 ## 3. Key binds
-- Grammar: `bind "<mods>+<key>" { <action> … }`; modifiers in any order; key is a keysym
+- Grammar: `bind "<mods>+<key>" { <action> … }`, or `bind "<mods>+<key>" "<action>"` for one
+  action with no arguments (the same as the block holding that action; both forms at once
+  are refused); modifiers in any order; key is a keysym
   name (layout-dependent, matched on the produced symbol, then on the unshifted symbol)
   or `physical:<name>` (position-dependent, wins when both match).
 - Options: `repeat=#false`, `mode="<mode-condition>"` (`alt-screen`, `app-cursor`,
@@ -1934,6 +1960,14 @@ inline by default, `--ext` for a separate window; lifetime rules in T-16 §1.1),
 (`list`, `explain <char>`), `doctor` (capability and environment report), `completions`.
 `--json` everywhere; exit codes: 0 ok, 1 error, 2 usage, 3 denied, 4 no instance.
 
+Session-daemon commands (T-21 §3, tmux model): `apoth server ls` (sessions, pane ids,
+sizes and view counts; no content), `apoth server kill [SESSION]` (end the session; exits
+0 once the server is gone, 4 with no such session), `apoth attach [SESSION]` (runs
+`apotheosis --attach`), `apoth detach [SESSION]` (detach every view, panes keep running).
+`SESSION` defaults to `default`. `apoth proxy [--session NAME] [--no-start]` is the remote
+end of a mux domain (T-22 §5) and `apoth askpass` the `SSH_ASKPASS` helper (T-22 §3);
+neither is meant to be typed.
+
 `set` and `reset`:
 - `apoth set key=value [key=value …]` (or the one-pair form `apoth set key value…`)
   saves to the user file exactly as `apoth config set` does (T-10 §5: lossless edit,
@@ -1954,7 +1988,8 @@ inline by default, `--ext` for a separate window; lifetime rules in T-16 §1.1),
 Inside Apotheosis panes the shell-integration snippets (T-14 §2) define `ap` as a short
 alias of `apoth`; nothing is installed system-wide, and no other short names are defined.
 `apotheosis` itself (the GUI binary) accepts `-e argv…`, `--cwd`, `--title`, `--app-id`,
-`--profile`, `--layout`, `--hold`, `-o key=value`, `--new-instance`, `--wait`. A second
+`--profile`, `--layout`, `--hold`, `-o key=value`, `--new-instance`, `--wait`, and for
+sessions (T-21 §3, T-22) `--server`, `--attach`, `--session NAME`, `--domain NAME`. A second
 launch sends one `launch` request (cwd, env, argv, activation token, overrides) to the
 running instance and, with `--wait`, relays the child's exit code.
 
@@ -2572,7 +2607,8 @@ needed or added. Detection runs once at start on the pool and again on socket lo
   re-implements either and holds no seed → colour mapping of its own.
 
 ## 3. Glass
-On Abyss, blur through `ext_background_effect_v1` only, with one region box covering the window geometry so the compositor draws backdrop, rim, bezel and shadow (COMP-06 §1, COMP-02 C-14/C-15); server-side decorations are requested; the client lays only the tint (STYLE.md §Colour; T-08 §3). Off Abyss the T-09 §5 ladder applies (ext → `org_kde_kwin_blur` → tint). Apotheosis asks for no entry in any compositor allow-list and has no private glass protocol.
+On Abyss, blur through `ext_background_effect_v1` only, with one region box covering the window geometry so the compositor draws backdrop, rim, bezel and shadow (COMP-06 §1, COMP-02 C-14/C-15); server-side decorations are requested; the client lays only the tint (STYLE.md §Colour; T-08 §3). Off Abyss the T-09 §5 ladder applies (ext → `org_kde_kwin_blur` → tint). Interface chips and sheets are `eclipse_glass_v1` panes; `apotheosis` is on the Abyss
+glass allow-list (`protocols/standard/glass.rs` DEFAULT_ALLOW; ADR 0081, amending ADR 0109).
 
 ## 4. Semantic publishing
 - `abyss/crates/ec-cataclysm-pub` is renamed `ec-term-pub` and its C ABI removed
@@ -2638,6 +2674,32 @@ On Abyss, blur through `ext_background_effect_v1` only, with one region box cove
   a remote pane requires a confirmation per broadcast session, unless the pane's profile
   sets `security { remote-keys #true }`. Sensitivity raise and publishing are not
   changed by this rule (there is no reliable signal; T-22 §7).
+- **Password prompt (auto-open).** Owner decision, 2026-11-15. With
+  `security.password-prompt auto` (enum `auto|off`, default `auto`, global; GUI row
+  Settings → Security → "Password prompt"), Apotheosis on Abyss opens `ec-secret-prompt`'s
+  Terminal target (T-22 §3) by itself when all of these hold:
+  - the credential predicate goes from false to true in the **focused** pane of a window
+    that has the keyboard;
+  - the foreground job is a command the user ran: an OSC 133 command is running (`C` seen,
+    no `D`), or the pane's foreground process group (`tcgetpgrp`) is not the pane's shell;
+  - no askpass request is pending for the pane.
+  Rules for the prompt:
+  - It opens auto-focused. The answer is typed into the PTY followed by `\r`. Esc or
+    Cancel closes it, focus returns to the pane, and typing works as before.
+  - It opens once per read: the predicate must go false before it can open again. If the
+    predicate goes false while the prompt is up, the prompt closes and nothing is typed.
+  - It never opens for an unfocused window or pane, a background job, or a session-daemon
+    pane. Remote panes never show the predicate (above), so it never opens for them.
+  - Askpass wins. A request arriving for a pane that has an auto-opened prompt closes that
+    prompt first, so there is never a second prompt.
+  - Keys typed between the decision and the prompt taking the keyboard are held, not sent.
+    They are typed ahead of the answer, or alone on a cancel, so the line discipline
+    applies erase and kill to them as if they had been typed. An Enter among them answers
+    the read from the terminal, as typing would have, and closes the prompt. If the
+    keyboard has not left the window within 3 s, the held keys go to the PTY.
+  - Off Abyss, without `ec-secret-prompt`, or with `off`, nothing changes.
+  This uses the predicate locally only. The sensitivity raise and publishing above are
+  separate (S-05, P-04; their own owner-reviewed change).
 - Keystroke content is never logged anywhere, in any state.
 
 ## 6. Notifications, bell, progress
@@ -3084,14 +3146,27 @@ survive GUI and compositor restarts; detach/attach; several views of one session
     that pane read-only; a pane with neither is omitted from the snapshot and tee.
   - Pre-granted only: a peer whose pidfd resolves to the installed `apotheosis` GUI
     binary (the path the package installs, checked through `/proc/<pid>/exe` on the
-    pidfd) started by the user, not as a descendant of any pane or agent session. Every
-    other peer — including `apoth` and any binary started from inside a pane — goes
-    through consent (a glass sheet in an already-attached view; with no view attached,
-    refuse).
+    pidfd) started by the user, not as a descendant of any pane or agent session; and
+    the installed `apoth` next to it while it runs `apoth proxy` (argv 1 is `proxy`,
+    read from `/proc/<pid>/cmdline` and confirmed live on the pidfd; owner decision
+    2026-11-14), so a mux domain's remote end attaches without a sheet. The agent,
+    pane-descendant and interpreter refusals apply first to both. Every other peer —
+    including `apoth` for any other verb and any binary started from inside a pane,
+    `apoth proxy` included — goes through consent (a glass sheet in an already-attached
+    view; with no view attached, refuse).
   - Grants are rechecked on every pane added to the session after attach.
   - `apoth proxy` (T-22 §5) is a peer of the remote server's socket and is subject to
-    the same check there; its consent is asked on the remote session's attached views or
-    refused.
+    the same check there: pre-granted as above when started by the user's ssh session,
+    refused (or asked on an attached view) from inside a pane or an agent session.
+- **Lifetime: the tmux model** (owner decision 2026-11-14). Closing a view's window (or
+  `window.close`, `app.quit`) detaches that view; the panes keep running and the server
+  keeps running with no view attached. The server exits when its last pane exits and
+  removes its socket; there is no idle timeout. `session.detach` (action, `layout`) detaches
+  the window it runs in; `apoth detach [SESSION]` detaches every view of a session.
+  `session.kill` (action, `layout`, confirmed on the window's consent bar: Kill / Cancel)
+  and `apoth server kill [SESSION]` end the session: the server closes every pane with
+  the HUP, TERM, KILL escalation (T-18 §7), refuses new spawns while it does, and exits
+  once the last pane is gone. Kill and detach-all are refused to agent-descendant peers.
 - systemd user unit with socket activation is shipped but not enabled by default; the
   daemon mode is opt-in (`sessions.server` `off|on`) until it has a release of soak.
 
@@ -3113,7 +3188,7 @@ byte-identical after a replayed corpus with random attach points); slow-view res
 version-refusal test; attach-authority tests (socket mode/owner, foreign uid refused,
 agent-descendant attach refused with a stub policy service for allow, deny and
 unreachable ⇒ refuse, `read-content`-only view cannot send input, GUI binary
-pre-granted, `apoth`-from-a-pane asks); spill survives a GUI restart and is deleted
+pre-granted, `apoth proxy` pre-granted by argv, `apoth`-from-a-pane asks); spill survives a GUI restart and is deleted
 unread after a daemon restart; soak: 24 h scripted session with periodic attach/detach.
 
 ## 7. Open Decisions
@@ -3143,7 +3218,17 @@ Features, each consented once per host and recorded in KDL:
   the compiled entry);
 - inject shell integration for the remote shell for that session only;
 - carry selected environment (`COLORTERM`, `TERM_PROGRAM*`).
-Falls back to plain `ssh` semantics when any step fails; never downloads binaries.
+Falls back to plain `ssh` semantics when any step fails. Nothing is ever installed on a
+remote host (owner decision 2026-11-14): no binary push, no download; the terminfo entry
+above is the only file written, and only with that host's recorded consent.
+
+`apoth ssh --hold` (what domain panes run) keeps the pane when the link drops: when ssh
+exits 255 it sets the user variable `apoth_ssh_lost` (OSC 1337 `SetUserVar`, the host
+base64-encoded; cleared on reconnect), prints that the connection was lost, and waits:
+Enter starts a fresh ssh in the same pane, Ctrl-D closes it. Ctrl-C and Ctrl-\ do not end
+the wrapper while ssh runs. The window shows a "Connection lost" notice bar for the pane
+(program text: the host) with Reconnect and Dismiss; Reconnect and the `pane.reconnect`
+action type Enter into the pane. Any other ssh exit status ends the pane with it.
 
 ## 3. Askpass
 `SSH_ASKPASS` + `SSH_ASKPASS_REQUIRE=force` point at `apoth askpass`. Askpass is armed
@@ -3174,19 +3259,91 @@ per `apoth ssh` session, following the SECURITY-30 template:
   socket, never logged, never stored; the sheet's text field is a protected field (not
   published, not accessible-readable).
 - Plain `ssh` (not through `apoth ssh`) gets no askpass from Apotheosis.
-On Abyss the sheet is superseded by `ec-secret-prompt` when that service is available;
-the token and ancestry checks are the same.
+- **sudo, opt-in.** With `security.sudo-askpass` on (bool, default `#false`, global,
+  restart-free: it applies to panes started after the change; GUI row Settings →
+  Security → "sudo password prompt"), the instance arms askpass for each local pane's
+  child when it spawns it. The pane is bound the same way an `apoth ssh` process is: same
+  token, same socket rules, ended when the pane's child exits. The pane gets
+  `SUDO_ASKPASS` (the `apoth` binary), `APOTHEOSIS_ASKPASS_SOCK` and
+  `APOTHEOSIS_ASKPASS_TOKEN` in its environment. Shell integration then aliases `sudo` to
+  `sudo -A` in interactive shells only, and only when that environment is present.
+  Scripts, and a `sudo` with no such environment, are untouched. A nested `apoth ssh` or
+  mux link replaces the variables for its own child. Session-daemon panes (T-21) are not
+  armed.
+
+**Routing on Abyss** (ADR 0053, amendment of 2026-11-15). When Abyss is detected (T-17
+§1) and `ec-secret-prompt` is on `PATH`, an accepted request of kind `secret` that is
+not a host-key question goes to `ec-secret-prompt`'s Terminal target instead of the
+sheet. The token and ancestry checks above run first and are unchanged. Host-key
+questions, `confirm` and `none` stay on the sheet. If the prompt cannot be started, the
+sheet is shown.
+- The instance spawns `ec-secret-prompt terminal` directly, so the prompt's parent is the
+  instance. It writes one JSON object of at most 64 KiB to the prompt's stdin and closes
+  it:
+  `{"v":1,"via","verified":{"window","tab","pane","pane_id","in_foreground","ancestry",
+  "pid","exe","uid","euid"},"unverified":{"argv","cwd","prompt","host"}}`.
+  - *Verified* fields are kernel facts the instance read.
+    - `window`, `tab` and `pane` are the titles as the window shows them.
+    - `pane_id` is the pane, or `null` when the armed process is a mux link with no
+      pane.
+    - `in_foreground` is whether the requester's process group is the pane's
+      `tcgetpgrp`.
+    - `ancestry` is the pid chain from the requester to the armed process.
+    - `pid`, `exe` (`null` when the link is unreadable, as for setuid `sudo`), `uid` and
+      `euid` are the requester's. The requester is the askpass client's parent, which is
+      the program that ran it.
+  - *Unverified* fields are what the program supplied. These are its argv from
+    `/proc/<pid>/cmdline` (at most 64 entries and 4096 bytes), its cwd (`null` when
+    unreadable), the prompt (at most 4096 bytes), and the host an `apoth ssh` named
+    (`null` for a pane arming).
+  - Strings are UTF-8 with invalid bytes replaced. The prompt renders them as program
+    text (T-18 §6).
+  - Argv is never logged, persisted or audited.
+- The prompt marks the verified block as verified only when its parent is a live
+  Apotheosis. It holds a pidfd on `getppid()`, reads `/proc/<ppid>/exe` and compares it
+  with `/usr/bin/apotheosis` (in debug builds, an `apotheosis` beside its own binary also
+  passes), and then confirms the pidfd is not yet readable. Otherwise it shows the same
+  facts in the unverified block, with a note that they did not come from Apotheosis.
+- The prompt answers on stdout: one status byte (`0` answered, `1` cancelled), then for
+  `0` the secret (at most 1024 bytes, no newline), then EOF. EOF with no byte means
+  cancelled. The instance forwards the answer to the waiting `apoth askpass` over the
+  armed socket, and it is never stored. When the request is withdrawn (the client or the
+  armed process exits), the instance kills the prompt by the pid it spawned.
+- The prompt shows one `*` per typed character. It opens focused because the user's own
+  command asked for it. The only triggers are an askpass request and the T-17 §5
+  auto-open. `via` (`askpass` or `pty`) tells the prompt which one it is. For `pty` the
+  requester is the pane's foreground group leader, the ancestry ends at the pane's
+  child, `in_foreground` is true by construction, and the prompt text is the cursor's row
+  up to the cursor. That answer is typed into the pane (T-17 §5), not relayed to an
+  askpass client.
 
 ## 4. `SshDomain`
-`domain "name" { ssh "user@host" }` makes spawn/split in that domain run a remote shell
-through the shared master, with cwd inheritance from OSC 7. Hosts can be imported from
-`~/.ssh/config` (non-wildcard `Host` entries) as suggestions in the palette.
+`domain "name" { ssh "user@host"; persist "off|auto|always" }` makes spawn/split in that
+domain run a remote shell through the shared master, with cwd inheritance from OSC 7.
+Hosts can be imported from `~/.ssh/config` (non-wildcard `Host` entries) as suggestions
+in the palette.
+
+Where the domain's panes live is `remote.persist` (T-10), default `auto`, overridden per
+domain by its `persist` child (owner decision 2026-11-14):
+- `off`: local panes running `apoth ssh --hold DEST` (§2). With `sessions.server on`
+  they are panes of the local session daemon (T-21 §3, session `ssh-<domain>` unless
+  `--session` names one), so they outlive the window and its crash like any server pane;
+  without it they are the window's own.
+- `auto`: before the first window, ask the host over the shared master whether it has
+  `apoth` (`command -v apoth`, BatchMode, 5 s). Present ⇒ remote mux (§5); absent or no
+  answer ⇒ `off`, silently.
+- `always`: remote mux, with no probe fallback: a host that answers that it has no `apoth`
+  fails the window with a message naming the host, the missing `apoth`, the setting and
+  the way out (install it with the host's package manager, or `persist "auto"`/`"off"`).
+  No answer (no master yet, a password host) proceeds to the mux link, whose own error
+  is the message.
 
 ## 5. Remote mux
-With the daemon (T-21 §3) installed on the remote by the user's package manager,
-`domain { ssh "host"; mux #true }` runs `apoth proxy` over ssh stdio and attaches with
-the T-21 sync protocol — no listener, no extra port. Version skew rules apply. We do not
-install or download the remote binary.
+With the daemon (T-21 §3) installed on the remote by the user's package manager, a
+domain resolved to remote mux (§4) runs `apoth proxy` over ssh stdio and attaches with
+the T-21 sync protocol — no listener, no extra port; the remote daemon pre-grants
+`apoth proxy` by argv (T-21 §3). Version skew rules apply. We do not install or download
+the remote binary.
 
 ## 6. Test Plan
 Integration tests against a local `sshd` in a container-free user-mode setup

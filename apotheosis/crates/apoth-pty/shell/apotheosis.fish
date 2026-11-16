@@ -7,4 +7,10 @@ if set -q APOTHEOSIS_PANE; and test -n "$APOTHEOSIS_PANE"
     function ap --wraps apoth --description 'apoth (Apotheosis)'
         apoth $argv
     end
+    # T-22 §3: `security.sudo-askpass` armed this pane; interactive shells only.
+    if status is-interactive; and set -q SUDO_ASKPASS; and set -q APOTHEOSIS_ASKPASS_SOCK
+        function sudo --wraps sudo --description 'sudo -A (Apotheosis password prompt)'
+            command sudo -A $argv
+        end
+    end
 end

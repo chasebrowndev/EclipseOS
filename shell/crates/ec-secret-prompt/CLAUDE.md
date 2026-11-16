@@ -9,6 +9,8 @@ Read the root `CLAUDE.md` first. Governing decision: ADR 0053.
 - **The secret is never logged, stored or shown by `Debug`.** No `derive(Debug)`
   on anything that can hold it; every copy we own is overwritten when replaced
   or dropped. No tracing of what was typed (root invariant).
-- Fixed size (min == max, not resizable): abyss floats such toplevels.
+- Not user-resizable; sized to content: the window is refitted to the sheet's
+  measured height on every change, min == max each time, so abyss keeps
+  floating it.
 - No literal colour, radius or size: `ec_ui::tokens` only.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.

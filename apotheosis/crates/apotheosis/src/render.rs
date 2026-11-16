@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use apoth_font::config::Style;
 use apoth_font::system::FontSystem;
 use apoth_grid::{Damage, FrameSnapshot};
+use apoth_render::chrome::{ChromeList, ChromePass};
 use apoth_render::colour::{Palette, Rgb, TextBlending};
 use apoth_render::cursor::{self, CursorScene, CursorShape, CursorState};
 use apoth_render::gpu::{GpuOptions, RenderError};
@@ -23,7 +24,7 @@ use apoth_render::presenter::{PresentOutcome, Presenter, SurfaceOptions, Surface
 use apoth_render::renderer::{FrameInput, PaneDraw, Renderer, RendererConfig};
 use apoth_render::scene::{BuildCtx, GridScene, Highlight, SceneConfig};
 use apoth_render::sched::{Pacing, Poll, SchedConfig, Scheduler};
-use apoth_render::surface::{AlphaRequest, FaultAction, fault_action};
+use apoth_render::surface::{AlphaKind, AlphaRequest, FaultAction, fault_action};
 use apoth_term::{CursorInfo, ImageDraw};
 use apoth_ui::frame::TabStyle;
 use apoth_ui::motion::{Fader, MotionMode};
@@ -36,7 +37,7 @@ use apoth_wl::{PaceEvent, Pacer, WlSurfaceHandle};
 use crate::glyphs::{COLOR_PAGES, Glyphs, MASK_PAGES, PAGE};
 use crate::hook::{FrameCount, ImageDump, MediaDump, ViewDump};
 use crate::pane::{MainMsg, PaneKey, PaneShared, RenderMsg, now_ns};
-use crate::ui::{Overlay, UiRaster, build_chrome};
+use crate::ui::{Overlay, UiRaster, build_chrome_glass};
 use crate::view::{Source, View, paint};
 
 /// Configured default colours. The term's own values win once a program has changed them
@@ -172,7 +173,7 @@ fn ink_on(bg: Rgb, text: apoth_ui::tokens::Rgba, base: apoth_ui::tokens::Rgba) -
 
 /// Search, hint and copy-mode colours (T-08, T-14), derived from the theme palette over the
 /// pane's own background so they read on light and dark alike. Matches are a quiet accent
-/// tint; the current match and hint labels are the solid accent with its on-accent ink; the
+/// tint; the current match and hint labels are the inset ground (a cell step over the pane) with gold text (a grid cell has no rim); the
 /// copy-mode cursor is the theme's ink (never the accent, since it sits on the current
 /// match). Highlighted text is re-inked from the theme so it keeps 4.5:1 whatever its
 /// own colour was.
@@ -189,26 +190,43 @@ pub(crate) fn hl_colours(
     };
     let match_bg = over_bg(pal.accent.alpha(MATCH_TINT), bg);
     let hint_bg = over_bg(pal.accent.alpha(HINT_TINT), bg);
+    let current_bg_c = over_bg(pal.accent.alpha(CURRENT_TINT), bg);
+    // The inset ground on dark; on light the pane itself, since an ink tint under the gold
+    // text would drop it below 4.5:1.
+    let label_bg_c = if light { bg } else { over_bg(pal.cell, bg) };
     let ink = |g| Some(ink_on(g, pal.text, pal.base));
+    // Selection: the chosen colour as a soft tint over the pane, not a slab.
+    let sel_soft = over_bg(
+        apoth_ui::tokens::Rgba::hex(
+            (u32::from(sel_bg.0) << 16) | (u32::from(sel_bg.1) << 8) | u32::from(sel_bg.2),
+        )
+        .alpha(SEL_TINT),
+        bg,
+    );
     crate::view::HlColours {
-        sel_bg,
+        sel_bg: sel_soft,
         sel_fg,
         match_bg,
         match_fg: ink(match_bg),
-        current_bg: rgb_of(ec_theme::Rgba(pal.accent.0)),
-        current_fg: Some(rgb_of(ec_theme::Rgba(pal.on_accent.0))),
+        current_bg: current_bg_c,
+        current_fg: ink(current_bg_c),
+        current_rim: over_bg(pal.accent_border, bg),
         cursor_bg: rgb_of(ec_theme::Rgba(pal.text.0)),
         cursor_fg: Some(rgb_of(ec_theme::Rgba(pal.base.0))),
         hint_bg,
         hint_fg: ink(hint_bg),
-        label_bg: rgb_of(ec_theme::Rgba(pal.accent.0)),
-        label_fg: Some(rgb_of(ec_theme::Rgba(pal.on_accent.0))),
+        label_bg: label_bg_c,
+        label_fg: Some(rgb_of(ec_theme::Rgba(pal.accent_text.0))),
     }
 }
 
 /// Accent strength of an ordinary search match, and of the span a hint label sits on.
 const MATCH_TINT: f32 = 0.34;
 const HINT_TINT: f32 = 0.18;
+/// The current match: a brighter tint of the same family, never a solid slab.
+const CURRENT_TINT: f32 = 0.78;
+/// How much of the selection colour shows over the pane.
+const SEL_TINT: f32 = 0.55;
 
 /// One pane of the shown tab as main places it.
 #[derive(Clone)]
@@ -437,6 +455,11 @@ pub(crate) struct RenderArgs {
     /// A sender into `rx`: the pacer's wake-up for events that arrive on the render queue.
     pub(crate) poke: mpsc::Sender<RenderMsg>,
     pub(crate) to_main: calloop::channel::Sender<MainMsg>,
+    /// Compositor glass panes (`eclipse_glass_v1`) for this window, when bound.
+    pub(crate) glass: Option<apoth_wl::GlassPanes>,
+    /// The overlay subsurface that stacks the sheets' glass over the window's own (bound
+    /// with the glass global; `None` without it).
+    pub(crate) overlay: Option<apoth_wl::OverlaySurface>,
 }
 
 /// Padding in physical pixels at `scale`; main uses the same rule for the grid size.
@@ -462,6 +485,43 @@ fn build_ui_fonts(family: &str, terminal: &FontSystem) -> Option<FontSystem> {
 struct Stack {
     presenter: SurfacePresenter,
     renderer: Renderer,
+}
+
+/// The overlay subsurface's own swapchain, chrome pass and glass object. It draws only the
+/// sheets, over a transparent clear; it is built when the first sheet opens.
+struct OverStack {
+    presenter: SurfacePresenter,
+    pass: ChromePass,
+    glass: apoth_wl::GlassPanes,
+    /// The compositor currently holds sheet content (so one more clearing frame is due when
+    /// the last sheet closes).
+    shown: bool,
+}
+
+/// The overlay stack on the main device, or `None` when it cannot be transparent.
+fn build_over(
+    src: &apoth_wl::OverlaySurface,
+    main: &Stack,
+    size: (u32, u32),
+    rs: &RenderSettings,
+) -> Option<OverStack> {
+    let opts = SurfaceOptions {
+        gpu: GpuOptions::default(),
+        alpha: rs.alpha,
+    };
+    let presenter =
+        SurfacePresenter::with_gpu(main.presenter.gpu(), Arc::new(src.handle()), size, &opts)
+            .ok()?;
+    if presenter.info().alpha != AlphaKind::PreMultiplied {
+        return None;
+    }
+    let pass = ChromePass::new(presenter.gpu(), presenter.format());
+    Some(OverStack {
+        presenter,
+        pass,
+        glass: src.glass(),
+        shown: false,
+    })
 }
 
 fn build_stack(
@@ -529,6 +589,12 @@ struct PaneR {
     cur: Option<CursorInfo>,
     show_cursor: bool,
     last_cursor: (usize, usize),
+    /// The caret's blink: when the cursor last moved or took focus, the next hold's end and
+    /// whether a fade runs (the scheduler's inputs).
+    blink_epoch: Instant,
+    blink_focused: bool,
+    blink_due: Option<Instant>,
+    blink_fading: bool,
     vdump: Option<ViewDump>,
     /// Image placements in view (T-15 §6), taken with the snapshot.
     draws: Vec<ImageDraw>,
@@ -541,11 +607,23 @@ struct PaneR {
     below: bool,
     /// `below` flipped: the scene and the retained grid start over.
     restage: bool,
+    /// A tiled pane on the window's own background: the clear already paints it at the
+    /// window opacity, so default backgrounds draw transparent instead of a second layer.
+    flat: bool,
     idump: Option<ImageDump>,
     mdump: Option<MediaDump>,
     /// The next animation frame of an image in view (T-15 §1: the frame scheduler wakes
     /// for it; nothing else does).
     due: Option<Instant>,
+}
+
+/// The window's background: the focused pane's, painted by the clear at the window opacity.
+fn window_bg(panes: &[PaneR]) -> Rgb {
+    panes
+        .iter()
+        .find(|p| p.v.focused)
+        .or(panes.first())
+        .map_or(Rgb(0, 0, 0), |p| p.pal.bg)
 }
 
 impl PaneR {
@@ -570,12 +648,17 @@ impl PaneR {
             cur: None,
             show_cursor: false,
             last_cursor: (usize::MAX, usize::MAX),
+            blink_epoch: Instant::now(),
+            blink_focused: false,
+            blink_due: None,
+            blink_fading: false,
             vdump,
             draws: Vec::new(),
             media: Vec::new(),
             media_top: 0,
             below: false,
             restage: false,
+            flat: false,
             idump,
             mdump,
             due: None,
@@ -679,7 +762,11 @@ impl PaneR {
     /// image sits under the text.
     fn scene_cfg(&self, cfg: &SceneConfig) -> SceneConfig {
         SceneConfig {
-            bg_alpha: if self.below { 0.0 } else { cfg.bg_alpha },
+            bg_alpha: if self.below || self.flat {
+                0.0
+            } else {
+                cfg.bg_alpha
+            },
             ..*cfg
         }
     }
@@ -687,7 +774,7 @@ impl PaneR {
     /// The premultiplied pane background under below-text images.
     fn backdrop(&self, opacity: f32) -> Option<[f32; 4]> {
         let c = |v: u8| f32::from(v) / 255.0 * opacity;
-        self.below.then(|| {
+        (self.below && !self.flat).then(|| {
             [
                 c(self.pal.bg.0),
                 c(self.pal.bg.1),
@@ -745,12 +832,18 @@ impl PaneR {
         to_main: &calloop::channel::Sender<MainMsg>,
     ) {
         self.show_cursor = false;
+        self.blink_due = None;
+        self.blink_fading = false;
         let Some(cur) = self.cur else { return };
+        let focused = self.v.focused && self.v.shared.focused.load(Ordering::Acquire);
+        if (cur.y, cur.x) != self.last_cursor || focused != self.blink_focused {
+            self.blink_epoch = Instant::now();
+            self.blink_focused = focused;
+        }
         if (cur.y, cur.x) != self.last_cursor {
             self.last_cursor = (cur.y, cur.x);
             let _ = to_main.send(MainMsg::Cursor(self.v.id, self.last_cursor));
         }
-        let focused = self.v.focused && self.v.shared.focused.load(Ordering::Acquire);
         let rows = self.disp().rows.len();
         self.show_cursor = cur.visible
             && self.view.offset() == 0
@@ -767,12 +860,26 @@ impl PaneR {
             metrics: &metrics,
             highlights: &self.hl,
         };
+        let level = if cur.style.blink && focused {
+            let c = apoth_ui::motion::caret_blink(
+                self.blink_epoch.elapsed().as_millis() as u64,
+                rs.motion,
+            );
+            self.blink_fading = c.fading;
+            self.blink_due = c
+                .next_ms
+                .map(|ms| Instant::now() + Duration::from_millis(ms));
+            c.alpha
+        } else {
+            1.0
+        };
         let st = CursorState {
             col: cur.x,
             row: cur.y,
             shape: shape_of(cur.style.shape, rs.cursor_shape),
             visible: true,
             focused,
+            alpha: (level * 255.0 + 0.5) as u8,
         };
         let disp = match self.source {
             Source::Composed { .. } => self.view.composed(),
@@ -815,6 +922,8 @@ fn run(a: RenderArgs) {
         rx,
         poke,
         to_main,
+        glass,
+        overlay: over_src,
     } = a;
     pacer.set_wake(move || {
         let _ = poke.send(RenderMsg::Poke);
@@ -865,7 +974,15 @@ fn run(a: RenderArgs) {
     let mut overlay: Option<Overlay> = None;
     let mut ui_cache: Option<(String, FontSystem)> = None;
     let mut raster = UiRaster::new();
+    let mut over_list = ChromeList::new();
+    let mut ostack: Option<OverStack> = None;
+    // The overlay could not be built (no premultiplied alpha, device refused): sheets are
+    // drawn on the root surface with their erase, as off Abyss.
+    let mut over_off = false;
+    let mut geom = ((0u32, 0u32), apoth_wl::scale::Scale::ONE);
     let mut chrome_dirty = false;
+    // Whether the compositor draws the interface's ground (it may start or stop at runtime).
+    let mut glass_seen = false;
     // Media control fades (T-08 §4) on this thread's clock.
     let mut fades = MediaFades::default();
     let t0 = Instant::now();
@@ -874,6 +991,12 @@ fn run(a: RenderArgs) {
 
     'outer: loop {
         let now = now_ns();
+        let glass_now = glass.as_ref().is_some_and(apoth_wl::GlassPanes::available);
+        if glass_now != glass_seen {
+            glass_seen = glass_now;
+            chrome_dirty = true;
+            sched.damage(now);
+        }
         let mut surface_event = false;
         while let Some(ev) = pacer.try_recv() {
             match ev {
@@ -883,12 +1006,16 @@ fn run(a: RenderArgs) {
                 }
                 PaceEvent::Discarded { .. } => {}
                 PaceEvent::Surface {
+                    logical,
                     buffer: b,
                     scale: s,
                     suspended,
-                    ..
                 } => {
                     surface_event = true;
+                    geom = (logical, s);
+                    if ostack.as_ref().is_some_and(|o| o.shown) {
+                        chrome_dirty = true;
+                    }
                     sched.set_suspended(suspended, now);
                     let s = s.as_f64();
                     if b != buffer {
@@ -952,6 +1079,14 @@ fn run(a: RenderArgs) {
                 let mut pending = 0usize;
                 for p in &mut panes {
                     p.snapshot(&rs);
+                }
+                let clear_bg = window_bg(&panes);
+                for p in &mut panes {
+                    let flat = !p.v.floating && p.pal.bg == clear_bg;
+                    if flat != p.flat {
+                        p.flat = flat;
+                        p.restage = true;
+                    }
                     if std::mem::take(&mut p.restage) {
                         stack.renderer.invalidate(p.v.id);
                         p.reset_scene();
@@ -1016,7 +1151,10 @@ fn run(a: RenderArgs) {
                         .map_or(0, |o| o.shown_at.elapsed().as_millis() as u64);
                     let ui_scale = (scale * f64::from(rs.ui_zoom)) as f32;
                     let fonts = ui_fonts(&rs, &mut ui_cache, &mut glyphs.fonts);
-                    build_chrome(
+                    // Logical pixels per interface unit: the zoom (the output scale is the
+                    // surface's own).
+                    let split = glass_seen && over_src.is_some() && !over_off;
+                    let (panes_out, over_panes) = build_chrome_glass(
                         stack.renderer.chrome_mut(),
                         overlay.as_ref(),
                         &chrome,
@@ -1026,15 +1164,38 @@ fn run(a: RenderArgs) {
                         age,
                         fonts,
                         &mut raster,
+                        glass_seen.then_some(rs.ui_zoom),
+                        split.then_some(&mut over_list),
                     );
+                    // The sheets' frame goes first. The subsurface is synced: its commit is
+                    // cached and applied with the main commit below, so sheet and grid land
+                    // together (see apoth_wl::overlay).
+                    let want = !over_list.is_empty() || !over_panes.is_empty();
+                    if split
+                        && want
+                        && ostack.is_none()
+                        && let Some(src) = &over_src
+                    {
+                        ostack = build_over(src, &stack, buffer, &rs);
+                        over_off = ostack.is_none();
+                    }
+                    if let (Some(o), Some(src)) = (ostack.as_mut(), &over_src)
+                        && (want || o.shown)
+                    {
+                        src.configure(geom.0, geom.1);
+                        o.presenter.resize(buffer);
+                        o.glass.set(&over_panes);
+                        o.shown = o.presenter.present_chrome(&mut o.pass, &over_list) && want;
+                    }
+                    // Sent before the present below, which commits the surface: the
+                    // compositor latches panes and buffer together. Unchanged sends nothing.
+                    if let Some(g) = &glass {
+                        g.set(&panes_out);
+                    }
                 }
                 let a = rs.opacity;
                 // The clear is the focused pane's background (dividers and padding show it).
-                let bg = panes
-                    .iter()
-                    .find(|p| p.v.focused)
-                    .or(panes.first())
-                    .map_or(Rgb(0, 0, 0), |p| p.pal.bg);
+                let bg = window_bg(&panes);
                 let clear = [
                     f32::from(bg.0) / 255.0 * a,
                     f32::from(bg.1) / 255.0 * a,
@@ -1080,7 +1241,10 @@ fn run(a: RenderArgs) {
                             f.presented();
                         }
                         sched.rendered();
-                        let due = panes.iter().filter_map(|p| p.due).min();
+                        let due = panes
+                            .iter()
+                            .flat_map(|p| p.due.into_iter().chain(p.blink_due))
+                            .min();
                         sched.animate(due.map(|d| {
                             now_ns()
                                 + u64::try_from(
@@ -1128,6 +1292,7 @@ fn run(a: RenderArgs) {
                         tracing::warn!("device lost; rebuilding the renderer");
                         glyphs.reset();
                         glyphs.flushed = false;
+                        ostack = None;
                         panes.iter_mut().for_each(PaneR::reset_scene);
                         match build_stack(&surface, buffer, &rs, cell(&glyphs), scale) {
                             Ok(s) => {
@@ -1145,7 +1310,7 @@ fn run(a: RenderArgs) {
                         }
                     }
                 }
-                if pending > 0 || fading {
+                if pending > 0 || fading || panes.iter().any(|p| p.blink_fading) {
                     sched.damage(now_ns());
                 }
                 continue;

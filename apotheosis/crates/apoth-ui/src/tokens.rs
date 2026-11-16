@@ -228,8 +228,13 @@ pub mod metrics {
     pub const TAB_MIN_W: f32 = 96.0;
     pub const TAB_MAX_W: f32 = 220.0;
     pub const TAB_GAP: f32 = 4.0;
-    pub const TAB_CLOSE: f32 = 18.0;
-    pub const NEW_TAB: f32 = 28.0;
+    /// The tab's close button and the new-tab button: their hit targets, and the shape
+    /// drawn in each.
+    pub const TAB_CLOSE: f32 = 22.0;
+    pub const NEW_TAB: f32 = 24.0;
+    /// The icon disc and close button of a bar.
+    pub const BAR_ICON: f32 = 18.0;
+    pub const TAB_ICON: f32 = 12.0;
     pub const BADGE_D: f32 = 6.0;
     pub const BAR_H: f32 = 40.0;
     pub const BAR_BUTTON_H: f32 = 26.0;
@@ -250,6 +255,9 @@ pub mod metrics {
     pub const PALETTE_MAX_ROWS: usize = 10;
     /// Open menu anchored at the pointer: its width, and the gap kept to the window edge.
     pub const MENU_W: f32 = 400.0;
+    /// A right-click context menu (anchored, no field): compact width and row height.
+    pub const CONTEXT_MENU_W: f32 = 232.0;
+    pub const CONTEXT_ROW_H: f32 = 26.0;
     /// Open menu header: its height, the type tile's width and height.
     pub const MENU_HEADER_H: f32 = 52.0;
     pub const TILE_W: f32 = 40.0;
@@ -321,6 +329,8 @@ pub mod alpha {
     pub const BUSY: f32 = 0.5;
     /// The visual bell's rim, against the pane's own.
     pub const BELL: f32 = 0.85;
+    /// A gold-tinted rim under the pointer: one small step up from its rest strength.
+    pub const ACCENT_RIM_HOVER: f32 = 1.4;
 }
 
 /// Durations in milliseconds.
@@ -331,6 +341,13 @@ pub mod motion {
     pub const SCROLLBAR_HOLD_MS: u64 = 1000;
     /// A consent bar or sheet ignores input this long after appearing (T-08 §5, T-18 §3).
     pub const CONSENT_GUARD_MS: u64 = 500;
+    /// The caret's blink: solid, eased out, dark, eased in.
+    pub const CARET_ON_MS: u64 = 500;
+    pub const CARET_FADE_MS: u64 = 150;
+    pub const CARET_OFF_MS: u64 = 400;
+    /// After this long without the cursor moving the caret stops blinking and rests solid, so
+    /// an idle terminal requests no frames.
+    pub const CARET_IDLE_MS: u64 = 15_000;
 }
 
 /// Caps on program-supplied text shown in the interface (T-18 §6).

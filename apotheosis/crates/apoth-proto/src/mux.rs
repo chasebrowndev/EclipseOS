@@ -22,7 +22,7 @@
 /// Major protocol version: a different major is refused (T-21 §4).
 pub const MUX_MAJOR: u16 = 1;
 /// Minor protocol version: informational; unknown records of a newer minor are skipped.
-pub const MUX_MINOR: u16 = 0;
+pub const MUX_MINOR: u16 = 1;
 /// Longest record (kind byte and payload): one page of a full-size alternate screen.
 pub const MAX_RECORD: usize = 64 * 1024 * 1024 + 4096;
 /// Longest `Tee` / `Input` payload a sender puts in one record.
@@ -103,6 +103,9 @@ pub enum ViewMsg {
     Detach,
     /// Detach every attached view (`apoth server detach`).
     DetachAll,
+    /// Close every pane (HUP, TERM, KILL) and end the server: tmux `kill-session`
+    /// (`apoth server kill`, the `session.kill` action). Minor 1.
+    KillSession,
 }
 
 /// One pane in a [`ServerMsg::Panes`] list. Ids, sizes and state only: no titles, no
@@ -247,6 +250,7 @@ mod kind {
     pub(super) const RESYNC: u8 = 8;
     pub(super) const DETACH: u8 = 9;
     pub(super) const DETACH_ALL: u8 = 10;
+    pub(super) const KILL_SESSION: u8 = 11;
 
     pub(super) const WELCOME: u8 = 64;
     pub(super) const REFUSED: u8 = 65;
@@ -366,6 +370,7 @@ impl ViewMsg {
             }
             ViewMsg::Detach => e = Enc::new(kind::DETACH),
             ViewMsg::DetachAll => e = Enc::new(kind::DETACH_ALL),
+            ViewMsg::KillSession => e = Enc::new(kind::KILL_SESSION),
         }
         e.done()
     }
@@ -414,6 +419,7 @@ impl ViewMsg {
             kind::RESYNC => ViewMsg::Resync { pane: d.u64()? },
             kind::DETACH => ViewMsg::Detach,
             kind::DETACH_ALL => ViewMsg::DetachAll,
+            kind::KILL_SESSION => ViewMsg::KillSession,
             other => return Ok(Decoded::Skipped(other)),
         };
         d.end()?;
@@ -810,6 +816,7 @@ mod tests {
             ViewMsg::Resync { pane: 2 },
             ViewMsg::Detach,
             ViewMsg::DetachAll,
+            ViewMsg::KillSession,
         ]
     }
 

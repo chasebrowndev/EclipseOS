@@ -447,6 +447,8 @@ impl App {
                 rx,
                 poke: w.render_tx.clone(),
                 to_main,
+                glass: self.handle.glass_panes(win),
+                overlay: None,
             })
             .map_err(|e| e.to_string())?;
             w.render = Some(render);

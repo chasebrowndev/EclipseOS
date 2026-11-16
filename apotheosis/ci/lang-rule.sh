@@ -13,7 +13,7 @@ cd "$(dirname "$0")/.."
 fail=0
 
 # 1. Source files.
-bad=$(find . \( -path ./target -o -path ./fuzz/corpus -o -path '*/tests/fixtures' \) -prune -o \
+bad=$(find . \( -path ./target -o -path ./fuzz/corpus -o -path ./fuzz/target -o -path '*/tests/fixtures' \) -prune -o \
   -type f \( -name '*.c' -o -name '*.h' -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' \
   -o -name '*.hpp' -o -name '*.m' -o -name '*.mm' -o -name '*.S' -o -name '*.s' -o -name '*.asm' \) -print)
 if [[ -n "$bad" ]]; then echo "lang-rule: C-family source in the workspace:"; echo "$bad"; fail=1; fi

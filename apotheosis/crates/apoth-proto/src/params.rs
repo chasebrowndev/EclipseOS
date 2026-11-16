@@ -250,6 +250,15 @@ pub struct MediaWindowWait {
     pub window: u64,
 }
 
+/// `askpass.arm {host}` (T-22 §3): arm the one-time askpass channel for the calling
+/// process (which then execs ssh). `host` is the `apoth ssh` destination the sheet names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AskpassArm {
+    /// The destination, as interface text on the sheet.
+    pub host: String,
+}
+
 /// `launch`: the second-launch hand-off (T-12 §5), one request.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -323,6 +332,7 @@ pub enum Params {
     MediaWindowWait(MediaWindowWait),
     /// `media.attach {}` with one descriptor in `SCM_RIGHTS`.
     MediaAttach(Empty),
+    AskpassArm(AskpassArm),
 }
 
 fn de<T: DeserializeOwned>(v: Value) -> Result<T, WireError> {
@@ -430,6 +440,7 @@ impl Params {
             Method::MediaWindowWrite => Params::MediaWindowWrite(de(v)?),
             Method::MediaWindowWait => Params::MediaWindowWait(de(v)?),
             Method::MediaAttach => Params::MediaAttach(de(v)?),
+            Method::AskpassArm => Params::AskpassArm(de(v)?),
         };
         p.validate()?;
         Ok(p)
@@ -468,6 +479,7 @@ impl Params {
             Params::MediaWindowWrite(_) => Method::MediaWindowWrite,
             Params::MediaWindowWait(_) => Method::MediaWindowWait,
             Params::MediaAttach(_) => Method::MediaAttach,
+            Params::AskpassArm(_) => Method::AskpassArm,
         }
     }
 
@@ -522,6 +534,7 @@ impl Params {
             Params::MediaWindowOpen(p) => serde_json::to_value(p),
             Params::MediaWindowWrite(p) => serde_json::to_value(p),
             Params::MediaWindowWait(p) => serde_json::to_value(p),
+            Params::AskpassArm(p) => serde_json::to_value(p),
         };
         // Plain derived structs of strings, numbers and maps cannot fail to serialise.
         r.unwrap_or(Value::Null)
@@ -605,6 +618,12 @@ impl Params {
                 }
             }
             Params::MediaWindowWait(_) | Params::MediaAttach(_) => {}
+            Params::AskpassArm(p) => {
+                if p.host.is_empty() || p.host.chars().any(char::is_control) {
+                    return Err(bad("host must be non-empty, without control characters"));
+                }
+                check_len("host", &p.host, crate::askpass::MAX_HOST)?;
+            }
             Params::Tree(_)
             | Params::PaneInfo(_)
             | Params::PaneProcesses(_)
