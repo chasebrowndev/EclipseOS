@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
+**English** | [Español](README.es.md)
+
 # steam-glass
 
 The Eclipse glass theme for Steam's desktop UI. An add-on (ADR 0066) with no
