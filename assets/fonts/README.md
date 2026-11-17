@@ -1,3 +1,5 @@
+**English** | [Español](README.es.md)
+
 # Vendored fonts
 
 The TTF families are [SIL Open Font Licence 1.1](https://openfontlicense.org/) —

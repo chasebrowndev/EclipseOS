@@ -1,3 +1,5 @@
+**English** | [Español](README.es.md)
+
 # abyss — the EclipseOS compositor
 
 `abyss` is a Wayland compositor written in Rust on

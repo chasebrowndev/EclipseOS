@@ -1,6 +1,14 @@
+**English** | [Español](README.es.md)
+
 <p align="center">
   <img src="installer/crates/ec-welcome/assets/eclipseos-logo.png" alt="EclipseOS" width="160">
 </p>
+
+<p align="center">
+  <img src="https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/chasebrowndev/b620b1bbc4d3ba91ccc0385a3cdfe6f9/raw/clones.json" alt="clones">
+  <img src="https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/chasebrowndev/b620b1bbc4d3ba91ccc0385a3cdfe6f9/raw/unique-clones.json" alt="unique clones">
+</p>
+
 
 > Hello, and welcome, to EclipseOS.  
 > My gift to the world, my labor of love.  

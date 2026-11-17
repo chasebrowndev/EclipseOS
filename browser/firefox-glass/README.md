@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
+**English** | [Español](README.es.md)
+
 # Glass for Firefox
 
 An EclipseOS add-on (ADR 0066) that makes Firefox match the desktop: warm near-black, gold accent, liquid glass. Firefox on Wayland always submits an opaque toplevel and flattens theme alpha, so the translucency is done by abyss, keyed on colour: the extension paints every glass surface in a reserved key colour, and abyss makes exactly the pixels of those colours translucent (with blur behind). Text, icons and page content are other colours and stay opaque.

@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
+**English** | [Español](README.es.md)
+
 # ISO test harness (headless QEMU)
 
 Drives the EclipseOS live ISO with scripted input so the graphical installer (D-07)

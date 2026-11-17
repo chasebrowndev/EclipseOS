@@ -1,0 +1,43 @@
+# Clone ticker. GitHub keeps only 14 days of traffic, so this folds each day's
+# clone counts into a gist and publishes two shields.io endpoint badges from it.
+# A gist, not a commit: attribution.yml rejects bot-authored commits.
+#
+# Setup: create a gist with a file `state.json` containing `{}`; add repo
+# variable TRAFFIC_GIST_ID (the gist id) and secret TRAFFIC_TOKEN (a PAT with
+# repo push access, which the traffic API requires, plus the gist scope).
+name: clone-ticker
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  tick:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: fold clones into the gist
+        env:
+          GH_TOKEN: ${{ secrets.TRAFFIC_TOKEN }}
+          GIST: ${{ vars.TRAFFIC_GIST_ID }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$REPO/traffic/clones?per=day" > fresh.json
+          gh api "gists/$GIST" --jq '.files["state.json"].content' > state.json
+          # Later fetches overwrite earlier ones for the same day; days that
+          # aged out of GitHub's window stay.
+          jq -s '.[0] * (.[1].clones | map({(.timestamp[0:10]): {c: .count, u: .uniques}}) | add // {})' \
+            state.json fresh.json > merged.json
+          total=$(jq '[.[].c] | add // 0' merged.json)
+          uniq=$(jq '[.[].u] | add // 0' merged.json)
+          badge() { jq -n --arg l "$1" --arg m "$2" '{schemaVersion:1,label:$l,message:$m,color:"c9a227"}'; }
+          jq -n \
+            --arg state "$(jq -c . merged.json)" \
+            --arg a "$(badge clones "$total")" \
+            --arg b "$(badge "unique clones" "$uniq")" \
+            '{files:{"state.json":{content:$state},"clones.json":{content:$a},"unique-clones.json":{content:$b}}}' \
+            | gh api -X PATCH "gists/$GIST" --input - > /dev/null

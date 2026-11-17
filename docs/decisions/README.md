@@ -1,3 +1,5 @@
+**English** | [Español](README.es.md)
+
 # Decision log (F-08)
 
 One decision per file, `NNNN-slug.md`, format in `TEMPLATE.md`. **Never edited
