@@ -21,6 +21,7 @@ pub mod font;
 pub mod glass;
 pub mod glass_profile;
 pub mod glyphs;
+pub mod groups;
 pub mod hud;
 pub mod hud_font;
 pub mod menu;
@@ -140,6 +141,72 @@ type BlurRequest = (
     Option<blur::Shape>,
     Option<Rectangle<i32, Physical>>,
 );
+
+/// One toplevel's place in the element list (Phase 1a): where its own
+/// elements start and end (`end` is also the index of its backdrop) and its
+/// frame rectangle, output-local physical.
+#[derive(Clone)]
+struct WinRec {
+    window: Window,
+    start: usize,
+    end: usize,
+    rect: Rectangle<i32, Physical>,
+}
+
+/// Wrap a backdrop element as the list holds it: cut to its tile if it has one.
+fn wrap_blur(
+    element: blur::BlurElement,
+    crop: Option<Rectangle<i32, Physical>>,
+    scale: Scale<f64>,
+) -> Option<AbyssRenderElement> {
+    match crop {
+        Some(crop) => {
+            CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
+        }
+        None => Some(AbyssRenderElement::Blur(element)),
+    }
+}
+
+/// An empty `Vec` of references, reusing `v`'s allocation whatever the old and
+/// new lifetime: the scratch vector outlives the frame, the references do not.
+fn recycle<'a, 'b>(mut v: Vec<&'a AbyssRenderElement>) -> Vec<&'b AbyssRenderElement> {
+    v.clear();
+    v.into_iter()
+        .map(|_| -> &'b AbyssRenderElement { unreachable!("the vector is empty") })
+        .collect()
+}
+
+/// A window's record is closed at the next window (or the end): by then every
+/// `continue` of the loop has had its say about whether it drew anything.
+type OpenRec = (Window, usize, Option<Rectangle<i32, Physical>>);
+
+fn close_rec(open: &mut Option<OpenRec>, end: usize, wins: &mut Vec<WinRec>) {
+    if let Some((window, start, Some(rect))) = open.take() {
+        wins.push(WinRec {
+            window,
+            start,
+            end,
+            rect,
+        });
+    }
+}
+
+/// One blurred surface prepared for the splice: what its final draw needs,
+/// decided before the requests are grouped (Phase 1a).
+struct BlurPrep {
+    key: blur::BlurKey,
+    index: usize,
+    region: Rectangle<i32, Physical>,
+    shape: Option<blur::Shape>,
+    crop: Option<Rectangle<i32, Physical>>,
+    /// The final draw's program and uniforms; taken when the element is built.
+    draw: Option<(
+        smithay::backend::renderer::gles::GlesTexProgram,
+        Vec<smithay::backend::renderer::gles::Uniform<'static>>,
+    )>,
+    reach: i32,
+    ring: Option<(i32, i32, i32)>,
+}
 
 /// A window's border drawn as a ring of glass instead of paint (COMP-02 §9).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -640,6 +707,15 @@ pub struct BorderStore {
     gpu: context::PerContext<BorderGpu>,
     /// Glass pane elements built this frame, kept to reuse the allocation.
     pane_scratch: Vec<blur::BlurElement>,
+    /// Blur requests prepared this frame, kept to reuse the allocation (Phase 1a).
+    blur_prep: Vec<BlurPrep>,
+    blur_tiers: Vec<u8>,
+    blur_assign: Vec<Option<u8>>,
+    blur_req_win: Vec<Option<usize>>,
+    blur_win_req: Vec<Option<usize>>,
+    blur_glass: Vec<Option<AbyssRenderElement>>,
+    blur_refs: Vec<&'static AbyssRenderElement>,
+    blur_wins: Vec<WinRec>,
     /// Titlebar textures under `mode "de"` (COMP-05 §7.1), per output and window.
     pub bars: titlebar::BarCache,
     /// Each output's wallpaper, the bottom-most element (ADR 0104).
@@ -1081,6 +1157,8 @@ pub fn collect_elements(
     // unwrapped at alpha 1.0, so damage tracking and direct scanout are what
     // `space_render_elements` gave.
     ghost_elements(renderer, borders, output, space, config, &mut elements);
+    let mut wins = std::mem::take(&mut borders.blur_wins);
+    wins.clear();
     window_elements(
         renderer,
         space,
@@ -1091,7 +1169,10 @@ pub fn collect_elements(
         &mut elements,
         &mut blur_requests,
         &mut pane_requests,
+        &mut wins,
     );
+    // Everything from here down lies below every window.
+    let base_start = elements.len();
 
     layers(
         &mut elements,
@@ -1115,7 +1196,11 @@ pub fn collect_elements(
         blur_requests,
         pane_requests,
         &mut elements,
+        &wins,
+        base_start,
     );
+    wins.clear();
+    borders.blur_wins = wins;
 
     elements
 }
@@ -1125,6 +1210,7 @@ pub fn collect_elements(
 /// Requests arrive in the order the windows were drawn (front to back); they are
 /// consumed back to front so each insertion leaves the earlier indices — and the
 /// backdrop of every window further back, already spliced in — intact.
+#[allow(clippy::too_many_arguments)]
 fn insert_blur(
     renderer: &mut GlesRenderer,
     output: &Output,
@@ -1133,6 +1219,8 @@ fn insert_blur(
     requests: Vec<BlurRequest>,
     panes: Vec<PaneRequest>,
     elements: &mut Vec<AbyssRenderElement>,
+    wins: &[WinRec],
+    base_start: usize,
 ) {
     let cfg = &config.decoration.blur;
     if requests.is_empty() && panes.is_empty() {
@@ -1169,11 +1257,13 @@ fn insert_blur(
 
     // Both lists are front to back, so both are consumed from the back: a pane
     // set goes in before any request whose index is not above its own.
-    let mut panes = panes.into_iter().rev().peekable();
+    //
+    // Phase 1a: first every request is prepared (program, uniforms, reach), then
+    // the requests are grouped (`groups`), then spliced back to front. The
+    // vectors live in the store, so a steady frame allocates nothing new here.
+    let mut preps = std::mem::take(&mut store.blur_prep);
+    preps.clear();
     for (key, index, region, mode, radius, bezel, shape, crop) in requests.into_iter().rev() {
-        while let Some(req) = panes.next_if(|p| p.before(index)) {
-            insert_panes(renderer, output, store, config, req, elements);
-        }
         // The final draw's program: plain `blur` only needs one to round
         // (a square backdrop draws with smithay's own); frost and glass
         // always do, radius 0 included. A shaped layer (Vol 1 §5.2) takes
@@ -1274,32 +1364,177 @@ fn insert_blur(
                 b.bar,
             )
         });
-        let behind = &elements[index..];
-        if let Some(element) = store.gpu.blur.entry(output.clone()).or_default().element(
-            renderer,
-            output,
-            &key,
+        preps.push(BlurPrep {
+            key,
+            index,
             region,
-            behind,
-            cfg,
-            scale,
-            program,
+            shape,
+            crop,
+            draw: program,
             reach,
             ring,
-            shape.as_ref(),
-            1.0,
-        ) {
-            let element = match crop {
-                Some(crop) => {
-                    CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
-                }
-                None => Some(AbyssRenderElement::Blur(element)),
-            };
-            if let Some(element) = element {
-                elements.insert(index, element);
+        });
+    }
+
+    // Depth tiers (Phase 1a, `groups`): each window's tier comes from the
+    // regions of the windows below it, and a blurred window of tier `d` draws
+    // from the one pyramid of tier `d`.
+    let mut tiers = std::mem::take(&mut store.blur_tiers);
+    groups::assign_tiers(wins.len(), |k| wins[k].rect, &mut tiers);
+    let mut assign = std::mem::take(&mut store.blur_assign);
+    let mut req_win = std::mem::take(&mut store.blur_req_win);
+    let mut win_req = std::mem::take(&mut store.blur_win_req);
+    assign.clear();
+    req_win.clear();
+    win_req.clear();
+    win_req.resize(wins.len(), None);
+    for (p, prep) in preps.iter().enumerate() {
+        // Only a window's own backdrop is tiered; layers, popups and anything
+        // shaped keep the per-window path; a window deeper than the last tier
+        // samples the last pyramid (`groups::pyramid_of`).
+        let k = match &prep.key {
+            blur::BlurKey::Window(w) if prep.shape.is_none() && prep.index <= base_start => {
+                wins.iter().position(|r| &r.window == w && r.end == prep.index)
             }
+            _ => None,
+        };
+        req_win.push(k);
+        if let Some(k) = k {
+            win_req[k] = Some(p);
+        }
+        assign.push(k.map(|k| groups::pyramid_of(tiers[k])));
+    }
+
+    let tiered = assign.iter().filter(|a| a.is_some()).count();
+    store
+        .gpu
+        .blur
+        .entry(output.clone())
+        .or_default()
+        .note_tiers(tiered, assign.len() - tiered);
+
+    // Build the pyramids, lowest tier first: tier `d` composites the windows
+    // of lower tiers (their glass included) over what lies below every window.
+    // Every window's own glass element is made here, from its pyramid, and
+    // spliced below.
+    let mut glass = std::mem::take(&mut store.blur_glass);
+    glass.clear();
+    glass.resize_with(preps.len(), || None);
+    let mut refs = std::mem::take(&mut store.blur_refs);
+    for d in 0..groups::MAX_TIERS as u8 {
+        // The topmost member (last in back-to-front order) sets how much of
+        // the stack the pyramid is composed from: the windows below it.
+        let Some(top) = assign.iter().rposition(|a| *a == Some(d)) else {
+            continue;
+        };
+        let Some(k_top) = req_win[top] else { continue };
+        let mut v = recycle(refs);
+        groups::pyramid_parts(
+            d,
+            k_top,
+            &tiers,
+            |k| win_req[k].is_some_and(|pp| glass[pp].is_some()),
+            |part| match part {
+                groups::Part::Window(k) => v.extend(elements[wins[k].start..wins[k].end].iter()),
+                groups::Part::Glass(k) => {
+                    if let Some(g) = win_req[k].and_then(|pp| glass[pp].as_ref()) {
+                        v.push(g);
+                    }
+                }
+                groups::Part::Base => v.extend(elements[base_start..].iter()),
+            },
+        );
+        let key = blur::BlurKey::Tier(d);
+        let members = preps
+            .iter()
+            .zip(assign.iter())
+            .filter(|(_, a)| **a == Some(d))
+            .map(|(m, _)| blur::GroupMember {
+                key: &m.key,
+                region: m.region,
+                reach: m.reach,
+                ring: m.ring,
+                shape: m.shape.as_ref(),
+            });
+        let ok = store
+            .gpu
+            .blur
+            .entry(output.clone())
+            .or_default()
+            .group_refresh(renderer, output, &key, members, &v, cfg, scale)
+            .is_some();
+        refs = recycle(v);
+        // A pyramid that could not be built hands its members to the
+        // per-window path, which samples what lies below each of them.
+        if !ok {
+            for a in assign.iter_mut().filter(|a| **a == Some(d)) {
+                *a = None;
+            }
+            continue;
+        }
+        for p in 0..preps.len() {
+            if assign[p] != Some(d) {
+                continue;
+            }
+            let draw = preps[p].draw.take();
+            let element = store.gpu.blur.entry(output.clone()).or_default().group_element(
+                renderer,
+                &key,
+                &preps[p].key,
+                preps[p].region,
+                draw,
+                preps[p].ring,
+                scale,
+            );
+            glass[p] = element.and_then(|e| wrap_blur(e, preps[p].crop, scale));
         }
     }
+    store.blur_refs = recycle(refs);
+
+    let mut panes = panes.into_iter().rev().peekable();
+    for p in 0..preps.len() {
+        let index = preps[p].index;
+        while let Some(req) = panes.next_if(|q| q.before(index)) {
+            insert_panes(renderer, output, store, config, req, elements);
+        }
+        let element = if assign[p].is_some() {
+            glass[p].take()
+        } else {
+            let draw = preps[p].draw.take();
+            let behind = &elements[index..];
+            store
+                .gpu
+                .blur
+                .entry(output.clone())
+                .or_default()
+                .element(
+                    renderer,
+                    output,
+                    &preps[p].key,
+                    preps[p].region,
+                    behind,
+                    cfg,
+                    scale,
+                    draw,
+                    preps[p].reach,
+                    preps[p].ring,
+                    preps[p].shape.as_ref(),
+                    1.0,
+                )
+                .and_then(|e| wrap_blur(e, preps[p].crop, scale))
+        };
+        if let Some(element) = element {
+            elements.insert(index, element);
+        }
+    }
+    preps.clear();
+    glass.clear();
+    store.blur_prep = preps;
+    store.blur_glass = glass;
+    store.blur_tiers = tiers;
+    store.blur_assign = assign;
+    store.blur_req_win = req_win;
+    store.blur_win_req = win_req;
     for req in panes {
         insert_panes(renderer, output, store, config, req, elements);
     }
@@ -1930,6 +2165,7 @@ fn window_elements(
     out: &mut Vec<AbyssRenderElement>,
     blurred: &mut Vec<BlurRequest>,
     pane_requests: &mut Vec<PaneRequest>,
+    wins: &mut Vec<WinRec>,
 ) {
     let Some(output_geo) = space.output_geometry(output) else {
         return;
@@ -1992,7 +2228,10 @@ fn window_elements(
         store.anim.forget_frames();
     }
     // `space.elements()` is bottom-to-top; frames are collected front-to-back.
+    let mut open: Option<OpenRec> = None;
     for window in live.into_iter().rev() {
+        close_rec(&mut open, out.len(), wins);
+        open = Some((window.clone(), out.len(), None));
         let Some(loc) = space.element_location(&window) else {
             continue;
         };
@@ -2048,6 +2287,12 @@ fn window_elements(
             (Some(g), Some(b)) => Some(titlebar::frame_of_content(g, b.height)),
             (g, _) => g,
         };
+        if let (Some(g), Some(o)) = (geo, open.as_mut()) {
+            o.2 = Some(Rectangle::new(
+                phys(g.loc - output_geo.loc, scale),
+                g.size.to_f64().to_physical(scale).to_i32_round(),
+            ));
+        }
         // Decorations are cut to the whole tile (the window plus its border),
         // whether or not the client overhangs it: unlike a surface, a shadow or
         // backdrop would otherwise bleed into the neighbouring tile.
@@ -2826,6 +3071,7 @@ fn window_elements(
             ));
         }
     }
+    close_rec(&mut open, out.len(), wins);
 }
 
 /// Windows that `owned` says belong on this output and whose geometry (moved

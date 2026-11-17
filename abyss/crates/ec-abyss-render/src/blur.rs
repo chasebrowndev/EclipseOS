@@ -637,6 +637,9 @@ pub fn shape_shows_through(shape: &Shape, opaque: &[Rectangle<i32, Physical>]) -
 /// damage history, so they share one keyed table.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BlurKey {
+    /// The shared pyramid of one depth tier of an output (Phase 1a, see
+    /// [`crate::groups`]); only ever a key of the store's group table.
+    Tier(u8),
     Window(Window),
     Layer(LayerSurface),
     /// An annotation panel (ADR 0071), by its handle. Annotations keep their
@@ -657,6 +660,154 @@ pub enum BlurKey {
     /// A layer surface's `eclipse_glass_v1` panes, kept apart from the
     /// layer's own shaped backdrop when it keeps one (the bar's sheet).
     LayerPanes(LayerSurface),
+}
+
+/// One persistent shared pyramid (Phase 1a): the blur of the union of its
+/// members' crops, drawn by each member from its own part of `result`.
+struct GroupBlur {
+    /// Damage of everything below the group's lowest member, scanned once a
+    /// frame for all the members.
+    damage: OutputDamageTracker,
+    /// The shared half-resolution result.
+    result: Option<GlesTexture>,
+    /// The output rectangle `result` covers: the union of the member crops.
+    crop: Option<Rectangle<i32, Physical>>,
+    /// `(size, passes)` the result was built with.
+    params: (i32, usize),
+    /// The members it was built for, back to front.
+    members: Vec<BlurKey>,
+    /// Bumped on every rebuild; a member whose `seen` differs redraws.
+    rebuilds: u64,
+    /// Damage landed while crowded and the rebuild was deferred.
+    pending: bool,
+    /// The store frame `result` was last rebuilt on.
+    last: u64,
+    /// The store frame the group was last asked for.
+    seen: u64,
+}
+
+/// A grouped surface's element bookkeeping (its backdrop is the group's).
+struct MemberSlot {
+    id: Id,
+    look: Vec<Uniform<'static>>,
+    commit: CommitCounter,
+    /// The group's `rebuilds` this slot last saw.
+    seen: u64,
+}
+
+/// What a group's refresh needs of one member.
+#[derive(Clone)]
+pub struct GroupMember<'a> {
+    pub key: &'a BlurKey,
+    pub region: Rectangle<i32, Physical>,
+    /// How far past `region` the final draw samples (glass refraction).
+    pub reach: i32,
+    /// An opaque bezel's `(width, corner radius, titlebar depth)`.
+    pub ring: Option<(i32, i32, i32)>,
+    pub shape: Option<&'a Shape>,
+}
+
+/// A member's blur crop: `(texture space, output space)` (see [`crop_rects`]).
+pub fn member_crop(
+    region: Rectangle<i32, Physical>,
+    blur: &Blur,
+    reach: i32,
+    fb: Size<i32, Physical>,
+    mirrored: bool,
+) -> Option<(Rectangle<i32, Physical>, Rectangle<i32, Physical>)> {
+    let passes = blur.passes.clamp(1, 6) as usize;
+    crop_rects(
+        region,
+        kernel_radius(blur).saturating_add(reach.max(0)),
+        fb,
+        passes,
+        mirrored,
+    )
+}
+
+/// The texture-space twin of an output-space `crop` that is already snapped
+/// (as a union of [`member_crop`] crops is): the same flip [`crop_rects`] makes.
+pub fn crop_tex(
+    crop: Rectangle<i32, Physical>,
+    fb: Size<i32, Physical>,
+    mirrored: bool,
+) -> Rectangle<i32, Physical> {
+    let y = if mirrored {
+        fb.h - (crop.loc.y + crop.size.h)
+    } else {
+        crop.loc.y
+    };
+    Rectangle::new((crop.loc.x, y).into(), crop.size)
+}
+
+/// Sizes of a tier's built region are rounded up to this many pixels, so the
+/// chains (keyed by crop size) are shared by every build of about that size
+/// instead of one per exact size.
+pub const CROP_BUCKET: i32 = 512;
+
+/// How far past its members' crops a tier pyramid is built, so a member dragged
+/// or resized inside the margin only moves its UV offset (Phase 1c). An eighth
+/// of the longer side of the output, clamped to 128..=512 px: wide enough that
+/// a drag rebuilds about once per 360 px of travel at 2880 px rather than every
+/// step, narrow enough that a rebuild stays a few times a window's own crop
+/// (the margin is paid in texels on every rebuild).
+pub fn crop_margin(fb: Size<i32, Physical>) -> i32 {
+    (fb.w.max(fb.h) / 8).clamp(128, 512)
+}
+
+/// The region a tier pyramid is built over for members needing `needed` (the
+/// union of their snapped crops, output space): `needed` grown by the margin,
+/// on the chain grid, its size rounded up to [`CROP_BUCKET`] and kept on the
+/// output. Always contains `needed`.
+pub fn padded_crop(
+    needed: Rectangle<i32, Physical>,
+    fb: Size<i32, Physical>,
+    passes: usize,
+    mirrored: bool,
+) -> Rectangle<i32, Physical> {
+    let Some((_, grown)) = crop_rects(needed, crop_margin(fb), fb, passes, mirrored) else {
+        return needed;
+    };
+    let d = 1i32 << passes.min(6);
+    // Round the length up to a bucket; past the output's edge slide back onto
+    // the grid, keeping everything `grown` covered.
+    let fit = |lo: i32, len: i32, max: i32| {
+        let want = (((len + CROP_BUCKET - 1) / CROP_BUCKET) * CROP_BUCKET).min(max);
+        if lo + want <= max {
+            return (lo, want);
+        }
+        let a = (max - want).div_euclid(d) * d;
+        (a, (a + want).max(lo + len) - a)
+    };
+    let (x, w) = fit(grown.loc.x, grown.size.w, fb.w);
+    let (y, h) = fit(grown.loc.y, grown.size.h, fb.h);
+    Rectangle::new((x, y).into(), (w, h).into())
+}
+
+/// Whether a pyramid built over `built` still serves members needing `needed`.
+pub fn covers(built: Option<Rectangle<i32, Physical>>, needed: Rectangle<i32, Physical>) -> bool {
+    built.is_some_and(|b| b.contains_rect(needed))
+}
+
+/// The invalidation test for one region: whole region, an opaque bezel's
+/// strips (`region`-relative), or a shape's boxes grown by its fillet.
+fn region_dirty(
+    region: Rectangle<i32, Physical>,
+    strips: Option<&[Rectangle<i32, Physical>; 4]>,
+    shape: Option<&Shape>,
+    radius: i32,
+    rects: &[Rectangle<i32, Physical>],
+) -> bool {
+    match (strips, shape) {
+        (Some(strips), _) => strips
+            .iter()
+            .any(|s| invalidates(Rectangle::new(s.loc + region.loc, s.size), radius, rects)),
+        (None, Some(shape)) => {
+            let radius = radius.saturating_add(shape.fillet.ceil() as i32);
+            shape.rects().iter().any(|b| invalidates(*b, radius, rects))
+        }
+        (None, None) => invalidates(region, radius, rects),
+    }
 }
 
 /// Per-surface blur bookkeeping, kept alive between frames.
@@ -722,6 +873,12 @@ pub struct BlurStore {
     frame: u64,
     /// First-time backdrops built this frame.
     started: usize,
+    /// Blurred surfaces that asked this frame (`retain`'s keep list).
+    live: usize,
+    /// Shared pyramids (Phase 1a), by the key of their lowest member.
+    groups: HashMap<BlurKey, GroupBlur>,
+    /// Per-surface element state of the grouped surfaces.
+    members: HashMap<BlurKey, MemberSlot>,
     /// Profiling counters (`EC_GLASS_PROFILE`).
     profile: GlassProfile,
 }
@@ -745,7 +902,17 @@ impl BlurStore {
         self.frame = self.frame.wrapping_add(1);
         self.started = 0;
         self.profile.frame(keep.len());
+        self.live = keep.len();
         self.surfaces.retain(|key, _| keep.contains(key));
+        self.members.retain(|key, _| keep.contains(key));
+        // A group that nothing used last frame is gone.
+        let now = self.frame;
+        self.groups.retain(|_, g| g.seen.wrapping_add(1) >= now);
+    }
+
+    /// Count this frame's tiered and per-window surfaces for the profile.
+    pub fn note_tiers(&mut self, tiered: usize, fallback: usize) {
+        self.profile.tiers(tiered, fallback);
     }
 
     /// Drop everything: called when blur is switched off so the textures do not
@@ -755,6 +922,8 @@ impl BlurStore {
         self.level0 = None;
         self.chain_size = Size::default();
         self.surfaces.clear();
+        self.groups.clear();
+        self.members.clear();
         self.backdrop = None;
     }
 
@@ -952,16 +1121,7 @@ impl BlurStore {
             let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
             let radius = kernel_radius(blur).saturating_add(reach.max(0));
             match damage {
-                Some(rects) => match (&strips, shape) {
-                    (Some(strips), _) => strips
-                        .iter()
-                        .any(|s| invalidates(Rectangle::new(s.loc + region.loc, s.size), radius, rects)),
-                    (None, Some(shape)) => {
-                        let radius = radius.saturating_add(shape.fillet.ceil() as i32);
-                        shape.rects().iter().any(|b| invalidates(*b, radius, rects))
-                    }
-                    (None, None) => invalidates(region, radius, rects),
-                },
+                Some(rects) => region_dirty(region, strips.as_ref(), shape, radius, rects),
                 // smithay returns `None` when there is no damage at all (an
                 // empty damage set), not "everything changed": the only reason
                 // left to rebuild is a backdrop that was never built.
@@ -971,7 +1131,7 @@ impl BlurStore {
         // Past CROWDED surfaces, a backdrop whose only reason to redraw is
         // damage behind it is refreshed at most every CROWDED_INTERVAL frames.
         // A new surface or a moved/resized one still redraws at once.
-        let crowded = self.surfaces.len() > CROWDED;
+        let crowded = self.live.max(self.surfaces.len()) > CROWDED;
         let frame = self.frame;
         let entry = self.surfaces.get_mut(key)?;
         let mut dirty = dirty || entry.pending;
@@ -992,73 +1152,269 @@ impl BlurStore {
         if dirty || fresh {
             entry.pending = false;
             entry.last = frame;
-            let Self {
-                down,
-                up,
-                level0,
-                chain,
-                backdrop,
-                surfaces,
-                profile,
-                ..
-            } = self;
-            if chain.len() >= MAX_CHAINS && !chain.contains_key(&(crop.size.w, crop.size.h)) {
-                chain.clear();
-            }
-            if let std::collections::hash_map::Entry::Vacant(slot) = chain.entry((crop.size.w, crop.size.h)) {
-                match alloc_levels(renderer, crop.size, passes) {
-                    Ok(levels) => {
-                        slot.insert(levels);
-                    }
-                    Err(err) => {
-                        tracing::warn!(?err, "allocating the blur chain; blur skipped this frame");
-                        return None;
-                    }
-                }
-            }
-            let entry = surfaces.get_mut(key)?;
-            let tracker = backdrop.get_or_insert_with(|| OutputDamageTracker::from_output(output));
-            // The backdrop is drawn with the output's own transform (so the
-            // `gl_FragCoord` rounding masks of the elements behind still line
-            // up), which under `Flipped180` (winit) stores it bottom row
-            // first. The result is sampled back as a `Normal` texture, so the
-            // last pass flips it upright; otherwise every window would blur
-            // the vertical mirror image of what is behind it.
-            let orient = match crate::effects::fb_y_mirrored(output.current_transform()) {
-                Some(true) => Transform::Flipped180,
-                _ => Transform::Normal,
-            };
-            match render_chain(
-                renderer,
-                tracker,
-                level0.as_mut()?,
-                chain.get_mut(&(crop.size.w, crop.size.h))?,
-                (tex, crop),
-                scale,
-                down.as_ref()?,
-                up.as_ref()?,
-                behind,
-                blur,
-                entry.result.take(),
-                orient,
-            ) {
-                Ok((texture, ran)) => {
-                    profile.rebuilt(Rebuild {
-                        crop_texels: crop.size.w as u64 * crop.size.h as u64,
-                        cleared_texels: fb_size.w as u64 * fb_size.h as u64,
-                        passes: ran,
+            let reuse = entry.result.take();
+            let texture = self.rebuild(renderer, output, blur, scale, (tex, crop), behind, reuse)?;
+            let entry = self.surfaces.get_mut(key)?;
+            entry.result = Some(texture);
+            entry.crop = Some(crop);
+            entry.commit.increment();
+        }
+        Some((crop, strips))
+    }
+
+    /// Phase 1a: bring the shared pyramid of one group up to date over the
+    /// union of its members' crops. Called once, for the group's lowest member
+    /// (`behind` is `elements[base..]`, exactly what every member's blur
+    /// samples, see [`crate::groups`]); the members then draw with
+    /// [`BlurStore::group_element`]. One damage scan serves the whole group.
+    /// Returns `None` when nothing could be built.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_refresh<'a, E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        key: &BlurKey,
+        members: impl Iterator<Item = GroupMember<'a>> + Clone,
+        behind: &[E],
+        blur: &Blur,
+        scale: Scale<f64>,
+    ) -> Option<()>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        let mode = output.current_mode()?;
+        let fb_size = output.current_transform().transform_size(mode.size);
+        if fb_size.w <= 0 || fb_size.h <= 0 {
+            return None;
+        }
+        self.ensure_programs(renderer)?;
+        let passes = blur.passes.clamp(1, 6) as usize;
+        self.ensure_chain(renderer, fb_size, passes)?;
+        let mirrored = crate::effects::fb_y_mirrored(output.current_transform()) == Some(true);
+        let crops = || {
+            members
+                .clone()
+                .filter(|m| !m.region.is_empty())
+                .filter_map(|m| member_crop(m.region, blur, m.reach, fb_size, mirrored))
+                .map(|(_, crop)| crop)
+        };
+        let needed = crops().reduce(|a, b| a.merge(b))?;
+        let params = (blur.size, passes);
+        let frame = self.frame;
+        let entry = self.groups.entry(key.clone()).or_insert_with(|| GroupBlur {
+            damage: OutputDamageTracker::from_output(output),
+            result: None,
+            crop: None,
+            params,
+            members: Vec::new(),
+            rebuilds: 0,
+            pending: false,
+            last: 0,
+            seen: frame,
+        });
+        entry.seen = frame;
+        // One scan for the whole group; each member tests its own region.
+        let dirty = {
+            let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
+            match damage {
+                Some(rects) => {
+                    // Damage in the margin (inside the built region, outside
+                    // every member's own crop) would be stale when a member
+                    // moves onto it, so it rebuilds too.
+                    let margin = entry.crop.is_some_and(|built| {
+                        rects
+                            .iter()
+                            .any(|d| built.overlaps(*d) && !crops().any(|c| c.contains_rect(*d)))
                     });
-                    entry.result = Some(texture);
-                    entry.crop = Some(crop);
-                    entry.commit.increment();
+                    margin
+                        || members.clone().any(|m| {
+                            let strips = m
+                                .ring
+                                .map(|(inner, corner, bar)| ring_strips(m.region.size, inner, corner, bar));
+                            let radius = kernel_radius(blur).saturating_add(m.reach.max(0));
+                            region_dirty(m.region, strips.as_ref(), m.shape, radius, rects)
+                        })
+                }
+                // `None` is no damage at all: only a never-built backdrop
+                // is a reason left to rebuild.
+                None => entry.result.is_none(),
+            }
+        };
+        let same_members = entry.members.len() == members.clone().count()
+            && entry.members.iter().zip(members.clone()).all(|(a, m)| a == m.key);
+        let crowded = self.live > CROWDED;
+        let entry = self.groups.get_mut(key)?;
+        let mut dirty = dirty || entry.pending;
+        let fresh =
+            entry.result.is_none() || !covers(entry.crop, needed) || entry.params != params || !same_members;
+        // Same throttle as a surface's, but the unit is the group's rebuild.
+        if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
+            entry.pending = true;
+            dirty = false;
+        }
+        if crowded && entry.result.is_none() {
+            if self.started >= CROWDED_STARTS {
+                return None;
+            }
+            self.started += 1;
+        }
+        let entry = self.groups.get_mut(key)?;
+        if dirty || fresh {
+            entry.pending = false;
+            entry.last = frame;
+            let reuse = entry.result.take();
+            // A rebuild with nothing new to cover (damage) keeps its region.
+            let crop = match entry.crop.filter(|_| !fresh) {
+                Some(built) => built,
+                None => padded_crop(needed, fb_size, passes, mirrored),
+            };
+            let tex = crop_tex(crop, fb_size, mirrored);
+            let texture = self.rebuild(renderer, output, blur, scale, (tex, crop), behind, reuse)?;
+            let entry = self.groups.get_mut(key)?;
+            entry.result = Some(texture);
+            entry.crop = Some(crop);
+            entry.params = params;
+            entry.rebuilds = entry.rebuilds.wrapping_add(1);
+            entry.members.clear();
+            entry.members.extend(members.map(|m| m.key.clone()));
+        }
+        Some(())
+    }
+
+    /// Phase 1a: one member's element, cut from its group's shared result.
+    /// `rounding` is the final draw's program and uniforms, as for
+    /// [`BlurStore::element`]; the members share one texture, so `px_uv` is
+    /// one physical pixel of the group's crop, and the element's source
+    /// rectangle is the member's region relative to that crop.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_element(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        group: &BlurKey,
+        key: &BlurKey,
+        region: Rectangle<i32, Physical>,
+        rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
+        ring: Option<(i32, i32, i32)>,
+        scale: Scale<f64>,
+    ) -> Option<BlurElement> {
+        let g = self.groups.get(group)?;
+        let texture = g.result.clone()?;
+        let crop = g.crop?;
+        let rebuilds = g.rebuilds;
+        let slot = self.members.entry(key.clone()).or_insert_with(|| MemberSlot {
+            id: Id::new(),
+            look: Vec::new(),
+            commit: CommitCounter::default(),
+            seen: rebuilds,
+        });
+        if slot.seen != rebuilds {
+            slot.seen = rebuilds;
+            slot.commit.increment();
+        }
+        let (program, mut uniforms) = match rounding {
+            Some((program, uniforms)) => (Some(program), uniforms),
+            None => (None, Vec::new()),
+        };
+        crate::effects::set_px_uv(&mut uniforms, (crop.size.w, crop.size.h));
+        if slot.look != uniforms {
+            slot.look.clone_from(&uniforms);
+            slot.commit.increment();
+        }
+        let mut element = BlurElement::placed(
+            slot.id.clone(),
+            renderer.context_id(),
+            texture,
+            crop,
+            region,
+            scale,
+            1.0,
+        );
+        element.commit = slot.commit;
+        element.program = program;
+        element.uniforms = uniforms;
+        element.ring = ring.map(|(inner, corner, bar)| ring_strips(region.size, inner, corner, bar));
+        Some(element)
+    }
+
+    /// Run the chain over `crop` and hand back the upright half-resolution
+    /// result (into `reuse` when it is the right size).
+    #[allow(clippy::too_many_arguments)]
+    fn rebuild<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        blur: &Blur,
+        scale: Scale<f64>,
+        (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+        behind: &[E],
+        reuse: Option<GlesTexture>,
+    ) -> Option<GlesTexture>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        let passes = blur.passes.clamp(1, 6) as usize;
+        let Self {
+            down,
+            up,
+            level0,
+            chain,
+            chain_size,
+            backdrop,
+            profile,
+            ..
+        } = self;
+        if chain.len() >= MAX_CHAINS && !chain.contains_key(&(crop.size.w, crop.size.h)) {
+            chain.clear();
+        }
+        if let std::collections::hash_map::Entry::Vacant(slot) = chain.entry((crop.size.w, crop.size.h)) {
+            match alloc_levels(renderer, crop.size, passes) {
+                Ok(levels) => {
+                    slot.insert(levels);
                 }
                 Err(err) => {
-                    tracing::warn!(?err, "rendering the blur chain; blur skipped this frame");
+                    tracing::warn!(?err, "allocating the blur chain; blur skipped this frame");
                     return None;
                 }
             }
         }
-        Some((crop, strips))
+        let tracker = backdrop.get_or_insert_with(|| OutputDamageTracker::from_output(output));
+        // The backdrop is drawn with the output's own transform (so the
+        // `gl_FragCoord` rounding masks of the elements behind still line
+        // up), which under `Flipped180` (winit) stores it bottom row
+        // first. The result is sampled back as a `Normal` texture, so the
+        // last pass flips it upright; otherwise every window would blur
+        // the vertical mirror image of what is behind it.
+        let orient = match crate::effects::fb_y_mirrored(output.current_transform()) {
+            Some(true) => Transform::Flipped180,
+            _ => Transform::Normal,
+        };
+        match render_chain(
+            renderer,
+            tracker,
+            level0.as_mut()?,
+            chain.get_mut(&(crop.size.w, crop.size.h))?,
+            (tex, crop),
+            scale,
+            down.as_ref()?,
+            up.as_ref()?,
+            behind,
+            blur,
+            reuse,
+            orient,
+        ) {
+            Ok((texture, ran)) => {
+                profile.rebuilt(Rebuild {
+                    crop_texels: crop.size.w as u64 * crop.size.h as u64,
+                    cleared_texels: chain_size.w as u64 * chain_size.h as u64,
+                    passes: ran,
+                });
+                Some(texture)
+            }
+            Err(err) => {
+                tracing::warn!(?err, "rendering the blur chain; blur skipped this frame");
+                None
+            }
+        }
     }
 
     fn ensure_programs(&mut self, renderer: &mut GlesRenderer) -> Option<()> {
@@ -1095,6 +1451,8 @@ impl BlurStore {
         self.chain.clear();
         self.level0 = None;
         self.surfaces.clear();
+        self.groups.clear();
+        self.members.clear();
         self.backdrop = None;
         match Offscreen::<GlesTexture>::create_buffer(
             renderer,
@@ -2056,6 +2414,190 @@ mod tests {
         );
         assert_eq!(el.src(), want);
         assert!(crop.contains_rect(grow(region, 64)));
+    }
+
+    /// Phase 1a: a group of one is the per-window chain. Its union crop is the
+    /// member's own crop, the texture-space twin is the same one `crop_rects`
+    /// makes (flipped under a y-mirrored output), and the element samples the
+    /// same output pixels.
+    #[test]
+    fn a_group_of_one_is_the_per_window_crop() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        for mirrored in [false, true] {
+            for region in [
+                r(36, 72, 800, 600),
+                r(0, 0, 400, 30),
+                r(2400, 1500, 480, 120),
+                r(1000, 500, 1, 1),
+            ] {
+                for reach in [0, 2, 5] {
+                    let (tex, crop) = member_crop(region, &blur, reach, fb, mirrored).unwrap();
+                    assert_eq!(
+                        crop_tex(crop, fb, mirrored),
+                        tex,
+                        "{region:?} mirrored {mirrored}"
+                    );
+                    // The union of one crop is the crop.
+                    assert_eq!([crop].into_iter().reduce(|a, b| a.merge(b)), Some(crop));
+                }
+            }
+        }
+    }
+
+    /// Phase 1a: members share one texture, so `px_uv` is one physical pixel of
+    /// the union crop, and each member's UV rectangle is its own part of it:
+    /// the same output pixels a per-window result would have shown.
+    #[test]
+    fn group_members_sample_their_own_part_of_the_union() {
+        use crate::effects::{px_uv_for, set_px_uv};
+        use smithay::backend::renderer::gles::UniformValue;
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        let a = r(100, 100, 400, 300);
+        let b = r(700, 150, 500, 300);
+        let (_, ca) = member_crop(a, &blur, 2, fb, false).unwrap();
+        let (_, cb) = member_crop(b, &blur, 2, fb, false).unwrap();
+        let union = ca.merge(cb);
+        assert!(union.contains_rect(ca) && union.contains_rect(cb));
+        // Snapped to the coarsest level, like each member's crop.
+        let d = 1 << 4;
+        assert!(union.loc.x % d == 0 && union.loc.y % d == 0);
+        assert!((union.loc.x + union.size.w) % d == 0 || union.loc.x + union.size.w == fb.w);
+        let scale = Scale::from(1.0);
+        for (region, own) in [(a, ca), (b, cb)] {
+            // The shared result is half the union's size.
+            let shared = Backdrop(Size::from((union.size.w / 2, union.size.h / 2)));
+            let el = BlurElement::placed(Id::new(), ContextId::new(), shared, union, region, scale, 1.0);
+            let src = el.src();
+            // Back to output pixels: the same ones as the member's own result.
+            let own_tex = Backdrop(Size::from((own.size.w / 2, own.size.h / 2)));
+            let alone =
+                BlurElement::placed(Id::new(), ContextId::new(), own_tex, own, region, scale, 1.0).src();
+            let at = |s: Rectangle<f64, BufferCoords>, origin: Point<i32, Physical>| {
+                (s.loc.x * 2.0 + origin.x as f64, s.loc.y * 2.0 + origin.y as f64)
+            };
+            assert_eq!(at(src, union.loc), (region.loc.x as f64, region.loc.y as f64));
+            assert_eq!(at(alone, own.loc), (region.loc.x as f64, region.loc.y as f64));
+            assert_eq!((src.size.w, src.size.h), (alone.size.w, alone.size.h));
+            let s = el.src();
+            assert!(s.loc.x >= 0.0 && s.loc.x + s.size.w <= (union.size.w / 2) as f64);
+            assert!(s.loc.y >= 0.0 && s.loc.y + s.size.h <= (union.size.h / 2) as f64);
+        }
+        // One physical pixel in the shared texture's UV is 1 / union, so a bend
+        // of `strength` px is strength / union.size.
+        let mut u = vec![smithay::backend::renderer::gles::Uniform::new(
+            "px_uv",
+            px_uv_for((fb.w, fb.h)),
+        )];
+        set_px_uv(&mut u, (union.size.w, union.size.h));
+        let UniformValue::_2f(x, y) = u[0].value else {
+            panic!("px_uv is a vec2")
+        };
+        assert_eq!(x, 1.0 / union.size.w as f32);
+        assert_eq!(y, 1.0 / union.size.h as f32);
+        assert!(union.size.w > ca.size.w, "the union is wider than one member");
+    }
+
+    /// Phase 1c: the built region carries a margin and is bucketed, so a member
+    /// moving inside it needs no rebuild; one leaving it does.
+    #[test]
+    fn a_member_moving_inside_the_margin_needs_no_rebuild() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        let needed = |region| member_crop(region, &blur, 2, fb, false).unwrap().1;
+        let a = r(1000, 600, 400, 300);
+        let built = padded_crop(needed(a), fb, 4, false);
+        assert!(built.contains_rect(needed(a)));
+        // The size is a bucket (or the whole side) and the corner is on the grid.
+        assert!(built.size.w % CROP_BUCKET < 16 || built.size.w == fb.w);
+        assert!(built.size.h % CROP_BUCKET < 16 || built.size.h == fb.h);
+        assert!(built.loc.x % 16 == 0 && built.loc.y % 16 == 0);
+        assert!(Rectangle::from_size(fb).contains_rect(built));
+        // Every step of a drag inside the margin is still covered; no new key.
+        let m = crop_margin(fb);
+        assert_eq!(m, 360);
+        for dx in (-m / 2..=m / 2).step_by(20) {
+            let moved = r(a.loc.x + dx, a.loc.y + dx / 2, a.size.w, a.size.h);
+            assert!(covers(Some(built), needed(moved)), "dx {dx}");
+        }
+        // Outside the margin it is not.
+        assert!(!covers(
+            Some(built),
+            needed(r(a.loc.x + m + 300, a.loc.y, 400, 300))
+        ));
+        // Resize growth inside the margin is covered, past it is not.
+        assert!(covers(
+            Some(built),
+            needed(r(1000, 600, 400 + m / 2, 300 + m / 2))
+        ));
+        assert!(!covers(Some(built), needed(r(1000, 600, 400 + 2 * m, 300))));
+        // Never built: nothing is covered.
+        assert!(!covers(None, needed(a)));
+    }
+
+    /// Chains are keyed by crop size, so the built sizes are few: every member
+    /// position of one size lands in the same bucket.
+    #[test]
+    fn built_sizes_are_bucketed() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        let mut sizes = std::collections::BTreeSet::new();
+        for x in (0..2400).step_by(37) {
+            for y in (0..1300).step_by(61) {
+                let c = member_crop(r(x, y, 400, 300), &blur, 2, fb, false).unwrap().1;
+                let built = padded_crop(c, fb, 4, false);
+                assert!(built.contains_rect(c));
+                sizes.insert((built.size.w, built.size.h));
+            }
+        }
+        // Two widths and two heights, each plus a grid-slide variant at the edge.
+        assert!(sizes.len() <= 8, "{sizes:?}");
+    }
+
+    /// A tier change or new membership is a rebuild whatever the region is
+    /// (`group_refresh` ORs `!same_members` into `fresh`); the margin test
+    /// itself is only about geometry, and a member at the output edge clamps.
+    #[test]
+    fn the_padded_region_stays_on_the_output() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((1920, 1080));
+        for region in [r(0, 0, 300, 200), r(1700, 900, 220, 180), r(0, 0, 1920, 1080)] {
+            let c = member_crop(region, &blur, 0, fb, true).unwrap().1;
+            let built = padded_crop(c, fb, 4, true);
+            assert!(
+                Rectangle::from_size(fb).contains_rect(built),
+                "{region:?} {built:?}"
+            );
+            assert!(built.contains_rect(c));
+        }
+    }
+
+    /// The shared texture addresses a member by its offset into the *built*
+    /// region: moving a member inside the margin changes only that offset.
+    #[test]
+    fn a_moved_member_changes_only_its_uv_offset() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        let a = r(1000, 600, 400, 300);
+        let built = padded_crop(member_crop(a, &blur, 2, fb, false).unwrap().1, fb, 4, false);
+        let tex = Backdrop(Size::from((built.size.w / 2, built.size.h / 2)));
+        let scale = Scale::from(1.0);
+        let src = |region| {
+            BlurElement::placed(
+                Id::new(),
+                ContextId::new(),
+                tex.clone(),
+                built,
+                region,
+                scale,
+                1.0,
+            )
+            .src()
+        };
+        let (s0, s1) = (src(a), src(r(1100, 640, 400, 300)));
+        assert_eq!((s1.loc.x - s0.loc.x, s1.loc.y - s0.loc.y), (50.0, 20.0));
+        assert_eq!(s0.size, s1.size);
     }
 
     /// A half-size result is sampled at half the region's offset and size.
