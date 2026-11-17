@@ -121,6 +121,8 @@ pub struct DrmOutput {
     deadline_armed: bool,
     /// Monotonic timestamp of the last page flip the kernel reported.
     last_vblank: Option<Duration>,
+    /// When the frame in flight was queued, for flip latency metrics.
+    queued_at: Option<Instant>,
     /// The vblank the frame in flight was queued to land on, to tell on-time
     /// flips from late ones.
     target_vblank: Option<Duration>,
@@ -1065,6 +1067,7 @@ fn add_connector(
             needs_render: true,
             deadline_armed: false,
             last_vblank: None,
+            queued_at: None,
             target_vblank: None,
             estimate: deadline::RenderEstimate::default(),
             feedback,
@@ -1504,6 +1507,7 @@ fn on_vblank(
     meta: Option<&DrmEventMetadata>,
 ) {
     let clock_now = state.clock.now();
+    let mut flip_sample: Option<(Duration, Option<Duration>)> = None;
     if let Some(drm) = state.drm.as_mut() {
         if let Some(i) = drm.index_of(dev_id, crtc) {
             {
@@ -1555,6 +1559,10 @@ fn on_vblank(
                         o.estimate.missed(refresh);
                     }
                 }
+                if let Some(queued) = o.queued_at.take() {
+                    let interval = o.last_vblank.and_then(|prev| flipped.checked_sub(prev));
+                    flip_sample = Some((queued.elapsed(), interval));
+                }
                 o.last_vblank = Some(flipped);
                 o.frame_pending = false;
                 // The flip is done, so the secondary GPU has finished reading
@@ -1564,6 +1572,9 @@ fn on_vblank(
                 }
             }
         }
+    }
+    if let Some((latency, interval)) = flip_sample {
+        state.stats.record_flip(latency, interval);
     }
     // No render here: the end of this dispatch round plans the next frame
     // against the deadline (`flush_renders`).
@@ -2525,6 +2536,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
         match drm.outputs[index].compositor.queue_frame(Some(presentation)) {
             Ok(()) => {
                 queued = true;
+                drm.outputs[index].queued_at = Some(Instant::now());
                 // Diagnostics: once per output after a commit, and again after a mode change.
                 let entry = &mut drm.outputs[index];
                 if !entry.diag.geometry_logged {

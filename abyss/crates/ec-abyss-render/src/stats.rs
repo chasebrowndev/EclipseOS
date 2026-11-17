@@ -25,6 +25,13 @@ pub struct FrameStats {
     next: usize,
     len: usize,
     frames: u64,
+    flip_us: Box<[u32; CAPACITY]>,
+    interval_us: Box<[u32; CAPACITY]>,
+    flip_next: usize,
+    flip_len: usize,
+    interval_next: usize,
+    interval_len: usize,
+    flips: u64,
     last_report: Instant,
 }
 
@@ -37,6 +44,13 @@ impl FrameStats {
             next: 0,
             len: 0,
             frames: 0,
+            flip_us: Box::new([0; CAPACITY]),
+            interval_us: Box::new([0; CAPACITY]),
+            flip_next: 0,
+            flip_len: 0,
+            interval_next: 0,
+            interval_len: 0,
+            flips: 0,
             last_report: Instant::now(),
         }
     }
@@ -48,6 +62,20 @@ impl FrameStats {
         self.next = (self.next + 1) % CAPACITY;
         self.len = (self.len + 1).min(CAPACITY);
         self.frames += 1;
+    }
+
+    /// Record one page flip: queue-to-vblank latency, and the time since the
+    /// output's previous flip (`None` for its first). Allocation-free.
+    pub fn record_flip(&mut self, latency: Duration, interval: Option<Duration>) {
+        self.flip_us[self.flip_next] = latency.as_micros().min(u32::MAX as u128) as u32;
+        self.flip_next = (self.flip_next + 1) % CAPACITY;
+        self.flip_len = (self.flip_len + 1).min(CAPACITY);
+        self.flips += 1;
+        if let Some(i) = interval {
+            self.interval_us[self.interval_next] = i.as_micros().min(u32::MAX as u128) as u32;
+            self.interval_next = (self.interval_next + 1) % CAPACITY;
+            self.interval_len = (self.interval_len + 1).min(CAPACITY);
+        }
     }
 
     /// Emit a summary if the reporting interval has elapsed. Called once per
@@ -82,8 +110,26 @@ impl FrameStats {
     /// size of the window; called only from the control socket, never from
     /// the render path.
     pub fn snapshot(&self) -> Snapshot {
+        let mut flip: Vec<u32> = self.flip_us[..self.flip_len].to_vec();
+        let mut interval: Vec<u32> = self.interval_us[..self.interval_len].to_vec();
+        flip.sort_unstable();
+        interval.sort_unstable();
+        let flips = (
+            self.flips,
+            pct(&flip, 50),
+            pct(&flip, 99),
+            pct(&interval, 50),
+            pct(&interval, 99),
+        );
         if self.len == 0 {
-            return Snapshot::default();
+            return Snapshot {
+                flips: flips.0,
+                flip_p50_us: flips.1,
+                flip_p99_us: flips.2,
+                interval_p50_us: flips.3,
+                interval_p99_us: flips.4,
+                ..Snapshot::default()
+            };
         }
         let mut render: Vec<u32> = self.render_us[..self.len].to_vec();
         let mut submit: Vec<u32> = self.submit_us[..self.len].to_vec();
@@ -96,6 +142,11 @@ impl FrameStats {
             render_p99_us: pct(&render, 99),
             submit_p50_us: pct(&submit, 50),
             submit_p99_us: pct(&submit, 99),
+            flips: flips.0,
+            flip_p50_us: flips.1,
+            flip_p99_us: flips.2,
+            interval_p50_us: flips.3,
+            interval_p99_us: flips.4,
         }
     }
 }
@@ -111,6 +162,12 @@ pub struct Snapshot {
     pub render_p99_us: u32,
     pub submit_p50_us: u32,
     pub submit_p99_us: u32,
+    /// Page flips recorded since start.
+    pub flips: u64,
+    pub flip_p50_us: u32,
+    pub flip_p99_us: u32,
+    pub interval_p50_us: u32,
+    pub interval_p99_us: u32,
 }
 
 /// Nearest-rank percentile over an already sorted slice.
@@ -133,6 +190,18 @@ mod tests {
         assert_eq!(pct(&v, 99), 99);
         assert_eq!(pct(&[], 50), 0);
         assert_eq!(pct(&[7], 99), 7);
+    }
+
+    #[test]
+    fn flips_record_latency_and_interval() {
+        let mut s = FrameStats::new(false);
+        s.record_flip(Duration::from_micros(50_000), None);
+        s.record_flip(Duration::from_micros(48_000), Some(Duration::from_micros(50_000)));
+        let snap = s.snapshot();
+        assert_eq!(snap.flips, 2);
+        assert_eq!(snap.flip_p99_us, 50_000);
+        assert_eq!(snap.interval_p50_us, 50_000);
+        assert_eq!(s.interval_len, 1);
     }
 
     #[test]
