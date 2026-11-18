@@ -8,6 +8,7 @@
 mod askpass;
 mod config;
 mod ctl;
+mod doctor;
 mod icat;
 mod play;
 mod proxy;
@@ -99,6 +100,9 @@ fn socket(args: &[String]) -> i32 {
         }
         a.extend(rest.iter().cloned());
         return config_cmd(&a);
+    }
+    if cmd == "doctor" {
+        return doctor::run(&opts);
     }
     if ctl::NOT_YET.contains(&cmd.as_str()) {
         eprintln!(
