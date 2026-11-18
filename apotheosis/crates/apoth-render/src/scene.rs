@@ -659,6 +659,9 @@ impl GridScene {
         self.extra.extend_from_slice(&self.force);
         self.force.clear();
         if damage == Damage::None && self.extra.is_empty() && !self.rows.iter().any(|r| r.pending) {
+            // The executor reads the last plan: an idle frame must not replay a region scroll.
+            self.planner
+                .plan(Damage::None, &[], &[], nrows, cols, &mut self.ring);
             return FrameWork::default();
         }
         let plan = self.planner.plan(
@@ -1136,6 +1139,32 @@ mod tests {
         assert_eq!(gs.rows[0].glyphs[0].atlas_xy[0], 0x62 * 8);
         assert_eq!(gs.rows[2].glyphs[0].atlas_xy[0], 0x64 * 8);
         assert_eq!(gs.ring.offset(), 1);
+    }
+
+    #[test]
+    fn idle_frame_drops_the_previous_region_scroll() {
+        let (cfg, pal, m) = (SceneConfig::default(), Palette::xterm(), test_metrics());
+        let mut gs = GridScene::new();
+        let mut f = Fake::default();
+        let mut s = snap(&["aa", "bb", "cc", "dd"]);
+        gs.update(&s, Damage::Full, &ctx(&cfg, &pal, &m, &[]), false, &mut f);
+        s = snap(&["aa", "cc", "ee", "dd"]);
+        s.changed = vec![2];
+        let d = Damage::Scroll {
+            top: 1,
+            bottom: 2,
+            left: 0,
+            right: 1,
+            delta: 1,
+        };
+        gs.update(&s, d, &ctx(&cfg, &pal, &m, &[]), false, &mut f);
+        assert_eq!(gs.plan().ops.len(), 1);
+        s.changed.clear();
+        gs.update(&s, Damage::None, &ctx(&cfg, &pal, &m, &[]), false, &mut f);
+        assert!(
+            gs.plan().ops.is_empty(),
+            "an idle frame replayed the scroll"
+        );
     }
 
     #[test]
