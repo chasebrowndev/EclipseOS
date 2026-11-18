@@ -29,6 +29,7 @@ pub mod output_overscan;
 pub mod overscan;
 pub mod overview;
 pub mod palette;
+pub mod partial;
 pub mod popup_shape;
 pub mod redact;
 pub mod sanitize;

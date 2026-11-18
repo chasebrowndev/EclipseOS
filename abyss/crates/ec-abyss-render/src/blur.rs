@@ -662,6 +662,9 @@ pub enum BlurKey {
     LayerPanes(LayerSurface),
 }
 
+/// What a tier's textures were made for: crop size, passes, output size.
+type ChainShape = (Size<i32, Physical>, usize, Size<i32, Physical>);
+
 /// One persistent shared pyramid (Phase 1a): the blur of the union of its
 /// members' crops, drawn by each member from its own part of `result`.
 struct GroupBlur {
@@ -678,6 +681,20 @@ struct GroupBlur {
     members: Vec<BlurKey>,
     /// Bumped on every rebuild; a member whose `seen` differs redraws.
     rebuilds: u64,
+    /// Phase 1b: this tier's own persistent chain, so a partial rebuild only
+    /// redoes the damaged part and the rest stays as the last build left it.
+    /// The backdrop, output-sized, drawn over `crop` only.
+    level0: Option<GlesTexture>,
+    /// Renders the backdrop into `level0` with `age = 1` between rebuilds:
+    /// its diff against the last build is the damage since then.
+    render: Option<OutputDamageTracker>,
+    /// Downsample results, levels `1..=passes`.
+    down: Vec<GlesTexture>,
+    /// Upsample results, levels `2..passes` (the top level is the
+    /// downsample's own).
+    up: Vec<GlesTexture>,
+    /// `(crop size, passes, output size)` the textures above were made for.
+    built: Option<ChainShape>,
     /// Damage landed while crowded and the rebuild was deferred.
     pending: bool,
     /// The store frame `result` was last rebuilt on.
@@ -879,6 +896,9 @@ pub struct BlurStore {
     groups: HashMap<BlurKey, GroupBlur>,
     /// Per-surface element state of the grouped surfaces.
     members: HashMap<BlurKey, MemberSlot>,
+    /// Scratch of a partial rebuild (Phase 1b), kept between rebuilds.
+    plan: crate::partial::Plan,
+    damage: Vec<Rectangle<i32, Physical>>,
     /// Profiling counters (`EC_GLASS_PROFILE`).
     profile: GlassProfile,
 }
@@ -1208,6 +1228,11 @@ impl BlurStore {
             params,
             members: Vec::new(),
             rebuilds: 0,
+            level0: None,
+            render: None,
+            down: Vec::new(),
+            up: Vec::new(),
+            built: None,
             pending: false,
             last: 0,
             seen: frame,
@@ -1262,23 +1287,103 @@ impl BlurStore {
         if dirty || fresh {
             entry.pending = false;
             entry.last = frame;
-            let reuse = entry.result.take();
             // A rebuild with nothing new to cover (damage) keeps its region.
             let crop = match entry.crop.filter(|_| !fresh) {
                 Some(built) => built,
                 None => padded_crop(needed, fb_size, passes, mirrored),
             };
             let tex = crop_tex(crop, fb_size, mirrored);
-            let texture = self.rebuild(renderer, output, blur, scale, (tex, crop), behind, reuse)?;
+            let changed = self.rebuild_group(
+                renderer,
+                output,
+                key,
+                blur,
+                scale,
+                (tex, crop),
+                behind,
+                fresh || self.profile.full_only(),
+            )?;
             let entry = self.groups.get_mut(key)?;
-            entry.result = Some(texture);
-            entry.crop = Some(crop);
-            entry.params = params;
-            entry.rebuilds = entry.rebuilds.wrapping_add(1);
-            entry.members.clear();
-            entry.members.extend(members.map(|m| m.key.clone()));
+            if fresh {
+                entry.crop = Some(crop);
+                entry.params = params;
+                entry.members.clear();
+                entry.members.extend(members.map(|m| m.key.clone()));
+            }
+            // Damage that turned out to change nothing the blur sees leaves
+            // the members as they were.
+            if changed {
+                entry.rebuilds = entry.rebuilds.wrapping_add(1);
+            }
         }
         Some(())
+    }
+
+    /// Phase 1b: bring one tier's chain up to date. `full` rebuilds every
+    /// level over the whole `crop`; otherwise the backdrop is redrawn only
+    /// where it changed since the last build and each pass only over the
+    /// texels that damage can reach (see [`crate::partial`]), which is
+    /// texel-for-texel what the full rebuild would have written. Returns
+    /// whether anything was rebuilt (`None` on a GL failure).
+    #[allow(clippy::too_many_arguments)]
+    fn rebuild_group<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        key: &BlurKey,
+        blur: &Blur,
+        scale: Scale<f64>,
+        (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+        behind: &[E],
+        full: bool,
+    ) -> Option<bool>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        let Self {
+            down,
+            up,
+            groups,
+            profile,
+            plan,
+            damage,
+            chain_size,
+            ..
+        } = self;
+        let g = groups.get_mut(key)?;
+        let orient = match crate::effects::fb_y_mirrored(output.current_transform()) {
+            Some(true) => Transform::Flipped180,
+            _ => Transform::Normal,
+        };
+        match render_group(
+            renderer,
+            output,
+            g,
+            plan,
+            damage,
+            (down.as_ref()?, up.as_ref()?),
+            (*chain_size, orient),
+            (tex, crop),
+            scale,
+            behind,
+            blur,
+            full,
+        ) {
+            Ok(done) => {
+                if let Some(rebuild) = done {
+                    profile.rebuilt(rebuild);
+                }
+                Some(done.is_some())
+            }
+            Err(err) => {
+                tracing::warn!(?err, "rendering the blur chain; blur skipped this frame");
+                // Whatever was half-written is not to be trusted next time.
+                g.built = None;
+                g.render = None;
+                g.result = None;
+                None
+            }
+        }
     }
 
     /// Phase 1a: one member's element, cut from its group's shared result.
@@ -1407,6 +1512,8 @@ impl BlurStore {
                     crop_texels: crop.size.w as u64 * crop.size.h as u64,
                     cleared_texels: chain_size.w as u64 * chain_size.h as u64,
                     passes: ran,
+                    pass_texels: chain_texels(crop.size, passes),
+                    partial: false,
                 });
                 Some(texture)
             }
@@ -1554,7 +1661,7 @@ where
         (tex.loc.x as f64, tex.loc.y as f64).into(),
         (tex.size.w as f64, tex.size.h as f64).into(),
     );
-    blit(
+    blit_full(
         renderer,
         level0,
         &mut mid[0],
@@ -1565,7 +1672,7 @@ where
     )?;
     for level in 1..passes {
         let (src, dst) = split_pair(mid, level - 1, level);
-        blit(renderer, src, dst, Some(down), offset, Transform::Normal, None)?;
+        blit_full(renderer, src, dst, Some(down), offset, Transform::Normal, None)?;
     }
 
     // 3. Upsample down to level 2. The last step writes level 1 (half size)
@@ -1575,20 +1682,226 @@ where
     //    is copied as is.
     for level in (2..passes).rev() {
         let (src, dst) = split_pair(mid, level, level - 1);
-        blit(renderer, src, dst, Some(up), offset, Transform::Normal, None)?;
+        blit_full(renderer, src, dst, Some(up), offset, Transform::Normal, None)?;
     }
     let half = mid[0].size();
     let mut result = sized(renderer, reuse, half)?;
     if passes >= 2 {
         let src = mid[1].clone();
-        blit(renderer, &src, &mut result, Some(up), offset, orient, None)?;
+        blit_full(renderer, &src, &mut result, Some(up), offset, orient, None)?;
     } else {
         let src = mid[0].clone();
-        blit(renderer, &src, &mut result, None, offset, orient, None)?;
+        blit_full(renderer, &src, &mut result, None, offset, orient, None)?;
     }
     // Down passes, up passes (levels `passes..=2`), then the final write.
     let ran = passes + passes.saturating_sub(2) + 1;
     Ok((result, ran as u32))
+}
+
+/// Texels the blits of a full chain over `crop` write.
+fn chain_texels(crop: Size<i32, Physical>, passes: usize) -> u64 {
+    let area = |l: usize| {
+        let s = level_size(crop, l);
+        s.w as u64 * s.h as u64
+    };
+    let down: u64 = (1..=passes).map(area).sum();
+    let up: u64 = (2..passes).map(area).sum();
+    down + up + area(1)
+}
+
+/// One tier's rebuild (Phase 1b). `chain` is the output size and the
+/// orientation of the final write.
+///
+/// Persistent per tier: `level0`, the down and up levels, the result and the
+/// damage tracker. A full rebuild renders the backdrop at age 0 (clearing the
+/// whole output) and runs every pass over its whole texture. A partial one
+/// renders at age 1, so the tracker reports exactly the damage since this
+/// tier's last build, then runs each pass only over [`crate::partial::Plan`]'s
+/// rectangles. Nothing outside them can differ from a full rebuild, so the
+/// result is identical to one (the unit tests bound the footprint against the
+/// shaders' taps; `docs/GLASS_PROFILING.md` has the pixel comparison).
+#[allow(clippy::too_many_arguments)]
+fn render_group<E>(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    g: &mut GroupBlur,
+    plan: &mut crate::partial::Plan,
+    damage: &mut Vec<Rectangle<i32, Physical>>,
+    (down, up): (&GlesTexProgram, &GlesTexProgram),
+    (fb, orient): (Size<i32, Physical>, Transform),
+    (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+    scale: Scale<f64>,
+    behind: &[E],
+    blur: &Blur,
+    full: bool,
+) -> Result<Option<Rebuild>, GlesError>
+where
+    E: Element + RenderElement<GlesRenderer>,
+{
+    let passes = blur.passes.clamp(1, 6) as usize;
+    let offset = sample_offset(blur);
+    let mirrored = orient == Transform::Flipped180;
+    let mut full = full;
+    let want = (crop.size, passes, fb);
+    if g.built != Some(want) {
+        full = true;
+        if g.built.map(|b| b.2) != Some(fb) || g.level0.is_none() {
+            g.level0 = Some(Offscreen::<GlesTexture>::create_buffer(
+                renderer,
+                FORMAT,
+                fb.to_logical(1).to_buffer(1, Transform::Normal),
+            )?);
+        }
+        g.down = alloc_levels(renderer, crop.size, passes)?;
+        g.up = (2..passes)
+            .map(|level| {
+                Offscreen::<GlesTexture>::create_buffer(
+                    renderer,
+                    FORMAT,
+                    level_size(crop.size, level)
+                        .to_logical(1)
+                        .to_buffer(1, Transform::Normal),
+                )
+            })
+            .collect::<Result<_, _>>()?;
+        g.built = Some(want);
+    }
+    if g.render.is_none() || g.result.is_none() || g.level0.is_none() {
+        full = true;
+    }
+    let tracker = g
+        .render
+        .get_or_insert_with(|| OutputDamageTracker::from_output(output));
+
+    // 1. The backdrop over `crop`: whole at age 0, else just what changed.
+    damage.clear();
+    let mut drawn = 0u64;
+    {
+        let cropped = crop_behind(behind, scale, crop);
+        let level0 = g.level0.as_mut().ok_or(GlesError::UnknownPixelFormat)?;
+        let mut target = Bind::bind(renderer, level0)?;
+        let res = tracker
+            .render_output(renderer, &mut target, if full { 0 } else { 1 }, &cropped, CLEAR)
+            .map_err(|_| GlesError::UnknownPixelFormat)?;
+        match res.damage {
+            // Nothing the blur samples changed.
+            None if !full => return Ok(None),
+            None => {}
+            Some(rects) => {
+                for d in rects {
+                    drawn += d.size.w.max(0) as u64 * d.size.h.max(0) as u64;
+                    if full {
+                        continue;
+                    }
+                    // Output space to the texture's (flipped when mirrored).
+                    if let Some(c) = d.intersection(crop) {
+                        let y = if mirrored {
+                            fb.h - (c.loc.y + c.size.h)
+                        } else {
+                            c.loc.y
+                        };
+                        damage.push(Rectangle::new((c.loc.x, y).into(), c.size));
+                    }
+                }
+            }
+        }
+    }
+    let sizes: [Size<i32, Physical>; 6] = std::array::from_fn(|i| level_size(crop.size, i + 1));
+    let partial = !full && plan.fill(damage, tex, &sizes[..passes], offset, mirrored);
+    if !full && !partial && damage.is_empty() {
+        // Damage that lies wholly outside the region.
+        return Ok(None);
+    }
+
+    // 2. Down, 3. up, over the full textures or just the planned rectangles.
+    let GroupBlur {
+        level0,
+        down: dn,
+        up: upv,
+        result,
+        ..
+    } = g;
+    let level0 = level0.as_ref().ok_or(GlesError::UnknownPixelFormat)?;
+    let whole = |t: &GlesTexture| {
+        let s = t.size();
+        [Rectangle::<i32, Physical>::from_size((s.w, s.h).into())]
+    };
+    let from = Rectangle::<f64, BufferCoords>::new(
+        (tex.loc.x as f64, tex.loc.y as f64).into(),
+        (tex.size.w as f64, tex.size.h as f64).into(),
+    );
+    for level in 1..=passes {
+        let rects = &plan.down;
+        if level == 1 {
+            let all = whole(&dn[0]);
+            let r = if partial { &rects[0][..] } else { &all[..] };
+            blit(
+                renderer,
+                level0,
+                &mut dn[0],
+                Some(down),
+                offset,
+                Transform::Normal,
+                Some(from),
+                r,
+            )?;
+        } else {
+            let (src, dst) = split_pair(dn, level - 2, level - 1);
+            let all = whole(dst);
+            let r = if partial { &rects[level - 1][..] } else { &all[..] };
+            blit(renderer, src, dst, Some(down), offset, Transform::Normal, None, r)?;
+        }
+    }
+    for level in (3..=passes).rev() {
+        let all = whole(&upv[level - 3]);
+        let r = if partial {
+            &plan.up[level - 3][..]
+        } else {
+            &all[..]
+        };
+        // The top level is the down chain's own; below it, two up levels.
+        if level == passes {
+            blit(
+                renderer,
+                &dn[passes - 1],
+                &mut upv[level - 3],
+                Some(up),
+                offset,
+                Transform::Normal,
+                None,
+                r,
+            )?;
+        } else {
+            let (src, dst) = split_pair(upv, level - 2, level - 3);
+            blit(renderer, src, dst, Some(up), offset, Transform::Normal, None, r)?;
+        }
+    }
+    let half = dn[0].size();
+    let mut out = sized(renderer, result.take(), half)?;
+    let all = whole(&out);
+    let r = if partial { &plan.result[..] } else { &all[..] };
+    match passes {
+        1 => blit(renderer, &dn[0], &mut out, None, offset, orient, None, r)?,
+        2 => blit(renderer, &dn[1], &mut out, Some(up), offset, orient, None, r)?,
+        _ => blit(renderer, &upv[0], &mut out, Some(up), offset, orient, None, r)?,
+    }
+    *result = Some(out);
+    let ran = passes + passes.saturating_sub(2) + 1;
+    Ok(Some(Rebuild {
+        crop_texels: if partial {
+            drawn
+        } else {
+            crop.size.w as u64 * crop.size.h as u64
+        },
+        cleared_texels: if full { fb.w as u64 * fb.h as u64 } else { drawn },
+        passes: ran as u32,
+        pass_texels: if partial {
+            plan.texels()
+        } else {
+            chain_texels(crop.size, passes)
+        },
+        partial,
+    }))
 }
 
 /// `reuse` if it is already `size`, else a fresh offscreen texture of `size`.
@@ -1629,9 +1942,28 @@ fn split_pair(chain: &mut [GlesTexture], src: usize, dst: usize) -> (&GlesTextur
     }
 }
 
-/// One Kawase pass: draw the whole of `src` over the whole of `dst`, sampling
-/// `src` (or just its `from` rectangle) under `transform` (`Normal` except for
-/// the final, upright-ing pass), through `program` or the default shader. The half-pixel is always one of `src`'s own.
+/// [`blit`] over the whole of `dst`.
+fn blit_full(
+    renderer: &mut GlesRenderer,
+    src: &GlesTexture,
+    dst: &mut GlesTexture,
+    program: Option<&GlesTexProgram>,
+    offset: f32,
+    transform: Transform,
+    from: Option<Rectangle<f64, BufferCoords>>,
+) -> Result<(), GlesError> {
+    let size = dst.size();
+    let whole = [Rectangle::<i32, Physical>::from_size((size.w, size.h).into())];
+    blit(renderer, src, dst, program, offset, transform, from, &whole)
+}
+
+/// One Kawase pass: draw `src` (or just its `from` rectangle) over `dst`,
+/// sampling it under `transform` (`Normal` except for the final, upright-ing
+/// pass), through `program` or the default shader. Only the `damage`
+/// rectangles of `dst` are written (the whole of it for a full pass); the
+/// sampling coordinates of a texel are the same either way. The half-pixel is
+/// always one of `src`'s own.
+#[allow(clippy::too_many_arguments)]
 fn blit(
     renderer: &mut GlesRenderer,
     src: &GlesTexture,
@@ -1640,6 +1972,7 @@ fn blit(
     offset: f32,
     transform: Transform,
     from: Option<Rectangle<f64, BufferCoords>>,
+    damage: &[Rectangle<i32, Physical>],
 ) -> Result<(), GlesError> {
     let src_size = src.size();
     let dst_size = dst.size();
@@ -1654,7 +1987,7 @@ fn blit(
         src,
         from.unwrap_or_else(|| Rectangle::from_size((src_size.w as f64, src_size.h as f64).into())),
         dest,
-        &[dest],
+        damage,
         &[],
         transform,
         1.0,

@@ -19,12 +19,18 @@ pub const REPORT_FRAMES: u64 = 120;
 /// What one chain rebuild cost, as the chain reports it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rebuild {
-    /// Texels of the output redrawn into level 0 (the crop area).
+    /// Texels of the output redrawn into level 0 (the crop area, or the damage
+    /// on a partial rebuild).
     pub crop_texels: u64,
-    /// Texels the age-0 backdrop render clears (the whole output).
+    /// Texels the backdrop render clears: the whole output at age 0, the damage
+    /// on a partial rebuild.
     pub cleared_texels: u64,
     /// Down, up and final blits run.
     pub passes: u32,
+    /// Texels the blits wrote, summed over the passes.
+    pub pass_texels: u64,
+    /// Rebuilt over the damage only (Phase 1b), not the whole region.
+    pub partial: bool,
 }
 
 impl Default for GlassProfile {
@@ -38,6 +44,9 @@ impl Default for GlassProfile {
 #[derive(Clone, Copy, Debug)]
 pub struct GlassProfile {
     enabled: bool,
+    /// `EC_GLASS_FULL_REBUILD` is set: every tier rebuild runs in full (the
+    /// reference for comparing a partial rebuild's pixels).
+    full_only: bool,
     /// Frames seen since the last report.
     frames: u64,
     /// Surfaces that asked for blur, summed over the window.
@@ -51,6 +60,8 @@ pub struct GlassProfile {
     crop_texels: u64,
     cleared_texels: u64,
     passes: u64,
+    pass_texels: u64,
+    partial: u64,
     max_passes_rebuild: u32,
     /// Rebuilds in the frame being drawn.
     this_frame: u32,
@@ -61,12 +72,20 @@ impl GlassProfile {
     /// or `0`).
     pub fn from_env() -> Self {
         let on = std::env::var_os("EC_GLASS_PROFILE").is_some_and(|v| !v.is_empty() && v != "0");
-        Self::new(on)
+        let mut p = Self::new(on);
+        p.full_only = std::env::var_os("EC_GLASS_FULL_REBUILD").is_some_and(|v| !v.is_empty() && v != "0");
+        p
+    }
+
+    /// Whether tier rebuilds are forced to run in full.
+    pub fn full_only(&self) -> bool {
+        self.full_only
     }
 
     pub fn new(enabled: bool) -> Self {
         Self {
             enabled,
+            full_only: false,
             frames: 0,
             surfaces: 0,
             tiered: 0,
@@ -77,6 +96,8 @@ impl GlassProfile {
             crop_texels: 0,
             cleared_texels: 0,
             passes: 0,
+            pass_texels: 0,
+            partial: 0,
             max_passes_rebuild: 0,
             this_frame: 0,
         }
@@ -90,6 +111,8 @@ impl GlassProfile {
         self.crop_texels += r.crop_texels;
         self.cleared_texels += r.cleared_texels;
         self.passes += u64::from(r.passes);
+        self.pass_texels += r.pass_texels;
+        self.partial += u64::from(r.partial);
         self.max_passes_rebuild = self.max_passes_rebuild.max(r.passes);
     }
 
@@ -121,11 +144,15 @@ impl GlassProfile {
                 crop_texels = self.crop_texels,
                 cleared_texels = self.cleared_texels,
                 passes = self.passes,
+                pass_texels = self.pass_texels,
+                partial_rebuilds = self.partial,
                 max_passes_per_rebuild = self.max_passes_rebuild,
                 "glass profile"
             );
         }
+        let full_only = self.full_only;
         *self = Self::new(self.enabled);
+        self.full_only = full_only;
     }
 }
 
@@ -140,6 +167,8 @@ mod tests {
             crop_texels: 100,
             cleared_texels: 1000,
             passes: 5,
+            pass_texels: 7,
+            partial: true,
         };
         p.rebuilt(r);
         p.rebuilt(r);
