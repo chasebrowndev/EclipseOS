@@ -1261,8 +1261,13 @@ fn run(a: RenderArgs) {
                         );
                     }
                     PresentOutcome::Skipped(fault) => {
-                        tracing::debug!(?fault, "frame skipped");
-                        match fault_action(fault) {
+                        let action = fault_action(fault);
+                        if matches!(action, FaultAction::SkipFrame) {
+                            tracing::debug!(?fault, "frame skipped");
+                        } else {
+                            tracing::warn!(?fault, ?action, "frame skipped");
+                        }
+                        match action {
                             FaultAction::Abort => {
                                 let _ = to_main.send(MainMsg::RenderFailed(format!(
                                     "surface fault: {fault:?}"

@@ -191,6 +191,30 @@ fn init_logging() {
         .try_init();
 }
 
+/// Log a fatal startup error and exit. A terminal already shows the log line; otherwise
+/// (compositor spawn) stderr is the only other place it would land.
+fn fail(code: i32, msg: &str) -> ! {
+    tracing::error!(code, "{msg}");
+    if !std::io::stderr().is_terminal() {
+        eprintln!("apotheosis: {msg}");
+    }
+    std::process::exit(code)
+}
+
+/// Panics go to the log with their location and thread, never the payload (it can carry
+/// pane text).
+fn log_panics() {
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let at = info
+            .location()
+            .map_or_else(String::new, ToString::to_string);
+        let thread = std::thread::current();
+        tracing::error!(at, thread = thread.name().unwrap_or("?"), "panic");
+        prev(info);
+    }));
+}
+
 fn main() {
     let cli = match parse_args(std::env::args().skip(1)) {
         Ok(c) => c,
@@ -211,9 +235,16 @@ fn main() {
         }
         Cli::Run(r) => {
             init_logging();
+            log_panics();
+            tracing::info!(
+                version = env!("CARGO_PKG_VERSION"),
+                pid = std::process::id(),
+                server = r.server,
+                attach = r.attach,
+                "starting"
+            );
             if r.hold || r.layout.is_some() {
-                eprintln!("apotheosis: --hold and --layout are not available yet");
-                std::process::exit(1);
+                fail(1, "--hold and --layout are not available yet");
             }
             if let Some(p) = &r.profile {
                 settings::set_launch_profile(p);
@@ -230,7 +261,9 @@ fn main() {
                     command: r.command,
                     cwd: r.cwd.as_deref().map(absolute),
                 };
-                std::process::exit(server::run(startup.settings, interpreters, opts));
+                let code = server::run(startup.settings, interpreters, opts);
+                tracing::info!(code, "session server exited");
+                std::process::exit(code);
             }
             // `--attach` opens its own window on the session, never a tab elsewhere.
             if !r.new_instance
@@ -238,6 +271,7 @@ fn main() {
                 && r.domain.is_none()
                 && let ctl::launch::Handoff::Done(code) = ctl::launch::hand_off(launch_request(&r))
             {
+                tracing::info!(code, "launch handed to the running instance");
                 std::process::exit(code);
             }
             let startup = settings::Settings::load(r.launch);
@@ -260,12 +294,10 @@ fn main() {
                         (n.to_owned(), dest, mode)
                     }
                     Some((None, _)) => {
-                        eprintln!("apotheosis: domain {n:?} names no ssh host");
-                        std::process::exit(EX_USAGE);
+                        fail(EX_USAGE, &format!("domain {n:?} names no ssh host"));
                     }
                     None => {
-                        eprintln!("apotheosis: no domain {n:?} in the config");
-                        std::process::exit(EX_USAGE);
+                        fail(EX_USAGE, &format!("no domain {n:?} in the config"));
                     }
                 }
             });
@@ -302,16 +334,14 @@ fn main() {
                         }
                     }
                     Err(m) => {
-                        eprintln!("apotheosis: {m}");
-                        std::process::exit(1);
+                        fail(1, &m);
                     }
                 }
             } else if r.attach {
                 match attach::connect(&session) {
                     Ok(h) => Some(attach::Attach::Local(h)),
                     Err(e) => {
-                        eprintln!("apotheosis: cannot attach to session {session:?}: {e}");
-                        std::process::exit(1);
+                        fail(1, &format!("cannot attach to session {session:?}: {e}"));
                     }
                 }
             } else if startup.settings.server_mode {
@@ -334,11 +364,11 @@ fn main() {
                 ssh_domain,
             };
             match app::run(startup, r.command, r.app_id, first, attach) {
-                Ok(code) => std::process::exit(code),
-                Err(e) => {
-                    eprintln!("apotheosis: {e}");
-                    std::process::exit(EX_UNAVAILABLE);
+                Ok(code) => {
+                    tracing::info!(code, "exiting");
+                    std::process::exit(code)
                 }
+                Err(e) => fail(EX_UNAVAILABLE, &e.to_string()),
             }
         }
     }

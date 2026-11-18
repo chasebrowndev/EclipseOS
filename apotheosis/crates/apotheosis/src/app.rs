@@ -3091,7 +3091,7 @@ impl App {
             A::MediaPlay {} => self.media_key(crate::pane::MediaWant::Play),
             A::MediaPause {} => self.media_key(crate::pane::MediaWant::Pause),
             other => {
-                tracing::debug!(action = other.id(), "action not available yet");
+                tracing::warn!(action = other.id(), "action not available yet");
                 return false;
             }
         }
