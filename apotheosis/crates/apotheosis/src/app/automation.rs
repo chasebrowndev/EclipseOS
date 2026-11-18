@@ -404,6 +404,9 @@ impl App {
 
     /// The window title from the `window.title` template and the focused pane.
     pub(super) fn window_title_now(&self) -> String {
+        if let Some(t) = &self.pinned_title {
+            return t.clone();
+        }
         let mut s = Snapshot::default();
         s.text.insert("title".into(), self.term_title.clone());
         if let Some(id) = self.focused() {

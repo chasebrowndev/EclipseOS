@@ -118,6 +118,16 @@ impl WindowStates {
         s
     }
 
+    /// What a fullscreen toggle asks for: the opposite of what the last configure said.
+    pub fn toggle_fullscreen_to(&self) -> bool {
+        !self.fullscreen
+    }
+
+    /// What a maximize toggle asks for: the opposite of what the last configure said.
+    pub fn toggle_maximized_to(&self) -> bool {
+        !self.maximized
+    }
+
     /// Any tiled edge.
     pub fn is_tiled(&self) -> bool {
         self.tiled_left || self.tiled_right || self.tiled_top || self.tiled_bottom
@@ -488,6 +498,19 @@ mod tests {
         r.extend([1, 2]);
         assert!(WindowStates::from_raw(&r).fullscreen);
         assert_eq!(WindowStates::from_raw(&[]), WindowStates::default());
+    }
+
+    #[test]
+    fn toggles_follow_the_configured_states() {
+        let none = WindowStates::default();
+        assert!(none.toggle_fullscreen_to() && none.toggle_maximized_to());
+        let fs = WindowStates::from_raw(&raw(&[2, 4]));
+        assert!(!fs.toggle_fullscreen_to() && fs.toggle_maximized_to());
+        let mx = WindowStates::from_raw(&raw(&[1]));
+        assert!(mx.toggle_fullscreen_to() && !mx.toggle_maximized_to());
+        // a tiled window is neither: asking for maximize is still a request, not an assumption
+        let tl = WindowStates::from_raw(&raw(&[5, 6]));
+        assert!(tl.toggle_maximized_to());
     }
 
     #[test]

@@ -58,6 +58,9 @@ pub(crate) const DEFAULTS: &[DefaultBind] = &[
     ),
     ("shift+Home", "scroll.top", &[("performable", "true")]),
     ("shift+End", "scroll.bottom", &[("performable", "true")]),
+    // Windows.
+    ("F11", "window.toggle-fullscreen", &[("repeat", "false")]),
+    ("ctrl+shift+n", "window.new", &[("repeat", "false")]),
     // Tabs (T-13 §4).
     ("ctrl+shift+t", "tab.new", &[("repeat", "false")]),
     ("ctrl+Tab", "tab.next", &[]),
