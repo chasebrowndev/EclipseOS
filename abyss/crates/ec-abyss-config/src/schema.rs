@@ -1195,6 +1195,42 @@ pub const TABLE: &[Key] = &[
        top-left edges with a weaker lobe at the bottom-right.",
     ),
     k(
+        "decoration.blur.glass.lens.refraction",
+        Ty::Float { min: 0.0, max: 96.0 },
+        Float(40.0),
+        Abyss,
+        Live,
+        "`glass` lens (small controls: shaped layer glass, glass panes): how far \
+       the rim pulls the backdrop, logical px. The content there comes from \
+       outside the shape; the centre is never bent.",
+    ),
+    k(
+        "decoration.blur.glass.lens.bevel",
+        int(1, 128),
+        Int(40),
+        Abyss,
+        Live,
+        "`glass` lens: widest the bevel band may be, logical px in from the \
+       edge; a small shape takes at most 40% of its shorter side.",
+    ),
+    k(
+        "decoration.blur.glass.lens.dispersion",
+        PCT,
+        Float(0.8),
+        Abyss,
+        Live,
+        "`glass` lens: colour fringing across the bevel, following the local \
+       bend; 0 is none.",
+    ),
+    k(
+        "decoration.blur.glass.lens.rim",
+        PCT,
+        Float(0.7),
+        Abyss,
+        Live,
+        "`glass` lens: strength of the hairline rim.",
+    ),
+    k(
         "decoration.blur.adaptive.enabled",
         Ty::Bool,
         Bool(true),
@@ -3197,6 +3233,10 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "decoration.blur.glass.bevel" => V::Int(c.decoration.blur.glass.bevel as i64),
         "decoration.blur.glass.dispersion" => V::Float(widen(c.decoration.blur.glass.dispersion)),
         "decoration.blur.glass.rim" => V::Float(widen(c.decoration.blur.glass.rim)),
+        "decoration.blur.glass.lens.refraction" => V::Float(widen(c.decoration.blur.glass.lens.refraction)),
+        "decoration.blur.glass.lens.bevel" => V::Int(c.decoration.blur.glass.lens.bevel as i64),
+        "decoration.blur.glass.lens.dispersion" => V::Float(widen(c.decoration.blur.glass.lens.dispersion)),
+        "decoration.blur.glass.lens.rim" => V::Float(widen(c.decoration.blur.glass.lens.rim)),
         "decoration.blur.adaptive.enabled" => V::Bool(c.decoration.blur.adaptive.enabled),
         "decoration.blur.adaptive.strength" => V::Float(widen(c.decoration.blur.adaptive.strength)),
         "decoration.blur.frost.tint" => V::Color(c.decoration.blur.frost.tint),

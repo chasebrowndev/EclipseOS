@@ -99,7 +99,34 @@ impl Config {
                     }
                     _ => self.reject(n, "glass rim must be 0.0..=1.0"),
                 },
+                "lens" => self.apply_lens(n),
                 _ => self.unknown_key(n, "decoration.blur.glass", "glass key"),
+            }
+        }
+    }
+
+    pub(crate) fn apply_lens(&mut self, node: &KdlNode) {
+        let Some(children) = node.children() else { return };
+        for n in children.nodes() {
+            let lens = &mut self.decoration.blur.glass.lens;
+            match n.name().value() {
+                "refraction" => match arg(n).and_then(as_f64) {
+                    Some(v) if (0.0..=96.0).contains(&v) => lens.refraction = v as f32,
+                    _ => self.reject(n, "lens refraction must be 0..=96 (a whole number or a decimal)"),
+                },
+                "bevel" => match arg(n).and_then(KdlValue::as_integer) {
+                    Some(v) if (1..=128).contains(&v) => lens.bevel = v as i32,
+                    _ => self.reject(n, "lens bevel must be an integer 1..=128"),
+                },
+                "dispersion" => match arg(n).and_then(as_f64) {
+                    Some(v) if (0.0..=1.0).contains(&v) => lens.dispersion = v as f32,
+                    _ => self.reject(n, "lens dispersion must be 0.0..=1.0"),
+                },
+                "rim" => match arg(n).and_then(as_f64) {
+                    Some(v) if (0.0..=1.0).contains(&v) => lens.rim = v as f32,
+                    _ => self.reject(n, "lens rim must be 0.0..=1.0"),
+                },
+                _ => self.unknown_key(n, "decoration.blur.glass.lens", "lens key"),
             }
         }
     }

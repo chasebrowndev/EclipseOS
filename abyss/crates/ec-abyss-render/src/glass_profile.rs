@@ -7,11 +7,10 @@
 //! journal every [`REPORT_FRAMES`] frames. The counters are always bumped
 //! (a handful of integer adds per rebuild); only the logging is gated.
 //!
-//! GPU timer queries (`EXT_disjoint_timer_query`) are deliberately not here:
-//! smithay 0.7.0's GLES bindings do not expose the extension, so using it would
-//! need raw `eglGetProcAddress` function pointers and the crate's first
-//! `unsafe`. Wall-clock CPU timings come from `--stats` (`stats.rs`); see
-//! `docs/GLASS_PROFILING.md`.
+//! GPU time comes from [`crate::gpu_timer`] (raw GL timer queries, the crate's
+//! one `unsafe` module), only when `EC_GLASS_PROFILE` is set and the driver has
+//! `GL_EXT_disjoint_timer_query`; wall-clock CPU timings come from `--stats`
+//! (`stats.rs`). See `docs/GLASS_PROFILING.md`.
 
 /// Frames between summary lines.
 pub const REPORT_FRAMES: u64 = 120;
@@ -54,6 +53,8 @@ pub struct GlassProfile {
     /// Blurred windows drawn from a tier pyramid / by the per-window path.
     tiered: u64,
     fallback: u64,
+    /// Window backdrops skipped as hidden behind opaque surfaces.
+    culled: u64,
     rebuilds: u64,
     max_rebuilds_frame: u32,
     level0_clears: u64,
@@ -72,6 +73,7 @@ impl GlassProfile {
     /// or `0`).
     pub fn from_env() -> Self {
         let on = std::env::var_os("EC_GLASS_PROFILE").is_some_and(|v| !v.is_empty() && v != "0");
+        crate::gpu_timer::set_wanted(on);
         let mut p = Self::new(on);
         p.full_only = std::env::var_os("EC_GLASS_FULL_REBUILD").is_some_and(|v| !v.is_empty() && v != "0");
         p
@@ -90,6 +92,7 @@ impl GlassProfile {
             surfaces: 0,
             tiered: 0,
             fallback: 0,
+            culled: 0,
             rebuilds: 0,
             max_rebuilds_frame: 0,
             level0_clears: 0,
@@ -123,6 +126,11 @@ impl GlassProfile {
         self.fallback += fallback as u64;
     }
 
+    /// `n` window backdrops were culled this frame (hidden behind opaque surfaces).
+    pub fn culled(&mut self, n: usize) {
+        self.culled += n as u64;
+    }
+
     /// A frame ended with `surfaces` blurred surfaces; log when due.
     pub fn frame(&mut self, surfaces: usize) {
         self.frames += 1;
@@ -133,11 +141,17 @@ impl GlassProfile {
             return;
         }
         if self.enabled {
+            // GPU time of the spans read back since the last line (they lag the
+            // frames by a few); averages are per timed frame, in microseconds.
+            let gpu = crate::gpu_timer::take_stats();
+            let g = gpu.unwrap_or_default();
+            let avg = |k: usize| g.sum_ns[k].checked_div(u64::from(g.frames) * 1000).unwrap_or(0);
             tracing::info!(
                 frames = self.frames,
                 avg_surfaces = self.surfaces / self.frames,
                 avg_tiered = self.tiered / self.frames,
                 avg_fallback = self.fallback / self.frames,
+                avg_culled = self.culled / self.frames,
                 rebuilds = self.rebuilds,
                 max_rebuilds_per_frame = self.max_rebuilds_frame,
                 level0_clears = self.level0_clears,
@@ -147,6 +161,24 @@ impl GlassProfile {
                 pass_texels = self.pass_texels,
                 partial_rebuilds = self.partial,
                 max_passes_per_rebuild = self.max_passes_rebuild,
+                gpu = if gpu.is_some() {
+                    "timer"
+                } else if crate::gpu_timer::unavailable() {
+                    "no-extension"
+                } else {
+                    "off"
+                },
+                gpu_frames = g.frames,
+                gpu_backdrop_us = avg(0),
+                gpu_down_us = avg(1),
+                gpu_up_us = avg(2),
+                gpu_pack_us = avg(3),
+                gpu_glass_us = avg(4),
+                gpu_total_max_us = g.max_total_ns / 1000,
+                gpu_glass_max_us = g.max_ns[4] / 1000,
+                gpu_lost = g.lost,
+                gpu_disjoint = g.disjoint,
+                gpu_skipped = g.skipped,
                 "glass profile"
             );
         }

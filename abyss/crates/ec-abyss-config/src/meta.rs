@@ -550,6 +550,30 @@ pub const META: &[Meta] = &[
         "effects/blur-glass",
         "blur",
     ),
+    m(
+        "decoration.blur.glass.lens.refraction",
+        "Lens refraction",
+        "effects/blur-glass",
+        "blur",
+    ),
+    m(
+        "decoration.blur.glass.lens.bevel",
+        "Lens bevel",
+        "effects/blur-glass",
+        "blur",
+    ),
+    m(
+        "decoration.blur.glass.lens.dispersion",
+        "Lens dispersion",
+        "effects/blur-glass",
+        "blur",
+    ),
+    m(
+        "decoration.blur.glass.lens.rim",
+        "Lens rim light",
+        "effects/blur-glass",
+        "blur",
+    ),
     Meta {
         pane_label: None,
         caption: Some(ADAPTIVE_CAPTION),

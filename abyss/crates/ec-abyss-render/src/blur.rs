@@ -24,6 +24,7 @@
 //! plane. See [`crate::scanout_candidate`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use smithay::{
     backend::{
@@ -49,7 +50,9 @@ use smithay::{
     wayland::compositor::{Cacheable, RectangleKind, RegionAttributes},
 };
 
+use crate::effects::GlassPreset;
 use crate::glass_profile::{GlassProfile, Rebuild};
+use crate::gpu_timer::Span;
 use ec_abyss_config::Blur;
 
 /// The offscreen chain is rendered in the same format the capture path uses.
@@ -197,15 +200,45 @@ pub struct BlurElement<T: Texture = GlesTexture> {
     region: Rectangle<i32, Physical>,
     commit: CommitCounter,
     program: Option<GlesTexProgram>,
-    uniforms: Vec<Uniform<'static>>,
+    /// The program's uniforms: shared with the slot that cached them, so a
+    /// frame that changes nothing allocates nothing.
+    uniforms: Option<Arc<[Uniform<'static>]>>,
+    /// What the draw needs without going through `inner` (which cannot take a
+    /// program and a uniform slice): the texture, its context and the fade.
+    texture: T,
+    context: ContextId<T>,
+    alpha: f32,
     /// An opaque window's bezel strips (see [`ring_strips`]), element-local.
     ring: Option<[Rectangle<i32, Physical>; 4]>,
+}
+
+/// An empty uniform set (a slot that has drawn nothing yet).
+fn no_uniforms() -> Arc<[Uniform<'static>]> {
+    Arc::from(Vec::new())
+}
+
+/// Keep `look` equal to `fresh`: when it already is, nothing is allocated and
+/// `false` comes back; when it is not, a new shared copy replaces it (once, on
+/// the change) and `true` says the element's look changed.
+fn refresh_look(look: &mut Arc<[Uniform<'static>]>, fresh: &[Uniform<'static>]) -> bool {
+    if look[..] == *fresh {
+        return false;
+    }
+    *look = Arc::from(fresh);
+    true
+}
+
+thread_local! {
+    /// Scratch for the damage clipped to an opaque bezel's ring, reused by every
+    /// draw so the draw allocates nothing once it has grown.
+    static RING_DAMAGE: std::cell::Cell<Vec<Rectangle<i32, Physical>>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 impl<T: Texture + Clone + 'static> BlurElement<T> {
     /// Place `texture` (buffer scale 1, upright, covering `crop` of the output
     /// at whatever resolution it was stored, e.g. half) so the element covers
     /// exactly `region` and samples exactly `region` of it, stretched.
+    #[cfg(test)]
     fn placed(
         id: Id,
         context: ContextId<T>,
@@ -215,12 +248,30 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
         scale: Scale<f64>,
         alpha: f32,
     ) -> Self {
+        Self::placed_in(id, context, texture, crop, region, scale, alpha, false)
+    }
+
+    /// [`BlurElement::placed`] for a `packed` texture: the blurred result in its
+    /// left half, the lightly blurred level in its right (chromatic aberration),
+    /// so the element addresses the left half only.
+    #[allow(clippy::too_many_arguments)]
+    fn placed_in(
+        id: Id,
+        context: ContextId<T>,
+        texture: T,
+        crop: Rectangle<i32, Physical>,
+        region: Rectangle<i32, Physical>,
+        scale: Scale<f64>,
+        alpha: f32,
+        packed: bool,
+    ) -> Self {
         // The result texture is built with a literal `texture_scale` of 1, so
         // `Element::src()` hands this rectangle straight to the GPU with no
         // further scaling. It must therefore already be in the texture's own
         // buffer space, i.e. `region` relative to `crop`, times the texture's
         // texels per output pixel (below 1 for a reduced-resolution result).
-        let sx = texture.width() as f64 / crop.size.w.max(1) as f64;
+        let wide = if packed { 2.0 } else { 1.0 };
+        let sx = texture.width() as f64 / (crop.size.w.max(1) as f64 * wide);
         let sy = texture.height() as f64 / crop.size.h.max(1) as f64;
         let src = Rectangle::<f64, smithay::utils::Logical>::new(
             (
@@ -238,9 +289,9 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
         ));
         let inner = TextureRenderElement::from_static_texture(
             id,
-            context,
+            context.clone(),
             region.loc.to_f64(),
-            texture,
+            texture.clone(),
             1,
             Transform::Normal,
             // 1.0 for a surface; an annotation fading in or out passes its
@@ -256,7 +307,10 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
             region,
             commit: CommitCounter::default(),
             program: None,
-            uniforms: Vec::new(),
+            uniforms: None,
+            texture,
+            context,
+            alpha,
             ring: None,
         }
     }
@@ -322,30 +376,51 @@ impl RenderElement<GlesRenderer> for BlurElement<GlesTexture> {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
-        // An opaque bezel draws nothing inside its ring: skip those pixels.
-        let clipped: Vec<_>;
+        // An opaque bezel draws nothing inside its ring: skip those pixels. The
+        // clipped rectangles go through a reused scratch vector, not a fresh one.
+        let mut scratch = RING_DAMAGE.take();
         let damage = match &self.ring {
             Some(strips) => {
-                clipped = damage
-                    .iter()
-                    .flat_map(|d| strips.iter().filter_map(move |s| s.intersection(*d)))
-                    .collect();
-                &clipped[..]
+                scratch.clear();
+                scratch.extend(
+                    damage
+                        .iter()
+                        .flat_map(|d| strips.iter().filter_map(move |s| s.intersection(*d))),
+                );
+                &scratch[..]
             }
             None => damage,
         };
         if damage.is_empty() {
+            RING_DAMAGE.set(scratch);
             return Ok(());
         }
-        if let Some(program) = &self.program {
-            frame.override_default_tex_program(program.clone(), self.uniforms.clone());
-            let res =
-                RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
-            frame.clear_tex_program_override();
-            res
+        let res = if let Some(program) = &self.program {
+            if frame.context_id() != self.context {
+                Ok(())
+            } else {
+                // The program and its uniforms go in by reference: the override
+                // path would take a fresh `Vec` of them per draw.
+                crate::gpu_timer::begin_in(frame, Span::Glass);
+                let res = frame.render_texture_from_to(
+                    &self.texture,
+                    src,
+                    dst,
+                    damage,
+                    opaque_regions,
+                    Transform::Normal,
+                    self.alpha,
+                    Some(program),
+                    self.uniforms.as_deref().unwrap_or(&[]),
+                );
+                crate::gpu_timer::end_in(frame);
+                res
+            }
         } else {
             RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
-        }
+        };
+        RING_DAMAGE.set(scratch);
+        res
     }
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
@@ -675,8 +750,10 @@ struct GroupBlur {
     result: Option<GlesTexture>,
     /// The output rectangle `result` covers: the union of the member crops.
     crop: Option<Rectangle<i32, Physical>>,
-    /// `(size, passes)` the result was built with.
-    params: (i32, usize),
+    /// `(size, passes, packed)` the result was built with. `packed`: the result
+    /// texture is twice as wide, the lightly blurred level beside the blurred one
+    /// (chromatic aberration, only while `glass.dispersion` is above 0).
+    params: (i32, usize, bool),
     /// The members it was built for, back to front.
     members: Vec<BlurKey>,
     /// Bumped on every rebuild; a member whose `seen` differs redraws.
@@ -706,7 +783,7 @@ struct GroupBlur {
 /// A grouped surface's element bookkeeping (its backdrop is the group's).
 struct MemberSlot {
     id: Id,
-    look: Vec<Uniform<'static>>,
+    look: Arc<[Uniform<'static>]>,
     commit: CommitCounter,
     /// The group's `rebuilds` this slot last saw.
     seen: u64,
@@ -722,6 +799,8 @@ pub struct GroupMember<'a> {
     /// An opaque bezel's `(width, corner radius, titlebar depth)`.
     pub ring: Option<(i32, i32, i32)>,
     pub shape: Option<&'a Shape>,
+    /// Which glass program draws it: sets the pyramid's passes and packing.
+    pub preset: GlassPreset,
 }
 
 /// A member's blur crop: `(texture space, output space)` (see [`crop_rects`]).
@@ -801,6 +880,84 @@ pub fn padded_crop(
     Rectangle::new((x, y).into(), (w, h).into())
 }
 
+/// Whether a surface of `preset` stores its result packed: the blurred result
+/// with the lightly blurred level beside it, which the lens and regular
+/// optics read at the rim and frost's chromatic fringe reads. Only glass mode
+/// pays for it, and frost only with `dispersion` above 0.
+pub fn packs(blur: &Blur, preset: GlassPreset) -> bool {
+    blur.mode == ec_abyss_config::BlurMode::Glass
+        && (preset != GlassPreset::Frost || blur.glass.dispersion > 0.0)
+}
+
+/// Blur passes a preset's interior is made with: a lens is a light blur (1 or
+/// 2 passes), a regular frame 3, frost the configured count.
+pub fn preset_passes(passes: i32, preset: GlassPreset) -> i32 {
+    let cap = match preset {
+        GlassPreset::Lens => 2,
+        GlassPreset::Regular => 3,
+        GlassPreset::Frost => 6,
+    };
+    passes.clamp(1, 6).min(cap)
+}
+
+/// `blur` with the preset's pass count (glass mode only; any other mode keeps
+/// its own).
+pub fn tuned(blur: &Blur, preset: GlassPreset) -> Blur {
+    let mut b = blur.clone();
+    if blur.mode == ec_abyss_config::BlurMode::Glass {
+        b.passes = preset_passes(blur.passes, preset);
+    }
+    b
+}
+
+/// What one pyramid is built with for members of these presets: the most
+/// passes any of them needs (a lens sharing a tier with a frost member shows
+/// the frost interior), packed if any of them reads the sharp half.
+pub fn tier_variant(blur: &Blur, presets: impl Iterator<Item = GlassPreset>) -> (Blur, bool) {
+    let mut passes = 1;
+    let mut sharp = false;
+    let mut any = false;
+    for p in presets {
+        any = true;
+        passes = passes.max(tuned(blur, p).passes);
+        sharp |= packs(blur, p);
+    }
+    let mut b = blur.clone();
+    if any {
+        b.passes = passes;
+    }
+    (b, sharp)
+}
+
+/// Whether a tier must be rebuilt in full rather than from damage: nothing
+/// built yet, its region no longer covers the members, the blur parameters (size,
+/// passes, packed: so a runtime dispersion toggle allocates or drops the packed
+/// texture) or the membership changed.
+pub fn tier_fresh(
+    has_result: bool,
+    built: Option<Rectangle<i32, Physical>>,
+    needed: Rectangle<i32, Physical>,
+    old: (i32, usize, bool),
+    new: (i32, usize, bool),
+    same_members: bool,
+) -> bool {
+    !has_result || !covers(built, needed) || old != new || !same_members
+}
+
+/// Whether `region` is wholly hidden behind one opaque rectangle of `above`
+/// (elements in front of it, as the damage tracker sees them). One rectangle,
+/// not a union: a conservative test that never hides what could show, and costs
+/// no allocation (smithay keeps an element's first few opaque regions inline).
+pub fn hidden_behind<E: Element>(region: Rectangle<i32, Physical>, above: &[E], scale: Scale<f64>) -> bool {
+    above.iter().any(|e| {
+        let geo = e.geometry(scale);
+        geo.contains_rect(region)
+            && e.opaque_regions(scale)
+                .iter()
+                .any(|o| Rectangle::new(o.loc + geo.loc, o.size).contains_rect(region))
+    })
+}
+
 /// Whether a pyramid built over `built` still serves members needing `needed`.
 pub fn covers(built: Option<Rectangle<i32, Physical>>, needed: Rectangle<i32, Physical>) -> bool {
     built.is_some_and(|b| b.contains_rect(needed))
@@ -845,7 +1002,7 @@ struct SurfaceBlur {
     /// names (none for smithay's plain one), so this also stands for the
     /// program: a mode switch or a tint/rim change bumps `commit` even though
     /// the chain behind it did not change.
-    look: Vec<Uniform<'static>>,
+    look: Arc<[Uniform<'static>]>,
     /// `eclipse_glass_v1` panes drawn from `result`, by index in the pane list.
     panes: Vec<PaneSlot>,
     /// Damage landed while the store was crowded and the recompute was
@@ -853,17 +1010,24 @@ struct SurfaceBlur {
     pending: bool,
     /// The store frame `result` was last recomputed on.
     last: u64,
+    /// `(passes, packed)` `result` was built with: a preset change rebuilds
+    /// once, in full.
+    variant: (usize, bool),
 }
 
-/// What [`BlurStore::refresh`] hands back: the crop the texture covers and an
-/// opaque bezel's strips.
-type Refreshed = (Rectangle<i32, Physical>, Option<[Rectangle<i32, Physical>; 4]>);
+/// What [`BlurStore::refresh`] hands back: the crop the texture covers, an
+/// opaque bezel's strips and whether the result is packed.
+type Refreshed = (
+    Rectangle<i32, Physical>,
+    Option<[Rectangle<i32, Physical>; 4]>,
+    bool,
+);
 
 /// One glass pane's bookkeeping: its own element id, uniforms and commit
 /// counter, so the damage tracker follows it across frames.
 struct PaneSlot {
     id: Id,
-    look: Vec<Uniform<'static>>,
+    look: Arc<[Uniform<'static>]>,
     commit: CommitCounter,
     /// The backdrop's commit this pane last saw.
     seen: CommitCounter,
@@ -878,9 +1042,8 @@ pub struct BlurStore {
     level0: Option<GlesTexture>,
     /// Levels `1..=passes` sized for a crop (level `n` is half of `n-1`),
     /// kept per crop size so windows that alternate do not reallocate.
-    chain: HashMap<(i32, i32), Vec<GlesTexture>>,
+    chain: HashMap<(i32, i32, usize), Vec<GlesTexture>>,
     chain_size: Size<i32, Physical>,
-    chain_passes: usize,
     /// Renders the backdrop into level 0. Always driven with `age = 0`, so its
     /// own damage history is never consulted and it can be shared by every
     /// blurred window on the output.
@@ -896,6 +1059,8 @@ pub struct BlurStore {
     groups: HashMap<BlurKey, GroupBlur>,
     /// Per-surface element state of the grouped surfaces.
     members: HashMap<BlurKey, MemberSlot>,
+    /// A pane's uniforms while its element is built, kept between frames.
+    pane_uniforms: Vec<Uniform<'static>>,
     /// Scratch of a partial rebuild (Phase 1b), kept between rebuilds.
     plan: crate::partial::Plan,
     damage: Vec<Rectangle<i32, Physical>>,
@@ -931,8 +1096,9 @@ impl BlurStore {
     }
 
     /// Count this frame's tiered and per-window surfaces for the profile.
-    pub fn note_tiers(&mut self, tiered: usize, fallback: usize) {
+    pub fn note_tiers(&mut self, tiered: usize, fallback: usize, culled: usize) {
         self.profile.tiers(tiered, fallback);
+        self.profile.culled(culled);
     }
 
     /// Drop everything: called when blur is switched off so the textures do not
@@ -973,32 +1139,35 @@ impl BlurStore {
         behind: &[E],
         blur: &Blur,
         scale: Scale<f64>,
-        rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
+        rounding: Option<(GlesTexProgram, &mut Vec<Uniform<'static>>)>,
         reach: i32,
         ring: Option<(i32, i32, i32)>,
         shape: Option<&Shape>,
         alpha: f32,
+        preset: GlassPreset,
     ) -> Option<BlurElement>
     where
         E: Element + RenderElement<GlesRenderer>,
     {
-        let (crop, strips) = self.refresh(
-            renderer, output, key, region, behind, blur, scale, reach, ring, shape,
+        let (crop, strips, packed) = self.refresh(
+            renderer, output, key, region, behind, blur, scale, reach, ring, shape, preset,
         )?;
         let entry = self.surfaces.get_mut(key)?;
-        let (program, mut uniforms) = match rounding {
+        let mut none = Vec::new();
+        let (program, uniforms) = match rounding {
             Some((program, uniforms)) => (Some(program), uniforms),
-            None => (None, Vec::new()),
+            None => (None, &mut none),
         };
         // The element samples `result`, which spans `crop`: one physical px is
-        // 1/crop in its UV, not 1/output.
-        crate::effects::set_px_uv(&mut uniforms, (crop.size.w, crop.size.h));
-        if entry.look != uniforms {
-            entry.look.clone_from(&uniforms);
+        // 1/crop in its UV, not 1/output (and half that in x when packed).
+        let wide = if packed { 2 } else { 1 };
+        crate::effects::set_px_uv(uniforms, (crop.size.w * wide, crop.size.h));
+        crate::effects::set_packed(uniforms, packed);
+        if refresh_look(&mut entry.look, uniforms) {
             entry.commit.increment();
         }
         let texture = entry.result.clone()?;
-        let mut element = BlurElement::placed(
+        let mut element = BlurElement::placed_in(
             entry.id.clone(),
             renderer.context_id(),
             texture,
@@ -1006,10 +1175,11 @@ impl BlurStore {
             region,
             scale,
             alpha,
+            packed,
         );
         element.commit = entry.commit;
         element.program = program;
-        element.uniforms = uniforms;
+        element.uniforms = Some(entry.look.clone());
         element.ring = strips;
         Some(element)
     }
@@ -1036,41 +1206,46 @@ impl BlurStore {
         program: &GlesTexProgram,
         count: usize,
         alpha: f32,
-        mut pane: impl FnMut(usize) -> Option<(Rectangle<i32, Physical>, Vec<Uniform<'static>>)>,
+        mut pane: impl FnMut(usize, &mut Vec<Uniform<'static>>) -> Option<Rectangle<i32, Physical>>,
         out: &mut Vec<BlurElement>,
+        preset: GlassPreset,
     ) -> Option<()>
     where
         E: Element + RenderElement<GlesRenderer>,
     {
-        let (crop, _) = self.refresh(
-            renderer, output, key, union, behind, blur, scale, reach, None, None,
+        let (crop, _, packed) = self.refresh(
+            renderer, output, key, union, behind, blur, scale, reach, None, None, preset,
         )?;
         let entry = self.surfaces.get_mut(key)?;
         let texture = entry.result.clone()?;
         while entry.panes.len() < count {
             entry.panes.push(PaneSlot {
                 id: Id::new(),
-                look: Vec::new(),
+                look: no_uniforms(),
                 commit: CommitCounter::default(),
                 seen: entry.commit,
             });
         }
         entry.panes.truncate(count);
         let backdrop = entry.commit;
+        let mut uniforms = std::mem::take(&mut self.pane_uniforms);
+        let entry = self.surfaces.get_mut(key)?;
         for (i, slot) in entry.panes.iter_mut().enumerate() {
-            let Some((rect, mut uniforms)) = pane(i) else {
+            uniforms.clear();
+            let Some(rect) = pane(i, &mut uniforms) else {
                 continue;
             };
-            crate::effects::set_px_uv(&mut uniforms, (crop.size.w, crop.size.h));
+            let wide = if packed { 2 } else { 1 };
+            crate::effects::set_px_uv(&mut uniforms, (crop.size.w * wide, crop.size.h));
+            crate::effects::set_packed(&mut uniforms, packed);
             if slot.seen != backdrop {
                 slot.seen = backdrop;
                 slot.commit.increment();
             }
-            if slot.look != uniforms {
-                slot.look.clone_from(&uniforms);
+            if refresh_look(&mut slot.look, &uniforms) {
                 slot.commit.increment();
             }
-            let mut element = BlurElement::placed(
+            let mut element = BlurElement::placed_in(
                 slot.id.clone(),
                 renderer.context_id(),
                 texture.clone(),
@@ -1078,12 +1253,14 @@ impl BlurStore {
                 rect,
                 scale,
                 alpha,
+                packed,
             );
             element.commit = slot.commit;
             element.program = Some(program.clone());
-            element.uniforms = uniforms;
+            element.uniforms = Some(slot.look.clone());
             out.push(element);
         }
+        self.pane_uniforms = uniforms;
         Some(())
     }
 
@@ -1103,6 +1280,7 @@ impl BlurStore {
         reach: i32,
         ring: Option<(i32, i32, i32)>,
         shape: Option<&Shape>,
+        preset: GlassPreset,
     ) -> Option<Refreshed>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -1113,8 +1291,11 @@ impl BlurStore {
             return None;
         }
         self.ensure_programs(renderer)?;
+        let sharp = packs(blur, preset);
+        let tuned_blur = tuned(blur, preset);
+        let blur = &tuned_blur;
         let passes = blur.passes.clamp(1, 6) as usize;
-        self.ensure_chain(renderer, fb_size, passes)?;
+        self.ensure_chain(renderer, fb_size)?;
         let mirrored = crate::effects::fb_y_mirrored(output.current_transform()) == Some(true);
         // Only this much of the backdrop is ever sampled (kernel plus the
         // final draw's own reach), so only this much is computed.
@@ -1125,9 +1306,10 @@ impl BlurStore {
             damage: OutputDamageTracker::from_output(output),
             result: None,
             crop: None,
+            variant: (passes, sharp),
             commit: CommitCounter::default(),
             id: Id::new(),
-            look: Vec::new(),
+            look: no_uniforms(),
             panes: Vec::new(),
             pending: false,
             last: 0,
@@ -1155,7 +1337,7 @@ impl BlurStore {
         let frame = self.frame;
         let entry = self.surfaces.get_mut(key)?;
         let mut dirty = dirty || entry.pending;
-        let fresh = entry.result.is_none() || entry.crop != Some(crop);
+        let fresh = entry.result.is_none() || entry.crop != Some(crop) || entry.variant != (passes, sharp);
         if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
             entry.pending = true;
             dirty = false;
@@ -1173,13 +1355,14 @@ impl BlurStore {
             entry.pending = false;
             entry.last = frame;
             let reuse = entry.result.take();
-            let texture = self.rebuild(renderer, output, blur, scale, (tex, crop), behind, reuse)?;
+            let texture = self.rebuild(renderer, output, blur, scale, (tex, crop), behind, reuse, sharp)?;
             let entry = self.surfaces.get_mut(key)?;
             entry.result = Some(texture);
             entry.crop = Some(crop);
+            entry.variant = (passes, sharp);
             entry.commit.increment();
         }
-        Some((crop, strips))
+        Some((crop, strips, sharp))
     }
 
     /// Phase 1a: bring the shared pyramid of one group up to date over the
@@ -1208,8 +1391,11 @@ impl BlurStore {
             return None;
         }
         self.ensure_programs(renderer)?;
+        // The tier's own blur: the passes its members' presets need.
+        let (tier_blur, sharp) = tier_variant(blur, members.clone().map(|m| m.preset));
+        let blur = &tier_blur;
         let passes = blur.passes.clamp(1, 6) as usize;
-        self.ensure_chain(renderer, fb_size, passes)?;
+        self.ensure_chain(renderer, fb_size)?;
         let mirrored = crate::effects::fb_y_mirrored(output.current_transform()) == Some(true);
         let crops = || {
             members
@@ -1219,7 +1405,7 @@ impl BlurStore {
                 .map(|(_, crop)| crop)
         };
         let needed = crops().reduce(|a, b| a.merge(b))?;
-        let params = (blur.size, passes);
+        let params = (blur.size, passes, sharp);
         let frame = self.frame;
         let entry = self.groups.entry(key.clone()).or_insert_with(|| GroupBlur {
             damage: OutputDamageTracker::from_output(output),
@@ -1270,8 +1456,14 @@ impl BlurStore {
         let crowded = self.live > CROWDED;
         let entry = self.groups.get_mut(key)?;
         let mut dirty = dirty || entry.pending;
-        let fresh =
-            entry.result.is_none() || !covers(entry.crop, needed) || entry.params != params || !same_members;
+        let fresh = tier_fresh(
+            entry.result.is_some(),
+            entry.crop,
+            needed,
+            entry.params,
+            params,
+            same_members,
+        );
         // Same throttle as a surface's, but the unit is the group's rebuild.
         if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
             entry.pending = true;
@@ -1302,6 +1494,7 @@ impl BlurStore {
                 (tex, crop),
                 behind,
                 fresh || self.profile.full_only(),
+                sharp,
             )?;
             let entry = self.groups.get_mut(key)?;
             if fresh {
@@ -1336,6 +1529,7 @@ impl BlurStore {
         (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
         behind: &[E],
         full: bool,
+        sharp: bool,
     ) -> Option<bool>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -1368,6 +1562,7 @@ impl BlurStore {
             behind,
             blur,
             full,
+            sharp,
         ) {
             Ok(done) => {
                 if let Some(rebuild) = done {
@@ -1398,17 +1593,18 @@ impl BlurStore {
         group: &BlurKey,
         key: &BlurKey,
         region: Rectangle<i32, Physical>,
-        rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
+        rounding: Option<(GlesTexProgram, &mut Vec<Uniform<'static>>)>,
         ring: Option<(i32, i32, i32)>,
         scale: Scale<f64>,
     ) -> Option<BlurElement> {
         let g = self.groups.get(group)?;
         let texture = g.result.clone()?;
         let crop = g.crop?;
+        let packed = g.params.2;
         let rebuilds = g.rebuilds;
         let slot = self.members.entry(key.clone()).or_insert_with(|| MemberSlot {
             id: Id::new(),
-            look: Vec::new(),
+            look: no_uniforms(),
             commit: CommitCounter::default(),
             seen: rebuilds,
         });
@@ -1416,16 +1612,20 @@ impl BlurStore {
             slot.seen = rebuilds;
             slot.commit.increment();
         }
-        let (program, mut uniforms) = match rounding {
+        let mut none = Vec::new();
+        let (program, uniforms) = match rounding {
             Some((program, uniforms)) => (Some(program), uniforms),
-            None => (None, Vec::new()),
+            None => (None, &mut none),
         };
-        crate::effects::set_px_uv(&mut uniforms, (crop.size.w, crop.size.h));
-        if slot.look != uniforms {
-            slot.look.clone_from(&uniforms);
+        // A packed texture holds two copies side by side: one physical px is
+        // half as wide in its UV.
+        let wide = if packed { 2 } else { 1 };
+        crate::effects::set_px_uv(uniforms, (crop.size.w * wide, crop.size.h));
+        crate::effects::set_packed(uniforms, packed);
+        if refresh_look(&mut slot.look, uniforms) {
             slot.commit.increment();
         }
-        let mut element = BlurElement::placed(
+        let mut element = BlurElement::placed_in(
             slot.id.clone(),
             renderer.context_id(),
             texture,
@@ -1433,10 +1633,11 @@ impl BlurStore {
             region,
             scale,
             1.0,
+            packed,
         );
         element.commit = slot.commit;
         element.program = program;
-        element.uniforms = uniforms;
+        element.uniforms = Some(slot.look.clone());
         element.ring = ring.map(|(inner, corner, bar)| ring_strips(region.size, inner, corner, bar));
         Some(element)
     }
@@ -1453,6 +1654,7 @@ impl BlurStore {
         (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
         behind: &[E],
         reuse: Option<GlesTexture>,
+        sharp: bool,
     ) -> Option<GlesTexture>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -1468,10 +1670,12 @@ impl BlurStore {
             profile,
             ..
         } = self;
-        if chain.len() >= MAX_CHAINS && !chain.contains_key(&(crop.size.w, crop.size.h)) {
+        if chain.len() >= MAX_CHAINS && !chain.contains_key(&(crop.size.w, crop.size.h, passes)) {
             chain.clear();
         }
-        if let std::collections::hash_map::Entry::Vacant(slot) = chain.entry((crop.size.w, crop.size.h)) {
+        if let std::collections::hash_map::Entry::Vacant(slot) =
+            chain.entry((crop.size.w, crop.size.h, passes))
+        {
             match alloc_levels(renderer, crop.size, passes) {
                 Ok(levels) => {
                     slot.insert(levels);
@@ -1497,7 +1701,7 @@ impl BlurStore {
             renderer,
             tracker,
             level0.as_mut()?,
-            chain.get_mut(&(crop.size.w, crop.size.h))?,
+            chain.get_mut(&(crop.size.w, crop.size.h, passes))?,
             (tex, crop),
             scale,
             down.as_ref()?,
@@ -1506,6 +1710,7 @@ impl BlurStore {
             blur,
             reuse,
             orient,
+            sharp,
         ) {
             Ok((texture, ran)) => {
                 profile.rebuilt(Rebuild {
@@ -1546,13 +1751,8 @@ impl BlurStore {
         Some(())
     }
 
-    fn ensure_chain(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        fb_size: Size<i32, Physical>,
-        passes: usize,
-    ) -> Option<()> {
-        if self.chain_size == fb_size && self.chain_passes == passes && self.level0.is_some() {
+    fn ensure_chain(&mut self, renderer: &mut GlesRenderer, fb_size: Size<i32, Physical>) -> Option<()> {
+        if self.chain_size == fb_size && self.level0.is_some() {
             return Some(());
         }
         self.chain.clear();
@@ -1573,7 +1773,6 @@ impl BlurStore {
             }
         }
         self.chain_size = fb_size;
-        self.chain_passes = passes;
         Some(())
     }
 }
@@ -1632,6 +1831,7 @@ fn render_chain<E>(
     blur: &Blur,
     reuse: Option<GlesTexture>,
     orient: Transform,
+    sharp: bool,
 ) -> Result<(GlesTexture, u32), GlesError>
 where
     E: Element + RenderElement<GlesRenderer>,
@@ -1685,16 +1885,59 @@ where
         blit_full(renderer, src, dst, Some(up), offset, Transform::Normal, None)?;
     }
     let half = mid[0].size();
-    let mut result = sized(renderer, reuse, half)?;
+    // Packed (lens and regular glass): twice as wide, the lightly blurred level 1
+    // beside the blurred result, as `render_group` lays it out.
+    let wide = if sharp {
+        Size::from((half.w * 2, half.h))
+    } else {
+        half
+    };
+    let mut result = sized(renderer, reuse, wide)?;
+    let left = Rectangle::<i32, Physical>::from_size((half.w, half.h).into());
+    let all = [left];
     if passes >= 2 {
         let src = mid[1].clone();
-        blit_full(renderer, &src, &mut result, Some(up), offset, orient, None)?;
+        blit_to(
+            renderer,
+            &src,
+            &mut result,
+            Some(up),
+            offset,
+            orient,
+            None,
+            left,
+            &all,
+        )?;
     } else {
         let src = mid[0].clone();
-        blit_full(renderer, &src, &mut result, None, offset, orient, None)?;
+        blit_to(
+            renderer,
+            &src,
+            &mut result,
+            None,
+            offset,
+            orient,
+            None,
+            left,
+            &all,
+        )?;
+    }
+    if sharp {
+        let right = Rectangle::new((half.w, 0).into(), left.size);
+        blit_to(
+            renderer,
+            &mid[0],
+            &mut result,
+            None,
+            offset,
+            orient,
+            None,
+            right,
+            &all,
+        )?;
     }
     // Down passes, up passes (levels `passes..=2`), then the final write.
-    let ran = passes + passes.saturating_sub(2) + 1;
+    let ran = passes + passes.saturating_sub(2) + 1 + usize::from(sharp);
     Ok((result, ran as u32))
 }
 
@@ -1734,6 +1977,7 @@ fn render_group<E>(
     behind: &[E],
     blur: &Blur,
     full: bool,
+    sharp: bool,
 ) -> Result<Option<Rebuild>, GlesError>
 where
     E: Element + RenderElement<GlesRenderer>,
@@ -1780,9 +2024,10 @@ where
         let cropped = crop_behind(behind, scale, crop);
         let level0 = g.level0.as_mut().ok_or(GlesError::UnknownPixelFormat)?;
         let mut target = Bind::bind(renderer, level0)?;
-        let res = tracker
-            .render_output(renderer, &mut target, if full { 0 } else { 1 }, &cropped, CLEAR)
-            .map_err(|_| GlesError::UnknownPixelFormat)?;
+        crate::gpu_timer::begin(renderer, Span::Backdrop);
+        let res = tracker.render_output(renderer, &mut target, if full { 0 } else { 1 }, &cropped, CLEAR);
+        crate::gpu_timer::end(renderer);
+        let res = res.map_err(|_| GlesError::UnknownPixelFormat)?;
         match res.damage {
             // Nothing the blur samples changed.
             None if !full => return Ok(None),
@@ -1830,63 +2075,106 @@ where
         (tex.loc.x as f64, tex.loc.y as f64).into(),
         (tex.size.w as f64, tex.size.h as f64).into(),
     );
-    for level in 1..=passes {
-        let rects = &plan.down;
-        if level == 1 {
-            let all = whole(&dn[0]);
-            let r = if partial { &rects[0][..] } else { &all[..] };
-            blit(
-                renderer,
-                level0,
-                &mut dn[0],
-                Some(down),
-                offset,
-                Transform::Normal,
-                Some(from),
-                r,
-            )?;
-        } else {
-            let (src, dst) = split_pair(dn, level - 2, level - 1);
-            let all = whole(dst);
-            let r = if partial { &rects[level - 1][..] } else { &all[..] };
-            blit(renderer, src, dst, Some(down), offset, Transform::Normal, None, r)?;
+    timed(renderer, Span::Down, |renderer| -> Result<(), GlesError> {
+        for level in 1..=passes {
+            let rects = &plan.down;
+            if level == 1 {
+                let all = whole(&dn[0]);
+                let r = if partial { &rects[0][..] } else { &all[..] };
+                blit(
+                    renderer,
+                    level0,
+                    &mut dn[0],
+                    Some(down),
+                    offset,
+                    Transform::Normal,
+                    Some(from),
+                    r,
+                )?;
+            } else {
+                let (src, dst) = split_pair(dn, level - 2, level - 1);
+                let all = whole(dst);
+                let r = if partial { &rects[level - 1][..] } else { &all[..] };
+                blit(renderer, src, dst, Some(down), offset, Transform::Normal, None, r)?;
+            }
         }
-    }
-    for level in (3..=passes).rev() {
-        let all = whole(&upv[level - 3]);
-        let r = if partial {
-            &plan.up[level - 3][..]
-        } else {
-            &all[..]
-        };
-        // The top level is the down chain's own; below it, two up levels.
-        if level == passes {
-            blit(
+        Ok(())
+    })?;
+    let half = dn[0].size();
+    // Packed: twice as wide, the blurred result on the left and a copy of down
+    // level 1 (same extent and resolution, lightly blurred) on the right. A
+    // toggle of `sharp` changes the size, so `sized` makes a new texture, and
+    // `params` changed, so the tier is rebuilt in full.
+    let wide = if sharp {
+        Size::from((half.w * 2, half.h))
+    } else {
+        half
+    };
+    let mut out = sized(renderer, result.take(), wide)?;
+    let all = [Rectangle::<i32, Physical>::from_size((half.w, half.h).into())];
+    let r = if partial { &plan.result[..] } else { &all[..] };
+    let left = all[0];
+    timed(renderer, Span::Up, |renderer| -> Result<(), GlesError> {
+        for level in (3..=passes).rev() {
+            let all = whole(&upv[level - 3]);
+            let r = if partial {
+                &plan.up[level - 3][..]
+            } else {
+                &all[..]
+            };
+            // The top level is the down chain's own; below it, two up levels.
+            if level == passes {
+                blit(
+                    renderer,
+                    &dn[passes - 1],
+                    &mut upv[level - 3],
+                    Some(up),
+                    offset,
+                    Transform::Normal,
+                    None,
+                    r,
+                )?;
+            } else {
+                let (src, dst) = split_pair(upv, level - 2, level - 3);
+                blit(renderer, src, dst, Some(up), offset, Transform::Normal, None, r)?;
+            }
+        }
+        match passes {
+            1 => blit_to(renderer, &dn[0], &mut out, None, offset, orient, None, left, r),
+            2 => blit_to(
                 renderer,
-                &dn[passes - 1],
-                &mut upv[level - 3],
+                &dn[1],
+                &mut out,
                 Some(up),
                 offset,
-                Transform::Normal,
+                orient,
                 None,
+                left,
                 r,
-            )?;
-        } else {
-            let (src, dst) = split_pair(upv, level - 2, level - 3);
-            blit(renderer, src, dst, Some(up), offset, Transform::Normal, None, r)?;
+            ),
+            _ => blit_to(
+                renderer,
+                &upv[0],
+                &mut out,
+                Some(up),
+                offset,
+                orient,
+                None,
+                left,
+                r,
+            ),
         }
-    }
-    let half = dn[0].size();
-    let mut out = sized(renderer, result.take(), half)?;
-    let all = whole(&out);
-    let r = if partial { &plan.result[..] } else { &all[..] };
-    match passes {
-        1 => blit(renderer, &dn[0], &mut out, None, offset, orient, None, r)?,
-        2 => blit(renderer, &dn[1], &mut out, Some(up), offset, orient, None, r)?,
-        _ => blit(renderer, &upv[0], &mut out, Some(up), offset, orient, None, r)?,
+    })?;
+    if sharp {
+        // The same rectangles, flipped the same way: level 1 as it is, written
+        // upright like the result.
+        let right = Rectangle::new((half.w, 0).into(), left.size);
+        timed(renderer, Span::Pack, |renderer| {
+            blit_to(renderer, &dn[0], &mut out, None, offset, orient, None, right, r)
+        })?;
     }
     *result = Some(out);
-    let ran = passes + passes.saturating_sub(2) + 1;
+    let ran = passes + passes.saturating_sub(2) + 1 + usize::from(sharp);
     Ok(Some(Rebuild {
         crop_texels: if partial {
             drawn
@@ -1902,6 +2190,15 @@ where
         },
         partial,
     }))
+}
+
+/// Run `f` between a GPU timer span of `kind` (a no-op unless `EC_GLASS_PROFILE`
+/// and the driver allow it), closing the span on every path out of `f`.
+fn timed<R>(renderer: &mut GlesRenderer, kind: Span, f: impl FnOnce(&mut GlesRenderer) -> R) -> R {
+    crate::gpu_timer::begin(renderer, kind);
+    let r = f(renderer);
+    crate::gpu_timer::end(renderer);
+    r
 }
 
 /// `reuse` if it is already `size`, else a fresh offscreen texture of `size`.
@@ -1974,9 +2271,27 @@ fn blit(
     from: Option<Rectangle<f64, BufferCoords>>,
     damage: &[Rectangle<i32, Physical>],
 ) -> Result<(), GlesError> {
+    let size = dst.size();
+    let dest = Rectangle::<i32, Physical>::from_size((size.w, size.h).into());
+    blit_to(renderer, src, dst, program, offset, transform, from, dest, damage)
+}
+
+/// [`blit`] into the `dest` rectangle of `dst` (the left or right half of a
+/// packed result); `damage` is relative to `dest`.
+#[allow(clippy::too_many_arguments)]
+fn blit_to(
+    renderer: &mut GlesRenderer,
+    src: &GlesTexture,
+    dst: &mut GlesTexture,
+    program: Option<&GlesTexProgram>,
+    offset: f32,
+    transform: Transform,
+    from: Option<Rectangle<f64, BufferCoords>>,
+    dest: Rectangle<i32, Physical>,
+    damage: &[Rectangle<i32, Physical>],
+) -> Result<(), GlesError> {
     let src_size = src.size();
     let dst_size = dst.size();
-    let dest = Rectangle::<i32, Physical>::from_size((dst_size.w, dst_size.h).into());
     let uniforms = [
         Uniform::new("halfpixel", [0.5 / src_size.w as f32, 0.5 / src_size.h as f32]),
         Uniform::new("blur_offset", offset),
@@ -2166,16 +2481,20 @@ mod tests {
     #[test]
     fn glass_refraction_widens_the_invalidation_reach() {
         use crate::effects::glass_reach;
-        assert_eq!(glass_reach(0.0, 1.5), 0);
-        assert_eq!(glass_reach(12.0, 1.0), 13);
-        assert_eq!(glass_reach(12.0, 2.0), 26);
+        assert_eq!(glass_reach(0.0, 0.0, 1.5), 0);
+        assert_eq!(glass_reach(12.0, 0.0, 1.0), 13);
+        assert_eq!(glass_reach(12.0, 0.0, 2.0), 26);
         // A fractional default still reserves whole pixels (ceil).
-        assert_eq!(glass_reach(1.5, 1.0), 2);
+        assert_eq!(glass_reach(1.5, 0.0, 1.0), 2);
         let region = r(100, 100, 200, 200);
         let k = kernel_radius(&blur(8, 2));
         let just_outside = [r(100 - k - 5, 150, 2, 2)];
         assert!(!invalidates(region, k, &just_outside));
-        assert!(invalidates(region, k + glass_reach(12.0, 1.0), &just_outside));
+        assert!(invalidates(
+            region,
+            k + glass_reach(12.0, 0.0, 1.0),
+            &just_outside
+        ));
     }
 
     /// An opaque window's bezel: the strips cover the ring and its corners,
@@ -2931,6 +3250,250 @@ mod tests {
         let (s0, s1) = (src(a), src(r(1100, 640, 400, 300)));
         assert_eq!((s1.loc.x - s0.loc.x, s1.loc.y - s0.loc.y), (50.0, 20.0));
         assert_eq!(s0.size, s1.size);
+    }
+
+    /// Chromatic aberration: a packed result is twice as wide, with the blurred
+    /// part in its left half, so an element addresses the left half only and its
+    /// source rectangle is the unpacked one's, in the same texels.
+    #[test]
+    fn a_packed_element_addresses_the_left_half() {
+        let region = r(1000, 500, 400, 300);
+        let (_, crop) = crop_rects(region, 64, Size::from((1920, 1080)), 3, false).unwrap();
+        let (hw, hh) = (crop.size.w / 2, crop.size.h / 2);
+        let scale = Scale::from(1.0);
+        let one = BlurElement::placed(
+            Id::new(),
+            ContextId::new(),
+            Backdrop(Size::from((hw, hh))),
+            crop,
+            region,
+            scale,
+            1.0,
+        );
+        let two = BlurElement::placed_in(
+            Id::new(),
+            ContextId::new(),
+            Backdrop(Size::from((hw * 2, hh))),
+            crop,
+            region,
+            scale,
+            1.0,
+            true,
+        );
+        assert_eq!(one.src(), two.src(), "same texels, only the texture is wider");
+        let s = two.src();
+        assert!(s.loc.x + s.size.w <= hw as f64, "inside the left half");
+    }
+
+    /// The chromatic fringe is real pixels: the UV offset times the sampled
+    /// texture's size in px is the same fringe whatever the output or the tier's
+    /// union is, packed (half-width UV px) or not.
+    #[test]
+    fn the_fringe_is_physical_px_whatever_the_union_size() {
+        use crate::effects::{fringe_px, px_uv_for, DISPERSION_PX};
+        for upscale in [1.0, 1.5, 2.0] {
+            let want = DISPERSION_PX as f64 * upscale;
+            assert!((fringe_px(1.0, upscale) as f64 - want).abs() < 1e-4);
+            assert!((fringe_px(0.5, upscale) as f64 - want / 2.0).abs() < 1e-4);
+            for size in [(800, 600), (1536, 1024), (2880, 1620)] {
+                // Unpacked: the texture spans `size` px across UV 0..1.
+                let uv = px_uv_for(size);
+                let off = fringe_px(1.0, upscale) * uv[0];
+                assert!((off as f64 * size.0 as f64 - want).abs() < 1e-3, "{size:?}");
+                // Packed: the blurred half spans `size` px across UV 0..0.5.
+                let uv = px_uv_for((size.0 * 2, size.1));
+                let off = fringe_px(1.0, upscale) * uv[0];
+                assert!((off as f64 * size.0 as f64 * 2.0 - want).abs() < 1e-3, "{size:?}");
+            }
+        }
+        assert_eq!(fringe_px(0.0, 2.0), 0.0);
+        assert_eq!(fringe_px(7.0, 1.0), DISPERSION_PX, "dispersion is clamped to 1");
+    }
+
+    /// The glass program's taps stay inside the built region: the reach covers
+    /// the bend plus the widest fringe at every scale; without dispersion it is
+    /// the old reach.
+    #[test]
+    fn the_reach_covers_the_widest_fringe() {
+        use crate::effects::{fringe_px, glass_reach};
+        for scale in [1.0, 1.25, 2.0] {
+            for refraction in [0.0f32, 1.5, 12.0] {
+                let bend = (refraction as f64 * scale).ceil() as i32;
+                assert_eq!(
+                    glass_reach(refraction, 0.0, scale),
+                    (refraction as f64 * scale * 1.05).ceil() as i32
+                );
+                for d in [0.25f32, 0.5, 1.0] {
+                    let reach = glass_reach(refraction, d, scale);
+                    assert!(
+                        reach as f64 >= refraction as f64 * scale + fringe_px(d, scale) as f64,
+                        "{scale} {refraction} {d}"
+                    );
+                    assert!(reach > bend);
+                }
+            }
+        }
+        // And the margin test: damage within the fringe of the region invalidates.
+        let region = r(100, 100, 200, 200);
+        let k = kernel_radius(&blur(8, 2));
+        let d = [r(100 - k - 6, 150, 2, 2)];
+        assert!(!invalidates(region, k + glass_reach(0.0, 0.0, 1.0), &d));
+        assert!(invalidates(region, k + glass_reach(0.0, 1.0, 1.0), &d));
+    }
+
+    /// A runtime dispersion toggle changes what the tier is built as (packed or
+    /// not), which forces a full rebuild and reallocates the result; neither a
+    /// change in blur mode nor in the other glass knobs does.
+    #[test]
+    fn toggling_dispersion_rebuilds_the_tier_in_full() {
+        let mut b = blur(8, 4);
+        assert!(!packs(&b, GlassPreset::Frost));
+        let off = (b.size, 4, packs(&b, GlassPreset::Frost));
+        let needed = r(0, 0, 512, 512);
+        let built = Some(r(0, 0, 1024, 1024));
+        assert!(!tier_fresh(true, built, needed, off, off, true));
+        b.glass.dispersion = 0.5;
+        assert!(packs(&b, GlassPreset::Frost));
+        let on = (b.size, 4, packs(&b, GlassPreset::Frost));
+        assert!(
+            tier_fresh(true, built, needed, off, on, true),
+            "on: allocate the packed texture"
+        );
+        assert!(tier_fresh(true, built, needed, on, off, true), "off: drop it");
+        assert!(!tier_fresh(true, built, needed, on, on, true));
+        // Only glass mode packs; another dispersion value stays packed.
+        b.glass.dispersion = 1.0;
+        assert_eq!((b.size, 4, packs(&b, GlassPreset::Frost)), on);
+        b.mode = ec_abyss_config::BlurMode::Frost;
+        assert!(!packs(&b, GlassPreset::Frost));
+        // The usual reasons stay.
+        assert!(tier_fresh(false, built, needed, on, on, true));
+        assert!(tier_fresh(true, None, needed, on, on, true));
+        assert!(tier_fresh(true, built, needed, on, on, false));
+    }
+
+    /// The pass count and packing are per preset: a lens is a light blur, packed
+    /// even without dispersion; frost keeps the configured passes and packs
+    /// only for dispersion. A tier takes the heaviest of its members.
+    #[test]
+    fn presets_pick_their_own_passes_and_packing() {
+        let b = blur(8, 4);
+        assert_eq!(preset_passes(4, GlassPreset::Lens), 2);
+        assert_eq!(preset_passes(1, GlassPreset::Lens), 1);
+        assert_eq!(preset_passes(4, GlassPreset::Regular), 3);
+        assert_eq!(preset_passes(2, GlassPreset::Regular), 2);
+        assert_eq!(preset_passes(4, GlassPreset::Frost), 4);
+        assert_eq!(tuned(&b, GlassPreset::Lens).passes, 2);
+        // Only glass mode retunes; frost/blur mode keep the configured passes.
+        let mut f = blur(8, 4);
+        f.mode = ec_abyss_config::BlurMode::Frost;
+        assert_eq!(tuned(&f, GlassPreset::Lens).passes, 4);
+        assert!(packs(&b, GlassPreset::Lens) && packs(&b, GlassPreset::Regular));
+        assert!(!packs(&b, GlassPreset::Frost));
+        assert!(!packs(&f, GlassPreset::Lens));
+        // A tier with a lens and a frost member is as heavy as frost and packed.
+        let (t, sharp) = tier_variant(&b, [GlassPreset::Lens, GlassPreset::Frost].into_iter());
+        assert_eq!((t.passes, sharp), (4, true));
+        let (t, sharp) = tier_variant(&b, [GlassPreset::Lens].into_iter());
+        assert_eq!((t.passes, sharp), (2, true));
+        let (t, sharp) = tier_variant(&b, [GlassPreset::Frost].into_iter());
+        assert_eq!((t.passes, sharp), (4, false));
+    }
+
+    /// A member's preset changing (frost to lens and back) changes the tier's
+    /// `(size, passes, packed)` once, which `tier_fresh` turns into exactly one
+    /// full rebuild; unchanged presets leave it alone.
+    #[test]
+    fn a_preset_change_forces_exactly_one_full_rebuild() {
+        let b = blur(8, 4);
+        let needed = r(0, 0, 512, 512);
+        let built = Some(r(0, 0, 1024, 1024));
+        let params = |presets: &[GlassPreset]| {
+            let (t, sharp) = tier_variant(&b, presets.iter().copied());
+            (t.size, t.passes as usize, sharp)
+        };
+        let frost = params(&[GlassPreset::Frost]);
+        let lens = params(&[GlassPreset::Lens]);
+        assert_ne!(frost, lens);
+        // The frame the preset changes: fresh, then stored as the new params.
+        assert!(tier_fresh(true, built, needed, frost, lens, true));
+        // Every later frame with the same preset: not fresh.
+        assert!(!tier_fresh(true, built, needed, lens, lens, true));
+        assert!(!tier_fresh(
+            true,
+            built,
+            needed,
+            lens,
+            params(&[GlassPreset::Lens]),
+            true
+        ));
+        // And back: one more.
+        assert!(tier_fresh(true, built, needed, lens, frost, true));
+        assert!(!tier_fresh(true, built, needed, frost, frost, true));
+    }
+
+    /// An opaque slab at a place, for the cull test.
+    struct Slab(Id, Rectangle<i32, Physical>, Vec<Rectangle<i32, Physical>>);
+
+    impl Element for Slab {
+        fn id(&self) -> &Id {
+            &self.0
+        }
+        fn current_commit(&self) -> CommitCounter {
+            CommitCounter::default()
+        }
+        fn src(&self) -> Rectangle<f64, BufferCoords> {
+            Rectangle::from_size((1.0, 1.0).into())
+        }
+        fn geometry(&self, _: Scale<f64>) -> Rectangle<i32, Physical> {
+            self.1
+        }
+        fn transform(&self) -> Transform {
+            Transform::Normal
+        }
+        fn damage_since(&self, _: Scale<f64>, _: Option<CommitCounter>) -> DamageSet<i32, Physical> {
+            DamageSet::default()
+        }
+        fn opaque_regions(&self, _: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+            self.2.iter().copied().collect()
+        }
+        fn alpha(&self) -> f32 {
+            1.0
+        }
+        fn kind(&self) -> Kind {
+            Kind::Unspecified
+        }
+    }
+
+    /// Occlusion cull: glass wholly under one opaque rectangle above it is hidden;
+    /// partly covered, covered only by a translucent element, or covered only by
+    /// the union of two opaque ones is not (conservative).
+    #[test]
+    fn glass_under_an_opaque_rectangle_is_hidden() {
+        let scale = Scale::from(1.0);
+        let region = r(100, 100, 200, 100);
+        let opaque = |g, o| Slab(Id::new(), g, vec![o]);
+        let slab = r(50, 50, 400, 300);
+        assert!(hidden_behind(region, &[opaque(slab, slab)], scale));
+        // The opaque part is the element's own, relative to its geometry.
+        assert!(hidden_behind(region, &[opaque(slab, r(0, 0, 400, 300))], scale));
+        // Partly covered.
+        assert!(!hidden_behind(
+            region,
+            &[opaque(r(150, 50, 400, 300), r(150, 50, 400, 300))],
+            scale
+        ));
+        // Translucent (no opaque region): never hides.
+        assert!(!hidden_behind(region, &[Slab(Id::new(), slab, vec![])], scale));
+        // Opaque region smaller than the element.
+        assert!(!hidden_behind(region, &[opaque(slab, r(0, 0, 100, 100))], scale));
+        // Two halves together cover it, neither alone: kept (conservative).
+        let halves = [
+            opaque(r(100, 100, 100, 100), r(100, 100, 100, 100)),
+            opaque(r(200, 100, 100, 100), r(200, 100, 100, 100)),
+        ];
+        assert!(!hidden_behind(region, &halves, scale));
+        assert!(!hidden_behind::<Slab>(region, &[], scale));
     }
 
     /// A half-size result is sampled at half the region's offset and size.

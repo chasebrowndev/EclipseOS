@@ -7,6 +7,8 @@
 //! `capture.rs` is not here: it reads `AbyssState` and is TCB, so it stays in
 //! `ec-abyss` (`ec-abyss/src/render/capture.rs`).
 
+#![deny(unsafe_code)]
+
 pub mod anim;
 pub mod annotation;
 pub mod blur;
@@ -21,6 +23,7 @@ pub mod font;
 pub mod glass;
 pub mod glass_profile;
 pub mod glyphs;
+pub mod gpu_timer;
 pub mod groups;
 pub mod hud;
 pub mod hud_font;
@@ -200,13 +203,13 @@ struct BlurPrep {
     region: Rectangle<i32, Physical>,
     shape: Option<blur::Shape>,
     crop: Option<Rectangle<i32, Physical>>,
-    /// The final draw's program and uniforms; taken when the element is built.
-    draw: Option<(
-        smithay::backend::renderer::gles::GlesTexProgram,
-        Vec<smithay::backend::renderer::gles::Uniform<'static>>,
-    )>,
+    /// The final draw's program (its uniforms are `blur_uniforms[n]` for this
+    /// prep's index `n`); taken when the element is built.
+    draw: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     reach: i32,
     ring: Option<(i32, i32, i32)>,
+    /// Which glass program draws it (sets its pyramid's passes and packing).
+    preset: effects::GlassPreset,
 }
 
 /// A window's border drawn as a ring of glass instead of paint (COMP-02 §9).
@@ -657,6 +660,10 @@ pub struct BorderGpu {
     /// draws a backdrop in that mode.
     frost: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     glass: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    /// The window/layer glass programs per preset (`effects::GlassPreset`),
+    /// compiled on first use, plain and shaped.
+    glass_presets: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
+    shaped_glass_presets: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
     /// The glass program failed to compile; layers with panes keep the
     /// whole-surface glass instead (and it is not retried per frame).
     glass_failed: bool,
@@ -710,6 +717,11 @@ pub struct BorderStore {
     pane_scratch: Vec<blur::BlurElement>,
     /// Blur requests prepared this frame, kept to reuse the allocation (Phase 1a).
     blur_prep: Vec<BlurPrep>,
+    blur_cull: Vec<bool>,
+    /// Each request's uniforms, by its index in `blur_prep`: refilled in place
+    /// every frame, so building them allocates nothing once warm.
+    blur_uniforms: Vec<Vec<smithay::backend::renderer::gles::Uniform<'static>>>,
+    blur_live: Vec<blur::BlurKey>,
     blur_tiers: Vec<u8>,
     blur_assign: Vec<Option<u8>>,
     blur_req_win: Vec<Option<usize>>,
@@ -1206,6 +1218,58 @@ pub fn collect_elements(
     elements
 }
 
+/// Drop the window backdrops that are hidden (see [`blur::hidden_behind`]) from
+/// `requests`; returns how many. Layer and annotation backdrops are never culled.
+fn cull_hidden(
+    store: &mut BorderStore,
+    cfg: &ec_abyss_config::Blur,
+    scale: Scale<f64>,
+    requests: &mut Vec<BlurRequest>,
+    panes: &[PaneRequest],
+    elements: &[AbyssRenderElement],
+    wins: &[WinRec],
+) -> usize {
+    let mut cull = std::mem::take(&mut store.blur_cull);
+    cull.clear();
+    // How far another backdrop samples: its kernel and the glass bend.
+    let sample = blur::kernel_radius(cfg)
+        + effects::GlassPreset::ALL
+            .iter()
+            .map(|p| effects::preset_reach(*p, &cfg.glass, scale.x.max(scale.y)))
+            .max()
+            .unwrap_or(0);
+    for (n, (key, index, region, ..)) in requests.iter().enumerate() {
+        let blur::BlurKey::Window(window) = key else {
+            cull.push(false);
+            continue;
+        };
+        // Above the window's own elements, which carry its own opaque body.
+        let above = wins
+            .iter()
+            .find(|r| &r.window == window && r.end == *index)
+            .map_or(*index, |r| r.start);
+        let hidden = elements
+            .get(..above)
+            .is_some_and(|a| blur::hidden_behind(*region, a, scale))
+            && !requests
+                .iter()
+                .enumerate()
+                .any(|(m, o)| m != n && o.1 < *index && blur::grow(o.2, sample).overlaps(*region))
+            && !panes.iter().any(|p| p.index < *index);
+        cull.push(hidden);
+    }
+    let count = cull.iter().filter(|c| **c).count();
+    if count > 0 {
+        let mut i = 0;
+        requests.retain(|_| {
+            i += 1;
+            !cull[i - 1]
+        });
+    }
+    store.blur_cull = cull;
+    count
+}
+
 /// Build and splice in one blurred backdrop per translucent surface (COMP-02 §9).
 ///
 /// Requests arrive in the order the windows were drawn (front to back); they are
@@ -1232,16 +1296,25 @@ fn insert_blur(
         return;
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let live: Vec<blur::BlurKey> = requests
-        .iter()
-        .map(|(key, ..)| key.clone())
-        .chain(panes.iter().map(|p| p.key.clone()))
-        .collect();
+    // Occlusion cull: a window's glass wholly under an opaque rectangle above it
+    // is not built, kept or drawn. It is also not in `live`, so its state is
+    // dropped and it is rebuilt from scratch (a fresh member of its tier) when it
+    // shows again, never from a stale backdrop. Nothing above may sample it: no
+    // other backdrop whose reach touches it, no pane.
+    let mut requests = requests;
+    let culled = cull_hidden(store, cfg, scale, &mut requests, &panes, elements, wins);
+    let mut live = std::mem::take(&mut store.blur_live);
+    live.clear();
+    live.extend(requests.iter().map(|(key, ..)| key.clone()));
+    live.extend(panes.iter().map(|p| p.key.clone()));
+    crate::gpu_timer::begin_frame(renderer);
     store.gpu.blur.entry(output.clone()).or_default().retain(&live);
     store
         .gpu
         .pane_shadows
         .retain(|(o, k, _), _| o != output || live.contains(k));
+    live.clear();
+    store.blur_live = live;
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
     // height and the sense of its vertical axis (COMP-02 §9).
@@ -1264,6 +1337,7 @@ fn insert_blur(
     // vectors live in the store, so a steady frame allocates nothing new here.
     let mut preps = std::mem::take(&mut store.blur_prep);
     preps.clear();
+    let mut pool = std::mem::take(&mut store.blur_uniforms);
     for (key, index, region, mode, radius, bezel, shape, crop) in requests.into_iter().rev() {
         // The final draw's program: plain `blur` only needs one to round
         // (a square backdrop draws with smithay's own); frost and glass
@@ -1272,14 +1346,31 @@ fn insert_blur(
         // A rotated output (`fb_height` None) keeps the plain square
         // backdrop in every mode.
         let scaled_radius = (radius as f64 * upscale) as f32;
+        let preset = if mode == BlurMode::Glass {
+            effects::GlassPreset::of(shape.is_some(), bezel.is_some())
+        } else {
+            effects::GlassPreset::Frost
+        };
         let gpu = &mut *store.gpu;
+        if pool.len() <= preps.len() {
+            pool.push(Vec::new());
+        }
+        let uniforms = &mut pool[preps.len()];
+        uniforms.clear();
         let program = fb_height.and_then(|(fb_height, mirrored)| {
             let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match (mode, shape.is_some()) {
                 (BlurMode::Off, _) => return None,
                 (BlurMode::Blur, false) if radius <= 0 => return None,
                 (BlurMode::Blur, false) => (&mut gpu.rounded, effects::compile_rounded, "rounded-corner"),
                 (BlurMode::Frost, false) => (&mut gpu.frost, effects::compile_frost, "frost"),
-                (BlurMode::Glass, false) => (&mut gpu.glass, effects::compile_glass, "glass"),
+                (BlurMode::Glass, false) => {
+                    let (compile, what): (fn(&mut GlesRenderer) -> _, _) = match preset {
+                        effects::GlassPreset::Lens => (effects::compile_glass_lens, "glass (lens)"),
+                        effects::GlassPreset::Regular => (effects::compile_glass_regular, "glass (regular)"),
+                        effects::GlassPreset::Frost => (effects::compile_glass_frost, "glass (frost)"),
+                    };
+                    (&mut gpu.glass_presets[preset.index()], compile, what)
+                }
                 (BlurMode::Blur, true) => (
                     &mut gpu.shaped[0],
                     effects::compile_rounded_shaped,
@@ -1289,7 +1380,18 @@ fn insert_blur(
                     (&mut gpu.shaped[1], effects::compile_frost_shaped, "shaped frost")
                 }
                 (BlurMode::Glass, true) => {
-                    (&mut gpu.shaped[2], effects::compile_glass_shaped, "shaped glass")
+                    let (compile, what): (fn(&mut GlesRenderer) -> _, _) = match preset {
+                        effects::GlassPreset::Lens => {
+                            (effects::compile_glass_shaped_lens, "shaped glass (lens)")
+                        }
+                        effects::GlassPreset::Regular => {
+                            (effects::compile_glass_shaped_regular, "shaped glass (regular)")
+                        }
+                        effects::GlassPreset::Frost => {
+                            (effects::compile_glass_shaped_frost, "shaped glass (frost)")
+                        }
+                    };
+                    (&mut gpu.shaped_glass_presets[preset.index()], compile, what)
                 }
             };
             if slot.is_none() && !gpu.compile_failed.contains(&what) {
@@ -1302,8 +1404,9 @@ fn insert_blur(
                 }
             }
             let program = slot.clone()?;
-            let mut uniforms = match mode {
-                BlurMode::Frost => effects::frost_uniforms(
+            match mode {
+                BlurMode::Frost => effects::frost_uniforms_into(
+                    uniforms,
                     region,
                     fb_height,
                     mirrored,
@@ -1315,16 +1418,18 @@ fn insert_blur(
                     cfg.adaptive.effective(),
                 ),
                 BlurMode::Glass => {
-                    let refraction = (cfg.glass.refraction as f64 * upscale) as f32;
-                    // A bezel lenses gently: at most 4 px, across the ring only.
+                    let look = effects::preset_look(preset, &cfg.glass, upscale);
+                    // A bezel bends across its ring only.
                     let (strength, bevel) = match bezel {
-                        Some(b) => (
-                            refraction.min((BEZEL_REFRACTION * upscale) as f32),
-                            b.inner as f32,
-                        ),
-                        None => (refraction, (cfg.glass.bevel as f64 * upscale) as f32),
+                        Some(b) => (look.strength, b.inner as f32),
+                        None => (look.strength, look.bevel),
                     };
-                    effects::glass_uniforms(
+                    let mut tuned = cfg.glass.clone();
+                    tuned.dispersion = look.dispersion;
+                    tuned.rim = look.rim;
+                    effects::glass_uniforms_into(
+                        uniforms,
+                        preset,
                         region,
                         fb_height,
                         mirrored,
@@ -1332,27 +1437,27 @@ fn insert_blur(
                         fb_size,
                         strength,
                         bevel,
-                        &cfg.glass,
+                        &tuned,
                         bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
                         config.appearance.glass_light(),
                         cfg.adaptive.effective(),
                     )
                 }
-                _ => effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius),
+                _ => effects::rounding_uniforms_into(uniforms, region, fb_height, mirrored, scaled_radius),
             };
             // The boxes ride in the uniforms, so a new shape changes the
             // backdrop's `look` and bumps its commit.
             if let Some(shape) = &shape {
                 uniforms.extend(effects::shape_uniforms(shape, fb_height, mirrored));
             }
-            Some((program, uniforms))
+            Some(program)
         });
         // COMP-02 §3: refraction samples up to this far outside the region,
         // so damage that far out must invalidate the backdrop too.
         let glass = mode == BlurMode::Glass && program.is_some();
         let frost = mode == BlurMode::Frost && program.is_some();
         let reach = if glass {
-            effects::glass_reach(cfg.glass.refraction, upscale)
+            effects::preset_reach(preset, &cfg.glass, upscale)
         } else {
             0
         };
@@ -1374,6 +1479,7 @@ fn insert_blur(
             draw: program,
             reach,
             ring,
+            preset,
         });
     }
 
@@ -1412,7 +1518,7 @@ fn insert_blur(
         .blur
         .entry(output.clone())
         .or_default()
-        .note_tiers(tiered, assign.len() - tiered);
+        .note_tiers(tiered, assign.len() - tiered, culled);
 
     // Build the pyramids, lowest tier first: tier `d` composites the windows
     // of lower tiers (their glass included) over what lies below every window.
@@ -1456,6 +1562,7 @@ fn insert_blur(
                 reach: m.reach,
                 ring: m.ring,
                 shape: m.shape.as_ref(),
+                preset: m.preset,
             });
         let ok = store
             .gpu
@@ -1477,7 +1584,7 @@ fn insert_blur(
             if assign[p] != Some(d) {
                 continue;
             }
-            let draw = preps[p].draw.take();
+            let draw = preps[p].draw.take().map(|program| (program, &mut pool[p]));
             let element = store.gpu.blur.entry(output.clone()).or_default().group_element(
                 renderer,
                 &key,
@@ -1501,7 +1608,7 @@ fn insert_blur(
         let element = if assign[p].is_some() {
             glass[p].take()
         } else {
-            let draw = preps[p].draw.take();
+            let draw = preps[p].draw.take().map(|program| (program, &mut pool[p]));
             let behind = &elements[index..];
             store
                 .gpu
@@ -1521,6 +1628,7 @@ fn insert_blur(
                     preps[p].ring,
                     preps[p].shape.as_ref(),
                     1.0,
+                    preps[p].preset,
                 )
                 .and_then(|e| wrap_blur(e, preps[p].crop, scale))
         };
@@ -1531,6 +1639,7 @@ fn insert_blur(
     preps.clear();
     glass.clear();
     store.blur_prep = preps;
+    store.blur_uniforms = pool;
     store.blur_glass = glass;
     store.blur_tiers = tiers;
     store.blur_assign = assign;
@@ -1543,9 +1652,10 @@ fn insert_blur(
 
 /// Make sure the glass program is compiled; false if it cannot be.
 fn ensure_glass(renderer: &mut GlesRenderer, store: &mut BorderStore) -> bool {
-    if store.gpu.glass.is_none() && !store.gpu.glass_failed {
-        match effects::compile_glass(renderer) {
-            Ok(program) => store.gpu.glass = Some(program),
+    let lens = effects::GlassPreset::Lens.index();
+    if store.gpu.glass_presets[lens].is_none() && !store.gpu.glass_failed {
+        match effects::compile_glass_lens(renderer) {
+            Ok(program) => store.gpu.glass_presets[lens] = Some(program),
             Err(err) => {
                 store.gpu.glass_failed = true;
                 tracing::warn!(
@@ -1555,7 +1665,7 @@ fn ensure_glass(renderer: &mut GlesRenderer, store: &mut BorderStore) -> bool {
             }
         }
     }
-    store.gpu.glass.is_some()
+    store.gpu.glass_presets[lens].is_some()
 }
 
 /// Splice one layer surface's glass panes into the element list (`eclipse_glass_v1`).
@@ -1588,7 +1698,7 @@ fn insert_panes(
         .map(|mode| output.current_transform().transform_size(mode.size))
         .map(|size| (size.w, size.h))
         .unwrap_or((1, 1));
-    let Some(program) = store.gpu.glass.clone() else {
+    let Some(program) = store.gpu.glass_presets[effects::GlassPreset::Lens.index()].clone() else {
         return;
     };
     let panes = req.set.as_slice();
@@ -1602,8 +1712,10 @@ fn insert_panes(
     let Some(union) = panes.iter().filter_map(rect_of).reduce(|a, b| a.merge(b)) else {
         return;
     };
-    let strength = (cfg.glass.refraction as f64 * upscale).min(BEZEL_REFRACTION * upscale) as f32;
-    let reach = effects::glass_reach(cfg.glass.refraction.min(BEZEL_REFRACTION as f32), upscale);
+    // Panes are lenses: the lens preset's bend and fringe, from a light blur.
+    let lens = effects::preset_look(effects::GlassPreset::Lens, &cfg.glass, upscale);
+    let strength = lens.strength;
+    let reach = effects::preset_reach(effects::GlassPreset::Lens, &cfg.glass, upscale);
     let mut blurs = std::mem::take(&mut store.pane_scratch);
     blurs.clear();
     // A bare window's panes skip its glass; stacked ones sample it and take a
@@ -1621,23 +1733,28 @@ fn insert_panes(
         &program,
         panes.len(),
         req.alpha,
-        |i| {
+        |i, uniforms| {
             let pane = &panes[i];
             let look = glass::look_on(pane, light > 0.0, req.stacked)?;
             let rect = rect_of(pane)?;
             let mut tuned = cfg.glass.clone();
-            tuned.dispersion = 0.0;
-            tuned.rim = cfg.glass.rim * look.rim;
-            Some((
-                rect,
-                effects::glass_uniforms_lifted(
+            tuned.dispersion = lens.dispersion;
+            tuned.rim = lens.rim * look.rim;
+            {
+                effects::glass_uniforms_lifted_into(
+                    uniforms,
+                    effects::GlassPreset::Lens,
                     rect,
                     fb_height,
                     mirrored,
                     (pane.radius as f64 * upscale * grown) as f32,
                     fb_size,
                     strength,
-                    glass::band(pane, rect, upscale * grown),
+                    if pane.bezel == 0 {
+                        lens.bevel * grown as f32
+                    } else {
+                        glass::band(pane, rect, upscale * grown)
+                    },
                     &tuned,
                     rim,
                     look.lift,
@@ -1646,10 +1763,12 @@ fn insert_panes(
                     light,
                     cfg.adaptive.effective(),
                     2.0,
-                ),
-            ))
+                );
+            }
+            Some(rect)
         },
         &mut blurs,
+        effects::GlassPreset::Lens,
     );
     // The contact shadows go in before the glass, at the same index, so they
     // lie under every pane's glass (STYLE.md Light; the shell cell's drop).
@@ -1745,10 +1864,6 @@ fn pane_shadow_program(
     }
     store.gpu.shadow.clone()
 }
-
-/// A bezel's largest refraction, logical px: felt at the window edge, never a
-/// funhouse.
-const BEZEL_REFRACTION: f64 = 4.0;
 
 /// How much of the neutral hairline an unfocused window's bezel keeps.
 const BEZEL_DIM: f32 = 0.6;
