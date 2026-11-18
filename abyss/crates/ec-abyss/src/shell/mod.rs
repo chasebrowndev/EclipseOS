@@ -2115,6 +2115,13 @@ pub fn fullscreen_toplevel(
     });
 }
 
+/// `xdg_toplevel.set_minimized`: send the window away like the X11 form and the IPC method.
+pub fn minimize_toplevel(state: &mut AbyssState, surface: &smithay::wayland::shell::xdg::ToplevelSurface) {
+    if let Some(window) = toplevel_window(state, surface) {
+        set_minimized(state, &window, true);
+    }
+}
+
 pub fn unfullscreen_toplevel(
     state: &mut AbyssState,
     surface: &smithay::wayland::shell::xdg::ToplevelSurface,

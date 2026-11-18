@@ -142,6 +142,10 @@ impl XdgShellHandler for AbyssState {
         crate::shell::fullscreen_toplevel(self, &surface, output.as_ref());
     }
 
+    fn minimize_request(&mut self, surface: ToplevelSurface) {
+        crate::shell::minimize_toplevel(self, &surface);
+    }
+
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         crate::shell::unfullscreen_toplevel(self, &surface);
     }
