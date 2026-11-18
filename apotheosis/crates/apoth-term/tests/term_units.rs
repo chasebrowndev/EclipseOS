@@ -430,3 +430,60 @@ fn cpr_never_underflows_after_restoring_origin_cursor_outside_margins() {
     let got = String::from_utf8(t.replies().take_all()).unwrap();
     assert!(got.len() < 16, "{got:?}");
 }
+
+fn shape(t: &Term) -> String {
+    let mut s = String::new();
+    for y in 0..t.rows() {
+        s.push_str(&apoth_term::row_text(t.grid(), y));
+        s.push('|');
+    }
+    format!(
+        "{s}{:?} hist={} alt={}",
+        t.cursor(),
+        t.primary().history_rows(),
+        t.on_alternate()
+    )
+}
+
+/// A term with scrollback, a styled screen and the cursor mid-screen.
+fn filled() -> Term {
+    let mut t = term(4, 10);
+    for i in 0..9 {
+        feed(&mut t, &format!("line{i}\r\n"));
+    }
+    feed(&mut t, "\x1b[1;31mred\x1b[0m\x1b[2;3H");
+    t
+}
+
+#[test]
+fn host_clear_screen_is_ed2_plus_home_and_keeps_scrollback() {
+    let (mut a, mut b) = (filled(), filled());
+    assert!(a.primary().history_rows() > 0);
+    assert!(a.clear_screen().dirty);
+    feed(&mut b, "\x1b[2J\x1b[H");
+    assert_eq!(shape(&a), shape(&b));
+    assert!(a.primary().history_rows() > 0);
+    assert_eq!((a.cursor().y, a.cursor().x), (0, 0));
+}
+
+#[test]
+fn host_clear_scrollback_is_ed3() {
+    let (mut a, mut b) = (filled(), filled());
+    assert!(a.clear_scrollback().dirty);
+    feed(&mut b, "\x1b[3J");
+    assert_eq!(shape(&a), shape(&b));
+    assert_eq!(a.primary().history_rows(), 0);
+    assert_ne!(a.cursor().y, 0, "the screen and cursor stay");
+}
+
+#[test]
+fn host_reset_is_ris() {
+    let (mut a, mut b) = (filled(), filled());
+    feed(&mut a, "\x1b[?1049h\x1b[?2004h");
+    feed(&mut b, "\x1b[?1049h\x1b[?2004h");
+    assert!(a.reset_wake().dirty);
+    feed(&mut b, "\x1bc");
+    assert_eq!(shape(&a), shape(&b));
+    assert!(!a.on_alternate());
+    assert_eq!(a.primary().history_rows(), 0);
+}

@@ -714,6 +714,9 @@ const HANDLED: &[&str] = &[
     "copy-mode.toggle-selection",
     "cursor.jump-char",
     "cursor.jump-repeat",
+    "font.size-decrease",
+    "font.size-increase",
+    "font.size-reset",
     "hints.cancel",
     "hints.start",
     "input.paste",
@@ -740,6 +743,7 @@ const HANDLED: &[&str] = &[
     "palette.open",
     "palette.toggle",
     "pane.break-out",
+    "pane.clear-screen",
     "pane.close",
     "pane.equalize",
     "pane.float",
@@ -749,6 +753,7 @@ const HANDLED: &[&str] = &[
     "pane.focus-prev",
     "pane.move",
     "pane.reconnect",
+    "pane.reset",
     "pane.resize",
     "pane.split",
     "pane.toggle-float",
@@ -763,6 +768,7 @@ const HANDLED: &[&str] = &[
     "scroll.page-down",
     "scroll.page-up",
     "scroll.top",
+    "scrollback.clear",
     "search.cancel",
     "search.next",
     "search.previous",
@@ -3087,6 +3093,16 @@ impl App {
                 }
             }
             A::AppIgnore {} => {}
+            A::FontSizeIncrease { amount } => self.zoom_font(1.0, amount),
+            A::FontSizeDecrease { amount } => self.zoom_font(-1.0, amount),
+            A::FontSizeReset {} => {
+                if self.runtime_override("font.size", None).is_err() {
+                    tracing::info!("font.size-reset refused");
+                }
+            }
+            A::PaneReset {} => self.term_op(focus, crate::pane::TermOp::Reset),
+            A::PaneClearScreen {} => self.term_op(focus, crate::pane::TermOp::ClearScreen),
+            A::ScrollbackClear {} => self.term_op(focus, crate::pane::TermOp::ClearScrollback),
             A::MediaTogglePlay {} => self.media_key(crate::pane::MediaWant::Toggle),
             A::MediaPlay {} => self.media_key(crate::pane::MediaWant::Play),
             A::MediaPause {} => self.media_key(crate::pane::MediaWant::Pause),
@@ -5122,6 +5138,39 @@ impl App {
         Ok(change)
     }
 
+    /// `font.size-increase` / `-decrease`: step the live font size by `amount` points (default
+    /// `font.zoom-step`), clamped to the schema range, through the runtime override layer so
+    /// the change reaches the renderer and atlas by the same path as `config.set font.size`.
+    fn zoom_font(&mut self, sign: f32, amount: Option<f32>) {
+        let cfg = self.reloader.config();
+        let step = amount
+            .filter(|a| a.is_finite())
+            .unwrap_or(cfg.float("font.zoom-step") as f32);
+        let to = zoomed_size(cfg.float("font.size") as f32, sign * step);
+        if self
+            .runtime_override("font.size", Some(&to.to_string()))
+            .is_err()
+        {
+            tracing::info!("font zoom refused");
+        }
+    }
+
+    /// Queue a host-side term operation for pane `id`'s io thread and wake it. A pane whose
+    /// term is a view of a session daemon's is left alone: the server's term is the truth.
+    fn term_op(&mut self, id: Option<PaneKey>, op: crate::pane::TermOp) {
+        let Some(p) = id.and_then(|id| self.panes.get(&id)) else {
+            return;
+        };
+        if p.remote.is_some() {
+            tracing::info!("terminal operation not supported on a daemon-attached pane");
+            return;
+        }
+        p.shared.post_term_op(op);
+        if let Some(io) = &p.io {
+            let _ = rustix::io::write(&io.wake, &[crate::pane::WAKE_TERM_OP]);
+        }
+    }
+
     /// Tell each subsystem what changed. Every settings reader below the loop either gets a
     /// message (render) or reads `self.settings` at use (bell, shell, title).
     fn apply_applied(&mut self, settings: Settings, a: &Applied) {
@@ -5502,6 +5551,12 @@ impl App {
     }
 }
 
+/// The font size after stepping `delta` points, clamped to the schema range and rounded to
+/// hundredths so repeated steps do not accumulate float noise.
+fn zoomed_size(now: f32, delta: f32) -> f32 {
+    (((now + delta).clamp(4.0, 96.0)) * 100.0).round() / 100.0
+}
+
 /// Which subsystems a reload's live keys touch, from the shared planner's `Applied`.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Flags {
@@ -5548,6 +5603,15 @@ mod tests {
         let mut new = old.clone();
         assert!(new.set_at(path, v, apoth_config::model::Origin::builtin()));
         apoth_config::reload::plan(apoth_config::diff(&old, &new), Vec::new())
+    }
+
+    #[test]
+    fn zoom_steps_clamp_to_the_schema_range() {
+        assert_eq!(zoomed_size(12.0, 1.0), 13.0);
+        assert_eq!(zoomed_size(12.0, -0.5), 11.5);
+        assert_eq!(zoomed_size(4.5, -1.0), 4.0);
+        assert_eq!(zoomed_size(95.5, 3.0), 96.0);
+        assert_eq!(zoomed_size(12.1, 0.2), 12.3);
     }
 
     #[test]

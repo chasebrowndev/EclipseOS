@@ -35,6 +35,28 @@ pub(crate) const WAKE_GRAPHICS_FILE: u8 = 4;
 const WAKE_MEDIA: u8 = 5;
 /// Wake byte: the user clicked a media placement ([`PaneShared::post_media_toggle`]).
 pub(crate) const WAKE_MEDIA_CLICK: u8 = 6;
+/// Wake byte: a host-side terminal operation waits ([`PaneShared::post_term_op`]).
+pub(crate) const WAKE_TERM_OP: u8 = 7;
+
+/// A host-side operation on the pane's term (`pane.reset`, `pane.clear-screen`,
+/// `scrollback.clear`), applied by the io thread under its own lock hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TermOp {
+    Reset,
+    ClearScreen,
+    ClearScrollback,
+}
+
+impl TermOp {
+    /// Run the operation on `t` (the same code the escape sequences reach).
+    pub(crate) fn apply(self, t: &mut Term) -> apoth_term::Wake {
+        match self {
+            TermOp::Reset => t.reset_wake(),
+            TermOp::ClearScreen => t.clear_screen(),
+            TermOp::ClearScrollback => t.clear_scrollback(),
+        }
+    }
+}
 
 /// Upper bound on the yields the io thread spends letting waiting takers go first.
 const MAX_HANDOFF_YIELDS: u32 = 2_000;
@@ -62,6 +84,8 @@ pub(crate) struct PaneShared {
     graphics_file: Mutex<Vec<(u64, bool)>>,
     /// Media placements the user clicked (play/pause toggles, by key), for the io thread.
     media_clicks: Mutex<Vec<u64>>,
+    /// Host-side term operations, for the io thread.
+    term_ops: Mutex<Vec<TermOp>>,
     /// The media placements of the frame render last drew, with that frame's top row
     /// (absolute): main hit-tests a press against them at press time (T-08 §4).
     media_shown: Mutex<(usize, Vec<apoth_term::MediaPlacement>)>,
@@ -96,6 +120,7 @@ impl PaneShared {
             resize: Mutex::new(None),
             graphics_file: Mutex::new(Vec::new()),
             media_clicks: Mutex::new(Vec::new()),
+            term_ops: Mutex::new(Vec::new()),
             media_shown: Mutex::new((0, Vec::new())),
             mirror,
             dirty: AtomicBool::new(false),
@@ -170,6 +195,27 @@ impl PaneShared {
         if q.len() < 16 {
             q.push(key);
         }
+    }
+
+    /// Leave a host-side term operation for the io thread; the caller then writes
+    /// [`WAKE_TERM_OP`] to the io wake pipe. Bounded: a runaway sender is a few operations.
+    pub(crate) fn post_term_op(&self, op: TermOp) {
+        let mut q = self
+            .term_ops
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if q.len() < 8 {
+            q.push(op);
+        }
+    }
+
+    fn take_term_ops(&self) -> Vec<TermOp> {
+        std::mem::take(
+            &mut *self
+                .term_ops
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// Render: the media placements it just drew, `top` being the frame's first row.
@@ -552,6 +598,10 @@ fn io_main(a: IoArgs, poke: Arc<OwnedFd>) {
             }
             for (token, allow) in shared.take_graphics_file() {
                 st = io.step(|t| t.graphics_file_decision(token, allow, Instant::now()));
+                ran = true;
+            }
+            for op in shared.take_term_ops() {
+                st = io.step(|t| op.apply(t));
                 ran = true;
             }
             let clicks = shared.take_media_toggles();
@@ -1133,6 +1183,47 @@ mod tests {
         taker.join().unwrap();
         io.join().unwrap();
         assert_eq!(*order.lock().unwrap(), ["taker", "io"]);
+    }
+
+    #[test]
+    fn term_ops_mailbox_is_bounded_and_drains_in_order() {
+        let shared = PaneShared::new(Term::new(TermConfig::default()));
+        shared.post_term_op(TermOp::ClearScreen);
+        shared.post_term_op(TermOp::Reset);
+        for _ in 0..20 {
+            shared.post_term_op(TermOp::ClearScrollback);
+        }
+        let ops = shared.take_term_ops();
+        assert_eq!(ops.len(), 8);
+        assert_eq!(ops[..2], [TermOp::ClearScreen, TermOp::Reset]);
+        assert!(shared.take_term_ops().is_empty());
+    }
+
+    #[test]
+    fn term_ops_reach_the_term() {
+        let mut t = Term::new(TermConfig {
+            rows: 3,
+            cols: 10,
+            ..TermConfig::default()
+        });
+        let now = Instant::now();
+        for i in 0..8 {
+            t.feed(format!("l{i}\r\n").as_bytes(), now);
+        }
+        assert!(t.primary().history_rows() > 0);
+        assert!(TermOp::ClearScreen.apply(&mut t).dirty);
+        assert!(t.primary().history_rows() > 0);
+        assert!(TermOp::ClearScrollback.apply(&mut t).dirty);
+        assert_eq!(t.primary().history_rows(), 0);
+        t.feed(b"\x1b[?2004h", now);
+        let on = |t: &Term| {
+            t.input_mirror()
+                .load()
+                .has(apoth_input::modes::bit::BRACKETED_PASTE)
+        };
+        assert!(on(&t));
+        TermOp::Reset.apply(&mut t);
+        assert!(!on(&t));
     }
 
     #[test]
