@@ -374,6 +374,7 @@ package_eclipseos-greeter() {
   install -Dm0644 "$srcdir/$_src/packaging/greetd/config.toml"  "$pkgdir/etc/eclipse/greetd/config.toml"
   install -Dm0644 "$srcdir/$_src/packaging/greetd/regreet.toml" "$pkgdir/etc/eclipse/greetd/regreet.toml"
   install -Dm0644 "$srcdir/$_src/packaging/greetd/regreet.css"  "$pkgdir/etc/eclipse/greetd/regreet.css"
+  install -Dm0644 "$srcdir/$_src/packaging/greetd/abyss-greeter.kdl" "$pkgdir/etc/eclipse/greetd/abyss-greeter.kdl"
   install -Dm0644 "$srcdir/$_src/packaging/greetd/10-eclipseos.conf" \
     "$pkgdir/usr/lib/systemd/system/greetd.service.d/10-eclipseos.conf"
   install -Dm0644 "$srcdir/$_src/packaging/greetd/wallpaper.png" \

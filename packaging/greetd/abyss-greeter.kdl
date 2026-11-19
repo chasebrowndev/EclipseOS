@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+//
+// The compositor's own configuration for the login screen (ADR 0126). Passed to
+// the kiosk Abyss with --config, so the greeter user needs no home directory.
+// The glass panes of ec-greeter-ui need `glass` mode, and glass is drawn over
+// what is behind it, so the compositor draws the wallpaper. ec-greeter-apply
+// keeps this file holding the shipped image or the one the machine chose.
+
+decoration {
+    blur {
+        mode "glass"
+    }
+}
+
+wallpaper {
+    path "/var/lib/eclipse/greeter/wallpaper.png"
+    mode "fill"
+}

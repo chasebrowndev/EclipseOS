@@ -18,6 +18,11 @@ use ec_theme::{Rgba, Seeds};
 pub const STATE_DIR: &str = "/var/lib/eclipse/greeter";
 pub const SETTINGS_FILE: &str = "settings.toml";
 pub const WALLPAPER_FILE: &str = "wallpaper.png";
+/// The image the package ships. The compositor draws `WALLPAPER_FILE` behind the
+/// glass greeter (ADR 0126), so when nothing custom is chosen it holds a copy of this.
+pub const SHIPPED_WALLPAPER: &str = "/usr/share/backgrounds/eclipseos/greeter.png";
+/// A shipped image larger than this is not copied.
+const MAX_SHIPPED: u64 = 32 << 20;
 
 pub const MAX_GREETING: usize = 80;
 pub const MAX_SETTINGS: usize = 4096;
@@ -505,7 +510,7 @@ fn remove(path: &Path) -> Result<(), Error> {
 /// Store `input`. A new image goes before the settings and an old one is removed
 /// after them, so settings never name one that is missing. The runner checks it
 /// decodes anyway.
-pub fn apply(dir: &Path, owner: u32, input: &Input) -> Result<(), Error> {
+pub fn apply(dir: &Path, owner: u32, shipped: &Path, input: &Input) -> Result<(), Error> {
     state_dir(dir, owner)?;
     match &input.image {
         Some((w, h, rgba)) => write_atomic(dir, WALLPAPER_FILE, &encode_png(*w, *h, rgba)?)?,
@@ -521,14 +526,28 @@ pub fn apply(dir: &Path, owner: u32, input: &Input) -> Result<(), Error> {
     if input.settings.wallpaper {
         return Ok(());
     }
-    remove(&dir.join(WALLPAPER_FILE))
+    restore_shipped(dir, shipped)
+}
+
+/// Put the package's own image where the compositor looks for the wallpaper. Root
+/// reads a root-owned file here, never anything a user supplied. With no usable
+/// shipped image the file is removed and the compositor shows its plain colour.
+fn restore_shipped(dir: &Path, shipped: &Path) -> Result<(), Error> {
+    let bytes = fs::symlink_metadata(shipped)
+        .ok()
+        .filter(|m| m.is_file() && m.len() <= MAX_SHIPPED)
+        .and_then(|_| fs::read(shipped).ok());
+    match bytes {
+        Some(b) => write_atomic(dir, WALLPAPER_FILE, &b),
+        None => remove(&dir.join(WALLPAPER_FILE)),
+    }
 }
 
 /// Back to the shipped look.
-pub fn reset(dir: &Path, owner: u32) -> Result<(), Error> {
+pub fn reset(dir: &Path, owner: u32, shipped: &Path) -> Result<(), Error> {
     state_dir(dir, owner)?;
     remove(&dir.join(SETTINGS_FILE))?;
-    remove(&dir.join(WALLPAPER_FILE))
+    restore_shipped(dir, shipped)
 }
 
 /// Read and render the customised files, or `None` if nothing is customised.
@@ -576,6 +595,12 @@ mod tests {
             clock: Some(Clock::Date12),
             layout: Some(Layout::default()),
         }
+    }
+
+    fn shipped_file(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("ec-greeter-ship-{name}-{}", std::process::id()));
+        fs::write(&p, b"shipped").unwrap();
+        p
     }
 
     fn tempdir(name: &str) -> PathBuf {
@@ -728,10 +753,12 @@ mod tests {
     #[test]
     fn apply_stores_what_prepare_reads_and_reset_clears_it() {
         let dir = tempdir("apply");
+        let ship = shipped_file("apply");
         let image = Some((2, 1, vec![9; 8]));
         apply(
             &dir,
             uid(),
+            &ship,
             &Input {
                 settings: full(),
                 image,
@@ -745,6 +772,7 @@ mod tests {
         apply(
             &dir,
             uid(),
+            &ship,
             &Input {
                 settings: full(),
                 image: None,
@@ -756,28 +784,37 @@ mod tests {
         apply(
             &dir,
             uid(),
+            &ship,
             &Input {
                 settings: plain,
                 image: None,
             },
         )
         .unwrap();
-        assert!(!dir.join(WALLPAPER_FILE).exists());
-        reset(&dir, uid()).unwrap();
+        // Not custom: the compositor's wallpaper is the shipped image again.
+        assert_eq!(fs::read(dir.join(WALLPAPER_FILE)).unwrap(), b"shipped");
+        reset(&dir, uid(), &ship).unwrap();
         assert_eq!(prepare(&dir, CONFIG, STYLE), Ok(None));
+        assert_eq!(fs::read(dir.join(WALLPAPER_FILE)).unwrap(), b"shipped");
+        reset(&dir, uid(), Path::new("/nonexistent")).unwrap();
+        assert!(
+            !dir.join(WALLPAPER_FILE).exists(),
+            "no shipped image: plain colour"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn apply_refuses_a_wallpaper_it_does_not_have_and_a_foreign_dir() {
         let dir = tempdir("refuse");
+        let ship = shipped_file("refuse");
         let input = Input {
             settings: full(),
             image: None,
         };
-        assert!(apply(&dir, uid(), &input).is_err());
+        assert!(apply(&dir, uid(), &ship, &input).is_err());
         assert!(!dir.join(SETTINGS_FILE).exists());
-        assert!(apply(&dir, uid() + 1, &input).is_err());
+        assert!(apply(&dir, uid() + 1, &ship, &input).is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 
