@@ -39,7 +39,9 @@ use crate::cursor::CursorScene;
 use crate::damage::{Op, RowRing};
 use crate::gpu::Gpu;
 use crate::image::{Band, ImagePass, ImageQuad};
+use crate::prof::{GpuProf, Group};
 use crate::scene::{GlyphInstance, GridScene, RectInstance};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const SHADER: &str = include_str!("shaders/grid.wgsl");
 const GRID_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -146,6 +148,16 @@ pub struct DrawStats {
     pub region_copies: usize,
     /// Every row was redrawn (first frame, resize, or after a skipped frame).
     pub full: bool,
+    /// Render passes recorded (grid passes plus the present pass).
+    pub passes: usize,
+    /// Image quads drawn (all panes, both bands).
+    pub image_quads: usize,
+    /// Image textures written to the GPU (new or in place).
+    pub image_uploads: usize,
+    /// Bytes written to the GPU since the previous draw (queue writes, atlas included).
+    pub upload_bytes: u64,
+    /// Of those, bytes of image pixels and image instances.
+    pub image_bytes: u64,
 }
 
 #[derive(Debug)]
@@ -421,6 +433,11 @@ pub struct Renderer {
     caret_pass: ChromePass,
     caret: ChromeList,
     image_pass: ImagePass,
+    /// Atlas, grid and cursor bytes written through the queue (render stats).
+    uploaded: AtomicU64,
+    /// Totals already reported by the previous draw.
+    reported: (u64, u64, u64),
+    prof: Option<GpuProf>,
 }
 
 impl Renderer {
@@ -608,6 +625,9 @@ impl Renderer {
             caret_pass: ChromePass::new(gpu, cfg.target_format),
             caret: ChromeList::new(),
             image_pass: ImagePass::new(gpu, cfg.target_format),
+            uploaded: AtomicU64::new(0),
+            reported: (0, 0, 0),
+            prof: None,
         }
     }
 
@@ -743,6 +763,8 @@ impl Renderer {
         if size.0 == 0 || size.1 == 0 {
             return;
         }
+        self.uploaded
+            .fetch_add(data.len() as u64, Ordering::Relaxed);
         self.queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: tex,
@@ -858,6 +880,9 @@ impl Renderer {
         input: &FrameInput<'_>,
     ) -> DrawStats {
         let mut stats = DrawStats::default();
+        if let Some(p) = self.prof.as_mut() {
+            p.begin_frame();
+        }
         let mut slots = std::mem::take(&mut self.slots);
         for p in input.panes {
             let i = match slots.iter().position(|s| s.key == p.key) {
@@ -889,11 +914,60 @@ impl Renderer {
                 stats.rects += st.rects;
                 stats.region_copies += st.region_copies;
                 stats.full |= st.full;
+                stats.passes += st.passes;
             }
         }
         self.present_pass(enc, target, target_size, input, &mut slots);
         self.slots = slots;
+        stats.passes += 1;
+        stats.image_quads = input
+            .panes
+            .iter()
+            .map(|p| p.images_below.len() + p.images_above.len())
+            .sum();
+        let total = self.uploaded.load(Ordering::Relaxed)
+            + self.image_pass.uploaded
+            + self.chrome_pass.uploaded
+            + self.caret_pass.uploaded;
+        let (prev_total, prev_img, prev_uploads) = self.reported;
+        let uploads = self.image_pass.uploads;
+        stats.upload_bytes = total - prev_total;
+        stats.image_bytes = self.image_pass.uploaded - prev_img;
+        stats.image_uploads = (uploads - prev_uploads) as usize;
+        self.reported = (total, self.image_pass.uploaded, uploads);
+        if let Some(p) = self.prof.as_mut() {
+            p.finish(enc);
+        }
         stats
+    }
+
+    /// Turns on GPU pass timing (opt-in, `APOTHEOSIS_RENDER_STATS`). Returns false, and
+    /// creates nothing, when the device was opened without timestamp queries.
+    pub fn enable_profiling(&mut self) -> bool {
+        if self.prof.is_none()
+            && self
+                .device
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY)
+        {
+            self.prof = Some(GpuProf::new(&self.device, &self.queue));
+        }
+        self.prof.is_some()
+    }
+
+    /// Call right after the frame's submission: starts and collects timestamp readbacks
+    /// without blocking. Does nothing unless profiling is enabled.
+    pub fn after_submit(&mut self) {
+        if let Some(p) = self.prof.as_mut() {
+            p.after_submit(&self.device);
+        }
+    }
+
+    /// Moves the GPU times of frames whose readback finished into `out` (a few frames late).
+    pub fn drain_gpu_times(&mut self, out: &mut Vec<crate::prof::GpuTimes>) {
+        if let Some(p) = self.prof.as_mut() {
+            p.drain(out);
+        }
     }
 
     fn grid_pass(
@@ -945,6 +1019,8 @@ impl Renderer {
             for px in &row.bg {
                 self.bg_bytes.extend_from_slice(px);
             }
+            self.uploaded
+                .fetch_add(self.bg_bytes.len() as u64, Ordering::Relaxed);
             self.queue.write_buffer(
                 &t.stage.buf,
                 u64::from(phys) * u64::from(t.stride),
@@ -984,12 +1060,16 @@ impl Renderer {
         if !self.glyph_bytes.is_empty() {
             slot.glyph_vb
                 .ensure(&self.device, self.glyph_bytes.len() as u64);
+            self.uploaded
+                .fetch_add(self.glyph_bytes.len() as u64, Ordering::Relaxed);
             self.queue
                 .write_buffer(&slot.glyph_vb.buf, 0, &self.glyph_bytes);
         }
         if !self.rect_bytes.is_empty() {
             slot.rect_vb
                 .ensure(&self.device, self.rect_bytes.len() as u64);
+            self.uploaded
+                .fetch_add(self.rect_bytes.len() as u64, Ordering::Relaxed);
             self.queue
                 .write_buffer(&slot.rect_vb.buf, 0, &self.rect_bytes);
         }
@@ -1003,6 +1083,8 @@ impl Renderer {
             flags: 0,
             cursor_dst: [0.0; 4],
         };
+        self.uploaded
+            .fetch_add(UNIFORM_BYTES as u64, Ordering::Relaxed);
         self.queue.write_buffer(&slot.ubo_grid, 0, &uni.bytes());
 
         // Staged background rows into the background ring, one copy per physical run.
@@ -1047,6 +1129,8 @@ impl Renderer {
             );
         }
 
+        stats.passes = 1;
+        let ts = self.prof.as_mut().and_then(|p| p.pass_writes(Group::Grid));
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("grid"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1058,6 +1142,7 @@ impl Renderer {
                     store: wgpu::StoreOp::Store,
                 },
             })],
+            timestamp_writes: ts,
             ..Default::default()
         });
         pass.set_bind_group(0, &t.bind_grid, &[]);
@@ -1181,6 +1266,17 @@ impl Renderer {
         }
     }
 
+    /// Opens an inside-pass timing span (only when profiling with inside-pass timestamps).
+    fn span(&mut self, pass: &mut wgpu::RenderPass<'_>, g: Group) -> Option<u32> {
+        self.prof.as_mut().and_then(|p| p.begin_span(pass, g))
+    }
+
+    fn span_end(&self, pass: &mut wgpu::RenderPass<'_>, end: Option<u32>) {
+        if let Some(p) = &self.prof {
+            p.end_span(pass, end);
+        }
+    }
+
     fn present_pass(
         &mut self,
         enc: &mut wgpu::CommandEncoder,
@@ -1214,6 +1310,8 @@ impl Renderer {
                 flags: 0,
                 cursor_dst: [0.0; 4],
             };
+            self.uploaded
+                .fetch_add(2 * UNIFORM_BYTES as u64, Ordering::Relaxed);
             self.queue.write_buffer(&slot.ubo_comp, 0, &base.bytes());
             let mut cursor_uni = Uni {
                 ring: (0, 0),
@@ -1243,12 +1341,16 @@ impl Renderer {
                     }
                 }
                 if slot.cursor_rects > 0 {
+                    self.uploaded
+                        .fetch_add(self.cursor_bytes.len() as u64, Ordering::Relaxed);
                     self.queue
                         .write_buffer(&slot.cursor_rect_vb, 0, &self.cursor_bytes);
                 }
                 if let Some(g) = &c.glyph {
                     self.cursor_bytes.clear();
                     pack_glyph(g, &mut self.cursor_bytes);
+                    self.uploaded
+                        .fetch_add(self.cursor_bytes.len() as u64, Ordering::Relaxed);
                     self.queue
                         .write_buffer(&slot.cursor_glyph_vb, 0, &self.cursor_bytes);
                     slot.cursor_glyph = true;
@@ -1297,6 +1399,10 @@ impl Renderer {
             0
         };
         let [r, g, b, a] = input.clear;
+        let ts = self
+            .prof
+            .as_mut()
+            .and_then(|p| p.pass_writes(Group::Present));
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("present"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1313,13 +1419,16 @@ impl Renderer {
                     store: wgpu::StoreOp::Store,
                 },
             })],
+            timestamp_writes: ts,
             ..Default::default()
         });
         let mut layer = 0;
         for (i, p) in input.panes.iter().enumerate() {
             while layer < layers && input.chrome_before[layer] <= i {
+                let sp = self.span(&mut pass, Group::Chrome);
                 self.chrome_pass
                     .draw_range(&mut pass, self.chrome.layer_range(layer));
+                self.span_end(&mut pass, sp);
                 layer += 1;
             }
             let Some(slot) = slots.iter().find(|s| s.key == p.key) else {
@@ -1336,15 +1445,21 @@ impl Renderer {
             let visible = c.2 > 0 && c.3 > 0;
             if below && visible {
                 pass.set_scissor_rect(c.0, c.1, c.2, c.3);
+                let sp = self.span(&mut pass, Group::Image);
                 self.image_pass.draw(&mut pass, i, Band::Below);
+                self.span_end(&mut pass, sp);
                 pass.set_scissor_rect(full.0, full.1, full.2, full.3);
             }
+            let sp = self.span(&mut pass, Group::Composite);
             pass.set_pipeline(&self.pipes.composite);
             pass.set_bind_group(0, &t.bind_comp, &[]);
             pass.draw(0..4, 0..1);
+            self.span_end(&mut pass, sp);
             if above && visible {
                 pass.set_scissor_rect(c.0, c.1, c.2, c.3);
+                let sp = self.span(&mut pass, Group::Image);
                 self.image_pass.draw(&mut pass, i, Band::Above);
+                self.span_end(&mut pass, sp);
                 pass.set_scissor_rect(full.0, full.1, full.2, full.3);
             }
             if let (true, Some(c)) = (carets, slot.caret) {
@@ -1367,7 +1482,9 @@ impl Renderer {
             // Layers whose pane never came, then the top layer (bars, strip, sheets).
             let start = self.chrome.layer_range(layer).start;
             let end = self.chrome.instances.len() as u32;
+            let sp = self.span(&mut pass, Group::Chrome);
             self.chrome_pass.draw_range(&mut pass, start..end);
+            self.span_end(&mut pass, sp);
         }
     }
 }

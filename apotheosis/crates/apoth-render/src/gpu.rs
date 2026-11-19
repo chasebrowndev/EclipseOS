@@ -59,6 +59,9 @@ pub struct GpuOptions {
     /// of the adapter name. Wgpu has no portable way to ask the compositor, so the caller
     /// (apoth-wl, from the compositor's device) supplies it.
     pub compositor_hint: Option<String>,
+    /// Ask for GPU timestamp queries when the adapter has them (render profiling,
+    /// `APOTHEOSIS_RENDER_STATS`). Off: the device requests no optional feature.
+    pub timestamps: bool,
 }
 
 /// What `apoth doctor` reports about the adapter.
@@ -70,6 +73,12 @@ pub struct AdapterReport {
     pub class: AdapterClass,
     /// Driver name and info.
     pub driver: String,
+    /// Graphics backend (always Vulkan today).
+    pub backend: String,
+    /// `TIMESTAMP_QUERY` is enabled on the device.
+    pub timestamp_query: bool,
+    /// `TIMESTAMP_QUERY_INSIDE_PASSES` is enabled on the device.
+    pub timestamp_inside_passes: bool,
 }
 
 /// Instance, adapter, device and queue. Cheap to clone: every field is a handle.
@@ -188,8 +197,22 @@ impl Gpu {
                 ));
                 continue;
             }
+            let features = if opts.timestamps {
+                adapter.features()
+                    & (wgpu::Features::TIMESTAMP_QUERY
+                        | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES)
+            } else {
+                wgpu::Features::empty()
+            };
+            // Inside-pass timestamps are only valid together with the base feature.
+            let features = if features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+                features
+            } else {
+                wgpu::Features::empty()
+            };
             let desc = wgpu::DeviceDescriptor {
                 label: Some("apoth-render"),
+                required_features: features,
                 required_limits: wgpu::Limits::downlevel_defaults()
                     .using_resolution(adapter.limits()),
                 ..Default::default()
@@ -205,6 +228,13 @@ impl Gpu {
                         name: info.name.clone(),
                         class: cand.class,
                         driver: format!("{} {}", info.driver, info.driver_info),
+                        backend: format!("{:?}", info.backend),
+                        timestamp_query: device
+                            .features()
+                            .contains(wgpu::Features::TIMESTAMP_QUERY),
+                        timestamp_inside_passes: device
+                            .features()
+                            .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES),
                     };
                     return Ok(Self {
                         instance,

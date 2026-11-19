@@ -87,6 +87,10 @@ pub(crate) struct ImagePass {
     panes: Vec<PaneRanges>,
     max_dim: u32,
     reused: u64,
+    /// Bytes written to the GPU so far (render stats).
+    pub(crate) uploaded: u64,
+    /// Texture uploads so far, new or in place (render stats).
+    pub(crate) uploads: u64,
 }
 
 fn vertex_buffer(device: &wgpu::Device, cap: u64) -> wgpu::Buffer {
@@ -252,6 +256,8 @@ impl ImagePass {
             panes: Vec::new(),
             max_dim,
             reused: 0,
+            uploaded: 0,
+            uploads: 0,
         }
     }
 
@@ -283,6 +289,8 @@ impl ImagePass {
             &px,
         );
         t.used = self.frame;
+        self.uploaded += px.len() as u64;
+        self.uploads += 1;
         self.cache.insert(q.key, t);
     }
 
@@ -317,6 +325,8 @@ impl ImagePass {
                     px.extend_from_slice(&[pm(p[0]), pm(p[1]), pm(p[2]), p[3]]);
                 }
             }
+            self.uploaded += px.len() as u64;
+            self.uploads += 1;
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &t.tex,
@@ -416,6 +426,7 @@ impl ImagePass {
             u[0..4].copy_from_slice(&(target_size.0 as f32).to_le_bytes());
             u[4..8].copy_from_slice(&(target_size.1 as f32).to_le_bytes());
             self.queue.write_buffer(&self.ubo, 0, &u);
+            self.uploaded += need + 16;
         }
         self.retire();
     }
