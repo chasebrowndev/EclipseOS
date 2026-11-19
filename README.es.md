@@ -87,7 +87,7 @@ Otros escritorios tienen una parte de esto. EclipseOS se diseñó en torno a est
 - **Actualizaciones a las que se puede volver.** Se conserva la compilación anterior de Abyss. Si una nueva falla al iniciar, la sesión vuelve a la anterior, y "Abyss (previous)" aparece en la pantalla de inicio de sesión.
 - **Una función rota no derriba el escritorio.** Una falla en una función opcional desactiva esa función durante la sesión, y sigues trabajando.
 - **Una compuerta en cada cambio.** Cada pull request ejecuta `rustfmt`, `clippy -D warnings`, la suite de pruebas completa, `cargo-deny` y la suite de conformidad de Wayland (WLCS), con un toolchain fijado.
-- **Primero la especificación.** Dos volúmenes de especificación y un conjunto de [ADRs](docs/decisions) gobiernan el código. Cuando el código y la especificación discrepan, se trata como un error. Los cambios en la ruta crítica para la seguridad reciben una revisión línea por línea.
+- **Primero la especificación.** Tres volúmenes de especificación y un conjunto de [ADRs](docs/decisions) gobiernan el código. Cuando el código y la especificación discrepan, se trata como un error. Los cambios en la ruta crítica para la seguridad reciben una revisión línea por línea.
 
 ## Agentes (en desarrollo)
 
@@ -101,7 +101,7 @@ La pila de agentes se distribuye por separado, como el paquete opcional `eclipse
 
 ## Estado
 
-**0.2.1, temprano.** El autor lo usa como su escritorio de todos los días, pero espera asperezas. [STATUS.md](docs/STATUS.md) registra lo que está construido y verificado, y [KNOWNBUGS.md](docs/KNOWNBUGS.md) lista lo que aún no funciona.
+**0.2.2, temprano.** El autor lo usa como su escritorio de todos los días, pero espera asperezas. [STATUS.md](docs/STATUS.md) registra lo que está construido y verificado, y [KNOWNBUGS.md](docs/KNOWNBUGS.md) lista lo que aún no funciona.
 
 ## Instalación
 

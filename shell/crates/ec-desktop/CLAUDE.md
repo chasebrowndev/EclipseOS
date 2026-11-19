@@ -16,7 +16,7 @@ Its own crate and package (ADR 0052); never depend on `hyperion`.
   corner surface with no keyboard. An `xdg_popup` would not do: it stacks with
   its parent's layer.
 - **Only under `mode "de"`.** `ec-desktop.service` has no `[Install]`;
-  abyss starts and stops it (`ec-abyss/src/session.rs`, `desktop_sync`).
+  abyss starts and stops it (`abyss/crates/ec-abyss/src/session.rs`, `desktop_sync`).
 - **The model is non-visual and unit-tested**: `scan` (the directory and its
   watcher), `launch` (`.desktop` and `xdg-open`), `icons`, `ops` (file
   operations), `trash` (freedesktop trash spec), `layout` (grid positions per

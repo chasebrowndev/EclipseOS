@@ -8,11 +8,11 @@ gestor de ventanas de EclipseOS y la mitad de su base de cómputo confiable: los
 manejan el escritorio mediante un protocolo nativo del compositor, bajo una verificación
 de política que se ejecuta antes de que cambie cualquier estado.
 
-**Estado: Fase 1, previa a la salida.** Tres backends (winit, DRM/udev, headless), el
+**Estado: Fase 1 en gran parte construida, Fase 2 iniciada.** Tres backends (winit, DRM/udev, headless), el
 conjunto estándar de protocolos, espacios de trabajo, reglas de ventanas y efectos, configuración KDL con
 recarga en caliente y el socket IPC COMP-13. El 2026-09-10 el backend DRM arrancó sobre
 KMS real en un equipo NVIDIA, encendió dos paneles en sus modos nativos y ejecutó un cliente
-en vivo. Todavía no es apto para el uso diario — consulta [docs/STATUS.md](docs/STATUS.md) para ver qué
+en vivo. Todavía no es apto para el uso diario — consulta [docs/STATUS.md](../docs/STATUS.md) para ver qué
 está verificado, qué es un stub y qué aún bloquea la salida de la Fase 1.
 
 ## Qué lo hace diferente
@@ -29,33 +29,34 @@ está verificado, qué es un stub y qué aún bloquea la salida de la Fase 1.
 ## Inicio rápido
 
 ```
+cd abyss
 cargo build --workspace
-cargo run -- --backend winit     # nested in your current session
-cargo run -- --backend drm       # from a bare VT, real KMS
-cargo run -- --backend headless  # no display; what wlcs drives
-journalctl --user -t ec-abyss -f    # logs
+cargo run -- --backend winit     # anidado en tu sesión actual
+cargo run -- --backend drm       # desde un VT limpio, KMS real
+cargo run -- --backend headless  # sin pantalla; lo que maneja wlcs
+journalctl --user -t ec-abyss -f    # registros
 ```
 
 `Super+Shift+Q` sale. Instrucciones completas y dependencias del sistema:
-[docs/BUILDING.md](docs/BUILDING.md).
+[docs/BUILDING.md](../docs/BUILDING.md).
 
 ## Documentación
 
 | | |
 |---|---|
-| [docs/STATUS.md](docs/STATUS.md) | qué está construido, qué es un stub, qué está verificado |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | disposición de crates, mapa de módulos, límites de confianza |
-| [docs/BUILDING.md](docs/BUILDING.md) | dependencias, compilación, ejecución, logs |
-| [docs/internal/HANDOFF.md](docs/internal/HANDOFF.md) | registro continuo de sesiones: qué cambió, qué se rompió, trampas |
-| [decisions/](decisions/) | registros de decisiones de arquitectura |
-| [CLAUDE.md](CLAUDE.md) | invariantes (tanto para humanos como para asistentes de IA) |
-| `ECLIPSEOS_SPECS_v2_VOL1.md` | el paquete de especificación; autoritativo |
+| [docs/STATUS.md](../docs/STATUS.md) | qué está construido, qué es un stub, qué está verificado |
+| [docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md) | disposición de crates, mapa de módulos, límites de confianza |
+| [docs/BUILDING.md](../docs/BUILDING.md) | dependencias, compilación, ejecución, logs |
+| [docs/internal/HANDOFF.md](../docs/internal/HANDOFF.md) | registro continuo de sesiones: qué cambió, qué se rompió, trampas |
+| [docs/decisions/](../docs/decisions/) | registros de decisiones de arquitectura |
+| [CLAUDE.md](../CLAUDE.md) | invariantes (tanto para humanos como para asistentes de IA) |
+| [docs/ECLIPSEOS_SPECS_v2_VOL1.md](../docs/ECLIPSEOS_SPECS_v2_VOL1.md) | el paquete de especificación; autoritativo |
 
 ## Licencia
 
-El código del sistema es **AGPL-3.0-only** ([LICENSE](LICENSE)). Las definiciones de protocolos y
-los SDK de agentes son **Apache-2.0** ([LICENSE-APACHE](LICENSE-APACHE)) para que los agentes
+El código del sistema es **AGPL-3.0-only** ([LICENSE](../LICENSE)). Las definiciones de protocolos y
+los SDK de agentes son **Apache-2.0** ([LICENSE-APACHE](../LICENSE-APACHE)) para que los agentes
 puedan escribirse bajo cualquier licencia. Hay una licencia comercial disponible para
 organizaciones que no pueden cumplir con la AGPL — consulta
-[CONTRIBUTING.md](CONTRIBUTING.md) y [NOTICE](NOTICE). El nombre y el logotipo no
-están licenciados por la AGPL: [TRADEMARK.md](TRADEMARK.md).
+[CONTRIBUTING.md](../CONTRIBUTING.md) y [NOTICE](../NOTICE). El nombre y el logotipo no
+están licenciados por la AGPL: [TRADEMARK.md](../TRADEMARK.md).

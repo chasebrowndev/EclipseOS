@@ -99,7 +99,7 @@ separate work:
 - **A first-party capture / screenshot tool.** Today capture is whatever
   `grim` or a portal client gets from `render/capture.rs`, which renders
   surfaces only — no blur (or its frost/glass modes), rounding, shadow or
-  glow, so a screenshot never matches the screen (`KNOWNBUGS.md` CAP-01).
+  glow, so a screenshot never matches the screen (since fixed: cursor and effects now captured).
   Owner direction (2026-09-27): build EclipseOS's own capture instead —
   region / window / output shots and screencasts that render the real
   composed look, with redaction applied *before* effects so a blurred secret

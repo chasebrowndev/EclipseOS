@@ -4,10 +4,10 @@ Read the root `CLAUDE.md` first. Governing spec: ADR 0038 (DE services),
 ADR 0051 (screensaver bridge), ADR 0053 (status actions, secret prompt),
 ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
 
-- **Not TCB.** Ordinary services running as the human, outside `abyss`. They
+- **Not TCB**, except the `ec-polkit-agent` binary (below). Ordinary services running as the human, outside `abyss`. They
   hold no capability and enforce no policy; a compromised service can annoy
   the human, not escalate. Anything that would need to be trusted belongs in
-  `abyss/src/trusted_ui/` instead.
+  `abyss/crates/ec-abyss/src/trusted_ui/` instead.
 - `src/bin/ec-lock-trigger.rs` starts `ec-lock` on logind's `Session.Lock`
   for the display session and on `PrepareForSleep(true)`, holding a sleep
   `delay` inhibitor for at most `session::SLEEP_GRACE` (3 s, under logind's
