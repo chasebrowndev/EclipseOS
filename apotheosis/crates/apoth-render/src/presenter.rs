@@ -273,6 +273,7 @@ impl Presenter for OffscreenPresenter {
             });
         let draw = renderer.draw(&mut enc, &self.view, self.size, input);
         self.gpu.queue.submit(std::iter::once(enc.finish()));
+        renderer.after_submit();
         let record = t0.elapsed();
         PresentOutcome::Presented(FrameStats {
             draw,
@@ -540,6 +541,7 @@ impl Presenter for SurfacePresenter {
             });
         let draw = renderer.draw(&mut enc, &view, self.size, input);
         self.gpu.queue.submit(std::iter::once(enc.finish()));
+        renderer.after_submit();
         let record = t0.elapsed();
         let t1 = Instant::now();
         let queue = &self.gpu.queue;

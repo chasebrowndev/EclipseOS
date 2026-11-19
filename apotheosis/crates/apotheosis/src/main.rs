@@ -34,6 +34,7 @@ mod secret_prompt;
 mod security;
 mod server;
 mod settings;
+mod stats;
 mod ui;
 mod view;
 mod workers;
