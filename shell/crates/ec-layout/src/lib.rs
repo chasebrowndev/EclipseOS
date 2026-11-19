@@ -244,11 +244,30 @@ pub fn place(l: &Layout, kind: Kind, want: Rect) -> Option<Rect> {
 /// `kind` resized to `want` keeping its top-left corner: shrunk (never below
 /// its minimum) until it overlaps nothing. `None` if even the minimum does.
 pub fn resize(l: &Layout, kind: Kind, want: Rect) -> Option<Rect> {
+    resize_anchored(l, kind, want, false, false)
+}
+
+/// [`resize`] for a drag of any edge. `want` is the whole rectangle the handle
+/// asks for. When `fix_right` (a west-edge drag) the right edge is the one that
+/// stays put as the tile shrinks to clear a neighbour, and likewise `fix_bottom`
+/// for a north-edge drag; otherwise the left or top edge stays.
+pub fn resize_anchored(
+    l: &Layout,
+    kind: Kind,
+    want: Rect,
+    fix_right: bool,
+    fix_bottom: bool,
+) -> Option<Rect> {
     let (mw, mh) = kind.min_size();
-    let (mut w, mut h) = (want.w.max(mw), want.h.max(mh));
-    let (x, y) = (want.x.clamp(0, COLS - mw), want.y.clamp(0, ROWS - mh));
-    w = w.min(COLS - x);
-    h = h.min(ROWS - y);
+    let (right, bottom) = (want.x + want.w, want.y + want.h);
+    let (mut x, mut y) = (want.x.clamp(0, COLS - mw), want.y.clamp(0, ROWS - mh));
+    let (mut w, mut h) = ((right - x).clamp(mw, COLS - x), (bottom - y).clamp(mh, ROWS - y));
+    if fix_right {
+        x = (right.min(COLS) - w).max(0);
+    }
+    if fix_bottom {
+        y = (bottom.min(ROWS) - h).max(0);
+    }
     loop {
         let r = Rect::new(x, y, w, h);
         if free(l, kind, r) {
@@ -256,10 +275,13 @@ pub fn resize(l: &Layout, kind: Kind, want: Rect) -> Option<Rect> {
         }
         if w > mw && w >= h {
             w -= 1;
+            x += fix_right as i32;
         } else if h > mh {
             h -= 1;
+            y += fix_bottom as i32;
         } else if w > mw {
             w -= 1;
+            x += fix_right as i32;
         } else {
             return None;
         }
@@ -348,6 +370,23 @@ mod tests {
         assert_eq!(r.x, 8);
         let mut m = l.clone();
         m.set(Kind::Clock, r);
+        assert_eq!(validate(&m), Ok(()));
+    }
+
+    #[test]
+    fn a_west_drag_keeps_the_right_edge() {
+        let l = Layout::default();
+        // Users sits at 8,5 8x4; pulling its west edge into Clock/Greeting's column
+        // is fine (nothing left of it), but shrinking from the left keeps x+w.
+        let r = resize_anchored(&l, Kind::Users, Rect::new(2, 5, 14, 4), true, false).unwrap();
+        assert_eq!((r.x + r.w, r.y, r.h), (16, 5, 4));
+        let mut m = l.clone();
+        m.set(Kind::Users, r);
+        assert_eq!(validate(&m), Ok(()));
+        // A north drag into the Greeting tile shrinks from the top, keeping the bottom.
+        let r = resize_anchored(&l, Kind::Users, Rect::new(8, 2, 8, 7), false, true).unwrap();
+        assert_eq!(r.y + r.h, 9);
+        m.set(Kind::Users, r);
         assert_eq!(validate(&m), Ok(()));
     }
 
