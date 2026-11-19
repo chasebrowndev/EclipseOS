@@ -1245,13 +1245,16 @@ fn run(a: RenderArgs) {
                             .iter()
                             .flat_map(|p| p.due.into_iter().chain(p.blink_due))
                             .min();
-                        sched.animate(due.map(|d| {
-                            now_ns()
-                                + u64::try_from(
+                        let at = now_ns();
+                        sched.animate(
+                            due.map(|d| {
+                                at + u64::try_from(
                                     d.saturating_duration_since(Instant::now()).as_nanos(),
                                 )
                                 .unwrap_or(u64::MAX / 2)
-                        }));
+                            }),
+                            at,
+                        );
                         tracing::trace!(
                             panes = panes.len(),
                             rows = st.draw.rows_drawn,
