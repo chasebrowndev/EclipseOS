@@ -2402,12 +2402,18 @@ side in `apotheosis`. Implements MEDIA-01..03, -05, -07..-10, -13, -15..-17, -20
 | Tier | Content | Release |
 |---|---|---|
 | A | Kitty animation protocol; GIF/APNG/WebP animation through `apoth icat`; named gate: `mpv --vo=kitty --vo-kitty-use-shm=yes` plays 1080p30 with < 1 % dropped frames | A-gate at M32 |
-| B | Native media placements: `apoth play`, software AV1 (`rav1d`), audio | M34 |
+| B | Native media placements: `apoth play`, software AV1 (`rav1d`), software H.264 in MP4 (`rust_h264`), audio | M34 |
 | C | Hardware decode through VA-API (H.264, HEVC, VP9, AV1 as the driver offers) | M36 |
 
-Software H.264 via a pure-Rust decoder (MEDIA-31) is admitted only after it passes the
-helper fuzz and conformance gates; software VP9 and HEVC are not planned. Without VA-API,
-those codecs play through Tier A (mpv decodes).
+Software H.264 via a pure-Rust decoder (MEDIA-31) is admitted (ADR 0118 addendum,
+2026-11-18): `rust_h264`, in MP4 (progressive and interlaced, 8 and 10 bit, 4:2:0, 4:2:2 and
+monochrome). The gates it passed: bit-exact display-order output against ffmpeg for every
+committed H.264 fixture (baseline, main with B-frames, high, interlaced, fragmented, edit
+list, 62x38, 63x37 monochrome compared on luma, High 10, High 4:2:2, with AAC), decode under the helper's real
+seccomp and rlimit profile, and the `mp4_demux` and `h264` fuzz targets (§6). 4:4:4, lossless,
+FMO/ASO, SP/SI and bit depths other than 8 and 10 are `unsupported`. Software VP9 and HEVC
+are not planned. Without VA-API, those codecs, and anything `unsupported`, play through Tier A
+(mpv decodes). `media.sw-codecs` gates H.264 in MP4.
 
 ### 1.1 `apoth icat` and `apoth play` lifetime
 Owner requirement (recorded at M32 for `icat`, binding on `play` at M34):
@@ -2474,8 +2480,19 @@ text and is stopped and freed when its rows leave the screen (playback never con
 history: `media.offscreen` `pause` (default) or `stop`).
 
 ## 3. Decode pipeline
-- Demux: Matroska/WebM (`matroska-demuxer`); MP4 after the M0-flagged spike confirms a
-  pure-Rust demuxer that exposes video packets (else MP4 stays Tier A).
+- Demux: Matroska/WebM (`matroska-demuxer`); MP4 and fragmented MP4 with
+  `shiguredo_mp4 = "=2026.6.0-canary.2"` (Apache-2.0, no dependencies, no `unsafe`; the M34
+  spike rejected `symphonia-format-isomp4`, `mp4` and `mp4parse`: no composition offsets or
+  keyframe flags, broken fragmented timing, or raw tables only). It applies no edit lists and
+  seeks per sample, so the helper builds one sample index (dts, pts, keyframe, offset, size) and
+  applies the first edit list per track itself; seeks snap to the previous keyframe. Limits: 2M
+  samples, 64 MiB of `moov` or fragment, 16 MiB per packet, 16384 px per side. AAC audio in
+  MP4 uses the Symphonia path, interleaved by decode time.
+- Video, H.264: `rust_h264 = "=0.6.1"` (MIT OR Apache-2.0, no dependencies, no build script,
+  SIMD through `core::arch` only), single-threaded `OrderedDecoder` carrying the pts through
+  B-frame reordering; our wrapper (`h264.rs`) contains no `unsafe`. Measured through the helper,
+  dev profile: 640x360 High with B-frames 298 fps, 1080p High 45.6 fps single-threaded; a
+  decoder panic aborts the helper (`panic = "abort"`), contained by the sandbox.
 - Video: `rav1d` (AV1), declared
   `rav1d = { version = "=1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }`
   (rav1d's default features enable its `asm` family, which is forbidden by T-00 §3.1
@@ -2559,7 +2576,7 @@ that TCB file.
 ## 6. Test Plan
 - Tier A budget `VID-MPV` (class M with a recorded procedure; CI-N runs a 5-second
   synthetic kitty-animation stream and counts presented frames).
-- Protocol fixtures; helper fuzz targets (`mkv_demux`, `av1_obu`, `va_slice_params`)
+- Protocol fixtures; helper fuzz targets (`mkv_demux`, `mp4_demux`, `av1_obu`, `h264`, `va_slice_params`)
   under the same seccomp profile; sandbox checklist (class M): helper cannot open a path,
   cannot connect a socket, is killed on RLIMIT; VA-API init succeeds under the profile on
   Intel and AMD and decodes a fixture clip, while a path open after init is denied; a
@@ -2570,7 +2587,9 @@ that TCB file.
   |skew| ≤ 40 ms steady-state.
 
 ## 7. Open Decisions
-- MP4 demuxer choice (spike at M34).
+- MP4 demuxer choice: resolved at M34 (`shiguredo_mp4`, §3). Open: threaded H.264 decode for
+  1080p60 and above before M36; a real `cargo fuzz` campaign on `mp4_demux` and `h264`;
+  edit lists beyond the first, the VUI display aspect, and Opus audio in MP4.
 - Zero-copy dmabuf path (R3) depends on multi-plane import support upstream. It needs wgpu ≥ 30 (`texture_from_dmabuf_fd`, Appendix A rows 1537/1646) and is at risk from wgpu PR 10635, which removes the external-memory flags again (row 1649).
 
 ---
@@ -3425,7 +3444,7 @@ measurement rows of the matrix. Harness: `apoth-testkit` (`benches/`, `apoth-ben
 | `SEARCH` | Regex search over 1 M lines history | — | first screenful of results ≤ 50 ms; full pass ≤ 1.5 s; UI never blocks | headless | M23 |
 | `IMG-LOAD` | 4K PNG via kitty direct transmission to first display | ≤ kitty | ≤ 150 ms | e2e | M25 |
 | `VID-MPV` | `mpv --vo=kitty` 1080p30 over shm | dropped frames < 1 % | — | e2e, class M | M32 |
-| `VID-NATIVE` | `apoth play` 1080p60 AV1 (software) / 4K60 (VA-API) | dropped < 1 %; A/V skew ≤ 40 ms | — | class M | M34, M36 |
+| `VID-NATIVE` | `apoth play` 1080p60 AV1 (software) / 4K60 (VA-API); 1080p30 H.264 (software, one thread, measured 45.6 fps) | dropped < 1 %; A/V skew ≤ 40 ms | — | class M | M34, M36 |
 | `GLASS` | Added frame cost of the glass interface with tab strip visible | — | ≤ 0.3 ms GPU, ≤ 0.2 ms CPU per frame at 4K | e2e | M14, M19 |
 
 ## 3. Design rules that the budgets force
