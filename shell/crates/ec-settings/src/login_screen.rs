@@ -18,15 +18,19 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use ec_greeter::{Clock, Settings, Theme as LoginTheme};
-use iced::widget::{button, column, container, row, stack, text, text_input, Space};
+use ec_layout::Layout;
+use iced::widget::{button, column, container, row, text, text_input, Space};
 use iced::{Alignment, Element, Length, Task, Theme};
 
 use ec_ui::theme;
-use ec_ui::tokens::{color, font, radius, size, space};
+use ec_ui::tokens::{color, font, size, space};
 use ec_ui::widget::{
     edge_note, glass_inset as inset, glass_panel as panel, inset_list, micro_label, pick_pill, pill,
     pill_group, Toggle,
 };
+
+mod layout_edit;
+mod layout_view;
 
 use crate::app::{App, Message};
 use crate::conn::Problem;
@@ -35,7 +39,7 @@ use crate::conn::Problem;
 pub const HELPER: &str = "/usr/lib/eclipse/ec-greeter-apply";
 /// Refuse to read more than this of a chosen file.
 const MAX_FILE: u64 = 128 * 1024 * 1024;
-/// The preview thumbnail fits this.
+/// The preview thumbnail, cropped to fill this (16:9, the editor's screen).
 const PREVIEW: (u32, u32) = (640, 360);
 /// The shipped wallpaper, as `packaging/greetd/regreet.toml` names it.
 const SHIPPED_WALLPAPER: &str = "/usr/share/backgrounds/eclipseos/greeter.png";
@@ -184,7 +188,9 @@ pub fn convert_bytes(bytes: &[u8]) -> Result<Image, String> {
             image::imageops::FilterType::Triangle,
         );
     }
-    let thumb = img.thumbnail(PREVIEW.0, PREVIEW.1).to_rgba8();
+    let thumb = img
+        .resize_to_fill(PREVIEW.0, PREVIEW.1, image::imageops::FilterType::Triangle)
+        .to_rgba8();
     let preview = iced::widget::image::Handle::from_rgba(thumb.width(), thumb.height(), thumb.into_raw());
     let rgba = img.to_rgba8();
     Ok(Image {
@@ -257,6 +263,8 @@ pub struct LoginScreen {
     pub greeting: String,
     /// `None` leaves the shipped clock.
     pub clock: Option<Clock>,
+    /// Where the tiles sit (the editor's pending layout).
+    pub layout: Layout,
     /// The path field, for choosing an image without the portal.
     pub path: String,
     /// An image is being decoded.
@@ -291,7 +299,18 @@ impl LoginScreen {
             theme: if self.use_theme { self.theme } else { None },
             greeting: (!greeting.trim().is_empty()).then_some(greeting),
             clock: self.clock,
+            // The default layout is "nothing stored", as on disk.
+            layout: (self.layout != Layout::default()).then(|| self.layout.clone()),
         }
+    }
+
+    /// What the machine has now, with a stored default layout read as none.
+    fn stored(&self) -> Settings {
+        let mut s = self.current.clone().unwrap_or_default();
+        if s.layout.as_ref() == Some(&Layout::default()) {
+            s.layout = None;
+        }
+        s
     }
 
     /// The bytes for the helper's stdin.
@@ -313,7 +332,7 @@ impl LoginScreen {
     /// stored. Reset runs the root helper; it does not clear unsent edits
     /// (Reload does), so edits alone never enable it.
     pub fn can_reset(&self) -> bool {
-        !self.applying && self.current.clone().unwrap_or_default() != Settings::default()
+        !self.applying && self.stored() != Settings::default()
     }
 
     /// The picture behind the preview, if one is decoded.
@@ -331,6 +350,7 @@ impl LoginScreen {
         self.use_theme = s.theme.is_some();
         self.greeting = s.greeting.clone().unwrap_or_default();
         self.clock = s.clock;
+        self.layout = s.layout.clone().unwrap_or_default();
         self.wallpaper = Wallpaper::Keep;
         self.current = Some(s);
     }
@@ -358,6 +378,10 @@ pub enum Msg {
     Greeting(String),
     /// A clock preset, or `None` for the shipped default.
     Clock(Option<Clock>),
+    /// The layout editor finished a gesture: the whole new layout.
+    SetLayout(Layout),
+    /// "Reset layout": the built-in arrangement.
+    ResetLayout,
     /// Apply (asks for authorisation via the compositor prompt).
     Apply,
     /// Reset to default.
@@ -470,6 +494,17 @@ fn run(p: &mut LoginScreen, action: Action, runner: Arc<Runner>) -> Task<Message
     )
 }
 
+/// The runner the page uses: pkexec. A debug build can swap in one that
+/// succeeds without running anything (`SETTINGS_STUB_RUNNER=1`), so a
+/// screenshot session can press Apply without a polkit prompt.
+fn runner() -> Arc<Runner> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("SETTINGS_STUB_RUNNER").is_some() {
+        return Arc::new(|_, _| Ok(Some(0)));
+    }
+    Arc::new(pkexec)
+}
+
 pub fn update(app: &mut App, m: Msg) -> Task<Message> {
     let p = &mut app.login;
     match m {
@@ -521,8 +556,15 @@ pub fn update(app: &mut App, m: Msg) -> Task<Message> {
         Msg::UseTheme(on) => p.use_theme = on && p.theme.is_some(),
         Msg::Greeting(s) => p.greeting = clean_greeting(&s),
         Msg::Clock(c) => p.clock = c,
-        Msg::Apply => return run(p, Action::Apply, Arc::new(pkexec)),
-        Msg::Reset => return run(p, Action::Reset, Arc::new(pkexec)),
+        Msg::SetLayout(l) => {
+            // The editor only ever sends a valid one; a bad one is dropped.
+            if ec_layout::validate(&l).is_ok() {
+                p.layout = l;
+            }
+        }
+        Msg::ResetLayout => p.layout = Layout::default(),
+        Msg::Apply => return run(p, Action::Apply, runner()),
+        Msg::Reset => return run(p, Action::Reset, runner()),
         Msg::Done(action, outcome) => {
             p.applying = false;
             let mut task = Task::none();
@@ -548,9 +590,6 @@ pub fn problem(action: Action, outcome: &Outcome) -> Option<Problem> {
 
 // ---- the view ----------------------------------------------------------
 
-/// What the shipped greeter says and shows when nothing is set.
-const SHIPPED_GREETING: &str =
-    "ECLIPSE OS  \u{b7}  ABYSS COMPOSITOR  \u{b7}  SELECT A SESSION AND AUTHENTICATE";
 /// The greeter's own clock when `[widget.clock]` is absent.
 const SHIPPED_CLOCK: &str = "Tue 09:41";
 
@@ -576,18 +615,19 @@ fn clock_label(c: Option<Clock>) -> &'static str {
 
 /// Unsent edits: anything Apply would change on the machine.
 fn dirty(p: &LoginScreen) -> bool {
-    matches!(p.wallpaper, Wallpaper::New(_)) || p.pending() != p.current.clone().unwrap_or_default()
+    matches!(p.wallpaper, Wallpaper::New(_)) || p.pending() != p.stored()
 }
 
 /// The header's two-line chip: what the machine has now.
 pub fn status(app: &App) -> (String, String) {
     let p = &app.login;
-    let s = p.current.clone().unwrap_or_default();
+    let s = p.stored();
     let changed = [
         s.wallpaper,
         s.theme.is_some(),
         s.greeting.is_some(),
         s.clock.is_some(),
+        s.layout.is_some(),
     ]
     .into_iter()
     .filter(|c| *c)
@@ -595,7 +635,7 @@ pub fn status(app: &App) -> (String, String) {
     if changed == 0 {
         ("shipped look".into(), "nothing customised".into())
     } else {
-        ("customised".into(), format!("{changed} of 4 changed"))
+        ("customised".into(), format!("{changed} of 5 changed"))
     }
 }
 
@@ -625,153 +665,6 @@ fn padded<'a>(e: impl Into<Element<'a, Message, Theme>>) -> Element<'a, Message,
         .into()
 }
 
-/// The login screen as it would look after Apply: the picture, the clock at
-/// the top, the glass card, the power pills. Drawn from `pending()`, so the
-/// colours, greeting and clock are the ones that would be sent. The clock and
-/// pills sit straight on the picture, as on the real screen.
-fn preview(p: &LoginScreen) -> Element<'_, Message, Theme> {
-    use ec_ui::tokens::login_preview as lp;
-    let pending = p.pending();
-    let seeds = ec_theme::DARK_SEEDS;
-    let (base, ink, accent) = match pending.theme {
-        Some(t) => (color::data(t.base), color::data(t.ink), color::data(t.accent)),
-        None => (
-            color::to_iced(seeds.base),
-            color::to_iced(seeds.ink),
-            color::to_iced(seeds.accent),
-        ),
-    };
-    let fixed = (Length::Fixed(lp::W), Length::Fixed(lp::H));
-
-    let ground: Element<'_, Message, Theme> = match p.backdrop() {
-        Some(handle) => iced::widget::image(handle.clone())
-            .width(fixed.0)
-            .height(fixed.1)
-            .content_fit(iced::ContentFit::Cover)
-            .border_radius(lp::RADIUS)
-            .into(),
-        None => container(Space::new())
-            .width(fixed.0)
-            .height(fixed.1)
-            .style(move |_t: &Theme| container::Style {
-                background: Some(base.into()),
-                border: iced::Border {
-                    radius: lp::RADIUS.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            })
-            .into(),
-    };
-
-    let clock = container(
-        text(clock_sample(pending.clock))
-            .font(font::DATA_MEDIUM)
-            .size(lp::CLOCK_SIZE)
-            .color(ink),
-    )
-    .padding([lp::EDGE, 0.0])
-    .width(fixed.0)
-    .align_x(Alignment::Center);
-
-    // Over a chosen picture the real card is dense base, not light glass.
-    let card_fill = if pending.wallpaper {
-        base.scale_alpha(lp::CARD_DENSE)
-    } else {
-        ink.scale_alpha(lp::CARD_FILL)
-    };
-    let greeting = pending
-        .greeting
-        .clone()
-        .unwrap_or_else(|| SHIPPED_GREETING.to_owned());
-    // The real card grows to fit the greeting on one line; so does this one.
-    // The spacer is the card's minimum inner width.
-    let card = container(
-        column![
-            Space::new()
-                .width(Length::Fixed(lp::CARD_W - 2.0 * lp::CARD_PAD))
-                .height(0),
-            text(greeting)
-                .font(font::UI_MEDIUM)
-                .size(lp::GREETING_SIZE)
-                .color(ink)
-                .wrapping(iced::widget::text::Wrapping::None),
-            container(Space::new())
-                .width(Length::Fill)
-                .height(Length::Fixed(lp::FIELD_H))
-                .style(move |_t: &Theme| container::Style {
-                    background: Some(ink.scale_alpha(lp::FIELD_FILL).into()),
-                    border: iced::Border {
-                        radius: lp::BUTTON_RADIUS.into(),
-                        ..Default::default()
-                    },
-                    ..Default::default()
-                }),
-            container(
-                text("Login")
-                    .font(font::UI_MEDIUM)
-                    .size(lp::BUTTON_SIZE)
-                    .color(base)
-            )
-            .width(Length::Fill)
-            .height(Length::Fixed(lp::BUTTON_H))
-            .align_x(Alignment::Center)
-            .align_y(Alignment::Center)
-            .style(move |_t: &Theme| container::Style {
-                background: Some(accent.into()),
-                border: iced::Border {
-                    radius: lp::BUTTON_RADIUS.into(),
-                    ..Default::default()
-                },
-                ..Default::default()
-            }),
-        ]
-        .spacing(lp::CARD_GAP)
-        .align_x(Alignment::Center),
-    )
-    .padding(lp::CARD_PAD)
-    .width(Length::Shrink)
-    .style(move |_t: &Theme| container::Style {
-        background: Some(card_fill.into()),
-        border: iced::Border {
-            color: ink.scale_alpha(lp::CARD_RIM),
-            width: space::HAIRLINE,
-            radius: lp::CARD_RADIUS.into(),
-        },
-        ..Default::default()
-    });
-    let middle = container(card)
-        .width(fixed.0)
-        .height(fixed.1)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::Center);
-
-    let power = |label: &'static str| {
-        container(text(label).font(font::UI_MEDIUM).size(lp::PILL_SIZE).color(ink))
-            .padding([lp::PILL_PAD_Y, lp::PILL_PAD_X])
-            .style(move |_t: &Theme| container::Style {
-                background: Some(ink.scale_alpha(lp::PILL_FILL).into()),
-                border: iced::Border {
-                    color: ink.scale_alpha(lp::PILL_RIM),
-                    width: space::HAIRLINE,
-                    radius: radius::PILL.into(),
-                },
-                ..Default::default()
-            })
-    };
-    let pills = container(row![power("Reboot"), power("Power Off")].spacing(lp::PILL_GAP))
-        .padding([lp::EDGE, 0.0])
-        .width(fixed.0)
-        .height(fixed.1)
-        .align_x(Alignment::Center)
-        .align_y(Alignment::End);
-
-    stack![ground, clock, middle, pills]
-        .width(fixed.0)
-        .height(fixed.1)
-        .into()
-}
-
 /// What picture the preview is standing in for.
 fn picture_caption(p: &LoginScreen) -> String {
     match &p.wallpaper {
@@ -782,25 +675,70 @@ fn picture_caption(p: &LoginScreen) -> String {
     }
 }
 
-/// The hero: the login screen itself, at its proportions, centred in a glass
-/// panel. A canvas, not a list.
+/// The previewed theme's colours and the texts the page is about to send, for
+/// the editor's mocks. Same source as Apply: `pending()`.
+fn skin(p: &LoginScreen) -> layout_view::Skin {
+    let pending = p.pending();
+    let seeds = ec_theme::DARK_SEEDS;
+    let (base, ink) = match pending.theme {
+        Some(t) => (color::data(t.base), color::data(t.ink)),
+        None => (color::to_iced(seeds.base), color::to_iced(seeds.ink)),
+    };
+    layout_view::Skin {
+        base,
+        ink,
+        dense: pending.wallpaper,
+        clock: clock_sample(pending.clock).to_owned(),
+        greeting: pending
+            .greeting
+            .unwrap_or_else(|| ec_ui::tokens::layout_edit::MOCK_GREETING.to_owned()),
+        backdrop: p.backdrop().cloned(),
+    }
+}
+
+/// The hero: the login screen itself as a live editor, at its proportions,
+/// in a glass panel. Drag a tile to move it, pull its corner to resize it,
+/// tap a chip in the tray to add one. A canvas, not a list.
 fn hero(app: &App) -> Element<'_, Message, Theme> {
     let p = &app.login;
+    let edited = p.layout != p.stored().layout.unwrap_or_default();
+    let n = p.layout.tiles.len();
+    let state = if edited {
+        format!("{n} tiles \u{b7} edited")
+    } else {
+        format!("{n} tiles")
+    };
+    let reset = button(
+        small("Reset layout")
+            .font(font::UI_MEDIUM)
+            .wrapping(text::Wrapping::None),
+    )
+    .padding([space::PILL_Y, space::PILL_X])
+    .on_press_maybe((p.layout != Layout::default()).then(|| msg(Msg::ResetLayout)))
+    .style(theme::link);
     panel(
         app.glass_radius,
         app.hairline_cards,
         column![
             row![
                 micro_label("login screen"),
-                Space::new().width(Length::Fill),
-                mono_tertiary(picture_caption(p)),
+                container(mono_tertiary(format!("{state} \u{b7} {}", picture_caption(p))))
+                    .width(Length::Fill)
+                    .align_x(Alignment::End),
+                reset,
             ]
+            .spacing(space::CONTROL_GAP)
             .align_y(Alignment::Center),
-            container(preview(p))
-                .width(Length::Fill)
-                .align_x(Alignment::Center),
-            small("Drawn from what Apply will send. The clock and buttons sit straight on the picture.")
-                .style(theme::text_tertiary),
+            container(layout_view::editor(&p.layout, skin(p), |l| msg(Msg::SetLayout(
+                l
+            ))))
+            .width(Length::Fill)
+            .align_x(Alignment::Center),
+            small(
+                "Drag a tile to move it, pull its corner to resize it. Tap or drag a tile below to add it. \
+                 Nothing changes on this computer until you press Apply."
+            )
+            .style(theme::text_tertiary),
         ]
         .spacing(space::ROW_Y),
     )
@@ -1038,6 +976,8 @@ pub fn blocks(app: &App) -> Vec<Element<'_, Message, Theme>> {
 /// state, with nothing run, so each can be screenshotted. Flags: `image:<path>`,
 /// `theme` (use the dark seeds), `notheme` (the active theme is unusable),
 /// `greeting:<text>`, `long` (an 80-character greeting), `clock:<0-3>`,
+/// `layout:<default|bw|bare>` (the pending layout: default; battery and wifi
+/// added; every optional tile removed),
 /// `ok`, `fail`, `error`, `busy`.
 #[cfg(debug_assertions)]
 pub fn preview_env(p: &mut LoginScreen) {
@@ -1063,6 +1003,23 @@ pub fn preview_env(p: &mut LoginScreen) {
             "greeting" => p.greeting = clean_greeting(val),
             "long" => p.greeting = clean_greeting(&"Welcome back, good to see you. ".repeat(5)),
             "clock" => p.clock = val.parse::<usize>().ok().and_then(|n| Clock::ALL.get(n).copied()),
+            "layout" => {
+                let mut l = Layout::default();
+                match val {
+                    "bw" => {
+                        for k in [ec_layout::Kind::Battery, ec_layout::Kind::Wifi] {
+                            l = layout_edit::add(&l, k, None).unwrap_or(l);
+                        }
+                    }
+                    "bare" => {
+                        for k in layout_edit::OPTIONAL {
+                            l = layout_edit::remove(&l, k).unwrap_or(l);
+                        }
+                    }
+                    _ => {}
+                }
+                p.layout = l;
+            }
             "ok" => p.last = Some((Action::Apply, Outcome::Done)),
             "fail" => p.last = Some((Action::Apply, Outcome::NotAuthorised)),
             "error" => p.image_error = Some("could not read that image: unsupported format".into()),
@@ -1259,6 +1216,49 @@ mod tests {
             .to_text()
         )
         .is_ok());
+    }
+
+    #[test]
+    fn the_layout_is_part_of_pending_and_the_default_is_nothing_stored() {
+        let mut p = LoginScreen::default();
+        assert_eq!(p.pending().layout, None);
+        assert!(!p.can_apply());
+        p.layout = layout_edit::add(&p.layout, ec_layout::Kind::Battery, None).unwrap();
+        let s = p.pending();
+        assert_eq!(s.layout.as_ref(), Some(&p.layout));
+        assert!(p.can_apply());
+        // The frame the helper re-validates parses back to the same layout.
+        let input = ec_greeter::Input::parse(p.frame()).unwrap();
+        assert_eq!(input.settings.layout, s.layout);
+        // Back to the default: nothing to send again.
+        p.layout = Layout::default();
+        assert!(!p.can_apply());
+    }
+
+    #[test]
+    fn a_stored_default_layout_is_not_a_change_and_not_resettable() {
+        let mut p = LoginScreen::default();
+        p.adopt(Some(Settings {
+            layout: Some(Layout::default()),
+            ..Default::default()
+        }));
+        assert!(!p.can_apply() && !p.can_reset());
+        p.layout = layout_edit::remove(&p.layout, ec_layout::Kind::Power).unwrap();
+        assert!(p.can_apply());
+    }
+
+    #[test]
+    fn set_layout_keeps_only_valid_layouts_and_reset_restores_the_default() {
+        let mut app = App::new();
+        let ok = layout_edit::add(&Layout::default(), ec_layout::Kind::Wifi, None).unwrap();
+        let _ = update(&mut app, Msg::SetLayout(ok.clone()));
+        assert_eq!(app.login.layout, ok);
+        let mut bad = ok.clone();
+        bad.set(ec_layout::Kind::Clock, ec_layout::Rect::new(8, 5, 8, 3));
+        let _ = update(&mut app, Msg::SetLayout(bad));
+        assert_eq!(app.login.layout, ok, "an overlapping layout is dropped");
+        let _ = update(&mut app, Msg::ResetLayout);
+        assert_eq!(app.login.layout, Layout::default());
     }
 
     fn dirty_page() -> LoginScreen {

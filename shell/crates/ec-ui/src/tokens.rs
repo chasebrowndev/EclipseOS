@@ -217,6 +217,86 @@ pub mod font {
     ];
 }
 
+pub mod layout_edit {
+    //! The login layout editor (Settings > Login screen): a phone-lock-style
+    //! canvas of glass tiles. Sizes are px at the editor's own scale; the
+    //! alphas are of the previewed theme's ink over its picture.
+
+    /// Air around the preview inside the widget, so a tile's remove badge can
+    /// overhang the preview's edge without being clipped.
+    pub const PAD: f32 = 12.0;
+    /// The widest the editor grows.
+    pub const MAX_W: f32 = 760.0;
+    /// Aspect of the preview (16:9).
+    pub const ASPECT: f32 = 9.0 / 16.0;
+    /// Gap a tile keeps from its cell edges, so neighbours never touch.
+    pub const TILE_GAP: f32 = 3.0;
+    pub const TILE_RADIUS: f32 = 9.0;
+    /// Tile glass over the picture, rest and hover/held, and its rim.
+    pub const TILE_FILL: f32 = 0.11;
+    pub const TILE_FILL_HOT: f32 = 0.19;
+    pub const TILE_RIM: f32 = 0.22;
+    pub const TILE_RIM_HOT: f32 = 0.62;
+    /// The base colour under a tile's tint (the stand-in for the blur), and the
+    /// remove badge's ground and rims.
+    pub const GROUND: f32 = 0.34;
+    pub const BADGE_FILL: f32 = 0.86;
+    pub const BADGE_RIM: f32 = 0.55;
+    pub const BADGE_RIM_HOT: f32 = 0.9;
+    /// The avatar disc, and the dim last signal bar, as ink alphas.
+    pub const DISC: f32 = 0.22;
+    pub const TRACK: f32 = 0.18;
+    pub const DIM_BAR: f32 = 0.28;
+    /// A scrim under tiles over a picture, so light wallpapers still read.
+    pub const SCRIM: f32 = 0.30;
+    /// Grid dots shown while a tile is held, and the ghost of its landing.
+    pub const DOT: f32 = 2.0;
+    pub const DOT_ALPHA: f32 = 0.20;
+    pub const GHOST_FILL: f32 = 0.07;
+    pub const GHOST_RIM: f32 = 0.55;
+    pub const GHOST_RIM_W: f32 = 1.5;
+    /// Resize grips: the corner bracket, and the edge bars.
+    pub const GRIP_REST: f32 = 0.38;
+    pub const GRIP_LEN: f32 = 12.0;
+    pub const GRIP_W: f32 = 2.5;
+    pub const GRIP_EDGE_LEN: f32 = 16.0;
+    /// Hit zones: the corner square and the edge strips.
+    pub const HIT_CORNER: f32 = 20.0;
+    pub const HIT_EDGE: f32 = 10.0;
+    /// The remove badge: its diameter, and how far it sits outside the corner.
+    pub const BADGE: f32 = 18.0;
+    pub const BADGE_OUT: f32 = 4.0;
+    pub const BADGE_ALPHA: f32 = 0.78;
+    /// A held tile lifts: this much bigger, with this much shadow.
+    pub const LIFT: f32 = 1.03;
+    pub const SHADOW: f32 = 0.32;
+    pub const SHADOW_SPREAD: f32 = 7.0;
+    pub const SHADOW_DROP: f32 = 5.0;
+    /// The tile that arrives pops from this scale.
+    pub const POP_FROM: f32 = 0.78;
+    /// The tray of tiles not on the screen.
+    pub const TRAY_GAP: f32 = 14.0;
+    pub const CHIP_H: f32 = 30.0;
+    pub const CHIP_PAD: f32 = 13.0;
+    pub const CHIP_GAP: f32 = 8.0;
+    pub const CHIP_SIZE: f32 = 12.0;
+    /// Mean glyph width of the chip label, as a share of its size.
+    pub const CHIP_GLYPH: f32 = 0.56;
+    pub const LABEL_SIZE: f32 = 10.0;
+    /// Motion, in ms to settle: a tile following the pointer, a tile landing
+    /// (bouncy), the hover light, the ghost's hop between cells, the dots.
+    pub const FOLLOW_MS: u64 = 90;
+    pub const LAND_MS: u64 = 460;
+    pub const HOVER_MS: u64 = 140;
+    pub const GHOST_MS: u64 = 120;
+    pub const DOTS_MS: u64 = 200;
+    /// Mock text: fractions of a tile's height, and floors in px.
+    pub const MIN_TEXT: f32 = 6.5;
+    pub const MOCK_NAMES: [&str; 3] = ["robin", "sam", "ada"];
+    pub const MOCK_TIME: &str = "Thursday, November 19";
+    pub const MOCK_GREETING: &str = "Sign in to continue";
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

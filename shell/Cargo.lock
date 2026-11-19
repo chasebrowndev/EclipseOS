@@ -1170,6 +1170,7 @@ dependencies = [
  "ec-config-schema",
  "ec-greeter",
  "ec-ipc",
+ "ec-layout",
  "ec-policy-viewer",
  "ec-services",
  "ec-theme",
