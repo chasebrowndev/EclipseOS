@@ -8,6 +8,7 @@ members = [
   "crates/ec-glass-host",
   "crates/ec-glance",
   "crates/ec-greeter",
+  "crates/ec-greeter-ui",
   "crates/ec-layout",
   "crates/ec-hyperion-bar",
   "crates/ec-launcher",

@@ -1040,6 +1040,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-greeter-ui"
+version = "0.2.2"
+dependencies = [
+ "ec-glance",
+ "ec-greeter",
+ "ec-layout",
+ "ec-protocols",
+ "ec-style-tokens",
+ "ec-theme",
+ "iced",
+ "image",
+ "libc",
+ "raw-window-handle",
+ "wayland-backend",
+ "wayland-client",
+]
+
+[[package]]
 name = "ec-hyperion-bar"
 version = "0.2.2"
 dependencies = [
