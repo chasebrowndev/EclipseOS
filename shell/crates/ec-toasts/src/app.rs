@@ -278,9 +278,10 @@ pub struct App {
     /// The surface height last asked for, so a tick that changes nothing does
     /// not ask the compositor to resize to the size it already has.
     height: u32,
-    /// The card's glass radius, read once from `decoration.rounding` at
-    /// startup (BLUR-06). `crate::conn::fetch_glass` is fail-soft, so
-    /// this falls back to the compile-time token when nothing answers.
+    /// `decoration.rounding`, read once at startup (BLUR-06);
+    /// `crate::conn::fetch_glass` is fail-soft, so this is `radius::CARD`
+    /// when nothing answers. Not the card's radius by itself: see
+    /// [`App::card_radius`].
     pub glass_radius: f32,
     /// Whether the compositor's blur is behind the cards, read with the
     /// radius; `false` when nothing answers, so the cards stay opaque.
@@ -299,6 +300,20 @@ pub struct App {
     pub drag: Option<Drag>,
 }
 
+/// The toast card radius. With compositor glass the card is a pane the
+/// client sizes itself, so it is rounder than a window by default:
+/// `max(rounding, radius::TOAST)`. Without panes (frost/blur mode, or no glass
+/// global) the compositor draws a sheet masked with `decoration.rounding`
+/// that it cannot resize to the client, so the card uses `rounding` and the
+/// two agree: a larger card radius would leave a grey wedge at each corner.
+fn toast_radius(rounding: f32, glass: bool) -> f32 {
+    if glass {
+        rounding.max(ec_ui::tokens::radius::TOAST)
+    } else {
+        rounding
+    }
+}
+
 impl Default for App {
     fn default() -> Self {
         Self::new()
@@ -306,6 +321,12 @@ impl Default for App {
 }
 
 impl App {
+    /// The radius the cards are drawn and declared at, now: it depends on
+    /// whether glass panes are live, which is only known after startup.
+    pub fn card_radius(&self) -> f32 {
+        toast_radius(self.glass_radius, ec_ui::glass::available())
+    }
+
     pub fn new() -> Self {
         let (radius, blur) = crate::conn::fetch_glass();
         let service = ec_services::notifications::spawn().ok();
@@ -747,6 +768,17 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn toast_radius_is_a_floor_over_the_rounding_only_with_glass() {
+        use super::toast_radius;
+        let t = ec_ui::tokens::radius::TOAST;
+        assert_eq!(toast_radius(9.0, true), t);
+        assert_eq!(toast_radius(t + 10.0, true), t + 10.0);
+        // No panes: the compositor's sheet is masked with the rounding.
+        assert_eq!(toast_radius(9.0, false), 9.0);
+        assert_eq!(toast_radius(t + 10.0, false), t + 10.0);
+    }
+
     use super::*;
     use crate::WIDTH;
     use ec_services::notifications::{Action, Urgency};

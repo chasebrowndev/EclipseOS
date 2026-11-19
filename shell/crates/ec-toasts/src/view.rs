@@ -362,7 +362,7 @@ fn card<'a>(
     // With glass the compositor draws the card's ground as a pane, at the
     // card's own opacity, so a fade takes the glass with it (GLASS-05).
     // Without it the card paints its ground itself.
-    let radius = app.glass_radius;
+    let radius = app.card_radius();
     let blur = app.blur;
     let ground = container(main)
         .width(Length::Fixed(WIDTH as f32))
