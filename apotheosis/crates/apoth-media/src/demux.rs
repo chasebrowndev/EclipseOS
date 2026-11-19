@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! Containers (T-16 §3, MEDIA-05, -07): Matroska/WebM through `matroska-demuxer` (video and
 //! audio), and audio-only files (Ogg, FLAC, MP3, WAV, ADTS) through Symphonia's readers.
-//! Runs only in the helper, on untrusted bytes; covered by the `mkv_demux` fuzz target.
-//! MP4 is not demuxed here: it stays Tier A (T-16 §7, the M34 spike).
+//! MP4 and fragmented MP4 (H.264 and AAC) live in [`crate::mp4`].
+//! Runs only in the helper, on untrusted bytes; covered by the `mkv_demux` and `mp4_demux`
+//! fuzz targets.
 
 use std::io::BufReader;
 
@@ -17,6 +18,7 @@ use symphonia::core::io::{MediaSource, MediaSourceStream, MediaSourceStreamOptio
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::{Time, TimeBase, Timestamp};
 
+use crate::mp4::{self, Mp4};
 use crate::wire::Fail;
 
 /// EBML magic: a Matroska or WebM file.
@@ -41,7 +43,15 @@ pub struct Packet {
     pub data: Vec<u8>,
 }
 
-/// The video stream (AV1 only in tier B).
+/// How the video stream is coded, with what its decoder needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VideoCodec {
+    Av1,
+    /// H.264: the `avcC` record (parameter sets, NAL length size).
+    H264(Vec<u8>),
+}
+
+/// The video stream.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VideoInfo {
     /// Coded size in pixels.
@@ -131,6 +141,7 @@ enum Inner {
         scale: u64,
         frame: Frame,
     },
+    Mp4(Box<Mp4>),
     Sym {
         reader: Box<dyn FormatReader>,
         track: u32,
@@ -142,6 +153,8 @@ enum Inner {
 pub struct Source {
     inner: Inner,
     pub video: Option<VideoInfo>,
+    /// The codec of `video` (`Some` exactly when `video` is).
+    pub vcodec: Option<VideoCodec>,
     pub audio: Option<AudioInfo>,
     pub duration_ms: u64,
 }
@@ -160,7 +173,12 @@ fn sym_channels(n: u8) -> symphonia::core::audio::Channels {
 }
 
 /// Codec parameters for a Matroska audio track Symphonia decodes.
-fn mkv_audio(codec: &str, private: Option<&[u8]>, rate: u32, ch: u8) -> Option<AudioCodec> {
+pub(crate) fn mkv_audio(
+    codec: &str,
+    private: Option<&[u8]>,
+    rate: u32,
+    ch: u8,
+) -> Option<AudioCodec> {
     use symphonia::core::codecs::audio::well_known::{
         CODEC_ID_AAC, CODEC_ID_FLAC, CODEC_ID_MP3, CODEC_ID_VORBIS,
     };
@@ -186,21 +204,43 @@ fn mkv_audio(codec: &str, private: Option<&[u8]>, rate: u32, ch: u8) -> Option<A
     Some(AudioCodec::Symphonia(Box::new(p)))
 }
 
+/// AAC from its AudioSpecificConfig.
+pub(crate) fn aac_codec(asc: &[u8], rate: u32, ch: u8) -> Option<AudioCodec> {
+    mkv_audio("A_AAC", Some(asc), rate, ch)
+}
+
 impl Source {
     /// Open `input`. `Unsupported`: no container or codec we play; `BadInput`: broken.
     pub fn open(mut input: Input) -> Result<Source, Fail> {
-        let mut magic = [0u8; 4];
-        let is_mkv = {
+        let mut magic = [0u8; 8];
+        let (is_mkv, is_mp4) = {
             use std::io::{Read, Seek, SeekFrom};
             let ok = input.read_exact(&mut magic).is_ok();
             input.seek(SeekFrom::Start(0)).map_err(|_| Fail::BadInput)?;
-            ok && magic == EBML
+            (ok && magic[..4] == EBML, ok && mp4::is_mp4(&magic))
         };
         if is_mkv {
             Self::open_mkv(input)
+        } else if is_mp4 {
+            Self::open_mp4(input)
         } else {
             Self::open_sym(input)
         }
+    }
+
+    fn open_mp4(input: Input) -> Result<Source, Fail> {
+        let o = mp4::open(input)?;
+        let (video, vcodec) = match o.video {
+            Some((v, avcc)) => (Some(v), Some(VideoCodec::H264(avcc))),
+            None => (None, None),
+        };
+        Ok(Source {
+            inner: Inner::Mp4(Box::new(o.mp4)),
+            video,
+            vcodec,
+            audio: o.audio,
+            duration_ms: o.duration_ms,
+        })
     }
 
     fn open_mkv(input: Input) -> Result<Source, Fail> {
@@ -287,6 +327,7 @@ impl Source {
                 scale,
                 frame: Frame::default(),
             },
+            vcodec: video.map(|_| VideoCodec::Av1),
             video,
             audio,
             duration_ms,
@@ -330,6 +371,7 @@ impl Source {
                 tb,
             },
             video: None,
+            vcodec: None,
             audio: Some(AudioInfo {
                 codec: AudioCodec::Symphonia(Box::new(p)),
                 rate,
@@ -366,6 +408,7 @@ impl Source {
                     data: std::mem::take(&mut frame.data),
                 }));
             },
+            Inner::Mp4(m) => m.next_packet(),
             Inner::Sym { reader, track, tb } => loop {
                 let Some(p) = reader.next_packet().map_err(|_| Fail::BadInput)? else {
                     return Ok(None);
@@ -395,6 +438,10 @@ impl Source {
                 let ticks = u128::from(ms) * 1_000_000 / u128::from((*scale).max(1));
                 file.seek(u64::try_from(ticks).unwrap_or(u64::MAX))
                     .map_err(|_| Fail::BadInput)
+            }
+            Inner::Mp4(m) => {
+                m.seek(ms);
+                Ok(())
             }
             Inner::Sym { reader, track, .. } => reader
                 .seek(

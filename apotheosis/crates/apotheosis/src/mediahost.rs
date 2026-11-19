@@ -49,6 +49,8 @@ pub(crate) enum Autoplay {
 pub(crate) struct MediaSettings {
     pub(crate) allow_paths: Vec<std::path::PathBuf>,
     pub(crate) av1_software: bool,
+    /// `media.sw-codecs`: software H.264 (MP4).
+    pub(crate) sw_codecs: bool,
     pub(crate) audio: AudioOut,
     pub(crate) autoplay: Autoplay,
     pub(crate) sandbox_decode: bool,
@@ -59,6 +61,7 @@ impl Default for MediaSettings {
         MediaSettings {
             allow_paths: Vec::new(),
             av1_software: true,
+            sw_codecs: true,
             audio: AudioOut::Auto,
             autoplay: Autoplay::Focused,
             sandbox_decode: true,
@@ -76,6 +79,7 @@ impl MediaSettings {
                 .filter(|p| p.is_absolute())
                 .collect(),
             av1_software: c.bool("media.av1-software"),
+            sw_codecs: c.bool("media.sw-codecs"),
             // `pulse` and `auto` both mean the PulseAudio-protocol server (pipewire-pulse).
             audio: if c.str("media.audio-output") == Some("off") {
                 AudioOut::Off
@@ -191,6 +195,13 @@ fn open_path(path: &[u8], allow: &[std::path::PathBuf]) -> Result<OwnedFd, &'sta
 }
 
 /// `s=d`: the bytes in a sealed-size memfd at offset 0.
+/// Whether the descriptor holds an ISO base media (MP4) file: `ftyp` at offset 4. Reads
+/// without moving the file offset; a descriptor that cannot be read this way is not MP4.
+fn is_mp4_fd(fd: &OwnedFd) -> bool {
+    let mut head = [0u8; 8];
+    matches!(rustix::io::pread(fd, &mut head, 0), Ok(8)) && apoth_media::mp4::is_mp4(&head)
+}
+
 fn memfd(data: &[u8]) -> Result<OwnedFd, &'static str> {
     use rustix::fs::MemfdFlags;
     let fd =
@@ -349,16 +360,23 @@ impl MediaHost {
         focused: bool,
     ) -> Result<(), &'static str> {
         let set = settings();
-        if !set.av1_software {
-            // Software AV1 is the only video decoder until hardware decode lands (M36).
-            return Err("unsupported");
-        }
         let explicit = matches!(source, MediaSource::Token(_));
         let fd = match source {
             MediaSource::Token(t) => claim(t).ok_or("bad-token")?,
             MediaSource::Path(p) => open_path(&p, &set.allow_paths)?,
             MediaSource::Data(d) => memfd(&d)?,
         };
+        // Software decode is gated per codec family until hardware decode lands (M36):
+        // MP4 (H.264) by `media.sw-codecs`, everything else (AV1, audio) by
+        // `media.av1-software`. The helper checks the container again; this only picks the row.
+        let allowed = if is_mp4_fd(&fd) {
+            set.sw_codecs
+        } else {
+            set.av1_software
+        };
+        if !allowed {
+            return Err("unsupported");
+        }
         if PLAYERS.fetch_add(1, Ordering::AcqRel) >= MAX_PLAYERS {
             PLAYERS.fetch_sub(1, Ordering::AcqRel);
             return Err("quota");

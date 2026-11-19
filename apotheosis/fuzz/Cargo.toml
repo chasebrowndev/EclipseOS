@@ -114,6 +114,20 @@ doc = false
 bench = false
 
 [[bin]]
+name = "mp4_demux"
+path = "fuzz_targets/mp4_demux.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "h264"
+path = "fuzz_targets/h264.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "mux_wire"
 path = "fuzz_targets/mux_wire.rs"
 test = false

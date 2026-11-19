@@ -26,6 +26,10 @@ apoth-image.workspace = true
 # T-16 §3: no default features (they enable `asm`, forbidden outside the nasm exception).
 rav1d = { version = "=1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 matroska-demuxer = "0.8"
+# T-16 §3, ADR 0118: MP4 demux (Apache-2.0, no deps, no unsafe) and software H.264
+# (MIT OR Apache-2.0, no deps, pure Rust; SIMD through core::arch only).
+shiguredo_mp4 = "=2026.6.0-canary.2"
+rust_h264 = "=0.6.1"
 symphonia = { version = "0.6", default-features = false, features = ["aac", "vorbis", "flac", "mp3", "ogg", "wav", "pcm"] }
 opus-decoder = "0.1"
 pulseaudio = "0.3"

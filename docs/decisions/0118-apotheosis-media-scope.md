@@ -19,3 +19,6 @@ Without VA-API, H.264/HEVC/VP9 play only through Tier A. Two vendored forks to m
 
 ## Revisit when
 A pure-Rust decoder for H.264/HEVC matures, or `rav1d` gains competitive pure-Rust SIMD (then the `nasm` exception is deleted).
+
+## Addendum 2026-11-18: software H.264 and MP4 admitted
+The owner chose software H.264 in pure Rust so MP4 plays natively. The M34 spike found `rust_h264 =0.6.1` (MIT OR Apache-2.0; bit-exact against ffmpeg on every supported fixture; no C, no assembly, SIMD through `core::arch`) and `shiguredo_mp4 =2026.6.0-canary.2` (Apache-2.0; the only pure-Rust MP4 demuxer that exposes composition offsets and keyframes). `deny.toml` and `ci/lang-rule.sh` need no change. The gate this ADR required is defined in T-16 §1: ffmpeg-exact fixtures, decode under the helper's seccomp profile, and the `mp4_demux` and `h264` fuzz targets. The Consequences line "H.264/HEVC/VP9 play only through Tier A" now reads: HEVC and VP9 play only through Tier A; H.264 in MP4 plays natively and falls back to Tier A for what the decoder does not support. Risks recorded: both crates are young (`shiguredo_mp4` is a canary release, pinned exactly); a decoder panic aborts the helper; a real fuzz campaign and threaded decode are still owed.
