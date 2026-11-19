@@ -58,6 +58,9 @@ pub(crate) const DEFAULTS: &[DefaultBind] = &[
     ),
     ("shift+Home", "scroll.top", &[("performable", "true")]),
     ("shift+End", "scroll.bottom", &[("performable", "true")]),
+    // Windows.
+    ("F11", "window.toggle-fullscreen", &[("repeat", "false")]),
+    ("ctrl+shift+n", "window.new", &[("repeat", "false")]),
     // Font zoom and clearing.
     ("ctrl+equal", "font.size-increase", &[]),
     ("ctrl+plus", "font.size-increase", &[]),

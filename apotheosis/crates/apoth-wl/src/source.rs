@@ -439,6 +439,27 @@ impl WlHandle {
         });
     }
 
+    /// Ask the compositor to minimize the window (`xdg_toplevel.set_minimized`). There is no
+    /// state to read back: the compositor may ignore it, and an unminimize is its business.
+    pub fn set_minimized(&self, id: WindowId) {
+        self.win(id, |s, wi| s.windows[wi].toplevel.set_minimized());
+    }
+
+    /// Fullscreen if the last configure said we are not, leave it if it said we are. The
+    /// answer is the configure that follows; `None` for an unknown window.
+    pub fn toggle_fullscreen(&self, id: WindowId) -> Option<bool> {
+        let want = self.states(id)?.toggle_fullscreen_to();
+        self.set_fullscreen(id, want);
+        Some(want)
+    }
+
+    /// As [`Self::toggle_fullscreen`] for maximize.
+    pub fn toggle_maximized(&self, id: WindowId) -> Option<bool> {
+        let want = self.states(id)?.toggle_maximized_to();
+        self.set_maximized(id, want);
+        Some(want)
+    }
+
     /// Ask for a `wl_surface.frame` callback; it fires after the next commit.
     pub fn request_frame(&self, id: WindowId) {
         self.win(id, |s, wi| {

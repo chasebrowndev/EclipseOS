@@ -390,6 +390,8 @@ pub(crate) struct App {
     auto_family: AutoFamily,
     /// The focused pane's terminal-set title, to re-render the title template on reload.
     term_title: String,
+    /// `window.set-title`: a pinned window title that outranks the `window.title` template.
+    pinned_title: Option<String>,
     // ---- selection, clipboard, pointer (T-05 §5-§6, T-09 §6)
     mouse: Mouse,
     /// Held modifiers from the seat's raw masks (depressed and latched; locks excluded).
@@ -568,6 +570,7 @@ pub(crate) fn run(
         system_reduced_motion: false,
         auto_family: None,
         term_title: String::new(),
+        pinned_title: None,
         mouse: Mouse::new(),
         held: Mods::NONE,
         left_down: false,
@@ -793,11 +796,37 @@ const HANDLED: &[&str] = &[
     "var.set",
     "var.unset",
     "window.close",
+    "window.minimize",
+    "window.new",
+    "window.set-title",
+    "window.toggle-fullscreen",
+    "window.toggle-maximize",
 ];
 
 /// Does the dispatcher handle action `id` yet?
 pub(crate) fn handles(id: &str) -> bool {
     HANDLED.binary_search(&id).is_ok()
+}
+
+/// The command line of a `window.new` child: `--new-instance [--cwd D] [--profile P] [-e ARGV]`
+/// (`-e` consumes the rest, so it comes last).
+fn new_window_args(
+    argv: Option<&[String]>,
+    cwd: Option<&std::path::Path>,
+    profile: Option<&str>,
+) -> Vec<std::ffi::OsString> {
+    let mut v: Vec<std::ffi::OsString> = vec!["--new-instance".into()];
+    if let Some(c) = cwd {
+        v.extend(["--cwd".into(), c.as_os_str().to_owned()]);
+    }
+    if let Some(p) = profile {
+        v.extend(["--profile".into(), p.into()]);
+    }
+    if let Some(a) = argv.filter(|a| !a.is_empty()) {
+        v.push("-e".into());
+        v.extend(a.iter().map(Into::into));
+    }
+    v
 }
 
 fn exit_code_of(s: ExitStatus) -> i32 {
@@ -3084,6 +3113,27 @@ impl App {
             A::VarSet { name, value, scope } => self.var_action(&name, Some(&value), scope),
             A::VarUnset { name, scope } => self.var_action(&name, None, scope),
             A::AppQuit { force: _ } | A::WindowClose {} => self.begin_close(),
+            // Fullscreen and maximize are requests: the compositor's next configure says
+            // whether they took (Abyss declines maximize outside mode "de", COMP-05 C-20).
+            A::WindowToggleFullscreen {} => {
+                let _ = self.handle.toggle_fullscreen(self.win);
+            }
+            A::WindowToggleMaximize {} => {
+                let _ = self.handle.toggle_maximized(self.win);
+            }
+            A::WindowMinimize {} => self.handle.set_minimized(self.win),
+            A::WindowSetTitle { title } => {
+                self.pinned_title = title
+                    .map(|t| clip(&t, MAX_TITLE).to_owned())
+                    .filter(|t| !t.is_empty());
+                let t = self.window_title_now();
+                self.handle.set_title(self.win, &t);
+            }
+            A::WindowNew { argv, cwd, profile } => {
+                let argv = argv.and_then(|a| self.expand_argv(&a));
+                let cwd = cwd.map(PathBuf::from).or_else(|| self.inherited_cwd());
+                self.spawn_window(argv, cwd, profile);
+            }
             A::SessionDetach {} => self.session_detach(),
             A::SessionKill {} => self.session_kill(),
             A::PaneReconnect {} => {
@@ -3671,6 +3721,44 @@ impl App {
         };
         if self.workers.submit(Box::new(job)).is_err() {
             tracing::warn!("worker queue full: open dropped");
+        }
+    }
+
+    /// `window.new`: another window of this app is another process with `--new-instance` (a
+    /// plain launch would be handed back to us as a tab), in the focused pane's directory.
+    /// Argv, cwd and profile are user data and are not logged.
+    fn spawn_window(
+        &mut self,
+        argv: Option<Vec<String>>,
+        cwd: Option<PathBuf>,
+        profile: Option<String>,
+    ) {
+        let Ok(exe) = std::env::current_exe() else {
+            tracing::warn!("window.new: own binary not found");
+            return;
+        };
+        let args = new_window_args(argv.as_deref(), cwd.as_deref(), profile.as_deref());
+        let job = move || {
+            let mut c = std::process::Command::new(exe);
+            c.args(args)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .env_remove("XDG_ACTIVATION_TOKEN")
+                .env_remove("DESKTOP_STARTUP_ID");
+            match c.spawn() {
+                Ok(mut child) => {
+                    let _ = std::thread::Builder::new()
+                        .name("apoth-window-reap".into())
+                        .spawn(move || {
+                            let _ = child.wait();
+                        });
+                }
+                Err(e) => tracing::warn!(error = %e.kind(), "window.new did not start"),
+            }
+        };
+        if self.workers.submit(Box::new(job)).is_err() {
+            tracing::warn!("worker queue full: window.new dropped");
         }
     }
 
@@ -5367,7 +5455,7 @@ impl App {
         }
     }
 
-    /// The one window's widget id; the binary opens a single window (`window.new` is not built).
+    /// The one window's widget id; a process owns a single window (`window.new` starts another instance).
     fn windows(&self) -> [WidgetId; 1] {
         [WidgetId(1)]
     }
@@ -5809,7 +5897,35 @@ xkb_keymap {
                 "{id} is not a registry id"
             );
         }
-        assert!(handles("tab.new") && !handles("window.new"));
+        assert!(handles("tab.new") && !handles("workspace.next"));
+    }
+
+    #[test]
+    fn new_window_command_line() {
+        use std::ffi::OsString as O;
+        assert_eq!(
+            new_window_args(None, None, None),
+            vec![O::from("--new-instance")]
+        );
+        let argv = ["vim".to_owned(), "-R".to_owned()];
+        assert_eq!(
+            new_window_args(
+                Some(&argv),
+                Some(std::path::Path::new("/tmp/x")),
+                Some("dev")
+            ),
+            [
+                "--new-instance",
+                "--cwd",
+                "/tmp/x",
+                "--profile",
+                "dev",
+                "-e",
+                "vim",
+                "-R"
+            ]
+            .map(O::from)
+        );
     }
 
     #[test]
