@@ -189,6 +189,76 @@ impl Layout {
     }
 }
 
+/// The most bytes [`Layout::from_lines`] will look at: the settings files'
+/// own cap, so a layout file can never be a way to make a reader allocate.
+pub const MAX_LINES_BYTES: usize = 4096;
+
+/// Why [`Layout::from_lines`] refused a text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseError {
+    /// Longer than [`MAX_LINES_BYTES`].
+    TooLong,
+    /// Not `key = value`, or a blank line.
+    Line,
+    /// A key that is not `tile.<kind>`.
+    Key,
+    /// The same kind twice.
+    Duplicate,
+    /// A value that is not `"x y w h"` in plain decimal cells.
+    Value,
+}
+
+/// `"x y w h"`: four plain decimal cells, single spaces, nothing else.
+fn parse_cells(s: &str) -> Option<Rect> {
+    let mut it = s.split(' ').map(|n| {
+        let plain = !n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit());
+        plain.then(|| n.parse::<i32>().ok()).flatten()
+    });
+    let r = Rect::new(it.next()??, it.next()??, it.next()??, it.next()??);
+    it.next().is_none().then_some(r)
+}
+
+impl Layout {
+    /// The `tile.<kind> = "x y w h"` lines of the settings files, one per
+    /// tile, each ending in a newline.
+    pub fn to_lines(&self) -> String {
+        let mut out = String::new();
+        for t in &self.tiles {
+            let r = t.rect;
+            out += &format!("tile.{} = \"{} {} {} {}\"\n", t.kind.name(), r.x, r.y, r.w, r.h);
+        }
+        out
+    }
+
+    /// Parse the lines [`Layout::to_lines`] writes. Strict: an unknown or
+    /// repeated key, a bad number, a blank line or a text over
+    /// [`MAX_LINES_BYTES`] fails the whole text. Parsing is not validation:
+    /// run [`validate`] on the result before drawing it.
+    pub fn from_lines(text: &str) -> Result<Layout, ParseError> {
+        if text.len() > MAX_LINES_BYTES {
+            return Err(ParseError::TooLong);
+        }
+        let mut tiles: Vec<Tile> = Vec::new();
+        for line in text.lines() {
+            let (key, value) = line.split_once(" = ").ok_or(ParseError::Line)?;
+            let kind = key
+                .strip_prefix("tile.")
+                .and_then(Kind::from_name)
+                .ok_or(ParseError::Key)?;
+            if tiles.iter().any(|t| t.kind == kind) {
+                return Err(ParseError::Duplicate);
+            }
+            let rect = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .and_then(parse_cells)
+                .ok_or(ParseError::Value)?;
+            tiles.push(Tile { kind, rect });
+        }
+        Ok(Layout { tiles })
+    }
+}
+
 /// Is this layout one the greeter may draw? Checked on read and again by the
 /// root helper before anything is written.
 pub fn validate(l: &Layout) -> Result<(), Error> {
@@ -412,6 +482,41 @@ mod tests {
             assert_eq!(Kind::from_name(k.name()), Some(k));
         }
         assert!(Kind::NowPlaying.needs_session() && !Kind::Battery.needs_session());
+    }
+
+    #[test]
+    fn lines_round_trip() {
+        let l = Layout::default();
+        assert_eq!(Layout::from_lines(&l.to_lines()), Ok(l));
+    }
+
+    #[test]
+    fn lines_refuse_anything_loose() {
+        let bad = [
+            "tile.clock = \"1 2 3\"",
+            "tile.clock = \"1 2 3 4 5\"",
+            "tile.clock = \"1  2 3 4\"",
+            "tile.clock = \"-1 0 4 2\"",
+            "tile.clock = \"+1 0 4 2\"",
+            "tile.clock = \"0 0 4 99999\"",
+            "tile.clock = 0 0 4 2",
+            "tile.bogus = \"0 0 4 2\"",
+            "clock = \"0 0 4 2\"",
+            "tile.clock = \"0 0 4 2\"\ntile.clock = \"0 4 4 2\"",
+            "tile.clock = \"0 0 4 2\"\n\ntile.wifi = \"0 4 2 1\"",
+            "# note",
+        ];
+        for b in bad {
+            assert!(Layout::from_lines(b).is_err(), "{b:?}");
+        }
+        let long = "tile.clock = \"0 0 4 2\"\n".repeat(200);
+        assert_eq!(Layout::from_lines(&long), Err(ParseError::TooLong));
+    }
+
+    #[test]
+    fn empty_text_is_an_empty_layout_that_does_not_validate() {
+        let l = Layout::from_lines("").unwrap();
+        assert!(l.tiles.is_empty() && validate(&l).is_err());
     }
 
     #[test]

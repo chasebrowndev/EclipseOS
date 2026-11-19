@@ -1102,7 +1102,9 @@ version = "0.2.2"
 name = "ec-lock"
 version = "0.2.2"
 dependencies = [
+ "ec-glance",
  "ec-ipc",
+ "ec-layout",
  "ec-ui",
  "iced",
  "iced_sessionlock",

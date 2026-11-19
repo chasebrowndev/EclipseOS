@@ -19,11 +19,13 @@ pub mod app;
 pub mod args;
 pub mod auth;
 pub mod clock;
+pub mod face;
 pub mod instance;
 pub mod machine;
 pub mod pam;
 pub mod secret;
 pub mod service;
+pub mod tokens;
 pub mod user;
 pub mod view;
 

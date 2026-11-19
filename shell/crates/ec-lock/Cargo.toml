@@ -27,6 +27,9 @@ iced = { version = "0.14", default-features = false, features = ["wgpu", "advanc
 # palette comes from the compositor (ADR 0084), not from the desktop portal.
 iced_sessionlock = { version = "0.19.1", default-features = false }
 ec-ui = { path = "../ec-ui" }
+# The tile layout and the Glances' readers (ADR 0126): both pure, no toolkit.
+ec-layout = { path = "../ec-layout" }
+ec-glance = { path = "../ec-glance" }
 # getuid, getpwuid_r, localtime_r, flock, and the PAM conversation's
 # calloc/free. libpam itself is linked by `src/pam.rs` (no binding crate).
 libc = "0.2"
