@@ -293,6 +293,20 @@ pub struct SurfaceOptions {
     pub alpha: AlphaRequest,
 }
 
+/// The surface format: an 8-bit non-sRGB one (Bgra8Unorm, then Rgba8Unorm) when offered, else
+/// the first non-sRGB format, else the first format. All blending is done in the shader, so
+/// wider formats (Rgba16Float) only cost bandwidth and compositor work.
+pub(crate) fn choose_format(offered: &[wgpu::TextureFormat]) -> Option<wgpu::TextureFormat> {
+    [
+        wgpu::TextureFormat::Bgra8Unorm,
+        wgpu::TextureFormat::Rgba8Unorm,
+    ]
+    .into_iter()
+    .find(|f| offered.contains(f))
+    .or_else(|| offered.iter().copied().find(|f| !f.is_srgb()))
+    .or_else(|| offered.first().copied())
+}
+
 fn present_kind(m: wgpu::PresentMode) -> PresentKind {
     match m {
         wgpu::PresentMode::Mailbox => PresentKind::Mailbox,
@@ -379,13 +393,7 @@ impl SurfacePresenter {
         opts: &SurfaceOptions,
     ) -> Result<Self, RenderError> {
         let caps = surface.get_capabilities(&gpu.adapter);
-        let format = caps
-            .formats
-            .iter()
-            .copied()
-            .find(|f| !f.is_srgb())
-            .or_else(|| caps.formats.first().copied())
-            .ok_or(RenderError::NoSurfaceFormat)?;
+        let format = choose_format(&caps.formats).ok_or(RenderError::NoSurfaceFormat)?;
         let modes: Vec<PresentKind> = caps
             .present_modes
             .iter()
@@ -637,6 +645,25 @@ pub fn is_software(info: &PresentInfo) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn surface_format_prefers_8_bit_unorm() {
+        use wgpu::TextureFormat as F;
+        assert_eq!(
+            choose_format(&[F::Rgba16Float, F::Rgba8Unorm, F::Bgra8Unorm]),
+            Some(F::Bgra8Unorm)
+        );
+        assert_eq!(
+            choose_format(&[F::Bgra8UnormSrgb, F::Rgba16Float, F::Rgba8Unorm]),
+            Some(F::Rgba8Unorm)
+        );
+        assert_eq!(
+            choose_format(&[F::Bgra8UnormSrgb, F::Rgba16Float]),
+            Some(F::Rgba16Float)
+        );
+        assert_eq!(choose_format(&[F::Bgra8UnormSrgb]), Some(F::Bgra8UnormSrgb));
+        assert_eq!(choose_format(&[]), None);
+    }
 
     #[test]
     fn modes_map_to_policy_kinds() {
