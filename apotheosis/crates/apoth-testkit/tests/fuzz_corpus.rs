@@ -107,6 +107,16 @@ const TARGETS: &[Target] = &[
         apoth_media::fuzz::fuzz_mkv_demux,
     ),
     (
+        "mp4_demux",
+        "apoth_media::fuzz::fuzz_mp4_demux",
+        apoth_media::fuzz::fuzz_mp4_demux,
+    ),
+    (
+        "h264",
+        "apoth_media::fuzz::fuzz_h264",
+        apoth_media::fuzz::fuzz_h264,
+    ),
+    (
         "av1_obu",
         "apoth_media::fuzz::fuzz_av1_obu",
         apoth_media::fuzz::fuzz_av1_obu,
