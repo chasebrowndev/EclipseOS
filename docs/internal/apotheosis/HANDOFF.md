@@ -50,10 +50,15 @@ On a machine where `.claude/agents/apoth-*.md` is missing, copy them from
   own glass interface is `apoth-frontend` work (our renderer).
 
 ## State
-- 2026-11-12: M0 complete on branch `t00-apotheosis-spec` (docs PR, awaiting owner
-  merge). Research run `wf_c37f725d-a27`; spec review run recorded in `SPEC-REVIEW.md`.
-- Next: M1 (scaffold) and X1 (`ec-config-schema`) can start in parallel once the docs PR
-  merges; then the M2–M7 wave.
+- 2026-11-18: the spec PR is merged (#311). Done on main: M1-M6, M8-M11, M14-M16, M19-M21, M23,
+  M25, M26, M32, M34, M35, M37, M38 and X1-X5. Partial: M7, M12, M17, M22, M24, M27-M30,
+  M33. Not started: M31, M36, M39. Unknown: M13, M18. The table with evidence is in
+  `docs/STATUS.md` ("Apotheosis").
+- Next gaps: the consent bar (M24), `apoth notify`/`fonts`/`completions` (M28/M29),
+  `layout.*` and `--layout` (M22), undo close, session save and the quick terminal (M33),
+  lazy reflow and cold-page compression (M12), baselines and budgets (M17), the 83
+  unhandled actions, and the M18 dogfood gate that blocks M31. foot stays the default
+  terminal until M31.
 
 ## Open owner decisions
 Collected from each section's "Open Decisions"; none blocks M1–M13. Ask at the milestone

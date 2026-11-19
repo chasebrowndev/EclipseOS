@@ -497,9 +497,12 @@ impl App {
             .get("socket.grants")
             .and_then(apoth_config::Value::as_map)
             .unwrap_or(&[]);
+        let own_exe = std::env::current_exe().ok();
         let policy = Policy {
             grants,
             key_stream: cfg.bool("socket.key-stream"),
+            launch: matches!(params, Params::Launch(_)),
+            own_exe: own_exe.as_deref(),
         };
         for class in cls.classes.iter() {
             match caps::decide(&c.peer.facts, c.peer.exe.as_deref(), class, target, &policy) {
@@ -507,6 +510,7 @@ impl App {
                 Verdict::Ask => {
                     // HOOK(consent): the consent bar (T-11 §1) is not built yet, so a class
                     // that needs the user's answer is denied (reported gap).
+                    tracing::info!(class = class.name(), cid, "socket request needs consent");
                     return Err(WireError::new(
                         ErrorCode::Denied,
                         format!(
@@ -515,7 +519,10 @@ impl App {
                         ),
                     ));
                 }
-                Verdict::Deny(m) => return Err(err(ErrorCode::Denied, m)),
+                Verdict::Deny(m) => {
+                    tracing::info!(class = class.name(), cid, "socket request denied");
+                    return Err(err(ErrorCode::Denied, m));
+                }
             }
         }
         Ok(())
@@ -547,6 +554,7 @@ impl App {
             let policy = Policy {
                 grants,
                 key_stream: cfg.bool("socket.key-stream"),
+                ..Policy::default()
             };
             let granted: Vec<Cap> = h
                 .want

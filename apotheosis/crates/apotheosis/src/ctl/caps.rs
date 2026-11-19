@@ -39,6 +39,19 @@ pub(crate) struct Policy<'a> {
     pub(crate) grants: &'a [(String, Vec<String>)],
     /// `socket.key-stream` in the target pane.
     pub(crate) key_stream: bool,
+    /// The request is a `launch` (second-launch hand-off, T-21 §1).
+    pub(crate) launch: bool,
+    /// This instance's own executable, to recognise a launcher of the same binary.
+    pub(crate) own_exe: Option<&'a Path>,
+}
+
+/// `/proc/<pid>/exe` of a replaced binary ends in " (deleted)"; the same install still matches.
+fn same_exe(a: &Path, b: &Path) -> bool {
+    let strip = |p: &Path| {
+        let s = p.to_str().unwrap_or_default();
+        s.strip_suffix(" (deleted)").unwrap_or(s).to_owned()
+    };
+    !strip(a).is_empty() && strip(a) == strip(b)
 }
 
 impl Policy<'_> {
@@ -75,6 +88,16 @@ pub(crate) fn decide(
     match class {
         Class::Observe | Class::Layout | Class::Appearance => Verdict::Grant,
         Class::Spawn if peer.pane.is_some() && !peer.remote => Verdict::Grant,
+        // A second `apotheosis` launched by the compositor hands off to this instance
+        // (T-21 §1): the same binary, not remote, not an interpreter, `launch` only.
+        Class::Spawn
+            if policy.launch
+                && !peer.remote
+                && !peer.interpreter
+                && exe.zip(policy.own_exe).is_some_and(|(a, b)| same_exe(a, b)) =>
+        {
+            Verdict::Grant
+        }
         Class::ReadContent | Class::Input if own => Verdict::Grant,
         Class::Keys if policy.key_stream => Verdict::Grant,
         Class::Keys => Verdict::Deny("the key stream needs socket.key-stream"),
@@ -160,6 +183,56 @@ mod tests {
     }
 
     #[test]
+    fn a_launch_from_our_own_binary_is_granted_spawn_only() {
+        let own = Path::new("/usr/bin/apotheosis");
+        let p = Policy {
+            launch: true,
+            own_exe: Some(own),
+            ..Policy::default()
+        };
+        let peer = local(None);
+        assert_eq!(decide(&peer, Some(own), Spawn, None, &p), Verdict::Grant);
+        let replaced = Path::new("/usr/bin/apotheosis (deleted)");
+        assert_eq!(
+            decide(&peer, Some(replaced), Spawn, None, &p),
+            Verdict::Grant
+        );
+        // Other binaries, other classes, other requests, remote, interpreter, agent: no.
+        let other = Some(Path::new("/usr/bin/tool"));
+        assert_eq!(decide(&peer, other, Spawn, None, &p), Verdict::Ask);
+        assert_eq!(
+            decide(&peer, Some(own), ReadContent, Some(1), &p),
+            Verdict::Ask
+        );
+        let not_launch = Policy { launch: false, ..p };
+        assert_eq!(
+            decide(&peer, Some(own), Spawn, None, &not_launch),
+            Verdict::Ask
+        );
+        for facts in [
+            PeerFacts {
+                remote: true,
+                ..PeerFacts::default()
+            },
+            PeerFacts {
+                interpreter: true,
+                ..PeerFacts::default()
+            },
+        ] {
+            assert_eq!(decide(&facts, Some(own), Spawn, None, &p), Verdict::Ask);
+        }
+        let agent = PeerFacts {
+            agent: true,
+            ..PeerFacts::default()
+        };
+        assert!(matches!(
+            decide(&agent, Some(own), Spawn, None, &p),
+            Verdict::Deny(_)
+        ));
+        assert_eq!(decide(&peer, None, Spawn, None, &p), Verdict::Ask);
+    }
+
+    #[test]
     fn grants_are_by_executable_and_never_for_interpreters_or_keys() {
         let grants = vec![(
             "/usr/bin/tool".to_owned(),
@@ -167,7 +240,7 @@ mod tests {
         )];
         let p = Policy {
             grants: &grants,
-            key_stream: false,
+            ..Policy::default()
         };
         let peer = local(None);
         let exe = Some(Path::new("/usr/bin/tool"));
@@ -186,6 +259,7 @@ mod tests {
         let ks = Policy {
             grants: &[],
             key_stream: true,
+            ..Policy::default()
         };
         assert_eq!(decide(&peer, exe, Keys, None, &ks), Verdict::Grant);
     }

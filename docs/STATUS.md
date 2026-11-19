@@ -688,12 +688,50 @@ workflows, research, hand-off) is in `docs/internal/apotheosis/`.
 | # | Milestone | State | Evidence |
 |---|---|---|---|
 | M0 | Research, spec volume, ADRs, spec-trail accepts `T` | **done (spec unfrozen until the owner merges the T-00 PR)** | `docs/internal/apotheosis/research/FEATURE-MATRIX.md` (946 rows from 13 dossiers and 9 topic studies); T-00..T-25 Draft v0.1; W2 review findings in `docs/internal/apotheosis/SPEC-REVIEW.md` |
-| M1 | Workspace scaffold | not started | — |
-| X1 | `ec-config-schema` extraction | not started | — |
-| M2–M7 | Pure-crate wave (`apoth-vt`, `-unicode`/`-grid`, `-config`/`-action`, `-pty`, `-font`, `-input`) | not started | — |
-| M8–M18 | Through daily-drivable alpha | not started | — |
-| M19–M31 | Through default terminal | not started | — |
-| M32–M39, X2–X4 | Post-default and Abyss-side work | not started | — |
+| M1 | Workspace scaffold, gate, deny, lang-rule, xtask | **done** | `b21763e3`; `apotheosis/ci/lang-rule.sh` |
+| X1 | `ec-config-schema` extraction | **done** | `00211bb1`, `9c5b924a`; `abyss/crates/ec-config-schema` |
+| M2–M6 | `apoth-vt`, `-unicode`/`-grid`, `-config`/`-action`, `-pty`, `-font` | **done** | `83ce37be`, `0483f316`; goldens, registry and pty tests. 83 of 170 actions have no dispatch handler (below) |
+| M7 | `apoth-input`, kbvm default | partial | `83ce37be`. Not built: the xkbcommon oracle feature; the differential CI job is not verified |
+| M8–M11 | `apoth-wl` v1, `apoth-term` v1 + testkit, `apoth-render` v1, first light | **done** | `0483f316`, `8cb2c12b`, `98da0bc7`, `6668866e`; `tests/first_light.rs` |
+| M12 | Grid v2: reflow, pins, selection, history | partial | `98da0bc7`. Not built: lazy history reflow, cold-page compression |
+| M13 | Term v2: all R1 modes, terminfo, fixtures | unknown | no M13-tagged commit; 1,037 fixture files vs the spec's 1,500 target |
+| M14–M16 | `apoth-ui` + glass, hot reload + importer, selection/clipboard/IME/DnD | **done** | `8c012129`, `871e3a16`, `9b826c41`; `tests/input_m16.rs` |
+| M17 | Perf harness, baselines, first budgets | partial | `8c012129`. Peer baselines and the absolute budget column are not evidenced; PGO is an open owner decision |
+| M18 | Daily-drivable alpha (vttest, one-week dogfood) | unknown | an owner gate; nothing in the tree records it. Blocks M31 |
+| X2 | Style tokens into a pure crate | **done** | `0314276e`; `abyss/crates/ec-style-tokens` |
+| M19–M21 | Theme + glass on Abyss, semantic publishing + `ec-term-pub`, dispatcher/binds/palette | **done** | `c7beda07`, `393a5fd7`; `tests/theme_m19.rs` |
+| M22 | Mux v1: tabs, splits, stacks, presets, layouts | partial | `393a5fd7`; `tests/mux_m22.rs`. Not built: `layout.*` actions, `--layout` |
+| M23 | Search, copy mode, hints, hyperlinks, capture | **done** | `85d4c7a6`. Shell-integration marks not verified |
+| M24 | Security pass, consent bar, paste guard | partial | `85d4c7a6`; `src/security.rs`. Not built: the consent bar (T-11 §1), so a socket request that needs consent is denied; fuzz coverage of every component is not verified |
+| M25 | Graphics 1: kitty static + sixel | **done** | `4d18f90d`; `tests/graphics_m25.rs` |
+| M26 | Settings GUI: scalar pages | **done** | `dccb4e6e` |
+| M27 | Settings GUI: collection editors | partial | `37e960ef`. Binds, profiles and rules editors only; layouts and grants editors are not evidenced |
+| M28 | Profiles, rules, templates, variables, notifications | partial | `048f5b4e`; `tests/rules_m28.rs`. Not built: notifications (`apoth notify`) |
+| M29 | Control socket, CLI, second-launch hand-off | partial | `ed2309d4`; `tests/ctl_m29.rs`. `apoth doctor` added; not built: `apoth notify`, `fonts`, `completions`. Hand-off from the compositor works only with the T-12 §4 `launch` grant (below) |
+| M30 | Accessibility tree, text model, Orca checklist | partial | `1e5b86a5`; `apoth-a11y/tests`. The Orca checklist is an owner step |
+| M31 | Default terminal switch | not started | no switch commit |
+| M32 | Graphics 2: animation, placements, icat, iTerm2 | **done** | `9fbfa989`; `tests/graphics_m32.rs` |
+| M33 | Floating panes, undo close, session save, quick terminal, R2 glass | partial | `19416557`; `tests/open_m33.rs`. Not evidenced: undo close, session save, quick terminal (`window.*` actions are unhandled) |
+| M34 | Media tier B: helper, AV1, audio, `apoth play` | **done** | `433b9f6b`, `942c8b0f`; `tests/media_m34.rs` |
+| M35 | Mux daemon: server mode, snapshot, attach/detach | **done** | `11060455`; `tests/daemon_m35.rs`. Daemon as default is an open owner decision |
+| M36 | Media tier C: VA-API | not started | only the `media.hwdec` enum value exists |
+| M37 | Remote domains: `apoth ssh`, askpass, SshDomain | **done** | `dc8f3ddc`, `2c121625`; `tests/remote_m37.rs` |
+| M38 | Presentation refinements | **done** | `39a4956d`, `950d85f2`; `tests/present_m38.rs`. Partial damage and present timing were deliberately closed as not built; PGO decision open |
+| M39 | R2 remainder: OSC 66, BiDi, OSC 5522, fragments, output-match | not started | no OSC 66 or 5522 code |
+| X3–X4 | Abyss system-bell, toplevel-icon, shortcuts-inhibit, fifo, commit-timing | **done** | `5c25f981`; `ec-abyss/src/protocols/standard/` |
+| X5 | `ec-theme` `terminal_scheme` | **done** | `abyss/crates/ec-theme/src/terminal.rs` |
+
+"Done" here means the commit and crate evidence is in the tree, as of 2026-11-18; it is not an owner
+review. Known gaps across milestones:
+
+- **Actions.** 83 of 170 registry actions have no handler in `run_action`
+  (`app.rs`). The palette hides them and the socket answers "not available yet"; none is
+  bound by default. Largest groups: tab/window/workspace/layout (17), font (10, so no zoom
+  from keys), config/session/scrollback (8), media (7).
+- **Launch flags.** `--hold` and `--layout` are accepted and do nothing.
+- **Hand-off grant.** A `launch` from the same executable as the running instance, not
+  remote and not an interpreter, is granted `spawn` (T-12 §4). Everything else that needs
+  consent is denied until the consent bar (M24) exists.
 
 foot remains the default terminal until M31.
 
