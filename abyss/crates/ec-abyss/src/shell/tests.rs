@@ -602,6 +602,21 @@ mod initial_commit_placement {
         (t, w)
     }
 
+    #[test]
+    fn a_client_minimize_request_sends_the_window_away() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h);
+        let t = c.create_toplevel(&mut h);
+        c.commit(&mut h, &t.surface);
+        c.attach(&mut h, &t.surface);
+        let w = window_of(&h, &t).expect("placed");
+        assert!(!crate::shell::is_minimized(&h.state, &w));
+
+        t.toplevel.set_minimized();
+        c.pump(&mut h);
+        assert!(crate::shell::is_minimized(&h.state, &w), "minimized");
+    }
+
     /// The topmost window in the space.
     fn top(h: &Harness) -> Window {
         h.state
