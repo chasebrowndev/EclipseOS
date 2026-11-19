@@ -56,6 +56,25 @@ pub enum Msg {
     Power(Power),
 }
 
+/// Names only: a message can carry typed text or a user name, and neither is logged.
+impl std::fmt::Debug for Msg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Msg::Attach(_) => "Attach",
+            Msg::Frame(_) => "Frame",
+            Msg::Tick => "Tick",
+            Msg::Resize(_) => "Resize",
+            Msg::Glance(_) => "Glance",
+            Msg::Pick(_) => "Pick",
+            Msg::Typed(_) => "Typed",
+            Msg::Backspace => "Backspace",
+            Msg::Submit => "Submit",
+            Msg::Cancel => "Cancel",
+            Msg::Power(_) => "Power",
+        })
+    }
+}
+
 pub struct App {
     pub(crate) pal: Palette,
     pub(crate) stage: Stage,
