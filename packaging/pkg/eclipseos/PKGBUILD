@@ -381,6 +381,8 @@ package_eclipseos-greeter() {
   # Root writes the machine's choices, greeter reads them (ADR 0089).
   install -Dm0755 "$srcdir/target/release/ec-greeter-run" "$pkgdir/usr/lib/eclipse/ec-greeter-run"
   install -Dm0755 "$srcdir/target/release/ec-greeter-apply" "$pkgdir/usr/lib/eclipse/ec-greeter-apply"
+  # The glass greeter (ADR 0126); ec-greeter-run execs it, else regreet.
+  install -Dm0755 "$srcdir/target/release/ec-greeter-ui" "$pkgdir/usr/lib/eclipse/ec-greeter-ui"
   install -Dm0644 "$srcdir/$_src/packaging/polkit/org.eclipse.greeter.apply.policy" \
     "$pkgdir/usr/share/polkit-1/actions/org.eclipse.greeter.apply.policy"
   install -Dm0644 "$srcdir/$_src/packaging/greetd/tmpfiles.conf" \

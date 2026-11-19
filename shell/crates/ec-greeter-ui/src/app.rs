@@ -250,8 +250,16 @@ impl App {
             Msg::Frame(now) => {
                 self.stage.step(now);
                 self.settle();
+                if self.state() == AuthState::Granted {
+                    return iced::exit();
+                }
             }
-            Msg::Tick => self.refresh_clock(),
+            Msg::Tick => {
+                self.refresh_clock();
+                if self.state() == AuthState::Granted {
+                    return iced::exit();
+                }
+            }
             Msg::Resize(size) => self.stage.resize(size, Instant::now()),
             Msg::Glance(Some(snapshot)) => self.glance = snapshot,
             Msg::Glance(None) => {}

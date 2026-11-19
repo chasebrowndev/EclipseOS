@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! `ec-greeter-run`: starts regreet for greetd (ADR 0089). **TCB.** Renders the
+//! `ec-greeter-run`: starts the greeter for greetd (ADR 0089, 0126): `ec-greeter-ui`
+//! when installed, else regreet. **TCB.** Renders the
 //! machine's settings over the shipped files into the greeter's runtime dir and
 //! execs regreet, keeping its pid for the kiosk compositor.
 //!
@@ -14,11 +15,20 @@ use std::process::{Command, ExitCode};
 
 use ec_greeter::{prepare, Error, STATE_DIR};
 
+/// The glass greeter (ADR 0126). Its executable name is what the compositor's
+/// glass allow-list matches.
+const GREETER_UI: &str = "/usr/lib/eclipse/ec-greeter-ui";
 const REGREET: &str = "/usr/bin/regreet";
 const SHIPPED_CONFIG: &str = "/etc/eclipse/greetd/regreet.toml";
 const SHIPPED_STYLE: &str = "/etc/eclipse/greetd/regreet.css";
 
 fn main() -> ExitCode {
+    // The new greeter reads the settings itself and falls back to the built-in
+    // look on its own. Only a build without it leaves regreet, until it is gone.
+    if Path::new(GREETER_UI).is_file() {
+        let e = Command::new(GREETER_UI).exec();
+        say(&format!("{GREETER_UI}: {e}"));
+    }
     let custom = std::panic::catch_unwind(customised).unwrap_or_else(|_| Err(Error::Io("panic".into())));
     let (config, style) = match custom {
         Ok(Some(paths)) => paths,

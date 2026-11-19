@@ -12,6 +12,10 @@ publish = false
 name = "ec_greeter_ui"
 path = "src/lib.rs"
 
+[[bin]]
+name = "ec-greeter-ui"
+path = "src/bin/ec-greeter-ui.rs"
+
 [dependencies]
 # Pinned to match ec-ui and ec-lock exactly (ADR 0039).
 iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "image-without-codecs"] }
@@ -31,6 +35,7 @@ raw-window-handle = "0.6"
 wayland-backend = { version = "0.3", features = ["client_system"] }
 # localtime_r for the clock face (the zone rules live in the C library).
 libc = "0.2"
+serde_json = { workspace = true }
 # Decodes the wallpaper and blurs a small copy for the fallback panes (the
 # same crate iced already links; PNG only, the format the greeter stores).
 image = { version = "0.25", default-features = false, features = ["png"] }

@@ -11,6 +11,7 @@ pub mod backdrop;
 pub mod clock;
 pub mod glance;
 pub mod glass;
+pub mod greetd;
 pub mod motion;
 pub mod parts;
 pub mod secret;

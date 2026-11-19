@@ -1053,6 +1053,7 @@ dependencies = [
  "image",
  "libc",
  "raw-window-handle",
+ "serde_json",
  "wayland-backend",
  "wayland-client",
 ]
