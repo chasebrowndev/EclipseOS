@@ -249,6 +249,26 @@ impl Look {
     }
 }
 
+/// A light-scheme pane whose shorter side is at least this many logical px is
+/// a card (launcher, toast), not a control cell.
+pub const SLAB_MIN_SHORT: i32 = 56;
+/// How far such a card lifts toward white: the near-opaque near-white slab of the
+/// iOS light references (the backdrop shows a few percent at most).
+pub const SLAB_LIFT_LIGHT: f32 = 0.86;
+
+/// The white lift of `pane` in the light scheme: `lift`, or the slab lift for a card.
+pub fn slab_lift(pane: &Pane, light: bool, lift: f32) -> f32 {
+    if light && pane.w.min(pane.h) >= SLAB_MIN_SHORT {
+        if pane.alpha == 0 {
+            lift
+        } else {
+            lift.max(SLAB_LIFT_LIGHT)
+        }
+    } else {
+        lift
+    }
+}
+
 /// The look of `pane`, or `None` when it draws nothing (latent at rest, or
 /// fully transparent). Everything scales by `alpha / 255`. `light` selects the
 /// light scheme's table; `false` is the dark table, unchanged.
@@ -350,8 +370,23 @@ pub fn band(pane: &Pane, rect: Rectangle<i32, Physical>, upscale: f64) -> f32 {
 /// A pane's contact shadow: the shell cell's drop (ec-ui `bar::CELL_SHADOW_Y`
 /// 1, `CELL_SHADOW_BLUR` 6), drawn by the window shadow program at its rest
 /// weight. Logical px.
-pub const SHADOW_DROP: i32 = 1;
-pub const SHADOW_RANGE: i32 = 6;
+pub const SHADOW_DROP: i32 = 2;
+pub const SHADOW_RANGE: i32 = 10;
+/// The light scheme's shadow is wide and faint (iOS light: separation from a
+/// soft halo, not a border); the dark one stays tight.
+pub const SHADOW_DROP_LIGHT: i32 = 6;
+pub const SHADOW_RANGE_LIGHT: i32 = 26;
+/// Share of the pane's alpha the light shadow keeps.
+pub const SHADOW_ALPHA_LIGHT: f32 = 0.38;
+
+/// `(range, drop)` in logical px for the scheme.
+pub fn shadow_extent(light: bool) -> (i32, i32) {
+    if light {
+        (SHADOW_RANGE_LIGHT, SHADOW_DROP_LIGHT)
+    } else {
+        (SHADOW_RANGE, SHADOW_DROP)
+    }
+}
 
 /// Whether `pane` casts a contact shadow, by the shell cell's rule
 /// (`ec-ui` `CellTone`): none while pressed (pushed into the glass), none for
@@ -367,21 +402,19 @@ pub fn casts_shadow(pane: &Pane) -> bool {
 /// The shadow's area, logical: the cell's box grown by `SHADOW_RANGE` on the
 /// sides and top, and by `SHADOW_DROP` more at the bottom. The shader's
 /// `size` is this area, so its `range` and `drop` are in the same units.
-pub fn shadow_area(cell: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+pub fn shadow_area(cell: Rectangle<i32, Logical>, light: bool) -> Rectangle<i32, Logical> {
+    let (range, drop) = shadow_extent(light);
     Rectangle::new(
-        (cell.loc.x - SHADOW_RANGE, cell.loc.y - SHADOW_RANGE).into(),
-        (
-            cell.size.w + 2 * SHADOW_RANGE,
-            cell.size.h + 2 * SHADOW_RANGE + SHADOW_DROP,
-        )
-            .into(),
+        (cell.loc.x - range, cell.loc.y - range).into(),
+        (cell.size.w + 2 * range, cell.size.h + 2 * range + drop).into(),
     )
 }
 
 /// The shadow shader's `[range, radius, drop]` for a cell of corner `radius`
 /// (logical px, already grown by any window animation scale).
-pub fn shadow_params(radius: f32) -> [f32; 3] {
-    [SHADOW_RANGE as f32, radius, SHADOW_DROP as f32]
+pub fn shadow_params(radius: f32, light: bool) -> [f32; 3] {
+    let (range, drop) = shadow_extent(light);
+    [range as f32, radius, drop as f32]
 }
 
 #[cfg(test)]
@@ -479,6 +512,31 @@ mod tests {
             h: 10,
             ..Pane::default()
         }
+    }
+
+    /// A light card (launcher, toast) lifts to the near-white slab; a control
+    /// cell and the dark scheme keep their lift.
+    #[test]
+    fn a_light_card_is_a_slab_and_a_cell_is_not() {
+        let card = Pane {
+            w: 440,
+            h: 110,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let cell = Pane {
+            w: 120,
+            h: 36,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        assert!((slab_lift(&card, true, 0.0) - SLAB_LIFT_LIGHT).abs() < 1e-6);
+        assert_eq!(slab_lift(&cell, true, 0.01), 0.01);
+        assert_eq!(slab_lift(&card, false, 0.0), 0.0);
+        // A faint-fill card is still a slab (its alpha is the fill, not the card), a transparent
+        // one draws nothing, and a larger lift is never lowered.
+        let faint = Pane { alpha: 60, ..card };
+        assert!((slab_lift(&faint, true, 0.0) - SLAB_LIFT_LIGHT).abs() < 1e-6);
+        assert_eq!(slab_lift(&Pane { alpha: 0, ..card }, true, 0.0), 0.0);
+        assert_eq!(slab_lift(&card, true, 0.95), 0.95);
     }
 
     /// The shader's two mixes for one channel, in its order: white lift, then
@@ -629,10 +687,10 @@ mod tests {
     #[test]
     fn the_shadow_hugs_the_cell_and_drops_a_pixel() {
         let cell = Rectangle::<i32, Logical>::new((20, 10).into(), (80, 30).into());
-        let area = shadow_area(cell);
-        // Six px out on the left, right and top; seven at the bottom: one px down.
-        assert_eq!((area.loc.x, area.loc.y), (14, 4));
-        assert_eq!((area.size.w, area.size.h), (92, 43));
+        let area = shadow_area(cell, false);
+        // Ten px out on the left, right and top; twelve at the bottom: two px down.
+        assert_eq!((area.loc.x, area.loc.y), (10, 0));
+        assert_eq!((area.size.w, area.size.h), (100, 52));
         assert_eq!(area.loc.x + area.size.w, cell.loc.x + cell.size.w + SHADOW_RANGE);
         assert_eq!(
             area.loc.y + area.size.h,
@@ -640,11 +698,14 @@ mod tests {
         );
         // Nothing reaches further than the range and drop, whatever the cell.
         let tiny = Rectangle::<i32, Logical>::new((0, 0).into(), (1, 1).into());
-        let a = shadow_area(tiny);
+        let a = shadow_area(tiny, false);
         assert!(a.loc.x >= -SHADOW_RANGE && a.loc.y >= -SHADOW_RANGE);
         assert_eq!(a.size.w - tiny.size.w, 2 * SHADOW_RANGE);
         assert_eq!(a.size.h - tiny.size.h, 2 * SHADOW_RANGE + SHADOW_DROP);
-        assert_eq!(shadow_params(8.0), [6.0, 8.0, 1.0]);
+        assert_eq!(shadow_params(8.0, false), [10.0, 8.0, 2.0]);
+        assert_eq!(shadow_params(8.0, true), [26.0, 8.0, 6.0]);
+        let l = shadow_area(cell, true);
+        assert_eq!((l.size.w, l.size.h), (80 + 52, 30 + 52 + 6));
     }
 
     #[test]

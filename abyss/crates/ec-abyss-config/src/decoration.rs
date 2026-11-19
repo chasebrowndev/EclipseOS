@@ -186,7 +186,7 @@ impl Default for GlassBlur {
     }
 }
 
-/// `blur { glass { lens { refraction 40; bevel 40; dispersion 0.8; rim 0.7 } } }`:
+/// `blur { glass { lens { refraction 28; bevel 40; dispersion 0.7; rim 0.7 } } }`:
 /// the same four knobs as [`GlassBlur`], for the lens preset (small controls).
 /// The regular preset (a window's glass frame) uses the top-level ones.
 #[derive(Debug, Clone, PartialEq)]
@@ -207,9 +207,9 @@ pub struct LensGlass {
 impl Default for LensGlass {
     fn default() -> Self {
         Self {
-            refraction: 40.0,
+            refraction: 28.0,
             bevel: 40,
-            dispersion: 0.8,
+            dispersion: 0.7,
             rim: 0.7,
         }
     }

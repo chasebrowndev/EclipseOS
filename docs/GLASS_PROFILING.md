@@ -658,3 +658,114 @@ under 1.5 between variants in every case; the lowest is V2, lens, light scheme,
 show V2 and V3 drawing a dark contour along the boundary and stripe-like
 modulation inside the lens interior (the tint follows the pixel's own luma), which V1
 smooths. V1 was kept.
+
+## Step D (rim light, inner shading)
+
+Lens and Regular only (`GLASS_LENS` / `GLASS_REGULAR`); Frost is byte-identical to
+the previous build at default config (0 of 3,499,200 samples differ at dispersion 0
+and 0.5). Inside the bevel band, with no extra texture taps and nothing on the
+plateau (the early-out is untouched):
+
+- edge darkening: `c *= 1 - EDGE_DARK * u^2` (0.20 dark, 0.10 light; `u` is 1 at the
+  rim, 0 at the plateau), so the edge reads as thickness;
+- a faint inner highlight line at 0.9 of the band width, 1.6 px wide, lit like the
+  hairline (`LINE_IN` 0.10 times 0.35 plus the top-left lobe plus half the
+  bottom-right lobe, in the rim tint, so ink on light glass);
+- both scale with `min(2 * rim, 1)`, so `rim 0` turns them off with the hairline.
+
+The existing specular hairline already follows `dot(N, LIGHT)` with a weaker
+bottom-right lobe, and is reused as is. Contact shadows were already there for
+panes (Lens): `pane_shadows` in `ec-abyss-render/src/lib.rs`, a pixel-shader
+element at range 6 / drop 1 under each pane, rebuilt only when its alpha changes and
+re-uniformed only when its parameters change, so it adds no damage while still. It
+was not extended to the shaped bar sheet: that sheet is an input-region shape and
+its shadow would overdraw the bar strip. No config keys were added.
+
+GPU ms, glass draws, 3 interleaved runs, previous build against this one:
+
+| scenario | previous | step D |
+|---|---|---|
+| tiled idle | 2.36 2.16 2.32 (2.28) | 2.48 2.30 2.02 (2.27) |
+| cascade damage | 0.93 1.06 0.98 (0.99) | 0.96 0.98 0.99 (0.98) |
+
+Screenshots (forced Lens/Regular on ordinary foot windows, as the bar does not
+draw in headless): `cap/rim/` in the scratchpad, `v_*` before and `d_*` after.
+
+## Look tuning (real surfaces, rounds 0 to 3)
+
+Headless setup for the real shell (no forced foot windows):
+
+- Pin the bar: `ec-hyperion-bar --output headless` (unpinned it asks for outputs and opens none).
+- `decoration { blur { mode "glass" } }` is required, or the clients keep their own ground.
+- Point clients at the headless control socket: `ECLIPSE_SOCKET_DIR=$XDG_RUNTIME_DIR/eclipse-headless-<wayland display>`.
+- Busy backdrop: the compositor's own `wallpaper { path "x.png" }`; it also lies under the bar strip.
+- Toasts: a private `dbus-daemon --session`, then `ec-toasts` and `notify-send` on it, never the host bus.
+- Light scheme: `general { color-scheme "light" }` in the config at start.
+- The installed `/usr/bin` shell binaries are old; build the bar, launcher and toasts from this tree.
+
+Changes (Lens preset only unless noted; Frost is untouched, its code path is the same):
+
+- Rim: the separate inner line is now one lit gradient falling off over the outer half of the band (`LINE_IN` 0.34, lit by the light direction, weaker opposite lobe); `EDGE_DARK` 0.26 dark, 0.12 light.
+- Interior: smoke kept at 35 percent, adaptive tint at 75 percent (`LENS_SMOKE`, `LENS_ADAPT`), plus a faint neutral fill (dark 0.10, light 0.55) so light glass reads white-tinted.
+- Config defaults `lens.refraction` 40 to 28, `lens.dispersion` 0.8 to 0.7 (bar cells showed rainbow fringes inside the cell).
+- Pane shadow: `SHADOW_RANGE` 6 to 10, `SHADOW_DROP` 1 to 2 (wider, softer).
+
+Contrast of white bar text, glass pixels only (p90 of non-text background): before 13.7 to 15.7, after 10.9 to 11.0, WCAG 4.5 held. The 95th percentile of all non-text pixels in the clock region drops to 3.9 (it includes antialiased text edges and stripe bleed).
+
+Not measured in this pass: GPU ms against the step-D table (no new texture taps; the added shader work is a few ALU ops), and frost pixel parity by diff.
+
+### Small widgets: sample area (owner feedback)
+
+Diagnosis. `px_uv` is right on the pane path: `BlurStore::{element, pane_element}` set it to 1/(crop width x 2 when packed, crop height), the same as the window and tier paths, and `placed_in` addresses the same crop. There was no doubled displacement. The cause was the lens keeping its full configured bend (28 px) on any shape and capping only the band (40% of the short side): on a ~30 px cell the rim bend (up to 28 x (1 + k) px, red/blue further) pulled content from nearly a cell-height beyond the edge. Over 1 px lines every 8 px a cell showed 5 to 6 line arcs per side; the interior blur is 2 passes and shows what is physically behind it (a 30 px cell has 3 to 4 lines of an 8 px grid behind it, so that count cannot go below that).
+
+Fix. Lens (and bar-less regular) rim bend is capped at `LENS_STRENGTH_FRACTION` (0.16) of the shape's shorter side: a 30 px cell bends under 5 px, a pill of 175 px or more keeps the configured 28. Windows with a bezel are unchanged. `preset_reach_for(preset, glass, upscale, short)` follows the capped bend for panes (the union's largest short side); other callers keep the conservative `preset_reach`. The interior blur was left at 2 passes: the interior bands that remain are the lines actually behind the cell.
+
+Corners (owner feedback on the compositor titlebar): the seam under the title was a full-width rectangle, so with a corner radius above the bar height it ran on past the curve; it is now clipped to the rounded body. The title's left inset is `max(PAD, arc at the text's top + 6 px)` so the first glyph starts inside the curve at any radius. A terminal's own cursor / column 0 is client content, flush with the left edge, and is left as is.
+
+## Step E (scheme tuning: light slab, wide shadow, backdrop-coloured rim)
+
+Lens and Regular only; Frost is untouched (grim diff identical, 0 of 1,080,000 samples).
+
+- Light adaptive tint: `ADAPT_MAX_L` 0.95 for Lens/Regular (Frost keeps 0.8), `LENS_FILL_AMT_L` 0.55 to 0.75. Light lens glass reads as a bright slab, as in the iOS light references.
+- Light shadow is wide and faint, dark stays tight: `shadow_extent(light)` gives range 26 / drop 6 with `SHADOW_ALPHA_LIGHT` 0.38 of the pane alpha (dark 10 / 2). It is the same pixel-shader element, no new blur; the area grows with the range only for panes. Shadow colour is still the warm ADR 0084 brown, not cool grey.
+- Rim picks up the backdrop: inside the band the sharp half already tapped for the bend (no new taps) is saturated (1.5) and brightened (1.7), clamped, and only ever lightens the fill, weighted by the light lobes. Dark scheme: soft, the outer half of the bevel (`RIM_SHARP` 0.8). Light scheme: a crisp ~3 px edge (`RIM_CRISP_PX`), weight 1.0, 45 percent white-biased (`RIM_WHITE_L`).
+- Reference measurement (iOS App Library, same dark wallpaper, bottom edge of a folder): dark-mode rim peak luma 77 over a fill of 64 (ratio 1.2); light-mode peak 193 (ratio 3.0), both about 3 px wide. Ours (bar cell edge over the warm wallpaper): dark scheme rim about 2x the interior, coloured by the wallpaper; light scheme white slab with peach hairlines.
+- Contrast: dark scheme, white text over the glass pixels p90 10.1 to 11.8:1 (median 13 to 19). Light scheme, ink text: the glass is near white; the p5 figure of 6.1 to 6.5:1 (min 4.3 to 4.5) includes antialiased text edges.
+
+Known gaps: the launcher, toasts and the bar pill alone are Frost (single input box), so they do not get the light slab or the new rim; over stripes the light launcher is still see-through at 0.8. That needs an owner decision on touching Frost. The light bar over a dark backdrop is a white slab, so its rim barely shows.
+
+### Step E, part 2: layer sheets in glass mode, persistent bar backdrop
+
+- Preset by geometry, glass mode only: a layer sheet with no input-region shape and no bezel is a Lens if its shorter side is at most 48 logical px (`SHEET_PILL_MAX_SHORT`; the bar is 40), else Regular (launcher, toasts). Shaped sheets stay Lens, window bezels Regular, window bodies Frost. Modes `frost` and `blur` and the Frost-preset window are pixel-identical to the step-D build (grim diffs: 0 differing samples each).
+- The Rust `adaptive_*` mirror now takes the preset (`adaptive_amount_for`, `adaptive_stacked_for`, `adaptive_cap_light`: 0.95 Lens/Regular, 0.8 Frost); `adaptive_caps_match_the_shader` pins both to the shader source.
+- Persistent bar: a layer sheet above the bottom layers whose region overlaps no window frame (`layer_sees_no_window`) is a member of the tier-0 pyramid (wallpaper and bottom layers only). Window damage no longer rebuilds it; a wallpaper change does (one full rebuild, see below). A sheet that overlaps a window (drawer over windows, launcher, toasts) keeps the per-surface path. Accepted visual change: the bar edge no longer picks up a window's colour.
+- Measured (3 interleaved runs, my harness): bar + launcher 0.17 to 0.19 ms (step D) vs 0.22 to 0.25 ms (Lens bar, Regular launcher): about +0.03 ms. Window churn under the bar: rebuilds 132 to 145 before, about 102 after, GPU 1.2 to 1.5 vs 1.3 to 1.5 ms (noise). A repainting window next to the bar: rebuilds while it opens 14 before, 2 to 3 after; steady state is 0 both (the strip is outside its reach).
+- Wallpaper: only a static image exists (no slideshow or crossfade). `install` swaps in a new buffer, which changes the element and forces a rebuild: swapping the image through `ec-ctl config set wallpaper.path=...` changed the bar backdrop with one full rebuild. An animated wallpaper would be damage over the strip only; not measurable here, none exists.
+- Not verified: opening a drawer (it did not open headless), toasts (the surface never drew on a private bus: the service took notifications but nothing appeared), and per-frame cost under an animated wallpaper.
+- Shadow colour stays the ADR 0084 warm brown. Clean-glass contrast of the light launcher (gap between search field and list): stripes 15.2:1 min (was 10.8), pale 11.8 (10.7), colour 5.1 (unchanged: adaptive only corrects as much as the text needs, so a coloured backdrop is not turned into a white slab).
+
+### Step F: real-surface runs (headless; the winit session was refused)
+
+Everything below ran in the hidden headless compositor with every client on its own socket and a private `dbus-run-session` bus (the wrapper prints and checks `WAYLAND_DISPLAY` / `DBUS_SESSION_BUS_ADDRESS` before launching). A visible winit window was not run: the permission classifier refused it.
+
+- Drawer: `ec-ctl open-power` opens the bar's power drawer headless. A region burst (`grim -g`, about 80 ms per frame) around the open: the sheet grows over about 4 frames (0.3 s), then one later frame only changes row text ("checking" to the permission result). Close mirrors it in about 3 frames. No flash or wrong-blur frame seen; rebuilds per open/close sequence: 2 (about 0.86 Mtexel each), then 0.
+- Wallpaper swap loop (30 swaps through `ec-ctl config set wallpaper.path`, 0.25 s apart): about 8 full rebuilds per 120-frame interval, 0 partial; each rebuild is the bar strip crop only (about 253,000 texels, 4 passes), not the screen.
+- Tiled idle and cascade damage with the bar present, step-D binary vs final, ms: idle 1.64 / 1.67 / 1.68 vs 1.53 / 1.61 / 1.65; damage 1.19 / 1.12 / 1.22 vs 1.12 / 1.17 / 1.18. Flat (these absolute values are not comparable with the earlier tables).
+- Toasts: `ec-toasts` owns `org.freedesktop.Notifications` on the private bus and `notify-send` succeeds, but no layer surface ever appears (no compositor log line either), also after a scripted click to give the output pointer focus. Cause not found.
+
+#### Toasts: why none drew (test setup, not a bug)
+
+Two settings of the harness, neither a code bug:
+
+1. State leak: `ec-toasts` / `ec_services::notifications` read and write `$XDG_STATE_HOME/eclipse/notifications.json`, and the harness did not isolate it, so the real user's persisted mode (`quiet`: no popup, stored unread) applied, and the test notifications ("Build finished N") were written into the real history. The scripts now set `XDG_STATE_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` under the private run dir.
+2. Capture redaction (ADR 0106): grim is a capture, and `ui.capture-toasts` defaults to `redact`, so the compositor draws a striped "Private" card over the toast in the screenshot. The scripts set `ui { capture-toasts "show" }`.
+
+With both, toasts draw (dark over colour/warm, light over pale/stripes: `cap/beauty/toasts_all.png`). Toast cards are taller than 48 px, so they are the Regular preset. Rebuilds in the first 120-frame interval while three toasts arrive: 12 to 14 (step-D build: 17), then 0 while they sit, 2 to 3 when they leave. Light toasts are grey and translucent (stripes show through): the light slab is not reached here either.
+
+#### Light slab for cards (Step E/F follow-up)
+
+- A light-scheme pane whose shorter side is at least 56 logical px (a toast card) lifts toward white by `SLAB_LIFT_LIGHT` 0.86 (`glass::slab_lift`, in the existing `lift` uniform: no shader change, no new taps). A light Regular layer sheet gets the same lift (`insert_blur`); windows' bezels and the dark scheme do not. Frost, `frost` and `blur` modes and the Frost-preset window: 0 differing samples against the previous build.
+- Measured clean-glass luminance of a light toast (region without text): over stripes Y 0.63 to 0.71, over colour 0.61 to 0.71 (ink contrast 11.8 to 13.1:1, min 10.2 to 12.0). That is a lighter grey card, not the near-white #f7f7fa slab of the reference: the lift does not reach near-white (the pane's own alpha or the later tint steps hold it back; not traced).
+- The launcher did not change at all: forcing the lift to 1.0 on its Regular layer sheet gave a pixel-identical image (the sheet request is made, with preset Regular and light 1.0, 540x374, yet the glass is not what shows). Not found why; the card visible over stripes looks like a flat translucent veil over crisp stripes. It needs a look at how the launcher draws its card.
+- An earlier floor on the Regular adaptive amount was dropped: it would also whiten light translucent window bezels (Regular).
+- GPU, bar + launcher open, 3 interleaved runs: 0.18 / 0.18 / 0.16 ms (previous build) vs 0.18 / 0.19 / 0.16 (this one).

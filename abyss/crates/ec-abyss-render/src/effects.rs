@@ -361,6 +361,17 @@ impl GlassPreset {
     /// Which preset a glass backdrop gets: shaped controls (bar pills) are
     /// lenses, a window frame's bezel is regular glass, anything else (a large
     /// translucent window body) is frost.
+    /// A single-rectangle layer sheet in glass mode (no input-region shape, no
+    /// bezel), by its shorter side in logical px: a capsule-thin one (the bar
+    /// pill) is a lens, anything bigger (launcher, toasts) is regular glass.
+    pub fn of_sheet(short_logical: f32) -> Self {
+        if short_logical <= SHEET_PILL_MAX_SHORT {
+            GlassPreset::Lens
+        } else {
+            GlassPreset::Regular
+        }
+    }
+
     pub fn of(shaped: bool, bezel: bool) -> Self {
         if shaped {
             GlassPreset::Lens
@@ -371,6 +382,10 @@ impl GlassPreset {
         }
     }
 }
+
+/// Largest shorter side, logical px, of a layer sheet that still counts as a
+/// control pill (the bar is 40): see [`GlassPreset::of_sheet`].
+pub const SHEET_PILL_MAX_SHORT: f32 = 48.0;
 
 /// `src` with the preset's `#define` right after the `radius` uniform (where the
 /// shaped variant's `SHAPED` also goes).
@@ -577,7 +592,13 @@ const float ADAPT_C_OK = 7.0;
 const float ADAPT_C_MIN = 2.0;
 const float ADAPT_REACH = 1.75;
 const float ADAPT_MAX = 0.95;
+#if defined(GLASS_LENS) || defined(GLASS_REGULAR)
+// iOS light glass is a bright, near-opaque slab with dark text: lens and regular
+// let the adaptive tint reach nearly all the way (frost keeps 0.8).
+const float ADAPT_MAX_L = 0.95;
+#else
 const float ADAPT_MAX_L = 0.8;     // light glass keeps some backdrop: it must not read as a white slab
+#endif
 const float ADAPT_EASE = 1.5;      // exponent of the response curve
 const float ADAPT_GHOST = 0.22;    // share of the backdrop's own deviation kept through the correction
 const float ADAPT_GRAIN = 0.03;    // faint frost, scaled by the correction
@@ -778,6 +799,23 @@ const float SMOKE_MIX = 0.28;
 const float LINE_BASE = 0.05;
 const float LINE_TL = 0.13;
 const float LINE_BR = 0.035;
+// Lens and regular only: edge darkening and the lit edge gradient at the rim, a
+// clearer interior (less smoke and adaptive tint) and a faint fill.
+const float EDGE_DARK = 0.26;
+const float EDGE_DARK_L = 0.12;
+const float LINE_IN = 0.34;
+const float RIM_SAT = 1.5;          // rim colour: saturation of the sharp backdrop
+const float RIM_GAIN = 1.7;         // and its brightening, then clamped
+const float RIM_SHARP = 0.8;        // weight (before the light lobes) in the dark scheme: soft, subtle
+const float RIM_SHARP_L = 1.0;      // and in the light one: a crisp edge
+const float RIM_WHITE_L = 0.45;     // light scheme: share of white mixed into the rim colour
+const float RIM_CRISP_PX = 3.0;     // light scheme: width of the crisp edge, physical px
+const float LENS_SMOKE = 0.35;      // share of the smoke the interior keeps
+const float LENS_ADAPT = 0.75;      // share of the adaptive tint it keeps
+const vec3 LENS_FILL_D = vec3(0.17, 0.17, 0.18);
+const vec3 LENS_FILL_L = vec3(1.0, 0.995, 0.985);
+const float LENS_FILL_AMT_D = 0.10;
+const float LENS_FILL_AMT_L = 0.75;
 // Darkening of the 1 px seam where the bezel meets the window.
 const float SEAM = 0.1;
 // The light twins: bright frosted glass with the dark ink drawn on it. Each is
@@ -866,8 +904,11 @@ void main() {
     // fringe is as wide as the local bend is.
     float t = -d / max(band_w, 1.0);
     vec4 color = blurred_at(v_coords);
+    float lens_u = 0.0;  // 0 on the plateau, up to 1 at the rim: where the edge shading runs
+    vec3 rim_sh = color.rgb;  // the sharp backdrop at the rim, for the rim's own colour
     if (t < 1.0) {
         float u = 1.0 - max(t, 0.0);
+        lens_u = u;
         vec2 b = grad * px_uv * (strength * u * u * sqrt(u));
         float k = dispersion;
         if (dual_tex > 0.5) {
@@ -875,6 +916,7 @@ void main() {
                            sharp_at(v_coords + b).g,
                            sharp_at(v_coords + b * (1.0 + k)).b);
             color.rgb = mix(color.rgb, sh, u);
+            rim_sh = sh;
         } else {
             color.r = blurred_at(v_coords + b * (1.0 - k)).r;
             color.g = blurred_at(v_coords + b).g;
@@ -910,12 +952,51 @@ void main() {
     vec3 c = color.rgb;
     c = max(mix(vec3(dot(c, LUMA)), c, mix(SATURATE, SATURATE_L, scheme_light)), 0.0);
     c = c / (1.0 + mix(COMPRESS, COMPRESS_L, scheme_light) * dot(c, LUMA));
-    c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light) * smoke);
+#if defined(GLASS_LENS)
+    float smoke_w = smoke * LENS_SMOKE;
+    float adapt_w = smoke * LENS_ADAPT;
+#else
+    float smoke_w = smoke;
+    float adapt_w = smoke;
+#endif
+    c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light) * smoke_w);
+#if defined(GLASS_LENS)
+    c = mix(c, mix(LENS_FILL_D, LENS_FILL_L, scheme_light), mix(LENS_FILL_AMT_D, LENS_FILL_AMT_L, scheme_light) * smoke);
+#endif
     if (smoke > 0.0) {
-        c = mix(c, adapt_tint(c), smoke);
+        c = mix(c, adapt_tint(c), adapt_w);
     }
     c = mix(c, vec3(1.0), lift);
     c = mix(c, LIFT_L, shade);
+
+#if defined(GLASS_LENS) || defined(GLASS_REGULAR)
+    // Thickness, inside the bevel only (the plateau never gets here): the edge
+    // darkens as the glass thickens toward the rim, and a faint highlight line
+    // sits near the inner end of the band, lit like the hairline. No taps: both
+    // are functions of the distance already computed. `rim` 0 turns them off too.
+    if (lens_u > 0.0) {
+        float rs = min(rim * 2.0, 1.0);
+        c *= 1.0 - mix(EDGE_DARK, EDGE_DARK_L, scheme_light) * lens_u * lens_u * rs;
+        // One lit edge: a soft gradient that falls off over the outer half of
+        // the band from the hairline (drawn below), lit like it. No separate line.
+        float fall = 1.0 - clamp(-d / (0.5 * band_w), 0.0, 1.0);
+        float lit = LINE_IN * (0.35 + max(dot(grad, LIGHT), 0.0) + 0.5 * max(dot(grad, -LIGHT), 0.0));
+        vec3 ltint = rim_color.rgb / max(rim_color.a, 0.0001);
+        c = mix(c, ltint, clamp(fall * fall * lit * rim_color.a * rs, 0.0, 1.0));
+        // The rim carries the backdrop's own colour: the sharp backdrop, brighter and
+        // more saturated, lightens the band (never darkens it), by the same lit
+        // falloff. Strong over light or colourful backdrops, nearly nothing over dark.
+        // Dark scheme: a soft band (the outer half of the bevel), subtle. Light
+        // scheme: a crisp ~3 px edge, brighter and biased to white (Apple's light
+        // glass shows a clearly visible rim even over a dark backdrop).
+        vec3 rb = mix(vec3(dot(rim_sh, LUMA)), rim_sh, RIM_SAT) * RIM_GAIN;
+        rb = mix(rb, vec3(0.95), scheme_light * RIM_WHITE_L);
+        float crisp = 1.0 - smoothstep(0.0, RIM_CRISP_PX, -d);
+        float dirl = clamp(0.35 + max(dot(grad, LIGHT), 0.0) + 0.5 * max(dot(grad, -LIGHT), 0.0), 0.0, 1.2);
+        float rw = mix(RIM_SHARP * fall * fall, RIM_SHARP_L * crisp, scheme_light) * dirl * rs;
+        c = mix(c, max(c, clamp(rb, 0.0, 1.0)), clamp(rw, 0.0, 1.0));
+    }
+#endif
 
     // Hairline: a 1.25 px band inside the mask edge.
     if (-d < 1.25) {
@@ -943,6 +1024,16 @@ void main() {
 const GLASS_BEVEL_FRACTION: f32 = 0.3;
 /// The same for a lens or regular preset.
 const LENS_BEVEL_FRACTION: f32 = 0.4;
+/// Largest rim bend of a lens or a bar-less regular shape, as a share of its
+/// shorter side: a 30 px cell bends by under 5 px, a 130 px pill keeps the full
+/// configured strength.
+pub const LENS_STRENGTH_FRACTION: f32 = 0.16;
+
+/// The rim bend of a lens shape whose shorter side is `short` physical px:
+/// `strength`, capped at [`LENS_STRENGTH_FRACTION`] of `short`.
+pub fn lens_strength(strength: f32, short: f32) -> f32 {
+    strength.min(short.max(1.0) * LENS_STRENGTH_FRACTION)
+}
 /// Share of the dispersion setting that becomes the per-channel bend scale `k`
 /// (red `1 - k`, blue `1 + k`).
 pub const DISPERSION_K: f32 = 0.12;
@@ -1246,10 +1337,14 @@ pub fn glass_uniforms_lifted_into(
     let (strength, bevel) = if inner > 0.0 || bevel <= 0.0 {
         (strength, bevel)
     } else if preset != GlassPreset::Frost {
-        // A lens keeps its full bend on a small shape: only the band is
-        // capped, at LENS_BEVEL_FRACTION of the shorter side.
+        // The band is capped at LENS_BEVEL_FRACTION of the shorter side and
+        // the bend at LENS_STRENGTH_FRACTION of it, so a small widget bends
+        // gently and shows what is directly behind it, not its neighbours.
         let short = rect.size.w.min(rect.size.h).max(1) as f32;
-        (strength, bevel.min(short * LENS_BEVEL_FRACTION))
+        (
+            lens_strength(strength, short),
+            bevel.min(short * LENS_BEVEL_FRACTION),
+        )
     } else {
         let short = rect.size.w.min(rect.size.h).max(1) as f32;
         let capped = bevel.min(short * GLASS_BEVEL_FRACTION);
@@ -1333,6 +1428,18 @@ const ADAPT_REACH: f32 = 1.75;
 const ADAPT_MAX: f32 = 0.95;
 /// The cap on light glass: it keeps some backdrop instead of a white slab.
 const ADAPT_MAX_L: f32 = 0.8;
+/// Lens and regular light glass is a near-opaque slab (iOS light): the shader's
+/// `ADAPT_MAX_L` for those presets.
+const ADAPT_MAX_L_SLAB: f32 = 0.95;
+
+/// The light-scheme cap of `preset` (0.95 lens and regular, 0.8 frost).
+pub fn adaptive_cap_light(preset: GlassPreset) -> f32 {
+    if preset == GlassPreset::Frost {
+        ADAPT_MAX_L
+    } else {
+        ADAPT_MAX_L_SLAB
+    }
+}
 /// Exponent of the response curve: 1 - (1 - a)^EASE steepens small shifts.
 const ADAPT_EASE: f32 = 1.5;
 /// Share of the backdrop's own luma deviation (centre minus local mean) kept
@@ -1374,19 +1481,34 @@ pub fn adaptive_luma(mean: f32, lo: f32, hi: f32, light: f32) -> f32 {
 /// `strength` the configured strength. 0 when the strength is 0 or the text
 /// already contrasts with the backdrop. Mirrors `adapt_amount` in the shader.
 pub fn adaptive_amount(luma: f32, light: f32, strength: f32) -> f32 {
+    adaptive_amount_for(GlassPreset::Frost, luma, light, strength)
+}
+
+/// [`adaptive_amount`] under `preset`'s light-scheme cap.
+pub fn adaptive_amount_for(preset: GlassPreset, luma: f32, light: f32, strength: f32) -> f32 {
     let lb = luma.clamp(0.0, 1.0).powi(2);
     let lt = ADAPT_TEXT_DARK + (ADAPT_TEXT_LIGHT - ADAPT_TEXT_DARK) * light;
     let contrast = (lb.max(lt) + 0.05) / (lb.min(lt) + 0.05);
     let need = ((ADAPT_CONTRAST_OK - contrast) / (ADAPT_CONTRAST_OK - ADAPT_CONTRAST_MIN)).clamp(0.0, 1.0);
-    adaptive_stacked(need * strength.max(0.0) * ADAPT_REACH, 1.0, light)
+    adaptive_stacked_for(
+        adaptive_cap_light(preset),
+        need * strength.max(0.0) * ADAPT_REACH,
+        1.0,
+        light,
+    )
 }
 
 /// The response curve for a raw shift `a` under `layers` glass layers (1 a
 /// window, 2 a pane on a window's glass): each layer multiplies the exponent.
 /// `light` is the scheme (light glass has the lower cap).
 pub fn adaptive_stacked(a: f32, layers: f32, light: f32) -> f32 {
+    adaptive_stacked_for(ADAPT_MAX_L, a, layers, light)
+}
+
+/// [`adaptive_stacked`] with the light-scheme cap `cap_light`.
+pub fn adaptive_stacked_for(cap_light: f32, a: f32, layers: f32, light: f32) -> f32 {
     (1.0 - (1.0 - a).max(0.0).powf(ADAPT_EASE * layers.max(1.0)))
-        .min(ADAPT_MAX + (ADAPT_MAX_L - ADAPT_MAX) * light)
+        .min(ADAPT_MAX + (cap_light - ADAPT_MAX) * light)
 }
 
 /// The luma added back to a corrected pixel: `dev` (its centre-minus-mean
@@ -1451,11 +1573,27 @@ pub fn preset_look(preset: GlassPreset, glass: &ec_abyss_config::GlassBlur, upsc
 /// frost member's reach and the reach does not depend on the size of the union
 /// of its tier's crops.
 pub fn preset_reach(preset: GlassPreset, glass: &ec_abyss_config::GlassBlur, upscale: f64) -> i32 {
+    preset_reach_for(preset, glass, upscale, f32::MAX)
+}
+
+/// [`preset_reach`] for members whose shorter side is at most `short` physical
+/// px (a lens's bend is capped by it, see [`lens_strength`]).
+pub fn preset_reach_for(
+    preset: GlassPreset,
+    glass: &ec_abyss_config::GlassBlur,
+    upscale: f64,
+    short: f32,
+) -> i32 {
     match preset {
         GlassPreset::Frost => glass_reach(glass.refraction, glass.dispersion, upscale),
         _ => {
             let look = preset_look(preset, glass, upscale);
-            (look.strength.max(0.0) * (1.0 + look.dispersion) * 1.05).ceil() as i32 + 1
+            let strength = if preset == GlassPreset::Lens {
+                lens_strength(look.strength, short)
+            } else {
+                look.strength
+            };
+            (strength.max(0.0) * (1.0 + look.dispersion) * 1.05).ceil() as i32 + 1
         }
     }
 }
@@ -2219,6 +2357,45 @@ mod tests {
         assert_eq!(GlassPreset::of(true, true), GlassPreset::Lens);
         assert_eq!(GlassPreset::of(false, true), GlassPreset::Regular);
         assert_eq!(GlassPreset::of(false, false), GlassPreset::Frost);
+        // A layer sheet: the 40 px bar is a lens, a launcher or toast regular.
+        assert_eq!(GlassPreset::of_sheet(40.0), GlassPreset::Lens);
+        assert_eq!(GlassPreset::of_sheet(48.0), GlassPreset::Lens);
+        assert_eq!(GlassPreset::of_sheet(72.0), GlassPreset::Regular);
+        assert_eq!(GlassPreset::of_sheet(370.0), GlassPreset::Regular);
+    }
+
+    /// The CPU mirror's light cap agrees with the shader's per-preset cap.
+    #[test]
+    fn adaptive_caps_match_the_shader() {
+        for preset in GlassPreset::ALL {
+            assert_eq!(preset != GlassPreset::Frost, adaptive_cap_light(preset) > 0.9);
+        }
+        assert!(BACKDROP_HEAD.contains("const float ADAPT_MAX_L = 0.95;"));
+        assert!(BACKDROP_HEAD.contains("const float ADAPT_MAX_L = 0.8;"));
+        // Light, a dark backdrop: the slab reaches further than frost.
+        let slab = adaptive_amount_for(GlassPreset::Lens, 0.0, 1.0, 1.0);
+        let frost = adaptive_amount_for(GlassPreset::Frost, 0.0, 1.0, 1.0);
+        assert!(
+            (slab - 0.95).abs() < 1e-4 && (frost - 0.8).abs() < 1e-4,
+            "{slab} {frost}"
+        );
+        assert_eq!(adaptive_amount(0.0, 1.0, 1.0), frost);
+    }
+
+    /// A small lens bends by a share of its shorter side, a big one keeps the
+    /// configured strength, and the reach follows the capped bend.
+    #[test]
+    fn small_lenses_bend_gently() {
+        assert!((lens_strength(28.0, 30.0) - 4.8).abs() < 1e-4);
+        assert_eq!(lens_strength(28.0, 200.0), 28.0);
+        assert!(lens_strength(28.0, 0.0) <= LENS_STRENGTH_FRACTION);
+        let glass = ec_abyss_config::GlassBlur::default();
+        let small = preset_reach_for(GlassPreset::Lens, &glass, 1.0, 30.0);
+        let big = preset_reach_for(GlassPreset::Lens, &glass, 1.0, 400.0);
+        assert!(small < big);
+        assert_eq!(big, preset_reach(GlassPreset::Lens, &glass, 1.0));
+        // The bend never reaches farther than the member is thick.
+        assert!(small as f32 <= 30.0 * LENS_STRENGTH_FRACTION * 1.3 + 3.0);
     }
 
     /// A member's reach is its own largest displacement (plus its own
