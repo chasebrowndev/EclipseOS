@@ -384,6 +384,8 @@ pub enum Msg {
     ResetLayout,
     /// Apply (asks for authorisation via the compositor prompt).
     Apply,
+    /// Revert: every pending edit back to what the machine has now.
+    Revert,
     /// Reset to default.
     Reset,
     /// The helper finished (internal).
@@ -507,6 +509,19 @@ fn runner() -> Arc<Runner> {
 
 pub fn update(app: &mut App, m: Msg) -> Task<Message> {
     let p = &mut app.login;
+    // An old result is not about what the page says now.
+    if matches!(
+        m,
+        Msg::SetLayout(_)
+            | Msg::ResetLayout
+            | Msg::Greeting(_)
+            | Msg::Clock(_)
+            | Msg::UseTheme(_)
+            | Msg::UseShippedWallpaper
+            | Msg::Revert
+    ) {
+        p.last = None;
+    }
     match m {
         Msg::Browse => {
             return Task::perform(crate::portal::pick_image(), |r| msg(Msg::Browsed(r)));
@@ -564,6 +579,17 @@ pub fn update(app: &mut App, m: Msg) -> Task<Message> {
         }
         Msg::ResetLayout => p.layout = Layout::default(),
         Msg::Apply => return run(p, Action::Apply, runner()),
+        Msg::Revert => {
+            if !p.applying {
+                // Whatever a conversion in flight brings is stale now.
+                p.generation += 1;
+                p.converting = false;
+                p.path.clear();
+                p.image_error = None;
+                let current = p.current.clone();
+                p.adopt(current);
+            }
+        }
         Msg::Reset => return run(p, Action::Reset, runner()),
         Msg::Done(action, outcome) => {
             p.applying = false;
@@ -616,6 +642,45 @@ fn clock_label(c: Option<Clock>) -> &'static str {
 /// Unsent edits: anything Apply would change on the machine.
 fn dirty(p: &LoginScreen) -> bool {
     matches!(p.wallpaper, Wallpaper::New(_)) || p.pending() != p.stored()
+}
+
+/// Which of the page's edits differ from what the machine has, in the order
+/// the apply bar names them.
+fn changes(p: &LoginScreen) -> Vec<&'static str> {
+    let (now, then) = (p.pending(), p.stored());
+    let mut out = Vec::new();
+    if now.layout != then.layout {
+        out.push("layout");
+    }
+    if now.greeting != then.greeting {
+        out.push("greeting");
+    }
+    if now.clock != then.clock {
+        out.push("clock");
+    }
+    if matches!(p.wallpaper, Wallpaper::New(_)) || now.wallpaper != then.wallpaper {
+        out.push("wallpaper");
+    }
+    if now.theme != then.theme {
+        out.push("colours");
+    }
+    out
+}
+
+/// The apply bar's few words: "Layout and greeting changed". `None` when
+/// nothing differs.
+fn summary(p: &LoginScreen) -> Option<String> {
+    let c = changes(p);
+    let list = match c.as_slice() {
+        [] => return None,
+        [a] => (*a).to_owned(),
+        [a, b] => format!("{a} and {b}"),
+        [a, b, rest @ ..] if rest.len() == 1 => format!("{a}, {b} and {}", rest[0]),
+        [a, b, rest @ ..] => format!("{a}, {b} and {} more", rest.len()),
+    };
+    let mut chars = list.chars();
+    let first = chars.next()?.to_uppercase().collect::<String>();
+    Some(format!("{first}{} changed", chars.as_str()))
 }
 
 /// The header's two-line chip: what the machine has now.
@@ -729,17 +794,25 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
             ]
             .spacing(space::CONTROL_GAP)
             .align_y(Alignment::Center),
-            container(layout_view::editor(&p.layout, skin(p), |l| msg(Msg::SetLayout(
-                l
-            ))))
+            container(
+                layout_view::editor(&p.layout, skin(p), |l| msg(Msg::SetLayout(l))).bar(layout_view::Bar {
+                    summary: summary(p),
+                    note: p.last.as_ref().map(|(a, o)| (o.message(*a), o.is_success())),
+                    can_apply: p.can_apply(),
+                    applying: p.applying,
+                    on_apply: msg(Msg::Apply),
+                    on_revert: msg(Msg::Revert),
+                })
+            )
             .width(Length::Fill)
             .align_x(Alignment::Center),
             small(
-                "Drag a tile to move it, pull its corner to resize it. Tap or drag a tile below to add it. \
+                "Drag a tile to move it; pull any edge or corner to resize it. Tap or drag a tile below to add it. \
                  Nothing changes on this computer until you press Apply."
             )
             .style(theme::text_tertiary),
         ]
+        .extend(result_banner(p))
         .spacing(space::ROW_Y),
     )
 }
@@ -907,34 +980,22 @@ fn settings(p: &LoginScreen) -> Element<'_, Message, Theme> {
     )
 }
 
-/// Apply, the quiet Reset, and the one line about the password prompt.
+/// The quiet Reset and the one line about the password prompt. Apply itself
+/// lives in the editor's bar, where the edits are.
 fn actions(p: &LoginScreen) -> Element<'_, Message, Theme> {
-    let apply: Element<'_, Message, Theme> = if p.applying {
-        pick_pill("Waiting for authorisation\u{2026}", false, None)
-    } else if p.can_apply() {
-        // Lifted white while there is something to send; never yellow.
-        pick_pill("Apply", dirty(p), Some(msg(Msg::Apply)))
-    } else {
-        pick_pill("Apply", false, None)
-    };
     let reset = button(small("Reset to default").font(font::UI_MEDIUM))
         .padding([space::PILL_Y, space::PILL_X])
         .on_press_maybe(p.can_reset().then(|| msg(Msg::Reset)))
         .style(theme::link);
-    let mut col = column![row![apply, reset]
-        .spacing(space::CONTROL_GAP)
-        .align_y(Alignment::Center),]
-    .spacing(space::ROW_Y);
-    if let Some(banner) = result_banner(p) {
-        col = col.push(banner);
-    }
-    col.push(
+    column![
+        reset,
         small(
             "Apply asks for an administrator password in a system prompt drawn by the compositor, \
              not here. It changes the login screen for every user of this computer.",
         )
         .style(theme::text_tertiary),
-    )
+    ]
+    .spacing(space::ROW_Y)
     .into()
 }
 
@@ -957,9 +1018,9 @@ fn result_banner(p: &LoginScreen) -> Option<Element<'_, Message, Theme>> {
 /// Every block after the header.
 ///
 /// Shape: the preview as a spatial canvas (glass panel) -> the settings as one
-/// inset list of hairlined rows -> the unboxed Apply line, with the result
-/// banner (inset, only after a run) directly under the buttons so it shows
-/// where the person just clicked and nothing above it moves. No two adjacent
+/// inset list of hairlined rows -> the unboxed Reset line. Apply is the editor's own
+/// bar, so it is where the edits are; the result banner (inset, only after a
+/// run) sits under it, where the person just clicked. No two adjacent
 /// blocks share a silhouette.
 ///
 /// Accent ledger: one live yellow, the "Use my theme" toggle while it is on:
@@ -1009,6 +1070,13 @@ pub fn preview_env(p: &mut LoginScreen) {
                     "bw" => {
                         for k in [ec_layout::Kind::Battery, ec_layout::Kind::Wifi] {
                             l = layout_edit::add(&l, k, None).unwrap_or(l);
+                        }
+                    }
+                    // Every tile at its smallest, for the mocks' degradation.
+                    "tiny" => {
+                        for tile in &mut l.tiles {
+                            let (w, h) = tile.kind.min_size();
+                            tile.rect = ec_layout::Rect::new(tile.rect.x, tile.rect.y, w, h);
                         }
                     }
                     "bare" => {
@@ -1142,6 +1210,41 @@ mod tests {
     fn default_page_sends_the_shipped_look() {
         let p = LoginScreen::default();
         assert_eq!(p.pending(), Settings::default());
+    }
+
+    #[test]
+    fn the_bar_names_what_changed_in_a_few_words() {
+        let mut p = LoginScreen::default();
+        assert_eq!(summary(&p), None);
+        p.layout = layout_edit::remove(&p.layout, ec_layout::Kind::Power).unwrap();
+        assert_eq!(summary(&p).as_deref(), Some("Layout changed"));
+        p.greeting = "hi".into();
+        assert_eq!(summary(&p).as_deref(), Some("Layout and greeting changed"));
+        p.clock = Some(Clock::Time24);
+        assert_eq!(summary(&p).as_deref(), Some("Layout, greeting and clock changed"));
+        p.wallpaper = Wallpaper::New(convert_bytes(&png(4, 4)).unwrap());
+        assert_eq!(
+            summary(&p).as_deref(),
+            Some("Layout, greeting and 2 more changed")
+        );
+    }
+
+    #[test]
+    fn revert_returns_every_pending_edit_to_the_applied_state() {
+        let mut app = App::new();
+        app.login.adopt(Some(Settings {
+            greeting: Some("stored".into()),
+            ..Settings::default()
+        }));
+        app.login.greeting = "edited".into();
+        app.login.clock = Some(Clock::Date12);
+        app.login.layout = layout_edit::remove(&app.login.layout, ec_layout::Kind::Power).unwrap();
+        app.login.wallpaper = Wallpaper::Shipped;
+        assert!(dirty(&app.login));
+        let _ = update(&mut app, Msg::Revert);
+        assert!(!dirty(&app.login));
+        assert_eq!(app.login.greeting, "stored");
+        assert_eq!(summary(&app.login), None);
     }
 
     #[test]

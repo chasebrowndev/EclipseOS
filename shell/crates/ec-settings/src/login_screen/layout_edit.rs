@@ -7,7 +7,7 @@
 //! Every position and size comes out of [`ec_layout::place`] or
 //! [`ec_layout::resize`]; nothing here does its own overlap arithmetic.
 
-use ec_layout::{place, resize, validate, Kind, Layout, Rect, REQUIRED};
+use ec_layout::{place, resize_anchored, validate, Kind, Layout, Rect, REQUIRED};
 
 /// The tiles a person may add or remove, in the order the tray offers them.
 /// Users and Password are required and never appear here; NowPlaying needs a
@@ -20,14 +20,49 @@ pub const OPTIONAL: [Kind; 5] = [
     Kind::Greeting,
 ];
 
-/// Which part of a tile is held to resize it. Resizing keeps the top-left
-/// corner (that is what [`ec_layout::resize`] does), so the handles are the
-/// ones on the far edges.
+/// Which part of a tile is held to resize it: an edge or a corner. The edge
+/// the handle is on moves; the opposite one stays, so a west or north drag
+/// resizes from the far side.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Handle {
-    East,
+    North,
     South,
+    East,
+    West,
+    NorthEast,
+    NorthWest,
     SouthEast,
+    SouthWest,
+}
+
+impl Handle {
+    #[cfg(test)]
+    pub const ALL: [Handle; 8] = [
+        Handle::North,
+        Handle::South,
+        Handle::East,
+        Handle::West,
+        Handle::NorthEast,
+        Handle::NorthWest,
+        Handle::SouthEast,
+        Handle::SouthWest,
+    ];
+
+    pub fn west(self) -> bool {
+        matches!(self, Handle::West | Handle::NorthWest | Handle::SouthWest)
+    }
+
+    pub fn east(self) -> bool {
+        matches!(self, Handle::East | Handle::NorthEast | Handle::SouthEast)
+    }
+
+    pub fn north(self) -> bool {
+        matches!(self, Handle::North | Handle::NorthWest | Handle::NorthEast)
+    }
+
+    pub fn south(self) -> bool {
+        matches!(self, Handle::South | Handle::SouthWest | Handle::SouthEast)
+    }
 }
 
 /// May this tile be taken off the screen?
@@ -86,22 +121,67 @@ pub fn drag_to(l: &Layout, kind: Kind, x: i32, y: i32) -> Option<Rect> {
     place(l, kind, Rect::new(x, y, cur.w, cur.h))
 }
 
-/// Where `kind` lands when a handle is dragged so its far corner is at cell
-/// `(far_x, far_y)` (exclusive, so a tile spanning cells 8..16 has
-/// `far_x == 16`). The held edge only changes the axes it owns.
-pub fn resize_to(l: &Layout, kind: Kind, handle: Handle, far_x: i32, far_y: i32) -> Option<Rect> {
+/// Where `kind` lands when `handle` is dragged to cell `(px, py)`: the held
+/// edge (or corner) goes to that grid line (exclusive for the east and south
+/// edges, so a tile spanning cells 8..16 has its east edge at 16), and the edge
+/// opposite it stays. An axis the handle does not own is untouched.
+pub fn resize_to(l: &Layout, kind: Kind, handle: Handle, px: i32, py: i32) -> Option<Rect> {
     let cur = l.get(kind)?;
-    let w = if handle == Handle::South {
-        cur.w
-    } else {
-        far_x - cur.x
-    };
-    let h = if handle == Handle::East {
-        cur.h
-    } else {
-        far_y - cur.y
-    };
-    resize(l, kind, Rect::new(cur.x, cur.y, w, h))
+    let (own_x, own_y) = (handle.west() || handle.east(), handle.north() || handle.south());
+    let (mut px, mut py) = (px, py);
+    loop {
+        let (mut x0, mut x1) = (cur.x, cur.x + cur.w);
+        let (mut y0, mut y1) = (cur.y, cur.y + cur.h);
+        if handle.west() {
+            x0 = px;
+        }
+        if handle.east() {
+            x1 = px;
+        }
+        if handle.north() {
+            y0 = py;
+        }
+        if handle.south() {
+            y1 = py;
+        }
+        let r = resize_anchored(
+            l,
+            kind,
+            Rect::new(x0, y0, x1 - x0, y1 - y0),
+            handle.west(),
+            handle.north(),
+        )?;
+        // `ec_layout` clears a neighbour by shrinking whichever side is
+        // longer, which for an edge handle can be the axis it does not own.
+        // Pull the held edge back toward the tile until only its own axis
+        // changes.
+        let kept = if own_x && !own_y {
+            (r.y, r.h) == (cur.y, cur.h)
+        } else if own_y && !own_x {
+            (r.x, r.w) == (cur.x, cur.w)
+        } else {
+            true
+        };
+        if kept {
+            return Some(r);
+        }
+        let edge = if own_x {
+            if handle.west() {
+                cur.x
+            } else {
+                cur.x + cur.w
+            }
+        } else if handle.north() {
+            cur.y
+        } else {
+            cur.y + cur.h
+        };
+        let held = if own_x { &mut px } else { &mut py };
+        if *held == edge {
+            return Some(cur);
+        }
+        *held += (edge - *held).signum();
+    }
 }
 
 /// `l` with `kind` moved to `rect`. `None` if the result would not validate.
@@ -240,31 +320,94 @@ mod tests {
     }
 
     #[test]
-    fn resize_keeps_the_corner_and_the_axes_the_handle_does_not_own() {
+    fn resize_keeps_the_opposite_edge_and_the_axes_the_handle_does_not_own() {
         let l = Layout::default();
         let cur = l.get(Kind::Power).unwrap();
         let r = resize_to(&l, Kind::Power, Handle::East, cur.x + 3, cur.y + 9).unwrap();
         assert_eq!((r.x, r.y, r.h), (cur.x, cur.y, cur.h));
         let r = resize_to(&l, Kind::Clock, Handle::South, 99, 3).unwrap();
         assert_eq!(r.w, l.get(Kind::Clock).unwrap().w);
+        // West and north drags keep the east and south edges.
+        let u = l.get(Kind::Users).unwrap();
+        let r = resize_to(&l, Kind::Users, Handle::West, u.x - 3, 0).unwrap();
+        assert_eq!((r.x + r.w, r.y, r.h), (u.x + u.w, u.y, u.h));
+        assert!(r.x < u.x);
+        let r = resize_to(&l, Kind::Password, Handle::North, 0, 8).unwrap();
+        let pw = l.get(Kind::Password).unwrap();
+        assert_eq!((r.y + r.h, r.x, r.w), (pw.y + pw.h, pw.x, pw.w));
+        let r = resize_to(&l, Kind::Users, Handle::NorthWest, u.x - 2, u.y - 1).unwrap();
+        assert_eq!((r.x + r.w, r.y + r.h), (u.x + u.w, u.y + u.h));
     }
 
     #[test]
-    fn resize_is_clamped_by_neighbours_the_grid_and_the_minimum() {
+    fn every_edge_and_corner_drag_stays_valid_and_above_the_minimum() {
         let l = Layout::default();
-        for kind in [Kind::Clock, Kind::Users, Kind::Password, Kind::Power] {
-            for h in [Handle::East, Handle::South, Handle::SouthEast] {
-                for fx in -2..COLS + 4 {
-                    for fy in -2..ROWS + 4 {
-                        if let Some(r) = resize_to(&l, kind, h, fx, fy) {
-                            ok(&commit(&l, kind, r).unwrap());
-                            let (mw, mh) = kind.min_size();
-                            assert!(r.w >= mw && r.h >= mh);
+        for kind in [
+            Kind::Clock,
+            Kind::Users,
+            Kind::Password,
+            Kind::Power,
+            Kind::Greeting,
+        ] {
+            let (mw, mh) = kind.min_size();
+            for h in Handle::ALL {
+                for px in -3..COLS + 4 {
+                    for py in -3..ROWS + 4 {
+                        if let Some(r) = resize_to(&l, kind, h, px, py) {
+                            ok(&commit(&l, kind, r)
+                                .unwrap_or_else(|| panic!("{kind:?} {h:?} {px},{py} {r:?}")));
+                            assert!(r.w >= mw && r.h >= mh, "{kind:?} {h:?} {r:?}");
+                            assert!(r.in_grid());
                         }
                     }
                 }
             }
         }
+    }
+
+    #[test]
+    fn an_edge_drag_only_ever_changes_its_own_axis() {
+        let l = Layout::default();
+        for kind in [
+            Kind::Clock,
+            Kind::Users,
+            Kind::Password,
+            Kind::Power,
+            Kind::Greeting,
+        ] {
+            let cur = l.get(kind).unwrap();
+            for h in [Handle::North, Handle::South, Handle::East, Handle::West] {
+                for p in -3..COLS + 4 {
+                    let r = resize_to(&l, kind, h, p, p).unwrap_or(cur);
+                    if matches!(h, Handle::North | Handle::South) {
+                        assert_eq!((r.x, r.w), (cur.x, cur.w), "{kind:?} {h:?} {p}");
+                    } else {
+                        assert_eq!((r.y, r.h), (cur.y, cur.h), "{kind:?} {h:?} {p}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_drag_past_the_far_side_stops_at_the_minimum_not_inside_out() {
+        let l = Layout::default();
+        let u = l.get(Kind::Users).unwrap();
+        let (mw, _) = Kind::Users.min_size();
+        let r = resize_to(&l, Kind::Users, Handle::West, u.x + u.w + 5, 0).unwrap();
+        assert_eq!(r.w, mw);
+        assert_eq!(r.x + r.w, u.x + u.w, "the east edge held");
+        let r = resize_to(&l, Kind::Users, Handle::East, u.x - 5, 0).unwrap();
+        assert_eq!((r.x, r.w), (u.x, mw));
+    }
+
+    #[test]
+    fn resize_is_clamped_by_neighbours() {
+        // Pulling Clock's south edge into Users stops short of it.
+        let l = Layout::default();
+        let r = resize_to(&l, Kind::Clock, Handle::South, 0, 12).unwrap();
+        let users = l.get(Kind::Users).unwrap();
+        assert!(r.y + r.h <= users.y);
     }
 
     #[test]

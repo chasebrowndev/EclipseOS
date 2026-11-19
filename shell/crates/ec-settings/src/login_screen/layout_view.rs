@@ -22,7 +22,7 @@ use ec_layout::{Kind, Layout, Rect, COLS, ROWS};
 use iced::advanced::image::Renderer as _;
 use iced::advanced::layout::{self, Layout as NodeLayout};
 use iced::advanced::renderer;
-use iced::advanced::text::{self, LineHeight, Renderer as _, Shaping, Wrapping};
+use iced::advanced::text::{self, LineHeight, Paragraph as _, Renderer as _, Shaping, Wrapping};
 use iced::advanced::widget::{tree, Tree, Widget};
 use iced::advanced::{Clipboard, Renderer as _, Shell};
 use iced::{
@@ -48,10 +48,26 @@ pub struct Skin {
     pub backdrop: Option<iced::widget::image::Handle>,
 }
 
+/// The apply bar under the tray: what differs from the machine, and the two
+/// ways out of it. `summary` is `None` while nothing differs, and the bar
+/// slides away.
+#[derive(Clone)]
+pub struct Bar<Message> {
+    pub summary: Option<String>,
+    /// What the slot says while nothing differs, if not its default: the last
+    /// run's result, and whether it went well.
+    pub note: Option<(String, bool)>,
+    pub can_apply: bool,
+    pub applying: bool,
+    pub on_apply: Message,
+    pub on_revert: Message,
+}
+
 pub struct Editor<'a, Message> {
     layout: &'a Layout,
     skin: Skin,
     on_change: Box<dyn Fn(Layout) -> Message + 'a>,
+    bar: Option<Bar<Message>>,
 }
 
 pub fn editor<'a, Message>(
@@ -63,6 +79,25 @@ pub fn editor<'a, Message>(
         layout,
         skin,
         on_change: Box::new(on_change),
+        bar: None,
+    }
+}
+
+impl<'a, Message> Editor<'a, Message> {
+    /// Give the editor its apply bar.
+    pub fn bar(mut self, bar: Bar<Message>) -> Self {
+        self.bar = Some(bar);
+        self
+    }
+
+    fn bar_label(&self) -> Option<&'static str> {
+        self.bar.as_ref().map(|b| {
+            if b.applying {
+                "Waiting for authorisation\u{2026}"
+            } else {
+                "Apply"
+            }
+        })
     }
 }
 
@@ -80,6 +115,15 @@ struct Geo {
     chips: Vec<(Kind, Rectangle)>,
     /// Where the tray starts.
     tray_y: f32,
+    /// The apply bar and its two buttons (revert, apply), when there is one.
+    bar: Option<BarGeo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct BarGeo {
+    rect: Rectangle,
+    revert: Rectangle,
+    apply: Rectangle,
 }
 
 fn kind_label(kind: Kind) -> &'static str {
@@ -95,13 +139,52 @@ fn kind_label(kind: Kind) -> &'static str {
     }
 }
 
-fn chip_width(kind: Kind) -> f32 {
-    let n = kind_label(kind).chars().count() as f32;
-    // The plus mark, then the label.
-    2.0 * t::CHIP_PAD + t::CHIP_SIZE + n * t::CHIP_SIZE * t::CHIP_GLYPH
+type Measure<'a> = &'a dyn Fn(&str, f32, iced::Font) -> f32;
+
+/// The width of `s` as the renderer will set it. Cached: the same few strings
+/// are asked for on every event and frame.
+fn measure(s: &str, size: f32, f: iced::Font) -> f32 {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    thread_local! {
+        static CACHE: RefCell<HashMap<(String, u32, iced::Font), f32>> = RefCell::new(HashMap::new());
+    }
+    let key = (s.to_owned(), size.to_bits(), f);
+    if let Some(w) = CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return w;
+    }
+    let w = <iced::Renderer as text::Renderer>::Paragraph::with_text(text::Text {
+        content: s,
+        bounds: Size::new(f32::INFINITY, size * 2.0),
+        size: Pixels(size),
+        line_height: LineHeight::Relative(1.0),
+        font: f,
+        align_x: text::Alignment::Left,
+        align_y: alignment::Vertical::Top,
+        shaping: Shaping::Basic,
+        wrapping: Wrapping::None,
+    })
+    .min_width();
+    CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 1024 {
+            c.clear();
+        }
+        c.insert(key, w);
+    });
+    w
 }
 
-fn geo(width: f32, offered: &[Kind]) -> Geo {
+fn chip_width(kind: Kind, m: Measure<'_>) -> f32 {
+    // The plus mark, then the label.
+    2.0 * t::CHIP_PAD + t::CHIP_SIZE + m(kind_label(kind), t::CHIP_SIZE, font::UI_MEDIUM).ceil()
+}
+
+fn geo(width: f32, offered: &[Kind], bar_label: Option<&str>) -> Geo {
+    geo_with(width, offered, bar_label, &measure)
+}
+
+fn geo_with(width: f32, offered: &[Kind], bar_label: Option<&str>, m: Measure<'_>) -> Geo {
     let w = width.clamp(0.0, t::MAX_W);
     let pw = (w - 2.0 * t::PAD).max(1.0);
     let pv = Rectangle::new(Point::new(t::PAD, t::PAD), Size::new(pw, pw * t::ASPECT));
@@ -109,7 +192,7 @@ fn geo(width: f32, offered: &[Kind]) -> Geo {
     let (mut x, mut y) = (t::PAD, tray_y);
     let mut chips = Vec::with_capacity(offered.len());
     for &k in offered {
-        let cw = chip_width(k);
+        let cw = chip_width(k, m);
         if x > t::PAD && x + cw > w - t::PAD {
             x = t::PAD;
             y += t::CHIP_H + t::CHIP_GAP;
@@ -117,14 +200,51 @@ fn geo(width: f32, offered: &[Kind]) -> Geo {
         chips.push((k, Rectangle::new(Point::new(x, y), Size::new(cw, t::CHIP_H))));
         x += cw + t::CHIP_GAP;
     }
+    let mut h = y + t::CHIP_H + t::PAD;
+    let bar = bar_label.map(|label| {
+        // Beside the last row of chips when there is room for it (the tray is
+        // short, so most of the time), else a row of its own.
+        let free = w - t::PAD - if chips.is_empty() { t::PAD } else { x };
+        let beside = free >= t::BAR_MIN_W;
+        let rect = if beside {
+            let lift = (t::BAR_H - t::CHIP_H) / 2.0;
+            for (_, r) in chips.iter_mut().filter(|(_, r)| r.y == y) {
+                r.y += lift;
+            }
+            h = y + t::BAR_H + t::PAD;
+            let x0 = if chips.is_empty() { t::PAD } else { x };
+            Rectangle::new(Point::new(x0, y), Size::new(w - t::PAD - x0, t::BAR_H))
+        } else {
+            let r = Rectangle::new(
+                Point::new(t::PAD, y + t::CHIP_H + t::BAR_GAP),
+                Size::new(pw, t::BAR_H),
+            );
+            h = r.y + r.height + t::PAD;
+            r
+        };
+        let btn = |s: &str| m(s, t::BAR_TEXT, font::UI_MEDIUM).ceil() + 2.0 * t::BTN_PAD;
+        let by = rect.y + (rect.height - t::BTN_H) / 2.0;
+        let apply_w = btn(label);
+        let apply = Rectangle::new(
+            Point::new(rect.x + rect.width - t::BAR_PAD - apply_w, by),
+            Size::new(apply_w, t::BTN_H),
+        );
+        let revert_w = btn("Revert");
+        let revert = Rectangle::new(
+            Point::new(apply.x - t::CHIP_GAP - revert_w, by),
+            Size::new(revert_w, t::BTN_H),
+        );
+        BarGeo { rect, revert, apply }
+    });
     Geo {
         w,
-        h: y + t::CHIP_H + t::PAD,
+        h,
         cw: pv.width / COLS as f32,
         ch: pv.height / ROWS as f32,
         pv,
         chips,
         tray_y,
+        bar,
     }
 }
 
@@ -158,25 +278,47 @@ fn badge_rect(tile: Rectangle) -> Rectangle {
     )
 }
 
-/// Which grip, if any, `p` is over on a tile: the corner wins over the edges.
+/// Which grip, if any, `p` is over on a tile: the corners win over the edges,
+/// and the zones shrink with the tile so a small one keeps a body to drag by.
 fn grip_at(tile: Rectangle, p: Point) -> Option<Handle> {
     if !tile.contains(p) {
         return None;
     }
-    let (dx, dy) = (tile.x + tile.width - p.x, tile.y + tile.height - p.y);
-    let corner = t::HIT_CORNER.min(tile.width / 2.0).min(tile.height / 2.0);
-    if dx <= corner && dy <= corner {
-        Some(Handle::SouthEast)
-    } else if dx <= t::HIT_EDGE.min(tile.width / 3.0) {
-        Some(Handle::East)
-    } else if dy <= t::HIT_EDGE.min(tile.height / 3.0) {
-        Some(Handle::South)
-    } else {
-        None
-    }
+    let (l, r) = (p.x - tile.x, tile.x + tile.width - p.x);
+    let (u, d) = (p.y - tile.y, tile.y + tile.height - p.y);
+    let c = t::HIT_CORNER.min(tile.width / 3.0).min(tile.height / 3.0);
+    let ex = t::HIT_EDGE.min(tile.width / 4.0);
+    let ey = t::HIT_EDGE.min(tile.height / 4.0);
+    Some(match (l <= c, r <= c, u <= c, d <= c) {
+        (_, true, _, true) => Handle::SouthEast,
+        (true, _, _, true) => Handle::SouthWest,
+        (true, _, true, _) => Handle::NorthWest,
+        (_, true, true, _) => Handle::NorthEast,
+        _ if r <= ex => Handle::East,
+        _ if l <= ex => Handle::West,
+        _ if d <= ey => Handle::South,
+        _ if u <= ey => Handle::North,
+        _ => return None,
+    })
 }
 
 // ------------------------------------------------------------------- state
+
+/// Aim an animation, but only when the aim has changed. The editor re-states
+/// every target on every event; a bounce is a tween, and a tween that is
+/// re-aimed at the value it is already heading for restarts from where it is,
+/// so a landing that is re-stated each frame never lands.
+trait Go {
+    fn go(&mut self, target: f32, m: Motion, now: Instant);
+}
+
+impl Go for Animated {
+    fn go(&mut self, target: f32, m: Motion, now: Instant) {
+        if self.target() != target || self.motion() != m {
+            self.set_target_under(target, m, now);
+        }
+    }
+}
 
 const FOLLOW: Motion = Motion {
     enabled: true,
@@ -197,6 +339,11 @@ const HOP: Motion = Motion {
     enabled: true,
     curve: Curve::Spring,
     duration: Duration::from_millis(t::GHOST_MS),
+};
+const BAR: Motion = Motion {
+    enabled: true,
+    curve: Curve::Bounce,
+    duration: Duration::from_millis(t::BAR_MS),
 };
 const DOTS: Motion = Motion {
     enabled: true,
@@ -230,15 +377,15 @@ impl Slot {
     }
 
     fn aim(&mut self, r: Rect, m: Motion, now: Instant) {
-        self.x.set_target_under(r.x as f32, m, now);
-        self.y.set_target_under(r.y as f32, m, now);
-        self.w.set_target_under(r.w as f32, m, now);
-        self.h.set_target_under(r.h as f32, m, now);
+        self.x.go(r.x as f32, m, now);
+        self.y.go(r.y as f32, m, now);
+        self.w.go(r.w as f32, m, now);
+        self.h.go(r.h as f32, m, now);
     }
 
     fn aim_f(&mut self, x: f32, y: f32, m: Motion, now: Instant) {
-        self.x.set_target_under(x, m, now);
-        self.y.set_target_under(y, m, now);
+        self.x.go(x, m, now);
+        self.y.go(y, m, now);
     }
 
     fn tick(&mut self, now: Instant) {
@@ -270,12 +417,14 @@ enum Hit {
     Grip(Kind, Handle),
     Badge(Kind),
     Chip(Kind),
+    Revert,
+    Apply,
 }
 
 impl Hit {
     fn kind(self) -> Option<Kind> {
         match self {
-            Hit::Nothing => None,
+            Hit::Nothing | Hit::Revert | Hit::Apply => None,
             Hit::Tile(k) | Hit::Grip(k, _) | Hit::Badge(k) | Hit::Chip(k) => Some(k),
         }
     }
@@ -303,6 +452,12 @@ struct State {
     grab: Option<Grab>,
     ghost: Option<Ghost>,
     dots: Option<Animated>,
+    /// The apply bar's arrival (0 away, 1 there; the bounce overshoots), the
+    /// last summary it showed (so it can leave still saying it), and the
+    /// hover light of its two buttons (revert, apply).
+    bar: Option<Animated>,
+    bar_text: String,
+    bar_hot: [Option<Animated>; 2],
     /// A chip dragged over the preview: the tile it would become, centred on
     /// the pointer (widget-relative).
     float: Option<(Kind, Point)>,
@@ -346,7 +501,7 @@ impl State {
                     if held != Some(tile.kind) {
                         s.aim(tile.rect, LAND, now);
                     }
-                    s.pop.set_target_under(1.0, LAND, now);
+                    s.pop.go(1.0, LAND, now);
                 }
                 None => {
                     let pop = if self.mounted { 0.0 } else { 1.0 };
@@ -356,7 +511,7 @@ impl State {
         }
         for s in &mut self.slots {
             if layout.get(s.kind).is_none() {
-                s.pop.set_target_under(0.0, LAND, now);
+                s.pop.go(0.0, LAND, now);
             }
         }
         self.slots
@@ -379,6 +534,9 @@ impl State {
                 self.ghost = None;
             }
         }
+        for a in self.bar.iter_mut().chain(self.bar_hot.iter_mut().flatten()) {
+            a.tick(now);
+        }
         if let Some(d) = &mut self.dots {
             d.tick(now);
             if d.value() <= 0.01 && !d.animating() && d.target() == 0.0 {
@@ -387,8 +545,39 @@ impl State {
         }
     }
 
+    fn bar_value(&self) -> f32 {
+        self.bar.as_ref().map_or(0.0, Animated::value)
+    }
+
+    fn bar_hot(&self, i: usize) -> f32 {
+        self.bar_hot[i]
+            .as_ref()
+            .map_or(0.0, |a| a.value().clamp(0.0, 1.0))
+    }
+
+    /// Slide the bar in or out, remembering what it says.
+    fn show_bar(&mut self, summary: Option<&str>, now: Instant) {
+        if let Some(s) = summary {
+            if self.bar_text != s {
+                self.bar_text = s.to_owned();
+            }
+        }
+        let a = self.bar.get_or_insert_with(|| Animated::new(0.0, BAR));
+        a.go(if summary.is_some() { 1.0 } else { 0.0 }, BAR, now);
+    }
+
+    fn light_bar(&mut self, hit: Option<Hit>, now: Instant) {
+        for (i, h) in [Hit::Revert, Hit::Apply].into_iter().enumerate() {
+            let a = self.bar_hot[i].get_or_insert_with(|| Animated::new(0.0, HOVER));
+            let on = hit == Some(h);
+            a.go(if on { 1.0 } else { 0.0 }, HOVER, now);
+        }
+    }
+
     fn busy(&self) -> bool {
-        self.slots.iter().any(Slot::busy)
+        self.bar.as_ref().is_some_and(Animated::animating)
+            || self.bar_hot.iter().flatten().any(Animated::animating)
+            || self.slots.iter().any(Slot::busy)
             || self.hov.iter().any(|(_, a)| a.animating())
             || self
                 .ghost
@@ -403,17 +592,17 @@ impl State {
             (Some(r), Some(g)) => {
                 if g.rect != r {
                     g.rect = r;
-                    g.x.set_target_under(r.x as f32, HOP, now);
-                    g.y.set_target_under(r.y as f32, HOP, now);
-                    g.w.set_target_under(r.w as f32, HOP, now);
-                    g.h.set_target_under(r.h as f32, HOP, now);
+                    g.x.go(r.x as f32, HOP, now);
+                    g.y.go(r.y as f32, HOP, now);
+                    g.w.go(r.w as f32, HOP, now);
+                    g.h.go(r.h as f32, HOP, now);
                 }
-                g.shown.set_target_under(1.0, HOP, now);
+                g.shown.go(1.0, HOP, now);
             }
             (Some(r), None) => {
                 let a = |v: i32| Animated::new(v as f32, HOP);
                 let mut shown = Animated::new(0.0, HOP);
-                shown.set_target_under(1.0, HOP, now);
+                shown.go(1.0, HOP, now);
                 self.ghost = Some(Ghost {
                     rect: r,
                     x: a(r.x),
@@ -423,14 +612,14 @@ impl State {
                     shown,
                 });
             }
-            (None, Some(g)) => g.shown.set_target_under(0.0, HOP, now),
+            (None, Some(g)) => g.shown.go(0.0, HOP, now),
             (None, None) => {}
         }
     }
 
     fn set_dots(&mut self, on: bool, now: Instant) {
         let d = self.dots.get_or_insert_with(|| Animated::new(0.0, DOTS));
-        d.set_target_under(if on { 1.0 } else { 0.0 }, DOTS, now);
+        d.go(if on { 1.0 } else { 0.0 }, DOTS, now);
     }
 
     /// Light the tile (or chip) under the pointer, dim the rest.
@@ -445,12 +634,11 @@ impl State {
             .collect();
         for k in kinds {
             let on = held.map_or(lit == Some(k), |h| h == k);
-            self.hov(k)
-                .set_target_under(if on { 1.0 } else { 0.0 }, HOVER, now);
+            self.hov(k).go(if on { 1.0 } else { 0.0 }, HOVER, now);
         }
         if let Some(k) = lit {
             self.hov(k)
-                .set_target_under(if held.is_none_or(|h| h == k) { 1.0 } else { 0.0 }, HOVER, now);
+                .go(if held.is_none_or(|h| h == k) { 1.0 } else { 0.0 }, HOVER, now);
         }
     }
 }
@@ -459,6 +647,16 @@ impl State {
 
 impl<M> Editor<'_, M> {
     fn hit(&self, g: &Geo, p: Point) -> Hit {
+        if let (Some(bg), Some(bar)) = (&g.bar, &self.bar) {
+            if bar.summary.is_some() {
+                if bg.revert.contains(p) {
+                    return Hit::Revert;
+                }
+                if bg.apply.contains(p) && bar.can_apply {
+                    return Hit::Apply;
+                }
+            }
+        }
         for tile in &self.layout.tiles {
             let r = g.rect_px(tile.rect);
             if layout_edit::removable(tile.kind) && badge_rect(r).contains(p) {
@@ -512,7 +710,7 @@ fn travel(this: &Editor<'_, impl Clone>, st: &mut State, g: &Geo, b: Rectangle, 
     let rel = Point::new(p.x - b.x, p.y - b.y);
     let Some(mut grab) = st.grab else { return };
     if !grab.dragging && grab.origin.distance(p) > motion::TAP_SLOP {
-        if matches!(grab.hit, Hit::Badge(_)) {
+        if matches!(grab.hit, Hit::Badge(_) | Hit::Revert | Hit::Apply) {
             // A press that wandered off the badge is not a remove.
             st.grab = Some(Grab {
                 dragging: true,
@@ -588,7 +786,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
         limits: &layout::Limits,
     ) -> layout::Node {
         let width = limits.max().width.min(t::MAX_W);
-        let g = geo(width, &layout_edit::offered(self.layout));
+        let g = geo(width, &layout_edit::offered(self.layout), self.bar_label());
         layout::Node::new(
             limits
                 .resolve(Length::Fill, Length::Shrink, Size::new(g.w, g.h))
@@ -608,10 +806,11 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
         _viewport: &Rectangle,
     ) {
         let b = layout.bounds();
-        let g = geo(b.width, &layout_edit::offered(self.layout));
+        let g = geo(b.width, &layout_edit::offered(self.layout), self.bar_label());
         let st = tree.state.downcast_mut::<State>();
         let now = Instant::now();
         st.sync(self.layout, now);
+        st.show_bar(self.bar.as_ref().and_then(|b| b.summary.as_deref()), now);
         // The pointer as the last motion said it, not as the cursor is now: a
         // press that arrives in the same batch as the moves after it still
         // lands where it was made. Events carry window coordinates and this
@@ -656,6 +855,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
                     if hit != st.hover {
                         st.hover = hit;
                         st.light(hit, now);
+                        st.light_bar(hit, now);
                         shell.request_redraw();
                     }
                 }
@@ -663,6 +863,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
             Event::Mouse(mouse::Event::CursorLeft) if st.grab.is_none() && st.hover.is_some() => {
                 st.hover = None;
                 st.light(None, now);
+                st.light_bar(None, now);
                 shell.request_redraw();
             }
             Event::Touch(touch::Event::FingerMoved { id, position })
@@ -711,10 +912,15 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
         let hit = st.grab.map(|g| g.hit).or(st.hover);
         let held = st.grab.is_some_and(|g| g.dragging);
         match hit {
-            Some(Hit::Grip(_, Handle::East)) => mouse::Interaction::ResizingHorizontally,
-            Some(Hit::Grip(_, Handle::South)) => mouse::Interaction::ResizingVertically,
-            Some(Hit::Grip(_, Handle::SouthEast)) => mouse::Interaction::ResizingDiagonallyDown,
-            Some(Hit::Badge(_)) => mouse::Interaction::Pointer,
+            Some(Hit::Grip(_, Handle::East | Handle::West)) => mouse::Interaction::ResizingHorizontally,
+            Some(Hit::Grip(_, Handle::South | Handle::North)) => mouse::Interaction::ResizingVertically,
+            Some(Hit::Grip(_, Handle::SouthEast | Handle::NorthWest)) => {
+                mouse::Interaction::ResizingDiagonallyDown
+            }
+            Some(Hit::Grip(_, Handle::NorthEast | Handle::SouthWest)) => {
+                mouse::Interaction::ResizingDiagonallyUp
+            }
+            Some(Hit::Badge(_) | Hit::Revert | Hit::Apply) => mouse::Interaction::Pointer,
             Some(Hit::Chip(_)) if held => mouse::Interaction::Grabbing,
             Some(Hit::Chip(_)) => mouse::Interaction::Pointer,
             Some(Hit::Tile(_)) if held => mouse::Interaction::Grabbing,
@@ -739,7 +945,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
         let Some(clip) = b.intersection(viewport) else {
             return;
         };
-        let g = geo(b.width, &layout_edit::offered(self.layout));
+        let g = geo(b.width, &layout_edit::offered(self.layout), self.bar_label());
         let st = tree.state.downcast_ref::<State>();
         let at = |r: Rectangle| Rectangle::new(Point::new(b.x + r.x, b.y + r.y), r.size());
         let sk = &self.skin;
@@ -825,6 +1031,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
                 s.h.value().max(0.5),
             ));
             let scale = lerp(t::POP_FROM, 1.0, pop.max(0.0)) * if lifted { t::LIFT } else { 1.0 };
+            let base = rect;
             let rect = scaled(rect, scale);
             let removable = layout_edit::removable(s.kind);
             renderer.with_layer(clip, |r| {
@@ -843,9 +1050,8 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
                         Color::TRANSPARENT,
                     );
                 }
-                self.tile(r, s.kind, rect, hot, alpha, lifted);
-                let grips = ink.scale_alpha(lerp(t::GRIP_REST, 1.0, hot) * alpha);
-                grip_marks(r, rect, grips);
+                self.tile(r, s.kind, rect, base, hot, alpha, lifted);
+                grip_marks(r, rect, ink, alpha, hot, !removable);
                 if removable {
                     badge(
                         r,
@@ -867,7 +1073,8 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
                 Point::new(p.x - cw / 2.0, p.y - ch / 2.0),
                 Size::new(cw, ch),
             ));
-            let rect = scaled(inset(rect, t::TILE_GAP), t::LIFT);
+            let base = inset(rect, t::TILE_GAP);
+            let rect = scaled(base, t::LIFT);
             renderer.with_layer(clip, |r| {
                 r.fill_quad(
                     renderer::Quad {
@@ -882,7 +1089,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
                     },
                     Color::TRANSPARENT,
                 );
-                self.tile(r, k, rect, 1.0, 1.0, true);
+                self.tile(r, k, rect, base, 1.0, 1.0, true);
             });
         }
 
@@ -890,6 +1097,10 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
         let offered = layout_edit::offered(self.layout);
         renderer.with_layer(clip, |r| {
             if offered.is_empty() {
+                // The bar's slot beside it says everything that needs saying.
+                if self.bar.is_some() {
+                    return;
+                }
                 let row = at(Rectangle::new(
                     Point::new(t::PAD, g.tray_y),
                     Size::new(g.w - 2.0 * t::PAD, t::CHIP_H),
@@ -953,6 +1164,144 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
                     rect,
                 );
             }
+        });
+
+        self.draw_bar(renderer, st, &g, b, clip);
+    }
+}
+
+impl<M> Editor<'_, M> {
+    /// The apply bar: a glass pill that rises and fades in while anything
+    /// differs from the machine, and leaves the same way; while nothing does
+    /// its slot just says so.
+    fn draw_bar(&self, renderer: &mut iced::Renderer, st: &State, g: &Geo, b: Rectangle, clip: Rectangle) {
+        let (Some(bg), Some(bar)) = (&g.bar, &self.bar) else {
+            return;
+        };
+        let at = |r: Rectangle, dy: f32| Rectangle::new(Point::new(b.x + r.x, b.y + r.y + dy), r.size());
+        let reveal = st.bar_value();
+        let a = reveal.clamp(0.0, 1.0);
+        // The slot's words and the bar's own never share the stage: the old
+        // ones are gone by the time the bar is a third of the way up, the new
+        // ones come in over the rest.
+        let idle = (1.0 - a * 3.0).clamp(0.0, 1.0);
+        let words = ((a - 0.34) / 0.66).clamp(0.0, 1.0);
+        renderer.with_layer(clip, |r| {
+            if idle > 0.02 {
+                let row = at(bg.rect, 0.0);
+                let (words, tone) = match &bar.note {
+                    Some((m, true)) => (m.as_str(), color::text_secondary()),
+                    Some((m, false)) => (m.as_str(), color::danger()),
+                    None => (t::BAR_IDLE, color::text_tertiary()),
+                };
+                put(
+                    r,
+                    words,
+                    Rectangle::new(
+                        Point::new(row.x + t::BAR_RADIUS * 0.75, row.y),
+                        Size::new(row.width, row.height),
+                    ),
+                    t::BAR_TEXT,
+                    font::UI,
+                    tone.scale_alpha(idle),
+                    text::Alignment::Left,
+                    alignment::Vertical::Center,
+                    row,
+                );
+            }
+            if a <= 0.01 {
+                return;
+            }
+            // Rises into place; the spring's overshoot carries it a touch past.
+            let dy = (1.0 - reveal) * t::BAR_SLIDE;
+            let rect = at(bg.rect, dy);
+            r.fill_quad(
+                renderer::Quad {
+                    bounds: rect,
+                    border: border::rounded(t::BAR_RADIUS),
+                    shadow: Shadow {
+                        color: Color::BLACK.scale_alpha(t::SHADOW * a),
+                        offset: Vector::new(0.0, t::SHADOW_DROP),
+                        blur_radius: t::SHADOW_SPREAD * 2.0,
+                    },
+                    ..renderer::Quad::default()
+                },
+                Color::TRANSPARENT,
+            );
+            fill(
+                r,
+                rect,
+                t::BAR_RADIUS,
+                mix(color::surface_2(), color::lift_soft(), 0.5).scale_alpha(a),
+                Some((color::cell_rim_hover().scale_alpha(a), space::HAIRLINE)),
+            );
+            put(
+                r,
+                &st.bar_text,
+                Rectangle::new(
+                    Point::new(rect.x + t::BAR_RADIUS * 0.75, rect.y),
+                    Size::new(bg.revert.x - rect.x - t::BAR_RADIUS, rect.height),
+                ),
+                t::BAR_TEXT,
+                font::UI_MEDIUM,
+                color::text().scale_alpha(words),
+                text::Alignment::Left,
+                alignment::Vertical::Center,
+                rect,
+            );
+            let button =
+                |r: &mut iced::Renderer, rr: Rectangle, label: &str, i: usize, on: bool, primary: bool| {
+                    let hot = st.bar_hot(i);
+                    let rr = at(rr, dy);
+                    let (fillc, rim, ink) = if primary && on {
+                        (
+                            mix(color::highlight(), color::highlight_strong(), hot),
+                            color::highlight_rim(),
+                            color::text(),
+                        )
+                    } else if primary {
+                        (color::lift_soft(), color::hairline(), color::text_tertiary())
+                    } else {
+                        (
+                            mix(color::lift_soft(), color::lift(), hot),
+                            color::border(),
+                            mix(color::text_secondary(), color::text(), hot),
+                        )
+                    };
+                    // Pressed-in under the pointer, a hair bigger when lit.
+                    let rr = scaled(rr, lerp(1.0, t::LIFT, hot));
+                    fill(
+                        r,
+                        rr,
+                        rr.height / 2.0,
+                        fillc.scale_alpha(a),
+                        Some((rim.scale_alpha(a), space::HAIRLINE)),
+                    );
+                    put(
+                        r,
+                        label,
+                        rr,
+                        t::BAR_TEXT,
+                        font::UI_MEDIUM,
+                        ink.scale_alpha(a),
+                        text::Alignment::Center,
+                        alignment::Vertical::Center,
+                        rr,
+                    );
+                };
+            button(r, bg.revert, "Revert", 0, true, false);
+            button(
+                r,
+                bg.apply,
+                if bar.applying {
+                    "Waiting for authorisation\u{2026}"
+                } else {
+                    "Apply"
+                },
+                1,
+                bar.can_apply && !bar.applying,
+                true,
+            );
         });
     }
 }
@@ -1035,57 +1384,92 @@ fn put(
     );
 }
 
-/// The corner bracket and the two edge bars of a tile: what says "pull me".
-fn grip_marks(r: &mut iced::Renderer, tile: Rectangle, c: Color) {
+/// What says "pull me": the south-east bracket always, and while the tile is
+/// lit the other brackets (not under the remove badge) and an edge bar on each
+/// side, so every edge and corner of a lit tile reads as a handle.
+fn grip_marks(r: &mut iced::Renderer, tile: Rectangle, ink: Color, alpha: f32, hot: f32, ne: bool) {
     let w = t::GRIP_W;
-    let (right, bottom) = (
-        tile.x + tile.width - t::TILE_RADIUS * 0.55,
-        tile.y + tile.height - t::TILE_RADIUS * 0.55,
-    );
+    let inset_c = t::TILE_RADIUS * 0.55;
     let len = t::GRIP_LEN.min(tile.width / 3.0).min(tile.height / 2.5);
-    fill(
+    let (l, rt) = (tile.x + inset_c, tile.x + tile.width - inset_c);
+    let (tp, bt) = (tile.y + inset_c, tile.y + tile.height - inset_c);
+    let bracket = |r: &mut iced::Renderer, cx: f32, cy: f32, sx: f32, sy: f32, c: Color| {
+        let hx = if sx > 0.0 { cx - len } else { cx };
+        let vy = if sy > 0.0 { cy - len } else { cy };
+        let hy = if sy > 0.0 { cy - w } else { cy };
+        let vx = if sx > 0.0 { cx - w } else { cx };
+        fill(
+            r,
+            Rectangle::new(Point::new(hx, hy), Size::new(len, w)),
+            w / 2.0,
+            c,
+            None,
+        );
+        fill(
+            r,
+            Rectangle::new(Point::new(vx, vy), Size::new(w, len)),
+            w / 2.0,
+            c,
+            None,
+        );
+    };
+    bracket(
         r,
-        Rectangle::new(Point::new(right - len, bottom - w), Size::new(len, w)),
-        w / 2.0,
-        c,
-        None,
+        rt,
+        bt,
+        1.0,
+        1.0,
+        ink.scale_alpha(lerp(t::GRIP_REST, 1.0, hot) * alpha),
     );
-    fill(
-        r,
-        Rectangle::new(Point::new(right - w, bottom - len), Size::new(w, len)),
-        w / 2.0,
-        c,
-        None,
-    );
+    if hot <= 0.02 {
+        return;
+    }
+    let c = ink.scale_alpha(t::GRIP_HOT * hot * alpha);
+    bracket(r, l, bt, -1.0, 1.0, c);
+    bracket(r, l, tp, -1.0, -1.0, c);
+    if ne {
+        bracket(r, rt, tp, 1.0, -1.0, c);
+    }
     // Edge bars sit on the tile's own edge, only when there is room for them.
     let edge = t::GRIP_EDGE_LEN;
-    if tile.height > 2.0 * edge + len {
+    let c = c.scale_alpha(0.8);
+    if tile.height > 2.0 * edge + 2.0 * len {
+        let y = tile.y + (tile.height - edge) / 2.0;
+        fill(
+            r,
+            Rectangle::new(Point::new(tile.x + w + 1.0, y), Size::new(w, edge)),
+            w / 2.0,
+            c,
+            None,
+        );
         fill(
             r,
             Rectangle::new(
-                Point::new(
-                    tile.x + tile.width - 2.0 * w - 1.0,
-                    tile.y + (tile.height - edge) / 2.0 - len / 3.0,
-                ),
+                Point::new(tile.x + tile.width - 2.0 * w - 1.0, y),
                 Size::new(w, edge),
             ),
             w / 2.0,
-            c.scale_alpha(0.7),
+            c,
             None,
         );
     }
-    if tile.width > 2.0 * edge + len {
+    if tile.width > 2.0 * edge + 2.0 * len {
+        let x = tile.x + (tile.width - edge) / 2.0;
+        fill(
+            r,
+            Rectangle::new(Point::new(x, tile.y + w + 1.0), Size::new(edge, w)),
+            w / 2.0,
+            c,
+            None,
+        );
         fill(
             r,
             Rectangle::new(
-                Point::new(
-                    tile.x + (tile.width - edge) / 2.0 - len / 3.0,
-                    tile.y + tile.height - 2.0 * w - 1.0,
-                ),
+                Point::new(x, tile.y + tile.height - 2.0 * w - 1.0),
                 Size::new(edge, w),
             ),
             w / 2.0,
-            c.scale_alpha(0.7),
+            c,
             None,
         );
     }
@@ -1148,10 +1532,25 @@ impl<M: Clone> Editor<'_, M> {
                 .layout
                 .get(k)
                 .map_or((0.0, 0.0), |r| (cx - r.x as f32, cy - r.y as f32)),
-            Hit::Grip(k, _) => self
-                .layout
-                .get(k)
-                .map_or((0.0, 0.0), |r| ((r.x + r.w) as f32 - cx, (r.y + r.h) as f32 - cy)),
+            // From the held edge (or corner) to the pointer, so the edge does
+            // not jump to it.
+            Hit::Grip(k, h) => self.layout.get(k).map_or((0.0, 0.0), |r| {
+                let ex = if h.west() {
+                    r.x as f32 - cx
+                } else if h.east() {
+                    (r.x + r.w) as f32 - cx
+                } else {
+                    0.0
+                };
+                let ey = if h.north() {
+                    r.y as f32 - cy
+                } else if h.south() {
+                    (r.y + r.h) as f32 - cy
+                } else {
+                    0.0
+                };
+                (ex, ey)
+            }),
             _ => (0.0, 0.0),
         };
         st.grab = Some(Grab {
@@ -1163,6 +1562,7 @@ impl<M: Clone> Editor<'_, M> {
             target: None,
         });
         st.light(Some(hit), now);
+        st.light_bar(Some(hit), now);
         shell.request_redraw();
         shell.capture_event();
     }
@@ -1173,6 +1573,7 @@ impl<M: Clone> Editor<'_, M> {
         st.set_ghost(None, now);
         st.set_dots(false, now);
         st.light(None, now);
+        st.light_bar(None, now);
         st.sync(self.layout, now);
     }
 
@@ -1189,6 +1590,17 @@ impl<M: Clone> Editor<'_, M> {
                         .is_some_and(|r| badge_rect(r).contains(rel))
                 {
                     next = layout_edit::remove(self.layout, k);
+                }
+            }
+            Hit::Apply | Hit::Revert => {
+                if !grab.dragging && self.hit(g, rel) == grab.hit {
+                    if let Some(bar) = &self.bar {
+                        shell.publish(if grab.hit == Hit::Apply {
+                            bar.on_apply.clone()
+                        } else {
+                            bar.on_revert.clone()
+                        });
+                    }
                 }
             }
             Hit::Chip(k) => {
@@ -1218,7 +1630,9 @@ impl<M: Clone> Editor<'_, M> {
             _ => {}
         }
         // Whatever happened, the tile lands (or springs back) on the bounce.
-        st.light(self.hover_after(g, rel), now);
+        let after = self.hover_after(g, rel);
+        st.light(after, now);
+        st.light_bar(after, now);
         st.sync(self.layout, now);
         if let Hit::Tile(k) | Hit::Grip(k, _) = grab.hit {
             if let (Some(rect), Some(s)) = (
@@ -1247,7 +1661,22 @@ impl Geo {
 
 impl<M: Clone> Editor<'_, M> {
     /// One glass tile: the pane, then the mock of what the greeter draws in it.
-    fn tile(&self, r: &mut iced::Renderer, kind: Kind, b: Rectangle, hot: f32, alpha: f32, lifted: bool) {
+    ///
+    /// `full` is the tile at the size it will be once it has landed: the mock
+    /// is laid out for that, centred in `b`, so it does not reflow (and change
+    /// how much it shows) while the tile pops in or out. Only a real resize
+    /// does that.
+    #[allow(clippy::too_many_arguments)]
+    fn tile(
+        &self,
+        r: &mut iced::Renderer,
+        kind: Kind,
+        b: Rectangle,
+        full: Rectangle,
+        hot: f32,
+        alpha: f32,
+        lifted: bool,
+    ) {
         let sk = &self.skin;
         let ink = sk.ink;
         let hot = if lifted { 1.0 } else { hot };
@@ -1270,42 +1699,224 @@ impl<M: Clone> Editor<'_, M> {
                 space::HAIRLINE,
             )),
         );
-        let inner = inset(b, (b.height.min(b.width) * 0.09).clamp(3.0, 12.0));
-        mock(r, kind, b, inner, sk, alpha);
+        let c = b.center();
+        let full = Rectangle::new(
+            Point::new(c.x - full.width / 2.0, c.y - full.height / 2.0),
+            full.size(),
+        );
+        let inner = inset(full, (full.height.min(full.width) * 0.09).clamp(3.0, 12.0));
+        mock(r, kind, full, inner, b, sk, alpha);
     }
 }
 
-/// Text sized to a tile, never below the floor.
-fn fit(h: f32, share: f32, max: f32) -> f32 {
-    (h * share).clamp(t::MIN_TEXT, max)
+/// `size` if it is readable, else nothing: text below the floor is hidden, not
+/// drawn small.
+fn ts(want: f32, max: f32) -> Option<f32> {
+    let s = want.min(max);
+    (s >= t::MIN_TEXT).then_some(s)
 }
 
-/// What the greeter draws in a tile, small. Clipped to the tile.
-fn mock(r: &mut iced::Renderer, kind: Kind, tile: Rectangle, b: Rectangle, sk: &Skin, a: f32) {
+/// `want` shrunk until `s` fits `w`, if it can without going below the floor.
+fn fit_w(s: &str, want: f32, w: f32, f: iced::Font) -> Option<f32> {
+    let want = ts(want, want)?;
+    let wide = measure(s, want, f);
+    let size = if wide > w && wide > 0.0 {
+        want * w / wide
+    } else {
+        want
+    };
+    (size >= t::MIN_TEXT).then_some(size)
+}
+
+/// `s` cut with an ellipsis until it fits `w` at `size`.
+fn ellipsize(s: &str, size: f32, w: f32, f: iced::Font) -> String {
+    if measure(s, size, f) <= w {
+        return s.to_owned();
+    }
+    let chars: Vec<char> = s.chars().collect();
+    let (mut lo, mut hi) = (0, chars.len());
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        let cut: String = chars[..mid].iter().collect::<String>().trim_end().to_owned() + "\u{2026}";
+        if measure(&cut, size, f) <= w {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    chars[..lo].iter().collect::<String>().trim_end().to_owned() + "\u{2026}"
+}
+
+/// A stroke-only circle.
+fn ring(r: &mut iced::Renderer, b: Rectangle, w: f32, c: Color) {
+    fill(r, b, b.width / 2.0, Color::TRANSPARENT, Some((c, w)));
+}
+
+/// A small icon for `kind` in the square `b`, drawn from quads.
+fn glyph(r: &mut iced::Renderer, kind: Kind, b: Rectangle, c: Color) {
+    let d = b.width.min(b.height);
+    let w = (d * 0.11).max(1.5);
+    let (cx, cy) = (b.x + b.width / 2.0, b.y + b.height / 2.0);
+    let sq = |x: f32, y: f32, s: f32| Rectangle::new(Point::new(x, y), Size::new(s, s));
+    let rc = |x: f32, y: f32, w: f32, h: f32| Rectangle::new(Point::new(x, y), Size::new(w, h));
+    match kind {
+        Kind::Power => {
+            ring(r, sq(cx - d * 0.42, cy - d * 0.36, d * 0.84), w, c);
+            fill(r, rc(cx - w / 2.0, cy - d * 0.5, w, d * 0.5), w / 2.0, c, None);
+        }
+        Kind::Clock => {
+            ring(r, sq(cx - d * 0.5, cy - d * 0.5, d), w, c);
+            fill(
+                r,
+                rc(cx - w / 2.0, cy - d * 0.3, w, d * 0.3 + w),
+                w / 2.0,
+                c,
+                None,
+            );
+            fill(r, rc(cx - w / 2.0, cy, d * 0.24 + w, w), w / 2.0, c, None);
+        }
+        Kind::Battery => {
+            let (bw, bh) = (d, d * 0.54);
+            let body = rc(cx - bw / 2.0, cy - bh / 2.0, bw, bh);
+            fill(r, body, bh * 0.28, Color::TRANSPARENT, Some((c, w)));
+            fill(r, inset(body, w * 1.8), bh * 0.12, c, None);
+        }
+        Kind::Wifi => {
+            let bw = d * 0.17;
+            for i in 0..4 {
+                let h = d * (0.3 + 0.7 * i as f32 / 3.0);
+                let x = cx - d / 2.0 + i as f32 * (d - bw) / 3.0;
+                let col = if i == 3 { c.scale_alpha(0.45) } else { c };
+                fill(r, rc(x, cy + d / 2.0 - h, bw, h), bw / 2.0, col, None);
+            }
+        }
+        Kind::Users => {
+            let head = d * 0.4;
+            fill(r, sq(cx - head / 2.0, cy - d * 0.5, head), head / 2.0, c, None);
+            let sh = d * 0.38;
+            fill(
+                r,
+                rc(cx - d * 0.45, cy + d * 0.12, d * 0.9, sh),
+                sh / 2.0,
+                c,
+                None,
+            );
+        }
+        Kind::Password => {
+            let sh = d * 0.5;
+            ring(r, sq(cx - sh / 2.0, cy - d * 0.5, sh), w, c);
+            let body = rc(cx - d * 0.4, cy - d * 0.08, d * 0.8, d * 0.58);
+            fill(r, body, d * 0.14, c, None);
+        }
+        Kind::Greeting | Kind::NowPlaying => {
+            let body = rc(cx - d * 0.5, cy - d * 0.34, d, d * 0.68);
+            fill(r, body, d * 0.2, Color::TRANSPARENT, Some((c, w)));
+            fill(r, rc(cx - d * 0.3, cy - d * 0.1, d * 0.6, w), w / 2.0, c, None);
+            fill(r, rc(cx - d * 0.3, cy + d * 0.1, d * 0.36, w), w / 2.0, c, None);
+        }
+    }
+}
+
+/// The smallest a tile gets: a glyph, with the one short label beside or
+/// under it when there is room, else the glyph alone.
+fn glyph_card(r: &mut iced::Renderer, kind: Kind, b: Rectangle, clip: Rectangle, sk: &Skin, a: f32) {
+    let c = sk.ink.scale_alpha(lp::TAG_ALPHA.max(0.8) * a);
+    let g = (b.width.min(b.height) * t::GLYPH_SHARE).min(t::GLYPH_MAX);
+    if g < t::GLYPH_MIN {
+        return;
+    }
+    let label = kind_label(kind);
+    let ls = ts(g * 0.55, t::LABEL_SIZE + 1.0);
+    let lw = ls.map_or(0.0, |s| measure(label, s, font::UI_MEDIUM));
+    let gap = g * 0.4;
+    let (cx, cy) = (b.x + b.width / 2.0, b.y + b.height / 2.0);
+    let stacked = ls.is_some_and(|s| lw <= b.width && b.height >= g + gap + s && b.height >= b.width * 0.8);
+    let beside = ls.is_some() && g + gap + lw <= b.width;
+    let sq = |x: f32, y: f32| Rectangle::new(Point::new(x, y), Size::new(g, g));
+    match (ls, stacked, beside) {
+        (Some(s), true, _) => {
+            let top = cy - (g + gap + s) / 2.0;
+            glyph(r, kind, sq(cx - g / 2.0, top), c);
+            put(
+                r,
+                label,
+                Rectangle::new(Point::new(b.x, top + g + gap), Size::new(b.width, s)),
+                s,
+                font::UI_MEDIUM,
+                c,
+                text::Alignment::Center,
+                alignment::Vertical::Top,
+                clip,
+            );
+        }
+        (Some(s), _, true) => {
+            let x0 = cx - (g + gap + lw) / 2.0;
+            glyph(r, kind, sq(x0, cy - g / 2.0), c);
+            put(
+                r,
+                label,
+                Rectangle::new(Point::new(x0 + g + gap, cy - s / 2.0), Size::new(lw + 2.0, s)),
+                s,
+                font::UI_MEDIUM,
+                c,
+                text::Alignment::Left,
+                alignment::Vertical::Top,
+                clip,
+            );
+        }
+        _ => glyph(r, kind, sq(cx - g / 2.0, cy - g / 2.0), c),
+    }
+}
+
+/// What the greeter draws in a tile, small, degrading with the tile's size:
+/// the whole miniature, then without its secondary text, then (when its main
+/// text would be unreadable) a glyph and one short label. Text under the
+/// floor is never drawn. Clipped to the tile.
+fn mock(
+    r: &mut iced::Renderer,
+    kind: Kind,
+    tile: Rectangle,
+    b: Rectangle,
+    clip: Rectangle,
+    sk: &Skin,
+    a: f32,
+) {
     let ink = sk.ink.scale_alpha(a);
     let dim = sk.ink.scale_alpha(lp::TAG_ALPHA * a);
     let faint = sk.ink.scale_alpha(lp::FIELD_FILL * a);
     let left = text::Alignment::Left;
     let mid = alignment::Vertical::Center;
     let top = alignment::Vertical::Top;
-    let label = |r: &mut iced::Renderer, s: &str, at: Point, w: f32| {
-        let size = fit(tile.height, 0.075, t::LABEL_SIZE);
+    // The small-caps heading of a tile, only on one tall enough to carry it.
+    let head_size = if b.height >= t::LEAN_H {
+        ts(tile.height * 0.075, t::LABEL_SIZE)
+    } else {
+        None
+    };
+    let heading = |r: &mut iced::Renderer, s: &str, size: f32| {
         put(
             r,
             s,
-            Rectangle::new(at, Size::new(w, size)),
+            Rectangle::new(b.position(), Size::new(b.width, size)),
             size,
             font::DATA,
             dim,
             left,
             top,
-            tile,
+            clip,
         );
     };
+    if b.width < t::GLYPH_W || b.height < t::GLYPH_H {
+        return glyph_card(r, kind, b, clip, sk, a);
+    }
     match kind {
         Kind::Clock => {
-            let chars = sk.clock.chars().count().max(1) as f32;
-            let size = (b.height * 0.52).min(b.width * 1.7 / chars).max(t::MIN_TEXT);
+            let ratio = measure(&sk.clock, 100.0, font::UI_MEDIUM) / 100.0;
+            let by_w = if ratio > 0.0 { b.width / ratio } else { b.height };
+            let size = (b.height * 0.52).min(by_w);
+            if size < t::MIN_PRIMARY {
+                return glyph_card(r, kind, b, clip, sk, a);
+            }
             put(
                 r,
                 &sk.clock,
@@ -1315,41 +1926,49 @@ fn mock(r: &mut iced::Renderer, kind: Kind, tile: Rectangle, b: Rectangle, sk: &
                 ink,
                 left,
                 top,
-                tile,
+                clip,
             );
             if b.height > size * 1.9 {
-                let s2 = fit(b.height, 0.13, 13.0);
-                put(
-                    r,
-                    t::MOCK_TIME,
-                    Rectangle::new(Point::new(b.x, b.y + b.height - s2), Size::new(b.width, s2)),
-                    s2,
-                    font::UI,
-                    dim,
-                    left,
-                    top,
-                    tile,
-                );
+                if let Some(s2) = fit_w(t::MOCK_TIME, (b.height * 0.13).min(13.0), b.width, font::UI) {
+                    put(
+                        r,
+                        t::MOCK_TIME,
+                        Rectangle::new(Point::new(b.x, b.y + b.height - s2), Size::new(b.width, s2)),
+                        s2,
+                        font::UI,
+                        dim,
+                        left,
+                        top,
+                        clip,
+                    );
+                }
             }
         }
         Kind::Greeting => {
-            let size = fit(b.height, 0.62, 15.0);
+            let size = (b.height * 0.62).min(15.0);
+            if size < t::MIN_PRIMARY.min(t::MIN_TEXT + 1.0) {
+                return glyph_card(r, kind, b, clip, sk, a);
+            }
+            let w = b.width - 2.0;
+            let s = ellipsize(&sk.greeting, size, w, font::UI_MEDIUM);
             put(
                 r,
-                &sk.greeting,
-                Rectangle::new(Point::new(b.x + 2.0, b.y), Size::new(b.width, b.height)),
+                &s,
+                Rectangle::new(Point::new(b.x + 2.0, b.y), Size::new(w, b.height)),
                 size,
                 font::UI_MEDIUM,
                 ink,
                 left,
                 mid,
-                tile,
+                clip,
             );
         }
         Kind::Users => {
-            label(r, "ACCOUNTS", b.position(), b.width);
-            let head = fit(tile.height, 0.075, t::LABEL_SIZE) + 5.0;
-            let rh = (b.height * 0.24).clamp(14.0, 28.0);
+            let head = head_size.map_or(0.0, |s| s + 5.0);
+            if let Some(s) = head_size {
+                heading(r, "ACCOUNTS", s);
+            }
+            let rh = (b.height * 0.24).clamp(14.0, 28.0).min(b.height);
             let gap = 4.0;
             let mut y = b.y + head;
             for name in t::MOCK_NAMES {
@@ -1364,75 +1983,89 @@ fn mock(r: &mut iced::Renderer, kind: Kind, tile: Rectangle, b: Rectangle, sk: &
                     Size::new(d, d),
                 );
                 fill(r, av, d / 2.0, sk.ink.scale_alpha(t::DISC * a), None);
-                let sz = fit(rh, 0.5, 12.0);
-                put(
-                    r,
-                    &name[..1].to_uppercase(),
-                    av,
-                    sz * 0.85,
-                    font::UI_MEDIUM,
-                    ink,
-                    text::Alignment::Center,
-                    mid,
-                    tile,
-                );
-                put(
-                    r,
-                    name,
-                    Rectangle::new(Point::new(av.x + d + rh * 0.25, row.y), Size::new(row.width, rh)),
-                    sz,
-                    font::UI_MEDIUM,
-                    ink,
-                    left,
-                    mid,
-                    tile,
-                );
+                if let Some(sz) = ts(rh * 0.5, 12.0) {
+                    put(
+                        r,
+                        &name[..1].to_uppercase(),
+                        av,
+                        sz * 0.85,
+                        font::UI_MEDIUM,
+                        ink,
+                        text::Alignment::Center,
+                        mid,
+                        clip,
+                    );
+                    put(
+                        r,
+                        name,
+                        Rectangle::new(Point::new(av.x + d + rh * 0.25, row.y), Size::new(row.width, rh)),
+                        sz,
+                        font::UI_MEDIUM,
+                        ink,
+                        left,
+                        mid,
+                        clip,
+                    );
+                }
                 y += rh + gap;
             }
         }
         Kind::Password => {
             let fh = (b.height * 0.5).clamp(12.0, 34.0).min(b.height);
+            let Some(sz) = ts(fh * 0.45, 12.0) else {
+                return glyph_card(r, kind, b, clip, sk, a);
+            };
             let bw = (b.width * 0.28).min(96.0);
             let field = Rectangle::new(b.position(), Size::new(b.width - bw - 6.0, fh));
             fill(r, field, fh * 0.3, faint, None);
-            let sz = fit(fh, 0.45, 12.0);
-            put(
-                r,
-                "Password",
-                Rectangle::new(Point::new(field.x + fh * 0.35, field.y), field.size()),
-                sz,
-                font::UI,
-                dim,
-                left,
-                mid,
-                tile,
-            );
-            let btn = Rectangle::new(Point::new(field.x + field.width + 6.0, b.y), Size::new(bw, fh));
-            fill(r, btn, fh * 0.3, sk.ink.scale_alpha(lp::PILL_FILL * a), None);
-            put(
-                r,
-                "Unlock",
-                btn,
-                sz,
-                font::UI_MEDIUM,
-                dim,
-                text::Alignment::Center,
-                mid,
-                tile,
-            );
-            if b.height > fh * 1.7 {
-                let s2 = fit(b.height, 0.14, 11.0);
+            let pad = fh * 0.35;
+            if measure("Password", sz, font::UI) + 2.0 * pad <= field.width {
                 put(
                     r,
-                    "Choose an account to sign in",
-                    Rectangle::new(Point::new(b.x, b.y + b.height - s2 - 1.0), Size::new(b.width, s2)),
-                    s2,
+                    "Password",
+                    Rectangle::new(Point::new(field.x + pad, field.y), field.size()),
+                    sz,
                     font::UI,
                     dim,
                     left,
-                    top,
-                    tile,
+                    mid,
+                    clip,
                 );
+            }
+            let btn = Rectangle::new(Point::new(field.x + field.width + 6.0, b.y), Size::new(bw, fh));
+            fill(r, btn, fh * 0.3, sk.ink.scale_alpha(lp::PILL_FILL * a), None);
+            if measure("Unlock", sz, font::UI_MEDIUM) + pad <= bw {
+                put(
+                    r,
+                    "Unlock",
+                    btn,
+                    sz,
+                    font::UI_MEDIUM,
+                    dim,
+                    text::Alignment::Center,
+                    mid,
+                    clip,
+                );
+            }
+            if b.height > fh * 1.7 {
+                if let Some(s2) = fit_w(
+                    "Choose an account to sign in",
+                    (b.height * 0.14).min(11.0),
+                    b.width,
+                    font::UI,
+                ) {
+                    put(
+                        r,
+                        "Choose an account to sign in",
+                        Rectangle::new(Point::new(b.x, b.y + b.height - s2 - 1.0), Size::new(b.width, s2)),
+                        s2,
+                        font::UI,
+                        dim,
+                        left,
+                        top,
+                        clip,
+                    );
+                }
             }
         }
         Kind::Power => {
@@ -1440,6 +2073,10 @@ fn mock(r: &mut iced::Renderer, kind: Kind, tile: Rectangle, b: Rectangle, sk: &
             let gap = 6.0;
             let pw = (b.width - gap * 2.0) / 3.0;
             let ph = b.height.min(26.0);
+            // One size for the three, set by the widest label.
+            let Some(sz) = fit_w("Power off", (ph * 0.46).min(11.0), pw - ph * 0.5, font::UI_MEDIUM) else {
+                return glyph_card(r, kind, b, clip, sk, a);
+            };
             let y = b.y + (b.height - ph) / 2.0;
             for (i, n) in names.iter().enumerate() {
                 let pill = Rectangle::new(Point::new(b.x + i as f32 * (pw + gap), y), Size::new(pw, ph));
@@ -1448,36 +2085,47 @@ fn mock(r: &mut iced::Renderer, kind: Kind, tile: Rectangle, b: Rectangle, sk: &
                     r,
                     n,
                     pill,
-                    fit(ph, 0.46, 11.0),
+                    sz,
                     font::UI_MEDIUM,
                     ink,
                     text::Alignment::Center,
                     mid,
-                    tile,
+                    clip,
                 );
             }
         }
         Kind::Battery => {
-            label(r, "BATTERY", b.position(), b.width);
-            let head = fit(tile.height, 0.075, t::LABEL_SIZE) + 5.0;
+            let head = head_size.map_or(0.0, |s| s + 5.0);
+            if let Some(s) = head_size {
+                heading(r, "BATTERY", s);
+            }
             let rows = [("Internal", 0.72), ("Mouse", 0.40), ("Keyboard", 0.85)];
             let rh = (b.height * 0.3).clamp(15.0, 30.0);
+            let Some(sz) = ts(rh * 0.42, 11.0) else {
+                return glyph_card(r, kind, b, clip, sk, a);
+            };
             let mut y = b.y + head;
             for (name, v) in rows {
                 if y + rh > b.y + b.height + 0.5 {
                     break;
                 }
-                let sz = fit(rh, 0.42, 11.0);
+                let pct = format!("{}%", (v * 100.0) as u32);
+                let full = format!("{name}  {pct}");
+                let line = if measure(&full, sz, font::UI) <= b.width {
+                    full
+                } else {
+                    pct
+                };
                 put(
                     r,
-                    &format!("{name}  {}%", (v * 100.0) as u32),
+                    &line,
                     Rectangle::new(Point::new(b.x, y), Size::new(b.width, sz)),
                     sz,
                     font::UI,
                     ink,
                     left,
                     top,
-                    tile,
+                    clip,
                 );
                 let bar = Rectangle::new(Point::new(b.x, y + sz + 3.0), Size::new(b.width, 3.5));
                 fill(r, bar, 1.75, sk.ink.scale_alpha(t::TRACK * a), None);
@@ -1492,9 +2140,14 @@ fn mock(r: &mut iced::Renderer, kind: Kind, tile: Rectangle, b: Rectangle, sk: &
             }
         }
         Kind::Wifi => {
-            label(r, "LINK", b.position(), b.width);
-            let head = fit(tile.height, 0.075, t::LABEL_SIZE) + 3.0;
-            let sz = fit(b.height - head, 0.5, 30.0);
+            let head = head_size.map_or(0.0, |s| s + 3.0);
+            if let Some(s) = head_size {
+                heading(r, "LINK", s);
+            }
+            let sz = ((b.height - head) * 0.5).min(30.0);
+            if sz < t::MIN_PRIMARY {
+                return glyph_card(r, kind, b, clip, sk, a);
+            }
             put(
                 r,
                 "68%",
@@ -1504,7 +2157,7 @@ fn mock(r: &mut iced::Renderer, kind: Kind, tile: Rectangle, b: Rectangle, sk: &
                 ink,
                 left,
                 top,
-                tile,
+                clip,
             );
             // Signal bars, rising, the last one dim.
             let bh = (sz * 0.9).max(8.0);
@@ -1543,12 +2196,37 @@ impl<'a, M: Clone + 'a> From<Editor<'a, M>> for Element<'a, M, Theme> {
 mod tests {
     use super::*;
 
+    /// Glyph width as a share of the size, for tests that have no renderer.
+    fn est(s: &str, size: f32, _: iced::Font) -> f32 {
+        s.chars().count() as f32 * size * 0.56
+    }
+
+    fn geo(width: f32, offered: &[Kind]) -> Geo {
+        geo_with(width, offered, Some("Apply"), &est)
+    }
+
     #[test]
-    fn the_preview_is_16_by_9_and_the_tray_follows_it() {
+    fn the_preview_is_16_by_9_and_the_tray_and_bar_follow_it() {
         let g = geo(700.0, &[Kind::Battery, Kind::Wifi]);
         assert!((g.pv.width / g.pv.height - 16.0 / 9.0).abs() < 1e-3);
         assert!(g.chips.iter().all(|(_, r)| r.y >= g.pv.y + g.pv.height));
-        assert!(g.h > g.pv.y + g.pv.height);
+        let bar = g.bar.unwrap();
+        // Beside the tray's last row, never over a chip.
+        for (_, c) in &g.chips {
+            assert!(
+                c.x + c.width <= bar.rect.x || c.y + c.height <= bar.rect.y,
+                "{c:?} {bar:?}"
+            );
+        }
+        assert!(g.h >= bar.rect.y + bar.rect.height);
+        assert!(bar.revert.x + bar.revert.width < bar.apply.x);
+        assert!(bar.apply.x + bar.apply.width <= bar.rect.x + bar.rect.width);
+    }
+
+    #[test]
+    fn the_preview_uses_the_whole_width_up_to_the_maximum() {
+        let g = geo(900.0, &[]);
+        assert!((g.pv.width - (900.0 - 2.0 * t::PAD)).abs() < 1e-3);
     }
 
     #[test]
@@ -1574,6 +2252,21 @@ mod tests {
     }
 
     #[test]
+    fn a_tray_with_no_room_beside_it_puts_the_bar_on_its_own_row() {
+        let g = geo(520.0, &layout_edit::OPTIONAL);
+        let bar = g.bar.unwrap();
+        let last = g.chips.last().unwrap().1;
+        assert!(bar.rect.y >= last.y + last.height, "{bar:?} {last:?}");
+        assert!(g.h >= bar.rect.y + bar.rect.height);
+    }
+
+    #[test]
+    fn no_bar_no_slot() {
+        let g = geo_with(700.0, &[], None, &est);
+        assert!(g.bar.is_none());
+    }
+
+    #[test]
     fn cells_round_trip_through_pixels() {
         let g = geo(640.0, &[]);
         let r = g.rect_px(Rect::new(8, 5, 8, 4));
@@ -1582,12 +2275,29 @@ mod tests {
     }
 
     #[test]
-    fn the_corner_grip_wins_over_the_edges() {
+    fn corners_win_over_edges_and_every_side_has_a_grip() {
         let tile = Rectangle::new(Point::new(0.0, 0.0), Size::new(100.0, 60.0));
         assert_eq!(grip_at(tile, Point::new(95.0, 55.0)), Some(Handle::SouthEast));
-        assert_eq!(grip_at(tile, Point::new(95.0, 20.0)), Some(Handle::East));
-        assert_eq!(grip_at(tile, Point::new(40.0, 56.0)), Some(Handle::South));
-        assert_eq!(grip_at(tile, Point::new(40.0, 20.0)), None);
+        assert_eq!(grip_at(tile, Point::new(5.0, 55.0)), Some(Handle::SouthWest));
+        assert_eq!(grip_at(tile, Point::new(5.0, 5.0)), Some(Handle::NorthWest));
+        assert_eq!(grip_at(tile, Point::new(95.0, 5.0)), Some(Handle::NorthEast));
+        assert_eq!(grip_at(tile, Point::new(97.0, 30.0)), Some(Handle::East));
+        assert_eq!(grip_at(tile, Point::new(3.0, 30.0)), Some(Handle::West));
+        assert_eq!(grip_at(tile, Point::new(50.0, 57.0)), Some(Handle::South));
+        assert_eq!(grip_at(tile, Point::new(50.0, 3.0)), Some(Handle::North));
+        assert_eq!(grip_at(tile, Point::new(50.0, 30.0)), None);
         assert_eq!(grip_at(tile, Point::new(140.0, 20.0)), None);
+    }
+
+    #[test]
+    fn a_small_tile_keeps_a_body_to_drag_by() {
+        let tile = Rectangle::new(Point::new(0.0, 0.0), Size::new(40.0, 28.0));
+        assert_eq!(grip_at(tile, Point::new(20.0, 14.0)), None);
+    }
+
+    #[test]
+    fn text_under_the_floor_is_hidden_not_shrunk() {
+        assert_eq!(ts(t::MIN_TEXT - 0.1, 20.0), None);
+        assert_eq!(ts(30.0, 11.0), Some(11.0));
     }
 }

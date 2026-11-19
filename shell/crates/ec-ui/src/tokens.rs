@@ -226,7 +226,7 @@ pub mod layout_edit {
     /// overhang the preview's edge without being clipped.
     pub const PAD: f32 = 12.0;
     /// The widest the editor grows.
-    pub const MAX_W: f32 = 760.0;
+    pub const MAX_W: f32 = 1040.0;
     /// Aspect of the preview (16:9).
     pub const ASPECT: f32 = 9.0 / 16.0;
     /// Gap a tile keeps from its cell edges, so neighbours never touch.
@@ -290,8 +290,41 @@ pub mod layout_edit {
     pub const HOVER_MS: u64 = 140;
     pub const GHOST_MS: u64 = 120;
     pub const DOTS_MS: u64 = 200;
-    /// Mock text: fractions of a tile's height, and floors in px.
-    pub const MIN_TEXT: f32 = 6.5;
+    /// The smallest text a mock draws, in px. Anything that would come out
+    /// smaller is hidden instead: unreadable text is noise.
+    pub const MIN_TEXT: f32 = 8.0;
+    /// A tile's main text (the time, the greeting) below this size gives way
+    /// to a glyph, and a glyph under `GLYPH_MIN` px is not drawn.
+    pub const MIN_PRIMARY: f32 = 11.0;
+    pub const GLYPH_MIN: f32 = 7.0;
+    /// Below these tile sizes (px, inside the padding) a mock stops being a
+    /// miniature of the greeter: first it drops its secondary text, then it is
+    /// only a glyph and one short label.
+    pub const LEAN_H: f32 = 64.0;
+    pub const GLYPH_H: f32 = 14.0;
+    pub const GLYPH_W: f32 = 60.0;
+    /// A glyph's size as a share of the tile's short side, and its ceiling.
+    pub const GLYPH_SHARE: f32 = 0.55;
+    pub const GLYPH_MAX: f32 = 26.0;
+    /// Grip marks other than the south-east bracket show only while the tile
+    /// is lit, at this alpha (ink).
+    pub const GRIP_HOT: f32 = 0.85;
+    /// The apply bar under the tray: its height, gap above, inner padding,
+    /// radius, button height and side padding.
+    pub const BAR_H: f32 = 48.0;
+    pub const BAR_GAP: f32 = 12.0;
+    /// The narrowest the bar may be and still sit beside the tray's last row.
+    pub const BAR_MIN_W: f32 = 440.0;
+    pub const BAR_PAD: f32 = 9.0;
+    pub const BAR_RADIUS: f32 = 24.0;
+    pub const BTN_H: f32 = 30.0;
+    pub const BTN_PAD: f32 = 18.0;
+    pub const BAR_TEXT: f32 = 13.0;
+    /// How far (px) the bar rises from while it arrives, and its spring.
+    pub const BAR_SLIDE: f32 = 18.0;
+    pub const BAR_MS: u64 = 480;
+    /// What the bar's slot says while nothing differs.
+    pub const BAR_IDLE: &str = "Matches this computer";
     pub const MOCK_NAMES: [&str; 3] = ["robin", "sam", "ada"];
     pub const MOCK_TIME: &str = "Thursday, November 19";
     pub const MOCK_GREETING: &str = "Sign in to continue";
