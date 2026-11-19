@@ -353,6 +353,13 @@ fn cmd_path(ctx: &mut Ctx, o: &Opts) -> i32 {
     OK
 }
 
+/// Errors and warnings of the layered config load, for `apoth doctor`.
+pub(crate) fn diagnostic_counts(fs: &dyn Fs, home: &Path, xdg: Option<&Path>) -> (usize, usize) {
+    let res = load(fs, &default_input(fs, home, xdg), None);
+    let errors = res.error_count();
+    (errors, res.diagnostics.len() - errors)
+}
+
 fn cmd_validate(ctx: &mut Ctx, o: &Opts) -> i32 {
     let res = load_cfg(ctx);
     let errors = res.error_count();

@@ -30,7 +30,7 @@ pub(crate) const DENIED: i32 = 3;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Commands T-12 §5 names that this build does not have yet.
-pub(crate) const NOT_YET: &[&str] = &["notify", "fonts", "doctor", "completions"];
+pub(crate) const NOT_YET: &[&str] = &["notify", "fonts", "completions"];
 
 /// Socket commands.
 pub(crate) const COMMANDS: &[&str] = &[
@@ -47,6 +47,7 @@ pub(crate) const COMMANDS: &[&str] = &[
     "version",
     "set",
     "reset",
+    "doctor",
 ];
 
 pub(crate) const HELP: &str = "\
@@ -85,6 +86,7 @@ Commands:
                              daemon (run by ssh, not by hand)
   askpass PROMPT             ssh's askpass for `apoth ssh` sessions (exits 3 elsewhere)
   shell-init bash|zsh|fish   print the shell-integration snippet (defines `ap`)
+  doctor                     check the environment, sockets, config and recent warnings
   config ...                 edit or read the config file (no socket)
 
 TARGET is self (the default inside a pane), focused, or id:N.

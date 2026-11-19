@@ -465,6 +465,17 @@ impl Machine {
         }
     }
 
+    /// `pane.clear-screen`: ED 2 then cursor home, scrollback kept (host-side, no parser).
+    pub(crate) fn clear_screen(&mut self) {
+        self.erase_display(2);
+        self.home();
+    }
+
+    /// `scrollback.clear`: ED 3 (history only; the screen and cursor stay).
+    pub(crate) fn clear_scrollback(&mut self) {
+        self.erase_display(3);
+    }
+
     fn erase_display(&mut self, mode: u32) {
         let (y, x, rows, cols) = (self.y, self.x, self.rows, self.cols);
         let (c, bg) = (self.cur, self.pen.bg);

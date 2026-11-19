@@ -141,6 +141,7 @@ fn gui(dir: &Path) -> Guard {
     );
     Guard(
         Command::new(env!("CARGO_BIN_EXE_apotheosis"))
+            .env_remove("APOTHEOSIS_SOCKET")
             .env("XDG_RUNTIME_DIR", dir)
             .env("HOME", dir.join("home"))
             .env("XDG_CONFIG_HOME", dir.join("home/.config"))

@@ -61,6 +61,17 @@ pub(crate) const DEFAULTS: &[DefaultBind] = &[
     // Windows.
     ("F11", "window.toggle-fullscreen", &[("repeat", "false")]),
     ("ctrl+shift+n", "window.new", &[("repeat", "false")]),
+    // Font zoom and clearing.
+    ("ctrl+equal", "font.size-increase", &[]),
+    ("ctrl+plus", "font.size-increase", &[]),
+    ("ctrl+minus", "font.size-decrease", &[]),
+    ("ctrl+0", "font.size-reset", &[("repeat", "false")]),
+    ("ctrl+shift+l", "pane.clear-screen", &[("repeat", "false")]),
+    (
+        "ctrl+shift+Delete",
+        "scrollback.clear",
+        &[("repeat", "false")],
+    ),
     // Tabs (T-13 §4).
     ("ctrl+shift+t", "tab.new", &[("repeat", "false")]),
     ("ctrl+Tab", "tab.next", &[]),

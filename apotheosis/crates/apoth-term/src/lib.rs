@@ -379,6 +379,24 @@ impl Term {
         self.parser = Parser::new();
     }
 
+    /// Host-side `pane.clear-screen`: the effect of `CSI 2 J` and `CSI H`, scrollback kept.
+    pub fn clear_screen(&mut self) -> Wake {
+        self.m.clear_screen();
+        self.wake(true)
+    }
+
+    /// Host-side `scrollback.clear`: the effect of `CSI 3 J`.
+    pub fn clear_scrollback(&mut self) -> Wake {
+        self.m.clear_scrollback();
+        self.wake(true)
+    }
+
+    /// Host-side `pane.reset`: [`Term::reset`] and a redraw wake.
+    pub fn reset_wake(&mut self) -> Wake {
+        self.reset();
+        self.wake(true)
+    }
+
     /// Visible rows.
     pub fn rows(&self) -> usize {
         self.m.rows
