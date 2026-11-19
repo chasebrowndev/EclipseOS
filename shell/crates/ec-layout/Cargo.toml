@@ -1,0 +1,13 @@
+[package]
+name = "ec-layout"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tile layout on a snapped grid: placement without overlap, validation, pixel mapping. Pure, no UI toolkit."
+publish = false
+
+[lib]
+name = "ec_layout"
+path = "src/lib.rs"

@@ -24,5 +24,6 @@ path = "src/bin/ec-greeter-run.rs"
 # Seeds to palette and the contrast check, shared with the session's theme.
 ec-theme = { path = "../../../abyss/crates/ec-theme" }
 # Root encodes the wallpaper; the greeter checks it decodes. Already in the tree.
+ec-layout = { path = "../ec-layout" }
 png = "0.18"
 libc = "0.2"

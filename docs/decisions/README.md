@@ -120,6 +120,7 @@ writing a new ADR that says so.
 | 0123 | [Mux sync by snapshot plus byte-stream tee](0123-apotheosis-mux-sync.md) | proposed |
 | 0124 | [`TERM=xterm-apotheosis`](0124-apotheosis-term-name.md) | proposed |
 | 0125 | [Pure-Rust XKB backend with libxkbcommon as an optional feature and test oracle](0125-apotheosis-xkb-backend.md) | proposed |
+| 0126 | [An iced greeter, a tile layout and Glances](0126-glance-greeter.md) (amends 0089) | proposed |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

@@ -11,6 +11,7 @@ use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+use ec_layout::{Kind, Layout, Tile};
 use ec_theme::{Rgba, Seeds};
 
 /// The machine's choices. Root-owned; `greeter` only reads it (D-01 §4.1).
@@ -88,6 +89,8 @@ pub struct Settings {
     pub theme: Option<Theme>,
     pub greeting: Option<String>,
     pub clock: Option<Clock>,
+    /// Where each tile sits. `None` is the built-in default layout.
+    pub layout: Option<Layout>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -153,6 +156,16 @@ fn unquote(s: &str) -> Option<String> {
     Some(out)
 }
 
+/// `"x y w h"`: four plain decimal cells, single spaces, nothing else.
+fn parse_rect(s: &str) -> Option<ec_layout::Rect> {
+    let mut it = s.split(' ').map(|n| {
+        let plain = !n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit());
+        plain.then(|| n.parse::<i32>().ok()).flatten()
+    });
+    let r = ec_layout::Rect::new(it.next()??, it.next()??, it.next()??, it.next()??);
+    it.next().is_none().then_some(r)
+}
+
 impl Settings {
     /// Strict: an unknown or repeated key, or a bad value, fails the whole file.
     pub fn parse(text: &str) -> Result<Settings, Error> {
@@ -161,6 +174,7 @@ impl Settings {
         }
         let mut s = Settings::default();
         let (mut wallpaper, mut greeting, mut clock) = (false, false, false);
+        let mut tiles: Vec<Tile> = Vec::new();
         let (mut base, mut ink, mut accent, mut accent_text) = (None, None, None, None);
         let colour = |slot: &mut Option<u32>, v: &str| -> Result<(), Error> {
             let c = unquote(v).and_then(|c| parse_hex(&c));
@@ -195,8 +209,22 @@ impl Settings {
                 "ink" => colour(&mut ink, value)?,
                 "accent" => colour(&mut accent, value)?,
                 "accent_text" => colour(&mut accent_text, value)?,
-                _ => return Err(Error::Invalid("key")),
+                _ => match key.strip_prefix("tile.").and_then(Kind::from_name) {
+                    Some(kind) if !kind.needs_session() && !tiles.iter().any(|t| t.kind == kind) => {
+                        let rect = unquote(value).and_then(|v| parse_rect(&v));
+                        tiles.push(Tile {
+                            kind,
+                            rect: rect.ok_or(Error::Invalid("tile"))?,
+                        });
+                    }
+                    _ => return Err(Error::Invalid("key")),
+                },
             }
+        }
+        if !tiles.is_empty() {
+            let layout = Layout { tiles };
+            ec_layout::validate(&layout).map_err(|_| Error::Invalid("layout"))?;
+            s.layout = Some(layout);
         }
         s.theme = match (base, ink, accent, accent_text) {
             (None, None, None, None) => None,
@@ -232,6 +260,12 @@ impl Settings {
         }
         if let Some(c) = self.clock {
             out += &format!("clock = \"{}\"\n", c.name());
+        }
+        if let Some(l) = &self.layout {
+            for t in &l.tiles {
+                let r = t.rect;
+                out += &format!("tile.{} = \"{} {} {} {}\"\n", t.kind.name(), r.x, r.y, r.w, r.h);
+            }
         }
         out
     }
@@ -540,6 +574,7 @@ mod tests {
             theme: Some(THEME),
             greeting: Some("Hello \"you\" \\ <b>there</b>".into()),
             clock: Some(Clock::Date12),
+            layout: Some(Layout::default()),
         }
     }
 
@@ -586,6 +621,14 @@ mod tests {
             "greeting = \"a\tb\"",
             "greeting = \"a\"b\"",
             "greeting = \"a\\nb\"",
+            "tile.clock = \"1 2 3\"",
+            "tile.clock = \"1 2 3 4 5\"",
+            "tile.clock = \"-1 0 4 2\"",
+            "tile.clock = \"0 0 4 2\"",
+            "tile.bogus = \"0 0 4 2\"",
+            "tile.now_playing = \"0 0 6 2\"",
+            "tile.users = \"0 0 4 3\"\ntile.password = \"2 2 6 2\"",
+            "tile.users = \"0 0 4 3\"\ntile.users = \"0 4 4 3\"",
             "base = \"#0b0906\"",
             "base = \"red\"\nink = \"#ffffff\"\naccent = \"#ffffff\"\naccent_text = \"#ffffff\"",
         ] {

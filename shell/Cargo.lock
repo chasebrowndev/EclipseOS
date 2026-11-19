@@ -1018,6 +1018,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-glance"
+version = "0.2.2"
+
+[[package]]
 name = "ec-glass-host"
 version = "0.2.2"
 dependencies = [
@@ -1029,6 +1033,7 @@ dependencies = [
 name = "ec-greeter"
 version = "0.2.2"
 dependencies = [
+ "ec-layout",
  "ec-theme",
  "libc",
  "png 0.18.1",
@@ -1069,6 +1074,10 @@ dependencies = [
  "iced_layershell",
  "serde_json",
 ]
+
+[[package]]
+name = "ec-layout"
+version = "0.2.2"
 
 [[package]]
 name = "ec-lock"
