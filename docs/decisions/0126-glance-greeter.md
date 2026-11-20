@@ -60,3 +60,16 @@ Glance reads run off the UI loop with a time limit.
 ## Revisit when
 Per-user login screens are wanted, or a Glance needs more than sysfs, NetworkManager or
 UPower pre-auth.
+
+## Amendment 2026-11-19: content-sized Glances
+A Glance whose content decides its size (the battery gauge row) keeps only a position in
+the layout. `ec-layout` marks such kinds (`Kind::is_intrinsic`; today `Battery`) and derives
+the footprint from the content: one gauge is 76 px plus an 8 px gap, four to a row, a second
+row after that, and the footprint in cells is the content px plus the tile gap, over the
+reference cell (1920x1080 / 24x14), rounded up. The file format is unchanged: the
+`tile.battery = "x y w h"` line keeps four numbers so every reader still parses it, but `w`
+and `h` are ignored (old files keep their position and lose their size). `validate` holds the
+tile to the footprint of one gauge, so a stored layout fits whatever devices appear; at run
+time `ec_layout::fit` shows as many devices as fit at the place, giving one up at a time
+when the footprint would overlap a neighbour or leave the grid, and nothing when there are
+none. Resizing such a tile is refused. The settings editor previews three devices.
