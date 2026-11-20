@@ -7,7 +7,29 @@
 //! Every position and size comes out of [`ec_layout::place`] or
 //! [`ec_layout::resize`]; nothing here does its own overlap arithmetic.
 
-use ec_layout::{place, resize_anchored, validate, Kind, Layout, Rect, REQUIRED};
+use ec_layout::{place_with, resize_anchored_with, validate, Content, Kind, Layout, Rect, REQUIRED};
+
+/// What a content-sized tile is measured for in the editor: a laptop, a mouse
+/// and a keyboard ([`PREVIEW_BATTERIES`]). The greeter shows however many
+/// devices it finds, up to what fits at the tile's place (`ec_layout::fit`).
+pub const CONTENT: Content = Content::PREVIEW;
+
+/// The fake devices the Battery mock shows: kind, percent, charging.
+pub const PREVIEW_BATTERIES: [(ec_greeter_ui::gauge::DeviceKind, u8, bool); 3] = [
+    (ec_greeter_ui::gauge::DeviceKind::Laptop, 72, false),
+    (ec_greeter_ui::gauge::DeviceKind::Mouse, 40, false),
+    (ec_greeter_ui::gauge::DeviceKind::Keyboard, 85, true),
+];
+
+/// `l` with every content-sized tile's stored size set to what [`CONTENT`]
+/// needs, so the editor can read a tile's rectangle straight off the layout.
+/// The stored size is never read by the greeter; this only keeps it honest.
+pub fn normalized(mut l: Layout) -> Layout {
+    for t in &mut l.tiles {
+        t.rect = t.extent(CONTENT);
+    }
+    l
+}
 
 /// The tiles a person may add or remove, in the order the tray offers them.
 /// Users and Password are required and never appear here; NowPlaying needs a
@@ -77,11 +99,14 @@ pub fn offered(l: &Layout) -> Vec<Kind> {
 
 /// The size a tile arrives at, in cells. Never below its minimum.
 pub fn default_size(kind: Kind) -> (i32, i32) {
+    if let Some(size) = kind.intrinsic_size(CONTENT) {
+        return size;
+    }
     let (w, h) = match kind {
         Kind::Clock => (8, 3),
         Kind::Greeting => (8, 1),
         Kind::Power => (6, 1),
-        Kind::Battery => (6, 3),
+        Kind::Battery => (4, 2),
         Kind::Wifi => (4, 3),
         Kind::Users => (8, 4),
         Kind::Password => (8, 2),
@@ -110,7 +135,17 @@ pub fn home(kind: Kind) -> (i32, i32) {
 fn with(l: &Layout, kind: Kind, rect: Rect) -> Option<Layout> {
     let mut m = l.clone();
     m.set(kind, rect);
-    validate(&m).ok().map(|()| m)
+    let m = normalized(m);
+    (validate(&m).is_ok() && previews_clear(&m)).then_some(m)
+}
+
+/// Every tile, content-sized ones at [`CONTENT`], is on the grid and clear of
+/// the others: what the editor draws is what it accepted.
+fn previews_clear(l: &Layout) -> bool {
+    l.tiles.iter().enumerate().all(|(i, t)| {
+        let r = t.extent(CONTENT);
+        r.in_grid() && l.tiles[..i].iter().all(|o| !o.extent(CONTENT).overlaps(r))
+    })
 }
 
 /// Where `kind` lands when its top-left is dragged to cell `(x, y)`: the
@@ -118,14 +153,19 @@ fn with(l: &Layout, kind: Kind, rect: Rect) -> Option<Layout> {
 /// screen or has no room.
 pub fn drag_to(l: &Layout, kind: Kind, x: i32, y: i32) -> Option<Rect> {
     let cur = l.get(kind)?;
-    place(l, kind, Rect::new(x, y, cur.w, cur.h))
+    place_with(l, kind, Rect::new(x, y, cur.w, cur.h), CONTENT)
 }
 
 /// Where `kind` lands when `handle` is dragged to cell `(px, py)`: the held
 /// edge (or corner) goes to that grid line (exclusive for the east and south
 /// edges, so a tile spanning cells 8..16 has its east edge at 16), and the edge
 /// opposite it stays. An axis the handle does not own is untouched.
+///
+/// A content-sized tile has no size to change: `None`.
 pub fn resize_to(l: &Layout, kind: Kind, handle: Handle, px: i32, py: i32) -> Option<Rect> {
+    if kind.is_intrinsic() {
+        return None;
+    }
     let cur = l.get(kind)?;
     let (own_x, own_y) = (handle.west() || handle.east(), handle.north() || handle.south());
     let (mut px, mut py) = (px, py);
@@ -144,12 +184,13 @@ pub fn resize_to(l: &Layout, kind: Kind, handle: Handle, px: i32, py: i32) -> Op
         if handle.south() {
             y1 = py;
         }
-        let r = resize_anchored(
+        let r = resize_anchored_with(
             l,
             kind,
             Rect::new(x0, y0, x1 - x0, y1 - y0),
             handle.west(),
             handle.north(),
+            CONTENT,
         )?;
         // `ec_layout` clears a neighbour by shrinking whichever side is
         // longer, which for an edge handle can be the axis it does not own.
@@ -199,7 +240,7 @@ pub fn add(l: &Layout, kind: Kind, at: Option<(i32, i32)>) -> Option<Layout> {
     }
     let (w, h) = default_size(kind);
     let (x, y) = at.unwrap_or_else(|| home(kind));
-    let rect = place(l, kind, Rect::new(x, y, w, h))?;
+    let rect = place_with(l, kind, Rect::new(x, y, w, h), CONTENT)?;
     with(l, kind, rect)
 }
 
@@ -431,5 +472,67 @@ mod tests {
             let (mw, mh) = k.min_size();
             assert!(w >= mw && h >= mh, "{k:?}");
         }
+    }
+
+    #[test]
+    fn a_content_tile_is_added_at_its_intrinsic_size_and_cannot_be_resized() {
+        let m = add(&Layout::default(), Kind::Battery, None).unwrap();
+        let (w, h) = Kind::Battery.intrinsic_size(CONTENT).unwrap();
+        let r = m.get(Kind::Battery).unwrap();
+        assert_eq!((r.w, r.h), (w, h));
+        for hd in Handle::ALL {
+            for px in -2..COLS + 3 {
+                for py in -2..ROWS + 3 {
+                    assert_eq!(resize_to(&m, Kind::Battery, hd, px, py), None, "{hd:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dragging_a_content_tile_keeps_its_size_and_never_overlaps() {
+        let m = add(&Layout::default(), Kind::Battery, None).unwrap();
+        let (w, h) = Kind::Battery.intrinsic_size(CONTENT).unwrap();
+        for x in -3..COLS + 3 {
+            for y in -3..ROWS + 3 {
+                let r = drag_to(&m, Kind::Battery, x, y).expect("there is room");
+                assert_eq!((r.w, r.h), (w, h));
+                let c = commit(&m, Kind::Battery, r).expect("a placed spot commits");
+                ok(&c);
+                assert!(previews_clear(&c));
+            }
+        }
+    }
+
+    #[test]
+    fn other_tiles_keep_clear_of_the_previewed_size_not_the_stored_one() {
+        let m = add(&Layout::default(), Kind::Battery, None).unwrap();
+        let b = m.get(Kind::Battery).unwrap();
+        for x in 0..COLS {
+            for y in 0..ROWS {
+                if let Some(r) = drag_to(&m, Kind::Clock, x, y) {
+                    assert!(!r.overlaps(b), "{r:?} on {b:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_hand_made_commit_that_would_overlap_the_preview_is_refused() {
+        let m = add(&Layout::default(), Kind::Battery, None).unwrap();
+        // Clock is 8..16 wide; a battery at 14 spans 14..18, over it.
+        assert_eq!(commit(&m, Kind::Battery, Rect::new(14, 1, 4, 2)), None);
+        // At 16 it touches and fits, and a stored size of 9x9 is replaced.
+        let c = commit(&m, Kind::Battery, Rect::new(16, 1, 9, 9)).unwrap();
+        assert_eq!(c.get(Kind::Battery), Some(Rect::new(16, 1, 4, 2)));
+    }
+
+    #[test]
+    fn an_old_file_battery_is_normalised_to_the_intrinsic_size() {
+        let mut l = Layout::default();
+        l.set(Kind::Battery, Rect::new(17, 1, 8, 5));
+        let n = normalized(l);
+        assert_eq!(n.get(Kind::Battery), Some(Rect::new(17, 1, 4, 2)));
+        ok(&n);
     }
 }

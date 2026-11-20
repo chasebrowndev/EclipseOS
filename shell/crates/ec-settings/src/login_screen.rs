@@ -307,6 +307,7 @@ impl LoginScreen {
     /// What the machine has now, with a stored default layout read as none.
     fn stored(&self) -> Settings {
         let mut s = self.current.clone().unwrap_or_default();
+        s.layout = s.layout.map(layout_edit::normalized);
         if s.layout.as_ref() == Some(&Layout::default()) {
             s.layout = None;
         }
@@ -350,7 +351,7 @@ impl LoginScreen {
         self.use_theme = s.theme.is_some();
         self.greeting = s.greeting.clone().unwrap_or_default();
         self.clock = s.clock;
-        self.layout = s.layout.clone().unwrap_or_default();
+        self.layout = layout_edit::normalized(s.layout.clone().unwrap_or_default());
         self.wallpaper = Wallpaper::Keep;
         self.current = Some(s);
     }
@@ -1074,7 +1075,7 @@ pub fn preview_env(p: &mut LoginScreen) {
                     }
                     // Every tile at its smallest, for the mocks' degradation.
                     "tiny" => {
-                        for tile in &mut l.tiles {
+                        for tile in l.tiles.iter_mut().filter(|t| !t.kind.is_intrinsic()) {
                             let (w, h) = tile.kind.min_size();
                             tile.rect = ec_layout::Rect::new(tile.rect.x, tile.rect.y, w, h);
                         }

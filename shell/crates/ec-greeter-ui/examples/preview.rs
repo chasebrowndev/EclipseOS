@@ -8,6 +8,9 @@
 //! `PREVIEW_LAYOUT=glances` draws a second layout with Battery and Wifi tiles
 //! over fixed fake Glance data (an internal battery and two connected devices).
 //!
+//! `PREVIEW_DEVICES=n` (default 3) is how many batteries the fake Glance data
+//! holds: 1, 3 or 6 show a lone gauge, one row, and a wrapped second row.
+//!
 //! Run it under a nested abyss, never on the host session:
 //! `cargo run -p ec-greeter-ui --example preview`.
 
@@ -38,7 +41,7 @@ fn glances_layout() -> Layout {
             t(Kind::Users, 2, 5, 10, 4),
             t(Kind::Password, 2, 9, 10, 2),
             t(Kind::Power, 5, 12, 7, 1),
-            t(Kind::Battery, 14, 1, 8, 5),
+            t(Kind::Battery, 14, 1, 2, 2),
             t(Kind::Wifi, 14, 7, 5, 3),
         ],
     }
@@ -66,17 +69,26 @@ fn glances() -> Snapshot {
         percent,
         charge,
     };
+    let all = [
+        Battery {
+            internal: true,
+            name: "BAT0".to_owned(),
+            percent: 72,
+            charge: Charge::Discharging,
+        },
+        device("Mouse", 40, Charge::Discharging),
+        device("Keyboard", 85, Charge::Charging),
+        device("Headphones", 18, Charge::Discharging),
+        device("Phone", 100, Charge::Full),
+        device("Pad", 56, Charge::Discharging),
+    ];
+    let n = std::env::var("PREVIEW_DEVICES")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(3)
+        .min(all.len());
     Snapshot {
-        batteries: vec![
-            Battery {
-                internal: true,
-                name: "BAT0".to_owned(),
-                percent: 72,
-                charge: Charge::Discharging,
-            },
-            device("Mouse", 40, Charge::Discharging),
-            device("Keyboard", 85, Charge::Charging),
-        ],
+        batteries: all.into_iter().take(n).collect(),
         wifi: Some(Wifi { percent: 68 }),
     }
 }
