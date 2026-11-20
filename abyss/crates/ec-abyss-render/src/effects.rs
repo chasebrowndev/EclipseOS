@@ -390,11 +390,26 @@ pub const SHEET_PILL_MAX_SHORT: f32 = 48.0;
 /// `src` with the preset's `#define` right after the `radius` uniform (where the
 /// shaped variant's `SHAPED` also goes).
 fn preset_source(src: &str, preset: GlassPreset) -> String {
+    let src = src.replacen("// SHADE_CONSTS", &shade_consts(), 1);
     src.replacen(
         RADIUS_DECL,
         &format!("{RADIUS_DECL}\n#define {} 1\n", preset.define()),
         1,
     )
+}
+
+/// Prepare a cell pane's uniforms: mark the pane as a cell, with the contact
+/// shadow's reach in physical px and alpha (see the cell branch in the shader).
+pub fn mark_cell(uniforms: &mut [Uniform<'static>], shadow_px: f32, shadow_alpha: f32) {
+    use smithay::backend::renderer::gles::UniformValue;
+    for u in uniforms.iter_mut() {
+        match u.name.as_ref() {
+            "opaque" => u.value = UniformValue::_1f(2.0),
+            "inner" => u.value = UniformValue::_1f(shadow_px),
+            "bar" => u.value = UniformValue::_1f(shadow_alpha),
+            _ => {}
+        }
+    }
 }
 
 /// The glass program of one preset (unshaped). Cached by the caller.
@@ -788,6 +803,7 @@ uniform float opaque;     // 1 when the window inside the bezel is opaque
 uniform float bar;        // titlebar depth from the region's top, physical px; 0 none
 uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
 uniform float shade;      // 0..1 mix toward ink (light only: a pane's depth step); 0 elsewhere
+uniform float shade_ref;  // physical px of the reference control size (40 logical); 0 (unset) = 40
 uniform float smoke;      // 0..1 weight of the smoke and adaptive tint; 1 normal, less on stacked glass
 uniform vec4 body_tint;   // a trusted prompt's fixed palette tint (straight rgb, alpha = weight); 0 elsewhere
 uniform float sharp_damp; // 0..1 share of the bevel's lightly blurred half held back; 0 (unset) everywhere but a trusted prompt
@@ -812,6 +828,19 @@ const float RIM_SHARP = 0.8;        // weight (before the light lobes) in the da
 const float RIM_SHARP_L = 1.0;      // and in the light one: a crisp edge
 const float RIM_WHITE_L = 0.45;     // light scheme: share of white mixed into the rim colour
 const float RIM_CRISP_PX = 3.0;     // light scheme: width of the crisp edge, physical px
+// A cell nested in a card pane (GLASS_LENS panes with `opaque` 2): fill colour,
+// depth cues and rim. See the branch in `main`.
+const vec3 CELL_BASE_D = vec3(1.0);
+const vec3 CELL_BASE_L = vec3(0.16, 0.13, 0.09);
+const float CELL_GRAD = 0.7;        // the gradient's share of the fill alpha at `shade` 1
+const float CELL_EDGE_DARK = 0.30;  // Fresnel edge darkening
+const float CELL_EDGE_A = 0.9;      // and the fill's thickening at the rim
+const float CELL_RIM_GAIN = 3.0;
+const float CELL_GRAD_L = 0.25;
+const float CELL_RIM_GAIN_L = 0.45;
+const float CELL_EDGE_A_L = 0.25;    // a cell's hairline is crisper than a pane's
+const float CELL_INNER = 0.10;      // the faint inner highlight
+// SHADE_CONSTS
 const float LENS_SMOKE = 0.35;      // share of the smoke the interior keeps
 const float LENS_ADAPT = 0.75;      // share of the adaptive tint it keeps
 const vec3 LENS_FILL_D = vec3(0.17, 0.17, 0.18);
@@ -861,6 +890,67 @@ void main() {
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+#endif
+
+#if defined(GLASS_LENS) && !defined(SHAPED)
+    // A CELL (a control nested in a card pane): a fill on what is already drawn,
+    // no backdrop sample at all. `opaque` is 2 for a cell (never on a pane
+    // otherwise), `lift` its fill alpha, `shade` its gradient strength, `rim`
+    // and `rim_color` the hairline, `inner` the contact shadow's reach (px) and
+    // `bar` its alpha. Premultiplied output.
+    if (opaque > 1.5) {
+        float edge = -d;
+        float bw = clamp(bevel, 2.0, 6.0);
+        vec2 cs = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
+        vec2 cg;
+        if (q.x > 0.0 && q.y > 0.0) {
+            cg = normalize(q);
+        } else if (q.x > q.y) {
+            cg = vec2(1.0, 0.0);
+        } else {
+            cg = vec2(0.0, 1.0);
+        }
+        cg *= cs;
+        float ctl = max(dot(cg, LIGHT), 0.0);
+        float cbr = max(dot(cg, -LIGHT), 0.0);
+        float cin = 1.0 - smoothstep(-0.5, 0.5, d);
+        vec4 outc = vec4(0.0);
+        if (d < 0.5) {
+            vec3 base = mix(CELL_BASE_D, CELL_BASE_L, scheme_light);
+            float a = lift;
+            // 1: a vertical gradient, the top clearer in dark and fainter in light.
+            float gs = (0.5 - clamp((p.y + half_size.y) / max(win_rect.w, 1.0), 0.0, 1.0)) * 2.0;
+            a *= 1.0 + mix(CELL_GRAD, CELL_GRAD_L, scheme_light) * shade * gs * mix(1.0, -1.0, scheme_light);
+            float u = 1.0 - clamp(edge / bw, 0.0, 1.0);
+            // 2: Fresnel-style: the fill darkens and thickens toward the rim.
+            base = mix(base, vec3(0.0), CELL_EDGE_DARK * u * u * mix(1.0, 0.1, scheme_light));
+            a *= 1.0 + mix(CELL_EDGE_A, CELL_EDGE_A_L, scheme_light) * u * u;
+            vec3 col = base;
+            // 3: one lit edge: a crisp two-lobe hairline and a faint inner highlight.
+            float line = 1.0 - smoothstep(0.0, 1.25, edge);
+            float lobe = LINE_BASE + LINE_TL * ctl + LINE_BR * cbr;
+            vec3 ctint = rim_color.rgb / max(rim_color.a, 0.0001);
+            float la = clamp(line * lobe * rim_color.a * rim * 2.0 * mix(CELL_RIM_GAIN, CELL_RIM_GAIN_L, scheme_light), 0.0, 1.0);
+            float hl = (1.0 - smoothstep(0.0, 1.4, abs(edge - bw))) * (0.3 + ctl + 0.5 * cbr)
+                * CELL_INNER * min(rim, 3.0) * (1.0 - scheme_light * 0.5);
+            col = mix(col, vec3(1.0), clamp(hl, 0.0, 1.0));
+            a = max(a, hl);
+            col = mix(col, ctint, la);
+            a = max(a, la);
+            outc = vec4(col * a, a) * cin;
+        }
+        // 4: a small soft contact shadow on the card, 1.5 px down, inside the margin.
+        if (bar > 0.0 && inner > 0.5 && d > -1.0) {
+            vec2 sp = p - vec2(0.0, 1.5);
+            vec2 sq = abs(sp) - half_size + r;
+            float sd = length(max(sq, vec2(0.0))) + min(max(sq.x, sq.y), 0.0) - r;
+            float sa = bar * (1.0 - smoothstep(0.0, inner, max(sd, 0.0)));
+            sa *= sa * (1.0 - cin);
+            outc += vec4(vec3(0.02, 0.015, 0.01) * sa, sa) * (1.0 - outc.a);
+        }
+        gl_FragColor = outc;
+        return;
+    }
 #endif
     // Outside the mask the result is zero: skip the taps below.
     if (d >= 0.5) {
@@ -982,13 +1072,24 @@ void main() {
     // are functions of the distance already computed. `rim` 0 turns them off too.
     if (lens_u > 0.0) {
         float rs = min(rim * 2.0, 1.0);
-        c *= 1.0 - mix(EDGE_DARK, EDGE_DARK_L, scheme_light) * lens_u * lens_u * rs;
+        // Edge shading follows ONE continuous rule of the pane's effective size
+        // `s_eff` (harmonic mean of its two sides, so a long skinny bar and a
+        // short fat card both read by what they are): the band grows
+        // sublinearly with size, its strength falls sublinearly, and neither has
+        // a threshold. Small controls (about 40 px) keep the original look.
+        float s_eff = 2.0 * win_rect.z * win_rect.w / max(win_rect.z + win_rect.w, 1.0);
+        float sref = shade_ref > 0.0 ? shade_ref : SHADE_REF;
+        float xs = max(s_eff / sref, 0.05);
+        float sw = max(min(band_w, max(SHADE_BASE * sref * pow(xs, SHADE_P), SHADE_MIN * sref / SHADE_REF)), 1.0);
+        float sk = min(pow(xs, -SHADE_Q), 1.0);
+        float su = 1.0 - clamp(-d / sw, 0.0, 1.0);
+        c *= 1.0 - mix(EDGE_DARK, EDGE_DARK_L, scheme_light) * sk * su * su * rs;
         // One lit edge: a soft gradient that falls off over the outer half of
         // the band from the hairline (drawn below), lit like it. No separate line.
-        float fall = 1.0 - clamp(-d / (0.5 * band_w), 0.0, 1.0);
+        float fall = 1.0 - clamp(-d / (0.5 * sw), 0.0, 1.0);
         float lit = LINE_IN * (0.35 + max(dot(grad, LIGHT), 0.0) + 0.5 * max(dot(grad, -LIGHT), 0.0));
         vec3 ltint = rim_color.rgb / max(rim_color.a, 0.0001);
-        c = mix(c, ltint, clamp(fall * fall * lit * rim_color.a * rs, 0.0, 1.0));
+        c = mix(c, ltint, clamp(fall * fall * lit * rim_color.a * rs * sk, 0.0, 1.0));
         // The rim carries the backdrop's own colour: the sharp backdrop, brighter and
         // more saturated, lightens the band (never darkens it), by the same lit
         // falloff. Strong over light or colourful backdrops, nearly nothing over dark.
@@ -1113,7 +1214,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 21] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 22] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -1133,6 +1234,7 @@ const GLASS_UNIFORMS: [(&str, UniformType); 21] = [
     ("scheme_light", UniformType::_1f),
     ("adapt", UniformType::_1f),
     ("adapt_layers", UniformType::_1f),
+    ("shade_ref", UniformType::_1f),
     ("body_tint", UniformType::_4f),
     ("sharp_damp", UniformType::_1f),
 ];
@@ -1163,6 +1265,55 @@ pub const DISPERSION_PX: f32 = 8.0;
 /// (0..1): the fringe at the edge in physical px at output scale `upscale`.
 pub fn fringe_px(dispersion: f32, upscale: f64) -> f32 {
     (dispersion.clamp(0.0, 1.0) as f64 * DISPERSION_PX as f64 * upscale) as f32
+}
+
+/// Logical px of the reference control size the edge shading is calibrated to
+/// (a bar pill, a lens button): at this size the shading is the original look.
+pub const SHADE_REF: f32 = 40.0;
+/// The shading band at the reference size, as a share of it (the old lens
+/// bevel cap, 0.4 of the shorter side).
+pub const SHADE_BASE: f32 = 0.4;
+/// How fast the band grows with the effective size: `(s / ref)^SHADE_P`.
+pub const SHADE_P: f32 = 0.4;
+/// How fast the shading's strength falls with it: `(s / ref)^-SHADE_Q`.
+pub const SHADE_Q: f32 = 0.4;
+/// Narrowest the band goes, logical px.
+pub const SHADE_MIN: f32 = 2.0;
+
+fn shade_consts() -> String {
+    format!(
+        "const float SHADE_REF = {SHADE_REF:?};\nconst float SHADE_BASE = {SHADE_BASE:?};\nconst float SHADE_P = {SHADE_P:?};\nconst float SHADE_Q = {SHADE_Q:?};\nconst float SHADE_MIN = {SHADE_MIN:?};\n"
+    )
+}
+
+/// The effective size of a `w` x `h` pane for edge shading: the harmonic mean
+/// of its sides (a square is its side, a long skinny box about twice its
+/// short side). Any unit.
+pub fn shade_size(w: f32, h: f32) -> f32 {
+    2.0 * w * h / (w + h).max(1.0)
+}
+
+/// CPU mirror of the shader's shading band, in the pane's px: `band` is the
+/// pane's bevel (what bounds the shading), `scale` the output scale.
+pub fn shade_band(w: f32, h: f32, band: f32, scale: f32) -> f32 {
+    let sref = SHADE_REF * scale;
+    let xs = (shade_size(w, h) / sref).max(0.05);
+    band.min((SHADE_BASE * sref * xs.powf(SHADE_P)).max(SHADE_MIN * scale))
+        .max(1.0)
+}
+
+/// CPU mirror of the shader's strength factor, 1.0 up to the reference size.
+pub fn shade_strength(w: f32, h: f32, scale: f32) -> f32 {
+    let xs = (shade_size(w, h) / (SHADE_REF * scale)).max(0.05);
+    xs.powf(-SHADE_Q).min(1.0)
+}
+
+/// Set the `shade_ref` uniform: the reference size in physical px
+/// (`SHADE_REF * output scale`), if `uniforms` has one.
+pub fn set_shade_ref(uniforms: &mut [Uniform<'static>], scale: f64) {
+    for u in uniforms.iter_mut().filter(|u| u.name == "shade_ref") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_1f(SHADE_REF * scale as f32);
+    }
 }
 
 /// Set the `body_tint` uniform (a trusted prompt's palette tint; straight rgb
@@ -1396,6 +1547,7 @@ pub fn glass_uniforms_lifted_into(
         Uniform::new("scheme_light", light),
         Uniform::new("adapt", adapt),
         Uniform::new("adapt_layers", layers),
+        Uniform::new("shade_ref", 0.0f32),
         Uniform::new("body_tint", [0.0f32; 4]),
         Uniform::new("sharp_damp", 0.0f32),
     ]);
@@ -2375,7 +2527,11 @@ mod tests {
             assert!(src.contains(&format!("#define {} 1", p.define())));
             // Dropping the define gives back the plain program.
             let plain = src.replace(&format!("\n#define {} 1\n", p.define()), "");
-            assert_eq!(plain, base, "{p:?}");
+            assert_eq!(
+                plain,
+                base.replacen("// SHADE_CONSTS", &shade_consts(), 1),
+                "{p:?}"
+            );
         }
         let shaped = shaped_source(&sources[0]);
         assert!(shaped.find("#define SHAPED").unwrap() < shaped.find("#ifdef SHAPED").unwrap());
@@ -2488,5 +2644,100 @@ mod tests {
             }
             assert!(worst < 0.09, "tint step per px {worst} (light {light})");
         }
+    }
+
+    // ---- edge shading: one continuous rule of the effective size -----------
+
+    /// The band the pane's bevel allows (`lens_bevel` of the 40 px logical cap)
+    /// and what shading it gets, for a `w` x `h` pane at `scale`.
+    fn shaded(w: f32, h: f32, scale: f32) -> (f32, f32) {
+        let band = lens_bevel(40.0 * scale, w.min(h));
+        (shade_band(w, h, band, scale), shade_strength(w, h, scale))
+    }
+
+    #[test]
+    fn the_shading_is_continuous_and_monotonic() {
+        let (mut pb, mut ps) = shaded(50.0, 50.0, 1.0);
+        for n in 51..4000 {
+            let (b, k) = shaded(n as f32, n as f32, 1.0);
+            assert!(b >= pb - 1e-4, "band shrank at {n}: {pb} -> {b}");
+            assert!(k <= ps + 1e-4, "strength grew at {n}: {ps} -> {k}");
+            assert!((b - pb).abs() / pb <= 0.02, "band jumps {pb} -> {b} at {n}");
+            assert!((k - ps).abs() / ps <= 0.02, "strength jumps {ps} -> {k} at {n}");
+            (pb, ps) = (b, k);
+        }
+        // Below that the band is the bevel's own 0.4 of the side (linear: a
+        // px of size is at most 1/s of it), never a step.
+        let mut prev = shaded(20.0, 20.0, 1.0).0;
+        for n in 21..50 {
+            let b = shaded(n as f32, n as f32, 1.0).0;
+            assert!((b - prev).abs() / prev <= 1.0 / (n - 1) as f32 + 1e-3, "{n}");
+            prev = b;
+        }
+    }
+
+    #[test]
+    fn skinny_and_fat_panes_read_alike_and_the_axes_are_symmetric() {
+        for (w, h) in [(2000.0, 60.0), (300.0, 700.0), (1900.0, 1000.0), (781.0, 205.0)] {
+            assert_eq!(shaded(w, h, 1.0), shaded(h, w, 1.0), "{w}x{h}");
+        }
+        let near = |a: f32, b: f32| (a - b).abs() / a.max(b) <= 0.15;
+        let (bar, bar_k) = shaded(2000.0, 60.0, 1.0);
+        let (small, small_k) = shaded(120.0, 60.0, 1.0);
+        assert!(
+            near(bar, small) && near(bar_k, small_k),
+            "{bar} {small} {bar_k} {small_k}"
+        );
+        let (sq, sq_k) = shaded(900.0, 900.0, 1.0);
+        let (card, card_k) = shaded(1900.0, 1000.0, 1.0);
+        assert!(
+            near(sq, card) && near(sq_k, card_k),
+            "{sq} {card} {sq_k} {card_k}"
+        );
+    }
+
+    #[test]
+    fn small_controls_keep_the_original_look_and_big_ones_never_get_wider_than_it() {
+        // At the reference size (a 40 px pill) the band is the old 0.4 of the
+        // side and the strength the old full one, exactly.
+        let (b, k) = shaded(40.0, 40.0, 1.0);
+        assert!((b - 16.0).abs() < 1e-3 && (k - 1.0).abs() < 1e-6, "{b} {k}");
+        // Below it nothing changes at all (the bevel is already the smaller).
+        for n in 8..40 {
+            let (b, k) = shaded(n as f32, n as f32, 1.0);
+            assert!((b - 0.4 * n as f32).abs() < 1e-3 && k == 1.0, "{n}");
+        }
+        // Above it the band is never wider than the old one nor the strength
+        // stronger; the table in docs/GLASS_PROFILING.md has the numbers.
+        for n in 40..4000 {
+            let old = lens_bevel(40.0, n as f32);
+            let (b, k) = shaded(n as f32, n as f32, 1.0);
+            assert!(b <= old + 1e-3 && k <= 1.0, "{n}");
+        }
+    }
+
+    #[test]
+    fn the_shading_scales_with_the_output() {
+        for (w, h) in [(40.0, 40.0), (300.0, 700.0), (2000.0, 60.0), (900.0, 900.0)] {
+            let (b1, k1) = shaded(w, h, 1.0);
+            let (b2, k2) = shaded(2.0 * w, 2.0 * h, 2.0);
+            assert!((b2 - 2.0 * b1).abs() < 1e-2, "{w}x{h}: {b1} {b2}");
+            assert!((k2 - k1).abs() < 1e-5);
+        }
+    }
+
+    #[test]
+    fn the_shader_carries_the_mirrored_constants() {
+        let c = shade_consts();
+        for (name, v) in [
+            ("SHADE_REF", SHADE_REF),
+            ("SHADE_BASE", SHADE_BASE),
+            ("SHADE_P", SHADE_P),
+            ("SHADE_Q", SHADE_Q),
+            ("SHADE_MIN", SHADE_MIN),
+        ] {
+            assert!(c.contains(&format!("const float {name} = {v:?};")), "{name}");
+        }
+        assert!(GLASS_BODY.contains("// SHADE_CONSTS"));
     }
 }

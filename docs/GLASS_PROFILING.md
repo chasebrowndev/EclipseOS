@@ -770,6 +770,48 @@ With both, toasts draw (dark over colour/warm, light over pale/stripes: `cap/bea
 - An earlier floor on the Regular adaptive amount was dropped: it would also whiten light translucent window bezels (Regular).
 - GPU, bar + launcher open, 3 interleaved runs: 0.18 / 0.18 / 0.16 ms (previous build) vs 0.18 / 0.19 / 0.16 (this one).
 
+## Nested cells, size-scaled edge shading, corner regression
+
+**Nested cells.** A pane lying fully inside an earlier, larger pane of the same surface whose shorter side is at least 56 logical px is a CELL (`glass::cell_parent`). It draws as a fill on what is already drawn: no backdrop sample, no blur, no refraction. The `GLASS_LENS` shader has a branch (`opaque` uniform 2, set by `effects::mark_cell`) with a vertical gradient, Fresnel-style edge darkening and thickening, a crisp two-lobe rim merged with a faint inner highlight, and a contact shadow clamped to the parent's rect (`glass::cell_shadow_margin`). Siblings that merely overlap (a stack-peek card), a pane sticking out of another, a later or equal-size container and a container under 56 px are not parents.
+
+**One continuous edge-shading rule.** The lens and regular shading (edge darkening, the lit tinted band, the rim colour overlay) follows the pane's effective size `s_eff = 2wh/(w+h)` (harmonic mean, so a long skinny bar and a short fat card are both judged by both sides; a square is its side):
+- band `= min(bevel, max(0.4 * ref * (s_eff/ref)^0.4, 2 px * scale))`, `ref = 40 px * scale`: it grows sublinearly and is bounded by the pane's own bevel (which already is `min(40 px, 0.4 * the shorter side)`); bezel panes (window frames) are bounded by their inner width, so they follow the same function;
+- strength `= min((s_eff/ref)^-0.4, 1)`: 1 up to the reference size (a 40 px pill, the original look), falling smoothly after it.
+There is no threshold, no `if big`, no smoothstep. CPU mirrors `effects::shade_size`, `shade_band`, `shade_strength` (constants `SHADE_REF`, `SHADE_BASE`, `SHADE_P`, `SHADE_Q`, `SHADE_MIN` are also written into the shader source, and a test pins them to it). Tests: `the_shading_is_continuous_and_monotonic` (no jump over 2% per px from 50 to 4000 px; below 50 px the band is the bevel's own linear 0.4 of the side), `skinny_and_fat_panes_read_alike_and_the_axes_are_symmetric` (WxH equals HxW; 2000x60 within 15% of 120x60; 900x900 within 15% of 1900x1000), `small_controls_keep_the_original_look_and_big_ones_never_get_wider_than_it`, `the_shading_scales_with_the_output` (2x output gives a 2x band, same strength).
+
+Deviation from the brief: "small controls (40 to 80 px) within 3% of the old values" cannot hold together with a sublinear growth (the old band doubles from 40 to 80 px). It holds exactly at the reference size and below it; from there the band is at most the old one and the strength falls (60 px: band 24 -> 18.8, strength 0.85; 80 px: 32 -> 20.4, 0.76).
+
+Pane sizes of the test scenes (logical px; greeter ones read off the 1920x1080 captures) and what they get at output scale 1:
+
+| pane | w x h | s_eff | old band | new band | strength |
+|---|---|---|---|---|---|
+| bar pill | 40x40 | 40 | 16.0 | 16.0 | 1.00 |
+| lens button / key cap | 60x60 | 60 | 24.0 | 18.8 | 0.85 |
+| greeter pill | 168x38 | 62 | 15.2 | 15.2 | 0.84 |
+| greeter row | 736x64 | 118 | 25.6 | 24.6 | 0.65 |
+| launcher search field | 500x44 | 81 | 17.6 | 17.6 | 0.75 |
+| greeter sign-in strip | 780x58 | 108 | 23.2 | 23.2 | 0.67 |
+| greeter dock | 540x58 | 105 | 23.2 | 23.2 | 0.68 |
+| bar | 600x40 | 75 | 16.0 | 16.0 | 0.78 |
+| skinny test pane | 1200x56 | 107 | 22.4 | 22.4 | 0.67 |
+| 2000x60 | 2000x60 | 117 | 24.0 | 24.0 | 0.65 |
+| 120x60 | 120x60 | 80 | 24.0 | 21.1 | 0.76 |
+| mid card | 400x260 | 315 | 40.0 | 36.5 | 0.44 |
+| greeter Link tile | 380x204 | 265 | 40.0 | 34.1 | 0.47 |
+| greeter clock card | 781x205 | 325 | 40.0 | 37.0 | 0.43 |
+| greeter password card | 780x130 | 223 | 40.0 | 31.8 | 0.50 |
+| greeter accounts card | 780x278 | 410 | 40.0 | 40.0 | 0.39 |
+| launcher card | 540x375 | 443 | 40.0 | 40.0 | 0.38 |
+| fat test pane | 300x700 | 420 | 40.0 | 40.0 | 0.39 |
+| square test pane | 700x700 | 700 | 40.0 | 40.0 | 0.32 |
+| 900x900 | 900x900 | 900 | 40.0 | 40.0 | 0.29 |
+| 1900x1000 | 1900x1000 | 1310 | 40.0 | 40.0 | 0.25 |
+| tiled window | 1400x800 | 1018 | 40.0 | 40.0 | 0.27 |
+
+(Window frames use their bezel's inner width as the band, a few px, and the strength column; so the tiled-window frame is a thin hairline at 27% of the old shading.)
+
+**Corner regression (the "square blur wedge" report).** Method, headless, no human in the loop: a test client (not in the repo) pushes `eclipse_glass_v1` panes of exact sizes in one transparent xdg window over a hard 8 px black/white checker wallpaper; the scene is captured with `grim` three times (all panes, only the parent cards, no panes); for each pane the pixels OUTSIDE its rounded rect inside each corner's wedge (SDF distance 2 px to the radius) are compared with the same pixels of the capture without the pane, and with the pixels at equal distance beside the middle of a straight edge (where the soft contact shadow, which is intended, also lives). The window's offset comes from `ec-ctl dump`. Cells are measured against the capture with their parent cards only. Result on this branch, panes of 1200x56, 301x701, 700x700, 400x260, 120x40, 60x60 and cells of 640x48, at odd positions, scale 1, 1.5 and 2, light and dark: the largest delta in any corner wedge is 3 levels in dark (8 in light, which is the wide light shadow, equal to the straight-edge delta); the excess of a corner over the straight edge at equal distance is at most 6 levels, 1 to 3 in almost all cases. No pane has a square wedge. Corner zooms (6x, nearest neighbour) of every pane are in the contact sheets. The greeter's Battery and Link tiles (glass mode), the bar caps and the window frame corners were zoomed the same way and are clean. I could not reproduce a wedge on the compositor-drawn glass; the one place a square, blurred ground can appear is a client that is not allow-listed for the glass global (`DEFAULT_ALLOW` in `protocols/standard/glass.rs`: `ec-greeter-ui` and `ec-lock` are not in it) and so paints its own fallback ground.
+
 ## Trusted prompt backdrop (ADR 0128, render half)
 
 `ec_abyss_render::prompt_backdrop(renderer, store, output, behind, panel: PromptMember, members: &[PromptMember], scale, light, tint, out: &mut Vec<BlurElement>) -> Option<()>` and `prompt_backdrop_release(store, output)`. The panel and each member (button, at most `PROMPT_MAX_MEMBERS` = 8) are lenses (the lens preset: bevel bend, dispersion, lit rim, edge darkening) over ONE private chain (`BlurKey::Prompt`, a per-output store outside the window tiers and the per-frame `retain`), built over the union of the rects from `behind`. On success `out` holds the panel's element first, then the members', to be drawn in that order; on any failure (bad tint or radius, empty or off-output rect, too many members, rotated output, lens program or chain failure) `out` is left empty and the result is `None`, so the backend draws the opaque panel. It takes no blur configuration. Fixed in `prompt.rs`: blur size 8, `PROMPT_PASSES` = `PROMPT_MIN_PASSES` = 6 for the interior, lens 28 px / bevel 40 / dispersion 0.7 / rim 0.7 (`PROMPT_REFRACTION` etc., pinned copies of the lens defaults), adaptive off, tint alpha raised to `PROMPT_MIN_TINT_ALPHA` (0.25). The bevel band alone reads the lightly blurred half of the packed texture, and only `PROMPT_SHARP_SHARE` (0.07) of it (shader uniform `sharp_damp`, 0 for every other lens); everything deeper is the 6-pass blur. Rebuilt only when damage lands under the union; `out` is the caller's scratch, so nothing allocates per frame.
