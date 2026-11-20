@@ -20,3 +20,6 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-02. **Not TCB.**
 - No allocation added to hot paths. winit/DRM/libinput/GBM types stay in
   `ec-abyss/src/backend/`.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.
+- `#![deny(unsafe_code)]` at the crate root. The one exception is `gpu_timer.rs`
+  (raw GL timer queries for `EC_GLASS_PROFILE`): every `unsafe` block there has a
+  `// SAFETY:` comment, and no other file may allow it.

@@ -25,10 +25,9 @@ fields (`journalctl --user -t <comm> -o json`, `F_REBUILDS` and so on):
 | `cleared_texels` | Texels cleared in level 0 (whole output per rebuild) |
 | `passes`, `max_passes_per_rebuild` | Down + up + final blits run (7 at 4 passes) |
 
-GPU timer queries (`EXT_disjoint_timer_query`) are not included: smithay 0.7.0's
-GLES bindings do not expose the extension, so it would take raw
-`eglGetProcAddress` pointers and the crate's first `unsafe`. Use `--stats`
-(p50/p99 frame CPU time) alongside the counters.
+GPU time is a separate log line group on the same summary (`gpu`, `gpu_*_us`),
+see "GPU baseline (step 0)" below. Use `--stats` (p50/p99 frame CPU time)
+alongside the counters.
 
 ## Headless glass recipe
 
@@ -484,3 +483,178 @@ Reading it honestly:
   Mtexels of crop per rebuild); with 1b a small damage costs a few thousand
   texels again, whatever the margin, and a damage that covers most of the region
   costs what it did in 1c.
+
+## Chromatic aberration
+
+Branch `comp02-glass-ca`. `decoration.blur.glass.dispersion` (0..1, default 0) now
+draws a visible colour fringe at the glass edge. The old dispersion moved red and
+blue by 5 percent of a bend of at most 4 px (under 0.2 px) and read the heavily
+blurred result, so it was invisible.
+
+- **Fringe.** In the glass program, red is read `dispersion * DISPERSION_PX * u`
+  physical px along the inward edge normal and blue the same distance outward,
+  on top of the existing bend; `u` is the bevel falloff (1 at the outer edge, 0
+  on the plateau). `DISPERSION_PX` is 8 logical px at dispersion 1 (scaled by the
+  output scale), `effects::fringe_px`. The offsets are in real pixels: the
+  program multiplies by `px_uv`, which is one physical pixel of the sampled
+  texture, so the fringe does not depend on the output or the tier's union size
+  (tested).
+- **Sharper source, no second sampler.** smithay 0.7.0's GLES path binds one
+  texture per draw and has no sampler uniform, so the lightly blurred level
+  (down level 1, `/2`, five taps) is packed beside the blurred result in one
+  texture: twice as wide, blurred left, level 1 right, only while
+  `dispersion > 0` in glass mode (`blur::packs`). Every channel moves from the
+  blurred result toward the packed sharp half by `u`, so the plateau stays pure
+  blur and nothing marks where the effect starts; green takes the same
+  sharpening (with red and blue sharp against blurred green, a sharp edge
+  turned into a wide green band in the first version). `px_uv.x` and the clamps
+  are halved for the packed width (`dual_tex` uniform).
+- **Rebuilds.** A partial rebuild copies the damaged rectangles of down level 1
+  into the right half (the plan's level 1 rectangles, flipped as the result's);
+  toggling dispersion at runtime changes the tier's parameters, which forces one
+  full rebuild and allocates or drops the packed texture (tested; and checked
+  live over the socket: 0 to 1 and back, 0 differing samples against a static
+  start in each state).
+- **Reach.** `glass_reach(refraction, dispersion, scale)` is the bend (with the
+  old 5 percent margin, kept so a build without dispersion keeps its region) plus
+  the widest fringe, and invalidation uses the same number, so the red and blue
+  taps stay inside the built region (tested).
+- **Panes** stay at 0 (their backdrop is not packed; the shader only fringes a
+  packed texture). A plain-blur or frost member of a packed tier samples the
+  left half as before; its clamp can reach the first texel of the right half at
+  an output edge.
+- **Cost.** Off: nothing changes (0 of 14.0 M samples differ from the 1b build in
+  both configs below). On: five more texture taps per fragment (red and blue read both halves, green the sharp half) inside the
+  bevel only (the shader returns before them outside it and skips them at
+  `dispersion` 0), one more full-region blit per tier rebuild (level 1 into the
+  right half, plus its rectangles on a partial rebuild), and a result texture
+  twice as wide (about one third of the crop's texels more, per tier). GPU time
+  is not measured.
+- **What it looks like.** A window frame's glass is only its border ring (1 px
+  by default), so with the default config the fringe is a faint line; the
+  plain bevel (`general.border-size 0`, 16 px) shows it clearly. At 8 px a
+  white-to-black edge under the window edge gets a blue fringe of about 4 px on
+  its outer side and a dark red/black one inside, no halo, no bloom, no
+  banding; `DISPERSION_PX` 3 to 16 were tried (3 reads as a thin tint, 12 and 16
+  as a broad blue band).
+
+## GPU baseline (step 0)
+
+GPU time is measured with raw GL timer queries (`gpu_timer.rs`, the crate's one
+`unsafe` module): `GL_TIME_ELAPSED_EXT` spans around the backdrop composite,
+the down passes, the up passes (with the final write), the packed copy and the
+glass draws, read back a few frames later without stalling. It runs only with
+`EC_GLASS_PROFILE` set and when the driver advertises
+`GL_EXT_disjoint_timer_query`; the summary line then carries `gpu`
+(`timer`, `no-extension` or `off`), `gpu_frames`, `gpu_{backdrop,down,up,pack,glass}_us`
+(mean per timed frame), `gpu_total_max_us`, `gpu_glass_max_us`, `gpu_lost`,
+`gpu_disjoint` and `gpu_skipped`. A frame is the interval between two
+glass-store frame starts, so measure with one output.
+
+Machine: AMD Ryzen AI 7 350 w/ Radeon 860M (integrated, Mesa radeonsi), Linux
+7.2.15, headless backend at 2880x1620, 10 glass windows, 12 s idle/damage and
+three paced-drag passes. The extension was present; no frame was lost or
+disjoint. Binary: step 0 (after the occlusion cull, allocation-free uniforms
+and the preset scaffold). Times are ms per frame.
+
+| layout | scenario | backdrop | down | up | pack | glass draws | total mean | total max | CPU p50 us | CPU p99 us |
+|---|---|---|---|---|---|---|---|---|---|---|
+| cascade | idle | 0 | 0 | 0 | 0 | 0.71 | 0.71 | 1.10 | 436 | 1491 |
+| cascade | paced drag | 0.01 | 0.01 | 0 | 0 | 0.77 | 0.79 | 2.86 | 469 | 1716 |
+| cascade | damage | 0.09 | 0.11 | 0.06 | 0 | 0.84 | 1.09 | 2.35 | 1023 | 2996 |
+| spread | idle | 0 | 0 | 0 | 0 | 0.62 | 0.62 | 1.00 | 387 | 1459 |
+| spread | paced drag | 0 | 0 | 0 | 0 | 0.60 | 0.60 | 0.89 | 392 | 1591 |
+| spread | damage | 0.10 | 0.10 | 0.08 | 0 | 0.59 | 0.87 | 1.38 | 767 | 2642 |
+| tiled | idle | 0 | 0 | 0 | 0 | 1.72 | 1.72 | 2.56 | 427 | 1490 |
+| tiled | paced drag | 0 | 0 | 0 | 0 | 1.75 | 1.75 | 2.55 | 362 | 2292 |
+| tiled | damage | 0 | 0 | 0 | 0 | 1.26 | 1.26 | 1.64 | 986 | 3064 |
+
+Reading it: the blur chain is nearly free on this GPU (a tenth of a ms even
+under damage, thanks to 1a/1b); the glass draws dominate, and they cost most when
+windows tile (1.7 ms, large glass areas). The pack column is 0 because
+dispersion is 0 in this config. Idle still draws glass every frame in headless
+(the headless backend repaints at age 0); on a real output with damage tracking
+the idle draw is skipped. A bigger iGPU number than a discrete card would give;
+no NVIDIA-desktop number was taken.
+
+## Step A (lens optics, cheaper shading)
+
+What changed: the glass program has three compile-time presets (`GLASS_LENS`,
+`GLASS_REGULAR`, `GLASS_FROST`). Shaped layer glass and glass panes are Lens, a
+window with a glass bezel is Regular, any other window body is Frost. Lens and
+Regular bend the rim with a convex profile (`strength * (1-t)^2.5`, pulled from
+outside the shape), read the lightly blurred half of a packed texture there,
+and fringe per channel (red `1-k`, blue `1+k`, `k = dispersion * 0.12`). The
+plateau is one tap. Lens tiers/chains blur with 2 passes, Regular 3, Frost the
+configured count; passes and packing are part of the tier's params, so a preset
+change is exactly one full rebuild. Reach is per member
+(`effects::preset_reach`). Config: `decoration.blur.glass.lens.{refraction,
+bevel, dispersion, rim}` (defaults 40 / 40 / 0.8 / 0.7); Regular uses the
+top-level keys (rim displacement = `refraction * 5`).
+
+Cheaper shading: shaped glass takes its normal from an analytic gradient (one
+evaluation per box instead of five), the adaptive tint reads 5 taps (centre plus
+the cross) instead of 9, `pow` is `x*sqrt(x)` for one layer, and the tint is
+skipped at `smoke` 0, the rim math outside its 1.25 px band.
+
+GPU ms, tiled idle, 10 windows, interleaved runs on one machine state (the GPU
+clock drifts between sessions: the same step-0 binary measured 1.72 ms in the
+step 0 table and 2.6-2.8 ms later; compare rows within one table only):
+
+| build | glass draws, ms (3 runs) | mean |
+|---|---|---|
+| step 0 | 2.60 2.80 2.59 | 2.66 |
+| A1 (presets, lens optics; tiled windows have a bezel so they are Regular) | 2.74 2.87 2.89 | 2.83 |
+| A1 + analytic shape gradient (no effect on unshaped) | 2.62 2.81 2.81 | 2.75 |
+| + 5-tap adaptive | 2.40 2.56 2.10 | 2.35 |
+| + pow/skips | 2.32 2.31 2.51 | 2.38 |
+
+Full step-A matrix (10 windows, ms/frame, a later, faster GPU state, so not
+comparable with the step 0 table above): cascade idle 0.61, drag 0.64, damage
+0.86; spread 0.48, 0.47, 0.70; tiled 1.45, 1.48, 0.96.
+
+Pixel difference vs step 0 at default config (Frost windows, adaptive on,
+dispersion 0 and 0.5): 63147 of 3.5M samples
+(1.8 percent) differ, max 9/255, mean 0.022; full image, every pixel: 252535
+of 14.0M, max 10, mean 0.022. Frost with the 9-tap adaptive restored is
+byte-identical to step 0 (tested before the tap change). The analytic shape
+gradient vs central differences on an L-shaped glass: 847 of 1.27M samples
+differ, max 5, mean 0.001.
+
+Not done: a per-member luma value computed once per rebuild. The glass shader
+has one sampler, the luma depends on the member's own rect (tap step and inset),
+and reading a value back to a uniform would stall; the 5-tap form gets part of
+the 0.7 ms the adaptive tint costs (measured: adaptive off, 0.96 ms vs 1.67 ms).
+
+## Smooth adaptive tint, and the one-tap experiment
+
+The adaptive tint's switch between the one-tap read and the 5-tap read was a hard
+threshold (arm length 2.2 px, a surface about 23 px across). It is now a
+smoothstep over arm lengths 0.55 to 8.8 px (`adaptive_tap_weight`, mirrored in
+the shader's `w`); surfaces over about 93 px are unchanged. Worst case in the
+tint model (c = 0.9 against a worst tap of 0.2): the old threshold jumped the tint
+by 0.8 to 0.95 in one step; the blend moves it at most 0.06 to 0.08 per physical
+pixel of resize. `smoke` 0, `adapt` 0, the 1.25 px rim band and the lens plateau
+all fade to the value they skip, so they have no step; a unit test covers the
+blend. Measured on a real window resized 12 to 96 px over vertical stripes and a
+checker (dark scheme), the centre pixel's luma changes by at most 1.1 of 255
+between adjacent sizes in both the old and the new build: that scene is blurred
+to flat grey, so it cannot show the old pop. The 12 px window is mostly rim and is
+the same in both builds.
+
+One-tap experiment (adaptive tint from the pixel's own fetched colour, V2; V3 adds
+a 30 percent squash toward the surface tone), measured on the same machine:
+
+| | tiled idle ms (3 runs, mean) | cascade damage ms (mean) |
+|---|---|---|
+| V1 5 taps (kept) | 2.30 2.06 2.64 (2.33) | 0.96 1.15 0.98 (1.03) |
+| V2 one tap | 1.60 2.08 1.81 (1.83) | 0.71 0.89 0.81 (0.80) |
+| V3 one tap + squash | 1.68 1.89 2.07 (1.88) | 0.80 0.74 0.81 (0.78) |
+
+Text contrast (WCAG, text colour against the glass along blank rows, worst over the
+row and within 35 px of a bright-left / dark-right backdrop boundary) differs by
+under 1.5 between variants in every case; the lowest is V2, lens, light scheme,
+5.2 against V1 6.4 (all above 4.5). The side-by-side crops under `cap/look/adapt/`
+show V2 and V3 drawing a dark contour along the boundary and stripe-like
+modulation inside the lens interior (the tint follows the pixel's own luma), which V1
+smooths. V1 was kept.
