@@ -42,6 +42,9 @@ pub struct GlassProfile {
     frames: u64,
     /// Surfaces that asked for blur, summed over the window.
     surfaces: u64,
+    /// Blurred windows drawn from a tier pyramid / by the per-window path.
+    tiered: u64,
+    fallback: u64,
     rebuilds: u64,
     max_rebuilds_frame: u32,
     level0_clears: u64,
@@ -66,6 +69,8 @@ impl GlassProfile {
             enabled,
             frames: 0,
             surfaces: 0,
+            tiered: 0,
+            fallback: 0,
             rebuilds: 0,
             max_rebuilds_frame: 0,
             level0_clears: 0,
@@ -88,6 +93,13 @@ impl GlassProfile {
         self.max_passes_rebuild = self.max_passes_rebuild.max(r.passes);
     }
 
+    /// This frame, `tiered` windows draw from a tier pyramid and `fallback`
+    /// blurred surfaces use the per-window path.
+    pub fn tiers(&mut self, tiered: usize, fallback: usize) {
+        self.tiered += tiered as u64;
+        self.fallback += fallback as u64;
+    }
+
     /// A frame ended with `surfaces` blurred surfaces; log when due.
     pub fn frame(&mut self, surfaces: usize) {
         self.frames += 1;
@@ -101,6 +113,8 @@ impl GlassProfile {
             tracing::info!(
                 frames = self.frames,
                 avg_surfaces = self.surfaces / self.frames,
+                avg_tiered = self.tiered / self.frames,
+                avg_fallback = self.fallback / self.frames,
                 rebuilds = self.rebuilds,
                 max_rebuilds_per_frame = self.max_rebuilds_frame,
                 level0_clears = self.level0_clears,

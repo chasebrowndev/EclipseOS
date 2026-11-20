@@ -181,3 +181,193 @@ exactly. Headless old-vs-new captures with the checker backdrop (glass window
 absolute difference is 0.35 of 255 (max 13) at 800 px, and 1.1 (max 18) for a
 300x200 window, where the old bug was weaker (crop/output about 0.2) so the new
 bend is slightly stronger than the old picture.
+
+## After Phase 1a (depth tiers)
+
+Branch `comp02-glass-pyramid`, same machine and harness as the baseline above.
+Phase 1a replaces the per-window blur chain with one shared pyramid per
+*depth tier* of an output (`ec-abyss-render/src/groups.rs`, `blur.rs`
+`group_refresh` / `group_element`, `lib.rs` `insert_blur`).
+
+- **Tier of a window.** 0 if no window below it in z-order overlaps its own
+  region (the frame rectangle, never its blur crop), otherwise one more than the
+  highest tier among the lower windows that do. Every window counts, glass or
+  not. Computed back to front into store-owned scratch vectors.
+- **One pyramid per tier, built lowest first.** Tier 0 is built from what lies
+  below every window (wallpaper, bottom layers). Tier `d` is built from that
+  plus the windows of tier `< d` below the tier's topmost member, composited in
+  z-order together with their own glass, so a window sees the lower windows that
+  overlap it and never its own content or anything above it. Tiled or
+  non-overlapping windows all share tier 0 whatever their blur margins reach.
+- **Cap.** `MAX_TIERS` = 4 stacked layers (tiers 0..3). A window deeper than
+  that clamps to tier 3 and samples that pyramid, which is built like the rest
+  from windows of true tier `< 3`: a clamped window does not see a lower window
+  that is itself clamped. If a pyramid cannot be built its members take the
+  per-window path for that frame (`BlurStore::element`, unchanged).
+- **Only a window's own backdrop is tiered.** Layers, popups and shaped
+  backdrops, and panes (which keep reusing their window's backdrop), stay on the
+  per-surface path. Panes of a lower window are not part of a higher tier's
+  composite.
+- Each member draws the same `BlurElement` as before with its region as a UV
+  offset into the shared half-resolution result; `px_uv` is one physical pixel of
+  the union crop of the tier's members. One damage scan per pyramid. The
+  crowded throttle is per pyramid. Rebuilds are still whole-pyramid and
+  full-crop (1b and 1c are not done).
+- The capture pass (`still.rs`, which `grim` and the built-in screenshots use)
+  records its windows the same way and takes the same path, so a capture and the
+  screen agree. A redaction card pushed between windows rides with the window
+  below it.
+
+### Pixel checks (headless, 2880x1620, checker backdrop, full frame)
+
+All through `grim`, Phase 0 binary against this branch:
+
+| Scene | Differing samples | Mean abs diff / max (of 255) |
+|---|---|---|
+| one glass window over the checker window | 0 of 14.0 M | 0 / 0 |
+| five glass windows apart (several share tier 1) | 2548 of 14.0 M | 0.0002 / 1 (UV rounding) |
+| five glass windows cascaded (overlap chain) | 0 of 14.0 M | 0 / 0 |
+| eight glass windows cascaded (chain deeper than the cap, clamped) | 807 564 of 14.0 M | 0.234 / 26 |
+| glass window 14 px beside a lower white window of its own tier, plain `blur` mode | 42 618 of 14.0 M | 0.042 / 50 |
+| same, glass mode (adaptive tint darkens both) | 0 | 0 / 0 |
+| glass window 18 and 46 px beside a lower glass window | 0 | 0 / 0 |
+
+The two non-zero rows are the accepted differences. A lower window that does not
+overlap the glass window no longer pulls into its blur through the kernel margin
+(the 14 px case: the white neighbour's bleed at the glass window's edge is gone,
+up to 50 levels in plain blur mode and nothing visible in glass mode); and a
+stack deeper than four stops seeing the clamped window directly beneath it.
+The overlap chains up to the cap and the pair (upper window's backdrop contains
+the lower window's content and not its own) match Phase 0 exactly.
+
+### Cascade layout (same matrix as the baseline)
+
+Rebuilds per frame and render times, Phase 0 to tiers. Rows marked * were
+re-measured today with the Phase 0 binary (this machine ran about 3 percent
+faster today than in the baseline session); the rest compare against the
+baseline table above. Render p50 / p99 in us, range over the 5 s reports.
+
+| Scenario | N | rebuilds/frame | max/frame | render p50 | render p99 |
+|---|---|---|---|---|---|
+| idle | 1 | 0 to 0 | 0 to 0 | 808-829 to 222-291 | 1706-1772 to 900-1144 |
+| idle | 5* | 0 to 0 | 0 to 0 | 334-479 to 322-433 | 1128-1641 to 993-1300 |
+| idle | 10 | 0 to 0 | 0 to 0 | 1021-1441 to 430-624 | 3519-3898 to 1508-2418 |
+| idle | 20* | 0 to 0 | 0 to 0 | 827-1227 to 681-893 | 2390-2416 to 2340-2487 |
+| drag | 1 | 0.066 to 0.072 | 1 to 2 | | |
+| drag | 5* | 0.072 to 0.162 | 1 to 4 | 326-489 to 360-481 | 1349-2087 to 1947-2213 |
+| drag | 10 | 0.066 to 0.100 | 1 to 4 | | |
+| drag | 20* | 0.067 to 0.099 | 1 to 4 | 733-1163 to 589-819 | 2007-2774 to 1988-2475 |
+| resize | 1 | 0.013 to 0.013 | 2 to 2 | | |
+| resize | 5 | 0.017 to 0.007 | 6 to 4 | | |
+| resize | 10 | 0.014 to 0.007 | 11 to 4 | | |
+| resize | 20 | 0.004 to 0.004 | 1 to 1 | | |
+| damage under | 1 | 0.564 to 0.549 | 1 to 1 | | |
+| damage under | 5* | 2.868 to 1.692 | 5 to 3 | 458-2168 to 505-750 | 3947-4054 to 3053-3104 |
+| damage under | 10* | 1.667 to 0.500 | 9 to 3 | 793-1359 to 647-1146 | 7369-7662 to 3090-3111 |
+| damage under | 20* | 3.333 to 0.500 | 11 to 2 | 1654-2515 to 1184-1458 | 10162-10632 to 3210-3339 |
+
+Idle with 20 overlapping glass windows is about a quarter cheaper at p50
+(1110 to 838 us median of the reports), with zero rebuilds either way; under
+damage the cost no longer grows with N (p99 render time 10.2 ms to 3.3 ms at
+N = 20). Drag is worse: a dragged window changes the tier's union crop on every
+step, so the whole pyramid rebuilds, with a larger crop (1.0-1.75 Mtexels
+against 0.6). That is the 1c problem (the drag margin), not fixed here.
+
+### Spread layout (windows 960 x 810 px apart), same day
+
+| Scenario | N | rebuilds/frame | max/frame | crop Mtex/rebuild | render p50 | render p99 |
+|---|---|---|---|---|---|---|
+| idle | 3 | 0 to 0 | 0 to 0 | n/a | 281-352 to 293-350 | 949-1032 to 1021-1195 |
+| idle | 5 | 0 to 0 | 0 to 0 | n/a | 379-436 to 336-434 | 1208-1367 to 1104-1307 |
+| damage under | 3 | 1.114 to 0.551 | 2 to 1 | 0.51 to 1.08 | 425-720 to 439-713 | 2640-2663 to 2267-2380 |
+| damage under | 5 | 2.278 to 0.554 | 4 to 1 | 0.54 to 2.46 | 473-727 to 487-1250 | 3631-4524 to 2278-5022 |
+| drag | 3 | 0.058 to 0.111 | 1 to 2 | 0.59 to 1.75 | 353-439 to 294-379 | 866-1744 to 1549-1934 |
+| drag | 5 | 0.067 to 0.059 | 1 to 2 | 0.60 to 2.77 | 317-424 to 318-405 | 977-3996 to 1615-1856 |
+
+Under damage the rebuilds drop by 2.1x (N = 3) and 4.1x (N = 5), and cleared
+texels per frame from 10.6 M to 2.6 M at N = 5. Texels redrawn into level 0 per
+frame are about 11 percent higher at N = 5 (1.36 M against 1.23 M): fewer,
+larger rebuilds. Drag at N = 3 doubles its rebuild count, as above.
+
+### Tiled layout (`mode "wm"`, N glass windows tiled, no overlap), same day
+
+Every window is tier 0, so there is one pyramid, built from the wallpaper only.
+In the damage scenario the first and the last tile are opaque windows
+repainting random blocks every ~30 ms (a window's content changes, the wallpaper
+does not); the other tiles are static glass windows. `avg_surfaces` counts the
+glass windows (2 fewer than N in that scenario).
+
+| Scenario | N | rebuilds/frame | max/frame | render p50 | render p99 |
+|---|---|---|---|---|---|
+| idle | 4 | 0 to 0 | 0 to 0 | 211-271 to 241-308 | 1626-3005 to 1262-2944 |
+| idle | 9 | 0 to 0 | 0 to 0 | 427-527 to 387-467 | 2384-2832 to 1157-2098 |
+| idle | 20 | 0 to 0 | 0 to 0 | 836-1103 to 587-739 | 5234-5594 to 1560-1872 |
+| window content changes | 4 | 1.131 to 0 | 2 to 0 | 314-1269 to 273-947 | 3510-4145 to 3251-3951 |
+| window content changes | 9 | 4.151 to 0 | 7 to 0 | 788-2728 to 551-1226 | 4475-4578 to 2859-3481 |
+| window content changes | 20 | 3.000 to 0.167 | 18 to 1 | 1524-1816 to 1199-1493 | 7516-7991 to 3307-3626 |
+
+A tiled layout needs no rebuild when a window's content changes: the one
+pyramid only depends on the wallpaper and the bottom layers.
+
+The 120 rebuilds in 12 s at N = 20 (one every 6 frames, the crowded throttle)
+are real damage, not a bug: the harness's spiral tiling at N = 20 gives windows
+of 6 x 16 px, which the terminal cannot shrink to, so the smallest tiles overlap
+one another and the repainting one sits under others. Those are tier 1 windows,
+whose pyramid contains the repainting window. N = 12, whose tiles are large enough not to overlap, has 0
+rebuilds.
+
+Not measured / unavailable: GPU time (no timer queries).
+
+## Phase 1c: the drag margin
+
+A tier's pyramid is built over its members' union crop plus a margin
+(`crop_margin`, an eighth of the longer side of the output clamped to 128..512
+px: 360 px at 2880 wide), its size rounded up to a 512 px bucket
+(`CROP_BUCKET`) and kept on the output and the chain grid (`padded_crop`). A
+member that moves or grows inside that region changes only its UV offset: no
+rebuild, no new chain key. It rebuilds when a member leaves the region, when
+membership or tier changes, on a parameter change, and on damage anywhere in the
+region (damage in the margin, outside every member's crop, rebuilds too, or a
+member moving onto it would show stale pixels). Chains are keyed by the bucketed
+size, so a drag reuses the same few chains (at most eight distinct sizes
+through the whole output, tested). 360 px: a rebuild per about 360 px of travel
+rather than per step; each rebuild is a few times a window's own crop (the margin
+is paid in texels on every rebuild, which is why it is not larger).
+
+Cost: a damage rebuild now covers the padded region, so under damage the crop
+per rebuild is 2.6 Mtexels against 1.1 (spread N = 3) and 4.2 against 2.5
+(N = 5); the render p99 under damage at N = 5 rose from 2.6 ms to 5.3 ms in one
+run. Pixels: the larger build region moves the finite-crop edge effect outwards,
+so single and cascaded windows differ slightly from Phase 0 (one glass window:
+8805 samples, max 10 of 255; five cascaded: mean 0.11, max 17).
+
+Rebuilds per frame while dragging, Phase 0 / tiers (before 1c) / tiers with the
+margin. `drag` is `ec-ctl drag --steps 120` (a burst, about 12 frames of motion,
+x3 out and back, so a lower bound on a real drag). `paced` is 40 drags of 20 px
+(4 steps each), one per ec-ctl round trip, over 800 px out and back three times
+(about 480 frames): the window follows the pointer throughout.
+
+| Layout | N | burst Phase 0 / tiers / 1c | paced Phase 0 / tiers / 1c |
+|---|---|---|---|
+| cascade | 1 | 0.066 / 0.072 / 0.017 | 0.214 / 0.160 / 0.017 |
+| cascade | 5 | 0.072 / 0.162 / 0.039 | 0.163 / 0.265 / 0.038 |
+| cascade | 10 | 0.066 / 0.100 / 0.043 | 0.135 / 0.148 / 0.033 |
+| cascade | 20 | 0.067 / 0.099 / 0.042 | 0.072 / 0.014 / 0.011 |
+| spread | 3 | 0.058 / 0.109 / 0.002 | 0.025 / 0.033 / 0.014 |
+| spread | 5 | 0.067 / 0.059 / 0.010 | 0.133 / 0.035 / 0.117 |
+| tiled | 4, 9, 12, 20 | not a drag | 0.067, 0.150, 0.092, 0.158 / (n/a) / 0, 0, 0, 0.008 |
+
+Caveats, honestly: the 1c rebuilds that remain are the ones at the margin edge
+(about one per 360 px) and the first build of each pass; it is not ~0 mid-drag
+for a window that travels farther than the margin. In the spread layout the
+paced drag only moved the window 80 px (it was dragged by a window that sits
+against the output edge), and the N = 5 paced rows there are dominated by tier
+changes as the dragged window crosses others (membership change = rebuild), not
+by the margin. In `mode "wm"` a drag does not move a tile; the Phase 0 rebuilds
+in the tiled row are crop invalidation as the layout reacts, and 1c has none.
+
+Damage and idle (1c), rebuilds per frame: cascade damage 1 / 5 / 10 / 20 =
+0.546 / 1.675 / 0.500 / 0.500 (tiers before 1c: 0.549 / 1.692 / 0.500 / 0.500);
+spread damage 3 / 5 = 0.550 / 0.572; tiled damage 4 / 9 / 12 / 20 = 0 / 0 / 0 /
+0.167. Idle is 0 everywhere. Render p50/p99 are within run-to-run noise of the
+tiers numbers apart from the damage p99 above.
