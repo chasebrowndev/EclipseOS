@@ -620,14 +620,15 @@ fn redraw(
     };
     let render_time = frame_start.elapsed();
     dump_frame(data);
-    update_primary_scanout(&state.space, out, &rendered);
+    let lock = state.lock.frame_surface(out);
+    update_primary_scanout(&state.space, out, lock.as_ref(), &rendered);
     let prompt = crate::trusted_ui::holds_seat(state);
     crate::render::capture::service(state, &mut data.renderer, prompt);
 
     // There is no page flip, so the frame is "presented" the moment it is
     // composited, and never with a hardware-completion flag.
     let now = state.clock.now();
-    let mut feedback = presentation_feedback(&state.space, out, &rendered);
+    let mut feedback = presentation_feedback(&state.space, out, lock.as_ref(), &rendered);
     feedback.presented::<_, smithay::utils::Monotonic>(
         now,
         Refresh::fixed(FRAME),
@@ -637,7 +638,7 @@ fn redraw(
     state.stats.record(render_time, std::time::Duration::ZERO);
     state.stats.maybe_report();
     let time = state.start_time.elapsed();
-    send_frames(&state.space, out, time);
+    send_frames(&state.space, out, lock.as_ref(), time);
     crate::protocols::standard::frame_timing::release(state, out);
     state.space.refresh();
     state.popups.cleanup();
