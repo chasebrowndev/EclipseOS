@@ -117,7 +117,7 @@ struct Open {
 }
 
 /// Where the glass panel sits on one output, in output-local physical pixels,
-/// and what its body is made of (ADR 0126). Fixed by the compiled-in palette
+/// and what its body is made of (ADR 0128). Fixed by the compiled-in palette
 /// and the layout: nothing a client or config says reaches it.
 #[derive(Debug, Clone)]
 struct PanelGlass {
@@ -144,7 +144,7 @@ pub struct TrustedUi {
     /// own outputs (ADR 0084), so the renderer is part of the key.
     art: BTreeMap<(ContextId<GlesTexture>, usize), (usize, TextureBuffer<GlesTexture>)>,
     /// The opaque panel per renderer and device scale: what is drawn when the
-    /// glass body cannot be built (ADR 0126). Same key and lifetime as `art`.
+    /// glass body cannot be built (ADR 0128). Same key and lifetime as `art`.
     art_solid: BTreeMap<(ContextId<GlesTexture>, usize), (usize, TextureBuffer<GlesTexture>)>,
     /// The glass panel placed by the last [`elements`] call, for
     /// [`splice_glass`] to put the blurred body behind it.
@@ -542,7 +542,7 @@ pub fn elements(
     let mut out = Vec::with_capacity(2);
     if ui.art.get(&key).map(|(f, _)| *f != o.focus).unwrap_or(true) {
         // The glass panel: the body ground is left transparent, and
-        // `splice_glass` draws the tinted blur under it (ADR 0126).
+        // `splice_glass` draws the tinted blur under it (ADR 0128).
         let raster = modal::rasterize_with(
             &o.modal,
             o.focus,
@@ -628,7 +628,7 @@ pub fn elements(
     out
 }
 
-/// Put the glass body behind the prompt panel (ADR 0126).
+/// Put the glass body behind the prompt panel (ADR 0128).
 ///
 /// `elements` is the output's front-to-back list as the backend has it ready
 /// to draw, and `panel_at` is where [`elements`] put its first element, the

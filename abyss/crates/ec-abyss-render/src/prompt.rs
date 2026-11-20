@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The glass of a compositor-drawn trusted prompt (ADR 0126, COMP-10).
+//! The glass of a compositor-drawn trusted prompt (ADR 0128, COMP-10).
 //!
 //! A prompt is drawn by the compositor so a client cannot imitate one. A
 //! translucent panel samples what a client drew behind it, so the sampling has
