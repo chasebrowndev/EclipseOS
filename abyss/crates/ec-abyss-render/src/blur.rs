@@ -720,6 +720,9 @@ pub enum BlurKey {
     /// An annotation panel (ADR 0071), by its handle. Annotations keep their
     /// own [`BlurStore`], so this never shares a table with a surface.
     Annotation(u64),
+    /// A trusted prompt's backdrop (ADR 0126): the only key of its private
+    /// store, never shared with a window's.
+    Prompt,
     /// The `n`th popup of a window with a keyed strip (ADR 0079), glassed
     /// over its whole surface.
     Popup(Window, usize),

@@ -34,6 +34,10 @@ pub mod overview;
 pub mod palette;
 pub mod partial;
 pub mod popup_shape;
+pub mod prompt;
+pub use prompt::{
+    prompt_backdrop, prompt_backdrop_release, PromptMember, PROMPT_MIN_PASSES, PROMPT_MIN_TINT_ALPHA,
+};
 pub mod redact;
 pub mod sanitize;
 pub mod select;
@@ -712,6 +716,10 @@ pub struct BorderGpu {
     /// per output so one output's retain, clear or chain size never touches
     /// another's (BLUR-04).
     blur: HashMap<Output, blur::BlurStore>,
+    /// The trusted prompt's private backdrop store per output (ADR 0128),
+    /// apart from `blur` so the per-frame `retain` of window backdrops never
+    /// touches it and it never shares a tier with a window.
+    prompt: HashMap<Output, blur::BlurStore>,
 }
 
 /// Border quads kept alive between frames, keyed by output and window: one
@@ -748,6 +756,11 @@ pub struct BorderStore {
 }
 
 impl BorderStore {
+    /// Prompt backdrops held, across renderer contexts (for tests and leaks).
+    pub fn gpu_prompt_count(&self) -> usize {
+        self.gpu.prompt.len()
+    }
+
     /// Drop the GPU objects of renderer contexts not in `keep` (a GPU went
     /// away, ADR 0084).
     pub fn retain_contexts(&mut self, keep: &[ContextId<smithay::backend::renderer::gles::GlesTexture>]) {

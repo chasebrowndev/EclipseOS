@@ -789,6 +789,8 @@ uniform float bar;        // titlebar depth from the region's top, physical px; 
 uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
 uniform float shade;      // 0..1 mix toward ink (light only: a pane's depth step); 0 elsewhere
 uniform float smoke;      // 0..1 weight of the smoke and adaptive tint; 1 normal, less on stacked glass
+uniform vec4 body_tint;   // a trusted prompt's fixed palette tint (straight rgb, alpha = weight); 0 elsewhere
+uniform float sharp_damp; // 0..1 share of the bevel's lightly blurred half held back; 0 (unset) everywhere but a trusted prompt
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
 const float SATURATE = 1.7;
@@ -915,8 +917,11 @@ void main() {
             vec3 sh = vec3(sharp_at(v_coords + b * (1.0 - k)).r,
                            sharp_at(v_coords + b).g,
                            sharp_at(v_coords + b * (1.0 + k)).b);
-            color.rgb = mix(color.rgb, sh, u);
-            rim_sh = sh;
+            // `sharp_damp` (a trusted prompt only) holds back that share of the
+            // lightly blurred half: the band stays a lens, not a window onto it.
+            vec3 shown = mix(color.rgb, sh, 1.0 - sharp_damp);
+            color.rgb = mix(color.rgb, shown, u);
+            rim_sh = shown;
         } else {
             color.r = blurred_at(v_coords + b * (1.0 - k)).r;
             color.g = blurred_at(v_coords + b).g;
@@ -968,6 +973,7 @@ void main() {
     }
     c = mix(c, vec3(1.0), lift);
     c = mix(c, LIFT_L, shade);
+    c = mix(c, body_tint.rgb, body_tint.a);
 
 #if defined(GLASS_LENS) || defined(GLASS_REGULAR)
     // Thickness, inside the bevel only (the plateau never gets here): the edge
@@ -1028,6 +1034,12 @@ const LENS_BEVEL_FRACTION: f32 = 0.4;
 /// shorter side: a 30 px cell bends by under 5 px, a 130 px pill keeps the full
 /// configured strength.
 pub const LENS_STRENGTH_FRACTION: f32 = 0.16;
+
+/// The bevel band of a lens whose shorter side is `short` physical px:
+/// `bevel`, capped at [`LENS_BEVEL_FRACTION`] of `short`.
+pub fn lens_bevel(bevel: f32, short: f32) -> f32 {
+    bevel.min(short.max(1.0) * LENS_BEVEL_FRACTION)
+}
 
 /// The rim bend of a lens shape whose shorter side is `short` physical px:
 /// `strength`, capped at [`LENS_STRENGTH_FRACTION`] of `short`.
@@ -1101,7 +1113,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 19] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 21] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -1121,6 +1133,8 @@ const GLASS_UNIFORMS: [(&str, UniformType); 19] = [
     ("scheme_light", UniformType::_1f),
     ("adapt", UniformType::_1f),
     ("adapt_layers", UniformType::_1f),
+    ("body_tint", UniformType::_4f),
+    ("sharp_damp", UniformType::_1f),
 ];
 
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
@@ -1149,6 +1163,22 @@ pub const DISPERSION_PX: f32 = 8.0;
 /// (0..1): the fringe at the edge in physical px at output scale `upscale`.
 pub fn fringe_px(dispersion: f32, upscale: f64) -> f32 {
     (dispersion.clamp(0.0, 1.0) as f64 * DISPERSION_PX as f64 * upscale) as f32
+}
+
+/// Set the `body_tint` uniform (a trusted prompt's palette tint; straight rgb
+/// and alpha), if `uniforms` has one.
+pub fn set_body_tint(uniforms: &mut [Uniform<'static>], tint: [f32; 4]) {
+    for u in uniforms.iter_mut().filter(|u| u.name == "body_tint") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_4f(tint[0], tint[1], tint[2], tint[3]);
+    }
+}
+
+/// Set the `sharp_damp` uniform (the share of the bevel's lightly blurred half
+/// held back; a trusted prompt's), if `uniforms` has one.
+pub fn set_sharp_damp(uniforms: &mut [Uniform<'static>], damp: f32) {
+    for u in uniforms.iter_mut().filter(|u| u.name == "sharp_damp") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_1f(damp);
+    }
 }
 
 /// Mark the `packed` uniform (if `uniforms` has one): `tex` is the blurred
@@ -1341,10 +1371,7 @@ pub fn glass_uniforms_lifted_into(
         // the bend at LENS_STRENGTH_FRACTION of it, so a small widget bends
         // gently and shows what is directly behind it, not its neighbours.
         let short = rect.size.w.min(rect.size.h).max(1) as f32;
-        (
-            lens_strength(strength, short),
-            bevel.min(short * LENS_BEVEL_FRACTION),
-        )
+        (lens_strength(strength, short), lens_bevel(bevel, short))
     } else {
         let short = rect.size.w.min(rect.size.h).max(1) as f32;
         let capped = bevel.min(short * GLASS_BEVEL_FRACTION);
@@ -1369,6 +1396,8 @@ pub fn glass_uniforms_lifted_into(
         Uniform::new("scheme_light", light),
         Uniform::new("adapt", adapt),
         Uniform::new("adapt_layers", layers),
+        Uniform::new("body_tint", [0.0f32; 4]),
+        Uniform::new("sharp_damp", 0.0f32),
     ]);
 }
 
