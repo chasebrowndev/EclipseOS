@@ -29,3 +29,18 @@ client holds a shortcuts inhibitor and while a prompt is already up.
 
 ## Revisit when
 Never, without a replacement anti-spoof story.
+
+## Amendment (2026-11-20): two faces
+The trusted UI uses two compiled-in faces. Text a human must verify character by
+character (the untrusted block, fact values, the typed entry and the personal
+secret) stays in the fixed-cell JetBrains Mono atlas, where `l`, `I`, `1` and `|`
+cannot be told apart by width. The compiled-in prose around it (headings,
+warnings, body, labels and button labels) is Onest, from an integer-advance atlas
+whose cells scale exactly with the output scale, so the exact-pixel layout
+guarantee holds for it too. Modal prompts still take trusted text as `&'static str`, so
+runtime text can only reach the fixed-cell well. `Canvas::sans` itself accepts any
+`&str`, so the rule for the other surfaces (commit card, lock indicator) is by
+review: callers pass compiled-in words or numbers the compositor formatted, and
+anything that can carry a request's text (such as an unknown refusal code) is
+drawn with `Canvas::text`. The owner's TCB review covers each call site. Onest's `l`, `I` and `|` are near-identical vertical bars; that
+is why no payload uses it.
