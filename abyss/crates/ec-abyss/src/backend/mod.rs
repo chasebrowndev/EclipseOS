@@ -166,6 +166,44 @@ pub fn output_vrr(state: &AbyssState, id: u64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// Every backend must hand the session locker's surface to the per-frame
+    /// services. It lives in neither the space nor the layer map, so without
+    /// `state.lock.frame_surface` a vsynced locker (ec-lock, wgpu fifo present)
+    /// gets no frame callback, presentation feedback or fifo release, and its
+    /// clock and password field freeze after the first frame.
+    #[test]
+    fn backends_service_the_lock_surface_each_frame() {
+        for (src, path) in [
+            (include_str!("drm.rs"), "drm.rs"),
+            (include_str!("winit.rs"), "winit.rs"),
+            (include_str!("headless.rs"), "headless.rs"),
+        ] {
+            let code: String = src
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(code.contains("frame_surface("), "{path}: no lock surface lookup");
+            for call in [
+                "update_primary_scanout(",
+                "presentation_feedback(",
+                "send_frames(",
+            ] {
+                let at = code.find(call).unwrap_or_else(|| panic!("{path}: no {call}"));
+                let args = &code[at..code[at..].find(");").map_or(code.len(), |e| at + e)];
+                assert!(
+                    args.contains("lock") || args.contains("frame_surface"),
+                    "{path}: {call} is not given the lock surface"
+                );
+            }
+        }
+        let timing = include_str!("../protocols/standard/frame_timing.rs");
+        assert!(
+            timing.contains("frame_surface("),
+            "frame_timing::release must sweep the lock surface's fifo/commit-timing barriers"
+        );
+    }
+
     /// A backend may only flush clients from its event-loop callback.
     ///
     /// `wl_display_flush_clients` destroys any client whose socket write

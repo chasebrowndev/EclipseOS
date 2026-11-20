@@ -485,6 +485,8 @@ fn build_ui_fonts(family: &str, terminal: &FontSystem) -> Option<FontSystem> {
 struct Stack {
     presenter: SurfacePresenter,
     renderer: Renderer,
+    /// GPU pass timing is on (render stats requested and the adapter has timestamp queries).
+    timestamps: bool,
 }
 
 /// The overlay subsurface's own swapchain, chrome pass and glass object. It draws only the
@@ -535,6 +537,7 @@ fn build_stack(
         gpu: GpuOptions {
             allow_software: rs.allow_software,
             compositor_hint: None,
+            timestamps: crate::stats::requested(),
         },
         alpha: rs.alpha,
     };
@@ -552,10 +555,12 @@ fn build_stack(
             pad_px(rs.padding.1, scale) as i32,
         ),
     };
-    let renderer = Renderer::new(presenter.gpu(), &cfg);
+    let mut renderer = Renderer::new(presenter.gpu(), &cfg);
+    let timestamps = crate::stats::requested() && renderer.enable_profiling();
     Ok(Stack {
         presenter,
         renderer,
+        timestamps,
     })
 }
 
@@ -910,6 +915,31 @@ fn ui_fonts<'a>(
     terminal
 }
 
+fn ns(d: Duration) -> u64 {
+    u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
+}
+
+/// The startup facts for reading render stats: adapter, backend, present mode, alpha, format,
+/// size and scale, enabled optional features. No paths, no content.
+fn log_gpu(info: &apoth_render::presenter::PresentInfo, size: (u32, u32), scale: f64) {
+    let a = &info.adapter;
+    tracing::info!(
+        adapter = %a.name,
+        backend = %a.backend,
+        device_type = ?a.class,
+        driver = %a.driver,
+        present_mode = ?info.present_mode,
+        alpha = ?info.alpha,
+        format = ?info.format,
+        width = size.0,
+        height = size.1,
+        scale,
+        timestamp_query = a.timestamp_query,
+        timestamp_inside_passes = a.timestamp_inside_passes,
+        "gpu"
+    );
+}
+
 #[allow(clippy::too_many_lines)]
 fn run(a: RenderArgs) {
     let RenderArgs {
@@ -954,6 +984,22 @@ fn run(a: RenderArgs) {
         opaque_fallback = info.opaque_fallback,
         "presenting"
     );
+    log_gpu(&info, buffer, scale);
+    let mut stats = crate::stats::requested().then(|| crate::stats::Stats::new(stack.timestamps));
+    if stats.is_some() {
+        tracing::info!(
+            "render stats on: {}s windows{}",
+            5,
+            if stack.timestamps {
+                ""
+            } else {
+                "; GPU timestamps unsupported on this adapter, GPU columns skipped"
+            }
+        );
+    }
+    let mut gpu_times = Vec::new();
+    // The next image-animation deadline, to count frames due against presented.
+    let mut anim_next: Option<Instant> = None;
     let mut sched = Scheduler::new(
         SchedConfig {
             echo_window: rs.echo_window,
@@ -1075,6 +1121,10 @@ fn run(a: RenderArgs) {
 
         let msg = match sched.poll(now_ns()) {
             Poll::Render(r) => {
+                let frame_t0 = stats.as_ref().map(|_| Instant::now());
+                let anim_late = anim_next
+                    .and_then(|d| Instant::now().checked_duration_since(d))
+                    .filter(|_| frame_t0.is_some());
                 glyphs.begin_frame();
                 let mut pending = 0usize;
                 for p in &mut panes {
@@ -1231,6 +1281,7 @@ fn run(a: RenderArgs) {
                     chrome_before: &floats,
                     clear,
                 };
+                let present_t0 = frame_t0.map(|_| Instant::now());
                 let outcome = stack.presenter.present(&mut stack.renderer, &input);
                 drop(list);
                 drop(quads);
@@ -1241,17 +1292,49 @@ fn run(a: RenderArgs) {
                             f.presented();
                         }
                         sched.rendered();
+                        anim_next = panes.iter().filter_map(|p| p.due).min();
+                        if let (Some(st_), Some(t0), Some(tp)) =
+                            (stats.as_mut(), frame_t0, present_t0)
+                        {
+                            let total = tp.elapsed();
+                            let sample = crate::stats::Sample {
+                                cpu_ns: ns(tp.saturating_duration_since(t0) + st.record),
+                                present_ns: ns(total.saturating_sub(st.record)),
+                                rows: st.draw.rows_drawn as u64,
+                                glyphs: st.draw.glyphs as u64,
+                                image_quads: st.draw.image_quads as u64,
+                                image_uploads: st.draw.image_uploads as u64,
+                                upload_bytes: st.draw.upload_bytes,
+                                image_bytes: st.draw.image_bytes,
+                                passes: st.draw.passes as u64,
+                                region_copies: st.draw.region_copies as u64,
+                                full: st.draw.full,
+                                anim_due: anim_late.is_some(),
+                                animating: anim_next.is_some(),
+                                anim_late_ns: anim_late.map_or(0, ns),
+                            };
+                            stack.renderer.drain_gpu_times(&mut gpu_times);
+                            for g in gpu_times.drain(..) {
+                                st_.gpu(&g);
+                            }
+                            if let Some(line) = st_.frame(now_ns(), &sample) {
+                                tracing::info!("{line}");
+                            }
+                        }
                         let due = panes
                             .iter()
                             .flat_map(|p| p.due.into_iter().chain(p.blink_due))
                             .min();
-                        sched.animate(due.map(|d| {
-                            now_ns()
-                                + u64::try_from(
+                        let at = now_ns();
+                        sched.animate(
+                            due.map(|d| {
+                                at + u64::try_from(
                                     d.saturating_duration_since(Instant::now()).as_nanos(),
                                 )
                                 .unwrap_or(u64::MAX / 2)
-                        }));
+                            }),
+                            at,
+                        );
                         tracing::trace!(
                             panes = panes.len(),
                             rows = st.draw.rows_drawn,
@@ -1261,8 +1344,13 @@ fn run(a: RenderArgs) {
                         );
                     }
                     PresentOutcome::Skipped(fault) => {
-                        tracing::debug!(?fault, "frame skipped");
-                        match fault_action(fault) {
+                        let action = fault_action(fault);
+                        if matches!(action, FaultAction::SkipFrame) {
+                            tracing::debug!(?fault, "frame skipped");
+                        } else {
+                            tracing::warn!(?fault, ?action, "frame skipped");
+                        }
+                        match action {
                             FaultAction::Abort => {
                                 let _ = to_main.send(MainMsg::RenderFailed(format!(
                                     "surface fault: {fault:?}"

@@ -1,0 +1,3 @@
+# Only the owner reviews and merges. With "Require review from Code Owners" on
+# in the branch rules, nothing lands without this approval.
+* @chasebrowndev

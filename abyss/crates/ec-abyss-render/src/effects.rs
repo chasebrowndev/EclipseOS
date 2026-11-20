@@ -805,6 +805,8 @@ uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
 uniform float shade;      // 0..1 mix toward ink (light only: a pane's depth step); 0 elsewhere
 uniform float shade_ref;  // physical px of the reference control size (40 logical); 0 (unset) = 40
 uniform float smoke;      // 0..1 weight of the smoke and adaptive tint; 1 normal, less on stacked glass
+uniform vec4 body_tint;   // a trusted prompt's fixed palette tint (straight rgb, alpha = weight); 0 elsewhere
+uniform float sharp_damp; // 0..1 share of the bevel's lightly blurred half held back; 0 (unset) everywhere but a trusted prompt
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
 const float SATURATE = 1.7;
@@ -1005,8 +1007,11 @@ void main() {
             vec3 sh = vec3(sharp_at(v_coords + b * (1.0 - k)).r,
                            sharp_at(v_coords + b).g,
                            sharp_at(v_coords + b * (1.0 + k)).b);
-            color.rgb = mix(color.rgb, sh, u);
-            rim_sh = sh;
+            // `sharp_damp` (a trusted prompt only) holds back that share of the
+            // lightly blurred half: the band stays a lens, not a window onto it.
+            vec3 shown = mix(color.rgb, sh, 1.0 - sharp_damp);
+            color.rgb = mix(color.rgb, shown, u);
+            rim_sh = shown;
         } else {
             color.r = blurred_at(v_coords + b * (1.0 - k)).r;
             color.g = blurred_at(v_coords + b).g;
@@ -1058,6 +1063,7 @@ void main() {
     }
     c = mix(c, vec3(1.0), lift);
     c = mix(c, LIFT_L, shade);
+    c = mix(c, body_tint.rgb, body_tint.a);
 
 #if defined(GLASS_LENS) || defined(GLASS_REGULAR)
     // Thickness, inside the bevel only (the plateau never gets here): the edge
@@ -1208,7 +1214,7 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 20] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 22] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
@@ -1229,6 +1235,8 @@ const GLASS_UNIFORMS: [(&str, UniformType); 20] = [
     ("adapt", UniformType::_1f),
     ("adapt_layers", UniformType::_1f),
     ("shade_ref", UniformType::_1f),
+    ("body_tint", UniformType::_4f),
+    ("sharp_damp", UniformType::_1f),
 ];
 
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
@@ -1305,6 +1313,22 @@ pub fn shade_strength(w: f32, h: f32, scale: f32) -> f32 {
 pub fn set_shade_ref(uniforms: &mut [Uniform<'static>], scale: f64) {
     for u in uniforms.iter_mut().filter(|u| u.name == "shade_ref") {
         u.value = smithay::backend::renderer::gles::UniformValue::_1f(SHADE_REF * scale as f32);
+    }
+}
+
+/// Set the `body_tint` uniform (a trusted prompt's palette tint; straight rgb
+/// and alpha), if `uniforms` has one.
+pub fn set_body_tint(uniforms: &mut [Uniform<'static>], tint: [f32; 4]) {
+    for u in uniforms.iter_mut().filter(|u| u.name == "body_tint") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_4f(tint[0], tint[1], tint[2], tint[3]);
+    }
+}
+
+/// Set the `sharp_damp` uniform (the share of the bevel's lightly blurred half
+/// held back; a trusted prompt's), if `uniforms` has one.
+pub fn set_sharp_damp(uniforms: &mut [Uniform<'static>], damp: f32) {
+    for u in uniforms.iter_mut().filter(|u| u.name == "sharp_damp") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_1f(damp);
     }
 }
 
@@ -1524,6 +1548,8 @@ pub fn glass_uniforms_lifted_into(
         Uniform::new("adapt", adapt),
         Uniform::new("adapt_layers", layers),
         Uniform::new("shade_ref", 0.0f32),
+        Uniform::new("body_tint", [0.0f32; 4]),
+        Uniform::new("sharp_damp", 0.0f32),
     ]);
 }
 

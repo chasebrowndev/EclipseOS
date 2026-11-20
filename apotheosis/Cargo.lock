@@ -206,8 +206,10 @@ dependencies = [
  "png",
  "pulseaudio",
  "rav1d",
+ "rust_h264",
  "rustix",
  "seccompiler",
+ "shiguredo_mp4",
  "symphonia",
  "tracing",
 ]
@@ -1974,6 +1976,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
+name = "rust_h264"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49a852e1544c48fba7d072620420c602f195092e3774655584ef5e4e6fd056a9"
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2101,6 +2109,12 @@ checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
 ]
+
+[[package]]
+name = "shiguredo_mp4"
+version = "2026.6.0-canary.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf0af704514ba7e8e9e2221af2b27af7f7e7d412acdad4aea2ad82ea86a6ed41"
 
 [[package]]
 name = "shlex"

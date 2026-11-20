@@ -1018,6 +1018,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-glance"
+version = "0.2.2"
+
+[[package]]
 name = "ec-glass-host"
 version = "0.2.2"
 dependencies = [
@@ -1029,9 +1033,29 @@ dependencies = [
 name = "ec-greeter"
 version = "0.2.2"
 dependencies = [
+ "ec-layout",
  "ec-theme",
  "libc",
  "png 0.18.1",
+]
+
+[[package]]
+name = "ec-greeter-ui"
+version = "0.2.2"
+dependencies = [
+ "ec-glance",
+ "ec-greeter",
+ "ec-layout",
+ "ec-protocols",
+ "ec-style-tokens",
+ "ec-theme",
+ "iced",
+ "image",
+ "libc",
+ "raw-window-handle",
+ "serde_json",
+ "wayland-backend",
+ "wayland-client",
 ]
 
 [[package]]
@@ -1071,15 +1095,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-layout"
+version = "0.2.2"
+
+[[package]]
 name = "ec-lock"
 version = "0.2.2"
 dependencies = [
+ "ec-glance",
  "ec-ipc",
+ "ec-layout",
+ "ec-theme",
  "ec-ui",
  "iced",
  "iced_sessionlock",
  "libc",
  "serde_json",
+ "sessionlockev",
 ]
 
 [[package]]
@@ -1142,6 +1174,7 @@ dependencies = [
  "ec-config-schema",
  "ec-greeter",
  "ec-ipc",
+ "ec-layout",
  "ec-policy-viewer",
  "ec-services",
  "ec-theme",
@@ -2015,8 +2048,6 @@ dependencies = [
 [[package]]
 name = "iced_sessionlock"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "519d0ba8279b4a2d9ce19bbc1824078135cc72c0dadf0dbb385c1507e0036f2f"
 dependencies = [
  "futures",
  "iced_core",
@@ -4092,8 +4123,6 @@ dependencies = [
 [[package]]
 name = "sessionlockev"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a50dd03affe5176bca3e763ebfc3b68f423e0096b4c1c6662d598b103b64c3be"
 dependencies = [
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",

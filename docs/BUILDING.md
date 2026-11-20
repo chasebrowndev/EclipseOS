@@ -27,8 +27,8 @@ Development headers, plus their runtime libraries:
 Arch:
 
 ```
-sudo pacman -S --needed rust seatd libinput wayland libxkbcommon \
-                        libdisplay-info mesa libdrm pam pkgconf
+sudo pacman -S --needed rustup seatd libinput wayland libxkbcommon \
+                        libdisplay-info mesa libdrm pam pkgconf pixman
 ```
 
 Debian/Ubuntu (what CI installs):
@@ -36,7 +36,8 @@ Debian/Ubuntu (what CI installs):
 ```
 sudo apt-get install -y libseat-dev libinput-dev libwayland-dev \
   libxkbcommon-dev libgbm-dev libegl-dev libudev-dev libdrm-dev \
-  libdisplay-info-dev libpam0g-dev pkg-config
+  libdisplay-info-dev libpam0g-dev pkg-config \
+  libgles2-mesa-dev libpixman-1-dev
 ```
 
 No C library is needed for D-Bus: `ec-services` uses `zbus` (pure Rust,
@@ -50,10 +51,10 @@ your user must be able to open the seat.
 ## Build
 
 ```
-cargo build --workspace
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo build --workspace --all-targets
 cargo test --workspace
-cargo clippy --workspace -- -D warnings
-cargo fmt --check
 ```
 
 ## Run
@@ -134,7 +135,7 @@ being worked on:
 
 ```
 cargo build --release --workspace --bins
-sudo ./dist/install-session.sh
+sudo ./packaging/install-session.sh
 ```
 
 It symlinks the release binaries into `/usr/local/bin`, installs the wrapper
@@ -245,7 +246,7 @@ overrides that. Test the scripts with `packaging/test/update-rollback.sh`.
 The distribution path (D-01..D-03), all under `packaging/`:
 
 - **`packaging/pkg/eclipseos/PKGBUILD`** — split package, built from the pushed
-  `v$pkgver` tag (`pkgver=0.1.1`). One package per swappable component
+  `v$pkgver` tag (`pkgver=0.2.2`). One package per swappable component
   (ADR 0052): `eclipseos-abyss` (abyss, ec-ctl, the session wrapper,
   desktop entry and target, and the update fallback of ADR 0101: the
   `eclipseos-abyss-keep.hook` pre-upgrade hook, `ec-abyss-keep`,
@@ -297,7 +298,7 @@ cargo deny check
 ```
 
 `cargo-deny` is not installed by default; `cargo install cargo-deny` if you want
-to run it locally. CI runs it on every push. `deny.toml` allows only AGPL-3.0
+to run it locally. CI runs it on pull requests, on pushes to main, and nightly. `deny.toml` allows only AGPL-3.0
 compatible licences and rejects wildcard version requirements.
 
 ## Testing DRM on a second VT

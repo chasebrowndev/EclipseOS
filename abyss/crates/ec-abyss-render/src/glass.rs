@@ -36,6 +36,8 @@ pub enum Tone {
 /// `state` bits.
 pub const HOVERED: u32 = 1;
 pub const PRESSED: u32 = 2;
+/// The pane is cut to the set's clip rectangle (protocol version 2).
+pub const CLIPPED: u32 = 4;
 
 /// One pane, surface-local logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -65,6 +67,9 @@ pub enum ParseError {
 pub struct PaneSet {
     panes: [Pane; MAX_PANES],
     len: usize,
+    /// `set_clip` (ADR 0127): the rectangle `CLIPPED` panes are cut to,
+    /// surface-local logical. `None` clears it.
+    pub clip: Option<Rectangle<i32, Logical>>,
 }
 
 impl Default for PaneSet {
@@ -72,13 +77,14 @@ impl Default for PaneSet {
         Self {
             panes: [Pane::default(); MAX_PANES],
             len: 0,
+            clip: None,
         }
     }
 }
 
 impl PartialEq for PaneSet {
     fn eq(&self, other: &Self) -> bool {
-        self.as_slice() == other.as_slice()
+        self.as_slice() == other.as_slice() && self.clip == other.clip
     }
 }
 
@@ -109,6 +115,15 @@ impl PaneSet {
             .filter(|r| !r.is_empty())
             .reduce(|a, b| a.merge(b))
     }
+}
+
+/// `set_clip`: a zero width or height clears the clip, a negative one is
+/// `bad_pane` (`None`), anything else is the clip rectangle.
+pub fn parse_clip(x: i32, y: i32, w: i32, h: i32) -> Option<Option<Rectangle<i32, Logical>>> {
+    if w < 0 || h < 0 {
+        return None;
+    }
+    Some((w > 0 && h > 0).then(|| Rectangle::new((x, y).into(), (w, h).into())))
 }
 
 /// Parse a `set_panes` array.
@@ -148,7 +163,7 @@ pub fn parse_panes(bytes: &[u8]) -> Result<PaneSet, ParseError> {
             radius: u32::from_ne_bytes(word(4)),
             bezel: u32::from_ne_bytes(word(5)),
             tone,
-            state: u32::from_ne_bytes(word(7)) & (HOVERED | PRESSED),
+            state: u32::from_ne_bytes(word(7)) & (HOVERED | PRESSED | CLIPPED),
             alpha: alpha as u8,
         };
     }
@@ -427,17 +442,12 @@ pub fn look_on(pane: &Pane, light: bool, stacked: bool) -> Option<Look> {
     Some(if stacked { l.stacked(light, pane.alpha) } else { l })
 }
 
-/// The pane's box in output-local physical pixels, clipped to the surface
-/// (`size`, logical) and to `crop` if given. `loc` is the surface origin,
-/// output-local physical; `scale` the output scale.
-pub fn pane_rect(
-    pane: &Pane,
-    size: smithay::utils::Size<i32, Logical>,
+/// A logical box placed at the surface origin `loc` in physical pixels.
+fn place(
+    logical: Rectangle<i32, Logical>,
     loc: smithay::utils::Point<i32, Physical>,
     scale: smithay::utils::Scale<f64>,
 ) -> Option<Rectangle<i32, Physical>> {
-    let logical = Rectangle::<i32, Logical>::new((pane.x, pane.y).into(), (pane.w, pane.h).into())
-        .intersection(Rectangle::from_size(size))?;
     let r = Rectangle::<i32, Physical>::new(
         (
             loc.x + (logical.loc.x as f64 * scale.x).round() as i32,
@@ -451,6 +461,50 @@ pub fn pane_rect(
             .into(),
     );
     (!r.is_empty()).then_some(r)
+}
+
+/// The pane's whole box, not cut to the surface: the shape a `CLIPPED` pane's
+/// corners, rim and bezel are computed from.
+pub fn pane_full_rect(
+    pane: &Pane,
+    loc: smithay::utils::Point<i32, Physical>,
+    scale: smithay::utils::Scale<f64>,
+) -> Option<Rectangle<i32, Physical>> {
+    place(
+        Rectangle::<i32, Logical>::new((pane.x, pane.y).into(), (pane.w, pane.h).into()),
+        loc,
+        scale,
+    )
+}
+
+/// The set's clip in output-local physical pixels, cut to the surface. `None`
+/// when the set has no clip; `Some(None)` when the clip misses the surface
+/// (so every clipped pane is hidden).
+pub fn clip_rect(
+    clip: Option<Rectangle<i32, Logical>>,
+    size: smithay::utils::Size<i32, Logical>,
+    loc: smithay::utils::Point<i32, Physical>,
+    scale: smithay::utils::Scale<f64>,
+) -> Option<Option<Rectangle<i32, Physical>>> {
+    let clip = clip?;
+    Some(
+        clip.intersection(Rectangle::from_size(size))
+            .and_then(|l| place(l, loc, scale)),
+    )
+}
+
+/// The pane's box in output-local physical pixels, clipped to the surface
+/// (`size`, logical) and to `crop` if given. `loc` is the surface origin,
+/// output-local physical; `scale` the output scale.
+pub fn pane_rect(
+    pane: &Pane,
+    size: smithay::utils::Size<i32, Logical>,
+    loc: smithay::utils::Point<i32, Physical>,
+    scale: smithay::utils::Scale<f64>,
+) -> Option<Rectangle<i32, Physical>> {
+    let logical = Rectangle::<i32, Logical>::new((pane.x, pane.y).into(), (pane.w, pane.h).into())
+        .intersection(Rectangle::from_size(size))?;
+    place(logical, loc, scale)
 }
 
 /// The pane's bend band in physical px: its bezel (or the default), at most

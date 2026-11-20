@@ -44,6 +44,7 @@ fn gpu() -> Option<Gpu> {
     match Gpu::headless(&GpuOptions {
         allow_software: true,
         compositor_hint: None,
+        timestamps: false,
     }) {
         Ok(g) => Some(g),
         Err(e) => {

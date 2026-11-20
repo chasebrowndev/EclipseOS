@@ -25,9 +25,10 @@ use std::os::unix::net::UnixStream;
 use apoth_image::{ErrCode, Limits};
 
 use crate::audio_dec::AudioDec;
-use crate::av1::{Decoder, PicView};
+use crate::av1::{self, PicView};
 use crate::chan::Chan;
-use crate::demux::{Packet, Source};
+use crate::demux::{Packet, Source, VideoCodec};
+use crate::h264;
 use crate::sandbox::{self, Knobs};
 use crate::wire::{self, Fail, FromHelper, ImageFrame, ImageKind, ToHelper};
 use crate::yuv::{Converter, fit_aspect};
@@ -189,6 +190,60 @@ pub fn decode_image(
     }
 }
 
+/// The video decoder of the open stream: AV1 (rav1d) or H.264 (`rust_h264`).
+enum Decoder {
+    Av1(av1::Decoder),
+    H264(Box<h264::Decoder>),
+}
+
+/// Why a packet did not decode.
+enum VideoErr {
+    /// The stream cannot play at all.
+    Unsupported,
+    /// This packet is bad: skip it.
+    Skip,
+}
+
+impl Decoder {
+    fn new(codec: &VideoCodec, threads: u32) -> Result<Decoder, Fail> {
+        match codec {
+            VideoCodec::Av1 => av1::Decoder::new(threads)
+                .map(Decoder::Av1)
+                .map_err(|_| Fail::Decode),
+            VideoCodec::H264(avcc) => h264::Decoder::new(avcc).map(|d| Decoder::H264(Box::new(d))),
+        }
+    }
+
+    fn decode(
+        &mut self,
+        data: &[u8],
+        pts: i64,
+        f: &mut dyn FnMut(&PicView<'_>),
+    ) -> Result<usize, VideoErr> {
+        match self {
+            Decoder::Av1(d) => d.decode(data, pts, f).map_err(|_| VideoErr::Skip),
+            Decoder::H264(d) => d.decode(data, pts, f).map_err(|e| match e {
+                h264::DecodeError::Unsupported => VideoErr::Unsupported,
+                h264::DecodeError::Bad => VideoErr::Skip,
+            }),
+        }
+    }
+
+    fn finish(&mut self, f: &mut dyn FnMut(&PicView<'_>)) {
+        let _ = match self {
+            Decoder::Av1(d) => d.finish(f).map_err(|_| ()),
+            Decoder::H264(d) => d.finish(f).map_err(|_| ()),
+        };
+    }
+
+    fn flush(&mut self) {
+        match self {
+            Decoder::Av1(d) => d.flush(),
+            Decoder::H264(d) => d.flush(),
+        }
+    }
+}
+
 struct Ring {
     fd: OwnedFd,
     slot_bytes: usize,
@@ -269,7 +324,8 @@ impl Media {
             (ow, oh) = fit_aspect(v.width, v.height, v.dar, bw, bh);
             (vw, vh) = (v.width, v.height);
             dar = v.dar.unwrap_or((0, 0));
-            let d = Decoder::new(threads).map_err(|_| fail(&chan, Fail::Decode, EXIT_FAILED))?;
+            let codec = src.vcodec.as_ref().ok_or(EXIT_FAILED)?;
+            let d = Decoder::new(codec, threads).map_err(|f| fail(&chan, f, EXIT_FAILED))?;
             video = Some((d, ow, oh));
         }
         let audio = match (&src.audio, audio_on) {
@@ -482,8 +538,10 @@ impl Media {
             ready.push_back((pic.pts, buf));
         };
         // A frame that does not decode is skipped; the decoder resyncs at a keyframe.
-        let _ = dec.decode(&p.data, p.pts_us, &mut f);
-        Ok(())
+        match dec.decode(&p.data, p.pts_us, &mut f) {
+            Err(VideoErr::Unsupported) => Err(self.fail(Fail::Unsupported)),
+            _ => Ok(()),
+        }
     }
 
     /// The input is done: take the decoder's last pictures.
@@ -501,7 +559,7 @@ impl Media {
             conv.convert(pic, ow, oh, &mut buf);
             ready.push_back((pic.pts, buf));
         };
-        let _ = dec.finish(&mut f);
+        dec.finish(&mut f);
     }
 
     fn audio_packet(&mut self, p: &Packet) -> Result<Step, i32> {

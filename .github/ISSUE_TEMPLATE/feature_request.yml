@@ -1,0 +1,27 @@
+name: Feature or design idea
+description: Suggest something new or a change to how something looks or works.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The need comes first. The solution can come after.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like to see?
+      description: Sketches, screenshots from other systems, or rough ideas are welcome.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Anything you tried or considered instead?
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Are you up for helping?
+      options:
+        - label: I could try an implementation or a mockup
+        - label: I can test a branch

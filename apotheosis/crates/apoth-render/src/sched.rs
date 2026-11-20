@@ -44,6 +44,9 @@ fn ns(d: Duration) -> Ns {
     u64::try_from(d.as_nanos()).unwrap_or(u64::MAX)
 }
 
+/// The shortest wait between two animation-driven presents (about 60 a second).
+pub const ANIM_MIN_GAP: Ns = 16_000_000;
+
 /// A monotonic clock, injectable so budgets and timers test without sleeping.
 pub trait Clock {
     /// Time since an arbitrary fixed origin.
@@ -322,9 +325,12 @@ impl Scheduler {
     }
 
     /// The last rendered frame shows an animation whose next frame is due at `due`
-    /// (`None`: nothing animates). Replaces the previous deadline.
-    pub fn animate(&mut self, due: Option<Ns>) {
-        self.anim = due;
+    /// (`None`: nothing animates). Replaces the previous deadline. `now` is the instant the
+    /// frame was presented: a deadline sooner than [`ANIM_MIN_GAP`] after it waits until then,
+    /// so a 1 ms frame gap cannot drive a present per refresh (the frame shown is a function
+    /// of the clock, so only frames faster than the cap are skipped).
+    pub fn animate(&mut self, due: Option<Ns>, now: Ns) {
+        self.anim = due.map(|d| d.max(now.saturating_add(ANIM_MIN_GAP)));
     }
 
     /// What to do at `now`.
@@ -407,18 +413,53 @@ mod tests {
             Pacing::choose(false, PresentKind::Mailbox),
         );
         assert_eq!(s.poll(0), Poll::Idle);
-        s.animate(Some(40 * MS));
+        s.animate(Some(40 * MS), 0);
         assert_eq!(s.poll(10 * MS), Poll::Wait(Some(40 * MS)));
         assert!(matches!(s.poll(40 * MS), Poll::Render(_)));
         s.rendered();
-        s.animate(Some(80 * MS));
+        s.animate(Some(80 * MS), 40 * MS);
         s.set_suspended(true, 50 * MS);
         assert_eq!(s.poll(90 * MS), Poll::Idle, "occluded: no wakeup");
         s.set_suspended(false, 100 * MS);
         assert!(matches!(s.poll(100 * MS), Poll::Render(_)));
         s.rendered();
-        s.animate(None);
+        s.animate(None, 100 * MS);
         assert_eq!(s.poll(200 * MS), Poll::Idle);
+    }
+
+    #[test]
+    fn a_100ms_animation_requests_ten_frames_a_second_and_nothing_between() {
+        let mut s = Scheduler::new(
+            SchedConfig::default(),
+            Pacing::choose(false, PresentKind::Mailbox),
+        );
+        let (mut now, mut renders) = (0, 0);
+        s.animate(Some(100 * MS), now);
+        while now <= 1000 * MS {
+            match s.poll(now) {
+                Poll::Render(_) => {
+                    renders += 1;
+                    s.rendered();
+                    s.animate(Some(now + 100 * MS), now);
+                }
+                Poll::Wait(Some(t)) => {
+                    assert!(t > now);
+                    now = t;
+                }
+                other => panic!("unexpected {other:?} at {now}"),
+            }
+        }
+        assert_eq!(renders, 10);
+    }
+
+    #[test]
+    fn a_1ms_frame_gap_is_capped_at_the_minimum_gap() {
+        let mut s = Scheduler::new(
+            SchedConfig::default(),
+            Pacing::choose(false, PresentKind::Mailbox),
+        );
+        s.animate(Some(51 * MS), 50 * MS);
+        assert_eq!(s.poll(50 * MS), Poll::Wait(Some(50 * MS + ANIM_MIN_GAP)));
     }
 
     fn sched(p: Pacing) -> Scheduler {

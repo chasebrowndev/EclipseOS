@@ -1205,6 +1205,14 @@ pub const TABLE: &[Key] = &[
        outside the shape; the centre is never bent.",
     ),
     k(
+        "decoration.blur.glass.lens.rim",
+        PCT,
+        Float(0.7),
+        Abyss,
+        Live,
+        "`glass` lens: strength of the hairline rim.",
+    ),
+    k(
         "decoration.blur.glass.lens.bevel",
         int(1, 128),
         Int(40),
@@ -1221,14 +1229,6 @@ pub const TABLE: &[Key] = &[
         Live,
         "`glass` lens: colour fringing across the bevel, following the local \
        bend; 0 is none.",
-    ),
-    k(
-        "decoration.blur.glass.lens.rim",
-        PCT,
-        Float(0.7),
-        Abyss,
-        Live,
-        "`glass` lens: strength of the hairline rim.",
     ),
     k(
         "decoration.blur.adaptive.enabled",

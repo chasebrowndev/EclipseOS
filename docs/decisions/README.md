@@ -1,3 +1,5 @@
+**English** | [Español](README.es.md)
+
 # Decision log (F-08)
 
 One decision per file, `NNNN-slug.md`, format in `TEMPLATE.md`. **Never edited
@@ -54,7 +56,7 @@ writing a new ADR that says so.
 | 0046 | [The S-04 §4 audit store is the task/counter journal, built at milestone 10](0046-shared-audit-store-at-m10.md) | accepted |
 | 0047 | [The `ec-policy-eval` API surface: what the two processes are allowed to share](0047-policy-eval-api-surface.md) | accepted |
 | 0048 | [A task's statement is journalled as a hash, and does not survive a restart](0048-task-statement-is-hashed-not-journalled.md) | accepted |
-| 0049 | [Outputs carry a number; Ctrl+Super+[N] moves a window to display N](0049-output-number-and-move-to-output.md) | accepted |
+| 0049 | [Outputs get a stable display number; move-window-to-output-workspace action](0049-output-number-and-move-to-output.md) | accepted |
 | 0050 | [Oracle-Eyes may call `get_outputs`](0050-oracle-eyes-reads-get-outputs.md) | accepted |
 | 0051 | [An `org.freedesktop.ScreenSaver` service bridges D-Bus idle inhibits to the compositor](0051-screensaver-service-bridges-idle-inhibit.md) | accepted |
 | 0052 | [One crate and one package per swappable DE component](0052-one-crate-per-swappable-de-component.md) | accepted |
@@ -62,21 +64,37 @@ writing a new ADR that says so.
 | 0054 | [Annotations gain a title and a pick marker](0054-annotation-pick-marker.md) | accepted |
 | 0055 | [Oracle-Eyes publishes a status beacon for the taskbar eye](0055-oracle-eyes-status-beacon.md) | accepted |
 | 0056 | [Small listed layer surfaces are omitted from capture](0056-capture-hide-layer.md) | accepted |
+| 0057 | [`mousebind`: modifier + mouse-button window move/resize](0057-mousebind-alt-drag.md) | accepted |
+| 0058 | [Radiant: weighted n-ary tiling with drop zones](0058-radiant-layout.md) | accepted |
+| 0059 | [`gesture "drag"`: modifier + touchpad window drag](0059-touchpad-drag-gesture.md) | accepted |
+| 0060 | [Setup profiles and the graphical ISO installer](0060-setup-profiles.md) | accepted |
+| 0061 | [Destructive-action confirmation and its request channel](0061-trusted-destructive-confirm.md) | accepted |
+| 0062 | [Hybrid interaction mode](0062-hybrid-interaction-mode.md) | accepted |
 | 0063 | [`agentd` is the sole trusted emitter of agent file-activity events](0063-agent-file-activity.md) | proposed |
 | 0064 | [An invalid config at startup drops the bad nodes and starts](0064-start-on-invalid-config.md) | accepted |
 | 0065 | [Taskbar widgets, fluid bar motion, and the audio monitor tap](0065-taskbar-widgets.md) | accepted |
+| 0066 | [Add-ons: one kind, a manifest, and hooks that stay off](0066-addons.md) | accepted |
+| 0067 | [Command widgets run only once the owner approves them in Trusted UI](0067-command-approval.md) | accepted |
 | 0068 | [The wallpaper is a core daemon on the Background layer](0068-wallpaper-daemon.md) | accepted |
 | 0069 | [The agent stack is one add-on](0069-agent-stack-addon.md) | accepted |
 | 0070 | [One umbrella repo, a workspace per product, `ec-` names](0070-umbrella-repo-and-ec-naming.md) | accepted |
-| 0074 | [Taskbar pinned apps](0074-taskbar-pinned-apps.md) | accepted |
 | 0071 | [Annotation HUD: liquid-glass presentation, owner colours, error kind](0071-annotation-hud-presentation.md) | accepted |
+| 0074 | [Taskbar pinned apps](0074-taskbar-pinned-apps.md) | accepted |
 | 0072 | [Oracle Eyes' settings live in abyss.kdl; a changed model command needs approval](0072-oracle-eyes-settings-in-abyss-kdl.md) | accepted |
 | 0073 | [Compositor animation system: events, presets, ghosts, transition shaders](0073-compositor-animation-system.md) | accepted |
+| 0075 | [brokerd runs as a user service with a per-user store](0075-brokerd-user-service.md) | accepted |
+| 0076 | [Inference router with an API backend and a Claude Code backend](0076-inference-router.md) | accepted |
+| 0077 | [Per-task accounts, a captured Claude Code login, and the store prompt](0077-per-task-accounts.md) | accepted |
 | 0078 | [XWayland defaults to client scaling](0078-xwayland-client-scaling-default.md) | accepted |
 | 0079 | [Depth-32 smithay frame windows for ARGB X11 clients](0079-xwayland-argb-frame.md) | accepted |
-| 0079 | [Glass for Firefox](0079-firefox-glass-addon.md) | accepted (two ADRs landed as 0079 the same day; numbers kept so citations stay valid) |
+| 0079 | [Glass for Firefox](0079-firefox-glass-addon.md) | accepted (three ADRs landed as 0079; numbers kept so citations stay valid) |
+| 0079 | [The bar's calendar reads events from a provider on the session bus](0079-calendar-provider.md) | accepted |
 | 0080 | [Keyed glass for opaque clients](0080-keyed-glass.md) | accepted |
+| 0081 | [Compositor-drawn glass panes for DE cells](0081-glass-panes.md) | proposed |
+| 0082 | [Oracle Eyes: multi-question screens, rolling context, model and image modes](0082-oracle-eyes-multi-question-context.md) | proposed |
+| 0083 | [Annotation HUD draws Latin and Greek](0083-annotation-extended-glyphs.md) | proposed |
 | 0084 | [Themes: derived palettes, dark and light as built-in presets](0084-themes.md) | accepted |
+| 0084 | [hybrid GPU: each GPU composites its own outputs, with a switchable mode](0084-hybrid-gpu-per-gpu-compositing.md) | accepted (per-GPU clause superseded by 0086); 0084 is shared with Themes, numbers kept so citations stay valid |
 | 0085 | [Update and power: the power widget's full upgrade](0085-update-and-power.md) | proposed |
 | 0086 | [Outputs on a secondary GPU get a copy by default; native compositing is opt-in](0086-secondary-gpu-copy-default.md) | accepted |
 | 0087 | [Abyss hosts the greeter](0087-abyss-hosts-the-greeter.md) | accepted |
@@ -89,7 +107,7 @@ writing a new ADR that says so.
 | 0094 | [Security globals admit by executable path](0094-global-admission-by-executable-path.md) (amends 0022, 0027) | proposed |
 | 0095 | [ec-lock: the screen locker is a client, with PAM in it](0095-ec-lock-client-locker.md) | accepted |
 | 0096 | [`ecl-desktop-portal`: an in-house, drop-in desktop portal](0096-ecl-desktop-portal.md) | proposed |
-| 0097 | [Scoped capture grants and a compositor-drawn capture confirm](0097-scoped-capture-grant-and-trusted-confirm.md) | proposed |
+| 0097 | [Scoped capture grants and a compositor-drawn capture confirm](0097-scoped-capture-grant-and-trusted-confirm.md) | accepted (amended 2026-11-12) |
 | 0098 | [The policy TCB leaves the owner's uid](0098-policy-tcb-out-of-the-owner-uid.md) | proposed |
 | 0099 | [One locker holds the session, a dead one is relaunched, and idle may suspend](0099-session-lock-hardening-and-idle-suspend.md) | proposed |
 | 0100 | [The portal file chooser is ec-portal driving Fog's picker](0100-portal-file-chooser.md) | proposed |
@@ -107,7 +125,7 @@ writing a new ADR that says so.
 | 0112 | [Prior art is studied, never copied](0112-apotheosis-prior-art-procedure.md) | accepted |
 | 0113 | [`ec-config-schema`: a second product uses the schema types; ec-settings edits the terminal file directly](0113-config-schema-second-source.md) | proposed |
 | 0114 | [`ec-cataclysm-pub` becomes `ec-term-pub`; the C ABI is removed](0114-ec-term-pub-rename.md) | proposed |
-| 0115 | [The credential signal is ECHO off and ICANON on](0115-credential-signal-echo-off-icanon-on.md) | proposed |
+| 0115 | [The credential signal is ECHO off and ICANON on](0115-credential-signal-echo-off-icanon-on.md) | accepted |
 | 0116 | [The terminal's control socket never bypasses seat policy](0116-apotheosis-control-socket-vs-seat-policy.md) | proposed |
 | 0117 | [`apotheosis` joins the terminal app class in the default policy](0117-terminal-app-class-in-policy.md) | proposed |
 | 0118 | [Media: three tiers, audio over the PulseAudio protocol, nasm at build time](0118-apotheosis-media-scope.md) | accepted |
@@ -118,6 +136,7 @@ writing a new ADR that says so.
 | 0123 | [Mux sync by snapshot plus byte-stream tee](0123-apotheosis-mux-sync.md) | proposed |
 | 0124 | [`TERM=xterm-apotheosis`](0124-apotheosis-term-name.md) | proposed |
 | 0125 | [Pure-Rust XKB backend with libxkbcommon as an optional feature and test oracle](0125-apotheosis-xkb-backend.md) | proposed |
+| 0126 | [An iced greeter, a tile layout and Glances](0126-glance-greeter.md) (amends 0089) | proposed |
 
 Numbers 0001–0015 are the seeded list from F-08 §"Seeded ADRs"; the ones marked
 "not yet written up" are decided in the spec and reserved here so numbering

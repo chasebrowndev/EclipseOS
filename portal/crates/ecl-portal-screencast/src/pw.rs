@@ -295,6 +295,10 @@ fn run(
                 // Node exists once we leave Connecting.
                 let _ = ready_ok.send(Ok(st.node_id()));
             }
+            // Buffers exist now: deliver the frame held since before the consumer arrived.
+            if matches!(new, pw::stream::StreamState::Streaming) {
+                let _ = st.trigger_process();
+            }
         })
         .param_changed(move |st, sh, id, param| {
             let Some(param) = param else { return };
@@ -317,7 +321,12 @@ fn run(
         })
         .process(|st, sh| {
             let mut sh = sh.borrow_mut();
-            let (Some(frame), Some((choice, ..))) = (sh.latest.take(), sh.negotiated) else {
+            // Check the format first: taking the frame before negotiation finished dropped it,
+            // and a still screen never sends another, so the consumer saw black.
+            let Some((choice, ..)) = sh.negotiated else {
+                return;
+            };
+            let Some(frame) = sh.latest.take() else {
                 return;
             };
             let Some(mut buf) = st.dequeue_buffer() else {

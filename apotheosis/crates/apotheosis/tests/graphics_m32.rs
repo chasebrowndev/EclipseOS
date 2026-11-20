@@ -402,6 +402,52 @@ fn kitty_animation_shows_every_frame() {
     );
 }
 
+/// A 100x100 four-frame animation at 100 ms a frame costs about ten presents a second
+/// (the display's refresh rate must not set the pace).
+#[test]
+fn small_animation_presents_at_its_own_rate() {
+    let Some(mut s) = Session::start("anim100") else {
+        return;
+    };
+    s.run("echo UP$((1+1))", "UP2");
+    let send = |ctl: &str, i: u8| {
+        let data = b64(&[i * 60, 255 - i * 60, 128, 255].repeat(100 * 100));
+        let chunks: Vec<&[u8]> = data.as_bytes().chunks(4096).collect();
+        let mut o = String::new();
+        for (n, c) in chunks.iter().enumerate() {
+            let more = u8::from(n + 1 < chunks.len());
+            let c = std::str::from_utf8(c).unwrap();
+            if n == 0 {
+                o.push_str(&format!("\x1b_G{ctl},m={more};{c}\x1b\\"));
+            } else {
+                o.push_str(&format!("\x1b_Gm={more};{c}\x1b\\"));
+            }
+        }
+        o
+    };
+    let mut all = send("a=T,f=32,s=100,v=100,i=9,c=12,r=6,q=2", 0);
+    for i in 1..4 {
+        all.push_str(&send("a=f,f=32,s=100,v=100,i=9,z=100,q=2", i));
+    }
+    all.push_str("\x1b_Ga=a,i=9,r=1,z=100,q=2\x1b\\\x1b_Ga=a,i=9,s=3,v=1,q=2\x1b\\\r\n\n\n\n\n\n");
+    std::fs::write(s.out().join("anim100.bin"), all).unwrap();
+    let cmd = format!("cat {}/anim100.bin; echo A$((0+1))", s.out().display());
+    s.run(&cmd, "A1");
+    s.quads("the animation's quad", |l| l.len() == 1);
+    let n = s.frames();
+    s.frames_above(n, "the animation runs");
+    let (n0, t0) = (s.frames(), Instant::now());
+    std::thread::sleep(Duration::from_secs(5));
+    let (n1, dt) = (s.frames(), t0.elapsed());
+    let want = dt.as_millis() as u64 / 100;
+    let shown = n1 - n0;
+    eprintln!("small animation: {shown} presents of {want} due in {dt:?}");
+    assert!(
+        shown + 2 >= want && shown <= want + 2,
+        "{shown} presents in {dt:?}, {want} due"
+    );
+}
+
 #[test]
 fn icat_lifetime() {
     if !have_apoth("icat_lifetime") {

@@ -5,16 +5,18 @@ computing base (the other is `policyd`). It is a Rust compositor built on
 Smithay `=0.7.0` used as a library, not a fork of an existing compositor
 (ADR 0002).
 
-Authoritative specs: `C-00 COMPOSITOR` and `COMP-01`..`COMP-16` in the spec
+Authoritative specs: `C-00 COMPOSITOR` and `COMP-01`..`COMP-19` in the spec
 bundle. Once code exists, `docs/` and the code are the source of truth
 (F-07 §7); where they and a spec disagree, amend the spec (Appendix B, C).
 
 ## Workspace layout (F-07 §1)
 
 Several independent cargo workspaces, each with its own lockfile and CI job
-(`.github/workflows/gate.yml`). Every crate has a `CLAUDE.md` naming its
-governing spec, local invariants and whether it is TCB, and a one-line
-`description` in its `Cargo.toml`. `[TCB]` crates and paths get a line-by-line
+(`.github/workflows/gate.yml`). Every crate has a one-line `description` in its `Cargo.toml`. Crates that enforce
+or are reviewed line by line carry a `CLAUDE.md` naming their governing spec,
+local invariants and TCB status; not every crate has one yet (`fd CLAUDE.md` is
+the current list). The CI list of TCB paths is the `tcb-review` filter in
+`.github/workflows/gate.yml`. `[TCB]` crates and paths get a line-by-line
 owner review on every change (F-07 §4).
 
 ```
@@ -24,27 +26,29 @@ abyss/          compositor + system daemons (AGPL; protocol crates Apache-2.0)
   crates/ec-abyss-wire/       state-free control-socket types; gate.rs is authz enforcement [TCB]
   crates/ec-abyss-config/     abyss.kdl schema, parse, validate, edit (no smithay)
   crates/ec-config-schema/    schema types shared with Apotheosis (Ty, Key, Meta, Value)
+  crates/ec-style-tokens/     non-colour STYLE.md tokens (radii, spacing, sizes)
   crates/ec-theme/            seed colours → derived palette, contrast checks (ADR 0084)
   crates/ec-ipc/ ec-ctl/      control-socket client and CLI
   crates/ec-protocols/        eclipse_agent_v1 XML + bindings (Apache-2.0)
   crates/ec-policyd/ ec-policy-eval/   policy daemon + shared evaluator [TCB]
   crates/ec-agentd/           agent gateway; sandbox.rs [TCB]
   crates/ec-audit/            verify, trace, query the audit store
-  crates/ec-brokerd/ ec-secret/        secrets broker + owner CLI
+  crates/ec-brokerd/ ec-secret/        secrets broker [TCB] + owner CLI
   crates/ec-inferenced/ ec-inference-wire/   inference router + wire contract
   crates/ec-claude-agent/ ec-ref-agent/      agents
-  crates/ec-cataclysm-pub/    terminal grid publisher (P-04)
+  crates/ec-term-pub/         terminal grid publisher (P-04; was ec-cataclysm-pub, ADR 0114)
   crates/ec-abyss-wlcs/       WLCS conformance shim
-  bench/ ci/                  frame-time harness; wlcs skip list, doc-refs, GUI-coverage exceptions
-shell/crates/   DE panes and services (iced via ec-ui; none is TCB)
+  bench/ ci/                  frame-time harness; wlcs skip list, doc-refs, claude-code-spike (GUI-coverage exceptions are in shell/ci/)
+shell/crates/   DE panes and services (iced via ec-ui; TCB only where stated: ec-greeter and the ec-polkit-agent bin in ec-services)
   ec-ui                       shared theme, tokens, widgets
   ec-hyperion-bar ec-toasts ec-launcher ec-settings ec-policy-viewer
-  ec-secret-prompt ec-lock ec-desktop ec-wallpaper ec-cheatsheet ec-console ec-greeter
+  ec-secret-prompt ec-lock ec-desktop ec-wallpaper ec-cheatsheet ec-console
+  ec-console-client ec-glance ec-glass-host ec-greeter ec-greeter-ui ec-layout ec-steam-glass
   ec-services                 D-Bus: notifications, tray, status, screensaver, portal
 apotheosis/     the terminal (docs/ECLIPSEOS_SPECS_APOTHEOSIS.md)
-portal/ installer/ fog/ oracle-eyes/   own workspaces, own CLAUDE.md
-browser/        firefox-glass extension
-packaging/      session, units, PKGBUILD, repo, ISO, /etc defaults
+portal/ installer/ fog/ oracle-eyes/   own cargo workspaces (own lockfile and gate job); fog/ and oracle-eyes/ have a workspace CLAUDE.md
+browser/        firefox-glass extension (no Cargo.toml)
+packaging/      session, units, PKGBUILD, repo, ISO, /etc defaults (no Cargo.toml)
 docs/           specs, this file, STATUS, KNOWNBUGS, CONFIG, STYLE, design/, decisions/ (ADRs)
 ```
 
@@ -87,19 +91,26 @@ SPDX header naming which.
 |---|---|---|
 | `backend/` | COMP-01 | Session, devices, presentation, behind one trait. `winit.rs` for nested dev; `drm.rs` (DRM/udev/libinput) for real sessions;
 `headless.rs` (COMP-01 §10) for wlcs and tests, with no display or input hardware at all; `gpu.rs` ranks DRM devices deterministically (COMP-01 §4). Nothing outside this module names a backend type — except `input::configure_device`, which takes a libinput `Device` (drm feature only) and is called from `drm.rs`. |
-| `render/` (+ `ec-abyss-render`) | COMP-02 | Everything but `capture.rs` lives in the state-free `abyss/crates/ec-abyss-render` and is re-exported as `render::`; `capture.rs` (TCB, reads `AbyssState`) stays here. Damage tracking, composition, direct scanout, explicit sync, fractional scaling, capture redaction, blur and effects, FB damage-clip sanitising (`sanitize.rs`), COMP-18 annotations and the region selector. |
+| `render/` (+ `ec-abyss-render`) | COMP-02 | Everything but `capture.rs` and `screenshot.rs` (both state-bound) lives in the state-free `abyss/crates/ec-abyss-render` and is re-exported as `render::`; `capture.rs` (TCB, reads `AbyssState`) stays here. Damage tracking, composition, direct scanout, explicit sync, fractional scaling, capture redaction, blur and effects, FB damage-clip sanitising (`sanitize.rs`), COMP-18 annotations and the region selector. |
 | `outputs/` | COMP-03 | Output discovery and hotplug, layout, EDID, overscan calibration, persistence, DPMS/power. Virtual outputs for agent workspaces are not yet (M24). |
-| `input/` | COMP-04 | The human seat: xkb, keybindings, pointer, touch, tablet, touchpad swipe gestures, move/resize grabs, idle, and synthetic injection (`inject.rs`, used by wlcs and IPC). The override and attention chords parse and dispatch but are stubs until agent seats exist (M11); agent seats and atomic batches are not yet. |
+| `input/` | COMP-04 | The human seat: xkb, keybindings, pointer, touch, tablet, touchpad swipe gestures, move/resize grabs, idle, and synthetic injection (`inject.rs`, used by wlcs and IPC). The override and attention chords parse and dispatch but are stubs until agent seats exist (M11); agent seat state lives in `protocols/agent/seat.rs`, atomic batches in `protocols/agent/atomic.rs`. |
 | `shell/` | COMP-05 | Window management: radiant/dwindle/master layouts, workspaces, window rules (matching on app id, title, cgroup), focus. |
 | `protocols/standard/` | COMP-06 | `wl_compositor`, `wl_shm`, `xdg_shell`, seat, selection/clipboard, layer-shell, dmabuf, session lock, idle, system bell, toplevel icon, shortcuts inhibit, fifo and commit timing, and the rest of the support matrix. |
-| `protocols/agent/` (M11 subset) | COMP-08 | `eclipse_agent_v1` server side, on the privileged socket `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock` only (0600, `SO_PEERCRED` uid, `agents` hook on). So far `create_agent`/`add_grant` and the read-only `list_toplevels`, `get_toplevel`, `hit_test`; every window goes through `policy::scene`. Acting requests will cross `policy::check()` first. |
-| `protocols/semantic/` (not yet) | COMP-09 | `eclipse_semantic_v1` server side: semantic tree publication and change notification. |
-| `trusted_ui/` (destructive-action prompt only) | COMP-10 | Compositor-drawn consent prompts, agent-activity indicator, emergency panel. Never a client (ADR 0009). So far only the destructive-system-action confirmation (§3.10, ADR 0061) and its root-only `trusted.sock`; the rest is not yet. |
-| `policy/` (not yet) | COMP-11 | The compiled enforcement table and `check()`; today a stub in `state.rs`. Fail-closed; no state mutation before `Allow`; `defer` may only tighten. |
-| `audit/` (not yet) | COMP-12 | Audit and provenance event emission. Never records human input by content. |
+| `protocols/agent/` (M11 subset) | COMP-08 | `eclipse_agent_v1` server side, on the privileged socket `$XDG_RUNTIME_DIR/eclipse/ec-agent.sock` only (0600, `SO_PEERCRED` uid, `agents` hook on). `create_agent`, `add_grant`, `list_toplevels`, `get_toplevel`, `hit_test`; M14 adds `atomic.rs`, `dedupe.rs`, `generation.rs`, `lock.rs`, `wait.rs`, `seat.rs`. Every window goes through `policy::scene`. Acting requests cross `policy::check()`. |
+| `protocols/semantic/` | COMP-09 | `eclipse_semantic_v1` server side on the privileged socket (not TCB). `tree.rs` is the state-free model; `mod.rs` the Wayland side and the seams TCB/agent code calls. |
+| `protocols/protected/` | COMP-19 | `eclipse_protected_surface_v1` on the public socket (not TCB). |
+| `trusted_ui/` | COMP-10 | TCB. Compositor-drawn consent prompts (ADR 0009): modal primitive, command-widget approval (ADR 0067), destructive-action confirmation (ADR 0061, root-only `socket.rs`), consent, polkit, screencast, indicator, panel, queue and slot. Never a client. |
+| `policy/` | COMP-11 | TCB. Grant admission, enforcement table and `check()` (`table.rs`, `enforce.rs`), agent scene filter (`scene.rs`), policyd link, lifecycle, batch, classes. Fail-closed; no state mutation before `Allow`; `defer` may only tighten. |
+| `audit/` | COMP-12 | TCB. Audit and provenance emission to `policyd`. Never records human input by content. |
 | `ipc/` | COMP-13 | Human JSON-RPC socket (gate table in `ec-abyss-wire`) — the taskbar, the launcher, settings, `ec-ctl`. Unprivileged, human-principal only. |
 | `config/` | COMP-13 | KDL parse, validate, hot-reload (ADR 0016), in-place edit for `set_config_value`. A bad config never takes down a live session. |
 | `xwayland/` | COMP-07 | X11 client support, window identity mapping, scaling. |
+| `addons.rs` | ADR 0066 | Add-on manifests and the hook set. |
+| `contain.rs` | ADR 0102 | Panic containment for listed non-essential features; TCB, input and the frame path are never contained. |
+| `kiosk.rs` | ADR 0126 | `--kiosk -- <client>` host mode for the greeter. |
+| `overview/` | COMP-05 §7.1 | Alt-Tab switcher, overview, hot corners, hover previews (compositor overlays, not trusted UI). |
+| `session.rs` | COMP-01 §5 | systemd/D-Bus user-session handoff, only with `--session`. |
+| `theme.rs` | ADR 0084 | Theme in force, owned by `AbyssState`. |
 | `state.rs` | COMP-01 | `AbyssState` itself: the single owner of everything above. |
 
 ## Trust boundaries
@@ -110,7 +121,7 @@ SPDX header naming which.
   semantic protocols live.
 - `policyd` is consulted over IPC only on the explicitly-marked `defer` path;
   every other check is a table lookup in-process (ADR 0008).
-- `registryd` is outside the TCB and never receives `secret`-class surfaces.
+- `registryd` (specified; no crate in the tree yet) is outside the TCB and never receives `secret`-class surfaces.
 
 ## Data flow of an agent action
 

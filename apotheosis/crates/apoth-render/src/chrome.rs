@@ -398,6 +398,8 @@ pub struct ChromePass {
     vb: wgpu::Buffer,
     cap: u64,
     bytes: Vec<u8>,
+    /// Bytes written to the GPU so far (render stats).
+    pub(crate) uploaded: u64,
 }
 
 const VB_USAGE: wgpu::BufferUsages = wgpu::BufferUsages::VERTEX.union(wgpu::BufferUsages::COPY_DST);
@@ -517,6 +519,7 @@ impl ChromePass {
             bind,
             cap,
             bytes: Vec::new(),
+            uploaded: 0,
         }
     }
 
@@ -542,6 +545,7 @@ impl ChromePass {
         u[0..4].copy_from_slice(&(target_size.0 as f32).to_le_bytes());
         u[4..8].copy_from_slice(&(target_size.1 as f32).to_le_bytes());
         self.queue.write_buffer(&self.ubo, 0, &u);
+        self.uploaded += need + UNIFORM_BYTES;
         true
     }
 
@@ -604,6 +608,7 @@ impl ChromePass {
         u[0..4].copy_from_slice(&(target_size.0 as f32).to_le_bytes());
         u[4..8].copy_from_slice(&(target_size.1 as f32).to_le_bytes());
         self.queue.write_buffer(&self.ubo, 0, &u);
+        self.uploaded += need + UNIFORM_BYTES;
 
         let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("chrome"),

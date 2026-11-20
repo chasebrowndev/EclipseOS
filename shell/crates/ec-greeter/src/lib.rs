@@ -11,12 +11,18 @@ use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
+use ec_layout::{Kind, Layout, Tile};
 use ec_theme::{Rgba, Seeds};
 
 /// The machine's choices. Root-owned; `greeter` only reads it (D-01 §4.1).
 pub const STATE_DIR: &str = "/var/lib/eclipse/greeter";
 pub const SETTINGS_FILE: &str = "settings.toml";
 pub const WALLPAPER_FILE: &str = "wallpaper.png";
+/// The image the package ships. The compositor draws `WALLPAPER_FILE` behind the
+/// glass greeter (ADR 0126), so when nothing custom is chosen it holds a copy of this.
+pub const SHIPPED_WALLPAPER: &str = "/usr/share/backgrounds/eclipseos/greeter.png";
+/// A shipped image larger than this is not copied.
+const MAX_SHIPPED: u64 = 32 << 20;
 
 pub const MAX_GREETING: usize = 80;
 pub const MAX_SETTINGS: usize = 4096;
@@ -88,6 +94,8 @@ pub struct Settings {
     pub theme: Option<Theme>,
     pub greeting: Option<String>,
     pub clock: Option<Clock>,
+    /// Where each tile sits. `None` is the built-in default layout.
+    pub layout: Option<Layout>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -153,6 +161,16 @@ fn unquote(s: &str) -> Option<String> {
     Some(out)
 }
 
+/// `"x y w h"`: four plain decimal cells, single spaces, nothing else.
+fn parse_rect(s: &str) -> Option<ec_layout::Rect> {
+    let mut it = s.split(' ').map(|n| {
+        let plain = !n.is_empty() && n.len() <= 3 && n.bytes().all(|b| b.is_ascii_digit());
+        plain.then(|| n.parse::<i32>().ok()).flatten()
+    });
+    let r = ec_layout::Rect::new(it.next()??, it.next()??, it.next()??, it.next()??);
+    it.next().is_none().then_some(r)
+}
+
 impl Settings {
     /// Strict: an unknown or repeated key, or a bad value, fails the whole file.
     pub fn parse(text: &str) -> Result<Settings, Error> {
@@ -161,6 +179,7 @@ impl Settings {
         }
         let mut s = Settings::default();
         let (mut wallpaper, mut greeting, mut clock) = (false, false, false);
+        let mut tiles: Vec<Tile> = Vec::new();
         let (mut base, mut ink, mut accent, mut accent_text) = (None, None, None, None);
         let colour = |slot: &mut Option<u32>, v: &str| -> Result<(), Error> {
             let c = unquote(v).and_then(|c| parse_hex(&c));
@@ -195,8 +214,22 @@ impl Settings {
                 "ink" => colour(&mut ink, value)?,
                 "accent" => colour(&mut accent, value)?,
                 "accent_text" => colour(&mut accent_text, value)?,
-                _ => return Err(Error::Invalid("key")),
+                _ => match key.strip_prefix("tile.").and_then(Kind::from_name) {
+                    Some(kind) if !kind.needs_session() && !tiles.iter().any(|t| t.kind == kind) => {
+                        let rect = unquote(value).and_then(|v| parse_rect(&v));
+                        tiles.push(Tile {
+                            kind,
+                            rect: rect.ok_or(Error::Invalid("tile"))?,
+                        });
+                    }
+                    _ => return Err(Error::Invalid("key")),
+                },
             }
+        }
+        if !tiles.is_empty() {
+            let layout = Layout { tiles };
+            ec_layout::validate(&layout).map_err(|_| Error::Invalid("layout"))?;
+            s.layout = Some(layout);
         }
         s.theme = match (base, ink, accent, accent_text) {
             (None, None, None, None) => None,
@@ -232,6 +265,12 @@ impl Settings {
         }
         if let Some(c) = self.clock {
             out += &format!("clock = \"{}\"\n", c.name());
+        }
+        if let Some(l) = &self.layout {
+            for t in &l.tiles {
+                let r = t.rect;
+                out += &format!("tile.{} = \"{} {} {} {}\"\n", t.kind.name(), r.x, r.y, r.w, r.h);
+            }
         }
         out
     }
@@ -471,7 +510,7 @@ fn remove(path: &Path) -> Result<(), Error> {
 /// Store `input`. A new image goes before the settings and an old one is removed
 /// after them, so settings never name one that is missing. The runner checks it
 /// decodes anyway.
-pub fn apply(dir: &Path, owner: u32, input: &Input) -> Result<(), Error> {
+pub fn apply(dir: &Path, owner: u32, shipped: &Path, input: &Input) -> Result<(), Error> {
     state_dir(dir, owner)?;
     match &input.image {
         Some((w, h, rgba)) => write_atomic(dir, WALLPAPER_FILE, &encode_png(*w, *h, rgba)?)?,
@@ -487,14 +526,28 @@ pub fn apply(dir: &Path, owner: u32, input: &Input) -> Result<(), Error> {
     if input.settings.wallpaper {
         return Ok(());
     }
-    remove(&dir.join(WALLPAPER_FILE))
+    restore_shipped(dir, shipped)
+}
+
+/// Put the package's own image where the compositor looks for the wallpaper. Root
+/// reads a root-owned file here, never anything a user supplied. With no usable
+/// shipped image the file is removed and the compositor shows its plain colour.
+fn restore_shipped(dir: &Path, shipped: &Path) -> Result<(), Error> {
+    let bytes = fs::symlink_metadata(shipped)
+        .ok()
+        .filter(|m| m.is_file() && m.len() <= MAX_SHIPPED)
+        .and_then(|_| fs::read(shipped).ok());
+    match bytes {
+        Some(b) => write_atomic(dir, WALLPAPER_FILE, &b),
+        None => remove(&dir.join(WALLPAPER_FILE)),
+    }
 }
 
 /// Back to the shipped look.
-pub fn reset(dir: &Path, owner: u32) -> Result<(), Error> {
+pub fn reset(dir: &Path, owner: u32, shipped: &Path) -> Result<(), Error> {
     state_dir(dir, owner)?;
     remove(&dir.join(SETTINGS_FILE))?;
-    remove(&dir.join(WALLPAPER_FILE))
+    restore_shipped(dir, shipped)
 }
 
 /// Read and render the customised files, or `None` if nothing is customised.
@@ -540,7 +593,14 @@ mod tests {
             theme: Some(THEME),
             greeting: Some("Hello \"you\" \\ <b>there</b>".into()),
             clock: Some(Clock::Date12),
+            layout: Some(Layout::default()),
         }
+    }
+
+    fn shipped_file(name: &str) -> PathBuf {
+        let p = std::env::temp_dir().join(format!("ec-greeter-ship-{name}-{}", std::process::id()));
+        fs::write(&p, b"shipped").unwrap();
+        p
     }
 
     fn tempdir(name: &str) -> PathBuf {
@@ -586,6 +646,14 @@ mod tests {
             "greeting = \"a\tb\"",
             "greeting = \"a\"b\"",
             "greeting = \"a\\nb\"",
+            "tile.clock = \"1 2 3\"",
+            "tile.clock = \"1 2 3 4 5\"",
+            "tile.clock = \"-1 0 4 2\"",
+            "tile.clock = \"0 0 4 2\"",
+            "tile.bogus = \"0 0 4 2\"",
+            "tile.now_playing = \"0 0 6 2\"",
+            "tile.users = \"0 0 4 3\"\ntile.password = \"2 2 6 2\"",
+            "tile.users = \"0 0 4 3\"\ntile.users = \"0 4 4 3\"",
             "base = \"#0b0906\"",
             "base = \"red\"\nink = \"#ffffff\"\naccent = \"#ffffff\"\naccent_text = \"#ffffff\"",
         ] {
@@ -685,10 +753,12 @@ mod tests {
     #[test]
     fn apply_stores_what_prepare_reads_and_reset_clears_it() {
         let dir = tempdir("apply");
+        let ship = shipped_file("apply");
         let image = Some((2, 1, vec![9; 8]));
         apply(
             &dir,
             uid(),
+            &ship,
             &Input {
                 settings: full(),
                 image,
@@ -702,6 +772,7 @@ mod tests {
         apply(
             &dir,
             uid(),
+            &ship,
             &Input {
                 settings: full(),
                 image: None,
@@ -713,28 +784,37 @@ mod tests {
         apply(
             &dir,
             uid(),
+            &ship,
             &Input {
                 settings: plain,
                 image: None,
             },
         )
         .unwrap();
-        assert!(!dir.join(WALLPAPER_FILE).exists());
-        reset(&dir, uid()).unwrap();
+        // Not custom: the compositor's wallpaper is the shipped image again.
+        assert_eq!(fs::read(dir.join(WALLPAPER_FILE)).unwrap(), b"shipped");
+        reset(&dir, uid(), &ship).unwrap();
         assert_eq!(prepare(&dir, CONFIG, STYLE), Ok(None));
+        assert_eq!(fs::read(dir.join(WALLPAPER_FILE)).unwrap(), b"shipped");
+        reset(&dir, uid(), Path::new("/nonexistent")).unwrap();
+        assert!(
+            !dir.join(WALLPAPER_FILE).exists(),
+            "no shipped image: plain colour"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn apply_refuses_a_wallpaper_it_does_not_have_and_a_foreign_dir() {
         let dir = tempdir("refuse");
+        let ship = shipped_file("refuse");
         let input = Input {
             settings: full(),
             image: None,
         };
-        assert!(apply(&dir, uid(), &input).is_err());
+        assert!(apply(&dir, uid(), &ship, &input).is_err());
         assert!(!dir.join(SETTINGS_FILE).exists());
-        assert!(apply(&dir, uid() + 1, &input).is_err());
+        assert!(apply(&dir, uid() + 1, &ship, &input).is_err());
         fs::remove_dir_all(&dir).unwrap();
     }
 

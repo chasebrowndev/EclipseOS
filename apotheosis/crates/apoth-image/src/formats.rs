@@ -209,7 +209,7 @@ pub fn decode_apng(bytes: &[u8], limits: &Limits, quota: u64) -> Result<Decoded,
         );
         let den = if fc.delay_den == 0 { 100 } else { fc.delay_den };
         let gap = (u32::from(fc.delay_num) * 1000 / u32::from(den)) as i32;
-        if !frames.push(canvas.clone(), gap.max(1)) {
+        if !frames.push(canvas.clone(), floor_gap(gap)) {
             break;
         }
         match fc.dispose_op {
@@ -225,6 +225,13 @@ pub fn decode_apng(bytes: &[u8], limits: &Limits, quota: u64) -> Result<Decoded,
         }
     }
     frames.done()
+}
+
+/// A frame delay of 10 ms or less shows 100 ms, as browsers do: a zero or one-centisecond
+/// delay (common in APNG and WebP) means "unspecified", not "as fast as possible". Anything
+/// longer plays as written, so a 60 fps animation keeps its speed.
+fn floor_gap(ms: i32) -> i32 {
+    if ms <= 10 { 100 } else { ms }
 }
 
 /// GIF: frames composed with their disposal methods; a delay under 20 ms shows 100 ms (the
@@ -359,7 +366,7 @@ pub fn decode_webp(bytes: &[u8], limits: &Limits, quota: u64) -> Result<Decoded,
         let Ok(ms) = d.read_frame(&mut buf) else {
             break;
         };
-        let gap = i32::try_from(ms).unwrap_or(i32::MAX).max(1);
+        let gap = floor_gap(i32::try_from(ms).unwrap_or(i32::MAX));
         if !frames.push(img(expand(&buf)), gap) {
             break;
         }
@@ -370,6 +377,18 @@ pub fn decode_webp(bytes: &[u8], limits: &Limits, quota: u64) -> Result<Decoded,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn short_frame_delays_show_100_ms() {
+        assert_eq!(floor_gap(0), 100);
+        assert_eq!(floor_gap(1), 100);
+        assert_eq!(floor_gap(10), 100);
+        assert_eq!(floor_gap(11), 11);
+        assert_eq!(floor_gap(17), 17);
+        assert_eq!(floor_gap(20), 20);
+        assert_eq!(floor_gap(100), 100);
+        assert_eq!(floor_gap(250), 250);
+    }
 
     #[test]
     fn sniffs_the_four_containers() {

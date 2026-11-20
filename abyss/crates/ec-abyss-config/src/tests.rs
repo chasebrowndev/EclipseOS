@@ -4139,3 +4139,17 @@ fn capture_indicator_color_defaults_red_and_is_forced_opaque() {
     assert!(!bad.errors.is_empty());
     assert_eq!(bad.ui.capture_indicator_color, [1.0, 0.15, 0.15, 1.0]);
 }
+
+/// The kiosk compositor's own config (ADR 0126) must parse clean: it is the
+/// only thing that gives the login screen glass and its wallpaper.
+#[test]
+fn the_greeter_kiosk_config_is_valid() {
+    let cfg = blur_cfg(include_str!("../../../../packaging/greetd/abyss-greeter.kdl"));
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert_eq!(cfg.decoration.blur.mode, BlurMode::Glass);
+    assert_eq!(
+        cfg.wallpaper.path.as_deref(),
+        Some("/var/lib/eclipse/greeter/wallpaper.png")
+    );
+    assert_eq!(cfg.wallpaper.mode, "fill");
+}

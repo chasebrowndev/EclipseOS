@@ -107,6 +107,10 @@ pub fn release(state: &mut AbyssState, output: &Output) {
         with_surfaces_surface_tree(layer.wl_surface(), |s, d| sweep.surface(s, d, until));
     }
 
+    if let Some(lock) = state.lock.frame_surface(output) {
+        with_surfaces_surface_tree(&lock, |s, d| sweep.surface(s, d, until));
+    }
+
     if let Some(next) = sweep.next {
         arm_wakeup(state, now, next);
     }

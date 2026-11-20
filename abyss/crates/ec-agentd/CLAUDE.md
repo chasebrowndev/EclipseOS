@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 # ec-agentd — the agent daemon
 
-Governing spec: A-01, COMP-08 §1-§3, C-00 §8.1. **Not TCB**: abyss verifies
-every grant and filters every answer (`abyss/src/policy/`); agentd holds no
+Governing spec: A-01, COMP-08 §1-§3, C-00 §8.1. **Not TCB**, except `src/sandbox.rs` (TCB): abyss verifies
+every grant and filters every answer (`ec-abyss/src/policy/`); agentd holds no
 authority beyond the signed grants `policyd` gives it.
 
 - Lib plus daemon. No arguments runs the daemon: `policyd` link (C2),

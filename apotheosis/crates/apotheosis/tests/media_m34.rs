@@ -376,6 +376,36 @@ fn kill(pid_file: &Path) {
     assert!(st.success());
 }
 
+/// H.264 in MP4 through the whole stack: `apoth play` hands it to the sandboxed helper,
+/// whose software decode draws and advances the frames; the clip ends with exit 0.
+#[test]
+fn play_mp4_h264_shows_frames() {
+    if !have_apoth("play_mp4_h264_shows_frames") {
+        return;
+    }
+    let Some(mut s) = Session::start("play-mp4") else {
+        return;
+    };
+    s.run("echo UP$((1+1))", "UP2");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../apoth-media/tests/fixtures/h264-main-bframes.mp4");
+    let clip = s.out().join("clip.mp4");
+    std::fs::copy(src, &clip).unwrap();
+    s.type_text(&format!(
+        "apoth play --loop --size 16x5 {}\n",
+        clip.display()
+    ));
+    // 64x64 source, never upscaled.
+    s.quads("the video's quad", |l| {
+        l.len() == 1 && l[0].starts_with("64x64 ")
+    });
+    let n = s.frames();
+    s.frames_above(n + 5, "the video plays");
+    s.ctrl_c();
+    s.quads("no quads after Ctrl+C", |l| l.is_empty());
+    s.run("echo R$?R", "R130R");
+}
+
 #[test]
 fn play_shows_frames_and_cleans_up() {
     if !have_apoth("play_shows_frames_and_cleans_up") {

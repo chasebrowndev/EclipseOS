@@ -720,6 +720,9 @@ pub enum BlurKey {
     /// An annotation panel (ADR 0071), by its handle. Annotations keep their
     /// own [`BlurStore`], so this never shares a table with a surface.
     Annotation(u64),
+    /// A trusted prompt's backdrop (ADR 0128): the only key of its private
+    /// store, never shared with a window's.
+    Prompt,
     /// The `n`th popup of a window with a keyed strip (ADR 0079), glassed
     /// over its whole surface.
     Popup(Window, usize),
@@ -735,6 +738,9 @@ pub enum BlurKey {
     /// A layer surface's `eclipse_glass_v1` panes, kept apart from the
     /// layer's own shaped backdrop when it keeps one (the bar's sheet).
     LayerPanes(LayerSurface),
+    /// The session locker's `eclipse_glass_v1` panes (ADR 0129): blurred over
+    /// the wallpaper alone, apart from every other key.
+    LockPanes(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface),
 }
 
 /// What a tier's textures were made for: crop size, passes, output size.

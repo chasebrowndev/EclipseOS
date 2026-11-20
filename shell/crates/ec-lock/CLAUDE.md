@@ -33,10 +33,24 @@ ADR 0024 (the compositor's fallback when it dies). Protocol: Vol 1's
 - **No PAM crate.** `pam.rs` links libpam directly (three calls and a
   conversation). Do not add a binding crate beside it.
 - **argv is `--help`/`--version` only.** The user is the process uid.
+- **Layout and Glances (ADR 0126) are drawing only.** `face.rs` reads
+  `$XDG_CONFIG_HOME/eclipse/lock-layout` once at start (`O_NOFOLLOW`, 4 KiB cap,
+  `Layout::from_lines` + `validate`; anything wrong is `face::builtin()`) and polls
+  battery/wifi off the UI loop under `ec_glance::bounded`. `Message::Frame` and
+  `Message::Glance` only set `Face`; they never convert to an unlock and never
+  reach auth. The Password tile is always drawn (added if a layout lacks it) and
+  never animates. `Users`, `Power`, `NowPlaying` tiles are not drawn here.
 - `view.rs` is eclipse-frontend's. It reads the model only through
-  `Scene::of(&App)` (`status, typed, user, clock, can_submit`) and emits only
-  `Message::Submit` / `Message::Clear`. `style()`/`ground()` stay opaque: a
-  translucent lock surface shows the desktop. `examples/preview.rs` renders
+  `Scene::of(&App)` (`status, typed, user, clock, can_submit, face`) and emits only
+  `Message::Submit` / `Message::Clear`. Glass (ADR 0129): under abyss in `glass`
+  mode the compositor draws the wallpaper, then this surface's `eclipse_glass_v1`
+  panes (blurring the wallpaper only), so `style()`/`ground_for()` draw **no ground**
+  while `glass_live()` and every pane pushes a pane. In the fall-back (no global,
+  not `glass` mode) the ground is **opaque** and panes are glass-styled, so the
+  lock is never see-through. `glass.rs` hands each lock surface to `ec_ui::glass`
+  through the vendored `iced_sessionlock` surface hook (`shell/vendor/PATCHES.md`
+  hunk 4). The lock draws only the primary and secondary inks (4.5:1 fall-back, 3:1
+  on glass; tests in `view.rs`). `examples/preview.rs` renders
   each state in an ordinary window for screenshots; it never locks.
 - `tests/headless.rs` needs `EC_ABYSS_BIN` and is `#[ignore]`d; run it with
   `-- --ignored` after building `ec-abyss`.

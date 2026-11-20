@@ -150,6 +150,113 @@ fn plays_10bit_av1() {
     assert!(p.nonblank);
 }
 
+/// H.264 in MP4 under the real seccomp/landlock/rlimit profile: B-frames reordered into
+/// presentation order, every frame delivered, AAC playing beside it.
+#[test]
+fn plays_h264_mp4_under_the_sandbox() {
+    let p = play("h264-main-bframes.mp4", false);
+    assert_eq!(p.frames.len(), 30, "{} frames", p.frames.len());
+    // 64x64 source, no upscale.
+    assert_eq!((p.frames[0].1, p.frames[0].2), (64, 64));
+    assert!(p.frames.windows(2).all(|w| w[0].0 < w[1].0), "pts in order");
+    assert_eq!(p.frames[0].0, 0);
+    assert!(p.nonblank);
+    let p = play("h264-aac.mp4", true);
+    assert_eq!(p.frames.len(), 30);
+    assert_eq!((p.rate, p.channels), (22_050, 1));
+    let want = 22_050 * 2;
+    assert!(
+        p.pcm_bytes > want * 8 / 10 && p.pcm_bytes < want * 12 / 10,
+        "{}",
+        p.pcm_bytes
+    );
+    // Fragmented, and 10-bit.
+    assert_eq!(play("h264-frag.mp4", false).frames.len(), 30);
+    let p = play("h264-high10.mp4", false);
+    assert_eq!(p.frames.len(), 30);
+    assert!(p.nonblank);
+}
+
+/// Decode speed through the real helper (frames per second, the ring drained at once):
+/// `APOTH_BENCH_MP4=/path/clip.mp4 cargo test --release -p apoth-media --test helper
+/// -- --ignored --nocapture bench_h264`. The box is the clip's own size.
+#[test]
+#[ignore]
+#[allow(clippy::print_stdout)]
+fn bench_h264() {
+    let Ok(path) = std::env::var("APOTH_BENCH_MP4") else {
+        return;
+    };
+    let mut h = Helper::start_at(bin(), Mode::Media, &[], 64 << 20).expect("helper starts");
+    let f = File::open(path).unwrap();
+    let open = ToHelper::Open {
+        audio: false,
+        box_w: 3840,
+        box_h: 2160,
+        max_w: 3840,
+        max_h: 2160,
+    };
+    h.tx.send(&open.encode(), Some(f.as_fd())).unwrap();
+    let FromHelper::Info { width, height, .. } = recv(&mut h) else {
+        panic!("no info");
+    };
+    let slot = width as usize * height as usize * 4;
+    let ring: OwnedFd = rustix::fs::memfd_create("ring", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
+    rustix::fs::ftruncate(&ring, (slot * 4) as u64).unwrap();
+    let r = ToHelper::Ring {
+        slots: 4,
+        slot_bytes: slot as u32,
+    };
+    h.tx.send(&r.encode(), Some(ring.as_fd())).unwrap();
+    let t = std::time::Instant::now();
+    let mut n = 0u32;
+    loop {
+        match recv(&mut h) {
+            FromHelper::Frame { slot: s, .. } => {
+                n += 1;
+                h.tx.send(&ToHelper::Release { slot: s }.encode(), None)
+                    .unwrap();
+            }
+            FromHelper::End => break,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+    let secs = t.elapsed().as_secs_f64();
+    println!(
+        "{width}x{height}: {n} frames in {secs:.2} s = {:.1} fps",
+        f64::from(n) / secs
+    );
+    h.tx.send(&ToHelper::Quit.encode(), None).unwrap();
+    assert_eq!(h.proc.finish(5_000).unwrap(), Some(0));
+}
+
+#[test]
+fn unsupported_mp4_fails_with_unsupported() {
+    for name in [
+        "h264-high444.mp4",
+        "h264-lossless.mp4",
+        "hevc.mp4",
+        "vp9.mp4",
+        "av1.mp4",
+    ] {
+        let mut h = Helper::start_at(bin(), Mode::Media, &[], 64 << 20).expect("helper starts");
+        let f = File::open(fixture(name)).unwrap();
+        let open = ToHelper::Open {
+            audio: true,
+            box_w: 160,
+            box_h: 90,
+            max_w: 3840,
+            max_h: 2160,
+        };
+        h.tx.send(&open.encode(), Some(f.as_fd())).unwrap();
+        assert_eq!(
+            recv(&mut h),
+            FromHelper::Failed(Fail::Unsupported),
+            "{name}"
+        );
+    }
+}
+
 #[test]
 fn plays_audio_only_flac() {
     let p = play("sine-1s.flac", true);

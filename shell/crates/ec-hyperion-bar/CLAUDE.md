@@ -9,7 +9,7 @@ Read the root `CLAUDE.md` first. Governing spec: DP-4 (`docs/design/DP-4-desktop
 
 - **Not TCB.** An ordinary layer-shell Wayland client with no authority of
   its own. Anything here that would only be safe if it could be
-  trusted belongs in `abyss/src/trusted_ui/` instead — trusted UI is
+  trusted belongs in `abyss/crates/ec-abyss/src/trusted_ui/` instead — trusted UI is
   compositor-drawn, never a layer-shell client (root invariant).
 - **It runs under any layer-shell host**, Hyprland included; abyss is not
   required to develop against it. `conn.rs` is fail-soft — `Conn::ensure()`

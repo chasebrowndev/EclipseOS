@@ -262,7 +262,7 @@ rows! {
     ("media.allow-paths", Ty::StringSet, Dv::Empty, Global, false, Live, Security, "Directories media may be opened from."; "Allowed media paths", &[]),
     ("media.hwdec", Ty::Enum(HWDEC), Dv::Str("auto"), Global, false, Live, Behaviour, "Hardware decode backend."; "Hardware decode", &[]),
     ("media.av1-software", Ty::Bool, Dv::Bool(true), Global, false, Live, Behaviour, "Allow software AV1 decode."; "Software AV1", &[]),
-    ("media.sw-codecs", Ty::Bool, Dv::Bool(true), Global, false, Live, Behaviour, "Allow software H.264/H.265 decode."; "Software codecs", &[]),
+    ("media.sw-codecs", Ty::Bool, Dv::Bool(true), Global, false, Live, Behaviour, "Allow software H.264 decode for MP4 video."; "Software codecs", &[]),
     ("media.audio-output", Ty::Enum(AUDIO_OUT), Dv::Str("auto"), Global, false, Live, Behaviour, "Audio backend."; "Audio output", &[]),
     ("media.sync-master", Ty::Enum(SYNC_MASTER), Dv::Str("audio"), Global, false, Live, Behaviour, "Playback clock master."; "Sync master", &[]),
     ("media.autoplay-audio", Ty::Enum(AUTOPLAY), Dv::Str("focused"), Pane, true, Live, Behaviour, "When audio may start."; "Autoplay audio", &[]),

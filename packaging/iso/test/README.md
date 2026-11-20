@@ -1,4 +1,6 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
+**English** | [Español](README.es.md)
+
 # ISO test harness (headless QEMU)
 
 Drives the EclipseOS live ISO with scripted input so the graphical installer (D-07)
@@ -109,7 +111,7 @@ stops QEMU by pid and confirms it is gone. Screens are left in `<work>/shots/`.
 ```
 ./run.sh scenario --iso /var/tmp/eclipseos-out/eclipseos-*.iso --work $TMPDIR/e2e \
     [--profile standard] [--disk virtio|nvme] [--disk-size 20G] [--second-disk 8G] [--res 1280x800] \
-    [--no-net] [--bios] [--wifi] [--reboot-count N] [--kernels linux,linux-lts] [--keep] [--tcg]
+    [--no-net] [--bios] [--wifi] [--vt-test] [--polkit-workaround] [--reboot-count N] [--kernels linux,linux-lts] [--keep] [--tcg]
 ```
 
 Boots the ISO fresh, asserts the welcome screen appears with zero keystrokes, then drives ec-setup
@@ -125,7 +127,7 @@ Honest limits:
 - **ec-setup has no remote-access step**, so SSH is planted into the finished install from the live
   session's tty2 root shell (key only, like the opt-in in `eclipseos-postinstall.sh`). Output of
   live-side commands returns over the serial port (`/dev/ttyS0` into `serial.log`).
-- Only the Standard profile can be picked in ec-setup (`data::selectable`); the other `--profile`
+- Only the Standard and Agentic profiles can be picked in ec-setup (`data::selectable`); the other `--profile`
   values are accepted and reported as a failed `profile_selectable` check without booting.
 - `--wifi`: mac80211_hwsim and a hostapd/dnsmasq WPA2 AP (SSID `eclipse-test`) in a netns, installed
   from the mirror over the ethernet SLIRP link (which stays the internet uplink). It tests the wizard's

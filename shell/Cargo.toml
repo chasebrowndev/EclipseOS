@@ -6,7 +6,10 @@ members = [
   "crates/ec-console-client",
   "crates/ec-desktop",
   "crates/ec-glass-host",
+  "crates/ec-glance",
   "crates/ec-greeter",
+  "crates/ec-greeter-ui",
+  "crates/ec-layout",
   "crates/ec-hyperion-bar",
   "crates/ec-launcher",
   "crates/ec-lock",
@@ -51,3 +54,6 @@ opt-level = 3
 [patch.crates-io]
 iced_layershell = { path = "vendor/iced_layershell" }
 layershellev = { path = "vendor/layershellev" }
+# The same hook for the session-lock surface (ec-lock glass). PATCHES.md hunk 4.
+iced_sessionlock = { path = "vendor/iced_sessionlock" }
+sessionlockev = { path = "vendor/sessionlockev" }

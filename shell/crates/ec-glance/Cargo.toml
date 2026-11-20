@@ -1,0 +1,13 @@
+[package]
+name = "ec-glance"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Glance data: battery (with connected devices) and wifi from sysfs, no bus, no session. Bounded reads."
+publish = false
+
+[lib]
+name = "ec_glance"
+path = "src/lib.rs"

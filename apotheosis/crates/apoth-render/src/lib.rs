@@ -26,6 +26,7 @@ pub mod glyph_cache;
 pub mod gpu;
 pub mod image;
 pub mod presenter;
+pub mod prof;
 pub mod reference;
 pub mod renderer;
 pub mod scene;

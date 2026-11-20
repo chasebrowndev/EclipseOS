@@ -1,6 +1,14 @@
+**English** | [Español](README.es.md)
+
 <p align="center">
   <img src="installer/crates/ec-welcome/assets/eclipseos-logo.png" alt="EclipseOS" width="160">
 </p>
+
+<p align="center">
+  <img src="https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/chasebrowndev/b620b1bbc4d3ba91ccc0385a3cdfe6f9/raw/clones.json" alt="clones">
+  <img src="https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/chasebrowndev/b620b1bbc4d3ba91ccc0385a3cdfe6f9/raw/unique-clones.json" alt="unique clones">
+</p>
+
 
 > Hello, and welcome, to EclipseOS.  
 > My gift to the world, my labor of love.  
@@ -79,7 +87,7 @@ Other desktops have some of this. EclipseOS was designed around it from the star
 - **Updates you can walk back.** The previous Abyss build is kept. If a new one crashes at startup, the session falls back to the old one, and "Abyss (previous)" is on the login screen.
 - **One broken feature doesn't take the desktop down.** A crash in an optional feature turns that feature off for the session, and you keep working.
 - **A gate on every change.** Every pull request runs `rustfmt`, `clippy -D warnings`, the full test suite, `cargo-deny` and the Wayland conformance suite (WLCS), with a pinned toolchain.
-- **Spec first.** Two spec volumes and a set of [ADRs](docs/decisions) govern the code. Where code and spec disagree, that is treated as a bug. Changes to the security-critical path get a line-by-line review.
+- **Spec first.** Three spec volumes and a set of [ADRs](docs/decisions) govern the code. Where code and spec disagree, that is treated as a bug. Changes to the security-critical path get a line-by-line review.
 
 ## Agents (in progress)
 

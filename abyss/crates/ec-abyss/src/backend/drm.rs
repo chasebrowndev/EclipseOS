@@ -121,6 +121,8 @@ pub struct DrmOutput {
     deadline_armed: bool,
     /// Monotonic timestamp of the last page flip the kernel reported.
     last_vblank: Option<Duration>,
+    /// When the frame in flight was queued, for flip latency metrics.
+    queued_at: Option<Instant>,
     /// The vblank the frame in flight was queued to land on, to tell on-time
     /// flips from late ones.
     target_vblank: Option<Duration>,
@@ -1065,6 +1067,7 @@ fn add_connector(
             needs_render: true,
             deadline_armed: false,
             last_vblank: None,
+            queued_at: None,
             target_vblank: None,
             estimate: deadline::RenderEstimate::default(),
             feedback,
@@ -1504,6 +1507,7 @@ fn on_vblank(
     meta: Option<&DrmEventMetadata>,
 ) {
     let clock_now = state.clock.now();
+    let mut flip_sample: Option<(Duration, Option<Duration>)> = None;
     if let Some(drm) = state.drm.as_mut() {
         if let Some(i) = drm.index_of(dev_id, crtc) {
             {
@@ -1555,6 +1559,10 @@ fn on_vblank(
                         o.estimate.missed(refresh);
                     }
                 }
+                if let Some(queued) = o.queued_at.take() {
+                    let interval = o.last_vblank.and_then(|prev| flipped.checked_sub(prev));
+                    flip_sample = Some((queued.elapsed(), interval));
+                }
                 o.last_vblank = Some(flipped);
                 o.frame_pending = false;
                 // The flip is done, so the secondary GPU has finished reading
@@ -1564,6 +1572,9 @@ fn on_vblank(
                 }
             }
         }
+    }
+    if let Some((latency, interval)) = flip_sample {
+        state.stats.record_flip(latency, interval);
     }
     // No render here: the end of this dispatch round plans the next frame
     // against the deadline (`flush_renders`).
@@ -2255,6 +2266,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
             scale,
         ));
     }
+    // Where the prompt's panel lands, for the glass body (ADR 0128).
+    let prompt_at = elements.len();
     elements.extend(crate::trusted_ui::elements(
         renderer,
         &mut state.trusted_ui,
@@ -2340,6 +2353,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
         elements.extend(crate::protocols::standard::session_lock::lock_elements(
             renderer,
             &mut state.lock,
+            &mut state.borders,
+            &state.config,
             &output,
         ));
     } else {
@@ -2364,6 +2379,16 @@ fn render_output(state: &mut AbyssState, index: usize) {
         Some(&behind),
     ));
     elements.extend(behind);
+    // The prompt's glass body, drawn from everything now below the panel
+    // (ADR 0128); only a prompt on this output does anything here.
+    crate::trusted_ui::splice_glass(
+        renderer,
+        &mut state.trusted_ui,
+        &mut state.borders,
+        &output,
+        &mut elements,
+        prompt_at,
+    );
     // Overscan compensation (COMP-03 §2): scale the finished scene into the
     // inset rect and leave the margins black. The markers go on afterwards so
     // they stay in raw framebuffer pixels — they exist to show where the
@@ -2515,16 +2540,18 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // `drm` borrow and handed back to `queue_frame`.
     let mut queued = false;
     if let Some(states) = states {
-        update_primary_scanout(&state.space, &output, &states);
+        let lock = state.lock.frame_surface(&output);
+        update_primary_scanout(&state.space, &output, lock.as_ref(), &states);
         if let Some(fb) = surface_feedback.as_ref() {
             send_dmabuf_feedback(&state.space, &output, fb, candidate.as_ref());
         }
-        let presentation = presentation_feedback(&state.space, &output, &states);
+        let presentation = presentation_feedback(&state.space, &output, lock.as_ref(), &states);
         let submit_start = Instant::now();
         let Some(drm) = state.drm.as_mut() else { return };
         match drm.outputs[index].compositor.queue_frame(Some(presentation)) {
             Ok(()) => {
                 queued = true;
+                drm.outputs[index].queued_at = Some(Instant::now());
                 // Diagnostics: once per output after a commit, and again after a mode change.
                 let entry = &mut drm.outputs[index];
                 if !entry.diag.geometry_logged {
@@ -2660,7 +2687,12 @@ fn render_output(state: &mut AbyssState, index: usize) {
     }
 
     let time = state.start_time.elapsed();
-    crate::render::send_frames(&state.space, &output, time);
+    crate::render::send_frames(
+        &state.space,
+        &output,
+        state.lock.frame_surface(&output).as_ref(),
+        time,
+    );
     crate::protocols::standard::frame_timing::release(state, &output);
     state.space.refresh();
     state.popups.cleanup();
