@@ -109,7 +109,9 @@ the same rules (ADR 0084).
   (.455 focused, .34 idle) plus the white focus lift, ink title and glyphs at the text steps,
   an ink seam (.10 / .06), and bar-cell ink steps on hovered buttons. Close keeps its danger cell
 - Trusted-UI prompts use the built-in dark or light palette matching the theme's
-  brightness, never a user theme's colours (ADR 0084)
+  brightness, never a user theme's colours (ADR 0084). The panel body is glass (ADR 0128):
+  the palette ground at .40 over a fixed blur floor of at least 6 passes,
+  with the frames, wells and buttons opaque; the blur and tint are not themeable
 
 ## Accent discipline
 The accent (yellow by default) marks state and one live value per screen: the active nav item, the selected

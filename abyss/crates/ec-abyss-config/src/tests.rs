@@ -1318,7 +1318,7 @@ fn glass_and_frost_tunables_parse_and_bad_ones_keep_defaults() {
         );
     assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
     let g = &cfg.decoration.blur.glass;
-    assert_eq!((g.refraction, g.bevel, g.dispersion, g.rim), (20, 8, 0.5, 1.0));
+    assert_eq!((g.refraction, g.bevel, g.dispersion, g.rim), (20.0, 8, 0.5, 1.0));
     assert_eq!(cfg.decoration.blur.frost.tint[3], 0x40 as f32 / 255.0);
     let cfg = blur_cfg(
             "decoration { blur {\n  glass { refraction 99; bevel 0; dispersion 2.0; rim -1.0; nope 1 }\n  frost { tint \"gold\" }\n} }\n",
@@ -1326,6 +1326,25 @@ fn glass_and_frost_tunables_parse_and_bad_ones_keep_defaults() {
     assert_eq!(cfg.errors.len(), 6, "{:?}", cfg.errors);
     assert_eq!(cfg.decoration.blur.glass, GlassBlur::default());
     assert_eq!(cfg.decoration.blur.frost, FrostBlur::default());
+}
+
+#[test]
+fn glass_refraction_takes_a_decimal_and_still_a_whole_number() {
+    assert_eq!(GlassBlur::default().refraction, 1.5);
+    for (src, want) in [("1.5", 1.5), ("4", 4.0), ("0", 0.0), ("0.25", 0.25), ("64", 64.0)] {
+        let cfg = blur_cfg(&format!(
+            "decoration {{ blur {{ glass {{ refraction {src} }} }} }}\n"
+        ));
+        assert!(cfg.errors.is_empty(), "{src}: {:?}", cfg.errors);
+        assert_eq!(cfg.decoration.blur.glass.refraction, want, "{src}");
+    }
+    for src in ["64.5", "-0.1", "\"1\""] {
+        let cfg = blur_cfg(&format!(
+            "decoration {{ blur {{ glass {{ refraction {src} }} }} }}\n"
+        ));
+        assert_eq!(cfg.errors.len(), 1, "{src}");
+        assert_eq!(cfg.decoration.blur.glass.refraction, 1.5, "{src}");
+    }
 }
 
 #[test]

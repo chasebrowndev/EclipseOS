@@ -4,7 +4,7 @@ Read the root `CLAUDE.md` first.
 
 - **Not TCB.** Nothing here is trusted; trusted UI is compositor-drawn
   (root invariants). A widget in this crate that would only make sense if it
-  could be trusted belongs in `abyss/src/trusted_ui/` instead.
+  could be trusted belongs in `abyss/crates/ec-abyss/src/trusted_ui/` instead.
 - `docs/STYLE.md` is the art direction and `tokens.rs` is its only
   transcription. A literal colour, radius or size anywhere else in the DE is a
   bug — add a token.

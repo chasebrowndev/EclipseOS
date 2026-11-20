@@ -17,7 +17,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ec_abyss_render::glass::{parse_panes, GlassState, PaneSet, ParseError};
+use ec_abyss_render::glass::{parse_clip, parse_panes, GlassState, PaneSet, ParseError};
 use ec_protocols::glass::server::{
     eclipse_glass_manager_v1::{EclipseGlassManagerV1, Error as ManagerError, Request as ManagerRequest},
     eclipse_glass_surface_v1::{EclipseGlassSurfaceV1, Request as SurfaceRequest},
@@ -37,7 +37,7 @@ use crate::{
     state::AbyssState,
 };
 
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
 
 /// The shell binaries that may bind the global. The glass is drawn under the
 /// client's surface, so `ec-secret-prompt` gains no access to what is typed.
@@ -219,8 +219,10 @@ impl Dispatch<EclipseGlassSurfaceV1, GlassData> for AbyssState {
                     return;
                 };
                 match parse_panes(&panes) {
-                    Ok(set) => with_states(&surface, |states| {
+                    Ok(mut set) => with_states(&surface, |states| {
                         let mut cached = states.cached_state.get::<GlassState>();
+                        // The clip outlives the list (ADR 0127).
+                        set.clip = cached.pending().panes.as_ref().and_then(|p| p.clip);
                         cached.pending().panes = Some(set);
                     }),
                     Err(ParseError::BadPane) => {
@@ -232,6 +234,21 @@ impl Dispatch<EclipseGlassSurfaceV1, GlassData> for AbyssState {
                     Err(ParseError::TooManyPanes) => {
                         object.post_error(ManagerError::TooManyPanes, "more than 64 panes");
                     }
+                }
+            }
+            SurfaceRequest::SetClip { x, y, width, height } => {
+                if !data.owner {
+                    return;
+                }
+                let Ok(surface) = data.surface.upgrade() else {
+                    return;
+                };
+                match parse_clip(x, y, width, height) {
+                    Some(clip) => with_states(&surface, |states| {
+                        let mut cached = states.cached_state.get::<GlassState>();
+                        cached.pending().panes.get_or_insert_with(PaneSet::default).clip = clip;
+                    }),
+                    None => object.post_error(ManagerError::BadPane, "a negative clip size"),
                 }
             }
             SurfaceRequest::Destroy => {}
@@ -385,7 +402,7 @@ mod tests {
             let (n, v) = find(&c, "wl_subcompositor").unwrap();
             c.subcompositor = Some(registry.bind(n, v.min(1), &qh, ()));
             if let Some((n, _)) = find(&c, "eclipse_glass_manager_v1") {
-                c.manager = Some(registry.bind(n, 1, &qh, ()));
+                c.manager = Some(registry.bind(n, 2, &qh, ()));
             }
             c.pump(h);
             c
@@ -534,6 +551,65 @@ mod tests {
             glass.set_panes(bytes);
             c.pump(&mut h);
             assert_eq!(c.error(), Some(code as u32));
+        }
+    }
+
+    fn current_clip(surface: &WlSurface) -> Option<(i32, i32, i32, i32)> {
+        with_states(surface, |states| {
+            let mut cached = states.cached_state.get::<GlassState>();
+            cached
+                .current()
+                .panes
+                .as_ref()
+                .and_then(|p| p.clip)
+                .map(|r| (r.loc.x, r.loc.y, r.size.w, r.size.h))
+        })
+    }
+
+    /// ADR 0127: `set_clip` is double-buffered with the panes, survives a new
+    /// `set_panes`, and a zero size clears it.
+    #[test]
+    fn set_clip_latches_on_commit_survives_set_panes_and_clears_on_zero() {
+        let mut h = harness();
+        let mut c = Client::connect(&mut h, true);
+        let qh = c.queue.handle();
+        let surface = c.compositor.as_ref().unwrap().create_surface(&qh, ());
+        let glass = c.manager.clone().unwrap().get_glass(&surface, &qh, ());
+        c.pump(&mut h);
+        let server = c.server_surface(&h, &surface);
+        glass.set_panes(rec(0, 0));
+        glass.set_clip(5, 6, 70, 80);
+        c.pump(&mut h);
+        assert_eq!(current_clip(&server), None, "pending until the commit");
+        surface.commit();
+        c.pump(&mut h);
+        assert_eq!(current_clip(&server), Some((5, 6, 70, 80)));
+        // New panes keep the clip.
+        glass.set_panes([rec(0, 0), rec(30, 1)].concat());
+        surface.commit();
+        c.pump(&mut h);
+        assert_eq!(current(&server), Some(2));
+        assert_eq!(current_clip(&server), Some((5, 6, 70, 80)));
+        // Zero width or height clears it.
+        glass.set_clip(0, 0, 0, 40);
+        surface.commit();
+        c.pump(&mut h);
+        assert_eq!(current_clip(&server), None);
+        assert_eq!(c.error(), None);
+    }
+
+    #[test]
+    fn a_negative_clip_is_bad_pane() {
+        for (w, h) in [(-1, 10), (10, -1)] {
+            let mut hn = harness();
+            let mut c = Client::connect(&mut hn, true);
+            let qh = c.queue.handle();
+            let surface = c.compositor.as_ref().unwrap().create_surface(&qh, ());
+            let glass = c.manager.clone().unwrap().get_glass(&surface, &qh, ());
+            c.pump(&mut hn);
+            glass.set_clip(0, 0, w, h);
+            c.pump(&mut hn);
+            assert_eq!(c.error(), Some(ManagerError::BadPane as u32));
         }
     }
 

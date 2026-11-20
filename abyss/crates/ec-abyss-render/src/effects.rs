@@ -259,6 +259,59 @@ vec3 join(vec3 a, vec3 b) {
     return vec3(m.x - gap * h * h * fillet * 0.25, m.yz);
 }
 
+// `box_sd` and the outward normal of the box's own distance (unnormalised sign
+// grid, as the unshaped path's), for `shape_sdg`.
+vec3 box_sdg(vec2 f, vec4 b, out vec2 g) {
+    vec2 h = b.zw * 0.5;
+    vec2 p = f - (b.xy + h);
+    float r = max(min(radius, min(h.x, h.y)), 0.0);
+    vec2 q = abs(p) - h + r;
+    float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+    vec2 arc = min(max(f, b.xy + r), b.xy + b.zw - r);
+    vec2 s = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
+    g = ((q.x > 0.0 && q.y > 0.0) ? normalize(q) : (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0))) * s;
+    return vec3(d, arc);
+}
+
+// `join` with the gradient carried along: the smooth-min's bite moves the
+// normal toward the other box's by `gap * h / 2` of the way (the derivative of
+// the bite term; the arc-centre gap is held constant).
+void join_g(inout vec3 a, inout vec2 ga, vec3 b, vec2 gb) {
+    bool bm = b.x < a.x;
+    vec3 m = bm ? b : a;
+    vec2 gm = bm ? gb : ga;
+    if (fillet > 0.0) {
+        float h = max(fillet - abs(a.x - b.x), 0.0) / fillet;
+        float gap = min(length(a.yz - b.yz) / max(radius, 1.0), 1.0);
+        gm += (gap * h * 0.5) * ((bm ? ga : gb) - gm);
+        m.x -= gap * h * h * fillet * 0.25;
+    }
+    a = m;
+    ga = gm;
+}
+
+// The shape's distance and its gradient from one evaluation of each box (the
+// glass shader used four more evaluations for a central difference).
+float shape_sdg(vec2 f, out vec2 g) {
+    vec2 g0;
+    vec2 g1;
+    vec3 a = box_sdg(f, box0, g0);
+    vec3 b = box_sdg(f, box1, g1);
+    join_g(a, g0, b, g1);
+    if (boxes > 2.5) {
+        vec2 g2;
+        vec3 c = box_sdg(f, box2, g2);
+        join_g(a, g0, c, g2);
+    }
+    if (boxes > 3.5) {
+        vec2 g3;
+        vec3 e = box_sdg(f, box3, g3);
+        join_g(a, g0, e, g3);
+    }
+    g = g0;
+    return a.x;
+}
+
 float shape_sd(vec2 f) {
     vec3 d = join(box_sd(f, box0), box_sd(f, box1));
     if (boxes > 2.5)
@@ -273,6 +326,120 @@ float shape_sd(vec2 f) {
 /// `SHAPED` defined right after its `radius` uniform.
 fn shaped_source(src: &str) -> String {
     src.replacen(RADIUS_DECL, &format!("{RADIUS_DECL}{SHAPE_FNS}"), 1)
+}
+
+/// The glass material presets (liquid-glass plan): `Lens` for small shaped
+/// controls, `Regular` for panes and window frames, `Frost` for large
+/// translucent bodies. Each is its own compiled program (a `#define`, not a
+/// uniform branch, so a variant carries only its own math). Until the optics
+/// steps land all three are today's look, bit for bit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GlassPreset {
+    Lens = 0,
+    Regular = 1,
+    Frost = 2,
+}
+
+impl GlassPreset {
+    /// Every preset, in program-slot order.
+    pub const ALL: [GlassPreset; 3] = [GlassPreset::Lens, GlassPreset::Regular, GlassPreset::Frost];
+
+    /// Slot in a `[_; 3]` of programs.
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The macro a variant is compiled with.
+    fn define(self) -> &'static str {
+        match self {
+            GlassPreset::Lens => "GLASS_LENS",
+            GlassPreset::Regular => "GLASS_REGULAR",
+            GlassPreset::Frost => "GLASS_FROST",
+        }
+    }
+
+    /// Which preset a glass backdrop gets: shaped controls (bar pills) are
+    /// lenses, a window frame's bezel is regular glass, anything else (a large
+    /// translucent window body) is frost.
+    /// A single-rectangle layer sheet in glass mode (no input-region shape, no
+    /// bezel), by its shorter side in logical px: a capsule-thin one (the bar
+    /// pill) is a lens, anything bigger (launcher, toasts) is regular glass.
+    pub fn of_sheet(short_logical: f32) -> Self {
+        if short_logical <= SHEET_PILL_MAX_SHORT {
+            GlassPreset::Lens
+        } else {
+            GlassPreset::Regular
+        }
+    }
+
+    pub fn of(shaped: bool, bezel: bool) -> Self {
+        if shaped {
+            GlassPreset::Lens
+        } else if bezel {
+            GlassPreset::Regular
+        } else {
+            GlassPreset::Frost
+        }
+    }
+}
+
+/// Largest shorter side, logical px, of a layer sheet that still counts as a
+/// control pill (the bar is 40): see [`GlassPreset::of_sheet`].
+pub const SHEET_PILL_MAX_SHORT: f32 = 48.0;
+
+/// `src` with the preset's `#define` right after the `radius` uniform (where the
+/// shaped variant's `SHAPED` also goes).
+fn preset_source(src: &str, preset: GlassPreset) -> String {
+    src.replacen(
+        RADIUS_DECL,
+        &format!("{RADIUS_DECL}\n#define {} 1\n", preset.define()),
+        1,
+    )
+}
+
+/// The glass program of one preset (unshaped). Cached by the caller.
+pub fn compile_glass_preset(
+    renderer: &mut GlesRenderer,
+    preset: GlassPreset,
+) -> Result<GlesTexProgram, GlesError> {
+    let names: Vec<_> = GLASS_UNIFORMS
+        .iter()
+        .map(|&(name, ty)| UniformName::new(name, ty))
+        .collect();
+    renderer.compile_custom_texture_shader(
+        preset_source(&format!("{BACKDROP_HEAD}{GLASS_BODY}"), preset),
+        &names,
+    )
+}
+
+/// The shaped glass program of one preset. Cached by the caller.
+pub fn compile_glass_shaped_preset(
+    renderer: &mut GlesRenderer,
+    preset: GlassPreset,
+) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        shaped_source(&preset_source(&format!("{BACKDROP_HEAD}{GLASS_BODY}"), preset)),
+        &with_shape(&GLASS_UNIFORMS),
+    )
+}
+
+macro_rules! preset_compilers {
+    ($($plain:ident, $shaped:ident => $preset:expr;)*) => {$(
+        /// `compile_glass_preset` for one preset, as a plain function pointer.
+        pub fn $plain(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+            compile_glass_preset(renderer, $preset)
+        }
+        /// `compile_glass_shaped_preset` for one preset, as a plain function pointer.
+        pub fn $shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+            compile_glass_shaped_preset(renderer, $preset)
+        }
+    )*};
+}
+
+preset_compilers! {
+    compile_glass_lens, compile_glass_shaped_lens => GlassPreset::Lens;
+    compile_glass_regular, compile_glass_shaped_regular => GlassPreset::Regular;
+    compile_glass_frost, compile_glass_shaped_frost => GlassPreset::Frost;
 }
 
 /// The shape's own uniforms, in the order [`shape_uniforms`] sets them.
@@ -412,22 +579,38 @@ float grain(vec2 p) {
 }
 
 // Adaptive glass (ADR 0092). Mirrors `adaptive_amount` below.
-const float ADAPT_SPAN = 0.5;
-const float ADAPT_STEP = 48.0;     // cross arm cap, physical px
-const float ADAPT_INSET = 24.0;    // taps stay this far inside the rect, physical px
-const float ADAPT_MIN_STEP = 6.0;  // below this one tap is enough
+// The lengths below were tuned while `px_uv` was 1/output instead of 1/crop
+// and so read ~0.37x as far as written (800 px window, 2880 px output); they
+// carry that factor so the adaptive tint reads the same patch as before.
+const float ADAPT_SPAN = 0.19;
+const float ADAPT_STEP = 18.0;     // cross arm cap, physical px
+const float ADAPT_INSET = 9.0;     // taps stay this far inside the rect, physical px
+const float ADAPT_MIN_STEP = 2.2;  // below this one tap is enough
 const float ADAPT_TEXT_DARK = 1.0;
 const float ADAPT_TEXT_LIGHT = 0.01;
 const float ADAPT_C_OK = 7.0;
 const float ADAPT_C_MIN = 2.0;
 const float ADAPT_REACH = 1.75;
 const float ADAPT_MAX = 0.95;
+#if defined(GLASS_LENS) || defined(GLASS_REGULAR)
+// iOS light glass is a bright, near-opaque slab with dark text: lens and regular
+// let the adaptive tint reach nearly all the way (frost keeps 0.8).
+const float ADAPT_MAX_L = 0.95;
+#else
 const float ADAPT_MAX_L = 0.8;     // light glass keeps some backdrop: it must not read as a white slab
+#endif
 const float ADAPT_EASE = 1.5;      // exponent of the response curve
 const float ADAPT_GHOST = 0.22;    // share of the backdrop's own deviation kept through the correction
 const float ADAPT_GRAIN = 0.03;    // faint frost, scaled by the correction
 const float ADAPT_WORST = 0.75;    // weight of the worst tap over the mean
-uniform vec2 px_uv;         // 1 / backdrop texture size
+#define ADAPT_ARMS 4               // taps around the centre: the cross (the diagonals were 4 more)
+uniform vec2 px_uv;         // 1 physical px in the sampled texture's UV (1 / crop size; half that in x when packed)
+uniform float dual_tex;       // 1 when `tex` is [blurred | sharp] side by side (chromatic aberration), else 0
+// The part of the texture the blurred backdrop lives in: all of it, or its left half when packed.
+vec2 blur_hi() { return vec2(dual_tex > 0.5 ? 0.5 : 1.0, 1.0); }
+vec2 clamp_blur(vec2 uv) { return clamp(uv, px_uv * 0.5, blur_hi() - px_uv * 0.5); }
+// The same uv in the lightly blurred half (packed only): shifted right by half the texture.
+vec2 clamp_sharp(vec2 uv) { return clamp(uv + vec2(0.5, 0.0), vec2(0.5, 0.0) + px_uv * 0.5, vec2(1.0) - px_uv * 0.5); }
 uniform float y_sign;       // -1 when the framebuffer is y-mirrored
 uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
 uniform float adapt;        // effective adaptive strength; 0 off
@@ -444,8 +627,8 @@ const vec3 SURFACE_L = vec3(0.985, 0.975, 0.955);  // warm white
 // its worst patch, not its average. The arms are at most `ADAPT_STEP` long (on
 // a small surface, `ADAPT_SPAN` of its half-size) and each tap is held inside
 // the surface's rect, so a shape's drawer and pill each read the backdrop
-// behind themselves. Under `ADAPT_MIN_STEP` the backdrop is flat at that
-// scale and one tap does. Mirrors `adaptive_luma` below.
+// behind themselves. Under `ADAPT_MIN_STEP` one tap does, blended in
+// continuously (see `w` below). Mirrors `adaptive_luma` below.
 float g_dev;  // centre minus local mean luma of the last backdrop_luma()
 float backdrop_luma() {
     vec2 hs = win_rect.zw * 0.5;
@@ -457,28 +640,33 @@ float backdrop_luma() {
     vec2 p0 = gl_FragCoord.xy - (win_rect.xy + hs);
     p0.y *= y_sign;
     vec2 pc = clamp(p0, -lim, lim);
-    float c = dot(texture2D(tex, clamp(v_coords + (pc - p0) * px_uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5)).rgb, LUMA);
+    float c = dot(texture2D(tex, clamp_blur(v_coords + (pc - p0) * px_uv)).rgb, LUMA);
     g_dev = 0.0;
-    if (max(step.x, step.y) < ADAPT_MIN_STEP) {
+    // Under `ADAPT_MIN_STEP` the backdrop is flat at the arms' scale and the
+    // centre tap does; the multi-tap read fades in over [MIN/4, 4 MIN] of the
+    // arm length, so a surface resizing across the threshold does not pop.
+    // Mirrors `adaptive_tap_weight`.
+    float w = smoothstep(ADAPT_MIN_STEP * 0.25, ADAPT_MIN_STEP * 4.0, max(step.x, step.y));
+    if (w <= 0.0) {
         return c;
     }
     float sum = c;
     float lo = c;
     float hi = c;
-    for (int i = 0; i < 8; i++) {
+    for (int i = 0; i < ADAPT_ARMS; i++) {
         vec2 d = i == 0 ? vec2(1.0, 0.0) : i == 1 ? vec2(-1.0, 0.0) : i == 2 ? vec2(0.0, 1.0)
             : i == 3 ? vec2(0.0, -1.0) : i == 4 ? vec2(0.7, 0.7) : i == 5 ? vec2(-0.7, 0.7)
             : i == 6 ? vec2(0.7, -0.7) : vec2(-0.7, -0.7);
         vec2 q = clamp(pc + d * step, -lim, lim);
-        vec2 uv = clamp(v_coords + (q - p0) * px_uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
+        vec2 uv = clamp_blur(v_coords + (q - p0) * px_uv);
         float l = dot(texture2D(tex, uv).rgb, LUMA);
         sum += l;
         lo = min(lo, l);
         hi = max(hi, l);
     }
-    float mean = sum / 9.0;
-    g_dev = c - mean;
-    return mix(mean, mix(hi, lo, scheme_light), ADAPT_WORST);
+    float mean = sum / float(ADAPT_ARMS + 1);
+    g_dev = (c - mean) * w;
+    return mix(c, mix(mean, mix(hi, lo, scheme_light), ADAPT_WORST), w);
 }
 
 // How far to pull the tint toward the scheme's surface colour.
@@ -491,7 +679,10 @@ float adapt_amount(float luma, float light, float strength) {
     // Convex ease; each glass layer stacked on the backdrop multiplies the
     // exponent, so a pane over a window's glass compounds, not adds.
     float a = need * strength * ADAPT_REACH;
-    return min(1.0 - pow(max(1.0 - a, 0.0), ADAPT_EASE * max(adapt_layers, 1.0)), mix(ADAPT_MAX, ADAPT_MAX_L, light));
+    float x = max(1.0 - a, 0.0);
+    // x^1.5 for a window's one layer without the general `pow`.
+    float xe = adapt_layers > 1.5 ? pow(x, ADAPT_EASE * adapt_layers) : x * sqrt(x);
+    return min(1.0 - xe, mix(ADAPT_MAX, ADAPT_MAX_L, light));
 }
 
 vec3 adapt_tint(vec3 c) {
@@ -589,7 +780,7 @@ void main() {
 const GLASS_BODY: &str = r#"
 uniform float strength;   // largest displacement, physical px, at the edge
 uniform float bevel;      // roll-off band width, physical px
-uniform float dispersion; // 0..1, off by default
+uniform float dispersion; // chromatic fringe at the edge, physical px; 0 off (needs a packed `tex`)
 uniform float rim;        // 0..1 hairline strength
 uniform vec4 rim_color;   // premultiplied hairline colour; opaque white off the bezel
 uniform float inner;      // bezel width, physical px; 0 off the bezel
@@ -598,6 +789,8 @@ uniform float bar;        // titlebar depth from the region's top, physical px; 
 uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
 uniform float shade;      // 0..1 mix toward ink (light only: a pane's depth step); 0 elsewhere
 uniform float smoke;      // 0..1 weight of the smoke and adaptive tint; 1 normal, less on stacked glass
+uniform vec4 body_tint;   // a trusted prompt's fixed palette tint (straight rgb, alpha = weight); 0 elsewhere
+uniform float sharp_damp; // 0..1 share of the bevel's lightly blurred half held back; 0 (unset) everywhere but a trusted prompt
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
 const float SATURATE = 1.7;
@@ -608,6 +801,23 @@ const float SMOKE_MIX = 0.28;
 const float LINE_BASE = 0.05;
 const float LINE_TL = 0.13;
 const float LINE_BR = 0.035;
+// Lens and regular only: edge darkening and the lit edge gradient at the rim, a
+// clearer interior (less smoke and adaptive tint) and a faint fill.
+const float EDGE_DARK = 0.26;
+const float EDGE_DARK_L = 0.12;
+const float LINE_IN = 0.34;
+const float RIM_SAT = 1.5;          // rim colour: saturation of the sharp backdrop
+const float RIM_GAIN = 1.7;         // and its brightening, then clamped
+const float RIM_SHARP = 0.8;        // weight (before the light lobes) in the dark scheme: soft, subtle
+const float RIM_SHARP_L = 1.0;      // and in the light one: a crisp edge
+const float RIM_WHITE_L = 0.45;     // light scheme: share of white mixed into the rim colour
+const float RIM_CRISP_PX = 3.0;     // light scheme: width of the crisp edge, physical px
+const float LENS_SMOKE = 0.35;      // share of the smoke the interior keeps
+const float LENS_ADAPT = 0.75;      // share of the adaptive tint it keeps
+const vec3 LENS_FILL_D = vec3(0.17, 0.17, 0.18);
+const vec3 LENS_FILL_L = vec3(1.0, 0.995, 0.985);
+const float LENS_FILL_AMT_D = 0.10;
+const float LENS_FILL_AMT_L = 0.75;
 // Darkening of the 1 px seam where the bezel meets the window.
 const float SEAM = 0.1;
 // The light twins: bright frosted glass with the dark ink drawn on it. Each is
@@ -619,15 +829,20 @@ const float SMOKE_MIX_L = 0.22;   // a light veil; the window tint does the whit
 const float SEAM_L = 0.04;
 const vec3 LIFT_L = vec3(0.102, 0.086, 0.063);      // ink #1a1610: a depth step darkens light glass
 
+// GLASS_LENS / GLASS_REGULAR / GLASS_FROST name the preset this program was
+// compiled for (liquid-glass step 0: scaffolding, all three are today's look).
 vec4 blurred_at(vec2 uv) {
-    return texture2D(tex, clamp(uv, px_uv * 0.5, vec2(1.0) - px_uv * 0.5));
+    return texture2D(tex, clamp_blur(uv));
+}
+
+// The lightly blurred twin of `blurred_at` (packed textures only).
+vec4 sharp_at(vec2 uv) {
+    return texture2D(tex, clamp_sharp(uv));
 }
 
 #ifdef SHAPED
-// Outward normal of the shape, y down, by central differences.
-vec2 shape_grad(vec2 f) {
-    vec2 g = vec2(shape_sd(f + vec2(0.5, 0.0)) - shape_sd(f - vec2(0.5, 0.0)),
-                  shape_sd(f + vec2(0.0, 0.5)) - shape_sd(f - vec2(0.0, 0.5)));
+// Outward normal of the shape, y down, from the analytic gradient.
+vec2 shape_normal(vec2 g) {
     g.y *= y_sign;
     return length(g) > 0.01 ? normalize(g) : vec2(0.0, -1.0);
 }
@@ -640,7 +855,8 @@ void main() {
     vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
     p.y *= y_sign;
 #ifdef SHAPED
-    float d = shape_sd(gl_FragCoord.xy);
+    vec2 sg;
+    float d = shape_sdg(gl_FragCoord.xy, sg);
 #else
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
@@ -659,7 +875,7 @@ void main() {
     }
 
 #ifdef SHAPED
-    vec2 grad = shape_grad(gl_FragCoord.xy);
+    vec2 grad = shape_normal(sg);
 #else
     // Outward normal of the rounded box, y down.
     vec2 s = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
@@ -674,35 +890,129 @@ void main() {
     grad *= s;
 #endif
 
-    // Roll-off: largest at the edge, easing to zero (and zero slope) where
-    // the bevel meets the plateau, so no line marks where the bend stops.
     // A bezel bends across its own width only.
     float band_w = inner > 0.0 ? inner : bevel;
+#if defined(GLASS_LENS) || defined(GLASS_REGULAR)
+    // Lens optics. `t` runs 0 at the edge to 1 where the bevel meets the flat
+    // plateau, which is only the lightly-bent blurred result (one tap, none of
+    // the lens math). In the bevel the surface is a convex height profile
+    // h(t) = 1 - (1 - t)^p, so the slope, and with it the bend, is steepest at
+    // the rim and eases to zero at the plateau: `strength * (1 - t)^(p - 1)`
+    // (p = 3.5) physical px. The bend points OUT of the shape, so the rim shows
+    // content from beyond the edge, however far the shape's own edge is. The
+    // rim reads the lightly blurred half of the packed `tex`, crossfading to
+    // the plateau's blur by `u`; each colour channel is bent a little
+    // differently (red by 1 - k, blue by 1 + k, `dispersion` = k), so the
+    // fringe is as wide as the local bend is.
+    float t = -d / max(band_w, 1.0);
+    vec4 color = blurred_at(v_coords);
+    float lens_u = 0.0;  // 0 on the plateau, up to 1 at the rim: where the edge shading runs
+    vec3 rim_sh = color.rgb;  // the sharp backdrop at the rim, for the rim's own colour
+    if (t < 1.0) {
+        float u = 1.0 - max(t, 0.0);
+        lens_u = u;
+        vec2 b = grad * px_uv * (strength * u * u * sqrt(u));
+        float k = dispersion;
+        if (dual_tex > 0.5) {
+            vec3 sh = vec3(sharp_at(v_coords + b * (1.0 - k)).r,
+                           sharp_at(v_coords + b).g,
+                           sharp_at(v_coords + b * (1.0 + k)).b);
+            // `sharp_damp` (a trusted prompt only) holds back that share of the
+            // lightly blurred half: the band stays a lens, not a window onto it.
+            vec3 shown = mix(color.rgb, sh, 1.0 - sharp_damp);
+            color.rgb = mix(color.rgb, shown, u);
+            rim_sh = shown;
+        } else {
+            color.r = blurred_at(v_coords + b * (1.0 - k)).r;
+            color.g = blurred_at(v_coords + b).g;
+            color.b = blurred_at(v_coords + b * (1.0 + k)).b;
+        }
+    }
+#else
+    // Roll-off: largest at the edge, easing to zero (and zero slope) where
+    // the bevel meets the plateau, so no line marks where the bend stops.
     float u = 1.0 - clamp(-d / max(band_w, 1.0), 0.0, 1.0);
     vec2 bend = -grad * px_uv * (strength * u * u);
     vec4 color = blurred_at(v_coords + bend);
-    if (dispersion > 0.0) {
-        float spread = 0.05 * dispersion;
-        color.r = blurred_at(v_coords + bend * (1.0 - spread)).r;
-        color.b = blurred_at(v_coords + bend * (1.0 + spread)).b;
+    // Chromatic aberration: every channel moves from the blurred result toward
+    // the lightly blurred half of the packed texture by the bevel falloff `u`
+    // (so the plateau, where u is 0, stays pure blur), and red and blue are read
+    // `dispersion * u` real pixels either side of the bent sample along the edge
+    // normal: strongest at the outer edge. Green stays on the bent sample and
+    // takes the same sharpening, or a sharp backdrop would turn the edge into a
+    // green band (red and blue sharp against a blurred green).
+    if (dispersion > 0.0 && dual_tex > 0.5) {
+        float w = u;
+        vec2 fr = -grad * px_uv * (dispersion * w);
+        vec2 uv0 = v_coords + bend;
+        vec2 uvr = uv0 + fr;
+        vec2 uvb = uv0 - fr;
+        color.r = mix(blurred_at(uvr).r, sharp_at(uvr).r, w);
+        color.g = mix(color.g, sharp_at(uv0).g, w);
+        color.b = mix(blurred_at(uvb).b, sharp_at(uvb).b, w);
     }
+#endif
 
     // Vibrancy: saturate, compress the highlights, smoke toward neutral.
     vec3 c = color.rgb;
     c = max(mix(vec3(dot(c, LUMA)), c, mix(SATURATE, SATURATE_L, scheme_light)), 0.0);
     c = c / (1.0 + mix(COMPRESS, COMPRESS_L, scheme_light) * dot(c, LUMA));
-    c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light) * smoke);
-    c = mix(c, adapt_tint(c), smoke);
+#if defined(GLASS_LENS)
+    float smoke_w = smoke * LENS_SMOKE;
+    float adapt_w = smoke * LENS_ADAPT;
+#else
+    float smoke_w = smoke;
+    float adapt_w = smoke;
+#endif
+    c = mix(c, mix(SMOKE, SMOKE_L, scheme_light), mix(SMOKE_MIX, SMOKE_MIX_L, scheme_light) * smoke_w);
+#if defined(GLASS_LENS)
+    c = mix(c, mix(LENS_FILL_D, LENS_FILL_L, scheme_light), mix(LENS_FILL_AMT_D, LENS_FILL_AMT_L, scheme_light) * smoke);
+#endif
+    if (smoke > 0.0) {
+        c = mix(c, adapt_tint(c), adapt_w);
+    }
     c = mix(c, vec3(1.0), lift);
     c = mix(c, LIFT_L, shade);
+    c = mix(c, body_tint.rgb, body_tint.a);
+
+#if defined(GLASS_LENS) || defined(GLASS_REGULAR)
+    // Thickness, inside the bevel only (the plateau never gets here): the edge
+    // darkens as the glass thickens toward the rim, and a faint highlight line
+    // sits near the inner end of the band, lit like the hairline. No taps: both
+    // are functions of the distance already computed. `rim` 0 turns them off too.
+    if (lens_u > 0.0) {
+        float rs = min(rim * 2.0, 1.0);
+        c *= 1.0 - mix(EDGE_DARK, EDGE_DARK_L, scheme_light) * lens_u * lens_u * rs;
+        // One lit edge: a soft gradient that falls off over the outer half of
+        // the band from the hairline (drawn below), lit like it. No separate line.
+        float fall = 1.0 - clamp(-d / (0.5 * band_w), 0.0, 1.0);
+        float lit = LINE_IN * (0.35 + max(dot(grad, LIGHT), 0.0) + 0.5 * max(dot(grad, -LIGHT), 0.0));
+        vec3 ltint = rim_color.rgb / max(rim_color.a, 0.0001);
+        c = mix(c, ltint, clamp(fall * fall * lit * rim_color.a * rs, 0.0, 1.0));
+        // The rim carries the backdrop's own colour: the sharp backdrop, brighter and
+        // more saturated, lightens the band (never darkens it), by the same lit
+        // falloff. Strong over light or colourful backdrops, nearly nothing over dark.
+        // Dark scheme: a soft band (the outer half of the bevel), subtle. Light
+        // scheme: a crisp ~3 px edge, brighter and biased to white (Apple's light
+        // glass shows a clearly visible rim even over a dark backdrop).
+        vec3 rb = mix(vec3(dot(rim_sh, LUMA)), rim_sh, RIM_SAT) * RIM_GAIN;
+        rb = mix(rb, vec3(0.95), scheme_light * RIM_WHITE_L);
+        float crisp = 1.0 - smoothstep(0.0, RIM_CRISP_PX, -d);
+        float dirl = clamp(0.35 + max(dot(grad, LIGHT), 0.0) + 0.5 * max(dot(grad, -LIGHT), 0.0), 0.0, 1.2);
+        float rw = mix(RIM_SHARP * fall * fall, RIM_SHARP_L * crisp, scheme_light) * dirl * rs;
+        c = mix(c, max(c, clamp(rb, 0.0, 1.0)), clamp(rw, 0.0, 1.0));
+    }
+#endif
 
     // Hairline: a 1.25 px band inside the mask edge.
-    float band = 1.0 - smoothstep(0.0, 1.25, -d);
-    float tl = max(dot(grad, LIGHT), 0.0);
-    float br = max(dot(grad, -LIGHT), 0.0);
-    float lobe = LINE_BASE + LINE_TL * tl + LINE_BR * br;
-    vec3 tint = rim_color.rgb / max(rim_color.a, 0.0001);
-    c = mix(c, tint, clamp(band * lobe * rim_color.a * rim * 2.0, 0.0, 1.0));
+    if (-d < 1.25) {
+        float band = 1.0 - smoothstep(0.0, 1.25, -d);
+        float tl = max(dot(grad, LIGHT), 0.0);
+        float br = max(dot(grad, -LIGHT), 0.0);
+        float lobe = LINE_BASE + LINE_TL * tl + LINE_BR * br;
+        vec3 tint = rim_color.rgb / max(rim_color.a, 0.0001);
+        c = mix(c, tint, clamp(band * lobe * rim_color.a * rim * 2.0, 0.0, 1.0));
+    }
 
     // Seam: a faint dark line just outside the window's own edge.
     if (inner > 0.0) {
@@ -718,6 +1028,30 @@ void main() {
 
 /// Largest share of a glass shape's shorter side its bevel may span.
 const GLASS_BEVEL_FRACTION: f32 = 0.3;
+/// The same for a lens or regular preset.
+const LENS_BEVEL_FRACTION: f32 = 0.4;
+/// Largest rim bend of a lens or a bar-less regular shape, as a share of its
+/// shorter side: a 30 px cell bends by under 5 px, a 130 px pill keeps the full
+/// configured strength.
+pub const LENS_STRENGTH_FRACTION: f32 = 0.16;
+
+/// The bevel band of a lens whose shorter side is `short` physical px:
+/// `bevel`, capped at [`LENS_BEVEL_FRACTION`] of `short`.
+pub fn lens_bevel(bevel: f32, short: f32) -> f32 {
+    bevel.min(short.max(1.0) * LENS_BEVEL_FRACTION)
+}
+
+/// The rim bend of a lens shape whose shorter side is `short` physical px:
+/// `strength`, capped at [`LENS_STRENGTH_FRACTION`] of `short`.
+pub fn lens_strength(strength: f32, short: f32) -> f32 {
+    strength.min(short.max(1.0) * LENS_STRENGTH_FRACTION)
+}
+/// Share of the dispersion setting that becomes the per-channel bend scale `k`
+/// (red `1 - k`, blue `1 + k`).
+pub const DISPERSION_K: f32 = 0.12;
+/// A window frame's (regular preset) rim displacement per unit of the top-level
+/// `refraction` setting: its default 1.5 px reads as 7.5.
+const REGULAR_GAIN: f32 = 5.0;
 
 /// The frost program's uniforms, in the order [`frost_uniforms`] sets them.
 const FROST_UNIFORMS: [(&str, UniformType); 12] = [
@@ -779,10 +1113,11 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
 }
 
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
-const GLASS_UNIFORMS: [(&str, UniformType); 18] = [
+const GLASS_UNIFORMS: [(&str, UniformType); 21] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
+    ("dual_tex", UniformType::_1f),
     ("y_sign", UniformType::_1f),
     ("strength", UniformType::_1f),
     ("bevel", UniformType::_1f),
@@ -798,6 +1133,8 @@ const GLASS_UNIFORMS: [(&str, UniformType); 18] = [
     ("scheme_light", UniformType::_1f),
     ("adapt", UniformType::_1f),
     ("adapt_layers", UniformType::_1f),
+    ("body_tint", UniformType::_4f),
+    ("sharp_damp", UniformType::_1f),
 ];
 
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
@@ -809,11 +1146,104 @@ pub fn compile_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gles
     renderer.compile_custom_texture_shader(format!("{BACKDROP_HEAD}{GLASS_BODY}"), &names)
 }
 
+/// `px_uv` for a texture that spans `size` physical px: one physical pixel in
+/// that texture's normalised UV space. The glass/frost element samples the
+/// blur result, which covers the chain's crop (not the whole output) at any
+/// resolution, so `size` is the crop, never the framebuffer.
+pub fn px_uv_for(size: (i32, i32)) -> [f32; 2] {
+    [1.0 / size.0.max(1) as f32, 1.0 / size.1.max(1) as f32]
+}
+
+/// Largest chromatic fringe at `dispersion` 1, in logical px (scaled to
+/// physical by the output scale). Red and blue sit this far either side of the
+/// bent sample at the outer edge of the bevel; tuned by eye (docs/GLASS_PROFILING.md).
+pub const DISPERSION_PX: f32 = 8.0;
+
+/// The glass program's `dispersion` uniform for a configured `dispersion`
+/// (0..1): the fringe at the edge in physical px at output scale `upscale`.
+pub fn fringe_px(dispersion: f32, upscale: f64) -> f32 {
+    (dispersion.clamp(0.0, 1.0) as f64 * DISPERSION_PX as f64 * upscale) as f32
+}
+
+/// Set the `body_tint` uniform (a trusted prompt's palette tint; straight rgb
+/// and alpha), if `uniforms` has one.
+pub fn set_body_tint(uniforms: &mut [Uniform<'static>], tint: [f32; 4]) {
+    for u in uniforms.iter_mut().filter(|u| u.name == "body_tint") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_4f(tint[0], tint[1], tint[2], tint[3]);
+    }
+}
+
+/// Set the `sharp_damp` uniform (the share of the bevel's lightly blurred half
+/// held back; a trusted prompt's), if `uniforms` has one.
+pub fn set_sharp_damp(uniforms: &mut [Uniform<'static>], damp: f32) {
+    for u in uniforms.iter_mut().filter(|u| u.name == "sharp_damp") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_1f(damp);
+    }
+}
+
+/// Mark the `packed` uniform (if `uniforms` has one): `tex` is the blurred
+/// result with the lightly blurred level beside it, which the chromatic
+/// fringe reads.
+pub fn set_packed(uniforms: &mut [Uniform<'static>], packed: bool) {
+    for u in uniforms.iter_mut().filter(|u| u.name == "dual_tex") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_1f(if packed { 1.0 } else { 0.0 });
+    }
+}
+
+/// Point the `px_uv` uniform (if `uniforms` has one) at a texture spanning
+/// `size` physical px. The builders cannot know the crop: it is only fixed
+/// once the backdrop is refreshed, so the blur store applies it here.
+pub fn set_px_uv(uniforms: &mut [Uniform<'static>], size: (i32, i32)) {
+    let [x, y] = px_uv_for(size);
+    for u in uniforms.iter_mut().filter(|u| u.name == "px_uv") {
+        u.value = smithay::backend::renderer::gles::UniformValue::_2f(x, y);
+    }
+}
+
 /// [`rounding_uniforms`] plus the frost tint (straight alpha, as configured)
 /// and a window bezel's `(width, opaque, premultiplied hairline colour)`;
-/// `None` is plain frost, no hairline. `tex_size` is the backdrop texture,
+/// `None` is plain frost, no hairline. `tex_size` is a placeholder for the
+/// size the backdrop texture spans (the blur store re-points `px_uv` at the
+/// chain's crop, see [`set_px_uv`]),
 /// `light` is `Appearance::glass_light()` and `adapt` the effective adaptive
 /// strength ([`ec_abyss_config::AdaptiveBlur::effective`]).
+#[allow(clippy::too_many_arguments)]
+pub fn frost_uniforms_into(
+    out: &mut Vec<Uniform<'static>>,
+    rect: Rectangle<i32, Physical>,
+    fb_height: i32,
+    mirrored: bool,
+    radius: f32,
+    tint: [f32; 4],
+    bezel: Option<(i32, bool, [f32; 4], i32)>,
+    tex_size: (i32, i32),
+    light: f32,
+    adapt: f32,
+) {
+    let (inner, opaque, rim_color, bar) =
+        bezel.map_or((0.0, 0.0, [0.0; 4], 0.0), |(inner, opaque, rim, bar)| {
+            (
+                inner.max(0) as f32,
+                if opaque { 1.0f32 } else { 0.0 },
+                rim,
+                bar.max(0) as f32,
+            )
+        });
+    rounding_uniforms_into(out, rect, fb_height, mirrored, radius);
+    out.extend([
+        Uniform::new("frost_tint", tint),
+        Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
+        Uniform::new("rim_color", rim_color),
+        Uniform::new("inner", inner),
+        Uniform::new("opaque", opaque),
+        Uniform::new("bar", bar),
+        Uniform::new("px_uv", px_uv_for(tex_size)),
+        Uniform::new("scheme_light", light),
+        Uniform::new("adapt", adapt),
+    ]);
+}
+
+/// [`frost_uniforms_into`] into a fresh vector.
 #[allow(clippy::too_many_arguments)]
 pub fn frost_uniforms(
     rect: Rectangle<i32, Physical>,
@@ -826,40 +1256,44 @@ pub fn frost_uniforms(
     light: f32,
     adapt: f32,
 ) -> Vec<Uniform<'static>> {
-    let (inner, opaque, rim_color, bar) =
-        bezel.map_or((0.0, 0.0, [0.0; 4], 0.0), |(inner, opaque, rim, bar)| {
-            (
-                inner.max(0) as f32,
-                if opaque { 1.0f32 } else { 0.0 },
-                rim,
-                bar.max(0) as f32,
-            )
-        });
-    let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
-    u.extend([
-        Uniform::new("frost_tint", tint),
-        Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
-        Uniform::new("rim_color", rim_color),
-        Uniform::new("inner", inner),
-        Uniform::new("opaque", opaque),
-        Uniform::new("bar", bar),
-        Uniform::new(
-            "px_uv",
-            [1.0 / tex_size.0.max(1) as f32, 1.0 / tex_size.1.max(1) as f32],
-        ),
-        Uniform::new("scheme_light", light),
-        Uniform::new("adapt", adapt),
-    ]);
+    let mut u = Vec::with_capacity(11);
+    frost_uniforms_into(
+        &mut u, rect, fb_height, mirrored, radius, tint, bezel, tex_size, light, adapt,
+    );
     u
 }
 
 /// [`rounding_uniforms`] plus the glass parameters. `tex_size` is the
-/// backdrop texture (the whole output, physical px); `strength` and `bevel`
+/// size the backdrop texture spans, physical px (a placeholder: the blur store
+/// re-points `px_uv` at the chain's crop, see [`set_px_uv`]); `strength` and `bevel`
 /// are physical px. `bezel` is a window bezel's width (physical px), whether
 /// the window inside it is opaque, and its premultiplied hairline colour;
 /// `None` is plain glass with the neutral white hairline. `light` is
 /// `Appearance::glass_light()`: 0.0 draws the original dark glass. `adapt` is
 /// the effective adaptive strength (0.0 leaves the tint fixed).
+#[allow(clippy::too_many_arguments)]
+pub fn glass_uniforms_into(
+    out: &mut Vec<Uniform<'static>>,
+    preset: GlassPreset,
+    rect: Rectangle<i32, Physical>,
+    fb_height: i32,
+    mirrored: bool,
+    radius: f32,
+    tex_size: (i32, i32),
+    strength: f32,
+    bevel: f32,
+    glass: &ec_abyss_config::GlassBlur,
+    bezel: Option<(i32, bool, [f32; 4], i32)>,
+    light: f32,
+    adapt: f32,
+) {
+    glass_uniforms_lifted_into(
+        out, preset, rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, 0.0,
+        1.0, light, adapt, 1.0,
+    )
+}
+
+/// [`glass_uniforms_into`] into a fresh vector.
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms(
     rect: Rectangle<i32, Physical>,
@@ -874,10 +1308,23 @@ pub fn glass_uniforms(
     light: f32,
     adapt: f32,
 ) -> Vec<Uniform<'static>> {
-    glass_uniforms_lifted(
-        rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, 0.0, 1.0, light,
-        adapt, 1.0,
-    )
+    let mut u = Vec::with_capacity(20);
+    glass_uniforms_into(
+        &mut u,
+        GlassPreset::Frost,
+        rect,
+        fb_height,
+        mirrored,
+        radius,
+        tex_size,
+        strength,
+        bevel,
+        glass,
+        bezel,
+        light,
+        adapt,
+    );
+    u
 }
 
 /// [`glass_uniforms`] with a fill `lift` (a mix toward white, 0.0..=1.0) and a
@@ -885,6 +1332,76 @@ pub fn glass_uniforms(
 /// fill (`eclipse_glass_v1`). `layers` is how many glass layers stack on the
 /// sampled backdrop for adaptive glass: 1 a window, 2 a pane on a window.
 /// `smoke` scales the smoke and adaptive tint (1.0 normal; stacked glass less).
+#[allow(clippy::too_many_arguments)]
+pub fn glass_uniforms_lifted_into(
+    out: &mut Vec<Uniform<'static>>,
+    preset: GlassPreset,
+    rect: Rectangle<i32, Physical>,
+    fb_height: i32,
+    mirrored: bool,
+    radius: f32,
+    tex_size: (i32, i32),
+    strength: f32,
+    bevel: f32,
+    glass: &ec_abyss_config::GlassBlur,
+    bezel: Option<(i32, bool, [f32; 4], i32)>,
+    lift: f32,
+    shade: f32,
+    smoke: f32,
+    light: f32,
+    adapt: f32,
+    layers: f32,
+) {
+    let (inner, opaque, rim_color, bar) =
+        bezel.map_or((0.0, 0.0, [1.0; 4], 0.0), |(inner, opaque, rim, bar)| {
+            (
+                inner.max(0) as f32,
+                if opaque { 1.0f32 } else { 0.0 },
+                rim,
+                bar.max(0) as f32,
+            )
+        });
+    // The configured bevel/strength are ceilings: a thin shape (a bar) gets a
+    // bevel of at most GLASS_BEVEL_FRACTION of its shorter side, and the bend
+    // shrinks with it, so it keeps a clear centre and the same slope.
+    let (strength, bevel) = if inner > 0.0 || bevel <= 0.0 {
+        (strength, bevel)
+    } else if preset != GlassPreset::Frost {
+        // The band is capped at LENS_BEVEL_FRACTION of the shorter side and
+        // the bend at LENS_STRENGTH_FRACTION of it, so a small widget bends
+        // gently and shows what is directly behind it, not its neighbours.
+        let short = rect.size.w.min(rect.size.h).max(1) as f32;
+        (lens_strength(strength, short), lens_bevel(bevel, short))
+    } else {
+        let short = rect.size.w.min(rect.size.h).max(1) as f32;
+        let capped = bevel.min(short * GLASS_BEVEL_FRACTION);
+        (strength * capped / bevel, capped)
+    };
+    rounding_uniforms_into(out, rect, fb_height, mirrored, radius);
+    out.extend([
+        Uniform::new("px_uv", px_uv_for(tex_size)),
+        Uniform::new("dual_tex", 0.0f32),
+        Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
+        Uniform::new("strength", strength),
+        Uniform::new("bevel", bevel),
+        Uniform::new("dispersion", glass.dispersion),
+        Uniform::new("rim", glass.rim),
+        Uniform::new("rim_color", rim_color),
+        Uniform::new("inner", inner),
+        Uniform::new("opaque", opaque),
+        Uniform::new("bar", bar),
+        Uniform::new("lift", lift),
+        Uniform::new("shade", shade),
+        Uniform::new("smoke", smoke),
+        Uniform::new("scheme_light", light),
+        Uniform::new("adapt", adapt),
+        Uniform::new("adapt_layers", layers),
+        Uniform::new("body_tint", [0.0f32; 4]),
+        Uniform::new("sharp_damp", 0.0f32),
+    ]);
+}
+
+/// [`glass_uniforms_lifted_into`] into a fresh vector.
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms_lifted(
     rect: Rectangle<i32, Physical>,
@@ -903,47 +1420,26 @@ pub fn glass_uniforms_lifted(
     adapt: f32,
     layers: f32,
 ) -> Vec<Uniform<'static>> {
-    let (inner, opaque, rim_color, bar) =
-        bezel.map_or((0.0, 0.0, [1.0; 4], 0.0), |(inner, opaque, rim, bar)| {
-            (
-                inner.max(0) as f32,
-                if opaque { 1.0f32 } else { 0.0 },
-                rim,
-                bar.max(0) as f32,
-            )
-        });
-    // The configured bevel/strength are ceilings: a thin shape (a bar) gets a
-    // bevel of at most GLASS_BEVEL_FRACTION of its shorter side, and the bend
-    // shrinks with it, so it keeps a clear centre and the same slope.
-    let (strength, bevel) = if inner > 0.0 || bevel <= 0.0 {
-        (strength, bevel)
-    } else {
-        let short = rect.size.w.min(rect.size.h).max(1) as f32;
-        let capped = bevel.min(short * GLASS_BEVEL_FRACTION);
-        (strength * capped / bevel, capped)
-    };
-    let mut u = rounding_uniforms(rect, fb_height, mirrored, radius);
-    u.extend([
-        Uniform::new(
-            "px_uv",
-            [1.0 / tex_size.0.max(1) as f32, 1.0 / tex_size.1.max(1) as f32],
-        ),
-        Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
-        Uniform::new("strength", strength),
-        Uniform::new("bevel", bevel),
-        Uniform::new("dispersion", glass.dispersion),
-        Uniform::new("rim", glass.rim),
-        Uniform::new("rim_color", rim_color),
-        Uniform::new("inner", inner),
-        Uniform::new("opaque", opaque),
-        Uniform::new("bar", bar),
-        Uniform::new("lift", lift),
-        Uniform::new("shade", shade),
-        Uniform::new("smoke", smoke),
-        Uniform::new("scheme_light", light),
-        Uniform::new("adapt", adapt),
-        Uniform::new("adapt_layers", layers),
-    ]);
+    let mut u = Vec::with_capacity(20);
+    glass_uniforms_lifted_into(
+        &mut u,
+        GlassPreset::Frost,
+        rect,
+        fb_height,
+        mirrored,
+        radius,
+        tex_size,
+        strength,
+        bevel,
+        glass,
+        bezel,
+        lift,
+        shade,
+        smoke,
+        light,
+        adapt,
+        layers,
+    );
     u
 }
 
@@ -961,6 +1457,18 @@ const ADAPT_REACH: f32 = 1.75;
 const ADAPT_MAX: f32 = 0.95;
 /// The cap on light glass: it keeps some backdrop instead of a white slab.
 const ADAPT_MAX_L: f32 = 0.8;
+/// Lens and regular light glass is a near-opaque slab (iOS light): the shader's
+/// `ADAPT_MAX_L` for those presets.
+const ADAPT_MAX_L_SLAB: f32 = 0.95;
+
+/// The light-scheme cap of `preset` (0.95 lens and regular, 0.8 frost).
+pub fn adaptive_cap_light(preset: GlassPreset) -> f32 {
+    if preset == GlassPreset::Frost {
+        ADAPT_MAX_L
+    } else {
+        ADAPT_MAX_L_SLAB
+    }
+}
 /// Exponent of the response curve: 1 - (1 - a)^EASE steepens small shifts.
 const ADAPT_EASE: f32 = 1.5;
 /// Share of the backdrop's own luma deviation (centre minus local mean) kept
@@ -976,6 +1484,21 @@ pub const ADAPT_SURFACE_LIGHT: [f32; 3] = [0.985, 0.975, 0.955];
 /// The luma adaptive glass judges: the mean of the sampled backdrop pulled
 /// toward the tap the scheme's text contrasts with least (`hi` for dark, `lo`
 /// for light). Mirrors the tail of `backdrop_luma` in the shader.
+/// Arm length (physical px) under which the backdrop is read with one tap.
+pub const ADAPT_MIN_STEP: f32 = 2.2;
+
+/// Weight of the multi-tap read at arm length `step`: 0 below a quarter of
+/// [`ADAPT_MIN_STEP`], 1 from four times it up, smooth between (the shader's `w`).
+pub fn adaptive_tap_weight(step: f32) -> f32 {
+    let t = ((step - ADAPT_MIN_STEP * 0.25) / (ADAPT_MIN_STEP * 3.75)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
+/// [`adaptive_luma`] faded in from the centre tap `c` by `weight`.
+pub fn adaptive_luma_blended(c: f32, mean: f32, lo: f32, hi: f32, light: f32, weight: f32) -> f32 {
+    c + (adaptive_luma(mean, lo, hi, light) - c) * weight
+}
+
 pub fn adaptive_luma(mean: f32, lo: f32, hi: f32, light: f32) -> f32 {
     let worst = hi + (lo - hi) * light;
     mean + (worst - mean) * ADAPT_WORST
@@ -987,19 +1510,34 @@ pub fn adaptive_luma(mean: f32, lo: f32, hi: f32, light: f32) -> f32 {
 /// `strength` the configured strength. 0 when the strength is 0 or the text
 /// already contrasts with the backdrop. Mirrors `adapt_amount` in the shader.
 pub fn adaptive_amount(luma: f32, light: f32, strength: f32) -> f32 {
+    adaptive_amount_for(GlassPreset::Frost, luma, light, strength)
+}
+
+/// [`adaptive_amount`] under `preset`'s light-scheme cap.
+pub fn adaptive_amount_for(preset: GlassPreset, luma: f32, light: f32, strength: f32) -> f32 {
     let lb = luma.clamp(0.0, 1.0).powi(2);
     let lt = ADAPT_TEXT_DARK + (ADAPT_TEXT_LIGHT - ADAPT_TEXT_DARK) * light;
     let contrast = (lb.max(lt) + 0.05) / (lb.min(lt) + 0.05);
     let need = ((ADAPT_CONTRAST_OK - contrast) / (ADAPT_CONTRAST_OK - ADAPT_CONTRAST_MIN)).clamp(0.0, 1.0);
-    adaptive_stacked(need * strength.max(0.0) * ADAPT_REACH, 1.0, light)
+    adaptive_stacked_for(
+        adaptive_cap_light(preset),
+        need * strength.max(0.0) * ADAPT_REACH,
+        1.0,
+        light,
+    )
 }
 
 /// The response curve for a raw shift `a` under `layers` glass layers (1 a
 /// window, 2 a pane on a window's glass): each layer multiplies the exponent.
 /// `light` is the scheme (light glass has the lower cap).
 pub fn adaptive_stacked(a: f32, layers: f32, light: f32) -> f32 {
+    adaptive_stacked_for(ADAPT_MAX_L, a, layers, light)
+}
+
+/// [`adaptive_stacked`] with the light-scheme cap `cap_light`.
+pub fn adaptive_stacked_for(cap_light: f32, a: f32, layers: f32, light: f32) -> f32 {
     (1.0 - (1.0 - a).max(0.0).powf(ADAPT_EASE * layers.max(1.0)))
-        .min(ADAPT_MAX + (ADAPT_MAX_L - ADAPT_MAX) * light)
+        .min(ADAPT_MAX + (cap_light - ADAPT_MAX) * light)
 }
 
 /// The luma added back to a corrected pixel: `dev` (its centre-minus-mean
@@ -1020,10 +1558,77 @@ pub fn adaptive_tint(tint: [f32; 3], luma: f32, light: f32, strength: f32) -> [f
 }
 
 /// How far past the blurred region the glass program samples, physical px:
-/// its displacement, with a margin for the widest dispersion (up to 5%
-/// further). Zero for every other mode.
-pub fn glass_reach(refraction: i32, scale: f64) -> i32 {
-    (refraction.max(0) as f64 * scale * 1.05).ceil() as i32
+/// its displacement (with a 5% margin, kept so a build without dispersion keeps
+/// its region), plus the widest chromatic fringe, [`fringe_px`] at `dispersion`.
+/// Zero for every other mode.
+/// What a preset's glass program is fed, in physical px at output scale
+/// `upscale`: the rim displacement `strength`, the bevel band cap, the
+/// dispersion uniform (px of fringe for frost, the per-channel bend scale `k`
+/// for lens and regular) and the rim strength.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PresetLook {
+    pub strength: f32,
+    pub bevel: f32,
+    pub dispersion: f32,
+    pub rim: f32,
+}
+
+/// [`PresetLook`] of `preset` under `glass`.
+pub fn preset_look(preset: GlassPreset, glass: &ec_abyss_config::GlassBlur, upscale: f64) -> PresetLook {
+    match preset {
+        GlassPreset::Frost => PresetLook {
+            strength: (glass.refraction as f64 * upscale) as f32,
+            bevel: (glass.bevel as f64 * upscale) as f32,
+            dispersion: fringe_px(glass.dispersion, upscale),
+            rim: glass.rim,
+        },
+        GlassPreset::Regular => PresetLook {
+            strength: (glass.refraction * REGULAR_GAIN) * upscale as f32,
+            bevel: (glass.bevel as f64 * upscale) as f32,
+            dispersion: glass.dispersion.clamp(0.0, 1.0) * DISPERSION_K,
+            rim: glass.rim,
+        },
+        GlassPreset::Lens => PresetLook {
+            strength: glass.lens.refraction * upscale as f32,
+            bevel: (glass.lens.bevel as f64 * upscale) as f32,
+            dispersion: glass.lens.dispersion.clamp(0.0, 1.0) * DISPERSION_K,
+            rim: glass.lens.rim,
+        },
+    }
+}
+
+/// How far past its region a member of `preset` samples, physical px: its own
+/// largest displacement (plus its own dispersion), so a lens never inflates a
+/// frost member's reach and the reach does not depend on the size of the union
+/// of its tier's crops.
+pub fn preset_reach(preset: GlassPreset, glass: &ec_abyss_config::GlassBlur, upscale: f64) -> i32 {
+    preset_reach_for(preset, glass, upscale, f32::MAX)
+}
+
+/// [`preset_reach`] for members whose shorter side is at most `short` physical
+/// px (a lens's bend is capped by it, see [`lens_strength`]).
+pub fn preset_reach_for(
+    preset: GlassPreset,
+    glass: &ec_abyss_config::GlassBlur,
+    upscale: f64,
+    short: f32,
+) -> i32 {
+    match preset {
+        GlassPreset::Frost => glass_reach(glass.refraction, glass.dispersion, upscale),
+        _ => {
+            let look = preset_look(preset, glass, upscale);
+            let strength = if preset == GlassPreset::Lens {
+                lens_strength(look.strength, short)
+            } else {
+                look.strength
+            };
+            (strength.max(0.0) * (1.0 + look.dispersion) * 1.05).ceil() as i32 + 1
+        }
+    }
+}
+
+pub fn glass_reach(refraction: f32, dispersion: f32, scale: f64) -> i32 {
+    (refraction.max(0.0) as f64 * scale * 1.05 + fringe_px(dispersion, scale) as f64).ceil() as i32
 }
 
 /// How the output's physical space maps onto `gl_FragCoord` for a frame
@@ -1053,22 +1658,35 @@ pub fn fb_y_mirrored(transform: Transform) -> Option<bool> {
 /// projection puts that origin at the bottom of the framebuffer (`false`, the
 /// two already coincide) or at the top (`true`, so `rect` is mirrored against
 /// `fb_height` to reach `gl_FragCoord` space).
-pub fn rounding_uniforms(
+pub fn rounding_uniforms_into(
+    out: &mut Vec<Uniform<'static>>,
     rect: Rectangle<i32, Physical>,
     fb_height: i32,
     mirrored: bool,
     radius: f32,
-) -> Vec<Uniform<'static>> {
+) {
     let x = rect.loc.x as f32;
     let y = if mirrored {
         (fb_height - rect.loc.y - rect.size.h) as f32
     } else {
         rect.loc.y as f32
     };
-    vec![
+    out.extend([
         Uniform::new("win_rect", [x, y, rect.size.w as f32, rect.size.h as f32]),
         Uniform::new("radius", radius),
-    ]
+    ]);
+}
+
+/// [`rounding_uniforms_into`] into a fresh vector (for callers off the per-frame path).
+pub fn rounding_uniforms(
+    rect: Rectangle<i32, Physical>,
+    fb_height: i32,
+    mirrored: bool,
+    radius: f32,
+) -> Vec<Uniform<'static>> {
+    let mut u = Vec::with_capacity(2);
+    rounding_uniforms_into(&mut u, rect, fb_height, mirrored, radius);
+    u
 }
 
 /// A surface element drawn with the rounded-corner program bound.
@@ -1741,5 +2359,134 @@ mod tests {
         let g = adaptive_ghost(-0.4, 0.8);
         assert!(g < 0.0 && g.abs() < 0.4 * 0.25, "{g}");
         assert!(adaptive_ghost(-0.4, 0.8).abs() > adaptive_ghost(-0.4, 0.4).abs());
+    }
+
+    /// The preset variants differ from each other in exactly one `#define`, and
+    /// the shaped ones add the shape functions on top.
+    #[test]
+    fn preset_variants_differ_only_in_their_define() {
+        let base = format!("{BACKDROP_HEAD}{GLASS_BODY}");
+        let sources: Vec<String> = GlassPreset::ALL
+            .iter()
+            .map(|p| preset_source(&base, *p))
+            .collect();
+        for (p, src) in GlassPreset::ALL.iter().zip(&sources) {
+            assert_eq!(src.matches("#define GLASS_").count(), 1, "{p:?}");
+            assert!(src.contains(&format!("#define {} 1", p.define())));
+            // Dropping the define gives back the plain program.
+            let plain = src.replace(&format!("\n#define {} 1\n", p.define()), "");
+            assert_eq!(plain, base, "{p:?}");
+        }
+        let shaped = shaped_source(&sources[0]);
+        assert!(shaped.find("#define SHAPED").unwrap() < shaped.find("#ifdef SHAPED").unwrap());
+        assert_eq!(shaped.matches("#define GLASS_LENS").count(), 1);
+        // Slots and selection.
+        assert_eq!(GlassPreset::ALL.map(GlassPreset::index), [0, 1, 2]);
+        assert_eq!(GlassPreset::of(true, false), GlassPreset::Lens);
+        assert_eq!(GlassPreset::of(true, true), GlassPreset::Lens);
+        assert_eq!(GlassPreset::of(false, true), GlassPreset::Regular);
+        assert_eq!(GlassPreset::of(false, false), GlassPreset::Frost);
+        // A layer sheet: the 40 px bar is a lens, a launcher or toast regular.
+        assert_eq!(GlassPreset::of_sheet(40.0), GlassPreset::Lens);
+        assert_eq!(GlassPreset::of_sheet(48.0), GlassPreset::Lens);
+        assert_eq!(GlassPreset::of_sheet(72.0), GlassPreset::Regular);
+        assert_eq!(GlassPreset::of_sheet(370.0), GlassPreset::Regular);
+    }
+
+    /// The CPU mirror's light cap agrees with the shader's per-preset cap.
+    #[test]
+    fn adaptive_caps_match_the_shader() {
+        for preset in GlassPreset::ALL {
+            assert_eq!(preset != GlassPreset::Frost, adaptive_cap_light(preset) > 0.9);
+        }
+        assert!(BACKDROP_HEAD.contains("const float ADAPT_MAX_L = 0.95;"));
+        assert!(BACKDROP_HEAD.contains("const float ADAPT_MAX_L = 0.8;"));
+        // Light, a dark backdrop: the slab reaches further than frost.
+        let slab = adaptive_amount_for(GlassPreset::Lens, 0.0, 1.0, 1.0);
+        let frost = adaptive_amount_for(GlassPreset::Frost, 0.0, 1.0, 1.0);
+        assert!(
+            (slab - 0.95).abs() < 1e-4 && (frost - 0.8).abs() < 1e-4,
+            "{slab} {frost}"
+        );
+        assert_eq!(adaptive_amount(0.0, 1.0, 1.0), frost);
+    }
+
+    /// A small lens bends by a share of its shorter side, a big one keeps the
+    /// configured strength, and the reach follows the capped bend.
+    #[test]
+    fn small_lenses_bend_gently() {
+        assert!((lens_strength(28.0, 30.0) - 4.8).abs() < 1e-4);
+        assert_eq!(lens_strength(28.0, 200.0), 28.0);
+        assert!(lens_strength(28.0, 0.0) <= LENS_STRENGTH_FRACTION);
+        let glass = ec_abyss_config::GlassBlur::default();
+        let small = preset_reach_for(GlassPreset::Lens, &glass, 1.0, 30.0);
+        let big = preset_reach_for(GlassPreset::Lens, &glass, 1.0, 400.0);
+        assert!(small < big);
+        assert_eq!(big, preset_reach(GlassPreset::Lens, &glass, 1.0));
+        // The bend never reaches farther than the member is thick.
+        assert!(small as f32 <= 30.0 * LENS_STRENGTH_FRACTION * 1.3 + 3.0);
+    }
+
+    /// A member's reach is its own largest displacement (plus its own
+    /// dispersion), in physical px: it scales with the output scale, not with
+    /// any union of crops, and a lens never inflates a frost member's.
+    #[test]
+    fn reach_covers_each_members_own_displacement() {
+        let glass = ec_abyss_config::GlassBlur::default();
+        for scale in [1.0, 1.5, 2.0] {
+            let lens = preset_look(GlassPreset::Lens, &glass, scale);
+            let reach = preset_reach(GlassPreset::Lens, &glass, scale);
+            // The farthest any channel is bent (blue, by 1 + k) is inside it.
+            assert!(
+                reach as f32 >= lens.strength * (1.0 + lens.dispersion),
+                "lens at {scale}"
+            );
+            let reg = preset_look(GlassPreset::Regular, &glass, scale);
+            assert!(preset_reach(GlassPreset::Regular, &glass, scale) as f32 >= reg.strength);
+            let frost = preset_reach(GlassPreset::Frost, &glass, scale);
+            assert_eq!(frost, glass_reach(glass.refraction, glass.dispersion, scale));
+        }
+        // A lens member's reach does not change a frost member's, whatever the
+        // lens setting.
+        let mut big = glass.clone();
+        big.lens.refraction = 90.0;
+        assert_eq!(
+            preset_reach(GlassPreset::Frost, &big, 1.0),
+            preset_reach(GlassPreset::Frost, &glass, 1.0)
+        );
+        assert!(preset_reach(GlassPreset::Lens, &big, 1.0) > preset_reach(GlassPreset::Lens, &glass, 1.0));
+        // Linear in the output scale (physical px), not in anything else.
+        let one = preset_look(GlassPreset::Lens, &glass, 1.0).strength;
+        let two = preset_look(GlassPreset::Lens, &glass, 2.0).strength;
+        assert!((two - 2.0 * one).abs() < 1e-3);
+    }
+
+    /// The one-tap to multi-tap switch is continuous: the weight is 0 at a quarter
+    /// of the threshold, 1 at four times it, and a surface resized one
+    /// physical px at a time (arm length `ADAPT_SPAN / 2` of its size) never
+    /// moves the tint by more than a few percent per px, whatever the backdrop's
+    /// spread. The tint amount is itself continuous in that luma (and in `smoke`,
+    /// `adapt`, the rim band and the lens plateau, which all fade to the value
+    /// they skip).
+    #[test]
+    fn adaptive_one_tap_to_multi_tap_is_continuous() {
+        assert_eq!(adaptive_tap_weight(0.0), 0.0);
+        assert_eq!(adaptive_tap_weight(ADAPT_MIN_STEP * 0.25), 0.0);
+        assert_eq!(adaptive_tap_weight(ADAPT_MIN_STEP * 4.0), 1.0);
+        assert_eq!(adaptive_tap_weight(18.0), 1.0);
+        for (light, c, mean, lo, hi) in [(1.0, 0.9, 0.5, 0.1, 0.9), (0.0, 0.1, 0.5, 0.1, 0.9)] {
+            let arm = |size: f32| (size * 0.5 * 0.19).min(18.0);
+            let tint = |size: f32| {
+                let l = adaptive_luma_blended(c, mean, lo, hi, light, adaptive_tap_weight(arm(size)));
+                adaptive_amount(l, light, 0.5)
+            };
+            let mut worst = 0.0f32;
+            let mut size = 0.0f32;
+            while size < 100.0 {
+                worst = worst.max((tint(size + 1.0) - tint(size)).abs());
+                size += 0.25;
+            }
+            assert!(worst < 0.09, "tint step per px {worst} (light {light})");
+        }
     }
 }

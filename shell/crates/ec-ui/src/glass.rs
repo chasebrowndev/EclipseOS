@@ -60,6 +60,8 @@ pub const MAX_PANES: usize = 64;
 pub const HOVERED: u32 = 1;
 /// State bit: the pane is being pressed.
 pub const PRESSED: u32 = 2;
+/// State bit (protocol v2): the pane is cut to the surface's clip rectangle.
+pub const CLIPPED: u32 = 4;
 
 /// One glass pane: a rounded box in surface-local logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -177,7 +179,7 @@ impl GlassPanes {
             (pane.radius.round().max(0.0) as u32).to_ne_bytes(),
             (pane.bezel.round().max(0.0) as u32).to_ne_bytes(),
             tone_code(pane.tone).to_ne_bytes(),
-            (pane.state & (HOVERED | PRESSED)).to_ne_bytes(),
+            (pane.state & (HOVERED | PRESSED | CLIPPED)).to_ne_bytes(),
             u32::from(pane.alpha).to_ne_bytes(),
         ];
         for f in fields {
@@ -241,6 +243,8 @@ struct Entry {
     glass: EclipseGlassSurfaceV1,
     /// What was last sent, so an unchanged frame sends nothing.
     last: Vec<u8>,
+    /// The clip last sent (`set_clip`, v2).
+    last_clip: Option<[i32; 4]>,
 }
 
 struct Shared {
@@ -264,6 +268,8 @@ thread_local! {
     // The fade and lift of the subtree being drawn ([`with_fade`]): ground
     // opacity scale and vertical offset, applied to every pane pushed.
     static FADE: std::cell::Cell<(f32, f32)> = const { std::cell::Cell::new((1.0, 0.0)) };
+    // The clip rectangle of this frame's `CLIPPED` panes (x, y, w, h), sent as `set_clip`.
+    static FRAME_CLIP: std::cell::Cell<Option<[i32; 4]>> = const { std::cell::Cell::new(None) };
     // Visible bounds (surface-local) of the scroll region being drawn, if any.
     static CLIP: std::cell::Cell<Option<Rectangle>> = const { std::cell::Cell::new(None) };
 }
@@ -274,26 +280,58 @@ thread_local! {
 /// hands the content a viewport of `visible + offset`, so
 /// `viewport.position - clip.position` is the offset. The pane moves by it
 /// and is cut to `clip` (the scrollable's visible bounds); `None` when
-/// nothing of it shows. A cut edge keeps its corner radius, so a half-shown
-/// card has a rounded cut: accepted.
+/// nothing of it shows. This is the v1 fallback: a cut edge keeps its corner
+/// radius. A v2 compositor gets [`scrolled_full`] and the clip instead
+/// (ADR 0127), so the cut edge is straight.
 pub fn scrolled(rect: Rectangle, viewport: &Rectangle, clip: &Rectangle) -> Option<Rectangle> {
+    scrolled_full(rect, viewport, clip)?.intersection(clip)
+}
+
+/// The pane moved by the scroll offset, whole and uncut; `None` when none of
+/// it falls inside `clip`.
+pub fn scrolled_full(rect: Rectangle, viewport: &Rectangle, clip: &Rectangle) -> Option<Rectangle> {
     let off = Vector::new(viewport.x - clip.x, viewport.y - clip.y);
     let moved = Rectangle {
         x: rect.x - off.x,
         y: rect.y - off.y,
         ..rect
     };
-    moved.intersection(clip)
+    moved.intersection(clip).map(|_| moved)
 }
+
+/// The clip as the integer rectangle `set_clip` carries; `None` if it is empty.
+fn clip_ints(clip: &Rectangle) -> Option<[i32; 4]> {
+    let (x0, y0) = (clip.x.round() as i32, clip.y.round() as i32);
+    let (x1, y1) = (
+        (clip.x + clip.width).round() as i32,
+        (clip.y + clip.height).round() as i32,
+    );
+    (x1 > x0 && y1 > y0 && clip.x.is_finite() && clip.y.is_finite()).then_some([x0, y0, x1 - x0, y1 - y0])
+}
+
+/// Whether the compositor bound for the frame in progress takes `set_clip`.
+static CLIP_OK: AtomicBool = AtomicBool::new(false);
 
 /// [`push`] for a pane whose `rect` is in the coordinates its widget was laid
 /// out in, drawn with `viewport`. Outside a [`scroll_region`] that is
 /// surface-local already and the pane is pushed as is.
 pub fn push_in(mut pane: Pane, viewport: &Rectangle) {
     if let Some(clip) = CLIP.with(|c| c.get()) {
-        match scrolled(pane.rect, viewport, &clip) {
-            Some(r) => pane.rect = r,
-            None => return,
+        if CLIP_OK.load(Ordering::Relaxed) {
+            // v2: the whole box plus the clip; the compositor cuts it straight.
+            let Some(ints) = clip_ints(&clip) else { return };
+            match scrolled_full(pane.rect, viewport, &clip) {
+                Some(r) => pane.rect = r,
+                None => return,
+            }
+            pane.state |= CLIPPED;
+            let (_, dy) = FADE.with(|f| f.get());
+            FRAME_CLIP.with(|c| c.set(Some([ints[0], ints[1] + dy.round() as i32, ints[2], ints[3]])));
+        } else {
+            match scrolled(pane.rect, viewport, &clip) {
+                Some(r) => pane.rect = r,
+                None => return,
+            }
         }
     }
     push(pane);
@@ -309,7 +347,11 @@ pub fn bootstrap() -> Option<Connection> {
     let conn = Connection::connect_to_env().ok()?;
     let (globals, mut queue) = registry_queue_init::<Dispatcher>(&conn).ok()?;
     let qh = queue.handle();
-    let manager = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=1, ()).ok();
+    let manager = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=2, ()).ok();
+    CLIP_OK.store(
+        manager.as_ref().is_some_and(|m| m.version() >= 2),
+        Ordering::Relaxed,
+    );
     if manager.is_some() {
         // The capability event rides the bind: take it before the first frame.
         let _ = queue.roundtrip(&mut Dispatcher);
@@ -349,6 +391,7 @@ pub fn surface_created(id: window::Id, surface: &WlSurface) {
             Entry {
                 glass,
                 last: Vec::new(),
+                last_clip: None,
             },
         );
     });
@@ -431,6 +474,7 @@ pub fn with_fade<R>(alpha: f32, dy: f32, draw: impl FnOnce() -> R) -> R {
 
 fn begin() {
     FRAME.with(|f| f.borrow_mut().clear());
+    FRAME_CLIP.with(|c| c.set(None));
 }
 
 /// Send the frame's panes for `id` if they changed. Runs in draw, ahead of
@@ -451,6 +495,14 @@ fn finish(id: Option<window::Id>) {
         let Some(entry) = sh.surfaces.get_mut(&key) else {
             return;
         };
+        // The clip rides with the panes it cuts: set only when it changed, and
+        // only to a compositor that has it (a v1 object never gets the request).
+        let clip = FRAME_CLIP.with(|c| c.get());
+        if clip != entry.last_clip && entry.glass.version() >= 2 {
+            let [x, y, w, h] = clip.unwrap_or([0; 4]);
+            entry.glass.set_clip(x, y, w, h);
+            entry.last_clip = clip;
+        }
         FRAME.with(|f| {
             let f = f.borrow();
             if entry.last == f.as_bytes() {
@@ -533,9 +585,10 @@ fn attach_raw(id: window::Id, w: &dyn window::Window) -> bool {
         return false;
     };
     let qh = queue.handle();
-    let Ok(manager) = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=1, ()) else {
+    let Ok(manager) = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=2, ()) else {
         return false;
     };
+    CLIP_OK.store(manager.version() >= 2, Ordering::Relaxed);
     let mut queue = queue;
     let _ = queue.roundtrip(&mut Dispatcher);
     let glass = manager.get_glass(&surface, &qh, ());
@@ -545,6 +598,7 @@ fn attach_raw(id: window::Id, w: &dyn window::Window) -> bool {
         Entry {
             glass,
             last: Vec::new(),
+            last_clip: None,
         },
     );
     SHARED.with(|sh| {
@@ -959,6 +1013,73 @@ mod tests {
         // Wholly above and wholly below.
         assert_eq!(scrolled(rect(210.0, 100.0, 100.0, 40.0), &vp, &clip), None);
         assert_eq!(scrolled(rect(210.0, 600.0, 100.0, 40.0), &vp, &clip), None);
+    }
+
+    #[test]
+    fn scrolled_full_keeps_the_whole_box_and_drops_only_outside() {
+        let clip = rect(200.0, 50.0, 400.0, 300.0);
+        let vp = rect(200.0, 170.0, 400.0, 300.0);
+        // Straddles the top edge: the box is whole, on screen y = 30..70.
+        assert_eq!(
+            scrolled_full(rect(210.0, 150.0, 100.0, 40.0), &vp, &clip),
+            Some(rect(210.0, 30.0, 100.0, 40.0))
+        );
+        assert_eq!(scrolled_full(rect(210.0, 100.0, 100.0, 40.0), &vp, &clip), None);
+        assert_eq!(scrolled_full(rect(210.0, 600.0, 100.0, 40.0), &vp, &clip), None);
+    }
+
+    #[test]
+    fn the_clip_rounds_to_ints_and_an_empty_one_is_none() {
+        assert_eq!(clip_ints(&rect(10.4, 20.6, 100.0, 50.0)), Some([10, 21, 100, 50]));
+        assert_eq!(clip_ints(&rect(10.0, 20.0, 0.0, 50.0)), None);
+        assert_eq!(clip_ints(&rect(f32::NAN, 0.0, 10.0, 10.0)), None);
+    }
+
+    /// The v2 path sends the whole pane flagged `CLIPPED` plus the clip; a v1
+    /// compositor gets today's cut pane and no flag, and no clip.
+    #[test]
+    fn push_in_sends_the_whole_pane_on_v2_and_the_cut_one_on_v1() {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _g = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        AVAILABLE.store(true, Ordering::Relaxed);
+        let clip = rect(200.0, 50.0, 400.0, 300.0);
+        let vp = rect(200.0, 170.0, 400.0, 300.0);
+        let pane = Pane::new(rect(210.0, 150.0, 100.0, 40.0), 8.0, CellTone::Plain);
+        let field = |bytes: &[u8], i: usize| i32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        for v2 in [true, false] {
+            CLIP_OK.store(v2, Ordering::Relaxed);
+            begin();
+            CLIP.with(|c| c.set(Some(clip)));
+            push_in(pane, &vp);
+            CLIP.with(|c| c.set(None));
+            FRAME.with(|f| {
+                let f = f.borrow();
+                assert_eq!(f.len(), 1);
+                let b = f.as_bytes();
+                if v2 {
+                    assert_eq!((field(b, 1), field(b, 3)), (30, 40), "the whole box");
+                    assert_eq!(field(b, 7) as u32 & CLIPPED, CLIPPED);
+                } else {
+                    assert_eq!((field(b, 1), field(b, 3)), (50, 20), "cut to the viewport");
+                    assert_eq!(field(b, 7) as u32 & CLIPPED, 0);
+                }
+            });
+            assert_eq!(FRAME_CLIP.with(|c| c.get()), v2.then_some([200, 50, 400, 300]));
+        }
+        // A pane wholly outside is dropped on both.
+        for v2 in [true, false] {
+            CLIP_OK.store(v2, Ordering::Relaxed);
+            begin();
+            CLIP.with(|c| c.set(Some(clip)));
+            push_in(
+                Pane::new(rect(210.0, 100.0, 100.0, 40.0), 8.0, CellTone::Plain),
+                &vp,
+            );
+            CLIP.with(|c| c.set(None));
+            assert!(FRAME.with(|f| f.borrow().is_empty()));
+        }
+        AVAILABLE.store(false, Ordering::Relaxed);
+        CLIP_OK.store(false, Ordering::Relaxed);
     }
 
     #[test]

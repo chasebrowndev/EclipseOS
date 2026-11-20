@@ -64,33 +64,6 @@ Framework 13 (HW-01..HW-07) is fixed. What they leave behind:
 
 # Screen capture — found building blur modes, 2026-09-27
 
-## CAP-01: screenshots and screencasts drop every compositor effect
-
-**Fix landed 2026-10-06, not yet seen on screen.** `capture_elements`
-(`abyss/crates/ec-abyss/src/render/capture.rs`, TCB) still takes every
-redaction decision itself, then hands each surviving window and layer to
-`abyss/crates/ec-abyss-render/src/still.rs`, which adds opacity, dim-inactive,
-rounding, shadow, glow and blurred backdrops from its own store. A backdrop
-samples only the redacted capture list, placeholders included, so a blurred
-secret is a blurred placeholder. Window borders are drawn as the live path
-draws them: a painted ring, or the glass bezel where the bezel program draws
-(glass and frost), focus colour at rest. Trusted UI stays out, as before.
-`still.rs` never reads animation state (`scan_tests.rs` pins it), so a capture
-shows the settled frame. There is no GL pixel test; this entry leaves after a
-nested-winit check: `decoration.blur.mode "glass"`, a translucent window over a
-`capture.redact-app-id` window, `grim` the output, and see rounded corners, a
-bezel or ring around each window, and a backdrop with only placeholder grey
-under the redacted rect.
-
-**Cursor (fixed 2026-09-29):** `wlr_screencopy`'s `overlay_cursor` request
-flag was silently discarded, so no client — with or without the flag set —
-ever saw the pointer in a capture (COMP-02 §8 requires cursor-in-capture to be
-opt-in, not ambiently absent). `copy_one` now bakes the cursor in via
-`render::cursor::elements` when the client asked and no trusted prompt holds
-the seat. `ext_image_copy_capture_v1`'s separate pointer-cursor session
-(`image_copy_capture.rs`) remains a stub — see `PROPOSEDFEATURES.md` Phase 1
-M8 — since it needs a metadata cursor stream, not baked-in pixels.
-
 ## BLUR-03: a blurred rectangle frames the toast stack
 
 Found 2026-09-28 fixing BLUR-02. While cards show, the compositor blurs the
@@ -129,21 +102,6 @@ ADR 0081, PR #166. Every entry here is open. None blocks the merge: each one
 either falls back to how things looked before the change, or is a
 visual-polish gap.
 
-## GLASS-01: captures do not draw panes
-
-**Fix landed 2026-11-08, not yet seen on screen.** `still.rs` (`Frame::window`
-and `Frame::layer`) reads `committed_panes` and splices each set in through the
-same `insert_blur`/`insert_panes` path and `PaneRequest::before` ordering as the
-live frame, so a window's or layer's panes show in `grim` and screencopy. The
-panes sample only the capture list (the redacted one, placeholders included),
-at rest: `scaled: None`, `alpha: 1.0`, like the live path at its target. No
-GL pixel test exists; this entry leaves after a nested-winit check:
-`decoration.blur.mode "glass"`, bar up, `grim` the output, and see the chips
-as glass, not flat cells.
-**Still open:** frost mode draws no panes on the live path either, so there is
-nothing to capture there; a keyed, strip or fullscreen window keeps its
-whole-window glass in a capture, as it does live.
-
 ## GLASS-02: panes are not clipped to the window's rounded mask
 
 A window pane is clipped to the surface rectangle, not to the window's corner
@@ -160,8 +118,8 @@ and take the min.
 that is cut by the scroll edge to the viewport but keeps all four radii. The
 cut edge shows rounded corners where the content runs straight through.
 Nested scroll regions are not supported: only the innermost viewport is used.
-**Proposed:** per-corner radius in the pane record (a protocol v2 field), or
-a client-side rule that a clipped side squares off.
+**Fixed by ADR 0127 (proposed):** protocol v2 `set_clip`; the cut edge is
+straight. A v1 compositor still shows the rounded cut.
 
 ## GLASS-04: the bar does not repaint when the capability flips
 
@@ -182,8 +140,8 @@ in one frame when the card is removed.
 `glass_ground` should take an alpha and pass it through, and the toast stack
 should feed it from its fade value.
 **Update 2026-11-06:** `ec-toasts/src/pane.rs` now passes alpha through, so the pane
-should fade with the card. Not yet confirmed visually: `grim` does not capture panes
-(GLASS-01).
+should fade with the card. Not yet confirmed visually: captures now draw panes
+(6599ae3a).
 
 ## GLASS-06: controls still drawing their own ground
 
@@ -295,7 +253,7 @@ user data alive in `get_global_handler`), then drop the decoy and the leak.
 ## SEAT-02: xdg_activation from agent-launched clients is not checked
 
 COMP-04 §7 says an agent-launched client cannot steal human focus through
-`xdg_activation`. `protocols/standard/xdg_activation.rs` has no notion of
+`xdg_activation`. `protocols/standard/protocols/standard/activation.rs` has no notion of
 which client an agent launched (agents cannot launch yet), so the rule is not
 enforced. It becomes live with agent `launch` (COMP-08); fix it there.
 
@@ -746,13 +704,6 @@ with a hostile client. Contradicts "no ambient authority" and "`password`-role
 values are never delivered". **Proposed:** an allowlist bind filter on the
 verified client identity (SEC-04), and no IME activation on password-purpose inputs.
 
-## SEC-02: the virtual-pointer global has no bind filter
-
-`protocols/standard/virtual_pointer.rs` registers `zwlr_virtual_pointer_manager_v1`
-unfiltered. Origin tagging keeps synthetic events off protected surfaces and
-lock suppresses them, but any client can move and click on ordinary windows
-with no policy decision. **Proposed:** same allowlist filter as SEC-01.
-
 ## SEC-03: `ext_foreign_toplevel_list` publishes every title, `secret` included
 
 `state.rs` creates `ForeignToplevelListState` for all clients and
@@ -789,12 +740,3 @@ Every process running as the session user can read it and sign grants or
 policy tables. The threat model names same-uid clients as adversaries
 (Vol 1, protected-surface section). See also TASK-01 (ptrace).
 
-## REPO-01: `.git` is inside a Syncthing folder
-
-The repository, `.git` included, syncs between two dev machines. On 2026-11-10
-that had produced 24 conflict copies inside `.git` (index, config, packed-refs,
-reflogs), 30 in the tree, a commit-graph naming seven absent commits, and
-worktree records for paths that exist on one machine only. Never run
-`git worktree prune` or `git gc --prune=now` — each machine sees the other's
-worktrees as dead. Both machines writing to the repo at once is what produces
-the conflicts.

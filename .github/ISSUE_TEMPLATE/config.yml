@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/chasebrowndev/EclipseOS/security/advisories/new
+    about: Private reporting only. Do not open a public issue for anything that bypasses policy, leaks input or window content, or escapes the sandbox (see SECURITY.md).

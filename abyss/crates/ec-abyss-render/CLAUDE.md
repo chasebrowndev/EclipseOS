@@ -4,7 +4,7 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-02. **Not TCB.**
 
 - Extracted from `ec-abyss/src/render/`. Everything here takes its inputs as
   parameters: **no `AbyssState`, no calloop, no locks.** Deps: smithay
-  (`=0.7.0`), `ec-abyss-config`, `tracing`, `serde_json`.
+  (`=0.7.0`), `ec-abyss-config`, `ec-theme`, `tracing`, `serde_json`.
 - **`capture.rs` is not here.** It reads `AbyssState` and is TCB, so it stays
   at `ec-abyss/src/render/capture.rs`, which re-exports this crate
   (`pub use ec_abyss_render::*`) so `crate::render::` paths keep working.
@@ -20,3 +20,6 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-02. **Not TCB.**
 - No allocation added to hot paths. winit/DRM/libinput/GBM types stay in
   `ec-abyss/src/backend/`.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.
+- `#![deny(unsafe_code)]` at the crate root. The one exception is `gpu_timer.rs`
+  (raw GL timer queries for `EC_GLASS_PROFILE`): every `unsafe` block there has a
+  `// SAFETY:` comment, and no other file may allow it.

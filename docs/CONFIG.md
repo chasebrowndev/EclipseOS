@@ -189,10 +189,14 @@ The compositor draws the wallpaper itself (ADR 0104): one picture per output, de
 | `decoration.blur.mode` | off \| blur \| frost \| glass | `"glass"` | live | What is drawn behind translucent windows and layer-shell surfaces: `off`, a plain dual-Kawase `blur`, `frost` (blur with a tint and fine grain) or `glass` (a saturated, smoked blur whose edge band gently bends the blurred backdrop, under a neutral hairline rim). A window or layer blurs when it is drawn below full opacity or its opaque region leaves it uncovered. A layer's glass follows its input region: two to four boxes are blurred as their union, joined by curved fillets `bar.rounding` wide. Replaces the old `enabled` bool, which still loads (`#false` is `off`). |
 | `decoration.blur.size` | int 1..64 | `8` | live | Blur kernel offset. Larger is softer and costs more. |
 | `decoration.blur.passes` | int 1..6 | `4` | live | Down/up-sample pairs in the blur chain. |
-| `decoration.blur.glass.refraction` | int 0..64 | `4` | live | `glass`: how far the bevel bends the blurred backdrop, logical px at the outer edge. The centre is never bent; 0 is flat glass. |
+| `decoration.blur.glass.refraction` | float 0..64 | `1.5` | live | `glass`: how far the bevel bends the blurred backdrop, logical px at the outer edge. The centre is never bent; 0 is flat glass. |
 | `decoration.blur.glass.bevel` | int 1..128 | `16` | live | `glass`: width of the edge band the backdrop rolls off in, logical px in from the edge. |
 | `decoration.blur.glass.dispersion` | float 0..1 | `0` | live | `glass`: colour fringing in the bevel; 0 (the default) is none. |
 | `decoration.blur.glass.rim` | float 0..1 | `0.5` | live | `glass`: strength of the neutral hairline rim, brightest along the top-left edges with a weaker lobe at the bottom-right. |
+| `decoration.blur.glass.lens.refraction` | float 0..96 | `28` | live | `glass` lens (small controls: shaped layer glass, glass panes): how far the rim pulls the backdrop, logical px. The content there comes from outside the shape; the centre is never bent. |
+| `decoration.blur.glass.lens.rim` | float 0..1 | `0.7` | live | `glass` lens: strength of the hairline rim. |
+| `decoration.blur.glass.lens.bevel` | int 1..128 | `40` | live | `glass` lens: widest the bevel band may be, logical px in from the edge; a small shape takes at most 40% of its shorter side. |
+| `decoration.blur.glass.lens.dispersion` | float 0..1 | `0.7` | live | `glass` lens: colour fringing across the bevel, following the local bend; 0 is none. |
 | `decoration.blur.adaptive.enabled` | bool | `#true` | live | Adaptive glass (ADR 0092): the backdrop's tint follows the brightness of what is behind it, so text stays readable. In a dark scheme a bright backdrop darkens the glass; in a light scheme a dark one lightens it. Measured on the GPU; nothing is read back. |
 | `decoration.blur.adaptive.strength` | float 0..1 | `0.5` | live | How far adaptive glass may move the tint; 0 keeps the fixed tint. |
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |

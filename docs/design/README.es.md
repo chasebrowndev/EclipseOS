@@ -12,6 +12,7 @@ Documentos de nivel 6 (índice de planificación del Vol 1):
 | D-05 | [Userland por defecto](D-05-userland.md) | escrito 2026-09-23, parcial (sin terminal, sin portal) |
 | D-08 | [Portal de escritorio (`ecl-desktop-portal`)](D-08-portal.md) | escrito 2026-11-02, solo especificación |
 | D-07 | [Primer arranque: instalador gráfico y configuración](D-07-first-run.md) | escrito 2026-09-24, solo especificación |
+| DP-4 | [Perfiles de escritorio (modo WM y modo DE)](DP-4-desktop-profiles.md) | revisado 2026-09-11, plan de trabajo |
 
 ## Referencia de diseño incluida
 

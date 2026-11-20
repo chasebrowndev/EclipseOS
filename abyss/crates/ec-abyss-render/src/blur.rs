@@ -24,6 +24,7 @@
 //! plane. See [`crate::scanout_candidate`].
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use smithay::{
     backend::{
@@ -49,6 +50,9 @@ use smithay::{
     wayland::compositor::{Cacheable, RectangleKind, RegionAttributes},
 };
 
+use crate::effects::GlassPreset;
+use crate::glass_profile::{GlassProfile, Rebuild};
+use crate::gpu_timer::Span;
 use ec_abyss_config::Blur;
 
 /// The offscreen chain is rendered in the same format the capture path uses.
@@ -196,15 +200,45 @@ pub struct BlurElement<T: Texture = GlesTexture> {
     region: Rectangle<i32, Physical>,
     commit: CommitCounter,
     program: Option<GlesTexProgram>,
-    uniforms: Vec<Uniform<'static>>,
+    /// The program's uniforms: shared with the slot that cached them, so a
+    /// frame that changes nothing allocates nothing.
+    uniforms: Option<Arc<[Uniform<'static>]>>,
+    /// What the draw needs without going through `inner` (which cannot take a
+    /// program and a uniform slice): the texture, its context and the fade.
+    texture: T,
+    context: ContextId<T>,
+    alpha: f32,
     /// An opaque window's bezel strips (see [`ring_strips`]), element-local.
     ring: Option<[Rectangle<i32, Physical>; 4]>,
+}
+
+/// An empty uniform set (a slot that has drawn nothing yet).
+fn no_uniforms() -> Arc<[Uniform<'static>]> {
+    Arc::from(Vec::new())
+}
+
+/// Keep `look` equal to `fresh`: when it already is, nothing is allocated and
+/// `false` comes back; when it is not, a new shared copy replaces it (once, on
+/// the change) and `true` says the element's look changed.
+fn refresh_look(look: &mut Arc<[Uniform<'static>]>, fresh: &[Uniform<'static>]) -> bool {
+    if look[..] == *fresh {
+        return false;
+    }
+    *look = Arc::from(fresh);
+    true
+}
+
+thread_local! {
+    /// Scratch for the damage clipped to an opaque bezel's ring, reused by every
+    /// draw so the draw allocates nothing once it has grown.
+    static RING_DAMAGE: std::cell::Cell<Vec<Rectangle<i32, Physical>>> = const { std::cell::Cell::new(Vec::new()) };
 }
 
 impl<T: Texture + Clone + 'static> BlurElement<T> {
     /// Place `texture` (buffer scale 1, upright, covering `crop` of the output
     /// at whatever resolution it was stored, e.g. half) so the element covers
     /// exactly `region` and samples exactly `region` of it, stretched.
+    #[cfg(test)]
     fn placed(
         id: Id,
         context: ContextId<T>,
@@ -214,12 +248,30 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
         scale: Scale<f64>,
         alpha: f32,
     ) -> Self {
+        Self::placed_in(id, context, texture, crop, region, scale, alpha, false)
+    }
+
+    /// [`BlurElement::placed`] for a `packed` texture: the blurred result in its
+    /// left half, the lightly blurred level in its right (chromatic aberration),
+    /// so the element addresses the left half only.
+    #[allow(clippy::too_many_arguments)]
+    fn placed_in(
+        id: Id,
+        context: ContextId<T>,
+        texture: T,
+        crop: Rectangle<i32, Physical>,
+        region: Rectangle<i32, Physical>,
+        scale: Scale<f64>,
+        alpha: f32,
+        packed: bool,
+    ) -> Self {
         // The result texture is built with a literal `texture_scale` of 1, so
         // `Element::src()` hands this rectangle straight to the GPU with no
         // further scaling. It must therefore already be in the texture's own
         // buffer space, i.e. `region` relative to `crop`, times the texture's
         // texels per output pixel (below 1 for a reduced-resolution result).
-        let sx = texture.width() as f64 / crop.size.w.max(1) as f64;
+        let wide = if packed { 2.0 } else { 1.0 };
+        let sx = texture.width() as f64 / (crop.size.w.max(1) as f64 * wide);
         let sy = texture.height() as f64 / crop.size.h.max(1) as f64;
         let src = Rectangle::<f64, smithay::utils::Logical>::new(
             (
@@ -237,9 +289,9 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
         ));
         let inner = TextureRenderElement::from_static_texture(
             id,
-            context,
+            context.clone(),
             region.loc.to_f64(),
-            texture,
+            texture.clone(),
             1,
             Transform::Normal,
             // 1.0 for a surface; an annotation fading in or out passes its
@@ -255,7 +307,10 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
             region,
             commit: CommitCounter::default(),
             program: None,
-            uniforms: Vec::new(),
+            uniforms: None,
+            texture,
+            context,
+            alpha,
             ring: None,
         }
     }
@@ -321,30 +376,51 @@ impl RenderElement<GlesRenderer> for BlurElement<GlesTexture> {
         damage: &[Rectangle<i32, Physical>],
         opaque_regions: &[Rectangle<i32, Physical>],
     ) -> Result<(), GlesError> {
-        // An opaque bezel draws nothing inside its ring: skip those pixels.
-        let clipped: Vec<_>;
+        // An opaque bezel draws nothing inside its ring: skip those pixels. The
+        // clipped rectangles go through a reused scratch vector, not a fresh one.
+        let mut scratch = RING_DAMAGE.take();
         let damage = match &self.ring {
             Some(strips) => {
-                clipped = damage
-                    .iter()
-                    .flat_map(|d| strips.iter().filter_map(move |s| s.intersection(*d)))
-                    .collect();
-                &clipped[..]
+                scratch.clear();
+                scratch.extend(
+                    damage
+                        .iter()
+                        .flat_map(|d| strips.iter().filter_map(move |s| s.intersection(*d))),
+                );
+                &scratch[..]
             }
             None => damage,
         };
         if damage.is_empty() {
+            RING_DAMAGE.set(scratch);
             return Ok(());
         }
-        if let Some(program) = &self.program {
-            frame.override_default_tex_program(program.clone(), self.uniforms.clone());
-            let res =
-                RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions);
-            frame.clear_tex_program_override();
-            res
+        let res = if let Some(program) = &self.program {
+            if frame.context_id() != self.context {
+                Ok(())
+            } else {
+                // The program and its uniforms go in by reference: the override
+                // path would take a fresh `Vec` of them per draw.
+                crate::gpu_timer::begin_in(frame, Span::Glass);
+                let res = frame.render_texture_from_to(
+                    &self.texture,
+                    src,
+                    dst,
+                    damage,
+                    opaque_regions,
+                    Transform::Normal,
+                    self.alpha,
+                    Some(program),
+                    self.uniforms.as_deref().unwrap_or(&[]),
+                );
+                crate::gpu_timer::end_in(frame);
+                res
+            }
         } else {
             RenderElement::<GlesRenderer>::draw(&self.inner, frame, src, dst, damage, opaque_regions)
-        }
+        };
+        RING_DAMAGE.set(scratch);
+        res
     }
 
     fn underlying_storage(&self, _renderer: &mut GlesRenderer) -> Option<UnderlyingStorage<'_>> {
@@ -636,11 +712,17 @@ pub fn shape_shows_through(shape: &Shape, opaque: &[Rectangle<i32, Physical>]) -
 /// damage history, so they share one keyed table.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum BlurKey {
+    /// The shared pyramid of one depth tier of an output (Phase 1a, see
+    /// [`crate::groups`]); only ever a key of the store's group table.
+    Tier(u8),
     Window(Window),
     Layer(LayerSurface),
     /// An annotation panel (ADR 0071), by its handle. Annotations keep their
     /// own [`BlurStore`], so this never shares a table with a surface.
     Annotation(u64),
+    /// A trusted prompt's backdrop (ADR 0128): the only key of its private
+    /// store, never shared with a window's.
+    Prompt,
     /// The `n`th popup of a window with a keyed strip (ADR 0079), glassed
     /// over its whole surface.
     Popup(Window, usize),
@@ -661,6 +743,253 @@ pub enum BlurKey {
     LockPanes(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface),
 }
 
+/// What a tier's textures were made for: crop size, passes, output size.
+type ChainShape = (Size<i32, Physical>, usize, Size<i32, Physical>);
+
+/// One persistent shared pyramid (Phase 1a): the blur of the union of its
+/// members' crops, drawn by each member from its own part of `result`.
+struct GroupBlur {
+    /// Damage of everything below the group's lowest member, scanned once a
+    /// frame for all the members.
+    damage: OutputDamageTracker,
+    /// The shared half-resolution result.
+    result: Option<GlesTexture>,
+    /// The output rectangle `result` covers: the union of the member crops.
+    crop: Option<Rectangle<i32, Physical>>,
+    /// `(size, passes, packed)` the result was built with. `packed`: the result
+    /// texture is twice as wide, the lightly blurred level beside the blurred one
+    /// (chromatic aberration, only while `glass.dispersion` is above 0).
+    params: (i32, usize, bool),
+    /// The members it was built for, back to front.
+    members: Vec<BlurKey>,
+    /// Bumped on every rebuild; a member whose `seen` differs redraws.
+    rebuilds: u64,
+    /// Phase 1b: this tier's own persistent chain, so a partial rebuild only
+    /// redoes the damaged part and the rest stays as the last build left it.
+    /// The backdrop, output-sized, drawn over `crop` only.
+    level0: Option<GlesTexture>,
+    /// Renders the backdrop into `level0` with `age = 1` between rebuilds:
+    /// its diff against the last build is the damage since then.
+    render: Option<OutputDamageTracker>,
+    /// Downsample results, levels `1..=passes`.
+    down: Vec<GlesTexture>,
+    /// Upsample results, levels `2..passes` (the top level is the
+    /// downsample's own).
+    up: Vec<GlesTexture>,
+    /// `(crop size, passes, output size)` the textures above were made for.
+    built: Option<ChainShape>,
+    /// Damage landed while crowded and the rebuild was deferred.
+    pending: bool,
+    /// The store frame `result` was last rebuilt on.
+    last: u64,
+    /// The store frame the group was last asked for.
+    seen: u64,
+}
+
+/// A grouped surface's element bookkeeping (its backdrop is the group's).
+struct MemberSlot {
+    id: Id,
+    look: Arc<[Uniform<'static>]>,
+    commit: CommitCounter,
+    /// The group's `rebuilds` this slot last saw.
+    seen: u64,
+}
+
+/// What a group's refresh needs of one member.
+#[derive(Clone)]
+pub struct GroupMember<'a> {
+    pub key: &'a BlurKey,
+    pub region: Rectangle<i32, Physical>,
+    /// How far past `region` the final draw samples (glass refraction).
+    pub reach: i32,
+    /// An opaque bezel's `(width, corner radius, titlebar depth)`.
+    pub ring: Option<(i32, i32, i32)>,
+    pub shape: Option<&'a Shape>,
+    /// Which glass program draws it: sets the pyramid's passes and packing.
+    pub preset: GlassPreset,
+}
+
+/// A member's blur crop: `(texture space, output space)` (see [`crop_rects`]).
+pub fn member_crop(
+    region: Rectangle<i32, Physical>,
+    blur: &Blur,
+    reach: i32,
+    fb: Size<i32, Physical>,
+    mirrored: bool,
+) -> Option<(Rectangle<i32, Physical>, Rectangle<i32, Physical>)> {
+    let passes = blur.passes.clamp(1, 6) as usize;
+    crop_rects(
+        region,
+        kernel_radius(blur).saturating_add(reach.max(0)),
+        fb,
+        passes,
+        mirrored,
+    )
+}
+
+/// The texture-space twin of an output-space `crop` that is already snapped
+/// (as a union of [`member_crop`] crops is): the same flip [`crop_rects`] makes.
+pub fn crop_tex(
+    crop: Rectangle<i32, Physical>,
+    fb: Size<i32, Physical>,
+    mirrored: bool,
+) -> Rectangle<i32, Physical> {
+    let y = if mirrored {
+        fb.h - (crop.loc.y + crop.size.h)
+    } else {
+        crop.loc.y
+    };
+    Rectangle::new((crop.loc.x, y).into(), crop.size)
+}
+
+/// Sizes of a tier's built region are rounded up to this many pixels, so the
+/// chains (keyed by crop size) are shared by every build of about that size
+/// instead of one per exact size.
+pub const CROP_BUCKET: i32 = 512;
+
+/// How far past its members' crops a tier pyramid is built, so a member dragged
+/// or resized inside the margin only moves its UV offset (Phase 1c). An eighth
+/// of the longer side of the output, clamped to 128..=512 px: wide enough that
+/// a drag rebuilds about once per 360 px of travel at 2880 px rather than every
+/// step, narrow enough that a rebuild stays a few times a window's own crop
+/// (the margin is paid in texels on every rebuild).
+pub fn crop_margin(fb: Size<i32, Physical>) -> i32 {
+    (fb.w.max(fb.h) / 8).clamp(128, 512)
+}
+
+/// The region a tier pyramid is built over for members needing `needed` (the
+/// union of their snapped crops, output space): `needed` grown by the margin,
+/// on the chain grid, its size rounded up to [`CROP_BUCKET`] and kept on the
+/// output. Always contains `needed`.
+pub fn padded_crop(
+    needed: Rectangle<i32, Physical>,
+    fb: Size<i32, Physical>,
+    passes: usize,
+    mirrored: bool,
+) -> Rectangle<i32, Physical> {
+    let Some((_, grown)) = crop_rects(needed, crop_margin(fb), fb, passes, mirrored) else {
+        return needed;
+    };
+    let d = 1i32 << passes.min(6);
+    // Round the length up to a bucket; past the output's edge slide back onto
+    // the grid, keeping everything `grown` covered.
+    let fit = |lo: i32, len: i32, max: i32| {
+        let want = (((len + CROP_BUCKET - 1) / CROP_BUCKET) * CROP_BUCKET).min(max);
+        if lo + want <= max {
+            return (lo, want);
+        }
+        let a = (max - want).div_euclid(d) * d;
+        (a, (a + want).max(lo + len) - a)
+    };
+    let (x, w) = fit(grown.loc.x, grown.size.w, fb.w);
+    let (y, h) = fit(grown.loc.y, grown.size.h, fb.h);
+    Rectangle::new((x, y).into(), (w, h).into())
+}
+
+/// Whether a surface of `preset` stores its result packed: the blurred result
+/// with the lightly blurred level beside it, which the lens and regular
+/// optics read at the rim and frost's chromatic fringe reads. Only glass mode
+/// pays for it, and frost only with `dispersion` above 0.
+pub fn packs(blur: &Blur, preset: GlassPreset) -> bool {
+    blur.mode == ec_abyss_config::BlurMode::Glass
+        && (preset != GlassPreset::Frost || blur.glass.dispersion > 0.0)
+}
+
+/// Blur passes a preset's interior is made with: a lens is a light blur (1 or
+/// 2 passes), a regular frame 3, frost the configured count.
+pub fn preset_passes(passes: i32, preset: GlassPreset) -> i32 {
+    let cap = match preset {
+        GlassPreset::Lens => 2,
+        GlassPreset::Regular => 3,
+        GlassPreset::Frost => 6,
+    };
+    passes.clamp(1, 6).min(cap)
+}
+
+/// `blur` with the preset's pass count (glass mode only; any other mode keeps
+/// its own).
+pub fn tuned(blur: &Blur, preset: GlassPreset) -> Blur {
+    let mut b = blur.clone();
+    if blur.mode == ec_abyss_config::BlurMode::Glass {
+        b.passes = preset_passes(blur.passes, preset);
+    }
+    b
+}
+
+/// What one pyramid is built with for members of these presets: the most
+/// passes any of them needs (a lens sharing a tier with a frost member shows
+/// the frost interior), packed if any of them reads the sharp half.
+pub fn tier_variant(blur: &Blur, presets: impl Iterator<Item = GlassPreset>) -> (Blur, bool) {
+    let mut passes = 1;
+    let mut sharp = false;
+    let mut any = false;
+    for p in presets {
+        any = true;
+        passes = passes.max(tuned(blur, p).passes);
+        sharp |= packs(blur, p);
+    }
+    let mut b = blur.clone();
+    if any {
+        b.passes = passes;
+    }
+    (b, sharp)
+}
+
+/// Whether a tier must be rebuilt in full rather than from damage: nothing
+/// built yet, its region no longer covers the members, the blur parameters (size,
+/// passes, packed: so a runtime dispersion toggle allocates or drops the packed
+/// texture) or the membership changed.
+pub fn tier_fresh(
+    has_result: bool,
+    built: Option<Rectangle<i32, Physical>>,
+    needed: Rectangle<i32, Physical>,
+    old: (i32, usize, bool),
+    new: (i32, usize, bool),
+    same_members: bool,
+) -> bool {
+    !has_result || !covers(built, needed) || old != new || !same_members
+}
+
+/// Whether `region` is wholly hidden behind one opaque rectangle of `above`
+/// (elements in front of it, as the damage tracker sees them). One rectangle,
+/// not a union: a conservative test that never hides what could show, and costs
+/// no allocation (smithay keeps an element's first few opaque regions inline).
+pub fn hidden_behind<E: Element>(region: Rectangle<i32, Physical>, above: &[E], scale: Scale<f64>) -> bool {
+    above.iter().any(|e| {
+        let geo = e.geometry(scale);
+        geo.contains_rect(region)
+            && e.opaque_regions(scale)
+                .iter()
+                .any(|o| Rectangle::new(o.loc + geo.loc, o.size).contains_rect(region))
+    })
+}
+
+/// Whether a pyramid built over `built` still serves members needing `needed`.
+pub fn covers(built: Option<Rectangle<i32, Physical>>, needed: Rectangle<i32, Physical>) -> bool {
+    built.is_some_and(|b| b.contains_rect(needed))
+}
+
+/// The invalidation test for one region: whole region, an opaque bezel's
+/// strips (`region`-relative), or a shape's boxes grown by its fillet.
+fn region_dirty(
+    region: Rectangle<i32, Physical>,
+    strips: Option<&[Rectangle<i32, Physical>; 4]>,
+    shape: Option<&Shape>,
+    radius: i32,
+    rects: &[Rectangle<i32, Physical>],
+) -> bool {
+    match (strips, shape) {
+        (Some(strips), _) => strips
+            .iter()
+            .any(|s| invalidates(Rectangle::new(s.loc + region.loc, s.size), radius, rects)),
+        (None, Some(shape)) => {
+            let radius = radius.saturating_add(shape.fillet.ceil() as i32);
+            shape.rects().iter().any(|b| invalidates(*b, radius, rects))
+        }
+        (None, None) => invalidates(region, radius, rects),
+    }
+}
+
 /// Per-surface blur bookkeeping, kept alive between frames.
 struct SurfaceBlur {
     /// Damage of the backdrop behind this window, tracked across frames. Only
@@ -679,7 +1008,7 @@ struct SurfaceBlur {
     /// names (none for smithay's plain one), so this also stands for the
     /// program: a mode switch or a tint/rim change bumps `commit` even though
     /// the chain behind it did not change.
-    look: Vec<Uniform<'static>>,
+    look: Arc<[Uniform<'static>]>,
     /// `eclipse_glass_v1` panes drawn from `result`, by index in the pane list.
     panes: Vec<PaneSlot>,
     /// Damage landed while the store was crowded and the recompute was
@@ -687,17 +1016,24 @@ struct SurfaceBlur {
     pending: bool,
     /// The store frame `result` was last recomputed on.
     last: u64,
+    /// `(passes, packed)` `result` was built with: a preset change rebuilds
+    /// once, in full.
+    variant: (usize, bool),
 }
 
-/// What [`BlurStore::refresh`] hands back: the crop the texture covers and an
-/// opaque bezel's strips.
-type Refreshed = (Rectangle<i32, Physical>, Option<[Rectangle<i32, Physical>; 4]>);
+/// What [`BlurStore::refresh`] hands back: the crop the texture covers, an
+/// opaque bezel's strips and whether the result is packed.
+type Refreshed = (
+    Rectangle<i32, Physical>,
+    Option<[Rectangle<i32, Physical>; 4]>,
+    bool,
+);
 
 /// One glass pane's bookkeeping: its own element id, uniforms and commit
 /// counter, so the damage tracker follows it across frames.
 struct PaneSlot {
     id: Id,
-    look: Vec<Uniform<'static>>,
+    look: Arc<[Uniform<'static>]>,
     commit: CommitCounter,
     /// The backdrop's commit this pane last saw.
     seen: CommitCounter,
@@ -712,9 +1048,8 @@ pub struct BlurStore {
     level0: Option<GlesTexture>,
     /// Levels `1..=passes` sized for a crop (level `n` is half of `n-1`),
     /// kept per crop size so windows that alternate do not reallocate.
-    chain: HashMap<(i32, i32), Vec<GlesTexture>>,
+    chain: HashMap<(i32, i32, usize), Vec<GlesTexture>>,
     chain_size: Size<i32, Physical>,
-    chain_passes: usize,
     /// Renders the backdrop into level 0. Always driven with `age = 0`, so its
     /// own damage history is never consulted and it can be shared by every
     /// blurred window on the output.
@@ -724,6 +1059,19 @@ pub struct BlurStore {
     frame: u64,
     /// First-time backdrops built this frame.
     started: usize,
+    /// Blurred surfaces that asked this frame (`retain`'s keep list).
+    live: usize,
+    /// Shared pyramids (Phase 1a), by the key of their lowest member.
+    groups: HashMap<BlurKey, GroupBlur>,
+    /// Per-surface element state of the grouped surfaces.
+    members: HashMap<BlurKey, MemberSlot>,
+    /// A pane's uniforms while its element is built, kept between frames.
+    pane_uniforms: Vec<Uniform<'static>>,
+    /// Scratch of a partial rebuild (Phase 1b), kept between rebuilds.
+    plan: crate::partial::Plan,
+    damage: Vec<Rectangle<i32, Physical>>,
+    /// Profiling counters (`EC_GLASS_PROFILE`).
+    profile: GlassProfile,
 }
 
 impl std::fmt::Debug for BlurStore {
@@ -744,7 +1092,19 @@ impl BlurStore {
     pub fn retain(&mut self, keep: &[BlurKey]) {
         self.frame = self.frame.wrapping_add(1);
         self.started = 0;
+        self.profile.frame(keep.len());
+        self.live = keep.len();
         self.surfaces.retain(|key, _| keep.contains(key));
+        self.members.retain(|key, _| keep.contains(key));
+        // A group that nothing used last frame is gone.
+        let now = self.frame;
+        self.groups.retain(|_, g| g.seen.wrapping_add(1) >= now);
+    }
+
+    /// Count this frame's tiered and per-window surfaces for the profile.
+    pub fn note_tiers(&mut self, tiered: usize, fallback: usize, culled: usize) {
+        self.profile.tiers(tiered, fallback);
+        self.profile.culled(culled);
     }
 
     /// Drop everything: called when blur is switched off so the textures do not
@@ -754,6 +1114,8 @@ impl BlurStore {
         self.level0 = None;
         self.chain_size = Size::default();
         self.surfaces.clear();
+        self.groups.clear();
+        self.members.clear();
         self.backdrop = None;
     }
 
@@ -783,29 +1145,35 @@ impl BlurStore {
         behind: &[E],
         blur: &Blur,
         scale: Scale<f64>,
-        rounding: Option<(GlesTexProgram, Vec<Uniform<'static>>)>,
+        rounding: Option<(GlesTexProgram, &mut Vec<Uniform<'static>>)>,
         reach: i32,
         ring: Option<(i32, i32, i32)>,
         shape: Option<&Shape>,
         alpha: f32,
+        preset: GlassPreset,
     ) -> Option<BlurElement>
     where
         E: Element + RenderElement<GlesRenderer>,
     {
-        let (crop, strips) = self.refresh(
-            renderer, output, key, region, behind, blur, scale, reach, ring, shape,
+        let (crop, strips, packed) = self.refresh(
+            renderer, output, key, region, behind, blur, scale, reach, ring, shape, preset,
         )?;
         let entry = self.surfaces.get_mut(key)?;
+        let mut none = Vec::new();
         let (program, uniforms) = match rounding {
             Some((program, uniforms)) => (Some(program), uniforms),
-            None => (None, Vec::new()),
+            None => (None, &mut none),
         };
-        if entry.look != uniforms {
-            entry.look.clone_from(&uniforms);
+        // The element samples `result`, which spans `crop`: one physical px is
+        // 1/crop in its UV, not 1/output (and half that in x when packed).
+        let wide = if packed { 2 } else { 1 };
+        crate::effects::set_px_uv(uniforms, (crop.size.w * wide, crop.size.h));
+        crate::effects::set_packed(uniforms, packed);
+        if refresh_look(&mut entry.look, uniforms) {
             entry.commit.increment();
         }
         let texture = entry.result.clone()?;
-        let mut element = BlurElement::placed(
+        let mut element = BlurElement::placed_in(
             entry.id.clone(),
             renderer.context_id(),
             texture,
@@ -813,10 +1181,11 @@ impl BlurStore {
             region,
             scale,
             alpha,
+            packed,
         );
         element.commit = entry.commit;
         element.program = program;
-        element.uniforms = uniforms;
+        element.uniforms = Some(entry.look.clone());
         element.ring = strips;
         Some(element)
     }
@@ -843,40 +1212,46 @@ impl BlurStore {
         program: &GlesTexProgram,
         count: usize,
         alpha: f32,
-        mut pane: impl FnMut(usize) -> Option<(Rectangle<i32, Physical>, Vec<Uniform<'static>>)>,
+        mut pane: impl FnMut(usize, &mut Vec<Uniform<'static>>) -> Option<Rectangle<i32, Physical>>,
         out: &mut Vec<BlurElement>,
+        preset: GlassPreset,
     ) -> Option<()>
     where
         E: Element + RenderElement<GlesRenderer>,
     {
-        let (crop, _) = self.refresh(
-            renderer, output, key, union, behind, blur, scale, reach, None, None,
+        let (crop, _, packed) = self.refresh(
+            renderer, output, key, union, behind, blur, scale, reach, None, None, preset,
         )?;
         let entry = self.surfaces.get_mut(key)?;
         let texture = entry.result.clone()?;
         while entry.panes.len() < count {
             entry.panes.push(PaneSlot {
                 id: Id::new(),
-                look: Vec::new(),
+                look: no_uniforms(),
                 commit: CommitCounter::default(),
                 seen: entry.commit,
             });
         }
         entry.panes.truncate(count);
         let backdrop = entry.commit;
+        let mut uniforms = std::mem::take(&mut self.pane_uniforms);
+        let entry = self.surfaces.get_mut(key)?;
         for (i, slot) in entry.panes.iter_mut().enumerate() {
-            let Some((rect, uniforms)) = pane(i) else {
+            uniforms.clear();
+            let Some(rect) = pane(i, &mut uniforms) else {
                 continue;
             };
+            let wide = if packed { 2 } else { 1 };
+            crate::effects::set_px_uv(&mut uniforms, (crop.size.w * wide, crop.size.h));
+            crate::effects::set_packed(&mut uniforms, packed);
             if slot.seen != backdrop {
                 slot.seen = backdrop;
                 slot.commit.increment();
             }
-            if slot.look != uniforms {
-                slot.look.clone_from(&uniforms);
+            if refresh_look(&mut slot.look, &uniforms) {
                 slot.commit.increment();
             }
-            let mut element = BlurElement::placed(
+            let mut element = BlurElement::placed_in(
                 slot.id.clone(),
                 renderer.context_id(),
                 texture.clone(),
@@ -884,12 +1259,14 @@ impl BlurStore {
                 rect,
                 scale,
                 alpha,
+                packed,
             );
             element.commit = slot.commit;
             element.program = Some(program.clone());
-            element.uniforms = uniforms;
+            element.uniforms = Some(slot.look.clone());
             out.push(element);
         }
+        self.pane_uniforms = uniforms;
         Some(())
     }
 
@@ -909,6 +1286,7 @@ impl BlurStore {
         reach: i32,
         ring: Option<(i32, i32, i32)>,
         shape: Option<&Shape>,
+        preset: GlassPreset,
     ) -> Option<Refreshed>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -919,8 +1297,11 @@ impl BlurStore {
             return None;
         }
         self.ensure_programs(renderer)?;
+        let sharp = packs(blur, preset);
+        let tuned_blur = tuned(blur, preset);
+        let blur = &tuned_blur;
         let passes = blur.passes.clamp(1, 6) as usize;
-        self.ensure_chain(renderer, fb_size, passes)?;
+        self.ensure_chain(renderer, fb_size)?;
         let mirrored = crate::effects::fb_y_mirrored(output.current_transform()) == Some(true);
         // Only this much of the backdrop is ever sampled (kernel plus the
         // final draw's own reach), so only this much is computed.
@@ -931,9 +1312,10 @@ impl BlurStore {
             damage: OutputDamageTracker::from_output(output),
             result: None,
             crop: None,
+            variant: (passes, sharp),
             commit: CommitCounter::default(),
             id: Id::new(),
-            look: Vec::new(),
+            look: no_uniforms(),
             panes: Vec::new(),
             pending: false,
             last: 0,
@@ -947,29 +1329,21 @@ impl BlurStore {
             let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
             let radius = kernel_radius(blur).saturating_add(reach.max(0));
             match damage {
-                Some(rects) => match (&strips, shape) {
-                    (Some(strips), _) => strips
-                        .iter()
-                        .any(|s| invalidates(Rectangle::new(s.loc + region.loc, s.size), radius, rects)),
-                    (None, Some(shape)) => {
-                        let radius = radius.saturating_add(shape.fillet.ceil() as i32);
-                        shape.rects().iter().any(|b| invalidates(*b, radius, rects))
-                    }
-                    (None, None) => invalidates(region, radius, rects),
-                },
-                // `None` means the tracker could not reason about damage; the
-                // fail-safe answer is "everything changed".
+                Some(rects) => region_dirty(region, strips.as_ref(), shape, radius, rects),
+                // smithay returns `None` when there is no damage at all (an
+                // empty damage set), not "everything changed": the only reason
+                // left to rebuild is a backdrop that was never built.
                 None => entry.result.is_none(),
             }
         };
         // Past CROWDED surfaces, a backdrop whose only reason to redraw is
         // damage behind it is refreshed at most every CROWDED_INTERVAL frames.
         // A new surface or a moved/resized one still redraws at once.
-        let crowded = self.surfaces.len() > CROWDED;
+        let crowded = self.live.max(self.surfaces.len()) > CROWDED;
         let frame = self.frame;
         let entry = self.surfaces.get_mut(key)?;
         let mut dirty = dirty || entry.pending;
-        let fresh = entry.result.is_none() || entry.crop != Some(crop);
+        let fresh = entry.result.is_none() || entry.crop != Some(crop) || entry.variant != (passes, sharp);
         if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
             entry.pending = true;
             dirty = false;
@@ -986,67 +1360,379 @@ impl BlurStore {
         if dirty || fresh {
             entry.pending = false;
             entry.last = frame;
-            let Self {
-                down,
-                up,
-                level0,
-                chain,
-                backdrop,
-                surfaces,
-                ..
-            } = self;
-            if chain.len() >= MAX_CHAINS && !chain.contains_key(&(crop.size.w, crop.size.h)) {
-                chain.clear();
-            }
-            if let std::collections::hash_map::Entry::Vacant(slot) = chain.entry((crop.size.w, crop.size.h)) {
-                match alloc_levels(renderer, crop.size, passes) {
-                    Ok(levels) => {
-                        slot.insert(levels);
-                    }
-                    Err(err) => {
-                        tracing::warn!(?err, "allocating the blur chain; blur skipped this frame");
-                        return None;
-                    }
+            let reuse = entry.result.take();
+            let texture = self.rebuild(renderer, output, blur, scale, (tex, crop), behind, reuse, sharp)?;
+            let entry = self.surfaces.get_mut(key)?;
+            entry.result = Some(texture);
+            entry.crop = Some(crop);
+            entry.variant = (passes, sharp);
+            entry.commit.increment();
+        }
+        Some((crop, strips, sharp))
+    }
+
+    /// Phase 1a: bring the shared pyramid of one group up to date over the
+    /// union of its members' crops. Called once, for the group's lowest member
+    /// (`behind` is `elements[base..]`, exactly what every member's blur
+    /// samples, see [`crate::groups`]); the members then draw with
+    /// [`BlurStore::group_element`]. One damage scan serves the whole group.
+    /// Returns `None` when nothing could be built.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_refresh<'a, E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        key: &BlurKey,
+        members: impl Iterator<Item = GroupMember<'a>> + Clone,
+        behind: &[E],
+        blur: &Blur,
+        scale: Scale<f64>,
+    ) -> Option<()>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        let mode = output.current_mode()?;
+        let fb_size = output.current_transform().transform_size(mode.size);
+        if fb_size.w <= 0 || fb_size.h <= 0 {
+            return None;
+        }
+        self.ensure_programs(renderer)?;
+        // The tier's own blur: the passes its members' presets need.
+        let (tier_blur, sharp) = tier_variant(blur, members.clone().map(|m| m.preset));
+        let blur = &tier_blur;
+        let passes = blur.passes.clamp(1, 6) as usize;
+        self.ensure_chain(renderer, fb_size)?;
+        let mirrored = crate::effects::fb_y_mirrored(output.current_transform()) == Some(true);
+        let crops = || {
+            members
+                .clone()
+                .filter(|m| !m.region.is_empty())
+                .filter_map(|m| member_crop(m.region, blur, m.reach, fb_size, mirrored))
+                .map(|(_, crop)| crop)
+        };
+        let needed = crops().reduce(|a, b| a.merge(b))?;
+        let params = (blur.size, passes, sharp);
+        let frame = self.frame;
+        let entry = self.groups.entry(key.clone()).or_insert_with(|| GroupBlur {
+            damage: OutputDamageTracker::from_output(output),
+            result: None,
+            crop: None,
+            params,
+            members: Vec::new(),
+            rebuilds: 0,
+            level0: None,
+            render: None,
+            down: Vec::new(),
+            up: Vec::new(),
+            built: None,
+            pending: false,
+            last: 0,
+            seen: frame,
+        });
+        entry.seen = frame;
+        // One scan for the whole group; each member tests its own region.
+        let dirty = {
+            let (damage, _) = entry.damage.damage_output(1, behind).ok()?;
+            match damage {
+                Some(rects) => {
+                    // Damage in the margin (inside the built region, outside
+                    // every member's own crop) would be stale when a member
+                    // moves onto it, so it rebuilds too.
+                    let margin = entry.crop.is_some_and(|built| {
+                        rects
+                            .iter()
+                            .any(|d| built.overlaps(*d) && !crops().any(|c| c.contains_rect(*d)))
+                    });
+                    margin
+                        || members.clone().any(|m| {
+                            let strips = m
+                                .ring
+                                .map(|(inner, corner, bar)| ring_strips(m.region.size, inner, corner, bar));
+                            let radius = kernel_radius(blur).saturating_add(m.reach.max(0));
+                            region_dirty(m.region, strips.as_ref(), m.shape, radius, rects)
+                        })
                 }
+                // `None` is no damage at all: only a never-built backdrop
+                // is a reason left to rebuild.
+                None => entry.result.is_none(),
             }
-            let entry = surfaces.get_mut(key)?;
-            let tracker = backdrop.get_or_insert_with(|| OutputDamageTracker::from_output(output));
-            // The backdrop is drawn with the output's own transform (so the
-            // `gl_FragCoord` rounding masks of the elements behind still line
-            // up), which under `Flipped180` (winit) stores it bottom row
-            // first. The result is sampled back as a `Normal` texture, so the
-            // last pass flips it upright; otherwise every window would blur
-            // the vertical mirror image of what is behind it.
-            let orient = match crate::effects::fb_y_mirrored(output.current_transform()) {
-                Some(true) => Transform::Flipped180,
-                _ => Transform::Normal,
+        };
+        let same_members = entry.members.len() == members.clone().count()
+            && entry.members.iter().zip(members.clone()).all(|(a, m)| a == m.key);
+        let crowded = self.live > CROWDED;
+        let entry = self.groups.get_mut(key)?;
+        let mut dirty = dirty || entry.pending;
+        let fresh = tier_fresh(
+            entry.result.is_some(),
+            entry.crop,
+            needed,
+            entry.params,
+            params,
+            same_members,
+        );
+        // Same throttle as a surface's, but the unit is the group's rebuild.
+        if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
+            entry.pending = true;
+            dirty = false;
+        }
+        if crowded && entry.result.is_none() {
+            if self.started >= CROWDED_STARTS {
+                return None;
+            }
+            self.started += 1;
+        }
+        let entry = self.groups.get_mut(key)?;
+        if dirty || fresh {
+            entry.pending = false;
+            entry.last = frame;
+            // A rebuild with nothing new to cover (damage) keeps its region.
+            let crop = match entry.crop.filter(|_| !fresh) {
+                Some(built) => built,
+                None => padded_crop(needed, fb_size, passes, mirrored),
             };
-            match render_chain(
+            let tex = crop_tex(crop, fb_size, mirrored);
+            let changed = self.rebuild_group(
                 renderer,
-                tracker,
-                level0.as_mut()?,
-                chain.get_mut(&(crop.size.w, crop.size.h))?,
-                (tex, crop),
-                scale,
-                down.as_ref()?,
-                up.as_ref()?,
-                behind,
+                output,
+                key,
                 blur,
-                entry.result.take(),
-                orient,
-            ) {
-                Ok(texture) => {
-                    entry.result = Some(texture);
-                    entry.crop = Some(crop);
-                    entry.commit.increment();
+                scale,
+                (tex, crop),
+                behind,
+                fresh || self.profile.full_only(),
+                sharp,
+            )?;
+            let entry = self.groups.get_mut(key)?;
+            if fresh {
+                entry.crop = Some(crop);
+                entry.params = params;
+                entry.members.clear();
+                entry.members.extend(members.map(|m| m.key.clone()));
+            }
+            // Damage that turned out to change nothing the blur sees leaves
+            // the members as they were.
+            if changed {
+                entry.rebuilds = entry.rebuilds.wrapping_add(1);
+            }
+        }
+        Some(())
+    }
+
+    /// Phase 1b: bring one tier's chain up to date. `full` rebuilds every
+    /// level over the whole `crop`; otherwise the backdrop is redrawn only
+    /// where it changed since the last build and each pass only over the
+    /// texels that damage can reach (see [`crate::partial`]), which is
+    /// texel-for-texel what the full rebuild would have written. Returns
+    /// whether anything was rebuilt (`None` on a GL failure).
+    #[allow(clippy::too_many_arguments)]
+    fn rebuild_group<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        key: &BlurKey,
+        blur: &Blur,
+        scale: Scale<f64>,
+        (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+        behind: &[E],
+        full: bool,
+        sharp: bool,
+    ) -> Option<bool>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        let Self {
+            down,
+            up,
+            groups,
+            profile,
+            plan,
+            damage,
+            chain_size,
+            ..
+        } = self;
+        let g = groups.get_mut(key)?;
+        let orient = match crate::effects::fb_y_mirrored(output.current_transform()) {
+            Some(true) => Transform::Flipped180,
+            _ => Transform::Normal,
+        };
+        match render_group(
+            renderer,
+            output,
+            g,
+            plan,
+            damage,
+            (down.as_ref()?, up.as_ref()?),
+            (*chain_size, orient),
+            (tex, crop),
+            scale,
+            behind,
+            blur,
+            full,
+            sharp,
+        ) {
+            Ok(done) => {
+                if let Some(rebuild) = done {
+                    profile.rebuilt(rebuild);
+                }
+                Some(done.is_some())
+            }
+            Err(err) => {
+                tracing::warn!(?err, "rendering the blur chain; blur skipped this frame");
+                // Whatever was half-written is not to be trusted next time.
+                g.built = None;
+                g.render = None;
+                g.result = None;
+                None
+            }
+        }
+    }
+
+    /// Phase 1a: one member's element, cut from its group's shared result.
+    /// `rounding` is the final draw's program and uniforms, as for
+    /// [`BlurStore::element`]; the members share one texture, so `px_uv` is
+    /// one physical pixel of the group's crop, and the element's source
+    /// rectangle is the member's region relative to that crop.
+    #[allow(clippy::too_many_arguments)]
+    pub fn group_element(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        group: &BlurKey,
+        key: &BlurKey,
+        region: Rectangle<i32, Physical>,
+        rounding: Option<(GlesTexProgram, &mut Vec<Uniform<'static>>)>,
+        ring: Option<(i32, i32, i32)>,
+        scale: Scale<f64>,
+    ) -> Option<BlurElement> {
+        let g = self.groups.get(group)?;
+        let texture = g.result.clone()?;
+        let crop = g.crop?;
+        let packed = g.params.2;
+        let rebuilds = g.rebuilds;
+        let slot = self.members.entry(key.clone()).or_insert_with(|| MemberSlot {
+            id: Id::new(),
+            look: no_uniforms(),
+            commit: CommitCounter::default(),
+            seen: rebuilds,
+        });
+        if slot.seen != rebuilds {
+            slot.seen = rebuilds;
+            slot.commit.increment();
+        }
+        let mut none = Vec::new();
+        let (program, uniforms) = match rounding {
+            Some((program, uniforms)) => (Some(program), uniforms),
+            None => (None, &mut none),
+        };
+        // A packed texture holds two copies side by side: one physical px is
+        // half as wide in its UV.
+        let wide = if packed { 2 } else { 1 };
+        crate::effects::set_px_uv(uniforms, (crop.size.w * wide, crop.size.h));
+        crate::effects::set_packed(uniforms, packed);
+        if refresh_look(&mut slot.look, uniforms) {
+            slot.commit.increment();
+        }
+        let mut element = BlurElement::placed_in(
+            slot.id.clone(),
+            renderer.context_id(),
+            texture,
+            crop,
+            region,
+            scale,
+            1.0,
+            packed,
+        );
+        element.commit = slot.commit;
+        element.program = program;
+        element.uniforms = Some(slot.look.clone());
+        element.ring = ring.map(|(inner, corner, bar)| ring_strips(region.size, inner, corner, bar));
+        Some(element)
+    }
+
+    /// Run the chain over `crop` and hand back the upright half-resolution
+    /// result (into `reuse` when it is the right size).
+    #[allow(clippy::too_many_arguments)]
+    fn rebuild<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        blur: &Blur,
+        scale: Scale<f64>,
+        (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+        behind: &[E],
+        reuse: Option<GlesTexture>,
+        sharp: bool,
+    ) -> Option<GlesTexture>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        let passes = blur.passes.clamp(1, 6) as usize;
+        let Self {
+            down,
+            up,
+            level0,
+            chain,
+            chain_size,
+            backdrop,
+            profile,
+            ..
+        } = self;
+        if chain.len() >= MAX_CHAINS && !chain.contains_key(&(crop.size.w, crop.size.h, passes)) {
+            chain.clear();
+        }
+        if let std::collections::hash_map::Entry::Vacant(slot) =
+            chain.entry((crop.size.w, crop.size.h, passes))
+        {
+            match alloc_levels(renderer, crop.size, passes) {
+                Ok(levels) => {
+                    slot.insert(levels);
                 }
                 Err(err) => {
-                    tracing::warn!(?err, "rendering the blur chain; blur skipped this frame");
+                    tracing::warn!(?err, "allocating the blur chain; blur skipped this frame");
                     return None;
                 }
             }
         }
-        Some((crop, strips))
+        let tracker = backdrop.get_or_insert_with(|| OutputDamageTracker::from_output(output));
+        // The backdrop is drawn with the output's own transform (so the
+        // `gl_FragCoord` rounding masks of the elements behind still line
+        // up), which under `Flipped180` (winit) stores it bottom row
+        // first. The result is sampled back as a `Normal` texture, so the
+        // last pass flips it upright; otherwise every window would blur
+        // the vertical mirror image of what is behind it.
+        let orient = match crate::effects::fb_y_mirrored(output.current_transform()) {
+            Some(true) => Transform::Flipped180,
+            _ => Transform::Normal,
+        };
+        match render_chain(
+            renderer,
+            tracker,
+            level0.as_mut()?,
+            chain.get_mut(&(crop.size.w, crop.size.h, passes))?,
+            (tex, crop),
+            scale,
+            down.as_ref()?,
+            up.as_ref()?,
+            behind,
+            blur,
+            reuse,
+            orient,
+            sharp,
+        ) {
+            Ok((texture, ran)) => {
+                profile.rebuilt(Rebuild {
+                    crop_texels: crop.size.w as u64 * crop.size.h as u64,
+                    cleared_texels: chain_size.w as u64 * chain_size.h as u64,
+                    passes: ran,
+                    pass_texels: chain_texels(crop.size, passes),
+                    partial: false,
+                });
+                Some(texture)
+            }
+            Err(err) => {
+                tracing::warn!(?err, "rendering the blur chain; blur skipped this frame");
+                None
+            }
+        }
     }
 
     fn ensure_programs(&mut self, renderer: &mut GlesRenderer) -> Option<()> {
@@ -1071,18 +1757,15 @@ impl BlurStore {
         Some(())
     }
 
-    fn ensure_chain(
-        &mut self,
-        renderer: &mut GlesRenderer,
-        fb_size: Size<i32, Physical>,
-        passes: usize,
-    ) -> Option<()> {
-        if self.chain_size == fb_size && self.chain_passes == passes && self.level0.is_some() {
+    fn ensure_chain(&mut self, renderer: &mut GlesRenderer, fb_size: Size<i32, Physical>) -> Option<()> {
+        if self.chain_size == fb_size && self.level0.is_some() {
             return Some(());
         }
         self.chain.clear();
         self.level0 = None;
         self.surfaces.clear();
+        self.groups.clear();
+        self.members.clear();
         self.backdrop = None;
         match Offscreen::<GlesTexture>::create_buffer(
             renderer,
@@ -1096,7 +1779,6 @@ impl BlurStore {
             }
         }
         self.chain_size = fb_size;
-        self.chain_passes = passes;
         Some(())
     }
 }
@@ -1155,7 +1837,8 @@ fn render_chain<E>(
     blur: &Blur,
     reuse: Option<GlesTexture>,
     orient: Transform,
-) -> Result<GlesTexture, GlesError>
+    sharp: bool,
+) -> Result<(GlesTexture, u32), GlesError>
 where
     E: Element + RenderElement<GlesRenderer>,
 {
@@ -1184,7 +1867,7 @@ where
         (tex.loc.x as f64, tex.loc.y as f64).into(),
         (tex.size.w as f64, tex.size.h as f64).into(),
     );
-    blit(
+    blit_full(
         renderer,
         level0,
         &mut mid[0],
@@ -1195,7 +1878,7 @@ where
     )?;
     for level in 1..passes {
         let (src, dst) = split_pair(mid, level - 1, level);
-        blit(renderer, src, dst, Some(down), offset, Transform::Normal, None)?;
+        blit_full(renderer, src, dst, Some(down), offset, Transform::Normal, None)?;
     }
 
     // 3. Upsample down to level 2. The last step writes level 1 (half size)
@@ -1205,18 +1888,323 @@ where
     //    is copied as is.
     for level in (2..passes).rev() {
         let (src, dst) = split_pair(mid, level, level - 1);
-        blit(renderer, src, dst, Some(up), offset, Transform::Normal, None)?;
+        blit_full(renderer, src, dst, Some(up), offset, Transform::Normal, None)?;
     }
     let half = mid[0].size();
-    let mut result = sized(renderer, reuse, half)?;
+    // Packed (lens and regular glass): twice as wide, the lightly blurred level 1
+    // beside the blurred result, as `render_group` lays it out.
+    let wide = if sharp {
+        Size::from((half.w * 2, half.h))
+    } else {
+        half
+    };
+    let mut result = sized(renderer, reuse, wide)?;
+    let left = Rectangle::<i32, Physical>::from_size((half.w, half.h).into());
+    let all = [left];
     if passes >= 2 {
         let src = mid[1].clone();
-        blit(renderer, &src, &mut result, Some(up), offset, orient, None)?;
+        blit_to(
+            renderer,
+            &src,
+            &mut result,
+            Some(up),
+            offset,
+            orient,
+            None,
+            left,
+            &all,
+        )?;
     } else {
         let src = mid[0].clone();
-        blit(renderer, &src, &mut result, None, offset, orient, None)?;
+        blit_to(
+            renderer,
+            &src,
+            &mut result,
+            None,
+            offset,
+            orient,
+            None,
+            left,
+            &all,
+        )?;
     }
-    Ok(result)
+    if sharp {
+        let right = Rectangle::new((half.w, 0).into(), left.size);
+        blit_to(
+            renderer,
+            &mid[0],
+            &mut result,
+            None,
+            offset,
+            orient,
+            None,
+            right,
+            &all,
+        )?;
+    }
+    // Down passes, up passes (levels `passes..=2`), then the final write.
+    let ran = passes + passes.saturating_sub(2) + 1 + usize::from(sharp);
+    Ok((result, ran as u32))
+}
+
+/// Texels the blits of a full chain over `crop` write.
+fn chain_texels(crop: Size<i32, Physical>, passes: usize) -> u64 {
+    let area = |l: usize| {
+        let s = level_size(crop, l);
+        s.w as u64 * s.h as u64
+    };
+    let down: u64 = (1..=passes).map(area).sum();
+    let up: u64 = (2..passes).map(area).sum();
+    down + up + area(1)
+}
+
+/// One tier's rebuild (Phase 1b). `chain` is the output size and the
+/// orientation of the final write.
+///
+/// Persistent per tier: `level0`, the down and up levels, the result and the
+/// damage tracker. A full rebuild renders the backdrop at age 0 (clearing the
+/// whole output) and runs every pass over its whole texture. A partial one
+/// renders at age 1, so the tracker reports exactly the damage since this
+/// tier's last build, then runs each pass only over [`crate::partial::Plan`]'s
+/// rectangles. Nothing outside them can differ from a full rebuild, so the
+/// result is identical to one (the unit tests bound the footprint against the
+/// shaders' taps; `docs/GLASS_PROFILING.md` has the pixel comparison).
+#[allow(clippy::too_many_arguments)]
+fn render_group<E>(
+    renderer: &mut GlesRenderer,
+    output: &Output,
+    g: &mut GroupBlur,
+    plan: &mut crate::partial::Plan,
+    damage: &mut Vec<Rectangle<i32, Physical>>,
+    (down, up): (&GlesTexProgram, &GlesTexProgram),
+    (fb, orient): (Size<i32, Physical>, Transform),
+    (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+    scale: Scale<f64>,
+    behind: &[E],
+    blur: &Blur,
+    full: bool,
+    sharp: bool,
+) -> Result<Option<Rebuild>, GlesError>
+where
+    E: Element + RenderElement<GlesRenderer>,
+{
+    let passes = blur.passes.clamp(1, 6) as usize;
+    let offset = sample_offset(blur);
+    let mirrored = orient == Transform::Flipped180;
+    let mut full = full;
+    let want = (crop.size, passes, fb);
+    if g.built != Some(want) {
+        full = true;
+        if g.built.map(|b| b.2) != Some(fb) || g.level0.is_none() {
+            g.level0 = Some(Offscreen::<GlesTexture>::create_buffer(
+                renderer,
+                FORMAT,
+                fb.to_logical(1).to_buffer(1, Transform::Normal),
+            )?);
+        }
+        g.down = alloc_levels(renderer, crop.size, passes)?;
+        g.up = (2..passes)
+            .map(|level| {
+                Offscreen::<GlesTexture>::create_buffer(
+                    renderer,
+                    FORMAT,
+                    level_size(crop.size, level)
+                        .to_logical(1)
+                        .to_buffer(1, Transform::Normal),
+                )
+            })
+            .collect::<Result<_, _>>()?;
+        g.built = Some(want);
+    }
+    if g.render.is_none() || g.result.is_none() || g.level0.is_none() {
+        full = true;
+    }
+    let tracker = g
+        .render
+        .get_or_insert_with(|| OutputDamageTracker::from_output(output));
+
+    // 1. The backdrop over `crop`: whole at age 0, else just what changed.
+    damage.clear();
+    let mut drawn = 0u64;
+    {
+        let cropped = crop_behind(behind, scale, crop);
+        let level0 = g.level0.as_mut().ok_or(GlesError::UnknownPixelFormat)?;
+        let mut target = Bind::bind(renderer, level0)?;
+        crate::gpu_timer::begin(renderer, Span::Backdrop);
+        let res = tracker.render_output(renderer, &mut target, if full { 0 } else { 1 }, &cropped, CLEAR);
+        crate::gpu_timer::end(renderer);
+        let res = res.map_err(|_| GlesError::UnknownPixelFormat)?;
+        match res.damage {
+            // Nothing the blur samples changed.
+            None if !full => return Ok(None),
+            None => {}
+            Some(rects) => {
+                for d in rects {
+                    drawn += d.size.w.max(0) as u64 * d.size.h.max(0) as u64;
+                    if full {
+                        continue;
+                    }
+                    // Output space to the texture's (flipped when mirrored).
+                    if let Some(c) = d.intersection(crop) {
+                        let y = if mirrored {
+                            fb.h - (c.loc.y + c.size.h)
+                        } else {
+                            c.loc.y
+                        };
+                        damage.push(Rectangle::new((c.loc.x, y).into(), c.size));
+                    }
+                }
+            }
+        }
+    }
+    let sizes: [Size<i32, Physical>; 6] = std::array::from_fn(|i| level_size(crop.size, i + 1));
+    let partial = !full && plan.fill(damage, tex, &sizes[..passes], offset, mirrored);
+    if !full && !partial && damage.is_empty() {
+        // Damage that lies wholly outside the region.
+        return Ok(None);
+    }
+
+    // 2. Down, 3. up, over the full textures or just the planned rectangles.
+    let GroupBlur {
+        level0,
+        down: dn,
+        up: upv,
+        result,
+        ..
+    } = g;
+    let level0 = level0.as_ref().ok_or(GlesError::UnknownPixelFormat)?;
+    let whole = |t: &GlesTexture| {
+        let s = t.size();
+        [Rectangle::<i32, Physical>::from_size((s.w, s.h).into())]
+    };
+    let from = Rectangle::<f64, BufferCoords>::new(
+        (tex.loc.x as f64, tex.loc.y as f64).into(),
+        (tex.size.w as f64, tex.size.h as f64).into(),
+    );
+    timed(renderer, Span::Down, |renderer| -> Result<(), GlesError> {
+        for level in 1..=passes {
+            let rects = &plan.down;
+            if level == 1 {
+                let all = whole(&dn[0]);
+                let r = if partial { &rects[0][..] } else { &all[..] };
+                blit(
+                    renderer,
+                    level0,
+                    &mut dn[0],
+                    Some(down),
+                    offset,
+                    Transform::Normal,
+                    Some(from),
+                    r,
+                )?;
+            } else {
+                let (src, dst) = split_pair(dn, level - 2, level - 1);
+                let all = whole(dst);
+                let r = if partial { &rects[level - 1][..] } else { &all[..] };
+                blit(renderer, src, dst, Some(down), offset, Transform::Normal, None, r)?;
+            }
+        }
+        Ok(())
+    })?;
+    let half = dn[0].size();
+    // Packed: twice as wide, the blurred result on the left and a copy of down
+    // level 1 (same extent and resolution, lightly blurred) on the right. A
+    // toggle of `sharp` changes the size, so `sized` makes a new texture, and
+    // `params` changed, so the tier is rebuilt in full.
+    let wide = if sharp {
+        Size::from((half.w * 2, half.h))
+    } else {
+        half
+    };
+    let mut out = sized(renderer, result.take(), wide)?;
+    let all = [Rectangle::<i32, Physical>::from_size((half.w, half.h).into())];
+    let r = if partial { &plan.result[..] } else { &all[..] };
+    let left = all[0];
+    timed(renderer, Span::Up, |renderer| -> Result<(), GlesError> {
+        for level in (3..=passes).rev() {
+            let all = whole(&upv[level - 3]);
+            let r = if partial {
+                &plan.up[level - 3][..]
+            } else {
+                &all[..]
+            };
+            // The top level is the down chain's own; below it, two up levels.
+            if level == passes {
+                blit(
+                    renderer,
+                    &dn[passes - 1],
+                    &mut upv[level - 3],
+                    Some(up),
+                    offset,
+                    Transform::Normal,
+                    None,
+                    r,
+                )?;
+            } else {
+                let (src, dst) = split_pair(upv, level - 2, level - 3);
+                blit(renderer, src, dst, Some(up), offset, Transform::Normal, None, r)?;
+            }
+        }
+        match passes {
+            1 => blit_to(renderer, &dn[0], &mut out, None, offset, orient, None, left, r),
+            2 => blit_to(
+                renderer,
+                &dn[1],
+                &mut out,
+                Some(up),
+                offset,
+                orient,
+                None,
+                left,
+                r,
+            ),
+            _ => blit_to(
+                renderer,
+                &upv[0],
+                &mut out,
+                Some(up),
+                offset,
+                orient,
+                None,
+                left,
+                r,
+            ),
+        }
+    })?;
+    if sharp {
+        // The same rectangles, flipped the same way: level 1 as it is, written
+        // upright like the result.
+        let right = Rectangle::new((half.w, 0).into(), left.size);
+        timed(renderer, Span::Pack, |renderer| {
+            blit_to(renderer, &dn[0], &mut out, None, offset, orient, None, right, r)
+        })?;
+    }
+    *result = Some(out);
+    let ran = passes + passes.saturating_sub(2) + 1 + usize::from(sharp);
+    Ok(Some(Rebuild {
+        crop_texels: if partial {
+            drawn
+        } else {
+            crop.size.w as u64 * crop.size.h as u64
+        },
+        cleared_texels: if full { fb.w as u64 * fb.h as u64 } else { drawn },
+        passes: ran as u32,
+        pass_texels: if partial {
+            plan.texels()
+        } else {
+            chain_texels(crop.size, passes)
+        },
+        partial,
+    }))
+}
+
+/// Run `f` between a GPU timer span of `kind` (a no-op unless `EC_GLASS_PROFILE`
+/// and the driver allow it), closing the span on every path out of `f`.
+fn timed<R>(renderer: &mut GlesRenderer, kind: Span, f: impl FnOnce(&mut GlesRenderer) -> R) -> R {
+    crate::gpu_timer::begin(renderer, kind);
+    let r = f(renderer);
+    crate::gpu_timer::end(renderer);
+    r
 }
 
 /// `reuse` if it is already `size`, else a fresh offscreen texture of `size`.
@@ -1257,10 +2245,8 @@ fn split_pair(chain: &mut [GlesTexture], src: usize, dst: usize) -> (&GlesTextur
     }
 }
 
-/// One Kawase pass: draw the whole of `src` over the whole of `dst`, sampling
-/// `src` (or just its `from` rectangle) under `transform` (`Normal` except for
-/// the final, upright-ing pass), through `program` or the default shader. The half-pixel is always one of `src`'s own.
-fn blit(
+/// [`blit`] over the whole of `dst`.
+fn blit_full(
     renderer: &mut GlesRenderer,
     src: &GlesTexture,
     dst: &mut GlesTexture,
@@ -1269,9 +2255,49 @@ fn blit(
     transform: Transform,
     from: Option<Rectangle<f64, BufferCoords>>,
 ) -> Result<(), GlesError> {
+    let size = dst.size();
+    let whole = [Rectangle::<i32, Physical>::from_size((size.w, size.h).into())];
+    blit(renderer, src, dst, program, offset, transform, from, &whole)
+}
+
+/// One Kawase pass: draw `src` (or just its `from` rectangle) over `dst`,
+/// sampling it under `transform` (`Normal` except for the final, upright-ing
+/// pass), through `program` or the default shader. Only the `damage`
+/// rectangles of `dst` are written (the whole of it for a full pass); the
+/// sampling coordinates of a texel are the same either way. The half-pixel is
+/// always one of `src`'s own.
+#[allow(clippy::too_many_arguments)]
+fn blit(
+    renderer: &mut GlesRenderer,
+    src: &GlesTexture,
+    dst: &mut GlesTexture,
+    program: Option<&GlesTexProgram>,
+    offset: f32,
+    transform: Transform,
+    from: Option<Rectangle<f64, BufferCoords>>,
+    damage: &[Rectangle<i32, Physical>],
+) -> Result<(), GlesError> {
+    let size = dst.size();
+    let dest = Rectangle::<i32, Physical>::from_size((size.w, size.h).into());
+    blit_to(renderer, src, dst, program, offset, transform, from, dest, damage)
+}
+
+/// [`blit`] into the `dest` rectangle of `dst` (the left or right half of a
+/// packed result); `damage` is relative to `dest`.
+#[allow(clippy::too_many_arguments)]
+fn blit_to(
+    renderer: &mut GlesRenderer,
+    src: &GlesTexture,
+    dst: &mut GlesTexture,
+    program: Option<&GlesTexProgram>,
+    offset: f32,
+    transform: Transform,
+    from: Option<Rectangle<f64, BufferCoords>>,
+    dest: Rectangle<i32, Physical>,
+    damage: &[Rectangle<i32, Physical>],
+) -> Result<(), GlesError> {
     let src_size = src.size();
     let dst_size = dst.size();
-    let dest = Rectangle::<i32, Physical>::from_size((dst_size.w, dst_size.h).into());
     let uniforms = [
         Uniform::new("halfpixel", [0.5 / src_size.w as f32, 0.5 / src_size.h as f32]),
         Uniform::new("blur_offset", offset),
@@ -1282,7 +2308,7 @@ fn blit(
         src,
         from.unwrap_or_else(|| Rectangle::from_size((src_size.w as f64, src_size.h as f64).into())),
         dest,
-        &[dest],
+        damage,
         &[],
         transform,
         1.0,
@@ -1421,20 +2447,60 @@ mod tests {
         }
     }
 
+    /// The glass element samples the blur result, which spans the crop, so a
+    /// bend of `strength` px is `strength / crop` in UV whatever the output
+    /// size, never `strength / output`.
+    #[test]
+    fn px_uv_follows_the_crop_not_the_output() {
+        use crate::effects::{px_uv_for, set_px_uv};
+        use smithay::backend::renderer::gles::UniformValue;
+        let blur = blur(8, 3);
+        let window = r(400, 200, 800, 600);
+        let strength = 12.0f32;
+        for fb_w in [1920, 2880] {
+            let fb: Size<i32, Physical> = (fb_w, fb_w * 9 / 16).into();
+            let (_, crop) = crop_rects(window, kernel_radius(&blur), fb, 3, false).unwrap();
+            assert!(crop.size.w < fb.w, "the crop is a part of the output");
+            let mut u = vec![Uniform::new("px_uv", px_uv_for((fb.w, fb.h)))];
+            set_px_uv(&mut u, (crop.size.w, crop.size.h));
+            let UniformValue::_2f(x, y) = u[0].value else {
+                panic!("px_uv is a vec2")
+            };
+            assert_eq!(x, 1.0 / crop.size.w as f32);
+            assert_eq!(y, 1.0 / crop.size.h as f32);
+            assert!((strength * x - strength / crop.size.w as f32).abs() < 1e-9);
+            assert!((strength * x - strength / fb.w as f32).abs() > 1e-6);
+        }
+        // Same window, bigger output: the crop (so the scale) does not change.
+        let crop_at = |w: i32| {
+            crop_rects(window, kernel_radius(&blur), (w, w * 9 / 16).into(), 3, false)
+                .unwrap()
+                .1
+                .size
+        };
+        assert_eq!(crop_at(1920), crop_at(2880));
+    }
+
     /// COMP-02 §3: the glass refraction widens the invalidation reach by its
     /// displacement (with the dispersion margin), scaled to physical px;
     /// flat glass adds nothing.
     #[test]
     fn glass_refraction_widens_the_invalidation_reach() {
         use crate::effects::glass_reach;
-        assert_eq!(glass_reach(0, 1.5), 0);
-        assert_eq!(glass_reach(12, 1.0), 13);
-        assert_eq!(glass_reach(12, 2.0), 26);
+        assert_eq!(glass_reach(0.0, 0.0, 1.5), 0);
+        assert_eq!(glass_reach(12.0, 0.0, 1.0), 13);
+        assert_eq!(glass_reach(12.0, 0.0, 2.0), 26);
+        // A fractional default still reserves whole pixels (ceil).
+        assert_eq!(glass_reach(1.5, 0.0, 1.0), 2);
         let region = r(100, 100, 200, 200);
         let k = kernel_radius(&blur(8, 2));
         let just_outside = [r(100 - k - 5, 150, 2, 2)];
         assert!(!invalidates(region, k, &just_outside));
-        assert!(invalidates(region, k + glass_reach(12, 1.0), &just_outside));
+        assert!(invalidates(
+            region,
+            k + glass_reach(12.0, 0.0, 1.0),
+            &just_outside
+        ));
     }
 
     /// An opaque window's bezel: the strips cover the ring and its corners,
@@ -2006,6 +3072,434 @@ mod tests {
         );
         assert_eq!(el.src(), want);
         assert!(crop.contains_rect(grow(region, 64)));
+    }
+
+    /// Phase 1a: a group of one is the per-window chain. Its union crop is the
+    /// member's own crop, the texture-space twin is the same one `crop_rects`
+    /// makes (flipped under a y-mirrored output), and the element samples the
+    /// same output pixels.
+    #[test]
+    fn a_group_of_one_is_the_per_window_crop() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        for mirrored in [false, true] {
+            for region in [
+                r(36, 72, 800, 600),
+                r(0, 0, 400, 30),
+                r(2400, 1500, 480, 120),
+                r(1000, 500, 1, 1),
+            ] {
+                for reach in [0, 2, 5] {
+                    let (tex, crop) = member_crop(region, &blur, reach, fb, mirrored).unwrap();
+                    assert_eq!(
+                        crop_tex(crop, fb, mirrored),
+                        tex,
+                        "{region:?} mirrored {mirrored}"
+                    );
+                    // The union of one crop is the crop.
+                    assert_eq!([crop].into_iter().reduce(|a, b| a.merge(b)), Some(crop));
+                }
+            }
+        }
+    }
+
+    /// Phase 1a: members share one texture, so `px_uv` is one physical pixel of
+    /// the union crop, and each member's UV rectangle is its own part of it:
+    /// the same output pixels a per-window result would have shown.
+    #[test]
+    fn group_members_sample_their_own_part_of_the_union() {
+        use crate::effects::{px_uv_for, set_px_uv};
+        use smithay::backend::renderer::gles::UniformValue;
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        let a = r(100, 100, 400, 300);
+        let b = r(700, 150, 500, 300);
+        let (_, ca) = member_crop(a, &blur, 2, fb, false).unwrap();
+        let (_, cb) = member_crop(b, &blur, 2, fb, false).unwrap();
+        let union = ca.merge(cb);
+        assert!(union.contains_rect(ca) && union.contains_rect(cb));
+        // Snapped to the coarsest level, like each member's crop.
+        let d = 1 << 4;
+        assert!(union.loc.x % d == 0 && union.loc.y % d == 0);
+        assert!((union.loc.x + union.size.w) % d == 0 || union.loc.x + union.size.w == fb.w);
+        let scale = Scale::from(1.0);
+        for (region, own) in [(a, ca), (b, cb)] {
+            // The shared result is half the union's size.
+            let shared = Backdrop(Size::from((union.size.w / 2, union.size.h / 2)));
+            let el = BlurElement::placed(Id::new(), ContextId::new(), shared, union, region, scale, 1.0);
+            let src = el.src();
+            // Back to output pixels: the same ones as the member's own result.
+            let own_tex = Backdrop(Size::from((own.size.w / 2, own.size.h / 2)));
+            let alone =
+                BlurElement::placed(Id::new(), ContextId::new(), own_tex, own, region, scale, 1.0).src();
+            let at = |s: Rectangle<f64, BufferCoords>, origin: Point<i32, Physical>| {
+                (s.loc.x * 2.0 + origin.x as f64, s.loc.y * 2.0 + origin.y as f64)
+            };
+            assert_eq!(at(src, union.loc), (region.loc.x as f64, region.loc.y as f64));
+            assert_eq!(at(alone, own.loc), (region.loc.x as f64, region.loc.y as f64));
+            assert_eq!((src.size.w, src.size.h), (alone.size.w, alone.size.h));
+            let s = el.src();
+            assert!(s.loc.x >= 0.0 && s.loc.x + s.size.w <= (union.size.w / 2) as f64);
+            assert!(s.loc.y >= 0.0 && s.loc.y + s.size.h <= (union.size.h / 2) as f64);
+        }
+        // One physical pixel in the shared texture's UV is 1 / union, so a bend
+        // of `strength` px is strength / union.size.
+        let mut u = vec![smithay::backend::renderer::gles::Uniform::new(
+            "px_uv",
+            px_uv_for((fb.w, fb.h)),
+        )];
+        set_px_uv(&mut u, (union.size.w, union.size.h));
+        let UniformValue::_2f(x, y) = u[0].value else {
+            panic!("px_uv is a vec2")
+        };
+        assert_eq!(x, 1.0 / union.size.w as f32);
+        assert_eq!(y, 1.0 / union.size.h as f32);
+        assert!(union.size.w > ca.size.w, "the union is wider than one member");
+    }
+
+    /// Phase 1c: the built region carries a margin and is bucketed, so a member
+    /// moving inside it needs no rebuild; one leaving it does.
+    #[test]
+    fn a_member_moving_inside_the_margin_needs_no_rebuild() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        let needed = |region| member_crop(region, &blur, 2, fb, false).unwrap().1;
+        let a = r(1000, 600, 400, 300);
+        let built = padded_crop(needed(a), fb, 4, false);
+        assert!(built.contains_rect(needed(a)));
+        // The size is a bucket (or the whole side) and the corner is on the grid.
+        assert!(built.size.w % CROP_BUCKET < 16 || built.size.w == fb.w);
+        assert!(built.size.h % CROP_BUCKET < 16 || built.size.h == fb.h);
+        assert!(built.loc.x % 16 == 0 && built.loc.y % 16 == 0);
+        assert!(Rectangle::from_size(fb).contains_rect(built));
+        // Every step of a drag inside the margin is still covered; no new key.
+        let m = crop_margin(fb);
+        assert_eq!(m, 360);
+        for dx in (-m / 2..=m / 2).step_by(20) {
+            let moved = r(a.loc.x + dx, a.loc.y + dx / 2, a.size.w, a.size.h);
+            assert!(covers(Some(built), needed(moved)), "dx {dx}");
+        }
+        // Outside the margin it is not.
+        assert!(!covers(
+            Some(built),
+            needed(r(a.loc.x + m + 300, a.loc.y, 400, 300))
+        ));
+        // Resize growth inside the margin is covered, past it is not.
+        assert!(covers(
+            Some(built),
+            needed(r(1000, 600, 400 + m / 2, 300 + m / 2))
+        ));
+        assert!(!covers(Some(built), needed(r(1000, 600, 400 + 2 * m, 300))));
+        // Never built: nothing is covered.
+        assert!(!covers(None, needed(a)));
+    }
+
+    /// Chains are keyed by crop size, so the built sizes are few: every member
+    /// position of one size lands in the same bucket.
+    #[test]
+    fn built_sizes_are_bucketed() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        let mut sizes = std::collections::BTreeSet::new();
+        for x in (0..2400).step_by(37) {
+            for y in (0..1300).step_by(61) {
+                let c = member_crop(r(x, y, 400, 300), &blur, 2, fb, false).unwrap().1;
+                let built = padded_crop(c, fb, 4, false);
+                assert!(built.contains_rect(c));
+                sizes.insert((built.size.w, built.size.h));
+            }
+        }
+        // Two widths and two heights, each plus a grid-slide variant at the edge.
+        assert!(sizes.len() <= 8, "{sizes:?}");
+    }
+
+    /// A tier change or new membership is a rebuild whatever the region is
+    /// (`group_refresh` ORs `!same_members` into `fresh`); the margin test
+    /// itself is only about geometry, and a member at the output edge clamps.
+    #[test]
+    fn the_padded_region_stays_on_the_output() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((1920, 1080));
+        for region in [r(0, 0, 300, 200), r(1700, 900, 220, 180), r(0, 0, 1920, 1080)] {
+            let c = member_crop(region, &blur, 0, fb, true).unwrap().1;
+            let built = padded_crop(c, fb, 4, true);
+            assert!(
+                Rectangle::from_size(fb).contains_rect(built),
+                "{region:?} {built:?}"
+            );
+            assert!(built.contains_rect(c));
+        }
+    }
+
+    /// The shared texture addresses a member by its offset into the *built*
+    /// region: moving a member inside the margin changes only that offset.
+    #[test]
+    fn a_moved_member_changes_only_its_uv_offset() {
+        let blur = blur(8, 4);
+        let fb = Size::<i32, Physical>::from((2880, 1620));
+        let a = r(1000, 600, 400, 300);
+        let built = padded_crop(member_crop(a, &blur, 2, fb, false).unwrap().1, fb, 4, false);
+        let tex = Backdrop(Size::from((built.size.w / 2, built.size.h / 2)));
+        let scale = Scale::from(1.0);
+        let src = |region| {
+            BlurElement::placed(
+                Id::new(),
+                ContextId::new(),
+                tex.clone(),
+                built,
+                region,
+                scale,
+                1.0,
+            )
+            .src()
+        };
+        let (s0, s1) = (src(a), src(r(1100, 640, 400, 300)));
+        assert_eq!((s1.loc.x - s0.loc.x, s1.loc.y - s0.loc.y), (50.0, 20.0));
+        assert_eq!(s0.size, s1.size);
+    }
+
+    /// Chromatic aberration: a packed result is twice as wide, with the blurred
+    /// part in its left half, so an element addresses the left half only and its
+    /// source rectangle is the unpacked one's, in the same texels.
+    #[test]
+    fn a_packed_element_addresses_the_left_half() {
+        let region = r(1000, 500, 400, 300);
+        let (_, crop) = crop_rects(region, 64, Size::from((1920, 1080)), 3, false).unwrap();
+        let (hw, hh) = (crop.size.w / 2, crop.size.h / 2);
+        let scale = Scale::from(1.0);
+        let one = BlurElement::placed(
+            Id::new(),
+            ContextId::new(),
+            Backdrop(Size::from((hw, hh))),
+            crop,
+            region,
+            scale,
+            1.0,
+        );
+        let two = BlurElement::placed_in(
+            Id::new(),
+            ContextId::new(),
+            Backdrop(Size::from((hw * 2, hh))),
+            crop,
+            region,
+            scale,
+            1.0,
+            true,
+        );
+        assert_eq!(one.src(), two.src(), "same texels, only the texture is wider");
+        let s = two.src();
+        assert!(s.loc.x + s.size.w <= hw as f64, "inside the left half");
+    }
+
+    /// The chromatic fringe is real pixels: the UV offset times the sampled
+    /// texture's size in px is the same fringe whatever the output or the tier's
+    /// union is, packed (half-width UV px) or not.
+    #[test]
+    fn the_fringe_is_physical_px_whatever_the_union_size() {
+        use crate::effects::{fringe_px, px_uv_for, DISPERSION_PX};
+        for upscale in [1.0, 1.5, 2.0] {
+            let want = DISPERSION_PX as f64 * upscale;
+            assert!((fringe_px(1.0, upscale) as f64 - want).abs() < 1e-4);
+            assert!((fringe_px(0.5, upscale) as f64 - want / 2.0).abs() < 1e-4);
+            for size in [(800, 600), (1536, 1024), (2880, 1620)] {
+                // Unpacked: the texture spans `size` px across UV 0..1.
+                let uv = px_uv_for(size);
+                let off = fringe_px(1.0, upscale) * uv[0];
+                assert!((off as f64 * size.0 as f64 - want).abs() < 1e-3, "{size:?}");
+                // Packed: the blurred half spans `size` px across UV 0..0.5.
+                let uv = px_uv_for((size.0 * 2, size.1));
+                let off = fringe_px(1.0, upscale) * uv[0];
+                assert!((off as f64 * size.0 as f64 * 2.0 - want).abs() < 1e-3, "{size:?}");
+            }
+        }
+        assert_eq!(fringe_px(0.0, 2.0), 0.0);
+        assert_eq!(fringe_px(7.0, 1.0), DISPERSION_PX, "dispersion is clamped to 1");
+    }
+
+    /// The glass program's taps stay inside the built region: the reach covers
+    /// the bend plus the widest fringe at every scale; without dispersion it is
+    /// the old reach.
+    #[test]
+    fn the_reach_covers_the_widest_fringe() {
+        use crate::effects::{fringe_px, glass_reach};
+        for scale in [1.0, 1.25, 2.0] {
+            for refraction in [0.0f32, 1.5, 12.0] {
+                let bend = (refraction as f64 * scale).ceil() as i32;
+                assert_eq!(
+                    glass_reach(refraction, 0.0, scale),
+                    (refraction as f64 * scale * 1.05).ceil() as i32
+                );
+                for d in [0.25f32, 0.5, 1.0] {
+                    let reach = glass_reach(refraction, d, scale);
+                    assert!(
+                        reach as f64 >= refraction as f64 * scale + fringe_px(d, scale) as f64,
+                        "{scale} {refraction} {d}"
+                    );
+                    assert!(reach > bend);
+                }
+            }
+        }
+        // And the margin test: damage within the fringe of the region invalidates.
+        let region = r(100, 100, 200, 200);
+        let k = kernel_radius(&blur(8, 2));
+        let d = [r(100 - k - 6, 150, 2, 2)];
+        assert!(!invalidates(region, k + glass_reach(0.0, 0.0, 1.0), &d));
+        assert!(invalidates(region, k + glass_reach(0.0, 1.0, 1.0), &d));
+    }
+
+    /// A runtime dispersion toggle changes what the tier is built as (packed or
+    /// not), which forces a full rebuild and reallocates the result; neither a
+    /// change in blur mode nor in the other glass knobs does.
+    #[test]
+    fn toggling_dispersion_rebuilds_the_tier_in_full() {
+        let mut b = blur(8, 4);
+        assert!(!packs(&b, GlassPreset::Frost));
+        let off = (b.size, 4, packs(&b, GlassPreset::Frost));
+        let needed = r(0, 0, 512, 512);
+        let built = Some(r(0, 0, 1024, 1024));
+        assert!(!tier_fresh(true, built, needed, off, off, true));
+        b.glass.dispersion = 0.5;
+        assert!(packs(&b, GlassPreset::Frost));
+        let on = (b.size, 4, packs(&b, GlassPreset::Frost));
+        assert!(
+            tier_fresh(true, built, needed, off, on, true),
+            "on: allocate the packed texture"
+        );
+        assert!(tier_fresh(true, built, needed, on, off, true), "off: drop it");
+        assert!(!tier_fresh(true, built, needed, on, on, true));
+        // Only glass mode packs; another dispersion value stays packed.
+        b.glass.dispersion = 1.0;
+        assert_eq!((b.size, 4, packs(&b, GlassPreset::Frost)), on);
+        b.mode = ec_abyss_config::BlurMode::Frost;
+        assert!(!packs(&b, GlassPreset::Frost));
+        // The usual reasons stay.
+        assert!(tier_fresh(false, built, needed, on, on, true));
+        assert!(tier_fresh(true, None, needed, on, on, true));
+        assert!(tier_fresh(true, built, needed, on, on, false));
+    }
+
+    /// The pass count and packing are per preset: a lens is a light blur, packed
+    /// even without dispersion; frost keeps the configured passes and packs
+    /// only for dispersion. A tier takes the heaviest of its members.
+    #[test]
+    fn presets_pick_their_own_passes_and_packing() {
+        let b = blur(8, 4);
+        assert_eq!(preset_passes(4, GlassPreset::Lens), 2);
+        assert_eq!(preset_passes(1, GlassPreset::Lens), 1);
+        assert_eq!(preset_passes(4, GlassPreset::Regular), 3);
+        assert_eq!(preset_passes(2, GlassPreset::Regular), 2);
+        assert_eq!(preset_passes(4, GlassPreset::Frost), 4);
+        assert_eq!(tuned(&b, GlassPreset::Lens).passes, 2);
+        // Only glass mode retunes; frost/blur mode keep the configured passes.
+        let mut f = blur(8, 4);
+        f.mode = ec_abyss_config::BlurMode::Frost;
+        assert_eq!(tuned(&f, GlassPreset::Lens).passes, 4);
+        assert!(packs(&b, GlassPreset::Lens) && packs(&b, GlassPreset::Regular));
+        assert!(!packs(&b, GlassPreset::Frost));
+        assert!(!packs(&f, GlassPreset::Lens));
+        // A tier with a lens and a frost member is as heavy as frost and packed.
+        let (t, sharp) = tier_variant(&b, [GlassPreset::Lens, GlassPreset::Frost].into_iter());
+        assert_eq!((t.passes, sharp), (4, true));
+        let (t, sharp) = tier_variant(&b, [GlassPreset::Lens].into_iter());
+        assert_eq!((t.passes, sharp), (2, true));
+        let (t, sharp) = tier_variant(&b, [GlassPreset::Frost].into_iter());
+        assert_eq!((t.passes, sharp), (4, false));
+    }
+
+    /// A member's preset changing (frost to lens and back) changes the tier's
+    /// `(size, passes, packed)` once, which `tier_fresh` turns into exactly one
+    /// full rebuild; unchanged presets leave it alone.
+    #[test]
+    fn a_preset_change_forces_exactly_one_full_rebuild() {
+        let b = blur(8, 4);
+        let needed = r(0, 0, 512, 512);
+        let built = Some(r(0, 0, 1024, 1024));
+        let params = |presets: &[GlassPreset]| {
+            let (t, sharp) = tier_variant(&b, presets.iter().copied());
+            (t.size, t.passes as usize, sharp)
+        };
+        let frost = params(&[GlassPreset::Frost]);
+        let lens = params(&[GlassPreset::Lens]);
+        assert_ne!(frost, lens);
+        // The frame the preset changes: fresh, then stored as the new params.
+        assert!(tier_fresh(true, built, needed, frost, lens, true));
+        // Every later frame with the same preset: not fresh.
+        assert!(!tier_fresh(true, built, needed, lens, lens, true));
+        assert!(!tier_fresh(
+            true,
+            built,
+            needed,
+            lens,
+            params(&[GlassPreset::Lens]),
+            true
+        ));
+        // And back: one more.
+        assert!(tier_fresh(true, built, needed, lens, frost, true));
+        assert!(!tier_fresh(true, built, needed, frost, frost, true));
+    }
+
+    /// An opaque slab at a place, for the cull test.
+    struct Slab(Id, Rectangle<i32, Physical>, Vec<Rectangle<i32, Physical>>);
+
+    impl Element for Slab {
+        fn id(&self) -> &Id {
+            &self.0
+        }
+        fn current_commit(&self) -> CommitCounter {
+            CommitCounter::default()
+        }
+        fn src(&self) -> Rectangle<f64, BufferCoords> {
+            Rectangle::from_size((1.0, 1.0).into())
+        }
+        fn geometry(&self, _: Scale<f64>) -> Rectangle<i32, Physical> {
+            self.1
+        }
+        fn transform(&self) -> Transform {
+            Transform::Normal
+        }
+        fn damage_since(&self, _: Scale<f64>, _: Option<CommitCounter>) -> DamageSet<i32, Physical> {
+            DamageSet::default()
+        }
+        fn opaque_regions(&self, _: Scale<f64>) -> OpaqueRegions<i32, Physical> {
+            self.2.iter().copied().collect()
+        }
+        fn alpha(&self) -> f32 {
+            1.0
+        }
+        fn kind(&self) -> Kind {
+            Kind::Unspecified
+        }
+    }
+
+    /// Occlusion cull: glass wholly under one opaque rectangle above it is hidden;
+    /// partly covered, covered only by a translucent element, or covered only by
+    /// the union of two opaque ones is not (conservative).
+    #[test]
+    fn glass_under_an_opaque_rectangle_is_hidden() {
+        let scale = Scale::from(1.0);
+        let region = r(100, 100, 200, 100);
+        let opaque = |g, o| Slab(Id::new(), g, vec![o]);
+        let slab = r(50, 50, 400, 300);
+        assert!(hidden_behind(region, &[opaque(slab, slab)], scale));
+        // The opaque part is the element's own, relative to its geometry.
+        assert!(hidden_behind(region, &[opaque(slab, r(0, 0, 400, 300))], scale));
+        // Partly covered.
+        assert!(!hidden_behind(
+            region,
+            &[opaque(r(150, 50, 400, 300), r(150, 50, 400, 300))],
+            scale
+        ));
+        // Translucent (no opaque region): never hides.
+        assert!(!hidden_behind(region, &[Slab(Id::new(), slab, vec![])], scale));
+        // Opaque region smaller than the element.
+        assert!(!hidden_behind(region, &[opaque(slab, r(0, 0, 100, 100))], scale));
+        // Two halves together cover it, neither alone: kept (conservative).
+        let halves = [
+            opaque(r(100, 100, 100, 100), r(100, 100, 100, 100)),
+            opaque(r(200, 100, 100, 100), r(200, 100, 100, 100)),
+        ];
+        assert!(!hidden_behind(region, &halves, scale));
+        assert!(!hidden_behind::<Slab>(region, &[], scale));
     }
 
     /// A half-size result is sampled at half the region's offset and size.

@@ -32,11 +32,21 @@ use crate::render::{
 /// no way to build a third: §5 allows the owner's colour scheme to choose
 /// between them (ADR 0084) and nothing else. A user theme's colours never reach
 /// this file. STYLE.md's grounds and hairlines: translucent tokens are
-/// pre-composited over the ground, so nothing here depends on what is behind
-/// the panel.
+/// pre-composited over the ground. The panel body is the one exception
+/// (ADR 0128): it is glass, a fixed tint over a blur floor that no client or
+/// config can lower, and every text colour that sits directly on it holds
+/// 4.5:1 against the worst-case ground (`text_reads_on_worst_case_glass`).
+/// Everything else on the panel (frames, wells, buttons) stays pre-composited
+/// and opaque.
 #[derive(Debug)]
 pub struct Colors {
     pub(super) panel: Rgba,
+    /// How much of the glass body is this palette's ground, the rest being the
+    /// blurred scene behind it (never below the blur floor's
+    /// `PROMPT_MIN_TINT_ALPHA`). Chosen per palette as the smallest value at
+    /// which every text colour on the body reads 4.5:1 over every backdrop the
+    /// scrim leaves (`text_reads_on_worst_case_glass`).
+    glass_alpha: f32,
     /// The panel's hairline: ink at .14 over the ground.
     pub(super) edge: Rgba,
     pub(super) heading: Rgba,
@@ -76,13 +86,32 @@ pub struct Colors {
     btn_focus_line: Rgba,
 }
 
+impl Colors {
+    /// The glass body's tint: the panel ground at the blur floor's minimum
+    /// alpha. Fixed per palette; never themeable (COMP-10 §5).
+    pub(super) fn glass_tint(&self) -> Rgba {
+        [self.panel[0], self.panel[1], self.panel[2], self.glass_alpha]
+    }
+
+    /// The panel ground as it can look on screen over a blurred backdrop of
+    /// luma `backdrop`: the tint composited over it. Blur only averages, so
+    /// the extremes of the range bound every scene.
+    #[cfg(test)]
+    fn glass_ground_over(&self, backdrop: f32) -> Rgba {
+        let a = self.glass_alpha;
+        let m = |c: f32| c * a + backdrop * (1.0 - a);
+        [m(self.panel[0]), m(self.panel[1]), m(self.panel[2]), 1.0]
+    }
+}
+
 pub const DARK: Colors = Colors {
     panel: [0.071, 0.063, 0.043, 1.0],
+    glass_alpha: 0.4,
     edge: [0.200, 0.195, 0.177, 1.0],
     heading: [1.0, 1.0, 1.0, 1.0],
     body: [1.0, 1.0, 1.0, 0.74],
     value: [1.0, 1.0, 1.0, 0.92],
-    label: [1.0, 1.0, 1.0, 0.46],
+    label: [1.0, 1.0, 1.0, 0.62],
     warn: [1.0, 0.48, 0.35, 1.0],
     gold: [0.949, 0.765, 0.235, 1.0],
     caret: [0.949, 0.765, 0.235, 1.0],
@@ -104,12 +133,13 @@ pub const DARK: Colors = Colors {
 /// dark twins and why the gold text is the deeper tint.
 pub const LIGHT: Colors = Colors {
     panel: [0.957, 0.945, 0.918, 1.0],
+    glass_alpha: 0.4,
     edge: [0.837, 0.825, 0.798, 1.0],
     heading: [0.102, 0.086, 0.063, 1.0],
     body: [0.102, 0.086, 0.063, 0.88],
     value: [0.102, 0.086, 0.063, 0.94],
-    label: [0.102, 0.086, 0.063, 0.84],
-    warn: [0.722, 0.204, 0.110, 1.0],
+    label: [0.102, 0.086, 0.063, 0.95],
+    warn: [0.360, 0.070, 0.030, 1.0],
     gold: [0.949, 0.765, 0.235, 1.0],
     caret: [0.522, 0.376, 0.0, 1.0],
     phrase_ground: [0.980, 0.975, 0.960, 1.0],
@@ -642,10 +672,28 @@ pub fn hit(layout: &Layout, x: i32, y: i32) -> Option<usize> {
 /// the personal secret, `None` when none is set (COMP-10 §2): it is drawn in
 /// its fixed frame at the top, verbatim, or the unconfigured warning is.
 pub fn rasterize(modal: &Modal, focus: usize, scale: usize, phrase: Option<&str>, p: &Colors) -> Raster {
+    rasterize_with(modal, focus, scale, phrase, p, false)
+}
+
+/// [`rasterize`], with the panel ground left transparent when `glass` is set
+/// (ADR 0128): the compositor draws the tinted blur under it (`prompt_backdrop`)
+/// and this buffer carries the rim, the text and the opaque frames, wells and
+/// buttons. With `glass` unset the ground is the opaque `panel` colour: the
+/// fallback whenever the blur cannot be built, so a failure is never a
+/// see-through prompt.
+pub fn rasterize_with(
+    modal: &Modal,
+    focus: usize,
+    scale: usize,
+    phrase: Option<&str>,
+    p: &Colors,
+    glass: bool,
+) -> Raster {
     let l = layout(modal);
     let rim = if modal.accent { (2, p.warn) } else { (1, p.edge) };
     let mut c = Canvas::new(l.w, l.h);
-    c.round(0, 0, l.w, l.h, PANEL_R, p.panel, Some(rim));
+    let ground = if glass { [0.0; 4] } else { p.panel };
+    c.round(0, 0, l.w, l.h, PANEL_R, ground, Some(rim));
 
     let x0 = BORDER + PAD;
     let ww = COLS * ADVANCE;
@@ -713,11 +761,19 @@ pub fn rasterize(modal: &Modal, focus: usize, scale: usize, phrase: Option<&str>
     for (i, (b, &(bx, by, bw, bh))) in modal.buttons.iter().zip(&l.buttons).enumerate() {
         let tx = bx + BTN_PAD;
         let ty = by + (bh - GLYPH_H) / 2 + 1;
+        // On the glass panel a button is a lens (ADR 0128): the compositor
+        // draws it under this buffer, so only its ring, a faint lift on the
+        // focused one, and the label are drawn here.
+        let (fill, fill_focus) = if glass {
+            ([0.0; 4], [p.btn_focus[0], p.btn_focus[1], p.btn_focus[2], 0.28])
+        } else {
+            (p.btn, p.btn_focus)
+        };
         if i == focus {
-            c.round(bx, by, bw, bh, PILL, p.btn_focus, Some((1, p.btn_focus_line)));
+            c.round(bx, by, bw, bh, PILL, fill_focus, Some((1, p.btn_focus_line)));
             c.text(tx, ty, b.label, p.phrase_text, true);
         } else {
-            c.round(bx, by, bw, bh, PILL, p.btn, Some((1, p.btn_line)));
+            c.round(bx, by, bw, bh, PILL, fill, Some((1, p.btn_line)));
             c.text(tx, ty, b.label, p.value, false);
         }
     }
@@ -889,9 +945,10 @@ mod tests {
     }
 
     #[test]
-    fn the_panel_is_opaque() {
-        // Nothing behind a prompt may show through it and be read as part of
-        // it: only the rounded corners are cut, and nothing is translucent.
+    fn the_fallback_panel_is_opaque() {
+        // The opaque panel is what is drawn when the glass cannot be built:
+        // nothing behind a prompt may show through it and be read as part of
+        // it. Only the rounded corners are cut.
         let m = modal("echo hi");
         let r = rasterize(&m, m.safe(), 1, None, &DARK);
         let (w, h) = (r.w as usize, r.h as usize);
@@ -900,6 +957,90 @@ mod tests {
                 let a = r.px[(y * w + x) * 4 + 3];
                 let corner = (x < PANEL_R || x >= w - PANEL_R) && (y < PANEL_R || y >= h - PANEL_R);
                 assert!(corner || a == 255, "({x}, {y}) is see-through");
+            }
+        }
+    }
+
+    /// ADR 0128: on the glass panel the body ground and the buttons' bodies
+    /// are transparent (lenses). The phrase frame, the untrusted well and the
+    /// entry field are opaque, and so are the rim ring and the button rings, so nothing that carries meaning
+    /// depends on a pixel the compositor blurred.
+    #[test]
+    fn the_glass_panel_keeps_its_wells_opaque_and_buttons_lens() {
+        let m = modal("echo hi");
+        let l = layout(&m);
+        for p in [&DARK, &LIGHT] {
+            let r = rasterize_with(&m, m.safe(), 1, Some("phrase"), p, true);
+            let w = r.w as usize;
+            let alpha = |x: usize, y: usize| r.px[(y * w + x) * 4 + 3];
+            // The body ground really is transparent (a point clear of text).
+            assert_eq!(alpha(w / 2, 2 + PANEL_R / 2), 0, "the body ground is not glass");
+            // The rim ring is opaque along the top edge.
+            assert_eq!(alpha(w / 2, 0), 255, "the rim is see-through");
+            // Each button is a lens: its ring is opaque, its body is not.
+            for &(bx, by, bw, bh) in &l.buttons {
+                assert_eq!(
+                    alpha(bx + bw / 2, by),
+                    255,
+                    "button ring ({bx}, {by}) is see-through"
+                );
+                assert!(
+                    alpha(bx + bw / 2, by + bh / 2) < 255,
+                    "button ({bx}, {by}) is not glass"
+                );
+            }
+            // The well and the phrase frame, sampled at their middle rows.
+            let x0 = BORDER + PAD;
+            let wx = x0 - WELL_PAD + 3;
+            assert_eq!(
+                alpha(wx, l.well_y + l.well_h / 2),
+                255,
+                "the untrusted well is see-through"
+            );
+            assert_eq!(
+                alpha(wx, BORDER + PAD + PHRASE_H / 2),
+                255,
+                "the phrase frame is see-through"
+            );
+        }
+    }
+
+    #[test]
+    fn the_glass_tint_is_never_below_the_blur_floor() {
+        for p in [&DARK, &LIGHT] {
+            assert!(p.glass_tint()[3] >= ec_abyss_render::PROMPT_MIN_TINT_ALPHA);
+            assert!(p.glass_tint()[3] <= 1.0);
+        }
+    }
+
+    /// ADR 0128: text drawn straight on the glass body reads (3:1, the large-text
+    /// floor) over a mid scene
+    /// (a mid-grey wallpaper under the scrim). The body is glass, so over a
+    /// pure black or pure white wallpaper it reads less well, by design: that
+    /// is the glass trade, judged by eye in the headless captures.
+    #[test]
+    fn text_reads_on_glass_over_a_mid_scene() {
+        let c = |fg: Rgba, bg: Rgba| ec_theme::contrast(ec_theme::Rgba(fg), ec_theme::Rgba(bg));
+        let over = |fg: Rgba, bg: Rgba| {
+            let a = fg[3];
+            [
+                fg[0] * a + bg[0] * (1.0 - a),
+                fg[1] * a + bg[1] * (1.0 - a),
+                fg[2] * a + bg[2] * (1.0 - a),
+                1.0,
+            ]
+        };
+        for (name, p) in [("dark", &DARK), ("light", &LIGHT)] {
+            let g = p.glass_ground_over((1.0 - crate::trusted_ui::DIM_ALPHA) * 0.5);
+            for (what, fg) in [
+                ("heading", p.heading),
+                ("body", p.body),
+                ("value", p.value),
+                ("label", p.label),
+                ("warn", p.warn),
+            ] {
+                let got = c(over(fg, g), g);
+                assert!(got >= 3.0, "{name} {what}: {got:.2}:1");
             }
         }
     }

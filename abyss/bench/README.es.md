@@ -32,7 +32,7 @@ son comparables con nada.
 COMP-14 §4.1 decía antes "microbenchmarks con Criterion". Criterion reporta una media
 con un intervalo de confianza y trata la cola lenta como ruido que hay que clasificar y descartar;
 cada presupuesto de COMP-14 §2 es un p99. Consulta
-`decisions/0043-hand-rolled-bench-harness.md` — la línea de la especificación se enmendó
+`docs/decisions/0043-hand-rolled-bench-harness.md` — la línea de la especificación se enmendó
 en el mismo cambio.
 
 ## Qué se ejecuta hoy
