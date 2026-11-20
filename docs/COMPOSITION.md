@@ -15,7 +15,7 @@ Mandatory order, top to bottom:
 
 1. **Header row.** Pane title (24px semibold) + a one-line subtitle that
    carries at most one accented phrase, and 1–3 pill controls at the right.
-   All five references also carry a **two-line mono status chip at the far
+   All five references also carry a **two-line status chip (Onest, tabular digits) at the far
    right** of the header — the machine's own reading of the pane's subject
    (`2 displays / compositor 60 fps`, `pipewire 1.0.4 / 48 kHz · 128 frames`,
    `Focus on / until 17:30`, `on battery / discharge 8.4 W`,
@@ -23,7 +23,7 @@ Mandatory order, top to bottom:
    two is the measurement.
 2. **The hero block.** One block, unique to this pane, that is not a list.
    See the catalogue below.
-3. **One or two inset list panels.** Hairline-separated rows, mono values at
+3. **One or two inset list panels.** Hairline-separated rows, data values (Onest, tabular) at
    the right.
 
 **A pane with no hero is incomplete.** That is the rule this document exists
@@ -55,6 +55,9 @@ never inlined in an app's `view.rs`.
 - **Consecutive blocks must not share a silhouette.** Two `inset_list`s in a
   row is the failure mode; an `inset_list` after a hero is the point. If a
   pane needs three lists, it needs a different pane.
+- **A page with several groups is a titled card per group**, a title and a one-line caption each (owner, 2026-11-20: Apple and
+  Windows lay a settings page out this way). A page that has a hero keeps it first; a page with one group stays one untitled
+  card. Cards share a silhouette, so the hero (a preview, a status grid) is what keeps the page from reading as a stack.
 - **One level of inset.** `inset(inset(..))` is not a thing. There is no guard
   in code; this is the honour system.
 - **Density is allowed to spike exactly once**, in the hero. The lists beneath

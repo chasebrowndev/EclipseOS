@@ -14,7 +14,7 @@ yellow accent. Use this as art direction; do not copy any specific screen.
   both the same tint, rgba(11,9,6,.70) by default, over the same blur (opaque #0b0906 with
   blur off), parted by a 1px hairline, not by a change of ground.
   The surface values are defaults, and users tune them live (the compositor's
-  `decoration.surface.tint` .70, `card-fill` .035, `inset-fill` .03; sRGB intent, 0..1 and
+  `decoration.surface.tint` .70, `card-fill` .035, `inset-fill` .05; sRGB intent, 0..1 and
   0..0.30 respectively. The tint is written as the buffer's alpha as is, because the compositor
   blends it in sRGB like a terminal's `alpha=`; card and inset fills are converted to linear alpha
   because iced blends those itself). Settings' Effects > Blur & glass page shows them as Window tint,
@@ -58,17 +58,19 @@ tint with dark ink on it. It is never the dark tokens flipped. Values below are
 starting points to tune in the per-pane visual pass. Every dark token has a
 light twin, derived from the built-in light seeds. User themes override seeds and obey
 the same rules (ADR 0084).
-- Base: #f4f1ea (warm off-white, never blue-white). Surfaces: #ebe6dc, #e3ddd1, #ddd6c9
-- Frost tint (compositor): #f4f1ea at .35. Glass fill on top: rgba(255,255,255,.22-.32);
-  sheets #f4f1ea at .36, the bar at .30
-- Window tint: the `decoration.surface.tint` intent times .65 (`LIGHT_TINT_SCALE`), so the
-  default .70 is .455. A white veil flattens the backdrop far more than a dark one at the
+- Base: #faf9f6 (paper white, barely warm, never cream or blue-white). Surfaces: #f1efea, #e9e6df, #e2dfd7
+- Frost tint (compositor): #faf9f6 at .35. Glass fill on top: rgba(255,255,255,.22-.32);
+  sheets #faf9f6 at .36, the bar at .30
+- Window tint: the `decoration.surface.tint` intent times .50 (`LIGHT_TINT_SCALE`), so the
+  default .70 is .35. A white veil flattens the backdrop far more than a dark one at the
   same alpha; one knob still drives both schemes
 - Ink: rgba(26,22,16,α) replaces rgba(255,255,255,α) for hairlines, borders and
-  tracks, at roughly the same α (.06-.14). The rim stays white: on light glass it reads as
-  a bright edge, not a highlight
-- Bar cells: rgba(26,22,16,.07) fill (darker than the frost: stacked glass moves away from the backdrop), rgba(26,22,16,.12) hairline. Hover darkens: .11 fill / .18 hairline;
-  press .15, no shadow. A focused cell thins to .58 white on hover and .46 on press.
+  tracks, at roughly the same α (.06-.14). The compositor rim of a window or layer stays white
+  but is no longer alone: white on near-white frost is no edge, so light adds an ink hairline
+  on the outermost pixel (α .45) and a white specular (.85) on the lit top-left lobe just
+  inside it. Panes already rim in ink and take neither
+- Bar cells: rgba(26,22,16,.05) fill (darker than the frost: stacked glass moves away from the backdrop), rgba(26,22,16,.12) hairline. Hover darkens: .09 fill / .18 hairline;
+  press .13, no shadow. A focused cell thins to .58 white on hover and .46 on press.
   Compositor glass does the same: `Look::shade` mixes toward ink. Focused / selected: .70 white and a crisp rgba(26,22,16,.18) hairline,
   gold on the label only. The same rules as dark: glassy, not glowy
 - Shadow: warm and soft, rgba(60,45,20,.18-.28). A light window must not sit in a black halo.
@@ -85,7 +87,7 @@ the same rules (ADR 0084).
   of the dark .28 black)
 - Depth runs toward the ink on light. A light card on the column is ink at the `lift_soft`
   step (rgba(26,22,16,.04)); an inset on a card is the bar cell's rest step (`cell`,
-  rgba(26,22,16,.07)). Both scale with `card-fill` / `inset-fill` against their dark
+  rgba(26,22,16,.05)). Both scale with `card-fill` / `inset-fill` against their dark
   defaults (.035 / .03), so an inset is always darker than its card. Never white over
   frost: white lifts a card above the column it sits on. Toast buttons are insets and
   follow the inset step. Selection is the one lift: the focused row is white .70 with its
@@ -101,12 +103,12 @@ the same rules (ADR 0084).
   tint colour is therefore pre-compensated per channel (`surface::tint`: `enc(dec(c*a)/a)`), so the
   buffer carries `c*a` and alpha `a`, the same effective .70-.72 as a terminal's `alpha=0.72` in either scheme
 - Compositor glass (`eclipse_glass_v1` panes, layer and window glass) in light has no dark smoke
-  and no highlight knee. The backdrop is saturated (1.6) and veiled 22% toward warm white
-  (.985,.975,.955), the light twin of dark's 28% smoke. Whitening happens once, in the window
+  and no highlight knee. The backdrop is saturated (1.6) and veiled 12% toward paper white
+  (.992,.989,.980), the light twin of dark's 28% smoke, thin enough that the wallpaper's colour and contrast survive. Whitening happens once, in the window
   tint: the shader only veils, or the backdrop is whitened twice and the glass reads opaque.
-  The bezel seam is .04 and the rim stays white. `Appearance::glass_light()` drives this
-- Compositor titlebars (`mode "de"`) follow the scheme: #f4f1ea at the light window tint
-  (.455 focused, .34 idle) plus the white focus lift, ink title and glyphs at the text steps,
+  The bezel seam is .08 and the rim stays white. `Appearance::glass_light()` drives this
+- Compositor titlebars (`mode "de"`) follow the scheme: #faf9f6 (GROUND_L, .980 .976 .965) at the light window tint
+  (.35 focused, .26 idle) plus the white focus lift, ink title and glyphs at the text steps,
   an ink seam (.10 / .06), and bar-cell ink steps on hovered buttons. Close keeps its danger cell
 - Trusted-UI prompts use the built-in dark or light palette matching the theme's
   brightness, never a user theme's colours (ADR 0084)
@@ -117,17 +119,24 @@ option, the current slider fill, an "in use" status. Never decorative, never two
 competing yellow areas in one pane, no gradients of it.
 
 ## Type
-- Instrument Sans (400/500/600) for UI labels and titles; -0.01em tracking on headings
-- JetBrains Mono (400/500) for all data, units, paths, timestamps, device identifiers,
-  and small uppercase section labels (9.5-10px, letter-spacing .12-.2em)
+- **Onest is the one UI face** (SIL OFL, `assets/fonts/Onest-*.ttf`): labels, titles, data, units,
+  paths, timestamps, device identifiers, key caps and the logo wordmark. No second family.
+  Weights 400/500/600 for UI (`font::UI`, `UI_MEDIUM`, `UI_SEMIBOLD`); `font::DATA`/`DATA_MEDIUM`
+  are the same family at 400/500, kept as names so a data run stays greppable. -0.01em tracking on headings
+- Digits are tabular: the vendored statics make `tnum` the default figures (`assets/fonts/gen_onest.py`),
+  because iced cannot switch OpenType features on. Columns of numbers align without a mono face
+- Small uppercase section labels (9.5-10px, letter-spacing .12-.2em) are Onest Medium
+- Monospace survives only where a cell grid is the point: terminal cells (apotheosis/foot) and the
+  compositor's HUD/trusted bitmap faces, which are not shell chrome
 - Sizes: pane title 24px/600, card title 12.5-13.5px/500, body 12-13.5px/400,
-  mono data 10.5-12px, big numbers 19-38px
+  data 10.5-12px, big numbers 19-38px
 
 ## Structure
 - Window: 1120x720, radius 16px, 1px light border. No traffic-light dots — this is a
   window manager, so the titlebar is either absent or a thin label row.
-- Left sidebar 214px: the window tint (rgba(11,9,6,.70) by default) + blur(30px), the same tint as the content column, text nav items each with a small
-  rounded placeholder icon square; active item = translucent fill + 3px yellow left bar
+- Left sidebar 214px: the window tint (rgba(11,9,6,.70) by default) + blur(30px), the same tint as the content column, nav items each with a drawn
+  icon tile (see Art); active item = translucent fill + 3px yellow left bar. Settings' sidebar is the search field pinned on top, the
+  Overview, then the sections under five small uppercase group headings (Look & feel, Devices, System, Privacy & accounts, Apps & add-ons)
 - Sidebar footer: small mono status block (uptime, daemon version, device count)
 - Content column: 26/30px padding, 18px gap between blocks
 - Header row: title + one-line subtitle (containing one yellow phrase) on the left,
@@ -151,9 +160,28 @@ competing yellow areas in one pane, no gradients of it.
 - Fictional but plausible system data: device names, config paths (~/.config/wm/theme.conf),
   daemon versions, dBm, Hz, W, GB, timestamps. No brand or trademark names.
 - No card-in-card-in-card; one level of inset inside a glass panel is the limit
-- No lorem, no decorative radial glow blobs, no emoji, no hand-drawn SVG icons —
-  small rounded rects stand in for icons
+- No lorem, no decorative radial glow blobs, no emoji, no SVG or bitmap icon files. Icons are
+  drawn in-process (`ec_ui::widget::art`), see Art
 - Every pane shows real state somewhere (what is connected, in use, or queued)
+
+## Art (Settings)
+Drawn in-process, no asset and no icon font: `ec_ui::widget::art` holds the glyphs (a handful of rounded rects, arcs and
+one bezier in a unit square) and `tokens::art` every size, alpha and hue.
+- **Icon tile**: a 22px glass squircle (corner .27 of the side), a hue at .22 fill and .38 rim, the glyph in line (stroke .075 of
+  the side) in the hue pulled .58 toward the text ink, so it is pastel on dark and deep on light. The current section's tile is
+  a brighter fill (.34) and a crisper rim (.70). Never gold, never a glow.
+- **One hue per sidebar group**, restrained: Look & feel violet, Devices azure, System slate, Privacy & accounts sage, Apps &
+  add-ons clay, Overview the neutral swatch grey. The accent is not a hue of the art.
+- **Vignette**: the page's header art, 92x64, left of the title. The group's hue at .16 over the glass, two quiet rings, and the
+  page's glyph drawn large with translucent glass fills. Hidden in a narrow window.
+- **Previews** are diagrams drawn from the live values (window set: layout, gaps, border, rounding; glass: rim, refraction,
+  dispersion, bevel, tint; scheme cards: the built-in dark and light palettes). A backdrop gradient of two group hues is the one
+  gradient the art allows, because glass needs something to bend; it is not chrome and not the accent.
+- Art never carries meaning alone (a tile sits by a label, a vignette by a title), does no work while the window is idle, and
+  follows the scheme.
+- Pages with several groups are one titled card per group (title 13px/500, a one-line caption); a settings few people change sit
+  behind an "Advanced" disclosure at the foot of the page's last card (opened by a search jump). Below 640px wide the sidebar is
+  a list that replaces the page, with a back control in the header.
 
 ## What to build
 One settings pane per screen at 1120x720, sidebar + detail, inline styles only.
