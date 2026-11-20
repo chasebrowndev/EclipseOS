@@ -48,6 +48,6 @@ Flow per frame: `FontSystem` (owns faces/fallback) -> `RowShaper::shape_row` -> 
   no host-font dependency.
 
 ## Embedded fonts
-`embedded::embedded_fonts()` returns JetBrains Mono Regular/Medium and Instrument Sans Regular
+`embedded::embedded_fonts()` returns JetBrains Mono Regular/Medium and Onest Regular/Medium/SemiBold (the interface face; `embedded::UI_FAMILY`)
 (`include_bytes!` of the repo's `assets/fonts/`, SIL OFL 1.1 data assets, T-06 §1). Pass it to
 `FontSystem::new`; the FiraMono file under `tests/fixtures` is a test fixture only.

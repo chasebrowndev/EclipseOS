@@ -293,7 +293,7 @@ pub fn run(options: Options) -> iced::Result {
         .window(settings)
         .scale_factor(move |_| scale)
         .antialiasing(true);
-    for font in ec_ui::FONTS {
+    for font in ec_ui::FONTS.iter().chain(ec_welcome::fonts::BYTES) {
         app = app.font(*font);
     }
     app.run()

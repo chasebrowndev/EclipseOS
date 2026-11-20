@@ -518,12 +518,11 @@ fn paint_version(frame: &mut canvas::Frame, u: Units, ratio: f32, label: &str, f
         .min_bounds()
         .width
     };
-    // `font-variant-numeric: tabular-nums`: iced cannot switch on the font's
-    // `tnum` feature, so give digits and the point one cell with the glyph
-    // centred in it. Half an em is what Lora's tabular set measures to in
-    // the reference render.
-    let cell = 0.5 * size;
-    let tabular = |c: char| c.is_ascii_digit() || c == '.';
+    // `font-variant-numeric: tabular-nums`: Onest's digits are tabular in the
+    // vendored statics (`assets/fonts/gen_onest.py`), so they already share one
+    // advance; measure it and centre each glyph in that cell regardless.
+    let cell = measure('0');
+    let tabular = |c: char| c.is_ascii_digit();
     let advances: Vec<f32> = label
         .chars()
         .map(|c| if tabular(c) { cell } else { measure(c) } + gap)
@@ -753,8 +752,8 @@ mod tests {
             let u = Units { w, h };
             let rect = logo_rect(
                 u,
-                Some(((0.5 * w) as u32, ((0.5 * w) * 144.0 / 796.0) as u32)),
-                144.0 / 796.0,
+                Some(((0.5 * w) as u32, ((0.5 * w) * 150.0 / 668.0) as u32)),
+                150.0 / 668.0,
                 1.0,
             );
             let ((ox, oy), od) = o_box(rect.x, rect.y, rect.width, rect.height);

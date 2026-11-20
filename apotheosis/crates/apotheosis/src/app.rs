@@ -5266,6 +5266,7 @@ impl App {
         let old_padding = self.settings.padding;
         self.settings = settings;
         self.settings.apply_theme(&self.theme_colors());
+        self.settings.glass.compositor_dark = self.abyss_theme.map(|t| t.dark);
         self.settings
             .glass
             .system_motion(self.system_reduced_motion);
@@ -5393,8 +5394,13 @@ impl App {
             )
         };
         let before = colours(&self.settings);
+        let before_dark = self.settings.glass.compositor_dark;
         self.settings.apply_theme(&self.theme_colors());
+        self.settings.glass.compositor_dark = self.abyss_theme.map(|t| t.dark);
         if colours(&self.settings) == before {
+            if before_dark != self.settings.glass.compositor_dark {
+                self.send_render_update(false);
+            }
             return;
         }
         self.push_term_colors();

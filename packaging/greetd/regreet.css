@@ -12,7 +12,7 @@
  * The screen is one glass card floating on a blurred amber corona:
  *
  *     clock                44px, light, white — the one large numeral
- *     masthead             mono micro-caps: what this OS is
+ *     masthead             micro-caps: what this OS is
  *   ╭──────────────────────────────────────────────╮  translucent glass,
  *   │  user      [ chase              ▾ ] [ ✎ ]    │  22px radius, light
  *   │  session   [ Abyss              ▾ ] [ ✎ ]    │  inner edge, deep
@@ -52,7 +52,7 @@
    glass can read; this file then paints back, explicitly, the four surfaces
    that exist: card, field, pill, popover. */
 * {
-    font-family: "Inter", "JetBrains Mono", "JetBrainsMono Nerd Font", sans-serif;
+    font-family: "Onest", "Inter", sans-serif;
     font-size: 13px;
     outline: none;
     text-shadow: none;
@@ -90,7 +90,7 @@ label.clock,
 
 /* ── masthead + field captions ────────────────────────────────────────── */
 label {
-    font-family: "JetBrains Mono", "JetBrainsMono Nerd Font", monospace;
+    font-family: "Onest", sans-serif;
     color: @ink_2;
     font-size: 10px;
     letter-spacing: 0.16em;
@@ -319,7 +319,7 @@ button.suggested-action label,
 button.default label,
 grid > button.text-button label {
     color: @on_accent;
-    font-family: "Inter", sans-serif;
+    font-family: "Onest", sans-serif;
     font-size: 13px;
     font-weight: 700;
     letter-spacing: 0.06em;

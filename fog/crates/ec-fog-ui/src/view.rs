@@ -7,7 +7,7 @@
 //! chrome changes silhouette at every step so nothing reads as a stack of
 //! panels: a flush, darker places column on the left; above the table a
 //! strip of bare tabs (only with more than one) and the path as an inset
-//! field of mono crumbs; then quiet column labels over a hairline, the
+//! field of crumbs; then quiet column labels over a hairline, the
 //! table, the job tray as a glass card of meters (only while there are
 //! jobs) and one line of bare status text. The palette, the name sheet and
 //! the dialogs are glass sheets over a light scrim, blurring a snapshot of
@@ -221,8 +221,7 @@ fn pill(fill: Color, border: Color, glow: Option<Shadow>, radius: f32) -> contai
     }
 }
 
-/// Data text: JetBrains Mono (STYLE.md: "mono for data, units, paths,
-/// timestamps").
+/// Data text: Onest, whose tabular digits keep sizes and dates aligned.
 fn label<'a>(s: impl text::IntoFragment<'a>, sz: f32, c: Color) -> text::Text<'a> {
     text(s)
         .size(sz)
@@ -231,7 +230,7 @@ fn label<'a>(s: impl text::IntoFragment<'a>, sz: f32, c: Color) -> text::Text<'a
         .wrapping(Wrapping::None)
 }
 
-/// Interface text: Instrument Sans.
+/// Interface text: Onest.
 fn caption<'a>(s: impl text::IntoFragment<'a>, sz: f32, c: Color) -> text::Text<'a> {
     label(s, sz, c).font(font::UI)
 }
@@ -376,7 +375,7 @@ pub fn basename(path: &[u8]) -> String {
 
 /// The places column: flush with the window's left edge on a darker shade
 /// (STYLE.md "Left sidebar: rgba(0,0,0,.4) + blur, width 214"), a hairline
-/// on its right, sections under small mono uppercase labels. The current
+/// on its right, sections under small uppercase labels. The current
 /// folder's place is a neutral wash; the sidebar's own cursor takes the
 /// gold wash and bar only while it has the keyboard. `k` is its spring:
 /// it opens by width alone and never fades, so its edge is always where
@@ -577,11 +576,11 @@ fn path_bar(app: &App) -> Element<'_, Message> {
     .into()
 }
 
-/// The path's crumbs, in mono: ancestors secondary, each a hover target
+/// The path's crumbs: ancestors secondary, each a hover target
 /// that opens it; the current folder in full white.
 fn crumb_bar<'a>(path: Vec<u8>) -> Element<'a, Message> {
     responsive(move |room: Size| {
-        // The path font is monospace, so a width is a character count,
+        // The path font's average advance gives a character count for a width,
         // less each crumb's own padding.
         let per = |w: f32| (w / (size::MONO * size::MONO_ADVANCE)) as usize;
         let mut segs = crumbs(&path, per(room.width));
@@ -888,7 +887,7 @@ struct Extra<'a> {
 }
 
 /// One row: `[icon] name … size modified kind`. The name is the reading
-/// line, in the interface face, elided to its column; the metadata is mono
+/// line, in the interface face, elided to its column; the metadata is Onest with tabular digits
 /// and a step quieter, and still-coming metadata reads `·`. In the trash a
 /// row is named by where it came from: `name from size deleted`. The
 /// cursor's pill is not the row's: it slides beneath (see [`list`]).

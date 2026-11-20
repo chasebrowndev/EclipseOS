@@ -319,7 +319,7 @@ pub fn render(name: &str, size: (f32, f32), scale: f32, path: &Path) -> Result<(
         let mut fonts = iced::advanced::graphics::text::font_system()
             .write()
             .expect("font system");
-        for face in ec_ui::FONTS {
+        for face in ec_ui::FONTS.iter().chain(ec_welcome::fonts::BYTES) {
             fonts.load_font(Cow::Borrowed(*face));
         }
     }

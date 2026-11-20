@@ -8,8 +8,9 @@ graph. The licence text ships beside them, which is all OFL-1.1 §2 asks.
 
 | file | source |
 |---|---|
-| `InstrumentSans-{Regular,Medium,SemiBold}.ttf` | instanced from Google Fonts' `InstrumentSans[wdth,wght].ttf` at `wght=400/500/600, wdth=100` |
-| `JetBrainsMono-{Regular,Medium}.ttf` | JetBrains Mono, upstream statics |
+| `Onest-{Light,Regular,Medium,SemiBold,Bold,ExtraBold}.ttf` | the shell's one face: instanced by `gen_onest.py` from Google Fonts' `Onest[wght].ttf` at `wght=300..800`, `tnum` digits made default. Shell embeds Regular/Medium/SemiBold; the welcome screen adds Light; Bold/ExtraBold are the logo wordmark's (`ec-welcome/assets/gen_logo.py`) |
+| `InstrumentSans-{Regular,Medium,SemiBold}.ttf` | no longer used by the shell; kept only because `apotheosis/` (`apoth-font`) still embeds them |
+| `JetBrainsMono-{Regular,Medium}.ttf` | JetBrains Mono, upstream statics. No longer a UI face: only the source the HUD and trusted bitmap atlases are rasterised from |
 
 `LICENSE-Spleen.txt` (BSD-2-Clause) covers the Spleen 2.1.0 8x16 glyphs that
 `abyss/crates/ec-abyss-render/src/font.rs` carries as a table, compiled in
@@ -40,12 +41,14 @@ by family and weight, and a variable font handed to it whole is one face at its
 default weight — every label would come out at 400 and the design's 500/600
 distinctions would silently vanish.
 
-To regenerate the Instrument Sans statics:
+To regenerate the Onest statics (needs fontTools):
 
 ```
-fonttools varLib.instancer InstrumentSans[wdth,wght].ttf wght=<400|500|600> wdth=100 \
-    --output InstrumentSans-<Regular|Medium|SemiBold>.ttf
+python3 -I assets/fonts/gen_onest.py path/to/'Onest[wght].ttf' assets/fonts
 ```
 
-then set name IDs 2/4/6 to the subfamily — the instancer leaves all three
-saying "Regular", which is cosmetic but misleads anyone inspecting the file.
+It instances each weight, sets name IDs 1/2/4/6 (family `Onest`, subfamily the weight name, which is
+what iced's `Family::Name("Onest")` + `Weight` resolves against) and repoints the digits' cmap
+entries at the font's `tnum` glyphs (`zero.tf`..`nine.tf`, 672/1000 em in every weight). Onest has
+the `tnum` feature, but iced cannot enable OpenType features, so tabular figures are baked in as
+the default instead. Onest covers Latin, Latin Extended and Cyrillic; no Greek, CJK, Arabic or Indic.

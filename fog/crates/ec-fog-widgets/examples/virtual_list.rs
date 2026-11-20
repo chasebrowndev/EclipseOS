@@ -229,7 +229,8 @@ fn main() -> iced::Result {
         .title("fog virtual list")
         .subscription(subscription)
         .theme(|_: &Demo| Theme::Dark)
-        .default_font(Font::MONOSPACE)
+        .font(include_bytes!("../../../../assets/fonts/Onest-Regular.ttf").as_slice())
+        .default_font(Font::with_name("Onest"))
         .window_size((720.0, 540.0))
         .run()
 }

@@ -47,7 +47,7 @@ pub enum Rule {
     Fallback(usize),
     /// System coverage index.
     System,
-    /// Embedded JetBrains Mono / Instrument Sans.
+    /// Embedded JetBrains Mono / Onest.
     Embedded,
     /// Nothing covers the base code point: procedural tofu with hex.
     Tofu,

@@ -120,6 +120,14 @@ fn shoot(args: &Args, path: &PathBuf) -> Result<(), String> {
         None,
     ))
     .ok_or("no GPU adapter to render with")?;
+    {
+        let mut fonts = iced::advanced::graphics::text::font_system()
+            .write()
+            .map_err(|_| "font system poisoned")?;
+        for face in ec_welcome::fonts::BYTES {
+            fonts.load_font(std::borrow::Cow::Borrowed(*face));
+        }
+    }
     let size = Size::new(w, h);
     welcome.paint(&mut renderer, size, scale);
     let physical = Size::new((w * scale).round() as u32, (h * scale).round() as u32);
@@ -170,5 +178,7 @@ fn main() -> iced::Result {
         .window(settings)
         .scale_factor(move |_| scale)
         .antialiasing(true)
+        .font(ec_welcome::fonts::BYTES[0])
+        .font(ec_welcome::fonts::BYTES[1])
         .run()
 }

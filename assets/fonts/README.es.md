@@ -8,8 +8,9 @@ El texto de la licencia se distribuye junto a ellas, que es todo lo que pide OFL
 
 | archivo | origen |
 |---|---|
-| `InstrumentSans-{Regular,Medium,SemiBold}.ttf` | instanciadas a partir de `InstrumentSans[wdth,wght].ttf` de Google Fonts en `wght=400/500/600, wdth=100` |
-| `JetBrainsMono-{Regular,Medium}.ttf` | JetBrains Mono, estáticas originales del upstream |
+| `Onest-{Light,Regular,Medium,SemiBold,Bold,ExtraBold}.ttf` | la única tipografía del shell: instanciadas por `gen_onest.py` a partir de `Onest[wght].ttf` de Google Fonts en `wght=300..800`, con los dígitos `tnum` por defecto. El shell incluye Regular/Medium/SemiBold; la pantalla de bienvenida añade Light; Bold/ExtraBold son del logotipo (`ec-welcome/assets/gen_logo.py`) |
+| `InstrumentSans-{Regular,Medium,SemiBold}.ttf` | el shell ya no las usa; se conservan solo porque `apotheosis/` aún las incluye |
+| `JetBrainsMono-{Regular,Medium}.ttf` | JetBrains Mono, estáticas originales. Ya no es tipografía de interfaz: solo la fuente de los atlas del HUD y de la interfaz confiable |
 
 `LICENSE-Spleen.txt` (BSD-2-Clause) cubre los glifos 8x16 de Spleen 2.1.0 que
 `abyss/crates/ec-abyss-render/src/font.rs` incluye como una tabla, compilada
@@ -40,12 +41,12 @@ por familia y peso, y una fuente variable entregada completa es una sola tipogra
 peso por defecto — cada etiqueta saldría en 400 y las distinciones 500/600 del diseño
 desaparecerían en silencio.
 
-Para regenerar las estáticas de Instrument Sans:
+Para regenerar las estáticas de Onest (requiere fontTools):
 
 ```
-fonttools varLib.instancer InstrumentSans[wdth,wght].ttf wght=<400|500|600> wdth=100 \
-    --output InstrumentSans-<Regular|Medium|SemiBold>.ttf
+python3 -I assets/fonts/gen_onest.py ruta/a/'Onest[wght].ttf' assets/fonts
 ```
 
-luego establece los name IDs 2/4/6 con la subfamilia — el instanciador deja los tres
-diciendo "Regular", lo cual es cosmético pero confunde a quien inspeccione el archivo.
+Instancia cada peso, fija los name IDs 1/2/4/6 (familia `Onest`, subfamilia el nombre del peso) y
+redirige los dígitos del cmap a los glifos `tnum` de la fuente (`zero.tf`..`nine.tf`), porque iced
+no puede activar características OpenType. Onest cubre latín, latín extendido y cirílico; no griego, CJK, árabe ni índicas.

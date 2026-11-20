@@ -23,7 +23,7 @@ greeting_msg = "ECLIPSE OS  ·  ABYSS COMPOSITOR  ·  SELECT A SESSION AND AUTHE
 [GTK]
 application_prefer_dark_theme = true
 cursor_theme_name = "Adwaita"
-font_name = "JetBrainsMono Nerd Font 11"
+font_name = "Onest 11"
 
 [commands]
 reboot = [ "systemctl", "reboot" ]
