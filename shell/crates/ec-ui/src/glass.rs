@@ -438,6 +438,7 @@ pub fn attach_surface(id: window::Id, surface: &WlSurface) -> bool {
             Entry {
                 glass,
                 last: Vec::new(),
+                last_clip: None,
             },
         );
         if let Some(c) = sh.conn.as_ref() {
