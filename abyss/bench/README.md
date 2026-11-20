@@ -32,7 +32,7 @@ not comparable to anything.
 COMP-14 §4.1 used to say "Criterion microbenchmarks". Criterion reports a mean
 with a confidence interval and treats the slow tail as noise to be classified
 out; every budget in COMP-14 §2 is a p99. See
-`decisions/0043-hand-rolled-bench-harness.md` — the spec line was amended in
+`docs/decisions/0043-hand-rolled-bench-harness.md` — the spec line was amended in
 the same change.
 
 ## What runs today

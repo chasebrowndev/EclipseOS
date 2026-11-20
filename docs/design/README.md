@@ -12,6 +12,7 @@ Tier 6 documents (Vol 1 planning index):
 | D-05 | [Default userland](D-05-userland.md) | written 2026-09-23, partial (no terminal, no portal) |
 | D-08 | [Desktop portal (`ecl-desktop-portal`)](D-08-portal.md) | written 2026-11-02, specification only |
 | D-07 | [First boot: graphical installer and setup](D-07-first-run.md) | written 2026-09-24, specification only |
+| DP-4 | [Desktop profiles (WM mode and DE mode)](DP-4-desktop-profiles.md) | revised 2026-09-11, work plan |
 
 ## Vendored design reference
 

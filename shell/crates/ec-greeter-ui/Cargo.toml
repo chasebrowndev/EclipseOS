@@ -1,0 +1,41 @@
+[package]
+name = "ec-greeter-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The login greeter's visual layer (ADR 0126): the tile layout drawn as glass panes, the Glances, and the Auth seam. Draws no authentication."
+publish = false
+
+[lib]
+name = "ec_greeter_ui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ec-greeter-ui"
+path = "src/bin/ec-greeter-ui.rs"
+
+[dependencies]
+# Pinned to match ec-ui and ec-lock exactly (ADR 0039).
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "image-without-codecs"] }
+# The layout engine, the Glance readers and the settings reader (ADR 0126).
+ec-layout = { path = "../ec-layout" }
+ec-glance = { path = "../ec-glance" }
+ec-greeter = { path = "../ec-greeter" }
+# Pure crates shared with the desktop. This crate never links ec-ui: the
+# greeter's package has no edge to the desktop widget crate (ADR 0089).
+ec-theme = { path = "../../../abyss/crates/ec-theme" }
+ec-style-tokens = { path = "../../../abyss/crates/ec-style-tokens" }
+# eclipse_glass_v1 client, the protocol crate ec-ui binds too.
+ec-protocols = { path = "../../../abyss/crates/ec-protocols", features = ["client"] }
+wayland-client = "0.31"
+# A plain xdg window's raw wl_display / wl_surface, on winit's connection.
+raw-window-handle = "0.6"
+wayland-backend = { version = "0.3", features = ["client_system"] }
+# localtime_r for the clock face (the zone rules live in the C library).
+libc = "0.2"
+serde_json = { workspace = true }
+# Decodes the wallpaper and blurs a small copy for the fallback panes (the
+# same crate iced already links; PNG only, the format the greeter stores).
+image = { version = "0.25", default-features = false, features = ["png"] }

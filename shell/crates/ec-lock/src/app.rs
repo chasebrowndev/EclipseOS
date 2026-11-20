@@ -28,6 +28,7 @@ use iced::{Subscription, Task};
 use iced_sessionlock::actions::UnLockAction;
 
 use crate::clock::{self, Reading};
+use crate::face::{self, Face, Snapshot};
 use crate::machine::{Machine, Phase, Reason};
 use crate::pam::{Granted, Verdict};
 use crate::secret::Secret;
@@ -124,6 +125,10 @@ pub enum Message {
     ThemeChanged,
     /// PAM answered attempt `.0`.
     Checked(u64, Verdict),
+    /// A frame of the entrance motion. Drawing state only.
+    Frame(Instant),
+    /// A Glance poll finished (`None`: it timed out). Drawing state only.
+    Glance(Option<Snapshot>),
     /// Release the lock. Built only by `update`, from the machine's grant.
     Unlock(Granted),
 }
@@ -139,6 +144,8 @@ impl fmt::Debug for Message {
             Message::SurfaceUp => f.write_str("SurfaceUp"),
             Message::ThemeChanged => f.write_str("ThemeChanged"),
             Message::Checked(a, v) => f.debug_tuple("Checked").field(a).field(v).finish(),
+            Message::Frame(_) => f.write_str("Frame"),
+            Message::Glance(_) => f.write_str("Glance"),
             Message::Unlock(g) => f.debug_tuple("Unlock").field(g).finish(),
         }
     }
@@ -162,6 +169,8 @@ pub struct App {
     user: CString,
     user_display: String,
     clock: Reading,
+    /// The tile layout, the Glances' numbers and the entrance: drawing only.
+    face: Face,
     /// When `update` last ran: what the view's countdown is measured from.
     now: Instant,
 }
@@ -175,6 +184,7 @@ impl App {
             user,
             user_display,
             clock: clock::now(ec_ui::tokens::clock::HOUR_12),
+            face: Face::load(),
             now: Instant::now(),
         }
     }
@@ -205,6 +215,10 @@ impl App {
 
     pub fn clock(&self) -> &Reading {
         &self.clock
+    }
+
+    pub fn face(&self) -> &Face {
+        &self.face
     }
 
     /// Whether Submit would reach PAM now: something is typed, nothing is in
@@ -265,6 +279,8 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         Message::Tick => app.clock = clock::now(ec_ui::tokens::clock::HOUR_12),
         Message::SurfaceUp => app.machine.surfaces_up(),
         Message::ThemeChanged => {}
+        Message::Frame(at) => app.face.frame(at),
+        Message::Glance(snap) => app.face.set_glance(snap),
         Message::Checked(attempt, verdict) => {
             if let Some(granted) = app.checked(attempt, verdict) {
                 return Task::done(Message::Unlock(granted));
@@ -277,11 +293,12 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
     Task::none()
 }
 
-pub fn subscription(_app: &App) -> Subscription<Message> {
+pub fn subscription(app: &App) -> Subscription<Message> {
     Subscription::batch([
         iced::event::listen_with(input),
         ticks(),
         ec_ui::ipc::theme_subscription(|| Message::ThemeChanged),
+        face::subscription(&app.face),
     ])
 }
 
@@ -344,6 +361,8 @@ mod tests {
             Message::Tick,
             Message::SurfaceUp,
             Message::ThemeChanged,
+            Message::Frame(Instant::now()),
+            Message::Glance(None),
             Message::Checked(1, Verdict::Granted(granted_for_test())),
             Message::Checked(1, Verdict::Denied),
         ];

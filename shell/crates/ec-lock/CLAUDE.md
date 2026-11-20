@@ -33,8 +33,15 @@ ADR 0024 (the compositor's fallback when it dies). Protocol: Vol 1's
 - **No PAM crate.** `pam.rs` links libpam directly (three calls and a
   conversation). Do not add a binding crate beside it.
 - **argv is `--help`/`--version` only.** The user is the process uid.
+- **Layout and Glances (ADR 0126) are drawing only.** `face.rs` reads
+  `$XDG_CONFIG_HOME/eclipse/lock-layout` once at start (`O_NOFOLLOW`, 4 KiB cap,
+  `Layout::from_lines` + `validate`; anything wrong is `face::builtin()`) and polls
+  battery/wifi off the UI loop under `ec_glance::bounded`. `Message::Frame` and
+  `Message::Glance` only set `Face`; they never convert to an unlock and never
+  reach auth. The Password tile is always drawn (added if a layout lacks it) and
+  never animates. `Users`, `Power`, `NowPlaying` tiles are not drawn here.
 - `view.rs` is eclipse-frontend's. It reads the model only through
-  `Scene::of(&App)` (`status, typed, user, clock, can_submit`) and emits only
+  `Scene::of(&App)` (`status, typed, user, clock, can_submit, face`) and emits only
   `Message::Submit` / `Message::Clear`. `style()`/`ground()` stay opaque: a
   translucent lock surface shows the desktop. `examples/preview.rs` renders
   each state in an ordinary window for screenshots; it never locks.

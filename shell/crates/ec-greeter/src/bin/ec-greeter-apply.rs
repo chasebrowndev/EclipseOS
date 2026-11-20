@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::Path;
 use std::process::ExitCode;
 
-use ec_greeter::{apply, reset, Error, Input, MAX_INPUT, STATE_DIR};
+use ec_greeter::{apply, reset, Error, Input, MAX_INPUT, SHIPPED_WALLPAPER, STATE_DIR};
 
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
@@ -29,10 +29,11 @@ fn main() -> ExitCode {
         return ExitCode::from(1);
     }
     let dir = Path::new(STATE_DIR);
+    let shipped = Path::new(SHIPPED_WALLPAPER);
     let result = if verb == "reset" {
-        reset(dir, 0)
+        reset(dir, 0, shipped)
     } else {
-        read_input().and_then(|input| apply(dir, 0, &input))
+        read_input().and_then(|input| apply(dir, 0, shipped, &input))
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

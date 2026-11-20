@@ -111,7 +111,7 @@ detiene QEMU por pid y confirma que ya no está. Las pantallas se dejan en `<wor
 ```
 ./run.sh scenario --iso /var/tmp/eclipseos-out/eclipseos-*.iso --work $TMPDIR/e2e \
     [--profile standard] [--disk virtio|nvme] [--disk-size 20G] [--second-disk 8G] [--res 1280x800] \
-    [--no-net] [--bios] [--wifi] [--reboot-count N] [--kernels linux,linux-lts] [--keep] [--tcg]
+    [--no-net] [--bios] [--wifi] [--vt-test] [--polkit-workaround] [--reboot-count N] [--kernels linux,linux-lts] [--keep] [--tcg]
 ```
 
 Arranca la ISO desde cero, comprueba que la pantalla de bienvenida aparece con cero pulsaciones, luego maneja ec-setup
@@ -127,7 +127,7 @@ Límites honestos:
 - **ec-setup no tiene paso de acceso remoto**, así que SSH se planta en la instalación terminada desde la shell root de tty2
   de la sesión live (solo con clave, como la opción en `eclipseos-postinstall.sh`). La salida de los comandos
   del lado live regresa por el puerto serial (`/dev/ttyS0` hacia `serial.log`).
-- Solo se puede elegir el perfil Standard en ec-setup (`data::selectable`); los demás valores de
+- Solo se pueden elegir los perfiles Standard y Agentic en ec-setup (`data::selectable`); los demás valores de
   `--profile` se aceptan y se reportan como una comprobación `profile_selectable` fallida sin arrancar.
 - `--wifi`: mac80211_hwsim y un AP WPA2 con hostapd/dnsmasq (SSID `eclipse-test`) en un netns, instalado
   desde el mirror por el enlace ethernet SLIRP (que sigue siendo la salida a internet). Prueba la unión del

@@ -1018,6 +1018,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-glance"
+version = "0.2.2"
+
+[[package]]
 name = "ec-glass-host"
 version = "0.2.2"
 dependencies = [
@@ -1029,9 +1033,29 @@ dependencies = [
 name = "ec-greeter"
 version = "0.2.2"
 dependencies = [
+ "ec-layout",
  "ec-theme",
  "libc",
  "png 0.18.1",
+]
+
+[[package]]
+name = "ec-greeter-ui"
+version = "0.2.2"
+dependencies = [
+ "ec-glance",
+ "ec-greeter",
+ "ec-layout",
+ "ec-protocols",
+ "ec-style-tokens",
+ "ec-theme",
+ "iced",
+ "image",
+ "libc",
+ "raw-window-handle",
+ "serde_json",
+ "wayland-backend",
+ "wayland-client",
 ]
 
 [[package]]
@@ -1071,10 +1095,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ec-layout"
+version = "0.2.2"
+
+[[package]]
 name = "ec-lock"
 version = "0.2.2"
 dependencies = [
+ "ec-glance",
  "ec-ipc",
+ "ec-layout",
  "ec-ui",
  "iced",
  "iced_sessionlock",
@@ -1142,6 +1172,7 @@ dependencies = [
  "ec-config-schema",
  "ec-greeter",
  "ec-ipc",
+ "ec-layout",
  "ec-policy-viewer",
  "ec-services",
  "ec-theme",

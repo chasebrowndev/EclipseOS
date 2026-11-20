@@ -27,5 +27,5 @@ vt = 1
 # only if it dies within seconds of starting, the build kept from before the
 # last update: the greeter has no session menu to pick "Abyss (previous)" from
 # when the compositor it runs on is the thing that broke.
-command = "systemd-cat -t greeter /usr/lib/eclipse/ec-abyss-launch /usr/bin/ec-abyss --backend drm --kiosk -- /usr/lib/eclipse/ec-greeter-run"
+command = "systemd-cat -t greeter /usr/lib/eclipse/ec-abyss-launch /usr/bin/ec-abyss --backend drm --kiosk --config /etc/eclipse/greetd/abyss-greeter.kdl -- /usr/lib/eclipse/ec-greeter-run"
 user = "greeter"
