@@ -9,6 +9,7 @@
 pub mod auth;
 pub mod backdrop;
 pub mod clock;
+pub mod gauge;
 pub mod glance;
 pub mod glass;
 pub mod greetd;

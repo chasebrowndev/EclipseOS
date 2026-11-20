@@ -1045,6 +1045,7 @@ version = "0.2.2"
 dependencies = [
  "ec-glance",
  "ec-greeter",
+ "ec-ipc",
  "ec-layout",
  "ec-protocols",
  "ec-style-tokens",
@@ -1171,6 +1172,7 @@ dependencies = [
  "ec-abyss-config",
  "ec-config-schema",
  "ec-greeter",
+ "ec-greeter-ui",
  "ec-ipc",
  "ec-layout",
  "ec-policy-viewer",

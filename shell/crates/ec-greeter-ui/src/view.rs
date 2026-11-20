@@ -5,7 +5,7 @@
 //! scales to the screen. Beneath it the rest of the layout reads in order:
 //! a one-line greeting, the account list, the field with its Unlock pill, the
 //! power pills, and the Glances. No two neighbours share a silhouette: a
-//! numeral, a line, a list, a field, a row of pills, a figure with a rail.
+//! numeral, a line, a list, a field, a row of pills, a row of gauges.
 //!
 //! Accent: the one live yellow is the typed-length dot run and its caret, and
 //! only while the field takes keys. Nothing else in the screen is accented.
@@ -16,7 +16,6 @@
 
 use std::time::Instant;
 
-use ec_glance::Charge;
 use ec_layout::Kind;
 use ec_theme::{Palette, Rgba};
 use iced::widget::image::FilterMethod;
@@ -26,13 +25,13 @@ use iced::{alignment, ContentFit, Element, Font, Length};
 
 use crate::app::{App, Msg};
 use crate::auth::{AuthState, Power, Refusal};
-use crate::glance::Snapshot;
+use crate::gauge::{self, Spec};
 use crate::glass::Tone;
-use crate::motion::Placed;
+use crate::motion::{content_scale, Placed};
 use crate::parts::{swatch, Ground};
 use crate::tokens::{
-    self, cell, font, scale, size, space, to_iced, CARD_RADIUS, CELL_RADIUS, PAD_FRACTION, PAD_MAX, PAD_MIN,
-    PAD_SHARE_MAX, PILL_RADIUS,
+    self, cell, font, gauge as g, scale, size, space, to_iced, CARD_RADIUS, CELL_RADIUS, PAD_FRACTION,
+    PAD_MAX, PAD_MIN, PAD_SHARE_MAX, PILL_RADIUS,
 };
 
 /// What one tile's content needs: its inner box, how far it has appeared, and
@@ -44,6 +43,9 @@ struct Cx<'a> {
     ih: f32,
     fade: f32,
     state: AuthState,
+    /// How much a content-sized tile's reference sizes are scaled (1 unless the
+    /// output is too small for them).
+    scale: f32,
 }
 
 /// The whole screen for this frame.
@@ -88,7 +90,15 @@ pub fn view(app: &App) -> Element<'_, Msg> {
 }
 
 fn tile<'a>(app: &'a App, p: &Placed, state: AuthState) -> Option<Element<'a, Msg>> {
-    let pad = pad_for(p.w, p.h);
+    if p.kind == Kind::Battery && (app.stage.shown() == 0 || p.w < 1.0 || p.h < 1.0) {
+        return None;
+    }
+    let (pad, scale) = if p.kind == Kind::Battery {
+        let s = content_scale(p.w, p.h, app.stage.shown());
+        (g::PAD_PX as f32 * s, s)
+    } else {
+        (pad_for(p.w, p.h), 1.0)
+    };
     let iw = (p.w - 2.0 * pad).max(0.0);
     let ih = (p.h - 2.0 * pad).max(0.0);
     let cx = Cx {
@@ -98,6 +108,7 @@ fn tile<'a>(app: &'a App, p: &Placed, state: AuthState) -> Option<Element<'a, Ms
         ih,
         fade: p.fade,
         state,
+        scale,
     };
     let content = match p.kind {
         Kind::Clock => clock(&cx),
@@ -330,11 +341,19 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     // ground, dimmed ink, no press.
     let idle = cx.state == AuthState::Idle;
     let dim = if idle { tokens::backdrop::DISABLED } else { 1.0 };
+    // A disabled control's ink steps back less on light glass, where a halved
+    // ink would vanish into the frost.
+    let ink_dim = if idle {
+        tokens::disabled_ink(pal.scheme)
+    } else {
+        1.0
+    };
+    let mark = tokens::typed_mark(pal);
     let typed = app.secret.chars().min(cell::DOTS_MAX);
     let mut ink = row![].spacing(cell::DOT_GAP).align_y(alignment::Vertical::Center);
     for _ in 0..typed {
         ink = ink.push(swatch(
-            pal.accent,
+            mark,
             cell::DOT / 2.0,
             Length::Fixed(cell::DOT),
             Length::Fixed(cell::DOT),
@@ -342,7 +361,7 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     }
     if focused {
         ink = ink.push(swatch(
-            pal.accent,
+            mark,
             cell::CARET_W / 2.0,
             Length::Fixed(cell::CARET_W),
             Length::Fixed(cell::CARET_H),
@@ -353,7 +372,7 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
             "Password",
             size::BODY,
             font::UI,
-            pal.text_tertiary.with_alpha(pal.text_tertiary.0[3] * dim),
+            pal.text_tertiary.with_alpha(pal.text_tertiary.0[3] * ink_dim),
         ));
     }
     let field_body = container(ink)
@@ -369,7 +388,7 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
         "Unlock",
         size::BODY_SMALL,
         font::UI_MEDIUM,
-        pal.text.with_alpha(pal.text.0[3] * dim),
+        pal.text.with_alpha(pal.text.0[3] * ink_dim),
     ))
     .width(Length::Fill)
     .height(Length::Fill)
@@ -448,121 +467,21 @@ fn power<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     .into()
 }
 
+/// The battery Glance: a row of gauges, each a device icon in a rounded-square
+/// ring with its percentage below, four to a row and then a second row. The
+/// pane is exactly as big as that content (`ec_layout::intrinsic`).
 fn battery<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
-    let pal = cx.pal;
-    let snap: &Snapshot = &cx.app.glance;
-    let Some(first) = snap.batteries.first() else {
-        return container(label(
-            "No battery",
-            size::BODY_SMALL,
-            font::UI,
-            pal.text_secondary,
-        ))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .center(Length::Fill)
-        .into();
-    };
-    let single = snap.batteries.len() == 1;
-    let detail = cx.ih >= cell::DETAIL_MIN_H;
-    let mut col = column![label(
-        "BATTERY",
-        size::MICRO,
-        font::DATA_MEDIUM,
-        pal.text_tertiary
-    )]
-    .spacing(space::ROW_Y)
-    .height(Length::Fill);
-    if single {
-        let fig = fit(
-            cx.ih,
-            cx.iw,
-            scale::FIGURE_H,
-            0.25,
-            scale::FIGURE_MIN,
-            scale::FIGURE_MAX,
-        );
-        col = col.push(label(
-            format!("{}%", first.percent),
-            fig,
-            font::DATA_MEDIUM,
-            pal.text,
-        ));
-        if detail {
-            col = col.push(rail(first.percent, pal));
+    let batteries = &cx.app.glance.batteries;
+    let shown = cx.app.stage.shown().min(batteries.len());
+    let mut rows = column![].spacing(g::ROW_GAP_PX as f32 * cx.scale);
+    for chunk in batteries[..shown].chunks(g::MAX_PER_ROW) {
+        let mut r = row![].spacing(g::GAUGE_GAP_PX as f32 * cx.scale);
+        for b in chunk {
+            r = r.push(gauge::cell(Spec::of(b), cx.scale, cx.pal));
         }
-        col = col.push(label(
-            charge_text(first.charge),
-            size::MICRO,
-            font::UI,
-            pal.text_secondary,
-        ));
-    } else {
-        for b in snap.batteries.iter().take(cell::DEVICES_MAX) {
-            let name = if b.internal {
-                "Internal".to_owned()
-            } else {
-                b.name.clone()
-            };
-            col = col.push(
-                row![
-                    label(name, size::BODY_SMALL, font::UI, pal.text_secondary),
-                    label(format!("{}%", b.percent), size::BODY, font::DATA_MEDIUM, pal.text),
-                    label(
-                        if b.charge == Charge::Charging {
-                            "Charging"
-                        } else {
-                            ""
-                        },
-                        size::MICRO,
-                        font::UI,
-                        pal.text_secondary,
-                    ),
-                ]
-                .align_y(alignment::Vertical::Center)
-                .spacing(space::ROW_Y),
-            );
-            if detail {
-                col = col.push(rail(b.percent, pal));
-            }
-        }
+        rows = rows.push(r);
     }
-    col.into()
-}
-
-/// The charge rail: a track with the lit part in text ink.
-fn rail<'a>(percent: u8, pal: &Palette) -> Element<'a, Msg> {
-    let p = u16::from(percent.min(100));
-    let mut bar = row![];
-    if p > 0 {
-        bar = bar.push(swatch(
-            pal.text,
-            cell::RAIL_H / 2.0,
-            Length::FillPortion(p),
-            Length::Fill,
-        ));
-    }
-    if p < 100 {
-        bar = bar.push(swatch(
-            pal.track,
-            cell::RAIL_H / 2.0,
-            Length::FillPortion(100 - p),
-            Length::Fill,
-        ));
-    }
-    container(bar)
-        .width(Length::Fill)
-        .height(Length::Fixed(cell::RAIL_H))
-        .into()
-}
-
-fn charge_text(charge: Charge) -> &'static str {
-    match charge {
-        Charge::Charging => "Charging",
-        Charge::Discharging => "On battery",
-        Charge::Full => "Full",
-        Charge::Unknown => "Unknown",
-    }
+    rows.into()
 }
 
 fn wifi<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {

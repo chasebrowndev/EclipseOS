@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use ec_layout::{Kind, Layout};
+use ec_layout::{intrinsic, Kind, Layout};
 use iced::Size;
 
 use crate::tokens::{motion, TILE_GAP};
@@ -84,6 +84,10 @@ pub struct Stage {
     sized: bool,
     items: Vec<Item>,
     last: Option<Instant>,
+    /// Devices the Glances have to show, and how many of them the battery
+    /// tile's footprint holds (`ec_layout::fit`).
+    devices: usize,
+    shown: usize,
 }
 
 impl Stage {
@@ -94,9 +98,25 @@ impl Stage {
             sized: false,
             items: Vec::new(),
             last: None,
+            devices: 0,
+            shown: 0,
         };
         s.reconcile(now);
         s
+    }
+
+    /// The Glances' device count changed: a content-sized tile re-measures and
+    /// springs to its new size (or hides when there is nothing to show).
+    pub fn set_devices(&mut self, devices: usize, now: Instant) {
+        if devices != self.devices {
+            self.devices = devices;
+            self.reconcile(now);
+        }
+    }
+
+    /// How many gauges the battery tile draws now.
+    pub fn shown(&self) -> usize {
+        self.shown
     }
 
     /// The output changed size: every tile springs to its new place.
@@ -166,7 +186,10 @@ impl Stage {
     fn reconcile(&mut self, now: Instant) {
         let mut next = Vec::with_capacity(self.layout.tiles.len());
         for (i, t) in self.layout.tiles.iter().enumerate() {
-            let target = target_px(&self.layout, t.kind, self.size);
+            let target = target_px(&self.layout, t.kind, self.size, self.devices);
+            if t.kind == Kind::Battery {
+                self.shown = ec_layout::fit(&self.layout, t.kind, self.devices).map_or(0, |f| f.1);
+            }
             let item = match self.items.iter().find(|it| it.kind == t.kind) {
                 Some(old) => {
                     let mut it = old.clone();
@@ -190,14 +213,38 @@ impl Stage {
 
 /// A tile's rectangle on an output of `size`, through `Rect::to_px` with the
 /// greeter's gap. A kind the layout lacks is a zero box (it is never drawn).
-fn target_px(layout: &Layout, kind: Kind, size: (f32, f32)) -> [f32; 4] {
+///
+/// A content-sized kind is the pane its content needs ([`intrinsic::px`]),
+/// anchored at its footprint's top-left, scaled down only if the footprint on
+/// this output is smaller than the content (a small output). With nothing to
+/// show it is a zero box.
+fn target_px(layout: &Layout, kind: Kind, size: (f32, f32), devices: usize) -> [f32; 4] {
+    let w = size.0.max(1.0) as u32;
+    let h = size.1.max(1.0) as u32;
+    if kind.is_intrinsic() {
+        let Some((r, n)) = ec_layout::fit(layout, kind, devices) else {
+            return [0.0; 4];
+        };
+        let (x, y, bw, bh) = r.to_px(w, h, TILE_GAP);
+        let s = content_scale(bw as f32, bh as f32, n);
+        let (pw, ph) = intrinsic::px(n);
+        return [x as f32, y as f32, pw as f32 * s, ph as f32 * s];
+    }
     let Some(r) = layout.get(kind) else {
         return [0.0; 4];
     };
-    let w = size.0.max(1.0) as u32;
-    let h = size.1.max(1.0) as u32;
     let (x, y, pw, ph) = r.to_px(w, h, TILE_GAP);
     [x as f32, y as f32, pw as f32, ph as f32]
+}
+
+/// How much `n` gauges shrink to fit a `bw` x `bh` px footprint: 1 unless the
+/// output is smaller than the reference, never above 1.
+pub fn content_scale(bw: f32, bh: f32, n: usize) -> f32 {
+    let (cw, ch) = intrinsic::px(n);
+    if cw <= 0 || ch <= 0 {
+        return 1.0;
+    }
+    (bw / cw as f32).min(bh / ch as f32).clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
@@ -257,8 +304,57 @@ mod tests {
     #[test]
     fn a_layout_with_no_room_for_a_tile_draws_nothing_wrong() {
         assert_eq!(
-            target_px(&Layout { tiles: vec![] }, Kind::Clock, (100.0, 100.0)),
+            target_px(&Layout { tiles: vec![] }, Kind::Clock, (100.0, 100.0), 0),
             [0.0; 4]
         );
+    }
+
+    #[test]
+    fn a_battery_tile_is_the_size_of_its_content_whatever_the_output() {
+        let mut l = Layout::default();
+        l.set(Kind::Battery, ec_layout::Rect::new(18, 1, 99, 99));
+        for (n, size) in [
+            (1, (1920.0, 1080.0)),
+            (3, (2560.0, 1440.0)),
+            (6, (3840.0, 2160.0)),
+        ] {
+            let [_, _, w, h] = target_px(&l, Kind::Battery, size, n);
+            let (cw, ch) = intrinsic::px(n);
+            assert_eq!((w, h), (cw as f32, ch as f32), "{n} devices on {size:?}");
+        }
+        assert_eq!(target_px(&l, Kind::Battery, (1920.0, 1080.0), 0), [0.0; 4]);
+    }
+
+    #[test]
+    fn a_small_output_shrinks_the_gauges_to_their_footprint() {
+        let mut l = Layout::default();
+        l.set(Kind::Battery, ec_layout::Rect::new(18, 1, 1, 1));
+        let [_, _, w, h] = target_px(&l, Kind::Battery, (960.0, 540.0), 4);
+        let (cw, ch) = intrinsic::px(4);
+        assert!(w < cw as f32 && h < ch as f32);
+        let (_, _, bw, bh) = ec_layout::fit(&l, Kind::Battery, 4)
+            .unwrap()
+            .0
+            .to_px(960, 540, TILE_GAP);
+        assert!(
+            w <= bw as f32 && h <= bh as f32,
+            "the pane stays in its footprint"
+        );
+        assert_eq!(content_scale(1e6, 1e6, 4), 1.0, "a big output never enlarges it");
+    }
+
+    #[test]
+    fn the_stage_re_measures_when_devices_appear_and_disappear() {
+        let t0 = Instant::now();
+        let mut l = Layout::default();
+        l.set(Kind::Battery, ec_layout::Rect::new(18, 1, 2, 2));
+        let mut st = Stage::new(l, Size::new(1920.0, 1080.0), t0);
+        assert_eq!(st.shown(), 0);
+        st.set_devices(6, t0);
+        assert_eq!(st.shown(), 6);
+        st.set_devices(2, t0);
+        assert_eq!(st.shown(), 2);
+        st.set_devices(0, t0);
+        assert_eq!(st.shown(), 0);
     }
 }

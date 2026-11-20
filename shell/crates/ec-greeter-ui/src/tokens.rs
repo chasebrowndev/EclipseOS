@@ -24,6 +24,76 @@ pub fn to_iced(c: Rgba) -> Color {
     }
 }
 
+/// Light glass: the ink alphas the greeter's text uses (linear-light, as the
+/// palette's are). The shared table's secondary and tertiary steps (.62, .42)
+/// are fine on the settings column but fall under 4.5:1 on the frost over a
+/// colourful wallpaper, so the greeter, which sits straight on the wallpaper,
+/// steps them up. Hierarchy then comes from size, weight and the mono face.
+pub mod light {
+    pub const TEXT_SECONDARY: f32 = 0.92;
+    pub const TEXT_TERTIARY: f32 = 0.90;
+    /// Danger text on light glass: a deep brick red, as #bd3a26 is 2.5:1 there.
+    pub const DANGER: u32 = 0x701609;
+    /// How far the typed marks' accent text steps toward the ink.
+    pub const MARK_INK: f32 = 0.4;
+    /// A disabled control's ink, as a share (dark uses `backdrop::DISABLED`).
+    pub const DISABLED_INK: f32 = 0.8;
+    /// The luminance of the darkest glass ground text may land on: measured
+    /// 0.49 over the colourful, pale, warm and shipped wallpapers, less a hover
+    /// darkening and a margin.
+    pub const WORST_GROUND_LUMINANCE: f32 = 0.40;
+}
+
+/// The luminance of the brightest dark glass ground a gauge may land on (the
+/// smoked blur over the saturated test wallpapers measures 0.01 to 0.04).
+pub const DARK_WORST_GROUND_LUMINANCE: f32 = 0.04;
+
+/// The worst glass ground for `scheme`.
+pub fn worst_ground(scheme: ec_theme::Scheme) -> f32 {
+    match scheme {
+        ec_theme::Scheme::Dark => DARK_WORST_GROUND_LUMINANCE,
+        ec_theme::Scheme::Light => light::WORST_GROUND_LUMINANCE,
+    }
+}
+
+/// The greeter's palette for `seeds`: the shared derivation, then (light only)
+/// the greeter's own legibility steps.
+pub fn palette(seeds: &ec_theme::Seeds, scheme: ec_theme::Scheme) -> ec_theme::Palette {
+    let mut p = ec_theme::derive(seeds);
+    if scheme == ec_theme::Scheme::Light {
+        p.text_secondary = p.text.with_alpha(light::TEXT_SECONDARY);
+        p.text_tertiary = p.text.with_alpha(light::TEXT_TERTIARY);
+        p.danger = Rgba::rgb(light::DANGER);
+    }
+    p
+}
+
+/// A disabled control's ink as a share of its enabled ink.
+pub fn disabled_ink(scheme: ec_theme::Scheme) -> f32 {
+    match scheme {
+        ec_theme::Scheme::Dark => backdrop::DISABLED,
+        ec_theme::Scheme::Light => light::DISABLED_INK,
+    }
+}
+
+/// The typed length's dots and caret: the accent, or its text step on light
+/// glass (stepped toward the ink), where the gold itself would wash out.
+pub fn typed_mark(p: &ec_theme::Palette) -> Rgba {
+    match p.scheme {
+        ec_theme::Scheme::Dark => p.accent,
+        ec_theme::Scheme::Light => {
+            let k = light::MARK_INK;
+            let mix = |a: f32, b: f32| a * (1.0 - k) + b * k;
+            Rgba::new(
+                mix(p.accent_text.r(), p.text.r()),
+                mix(p.accent_text.g(), p.text.g()),
+                mix(p.accent_text.b(), p.text.b()),
+                1.0,
+            )
+        }
+    }
+}
+
 /// The window size before the compositor says otherwise, logical px.
 pub const DEFAULT_WINDOW: (f32, f32) = (1920.0, 1080.0);
 
@@ -35,7 +105,7 @@ pub const CELL_RADIUS: f32 = 14.0;
 /// Asks for a pill: clamped to half the cell's short side.
 pub const PILL_RADIUS: f32 = 999.0;
 /// The gap a tile leaves on each side (`Rect::to_px`): neighbours sit 2x apart.
-pub const TILE_GAP: u32 = 8;
+pub const TILE_GAP: u32 = ec_layout::intrinsic::TILE_GAP_PX as u32;
 /// Card padding as a share of the card's short side, and its bounds.
 pub const PAD_FRACTION: f32 = 0.08;
 pub const PAD_MIN: f32 = 12.0;
@@ -125,8 +195,6 @@ pub mod cell {
     pub const CARET_H: f32 = 20.0;
     /// The danger rim of a refused field, as a share of full ink.
     pub const FAIL_RIM: f32 = 0.45;
-    /// Charge rail.
-    pub const RAIL_H: f32 = 6.0;
     /// The Unlock pill beside the field: a share of the tile, clamped.
     pub const SUBMIT_W_FRAC: f32 = 0.3;
     pub const SUBMIT_MIN: f32 = 72.0;
@@ -142,9 +210,29 @@ pub mod cell {
     pub const BAR_BASE: f32 = 0.35;
     pub const BAR_STEP: f32 = 0.2;
     pub const BAR_RADIUS: f32 = 2.0;
-    /// A Glance drops its detail below this height.
-    pub const DETAIL_MIN_H: f32 = 120.0;
-    pub const DEVICES_MAX: usize = 4;
+}
+
+/// The battery gauge (`gauge.rs`). The sizes that fix the tile's footprint live
+/// in `ec_layout::intrinsic`, so the layout engine and the drawing cannot
+/// disagree about how big the pane is.
+pub mod gauge {
+    pub use ec_layout::intrinsic::{
+        CELL_H_PX, GAUGE_GAP_PX, GAUGE_PX, MAX_DEVICES, MAX_PER_ROW, NUMERAL_PX, PAD_PX, ROW_GAP_PX,
+    };
+    /// The ring's stroke and its corner radius, as shares of the gauge's side
+    /// and of the ring's own side.
+    pub const STROKE_FRAC: f32 = 0.085;
+    pub const CORNER_FRAC: f32 = 0.30;
+    /// The device icon's box and its stroke, as shares of the side and of the box.
+    pub const ICON_FRAC: f32 = 0.40;
+    pub const ICON_STROKE_FRAC: f32 = 0.085;
+    /// The charging bolt: its box and its top-left, as shares of the side.
+    pub const BOLT_FRAC: f32 = 0.20;
+    pub const BOLT_AT: f32 = 0.2;
+    /// The percentage under the gauge, px at the reference size.
+    pub const NUMERAL_SIZE: f32 = 20.0;
+    /// At or under this and not charging, the ring is the danger colour.
+    pub const LOW_PERCENT: u8 = 20;
 }
 
 /// Motion. A pane springs to its place and rises in when the screen appears.
@@ -219,6 +307,65 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ec_theme::{Scheme, DARK_SEEDS, LIGHT_SEEDS};
+
+    /// WCAG contrast of `fg` laid on a neutral ground of luminance `ground`,
+    /// blended in linear light as the renderer does.
+    fn on_ground(fg: Rgba, ground: f32) -> f32 {
+        let a = fg.a();
+        let seen = a * fg.luminance() + (1.0 - a) * ground;
+        (ground + 0.05) / (seen + 0.05)
+    }
+
+    /// WCAG contrast either way round: dark ink on a light ground or light on dark.
+    fn contrast(fg: Rgba, ground: f32) -> f32 {
+        let a = fg.a();
+        let seen = a * fg.luminance() + (1.0 - a) * ground;
+        let (hi, lo) = if seen > ground {
+            (seen, ground)
+        } else {
+            (ground, seen)
+        };
+        (hi + 0.05) / (lo + 0.05)
+    }
+
+    #[test]
+    fn dark_palette_is_the_shared_derivation_untouched() {
+        assert_eq!(palette(&DARK_SEEDS, Scheme::Dark), ec_theme::derive(&DARK_SEEDS));
+    }
+
+    #[test]
+    fn light_text_holds_4_5_to_1_on_the_worst_glass_ground() {
+        let p = palette(&LIGHT_SEEDS, Scheme::Light);
+        let g = light::WORST_GROUND_LUMINANCE;
+        for (name, c) in [
+            ("text", p.text),
+            ("text_secondary", p.text_secondary),
+            ("text_tertiary", p.text_tertiary),
+            ("danger", p.danger),
+        ] {
+            let r = on_ground(c, g);
+            assert!(r >= 4.5, "{name} is {r:.2}:1 on light glass");
+        }
+    }
+
+    #[test]
+    fn light_typed_marks_hold_3_to_1_on_the_worst_glass_ground() {
+        let p = palette(&LIGHT_SEEDS, Scheme::Light);
+        let r = on_ground(typed_mark(&p), light::WORST_GROUND_LUMINANCE);
+        assert!(r >= 3.0, "the typed marks are {r:.2}:1 on light glass");
+        // Dark keeps the accent itself.
+        let d = palette(&DARK_SEEDS, Scheme::Dark);
+        assert_eq!(typed_mark(&d), d.accent);
+    }
+
+    #[test]
+    fn light_ink_steps_stay_ordered_and_a_disabled_control_stays_dimmer() {
+        let p = palette(&LIGHT_SEEDS, Scheme::Light);
+        assert!(p.text.a() >= p.text_secondary.a() && p.text_secondary.a() > p.text_tertiary.a());
+        assert!(disabled_ink(Scheme::Light) < 1.0);
+        assert_eq!(disabled_ink(Scheme::Dark), backdrop::DISABLED);
+    }
 
     #[test]
     fn every_face_is_a_truetype_or_opentype_file() {
@@ -226,5 +373,57 @@ mod tests {
         for face in font::BYTES {
             assert!(face.starts_with(&[0x00, 0x01, 0x00, 0x00]) || face.starts_with(b"OTTO"));
         }
+    }
+
+    #[test]
+    fn the_gauge_ring_holds_3_to_1_and_its_numerals_4_5_to_1_in_both_schemes() {
+        use crate::gauge::{Colours, DeviceKind, Spec};
+        let spec = |percent, charging| Spec {
+            kind: DeviceKind::Mouse,
+            percent,
+            charging,
+        };
+        for (scheme, seeds) in [(Scheme::Dark, &DARK_SEEDS), (Scheme::Light, &LIGHT_SEEDS)] {
+            let p = palette(seeds, scheme);
+            let g = worst_ground(scheme);
+            for (what, s) in [
+                ("charged", spec(80, false)),
+                ("charging", spec(80, true)),
+                ("low", spec(10, false)),
+            ] {
+                let c = Colours::of(&p, &s);
+                let ring = contrast(c.ring, g);
+                assert!(ring >= 3.0, "{scheme:?} {what} ring is {ring:.2}:1");
+                let bolt = contrast(c.bolt, g);
+                assert!(bolt >= 3.0, "{scheme:?} {what} bolt is {bolt:.2}:1");
+                let ink = contrast(c.ink, g);
+                assert!(ink >= 4.5, "{scheme:?} {what} numerals are {ink:.2}:1");
+            }
+        }
+    }
+
+    #[test]
+    fn the_gauge_track_is_fainter_than_the_ring() {
+        use crate::gauge::{Colours, DeviceKind, Spec};
+        for (scheme, seeds) in [(Scheme::Dark, &DARK_SEEDS), (Scheme::Light, &LIGHT_SEEDS)] {
+            let p = palette(seeds, scheme);
+            let c = Colours::of(
+                &p,
+                &Spec {
+                    kind: DeviceKind::Laptop,
+                    percent: 50,
+                    charging: false,
+                },
+            );
+            let g = worst_ground(scheme);
+            assert!(contrast(c.track, g) < contrast(c.ring, g), "{scheme:?}");
+        }
+    }
+
+    #[test]
+    fn the_gauge_sizes_come_from_the_layout_engine() {
+        assert_eq!(TILE_GAP as i32, ec_layout::intrinsic::TILE_GAP_PX);
+        assert_eq!(gauge::CELL_H_PX, gauge::GAUGE_PX + gauge::NUMERAL_PX);
+        assert!(gauge::NUMERAL_SIZE < gauge::NUMERAL_PX as f32);
     }
 }
