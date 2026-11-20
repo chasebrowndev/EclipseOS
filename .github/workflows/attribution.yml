@@ -1,6 +1,7 @@
-# Enforces the attribution rule in CLAUDE.md ("Commits & PRs"):
-# every commit is authored by the repo owner, and no commit message carries an
-# agent co-author trailer or session link.
+# Enforces the attribution rule in CLAUDE.md ("Commits & PRs"): no commit
+# message carries an agent co-author trailer or session link. Anyone may author
+# a pull request's commits (contributors sign the CLA, CONTRIBUTING.md); only
+# the owner merges, which is a branch rule plus CODEOWNERS, not this check.
 #
 # This is the server-side half of the rule. The local `commit-msg` hook is the
 # fast half; a hook can be bypassed with --no-verify, this cannot.
@@ -12,7 +13,7 @@ on:
 
 jobs:
   attribution:
-    name: owner-only authorship
+    name: no agent attribution
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -21,20 +22,6 @@ jobs:
           fetch-depth: 0
 
       - name: check commits
-        env:
-          # Identities allowed to author or commit. Both the git user.name
-          # (chasebrowndev) and the GitHub profile display name (Chase Brown)
-          # appear: the merge button and web-UI edits stamp the display name,
-          # and the noreply address. They are still the owner, so rejecting
-          # them would only teach people to stop using the web UI. The
-          # agent-attribution half of this check is what catches a real
-          # violation; this half only asserts the identity is the owner's.
-          ALLOWED: |
-            chasebrowndev <chase.brown.dev@gmail.com>
-            Chase Brown <chase.brown.dev@gmail.com>
-            Chase Brown <chasebrowndev@users.noreply.github.com>
-            chasebrowndev <chasebrowndev@users.noreply.github.com>
-            GitHub <noreply@github.com>
         run: |
           set -euo pipefail
 
@@ -79,22 +66,11 @@ jobs:
               fail=1
             fi
 
-            # Author and committer identity.
-            for role in an cn; do
-              case "$role" in
-                an) who=$(git log -1 --format='%an <%ae>' "$sha"); label=author ;;
-                cn) who=$(git log -1 --format='%cn <%ce>' "$sha"); label=committer ;;
-              esac
-              if ! printf '%s\n' "$ALLOWED" | grep -qxF "$who"; then
-                echo "::error title=Unexpected $label::$short is ${label}ed by '$who'"
-                fail=1
-              fi
-            done
           done
 
           if [ "$fail" -ne 0 ]; then
             echo
-            echo "Commits must be authored by the repo owner with no agent attribution."
+            echo "Commit messages must not carry agent attribution (Co-Authored-By an agent, a session link, or a generated-with line)."
             echo "See the 'Commits & PRs' section of CLAUDE.md."
             exit 1
           fi

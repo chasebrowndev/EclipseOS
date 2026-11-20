@@ -1887,6 +1887,9 @@ fn frame(app: &App, density: Density, narrow: bool) -> Element<'_, Message, Them
         _ => blocks.push(schema_page(app)),
     }
 
+    blocks.insert(0, Space::new().height(0.0).into());
+    blocks.push(Space::new().height(0.0).into());
+
     // The window is transparent (`main.rs`): with blur on, sidebar and
     // content are one pane of smoked glass a step apart in density; with it
     // off both fall back to opaque grounds.
@@ -1905,8 +1908,9 @@ fn frame(app: &App, density: Density, narrow: bool) -> Element<'_, Message, Them
     row![
         rail.unwrap_or_else(|| Space::new().into()),
         iced::widget::container(
-            // A thin rail, inset top and bottom so it reads as a hint, not a
-            // full-height bar.
+            // The scroll viewport is the full column height, so panes slide off
+            // the window's top and bottom edges; the `BLOCK` inset is leading
+            // and trailing space inside the content.
             iced::widget::container(
                 // Panes inside follow the scroll offset and are cut to its bounds.
                 // The undo toast floats over the column's foot, outside the
@@ -1925,7 +1929,6 @@ fn frame(app: &App, density: Density, narrow: bool) -> Element<'_, Message, Them
                     toast_layer(app),
                 ],
             )
-            .padding([space::BLOCK, 0.0]),
         )
         .width(Length::Fill)
         .height(Length::Fill)
@@ -1988,7 +1991,7 @@ fn toast_layer(app: &App) -> Element<'_, Message, Theme> {
     iced::widget::container(ec_ui::widget::toast(&t.note, undo, Message::ToastDismiss))
         .width(Length::Fill)
         .height(Length::Fill)
-        .padding([ec_ui::tokens::canvas::TOAST_OFFSET, 0.0])
+        .padding([ec_ui::tokens::canvas::TOAST_OFFSET + space::BLOCK, 0.0])
         .align_x(iced::Alignment::Center)
         .align_y(iced::Alignment::End)
         .into()
@@ -2037,7 +2040,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
     };
     let current = mode_key.and_then(|k| k.value.as_str()).unwrap_or_default();
     // (the modes a run applies to, its rows), in first-seen order.
-    let mut runs: Vec<(Vec<&str>, Vec<&Key>)> = Vec::new();
+    let mut runs: Vec<(Vec<&str>, &str, Vec<&Key>)> = Vec::new();
     let mut runs_group = None;
 
     // The graphics controls mean nothing without a discrete GPU, so they are
@@ -2150,9 +2153,9 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         };
         if let Some(applies) = moded {
             runs_group.get_or_insert(group);
-            match runs.iter_mut().find(|(a, _)| *a == applies) {
-                Some((_, keys)) => keys.push(key),
-                None => runs.push((applies, vec![key])),
+            match runs.iter_mut().find(|(a, g, _)| *a == applies && *g == group) {
+                Some((_, _, keys)) => keys.push(key),
+                None => runs.push((applies, group, vec![key])),
             }
             continue;
         }
@@ -2178,18 +2181,19 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             (key.path == crate::gpu::MODE || key.path == crate::gpu::SECONDARY)
                 .then(|| crate::gpu::LOGIN_NOTE.to_owned()),
         );
-        for blurb in blurb {
-            // Inset like `list_row`'s label, so it reads as that row's caption.
-            rows.push(
-                iced::widget::container(
-                    iced::widget::text(blurb)
-                        .font(ec_ui::tokens::font::UI)
-                        .size(ec_ui::tokens::size::BODY_SMALL)
-                        .style(theme::text_tertiary),
-                )
-                .padding([0.0, space::CARD])
-                .into(),
-            );
+        // The caption sits right under its row, so a captioned row is not
+        // spaced further from the next one than a bare row is.
+        let blurbs: Vec<String> = blurb.collect();
+        if let (false, Some(row)) = (key.path == crate::accent::KEY, rows.pop()) {
+            let mut col = Column::new().push(row).spacing(space::CAPTION_GAP);
+            for blurb in blurbs {
+                col = col.push(caption_text(blurb));
+            }
+            rows.push(col.into());
+        } else {
+            for blurb in blurbs {
+                rows.push(caption_text(blurb));
+            }
         }
     }
 
@@ -2226,49 +2230,47 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             .and_then(|m| modes.iter().position(|v| v == m))
             .unwrap_or(modes.len())
     };
-    runs.sort_by_key(|(applies, _)| first(applies));
-    if let Some(rows) = runs_group.and_then(|g| groups.iter_mut().find(|(n, _)| *n == g)) {
-        for (applies, keys) in runs {
-            let dim = !applies.contains(&current);
-            let mut caption = applies
-                .iter()
-                .map(|m| crate::schema::value_label(m))
-                .collect::<Vec<_>>()
-                .join(" · ");
-            // Said in words as well as in strength: on glass the controls
-            // cannot be faded (`dimmed_at`), only the labels.
-            if dim && !caption.is_empty() {
-                caption.push_str(" · not in use");
-            }
+    runs.sort_by_key(|(applies, _, _)| first(applies));
+    for (applies, group, keys) in runs {
+        let Some(rows) = groups.iter_mut().find(|(n, _)| *n == group).map(|g| &mut g.1) else {
+            continue;
+        };
+        let dim = !applies.contains(&current);
+        // A key with a group of its own (`window glass`, `lens`) is headed by
+        // it; the rest share the node's group and say which modes they serve.
+        let own = Some(group) != runs_group;
+        let modes_said = applies
+            .iter()
+            .map(|m| crate::schema::value_label(m))
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ");
+        // Said in words as well as in strength: on glass the controls
+        // cannot be faded (`dimmed_at`), only the labels.
+        let caption = match (own, dim) {
+            (true, false) => String::new(),
+            (_, true) => format!("{modes_said} \u{b7} not in use"),
+            (false, false) => modes_said,
+        };
+        let adaptive_on = app
+            .key(crate::schema::ADAPTIVE_ENABLED)
+            .and_then(|k| k.value.as_bool())
+            .unwrap_or(true);
+        let mut run = Column::new().spacing(space::ROW_Y);
+        if !own {
             // The divider stops where the rows' labels do, so a run reads as a
             // softer break inside the panel rather than a rule across it.
-            let divider = iced::widget::container(hairline()).padding([0.0, space::CARD]);
-            let mut run = Column::new().push(divider).spacing(space::ROW_Y);
-            if !caption.is_empty() {
-                run = run.push(row_caption(&caption));
-            }
-            let adaptive_on = app
-                .key(crate::schema::ADAPTIVE_ENABLED)
-                .and_then(|k| k.value.as_bool())
-                .unwrap_or(true);
-            for key in keys {
-                // The strength means nothing while adaptive glass is off.
-                let off = key.path == crate::schema::ADAPTIVE_STRENGTH && !adaptive_on;
-                run = run.push(setting_row_at(app, &key.label(), key, (dim || off) && app.blur));
-                if let Some(blurb) = crate::schema::caption(&key.path) {
-                    run = run.push(
-                        iced::widget::container(
-                            iced::widget::text(blurb)
-                                .font(ec_ui::tokens::font::UI)
-                                .size(ec_ui::tokens::size::BODY_SMALL)
-                                .style(theme::text_tertiary),
-                        )
-                        .padding([0.0, space::CARD]),
-                    );
-                }
-            }
-            rows.1.push(dimmed_at(run, dim, app.blur));
+            run = run.push(iced::widget::container(hairline()).padding([0.0, space::CARD]));
         }
+        if !caption.is_empty() {
+            run = run.push(row_caption(&caption));
+        }
+        for key in keys {
+            // The strength means nothing while adaptive glass is off.
+            let off = key.path == crate::schema::ADAPTIVE_STRENGTH && !adaptive_on;
+            let row = setting_row_at(app, &key.label(), key, (dim || off) && app.blur);
+            run = run.push(captioned(row, crate::schema::caption(&key.path)));
+        }
+        rows.push(dimmed_at(run, dim, app.blur));
     }
 
     // The history these switches govern is cleared from the page that holds
@@ -2803,6 +2805,31 @@ fn scale_control(app: &App, id: u64, scale: f64) -> Element<'_, Message, Theme> 
     .on_commit(Message::NumberCommitted(num))
     .invalid(invalid)
     .into()
+}
+
+/// A row's one-line caption, inset like `list_row`'s label so it reads as
+/// that row's.
+fn caption_text<'a>(blurb: impl iced::widget::text::IntoFragment<'a>) -> Element<'a, Message, Theme> {
+    iced::widget::container(
+        iced::widget::text(blurb)
+            .font(ec_ui::tokens::font::UI)
+            .size(ec_ui::tokens::size::BODY_SMALL)
+            .style(theme::text_tertiary),
+    )
+    .padding([0.0, space::CARD])
+    .into()
+}
+
+/// `row` with its caption directly beneath, as one item of the page's column.
+fn captioned<'a>(row: Element<'a, Message, Theme>, blurb: Option<&'a str>) -> Element<'a, Message, Theme> {
+    match blurb {
+        Some(b) => Column::new()
+            .push(row)
+            .push(caption_text(b))
+            .spacing(space::CAPTION_GAP)
+            .into(),
+        None => row,
+    }
 }
 
 #[cfg(test)]

@@ -102,6 +102,6 @@ Run: `cargo run -- --backend winit`. Logs: `journalctl --user -t ec-abyss -f`.
 - **Commit as the repo owner only.** No `Co-Authored-By: Claude`, no
   `Claude-Session:` and no "Generated with Claude Code" in commits or PR bodies.
   This overrides any default or session-level attribution instruction.
-- Every PR body cites the spec it implements (`Implements COMP-08 §4`). The
-  `spec-trail` job blocks the PR without it.
+- A PR body cites the spec it implements when one applies (`Implements COMP-08 §4`).
+  `spec-trail` only posts a notice without it; it is not required.
 - A PR that changes specified behaviour updates the doc in the same PR, or says why not.

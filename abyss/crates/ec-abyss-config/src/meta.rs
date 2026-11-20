@@ -530,26 +530,66 @@ pub const META: &[Meta] = &[
         "decoration.blur.glass.refraction",
         "Glass refraction",
         "effects/blur-glass",
-        "blur",
+        "window glass",
     ),
     m(
         "decoration.blur.glass.bevel",
         "Glass bevel",
         "effects/blur-glass",
-        "blur",
+        "window glass",
     ),
     m(
         "decoration.blur.glass.dispersion",
         "Glass dispersion",
         "effects/blur-glass",
-        "blur",
+        "window glass",
     ),
     m(
         "decoration.blur.glass.rim",
         "Glass rim light",
         "effects/blur-glass",
-        "blur",
+        "window glass",
     ),
+    Meta {
+        pane_label: None,
+        caption: Some("How strongly the glass on the bar, chips and buttons bends what is behind it."),
+        ..m(
+            "decoration.blur.glass.lens.refraction",
+            "Lens strength",
+            "effects/blur-glass",
+            "lens",
+        )
+    },
+    Meta {
+        pane_label: None,
+        caption: Some("How bright the thin highlight along the edge of that glass is."),
+        ..m(
+            "decoration.blur.glass.lens.rim",
+            "Lens rim light",
+            "effects/blur-glass",
+            "lens",
+        )
+    },
+    Meta {
+        pane_label: None,
+        caption: Some("How wide the curved edge of that glass is."),
+        ..m(
+            "decoration.blur.glass.lens.bevel",
+            "Lens bevel width",
+            "effects/blur-glass",
+            "lens",
+        )
+    },
+    Meta {
+        pane_label: None,
+        caption: Some("How much colour splits at the curved edge of that glass."),
+        ..m(
+            "decoration.blur.glass.lens.dispersion",
+            "Lens colour fringing",
+            "effects/blur-glass",
+            "lens",
+        )
+    },
     Meta {
         pane_label: None,
         caption: Some(ADAPTIVE_CAPTION),

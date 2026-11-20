@@ -649,7 +649,7 @@ pub fn annotation_elements(
             let region: Rectangle<i32, Physical> =
                 Rectangle::new(loc, layout.panel.size.to_f64().to_physical(scale).to_i32_round());
             let radius = (hud::RADIUS as f64 * fractional) as f32;
-            let uniforms = effects::rounding_uniforms(region, fb_height, mirrored, radius);
+            let mut uniforms = effects::rounding_uniforms(region, fb_height, mirrored, radius);
             let key = BlurKey::Annotation(id.0);
             let store = blur.entry(output.clone()).or_default();
             if let Some(b) = store.element(
@@ -660,11 +660,12 @@ pub fn annotation_elements(
                 behind,
                 &blur_cfg,
                 scale,
-                Some((program.clone(), uniforms)),
+                Some((program.clone(), &mut uniforms)),
                 0,
                 None,
                 None,
                 alpha,
+                crate::effects::GlassPreset::Frost,
             ) {
                 elements.push(AbyssRenderElement::Blur(b));
             }

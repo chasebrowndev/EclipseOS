@@ -36,6 +36,8 @@ pub enum Tone {
 /// `state` bits.
 pub const HOVERED: u32 = 1;
 pub const PRESSED: u32 = 2;
+/// The pane is cut to the set's clip rectangle (protocol version 2).
+pub const CLIPPED: u32 = 4;
 
 /// One pane, surface-local logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -65,6 +67,9 @@ pub enum ParseError {
 pub struct PaneSet {
     panes: [Pane; MAX_PANES],
     len: usize,
+    /// `set_clip` (ADR 0127): the rectangle `CLIPPED` panes are cut to,
+    /// surface-local logical. `None` clears it.
+    pub clip: Option<Rectangle<i32, Logical>>,
 }
 
 impl Default for PaneSet {
@@ -72,13 +77,14 @@ impl Default for PaneSet {
         Self {
             panes: [Pane::default(); MAX_PANES],
             len: 0,
+            clip: None,
         }
     }
 }
 
 impl PartialEq for PaneSet {
     fn eq(&self, other: &Self) -> bool {
-        self.as_slice() == other.as_slice()
+        self.as_slice() == other.as_slice() && self.clip == other.clip
     }
 }
 
@@ -109,6 +115,15 @@ impl PaneSet {
             .filter(|r| !r.is_empty())
             .reduce(|a, b| a.merge(b))
     }
+}
+
+/// `set_clip`: a zero width or height clears the clip, a negative one is
+/// `bad_pane` (`None`), anything else is the clip rectangle.
+pub fn parse_clip(x: i32, y: i32, w: i32, h: i32) -> Option<Option<Rectangle<i32, Logical>>> {
+    if w < 0 || h < 0 {
+        return None;
+    }
+    Some((w > 0 && h > 0).then(|| Rectangle::new((x, y).into(), (w, h).into())))
 }
 
 /// Parse a `set_panes` array.
@@ -148,7 +163,7 @@ pub fn parse_panes(bytes: &[u8]) -> Result<PaneSet, ParseError> {
             radius: u32::from_ne_bytes(word(4)),
             bezel: u32::from_ne_bytes(word(5)),
             tone,
-            state: u32::from_ne_bytes(word(7)) & (HOVERED | PRESSED),
+            state: u32::from_ne_bytes(word(7)) & (HOVERED | PRESSED | CLIPPED),
             alpha: alpha as u8,
         };
     }
@@ -233,36 +248,6 @@ pub const STACKED_LIFT: f32 = 0.018;
 /// Rim multiplier: the hairline is what separates the two layers.
 pub const STACKED_RIM: f32 = 1.3;
 
-/// Cells inside a larger pane of the same surface read as a layer above it
-/// (nested glass), by a step per level of nesting (at most [`NEST_MAX`]).
-/// Dark glass: a white lift and a firmer rim, since the cell is as smoked as
-/// the pane under it and only these tell the two apart. Light glass: a deeper
-/// ink step (white on frost lifts nothing) and a firmer ink rim. Never a
-/// colour: glassy, not glowy.
-pub const NEST_MAX: u32 = 2;
-pub const NEST_LIFT: f32 = 0.04;
-pub const NEST_RIM: f32 = 0.5;
-pub const NEST_SHADE: f32 = 0.05;
-pub const NEST_RIM_LIGHT: f32 = 0.4;
-/// Contact shadow of a nested cell: weight of the shader's `focus` (the firmer
-/// shadow) and extra drop in logical px, per level.
-pub const NEST_SHADOW_FOCUS: f32 = 0.6;
-pub const NEST_SHADOW_DROP: i32 = 1;
-
-/// How many larger panes of `panes` (drawn before it, so under it) wholly
-/// contain pane `i`, at most [`NEST_MAX`].
-pub fn nest_depth(panes: &[Pane], i: usize) -> u32 {
-    let Some(p) = panes.get(i) else { return 0 };
-    let inside = |o: &Pane| {
-        o.x <= p.x
-            && o.y <= p.y
-            && o.x + o.w >= p.x + p.w
-            && o.y + o.h >= p.y + p.h
-            && (o.w as i64 * o.h as i64) > (p.w as i64 * p.h as i64)
-    };
-    (panes[..i].iter().filter(|o| inside(o)).count() as u32).min(NEST_MAX)
-}
-
 /// Lens strength share of a pane by its shorter logical side. A small control
 /// keeps its lens; a big sheet or card is bent only a hair at its rim, so the
 /// backdrop's grid reads straight through it: `FLOOR + (1 - FLOOR) / (1 +
@@ -275,26 +260,6 @@ pub fn lens_scale(pane: &Pane) -> f32 {
 }
 
 impl Look {
-    /// This look for a cell `depth` levels inside larger panes (see
-    /// [`NEST_LIFT`]); `alpha` fades the step with the pane.
-    pub fn nested(self, depth: u32, light: bool, alpha: u8) -> Look {
-        let d = depth.min(NEST_MAX) as f32;
-        let a = alpha as f32 / 255.0;
-        if light {
-            Look {
-                rim: self.rim * (1.0 + NEST_RIM_LIGHT * d),
-                shade: self.shade + NEST_SHADE * d * a,
-                ..self
-            }
-        } else {
-            Look {
-                rim: self.rim * (1.0 + NEST_RIM * d),
-                lift: self.lift + NEST_LIFT * d * a,
-                ..self
-            }
-        }
-    }
-
     /// This look on glass laid over a window's own glass.
     pub fn stacked(self, light: bool, alpha: u8) -> Look {
         Look {
@@ -308,6 +273,124 @@ impl Look {
             smoke: if light { STACKED_SMOKE_LIGHT } else { STACKED_SMOKE },
         }
     }
+}
+
+/// A light-scheme pane whose shorter side is at least this many logical px is
+/// a card (launcher, toast), not a control cell.
+pub const SLAB_MIN_SHORT: i32 = 56;
+/// How far such a card lifts toward white: the near-opaque near-white slab of the
+/// iOS light references (the backdrop shows a few percent at most).
+pub const SLAB_LIFT_LIGHT: f32 = 0.86;
+
+/// The white lift of `pane` in the light scheme: `lift`, or the slab lift for a card.
+pub fn slab_lift(pane: &Pane, light: bool, lift: f32) -> f32 {
+    if light && pane.w.min(pane.h) >= SLAB_MIN_SHORT {
+        if pane.alpha == 0 {
+            lift
+        } else {
+            lift.max(SLAB_LIFT_LIGHT)
+        }
+    } else {
+        lift
+    }
+}
+
+/// A pane lying fully inside an earlier, larger pane of the same surface whose
+/// shorter side is at least this many logical px is a CELL: a control sitting on
+/// a sheet (search field, selected row, key cap, icon chip), drawn as a fill on
+/// the sheet's finished glass rather than as glass of its own.
+pub const CELL_PARENT_MIN_SHORT: i32 = 56;
+
+fn contains(outer: &Pane, inner: &Pane) -> bool {
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && inner.x + inner.w <= outer.x + outer.w
+        && inner.y + inner.h <= outer.y + outer.h
+}
+
+/// The index of pane `i`'s parent card, or `None` when it is not a cell. The
+/// parent is the nearest earlier (lower in z) pane that contains it, is larger
+/// and has a shorter side of at least [`CELL_PARENT_MIN_SHORT`]. Siblings that
+/// merely overlap, a pane that sticks out, a smaller or later container and a
+/// small container are not parents.
+pub fn cell_parent(panes: &[Pane], i: usize) -> Option<usize> {
+    let cell = panes.get(i)?;
+    if cell.w <= 0 || cell.h <= 0 {
+        return None;
+    }
+    (0..i).rev().find(|&j| {
+        let p = &panes[j];
+        p.w.min(p.h) >= CELL_PARENT_MIN_SHORT
+            && i64::from(p.w) * i64::from(p.h) > i64::from(cell.w) * i64::from(cell.h)
+            && contains(p, cell)
+    })
+}
+
+/// A cell's fill: alpha of the scheme's fill colour, how strongly it fades
+/// top to bottom, and the hairline strength.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellLook {
+    pub fill: f32,
+    pub grad: f32,
+    pub rim: f32,
+}
+
+/// Fill alpha of a plain cell at rest, dark (white fill) and light (ink fill).
+const CELL_FILL_D: f32 = 0.09;
+const CELL_FILL_L: f32 = 0.03;
+/// The extra a focused or selected cell takes, and hover and press steps.
+const CELL_FOCUS_D: f32 = 0.085;
+const CELL_FOCUS_L: f32 = 0.03;
+const CELL_HOT: f32 = 0.03;
+const CELL_PRESS: f32 = 0.05;
+/// Gradient strength: plain, focused.
+const CELL_GRAD_PLAIN: f32 = 0.5;
+const CELL_GRAD_FOCUS: f32 = 0.9;
+
+/// The look of a cell, scaled by the pane's alpha; `None` when it draws nothing
+/// (the same cases as [`look`]).
+pub fn cell_look(pane: &Pane, light: bool) -> Option<CellLook> {
+    let l = look(pane, light)?;
+    let pressed = pane.state & PRESSED != 0;
+    let hot = pressed || pane.state & HOVERED != 0;
+    let focus = pane.tone == Tone::Focused;
+    let a = pane.alpha as f32 / 255.0;
+    let mut fill = if light { CELL_FILL_L } else { CELL_FILL_D };
+    if pane.tone == Tone::Away {
+        fill *= 0.5;
+    }
+    if focus {
+        fill += if light { CELL_FOCUS_L } else { CELL_FOCUS_D };
+    }
+    if hot {
+        fill += if pressed { CELL_PRESS } else { CELL_HOT };
+    }
+    Some(CellLook {
+        fill: fill * a,
+        grad: if focus { CELL_GRAD_FOCUS } else { CELL_GRAD_PLAIN },
+        rim: l.rim,
+    })
+}
+
+/// How far a cell's contact shadow may reach, logical px: its own reach, no
+/// further than the nearest edge of its parent, so it never leaves the card.
+pub const CELL_SHADOW_REACH: i32 = 5;
+/// The contact shadow's alpha under a cell: dark, and the wider-and-fainter light.
+pub const CELL_SHADOW_ALPHA_DARK: f32 = 0.45;
+pub const CELL_SHADOW_ALPHA_LIGHT: f32 = 0.22;
+
+pub fn cell_shadow_margin(cell: &Pane, parent: &Pane) -> i32 {
+    let to_edges = [
+        cell.x - parent.x,
+        cell.y - parent.y,
+        parent.x + parent.w - (cell.x + cell.w),
+        parent.y + parent.h - (cell.y + cell.h),
+    ];
+    to_edges
+        .into_iter()
+        .min()
+        .unwrap_or(0)
+        .clamp(0, CELL_SHADOW_REACH)
 }
 
 /// The look of `pane`, or `None` when it draws nothing (latent at rest, or
@@ -366,32 +449,16 @@ pub fn look(pane: &Pane, light: bool) -> Option<Look> {
 /// [`look`] for a pane on glass that is already a window's (see
 /// [`STACKED_SMOKE`]), or on bare backdrop when `stacked` is false.
 pub fn look_on(pane: &Pane, light: bool, stacked: bool) -> Option<Look> {
-    look_nested(pane, light, stacked, 0)
-}
-
-/// [`look_on`] for a cell `depth` levels inside larger glass (panes of its
-/// surface, plus one when the surface's own window glass is under it).
-pub fn look_nested(pane: &Pane, light: bool, stacked: bool, depth: u32) -> Option<Look> {
     let l = look(pane, light)?;
-    let l = if stacked { l.stacked(light, pane.alpha) } else { l };
-    Some(if depth > 0 {
-        l.nested(depth, light, pane.alpha)
-    } else {
-        l
-    })
+    Some(if stacked { l.stacked(light, pane.alpha) } else { l })
 }
 
-/// The pane's box in output-local physical pixels, clipped to the surface
-/// (`size`, logical) and to `crop` if given. `loc` is the surface origin,
-/// output-local physical; `scale` the output scale.
-pub fn pane_rect(
-    pane: &Pane,
-    size: smithay::utils::Size<i32, Logical>,
+/// A logical box placed at the surface origin `loc` in physical pixels.
+fn place(
+    logical: Rectangle<i32, Logical>,
     loc: smithay::utils::Point<i32, Physical>,
     scale: smithay::utils::Scale<f64>,
 ) -> Option<Rectangle<i32, Physical>> {
-    let logical = Rectangle::<i32, Logical>::new((pane.x, pane.y).into(), (pane.w, pane.h).into())
-        .intersection(Rectangle::from_size(size))?;
     let r = Rectangle::<i32, Physical>::new(
         (
             loc.x + (logical.loc.x as f64 * scale.x).round() as i32,
@@ -405,6 +472,50 @@ pub fn pane_rect(
             .into(),
     );
     (!r.is_empty()).then_some(r)
+}
+
+/// The pane's whole box, not cut to the surface: the shape a `CLIPPED` pane's
+/// corners, rim and bezel are computed from.
+pub fn pane_full_rect(
+    pane: &Pane,
+    loc: smithay::utils::Point<i32, Physical>,
+    scale: smithay::utils::Scale<f64>,
+) -> Option<Rectangle<i32, Physical>> {
+    place(
+        Rectangle::<i32, Logical>::new((pane.x, pane.y).into(), (pane.w, pane.h).into()),
+        loc,
+        scale,
+    )
+}
+
+/// The set's clip in output-local physical pixels, cut to the surface. `None`
+/// when the set has no clip; `Some(None)` when the clip misses the surface
+/// (so every clipped pane is hidden).
+pub fn clip_rect(
+    clip: Option<Rectangle<i32, Logical>>,
+    size: smithay::utils::Size<i32, Logical>,
+    loc: smithay::utils::Point<i32, Physical>,
+    scale: smithay::utils::Scale<f64>,
+) -> Option<Option<Rectangle<i32, Physical>>> {
+    let clip = clip?;
+    Some(
+        clip.intersection(Rectangle::from_size(size))
+            .and_then(|l| place(l, loc, scale)),
+    )
+}
+
+/// The pane's box in output-local physical pixels, clipped to the surface
+/// (`size`, logical) and to `crop` if given. `loc` is the surface origin,
+/// output-local physical; `scale` the output scale.
+pub fn pane_rect(
+    pane: &Pane,
+    size: smithay::utils::Size<i32, Logical>,
+    loc: smithay::utils::Point<i32, Physical>,
+    scale: smithay::utils::Scale<f64>,
+) -> Option<Rectangle<i32, Physical>> {
+    let logical = Rectangle::<i32, Logical>::new((pane.x, pane.y).into(), (pane.w, pane.h).into())
+        .intersection(Rectangle::from_size(size))?;
+    place(logical, loc, scale)
 }
 
 /// The pane's bend band in physical px: its bezel (or the default), at most
@@ -422,8 +533,23 @@ pub fn band(pane: &Pane, rect: Rectangle<i32, Physical>, upscale: f64) -> f32 {
 /// A pane's contact shadow: the shell cell's drop (ec-ui `bar::CELL_SHADOW_Y`
 /// 1, `CELL_SHADOW_BLUR` 6), drawn by the window shadow program at its rest
 /// weight. Logical px.
-pub const SHADOW_DROP: i32 = 1;
-pub const SHADOW_RANGE: i32 = 6;
+pub const SHADOW_DROP: i32 = 2;
+pub const SHADOW_RANGE: i32 = 10;
+/// The light scheme's shadow is wide and faint (iOS light: separation from a
+/// soft halo, not a border); the dark one stays tight.
+pub const SHADOW_DROP_LIGHT: i32 = 6;
+pub const SHADOW_RANGE_LIGHT: i32 = 26;
+/// Share of the pane's alpha the light shadow keeps.
+pub const SHADOW_ALPHA_LIGHT: f32 = 0.38;
+
+/// `(range, drop)` in logical px for the scheme.
+pub fn shadow_extent(light: bool) -> (i32, i32) {
+    if light {
+        (SHADOW_RANGE_LIGHT, SHADOW_DROP_LIGHT)
+    } else {
+        (SHADOW_RANGE, SHADOW_DROP)
+    }
+}
 
 /// Whether `pane` casts a contact shadow, by the shell cell's rule
 /// (`ec-ui` `CellTone`): none while pressed (pushed into the glass), none for
@@ -439,35 +565,19 @@ pub fn casts_shadow(pane: &Pane) -> bool {
 /// The shadow's area, logical: the cell's box grown by `SHADOW_RANGE` on the
 /// sides and top, and by `SHADOW_DROP` more at the bottom. The shader's
 /// `size` is this area, so its `range` and `drop` are in the same units.
-pub fn shadow_area(cell: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
-    shadow_area_dropped(cell, SHADOW_DROP)
-}
-
-/// [`shadow_area`] for a cell that drops its shadow `drop` px.
-pub fn shadow_area_dropped(cell: Rectangle<i32, Logical>, drop: i32) -> Rectangle<i32, Logical> {
+pub fn shadow_area(cell: Rectangle<i32, Logical>, light: bool) -> Rectangle<i32, Logical> {
+    let (range, drop) = shadow_extent(light);
     Rectangle::new(
-        (cell.loc.x - SHADOW_RANGE, cell.loc.y - SHADOW_RANGE).into(),
-        (
-            cell.size.w + 2 * SHADOW_RANGE,
-            cell.size.h + 2 * SHADOW_RANGE + drop,
-        )
-            .into(),
+        (cell.loc.x - range, cell.loc.y - range).into(),
+        (cell.size.w + 2 * range, cell.size.h + 2 * range + drop).into(),
     )
 }
 
 /// The shadow shader's `[range, radius, drop]` for a cell of corner `radius`
 /// (logical px, already grown by any window animation scale).
-pub fn shadow_params(radius: f32) -> [f32; 3] {
-    [SHADOW_RANGE as f32, radius, SHADOW_DROP as f32]
-}
-
-/// The extra drop and the shader's `focus` weight of a cell `depth` levels in.
-pub fn nested_shadow(depth: u32) -> (i32, f32) {
-    let d = depth.min(NEST_MAX);
-    (
-        SHADOW_DROP + NEST_SHADOW_DROP * d as i32,
-        (NEST_SHADOW_FOCUS * d as f32).min(1.0),
-    )
+pub fn shadow_params(radius: f32, light: bool) -> [f32; 3] {
+    let (range, drop) = shadow_extent(light);
+    [range as f32, radius, drop as f32]
 }
 
 #[cfg(test)]
@@ -565,6 +675,179 @@ mod tests {
             h: 10,
             ..Pane::default()
         }
+    }
+
+    #[test]
+    fn nesting_is_a_cell_inside_a_larger_early_card() {
+        let card = Pane {
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 300,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let field = Pane {
+            x: 20,
+            y: 20,
+            w: 360,
+            h: 40,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let row = Pane {
+            x: 20,
+            y: 80,
+            w: 360,
+            h: 36,
+            ..pane(Tone::Focused, 0, 255)
+        };
+        let sibling = Pane {
+            x: 380,
+            y: 0,
+            w: 300,
+            h: 300,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let sticks_out = Pane {
+            x: 300,
+            y: 20,
+            w: 200,
+            h: 40,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let small_card = Pane {
+            x: 700,
+            y: 0,
+            w: 120,
+            h: 40,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let in_small = Pane {
+            x: 710,
+            y: 5,
+            w: 30,
+            h: 30,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let set = [card, field, row, sibling, sticks_out, small_card, in_small];
+        assert_eq!(cell_parent(&set, 0), None, "the card itself");
+        assert_eq!(cell_parent(&set, 1), Some(0));
+        assert_eq!(cell_parent(&set, 2), Some(0));
+        assert_eq!(cell_parent(&set, 3), None, "a stack-peek sibling is no cell");
+        assert_eq!(cell_parent(&set, 4), None, "partial overlap");
+        assert_eq!(cell_parent(&set, 5), None, "a pane outside every card");
+        assert_eq!(cell_parent(&set, 6), None, "its container is under 56 px");
+        assert_eq!(cell_parent(&set, 99), None);
+    }
+
+    #[test]
+    fn a_container_must_come_first_and_be_larger() {
+        let a = Pane {
+            x: 0,
+            y: 0,
+            w: 300,
+            h: 100,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let b = Pane {
+            x: 10,
+            y: 10,
+            w: 100,
+            h: 60,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        // The container after the contained one is not a parent (z order).
+        assert_eq!(cell_parent(&[b, a], 0), None);
+        assert_eq!(cell_parent(&[b, a], 1), None);
+        assert_eq!(cell_parent(&[a, b], 1), Some(0));
+        // The same box is not a cell of itself or of an equal pane.
+        assert_eq!(cell_parent(&[a, a], 1), None);
+        // The threshold is on the shorter side: 56 qualifies, 55 does not.
+        let slim = |h| Pane {
+            x: 0,
+            y: 0,
+            w: 300,
+            h,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let inner = Pane {
+            x: 5,
+            y: 5,
+            w: 20,
+            h: 20,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        assert_eq!(cell_parent(&[slim(56), inner], 1), Some(0));
+        assert_eq!(cell_parent(&[slim(55), inner], 1), None);
+    }
+
+    #[test]
+    fn a_cell_fills_less_than_it_would_glass_and_never_beyond_its_card() {
+        let plain = Pane {
+            w: 100,
+            h: 30,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let sel = Pane {
+            tone: Tone::Focused,
+            ..plain
+        };
+        for light in [false, true] {
+            let (p, f) = (cell_look(&plain, light).unwrap(), cell_look(&sel, light).unwrap());
+            assert!(p.fill > 0.0 && p.fill < 0.2, "faint");
+            assert!(
+                f.fill > p.fill && f.grad > p.grad && f.rim > p.rim,
+                "the selected row is clearer"
+            );
+        }
+        assert_eq!(cell_look(&Pane { alpha: 0, ..plain }, false), None);
+        let card = Pane {
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 300,
+            ..plain
+        };
+        let near = Pane {
+            x: 2,
+            y: 100,
+            w: 50,
+            h: 30,
+            ..plain
+        };
+        let far = Pane {
+            x: 100,
+            y: 100,
+            w: 50,
+            h: 30,
+            ..plain
+        };
+        assert_eq!(cell_shadow_margin(&near, &card), 2);
+        assert_eq!(cell_shadow_margin(&far, &card), CELL_SHADOW_REACH);
+    }
+
+    /// A light card (launcher, toast) lifts to the near-white slab; a control
+    /// cell and the dark scheme keep their lift.
+    #[test]
+    fn a_light_card_is_a_slab_and_a_cell_is_not() {
+        let card = Pane {
+            w: 440,
+            h: 110,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let cell = Pane {
+            w: 120,
+            h: 36,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        assert!((slab_lift(&card, true, 0.0) - SLAB_LIFT_LIGHT).abs() < 1e-6);
+        assert_eq!(slab_lift(&cell, true, 0.01), 0.01);
+        assert_eq!(slab_lift(&card, false, 0.0), 0.0);
+        // A faint-fill card is still a slab (its alpha is the fill, not the card), a transparent
+        // one draws nothing, and a larger lift is never lowered.
+        let faint = Pane { alpha: 60, ..card };
+        assert!((slab_lift(&faint, true, 0.0) - SLAB_LIFT_LIGHT).abs() < 1e-6);
+        assert_eq!(slab_lift(&Pane { alpha: 0, ..card }, true, 0.0), 0.0);
+        assert_eq!(slab_lift(&card, true, 0.95), 0.95);
     }
 
     /// The shader's two mixes for one channel, in its order: white lift, then
@@ -715,10 +998,10 @@ mod tests {
     #[test]
     fn the_shadow_hugs_the_cell_and_drops_a_pixel() {
         let cell = Rectangle::<i32, Logical>::new((20, 10).into(), (80, 30).into());
-        let area = shadow_area(cell);
-        // Six px out on the left, right and top; seven at the bottom: one px down.
-        assert_eq!((area.loc.x, area.loc.y), (14, 4));
-        assert_eq!((area.size.w, area.size.h), (92, 43));
+        let area = shadow_area(cell, false);
+        // Ten px out on the left, right and top; twelve at the bottom: two px down.
+        assert_eq!((area.loc.x, area.loc.y), (10, 0));
+        assert_eq!((area.size.w, area.size.h), (100, 52));
         assert_eq!(area.loc.x + area.size.w, cell.loc.x + cell.size.w + SHADOW_RANGE);
         assert_eq!(
             area.loc.y + area.size.h,
@@ -726,11 +1009,14 @@ mod tests {
         );
         // Nothing reaches further than the range and drop, whatever the cell.
         let tiny = Rectangle::<i32, Logical>::new((0, 0).into(), (1, 1).into());
-        let a = shadow_area(tiny);
+        let a = shadow_area(tiny, false);
         assert!(a.loc.x >= -SHADOW_RANGE && a.loc.y >= -SHADOW_RANGE);
         assert_eq!(a.size.w - tiny.size.w, 2 * SHADOW_RANGE);
         assert_eq!(a.size.h - tiny.size.h, 2 * SHADOW_RANGE + SHADOW_DROP);
-        assert_eq!(shadow_params(8.0), [6.0, 8.0, 1.0]);
+        assert_eq!(shadow_params(8.0, false), [10.0, 8.0, 2.0]);
+        assert_eq!(shadow_params(8.0, true), [26.0, 8.0, 6.0]);
+        let l = shadow_area(cell, true);
+        assert_eq!((l.size.w, l.size.h), (80 + 52, 30 + 52 + 6));
     }
 
     #[test]
@@ -791,43 +1077,5 @@ mod tests {
             assert!(v <= last + 1e-6);
             last = v;
         }
-    }
-
-    #[test]
-    fn a_cell_inside_a_pane_is_a_layer_above_it() {
-        let boxed = |x, y, w, h| Pane {
-            x,
-            y,
-            w,
-            h,
-            ..Pane::default()
-        };
-        let set = [
-            boxed(0, 0, 500, 400),
-            boxed(10, 10, 480, 40),
-            boxed(20, 20, 30, 20),
-            boxed(600, 0, 30, 30),
-        ];
-        assert_eq!(nest_depth(&set, 0), 0);
-        assert_eq!(nest_depth(&set, 1), 1);
-        assert_eq!(nest_depth(&set, 2), 2);
-        assert_eq!(nest_depth(&set, 3), 0, "a sibling is not inside");
-        for light in [false, true] {
-            let base = look(&pane(Tone::Plain, 0, 255), light).unwrap();
-            let one = base.nested(1, light, 255);
-            let two = base.nested(2, light, 255);
-            assert!(one.rim > base.rim && two.rim > one.rim);
-            if light {
-                assert!(one.shade > base.shade && two.shade > one.shade);
-                assert_eq!(one.lift, base.lift, "no white on light frost");
-            } else {
-                assert!(one.lift > base.lift && two.lift > one.lift);
-                assert_eq!(one.shade, 0.0);
-            }
-            // A faded pane fades its step.
-            assert!(base.nested(1, light, 0).lift <= base.lift + 1e-6);
-        }
-        let (drop, focus) = nested_shadow(1);
-        assert!(drop > SHADOW_DROP && focus > 0.0 && nested_shadow(0) == (SHADOW_DROP, 0.0));
     }
 }

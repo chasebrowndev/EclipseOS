@@ -24,6 +24,10 @@ pub mod radius {
     pub const WINDOW: f32 = 16.0;
     pub const CARD: f32 = 13.0;
     pub const INSET: f32 = 10.0;
+    /// A notification toast card: rounder than a window so a transient card
+    /// reads as a pebble over the desktop. A floor, not a fixed value: the
+    /// toasts use `max(decoration.rounding, TOAST)` when glass panes are live.
+    pub const TOAST: f32 = 20.0;
     /// Anything fully round: pills, toggles, knobs.
     pub const PILL: f32 = 99.0;
     /// A canvas chip: squarer than a pill, so an object never reads as a verb.
@@ -51,6 +55,9 @@ pub mod space {
     pub const BLOCK: f32 = 18.0;
     pub const CARD: f32 = 16.0;
     pub const ROW_Y: f32 = 11.0;
+    /// Between a row and the one-line caption beneath it: tight, so the
+    /// caption reads as part of its row and adds only its own height.
+    pub const CAPTION_GAP: f32 = 2.0;
     /// The accent bar that marks the current item at the left edge of a nav
     /// item or a choice row. Three pixels, per the spec.
     pub const BAR_W: f32 = 3.0;

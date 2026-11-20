@@ -1045,6 +1045,7 @@ version = "0.2.2"
 dependencies = [
  "ec-glance",
  "ec-greeter",
+ "ec-ipc",
  "ec-layout",
  "ec-protocols",
  "ec-style-tokens",
@@ -1105,11 +1106,13 @@ dependencies = [
  "ec-glance",
  "ec-ipc",
  "ec-layout",
+ "ec-theme",
  "ec-ui",
  "iced",
  "iced_sessionlock",
  "libc",
  "serde_json",
+ "sessionlockev",
 ]
 
 [[package]]
@@ -1171,6 +1174,7 @@ dependencies = [
  "ec-abyss-config",
  "ec-config-schema",
  "ec-greeter",
+ "ec-greeter-ui",
  "ec-ipc",
  "ec-layout",
  "ec-policy-viewer",
@@ -2046,8 +2050,6 @@ dependencies = [
 [[package]]
 name = "iced_sessionlock"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "519d0ba8279b4a2d9ce19bbc1824078135cc72c0dadf0dbb385c1507e0036f2f"
 dependencies = [
  "futures",
  "iced_core",
@@ -4123,8 +4125,6 @@ dependencies = [
 [[package]]
 name = "sessionlockev"
 version = "0.19.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a50dd03affe5176bca3e763ebfc3b68f423e0096b4c1c6662d598b103b64c3be"
 dependencies = [
  "calloop 0.14.4",
  "calloop-wayland-source 0.4.1",

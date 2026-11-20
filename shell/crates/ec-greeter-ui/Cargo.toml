@@ -18,7 +18,7 @@ path = "src/bin/ec-greeter-ui.rs"
 
 [dependencies]
 # Pinned to match ec-ui and ec-lock exactly (ADR 0039).
-iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "image-without-codecs"] }
+iced = { version = "0.14", default-features = false, features = ["wgpu", "advanced", "wayland", "thread-pool", "image-without-codecs", "canvas"] }
 # The layout engine, the Glance readers and the settings reader (ADR 0126).
 ec-layout = { path = "../ec-layout" }
 ec-glance = { path = "../ec-glance" }
@@ -26,6 +26,7 @@ ec-greeter = { path = "../ec-greeter" }
 # Pure crates shared with the desktop. This crate never links ec-ui: the
 # greeter's package has no edge to the desktop widget crate (ADR 0089).
 ec-theme = { path = "../../../abyss/crates/ec-theme" }
+ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 ec-style-tokens = { path = "../../../abyss/crates/ec-style-tokens" }
 # eclipse_glass_v1 client, the protocol crate ec-ui binds too.
 ec-protocols = { path = "../../../abyss/crates/ec-protocols", features = ["client"] }

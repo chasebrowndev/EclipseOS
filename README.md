@@ -33,6 +33,21 @@
   <sub>What a screen share sees: the password manager is covered at the source.</sub>
 </p>
 
+### Latest release: ASCENSIONISM
+
+Glass is one material everywhere now, in dark and in light: the launcher, Settings, the lock screen, the login screen, toasts and the compositor's own security prompts. One typeface, Onest, runs from the logo to the window titlebars. Settings has an Overview page, real navigation and live previews, and light mode is paper white. Read the full patch notes in the [CHANGELOG](CHANGELOG.md).
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/light.png" alt="The light scheme: Settings with a live glass preview and a toast"></td>
+    <td width="50%"><img src="docs/screenshots/glass-detail.png" alt="A close look at lens glass in Settings: rim light, refraction and colour fringing"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/greeter.png" alt="The login screen with Glance tiles"></td>
+    <td><img src="docs/screenshots/toasts.png" alt="Notification toasts as glass"></td>
+  </tr>
+</table>
+
 ## What is EclipseOS
 
 EclipseOS is a Linux desktop built on Arch. Its compositor, desktop, file manager and installer are designed together and look and behave as one thing. At the centre is **Abyss**, a Wayland compositor written in Rust. Everything you see around it is written in Rust too: the taskbar, launcher, notifications, Settings, the Fog file manager, the lock screen and the installer.
@@ -52,7 +67,7 @@ It looks like liquid glass: dark by default with a gold accent, with translucent
 Other desktops have some of this. EclipseOS was designed around it from the start.
 
 - **Adaptive glass.** Every glass surface (the taskbar, panes, window glass, titlebars) measures the backdrop behind it on the GPU, every frame, and shifts its own tint to keep the text on it readable. It darkens over a bright photo and lifts over a dark one. Nothing is read back to the CPU, and no app ever sees your screen to make that happen.
-- **Real liquid glass.** Beyond blur, there are three glass styles: `blur`, `frost`, and `glass`, which adds refraction, chromatic dispersion, a bevel and rim light. They're drawn by the compositor, so they're consistent everywhere and cost apps nothing.
+- **Real liquid glass.** Beyond blur, there are three glass styles: `blur`, `frost`, and `glass`, which adds refraction, chromatic dispersion, a bevel and rim light. Small controls use a lens material, big surfaces stay clear, and a pane inside a pane reads as its own layer. They're drawn by the compositor, so they're consistent everywhere and cost apps nothing.
 - **Glass for apps that don't support it.** Some apps, Firefox among them, always draw opaque windows. *Keyed glass* lets the compositor turn chosen colours in an app's frame into translucent glass, so it blends with the rest of the desktop. The Firefox add-on uses it. A Steam add-on that themes Steam's UI to match is a work in progress.
 - **A compositor-wide animation system.** Opening, closing and moving windows, switching workspaces, minimising, layers, focus, taskbar chips and toasts are all animated by the compositor. Pick a preset (`off`, `subtle`, `smooth`, `lively`), tune curves per event, or drop in GLSL transition shaders from an add-on. A closing window leaves a ghost that fades out after the app is already gone. Reduce-motion is respected everywhere.
 - **Radiant tiling.** Splits are weighted and can hold any number of windows, not just pairs. Drag a window and a ghost shows exactly where it will land, with a little hysteresis so it doesn't flicker between zones. Switching layouts and back loses nothing.
@@ -67,10 +82,11 @@ Other desktops have some of this. EclipseOS was designed around it from the star
 ## The desktop
 
 - **Desktop or tiling, your choice.** In `de` mode you get a stacking desktop with titlebars, maximize, Quick Tile, snapping, desktop icons, Alt-Tab, an overview and hot corners. `wm` mode tiles with Radiant, dwindle and master layouts. `hybrid` sits between the two. You can switch at any time, and your windows are kept.
-- **Dark and light, derived.** Themes are derived from a few seed colours, and contrast is checked automatically. Dark and light are both built in, and the desktop can follow the time of day.
+- **Dark and light, derived.** Themes are derived from a few seed colours, and contrast is checked automatically. Dark and light are both built in, and the desktop can follow the time of day. Light is paper white, and it is glass too, not frosted plastic.
+- **One typeface.** Onest is the interface font everywhere, from the logo to titlebars, prompts and the terminal's own chrome. Only the terminal grid is monospace, and security prompts keep fixed cells for the text you must verify.
 - **A complete desktop, not a parts bin.** The taskbar, launcher with search, notification toasts and history, control centre, Settings, Fog file manager and screen locker share one design system.
 - **File dialogs that match.** Apps that ask the desktop portal for a file get Fog's picker.
-- **Settings you can't break.** Everything lives in one KDL file that hot-reloads. A bad edit is reported and never takes the session down. The Settings app edits the same file in place.
+- **Settings you can't break.** Everything lives in one KDL file that hot-reloads. A bad edit is reported and never takes the session down. The Settings app edits the same file in place, with an Overview page, grouped navigation, search that shows where a setting lives, and live previews.
 - **Fits the apps you already use.** Optional add-ons give Firefox and Steam the same glass. Multi-monitor and hybrid-GPU laptops are handled, and so are touchpads, touchscreens and tablets.
 
 ## Private by default
@@ -80,13 +96,13 @@ Other desktops have some of this. EclipseOS was designed around it from the star
 - **Passwords only go where they belong.** The login screen runs inside Abyss in a locked-down kiosk mode. Admin (polkit) password prompts are drawn by the compositor and sent straight to the root helper, so the desktop-side agent never sees your password.
 - **Only approved apps can capture.** Screen capture, input methods, virtual pointers and the clipboard manager admit only the programs you list, by their full path. Everyone else is refused.
 - **A real lock screen.** `ec-lock` holds the session until you unlock it. If it crashes, it is relaunched and the session stays locked.
-- **Prompts no app can fake.** Confirmations are drawn by the compositor above every window, never by a client.
+- **Prompts no app can fake.** Confirmations are drawn by the compositor above every window, never by a client. They are glass, with the command or path you must check in fixed cells.
 
 ## Built to stay up
 
 - **Updates you can walk back.** The previous Abyss build is kept. If a new one crashes at startup, the session falls back to the old one, and "Abyss (previous)" is on the login screen.
 - **One broken feature doesn't take the desktop down.** A crash in an optional feature turns that feature off for the session, and you keep working.
-- **A gate on every change.** Every pull request runs `rustfmt`, `clippy -D warnings`, the full test suite, `cargo-deny` and the Wayland conformance suite (WLCS), with a pinned toolchain.
+- **A gate on every change.** Every pull request runs `rustfmt`, `clippy -D warnings`, the full test suite and `cargo-deny`, with a pinned toolchain. The Wayland conformance suite (WLCS) runs too and reports. Only the owner merges.
 - **Spec first.** Three spec volumes and a set of [ADRs](docs/decisions) govern the code. Where code and spec disagree, that is treated as a bug. Changes to the security-critical path get a line-by-line review.
 
 ## Agents (in progress)
@@ -126,7 +142,10 @@ Once installed, updates come from the signed EclipseOS package repository with `
 | [CONFIG.md](docs/CONFIG.md) | every setting, what it does and its default |
 | [STYLE.md](docs/STYLE.md) | the visual language |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | how the pieces fit together |
+| [CHANGELOG.md](CHANGELOG.md) | patch notes for every release, newest first |
 | [STATUS.md](docs/STATUS.md) | what is built and verified |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | how to contribute, and the CLA |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | how we treat each other |
 | [SECURITY.md](SECURITY.md) | the security model and how to report a vulnerability |
 
 ## Licence

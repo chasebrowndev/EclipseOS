@@ -18,7 +18,7 @@
     client never receives them. Panes restrict nothing and grant nothing.
   </description>
 
-  <interface name="eclipse_glass_manager_v1" version="1">
+  <interface name="eclipse_glass_manager_v1" version="2">
     <description summary="glass pane factory">
       The global. It sends `capability` on bind and again whenever the
       compositor starts or stops drawing glass panes (for example a change
@@ -55,7 +55,7 @@
     </request>
   </interface>
 
-  <interface name="eclipse_glass_surface_v1" version="1">
+  <interface name="eclipse_glass_surface_v1" version="2">
     <description summary="the glass panes of one wl_surface">
       The pane list is double-buffered surface state: `set_panes` writes the
       pending list and the next wl_surface.commit makes it current, together
@@ -77,6 +77,7 @@
       </description>
       <entry name="hovered" value="1" summary="the pointer is over the pane"/>
       <entry name="pressed" value="2" summary="the pane is being pressed"/>
+      <entry name="clipped" value="4" since="2" summary="the pane is cut to the surface's clip rectangle"/>
     </enum>
 
     <request name="set_panes">
@@ -100,6 +101,27 @@
         are drawn in array order; an empty array removes every pane.
       </description>
       <arg name="panes" type="array"/>
+    </request>
+
+    <request name="set_clip" since="2">
+      <description summary="cut the panes to a rectangle">
+        Double-buffered with set_panes and applied at the same commit. The
+        rectangle is surface-local logical pixels. The pane boxes stay the
+        full, unclipped outlines (their corner radius, rim and bezel are
+        those of the whole box); the compositor draws only the part inside
+        the clip (and the surface). Only panes with the `clipped` state bit
+        are cut; the rest ignore the clip. Where a clip cuts a pane the edge is
+        straight and square, with no corner rounding, rim or shading along
+        the cut, so a card scrolled half out of a viewport runs off it.
+
+        A negative width or height is bad_pane. A zero width or height
+        clears the clip. A new object has no clip; the clip persists across
+        set_panes calls until changed. At most one clip per surface.
+      </description>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
     </request>
 
     <request name="destroy" type="destructor">

@@ -111,7 +111,9 @@ the same rules (ADR 0084).
   (.35 focused, .26 idle) plus the white focus lift, ink title and glyphs at the text steps,
   an ink seam (.10 / .06), and bar-cell ink steps on hovered buttons. Close keeps its danger cell
 - Trusted-UI prompts use the built-in dark or light palette matching the theme's
-  brightness, never a user theme's colours (ADR 0084)
+  brightness, never a user theme's colours (ADR 0084). The panel body is glass (ADR 0128):
+  the palette ground at .40 over a fixed blur floor of at least 6 passes,
+  with the frames, wells and buttons opaque; the blur and tint are not themeable
 
 ## Accent discipline
 The accent (yellow by default) marks state and one live value per screen: the active nav item, the selected
@@ -134,6 +136,7 @@ competing yellow areas in one pane, no gradients of it.
 ## Structure
 - Window: 1120x720, radius 16px, 1px light border. No traffic-light dots — this is a
   window manager, so the titlebar is either absent or a thin label row.
+- Notification toast cards: radius 20px (`radius::TOAST`), rounder than windows; with compositor glass, `max(decoration.rounding, 20)`; without it (frost/blur mode) `decoration.rounding`, so the card matches the compositor sheet behind it.
 - Left sidebar 214px: the window tint (rgba(11,9,6,.70) by default) + blur(30px), the same tint as the content column, nav items each with a drawn
   icon tile (see Art); active item = translucent fill + 3px yellow left bar. Settings' sidebar is the search field pinned on top, the
   Overview, then the sections under five small uppercase group headings (Look & feel, Devices, System, Privacy & accounts, Apps & add-ons)

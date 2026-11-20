@@ -680,6 +680,19 @@ mod tests {
         assert_eq!(row("mode").label(), "Interaction mode");
         assert_eq!(row("components.notifications").label(), "Notifications");
         assert_eq!(row("decoration.blur.glass.rim").label(), "Glass rim light");
+        assert_eq!(
+            row("decoration.blur.glass.lens.refraction").label(),
+            "Lens strength"
+        );
+        assert_eq!(row("decoration.blur.glass.lens.rim").label(), "Lens rim light");
+        assert_eq!(
+            row("decoration.blur.glass.lens.bevel").label(),
+            "Lens bevel width"
+        );
+        assert_eq!(
+            row("decoration.blur.glass.lens.dispersion").label(),
+            "Lens colour fringing"
+        );
         assert_eq!(row("decoration.blur.frost.tint").label(), "Frost tint");
         assert_eq!(row("general.col-active-border").label(), "Active border colour");
         assert_eq!(row("input.repeat-rate").label(), "Key repeat rate");
@@ -731,6 +744,18 @@ mod tests {
         ] {
             assert_eq!(caption(path), Some(want), "{path}");
         }
+        for path in [
+            "decoration.blur.glass.lens.refraction",
+            "decoration.blur.glass.lens.rim",
+            "decoration.blur.glass.lens.bevel",
+            "decoration.blur.glass.lens.dispersion",
+        ] {
+            let c = caption(path).unwrap_or_else(|| panic!("{path} has a caption"));
+            assert!(
+                c.starts_with(char::is_uppercase) && c.ends_with('.'),
+                "{path}: {c:?}"
+            );
+        }
         assert_eq!(caption("general.layout"), None);
     }
 
@@ -741,6 +766,10 @@ mod tests {
             "decoration.blur.glass.bevel",
             "decoration.blur.glass.dispersion",
             "decoration.blur.glass.rim",
+            "decoration.blur.glass.lens.refraction",
+            "decoration.blur.glass.lens.bevel",
+            "decoration.blur.glass.lens.dispersion",
+            "decoration.blur.glass.lens.rim",
             "decoration.blur.frost.tint",
             "general.col-inactive-border",
             "decoration.dim-inactive",
@@ -768,6 +797,13 @@ mod tests {
             moded(BLUR, "decoration.blur.glass.rim", &modes),
             Some(vec!["glass"])
         );
+        for lens in ["refraction", "rim", "bevel", "dispersion"] {
+            assert_eq!(
+                moded(BLUR, &format!("decoration.blur.glass.lens.{lens}"), &modes),
+                Some(vec!["glass"]),
+                "{lens}"
+            );
+        }
         // A sub-node no mode is named for applies to no mode, and says so by
         // being dimmed under every one of them rather than by vanishing.
         assert_eq!(moded(BLUR, "decoration.blur.smoke.depth", &modes), Some(vec![]));

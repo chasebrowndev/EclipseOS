@@ -158,27 +158,59 @@ impl AdaptiveBlur {
     }
 }
 
-/// `blur { glass { refraction 4; bevel 16; dispersion 0; rim 0.5 } }`.
+/// `blur { glass { refraction 1.5; bevel 16; dispersion 0; rim 0.5 } }`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlassBlur {
     /// Largest displacement of the blurred backdrop, logical px, at the
     /// outermost edge of the bevel; the flat centre is never bent.
-    pub refraction: i32,
+    pub refraction: f32,
     /// Width of the edge band the backdrop rolls off in, logical px.
     pub bevel: i32,
     /// Chromatic spread in the bevel, 0.0..=1.0; off by default.
     pub dispersion: f32,
     /// Strength of the neutral two-lobe hairline rim, 0.0..=1.0.
     pub rim: f32,
+    /// The lens look of small controls (shaped layer glass, glass panes).
+    pub lens: LensGlass,
 }
 
 impl Default for GlassBlur {
     fn default() -> Self {
         Self {
-            refraction: 4,
+            refraction: 1.5,
             bevel: 16,
             dispersion: 0.0,
             rim: 0.5,
+            lens: LensGlass::default(),
+        }
+    }
+}
+
+/// `blur { glass { lens { refraction 28; bevel 40; dispersion 0.7; rim 0.7 } } }`:
+/// the same four knobs as [`GlassBlur`], for the lens preset (small controls).
+/// The regular preset (a window's glass frame) uses the top-level ones.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LensGlass {
+    /// Displacement of the backdrop at the rim, logical px (the content there
+    /// is pulled from outside the shape when this exceeds the distance to the
+    /// edge).
+    pub refraction: f32,
+    /// Widest the bevel band may be, logical px; a small shape takes at most
+    /// 40% of its shorter side.
+    pub bevel: i32,
+    /// Chromatic spread across the bevel, 0.0..=1.0.
+    pub dispersion: f32,
+    /// Hairline rim strength, 0.0..=1.0.
+    pub rim: f32,
+}
+
+impl Default for LensGlass {
+    fn default() -> Self {
+        Self {
+            refraction: 28.0,
+            bevel: 40,
+            dispersion: 0.7,
+            rim: 0.7,
         }
     }
 }

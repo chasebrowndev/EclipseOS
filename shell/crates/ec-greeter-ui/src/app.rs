@@ -11,7 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ec_greeter::{Settings, Theme as GreeterTheme};
 use ec_layout::Layout;
-use ec_theme::{derive, Palette, Rgba, Seeds, DARK_SEEDS};
+use ec_theme::{Palette, Rgba, Scheme, Seeds, DARK_SEEDS, LIGHT_SEEDS};
 use iced::futures::channel::mpsc::Sender;
 use iced::futures::Stream;
 use iced::keyboard::key::Named;
@@ -120,9 +120,16 @@ impl Default for Options {
 /// `settings.wallpaper`, the shipped one by `options`.
 pub fn run_with(settings: Settings, auth: Box<dyn Auth>, options: Options) -> iced::Result {
     let backdrop = load_backdrop(settings.wallpaper, &options.shipped_wallpaper);
+    let theme = settings.theme;
     let mut app0 = App::new(settings, auth);
+    // The compositor knows the colour scheme; a greeter with no theme of its
+    // own follows it, so light glass gets dark ink.
+    if let Some(scheme) = compositor_scheme() {
+        app0.pal = tokens::palette(&seeds(theme.as_ref(), scheme), scheme);
+    }
     app0.backdrop = backdrop;
     if let Some(fixed) = options.glance {
+        app0.stage.set_devices(fixed.batteries.len(), Instant::now());
         app0.glance = fixed;
         app0.glance_fixed = true;
     }
@@ -163,16 +170,32 @@ fn usable(l: &Layout) -> bool {
     ec_layout::validate(l).is_ok() && l.tiles.iter().all(|t| !t.kind.needs_session())
 }
 
-/// The palette from the operator's theme. Absent, the shipped dark one.
-fn seeds(theme: Option<&GreeterTheme>) -> Seeds {
+/// The scheme in force, asked of the compositor's control socket (`get_theme`,
+/// read-only). `None` when nothing answers: the shipped dark look stays.
+fn compositor_scheme() -> Option<Scheme> {
+    let mut client = ec_ipc::Client::connect().ok()?;
+    let reply = client.call("get_theme", serde_json::json!({})).ok()?;
+    match reply.get("scheme")?.as_str()? {
+        "light" => Some(Scheme::Light),
+        "dark" => Some(Scheme::Dark),
+        _ => None,
+    }
+}
+
+/// The seeds from the operator's theme over the scheme's built-in ones.
+fn seeds(theme: Option<&GreeterTheme>, scheme: Scheme) -> Seeds {
+    let built_in = match scheme {
+        Scheme::Dark => DARK_SEEDS,
+        Scheme::Light => LIGHT_SEEDS,
+    };
     match theme {
-        None => DARK_SEEDS,
+        None => built_in,
         Some(t) => Seeds {
             base: Rgba::rgb(t.base),
             ink: Rgba::rgb(t.ink),
             accent: Rgba::rgb(t.accent),
             accent_text: Some(Rgba::rgb(t.accent_text)),
-            ..DARK_SEEDS
+            ..built_in
         },
     }
 }
@@ -223,7 +246,7 @@ impl App {
         let now = Instant::now();
         let users = auth.users();
         let mut app = App {
-            pal: derive(&seeds(theme)),
+            pal: tokens::palette(&seeds(theme, Scheme::Dark), Scheme::Dark),
             stage: Stage::new(
                 layout,
                 Size::new(tokens::DEFAULT_WINDOW.0, tokens::DEFAULT_WINDOW.1),
@@ -280,7 +303,10 @@ impl App {
                 }
             }
             Msg::Resize(size) => self.stage.resize(size, Instant::now()),
-            Msg::Glance(Some(snapshot)) => self.glance = snapshot,
+            Msg::Glance(Some(snapshot)) => {
+                self.stage.set_devices(snapshot.batteries.len(), Instant::now());
+                self.glance = snapshot;
+            }
             Msg::Glance(None) => {}
             Msg::Pick(user) => {
                 if matches!(self.state(), AuthState::Idle | AuthState::Refused(_)) {

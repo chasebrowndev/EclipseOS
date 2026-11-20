@@ -3,7 +3,8 @@
 //!
 //! The lock is compositor-side and unbypassable: while [`LockState::locked`] is
 //! set, each backend draws [`lock_elements`] and nothing else: the locker's
-//! surface for that output, or a compositor-drawn fallback where the locker
+//! surface for that output (over the compositor's own wallpaper when it
+//! asks for glass panes, ADR 0129), or a compositor-drawn fallback where the locker
 //! has not provided one. A locker that dies keeps the session locked behind that
 //! fallback (ADR 0024) — a crash must never be a way in.
 //!
@@ -155,6 +156,17 @@ impl LockState {
             .iter()
             .find(|(o, s)| o == output && s.alive())
             .map(|(_, s)| s)
+    }
+
+    /// The locker's root surface on `output` while the session is locked, for
+    /// the per-frame services (frame callbacks, presentation feedback, fifo and
+    /// commit-timing release). The locker's surface is in neither the space nor
+    /// the layer map, so those sweeps reach it only through here.
+    pub fn frame_surface(&self, output: &Output) -> Option<WlSurface> {
+        if !self.locked {
+            return None;
+        }
+        self.surface_for(output).map(|s| s.wl_surface().clone())
     }
 
     /// The compositor-drawn fallback quads for `output`, sized to it.
@@ -518,9 +530,22 @@ pub(crate) fn tick(state: &mut AbyssState, now: Instant) {
 pub fn lock_elements(
     renderer: &mut GlesRenderer,
     lock: &mut LockState,
+    borders: &mut ec_abyss_render::BorderStore,
+    config: &crate::config::Config,
     output: &Output,
 ) -> Vec<AbyssRenderElement> {
     let scale = Scale::from(output.current_scale().fractional_scale());
+    // ADR 0129: a locker that asks for glass panes gets them over the
+    // compositor's wallpaper alone; anything less falls back to the plain
+    // surface below.
+    if let Some(surface) = lock.surface_for(output).map(|s| s.wl_surface().clone()) {
+        let ground = lock.fallback_for(output).0.clone();
+        if let Some(els) =
+            ec_abyss_render::lock_glass_elements(renderer, borders, config, output, &surface, &ground)
+        {
+            return els;
+        }
+    }
     if let Some(surface) = lock.surface_for(output) {
         return render_elements_from_surface_tree(
             renderer,
@@ -579,7 +604,27 @@ mod tests {
         globals: Vec<(u32, String, u32)>,
         locked: u32,
         finished: u32,
+        frames: u32,
+        configure: Option<(u32, u32, u32)>,
     }
+
+    impl CDispatch<wayland_client::protocol::wl_callback::WlCallback, ()> for Seen {
+        fn event(
+            s: &mut Self,
+            _: &wayland_client::protocol::wl_callback::WlCallback,
+            e: wayland_client::protocol::wl_callback::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            if matches!(e, wayland_client::protocol::wl_callback::Event::Done { .. }) {
+                s.frames += 1;
+            }
+        }
+    }
+
+    delegate_noop!(Seen: ignore wayland_protocols::wp::fifo::v1::client::wp_fifo_manager_v1::WpFifoManagerV1);
+    delegate_noop!(Seen: ignore wayland_protocols::wp::fifo::v1::client::wp_fifo_v1::WpFifoV1);
 
     impl CDispatch<wl_registry::WlRegistry, ()> for Seen {
         fn event(
@@ -615,7 +660,31 @@ mod tests {
     delegate_noop!(Seen: WlCompositor);
     delegate_noop!(Seen: ignore CWlSurface);
     delegate_noop!(Seen: ignore CWlOutput);
-    delegate_noop!(Seen: ignore CLockSurface);
+    delegate_noop!(Seen: ignore wayland_client::protocol::wl_shm::WlShm);
+    delegate_noop!(Seen: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
+    delegate_noop!(Seen: ignore wayland_client::protocol::wl_buffer::WlBuffer);
+
+    impl CDispatch<CLockSurface, ()> for Seen {
+        fn event(
+            s: &mut Self,
+            _: &CLockSurface,
+            e: wayland_protocols::ext::session_lock::v1::client::ext_session_lock_surface_v1::Event,
+            _: &(),
+            _: &Connection,
+            _: &QueueHandle<Self>,
+        ) {
+            use wayland_protocols::ext::session_lock::v1::client::ext_session_lock_surface_v1::Event;
+            let Event::Configure {
+                serial,
+                width,
+                height,
+            } = e
+            else {
+                return;
+            };
+            s.configure = Some((serial, width, height));
+        }
+    }
 
     struct Client {
         server: smithay::reexports::wayland_server::Client,
@@ -754,6 +823,102 @@ mod tests {
         assert_eq!(a.error(), None);
         assert!(!h.state.lock.locked);
         assert!(!h.state.lock.locker_alive());
+    }
+
+    /// The locker's surface is in neither the space nor the layer map, so the
+    /// per-frame services must reach it through `LockState::frame_surface`: a
+    /// vsynced locker (wgpu fifo present) otherwise gets no frame callback and
+    /// its fifo barrier is never released, freezing the screen after one frame.
+    #[test]
+    fn the_lock_surface_gets_frames_and_fifo_release() {
+        use wayland_protocols::wp::fifo::v1::client::wp_fifo_manager_v1::WpFifoManagerV1;
+        let mut h = harness();
+        let output = h.state.outputs.get(h.a).expect("output").output.clone();
+        let mut a = Client::connect(&mut h);
+        let lock = a.lock(&mut h);
+        let qh = a.queue.handle();
+        let surface = a.compositor.create_surface(&qh, ());
+        let lock_surface = lock.get_lock_surface(&surface, &a.output, &qh, ());
+        a.pump(&mut h);
+        let (serial, w, hgt) = a.seen.configure.expect("configured");
+        lock_surface.ack_configure(serial);
+        let shm_name = a
+            .seen
+            .globals
+            .iter()
+            .find(|(_, i, _)| i == "wl_shm")
+            .map(|(n, _, _)| *n)
+            .expect("shm");
+        let registry = a.conn.display().get_registry(&qh, ());
+        a.pump(&mut h);
+        let shm: wayland_client::protocol::wl_shm::WlShm = registry.bind(shm_name, 1, &qh, ());
+        let len = (w * hgt * 4) as usize;
+        let file = rustix::fs::memfd_create("lock-frames", rustix::fs::MemfdFlags::empty()).unwrap();
+        rustix::fs::ftruncate(&file, len as u64).unwrap();
+        let pool = shm.create_pool(std::os::fd::AsFd::as_fd(&file), len as i32, &qh, ());
+        let buf = pool.create_buffer(
+            0,
+            w as i32,
+            hgt as i32,
+            (w * 4) as i32,
+            wayland_client::protocol::wl_shm::Format::Argb8888,
+            &qh,
+            (),
+        );
+        surface.attach(Some(&buf), 0, 0);
+        let fm_name = a
+            .seen
+            .globals
+            .iter()
+            .find(|(_, i, _)| i == "wp_fifo_manager_v1")
+            .map(|(n, _, _)| *n)
+            .expect("fifo advertised to the locker");
+        let fm: WpFifoManagerV1 = registry.bind(fm_name, 1, &qh, ());
+        let fifo = fm.get_fifo(&surface, &qh, ());
+        let scale = |h: &Harness| {
+            use smithay::wayland::compositor::{with_states, SurfaceAttributes};
+            let s = h
+                .state
+                .lock
+                .frame_surface(&output)
+                .expect("locked, with a surface");
+            with_states(&s, |st| {
+                st.cached_state.get::<SurfaceAttributes>().current().buffer_scale
+            })
+        };
+
+        // Frame one sets the barrier; frame two waits on it and asks for a callback.
+        fifo.set_barrier();
+        surface.commit();
+        a.pump(&mut h);
+        fifo.wait_barrier();
+        surface.set_buffer_scale(2);
+        let _cb = surface.frame(&qh, ());
+        surface.commit();
+        a.pump(&mut h);
+        assert_eq!(scale(&h), 1, "held behind the fifo barrier");
+        assert_eq!(a.seen.frames, 0, "no frame yet");
+
+        // Frame N releases the barrier (the held commit, callback included,
+        // applies); frame N+1 answers the callback.
+        for i in 0..2u64 {
+            let lock_surface = h.state.lock.frame_surface(&output);
+            crate::render::send_frames(
+                &h.state.space,
+                &output,
+                lock_surface.as_ref(),
+                std::time::Duration::from_millis(5 + 10 * i),
+            );
+            crate::protocols::standard::frame_timing::release(&mut h.state, &output);
+            a.pump(&mut h);
+        }
+        assert_eq!(a.seen.frames, 1, "the locker's frame callback is answered");
+        assert_eq!(scale(&h), 2, "the fifo barrier is released by the frame");
+
+        // Unlocked, the surface is nobody's to service.
+        lock.unlock_and_destroy();
+        a.pump(&mut h);
+        assert!(h.state.lock.frame_surface(&output).is_none());
     }
 
     /// A lock command naming this test binary, so the in-process client is

@@ -19,6 +19,7 @@
 use std::time::{Duration, Instant};
 
 use ec_layout::{Kind, Layout, Rect, COLS, ROWS};
+use iced::advanced::graphics::geometry;
 use iced::advanced::image::Renderer as _;
 use iced::advanced::layout::{self, Layout as NodeLayout};
 use iced::advanced::renderer;
@@ -666,7 +667,8 @@ impl<M> Editor<'_, M> {
         for tile in &self.layout.tiles {
             let r = g.rect_px(tile.rect);
             if r.contains(p) {
-                return match grip_at(r, p) {
+                // A content-sized tile has no size to grip: all of it drags.
+                return match grip_at(r, p).filter(|_| !tile.kind.is_intrinsic()) {
                     Some(h) => Hit::Grip(tile.kind, h),
                     None => Hit::Tile(tile.kind),
                 };
@@ -1051,7 +1053,9 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
                     );
                 }
                 self.tile(r, s.kind, rect, base, hot, alpha, lifted);
-                grip_marks(r, rect, ink, alpha, hot, !removable);
+                if !s.kind.is_intrinsic() {
+                    grip_marks(r, rect, ink, alpha, hot, !removable);
+                }
                 if removable {
                     badge(
                         r,
@@ -2095,48 +2099,65 @@ fn mock(
             }
         }
         Kind::Battery => {
-            let head = head_size.map_or(0.0, |s| s + 5.0);
-            if let Some(s) = head_size {
-                heading(r, "BATTERY", s);
-            }
-            let rows = [("Internal", 0.72), ("Mouse", 0.40), ("Keyboard", 0.85)];
-            let rh = (b.height * 0.3).clamp(15.0, 30.0);
-            let Some(sz) = ts(rh * 0.42, 11.0) else {
-                return glyph_card(r, kind, b, clip, sk, a);
+            // The gauge row at its intrinsic proportions (`ec_layout::intrinsic`),
+            // scaled to fit the tile and centred. Ink only, like every mock.
+            use ec_greeter_ui::gauge::{paint, Colours, Spec};
+            use ec_greeter_ui::tokens::gauge as gt;
+            let n = layout_edit::PREVIEW_BATTERIES.len();
+            let (cw, ch) = ec_layout::intrinsic::px(n);
+            let s = (tile.width / cw as f32).min(tile.height / ch as f32);
+            let side = gt::GAUGE_PX as f32 * s;
+            let origin = Point::new(
+                tile.x + (tile.width - cw as f32 * s) / 2.0 + gt::PAD_PX as f32 * s,
+                tile.y + (tile.height - ch as f32 * s) / 2.0 + gt::PAD_PX as f32 * s,
+            );
+            let rgba = |c: Color| ec_theme::Rgba::new(c.r, c.g, c.b, c.a);
+            let colours = Colours {
+                ring: rgba(ink),
+                track: rgba(sk.ink.scale_alpha(t::TRACK * a)),
+                ink: rgba(ink),
+                bolt: rgba(ink),
             };
-            let mut y = b.y + head;
-            for (name, v) in rows {
-                if y + rh > b.y + b.height + 0.5 {
-                    break;
-                }
-                let pct = format!("{}%", (v * 100.0) as u32);
-                let full = format!("{name}  {pct}");
-                let line = if measure(&full, sz, font::UI) <= b.width {
-                    full
-                } else {
-                    pct
+            let mut frame = iced::widget::canvas::Frame::new(&*r, clip.size());
+            let at = |i: usize| {
+                Point::new(
+                    origin.x - clip.x + i as f32 * (side + gt::GAUGE_GAP_PX as f32 * s),
+                    origin.y - clip.y,
+                )
+            };
+            for (i, (kind, percent, charging)) in layout_edit::PREVIEW_BATTERIES.iter().enumerate() {
+                let spec = Spec {
+                    kind: *kind,
+                    percent: *percent,
+                    charging: *charging,
                 };
-                put(
-                    r,
-                    &line,
-                    Rectangle::new(Point::new(b.x, y), Size::new(b.width, sz)),
-                    sz,
-                    font::UI,
-                    ink,
-                    left,
-                    top,
-                    clip,
-                );
-                let bar = Rectangle::new(Point::new(b.x, y + sz + 3.0), Size::new(b.width, 3.5));
-                fill(r, bar, 1.75, sk.ink.scale_alpha(t::TRACK * a), None);
-                fill(
-                    r,
-                    Rectangle::new(bar.position(), Size::new(bar.width * v, bar.height)),
-                    1.75,
-                    ink,
-                    None,
-                );
-                y += rh;
+                paint(&mut frame, at(i), side, &spec, &colours);
+            }
+            r.with_translation(Vector::new(clip.x, clip.y), |r| {
+                geometry::Renderer::draw_geometry(r, frame.into_geometry());
+            });
+            let line = gt::NUMERAL_PX as f32 * s;
+            let size = (gt::NUMERAL_SIZE * s).max(t::MIN_TEXT);
+            if line >= t::MIN_TEXT {
+                for (i, (_, percent, _)) in layout_edit::PREVIEW_BATTERIES.iter().enumerate() {
+                    put(
+                        r,
+                        &format!("{percent}%"),
+                        Rectangle::new(
+                            Point::new(
+                                origin.x + i as f32 * (side + gt::GAUGE_GAP_PX as f32 * s),
+                                origin.y + side,
+                            ),
+                            Size::new(side, line),
+                        ),
+                        size.min(line),
+                        font::DATA,
+                        ink,
+                        text::Alignment::Center,
+                        alignment::Vertical::Center,
+                        clip,
+                    );
+                }
             }
         }
         Kind::Wifi => {

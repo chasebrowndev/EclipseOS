@@ -2266,6 +2266,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
             scale,
         ));
     }
+    // Where the prompt's panel lands, for the glass body (ADR 0128).
+    let prompt_at = elements.len();
     elements.extend(crate::trusted_ui::elements(
         renderer,
         &mut state.trusted_ui,
@@ -2351,6 +2353,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
         elements.extend(crate::protocols::standard::session_lock::lock_elements(
             renderer,
             &mut state.lock,
+            &mut state.borders,
+            &state.config,
             &output,
         ));
     } else {
@@ -2375,6 +2379,16 @@ fn render_output(state: &mut AbyssState, index: usize) {
         Some(&behind),
     ));
     elements.extend(behind);
+    // The prompt's glass body, drawn from everything now below the panel
+    // (ADR 0128); only a prompt on this output does anything here.
+    crate::trusted_ui::splice_glass(
+        renderer,
+        &mut state.trusted_ui,
+        &mut state.borders,
+        &output,
+        &mut elements,
+        prompt_at,
+    );
     // Overscan compensation (COMP-03 §2): scale the finished scene into the
     // inset rect and leave the margins black. The markers go on afterwards so
     // they stay in raw framebuffer pixels — they exist to show where the
@@ -2526,11 +2540,12 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // `drm` borrow and handed back to `queue_frame`.
     let mut queued = false;
     if let Some(states) = states {
-        update_primary_scanout(&state.space, &output, &states);
+        let lock = state.lock.frame_surface(&output);
+        update_primary_scanout(&state.space, &output, lock.as_ref(), &states);
         if let Some(fb) = surface_feedback.as_ref() {
             send_dmabuf_feedback(&state.space, &output, fb, candidate.as_ref());
         }
-        let presentation = presentation_feedback(&state.space, &output, &states);
+        let presentation = presentation_feedback(&state.space, &output, lock.as_ref(), &states);
         let submit_start = Instant::now();
         let Some(drm) = state.drm.as_mut() else { return };
         match drm.outputs[index].compositor.queue_frame(Some(presentation)) {
@@ -2672,7 +2687,12 @@ fn render_output(state: &mut AbyssState, index: usize) {
     }
 
     let time = state.start_time.elapsed();
-    crate::render::send_frames(&state.space, &output, time);
+    crate::render::send_frames(
+        &state.space,
+        &output,
+        state.lock.frame_surface(&output).as_ref(),
+        time,
+    );
     crate::protocols::standard::frame_timing::release(state, &output);
     state.space.refresh();
     state.popups.cleanup();

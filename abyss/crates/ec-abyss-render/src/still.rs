@@ -88,6 +88,8 @@ pub struct Frame<'a> {
     bezel_ok: [Option<bool>; 2],
     requests: Vec<BlurRequest>,
     panes: Vec<PaneRequest>,
+    /// Where each window's elements sit in the list (depth tiers).
+    wins: Vec<crate::WinRec>,
 }
 
 impl Still {
@@ -140,6 +142,7 @@ impl Still {
             bezel_ok: [None; 2],
             requests: Vec::new(),
             panes: Vec::new(),
+            wins: Vec::new(),
         }
     }
 }
@@ -189,6 +192,37 @@ impl Frame<'_> {
     /// with its effects: dim overlay, popups, surfaces, border or bezel, glow,
     /// shadow, panes, and a backdrop request spliced in by [`Frame::finish`].
     pub fn window(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        window: &Window,
+        geo: Rectangle<i32, Logical>,
+        active: bool,
+        out: &mut Vec<AbyssRenderElement>,
+    ) {
+        // A window's range runs from where the last one ended (so a redaction
+        // card pushed in between rides with the window below it) to here.
+        let start = self.wins.last().map_or(out.len(), |w| w.end);
+        self.window_inner(renderer, window, geo, active, out);
+        let (scale, output_loc) = (self.scale, self.output_geo.loc);
+        let bar = crate::titlebar::bar_of(window);
+        let geo = if bar.is_some_and(|b| b.shaded) {
+            Rectangle::new(geo.loc, (geo.size.w, 0).into())
+        } else {
+            geo
+        };
+        let frame = bar.map_or(geo, |b| crate::titlebar::frame_of_content(geo, b.height));
+        self.wins.push(crate::WinRec {
+            window: window.clone(),
+            start,
+            end: out.len(),
+            rect: Rectangle::new(
+                crate::phys(frame.loc - output_loc, scale),
+                frame.size.to_f64().to_physical(scale).to_i32_round(),
+            ),
+        });
+    }
+
+    fn window_inner(
         &mut self,
         renderer: &mut GlesRenderer,
         window: &Window,
@@ -775,6 +809,9 @@ impl Frame<'_> {
             self.requests,
             self.panes,
             out,
+            &self.wins,
+            // Everything after the last window lies below every window.
+            self.wins.last().map_or(0, |w| w.end),
         );
     }
 }

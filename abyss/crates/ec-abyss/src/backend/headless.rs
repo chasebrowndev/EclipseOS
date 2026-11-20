@@ -466,7 +466,13 @@ fn redraw(
         // A fullscreen toplevel drops the `Top` layer below the window stack.
         let fullscreen = crate::shell::output_has_fullscreen(state, out);
         let mut elements = if state.lock.locked {
-            crate::protocols::standard::session_lock::lock_elements(renderer, &mut state.lock, out)
+            crate::protocols::standard::session_lock::lock_elements(
+                renderer,
+                &mut state.lock,
+                &mut state.borders,
+                &state.config,
+                out,
+            )
         } else {
             collect_elements(
                 renderer,
@@ -601,6 +607,16 @@ fn redraw(
                     .unwrap_or_default(),
             ),
         );
+        // Its glass body, drawn from everything now below the panel
+        // (ADR 0128); only a prompt on this output does anything here.
+        crate::trusted_ui::splice_glass(
+            renderer,
+            &mut state.trusted_ui,
+            &mut state.borders,
+            out,
+            &mut elements,
+            0,
+        );
         let mut fb = match Bind::bind(renderer, &mut data.target) {
             Ok(fb) => fb,
             Err(e) => {
@@ -620,14 +636,15 @@ fn redraw(
     };
     let render_time = frame_start.elapsed();
     dump_frame(data);
-    update_primary_scanout(&state.space, out, &rendered);
+    let lock = state.lock.frame_surface(out);
+    update_primary_scanout(&state.space, out, lock.as_ref(), &rendered);
     let prompt = crate::trusted_ui::holds_seat(state);
     crate::render::capture::service(state, &mut data.renderer, prompt);
 
     // There is no page flip, so the frame is "presented" the moment it is
     // composited, and never with a hardware-completion flag.
     let now = state.clock.now();
-    let mut feedback = presentation_feedback(&state.space, out, &rendered);
+    let mut feedback = presentation_feedback(&state.space, out, lock.as_ref(), &rendered);
     feedback.presented::<_, smithay::utils::Monotonic>(
         now,
         Refresh::fixed(FRAME),
@@ -637,7 +654,7 @@ fn redraw(
     state.stats.record(render_time, std::time::Duration::ZERO);
     state.stats.maybe_report();
     let time = state.start_time.elapsed();
-    send_frames(&state.space, out, time);
+    send_frames(&state.space, out, lock.as_ref(), time);
     crate::protocols::standard::frame_timing::release(state, out);
     state.space.refresh();
     state.popups.cleanup();

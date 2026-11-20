@@ -8,3 +8,6 @@ Read the root `CLAUDE.md` first. Governing decision: ADR 0126. **Linked by TCB
   from disk; `place` and `resize` only ever return valid spots.
 - `Users` and `Password` are `REQUIRED`: no layout may hide the way in.
 - `Kind::needs_session` kinds (now playing) must never reach the pre-auth greeter.
+- Content-sized kinds (`Kind::is_intrinsic`, now `Battery`) store only `x y`: their `w h` in a
+  file or a `Rect` is ignored, `validate`/`place`/`fit` use `Tile::extent(Content)`, and
+  `resize` refuses them. `intrinsic` holds the px numbers; the greeter's gauge reads them from here.

@@ -42,8 +42,15 @@ ADR 0024 (the compositor's fallback when it dies). Protocol: Vol 1's
   never animates. `Users`, `Power`, `NowPlaying` tiles are not drawn here.
 - `view.rs` is eclipse-frontend's. It reads the model only through
   `Scene::of(&App)` (`status, typed, user, clock, can_submit, face`) and emits only
-  `Message::Submit` / `Message::Clear`. `style()`/`ground()` stay opaque: a
-  translucent lock surface shows the desktop. `examples/preview.rs` renders
+  `Message::Submit` / `Message::Clear`. Glass (ADR 0129): under abyss in `glass`
+  mode the compositor draws the wallpaper, then this surface's `eclipse_glass_v1`
+  panes (blurring the wallpaper only), so `style()`/`ground_for()` draw **no ground**
+  while `glass_live()` and every pane pushes a pane. In the fall-back (no global,
+  not `glass` mode) the ground is **opaque** and panes are glass-styled, so the
+  lock is never see-through. `glass.rs` hands each lock surface to `ec_ui::glass`
+  through the vendored `iced_sessionlock` surface hook (`shell/vendor/PATCHES.md`
+  hunk 4). The lock draws only the primary and secondary inks (4.5:1 fall-back, 3:1
+  on glass; tests in `view.rs`). `examples/preview.rs` renders
   each state in an ordinary window for screenshots; it never locks.
 - `tests/headless.rs` needs `EC_ABYSS_BIN` and is `#[ignore]`d; run it with
   `-- --ignored` after building `ec-abyss`.

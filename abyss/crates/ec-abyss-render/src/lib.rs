@@ -7,6 +7,8 @@
 //! `capture.rs` is not here: it reads `AbyssState` and is TCB, so it stays in
 //! `ec-abyss` (`ec-abyss/src/render/capture.rs`).
 
+#![deny(unsafe_code)]
+
 pub mod anim;
 pub mod annotation;
 pub mod blur;
@@ -19,7 +21,10 @@ pub mod drop;
 pub mod effects;
 pub mod font;
 pub mod glass;
+pub mod glass_profile;
 pub mod glyphs;
+pub mod gpu_timer;
+pub mod groups;
 pub mod hud;
 pub mod hud_font;
 pub mod menu;
@@ -27,7 +32,12 @@ pub mod output_overscan;
 pub mod overscan;
 pub mod overview;
 pub mod palette;
+pub mod partial;
 pub mod popup_shape;
+pub mod prompt;
+pub use prompt::{
+    prompt_backdrop, prompt_backdrop_release, PromptMember, PROMPT_MIN_PASSES, PROMPT_MIN_TINT_ALPHA,
+};
 pub mod redact;
 pub mod sanitize;
 pub mod select;
@@ -59,8 +69,9 @@ use smithay::{
         layer_map_for_output,
         space::SpaceRenderElements,
         utils::{
-            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
-            update_surface_primary_scanout_output, OutputPresentationFeedback,
+            send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
+            surface_primary_scanout_output, take_presentation_feedback_surface_tree,
+            update_surface_primary_scanout_output, with_surfaces_surface_tree, OutputPresentationFeedback,
         },
         PopupManager, Space, Window,
     },
@@ -139,6 +150,84 @@ type BlurRequest = (
     Option<blur::Shape>,
     Option<Rectangle<i32, Physical>>,
 );
+
+/// One toplevel's place in the element list (Phase 1a): where its own
+/// elements start and end (`end` is also the index of its backdrop) and its
+/// frame rectangle, output-local physical.
+#[derive(Clone)]
+struct WinRec {
+    window: Window,
+    start: usize,
+    end: usize,
+    rect: Rectangle<i32, Physical>,
+}
+
+/// Whether a layer sheet at element `index` over `region` samples no window: it
+/// sits above the bottom layers (`index <= base_start`) and overlaps no window's
+/// frame. Such a sheet is a member of the wallpaper-only tier-0 pyramid.
+fn layer_sees_no_window(
+    index: usize,
+    base_start: usize,
+    region: Rectangle<i32, Physical>,
+    mut windows: impl Iterator<Item = Rectangle<i32, Physical>>,
+) -> bool {
+    index <= base_start && !windows.any(|w| w.overlaps(region))
+}
+
+/// Wrap a backdrop element as the list holds it: cut to its tile if it has one.
+fn wrap_blur(
+    element: blur::BlurElement,
+    crop: Option<Rectangle<i32, Physical>>,
+    scale: Scale<f64>,
+) -> Option<AbyssRenderElement> {
+    match crop {
+        Some(crop) => {
+            CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
+        }
+        None => Some(AbyssRenderElement::Blur(element)),
+    }
+}
+
+/// An empty `Vec` of references, reusing `v`'s allocation whatever the old and
+/// new lifetime: the scratch vector outlives the frame, the references do not.
+fn recycle<'a, 'b>(mut v: Vec<&'a AbyssRenderElement>) -> Vec<&'b AbyssRenderElement> {
+    v.clear();
+    v.into_iter()
+        .map(|_| -> &'b AbyssRenderElement { unreachable!("the vector is empty") })
+        .collect()
+}
+
+/// A window's record is closed at the next window (or the end): by then every
+/// `continue` of the loop has had its say about whether it drew anything.
+type OpenRec = (Window, usize, Option<Rectangle<i32, Physical>>);
+
+fn close_rec(open: &mut Option<OpenRec>, end: usize, wins: &mut Vec<WinRec>) {
+    if let Some((window, start, Some(rect))) = open.take() {
+        wins.push(WinRec {
+            window,
+            start,
+            end,
+            rect,
+        });
+    }
+}
+
+/// One blurred surface prepared for the splice: what its final draw needs,
+/// decided before the requests are grouped (Phase 1a).
+struct BlurPrep {
+    key: blur::BlurKey,
+    index: usize,
+    region: Rectangle<i32, Physical>,
+    shape: Option<blur::Shape>,
+    crop: Option<Rectangle<i32, Physical>>,
+    /// The final draw's program (its uniforms are `blur_uniforms[n]` for this
+    /// prep's index `n`); taken when the element is built.
+    draw: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    reach: i32,
+    ring: Option<(i32, i32, i32)>,
+    /// Which glass program draws it (sets its pyramid's passes and packing).
+    preset: effects::GlassPreset,
+}
 
 /// A window's border drawn as a ring of glass instead of paint (COMP-02 §9).
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -240,18 +329,71 @@ struct PaneRequest {
 }
 
 impl PaneRequest {
-    /// Pane `pane`'s output-local physical box: placed against the surface
-    /// origin, carried through the window's animation scale, then cut to the
-    /// crop. `None` when it lies wholly outside the surface or the crop.
-    fn rect(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
-        let r = glass::pane_rect(pane, self.size, self.loc, scale)?;
+    /// Where the set's clip falls, output-local physical, carried through the
+    /// window's animation scale like the boxes are. `None`: no clip.
+    /// `Some(None)`: the clip misses the surface.
+    fn clip_phys(&self, scale: Scale<f64>) -> Option<Option<Rectangle<i32, Physical>>> {
+        let c = glass::clip_rect(self.set.clip, self.size, self.loc, scale)?;
+        Some(c.map(|r| match self.scaled {
+            Some((origin, by)) => anim::track::scale_about(r, origin, by),
+            None => r,
+        }))
+    }
+
+    /// Pane `pane`'s SHAPE box: what its corner radius, rim and bezel are
+    /// computed from. A `CLIPPED` pane (ADR 0127) keeps its whole box, not cut
+    /// to the surface or the crop; any other is placed, carried through the
+    /// window's animation scale, and cut to the crop (a cut edge rounds).
+    fn shape(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
+        let clipped = pane.state & glass::CLIPPED != 0 && self.set.clip.is_some();
+        let r = if clipped {
+            glass::pane_full_rect(pane, self.loc, scale)?
+        } else {
+            glass::pane_rect(pane, self.size, self.loc, scale)?
+        };
         let r = match self.scaled {
             Some((origin, by)) => anim::track::scale_about(r, origin, by),
             None => r,
         };
+        if clipped {
+            return Some(r);
+        }
         match self.crop {
             Some(crop) => r.intersection(crop),
             None => Some(r),
+        }
+    }
+
+    /// The part of pane `pane` that is drawn: its shape cut to the clip (and
+    /// the surface) if it is `CLIPPED`, and to the crop. This, not the shape,
+    /// is the backdrop region and the element's box. `None` when nothing of
+    /// it shows.
+    fn rect(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
+        let shape = self.shape(pane, scale)?;
+        if pane.state & glass::CLIPPED == 0 {
+            return Some(shape);
+        }
+        let shown = match self.clip_phys(scale) {
+            Some(clip) => shape.intersection(clip?)?,
+            None => shape,
+        };
+        match self.crop {
+            Some(crop) => shown.intersection(crop),
+            None => Some(shown),
+        }
+    }
+
+    /// What a drawn effect that is not tied to one pane's box (a contact
+    /// shadow) is cut to for pane `pane`: the output crop and, for a
+    /// `CLIPPED` pane, the clip. `None`: uncut; an empty rectangle: hidden.
+    fn cut(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
+        let clip = (pane.state & glass::CLIPPED != 0)
+            .then(|| self.clip_phys(scale))
+            .flatten()
+            .map(|c| c.unwrap_or_default());
+        match (self.crop, clip) {
+            (Some(a), Some(b)) => Some(a.intersection(b).unwrap_or_default()),
+            (a, b) => a.or(b),
         }
     }
 
@@ -569,7 +711,7 @@ fn layer_shows(
 type Border = [SolidColorBuffer; 4];
 /// A pane's contact shadow kept between frames: its element, the uniforms it was
 /// last given (range, radius, drop, colour), and the alpha it was built with.
-type PaneShadow = (PixelShaderElement, [f32; 7], f32);
+type PaneShadow = (PixelShaderElement, [f32; 6], f32);
 
 /// The GPU objects of a [`BorderStore`]: programs, and the elements and
 /// backdrop chains built on them. A program belongs to the renderer that
@@ -588,6 +730,10 @@ pub struct BorderGpu {
     /// draws a backdrop in that mode.
     frost: Option<smithay::backend::renderer::gles::GlesTexProgram>,
     glass: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    /// The window/layer glass programs per preset (`effects::GlassPreset`),
+    /// compiled on first use, plain and shaped.
+    glass_presets: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
+    shaped_glass_presets: [Option<smithay::backend::renderer::gles::GlesTexProgram>; 3],
     /// The glass program failed to compile; layers with panes keep the
     /// whole-surface glass instead (and it is not retried per frame).
     glass_failed: bool,
@@ -624,6 +770,10 @@ pub struct BorderGpu {
     /// per output so one output's retain, clear or chain size never touches
     /// another's (BLUR-04).
     blur: HashMap<Output, blur::BlurStore>,
+    /// The trusted prompt's private backdrop store per output (ADR 0128),
+    /// apart from `blur` so the per-frame `retain` of window backdrops never
+    /// touches it and it never shares a tier with a window.
+    prompt: HashMap<Output, blur::BlurStore>,
 }
 
 /// Border quads kept alive between frames, keyed by output and window: one
@@ -639,6 +789,20 @@ pub struct BorderStore {
     gpu: context::PerContext<BorderGpu>,
     /// Glass pane elements built this frame, kept to reuse the allocation.
     pane_scratch: Vec<blur::BlurElement>,
+    /// Blur requests prepared this frame, kept to reuse the allocation (Phase 1a).
+    blur_prep: Vec<BlurPrep>,
+    blur_cull: Vec<bool>,
+    /// Each request's uniforms, by its index in `blur_prep`: refilled in place
+    /// every frame, so building them allocates nothing once warm.
+    blur_uniforms: Vec<Vec<smithay::backend::renderer::gles::Uniform<'static>>>,
+    blur_live: Vec<blur::BlurKey>,
+    blur_tiers: Vec<u8>,
+    blur_assign: Vec<Option<u8>>,
+    blur_req_win: Vec<Option<usize>>,
+    blur_win_req: Vec<Option<usize>>,
+    blur_glass: Vec<Option<AbyssRenderElement>>,
+    blur_refs: Vec<&'static AbyssRenderElement>,
+    blur_wins: Vec<WinRec>,
     /// Titlebar textures under `mode "de"` (COMP-05 §7.1), per output and window.
     pub bars: titlebar::BarCache,
     /// Each output's wallpaper, the bottom-most element (ADR 0104).
@@ -646,6 +810,11 @@ pub struct BorderStore {
 }
 
 impl BorderStore {
+    /// Prompt backdrops held, across renderer contexts (for tests and leaks).
+    pub fn gpu_prompt_count(&self) -> usize {
+        self.gpu.prompt.len()
+    }
+
     /// Drop the GPU objects of renderer contexts not in `keep` (a GPU went
     /// away, ADR 0084).
     pub fn retain_contexts(&mut self, keep: &[ContextId<smithay::backend::renderer::gles::GlesTexture>]) {
@@ -1080,6 +1249,8 @@ pub fn collect_elements(
     // unwrapped at alpha 1.0, so damage tracking and direct scanout are what
     // `space_render_elements` gave.
     ghost_elements(renderer, borders, output, space, config, &mut elements);
+    let mut wins = std::mem::take(&mut borders.blur_wins);
+    wins.clear();
     window_elements(
         renderer,
         space,
@@ -1090,7 +1261,10 @@ pub fn collect_elements(
         &mut elements,
         &mut blur_requests,
         &mut pane_requests,
+        &mut wins,
     );
+    // Everything from here down lies below every window.
+    let base_start = elements.len();
 
     layers(
         &mut elements,
@@ -1114,9 +1288,160 @@ pub fn collect_elements(
         blur_requests,
         pane_requests,
         &mut elements,
+        &wins,
+        base_start,
     );
+    wins.clear();
+    borders.blur_wins = wins;
 
     elements
+}
+
+/// The session lock's frame with glass (ADR 0129): the locker's surface tree
+/// over the compositor's own ground (the wallpaper, else `ground`), with the
+/// surface's `eclipse_glass_v1` panes spliced between so each pane's backdrop
+/// is that ground and nothing else.
+///
+/// SECURITY: this function takes no `Space`, no layer map, no focus, no popup
+/// or cursor state, and builds its list from exactly three things: the lock
+/// surface tree, the wallpaper element, and the ground quad. No window, layer
+/// surface, popup, drag icon or other client content can reach it, so none
+/// can be drawn or sampled by the lock's glass (`scan_tests` keeps it so).
+///
+/// `None` means the glass path is not available (not `glass` mode, no glass
+/// program, a rotated output, or the locker has no panes): the caller draws
+/// the locker's surface alone, as before. Never a reason to skip the lock.
+pub fn lock_glass_elements(
+    renderer: &mut GlesRenderer,
+    borders: &mut BorderStore,
+    config: &Config,
+    output: &Output,
+    lock_surface: &WlSurface,
+    ground: &SolidColorBuffer,
+) -> Option<Vec<AbyssRenderElement>> {
+    if !lock_glass_possible(
+        config.decoration.blur.mode,
+        effects::fb_y_mirrored(output.current_transform()).is_some() && output.current_mode().is_some(),
+        committed_panes(lock_surface).is_some(),
+    ) || !ensure_glass(renderer, borders)
+    {
+        return None;
+    }
+    let set = committed_panes(lock_surface)?;
+    borders.bind(renderer);
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let mode = output.current_mode()?;
+    let size: Size<i32, Logical> = output
+        .current_transform()
+        .transform_size(mode.size)
+        .to_f64()
+        .to_logical(scale)
+        .to_i32_round();
+    let mut elements: Vec<AbyssRenderElement> =
+        render_elements_from_surface_tree(renderer, lock_surface, (0, 0), scale, 1.0, Kind::Unspecified);
+    let index = elements.len();
+    // The ground: the wallpaper, else the compositor's solid. Last, so the
+    // panes' backdrop (`elements[index..]`) is this and only this.
+    elements.push(
+        borders
+            .wallpaper
+            .element(renderer, output, scale)
+            .unwrap_or_else(|| {
+                AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
+                    ground,
+                    (0, 0),
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                ))
+            }),
+    );
+    let req = PaneRequest {
+        key: blur::BlurKey::LockPanes(lock_surface.clone()),
+        index,
+        set,
+        size,
+        loc: Point::from((0, 0)),
+        crop: None,
+        over: false,
+        stacked: false,
+        sub: false,
+        scaled: None,
+        alpha: 1.0,
+    };
+    insert_blur(
+        renderer,
+        output,
+        borders,
+        config,
+        Vec::new(),
+        vec![req],
+        &mut elements,
+        // No windows under the lock: nothing to cull.
+        &[],
+        0,
+    );
+    Some(elements)
+}
+
+/// Whether the lock's glass path may run: glass mode, an output the glass
+/// program can draw to, and a locker that asked for panes. Anything else is
+/// the plain locker surface (fail soft, never fail open: the ground is only
+/// ever the wallpaper).
+pub fn lock_glass_possible(mode: BlurMode, drawable: bool, has_panes: bool) -> bool {
+    mode == BlurMode::Glass && drawable && has_panes
+}
+
+/// Drop the window backdrops that are hidden (see [`blur::hidden_behind`]) from
+/// `requests`; returns how many. Layer and annotation backdrops are never culled.
+fn cull_hidden(
+    store: &mut BorderStore,
+    cfg: &ec_abyss_config::Blur,
+    scale: Scale<f64>,
+    requests: &mut Vec<BlurRequest>,
+    panes: &[PaneRequest],
+    elements: &[AbyssRenderElement],
+    wins: &[WinRec],
+) -> usize {
+    let mut cull = std::mem::take(&mut store.blur_cull);
+    cull.clear();
+    // How far another backdrop samples: its kernel and the glass bend.
+    let sample = blur::kernel_radius(cfg)
+        + effects::GlassPreset::ALL
+            .iter()
+            .map(|p| effects::preset_reach(*p, &cfg.glass, scale.x.max(scale.y)))
+            .max()
+            .unwrap_or(0);
+    for (n, (key, index, region, ..)) in requests.iter().enumerate() {
+        let blur::BlurKey::Window(window) = key else {
+            cull.push(false);
+            continue;
+        };
+        // Above the window's own elements, which carry its own opaque body.
+        let above = wins
+            .iter()
+            .find(|r| &r.window == window && r.end == *index)
+            .map_or(*index, |r| r.start);
+        let hidden = elements
+            .get(..above)
+            .is_some_and(|a| blur::hidden_behind(*region, a, scale))
+            && !requests
+                .iter()
+                .enumerate()
+                .any(|(m, o)| m != n && o.1 < *index && blur::grow(o.2, sample).overlaps(*region))
+            && !panes.iter().any(|p| p.index < *index);
+        cull.push(hidden);
+    }
+    let count = cull.iter().filter(|c| **c).count();
+    if count > 0 {
+        let mut i = 0;
+        requests.retain(|_| {
+            i += 1;
+            !cull[i - 1]
+        });
+    }
+    store.blur_cull = cull;
+    count
 }
 
 /// Build and splice in one blurred backdrop per translucent surface (COMP-02 §9).
@@ -1124,6 +1449,7 @@ pub fn collect_elements(
 /// Requests arrive in the order the windows were drawn (front to back); they are
 /// consumed back to front so each insertion leaves the earlier indices — and the
 /// backdrop of every window further back, already spliced in — intact.
+#[allow(clippy::too_many_arguments)]
 fn insert_blur(
     renderer: &mut GlesRenderer,
     output: &Output,
@@ -1132,6 +1458,8 @@ fn insert_blur(
     requests: Vec<BlurRequest>,
     panes: Vec<PaneRequest>,
     elements: &mut Vec<AbyssRenderElement>,
+    wins: &[WinRec],
+    base_start: usize,
 ) {
     let cfg = &config.decoration.blur;
     if requests.is_empty() && panes.is_empty() {
@@ -1142,16 +1470,25 @@ fn insert_blur(
         return;
     }
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let live: Vec<blur::BlurKey> = requests
-        .iter()
-        .map(|(key, ..)| key.clone())
-        .chain(panes.iter().map(|p| p.key.clone()))
-        .collect();
+    // Occlusion cull: a window's glass wholly under an opaque rectangle above it
+    // is not built, kept or drawn. It is also not in `live`, so its state is
+    // dropped and it is rebuilt from scratch (a fresh member of its tier) when it
+    // shows again, never from a stale backdrop. Nothing above may sample it: no
+    // other backdrop whose reach touches it, no pane.
+    let mut requests = requests;
+    let culled = cull_hidden(store, cfg, scale, &mut requests, &panes, elements, wins);
+    let mut live = std::mem::take(&mut store.blur_live);
+    live.clear();
+    live.extend(requests.iter().map(|(key, ..)| key.clone()));
+    live.extend(panes.iter().map(|p| p.key.clone()));
+    crate::gpu_timer::begin_frame(renderer);
     store.gpu.blur.entry(output.clone()).or_default().retain(&live);
     store
         .gpu
         .pane_shadows
         .retain(|(o, k, _), _| o != output || live.contains(k));
+    live.clear();
+    store.blur_live = live;
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
     // height and the sense of its vertical axis (COMP-02 §9).
@@ -1168,11 +1505,14 @@ fn insert_blur(
 
     // Both lists are front to back, so both are consumed from the back: a pane
     // set goes in before any request whose index is not above its own.
-    let mut panes = panes.into_iter().rev().peekable();
+    //
+    // Phase 1a: first every request is prepared (program, uniforms, reach), then
+    // the requests are grouped (`groups`), then spliced back to front. The
+    // vectors live in the store, so a steady frame allocates nothing new here.
+    let mut preps = std::mem::take(&mut store.blur_prep);
+    preps.clear();
+    let mut pool = std::mem::take(&mut store.blur_uniforms);
     for (key, index, region, mode, radius, bezel, shape, crop) in requests.into_iter().rev() {
-        while let Some(req) = panes.next_if(|p| p.before(index)) {
-            insert_panes(renderer, output, store, config, req, elements);
-        }
         // The final draw's program: plain `blur` only needs one to round
         // (a square backdrop draws with smithay's own); frost and glass
         // always do, radius 0 included. A shaped layer (Vol 1 §5.2) takes
@@ -1180,14 +1520,38 @@ fn insert_blur(
         // A rotated output (`fb_height` None) keeps the plain square
         // backdrop in every mode.
         let scaled_radius = (radius as f64 * upscale) as f32;
+        let preset = if mode == BlurMode::Glass {
+            match &key {
+                // A single-rectangle layer sheet: geometric rule, no name match.
+                blur::BlurKey::Layer(_) if shape.is_none() && bezel.is_none() => {
+                    let short = region.size.w.min(region.size.h) as f32 / upscale as f32;
+                    effects::GlassPreset::of_sheet(short)
+                }
+                _ => effects::GlassPreset::of(shape.is_some(), bezel.is_some()),
+            }
+        } else {
+            effects::GlassPreset::Frost
+        };
         let gpu = &mut *store.gpu;
+        if pool.len() <= preps.len() {
+            pool.push(Vec::new());
+        }
+        let uniforms = &mut pool[preps.len()];
+        uniforms.clear();
         let program = fb_height.and_then(|(fb_height, mirrored)| {
             let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match (mode, shape.is_some()) {
                 (BlurMode::Off, _) => return None,
                 (BlurMode::Blur, false) if radius <= 0 => return None,
                 (BlurMode::Blur, false) => (&mut gpu.rounded, effects::compile_rounded, "rounded-corner"),
                 (BlurMode::Frost, false) => (&mut gpu.frost, effects::compile_frost, "frost"),
-                (BlurMode::Glass, false) => (&mut gpu.glass, effects::compile_glass, "glass"),
+                (BlurMode::Glass, false) => {
+                    let (compile, what): (fn(&mut GlesRenderer) -> _, _) = match preset {
+                        effects::GlassPreset::Lens => (effects::compile_glass_lens, "glass (lens)"),
+                        effects::GlassPreset::Regular => (effects::compile_glass_regular, "glass (regular)"),
+                        effects::GlassPreset::Frost => (effects::compile_glass_frost, "glass (frost)"),
+                    };
+                    (&mut gpu.glass_presets[preset.index()], compile, what)
+                }
                 (BlurMode::Blur, true) => (
                     &mut gpu.shaped[0],
                     effects::compile_rounded_shaped,
@@ -1197,7 +1561,18 @@ fn insert_blur(
                     (&mut gpu.shaped[1], effects::compile_frost_shaped, "shaped frost")
                 }
                 (BlurMode::Glass, true) => {
-                    (&mut gpu.shaped[2], effects::compile_glass_shaped, "shaped glass")
+                    let (compile, what): (fn(&mut GlesRenderer) -> _, _) = match preset {
+                        effects::GlassPreset::Lens => {
+                            (effects::compile_glass_shaped_lens, "shaped glass (lens)")
+                        }
+                        effects::GlassPreset::Regular => {
+                            (effects::compile_glass_shaped_regular, "shaped glass (regular)")
+                        }
+                        effects::GlassPreset::Frost => {
+                            (effects::compile_glass_shaped_frost, "shaped glass (frost)")
+                        }
+                    };
+                    (&mut gpu.shaped_glass_presets[preset.index()], compile, what)
                 }
             };
             if slot.is_none() && !gpu.compile_failed.contains(&what) {
@@ -1210,8 +1585,9 @@ fn insert_blur(
                 }
             }
             let program = slot.clone()?;
-            let mut uniforms = match mode {
-                BlurMode::Frost => effects::frost_uniforms(
+            match mode {
+                BlurMode::Frost => effects::frost_uniforms_into(
+                    uniforms,
                     region,
                     fb_height,
                     mirrored,
@@ -1223,16 +1599,24 @@ fn insert_blur(
                     cfg.adaptive.effective(),
                 ),
                 BlurMode::Glass => {
-                    let refraction = (cfg.glass.refraction as f64 * upscale) as f32;
-                    // A bezel lenses gently: at most 4 px, across the ring only.
+                    let look = effects::preset_look(preset, &cfg.glass, upscale);
+                    // A bezel bends across its ring only.
                     let (strength, bevel) = match bezel {
-                        Some(b) => (
-                            refraction.min((BEZEL_REFRACTION * upscale) as f32),
-                            b.inner as f32,
-                        ),
-                        None => (refraction, (cfg.glass.bevel as f64 * upscale) as f32),
+                        Some(b) => (look.strength, b.inner as f32),
+                        None => (look.strength, look.bevel),
                     };
-                    effects::glass_uniforms(
+                    let mut tuned = cfg.glass.clone();
+                    tuned.dispersion = look.dispersion;
+                    tuned.rim = look.rim;
+                    // A light layer sheet of regular glass (a launcher card) is the
+                    // near-white slab; windows' bezels and everything else lift 0.
+                    let light = config.appearance.glass_light();
+                    let slab = matches!(&key, blur::BlurKey::Layer(_))
+                        && preset == effects::GlassPreset::Regular
+                        && light > 0.0;
+                    effects::glass_uniforms_lifted_into(
+                        uniforms,
+                        preset,
                         region,
                         fb_height,
                         mirrored,
@@ -1240,27 +1624,32 @@ fn insert_blur(
                         fb_size,
                         strength,
                         bevel,
-                        &cfg.glass,
+                        &tuned,
                         bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
-                        config.appearance.glass_light(),
+                        if slab { glass::SLAB_LIFT_LIGHT } else { 0.0 },
+                        0.0,
+                        1.0,
+                        light,
                         cfg.adaptive.effective(),
-                    )
+                        1.0,
+                    );
+                    effects::set_shade_ref(uniforms, upscale);
                 }
-                _ => effects::rounding_uniforms(region, fb_height, mirrored, scaled_radius),
+                _ => effects::rounding_uniforms_into(uniforms, region, fb_height, mirrored, scaled_radius),
             };
             // The boxes ride in the uniforms, so a new shape changes the
             // backdrop's `look` and bumps its commit.
             if let Some(shape) = &shape {
                 uniforms.extend(effects::shape_uniforms(shape, fb_height, mirrored));
             }
-            Some((program, uniforms))
+            Some(program)
         });
         // COMP-02 §3: refraction samples up to this far outside the region,
         // so damage that far out must invalidate the backdrop too.
         let glass = mode == BlurMode::Glass && program.is_some();
         let frost = mode == BlurMode::Frost && program.is_some();
         let reach = if glass {
-            effects::glass_reach(cfg.glass.refraction, upscale)
+            effects::preset_reach(preset, &cfg.glass, upscale)
         } else {
             0
         };
@@ -1273,32 +1662,196 @@ fn insert_blur(
                 b.bar,
             )
         });
-        let behind = &elements[index..];
-        if let Some(element) = store.gpu.blur.entry(output.clone()).or_default().element(
-            renderer,
-            output,
-            &key,
+        preps.push(BlurPrep {
+            key,
+            index,
             region,
-            behind,
-            cfg,
-            scale,
-            program,
+            shape,
+            crop,
+            draw: program,
             reach,
             ring,
-            shape.as_ref(),
-            1.0,
-        ) {
-            let element = match crop {
-                Some(crop) => {
-                    CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
-                }
-                None => Some(AbyssRenderElement::Blur(element)),
-            };
-            if let Some(element) = element {
-                elements.insert(index, element);
+            preset,
+        });
+    }
+
+    // Depth tiers (Phase 1a, `groups`): each window's tier comes from the
+    // regions of the windows below it, and a blurred window of tier `d` draws
+    // from the one pyramid of tier `d`.
+    let mut tiers = std::mem::take(&mut store.blur_tiers);
+    groups::assign_tiers(wins.len(), |k| wins[k].rect, &mut tiers);
+    let mut assign = std::mem::take(&mut store.blur_assign);
+    let mut req_win = std::mem::take(&mut store.blur_req_win);
+    let mut win_req = std::mem::take(&mut store.blur_win_req);
+    assign.clear();
+    req_win.clear();
+    win_req.clear();
+    win_req.resize(wins.len(), None);
+    for (p, prep) in preps.iter().enumerate() {
+        // Only a window's own backdrop is tiered; layers, popups and anything
+        // shaped keep the per-window path; a window deeper than the last tier
+        // samples the last pyramid (`groups::pyramid_of`).
+        let k = match &prep.key {
+            blur::BlurKey::Window(w) if prep.shape.is_none() && prep.index <= base_start => {
+                wins.iter().position(|r| &r.window == w && r.end == prep.index)
             }
+            _ => None,
+        };
+        req_win.push(k);
+        if let Some(k) = k {
+            win_req[k] = Some(p);
+        }
+        // A layer sheet (the bar) that overlaps no window is a tier-0 member:
+        // it samples the wallpaper-only pyramid, so window damage near it
+        // rebuilds nothing and only wallpaper / bottom-layer damage does.
+        // Overlapping a window (a drawer, the launcher, toasts over windows)
+        // keeps the per-surface path, which sees the windows below it.
+        let layer_t0 = matches!(&prep.key, blur::BlurKey::Layer(_))
+            && layer_sees_no_window(prep.index, base_start, prep.region, wins.iter().map(|w| w.rect));
+        assign.push(match k {
+            Some(k) => Some(groups::pyramid_of(tiers[k])),
+            None if layer_t0 => Some(0),
+            None => None,
+        });
+    }
+
+    let tiered = assign.iter().filter(|a| a.is_some()).count();
+    store
+        .gpu
+        .blur
+        .entry(output.clone())
+        .or_default()
+        .note_tiers(tiered, assign.len() - tiered, culled);
+
+    // Build the pyramids, lowest tier first: tier `d` composites the windows
+    // of lower tiers (their glass included) over what lies below every window.
+    // Every window's own glass element is made here, from its pyramid, and
+    // spliced below.
+    let mut glass = std::mem::take(&mut store.blur_glass);
+    glass.clear();
+    glass.resize_with(preps.len(), || None);
+    let mut refs = std::mem::take(&mut store.blur_refs);
+    for d in 0..groups::MAX_TIERS as u8 {
+        // The topmost member (last in back-to-front order) sets how much of
+        // the stack the pyramid is composed from: the windows below it.
+        let Some(top) = assign.iter().rposition(|a| *a == Some(d)) else {
+            continue;
+        };
+        // A tier-0 layer member has no window; tier 0 is the base alone, which
+        // ignores `k_top`.
+        let Some(k_top) = req_win[top].or((d == 0).then_some(0)) else {
+            continue;
+        };
+        let mut v = recycle(refs);
+        groups::pyramid_parts(
+            d,
+            k_top,
+            &tiers,
+            |k| win_req[k].is_some_and(|pp| glass[pp].is_some()),
+            |part| match part {
+                groups::Part::Window(k) => v.extend(elements[wins[k].start..wins[k].end].iter()),
+                groups::Part::Glass(k) => {
+                    if let Some(g) = win_req[k].and_then(|pp| glass[pp].as_ref()) {
+                        v.push(g);
+                    }
+                }
+                groups::Part::Base => v.extend(elements[base_start..].iter()),
+            },
+        );
+        let key = blur::BlurKey::Tier(d);
+        let members = preps
+            .iter()
+            .zip(assign.iter())
+            .filter(|(_, a)| **a == Some(d))
+            .map(|(m, _)| blur::GroupMember {
+                key: &m.key,
+                region: m.region,
+                reach: m.reach,
+                ring: m.ring,
+                shape: m.shape.as_ref(),
+                preset: m.preset,
+            });
+        let ok = store
+            .gpu
+            .blur
+            .entry(output.clone())
+            .or_default()
+            .group_refresh(renderer, output, &key, members, &v, cfg, scale)
+            .is_some();
+        refs = recycle(v);
+        // A pyramid that could not be built hands its members to the
+        // per-window path, which samples what lies below each of them.
+        if !ok {
+            for a in assign.iter_mut().filter(|a| **a == Some(d)) {
+                *a = None;
+            }
+            continue;
+        }
+        for p in 0..preps.len() {
+            if assign[p] != Some(d) {
+                continue;
+            }
+            let draw = preps[p].draw.take().map(|program| (program, &mut pool[p]));
+            let element = store.gpu.blur.entry(output.clone()).or_default().group_element(
+                renderer,
+                &key,
+                &preps[p].key,
+                preps[p].region,
+                draw,
+                preps[p].ring,
+                scale,
+            );
+            glass[p] = element.and_then(|e| wrap_blur(e, preps[p].crop, scale));
         }
     }
+    store.blur_refs = recycle(refs);
+
+    let mut panes = panes.into_iter().rev().peekable();
+    for p in 0..preps.len() {
+        let index = preps[p].index;
+        while let Some(req) = panes.next_if(|q| q.before(index)) {
+            insert_panes(renderer, output, store, config, req, elements);
+        }
+        let element = if assign[p].is_some() {
+            glass[p].take()
+        } else {
+            let draw = preps[p].draw.take().map(|program| (program, &mut pool[p]));
+            let behind = &elements[index..];
+            store
+                .gpu
+                .blur
+                .entry(output.clone())
+                .or_default()
+                .element(
+                    renderer,
+                    output,
+                    &preps[p].key,
+                    preps[p].region,
+                    behind,
+                    cfg,
+                    scale,
+                    draw,
+                    preps[p].reach,
+                    preps[p].ring,
+                    preps[p].shape.as_ref(),
+                    1.0,
+                    preps[p].preset,
+                )
+                .and_then(|e| wrap_blur(e, preps[p].crop, scale))
+        };
+        if let Some(element) = element {
+            elements.insert(index, element);
+        }
+    }
+    preps.clear();
+    glass.clear();
+    store.blur_prep = preps;
+    store.blur_uniforms = pool;
+    store.blur_glass = glass;
+    store.blur_tiers = tiers;
+    store.blur_assign = assign;
+    store.blur_req_win = req_win;
+    store.blur_win_req = win_req;
     for req in panes {
         insert_panes(renderer, output, store, config, req, elements);
     }
@@ -1306,9 +1859,10 @@ fn insert_blur(
 
 /// Make sure the glass program is compiled; false if it cannot be.
 fn ensure_glass(renderer: &mut GlesRenderer, store: &mut BorderStore) -> bool {
-    if store.gpu.glass.is_none() && !store.gpu.glass_failed {
-        match effects::compile_glass(renderer) {
-            Ok(program) => store.gpu.glass = Some(program),
+    let lens = effects::GlassPreset::Lens.index();
+    if store.gpu.glass_presets[lens].is_none() && !store.gpu.glass_failed {
+        match effects::compile_glass_lens(renderer) {
+            Ok(program) => store.gpu.glass_presets[lens] = Some(program),
             Err(err) => {
                 store.gpu.glass_failed = true;
                 tracing::warn!(
@@ -1318,7 +1872,7 @@ fn ensure_glass(renderer: &mut GlesRenderer, store: &mut BorderStore) -> bool {
             }
         }
     }
-    store.gpu.glass.is_some()
+    store.gpu.glass_presets[lens].is_some()
 }
 
 /// Splice one layer surface's glass panes into the element list (`eclipse_glass_v1`).
@@ -1351,11 +1905,14 @@ fn insert_panes(
         .map(|mode| output.current_transform().transform_size(mode.size))
         .map(|size| (size.w, size.h))
         .unwrap_or((1, 1));
-    let Some(program) = store.gpu.glass.clone() else {
+    let Some(program) = store.gpu.glass_presets[effects::GlassPreset::Lens.index()].clone() else {
         return;
     };
     let panes = req.set.as_slice();
     let rect_of = |p: &glass::Pane| req.rect(p, scale);
+    // The whole box: shape, radius and band come from it, so a clipped pane's
+    // cut edge is straight (ADR 0127).
+    let shape_of = |p: &glass::Pane| req.shape(p, scale);
     let light = config.appearance.glass_light();
     // A light pane's hairline is ink (STYLE.md Light); dark keeps the white one.
     let rim = (light > 0.0).then_some((0, false, glass::LIGHT_RIM_INK, 0));
@@ -1365,9 +1922,16 @@ fn insert_panes(
     let Some(union) = panes.iter().filter_map(rect_of).reduce(|a, b| a.merge(b)) else {
         return;
     };
-    // The pane's lens shrinks with its size (`glass::lens_scale`).
-    let strength = (cfg.glass.refraction as f64 * upscale).min(BEZEL_REFRACTION * upscale) as f32;
-    let reach = effects::glass_reach(cfg.glass.refraction.min(BEZEL_REFRACTION as i32), upscale);
+    // Panes are lenses: the lens preset's bend and fringe, from a light blur.
+    let lens = effects::preset_look(effects::GlassPreset::Lens, &cfg.glass, upscale);
+    let strength = lens.strength;
+    let short = panes
+        .iter()
+        .filter_map(shape_of)
+        .map(|r| r.size.w.min(r.size.h))
+        .max()
+        .unwrap_or(1) as f32;
+    let reach = effects::preset_reach_for(effects::GlassPreset::Lens, &cfg.glass, upscale, short);
     let mut blurs = std::mem::take(&mut store.pane_scratch);
     blurs.clear();
     // A bare window's panes skip its glass; stacked ones sample it and take a
@@ -1385,93 +1949,145 @@ fn insert_panes(
         &program,
         panes.len(),
         req.alpha,
-        |i| {
+        |i, uniforms| {
             let pane = &panes[i];
-            let look = glass::look_nested(
-                pane,
-                light > 0.0,
-                req.stacked,
-                glass::nest_depth(panes, i) + u32::from(req.stacked || req.over),
-            )?;
+            let look = glass::look_on(pane, light > 0.0, req.stacked)?;
             let rect = rect_of(pane)?;
+            let shape = shape_of(pane)?;
             let mut tuned = cfg.glass.clone();
-            tuned.dispersion = 0.0;
-            tuned.rim = cfg.glass.rim * look.rim;
-            Some((
-                rect,
-                effects::glass_uniforms_lifted(
-                    rect,
+            tuned.dispersion = lens.dispersion;
+            tuned.rim = lens.rim * look.rim;
+            // A control nested in a card pane is a fill on the card, not glass.
+            {
+                if let (Some(parent), Some(cell)) =
+                    (glass::cell_parent(panes, i), glass::cell_look(pane, light > 0.0))
+                {
+                    tuned.rim = lens.rim * cell.rim;
+                    effects::glass_uniforms_lifted_into(
+                        uniforms,
+                        effects::GlassPreset::Lens,
+                        rect,
+                        fb_height,
+                        mirrored,
+                        (pane.radius as f64 * upscale * grown) as f32,
+                        fb_size,
+                        0.0,
+                        4.0 * (upscale * grown) as f32,
+                        &tuned,
+                        rim,
+                        cell.fill,
+                        cell.grad,
+                        1.0,
+                        light,
+                        0.0,
+                        2.0,
+                    );
+                    let margin = glass::cell_shadow_margin(pane, &panes[parent]) as f64 * upscale * grown;
+                    let shadow = if light > 0.0 {
+                        glass::CELL_SHADOW_ALPHA_LIGHT
+                    } else {
+                        glass::CELL_SHADOW_ALPHA_DARK
+                    };
+                    effects::mark_cell(
+                        uniforms,
+                        margin as f32,
+                        if margin > 0.5 {
+                            shadow * pane.alpha as f32 / 255.0
+                        } else {
+                            0.0
+                        },
+                    );
+                    let m = margin.round() as i32;
+                    return Some(Rectangle::new(
+                        (rect.loc.x - m, rect.loc.y - m).into(),
+                        (rect.size.w + 2 * m, rect.size.h + 2 * m).into(),
+                    ));
+                }
+            }
+            {
+                effects::glass_uniforms_lifted_into(
+                    uniforms,
+                    effects::GlassPreset::Lens,
+                    shape,
                     fb_height,
                     mirrored,
                     (pane.radius as f64 * upscale * grown) as f32,
                     fb_size,
                     strength * glass::lens_scale(pane),
-                    glass::band(pane, rect, upscale * grown),
+                    if pane.bezel == 0 {
+                        lens.bevel * grown as f32
+                    } else {
+                        glass::band(pane, shape, upscale * grown)
+                    },
                     &tuned,
                     rim,
-                    look.lift,
+                    glass::slab_lift(pane, light > 0.0, look.lift),
                     look.shade,
                     look.smoke,
                     light,
                     cfg.adaptive.effective(),
                     2.0,
-                ),
-            ))
+                );
+                effects::set_shade_ref(uniforms, upscale * grown);
+            }
+            Some(rect)
         },
         &mut blurs,
+        effects::GlassPreset::Lens,
     );
     // The contact shadows go in before the glass, at the same index, so they
     // lie under every pane's glass (STYLE.md Light; the shell cell's drop).
-    // A pressed or resting cell casts none (`glass::casts_shadow`). A cell
-    // nested in a larger pane casts its firmer shadow over that pane's glass
-    // and under its own, or it would be hidden by the pane it sits on.
-    let shadow = pane_shadow_program(renderer, store);
-    let rgb = config.appearance.shadow_rgb();
-    let shadow_of = |store: &mut BorderStore, i: usize| -> Option<AbyssRenderElement> {
-        let shadow = shadow.as_ref()?;
-        let pane = &panes[i];
-        let rect = rect_of(pane).filter(|_| glass::casts_shadow(pane))?;
-        let depth = glass::nest_depth(panes, i) + u32::from(req.stacked || req.over);
-        let (drop_px, focus) = glass::nested_shadow(depth);
-        let cell = rect.to_f64().to_logical(scale).to_i32_round();
-        let area = glass::shadow_area_dropped(cell, drop_px);
-        let [range, radius, _] = glass::shadow_params(pane.radius as f32 * grown as f32);
-        let drop = drop_px as f32;
-        let alpha = pane.alpha as f32 / 255.0 * req.alpha;
-        let params = [range, radius, drop, rgb[0], rgb[1], rgb[2], focus];
-        let uniforms = || effects::shadow_uniforms([range, radius, drop], focus, rgb);
-        let (element, applied, applied_alpha) = store
-            .gpu
-            .pane_shadows
-            .entry((output.clone(), req.key.clone(), i))
-            .or_insert_with(|| {
-                (
-                    PixelShaderElement::new(shadow.clone(), area, None, alpha, uniforms(), Kind::Unspecified),
-                    params,
-                    alpha,
-                )
-            });
-        if *applied_alpha != alpha {
-            *element =
-                PixelShaderElement::new(shadow.clone(), area, None, alpha, uniforms(), Kind::Unspecified);
-            *applied = params;
-            *applied_alpha = alpha;
-        } else {
-            element.resize(area, None);
-            if *applied != params {
-                element.update_uniforms(uniforms());
+    // A pressed or resting cell casts none (`glass::casts_shadow`).
+    if let Some(shadow) = pane_shadow_program(renderer, store) {
+        let rgb = config.appearance.shadow_rgb();
+        for (i, pane) in panes.iter().enumerate() {
+            let Some(rect) =
+                rect_of(pane).filter(|_| glass::casts_shadow(pane) && glass::cell_parent(panes, i).is_none())
+            else {
+                continue;
+            };
+            let rect = shape_of(pane).unwrap_or(rect);
+            let cell = rect.to_f64().to_logical(scale).to_i32_round();
+            let area = glass::shadow_area(cell, light > 0.0);
+            let [range, radius, drop] = glass::shadow_params(pane.radius as f32 * grown as f32, light > 0.0);
+            let alpha = pane.alpha as f32 / 255.0
+                * req.alpha
+                * if light > 0.0 {
+                    glass::SHADOW_ALPHA_LIGHT
+                } else {
+                    1.0
+                };
+            let params = [range, radius, drop, rgb[0], rgb[1], rgb[2]];
+            let uniforms = || effects::shadow_uniforms([range, radius, drop], 0.0, rgb);
+            let (element, applied, applied_alpha) = store
+                .gpu
+                .pane_shadows
+                .entry((output.clone(), req.key.clone(), i))
+                .or_insert_with(|| {
+                    (
+                        PixelShaderElement::new(
+                            shadow.clone(),
+                            area,
+                            None,
+                            alpha,
+                            uniforms(),
+                            Kind::Unspecified,
+                        ),
+                        params,
+                        alpha,
+                    )
+                });
+            if *applied_alpha != alpha {
+                *element =
+                    PixelShaderElement::new(shadow.clone(), area, None, alpha, uniforms(), Kind::Unspecified);
                 *applied = params;
             }
-        }
-        match req.crop {
-            Some(crop) => CropRenderElement::from_element(element.clone(), scale, crop)
-                .map(AbyssRenderElement::CroppedShader),
-            None => Some(AbyssRenderElement::Shader(element.clone())),
-        }
-    };
-    for i in 0..panes.len() {
-        if glass::nest_depth(panes, i) == 0 {
-            if let Some(element) = shadow_of(store, i) {
+            let element = match req.cut(pane, scale) {
+                Some(crop) => CropRenderElement::from_element(element.clone(), scale, crop)
+                    .map(AbyssRenderElement::CroppedShader),
+                None => Some(AbyssRenderElement::Shader(element.clone())),
+            };
+            if let Some(element) = element {
                 elements.insert(req.index, element);
             }
         }
@@ -1484,13 +2100,8 @@ fn insert_panes(
     // Inserting each at the same index leaves the last pane in front. `blurs`
     // holds one element per drawn pane, in pane order.
     let mut glass_of = blurs.drain(..);
-    for (i, pane) in panes.iter().enumerate() {
+    for pane in panes.iter() {
         let drawn = glass::look_on(pane, light > 0.0, req.stacked).is_some() && rect_of(pane).is_some();
-        if glass::nest_depth(panes, i) > 0 {
-            if let Some(element) = shadow_of(store, i) {
-                elements.insert(req.index, element);
-            }
-        }
         if !drawn {
             continue;
         }
@@ -1528,10 +2139,6 @@ fn pane_shadow_program(
     }
     store.gpu.shadow.clone()
 }
-
-/// A bezel's largest refraction, logical px: felt at the window edge, never a
-/// funhouse.
-const BEZEL_REFRACTION: f64 = 4.0;
 
 /// How much of the neutral hairline an unfocused window's bezel keeps.
 const BEZEL_DIM: f32 = 0.6;
@@ -1949,6 +2556,7 @@ fn window_elements(
     out: &mut Vec<AbyssRenderElement>,
     blurred: &mut Vec<BlurRequest>,
     pane_requests: &mut Vec<PaneRequest>,
+    wins: &mut Vec<WinRec>,
 ) {
     let Some(output_geo) = space.output_geometry(output) else {
         return;
@@ -2011,7 +2619,10 @@ fn window_elements(
         store.anim.forget_frames();
     }
     // `space.elements()` is bottom-to-top; frames are collected front-to-back.
+    let mut open: Option<OpenRec> = None;
     for window in live.into_iter().rev() {
+        close_rec(&mut open, out.len(), wins);
+        open = Some((window.clone(), out.len(), None));
         let Some(loc) = space.element_location(&window) else {
             continue;
         };
@@ -2067,6 +2678,12 @@ fn window_elements(
             (Some(g), Some(b)) => Some(titlebar::frame_of_content(g, b.height)),
             (g, _) => g,
         };
+        if let (Some(g), Some(o)) = (geo, open.as_mut()) {
+            o.2 = Some(Rectangle::new(
+                phys(g.loc - output_geo.loc, scale),
+                g.size.to_f64().to_physical(scale).to_i32_round(),
+            ));
+        }
         // Decorations are cut to the whole tile (the window plus its border),
         // whether or not the client overhangs it: unlike a surface, a shadow or
         // backdrop would otherwise bleed into the neighbouring tile.
@@ -2845,6 +3462,7 @@ fn window_elements(
             ));
         }
     }
+    close_rec(&mut open, out.len(), wins);
 }
 
 /// Windows that `owned` says belong on this output and whose geometry (moved
@@ -3291,7 +3909,25 @@ fn push_border(
 }
 
 /// Send frame callbacks to everything that was just drawn.
-pub fn send_frames(space: &Space<Window>, output: &Output, time: std::time::Duration) {
+///
+/// `lock` is the session locker's surface for `output` while locked (it is
+/// not in the space or the layer map, so it needs its own pass; without it a
+/// vsynced locker never gets a frame callback and freezes after one frame).
+pub fn send_frames(
+    space: &Space<Window>,
+    output: &Output,
+    lock: Option<&WlSurface>,
+    time: std::time::Duration,
+) {
+    if let Some(surface) = lock {
+        send_frames_surface_tree(
+            surface,
+            output,
+            time,
+            Some(std::time::Duration::ZERO),
+            surface_primary_scanout_output,
+        );
+    }
     for window in space.elements() {
         window.send_frame(
             output,
@@ -3326,7 +3962,23 @@ pub struct SurfaceFeedback {
 
 /// Record, per surface, which output actually presented it. Feeds both
 /// `wp_presentation` (zero-copy flag) and frame-callback throttling.
-pub fn update_primary_scanout(space: &Space<Window>, output: &Output, states: &RenderElementStates) {
+pub fn update_primary_scanout(
+    space: &Space<Window>,
+    output: &Output,
+    lock: Option<&WlSurface>,
+    states: &RenderElementStates,
+) {
+    if let Some(surface) = lock {
+        with_surfaces_surface_tree(surface, |surface, data| {
+            update_surface_primary_scanout_output(
+                surface,
+                output,
+                data,
+                states,
+                default_primary_scanout_output_compare,
+            );
+        });
+    }
     for window in space.elements() {
         window.with_surfaces(|surface, data| {
             update_surface_primary_scanout_output(
@@ -3357,9 +4009,18 @@ pub fn update_primary_scanout(space: &Space<Window>, output: &Output, states: &R
 pub fn presentation_feedback(
     space: &Space<Window>,
     output: &Output,
+    lock: Option<&WlSurface>,
     states: &RenderElementStates,
 ) -> OutputPresentationFeedback {
     let mut feedback = OutputPresentationFeedback::new(output);
+    if let Some(surface) = lock {
+        take_presentation_feedback_surface_tree(
+            surface,
+            &mut feedback,
+            surface_primary_scanout_output,
+            |s, _| surface_presentation_feedback_flags_from_states(s, states),
+        );
+    }
     for window in space.elements() {
         window.take_presentation_feedback(&mut feedback, surface_primary_scanout_output, |surface, _| {
             surface_presentation_feedback_flags_from_states(surface, states)
@@ -3538,6 +4199,25 @@ pub fn send_dmabuf_feedback(
 
 #[cfg(test)]
 mod tests {
+    /// ADR 0129: the lock's glass runs only in glass mode, on a drawable
+    /// output, for a locker that asked for panes. Everything else is the
+    /// plain locker surface: the lock still draws, never the desktop.
+    #[test]
+    fn lock_glass_fails_soft_to_the_plain_surface() {
+        assert!(lock_glass_possible(BlurMode::Glass, true, true));
+        for (mode, drawable, panes) in [
+            (BlurMode::Off, true, true),
+            (BlurMode::Blur, true, true),
+            (BlurMode::Frost, true, true),
+            (BlurMode::Glass, false, true),
+            (BlurMode::Glass, true, false),
+        ] {
+            assert!(
+                !lock_glass_possible(mode, drawable, panes),
+                "{mode:?} {drawable} {panes}"
+            );
+        }
+    }
     use super::*;
 
     fn pane_set(boxes: &[(i32, i32, i32, i32)]) -> glass::PaneSet {
@@ -3573,10 +4253,126 @@ mod tests {
         }
     }
 
+    fn clipped_pane(x: i32, y: i32, w: i32, h: i32, r: u32) -> glass::Pane {
+        glass::Pane {
+            x,
+            y,
+            w,
+            h,
+            radius: r,
+            state: glass::CLIPPED,
+            alpha: 255,
+            ..Default::default()
+        }
+    }
+
+    fn clip_request(clip: Option<(i32, i32, i32, i32)>) -> PaneRequest {
+        let mut req = window_request(0, false, (0, 0).into(), None);
+        req.set.clip = clip.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
+        req
+    }
+
+    fn pr(r: Rectangle<i32, Physical>) -> (i32, i32, i32, i32) {
+        (r.loc.x, r.loc.y, r.size.w, r.size.h)
+    }
+
+    /// ADR 0127: the shape stays the whole box; only the drawn rectangle is
+    /// cut to the clip.
+    #[test]
+    fn a_clip_cuts_the_drawn_box_and_keeps_the_shape_whole() {
+        let scale = Scale::from(1.0);
+        let req = clip_request(Some((0, 50, 400, 100)));
+        let top = clipped_pane(20, 30, 100, 60, 12);
+        assert_eq!(pr(req.shape(&top, scale).unwrap()), (20, 30, 100, 60));
+        assert_eq!(pr(req.rect(&top, scale).unwrap()), (20, 50, 100, 40));
+        let bottom = clipped_pane(20, 120, 100, 60, 12);
+        assert_eq!(pr(req.shape(&bottom, scale).unwrap()), (20, 120, 100, 60));
+        assert_eq!(pr(req.rect(&bottom, scale).unwrap()), (20, 120, 100, 30));
+    }
+
+    #[test]
+    fn a_shape_is_not_cut_to_the_surface_when_clipped() {
+        let scale = Scale::from(1.0);
+        // The surface is 400x300; the pane hangs 20 px below it.
+        let req = clip_request(Some((0, 0, 400, 300)));
+        let p = clipped_pane(20, 250, 100, 70, 12);
+        assert_eq!(pr(req.shape(&p, scale).unwrap()), (20, 250, 100, 70));
+        assert_eq!(pr(req.rect(&p, scale).unwrap()), (20, 250, 100, 50));
+        // Unclipped (no clip set) keeps today's surface cut.
+        let req = clip_request(None);
+        assert_eq!(pr(req.shape(&p, scale).unwrap()), (20, 250, 100, 50));
+    }
+
+    #[test]
+    fn a_pane_wholly_outside_the_clip_is_dropped() {
+        let scale = Scale::from(1.0);
+        let req = clip_request(Some((0, 50, 400, 100)));
+        assert_eq!(req.rect(&clipped_pane(20, 0, 100, 40, 8), scale), None);
+        assert_eq!(req.rect(&clipped_pane(20, 160, 100, 40, 8), scale), None);
+        // A clip that misses the surface hides every clipped pane.
+        let req = clip_request(Some((0, 500, 400, 100)));
+        assert_eq!(req.rect(&clipped_pane(20, 0, 100, 40, 8), scale), None);
+    }
+
+    #[test]
+    fn unflagged_panes_ignore_the_clip() {
+        let scale = Scale::from(1.0);
+        let req = clip_request(Some((0, 50, 400, 100)));
+        let mut p = clipped_pane(20, 0, 100, 40, 8);
+        p.state = 0;
+        assert_eq!(pr(req.rect(&p, scale).unwrap()), (20, 0, 100, 40));
+        assert_eq!(req.rect(&p, scale), req.shape(&p, scale));
+    }
+
+    #[test]
+    fn clip_math_zero_and_negative_sizes() {
+        assert_eq!(glass::parse_clip(0, 0, 0, 10), Some(None));
+        assert_eq!(glass::parse_clip(0, 0, 10, 0), Some(None));
+        assert_eq!(glass::parse_clip(0, 0, -1, 10), None);
+        assert_eq!(glass::parse_clip(0, 0, 10, -1), None);
+        let c = glass::parse_clip(1, 2, 3, 4).unwrap().unwrap();
+        assert_eq!((c.loc.x, c.loc.y, c.size.w, c.size.h), (1, 2, 3, 4));
+        // The state bit survives the parser.
+        let bytes: Vec<u8> = [0u32, 0, 10, 10, 4, 0, 0, glass::CLIPPED | 8, 255]
+            .iter()
+            .flat_map(|v| v.to_ne_bytes())
+            .collect();
+        assert_eq!(
+            glass::parse_panes(&bytes).unwrap().as_slice()[0].state,
+            glass::CLIPPED
+        );
+    }
+
+    #[test]
+    fn a_clipped_cut_covers_the_shadow_and_scales_with_the_output() {
+        let scale = Scale::from(2.0);
+        let req = clip_request(Some((0, 50, 400, 100)));
+        let p = clipped_pane(20, 30, 100, 60, 12);
+        assert_eq!(pr(req.cut(&p, scale).unwrap()), (0, 100, 800, 200));
+        assert_eq!(pr(req.rect(&p, scale).unwrap()), (40, 100, 200, 80));
+        let mut q = p;
+        q.state = 0;
+        assert_eq!(req.cut(&q, scale), None);
+    }
+
     /// Panes are surface-local to the root surface, whose origin is the window
     /// position minus the xdg geometry offset: a cell at (10, 20) under a
     /// client with a (12, 8) shadow margin sits 12 and 8 px left and up of
     /// where it would on the window rect, at the output scale.
+    #[test]
+    fn a_layer_sheet_over_no_window_is_tier_zero() {
+        let rect = |x, y, w, h| Rectangle::<i32, Physical>::new((x, y).into(), (w, h).into());
+        let bar = rect(0, 6, 2860, 40);
+        let below = [rect(0, 64, 1400, 500)];
+        assert!(layer_sees_no_window(3, 5, bar, below.iter().copied()));
+        // A window under the sheet (a drawer open over it) leaves tier 0, and it returns when it closes.
+        let under = [rect(100, 20, 300, 300)];
+        assert!(!layer_sees_no_window(3, 5, bar, under.iter().copied()));
+        assert!(layer_sees_no_window(3, 5, bar, std::iter::empty()));
+        // A bottom layer (inside the base) never samples itself.
+        assert!(!layer_sees_no_window(9, 5, bar, std::iter::empty()));
+    }
+
     #[test]
     fn window_panes_follow_the_geometry_offset() {
         let scale = Scale::from(2.0);

@@ -171,6 +171,27 @@ pub fn outer_of_content(content: Rectangle<i32, Logical>, border: i32, bar: i32)
 
 const PAD: i32 = 12;
 
+/// Clear space kept between the rounded corner and the title's first glyph.
+const TITLE_CORNER_GAP: i32 = 6;
+
+/// How far the rounded top-left corner of radius `radius` (logical px) cuts in
+/// at `y` px below the top edge: 0 from the radius down.
+fn arc_x(radius: i32, y: f32) -> f32 {
+    let r = radius as f32;
+    if r <= 0.0 || y >= r {
+        return 0.0;
+    }
+    r - (r * r - (r - y) * (r - y)).max(0.0).sqrt()
+}
+
+/// The title's left inset, logical px: [`PAD`], or more when the corner's arc
+/// at the top of the text (where it cuts in furthest) would leave less than
+/// [`TITLE_CORNER_GAP`] to the first glyph. `line_h` is the text's line box.
+fn title_inset(radius: i32, bar_h: i32, line_h: i32) -> i32 {
+    let top = (bar_h.saturating_sub(line_h) / 2) as f32;
+    PAD.max(arc_x(radius, top).ceil() as i32 + TITLE_CORNER_GAP)
+}
+
 /// The bar's material, the window tint of STYLE.md (warm black, never
 /// blue-grey) over the backdrop blur the renderer puts behind the bar. The
 /// focused bar is a step clearer than the unfocused one: more tint over the
@@ -250,8 +271,8 @@ pub fn display_title(raw: &str, face: Face, max_w: usize) -> String {
 }
 
 /// The title for a bar whose leftmost button starts at `left`.
-fn title_for(raw: &str, left: i32) -> String {
-    display_title(raw, Face::Body, (left - 2 * PAD).max(0) as usize)
+fn title_for(raw: &str, left: i32, inset: i32) -> String {
+    display_title(raw, Face::Body, (left - inset - PAD).max(0) as usize)
 }
 
 /// Everything that decides the bar's pixels.
@@ -298,7 +319,11 @@ fn paint(look: &Look) -> Vec<u8> {
         p.fill(body, r, lift);
     }
     if !look.shaded {
-        p.shade((0.0, ph as f32 - d, pw as f32, d), seam, |_, _| 1.0);
+        // Clipped to the rounded body: with a corner radius over the bar height
+        // the seam would otherwise run on past the curve.
+        p.shade((0.0, ph as f32 - d, pw as f32, d), seam, |x, y| {
+            cov(sd_box(x, y, body, r))
+        });
     }
 
     let ink = match (look.light, look.active) {
@@ -399,7 +424,8 @@ fn paint(look: &Look) -> Vec<u8> {
     // Title: left, vertically centred on the face's line box; it stops short
     // of the leftmost button.
     let left = button_rect(look.w, look.h, Button::Minimize).loc.x;
-    if !look.title.is_empty() && left > PAD {
+    let inset = title_inset(look.radius, look.h, Face::Body.line_h() as i32);
+    if !look.title.is_empty() && left > inset {
         let face = Face::Body;
         let top = ((look.h as usize).saturating_sub(face.line_h())) / 2;
         let ink = match (look.light, look.active) {
@@ -408,7 +434,7 @@ fn paint(look: &Look) -> Vec<u8> {
             (true, true) => INK_L,
             (true, false) => INK_IDLE_L,
         };
-        p.text(face, look.dev, PAD as usize, top, &look.title, ink);
+        p.text(face, look.dev, inset as usize, top, &look.title, ink);
     }
     let raster = p.into_raster();
     // Premultiplied RGBA -> Argb8888 (little-endian B, G, R, A).
@@ -528,9 +554,10 @@ pub fn bar_element(
     }
     let dev = raster_scale(scale);
     let left = button_rect(width, info.height, Button::Minimize).loc.x;
+    let inset = title_inset(radius, info.height, Face::Body.line_h() as i32);
     let raw = title_of(window);
     let look = Look {
-        title: title_for(&raw, left),
+        title: title_for(&raw, left, inset),
         w: width,
         h: info.height,
         dev,
@@ -665,6 +692,41 @@ mod tests {
     }
 
     #[test]
+    fn the_seam_stops_at_the_rounded_corner() {
+        // A radius over the bar height cuts the corner in at the seam's row.
+        let big = paint(&Look { radius: 60, ..look() });
+        assert_eq!(alpha_at(&big, 300, 0, 31), 0);
+        assert!(alpha_at(&big, 300, 150, 31) > 0);
+        let square = paint(&Look { radius: 0, ..look() });
+        assert!(alpha_at(&square, 300, 0, 31) > 0);
+    }
+
+    #[test]
+    fn the_title_clears_the_corner() {
+        let line_h = Face::Body.line_h() as i32;
+        let bar_h = 30;
+        // Square or small corners keep the old padding.
+        assert_eq!(title_inset(0, bar_h, line_h), PAD);
+        assert_eq!(title_inset(9, bar_h, line_h), PAD);
+        let mut last = PAD;
+        for r in [12, 22, 36, 60, 120] {
+            let inset = title_inset(r, bar_h, line_h);
+            let top = (bar_h - line_h) as f32 / 2.0;
+            // The first glyph starts at least the gap inside the arc at the text's top.
+            assert!(
+                inset as f32 >= arc_x(r, top) + TITLE_CORNER_GAP as f32 - 1.0,
+                "r {r}"
+            );
+            assert!(inset >= last, "grows with the radius");
+            last = inset;
+        }
+        assert!(last > PAD);
+        assert_eq!(arc_x(0, 3.0), 0.0);
+        assert_eq!(arc_x(10, 10.0), 0.0);
+        assert!((arc_x(10, 0.0) - 10.0).abs() < 1e-4);
+    }
+
+    #[test]
     fn titles_drop_control_bidi_and_private_use() {
         assert_eq!(display_title("a\u{1b}b\u{202e}c\u{e000}d", B, 400), "abcd");
     }
@@ -706,7 +768,7 @@ mod tests {
         let long = "A very long window title that cannot possibly fit between the edge and the buttons";
         for w in [160, 220, 320, 640] {
             let left = button_rect(w, 32, Button::Minimize).loc.x;
-            let t = title_for(long, left);
+            let t = title_for(long, left, PAD);
             assert!(PAD as usize + B.width(&t) <= (left - PAD) as usize, "{w}: {t:?}");
         }
     }
@@ -852,7 +914,7 @@ mod tests {
             ] {
                 let left = button_rect(w, 32, Button::Minimize).loc.x;
                 let l = Look {
-                    title: title_for(title, left),
+                    title: title_for(title, left, PAD),
                     w,
                     h: 32,
                     dev,
