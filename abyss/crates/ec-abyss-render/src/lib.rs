@@ -1470,7 +1470,8 @@ fn insert_blur(
                         light,
                         cfg.adaptive.effective(),
                         1.0,
-                    )
+                    );
+                    effects::set_shade_ref(uniforms, upscale);
                 }
                 _ => effects::rounding_uniforms_into(uniforms, region, fb_height, mirrored, scaled_radius),
             };
@@ -1790,6 +1791,53 @@ fn insert_panes(
             let mut tuned = cfg.glass.clone();
             tuned.dispersion = lens.dispersion;
             tuned.rim = lens.rim * look.rim;
+            // A control nested in a card pane is a fill on the card, not glass.
+            {
+                if let (Some(parent), Some(cell)) =
+                    (glass::cell_parent(panes, i), glass::cell_look(pane, light > 0.0))
+                {
+                    tuned.rim = lens.rim * cell.rim;
+                    effects::glass_uniforms_lifted_into(
+                        uniforms,
+                        effects::GlassPreset::Lens,
+                        rect,
+                        fb_height,
+                        mirrored,
+                        (pane.radius as f64 * upscale * grown) as f32,
+                        fb_size,
+                        0.0,
+                        4.0 * (upscale * grown) as f32,
+                        &tuned,
+                        rim,
+                        cell.fill,
+                        cell.grad,
+                        1.0,
+                        light,
+                        0.0,
+                        2.0,
+                    );
+                    let margin = glass::cell_shadow_margin(pane, &panes[parent]) as f64 * upscale * grown;
+                    let shadow = if light > 0.0 {
+                        glass::CELL_SHADOW_ALPHA_LIGHT
+                    } else {
+                        glass::CELL_SHADOW_ALPHA_DARK
+                    };
+                    effects::mark_cell(
+                        uniforms,
+                        margin as f32,
+                        if margin > 0.5 {
+                            shadow * pane.alpha as f32 / 255.0
+                        } else {
+                            0.0
+                        },
+                    );
+                    let m = margin.round() as i32;
+                    return Some(Rectangle::new(
+                        (rect.loc.x - m, rect.loc.y - m).into(),
+                        (rect.size.w + 2 * m, rect.size.h + 2 * m).into(),
+                    ));
+                }
+            }
             {
                 effects::glass_uniforms_lifted_into(
                     uniforms,
@@ -1814,6 +1862,7 @@ fn insert_panes(
                     cfg.adaptive.effective(),
                     2.0,
                 );
+                effects::set_shade_ref(uniforms, upscale * grown);
             }
             Some(rect)
         },
@@ -1826,7 +1875,9 @@ fn insert_panes(
     if let Some(shadow) = pane_shadow_program(renderer, store) {
         let rgb = config.appearance.shadow_rgb();
         for (i, pane) in panes.iter().enumerate() {
-            let Some(rect) = rect_of(pane).filter(|_| glass::casts_shadow(pane)) else {
+            let Some(rect) =
+                rect_of(pane).filter(|_| glass::casts_shadow(pane) && glass::cell_parent(panes, i).is_none())
+            else {
                 continue;
             };
             let cell = rect.to_f64().to_logical(scale).to_i32_round();

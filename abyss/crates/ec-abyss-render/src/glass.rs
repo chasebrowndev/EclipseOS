@@ -269,6 +269,104 @@ pub fn slab_lift(pane: &Pane, light: bool, lift: f32) -> f32 {
     }
 }
 
+/// A pane lying fully inside an earlier, larger pane of the same surface whose
+/// shorter side is at least this many logical px is a CELL: a control sitting on
+/// a sheet (search field, selected row, key cap, icon chip), drawn as a fill on
+/// the sheet's finished glass rather than as glass of its own.
+pub const CELL_PARENT_MIN_SHORT: i32 = 56;
+
+fn contains(outer: &Pane, inner: &Pane) -> bool {
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && inner.x + inner.w <= outer.x + outer.w
+        && inner.y + inner.h <= outer.y + outer.h
+}
+
+/// The index of pane `i`'s parent card, or `None` when it is not a cell. The
+/// parent is the nearest earlier (lower in z) pane that contains it, is larger
+/// and has a shorter side of at least [`CELL_PARENT_MIN_SHORT`]. Siblings that
+/// merely overlap, a pane that sticks out, a smaller or later container and a
+/// small container are not parents.
+pub fn cell_parent(panes: &[Pane], i: usize) -> Option<usize> {
+    let cell = panes.get(i)?;
+    if cell.w <= 0 || cell.h <= 0 {
+        return None;
+    }
+    (0..i).rev().find(|&j| {
+        let p = &panes[j];
+        p.w.min(p.h) >= CELL_PARENT_MIN_SHORT
+            && i64::from(p.w) * i64::from(p.h) > i64::from(cell.w) * i64::from(cell.h)
+            && contains(p, cell)
+    })
+}
+
+/// A cell's fill: alpha of the scheme's fill colour, how strongly it fades
+/// top to bottom, and the hairline strength.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellLook {
+    pub fill: f32,
+    pub grad: f32,
+    pub rim: f32,
+}
+
+/// Fill alpha of a plain cell at rest, dark (white fill) and light (ink fill).
+const CELL_FILL_D: f32 = 0.09;
+const CELL_FILL_L: f32 = 0.03;
+/// The extra a focused or selected cell takes, and hover and press steps.
+const CELL_FOCUS_D: f32 = 0.085;
+const CELL_FOCUS_L: f32 = 0.03;
+const CELL_HOT: f32 = 0.03;
+const CELL_PRESS: f32 = 0.05;
+/// Gradient strength: plain, focused.
+const CELL_GRAD_PLAIN: f32 = 0.5;
+const CELL_GRAD_FOCUS: f32 = 0.9;
+
+/// The look of a cell, scaled by the pane's alpha; `None` when it draws nothing
+/// (the same cases as [`look`]).
+pub fn cell_look(pane: &Pane, light: bool) -> Option<CellLook> {
+    let l = look(pane, light)?;
+    let pressed = pane.state & PRESSED != 0;
+    let hot = pressed || pane.state & HOVERED != 0;
+    let focus = pane.tone == Tone::Focused;
+    let a = pane.alpha as f32 / 255.0;
+    let mut fill = if light { CELL_FILL_L } else { CELL_FILL_D };
+    if pane.tone == Tone::Away {
+        fill *= 0.5;
+    }
+    if focus {
+        fill += if light { CELL_FOCUS_L } else { CELL_FOCUS_D };
+    }
+    if hot {
+        fill += if pressed { CELL_PRESS } else { CELL_HOT };
+    }
+    Some(CellLook {
+        fill: fill * a,
+        grad: if focus { CELL_GRAD_FOCUS } else { CELL_GRAD_PLAIN },
+        rim: l.rim,
+    })
+}
+
+/// How far a cell's contact shadow may reach, logical px: its own reach, no
+/// further than the nearest edge of its parent, so it never leaves the card.
+pub const CELL_SHADOW_REACH: i32 = 5;
+/// The contact shadow's alpha under a cell: dark, and the wider-and-fainter light.
+pub const CELL_SHADOW_ALPHA_DARK: f32 = 0.45;
+pub const CELL_SHADOW_ALPHA_LIGHT: f32 = 0.22;
+
+pub fn cell_shadow_margin(cell: &Pane, parent: &Pane) -> i32 {
+    let to_edges = [
+        cell.x - parent.x,
+        cell.y - parent.y,
+        parent.x + parent.w - (cell.x + cell.w),
+        parent.y + parent.h - (cell.y + cell.h),
+    ];
+    to_edges
+        .into_iter()
+        .min()
+        .unwrap_or(0)
+        .clamp(0, CELL_SHADOW_REACH)
+}
+
 /// The look of `pane`, or `None` when it draws nothing (latent at rest, or
 /// fully transparent). Everything scales by `alpha / 255`. `light` selects the
 /// light scheme's table; `false` is the dark table, unchanged.
@@ -512,6 +610,154 @@ mod tests {
             h: 10,
             ..Pane::default()
         }
+    }
+
+    #[test]
+    fn nesting_is_a_cell_inside_a_larger_early_card() {
+        let card = Pane {
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 300,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let field = Pane {
+            x: 20,
+            y: 20,
+            w: 360,
+            h: 40,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let row = Pane {
+            x: 20,
+            y: 80,
+            w: 360,
+            h: 36,
+            ..pane(Tone::Focused, 0, 255)
+        };
+        let sibling = Pane {
+            x: 380,
+            y: 0,
+            w: 300,
+            h: 300,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let sticks_out = Pane {
+            x: 300,
+            y: 20,
+            w: 200,
+            h: 40,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let small_card = Pane {
+            x: 700,
+            y: 0,
+            w: 120,
+            h: 40,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let in_small = Pane {
+            x: 710,
+            y: 5,
+            w: 30,
+            h: 30,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let set = [card, field, row, sibling, sticks_out, small_card, in_small];
+        assert_eq!(cell_parent(&set, 0), None, "the card itself");
+        assert_eq!(cell_parent(&set, 1), Some(0));
+        assert_eq!(cell_parent(&set, 2), Some(0));
+        assert_eq!(cell_parent(&set, 3), None, "a stack-peek sibling is no cell");
+        assert_eq!(cell_parent(&set, 4), None, "partial overlap");
+        assert_eq!(cell_parent(&set, 5), None, "a pane outside every card");
+        assert_eq!(cell_parent(&set, 6), None, "its container is under 56 px");
+        assert_eq!(cell_parent(&set, 99), None);
+    }
+
+    #[test]
+    fn a_container_must_come_first_and_be_larger() {
+        let a = Pane {
+            x: 0,
+            y: 0,
+            w: 300,
+            h: 100,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let b = Pane {
+            x: 10,
+            y: 10,
+            w: 100,
+            h: 60,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        // The container after the contained one is not a parent (z order).
+        assert_eq!(cell_parent(&[b, a], 0), None);
+        assert_eq!(cell_parent(&[b, a], 1), None);
+        assert_eq!(cell_parent(&[a, b], 1), Some(0));
+        // The same box is not a cell of itself or of an equal pane.
+        assert_eq!(cell_parent(&[a, a], 1), None);
+        // The threshold is on the shorter side: 56 qualifies, 55 does not.
+        let slim = |h| Pane {
+            x: 0,
+            y: 0,
+            w: 300,
+            h,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let inner = Pane {
+            x: 5,
+            y: 5,
+            w: 20,
+            h: 20,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        assert_eq!(cell_parent(&[slim(56), inner], 1), Some(0));
+        assert_eq!(cell_parent(&[slim(55), inner], 1), None);
+    }
+
+    #[test]
+    fn a_cell_fills_less_than_it_would_glass_and_never_beyond_its_card() {
+        let plain = Pane {
+            w: 100,
+            h: 30,
+            ..pane(Tone::Plain, 0, 255)
+        };
+        let sel = Pane {
+            tone: Tone::Focused,
+            ..plain
+        };
+        for light in [false, true] {
+            let (p, f) = (cell_look(&plain, light).unwrap(), cell_look(&sel, light).unwrap());
+            assert!(p.fill > 0.0 && p.fill < 0.2, "faint");
+            assert!(
+                f.fill > p.fill && f.grad > p.grad && f.rim > p.rim,
+                "the selected row is clearer"
+            );
+        }
+        assert_eq!(cell_look(&Pane { alpha: 0, ..plain }, false), None);
+        let card = Pane {
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 300,
+            ..plain
+        };
+        let near = Pane {
+            x: 2,
+            y: 100,
+            w: 50,
+            h: 30,
+            ..plain
+        };
+        let far = Pane {
+            x: 100,
+            y: 100,
+            w: 50,
+            h: 30,
+            ..plain
+        };
+        assert_eq!(cell_shadow_margin(&near, &card), 2);
+        assert_eq!(cell_shadow_margin(&far, &card), CELL_SHADOW_REACH);
     }
 
     /// A light card (launcher, toast) lifts to the near-white slab; a control
