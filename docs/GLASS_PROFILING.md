@@ -337,9 +337,21 @@ is paid in texels on every rebuild, which is why it is not larger).
 Cost: a damage rebuild now covers the padded region, so under damage the crop
 per rebuild is 2.6 Mtexels against 1.1 (spread N = 3) and 4.2 against 2.5
 (N = 5); the render p99 under damage at N = 5 rose from 2.6 ms to 5.3 ms in one
-run. Pixels: the larger build region moves the finite-crop edge effect outwards,
-so single and cascaded windows differ slightly from Phase 0 (one glass window:
-8805 samples, max 10 of 255; five cascaded: mean 0.11, max 17).
+run. Pixels: single and cascaded windows differ slightly from Phase 0 (one
+glass window: 8805 samples, max 10 of 255; five cascaded: mean 0.11, max 17).
+Cause, bisected with a debug override of the built region on the one-window
+scene (not shipped): with the region equal to the old crop the output is
+identical to Phase 0 again (0 of 14.0 M), so it is the padding. It is not the
+finite-crop edge effect of the old crop (a build over the whole output differs
+from Phase 0 by only 9314 samples of at most 3 levels, so Phase 0 is already
+close to the unbounded result, while the padded builds are *further* from it,
+up to 10). Growing the old crop by 128 px in width, or by 16 or 64 px in both,
+still matches Phase 0; by 256 px in width the window's left 50 px band changes by
+up to 10 levels; any growth in height changes its top band (y 40 to 92) by at
+most 3. The differences therefore sit at the window's own left and top edge and
+switch on at a size threshold, rather than shrinking with a larger margin: a
+crop-size dependence in the sampling, not yet pinned to a shader or a grid
+phase. Margin alone and bucketing alone each differ (14759 and 9985 samples).
 
 Rebuilds per frame while dragging, Phase 0 / tiers (before 1c) / tiers with the
 margin. `drag` is `ec-ctl drag --steps 120` (a burst, about 12 frames of motion,
@@ -371,3 +383,104 @@ Damage and idle (1c), rebuilds per frame: cascade damage 1 / 5 / 10 / 20 =
 spread damage 3 / 5 = 0.550 / 0.572; tiled damage 4 / 9 / 12 / 20 = 0 / 0 / 0 /
 0.167. Idle is 0 everywhere. Render p50/p99 are within run-to-run noise of the
 tiers numbers apart from the damage p99 above.
+
+## After 1b (damage-limited rebuilds)
+
+Branch `comp02-glass-damage` (on top of the tier and margin work). A tier
+rebuild no longer clears the whole output-sized level 0 and re-blurs its whole
+region for a small damage rect.
+
+- **Persistent per tier.** Each tier owns its level 0 (output-sized, drawn over
+  the built region only), its down levels `1..=passes`, its up levels
+  `2..passes` (kept apart from the down levels, which the up passes used to
+  overwrite), its result texture and a render `OutputDamageTracker`. About 25 MB
+  per tier at 2880 x 1620 (the output-sized level 0 is most of it), allocated on
+  first use and dropped with the tier.
+- **Damage since the last build.** A partial rebuild renders the backdrop with
+  `age = 1` into the tier's own level 0, so the tracker's diff against its last
+  build is exactly the damage since then, however many frames ago (throttle and
+  `pending` are unchanged: a deferred rebuild simply sees more damage). Elements
+  are still cropped to the built region, so damage outside it is ignored.
+- **Per-level rectangles** (`ec-abyss-render/src/partial.rs`). Damage is turned
+  into texture space (flipped under `Flipped180`), then each pass is drawn only
+  over the destination texels whose taps can reach a changed source texel: the
+  downsample reaches 0.5 x offset source texels, the upsample offset texels, each
+  plus the bilinear footprint, with the real size ratio of the level (not 2:
+  levels of an odd size are slightly off), plus one texel each side for float
+  rounding. The final write into the result is flipped back when the output is
+  mirrored. Passes are drawn with the GLES frame's damage rectangles (instanced
+  quads), so the sampling coordinates of every texel are the full pass's.
+- **Full rebuilds** stay for: the first build, a member, tier, parameter or
+  region change (`fresh`), a resized built region, GL errors, and damage whose
+  level 1 rectangles cover at least half of level 1 (`FULL_SHARE`): past that the
+  grown rectangles reach most of the level anyway and the per-rectangle draws
+  cost more than they save. More than eight rectangles per level fold into
+  their bounding box.
+- **Nothing changed means no rebuild:** if the tracker reports no damage inside
+  the region the members are left alone (no commit bump, no redraw).
+- `EC_GLASS_FULL_REBUILD=1` forces every tier rebuild full (the reference for
+  the pixel comparison below); the profile line gains `pass_texels` (texels
+  written by all passes) and `partial_rebuilds`.
+
+### Correctness
+
+- `partial::tests::a_pass_changes_nothing_outside_its_spread` runs the real
+  taps (5 down, 8 up, bilinear, edge clamp) of 400 random cases (offsets 1 to 16,
+  source sizes that are not twice the destination's, sub-rectangle origins) and
+  asserts that every destination texel a perturbed damage rectangle changes lies
+  inside the rectangle `spread` reports (more than 10 000 changed texels
+  checked); further tests cover the whole-chain plan, the mirrored flip, the
+  fold into a bounding box, and the full-rebuild threshold.
+- Pixels, partial against `EC_GLASS_FULL_REBUILD`, 2880 x 1620 `grim`, after a
+  deterministic repaint sequence (70 coloured blocks, 0.1 s apart, over a
+  checker, under glass windows): **0 differing samples of 14 000 000** in each of
+  three scenes (3 windows at the default blur; 6 windows at size 12, 3 passes;
+  4 windows at size 6, 5 passes), with 10 to 63 of the rebuilds partial in each
+  run. The mirrored (`Flipped180`, winit) case is covered by the unit test only,
+  since no nested window may be opened.
+
+### Numbers (headless, this machine)
+
+Per frame, 1c against 1b, same day. Cleared and drawn are Mtexels of level 0;
+pass is texels written by all blits (not measured for 1c: a full pass writes
+about 0.66 x the region). Rebuilds per frame are unchanged by 1b.
+`damage` is the harness's repainting window (the whole backdrop changes each
+frame, so most rebuilds are full); `small` is a 12-cell block at a random place
+every 30 ms.
+
+| Layout | Scenario | N | rebuilds/f | partial | cleared 1c to 1b | drawn 1c to 1b | pass (1b) | render p50 / p99 us 1c to 1b |
+|---|---|---|---|---|---|---|---|---|
+| cascade | damage | 5 | 1.78 | 0 of 1068 | 8.28 to 2.69 | 3.26 to 3.27 | 2.16 | 1264 / 6018 to 1290 / 5504 |
+| cascade | damage | 20 | 0.50 | 120 of 360 | 2.33 to 0.77 | 1.08 to 0.79 | 0.62 | 2450 / 5610 to 2251 / 5873 |
+| cascade | small | 5 | 1.78 | 1266 of 1266 | 8.30 to 0.31 | 3.26 to 0.31 | 0.65 | 1055 / 4479 to 1096 / 3962 |
+| cascade | small | 20 | 0.50 | 298 of 300 | 2.33 to 0.09 | 1.08 to 0.09 | 0.23 | 1468 / 4183 to 1660 / 4433 |
+| spread | damage | 3 | 0.57 | 0 of 340 | 2.63 to 0.89 | 1.48 to 1.49 | 0.98 | 1119 / 4308 to 1090 / 4281 |
+| spread | damage | 5 | 0.57 | 411 of 411 | 2.66 to 0.90 | 2.36 to 0.90 | 0.83 | 1231 / 4602 to 1265 / 4136 |
+| spread | small | 3 | 0.57 | 408 of 408 | 2.66 to 0 | 1.49 to 0 | 0.05 | 930 / 3044 to 1049 / 3330 |
+| spread | small | 5 | 0.57 | 410 of 410 | 2.68 to 0 | 2.38 to 0 | 0.05 | 1047 / 3689 to 980 / 3602 |
+| tiled | damage | 20 | 0.17 | 120 of 120 | 0.78 to 0 | 0.04 to 0 | 0 | 2855 / 5863 to 2799 / 6153 |
+
+Drag, burst and paced (`pdrag`), rebuilds per frame unchanged (cascade N = 5:
+0.042 to 0.039 and 0.038 to 0.038; spread N = 5 paced 0.085 to 0.083); of those
+rebuilds, 18 of 42 (burst) and 6 of 18 (paced) are partial at cascade N = 5, 32
+of 40 at spread N = 5 paced, and the cleared texels per frame fall by 30 to 85
+percent. Idle is 0 everywhere.
+
+Reading it honestly:
+
+- The texels cleared and written fall sharply where the damage is small
+  (cascade N = 5 small damage: 8.3 to 0.31 Mtexels per frame cleared, and about
+  2.2 to 0.65 written by the passes, if a full pass writes 0.66 x the region;
+  spread: 2.7 to 0 cleared, about 1.0 to 0.05 written) and less where it is large:
+  the repainting-window scenario damages most of the built region each frame, so
+  the threshold sends its rebuilds to the full path (cascade N = 5: 0 of 1068
+  partial), and what is saved there is only the whole-output clear (8.28 to 2.69:
+  a rebuild that is not partial still draws and clears only its damage).
+- Render p50 / p99 here is CPU time to build the frame (`--stats`): it does not
+  move within noise, because the work 1b removes is GPU fill, not CPU. There is
+  no GPU timer available (see the top of this file), so the GPU saving is
+  inferred from the texel counts, not measured.
+- The 1c margin made damage rebuilds larger (spread N = 5: 4.2 against 2.5
+  Mtexels of crop per rebuild); with 1b a small damage costs a few thousand
+  texels again, whatever the margin, and a damage that covers most of the region
+  costs what it did in 1c.
