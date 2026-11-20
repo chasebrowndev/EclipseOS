@@ -371,3 +371,73 @@ fn drm_input_and_dispatch_only_mark_dirty_and_the_round_renders_once() {
         "one composite pass per round"
     );
 }
+
+/// ADR 0129 (SECURITY): the session lock's glass samples the wallpaper and
+/// the locker's own surface and nothing else. There is no GL context in a unit
+/// test to compare two rendered lists, so the property is asserted where it
+/// lives: in the source of the two functions that build the locked frame.
+/// Neither may name the windows' space, the layer map, popups, the cursor, a
+/// drag icon, focus or `collect_elements`, and the render side may only be
+/// handed a surface, a wallpaper store and a ground quad.
+#[test]
+fn the_lock_glass_sees_only_the_wallpaper_and_the_lock_surface() {
+    fn between<'a>(src: &'a str, from: &str, to: &str) -> &'a str {
+        let a = src.find(from).unwrap_or_else(|| panic!("`{from}` not found"));
+        let b = a + src[a..].find(to).unwrap_or_else(|| panic!("`{to}` not found"));
+        &src[a..b]
+    }
+    let render = include_str!("../../../ec-abyss-render/src/lib.rs");
+    let glass = between(
+        render,
+        "pub fn lock_glass_elements(",
+        "pub fn lock_glass_possible(",
+    );
+    let lock = include_str!("../protocols/standard/session_lock.rs");
+    let plain = between(lock, "pub fn lock_elements(", "#[cfg(test)]");
+    for (what, body) in [("lock_glass_elements", glass), ("lock_elements", plain)] {
+        let body = body.to_ascii_lowercase();
+        for word in [
+            "space",
+            "layer_map",
+            "layer_surface",
+            "collect_elements",
+            "popup",
+            "cursor",
+            "drag",
+            "dnd",
+            "focus",
+            "window",
+            "xdg",
+            "capture",
+        ] {
+            // The doc comment states what it must not see; the code must not name it.
+            let code: String = body
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                !code.contains(word),
+                "{what} references `{word}`: the locked frame may hold only the wallpaper and the lock surface"
+            );
+        }
+    }
+    // The only backdrop the panes get is the list built in that function.
+    assert!(glass.contains("Vec::new()") && glass.contains("vec![req]"));
+    assert!(glass.contains("borders.wallpaper") || glass.contains(".wallpaper"));
+    // Every backend, locked, takes the lock path instead of `collect_elements`.
+    for (src, path) in [
+        (include_str!("../backend/drm.rs"), "drm.rs"),
+        (include_str!("../backend/winit.rs"), "winit.rs"),
+        (include_str!("../backend/headless.rs"), "headless.rs"),
+    ] {
+        let at = src
+            .find("if state.lock.locked {")
+            .unwrap_or_else(|| panic!("{path}: no locked branch"));
+        let branch = &src[at..at + src[at..].find("collect_elements").expect("else branch")];
+        assert!(
+            branch.contains("lock_elements("),
+            "{path}: locked branch must call lock_elements"
+        );
+    }
+}

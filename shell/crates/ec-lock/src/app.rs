@@ -177,6 +177,9 @@ pub struct App {
 
 impl App {
     pub fn new(user: CString) -> Self {
+        // Drawing only: have the compositor's glass offered the lock surfaces
+        // (`glass.rs`). Boot runs before any surface exists.
+        crate::glass::install();
         let user_display = user.to_string_lossy().into_owned();
         App {
             machine: Machine::new(),

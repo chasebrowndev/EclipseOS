@@ -25,9 +25,20 @@
 //! button; a failure is `danger`, not accent. Focus is a brighter fill and a
 //! crisp rim, never a glow.
 //!
-//! **Opaque.** Panes are glass-styled (a tint, a rim, a soft drop) on the
-//! opaque ground. A lock surface that let the desktop through would show what
-//! it locks, so there is no `eclipse_glass_v1` here.
+//! **Glass, with an opaque fall-back (ADR 0129).** Under abyss in `glass` blur
+//! mode the compositor draws the wallpaper, then this surface's
+//! `eclipse_glass_v1` panes (blurring *the wallpaper only*: no window, bar or
+//! layer is ever sampled while locked), then this surface. So when
+//! [`glass_live`] the client draws **no ground** and every pane (the clock, the
+//! greeting, the password card, its field, Unlock, the Glances) pushes a pane
+//! and keeps only its content. Anywhere else (another compositor, a blur mode
+//! other than `glass`, no global, an output the compositor will not draw glass
+//! on) the surface keeps today's look: an **opaque** ground and glass-styled
+//! panes (a tint, a rim, a soft drop), so the lock is never see-through and
+//! never unreadable. `style`/[`ground_for`] decide per frame; the glass is
+//! live only once the compositor has said so, before the first frame, and the
+//! panes travel in the same commit as the buffer, so no frame has text on a
+//! ground that is not there.
 //!
 //! **Panic-free and never in the way.** Sizes go through [`fit_in`], which
 //! never returns more than the room it was given; every index is checked; a
@@ -43,9 +54,9 @@ use iced::{alignment, Alignment, Color, Element, Font, Length, Shadow, Size, The
 
 use ec_glance::{clean, Charge};
 use ec_layout::{Kind, Rect};
-use ec_ui::theme;
-use ec_ui::tokens::{color, font, lock, size, space};
-use ec_ui::widget::{dot_run, key_hints, micro_label, secret_field, spinner, FieldState};
+use ec_ui::theme::{self, CellTone};
+use ec_ui::tokens::{color, font, lock, radius, size, space};
+use ec_ui::widget::{dot_run, glass_card, glass_ground, secret_field, spinner, Fade, FieldState};
 
 use crate::app::{App, Message, Status};
 use crate::clock::Reading;
@@ -89,8 +100,20 @@ impl<'a> Scene<'a> {
     }
 }
 
-pub fn view(app: &App, _window: iced::window::Id) -> Element<'_, Message, Theme> {
-    scene(Scene::of(app))
+pub fn view(app: &App, window: iced::window::Id) -> Element<'_, Message, Theme> {
+    // Sends this output's panes once the content has drawn them (a no-op in
+    // the fall-back).
+    // The entrance advances on frames, and a lock surface has no input to
+    // cause them, so it asks for them while it plays.
+    ec_ui::glass::root(window, scene(Scene::of(app)))
+        .animating(app.face().animating())
+        .into()
+}
+
+/// Whether the compositor is drawing this surface's panes, so the client draws
+/// no ground of its own.
+pub fn glass_live() -> bool {
+    ec_ui::glass::available()
 }
 
 /// The lock screen for one output. Every output gets the same one, laid out
@@ -180,9 +203,13 @@ fn tile<'a>(s: Scene<'a>, kind: Kind, w: f32, h: f32, appeared: f32) -> Option<E
         iw: (w - 2.0 * pad_x).max(0.0),
         ih: (h - 2.0 * pad).max(0.0),
     };
-    // The clock is bare type; every other tile is a pane.
+    let glass = glass_live();
+    // The clock is bare type on the opaque fall-back, where it needs no
+    // ground. On glass it has none to lean on (bare type on any wallpaper can
+    // fail contrast), so it is a pane like the rest.
     let (content, radius) = match kind {
-        Kind::Clock => return Some(fading(clock(&cx), appeared)),
+        Kind::Clock if !glass => return Some(fading(clock(&cx), appeared)),
+        Kind::Clock => (clock(&cx), tokens::PANE_RADIUS),
         Kind::Greeting => (greeting(&cx), tokens::PILL_RADIUS),
         Kind::Password => (password(&cx), tokens::PANE_RADIUS),
         Kind::Battery => (battery(&cx), tokens::PANE_RADIUS),
@@ -197,6 +224,17 @@ fn tile<'a>(s: Scene<'a>, kind: Kind, w: f32, h: f32, appeared: f32) -> Option<E
         .width(Length::Fill)
         .height(Length::Fill)
         .clip(true);
+    if glass {
+        // The compositor draws the ground; `Fade` fades its pane and the
+        // content stays whole (no veil colour could stand in for glass).
+        let fade = Fade::new(
+            glass_card(body, CellTone::Plain, radius),
+            appeared,
+            space::ZERO,
+            Color::TRANSPARENT,
+        );
+        return Some(fade.into());
+    }
     // A tile still appearing hides its content under the pane's own ground,
     // so text and cells fade with the pane rather than popping in.
     let body: Element<'a, Message, Theme> = if appeared < 1.0 {
@@ -264,6 +302,64 @@ fn pane_style(radius: f32, fade: f32) -> container::Style {
     }
 }
 
+/// A small uppercase mono label, in the secondary ink. The desktop's section label
+/// is tertiary, which on a light scheme is under 3:1; the lock holds 4.5:1.
+fn micro<'a>(word: &str) -> Element<'a, Message, Theme> {
+    let spaced: String = word
+        .to_uppercase()
+        .chars()
+        .flat_map(|c| [c, '\u{2009}'])
+        .collect();
+    text(spaced)
+        .font(font::DATA_MEDIUM)
+        .size(size::MICRO)
+        .style(theme::text_secondary)
+        .wrapping(text::Wrapping::None)
+        .into()
+}
+
+/// The desktop's key hints with the verb in the secondary ink (see [`micro`]): a
+/// keycap pane (glass on glass, a styled cell otherwise) and its verb.
+fn hints<'a>(pairs: &[(&str, &str)]) -> Element<'a, Message, Theme> {
+    pairs
+        .iter()
+        .fold(
+            row![].spacing(space::HINT_GAP).align_y(Alignment::Center),
+            |line, &(key, verb)| {
+                let cap = container(
+                    text(key.to_owned())
+                        .font(font::DATA_MEDIUM)
+                        .size(size::MICRO)
+                        .style(theme::text_secondary)
+                        .wrapping(text::Wrapping::None),
+                )
+                .padding([space::BADGE_Y, space::BADGE_X])
+                .style(|t: &Theme| {
+                    let c = theme::glass_cell(CellTone::Plain, radius::KEYCAP)(t, button::Status::Active);
+                    theme::bare_container_if_glass(container::Style {
+                        background: c.background,
+                        border: c.border,
+                        shadow: c.shadow,
+                        ..container::Style::default()
+                    })
+                });
+                line.push(
+                    row![
+                        glass_card(cap, CellTone::Plain, radius::KEYCAP),
+                        text(verb.to_owned())
+                            .font(font::DATA)
+                            .size(size::MICRO)
+                            .style(theme::text_secondary)
+                            .wrapping(text::Wrapping::None),
+                    ]
+                    .spacing(space::KEY_GAP)
+                    .align_y(Alignment::Center),
+                )
+            },
+        )
+        .into()
+}
+
 /// A plain filled shape: a rail, a bar, a veil.
 fn swatch<'a>(ink: Color, radius: f32, w: Length, h: Length) -> Element<'a, Message, Theme> {
     container(Space::new())
@@ -328,7 +424,7 @@ fn greeting<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
     .spacing(space::CONTROL_GAP)
     .align_y(Alignment::Center);
     if cx.iw >= cell::GREETING_WORD_W {
-        r = r.push(micro_label(word));
+        r = r.push(micro(word));
     }
     container(r)
         .width(Length::Fill)
@@ -370,18 +466,18 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
     let s = &cx.s;
     let note_room = cell::NOTE_H + cell::NOTE_GAP;
     let hint_room = cell::HINT_H + cell::NOTE_GAP;
-    let hints = cx.ih >= cell::FIELD_MIN + note_room + hint_room;
-    let avail = cx.ih - note_room - if hints { hint_room } else { 0.0 };
+    let room_for_hints = cx.ih >= cell::FIELD_MIN + note_room + hint_room;
+    let avail = cx.ih - note_room - if room_for_hints { hint_room } else { 0.0 };
     let field_h = fit_in(avail, cell::FIELD_MIN, cell::FIELD_MAX);
 
     let mut col = column![field(s, field_h), note(s)]
         .spacing(cell::NOTE_GAP)
         .width(Length::Fill);
-    if hints {
+    if room_for_hints {
         // Nothing to press while PAM holds the password or the lock is going;
         // the line keeps its height so the pane does not move.
         let line: Element<'a, Message, Theme> = if s.taking() {
-            key_hints(&[("enter", "unlock"), ("esc", "clear")])
+            hints(&[("enter", "unlock"), ("esc", "clear")])
         } else {
             Space::new().height(space::KEYCAP_H).into()
         };
@@ -412,7 +508,7 @@ fn battery<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
         return container(r).center_y(Length::Fill).into();
     }
     let detail = cx.ih >= cell::DETAIL_MIN_H;
-    let mut col = column![micro_label("battery")]
+    let mut col = column![micro("battery")]
         .spacing(space::ROW_Y)
         .height(Length::Fill);
     if snap.batteries.len() == 1 {
@@ -556,7 +652,7 @@ fn wifi<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
     if compact {
         return container(figure).center_y(Length::Fill).into();
     }
-    column![micro_label("link"), figure]
+    column![micro("link"), figure]
         .spacing(space::ROW_Y)
         .height(Length::Fill)
         .into()
@@ -608,7 +704,7 @@ fn field<'a>(s: &Scene<'a>, height: f32) -> Element<'a, Message, Theme> {
                     text("Password")
                         .font(font::UI)
                         .size(size::BODY)
-                        .style(theme::text_tertiary),
+                        .style(theme::text_secondary),
                 ]
                 .spacing(space::CONTROL_GAP)
                 .align_y(Alignment::Center)
@@ -623,9 +719,25 @@ fn field<'a>(s: &Scene<'a>, height: f32) -> Element<'a, Message, Theme> {
             )
         }
     };
-    secret_field(state, MARKER, body, trailing)
-        .height(Length::Fixed(height))
-        .into()
+    let field = secret_field(state, MARKER, body, trailing).height(Length::Fixed(height));
+    if !glass_live() {
+        return field.into();
+    }
+    // A pane of the inset's tone, as `ec_ui`'s `secret_field_pane`: the pane is
+    // the ground, and the client keeps only a rim that says something (focus,
+    // refusal).
+    let field = field.style(move |t: &Theme| {
+        let mut s = theme::inset_field(state != FieldState::Resting)(t);
+        if state == FieldState::Refused {
+            s.border.color = color::danger().scale_alpha(lock::FAIL_RIM);
+        }
+        s.background = None;
+        if state == FieldState::Resting {
+            s.border.color = Color::TRANSPARENT;
+        }
+        s
+    });
+    glass_card(field, CellTone::Plain, radius::INSET)
 }
 
 /// Unlock: a ghost until there is something PAM may check, then a white lift.
@@ -635,18 +747,34 @@ fn unlock<'a>(ready: bool, tight: bool) -> Element<'a, Message, Theme> {
     } else {
         space::PILL_Y
     };
-    button(text("Unlock").font(font::UI_MEDIUM).size(size::BODY_SMALL))
-        .padding([pad_y, space::PILL_X])
-        .style(theme::send(ready))
-        .on_press_maybe(ready.then_some(Message::Submit))
-        .into()
+    let label = text("Unlock").font(font::UI_MEDIUM).size(size::BODY_SMALL);
+    if !glass_live() {
+        return button(label)
+            .padding([pad_y, space::PILL_X])
+            .style(theme::send(ready))
+            .on_press_maybe(ready.then_some(Message::Submit))
+            .into();
+    }
+    // A pane of its own: the brighter tone once there is something to check,
+    // lit by the pointer through the pane's hover and press bits. The button
+    // keeps only its label.
+    let send = theme::send(ready);
+    let tone = if ready { CellTone::Focused } else { CellTone::Plain };
+    glass_ground(
+        button(label)
+            .padding([pad_y, space::PILL_X])
+            .style(move |t: &Theme, st| theme::bare_if_glass(send(t, st)))
+            .on_press_maybe(ready.then_some(Message::Submit)),
+        tone,
+        radius::PILL,
+    )
 }
 
 /// One line under the field: what is happening at the left, the machine's
 /// reading of it (the wait, the count) in mono at the right.
 fn note<'a>(s: &Scene<'a>) -> Element<'a, Message, Theme> {
     let (line, tone, reading): (&str, fn(&Theme) -> text::Style, Option<String>) = match s.status {
-        Status::Locking | Status::Ready => ("Enter your password to unlock", theme::text_tertiary, None),
+        Status::Locking | Status::Ready => ("Enter your password to unlock", theme::text_secondary, None),
         Status::Checking => ("Checking your password", theme::text_secondary, None),
         Status::Unlocking => ("Welcome back", theme::text_secondary, None),
         Status::Failed {
@@ -664,7 +792,7 @@ fn note<'a>(s: &Scene<'a>) -> Element<'a, Message, Theme> {
                 (None, Reason::Wrong) if failures == 1 => "1 failed try".to_owned(),
                 (None, Reason::Wrong) => format!("{failures} failed tries"),
             };
-            (line, theme::text_danger, Some(reading))
+            (line, theme::text_primary, Some(reading))
         }
     };
     let mut r = row![container(
@@ -681,23 +809,36 @@ fn note<'a>(s: &Scene<'a>) -> Element<'a, Message, Theme> {
             text(reading)
                 .font(font::DATA)
                 .size(size::MONO)
-                .style(theme::text_tertiary)
+                .style(theme::text_secondary)
                 .wrapping(text::Wrapping::None),
         );
     }
     container(r).height(Length::Fixed(cell::NOTE_H)).into()
 }
 
-/// The surface ground: opaque, the theme's base. A lock surface that let the
-/// desktop through would show what it locks.
+/// The surface ground: the theme's base, **opaque**, unless the compositor is
+/// drawing this surface's glass ([`glass_live`]), when there is none and the
+/// wallpaper shows through the panes' glass.
 pub fn style(_app: &App, theme: &Theme) -> iced::theme::Style {
-    ground(theme)
+    ground_for(theme, glass_live())
 }
 
-/// [`style`] without the model, for the preview.
+/// [`style`] without the model, for the preview (a plain window: no glass).
 pub fn ground(theme: &Theme) -> iced::theme::Style {
+    ground_for(theme, glass_live())
+}
+
+/// The ground for a frame. Opaque in the fall-back (a lock surface that let
+/// the desktop through would show what it locks); transparent only when the
+/// compositor draws the wallpaper and the panes' glass beneath.
+pub fn ground_for(theme: &Theme, glass: bool) -> iced::theme::Style {
+    let base = theme.palette().background;
     iced::theme::Style {
-        background_color: theme.palette().background,
+        background_color: if glass {
+            Color::TRANSPARENT
+        } else {
+            Color::from_rgb(base.r, base.g, base.b)
+        },
         text_color: theme.palette().text,
     }
 }
@@ -706,10 +847,126 @@ pub fn ground(theme: &Theme) -> iced::theme::Style {
 mod tests {
     use super::*;
 
+    use ec_theme::{contrast, derive, Palette, Rgba, DARK_SEEDS, LIGHT_SEEDS};
+
     #[test]
-    fn the_ground_is_opaque() {
+    fn the_fallback_ground_is_opaque() {
         let t = theme::theme();
+        assert_eq!(ground_for(&t, false).background_color.a, 1.0);
+        // Even a theme whose base carries alpha cannot make the fallback see-through.
+        let clear = Theme::custom(
+            "clear".to_owned(),
+            iced::theme::Palette {
+                background: Color::from_rgba(0.1, 0.1, 0.1, 0.2),
+                ..t.palette()
+            },
+        );
+        assert_eq!(ground_for(&clear, false).background_color.a, 1.0);
+    }
+
+    #[test]
+    fn the_glass_path_draws_no_ground() {
+        let t = theme::theme();
+        assert_eq!(ground_for(&t, true).background_color.a, 0.0);
+        // The text colour is still the theme's: the glass changes the ground only.
+        assert_eq!(ground_for(&t, true).text_color, ground_for(&t, false).text_color);
+        // Nothing in this process attached glass: the live styles are the fallback.
+        assert!(!glass_live());
         assert_eq!(ground(&t).background_color.a, 1.0);
+    }
+
+    /// The lock draws only the primary and secondary inks: the tertiary step is
+    /// 2.7:1 on the light scheme and the light `danger` 3.8:1, both under 4.5
+    /// (found by `fallback_text_holds_4_5_to_1`), so the drawing code asks for
+    /// neither. A refusal is its words in primary ink and the field's danger rim.
+    #[test]
+    fn the_lock_draws_no_tertiary_ink() {
+        let src = include_str!("view.rs");
+        let drawing = &src[..src.find("#[cfg(test)]").unwrap()];
+        for banned in ["text_tertiary", "micro_label", "key_hints", "text_danger"] {
+            assert!(!drawing.contains(banned), "{banned} in view.rs");
+        }
+    }
+
+    fn palettes() -> [(&'static str, Palette); 2] {
+        [("dark", derive(&DARK_SEEDS)), ("light", derive(&LIGHT_SEEDS))]
+    }
+
+    /// In the fall-back every ink the screen uses holds 4.5:1 on the surfaces
+    /// it can sit on: the opaque ground and the pane's own ground over it.
+    #[test]
+    fn fallback_text_holds_4_5_to_1() {
+        for (name, p) in palettes() {
+            let pane = p.surface_2.over_opaque(p.base);
+            for ground in [p.base, pane] {
+                for (ink, what) in [(p.text, "text"), (p.text_secondary, "secondary")] {
+                    let c = contrast(ink, ground);
+                    assert!(c >= 4.5, "{name} {what} {c:.2} < 4.5");
+                }
+            }
+        }
+    }
+
+    /// The compositor's pane ground over a grey wallpaper of sRGB level `b`,
+    /// mirroring `effects.rs` (vibrancy, smoke, the focus lift or ink shade)
+    /// and, where `adapt` is set, its adaptive tint at the strongest it goes.
+    fn glass_ground(scheme: ec_theme::Scheme, b: f32, adapt: bool) -> Rgba {
+        let mix = |a: f32, c: f32, t: f32| a + (c - a) * t;
+        let light = scheme == ec_theme::Scheme::Light;
+        let mut c = if light { b } else { b / (1.0 + b) };
+        let (smoke, mixv) = if light { (0.975, 0.22) } else { (0.047, 0.28) };
+        c = mix(c, smoke, mixv);
+        if adapt {
+            // `ADAPT_MAX_L` .8 on light, `ADAPT_MAX` .95 on dark, toward the surface.
+            c = if light {
+                mix(c, 0.975, 0.8)
+            } else {
+                mix(c, 0.047, 0.95)
+            };
+        }
+        // The strongest pane state: dark glass lifts toward white .028 (focused,
+        // pressed), light glass shades toward ink .15 (pressed).
+        c = if light {
+            mix(c, 0.102, 0.15)
+        } else {
+            mix(c, 1.0, 0.03)
+        };
+        Rgba::new(c, c, c, 1.0)
+    }
+
+    /// Over the worst plausible glass the ink still holds 3:1: light ink on
+    /// dark glass, dark ink on light glass (STYLE.md Light: never the dark
+    /// tokens flipped). Dark glass is held over every wallpaper, white included
+    /// (white is the worst: the highlight knee and the smoke only go so far).
+    /// Light glass is held over any wallpaper from a mid-grey (.5) up on its own,
+    /// and over anything darker only with the compositor's adaptive tint, which
+    /// exists for exactly that (ADAPT_MAX_L).
+    #[test]
+    fn glass_text_holds_3_to_1() {
+        for (name, p) in palettes() {
+            let light = p.scheme == ec_theme::Scheme::Light;
+            let grounds: Vec<Rgba> = if light {
+                [0.5, 0.65, 0.8, 1.0]
+                    .iter()
+                    .map(|b| glass_ground(p.scheme, *b, false))
+                    .chain([glass_ground(p.scheme, 0.0, true)])
+                    .collect()
+            } else {
+                [0.0, 0.25, 0.5, 0.75, 1.0]
+                    .iter()
+                    .map(|b| glass_ground(p.scheme, *b, false))
+                    .collect()
+            };
+            for g in grounds {
+                for (ink, what) in [(p.text, "text"), (p.text_secondary, "secondary")] {
+                    let c = contrast(ink, g);
+                    assert!(c >= 3.0, "{name} {what} {c:.2} < 3 on glass {:?}", g.0);
+                }
+            }
+            // The right ink for the scheme: dark ink on light glass, light on dark.
+            let ink = p.text.luminance();
+            assert_eq!(light, ink < 0.5, "{name} ink is the wrong way round");
+        }
     }
 
     /// Building the tiles never panics, whatever the output size or layout,

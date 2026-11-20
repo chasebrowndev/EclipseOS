@@ -1297,6 +1297,101 @@ pub fn collect_elements(
     elements
 }
 
+/// The session lock's frame with glass (ADR 0129): the locker's surface tree
+/// over the compositor's own ground (the wallpaper, else `ground`), with the
+/// surface's `eclipse_glass_v1` panes spliced between so each pane's backdrop
+/// is that ground and nothing else.
+///
+/// SECURITY: this function takes no `Space`, no layer map, no focus, no popup
+/// or cursor state, and builds its list from exactly three things: the lock
+/// surface tree, the wallpaper element, and the ground quad. No window, layer
+/// surface, popup, drag icon or other client content can reach it, so none
+/// can be drawn or sampled by the lock's glass (`scan_tests` keeps it so).
+///
+/// `None` means the glass path is not available (not `glass` mode, no glass
+/// program, a rotated output, or the locker has no panes): the caller draws
+/// the locker's surface alone, as before. Never a reason to skip the lock.
+pub fn lock_glass_elements(
+    renderer: &mut GlesRenderer,
+    borders: &mut BorderStore,
+    config: &Config,
+    output: &Output,
+    lock_surface: &WlSurface,
+    ground: &SolidColorBuffer,
+) -> Option<Vec<AbyssRenderElement>> {
+    if !lock_glass_possible(
+        config.decoration.blur.mode,
+        effects::fb_y_mirrored(output.current_transform()).is_some() && output.current_mode().is_some(),
+        committed_panes(lock_surface).is_some(),
+    ) || !ensure_glass(renderer, borders)
+    {
+        return None;
+    }
+    let set = committed_panes(lock_surface)?;
+    borders.bind(renderer);
+    let scale = Scale::from(output.current_scale().fractional_scale());
+    let mode = output.current_mode()?;
+    let size: Size<i32, Logical> = output
+        .current_transform()
+        .transform_size(mode.size)
+        .to_f64()
+        .to_logical(scale)
+        .to_i32_round();
+    let mut elements: Vec<AbyssRenderElement> =
+        render_elements_from_surface_tree(renderer, lock_surface, (0, 0), scale, 1.0, Kind::Unspecified);
+    let index = elements.len();
+    // The ground: the wallpaper, else the compositor's solid. Last, so the
+    // panes' backdrop (`elements[index..]`) is this and only this.
+    elements.push(
+        borders
+            .wallpaper
+            .element(renderer, output, scale)
+            .unwrap_or_else(|| {
+                AbyssRenderElement::Solid(SolidColorRenderElement::from_buffer(
+                    ground,
+                    (0, 0),
+                    scale,
+                    1.0,
+                    Kind::Unspecified,
+                ))
+            }),
+    );
+    let req = PaneRequest {
+        key: blur::BlurKey::LockPanes(lock_surface.clone()),
+        index,
+        set,
+        size,
+        loc: Point::from((0, 0)),
+        crop: None,
+        over: false,
+        stacked: false,
+        sub: false,
+        scaled: None,
+        alpha: 1.0,
+    };
+    insert_blur(
+        renderer,
+        output,
+        borders,
+        config,
+        Vec::new(),
+        vec![req],
+        &mut elements,
+        // No windows under the lock: nothing to cull.
+        &[],
+        0,
+    );
+    Some(elements)
+}
+
+/// Whether the lock's glass path may run: glass mode, an output the glass
+/// program can draw to, and a locker that asked for panes. Anything else is
+/// the plain locker surface (fail soft, never fail open: the ground is only
+/// ever the wallpaper).
+pub fn lock_glass_possible(mode: BlurMode, drawable: bool, has_panes: bool) -> bool {
+    mode == BlurMode::Glass && drawable && has_panes
+}
+
 /// Drop the window backdrops that are hidden (see [`blur::hidden_behind`]) from
 /// `requests`; returns how many. Layer and annotation backdrops are never culled.
 fn cull_hidden(
@@ -4052,6 +4147,25 @@ pub fn send_dmabuf_feedback(
 
 #[cfg(test)]
 mod tests {
+    /// ADR 0129: the lock's glass runs only in glass mode, on a drawable
+    /// output, for a locker that asked for panes. Everything else is the
+    /// plain locker surface: the lock still draws, never the desktop.
+    #[test]
+    fn lock_glass_fails_soft_to_the_plain_surface() {
+        assert!(lock_glass_possible(BlurMode::Glass, true, true));
+        for (mode, drawable, panes) in [
+            (BlurMode::Off, true, true),
+            (BlurMode::Blur, true, true),
+            (BlurMode::Frost, true, true),
+            (BlurMode::Glass, false, true),
+            (BlurMode::Glass, true, false),
+        ] {
+            assert!(
+                !lock_glass_possible(mode, drawable, panes),
+                "{mode:?} {drawable} {panes}"
+            );
+        }
+    }
     use super::*;
 
     fn pane_set(boxes: &[(i32, i32, i32, i32)]) -> glass::PaneSet {

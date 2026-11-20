@@ -2353,6 +2353,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
         elements.extend(crate::protocols::standard::session_lock::lock_elements(
             renderer,
             &mut state.lock,
+            &mut state.borders,
+            &state.config,
             &output,
         ));
     } else {

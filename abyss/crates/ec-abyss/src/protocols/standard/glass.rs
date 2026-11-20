@@ -42,8 +42,9 @@ const VERSION: u32 = 2;
 /// The shell binaries that may bind the global. The glass is drawn under the
 /// client's surface, so `ec-secret-prompt` gains no access to what is typed.
 /// `ec-greeter-ui` is the login screen (ADR 0126); the kiosk compositor offers
-/// the global to it like any other.
-pub const DEFAULT_ALLOW: [&str; 8] = [
+/// the global to it like any other. `ec-lock` is the screen locker: while the
+/// session is locked its panes are drawn over the wallpaper alone (ADR 0129).
+pub const DEFAULT_ALLOW: [&str; 9] = [
     "ec-hyperion-bar",
     "ec-launcher",
     "ec-toasts",
@@ -52,6 +53,7 @@ pub const DEFAULT_ALLOW: [&str; 8] = [
     "ec-secret-prompt",
     "apotheosis",
     "ec-greeter-ui",
+    "ec-lock",
 ];
 
 /// On a surface's data map: whether it already has a glass object, which is
@@ -432,6 +434,19 @@ mod tests {
                 .object_from_protocol_id::<WlSurface>(&h.state.display_handle, surface.id().protocol_id())
                 .expect("server surface")
         }
+    }
+
+    /// ADR 0129: the screen locker may bind the global (its panes are drawn
+    /// over the wallpaper while locked); a lookalike may not.
+    #[test]
+    fn ec_lock_is_allowlisted_and_lookalikes_are_not() {
+        assert!(DEFAULT_ALLOW.contains(&"ec-lock"));
+        let allow = Allowlist::new(DEFAULT_ALLOW.iter().map(|s| s.to_string()).collect());
+        assert!(allow.contains("ec-lock"));
+        for name in ["ec-lock2", "ec-lockd", "lock", "swaylock", "ec-lock "] {
+            assert!(!allow.contains(name), "{name}");
+        }
+        assert_eq!(DEFAULT_ALLOW.len(), 9);
     }
 
     #[test]
