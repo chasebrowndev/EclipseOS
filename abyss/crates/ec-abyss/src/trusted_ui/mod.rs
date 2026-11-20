@@ -72,7 +72,7 @@ use smithay::{
     input::{keyboard::Keysym, pointer::MotionEvent},
     output::Output,
     reexports::calloop::timer::{TimeoutAction, Timer},
-    utils::{Logical, Point, Rectangle, Scale, Size, Transform, SERIAL_COUNTER},
+    utils::{Logical, Physical, Point, Rectangle, Scale, Size, Transform, SERIAL_COUNTER},
 };
 
 use crate::{render::AbyssRenderElement, state::AbyssState};
@@ -87,7 +87,7 @@ pub const ARM: Duration = Duration::from_millis(750);
 /// Everything behind a prompt is dimmed, on every output, so it is plain that
 /// the session is waiting on the human and nothing behind it takes input.
 const DIM: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
-const DIM_ALPHA: f32 = 0.6;
+const DIM_ALPHA: f32 = 0.45;
 
 /// The answer to a prompt, handed to [`resolve`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +116,24 @@ struct Open {
     shown: Instant,
 }
 
+/// Where the glass panel sits on one output, in output-local physical pixels,
+/// and what its body is made of (ADR 0126). Fixed by the compiled-in palette
+/// and the layout: nothing a client or config says reaches it.
+#[derive(Debug, Clone)]
+struct PanelGlass {
+    rect: Rectangle<i32, Physical>,
+    radius: f32,
+    scale: Scale<f64>,
+    tint: [f32; 4],
+    light: bool,
+    /// Where the opaque fallback is drawn if the glass cannot be.
+    local: Point<i32, Logical>,
+    key: (ContextId<GlesTexture>, usize),
+    focus: usize,
+    /// The buttons, as lens members over the panel.
+    buttons: Vec<crate::render::PromptMember>,
+}
+
 /// Trusted-UI state, owned by `AbyssState`.
 #[derive(Debug, Default)]
 pub struct TrustedUi {
@@ -125,6 +143,15 @@ pub struct TrustedUi {
     /// element. A texture belongs to one GPU's context, and each GPU draws its
     /// own outputs (ADR 0084), so the renderer is part of the key.
     art: BTreeMap<(ContextId<GlesTexture>, usize), (usize, TextureBuffer<GlesTexture>)>,
+    /// The opaque panel per renderer and device scale: what is drawn when the
+    /// glass body cannot be built (ADR 0126). Same key and lifetime as `art`.
+    art_solid: BTreeMap<(ContextId<GlesTexture>, usize), (usize, TextureBuffer<GlesTexture>)>,
+    /// The glass panel placed by the last [`elements`] call, for
+    /// [`splice_glass`] to put the blurred body behind it.
+    glass: Option<PanelGlass>,
+    /// Outputs whose private prompt backdrop is held, so it is released once
+    /// the prompt is gone.
+    glass_held: std::collections::BTreeSet<String>,
     /// One dim buffer per output size, for the same reason.
     dim: BTreeMap<(i32, i32), SolidColorBuffer>,
     /// The command-approval prompt's widget, if that is what is up.
@@ -213,6 +240,7 @@ pub fn open(state: &mut AbyssState, modal: modal::Modal) -> bool {
         shown: Instant::now(),
     });
     state.trusted_ui.art.clear();
+    state.trusted_ui.art_solid.clear();
     let timer = state
         .loop_handle
         .insert_source(Timer::from_duration(TIMEOUT), move |_, _, state| {
@@ -292,6 +320,7 @@ pub fn key(state: &mut AbyssState, sym: Keysym) {
         modal::Outcome::Edited => {
             // The cached panel is keyed by focus only; the text changed.
             state.trusted_ui.art.clear();
+            state.trusted_ui.art_solid.clear();
             crate::backend::damage_all(state);
         }
         modal::Outcome::Choose(i) => choose(state, i, false),
@@ -340,6 +369,7 @@ fn choose(state: &mut AbyssState, button: usize, timed_out: bool) {
         return;
     };
     state.trusted_ui.art.clear();
+    state.trusted_ui.art_solid.clear();
     state.trusted_ui.dim.clear();
     let Some(b) = o.modal.buttons().get(button) else {
         return;
@@ -418,6 +448,7 @@ pub(crate) fn replace(state: &mut AbyssState, modal: modal::Modal) -> bool {
     o.focus = focus;
     o.pressed = None;
     state.trusted_ui.art.clear();
+    state.trusted_ui.art_solid.clear();
     crate::backend::damage_all(state);
     true
 }
@@ -430,6 +461,7 @@ fn cancel(state: &mut AbyssState, token: u64) {
     }
     state.trusted_ui.open = None;
     state.trusted_ui.art.clear();
+    state.trusted_ui.art_solid.clear();
     state.trusted_ui.dim.clear();
     crate::backend::damage_all(state);
     state.refresh_pointer_focus();
@@ -463,6 +495,7 @@ pub(crate) fn set_scheme(ui: &mut TrustedUi, scheme: ec_theme::Scheme) {
     if ui.light != light {
         ui.light = light;
         ui.art.clear();
+        ui.art_solid.clear();
         ui.marks.repaint();
         ui.cards.repaint();
     }
@@ -477,6 +510,7 @@ pub fn elements(
     output: &Output,
     output_loc: Point<i32, Logical>,
 ) -> Vec<AbyssRenderElement> {
+    ui.glass = None;
     if locked {
         return Vec::new();
     }
@@ -507,12 +541,15 @@ pub fn elements(
 
     let mut out = Vec::with_capacity(2);
     if ui.art.get(&key).map(|(f, _)| *f != o.focus).unwrap_or(true) {
-        let raster = modal::rasterize(
+        // The glass panel: the body ground is left transparent, and
+        // `splice_glass` draws the tinted blur under it (ADR 0126).
+        let raster = modal::rasterize_with(
             &o.modal,
             o.focus,
             dev,
             ui.phrase.as_ref().map(phrase::Phrase::as_str),
             colors,
+            true,
         );
         match upload(renderer, &raster, dev) {
             Some(buffer) => {
@@ -528,6 +565,43 @@ pub fn elements(
     }
     if let Some((_, buffer)) = ui.art.get(&key) {
         let local = centre(Rectangle::new(output_loc, logical), &o.layout) - output_loc;
+        // The panel's physical rectangle, from the same logical placement the
+        // texture uses, so the blur body and the texture agree to the pixel.
+        let origin: Point<i32, Physical> = local.to_f64().to_physical(scale).to_i32_round();
+        let size = Size::<i32, Physical>::from((
+            (o.layout.w as f64 * fractional).round() as i32,
+            (o.layout.h as f64 * fractional).round() as i32,
+        ));
+        ui.glass = Some(PanelGlass {
+            rect: Rectangle::new(origin, size),
+            radius: (modal::PANEL_R as f64 * fractional) as f32,
+            scale,
+            tint: colors.glass_tint(),
+            light: ui.light,
+            local,
+            key: key.clone(),
+            focus: o.focus,
+            buttons: o
+                .layout
+                .buttons
+                .iter()
+                .map(|&(bx, by, bw, bh)| crate::render::PromptMember {
+                    rect: Rectangle::new(
+                        (
+                            origin.x + (bx as f64 * fractional).round() as i32,
+                            origin.y + (by as f64 * fractional).round() as i32,
+                        )
+                            .into(),
+                        (
+                            (bw as f64 * fractional).round() as i32,
+                            (bh as f64 * fractional).round() as i32,
+                        )
+                            .into(),
+                    ),
+                    radius: (bh as f64 * fractional / 2.0) as f32,
+                })
+                .collect(),
+        });
         out.push(AbyssRenderElement::Texture(
             TextureRenderElement::from_texture_buffer(
                 local.to_f64().to_physical(scale),
@@ -552,6 +626,108 @@ pub fn elements(
     )));
     out.extend(cards);
     out
+}
+
+/// Put the glass body behind the prompt panel (ADR 0126).
+///
+/// `elements` is the output's front-to-back list as the backend has it ready
+/// to draw, and `panel_at` is where [`elements`] put its first element, the
+/// panel texture. The tinted blur is drawn directly behind that texture, from
+/// everything below it: the scrim, the cards and the scene. It is the
+/// compositor's own already-drawn passes only, and nothing here can reach a
+/// capture target (the capture pass never names this module).
+///
+/// If the blur cannot be built for any reason, the panel texture is swapped
+/// for the opaque one: a failure is never a see-through prompt. With no
+/// prompt on this output it only releases the private backdrop the output
+/// still held.
+pub fn splice_glass(
+    renderer: &mut GlesRenderer,
+    ui: &mut TrustedUi,
+    store: &mut crate::render::BorderStore,
+    output: &Output,
+    elements: &mut Vec<AbyssRenderElement>,
+    panel_at: usize,
+) {
+    let name = output.name();
+    let Some(g) = ui.glass.take() else {
+        if ui.glass_held.remove(&name) {
+            crate::render::prompt_backdrop_release(store, output);
+        }
+        return;
+    };
+    // The panel texture is the element `elements()` pushed first. Anything
+    // else there means the backend's bookkeeping is off: draw nothing extra.
+    if !matches!(elements.get(panel_at), Some(AbyssRenderElement::Texture(_))) {
+        debug_assert!(false, "the trusted panel is not at the index the backend gave");
+        return;
+    }
+    let behind = &elements[panel_at + 1..];
+    let mut lens = Vec::new();
+    let body = crate::render::prompt_backdrop(
+        renderer,
+        store,
+        output,
+        behind,
+        crate::render::PromptMember {
+            rect: g.rect,
+            radius: g.radius,
+        },
+        &g.buttons,
+        g.scale,
+        g.light,
+        g.tint,
+        &mut lens,
+    );
+    match body {
+        Some(()) => {
+            ui.glass_held.insert(name);
+            // Panel first, then each button, each over the one before; all
+            // directly behind the panel texture (the buttons' rings and the
+            // text are in it).
+            for (i, el) in lens.into_iter().enumerate() {
+                elements.insert(panel_at + 1 + i, AbyssRenderElement::Blur(el));
+            }
+        }
+        None => {
+            // Opaque fallback, drawn with the same placement and focus.
+            if ui
+                .art_solid
+                .get(&g.key)
+                .map(|(f, _)| *f != g.focus)
+                .unwrap_or(true)
+            {
+                if let Some(o) = ui.open.as_ref() {
+                    let raster = modal::rasterize(
+                        &o.modal,
+                        o.focus,
+                        g.key.1,
+                        ui.phrase.as_ref().map(phrase::Phrase::as_str),
+                        ui.colors(),
+                    );
+                    match upload(renderer, &raster, g.key.1) {
+                        Some(buffer) => {
+                            ui.art_solid.insert(g.key.clone(), (o.focus, buffer));
+                        }
+                        None => {
+                            tracing::error!("trusted prompt opaque upload failed");
+                            ui.art_solid.remove(&g.key);
+                        }
+                    }
+                }
+            }
+            if let Some((_, buffer)) = ui.art_solid.get(&g.key) {
+                elements[panel_at] = AbyssRenderElement::Texture(TextureRenderElement::from_texture_buffer(
+                    g.local.to_f64().to_physical(g.scale),
+                    buffer,
+                    None,
+                    None,
+                    None,
+                    Kind::Unspecified,
+                ));
+            }
+        }
+    }
 }
 
 /// The output's logical size, transformed as `space.output_geometry` is:
