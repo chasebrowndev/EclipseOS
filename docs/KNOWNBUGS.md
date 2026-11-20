@@ -160,8 +160,8 @@ and take the min.
 that is cut by the scroll edge to the viewport but keeps all four radii. The
 cut edge shows rounded corners where the content runs straight through.
 Nested scroll regions are not supported: only the innermost viewport is used.
-**Proposed:** per-corner radius in the pane record (a protocol v2 field), or
-a client-side rule that a clipped side squares off.
+**Fixed by ADR 0127 (proposed):** protocol v2 `set_clip`; the cut edge is
+straight. A v1 compositor still shows the rounded cut.
 
 ## GLASS-04: the bar does not repaint when the capability flips
 
