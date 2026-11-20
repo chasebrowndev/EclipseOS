@@ -158,12 +158,12 @@ impl AdaptiveBlur {
     }
 }
 
-/// `blur { glass { refraction 4; bevel 16; dispersion 0; rim 0.5 } }`.
+/// `blur { glass { refraction 1.5; bevel 16; dispersion 0; rim 0.5 } }`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GlassBlur {
     /// Largest displacement of the blurred backdrop, logical px, at the
     /// outermost edge of the bevel; the flat centre is never bent.
-    pub refraction: i32,
+    pub refraction: f32,
     /// Width of the edge band the backdrop rolls off in, logical px.
     pub bevel: i32,
     /// Chromatic spread in the bevel, 0.0..=1.0; off by default.
@@ -175,7 +175,7 @@ pub struct GlassBlur {
 impl Default for GlassBlur {
     fn default() -> Self {
         Self {
-            refraction: 4,
+            refraction: 1.5,
             bevel: 16,
             dispersion: 0.0,
             rim: 0.5,
