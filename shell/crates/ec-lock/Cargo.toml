@@ -26,6 +26,8 @@ iced = { version = "0.14", default-features = false, features = ["wgpu", "advanc
 # already in the tree through iced_layershell. No `linux-theme-detection`: the
 # palette comes from the compositor (ADR 0084), not from the desktop portal.
 iced_sessionlock = { version = "0.19.1", default-features = false }
+# The surface hook's `WlSurface` (the vendored sessionlockev, PATCHES.md hunk 4).
+sessionlockev = "0.19.1"
 ec-ui = { path = "../ec-ui" }
 # The tile layout and the Glances' readers (ADR 0126): both pure, no toolkit.
 ec-layout = { path = "../ec-layout" }
@@ -38,3 +40,5 @@ libc = "0.2"
 # tests/headless.rs asks the compositor whether the session is locked.
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 serde_json.workspace = true
+# Contrast tests run the built-in palettes through the theme's own maths.
+ec-theme = { path = "../../../abyss/crates/ec-theme" }

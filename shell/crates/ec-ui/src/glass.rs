@@ -354,6 +354,56 @@ pub fn surface_created(id: window::Id, surface: &WlSurface) {
     });
 }
 
+/// For a surface whose toolkit gives no connection to share and no
+/// `window::run` (`iced_sessionlock`'s lock surfaces): bind the manager on a
+/// private queue of the surface's own connection and give the surface its glass
+/// object. Call from the vendored `iced_sessionlock::set_surface_hook`, once per
+/// output; the first call binds, the rest only add surfaces. Fail-soft: any
+/// failure leaves [`available`] false. Runs before the first frame is drawn and
+/// round-trips the bind, so the capability is known before that frame.
+pub fn attach_surface(id: window::Id, surface: &WlSurface) -> bool {
+    let Some(backend) = surface.backend().upgrade() else {
+        return false;
+    };
+    let conn = Connection::from_backend(backend);
+    SHARED.with(|s| {
+        let mut s = s.borrow_mut();
+        if s.is_none() {
+            let Ok((globals, mut queue)) = registry_queue_init::<Dispatcher>(&conn) else {
+                return false;
+            };
+            let manager = globals
+                .bind::<EclipseGlassManagerV1, _, _>(&queue.handle(), 1..=1, ())
+                .ok();
+            if manager.is_some() {
+                let _ = queue.roundtrip(&mut Dispatcher);
+            }
+            *s = Some(ManuallyDrop::new(Shared {
+                conn: Some(conn),
+                queue,
+                manager,
+                surfaces: HashMap::new(),
+            }));
+        }
+        let Some(sh) = s.as_mut() else { return false };
+        let Some(manager) = sh.manager.as_ref() else {
+            return false;
+        };
+        let glass = manager.get_glass(surface, &sh.queue.handle(), ());
+        sh.surfaces.insert(
+            id,
+            Entry {
+                glass,
+                last: Vec::new(),
+            },
+        );
+        if let Some(c) = sh.conn.as_ref() {
+            let _ = c.flush();
+        }
+        available()
+    })
+}
+
 /// Add a pane to the frame being drawn. A no-op while glass is unavailable.
 pub fn push(mut pane: Pane) {
     if !available() {
@@ -519,6 +569,7 @@ pub fn root<'a, Message>(
     Root {
         id: Some(id),
         content: content.into(),
+        animating: false,
     }
 }
 
@@ -529,6 +580,7 @@ pub fn root_sole<'a, Message>(content: impl Into<Element<'a, Message, Theme>>) -
     Root {
         id: None,
         content: content.into(),
+        animating: false,
     }
 }
 
@@ -536,6 +588,19 @@ pub fn root_sole<'a, Message>(content: impl Into<Element<'a, Message, Theme>>) -
 pub struct Root<'a, Message> {
     id: Option<window::Id>,
     content: Element<'a, Message, Theme>,
+    /// Keep the window redrawing frame after frame (see [`Root::animating`]).
+    animating: bool,
+}
+
+impl<Message> Root<'_, Message> {
+    /// While `on`, ask for a redraw after every redraw, so a subscription on
+    /// `window::frames()` keeps ticking: iced does not redraw on its own
+    /// between events, and a surface with no input (a lock screen) would
+    /// otherwise never advance an entrance. Off, nothing is requested.
+    pub fn animating(mut self, on: bool) -> Self {
+        self.animating = on;
+        self
+    }
 }
 
 impl<Message> Widget<Message, Theme, iced::Renderer> for Root<'_, Message> {
@@ -595,6 +660,9 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Root<'_, Message> {
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
     ) {
+        if self.animating && matches!(event, Event::Window(window::Event::RedrawRequested(_))) {
+            shell.request_redraw();
+        }
         self.content
             .as_widget_mut()
             .update(tree, event, layout, cursor, renderer, clipboard, shell, viewport);

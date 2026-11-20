@@ -135,19 +135,23 @@ pub fn enter(t: f32) -> f32 {
 pub struct Face {
     layout: Layout,
     glance: Snapshot,
-    /// The first frame: the entrance counts from here.
-    born: Option<Instant>,
-    /// The latest frame.
+    /// When the face was made: the entrance counts from here, on the wall
+    /// clock, not on frames. A compositor that sends a lock surface no frame
+    /// callbacks (abyss sends none today) would otherwise hold every tile but
+    /// the password at "not yet" for good.
+    born: Instant,
+    /// The latest frame (frames now only prompt a redraw).
     now: Instant,
 }
 
 impl Face {
     pub fn new(layout: Layout) -> Self {
+        let now = Instant::now();
         Face {
             layout,
             glance: Snapshot::default(),
-            born: None,
-            now: Instant::now(),
+            born: now,
+            now,
         }
     }
 
@@ -162,7 +166,7 @@ impl Face {
         Face {
             layout,
             glance,
-            born: Some(now.checked_sub(Duration::from_secs(60)).unwrap_or(now)),
+            born: now.checked_sub(Duration::from_secs(60)).unwrap_or(now),
             now,
         }
     }
@@ -183,7 +187,6 @@ impl Face {
     }
 
     pub fn frame(&mut self, now: Instant) {
-        self.born.get_or_insert(now);
         self.now = now;
     }
 
@@ -194,8 +197,7 @@ impl Face {
     /// Whether the entrance is still running: the view asks for frames only
     /// while this is true.
     pub fn animating(&self) -> bool {
-        self.born
-            .is_none_or(|b| self.now.saturating_duration_since(b) < self.total())
+        Instant::now().saturating_duration_since(self.born) < self.total()
     }
 
     /// Whether the glance feed is worth polling: a Glance tile is placed.
@@ -213,8 +215,7 @@ impl Face {
         if kind == Kind::Password {
             return 1.0;
         }
-        let Some(born) = self.born else { return 0.0 };
-        let t = self.now.saturating_duration_since(born).as_secs_f32()
+        let t = Instant::now().saturating_duration_since(self.born).as_secs_f32()
             - (motion::STAGGER_MS * index as u64) as f32 / 1000.0;
         if t * 1000.0 >= motion::SETTLE_MS as f32 {
             1.0
@@ -328,15 +329,14 @@ mod tests {
     }
 
     #[test]
-    fn the_password_pane_is_never_hidden_and_the_rest_wait_for_a_frame() {
+    fn the_password_pane_is_never_hidden_and_the_rest_count_from_birth() {
         let mut f = Face::new(builtin());
         assert_eq!(f.appeared(2, Kind::Password), 1.0);
-        assert_eq!(f.appeared(0, Kind::Clock), 0.0);
+        assert!(f.appeared(0, Kind::Clock) < 1.0);
         assert!(f.animating());
-        let t0 = Instant::now();
-        f.frame(t0);
-        assert_eq!(f.appeared(0, Kind::Clock), 0.0);
-        f.frame(t0 + Duration::from_secs(5));
+        // No frame ever arrives: the wall clock alone settles the entrance.
+        let long_ago = Instant::now().checked_sub(Duration::from_secs(5)).unwrap();
+        f.born = long_ago;
         assert_eq!(f.appeared(0, Kind::Clock), 1.0);
         assert!(!f.animating());
     }
