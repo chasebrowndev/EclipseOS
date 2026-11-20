@@ -157,6 +157,18 @@ struct WinRec {
     rect: Rectangle<i32, Physical>,
 }
 
+/// Whether a layer sheet at element `index` over `region` samples no window: it
+/// sits above the bottom layers (`index <= base_start`) and overlaps no window's
+/// frame. Such a sheet is a member of the wallpaper-only tier-0 pyramid.
+fn layer_sees_no_window(
+    index: usize,
+    base_start: usize,
+    region: Rectangle<i32, Physical>,
+    mut windows: impl Iterator<Item = Rectangle<i32, Physical>>,
+) -> bool {
+    index <= base_start && !windows.any(|w| w.overlaps(region))
+}
+
 /// Wrap a backdrop element as the list holds it: cut to its tile if it has one.
 fn wrap_blur(
     element: blur::BlurElement,
@@ -1347,7 +1359,14 @@ fn insert_blur(
         // backdrop in every mode.
         let scaled_radius = (radius as f64 * upscale) as f32;
         let preset = if mode == BlurMode::Glass {
-            effects::GlassPreset::of(shape.is_some(), bezel.is_some())
+            match &key {
+                // A single-rectangle layer sheet: geometric rule, no name match.
+                blur::BlurKey::Layer(_) if shape.is_none() && bezel.is_none() => {
+                    let short = region.size.w.min(region.size.h) as f32 / upscale as f32;
+                    effects::GlassPreset::of_sheet(short)
+                }
+                _ => effects::GlassPreset::of(shape.is_some(), bezel.is_some()),
+            }
         } else {
             effects::GlassPreset::Frost
         };
@@ -1427,7 +1446,13 @@ fn insert_blur(
                     let mut tuned = cfg.glass.clone();
                     tuned.dispersion = look.dispersion;
                     tuned.rim = look.rim;
-                    effects::glass_uniforms_into(
+                    // A light layer sheet of regular glass (a launcher card) is the
+                    // near-white slab; windows' bezels and everything else lift 0.
+                    let light = config.appearance.glass_light();
+                    let slab = matches!(&key, blur::BlurKey::Layer(_))
+                        && preset == effects::GlassPreset::Regular
+                        && light > 0.0;
+                    effects::glass_uniforms_lifted_into(
                         uniforms,
                         preset,
                         region,
@@ -1439,8 +1464,12 @@ fn insert_blur(
                         bevel,
                         &tuned,
                         bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
-                        config.appearance.glass_light(),
+                        if slab { glass::SLAB_LIFT_LIGHT } else { 0.0 },
+                        0.0,
+                        1.0,
+                        light,
                         cfg.adaptive.effective(),
+                        1.0,
                     )
                 }
                 _ => effects::rounding_uniforms_into(uniforms, region, fb_height, mirrored, scaled_radius),
@@ -1509,7 +1538,18 @@ fn insert_blur(
         if let Some(k) = k {
             win_req[k] = Some(p);
         }
-        assign.push(k.map(|k| groups::pyramid_of(tiers[k])));
+        // A layer sheet (the bar) that overlaps no window is a tier-0 member:
+        // it samples the wallpaper-only pyramid, so window damage near it
+        // rebuilds nothing and only wallpaper / bottom-layer damage does.
+        // Overlapping a window (a drawer, the launcher, toasts over windows)
+        // keeps the per-surface path, which sees the windows below it.
+        let layer_t0 = matches!(&prep.key, blur::BlurKey::Layer(_))
+            && layer_sees_no_window(prep.index, base_start, prep.region, wins.iter().map(|w| w.rect));
+        assign.push(match k {
+            Some(k) => Some(groups::pyramid_of(tiers[k])),
+            None if layer_t0 => Some(0),
+            None => None,
+        });
     }
 
     let tiered = assign.iter().filter(|a| a.is_some()).count();
@@ -1534,7 +1574,11 @@ fn insert_blur(
         let Some(top) = assign.iter().rposition(|a| *a == Some(d)) else {
             continue;
         };
-        let Some(k_top) = req_win[top] else { continue };
+        // A tier-0 layer member has no window; tier 0 is the base alone, which
+        // ignores `k_top`.
+        let Some(k_top) = req_win[top].or((d == 0).then_some(0)) else {
+            continue;
+        };
         let mut v = recycle(refs);
         groups::pyramid_parts(
             d,
@@ -1715,7 +1759,13 @@ fn insert_panes(
     // Panes are lenses: the lens preset's bend and fringe, from a light blur.
     let lens = effects::preset_look(effects::GlassPreset::Lens, &cfg.glass, upscale);
     let strength = lens.strength;
-    let reach = effects::preset_reach(effects::GlassPreset::Lens, &cfg.glass, upscale);
+    let short = panes
+        .iter()
+        .filter_map(rect_of)
+        .map(|r| r.size.w.min(r.size.h))
+        .max()
+        .unwrap_or(1) as f32;
+    let reach = effects::preset_reach_for(effects::GlassPreset::Lens, &cfg.glass, upscale, short);
     let mut blurs = std::mem::take(&mut store.pane_scratch);
     blurs.clear();
     // A bare window's panes skip its glass; stacked ones sample it and take a
@@ -1757,7 +1807,7 @@ fn insert_panes(
                     },
                     &tuned,
                     rim,
-                    look.lift,
+                    glass::slab_lift(pane, light > 0.0, look.lift),
                     look.shade,
                     look.smoke,
                     light,
@@ -1780,9 +1830,15 @@ fn insert_panes(
                 continue;
             };
             let cell = rect.to_f64().to_logical(scale).to_i32_round();
-            let area = glass::shadow_area(cell);
-            let [range, radius, drop] = glass::shadow_params(pane.radius as f32 * grown as f32);
-            let alpha = pane.alpha as f32 / 255.0 * req.alpha;
+            let area = glass::shadow_area(cell, light > 0.0);
+            let [range, radius, drop] = glass::shadow_params(pane.radius as f32 * grown as f32, light > 0.0);
+            let alpha = pane.alpha as f32 / 255.0
+                * req.alpha
+                * if light > 0.0 {
+                    glass::SHADOW_ALPHA_LIGHT
+                } else {
+                    1.0
+                };
             let params = [range, radius, drop, rgb[0], rgb[1], rgb[2]];
             let uniforms = || effects::shadow_uniforms([range, radius, drop], 0.0, rgb);
             let (element, applied, applied_alpha) = store
@@ -3920,6 +3976,20 @@ mod tests {
     /// position minus the xdg geometry offset: a cell at (10, 20) under a
     /// client with a (12, 8) shadow margin sits 12 and 8 px left and up of
     /// where it would on the window rect, at the output scale.
+    #[test]
+    fn a_layer_sheet_over_no_window_is_tier_zero() {
+        let rect = |x, y, w, h| Rectangle::<i32, Physical>::new((x, y).into(), (w, h).into());
+        let bar = rect(0, 6, 2860, 40);
+        let below = [rect(0, 64, 1400, 500)];
+        assert!(layer_sees_no_window(3, 5, bar, below.iter().copied()));
+        // A window under the sheet (a drawer open over it) leaves tier 0, and it returns when it closes.
+        let under = [rect(100, 20, 300, 300)];
+        assert!(!layer_sees_no_window(3, 5, bar, under.iter().copied()));
+        assert!(layer_sees_no_window(3, 5, bar, std::iter::empty()));
+        // A bottom layer (inside the base) never samples itself.
+        assert!(!layer_sees_no_window(9, 5, bar, std::iter::empty()));
+    }
+
     #[test]
     fn window_panes_follow_the_geometry_offset() {
         let scale = Scale::from(2.0);

@@ -1197,7 +1197,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.blur.glass.lens.refraction",
         Ty::Float { min: 0.0, max: 96.0 },
-        Float(40.0),
+        Float(28.0),
         Abyss,
         Live,
         "`glass` lens (small controls: shaped layer glass, glass panes): how far \
@@ -1216,7 +1216,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.blur.glass.lens.dispersion",
         PCT,
-        Float(0.8),
+        Float(0.7),
         Abyss,
         Live,
         "`glass` lens: colour fringing across the bevel, following the local \
