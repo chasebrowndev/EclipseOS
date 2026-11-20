@@ -51,6 +51,9 @@ pub mod space {
     pub const BLOCK: f32 = 18.0;
     pub const CARD: f32 = 16.0;
     pub const ROW_Y: f32 = 11.0;
+    /// Between a row and the one-line caption beneath it: tight, so the
+    /// caption reads as part of its row and adds only its own height.
+    pub const CAPTION_GAP: f32 = 2.0;
     /// The accent bar that marks the current item at the left edge of a nav
     /// item or a choice row. Three pixels, per the spec.
     pub const BAR_W: f32 = 3.0;
