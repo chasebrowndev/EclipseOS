@@ -434,7 +434,7 @@ uniform float adapt;        // effective adaptive strength; 0 off
 uniform float adapt_layers; // glass layers over this backdrop: 1 window, 2 pane on a window; 0 unset = 1
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);    // Rec.709
 const vec3 SURFACE_D = vec3(0.047, 0.047, 0.055);  // #0c0c0e
-const vec3 SURFACE_L = vec3(0.985, 0.975, 0.955);  // warm white
+const vec3 SURFACE_L = vec3(0.992, 0.989, 0.980);  // paper white
 
 // Luma (display-encoded) of the blurred backdrop around this fragment that
 // the text has to survive: nine taps (centre, cross, diagonals) from `tex`,
@@ -614,9 +614,14 @@ const float SEAM = 0.1;
 // `mix(dark, light, scheme_light)`, which is the dark constant bit for bit at 0.
 const float SATURATE_L = 1.6;
 const float COMPRESS_L = 0.0;                       // no highlight knee
-const vec3 SMOKE_L = vec3(0.985, 0.975, 0.955);     // warm white
-const float SMOKE_MIX_L = 0.22;   // a light veil; the window tint does the whitening (ADR 0084)
-const float SEAM_L = 0.04;
+const vec3 SMOKE_L = vec3(0.992, 0.989, 0.980);     // paper white
+const float SMOKE_MIX_L = 0.12;   // a light veil; the window tint does the whitening (ADR 0084)
+const float SEAM_L = 0.08;
+// A white rim on near-white frost is no edge. In light a white-rimmed shape
+// (a window's bezel, a layer) gets an ink hairline on its outermost pixel, and
+// its white stays as the specular on the lit top-left lobe just inside.
+const float INK_EDGE_L = 0.45;
+const float SPEC_L = 0.85;
 const vec3 LIFT_L = vec3(0.102, 0.086, 0.063);      // ink #1a1610: a depth step darkens light glass
 
 vec4 blurred_at(vec2 uv) {
@@ -703,6 +708,12 @@ void main() {
     float lobe = LINE_BASE + LINE_TL * tl + LINE_BR * br;
     vec3 tint = rim_color.rgb / max(rim_color.a, 0.0001);
     c = mix(c, tint, clamp(band * lobe * rim_color.a * rim * 2.0, 0.0, 1.0));
+    // Light only: `white_rim` is 0 on dark (and on a light pane, whose rim is
+    // already ink), so these two mixes leave dark bit for bit.
+    float white_rim = scheme_light * step(0.5, dot(tint, LUMA));
+    float spec = (1.0 - smoothstep(0.0, 1.0, abs(-d - 1.75) - 0.5)) * tl;
+    c = mix(c, vec3(1.0), white_rim * SPEC_L * rim_color.a * spec);
+    c = mix(c, LIFT_L, white_rim * INK_EDGE_L * rim_color.a * (1.0 - smoothstep(0.0, 1.1, -d)));
 
     // Seam: a faint dark line just outside the window's own edge.
     if (inner > 0.0) {
@@ -971,7 +982,7 @@ pub const ADAPT_GHOST: f32 = 0.22;
 const ADAPT_WORST: f32 = 0.75;
 /// The scheme's surface colour the tint moves toward (the glass smoke).
 pub const ADAPT_SURFACE_DARK: [f32; 3] = [0.047, 0.047, 0.055];
-pub const ADAPT_SURFACE_LIGHT: [f32; 3] = [0.985, 0.975, 0.955];
+pub const ADAPT_SURFACE_LIGHT: [f32; 3] = [0.992, 0.989, 0.980];
 
 /// The luma adaptive glass judges: the mean of the sampled backdrop pulled
 /// toward the tap the scheme's text contrasts with least (`hi` for dark, `lo`

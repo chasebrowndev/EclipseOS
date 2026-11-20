@@ -569,7 +569,7 @@ fn layer_shows(
 type Border = [SolidColorBuffer; 4];
 /// A pane's contact shadow kept between frames: its element, the uniforms it was
 /// last given (range, radius, drop, colour), and the alpha it was built with.
-type PaneShadow = (PixelShaderElement, [f32; 6], f32);
+type PaneShadow = (PixelShaderElement, [f32; 7], f32);
 
 /// The GPU objects of a [`BorderStore`]: programs, and the elements and
 /// backdrop chains built on them. A program belongs to the renderer that
@@ -1365,6 +1365,7 @@ fn insert_panes(
     let Some(union) = panes.iter().filter_map(rect_of).reduce(|a, b| a.merge(b)) else {
         return;
     };
+    // The pane's lens shrinks with its size (`glass::lens_scale`).
     let strength = (cfg.glass.refraction as f64 * upscale).min(BEZEL_REFRACTION * upscale) as f32;
     let reach = effects::glass_reach(cfg.glass.refraction.min(BEZEL_REFRACTION as i32), upscale);
     let mut blurs = std::mem::take(&mut store.pane_scratch);
@@ -1386,7 +1387,12 @@ fn insert_panes(
         req.alpha,
         |i| {
             let pane = &panes[i];
-            let look = glass::look_on(pane, light > 0.0, req.stacked)?;
+            let look = glass::look_nested(
+                pane,
+                light > 0.0,
+                req.stacked,
+                glass::nest_depth(panes, i) + u32::from(req.stacked || req.over),
+            )?;
             let rect = rect_of(pane)?;
             let mut tuned = cfg.glass.clone();
             tuned.dispersion = 0.0;
@@ -1399,7 +1405,7 @@ fn insert_panes(
                     mirrored,
                     (pane.radius as f64 * upscale * grown) as f32,
                     fb_size,
-                    strength,
+                    strength * glass::lens_scale(pane),
                     glass::band(pane, rect, upscale * grown),
                     &tuned,
                     rim,
@@ -1416,55 +1422,56 @@ fn insert_panes(
     );
     // The contact shadows go in before the glass, at the same index, so they
     // lie under every pane's glass (STYLE.md Light; the shell cell's drop).
-    // A pressed or resting cell casts none (`glass::casts_shadow`).
-    if let Some(shadow) = pane_shadow_program(renderer, store) {
-        let rgb = config.appearance.shadow_rgb();
-        for (i, pane) in panes.iter().enumerate() {
-            let Some(rect) = rect_of(pane).filter(|_| glass::casts_shadow(pane)) else {
-                continue;
-            };
-            let cell = rect.to_f64().to_logical(scale).to_i32_round();
-            let area = glass::shadow_area(cell);
-            let [range, radius, drop] = glass::shadow_params(pane.radius as f32 * grown as f32);
-            let alpha = pane.alpha as f32 / 255.0 * req.alpha;
-            let params = [range, radius, drop, rgb[0], rgb[1], rgb[2]];
-            let uniforms = || effects::shadow_uniforms([range, radius, drop], 0.0, rgb);
-            let (element, applied, applied_alpha) = store
-                .gpu
-                .pane_shadows
-                .entry((output.clone(), req.key.clone(), i))
-                .or_insert_with(|| {
-                    (
-                        PixelShaderElement::new(
-                            shadow.clone(),
-                            area,
-                            None,
-                            alpha,
-                            uniforms(),
-                            Kind::Unspecified,
-                        ),
-                        params,
-                        alpha,
-                    )
-                });
-            if *applied_alpha != alpha {
-                *element =
-                    PixelShaderElement::new(shadow.clone(), area, None, alpha, uniforms(), Kind::Unspecified);
+    // A pressed or resting cell casts none (`glass::casts_shadow`). A cell
+    // nested in a larger pane casts its firmer shadow over that pane's glass
+    // and under its own, or it would be hidden by the pane it sits on.
+    let shadow = pane_shadow_program(renderer, store);
+    let rgb = config.appearance.shadow_rgb();
+    let shadow_of = |store: &mut BorderStore, i: usize| -> Option<AbyssRenderElement> {
+        let shadow = shadow.as_ref()?;
+        let pane = &panes[i];
+        let rect = rect_of(pane).filter(|_| glass::casts_shadow(pane))?;
+        let depth = glass::nest_depth(panes, i) + u32::from(req.stacked || req.over);
+        let (drop_px, focus) = glass::nested_shadow(depth);
+        let cell = rect.to_f64().to_logical(scale).to_i32_round();
+        let area = glass::shadow_area_dropped(cell, drop_px);
+        let [range, radius, _] = glass::shadow_params(pane.radius as f32 * grown as f32);
+        let drop = drop_px as f32;
+        let alpha = pane.alpha as f32 / 255.0 * req.alpha;
+        let params = [range, radius, drop, rgb[0], rgb[1], rgb[2], focus];
+        let uniforms = || effects::shadow_uniforms([range, radius, drop], focus, rgb);
+        let (element, applied, applied_alpha) = store
+            .gpu
+            .pane_shadows
+            .entry((output.clone(), req.key.clone(), i))
+            .or_insert_with(|| {
+                (
+                    PixelShaderElement::new(shadow.clone(), area, None, alpha, uniforms(), Kind::Unspecified),
+                    params,
+                    alpha,
+                )
+            });
+        if *applied_alpha != alpha {
+            *element =
+                PixelShaderElement::new(shadow.clone(), area, None, alpha, uniforms(), Kind::Unspecified);
+            *applied = params;
+            *applied_alpha = alpha;
+        } else {
+            element.resize(area, None);
+            if *applied != params {
+                element.update_uniforms(uniforms());
                 *applied = params;
-                *applied_alpha = alpha;
-            } else {
-                element.resize(area, None);
-                if *applied != params {
-                    element.update_uniforms(uniforms());
-                    *applied = params;
-                }
             }
-            let element = match req.crop {
-                Some(crop) => CropRenderElement::from_element(element.clone(), scale, crop)
-                    .map(AbyssRenderElement::CroppedShader),
-                None => Some(AbyssRenderElement::Shader(element.clone())),
-            };
-            if let Some(element) = element {
+        }
+        match req.crop {
+            Some(crop) => CropRenderElement::from_element(element.clone(), scale, crop)
+                .map(AbyssRenderElement::CroppedShader),
+            None => Some(AbyssRenderElement::Shader(element.clone())),
+        }
+    };
+    for i in 0..panes.len() {
+        if glass::nest_depth(panes, i) == 0 {
+            if let Some(element) = shadow_of(store, i) {
                 elements.insert(req.index, element);
             }
         }
@@ -1474,8 +1481,20 @@ fn insert_panes(
         .gpu
         .pane_shadows
         .retain(|(o, k, i), _| o != output || k != &req.key || *i < panes.len());
-    // Inserting each at the same index leaves the last pane in front.
-    for element in blurs.drain(..) {
+    // Inserting each at the same index leaves the last pane in front. `blurs`
+    // holds one element per drawn pane, in pane order.
+    let mut glass_of = blurs.drain(..);
+    for (i, pane) in panes.iter().enumerate() {
+        let drawn = glass::look_on(pane, light > 0.0, req.stacked).is_some() && rect_of(pane).is_some();
+        if glass::nest_depth(panes, i) > 0 {
+            if let Some(element) = shadow_of(store, i) {
+                elements.insert(req.index, element);
+            }
+        }
+        if !drawn {
+            continue;
+        }
+        let Some(element) = glass_of.next() else { break };
         let element = match req.crop {
             Some(crop) => {
                 CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
@@ -1486,6 +1505,7 @@ fn insert_panes(
             elements.insert(req.index, element);
         }
     }
+    drop(glass_of);
     store.pane_scratch = blurs;
 }
 

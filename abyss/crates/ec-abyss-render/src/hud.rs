@@ -15,9 +15,9 @@
 //! `text::sanitize_annotation` at the door; the colours are all [`HudPalette`]'s and none is the
 //! caller's.
 
-use crate::hud_font::{Face, ADVANCE};
+use crate::hud_font::{Face, SUBPX};
 use crate::palette::HudPalette;
-use crate::text::{wrap, Raster, Rgba};
+use crate::text::{wrap_px, Raster, Rgba};
 
 // ------------------------------------------------------------------ canvas
 
@@ -96,21 +96,20 @@ impl Paint {
     }
 
     /// One row of `s` in `face`. `x` and `top` are logical; the line box's
-    /// top is `top`, and every column is [`ADVANCE`]-wide logical whatever
-    /// atlas `dev` picks, so text lines up with layout at every scale.
+    /// top is `top`. Glyphs advance by their own proportional widths, kept in
+    /// 1/64 logical px and rounded to a device pixel per glyph, so a row is
+    /// the same logical width at every scale and the baseline lands where the
+    /// 1x one does. Allocation-free.
     pub(crate) fn text(&mut self, face: Face, dev: usize, x: usize, top: usize, s: &str, c: Rgba) {
         let a = face.atlas(dev);
-        let col = face.advance() * dev;
-        // Centre a 2x advance that rounded off its 1x double, and put its
-        // baseline where the 1x one lands.
-        let dx = (col.saturating_sub(a.advance)) / 2;
-        let base = face.ascent() * dev;
-        for (i, ch) in s.chars().enumerate() {
-            let pen = x * dev + i * col + dx;
-            let (Some(cx), Some(cy)) = (
-                pen.checked_sub(a.margin),
-                (top * dev + base).checked_sub(a.ascent),
-            ) else {
+        let Some(cy) = (top * dev + face.ascent() * dev).checked_sub(a.ascent) else {
+            return;
+        };
+        let mut pen64 = 0usize;
+        for ch in s.chars() {
+            let pen = x * dev + (pen64 * dev + SUBPX / 2) / SUBPX;
+            pen64 += a.advance64(ch);
+            let Some(cx) = pen.checked_sub(a.margin) else {
                 continue;
             };
             let cell = a.cell(ch);
@@ -193,17 +192,17 @@ pub struct Card {
 }
 
 impl Card {
-    /// Wrap `title` and `body` at `cols` columns. Title lines hang after the
-    /// dot and chip, so they wrap that much narrower.
-    pub fn new(chip: &str, title: &str, body: &str, cols: usize, error: bool) -> Card {
+    /// Wrap `title` and `body` to `measure` logical px of text. Title lines
+    /// hang after the dot and chip, so they wrap that much narrower.
+    pub fn new(chip: &str, title: &str, body: &str, measure: usize, error: bool) -> Card {
         let chip = if error { "" } else { chip };
-        let prefix = prefix_w(chip, error).div_ceil(ADVANCE);
-        let mut title = wrap(title, cols.saturating_sub(prefix).max(1));
+        let prefix = prefix_w(chip, error);
+        let mut title = wrap_px(title, Face::Title, measure.saturating_sub(prefix));
         title.truncate(MAX_TITLE_LINES);
         Card {
             chip: chip.to_string(),
             title,
-            body: wrap(body, cols),
+            body: wrap_px(body, Face::Body, measure),
             error,
             min_w: MIN_W,
         }
@@ -246,13 +245,13 @@ impl Card {
         if self.is_empty() {
             return (0, 0);
         }
-        let widest = |l: &[String]| l.iter().map(|s| s.chars().count()).max().unwrap_or(0) * ADVANCE;
+        let widest = |l: &[String], face: Face| l.iter().map(|s| face.width(s)).max().unwrap_or(0);
         let head = if self.has_head() {
-            prefix_w(&self.chip, self.error) + widest(&self.title)
+            prefix_w(&self.chip, self.error) + widest(&self.title, Face::Title)
         } else {
             0
         };
-        let w = PAD_X * 2 + head.max(widest(&self.body));
+        let w = PAD_X * 2 + head.max(widest(&self.body, Face::Body));
         let h = self.body_top() + block(self.body.len(), Face::Body) + PAD_B;
         (w.max(self.min_w), h)
     }
@@ -312,14 +311,7 @@ fn line(
     match meta_split(s).filter(|_| last) {
         Some(at) => {
             p.text(face, dev, x, top, &s[..at], c);
-            p.text(
-                face,
-                dev,
-                x + s[..at].chars().count() * face.advance(),
-                top,
-                &s[at..],
-                meta,
-            );
+            p.text(face, dev, x + face.width(&s[..at]), top, &s[at..], meta);
         }
         None => p.text(face, dev, x, top, s, c),
     }
@@ -406,8 +398,8 @@ pub fn panel(card: &Card, pal: &HudPalette, glass: bool, dev: usize) -> Raster {
         let top = oy + PAD_T;
         let mut x = ox + PAD_X;
         if card.error {
-            // Centred on the capitals: JetBrains Mono's cap height is .73 em.
-            let cy = top as f32 + Face::Title.ascent() as f32 - 4.75;
+            // Centred on the capitals: Onest's cap height is .71 em.
+            let cy = top as f32 + Face::Title.ascent() as f32 - 4.6;
             let dot = dbox(x as f32, cy - DOT as f32 * 0.5, DOT as f32, DOT as f32, dev);
             p.fill(dot, DOT as f32 * 0.5 * d, pal.danger);
             x += DOT + DOT_GAP;
@@ -573,12 +565,61 @@ pub fn rim_parts(r: (i32, i32, i32, i32)) -> Vec<(i32, i32, i32, i32)> {
     v
 }
 
+/// Test support: composite premultiplied rasters over flat backgrounds and
+/// write a P6 sheet, for eyeballing text. Used by the env-gated `*_sheet` tests
+/// (`HUD_TEXT_SHEET_DIR`).
+#[cfg(test)]
+pub(crate) mod sheet {
+    /// One strip: premultiplied pixels, `bgra` when they are Argb8888 order.
+    pub struct Strip {
+        pub w: usize,
+        pub h: usize,
+        pub px: Vec<u8>,
+        pub bgra: bool,
+        pub bg: [u8; 3],
+    }
+
+    pub fn dir() -> Option<std::path::PathBuf> {
+        std::env::var_os("HUD_TEXT_SHEET_DIR").map(Into::into)
+    }
+
+    /// Strips stacked top to bottom with a 4px gap, each over its own `bg`.
+    pub fn write(path: &std::path::Path, strips: &[Strip]) {
+        let w = strips.iter().map(|s| s.w).max().unwrap_or(0);
+        let h: usize = strips.iter().map(|s| s.h + 4).sum();
+        let mut img = vec![30u8; w * h * 3];
+        let mut y0 = 0;
+        for s in strips {
+            for y in 0..s.h {
+                for x in 0..w {
+                    let o = ((y0 + y) * w + x) * 3;
+                    img[o..o + 3].copy_from_slice(&s.bg);
+                    if x >= s.w {
+                        continue;
+                    }
+                    let q = &s.px[(y * s.w + x) * 4..][..4];
+                    let (r, b) = if s.bgra { (q[2], q[0]) } else { (q[0], q[2]) };
+                    let k = 255 - q[3] as u32;
+                    let c = [r, q[1], b];
+                    for i in 0..3 {
+                        img[o + i] = (c[i] as u32 + s.bg[i] as u32 * k / 255).min(255) as u8;
+                    }
+                }
+            }
+            y0 += s.h + 4;
+        }
+        let mut ppm = format!("P6\n{w} {h}\n255\n").into_bytes();
+        ppm.extend_from_slice(&img);
+        std::fs::write(path, ppm).unwrap();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn card(chip: &str, title: &str, body: &str, error: bool) -> Card {
-        Card::new(chip, title, body, 32, error)
+        Card::new(chip, title, body, 256, error)
     }
 
     #[test]
@@ -623,8 +664,9 @@ mod tests {
     #[test]
     fn the_chip_narrows_the_titles_first_row() {
         let t = "aaaaa bbbbb ccccc";
-        let plain = Card::new("", t, "", 12, false);
-        let chipped = Card::new("B", t, "", 12, false);
+        let m = Face::Title.width("aaaaa bbbbb") + 1;
+        let plain = Card::new("", t, "", m, false);
+        let chipped = Card::new("B", t, "", m, false);
         assert!(chipped.title.len() > plain.title.len());
         assert!(chipped.title.len() <= MAX_TITLE_LINES);
     }

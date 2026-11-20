@@ -197,12 +197,12 @@ const CELL_PRESS: (Rgba, Rgba) = ([1.0, 1.0, 1.0, 0.17], [1.0, 1.0, 1.0, 0.24]);
 const CLOSE_HOVER: (Rgba, Rgba) = ([0.90, 0.28, 0.30, 0.34], [0.95, 0.40, 0.42, 0.60]);
 const CLOSE_PRESS: (Rgba, Rgba) = ([0.90, 0.28, 0.30, 0.52], [0.95, 0.40, 0.42, 0.75]);
 /// The light twins (ADR 0084, STYLE.md Light): the warm off-white tint at the
-/// light window tint (`.70 x .65`, the same veil a light client lays), ink in
+/// light window tint (`.70 x .50`, the same veil a light client lays), ink in
 /// place of white for text, glyphs, seam and cells. Focus stays the one white
 /// lift; the rim stays the compositor's.
-const GROUND_L: [f32; 3] = [0.957, 0.945, 0.918];
-const GROUND_ALPHA_L: f32 = 0.455;
-const GROUND_ALPHA_IDLE_L: f32 = 0.34;
+const GROUND_L: [f32; 3] = [0.980, 0.976, 0.965];
+const GROUND_ALPHA_L: f32 = 0.35;
+const GROUND_ALPHA_IDLE_L: f32 = 0.26;
 const LIFT_L: Rgba = [1.0, 1.0, 1.0, 0.10];
 const SEAM_L: Rgba = [0.102, 0.086, 0.063, 0.10];
 const SEAM_IDLE_L: Rgba = [0.102, 0.086, 0.063, 0.06];
@@ -217,24 +217,41 @@ const CELL_INSET: f32 = 4.0;
 const CELL_RADIUS: f32 = 7.0;
 
 /// The title as it is drawn: sanitised for the overlay face, one line, cut to
-/// `cols` columns with an ellipsis when it does not fit.
-pub fn display_title(raw: &str, cols: usize) -> String {
+/// `max_w` logical px of `face` with an ellipsis when it does not fit. The cut
+/// keeps as many whole glyphs as leave room for the ellipsis (trailing
+/// spaces dropped before it); if not even the ellipsis fits, nothing is drawn.
+pub fn display_title(raw: &str, face: Face, max_w: usize) -> String {
     let clean = text::sanitize_title_line(raw);
-    let n = clean.chars().count();
-    if n <= cols {
+    let limit = max_w * hud_font::SUBPX;
+    if face.width64(&clean) <= limit {
         return clean;
-    }
-    if cols == 0 {
-        return String::new();
     }
     let ellipsis = if hud_font::covers('\u{2026}') {
         '\u{2026}'
     } else {
         '.'
     };
-    let mut out: String = clean.chars().take(cols - 1).collect();
+    let room = limit.saturating_sub(face.advance64(ellipsis));
+    if face.advance64(ellipsis) > limit {
+        return String::new();
+    }
+    let mut used = 0;
+    let mut end = 0;
+    for (i, c) in clean.char_indices() {
+        used += face.advance64(c);
+        if used > room {
+            break;
+        }
+        end = i + c.len_utf8();
+    }
+    let mut out = clean[..end].trim_end().to_string();
     out.push(ellipsis);
     out
+}
+
+/// The title for a bar whose leftmost button starts at `left`.
+fn title_for(raw: &str, left: i32) -> String {
+    display_title(raw, Face::Body, (left - 2 * PAD).max(0) as usize)
 }
 
 /// Everything that decides the bar's pixels.
@@ -511,10 +528,9 @@ pub fn bar_element(
     }
     let dev = raster_scale(scale);
     let left = button_rect(width, info.height, Button::Minimize).loc.x;
-    let cols = ((left - 2 * PAD).max(0) as usize) / hud_font::ADVANCE;
     let raw = title_of(window);
     let look = Look {
-        title: display_title(&raw, cols),
+        title: title_for(&raw, left),
         w: width,
         h: info.height,
         dev,
@@ -576,6 +592,8 @@ pub fn bar_element(
 mod tests {
     use super::*;
 
+    const B: Face = Face::Body;
+
     fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Logical> {
         Rectangle::new((x, y).into(), (w, h).into())
     }
@@ -633,38 +651,72 @@ mod tests {
 
     #[test]
     fn a_covered_spinner_glyph_survives() {
-        assert_eq!(display_title("\u{2736} Claude Code", 40), "\u{2736} Claude Code");
+        assert_eq!(
+            display_title("\u{2736} Claude Code", B, 400),
+            "\u{2736} Claude Code"
+        );
     }
 
     #[test]
     fn an_uncovered_symbol_is_dropped_and_the_title_trimmed() {
-        assert_eq!(display_title("\u{273b} Claude Code", 40), "Claude Code");
-        assert_eq!(display_title("a \u{273d} b", 40), "a b");
-        assert_eq!(display_title("what?", 40), "what?");
+        assert_eq!(display_title("\u{273b} Claude Code", B, 400), "Claude Code");
+        assert_eq!(display_title("a \u{273d} b", B, 400), "a b");
+        assert_eq!(display_title("what?", B, 400), "what?");
     }
 
     #[test]
     fn titles_drop_control_bidi_and_private_use() {
-        assert_eq!(display_title("a\u{1b}b\u{202e}c\u{e000}d", 40), "abcd");
+        assert_eq!(display_title("a\u{1b}b\u{202e}c\u{e000}d", B, 400), "abcd");
     }
 
     #[test]
     fn titles_are_sanitised_and_truncated_with_an_ellipsis() {
-        assert_eq!(display_title("hello", 10), "hello");
-        assert_eq!(display_title("a\u{1b}[31mb\r\nc\u{202e}d", 20), "a[31mb cd");
-        let cut = display_title("0123456789", 5);
-        assert_eq!(cut.chars().count(), 5);
-        assert!(cut.starts_with("0123"));
-        assert!(cut.ends_with('\u{2026}'));
-        assert_eq!(display_title("anything", 0), "");
+        assert_eq!(display_title("hello", B, 100), "hello");
+        assert_eq!(display_title("a\u{1b}[31mb\r\nc\u{202e}d", B, 200), "a[31mb cd");
+        assert_eq!(display_title("anything", B, 0), "");
+    }
+
+    #[test]
+    fn a_long_title_is_cut_by_width_and_never_overruns_its_room() {
+        let long = "The quick brown fox jumps over the lazy dog, again and again";
+        for room in [30usize, 60, 90, 140, 200, 300] {
+            let cut = display_title(long, B, room);
+            assert!(B.width(&cut) <= room, "{room}: {cut:?} is {}", B.width(&cut));
+            if B.width(long) > room {
+                assert!(cut.is_empty() || cut.ends_with('\u{2026}'), "{room}: {cut:?}");
+            }
+        }
+        // The cut is tight: one more glyph would not have fit.
+        let cut = display_title(long, B, 140);
+        let kept = cut.trim_end_matches('\u{2026}');
+        let next = long[kept.len()..].chars().next().unwrap();
+        assert!(B.width64(kept) + B.advance64(next) + B.advance64('\u{2026}') > 140 * hud_font::SUBPX);
+        // No trailing space before the ellipsis.
+        assert!(!kept.ends_with(' '));
+        // A narrow-glyph title keeps more characters than a wide-glyph one.
+        let narrow = display_title(&"i".repeat(60), B, 100).chars().count();
+        let wide = display_title(&"M".repeat(60), B, 100).chars().count();
+        assert!(narrow > wide + 5, "{narrow} {wide}");
+        // The room is not enough for the ellipsis: draw nothing.
+        assert_eq!(display_title(long, B, 3), "");
+    }
+
+    #[test]
+    fn the_title_stops_short_of_the_buttons() {
+        let long = "A very long window title that cannot possibly fit between the edge and the buttons";
+        for w in [160, 220, 320, 640] {
+            let left = button_rect(w, 32, Button::Minimize).loc.x;
+            let t = title_for(long, left);
+            assert!(PAD as usize + B.width(&t) <= (left - PAD) as usize, "{w}: {t:?}");
+        }
     }
 
     #[test]
     fn what_the_overlay_face_cannot_draw_is_dropped() {
         // Latin-1 and Greek draw; CJK, Cyrillic and emoji do not.
-        assert_eq!(display_title("café Σ", 20), "café Σ");
-        assert_eq!(display_title("日本語 Привет \u{1f600}", 40), "");
-        assert_eq!(display_title("日本語 ok Привет", 40), "ok");
+        assert_eq!(display_title("café Σ", B, 200), "café Σ");
+        assert_eq!(display_title("日本語 Привет \u{1f600}", B, 400), "");
+        assert_eq!(display_title("日本語 ok Привет", B, 400), "ok");
     }
 
     #[test]
@@ -770,5 +822,57 @@ mod tests {
     #[test]
     fn the_cache_starts_empty() {
         assert_eq!(BarCache::default().len(), 0);
+    }
+
+    /// Writes `titlebar-{1,2}x.ppm` into `HUD_TEXT_SHEET_DIR`: short and long
+    /// titles, dark and light, one with the close button hovered.
+    #[test]
+    fn titlebar_sheet() {
+        let Some(dir) = crate::hud::sheet::dir() else {
+            return;
+        };
+        for dev in [1usize, 2] {
+            let mut strips = Vec::new();
+            for (light, title, w, hover) in [
+                (false, "Terminal \u{2014} nvim main.rs", 420, None),
+                (
+                    false,
+                    "A very long window title that cannot possibly fit between the edge and the buttons",
+                    420,
+                    Some(Button::Close),
+                ),
+                (true, "Terminal \u{2014} nvim main.rs", 420, None),
+                (
+                    true,
+                    "A very long window title that cannot possibly fit between the edge and the buttons",
+                    420,
+                    Some(Button::Close),
+                ),
+                (false, "Narrow window with a long title", 200, None),
+            ] {
+                let left = button_rect(w, 32, Button::Minimize).loc.x;
+                let l = Look {
+                    title: title_for(title, left),
+                    w,
+                    h: 32,
+                    dev,
+                    radius: 9,
+                    hover,
+                    pressed: None,
+                    maximized: false,
+                    shaded: false,
+                    active: true,
+                    light,
+                };
+                strips.push(crate::hud::sheet::Strip {
+                    w: w as usize * dev,
+                    h: 32 * dev,
+                    px: paint(&l),
+                    bgra: true,
+                    bg: if light { [225, 222, 214] } else { [40, 44, 56] },
+                });
+            }
+            crate::hud::sheet::write(&dir.join(format!("titlebar-{dev}x.ppm")), &strips);
+        }
     }
 }

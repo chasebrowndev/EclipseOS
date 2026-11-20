@@ -137,7 +137,7 @@ impl Config {
         }
     }
 
-    /// `surface { tint 0.70; card-fill 0.035; inset-fill 0.03 }`. Out-of-range
+    /// `surface { tint 0.70; card-fill 0.035; inset-fill 0.05 }`. Out-of-range
     /// values are rejected and keep their default, as `decoration` does.
     pub(crate) fn apply_surface(&mut self, node: &KdlNode) {
         let Some(children) = node.children() else { return };

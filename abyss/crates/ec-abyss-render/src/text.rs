@@ -238,6 +238,102 @@ pub fn wrap(text: &str, cols: usize) -> Vec<String> {
     lines
 }
 
+/// Word-wrap compiled-in prose to `max_w` logical px of Onest at `weight`
+/// ([`crate::glyphs::sans`]). Greedy by word; `\n` breaks a paragraph; a word
+/// wider than the measure is cut per glyph, at least one glyph a line.
+pub fn wrap_sans(text: &str, weight: crate::glyphs::sans::Weight, max_w: usize) -> Vec<String> {
+    use crate::glyphs::sans::{advance, width};
+    let max_w = max_w.max(1);
+    let space = advance(b' ', weight).unwrap_or(0);
+    let mut lines = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        let mut w = 0;
+        for word in para.split(' ').filter(|x| !x.is_empty()) {
+            let ww = width(word, weight);
+            if !line.is_empty() && w + space + ww <= max_w {
+                line.push(' ');
+                line.push_str(word);
+                w += space + ww;
+                continue;
+            }
+            if !line.is_empty() {
+                lines.push(std::mem::take(&mut line));
+                w = 0;
+            }
+            if ww <= max_w {
+                line.push_str(word);
+                w = ww;
+                continue;
+            }
+            for c in word.chars() {
+                let cw = u8::try_from(c as u32)
+                    .ok()
+                    .and_then(|b| advance(b, weight))
+                    .unwrap_or(0);
+                if w + cw > max_w && !line.is_empty() {
+                    lines.push(std::mem::take(&mut line));
+                    w = 0;
+                }
+                line.push(c);
+                w += cw;
+            }
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// Break sanitised annotation text into at most [`MAX_LINES`] lines no wider
+/// than `max_w` logical px set in `face`, preferring word boundaries and
+/// cutting a word wider than the measure at the last glyph that fits (never
+/// fewer than one glyph per line). The proportional twin of [`wrap`]; widths
+/// are the face's additive 1/64 px advances, so no line is measured twice.
+pub fn wrap_px(text: &str, face: hud_font::Face, max_w: usize) -> Vec<String> {
+    let limit = max_w.max(1) * hud_font::SUBPX;
+    let space = face.advance64(' ');
+    let mut lines = Vec::new();
+    for para in text.split('\n') {
+        let mut line = String::new();
+        let mut used = 0usize;
+        for word in para.split(' ').filter(|w| !w.is_empty()) {
+            let w = face.width64(word);
+            if w > limit {
+                if !line.is_empty() {
+                    lines.push(std::mem::take(&mut line));
+                }
+                used = 0;
+                for c in word.chars() {
+                    let a = face.advance64(c);
+                    if used + a > limit && !line.is_empty() {
+                        lines.push(std::mem::take(&mut line));
+                        used = 0;
+                    }
+                    line.push(c);
+                    used += a;
+                }
+                continue;
+            }
+            if !line.is_empty() && used + space + w > limit {
+                lines.push(std::mem::take(&mut line));
+                used = 0;
+            }
+            if !line.is_empty() {
+                line.push(' ');
+                used += space;
+            }
+            line.push_str(word);
+            used += w;
+        }
+        lines.push(line);
+    }
+    while lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop();
+    }
+    lines.truncate(MAX_LINES);
+    lines
+}
+
 /// One line of caller text, for places that have room for exactly one: the
 /// same reduction as [`sanitize`], with a newline turned into a space rather
 /// than a break.
@@ -295,6 +391,13 @@ enum Op {
         s: String,
         c: [u8; 4],
         medium: bool,
+    },
+    Sans {
+        x: usize,
+        y: usize,
+        s: String,
+        c: [u8; 4],
+        weight: crate::glyphs::sans::Weight,
     },
 }
 
@@ -356,6 +459,19 @@ impl Canvas {
         });
     }
 
+    /// One row of proportional Onest ([`crate::glyphs::sans`]), `x` the pen
+    /// origin and `y` the top of the cell. Compiled-in text only: runtime
+    /// text goes through [`Canvas::text`], in the fixed cells.
+    pub fn sans(&mut self, x: usize, y: usize, s: &str, c: Rgba, weight: crate::glyphs::sans::Weight) {
+        self.ops.push(Op::Sans {
+            x,
+            y,
+            s: s.to_owned(),
+            c: premul(c),
+            weight,
+        });
+    }
+
     /// Draw at `scale` device pixels per logical pixel.
     pub fn into_raster(self, scale: usize) -> Raster {
         let scale = scale.max(1);
@@ -408,6 +524,41 @@ impl Canvas {
                                 None => over(p, fill, outer),
                             }
                         }
+                    }
+                }
+                Op::Sans {
+                    x,
+                    y,
+                    s: ref text,
+                    c,
+                    weight,
+                } => {
+                    use crate::glyphs::sans;
+                    let ch = crate::glyphs::CELL_H * s;
+                    let mut pen = x;
+                    for b in text.bytes() {
+                        let (Some(adv), Some((cell, cw))) =
+                            (sans::advance(b, weight), sans::cell(b, weight, s))
+                        else {
+                            continue;
+                        };
+                        // The cell starts PADX before the pen; a pen nearer the
+                        // edge than that clips the margin, which is blank.
+                        let ox = (pen * s).wrapping_sub(sans::PADX * s);
+                        for gy in 0..ch {
+                            let yy = y * s + gy;
+                            if yy >= h {
+                                break;
+                            }
+                            for gx in 0..cw {
+                                let xx = ox.wrapping_add(gx);
+                                let a = cell[gy * cw + gx];
+                                if xx < w && a != 0 {
+                                    over(&mut px[yy * w + xx], c, f32::from(a) / 255.0);
+                                }
+                            }
+                        }
+                        pen += adv;
                     }
                 }
                 Op::Text {
@@ -573,7 +724,15 @@ mod tests {
         assert_eq!(s.chars().count(), 7);
         let three = sanitize_annotation("p\u{302}p\u{302}p\u{302}");
         assert_eq!(wrap(&three, 3), [format!("{hat_p}{hat_p}{hat_p}")]);
-        assert_eq!(hud_font::Face::Body.width(&three), 3 * hud_font::ADVANCE);
+        let face = hud_font::Face::Body;
+        assert_eq!(
+            face.width(&three),
+            (3 * face.advance64(hat_p)).div_ceil(hud_font::SUBPX)
+        );
+        assert_eq!(
+            wrap_px(&three, face, face.width(&three)),
+            std::slice::from_ref(&three)
+        );
         // The clamp counts sequences, not the bytes they came in.
         let long = sanitize_annotation(&"p\u{302}".repeat(MAX_CHARS * 2));
         assert_eq!(long.chars().count(), MAX_CHARS);
@@ -635,6 +794,39 @@ mod tests {
         assert_eq!(wrap("αβγδ εζ", 4), ["αβγδ", "εζ"]);
         // A hard cut never splits a character.
         assert_eq!(wrap("αβγδεζ", 4), ["αβγδ", "εζ"]);
+    }
+
+    #[test]
+    fn wrap_px_measures_width_not_characters() {
+        let f = hud_font::Face::Body;
+        // Narrow glyphs pack more to a line than wide ones in the same measure.
+        let m = f.width("mmmmmm");
+        assert_eq!(wrap_px("mmmmmm", f, m), ["mmmmmm"]);
+        assert_eq!(wrap_px("iiiiiiiiiiii", f, m), ["iiiiiiiiiiii"]);
+        assert!(f.width("iiiiiiiiiiii") <= m);
+        assert_eq!(wrap_px("mmmmmmm", f, m).len(), 2);
+        // A greek word is measured like any other, and a cut never splits one.
+        let lines = wrap_px("αβγδεζηθικλμνξοπρστυφχψω", f, f.width("αβγδε"));
+        assert!(lines.len() > 1);
+        assert!(
+            lines.iter().all(|l| f.width(l) <= f.width("αβγδε") + 1),
+            "{lines:?}"
+        );
+        assert_eq!(lines.concat(), "αβγδεζηθικλμνξοπρστυφχψω");
+    }
+
+    #[test]
+    fn wrap_px_prefers_words_and_cuts_only_when_it_must() {
+        let f = hud_font::Face::Body;
+        let m = f.width("the quick") + f.width("xx");
+        assert_eq!(wrap_px("the quick brown fox", f, m), ["the quick", "brown fox"]);
+        let m = f.width("aaaaa");
+        let cut = wrap_px("aaaaaaaaaaaa b", f, m);
+        assert!(cut.len() >= 3 && cut.iter().all(|l| f.width(l) <= m), "{cut:?}");
+        assert_eq!(cut.join("").replace(' ', ""), "aaaaaaaaaaaab");
+        // Even a measure narrower than one glyph makes progress.
+        assert_eq!(wrap_px("abc", f, 0).concat(), "abc");
+        assert_eq!(wrap_px("a\n\nb", f, 200), ["a", "", "b"]);
     }
 
     #[test]

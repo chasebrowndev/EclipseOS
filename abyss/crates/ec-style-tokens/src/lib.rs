@@ -56,7 +56,7 @@ pub mod space {
     pub const BAR_W: f32 = 3.0;
     pub const SIDEBAR_W: f32 = 214.0;
     /// The sidebar below [`super::breakpoint::COMPACT`]: wide enough for the
-    /// longest pane title and a mono footer, and no wider — the icon squares
+    /// longest pane title and a data footer, and no wider — the icon squares
     /// go, because they are placeholders and cost 25px of every row.
     pub const SIDEBAR_W_COMPACT: f32 = 148.0;
     /// The sidebar's own side padding, and its compact form.
@@ -184,7 +184,7 @@ pub mod space {
     /// A thin scrollbar, for a strip that scrolls sideways inside a pane
     /// (the bar preview, narrower than the bar).
     pub const SCROLLBAR_W: f32 = 4.0;
-    /// A badge's padding: a line of micro mono with a hair of air around it.
+    /// A badge's padding: a line of micro data text with a hair of air around it.
     pub const BADGE_Y: f32 = 2.0;
     /// A badge's side padding.
     pub const BADGE_X: f32 = 6.0;
@@ -197,7 +197,7 @@ pub mod space {
     /// enough that the next key does not.
     pub const KEY_GAP: f32 = 6.0;
     pub const HINT_GAP: f32 = 14.0;
-    /// A keycap's height: one line of micro mono (iced's default 1.3 line
+    /// A keycap's height: one line of micro data text (iced's default 1.3 line
     /// height) inside its badge padding. A header that shows hints only some
     /// of the time reserves it always, so the hints coming and going never
     /// move what is below.
@@ -220,7 +220,7 @@ pub mod size {
     pub const BODY: f32 = 13.0;
     pub const BODY_SMALL: f32 = 12.0;
     pub const MONO: f32 = 11.5;
-    /// Small uppercase section labels — mono, wide tracking.
+    /// Small uppercase section labels — wide tracking.
     pub const MICRO: f32 = 10.0;
     pub const BIG_NUMBER: f32 = 32.0;
     /// A single live line of input at hero scale — the launcher's query. Big
@@ -549,7 +549,7 @@ pub mod bar {
     /// bead on a wire and reads as decoration.
     pub const VOLUME_KNOB_W: u16 = 2;
     pub const VOLUME_KNOB_H: f32 = 12.0;
-    /// Room for `100%` in the mono face, so the track never shifts as the
+    /// Room for `100%` in the data face, so the track never shifts as the
     /// reading changes width.
     pub const VOLUME_READOUT_W: f32 = 28.0;
     /// Between the track and its reading.
@@ -660,8 +660,9 @@ pub mod canvas {
     /// The caret under a positioned config error, a hard rule under the
     /// offending span.
     pub const CARET_H: f32 = 2.0;
-    /// One character cell of the data face at [`super::size::MONO`]:
-    /// JetBrains Mono advances 0.6 em. What lines a caret up under a column.
+    /// A character budget of the data face (Onest, proportional with tabular
+    /// digits) at [`super::size::MONO`]: 0.6 em, a generous average advance.
+    /// Sizes a column or an elision, never positions a caret.
     pub const MONO_CHAR_W: f32 = 0.6 * super::size::MONO;
     /// The drop marker between lane tiles while one is dragged: a hard
     /// rule where the tile will land.
@@ -983,7 +984,7 @@ pub mod drawer {
     pub const TILE_H: f32 = 46.0;
     pub const TILE_GAP: f32 = 4.0;
     /// One job in the progress drawer: its ring and label, its bar, and its
-    /// mono line, with [`JOB_PAD`] of air above and below. How many characters
+    /// data line, with [`JOB_PAD`] of air above and below. How many characters
     /// of a job's label the drawer shows before it is cut.
     pub const JOB_H: f32 = 46.0;
     pub const JOB_PAD: f32 = 3.0;

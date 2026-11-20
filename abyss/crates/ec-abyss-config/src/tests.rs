@@ -1187,7 +1187,7 @@ fn decoration_defaults_round_but_are_otherwise_no_effect() {
 #[test]
 fn surface_defaults_parse_and_reject_out_of_range() {
     let s = &Config::default().decoration.surface;
-    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.05));
 
     let doc: KdlDocument = r#"
             decoration {
@@ -1214,7 +1214,7 @@ fn surface_defaults_parse_and_reject_out_of_range() {
     let mut cfg = Config::default();
     cfg.apply(&doc, &mut Vec::new());
     let s = &cfg.decoration.surface;
-    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.03));
+    assert_eq!((s.tint, s.card_fill, s.inset_fill), (0.70, 0.035, 0.05));
     assert_eq!(cfg.errors.len(), 4, "{:?}", cfg.errors);
     let doc: KdlDocument = "decoration { surface { tint 1.0; card-fill 0.30; inset-fill 0.30 } }\n"
         .parse()

@@ -52,21 +52,23 @@ use super::{
     blur::{BlurKey, BlurStore},
     effects,
     hud::{self, Card},
-    hud_font::{self, Face, ADVANCE},
+    hud_font::{self, Face},
     palette::HudPalette,
     text, AbyssRenderElement,
 };
 use crate::context::PerContext;
 
-/// Columns a panel wraps at: chosen per output from this range, never by the
-/// caller, so a caller cannot pick a width that shoulders other content off
-/// the screen. See [`columns`].
-const MIN_COLS: usize = 28;
-const MAX_COLS: usize = 48;
+/// The text measure a panel wraps at, logical px: chosen per output from this
+/// range, never by the caller, so a caller cannot pick a width that shoulders
+/// other content off the screen. See [`measure`].
+const MIN_MEASURE: usize = 224;
+const MAX_MEASURE: usize = 384;
+/// [`measure`] narrows in steps of this much.
+const MEASURE_STEP: usize = 8;
 /// A panel stacked above or below its region is never narrower than this:
 /// a tall thin panel under a wide paragraph reads as a sidebar that lost its
 /// way.
-const STACK_MIN_COLS: usize = 40;
+const STACK_MIN_MEASURE: usize = 320;
 
 /// Longest title kept, in characters, before wrapping. ADR 0054: a headline,
 /// not a second body.
@@ -751,8 +753,8 @@ fn lay_out(
         .map(|p| p.label.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    let cols = columns(&chip, &a.title, &a.text, output.w, error);
-    let mut card = Card::new(&chip, &a.title, &a.text, cols, error);
+    let measure = measure(&chip, &a.title, &a.text, output.w, error);
+    let mut card = Card::new(&chip, &a.title, &a.text, measure, error);
     if card.is_empty() {
         return None;
     }
@@ -763,13 +765,13 @@ fn lay_out(
     let marked = !picks.is_empty();
     let mut size = card_size(&card);
     let (mut loc, mut side) = place(blocked, focus, marked, size, output, taken);
-    if side.stacked() && cols < STACK_MIN_COLS {
+    if side.stacked() && measure < STACK_MIN_MEASURE {
         // Stacked: widen to the stacked minimum (as far as the output
         // allows) and place again.
-        let fit = (output.w.max(0) as usize).saturating_sub(hud::PAD_X * 2) / ADVANCE;
-        let wide_cols = STACK_MIN_COLS.min(fit).max(cols);
-        let wide = Card::new(&chip, &a.title, &a.text, wide_cols, error)
-            .at_least(wide_cols * ADVANCE + hud::PAD_X * 2);
+        let fit = (output.w.max(0) as usize).saturating_sub(hud::PAD_X * 2);
+        let wide_measure = STACK_MIN_MEASURE.min(fit).max(measure);
+        let wide =
+            Card::new(&chip, &a.title, &a.text, wide_measure, error).at_least(wide_measure + hud::PAD_X * 2);
         let wide_size = card_size(&wide);
         let (l, s) = place(blocked, focus, marked, wide_size, output, taken);
         if s.stacked() {
@@ -793,8 +795,8 @@ fn unanchored(
     taken: &[Rectangle<i32, Logical>],
 ) -> Option<Layout> {
     let error = a.kind == AnnotationKind::Error;
-    let cols = columns("", &a.title, &a.text, output.w, error);
-    let card = Card::new("", &a.title, &a.text, cols, error);
+    let measure = measure("", &a.title, &a.text, output.w, error);
+    let card = Card::new("", &a.title, &a.text, measure, error);
     if card.is_empty() {
         return None;
     }
@@ -827,25 +829,26 @@ fn card_size(card: &Card) -> Size<i32, Logical> {
     Size::from((w as i32, h as i32))
 }
 
-/// The column count for a panel on an output `output_w` logical pixels wide.
+/// The text measure, logical px, for a panel on an output `output_w` logical
+/// pixels wide.
 ///
-/// The widest the output allows -- a third of it, within [`MIN_COLS`] and
-/// [`MAX_COLS`] -- and then narrowed while that costs no extra line, so a
+/// The widest the output allows -- a third of it, within [`MIN_MEASURE`] and
+/// [`MAX_MEASURE`] -- and then narrowed while that costs no extra line, so a
 /// three-line answer is three even lines rather than two full ones and a
 /// straggler.
-fn columns(chip: &str, title: &str, body: &str, output_w: i32, error: bool) -> usize {
-    let room = (output_w.max(0) as usize / 3).saturating_sub(hud::PAD_X * 2) / ADVANCE;
-    let widest = room.clamp(MIN_COLS, MAX_COLS);
-    let rows = |cols: usize| {
-        let c = Card::new(chip, title, body, cols, error);
+fn measure(chip: &str, title: &str, body: &str, output_w: i32, error: bool) -> usize {
+    let room = (output_w.max(0) as usize / 3).saturating_sub(hud::PAD_X * 2);
+    let widest = room.clamp(MIN_MEASURE, MAX_MEASURE);
+    let rows = |m: usize| {
+        let c = Card::new(chip, title, body, m, error);
         (c.title.len(), c.body.len())
     };
     let want = rows(widest);
-    let mut cols = widest;
-    while cols > MIN_COLS && rows(cols - 1) == want {
-        cols -= 1;
+    let mut m = widest;
+    while m >= MIN_MEASURE + MEASURE_STEP && rows(m - MEASURE_STEP) == want {
+        m -= MEASURE_STEP;
     }
-    cols
+    m
 }
 
 /// One raster of an annotation, where it goes (output-local, logical), and
@@ -1641,11 +1644,7 @@ mod tests {
         let a = s.iter().next().unwrap().1;
         let l = lay_out(a, OUT.into(), (0, 0).into(), &[]).unwrap();
         assert!(l.side.stacked(), "{:?}", l.side);
-        assert!(
-            l.panel.size.w as usize >= STACK_MIN_COLS * ADVANCE,
-            "{:?}",
-            l.panel
-        );
+        assert!(l.panel.size.w as usize >= STACK_MIN_MEASURE, "{:?}", l.panel);
     }
 
     #[test]
@@ -1682,26 +1681,27 @@ mod tests {
     }
 
     #[test]
-    fn columns_follow_the_output_and_balance_the_lines() {
+    fn the_measure_follows_the_output_and_balances_the_lines() {
         assert_eq!(
-            columns("", "", &"word ".repeat(4), 1920, false),
-            MIN_COLS,
+            measure("", "", &"word ".repeat(4), 1920, false),
+            MIN_MEASURE,
             "short text never widens the panel"
         );
         let long = "word ".repeat(60);
         assert_eq!(
-            columns("", "", &long, 1920, false),
-            MAX_COLS.min(columns("", "", &long, 9999, false))
+            measure("", "", &long, 1920, false),
+            MAX_MEASURE.min(measure("", "", &long, 9999, false))
         );
         assert_eq!(
-            columns("", "", &long, 600, false),
-            MIN_COLS,
+            measure("", "", &long, 600, false),
+            MIN_MEASURE,
             "a small output gets the narrowest"
         );
-        // Balanced: dropping one more column would cost a line.
-        let c = columns("", "", &long, 1920, false);
-        let rows = |c| text::wrap(&long, c).len();
-        assert!(c == MIN_COLS || rows(c - 1) > rows(c));
+        // Balanced: dropping one more step would cost a line.
+        let c = measure("", "", &long, 1920, false);
+        let rows = |m| text::wrap_px(&long, Face::Body, m).len();
+        assert!(c < MIN_MEASURE + MEASURE_STEP || rows(c - MEASURE_STEP) > rows(c));
+        assert!((MIN_MEASURE..=MAX_MEASURE).contains(&c));
     }
 
     #[test]

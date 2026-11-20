@@ -1,17 +1,22 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! The annotation HUD's typeface: JetBrains Mono, pre-rasterised (ADR 0071).
+//! The compositor-drawn HUD's typeface: proportional Onest, pre-rasterised
+//! (ADR 0071).
 //!
 //! The compositor carries no font engine and must not grow one at runtime
 //! (ADR 0009), so the face is rasterised offline by
-//! `assets/fonts/hud/gen_atlas.c` into 8-bit coverage atlases and compiled in
-//! here. Three faces -- title, body, readout -- each at 1x and 2x. A
-//! fractional output scale takes the nearer of the two, and the GPU scales
-//! that last fraction; there is no third atlas and no smearing hack.
+//! `assets/fonts/hud/gen_atlas.c` (run `assets/fonts/hud/gen_hud.sh`) into
+//! 8-bit coverage atlases and compiled in here. Three faces -- title, body,
+//! readout -- each at 1x and 2x. A fractional output scale takes the nearer of
+//! the two, and the GPU scales that last fraction; there is no third atlas and
+//! no smearing hack. Codepoints Onest lacks (Greek, maths, arrows) come from
+//! JetBrains Mono at the same size, chosen per glyph by the generator.
 //!
 //! Each atlas carries printable ASCII, the two compositor glyphs, and the
 //! [`EXTENDED`] set (Latin-1, Latin Extended-A, Greek, math and punctuation)
 //! so model replies in those scripts can be drawn. The extended set is
-//! annotation-only; see [`crate::text::sanitize_annotation`].
+//! annotation-only; see [`crate::text::sanitize_annotation`]. The charset is
+//! `assets/fonts/hud/charset.txt`, in cell order; a test keeps it and
+//! [`EXTENDED`] in step.
 //!
 //! The tail of [`EXTENDED`] is the composed cells (ADR 0083 amendment): a
 //! base letter with a combining mark over it, drawn as one glyph at a
@@ -22,23 +27,25 @@
 //! This is a separate set from [`crate::glyphs`], the trusted UI's, which
 //! keeps an exact integer grid at every scale and stays ASCII-only.
 //!
-//! Layout is always done in 1x logical metrics, which every scale shares:
-//! a column is [`ADVANCE`] logical px wide whatever atlas draws it, so a
-//! panel is the same logical size at 1x and 2x and placement never depends
-//! on the scale.
+//! The face is proportional: each glyph has its own advance, stored in 1/64
+//! logical px in the atlas and shared by both scales. Layout is always done
+//! in 1x logical metrics ([`Face::width`], [`Face::width64`]), so a panel is
+//! the same logical size at 1x and 2x and placement never depends on the
+//! scale. Digits are tabular (the Onest statics make `tnum` the default), so
+//! clocks and counters do not jitter. Kerning is not applied; advances are
+//! additive, which keeps measuring allocation-free.
 
-/// One atlas file: an 8-byte `HUD2` header, then [`CELLS`] coverage cells.
+/// One atlas file: an 8-byte `HUD3` header, one `u16` advance per cell, then
+/// [`CELLS`] coverage cells.
 #[derive(Debug, Clone, Copy)]
 pub struct Atlas {
     pub cell_w: usize,
     pub cell_h: usize,
-    /// Pen advance, pixels.
-    pub advance: usize,
-    /// Overhang room left of the pen position inside each cell, pixels.
+    /// Room left of the pen position inside each cell, pixels.
     pub margin: usize,
-    /// Baseline, pixels from the cell's top row (the generator's
-    /// `ceil(ascender / em * px)`; not stored in the file).
+    /// Baseline, pixels from the cell's top row.
     pub ascent: usize,
+    adv: &'static [u8],
     data: &'static [u8],
 }
 
@@ -47,6 +54,8 @@ pub struct Atlas {
 const BASE: usize = 97;
 const CELLS: usize = BASE + EXTENDED.len();
 const HEADER: usize = 8;
+/// Advances are 1/64 logical px.
+pub const SUBPX: usize = 64;
 
 /// Codepoints of cells [`BASE`].. in file order, ascending. Must match the
 /// `EXTENDED` table in `assets/fonts/hud/gen_atlas.c` exactly; the atlas
@@ -110,32 +119,45 @@ pub fn compose(base: char, mark: char) -> Option<char> {
 
 impl Atlas {
     /// Read the header at compile time; a malformed file fails the build.
-    const fn new(data: &'static [u8], ascent: usize) -> Atlas {
+    const fn new(data: &'static [u8]) -> Atlas {
         assert!(data.len() > HEADER);
-        assert!(data[0] == b'H' && data[1] == b'U' && data[2] == b'D' && data[3] == b'2');
+        assert!(data[0] == b'H' && data[1] == b'U' && data[2] == b'D' && data[3] == b'3');
         let (cell_w, cell_h) = (data[4] as usize, data[5] as usize);
-        assert!(data.len() == HEADER + CELLS * cell_w * cell_h);
-        assert!(ascent < cell_h);
+        assert!(data.len() == HEADER + CELLS * 2 + CELLS * cell_w * cell_h);
+        assert!((data[7] as usize) < cell_h);
+        let (adv, _) = data.split_at(HEADER + CELLS * 2);
+        let (_, adv) = adv.split_at(HEADER);
         Atlas {
             cell_w,
             cell_h,
-            advance: data[6] as usize,
-            margin: data[7] as usize,
-            ascent,
+            margin: data[6] as usize,
+            ascent: data[7] as usize,
+            adv,
             data,
         }
     }
 
-    /// The coverage cell for `c`. Anything the atlas does not carry draws as
-    /// `?`. Callers' text has already been reduced by
-    /// `text::sanitize_annotation`, which keeps exactly the set [`covers`]
-    /// accepts, so the fallback only shows for compositor strings that
-    /// strayed outside it.
+    /// Cell index for `c`; anything the atlas does not carry is `?`. Callers'
+    /// text has already been reduced by `text::sanitize_annotation`, which
+    /// keeps exactly the set [`covers`] accepts, so the fallback only shows
+    /// for compositor strings that strayed outside it.
+    fn slot(c: char) -> usize {
+        index_of(c).unwrap_or('?' as usize - 0x20)
+    }
+
+    /// Advance of `c`, in 1/64 logical px.
+    pub fn advance64(&self, c: char) -> usize {
+        let i = Atlas::slot(c) * 2;
+        usize::from(self.adv[i]) | usize::from(self.adv[i + 1]) << 8
+    }
+
+    /// The coverage cell for `c` (the `?` cell if the atlas lacks it).
     pub fn cell(&self, c: char) -> &'static [u8] {
-        let i = index_of(c).unwrap_or('?' as usize - 0x20);
+        let i = Atlas::slot(c);
         let n = self.cell_w * self.cell_h;
         let data: &'static [u8] = self.data;
-        &data[HEADER + i * n..HEADER + (i + 1) * n]
+        let base = HEADER + CELLS * 2;
+        &data[base + i * n..base + (i + 1) * n]
     }
 }
 
@@ -158,25 +180,25 @@ pub fn covers(c: char) -> bool {
 /// Which of the three faces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Face {
-    /// JetBrains Mono Medium 13px, emboldened: panel titles, the pick letter.
+    /// Onest SemiBold 13px: panel titles, the pick letter, titles on pills.
     Title,
-    /// JetBrains Mono Regular 12.5px: panel body, the selector hint.
+    /// Onest Regular 12.5px: panel body, titlebars, menus, the selector hint.
     Body,
-    /// JetBrains Mono Medium 11px: the selector's size readout.
+    /// Onest Medium 11px: the selector's size readout.
     Readout,
 }
 
 static TITLE: [Atlas; 2] = [
-    Atlas::new(include_bytes!("../../../../assets/fonts/hud/title-1x.a8"), 14),
-    Atlas::new(include_bytes!("../../../../assets/fonts/hud/title-2x.a8"), 27),
+    Atlas::new(include_bytes!("../../../../assets/fonts/hud/title-1x.a8")),
+    Atlas::new(include_bytes!("../../../../assets/fonts/hud/title-2x.a8")),
 ];
 static BODY: [Atlas; 2] = [
-    Atlas::new(include_bytes!("../../../../assets/fonts/hud/body-1x.a8"), 13),
-    Atlas::new(include_bytes!("../../../../assets/fonts/hud/body-2x.a8"), 26),
+    Atlas::new(include_bytes!("../../../../assets/fonts/hud/body-1x.a8")),
+    Atlas::new(include_bytes!("../../../../assets/fonts/hud/body-2x.a8")),
 ];
 static READOUT: [Atlas; 2] = [
-    Atlas::new(include_bytes!("../../../../assets/fonts/hud/readout-1x.a8"), 12),
-    Atlas::new(include_bytes!("../../../../assets/fonts/hud/readout-2x.a8"), 23),
+    Atlas::new(include_bytes!("../../../../assets/fonts/hud/readout-1x.a8")),
+    Atlas::new(include_bytes!("../../../../assets/fonts/hud/readout-2x.a8")),
 ];
 
 impl Face {
@@ -193,11 +215,6 @@ impl Face {
         &self.set()[usize::from(dev >= 2)]
     }
 
-    /// Logical column width: the 1x advance.
-    pub fn advance(self) -> usize {
-        self.set()[0].advance
-    }
-
     /// Logical line box: the 1x cell height.
     pub fn line_h(self) -> usize {
         self.set()[0].cell_h
@@ -208,15 +225,21 @@ impl Face {
         self.set()[0].ascent
     }
 
-    /// Logical width of `s` set in this face.
+    /// Advance of `c` in 1/64 logical px. The same at every raster scale.
+    pub fn advance64(self, c: char) -> usize {
+        self.set()[0].advance64(c)
+    }
+
+    /// Width of `s` set in this face, in 1/64 logical px.
+    pub fn width64(self, s: &str) -> usize {
+        s.chars().map(|c| self.advance64(c)).sum()
+    }
+
+    /// Logical width of `s` set in this face, rounded up to a whole pixel.
     pub fn width(self, s: &str) -> usize {
-        s.chars().count() * self.advance()
+        self.width64(s).div_ceil(SUBPX)
     }
 }
-
-/// The column width every layout counts in. Title and body share it, so a
-/// panel can wrap both at one column count.
-pub const ADVANCE: usize = 8;
 
 /// The raster scale for an output's fractional scale: the nearer atlas.
 pub fn raster_scale(fractional: f64) -> usize {
@@ -235,16 +258,40 @@ mod tests {
     fn the_atlases_parse_and_agree_on_logical_metrics() {
         for face in [Face::Title, Face::Body, Face::Readout] {
             let [one, two] = face.set();
-            assert_eq!(one.cell_w, one.advance + 2 * one.margin);
-            assert_eq!(two.cell_w, two.advance + 2 * two.margin);
             // 2x is twice 1x to within the generator's whole-pixel rounding
-            // (the line box rounds twice, so it may be off by two). Layout
-            // uses 1x metrics only, so this is a sanity bound, not a contract.
-            assert!(two.advance.abs_diff(one.advance * 2) <= 1, "{face:?}");
-            assert!(two.cell_h.abs_diff(one.cell_h * 2) <= 2, "{face:?}");
+            // (the line box rounds twice). Layout uses 1x metrics only, so
+            // this is a sanity bound, not a contract.
+            assert!(two.cell_h.abs_diff(one.cell_h * 2) <= 3, "{face:?}");
+            assert!(two.ascent.abs_diff(one.ascent * 2) <= 2, "{face:?}");
+            // The advance table is logical, so both scales carry the same one.
+            for c in (' '..='~').chain(EXTENDED.iter().map(|&c| char::from_u32(c).unwrap())) {
+                assert_eq!(one.advance64(c), two.advance64(c), "{face:?} {c:?}");
+            }
         }
-        assert_eq!(Face::Title.advance(), ADVANCE);
-        assert_eq!(Face::Body.advance(), ADVANCE);
+    }
+
+    #[test]
+    fn the_face_is_proportional_with_tabular_digits() {
+        for face in [Face::Title, Face::Body, Face::Readout] {
+            assert!(face.width("iiii") < face.width("MMMM"), "{face:?}");
+            assert!(face.width("lll") < face.width("www"), "{face:?}");
+            // Digits share one advance, so a clock or counter never jitters.
+            let zero = face.advance64('0');
+            assert!(zero > 0);
+            assert!(('0'..='9').all(|d| face.advance64(d) == zero), "{face:?}");
+            assert_eq!(face.width("00:00"), face.width("11:11"), "{face:?}");
+            // Additive: a string is the sum of its glyphs, so truncation and
+            // wrap can measure without allocating.
+            assert_eq!(face.width64("ab"), face.advance64('a') + face.advance64('b'));
+            assert_eq!(face.width(""), 0);
+        }
+    }
+
+    #[test]
+    fn an_unknown_glyph_measures_as_the_replacement() {
+        for face in [Face::Title, Face::Body, Face::Readout] {
+            assert_eq!(face.advance64('\u{4e2d}'), face.advance64('?'));
+        }
     }
 
     #[test]
@@ -289,12 +336,17 @@ mod tests {
 
     #[test]
     fn composed_cells_are_listed_sorted_and_drawn_apart_from_their_base() {
-        let src = include_str!("../../../../assets/fonts/hud/gen_atlas.c");
-        // Every triple is in the generator's table, and the table has no more.
-        assert_eq!(src.matches("{0x").count(), COMPOSED.len());
+        let src = include_str!("../../../../assets/fonts/hud/charset.txt");
+        // Every triple is in the generator's charset, and the charset has no more.
+        assert_eq!(
+            src.lines()
+                .filter(|l| !l.starts_with('#') && l.contains('='))
+                .count(),
+            COMPOSED.len()
+        );
         for &(b, m, p) in COMPOSED {
-            let line = format!("{{0x{:x}, 0x{:x}, 0x{:x}}}", b as u32, m as u32, p as u32);
-            assert!(src.contains(&line), "{line} missing from gen_atlas.c");
+            let line = format!("{:x}={:x}+{:x}", p as u32, b as u32, m as u32);
+            assert!(src.lines().any(|l| l == line), "{line} missing from charset.txt");
             assert!(covers(p), "{p:?}");
             assert_eq!(compose(b, m), Some(p));
         }
@@ -312,6 +364,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn the_charset_file_matches_the_tables() {
+        let src = include_str!("../../../../assets/fonts/hud/charset.txt");
+        let mut cps: Vec<u32> = Vec::new();
+        for l in src.lines().filter(|l| !l.starts_with('#') && !l.is_empty()) {
+            if let Some((p, _)) = l.split_once('=') {
+                cps.push(u32::from_str_radix(p, 16).unwrap());
+            } else if let Some((a, b)) = l.split_once('-') {
+                let (a, b) = (
+                    u32::from_str_radix(a, 16).unwrap(),
+                    u32::from_str_radix(b, 16).unwrap(),
+                );
+                cps.extend(a..=b);
+            } else {
+                cps.push(u32::from_str_radix(l, 16).unwrap());
+            }
+        }
+        let mut want: Vec<u32> = (0x20..=0x7e).chain([0xd7, 0xb7]).collect();
+        want.extend_from_slice(EXTENDED);
+        assert_eq!(cps, want);
     }
 
     #[test]

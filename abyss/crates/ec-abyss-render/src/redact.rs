@@ -68,6 +68,24 @@ const LABEL_FILL: Rgba = [0.09, 0.08, 0.06, 1.0];
 const LABEL_INK: Rgba = [0.96, 0.94, 0.90, 1.0];
 const LABEL_KEYLINE: Rgba = [0.0, 0.0, 0.0, 0.25];
 
+/// The light twins: a paper slab with ink on it (STYLE.md "Light"), as opaque
+/// as the dark one. Hatch and hairlines are the ink `#1a1610`, faint.
+const FILL_L: Rgba = [0.925, 0.915, 0.89, 1.0];
+const HATCH_L: Rgba = [0.102, 0.086, 0.063, 0.10];
+const BAND_EDGE_L: Rgba = [0.102, 0.086, 0.063, 0.14];
+const RIM_COLOR_L: Rgba = [0.102, 0.086, 0.063, 0.18];
+const LABEL_FILL_L: Rgba = [0.98, 0.975, 0.96, 1.0];
+const LABEL_INK_L: Rgba = [0.102, 0.086, 0.063, 1.0];
+const LABEL_KEYLINE_L: Rgba = [0.102, 0.086, 0.063, 0.14];
+
+fn pick(light: bool, dark: Rgba, paper: Rgba) -> Rgba {
+    if light {
+        paper
+    } else {
+        dark
+    }
+}
+
 type Rect = Rectangle<i32, Logical>;
 
 /// The hatched band: full width, [`BAND`] tall, centred vertically. `None`
@@ -136,22 +154,28 @@ pub fn stripe(u: f32, dev: f32) -> f32 {
     ((p / 4.0 - d) * dev * std::f32::consts::FRAC_1_SQRT_2 + 0.5).clamp(0.0, 1.0)
 }
 
-fn hatch_tile(dev: usize) -> Raster {
+fn hatch_tile(dev: usize, light: bool) -> Raster {
     let (w, h) = (TILE as usize * dev, BAND as usize * dev);
     let mut p = Paint::new(w, h);
     let d = dev as f32;
-    p.shade((0.0, 0.0, w as f32, h as f32), HATCH, |x, y| {
-        stripe((x + y) / d, d)
-    });
+    p.shade(
+        (0.0, 0.0, w as f32, h as f32),
+        pick(light, HATCH, HATCH_L),
+        |x, y| stripe((x + y) / d, d),
+    );
     p.into_raster()
 }
+
+/// A texture with the raster scale and scheme it was painted at.
+type Stripes = (usize, bool, TextureBuffer<GlesTexture>);
+type Label = (usize, bool, TextureBuffer<GlesTexture>, (i32, i32));
 
 /// The card's textures for one renderer: the stripe tile and the label, each
 /// with the raster scale it was painted at.
 #[derive(Default)]
 pub struct Textures {
-    stripes: Option<(usize, TextureBuffer<GlesTexture>)>,
-    label: Option<(usize, TextureBuffer<GlesTexture>, (i32, i32))>,
+    stripes: Option<Stripes>,
+    label: Option<Label>,
 }
 
 fn solid(color: Rgba, rect: Rect, at: Point<i32, Logical>, scale: Scale<f64>) -> AbyssRenderElement {
@@ -194,8 +218,9 @@ fn texture(
 
 /// The slab's base element: a solid of [`FILL`] over the whole of `local`.
 /// Its own function so a test can hold it to the opacity guarantee.
-fn glass(local: Rect, at: Point<i32, Logical>, scale: Scale<f64>) -> SolidColorRenderElement {
-    let c = [FILL[0], FILL[1], FILL[2], FILL[3]]; // alpha 1.0: premultiplied == straight
+fn glass(local: Rect, at: Point<i32, Logical>, scale: Scale<f64>, light: bool) -> SolidColorRenderElement {
+    let f = pick(light, FILL, FILL_L);
+    let c = [f[0], f[1], f[2], f[3]]; // alpha 1.0: premultiplied == straight
     let buffer = SolidColorBuffer::new(local.size, c);
     SolidColorRenderElement::from_buffer(
         &buffer,
@@ -217,6 +242,7 @@ pub fn card(
     rect: Rect,
     output_loc: Point<i32, Logical>,
     scale: Scale<f64>,
+    light: bool,
     out: &mut Vec<AbyssRenderElement>,
 ) {
     if rect.size.w <= 0 || rect.size.h <= 0 {
@@ -225,23 +251,27 @@ pub fn card(
     let dev = raster_scale(scale.x);
     let at = Point::from((0, 0)) - output_loc + rect.loc;
 
-    if textures.label.as_ref().is_none_or(|(d, ..)| *d != dev) {
+    if textures
+        .label
+        .as_ref()
+        .is_none_or(|(d, l, ..)| *d != dev || *l != light)
+    {
         let (raster, (w, h)) = hud::pill(
             LABEL,
             Face::Title,
             (5, 14),
-            LABEL_FILL,
-            Some(RIM_COLOR),
-            LABEL_KEYLINE,
-            LABEL_INK,
+            pick(light, LABEL_FILL, LABEL_FILL_L),
+            Some(pick(light, RIM_COLOR, RIM_COLOR_L)),
+            pick(light, LABEL_KEYLINE, LABEL_KEYLINE_L),
+            pick(light, LABEL_INK, LABEL_INK_L),
             dev,
         );
         textures.label = crate::annotation::upload(renderer, &raster, dev).map(|b| {
             let m = hud::PILL_MARGIN as i32;
-            (dev, b, (w as i32 + 2 * m, h as i32 + 2 * m))
+            (dev, light, b, (w as i32 + 2 * m, h as i32 + 2 * m))
         });
     }
-    if let Some((_, buffer, size)) = &textures.label {
+    if let Some((_, _, buffer, size)) = &textures.label {
         if let Some(l) = label_rect(rect.size, *size) {
             out.push(texture(buffer, at + l.loc, l.size, scale));
         }
@@ -251,24 +281,28 @@ pub fn card(
     if let Some(b) = band(rect.size) {
         for y in [b.loc.y, b.loc.y + b.size.h - RIM] {
             let line = Rect::new((0, y).into(), (b.size.w, RIM).into());
-            out.push(solid(BAND_EDGE, line, at, scale));
+            out.push(solid(pick(light, BAND_EDGE, BAND_EDGE_L), line, at, scale));
         }
     }
     for edge in rim(rect.size) {
-        out.push(solid(RIM_COLOR, edge, at, scale));
+        out.push(solid(pick(light, RIM_COLOR, RIM_COLOR_L), edge, at, scale));
     }
 
-    if textures.stripes.as_ref().is_none_or(|(d, _)| *d != dev) {
-        let raster = hatch_tile(dev);
-        textures.stripes = crate::annotation::upload(renderer, &raster, dev).map(|b| (dev, b));
+    if textures
+        .stripes
+        .as_ref()
+        .is_none_or(|(d, l, _)| *d != dev || *l != light)
+    {
+        let raster = hatch_tile(dev, light);
+        textures.stripes = crate::annotation::upload(renderer, &raster, dev).map(|b| (dev, light, b));
     }
-    if let (Some((_, buffer)), Some(b)) = (&textures.stripes, band(rect.size)) {
+    if let (Some((_, _, buffer)), Some(b)) = (&textures.stripes, band(rect.size)) {
         for t in band_tiles(b) {
             out.push(texture(buffer, at + t.loc, t.size, scale));
         }
     }
 
-    out.push(AbyssRenderElement::Solid(glass(local, at, scale)));
+    out.push(AbyssRenderElement::Solid(glass(local, at, scale, light)));
 }
 
 #[cfg(test)]
@@ -294,12 +328,14 @@ mod tests {
         use smithay::backend::renderer::element::Element;
         for (w, h, sc) in [(1, 1, 1.0), (640, 480, 1.0), (1921, 1079, 1.5), (3840, 2160, 2.0)] {
             let scale = Scale::from(sc);
-            let e = glass(Rect::from_size(size(w, h)), (13, 7).into(), scale);
-            assert_eq!(Element::alpha(&e), 1.0);
-            let geo = Element::geometry(&e, scale);
-            let regions = Element::opaque_regions(&e, scale);
-            let opaque: i64 = regions.iter().map(|r| r.size.w as i64 * r.size.h as i64).sum();
-            assert_eq!(opaque, geo.size.w as i64 * geo.size.h as i64, "{w}x{h}@{sc}");
+            for light in [false, true] {
+                let e = glass(Rect::from_size(size(w, h)), (13, 7).into(), scale, light);
+                assert_eq!(Element::alpha(&e), 1.0);
+                let geo = Element::geometry(&e, scale);
+                let regions = Element::opaque_regions(&e, scale);
+                let opaque: i64 = regions.iter().map(|r| r.size.w as i64 * r.size.h as i64).sum();
+                assert_eq!(opaque, geo.size.w as i64 * geo.size.h as i64, "{w}x{h}@{sc}");
+            }
         }
     }
 
@@ -309,7 +345,9 @@ mod tests {
         // and the label's ground are not.
         assert_eq!(FILL[3], 1.0);
         assert_eq!(LABEL_FILL[3], 1.0);
-        for ink in [HATCH, BAND_EDGE, RIM_COLOR] {
+        assert_eq!(FILL_L[3], 1.0);
+        assert_eq!(LABEL_FILL_L[3], 1.0);
+        for ink in [HATCH, BAND_EDGE, RIM_COLOR, HATCH_L, BAND_EDGE_L, RIM_COLOR_L] {
             assert!(ink[3] < 0.2, "decor stays faint");
         }
     }
@@ -386,7 +424,7 @@ mod tests {
     fn the_hatch_tile_is_seamless_across_its_horizontal_edges() {
         // The pattern is a function of x + y with a period that divides the
         // tile's width, so repeats side by side meet without a seam.
-        let t = hatch_tile(1);
+        let t = hatch_tile(1, false);
         let (w, h) = (TILE as usize, BAND as usize);
         assert_eq!(t.px.len(), w * h * 4);
         let at = |x: usize, y: usize| t.px[(y * w + x) * 4 + 3];
@@ -399,5 +437,37 @@ mod tests {
     #[test]
     fn the_label_is_plain_ascii_the_atlas_draws() {
         assert!(LABEL.chars().all(crate::hud_font::covers));
+    }
+
+    /// Writes `redact-{1,2}x.ppm` (the "Private" pill, dark and light) into
+    /// `HUD_TEXT_SHEET_DIR`.
+    #[test]
+    fn redact_sheet() {
+        let Some(dir) = crate::hud::sheet::dir() else {
+            return;
+        };
+        for dev in [1usize, 2] {
+            let mut strips = Vec::new();
+            for light in [false, true] {
+                let (raster, _) = hud::pill(
+                    LABEL,
+                    Face::Title,
+                    (5, 14),
+                    pick(light, LABEL_FILL, LABEL_FILL_L),
+                    Some(pick(light, RIM_COLOR, RIM_COLOR_L)),
+                    pick(light, LABEL_KEYLINE, LABEL_KEYLINE_L),
+                    pick(light, LABEL_INK, LABEL_INK_L),
+                    dev,
+                );
+                strips.push(crate::hud::sheet::Strip {
+                    w: raster.w as usize,
+                    h: raster.h as usize,
+                    px: raster.px,
+                    bgra: false,
+                    bg: if light { [225, 222, 214] } else { [40, 44, 56] },
+                });
+            }
+            crate::hud::sheet::write(&dir.join(format!("redact-{dev}x.ppm")), &strips);
+        }
     }
 }

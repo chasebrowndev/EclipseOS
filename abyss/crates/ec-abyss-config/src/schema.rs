@@ -1240,7 +1240,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.surface.inset-fill",
         Ty::Float { min: 0.0, max: 0.30 },
-        Float(0.03),
+        Float(0.05),
         Abyss,
         Live,
         "Alpha of an inset group's white fill. sRGB-intent; clients convert.",

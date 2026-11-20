@@ -183,7 +183,7 @@ const RIM_FOCUS_HOVER: f32 = 3.4375;
 
 /// The light scheme's pane look (ADR 0084, STYLE.md Light, the `LIGHT` cell
 /// table in ec-theme). Each depth step moves toward the ink: a rest fill of
-/// ink .07, hover .11, press .15 (`shade`), and an ink hairline of .12 at rest,
+/// ink .05, hover .09, press .13 (`shade`), and an ink hairline of .12 at rest,
 /// .18 hovered or focused, .24 focused and hovered. A minimized (`Away`) chip
 /// has no fill. The focused pane takes no ink: it is the one lift, with the
 /// white `lift` and the crisp ink rim.
@@ -191,9 +191,9 @@ const RIM_FOCUS_HOVER: f32 = 3.4375;
 /// `rim` is scaled so that at the default `glass.rim` (0.5) the base lobe of
 /// the shader's hairline (`LINE_BASE` .05, weight `lobe * rim_color.a * 2 *
 /// rim`) reads these alphas: `rim = alpha / 0.05`, which is `alpha * 20`.
-const LIGHT_REST: f32 = 0.07;
-const LIGHT_HOVER: f32 = 0.11;
-const LIGHT_PRESS: f32 = 0.15;
+const LIGHT_REST: f32 = 0.05;
+const LIGHT_HOVER: f32 = 0.09;
+const LIGHT_PRESS: f32 = 0.13;
 const LIGHT_RIM_REST: f32 = 0.12 * 20.0;
 const LIGHT_RIM_HOT: f32 = 0.18 * 20.0;
 const LIGHT_RIM_FOCUS: f32 = 0.18 * 20.0;
@@ -233,7 +233,68 @@ pub const STACKED_LIFT: f32 = 0.018;
 /// Rim multiplier: the hairline is what separates the two layers.
 pub const STACKED_RIM: f32 = 1.3;
 
+/// Cells inside a larger pane of the same surface read as a layer above it
+/// (nested glass), by a step per level of nesting (at most [`NEST_MAX`]).
+/// Dark glass: a white lift and a firmer rim, since the cell is as smoked as
+/// the pane under it and only these tell the two apart. Light glass: a deeper
+/// ink step (white on frost lifts nothing) and a firmer ink rim. Never a
+/// colour: glassy, not glowy.
+pub const NEST_MAX: u32 = 2;
+pub const NEST_LIFT: f32 = 0.04;
+pub const NEST_RIM: f32 = 0.5;
+pub const NEST_SHADE: f32 = 0.05;
+pub const NEST_RIM_LIGHT: f32 = 0.4;
+/// Contact shadow of a nested cell: weight of the shader's `focus` (the firmer
+/// shadow) and extra drop in logical px, per level.
+pub const NEST_SHADOW_FOCUS: f32 = 0.6;
+pub const NEST_SHADOW_DROP: i32 = 1;
+
+/// How many larger panes of `panes` (drawn before it, so under it) wholly
+/// contain pane `i`, at most [`NEST_MAX`].
+pub fn nest_depth(panes: &[Pane], i: usize) -> u32 {
+    let Some(p) = panes.get(i) else { return 0 };
+    let inside = |o: &Pane| {
+        o.x <= p.x
+            && o.y <= p.y
+            && o.x + o.w >= p.x + p.w
+            && o.y + o.h >= p.y + p.h
+            && (o.w as i64 * o.h as i64) > (p.w as i64 * p.h as i64)
+    };
+    (panes[..i].iter().filter(|o| inside(o)).count() as u32).min(NEST_MAX)
+}
+
+/// Lens strength share of a pane by its shorter logical side. A small control
+/// keeps its lens; a big sheet or card is bent only a hair at its rim, so the
+/// backdrop's grid reads straight through it: `FLOOR + (1 - FLOOR) / (1 +
+/// (short / LENS_SIZE)^3)`. Continuous and non-increasing in size.
+pub const LENS_SIZE: f32 = 64.0;
+pub const LENS_FLOOR: f32 = 0.15;
+pub fn lens_scale(pane: &Pane) -> f32 {
+    let r = pane.w.min(pane.h).max(0) as f32 / LENS_SIZE;
+    LENS_FLOOR + (1.0 - LENS_FLOOR) / (1.0 + r * r * r)
+}
+
 impl Look {
+    /// This look for a cell `depth` levels inside larger panes (see
+    /// [`NEST_LIFT`]); `alpha` fades the step with the pane.
+    pub fn nested(self, depth: u32, light: bool, alpha: u8) -> Look {
+        let d = depth.min(NEST_MAX) as f32;
+        let a = alpha as f32 / 255.0;
+        if light {
+            Look {
+                rim: self.rim * (1.0 + NEST_RIM_LIGHT * d),
+                shade: self.shade + NEST_SHADE * d * a,
+                ..self
+            }
+        } else {
+            Look {
+                rim: self.rim * (1.0 + NEST_RIM * d),
+                lift: self.lift + NEST_LIFT * d * a,
+                ..self
+            }
+        }
+    }
+
     /// This look on glass laid over a window's own glass.
     pub fn stacked(self, light: bool, alpha: u8) -> Look {
         Look {
@@ -305,8 +366,19 @@ pub fn look(pane: &Pane, light: bool) -> Option<Look> {
 /// [`look`] for a pane on glass that is already a window's (see
 /// [`STACKED_SMOKE`]), or on bare backdrop when `stacked` is false.
 pub fn look_on(pane: &Pane, light: bool, stacked: bool) -> Option<Look> {
+    look_nested(pane, light, stacked, 0)
+}
+
+/// [`look_on`] for a cell `depth` levels inside larger glass (panes of its
+/// surface, plus one when the surface's own window glass is under it).
+pub fn look_nested(pane: &Pane, light: bool, stacked: bool, depth: u32) -> Option<Look> {
     let l = look(pane, light)?;
-    Some(if stacked { l.stacked(light, pane.alpha) } else { l })
+    let l = if stacked { l.stacked(light, pane.alpha) } else { l };
+    Some(if depth > 0 {
+        l.nested(depth, light, pane.alpha)
+    } else {
+        l
+    })
 }
 
 /// The pane's box in output-local physical pixels, clipped to the surface
@@ -368,11 +440,16 @@ pub fn casts_shadow(pane: &Pane) -> bool {
 /// sides and top, and by `SHADOW_DROP` more at the bottom. The shader's
 /// `size` is this area, so its `range` and `drop` are in the same units.
 pub fn shadow_area(cell: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
+    shadow_area_dropped(cell, SHADOW_DROP)
+}
+
+/// [`shadow_area`] for a cell that drops its shadow `drop` px.
+pub fn shadow_area_dropped(cell: Rectangle<i32, Logical>, drop: i32) -> Rectangle<i32, Logical> {
     Rectangle::new(
         (cell.loc.x - SHADOW_RANGE, cell.loc.y - SHADOW_RANGE).into(),
         (
             cell.size.w + 2 * SHADOW_RANGE,
-            cell.size.h + 2 * SHADOW_RANGE + SHADOW_DROP,
+            cell.size.h + 2 * SHADOW_RANGE + drop,
         )
             .into(),
     )
@@ -382,6 +459,15 @@ pub fn shadow_area(cell: Rectangle<i32, Logical>) -> Rectangle<i32, Logical> {
 /// (logical px, already grown by any window animation scale).
 pub fn shadow_params(radius: f32) -> [f32; 3] {
     [SHADOW_RANGE as f32, radius, SHADOW_DROP as f32]
+}
+
+/// The extra drop and the shader's `focus` weight of a cell `depth` levels in.
+pub fn nested_shadow(depth: u32) -> (i32, f32) {
+    let d = depth.min(NEST_MAX);
+    (
+        SHADOW_DROP + NEST_SHADOW_DROP * d as i32,
+        (NEST_SHADOW_FOCUS * d as f32).min(1.0),
+    )
 }
 
 #[cfg(test)]
@@ -526,9 +612,9 @@ mod tests {
         let rest = look(&pane(Tone::Plain, 0, 255), true).unwrap();
         let hover = look(&pane(Tone::Plain, HOVERED, 255), true).unwrap();
         let press = look(&pane(Tone::Plain, PRESSED, 255), true).unwrap();
-        assert!((rest.shade - 0.07).abs() < 1e-6);
-        assert!((hover.shade - 0.11).abs() < 1e-6);
-        assert!((press.shade - 0.15).abs() < 1e-6);
+        assert!((rest.shade - 0.05).abs() < 1e-6);
+        assert!((hover.shade - 0.09).abs() < 1e-6);
+        assert!((press.shade - 0.13).abs() < 1e-6);
         // Rest < hover < press, and each is a darker step than the last.
         assert!(rest.shade < hover.shade && hover.shade < press.shade);
         // No white on a plain light pane: white over frost lifts it off its column.
@@ -682,5 +768,66 @@ mod tests {
         assert!(a.lift < full.lift && a.lift > 0.0);
         assert_eq!(look_on(&pane(Tone::Latent, 0, 255), false, true), None);
         assert_eq!(look_on(&pane(Tone::Plain, 0, 0), false, true), None);
+    }
+
+    #[test]
+    fn big_panes_are_barely_lensed_and_small_ones_keep_theirs() {
+        let sized = |w: i32, h: i32| Pane {
+            w,
+            h,
+            ..Pane::default()
+        };
+        // The largest bend any pane gets is the 4 px cap times this share.
+        let px = |p: &Pane| 4.0 * lens_scale(p);
+        assert!(px(&sized(32, 32)) > 3.5, "a key cap keeps its lens");
+        assert!(px(&sized(300, 36)) > 3.2, "a row is as tall as a control");
+        assert!(px(&sized(120, 100)) < 1.4, "a toast card is bent about a pixel");
+        assert!(px(&sized(540, 374)) <= 0.7, "a sheet is bent under a pixel");
+        assert!(px(&sized(4000, 3000)) >= 4.0 * LENS_FLOOR - 1e-4);
+        // Smooth and non-increasing in size.
+        let mut last = f32::MAX;
+        for s in 1..800 {
+            let v = lens_scale(&sized(s, s));
+            assert!(v <= last + 1e-6);
+            last = v;
+        }
+    }
+
+    #[test]
+    fn a_cell_inside_a_pane_is_a_layer_above_it() {
+        let boxed = |x, y, w, h| Pane {
+            x,
+            y,
+            w,
+            h,
+            ..Pane::default()
+        };
+        let set = [
+            boxed(0, 0, 500, 400),
+            boxed(10, 10, 480, 40),
+            boxed(20, 20, 30, 20),
+            boxed(600, 0, 30, 30),
+        ];
+        assert_eq!(nest_depth(&set, 0), 0);
+        assert_eq!(nest_depth(&set, 1), 1);
+        assert_eq!(nest_depth(&set, 2), 2);
+        assert_eq!(nest_depth(&set, 3), 0, "a sibling is not inside");
+        for light in [false, true] {
+            let base = look(&pane(Tone::Plain, 0, 255), light).unwrap();
+            let one = base.nested(1, light, 255);
+            let two = base.nested(2, light, 255);
+            assert!(one.rim > base.rim && two.rim > one.rim);
+            if light {
+                assert!(one.shade > base.shade && two.shade > one.shade);
+                assert_eq!(one.lift, base.lift, "no white on light frost");
+            } else {
+                assert!(one.lift > base.lift && two.lift > one.lift);
+                assert_eq!(one.shade, 0.0);
+            }
+            // A faded pane fades its step.
+            assert!(base.nested(1, light, 0).lift <= base.lift + 1e-6);
+        }
+        let (drop, focus) = nested_shadow(1);
+        assert!(drop > SHADOW_DROP && focus > 0.0 && nested_shadow(0) == (SHADOW_DROP, 0.0));
     }
 }

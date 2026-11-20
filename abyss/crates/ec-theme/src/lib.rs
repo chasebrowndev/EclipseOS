@@ -252,11 +252,11 @@ pub const DARK_SEEDS: Seeds = Seeds {
 
 /// STYLE.md "Light".
 pub const LIGHT_SEEDS: Seeds = Seeds {
-    base: Rgba::rgb(0xf4f1ea),
+    base: Rgba::rgb(0xfaf9f6),
     ink: Rgba::rgb(0x1a1610),
     accent: Rgba::rgb(0xf2c33c),
     accent_text: Some(Rgba::rgb(0x856000)),
-    frost_tint: Rgba::rgb(0xf4f1ea),
+    frost_tint: Rgba::rgb(0xfaf9f6),
     rim: 0.60,
 };
 
@@ -467,13 +467,13 @@ const DARK: Table = Table {
     glass_deep: 0.62,
     sheet_tint: 0.34,
     bar_tint: 0.22,
-    cell: [0.006, 0.012, 0.02],
-    cell_rim: [0.016, 0.026],
+    cell: [0.014, 0.024, 0.034], // a cell is a layer above the pane it sits on: a clear step, not a tint
+    cell_rim: [0.030, 0.045],
     cell_rim_away: 0.006,
-    cell_focus: [0.014, 0.02, 0.028],
-    cell_focus_rim: [0.04, 0.055],
+    cell_focus: [0.026, 0.034, 0.044],
+    cell_focus_rim: [0.06, 0.075],
     shadow: BLACK,
-    cell_shadow: 0.30,
+    cell_shadow: 0.45,
     border: [0.10, 0.16],
     hairline: 0.055,
     highlight: [0.07, 0.12, 0.20],
@@ -511,20 +511,20 @@ const DARK: Table = Table {
 const LIGHT: Table = Table {
     intent: true,
     builtin_base: LIGHT_SEEDS.base,
-    surfaces: [Rgba::rgb(0xebe6dc), Rgba::rgb(0xe3ddd1), Rgba::rgb(0xddd6c9)],
+    surfaces: [Rgba::rgb(0xf1efea), Rgba::rgb(0xe9e6df), Rgba::rgb(0xe2dfd7)],
     fill: WHITE,
     glass: 0.22,
     glass_strong: 0.32,
     glass_deep: 0.62,
     sheet_tint: 0.36,
     bar_tint: 0.30,
-    cell: [0.07, 0.11, 0.15], // ink at every state: a cell is darker than the frost it sits on, and each step darker still
-    cell_rim: [0.12, 0.18],
+    cell: [0.08, 0.12, 0.16], // ink at every state: a cell is darker than the frost it sits on, and each step darker still
+    cell_rim: [0.15, 0.21],
     cell_rim_away: 0.04,
     cell_focus: [0.70, 0.58, 0.46], // less white under the pointer
-    cell_focus_rim: [0.18, 0.24],
+    cell_focus_rim: [0.20, 0.26],
     shadow: Rgba::rgb(0x3c2d14),
-    cell_shadow: 0.28,
+    cell_shadow: 0.40,
     border: [0.10, 0.16],
     hairline: 0.07,
     highlight: [0.40, 0.60, 0.80],

@@ -199,7 +199,7 @@ impl Default for FrostBlur {
     }
 }
 
-/// `surface { tint 0.70; card-fill 0.035; inset-fill 0.03 }`. The white and
+/// `surface { tint 0.70; card-fill 0.035; inset-fill 0.05 }`. The white and
 /// tint layers the client-drawn glass sits on (COMP-02 §9). Values are
 /// sRGB-intent; clients convert.
 #[derive(Debug, Clone)]
@@ -217,7 +217,7 @@ impl Default for Surface {
         Self {
             tint: 0.70,
             card_fill: 0.035,
-            inset_fill: 0.03,
+            inset_fill: 0.05,
         }
     }
 }
