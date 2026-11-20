@@ -12,6 +12,7 @@ fn moved_values_equal_the_old_literals() {
     assert_eq!(popup::ANCHOR, popup::Anchor::Cell);
     assert_eq!(radius::WINDOW, 16.0);
     assert_eq!(radius::CARD, 13.0);
+    assert_eq!(radius::TOAST, 20.0);
     assert_eq!(radius::INSET, 10.0);
     assert_eq!(radius::PILL, 99.0);
     assert_eq!(radius::CHIP, 6.0);

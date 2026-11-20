@@ -128,6 +128,7 @@ competing yellow areas in one pane, no gradients of it.
 ## Structure
 - Window: 1120x720, radius 16px, 1px light border. No traffic-light dots — this is a
   window manager, so the titlebar is either absent or a thin label row.
+- Notification toast cards: radius 20px (`radius::TOAST`), rounder than windows; with compositor glass, `max(decoration.rounding, 20)`; without it (frost/blur mode) `decoration.rounding`, so the card matches the compositor sheet behind it.
 - Left sidebar 214px: the window tint (rgba(11,9,6,.70) by default) + blur(30px), the same tint as the content column, text nav items each with a small
   rounded placeholder icon square; active item = translucent fill + 3px yellow left bar
 - Sidebar footer: small mono status block (uptime, daemon version, device count)
