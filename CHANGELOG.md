@@ -38,9 +38,9 @@ scheme is now paper white.
   chips) use the lens material: a narrow bright rim, refraction that bends the
   backdrop near the edge only, and a soft contact shadow. Large surfaces stay
   clear in the middle.
-- **Stacked glass reads as layers.** A pane inside a bigger pane is drawn as a
-  cell with its own lift, rim and shadow, up to two levels. A control on a card
-  on a window no longer looks like one flat sheet.
+- **Stacked glass reads as layers.** A pane wholly inside a larger one draws as a
+  cell: its own fill, gradient, rim and contact shadow, with no second backdrop
+  sample. A control on a card on a window no longer looks like one flat sheet.
 - **Size-aware edge shading.** Edge darkening and lightening follow one
   continuous rule based on a pane's effective size, so long skinny panes, short
   fat panes and big windows all read as one family. Small controls look as they
@@ -134,7 +134,6 @@ scheme is now paper white.
   off their card more clearly.
 - Trusted prompt scrim is .45 (was heavier) so the glass behind it reads. The
   owner has not yet signed this value off.
-- Nested cell fills, rims and shadows are stronger in both schemes.
 - Compositor text is proportional: panels are the same pixel width but hold more
   characters, and line boxes are a pixel or two taller.
 - Apotheosis's chrome follows the compositor's colour scheme under glass.
@@ -181,3 +180,7 @@ scheme is now paper white.
 - Not yet measured: GPU cost per glass preset. Not yet tested: real DRM, greetd,
   PAM and multi-output sessions.
 - Apotheosis tab and palette overlays do not render in headless captures.
+- A headless run of the real lock screen showed a black screen with no wallpaper
+  and no clock. The lock preview renders correctly. Under investigation.
+- The README's lock screen and trusted prompt pictures are missing until they can
+  be captured as real glass.
