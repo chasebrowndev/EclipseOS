@@ -329,18 +329,71 @@ struct PaneRequest {
 }
 
 impl PaneRequest {
-    /// Pane `pane`'s output-local physical box: placed against the surface
-    /// origin, carried through the window's animation scale, then cut to the
-    /// crop. `None` when it lies wholly outside the surface or the crop.
-    fn rect(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
-        let r = glass::pane_rect(pane, self.size, self.loc, scale)?;
+    /// Where the set's clip falls, output-local physical, carried through the
+    /// window's animation scale like the boxes are. `None`: no clip.
+    /// `Some(None)`: the clip misses the surface.
+    fn clip_phys(&self, scale: Scale<f64>) -> Option<Option<Rectangle<i32, Physical>>> {
+        let c = glass::clip_rect(self.set.clip, self.size, self.loc, scale)?;
+        Some(c.map(|r| match self.scaled {
+            Some((origin, by)) => anim::track::scale_about(r, origin, by),
+            None => r,
+        }))
+    }
+
+    /// Pane `pane`'s SHAPE box: what its corner radius, rim and bezel are
+    /// computed from. A `CLIPPED` pane (ADR 0127) keeps its whole box, not cut
+    /// to the surface or the crop; any other is placed, carried through the
+    /// window's animation scale, and cut to the crop (a cut edge rounds).
+    fn shape(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
+        let clipped = pane.state & glass::CLIPPED != 0 && self.set.clip.is_some();
+        let r = if clipped {
+            glass::pane_full_rect(pane, self.loc, scale)?
+        } else {
+            glass::pane_rect(pane, self.size, self.loc, scale)?
+        };
         let r = match self.scaled {
             Some((origin, by)) => anim::track::scale_about(r, origin, by),
             None => r,
         };
+        if clipped {
+            return Some(r);
+        }
         match self.crop {
             Some(crop) => r.intersection(crop),
             None => Some(r),
+        }
+    }
+
+    /// The part of pane `pane` that is drawn: its shape cut to the clip (and
+    /// the surface) if it is `CLIPPED`, and to the crop. This, not the shape,
+    /// is the backdrop region and the element's box. `None` when nothing of
+    /// it shows.
+    fn rect(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
+        let shape = self.shape(pane, scale)?;
+        if pane.state & glass::CLIPPED == 0 {
+            return Some(shape);
+        }
+        let shown = match self.clip_phys(scale) {
+            Some(clip) => shape.intersection(clip?)?,
+            None => shape,
+        };
+        match self.crop {
+            Some(crop) => shown.intersection(crop),
+            None => Some(shown),
+        }
+    }
+
+    /// What a drawn effect that is not tied to one pane's box (a contact
+    /// shadow) is cut to for pane `pane`: the output crop and, for a
+    /// `CLIPPED` pane, the clip. `None`: uncut; an empty rectangle: hidden.
+    fn cut(&self, pane: &glass::Pane, scale: Scale<f64>) -> Option<Rectangle<i32, Physical>> {
+        let clip = (pane.state & glass::CLIPPED != 0)
+            .then(|| self.clip_phys(scale))
+            .flatten()
+            .map(|c| c.unwrap_or_default());
+        match (self.crop, clip) {
+            (Some(a), Some(b)) => Some(a.intersection(b).unwrap_or_default()),
+            (a, b) => a.or(b),
         }
     }
 
@@ -1761,6 +1814,9 @@ fn insert_panes(
     };
     let panes = req.set.as_slice();
     let rect_of = |p: &glass::Pane| req.rect(p, scale);
+    // The whole box: shape, radius and band come from it, so a clipped pane's
+    // cut edge is straight (ADR 0127).
+    let shape_of = |p: &glass::Pane| req.shape(p, scale);
     let light = config.appearance.glass_light();
     // A light pane's hairline is ink (STYLE.md Light); dark keeps the white one.
     let rim = (light > 0.0).then_some((0, false, glass::LIGHT_RIM_INK, 0));
@@ -1775,7 +1831,7 @@ fn insert_panes(
     let strength = lens.strength;
     let short = panes
         .iter()
-        .filter_map(rect_of)
+        .filter_map(shape_of)
         .map(|r| r.size.w.min(r.size.h))
         .max()
         .unwrap_or(1) as f32;
@@ -1801,6 +1857,7 @@ fn insert_panes(
             let pane = &panes[i];
             let look = glass::look_on(pane, light > 0.0, req.stacked)?;
             let rect = rect_of(pane)?;
+            let shape = shape_of(pane)?;
             let mut tuned = cfg.glass.clone();
             tuned.dispersion = lens.dispersion;
             tuned.rim = lens.rim * look.rim;
@@ -1808,7 +1865,7 @@ fn insert_panes(
                 effects::glass_uniforms_lifted_into(
                     uniforms,
                     effects::GlassPreset::Lens,
-                    rect,
+                    shape,
                     fb_height,
                     mirrored,
                     (pane.radius as f64 * upscale * grown) as f32,
@@ -1817,7 +1874,7 @@ fn insert_panes(
                     if pane.bezel == 0 {
                         lens.bevel * grown as f32
                     } else {
-                        glass::band(pane, rect, upscale * grown)
+                        glass::band(pane, shape, upscale * grown)
                     },
                     &tuned,
                     rim,
@@ -1843,6 +1900,7 @@ fn insert_panes(
             let Some(rect) = rect_of(pane).filter(|_| glass::casts_shadow(pane)) else {
                 continue;
             };
+            let rect = shape_of(pane).unwrap_or(rect);
             let cell = rect.to_f64().to_logical(scale).to_i32_round();
             let area = glass::shadow_area(cell, light > 0.0);
             let [range, radius, drop] = glass::shadow_params(pane.radius as f32 * grown as f32, light > 0.0);
@@ -1885,7 +1943,7 @@ fn insert_panes(
                     *applied = params;
                 }
             }
-            let element = match req.crop {
+            let element = match req.cut(pane, scale) {
                 Some(crop) => CropRenderElement::from_element(element.clone(), scale, crop)
                     .map(AbyssRenderElement::CroppedShader),
                 None => Some(AbyssRenderElement::Shader(element.clone())),
@@ -4027,6 +4085,108 @@ mod tests {
             scaled,
             alpha: 1.0,
         }
+    }
+
+    fn clipped_pane(x: i32, y: i32, w: i32, h: i32, r: u32) -> glass::Pane {
+        glass::Pane {
+            x,
+            y,
+            w,
+            h,
+            radius: r,
+            state: glass::CLIPPED,
+            alpha: 255,
+            ..Default::default()
+        }
+    }
+
+    fn clip_request(clip: Option<(i32, i32, i32, i32)>) -> PaneRequest {
+        let mut req = window_request(0, false, (0, 0).into(), None);
+        req.set.clip = clip.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
+        req
+    }
+
+    fn pr(r: Rectangle<i32, Physical>) -> (i32, i32, i32, i32) {
+        (r.loc.x, r.loc.y, r.size.w, r.size.h)
+    }
+
+    /// ADR 0127: the shape stays the whole box; only the drawn rectangle is
+    /// cut to the clip.
+    #[test]
+    fn a_clip_cuts_the_drawn_box_and_keeps_the_shape_whole() {
+        let scale = Scale::from(1.0);
+        let req = clip_request(Some((0, 50, 400, 100)));
+        let top = clipped_pane(20, 30, 100, 60, 12);
+        assert_eq!(pr(req.shape(&top, scale).unwrap()), (20, 30, 100, 60));
+        assert_eq!(pr(req.rect(&top, scale).unwrap()), (20, 50, 100, 40));
+        let bottom = clipped_pane(20, 120, 100, 60, 12);
+        assert_eq!(pr(req.shape(&bottom, scale).unwrap()), (20, 120, 100, 60));
+        assert_eq!(pr(req.rect(&bottom, scale).unwrap()), (20, 120, 100, 30));
+    }
+
+    #[test]
+    fn a_shape_is_not_cut_to_the_surface_when_clipped() {
+        let scale = Scale::from(1.0);
+        // The surface is 400x300; the pane hangs 20 px below it.
+        let req = clip_request(Some((0, 0, 400, 300)));
+        let p = clipped_pane(20, 250, 100, 70, 12);
+        assert_eq!(pr(req.shape(&p, scale).unwrap()), (20, 250, 100, 70));
+        assert_eq!(pr(req.rect(&p, scale).unwrap()), (20, 250, 100, 50));
+        // Unclipped (no clip set) keeps today's surface cut.
+        let req = clip_request(None);
+        assert_eq!(pr(req.shape(&p, scale).unwrap()), (20, 250, 100, 50));
+    }
+
+    #[test]
+    fn a_pane_wholly_outside_the_clip_is_dropped() {
+        let scale = Scale::from(1.0);
+        let req = clip_request(Some((0, 50, 400, 100)));
+        assert_eq!(req.rect(&clipped_pane(20, 0, 100, 40, 8), scale), None);
+        assert_eq!(req.rect(&clipped_pane(20, 160, 100, 40, 8), scale), None);
+        // A clip that misses the surface hides every clipped pane.
+        let req = clip_request(Some((0, 500, 400, 100)));
+        assert_eq!(req.rect(&clipped_pane(20, 0, 100, 40, 8), scale), None);
+    }
+
+    #[test]
+    fn unflagged_panes_ignore_the_clip() {
+        let scale = Scale::from(1.0);
+        let req = clip_request(Some((0, 50, 400, 100)));
+        let mut p = clipped_pane(20, 0, 100, 40, 8);
+        p.state = 0;
+        assert_eq!(pr(req.rect(&p, scale).unwrap()), (20, 0, 100, 40));
+        assert_eq!(req.rect(&p, scale), req.shape(&p, scale));
+    }
+
+    #[test]
+    fn clip_math_zero_and_negative_sizes() {
+        assert_eq!(glass::parse_clip(0, 0, 0, 10), Some(None));
+        assert_eq!(glass::parse_clip(0, 0, 10, 0), Some(None));
+        assert_eq!(glass::parse_clip(0, 0, -1, 10), None);
+        assert_eq!(glass::parse_clip(0, 0, 10, -1), None);
+        let c = glass::parse_clip(1, 2, 3, 4).unwrap().unwrap();
+        assert_eq!((c.loc.x, c.loc.y, c.size.w, c.size.h), (1, 2, 3, 4));
+        // The state bit survives the parser.
+        let bytes: Vec<u8> = [0u32, 0, 10, 10, 4, 0, 0, glass::CLIPPED | 8, 255]
+            .iter()
+            .flat_map(|v| v.to_ne_bytes())
+            .collect();
+        assert_eq!(
+            glass::parse_panes(&bytes).unwrap().as_slice()[0].state,
+            glass::CLIPPED
+        );
+    }
+
+    #[test]
+    fn a_clipped_cut_covers_the_shadow_and_scales_with_the_output() {
+        let scale = Scale::from(2.0);
+        let req = clip_request(Some((0, 50, 400, 100)));
+        let p = clipped_pane(20, 30, 100, 60, 12);
+        assert_eq!(pr(req.cut(&p, scale).unwrap()), (0, 100, 800, 200));
+        assert_eq!(pr(req.rect(&p, scale).unwrap()), (40, 100, 200, 80));
+        let mut q = p;
+        q.state = 0;
+        assert_eq!(req.cut(&q, scale), None);
     }
 
     /// Panes are surface-local to the root surface, whose origin is the window
