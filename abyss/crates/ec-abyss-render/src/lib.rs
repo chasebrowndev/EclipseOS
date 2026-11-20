@@ -59,8 +59,9 @@ use smithay::{
         layer_map_for_output,
         space::SpaceRenderElements,
         utils::{
-            surface_presentation_feedback_flags_from_states, surface_primary_scanout_output,
-            update_surface_primary_scanout_output, OutputPresentationFeedback,
+            send_frames_surface_tree, surface_presentation_feedback_flags_from_states,
+            surface_primary_scanout_output, take_presentation_feedback_surface_tree,
+            update_surface_primary_scanout_output, with_surfaces_surface_tree, OutputPresentationFeedback,
         },
         PopupManager, Space, Window,
     },
@@ -3271,7 +3272,25 @@ fn push_border(
 }
 
 /// Send frame callbacks to everything that was just drawn.
-pub fn send_frames(space: &Space<Window>, output: &Output, time: std::time::Duration) {
+///
+/// `lock` is the session locker's surface for `output` while locked (it is
+/// not in the space or the layer map, so it needs its own pass; without it a
+/// vsynced locker never gets a frame callback and freezes after one frame).
+pub fn send_frames(
+    space: &Space<Window>,
+    output: &Output,
+    lock: Option<&WlSurface>,
+    time: std::time::Duration,
+) {
+    if let Some(surface) = lock {
+        send_frames_surface_tree(
+            surface,
+            output,
+            time,
+            Some(std::time::Duration::ZERO),
+            surface_primary_scanout_output,
+        );
+    }
     for window in space.elements() {
         window.send_frame(
             output,
@@ -3306,7 +3325,23 @@ pub struct SurfaceFeedback {
 
 /// Record, per surface, which output actually presented it. Feeds both
 /// `wp_presentation` (zero-copy flag) and frame-callback throttling.
-pub fn update_primary_scanout(space: &Space<Window>, output: &Output, states: &RenderElementStates) {
+pub fn update_primary_scanout(
+    space: &Space<Window>,
+    output: &Output,
+    lock: Option<&WlSurface>,
+    states: &RenderElementStates,
+) {
+    if let Some(surface) = lock {
+        with_surfaces_surface_tree(surface, |surface, data| {
+            update_surface_primary_scanout_output(
+                surface,
+                output,
+                data,
+                states,
+                default_primary_scanout_output_compare,
+            );
+        });
+    }
     for window in space.elements() {
         window.with_surfaces(|surface, data| {
             update_surface_primary_scanout_output(
@@ -3337,9 +3372,18 @@ pub fn update_primary_scanout(space: &Space<Window>, output: &Output, states: &R
 pub fn presentation_feedback(
     space: &Space<Window>,
     output: &Output,
+    lock: Option<&WlSurface>,
     states: &RenderElementStates,
 ) -> OutputPresentationFeedback {
     let mut feedback = OutputPresentationFeedback::new(output);
+    if let Some(surface) = lock {
+        take_presentation_feedback_surface_tree(
+            surface,
+            &mut feedback,
+            surface_primary_scanout_output,
+            |s, _| surface_presentation_feedback_flags_from_states(s, states),
+        );
+    }
     for window in space.elements() {
         window.take_presentation_feedback(&mut feedback, surface_primary_scanout_output, |surface, _| {
             surface_presentation_feedback_flags_from_states(surface, states)

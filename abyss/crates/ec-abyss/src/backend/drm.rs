@@ -2526,11 +2526,12 @@ fn render_output(state: &mut AbyssState, index: usize) {
     // `drm` borrow and handed back to `queue_frame`.
     let mut queued = false;
     if let Some(states) = states {
-        update_primary_scanout(&state.space, &output, &states);
+        let lock = state.lock.frame_surface(&output);
+        update_primary_scanout(&state.space, &output, lock.as_ref(), &states);
         if let Some(fb) = surface_feedback.as_ref() {
             send_dmabuf_feedback(&state.space, &output, fb, candidate.as_ref());
         }
-        let presentation = presentation_feedback(&state.space, &output, &states);
+        let presentation = presentation_feedback(&state.space, &output, lock.as_ref(), &states);
         let submit_start = Instant::now();
         let Some(drm) = state.drm.as_mut() else { return };
         match drm.outputs[index].compositor.queue_frame(Some(presentation)) {
@@ -2672,7 +2673,12 @@ fn render_output(state: &mut AbyssState, index: usize) {
     }
 
     let time = state.start_time.elapsed();
-    crate::render::send_frames(&state.space, &output, time);
+    crate::render::send_frames(
+        &state.space,
+        &output,
+        state.lock.frame_surface(&output).as_ref(),
+        time,
+    );
     crate::protocols::standard::frame_timing::release(state, &output);
     state.space.refresh();
     state.popups.cleanup();

@@ -416,7 +416,8 @@ fn redraw(
     let render_time = frame_start.elapsed();
     let submit_start = std::time::Instant::now();
     let (damage, states) = rendered;
-    update_primary_scanout(&state.space, out, &states);
+    let lock = state.lock.frame_surface(out);
+    update_primary_scanout(&state.space, out, lock.as_ref(), &states);
     if let Some(damage) = damage {
         if let Err(e) = backend.submit(Some(&damage)) {
             tracing::error!(?e, "submit");
@@ -429,7 +430,7 @@ fn redraw(
     // Best effort: winit gives us no page-flip timestamp, so the submit time is
     // reported without a hardware-completion flag.
     let now = state.clock.now();
-    let mut feedback = presentation_feedback(&state.space, out, &states);
+    let mut feedback = presentation_feedback(&state.space, out, lock.as_ref(), &states);
     feedback.presented::<_, smithay::utils::Monotonic>(
         now,
         Refresh::fixed(std::time::Duration::from_millis(16)),
@@ -439,7 +440,7 @@ fn redraw(
     state.stats.record(render_time, submit_start.elapsed());
     state.stats.maybe_report();
     let time = state.start_time.elapsed();
-    send_frames(&state.space, out, time);
+    send_frames(&state.space, out, lock.as_ref(), time);
     crate::protocols::standard::frame_timing::release(state, out);
     state.space.refresh();
     state.popups.cleanup();
