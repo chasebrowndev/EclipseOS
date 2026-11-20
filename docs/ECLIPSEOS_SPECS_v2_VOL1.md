@@ -2590,7 +2590,10 @@ overlay; top layer-shell; overlay layer-shell; input-method popup; cursor;
 **annotation pass** (COMP-18 §1.1); region selector; **TrustedUI last,
 always**. A fullscreen toplevel that owns its output is drawn above the top
 layer, not above overlay. While the session is locked the lock surfaces replace
-everything below TrustedUI. A translucent layer surface gets its blur
+everything below TrustedUI. *(amended ADR 0129, 2026-11-19)* "Everything" includes the windows and layers: the one
+exception is the compositor's own wallpaper, drawn beneath the lock surface of a locker that
+asks for `eclipse_glass_v1` panes in `glass` mode, so its glass blurs the wallpaper and nothing
+else. No window, layer, popup or other client content is ever drawn or sampled under lock. A translucent layer surface gets its blur
 backdrop directly beneath it (§9). The drag icon is not yet drawn (code owed).
 
 *(amended ADR 0104, 2026-11-12)* Beneath everything, the compositor draws the

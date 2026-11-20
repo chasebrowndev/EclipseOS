@@ -3,7 +3,8 @@
 //!
 //! The lock is compositor-side and unbypassable: while [`LockState::locked`] is
 //! set, each backend draws [`lock_elements`] and nothing else: the locker's
-//! surface for that output, or a compositor-drawn fallback where the locker
+//! surface for that output (over the compositor's own wallpaper when it
+//! asks for glass panes, ADR 0129), or a compositor-drawn fallback where the locker
 //! has not provided one. A locker that dies keeps the session locked behind that
 //! fallback (ADR 0024) — a crash must never be a way in.
 //!
@@ -518,9 +519,22 @@ pub(crate) fn tick(state: &mut AbyssState, now: Instant) {
 pub fn lock_elements(
     renderer: &mut GlesRenderer,
     lock: &mut LockState,
+    borders: &mut ec_abyss_render::BorderStore,
+    config: &crate::config::Config,
     output: &Output,
 ) -> Vec<AbyssRenderElement> {
     let scale = Scale::from(output.current_scale().fractional_scale());
+    // ADR 0129: a locker that asks for glass panes gets them over the
+    // compositor's wallpaper alone; anything less falls back to the plain
+    // surface below.
+    if let Some(surface) = lock.surface_for(output).map(|s| s.wl_surface().clone()) {
+        let ground = lock.fallback_for(output).0.clone();
+        if let Some(els) =
+            ec_abyss_render::lock_glass_elements(renderer, borders, config, output, &surface, &ground)
+        {
+            return els;
+        }
+    }
     if let Some(surface) = lock.surface_for(output) {
         return render_elements_from_surface_tree(
             renderer,

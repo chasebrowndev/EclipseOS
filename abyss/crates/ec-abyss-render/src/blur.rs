@@ -656,6 +656,9 @@ pub enum BlurKey {
     /// A layer surface's `eclipse_glass_v1` panes, kept apart from the
     /// layer's own shaped backdrop when it keeps one (the bar's sheet).
     LayerPanes(LayerSurface),
+    /// The session locker's `eclipse_glass_v1` panes (ADR 0129): blurred over
+    /// the wallpaper alone, apart from every other key.
+    LockPanes(smithay::reexports::wayland_server::protocol::wl_surface::WlSurface),
 }
 
 /// Per-surface blur bookkeeping, kept alive between frames.

@@ -466,7 +466,13 @@ fn redraw(
         // A fullscreen toplevel drops the `Top` layer below the window stack.
         let fullscreen = crate::shell::output_has_fullscreen(state, out);
         let mut elements = if state.lock.locked {
-            crate::protocols::standard::session_lock::lock_elements(renderer, &mut state.lock, out)
+            crate::protocols::standard::session_lock::lock_elements(
+                renderer,
+                &mut state.lock,
+                &mut state.borders,
+                &state.config,
+                out,
+            )
         } else {
             collect_elements(
                 renderer,
