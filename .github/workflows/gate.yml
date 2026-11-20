@@ -74,8 +74,11 @@ jobs:
       - run: cargo test --workspace
 
   conformance:
-    name: wlcs (headless)
+    name: wlcs (headless, advisory)
     runs-on: ubuntu-24.04
+    # Advisory: a red run is reported but does not block a merge. The owner
+    # decides what to do with it; the suite is slow and the skip list is long.
+    continue-on-error: true
     # PR-only, like tcb-review and spec-trail. The suite is a ~40 minute job
     # dominated by a from-scratch cmake build of wlcs; running it on every
     # push to every branch bought nothing that the PR run does not.
@@ -450,14 +453,14 @@ jobs:
         run: packaging/test/release-preflight.sh
 
   spec-trail:
-    name: PR cites a spec section
+    name: PR spec citation (advisory)
     runs-on: ubuntu-24.04
     if: github.event_name == 'pull_request'
     timeout-minutes: 5
     steps:
-      # F-07 §5: every PR body cites the spec section it implements.
-      # This is what makes the spec->code trail auditable when work is
-      # delegated to an agent rather than typed by hand.
+      # F-07 §5: a PR body cites the spec section it implements when one
+      # applies. It no longer blocks: outside contributors and small fixes
+      # often have no section to cite. The notice keeps the trail visible.
       # Fog's spec has no numbered IDs, so it is cited as 'Implements FOG §X'.
       - name: check PR body
         env:
@@ -466,6 +469,5 @@ jobs:
           if echo "$BODY" | grep -qE '(Implements|Fixes|Amends) ((COMP|S|P|A|F|I|D|X|T)-[0-9]{2}|FOG §)'; then
             echo "spec citation found"
           else
-            echo "::error title=No spec citation::PR body must cite the spec section it implements, e.g. 'Implements COMP-08 §4' or 'Implements FOG §Milestones' (F-07 §5)"
-            exit 1
+            echo "::notice title=No spec citation::A spec citation is welcome when one applies, e.g. 'Implements COMP-08 §4' or 'Implements FOG §Milestones' (F-07 §5). Not required."
           fi

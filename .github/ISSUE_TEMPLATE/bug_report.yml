@@ -1,0 +1,60 @@
+name: Bug report
+description: Something looks wrong or does not work.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Security problems go through SECURITY.md, not here.
+        Small reports are fine. Fill in what you know.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you saw, and what you expected instead. A screenshot helps a lot for anything visual.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can we see it?
+      description: Steps, or "it just happens". Say if it is every time or sometimes.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it show up?
+      options:
+        - Compositor (abyss)
+        - Settings
+        - Bar, launcher or toasts
+        - Login, lock screen or greeter
+        - Terminal (Apotheosis)
+        - Installer or first run
+        - Policy, agents or trusted prompts
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: scheme
+    attributes:
+      label: Colour scheme
+      options:
+        - Dark
+        - Light
+        - Both / not relevant
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: "`ec-ctl version`, or the commit you built."
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`journalctl --user -t ec-abyss -b` around the problem. Please remove anything private."
+      render: shell
+  - type: textarea
+    id: setup
+    attributes:
+      label: Your setup
+      description: GPU and driver, number of monitors and scale, backend (drm, winit, headless).
