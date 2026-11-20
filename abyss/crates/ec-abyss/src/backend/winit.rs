@@ -392,6 +392,16 @@ fn redraw(
                     .unwrap_or_default(),
             ),
         );
+        // Its glass body, drawn from everything now below the panel
+        // (ADR 0128); only a prompt on this output does anything here.
+        crate::trusted_ui::splice_glass(
+            renderer,
+            &mut state.trusted_ui,
+            &mut state.borders,
+            out,
+            &mut elements,
+            0,
+        );
         // Overscan compensation (COMP-03 §2) — same wrap as the DRM path, so a
         // nested dev session shows exactly what the panel will.
         let (overscan, calibrating) = state

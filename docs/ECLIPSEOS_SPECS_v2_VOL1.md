@@ -4849,6 +4849,18 @@ on the event loop while PAM runs.
   once, so a prompt always matches the desktop around it. No client can set
   or request it, and layout, text and controls are identical in both.
 - Scales with output scale; readable at 1.0 and 2.0.
+- *(amended ADR 0128, 2026-11-19)* The prompt panel's body is glass: a fixed
+  tint over a blur of the compositor's own already-drawn passes. The blur
+  floor (at least 4 down/up passes, no sharp half, no lensing or dispersion)
+  and the tint floor are compiled in and cannot be set by config, theme,
+  window rule or client; the measured leak bound (no local contrast above
+  6/255 over a 16x16 window of the body, whatever is behind) is asserted by
+  test. Every text colour drawn straight on the body holds 4.5:1 over a
+  mid-grey scene. The phrase frame, the untrusted block, the entry
+  field and the buttons stay opaque. If the blur cannot be built for a frame
+  the opaque panel is drawn instead, never a see-through one. The prompt is
+  still the last pass, never in a capture target, and not drawn under the
+  session lock.
 - Renders in the compositor process only; no IPC in the render path, so a
   hung `policyd` cannot blank the prompt that is waiting on it.
 

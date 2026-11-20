@@ -601,6 +601,16 @@ fn redraw(
                     .unwrap_or_default(),
             ),
         );
+        // Its glass body, drawn from everything now below the panel
+        // (ADR 0128); only a prompt on this output does anything here.
+        crate::trusted_ui::splice_glass(
+            renderer,
+            &mut state.trusted_ui,
+            &mut state.borders,
+            out,
+            &mut elements,
+            0,
+        );
         let mut fb = match Bind::bind(renderer, &mut data.target) {
             Ok(fb) => fb,
             Err(e) => {

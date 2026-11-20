@@ -2266,6 +2266,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
             scale,
         ));
     }
+    // Where the prompt's panel lands, for the glass body (ADR 0128).
+    let prompt_at = elements.len();
     elements.extend(crate::trusted_ui::elements(
         renderer,
         &mut state.trusted_ui,
@@ -2375,6 +2377,16 @@ fn render_output(state: &mut AbyssState, index: usize) {
         Some(&behind),
     ));
     elements.extend(behind);
+    // The prompt's glass body, drawn from everything now below the panel
+    // (ADR 0128); only a prompt on this output does anything here.
+    crate::trusted_ui::splice_glass(
+        renderer,
+        &mut state.trusted_ui,
+        &mut state.borders,
+        &output,
+        &mut elements,
+        prompt_at,
+    );
     // Overscan compensation (COMP-03 §2): scale the finished scene into the
     // inset rect and leave the margins black. The markers go on afterwards so
     // they stay in raw framebuffer pixels — they exist to show where the
