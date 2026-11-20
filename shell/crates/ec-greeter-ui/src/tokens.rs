@@ -167,39 +167,33 @@ pub mod motion {
     pub const MAX_DT: f32 = 1.0 / 30.0;
 }
 
-/// Type faces: Instrument Sans for the UI, JetBrains Mono for data (STYLE.md).
+/// Type faces: Onest for everything (STYLE.md); digits are tabular in the
+/// vendored statics.
 pub mod font {
     use super::Font;
     use iced::font::{Family, Weight};
 
-    const fn sans(weight: Weight) -> Font {
+    /// The family name the embedded files carry (name ID 1).
+    pub const FAMILY: &str = "Onest";
+
+    const fn onest(weight: Weight) -> Font {
         Font {
-            family: Family::Name("Instrument Sans"),
+            family: Family::Name(FAMILY),
             weight,
             ..Font::DEFAULT
         }
     }
 
-    const fn mono(weight: Weight) -> Font {
-        Font {
-            family: Family::Name("JetBrains Mono"),
-            weight,
-            ..Font::DEFAULT
-        }
-    }
-
-    pub const UI: Font = sans(Weight::Normal);
-    pub const UI_MEDIUM: Font = sans(Weight::Medium);
-    pub const DATA: Font = mono(Weight::Normal);
-    pub const DATA_MEDIUM: Font = mono(Weight::Medium);
+    pub const UI: Font = onest(Weight::Normal);
+    pub const UI_MEDIUM: Font = onest(Weight::Medium);
+    pub const DATA: Font = onest(Weight::Normal);
+    pub const DATA_MEDIUM: Font = onest(Weight::Medium);
 
     /// The faces the greeter uses, for `iced::Settings::fonts`. Loading them is
     /// the application's job (`run`).
     pub const BYTES: &[&[u8]] = &[
-        include_bytes!("../../../../assets/fonts/InstrumentSans-Regular.ttf"),
-        include_bytes!("../../../../assets/fonts/InstrumentSans-Medium.ttf"),
-        include_bytes!("../../../../assets/fonts/JetBrainsMono-Regular.ttf"),
-        include_bytes!("../../../../assets/fonts/JetBrainsMono-Medium.ttf"),
+        include_bytes!("../../../../assets/fonts/Onest-Regular.ttf"),
+        include_bytes!("../../../../assets/fonts/Onest-Medium.ttf"),
     ];
 }
 
@@ -222,9 +216,21 @@ mod tests {
 
     #[test]
     fn every_face_is_a_truetype_or_opentype_file() {
-        assert_eq!(font::BYTES.len(), 4);
+        assert_eq!(font::BYTES.len(), 2);
         for face in font::BYTES {
             assert!(face.starts_with(&[0x00, 0x01, 0x00, 0x00]) || face.starts_with(b"OTTO"));
+        }
+    }
+
+    /// The embedded faces carry the family name the tokens request.
+    #[test]
+    fn every_embedded_face_is_the_requested_family() {
+        let needle: Vec<u8> = font::FAMILY.encode_utf16().flat_map(u16::to_be_bytes).collect();
+        for face in font::BYTES {
+            assert!(face.windows(needle.len()).any(|w| w == needle.as_slice()));
+        }
+        for f in [font::UI, font::UI_MEDIUM, font::DATA, font::DATA_MEDIUM] {
+            assert_eq!(f.family, iced::font::Family::Name(font::FAMILY));
         }
     }
 }

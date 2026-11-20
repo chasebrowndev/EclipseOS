@@ -167,7 +167,7 @@ pub fn scheme_blurb(value: &str) -> &'static str {
     match value {
         "dark" => "The warm-black desktop, always.",
         "light" => "The bright frosted desktop, always.",
-        _ => "Dark and light by the times below, local time. No location is used.",
+        _ => "Dark and light by the time of day, at the hours set in Blur & glass. No location is used.",
     }
 }
 
@@ -209,6 +209,95 @@ pub const ADAPTIVE_STRENGTH: &str = "decoration.blur.adaptive.strength";
 /// ([`mode_blurb`], [`blur_blurb`], …) are not data and stay here.
 pub fn caption(path: &str) -> Option<&'static str> {
     ec_abyss_config::meta::get(path).and_then(|m| m.caption)
+}
+
+/// A group name as a card's title: its first letter up (`colour scheme` is
+/// "Colour scheme"). `None` for an unnamed group.
+pub fn group_title(group: &str) -> Option<String> {
+    let mut chars = group.chars();
+    let first = chars.next()?;
+    Some(first.to_uppercase().chain(chars).collect())
+}
+
+/// The card a key sits in: its group, unless this page splits that group
+/// further. The Layout page's one group of fourteen settings is three topics
+/// to a person (how windows tile, the desktops, the corners), and a long card
+/// with no break is what a settings list reads as at its worst.
+pub fn card(path: &str, group: &'static str) -> &'static str {
+    match path {
+        "general.layout"
+        | "general.floating-placement"
+        | "general.snap"
+        | "general.snap-distance"
+        | "general.edge-tile"
+        | "general.edge-tile-distance" => "tiling & snapping",
+        "general.desktop-rows" | "general.desktop-wrap" => "desktops",
+        p if p.starts_with("general.hot-corner") => "hot corners",
+        _ => group,
+    }
+}
+
+/// The one line under a group's title when its page shows several cards.
+/// Keyed by the page's path and the group, because a group name repeats
+/// across pages (`keybinds`, `search`). Presentation only: a missing row is a
+/// card with no caption, never a missing setting.
+pub fn group_caption(page: &str, group: &str) -> Option<&'static str> {
+    Some(match (page, group) {
+        ("effects/blur-glass", "colour scheme") => {
+            "Light, dark or automatic, and the accent every app shares."
+        }
+        ("effects/blur-glass", "blur") => "The material drawn behind translucent windows.",
+        ("effects/blur-glass", "surface") => "How much tint windows and their cards carry.",
+        ("effects/shadow-glow", "shadow") => "Depth under windows.",
+        ("effects/shadow-glow", "glow") => "The light on the active window.",
+        ("windows/layout", "tiling & snapping") => "How windows tile, snap to edges and open when floating.",
+        ("windows/layout", "desktops") => "The grid of desktops, and whether it wraps around.",
+        ("windows/layout", "hot corners") => "What a corner of the screen does when the pointer rests in it.",
+        ("windows/focus-guides", "focus") => "Which window takes the keys, and where the pointer goes.",
+        ("windows/focus-guides", "new windows") => "What a window does when it opens.",
+        ("windows/focus-guides", "drag guides") => "The outlines shown while a window is dragged.",
+        ("system/rendering", "graphics") => "Which GPU draws which apps.",
+        ("system/rendering", "rendering") => "The render device, and how frames reach the screen.",
+        ("system/general", "general") => "Hints and behaviour across the desktop.",
+        ("system/general", "search") => "What Settings search remembers about you.",
+        ("privacy", "capture") => "Who may record the screen, and how you are told.",
+        ("privacy", "clipboard") => "Apps that may read the clipboard in the background.",
+        ("privacy", "input method") => "Apps that may act as an input method.",
+        ("privacy", "input scripting") => "Whether programs may type for you.",
+        ("privacy", "virtual pointer") => "Apps that may move the pointer.",
+        ("oracle-eyes/model-capture", "model") => "The command that answers.",
+        ("oracle-eyes/model-capture", "timing") => "How long it waits, and how long answers stay.",
+        ("oracle-eyes/model-capture", "keybinds") => "Keys while an answer is open.",
+        ("oracle-eyes/model-capture", "debug") => "Diagnostics for the add-on's author.",
+        _ => return None,
+    })
+}
+
+/// Settings most people never change: tucked behind a page's "Advanced"
+/// expander, still searchable, and opened by a search jump or when the page
+/// holds nothing else. Presentation only; the keys and their pages are the
+/// compositor's (`ec_abyss_config::meta`).
+pub const ADVANCED: &[&str] = &[
+    "general.edge-tile-distance",
+    "general.hot-corner-dwell",
+    "general.hot-corner-cooldown",
+    "general.drop-edge-band",
+    "decoration.blur.passes",
+    "misc.render-device",
+    "render.direct-scanout",
+    "misc.secondary-compositing",
+    "input.kb-options",
+    "idle.lock-command",
+    "oracle-eyes.timeout-ms",
+    "oracle-eyes.auto-interval-ms",
+    "oracle-eyes.hold-ms",
+    "oracle-eyes.debug",
+    "setup.complete",
+    "setup.pending-preset",
+];
+
+pub fn is_advanced(path: &str) -> bool {
+    ADVANCED.contains(&path)
 }
 
 /// The value of a node's `mode` key that turns the node off: nothing under

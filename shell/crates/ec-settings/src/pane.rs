@@ -13,10 +13,15 @@
 //! the config node it happens to be spelled under: `components.launcher` and
 //! `misc.terminal-command` are the launcher's.
 
+use ec_ui::widget::art::{Glyph, Hue};
+
 /// A top-level entry in the sidebar. Sections with more than one page expand
 /// in place to list them; the rest are a page of their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Section {
+    /// The landing page: a summary of this machine and the settings reached
+    /// for most. Not a settings page; no config key lands on it.
+    Overview,
     Windows,
     Effects,
     Desktop,
@@ -37,6 +42,8 @@ pub enum Section {
 /// One short page of settings: what the content column shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Page {
+    /// The landing page.
+    Overview,
     // Windows
     Layout,
     Gaps,
@@ -97,28 +104,96 @@ pub enum Page {
     TermMedia,
 }
 
+/// A heading in the sidebar: a few families of sections, named the way an
+/// operating system's own settings name them. Presentation only. A key's page
+/// path (`effects/blur-glass`) never includes it, so no path, CLI argument or
+/// config key changes with how the sidebar is grouped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Group {
+    Look,
+    Devices,
+    System,
+    Privacy,
+    Apps,
+}
+
+impl Group {
+    /// Sidebar order.
+    pub const ALL: &'static [Group] = &[
+        Group::Look,
+        Group::Devices,
+        Group::System,
+        Group::Privacy,
+        Group::Apps,
+    ];
+
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::Look => "Look & feel",
+            Group::Devices => "Devices",
+            Group::System => "System",
+            Group::Privacy => "Privacy & accounts",
+            Group::Apps => "Apps & add-ons",
+        }
+    }
+
+    /// The heading in a narrow sidebar, where a long one would wrap mid-word.
+    pub fn short_title(self) -> &'static str {
+        match self {
+            Group::Privacy => "Privacy",
+            Group::Apps => "Apps",
+            other => other.title(),
+        }
+    }
+
+    /// The sections under this heading, in sidebar order.
+    pub fn sections(self) -> impl Iterator<Item = Section> {
+        Section::ALL
+            .iter()
+            .copied()
+            .filter(move |s| s.group() == Some(self))
+    }
+
+    pub fn hue(self) -> Hue {
+        match self {
+            Group::Look => Hue::Look,
+            Group::Devices => Hue::Devices,
+            Group::System => Hue::System,
+            Group::Privacy => Hue::Privacy,
+            Group::Apps => Hue::Apps,
+        }
+    }
+}
+
 impl Section {
     /// Sidebar order.
     pub const ALL: &'static [Section] = &[
+        Section::Overview,
+        // Look & feel
         Section::Windows,
         Section::Effects,
         Section::Desktop,
         Section::Taskbar,
         Section::Launcher,
+        // Devices
         Section::Display,
-        Section::Network,
         Section::Input,
+        Section::Network,
+        // System
         Section::Session,
         Section::System,
+        // Privacy & accounts
         Section::Privacy,
         Section::Accounts,
+        // Apps & add-ons
+        Section::Terminal,
         Section::Addons,
         Section::OracleEyes,
-        Section::Terminal,
     ];
 
     pub fn title(self) -> &'static str {
         match self {
+            Section::Overview => "Overview",
             Section::Windows => "Windows",
             Section::Effects => "Effects",
             Section::Desktop => "Desktop",
@@ -141,6 +216,7 @@ impl Section {
     /// on the section opens.
     pub fn pages(self) -> &'static [Page] {
         match self {
+            Section::Overview => &[Page::Overview],
             Section::Windows => &[Page::Layout, Page::Gaps, Page::Borders, Page::Focus],
             Section::Effects => &[Page::Blur, Page::Shadow, Page::Rounding, Page::Animations],
             Section::Desktop => &[Page::Mode, Page::Components, Page::Wallpaper, Page::LoginScreen],
@@ -168,6 +244,68 @@ impl Section {
             Section::Addons => &[Page::Addons],
             Section::OracleEyes => &[Page::OeGeneral, Page::OeColours],
             Section::Terminal => Page::TERMINAL,
+        }
+    }
+
+    /// The heading this section sits under; the overview sits above them all.
+    pub fn group(self) -> Option<Group> {
+        match self {
+            Section::Overview => None,
+            Section::Windows | Section::Effects | Section::Desktop | Section::Taskbar | Section::Launcher => {
+                Some(Group::Look)
+            }
+            Section::Display | Section::Input | Section::Network => Some(Group::Devices),
+            Section::Session | Section::System => Some(Group::System),
+            Section::Privacy | Section::Accounts => Some(Group::Privacy),
+            Section::Terminal | Section::Addons | Section::OracleEyes => Some(Group::Apps),
+        }
+    }
+
+    pub fn hue(self) -> Hue {
+        self.group().map_or(Hue::Home, Group::hue)
+    }
+
+    /// The picture on the section's icon tile.
+    pub fn glyph(self) -> Glyph {
+        match self {
+            Section::Overview => Glyph::Overview,
+            Section::Windows => Glyph::Tiles,
+            Section::Effects => Glyph::Panes,
+            Section::Desktop => Glyph::Landscape,
+            Section::Taskbar => Glyph::Bar,
+            Section::Launcher => Glyph::Search,
+            Section::Display => Glyph::Monitor,
+            Section::Network => Glyph::Wifi,
+            Section::Input => Glyph::Keycap,
+            Section::Session => Glyph::Power,
+            Section::System => Glyph::Chip,
+            Section::Privacy => Glyph::Lock,
+            Section::Accounts => Glyph::Person,
+            Section::Addons => Glyph::Cube,
+            Section::OracleEyes => Glyph::Eye,
+            Section::Terminal => Glyph::Prompt,
+        }
+    }
+
+    /// A short line under the section's name on the overview.
+    pub fn blurb(self) -> &'static str {
+        match self {
+            Section::Overview => "This computer at a glance",
+            Section::Windows => "Tiling, gaps, borders and focus",
+            Section::Effects => "Glass, shadow, corners and motion",
+            Section::Desktop => "Mode, wallpaper and login screen",
+            Section::Taskbar => "The bar, its widgets and tray",
+            Section::Launcher => "How apps are found and opened",
+            Section::Display => "Monitors, modes and scale",
+            Section::Input => "Keyboard, pointer and touchpad",
+            Section::Network => "Wifi and paired devices",
+            Section::Session => "Idle, lock and power",
+            Section::System => "Rendering, X11 apps and defaults",
+            Section::Privacy => "What apps may capture or inject",
+            Section::Accounts => "Accounts a task can sign in as",
+            Section::Terminal => "Font, colours, keys and profiles",
+            Section::Addons => "Optional packages and their hooks",
+            Section::OracleEyes => "What the add-on sees and asks",
         }
     }
 
@@ -199,6 +337,7 @@ impl Page {
 
     pub fn section(self) -> Section {
         match self {
+            Page::Overview => Section::Overview,
             Page::Layout | Page::Gaps | Page::Borders | Page::Focus => Section::Windows,
             Page::Blur | Page::Shadow | Page::Rounding | Page::Animations => Section::Effects,
             Page::Mode | Page::Components | Page::Wallpaper | Page::LoginScreen => Section::Desktop,
@@ -286,6 +425,7 @@ impl Page {
     /// The one line under the page title.
     pub fn subtitle(self) -> &'static str {
         match self {
+            Page::Overview => "This computer at a glance, and the settings you reach for most.",
             Page::Layout => "How windows tile, and where a floating one opens.",
             Page::Gaps => "The air between windows and around the screen.",
             Page::Borders => "The line around each window, active and not.",
@@ -345,6 +485,30 @@ impl Page {
         }
     }
 
+    /// The picture on the page's header vignette: its section's, unless the
+    /// page is about something more particular.
+    pub fn glyph(self) -> Glyph {
+        match self {
+            Page::Layout => Glyph::Tiles,
+            Page::Gaps => Glyph::Gaps,
+            Page::Borders => Glyph::Frame,
+            Page::Focus => Glyph::Focus,
+            Page::Blur => Glyph::Panes,
+            Page::Shadow => Glyph::Shadow,
+            Page::Rounding => Glyph::Corner,
+            Page::Animations | Page::BarMotion => Glyph::Motion,
+            Page::Mode | Page::General | Page::Setup => Glyph::Sliders,
+            Page::Components => Glyph::Dots,
+            Page::LoginScreen => Glyph::Person,
+            Page::Pointer => Glyph::Mouse,
+            Page::Touchpad => Glyph::Touchpad,
+            Page::Rendering => Glyph::Chip,
+            Page::Xwayland => Glyph::Tiles,
+            Page::OeColours => Glyph::Panes,
+            other => other.section().glyph(),
+        }
+    }
+
     /// The Terminal section's pages, in sidebar order.
     pub const TERMINAL: &'static [Page] = &[
         Page::TermFont,
@@ -373,7 +537,8 @@ impl Page {
     pub fn is_bespoke(self) -> bool {
         matches!(
             self,
-            Page::Display
+            Page::Overview
+                | Page::Display
                 | Page::Network
                 | Page::Addons
                 | Page::BarWidgets
@@ -634,7 +799,94 @@ mod tests {
             assert_eq!(owners, 1, "{page:?}");
             assert!(page.section().pages().contains(&page));
         }
-        assert_eq!(Page::all().count(), 48);
+        assert_eq!(Page::all().count(), 49);
+    }
+
+    #[test]
+    fn the_sitemap_has_no_duplicate_ids() {
+        let mut paths: Vec<String> = Page::all().map(Page::path).collect();
+        let n = paths.len();
+        paths.sort();
+        paths.dedup();
+        assert_eq!(paths.len(), n, "two pages share a path");
+        // Titles are unique inside a section, or a sidebar row is ambiguous.
+        for s in Section::ALL {
+            let mut titles: Vec<&str> = s.pages().iter().map(|p| p.title()).collect();
+            let n = titles.len();
+            titles.sort_unstable();
+            titles.dedup();
+            assert_eq!(titles.len(), n, "{:?} repeats a page title", s);
+        }
+        // So are the sections' own.
+        let mut names: Vec<&str> = Section::ALL.iter().map(|s| s.title()).collect();
+        names.sort_unstable();
+        let n = names.len();
+        names.dedup();
+        assert_eq!(names.len(), n);
+    }
+
+    /// Every section sits under exactly one heading (the overview, above
+    /// them all, under none), every heading has sections, and every section
+    /// and page has a picture and a hue.
+    #[test]
+    fn every_section_has_a_group_an_icon_and_a_hue() {
+        for s in Section::ALL {
+            match (s.group(), *s == Section::Overview) {
+                (None, true) | (Some(_), false) => {}
+                other => panic!("{s:?}: {other:?}"),
+            }
+            assert!(!s.blurb().is_empty());
+            let _ = (s.glyph(), s.hue());
+        }
+        let mut seen = 0;
+        for g in Group::ALL {
+            let n = g.sections().count();
+            assert!(n > 0, "{g:?} is empty");
+            seen += n;
+        }
+        assert_eq!(seen, Section::ALL.len() - 1);
+        let mut hues: Vec<_> = Group::ALL.iter().map(|g| g.hue()).collect();
+        hues.dedup();
+        assert_eq!(hues.len(), Group::ALL.len(), "two groups share a hue");
+        for p in Page::all() {
+            let _ = p.glyph();
+        }
+        // Sections draw their own glyph, so two sections never look alike.
+        let mut glyphs: Vec<_> = Section::ALL.iter().map(|s| s.glyph()).collect();
+        let n = glyphs.len();
+        glyphs.sort_by_key(|g| *g as u8);
+        glyphs.dedup();
+        assert_eq!(glyphs.len(), n, "two sections share an icon");
+    }
+
+    #[test]
+    fn a_groups_sections_are_contiguous_in_sidebar_order() {
+        // The sidebar draws a heading before each group's first section, so a
+        // group split across the list would heading twice.
+        let mut last = None;
+        let mut closed: Vec<Group> = Vec::new();
+        for s in Section::ALL {
+            let g = s.group();
+            if g != last {
+                if let Some(done) = last {
+                    closed.push(done);
+                }
+                if let Some(g) = g {
+                    assert!(!closed.contains(&g), "{g:?} is split");
+                }
+                last = g;
+            }
+        }
+    }
+
+    #[test]
+    fn the_overview_is_the_default_and_nothing_lands_on_it() {
+        assert_eq!(Page::from_arg("overview"), Some(Page::Overview));
+        assert_eq!(Page::Overview.path(), "overview");
+        assert_eq!(Section::Overview.first(), Page::Overview);
+        for m in ec_abyss_config::meta::META {
+            assert_ne!(Page::from_path(m.page), Some(Page::Overview), "{}", m.path);
+        }
     }
 
     #[test]

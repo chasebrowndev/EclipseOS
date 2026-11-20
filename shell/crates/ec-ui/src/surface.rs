@@ -35,7 +35,7 @@ pub struct Values {
 pub const DEFAULT: Values = Values {
     tint: 0.70,
     card_fill: 0.035,
-    inset_fill: 0.03,
+    inset_fill: 0.05,
 };
 
 /// A rim runs this many times its fill: the spec's `.12` border over a `.035`
@@ -77,7 +77,7 @@ pub fn white_fill(intent: f32) -> Color {
 /// Light veils the backdrop with a near-white base; the alpha that holds a
 /// dark window up flattens the wallpaper under a white one. One user knob
 /// (`decoration.surface.tint`), scaled down on light.
-const LIGHT_TINT_SCALE: f32 = 0.65;
+const LIGHT_TINT_SCALE: f32 = 0.50;
 
 fn is_light() -> bool {
     crate::tokens::color::palette().scheme == ec_theme::Scheme::Light

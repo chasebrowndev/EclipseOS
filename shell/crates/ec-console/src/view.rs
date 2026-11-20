@@ -1310,8 +1310,8 @@ const CHOICE_CHARS: usize = {
 };
 
 /// That label's width: `micro_label` sets each character and a thin space
-/// after it, every one a mono cell at [`size::MICRO`] (the data face's cell,
-/// `MONO_CHAR_W`, scaled from [`size::MONO`]).
+/// after it, every one budgeted a cell at [`size::MICRO`] (`MONO_CHAR_W`, scaled from
+/// [`size::MONO`]: a generous estimate for Onest capitals).
 const CHOICE_LABEL_W: f32 =
     (2 * CHOICE_CHARS) as f32 * ec_ui::tokens::canvas::MONO_CHAR_W * size::MICRO / size::MONO;
 

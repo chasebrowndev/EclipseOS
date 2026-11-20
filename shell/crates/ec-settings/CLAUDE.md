@@ -25,3 +25,13 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-17 §3 (DP-5).
   (COMP-03 §1.1). This pane sends `calibrate_output` verbs and shows numbers.
 - No literal colour, radius or size: `ec_ui::tokens` is the only source.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.
+- **The sitemap is presentation.** `pane.rs` owns it: `Group` (five sidebar headings) over `Section` over `Page`. A key's
+  page path (`effects/blur-glass`), the CLI argument and every config key are unchanged by how the sidebar is grouped; the
+  presentation table is `ec_abyss_config::meta`. Pages that group differently from the meta (`schema::card`), captions
+  (`schema::group_caption`) and the advanced settings (`schema::ADVANCED`) are in `schema.rs`, and still searchable. Tests in
+  `pane.rs` and `search.rs` fail on a duplicate id, a section with no group or icon, a key or page search cannot reach.
+- **The overview** (`overview.rs`) reads the machine without privilege (hostname, os-release, `/proc/uptime`, battery
+  `capacity`) once, on reload and when opened, never from a `view`. Quick settings are drawn only for keys the compositor
+  reports as switches. "Recently opened" is the search's own frecency, shown only while it is on and not empty.
+- **Art** is `ec_ui::widget::art` (tiles, vignettes) and `previews.rs` (live diagrams). No asset, no new dependency, nothing
+  drawn while idle, nothing gold. See STYLE.md > Art.
