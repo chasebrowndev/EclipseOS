@@ -245,8 +245,8 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
 **Look of the live session.** It is the installed system's look, with no live-only
 user config. The live `liveuser` has no `~/.config/eclipse/abyss.kdl`: D-07 §5 copies that file to the
 new user at Apply, so a blur mode or quality key written there for the medium would
-be installed on every machine and fight the graphics profile (the medium-level
-`/etc/eclipse/abyss.kdl` below carries only `profile "auto"`, which the seed filter drops). Blur is the schema
+be installed on every machine and fight the graphics profile (the live medium ships no
+config of its own for this: `profile "auto"` is the built-in default). Blur is the schema
 default (`glass`) and its quality is the auto graphics profile's call, on the medium
 as on disk. The wallpaper is the packaged default in `/etc/eclipse/abyss.kdl`
 (`/usr/share/backgrounds/eclipseos/eclipse-dark.png`, STYLE.md "Wallpaper"). `ec-setup`
@@ -256,16 +256,17 @@ wallpaper, light or dark with the compositor's scheme.
 ### 5.1 Graphics profile on the live medium *(added with `decoration.profile`)*
 
 The live session runs on whatever the PC has, often a software rasteriser or a
-virtual GPU, and a user must not lag through the installer. `airootfs/etc/eclipse/abyss.kdl`
-sets `decoration { profile "auto" }` (the built-in default, written down so the
-intent is visible). At startup abyss measures the renderer string, RAM, CPU
+virtual GPU, and a user must not lag through the installer. The built-in default
+is `decoration { profile "auto" }`. The medium ships no file for it:
+`/etc/eclipse/abyss.kdl` belongs to `eclipseos-meta`, and a copy in
+`airootfs/etc/eclipse/` collides with it when mkarchiso installs the packages. At startup abyss measures the renderer string, RAM, CPU
 count, output size and hypervisor hints; a weak PC gets `minimal` or `low`
 (blur and animation off or short, no shadows), capable hardware keeps `full`.
 `ec-ctl graphics` shows the choice and the reason.
 
 The installed system **inherits `auto`, not the live decision.** The decision is
 never written to a file, `decoration.profile` is not on the seed allowlist
-(D-07 §5), and the file above is part of the medium, not of any package. The
+(D-07 §5), The
 installed system measures its own hardware on every start, so a disk installed
 from a VM and booted on real hardware renders accordingly. The installer's last
 screen says so.
