@@ -101,7 +101,8 @@ pub struct State {
 const HEADING: &str = "Erase this disk?";
 const WARNING: &str = "This cannot be undone. Everything on the disk will be lost.";
 const BODY: &str = "A system service is asking to erase a whole disk. This prompt is drawn \
-                    by the compositor and appears only when the system asks to erase a disk.";
+                    by the compositor and appears only when the system asks to erase a disk. \
+                    To erase, press Tab to select Erase, then Space.";
 const WELL: &str = "The service says (not verified):";
 
 /// Deny holds the focus. Erase grants, so Enter never activates it: the
