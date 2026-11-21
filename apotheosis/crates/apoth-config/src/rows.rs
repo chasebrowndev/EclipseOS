@@ -152,7 +152,7 @@ rows! {
     ("window.padding-balance", Ty::Bool, Dv::Bool(false), Window, true, Live, Appearance, "Spread the leftover pixels evenly around the grid."; "Balance padding", &[]),
     ("window.remember-size", Ty::Bool, Dv::Bool(true), Window, false, Live, Behaviour, "Reopen windows at their last size."; "Remember size", &[]),
     ("window.title", Ty::Template, Dv::Str("{title}"), Window, true, Live, Appearance, "Window title template."; "Window title", &[]),
-    ("interface.font", Ty::Font, Dv::Null, Window, false, Live, Appearance, "Font of the terminal's own interface; unset follows the system."; "Interface font", &[]),
+    ("interface.font", Ty::Font, Dv::Null, Window, false, Live, Appearance, "Font of the terminal's own interface; unset uses Onest."; "Interface font", &[]),
     ("interface.font-size", Ty::float(8.0, 32.0), Dv::Float(13.0), Window, false, Live, Appearance, "Size of the interface font."; "Interface font size", &[]),
     ("interface.motion", Ty::Enum(MOTION), Dv::Computed { id: "interface.motion", doc: "Follows the portal reduce-motion setting." }, Window, false, Live, Appearance, "Animation level of the interface."; "Motion", &[]),
     ("interface.scale", Ty::float(0.5, 3.0), Dv::Float(1.0), Window, false, Live, Appearance, "Scale of the terminal's own interface."; "Interface scale", &[]),

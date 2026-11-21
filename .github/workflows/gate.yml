@@ -416,6 +416,9 @@ jobs:
       # F-07 §7: docs/ is the source of truth, so a path it cites must exist.
       - name: check doc paths
         run: abyss/ci/doc-refs.sh
+      # STYLE.md: Onest is the one UI face; mono survives only in the cell grid.
+      - name: one UI font
+        run: abyss/ci/one-font.sh
 
   firefox-glass:
     name: Glass for Firefox lint + signed XPI matches source

@@ -202,7 +202,7 @@ The compositor draws the wallpaper itself (ADR 0104): one picture per output, de
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
 | `decoration.surface.tint` | float 0..1 | `0.7` | live | Window tint opacity over the glass. sRGB-intent; clients convert. |
 | `decoration.surface.card-fill` | float 0..0.3 | `0.035` | live | Alpha of a hairline card's white fill. sRGB-intent; clients convert. |
-| `decoration.surface.inset-fill` | float 0..0.3 | `0.03` | live | Alpha of an inset group's white fill. sRGB-intent; clients convert. |
+| `decoration.surface.inset-fill` | float 0..0.3 | `0.05` | live | Alpha of an inset group's white fill. sRGB-intent; clients convert. |
 | `decoration.shadow.enabled` | bool | `#true` | live | Drop shadow behind windows. |
 | `decoration.shadow.range` | int 0..128 | `16` | live | Shadow falloff distance, logical px. |
 | `decoration.glow.enabled` | bool | `#false` | live | Glow around windows in their border colour. |

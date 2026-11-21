@@ -14,7 +14,7 @@ fn main() -> iced::Result {
     let page = std::env::args()
         .nth(1)
         .and_then(|a| Page::from_arg(&a))
-        .unwrap_or(Page::Layout);
+        .unwrap_or(Page::Overview);
     let mut builder = iced::application(move || app::boot(page), app::update, app::view)
         .title("Eclipse Settings")
         .theme(|_: &App| ec_ui::theme::theme())

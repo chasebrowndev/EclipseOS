@@ -5,6 +5,21 @@
  * Glass fills are white at the spec's alphas over an opaque warm ground:
  * these pages sit inside Firefox's opaque area, so they only get the look.
  */
+@font-face {
+  font-family: "Onest";
+  font-weight: 400;
+  src: local("Onest Regular"), url("fonts/Onest-Regular.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Onest";
+  font-weight: 500;
+  src: local("Onest Medium"), url("fonts/Onest-Medium.ttf") format("truetype");
+}
+@font-face {
+  font-family: "Onest";
+  font-weight: 600;
+  src: local("Onest SemiBold"), url("fonts/Onest-SemiBold.ttf") format("truetype");
+}
 :root {
   --base: #0b0906;
   --surface-0: #12100b;
@@ -29,8 +44,9 @@
   --radius-card: 13px;
   --radius-inset: 10px;
   --radius-pill: 99px;
-  --font-ui: "Instrument Sans", "Inter", system-ui, sans-serif;
-  --font-mono: "JetBrains Mono", ui-monospace, "DejaVu Sans Mono", monospace;
+  --font-ui: "Onest", system-ui, sans-serif;
+  /* One family: data is Onest too; tabular digits keep columns aligned. */
+  --font-mono: var(--font-ui);
   color-scheme: dark;
 }
 :root[data-scheme="light"] {

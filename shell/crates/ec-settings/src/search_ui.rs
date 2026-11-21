@@ -72,6 +72,28 @@ impl Search {
         !self.query.trim().is_empty()
     }
 
+    /// The settings most recently opened from the search, newest first, as
+    /// `(label, path)`: the overview's "Recently opened". Empty with the
+    /// history off or cleared. Config keys and pages only; the Terminal's
+    /// and the bespoke panes' entries are left out because only a key or a
+    /// page is a place a button can take you.
+    pub fn recent(&self, n: usize) -> Vec<(String, String)> {
+        if !self.frecency {
+            return Vec::new();
+        }
+        let mut seen: Vec<(u64, &SearchEntry)> = self
+            .entries
+            .iter()
+            .filter(|e| !e.is_bespoke() && !e.path.starts_with(search::TERMINAL))
+            .filter_map(|e| self.usage.get(&e.path).map(|u| (u.last_used, e)))
+            .collect();
+        seen.sort_by_key(|b| std::cmp::Reverse(b.0));
+        seen.into_iter()
+            .take(n)
+            .map(|(_, e)| (e.label.clone(), e.path.clone()))
+            .collect()
+    }
+
     /// Rebuild the index from a fresh schema reply, keeping the query.
     pub fn reindex(&mut self, rows: &[Key]) {
         self.entries = search::index(rows, place);
@@ -115,6 +137,19 @@ impl Search {
             &self.usage,
             frecency::now(),
         );
+        // Two entries that say the same thing and go to the same place (a page
+        // and a bespoke row both called "Login screen") are one result.
+        let mut seen: Vec<(String, Option<crate::app::Locus>)> = Vec::new();
+        let entries = &self.entries;
+        self.hits.retain(|&(_, i)| {
+            let e = &entries[i];
+            let key = (e.label.to_lowercase(), locate(&e.path));
+            if seen.contains(&key) {
+                return false;
+            }
+            seen.push(key);
+            true
+        });
         self.select(self.selected);
     }
 
@@ -153,8 +188,25 @@ pub fn place(row: &Key) -> Option<Place> {
     Some(Place {
         section: at.section.title().to_owned(),
         page: at.section.expands().then(|| at.page.title().to_owned()),
-        group: None,
+        // The group is the page's own name on a page with one group
+        // ("Windows › Layout › Layout"): say it once.
+        group: crate::schema::group_title(at.group).filter(|g| {
+            !g.eq_ignore_ascii_case(if at.section.expands() {
+                at.page.title()
+            } else {
+                at.section.title()
+            })
+        }),
     })
+}
+
+/// A narrow window shows the results *instead of* the page, so picking one
+/// has to leave the search or the page it opens stays hidden behind the list.
+/// A wide window keeps its results beside the page.
+fn leave_search(app: &mut App) {
+    if app.facts.get().narrow {
+        app.search.set_query("");
+    }
 }
 
 pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
@@ -162,9 +214,11 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
     match msg {
         Msg::Query(q) => s.set_query(&q),
         Msg::Focus => {
+            app.show_nav = true;
             return iced::widget::operation::focus(FIELD).chain(iced::widget::operation::select_all(FIELD));
         }
         Msg::TypeAhead(t) => {
+            app.show_nav = true;
             let q = format!("{}{t}", s.query);
             s.set_query(&q);
             return iced::widget::operation::focus(FIELD)
@@ -174,10 +228,16 @@ pub fn update(app: &mut App, msg: Msg) -> Task<Message> {
             let last = s.hits.len().saturating_sub(1) as isize;
             s.selected = (s.selected as isize + by).clamp(0, last) as usize;
         }
-        Msg::Activate => return s.target(),
+        Msg::Activate => {
+            let task = s.target();
+            leave_search(app);
+            return task;
+        }
         Msg::Pick(n) => {
             s.select(n);
-            return s.target();
+            let task = s.target();
+            leave_search(app);
+            return task;
         }
         Msg::Clear => s.set_query(""),
     }
@@ -262,21 +322,28 @@ fn always(event: &iced::Event, status: iced::event::Status) -> Option<Msg> {
 /// With hints on, an empty field carries its Ctrl+F keycap at the right.
 pub fn field(app: &App, density: Density) -> Element<'_, Message, Theme> {
     let s = &app.search;
-    let input = text_input("Search settings", &s.query)
-        .id(FIELD)
-        .on_input(|q| Message::Search(Msg::Query(q)))
-        .on_submit(Message::Search(Msg::Activate))
-        .font(font::UI)
-        .size(size::BODY)
-        .padding([space::NAV_Y, space::NAV_X])
-        .icon(text_input::Icon {
-            font: font::DATA_MEDIUM,
-            code_point: '/',
-            size: Some(size::BODY.into()),
-            spacing: space::KEY_GAP,
-            side: text_input::Side::Left,
-        })
-        .style(field_style);
+    let input = text_input(
+        if density == Density::Compact {
+            "Search"
+        } else {
+            "Search settings"
+        },
+        &s.query,
+    )
+    .id(FIELD)
+    .on_input(|q| Message::Search(Msg::Query(q)))
+    .on_submit(Message::Search(Msg::Activate))
+    .font(font::UI)
+    .size(size::BODY)
+    .padding([space::NAV_Y, space::NAV_X])
+    .icon(text_input::Icon {
+        font: font::DATA_MEDIUM,
+        code_point: '/',
+        size: Some(size::BODY.into()),
+        spacing: space::KEY_GAP,
+        side: text_input::Side::Left,
+    })
+    .style(field_style);
     let cap = app.key_hints_on() && s.query.is_empty() && density == Density::Regular;
     let field: Element<'_, Message, Theme> = if cap {
         stack![
@@ -442,6 +509,12 @@ fn result_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::St
 fn empty(query: &str) -> Element<'_, Message, Theme> {
     container(
         column![
+            ec_ui::widget::art::tile(
+                ec_ui::widget::art::Glyph::Search,
+                ec_ui::widget::art::Hue::Home,
+                ec_ui::tokens::art::EMPTY_TILE,
+                false,
+            ),
             micro_label("no match"),
             text(format!(
                 "Nothing in Settings matches \u{201c}{}\u{201d}.",
@@ -459,4 +532,54 @@ fn empty(query: &str) -> Element<'_, Message, Theme> {
     )
     .padding(Padding::ZERO.left(TEXT_INSET).right(space::NAV_X))
     .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::focus::Facts;
+
+    /// Opening a result under test must never write the person's real usage
+    /// history (`settings-usage.json`): it is ranking data about what they
+    /// opened. The guard is `cfg!(test)` in `record`/`reindex`; this fails
+    /// if that guard is ever dropped.
+    #[test]
+    fn opening_a_result_never_touches_the_real_usage_history() {
+        let real = frecency::path_for(frecency::SETTINGS_FILE);
+        let stamp = || {
+            real.as_ref()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .map(|m| (m.len(), m.modified().ok()))
+        };
+        let before = stamp();
+        let mut app = App::new();
+        app.search.set_query("snap");
+        let _ = update(&mut app, Msg::Activate);
+        let _ = update(&mut app, Msg::Pick(0));
+        assert_eq!(before, stamp(), "a test wrote the real settings usage history");
+        assert!(app.search.usage.is_empty(), "a test read the real usage history");
+    }
+
+    /// Narrow window: results replace the page, so choosing one leaves the
+    /// search (and shows the page); wide, the results stay beside it.
+    #[test]
+    fn a_narrow_pick_leaves_the_search_and_a_wide_one_keeps_it() {
+        let mut app = App::new();
+        app.facts.set(Facts {
+            narrow: true,
+            advanced: false,
+        });
+        app.search.set_query("snap");
+        assert!(app.search.active());
+        let _ = update(&mut app, Msg::Activate);
+        assert!(!app.search.active());
+
+        app.facts.set(Facts {
+            narrow: false,
+            advanced: false,
+        });
+        app.search.set_query("snap");
+        let _ = update(&mut app, Msg::Activate);
+        assert!(app.search.active());
+    }
 }

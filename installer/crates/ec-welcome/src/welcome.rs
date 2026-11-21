@@ -90,7 +90,7 @@ impl Welcome {
         // it never takes the fallback, but a welcome screen must not panic.
         let (logo, logo_aspect) = match &logo_src {
             Some(src) => (src.native(), src.aspect),
-            None => (Layers::whole(LOGO_PNG), 144.0 / 796.0),
+            None => (Layers::whole(LOGO_PNG), 150.0 / 668.0),
         };
         Welcome {
             label: format!("Version {}", version.as_ref()),
@@ -353,9 +353,9 @@ mod tests {
         assert!(w.logo_px.is_none(), "no size yet, nothing to resample to");
         let _ = w.update(Message::Resized(Size::new(1000.0, 600.0)));
         // 50cqw of 1000 logical px, at 1.5: 750 physical.
-        assert_eq!(w.logo_px, Some((750, 136)));
+        assert_eq!(w.logo_px, Some((750, 168)));
         let _ = w.update(Message::Rescaled(2.0));
-        assert_eq!(w.logo_px, Some((1000, 181)));
+        assert_eq!(w.logo_px, Some((1000, 225)));
         // The application's own multiplier counts too.
         let mut w = welcome().ui_scale(0.5);
         let _ = w.update(Message::Rescaled(2.0));

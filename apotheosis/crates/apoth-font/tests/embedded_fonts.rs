@@ -99,3 +99,29 @@ fn builtin_glyphs_ignore_the_font() {
         assert_eq!(g.source, GlyphSource::Sprite(cp));
     }
 }
+
+/// The interface face: `Onest` resolves from the embedded set by family, bold picks the
+/// SemiBold static (no synthetic emboldening), and the digits are tabular (one advance) so
+/// hints, the palette and counters keep their columns.
+#[test]
+fn onest_is_the_embedded_interface_face_with_tabular_digits() {
+    let mut cfg = FontConfig::default();
+    for st in [Style::Regular, Style::Bold] {
+        cfg.styles[st.index()].family = Some(apoth_font::embedded::UI_FAMILY.to_owned());
+    }
+    let mut fs = system(cfg);
+    let reg = fs.resolve(Style::Regular, "a").face.expect("Onest regular");
+    assert_eq!(reg.face().family(), "Onest");
+    assert_eq!(reg.face().weight(), 400);
+    let bold = fs.resolve(Style::Bold, "a").face.expect("Onest bold");
+    assert_eq!(bold.face().weight(), 600);
+    assert!(!bold.synthetic_bold());
+    let face = reg.face();
+    let adv = |c: char| {
+        face.advance_units(face.glyph_for(c as u32).unwrap())
+            .unwrap()
+    };
+    for d in '1'..='9' {
+        assert_eq!(adv(d), adv('0'), "digit {d} is not tabular");
+    }
+}

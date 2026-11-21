@@ -31,7 +31,7 @@ use smithay::{
 
 use crate::{
     hud::{band, cov, sd_box, Paint},
-    hud_font::{self, Face},
+    hud_font::Face,
     text::Rgba,
     titlebar::display_title,
     AbyssRenderElement,
@@ -190,7 +190,7 @@ fn paint(look: &Look, view: &MenuView) -> Vec<u8> {
     p.shade(body, RIM, |x, y| band(sd_box(x, y, body, r), -d, 0.0));
     p.shade((r, d, pw as f32 - 2.0 * r, d), TOP_LIGHT, |_, _| 1.0);
     let face = Face::Body;
-    let cols = ((WIDTH - TEXT_X - 24).max(0) as usize) / hud_font::ADVANCE;
+    let room = (WIDTH - TEXT_X - 24).max(0) as usize;
     for (i, row) in look.rows.iter().enumerate() {
         let rr = view.row_rect_local(i);
         if row.separator_before {
@@ -226,7 +226,7 @@ fn paint(look: &Look, view: &MenuView) -> Vec<u8> {
             });
         }
         let top = (rr.loc.y as usize) + (ROW_H as usize).saturating_sub(face.line_h()) / 2;
-        let label = display_title(&row.label, cols);
+        let label = display_title(&row.label, face, room);
         p.text(face, look.dev, TEXT_X as usize, top, &label, ink);
         if row.submenu {
             let cx = (WIDTH - 16) as f32 * d;
@@ -422,5 +422,55 @@ mod tests {
         assert_eq!(plain.len(), (v.size().w * v.size().h * 4) as usize);
         assert_ne!(plain, lit, "hover repaints");
         assert_eq!(plain, off, "a disabled row is not lit");
+    }
+
+    /// Writes `menu-{1,2}x.ppm` into `HUD_TEXT_SHEET_DIR`.
+    #[test]
+    fn menu_sheet() {
+        let Some(dir) = crate::hud::sheet::dir() else {
+            return;
+        };
+        let v = MenuView {
+            rows: vec![
+                MenuRow::new("Minimize"),
+                MenuRow {
+                    checked: true,
+                    ..MenuRow::new("Always on top")
+                },
+                MenuRow {
+                    submenu: true,
+                    ..MenuRow::new("Move to workspace")
+                },
+                MenuRow {
+                    separator_before: true,
+                    enabled: false,
+                    ..MenuRow::new("Maximize (disabled)")
+                },
+                MenuRow {
+                    separator_before: true,
+                    ..MenuRow::new("An extremely long menu label that has to be cut")
+                },
+                MenuRow::new("Close window 0123456789"),
+            ],
+            hover: Some(2),
+            ..Default::default()
+        };
+        for dev in [1usize, 2] {
+            let look = Look {
+                rows: v.rows.clone(),
+                hover: v.hover,
+                w: v.size().w,
+                h: v.size().h,
+                dev,
+            };
+            let strips = [crate::hud::sheet::Strip {
+                w: v.size().w as usize * dev,
+                h: v.size().h as usize * dev,
+                px: paint(&look, &v),
+                bgra: true,
+                bg: [70, 80, 100],
+            }];
+            crate::hud::sheet::write(&dir.join(format!("menu-{dev}x.ppm")), &strips);
+        }
     }
 }

@@ -124,8 +124,38 @@ where
         .filter_map(|row| Some(entry_for(row, &place(row)?)))
         .collect();
     out.extend(bespoke());
+    out.extend(page_entries());
     out.extend(terminal_entries());
     out
+}
+
+/// Path prefix of a page's own entry: `page:effects/blur-glass`, the page's
+/// [`crate::pane::Page::path`]. `app::locate` resolves it to that page.
+pub const PAGE: &str = "page:";
+
+/// One entry per page, so "wallpaper" or "keyboard" finds the page itself and
+/// not only the settings on it. The breadcrumb is the sidebar group and the
+/// section; the section's own name, the group's and the page's blurb are what
+/// it is found by.
+fn page_entries() -> Vec<SearchEntry> {
+    crate::pane::Page::all()
+        .map(|page| {
+            let section = page.section();
+            let crumb = match section.group() {
+                Some(g) => format!("{} \u{203a} {}", g.title(), section.title()),
+                None => section.title().to_owned(),
+            };
+            let mut words = vec![section.title().to_owned()];
+            words.extend(section.group().map(|g| g.title().to_owned()));
+            SearchEntry::new(
+                format!("{PAGE}{}", page.path()),
+                page.title().to_owned(),
+                crumb,
+                page.subtitle().to_owned(),
+                words,
+            )
+        })
+        .collect()
 }
 
 /// Path prefix of a Terminal key's entry: `term:font.size`. Not a `BESPOKE`
@@ -857,6 +887,51 @@ mod tests {
             .collect()
     }
 
+    /// Every key the compositor's table declares and a page claims is a
+    /// search result, with the group path in front of its place, and every
+    /// page is a result of its own: nothing the sitemap draws is unfindable.
+    #[test]
+    fn every_placed_key_and_every_page_is_reachable_from_search() {
+        let e = entries();
+        for row in rows() {
+            if crate::pane::place_for(&row.path).is_none() {
+                continue;
+            }
+            let hit = e.iter().find(|x| x.path == row.path);
+            let hit = hit.unwrap_or_else(|| panic!("{} is not indexed", row.path));
+            assert!(
+                crate::app::locate(&hit.path).is_some(),
+                "{} is indexed but search cannot take you to it",
+                row.path
+            );
+        }
+        for page in crate::pane::Page::all() {
+            let want = format!("{PAGE}{}", page.path());
+            let hit = e
+                .iter()
+                .find(|x| x.path == want)
+                .unwrap_or_else(|| panic!("{} has no entry of its own", page.path()));
+            assert_eq!(crate::app::locate(&hit.path).map(|l| l.page), Some(page));
+            // A page's crumb names its sidebar group, so a result says where it lives.
+            if let Some(g) = page.section().group() {
+                assert!(hit.breadcrumb.starts_with(g.title()), "{}", hit.breadcrumb);
+            }
+        }
+    }
+
+    #[test]
+    fn a_page_is_found_by_its_name_and_a_setting_by_its_group_path() {
+        let e = entries();
+        assert_top3(&e, "wallpaper", "page:desktop/wallpaper");
+        assert_top3(&e, "keyboard", "page:input/keyboard");
+        let blur = e
+            .iter()
+            .find(|x| x.path == "decoration.blur.mode")
+            .expect("blur mode");
+        assert!(blur.breadcrumb.contains("Blur & glass"), "{}", blur.breadcrumb);
+        assert!(blur.breadcrumb.ends_with("Blur"), "{}", blur.breadcrumb);
+    }
+
     fn entries() -> Vec<SearchEntry> {
         let mut e = index(&rows(), crate::search_ui::place);
         // These tests rank the compositor's keys; Terminal's have their own.
@@ -909,7 +984,9 @@ mod tests {
     fn wallpaper_fills_the_top_with_wallpaper_keys() {
         let e = entries();
         let got = top(&e, "wallpaper", 3);
-        assert!(got.iter().all(|p| p.starts_with("wallpaper.")), "{got:?}");
+        // The page itself leads; the keys on it fill the rest.
+        assert_eq!(got[0], "page:desktop/wallpaper", "{got:?}");
+        assert!(got[1..].iter().all(|p| p.starts_with("wallpaper.")), "{got:?}");
     }
 
     #[test]
@@ -921,7 +998,12 @@ mod tests {
     #[test]
     fn a_misspelt_table_term_beats_its_synonyms() {
         let e = entries();
-        let hits = top(&e, "keybord", 3);
+        // Pages are results too ("Keyboard" leads); the keys are what is ranked.
+        let hits: Vec<&str> = top(&e, "keybord", 12)
+            .into_iter()
+            .filter(|p| !p.starts_with(PAGE))
+            .take(3)
+            .collect();
         assert!(
             hits.iter()
                 .all(|p| p.starts_with("input.") && *p != "input.touchpad.disable-while-typing"),
@@ -977,7 +1059,11 @@ mod tests {
         assert_top3(&e, "suspend", "idle.suspend-timeout-seconds");
         assert_top3(&e, "sleep", "idle.suspend-timeout-seconds");
         assert_top3(&e, "standby", "idle.suspend-timeout-seconds");
-        let dock = search(&e, "dock", 3);
+        let dock: Vec<_> = search(&e, "dock", 12)
+            .into_iter()
+            .filter(|&(_, i)| !e[i].path.starts_with(PAGE))
+            .take(3)
+            .collect();
         assert!(
             dock.len() == 3 && dock.iter().all(|&(_, i)| e[i].breadcrumb.starts_with("Taskbar")),
             "{:?}",

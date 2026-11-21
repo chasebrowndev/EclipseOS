@@ -198,7 +198,7 @@ const RIM_FOCUS_HOVER: f32 = 3.4375;
 
 /// The light scheme's pane look (ADR 0084, STYLE.md Light, the `LIGHT` cell
 /// table in ec-theme). Each depth step moves toward the ink: a rest fill of
-/// ink .07, hover .11, press .15 (`shade`), and an ink hairline of .12 at rest,
+/// ink .05, hover .09, press .13 (`shade`), and an ink hairline of .12 at rest,
 /// .18 hovered or focused, .24 focused and hovered. A minimized (`Away`) chip
 /// has no fill. The focused pane takes no ink: it is the one lift, with the
 /// white `lift` and the crisp ink rim.
@@ -206,9 +206,9 @@ const RIM_FOCUS_HOVER: f32 = 3.4375;
 /// `rim` is scaled so that at the default `glass.rim` (0.5) the base lobe of
 /// the shader's hairline (`LINE_BASE` .05, weight `lobe * rim_color.a * 2 *
 /// rim`) reads these alphas: `rim = alpha / 0.05`, which is `alpha * 20`.
-const LIGHT_REST: f32 = 0.07;
-const LIGHT_HOVER: f32 = 0.11;
-const LIGHT_PRESS: f32 = 0.15;
+const LIGHT_REST: f32 = 0.05;
+const LIGHT_HOVER: f32 = 0.09;
+const LIGHT_PRESS: f32 = 0.13;
 const LIGHT_RIM_REST: f32 = 0.12 * 20.0;
 const LIGHT_RIM_HOT: f32 = 0.18 * 20.0;
 const LIGHT_RIM_FOCUS: f32 = 0.18 * 20.0;
@@ -247,6 +247,17 @@ pub const STACKED_SMOKE_LIGHT: f32 = 0.35;
 pub const STACKED_LIFT: f32 = 0.018;
 /// Rim multiplier: the hairline is what separates the two layers.
 pub const STACKED_RIM: f32 = 1.3;
+
+/// Lens strength share of a pane by its shorter logical side. A small control
+/// keeps its lens; a big sheet or card is bent only a hair at its rim, so the
+/// backdrop's grid reads straight through it: `FLOOR + (1 - FLOOR) / (1 +
+/// (short / LENS_SIZE)^3)`. Continuous and non-increasing in size.
+pub const LENS_SIZE: f32 = 64.0;
+pub const LENS_FLOOR: f32 = 0.15;
+pub fn lens_scale(pane: &Pane) -> f32 {
+    let r = pane.w.min(pane.h).max(0) as f32 / LENS_SIZE;
+    LENS_FLOOR + (1.0 - LENS_FLOOR) / (1.0 + r * r * r)
+}
 
 impl Look {
     /// This look on glass laid over a window's own glass.
@@ -884,9 +895,9 @@ mod tests {
         let rest = look(&pane(Tone::Plain, 0, 255), true).unwrap();
         let hover = look(&pane(Tone::Plain, HOVERED, 255), true).unwrap();
         let press = look(&pane(Tone::Plain, PRESSED, 255), true).unwrap();
-        assert!((rest.shade - 0.07).abs() < 1e-6);
-        assert!((hover.shade - 0.11).abs() < 1e-6);
-        assert!((press.shade - 0.15).abs() < 1e-6);
+        assert!((rest.shade - 0.05).abs() < 1e-6);
+        assert!((hover.shade - 0.09).abs() < 1e-6);
+        assert!((press.shade - 0.13).abs() < 1e-6);
         // Rest < hover < press, and each is a darker step than the last.
         assert!(rest.shade < hover.shade && hover.shade < press.shade);
         // No white on a plain light pane: white over frost lifts it off its column.
@@ -1043,5 +1054,28 @@ mod tests {
         assert!(a.lift < full.lift && a.lift > 0.0);
         assert_eq!(look_on(&pane(Tone::Latent, 0, 255), false, true), None);
         assert_eq!(look_on(&pane(Tone::Plain, 0, 0), false, true), None);
+    }
+
+    #[test]
+    fn big_panes_are_barely_lensed_and_small_ones_keep_theirs() {
+        let sized = |w: i32, h: i32| Pane {
+            w,
+            h,
+            ..Pane::default()
+        };
+        // The largest bend any pane gets is the 4 px cap times this share.
+        let px = |p: &Pane| 4.0 * lens_scale(p);
+        assert!(px(&sized(32, 32)) > 3.5, "a key cap keeps its lens");
+        assert!(px(&sized(300, 36)) > 3.2, "a row is as tall as a control");
+        assert!(px(&sized(120, 100)) < 1.4, "a toast card is bent about a pixel");
+        assert!(px(&sized(540, 374)) <= 0.7, "a sheet is bent under a pixel");
+        assert!(px(&sized(4000, 3000)) >= 4.0 * LENS_FLOOR - 1e-4);
+        // Smooth and non-increasing in size.
+        let mut last = f32::MAX;
+        for s in 1..800 {
+            let v = lens_scale(&sized(s, s));
+            assert!(v <= last + 1e-6);
+            last = v;
+        }
     }
 }

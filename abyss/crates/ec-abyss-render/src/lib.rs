@@ -2013,7 +2013,7 @@ fn insert_panes(
                     mirrored,
                     (pane.radius as f64 * upscale * grown) as f32,
                     fb_size,
-                    strength,
+                    strength * glass::lens_scale(pane),
                     if pane.bezel == 0 {
                         lens.bevel * grown as f32
                     } else {
@@ -2081,13 +2081,6 @@ fn insert_panes(
                 *element =
                     PixelShaderElement::new(shadow.clone(), area, None, alpha, uniforms(), Kind::Unspecified);
                 *applied = params;
-                *applied_alpha = alpha;
-            } else {
-                element.resize(area, None);
-                if *applied != params {
-                    element.update_uniforms(uniforms());
-                    *applied = params;
-                }
             }
             let element = match req.cut(pane, scale) {
                 Some(crop) => CropRenderElement::from_element(element.clone(), scale, crop)
@@ -2104,8 +2097,15 @@ fn insert_panes(
         .gpu
         .pane_shadows
         .retain(|(o, k, i), _| o != output || k != &req.key || *i < panes.len());
-    // Inserting each at the same index leaves the last pane in front.
-    for element in blurs.drain(..) {
+    // Inserting each at the same index leaves the last pane in front. `blurs`
+    // holds one element per drawn pane, in pane order.
+    let mut glass_of = blurs.drain(..);
+    for pane in panes.iter() {
+        let drawn = glass::look_on(pane, light > 0.0, req.stacked).is_some() && rect_of(pane).is_some();
+        if !drawn {
+            continue;
+        }
+        let Some(element) = glass_of.next() else { break };
         let element = match req.crop {
             Some(crop) => {
                 CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
@@ -2116,6 +2116,7 @@ fn insert_panes(
             elements.insert(req.index, element);
         }
     }
+    drop(glass_of);
     store.pane_scratch = blurs;
 }
 

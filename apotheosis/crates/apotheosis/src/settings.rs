@@ -208,6 +208,9 @@ pub(crate) struct GlassSettings {
     pub(crate) scrollbar_marks: bool,
     /// `interface.font`: family of the interface's own text (None follows the terminal's).
     pub(crate) interface_font: Option<String>,
+    /// The compositor's scheme when Abyss has reported one (`Some(true)` = dark): its glass
+    /// panes are tinted by it, so the interface ink follows it, not the terminal background.
+    pub(crate) compositor_dark: Option<bool>,
     /// `interface.font-size` over the 13 px body token, times `interface.scale`.
     pub(crate) interface_zoom: f32,
     /// `interface.motion` in force. Under `system` it is `full` until the settings portal
@@ -249,6 +252,7 @@ impl GlassSettings {
             },
             scrollbar_marks: c.bool("scrollbar.marks"),
             interface_font: nonempty(c.str("interface.font")),
+            compositor_dark: None,
             motion: apoth_ui::motion::MotionMode::resolve(
                 c.str("interface.motion").unwrap_or("system"),
                 false,

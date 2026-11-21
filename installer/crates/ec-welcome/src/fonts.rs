@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-//! Font selection by fontconfig family name, with a serif fallback.
-//!
-//! Nothing here is vendored (the CJK faces are 10-25 MB each; see
-//! `reference/fonts.md` and the README). The ISO ships the families; this asks
-//! fontconfig once whether each is installed and, if it is not, degrades to the
-//! generic serif rather than to iced's default sans, which is what an unknown
-//! `Family::Name` would otherwise silently become. CJK glyphs missing from the
-//! chosen face are found by the text stack's own per-glyph fallback.
+//! Font selection. Onest is the one face, vendored and embedded
+//! (`assets/fonts`, [`BYTES`]): Latin and Cyrillic greetings in Light, the
+//! version label in Regular. Onest has no CJK, so Japanese, Simplified Chinese
+//! and Korean are asked of the Noto Sans CJK faces by fontconfig family name
+//! (the ISO's `noto-fonts-cjk`); where one is missing the word falls back to
+//! Onest and then to the text stack's per-glyph fallback. Greek, Arabic,
+//! Hebrew, Devanagari and Thai are likewise not in Onest; none is among the ten
+//! greetings.
 
 use crate::timeline::Script;
 use iced::font::{Family, Weight};
@@ -14,14 +14,21 @@ use iced::Font;
 use std::collections::HashSet;
 use std::process::Command;
 
-pub const CORMORANT: &str = "Cormorant Garamond";
-pub const LORA: &str = "Lora";
-pub const NOTO_JP: &str = "Noto Serif JP";
-pub const NOTO_SC: &str = "Noto Serif SC";
-pub const NOTO_KR: &str = "Noto Serif KR";
+/// The family name Onest's embedded files carry.
+pub const ONEST: &str = "Onest";
+pub const NOTO_JP: &str = "Noto Sans CJK JP";
+pub const NOTO_SC: &str = "Noto Sans CJK SC";
+pub const NOTO_KR: &str = "Noto Sans CJK KR";
 
-/// The five families the screen asks for, in the order the ISO must carry them.
-pub const REQUIRED_FAMILIES: [&str; 5] = [CORMORANT, LORA, NOTO_JP, NOTO_SC, NOTO_KR];
+/// The families asked of fontconfig, in the order the ISO must carry them
+/// (Onest is embedded, so it is not one of them).
+pub const REQUIRED_FAMILIES: [&str; 3] = [NOTO_JP, NOTO_SC, NOTO_KR];
+
+/// The embedded faces, for `iced::Settings::fonts` and the offscreen renderer.
+pub const BYTES: &[&[u8]] = &[
+    include_bytes!("../../../../assets/fonts/Onest-Light.ttf"),
+    include_bytes!("../../../../assets/fonts/Onest-Regular.ttf"),
+];
 
 /// The faces the screen draws with, resolved once.
 #[derive(Debug, Clone, Copy)]
@@ -33,30 +40,9 @@ pub struct Faces {
     label: Font,
 }
 
-/// Named serifs to try when a wanted family is missing. The generic
-/// `Family::Serif` is not enough: the text stack can resolve it to a sans.
-const SERIF_FALLBACKS: [&str; 5] = [
-    "Noto Serif",
-    "DejaVu Serif",
-    "Liberation Serif",
-    "Times New Roman",
-    "FreeSerif",
-];
-
-/// One face: `name` if installed, else the first installed named serif, else
-/// the generic serif.
-fn face(installed: Option<&HashSet<String>>, name: &'static str, weight: Weight) -> Font {
-    let has = |n: &str| installed.is_none_or(|set| set.contains(&n.to_lowercase()));
-    let family = if has(name) {
-        Family::Name(name)
-    } else {
-        SERIF_FALLBACKS
-            .into_iter()
-            .find(|n| has(n))
-            .map_or(Family::Serif, Family::Name)
-    };
+fn onest(weight: Weight) -> Font {
     Font {
-        family,
+        family: Family::Name(ONEST),
         weight,
         ..Font::DEFAULT
     }
@@ -82,20 +68,21 @@ fn installed_families() -> Option<HashSet<String>> {
 }
 
 impl Faces {
-    /// Ask fontconfig. Run once, at startup: it spawns `fc-list`.
+    /// Ask fontconfig about the CJK faces. Run once, at startup: it spawns `fc-list`.
     pub fn detect() -> Faces {
         Faces::from_installed(installed_families().as_ref())
     }
 
     /// Resolve against a known set of installed (lower-case) families.
     pub fn from_installed(installed: Option<&HashSet<String>>) -> Faces {
-        let light = Weight::Light;
-        // The CJK words list Cormorant after their own Noto family, so a
-        // missing Noto falls to Cormorant and then to the glyph fallback.
-        let latin = face(installed, CORMORANT, light);
+        let latin = onest(Weight::Light);
         let cjk = |name: &'static str| {
             if installed.is_none_or(|set| set.contains(&name.to_lowercase())) {
-                face(installed, name, light)
+                Font {
+                    family: Family::Name(name),
+                    weight: Weight::Light,
+                    ..Font::DEFAULT
+                }
             } else {
                 latin
             }
@@ -105,7 +92,7 @@ impl Faces {
             japanese: cjk(NOTO_JP),
             chinese: cjk(NOTO_SC),
             korean: cjk(NOTO_KR),
-            label: face(installed, LORA, Weight::Normal),
+            label: onest(Weight::Normal),
         }
     }
 
@@ -133,45 +120,46 @@ mod tests {
     }
 
     #[test]
-    fn installed_families_are_asked_for_by_name() {
-        let all = set(&REQUIRED_FAMILIES);
-        let f = Faces::from_installed(Some(&all));
-        assert_eq!(f.greeting(Script::Latin).family, Family::Name(CORMORANT));
+    fn latin_and_label_are_onest_whatever_is_installed() {
+        for installed in [Some(set(&[])), Some(set(&REQUIRED_FAMILIES)), None] {
+            let f = Faces::from_installed(installed.as_ref());
+            assert_eq!(f.greeting(Script::Latin).family, Family::Name(ONEST));
+            assert_eq!(f.label().family, Family::Name(ONEST));
+            assert_eq!(f.greeting(Script::Latin).weight, Weight::Light);
+            assert_eq!(f.label().weight, Weight::Normal);
+        }
+    }
+
+    #[test]
+    fn installed_cjk_faces_are_asked_for_by_name() {
+        let f = Faces::from_installed(Some(&set(&REQUIRED_FAMILIES)));
         assert_eq!(f.greeting(Script::Japanese).family, Family::Name(NOTO_JP));
         assert_eq!(
             f.greeting(Script::ChineseSimplified).family,
             Family::Name(NOTO_SC)
         );
         assert_eq!(f.greeting(Script::Korean).family, Family::Name(NOTO_KR));
-        assert_eq!(f.label().family, Family::Name(LORA));
-        assert_eq!(f.greeting(Script::Latin).weight, Weight::Light);
-        assert_eq!(f.label().weight, Weight::Normal);
     }
 
     #[test]
-    fn missing_families_degrade_to_serif_not_to_default_sans() {
+    fn a_missing_cjk_face_falls_back_to_onest() {
         let f = Faces::from_installed(Some(&set(&[])));
-        assert_eq!(f.greeting(Script::Latin).family, Family::Serif);
-        assert_eq!(f.greeting(Script::Korean).family, Family::Serif);
-        assert_eq!(f.label().family, Family::Serif);
-    }
-
-    #[test]
-    fn a_named_serif_beats_the_generic_one() {
-        let f = Faces::from_installed(Some(&set(&["DejaVu Serif", "Liberation Serif"])));
-        assert_eq!(f.greeting(Script::Latin).family, Family::Name("DejaVu Serif"));
-        assert_eq!(f.label().family, Family::Name("DejaVu Serif"));
-    }
-
-    #[test]
-    fn a_missing_cjk_face_falls_back_to_cormorant_first() {
-        let f = Faces::from_installed(Some(&set(&[CORMORANT])));
-        assert_eq!(f.greeting(Script::Japanese).family, Family::Name(CORMORANT));
+        assert_eq!(f.greeting(Script::Japanese).family, Family::Name(ONEST));
+        assert_eq!(f.greeting(Script::Korean).family, Family::Name(ONEST));
     }
 
     #[test]
     fn unknown_fontconfig_means_ask_by_name() {
         let f = Faces::from_installed(None);
         assert_eq!(f.greeting(Script::Korean).family, Family::Name(NOTO_KR));
+    }
+
+    #[test]
+    fn the_embedded_faces_are_onest() {
+        for ttf in BYTES {
+            // `name` strings are UTF-16BE; "Onest" appears as such.
+            let needle: Vec<u8> = "Onest".encode_utf16().flat_map(u16::to_be_bytes).collect();
+            assert!(ttf.windows(needle.len()).any(|w| w == needle.as_slice()));
+        }
     }
 }

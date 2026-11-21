@@ -33,6 +33,24 @@
   <sub>Lo que ve una pantalla compartida: el administrador de contraseñas queda cubierto en el origen.</sub>
 </p>
 
+### Última versión: ASCENSIONISM
+
+El vidrio es ahora un solo material en todas partes, en oscuro y en claro: el lanzador, Ajustes, la pantalla de bloqueo, la de inicio de sesión, las notificaciones y las confirmaciones de seguridad del propio compositor. Una sola tipografía, Onest, recorre todo, desde el logotipo hasta las barras de título. Ajustes tiene una página de Resumen, navegación real y vistas previas en vivo, y el modo claro es blanco papel. Las notas completas están en el [CHANGELOG](CHANGELOG.md) (en inglés).
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/screenshots/light.png" alt="El esquema claro: Ajustes con vista previa de vidrio y una notificación"></td>
+    <td width="50%"><img src="docs/screenshots/glass-detail.png" alt="Detalle del vidrio de lente en Ajustes: luz de borde, refracción y franjas de color"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><img src="docs/screenshots/lock.png" alt="La pantalla de bloqueo como vidrio real sobre el fondo"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/greeter.png" alt="La pantalla de inicio de sesión con mosaicos Glance"></td>
+    <td><img src="docs/screenshots/toasts.png" alt="Notificaciones como vidrio"></td>
+  </tr>
+</table>
+
 ## Qué es EclipseOS
 
 EclipseOS es un escritorio Linux construido sobre Arch. Su compositor, su escritorio, su administrador de archivos y su instalador están diseñados en conjunto y se ven y se comportan como una sola cosa. En el centro está **Abyss**, un compositor Wayland escrito en Rust. Todo lo que ves a su alrededor también está escrito en Rust: la barra de tareas, el lanzador, las notificaciones, Settings, el administrador de archivos Fog, la pantalla de bloqueo y el instalador.
@@ -126,7 +144,10 @@ Una vez instalado, las actualizaciones vienen del repositorio de paquetes firmad
 | [CONFIG.md](docs/CONFIG.md) | cada ajuste, lo que hace y su valor por defecto |
 | [STYLE.md](docs/STYLE.md) | el lenguaje visual |
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | cómo encajan las piezas |
+| [CHANGELOG.md](CHANGELOG.md) | notas de cada versión, la más nueva primero (en inglés) |
 | [STATUS.md](docs/STATUS.md) | lo que está construido y verificado |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | cómo contribuir y el CLA |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | cómo nos tratamos |
 | [SECURITY.md](SECURITY.md) | el modelo de seguridad y cómo reportar una vulnerabilidad |
 
 ## Licencia

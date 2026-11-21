@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The logo, split in two and resampled to the exact size it is drawn at.
 //!
-//! **Why resample.** The asset is 796x144 and is drawn 50cqw wide: on a 1080p
+//! **Why resample.** The asset is 668x150 and is drawn 50cqw wide: on a 1080p
 //! output that is 960 px, on a 4K one 1920. Handed to the GPU as-is, it is
 //! stretched by a bilinear filter, which turns every edge of a flat
 //! white-and-gold wordmark into a two or three pixel ramp. That is the blur.
@@ -35,10 +35,10 @@ use image::{ImageBuffer, Rgba};
 type Premul = ImageBuffer<Rgba<f32>, Vec<f32>>;
 
 /// The asset's size, pixels.
-pub const SRC_W: f32 = 796.0;
-pub const SRC_H: f32 = 144.0;
+pub const SRC_W: f32 = 668.0;
+pub const SRC_H: f32 = 150.0;
 /// The O's centre in asset pixels (its coverage-weighted centroid).
-pub const O_CENTRE: (f32, f32) = (654.0, 74.0);
+pub const O_CENTRE: (f32, f32) = (505.0, 75.0);
 /// The O's outer diameter, asset pixels. This is the eclipse's `1em` when it
 /// lands.
 pub const O_DIAMETER: f32 = 110.0;
@@ -299,8 +299,8 @@ mod tests {
     #[test]
     fn a_resample_is_the_size_asked_for() {
         let logo = logo();
-        assert_eq!(logo.height_for(796), 144);
-        assert_eq!(logo.height_for(1920), 347);
+        assert_eq!(logo.height_for(668), 150);
+        assert_eq!(logo.height_for(1920), 431);
         assert_eq!(logo.height_for(1), 1);
     }
 
@@ -347,7 +347,7 @@ mod tests {
         }
         // The glow's own pixels (clear of any letter) are gone too. Sample a
         // ring of them straight above the O.
-        for x in 640..668 {
+        for x in 491..519 {
             for y in 0..12 {
                 let a = logo.body.get_pixel(x, y).0[3];
                 assert!(a < 0.05, "glow left at ({x},{y}): {a}");
@@ -378,10 +378,10 @@ mod tests {
 
     #[test]
     fn the_o_box_scales_with_the_logo() {
-        let (c, d) = o_box(100.0, 50.0, 796.0, 144.0);
-        assert!((c.0 - 754.0).abs() < 1e-3 && (c.1 - 124.0).abs() < 1e-3);
+        let (c, d) = o_box(100.0, 50.0, 668.0, 150.0);
+        assert!((c.0 - 605.0).abs() < 1e-3 && (c.1 - 125.0).abs() < 1e-3);
         assert!((d - 110.0).abs() < 1e-3);
         let (c, d) = o_box(0.0, 0.0, 1592.0, 288.0);
-        assert!((c.0 - 1308.0).abs() < 1e-3 && (d - 220.0).abs() < 1e-3);
+        assert!((c.0 - 1203.5).abs() < 0.1 && (d - 262.2).abs() < 0.1);
     }
 }

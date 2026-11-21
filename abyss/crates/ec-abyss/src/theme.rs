@@ -220,7 +220,7 @@ mod tests {
         assert_eq!(themes.len(), 1, "{events:?}");
         assert_eq!(themes[0].1["scheme"], "light");
         assert_eq!(h.state.theme.scheme(), Scheme::Light);
-        assert_eq!(themes[0].1["seeds"]["base"], "#f4f1ea");
+        assert_eq!(themes[0].1["seeds"]["base"], "#faf9f6");
 
         // The shared accent: one `theme` event carrying the effective accent
         // and its derived text colour; unsetting it restores the theme's own.

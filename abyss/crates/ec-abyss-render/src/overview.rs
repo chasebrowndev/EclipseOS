@@ -35,7 +35,7 @@ use smithay::{
 
 use crate::{
     hud::{band, cov, sd_box, Paint},
-    hud_font::{self, Face},
+    hud_font::Face,
     text::Rgba,
     thumb::ThumbStore,
     titlebar::display_title,
@@ -523,8 +523,7 @@ fn paint(look: &Look) -> crate::text::Raster {
             }
             if let Some(title) = title {
                 let face = Face::Body;
-                let cols = ((look.w - 2 * CARD_PAD - 4).max(0) as usize) / hud_font::ADVANCE;
-                let text = display_title(title, cols);
+                let text = display_title(title, face, (look.w - 2 * CARD_PAD - 4).max(0) as usize);
                 let top =
                     (CARD_PAD + thumb.h) as usize + (TITLE_H as usize).saturating_sub(face.line_h()) / 2;
                 p.text(
@@ -744,7 +743,7 @@ impl Pass<'_> {
 }
 
 fn pill_size(text: &str) -> Size<i32, Logical> {
-    Size::from((hud_font::ADVANCE as i32 * text.chars().count() as i32 + 28, 30))
+    Size::from((Face::Body.width(text) as i32 + 28, 30))
 }
 
 /// The overlay's elements for `output`, front to back: the drag chip, the
@@ -778,14 +777,14 @@ pub fn overlay_elements(
         let text = drag
             .label
             .as_deref()
-            .map(|t| display_title(t, 28))
+            .map(|t| display_title(t, Face::Body, 224))
             .unwrap_or_default();
         let size = pill_size(&text);
         let rect = Rectangle::new(drag.at - Point::from((size.w / 2, size.h / 2)), size);
         pass.piece(PieceKey::Chip, rect, What::Pill(text));
     }
     if let Some(filter) = view.filter.as_ref().filter(|f| !f.is_empty()) {
-        let text = display_title(filter, 40);
+        let text = display_title(filter, Face::Body, 320);
         let size = pill_size(&text);
         let rect = Rectangle::new(
             Point::from((

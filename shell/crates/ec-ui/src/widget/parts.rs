@@ -2380,8 +2380,15 @@ pub fn surface<'a, Message: 'a>(
         .padding(space::CARD)
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(crate::theme::surface(radius, blur));
-    if blur {
+        .style(move |t: &Theme| {
+            crate::theme::bare_container_if_glass(crate::theme::surface(radius, blur)(t))
+        });
+    if crate::glass::available() {
+        // abyss draws no backdrop under an unshaped layer but its panes, so
+        // the sheet is itself one (as the secret prompt's is): without it the
+        // sheet is only its own translucent fill, over an unblurred wallpaper.
+        super::bar_widget::glass_card(sheet, theme::CellTone::Plain, radius)
+    } else if blur {
         sheet.into()
     } else {
         lit(sheet, radius, color::highlight())
@@ -2807,6 +2814,40 @@ pub fn pill_group<'a, Message: 'a>(pills: Vec<Element<'a, Message, Theme>>) -> E
         .into()
 }
 
+/// Wrap a control in its keyboard focus ring: while `on`, a brighter fill and
+/// a crisp rim at `radius`, never a glow; off, nothing is drawn but the tree
+/// keeps its shape, so focus moving never rebuilds the control inside.
+///
+/// A widget wrapper because iced 0.14's buttons have no focus of their own: the
+/// app tracks which control the keys are on and says so here.
+pub fn focus_ring<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    on: bool,
+    radius: f32,
+    width: Length,
+) -> Element<'a, Message, Theme> {
+    container(content)
+        .width(width)
+        .style(move |_t: &Theme| container::Style {
+            background: on.then(|| iced::Background::Color(color::highlight_soft())),
+            border: iced::Border {
+                color: if on {
+                    color::text_secondary()
+                } else {
+                    Color::TRANSPARENT
+                },
+                width: if on {
+                    2.0 * space::HAIRLINE
+                } else {
+                    space::HAIRLINE
+                },
+                radius: radius.into(),
+            },
+            ..container::Style::default()
+        })
+        .into()
+}
+
 /// A sidebar nav item. The 3px accent bar is a sibling quad, because a
 /// container border cannot be applied to one edge only.
 pub fn nav_item<'a, Message: Clone + 'a>(
@@ -2825,21 +2866,36 @@ pub fn nav_item_at<'a, Message: Clone + 'a>(
     active: bool,
     on_press: Message,
 ) -> Element<'a, Message, Theme> {
+    nav_item_with(density, None, label, active, on_press)
+}
+
+/// [`nav_item_at`] with a drawn icon (an [`art::tile`](super::art::tile)) in
+/// place of the placeholder square. The icon stays in a compact sidebar: with
+/// a real picture it is what identifies the row, not decoration.
+pub fn nav_item_with<'a, Message: Clone + 'a>(
+    density: Density,
+    icon: Option<Element<'a, Message, Theme>>,
+    label: &'a str,
+    active: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
     let compact = density == Density::Compact;
     let bar = nav_bar(active);
-    let glyph = nav_glyph(active);
 
     let name = text(label)
         .font(if active { font::UI_MEDIUM } else { font::UI })
         .size(size::BODY)
         .wrapping(text::Wrapping::None);
-    let face: Element<'a, Message, Theme> = if compact {
-        name.into()
-    } else {
-        row![glyph, name]
+    let face: Element<'a, Message, Theme> = match (icon, compact) {
+        (Some(icon), _) => row![icon, name]
             .spacing(space::NAV_GLYPH_GAP)
             .align_y(Alignment::Center)
-            .into()
+            .into(),
+        (None, true) => name.into(),
+        (None, false) => row![nav_glyph(active), name]
+            .spacing(space::NAV_GLYPH_GAP)
+            .align_y(Alignment::Center)
+            .into(),
     };
     let pad = if compact {
         [space::NAV_Y_COMPACT, space::NAV_X_COMPACT]
@@ -2952,8 +3008,32 @@ pub fn nav_section_at<'a, Message: Clone + 'a>(
     on_press: Message,
     pages: Vec<Element<'a, Message, Theme>>,
 ) -> Element<'a, Message, Theme> {
+    nav_section_with(
+        density, None, label, current, open, reveal, false, on_press, pages,
+    )
+}
+
+/// [`nav_section_at`] with a drawn icon in place of the placeholder square,
+/// and the keyboard ring (`focused`) drawn round the head alone, not its pages.
+#[allow(clippy::too_many_arguments)]
+pub fn nav_section_with<'a, Message: Clone + 'a>(
+    density: Density,
+    icon: Option<Element<'a, Message, Theme>>,
+    label: &'a str,
+    current: bool,
+    open: bool,
+    reveal: f32,
+    focused: bool,
+    on_press: Message,
+    pages: Vec<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
     if pages.is_empty() {
-        return nav_item_at(density, label, current, on_press);
+        return focus_ring(
+            nav_item_with(density, icon, label, current, on_press),
+            focused,
+            radius::INSET,
+            Length::Fill,
+        );
     }
     let compact = density == Density::Compact;
     let lit = current && !open;
@@ -2980,8 +3060,10 @@ pub fn nav_section_at<'a, Message: Clone + 'a>(
     let mut face = Row::new()
         .spacing(space::NAV_GLYPH_GAP)
         .align_y(Alignment::Center);
-    if !compact {
-        face = face.push(nav_glyph(lit));
+    match icon {
+        Some(icon) => face = face.push(icon),
+        None if !compact => face = face.push(nav_glyph(lit)),
+        None => {}
     }
     let face = face.push(name).push(Space::new().width(Length::Fill)).push(mark);
     let pad = if compact {
@@ -3002,6 +3084,7 @@ pub fn nav_section_at<'a, Message: Clone + 'a>(
     ]
     .spacing(space::NAV_BAR_GAP)
     .align_y(Alignment::Center);
+    let head = focus_ring(head, focused, radius::INSET, Length::Fill);
 
     let mut list = Column::new()
         .spacing(space::NAV_SUB_GAP)
@@ -3012,8 +3095,17 @@ pub fn nav_section_at<'a, Message: Clone + 'a>(
     // Folded, the well is there with no height, so the tree keeps its shape.
     // `max_height`, not `height(Fixed(0.0))`: a column drops a `Fixed(0)`
     // child from the tree altogether.
-    let well = container(list).width(Length::Fill).clip(true);
-    let well = if open { well } else { well.max_height(0.0) };
+    //
+    // Open, the well does not clip: a clipping container narrows the
+    // viewport its children are drawn with, and the compositor panes under
+    // the rows (`nav_ground`) read the scroll offset off that viewport
+    // (`glass::scrolled`). `Reveal` does the cutting while it opens.
+    let well = container(list).width(Length::Fill);
+    let well = if open {
+        well
+    } else {
+        well.clip(true).max_height(0.0)
+    };
     let reveal = if open { reveal.clamp(0.0, 1.0) } else { 0.0 };
     column![head, Reveal::new(well, reveal)].into()
 }
@@ -3207,9 +3299,26 @@ pub fn nav_page_at<'a, Message: Clone + 'a>(
     active: bool,
     on_press: Message,
 ) -> Element<'a, Message, Theme> {
+    // A compact sidebar has no placeholder square, so nothing to indent past.
+    let glyph = match density {
+        Density::Regular => space::NAV_GLYPH,
+        Density::Compact => 0.0,
+    };
+    nav_page_with(density, glyph, label, active, on_press)
+}
+
+/// [`nav_page_at`] under a section whose icon is `glyph` px wide, so the
+/// sub-page's label still sits under the section's.
+pub fn nav_page_with<'a, Message: Clone + 'a>(
+    density: Density,
+    glyph: f32,
+    label: &'a str,
+    active: bool,
+    on_press: Message,
+) -> Element<'a, Message, Theme> {
     let indent = match density {
-        Density::Regular => space::NAV_SUB_INDENT,
-        Density::Compact => space::NAV_SUB_INDENT_COMPACT,
+        Density::Regular => space::NAV_X + glyph + space::NAV_GLYPH_GAP,
+        Density::Compact => space::NAV_X_COMPACT + glyph + space::NAV_GLYPH_GAP,
     };
     let name = text(label)
         .font(if active { font::UI_MEDIUM } else { font::UI })
@@ -3307,6 +3416,18 @@ pub fn sidebar_at<'a, Message: 'a>(
     items: Vec<Element<'a, Message, Theme>>,
     footer: Vec<(&'a str, String)>,
 ) -> Element<'a, Message, Theme> {
+    sidebar_with(density, blur, None, items, footer)
+}
+
+/// [`sidebar_at`] with a `pinned` element (a search field) held above the
+/// scrolling nav, so a tall tree scrolls under it and never takes it away.
+pub fn sidebar_with<'a, Message: 'a>(
+    density: Density,
+    blur: bool,
+    pinned: Option<Element<'a, Message, Theme>>,
+    items: Vec<Element<'a, Message, Theme>>,
+    footer: Vec<(&'a str, String)>,
+) -> Element<'a, Message, Theme> {
     let (width, pad_x) = match density {
         Density::Regular => (space::SIDEBAR_W, space::SIDEBAR_X),
         Density::Compact => (space::SIDEBAR_W_COMPACT, space::SIDEBAR_X_COMPACT),
@@ -3347,11 +3468,22 @@ pub fn sidebar_at<'a, Message: 'a>(
         .style(theme::eclipse_scrollable)
         .width(Length::Fill)
         .height(Length::Fill);
-    let rail = container(column![nav, foot].spacing(space::BLOCK).width(Length::Fill))
-        .width(width)
-        .height(Length::Fill)
-        .padding([space::PANE_Y, pad_x])
-        .style(theme::window_pane(blur));
+    // The rows are compositor panes under glass: they follow the scroll.
+    let nav = crate::glass::scroll_region(nav);
+    // The pinned element sits flush on the nav; the foot is a block away.
+    let mut top = Column::new().width(Length::Fill).height(Length::Fill);
+    if let Some(pinned) = pinned {
+        top = top.push(pinned);
+    }
+    let rail = container(
+        column![top.push(nav), foot]
+            .spacing(space::BLOCK)
+            .width(Length::Fill),
+    )
+    .width(width)
+    .height(Length::Fill)
+    .padding([space::PANE_Y, pad_x])
+    .style(theme::window_pane(blur));
     // The one line between the rail and the content: both are the same
     // window material ([`theme::window_pane`]), so the edge is a hairline,
     // not a slab meeting a slab.
@@ -4553,9 +4685,8 @@ pub fn arg_chip<'a, Message: Clone + 'a>(arg: &str, on_remove: Message) -> Eleme
 ///
 /// A widget because the compositor already says *where* (a line, a column and
 /// a span length) and a pane that flattened that into a sentence would throw
-/// the most useful part away. The caret is measured in mono character cells
-/// ([`crate::tokens::canvas::MONO_CHAR_W`]), so it lines up under the snippet
-/// it annotates. Danger ink, never the accent: a refusal is not state.
+/// the most useful part away. The caret is the rule under the span's own glyphs,
+/// so it lines up under the snippet it annotates in a proportional face. Danger ink, never the accent: a refusal is not state.
 pub fn config_error<'a, Message: 'a>(
     position: &str,
     message: &str,
@@ -4580,25 +4711,35 @@ pub fn config_error<'a, Message: 'a>(
         .align_y(Alignment::Center),
     );
     if !snippet.is_empty() {
-        let lead = col.saturating_sub(1) as f32 * canvas::MONO_CHAR_W;
-        let run = span.max(1) as f32 * canvas::MONO_CHAR_W;
+        // The face is proportional, so the span is cut out of the line by
+        // character index rather than placed by a computed cell offset: the
+        // caret is the rule under that cut, wherever its glyphs land.
+        let chars: Vec<char> = snippet.chars().collect();
+        let start = col.saturating_sub(1).min(chars.len());
+        let end = (start + span.max(1)).min(chars.len());
+        let piece = |s: &[char]| -> String { s.iter().collect() };
+        let run = |s: String, danger: bool| {
+            let t = text(s)
+                .font(if danger { font::DATA_MEDIUM } else { font::DATA })
+                .size(size::MONO)
+                .wrapping(text::Wrapping::None);
+            if danger {
+                t.style(theme::text_danger)
+            } else {
+                t.style(theme::text_primary)
+            }
+        };
         body = body.push(
-            column![
-                text(snippet.to_string())
-                    .font(font::DATA)
-                    .size(size::MONO)
-                    .style(theme::text_primary)
-                    .wrapping(text::Wrapping::None),
-                row![
-                    Space::new().width(Length::Fixed(lead)),
-                    edge_quad(
-                        Length::Fixed(run),
-                        Length::Fixed(canvas::CARET_H),
-                        color::danger()
-                    ),
-                ],
+            row![
+                run(piece(&chars[..start]), false),
+                column![
+                    run(piece(&chars[start..end]), true),
+                    edge_quad(Length::Fill, Length::Fixed(canvas::CARET_H), color::danger()),
+                ]
+                .spacing(space::HAIRLINE),
+                run(piece(&chars[end..]), false),
             ]
-            .spacing(space::HAIRLINE),
+            .align_y(Alignment::Start),
         );
     }
     container(

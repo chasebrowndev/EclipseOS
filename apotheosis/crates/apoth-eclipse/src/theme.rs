@@ -142,14 +142,14 @@ mod tests {
     #[test]
     fn light_payload_and_contrast_check() {
         let mut p = payload();
-        p["seeds"]["base"] = json!("#f4f1ea");
+        p["seeds"]["base"] = json!("#faf9f6");
         p["seeds"]["ink"] = json!("#1a1610");
         p["seeds"]["accent_text"] = json!("#856000");
         let c = TermColors::checked(&seeds_from_payload(&p).unwrap()).unwrap();
         assert!(!c.dark);
         assert_eq!(c, TermColors::stock(false));
         // Ink on its own base cannot be read: rejected.
-        p["seeds"]["ink"] = json!("#f4f1ea");
+        p["seeds"]["ink"] = json!("#faf9f6");
         assert!(TermColors::checked(&seeds_from_payload(&p).unwrap()).is_err());
     }
 }

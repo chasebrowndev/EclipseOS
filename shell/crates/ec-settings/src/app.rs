@@ -23,8 +23,8 @@ use ec_ui::theme;
 use ec_ui::tokens::{color, font, radius, size, space};
 use ec_ui::widget::{
     color_picker, content_at, dimmed_at, dropdown, edge_note, glass_panel as panel, hairline, header,
-    list_row, list_row_at, micro_label, nav_item_at, nav_page_at, nav_section_at, pill, pill_group,
-    row_caption, sidebar_at, status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider,
+    list_row, list_row_at, micro_label, nav_item_with, nav_page_with, nav_section_with, pill, pill_group,
+    row_caption, sidebar_with, status_chip, subtitle, swatch_button, value as mono, Density, NumericSlider,
     Toggle,
 };
 
@@ -33,7 +33,7 @@ mod display;
 use crate::conn::{Conn, Problem};
 use crate::network::{self, Net};
 use crate::output::{Edge, Inset, Output};
-use crate::pane::{page_of, place_for, Page, Section};
+use crate::pane::{page_of, place_for, Group, Page, Section};
 use crate::schema::{Control, Row as Key};
 use crate::tray::{Tray, Writes};
 
@@ -159,6 +159,12 @@ pub enum Message {
     LoginScreen(crate::login_screen::Msg),
     /// The Terminal pages' own messages.
     Terminal(crate::terminal::Msg),
+    /// A key on the control the ring is on (`focus.rs`).
+    Focus(crate::focus::Key),
+    /// A page's "Advanced" expander.
+    Advanced,
+    /// In a narrow window: back from a page to the list of pages.
+    Back,
 }
 
 /// Somewhere to take the user: a page, and optionally a row on it by its
@@ -181,6 +187,9 @@ pub fn locate(target: &str) -> Option<Locus> {
     if let Some(place) = target.strip_prefix(BESPOKE) {
         let path = place.replacen('.', "/", 1);
         return Page::from_arg(&path).map(|page| Locus { page, row: None });
+    }
+    if let Some(path) = target.strip_prefix(crate::search::PAGE) {
+        return Page::from_path(path).map(|page| Locus { page, row: None });
     }
     if let Some(key) = target.strip_prefix(crate::search::TERMINAL) {
         return crate::terminal::page_of_key(key).map(|page| Locus {
@@ -270,7 +279,7 @@ pub struct App {
     pub(crate) page: Page,
     /// The expanded section in the sidebar: at most one, and not always the
     /// shown page's — folding the current section leaves its page showing.
-    open: Option<Section>,
+    pub(crate) open: Option<Section>,
     /// Each expanding section's open fraction, 0 folded to 1 open, moving
     /// toward `open` under the default motion.
     folds: HashMap<Section, Animated>,
@@ -294,7 +303,7 @@ pub struct App {
     pub(crate) live: HashMap<String, f64>,
     /// The throttled writes of the sliders being held, per path.
     live_writes: HashMap<String, LiveWrite>,
-    outputs: Vec<Output>,
+    pub(crate) outputs: Vec<Output>,
     /// The output the Display card is about; `None` is the focused one.
     selected: Option<u64>,
     insets: HashMap<u64, Inset>,
@@ -302,7 +311,7 @@ pub struct App {
     calibrating: Option<u64>,
     pub(crate) banner: Option<Problem>,
     restart_pending: bool,
-    net: Net,
+    pub(crate) net: Net,
     /// The tray entry the move pills act on.
     pub(crate) tray_sel: Option<String>,
     /// Each live tray app's icon, as the feed resolved it.
@@ -362,6 +371,20 @@ pub struct App {
     pub(crate) login: crate::login_screen::LoginScreen,
     /// The Terminal pages: `apotheosis.kdl`, loaded when one is shown.
     pub(crate) terminal: crate::terminal::Terminal,
+    /// Whether the page's "Advanced" expander is open. Per visit: a new page
+    /// starts folded, and a search jump to an advanced row opens it.
+    pub(crate) advanced: bool,
+    /// In a narrow window the page list replaces the page, and this says
+    /// which of the two shows. Ignored when the window is wide enough for
+    /// both.
+    pub(crate) show_nav: bool,
+    /// What the overview says about this machine.
+    pub(crate) sys: crate::overview::Sys,
+    /// The control the keyboard is on, or none: the ring the views draw.
+    pub(crate) focus: Option<crate::focus::Focus>,
+    /// What the last `view` established for the keys (window shape, whether
+    /// the page has an Advanced disclosure). A cell: `view` takes `&App`.
+    pub(crate) facts: std::cell::Cell<crate::focus::Facts>,
 }
 
 /// How long "Cleared" stands in for the button.
@@ -375,7 +398,7 @@ impl Default for App {
 
 impl App {
     pub fn new() -> Self {
-        Self::with_page(Section::Windows.first())
+        Self::with_page(Page::Overview)
     }
 
     /// Open on `page`, its section expanded — `ec-settings network`
@@ -436,6 +459,11 @@ impl App {
             accounts: crate::accounts::Accounts::default(),
             login: crate::login_screen::LoginScreen::default(),
             terminal: crate::terminal::Terminal::default(),
+            advanced: false,
+            show_nav: false,
+            sys: crate::overview::Sys::read(),
+            focus: None,
+            facts: std::cell::Cell::new(crate::focus::Facts::default()),
         };
         // Debug builds only: open with a tray entry selected, so the selected
         // state can be screenshotted without pointer injection.
@@ -832,6 +860,11 @@ fn boot_inner(page: Page) -> (App, Task<Message>) {
     } else {
         Task::none()
     };
+    // `SETTINGS_PREVIEW_NAV=1`: open on the page list a narrow window shows.
+    #[cfg(debug_assertions)]
+    if std::env::var("SETTINGS_PREVIEW_NAV").is_ok() {
+        app.show_nav = true;
+    }
     #[cfg(debug_assertions)]
     if let Ok(q) = std::env::var("SETTINGS_PREVIEW_SEARCH") {
         app.search.set_query(&q);
@@ -877,7 +910,7 @@ fn boot_inner(page: Page) -> (App, Task<Message>) {
             Task::batch([pictures, iced::widget::operation::scroll_to(SCROLL, to)]),
         );
     }
-    (app, Task::batch([pictures, nav_into_view(page)]))
+    (app, Task::batch([pictures, nav_align(page.section())]))
 }
 
 pub fn update(app: &mut App, message: Message) -> Task<Message> {
@@ -913,14 +946,24 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             } else {
                 return go(app, s.first());
             }
+            // Folding or unfolding moves the rows below, never this one, and
+            // the one before it may have just folded: keep this header at the
+            // top edge of the rail.
+            return nav_align(s);
         }
+        Message::Focus(k) => return crate::focus::update(app, k),
         Message::Open(p) => return go(app, p),
+        Message::Advanced => app.advanced = !app.advanced,
+        Message::Back => app.show_nav = true,
         Message::Reveal(Locus { page, row }) => {
             if page.is_terminal() {
                 app.terminal.clear_filter();
             }
             let top = go(app, page);
             let Some(path) = row else { return top };
+            if crate::schema::is_advanced(&path) {
+                app.advanced = true;
+            }
             app.flash = Some((path.clone(), Instant::now()));
             return iced::advanced::widget::operate(Measure::new(row_id(&path))).then(|at| match at {
                 Some(y) => iced::widget::operation::scroll_to(
@@ -976,6 +1019,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             }
         }
         Message::Reload => {
+            app.sys = crate::overview::Sys::read();
             app.reload();
             if app.page.is_terminal() {
                 app.terminal.reload();
@@ -1208,6 +1252,15 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
 fn go(app: &mut App, page: Page) -> Task<Message> {
     let changed = app.page != page;
     app.page = page;
+    // A page opened from the narrow list shows; and starts with its
+    // advanced settings folded.
+    app.show_nav = false;
+    if changed {
+        app.advanced = false;
+        if page == Page::Overview {
+            app.sys = crate::overview::Sys::read();
+        }
+    }
     app.fold(Some(page.section()));
     if !changed {
         return Task::none();
@@ -1225,22 +1278,128 @@ fn go(app: &mut App, page: Page) -> Task<Message> {
     Task::batch([
         pictures,
         iced::widget::operation::snap_to(SCROLL, iced::widget::scrollable::RelativeOffset::START),
-        nav_into_view(page),
+        nav_align(page.section()),
     ])
 }
 
-/// Scroll the sidebar so the page's section is in view: it is a tree that can
-/// be taller than the window, and the section sits proportionally down it.
-fn nav_into_view(page: Page) -> Task<Message> {
-    let at = Section::ALL
-        .iter()
-        .position(|s| *s == page.section())
-        .unwrap_or(0);
-    let y = at as f32 / (Section::ALL.len() - 1) as f32;
-    iced::widget::operation::snap_to(
+/// The id of the sidebar row for `key` (a section's title or a page's path).
+pub(crate) fn nav_row_id(key: &str) -> iced::widget::Id {
+    iced::widget::Id::from(format!("nav:{key}"))
+}
+
+fn nav_key(f: crate::focus::Focus) -> Option<String> {
+    match f {
+        crate::focus::Focus::Section(s) => Some(s.title().to_owned()),
+        crate::focus::Focus::Page(p) => Some(p.path()),
+        _ => None,
+    }
+}
+
+/// Scroll the sidebar so `section`'s row is flush with the top edge, a whole
+/// row at a time: nothing half-hidden above it, however the tree folded.
+pub(crate) fn nav_align(section: Section) -> Task<Message> {
+    iced::advanced::widget::operate(NavMeasure::new(nav_row_id(section.title()))).then(|m| match m {
+        Some(m) => nav_scroll(m.at),
+        None => Task::none(),
+    })
+}
+
+/// A sidebar row's height, for the rows (open sections) whose id also covers pages.
+const NAV_ROW_H: f32 = ec_ui::tokens::art::TILE + 2.0 * ec_ui::tokens::space::NAV_Y;
+
+/// Scroll the sidebar only as far as keeps the focused row in view.
+pub(crate) fn nav_reveal(f: crate::focus::Focus) -> Task<Message> {
+    let Some(key) = nav_key(f) else {
+        return Task::none();
+    };
+    iced::advanced::widget::operate(NavMeasure::new(nav_row_id(&key))).then(|m| match m {
+        Some(m) if m.at < m.scrolled => nav_scroll(m.at),
+        Some(m) if m.at + m.height.min(NAV_ROW_H) > m.scrolled + m.view => {
+            nav_scroll(m.at + m.height.min(NAV_ROW_H) - m.view)
+        }
+        _ => Task::none(),
+    })
+}
+
+fn nav_scroll(y: f32) -> Task<Message> {
+    iced::widget::operation::scroll_to(
         iced::widget::Id::new(ec_ui::widget::SIDEBAR_NAV),
-        iced::widget::scrollable::RelativeOffset { x: 0.0, y },
+        iced::widget::scrollable::AbsoluteOffset {
+            x: None,
+            y: Some(y.max(0.0)),
+        },
     )
+}
+
+/// Where a sidebar row is: its offset in the rail's content, its height, how
+/// far the rail is scrolled and how tall its window is.
+#[derive(Debug, Clone, Copy)]
+struct NavAt {
+    at: f32,
+    height: f32,
+    scrolled: f32,
+    view: f32,
+}
+
+struct NavMeasure {
+    target: iced::widget::Id,
+    scroll: iced::widget::Id,
+    top: Option<f32>,
+    row: Option<(f32, f32)>,
+    scrolled: f32,
+    view: f32,
+}
+
+impl NavMeasure {
+    fn new(target: iced::widget::Id) -> Self {
+        NavMeasure {
+            target,
+            scroll: iced::widget::Id::new(ec_ui::widget::SIDEBAR_NAV),
+            top: None,
+            row: None,
+            scrolled: 0.0,
+            view: 0.0,
+        }
+    }
+}
+
+impl iced::advanced::widget::Operation<Option<NavAt>> for NavMeasure {
+    fn traverse(
+        &mut self,
+        operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Option<NavAt>>),
+    ) {
+        operate(self);
+    }
+
+    fn container(&mut self, id: Option<&iced::widget::Id>, bounds: iced::Rectangle) {
+        if id == Some(&self.target) {
+            self.row = Some((bounds.y, bounds.height));
+        }
+    }
+
+    fn scrollable(
+        &mut self,
+        id: Option<&iced::widget::Id>,
+        bounds: iced::Rectangle,
+        content: iced::Rectangle,
+        translation: iced::Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        if id == Some(&self.scroll) {
+            self.top = Some(content.y);
+            self.scrolled = translation.y;
+            self.view = bounds.height;
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<Option<NavAt>> {
+        iced::advanced::widget::operation::Outcome::Some(self.top.zip(self.row).map(|(top, (y, h))| NavAt {
+            at: y - top,
+            height: h,
+            scrolled: self.scrolled,
+            view: self.view,
+        }))
+    }
 }
 
 impl App {
@@ -1353,6 +1512,10 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
     // belong to that form: the sidebar's type-to-search hears none.
     if !app.terminal.lists.recording() && !app.terminal.open.editing() {
         subs.push(crate::search_ui::keys(&app.search));
+        // While results show, the arrows, Enter and Escape are the search's.
+        if !app.search.active() {
+            subs.push(crate::focus::keys(app.focus.is_some()));
+        }
     }
     if app.terminal.open.editing() {
         subs.push(crate::term_open::keys());
@@ -1491,41 +1654,126 @@ pub fn view(app: &App) -> Element<'_, Message, Theme> {
     // The frame is the only thing that reads the window's width; every row
     // below folds on its own.
     ec_ui::glass::root_sole(iced::widget::responsive(move |size| {
-        frame(app, Density::for_width(size.width))
+        frame(
+            app,
+            Density::for_width(size.width),
+            size.width < ec_ui::tokens::art::NARROW_W,
+        )
     }))
     .into()
 }
 
-/// The sidebar's section tree: what the rail shows when nothing is searched.
+/// The sidebar's tree: the overview, then the sections under their group
+/// headings, each with its icon tile. What the rail shows when nothing is
+/// searched. `short` swaps in the headings' short forms (a compact rail).
 fn tree(app: &App, density: Density) -> Vec<Element<'_, Message, Theme>> {
-    Section::ALL
-        .iter()
-        .map(|s| {
-            let current = app.page.section() == *s;
-            if !s.expands() {
-                return nav_item_at(density, s.title(), current, Message::Open(s.first()));
-            }
-            let pages = s
-                .pages()
-                .iter()
-                .map(|p| nav_page_at(density, p.title(), *p == app.page, Message::Open(*p)))
-                .collect();
-            let reveal = app.folds.get(s).map_or(0.0, Animated::value);
-            nav_section_at(
-                density,
-                s.title(),
-                current,
-                app.open == Some(*s),
-                reveal,
-                Message::Section(*s),
-                pages,
-            )
-        })
-        .collect()
+    let mut out = vec![section_item(app, density, Section::Overview)];
+    for g in Group::ALL {
+        out.push(group_heading(*g, density == Density::Compact));
+        out.extend(g.sections().map(|s| section_item(app, density, s)));
+    }
+    out
 }
 
-fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
-    let mut nav = vec![crate::search_ui::field(app, density)];
+/// A group's small uppercase heading, in line with the nav labels. A compact
+/// rail is too narrow for "Privacy & accounts" (it wrapped mid-word), so it
+/// gets the group's short name.
+fn group_heading<'a>(g: Group, short: bool) -> Element<'a, Message, Theme> {
+    iced::widget::container(micro_label(if short { g.short_title() } else { g.title() }))
+        .padding(
+            iced::Padding::ZERO
+                .left(space::BAR_W + space::NAV_BAR_GAP + space::NAV_X)
+                .top(space::BLOCK)
+                .bottom(space::LINE_GAP),
+        )
+        .into()
+}
+
+/// One sidebar row: the keyboard ring when it has it, and the id the rail's
+/// scrolling finds it by.
+fn nav_row<'a>(
+    app: &App,
+    key: &str,
+    focus: crate::focus::Focus,
+    ring: bool,
+    row: Element<'a, Message, Theme>,
+) -> Element<'a, Message, Theme> {
+    iced::widget::container(ec_ui::widget::focus_ring(
+        row,
+        ring && app.focus == Some(focus),
+        radius::INSET,
+        Length::Fill,
+    ))
+    .id(nav_row_id(key))
+    .into()
+}
+
+/// One section's row: a plain item for a single page, an expanding head with
+/// its pages otherwise.
+fn section_item(app: &App, density: Density, s: Section) -> Element<'_, Message, Theme> {
+    let current = app.page.section() == s;
+    let icon = || ec_ui::widget::art::tile(s.glyph(), s.hue(), ec_ui::tokens::art::TILE, current);
+    let ring = crate::focus::Focus::Section(s);
+    if !s.expands() {
+        return nav_row(
+            app,
+            s.title(),
+            ring,
+            true,
+            nav_item_with(
+                density,
+                Some(icon()),
+                s.title(),
+                current,
+                Message::Open(s.first()),
+            ),
+        );
+    }
+    let pages = s
+        .pages()
+        .iter()
+        .map(|p| {
+            nav_row(
+                app,
+                &p.path(),
+                crate::focus::Focus::Page(*p),
+                true,
+                nav_page_with(
+                    density,
+                    ec_ui::tokens::art::TILE,
+                    p.title(),
+                    *p == app.page,
+                    Message::Open(*p),
+                ),
+            )
+        })
+        .collect();
+    let reveal = app.folds.get(&s).map_or(0.0, Animated::value);
+    nav_row(
+        app,
+        s.title(),
+        ring,
+        false,
+        nav_section_with(
+            density,
+            Some(icon()),
+            s.title(),
+            current,
+            app.open == Some(s),
+            reveal,
+            app.focus == Some(ring),
+            Message::Section(s),
+            pages,
+        ),
+    )
+}
+
+fn frame(app: &App, density: Density, narrow: bool) -> Element<'_, Message, Theme> {
+    app.facts.set(crate::focus::Facts {
+        narrow,
+        advanced: false,
+    });
+    let mut nav = Vec::new();
     if app.search.active() {
         nav.extend(crate::search_ui::results(app));
     } else {
@@ -1537,7 +1785,18 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         footer.push(("restart", "required".into()));
     }
 
-    let mut controls = vec![pill("Reload", false, Message::Reload)];
+    let mut controls = Vec::new();
+    // A narrow window shows the list or the page, not both: the page's way
+    // back to the list is its first control.
+    if narrow {
+        controls.push(ec_ui::widget::focus_ring(
+            pill("\u{2039} Settings", false, Message::Back),
+            app.focus == Some(crate::focus::Focus::Back),
+            radius::PILL,
+            Length::Shrink,
+        ));
+    }
+    controls.push(pill("Reload", false, Message::Reload));
     match app.page.section() {
         Section::Network => {
             let (state, measure) = app.net.chip();
@@ -1577,15 +1836,25 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         }
         _ => {}
     }
-    let mut blocks = vec![header(
-        app.page.title(),
-        subtitle(app.page.subtitle(), "", ""),
-        controls,
-    )];
+    let title = header(app.page.title(), subtitle(app.page.subtitle(), "", ""), controls);
+    // The page's vignette sits left of its title; a narrow window has no room.
+    let head: Element<'_, Message, Theme> = if narrow {
+        title
+    } else {
+        row![
+            ec_ui::widget::art::vignette(app.page.glyph(), app.page.section().hue()),
+            title,
+        ]
+        .spacing(space::CARD)
+        .align_y(iced::Alignment::Center)
+        .into()
+    };
+    let mut blocks = vec![head];
     if let Some(problem) = &app.banner {
         blocks.push(banner(problem, app.glass_radius, app.hairline_cards));
     }
     match app.page {
+        Page::Overview => blocks.extend(crate::overview::blocks(app)),
         Page::Display => blocks.extend(display::blocks(app)),
         Page::Network => blocks.extend(network::blocks(&app.net, app.glass_radius, app.hairline_cards)),
         Page::Addons => blocks.extend(crate::addons::blocks(app)),
@@ -1597,6 +1866,14 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         Page::Rendering => {
             blocks.push(schema_page(app));
             blocks.extend(crate::gpu::view(app));
+        }
+        Page::Blur => {
+            blocks.push(crate::previews::glass(app));
+            blocks.push(schema_page(app));
+        }
+        Page::Layout | Page::Gaps | Page::Borders | Page::Rounding => {
+            blocks.push(crate::previews::windows(app));
+            blocks.push(schema_page(app));
         }
         Page::Focus => {
             blocks.push(schema_page(app));
@@ -1616,8 +1893,20 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
     // The window is transparent (`main.rs`): with blur on, sidebar and
     // content are one pane of smoked glass a step apart in density; with it
     // off both fall back to opaque grounds.
+    if narrow && (app.show_nav || app.search.active()) {
+        return narrow_list(app, nav, footer);
+    }
+    let rail: Option<Element<'_, Message, Theme>> = (!narrow).then(|| {
+        sidebar_with(
+            density,
+            app.blur,
+            Some(crate::search_ui::field(app, density)),
+            nav,
+            footer,
+        )
+    });
     row![
-        sidebar_at(density, app.blur, nav, footer),
+        rail.unwrap_or_else(|| Space::new().into()),
         iced::widget::container(
             // The scroll viewport is the full column height, so panes slide off
             // the window's top and bottom edges; the `BLOCK` inset is leading
@@ -1645,6 +1934,46 @@ fn frame(app: &App, density: Density) -> Element<'_, Message, Theme> {
         .height(Length::Fill)
         .style(theme::window_pane(app.blur)),
     ]
+    .into()
+}
+
+/// A narrow window's page list: the rail's items across the whole window, in
+/// the window's material, with the footer under them. Picking a page swaps it
+/// for the page (`go` clears `show_nav`); the page's first control brings it
+/// back.
+fn narrow_list<'a>(
+    app: &'a App,
+    nav: Vec<Element<'a, Message, Theme>>,
+    footer: Vec<(&'a str, String)>,
+) -> Element<'a, Message, Theme> {
+    let mut list = Column::new().spacing(space::NAV_SUB_GAP).width(Length::Fill);
+    list = list.push(crate::search_ui::field(app, Density::Regular));
+    for item in nav {
+        list = list.push(item);
+    }
+    for (k, v) in footer {
+        list = list.push(mono(&format!("{k}  {v}")));
+    }
+    iced::widget::container(
+        scrollable(list)
+            .id(ec_ui::widget::SIDEBAR_NAV)
+            .direction(scrollable::Direction::Vertical(
+                scrollable::Scrollbar::new()
+                    .width(space::SCROLLBAR_W)
+                    .scroller_width(space::SCROLLBAR_W)
+                    .margin(3),
+            ))
+            .style(theme::eclipse_scrollable)
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .padding(
+        iced::Padding::from([space::PANE_Y_COMPACT, space::SIDEBAR_X])
+            .right(space::SIDEBAR_X + 3.0 * space::SCROLLBAR_W),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .style(theme::window_pane(app.blur))
     .into()
 }
 
@@ -1758,6 +2087,14 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         .key(crate::schema::IDLE_SUSPEND)
         .is_some_and(|k| k.as_f64() > 0.0);
     let mut set_apart = false;
+    // Rows behind the "Advanced" expander, unless that would leave the page
+    // with nothing in front of it.
+    let n_advanced = keys
+        .iter()
+        .filter(|k| crate::schema::is_advanced(&k.path))
+        .count();
+    let fold_advanced = n_advanced > 0 && n_advanced < keys.len();
+    let mut advanced_rows: Vec<Element<'_, Message, Theme>> = Vec::new();
     // The auto schedule and the theme names, set after the scheme row.
     let mut schedule: Vec<&Key> = Vec::new();
     let mut themes: Vec<&Key> = Vec::new();
@@ -1766,12 +2103,17 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
         if key.path == crate::schema::COLOR_SCHEME {
             scheme = key.value.as_str().unwrap_or("dark");
         }
-        let group = place_for(&key.path).map_or("", |p| p.group);
-        let rows = match groups.iter().position(|(g, _)| *g == group) {
-            Some(i) => &mut groups[i].1,
-            None => {
-                groups.push((group, Vec::new()));
-                &mut groups.last_mut().expect("just pushed").1
+        let group = place_for(&key.path).map_or("", |p| crate::schema::card(&key.path, p.group));
+        let to_advanced = fold_advanced && crate::schema::is_advanced(&key.path);
+        let rows = if to_advanced {
+            &mut advanced_rows
+        } else {
+            match groups.iter().position(|(g, _)| *g == group) {
+                Some(i) => &mut groups[i].1,
+                None => {
+                    groups.push((group, Vec::new()));
+                    &mut groups.last_mut().expect("just pushed").1
+                }
             }
         };
         // An unset mirror would be a second slider reading the same number
@@ -1803,7 +2145,13 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             themes.push(key);
             continue;
         }
-        if let Some(applies) = crate::schema::moded(crate::schema::BLUR, &key.path, modes) {
+        // An advanced setting is set apart whatever it is moded by.
+        let moded = if to_advanced {
+            None
+        } else {
+            crate::schema::moded(crate::schema::BLUR, &key.path, modes)
+        };
+        if let Some(applies) = moded {
             runs_group.get_or_insert(group);
             match runs.iter_mut().find(|(a, g, _)| *a == applies && *g == group) {
                 Some((_, _, keys)) => keys.push(key),
@@ -1939,27 +2287,119 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
     }
 
     if groups.is_empty() {
-        return edge_note(
-            "Nothing to set here yet",
-            "This compositor reports no settings for this page. A newer abyss adds them; until then \
-             they are not in abyss.kdl either.",
-            color::neutral(),
-        );
+        return column![
+            ec_ui::widget::art::tile(
+                app.page.glyph(),
+                app.page.section().hue(),
+                ec_ui::tokens::art::EMPTY_TILE,
+                false
+            ),
+            edge_note(
+                "Nothing to set here yet",
+                "This compositor reports no settings for this page. A newer abyss adds them; until then \
+                 they are not in abyss.kdl either.",
+                color::neutral(),
+            ),
+        ]
+        .spacing(space::ROW_Y)
+        .into();
     }
-    let labelled = groups.len() > 1;
-    let mut col = Column::new().spacing(space::ROW_Y);
-    for (i, (group, rows)) in groups.into_iter().enumerate() {
-        if i > 0 {
-            col = col.push(hairline());
-        }
-        if labelled {
-            col = col.push(micro_label(group));
+    let page_path = app.page.path();
+    let titled = groups.len() > 1;
+    let mut cards: Vec<Element<'_, Message, Theme>> = Vec::new();
+    let mut groups = groups.into_iter().peekable();
+    while let Some((group, rows)) = groups.next() {
+        let mut col = Column::new().spacing(space::ROW_Y);
+        if titled {
+            col = col.push(card_head(group, crate::schema::group_caption(&page_path, group)));
         }
         for r in rows {
             col = col.push(r);
         }
+        // The advanced rows close the last card, under their own expander.
+        if groups.peek().is_none() && !advanced_rows.is_empty() {
+            col = col.push(hairline());
+            app.facts.set(crate::focus::Facts {
+                advanced: true,
+                ..app.facts.get()
+            });
+            col = col.push(advanced_head(
+                app.advanced,
+                advanced_rows.len(),
+                app.focus == Some(crate::focus::Focus::Advanced),
+            ));
+            if app.advanced {
+                for r in std::mem::take(&mut advanced_rows) {
+                    col = col.push(r);
+                }
+            }
+        }
+        cards.push(panel(app.glass_radius, app.hairline_cards, col));
     }
-    panel(app.glass_radius, app.hairline_cards, col)
+    if cards.len() == 1 {
+        return cards.pop().expect("one card");
+    }
+    Column::with_children(cards).spacing(space::BLOCK).into()
+}
+
+/// A card's title and its one line under it.
+fn card_head<'a>(group: &str, caption: Option<&str>) -> Element<'a, Message, Theme> {
+    let mut head = Column::new().spacing(space::LINE_GAP).push(
+        iced::widget::text(crate::schema::group_title(group).unwrap_or_default())
+            .font(font::UI_MEDIUM)
+            .size(size::CARD_TITLE)
+            .style(theme::text_primary),
+    );
+    if let Some(c) = caption {
+        head = head.push(
+            iced::widget::text(c.to_owned())
+                .font(font::UI)
+                .size(size::BODY_SMALL)
+                .style(theme::text_tertiary),
+        );
+    }
+    iced::widget::container(head)
+        .padding([0.0, space::CARD / 2.0])
+        .into()
+}
+
+/// The "Advanced" disclosure at the foot of a page's last card: a full-width
+/// row with a turning chevron and how many settings it holds.
+fn advanced_head<'a>(open: bool, count: usize, ringed: bool) -> Element<'a, Message, Theme> {
+    let face = iced::widget::row![
+        ec_ui::widget::chevron_turn(if open { 1.0 } else { 0.0 }, color::text_secondary()),
+        iced::widget::text("Advanced")
+            .font(font::UI_MEDIUM)
+            .size(size::BODY)
+            .style(theme::text_primary),
+        iced::widget::text(if count == 1 {
+            "1 setting".to_owned()
+        } else {
+            format!("{count} settings")
+        })
+        .font(font::UI)
+        .size(size::BODY_SMALL)
+        .style(theme::text_tertiary),
+    ]
+    .spacing(space::CONTROL_GAP)
+    .align_y(iced::Alignment::Center);
+    let button = iced::widget::button(face)
+        .padding([space::NAV_Y, space::CARD / 2.0])
+        .width(Length::Fill)
+        .on_press(Message::Advanced)
+        .style(|_t: &Theme, status| {
+            let hovered = matches!(
+                status,
+                iced::widget::button::Status::Hovered | iced::widget::button::Status::Pressed
+            );
+            iced::widget::button::Style {
+                background: hovered.then(|| iced::Background::Color(color::lift_soft())),
+                text_color: color::text(),
+                border: iced::border::rounded(radius::INSET),
+                ..iced::widget::button::Style::default()
+            }
+        });
+    ec_ui::widget::focus_ring(button, ringed, radius::INSET, Length::Fill)
 }
 
 fn is_frecency(path: &str) -> bool {
@@ -2442,8 +2882,21 @@ mod tests {
     #[test]
     fn a_sidebar_section_keeps_its_tree_shape_open_or_folded() {
         let tree = |open: bool| {
-            let pages = vec![nav_page_at(Density::Regular, "A", false, Message::Reload)];
-            let el = nav_section_at(Density::Regular, "S", false, open, 0.5, Message::Reload, pages);
+            let pages = vec![ec_ui::widget::nav_page_at(
+                Density::Regular,
+                "A",
+                false,
+                Message::Reload,
+            )];
+            let el = ec_ui::widget::nav_section_at(
+                Density::Regular,
+                "S",
+                false,
+                open,
+                0.5,
+                Message::Reload,
+                pages,
+            );
             let t = iced::advanced::widget::Tree::new(&el);
             let head = &t.children[0];
             let button = &head.children[1];

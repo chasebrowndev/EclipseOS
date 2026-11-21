@@ -162,12 +162,12 @@ package_eclipseos-launcher() {
 
 package_eclipseos-desktop() {
   pkgdesc="EclipseOS desktop apps: settings, policy viewer, agent console, desktop icons, screensaver, screen locker, welcome, pairing agent, secret prompt, portal backend"
-  # Fonts for ec-welcome (D-07 step 0). Lora has no official package; the
-  # version label falls back to a serif.
+  # Fonts for ec-welcome (D-07 step 0): Onest is embedded; noto-fonts-cjk
+  # supplies the Japanese / Chinese / Korean greetings.
   # eclipseos-fog: abyss-portals.conf routes FileChooser to ec-portal, which
   # opens ec-fog-ui as the picker (ADR 0100). Without it every app's file
   # dialog would answer "other", so it is a hard dependency.
-  depends=(eclipseos-abyss eclipseos-fog eclipseos-portal wayland libxkbcommon mesa networkmanager bluez ttf-cormorant noto-fonts-cjk polkit pam)
+  depends=(eclipseos-abyss eclipseos-fog eclipseos-portal wayland libxkbcommon mesa networkmanager bluez noto-fonts-cjk polkit pam)
   # The locker's PAM service is the admin's to edit (an OTP module, faillock
   # tuning), so pacman keeps their copy.
   backup=(etc/pam.d/ec-lock)

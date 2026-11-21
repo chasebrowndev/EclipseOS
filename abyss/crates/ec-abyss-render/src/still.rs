@@ -182,6 +182,7 @@ impl Frame<'_> {
                 *rect,
                 output_loc,
                 self.scale,
+                self.config.appearance.glass_light() > 0.0,
                 out,
             );
         }

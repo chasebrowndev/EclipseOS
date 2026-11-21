@@ -55,7 +55,7 @@ use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 use super::modal::{self, Button, Modal, Role};
 use super::slot::{Arming, Conditions, Disarm, Enter, State as Arm, ARM_DEFAULT_MS};
 use crate::protocols::protected::{self as protected, Kind, Reason, State};
-use crate::render::glyphs::{ADVANCE, CELL_H as GLYPH_H, LINE_H};
+use crate::render::glyphs::{sans::Weight, ADVANCE, CELL_H as GLYPH_H, LINE_H};
 use crate::render::text::{self, Canvas, Raster};
 use crate::render::AbyssRenderElement;
 use crate::state::AbyssState;
@@ -908,7 +908,7 @@ fn rasterize(
             }
             y += LINE_H;
             if s.could.is_empty() && kind == Kind::TaskCommit {
-                c.text(x0, y, "Could: only talk with you", body, false);
+                c.sans(x0, y, "Could: only talk with you", body, Weight::Regular);
             }
             for (i, l) in s.could.iter().take(COULD_ROWS).enumerate() {
                 let line: String = format!("Could: {}", text::sanitize_line(l))
@@ -924,7 +924,7 @@ fn rasterize(
                 } else {
                     "Resumes a session that may hold untrusted content."
                 };
-                c.text(x0, y, line, p.warn, false);
+                c.sans(x0, y, line, p.warn, Weight::Regular);
             }
         }
         (_, None) => {
@@ -934,9 +934,9 @@ fn rasterize(
                 Kind::TaskUnpause => ("Let a paused task act again", IDLE_UNPAUSE),
                 _ => ("Start an agent task", IDLE_COMMIT),
             };
-            c.text(x0, y, head, p.heading, true);
+            c.sans(x0, y, head, p.heading, Weight::SemiBold);
             for (i, l) in lines.iter().enumerate() {
-                c.text(x0, y + (i + 1) * LINE_H, l, p.label, false);
+                c.sans(x0, y + (i + 1) * LINE_H, l, p.label, Weight::Regular);
             }
             y += (1 + STATEMENT_ROWS + 1 + COULD_ROWS) * LINE_H;
         }
@@ -968,25 +968,27 @@ fn rasterize(
         } else {
             "Enter: start this task"
         };
-        c.text(
+        c.sans(
             x0 + 16,
             cy + (CONTROL_H - GLYPH_H) / 2 + 1,
             label,
             p.phrase_text,
-            true,
+            Weight::Medium,
         );
     } else {
-        c.text(
-            x0,
-            cy + (CONTROL_H - GLYPH_H) / 2,
-            &status,
-            if matches!(look, Look::Refused(_) | Look::Pulse) {
-                p.warn
-            } else {
-                p.label
-            },
-            false,
-        );
+        let ink = if matches!(look, Look::Refused(_) | Look::Pulse) {
+            p.warn
+        } else {
+            p.label
+        };
+        let ty = cy + (CONTROL_H - GLYPH_H) / 2;
+        // A refusal can carry an unknown code as sent (`refusal`), so it stays
+        // in the fixed cells; every other status is compiled-in prose.
+        if matches!(look, Look::Refused(_)) {
+            c.text(x0, ty, &status, ink, false);
+        } else {
+            c.sans(x0, ty, &status, ink, Weight::Regular);
+        }
     }
     c.into_raster(scale)
 }

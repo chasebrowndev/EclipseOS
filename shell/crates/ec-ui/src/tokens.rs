@@ -176,45 +176,89 @@ pub mod color {
     }
 }
 
-/// UI type. Three weights, because the spec distinguishes 400/500/600 and a
-/// variable font handed to iced whole would flatten all three to 400.
+/// UI type: Onest, one family for everything the shell draws. Three weights,
+/// because the spec distinguishes 400/500/600 and a variable font handed to
+/// iced whole would flatten all three to 400. Digits are tabular in the
+/// vendored statics (`assets/fonts/gen_onest.py` makes `tnum` the default
+/// figures), since iced cannot switch OpenType features on.
 pub mod font {
     use super::Font;
     use iced::font::{Family, Weight};
 
-    const fn sans(weight: Weight) -> Font {
+    /// The family name the embedded files carry (name ID 1).
+    pub const FAMILY: &str = "Onest";
+
+    const fn onest(weight: Weight) -> Font {
         Font {
-            family: Family::Name("Instrument Sans"),
+            family: Family::Name(FAMILY),
             weight,
             ..Font::DEFAULT
         }
     }
 
-    const fn mono(weight: Weight) -> Font {
-        Font {
-            family: Family::Name("JetBrains Mono"),
-            weight,
-            ..Font::DEFAULT
-        }
-    }
-
-    pub const UI: Font = sans(Weight::Normal);
-    pub const UI_MEDIUM: Font = sans(Weight::Medium);
-    pub const UI_SEMIBOLD: Font = sans(Weight::Semibold);
-    /// All data: units, paths, timestamps, device identifiers.
-    pub const DATA: Font = mono(Weight::Normal);
-    pub const DATA_MEDIUM: Font = mono(Weight::Medium);
+    pub const UI: Font = onest(Weight::Normal);
+    pub const UI_MEDIUM: Font = onest(Weight::Medium);
+    pub const UI_SEMIBOLD: Font = onest(Weight::Semibold);
+    /// All data: units, paths, timestamps, device identifiers. Same family as
+    /// the UI; the tabular digits are what keep columns aligned.
+    pub const DATA: Font = onest(Weight::Normal);
+    pub const DATA_MEDIUM: Font = onest(Weight::Medium);
 
     /// The bytes, for `iced::Settings::fonts`. Loading is the application's
     /// job — a library that registered fonts as a side effect would do it
     /// once per process and be impossible to opt out of.
     pub const BYTES: &[&[u8]] = &[
-        include_bytes!("../../../../assets/fonts/InstrumentSans-Regular.ttf"),
-        include_bytes!("../../../../assets/fonts/InstrumentSans-Medium.ttf"),
-        include_bytes!("../../../../assets/fonts/InstrumentSans-SemiBold.ttf"),
-        include_bytes!("../../../../assets/fonts/JetBrainsMono-Regular.ttf"),
-        include_bytes!("../../../../assets/fonts/JetBrainsMono-Medium.ttf"),
+        include_bytes!("../../../../assets/fonts/Onest-Regular.ttf"),
+        include_bytes!("../../../../assets/fonts/Onest-Medium.ttf"),
+        include_bytes!("../../../../assets/fonts/Onest-SemiBold.ttf"),
     ];
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Name ID 1 of an sfnt, from its `name` table (platform 3, UTF-16BE).
+        fn family_of(ttf: &[u8]) -> String {
+            let be16 = |o: usize| u16::from_be_bytes([ttf[o], ttf[o + 1]]) as usize;
+            let be32 = |o: usize| u32::from_be_bytes([ttf[o], ttf[o + 1], ttf[o + 2], ttf[o + 3]]) as usize;
+            let tables = be16(4);
+            let name = (0..tables)
+                .map(|i| 12 + i * 16)
+                .find(|&r| &ttf[r..r + 4] == b"name")
+                .map(|r| be32(r + 8))
+                .expect("name table");
+            let (count, strings) = (be16(name + 2), name + be16(name + 4));
+            for i in 0..count {
+                let r = name + 6 + i * 12;
+                if be16(r) == 3 && be16(r + 6) == 1 {
+                    let (len, off) = (be16(r + 8), be16(r + 10));
+                    let units: Vec<u16> = ttf[strings + off..strings + off + len]
+                        .chunks(2)
+                        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                        .collect();
+                    return String::from_utf16(&units).unwrap();
+                }
+            }
+            panic!("no family name");
+        }
+
+        #[test]
+        fn every_embedded_face_is_the_family_the_tokens_ask_for() {
+            for ttf in BYTES {
+                assert_eq!(family_of(ttf), FAMILY);
+            }
+            for f in [UI, UI_MEDIUM, UI_SEMIBOLD, DATA, DATA_MEDIUM] {
+                assert_eq!(f.family, Family::Name(FAMILY));
+            }
+        }
+
+        #[test]
+        fn the_weights_are_distinct_faces() {
+            assert_ne!(UI.weight, UI_MEDIUM.weight);
+            assert_ne!(UI_MEDIUM.weight, UI_SEMIBOLD.weight);
+            assert_eq!(BYTES.len(), 3);
+        }
+    }
 }
 
 pub mod layout_edit {
@@ -330,13 +374,115 @@ pub mod layout_edit {
     pub const MOCK_GREETING: &str = "Sign in to continue";
 }
 
+pub mod art {
+    //! Settings' drawn art: the icon tile every category carries, the header
+    //! vignette, and the previews. Hues are data (restrained, mid-chroma),
+    //! one per sidebar group; every alpha below is of that hue over the
+    //! window's glass, and the strokes take the palette's text so the same
+    //! drawing reads in light and dark. The accent is never used here: a tile
+    //! is glass with a hue in it, never a gold ground.
+
+    use super::color::data;
+    use iced::Color;
+
+    pub const HUE_HOME: Color = data(0x96918a);
+    pub const HUE_LOOK: Color = data(0x8e86d9);
+    pub const HUE_DEVICES: Color = data(0x5b9bd0);
+    pub const HUE_SYSTEM: Color = data(0x8794a6);
+    pub const HUE_PRIVACY: Color = data(0x62ad8a);
+    pub const HUE_APPS: Color = data(0xd0887a);
+
+    /// A tile in the sidebar and in a result row, and its corner as a share
+    /// of the side (a superellipse-ish squircle, not a circle).
+    pub const TILE: f32 = 22.0;
+    pub const TILE_SMALL: f32 = 18.0;
+    pub const TILE_R: f32 = 0.27;
+    /// A tile's ground and rim, at rest, and when it is the current page.
+    pub const TILE_FILL: f32 = 0.22;
+    pub const TILE_FILL_LIT: f32 = 0.34;
+    pub const TILE_RIM: f32 = 0.38;
+    pub const TILE_RIM_LIT: f32 = 0.70;
+    /// How far a drawn line moves from the hue toward the palette's text:
+    /// pastel on dark, deep on light.
+    pub const LINE_MIX: f32 = 0.58;
+    /// A line's width as a share of the glyph's side, and its floor in px.
+    pub const STROKE: f32 = 0.075;
+    pub const STROKE_MIN: f32 = 1.0;
+    /// The same, drawn large in a vignette, where the glass fills do the work.
+    pub const STROKE_DETAIL: f32 = 0.052;
+    /// A glyph's ink margin inside its square, as a share of the side.
+    pub const PAD: f32 = 0.1;
+    /// The header vignette: its size, its corner and its wash.
+    pub const VIGNETTE_W: f32 = 92.0;
+    pub const VIGNETTE_H: f32 = 64.0;
+    pub const VIGNETTE_R: f32 = 16.0;
+    pub const VIGNETTE_WASH: f32 = 0.16;
+    pub const VIGNETTE_RING: f32 = 0.20;
+    pub const VIGNETTE_GLASS: f32 = 0.16;
+    /// The glyph's share of the vignette's height.
+    pub const VIGNETTE_GLYPH: f32 = 0.74;
+    /// The two rings behind it, as shares of the card's height; the outer one
+    /// stays short of the corners so no arc pokes out of the rounded card.
+    pub const RING_INNER: f32 = 0.44;
+    pub const RING_OUTER: f32 = 0.66;
+    /// Below this window width the sidebar is a list that replaces the page
+    /// (a back stack), and the vignette goes.
+    pub const NARROW_W: f32 = 640.0;
+    /// The overview's quick tiles: the width of one (they wrap).
+    pub const QUICK_W: f32 = 156.0;
+    /// The least width of a device-card cell before the grid drops a column.
+    pub const CELL_MIN_W: f32 = 200.0;
+    /// The device card's tile, and its host name's size.
+    pub const HERO_TILE: f32 = 44.0;
+    pub const HOST_SIZE: f32 = 20.0;
+    /// An empty state's tile.
+    pub const EMPTY_TILE: f32 = 36.0;
+    /// A preview card's height, and its picture's corner.
+    pub const PREVIEW_H: f32 = 132.0;
+    pub const PREVIEW_R: f32 = 12.0;
+    /// The mock window inside a preview: its share of the card.
+    pub const MOCK_W: f32 = 0.34;
+    pub const MOCK_H: f32 = 0.56;
+    /// The backdrop under a preview: its gradient's alpha, and the shapes'.
+    pub const BACKDROP_A: f32 = 0.30;
+    pub const SHAPE_A: f32 = 0.62;
+    pub const SHAPE_LINE: f32 = 0.38;
+    pub const SHAPE_LINE_W: f32 = 3.0;
+    /// The glass pane in the glass preview: its share of the card, the fill it
+    /// has at no tint and the span the tint adds, and what the sliders reach.
+    pub const GLASS_W: f32 = 0.38;
+    pub const GLASS_H: f32 = 0.74;
+    pub const GLASS_FILL_MIN: f32 = 0.05;
+    pub const GLASS_FILL_SPAN: f32 = 0.22;
+    pub const REFRACT_MAX: f32 = 0.35;
+    pub const FRINGE_MAX: f32 = 3.0;
+    pub const FRINGE_A: f32 = 0.55;
+    pub const BEVEL_MAX: f32 = 5.0;
+    pub const BEVEL_A: f32 = 0.5;
+    pub const RIM_MAX: f32 = 2.0;
+    /// The window-set preview: how a gap, a border and a corner (px) are
+    /// drawn, so a change of a few px shows at a card's size.
+    pub const GAP_SCALE: f32 = 0.9;
+    pub const BORDER_SCALE: f32 = 0.7;
+    pub const BORDER_MAX: f32 = 4.0;
+    pub const ROUND_SCALE: f32 = 0.6;
+    pub const ROUND_MAX: f32 = 22.0;
+    pub const STAGE_PAD: f32 = 10.0;
+    pub const TITLE_A: f32 = 0.55;
+    pub const BODY_A: f32 = 0.25;
+    /// A scheme card's miniature: its height, its corner and sidebar share.
+    pub const SWATCH_H: f32 = 76.0;
+    pub const MOCK_R: f32 = 8.0;
+    pub const MOCK_SIDE: f32 = 0.28;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn every_vendored_face_is_present_and_is_a_truetype_file() {
-        assert_eq!(font::BYTES.len(), 5);
+        assert_eq!(font::BYTES.len(), 3);
         for face in font::BYTES {
             // Either a bare TrueType outline file or an OpenType wrapper; a
             // missing `include_bytes!` target would not have compiled, but a

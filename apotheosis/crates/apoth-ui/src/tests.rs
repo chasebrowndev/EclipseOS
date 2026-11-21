@@ -1578,3 +1578,50 @@ fn new_tab_button_follows_the_last_tab_and_stays_visible_on_overflow() {
     assert!(l.new_tab.right() <= strip.right() - crate::tokens::space::SM + 0.01);
     assert!(l.new_tab.x >= l.cells.last().unwrap().rect.right());
 }
+
+/// Drawn text over the fills actually painted under it (client-drawn list, `base` as the
+/// ground): every run in the tab strip, in both schemes and every tab state, clears the
+/// contrast floor. This is the check that ink follows the scheme (light ink on a light
+/// window would fail here).
+#[test]
+fn tab_strip_text_meets_contrast_in_both_schemes() {
+    for (name, p) in [("dark", Palette::dark()), ("light", Palette::light())] {
+        let strip = Rect::new(0.0, 0.0, 800.0, 40.0);
+        let tabs = [tab(0, "active", true), tab(1, "other", false)];
+        let l = tabs::layout(strip, WidgetId(1), &tabs);
+        for state in ["rest", "hover", "pressed", "focus"] {
+            let ui = state_ui(state, tabs[1].id);
+            let mut dl = DrawList::new();
+            tabs::draw(&l, &tabs, TabStyle::Floating, &ui, &p, &mut dl);
+            let mut fills: Vec<(Rect, crate::tokens::Rgba)> = Vec::new();
+            let mut seen = 0;
+            for c in &dl.cmds {
+                match c {
+                    Cmd::RoundedRect { rect, fill, .. } => fills.push((*rect, *fill)),
+                    Cmd::Text { run, pos, colour } => {
+                        let pt = Point {
+                            x: pos.x + 1.0,
+                            y: pos.y + run.size * 0.5,
+                        };
+                        let mut bg = ec_theme::Rgba(p.base.0);
+                        for (r, f) in &fills {
+                            if r.contains(pt) {
+                                bg = over(*f, bg);
+                            }
+                        }
+                        let fg = over(*colour, bg);
+                        let cr = ec_theme::contrast(fg, bg);
+                        assert!(
+                            cr >= 4.4,
+                            "{name}/{state}: tab text `{}` = {cr:.2}",
+                            run.text
+                        );
+                        seen += 1;
+                    }
+                    _ => {}
+                }
+            }
+            assert!(seen >= 2, "{name}/{state}: tab titles drawn");
+        }
+    }
+}

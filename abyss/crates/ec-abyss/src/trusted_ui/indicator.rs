@@ -33,7 +33,10 @@ use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::utils::{Logical, Point, Rectangle, Scale, Size};
 
 use super::modal;
-use crate::render::glyphs::{ADVANCE, CELL_H as GLYPH_H};
+use crate::render::glyphs::{
+    sans::{self, Weight},
+    ADVANCE, CELL_H as GLYPH_H,
+};
 use crate::render::text::{self, Canvas, Raster, Rgba};
 use crate::render::AbyssRenderElement;
 use crate::state::AbyssState;
@@ -166,8 +169,11 @@ fn label(s: &Shown) -> (String, String, String) {
 
 fn pill_w(s: &Shown) -> i32 {
     let (a, b, c) = label(s);
-    let chars = a.chars().count() + b.len() + c.len();
-    PAD + ICON_W + ICON_GAP + (chars * ADVANCE) as i32 + PAD
+    // The agent's name is runtime text, so it stays in the fixed cells; the
+    // compiled-in words after it are Onest.
+    let text =
+        a.chars().count() * ADVANCE + sans::width(&b, Weight::Regular) + sans::width(&c, Weight::Regular);
+    PAD + ICON_W + ICON_GAP + text as i32 + PAD
 }
 
 /// The `i`th pill, output-local, on an output `logical` in size.
@@ -193,9 +199,9 @@ fn rasterize(s: &Shown, scale: usize, p: &modal::Colors) -> Raster {
     let y = (h - GLYPH_H) / 2;
     c.text(x, y, &name, p.heading, true);
     x += name.chars().count() * ADVANCE;
-    c.text(x, y, &rest, p.body, false);
-    x += rest.len() * ADVANCE;
-    c.text(x, y, &held, p.warn, false);
+    c.sans(x, y, &rest, p.body, Weight::Regular);
+    x += sans::width(&rest, Weight::Regular);
+    c.sans(x, y, &held, p.warn, Weight::Regular);
     c.into_raster(scale)
 }
 

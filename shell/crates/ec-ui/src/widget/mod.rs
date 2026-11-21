@@ -3,6 +3,7 @@
 
 mod arrangement;
 pub mod arrangement_geometry;
+pub mod art;
 mod bar_chart;
 mod bar_widget;
 mod color_picker;

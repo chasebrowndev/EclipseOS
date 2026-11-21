@@ -11,7 +11,7 @@ set -eu
 fb=/dev/fb0
 sys=/sys/class/graphics/fb0
 logo=/usr/share/eclipseos/splash.bgr0
-lw=796 lh=144
+lw=668 lh=150
 
 [ -w "$fb" ] && [ -r "$logo" ] || exit 0
 [ "$(cat "$sys/bits_per_pixel")" = 32 ] || exit 0

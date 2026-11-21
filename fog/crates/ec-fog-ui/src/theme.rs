@@ -174,42 +174,76 @@ pub fn iced_theme() -> iced::Theme {
     )
 }
 
-/// tokens `font`: Instrument Sans for the interface and file names,
-/// JetBrains Mono for data (sizes, dates, paths, chords).
+/// tokens `font`: Onest for everything, names and data alike. The statics
+/// carry tabular digits, which is what keeps sizes, dates and chords aligned.
 pub mod font {
     use iced::font::{Family, Weight};
     use iced::Font;
 
-    const fn sans(weight: Weight) -> Font {
+    /// The family name the embedded files carry (name ID 1).
+    pub const FAMILY: &str = "Onest";
+
+    const fn onest(weight: Weight) -> Font {
         Font {
-            family: Family::Name("Instrument Sans"),
+            family: Family::Name(FAMILY),
             weight,
             ..Font::DEFAULT
         }
     }
 
-    const fn mono(weight: Weight) -> Font {
-        Font {
-            family: Family::Name("JetBrains Mono"),
-            weight,
-            ..Font::DEFAULT
-        }
-    }
-
-    pub const UI: Font = sans(Weight::Normal);
-    pub const UI_MEDIUM: Font = sans(Weight::Medium);
-    pub const UI_SEMIBOLD: Font = sans(Weight::Semibold);
-    pub const DATA: Font = mono(Weight::Normal);
+    pub const UI: Font = onest(Weight::Normal);
+    pub const UI_MEDIUM: Font = onest(Weight::Medium);
+    pub const UI_SEMIBOLD: Font = onest(Weight::Semibold);
+    pub const DATA: Font = onest(Weight::Normal);
 
     /// The faces, embedded from the desktop's vendored copies (Fog builds
     /// inside the EclipseOS tree; see the PKGBUILD).
     pub const BYTES: &[&[u8]] = &[
-        include_bytes!("../../../../assets/fonts/InstrumentSans-Regular.ttf"),
-        include_bytes!("../../../../assets/fonts/InstrumentSans-Medium.ttf"),
-        include_bytes!("../../../../assets/fonts/InstrumentSans-SemiBold.ttf"),
-        include_bytes!("../../../../assets/fonts/JetBrainsMono-Regular.ttf"),
-        include_bytes!("../../../../assets/fonts/JetBrainsMono-Medium.ttf"),
+        include_bytes!("../../../../assets/fonts/Onest-Regular.ttf"),
+        include_bytes!("../../../../assets/fonts/Onest-Medium.ttf"),
+        include_bytes!("../../../../assets/fonts/Onest-SemiBold.ttf"),
     ];
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Name ID 1 of an sfnt, from its `name` table (platform 3, UTF-16BE).
+        fn family_of(ttf: &[u8]) -> String {
+            let be16 = |o: usize| u16::from_be_bytes([ttf[o], ttf[o + 1]]) as usize;
+            let be32 = |o: usize| {
+                u32::from_be_bytes([ttf[o], ttf[o + 1], ttf[o + 2], ttf[o + 3]]) as usize
+            };
+            let name = (0..be16(4))
+                .map(|i| 12 + i * 16)
+                .find(|&r| &ttf[r..r + 4] == b"name")
+                .map(|r| be32(r + 8))
+                .expect("name table");
+            let (count, strings) = (be16(name + 2), name + be16(name + 4));
+            for i in 0..count {
+                let r = name + 6 + i * 12;
+                if be16(r) == 3 && be16(r + 6) == 1 {
+                    let (len, off) = (be16(r + 8), be16(r + 10));
+                    let units: Vec<u16> = ttf[strings + off..strings + off + len]
+                        .chunks(2)
+                        .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                        .collect();
+                    return String::from_utf16(&units).unwrap();
+                }
+            }
+            panic!("no family name");
+        }
+
+        #[test]
+        fn every_embedded_face_is_the_family_the_tokens_ask_for() {
+            for ttf in BYTES {
+                assert_eq!(family_of(ttf), FAMILY);
+            }
+            for f in [UI, UI_MEDIUM, UI_SEMIBOLD, DATA] {
+                assert_eq!(f.family, Family::Name(FAMILY));
+            }
+        }
+    }
 }
 
 pub mod size {
@@ -224,7 +258,7 @@ pub mod size {
     pub const CAPTION: f32 = 10.5;
     /// tokens `size::MONO`: data (sizes, dates, paths, chords).
     pub const MONO: f32 = 11.5;
-    /// tokens `size::MICRO`: the sidebar's uppercase mono section labels.
+    /// tokens `size::MICRO`: the sidebar's uppercase section labels.
     pub const MICRO: f32 = 10.0;
     /// Horizontal padding of every row and chrome line.
     pub const PAD_X: f32 = 14.0;
@@ -288,7 +322,7 @@ pub mod size {
     pub const INPUT_H: f32 = 34.0;
     /// Text caret in the path bar and palette.
     pub const CARET_W: f32 = 2.0;
-    /// Advance of one monospace glyph, in ems: turns a width into a
+    /// Average advance of one glyph, in ems: turns a width into a
     /// character budget for eliding the path bar. Slightly generous, so an
     /// estimate never clips the current folder.
     pub const MONO_ADVANCE: f32 = 0.62;
@@ -542,7 +576,7 @@ pub fn look() -> Look {
     *slot.get_or_insert_with(Look::default)
 }
 
-/// The default font: interface text, names included, is Instrument Sans;
+/// The default font: interface text, names included, is Onest;
 /// data (sizes, dates, paths, chords) asks for [`font::DATA`] by name.
 pub const DEFAULT_FONT: Font = font::UI;
 

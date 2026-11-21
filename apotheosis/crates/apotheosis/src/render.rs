@@ -96,6 +96,9 @@ pub(crate) struct RenderSettings {
     pub(crate) ui_zoom: f32,
     /// `interface.font`.
     pub(crate) interface_font: Option<String>,
+    /// The compositor's scheme (`Some(true)` = dark) when known: with glass panes it, not the
+    /// terminal background, picks the interface palette.
+    pub(crate) compositor_dark: Option<bool>,
     /// The terminal background is light: the interface uses the light palette.
     pub(crate) light: bool,
     /// `interface.motion`: the interface's fades and springs.
@@ -116,6 +119,7 @@ impl RenderSettings {
             alpha: s.glass.alpha,
             ui_zoom: s.glass.interface_zoom,
             interface_font: s.glass.interface_font.clone(),
+            compositor_dark: s.glass.compositor_dark,
             motion: s.glass.motion,
             light: lum >= ec_theme::SCHEME_LUMINANCE,
             colors: ColorCfg {
@@ -467,7 +471,9 @@ pub(crate) fn pad_px(padding: u32, scale: f64) -> u32 {
     (f64::from(padding) * scale).round() as u32
 }
 
-/// A second font system for `interface.font`, over the same discovery index as the terminal's.
+/// A second font system for the interface (`interface.font`, default the embedded Onest), over
+/// the same discovery index as the terminal's. The embedded Onest faces are always present so
+/// the default never depends on a host font.
 fn build_ui_fonts(family: &str, terminal: &FontSystem) -> Option<FontSystem> {
     let mut cfg = terminal.config().clone();
     for st in [Style::Regular, Style::Bold] {
@@ -478,7 +484,7 @@ fn build_ui_fonts(family: &str, terminal: &FontSystem) -> Option<FontSystem> {
         Some(f) => apoth_font::discovery::FontIndex::load_or_build(&dirs, &f).0,
         None => apoth_font::discovery::FontIndex::build(&dirs, None).0,
     };
-    let mut fs = FontSystem::new(index, Vec::new(), cfg);
+    let mut fs = FontSystem::new(index, apoth_font::embedded::embedded_fonts(), cfg);
     fs.cell_metrics(16.0).map(|_| fs)
 }
 
@@ -898,21 +904,70 @@ impl PaneR {
     }
 }
 
-/// The interface fonts: `interface.font` when set, else the terminal's.
+/// Whether the interface draws with the light palette. Compositor glass is tinted by the
+/// compositor's own scheme, so with panes active the ink must follow that; otherwise (client
+/// drawn) the terminal background decides.
+fn chrome_light(rs: &RenderSettings, glass: bool) -> bool {
+    match (glass, rs.compositor_dark) {
+        (true, Some(dark)) => !dark,
+        _ => rs.light,
+    }
+}
+
+/// What the interface font system was built from: a change in any of it rebuilds it.
+#[derive(Clone, PartialEq, Eq, Debug)]
+struct UiFontKey {
+    family: String,
+    /// `font.fallback` of the terminal system it was cloned from.
+    fallback: Vec<String>,
+    /// The embedded font set (`apoth_font::embedded::embedded_id`).
+    embedded: u64,
+}
+
+/// The interface font system and the key it was built for (`fonts` is `None` when the build
+/// failed: the terminal's system stands in, and the failure is not retried until the key
+/// changes).
+#[derive(Default)]
+struct UiFontCache {
+    built: Option<(UiFontKey, Option<FontSystem>)>,
+    /// Builds so far (tests assert a settled config does not rebuild per frame).
+    builds: u32,
+}
+
+impl UiFontCache {
+    fn ensure(
+        &mut self,
+        key: UiFontKey,
+        build: impl FnOnce() -> Option<FontSystem>,
+    ) -> Option<&mut FontSystem> {
+        if self.built.as_ref().is_none_or(|(k, _)| *k != key) {
+            self.builds += 1;
+            self.built = Some((key, build()));
+        }
+        self.built.as_mut().and_then(|(_, f)| f.as_mut())
+    }
+}
+
+/// The interface fonts: `interface.font` when set, else Onest (embedded); the terminal's only
+/// when no such system can be built.
 fn ui_fonts<'a>(
     rs: &RenderSettings,
-    cache: &'a mut Option<(String, FontSystem)>,
+    cache: &'a mut UiFontCache,
     terminal: &'a mut FontSystem,
 ) -> &'a mut FontSystem {
-    if let Some(fam) = &rs.interface_font {
-        if cache.as_ref().is_none_or(|(f, _)| f != fam) {
-            *cache = build_ui_fonts(fam, terminal).map(|f| (fam.clone(), f));
-        }
-        if let Some((_, f)) = cache.as_mut() {
-            return f;
-        }
+    let fam = rs
+        .interface_font
+        .as_deref()
+        .unwrap_or(apoth_font::embedded::UI_FAMILY);
+    let key = UiFontKey {
+        family: fam.to_owned(),
+        fallback: terminal.config().fallback.clone(),
+        embedded: apoth_font::embedded::embedded_id(),
+    };
+    match cache.ensure(key, || build_ui_fonts(fam, terminal)) {
+        Some(f) => f,
+        None => terminal,
     }
-    terminal
 }
 
 fn ns(d: Duration) -> u64 {
@@ -1018,7 +1073,7 @@ fn run(a: RenderArgs) {
     let (mut seen_key, mut was_hold, mut seen_focus) = (0u64, false, false);
     let mut fault_streak = 0u32;
     let mut overlay: Option<Overlay> = None;
-    let mut ui_cache: Option<(String, FontSystem)> = None;
+    let mut ui_cache = UiFontCache::default();
     let mut raster = UiRaster::new();
     let mut over_list = ChromeList::new();
     let mut ostack: Option<OverStack> = None;
@@ -1210,7 +1265,7 @@ fn run(a: RenderArgs) {
                         &chrome,
                         buffer,
                         ui_scale,
-                        rs.light,
+                        chrome_light(&rs, glass_seen),
                         age,
                         fonts,
                         &mut raster,
@@ -1506,6 +1561,61 @@ fn run(a: RenderArgs) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ui_key(fallback: &[&str]) -> UiFontKey {
+        UiFontKey {
+            family: "Onest".into(),
+            fallback: fallback.iter().map(|s| (*s).to_owned()).collect(),
+            embedded: apoth_font::embedded::embedded_id(),
+        }
+    }
+
+    fn ui_system() -> Option<FontSystem> {
+        Some(FontSystem::new(
+            apoth_font::discovery::FontIndex::default(),
+            apoth_font::embedded::embedded_fonts(),
+            apoth_font::config::FontConfig::default(),
+        ))
+    }
+
+    #[test]
+    fn ui_font_cache_rebuilds_on_fallback_change_only() {
+        let mut c = UiFontCache::default();
+        assert!(c.ensure(ui_key(&[]), ui_system).is_some());
+        for _ in 0..5 {
+            c.ensure(ui_key(&[]), || panic!("unchanged config must not rebuild"));
+        }
+        assert_eq!(c.builds, 1);
+        c.ensure(ui_key(&["Noto Sans"]), ui_system);
+        assert_eq!(c.builds, 2);
+        c.ensure(ui_key(&["Noto Sans"]), || panic!("settled"));
+        let mut other = ui_key(&["Noto Sans"]);
+        other.family = "Inter".into();
+        c.ensure(other, ui_system);
+        assert_eq!(c.builds, 3);
+        let mut set = ui_key(&["Noto Sans"]);
+        set.family = "Inter".into();
+        set.embedded ^= 1;
+        c.ensure(set, ui_system);
+        assert_eq!(c.builds, 4);
+    }
+
+    #[test]
+    fn chrome_scheme_follows_the_compositor_under_glass() {
+        let mut rs = RenderSettings::from_settings(
+            &crate::settings::Settings::from_config(&apoth_config::Config::defaults()),
+            None,
+        );
+        rs.light = true;
+        rs.compositor_dark = Some(true);
+        assert!(!chrome_light(&rs, true));
+        assert!(chrome_light(&rs, false));
+        rs.compositor_dark = None;
+        assert!(chrome_light(&rs, true));
+        rs.light = false;
+        rs.compositor_dark = Some(false);
+        assert!(chrome_light(&rs, true));
+    }
 
     fn hud(key: u64, hovered: bool) -> MediaHud {
         MediaHud {
