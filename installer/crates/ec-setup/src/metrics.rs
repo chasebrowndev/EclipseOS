@@ -10,6 +10,12 @@
 /// with the window on a narrow one.
 pub const CONTENT_W: f32 = 620.0;
 
+/// The glass sheet the wizard sits in: its largest size, and the margin kept
+/// round it so the wallpaper shows (logical px, before the installer's scale).
+pub const SHEET_W: f32 = 840.0;
+pub const SHEET_H: f32 = 780.0;
+pub const SHEET_MARGIN: f32 = 28.0;
+
 /// The progress indicator: one short bar per step.
 pub const PROGRESS_W: f32 = 16.0;
 pub const PROGRESS_H: f32 = 3.0;

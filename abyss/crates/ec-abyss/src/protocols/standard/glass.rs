@@ -44,7 +44,9 @@ const VERSION: u32 = 2;
 /// `ec-greeter-ui` is the login screen (ADR 0126); the kiosk compositor offers
 /// the global to it like any other. `ec-lock` is the screen locker: while the
 /// session is locked its panes are drawn over the wallpaper alone (ADR 0129).
-pub const DEFAULT_ALLOW: [&str; 9] = [
+/// `ec-setup` is the graphical installer (D-03 §5): a sheet of glass over the
+/// wallpaper on the live medium.
+pub const DEFAULT_ALLOW: [&str; 10] = [
     "ec-hyperion-bar",
     "ec-launcher",
     "ec-toasts",
@@ -54,6 +56,7 @@ pub const DEFAULT_ALLOW: [&str; 9] = [
     "apotheosis",
     "ec-greeter-ui",
     "ec-lock",
+    "ec-setup",
 ];
 
 /// On a surface's data map: whether it already has a glass object, which is
@@ -446,7 +449,17 @@ mod tests {
         for name in ["ec-lock2", "ec-lockd", "lock", "swaylock", "ec-lock "] {
             assert!(!allow.contains(name), "{name}");
         }
-        assert_eq!(DEFAULT_ALLOW.len(), 9);
+        assert_eq!(DEFAULT_ALLOW.len(), 10);
+    }
+
+    /// The graphical installer (D-03 §5) binds the global; a lookalike may not.
+    #[test]
+    fn ec_setup_is_allowlisted_and_lookalikes_are_not() {
+        let allow = Allowlist::new(DEFAULT_ALLOW.iter().map(|s| s.to_string()).collect());
+        assert!(allow.contains("ec-setup"));
+        for name in ["ec-setup-helper", "ec-setup2", "setup"] {
+            assert!(!allow.contains(name), "{name}");
+        }
     }
 
     #[test]

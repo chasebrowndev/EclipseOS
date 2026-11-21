@@ -34,7 +34,7 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use ec_protocols::glass::client::eclipse_glass_manager_v1::{self, EclipseGlassManagerV1};
 use ec_protocols::glass::client::eclipse_glass_surface_v1::{self, EclipseGlassSurfaceV1};
@@ -62,6 +62,22 @@ pub const HOVERED: u32 = 1;
 pub const PRESSED: u32 = 2;
 /// State bit (protocol v2): the pane is cut to the surface's clip rectangle.
 pub const CLIPPED: u32 = 4;
+
+/// The app's own `scale_factor` (iced `Application::scale_factor`), as f32 bits.
+/// Widget bounds are in iced's scaled logical pixels and the protocol wants
+/// surface-local ones, so a panel that scales its UI (the installer) must say
+/// so here or its panes land in the wrong place at the wrong size.
+static UI_SCALE: AtomicU32 = AtomicU32::new(0x3f80_0000);
+
+/// Tell the glass the app multiplies its logical pixels by `factor`. Once, at
+/// start; 1.0 (the default) is no scaling.
+pub fn set_ui_scale(factor: f32) {
+    UI_SCALE.store(factor.max(0.1).to_bits(), Ordering::Relaxed);
+}
+
+fn ui_scale() -> f32 {
+    f32::from_bits(UI_SCALE.load(Ordering::Relaxed))
+}
 
 /// One glass pane: a rounded box in surface-local logical pixels.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -160,7 +176,18 @@ impl GlassPanes {
             self.dropped += 1;
             return;
         }
-        let r = pane.rect;
+        let k = ui_scale();
+        let r = Rectangle {
+            x: pane.rect.x * k,
+            y: pane.rect.y * k,
+            width: pane.rect.width * k,
+            height: pane.rect.height * k,
+        };
+        let pane = &Pane {
+            radius: pane.radius * k,
+            bezel: pane.bezel * k,
+            ..*pane
+        };
         if ![r.x, r.y, r.width, r.height, pane.radius, pane.bezel]
             .iter()
             .all(|v| v.is_finite())
@@ -500,7 +527,8 @@ fn finish(id: Option<window::Id>) {
         // only to a compositor that has it (a v1 object never gets the request).
         let clip = FRAME_CLIP.with(|c| c.get());
         if clip != entry.last_clip && entry.glass.version() >= 2 {
-            let [x, y, w, h] = clip.unwrap_or([0; 4]);
+            let k = ui_scale();
+            let [x, y, w, h] = clip.unwrap_or([0; 4]).map(|v| (v as f32 * k).round() as i32);
             entry.glass.set_clip(x, y, w, h);
             entry.last_clip = clip;
         }
