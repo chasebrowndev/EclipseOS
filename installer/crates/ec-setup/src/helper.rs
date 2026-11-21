@@ -363,6 +363,7 @@ mod tests {
     fn plan() -> Plan {
         Plan {
             disk_by_id: "nvme-x".into(),
+            confirm_disk: "nvme-x".into(),
             hostname: "eclipse".into(),
             username: "chase".into(),
             locale: "en_US.UTF-8".into(),

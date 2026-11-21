@@ -267,6 +267,11 @@ impl Run<'_, '_> {
             12,
             "waiting for confirmation to erase the disk",
             |_| {
+                // The human typed the disk's whole name on Review: that is the
+                // consent. A plan that does not carry it never reaches a disk.
+                if req.plan.confirm_disk != v.disk.disk.by_id {
+                    return Err(Error::Refused("disk name not confirmed"));
+                }
                 // Err is a "no": a transport that cannot be reached must not erase.
                 match env.confirm.confirm_erase(&v.disk.disk) {
                     Ok(true) => Ok(()),
@@ -487,6 +492,21 @@ mod tests {
         assert!(!r.issued(Tool::Blkid));
         // The live keyring may change (packaging key, refresh); the disk may not.
         assert!(!lines.iter().any(|l| l.stage == Stage::Partition));
+    }
+
+    #[test]
+    fn a_plan_without_the_typed_disk_name_never_reaches_a_disk() {
+        for typed in ["", "nvme-Some_Other_2"] {
+            let (_t, p) = live();
+            let r = machine_runner(&p);
+            let mut rq = req();
+            rq.plan.confirm_disk = typed.into();
+            let mut out = Vec::new();
+            assert!(!apply(&env(p, &r, &AllowConfirm, None), &rq, &mut out));
+            let last = progress(&out).last().unwrap().clone();
+            assert_eq!((last.stage, last.failed), (Stage::Confirm, true));
+            assert!(r.tools().iter().all(|t| !t.touches_disk()), "{typed:?}");
+        }
     }
 
     #[test]

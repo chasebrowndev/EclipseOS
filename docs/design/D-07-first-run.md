@@ -340,14 +340,14 @@ authorities:
   so a remote or inactive `liveuser` login cannot qualify. The helper
   independently **refuses the action unless `/run/archiso` exists**, so an
   installed system cannot be pointed at its own disk even if the rule leaked.
-  **A typed disk name in a client proves nothing** against a `liveuser` process
-  that sends the right string, so the wipe is confirmed on a **compositor-drawn
-  trusted prompt** (COMP-10 §3.10, ADR 0061; code owed): before
-  repartitioning the helper asks the compositor to show the disk's model, size
-  and by-id name and to return allow or deny from the human seat, and it
-  proceeds only on allow. The helper reaches the compositor over its root-only
-  trusted socket after checking the peer is the session's `abyss`. The typed name in §4.2 remains as an in-client safety
-  against mistakes, not as the authority. The root shell on tty2 is accepted
+  **Owner decision, 2026-11-21: the typed disk name is the consent.** A typed
+  name in a client proves nothing against a `liveuser` process that sends the
+  right string, and the compositor-drawn trusted prompt (COMP-10 §3.10, ADR 0061)
+  would have closed that, but it was one confirmation too many on the install
+  path, so the helper no longer asks it. The plan carries the name as typed
+  (`confirm_disk`) and the helper refuses unless it equals the chosen disk's
+  by-id name. The polkit rule and the `/run/archiso` check above are unchanged.
+  The prompt still exists in the compositor for other callers. The root shell on tty2 is accepted
   for a person at the keyboard; this gate is against *other processes*.
 - **`org.eclipse.setup.apply`**: `--reconfigure` on an installed system, one
   `pacman -S --needed` (and one `pacman -Rns` for removals the user ticked)
