@@ -54,6 +54,7 @@ pub enum Page {
     Shadow,
     Rounding,
     Animations,
+    Graphics,
     // Desktop
     Mode,
     Components,
@@ -218,7 +219,13 @@ impl Section {
         match self {
             Section::Overview => &[Page::Overview],
             Section::Windows => &[Page::Layout, Page::Gaps, Page::Borders, Page::Focus],
-            Section::Effects => &[Page::Blur, Page::Shadow, Page::Rounding, Page::Animations],
+            Section::Effects => &[
+                Page::Blur,
+                Page::Shadow,
+                Page::Rounding,
+                Page::Animations,
+                Page::Graphics,
+            ],
             Section::Desktop => &[Page::Mode, Page::Components, Page::Wallpaper, Page::LoginScreen],
             Section::Taskbar => &[
                 Page::BarAppearance,
@@ -339,7 +346,9 @@ impl Page {
         match self {
             Page::Overview => Section::Overview,
             Page::Layout | Page::Gaps | Page::Borders | Page::Focus => Section::Windows,
-            Page::Blur | Page::Shadow | Page::Rounding | Page::Animations => Section::Effects,
+            Page::Blur | Page::Shadow | Page::Rounding | Page::Animations | Page::Graphics => {
+                Section::Effects
+            }
             Page::Mode | Page::Components | Page::Wallpaper | Page::LoginScreen => Section::Desktop,
             Page::BarAppearance | Page::BarWidgets | Page::BarFolding | Page::BarTray | Page::BarMotion => {
                 Section::Taskbar
@@ -384,6 +393,7 @@ impl Page {
             Page::Shadow => "Shadow & glow",
             Page::Rounding => "Rounding & opacity",
             Page::Animations => "Animations",
+            Page::Graphics => "Graphics",
             Page::Mode => "Mode",
             Page::Components => "Components",
             Page::Wallpaper => "Wallpaper",
@@ -434,6 +444,7 @@ impl Page {
             Page::Shadow => "Depth under windows, and the glow on the active one.",
             Page::Rounding => "Window corners, and how see-through windows are.",
             Page::Animations => "Whether windows move or snap into place.",
+            Page::Graphics => "How much the desktop draws, matched to this computer.",
             Page::Mode => "How much desktop there is around your windows.",
             Page::Components => "The programs that draw the desktop's notifications and panels.",
             Page::Wallpaper => "The picture behind everything.",
@@ -496,6 +507,7 @@ impl Page {
             Page::Blur => Glyph::Panes,
             Page::Shadow => Glyph::Shadow,
             Page::Rounding => Glyph::Corner,
+            Page::Graphics => Glyph::Chip,
             Page::Animations | Page::BarMotion => Glyph::Motion,
             Page::Mode | Page::General | Page::Setup => Glyph::Sliders,
             Page::Components => Glyph::Dots,
@@ -799,7 +811,7 @@ mod tests {
             assert_eq!(owners, 1, "{page:?}");
             assert!(page.section().pages().contains(&page));
         }
-        assert_eq!(Page::all().count(), 49);
+        assert_eq!(Page::all().count(), 50);
     }
 
     #[test]
@@ -913,6 +925,10 @@ mod tests {
     fn effects_splits_by_topic() {
         assert_eq!(page_of("decoration.blur.mode"), Some(Page::Blur));
         assert_eq!(page_of("decoration.blur.glass.rim"), Some(Page::Blur));
+        assert_eq!(page_of("decoration.profile"), Some(Page::Graphics));
+        assert_eq!(page_of("decoration.profile-governor"), Some(Page::Graphics));
+        assert_eq!(Page::from_arg("effects/graphics"), Some(Page::Graphics));
+        assert_eq!(Page::Graphics.path(), "effects/graphics");
         assert_eq!(page_of("decoration.shadow.range"), Some(Page::Shadow));
         assert_eq!(page_of("decoration.glow.strength"), Some(Page::Shadow));
         assert_eq!(page_of("decoration.rounding"), Some(Page::Rounding));

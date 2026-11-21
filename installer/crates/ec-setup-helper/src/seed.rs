@@ -466,6 +466,18 @@ setup { complete #true; profile "standard" }
     }
 
     #[test]
+    fn the_graphics_profile_is_not_carried_over() {
+        // The installed system starts on `auto` and decides for its own
+        // hardware (D-03 §5.1): the live medium's choice never travels.
+        let src = "decoration {\n    profile \"minimal\"\n    profile-governor #false\n    rounding 10\n}\n";
+        let (out, rejected) = filter_seed(src.as_bytes()).unwrap();
+        assert_eq!(rejected, 2);
+        let text = String::from_utf8(out).unwrap();
+        assert!(!text.contains("profile"), "{text}");
+        assert!(text.contains("rounding"));
+    }
+
+    #[test]
     fn drops_every_command_bearing_key() {
         let src = r#"
 bind "SUPER" "Return" { spawn "foot"; }

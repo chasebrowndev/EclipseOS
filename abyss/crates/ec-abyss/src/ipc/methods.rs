@@ -605,6 +605,7 @@ fn get_metrics(state: &mut AbyssState) -> Reply {
         // Protocol counters and the policy-latency histogram are X-02 and
         // COMP-11 respectively; neither exists yet, so neither is reported.
         "policy_latency_us": Value::Null,
+        "graphics": crate::backend::gfx::status_json(state),
     }))
 }
 

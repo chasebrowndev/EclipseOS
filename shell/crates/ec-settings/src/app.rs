@@ -328,6 +328,9 @@ pub struct App {
     /// The discrete GPU's name, when the machine has one; the graphics
     /// controls are drawn only then. Read once at start.
     pub(crate) discrete_gpu: Option<String>,
+    /// The compositor's graphics profile and recommendation (`get_metrics`),
+    /// read on reload and refresh. `None` with no socket or an older compositor.
+    pub(crate) graphics: Option<crate::graphics::Status>,
     /// The running status-notifier items, while the Taskbar pane shows.
     /// `None` is not heard from yet; `Some(None)` is the feed failing.
     pub(crate) tray_live: Option<Option<Vec<String>>>,
@@ -444,6 +447,7 @@ impl App {
             installed: crate::pinned::installed(),
             wm_apps: crate::maximize::installed(),
             discrete_gpu: discrete_gpu(),
+            graphics: None,
             tray_live: None,
             tray_seen: Vec::new(),
             glass_radius,
@@ -513,6 +517,7 @@ impl App {
         crate::taskbar::stand_in(&mut self.rows);
         self.search.reindex(&self.rows);
         self.read_widgets();
+        self.read_graphics();
         match self.conn.call("get_outputs", json!({ "all": true })) {
             Ok(reply) => {
                 self.outputs = crate::output::parse_all(&reply);
@@ -532,6 +537,16 @@ impl App {
             self.search.reindex(&self.rows);
         }
         self.read_widgets();
+        self.read_graphics();
+    }
+
+    /// The recommendation and the profile in force, from `get_metrics`.
+    fn read_graphics(&mut self) {
+        self.graphics = self
+            .conn
+            .call("get_metrics", Value::Null)
+            .ok()
+            .and_then(|m| crate::graphics::Status::parse(&m));
     }
 
     /// The widget blocks, their approval states, and the add-ons that decide
@@ -1880,6 +1895,10 @@ fn frame(app: &App, density: Density, narrow: bool) -> Element<'_, Message, Them
             blocks.extend(crate::maximize::view(app));
         }
         Page::Animations => blocks.extend(crate::animations::blocks(app)),
+        Page::Graphics => {
+            blocks.push(crate::graphics::hero(app));
+            blocks.push(schema_page(app));
+        }
         Page::Accounts => blocks.extend(crate::accounts::blocks(app)),
         Page::LoginScreen => blocks.extend(crate::login_screen::blocks(app)),
         p if p.is_terminal() => blocks.extend(crate::terminal::blocks(app, p)),
@@ -2171,6 +2190,7 @@ fn schema_page(app: &App) -> Element<'_, Message, Theme> {
             "mode" => crate::schema::mode_blurb(key.value.as_str().unwrap_or_default()),
             p if p == mode_path => crate::schema::blur_blurb(current),
             crate::gpu::MODE => crate::gpu::mode_blurb(key.value.as_str().unwrap_or("hybrid")),
+            crate::graphics::KEY => crate::graphics::blurb(key.value.as_str().unwrap_or("auto")),
             crate::oracle::MODEL_COMMAND => Some(crate::oracle::approval_line(key)),
             p => crate::schema::caption(p),
         };

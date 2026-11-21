@@ -1084,6 +1084,28 @@ pub const TABLE: &[Key] = &[
     ),
     // decoration
     k(
+        "decoration.profile",
+        Ty::Enum(crate::gfx::ProfileSetting::NAMES),
+        Str("auto"),
+        Abyss,
+        Live,
+        "Graphics profile: the defaults of the rounding, blur, shadow and animation \
+       keys below. `auto` picks one for this PC at startup (software rendering, \
+       virtual machines, little RAM or an old integrated GPU get a lighter one); \
+       `minimal`, `low`, `balanced` and `full` fix it. A key written in this file \
+       always wins over the profile. Nothing is written back to the file.",
+    ),
+    k(
+        "decoration.profile-governor",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "With `profile \"auto\"`: after sustained missed frames, drop one profile \
+       for the rest of the session (`full` to `balanced` to `low`). Never raises \
+       it and never writes the config. A fixed profile is never changed.",
+    ),
+    k(
         "decoration.rounding",
         int(0, 64),
         Int(9),
@@ -3223,6 +3245,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "ui.capture-toasts" => V::Str(c.ui.capture_toasts.name().into()),
         "ui.capture-indicator-color" => V::Color(c.ui.capture_indicator_color),
         "settings.search.frecency" => V::Bool(c.settings.search_frecency),
+        "decoration.profile" => V::Str(c.gfx.setting.name().into()),
+        "decoration.profile-governor" => V::Bool(c.gfx.governor),
         "decoration.rounding" => V::Int(c.decoration.rounding as i64),
         "decoration.titlebar-height" => V::Int(c.decoration.titlebar_height as i64),
         "decoration.active-opacity" => V::Float(widen(c.decoration.active_opacity)),

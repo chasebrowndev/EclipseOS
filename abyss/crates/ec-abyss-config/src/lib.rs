@@ -29,6 +29,7 @@ pub mod animations;
 pub mod approvals;
 pub mod catalog;
 pub mod edit;
+pub mod gfx;
 pub mod input;
 pub mod meta;
 pub mod outputs;
@@ -123,6 +124,8 @@ pub struct Config {
     pub render: Render,
     pub bar: Bar,
     pub decoration: Decoration,
+    /// `decoration.profile` and what it resolved to (see [`gfx`]).
+    pub gfx: gfx::GfxConfig,
     pub animations: Animations,
     pub clipboard: Clipboard,
     pub capture: Capture,
@@ -203,6 +206,7 @@ impl Default for Config {
             render: Render::default(),
             bar: Bar::default(),
             decoration: Decoration::default(),
+            gfx: gfx::GfxConfig::default(),
             animations: Animations::default(),
             clipboard: Clipboard::default(),
             capture: Capture::default(),
@@ -363,6 +367,7 @@ impl Config {
         defaults.extend(launcher_defaults);
         cfg.binds = merge_binds(defaults, binds_from_file);
         cfg.resolve_mode_defaults();
+        cfg.resolve_gfx_defaults();
         cfg.finish_themes();
         if !any {
             tracing::info!("no config found, using built-in defaults");

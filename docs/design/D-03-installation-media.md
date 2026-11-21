@@ -243,14 +243,32 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
   backend so `iwctl` and the fallback script's saved-network carry-over work.
 
 **Look of the live session.** It is the installed system's look, with no live-only
-config file. The live `liveuser` has no `abyss.kdl`: D-07 §5 copies that file to the
+user config. The live `liveuser` has no `~/.config/eclipse/abyss.kdl`: D-07 §5 copies that file to the
 new user at Apply, so a blur mode or quality key written there for the medium would
-be installed on every machine and fight the graphics profile. Blur is the schema
+be installed on every machine and fight the graphics profile (the medium-level
+`/etc/eclipse/abyss.kdl` below carries only `profile "auto"`, which the seed filter drops). Blur is the schema
 default (`glass`) and its quality is the auto graphics profile's call, on the medium
 as on disk. The wallpaper is the packaged default in `/etc/eclipse/abyss.kdl`
 (`/usr/share/backgrounds/eclipseos/eclipse-dark.png`, STYLE.md "Wallpaper"). `ec-setup`
 is on the compositor's glass allowlist, so the installer is a glass sheet over that
 wallpaper, light or dark with the compositor's scheme.
+
+### 5.1 Graphics profile on the live medium *(added with `decoration.profile`)*
+
+The live session runs on whatever the PC has, often a software rasteriser or a
+virtual GPU, and a user must not lag through the installer. `airootfs/etc/eclipse/abyss.kdl`
+sets `decoration { profile "auto" }` (the built-in default, written down so the
+intent is visible). At startup abyss measures the renderer string, RAM, CPU
+count, output size and hypervisor hints; a weak PC gets `minimal` or `low`
+(blur and animation off or short, no shadows), capable hardware keeps `full`.
+`ec-ctl graphics` shows the choice and the reason.
+
+The installed system **inherits `auto`, not the live decision.** The decision is
+never written to a file, `decoration.profile` is not on the seed allowlist
+(D-07 §5), and the file above is part of the medium, not of any package. The
+installed system measures its own hardware on every start, so a disk installed
+from a VM and booted on real hardware renders accordingly. The installer's last
+screen says so.
 
 The root shell moves to **tty2** and stays: root has an empty password, reachable
 only from the local console now that sshd is gone. A session that will not start

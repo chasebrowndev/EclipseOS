@@ -12,7 +12,10 @@ impl Config {
             let name = n.name().value();
             match name {
                 "rounding" => match arg(n).and_then(KdlValue::as_integer) {
-                    Some(v) if (0..=64).contains(&v) => self.decoration.rounding = v as i32,
+                    Some(v) if (0..=64).contains(&v) => {
+                        self.decoration.rounding = v as i32;
+                        self.gfx.explicit |= gfx::explicit::ROUNDING;
+                    }
                     _ => self.reject(n, "decoration rounding must be an integer 0..=64"),
                 },
                 "titlebar-height" => match arg(n).and_then(KdlValue::as_integer) {
@@ -30,6 +33,21 @@ impl Config {
                     }
                     _ => self.reject(n, format!("{name} must be 0.0..=1.0")),
                 },
+                "profile" => match arg(n)
+                    .and_then(KdlValue::as_string)
+                    .and_then(gfx::ProfileSetting::parse)
+                {
+                    Some(p) => self.gfx.setting = p,
+                    None => self.reject(
+                        n,
+                        "decoration profile must be \"auto\", \"minimal\", \"low\", \"balanced\" or \"full\"",
+                    ),
+                },
+                "profile-governor" => {
+                    if let Some(b) = self.flag(n) {
+                        self.gfx.governor = b;
+                    }
+                }
                 "blur" => self.apply_blur(n),
                 "shadow" => self.apply_shadow(n),
                 "glow" => self.apply_glow(n),
@@ -49,6 +67,7 @@ impl Config {
                 // `ec-ctl config migrate` rewrites it.
                 "enabled" if has_mode => {}
                 "enabled" => {
+                    self.gfx.explicit |= gfx::explicit::BLUR_MODE;
                     self.decoration.blur.mode = if arg(n).and_then(KdlValue::as_bool).unwrap_or(true) {
                         BlurMode::Blur
                     } else {
@@ -56,18 +75,27 @@ impl Config {
                     };
                 }
                 "mode" => match arg(n).and_then(KdlValue::as_string).and_then(BlurMode::parse) {
-                    Some(m) => self.decoration.blur.mode = m,
+                    Some(m) => {
+                        self.decoration.blur.mode = m;
+                        self.gfx.explicit |= gfx::explicit::BLUR_MODE;
+                    }
                     None => self.reject(n, "blur mode must be \"off\", \"blur\", \"frost\" or \"glass\""),
                 },
                 "glass" => self.apply_glass(n),
                 "frost" => self.apply_frost(n),
                 "adaptive" => self.apply_adaptive(n),
                 "size" => match arg(n).and_then(KdlValue::as_integer) {
-                    Some(v) if (1..=64).contains(&v) => self.decoration.blur.size = v as i32,
+                    Some(v) if (1..=64).contains(&v) => {
+                        self.decoration.blur.size = v as i32;
+                        self.gfx.explicit |= gfx::explicit::BLUR_SIZE;
+                    }
                     _ => self.reject(n, "blur size must be an integer 1..=64"),
                 },
                 "passes" => match arg(n).and_then(KdlValue::as_integer) {
-                    Some(v) if (1..=6).contains(&v) => self.decoration.blur.passes = v as i32,
+                    Some(v) if (1..=6).contains(&v) => {
+                        self.decoration.blur.passes = v as i32;
+                        self.gfx.explicit |= gfx::explicit::BLUR_PASSES;
+                    }
                     _ => self.reject(n, "blur passes must be an integer 1..=6"),
                 },
                 _ => self.unknown_key(n, "decoration.blur", "blur key"),
@@ -136,7 +164,10 @@ impl Config {
         for n in children.nodes() {
             match n.name().value() {
                 "enabled" => match arg(n).and_then(KdlValue::as_bool) {
-                    Some(v) => self.decoration.blur.adaptive.enabled = v,
+                    Some(v) => {
+                        self.decoration.blur.adaptive.enabled = v;
+                        self.gfx.explicit |= gfx::explicit::ADAPTIVE;
+                    }
                     None => self.reject(n, "adaptive enabled must be #true or #false"),
                 },
                 "strength" => match arg(n).and_then(as_f64) {
@@ -195,10 +226,14 @@ impl Config {
         for n in children.nodes() {
             match n.name().value() {
                 "enabled" => {
+                    self.gfx.explicit |= gfx::explicit::SHADOW;
                     self.decoration.shadow.enabled = arg(n).and_then(KdlValue::as_bool).unwrap_or(true);
                 }
                 "range" => match arg(n).and_then(KdlValue::as_integer) {
-                    Some(v) if (0..=128).contains(&v) => self.decoration.shadow.range = v as i32,
+                    Some(v) if (0..=128).contains(&v) => {
+                        self.decoration.shadow.range = v as i32;
+                        self.gfx.explicit |= gfx::explicit::SHADOW_RANGE;
+                    }
                     _ => self.reject(n, "shadow range must be an integer 0..=128"),
                 },
                 _ => self.unknown_key(n, "decoration.shadow", "shadow key"),
@@ -250,6 +285,7 @@ impl Config {
                 {
                     Some(p) => {
                         self.animations.preset = p;
+                        self.gfx.explicit |= gfx::explicit::ANIM_PRESET;
                         preset_here = true;
                     }
                     None => self.reject(
@@ -295,6 +331,7 @@ impl Config {
         }
         if legacy_enabled == Some(false) && !preset_here {
             self.animations.preset = animations::Preset::Off;
+            self.gfx.explicit |= gfx::explicit::ANIM_PRESET;
         }
         if legacy_enabled == Some(true) {
             for (ev, o) in legacy {

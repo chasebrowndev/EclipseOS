@@ -494,6 +494,18 @@ pub const META: &[Meta] = &[
     m("bar.motion.curve", "Curve", "taskbar/motion", "motion").pane("Curve"),
     // decoration
     m(
+        "decoration.profile",
+        "Graphics profile",
+        "effects/graphics",
+        "graphics",
+    ),
+    m(
+        "decoration.profile-governor",
+        "Step down when frames are missed",
+        "effects/graphics",
+        "graphics",
+    ),
+    m(
         "decoration.rounding",
         "Rounding",
         "effects/rounding-opacity",

@@ -1637,7 +1637,11 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
     } = open_device(&mut session_for_open, &gpu_path)?;
     check_nvidia_modeset(&node)?;
     let our_device = node.dev_id();
-    let renderer = gles_on(&gbm)?;
+    let mut renderer = gles_on(&gbm)?;
+    {
+        let name = super::gl_renderer_string(&mut renderer);
+        super::gfx::set_renderer(&mut state, name);
+    }
 
     // dmabuf is the expected client buffer path (F-04); shm still works.
     // v5 default feedback names the render node and its texture formats; the
@@ -2608,6 +2612,8 @@ fn render_output(state: &mut AbyssState, index: usize) {
                 state.borders.anim.set_shed(level);
             }
         }
+        let period = frame_period(output.current_mode().map_or(0, |m| m.refresh));
+        super::gfx::on_frame(state, frame_time, period);
         state.stats.maybe_report();
     }
 

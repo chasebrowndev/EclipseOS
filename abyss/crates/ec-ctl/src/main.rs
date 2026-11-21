@@ -24,6 +24,7 @@ ec-ctl — control the abyss compositor
   ec-ctl windows                 list windows
   ec-ctl focused                 the focused window, per seat
   ec-ctl metrics                 frame timing and counters
+  ec-ctl graphics                graphics profile in force, recommended for this PC and why (--json for all)
   ec-ctl dump                    everything, as JSON
   ec-ctl watch [EVENT...]        stream events until interrupted
   ec-ctl focus HANDLE            focus a window
@@ -267,6 +268,8 @@ enum Table {
     ConfigCheck,
     Widgets,
     Addons,
+    /// `graphics`: the `graphics` object of `get_metrics`.
+    Graphics,
 }
 
 type Parsed = (String, Value, Option<Table>);
@@ -297,6 +300,7 @@ fn parse(args: &[String], flags: &Flags) -> Result<Parsed, String> {
         "windows" => ("get_windows".into(), Value::Null, Some(Table::Windows)),
         "focused" => ("get_focused".into(), Value::Null, None),
         "metrics" => ("get_metrics".into(), Value::Null, None),
+        "graphics" => ("get_metrics".into(), Value::Null, Some(Table::Graphics)),
         "dump" => ("dump_state".into(), Value::Null, None),
         "agents" => ("get_agents".into(), Value::Null, None),
         "reload" => ("reload_config".into(), Value::Null, None),
@@ -928,6 +932,10 @@ fn print_table(table: Table, result: &Value) {
             print!("{}", addons_text(result));
             return;
         }
+        Table::Graphics => {
+            print!("{}", graphics_text(&result["graphics"]));
+            return;
+        }
         Table::ConfigCheck => {
             if result["valid"] == Value::Bool(true) {
                 println!("ok");
@@ -1000,7 +1008,8 @@ fn print_table(table: Table, result: &Value) {
         | Table::ConfigValue
         | Table::ConfigCheck
         | Table::Widgets
-        | Table::Addons => {
+        | Table::Addons
+        | Table::Graphics => {
             unreachable!("handled above")
         }
         Table::Windows => {
@@ -1289,5 +1298,46 @@ mod tests {
             addons_text(&json!({"keys": [], "addons": [], "hooks_on": []})),
             "no add-ons installed\nhooks on: none\n"
         );
+    }
+}
+
+/// `ec-ctl graphics`: what is in force and what was recommended.
+fn graphics_text(g: &Value) -> String {
+    let st = |k: &str| g[k].as_str().unwrap_or("unknown");
+    let mut out = format!(
+        "in force:    {} ({})\nsetting:     {}\nrecommended: {}",
+        st("effective"),
+        st("description"),
+        st("setting"),
+        st("recommended"),
+    );
+    if let Some(r) = g["reason"].as_str() {
+        out.push_str(&format!(" ({r})"));
+    }
+    if let Some(s) = g["stepped_down"].as_object() {
+        out.push_str(&format!(
+            "\nstepped down this session: {} to {}",
+            s["from"].as_str().unwrap_or("?"),
+            s["to"].as_str().unwrap_or("?")
+        ));
+    }
+    out.push('\n');
+    out
+}
+
+#[cfg(test)]
+mod graphics_tests {
+    use super::*;
+
+    #[test]
+    fn graphics_text_names_the_profile_and_reason() {
+        let g = json!({"effective": "minimal", "description": "d", "setting": "auto",
+            "recommended": "minimal", "reason": "software rendering",
+            "stepped_down": {"from": "full", "to": "balanced"}});
+        let t = graphics_text(&g);
+        assert!(t.contains("in force:    minimal (d)"));
+        assert!(t.contains("recommended: minimal (software rendering)"));
+        assert!(t.contains("full to balanced"));
+        assert!(graphics_text(&Value::Null).contains("unknown"));
     }
 }

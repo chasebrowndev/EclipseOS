@@ -81,7 +81,12 @@ pub fn body(m: &Model) -> Body<'_> {
             } else {
                 "Take out the installation medium so the machine starts from the disk."
             },
-            vec![],
+            // The live session's graphics choice is not copied (D-03 §5.1): the
+            // installed system starts on `auto` and decides for its own hardware.
+            vec![(
+                "graphics".to_owned(),
+                "chosen for this PC on each start".to_owned(),
+            )],
         ),
         _ => {
             let pct = f32::from(ins.pct);
