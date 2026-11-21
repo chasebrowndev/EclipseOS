@@ -43,6 +43,9 @@ Glass is one material everywhere now, in dark and in light: the launcher, Settin
     <td width="50%"><img src="docs/screenshots/glass-detail.png" alt="A close look at lens glass in Settings: rim light, refraction and colour fringing"></td>
   </tr>
   <tr>
+    <td colspan="2"><img src="docs/screenshots/lock.png" alt="The lock screen as real glass over the wallpaper"></td>
+  </tr>
+  <tr>
     <td><img src="docs/screenshots/greeter.png" alt="The login screen with Glance tiles"></td>
     <td><img src="docs/screenshots/toasts.png" alt="Notification toasts as glass"></td>
   </tr>

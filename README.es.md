@@ -43,6 +43,9 @@ El vidrio es ahora un solo material en todas partes, en oscuro y en claro: el la
     <td width="50%"><img src="docs/screenshots/glass-detail.png" alt="Detalle del vidrio de lente en Ajustes: luz de borde, refracción y franjas de color"></td>
   </tr>
   <tr>
+    <td colspan="2"><img src="docs/screenshots/lock.png" alt="La pantalla de bloqueo como vidrio real sobre el fondo"></td>
+  </tr>
+  <tr>
     <td><img src="docs/screenshots/greeter.png" alt="La pantalla de inicio de sesión con mosaicos Glance"></td>
     <td><img src="docs/screenshots/toasts.png" alt="Notificaciones como vidrio"></td>
   </tr>
