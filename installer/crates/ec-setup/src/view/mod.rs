@@ -27,10 +27,11 @@ use crate::metrics;
 use crate::model::{Message, Model, Phase, Step};
 use crate::parts::{self, El};
 use ec_ui::theme;
-use ec_ui::tokens::{color, space};
+use ec_ui::tokens::{color, radius, space};
 use ec_ui::widget::hairline;
 use iced::widget::{column, container, row, scrollable, Column, Space};
 use iced::{Alignment, Length};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// What a step contributes to the shell.
 pub struct Body<'a> {
@@ -107,12 +108,55 @@ pub fn view(m: &Model) -> El<'_, Message> {
         centred(footer(m), Length::Shrink, [0.0, space::PANE_X]),
     ];
 
-    container(main.width(Length::Fill))
+    sheet(main.width(Length::Fill).into())
+}
+
+/// The wizard's window. With compositor glass it is one sheet floating over
+/// the wallpaper: at most [`metrics::SHEET_W`] by [`metrics::SHEET_H`], centred
+/// in a margin, so the wallpaper frames it and the glass has something to bend
+/// (Settings' cards do the same at a smaller scale). The compositor draws the
+/// material (blur, tint, rim, shadow) under a glass pane, and gives panes to a
+/// window only while it is not fullscreen (`window_takes_panes`), which is why
+/// the installer is a tiled toplevel. With blur on but no glass, the sheet is
+/// the window tint filling the window; with blur off or on a host with no glass
+/// it is the opaque ground, as before.
+fn sheet(main: El<'_, Message>) -> El<'_, Message> {
+    if ec_ui::glass::available() {
+        let card = ec_ui::widget::glass_card(
+            container(main)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .style(|th: &iced::Theme| theme::bare_container_if_glass(theme::window_pane(true)(th))),
+            theme::CellTone::Plain,
+            radius::WINDOW,
+        );
+        return container(
+            container(card)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .max_width(metrics::SHEET_W)
+                .max_height(metrics::SHEET_H),
+        )
+        .center(Length::Fill)
+        .padding(metrics::SHEET_MARGIN)
+        .into();
+    }
+    let blur = BLUR.load(Ordering::Relaxed);
+    container(main)
         .width(Length::Fill)
         .height(Length::Fill)
-        .style(theme::window(ec_ui::tokens::radius::WINDOW))
+        .style(move |th: &iced::Theme| {
+            if blur {
+                theme::window_pane(true)(th)
+            } else {
+                theme::window(radius::WINDOW)(th)
+            }
+        })
         .into()
 }
+
+/// `decoration.blur.mode` is not `off`, read once at start (`main`).
+pub static BLUR: AtomicBool = AtomicBool::new(false);
 
 /// A column no wider than the content measure, centred in what is left.
 fn centred<'a>(inner: El<'a, Message>, height: Length, padding: [f32; 2]) -> El<'a, Message> {

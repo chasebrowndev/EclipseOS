@@ -377,7 +377,9 @@ package_eclipseos-greeter() {
   install -Dm0644 "$srcdir/$_src/packaging/greetd/abyss-greeter.kdl" "$pkgdir/etc/eclipse/greetd/abyss-greeter.kdl"
   install -Dm0644 "$srcdir/$_src/packaging/greetd/10-eclipseos.conf" \
     "$pkgdir/usr/lib/systemd/system/greetd.service.d/10-eclipseos.conf"
-  install -Dm0644 "$srcdir/$_src/packaging/greetd/wallpaper.png" \
+  # The login screen shows the same eclipse as the desktop. greetd/wallpaper.png
+  # (the older ring) stays in the tree for the previews that load it.
+  install -Dm0644 "$srcdir/$_src/packaging/backgrounds/eclipse-dark-3840x2160.png" \
     "$pkgdir/usr/share/backgrounds/eclipseos/greeter.png"
   # Root writes the machine's choices, greeter reads them (ADR 0089).
   install -Dm0755 "$srcdir/target/release/ec-greeter-run" "$pkgdir/usr/lib/eclipse/ec-greeter-run"
@@ -432,6 +434,13 @@ package_eclipseos-meta() {
   # pacman overwrites rather than leaving .pacnew, and the later atomic scheme
   # is a no-op migration.
   install -Dm0644 "$srcdir/$_src/packaging/etc/abyss.kdl"  "$pkgdir/etc/eclipse/abyss.kdl"
+  # The default wallpaper in both inks and both sizes (packaging/backgrounds/gen-eclipse.py).
+  for ink in dark light; do
+    install -Dm0644 "$srcdir/$_src/packaging/backgrounds/eclipse-$ink-3840x2160.png" \
+      "$pkgdir/usr/share/backgrounds/eclipseos/eclipse-$ink.png"
+    install -Dm0644 "$srcdir/$_src/packaging/backgrounds/eclipse-$ink-1920x1080.png" \
+      "$pkgdir/usr/share/backgrounds/eclipseos/eclipse-$ink-1080p.png"
+  done
   # /etc/xdg/foot/foot.ini is owned by the foot package and pacman refuses to
   # co-own a file, so this copy sits on abyss-session's XDG_CONFIG_DIRS instead.
   install -Dm0644 "$srcdir/$_src/packaging/etc/foot.ini"   "$pkgdir/etc/eclipse/xdg/foot/foot.ini"

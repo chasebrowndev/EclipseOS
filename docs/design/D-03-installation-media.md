@@ -242,6 +242,17 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
 - **NetworkManager** owns networking (D-07 §4 step 3), with iwd as its wifi
   backend so `iwctl` and the fallback script's saved-network carry-over work.
 
+**Look of the live session.** It is the installed system's look, with no live-only
+user config. The live `liveuser` has no `~/.config/eclipse/abyss.kdl`: D-07 §5 copies that file to the
+new user at Apply, so a blur mode or quality key written there for the medium would
+be installed on every machine and fight the graphics profile (the medium-level
+`/etc/eclipse/abyss.kdl` below carries only `profile "auto"`, which the seed filter drops). Blur is the schema
+default (`glass`) and its quality is the auto graphics profile's call, on the medium
+as on disk. The wallpaper is the packaged default in `/etc/eclipse/abyss.kdl`
+(`/usr/share/backgrounds/eclipseos/eclipse-dark.png`, STYLE.md "Wallpaper"). `ec-setup`
+is on the compositor's glass allowlist, so the installer is a glass sheet over that
+wallpaper, light or dark with the compositor's scheme.
+
 ### 5.1 Graphics profile on the live medium *(added with `decoration.profile`)*
 
 The live session runs on whatever the PC has, often a software rasteriser or a
