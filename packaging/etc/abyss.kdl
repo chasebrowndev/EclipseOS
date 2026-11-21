@@ -44,3 +44,13 @@ animations {
 idle {
     lock-command "ec-lock"
 }
+
+// The default wallpaper: the EclipseOS eclipse (packaging/backgrounds, made
+// by gen-eclipse.py), in the eclipseos-meta package. The light variant
+// (eclipse-light.png) and 1080p copies (-1080p) sit beside it for Settings and
+// weak machines. Blur and graphics quality are not set here: they come from the
+// schema default and the machine's graphics profile.
+wallpaper {
+    path "/usr/share/backgrounds/eclipseos/eclipse-dark.png"
+    mode "fill"
+}

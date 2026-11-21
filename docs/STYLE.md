@@ -190,3 +190,11 @@ one bezier in a unit square) and `tokens::art` every size, alpha and hue.
 One settings pane per screen at 1120x720, sidebar + detail, inline styles only.
 Candidate panes: appearance, network, display, sound, input, notifications, power,
 privacy, storage, keybinds, autostart, accounts.
+
+## Wallpaper
+The default wallpaper is an eclipse: a dark moon with a gold corona, right of centre so
+centred glass overlaps its limb. It is generated, not drawn: `packaging/backgrounds/gen-eclipse.py`
+writes `eclipse-{dark,light}-{3840x2160,1920x1080}.png` beside itself (numpy + ffmpeg, deterministic).
+The package installs them as `/usr/share/backgrounds/eclipseos/eclipse-{dark,light}.png` (and `-1080p`);
+`packaging/etc/abyss.kdl` points `wallpaper.path` at the dark one, and the login screen ships it as
+`greeter.png`. The light variant is paper white with a deep-gold corona wash, for the light scheme.

@@ -242,6 +242,16 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
 - **NetworkManager** owns networking (D-07 §4 step 3), with iwd as its wifi
   backend so `iwctl` and the fallback script's saved-network carry-over work.
 
+**Look of the live session.** It is the installed system's look, with no live-only
+config file. The live `liveuser` has no `abyss.kdl`: D-07 §5 copies that file to the
+new user at Apply, so a blur mode or quality key written there for the medium would
+be installed on every machine and fight the graphics profile. Blur is the schema
+default (`glass`) and its quality is the auto graphics profile's call, on the medium
+as on disk. The wallpaper is the packaged default in `/etc/eclipse/abyss.kdl`
+(`/usr/share/backgrounds/eclipseos/eclipse-dark.png`, STYLE.md "Wallpaper"). `ec-setup`
+is on the compositor's glass allowlist, so the installer is a glass sheet over that
+wallpaper, light or dark with the compositor's scheme.
+
 The root shell moves to **tty2** and stays: root has an empty password, reachable
 only from the local console now that sshd is gone. A session that will not start
 on some hardware must not strand the user (D-07 §8), and `/root/install-eclipseos.sh`

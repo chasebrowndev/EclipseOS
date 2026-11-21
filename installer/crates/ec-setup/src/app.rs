@@ -56,6 +56,11 @@ pub enum Msg {
     /// The compositor's theme moved and the palette was re-applied (ADR 0084);
     /// the step's live preview just rebuilds.
     ThemeChanged,
+    /// The window exists: bind the compositor's glass for it (once).
+    GlassWindow(window::Id),
+    /// Glass is on or off; any update makes iced redraw, and that frame
+    /// carries the panes.
+    GlassReady(bool),
 }
 
 struct Job {
@@ -137,6 +142,8 @@ impl App {
             Msg::Welcome(m) => self.welcome.update(m).map(Msg::Welcome),
             Msg::Wizard(m) => self.wizard(m),
             Msg::ThemeChanged => Task::none(),
+            Msg::GlassReady(_) => Task::none(),
+            Msg::GlassWindow(id) => ec_ui::glass::attach_window(id).map(Msg::GlassReady),
         }
     }
 
@@ -219,14 +226,15 @@ impl App {
 
     pub fn view(&self) -> Element<'_, Msg> {
         match self.model.step {
-            Step::Welcome => self.welcome.view().map(Msg::Welcome),
-            _ => crate::view::view(&self.model).map(Msg::Wizard),
+            Step::Welcome => ec_ui::glass::root_sole(self.welcome.view().map(Msg::Welcome)).into(),
+            _ => ec_ui::glass::root_sole(crate::view::view(&self.model).map(Msg::Wizard)).into(),
         }
     }
 
     pub fn subscription(&self) -> Subscription<Msg> {
         let keys = event::listen_with(key_message);
         let theme = ec_ui::ipc::theme_subscription(|| Msg::ThemeChanged);
+        let keys = Subscription::batch([keys, ec_ui::glass::xdg_window().map(Msg::GlassWindow)]);
         if self.model.step == Step::Welcome {
             Subscription::batch([self.welcome.subscription().map(Msg::Welcome), keys, theme])
         } else {
@@ -272,8 +280,11 @@ pub fn run(options: Options) -> iced::Result {
             decorations: false,
             ..window::Settings::default()
         },
+        // Not fullscreen: the compositor gives a fullscreen window no glass,
+        // and the wizard is a glass window over the wallpaper. A tiled
+        // toplevel fills the screen anyway (not `maximized`, which the
+        // compositor also draws square and unblurred).
         None => window::Settings {
-            fullscreen: true,
             decorations: false,
             ..window::Settings::default()
         },
@@ -286,9 +297,15 @@ pub fn run(options: Options) -> iced::Result {
         ..settings
     };
     let scale = options.scale;
+    // Panes are placed in surface pixels; ours are laid out in scaled ones.
+    ec_ui::glass::set_ui_scale(scale);
     let mut app = iced::application(move || App::boot(&options), App::update, App::view)
         .title("Install EclipseOS")
         .theme(theme_of)
+        // Transparent, so the compositor's blur shows through; the view paints
+        // the opaque ground itself when blur is off.
+        .transparent(true)
+        .style(ec_ui::theme::clear_window)
         .subscription(App::subscription)
         .window(settings)
         .scale_factor(move |_| scale)

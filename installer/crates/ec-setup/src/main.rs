@@ -11,7 +11,7 @@
 //! `--fake-helper` runs the whole flow against simulations of the install
 //! helper, the network, the reboot and the compositor's config, so it needs no
 //! root and changes nothing on the machine. It is never the default. Without
-//! `--size` the window is full screen: on a desktop somebody is using, give it
+//! `--size` the window is a tiled toplevel (it keeps its glass): on a desktop somebody is using, give it
 //! a size, or use `--shot`, which renders one screen offscreen and opens no
 //! window at all.
 
@@ -106,6 +106,10 @@ fn main() -> iced::Result {
         Mode::Install => {
             // Start on the compositor's theme (ADR 0084); the subscription keeps it there.
             ec_ui::ipc::sync_theme_now();
+            ec_setup::view::BLUR.store(
+                ec_ui::ipc::fetch_glass().1.unwrap_or(false),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             app::run(args.options)
         }
     }
