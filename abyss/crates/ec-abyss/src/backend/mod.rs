@@ -4,6 +4,7 @@
 
 #[cfg(feature = "drm")]
 pub mod drm;
+pub mod gfx;
 #[cfg(feature = "drm")]
 pub mod gpu;
 #[cfg(feature = "headless")]
@@ -17,6 +18,28 @@ use crate::state::AbyssState;
 /// name a `smithay::backend::` path (root invariant: backends live behind this
 /// module).
 pub use smithay::backend::allocator::Fourcc;
+
+/// `GL_RENDERER` of a live renderer, empty if the driver reports none. The
+/// only GL call the graphics-profile probe needs, kept here so no GL type
+/// leaves `backend/`.
+pub fn gl_renderer_string(r: &mut smithay::backend::renderer::gles::GlesRenderer) -> String {
+    use smithay::backend::renderer::gles::ffi;
+    r.with_context(|gl| {
+        // SAFETY: `GetString` returns a NUL-terminated static string or null,
+        // and the context was made current by `with_context`.
+        unsafe {
+            let p = gl.GetString(ffi::RENDERER);
+            if p.is_null() {
+                String::new()
+            } else {
+                std::ffi::CStr::from_ptr(p as *const std::ffi::c_char)
+                    .to_string_lossy()
+                    .into_owned()
+            }
+        }
+    })
+    .unwrap_or_default()
+}
 
 /// What every backend can do to itself.
 ///

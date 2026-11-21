@@ -825,3 +825,22 @@ Leak bounds (CPU model of the dual-Kawase chain and of the lens shader's band, `
 This is a deviation from the lens of a window: showing all of the lightly blurred half in the band (share 1) leaves 1x text at 79 levels and 4 px stripes at 196 in the band, which is legible; the share is what buys the leak bound, at the cost of less visible refraction of the scene at the rim (the bend, dispersion, edge darkening, lit rim and rim colour remain).
 
 Not covered: a GPU run of the prompt path. The prompt is spliced by the backends (TCB side). The shared lens shader (with the new `body_tint` and `sharp_damp` uniforms, both 0 for every other pane) was checked headless: the launcher over stripes renders its lens panes unchanged. Cost, estimated and not measured: a 6-pass chain over the union crop plus its 512 px kernel margin on a frame that rebuilds, then one lens draw per member; a static scene costs only the lens draws.
+
+## Graphics profiles (`decoration.profile`)
+
+`decoration.profile "auto|minimal|low|balanced|full"` sets the *defaults* of
+`decoration.rounding`, `decoration.blur.{mode,size,passes,adaptive.enabled}`,
+`decoration.shadow.{enabled,range}` and `animations.preset`. A key written in
+`abyss.kdl` always wins; `full` is the built-in defaults. `auto` (the default)
+follows the profile detected at the first frame: `backend/gfx.rs` `decide()`
+from the GL renderer string, RAM, CPU count, output pixels and hypervisor hints.
+Under `auto`, `decoration.profile-governor` (on) lowers the profile one step for
+the session after two consecutive 10 s windows with at least half of the frames
+missing the refresh period (after a 30 s warm-up, 30 s cool-down, `full` to
+`balanced` to `low` only; never up, never written to the config).
+
+`ec-ctl graphics` prints the profile in force, the recommendation and why.
+The headless backend keeps `auto` at `full` (it is the CI and screenshot
+backend, and llvmpipe would otherwise turn blur off in every capture) unless a
+machine is simulated. Simulate one with `ECLIPSE_GFX_FAKE_RENDERER="llvmpipe"`
+(also `_RAM_MB`, `_CPUS`, `_PIXELS`, `_VM=1`) on any backend.

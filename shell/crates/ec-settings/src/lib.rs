@@ -20,6 +20,7 @@ pub mod conn;
 pub mod editor;
 pub mod focus;
 pub mod gpu;
+pub mod graphics;
 pub mod icons;
 pub mod login_screen;
 pub mod maximize;

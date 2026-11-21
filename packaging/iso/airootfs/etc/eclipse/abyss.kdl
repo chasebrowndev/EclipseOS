@@ -1,0 +1,10 @@
+// The live medium's compositor defaults. Not copied to the installed system.
+//
+// "auto" picks the lightest graphics profile this PC needs when abyss starts:
+// software rendering, a virtual GPU, little RAM or an old integrated GPU gets
+// "minimal" or "low"; capable hardware keeps the full glass look. The choice is
+// made again on every start and never written to a file. A key a user writes in
+// ~/.config/eclipse/abyss.kdl still wins over the profile. See D-03 section 5.1.
+decoration {
+    profile "auto"
+}

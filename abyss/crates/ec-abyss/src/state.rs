@@ -396,6 +396,8 @@ pub struct AbyssState {
 
     /// Frame timing (COMP-14 §2).
     pub stats: crate::render::stats::FrameStats,
+    /// Recommended graphics profile and the frame-time governor.
+    pub gfx: crate::backend::gfx::GfxState,
 
     /// Human control socket (COMP-13 §2).
     pub ipc: crate::ipc::IpcState,
@@ -755,6 +757,7 @@ impl AbyssState {
             xwayland_shell_state,
             xwayland: Default::default(),
             stats: crate::render::stats::FrameStats::new(stats),
+            gfx: Default::default(),
             ipc: crate::ipc::IpcState::default(),
             config_dirty: None,
             config_timer: None,

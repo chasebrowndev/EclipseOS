@@ -101,6 +101,9 @@ pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
         None => tracing::warn!("host EGL has no render node (llvmpipe?); no dmabuf global"),
     }
 
+    let renderer_name = super::gl_renderer_string(backend.renderer());
+    super::gfx::set_renderer(&mut state, renderer_name);
+
     let size = backend.window_size();
     let mode = Mode {
         size,
@@ -454,6 +457,11 @@ fn redraw(
         wp_presentation_feedback::Kind::Vsync,
     );
     state.stats.record(render_time, submit_start.elapsed());
+    super::gfx::on_frame(
+        state,
+        render_time + submit_start.elapsed(),
+        std::time::Duration::from_micros(16_667),
+    );
     state.stats.maybe_report();
     let time = state.start_time.elapsed();
     send_frames(&state.space, out, lock.as_ref(), time);

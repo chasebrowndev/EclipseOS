@@ -242,6 +242,23 @@ The medium boots to a session, not a prompt. `airootfs/` carries:
 - **NetworkManager** owns networking (D-07 §4 step 3), with iwd as its wifi
   backend so `iwctl` and the fallback script's saved-network carry-over work.
 
+### 5.1 Graphics profile on the live medium *(added with `decoration.profile`)*
+
+The live session runs on whatever the PC has, often a software rasteriser or a
+virtual GPU, and a user must not lag through the installer. `airootfs/etc/eclipse/abyss.kdl`
+sets `decoration { profile "auto" }` (the built-in default, written down so the
+intent is visible). At startup abyss measures the renderer string, RAM, CPU
+count, output size and hypervisor hints; a weak PC gets `minimal` or `low`
+(blur and animation off or short, no shadows), capable hardware keeps `full`.
+`ec-ctl graphics` shows the choice and the reason.
+
+The installed system **inherits `auto`, not the live decision.** The decision is
+never written to a file, `decoration.profile` is not on the seed allowlist
+(D-07 §5), and the file above is part of the medium, not of any package. The
+installed system measures its own hardware on every start, so a disk installed
+from a VM and booted on real hardware renders accordingly. The installer's last
+screen says so.
+
 The root shell moves to **tty2** and stays: root has an empty password, reachable
 only from the local console now that sshd is gone. A session that will not start
 on some hardware must not strand the user (D-07 §8), and `/root/install-eclipseos.sh`

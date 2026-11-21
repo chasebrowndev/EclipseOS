@@ -181,6 +181,8 @@ The compositor draws the wallpaper itself (ADR 0104): one picture per output, de
 
 | setting | type | default | reload | what it does |
 | --- | --- | --- | --- | --- |
+| `decoration.profile` | auto \| minimal \| low \| balanced \| full | `"auto"` | live | Graphics profile: the defaults of the rounding, blur, shadow and animation keys below. `auto` picks one for this PC at startup (software rendering, virtual machines, little RAM or an old integrated GPU get a lighter one); `minimal`, `low`, `balanced` and `full` fix it. A key written in this file always wins over the profile. Nothing is written back to the file. |
+| `decoration.profile-governor` | bool | `#true` | live | With `profile "auto"`: after sustained missed frames, drop one profile for the rest of the session (`full` to `balanced` to `low`). Never raises it and never writes the config. A fixed profile is never changed. |
 | `decoration.rounding` | int 0..64 | `9` | live | Corner radius in logical px; 0 disables. Also rounds the blur backdrop behind a layer-shell surface, except one that spans an output edge to edge (three anchors, or two opposite ones, with no positive exclusive zone), which stays square; the taskbar uses `bar.rounding`. |
 | `decoration.titlebar-height` | int 16..64 | `32` | live | Height in logical px of the titlebar drawn above a server-side-decorated window under `mode "de"` (COMP-05 §7.1). `wm` and `hybrid` draw no titlebar and ignore it. |
 | `decoration.active-opacity` | float 0..1 | `1` | live | Alpha applied to the focused window. |

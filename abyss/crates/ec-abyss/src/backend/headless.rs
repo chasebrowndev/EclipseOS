@@ -272,6 +272,13 @@ fn boot(
     let dh = state.display_handle.clone();
 
     let (mut renderer, render_node) = open_renderer()?;
+    // Headless is the CI and screenshot backend: `auto` stays `full` there
+    // (llvmpipe would otherwise turn blur off in every capture) unless a
+    // simulated machine is asked for.
+    if std::env::var_os("ECLIPSE_GFX_FAKE_RENDERER").is_some() {
+        let name = super::gl_renderer_string(&mut renderer);
+        super::gfx::set_renderer(&mut state, name);
+    }
 
     // COMP-02 §2: a dmabuf global only where there is a render node to import
     // into. On the software device there is none, so clients use shm — which
@@ -652,6 +659,7 @@ fn redraw(
         wp_presentation_feedback::Kind::Vsync,
     );
     state.stats.record(render_time, std::time::Duration::ZERO);
+    super::gfx::on_frame(state, render_time, FRAME);
     state.stats.maybe_report();
     let time = state.start_time.elapsed();
     send_frames(&state.space, out, lock.as_ref(), time);
