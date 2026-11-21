@@ -180,7 +180,6 @@ scheme is now paper white.
 - Not yet measured: GPU cost per glass preset. Not yet tested: real DRM, greetd,
   PAM and multi-output sessions.
 - Apotheosis tab and palette overlays do not render in headless captures.
-- A headless run of the real lock screen showed a black screen with no wallpaper
-  and no clock. The lock preview renders correctly. Under investigation.
-- The README's lock screen and trusted prompt pictures are missing until they can
-  be captured as real glass.
+- The lock screen shows the wallpaper only in `glass` blur mode. In the other
+  modes it keeps an opaque ground, by design (ADR 0129).
+- The README has no picture of the trusted prompt as glass yet.
