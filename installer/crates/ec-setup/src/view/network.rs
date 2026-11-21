@@ -40,7 +40,7 @@ pub fn body(m: &Model) -> Body<'_> {
                 if m.more {
                     blocks.push(wifi(m));
                     blocks.push(parts::link("Fewer options", Message::More(false)));
-                } else {
+                } else if s.wifi_device {
                     blocks.push(parts::link("Connect to Wi-Fi", Message::More(true)));
                 }
                 Body {

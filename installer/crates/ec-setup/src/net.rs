@@ -52,6 +52,9 @@ pub struct Ap {
 pub struct Snapshot {
     pub link: Link,
     pub aps: Vec<Ap>,
+    /// NetworkManager lists a Wi-Fi device. Without one there is nothing to
+    /// offer under "Connect to Wi-Fi".
+    pub wifi_device: bool,
 }
 
 /// Split one line of `nmcli -t` output: fields are separated by `:`, and a
@@ -95,6 +98,12 @@ pub fn parse_device_status(text: &str) -> Link {
         }
     }
     Link::Offline
+}
+
+/// Whether `device status` lists a Wi-Fi device at all.
+pub fn has_wifi_device(text: &str) -> bool {
+    text.lines()
+        .any(|l| split_terse(l).first().is_some_and(|t| t == "wifi"))
 }
 
 /// `nmcli -t -f IN-USE,SSID,SIGNAL,SECURITY device wifi list`
@@ -154,7 +163,7 @@ pub fn scan(env: &Env) -> Snapshot {
     let Some(status) = nmcli(&["-t", "-f", "TYPE,STATE,CONNECTION", "device", "status"]) else {
         return Snapshot {
             link: Link::NoManager,
-            aps: Vec::new(),
+            ..Snapshot::default()
         };
     };
     let aps = nmcli(&[
@@ -170,6 +179,7 @@ pub fn scan(env: &Env) -> Snapshot {
     Snapshot {
         link: parse_device_status(&status),
         aps,
+        wifi_device: has_wifi_device(&status),
     }
 }
 
@@ -231,6 +241,7 @@ pub fn fake_snapshot(online: bool) -> Snapshot {
             ap("DIRECT-7f-Printer", 38, true, false),
             ap("Neighbour 5G", 27, true, false),
         ],
+        wifi_device: true,
     }
 }
 
@@ -302,5 +313,14 @@ mod tests {
         assert!(!join(&env, "Lighthouse", true, Zeroizing::new("short".into())));
         assert!(join(&env, "Cafe", false, Zeroizing::new(String::new())));
         assert!(!join(&env, "--ask", false, Zeroizing::new(String::new())));
+    }
+
+    #[test]
+    fn a_wifi_device_is_found_only_when_one_is_listed() {
+        assert!(has_wifi_device("ethernet:connected:Wired\nwifi:disconnected:\n"));
+        assert!(!has_wifi_device(
+            "ethernet:connected:Wired\nloopback:unmanaged:\n"
+        ));
+        assert!(!has_wifi_device(""));
     }
 }

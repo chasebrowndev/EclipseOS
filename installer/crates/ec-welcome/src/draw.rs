@@ -23,9 +23,7 @@ use iced::advanced::text::{Paragraph as _, Shaping, Text as CoreText, Wrapping};
 use iced::alignment::Vertical;
 use iced::mouse;
 use iced::widget::canvas::path::lyon_path::math::Transform;
-use iced::widget::canvas::{
-    self, fill, gradient, Cache, Fill, Geometry, Image, Path, Program, Stroke, Style, Text,
-};
+use iced::widget::canvas::{self, fill, Cache, Fill, Geometry, Image, Path, Program, Stroke, Style, Text};
 use iced::widget::text::{Alignment, LineHeight};
 use iced::{Color, Font, Pixels, Point, Rectangle, Renderer, Size, Theme};
 
@@ -226,7 +224,13 @@ impl Program<Message> for Stage<'_> {
         if let Some(g) = &self.frame.greeting {
             paint_greeting(&mut scene, u, self.pixel_ratio, self.faces, g);
         }
-        paint_keycap(&mut scene, u, self.frame.key_opacity, self.frame.pulse);
+        paint_keycap(
+            &mut scene,
+            u,
+            self.frame.key_opacity,
+            self.frame.pulse,
+            self.faces.label(),
+        );
         if self.frame.version_opacity > 0.0 {
             paint_version(
                 &mut scene,
@@ -558,9 +562,9 @@ fn rrect(x: f32, y: f32, w: f32, h: f32, r: f32) -> Path {
     )
 }
 
-/// The spacebar: a translucent keycap with a hard lower edge, a soft drop
-/// shadow and, while pressed, a gold glow. `d` is the press, `0..=1`.
-fn paint_keycap(frame: &mut canvas::Frame, u: Units, opacity: f32, d: f32) {
+/// The key: a translucent keycap with a hard lower edge, a soft drop
+/// shadow and a rim that warms while pressed. `d` is the press, `0..=1`.
+fn paint_keycap(frame: &mut canvas::Frame, u: Units, opacity: f32, d: f32, font: Font) {
     if opacity <= 0.0 {
         return;
     }
@@ -611,48 +615,35 @@ fn paint_keycap(frame: &mut canvas::Frame, u: Units, opacity: f32, d: f32) {
         );
     });
 
-    // `0 0 2.4cqw*d rgba(244,187,60,.35d)`: the glow, all round, holed by the
-    // key so it never shows through the translucent fill.
-    if d > 0.005 {
-        let sigma = d * 2.4 * cqw / 2.0;
-        let steps = 20;
-        let s_at = |i: usize| 3.0 * sigma * (1.0 - i as f32 / steps as f32);
-        let targets: Vec<f32> = (0..steps)
-            .map(|i| {
-                let s = 0.5 * (s_at(i) + s_at(i + 1));
-                lit(0.35 * d * opacity * blurred_edge(s, sigma))
-            })
-            .collect();
-        for (i, a) in stack_alphas(&targets).into_iter().enumerate() {
-            let s = s_at(i);
-            frame.fill(
-                &Path::new(|b| {
-                    b.rounded_rectangle(
-                        Point::new(x - s, y - s),
-                        Size::new(w + 2.0 * s, h + 2.0 * s),
-                        (r + s).into(),
-                    );
-                    b.rounded_rectangle(Point::new(x, y), Size::new(w, h), r.into());
-                }),
-                even_odd(scaled(palette::GOLD, a)),
-            );
-        }
-    }
-
-    // The keycap itself: `linear-gradient(180deg, white .10, white .04)`.
-    let top = scaled(palette::WHITE, sheen(0.10 * opacity));
-    let bottom_c = scaled(palette::WHITE, sheen(0.04 * opacity));
-    let ground = gradient::Linear::new(Point::new(x, y), Point::new(x, y + h))
-        .add_stop(0.0, top)
-        .add_stop(1.0, bottom_c);
-    frame.fill(&rrect(x, y, w, h, r), Fill::from(ground));
+    // The keycap itself: one flat white sheen (no gradient, no glow), so it
+    // reads the same with or without the compositor's blur behind it.
+    frame.fill(
+        &rrect(x, y, w, h, r),
+        solid(scaled(palette::WHITE, sheen((0.08 + d * 0.04) * opacity))),
+    );
     // `border: 1px solid rgba(244,187,60, .18 + d*.5)`, inside the box.
     let edge = scaled(palette::GOLD, lit((0.18 + d * 0.5) * opacity));
     frame.stroke(
         &rrect(x + 0.5, y + 0.5, w - 1.0, h - 1.0, r - 0.5),
         Stroke::default().with_width(1.0).with_color(edge),
     );
+    // The key is the screen's one focused control: it says what it does.
+    frame.fill_text(Text {
+        content: KEY_LABEL.to_owned(),
+        position: Point::new(x + w / 2.0, y + h / 2.0),
+        max_width: f32::INFINITY,
+        color: scaled(palette::TEXT, lit(opacity)),
+        size: Pixels(1.7 * cqw),
+        line_height: LineHeight::default(),
+        font,
+        align_x: Alignment::Center,
+        align_y: Vertical::Center,
+        shaping: Shaping::Advanced,
+    });
 }
+
+/// The keycap's label. Space and Enter both press it.
+pub const KEY_LABEL: &str = "Get started";
 
 #[cfg(test)]
 mod tests {

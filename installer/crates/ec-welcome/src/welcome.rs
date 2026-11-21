@@ -308,7 +308,7 @@ impl Welcome {
         }
         let input = event::listen_with(|event, _status, _window| match event {
             iced::Event::Keyboard(keyboard::Event::KeyPressed {
-                key: keyboard::Key::Named(keyboard::key::Named::Space),
+                key: keyboard::Key::Named(keyboard::key::Named::Space | keyboard::key::Named::Enter),
                 repeat: false,
                 ..
             })

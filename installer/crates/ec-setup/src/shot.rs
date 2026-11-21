@@ -45,6 +45,7 @@ pub const NAMES: &[&str] = &[
     "disk-more",
     "identity",
     "identity-invalid",
+    "identity-retry",
     "profile",
     "profile-more",
     "profile-agentic",
@@ -189,6 +190,13 @@ pub fn fixture(name: &str) -> Option<Model> {
             walk(&mut m, Step::Identity, true);
             m.update(Message::Hostname("lighthouse".into()));
         }
+        "identity-retry" => {
+            // Back from a failed install: the name kept, the passwords cleared.
+            walk(&mut m, Step::Identity, true);
+            m.update(Message::Username("chase".into()));
+            m.update(Message::Password(Secret::new(String::new())));
+            m.update(Message::Password2(Secret::new(String::new())));
+        }
         "identity-invalid" => {
             walk(&mut m, Step::Identity, true);
             m.update(Message::Username("chase".into()));
@@ -263,7 +271,13 @@ pub fn fixture(name: &str) -> Option<Model> {
                 drop(m.update(Message::Apply));
             }
             match name {
-                "install" => progress(&mut m, Stage::Pacstrap, 47, "installing packages", false),
+                "install" => {
+                    progress(&mut m, Stage::Pacstrap, 47, "installing packages", false);
+                    // Minutes into one long stage: the clock and the still-working line.
+                    for _ in 0..222 {
+                        m.update(Message::Tick);
+                    }
+                }
                 "install-confirm" => progress(
                     &mut m,
                     Stage::Confirm,

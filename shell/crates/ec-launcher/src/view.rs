@@ -64,6 +64,29 @@ const ROW_GAP: f32 = 2.0;
 /// different x on every row is not a list, so this is a layout metric and not
 /// a styling token.
 const NAME_W: f32 = 196.0;
+/// A typical glyph's advance in em, a little generous so a cut line errs short.
+const GLYPH_EM: f32 = 0.5;
+/// The mono identifier's advance in em.
+const MONO_EM: f32 = 0.6;
+/// Card-widths of padding a row spends outside its name and note: the sheet's
+/// two edges, the cell's two, and the note's own right gap.
+const NOTE_MARGIN: f32 = 5.0;
+
+/// `s` cut to about `px` pixels of `font_size` text, ending in an ellipsis
+/// when something was left.
+fn ellipsize(s: &str, px: f32, font_size: f32) -> String {
+    let fit = (px / (font_size * GLYPH_EM)).floor().max(1.0) as usize;
+    if s.chars().count() <= fit {
+        return s.to_owned();
+    }
+    let mut out: String = s.chars().take(fit.saturating_sub(1)).collect();
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out.push('\u{2026}');
+    out
+}
+
 /// The widest the "Run on <GPU>" cell grows; a long adapter name is clipped.
 const GPU_CHIP_W: f32 = 212.0;
 /// The last line of the panel, where a refusal, the key hints and the match
@@ -202,7 +225,7 @@ fn results(app: &App) -> Element<'_, Message, Theme> {
                     .as_deref()
                     .filter(|_| selected && !entry.terminal && refusal.is_none())
                     .map(|name| (name, app.always_discrete(entry)));
-                col.push(entry_row(entry, index, selected, refusal, gpu))
+                col.push(entry_row(entry, index, selected, refusal, gpu, app.width as f32))
             }
             // An empty slot rather than a shorter list: the panel is a fixed
             // height, and rows that slide up as you type are rows you misclick.
@@ -222,6 +245,7 @@ fn entry_row(
     selected: bool,
     refusal: Option<&str>,
     gpu: Option<(&str, bool)>,
+    panel_w: f32,
 ) -> Element<'static, Message, Theme> {
     // A terminal-only entry is listed and greyed: `apps::launch` will refuse
     // it, and a row that is simply missing teaches the human nothing. The
@@ -251,7 +275,19 @@ fn entry_row(
     } else if entry.terminal {
         "needs a terminal".to_owned()
     } else {
-        entry.comment.clone().unwrap_or_default()
+        // iced has no eliding text, so the comment is cut to what the column
+        // can hold and ends in an ellipsis; the clip below stays as the backstop.
+        let tail_w = if live {
+            entry.id.trim_end_matches(".desktop").len() as f32 * size::MONO * MONO_EM
+        } else {
+            0.0
+        };
+        let room = panel_w - NAME_W - tail_w - NOTE_MARGIN * space::CARD;
+        ellipsize(
+            entry.comment.as_deref().unwrap_or_default(),
+            room,
+            size::BODY_SMALL,
+        )
     };
     let note: iced::widget::Text<'_, Theme> = text(note)
         .size(size::BODY_SMALL)
@@ -504,5 +540,21 @@ mod tests {
     #[test]
     fn a_list_that_fits_does_not_scroll() {
         assert_eq!(scroll(&app_with(MAX_ROWS, MAX_ROWS - 1)), 0);
+    }
+}
+
+#[cfg(test)]
+mod ellipsis_tests {
+    use super::ellipsize;
+
+    #[test]
+    fn a_short_note_is_untouched_and_a_long_one_ends_in_an_ellipsis() {
+        assert_eq!(ellipsize("Policy", 400.0, 12.0), "Policy");
+        let cut = ellipsize(
+            "Review what each app may do and revoke it at any time",
+            100.0,
+            12.0,
+        );
+        assert!(cut.ends_with('\u{2026}') && cut.chars().count() < 20, "{cut}");
     }
 }
