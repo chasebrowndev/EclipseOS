@@ -34,6 +34,29 @@ pub fn stage_label(s: Stage) -> &'static str {
     }
 }
 
+/// `3:07`, or `1:02:03` past an hour.
+pub fn clock(secs: u32) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+/// The line that shows a long stage is alive: time since Apply, and once the
+/// helper has been quiet a while, that it is still working and for how long.
+pub fn liveness(elapsed: u32, quiet: u32) -> String {
+    if quiet >= 20 {
+        format!(
+            "Still working, this can take several minutes. {} elapsed",
+            clock(elapsed)
+        )
+    } else {
+        format!("{} elapsed", clock(elapsed))
+    }
+}
+
 pub fn body(m: &Model) -> Body<'_> {
     let ins = &m.install;
     let stage = ins.stage;
@@ -112,6 +135,10 @@ pub fn body(m: &Model) -> Body<'_> {
                                 .font(font::UI)
                                 .size(size::BODY)
                                 .style(theme::text_secondary),
+                            text(liveness(ins.elapsed, ins.quiet))
+                                .font(font::UI)
+                                .size(size::BODY)
+                                .style(theme::text_tertiary),
                         ]
                         .spacing(space::CHIP_GAP)
                         .align_x(Alignment::End),

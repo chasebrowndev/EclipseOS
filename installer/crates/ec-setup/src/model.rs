@@ -260,6 +260,11 @@ pub struct Install {
     /// `Some(err)` when the restart was refused.
     pub restart_error: Option<String>,
     pub restarting: bool,
+    /// Whole seconds since Apply, counted by [`Message::Tick`]. Liveness for a
+    /// stage that reports once and then works for minutes (pacstrap).
+    pub elapsed: u32,
+    /// Whole seconds since the helper last reported anything.
+    pub quiet: u32,
 }
 
 impl Install {
@@ -272,6 +277,8 @@ impl Install {
             failed_at: None,
             restart_error: None,
             restarting: false,
+            elapsed: 0,
+            quiet: 0,
         }
     }
 }
@@ -404,6 +411,8 @@ pub enum Message {
     Apply,
 
     Helper(HelperEvent),
+    /// One second of wall clock, only while the install runs.
+    Tick,
     Restart,
     Restarted(Result<(), String>),
 
@@ -756,6 +765,12 @@ impl Model {
     pub fn update(&mut self, message: Message) -> Vec<Effect> {
         let mut fx = Vec::new();
         match message {
+            Message::Tick => {
+                if self.step == Step::Install && self.install.phase == Phase::Running {
+                    self.install.elapsed = self.install.elapsed.saturating_add(1);
+                    self.install.quiet = self.install.quiet.saturating_add(1);
+                }
+            }
             Message::Noop => {}
             Message::Begin => {
                 if self.step == Step::Welcome {
@@ -1322,6 +1337,7 @@ impl Model {
                 msg,
                 failed,
             }) => {
+                self.install.quiet = 0;
                 self.install.pct = pct.min(100);
                 self.install.stage = Some(stage);
                 self.install.note = msg;
@@ -1491,7 +1507,7 @@ mod tests {
         let mut m = at(Step::Network);
         m.update(Message::NetScanned(Snapshot {
             link: Link::Offline,
-            aps: vec![],
+            ..Snapshot::default()
         }));
         assert!(!m.online());
         assert!(m.can_next(), "step 3 is skippable");
@@ -2263,5 +2279,24 @@ mod tests {
         assert!(!m.more);
         m.update(Message::Next);
         assert_eq!(m.step, Step::Profile);
+    }
+
+    #[test]
+    fn the_clock_runs_only_while_the_install_runs_and_resets_on_a_report() {
+        let mut m = at(Step::Review);
+        m.update(Message::Tick);
+        assert_eq!(m.install.elapsed, 0, "not installing yet");
+        m.step = Step::Install;
+        m.install.phase = Phase::Running;
+        m.update(Message::Tick);
+        m.update(Message::Tick);
+        assert_eq!((m.install.elapsed, m.install.quiet), (2, 2));
+        m.update(Message::Helper(HelperEvent::Progress(Progress {
+            stage: Stage::Pacstrap,
+            pct: 30,
+            msg: "installing packages".into(),
+            failed: false,
+        })));
+        assert_eq!((m.install.elapsed, m.install.quiet), (2, 0));
     }
 }

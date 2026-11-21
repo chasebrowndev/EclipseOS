@@ -3,7 +3,7 @@
 //!
 //! The hero is the clock: one large numeral, bottom-left, the only type that
 //! scales to the screen. Beneath it the rest of the layout reads in order:
-//! a one-line greeting, the account list, the field with its Unlock pill, the
+//! a one-line greeting, the account list, the field with its Sign in pill, the
 //! power pills, and the Glances. No two neighbours share a silhouette: a
 //! numeral, a line, a list, a field, a row of pills, a row of gauges.
 //!
@@ -385,7 +385,7 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
         .fade(cx.fade * dim);
 
     let unlock = container(label(
-        "Unlock",
+        "Sign in",
         size::BODY_SMALL,
         font::UI_MEDIUM,
         pal.text.with_alpha(pal.text.0[3] * ink_dim),

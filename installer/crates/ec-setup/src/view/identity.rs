@@ -76,10 +76,15 @@ pub fn body(m: &Model) -> Body<'_> {
         form = form.push(parts::link("More options", Message::More(true)));
     }
 
-    // One sentence, and only once there is something to be wrong about.
+    // One sentence, and only once there is something to be wrong about. The
+    // password rules stay quiet until a password field has been typed in, so
+    // a form returned to after a failed install (passwords cleared) is not
+    // scolding anyone who has not touched it yet.
+    let untouched_password = m.password.is_empty() && m.password2.is_empty();
     let problem = match m.identity_problem() {
-        Some(p) if !(m.username.is_empty() && m.password.is_empty()) => Some(p),
-        _ => None,
+        _ if m.username.is_empty() && m.password.is_empty() => None,
+        Some(_) if untouched_password && m.username_ok() && m.hostname_ok() => None,
+        p => p,
     };
     let mut blocks: Vec<El<'_, Message>> = vec![form.into()];
     if let Some(p) = problem {

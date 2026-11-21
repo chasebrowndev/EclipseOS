@@ -2038,10 +2038,10 @@ fn mock(
             }
             let btn = Rectangle::new(Point::new(field.x + field.width + 6.0, b.y), Size::new(bw, fh));
             fill(r, btn, fh * 0.3, sk.ink.scale_alpha(lp::PILL_FILL * a), None);
-            if measure("Unlock", sz, font::UI_MEDIUM) + pad <= bw {
+            if measure("Sign in", sz, font::UI_MEDIUM) + pad <= bw {
                 put(
                     r,
-                    "Unlock",
+                    "Sign in",
                     btn,
                     sz,
                     font::UI_MEDIUM,

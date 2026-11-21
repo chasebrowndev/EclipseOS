@@ -1539,8 +1539,9 @@ fn subscription_inner(app: &App) -> Subscription<Message> {
     if app.nav_moving() {
         subs.push(iced::window::frames().map(Message::NavFrame));
     }
-    // The status feed runs only while its pane is showing.
-    if app.page == Page::Network {
+    // The status feed runs only while a pane that shows it is: Network, and the
+    // Overview, whose Network cell would otherwise read "reading" forever.
+    if matches!(app.page, Page::Network | Page::Overview) {
         subs.push(network::feed());
     }
     if app.page.section() == Section::Taskbar {

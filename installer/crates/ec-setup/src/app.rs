@@ -8,7 +8,7 @@
 
 use crate::config::{WriteError, Writer};
 use crate::helper::{self, Env, FakeCfg};
-use crate::model::{Effect, Inputs, Key, Message, Model, Step};
+use crate::model::{Effect, Inputs, Key, Message, Model, Phase, Step};
 use crate::net::{self, Link, Snapshot};
 use crate::sys;
 use ec_ui::theme;
@@ -189,7 +189,7 @@ impl App {
                     |s| {
                         Message::NetScanned(s.unwrap_or(Snapshot {
                             link: Link::NoManager,
-                            aps: Vec::new(),
+                            ..Snapshot::default()
                         }))
                     },
                 )
@@ -237,6 +237,19 @@ impl App {
         let keys = Subscription::batch([keys, ec_ui::glass::xdg_window().map(Msg::GlassWindow)]);
         if self.model.step == Step::Welcome {
             Subscription::batch([self.welcome.subscription().map(Msg::Welcome), keys, theme])
+        } else if self.model.step == Step::Install && self.model.install.phase == Phase::Running {
+            // One tick a second: the elapsed clock that shows a long stage is alive.
+            let tick = Subscription::run(|| {
+                iced::stream::channel(4, async move |mut sender| {
+                    std::thread::spawn(move || loop {
+                        std::thread::sleep(std::time::Duration::from_secs(1));
+                        if sender.try_send(Msg::Wizard(Message::Tick)).is_err() {
+                            return;
+                        }
+                    });
+                })
+            });
+            Subscription::batch([keys, theme, tick])
         } else {
             Subscription::batch([keys, theme])
         }

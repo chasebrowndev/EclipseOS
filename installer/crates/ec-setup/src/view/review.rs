@@ -39,21 +39,32 @@ pub fn body(m: &Model) -> Body<'_> {
         };
     };
 
-    let banner = parts::banner(
-        Tone::Danger,
-        "erase",
-        &format!("Everything on {} will be erased", disk.model),
-        &format!(
-            "The whole {} disk is wiped and cannot be recovered. Nothing else is touched.",
-            format_size(disk.size_bytes)
-        ),
-        vec![],
-    );
+    let size = format_size(disk.size_bytes);
+    let model = disk.model.trim();
+    let named = !model.is_empty() && !model.eq_ignore_ascii_case("unknown");
+    let (headline, detail) = if named {
+        (
+            format!("Everything on {model} will be erased"),
+            format!("The whole {size} disk is wiped and cannot be recovered. Nothing else is touched."),
+        )
+    } else {
+        (
+            format!("Everything on this disk ({size}) will be erased"),
+            "The whole disk is wiped and cannot be recovered. Nothing else is touched.".to_owned(),
+        )
+    };
+    let banner = parts::banner(Tone::Danger, "erase", &headline, &detail, vec![]);
 
     let lang = &LANGUAGES[m.language.min(LANGUAGES.len() - 1)];
     let keyboard = match &m.variant {
         Some(v) => format!("{} ({v})", m.layout),
         None => m.layout.clone(),
+    };
+    // The keyboard is only worth a mention when it is not the language's own.
+    let language = if m.layout == lang.layout && m.variant.is_none() {
+        lang.english.to_owned()
+    } else {
+        format!("{} ({keyboard})", lang.english)
     };
     let parts_on = m.choices.slots.iter().filter(|s| **s != NONE).count();
     let apps = match m.choices.app_count() {
@@ -63,7 +74,7 @@ pub fn body(m: &Model) -> Body<'_> {
     };
     let agents = m.profile.agents_default();
     let mut stats = vec![
-        ("Language", format!("{} ({keyboard})", lang.english)),
+        ("Language", language),
         ("User", m.username.clone()),
         (
             "Desktop",
