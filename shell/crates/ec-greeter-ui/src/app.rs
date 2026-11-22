@@ -90,6 +90,8 @@ pub struct App {
     pub(crate) backdrop: Option<Backdrop>,
     /// Glance data was handed in; do not poll the machine.
     glance_fixed: bool,
+    /// The lone account was chosen for the person already (once per run).
+    auto_picked: bool,
 }
 
 /// Show the greeter with `settings` and the backend `auth`. Blocks until the
@@ -262,9 +264,26 @@ impl App {
             glance: Snapshot::default(),
             backdrop: None,
             glance_fixed: false,
+            auto_picked: false,
         };
         app.refresh_clock();
         app
+    }
+
+    /// With exactly one account there is nothing to choose: open its
+    /// conversation so keys reach the password field at once, with no
+    /// pointer needed (a laptop whose touchpad is not up yet, a screen the
+    /// person cannot see). Once; Escape or a refusal leaves the choice to them.
+    fn auto_pick_sole_account(&mut self) {
+        if self.auto_picked || self.selected.is_some() || self.state() != AuthState::Idle {
+            return;
+        }
+        if let [only] = self.users.as_slice() {
+            self.auto_picked = true;
+            let user = only.clone();
+            self.selected = Some(user.clone());
+            self.auth.begin(&user);
+        }
     }
 
     fn refresh_clock(&mut self) {
@@ -297,6 +316,7 @@ impl App {
                 }
             }
             Msg::Tick => {
+                self.auto_pick_sole_account();
                 self.refresh_clock();
                 if self.state() == AuthState::Granted {
                     return iced::exit();
@@ -400,11 +420,56 @@ fn key(event: Event, _status: event::Status, _id: window::Id) -> Option<Msg> {
     else {
         return None;
     };
+    // Once, for the journal: a key reached the client. Never which key.
+    static FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if !FIRST.swap(true, std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("ec-greeter-ui: first key event received (content not logged)");
+    }
     match key {
         Key::Named(Named::Enter) => Some(Msg::Submit),
         Key::Named(Named::Backspace) => Some(Msg::Backspace),
         Key::Named(Named::Escape) => Some(Msg::Cancel),
         _ if modifiers.control() || modifiers.alt() || modifiers.logo() => None,
         _ => text.as_deref().and_then(Typed::new).map(Msg::Typed),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn app(users: &[&str]) -> App {
+        App::assemble(
+            Layout::default(),
+            None,
+            Format::of(None),
+            DEFAULT_GREETING.to_owned(),
+            Box::new(FakeAuth::new(users)),
+        )
+    }
+
+    #[test]
+    fn the_only_account_is_opened_without_a_click() {
+        let mut a = app(&["robin"]);
+        let _ = a.update(Msg::Tick);
+        assert_eq!(a.selected.as_deref(), Some("robin"));
+        assert!(a.state() != AuthState::Idle);
+    }
+
+    #[test]
+    fn several_accounts_wait_for_a_choice() {
+        let mut a = app(&["robin", "sam"]);
+        let _ = a.update(Msg::Tick);
+        assert!(a.selected.is_none());
+        assert_eq!(a.state(), AuthState::Idle);
+    }
+
+    #[test]
+    fn cancel_is_not_undone_by_the_next_tick() {
+        let mut a = app(&["robin"]);
+        let _ = a.update(Msg::Tick);
+        let _ = a.update(Msg::Cancel);
+        let _ = a.update(Msg::Tick);
+        assert!(a.selected.is_none());
     }
 }
