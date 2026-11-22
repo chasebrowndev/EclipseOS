@@ -1266,7 +1266,7 @@ pub const TABLE: &[Key] = &[
     k(
         "decoration.blur.adaptive.strength",
         PCT,
-        Float(0.5),
+        Float(0.3),
         Abyss,
         Live,
         "How far adaptive glass may move the tint; 0 keeps the fixed tint.",

@@ -809,6 +809,7 @@ uniform vec4 body_tint;   // a trusted prompt's fixed palette tint (straight rgb
 uniform float sharp_damp; // 0..1 share of the bevel's lightly blurred half held back; 0 (unset) everywhere but a trusted prompt
 
 const vec2 LIGHT = vec2(-0.70710678, -0.70710678); // top-left, y down
+const float WINDOW_RIM_K = 0.85;   // floor of the size fade for a translucent window's rim
 const float SATURATE = 1.7;
 const float COMPRESS = 1.0;  // highlight knee: c / (1 + COMPRESS * luma)
 const vec3 SMOKE = vec3(0.047, 0.047, 0.055);       // #0c0c0e
@@ -824,7 +825,7 @@ const float EDGE_DARK_L = 0.12;
 const float LINE_IN = 0.34;
 const float RIM_SAT = 1.5;          // rim colour: saturation of the sharp backdrop
 const float RIM_GAIN = 1.7;         // and its brightening, then clamped
-const float RIM_SHARP = 0.8;        // weight (before the light lobes) in the dark scheme: soft, subtle
+const float RIM_SHARP = 1.05;       // weight (before the light lobes) in the dark scheme: soft, subtle
 const float RIM_SHARP_L = 1.0;      // and in the light one: a crisp edge
 const float RIM_WHITE_L = 0.45;     // light scheme: share of white mixed into the rim colour
 const float RIM_CRISP_PX = 3.0;     // light scheme: width of the crisp edge, physical px
@@ -986,7 +987,14 @@ void main() {
 #endif
 
     // A bezel bends across its own width only.
+#if defined(GLASS_LENS) || defined(GLASS_REGULAR)
+    // A translucent window (its bezel is not `opaque`) shows its glass through
+    // the body, so its lit rim and edge bend run over the full bevel, like any
+    // other lens; only an opaque window's glass is the bare ring.
+    float band_w = (inner > 0.0 && opaque > 0.5) ? inner : bevel;
+#else
     float band_w = inner > 0.0 ? inner : bevel;
+#endif
 #if defined(GLASS_LENS) || defined(GLASS_REGULAR)
     // Lens optics. `t` runs 0 at the edge to 1 where the bevel meets the flat
     // plateau, which is only the lightly-bent blurred result (one tap, none of
@@ -1087,6 +1095,12 @@ void main() {
         float xs = max(s_eff / sref, 0.05);
         float sw = max(min(band_w, max(SHADE_BASE * sref * pow(xs, SHADE_P), SHADE_MIN * sref / SHADE_REF)), 1.0);
         float sk = min(pow(xs, -SHADE_Q), 1.0);
+        // A translucent window's rim stays legible however large the window is
+        // (the size rule would fade it to a third): it is what ties the window to
+        // the bar and the launcher.
+        if (inner > 0.0 && opaque < 0.5) {
+            sk = max(sk, WINDOW_RIM_K);
+        }
         float su = 1.0 - clamp(-d / sw, 0.0, 1.0);
         c *= 1.0 - mix(EDGE_DARK, EDGE_DARK_L, scheme_light) * sk * su * su * rs;
         // One lit edge: a soft gradient that falls off over the outer half of
@@ -1147,6 +1161,11 @@ const LENS_BEVEL_FRACTION: f32 = 0.4;
 /// shorter side: a 30 px cell bends by under 5 px, a 130 px pill keeps the full
 /// configured strength.
 pub const LENS_STRENGTH_FRACTION: f32 = 0.16;
+/// The cap for a lens glass pane that is not a nested cell (the bar's pill, a
+/// card): a 40 px pill bends its rim by up to 18 px, like the launcher card's
+/// 28, not by the 6 px that [`LENS_STRENGTH_FRACTION`] left it (the bend is
+/// already scaled down with size by `glass::lens_scale`).
+pub const LENS_STRENGTH_FRACTION_PANE: f32 = 0.45;
 
 /// The bevel band of a lens whose shorter side is `short` physical px:
 /// `bevel`, capped at [`LENS_BEVEL_FRACTION`] of `short`.
@@ -1515,6 +1534,52 @@ pub fn glass_uniforms_lifted_into(
     adapt: f32,
     layers: f32,
 ) {
+    glass_uniforms_capped_into(
+        out,
+        preset,
+        rect,
+        fb_height,
+        mirrored,
+        radius,
+        tex_size,
+        strength,
+        bevel,
+        glass,
+        bezel,
+        lift,
+        shade,
+        smoke,
+        light,
+        adapt,
+        layers,
+        LENS_STRENGTH_FRACTION,
+    );
+}
+
+/// [`glass_uniforms_lifted_into`] with the lens bend cap as a share of the
+/// shape's shorter side. The pane path passes [`LENS_STRENGTH_FRACTION_PANE`]:
+/// the bar is one thin pill whose rim must bend as visibly as the launcher's.
+#[allow(clippy::too_many_arguments)]
+pub fn glass_uniforms_capped_into(
+    out: &mut Vec<Uniform<'static>>,
+    preset: GlassPreset,
+    rect: Rectangle<i32, Physical>,
+    fb_height: i32,
+    mirrored: bool,
+    radius: f32,
+    tex_size: (i32, i32),
+    strength: f32,
+    bevel: f32,
+    glass: &ec_abyss_config::GlassBlur,
+    bezel: Option<(i32, bool, [f32; 4], i32)>,
+    lift: f32,
+    shade: f32,
+    smoke: f32,
+    light: f32,
+    adapt: f32,
+    layers: f32,
+    strength_fraction: f32,
+) {
     let (inner, opaque, rim_color, bar) =
         bezel.map_or((0.0, 0.0, [1.0; 4], 0.0), |(inner, opaque, rim, bar)| {
             (
@@ -1527,14 +1592,18 @@ pub fn glass_uniforms_lifted_into(
     // The configured bevel/strength are ceilings: a thin shape (a bar) gets a
     // bevel of at most GLASS_BEVEL_FRACTION of its shorter side, and the bend
     // shrinks with it, so it keeps a clear centre and the same slope.
-    let (strength, bevel) = if inner > 0.0 || bevel <= 0.0 {
+    let (strength, bevel) = if inner > 0.0 && opaque < 0.5 && bevel > 0.0 && preset != GlassPreset::Frost {
+        // A translucent window's bevel runs into its body, bounded by its size.
+        let short = rect.size.w.min(rect.size.h).max(1) as f32;
+        (strength, lens_bevel(bevel, short))
+    } else if inner > 0.0 || bevel <= 0.0 {
         (strength, bevel)
     } else if preset != GlassPreset::Frost {
         // The band is capped at LENS_BEVEL_FRACTION of the shorter side and
         // the bend at LENS_STRENGTH_FRACTION of it, so a small widget bends
         // gently and shows what is directly behind it, not its neighbours.
         let short = rect.size.w.min(rect.size.h).max(1) as f32;
-        (lens_strength(strength, short), lens_bevel(bevel, short))
+        (strength.min(short * strength_fraction), lens_bevel(bevel, short))
     } else {
         let short = rect.size.w.min(rect.size.h).max(1) as f32;
         let capped = bevel.min(short * GLASS_BEVEL_FRACTION);

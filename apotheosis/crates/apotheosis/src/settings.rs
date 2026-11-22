@@ -70,7 +70,7 @@ pub(crate) struct Settings {
     /// The regular family was named explicitly (not the `monospace` default).
     pub(crate) family_named: bool,
     pub(crate) padding: (u32, u32),
-    /// `window.opacity` when the file sets it; `None` is the computed default (T-08 §3): 0.82
+    /// `window.opacity` when the file sets it; `None` is the computed default (T-08 §3): 0.55
     /// while the compositor blurs behind the window, 1 otherwise.
     pub(crate) opacity: Option<f32>,
     pub(crate) glass: GlassSettings,
@@ -416,7 +416,7 @@ impl InputSettings {
     }
 }
 
-/// Opacity of the window and the clear colour: the configured value, else 0.82 over a
+/// Opacity of the window and the clear colour: the configured value, else 0.55 over a
 /// compositor blur and 1 without (T-08 §3). With `blur-fallback opaque` and no blur the window
 /// is opaque whatever was configured.
 pub(crate) fn effective_opacity(
@@ -434,7 +434,7 @@ pub(crate) fn effective_opacity(
 }
 
 /// `window.opacity`'s computed default while a blur is available (schema row doc).
-pub(crate) const AUTO_OPACITY: f32 = 0.82;
+pub(crate) const AUTO_OPACITY: f32 = 0.55;
 
 /// What startup loaded: the settings, the config they came from (the baseline for the first
 /// reload diff), the watch set and the error positions for the error bar.

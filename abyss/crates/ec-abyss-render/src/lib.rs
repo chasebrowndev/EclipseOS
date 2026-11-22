@@ -1527,7 +1527,14 @@ fn insert_blur(
                     let short = region.size.w.min(region.size.h) as f32 / upscale as f32;
                     effects::GlassPreset::of_sheet(short)
                 }
-                _ => effects::GlassPreset::of(shape.is_some(), bezel.is_some()),
+                // A window body in glass mode takes the Regular optics (the lit,
+                // backdrop-coloured rim and edge bend, in the bevel only) with
+                // its own cheap interior, so it reads as the same material as
+                // the bar and the launcher; Frost stays for the other modes.
+                _ => match effects::GlassPreset::of(shape.is_some(), bezel.is_some()) {
+                    effects::GlassPreset::Frost => effects::GlassPreset::Regular,
+                    p => p,
+                },
             }
         } else {
             effects::GlassPreset::Frost
@@ -1602,7 +1609,8 @@ fn insert_blur(
                     let look = effects::preset_look(preset, &cfg.glass, upscale);
                     // A bezel bends across its ring only.
                     let (strength, bevel) = match bezel {
-                        Some(b) => (look.strength, b.inner as f32),
+                        Some(b) if b.opaque => (look.strength, b.inner as f32),
+                        Some(_) => (look.strength, look.bevel),
                         None => (look.strength, look.bevel),
                     };
                     let mut tuned = cfg.glass.clone();
@@ -2005,7 +2013,7 @@ fn insert_panes(
                 }
             }
             {
-                effects::glass_uniforms_lifted_into(
+                effects::glass_uniforms_capped_into(
                     uniforms,
                     effects::GlassPreset::Lens,
                     shape,
@@ -2027,6 +2035,7 @@ fn insert_panes(
                     light,
                     cfg.adaptive.effective(),
                     2.0,
+                    effects::LENS_STRENGTH_FRACTION_PANE,
                 );
                 effects::set_shade_ref(uniforms, upscale * grown);
             }
