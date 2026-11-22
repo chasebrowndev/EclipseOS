@@ -828,6 +828,8 @@ const float RIM_GAIN = 1.7;         // and its brightening, then clamped
 const float RIM_SHARP = 1.05;       // weight (before the light lobes) in the dark scheme: soft, subtle
 const float RIM_SHARP_L = 1.0;      // and in the light one: a crisp edge
 const float RIM_WHITE_L = 0.45;     // light scheme: share of white mixed into the rim colour
+const float OUT_BLUR_IN = 4.0;      // a displaced sample this deep inside the edge starts to go blurred, physical px
+const float OUT_BLUR_OUT = 2.0;     // and is fully blurred this far outside it
 const float RIM_CRISP_PX = 3.0;     // light scheme: width of the crisp edge, physical px
 // A cell nested in a card pane (GLASS_LENS panes with `opaque` 2): fill colour,
 // depth cues and rim. See the branch in `main`.
@@ -1020,6 +1022,15 @@ void main() {
             vec3 sh = vec3(sharp_at(v_coords + b * (1.0 - k)).r,
                            sharp_at(v_coords + b).g,
                            sharp_at(v_coords + b * (1.0 + k)).b);
+            // Where the bent sample lands outside the shape (or in the outer
+            // part of the bevel) the lightly blurred half is still readable
+            // text of whatever lies beside the pane: show the plateau's blur
+            // there instead, so the rim keeps its colour and bend but never
+            // legible content. One extra tap, only for those fragments.
+            float out_w = smoothstep(-OUT_BLUR_IN, OUT_BLUR_OUT, d + strength * u * u * sqrt(u));
+            if (out_w > 0.0) {
+                sh = mix(sh, blurred_at(v_coords + b).rgb, out_w);
+            }
             // `sharp_damp` (a trusted prompt only) holds back that share of the
             // lightly blurred half: the band stays a lens, not a window onto it.
             vec3 shown = mix(color.rgb, sh, 1.0 - sharp_damp);
@@ -1162,10 +1173,10 @@ const LENS_BEVEL_FRACTION: f32 = 0.4;
 /// configured strength.
 pub const LENS_STRENGTH_FRACTION: f32 = 0.16;
 /// The cap for a lens glass pane that is not a nested cell (the bar's pill, a
-/// card): a 40 px pill bends its rim by up to 18 px, like the launcher card's
+/// card): a 40 px pill bends its rim by up to 16 px, like the launcher card's
 /// 28, not by the 6 px that [`LENS_STRENGTH_FRACTION`] left it (the bend is
 /// already scaled down with size by `glass::lens_scale`).
-pub const LENS_STRENGTH_FRACTION_PANE: f32 = 0.45;
+pub const LENS_STRENGTH_FRACTION_PANE: f32 = 0.4;
 
 /// The bevel band of a lens whose shorter side is `short` physical px:
 /// `bevel`, capped at [`LENS_BEVEL_FRACTION`] of `short`.
