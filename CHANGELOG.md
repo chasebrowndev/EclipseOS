@@ -16,6 +16,30 @@ update. The newest release is at the top. Older releases stay below it.
 
 ---
 
+## ASCENSIONISM, hotfix v0.4.1
+
+**Status:** released as v0.4.1. Date: 2026-11-22.
+
+### Fixed
+
+- **Text showing along the bar's edge.** The stronger lens bend on the bar pulled
+  sharp pixels from just outside it, so a terminal under the bar showed as a
+  coloured smear along its rim. The rim now samples the blurred backdrop where it
+  reaches outside the pane, so the bend and rim stay and the text does not. The
+  pane lens cap is 0.4 (about 16 px on a 40 px pill). (COMP-02 §9)
+- **Login screen on real hardware.** On one laptop the glass greeter showed black
+  controls and took no typing. The cause was not found. The compositor now resets
+  an output whose page flip never completes, the greeter opens a lone account on
+  its own so typing needs no click, and the journal records the first page flip,
+  keyboard focus and first key event (never their content).
+
+### Known issues
+
+- The glass greeter failure above was seen once and not reproduced. If it
+  happens again, `journalctl -b -t ec-abyss -t greeter` now says where it stopped.
+
+---
+
 ## ASCENSIONISM
 
 **Status:** released as v0.4.0. Date: 2026-11-21.
