@@ -1563,6 +1563,9 @@ fn on_vblank(
                     let interval = o.last_vblank.and_then(|prev| flipped.checked_sub(prev));
                     flip_sample = Some((queued.elapsed(), interval));
                 }
+                if o.last_vblank.is_none() {
+                    tracing::info!(output = %o.output.name(), "first page flip completed (frame reached the panel)");
+                }
                 o.last_vblank = Some(flipped);
                 o.frame_pending = false;
                 // The flip is done, so the secondary GPU has finished reading
@@ -1911,6 +1914,17 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
             }
         })
         .map_err(|err| anyhow!("inserting session source: {err}"))?;
+
+    // A page flip whose event never arrives leaves `frame_pending` set for
+    // good: nothing renders again and the screen keeps its last (at login, an
+    // empty black) frame. Observed symptom on a laptop panel: a black greeter
+    // that never repainted. Poll for it and recover the way a VT switch does.
+    handle
+        .insert_source(Timer::from_duration(FLIP_WATCH), |_, _, state| {
+            recover_stuck_flips(state);
+            TimeoutAction::ToDuration(FLIP_WATCH)
+        })
+        .map_err(|err| anyhow!("inserting flip watchdog: {err}"))?;
 
     handle
         .insert_source(udev, move |event, _, state| {
@@ -2569,6 +2583,7 @@ fn render_output(state: &mut AbyssState, index: usize) {
                         crtc = ?entry.compositor.crtc(),
                         crtc_w = mode.size().0,
                         crtc_h = mode.size().1,
+                        session_active = drm.session.is_active(),
                         "first commit on output: plane, crtc and mode (src/dst/fb not visible to the backend)"
                     );
                 }
@@ -3106,6 +3121,50 @@ pub fn set_gamma(state: &mut AbyssState, id: u64, r: &[u16], g: &[u16], b: &[u16
             tracing::warn!(?err, id, "setting gamma ramp");
             false
         }
+    }
+}
+
+/// How often the flip watchdog looks.
+const FLIP_WATCH: Duration = Duration::from_millis(500);
+/// A queued frame older than this has lost its page-flip event (a panel is
+/// never this slow: even 1 Hz refresh is a quarter of it).
+const FLIP_STUCK: Duration = Duration::from_secs(2);
+
+/// Clear an output whose queued frame never completed and ask for a redraw.
+fn recover_stuck_flips(state: &mut AbyssState) {
+    let mut any = false;
+    if let Some(drm) = state.drm.as_mut() {
+        if !drm.session.is_active() {
+            return;
+        }
+        for o in drm.outputs.iter_mut() {
+            let stuck = o.frame_pending && o.queued_at.is_some_and(|t| t.elapsed() > FLIP_STUCK);
+            if !stuck {
+                continue;
+            }
+            tracing::warn!(
+                output = %o.output.name(),
+                waited_ms = o.queued_at.map_or(0, |t| t.elapsed().as_millis() as u64),
+                "page flip never completed; resetting the output and redrawing"
+            );
+            if let Err(err) = o.compositor.reset_state() {
+                tracing::error!(?err, "resetting compositor state after a lost page flip");
+            }
+            o.frame_pending = false;
+            o.queued_at = None;
+            o.retry_armed = false;
+            o.needs_render = true;
+            o.last_vblank = None;
+            o.target_vblank = None;
+            if let Some(pass) = o.pass.as_mut() {
+                pass.force_full = true;
+                pass.held = None;
+            }
+            any = true;
+        }
+    }
+    if any {
+        render(state);
     }
 }
 

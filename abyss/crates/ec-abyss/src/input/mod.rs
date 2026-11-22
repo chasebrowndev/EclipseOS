@@ -158,6 +158,21 @@ impl AbyssState {
     /// A human key press or release. Split from `on_keyboard` so tests drive
     /// the real path.
     pub(crate) fn keyboard_key(&mut self, key_code: Keycode, key_state: KeyState, time: u32) {
+        // Kiosk (the login screen) debugging: once, whether a key reached the
+        // compositor and whether a client holds the keyboard. Never the key.
+        if self.kiosk {
+            static FIRST: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !FIRST.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                let focused = self
+                    .seat
+                    .get_keyboard()
+                    .is_some_and(|k| k.current_focus().is_some());
+                tracing::info!(
+                    client_has_keyboard_focus = focused,
+                    "kiosk: first key event (content not logged)"
+                );
+            }
+        }
         let mut fx = KeyEffects::default();
         self.keyboard_key_inner(key_code, key_state, time, &mut fx);
         // After the key itself went where it was going: the release that ends

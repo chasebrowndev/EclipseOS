@@ -385,6 +385,9 @@ pub fn focus_window_raising(state: &mut AbyssState, window: &Window, raise: bool
     };
     let keyboard = state.seat.get_keyboard().unwrap();
     keyboard.set_focus(state, Some(target), SERIAL_COUNTER.next_serial());
+    if state.kiosk {
+        tracing::info!("kiosk: keyboard focus given to the client window");
+    }
     arrange(state);
     let handle = state.ipc.handle_for(window);
     crate::audit::focus(state, Some(handle), "human");
