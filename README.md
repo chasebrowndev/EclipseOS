@@ -28,6 +28,8 @@
   </tr>
 </table>
 
+<p align="center"><sub>*For photography purposes, adaptive glass (optimized for readability) is turned off in these pictures. The actual default implementation is even more readable.*</sub></p>
+
 <p align="center">
   <img src="docs/screenshots/share-redaction.png" alt="A screen share with a password manager covered by police tape" width="70%"><br>
   <sub>What a screen share sees: the password manager is covered at the source.</sub>
