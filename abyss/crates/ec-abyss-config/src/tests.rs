@@ -1298,10 +1298,10 @@ fn adaptive_glass_defaults_parse_and_reject() {
         cfg.decoration.blur.adaptive,
         AdaptiveBlur {
             enabled: true,
-            strength: 0.5
+            strength: 0.3
         }
     );
-    assert_eq!(cfg.decoration.blur.adaptive.effective(), 0.5);
+    assert_eq!(cfg.decoration.blur.adaptive.effective(), 0.3);
     let cfg = blur_cfg("decoration { blur { adaptive { enabled #false; strength 0.8 } } }\n");
     assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
     assert_eq!(cfg.decoration.blur.adaptive.strength, 0.8);

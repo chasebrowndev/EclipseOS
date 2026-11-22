@@ -31,7 +31,7 @@ the CPU, nothing is sent to a client, and no new protocol exists, so the capture
 is not touched. In a dark scheme a bright backdrop darkens the glass; in a light scheme a
 dark backdrop lightens it. A backdrop that already contrasts leaves the tint as
 configured. It is on by default:
-`decoration { blur { adaptive { enabled #true; strength 0.5 } } }`, live on hot reload
+`decoration { blur { adaptive { enabled #true; strength 0.3 } } }`, live on hot reload
 and in Settings. `strength` (0.0..=1.0) scales how far the tint may move; 0 is the fixed
 tint.
 

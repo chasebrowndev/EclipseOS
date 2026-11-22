@@ -28,6 +28,8 @@
   </tr>
 </table>
 
+<p align="center"><sub>*Para fotografiar, el vidrio adaptativo (optimizado para la legibilidad) está desactivado en estas imágenes. La implementación predeterminada real es aún más legible.*</sub></p>
+
 <p align="center">
   <img src="docs/screenshots/share-redaction.png" alt="Una pantalla compartida con un administrador de contraseñas cubierto con cinta policial" width="70%"><br>
   <sub>Lo que ve una pantalla compartida: el administrador de contraseñas queda cubierto en el origen.</sub>

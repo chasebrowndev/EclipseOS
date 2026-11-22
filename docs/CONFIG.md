@@ -200,7 +200,7 @@ The compositor draws the wallpaper itself (ADR 0104): one picture per output, de
 | `decoration.blur.glass.lens.bevel` | int 1..128 | `40` | live | `glass` lens: widest the bevel band may be, logical px in from the edge; a small shape takes at most 40% of its shorter side. |
 | `decoration.blur.glass.lens.dispersion` | float 0..1 | `0.7` | live | `glass` lens: colour fringing across the bevel, following the local bend; 0 is none. |
 | `decoration.blur.adaptive.enabled` | bool | `#true` | live | Adaptive glass (ADR 0092): the backdrop's tint follows the brightness of what is behind it, so text stays readable. In a dark scheme a bright backdrop darkens the glass; in a light scheme a dark one lightens it. Measured on the GPU; nothing is read back. |
-| `decoration.blur.adaptive.strength` | float 0..1 | `0.5` | live | How far adaptive glass may move the tint; 0 keeps the fixed tint. |
+| `decoration.blur.adaptive.strength` | float 0..1 | `0.3` | live | How far adaptive glass may move the tint; 0 keeps the fixed tint. |
 | `decoration.blur.frost.tint` | colour `#rrggbb[aa]` | `#1a171266` | live | `frost`: colour mixed over the blurred backdrop; its alpha is how much. |
 | `decoration.surface.tint` | float 0..1 | `0.7` | live | Window tint opacity over the glass. sRGB-intent; clients convert. |
 | `decoration.surface.card-fill` | float 0..0.3 | `0.035` | live | Alpha of a hairline card's white fill. sRGB-intent; clients convert. |

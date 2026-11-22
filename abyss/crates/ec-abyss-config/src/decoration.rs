@@ -129,7 +129,7 @@ impl Default for Blur {
     }
 }
 
-/// `blur { adaptive { enabled #true; strength 0.5 } }` (ADR 0092): the glass
+/// `blur { adaptive { enabled #true; strength 0.3 } }` (ADR 0092): the glass
 /// tint follows the blurred backdrop's brightness.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AdaptiveBlur {
@@ -142,7 +142,7 @@ impl Default for AdaptiveBlur {
     fn default() -> Self {
         Self {
             enabled: true,
-            strength: 0.5,
+            strength: 0.3,
         }
     }
 }

@@ -1262,7 +1262,7 @@ Crates: `apoth-ui` (AGPL-3.0-only; GPU-free, emits a draw list) and the glass pi
   settled one requests none (T-07 idle rule).
 
 ## 3. Glass pipeline
-- Window background: `window.opacity` `auto|<0..1>` (default `auto`: 0.82 while a blur
+- Window background: `window.opacity` `auto|<0..1>` (default `auto`: 0.55 while a blur
   capability is present, else 1.0; re-evaluated when the capability changes) applies to
   default-background cells; `window.alpha-mode`
   `default|matching|all` decides whether explicitly coloured cells are also translucent.
