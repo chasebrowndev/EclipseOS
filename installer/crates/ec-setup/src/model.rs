@@ -1284,6 +1284,7 @@ impl Model {
             return;
         }
         let plan = Plan {
+            confirm_disk: self.confirm.clone(),
             disk_by_id: disk,
             hostname: self.hostname.clone(),
             username: self.username.clone(),

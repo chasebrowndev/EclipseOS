@@ -106,6 +106,18 @@ fn parse_reply(buf: &[u8]) -> Result<bool> {
     }
 }
 
+/// The human typed the disk's whole name on Review and `apply` has already
+/// checked it against the disk (D-07 §4.2); that is the consent, so there is no
+/// second prompt. Owner decision, 2026-11-21: the compositor prompt was one
+/// confirmation too many on the install path.
+pub struct TypedConfirm;
+
+impl Confirm for TypedConfirm {
+    fn confirm_erase(&self, _disk: &Disk) -> Result<bool> {
+        Ok(true)
+    }
+}
+
 /// Never allows.
 pub struct DenyConfirm;
 

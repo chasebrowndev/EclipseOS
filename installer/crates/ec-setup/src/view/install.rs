@@ -22,7 +22,7 @@ pub fn stage_label(s: Stage) -> &'static str {
     match s {
         Stage::Validate => "Checking the request",
         Stage::Preflight => "Checking the machine",
-        Stage::Confirm => "Confirming on the trusted screen",
+        Stage::Confirm => "Checking the disk name",
         Stage::Partition => "Partitioning the disk",
         Stage::Pacstrap => "Installing the system",
         Stage::Configure => "Configuring the system",
@@ -114,7 +114,7 @@ pub fn body(m: &Model) -> Body<'_> {
         _ => {
             let pct = f32::from(ins.pct);
             let caption = if stage == Some(Stage::Confirm) {
-                "Confirm on the trusted screen. Nothing has been written to the disk yet.".to_owned()
+                "Nothing has been written to the disk yet.".to_owned()
             } else if ins.note.is_empty() {
                 at.clone()
             } else {

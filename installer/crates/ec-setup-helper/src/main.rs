@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 use ec_setup_helper::cli;
-use ec_setup_helper::confirm::{Confirm, DenyConfirm, SocketConfirm};
+use ec_setup_helper::confirm::{Confirm, TypedConfirm};
 use ec_setup_helper::env::{Env, Paths};
 use ec_setup_helper::runner::SysRunner;
 use rustix::fs::Mode;
@@ -23,15 +23,7 @@ fn main() -> ExitCode {
     // The calling user, from pkexec. A hint that says only where the
     // compositor's socket is and who must own it; the peer check is the trust.
     let caller_uid_hint = std::env::var("PKEXEC_UID").ok();
-    // No caller uid, no compositor to ask: deny (D-07 §6).
-    let socket_confirm = caller_uid_hint
-        .as_deref()
-        .and_then(|u| u.parse::<u32>().ok())
-        .map(SocketConfirm::for_caller);
-    let confirm: &dyn Confirm = match &socket_confirm {
-        Some(c) => c,
-        None => &DenyConfirm,
-    };
+    let confirm: &dyn Confirm = &TypedConfirm;
     let env = Env {
         paths: Paths::system(),
         euid: geteuid().as_raw(),

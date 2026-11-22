@@ -263,6 +263,7 @@ pub fn req() -> ec_setup_plan::Request {
     Request {
         plan: Plan {
             disk_by_id: "nvme-Some_NVMe_1".into(),
+            confirm_disk: "nvme-Some_NVMe_1".into(),
             hostname: "eclipse".into(),
             username: "chase".into(),
             locale: "en_US.UTF-8".into(),

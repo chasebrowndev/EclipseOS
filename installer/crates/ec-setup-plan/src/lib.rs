@@ -42,6 +42,11 @@ impl Profile {
 pub struct Plan {
     /// A `/dev/disk/by-id` name from the helper's own listing, never a free path.
     pub disk_by_id: String,
+    /// The disk's name as the human typed it on Review (D-07 §4.2). The helper
+    /// refuses to erase unless it equals `disk_by_id`; absent on the wire means
+    /// not typed.
+    #[serde(default)]
+    pub confirm_disk: String,
     pub hostname: String,
     pub username: String,
     /// e.g. `en_US.UTF-8`, from the locale list.
@@ -343,6 +348,7 @@ mod tests {
     fn plan_json_carries_no_password_and_roundtrips() {
         let plan = Plan {
             disk_by_id: "nvme-x".into(),
+            confirm_disk: "nvme-x".into(),
             hostname: "h".into(),
             username: "u".into(),
             locale: "en_US.UTF-8".into(),
