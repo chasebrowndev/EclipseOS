@@ -1016,7 +1016,8 @@ void main() {
     if (t < 1.0) {
         float u = 1.0 - max(t, 0.0);
         lens_u = u;
-        vec2 b = grad * px_uv * (strength * u * u * sqrt(u));
+        float bend = strength * u * u * sqrt(u);
+        vec2 b = grad * px_uv * bend;
         float k = dispersion;
         if (dual_tex > 0.5) {
             vec3 sh = vec3(sharp_at(v_coords + b * (1.0 - k)).r,
@@ -1027,7 +1028,7 @@ void main() {
             // text of whatever lies beside the pane: show the plateau's blur
             // there instead, so the rim keeps its colour and bend but never
             // legible content. One extra tap, only for those fragments.
-            float out_w = smoothstep(-OUT_BLUR_IN, OUT_BLUR_OUT, d + strength * u * u * sqrt(u));
+            float out_w = smoothstep(-OUT_BLUR_IN, OUT_BLUR_OUT, d + bend);
             if (out_w > 0.0) {
                 sh = mix(sh, blurred_at(v_coords + b).rgb, out_w);
             }
@@ -1102,6 +1103,18 @@ void main() {
         // sublinearly with size, its strength falls sublinearly, and neither has
         // a threshold. Small controls (about 40 px) keep the original look.
         float s_eff = 2.0 * win_rect.z * win_rect.w / max(win_rect.z + win_rect.w, 1.0);
+#ifdef SHAPED
+        // A joined shape reads by its smallest box, not its bounding box: a
+        // drawer opening under a bar must not change how wide the bar's own edge is.
+        s_eff = min(s_eff, 2.0 * box0.z * box0.w / max(box0.z + box0.w, 1.0));
+        s_eff = min(s_eff, 2.0 * box1.z * box1.w / max(box1.z + box1.w, 1.0));
+        if (boxes > 2.5) {
+            s_eff = min(s_eff, 2.0 * box2.z * box2.w / max(box2.z + box2.w, 1.0));
+        }
+        if (boxes > 3.5) {
+            s_eff = min(s_eff, 2.0 * box3.z * box3.w / max(box3.z + box3.w, 1.0));
+        }
+#endif
         float sref = shade_ref > 0.0 ? shade_ref : SHADE_REF;
         float xs = max(s_eff / sref, 0.05);
         float sw = max(min(band_w, max(SHADE_BASE * sref * pow(xs, SHADE_P), SHADE_MIN * sref / SHADE_REF)), 1.0);
