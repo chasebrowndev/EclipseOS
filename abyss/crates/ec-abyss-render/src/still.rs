@@ -78,7 +78,7 @@ pub struct Frame<'a> {
     config: &'a Config,
     output_geo: Rectangle<i32, Logical>,
     scale: Scale<f64>,
-    rounding: Option<((i32, bool), smithay::backend::renderer::gles::GlesTexProgram)>,
+    rounding: Option<(effects::FbMap, smithay::backend::renderer::gles::GlesTexProgram)>,
     shadow: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
     glow: Option<smithay::backend::renderer::gles::GlesPixelProgram>,
     /// This output's painted-border frame; `None` when `border-size` is off.
@@ -114,17 +114,14 @@ impl Still {
         } else {
             store.dims.clear();
         }
-        let fb_height = effects::fb_y_mirrored(output.current_transform())
-            .zip(output.current_mode())
-            .filter(|_| deco.rounding > 0)
-            .map(|(mirrored, mode)| (mode.size.h, mirrored));
-        if fb_height.is_some() && store.gpu.rounded.is_none() {
+        let fb_map = effects::output_fb_map(output).filter(|_| deco.rounding > 0);
+        if fb_map.is_some() && store.gpu.rounded.is_none() {
             match effects::compile_rounded(renderer) {
                 Ok(program) => store.gpu.rounded = Some(program),
                 Err(err) => tracing::warn!(?err, "compiling the rounded-corner shader; capture unrounded"),
             }
         }
-        let rounding = fb_height.zip(store.gpu.rounded.clone());
+        let rounding = fb_map.zip(store.gpu.rounded.clone());
         let scale = Scale::from(output.current_scale().fractional_scale());
         let border = border_frame(renderer, store, output_geo.loc, scale, output, config, windows);
         let shadow = shadow_program(renderer, store, output, config, windows);
@@ -268,7 +265,7 @@ impl Frame<'_> {
         let strip_def = userdata::strip_of(window).filter(|_| !rolled && window.toplevel().is_some());
         let keyed = match strip_def.as_ref().and_then(|s| s.keyed().copied()) {
             Some(keys) => crate::keyed_target(renderer, self.store, self.output)
-                .map(|(program, h, mirrored)| (program, h, mirrored, keys)),
+                .map(|(program, fb)| (program, fb, keys)),
             None => None,
         };
         let strip_def = strip_def.filter(|s| s.keyed().is_none() || keyed.is_some());
@@ -468,7 +465,7 @@ impl Frame<'_> {
             keyed.is_some(),
             strip.is_some(),
             fills_area(window),
-            effects::fb_y_mirrored(self.output.current_transform()).is_some(),
+            effects::pane_fb_map(self.output).is_some(),
         );
         let pane = takes_panes
             .then(|| WaylandFocus::wl_surface(window))
@@ -513,13 +510,13 @@ impl Frame<'_> {
                 }
             }
         };
-        if let Some((program, fb_h, mirrored, keys)) = &keyed {
+        if let Some((program, fb, keys)) = &keyed {
             for (n, prect, pradius, els) in popup_groups.drain(..) {
                 push_keyed(
                     out,
                     program,
                     els,
-                    effects::keyed_uniforms(None, None, *fb_h, *mirrored, keys),
+                    effects::keyed_uniforms(None, None, *fb, keys),
                     None,
                 );
                 if mode != BlurMode::Off {
@@ -573,7 +570,7 @@ impl Frame<'_> {
             _ => vec![(surfaces, None)],
         };
         for (surfaces, crop) in bands {
-            if let Some((program, fb_h, mirrored, keys)) = &keyed {
+            if let Some((program, fb, keys)) = &keyed {
                 let radius = deco.rounding as f64 * scale.x.max(scale.y);
                 let mask = self.rounding.as_ref().map(|_| (frame_rect, radius as f32));
                 let region = key_region;
@@ -581,16 +578,15 @@ impl Frame<'_> {
                     out,
                     program,
                     surfaces,
-                    effects::keyed_uniforms(mask, region, *fb_h, *mirrored, keys),
+                    effects::keyed_uniforms(mask, region, *fb, keys),
                     crop,
                 );
                 continue;
             }
             match (&self.rounding, crop) {
-                (Some(((fb_height, mirrored), program)), crop) => {
+                (Some((fb, program)), crop) => {
                     let radius = deco.rounding as f64 * scale.x.max(scale.y);
-                    let uniforms =
-                        effects::rounding_uniforms(frame_rect, *fb_height, *mirrored, radius as f32);
+                    let uniforms = effects::rounding_uniforms(frame_rect, *fb, radius as f32);
                     let round = |s| effects::RoundedElement::new(s, program.clone(), uniforms.clone());
                     match crop {
                         Some(crop) => out.extend(
@@ -722,11 +718,10 @@ impl Frame<'_> {
         // glass under each pane and none under the whole surface, as the live
         // path draws it. Glass mode only, on an output the glass program can
         // draw to.
-        let panes = (mode == BlurMode::Glass
-            && effects::fb_y_mirrored(self.output.current_transform()).is_some())
-        .then(|| committed_panes(surface.wl_surface()))
-        .flatten()
-        .filter(|_| ensure_glass(renderer, self.store));
+        let panes = (mode == BlurMode::Glass && effects::pane_fb_map(self.output).is_some())
+            .then(|| committed_panes(surface.wl_surface()))
+            .flatten()
+            .filter(|_| ensure_glass(renderer, self.store));
         if let Some(set) = panes {
             let els = cropped(els, scale, crop);
             // Directly below the surface's own elements.

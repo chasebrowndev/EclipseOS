@@ -237,7 +237,7 @@ where
     let union = union?;
     // A rotated output keeps the unmasked backdrop in every mode: a prompt
     // does not draw glass there.
-    let mirrored = effects::fb_y_mirrored(output.current_transform())?;
+    let fb_map = effects::output_fb_map(output)?;
     let upscale = scale.x.max(scale.y);
     let short = (0..count)
         .map(|i| all(i).rect.size.w.min(all(i).rect.size.h))
@@ -273,6 +273,7 @@ where
     blurs.pane_elements(
         renderer,
         output,
+        fb_map,
         &BlurKey::Prompt,
         union,
         behind,
@@ -289,8 +290,7 @@ where
                 uniforms,
                 effects::GlassPreset::Lens,
                 m.rect,
-                mode.size.h,
-                mirrored,
+                fb_map,
                 radius,
                 (fb.w, fb.h),
                 look.strength,
