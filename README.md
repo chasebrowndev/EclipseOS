@@ -9,6 +9,9 @@
   <img src="https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/chasebrowndev/b620b1bbc4d3ba91ccc0385a3cdfe6f9/raw/unique-clones.json" alt="unique clones">
 </p>
 
+<p align="center">
+  <a href="https://github.com/chasebrowndev/EclipseOS/releases/latest"><b>Download the latest ISO</b></a> &nbsp;·&nbsp; <a href="#install">Install guide</a> &nbsp;·&nbsp; <a href="CHANGELOG.md">Patch notes</a>
+</p>
 
 > Hello, and welcome, to EclipseOS.  
 > My gift to the world, my labor of love.  
@@ -128,7 +131,11 @@ The agent stack ships separately, as the optional `eclipseos-agents` package, an
 
 **You will need:** a 64-bit UEFI PC, a USB stick (the ISO is a few GB), and an internet connection during install. Turn Secure Boot off; it isn't supported yet. The installer erases the disk you pick, so back up first.
 
-1. **Get the ISO.** Prebuilt ISOs are not published yet. Build one with [D-03](docs/design/D-03-installation-media.md) and [BUILDING.md](docs/BUILDING.md). When they are published, they will be on the [Releases page](https://github.com/chasebrowndev/EclipseOS/releases) as `eclipseos-YYYY.MM.DD-x86_64.iso`, with a `.sig` and a sha256 to check (`sha256sum -c eclipseos-*.iso.sha256`).
+1. **Get the ISO.** Download `eclipseos-YYYY.MM.DD-x86_64.iso` and `SHA256SUMS` from the [latest release](https://github.com/chasebrowndev/EclipseOS/releases/latest) (under *Assets*; the ISO is about 2 GB). Check it before you write it:
+   ```
+   sha256sum -c --ignore-missing SHA256SUMS
+   ```
+   It should print `eclipseos-…iso: OK`. Prefer to build your own? See [D-03](docs/design/D-03-installation-media.md) and [BUILDING.md](docs/BUILDING.md).
 2. **Write it to a USB stick.** Replace `/dev/sdX` with your stick (check with `lsblk`). Everything on it is erased:
    ```
    sudo dd if=eclipseos-*.iso of=/dev/sdX bs=4M status=progress oflag=sync
