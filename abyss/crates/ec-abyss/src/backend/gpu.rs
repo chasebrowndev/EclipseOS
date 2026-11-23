@@ -355,6 +355,19 @@ pub fn is_packed_argb8888(w: i32, h: i32, len: usize) -> bool {
     w > 0 && h > 0 && len == w as usize * h as usize * 4
 }
 
+/// Damage the output's tracker reports is in the unrotated render space; the
+/// `CpuCopy` transfer buffer holds the frame already rotated, so a rectangle
+/// must be moved into it before the secondary copies it. `buffer` is the
+/// transfer buffer's size (the mode size).
+pub fn damage_to_buffer(
+    rect: smithay::utils::Rectangle<i32, smithay::utils::Physical>,
+    output: smithay::utils::Transform,
+    buffer: smithay::utils::Size<i32, smithay::utils::Physical>,
+) -> smithay::utils::Rectangle<i32, smithay::utils::Physical> {
+    let render = output.invert();
+    render.transform_rect_in(rect, &render.transform_size(buffer))
+}
+
 /// Formats every set contains, in the order of the first set. Empty when there
 /// are no sets.
 pub fn common_formats(sets: &[&[Format]]) -> Vec<Format> {
@@ -1098,5 +1111,30 @@ mod tests {
         assert_eq!(parse_dbdf("0000:01:00.0"), Some((0, 1, 0, 0)));
         assert_eq!(parse_dbdf("10a0:ff:1f.7"), Some((0x10a0, 0xff, 0x1f, 7)));
         assert_eq!(parse_dbdf("vkms"), None);
+    }
+
+    #[test]
+    fn damage_follows_the_output_rotation_into_the_buffer() {
+        use smithay::utils::{Rectangle, Size, Transform};
+        let buffer: Size<i32, smithay::utils::Physical> = (1920, 1080).into();
+        let bounds = Rectangle::from_size(buffer);
+        // Unrotated: the rectangle is already in buffer coordinates.
+        let r = Rectangle::new((10, 20).into(), (30, 40).into());
+        assert_eq!(damage_to_buffer(r, Transform::Normal, buffer), r);
+        // A rotated output renders a portrait space, 1080 wide and 1920 high.
+        // The whole of it must land on the whole buffer, not on its left 1080
+        // columns, which is what treating it as buffer coordinates did.
+        for t in [Transform::_90, Transform::_270] {
+            let whole = Rectangle::new((0, 0).into(), (1080, 1920).into());
+            assert_eq!(damage_to_buffer(whole, t, buffer), bounds, "{t:?}");
+            // Any rectangle stays inside the buffer and keeps its area.
+            let part = Rectangle::new((100, 1500).into(), (200, 300).into());
+            let moved = damage_to_buffer(part, t, buffer);
+            assert!(bounds.contains_rect(moved), "{t:?} {moved:?}");
+            assert_eq!(moved.size.w * moved.size.h, 200 * 300, "{t:?}");
+            assert_eq!((moved.size.w, moved.size.h), (300, 200), "{t:?}");
+        }
+        let whole = Rectangle::new((0, 0).into(), (1920, 1080).into());
+        assert_eq!(damage_to_buffer(whole, Transform::_180, buffer), bounds);
     }
 }

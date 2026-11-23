@@ -694,6 +694,107 @@ lets us see whether Zoom responds. Holding presentation until the counter catche
 is the part that would matter, and is not done. The spec has no section for it;
 the protocol is EWMH.
 
+# Hybrid GPU and rotated outputs on alayna-laptop-2, 2026-11-22
+
+## GPU-01 — a secondary output showed the top row repeated (fixed)
+
+**Seen:** the NVIDIA-driven HDMI output (`CpuCopy` route) showed vertical stripes:
+every scanline was a copy of row 0. Reproduced on Mesa (Intel as the secondary,
+NVIDIA primary) as well as NVIDIA, on driver 615.78 and 620.73.
+
+**Cause:** `render_secondary` uploaded the primary's read-back with
+`import_memory(.., flipped)`, `flipped` being `mapping.flipped()` (`true`). GLES draws
+a y-inverted `import_memory` texture as one repeated row, on any renderer. Sampling
+nine rows per stage showed the read-back and the uploaded texture intact and the
+secondary's scanout buffer collapsed; a control drawing the same bytes unflagged was
+correct, and the flagged texture collapsed on the primary renderer too. The pass renders
+into the dmabuf top-down, so the read-back is already upright.
+
+**Fix:** upload with `false`. `backend/drm.rs`, `render_secondary`.
+
+## GPU-02 — a rotated secondary output showed half a frame and flickered (fixed)
+
+**Seen:** with the HDMI output at `transform "90"`, the wallpaper covered only the
+first 1080 rows of the 1920-row portrait view, the rest was the clear colour, and
+the picture flickered between two buffers.
+
+**Cause:** the damage tracker reports damage in the unrotated render space (1080x1920
+for a 1080p panel at 90 degrees); the transfer buffer holds the rotated frame
+(1920x1080). `render_secondary` used the rectangles as buffer coordinates, so the
+secondary refreshed the wrong region.
+
+**Fix:** `gpu::damage_to_buffer` moves each rectangle through the output's render
+transform. Unit-tested for bounds, area and the swap of width and height; the rotation
+direction was confirmed on the laptop only.
+
+## GPU-03 — `ImportScanout` is refused on this NVIDIA plane (open)
+
+Every format fails the import compositor's test commit with `EINVAL`
+(`Mode-setting failed with buffer format .. modifier: Invalid`) on card1 at boot,
+so the route falls back to `CpuCopy` on every boot. The imported buffer is
+exported with an implicit modifier; the plane declares explicit block-linear
+modifiers and LINEAR. Not tried: exporting the Intel buffer with an explicit LINEAR
+modifier. KWin avoids importing NVIDIA-allocated buffers into other vendors for a
+driver hang; ours has no vendor check.
+
+## GPU-04 — `secondary-compositing` (the `Own` route) showed stripes too (open, unmeasured)
+
+With `#true` the HDMI output was on `own-gpu` and still looked striped. The row probes
+were only wired to `CpuCopy`, so whether GPU-01 also explains it is unknown.
+
+## GPU-05 — login handoff (open)
+
+Twice after a greeter session ended: (a) abyss got `EACCES` on every atomic test
+because the greeter held DRM master for a few milliseconds longer (`Unable to become
+drm master` is logged on good boots too and means nothing); abyss never retries
+and stays on a 1024x768 fallback; (b) on 620.73 the HDMI connector reported no modes
+(`connector skipped by scan`) after the greeter exited, until a reboot. The greeter's
+exit also logs `Failed to restore previous state: Invalid argument`. Seen once each.
+
+## GPU-06 — rotated outputs lose glass (panes fixed in 0.4.2; windows by design)
+
+**Was:** `effects::fb_y_mirrored` was `Some` only for `Normal` and `Flipped180`, so
+`insert_panes` drew nothing and the bar lost its glass on a 90 or 270 output. Two defects
+hid the result once a mapping existed: the glass program declared `gl_to_phys`, a reserved
+GLSL name, so it never compiled; and `blur::rebuild` looked its chain up by the pre-rotation
+crop size while it was stored under the rotated texture size, so the lookup failed silently.
+
+**Now:** `effects::pane_fb_map` maps render space to framebuffer space for all eight
+transforms and panes draw on every output. Windows, bezel, rings and rounding keep the old
+gate, so a rotated window keeps its painted border (C-15) and the trusted prompt still draws
+no glass there. A pane on a rotated output blurs the wallpaper only, so its tint differs
+from a normal output's, where it also blurs the window glass behind it.
+
+**Verified:** headless pixel checks at normal, 90, 180 and 270 (normal output identical to
+before; the pane covers the same area on 90 and 270). Not watched on a real rotated monitor.
+
+## DRAG-01 — dragging a window across displays was not live (fixed in 0.4.2)
+
+**Was:** ownership of a dragged window (output and workspace) changed only on release,
+and drawing was gated on ownership, so the window was cut at the seam and vanished once
+fully across. Radiant (tiled) drags could not leave the source output; drop guides and the
+home ghost drew only on the source output; `de` edge-tile committed on the owner's output,
+not the pointer's; `de` snapping used only the source output's area; a DPMS-off output could
+be a drop target; output focus moved mid-drag while keyboard focus was frozen.
+
+**Now:** one overlap rule decides which outputs draw a window (a window across a seam draws
+on both, each cut to its own rectangle); the owner cell is gone, and a floating window takes
+its scale and transform from the output under its centre. `TileDrag` carries a drop target
+per powered output, built once at drag start; over another Radiant output the guides, the
+ghost and the drop use that output's tree, and elsewhere the window floats there. `de`
+edge-tile moves the window to the preview's output first; snapping uses the output under
+the frame centre; powered-off outputs are never targets, including one powered off mid-drag;
+output focus follows the pointer again when the drag ends or is cancelled.
+
+**Verified by test only** (synthetic two-output harness, one of them a 1080x1920 portrait at
+x=3840): landing, tiled landing, edge-tile, snap, powered-off. Not seen on a real
+multi-output screen, and the headless backend has one output. Snapping by the output under
+the frame centre is an implementation choice the spec text does not cover.
+
+**Still open:** `select.rs` and `annotation.rs` use the unrotated mode size on a portrait
+output; screencopy sizes use the physical mode size; each `CpuCopy` output does a full
+read-back per frame and every output is dirtied per pointer motion.
+
 ## SEC-01: the input-method global admits any client
 
 `state.rs` creates `InputMethodManagerState` with the filter `|_| true`, so any

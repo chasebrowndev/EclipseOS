@@ -33,7 +33,7 @@ use ec_ui::widget::{
     NumericSlider, Toggle, Well,
 };
 
-use crate::app::{App, Message};
+use crate::app::{App, Message, Undoable};
 use crate::bar_preview::{self as bp, Cell, Knobs, Mode, Solved};
 use crate::conn::Problem;
 use crate::editor::{Editor, Field, Kind, Slot, SOURCES};
@@ -981,7 +981,7 @@ fn land(app: &mut App, edits: Vec<(String, Value)>, note: String) -> bool {
     match app.write_batch(&edits) {
         Ok(()) => {
             app.bar.said = Some(note.clone());
-            app.undo.push(note, restore);
+            app.undo.push(note, Undoable::Bar(restore));
             true
         }
         Err(p) => {
@@ -999,11 +999,22 @@ fn undo(app: &mut App) {
         app.undo.say("Nothing to undo");
         return;
     };
-    match app.write_batch(&e.restore.edits) {
+    let restore = match e.restore {
+        Undoable::Bar(r) => r,
+        Undoable::Wall(r) => {
+            let said = match crate::wallpaper::undo(app, &e.note, r) {
+                Ok(note) => note,
+                Err(p) => format!("Could not undo: {}", p.headline()),
+            };
+            app.undo.say(said);
+            return;
+        }
+    };
+    match app.write_batch(&restore.edits) {
         Ok(()) => {
             app.bar.lift = None;
-            app.bar.selected = e.restore.select;
-            app.tray_sel = e.restore.tray;
+            app.bar.selected = restore.select;
+            app.tray_sel = restore.tray;
             let note = format!("Undone: {}", e.note);
             app.bar.said = Some(note.clone());
             app.undo.say(note);
@@ -1318,11 +1329,11 @@ pub fn preview_env(app: &mut App) {
     if let Some(note) = var("SETTINGS_PREVIEW_TOAST") {
         app.undo.push(
             note.clone(),
-            Restore {
+            Undoable::Bar(Restore {
                 edits: Vec::new(),
                 select: None,
                 tray: None,
-            },
+            }),
         );
         app.bar.said = Some(note);
     }

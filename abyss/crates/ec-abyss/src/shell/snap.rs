@@ -8,11 +8,12 @@
 //! same. Frames are the outer rectangles (`Floating::rect`: titlebar, content
 //! and border), so two snapped windows touch exactly.
 //!
-//! **Who counts.** Only floating windows on the dragged window's own output
-//! and its active workspace, so a minimized window (not in the layout at all),
-//! a window on another workspace and a window that is rolled up to its bar
-//! (its content is not there to line up with) are ignored, as are fullscreen
-//! windows. **Never off the area.** A snap that would leave the frame further
+//! **Which output.** The output under the frame's centre, so a window dragged
+//! across a seam snaps to the output it is over, not to the one it left. Only
+//! floating windows on that output's active workspace count, so a minimized
+//! window (not in the layout at all), a window on another workspace and a
+//! window that is rolled up to its bar (its content is not there to line up
+//! with) are ignored, as are fullscreen windows. **Never off the area.** A snap that would leave the frame further
 //! outside the usable area than it already was is refused.
 //!
 //! **Shift** held at the time of the motion disables snapping for that motion
@@ -169,19 +170,32 @@ pub fn snap_content(
     }
     let border = state.config.general.border_size;
     let bar = titlebar::bar_height(state, window);
-    // The window's output, and its active workspace's floating windows.
-    let Some(entry) = state.outputs.iter().find(|e| {
+    // The window must be floating on its own output's active workspace.
+    let Some(source) = state.outputs.iter().find(|e| {
         e.workspaces
             .iter()
             .any(|ws| ws.floating.iter().any(|f| &f.window == window))
     }) else {
         return content;
     };
-    let ws = &entry.workspaces[entry.active];
-    if !ws.floating.iter().any(|f| &f.window == window) {
+    if !source.workspaces[source.active]
+        .floating
+        .iter()
+        .any(|f| &f.window == window)
+    {
         return content;
     }
     let frame = titlebar::outer_of_content(content, border, bar);
+    // The output under the frame's centre (the window's own when it is on none)
+    // supplies the usable area and the windows to line up with.
+    let centre = Point::from((frame.loc.x + frame.size.w / 2, frame.loc.y + frame.size.h / 2)).to_f64();
+    let entry = state
+        .space
+        .output_under(centre)
+        .next()
+        .and_then(|o| state.outputs.by_output(o))
+        .unwrap_or(source);
+    let ws = &entry.workspaces[entry.active];
     let usable = usable_area(state, &entry.output);
     let others = ws
         .floating

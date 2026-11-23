@@ -109,6 +109,10 @@ pub struct Conn {
     /// event resolved by the compositor, so the Animations page never
     /// expands the live preset itself. `Null` until a reply carries one.
     pub animations: Value,
+    /// `get_config.collections` from the last [`Conn::load_schema`]: the
+    /// wallpaper overrides and the widget blocks, as the compositor lists
+    /// them. `Null` until a reply carries it.
+    pub collections: Value,
 }
 
 impl Default for Conn {
@@ -123,6 +127,7 @@ impl Conn {
             client: None,
             problem: None,
             animations: Value::Null,
+            collections: Value::Null,
         };
         conn.reconnect();
         conn
@@ -200,6 +205,7 @@ impl Conn {
     pub fn load_schema(&mut self) -> Result<Vec<crate::schema::Row>, Problem> {
         let reply = self.call("get_config", json!({ "schema": true }))?;
         self.animations = reply.get("animations").cloned().unwrap_or(Value::Null);
+        self.collections = reply.get("collections").cloned().unwrap_or(Value::Null);
         Ok(crate::schema::parse_keys(&reply))
     }
 

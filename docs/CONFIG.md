@@ -547,7 +547,7 @@ Per-device pointer settings, written inside `input { }`: `device "<name>" { acce
 
 ### `wallpaper.output`
 
-A per-output wallpaper override, written inside `wallpaper { }`: `output "<name>" { path "…"; mode "fit"; color "#rrggbb"; }`, any subset of the three keys, each validated as its `wallpaper.*` key is; a key left out inherits the global one. `<name>` is the connector name (`DP-1`). A later block for the same name overrides an earlier one key by key. KDL-only: not settable over the socket. `get_config` lists them, in file order, under `collections."wallpaper.output"` as `{"output", "path": string | null, "mode": string | null, "color": "#rrggbbaa" | null}`, every field always present; `null` means inherited.
+A per-output wallpaper override, written inside `wallpaper { }`: `output "<name>" { path "…"; mode "fit"; color "#rrggbb"; }`, any subset of the three keys, each validated as its `wallpaper.*` key is; a key left out inherits the global one. `<name>` is the connector name (`DP-1`). A later block for the same name overrides an earlier one key by key. Settable over the socket: `set_config_collection` with `collection` `"wallpaper.output"`, `op` `"upsert"` (an `entry` of any subset of `path`, `mode`, `color`; a key absent or `null` inherits) or `"remove"`; `upsert` replaces the whole block and `remove` deletes every block of that name. `get_config` lists them, in file order, under `collections."wallpaper.output"` as `{"output", "path": string | null, "mode": string | null, "color": "#rrggbbaa" | null}`, every field always present; `null` means inherited.
 
 ## `policy.kdl`
 

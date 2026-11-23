@@ -586,11 +586,13 @@ fixed by editing either side.
    it second, on two independent criteria (no render node, no PCI parent).
    `vkms` cannot be unloaded while a session is running — logind and the
    running compositor both hold the card open — so it stays resident until the
-   next logout; nothing autoloads it. **Still unverified on real multi-GPU
-   hardware.** That is COMP-01 §11's test plan. ADR 0084's per-GPU compositing
-   is the same: it is built and unit-tested, but has not been run. The
-   reference hybrid box is an Acer laptop (Intel Raptor Lake eDP + RTX 4050
-   Mobile HDMI). It gets checked once EclipseOS is imaged onto it.
+   next logout; nothing autoloads it. **First run on real multi-GPU hardware
+   (2026-11-22, alayna-laptop-2: Intel Raptor Lake eDP + DP, RTX 4050 Mobile
+   HDMI, nvidia-open 615.78 and 620.73):** the ranking, primary choice and
+   the `CpuCopy` route work; `ImportScanout` is refused on this NVIDIA plane
+   (see GPU-03 in KNOWNBUGS.md) and the `Own` route (`secondary-compositing`)
+   was not measured. The run found two `CpuCopy` bugs, both fixed (GPU-01,
+   GPU-02). COMP-01 §11's multi-GPU test plan is otherwise still open.
 3. **COMP-06 §1 protocol list vs. the implemented modules.** *Closed.* The
    fifteen missing protocols are implemented (milestone 9a). COMP-06 §1 also
    gained a note that
