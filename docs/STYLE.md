@@ -192,9 +192,13 @@ Candidate panes: appearance, network, display, sound, input, notifications, powe
 privacy, storage, keybinds, autostart, accounts.
 
 ## Wallpaper
-The default wallpaper is an eclipse: a dark moon with a gold corona, right of centre so
-centred glass overlaps its limb. It is generated, not drawn: `packaging/backgrounds/gen-eclipse.py`
-writes `eclipse-{dark,light}-{3840x2160,1920x1080}.png` beside itself (numpy + ffmpeg, deterministic).
-The package installs them as `/usr/share/backgrounds/eclipseos/eclipse-{dark,light}.png` (and `-1080p`);
+The default wallpaper is an eclipse ring: a corona ring arcing across the top of the screen over a deep
+indigo ground with broad gold, blue and pink glows, so glass laid over it has rich colour to bend. It is
+generated, not drawn: `packaging/backgrounds/gen-eclipse.py` writes
+`eclipse-{dark,light}-{3840x2160,1920x1080}.png` beside itself (numpy + ffmpeg, deterministic); every length is a
+fraction of the screen height, so every size is the same picture. `--all` also writes the variants (`fill`,
+`totality`, `crescent`, `twin`, `orbit`, `horizon`, `tilt`) as `eclipse-<variant>-*`; they are not packaged.
+The package installs the default as `/usr/share/backgrounds/eclipseos/eclipse-{dark,light}.png` (and `-1080p`);
 `packaging/etc/abyss.kdl` points `wallpaper.path` at the dark one, and the login screen ships it as
-`greeter.png`. The light variant is paper white with a deep-gold corona wash, for the light scheme.
+`greeter.png`. The light variant is the same picture over a pale ground, with near-black rim lines under a
+strong orange glow, for the light scheme.
