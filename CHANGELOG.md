@@ -16,6 +16,74 @@ update. The newest release is at the top. Older releases stay below it.
 
 ---
 
+## ASCENSIONISM, update v0.4.2
+
+**Status:** in review. Date: 2026-11-22.
+
+### Headline
+
+The first release run on a real hybrid-graphics laptop with a portrait monitor.
+Displays driven by the second GPU show a proper picture, rotated displays no
+longer lose half the screen, and windows can be dragged between displays and
+land where you drop them.
+
+### New
+
+- **Per-display wallpaper can be set over the control socket.** The
+  `wallpaper { output "<connector>" { … } }` override already worked in the
+  config file; `set_config_collection` can now create, change and remove it live,
+  keeping the rest of the file (comments, order) as written. A display that
+  should look different from the others, such as a portrait monitor, no longer
+  needs a hand-edited file. (COMP-13 §1.4)
+- **Dragging a window across displays.** A window that straddles two displays is
+  drawn on both while you drag it, instead of being cut at the seam and vanishing
+  once it is fully across. A tiled window can be dropped onto another display's
+  layout, the drop guides and the ghost follow the pointer to that display, and
+  the edge snap and the screen-edge tile in desktop mode use the display the
+  window is on. A display that is switched off is never a drop target, even if it
+  went off in the middle of the drag. Output focus follows the pointer again as
+  soon as the drag ends. (COMP-05 §5.1, COMP-04 §7)
+
+### Fixed
+
+- **A second GPU's display showed the top row repeated.** On a laptop where an
+  external monitor hangs off the discrete GPU, the picture was one row stretched
+  down the whole screen (a patterned wallpaper looked like vertical stripes, the
+  bar and cursor were missing). The frame handed to the second GPU was flagged
+  upside-down, which OpenGL ES draws as a single repeated row, on every driver
+  tried. It is now handed over as it is. (COMP-01 §4, ADR 0086)
+- **A rotated display on the second GPU showed half the screen and flickered.**
+  Only part of the frame was refreshed, so the rest kept stale contents that
+  flipped between two buffers. The changed regions are now mapped through the
+  display's rotation before they are copied.
+
+### Upgrade notes
+
+- Nothing moves under you. A write over the socket that would leave the config
+  file byte-identical no longer rewrites it, reloads, or sends a `config` event,
+  and reports `applied: false`.
+
+### Known issues
+
+- Glass panes (the bar's body) are not drawn on a display rotated by 90 or 270
+  degrees, so the bar looks plain there. Rounded corners and the border fall back
+  to square on those displays, as before. (COMP-02 §9)
+- A display on the second GPU is composited on the first and copied; the faster
+  path that scans the first GPU's buffer out directly is refused by the NVIDIA
+  plane we tested, so every second-GPU display takes the copy. `misc.secondary-compositing`
+  (the second GPU composites its own displays) was not measured.
+- Right after the login screen hands over, the compositor can lose a short race
+  for the display and start on a low-resolution fallback, or the second GPU's
+  display can come up empty until a reboot. Seen once each; not fixed.
+- The drag changes are covered by tests on a synthetic two-display layout, one of
+  them a portrait display. They have not been watched on a real multi-display
+  screen.
+- A small wallpaper image set on a large or portrait display is scaled up to
+  cover it and looks soft. That is how `fill` works; give that display its own
+  image.
+
+---
+
 ## ASCENSIONISM, hotfix v0.4.1
 
 **Status:** released as v0.4.1. Date: 2026-11-22.
