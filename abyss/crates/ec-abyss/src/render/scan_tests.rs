@@ -441,3 +441,20 @@ fn the_lock_glass_sees_only_the_wallpaper_and_the_lock_surface() {
         );
     }
 }
+
+/// A capture frame is the mode as scanned out, which is the size both capture
+/// protocols advertise, with the output's transform drawn into it and reported
+/// to the client. Sizing the target by `transform_size` made a rotated output's
+/// requested region fall outside it (black bands, a window in the wrong place).
+#[test]
+fn the_capture_target_is_the_advertised_mode_size() {
+    let src = include_str!("capture.rs");
+    assert!(
+        src.contains("let fb_size = mode.size;"),
+        "the capture target must be the mode size the protocols advertise"
+    );
+    assert!(
+        !src.contains("let fb_size = transform.transform_size(mode.size);"),
+        "capture sized its target by transform_size again"
+    );
+}
