@@ -155,6 +155,18 @@ mv "$L/usr/lib/eclipse/gone" "$L/usr/lib/eclipse/previous"
 if ECLIPSE_ROOT="$L" "$launch" 2>/dev/null; then st=0; else st=$?; fi
 check "launch: no binary exits 2" [ "$st" -eq 2 ]
 
+# The greeter's home is not writable: Mesa's cache goes to the package's dir.
+mkbin "$L/bin/showcache" current 'echo "cache=${XDG_CACHE_HOME:-unset}" >>"$LOG"'
+mkdir -p "$L/var/cache/eclipse-greeter" "$L/ro"
+chmod 0555 "$L/ro"
+: >"$log"
+env -u XDG_CACHE_HOME HOME="$L/ro" ECLIPSE_ROOT="$L" "$launch" "$L/bin/showcache" 2>/dev/null
+check "launch: an unwritable home gets the greeter cache dir" grep -q "cache=$L/var/cache/eclipse-greeter" "$log"
+: >"$log"
+mkdir -p "$L/.cache"
+env -u XDG_CACHE_HOME HOME="$L" ECLIPSE_ROOT="$L" "$launch" "$L/bin/showcache" 2>/dev/null
+check "launch: a writable cache is left alone" grep -q 'cache=unset' "$log"
+
 # --- abyss-session -----------------------------------------------------------
 # Fake systemd-cat and ec-abyss on PATH; ec-ctl absent so the migration is skipped.
 S="$tmp/session"

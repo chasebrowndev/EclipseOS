@@ -71,7 +71,13 @@ struct Item {
     pos: [Spring; 4],
     /// 0 → 1 as the tile appears.
     enter: Spring,
-    appear: Instant,
+    /// How long after the first frame this tile starts to appear.
+    delay: Duration,
+    /// When it starts: fixed by the first frame drawn, not by when the
+    /// process began. A cold start takes longer than the whole stagger (no
+    /// shader cache, a slow modeset), and a clock that started at launch
+    /// would have every tile already due, with nothing left to ask for frames.
+    appear: Option<Instant>,
 }
 
 /// The tiles of one layout on one output size, animated.
@@ -145,7 +151,8 @@ impl Stage {
         };
         self.last = Some(now);
         for it in &mut self.items {
-            it.enter.target = if now >= it.appear { 1.0 } else { 0.0 };
+            let appear = *it.appear.get_or_insert(now + it.delay);
+            it.enter.target = if now >= appear { 1.0 } else { 0.0 };
             it.enter.step(dt);
             for s in &mut it.pos {
                 s.step(dt);
@@ -154,11 +161,12 @@ impl Stage {
     }
 
     /// Whether any tile is still moving or still waiting to appear. The view
-    /// asks for frames only while this is true.
+    /// asks for frames only while this is true. Before the first frame it is
+    /// always true: nothing has started, and a frame is what starts it.
     pub fn animating(&self, now: Instant) -> bool {
-        self.items
-            .iter()
-            .any(|it| now < it.appear || !it.enter.settled() || it.pos.iter().any(|s| !s.settled()))
+        self.items.iter().any(|it| {
+            it.appear.is_none_or(|a| now < a) || !it.enter.settled() || it.pos.iter().any(|s| !s.settled())
+        })
     }
 
     /// Every tile's place this frame, in layout order.
@@ -183,7 +191,10 @@ impl Stage {
 
     /// Match the items to the layout. Springs of a tile that stays are kept, so
     /// it moves from where it is; a new tile starts at its place and rises.
-    fn reconcile(&mut self, now: Instant) {
+    ///
+    /// `_now` is unused: a new tile's start is fixed by the first frame it sees,
+    /// not by when the layout was reconciled.
+    fn reconcile(&mut self, _now: Instant) {
         let mut next = Vec::with_capacity(self.layout.tiles.len());
         for (i, t) in self.layout.tiles.iter().enumerate() {
             let target = target_px(&self.layout, t.kind, self.size, self.devices);
@@ -202,7 +213,8 @@ impl Stage {
                     kind: t.kind,
                     pos: target.map(Spring::at),
                     enter: Spring::at(0.0),
-                    appear: now + Duration::from_millis(motion::STAGGER_MS * i as u64),
+                    delay: Duration::from_millis(motion::STAGGER_MS * i as u64),
+                    appear: None,
                 },
             };
             next.push(item);
@@ -285,6 +297,37 @@ mod tests {
             .placed()
             .iter()
             .all(|p| (p.fade - 1.0).abs() < 1e-3 && p.rise.abs() < 0.5));
+    }
+
+    #[test]
+    fn a_slow_start_still_animates_from_the_first_frame() {
+        let t0 = Instant::now();
+        let mut st = Stage::new(layout(), Size::new(1920.0, 1080.0), t0);
+        // The first frame comes long after the whole stagger has passed.
+        let late = t0 + Duration::from_secs(3);
+        assert!(
+            st.animating(late),
+            "an unstarted stage must ask for its first frame"
+        );
+        st.step(late);
+        assert!(st.animating(late), "the tiles are only now starting");
+        let mut now = late;
+        let mut seen = Vec::new();
+        for _ in 0..30 {
+            now += Duration::from_millis(16);
+            st.step(now);
+            seen.push(st.placed().iter().filter(|p| p.fade > 0.02).count());
+        }
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]));
+        assert!(
+            seen.first() < seen.last(),
+            "staggered: tiles join one after another"
+        );
+        for _ in 0..600 {
+            now += Duration::from_millis(16);
+            st.step(now);
+        }
+        assert!(!st.animating(now));
     }
 
     #[test]
