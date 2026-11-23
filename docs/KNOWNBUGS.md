@@ -751,12 +751,22 @@ and stays on a 1024x768 fallback; (b) on 620.73 the HDMI connector reported no m
 (`connector skipped by scan`) after the greeter exited, until a reboot. The greeter's
 exit also logs `Failed to restore previous state: Invalid argument`. Seen once each.
 
-## GPU-06 — rotated outputs lose glass (open)
+## GPU-06 — rotated outputs lose glass (panes fixed in 0.4.2; windows by design)
 
-`effects::fb_y_mirrored` is `Some` only for `Normal` and `Flipped180`, so
-`insert_panes` draws nothing and the bar loses its glass on a 90 or 270 output.
-Rounding and the bezel fall back to square corners by design (COMP-02 §9, C-15). The
-blur backdrop path still runs there with the unrotated size.
+**Was:** `effects::fb_y_mirrored` was `Some` only for `Normal` and `Flipped180`, so
+`insert_panes` drew nothing and the bar lost its glass on a 90 or 270 output. Two defects
+hid the result once a mapping existed: the glass program declared `gl_to_phys`, a reserved
+GLSL name, so it never compiled; and `blur::rebuild` looked its chain up by the pre-rotation
+crop size while it was stored under the rotated texture size, so the lookup failed silently.
+
+**Now:** `effects::pane_fb_map` maps render space to framebuffer space for all eight
+transforms and panes draw on every output. Windows, bezel, rings and rounding keep the old
+gate, so a rotated window keeps its painted border (C-15) and the trusted prompt still draws
+no glass there. A pane on a rotated output blurs the wallpaper only, so its tint differs
+from a normal output's, where it also blurs the window glass behind it.
+
+**Verified:** headless pixel checks at normal, 90, 180 and 270 (normal output identical to
+before; the pane covers the same area on 90 and 270). Not watched on a real rotated monitor.
 
 ## DRAG-01 — dragging a window across displays was not live (fixed in 0.4.2)
 

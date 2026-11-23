@@ -16,76 +16,79 @@ update. The newest release is at the top. Older releases stay below it.
 
 ---
 
-## ASCENSIONISM, update v0.4.2
+## ASCENSIONISM, hotfix v0.4.2
 
-**Status:** in review. Date: 2026-11-22.
+**Status:** released as v0.4.2. Date: 2026-11-23.
 
-### Headline
-
-The first release run on a real hybrid-graphics laptop with a portrait monitor.
-Displays driven by the second GPU show a proper picture, rotated displays no
-longer lose half the screen, and windows can be dragged between displays and
-land where you drop them.
-
-### New
-
-- **Per-display wallpaper can be set over the control socket.** The
-  `wallpaper { output "<connector>" { … } }` override already worked in the
-  config file; `set_config_collection` can now create, change and remove it live,
-  keeping the rest of the file (comments, order) as written. A display that
-  should look different from the others, such as a portrait monitor, no longer
-  needs a hand-edited file. (COMP-13 §1.4)
-- **Wallpaper for each display.** Settings > Desktop > Wallpaper shows your displays
-  and lets each one have its own picture, sizing and background colour, applied
-  live, with "Use the same as all displays" to undo it. A small note appears when
-  a picture would be enlarged more than twice to fill a display. Not yet clicked
-  through on a real session. (COMP-17 §3, COMP-13 §1.4)
-- **Dragging a window across displays.** A window that straddles two displays is
-  drawn on both while you drag it, instead of being cut at the seam and vanishing
-  once it is fully across. A tiled window can be dropped onto another display's
-  layout, the drop guides and the ghost follow the pointer to that display, and
-  the edge snap and the screen-edge tile in desktop mode use the display the
-  window is on. A display that is switched off is never a drop target, even if it
-  went off in the middle of the drag. Output focus follows the pointer again as
-  soon as the drag ends. (COMP-05 §5.1, COMP-04 §7)
+This is still ASCENSIONISM: the glass material, Onest, the rebuilt Settings and the
+paper-white light scheme are exactly as in v0.4.0. v0.4.2 is a hotfix on top of it,
+from the first run on a hybrid-graphics laptop with a portrait monitor, plus screen
+sharing that works in OBS.
 
 ### Fixed
 
+- **Screen sharing and OBS showed black.** The portal's PipeWire stream negotiated
+  and reported itself running, but never delivered a frame: its buffers had no
+  memory behind them, and the frame trigger it used never ran on current PipeWire.
+  OBS, browsers and recorders that capture through the portal now get the screen.
+  (COMP-16 M8, ADR 0029)
 - **A second GPU's display showed the top row repeated.** On a laptop where an
   external monitor hangs off the discrete GPU, the picture was one row stretched
   down the whole screen (a patterned wallpaper looked like vertical stripes, the
   bar and cursor were missing). The frame handed to the second GPU was flagged
-  upside-down, which OpenGL ES draws as a single repeated row, on every driver
-  tried. It is now handed over as it is. (COMP-01 §4, ADR 0086)
+  upside-down, which OpenGL ES draws as a single repeated row. It is now handed
+  over as it is. (COMP-01 §4, ADR 0086)
 - **A rotated display on the second GPU showed half the screen and flickered.**
-  Only part of the frame was refreshed, so the rest kept stale contents that
-  flipped between two buffers. The changed regions are now mapped through the
-  display's rotation before they are copied.
+  Only part of the frame was refreshed, so the rest kept stale contents that flipped
+  between two buffers. Changed regions are now mapped through the display's
+  rotation before they are copied.
+- **Glass on a rotated display.** The bar, launcher and toasts had no glass on a
+  monitor turned 90 or 270 degrees, because the glass program never compiled and a
+  silent fallback hid it. Panes now draw there. Windows on a rotated display keep
+  their painted border, so the pane blurs the wallpaper only and its tint differs
+  slightly from a normal display. (COMP-02 §9)
+- **Screenshots and recordings of a rotated display** had black bands, part of the
+  wallpaper, and at 270 degrees no window. The capture frame is now the display's
+  own size, with the rotation reported so a client turns it upright.
+  (COMP-06 §3)
+- **Dragging a window across displays.** A window that straddles two displays is
+  drawn on both while you drag it, instead of being cut at the seam and vanishing
+  once it is fully across. A tiled window can be dropped onto another display's
+  layout, the drop guides and the ghost follow the pointer to that display, and the
+  edge snap and the screen-edge tile in desktop mode use the display the window is
+  on. A display that is switched off is never a drop target. Output focus follows
+  the pointer again as soon as the drag ends. (COMP-05 §5.1, COMP-04 §7)
+
+### New
+
+- **Wallpaper for each display.** Settings > Desktop > Wallpaper shows your displays
+  and lets each one have its own picture, sizing and background colour, applied
+  live, with "Use the same as all displays" to undo it. A small note appears when a
+  picture would be enlarged more than twice to fill a display. The config file's
+  `wallpaper { output "<connector>" { … } }` can also be written live over the
+  control socket, keeping comments and order. (COMP-17 §3, COMP-13 §1.4)
 
 ### Upgrade notes
 
-- Nothing moves under you. A write over the socket that would leave the config
-  file byte-identical no longer rewrites it, reloads, or sends a `config` event,
-  and reports `applied: false`.
+- Nothing moves under you. A write over the socket that would leave the config file
+  byte-identical no longer rewrites it, reloads, or sends a `config` event.
+- The first-boot login screen on the same laptop is still being looked at; see below.
 
 ### Known issues
 
-- Glass panes (the bar's body) are not drawn on a display rotated by 90 or 270
-  degrees, so the bar looks plain there. Rounded corners and the border fall back
-  to square on those displays, as before. (COMP-02 §9)
-- A display on the second GPU is composited on the first and copied; the faster
-  path that scans the first GPU's buffer out directly is refused by the NVIDIA
-  plane we tested, so every second-GPU display takes the copy. `misc.secondary-compositing`
+- A display on the second GPU is composited on the first and copied; the faster path
+  that scans the first GPU's buffer out directly is refused by the NVIDIA plane we
+  tested, so every second-GPU display takes the copy. `misc.secondary-compositing`
   (the second GPU composites its own displays) was not measured.
-- Right after the login screen hands over, the compositor can lose a short race
-  for the display and start on a low-resolution fallback, or the second GPU's
-  display can come up empty until a reboot. Seen once each; not fixed.
-- The drag changes are covered by tests on a synthetic two-display layout, one of
-  them a portrait display. They have not been watched on a real multi-display
-  screen.
-- A small wallpaper image set on a large or portrait display is scaled up to
-  cover it and looks soft. That is how `fill` works; give that display its own
-  image.
+- Right after the login screen hands over, the compositor can lose a short race for
+  the display and start on a low-resolution fallback, or the second GPU's display can
+  come up empty until a reboot. Seen once each; not fixed.
+- The drag changes and the rotated-display glass are covered by tests and headless
+  pixel checks. They have not been watched on a real multi-display screen.
+- A small wallpaper image set on a large or portrait display is scaled up to cover it
+  and looks soft. That is how `fill` works; give that display its own image.
+- The signed Firefox extension in the repository is older than its source, so its CI
+  check fails until it is re-signed. It does not affect the desktop.
 
 ---
 
