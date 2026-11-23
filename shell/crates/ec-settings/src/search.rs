@@ -267,6 +267,20 @@ pub fn bespoke() -> Vec<SearchEntry> {
             ],
         ),
         (
+            "desktop.wallpaper",
+            "Picture for each display",
+            "Desktop",
+            "Give one display its own picture, sizing or background.",
+            &[
+                "per display",
+                "per output",
+                "each display",
+                "second monitor",
+                "portrait",
+                "monitor picture",
+            ],
+        ),
+        (
             "display.overscan",
             "Overscan",
             "Display",

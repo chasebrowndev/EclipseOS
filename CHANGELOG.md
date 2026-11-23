@@ -35,6 +35,11 @@ land where you drop them.
   keeping the rest of the file (comments, order) as written. A display that
   should look different from the others, such as a portrait monitor, no longer
   needs a hand-edited file. (COMP-13 §1.4)
+- **Wallpaper for each display.** Settings > Desktop > Wallpaper shows your displays
+  and lets each one have its own picture, sizing and background colour, applied
+  live, with "Use the same as all displays" to undo it. A small note appears when
+  a picture would be enlarged more than twice to fill a display. Not yet clicked
+  through on a real session. (COMP-17 §3, COMP-13 §1.4)
 - **Dragging a window across displays.** A window that straddles two displays is
   drawn on both while you drag it, instead of being cut at the seam and vanishing
   once it is fully across. A tiled window can be dropped onto another display's

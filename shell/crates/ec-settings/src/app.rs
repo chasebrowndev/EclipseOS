@@ -59,6 +59,14 @@ struct LiveWrite {
     failed: bool,
 }
 
+/// What the undo toast can take back: a taskbar change, or one wallpaper
+/// override. The stack is shared, so Ctrl+Z reaches whichever came last.
+#[derive(Debug, Clone)]
+pub enum Undoable {
+    Bar(crate::taskbar::Restore),
+    Wall(crate::wallpaper::Restore),
+}
+
 #[derive(Debug, Clone)]
 pub enum Message {
     /// The compositor's theme moved and the palette was re-applied (ADR 0084);
@@ -141,6 +149,8 @@ pub enum Message {
     ToastDismiss,
     /// The Taskbar pane's own messages.
     Bar(crate::taskbar::Msg),
+    /// The Wallpaper page's per-display pictures.
+    Wall(crate::wallpaper::Msg),
     /// An edit to `bar.pinned-apps`.
     Pinned(crate::pinned::Msg),
     /// An edit to `misc.discrete-gpu-apps`.
@@ -317,7 +327,9 @@ pub struct App {
     /// Each live tray app's icon, as the feed resolved it.
     pub(crate) tray_art: Vec<(String, ec_ui::widget::Art)>,
     /// What the toast offers to take back, newest last.
-    pub(crate) undo: crate::undo::Stack<crate::taskbar::Restore>,
+    pub(crate) undo: crate::undo::Stack<Undoable>,
+    /// The Wallpaper page's per-display pictures and the picked display.
+    pub(crate) wall: crate::wallpaper::Pane,
     /// The content column's viewport: its bounds on screen, how far it is
     /// scrolled, and how far it can be.
     pub(crate) viewport: Option<(iced::Rectangle, f32, f32)>,
@@ -443,6 +455,7 @@ impl App {
             tray_sel: None,
             tray_art: Vec::new(),
             undo: crate::undo::Stack::default(),
+            wall: crate::wallpaper::Pane::default(),
             viewport: None,
             installed: crate::pinned::installed(),
             wm_apps: crate::maximize::installed(),
@@ -477,6 +490,8 @@ impl App {
             app.picker = std::env::var("SETTINGS_PREVIEW_PICKER").ok();
         }
         app.reload();
+        #[cfg(debug_assertions)]
+        crate::wallpaper::preview_env(&mut app);
         #[cfg(debug_assertions)]
         crate::taskbar::preview_env(&mut app);
         #[cfg(debug_assertions)]
@@ -525,6 +540,7 @@ impl App {
             }
             Err(e) => self.banner = Some(e),
         }
+        crate::wallpaper::read(self);
     }
 
     /// Re-read the values after the config changed underneath, keeping
@@ -538,6 +554,7 @@ impl App {
         }
         self.read_widgets();
         self.read_graphics();
+        crate::wallpaper::read(self);
     }
 
     /// The recommendation and the profile in force, from `get_metrics`.
@@ -1250,6 +1267,14 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
                 _ => task,
             };
         }
+        Message::Wall(m) => {
+            let before = app.undo.serial();
+            let task = crate::wallpaper::update(app, m);
+            return match app.undo.serial() {
+                Some(now) if before != Some(now) => Task::batch([task, toast_timer(now)]),
+                _ => task,
+            };
+        }
         Message::Pinned(m) => crate::pinned::update(app, m),
         Message::GpuApps(m) => crate::gpu::update(app, m),
         Message::Exempt(m) => crate::maximize::update(app, m),
@@ -1850,6 +1875,10 @@ fn frame(app: &App, density: Density, narrow: bool) -> Element<'_, Message, Them
             let (state, measure) = crate::animations::status(app);
             controls.push(status_chip(&state, &measure));
         }
+        _ if app.page == Page::Wallpaper => {
+            let (state, measure) = crate::wallpaper::status(app);
+            controls.push(status_chip(&state, &measure));
+        }
         _ => {}
     }
     let title = header(app.page.title(), subtitle(app.page.subtitle(), "", ""), controls);
@@ -1902,6 +1931,15 @@ fn frame(app: &App, density: Density, narrow: bool) -> Element<'_, Message, Them
         }
         Page::Accounts => blocks.extend(crate::accounts::blocks(app)),
         Page::LoginScreen => blocks.extend(crate::login_screen::blocks(app)),
+        // The displays, then the picked display's card. "All displays" keeps
+        // the page's own global rows.
+        Page::Wallpaper => {
+            blocks.push(crate::wallpaper::hero(app));
+            match app.wall.card_for() {
+                Some(name) => blocks.push(crate::wallpaper::card(app, name)),
+                None => blocks.push(schema_page(app)),
+            }
+        }
         p if p.is_terminal() => blocks.extend(crate::terminal::blocks(app, p)),
         p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
         _ => blocks.push(schema_page(app)),
