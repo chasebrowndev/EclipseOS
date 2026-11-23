@@ -3,11 +3,20 @@
 //! PipeWire producer: node "Eclipse Screen Share", `Video/Source`, raw
 //! BGRx/BGRA (or RGBx/RGBA) frames pushed from the capture pump.
 //!
-//! The stream is connected `DRIVER | TRIGGER | ALLOC_BUFFERS | MAP_BUFFERS`.
-//! `TRIGGER` is the point (ADR 0029): xdpw 0.8.3 was `DRIVER` only and only
-//! re-armed capture from its `process` callback, so one frame went out and
-//! the graph never cycled again. Here every captured frame calls
-//! `trigger_process()` itself; nothing depends on the consumer pulling.
+//! The stream is connected `DRIVER | ALLOC_BUFFERS | MAP_BUFFERS`.
+//! `ALLOC_BUFFERS` means the application backs every buffer, so `add_buffer`
+//! hands each one a mapped memfd and `remove_buffer` takes it back. Without
+//! those two handlers the buffer's data stays `MemId`, which the client-node
+//! refuses (`invalid memory type 4`), the node falls back to Paused and
+//! `process` never runs: a consumer sees nothing at all.
+//! Every captured frame calls `trigger_process()` itself, so the graph cycles on
+//! damage and nothing depends on the consumer pulling (ADR 0029: xdpw 0.8.3
+//! only re-armed capture from its `process` callback, so one frame went out and
+//! the graph never cycled again). `TRIGGER` is deliberately NOT set: with
+//! `DRIVER | TRIGGER` on libpipewire 1.6 the node reaches Streaming, every
+//! `trigger_process()` returns Ok, and `process` is never called, so a consumer
+//! (OBS, gst, pw-cat) gets no buffer at all. `DRIVER` alone, triggered the same
+//! way, cycles once per frame.
 //!
 //! Threading: the PipeWire main loop runs on its own thread. Frames cross by
 //! a `pipewire::channel`; everything pw-typed stays on that thread.
@@ -19,6 +28,7 @@
 
 use std::cell::RefCell;
 use std::io::Cursor;
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::thread::JoinHandle;
@@ -26,6 +36,8 @@ use std::thread::JoinHandle;
 use pipewire as pw;
 use pw::properties::properties;
 use pw::spa;
+use rustix::fs::{ftruncate, memfd_create, MemfdFlags};
+use rustix::mm::{mmap, munmap, MapFlags, ProtFlags};
 use spa::param::format::{FormatProperties, MediaSubtype, MediaType};
 use spa::param::video::{VideoFormat, VideoInfoRaw};
 use spa::param::ParamType;
@@ -217,13 +229,100 @@ fn format_param(cfg: &ProducerConfig) -> Vec<u8> {
     ))
 }
 
+/// Row stride and total byte size of one tightly packed 4-byte-per-pixel frame.
+fn frame_layout(w: u32, h: u32) -> (u32, u32) {
+    let stride = w.saturating_mul(4);
+    (stride, stride.saturating_mul(h))
+}
+
+/// Back one PipeWire buffer with a fresh memfd mapped read/write.
+///
+/// # Safety
+/// `pwbuf` must be the live `pw_buffer` passed to the `add_buffer` callback.
+unsafe fn back_with_memfd(pwbuf: *mut pw::sys::pw_buffer, size: u32) {
+    if pwbuf.is_null() || size == 0 {
+        return;
+    }
+    // SAFETY: the caller guarantees `pwbuf` is live; `buffer` and `datas` are
+    // checked for null and `n_datas` before the first data is touched.
+    let spa_buf = unsafe { (*pwbuf).buffer };
+    if spa_buf.is_null()
+        || unsafe { (*spa_buf).n_datas } < 1
+        || unsafe { (*spa_buf).datas.is_null() }
+    {
+        return;
+    }
+    let Ok(fd) = memfd_create("ecl-screen-share", MemfdFlags::CLOEXEC) else {
+        return;
+    };
+    if ftruncate(&fd, u64::from(size)).is_err() {
+        return;
+    }
+    // SAFETY: a fresh shared mapping of `size` bytes of our own memfd; no
+    // address hint, so nothing existing is replaced. Unmapped in `release_data`.
+    let Ok(ptr) = (unsafe {
+        mmap(
+            std::ptr::null_mut(),
+            size as usize,
+            ProtFlags::READ | ProtFlags::WRITE,
+            MapFlags::SHARED,
+            &fd,
+            0,
+        )
+    }) else {
+        return;
+    };
+    // SAFETY: `datas` points at `n_datas >= 1` elements owned by this buffer.
+    let d = unsafe { &mut *(*spa_buf).datas };
+    d.type_ = pw::spa::sys::SPA_DATA_MemFd;
+    d.flags = pw::spa::sys::SPA_DATA_FLAG_READWRITE;
+    d.fd = i64::from(fd.into_raw_fd());
+    d.mapoffset = 0;
+    d.maxsize = size;
+    d.data = ptr;
+}
+
+/// Undo [`back_with_memfd`]: unmap and close what it set up. Safe to call on a
+/// buffer it never backed (the data pointer and fd are checked).
+///
+/// # Safety
+/// `pwbuf` must be the live `pw_buffer` passed to the `remove_buffer` callback.
+unsafe fn release_data(pwbuf: *mut pw::sys::pw_buffer) {
+    if pwbuf.is_null() {
+        return;
+    }
+    // SAFETY: as in `back_with_memfd`.
+    let spa_buf = unsafe { (*pwbuf).buffer };
+    if spa_buf.is_null()
+        || unsafe { (*spa_buf).n_datas } < 1
+        || unsafe { (*spa_buf).datas.is_null() }
+    {
+        return;
+    }
+    let d = unsafe { &mut *(*spa_buf).datas };
+    if d.type_ != pw::spa::sys::SPA_DATA_MemFd || d.data.is_null() {
+        return;
+    }
+    // SAFETY: `data`/`maxsize` are exactly what `back_with_memfd` mapped, and
+    // `fd` is the memfd it handed us ownership of; each is cleared so a second
+    // call does nothing.
+    unsafe {
+        let _ = munmap(d.data, d.maxsize as usize);
+        if d.fd >= 0 {
+            drop(OwnedFd::from_raw_fd(d.fd as i32));
+        }
+    }
+    d.data = std::ptr::null_mut();
+    d.fd = -1;
+}
+
 /// Buffers param: memfd or memptr, 3..8 buffers, one block, `stride * height`. The data types
 /// are a flags choice: a consumer that asks for a set (OBS sends a plain bitmask) intersects
 /// with it, where a plain int only matches the identical value.
 fn buffers_param(w: u32, h: u32) -> Vec<u8> {
     use spa::sys::*;
-    let stride = (w * 4) as i32;
-    let size = stride * h as i32;
+    let (stride, size) = frame_layout(w, h);
+    let (stride, size) = (stride as i32, size as i32);
     let range = Value::Choice(ChoiceValue::Int(Choice(
         ChoiceFlags::empty(),
         ChoiceEnum::Range {
@@ -257,6 +356,8 @@ fn buffers_param(w: u32, h: u32) -> Vec<u8> {
 struct Shared {
     latest: Option<Frame>,
     negotiated: Option<(PixelFormatChoice, u32, u32)>,
+    /// Bytes per buffer, from the negotiated size; 0 until negotiated.
+    buffer_size: u32,
 }
 
 fn run(
@@ -285,6 +386,7 @@ fn run(
     let shared = Rc::new(RefCell::new(Shared {
         latest: None,
         negotiated: None,
+        buffer_size: 0,
     }));
     let ready_ok = ready.clone();
 
@@ -313,11 +415,24 @@ fn run(
                 return;
             };
             let size = info.size();
-            sh.borrow_mut().negotiated = Some((choice, size.width, size.height));
+            {
+                let mut sh = sh.borrow_mut();
+                sh.negotiated = Some((choice, size.width, size.height));
+                sh.buffer_size = frame_layout(size.width, size.height).1;
+            }
             let b = buffers_param(size.width, size.height);
             if let Some(p) = Pod::from_bytes(&b) {
                 let _ = st.update_params(&mut [p]);
             }
+        })
+        .add_buffer(|_st, sh, pwbuf| {
+            let size = sh.borrow().buffer_size;
+            // SAFETY: `pwbuf` is the buffer pipewire just handed to this callback.
+            unsafe { back_with_memfd(pwbuf, size) };
+        })
+        .remove_buffer(|_st, _sh, pwbuf| {
+            // SAFETY: `pwbuf` is the buffer pipewire is about to drop.
+            unsafe { release_data(pwbuf) };
         })
         .process(|st, sh| {
             let mut sh = sh.borrow_mut();
@@ -352,7 +467,6 @@ fn run(
         spa::utils::Direction::Output,
         None,
         pw::stream::StreamFlags::DRIVER
-            | pw::stream::StreamFlags::TRIGGER
             | pw::stream::StreamFlags::ALLOC_BUFFERS
             | pw::stream::StreamFlags::MAP_BUFFERS,
         &mut params,
@@ -376,6 +490,15 @@ fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_layout_is_tight_four_bytes_per_pixel() {
+        assert_eq!(frame_layout(1280, 800), (5120, 4_096_000));
+        assert_eq!(frame_layout(1, 1), (4, 4));
+        assert_eq!(frame_layout(0, 800), (0, 0));
+        // Absurd sizes saturate rather than wrap.
+        assert_eq!(frame_layout(u32::MAX, u32::MAX), (u32::MAX, u32::MAX));
+    }
 
     #[test]
     fn advertised_keeps_channel_order() {

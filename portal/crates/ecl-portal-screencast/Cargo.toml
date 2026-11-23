@@ -22,7 +22,7 @@ thiserror.workspace = true
 postcard.workspace = true
 tracing.workspace = true
 tokio.workspace = true
-rustix = { workspace = true, features = ["event"] }
+rustix = { workspace = true, features = ["event", "mm"] }
 png = "0.17"
 wayland-client = { version = "0.31", optional = true }
 wayland-protocols-wlr = { version = "0.3", features = ["client"], optional = true }
