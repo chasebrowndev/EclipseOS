@@ -250,6 +250,19 @@ fn landing_output_is_the_other_output_under_the_window_centre() {
 }
 
 #[test]
+fn landing_follows_logical_geometry_of_a_rotated_output() {
+    // A 1920x1080 output at x = 1920, beside a 1080x1920 portrait one at x = 3840.
+    let outs = [(1, rr(1920, 0, 1920, 1080)), (2, rr(3840, 0, 1080, 1920))];
+    let p = |x: f64, y: f64| Point::from((x, y));
+    // The portrait's lower half is its own: the centre lands there.
+    assert_eq!(landing_output(&outs, 1, p(4300.0, 1500.0)), Some(2));
+    assert_eq!(landing_output(&outs, 1, p(3900.0, 1900.0)), Some(2));
+    assert_eq!(landing_output(&outs, 2, p(2500.0, 500.0)), Some(1));
+    // Still on the landscape output, right up to the seam.
+    assert_eq!(landing_output(&outs, 1, p(3800.0, 100.0)), None);
+}
+
+#[test]
 fn drop_candidates_precompute_exactly_what_a_drop_would_do() {
     let (t, tiles) = two();
     let area = rr(0, 0, 1000, 500);
@@ -798,7 +811,7 @@ mod de_mode {
             .expect("placed")
     }
 
-    fn map(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
+    pub(super) fn map(h: &mut Harness, c: &mut Client) -> (Toplevel, Window) {
         let t = c.create_toplevel(h);
         c.commit(h, &t.surface);
         c.attach(h, &t.surface);
@@ -817,21 +830,21 @@ mod de_mode {
     }
 
     /// Reload with `mode` changed, through the same path a config reload takes.
-    fn flip(h: &mut Harness, mode: Mode) {
+    pub(super) fn flip(h: &mut Harness, mode: Mode) {
         let mut next = h.state.config.clone();
         next.mode = mode;
         crate::config::apply_loaded(&mut h.state, next);
     }
 
     #[derive(Debug, PartialEq, Clone, Copy)]
-    enum At {
+    pub(super) enum At {
         Tiled(u64, usize),
         Floating(u64, usize),
         Minimized(u64, usize),
         Nowhere,
     }
 
-    fn at(h: &Harness, w: &Window) -> At {
+    pub(super) fn at(h: &Harness, w: &Window) -> At {
         for e in h.state.outputs.iter() {
             for (i, ws) in e.workspaces.iter().enumerate() {
                 if ws.tiled.contains(w) {
@@ -1890,5 +1903,159 @@ mod de_mode {
             .iter()
             .any(|b| b.action == Action::ToggleMaximize && b.mods.logo && !b.mods.alt && !b.mods.shift));
         assert!(crate::config::mode_default_binds(Mode::Hybrid).is_empty());
+    }
+}
+
+/// Two outputs on the seam of the spec's example: `a` a 1920x1080 landscape
+/// at x 1920, `b` a 1080x1920 portrait (`_90`) at x 3840. Logical geometry
+/// comes from the space, which is what the drag paths read.
+mod seam_drag {
+    use super::de_mode::{at, flip, map, At};
+    use super::*;
+    use crate::config::Mode;
+    use crate::shell::focus::state_tests::{client::Client, harness, Harness};
+    use ec_abyss_render::drop::DropGuides;
+    use smithay::output::Mode as OutputMode;
+    use smithay::utils::Transform;
+
+    fn place(h: &mut Harness, id: u64, size: (i32, i32), transform: Transform, at: (i32, i32)) {
+        let output = h.state.outputs.get(id).expect("output").output.clone();
+        let mode = OutputMode {
+            size: size.into(),
+            refresh: 60_000,
+        };
+        output.change_current_state(Some(mode), Some(transform), None, None);
+        h.state.space.map_output(&output, at);
+        arrange(&mut h.state);
+    }
+
+    fn two_outputs(h: &mut Harness) -> (u64, u64) {
+        let (a, b) = (h.a, h.b);
+        place(h, a, (1920, 1080), Transform::Normal, (1920, 0));
+        place(h, b, (1920, 1080), Transform::_90, (3840, 0));
+        let geo = |h: &Harness, id| {
+            let o = &h.state.outputs.get(id).expect("output").output;
+            h.state.space.output_geometry(o).expect("mapped")
+        };
+        assert_eq!(geo(h, a), Rectangle::new((1920, 0).into(), (1920, 1080).into()));
+        assert_eq!(geo(h, b), Rectangle::new((3840, 0).into(), (1080, 1920).into()));
+        (a, b)
+    }
+
+    fn output_of(h: &Harness, id: u64) -> Output {
+        h.state.outputs.get(id).expect("output").output.clone()
+    }
+
+    /// Where a window's top-left goes to put its centre at `(x, y)`.
+    fn aim_at(h: &Harness, w: &Window, x: i32, y: i32) -> Point<i32, Logical> {
+        let size = h.state.space.element_geometry(w).expect("mapped").size;
+        Point::from((x - size.w / 2, y - size.h / 2))
+    }
+
+    #[test]
+    fn a_tile_drag_over_the_other_output_aims_at_its_tree_and_lands_there() {
+        let mut h = harness();
+        flip(&mut h, Mode::Hybrid);
+        let (a, b) = two_outputs(&mut h);
+        let mut c = Client::connect(&mut h);
+        let (_w1, w1) = map(&mut h, &mut c);
+        let (_w2, w2) = map(&mut h, &mut c);
+        assert_eq!(at(&h, &w1), At::Tiled(a, 0));
+        // Over the centre of the portrait output.
+        let l = aim_at(&h, &w1, 4380, 960);
+        drop_guides::drag_tile(&mut h.state, &w1, l);
+        let drag = h.state.tile_drag.as_ref().expect("the drag started");
+        assert_eq!(
+            drag.output(),
+            &output_of(&h, b),
+            "the guides follow the drag onto b"
+        );
+        drop_guides::drop_window(&mut h.state, &w1);
+        assert!(h.state.tile_drag.is_none());
+        // Tiled or floated, it is on b, and wholly inside b's logical rectangle.
+        assert!(
+            matches!(at(&h, &w1), At::Tiled(id, _) | At::Floating(id, _) if id == b),
+            "{:?}",
+            at(&h, &w1)
+        );
+        assert_eq!(
+            at(&h, &w2),
+            At::Tiled(a, 0),
+            "the window it left keeps its neighbour"
+        );
+        let b_geo = h.state.space.output_geometry(&output_of(&h, b)).expect("mapped");
+        let g = h.state.space.element_geometry(&w1).expect("mapped");
+        assert!(b_geo.contains_rect(g), "{g:?} not on {b_geo:?}");
+    }
+
+    #[test]
+    fn a_powered_off_output_takes_no_tile_drag() {
+        let mut h = harness();
+        flip(&mut h, Mode::Hybrid);
+        let (a, b) = two_outputs(&mut h);
+        let mut c = Client::connect(&mut h);
+        let (_w1, w1) = map(&mut h, &mut c);
+        h.state.outputs.get_mut(b).expect("output").powered = false;
+        let l = aim_at(&h, &w1, 4380, 960);
+        drop_guides::drag_tile(&mut h.state, &w1, l);
+        let drag = h.state.tile_drag.as_ref().expect("the drag started");
+        assert_eq!(drag.output(), &output_of(&h, a));
+        drop_guides::drop_window(&mut h.state, &w1);
+        assert_eq!(at(&h, &w1), At::Tiled(a, 0));
+    }
+
+    #[test]
+    fn an_output_powered_off_mid_drag_takes_no_drop() {
+        let mut h = harness();
+        flip(&mut h, Mode::Hybrid);
+        let (a, b) = two_outputs(&mut h);
+        let mut c = Client::connect(&mut h);
+        let (_w1, w1) = map(&mut h, &mut c);
+        let l = aim_at(&h, &w1, 4380, 960);
+        drop_guides::drag_tile(&mut h.state, &w1, l);
+        let drag = h.state.tile_drag.as_ref().expect("the drag started");
+        assert_eq!(drag.output(), &output_of(&h, b), "aimed at the other output");
+        // The output goes dark before the button is released.
+        h.state.outputs.get_mut(b).expect("output").powered = false;
+        drop_guides::drop_window(&mut h.state, &w1);
+        assert_eq!(at(&h, &w1), At::Tiled(a, 0));
+    }
+
+    #[test]
+    fn a_de_edge_tile_lands_on_the_output_the_pointer_is_on() {
+        let mut h = harness();
+        flip(&mut h, Mode::De);
+        let (_a, b) = two_outputs(&mut h);
+        let mut c = Client::connect(&mut h);
+        let (_w, w) = map(&mut h, &mut c);
+        // The right-hand edge of the portrait output is an outer edge.
+        quicktile::drag_preview(&mut h.state, &w, Point::from((4915.0, 500.0)));
+        assert!(h.state.tile_preview.is_some(), "the edge preview is up");
+        quicktile::drop_preview(&mut h.state, &w);
+        assert!(
+            matches!(at(&h, &w), At::Floating(id, _) if id == b),
+            "{:?}",
+            at(&h, &w)
+        );
+        let b_geo = h.state.space.output_geometry(&output_of(&h, b)).expect("mapped");
+        let g = h.state.space.element_geometry(&w).expect("mapped");
+        assert!(b_geo.contains_rect(g), "{g:?} not on {b_geo:?}");
+    }
+
+    #[test]
+    fn a_floating_frame_snaps_to_the_edge_of_the_output_it_is_over() {
+        let mut h = harness();
+        flip(&mut h, Mode::De);
+        let (_a, _b) = two_outputs(&mut h);
+        let mut c = Client::connect(&mut h);
+        let (_w, w) = map(&mut h, &mut c);
+        let size = h.state.space.element_geometry(&w).expect("mapped").size;
+        // Content whose frame stops 4 px short of the portrait's right edge.
+        let want = Rectangle::new(Point::from((4920 - 4 - size.w, 300)), size);
+        let got = snap::snap_content(&h.state, &w, want, None);
+        let border = h.state.config.general.border_size;
+        let bar = titlebar::bar_height(&h.state, &w);
+        let frame = titlebar::outer_of_content(got, border, bar);
+        assert_eq!(frame.loc.x + frame.size.w, 4920, "snapped to b's edge, not a's");
     }
 }

@@ -72,16 +72,15 @@ pub fn window_surface(window: &Window) -> Option<WlSurface> {
 }
 
 // Read by the renderer, written here; defined in `ec-abyss-render::userdata`.
-pub use ec_abyss_render::userdata::{
-    layer_geometry, owner_output, tile_clip, LayerOffset, OwnerOutput, QuickTiled, TileClip,
-};
+pub use ec_abyss_render::userdata::{layer_geometry, tile_clip, LayerOffset, QuickTiled, TileClip};
 
-fn set_owner_output(window: &Window, output: &Output) {
-    let data = window.user_data();
-    data.insert_if_missing(|| OwnerOutput(Cell::new(None)));
-    if let Some(o) = data.get::<OwnerOutput>() {
-        o.0.set(Some(output.clone()));
-    }
+/// The output whose scale and transform a floating window is told: the one
+/// under its centre, so a window straddling two outputs follows the one it is
+/// mostly on, and a drag re-tells it as the centre crosses. `None` when the
+/// centre is on no output.
+fn output_under_centre(state: &AbyssState, rect: Rectangle<i32, Logical>) -> Option<Output> {
+    let centre = Point::from((rect.loc.x + rect.size.w / 2, rect.loc.y + rect.size.h / 2)).to_f64();
+    state.space.output_under(centre).next().cloned()
 }
 
 fn set_quick_tiled(window: &Window, on: bool) {
@@ -674,7 +673,6 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
         titlebar::publish(state, &w, 0, false, false);
         set_quick_tiled(&w, false);
         set_tile_clip(&w, Some(inner));
-        set_owner_output(&w, &output);
         state.space.map_element(w, inner.loc, false);
     }
     for (w, rect, placement) in floating {
@@ -711,9 +709,9 @@ pub fn arrange_output(state: &mut AbyssState, id: u64) {
                 placement.is_fully_maximized() && !full,
             );
         }
-        fractional_scale::update_window_scale(&w, &output);
+        let scale_output = output_under_centre(state, rect).unwrap_or_else(|| output.clone());
+        fractional_scale::update_window_scale(&w, &scale_output);
         set_tile_clip(&w, None);
-        set_owner_output(&w, &output);
         state.space.map_element(w.clone(), inner.loc, false);
         state.space.raise_element(&w, false);
     }

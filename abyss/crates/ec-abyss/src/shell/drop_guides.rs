@@ -42,36 +42,62 @@ pub struct DropCandidate {
 /// resting between two candidates does not flicker.
 pub const AIM_HYSTERESIS: f64 = 24.0;
 
+/// One output a Radiant drag can land on, precomputed at drag start: its
+/// tiling tree as it would be with the window in it. An output that does not
+/// tile has no tiles or candidates, so a drop there floats the window.
+#[derive(Debug)]
+pub struct DropTarget {
+    pub output: Output,
+    id: u64,
+    /// The workspace the drop lands on: the output's active one at drag start.
+    ws: usize,
+    /// The output's active layout is Radiant.
+    radiant: bool,
+    /// The output's global logical geometry.
+    bounds: Rectangle<i32, Logical>,
+    /// The tiling area the tiles were laid out in.
+    area: Rectangle<i32, Logical>,
+    tiles: Vec<(Window, Rectangle<i32, Logical>)>,
+    /// Every place the drag could land on this output, computed once at drag
+    /// start. Motion only scans this.
+    candidates: Vec<DropCandidate>,
+}
+
 /// A window being dragged onto the Radiant tree (COMP-05 §3.1).
 ///
 /// A tiled window keeps its leaf as a placeholder for the whole drag, so the
-/// other tiles hold still while the human aims; `tiles` is their layout
-/// captured when the drag started. A floating window only gets one while the
-/// main modifier (Super) is held.
+/// other tiles hold still while the human aims; the source output's tiles are
+/// their layout captured when the drag started. A floating window only gets
+/// one while the main modifier (Super) is held.
+///
+/// The drag aims at the output whose bounds hold the window's centre
+/// (`targets[current]`). Its guides, ghost and drop follow that output, so a
+/// window dragged across a seam lands on the tree it is over.
 #[derive(Debug)]
 pub struct TileDrag {
     pub window: Window,
-    /// The output the drag started on; drops land on its active workspace.
-    pub output: Output,
+    /// The output the drag started on; a cancelled drag goes back to it.
     id: u64,
-    ws: usize,
     /// The window was floating when the drag started.
     pub floating: bool,
     /// Whether a drop would tile it: always for a tiled window, and for a
     /// floating one only while Super is held. Releasing and re-pressing Super
     /// toggles this without recomputing anything.
     pub armed: bool,
-    /// The output's global logical geometry.
-    pub bounds: Rectangle<i32, Logical>,
-    /// The tiling area the tiles were laid out in.
-    pub area: Rectangle<i32, Logical>,
     /// Edge band width, logical px; 0 disables the bands.
     pub band: i32,
-    pub tiles: Vec<(Window, Rectangle<i32, Logical>)>,
-    /// Every place the drag could land, computed once at drag start. Motion
-    /// only scans this.
-    candidates: Vec<DropCandidate>,
+    /// The source output's entry in `targets`.
+    source: usize,
+    /// The output under the window's centre, an index into `targets`.
+    current: usize,
+    targets: Vec<DropTarget>,
     pub preview: DropPreview,
+}
+
+impl TileDrag {
+    fn target(&self) -> &DropTarget {
+        &self.targets[self.current]
+    }
 }
 
 impl ec_abyss_render::drop::DropGuides for TileDrag {
@@ -79,16 +105,16 @@ impl ec_abyss_render::drop::DropGuides for TileDrag {
         self.armed
     }
     fn output(&self) -> &Output {
-        &self.output
+        &self.target().output
     }
     fn ghost(&self) -> Option<Rectangle<i32, Logical>> {
         self.preview.ghost
     }
     fn tiles(&self) -> &[(Window, Rectangle<i32, Logical>)] {
-        &self.tiles
+        &self.target().tiles
     }
     fn area(&self) -> Rectangle<i32, Logical> {
-        self.area
+        self.target().area
     }
     fn band(&self) -> i32 {
         self.band
@@ -241,6 +267,43 @@ pub(crate) fn drop_candidates<W: Clone + PartialEq>(
     home.into_iter().chain(drops).collect()
 }
 
+/// Every output a Radiant drag of `window` could land on, precomputed here
+/// once per drag. The source is always in the list; another output is left
+/// out only when it is powered off (COMP-03 §4).
+fn drop_targets(state: &AbyssState, source: u64, window: &Window) -> Vec<DropTarget> {
+    let g = &state.config.general;
+    let (gap_x, gap_y, band) = (g.gaps_in, g.gaps_in_y(), g.drop_edge_band);
+    state
+        .outputs
+        .iter()
+        .filter(|e| e.id == source || e.powered)
+        .filter_map(|e| {
+            let bounds = state.space.output_geometry(&e.output)?;
+            let (ws, kind) = active_layout(state, e.id)?;
+            let radiant = matches!(kind, LayoutKind::Radiant);
+            let (area, tiles, candidates) = if radiant {
+                let area = tiling_area(state, &e.output);
+                let tree = &e.workspaces[ws].tiled;
+                let tiles = tree.radiant(area, gap_x, gap_y);
+                let candidates = drop_candidates(tree, window, &tiles, area, gap_x, gap_y, band);
+                (area, tiles, candidates)
+            } else {
+                (Rectangle::default(), Vec::new(), Vec::new())
+            };
+            Some(DropTarget {
+                output: e.output.clone(),
+                id: e.id,
+                ws,
+                radiant,
+                bounds,
+                area,
+                tiles,
+                candidates,
+            })
+        })
+        .collect()
+}
+
 /// Start a Radiant drag for `window` if it qualifies: tiled (or floating with
 /// Super held) on the active workspace of a Radiant output, and neither
 /// fullscreen.
@@ -264,33 +327,25 @@ fn start_tile_drag(state: &mut AbyssState, window: &Window) {
         return;
     };
     // Every allocation of the drag happens here, once per drag, and in
-    // `drop_window` on release; motion only looks up `ghosts`. The float-on-
-    // first-motion path this replaces allocated on every motion.
-    let output = entry.output.clone();
-    let area = tiling_area(state, &output);
-    let bounds = state.space.output_geometry(&output).unwrap_or_default();
-    let gap_x = state.config.general.gaps_in;
-    let gap_y = state.config.general.gaps_in_y();
-    let band = state.config.general.drop_edge_band;
-    let tree = &state.outputs.get(id).expect("just resolved").workspaces[ws].tiled;
-    let tiles = tree.radiant(area, gap_x, gap_y);
-    let candidates = drop_candidates(tree, window, &tiles, area, gap_x, gap_y, band);
+    // `drop_window` on release; motion only scans the candidates.
+    let targets = drop_targets(state, id, window);
+    let Some(source) = targets.iter().position(|t| t.id == id) else {
+        return;
+    };
     if !floating {
         // The tile crop would clip the window to where it used to be.
         set_tile_clip(window, None);
     }
+    let band = state.config.general.drop_edge_band;
     state.tile_drag = Some(TileDrag {
         window: window.clone(),
-        output,
         id,
-        ws,
         floating,
         armed: true,
-        bounds,
-        area,
         band,
-        tiles,
-        candidates,
+        source,
+        current: source,
+        targets,
         preview: DropPreview {
             key: DropKey::Stay,
             ghost: None,
@@ -300,24 +355,41 @@ fn start_tile_drag(state: &mut AbyssState, window: &Window) {
     crate::backend::damage_all(state);
 }
 
-/// Re-aim the drag at a window centred at `aim`: a scan of the precomputed
-/// candidates. No allocation.
+/// Re-aim the drag at a window centred at `aim`. The output under the centre
+/// is the target; the nearest candidate on it is the drop. A scan of the
+/// precomputed candidates. Crossing onto another output re-tells the window
+/// its scale (an Arc clone, on the rare crossing only).
 fn update_drop_target(state: &mut AbyssState, aim: Point<f64, Logical>) {
     let Some(drag) = state.tile_drag.as_mut() else {
         return;
     };
+    let current = drag
+        .targets
+        .iter()
+        .position(|t| t.bounds.to_f64().contains(aim))
+        .unwrap_or(drag.source);
+    let retarget = current != drag.current;
+    if retarget {
+        drag.current = current;
+        // Hysteresis is per output: a candidate on another tree means nothing.
+        drag.preview.key = DropKey::Stay;
+    }
+    let t = drag.target();
     let key = if drag.armed {
-        aim_drop(drag.bounds, &drag.candidates, drag.preview.key, aim)
+        aim_drop(t.bounds, &t.candidates, drag.preview.key, aim)
     } else {
         DropKey::Stay
     };
-    let ghost = drag
+    let ghost = t
         .candidates
         .iter()
         .find(|c| c.key == key)
         .map(|c| c.ghost)
         .filter(|_| drag.armed);
-    if key == drag.preview.key && ghost == drag.preview.ghost {
+    if retarget {
+        fractional_scale::update_window_scale(&drag.window, &t.output);
+    }
+    if !retarget && key == drag.preview.key && ghost == drag.preview.ghost {
         return;
     }
     drag.preview = DropPreview { key, ghost };
@@ -356,35 +428,122 @@ pub fn drag_tile(state: &mut AbyssState, window: &Window, loc: Point<i32, Logica
 
 /// The end of an interactive move: land the window on the previewed drop
 /// target, so the drop is exactly what the guides showed, or snap it back to
-/// its placeholder. A floating window only tiles if Super is still held.
-/// Always ends the drag.
+/// its placeholder. A floating window only tiles if Super is still held. A
+/// drop on another output lands there: tiled on that output's tree when it
+/// tiles, else floating. Always ends the drag.
 pub fn drop_window(state: &mut AbyssState, window: &Window) {
     let Some(drag) = state.tile_drag.take() else {
         return;
     };
-    let tile_it = &drag.window == window && !state.lock.locked && (!drag.floating || main_mod_held(state));
-    if tile_it {
-        let key = drag.preview.key;
-        if let Some(entry) = state.outputs.get_mut(drag.id) {
-            if entry.active == drag.ws {
-                let ws = &mut entry.workspaces[drag.ws];
-                let held = if drag.floating {
-                    ws.floating.iter().any(|f| f.window == drag.window)
-                } else {
-                    ws.tiled.contains(&drag.window)
-                };
-                // Applied to a copy and committed whole, so a drop whose
-                // target vanished mid-drag changes nothing at all.
-                let mut tree = ws.tiled.clone();
-                if held && apply_drop(&mut tree, &drag.window, key, &drag.tiles) {
-                    ws.tiled = tree;
-                    ws.floating.retain(|f| f.window != drag.window);
-                    tracing::debug!(?key, "radiant drop");
-                }
+    if &drag.window == window && !state.lock.locked {
+        let tile_it = !drag.floating || main_mod_held(state);
+        let to = drag.target().id;
+        if to == drag.id {
+            if tile_it {
+                tile_on_source(state, &drag);
             }
+        } else if !(tile_it && land_tiled(state, &drag)) {
+            move_to_output(state, window, to);
         }
     }
+    focus_pointer_output(state);
     arrange(state);
+}
+
+/// Output focus follows the pointer again once a drag is over: while it ran,
+/// pointer motion left focus alone (`input::pointer_moved`), so a drop that
+/// leaves the window where it was would otherwise keep the old output focused
+/// until the next motion.
+fn focus_pointer_output(state: &mut AbyssState) {
+    let Some(id) = state
+        .space
+        .output_under(state.pointer_location)
+        .next()
+        .and_then(|o| state.outputs.by_output(o))
+        .map(|e| e.id)
+    else {
+        return;
+    };
+    if state.outputs.set_focused(id) {
+        let name = state
+            .outputs
+            .get(id)
+            .map(|e| e.connector.clone())
+            .unwrap_or_default();
+        crate::ipc::emit(
+            state,
+            "output",
+            serde_json::json!({ "focused": id, "name": name }),
+        );
+    }
+}
+
+/// Apply a drop on the source output's tree: the window tiles where it aims,
+/// or stays where it is when the drop changes nothing.
+fn tile_on_source(state: &mut AbyssState, drag: &TileDrag) {
+    let target = drag.target();
+    let Some(entry) = state.outputs.get_mut(drag.id) else {
+        return;
+    };
+    if entry.active != target.ws {
+        return;
+    }
+    let ws = &mut entry.workspaces[target.ws];
+    let held = if drag.floating {
+        ws.floating.iter().any(|f| f.window == drag.window)
+    } else {
+        ws.tiled.contains(&drag.window)
+    };
+    // Applied to a copy and committed whole, so a drop whose target vanished
+    // mid-drag changes nothing at all.
+    let mut tree = ws.tiled.clone();
+    if held && apply_drop(&mut tree, &drag.window, drag.preview.key, &target.tiles) {
+        ws.tiled = tree;
+        ws.floating.retain(|f| f.window != drag.window);
+        tracing::debug!(key = ?drag.preview.key, "radiant drop");
+    }
+}
+
+/// Tile the dragged window onto a Radiant output other than its own: the drop
+/// applies to that output's tree, and the window leaves the source's. False,
+/// with nothing changed, when the drop has no tile there.
+fn land_tiled(state: &mut AbyssState, drag: &TileDrag) -> bool {
+    let target = drag.target();
+    if !target.radiant || drag.preview.key == DropKey::Stay {
+        return false;
+    }
+    let Some(dst) = state.outputs.get(target.id) else {
+        return false;
+    };
+    // Powered off mid-drag: the window would be arranged onto a dark output.
+    if dst.active != target.ws || !dst.powered {
+        return false;
+    }
+    let mut tree = dst.workspaces[target.ws].tiled.clone();
+    if !apply_drop(&mut tree, &drag.window, drag.preview.key, &target.tiles) {
+        return false;
+    }
+    let src_ws = drag.targets[drag.source].ws;
+    let Some(src) = state.outputs.get_mut(drag.id) else {
+        return false;
+    };
+    if !src.workspaces[src_ws].holds(&drag.window) {
+        return false;
+    }
+    let src_output = src.output.clone();
+    src.workspaces[src_ws].remove(&drag.window);
+    let Some(dst) = state.outputs.get_mut(target.id) else {
+        return false;
+    };
+    let dst_output = dst.output.clone();
+    dst.workspaces[target.ws].tiled = tree;
+    super::anim::leave_output(state, &drag.window, &src_output, &dst_output);
+    state.space.unmap_elem(&drag.window);
+    state.outputs.set_focused(target.id);
+    arrange(state);
+    super::anim::arrive_on_output(state, &drag.window);
+    tracing::info!(output = target.id, "radiant drop onto another output");
+    true
 }
 
 /// The output a window whose centre is `centre` lands on when released: the
@@ -401,11 +560,63 @@ pub(crate) fn landing_output(
         .map(|(id, _)| *id)
 }
 
+/// Move `window` from the output that holds it to output `to`'s active
+/// workspace, floating, at the rectangle it has now (kept inside `to`'s usable
+/// area). A tiled window's rectangle is the one it is drawn at. Focus goes
+/// with the window (`COMP-05 §5.1`). False when there is nothing to move.
+pub(crate) fn move_to_output(state: &mut AbyssState, window: &Window, to: u64) -> bool {
+    let Some(from) = output_of_window(state, window) else {
+        return false;
+    };
+    if from == to || !state.outputs.get(to).is_some_and(|e| e.powered) {
+        return false;
+    }
+    let src = state.outputs.get(from).expect("just resolved");
+    let (src_output, src_ws) = (src.output.clone(), src.active);
+    let floating = src.workspaces[src_ws]
+        .floating
+        .iter()
+        .find(|f| &f.window == window)
+        .map(|f| (f.rect, f.placement));
+    let (rect, placement) = match floating {
+        Some(placed) => placed,
+        None => {
+            let Some(content) = state.space.element_geometry(window) else {
+                return false;
+            };
+            let border = state.config.general.border_size;
+            let bar = titlebar::bar_height(state, window);
+            (outer_of_content(content, border, bar), Placement::Free)
+        }
+    };
+    let dst = state.outputs.get(to).expect("checked above");
+    let (dst_output, dst_ws) = (dst.output.clone(), dst.active);
+    // A drag keeps the stored rectangle in global coordinates (`place_at`), so
+    // it is already where the window was dropped: only clamp it to the target.
+    layer_map_for_output(&dst_output).arrange();
+    let area = tiling_area(state, &dst_output);
+    let rect = super::de::carried_rect(rect, Point::default(), area);
+    state.outputs.get_mut(from).expect("just resolved").workspaces[src_ws].remove(window);
+    super::anim::leave_output(state, window, &src_output, &dst_output);
+    state.space.unmap_elem(window);
+    let dst = state.outputs.get_mut(to).expect("checked above");
+    dst.workspaces[dst_ws].floating.push(super::workspace::Floating {
+        window: window.clone(),
+        rect,
+        weight: None,
+        placement,
+    });
+    state.outputs.set_focused(to);
+    arrange(state);
+    super::anim::arrive_on_output(state, window);
+    tracing::info!(output = to, "floating window moved to output");
+    true
+}
+
 /// A floating window released over another output moves to that output's
-/// active workspace. Its rectangle is carried across by the offset between the
-/// two outputs and kept inside the target's usable area, as
-/// `move_to_output_workspace` does. Tiled windows keep their output. Focus goes
-/// with the window (`COMP-05 §5.1`).
+/// active workspace (`move_to_output`). Tiled windows keep their output here;
+/// a drag onto another output is `drop_window`'s. Only for a move that ran no
+/// tile drag.
 pub fn land_on_output(state: &mut AbyssState, window: &Window) {
     if state.lock.locked {
         return;
@@ -416,48 +627,25 @@ pub fn land_on_output(state: &mut AbyssState, window: &Window) {
     let Some(geo) = state.space.element_geometry(window) else {
         return;
     };
+    let floating = state.outputs.get(from).is_some_and(|e| {
+        e.workspaces[e.active]
+            .floating
+            .iter()
+            .any(|f| &f.window == window)
+    });
+    if !floating {
+        return;
+    }
+    // A powered-off output takes no window (COMP-03 §4).
     let outputs: Vec<(u64, Rectangle<i32, Logical>)> = state
         .outputs
         .iter()
+        .filter(|e| e.powered)
         .filter_map(|e| state.space.output_geometry(&e.output).map(|g| (e.id, g)))
         .collect();
-    let Some(to) = landing_output(&outputs, from, centre(geo)) else {
-        return;
-    };
-    let src = state.outputs.get(from).expect("just resolved");
-    let (src_output, src_active) = (src.output.clone(), src.active);
-    let Some((rect, placement)) = src.workspaces[src_active]
-        .floating
-        .iter()
-        .find(|f| &f.window == window)
-        .map(|f| (f.rect, f.placement))
-    else {
-        return;
-    };
-    let dst = state.outputs.get(to).expect("from the geometry list");
-    let (dst_output, dst_active) = (dst.output.clone(), dst.active);
-    // A drag keeps the stored rectangle in global coordinates (`place_at`), so
-    // it is already where the window was dropped: only clamp it to the target.
-    layer_map_for_output(&dst_output).arrange();
-    let area = tiling_area(state, &dst_output);
-    let rect = super::de::carried_rect(rect, Point::default(), area);
-    let src = state.outputs.get_mut(from).expect("just resolved");
-    src.workspaces[src_active].remove(window);
-    super::anim::leave_output(state, window, &src_output, &dst_output);
-    state.space.unmap_elem(window);
-    let dst = state.outputs.get_mut(to).expect("from the geometry list");
-    dst.workspaces[dst_active]
-        .floating
-        .push(super::workspace::Floating {
-            window: window.clone(),
-            rect,
-            weight: None,
-            placement,
-        });
-    state.outputs.set_focused(to);
-    arrange(state);
-    super::anim::arrive_on_output(state, window);
-    tracing::info!(output = to, "floating window moved to output on drop");
+    if let Some(to) = landing_output(&outputs, from, centre(geo)) {
+        move_to_output(state, window, to);
+    }
 }
 
 /// Abandon a drag in flight (grab cancelled, session locked): the window goes
@@ -466,6 +654,7 @@ pub fn cancel_tile_drag(state: &mut AbyssState) {
     // The `de` screen-edge preview is a drag overlay too.
     super::quicktile::clear_preview(state);
     if state.tile_drag.take().is_some() {
+        focus_pointer_output(state);
         arrange(state);
     }
 }

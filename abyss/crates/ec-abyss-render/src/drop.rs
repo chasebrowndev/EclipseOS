@@ -26,13 +26,14 @@ use super::{effects, AbyssRenderElement};
 pub trait DropGuides {
     /// Whether a drop would tile the window right now.
     fn armed(&self) -> bool;
-    /// The output the drag started on.
+    /// The output the guides are drawn on: the one under the window's centre,
+    /// which is the source output while the window is over it.
     fn output(&self) -> &Output;
     /// The landing tile, global logical coordinates, if anything would tile.
     fn ghost(&self) -> Option<Rectangle<i32, Logical>>;
-    /// Every tile of the layout captured at drag start.
+    /// Every tile of the layout on `output()`, captured at drag start.
     fn tiles(&self) -> &[(Window, Rectangle<i32, Logical>)];
-    /// The tiling area the tiles were laid out in.
+    /// The tiling area the tiles of `output()` were laid out in.
     fn area(&self) -> Rectangle<i32, Logical>;
     /// Edge band width, logical px; 0 disables the bands.
     fn band(&self) -> i32;

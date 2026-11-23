@@ -2572,16 +2572,9 @@ fn window_elements(
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
     let deco = &config.decoration;
-    // Only windows that reach this output get any decoration work: one that
-    // sits on another output must not paint its backdrop, shadow, glow, border
-    // or dim here.
-    let live = windows_on_output(
-        space,
-        output_geo,
-        // A window not yet laid out has no owner and is drawn wherever it lands.
-        |w| userdata::owner_output(w).is_none_or(|o| &o == output),
-        |w| store.anim.transform(w).loc(),
-    );
+    // Only windows that reach this output get any decoration work. A window
+    // across a seam reaches both outputs and is drawn, cut to each one, on both.
+    let live = windows_on_output(space, output_geo, |w| store.anim.transform(w).loc());
     // The output's own rectangle, output-local physical: nothing of a window
     // (surface tree, popups, decorations) is ever drawn outside it.
     let out_rect = Rectangle::new(
@@ -3474,18 +3467,17 @@ fn window_elements(
     close_rec(&mut open, out.len(), wins);
 }
 
-/// Windows that `owned` says belong on this output and whose geometry (moved
-/// by their animation `offset`) reaches `output_geo`, bottom to top. Everything per-output about a window starts
-/// from this list.
+/// Windows whose geometry (moved by their animation `offset`) overlaps
+/// `output_geo`, bottom to top. Everything per-output about a window starts
+/// from this list. The rule is overlap, the same one `window_on` applies to
+/// the scanout and missing-texture checks.
 fn windows_on_output<E: SpaceElement + PartialEq + Clone>(
     space: &Space<E>,
     output_geo: Rectangle<i32, Logical>,
-    owned: impl Fn(&E) -> bool,
     offset: impl Fn(&E) -> Point<i32, Logical>,
 ) -> Vec<E> {
     space
         .elements()
-        .filter(|w| owned(w))
         .filter(|w| {
             space.element_geometry(w).is_some_and(|mut geo| {
                 geo.loc += offset(w);
@@ -3494,6 +3486,16 @@ fn windows_on_output<E: SpaceElement + PartialEq + Clone>(
         })
         .cloned()
         .collect()
+}
+
+/// Whether `window`'s geometry overlaps `output`: the one rule for "this
+/// window is on this output", shared by drawing and the mixed-GPU checks.
+fn window_on(space: &Space<Window>, window: &Window, output: &Output) -> bool {
+    space.output_geometry(output).is_some_and(|out| {
+        space
+            .element_geometry(window)
+            .is_some_and(|geo| geo.overlaps(out))
+    })
 }
 
 /// A cropped window's popups, cut to the output only when they might leave it.
@@ -4056,7 +4058,7 @@ pub fn scanout_candidate(space: &Space<Window>, output: &Output, config: &Config
         return None;
     }
     let geo = space.output_geometry(output)?;
-    let window = space.elements_for_output(output).last()?;
+    let window = space.elements().rev().find(|w| window_on(space, w, output))?;
     // A translucent strip is composited by us, like any other alpha.
     if userdata::strip_of(window).is_some() {
         return None;
@@ -4079,7 +4081,7 @@ pub fn scanout_candidate(space: &Space<Window>, output: &Output, config: &Config
 /// offered to the importer, which would log a warning for it on every frame.
 pub fn surfaces_missing_texture(space: &Space<Window>, output: &Output, renderer: &mut GlesRenderer) -> bool {
     use smithay::wayland::seat::WaylandFocus;
-    for window in space.elements_for_output(output) {
+    for window in space.elements().filter(|w| window_on(space, w, output)) {
         let Some(root) = window.wl_surface() else {
             continue;
         };
@@ -4774,7 +4776,7 @@ mod tests {
     }
 
     #[test]
-    fn a_window_on_another_output_gets_no_elements_here() {
+    fn a_window_across_a_seam_is_drawn_on_both_outputs() {
         let a = virtual_output("A");
         let b = virtual_output("B");
         let mut space: Space<Fake> = Space::default();
@@ -4783,38 +4785,20 @@ mod tests {
         let a_geo = space.output_geometry(&a).unwrap();
         let b_geo = space.output_geometry(&b).unwrap();
         let none = |_: &Fake| Point::from((0, 0));
-
         space.map_element(Fake(1), (2100, 400), false);
         space.map_element(Fake(2), (1820, 400), false);
-        // Fake 1 belongs to B, fake 2 to A.
-        let owned_by = |name: &'static str| move |w: &Fake| (w.0 == 1) == (name == "B");
-        // Wholly on B.
-        let only_one = |w: Fake| move |x: &Fake| *x == w;
-        let on = |geo, name, w: Fake| {
-            windows_on_output(
-                &space,
-                geo,
-                |x: &Fake| owned_by(name)(x) && only_one(w.clone())(x),
-                none,
-            )
-        };
-        assert!(on(a_geo, "A", Fake(1)).is_empty());
-        assert_eq!(on(b_geo, "B", Fake(1)), vec![Fake(1)]);
-
-        // Owned by A but hanging 100 px into B's rectangle (300 wide at x=1820,
-        // y=400): B draws none of it, A still does.
-        assert!(on(b_geo, "B", Fake(2)).is_empty());
-        assert_eq!(on(a_geo, "A", Fake(2)), vec![Fake(2)]);
-        // The crop rect that bounds it on A is A's own, so nothing lands on B.
+        let ids = |geo| -> Vec<u32> { windows_on_output(&space, geo, none).iter().map(|w| w.0).collect() };
+        // Wholly on B: only B has it.
+        assert_eq!(ids(a_geo), vec![2]);
+        assert_eq!(ids(b_geo), vec![1, 2]);
+        // Fake 2 hangs 100 px into B's rectangle. It is drawn on both outputs,
+        // and each output cuts it to its own rectangle, so nothing lands on the
+        // wrong one.
         let overhang = space.element_geometry(&Fake(2)).unwrap();
         assert!(!a_geo.contains_rect(overhang) && a_geo.intersection(overhang).is_some());
-
-        // An animation offset can carry an owned window onto this output.
+        // An animation offset can carry a window onto this output.
         let slide = |_: &Fake| Point::from((-400, 0));
-        assert_eq!(
-            windows_on_output(&space, a_geo, |w: &Fake| w.0 == 1, slide).len(),
-            1
-        );
+        assert_eq!(windows_on_output(&space, a_geo, slide).len(), 2);
     }
 
     #[test]

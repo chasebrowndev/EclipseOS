@@ -634,7 +634,10 @@ impl AbyssState {
             .next()
             .and_then(|o| self.outputs.by_output(o))
             .map(|e| e.id);
-        if let Some(id) = under_output {
+        // Not while a drag is running: the grab keeps the window's focus where
+        // it was, and the output follows the drop instead (`shell::drop_window`).
+        let dragging = self.pointer_grab_active || self.tile_drag.is_some();
+        if let Some(id) = under_output.filter(|_| !dragging) {
             if self.outputs.set_focused(id) {
                 // Only on a real transition: the unchanged path must not
                 // allocate, and this is pointer motion.

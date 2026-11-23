@@ -11,7 +11,6 @@ use std::cell::Cell;
 use ec_abyss_config::BlurRule;
 use smithay::{
     desktop::{LayerMap, LayerSurface as DesktopLayerSurface, Window},
-    output::Output,
     utils::{Logical, Point, Rectangle},
 };
 
@@ -146,19 +145,6 @@ pub struct QuickTiled(pub Cell<bool>);
 /// Is `window` Quick Tiled by placement?
 pub fn is_quick_tiled(window: &Window) -> bool {
     window.user_data().get::<QuickTiled>().is_some_and(|c| c.0.get())
-}
-
-/// The output whose workspace laid this window out. Render draws a window on
-/// that output only and cuts it to that output's rectangle, so no part of it
-/// shows again on a neighbouring monitor sharing the global space.
-pub struct OwnerOutput(pub Cell<Option<Output>>);
-
-/// The output that owns `window`, once a layout pass has placed it.
-pub fn owner_output(window: &Window) -> Option<Output> {
-    let owner = window.user_data().get::<OwnerOutput>()?;
-    let out = owner.0.take();
-    owner.0.set(out.clone());
-    out
 }
 
 /// An explicit position for a layer surface, over and above the arrangement

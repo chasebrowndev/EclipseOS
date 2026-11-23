@@ -541,6 +541,10 @@ fn target_at(
         return None;
     }
     let output = super::output_at(state, pointer)?;
+    // A powered-off output takes no edge tile (COMP-03 §4).
+    if !state.outputs.by_output(&output).is_some_and(|e| e.powered) {
+        return None;
+    }
     let bounds = state.space.output_geometry(&output)?;
     let outer = outer_edges(state, bounds, pointer);
     let target = edge_target(bounds, outer, pointer, g.edge_tile_distance)?;
@@ -593,6 +597,11 @@ pub fn drop_preview(state: &mut AbyssState, window: &Window) {
     crate::backend::damage_all(state);
     if &preview.window != window {
         return;
+    }
+    // The preview is aimed at the output under the pointer. The window moves
+    // there first, so the zone (or maximize) is computed on that output.
+    if let Some(to) = state.outputs.by_output(&preview.output).map(|e| e.id) {
+        super::move_to_output(state, window, to);
     }
     match preview.target {
         EdgeTarget::Tile(zone) => {
