@@ -421,6 +421,12 @@ pub const WIDGET: BlockKind = BlockKind {
     node: "widget",
 };
 
+/// `wallpaper { output "<name>" { … } }` (ADR 0104): a per-output override.
+pub const WALLPAPER_OUTPUT: BlockKind = BlockKind {
+    parent: "wallpaper",
+    node: "output",
+};
+
 /// A string as a KDL literal, always quoted — `exec "curl"`, never the bare
 /// identifier kdl would pick — so a written block reads like the docs.
 pub fn quote(s: &str) -> String {
@@ -1239,6 +1245,94 @@ bar {
         assert_eq!(
             move_block(BAR, WIDGET, "cpu", 2),
             Err(EditError::Index { index: 2, len: 2 })
+        );
+    }
+
+    const WALL: &str = "\
+// my wallpaper
+wallpaper {
+    path \"~/Pictures/a.png\" // global
+    // the laptop panel
+    output \"eDP-1\" {
+        mode \"fit\" // fit it
+    }
+    output \"DP-1\" { color \"#112233\"; }
+}
+// the end
+";
+
+    #[test]
+    fn wallpaper_upsert_creates_the_section_when_missing() {
+        let out = upsert_block(
+            "// mine\ngeneral { gaps-in 5; }\n",
+            WALLPAPER_OUTPUT,
+            "DP-1",
+            &lines(&["path \"~/x.png\"", "mode \"center\""]),
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "// mine\ngeneral { gaps-in 5; }\nwallpaper {\n    output \"DP-1\" {\n        path \"~/x.png\"\n        mode \"center\"\n    }\n}\n"
+        );
+    }
+
+    #[test]
+    fn wallpaper_upsert_adds_a_block_and_keeps_comments_byte_for_byte() {
+        let out = upsert_block(WALL, WALLPAPER_OUTPUT, "HDMI-A-1", &lines(&["mode \"fill\""])).unwrap();
+        assert_eq!(
+            out,
+            WALL.replacen(
+                "    output \"DP-1\" { color \"#112233\"; }\n",
+                "    output \"DP-1\" { color \"#112233\"; }\n    output \"HDMI-A-1\" {\n        mode \"fill\"\n    }\n",
+                1
+            )
+        );
+        assert_eq!(diff_runs(WALL, &out), 1);
+        assert_eq!(
+            block_names(&out, WALLPAPER_OUTPUT).unwrap(),
+            ["eDP-1", "DP-1", "HDMI-A-1"]
+        );
+    }
+
+    #[test]
+    fn wallpaper_upsert_replaces_one_block_in_place() {
+        let out = upsert_block(WALL, WALLPAPER_OUTPUT, "eDP-1", &lines(&["path \"/x.png\""])).unwrap();
+        assert_eq!(
+            out,
+            WALL.replace(
+                "    output \"eDP-1\" {\n        mode \"fit\" // fit it\n    }\n",
+                "    output \"eDP-1\" {\n        path \"/x.png\"\n    }\n"
+            )
+        );
+        assert!(out.contains("    // the laptop panel\n"), "{out}");
+        // The same block again is byte-identical.
+        assert_eq!(
+            upsert_block(&out, WALLPAPER_OUTPUT, "eDP-1", &lines(&["path \"/x.png\""])).unwrap(),
+            out
+        );
+    }
+
+    #[test]
+    fn wallpaper_upsert_collapses_duplicates_and_writes_an_empty_block() {
+        let text = "wallpaper {\n    output \"DP-1\" { mode \"fit\"; }\n    output \"DP-1\" { color \"#112233\"; }\n}\n";
+        let out = upsert_block(text, WALLPAPER_OUTPUT, "DP-1", &lines(&["mode \"center\""])).unwrap();
+        assert_eq!(
+            out,
+            "wallpaper {\n    output \"DP-1\" {\n        mode \"center\"\n    }\n}\n"
+        );
+        let out = upsert_block("", WALLPAPER_OUTPUT, "DP-1", &[]).unwrap();
+        assert_eq!(out, "wallpaper {\n    output \"DP-1\" {\n    }\n}\n");
+    }
+
+    #[test]
+    fn wallpaper_remove_deletes_every_block_of_the_name() {
+        let text = "wallpaper {\n    output \"DP-1\" { mode \"fit\"; }\n    output \"eDP-1\" { mode \"fill\"; }\n    output \"DP-1\" { color \"#112233\"; }\n}\n";
+        let out = remove_block(text, WALLPAPER_OUTPUT, "DP-1").unwrap();
+        assert_eq!(out, "wallpaper {\n    output \"eDP-1\" { mode \"fill\"; }\n}\n");
+        assert_eq!(block_names(&out, WALLPAPER_OUTPUT).unwrap(), ["eDP-1"]);
+        assert_eq!(
+            remove_block(WALL, WALLPAPER_OUTPUT, "HDMI-A-1"),
+            Err(EditError::NotFound("output \"HDMI-A-1\"".into()))
         );
     }
 

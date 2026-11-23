@@ -677,7 +677,7 @@ fn commit(
 /// Collections the socket can write, by node name. Anything else in
 /// `schema::COLLECTIONS` is readable but refused here; a collection joins
 /// this list with its own entry renderer and a row in `collection_write`.
-const WRITABLE_COLLECTIONS: &[&str] = &["widget"];
+const WRITABLE_COLLECTIONS: &[&str] = &["widget", "wallpaper.output"];
 
 /// Lists that name widgets by id: a removal drops `custom:<name>` from them
 /// and a rename rewrites it, in the same write (ADR 0065).
@@ -686,6 +686,8 @@ const WIDGET_ID_LISTS: &[&str] = &["bar.widgets.order", "bar.widgets.important"]
 /// Create, replace, rename, reorder or delete one entry of a collection
 /// (COMP-13 §1.4; ADR 0065). Params:
 /// `{collection, op: "upsert"|"remove"|"rename"|"move", name, entry?, new_name?, index?, dry_run?}`.
+/// `wallpaper.output` takes only `upsert` and `remove`, with `name` a connector.
+/// A write that leaves the file byte-identical is not written or reloaded.
 fn set_config_collection(state: &mut AbyssState, outer: Decision, params: &Value) -> Reply {
     let collection = str_param(params, "collection")
         .ok_or_else(|| RpcError::invalid_params("collection must be a string"))?;
@@ -709,7 +711,15 @@ fn set_config_collection(state: &mut AbyssState, outer: Decision, params: &Value
         .unwrap_or(false);
 
     let before = std::fs::read_to_string(&target).unwrap_or_default();
-    let (previous, after, references) = widget_edit(state, params, &before)?;
+    let (previous, after, references) = match collection {
+        "widget" => widget_edit(state, params, &before)?,
+        "wallpaper.output" => wallpaper_output_edit(state, params, &before)?,
+        other => {
+            return Err(RpcError::invalid_params(&format!(
+                "collection {other:?} is not settable over the socket yet"
+            )))
+        }
+    };
 
     if dry_run {
         let errors = Config::check_text_with(&target, coll.owner, &after, &state.config.catalog);
@@ -724,15 +734,105 @@ fn set_config_collection(state: &mut AbyssState, outer: Decision, params: &Value
         }));
     }
 
-    commit(state, &target, &before, &after)?;
+    // Nothing to change (a removal of an override that is not there, or the
+    // one already written): no write, no reload, no `config` event.
+    let applied = after != before;
+    if applied {
+        commit(state, &target, &before, &after)?;
+    }
     Ok(json!({
         "file": target.display().to_string(),
         "previous": previous,
         "references": references,
-        "applied": true,
+        "applied": applied,
         "valid": true,
         "errors": [],
     }))
+}
+
+/// Render one `wallpaper.output` op onto `before`: `(previous entry, new
+/// text, no id lists)`. `upsert` replaces the whole override block for
+/// `name` and `remove` deletes every block of it (a later duplicate would
+/// otherwise take effect in its place); `remove` of a name not in the file
+/// changes nothing.
+fn wallpaper_output_edit(
+    state: &AbyssState,
+    params: &Value,
+    before: &str,
+) -> Result<(Value, String, Vec<&'static str>), RpcError> {
+    let kind = edit::WALLPAPER_OUTPUT;
+    let name = str_param(params, "name")
+        .filter(|s| !s.is_empty() && !s.chars().any(|c| c.is_whitespace() || c == '*'))
+        .ok_or_else(|| {
+            RpcError::invalid_params("name must be a connector name such as \"DP-1\" (no spaces, no glob)")
+        })?;
+    let op = str_param(params, "op").ok_or_else(|| RpcError::invalid_params("op must be a string"))?;
+    let e = |e: edit::EditError| RpcError::invalid_params(&e.to_string());
+    let previous = state
+        .config
+        .wallpaper
+        .outputs
+        .iter()
+        .find(|o| o.name == name)
+        .map_or(Value::Null, wallpaper_output_json);
+
+    let after = match op {
+        "upsert" => {
+            let body = wallpaper_entry_body(obj(params).get("entry").filter(|v| !v.is_null()))?;
+            edit::upsert_block(before, kind, name, &body).map_err(e)?
+        }
+        "remove" => {
+            let present = edit::block_names(before, kind)
+                .map_err(e)?
+                .iter()
+                .any(|n| n.as_str() == name);
+            if present {
+                edit::remove_block(before, kind, name).map_err(e)?
+            } else {
+                before.to_owned()
+            }
+        }
+        other => {
+            return Err(RpcError::invalid_params(&format!(
+                "op must be \"upsert\" or \"remove\" for wallpaper.output, not {other:?}"
+            )))
+        }
+    };
+    Ok((previous, after, Vec::new()))
+}
+
+/// A `wallpaper.output` entry → the lines of its block. Each key is checked
+/// as its `wallpaper.*` key is (`path` a string, `mode` one of the modes,
+/// `color` `#rrggbb[aa]`), and written only when given: an absent or `null`
+/// key is left out of the block, so it inherits the global value.
+fn wallpaper_entry_body(entry: Option<&Value>) -> Result<Vec<String>, RpcError> {
+    const KEYS: &[(&str, &str)] = &[
+        ("path", "wallpaper.path"),
+        ("mode", "wallpaper.mode"),
+        ("color", "wallpaper.color"),
+    ];
+    let Some(entry) = entry else { return Ok(Vec::new()) };
+    let m = entry
+        .as_object()
+        .ok_or_else(|| RpcError::invalid_params("entry must be an object"))?;
+    if let Some(k) = m.keys().find(|k| !KEYS.iter().any(|(f, _)| *f == k.as_str())) {
+        return Err(RpcError::invalid_params(&format!(
+            "unknown entry field {k:?}; expected path, mode or color"
+        )));
+    }
+    let mut body = Vec::new();
+    for &(field, path) in KEYS {
+        let Some(raw) = m.get(field).filter(|v| !v.is_null()) else {
+            continue;
+        };
+        let v = coerce(raw, &lookup_key(path)?.ty)
+            .map_err(|err| RpcError::invalid_params(&format!("entry.{field}: {}", err.message)))?;
+        let s = v
+            .as_string()
+            .ok_or_else(|| RpcError::invalid_params(&format!("entry.{field} must be a string")))?;
+        body.push(format!("{field} {}", edit::quote(s)));
+    }
+    Ok(body)
 }
 
 /// Render one `widget` op onto `before`: `(previous entry, new text, the id
@@ -1717,6 +1817,263 @@ mod tests {
             json!([{"output": "DP-1", "path": null, "mode": "fit", "color": "#112233ff"}])
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn wall_harness(
+        tag: &str,
+        text: &str,
+    ) -> (crate::shell::focus::state_tests::Harness, std::path::PathBuf) {
+        let mut h = crate::shell::focus::state_tests::harness();
+        let dir = std::env::temp_dir().join(format!("abyss-wall-{tag}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("abyss.kdl");
+        std::fs::write(&file, text).unwrap();
+        h.state.config = Config::load(Some(&file));
+        (h, file)
+    }
+
+    fn wall(h: &mut crate::shell::focus::state_tests::Harness, params: Value) -> Reply {
+        let mut p = params;
+        p["collection"] = json!("wallpaper.output");
+        set_config_collection(&mut h.state, Decision::Allow, &p)
+    }
+
+    fn wall_served(h: &mut crate::shell::focus::state_tests::Harness) -> Value {
+        get_config(&mut h.state, Decision::Allow, &json!({}))
+            .ok()
+            .unwrap()["collections"]["wallpaper.output"]
+            .clone()
+    }
+
+    const WALL_FILE: &str = "// mine\nwallpaper {\n    path \"~/Pictures/a.png\" // global\n    // laptop\n    output \"eDP-1\" {\n        mode \"fit\" // fit\n    }\n}\n// end\n";
+
+    /// Upsert creates the section in a file without one, serves the entry back
+    /// through `get_config`, inherits what is not given, and replaces in place.
+    #[test]
+    fn wallpaper_output_upsert_round_trips_and_inherits() {
+        let (mut h, file) = wall_harness("upsert", "// mine\ngeneral { gaps-in 5; }\n");
+        crate::ipc::capture::take();
+        let got = wall(
+            &mut h,
+            json!({"op": "upsert", "name": "DP-1",
+                   "entry": {"path": "~/Pictures/x.png", "mode": "fit", "color": "#112233"}}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(got["applied"], json!(true));
+        assert_eq!(got["previous"], Value::Null);
+        assert_eq!(got["references"], json!([]));
+        assert_eq!(
+            crate::ipc::capture::take()
+                .iter()
+                .filter(|(k, _)| k == "config")
+                .count(),
+            1
+        );
+        assert_eq!(
+            wall_served(&mut h),
+            json!([{"output": "DP-1", "path": "~/Pictures/x.png", "mode": "fit", "color": "#112233ff"}])
+        );
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert_eq!(
+            text,
+            "// mine\ngeneral { gaps-in 5; }\nwallpaper {\n    output \"DP-1\" {\n        path \"~/Pictures/x.png\"\n        mode \"fit\"\n        color \"#112233\"\n    }\n}\n"
+        );
+
+        // Replace: previous is the old entry; null and absent keys are left out
+        // of the block, so they inherit the global wallpaper.
+        let got = wall(
+            &mut h,
+            json!({"op": "upsert", "name": "DP-1", "entry": {"path": null, "mode": "center", "color": null}}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(got["previous"]["mode"], json!("fit"));
+        assert_eq!(
+            wall_served(&mut h),
+            json!([{"output": "DP-1", "path": null, "mode": "center", "color": null}])
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "// mine\ngeneral { gaps-in 5; }\nwallpaper {\n    output \"DP-1\" {\n        mode \"center\"\n    }\n}\n"
+        );
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// Comments and formatting around the block survive; a second output is
+    /// added beside the first, and a duplicate pair collapses to one.
+    #[test]
+    fn wallpaper_output_keeps_comments_and_handles_duplicates() {
+        let (mut h, file) = wall_harness("comments", WALL_FILE);
+        let got = wall(
+            &mut h,
+            json!({"op": "upsert", "name": "DP-1", "entry": {"mode": "fill"}}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(got["previous"], Value::Null);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.starts_with("// mine\nwallpaper {\n    path \"~/Pictures/a.png\" // global\n    // laptop\n    output \"eDP-1\" {\n        mode \"fit\" // fit\n    }\n"), "{text}");
+        assert!(text.ends_with("}\n// end\n"), "{text}");
+        assert_eq!(wall_served(&mut h).as_array().unwrap().len(), 2);
+
+        std::fs::write(
+            &file,
+            "wallpaper {\n    output \"DP-1\" { mode \"fit\"; }\n    output \"DP-1\" { color \"#112233\"; }\n}\n",
+        )
+        .unwrap();
+        h.state.config = Config::load(Some(&file));
+        assert_eq!(
+            wall_served(&mut h),
+            json!([{"output": "DP-1", "path": null, "mode": "fit", "color": "#112233ff"}])
+        );
+        wall(
+            &mut h,
+            json!({"op": "upsert", "name": "DP-1", "entry": {"mode": "center"}}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "wallpaper {\n    output \"DP-1\" {\n        mode \"center\"\n    }\n}\n"
+        );
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// Bad input is refused before anything is written, naming the field.
+    #[test]
+    fn wallpaper_output_refuses_bad_input_without_writing() {
+        let (mut h, file) = wall_harness("refuse", WALL_FILE);
+        let bad = [
+            (
+                json!({"op": "upsert", "name": "DP-1", "entry": {"mode": "stretch"}}),
+                "entry.mode",
+            ),
+            (
+                json!({"op": "upsert", "name": "DP-1", "entry": {"color": "#ff88"}}),
+                "entry.color",
+            ),
+            (
+                json!({"op": "upsert", "name": "DP-1", "entry": {"path": 5}}),
+                "entry.path",
+            ),
+            (
+                json!({"op": "upsert", "name": "DP-1", "entry": {"opacity": 1}}),
+                "opacity",
+            ),
+            (
+                json!({"op": "upsert", "name": "DP-1", "entry": "fit"}),
+                "entry must be an object",
+            ),
+            (json!({"op": "upsert", "name": "", "entry": {}}), "name"),
+            (json!({"op": "upsert", "name": "  ", "entry": {}}), "name"),
+            (json!({"op": "upsert", "name": "DP-*", "entry": {}}), "name"),
+            (json!({"op": "upsert", "entry": {}}), "name"),
+            (json!({"op": "rename", "name": "DP-1", "new_name": "x"}), "op"),
+            (json!({"name": "DP-1"}), "op"),
+        ];
+        for (params, why) in bad {
+            let e = wall(&mut h, params.clone()).unwrap_err();
+            assert_eq!(e.code, super::super::INVALID_PARAMS, "{params}");
+            assert!(e.message.contains(why), "{params}: {}", e.message);
+        }
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), WALL_FILE);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// `dry_run` reports what the write would do and writes nothing. A file
+    /// that already fails to load gets the same refusal from both paths.
+    #[test]
+    fn wallpaper_output_dry_run_writes_nothing() {
+        let (mut h, file) = wall_harness("dry", WALL_FILE);
+        crate::ipc::capture::take();
+        let got = wall(
+            &mut h,
+            json!({"op": "upsert", "name": "DP-1", "entry": {"mode": "center"}, "dry_run": true}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(
+            (got["applied"].clone(), got["valid"].clone()),
+            (json!(false), json!(true))
+        );
+        assert_eq!(got["errors"], json!([]));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), WALL_FILE);
+        assert!(crate::ipc::capture::take().iter().all(|(k, _)| k != "config"));
+
+        let broken = "wallpaper {\n    mode \"stretch\"\n}\n";
+        std::fs::write(&file, broken).unwrap();
+        h.state.config = Config::load(Some(&file));
+        let got = wall(
+            &mut h,
+            json!({"op": "upsert", "name": "DP-1", "entry": {"mode": "center"}, "dry_run": true}),
+        )
+        .unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(got["valid"], json!(false));
+        assert!(!got["errors"].as_array().unwrap().is_empty());
+        let real = wall(
+            &mut h,
+            json!({"op": "upsert", "name": "DP-1", "entry": {"mode": "center"}}),
+        );
+        assert!(real.is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), broken);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// `remove` deletes every block of the name and reports the merged entry it
+    /// had; removing a name that is not there is not an error and writes nothing.
+    #[test]
+    fn wallpaper_output_remove_deletes_all_and_is_a_no_op_when_absent() {
+        let (mut h, file) = wall_harness("remove", WALL_FILE);
+        std::fs::write(
+            &file,
+            "wallpaper {\n    output \"DP-1\" { mode \"fit\"; }\n    output \"eDP-1\" { mode \"fill\"; }\n    output \"DP-1\" { color \"#112233\"; }\n}\n",
+        )
+        .unwrap();
+        h.state.config = Config::load(Some(&file));
+        let got =
+            wall(&mut h, json!({"op": "remove", "name": "DP-1"})).unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(got["applied"], json!(true));
+        assert_eq!(
+            got["previous"],
+            json!({"output": "DP-1", "path": null, "mode": "fit", "color": "#112233ff"})
+        );
+        assert_eq!(
+            wall_served(&mut h),
+            json!([{"output": "eDP-1", "path": null, "mode": "fill", "color": null}])
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "wallpaper {\n    output \"eDP-1\" { mode \"fill\"; }\n}\n"
+        );
+
+        crate::ipc::capture::take();
+        let before = std::fs::read_to_string(&file).unwrap();
+        let got =
+            wall(&mut h, json!({"op": "remove", "name": "DP-1"})).unwrap_or_else(|e| panic!("{}", e.message));
+        assert_eq!(
+            (got["applied"].clone(), got["previous"].clone()),
+            (json!(false), Value::Null)
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+        assert!(crate::ipc::capture::take().iter().all(|(k, _)| k != "config"));
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
+    }
+
+    /// The collection write takes the same file gate as `set_config_value`: a
+    /// denied outer decision writes nothing, and nothing is read or opened.
+    #[test]
+    fn wallpaper_output_write_is_gated() {
+        let (mut h, file) = wall_harness("gate", WALL_FILE);
+        let mut p = json!({"collection": "wallpaper.output", "op": "remove", "name": "eDP-1"});
+        let e = set_config_collection(
+            &mut h.state,
+            Decision::Deny("peer uid is not the session owner"),
+            &p,
+        )
+        .unwrap_err();
+        assert_eq!(e.code, super::super::DENIED);
+        let body: Value = serde_json::from_str(&e.message).expect("structured denial");
+        assert_eq!(body["file"], "abyss");
+        p["op"] = json!("upsert");
+        assert!(set_config_collection(&mut h.state, Decision::Deny("x"), &p).is_err());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), WALL_FILE);
+        let _ = std::fs::remove_dir_all(file.parent().unwrap());
     }
 
     /// D-07 §4: `setup.*` is readable, defaults are served, a write round-trips
