@@ -1033,6 +1033,7 @@ dependencies = [
 name = "ec-greeter"
 version = "0.2.2"
 dependencies = [
+ "ec-glance",
  "ec-layout",
  "ec-theme",
  "libc",
@@ -1104,6 +1105,7 @@ name = "ec-lock"
 version = "0.2.2"
 dependencies = [
  "ec-glance",
+ "ec-greeter",
  "ec-ipc",
  "ec-layout",
  "ec-theme",
@@ -1173,6 +1175,7 @@ dependencies = [
  "apoth-config",
  "ec-abyss-config",
  "ec-config-schema",
+ "ec-glance",
  "ec-greeter",
  "ec-greeter-ui",
  "ec-ipc",

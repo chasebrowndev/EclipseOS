@@ -55,3 +55,6 @@ ADR 0024 (the compositor's fallback when it dies). Protocol: Vol 1's
 - `tests/headless.rs` needs `EC_ABYSS_BIN` and is `#[ignore]`d; run it with
   `-- --ignored` after building `ec-abyss`.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.
+- The clock face follows the login screen's clock preset: read-only from `/var/lib/eclipse/greeter/settings.toml` via
+  `ec_greeter::Settings::parse` and `ec_greeter::clock_format`; a missing or invalid file means the default (12-hour with date).
+  Strings and sizing come from `ec_glance::clock` and `ec_glance::tile`, shared with the greeter and the builder preview.

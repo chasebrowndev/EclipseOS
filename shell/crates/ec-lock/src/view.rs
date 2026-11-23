@@ -52,6 +52,7 @@
 use iced::widget::{button, column, container, pin, responsive, row, stack, text, Space};
 use iced::{alignment, Alignment, Color, Element, Font, Length, Shadow, Size, Theme, Vector};
 
+use ec_glance::tile::{self, BatteryPlan, Inner, WifiPlan};
 use ec_glance::{clean, Charge};
 use ec_layout::{Kind, Rect};
 use ec_ui::theme::{self, CellTone};
@@ -62,7 +63,7 @@ use crate::app::{App, Message, Status};
 use crate::clock::Reading;
 use crate::face::{self, Face};
 use crate::machine::Reason;
-use crate::tokens::{self, cell, scale};
+use crate::tokens::{self, cell};
 
 /// The field's marker, as in the secret prompt.
 const MARKER: &str = "\u{203a}";
@@ -167,13 +168,10 @@ fn tiles<'a>(s: Scene<'a>, output: Size) -> Element<'a, Message, Theme> {
     stack(out).width(Length::Fill).height(Length::Fill).into()
 }
 
-/// The inner margin of a pane: a share of its short side, clamped, and never
-/// more than a fifth of that side, so a one-row tile keeps its content.
+/// The inner margin of a pane: the shared rule (`ec_glance::tile::pad_for`),
+/// so the lock, the greeter and the builder preview agree.
 fn pad_for(w: f32, h: f32) -> f32 {
-    let short = w.min(h).max(0.0);
-    (short * tokens::PAD_FRACTION)
-        .clamp(tokens::PAD_MIN, tokens::PAD_MAX)
-        .min(short * tokens::PAD_SHARE_MAX)
+    tile::pad_for(w, h)
 }
 
 /// Clamp `avail` into `[lo, hi]`, but never above `avail` itself: a size is a
@@ -183,10 +181,12 @@ fn fit_in(avail: f32, lo: f32, hi: f32) -> f32 {
     avail.min(hi).max(lo.min(avail))
 }
 
-/// `fit_in` of the smaller of a height share and a width share.
-fn fit(h: f32, w: f32, h_share: f32, w_share: f32, lo: f32, hi: f32) -> f32 {
-    fit_in((h * h_share).min(w * w_share), lo, hi)
-}
+/// The Glances' text sizes, for `ec_glance::tile`.
+const GLANCE_TYPE: tile::Type = tile::Type {
+    micro: size::MICRO,
+    body_small: size::BODY_SMALL,
+    body: size::BODY,
+};
 
 fn tile<'a>(s: Scene<'a>, kind: Kind, w: f32, h: f32, appeared: f32) -> Option<Element<'a, Message, Theme>> {
     let pad = pad_for(w, h);
@@ -389,22 +389,24 @@ fn label<'a>(s: impl Into<String>, px: f32, font: Font, ink: Color) -> Element<'
 
 fn clock<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
     let r = cx.s.clock;
-    let numeral = fit(
-        cx.ih,
-        cx.iw,
-        scale::CLOCK_H,
-        scale::CLOCK_W,
-        scale::CLOCK_MIN,
-        scale::CLOCK_MAX,
-    );
-    let mut col = column![label(r.time.clone(), numeral, font::UI_MEDIUM, color::text())]
-        .spacing(lock::DATE_GAP)
-        .align_x(Alignment::Center);
-    if !r.date.is_empty() {
-        let date = (numeral * scale::DATE_OF_CLOCK).clamp(scale::DATE_MIN, scale::DATE_MAX);
+    // The shared rules: sized against the widest strings of the 12/24-hour
+    // choice and the date, so the minute rolling over never moves it.
+    let plan = tile::clock(Inner { w: cx.iw, h: cx.ih }, r.format.twelve, r.format.date);
+    let mut col = column![label(
+        r.time.clone(),
+        plan.numeral,
+        font::UI_MEDIUM,
+        color::text()
+    )]
+    .spacing(tile::CLOCK_GAP);
+    if let (Some(date), false) = (plan.date, r.date.is_empty()) {
         col = col.push(label(r.date.clone(), date, font::UI, color::text_secondary()));
     }
-    container(col).center(Length::Fill).clip(true).into()
+    let c = container(col).width(Length::Fill).height(Length::Fill).clip(true);
+    match plan.align {
+        tile::Align::Centre => c.center(Length::Fill).into(),
+        tile::Align::BottomLeft => c.align_y(alignment::Vertical::Bottom).into(),
+    }
 }
 
 /// The account as one line: its disc, its name, and whether it is locked.
@@ -488,99 +490,122 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
 
 fn battery<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
     let snap = cx.s.face.glance();
+    let plan = tile::battery(Inner { w: cx.iw, h: cx.ih }, &snap.batteries, GLANCE_TYPE);
     let Some(first) = snap.batteries.first() else {
         return quiet("No battery");
     };
-    if cx.ih < cell::COMPACT_H {
-        // One row: the figure and, if there is room, the rail beside it.
-        let px = fit_in(cx.ih * cell::COMPACT_FIG, cell::COMPACT_MIN, scale::FIGURE_MAX);
-        let mut r = row![label(
-            format!("{}%", first.percent),
-            px,
-            font::DATA_MEDIUM,
-            color::text()
-        )]
-        .spacing(space::CONTROL_GAP)
-        .align_y(Alignment::Center);
-        if cx.iw >= cell::COMPACT_RAIL_W {
-            r = r.push(rail(first.percent));
+    match plan {
+        BatteryPlan::Empty => quiet("No battery"),
+        BatteryPlan::Compact {
+            figure,
+            rail: with_rail,
+        } => {
+            let mut r = row![label(
+                format!("{}%", first.percent),
+                figure,
+                font::DATA_MEDIUM,
+                color::text()
+            )]
+            .spacing(tile::CELL_GAP)
+            .align_y(Alignment::Center);
+            if with_rail {
+                r = r.push(rail(first.percent, tile::RAIL_H));
+            }
+            container(r).width(Length::Fill).center_y(Length::Fill).into()
         }
-        return container(r).center_y(Length::Fill).into();
-    }
-    let detail = cx.ih >= cell::DETAIL_MIN_H;
-    let mut col = column![micro("battery")]
-        .spacing(space::ROW_Y)
-        .height(Length::Fill);
-    if snap.batteries.len() == 1 {
-        let fig = fit(
-            cx.ih,
-            cx.iw,
-            scale::FIGURE_H,
-            scale::FIGURE_W,
-            scale::FIGURE_MIN,
-            scale::FIGURE_MAX,
-        );
-        col = col.push(label(
-            format!("{}%", first.percent),
-            fig,
-            font::DATA_MEDIUM,
-            color::text(),
-        ));
-        if detail {
-            col = col.push(rail(first.percent));
+        BatteryPlan::One {
+            figure,
+            rail: with_rail,
+            note,
+        } => {
+            let mut col = column![
+                micro("battery"),
+                Space::new().height(Length::Fill),
+                label(
+                    format!("{}%", first.percent),
+                    figure,
+                    font::DATA_MEDIUM,
+                    color::text()
+                ),
+            ]
+            .spacing(tile::GAP)
+            .height(Length::Fill);
+            if with_rail {
+                col = col.push(rail(first.percent, tile::RAIL_H));
+            }
+            if note {
+                col = col.push(label(
+                    tile::charge_note(first.charge),
+                    size::MICRO,
+                    font::UI,
+                    color::text_secondary(),
+                ));
+            }
+            col.into()
         }
-        col = col.push(label(
-            charge_text(first.charge),
-            size::MICRO,
-            font::UI,
-            color::text_secondary(),
-        ));
-    } else {
-        for b in snap.batteries.iter().take(cell::DEVICES_MAX) {
-            let name = if b.internal {
-                "Internal".to_owned()
-            } else {
-                clean(&b.name)
-            };
-            col = col.push(
-                row![
-                    label(name, size::BODY_SMALL, font::UI, color::text_secondary()),
-                    label(
-                        format!("{}%", b.percent),
-                        size::BODY,
-                        font::DATA_MEDIUM,
-                        color::text()
-                    ),
-                    label(
-                        if b.charge == Charge::Charging {
-                            "Charging"
-                        } else {
-                            ""
-                        },
-                        size::MICRO,
+        BatteryPlan::Many {
+            shown,
+            rail: with_rail,
+            tag,
+            gap,
+            name_chars,
+            scale,
+        } => {
+            let mut list = column![].spacing(gap);
+            for b in snap.batteries.iter().take(shown) {
+                let name = if b.internal {
+                    "Internal".to_owned()
+                } else {
+                    clean(&b.name)
+                };
+                let mut line = row![container(label(
+                    tile::truncate(&name, name_chars),
+                    size::BODY_SMALL * scale,
+                    font::UI,
+                    color::text_secondary()
+                ))
+                .width(Length::Fill)]
+                .spacing(tile::CELL_GAP)
+                .align_y(Alignment::Center);
+                if tag && b.charge == Charge::Charging {
+                    line = line.push(label(
+                        "Charging",
+                        size::MICRO * scale,
                         font::UI,
                         color::text_secondary(),
-                    ),
-                ]
-                .align_y(Alignment::Center)
-                .spacing(space::ROW_Y),
-            );
-            if detail {
-                col = col.push(rail(b.percent));
+                    ));
+                }
+                line = line.push(
+                    container(label(
+                        format!("{}%", b.percent),
+                        size::BODY * scale,
+                        font::DATA_MEDIUM,
+                        color::text(),
+                    ))
+                    .align_x(alignment::Horizontal::Right),
+                );
+                let mut group = column![line].spacing(tile::GAP);
+                if with_rail {
+                    group = group.push(rail(b.percent, tile::RAIL_H * scale));
+                }
+                list = list.push(group);
             }
+            column![micro("battery"), list]
+                .spacing(tile::GAP)
+                .height(Length::Fill)
+                .into()
         }
     }
-    col.into()
 }
 
 /// The charge rail: a track with the lit part in text ink.
-fn rail<'a>(percent: u8) -> Element<'a, Message, Theme> {
+fn rail<'a>(percent: u8, h: f32) -> Element<'a, Message, Theme> {
     let p = u16::from(percent.min(100));
     let mut bar = row![];
     if p > 0 {
         bar = bar.push(swatch(
             color::text(),
-            cell::RAIL_H / 2.0,
+            h / 2.0,
             Length::FillPortion(p),
             Length::Fill,
         ));
@@ -588,72 +613,51 @@ fn rail<'a>(percent: u8) -> Element<'a, Message, Theme> {
     if p < 100 {
         bar = bar.push(swatch(
             color::track(),
-            cell::RAIL_H / 2.0,
+            h / 2.0,
             Length::FillPortion(100 - p),
             Length::Fill,
         ));
     }
-    container(bar)
-        .width(Length::Fill)
-        .height(Length::Fixed(cell::RAIL_H))
-        .into()
-}
-
-fn charge_text(charge: Charge) -> &'static str {
-    match charge {
-        Charge::Charging => "Charging",
-        Charge::Discharging => "On battery",
-        Charge::Full => "Full",
-        Charge::Unknown => "Unknown",
-    }
+    container(bar).width(Length::Fill).height(Length::Fixed(h)).into()
 }
 
 fn wifi<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
-    let Some(link) = cx.s.face.glance().wifi else {
+    let link = cx.s.face.glance().wifi;
+    let plan = tile::wifi(Inner { w: cx.iw, h: cx.ih }, link.map(|l| l.percent), GLANCE_TYPE);
+    let (Some(link), WifiPlan::Compact { figure, bars, gap } | WifiPlan::Full { figure, bars, gap }) =
+        (link, plan)
+    else {
         return quiet("No link");
     };
-    let compact = cx.ih < cell::COMPACT_H;
-    let fig = if compact {
-        fit_in(cx.ih * cell::COMPACT_FIG, cell::COMPACT_MIN, scale::FIGURE_MAX)
-    } else {
-        fit(
-            cx.ih,
-            cx.iw,
-            scale::FIGURE_H,
-            scale::FIGURE_W,
-            scale::FIGURE_MIN,
-            scale::FIGURE_MAX,
-        )
-    };
-    let pct = usize::from(link.percent.min(100));
-    let lit = pct.div_ceil(cell::WIFI_STEP_PCT);
-    let mut bars = row![].spacing(cell::BAR_GAP).align_y(Alignment::End);
-    for i in 0..cell::WIFI_BARS {
-        let h = fig * (cell::BAR_BASE + cell::BAR_STEP * i as f32);
-        let ink = if i < lit { color::text() } else { color::track() };
-        bars = bars.push(swatch(
-            ink,
-            cell::BAR_RADIUS,
-            Length::Fixed(cell::BAR_W),
-            Length::Fixed(h),
-        ));
-    }
-    let figure = row![
-        label(
-            format!("{}%", link.percent),
-            fig,
-            font::DATA_MEDIUM,
-            color::text()
-        ),
-        bars,
-    ]
-    .spacing(space::BLOCK)
+    let mut figure_row = row![label(
+        format!("{}%", link.percent),
+        figure,
+        font::DATA_MEDIUM,
+        color::text()
+    )]
+    .spacing(gap)
     .align_y(Alignment::End);
-    if compact {
-        return container(figure).center_y(Length::Fill).into();
+    if let Some(b) = bars {
+        let mut bs = row![].spacing(b.gap).align_y(Alignment::End);
+        for i in 0..tile::WIFI_BARS {
+            let ink = if i < b.lit { color::text() } else { color::track() };
+            bs = bs.push(swatch(
+                ink,
+                cell::BAR_RADIUS,
+                Length::Fixed(b.w),
+                Length::Fixed(tile::bar_h(figure, i)),
+            ));
+        }
+        figure_row = figure_row.push(bs);
     }
-    column![micro("link"), figure]
-        .spacing(space::ROW_Y)
+    if matches!(plan, WifiPlan::Compact { .. }) {
+        return container(figure_row)
+            .width(Length::Fill)
+            .center_y(Length::Fill)
+            .into();
+    }
+    column![micro("link"), Space::new().height(Length::Fill), figure_row]
+        .spacing(tile::GAP)
         .height(Length::Fill)
         .into()
 }

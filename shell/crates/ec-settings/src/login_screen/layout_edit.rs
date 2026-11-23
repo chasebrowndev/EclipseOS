@@ -10,16 +10,9 @@
 use ec_layout::{place_with, resize_anchored_with, validate, Content, Kind, Layout, Rect, REQUIRED};
 
 /// What a content-sized tile is measured for in the editor: a laptop, a mouse
-/// and a keyboard ([`PREVIEW_BATTERIES`]). The greeter shows however many
+/// and a keyboard (the builder's "Several" sample). The greeter shows however many
 /// devices it finds, up to what fits at the tile's place (`ec_layout::fit`).
 pub const CONTENT: Content = Content::PREVIEW;
-
-/// The fake devices the Battery mock shows: kind, percent, charging.
-pub const PREVIEW_BATTERIES: [(ec_greeter_ui::gauge::DeviceKind, u8, bool); 3] = [
-    (ec_greeter_ui::gauge::DeviceKind::Laptop, 72, false),
-    (ec_greeter_ui::gauge::DeviceKind::Mouse, 40, false),
-    (ec_greeter_ui::gauge::DeviceKind::Keyboard, 85, true),
-];
 
 /// `l` with every content-sized tile's stored size set to what [`CONTENT`]
 /// needs, so the editor can read a tile's rectangle straight off the layout.

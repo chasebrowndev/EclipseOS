@@ -29,6 +29,19 @@ pub const MAX_SETTINGS: usize = 4096;
 pub const MAX_WIDTH: u32 = 3840;
 pub const MAX_HEIGHT: u32 = 2160;
 
+/// What a preset asks of the clock tile: the hour format and whether a date
+/// line shows. A missing preset is the shipped default, 12-hour with the date.
+/// The greeter, the lock screen and Settings' preview all ask here.
+pub fn clock_format(clock: Option<Clock>) -> ec_glance::clock::Format {
+    let (twelve, date) = match clock.unwrap_or(Clock::Date12) {
+        Clock::Time24 => (false, false),
+        Clock::Time12 => (true, false),
+        Clock::Date24 => (false, true),
+        Clock::Date12 => (true, true),
+    };
+    ec_glance::clock::Format { twelve, date }
+}
+
 /// A preset, never a free format: a bad strftime string could break the screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Clock {

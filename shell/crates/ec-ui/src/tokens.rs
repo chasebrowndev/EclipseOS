@@ -327,6 +327,14 @@ pub mod layout_edit {
     /// Mean glyph width of the chip label, as a share of its size.
     pub const CHIP_GLYPH: f32 = 0.56;
     pub const LABEL_SIZE: f32 = 10.0;
+    /// The caption column of the sample-data pills under the preview.
+    pub const SAMPLE_LABEL_W: f32 = 120.0;
+    /// The screen the preview stands in for: the greeter's reference window,
+    /// and the gap its tiles leave (`ec_layout::Rect::to_px`). The shared
+    /// sizing rules (`ec_glance::tile`) are asked in these px, then drawn
+    /// scaled by the preview's width over `REAL_W`.
+    pub const REAL_W: f32 = 1920.0;
+    pub const REAL_GAP: f32 = 8.0;
     /// Motion, in ms to settle: a tile following the pointer, a tile landing
     /// (bouncy), the hover light, the ghost's hop between cells, the dots.
     pub const FOLLOW_MS: u64 = 90;

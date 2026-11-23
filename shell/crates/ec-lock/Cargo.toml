@@ -32,6 +32,8 @@ ec-ui = { path = "../ec-ui" }
 # The tile layout and the Glances' readers (ADR 0126): both pure, no toolkit.
 ec-layout = { path = "../ec-layout" }
 ec-glance = { path = "../ec-glance" }
+# The login screen's settings reader, so the lock follows the same clock preset.
+ec-greeter = { path = "../ec-greeter" }
 # getuid, getpwuid_r, localtime_r, flock, and the PAM conversation's
 # calloc/free. libpam itself is linked by `src/pam.rs` (no binding crate).
 libc = "0.2"

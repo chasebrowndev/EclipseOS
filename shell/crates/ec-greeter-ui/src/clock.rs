@@ -1,70 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 //! The clock face: the time and date the greeter shows, in the operator's
-//! preset (`ec_greeter::Clock`). The zone rules come from the C library's
-//! `localtime_r`, as ec-lock's clock does.
+//! preset (`ec_greeter::Clock`). The strings are `ec_glance::clock`'s, the
+//! same ones the lock screen draws; the zone rules come from the C library's
+//! `localtime_r`.
 
+pub use ec_glance::clock::{Face, Format};
 use ec_greeter::Clock;
 
-const WEEKDAYS: [&str; 7] = [
-    "Sunday",
-    "Monday",
-    "Tuesday",
-    "Wednesday",
-    "Thursday",
-    "Friday",
-    "Saturday",
-];
-const MONTHS: [&str; 12] = [
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-];
-
-/// What a preset asks for: the hour format, and whether a date line shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Format {
-    pub twelve: bool,
-    pub date: bool,
-}
-
-impl Format {
-    /// A missing preset is the shipped default: 12-hour time with the date.
-    pub fn of(clock: Option<Clock>) -> Self {
-        match clock.unwrap_or(Clock::Date12) {
-            Clock::Time24 => Format {
-                twelve: false,
-                date: false,
-            },
-            Clock::Time12 => Format {
-                twelve: true,
-                date: false,
-            },
-            Clock::Date24 => Format {
-                twelve: false,
-                date: true,
-            },
-            Clock::Date12 => Format {
-                twelve: true,
-                date: true,
-            },
-        }
-    }
-}
-
-/// The text on the clock tile.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Face {
-    pub time: String,
-    pub date: String,
+/// What a preset asks for. A missing preset is the shipped default: 12-hour
+/// time with the date.
+pub fn format_of(clock: Option<Clock>) -> Format {
+    ec_greeter::clock_format(clock)
 }
 
 /// The face for the Unix time `secs` in the local zone. Falls back to an
@@ -93,29 +39,7 @@ fn local(secs: i64) -> Option<libc::tm> {
 
 /// The face for a broken-down local time. Pure, so the tests need no clock.
 pub fn render(tm: &libc::tm, format: Format) -> Face {
-    let hour = tm.tm_hour.clamp(0, 23) as u32;
-    let minute = tm.tm_min.clamp(0, 59) as u32;
-    let time = if format.twelve {
-        let h12 = match hour % 12 {
-            0 => 12,
-            h => h,
-        };
-        let suffix = if hour < 12 { "AM" } else { "PM" };
-        format!("{h12}:{minute:02} {suffix}")
-    } else {
-        format!("{hour:02}:{minute:02}")
-    };
-    let date = if format.date {
-        let weekday = WEEKDAYS
-            .get(tm.tm_wday.clamp(0, 6) as usize)
-            .copied()
-            .unwrap_or("");
-        let month = MONTHS.get(tm.tm_mon.clamp(0, 11) as usize).copied().unwrap_or("");
-        format!("{weekday}, {month} {}", tm.tm_mday.clamp(1, 31))
-    } else {
-        String::new()
-    };
-    Face { time, date }
+    ec_glance::clock::render(tm.tm_hour, tm.tm_min, tm.tm_wday, tm.tm_mon, tm.tm_mday, format)
 }
 
 #[cfg(test)]
@@ -183,7 +107,7 @@ mod tests {
     #[test]
     fn a_missing_preset_is_the_shipped_default() {
         assert_eq!(
-            Format::of(None),
+            format_of(None),
             Format {
                 twelve: true,
                 date: true

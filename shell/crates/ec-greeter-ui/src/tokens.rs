@@ -94,6 +94,16 @@ pub fn typed_mark(p: &ec_theme::Palette) -> Rgba {
     }
 }
 
+/// The Glances' text sizes. Their sizing rules are `ec_glance::tile`, shared with
+/// the lock screen and the layout builder's preview.
+pub const GLANCE_TYPE: ec_glance::tile::Type = ec_glance::tile::Type {
+    micro: size::MICRO,
+    body_small: size::BODY_SMALL,
+    body: size::BODY,
+};
+/// A signal bar's corner radius.
+pub const BAR_RADIUS: f32 = 2.0;
+
 /// The window size before the compositor says otherwise, logical px.
 pub const DEFAULT_WINDOW: (f32, f32) = (1920.0, 1080.0);
 
@@ -107,11 +117,7 @@ pub const PILL_RADIUS: f32 = 999.0;
 /// The gap a tile leaves on each side (`Rect::to_px`): neighbours sit 2x apart.
 pub const TILE_GAP: u32 = ec_layout::intrinsic::TILE_GAP_PX as u32;
 /// Card padding as a share of the card's short side, and its bounds.
-pub const PAD_FRACTION: f32 = 0.08;
-pub const PAD_MIN: f32 = 12.0;
-pub const PAD_MAX: f32 = 28.0;
 /// The pad never exceeds this share of the card's short side.
-pub const PAD_SHARE_MAX: f32 = 0.18;
 /// The hairline width of a rim painted without glass.
 pub const RIM: f32 = 1.0;
 /// Drop shadows painted without glass. The compositor casts them with glass on.
@@ -150,24 +156,11 @@ pub mod backdrop {
 /// width share, clamped. Fixed sizes are hints; a tile never gets a size it
 /// cannot hold.
 pub mod scale {
-    /// The clock numeral.
-    pub const CLOCK_H: f32 = 0.56;
-    pub const CLOCK_W: f32 = 0.26;
-    pub const CLOCK_MIN: f32 = 24.0;
-    pub const CLOCK_MAX: f32 = 180.0;
-    /// The date under the numeral, as a share of the numeral.
-    pub const DATE_OF_CLOCK: f32 = 0.16;
-    pub const DATE_MIN: f32 = 12.0;
-    pub const DATE_MAX: f32 = 28.0;
     /// The greeting line.
     pub const GREETING_H: f32 = 0.62;
     pub const GREETING_W: f32 = 0.07;
     pub const GREETING_MIN: f32 = 20.0;
     pub const GREETING_MAX: f32 = 44.0;
-    /// A Glance's figure: the battery's or the link's percentage.
-    pub const FIGURE_H: f32 = 0.42;
-    pub const FIGURE_MIN: f32 = 18.0;
-    pub const FIGURE_MAX: f32 = 96.0;
 }
 
 /// Inside a card: the field, the user rows, the pills, the Glances' parts.
@@ -199,17 +192,8 @@ pub mod cell {
     pub const SUBMIT_W_FRAC: f32 = 0.3;
     pub const SUBMIT_MIN: f32 = 72.0;
     pub const SUBMIT_MAX: f32 = 140.0;
-    /// Link quality per lit bar, percent.
-    pub const WIFI_STEP_PCT: usize = 25;
     /// The inner width at which the three power pills carry their full labels.
     pub const POWER_FULL_W: f32 = 300.0;
-    /// Link bars: how many, how tall (shares of the figure), and their gaps.
-    pub const WIFI_BARS: usize = 4;
-    pub const BAR_W: f32 = 5.0;
-    pub const BAR_GAP: f32 = 4.0;
-    pub const BAR_BASE: f32 = 0.35;
-    pub const BAR_STEP: f32 = 0.2;
-    pub const BAR_RADIUS: f32 = 2.0;
 }
 
 /// The battery gauge (`gauge.rs`). The sizes that fix the tile's footprint live
@@ -288,14 +272,10 @@ pub mod font {
 // Every clamp in the view takes its bounds in order; a reversed pair would
 // panic at run time, so the order is checked at compile time.
 const _: () = {
-    assert!(scale::CLOCK_MIN < scale::CLOCK_MAX);
     assert!(scale::GREETING_MIN < scale::GREETING_MAX);
-    assert!(scale::FIGURE_MIN < scale::FIGURE_MAX);
-    assert!(scale::DATE_MIN < scale::DATE_MAX);
     assert!(cell::FIELD_MIN < cell::FIELD_MAX);
     assert!(cell::ROW_MIN < cell::ROW_MAX);
     assert!(cell::SUBMIT_MIN < cell::SUBMIT_MAX);
-    assert!(PAD_MIN < PAD_MAX);
 };
 
 #[cfg(test)]
