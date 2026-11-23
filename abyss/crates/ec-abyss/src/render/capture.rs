@@ -782,10 +782,15 @@ fn copy_one(
         }
     }
 
-    // Render through the output's own transform so a capture is oriented the way
-    // the user sees the screen, not the way the GPU happens to store it.
+    // The target is the frame the client was told about (the mode as scanned
+    // out), and the tracker draws the output's own transform into it exactly as
+    // the scanout path does, so the buffer holds the rotated signal and the
+    // transform returned below is what a client applies to make it upright. A
+    // target of `transform_size(mode.size)` is a different shape from the
+    // advertised frame and from the viewport the tracker draws into: on a
+    // rotated output the requested region fell partly outside it.
     let transform = output.current_transform();
-    let fb_size = transform.transform_size(mode.size);
+    let fb_size = mode.size;
     let mut target: smithay::backend::renderer::gles::GlesTexture = Offscreen::create_buffer(
         renderer,
         FORMAT,
