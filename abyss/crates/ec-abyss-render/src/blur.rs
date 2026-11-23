@@ -546,6 +546,11 @@ impl Shape {
         &self.rects[..self.len]
     }
 
+    /// The shorter side of the smallest box, physical px.
+    pub fn shortest_box(&self) -> Option<i32> {
+        self.rects().iter().map(|r| r.size.w.min(r.size.h)).min()
+    }
+
     /// The smallest rectangle holding every box.
     pub fn bounds(&self) -> Option<Rectangle<i32, Physical>> {
         self.rects().iter().copied().reduce(|a, b| a.merge(b))

@@ -1613,6 +1613,16 @@ fn insert_blur(
                         Some(_) => (look.strength, look.bevel),
                         None => (look.strength, look.bevel),
                     };
+                    // A joined shape (a bar and its drawer) bends and bevels by its
+                    // own boxes, not its bounding box: opening a drawer must not
+                    // change how deep the bar's own edge refracts.
+                    let (strength, bevel) = match shape.as_ref().and_then(blur::Shape::shortest_box) {
+                        Some(short) => (
+                            effects::lens_strength(strength, short as f32),
+                            effects::lens_bevel(bevel, short as f32),
+                        ),
+                        None => (strength, bevel),
+                    };
                     let mut tuned = cfg.glass.clone();
                     tuned.dispersion = look.dispersion;
                     tuned.rim = look.rim;

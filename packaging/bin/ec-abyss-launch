@@ -21,6 +21,18 @@ set -eu
 
 say() { printf 'ec-abyss-launch: %s\n' "$*" >&2; }
 
+# The greeter user's home is /, which it cannot write, so Mesa had no shader
+# cache: the compositor's and the greeter's glass shaders were rebuilt on every
+# boot (~0.7 s before the login screen could draw). Point both at a cache the
+# package creates for it (greetd/tmpfiles.conf). Only when the cache is usable
+# and the user has no writable cache of their own; a missing directory changes
+# nothing.
+cache="${ECLIPSE_ROOT:-}/var/cache/eclipse-greeter"
+if [ -d "$cache" ] && [ -w "$cache" ] && [ ! -w "${XDG_CACHE_HOME:-${HOME:-/}/.cache}" ]; then
+    XDG_CACHE_HOME=$cache
+    export XDG_CACHE_HOME
+fi
+
 prev="${ECLIPSE_ROOT:-}/usr/lib/eclipse/previous/ec-abyss"
 window=${EC_ABYSS_FALLBACK_SECS:-10}
 
