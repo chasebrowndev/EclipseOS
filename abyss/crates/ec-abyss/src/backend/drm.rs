@@ -49,7 +49,7 @@ use smithay::{
             element::{texture::TextureRenderElement, Id, Kind, RenderElementStates},
             gles::GlesRenderer,
             utils::DamageBag,
-            Bind, ExportMem, ImportDma, ImportMem, Renderer, Texture, TextureMapping,
+            Bind, ExportMem, ImportDma, ImportMem, Renderer, Texture,
         },
         session::{libseat::LibSeatSession, Event as SessionEvent, Session},
         udev::{UdevBackend, UdevEvent},
@@ -2913,10 +2913,16 @@ fn render_secondary(
     let states = result.states.clone();
     // The pass reports damage accumulated over the slot's age, a superset of
     // what changed since the last frame the secondary saw, which is safe.
+    //
+    // The tracker damages the unrotated render space, while the transfer buffer
+    // holds the frame already rotated, so a rotated output moves each rectangle
+    // into the buffer first.
+    let rotation = out.output.current_transform();
     let damage: Vec<Rectangle<i32, BufferCoord>> = result
         .damage
         .map(|d| {
             d.iter()
+                .map(|r| gpu::damage_to_buffer(*r, rotation, size))
                 .map(|r| Rectangle::new((r.loc.x, r.loc.y).into(), (r.size.w, r.size.h).into()))
                 .collect()
         })
@@ -2936,7 +2942,6 @@ fn render_secondary(
     let mapping = primary
         .copy_framebuffer(&target, region, Fourcc::Abgr8888)
         .map_err(|err| anyhow!("reading back the transfer buffer: {err}"))?;
-    let flipped = mapping.flipped();
     let bytes = primary
         .map_texture(&mapping)
         .map_err(|err| anyhow!("mapping the read-back: {err}"))?;
@@ -2974,8 +2979,12 @@ fn render_secondary(
             size.h
         );
     }
+    // The pass renders into the dmabuf top-down, so the read-back is upright as
+    // read and the texture is never flagged y-inverted: GLES draws a y-inverted
+    // `import_memory` texture as one repeated row (Mesa and NVIDIA, on either
+    // GPU), which showed as vertical stripes on a secondary output.
     let texture = secondary
-        .import_memory(bytes, Fourcc::Abgr8888, (size.w, size.h).into(), flipped)
+        .import_memory(bytes, Fourcc::Abgr8888, (size.w, size.h).into(), false)
         .map_err(|err| anyhow!("uploading to the secondary GPU: {err}"))?;
     drop(target);
 
