@@ -50,7 +50,7 @@ use smithay::{
     wayland::compositor::{Cacheable, RectangleKind, RegionAttributes},
 };
 
-use crate::effects::GlassPreset;
+use crate::effects::{FbMap, GlassPreset};
 use crate::glass_profile::{GlassProfile, Rebuild};
 use crate::gpu_timer::Span;
 use ec_abyss_config::Blur;
@@ -91,10 +91,10 @@ pub fn grow(rect: Rectangle<i32, Physical>, radius: i32) -> Rectangle<i32, Physi
 }
 
 /// The part of the output a blur of `region` has to compute: `region` grown by
-/// `radius` and clamped to the `fb` output, as `(tex, phys)`. `phys` is that
-/// rectangle in output-local physical pixels; `tex` is the same pixels in the
-/// backdrop texture, which is stored bottom row first when `mirrored`
-/// (`Flipped180`, see [`crate::effects::fb_y_mirrored`]).
+/// `radius` and clamped to the render space, as `(tex, phys)`. `phys` is that
+/// rectangle in render-space physical pixels; `tex` is the same pixels in the
+/// backdrop texture, which is `gl_FragCoord` space (the framebuffer, mode
+/// size, see [`FbMap`]).
 ///
 /// `tex` is snapped outwards to the chain's coarsest level (`1 << passes`
 /// px), so every level samples the same pixel grid as an output-sized chain
@@ -104,19 +104,14 @@ pub fn grow(rect: Rectangle<i32, Physical>, radius: i32) -> Rectangle<i32, Physi
 pub fn crop_rects(
     region: Rectangle<i32, Physical>,
     radius: i32,
-    fb: Size<i32, Physical>,
+    fb: FbMap,
     passes: usize,
-    mirrored: bool,
 ) -> Option<(Rectangle<i32, Physical>, Rectangle<i32, Physical>)> {
-    let want = grow(region, radius).intersection(Rectangle::from_size(fb))?;
+    let want = grow(region, radius).intersection(Rectangle::from_size(fb.render_size()))?;
     if want.is_empty() {
         return None;
     }
-    let y = if mirrored {
-        fb.h - (want.loc.y + want.size.h)
-    } else {
-        want.loc.y
-    };
+    let want = fb.gl_rect(want);
     let d = 1i32 << passes.min(6);
     let snap = |lo: i32, len: i32, max: i32| {
         let a = lo.div_euclid(d) * d;
@@ -127,11 +122,10 @@ pub fn crop_rects(
         };
         (a, b - a)
     };
-    let (x, w) = snap(want.loc.x, want.size.w, fb.w);
-    let (ty, h) = snap(y, want.size.h, fb.h);
-    let tex = Rectangle::new((x, ty).into(), (w, h).into());
-    let py = if mirrored { fb.h - (ty + h) } else { ty };
-    Some((tex, Rectangle::new((x, py).into(), (w, h).into())))
+    let (x, w) = snap(want.loc.x, want.size.w, fb.fb.w);
+    let (y, h) = snap(want.loc.y, want.size.h, fb.fb.h);
+    let tex = Rectangle::new((x, y).into(), (w, h).into());
+    Some((tex, fb.phys_rect(tex)))
 }
 
 /// The blur invalidation rule (COMP-02 §3).
@@ -546,6 +540,11 @@ impl Shape {
         &self.rects[..self.len]
     }
 
+    /// The shorter side of the smallest box, physical px.
+    pub fn shortest_box(&self) -> Option<i32> {
+        self.rects().iter().map(|r| r.size.w.min(r.size.h)).min()
+    }
+
     /// The smallest rectangle holding every box.
     pub fn bounds(&self) -> Option<Rectangle<i32, Physical>> {
         self.rects().iter().copied().reduce(|a, b| a.merge(b))
@@ -814,8 +813,7 @@ pub fn member_crop(
     region: Rectangle<i32, Physical>,
     blur: &Blur,
     reach: i32,
-    fb: Size<i32, Physical>,
-    mirrored: bool,
+    fb: FbMap,
 ) -> Option<(Rectangle<i32, Physical>, Rectangle<i32, Physical>)> {
     let passes = blur.passes.clamp(1, 6) as usize;
     crop_rects(
@@ -823,23 +821,13 @@ pub fn member_crop(
         kernel_radius(blur).saturating_add(reach.max(0)),
         fb,
         passes,
-        mirrored,
     )
 }
 
 /// The texture-space twin of an output-space `crop` that is already snapped
-/// (as a union of [`member_crop`] crops is): the same flip [`crop_rects`] makes.
-pub fn crop_tex(
-    crop: Rectangle<i32, Physical>,
-    fb: Size<i32, Physical>,
-    mirrored: bool,
-) -> Rectangle<i32, Physical> {
-    let y = if mirrored {
-        fb.h - (crop.loc.y + crop.size.h)
-    } else {
-        crop.loc.y
-    };
-    Rectangle::new((crop.loc.x, y).into(), crop.size)
+/// (as a union of [`member_crop`] crops is): the same map [`crop_rects`] makes.
+pub fn crop_tex(crop: Rectangle<i32, Physical>, fb: FbMap) -> Rectangle<i32, Physical> {
+    fb.gl_rect(crop)
 }
 
 /// Sizes of a tier's built region are rounded up to this many pixels, so the
@@ -861,13 +849,8 @@ pub fn crop_margin(fb: Size<i32, Physical>) -> i32 {
 /// union of their snapped crops, output space): `needed` grown by the margin,
 /// on the chain grid, its size rounded up to [`CROP_BUCKET`] and kept on the
 /// output. Always contains `needed`.
-pub fn padded_crop(
-    needed: Rectangle<i32, Physical>,
-    fb: Size<i32, Physical>,
-    passes: usize,
-    mirrored: bool,
-) -> Rectangle<i32, Physical> {
-    let Some((_, grown)) = crop_rects(needed, crop_margin(fb), fb, passes, mirrored) else {
+pub fn padded_crop(needed: Rectangle<i32, Physical>, fb: FbMap, passes: usize) -> Rectangle<i32, Physical> {
+    let Some((_, grown)) = crop_rects(needed, crop_margin(fb.render_size()), fb, passes) else {
         return needed;
     };
     let d = 1i32 << passes.min(6);
@@ -881,8 +864,9 @@ pub fn padded_crop(
         let a = (max - want).div_euclid(d) * d;
         (a, (a + want).max(lo + len) - a)
     };
-    let (x, w) = fit(grown.loc.x, grown.size.w, fb.w);
-    let (y, h) = fit(grown.loc.y, grown.size.h, fb.h);
+    let render = fb.render_size();
+    let (x, w) = fit(grown.loc.x, grown.size.w, render.w);
+    let (y, h) = fit(grown.loc.y, grown.size.h, render.h);
     Rectangle::new((x, y).into(), (w, h).into())
 }
 
@@ -1155,8 +1139,9 @@ impl BlurStore {
     where
         E: Element + RenderElement<GlesRenderer>,
     {
+        let fb = crate::effects::output_fb_map(output)?;
         let (crop, strips, packed) = self.refresh(
-            renderer, output, key, region, behind, blur, scale, reach, ring, shape, preset,
+            renderer, output, fb, key, region, behind, blur, scale, reach, ring, shape, preset,
         )?;
         let entry = self.surfaces.get_mut(key)?;
         let mut none = Vec::new();
@@ -1203,6 +1188,7 @@ impl BlurStore {
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
+        fb: FbMap,
         key: &BlurKey,
         union: Rectangle<i32, Physical>,
         behind: &[E],
@@ -1220,7 +1206,7 @@ impl BlurStore {
         E: Element + RenderElement<GlesRenderer>,
     {
         let (crop, _, packed) = self.refresh(
-            renderer, output, key, union, behind, blur, scale, reach, None, None, preset,
+            renderer, output, fb, key, union, behind, blur, scale, reach, None, None, preset,
         )?;
         let entry = self.surfaces.get_mut(key)?;
         let texture = entry.result.clone()?;
@@ -1278,6 +1264,7 @@ impl BlurStore {
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
+        fb: FbMap,
         key: &BlurKey,
         region: Rectangle<i32, Physical>,
         behind: &[E],
@@ -1291,8 +1278,7 @@ impl BlurStore {
     where
         E: Element + RenderElement<GlesRenderer>,
     {
-        let mode = output.current_mode()?;
-        let fb_size = output.current_transform().transform_size(mode.size);
+        let fb_size = fb.fb;
         if fb_size.w <= 0 || fb_size.h <= 0 || region.size.w <= 0 || region.size.h <= 0 {
             return None;
         }
@@ -1302,11 +1288,10 @@ impl BlurStore {
         let blur = &tuned_blur;
         let passes = blur.passes.clamp(1, 6) as usize;
         self.ensure_chain(renderer, fb_size)?;
-        let mirrored = crate::effects::fb_y_mirrored(output.current_transform()) == Some(true);
         // Only this much of the backdrop is ever sampled (kernel plus the
         // final draw's own reach), so only this much is computed.
         let sampled = kernel_radius(blur).saturating_add(reach.max(0));
-        let (tex, crop) = crop_rects(region, sampled, fb_size, passes, mirrored)?;
+        let (tex, crop) = crop_rects(region, sampled, fb, passes)?;
 
         let entry = self.surfaces.entry(key.clone()).or_insert_with(|| SurfaceBlur {
             damage: OutputDamageTracker::from_output(output),
@@ -1361,7 +1346,17 @@ impl BlurStore {
             entry.pending = false;
             entry.last = frame;
             let reuse = entry.result.take();
-            let texture = self.rebuild(renderer, output, blur, scale, (tex, crop), behind, reuse, sharp)?;
+            let texture = self.rebuild(
+                renderer,
+                output,
+                blur,
+                scale,
+                (tex, crop),
+                behind,
+                reuse,
+                sharp,
+                fb.orient(),
+            )?;
             let entry = self.surfaces.get_mut(key)?;
             entry.result = Some(texture);
             entry.crop = Some(crop);
@@ -1391,8 +1386,9 @@ impl BlurStore {
     where
         E: Element + RenderElement<GlesRenderer>,
     {
-        let mode = output.current_mode()?;
-        let fb_size = output.current_transform().transform_size(mode.size);
+        // A quarter-turned output has no verified backdrop map yet (see above).
+        let fb = crate::effects::output_fb_map(output)?;
+        let fb_size = fb.fb;
         if fb_size.w <= 0 || fb_size.h <= 0 {
             return None;
         }
@@ -1402,12 +1398,11 @@ impl BlurStore {
         let blur = &tier_blur;
         let passes = blur.passes.clamp(1, 6) as usize;
         self.ensure_chain(renderer, fb_size)?;
-        let mirrored = crate::effects::fb_y_mirrored(output.current_transform()) == Some(true);
         let crops = || {
             members
                 .clone()
                 .filter(|m| !m.region.is_empty())
-                .filter_map(|m| member_crop(m.region, blur, m.reach, fb_size, mirrored))
+                .filter_map(|m| member_crop(m.region, blur, m.reach, fb))
                 .map(|(_, crop)| crop)
         };
         let needed = crops().reduce(|a, b| a.merge(b))?;
@@ -1488,9 +1483,9 @@ impl BlurStore {
             // A rebuild with nothing new to cover (damage) keeps its region.
             let crop = match entry.crop.filter(|_| !fresh) {
                 Some(built) => built,
-                None => padded_crop(needed, fb_size, passes, mirrored),
+                None => padded_crop(needed, fb, passes),
             };
-            let tex = crop_tex(crop, fb_size, mirrored);
+            let tex = crop_tex(crop, fb);
             let changed = self.rebuild_group(
                 renderer,
                 output,
@@ -1551,10 +1546,7 @@ impl BlurStore {
             ..
         } = self;
         let g = groups.get_mut(key)?;
-        let orient = match crate::effects::fb_y_mirrored(output.current_transform()) {
-            Some(true) => Transform::Flipped180,
-            _ => Transform::Normal,
-        };
+        let orient = crate::effects::output_fb_map(output).map_or(Transform::Normal, |fb| fb.orient());
         match render_group(
             renderer,
             output,
@@ -1661,6 +1653,7 @@ impl BlurStore {
         behind: &[E],
         reuse: Option<GlesTexture>,
         sharp: bool,
+        orient: Transform,
     ) -> Option<GlesTexture>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -1676,13 +1669,14 @@ impl BlurStore {
             profile,
             ..
         } = self;
-        if chain.len() >= MAX_CHAINS && !chain.contains_key(&(crop.size.w, crop.size.h, passes)) {
+        // The chain runs in framebuffer space, so its levels take the crop's
+        // framebuffer size (`tex`), which a quarter turn swaps against `crop`.
+        if chain.len() >= MAX_CHAINS && !chain.contains_key(&(tex.size.w, tex.size.h, passes)) {
             chain.clear();
         }
-        if let std::collections::hash_map::Entry::Vacant(slot) =
-            chain.entry((crop.size.w, crop.size.h, passes))
+        if let std::collections::hash_map::Entry::Vacant(slot) = chain.entry((tex.size.w, tex.size.h, passes))
         {
-            match alloc_levels(renderer, crop.size, passes) {
+            match alloc_levels(renderer, tex.size, passes) {
                 Ok(levels) => {
                     slot.insert(levels);
                 }
@@ -1699,15 +1693,11 @@ impl BlurStore {
         // first. The result is sampled back as a `Normal` texture, so the
         // last pass flips it upright; otherwise every window would blur
         // the vertical mirror image of what is behind it.
-        let orient = match crate::effects::fb_y_mirrored(output.current_transform()) {
-            Some(true) => Transform::Flipped180,
-            _ => Transform::Normal,
-        };
         match render_chain(
             renderer,
             tracker,
             level0.as_mut()?,
-            chain.get_mut(&(crop.size.w, crop.size.h, passes))?,
+            chain.get_mut(&(tex.size.w, tex.size.h, passes))?,
             (tex, crop),
             scale,
             down.as_ref()?,
@@ -1890,7 +1880,8 @@ where
         let (src, dst) = split_pair(mid, level, level - 1);
         blit_full(renderer, src, dst, Some(up), offset, Transform::Normal, None)?;
     }
-    let half = mid[0].size();
+    // The result is upright: a quarter turn swaps the framebuffer's extent.
+    let half = orient.transform_size(mid[0].size());
     // Packed (lens and regular glass): twice as wide, the lightly blurred level 1
     // beside the blurred result, as `render_group` lays it out.
     let wide = if sharp {
@@ -1991,6 +1982,11 @@ where
     let passes = blur.passes.clamp(1, 6) as usize;
     let offset = sample_offset(blur);
     let mirrored = orient == Transform::Flipped180;
+    // `orient` is the output's own transform; the map takes the render one.
+    let map = FbMap {
+        fb,
+        transform: orient.invert(),
+    };
     let mut full = full;
     let want = (crop.size, passes, fb);
     if g.built != Some(want) {
@@ -2044,14 +2040,9 @@ where
                     if full {
                         continue;
                     }
-                    // Output space to the texture's (flipped when mirrored).
+                    // Render space to the texture's `gl_FragCoord` space.
                     if let Some(c) = d.intersection(crop) {
-                        let y = if mirrored {
-                            fb.h - (c.loc.y + c.size.h)
-                        } else {
-                            c.loc.y
-                        };
-                        damage.push(Rectangle::new((c.loc.x, y).into(), c.size));
+                        damage.push(map.gl_rect(c));
                     }
                 }
             }
@@ -2434,6 +2425,50 @@ void main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The crop tests speak in the old `(fb size, mirrored)` pair: a quarter
+    // turn has its own tests on `FbMap`. These shims build the map for it.
+    fn map(fb: Size<i32, Physical>, mirrored: bool) -> FbMap {
+        let transform = if mirrored {
+            Transform::Flipped180
+        } else {
+            Transform::Normal
+        };
+        FbMap { fb, transform }
+    }
+    fn crop_rects(
+        region: Rectangle<i32, Physical>,
+        radius: i32,
+        fb: Size<i32, Physical>,
+        passes: usize,
+        mirrored: bool,
+    ) -> Option<(Rectangle<i32, Physical>, Rectangle<i32, Physical>)> {
+        super::crop_rects(region, radius, map(fb, mirrored), passes)
+    }
+    fn member_crop(
+        region: Rectangle<i32, Physical>,
+        blur: &Blur,
+        reach: i32,
+        fb: Size<i32, Physical>,
+        mirrored: bool,
+    ) -> Option<(Rectangle<i32, Physical>, Rectangle<i32, Physical>)> {
+        super::member_crop(region, blur, reach, map(fb, mirrored))
+    }
+    fn padded_crop(
+        needed: Rectangle<i32, Physical>,
+        fb: Size<i32, Physical>,
+        passes: usize,
+        mirrored: bool,
+    ) -> Rectangle<i32, Physical> {
+        super::padded_crop(needed, map(fb, mirrored), passes)
+    }
+    fn crop_tex(
+        crop: Rectangle<i32, Physical>,
+        fb: Size<i32, Physical>,
+        mirrored: bool,
+    ) -> Rectangle<i32, Physical> {
+        super::crop_tex(crop, map(fb, mirrored))
+    }
 
     fn r(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, Physical> {
         Rectangle::new((x, y).into(), (w, h).into())

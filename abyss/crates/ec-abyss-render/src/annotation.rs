@@ -510,9 +510,8 @@ pub fn annotation_elements(
     // Glass needs a blur to be configured at all, something to blur, and an
     // upright output (the mask works in `gl_FragCoord`, which a rotation
     // turns); otherwise the near-opaque fallback.
-    let transform = output.current_transform();
-    let mirrored = effects::fb_y_mirrored(transform);
-    let mut glass = config.decoration.blur.mode != BlurMode::Off && behind.is_some() && mirrored.is_some();
+    let fb_map = effects::output_fb_map(output);
+    let mut glass = config.decoration.blur.mode != BlurMode::Off && behind.is_some() && fb_map.is_some();
     if glass && store.gpu.glass.is_none() && !store.gpu.glass_failed {
         match effects::compile_hud_glass(renderer) {
             Ok(p) => store.gpu.glass = Some(p),
@@ -523,7 +522,6 @@ pub fn annotation_elements(
         }
     }
     glass &= store.gpu.glass.is_some();
-    let fb_height = transform.transform_size(mode.size).h;
     let blur_cfg = Blur {
         size: GLASS_BLUR_SIZE,
         passes: GLASS_BLUR_PASSES,
@@ -637,7 +635,7 @@ pub fn annotation_elements(
                 elements.push(element(prev, alpha * (1.0 - x)));
             }
             // The glass, directly behind the panel's own texture.
-            let (Some(program), Some(mirrored), Some(behind)) = (program.as_ref(), mirrored, behind) else {
+            let (Some(program), Some(fb_map), Some(behind)) = (program.as_ref(), fb_map, behind) else {
                 continue;
             };
             if !glass {
@@ -649,7 +647,7 @@ pub fn annotation_elements(
             let region: Rectangle<i32, Physical> =
                 Rectangle::new(loc, layout.panel.size.to_f64().to_physical(scale).to_i32_round());
             let radius = (hud::RADIUS as f64 * fractional) as f32;
-            let mut uniforms = effects::rounding_uniforms(region, fb_height, mirrored, radius);
+            let mut uniforms = effects::rounding_uniforms(region, fb_map, radius);
             let key = BlurKey::Annotation(id.0);
             let store = blur.entry(output.clone()).or_default();
             if let Some(b) = store.element(

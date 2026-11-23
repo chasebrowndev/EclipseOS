@@ -38,6 +38,11 @@ const TICK: Duration = Duration::from_secs(1);
 pub enum Msg {
     /// The window's id is known: bind its glass surface.
     Attach(window::Id),
+    /// The glass surface is bound (or was refused). Handling any message makes
+    /// iced redraw, which is what sends the panes the first frame had no
+    /// surface to send them to: a screen that is not animating would otherwise
+    /// stay without glass until the next input.
+    Attached,
     /// One animation frame.
     Frame(Instant),
     /// The clock's second.
@@ -61,6 +66,7 @@ impl std::fmt::Debug for Msg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
             Msg::Attach(_) => "Attach",
+            Msg::Attached => "Attached",
             Msg::Frame(_) => "Frame",
             Msg::Tick => "Tick",
             Msg::Resize(_) => "Resize",
@@ -307,7 +313,8 @@ impl App {
 
     pub(crate) fn update(&mut self, msg: Msg) -> Task<Msg> {
         match msg {
-            Msg::Attach(id) => return glass::attach_window(id).discard(),
+            Msg::Attach(id) => return glass::attach_window(id).map(|_| Msg::Attached),
+            Msg::Attached => {}
             Msg::Frame(now) => {
                 self.stage.step(now);
                 self.settle();

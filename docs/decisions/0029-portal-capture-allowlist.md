@@ -84,3 +84,20 @@ The COMP-10 capture prompt lands and consent becomes interactive — the allowli
 entry then stops being the grant and becomes a permission to prompt — or when
 `ext-image-copy-capture-v1` is implemented, at which point the portal path should
 be re-measured end to end and this ADR's stall finding retired.
+
+## Amendment, 2026-11-22 — our own producer is `DRIVER` without `TRIGGER`, and allocates its buffers
+The xdpw finding above stands: xdpw 0.8.3's wlr path stalls because it is `DRIVER`
+without `TRIGGER`. `ecl-desktop-portal` had copied the fix (`DRIVER | TRIGGER`,
+`ALLOC_BUFFERS`), and on libpipewire 1.6.11 that produced a stream that negotiated,
+showed `running` and `active`, and delivered nothing: OBS saw black. Two causes, both
+in `ecl-portal-screencast/src/pw.rs`:
+- `ALLOC_BUFFERS` means the application backs the buffers. With no `add_buffer`
+  handler they stayed `SPA_DATA_MemId`, the daemon logged `invalid memory type 4` and
+  the node fell back to Paused. Each buffer is now a mapped memfd, released in
+  `remove_buffer`.
+- With a consumer attached, 1134 `trigger_process()` calls returned `Ok` and
+  `process` ran zero times. `DRIVER` alone runs `process` for every frame. `TRIGGER`
+  is dropped; frames are still damage-driven from the capture pump.
+Checked at the PipeWire layer (private daemon, producer with a mock source, gst
+`pipewiresrc`: exact-size frames, A=255, a 2 s recording that ffprobe reads) and in a
+real OBS on the owner's session with the fixed binary installed.

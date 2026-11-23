@@ -77,7 +77,7 @@ use smithay::{
     },
     output::Output,
     reexports::wayland_server::protocol::wl_surface::WlSurface,
-    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size},
+    utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale, Size, Transform},
     wayland::{
         compositor::{with_states, SurfaceAttributes},
         dmabuf::DmabufFeedback,
@@ -586,16 +586,23 @@ fn fills_area(window: &Window) -> bool {
     window.x11_surface().is_some_and(|x| x.is_fullscreen())
 }
 
+/// Whether a bezel may be drawn on an output with `transform`. The painted
+/// border stays on a rotated output (VOL1 C-15, owner decision), so only the
+/// two transforms the glass is verified on count.
+fn painted_bezel_transform(transform: Transform) -> bool {
+    matches!(transform, Transform::Normal | Transform::Flipped180)
+}
+
 /// Whether `mode`'s backdrop program (glass or frost) can draw a bezel on
-/// `output` this frame: compiled on first use, and never on a rotated output
-/// (see [`effects::fb_y_mirrored`]).
+/// `output` this frame: compiled on first use. A bezel stays off a rotated
+/// output: COMP-02 / VOL1 C-15 keeps the painted border there (owner decision).
 fn bezel_ready(
     renderer: &mut GlesRenderer,
     store: &mut BorderStore,
     output: &Output,
     mode: BlurMode,
 ) -> bool {
-    if effects::fb_y_mirrored(output.current_transform()).is_none() || output.current_mode().is_none() {
+    if !painted_bezel_transform(output.current_transform()) || output.current_mode().is_none() {
         return false;
     }
     let gpu = &mut *store.gpu;
@@ -865,13 +872,13 @@ fn keyed_target(
     renderer: &mut GlesRenderer,
     store: &mut BorderStore,
     output: &Output,
-) -> Option<(smithay::backend::renderer::gles::GlesTexProgram, i32, bool)> {
-    let (mirrored, mode) = effects::fb_y_mirrored(output.current_transform()).zip(output.current_mode())?;
+) -> Option<(smithay::backend::renderer::gles::GlesTexProgram, effects::FbMap)> {
+    let fb = effects::output_fb_map(output)?;
     let program = store.gpu.keyed.get_or_insert_with(|| {
         effects::compile_keyed(renderer)
             .map_err(|err| tracing::warn!(?err, "compiling the keyed-glass shader; strip stays opaque"))
     });
-    Some((program.clone().ok()?, mode.size.h, mirrored))
+    Some((program.clone().ok()?, fb))
 }
 
 fn phys(p: Point<i32, Logical>, scale: Scale<f64>) -> Point<i32, Physical> {
@@ -1115,7 +1122,7 @@ pub fn collect_elements(
                 // panes are laid out at the target) and where the glass program
                 // can draw (an unrotated output).
                 let panes = (panes_ok && t.is_identity())
-                    .then(|| effects::fb_y_mirrored(output.current_transform()))
+                    .then(|| effects::pane_fb_map(output))
                     .flatten()
                     .and_then(|_| committed_panes(surface.wl_surface()));
                 if let Some(set) = panes {
@@ -1321,7 +1328,7 @@ pub fn lock_glass_elements(
 ) -> Option<Vec<AbyssRenderElement>> {
     if !lock_glass_possible(
         config.decoration.blur.mode,
-        effects::fb_y_mirrored(output.current_transform()).is_some() && output.current_mode().is_some(),
+        effects::output_fb_map(output).is_some(),
         committed_panes(lock_surface).is_some(),
     ) || !ensure_glass(renderer, borders)
     {
@@ -1492,13 +1499,11 @@ fn insert_blur(
 
     // Same framebuffer-space mask as `window_elements`: needs the output's own
     // height and the sense of its vertical axis (COMP-02 §9).
-    let fb_height = effects::fb_y_mirrored(output.current_transform())
-        .zip(output.current_mode())
-        .map(|(mirrored, mode)| (mode.size.h, mirrored));
-    // The backdrop texture is the whole output in physical pixels.
+    let fb_map = effects::output_fb_map(output);
+    // The backdrop texture is the whole framebuffer (`gl_FragCoord` space).
     let fb_size = output
         .current_mode()
-        .map(|mode| output.current_transform().transform_size(mode.size))
+        .map(|mode| mode.size)
         .map(|size| (size.w, size.h))
         .unwrap_or((1, 1));
     let upscale = scale.x.max(scale.y);
@@ -1517,7 +1522,7 @@ fn insert_blur(
         // (a square backdrop draws with smithay's own); frost and glass
         // always do, radius 0 included. A shaped layer (Vol 1 §5.2) takes
         // the shaped variant of its mode's program, plain `blur` included.
-        // A rotated output (`fb_height` None) keeps the plain square
+        // A rotated output (`fb_map` None) keeps the plain square
         // backdrop in every mode.
         let scaled_radius = (radius as f64 * upscale) as f32;
         let preset = if mode == BlurMode::Glass {
@@ -1545,7 +1550,7 @@ fn insert_blur(
         }
         let uniforms = &mut pool[preps.len()];
         uniforms.clear();
-        let program = fb_height.and_then(|(fb_height, mirrored)| {
+        let program = fb_map.and_then(|fb| {
             let (slot, compile, what): (_, fn(&mut GlesRenderer) -> _, _) = match (mode, shape.is_some()) {
                 (BlurMode::Off, _) => return None,
                 (BlurMode::Blur, false) if radius <= 0 => return None,
@@ -1596,8 +1601,7 @@ fn insert_blur(
                 BlurMode::Frost => effects::frost_uniforms_into(
                     uniforms,
                     region,
-                    fb_height,
-                    mirrored,
+                    fb,
                     scaled_radius,
                     cfg.frost.tint,
                     bezel.map(|b| (b.inner, b.opaque, b.rim, b.bar)),
@@ -1613,6 +1617,16 @@ fn insert_blur(
                         Some(_) => (look.strength, look.bevel),
                         None => (look.strength, look.bevel),
                     };
+                    // A joined shape (a bar and its drawer) bends and bevels by its
+                    // own boxes, not its bounding box: opening a drawer must not
+                    // change how deep the bar's own edge refracts.
+                    let (strength, bevel) = match shape.as_ref().and_then(blur::Shape::shortest_box) {
+                        Some(short) => (
+                            effects::lens_strength(strength, short as f32),
+                            effects::lens_bevel(bevel, short as f32),
+                        ),
+                        None => (strength, bevel),
+                    };
                     let mut tuned = cfg.glass.clone();
                     tuned.dispersion = look.dispersion;
                     tuned.rim = look.rim;
@@ -1626,8 +1640,7 @@ fn insert_blur(
                         uniforms,
                         preset,
                         region,
-                        fb_height,
-                        mirrored,
+                        fb,
                         scaled_radius,
                         fb_size,
                         strength,
@@ -1643,12 +1656,12 @@ fn insert_blur(
                     );
                     effects::set_shade_ref(uniforms, upscale);
                 }
-                _ => effects::rounding_uniforms_into(uniforms, region, fb_height, mirrored, scaled_radius),
+                _ => effects::rounding_uniforms_into(uniforms, region, fb, scaled_radius),
             };
             // The boxes ride in the uniforms, so a new shape changes the
             // backdrop's `look` and bumps its commit.
             if let Some(shape) = &shape {
-                uniforms.extend(effects::shape_uniforms(shape, fb_height, mirrored));
+                uniforms.extend(effects::shape_uniforms(shape, fb));
             }
             Some(program)
         });
@@ -1902,15 +1915,12 @@ fn insert_panes(
     let cfg = &config.decoration.blur;
     let scale = Scale::from(output.current_scale().fractional_scale());
     let upscale = scale.x.max(scale.y);
-    let Some((fb_height, mirrored)) = effects::fb_y_mirrored(output.current_transform())
-        .zip(output.current_mode())
-        .map(|(mirrored, mode)| (mode.size.h, mirrored))
-    else {
+    let Some(fb) = effects::pane_fb_map(output) else {
         return;
     };
     let fb_size = output
         .current_mode()
-        .map(|mode| output.current_transform().transform_size(mode.size))
+        .map(|mode| mode.size)
         .map(|size| (size.w, size.h))
         .unwrap_or((1, 1));
     let Some(program) = store.gpu.glass_presets[effects::GlassPreset::Lens.index()].clone() else {
@@ -1948,6 +1958,7 @@ fn insert_panes(
     store.gpu.blur.entry(output.clone()).or_default().pane_elements(
         renderer,
         output,
+        fb,
         &req.key,
         union,
         behind,
@@ -1975,8 +1986,7 @@ fn insert_panes(
                         uniforms,
                         effects::GlassPreset::Lens,
                         rect,
-                        fb_height,
-                        mirrored,
+                        fb,
                         (pane.radius as f64 * upscale * grown) as f32,
                         fb_size,
                         0.0,
@@ -2017,8 +2027,7 @@ fn insert_panes(
                     uniforms,
                     effects::GlassPreset::Lens,
                     shape,
-                    fb_height,
-                    mirrored,
+                    fb,
                     (pane.radius as f64 * upscale * grown) as f32,
                     fb_size,
                     strength * glass::lens_scale(pane),
@@ -2176,10 +2185,8 @@ fn ghost_elements(
         return;
     };
     let scale = Scale::from(output.current_scale().fractional_scale());
-    let rounding = effects::fb_y_mirrored(output.current_transform())
-        .zip(output.current_mode())
+    let rounding = effects::output_fb_map(output)
         .filter(|_| config.decoration.rounding > 0)
-        .map(|(mirrored, mode)| (mode.size.h, mirrored))
         .zip(store.gpu.rounded.clone());
     let radius = (config.decoration.rounding as f64 * scale.x.max(scale.y)) as f32;
 
@@ -2270,15 +2277,12 @@ fn ghost_elements(
             .to_physical(scale)
             .to_i32_round();
         let by = Scale::from(t.scale);
-        let mask = rounding.as_ref().map(|((fb_height, mirrored), program)| {
+        let mask = rounding.as_ref().map(|(fb, program)| {
             let rect = Rectangle::new(
                 phys(drawn.loc - output_geo.loc, scale),
                 drawn.size.to_f64().to_physical(scale).to_i32_round(),
             );
-            (
-                program.clone(),
-                effects::rounding_uniforms(rect, *fb_height, *mirrored, radius),
-            )
+            (program.clone(), effects::rounding_uniforms(rect, *fb, radius))
         });
         match ghost {
             anim::Ghost::Live { window, .. } => {
@@ -2383,7 +2387,14 @@ fn transition_quad(
         let rect = Rectangle::new(origin, win);
         (
             program.clone(),
-            effects::rounding_uniforms(rect, quad.size(win).h, false, radius),
+            effects::rounding_uniforms(
+                rect,
+                effects::FbMap {
+                    fb: quad.size(win),
+                    transform: Transform::Normal,
+                },
+                radius,
+            ),
         )
     });
     // Built only when the copy is drawn: a frozen ghost's is built once.
@@ -2590,18 +2601,15 @@ fn window_elements(
 
     // Rounding masks in framebuffer (`gl_FragCoord`) space, so it needs the
     // output's own height and the sense of its vertical axis under the output
-    // transform; see `effects::fb_y_mirrored` (COMP-02 §9).
-    let fb_height = effects::fb_y_mirrored(output.current_transform())
-        .zip(output.current_mode())
-        .filter(|_| deco.rounding > 0)
-        .map(|(mirrored, mode)| (mode.size.h, mirrored));
-    if fb_height.is_some() && store.gpu.rounded.is_none() {
+    // transform; see `effects::fb_map` (COMP-02 §9).
+    let fb_map = effects::output_fb_map(output).filter(|_| deco.rounding > 0);
+    if fb_map.is_some() && store.gpu.rounded.is_none() {
         match effects::compile_rounded(renderer) {
             Ok(program) => store.gpu.rounded = Some(program),
             Err(err) => tracing::warn!(?err, "compiling the rounded-corner shader; rounding disabled"),
         }
     }
-    let rounding = fb_height.zip(store.gpu.rounded.clone());
+    let rounding = fb_map.zip(store.gpu.rounded.clone());
     let border = border_frame(renderer, store, output_geo.loc, scale, output, config, &live);
     let shadow = shadow_program(renderer, store, output, config, &live);
     let glow = glow_program(renderer, store, output, config, &live);
@@ -2726,8 +2734,7 @@ fn window_elements(
         // A keyed strip needs the keyed program and a framebuffer axis; where
         // either is missing the window stays opaque rather than fading whole.
         let keyed = match strip_def.as_ref().and_then(|(s, _)| s.keyed().copied()) {
-            Some(keys) => keyed_target(renderer, store, output)
-                .map(|(program, h, mirrored)| (program, h, mirrored, keys)),
+            Some(keys) => keyed_target(renderer, store, output).map(|(program, fb)| (program, fb, keys)),
             None => None,
         };
         let strip_def = strip_def.filter(|(s, _)| s.keyed().is_none() || keyed.is_some());
@@ -3116,7 +3123,7 @@ fn window_elements(
                     false,
                     strip.is_some(),
                     fills_area(&window),
-                    effects::fb_y_mirrored(output.current_transform()).is_some(),
+                    effects::pane_fb_map(output).is_some(),
                 )
                 .then(|| smithay::wayland::seat::WaylandFocus::wl_surface(&window))
                 .flatten()
@@ -3132,7 +3139,7 @@ fn window_elements(
             // tree, each through the keyed program; only key-coloured pixels
             // inside the region turn translucent. Idle windows only.
             (None, _, Some(geo)) if keyed_on.is_some() => {
-                let Some((program, fb_h, mirrored, keys)) = keyed_on.clone() else {
+                let Some((program, fb, keys)) = keyed_on.clone() else {
                     continue;
                 };
                 let rect = Rectangle::new(
@@ -3162,7 +3169,7 @@ fn window_elements(
                     push_keyed(
                         out,
                         els,
-                        effects::keyed_uniforms(None, None, fb_h, mirrored, &keys),
+                        effects::keyed_uniforms(None, None, fb, &keys),
                         popup_crop,
                     );
                     if mode != BlurMode::Off {
@@ -3183,7 +3190,7 @@ fn window_elements(
                     push_keyed(
                         out,
                         surfaces,
-                        effects::keyed_uniforms(mask, region, fb_h, mirrored, &keys),
+                        effects::keyed_uniforms(mask, region, fb, &keys),
                         crop,
                     );
                 }
@@ -3191,20 +3198,17 @@ fn window_elements(
             // Animating at a scale: the same arms through `ScaledElement`,
             // which carries the mask itself. Idle windows never get here.
             (Some((origin, by)), rounding, _) => {
-                let mask = rounding
-                    .as_ref()
-                    .zip(geo)
-                    .map(|(((fb_height, mirrored), program), geo)| {
-                        let rect = Rectangle::new(
-                            phys(geo.loc - output_geo.loc, scale),
-                            geo.size.to_f64().to_physical(scale).to_i32_round(),
-                        );
-                        let radius = deco.rounding as f64 * scale.x.max(scale.y);
-                        (
-                            program.clone(),
-                            effects::rounding_uniforms(rect, *fb_height, *mirrored, radius as f32),
-                        )
-                    });
+                let mask = rounding.as_ref().zip(geo).map(|((fb, program), geo)| {
+                    let rect = Rectangle::new(
+                        phys(geo.loc - output_geo.loc, scale),
+                        geo.size.to_f64().to_physical(scale).to_i32_round(),
+                    );
+                    let radius = deco.rounding as f64 * scale.x.max(scale.y);
+                    (
+                        program.clone(),
+                        effects::rounding_uniforms(rect, *fb, radius as f32),
+                    )
+                });
                 let popup_crop = overhangs.then_some(out_rect);
                 for popup in popups {
                     let popup = anim::ScaledElement::new(popup, origin, by, None);
@@ -3227,13 +3231,13 @@ fn window_elements(
                     }
                 }
             }
-            (None, Some(((fb_height, mirrored), program)), Some(geo)) => {
+            (None, Some((fb, program)), Some(geo)) => {
                 let rect = Rectangle::new(
                     phys(geo.loc - output_geo.loc, scale),
                     geo.size.to_f64().to_physical(scale).to_i32_round(),
                 );
                 let radius = deco.rounding as f64 * scale.x.max(scale.y);
-                let uniforms = effects::rounding_uniforms(rect, *fb_height, *mirrored, radius as f32);
+                let uniforms = effects::rounding_uniforms(rect, *fb, radius as f32);
                 let round =
                     |surface| effects::RoundedElement::new(surface, program.clone(), uniforms.clone());
                 // Unmasked: the mask follows the tile, and would cut the popup too.
@@ -3396,7 +3400,7 @@ fn window_elements(
                 keyed_on.is_some(),
                 strip.is_some(),
                 fills_area(&window),
-                effects::fb_y_mirrored(output.current_transform()).is_some(),
+                effects::pane_fb_map(output).is_some(),
             )
             .then(|| smithay::wayland::seat::WaylandFocus::wl_surface(&window))
             .flatten()
@@ -3804,12 +3808,10 @@ fn border_frame(
 
     // The ring only exists where `window_elements` actually rounds the window:
     // same radius, and the same fallback to square corners on an output whose
-    // transform the mask does not handle (`effects::fb_y_mirrored`), so the
+    // transform the mask does not handle (`effects::fb_map`), so the
     // border and the window it frames never disagree.
     let radius = config.decoration.rounding;
-    let rounds = radius > 0
-        && effects::fb_y_mirrored(output.current_transform()).is_some()
-        && output.current_mode().is_some();
+    let rounds = radius > 0 && effects::output_fb_map(output).is_some() && output.current_mode().is_some();
     if rounds && store.gpu.ring.is_none() {
         match effects::compile_border(renderer) {
             Ok(program) => store.gpu.ring = Some(program),

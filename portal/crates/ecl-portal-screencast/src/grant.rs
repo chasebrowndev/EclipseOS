@@ -13,6 +13,7 @@
 //! The answer is a claim until abyss enforces it; the daemon never treats a
 //! grant id as authority by itself.
 
+use std::ffi::OsString;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -39,8 +40,25 @@ pub enum GrantError {
     Protocol(&'static str),
 }
 
+/// Where abyss binds `portal.sock`: `ECLIPSE_SOCKET_DIR` when set and not empty (a
+/// nested or headless compositor isolates its sockets there), else `$XDG_RUNTIME_DIR/eclipse`.
+/// Mirrors `ipc::socket_dir` in abyss, which is the other end of this socket.
+fn socket_dir_from(
+    override_dir: Option<OsString>,
+    runtime_dir: Option<OsString>,
+) -> Option<PathBuf> {
+    if let Some(dir) = override_dir.filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
+    Some(PathBuf::from(runtime_dir?).join("eclipse"))
+}
+
 pub fn socket_path() -> Option<PathBuf> {
-    Some(PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?).join("eclipse/portal.sock"))
+    socket_dir_from(
+        std::env::var_os("ECLIPSE_SOCKET_DIR"),
+        std::env::var_os("XDG_RUNTIME_DIR"),
+    )
+    .map(|d| d.join("portal.sock"))
 }
 
 /// The socket must be a socket owned by us (the runtime dir is 0700, this is
@@ -126,6 +144,27 @@ pub async fn request_grant(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn socket_dir_honours_the_headless_override() {
+        let os = |s: &str| Some(OsString::from(s));
+        // Override set: abyss bound its isolated dir, the portal must look there.
+        assert_eq!(
+            socket_dir_from(os("/run/x/eclipse-headless-wayland-1"), os("/run/x")),
+            Some(PathBuf::from("/run/x/eclipse-headless-wayland-1"))
+        );
+        // Empty override is ignored, same as abyss.
+        assert_eq!(
+            socket_dir_from(os(""), os("/run/x")),
+            Some(PathBuf::from("/run/x/eclipse"))
+        );
+        // Neither set: no socket path.
+        assert_eq!(socket_dir_from(None, None), None);
+        assert_eq!(
+            socket_dir_from(None, os("/run/x")),
+            Some(PathBuf::from("/run/x/eclipse"))
+        );
+    }
     use ecl_portal_proto::Source;
     use tokio::net::UnixListener;
 

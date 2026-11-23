@@ -19,7 +19,7 @@ use smithay::backend::renderer::{
     },
     utils::{CommitCounter, DamageSet, OpaqueRegions},
 };
-use smithay::utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Transform};
+use smithay::utils::{Buffer as BufferCoords, Physical, Point, Rectangle, Scale, Size, Transform};
 
 /// Mirrors smithay's built-in `texture.frag`, with a rounded-box mask applied
 /// to the final colour. `win_rect` is the window's rectangle in `gl_FragCoord`
@@ -158,15 +158,11 @@ pub fn compile_keyed(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gles
 /// A rectangle covering any framebuffer: "no mask" / "everywhere".
 const EVERYWHERE: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
 
-fn fb_rect(rect: Rectangle<i32, Physical>, fb_height: i32, mirrored: bool) -> [f32; 4] {
-    let y = if mirrored {
-        fb_height - rect.loc.y - rect.size.h
-    } else {
-        rect.loc.y
-    };
+fn fb_rect(rect: Rectangle<i32, Physical>, fb: FbMap) -> [f32; 4] {
+    let rect = fb.gl_rect(rect);
     [
         rect.loc.x as f32,
-        y as f32,
+        rect.loc.y as f32,
         rect.size.w as f32,
         rect.size.h as f32,
     ]
@@ -178,15 +174,14 @@ fn fb_rect(rect: Rectangle<i32, Physical>, fb_height: i32, mirrored: bool) -> [f
 pub fn keyed_uniforms(
     mask: Option<(Rectangle<i32, Physical>, f32)>,
     region: Option<Rectangle<i32, Physical>>,
-    fb_height: i32,
-    mirrored: bool,
+    fb: FbMap,
     keys: &crate::userdata::Keys,
 ) -> Vec<Uniform<'static>> {
     let (win, radius) = match mask {
-        Some((rect, radius)) => (fb_rect(rect, fb_height, mirrored), radius),
+        Some((rect, radius)) => (fb_rect(rect, fb), radius),
         None => (EVERYWHERE, 0.0),
     };
-    let key_rect = region.map_or(EVERYWHERE, |r| fb_rect(r, fb_height, mirrored));
+    let key_rect = region.map_or(EVERYWHERE, |r| fb_rect(r, fb));
     let key = |i: usize| -> [f32; 4] {
         if i < keys.n as usize {
             let [r, g, b] = keys.rgb[i];
@@ -501,17 +496,14 @@ pub fn compile_glass_shaped(renderer: &mut GlesRenderer) -> Result<GlesTexProgra
 /// The shape uniforms appended to a mask program's own: the boxes placed in
 /// `gl_FragCoord` space exactly as [`rounding_uniforms`] places `win_rect`,
 /// unused slots zeroed (`boxes` says how many are live).
-pub fn shape_uniforms(shape: &crate::blur::Shape, fb_height: i32, mirrored: bool) -> [Uniform<'static>; 6] {
+pub fn shape_uniforms(shape: &crate::blur::Shape, fb: FbMap) -> [Uniform<'static>; 6] {
     let mut boxes = [[0.0f32; 4]; 4];
+    let map = fb;
     for (slot, rect) in boxes.iter_mut().zip(shape.rects()) {
-        let y = if mirrored {
-            fb_height - rect.loc.y - rect.size.h
-        } else {
-            rect.loc.y
-        };
+        let rect = map.gl_rect(*rect);
         *slot = [
             rect.loc.x as f32,
-            y as f32,
+            rect.loc.y as f32,
             rect.size.w as f32,
             rect.size.h as f32,
         ];
@@ -626,7 +618,9 @@ vec2 blur_hi() { return vec2(dual_tex > 0.5 ? 0.5 : 1.0, 1.0); }
 vec2 clamp_blur(vec2 uv) { return clamp(uv, px_uv * 0.5, blur_hi() - px_uv * 0.5); }
 // The same uv in the lightly blurred half (packed only): shifted right by half the texture.
 vec2 clamp_sharp(vec2 uv) { return clamp(uv + vec2(0.5, 0.0), vec2(0.5, 0.0) + px_uv * 0.5, vec2(1.0) - px_uv * 0.5); }
-uniform float y_sign;       // -1 when the framebuffer is y-mirrored
+uniform vec4 phys_map;  // mat2, column-major: gl_FragCoord offset -> render-space offset
+// A gl_FragCoord offset (or gradient) in the render-space frame the glass is laid out in.
+vec2 to_phys(vec2 g) { return mat2(phys_map.xy, phys_map.zw) * g; }
 uniform float scheme_light; // 0 dark (the original look, exactly), 1 light (ADR 0084)
 uniform float adapt;        // effective adaptive strength; 0 off
 uniform float adapt_layers; // glass layers over this backdrop: 1 window, 2 pane on a window; 0 unset = 1
@@ -646,14 +640,13 @@ const vec3 SURFACE_L = vec3(0.992, 0.989, 0.980);  // paper white
 // continuously (see `w` below). Mirrors `adaptive_luma` below.
 float g_dev;  // centre minus local mean luma of the last backdrop_luma()
 float backdrop_luma() {
-    vec2 hs = win_rect.zw * 0.5;
+    vec2 hs = abs(to_phys(win_rect.zw)) * 0.5;
     vec2 step = min(vec2(ADAPT_STEP), hs * ADAPT_SPAN);
     // Taps stay `ADAPT_INSET` inside the rect (at least half its size): the
     // blur chain is low-res and ragged at an output edge, and a worst-patch
     // read turns those blocks into pale rectangles.
     vec2 lim = max(hs - vec2(ADAPT_INSET), hs * 0.5);
-    vec2 p0 = gl_FragCoord.xy - (win_rect.xy + hs);
-    p0.y *= y_sign;
+    vec2 p0 = to_phys(gl_FragCoord.xy - (win_rect.xy + win_rect.zw * 0.5));
     vec2 pc = clamp(p0, -lim, lim);
     float c = dot(texture2D(tex, clamp_blur(v_coords + (pc - p0) * px_uv)).rgb, LUMA);
     g_dev = 0.0;
@@ -734,9 +727,9 @@ void main() {
 
     // `p` and `half_size` are read by the opaque-window test below in both
     // variants, so they sit outside the shaped split.
-    vec2 half_size = win_rect.zw * 0.5;
-    vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
-    p.y *= y_sign;
+    // Physical space from here on: the size is the rect's, swapped on a quarter turn.
+    vec2 half_size = abs(to_phys(win_rect.zw)) * 0.5;
+    vec2 p = to_phys(gl_FragCoord.xy - (win_rect.xy + win_rect.zw * 0.5));
 #ifdef SHAPED
     float d = shape_sd(gl_FragCoord.xy);
 #else
@@ -782,7 +775,7 @@ void main() {
 /// `#0c0c0e`, and a crisp near-white hairline lit from the top-left (with a
 /// weaker bottom-right lobe) is laid along the mask edge. A ±0.5/255 dither
 /// removes 8-bit banding. Everything is in physical pixels with a y-down axis
-/// (`y_sign` undoes the framebuffer mirroring of [`fb_y_mirrored`]), so the
+/// (`to_phys` undoes the framebuffer orientation of [`FbMap`]), so the
 /// texture offset is just the pixel offset times `px_uv`.
 ///
 /// A window bezel (`inner` > 0) is the same glass laid as a ring of that width
@@ -880,7 +873,7 @@ vec4 sharp_at(vec2 uv) {
 #ifdef SHAPED
 // Outward normal of the shape, y down, from the analytic gradient.
 vec2 shape_normal(vec2 g) {
-    g.y *= y_sign;
+    g = to_phys(g);
     return length(g) > 0.01 ? normalize(g) : vec2(0.0, -1.0);
 }
 #endif
@@ -888,9 +881,9 @@ vec2 shape_normal(vec2 g) {
 void main() {
     // `p` and `half_size` are read by the opaque-window test below in both
     // variants, so they sit outside the shaped split.
-    vec2 half_size = win_rect.zw * 0.5;
-    vec2 p = gl_FragCoord.xy - (win_rect.xy + half_size);
-    p.y *= y_sign;
+    // Physical space from here on: the size is the rect's, swapped on a quarter turn.
+    vec2 half_size = abs(to_phys(win_rect.zw)) * 0.5;
+    vec2 p = to_phys(gl_FragCoord.xy - (win_rect.xy + win_rect.zw * 0.5));
 #ifdef SHAPED
     vec2 sg;
     float d = shape_sdg(gl_FragCoord.xy, sg);
@@ -927,7 +920,7 @@ void main() {
             vec3 base = mix(CELL_BASE_D, CELL_BASE_L, scheme_light);
             float a = lift;
             // 1: a vertical gradient, the top clearer in dark and fainter in light.
-            float gs = (0.5 - clamp((p.y + half_size.y) / max(win_rect.w, 1.0), 0.0, 1.0)) * 2.0;
+            float gs = (0.5 - clamp((p.y + half_size.y) / max(2.0 * half_size.y, 1.0), 0.0, 1.0)) * 2.0;
             a *= 1.0 + mix(CELL_GRAD, CELL_GRAD_L, scheme_light) * shade * gs * mix(1.0, -1.0, scheme_light);
             float u = 1.0 - clamp(edge / bw, 0.0, 1.0);
             // 2: Fresnel-style: the fill darkens and thickens toward the rim.
@@ -1016,7 +1009,8 @@ void main() {
     if (t < 1.0) {
         float u = 1.0 - max(t, 0.0);
         lens_u = u;
-        vec2 b = grad * px_uv * (strength * u * u * sqrt(u));
+        float bend = strength * u * u * sqrt(u);
+        vec2 b = grad * px_uv * bend;
         float k = dispersion;
         if (dual_tex > 0.5) {
             vec3 sh = vec3(sharp_at(v_coords + b * (1.0 - k)).r,
@@ -1027,7 +1021,7 @@ void main() {
             // text of whatever lies beside the pane: show the plateau's blur
             // there instead, so the rim keeps its colour and bend but never
             // legible content. One extra tap, only for those fragments.
-            float out_w = smoothstep(-OUT_BLUR_IN, OUT_BLUR_OUT, d + strength * u * u * sqrt(u));
+            float out_w = smoothstep(-OUT_BLUR_IN, OUT_BLUR_OUT, d + bend);
             if (out_w > 0.0) {
                 sh = mix(sh, blurred_at(v_coords + b).rgb, out_w);
             }
@@ -1102,6 +1096,18 @@ void main() {
         // sublinearly with size, its strength falls sublinearly, and neither has
         // a threshold. Small controls (about 40 px) keep the original look.
         float s_eff = 2.0 * win_rect.z * win_rect.w / max(win_rect.z + win_rect.w, 1.0);
+#ifdef SHAPED
+        // A joined shape reads by its smallest box, not its bounding box: a
+        // drawer opening under a bar must not change how wide the bar's own edge is.
+        s_eff = min(s_eff, 2.0 * box0.z * box0.w / max(box0.z + box0.w, 1.0));
+        s_eff = min(s_eff, 2.0 * box1.z * box1.w / max(box1.z + box1.w, 1.0));
+        if (boxes > 2.5) {
+            s_eff = min(s_eff, 2.0 * box2.z * box2.w / max(box2.z + box2.w, 1.0));
+        }
+        if (boxes > 3.5) {
+            s_eff = min(s_eff, 2.0 * box3.z * box3.w / max(box3.z + box3.w, 1.0));
+        }
+#endif
         float sref = shade_ref > 0.0 ? shade_ref : SHADE_REF;
         float xs = max(s_eff / sref, 0.05);
         float sw = max(min(band_w, max(SHADE_BASE * sref * pow(xs, SHADE_P), SHADE_MIN * sref / SHADE_REF)), 1.0);
@@ -1201,7 +1207,7 @@ const FROST_UNIFORMS: [(&str, UniformType); 12] = [
     ("win_rect", UniformType::_4f),
     ("radius", UniformType::_1f),
     ("frost_tint", UniformType::_4f),
-    ("y_sign", UniformType::_1f),
+    ("phys_map", UniformType::_4f),
     ("rim_color", UniformType::_4f),
     ("inner", UniformType::_1f),
     ("opaque", UniformType::_1f),
@@ -1261,7 +1267,7 @@ const GLASS_UNIFORMS: [(&str, UniformType); 22] = [
     ("radius", UniformType::_1f),
     ("px_uv", UniformType::_2f),
     ("dual_tex", UniformType::_1f),
-    ("y_sign", UniformType::_1f),
+    ("phys_map", UniformType::_4f),
     ("strength", UniformType::_1f),
     ("bevel", UniformType::_1f),
     ("dispersion", UniformType::_1f),
@@ -1404,8 +1410,7 @@ pub fn set_px_uv(uniforms: &mut [Uniform<'static>], size: (i32, i32)) {
 pub fn frost_uniforms_into(
     out: &mut Vec<Uniform<'static>>,
     rect: Rectangle<i32, Physical>,
-    fb_height: i32,
-    mirrored: bool,
+    fb: FbMap,
     radius: f32,
     tint: [f32; 4],
     bezel: Option<(i32, bool, [f32; 4], i32)>,
@@ -1422,10 +1427,10 @@ pub fn frost_uniforms_into(
                 bar.max(0) as f32,
             )
         });
-    rounding_uniforms_into(out, rect, fb_height, mirrored, radius);
+    rounding_uniforms_into(out, rect, fb, radius);
     out.extend([
         Uniform::new("frost_tint", tint),
-        Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
+        Uniform::new("phys_map", fb.phys_map()),
         Uniform::new("rim_color", rim_color),
         Uniform::new("inner", inner),
         Uniform::new("opaque", opaque),
@@ -1440,8 +1445,7 @@ pub fn frost_uniforms_into(
 #[allow(clippy::too_many_arguments)]
 pub fn frost_uniforms(
     rect: Rectangle<i32, Physical>,
-    fb_height: i32,
-    mirrored: bool,
+    fb: FbMap,
     radius: f32,
     tint: [f32; 4],
     bezel: Option<(i32, bool, [f32; 4], i32)>,
@@ -1450,9 +1454,7 @@ pub fn frost_uniforms(
     adapt: f32,
 ) -> Vec<Uniform<'static>> {
     let mut u = Vec::with_capacity(11);
-    frost_uniforms_into(
-        &mut u, rect, fb_height, mirrored, radius, tint, bezel, tex_size, light, adapt,
-    );
+    frost_uniforms_into(&mut u, rect, fb, radius, tint, bezel, tex_size, light, adapt);
     u
 }
 
@@ -1469,8 +1471,7 @@ pub fn glass_uniforms_into(
     out: &mut Vec<Uniform<'static>>,
     preset: GlassPreset,
     rect: Rectangle<i32, Physical>,
-    fb_height: i32,
-    mirrored: bool,
+    fb: FbMap,
     radius: f32,
     tex_size: (i32, i32),
     strength: f32,
@@ -1481,8 +1482,8 @@ pub fn glass_uniforms_into(
     adapt: f32,
 ) {
     glass_uniforms_lifted_into(
-        out, preset, rect, fb_height, mirrored, radius, tex_size, strength, bevel, glass, bezel, 0.0, 0.0,
-        1.0, light, adapt, 1.0,
+        out, preset, rect, fb, radius, tex_size, strength, bevel, glass, bezel, 0.0, 0.0, 1.0, light, adapt,
+        1.0,
     )
 }
 
@@ -1490,8 +1491,7 @@ pub fn glass_uniforms_into(
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms(
     rect: Rectangle<i32, Physical>,
-    fb_height: i32,
-    mirrored: bool,
+    fb: FbMap,
     radius: f32,
     tex_size: (i32, i32),
     strength: f32,
@@ -1506,8 +1506,7 @@ pub fn glass_uniforms(
         &mut u,
         GlassPreset::Frost,
         rect,
-        fb_height,
-        mirrored,
+        fb,
         radius,
         tex_size,
         strength,
@@ -1530,8 +1529,7 @@ pub fn glass_uniforms_lifted_into(
     out: &mut Vec<Uniform<'static>>,
     preset: GlassPreset,
     rect: Rectangle<i32, Physical>,
-    fb_height: i32,
-    mirrored: bool,
+    fb: FbMap,
     radius: f32,
     tex_size: (i32, i32),
     strength: f32,
@@ -1549,8 +1547,7 @@ pub fn glass_uniforms_lifted_into(
         out,
         preset,
         rect,
-        fb_height,
-        mirrored,
+        fb,
         radius,
         tex_size,
         strength,
@@ -1575,8 +1572,7 @@ pub fn glass_uniforms_capped_into(
     out: &mut Vec<Uniform<'static>>,
     preset: GlassPreset,
     rect: Rectangle<i32, Physical>,
-    fb_height: i32,
-    mirrored: bool,
+    fb: FbMap,
     radius: f32,
     tex_size: (i32, i32),
     strength: f32,
@@ -1620,11 +1616,11 @@ pub fn glass_uniforms_capped_into(
         let capped = bevel.min(short * GLASS_BEVEL_FRACTION);
         (strength * capped / bevel, capped)
     };
-    rounding_uniforms_into(out, rect, fb_height, mirrored, radius);
+    rounding_uniforms_into(out, rect, fb, radius);
     out.extend([
         Uniform::new("px_uv", px_uv_for(tex_size)),
         Uniform::new("dual_tex", 0.0f32),
-        Uniform::new("y_sign", if mirrored { -1.0f32 } else { 1.0 }),
+        Uniform::new("phys_map", fb.phys_map()),
         Uniform::new("strength", strength),
         Uniform::new("bevel", bevel),
         Uniform::new("dispersion", glass.dispersion),
@@ -1649,8 +1645,7 @@ pub fn glass_uniforms_capped_into(
 #[allow(clippy::too_many_arguments)]
 pub fn glass_uniforms_lifted(
     rect: Rectangle<i32, Physical>,
-    fb_height: i32,
-    mirrored: bool,
+    fb: FbMap,
     radius: f32,
     tex_size: (i32, i32),
     strength: f32,
@@ -1669,8 +1664,7 @@ pub fn glass_uniforms_lifted(
         &mut u,
         GlassPreset::Frost,
         rect,
-        fb_height,
-        mirrored,
+        fb,
         radius,
         tex_size,
         strength,
@@ -1875,61 +1869,171 @@ pub fn glass_reach(refraction: f32, dispersion: f32, scale: f64) -> i32 {
     (refraction.max(0.0) as f64 * scale * 1.05 + fringe_px(dispersion, scale) as f64).ceil() as i32
 }
 
-/// How the output's physical space maps onto `gl_FragCoord` for a frame
-/// rendered with `transform`, or `None` for a transform the mask does not
-/// handle (a rotated output keeps square corners rather than drawing the mask
-/// in the wrong place).
+/// The map for glass panes (`eclipse_glass_v1`, COMP-02 §9) on `output`, for
+/// every transform: panes are drawn on quarter-turned outputs too.
+pub fn pane_fb_map(output: &smithay::output::Output) -> Option<FbMap> {
+    let mode = output.current_mode()?;
+    Some(FbMap::new(output.current_transform(), mode.size))
+}
+
+/// The map for windows, bezels, rounding and the trusted prompt and annotation
+/// glass: `None` on a rotated output, which keeps the painted border and square
+/// corners (VOL1 C-15). See [`windowed_transform`].
+pub fn output_fb_map(output: &smithay::output::Output) -> Option<FbMap> {
+    let mode = output.current_mode()?;
+    windowed_transform(output.current_transform()).then(|| FbMap::new(output.current_transform(), mode.size))
+}
+
+/// Whether windows and bezels draw their masks under `transform`: the two
+/// transforms they are verified on. A rotated output keeps the painted border
+/// (VOL1 C-15) and square corners.
+pub fn windowed_transform(transform: Transform) -> bool {
+    matches!(transform, Transform::Normal | Transform::Flipped180)
+}
+
+/// The render-space to `gl_FragCoord` map for one frame, for all eight
+/// transforms (COMP-02 §9). `fb` is the framebuffer (`mode.size`); `transform`
+/// is the render transform, i.e. the output's `current_transform()` inverted,
+/// which is what `GlesRenderer::render` is handed.
 ///
-/// `Some(true)` means the vertical axis is mirrored: physical `y` lands at
-/// `fb_height - y`. `GlesRenderer::render` builds its projection as
-/// `flip180 * transform.matrix() * ortho`, where `ortho` maps physical `y = 0`
-/// to the top of clip space and `flip180` negates it again. Under `Normal`
-/// (DRM) that leaves physical `y = 0` at `gl_FragCoord.y = 0`, so the two
-/// origins coincide; `Flipped180` (winit) cancels `flip180`, so physical
-/// `y = 0` lands at `gl_FragCoord.y = fb_height` and the rect must be mirrored.
-pub fn fb_y_mirrored(transform: Transform) -> Option<bool> {
-    match transform {
-        Transform::Normal => Some(false),
-        Transform::Flipped180 => Some(true),
-        _ => None,
+/// Render space is what render elements are laid out in: top-left origin,
+/// `transform.transform_size(fb)` big. `GlesRenderer::render` projects it as
+/// `flip180 * transform.matrix() * ortho`, with the ortho built over the render
+/// size and the viewport over `fb`. Because the render size is `fb` with its
+/// axes swapped for a quarter turn, every edge maps to an integer edge, with
+/// no scaling: see [`FbMap::gl_edge`]. A rotated output is therefore a
+/// rectangle in `gl_FragCoord` space like any other, and its rounding mask,
+/// shape boxes and blur crop are the same rectangle as they are unrotated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FbMap {
+    pub fb: Size<i32, Physical>,
+    pub transform: Transform,
+}
+
+impl FbMap {
+    /// The map for an output in `output_transform` whose mode is `mode`.
+    pub fn new(output_transform: Transform, mode: Size<i32, Physical>) -> Self {
+        Self {
+            fb: mode,
+            transform: output_transform.invert(),
+        }
+    }
+
+    /// The transform that turns framebuffer texels into upright render space:
+    /// the output's own transform (the inverse of the render one). A texture
+    /// blitted under it (`render_texture_from_to`) lands with
+    /// `transform_size(fb)` extent, so a quarter turn's result is upright.
+    pub fn orient(&self) -> Transform {
+        self.transform.invert()
+    }
+
+    /// The render-space size (what elements lay out in).
+    pub fn render_size(&self) -> Size<i32, Physical> {
+        self.transform.transform_size(self.fb)
+    }
+
+    /// Where the render-space edge point `(x, y)` lands in `gl_FragCoord`
+    /// pixels (origin bottom-left, as GL). `Normal` leaves `(x, y)` alone,
+    /// which is why DRM (`Normal`) needs no mirror; `Flipped180` (winit) is
+    /// `y` mirrored against `fb.h`. Quarter turns swap the axes and mirror
+    /// whichever of them the turn points down.
+    pub fn gl_edge(&self, x: i32, y: i32) -> (i32, i32) {
+        let (w, h) = (self.fb.w, self.fb.h);
+        match self.transform {
+            Transform::Normal => (x, y),
+            Transform::_180 => (w - x, h - y),
+            Transform::Flipped => (w - x, y),
+            Transform::Flipped180 => (x, h - y),
+            Transform::_90 => (w - y, x),
+            Transform::_270 => (y, h - x),
+            Transform::Flipped90 => (w - y, h - x),
+            Transform::Flipped270 => (y, x),
+        }
+    }
+
+    /// The render-space rectangle `rect` as a `gl_FragCoord` rectangle: the
+    /// lower-left corner and the size, from its two mapped corners.
+    pub fn gl_rect(&self, rect: Rectangle<i32, Physical>) -> Rectangle<i32, Physical> {
+        let (ax, ay) = self.gl_edge(rect.loc.x, rect.loc.y);
+        let (bx, by) = self.gl_edge(rect.loc.x + rect.size.w, rect.loc.y + rect.size.h);
+        Rectangle::new(
+            (ax.min(bx), ay.min(by)).into(),
+            ((ax - bx).abs(), (ay - by).abs()).into(),
+        )
+    }
+
+    /// The inverse of [`FbMap::gl_edge`]: the render-space point at
+    /// `gl_FragCoord` edge `(x, y)`.
+    pub fn phys_edge(&self, x: i32, y: i32) -> (i32, i32) {
+        let (w, h) = (self.fb.w, self.fb.h);
+        match self.transform {
+            Transform::Normal => (x, y),
+            Transform::_180 => (w - x, h - y),
+            Transform::Flipped => (w - x, y),
+            Transform::Flipped180 => (x, h - y),
+            Transform::_90 => (y, w - x),
+            Transform::_270 => (h - y, x),
+            Transform::Flipped90 => (h - y, w - x),
+            Transform::Flipped270 => (y, x),
+        }
+    }
+
+    /// The render-space rectangle whose `gl_FragCoord` image is `rect`.
+    pub fn phys_rect(&self, rect: Rectangle<i32, Physical>) -> Rectangle<i32, Physical> {
+        let (ax, ay) = self.phys_edge(rect.loc.x, rect.loc.y);
+        let (bx, by) = self.phys_edge(rect.loc.x + rect.size.w, rect.loc.y + rect.size.h);
+        Rectangle::new(
+            (ax.min(bx), ay.min(by)).into(),
+            ((ax - bx).abs(), (ay - by).abs()).into(),
+        )
+    }
+
+    /// The matrix that turns a `gl_FragCoord` offset into a render-space
+    /// offset, as a column-major `mat2` (`[c0.x, c0.y, c1.x, c1.y]`, the
+    /// layout `mat2(vec4)` reads). Every map here is a signed axis swap, which
+    /// is orthogonal, so this matrix is also the inverse of the render-to-gl
+    /// one. The shaders apply it as `p = mat2(m.xy, m.zw) * p`; for
+    /// `Flipped180` it is `diag(1, -1)`, the old `y_sign`.
+    pub fn phys_map(&self) -> [f32; 4] {
+        let (ox, oy) = self.gl_edge(0, 0);
+        let (ex, ey) = self.gl_edge(1, 0);
+        let (fx, fy) = self.gl_edge(0, 1);
+        // Columns of the render-to-gl Jacobian; its transpose maps back.
+        let (jx0, jy0) = ((ex - ox) as f32, (ey - oy) as f32);
+        let (jx1, jy1) = ((fx - ox) as f32, (fy - oy) as f32);
+        [jx0, jx1, jy0, jy1]
     }
 }
 
 /// The uniform pair describing one window's rounded rectangle.
 ///
 /// `rect` is in physical output pixels with a top-left origin (what the render
-/// elements use). `mirrored` (from [`fb_y_mirrored`]) says whether the frame's
-/// projection puts that origin at the bottom of the framebuffer (`false`, the
-/// two already coincide) or at the top (`true`, so `rect` is mirrored against
-/// `fb_height` to reach `gl_FragCoord` space).
+/// elements use); `fb` maps it to `gl_FragCoord` space.
 pub fn rounding_uniforms_into(
     out: &mut Vec<Uniform<'static>>,
     rect: Rectangle<i32, Physical>,
-    fb_height: i32,
-    mirrored: bool,
+    fb: FbMap,
     radius: f32,
 ) {
-    let x = rect.loc.x as f32;
-    let y = if mirrored {
-        (fb_height - rect.loc.y - rect.size.h) as f32
-    } else {
-        rect.loc.y as f32
-    };
+    let rect = fb.gl_rect(rect);
     out.extend([
-        Uniform::new("win_rect", [x, y, rect.size.w as f32, rect.size.h as f32]),
+        Uniform::new(
+            "win_rect",
+            [
+                rect.loc.x as f32,
+                rect.loc.y as f32,
+                rect.size.w as f32,
+                rect.size.h as f32,
+            ],
+        ),
         Uniform::new("radius", radius),
     ]);
 }
 
 /// [`rounding_uniforms_into`] into a fresh vector (for callers off the per-frame path).
-pub fn rounding_uniforms(
-    rect: Rectangle<i32, Physical>,
-    fb_height: i32,
-    mirrored: bool,
-    radius: f32,
-) -> Vec<Uniform<'static>> {
+pub fn rounding_uniforms(rect: Rectangle<i32, Physical>, fb: FbMap, radius: f32) -> Vec<Uniform<'static>> {
     let mut u = Vec::with_capacity(2);
-    rounding_uniforms_into(&mut u, rect, fb_height, mirrored, radius);
+    rounding_uniforms_into(&mut u, rect, fb, radius);
     u
 }
 
@@ -2353,6 +2457,13 @@ pub const GLOW_RANGE: i32 = 24;
 mod tests {
     use super::*;
 
+    fn fb_norm() -> FbMap {
+        FbMap::new(Transform::Normal, (1920, 1080).into())
+    }
+    fn fb_flip() -> FbMap {
+        FbMap::new(Transform::Flipped180, (1920, 1080).into())
+    }
+
     fn win_rect(uniforms: &[Uniform<'static>]) -> String {
         format!("{:?}", uniforms[0])
     }
@@ -2365,8 +2476,7 @@ mod tests {
         let rect = Rectangle::new((0, 0).into(), (300, 200).into());
         let got = glass_uniforms(
             rect,
-            1080,
-            false,
+            fb_norm(),
             13.0,
             (1920, 1080),
             4.0,
@@ -2382,8 +2492,7 @@ mod tests {
         // A bezel sets the same list, not a longer one.
         let bezel = glass_uniforms(
             rect,
-            1080,
-            false,
+            fb_norm(),
             19.0,
             (1920, 1080),
             4.0,
@@ -2442,8 +2551,7 @@ mod tests {
         let rect = Rectangle::new((0, 0).into(), (400, 300).into());
         let mut got = glass_uniforms(
             rect,
-            1080,
-            true,
+            fb_flip(),
             20.0,
             (1920, 1080),
             4.0,
@@ -2453,7 +2561,7 @@ mod tests {
             0.0,
             0.0,
         );
-        got.extend(shape_uniforms(&shape, 1080, true));
+        got.extend(shape_uniforms(&shape, fb_flip()));
         let set: Vec<String> = got.iter().map(|u| u.name.to_string()).collect();
         let compiled: Vec<String> = with_shape(&GLASS_UNIFORMS)
             .iter()
@@ -2479,8 +2587,8 @@ mod tests {
         )
         .unwrap();
         assert_ne!(
-            format!("{:?}", shape_uniforms(&shape, 1080, true)),
-            format!("{:?}", shape_uniforms(&other, 1080, true))
+            format!("{:?}", shape_uniforms(&shape, fb_flip())),
+            format!("{:?}", shape_uniforms(&other, fb_flip()))
         );
     }
 
@@ -2489,8 +2597,7 @@ mod tests {
         let rect = Rectangle::new((0, 0).into(), (300, 200).into());
         let got = glass_uniforms(
             rect,
-            1080,
-            false,
+            fb_norm(),
             13.0,
             (1920, 1080),
             4.0,
@@ -2523,8 +2630,8 @@ mod tests {
     fn normal_output_keeps_the_top_left_origin() {
         // DRM: physical y = 0 is gl_FragCoord.y = 0, so the rect is unchanged.
         let rect = Rectangle::new((10, 20).into(), (300, 200).into());
-        let mirrored = fb_y_mirrored(Transform::Normal).unwrap();
-        let got = rounding_uniforms(rect, 1080, mirrored, 13.0);
+        let fb = FbMap::new(Transform::Normal, (1920, 1080).into());
+        let got = rounding_uniforms(rect, fb, 13.0);
         let want = vec![Uniform::new("win_rect", [10.0f32, 20.0, 300.0, 200.0])];
         assert_eq!(win_rect(&got), win_rect(&want));
     }
@@ -2533,8 +2640,8 @@ mod tests {
     fn flipped180_output_mirrors_the_rect() {
         // winit: physical y = 0 is gl_FragCoord.y = fb_height.
         let rect = Rectangle::new((10, 20).into(), (300, 200).into());
-        let mirrored = fb_y_mirrored(Transform::Flipped180).unwrap();
-        let got = rounding_uniforms(rect, 1080, mirrored, 13.0);
+        let fb = FbMap::new(Transform::Flipped180, (1920, 1080).into());
+        let got = rounding_uniforms(rect, fb, 13.0);
         let want = vec![Uniform::new("win_rect", [10.0f32, 860.0, 300.0, 200.0])];
         assert_eq!(win_rect(&got), win_rect(&want));
     }
@@ -2547,8 +2654,185 @@ mod tests {
             Transform::_270,
             Transform::Flipped,
         ] {
-            assert_eq!(fb_y_mirrored(t), None);
+            assert!(!windowed_transform(t), "{t:?}");
         }
+    }
+
+    const ALL_RENDER_TRANSFORMS: [Transform; 8] = [
+        Transform::Normal,
+        Transform::_90,
+        Transform::_180,
+        Transform::_270,
+        Transform::Flipped,
+        Transform::Flipped90,
+        Transform::Flipped180,
+        Transform::Flipped270,
+    ];
+
+    /// `GlesRenderer::render`'s projection, replicated from smithay 0.7.0
+    /// (`renderer/gles/mod.rs`): the ortho over the render size, then
+    /// `flip180 * transform.matrix()`, then the viewport over `fb`. Matrices
+    /// are indexed `[column][row]`, as cgmath's are.
+    fn projected_gl(t: Transform, fb: (i32, i32), x: i32, y: i32) -> (f32, f32) {
+        let render = t.transform_size(Size::<i32, Physical>::from(fb));
+        let (rw, rh) = (render.w as f32, render.h as f32);
+        let mut ortho = [[0.0f32; 3]; 3];
+        ortho[0][0] = 2.0 / rw;
+        ortho[1][1] = -2.0 / rh;
+        ortho[2][0] = -(1.0f32.copysign(ortho[0][0]));
+        ortho[2][1] = -(1.0f32.copysign(ortho[1][1]));
+        let tm = t.matrix();
+        let mut transform = [[0.0f32; 3]; 3];
+        for (c, col) in transform.iter_mut().enumerate() {
+            for (r, v) in col.iter_mut().enumerate() {
+                *v = tm[c][r];
+            }
+        }
+        let flip180 = [[1.0f32, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]];
+        let mul = |m: &[[f32; 3]; 3], v: [f32; 3]| {
+            let mut out = [0.0f32; 3];
+            for (r, o) in out.iter_mut().enumerate() {
+                *o = (0..3).map(|c| m[c][r] * v[c]).sum();
+            }
+            out
+        };
+        let v = mul(&flip180, mul(&transform, mul(&ortho, [x as f32, y as f32, 1.0])));
+        ((v[0] + 1.0) / 2.0 * fb.0 as f32, (v[1] + 1.0) / 2.0 * fb.1 as f32)
+    }
+
+    #[test]
+    fn fb_map_matches_smithay_projection_for_every_transform() {
+        // The output's mode, and a few points on the render-space edges and inside.
+        let fb = (1920, 1080);
+        for t in ALL_RENDER_TRANSFORMS {
+            let map = FbMap {
+                fb: fb.into(),
+                transform: t,
+            };
+            let rs = t.transform_size(Size::<i32, Physical>::from(fb));
+            for (x, y) in [
+                (0, 0),
+                (rs.w, 0),
+                (0, rs.h),
+                (rs.w, rs.h),
+                (300, 200),
+                (17, rs.h - 3),
+            ] {
+                let (gx, gy) = projected_gl(t, fb, x, y);
+                let (mx, my) = map.gl_edge(x, y);
+                assert!(
+                    (gx - mx as f32).abs() < 1e-2 && (gy - my as f32).abs() < 1e-2,
+                    "{t:?} ({x}, {y}): projection ({gx}, {gy}), map ({mx}, {my})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fb_map_rect_is_the_projected_rect_for_every_transform() {
+        let fb = (1920, 1080);
+        let rect = Rectangle::new((40, 25).into(), (360, 140).into());
+        for t in ALL_RENDER_TRANSFORMS {
+            let got = FbMap {
+                fb: fb.into(),
+                transform: t,
+            }
+            .gl_rect(rect);
+            // The four projected corners span exactly the mapped rectangle.
+            let corners = [
+                projected_gl(t, fb, rect.loc.x, rect.loc.y),
+                projected_gl(t, fb, rect.loc.x + rect.size.w, rect.loc.y),
+                projected_gl(t, fb, rect.loc.x, rect.loc.y + rect.size.h),
+                projected_gl(t, fb, rect.loc.x + rect.size.w, rect.loc.y + rect.size.h),
+            ];
+            let lo_x = corners.iter().map(|c| c.0).fold(f32::MAX, f32::min);
+            let lo_y = corners.iter().map(|c| c.1).fold(f32::MAX, f32::min);
+            let hi_x = corners.iter().map(|c| c.0).fold(f32::MIN, f32::max);
+            let hi_y = corners.iter().map(|c| c.1).fold(f32::MIN, f32::max);
+            assert_eq!(
+                (got.loc.x, got.loc.y, got.size.w, got.size.h),
+                (
+                    lo_x.round() as i32,
+                    lo_y.round() as i32,
+                    (hi_x - lo_x).round() as i32,
+                    (hi_y - lo_y).round() as i32,
+                ),
+                "{t:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn fb_map_phys_map_undoes_the_projection_for_every_transform() {
+        // A one-pixel step in render space, seen in gl space, and back through
+        // the matrix, is the same step.
+        let fb = (1920, 1080);
+        for t in ALL_RENDER_TRANSFORMS {
+            let m = FbMap {
+                fb: fb.into(),
+                transform: t,
+            }
+            .phys_map();
+            let (x, y) = (300, 200);
+            let (ox, oy) = projected_gl(t, fb, x, y);
+            for (dx, dy) in [(1, 0), (0, 1)] {
+                let (nx, ny) = projected_gl(t, fb, x + dx, y + dy);
+                let (gx, gy) = (nx - ox, ny - oy);
+                let back = (m[0] * gx + m[2] * gy, m[1] * gx + m[3] * gy);
+                assert!(
+                    (back.0 - dx as f32).abs() < 1e-3 && (back.1 - dy as f32).abs() < 1e-3,
+                    "{t:?} step ({dx}, {dy}): {back:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fb_map_phys_edge_inverts_gl_edge_for_every_transform() {
+        let map_fb = (1920, 1080);
+        for t in ALL_RENDER_TRANSFORMS {
+            let map = FbMap {
+                fb: map_fb.into(),
+                transform: t,
+            };
+            let rs = map.render_size();
+            for (x, y) in [(0, 0), (rs.w, rs.h), (17, rs.h - 3), (rs.w, 0)] {
+                let (gx, gy) = map.gl_edge(x, y);
+                assert_eq!(map.phys_edge(gx, gy), (x, y), "{t:?} ({x}, {y})");
+            }
+            let rect = Rectangle::new((40, 25).into(), (360, 140).into());
+            let gl = map.gl_rect(rect);
+            assert_eq!(map.phys_rect(gl), rect, "{t:?}");
+        }
+    }
+
+    #[test]
+    fn fb_map_flip_only_transforms_keep_the_mirror_matrix() {
+        let fb = (1920, 1080);
+        let normal = FbMap {
+            fb: fb.into(),
+            transform: Transform::Normal,
+        };
+        let flipped = FbMap {
+            fb: fb.into(),
+            transform: Transform::Flipped180,
+        };
+        assert_eq!(normal.phys_map(), [1.0, 0.0, 0.0, 1.0]);
+        // `y_sign` of -1: the mirrored y axis.
+        assert_eq!(flipped.phys_map(), [1.0, 0.0, 0.0, -1.0]);
+        assert_eq!(normal.gl_edge(10, 20), (10, 20));
+        assert_eq!(flipped.gl_edge(10, 20), (10, 1060));
+    }
+
+    #[test]
+    fn output_transform_is_inverted_for_the_render_transform() {
+        // A `_90` output is rendered with `_270`, and its render size is the
+        // mode's axes swapped (portrait for a landscape panel).
+        let map = FbMap::new(Transform::_90, Size::from((1920, 1080)));
+        assert_eq!(map.transform, Transform::_270);
+        assert_eq!(map.render_size(), Size::<i32, Physical>::from((1080, 1920)));
+        let normal = FbMap::new(Transform::Normal, Size::from((1920, 1080)));
+        assert_eq!(normal.render_size(), Size::<i32, Physical>::from((1920, 1080)));
     }
 
     #[test]
