@@ -40,8 +40,8 @@
 //! panes travel in the same commit as the buffer, so no frame has text on a
 //! ground that is not there.
 //!
-//! **Panic-free and never in the way.** Sizes go through [`fit_in`], which
-//! never returns more than the room it was given; every index is checked; a
+//! **Panic-free and never in the way.** Sizes go through `ec_glance::cells`, whose plans
+//! never return more than the room it was given; every index is checked; a
 //! layout with no Password tile gets the built-in one added. The layout and
 //! the Glance numbers are only *drawn*: nothing here reaches `update`.
 //!
@@ -52,6 +52,7 @@
 use iced::widget::{button, column, container, pin, responsive, row, stack, text, Space};
 use iced::{alignment, Alignment, Color, Element, Font, Length, Shadow, Size, Theme, Vector};
 
+use ec_glance::cells;
 use ec_glance::tile::{self, BatteryPlan, Inner, WifiPlan};
 use ec_glance::{clean, Charge};
 use ec_layout::{Kind, Rect};
@@ -66,7 +67,7 @@ use crate::machine::Reason;
 use crate::tokens::{self, cell};
 
 /// The field's marker, as in the secret prompt.
-const MARKER: &str = "\u{203a}";
+const MARKER: &str = cells::lock::MARKER;
 
 /// Everything the view draws, read once from the model. `pub` so the preview
 /// example can draw any state without a lock, a PAM stack or a grant.
@@ -168,19 +169,6 @@ fn tiles<'a>(s: Scene<'a>, output: Size) -> Element<'a, Message, Theme> {
     stack(out).width(Length::Fill).height(Length::Fill).into()
 }
 
-/// The inner margin of a pane: the shared rule (`ec_glance::tile::pad_for`),
-/// so the lock, the greeter and the builder preview agree.
-fn pad_for(w: f32, h: f32) -> f32 {
-    tile::pad_for(w, h)
-}
-
-/// Clamp `avail` into `[lo, hi]`, but never above `avail` itself: a size is a
-/// hint, and a tile never gets a size it cannot hold.
-fn fit_in(avail: f32, lo: f32, hi: f32) -> f32 {
-    let avail = avail.max(0.0);
-    avail.min(hi).max(lo.min(avail))
-}
-
 /// The Glances' text sizes, for `ec_glance::tile`.
 const GLANCE_TYPE: tile::Type = tile::Type {
     micro: size::MICRO,
@@ -189,19 +177,13 @@ const GLANCE_TYPE: tile::Type = tile::Type {
 };
 
 fn tile<'a>(s: Scene<'a>, kind: Kind, w: f32, h: f32, appeared: f32) -> Option<Element<'a, Message, Theme>> {
-    let pad = pad_for(w, h);
-    // A pill's content keeps clear of its curve: the horizontal pad is most
-    // of the radius, never less than the pane's own.
-    let pill = if kind == Kind::Greeting {
-        w.min(h) / 2.0
-    } else {
-        0.0
-    };
-    let pad_x = pad.max(pill * tokens::PILL_PAD_X).min(w / 4.0);
+    // The shared frame: a pill's content keeps clear of its curve.
+    let frame = cells::lock_frame(w, h, kind == Kind::Greeting);
+    let (pad, pad_x) = (frame.pad, frame.pad_x);
     let cx = Cx {
         s,
-        iw: (w - 2.0 * pad_x).max(0.0),
-        ih: (h - 2.0 * pad).max(0.0),
+        iw: frame.inner.w,
+        ih: frame.inner.h,
     };
     let glass = glass_live();
     // The clock is bare type on the opaque fall-back, where it needs no
@@ -412,20 +394,20 @@ fn clock<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
 /// The account as one line: its disc, its name, and whether it is locked.
 fn greeting<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
     let s = &cx.s;
-    let disc = fit_in(cx.ih * cell::AVATAR_FRAC, cell::AVATAR_MIN, cell::AVATAR_MAX).min(cx.ih);
+    let plan = cells::lock_greeting(Inner { w: cx.iw, h: cx.ih });
     let word = if s.status == Status::Unlocking {
-        "unlocked"
+        cells::lock::WORD_UNLOCKED
     } else {
-        "locked"
+        cells::lock::WORD_LOCKED
     };
     let mut r = row![
-        initial_disc(s.user, disc),
-        label(clean(s.user), size::PROMPT, font::UI_MEDIUM, color::text()),
+        initial_disc(s.user, plan.disc, plan.initial_px),
+        label(clean(s.user), plan.name_px, font::UI_MEDIUM, color::text()),
         Space::new().width(Length::Fill),
     ]
     .spacing(space::CONTROL_GAP)
     .align_y(Alignment::Center);
-    if cx.iw >= cell::GREETING_WORD_W {
+    if plan.word {
         r = r.push(micro(word));
     }
     container(r)
@@ -438,7 +420,7 @@ fn greeting<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
 /// The account's initial in a pill-round disc, sized to the line it sits on.
 /// Not `ec_ui`'s `avatar`: that one's letter is a fixed size, and this disc
 /// follows the tile.
-fn initial_disc<'a>(name: &str, side: f32) -> Element<'a, Message, Theme> {
+fn initial_disc<'a>(name: &str, side: f32, initial_px: f32) -> Element<'a, Message, Theme> {
     let initial: String = name
         .chars()
         .next()
@@ -446,7 +428,7 @@ fn initial_disc<'a>(name: &str, side: f32) -> Element<'a, Message, Theme> {
         .unwrap_or_default();
     container(label(
         initial,
-        side * cell::INITIAL_FRAC,
+        initial_px,
         font::UI_MEDIUM,
         color::text_secondary(),
     ))
@@ -466,20 +448,17 @@ fn initial_disc<'a>(name: &str, side: f32) -> Element<'a, Message, Theme> {
 /// whatever the tile gives it.
 fn password<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
     let s = &cx.s;
-    let note_room = cell::NOTE_H + cell::NOTE_GAP;
-    let hint_room = cell::HINT_H + cell::NOTE_GAP;
-    let room_for_hints = cx.ih >= cell::FIELD_MIN + note_room + hint_room;
-    let avail = cx.ih - note_room - if room_for_hints { hint_room } else { 0.0 };
-    let field_h = fit_in(avail, cell::FIELD_MIN, cell::FIELD_MAX);
+    let plan = cells::lock_password(Inner { w: cx.iw, h: cx.ih });
+    let (room_for_hints, field_h) = (plan.hints, plan.field_h);
 
-    let mut col = column![field(s, field_h), note(s)]
+    let mut col = column![field(s, field_h, plan.tight), note(s)]
         .spacing(cell::NOTE_GAP)
         .width(Length::Fill);
     if room_for_hints {
         // Nothing to press while PAM holds the password or the lock is going;
         // the line keeps its height so the pane does not move.
         let line: Element<'a, Message, Theme> = if s.taking() {
-            hints(&[("enter", "unlock"), ("esc", "clear")])
+            hints(&cells::lock::HINTS)
         } else {
             Space::new().height(space::KEYCAP_H).into()
         };
@@ -519,7 +498,7 @@ fn battery<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
             note,
         } => {
             let mut col = column![
-                micro("battery"),
+                micro(cells::lock::HEAD_BATTERY),
                 Space::new().height(Length::Fill),
                 label(
                     format!("{}%", first.percent),
@@ -590,7 +569,7 @@ fn battery<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
                 }
                 list = list.push(group);
             }
-            column![micro("battery"), list]
+            column![micro(cells::lock::HEAD_BATTERY), list]
                 .spacing(tile::GAP)
                 .height(Length::Fill)
                 .into()
@@ -656,10 +635,14 @@ fn wifi<'a>(cx: &Cx<'a>) -> Element<'a, Message, Theme> {
             .center_y(Length::Fill)
             .into();
     }
-    column![micro("link"), Space::new().height(Length::Fill), figure_row]
-        .spacing(tile::GAP)
-        .height(Length::Fill)
-        .into()
+    column![
+        micro(cells::lock::HEAD_LINK),
+        Space::new().height(Length::Fill),
+        figure_row
+    ]
+    .spacing(tile::GAP)
+    .height(Length::Fill)
+    .into()
 }
 
 /// A Glance with nothing to show: one quiet line, centred.
@@ -676,7 +659,7 @@ fn quiet<'a>(line: &str) -> Element<'a, Message, Theme> {
 
 /// The field: the typed length while it takes keys, the check while PAM has
 /// the password, the exit while the lock goes.
-fn field<'a>(s: &Scene<'a>, height: f32) -> Element<'a, Message, Theme> {
+fn field<'a>(s: &Scene<'a>, height: f32, tight: bool) -> Element<'a, Message, Theme> {
     let quiet = |label: &str| {
         text(label.to_owned())
             .font(font::UI)
@@ -705,7 +688,7 @@ fn field<'a>(s: &Scene<'a>, height: f32) -> Element<'a, Message, Theme> {
             let body: Element<'a, Message, Theme> = if s.typed == 0 {
                 row![
                     dot_run(0, color::accent()),
-                    text("Password")
+                    text(cells::PLACEHOLDER)
                         .font(font::UI)
                         .size(size::BODY)
                         .style(theme::text_secondary),
@@ -716,11 +699,7 @@ fn field<'a>(s: &Scene<'a>, height: f32) -> Element<'a, Message, Theme> {
             } else {
                 dot_run(s.typed, color::accent())
             };
-            (
-                state,
-                body,
-                Some(unlock(s.can_submit, height < cell::FIELD_ROOMY)),
-            )
+            (state, body, Some(unlock(s.can_submit, tight)))
         }
     };
     let field = secret_field(state, MARKER, body, trailing).height(Length::Fixed(height));
@@ -751,7 +730,9 @@ fn unlock<'a>(ready: bool, tight: bool) -> Element<'a, Message, Theme> {
     } else {
         space::PILL_Y
     };
-    let label = text("Unlock").font(font::UI_MEDIUM).size(size::BODY_SMALL);
+    let label = text(cells::lock::UNLOCK)
+        .font(font::UI_MEDIUM)
+        .size(size::BODY_SMALL);
     if !glass_live() {
         return button(label)
             .padding([pad_y, space::PILL_X])
@@ -778,7 +759,7 @@ fn unlock<'a>(ready: bool, tight: bool) -> Element<'a, Message, Theme> {
 /// reading of it (the wait, the count) in mono at the right.
 fn note<'a>(s: &Scene<'a>) -> Element<'a, Message, Theme> {
     let (line, tone, reading): (&str, fn(&Theme) -> text::Style, Option<String>) = match s.status {
-        Status::Locking | Status::Ready => ("Enter your password to unlock", theme::text_secondary, None),
+        Status::Locking | Status::Ready => (cells::lock::NOTE_READY, theme::text_secondary, None),
         Status::Checking => ("Checking your password", theme::text_secondary, None),
         Status::Unlocking => ("Welcome back", theme::text_secondary, None),
         Status::Failed {
@@ -1019,6 +1000,34 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod shared_plan_tests {
+    /// The lock holds no sizing of its own for its panes: the frame, the
+    /// greeting and the password are `ec_glance::cells`, which the layout
+    /// builder's lock preview draws too (Settings > Lock screen).
+    #[test]
+    fn the_lock_asks_the_shared_plans() {
+        let src = include_str!("view.rs");
+        let body = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for asked in [
+            "cells::lock_frame(",
+            "cells::lock_greeting(",
+            "cells::lock_password(",
+            "tile::clock(",
+            "tile::battery(",
+            "tile::wifi(",
+            "cells::lock::NOTE_READY",
+            "cells::lock::HINTS",
+            "cells::lock::UNLOCK",
+        ] {
+            assert!(body.contains(asked), "{asked} is not asked");
+        }
+        for gone in ["\"Enter your password to unlock\"", "fit_in(", "pad_for("] {
+            assert!(!body.contains(gone), "{gone} is back in the lock view");
         }
     }
 }

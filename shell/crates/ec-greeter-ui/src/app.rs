@@ -208,6 +208,13 @@ fn seeds(theme: Option<&GreeterTheme>, scheme: Scheme) -> Seeds {
     }
 }
 
+/// The palette the greeter draws with for `theme` under `scheme`: the shared
+/// derivation, then (light only) the greeter's legibility steps. Public so the
+/// Settings layout builder's preview is drawn in the same colours.
+pub fn palette_for(theme: Option<&GreeterTheme>, scheme: Scheme) -> ec_theme::Palette {
+    tokens::palette(&seeds(theme, scheme), scheme)
+}
+
 fn now_secs() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

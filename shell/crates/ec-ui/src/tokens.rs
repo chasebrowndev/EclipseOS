@@ -276,14 +276,11 @@ pub mod layout_edit {
     /// Gap a tile keeps from its cell edges, so neighbours never touch.
     pub const TILE_GAP: f32 = 3.0;
     pub const TILE_RADIUS: f32 = 9.0;
-    /// Tile glass over the picture, rest and hover/held, and its rim.
-    pub const TILE_FILL: f32 = 0.11;
+    /// Tile glass over the picture when hovered or held, and its rim. At rest a
+    /// tile is the greeter's card (`ec_glance::cells::CARD`), so it is not here.
     pub const TILE_FILL_HOT: f32 = 0.19;
-    pub const TILE_RIM: f32 = 0.22;
     pub const TILE_RIM_HOT: f32 = 0.62;
-    /// The base colour under a tile's tint (the stand-in for the blur), and the
-    /// remove badge's ground and rims.
-    pub const GROUND: f32 = 0.34;
+    /// The remove badge's ground and rims.
     pub const BADGE_FILL: f32 = 0.86;
     pub const BADGE_RIM: f32 = 0.55;
     pub const BADGE_RIM_HOT: f32 = 0.9;

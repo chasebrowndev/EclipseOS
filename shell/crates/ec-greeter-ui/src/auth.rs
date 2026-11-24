@@ -29,21 +29,23 @@ pub enum Power {
 impl Power {
     pub const ALL: [Power; 3] = [Power::Suspend, Power::Restart, Power::PowerOff];
 
-    pub fn label(self) -> &'static str {
+    fn index(self) -> usize {
         match self {
-            Power::Suspend => "Suspend",
-            Power::Restart => "Restart",
-            Power::PowerOff => "Power off",
+            Power::Suspend => 0,
+            Power::Restart => 1,
+            Power::PowerOff => 2,
         }
+    }
+
+    /// The words are `ec_glance::cells::POWER`, the table the layout builder's
+    /// preview reads too.
+    pub fn label(self) -> &'static str {
+        ec_glance::cells::POWER[self.index()].0
     }
 
     /// The label for a narrow tile, where the full one would wrap.
     pub fn short(self) -> &'static str {
-        match self {
-            Power::Suspend => "Sleep",
-            Power::Restart => "Restart",
-            Power::PowerOff => "Off",
-        }
+        ec_glance::cells::POWER[self.index()].1
     }
 }
 

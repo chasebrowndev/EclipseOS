@@ -16,6 +16,7 @@
 
 use std::time::Instant;
 
+use ec_glance::cells;
 use ec_glance::tile::{self, Inner, WifiPlan};
 use ec_layout::Kind;
 use ec_theme::{Palette, Rgba};
@@ -31,7 +32,7 @@ use crate::glass::Tone;
 use crate::motion::{content_scale, Placed};
 use crate::parts::{swatch, Ground};
 use crate::tokens::{
-    self, cell, font, gauge as g, scale, size, space, to_iced, CARD_RADIUS, CELL_RADIUS, PILL_RADIUS,
+    self, cell, font, gauge as g, size, space, to_iced, CARD_RADIUS, CELL_RADIUS, PILL_RADIUS,
 };
 
 /// What one tile's content needs: its inner box, how far it has appeared, and
@@ -154,18 +155,6 @@ fn tile<'a>(app: &'a App, p: &Placed, state: AuthState) -> Option<Element<'a, Ms
     )
 }
 
-/// `fit_in` of the smaller of a height share and a width share.
-fn fit(h: f32, w: f32, h_share: f32, w_share: f32, lo: f32, hi: f32) -> f32 {
-    fit_in((h * h_share).min(w * w_share), lo, hi)
-}
-
-/// Clamp `avail` into `[lo, hi]`, but never above `avail` itself: a size is a
-/// hint, and a tile never gets a size it cannot hold.
-fn fit_in(avail: f32, lo: f32, hi: f32) -> f32 {
-    let avail = avail.max(0.0);
-    avail.min(hi).max(lo.min(avail))
-}
-
 /// One line of text. It never wraps: a tile too small for its words clips them
 /// rather than breaking a pill or a row into a second line.
 fn label<'a>(s: impl Into<String>, px: f32, font: Font, colour: Rgba) -> Element<'a, Msg> {
@@ -213,14 +202,7 @@ fn clock<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
 }
 
 fn greeting<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
-    let px = fit(
-        cx.ih,
-        cx.iw,
-        scale::GREETING_H,
-        scale::GREETING_W,
-        scale::GREETING_MIN,
-        scale::GREETING_MAX,
-    );
+    let px = cells::greeting(Inner { w: cx.iw, h: cx.ih });
     container(label(cx.app.greeting.clone(), px, font::UI_MEDIUM, cx.pal.text))
         .width(Length::Fill)
         .height(Length::Fill)
@@ -231,95 +213,81 @@ fn greeting<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
 fn users<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     let app = cx.app;
     let pal = cx.pal;
-    let head = cell::HEAD_H;
-    let avail = (cx.ih - head - space::ROW_Y).max(0.0);
-    let n = app.users.len();
-    let mut col = column![label(
-        "ACCOUNTS",
+    let head = label(
+        cells::ACCOUNTS_HEAD,
         size::MICRO,
         font::DATA_MEDIUM,
-        pal.text_tertiary
-    )]
-    .spacing(space::ROW_Y)
-    .height(Length::Fill);
-    if n == 0 {
-        return col
-            .push(label(
-                "No accounts",
-                size::BODY_SMALL,
-                font::UI,
-                pal.text_secondary,
-            ))
-            .into();
+        pal.text_tertiary,
+    );
+    let plan = cells::users(Inner { w: cx.iw, h: cx.ih }, app.users.len());
+    if app.users.is_empty() {
+        return column![
+            head,
+            label(cells::NO_ACCOUNTS, size::BODY_SMALL, font::UI, pal.text_secondary)
+        ]
+        .spacing(cell::LINE_GAP)
+        .height(Length::Fill)
+        .into();
     }
-    // How many rows the tile can hold at the smallest comfortable height.
-    let gap = cell::ROW_GAP;
-    let fit_rows = (((avail + gap) / (cell::ROW_MIN + gap)).floor().max(1.0)) as usize;
-    let shown = if n > fit_rows {
-        fit_rows.saturating_sub(1).max(1)
-    } else {
-        n
-    };
-    let more = n.saturating_sub(shown);
-    let total = shown + usize::from(more > 0);
-    let total_f = total.max(1) as f32;
-    let row_h = ((avail - gap * (total_f - 1.0)) / total_f).clamp(0.0, cell::ROW_MAX);
-
-    for name in app.users.iter().take(shown) {
+    let mut list = column![].spacing(cell::ROW_GAP);
+    for name in app.users.iter().take(plan.shown) {
         let selected = app.selected.as_deref() == Some(name.as_str()) && cx.state != AuthState::Idle;
-        let avatar = fit_in(row_h * cell::AVATAR_FRAC, cell::AVATAR_MIN, cell::AVATAR_MAX).min(row_h);
         let initial = name
             .chars()
             .next()
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_default();
-        let disc = container(label(initial, avatar * 0.45, font::UI_MEDIUM, pal.text))
-            .width(Length::Fixed(avatar))
-            .height(Length::Fixed(avatar))
-            .center(Length::Fixed(avatar))
-            .style(move |_| container::Style {
-                background: Some(iced::Background::Color(to_iced(pal.lift))),
-                border: iced::Border {
-                    radius: (avatar / 2.0).into(),
-                    ..iced::Border::default()
-                },
-                ..container::Style::default()
-            });
+        let disc = container(label(
+            initial,
+            plan.avatar * cell::INITIAL_FRAC,
+            font::UI_MEDIUM,
+            pal.text,
+        ))
+        .width(Length::Fixed(plan.avatar))
+        .height(Length::Fixed(plan.avatar))
+        .center(Length::Fixed(plan.avatar))
+        .style(move |_| container::Style {
+            background: Some(iced::Background::Color(to_iced(pal.lift))),
+            border: iced::Border {
+                radius: (plan.avatar / 2.0).into(),
+                ..iced::Border::default()
+            },
+            ..container::Style::default()
+        });
         let line = row![disc, label(name.clone(), size::BODY, font::UI_MEDIUM, pal.text)]
-            .spacing(space::ROW_Y)
+            .spacing(cell::LINE_GAP)
             .align_y(alignment::Vertical::Center);
         let cell_body = container(line)
             .padding([space::ZERO, cell::ROW_PAD_X])
             .width(Length::Fill)
-            .height(Length::Fixed(row_h))
+            .height(Length::Fixed(plan.row_h))
             .align_y(alignment::Vertical::Center);
         let tone = if selected { Tone::Focused } else { Tone::Plain };
-        col = col.push(
+        list = list.push(
             ground(cx, cell_body.into(), CELL_RADIUS)
                 .tone(tone)
                 .on_press(Msg::Pick(name.clone())),
         );
     }
-    if more > 0 {
-        col = col.push(label(
-            format!("+{more} more"),
+    if plan.more > 0 {
+        list = list.push(label(
+            cells::more_label(plan.more),
             size::MICRO,
             font::DATA,
             pal.text_tertiary,
         ));
     }
-    col.into()
+    column![head, list]
+        .spacing(cell::LINE_GAP)
+        .height(Length::Fill)
+        .into()
 }
 
 fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     let app = cx.app;
     let pal = cx.pal;
-    let field_h = fit_in(
-        cx.ih - cell::NOTE_H - cell::NOTE_GAP,
-        cell::FIELD_MIN,
-        cell::FIELD_MAX,
-    );
-    let submit_w = fit_in(cx.iw * cell::SUBMIT_W_FRAC, cell::SUBMIT_MIN, cell::SUBMIT_MAX);
+    let plan = cells::password(Inner { w: cx.iw, h: cx.ih });
+    let (field_h, submit_w) = (plan.field_h, plan.submit_w);
     let focused = cx.state.takes_keys();
 
     // Before an account is chosen the field and its pill are inert: dimmed
@@ -354,7 +322,7 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     }
     if typed == 0 {
         ink = ink.push(label(
-            "Password",
+            cells::PLACEHOLDER,
             size::BODY,
             font::UI,
             pal.text_tertiary.with_alpha(pal.text_tertiary.0[3] * ink_dim),
@@ -370,7 +338,7 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
         .fade(cx.fade * dim);
 
     let unlock = container(label(
-        "Sign in",
+        cells::SIGN_IN,
         size::BODY_SMALL,
         font::UI_MEDIUM,
         pal.text.with_alpha(pal.text.0[3] * ink_dim),
@@ -393,7 +361,7 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
             .width(Length::Fixed(submit_w))
             .height(Length::Fixed(field_h)),
     ]
-    .spacing(space::ROW_Y)
+    .spacing(cell::LINE_GAP)
     .align_y(alignment::Vertical::Center);
     let (note, colour) = note(cx.state, pal);
     column![line, label(note, size::BODY_SMALL, font::UI, colour)]
@@ -404,7 +372,7 @@ fn password<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
 
 fn note(state: AuthState, pal: &Palette) -> (&'static str, Rgba) {
     match state {
-        AuthState::Idle => ("Choose an account to sign in", pal.text_tertiary),
+        AuthState::Idle => (cells::NOTE_IDLE, pal.text_tertiary),
         AuthState::Starting => ("Starting...", pal.text_secondary),
         AuthState::Prompting => ("Enter your password", pal.text_tertiary),
         AuthState::Checking => ("Checking...", pal.text_secondary),
@@ -416,9 +384,10 @@ fn note(state: AuthState, pal: &Palette) -> (&'static str, Rgba) {
 
 fn power<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     let pal = cx.pal;
-    let pill_h = fit_in(cx.ih, 0.0, cell::FIELD_MAX);
+    let plan = cells::power(Inner { w: cx.iw, h: cx.ih });
+    let pill_h = plan.pill_h;
     // Full labels need room for three pills; a narrower tile uses short ones.
-    let full = cx.iw >= cell::POWER_FULL_W;
+    let full = plan.full;
     let items: Vec<Element<'a, Msg>> = Power::ALL
         .iter()
         .map(|&action| {
@@ -526,4 +495,35 @@ fn wifi<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
         .spacing(tile::GAP)
         .height(Length::Fill)
         .into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The screen holds no sizing of its own for these tiles: the plans are
+    /// `ec_glance::cells`, which the layout builder's preview draws too.
+    #[test]
+    fn the_tiles_ask_the_shared_plans() {
+        let src = include_str!("view.rs");
+        let body = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for asked in [
+            "cells::greeting(",
+            "cells::users(",
+            "cells::password(",
+            "cells::power(",
+            "tile::clock(",
+            "gauge::cell(",
+            "tile::wifi(",
+        ] {
+            assert!(body.contains(asked), "{asked} is not asked");
+        }
+    }
+
+    #[test]
+    fn the_power_words_are_the_shared_table() {
+        for (p, (full, short)) in Power::ALL.iter().zip(cells::POWER) {
+            assert_eq!((p.label(), p.short()), (full, short));
+        }
+    }
 }

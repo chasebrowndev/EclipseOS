@@ -167,6 +167,7 @@ pub enum Message {
     Accounts(crate::accounts::Msg),
     /// The Login screen page's own messages.
     LoginScreen(crate::login_screen::Msg),
+    LockScreen(crate::login_screen::lock::Msg),
     /// The Terminal pages' own messages.
     Terminal(crate::terminal::Msg),
     /// A key on the control the ring is on (`focus.rs`).
@@ -384,6 +385,7 @@ pub struct App {
     pub(crate) accounts: crate::accounts::Accounts,
     /// The Login screen page: what the machine has, and the pending choices.
     pub(crate) login: crate::login_screen::LoginScreen,
+    pub(crate) lock: crate::login_screen::lock::LockScreen,
     /// The Terminal pages: `apotheosis.kdl`, loaded when one is shown.
     pub(crate) terminal: crate::terminal::Terminal,
     /// Whether the page's "Advanced" expander is open. Per visit: a new page
@@ -475,6 +477,7 @@ impl App {
             anim: crate::animations::Anim::default(),
             accounts: crate::accounts::Accounts::default(),
             login: crate::login_screen::LoginScreen::default(),
+            lock: crate::login_screen::lock::LockScreen::default(),
             terminal: crate::terminal::Terminal::default(),
             advanced: false,
             show_nav: false,
@@ -509,6 +512,9 @@ impl App {
             crate::login_screen::load(&mut app);
             #[cfg(debug_assertions)]
             crate::login_screen::preview_env(&mut app.login);
+        }
+        if app.page == Page::LockScreen {
+            crate::login_screen::lock::load(&mut app);
         }
         crate::taskbar::adopt_selection(&mut app);
         app
@@ -1060,6 +1066,9 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
             if app.page == Page::LoginScreen {
                 return crate::login_screen::reload(app);
             }
+            if app.page == Page::LockScreen {
+                crate::login_screen::lock::load(app);
+            }
         }
 
         Message::Toggled(path, on) => app.write(&path, Value::Bool(on)),
@@ -1283,6 +1292,7 @@ fn update_inner(app: &mut App, message: Message) -> Task<Message> {
         Message::Accounts(m) => return crate::accounts::update(app, m),
         Message::Terminal(m) => return crate::terminal::update(app, m),
         Message::LoginScreen(m) => return crate::login_screen::update(app, m),
+        Message::LockScreen(m) => return crate::login_screen::lock::update(app, m),
     }
     Task::none()
 }
@@ -1315,6 +1325,9 @@ fn go(app: &mut App, page: Page) -> Task<Message> {
     } else {
         Task::none()
     };
+    if page == Page::LockScreen {
+        crate::login_screen::lock::load(app);
+    }
     Task::batch([
         pictures,
         iced::widget::operation::snap_to(SCROLL, iced::widget::scrollable::RelativeOffset::START),
@@ -1871,6 +1884,10 @@ fn frame(app: &App, density: Density, narrow: bool) -> Element<'_, Message, Them
             let (state, measure) = crate::login_screen::status(app);
             controls.push(status_chip(&state, &measure));
         }
+        _ if app.page == Page::LockScreen => {
+            let (state, measure) = crate::login_screen::lock::status(app);
+            controls.push(status_chip(&state, &measure));
+        }
         _ if app.page == Page::Animations => {
             let (state, measure) = crate::animations::status(app);
             controls.push(status_chip(&state, &measure));
@@ -1940,6 +1957,7 @@ fn frame(app: &App, density: Density, narrow: bool) -> Element<'_, Message, Them
                 None => blocks.push(schema_page(app)),
             }
         }
+        Page::LockScreen => blocks.extend(crate::login_screen::lock::blocks(app)),
         p if p.is_terminal() => blocks.extend(crate::terminal::blocks(app, p)),
         p if p.section() == Section::Taskbar => blocks.extend(crate::taskbar::blocks(app, p)),
         _ => blocks.push(schema_page(app)),

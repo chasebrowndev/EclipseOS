@@ -34,9 +34,11 @@ use iced::{
 use ec_ui::motion::{Animated, Curve, Motion};
 use ec_ui::tokens::{color, font, layout_edit as t, login_preview as lp, motion, space};
 
-use super::layout_edit::{self, Handle};
+use super::layout_edit::{self, Handle, Screen};
 use super::sample;
-use ec_glance::tile::{self, WifiPlan};
+use ec_glance::tile::{self, BatteryPlan, WifiPlan};
+use ec_glance::{cells, Charge};
+use ec_theme::{Palette, Rgba};
 
 /// What the mocks draw with: the previewed theme's colours and the texts the
 /// page is about to send.
@@ -44,6 +46,9 @@ use ec_glance::tile::{self, WifiPlan};
 pub struct Skin {
     pub base: Color,
     pub ink: Color,
+    /// The palette the greeter derives for this theme: every colour a tile's
+    /// content is drawn in comes from here, as on the real screen.
+    pub pal: Palette,
     /// A chosen picture is behind the preview: the tiles are denser.
     pub dense: bool,
     pub clock: sample::ClockSample,
@@ -72,6 +77,7 @@ pub struct Bar<Message> {
 pub struct Editor<'a, Message> {
     layout: &'a Layout,
     skin: Skin,
+    screen: Screen,
     on_change: Box<dyn Fn(Layout) -> Message + 'a>,
     bar: Option<Bar<Message>>,
 }
@@ -84,12 +90,20 @@ pub fn editor<'a, Message>(
     Editor {
         layout,
         skin,
+        screen: Screen::Login,
         on_change: Box::new(on_change),
         bar: None,
     }
 }
 
 impl<'a, Message> Editor<'a, Message> {
+    /// Edit the lock screen's layout instead of the login screen's: its own tile
+    /// set, and its tiles drawn as the lock draws them.
+    pub fn screen(mut self, screen: Screen) -> Self {
+        self.screen = screen;
+        self
+    }
+
     /// Give the editor its apply bar.
     pub fn bar(mut self, bar: Bar<Message>) -> Self {
         self.bar = Some(bar);
@@ -149,7 +163,7 @@ type Measure<'a> = &'a dyn Fn(&str, f32, iced::Font) -> f32;
 
 /// The width of `s` as the renderer will set it. Cached: the same few strings
 /// are asked for on every event and frame.
-fn measure(s: &str, size: f32, f: iced::Font) -> f32 {
+pub(super) fn measure(s: &str, size: f32, f: iced::Font) -> f32 {
     use std::cell::RefCell;
     use std::collections::HashMap;
     thread_local! {
@@ -665,7 +679,7 @@ impl<M> Editor<'_, M> {
         }
         for tile in &self.layout.tiles {
             let r = g.rect_px(tile.rect);
-            if layout_edit::removable(tile.kind) && badge_rect(r).contains(p) {
+            if layout_edit::removable(self.screen, tile.kind) && badge_rect(r).contains(p) {
                 return Hit::Badge(tile.kind);
             }
         }
@@ -691,22 +705,22 @@ impl<M> Editor<'_, M> {
         match grab.hit {
             Hit::Tile(k) => {
                 let (x, y) = ((cx - grab.off.0).round() as i32, (cy - grab.off.1).round() as i32);
-                layout_edit::drag_to(self.layout, k, x, y)
+                layout_edit::drag_to(self.screen, self.layout, k, x, y)
             }
             Hit::Grip(k, h) => {
                 let (fx, fy) = ((cx + grab.off.0).round() as i32, (cy + grab.off.1).round() as i32);
-                layout_edit::resize_to(self.layout, k, h, fx, fy)
+                layout_edit::resize_to(self.screen, self.layout, k, h, fx, fy)
             }
             Hit::Chip(k) => {
                 if !g.pv.contains(p) {
                     return None;
                 }
-                let (w, h) = layout_edit::default_size(k);
+                let (w, h) = layout_edit::default_size(self.screen, k);
                 let at = (
                     (cx - w as f32 / 2.0).round() as i32,
                     (cy - h as f32 / 2.0).round() as i32,
                 );
-                layout_edit::add(self.layout, k, Some(at))?.get(k)
+                layout_edit::add(self.screen, self.layout, k, Some(at))?.get(k)
             }
             _ => None,
         }
@@ -760,7 +774,7 @@ fn travel(this: &Editor<'_, impl Clone>, st: &mut State, g: &Geo, b: Rectangle, 
     st.grab = Some(grab);
 }
 
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
+pub(super) fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
@@ -793,7 +807,11 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
         limits: &layout::Limits,
     ) -> layout::Node {
         let width = limits.max().width.min(t::MAX_W);
-        let g = geo(width, &layout_edit::offered(self.layout), self.bar_label());
+        let g = geo(
+            width,
+            &layout_edit::offered(self.screen, self.layout),
+            self.bar_label(),
+        );
         layout::Node::new(
             limits
                 .resolve(Length::Fill, Length::Shrink, Size::new(g.w, g.h))
@@ -813,7 +831,11 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
         _viewport: &Rectangle,
     ) {
         let b = layout.bounds();
-        let g = geo(b.width, &layout_edit::offered(self.layout), self.bar_label());
+        let g = geo(
+            b.width,
+            &layout_edit::offered(self.screen, self.layout),
+            self.bar_label(),
+        );
         let st = tree.state.downcast_mut::<State>();
         let now = Instant::now();
         st.sync(self.layout, now);
@@ -952,7 +974,11 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
         let Some(clip) = b.intersection(viewport) else {
             return;
         };
-        let g = geo(b.width, &layout_edit::offered(self.layout), self.bar_label());
+        let g = geo(
+            b.width,
+            &layout_edit::offered(self.screen, self.layout),
+            self.bar_label(),
+        );
         let st = tree.state.downcast_ref::<State>();
         let at = |r: Rectangle| Rectangle::new(Point::new(b.x + r.x, b.y + r.y), r.size());
         let sk = &self.skin;
@@ -1040,13 +1066,13 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
             let scale = lerp(t::POP_FROM, 1.0, pop.max(0.0)) * if lifted { t::LIFT } else { 1.0 };
             let base = rect;
             let rect = scaled(rect, scale);
-            let removable = layout_edit::removable(s.kind);
+            let removable = layout_edit::removable(self.screen, s.kind);
             renderer.with_layer(clip, |r| {
                 if lifted {
                     r.fill_quad(
                         renderer::Quad {
                             bounds: rect,
-                            border: border::rounded(t::TILE_RADIUS),
+                            border: border::rounded(tile_radius(rect, g.pv.width)),
                             shadow: Shadow {
                                 color: Color::BLACK.scale_alpha(t::SHADOW * alpha),
                                 offset: Vector::new(0.0, t::SHADOW_DROP),
@@ -1076,7 +1102,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
 
         // A chip in the air: the tile it would become.
         if let Some((k, p)) = st.float {
-            let (w, h) = layout_edit::default_size(k);
+            let (w, h) = layout_edit::default_size(self.screen, k);
             let (cw, ch) = (w as f32 * g.cw, h as f32 * g.ch);
             let rect = at(Rectangle::new(
                 Point::new(p.x - cw / 2.0, p.y - ch / 2.0),
@@ -1088,7 +1114,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
                 r.fill_quad(
                     renderer::Quad {
                         bounds: rect,
-                        border: border::rounded(t::TILE_RADIUS),
+                        border: border::rounded(tile_radius(rect, g.pv.width)),
                         shadow: Shadow {
                             color: Color::BLACK.scale_alpha(t::SHADOW),
                             offset: Vector::new(0.0, t::SHADOW_DROP),
@@ -1103,7 +1129,7 @@ impl<M: Clone> Widget<M, Theme, iced::Renderer> for Editor<'_, M> {
         }
 
         // The tray.
-        let offered = layout_edit::offered(self.layout);
+        let offered = layout_edit::offered(self.screen, self.layout);
         renderer.with_layer(clip, |r| {
             if offered.is_empty() {
                 // The bar's slot beside it says everything that needs saying.
@@ -1330,7 +1356,7 @@ fn inset(r: Rectangle, by: f32) -> Rectangle {
     )
 }
 
-fn fill(r: &mut iced::Renderer, b: Rectangle, radius: f32, c: Color, rim: Option<(Color, f32)>) {
+pub(super) fn fill(r: &mut iced::Renderer, b: Rectangle, radius: f32, c: Color, rim: Option<(Color, f32)>) {
     let mut border = border::rounded(radius);
     if let Some((col, w)) = rim {
         border = border.color(col).width(w);
@@ -1345,8 +1371,21 @@ fn fill(r: &mut iced::Renderer, b: Rectangle, radius: f32, c: Color, rim: Option
     );
 }
 
+/// The width of the box a line of text is set in: the caller's `w`, but never
+/// narrower than the text when it is left-aligned, so the renderer cannot
+/// wrap it. Centred and right-aligned text anchor on the box's width, so
+/// those keep it.
+fn one_line_width(w: f32, text_w: f32, ax: text::Alignment) -> f32 {
+    match ax {
+        text::Alignment::Left | text::Alignment::Default | text::Alignment::Justified => {
+            w.max(text_w.ceil() + 2.0)
+        }
+        _ => w,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn put(
+pub(super) fn put(
     r: &mut iced::Renderer,
     s: &str,
     bounds: Rectangle,
@@ -1365,10 +1404,23 @@ fn put(
         alignment::Vertical::Center => (bounds.height - size) / 2.0,
         alignment::Vertical::Bottom => bounds.height - size,
     };
+    // `Wrapping::None` is not honoured for cached text, which word-wraps in
+    // its box; the screens' labels never wrap, so a left-aligned line gets a
+    // box as wide as the text and overflows rather than breaks.
+    let width = one_line_width(bounds.width, measure(s, size, f), ax);
+    // ...and is cut at its own box's sides, as the floor on text size can make
+    // a line wider than the real one the box was sized for.
+    let clip = if width > bounds.width {
+        Rectangle::new(Point::new(bounds.x, clip.y), Size::new(bounds.width, clip.height))
+            .intersection(&clip)
+            .unwrap_or(Rectangle::new(Point::ORIGIN, Size::ZERO))
+    } else {
+        clip
+    };
     r.fill_text(
         text::Text {
             content: s.to_owned(),
-            bounds: Size::new(bounds.width, size),
+            bounds: Size::new(width, size),
             size: Pixels(size),
             line_height: LineHeight::Relative(1.0),
             font: f,
@@ -1598,7 +1650,7 @@ impl<M: Clone> Editor<'_, M> {
                     && g.rect_px_of(self.layout, k)
                         .is_some_and(|r| badge_rect(r).contains(rel))
                 {
-                    next = layout_edit::remove(self.layout, k);
+                    next = layout_edit::remove(self.screen, self.layout, k);
                 }
             }
             Hit::Apply | Hit::Revert => {
@@ -1616,7 +1668,7 @@ impl<M: Clone> Editor<'_, M> {
                 let at = if grab.dragging {
                     grab.target.map(|_| {
                         let (cx, cy) = g.cell(rel);
-                        let (w, h) = layout_edit::default_size(k);
+                        let (w, h) = layout_edit::default_size(self.screen, k);
                         (
                             (cx - w as f32 / 2.0).round() as i32,
                             (cy - h as f32 / 2.0).round() as i32,
@@ -1626,11 +1678,13 @@ impl<M: Clone> Editor<'_, M> {
                     None
                 };
                 if !grab.dragging || at.is_some() {
-                    next = layout_edit::add(self.layout, k, at);
+                    next = layout_edit::add(self.screen, self.layout, k, at);
                 }
             }
             Hit::Tile(k) | Hit::Grip(k, _) if grab.dragging => {
-                next = grab.target.and_then(|r| layout_edit::commit(self.layout, k, r));
+                next = grab
+                    .target
+                    .and_then(|r| layout_edit::commit(self.screen, self.layout, k, r));
             }
             _ => {}
         }
@@ -1688,24 +1742,41 @@ impl<M: Clone> Editor<'_, M> {
         pv_w: f32,
     ) {
         let sk = &self.skin;
-        let ink = sk.ink;
+        if self.screen == Screen::Lock {
+            return super::lock_mock::tile(r, kind, b, full, hot, alpha, lifted, pv_w, sk);
+        }
+        let ink = color::to_iced(sk.pal.text);
         let hot = if lifted { 1.0 } else { hot };
+        // A battery pane is content-sized: the pane the greeter draws is as big
+        // as its gauges (`ec_layout::intrinsic`), anchored at its footprint's
+        // top-left, so that is the pane drawn here, not the whole footprint.
+        let gauges = (kind == Kind::Battery)
+            .then(|| self.gauge_pane(b, full, pv_w))
+            .flatten();
+        let pane = gauges.map_or(b, |g| g.0);
+        let b = pane;
+        let radius = tile_radius(b, pv_w);
         // Frosted ground, then the light tint a step brighter when held.
         fill(
             r,
             b,
-            t::TILE_RADIUS,
-            sk.base
-                .scale_alpha(if sk.dense { lp::CARD_DENSE } else { t::GROUND } * alpha),
+            radius,
+            sk.base.scale_alpha(
+                if sk.dense {
+                    lp::CARD_DENSE
+                } else {
+                    cells::CARD_BACK
+                } * alpha,
+            ),
             None,
         );
         fill(
             r,
             b,
-            t::TILE_RADIUS,
-            ink.scale_alpha(lerp(t::TILE_FILL, t::TILE_FILL_HOT, hot) * alpha),
+            radius,
+            ink.scale_alpha(lerp(cells::CARD.0, t::TILE_FILL_HOT, hot) * alpha),
             Some((
-                ink.scale_alpha(lerp(t::TILE_RIM, t::TILE_RIM_HOT, hot) * alpha),
+                ink.scale_alpha(lerp(cells::CARD.1, t::TILE_RIM_HOT, hot) * alpha),
                 space::HAIRLINE,
             )),
         );
@@ -1714,10 +1785,109 @@ impl<M: Clone> Editor<'_, M> {
             Point::new(c.x - full.width / 2.0, c.y - full.height / 2.0),
             full.size(),
         );
-        let inner = inset(full, (full.height.min(full.width) * 0.09).clamp(3.0, 12.0));
         let k = pv_w / t::REAL_W;
-        mock(r, kind, full, inner, b, sk, alpha, k);
+        if let Some((_, n, scale)) = gauges {
+            return gauge_mock(r, b, n, scale, sk, alpha, k);
+        }
+        mock(r, kind, full, b, sk, alpha, k);
     }
+
+    /// The battery pane the greeter draws for the sample's devices: its
+    /// rectangle in the preview, how many gauges fit the footprint
+    /// (`ec_layout::fit`), and the scale they are drawn at (`content_scale`).
+    /// `None` when there is nothing to show (the greeter draws no pane then).
+    fn gauge_pane(&self, b: Rectangle, full: Rectangle, pv_w: f32) -> Option<(Rectangle, usize, f32)> {
+        let k = pv_w / t::REAL_W;
+        let devices = self.skin.batteries.len();
+        let (_, n) = ec_layout::fit(self.layout, Kind::Battery, devices)?;
+        if n == 0 || k <= 0.0 {
+            return None;
+        }
+        let c = b.center();
+        let (rw, rh) = real_size(full.size(), k);
+        let scale = ec_greeter_ui::motion::content_scale(rw, rh, n);
+        let (pw, ph) = ec_layout::intrinsic::px(n);
+        // The footprint's top-left on the real screen is its cell edge plus the
+        // real gap; the preview's tile keeps its own, smaller one.
+        let x = c.x - full.width / 2.0 + (t::REAL_GAP * k - t::TILE_GAP);
+        let y = c.y - full.height / 2.0 + (t::REAL_GAP * k - t::TILE_GAP);
+        let pane = Rectangle::new(
+            Point::new(x, y),
+            Size::new(pw as f32 * scale * k, ph as f32 * scale * k),
+        );
+        Some((pane, n, scale))
+    }
+}
+
+/// The greeter's battery pane: a row of gauges, each the greeter's own drawing
+/// (`ec_greeter_ui::gauge::paint`) with its percentage under it, at the
+/// intrinsic proportions of `ec_layout::intrinsic`, scaled by the preview's `k`.
+fn gauge_mock(r: &mut iced::Renderer, pane: Rectangle, n: usize, scale: f32, sk: &Skin, a: f32, k: f32) {
+    use ec_greeter_ui::gauge::{paint, Colours, Spec};
+    use ec_greeter_ui::tokens::gauge as gt;
+    let s = scale * k;
+    let specs: Vec<Spec> = sk.batteries.iter().take(n).map(Spec::of).collect();
+    let side = gt::GAUGE_PX as f32 * s;
+    let origin = Point::new(pane.x + gt::PAD_PX as f32 * s, pane.y + gt::PAD_PX as f32 * s);
+    let pitch = side + gt::GAUGE_GAP_PX as f32 * s;
+    let row_pitch = (gt::CELL_H_PX + gt::ROW_GAP_PX) as f32 * s;
+    let cell_at = |i: usize| {
+        Point::new(
+            origin.x + (i % gt::MAX_PER_ROW) as f32 * pitch,
+            origin.y + (i / gt::MAX_PER_ROW) as f32 * row_pitch,
+        )
+    };
+    let fade = |c: ec_theme::Rgba| c.with_alpha(c.0[3] * a);
+    let mut frame = iced::widget::canvas::Frame::new(&*r, pane.size());
+    for (i, spec) in specs.iter().enumerate() {
+        let p = cell_at(i);
+        let mut colours = Colours::of(&sk.pal, spec);
+        colours.ring = fade(colours.ring);
+        colours.track = fade(colours.track);
+        colours.ink = fade(colours.ink);
+        colours.bolt = fade(colours.bolt);
+        paint(
+            &mut frame,
+            Point::new(p.x - pane.x, p.y - pane.y),
+            side,
+            spec,
+            &colours,
+        );
+    }
+    r.with_translation(Vector::new(pane.x, pane.y), |r| {
+        geometry::Renderer::draw_geometry(r, frame.into_geometry());
+    });
+    let mut pen = Pen {
+        r,
+        k,
+        clip: pane,
+        a,
+        pal: &sk.pal,
+        lock: false,
+    };
+    let pal = pen.pal;
+    let (line, numeral) = (gt::NUMERAL_PX as f32 * scale, gt::NUMERAL_SIZE * scale);
+    for (i, spec) in specs.iter().enumerate() {
+        let p = cell_at(i);
+        // The numeral sits at the bottom of its box under the gauge.
+        let y = p.y + side + (line - tile::line(numeral)) * k;
+        pen.text(
+            &format!("{}%", spec.percent.min(100)),
+            p.x,
+            y,
+            side,
+            numeral,
+            font::DATA_MEDIUM,
+            pal.text,
+            text::Alignment::Center,
+        );
+    }
+}
+
+/// A tile's corner radius: the greeter's card radius scaled by the preview's
+/// scale, clamped to half the short side as the greeter's panes are.
+pub(super) fn tile_radius(b: Rectangle, pv_w: f32) -> f32 {
+    cells::radius(cells::CARD_RADIUS * pv_w / t::REAL_W, b.width.min(b.height))
 }
 
 /// `size` if it is readable, else nothing: text below the floor is hidden, not
@@ -1725,37 +1895,6 @@ impl<M: Clone> Editor<'_, M> {
 fn ts(want: f32, max: f32) -> Option<f32> {
     let s = want.min(max);
     (s >= t::MIN_TEXT).then_some(s)
-}
-
-/// `want` shrunk until `s` fits `w`, if it can without going below the floor.
-fn fit_w(s: &str, want: f32, w: f32, f: iced::Font) -> Option<f32> {
-    let want = ts(want, want)?;
-    let wide = measure(s, want, f);
-    let size = if wide > w && wide > 0.0 {
-        want * w / wide
-    } else {
-        want
-    };
-    (size >= t::MIN_TEXT).then_some(size)
-}
-
-/// `s` cut with an ellipsis until it fits `w` at `size`.
-fn ellipsize(s: &str, size: f32, w: f32, f: iced::Font) -> String {
-    if measure(s, size, f) <= w {
-        return s.to_owned();
-    }
-    let chars: Vec<char> = s.chars().collect();
-    let (mut lo, mut hi) = (0, chars.len());
-    while lo < hi {
-        let mid = (lo + hi).div_ceil(2);
-        let cut: String = chars[..mid].iter().collect::<String>().trim_end().to_owned() + "\u{2026}";
-        if measure(&cut, size, f) <= w {
-            lo = mid;
-        } else {
-            hi = mid - 1;
-        }
-    }
-    chars[..lo].iter().collect::<String>().trim_end().to_owned() + "\u{2026}"
 }
 
 /// A stroke-only circle.
@@ -1830,7 +1969,14 @@ fn glyph(r: &mut iced::Renderer, kind: Kind, b: Rectangle, c: Color) {
 
 /// The smallest a tile gets: a glyph, with the one short label beside or
 /// under it when there is room, else the glyph alone.
-fn glyph_card(r: &mut iced::Renderer, kind: Kind, b: Rectangle, clip: Rectangle, sk: &Skin, a: f32) {
+pub(super) fn glyph_card(
+    r: &mut iced::Renderer,
+    kind: Kind,
+    b: Rectangle,
+    clip: Rectangle,
+    sk: &Skin,
+    a: f32,
+) {
     let c = sk.ink.scale_alpha(lp::TAG_ALPHA.max(0.8) * a);
     let g = (b.width.min(b.height) * t::GLYPH_SHARE).min(t::GLYPH_MAX);
     if g < t::GLYPH_MIN {
@@ -1880,7 +2026,7 @@ fn glyph_card(r: &mut iced::Renderer, kind: Kind, b: Rectangle, clip: Rectangle,
 }
 
 /// The text sizes the shared sizing rules are asked with: the greeter's.
-const GLANCE_TYPE: tile::Type = tile::Type {
+pub(super) const GLANCE_TYPE: tile::Type = tile::Type {
     micro: ec_ui::tokens::size::MICRO,
     body_small: ec_ui::tokens::size::BODY_SMALL,
     body: ec_ui::tokens::size::BODY,
@@ -1889,27 +2035,131 @@ const GLANCE_TYPE: tile::Type = tile::Type {
 /// The tile's size on the real screen: the preview tile (which keeps
 /// `TILE_GAP` from its cell) scaled up by `1/k`, less the gap the real screen
 /// leaves (`ec_layout::Rect::to_px`).
-fn real_size(preview: Size, k: f32) -> (f32, f32) {
+pub(super) fn real_size(preview: Size, k: f32) -> (f32, f32) {
     let up = |v: f32| ((v + 2.0 * t::TILE_GAP) / k - 2.0 * t::REAL_GAP).max(0.0);
     (up(preview.width), up(preview.height))
 }
 
-/// The clock and the two Glances. Not an imitation: the tile is asked what the
-/// real screen would draw (`ec_glance::tile`, at the real screen's px: the
-/// tile's size here divided by the preview's scale `k`), and the answer is
-/// drawn scaled by `k`. Text the scale would take under [`t::MIN_TEXT`] is
-/// drawn at the floor instead, so it stays readable; its line box keeps the
-/// scaled height, so the variant, the rows, the rail and the lit bars are the
-/// real ones.
-fn shared_mock(
-    r: &mut iced::Renderer,
-    kind: Kind,
-    tile_px: Rectangle,
-    clip: Rectangle,
-    sk: &Skin,
-    a: f32,
-    k: f32,
-) {
+/// Draws what the real greeter draws, at the real screen's numbers, scaled by
+/// `k` (the preview's width over the real screen's).
+///
+/// Nothing here decides how a tile looks. The tile's box is the real one
+/// ([`real_size`]), its padding and inner box are `ec_glance::tile`'s, and each
+/// kind's variant, sizes and parts come from the plan the greeter asks for the
+/// same inputs (`ec_glance::tile` for the clock and the Glances,
+/// `ec_glance::cells` for the greeting, the accounts, the field and the power
+/// pills). The colours are the greeter's palette for the previewed theme, the
+/// faces and the words the greeter's. All this does is the scaling: positions
+/// and sizes are the plan's times `k`, in the order the greeter's widgets lay
+/// them out.
+///
+/// The deviations, all for legibility at a miniature, never for the layout:
+/// text the scale would take under [`t::MIN_TEXT`] is drawn at the floor (its
+/// line box keeps the scaled height, so the variant, the rows and the rails
+/// are the real ones), a rail or bar is at least 2px thick, and a tile whose
+/// inner box is too small to draw anything in is a glyph.
+pub(super) struct Pen<'r> {
+    pub(super) r: &'r mut iced::Renderer,
+    pub(super) k: f32,
+    pub(super) clip: Rectangle,
+    pub(super) a: f32,
+    pub(super) pal: &'r Palette,
+    /// The lock screen's tiles: its Glances set their headings as `micro_label`
+    /// does (small caps, tracked).
+    pub(super) lock: bool,
+}
+
+impl Pen<'_> {
+    pub(super) fn colour(&self, c: Rgba) -> Color {
+        color::to_iced(c).scale_alpha(self.a)
+    }
+
+    /// Text at the real size `px`, scaled but not below the floor.
+    pub(super) fn fs(&self, px: f32) -> f32 {
+        (px * self.k).max(t::MIN_TEXT)
+    }
+
+    /// One line of text in a box of the real line height, scaled: `x`, `y` and
+    /// `w` are preview px.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn text(
+        &mut self,
+        s: &str,
+        x: f32,
+        y: f32,
+        w: f32,
+        px: f32,
+        f: iced::Font,
+        c: Rgba,
+        ax: text::Alignment,
+    ) {
+        let ink = self.colour(c);
+        put(
+            self.r,
+            s,
+            Rectangle::new(Point::new(x, y), Size::new(w.max(0.0), tile::line(px) * self.k)),
+            self.fs(px),
+            f,
+            ink,
+            ax,
+            alignment::Vertical::Center,
+            self.clip,
+        );
+    }
+
+    /// A cell on a card, as the greeter paints one over the wallpaper: text
+    /// ink at `cells::CELL`'s alphas, with a hairline. `ask` is the real
+    /// radius, clamped to half the short side as the greeter's panes are.
+    /// `fade` is the greeter's `Ground::fade`.
+    pub(super) fn ground(&mut self, b: Rectangle, ask: f32, fade: f32) {
+        let radius = cells::radius(ask * self.k, b.width.min(b.height));
+        let ink = self.pal.text;
+        let f = self.colour(ink.with_alpha(cells::CELL.0)).scale_alpha(fade);
+        let rim = self.colour(ink.with_alpha(cells::CELL.1)).scale_alpha(fade);
+        fill(self.r, b, radius, f, Some((rim, space::HAIRLINE)));
+    }
+
+    /// A Glance heading's ink: the greeter's tertiary, or the lock's secondary
+    /// (its `micro`, which holds 4.5:1 on a light scheme).
+    pub(super) fn head_ink(&self) -> ec_theme::Rgba {
+        if self.lock {
+            self.pal.text_secondary
+        } else {
+            self.pal.text_tertiary
+        }
+    }
+
+    /// A Glance's heading: the greeter's plain caps, or the lock's `micro_label`.
+    pub(super) fn heading(&self, greeter: &str, lock: &str) -> String {
+        if self.lock {
+            ec_ui::widget::tracked(lock)
+        } else {
+            greeter.to_owned()
+        }
+    }
+
+    /// The charge rail: a track with the lit part in text ink.
+    pub(super) fn rail(&mut self, x: f32, y: f32, w: f32, pct: u8, real_h: f32) {
+        let h = (real_h * self.k).max(2.0);
+        let bar = Rectangle::new(Point::new(x, y), Size::new(w.max(0.0), h));
+        let (track, lit) = (self.colour(self.pal.track), self.colour(self.pal.text));
+        fill(self.r, bar, h / 2.0, track, None);
+        fill(
+            self.r,
+            Rectangle::new(
+                bar.position(),
+                Size::new(bar.width * f32::from(pct.min(100)) / 100.0, h),
+            ),
+            h / 2.0,
+            lit,
+            None,
+        );
+    }
+}
+
+/// What the greeter draws in `tile_px` (the tile's preview rectangle), for
+/// every kind. See [`Pen`].
+fn mock(r: &mut iced::Renderer, kind: Kind, tile_px: Rectangle, clip: Rectangle, sk: &Skin, a: f32, k: f32) {
     if k <= 0.0 {
         return;
     }
@@ -1918,373 +2168,450 @@ fn shared_mock(
     let inner = tile::inner(real_w, real_h);
     let (ox, oy) = (tile_px.x + pad * k, tile_px.y + pad * k);
     let (iw, ih) = (inner.w * k, inner.h * k);
-    let ink = sk.ink.scale_alpha(a);
-    let dim = sk.ink.scale_alpha(lp::TAG_ALPHA * a);
-    let dim_bar = sk.ink.scale_alpha(t::DIM_BAR * a);
-    let ty = GLANCE_TYPE;
-    let fs = |px: f32| (px * k).max(t::MIN_TEXT);
-    let left = text::Alignment::Left;
-    let mid = alignment::Vertical::Center;
-    // One line of text in a box of the real line height, scaled.
-    let line =
-        |r: &mut iced::Renderer, s: &str, x: f32, y: f32, w: f32, px: f32, f: iced::Font, c: Color, ax| {
-            put(
-                r,
-                s,
-                Rectangle::new(Point::new(x, y), Size::new(w, tile::line(px) * k)),
-                fs(px),
-                f,
-                c,
-                ax,
-                mid,
-                clip,
-            );
-        };
-    let quiet = |r: &mut iced::Renderer, s: &str| {
-        put(
-            r,
-            s,
-            Rectangle::new(Point::new(ox, oy), Size::new(iw, ih)),
-            fs(ty.body_small),
-            font::UI,
-            dim,
-            text::Alignment::Center,
-            mid,
-            clip,
-        );
+    if iw < t::GLYPH_W || ih < t::GLYPH_H {
+        let b = Rectangle::new(Point::new(ox, oy), Size::new(iw.max(1.0), ih.max(1.0)));
+        return glyph_card(r, kind, b, clip, sk, a);
+    }
+    let mut pen = Pen {
+        r,
+        k,
+        clip,
+        a,
+        pal: &sk.pal,
+        lock: false,
     };
-    let bottom = oy + ih;
+    let at = Rectangle::new(Point::new(ox, oy), Size::new(iw, ih));
     match kind {
-        Kind::Clock => {
-            let c = &sk.clock;
-            let plan = tile::clock(inner, c.twelve, c.has_date);
-            let (tw, dw) = (
-                measure(c.time, plan.numeral * k, font::UI_MEDIUM),
-                plan.date.map_or(0.0, |d| measure(c.date, d * k, font::UI)),
-            );
-            let h = plan.used_h() * k;
-            let (x, y) = match plan.align {
-                tile::Align::BottomLeft => (ox, bottom - h),
-                tile::Align::Centre => (ox + (iw - tw.max(dw)) / 2.0, oy + (ih - h) / 2.0),
-            };
-            line(r, c.time, x, y, iw, plan.numeral, font::UI_MEDIUM, ink, left);
-            if let Some(d) = plan.date {
-                let dy = y + (tile::line(plan.numeral) + tile::CLOCK_GAP) * k;
-                line(r, c.date, x, dy, iw, d, font::UI, dim, left);
-            }
-        }
-        _ => match (sk.link, tile::wifi(inner, sk.link, ty)) {
-            (None, _) | (_, WifiPlan::Empty) => quiet(r, "No link"),
-            (Some(q), WifiPlan::Compact { figure, bars, gap } | WifiPlan::Full { figure, bars, gap }) => {
-                let full = matches!(tile::wifi(inner, sk.link, ty), WifiPlan::Full { .. });
-                let h = tile::line(figure) * k;
-                let y = if full {
-                    line(r, "LINK", ox, oy, iw, ty.micro, font::DATA_MEDIUM, dim, left);
-                    bottom - h
-                } else {
-                    oy + (ih - h) / 2.0
-                };
-                let s = format!("{q}%");
-                let w = measure(&s, figure * k, font::DATA_MEDIUM);
-                line(r, &s, ox, y, w + 2.0, figure, font::DATA_MEDIUM, ink, left);
-                if let Some(b) = bars {
-                    let x0 = ox + w + gap * k;
-                    for i in 0..tile::WIFI_BARS {
-                        let (bw, bg) = (b.w * k, b.gap * k);
-                        let bh = tile::bar_h(figure, i) * k;
-                        let c = if i < b.lit { ink } else { dim_bar };
-                        fill(
-                            r,
-                            Rectangle::new(
-                                Point::new(x0 + i as f32 * (bw + bg), y + h - bh),
-                                Size::new(bw, bh),
-                            ),
-                            bw / 2.0,
-                            c,
-                            None,
-                        );
-                    }
-                }
-            }
-        },
+        Kind::Clock => clock_mock(&mut pen, inner, at, sk),
+        Kind::Battery => battery_mock(&mut pen, inner, at, sk),
+        Kind::Wifi => wifi_mock(&mut pen, inner, at, sk),
+        Kind::Greeting => greeting_mock(&mut pen, inner, at, sk),
+        Kind::Users => users_mock(&mut pen, inner, at),
+        Kind::Password => password_mock(&mut pen, inner, at),
+        Kind::Power => power_mock(&mut pen, inner, at),
+        // Never placed: it needs a session, so the editor does not offer it.
+        Kind::NowPlaying => {}
     }
 }
 
-/// What the greeter draws in a tile, small, degrading with the tile's size:
-/// the whole miniature, then without its secondary text, then (when its main
-/// text would be unreadable) a glyph and one short label. Text under the
-/// floor is never drawn. Clipped to the tile.
-#[allow(clippy::too_many_arguments)]
-fn mock(
-    r: &mut iced::Renderer,
-    kind: Kind,
-    tile: Rectangle,
-    b: Rectangle,
-    clip: Rectangle,
-    sk: &Skin,
-    a: f32,
-    k: f32,
-) {
-    let ink = sk.ink.scale_alpha(a);
-    let dim = sk.ink.scale_alpha(lp::TAG_ALPHA * a);
-    let faint = sk.ink.scale_alpha(lp::FIELD_FILL * a);
-    let left = text::Alignment::Left;
-    let mid = alignment::Vertical::Center;
-    let top = alignment::Vertical::Top;
-    // The small-caps heading of a tile, only on one tall enough to carry it.
-    let head_size = if b.height >= t::LEAN_H {
-        ts(tile.height * 0.075, t::LABEL_SIZE)
-    } else {
-        None
+pub(super) fn clock_mock(p: &mut Pen<'_>, inner: tile::Inner, at: Rectangle, sk: &Skin) {
+    let k = p.k;
+    let c = &sk.clock;
+    let pal = p.pal;
+    let plan = tile::clock(inner, c.twelve, c.has_date);
+    let (tw, dw) = (
+        measure(c.time, plan.numeral * k, font::UI_MEDIUM),
+        plan.date.map_or(0.0, |d| measure(c.date, d * k, font::UI)),
+    );
+    let h = plan.used_h() * k;
+    let (x, y) = match plan.align {
+        tile::Align::BottomLeft => (at.x, at.y + at.height - h),
+        tile::Align::Centre => (at.x + (at.width - tw.max(dw)) / 2.0, at.y + (at.height - h) / 2.0),
     };
-    let heading = |r: &mut iced::Renderer, s: &str, size: f32| {
-        put(
-            r,
-            s,
-            Rectangle::new(b.position(), Size::new(b.width, size)),
-            size,
-            font::DATA,
-            dim,
-            left,
-            top,
-            clip,
+    p.text(
+        c.time,
+        x,
+        y,
+        at.width,
+        plan.numeral,
+        font::UI_MEDIUM,
+        pal.text,
+        text::Alignment::Left,
+    );
+    if let Some(d) = plan.date {
+        let dy = y + (tile::line(plan.numeral) + tile::CLOCK_GAP) * k;
+        p.text(
+            c.date,
+            x,
+            dy,
+            at.width,
+            d,
+            font::UI,
+            pal.text_secondary,
+            text::Alignment::Left,
         );
-    };
-    if b.width < t::GLYPH_W || b.height < t::GLYPH_H {
-        return glyph_card(r, kind, b, clip, sk, a);
     }
-    match kind {
-        Kind::Clock | Kind::Wifi => shared_mock(r, kind, tile, clip, sk, a, k),
-        Kind::Greeting => {
-            let size = (b.height * 0.62).min(15.0);
-            if size < t::MIN_PRIMARY.min(t::MIN_TEXT + 1.0) {
-                return glyph_card(r, kind, b, clip, sk, a);
-            }
-            let w = b.width - 2.0;
-            let s = ellipsize(&sk.greeting, size, w, font::UI_MEDIUM);
-            put(
-                r,
-                &s,
-                Rectangle::new(Point::new(b.x + 2.0, b.y), Size::new(w, b.height)),
-                size,
-                font::UI_MEDIUM,
-                ink,
-                left,
-                mid,
-                clip,
-            );
-        }
-        Kind::Users => {
-            let head = head_size.map_or(0.0, |s| s + 5.0);
-            if let Some(s) = head_size {
-                heading(r, "ACCOUNTS", s);
-            }
-            let rh = (b.height * 0.24).clamp(14.0, 28.0).min(b.height);
-            let gap = 4.0;
-            let mut y = b.y + head;
-            for name in t::MOCK_NAMES {
-                if y + rh > b.y + b.height + 0.5 {
-                    break;
-                }
-                let row = Rectangle::new(Point::new(b.x, y), Size::new(b.width, rh));
-                fill(r, row, rh * 0.34, faint, None);
-                let d = rh * 0.62;
-                let av = Rectangle::new(
-                    Point::new(row.x + rh * 0.2, row.y + (rh - d) / 2.0),
-                    Size::new(d, d),
+}
+
+fn quiet_mock(p: &mut Pen<'_>, at: Rectangle, s: &str) {
+    let pal = p.pal;
+    // The greeter centres the one line in the box, whole.
+    let h = tile::line(GLANCE_TYPE.body_small) * p.k;
+    p.text(
+        s,
+        at.x,
+        at.y + (at.height - h) / 2.0,
+        at.width,
+        GLANCE_TYPE.body_small,
+        font::UI,
+        pal.text_secondary,
+        text::Alignment::Center,
+    );
+}
+
+pub(super) fn battery_mock(p: &mut Pen<'_>, inner: tile::Inner, at: Rectangle, sk: &Skin) {
+    let k = p.k;
+    let (ox, oy, iw, ih) = (at.x, at.y, at.width, at.height);
+    let bottom = oy + ih;
+    let pal = p.pal;
+    let ty = GLANCE_TYPE;
+    let left = text::Alignment::Left;
+    let head = |p: &mut Pen<'_>| {
+        let word = p.heading("BATTERY", cells::lock::HEAD_BATTERY);
+        let ink = p.head_ink();
+        p.text(&word, ox, oy, iw, ty.micro, font::DATA_MEDIUM, ink, left);
+    };
+    match (tile::battery(inner, &sk.batteries, ty), sk.batteries.first()) {
+        (BatteryPlan::Empty, _) | (_, None) => quiet_mock(p, at, "No battery"),
+        (
+            BatteryPlan::Compact {
+                figure,
+                rail: with_rail,
+            },
+            Some(f),
+        ) => {
+            let h = tile::line(figure) * k;
+            let y = oy + (ih - h) / 2.0;
+            let s = format!("{}%", f.percent);
+            let w = measure(&s, figure * k, font::DATA_MEDIUM);
+            p.text(&s, ox, y, w + 2.0, figure, font::DATA_MEDIUM, pal.text, left);
+            if with_rail {
+                let rx = ox + w + tile::CELL_GAP * k;
+                p.rail(
+                    rx,
+                    y + (h - tile::RAIL_H * k) / 2.0,
+                    ox + iw - rx,
+                    f.percent,
+                    tile::RAIL_H,
                 );
-                fill(r, av, d / 2.0, sk.ink.scale_alpha(t::DISC * a), None);
-                if let Some(sz) = ts(rh * 0.5, 12.0) {
-                    put(
-                        r,
-                        &name[..1].to_uppercase(),
-                        av,
-                        sz * 0.85,
-                        font::UI_MEDIUM,
-                        ink,
-                        text::Alignment::Center,
-                        mid,
-                        clip,
-                    );
-                    put(
-                        r,
-                        name,
-                        Rectangle::new(Point::new(av.x + d + rh * 0.25, row.y), Size::new(row.width, rh)),
-                        sz,
-                        font::UI_MEDIUM,
-                        ink,
-                        left,
-                        mid,
-                        clip,
-                    );
-                }
-                y += rh + gap;
             }
         }
-        Kind::Password => {
-            let fh = (b.height * 0.5).clamp(12.0, 34.0).min(b.height);
-            let Some(sz) = ts(fh * 0.45, 12.0) else {
-                return glyph_card(r, kind, b, clip, sk, a);
-            };
-            let bw = (b.width * 0.28).min(96.0);
-            let field = Rectangle::new(b.position(), Size::new(b.width - bw - 6.0, fh));
-            fill(r, field, fh * 0.3, faint, None);
-            let pad = fh * 0.35;
-            if measure("Password", sz, font::UI) + 2.0 * pad <= field.width {
-                put(
-                    r,
-                    "Password",
-                    Rectangle::new(Point::new(field.x + pad, field.y), field.size()),
-                    sz,
+        (
+            BatteryPlan::One {
+                figure,
+                rail: with_rail,
+                note,
+            },
+            Some(f),
+        ) => {
+            head(p);
+            let mut y = bottom;
+            if note {
+                y -= tile::line(ty.micro) * k;
+                p.text(
+                    tile::charge_note(f.charge),
+                    ox,
+                    y,
+                    iw,
+                    ty.micro,
                     font::UI,
-                    dim,
+                    pal.text_secondary,
                     left,
-                    mid,
-                    clip,
                 );
+                y -= tile::GAP * k;
             }
-            let btn = Rectangle::new(Point::new(field.x + field.width + 6.0, b.y), Size::new(bw, fh));
-            fill(r, btn, fh * 0.3, sk.ink.scale_alpha(lp::PILL_FILL * a), None);
-            if measure("Sign in", sz, font::UI_MEDIUM) + pad <= bw {
-                put(
-                    r,
-                    "Sign in",
-                    btn,
-                    sz,
-                    font::UI_MEDIUM,
-                    dim,
-                    text::Alignment::Center,
-                    mid,
-                    clip,
-                );
+            if with_rail {
+                y -= tile::RAIL_H * k;
+                p.rail(ox, y, iw, f.percent, tile::RAIL_H);
+                y -= tile::GAP * k;
             }
-            if b.height > fh * 1.7 {
-                if let Some(s2) = fit_w(
-                    "Choose an account to sign in",
-                    (b.height * 0.14).min(11.0),
-                    b.width,
-                    font::UI,
-                ) {
-                    put(
-                        r,
-                        "Choose an account to sign in",
-                        Rectangle::new(Point::new(b.x, b.y + b.height - s2 - 1.0), Size::new(b.width, s2)),
-                        s2,
-                        font::UI,
-                        dim,
-                        left,
-                        top,
-                        clip,
-                    );
-                }
-            }
-        }
-        Kind::Power => {
-            let names = ["Suspend", "Restart", "Power off"];
-            let gap = 6.0;
-            let pw = (b.width - gap * 2.0) / 3.0;
-            let ph = b.height.min(26.0);
-            // One size for the three, set by the widest label.
-            let Some(sz) = fit_w("Power off", (ph * 0.46).min(11.0), pw - ph * 0.5, font::UI_MEDIUM) else {
-                return glyph_card(r, kind, b, clip, sk, a);
-            };
-            let y = b.y + (b.height - ph) / 2.0;
-            for (i, n) in names.iter().enumerate() {
-                let pill = Rectangle::new(Point::new(b.x + i as f32 * (pw + gap), y), Size::new(pw, ph));
-                fill(r, pill, ph / 2.0, sk.ink.scale_alpha(lp::PILL_FILL * a), None);
-                put(
-                    r,
-                    n,
-                    pill,
-                    sz,
-                    font::UI_MEDIUM,
-                    ink,
-                    text::Alignment::Center,
-                    mid,
-                    clip,
-                );
-            }
-        }
-        Kind::Battery => {
-            // The greeter's gauges at their intrinsic proportions
-            // (`ec_layout::intrinsic`), for the sample's batteries, scaled by
-            // what fits the tile's own footprint and centred. Ink only, like
-            // every mock. The gauge is the greeter's own drawing; only the
-            // sizes come from the layout engine.
-            use ec_greeter_ui::gauge::{paint, Colours, Spec};
-            use ec_greeter_ui::tokens::gauge as gt;
-            let shown: Vec<Spec> = sk.batteries.iter().take(gt::MAX_DEVICES).map(Spec::of).collect();
-            if shown.is_empty() {
-                put(
-                    r,
-                    "No battery",
-                    b,
-                    t::LABEL_SIZE,
-                    font::UI,
-                    dim,
-                    text::Alignment::Center,
-                    mid,
-                    clip,
-                );
-                return;
-            }
-            let (fw, fh) = ec_layout::intrinsic::px(layout_edit::CONTENT.devices);
-            let s = (tile.width / fw as f32).min(tile.height / fh as f32);
-            let (cw, ch) = ec_layout::intrinsic::px(shown.len());
-            let side = gt::GAUGE_PX as f32 * s;
-            let origin = Point::new(
-                tile.x + (tile.width - cw as f32 * s) / 2.0 + gt::PAD_PX as f32 * s,
-                tile.y + (tile.height - ch as f32 * s) / 2.0 + gt::PAD_PX as f32 * s,
+            y -= tile::line(figure) * k;
+            p.text(
+                &format!("{}%", f.percent),
+                ox,
+                y,
+                iw,
+                figure,
+                font::DATA_MEDIUM,
+                pal.text,
+                left,
             );
-            let rgba = |c: Color| ec_theme::Rgba::new(c.r, c.g, c.b, c.a);
-            let colours = Colours {
-                ring: rgba(ink),
-                track: rgba(sk.ink.scale_alpha(t::TRACK * a)),
-                ink: rgba(ink),
-                bolt: rgba(ink),
-            };
-            let pitch = side + gt::GAUGE_GAP_PX as f32 * s;
-            let row_pitch = (gt::CELL_H_PX + gt::ROW_GAP_PX) as f32 * s;
-            let cell_at = |i: usize| {
-                Point::new(
-                    origin.x + (i % gt::MAX_PER_ROW) as f32 * pitch,
-                    origin.y + (i / gt::MAX_PER_ROW) as f32 * row_pitch,
-                )
-            };
-            let mut frame = iced::widget::canvas::Frame::new(&*r, clip.size());
-            for (i, spec) in shown.iter().enumerate() {
-                let p = cell_at(i);
-                paint(
-                    &mut frame,
-                    Point::new(p.x - clip.x, p.y - clip.y),
-                    side,
-                    spec,
-                    &colours,
+        }
+        (
+            BatteryPlan::Many {
+                shown,
+                rail: with_rail,
+                tag,
+                gap,
+                name_chars,
+                scale,
+            },
+            Some(_),
+        ) => {
+            head(p);
+            let st = ty.scaled(scale);
+            let mut y = oy + (tile::line(ty.micro) + tile::GAP) * k;
+            for b in sk.batteries.iter().take(shown) {
+                let name = if b.internal {
+                    "Internal".to_owned()
+                } else {
+                    ec_glance::clean(&b.name)
+                };
+                let pct = format!("{}%", b.percent);
+                let pw = measure("100%", p.fs(st.body), font::DATA_MEDIUM);
+                let cw = if tag && b.charge == Charge::Charging {
+                    measure("Charging", p.fs(st.micro), font::UI)
+                } else {
+                    0.0
+                };
+                let gaps = tile::CELL_GAP * k * if cw > 0.0 { 2.0 } else { 1.0 };
+                let room = (iw - pw - cw - gaps).max(0.0);
+                // The screens cut a name by `truncate` only and clip the rest.
+                let nm = tile::truncate(&name, name_chars);
+                p.text(
+                    &nm,
+                    ox,
+                    y,
+                    room + 2.0,
+                    st.body_small,
+                    font::UI,
+                    pal.text_secondary,
+                    left,
                 );
-            }
-            r.with_translation(Vector::new(clip.x, clip.y), |r| {
-                geometry::Renderer::draw_geometry(r, frame.into_geometry());
-            });
-            let line = gt::NUMERAL_PX as f32 * s;
-            let size = (gt::NUMERAL_SIZE * s).max(t::MIN_TEXT);
-            if line >= t::MIN_TEXT {
-                for (i, spec) in shown.iter().enumerate() {
-                    let p = cell_at(i);
-                    put(
-                        r,
-                        &format!("{}%", spec.percent),
-                        Rectangle::new(Point::new(p.x, p.y + side), Size::new(side, line)),
-                        size.min(line),
-                        font::DATA,
-                        ink,
-                        text::Alignment::Center,
-                        alignment::Vertical::Center,
-                        clip,
+                if cw > 0.0 {
+                    p.text(
+                        "Charging",
+                        ox + iw - pw - cw - tile::CELL_GAP * k,
+                        y,
+                        cw + 2.0,
+                        st.micro,
+                        font::UI,
+                        pal.text_secondary,
+                        left,
                     );
                 }
+                p.text(
+                    &pct,
+                    ox + iw - pw,
+                    y,
+                    pw,
+                    st.body,
+                    font::DATA_MEDIUM,
+                    pal.text,
+                    text::Alignment::Right,
+                );
+                y += tile::line(st.body) * k;
+                if with_rail {
+                    y += tile::GAP * k;
+                    p.rail(ox, y, iw, b.percent, tile::RAIL_H * scale);
+                    y += tile::RAIL_H * scale * k;
+                }
+                y += gap * k;
             }
         }
-        _ => {}
+    }
+}
+
+pub(super) fn wifi_mock(p: &mut Pen<'_>, inner: tile::Inner, at: Rectangle, sk: &Skin) {
+    let k = p.k;
+    let (ox, oy, iw, ih) = (at.x, at.y, at.width, at.height);
+    let pal = p.pal;
+    let left = text::Alignment::Left;
+    let plan = tile::wifi(inner, sk.link, GLANCE_TYPE);
+    let (Some(q), WifiPlan::Compact { figure, bars, gap } | WifiPlan::Full { figure, bars, gap }) =
+        (sk.link, plan)
+    else {
+        return quiet_mock(p, at, "No link");
+    };
+    let h = tile::line(figure) * k;
+    let y = if matches!(plan, WifiPlan::Full { .. }) {
+        let head = p.heading("LINK", cells::lock::HEAD_LINK);
+        p.text(
+            &head,
+            ox,
+            oy,
+            iw,
+            GLANCE_TYPE.micro,
+            font::DATA_MEDIUM,
+            p.head_ink(),
+            left,
+        );
+        oy + ih - h
+    } else {
+        oy + (ih - h) / 2.0
+    };
+    let s = format!("{q}%");
+    let w = measure(&s, figure * k, font::DATA_MEDIUM);
+    p.text(&s, ox, y, w + 2.0, figure, font::DATA_MEDIUM, pal.text, left);
+    if let Some(b) = bars {
+        let x0 = ox + w + gap * k;
+        for i in 0..tile::WIFI_BARS {
+            let (bw, bg) = (b.w * k, b.gap * k);
+            let bh = tile::bar_h(figure, i) * k;
+            let c = if i < b.lit { pal.text } else { pal.track };
+            let col = p.colour(c);
+            fill(
+                p.r,
+                Rectangle::new(
+                    Point::new(x0 + i as f32 * (bw + bg), y + h - bh),
+                    Size::new(bw, bh),
+                ),
+                bw / 2.0,
+                col,
+                None,
+            );
+        }
+    }
+}
+
+fn greeting_mock(p: &mut Pen<'_>, inner: tile::Inner, at: Rectangle, sk: &Skin) {
+    let px = cells::greeting(inner);
+    let h = tile::line(px) * p.k;
+    let pal = p.pal;
+    p.text(
+        &sk.greeting,
+        at.x,
+        at.y + (at.height - h) / 2.0,
+        at.width,
+        px,
+        font::UI_MEDIUM,
+        pal.text,
+        text::Alignment::Left,
+    );
+}
+
+fn users_mock(p: &mut Pen<'_>, inner: tile::Inner, at: Rectangle) {
+    let k = p.k;
+    let pal = p.pal;
+    let plan = cells::users(inner, t::MOCK_NAMES.len());
+    let left = text::Alignment::Left;
+    let micro = ec_ui::tokens::size::MICRO;
+    p.text(
+        cells::ACCOUNTS_HEAD,
+        at.x,
+        at.y,
+        at.width,
+        micro,
+        font::DATA_MEDIUM,
+        pal.text_tertiary,
+        left,
+    );
+    let mut y = at.y + (tile::line(micro) + cells::LINE_GAP) * k;
+    for name in t::MOCK_NAMES.iter().take(plan.shown) {
+        let row = Rectangle::new(Point::new(at.x, y), Size::new(at.width, plan.row_h * k));
+        // The list starts with no account chosen: every row is plain.
+        p.ground(row, cells::CELL_RADIUS, 1.0);
+        let d = plan.avatar * k;
+        let av = Rectangle::new(
+            Point::new(row.x + cells::ROW_PAD_X * k, row.y + (row.height - d) / 2.0),
+            Size::new(d, d),
+        );
+        let lift = p.colour(pal.lift);
+        fill(p.r, av, d / 2.0, lift, None);
+        let initial = name
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_default();
+        let ipx = plan.avatar * cells::INITIAL_FRAC;
+        p.text(
+            &initial,
+            av.x,
+            av.y + (d - tile::line(ipx) * k) / 2.0,
+            d,
+            ipx,
+            font::UI_MEDIUM,
+            pal.text,
+            text::Alignment::Center,
+        );
+        let body = ec_ui::tokens::size::BODY;
+        p.text(
+            name,
+            av.x + d + cells::LINE_GAP * k,
+            row.y + (row.height - tile::line(body) * k) / 2.0,
+            row.x + row.width - (av.x + d + cells::LINE_GAP * k),
+            body,
+            font::UI_MEDIUM,
+            pal.text,
+            left,
+        );
+        y += (plan.row_h + cells::ROW_GAP) * k;
+    }
+    if plan.more > 0 {
+        p.text(
+            &cells::more_label(plan.more),
+            at.x,
+            y,
+            at.width,
+            micro,
+            font::DATA,
+            pal.text_tertiary,
+            left,
+        );
+    }
+}
+
+fn password_mock(p: &mut Pen<'_>, inner: tile::Inner, at: Rectangle) {
+    let k = p.k;
+    let pal = p.pal;
+    let plan = cells::password(inner);
+    let left = text::Alignment::Left;
+    let (body, small) = (ec_ui::tokens::size::BODY, ec_ui::tokens::size::BODY_SMALL);
+    // The screen starts with no account chosen: the field and its pill are
+    // inert, dimmed, the field not focused, no caret. The ground dims by one
+    // share and the ink by the scheme's own (`tokens::disabled_ink`).
+    let dim = cells::DISABLED;
+    let ink_dim = ec_greeter_ui::tokens::disabled_ink(pal.scheme);
+    let (fh, sw) = (plan.field_h * k, plan.submit_w * k);
+    let gap = cells::LINE_GAP * k;
+    let field = Rectangle::new(at.position(), Size::new((at.width - sw - gap).max(0.0), fh));
+    p.ground(field, cells::CELL_RADIUS, dim);
+    p.text(
+        cells::PLACEHOLDER,
+        field.x + cells::ROW_PAD_X * k,
+        field.y + (fh - tile::line(body) * k) / 2.0,
+        field.width - 2.0 * cells::ROW_PAD_X * k,
+        body,
+        font::UI,
+        pal.text_tertiary.with_alpha(pal.text_tertiary.0[3] * ink_dim),
+        left,
+    );
+    let submit = Rectangle::new(Point::new(field.x + field.width + gap, at.y), Size::new(sw, fh));
+    p.ground(submit, cells::PILL_RADIUS, dim);
+    p.text(
+        cells::SIGN_IN,
+        submit.x,
+        submit.y + (fh - tile::line(small) * k) / 2.0,
+        submit.width,
+        small,
+        font::UI_MEDIUM,
+        pal.text.with_alpha(pal.text.0[3] * ink_dim),
+        text::Alignment::Center,
+    );
+    p.text(
+        cells::NOTE_IDLE,
+        at.x,
+        at.y + fh + cells::NOTE_GAP * k,
+        at.width,
+        small,
+        font::UI,
+        pal.text_tertiary,
+        left,
+    );
+}
+
+fn power_mock(p: &mut Pen<'_>, inner: tile::Inner, at: Rectangle) {
+    let k = p.k;
+    let pal = p.pal;
+    let plan = cells::power(inner);
+    let small = ec_ui::tokens::size::BODY_SMALL;
+    let gap = cells::ROW_GAP * k;
+    let pw = (at.width - 2.0 * gap) / 3.0;
+    let ph = plan.pill_h * k;
+    let y = at.y + (at.height - ph) / 2.0;
+    for (i, (full, short)) in cells::POWER.iter().enumerate() {
+        let pill = Rectangle::new(Point::new(at.x + i as f32 * (pw + gap), y), Size::new(pw, ph));
+        p.ground(pill, cells::PILL_RADIUS, 1.0);
+        p.text(
+            if plan.full { full } else { short },
+            pill.x,
+            y + (ph - tile::line(small) * k) / 2.0,
+            pw,
+            small,
+            font::UI_MEDIUM,
+            pal.text,
+            text::Alignment::Center,
+        );
     }
 }
 
@@ -2323,17 +2650,64 @@ mod tests {
         }
     }
 
-    /// The clock and Wi-Fi mocks hold no sizing of their own: the old hand-drawn
+    /// The Glance mocks hold no sizing of their own: the old hand-drawn
     /// literals are gone and the shared module is asked for each plan.
     #[test]
     fn the_glance_mocks_ask_the_shared_module() {
         let src = include_str!("layout_view.rs");
         let body = src.split("#[cfg(test)]").next().unwrap_or(src);
-        for gone in ["(\"Internal\", 0.72)", "\"68%\""] {
+        for gone in [
+            "(\"Internal\", 0.72)",
+            "\"68%\"",
+            "\"Choose an account to sign in\"",
+            "[\"Suspend\", \"Restart\", \"Power off\"]",
+            "fn fit_w(",
+            "b.height * 0.24",
+        ] {
             assert!(!body.contains(gone), "{gone} is back");
         }
-        for asked in ["tile::wifi(", "tile::clock(", "tile::inner("] {
+        for asked in [
+            "tile::battery(",
+            "tile::wifi(",
+            "tile::clock(",
+            "tile::inner(",
+            "cells::greeting(",
+            "cells::users(",
+            "cells::password(",
+            "cells::power(",
+        ] {
             assert!(body.contains(asked), "{asked} is not asked");
+        }
+    }
+
+    /// The lock's tiles hold no sizing of their own either: the shared plans
+    /// are asked, and the lock's words and numbers are `ec_glance::cells::lock`.
+    #[test]
+    fn the_lock_mocks_ask_the_shared_plans() {
+        let src = include_str!("lock_mock.rs");
+        let body = src.split("#[cfg(test)]").next().unwrap_or(src);
+        for asked in [
+            "cells::lock_frame(",
+            "cells::lock_greeting(",
+            "cells::lock_password(",
+            "clock_mock(",
+            "battery_mock(",
+            "wifi_mock(",
+            "lock::NOTE_READY",
+            "lock::HINTS",
+            "lock::WORD_LOCKED",
+            "cells::lock::UNLOCK",
+            "cells::PLACEHOLDER",
+        ] {
+            assert!(body.contains(asked), "{asked} is not asked");
+        }
+        for gone in [
+            "\"Enter your password to unlock\"",
+            "\"LOCKED\"",
+            "\"Unlock\"",
+            "0.62",
+        ] {
+            assert!(!body.contains(gone), "{gone} is a literal in the lock mock");
         }
     }
 
@@ -2342,6 +2716,10 @@ mod tests {
     fn every_sample_shape_plans_inside_its_tile() {
         for (w, h) in [(40.0, 30.0), (200.0, 60.0), (300.0, 150.0), (900.0, 400.0)] {
             let i = tile::Inner { w, h };
+            for b in sample::Batteries::ALL {
+                let p = tile::battery(i, &b.data(), GLANCE_TYPE);
+                assert!(p.used_h(GLANCE_TYPE) <= h + 0.01 || matches!(p, BatteryPlan::Empty));
+            }
             for l in sample::Link::ALL {
                 let p = tile::wifi(i, l.quality(), GLANCE_TYPE);
                 assert!(p.used_h(GLANCE_TYPE) <= h + 0.01 && p.used_w() <= w + 0.01);
@@ -2446,6 +2824,17 @@ mod tests {
     fn a_small_tile_keeps_a_body_to_drag_by() {
         let tile = Rectangle::new(Point::new(0.0, 0.0), Size::new(40.0, 28.0));
         assert_eq!(grip_at(tile, Point::new(20.0, 14.0)), None);
+    }
+
+    #[test]
+    fn a_left_line_is_never_set_in_a_box_narrower_than_itself() {
+        let left = text::Alignment::Left;
+        // A name column squeezed by its percentage and tag: the line must not
+        // break, as the lock's `Wrapping::None` label does not.
+        assert!(one_line_width(20.0, 52.4, left) >= 52.4);
+        assert_eq!(one_line_width(80.0, 52.4, left), 80.0);
+        assert_eq!(one_line_width(20.0, 52.4, text::Alignment::Right), 20.0);
+        assert_eq!(one_line_width(20.0, 52.4, text::Alignment::Center), 20.0);
     }
 
     #[test]

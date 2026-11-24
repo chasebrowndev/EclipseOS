@@ -42,18 +42,37 @@ power, now playing...) that fills a tile slot. Not "widget": the taskbar owns th
 On the login screen only Glances that need no session may appear. Now playing needs the
 user's session bus and is private on a locked screen, so it is opt-in there.
 
-**Lock screen.** `ec-lock` moves to the same engine later, with its own layout and Glance
-choices stored per user in the user's config dir and applied live (the owner's own
-screen, so no root helper or prompt). Its surfaces stay opaque (glass-styled panes over a
-blurred wallpaper the lock draws itself), the password field is required, layout code
-must not panic, and nothing from the layout reaches `update` or the unlock gate (0095).
-Glance reads run off the UI loop with a time limit.
+**Lock screen.** `ec-lock` runs on the same engine. Its layout is
+`$XDG_CONFIG_HOME/eclipse/lock-layout`, owned by the user and applied live (the owner's
+own screen, so no root helper or prompt). It draws Clock, Greeting, Password, Battery and
+Wifi only, never Users, Power or Now playing; only the Password tile is required
+(`ec_layout::{LOCK_KINDS, LOCK_REQUIRED, validate_with, Layout::lock_default}`; files
+that still name Users or Power are read and the tiles ignored). Its surfaces stay opaque
+(glass-styled panes over a blurred wallpaper the lock draws itself), layout code must not
+panic, and nothing from the layout reaches `update` or the unlock gate (0095). Glance reads
+run off the UI loop with a time limit.
+
+**Settings builders.** Settings > Desktop has a Login screen page and a Lock screen page,
+both the one editor (`login_screen/layout_view.rs`, parameterised by `Screen`). The Lock
+screen page needs no Apply bar: a finished gesture is written at once (a 0600 temp file in
+the same directory, then rename), a failed write reverts the editor to what the file holds,
+and Reset deletes the file, which means the built-in layout. Reads refuse symlinks and files
+over 4 KiB, and drop tiles the lock does not draw. Changes show the next time the screen locks.
+
+**The builder is the screen.** Every tile the builder draws is the real screen's own plan,
+scaled: `ec_glance::tile` (clock, battery, wifi) and `ec_glance::cells` (greeting, accounts,
+password, power, and the lock's `lock_frame`, `lock_greeting`, `lock_password` and
+`cells::lock` words) are asked by the greeter, the lock and the preview alike, with colours
+from the screen's own derived palette. Tests fail on drift. The allowed differences are the
+8 px text floor, the 2 px minimum rail and bar, the compositor glass (the preview draws the
+non-glass frost) and the preview's fixed tile gap. The lock's bare clock has no pane
+and no padding by design; the preview does the same.
 
 ## Consequences
 - Settings stay world-readable machine state; layout is public like the greeting.
 - Login and lock share one layout engine, and the desktop can later.
-- The editor is an exception to live-apply settings, by decision: the login screen is
-  the only way in, so changes are batched and confirmed.
+- The login editor is an exception to live-apply settings, by decision: the login screen is
+  the only way in, so changes are batched and confirmed. The lock editor applies live.
 - A second greeter binary stands between greetd and login, so it is TCB and
   line-reviewed, with the same all-or-nothing fallback.
 

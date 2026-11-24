@@ -31,6 +31,8 @@ use ec_ui::widget::{
 
 mod layout_edit;
 mod layout_view;
+pub mod lock;
+mod lock_mock;
 mod sample;
 
 use crate::app::{App, Message};
@@ -751,14 +753,13 @@ fn picture_caption(p: &LoginScreen) -> String {
 /// the editor's mocks. Same source as Apply: `pending()`.
 fn skin(p: &LoginScreen) -> layout_view::Skin {
     let pending = p.pending();
-    let seeds = ec_theme::DARK_SEEDS;
-    let (base, ink) = match pending.theme {
-        Some(t) => (color::data(t.base), color::data(t.ink)),
-        None => (color::to_iced(seeds.base), color::to_iced(seeds.ink)),
-    };
+    // The greeter's own palette for this theme, under the scheme the desktop is in
+    // (the greeter follows the compositor's), light legibility steps included.
+    let pal = ec_greeter_ui::palette_for(pending.theme.as_ref(), color::palette().scheme);
     layout_view::Skin {
-        base,
-        ink,
+        base: color::to_iced(pal.base),
+        ink: color::to_iced(pal.text),
+        pal,
         dense: pending.wallpaper,
         clock: sample::clock(pending.clock),
         batteries: p.sample_batteries.data(),
@@ -768,6 +769,43 @@ fn skin(p: &LoginScreen) -> layout_view::Skin {
             .unwrap_or_else(|| ec_ui::tokens::layout_edit::MOCK_GREETING.to_owned()),
         backdrop: p.backdrop().cloned(),
     }
+}
+
+/// The layout editor on its own, with the preview's sample data named as the
+/// greeter's preview example names it (`none|one|several`, `none|strong|weak`),
+/// for `examples/builder_preview.rs`: the builder's tiles and the greeter's,
+/// rendered from the same layout and data, side by side. Not used by the app.
+pub fn preview_editor<'a, M: Clone + 'a>(
+    layout: &'a Layout,
+    theme: Option<LoginTheme>,
+    clock: Option<Clock>,
+    batteries: &str,
+    link: &str,
+    on_change: impl Fn(Layout) -> M + 'a,
+) -> Element<'a, M, Theme> {
+    let pal = ec_greeter_ui::palette_for(theme.as_ref(), color::palette().scheme);
+    let skin = layout_view::Skin {
+        base: color::to_iced(pal.base),
+        ink: color::to_iced(pal.text),
+        pal,
+        dense: false,
+        clock: sample::clock(clock),
+        batteries: match batteries {
+            "none" => sample::Batteries::None,
+            "several" => sample::Batteries::Several,
+            _ => sample::Batteries::One,
+        }
+        .data(),
+        link: match link {
+            "none" => sample::Link::None,
+            "weak" => sample::Link::Weak,
+            _ => sample::Link::Strong,
+        }
+        .quality(),
+        greeting: ec_ui::tokens::layout_edit::MOCK_GREETING.to_owned(),
+        backdrop: None,
+    };
+    layout_view::editor(layout, skin, on_change).into()
 }
 
 /// The hero: the login screen itself as a live editor, at its proportions,
@@ -1118,7 +1156,7 @@ pub fn preview_env(p: &mut LoginScreen) {
                 match val {
                     "bw" => {
                         for k in [ec_layout::Kind::Battery, ec_layout::Kind::Wifi] {
-                            l = layout_edit::add(&l, k, None).unwrap_or(l);
+                            l = layout_edit::add(layout_edit::Screen::Login, &l, k, None).unwrap_or(l);
                         }
                     }
                     // Every tile at its smallest, for the mocks' degradation.
@@ -1130,7 +1168,7 @@ pub fn preview_env(p: &mut LoginScreen) {
                     }
                     "bare" => {
                         for k in layout_edit::OPTIONAL {
-                            l = layout_edit::remove(&l, k).unwrap_or(l);
+                            l = layout_edit::remove(layout_edit::Screen::Login, &l, k).unwrap_or(l);
                         }
                     }
                     _ => {}
@@ -1299,7 +1337,8 @@ mod tests {
     fn the_bar_names_what_changed_in_a_few_words() {
         let mut p = LoginScreen::default();
         assert_eq!(summary(&p), None);
-        p.layout = layout_edit::remove(&p.layout, ec_layout::Kind::Power).unwrap();
+        p.layout =
+            layout_edit::remove(layout_edit::Screen::Login, &p.layout, ec_layout::Kind::Power).unwrap();
         assert_eq!(summary(&p).as_deref(), Some("Layout changed"));
         p.greeting = "hi".into();
         assert_eq!(summary(&p).as_deref(), Some("Layout and greeting changed"));
@@ -1321,7 +1360,12 @@ mod tests {
         }));
         app.login.greeting = "edited".into();
         app.login.clock = Some(Clock::Date12);
-        app.login.layout = layout_edit::remove(&app.login.layout, ec_layout::Kind::Power).unwrap();
+        app.login.layout = layout_edit::remove(
+            layout_edit::Screen::Login,
+            &app.login.layout,
+            ec_layout::Kind::Power,
+        )
+        .unwrap();
         app.login.wallpaper = Wallpaper::Shipped;
         assert!(dirty(&app.login));
         let _ = update(&mut app, Msg::Revert);
@@ -1409,7 +1453,13 @@ mod tests {
         let mut p = LoginScreen::default();
         assert_eq!(p.pending().layout, None);
         assert!(!p.can_apply());
-        p.layout = layout_edit::add(&p.layout, ec_layout::Kind::Battery, None).unwrap();
+        p.layout = layout_edit::add(
+            layout_edit::Screen::Login,
+            &p.layout,
+            ec_layout::Kind::Battery,
+            None,
+        )
+        .unwrap();
         let s = p.pending();
         assert_eq!(s.layout.as_ref(), Some(&p.layout));
         assert!(p.can_apply());
@@ -1429,14 +1479,21 @@ mod tests {
             ..Default::default()
         }));
         assert!(!p.can_apply() && !p.can_reset());
-        p.layout = layout_edit::remove(&p.layout, ec_layout::Kind::Power).unwrap();
+        p.layout =
+            layout_edit::remove(layout_edit::Screen::Login, &p.layout, ec_layout::Kind::Power).unwrap();
         assert!(p.can_apply());
     }
 
     #[test]
     fn set_layout_keeps_only_valid_layouts_and_reset_restores_the_default() {
         let mut app = App::new();
-        let ok = layout_edit::add(&Layout::default(), ec_layout::Kind::Wifi, None).unwrap();
+        let ok = layout_edit::add(
+            layout_edit::Screen::Login,
+            &Layout::default(),
+            ec_layout::Kind::Wifi,
+            None,
+        )
+        .unwrap();
         let _ = update(&mut app, Msg::SetLayout(ok.clone()));
         assert_eq!(app.login.layout, ok);
         let mut bad = ok.clone();

@@ -202,3 +202,10 @@ The package installs the default as `/usr/share/backgrounds/eclipseos/eclipse-{d
 `packaging/etc/abyss.kdl` points `wallpaper.path` at the dark one, and the login screen ships it as
 `greeter.png`. The light variant is the same picture over a pale ground, with near-black rim lines under a
 strong orange glow, for the light scheme.
+
+## Login and lock builders
+The Settings builders show each tile exactly as the screen draws it: the same plan (`ec_glance::tile`,
+`ec_glance::cells`), the screen's own derived palette, the greeter's card veil and rim, scaled by the preview. The
+only allowed differences are the 8 px text floor, the 2 px minimum rail and bar, the non-glass frost standing in for
+compositor glass, and the preview's fixed tile gap. On the lock the focused field follows "focus is a brighter fill and
+a crisp rim"; the bare clock is the one tile with no pane. The lock builder adds a faint veil only while a tile is held.

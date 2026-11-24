@@ -58,3 +58,8 @@ ADR 0024 (the compositor's fallback when it dies). Protocol: Vol 1's
 - The clock face follows the login screen's clock preset: read-only from `/var/lib/eclipse/greeter/settings.toml` via
   `ec_greeter::Settings::parse` and `ec_greeter::clock_format`; a missing or invalid file means the default (12-hour with date).
   Strings and sizing come from `ec_glance::clock` and `ec_glance::tile`, shared with the greeter and the builder preview.
+- The layout file needs only a Password tile; a Users or Power tile in it is accepted and ignored (`ec_layout::validate_with`
+  with `LOCK_REQUIRED`; built-in is `Layout::lock_default()`). Sizes and words come from `ec_glance::cells` (`lock_frame`,
+  `lock_greeting`, `lock_password`, `cells::lock`), not from `tokens.rs` or `view.rs`. Settings' lock builder
+  (`ec-settings/.../lock_mock.rs`) draws the same plans, so change `view.rs` and the preview together; tests fail on drift.
+  The bare clock has no pane and no padding on purpose, and the preview copies that: do not "fix" one side.

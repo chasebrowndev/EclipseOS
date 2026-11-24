@@ -116,6 +116,20 @@ impl Content {
     pub const PREVIEW: Content = Content { devices: 3 };
 }
 
+/// What the lock screen draws, in the order its editor offers them. It has one
+/// account and no power menu (a locked session is not the place for either), and
+/// no session bus, so Users, Power and NowPlaying are not here.
+pub const LOCK_KINDS: [Kind; 5] = [
+    Kind::Clock,
+    Kind::Greeting,
+    Kind::Password,
+    Kind::Battery,
+    Kind::Wifi,
+];
+
+/// A lock layout without these cannot unlock anything.
+pub const LOCK_REQUIRED: [Kind; 1] = [Kind::Password];
+
 impl Kind {
     /// The key used in the settings file.
     pub const fn name(self) -> &'static str {
@@ -276,6 +290,24 @@ impl Default for Layout {
 }
 
 impl Layout {
+    /// What the lock screen draws when nothing is configured: the clock, one
+    /// line for the account, the field. No Users tile (the lock has one account)
+    /// and no Power tile (a locked session is not the place to turn the machine
+    /// off). It always has the Password tile.
+    pub fn lock_default() -> Self {
+        let t = |kind, x, y, w, h| Tile {
+            kind,
+            rect: Rect::new(x, y, w, h),
+        };
+        Layout {
+            tiles: vec![
+                t(Kind::Clock, 6, 3, 12, 4),
+                t(Kind::Greeting, 8, 7, 8, 1),
+                t(Kind::Password, 8, 8, 8, 3),
+            ],
+        }
+    }
+
     pub fn get(&self, kind: Kind) -> Option<Rect> {
         self.tiles.iter().find(|t| t.kind == kind).map(|t| t.rect)
     }
@@ -391,6 +423,12 @@ impl Layout {
 /// Is this layout one the greeter may draw? Checked on read and again by the
 /// root helper before anything is written.
 pub fn validate(l: &Layout) -> Result<(), Error> {
+    validate_with(l, &REQUIRED)
+}
+
+/// [`validate`] for a screen whose required kinds are not the greeter's: the
+/// lock has one account and no power menu, so it requires only the password.
+pub fn validate_with(l: &Layout, required: &[Kind]) -> Result<(), Error> {
     let c = Content::MIN;
     for (i, t) in l.tiles.iter().enumerate() {
         if l.tiles[..i].iter().any(|o| o.kind == t.kind) {
@@ -408,8 +446,9 @@ pub fn validate(l: &Layout) -> Result<(), Error> {
             return Err(Error::Overlap(o.kind, t.kind));
         }
     }
-    REQUIRED
-        .into_iter()
+    required
+        .iter()
+        .copied()
         .find(|k| l.get(*k).is_none())
         .map_or(Ok(()), |k| Err(Error::Missing(k)))
 }
@@ -542,6 +581,14 @@ pub fn resize_anchored_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_lock_default_is_a_lock_layout() {
+        let l = Layout::lock_default();
+        assert_eq!(validate_with(&l, &LOCK_REQUIRED), Ok(()));
+        assert!(l.tiles.iter().all(|t| LOCK_KINDS.contains(&t.kind)));
+        assert_eq!(Layout::from_lines(&l.to_lines()), Ok(l));
+    }
 
     #[test]
     fn the_default_is_valid() {

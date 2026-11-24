@@ -107,13 +107,11 @@ pub const BAR_RADIUS: f32 = 2.0;
 /// The window size before the compositor says otherwise, logical px.
 pub const DEFAULT_WINDOW: (f32, f32) = (1920.0, 1080.0);
 
-/// The card's corner radius (STYLE.md: 22-24px on the login screen). Glass
-/// panes are clamped to half their short side, so a small card stays round.
-pub const CARD_RADIUS: f32 = 22.0;
-/// A cell inside a card: a user row, the password field.
-pub const CELL_RADIUS: f32 = 14.0;
-/// Asks for a pill: clamped to half the cell's short side.
-pub const PILL_RADIUS: f32 = 999.0;
+/// The radii and every number inside a card (the field, the user rows, the
+/// pills) are `ec_glance::cells`, shared with the layout builder's preview, so
+/// the screen and the preview are drawn from one table.
+pub use ec_glance::cells as cell;
+pub use ec_glance::cells::{CARD_RADIUS, CELL_RADIUS, PILL_RADIUS};
 /// The gap a tile leaves on each side (`Rect::to_px`): neighbours sit 2x apart.
 pub const TILE_GAP: u32 = ec_layout::intrinsic::TILE_GAP_PX as u32;
 /// Card padding as a share of the card's short side, and its bounds.
@@ -137,9 +135,9 @@ pub mod backdrop {
     pub const FROST_SIGMA: f32 = 3.0;
     /// The frosted look without glass is ink laid over the blurred wallpaper:
     /// (fill, rim) alphas of text ink. A card first.
-    pub const CARD: (f32, f32) = (0.035, 0.18);
+    pub const CARD: (f32, f32) = ec_glance::cells::CARD;
     /// A cell, by state: rest, hover, press.
-    pub const CELL: (f32, f32) = (0.045, 0.10);
+    pub const CELL: (f32, f32) = ec_glance::cells::CELL;
     pub const CELL_HOVER: (f32, f32) = (0.085, 0.18);
     pub const CELL_PRESS: (f32, f32) = (0.025, 0.10);
     /// The focused cell: a brighter fill and a crisp rim, never a glow.
@@ -147,53 +145,9 @@ pub mod backdrop {
     pub const FOCUS_HOVER: (f32, f32) = (0.15, 0.60);
     pub const FOCUS_PRESS: (f32, f32) = (0.07, 0.50);
     /// How far a card's backing is darkened before the frost shows through.
-    pub const CARD_BACK: f32 = 0.30;
+    pub const CARD_BACK: f32 = ec_glance::cells::CARD_BACK;
     /// A control that cannot be used yet: its ground and its ink, as a share.
-    pub const DISABLED: f32 = 0.5;
-}
-
-/// How a tile's type scales: each size is the smaller of a height share and a
-/// width share, clamped. Fixed sizes are hints; a tile never gets a size it
-/// cannot hold.
-pub mod scale {
-    /// The greeting line.
-    pub const GREETING_H: f32 = 0.62;
-    pub const GREETING_W: f32 = 0.07;
-    pub const GREETING_MIN: f32 = 20.0;
-    pub const GREETING_MAX: f32 = 44.0;
-}
-
-/// Inside a card: the field, the user rows, the pills, the Glances' parts.
-pub mod cell {
-    pub const FIELD_MIN: f32 = 36.0;
-    pub const FIELD_MAX: f32 = 56.0;
-    /// The line under the field: what is happening.
-    pub const NOTE_H: f32 = 18.0;
-    pub const NOTE_GAP: f32 = 10.0;
-    /// The Users header row.
-    pub const HEAD_H: f32 = 16.0;
-    pub const ROW_MIN: f32 = 36.0;
-    pub const ROW_MAX: f32 = 64.0;
-    pub const ROW_GAP: f32 = 8.0;
-    pub const ROW_PAD_X: f32 = 14.0;
-    /// An account's disc: a share of its row, clamped.
-    pub const AVATAR_FRAC: f32 = 0.7;
-    pub const AVATAR_MIN: f32 = 22.0;
-    pub const AVATAR_MAX: f32 = 44.0;
-    /// The typed length: dots, then a caret.
-    pub const DOT: f32 = 8.0;
-    pub const DOT_GAP: f32 = 7.0;
-    pub const DOTS_MAX: usize = 24;
-    pub const CARET_W: f32 = 2.0;
-    pub const CARET_H: f32 = 20.0;
-    /// The danger rim of a refused field, as a share of full ink.
-    pub const FAIL_RIM: f32 = 0.45;
-    /// The Unlock pill beside the field: a share of the tile, clamped.
-    pub const SUBMIT_W_FRAC: f32 = 0.3;
-    pub const SUBMIT_MIN: f32 = 72.0;
-    pub const SUBMIT_MAX: f32 = 140.0;
-    /// The inner width at which the three power pills carry their full labels.
-    pub const POWER_FULL_W: f32 = 300.0;
+    pub const DISABLED: f32 = ec_glance::cells::DISABLED;
 }
 
 /// The battery gauge (`gauge.rs`). The sizes that fix the tile's footprint live
@@ -268,15 +222,6 @@ pub mod font {
         include_bytes!("../../../../assets/fonts/Onest-Medium.ttf"),
     ];
 }
-
-// Every clamp in the view takes its bounds in order; a reversed pair would
-// panic at run time, so the order is checked at compile time.
-const _: () = {
-    assert!(scale::GREETING_MIN < scale::GREETING_MAX);
-    assert!(cell::FIELD_MIN < cell::FIELD_MAX);
-    assert!(cell::ROW_MIN < cell::ROW_MAX);
-    assert!(cell::SUBMIT_MIN < cell::SUBMIT_MAX);
-};
 
 #[cfg(test)]
 mod tests {

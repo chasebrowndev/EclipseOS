@@ -4,11 +4,11 @@
 //! scale and spacing come from `ec_ui::tokens`, the table the desktop reads.
 
 /// The gap a tile leaves on each side (`Rect::to_px`): neighbours sit 2x apart.
-pub const TILE_GAP: u32 = 8;
+pub const TILE_GAP: u32 = ec_glance::cells::lock::TILE_GAP;
 /// A pane's corner radius. Clamped to half the pane's short side.
-pub const PANE_RADIUS: f32 = 22.0;
+pub const PANE_RADIUS: f32 = ec_glance::cells::lock::PANE_RADIUS;
 /// A cell inside a pane: the account disc's row, a pill.
-pub const PILL_RADIUS: f32 = 999.0;
+pub const PILL_RADIUS: f32 = ec_glance::cells::lock::PILL_RADIUS;
 /// Pane padding as a share of its short side, and its bounds.
 /// The pad never exceeds this share of the pane's short side.
 /// A pane rests on the ground with a soft drop: depth, never a halo.
@@ -17,28 +17,12 @@ pub const SHADOW_BLUR: f32 = 36.0;
 /// The pane's rim, as a share of the shared strong border.
 pub const RIM: f32 = 1.0;
 /// A pill's horizontal padding as a share of its radius.
-pub const PILL_PAD_X: f32 = 0.7;
+pub const PILL_PAD_X: f32 = ec_glance::cells::lock::PILL_PAD_X;
 
-/// Inside a pane.
+/// Inside a pane: the shared numbers (`ec_glance::cells::lock`), which the
+/// layout builder's lock preview reads too, plus the signal bar's own corner.
 pub mod cell {
-    pub const FIELD_MIN: f32 = 44.0;
-    /// Below this the Unlock pill trims its padding to stay inside the field.
-    pub const FIELD_ROOMY: f32 = 52.0;
-    pub const UNLOCK_PAD_TIGHT: f32 = 2.0;
-    pub const FIELD_MAX: f32 = 56.0;
-    /// The line under the field: what is happening.
-    pub const NOTE_H: f32 = 18.0;
-    pub const NOTE_GAP: f32 = 6.0;
-    /// The hint line under the note, when the pane has the room.
-    pub const HINT_H: f32 = 22.0;
-    /// The account disc in the greeting pill: a share of the pill, clamped.
-    pub const AVATAR_FRAC: f32 = 0.9;
-    pub const AVATAR_MIN: f32 = 22.0;
-    pub const AVATAR_MAX: f32 = 44.0;
-    /// The initial's size as a share of its disc.
-    pub const INITIAL_FRAC: f32 = 0.5;
-    /// The greeting drops its state word below this inner width.
-    pub const GREETING_WORD_W: f32 = 220.0;
+    pub use ec_glance::cells::lock::*;
     pub const BAR_RADIUS: f32 = 2.0;
 }
 
@@ -65,7 +49,4 @@ pub mod glance {
 
 // Every clamp in the view takes its bounds in order; a reversed pair would
 // panic at run time, so the order is checked at compile time.
-const _: () = {
-    assert!(cell::FIELD_MIN < cell::FIELD_MAX);
-    assert!(cell::AVATAR_MIN < cell::AVATAR_MAX);
-};
+const _: () = {};

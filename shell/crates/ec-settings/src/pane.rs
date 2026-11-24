@@ -60,6 +60,7 @@ pub enum Page {
     Components,
     Wallpaper,
     LoginScreen,
+    LockScreen,
     // Taskbar
     BarAppearance,
     BarWidgets,
@@ -226,7 +227,13 @@ impl Section {
                 Page::Animations,
                 Page::Graphics,
             ],
-            Section::Desktop => &[Page::Mode, Page::Components, Page::Wallpaper, Page::LoginScreen],
+            Section::Desktop => &[
+                Page::Mode,
+                Page::Components,
+                Page::Wallpaper,
+                Page::LoginScreen,
+                Page::LockScreen,
+            ],
             Section::Taskbar => &[
                 Page::BarAppearance,
                 Page::BarWidgets,
@@ -349,7 +356,9 @@ impl Page {
             Page::Blur | Page::Shadow | Page::Rounding | Page::Animations | Page::Graphics => {
                 Section::Effects
             }
-            Page::Mode | Page::Components | Page::Wallpaper | Page::LoginScreen => Section::Desktop,
+            Page::Mode | Page::Components | Page::Wallpaper | Page::LoginScreen | Page::LockScreen => {
+                Section::Desktop
+            }
             Page::BarAppearance | Page::BarWidgets | Page::BarFolding | Page::BarTray | Page::BarMotion => {
                 Section::Taskbar
             }
@@ -398,6 +407,7 @@ impl Page {
             Page::Components => "Components",
             Page::Wallpaper => "Wallpaper",
             Page::LoginScreen => "Login screen",
+            Page::LockScreen => "Lock screen",
             Page::BarAppearance => "Appearance",
             Page::BarWidgets => "Widgets",
             Page::BarFolding => "Folding",
@@ -449,6 +459,9 @@ impl Page {
             Page::Components => "The programs that draw the desktop's notifications and panels.",
             Page::Wallpaper => "The picture behind everything.",
             Page::LoginScreen => "The picture, greeting and clock on this machine's login screen.",
+            Page::LockScreen => {
+                "Where the clock, the account line and the password field sit on your lock screen."
+            }
             Page::BarAppearance => "Where the bar sits and how it looks.",
             Page::BarWidgets => "Widgets, their order, and how the bar gives way.",
             Page::BarFolding => "When the bar folds away to a strip.",
@@ -512,6 +525,7 @@ impl Page {
             Page::Mode | Page::General | Page::Setup => Glyph::Sliders,
             Page::Components => Glyph::Dots,
             Page::LoginScreen => Glyph::Person,
+            Page::LockScreen => Glyph::Lock,
             Page::Pointer => Glyph::Mouse,
             Page::Touchpad => Glyph::Touchpad,
             Page::Rendering => Glyph::Chip,
@@ -561,6 +575,7 @@ impl Page {
                 | Page::Animations
                 | Page::Accounts
                 | Page::LoginScreen
+                | Page::LockScreen
         ) || self.is_terminal()
     }
 
@@ -811,7 +826,7 @@ mod tests {
             assert_eq!(owners, 1, "{page:?}");
             assert!(page.section().pages().contains(&page));
         }
-        assert_eq!(Page::all().count(), 50);
+        assert_eq!(Page::all().count(), 51);
     }
 
     #[test]

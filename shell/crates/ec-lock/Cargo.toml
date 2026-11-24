@@ -43,4 +43,5 @@ libc = "0.2"
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
 serde_json.workspace = true
 # Contrast tests run the built-in palettes through the theme's own maths.
+# examples/preview.rs: `PREVIEW_LIGHT=1` sets the light palette the desktop would give the lock.
 ec-theme = { path = "../../../abyss/crates/ec-theme" }
