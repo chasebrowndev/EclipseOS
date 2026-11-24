@@ -4,7 +4,7 @@
 //! Not a locker: it takes no lock, runs no PAM, reads no keys and has no
 //! password. It draws `ec_lock::view::scene` for one fixed state:
 //!
-//! `cargo run -p ec-lock --example preview -- <state> [layout-file|-] [glance] [WxH]`
+//! `cargo run -p ec-lock --example preview -- <state> [layout-file|-] [glance] [clock=24h|12h|24h-date|12h-date] [WxH]`
 //!
 //! `layout-file` goes through the lock's own loader (`face::read_capped`,
 //! `face::layout_from_text`), so a bad file shows the fallback; `-` or none is
@@ -15,6 +15,7 @@
 //! `unavailable`, `unlocking`, and `secondary` (the scene every other output
 //! shows, at a smaller output's size).
 
+use ec_glance::clock::Format;
 use ec_glance::{Battery, Charge, Wifi};
 use ec_lock::app::{Message, Status};
 use ec_lock::clock::Reading;
@@ -64,6 +65,7 @@ fn fixture(state: &str, face: Face) -> Option<(Preview, (f32, f32))> {
         clock: Reading {
             time: "9:41 AM".to_owned(),
             date: "Wednesday, November 11".to_owned(),
+            format: Format::default(),
         },
         face,
     };
@@ -83,12 +85,44 @@ fn draw(p: &Preview) -> Element<'_, Message, Theme> {
     })
 }
 
+fn clock_preset(name: &str) -> Format {
+    let text = format!("clock = \"{name}\"\n");
+    ec_lock::clock::format_from_text(Some(&text))
+}
+
 fn main() -> iced::Result {
     let state = std::env::args().nth(1).unwrap_or_else(|| "ready".to_owned());
     let mut layout = face::builtin();
     let (mut glance, mut dims) = (Snapshot::default(), None);
+    let mut format = Format::default();
     for arg in std::env::args().skip(2) {
-        if arg == "glance" {
+        if let Some(v) = arg.strip_prefix("bat=") {
+            let dev = |internal, name: &str, percent, charge| Battery {
+                internal,
+                name: name.to_owned(),
+                percent,
+                charge,
+            };
+            let internal = dev(true, "BAT0", 72, Charge::Discharging);
+            glance.batteries = match v {
+                "none" => Vec::new(),
+                "one" => vec![internal],
+                _ => vec![
+                    internal,
+                    dev(false, "Logitech MX Master 3S", 40, Charge::Discharging),
+                    dev(false, "Keychron K3", 100, Charge::Charging),
+                ],
+            };
+        } else if let Some(v) = arg.strip_prefix("link=") {
+            glance.wifi = match v {
+                "none" => None,
+                "weak" => Some(Wifi { percent: 24 }),
+                _ => Some(Wifi { percent: 92 }),
+            };
+        } else if let Some(v) = arg.strip_prefix("clock=") {
+            // A preset by its settings-file name, through the login screen's reader.
+            format = clock_preset(v);
+        } else if arg == "glance" {
             let dev = |internal, name: &str, percent, charge| Battery {
                 internal,
                 name: name.to_owned(),
@@ -112,6 +146,15 @@ fn main() -> iced::Result {
     let Some((preview, mut size)) = fixture(&state, Face::settled(layout, glance)) else {
         eprintln!("usage: preview <{STATES}> [layout-file|-] [glance] [WxH]");
         std::process::exit(2);
+    };
+    let mut preview = preview;
+    preview.clock = {
+        let f = ec_glance::clock::render(9, 41, 3, 10, 11, format);
+        Reading {
+            time: f.time,
+            date: f.date,
+            format,
+        }
     };
     if let Some(d) = dims {
         size = d;

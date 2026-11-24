@@ -169,6 +169,8 @@ pub struct App {
     user: CString,
     user_display: String,
     clock: Reading,
+    /// The login screen's clock preset: what `clock` is drawn in.
+    clock_format: ec_glance::clock::Format,
     /// The tile layout, the Glances' numbers and the entrance: drawing only.
     face: Face,
     /// When `update` last ran: what the view's countdown is measured from.
@@ -181,12 +183,14 @@ impl App {
         // (`glass.rs`). Boot runs before any surface exists.
         crate::glass::install();
         let user_display = user.to_string_lossy().into_owned();
+        let clock_format = clock::load_format();
         App {
             machine: Machine::new(),
             secret: Secret::new(),
             user,
             user_display,
-            clock: clock::now(ec_ui::tokens::clock::HOUR_12),
+            clock: clock::now(clock_format),
+            clock_format,
             face: Face::load(),
             now: Instant::now(),
         }
@@ -279,7 +283,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             app.machine.surfaces_up();
             return app.submit();
         }
-        Message::Tick => app.clock = clock::now(ec_ui::tokens::clock::HOUR_12),
+        Message::Tick => app.clock = clock::now(app.clock_format),
         Message::SurfaceUp => app.machine.surfaces_up(),
         Message::ThemeChanged => {}
         Message::Frame(at) => app.face.frame(at),

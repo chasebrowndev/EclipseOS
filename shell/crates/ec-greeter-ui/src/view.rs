@@ -16,11 +16,12 @@
 
 use std::time::Instant;
 
+use ec_glance::tile::{self, Inner, WifiPlan};
 use ec_layout::Kind;
 use ec_theme::{Palette, Rgba};
 use iced::widget::image::FilterMethod;
 use iced::widget::text::Wrapping;
-use iced::widget::{column, container, image, pin, row, stack, text};
+use iced::widget::{column, container, image, pin, row, stack, text, Space};
 use iced::{alignment, ContentFit, Element, Font, Length};
 
 use crate::app::{App, Msg};
@@ -30,8 +31,7 @@ use crate::glass::Tone;
 use crate::motion::{content_scale, Placed};
 use crate::parts::{swatch, Ground};
 use crate::tokens::{
-    self, cell, font, gauge as g, scale, size, space, to_iced, CARD_RADIUS, CELL_RADIUS, PAD_FRACTION,
-    PAD_MAX, PAD_MIN, PAD_SHARE_MAX, PILL_RADIUS,
+    self, cell, font, gauge as g, scale, size, space, to_iced, CARD_RADIUS, CELL_RADIUS, PILL_RADIUS,
 };
 
 /// What one tile's content needs: its inner box, how far it has appeared, and
@@ -93,11 +93,13 @@ fn tile<'a>(app: &'a App, p: &Placed, state: AuthState) -> Option<Element<'a, Ms
     if p.kind == Kind::Battery && (app.stage.shown() == 0 || p.w < 1.0 || p.h < 1.0) {
         return None;
     }
+    // A battery pane is content-sized (`ec_layout::intrinsic`), so it keeps its
+    // own margin; every other tile takes the shared Glance one.
     let (pad, scale) = if p.kind == Kind::Battery {
         let s = content_scale(p.w, p.h, app.stage.shown());
         (g::PAD_PX as f32 * s, s)
     } else {
-        (pad_for(p.w, p.h), 1.0)
+        (tile::pad_for(p.w, p.h), 1.0)
     };
     let iw = (p.w - 2.0 * pad).max(0.0);
     let ih = (p.h - 2.0 * pad).max(0.0);
@@ -152,15 +154,6 @@ fn tile<'a>(app: &'a App, p: &Placed, state: AuthState) -> Option<Element<'a, Ms
     )
 }
 
-/// The inner margin of a card: a share of its short side, clamped, and never
-/// more than a fifth of that side, so a one-row tile keeps its content.
-fn pad_for(w: f32, h: f32) -> f32 {
-    let short = w.min(h).max(0.0);
-    (short * PAD_FRACTION)
-        .clamp(PAD_MIN, PAD_MAX)
-        .min(short * PAD_SHARE_MAX)
-}
-
 /// `fit_in` of the smaller of a height share and a width share.
 fn fit(h: f32, w: f32, h_share: f32, w_share: f32, lo: f32, hi: f32) -> f32 {
     fit_in((h * h_share).min(w * w_share), lo, hi)
@@ -193,23 +186,18 @@ fn ground<'a>(cx: &Cx<'a>, content: Element<'a, Msg>, radius: f32) -> Ground<'a,
 
 fn clock<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     let app = cx.app;
-    let numeral = fit(
-        cx.ih,
-        cx.iw,
-        scale::CLOCK_H,
-        scale::CLOCK_W,
-        scale::CLOCK_MIN,
-        scale::CLOCK_MAX,
-    );
+    // Sized by the shared rules against the preset's widest strings, so the
+    // minute rolling over never moves it (and the builder draws the same).
+    let fmt = app.format;
+    let plan = tile::clock(Inner { w: cx.iw, h: cx.ih }, fmt.twelve, fmt.date);
     let mut col = column![label(
         app.clock.time.clone(),
-        numeral,
+        plan.numeral,
         font::UI_MEDIUM,
         cx.pal.text
     )]
-    .spacing(space::ROW_Y);
-    if !app.clock.date.is_empty() {
-        let date = (numeral * scale::DATE_OF_CLOCK).clamp(scale::DATE_MIN, scale::DATE_MAX);
+    .spacing(tile::CLOCK_GAP);
+    if let (Some(date), false) = (plan.date, app.clock.date.is_empty()) {
         col = col.push(label(
             app.clock.date.clone(),
             date,
@@ -217,13 +205,10 @@ fn clock<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
             cx.pal.text_secondary,
         ));
     }
-    // A tall, narrow tile centres its numeral; a wide one sets it low-left.
-    let portrait = cx.ih > cx.iw;
     let c = container(col).width(Length::Fill).height(Length::Fill);
-    if portrait {
-        c.center(Length::Fill).into()
-    } else {
-        c.align_y(alignment::Vertical::Bottom).into()
+    match plan.align {
+        tile::Align::Centre => c.center(Length::Fill).into(),
+        tile::Align::BottomLeft => c.align_y(alignment::Vertical::Bottom).into(),
     }
 }
 
@@ -467,6 +452,19 @@ fn power<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     .into()
 }
 
+/// A Glance with nothing to show: one quiet line, centred.
+fn quiet<'a>(cx: &Cx<'a>, line: &'static str) -> Element<'a, Msg> {
+    container(label(line, size::BODY_SMALL, font::UI, cx.pal.text_secondary))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .center(Length::Fill)
+        .into()
+}
+
+fn heading<'a>(cx: &Cx<'a>, s: &'static str) -> Element<'a, Msg> {
+    label(s, size::MICRO, font::DATA_MEDIUM, cx.pal.text_tertiary)
+}
+
 /// The battery Glance: a row of gauges, each a device icon in a rounded-square
 /// ring with its percentage below, four to a row and then a second row. The
 /// pane is exactly as big as that content (`ec_layout::intrinsic`).
@@ -486,45 +484,46 @@ fn battery<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
 
 fn wifi<'a>(cx: &Cx<'a>) -> Element<'a, Msg> {
     let pal = cx.pal;
-    let Some(link) = cx.app.glance.wifi else {
-        return container(label("No link", size::BODY_SMALL, font::UI, pal.text_secondary))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .center(Length::Fill)
-            .into();
-    };
-    let fig = fit(
-        cx.ih,
-        cx.iw,
-        scale::FIGURE_H,
-        0.25,
-        scale::FIGURE_MIN,
-        scale::FIGURE_MAX,
+    let link = cx.app.glance.wifi;
+    let plan = tile::wifi(
+        Inner { w: cx.iw, h: cx.ih },
+        link.map(|l| l.percent),
+        tokens::GLANCE_TYPE,
     );
-    let pct = usize::from(link.percent.min(100));
-    let lit = pct.div_ceil(cell::WIFI_STEP_PCT);
-    let mut bars = row![].spacing(cell::BAR_GAP).align_y(alignment::Vertical::Bottom);
-    for i in 0..cell::WIFI_BARS {
-        let h = fig * (cell::BAR_BASE + cell::BAR_STEP * i as f32);
-        let colour = if i < lit { pal.text } else { pal.track };
-        bars = bars.push(swatch(
-            colour,
-            cell::BAR_RADIUS,
-            Length::Fixed(cell::BAR_W),
-            Length::Fixed(h),
-        ));
-    }
-    let figure = row![
-        label(format!("{}%", link.percent), fig, font::DATA_MEDIUM, pal.text),
-        bars,
-    ]
-    .spacing(space::BLOCK)
+    let (Some(link), WifiPlan::Compact { figure, bars, gap } | WifiPlan::Full { figure, bars, gap }) =
+        (link, plan)
+    else {
+        return quiet(cx, "No link");
+    };
+    let mut figure_row = row![label(
+        format!("{}%", link.percent),
+        figure,
+        font::DATA_MEDIUM,
+        pal.text
+    )]
+    .spacing(gap)
     .align_y(alignment::Vertical::Bottom);
-    column![
-        label("LINK", size::MICRO, font::DATA_MEDIUM, pal.text_tertiary),
-        figure
-    ]
-    .spacing(space::ROW_Y)
-    .height(Length::Fill)
-    .into()
+    if let Some(b) = bars {
+        let mut bs = row![].spacing(b.gap).align_y(alignment::Vertical::Bottom);
+        for i in 0..tile::WIFI_BARS {
+            let colour = if i < b.lit { pal.text } else { pal.track };
+            bs = bs.push(swatch(
+                colour,
+                tokens::BAR_RADIUS,
+                Length::Fixed(b.w),
+                Length::Fixed(tile::bar_h(figure, i)),
+            ));
+        }
+        figure_row = figure_row.push(bs);
+    }
+    if matches!(plan, WifiPlan::Compact { .. }) {
+        return container(figure_row)
+            .width(Length::Fill)
+            .center_y(Length::Fill)
+            .into();
+    }
+    column![heading(cx, "LINK"), Space::new().height(Length::Fill), figure_row]
+        .spacing(tile::GAP)
+        .height(Length::Fill)
+        .into()
 }

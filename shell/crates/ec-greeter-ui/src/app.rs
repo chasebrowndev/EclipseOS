@@ -226,7 +226,7 @@ impl App {
         Self::assemble(
             layout,
             settings.theme.as_ref(),
-            Format::of(settings.clock),
+            clock::format_of(settings.clock),
             greeting,
             auth,
         )
@@ -238,7 +238,7 @@ impl App {
         Self::assemble(
             Layout::default(),
             None,
-            Format::of(None),
+            clock::format_of(None),
             DEFAULT_GREETING.to_owned(),
             Box::new(FakeAuth::new(&[])),
         )
@@ -449,7 +449,7 @@ mod tests {
         App::assemble(
             Layout::default(),
             None,
-            Format::of(None),
+            clock::format_of(None),
             DEFAULT_GREETING.to_owned(),
             Box::new(FakeAuth::new(users)),
         )

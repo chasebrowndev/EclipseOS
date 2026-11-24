@@ -11,6 +11,13 @@
 //! `PREVIEW_DEVICES=n` (default 3) is how many batteries the fake Glance data
 //! holds: 1, 3 or 6 show a lone gauge, one row, and a wrapped second row.
 //!
+//! `PREVIEW_TILES="clock 0 0 12 6/battery 12 0 6 4"` sets an exact layout (tiles
+//! `kind x y w h` split by `/`; keep Users and Password in it), `PREVIEW_BAT`
+//! (`none|one|several`) and `PREVIEW_LINK` (`none|strong|weak`) the Glance data,
+//! `PREVIEW_CLOCK` (`24h|12h|24h-date|12h-date`) the clock preset, and
+//! `PREVIEW_LIGHT=1` the light palette. These are for comparing against the
+//! layout builder's preview.
+//!
 //! Run it under a nested abyss, never on the host session:
 //! `cargo run -p ec-greeter-ui --example preview`.
 
@@ -105,6 +112,73 @@ fn main() -> iced::Result {
     }
     if std::env::var("PREVIEW_LAYOUT").as_deref() == Ok("portrait") {
         settings.layout = Some(portrait_layout());
+    }
+    if let Ok(spec) = std::env::var("PREVIEW_TILES") {
+        let tiles: Vec<Tile> = spec
+            .split('/')
+            .filter_map(|t| {
+                let mut it = t.split_whitespace();
+                let kind = Kind::from_name(it.next()?)?;
+                let mut n = || it.next()?.parse::<i32>().ok();
+                Some(Tile {
+                    kind,
+                    rect: Rect::new(n()?, n()?, n()?, n()?),
+                })
+            })
+            .collect();
+        settings.layout = Some(Layout { tiles });
+    }
+    let dev = |name: &str, percent, charge| Battery {
+        internal: false,
+        name: name.to_owned(),
+        percent,
+        charge,
+    };
+    let internal = Battery {
+        internal: true,
+        name: "BAT0".to_owned(),
+        percent: 72,
+        charge: Charge::Discharging,
+    };
+    let batteries = match std::env::var("PREVIEW_BAT").as_deref() {
+        Ok("none") => Some(Vec::new()),
+        Ok("one") => Some(vec![internal]),
+        Ok("several") => Some(vec![
+            internal,
+            dev("Logitech MX Master 3S", 40, Charge::Discharging),
+            dev("Keychron K3", 100, Charge::Charging),
+        ]),
+        _ => None,
+    };
+    let wifi = match std::env::var("PREVIEW_LINK").as_deref() {
+        Ok("none") => Some(None),
+        Ok("strong") => Some(Some(Wifi { percent: 92 })),
+        Ok("weak") => Some(Some(Wifi { percent: 24 })),
+        _ => None,
+    };
+    if batteries.is_some() || wifi.is_some() {
+        let base = options.glance.take().unwrap_or_default();
+        options.glance = Some(Snapshot {
+            batteries: batteries.unwrap_or(base.batteries),
+            wifi: wifi.unwrap_or(base.wifi),
+        });
+    }
+    if let Ok(c) = std::env::var("PREVIEW_CLOCK") {
+        settings.clock = match c.as_str() {
+            "24h" => Some(ec_greeter::Clock::Time24),
+            "12h" => Some(ec_greeter::Clock::Time12),
+            "24h-date" => Some(ec_greeter::Clock::Date24),
+            "12h-date" => Some(ec_greeter::Clock::Date12),
+            _ => None,
+        };
+    }
+    if std::env::var_os("PREVIEW_LIGHT").is_some() {
+        settings.theme = Some(ec_greeter::Theme {
+            base: 0xfaf9f6,
+            ink: 0x1a1610,
+            accent: 0xf2c33c,
+            accent_text: 0x7a5c00,
+        });
     }
     let users = ["robin", "sam", "ada"];
     if std::env::var_os("PREVIEW_PROMPT").is_some() {

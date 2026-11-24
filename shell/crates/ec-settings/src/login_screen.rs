@@ -31,6 +31,7 @@ use ec_ui::widget::{
 
 mod layout_edit;
 mod layout_view;
+mod sample;
 
 use crate::app::{App, Message};
 use crate::conn::Problem;
@@ -265,6 +266,9 @@ pub struct LoginScreen {
     pub clock: Option<Clock>,
     /// Where the tiles sit (the editor's pending layout).
     pub layout: Layout,
+    /// Sample data the preview's Glances draw with (display only, never sent).
+    pub sample_batteries: sample::Batteries,
+    pub sample_link: sample::Link,
     /// The path field, for choosing an image without the portal.
     pub path: String,
     /// An image is being decoded.
@@ -379,6 +383,9 @@ pub enum Msg {
     Greeting(String),
     /// A clock preset, or `None` for the shipped default.
     Clock(Option<Clock>),
+    /// Which sample data the preview's Glances show (display only).
+    SampleBatteries(sample::Batteries),
+    SampleLink(sample::Link),
     /// The layout editor finished a gesture: the whole new layout.
     SetLayout(Layout),
     /// "Reset layout": the built-in arrangement.
@@ -572,6 +579,8 @@ pub fn update(app: &mut App, m: Msg) -> Task<Message> {
         Msg::UseTheme(on) => p.use_theme = on && p.theme.is_some(),
         Msg::Greeting(s) => p.greeting = clean_greeting(&s),
         Msg::Clock(c) => p.clock = c,
+        Msg::SampleBatteries(b) => p.sample_batteries = b,
+        Msg::SampleLink(l) => p.sample_link = l,
         Msg::SetLayout(l) => {
             // The editor only ever sends a valid one; a bad one is dropped.
             if ec_layout::validate(&l).is_ok() {
@@ -617,16 +626,13 @@ pub fn problem(action: Action, outcome: &Outcome) -> Option<Problem> {
 
 // ---- the view ----------------------------------------------------------
 
-/// The greeter's own clock when `[widget.clock]` is absent.
-const SHIPPED_CLOCK: &str = "Tue 09:41";
-
-fn clock_sample(c: Option<Clock>) -> &'static str {
-    match c {
-        None => SHIPPED_CLOCK,
-        Some(Clock::Time24) => "09:41",
-        Some(Clock::Time12) => "09:41 AM",
-        Some(Clock::Date24) => "Tue 04 Nov  09:41",
-        Some(Clock::Date12) => "Tue 04 Nov  09:41 AM",
+/// The clock preset as one line, for the row's caption: the time, then the date.
+fn clock_sample(c: Option<Clock>) -> String {
+    let s = sample::clock(c);
+    if s.has_date {
+        format!("{} \u{b7} {}", s.time, s.date)
+    } else {
+        s.time.to_owned()
     }
 }
 
@@ -754,7 +760,9 @@ fn skin(p: &LoginScreen) -> layout_view::Skin {
         base,
         ink,
         dense: pending.wallpaper,
-        clock: clock_sample(pending.clock).to_owned(),
+        clock: sample::clock(pending.clock),
+        batteries: p.sample_batteries.data(),
+        link: p.sample_link.quality(),
         greeting: pending
             .greeting
             .unwrap_or_else(|| ec_ui::tokens::layout_edit::MOCK_GREETING.to_owned()),
@@ -807,6 +815,7 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
             )
             .width(Length::Fill)
             .align_x(Alignment::Center),
+            samples(p),
             small(
                 "Drag a tile to move it; pull any edge or corner to resize it. Tap or drag a tile below to add it. \
                  Nothing changes on this computer until you press Apply."
@@ -816,6 +825,40 @@ fn hero(app: &App) -> Element<'_, Message, Theme> {
         .extend(result_banner(p))
         .spacing(space::ROW_Y),
     )
+}
+
+/// What the preview's Glances pretend the machine has, so a tile's sizing can be
+/// seen as the data changes. Display only: nothing here is applied.
+fn samples(p: &LoginScreen) -> Element<'_, Message, Theme> {
+    let batteries = sample::Batteries::ALL
+        .into_iter()
+        .map(|b| {
+            pick_pill(
+                b.label(),
+                p.sample_batteries == b,
+                Some(msg(Msg::SampleBatteries(b))),
+            )
+        })
+        .collect();
+    let link = sample::Link::ALL
+        .into_iter()
+        .map(|l| pick_pill(l.label(), p.sample_link == l, Some(msg(Msg::SampleLink(l)))))
+        .collect();
+    let line = |name: &'static str, pills| {
+        row![
+            container(small(name).style(theme::text_tertiary)).width(Length::Fixed(sample_label_w())),
+            container(pill_group(pills)).width(Length::Fill),
+        ]
+        .spacing(space::CONTROL_GAP)
+        .align_y(Alignment::Center)
+    };
+    column![line("Preview battery", batteries), line("Preview Wi-Fi", link)]
+        .spacing(space::PILL_GAP)
+        .into()
+}
+
+fn sample_label_w() -> f32 {
+    ec_ui::tokens::layout_edit::SAMPLE_LABEL_W
 }
 
 /// The wallpaper row: Browse, the path, Use, and back to the shipped image.
@@ -1036,11 +1079,12 @@ pub fn blocks(app: &App) -> Vec<Element<'_, Message, Theme>> {
 
 /// Debug builds only: `SETTINGS_PREVIEW_LOGIN=<flag>,..` opens the page in a
 /// state, with nothing run, so each can be screenshotted. Flags: `image:<path>`,
-/// `theme` (use the dark seeds), `notheme` (the active theme is unusable),
+/// `theme` (use the dark seeds), `light` (the light seeds), `notheme` (the active theme is unusable),
 /// `greeting:<text>`, `long` (an 80-character greeting), `clock:<0-3>`,
 /// `layout:<default|bw|bare>` (the pending layout: default; battery and wifi
 /// added; every optional tile removed),
-/// `ok`, `fail`, `error`, `busy`.
+/// `bat:<none|one|several>`, `link:<none|strong|weak>`, `tiles:<kind x y w h/..>` (sample data and
+/// an exact layout), `ok`, `fail`, `error`, `busy`.
 #[cfg(debug_assertions)]
 pub fn preview_env(p: &mut LoginScreen) {
     let Ok(spec) = std::env::var("SETTINGS_PREVIEW_LOGIN") else {
@@ -1056,6 +1100,10 @@ pub fn preview_env(p: &mut LoginScreen) {
             }
             "theme" => {
                 p.theme = login_theme(&ec_theme::DARK_SEEDS);
+                p.use_theme = true;
+            }
+            "light" => {
+                p.theme = login_theme(&ec_theme::LIGHT_SEEDS);
                 p.use_theme = true;
             }
             "notheme" => {
@@ -1088,6 +1136,40 @@ pub fn preview_env(p: &mut LoginScreen) {
                     _ => {}
                 }
                 p.layout = l;
+            }
+            // The sample data the preview's Glances draw with.
+            "bat" => {
+                p.sample_batteries = match val {
+                    "none" => sample::Batteries::None,
+                    "several" => sample::Batteries::Several,
+                    _ => sample::Batteries::One,
+                }
+            }
+            "link" => {
+                p.sample_link = match val {
+                    "none" => sample::Link::None,
+                    "weak" => sample::Link::Weak,
+                    _ => sample::Link::Strong,
+                }
+            }
+            // `tiles:clock 2 1 10 3/battery 14 1 8 5`: an exact layout.
+            "tiles" => {
+                let tiles = val
+                    .split('/')
+                    .filter_map(|t| {
+                        let mut it = t.split_whitespace();
+                        let kind = ec_layout::Kind::from_name(it.next()?)?;
+                        let mut n = || it.next()?.parse::<i32>().ok();
+                        Some(ec_layout::Tile {
+                            kind,
+                            rect: ec_layout::Rect::new(n()?, n()?, n()?, n()?),
+                        })
+                    })
+                    .collect();
+                let l = Layout { tiles };
+                if ec_layout::validate(&l).is_ok() {
+                    p.layout = l;
+                }
             }
             "ok" => p.last = Some((Action::Apply, Outcome::Done)),
             "fail" => p.last = Some((Action::Apply, Outcome::NotAuthorised)),

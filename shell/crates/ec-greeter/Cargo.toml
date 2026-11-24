@@ -25,5 +25,7 @@ path = "src/bin/ec-greeter-run.rs"
 ec-theme = { path = "../../../abyss/crates/ec-theme" }
 # Root encodes the wallpaper; the greeter checks it decodes. Already in the tree.
 ec-layout = { path = "../ec-layout" }
+# The clock tile's Format, pure and dependency-free.
+ec-glance = { path = "../ec-glance" }
 png = "0.18"
 libc = "0.2"
