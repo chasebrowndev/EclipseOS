@@ -89,3 +89,33 @@ Option 3, expressed as joins between panes rather than a group id on each pane.
 A design needs a shape that is not a union of rounded boxes (a notch, a tail), or
 the per-fragment cost of joined-shape evaluation shows in the glass timers on the
 reference hardware.
+
+## Implementation (2026-11-25)
+Compositor: `ec-abyss-render` (`glass.rs`: `find_shapes`, `joined_distance`;
+`effects.rs`: the `JOINED` variant of the glass body; `blur.rs`/`lib.rs`: one
+element per shape at its lowest member's z-position) and `ec-abyss`
+`protocols/standard/glass.rs` (version 3, `set_joins`). Client: `ec-ui`
+`glass::push` and `push_in` return the pane's index, and `glass::join(a, b,
+radius)` records a join that follows `set_panes` to a v3 compositor.
+
+Rules as built:
+- A join counts only when both panes are drawn and touch (overlap or share an
+  edge or corner). Cells (`cell_parent`) and `CLIPPED` panes under a clip are
+  never joined. A shape of more than 16 panes keeps its 16 lowest indices.
+- Each member keeps its own bevel, strength, rim, lift, shade and smoke, chosen
+  per fragment by the nearest member (raw distance). The fillet belongs to the
+  member joined in, so member order matters (attachment order from the lowest
+  index).
+- Dispersion, rim colour, scheme, adaptive strength and layers are shared.
+- The inside corner is bitten by at most `k/4` px for a join radius `k`, the
+  smooth-min bound.
+- An unjoined pane renders bit for bit as before (pinned by a probe diff).
+- Cost, joined shapes only: up to 16 rounded-box distances, 15 join folds and 16
+  nearest-member compares per fragment, no extra texture taps; 65 uniform names
+  against 22 for the unjoined program. Unjoined programs are unchanged.
+
+Owed: COMP-02 §9 text (joined panes draw as one shape at the lowest member's
+z-position; the exclusions above), a bench row, the bar's and toasts' use of
+`join`, and the start menu. Dev tool: `abyss/crates/ec-abyss/examples/
+glass_probe.rs` (a headless test client; it must run under an allowlisted exe
+name, so it is a probe, not a shipped binary).
