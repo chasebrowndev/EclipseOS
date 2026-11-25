@@ -1827,20 +1827,35 @@ fn drawer_sheet<'a>(
         fillet: app.bar_radius,
         edge: if top { SheetEdge::Top } else { SheetEdge::Bottom },
     };
-    let pill = container(pill_row)
-        .width(Length::Fill)
-        .height(Length::Fixed(bar::PILL_H));
+    // Both halves keep the compositor pane that the bar's own pill has at
+    // rest (`bar_row`), so the glass under the sheet is the same with a drawer
+    // out as without one. Without the pill's pane the compositor has nothing
+    // under the tint and the whole bar reads lighter (ADR 0081: panes replace
+    // the layer's whole-surface blur). The drawer's panel gets one too, so the
+    // sheet is one material, not glass on the pill and a bare tint on the
+    // drawer.
+    let pill = ec_ui::widget::glass_card(
+        container(pill_row)
+            .width(Length::Fill)
+            .height(Length::Fixed(bar::PILL_H)),
+        CellTone::Plain,
+        app.bar_radius,
+    );
     // The panel's body is always laid out at full height and cut by the
     // container, so the rows never reflow while the sheet opens: they are
     // uncovered, from the pill's side outward.
     let body = container(parts::drawer_body(head, rows))
         .width(Length::Fixed(on.drawer.width()))
         .height(Length::Fixed(height));
-    let panel = container(body)
-        .width(Length::Fixed(on.drawer.width()))
-        .height(Length::Fixed(extent))
-        .align_y(if top { Alignment::Start } else { Alignment::End })
-        .clip(true);
+    let panel = ec_ui::widget::glass_card(
+        container(body)
+            .width(Length::Fixed(on.drawer.width()))
+            .height(Length::Fixed(extent))
+            .align_y(if top { Alignment::Start } else { Alignment::End })
+            .clip(true),
+        CellTone::Plain,
+        app.bar_radius,
+    );
     let panel = Row::new()
         .push(Space::new().width(Length::Fixed(anchor)))
         .push(panel);
