@@ -844,3 +844,9 @@ The headless backend keeps `auto` at `full` (it is the CI and screenshot
 backend, and llvmpipe would otherwise turn blur off in every capture) unless a
 machine is simulated. Simulate one with `ECLIPSE_GFX_FAKE_RENDERER="llvmpipe"`
 (also `_RAM_MB`, `_CPUS`, `_PIXELS`, `_VM=1`) on any backend.
+
+## Joined glass (ADR 0130) — cost model, not yet measured
+
+A surface whose panes carry joins draws each joined shape as one element with a second glass program (`JOINED` variant of `GLASS_BODY`; 65 uniforms against 22). Per fragment it folds up to 16 member boxes into a smooth minimum, then reads the nearest member's look. Cost scales with members per shape, only inside the shape's bounding box. Unjoined panes use the original program and are unchanged. The joined program compiles lazily on the first joined shape; if compilation fails the panes draw apart.
+
+Owed: a GPU-timer capture of a bar with an open drawer (2 members) and a 16-member shape against the same panes unjoined, on the reference hardware. No number is claimed here until that run exists.
