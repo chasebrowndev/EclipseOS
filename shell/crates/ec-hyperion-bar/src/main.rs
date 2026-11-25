@@ -74,6 +74,9 @@ fn main() -> iced_layershell::Result {
     })
     .style(view::style)
     .theme(|_: &app::App, _: iced::window::Id| ec_ui::theme::theme())
+    // Onest is the one UI face (STYLE.md, Type): a `text` with no `.font()`
+    // (the drawers' labels, the buttons' text) takes this, not the system sans.
+    .default_font(ec_ui::tokens::font::UI)
     .subscription(app::subscription)
     .antialiasing(true);
     // Every face, registered once, before the first surface exists.

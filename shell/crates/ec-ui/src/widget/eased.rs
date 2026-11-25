@@ -47,6 +47,12 @@ pub struct EasedCell<'a, Message> {
     ease: Duration,
     keep_fill: bool,
     keep_rim: bool,
+    /// Sizing, as a container's: `Shrink` (the content's own size) by default.
+    width: Length,
+    height: Length,
+    /// Whether the pointer lights the cell. `false` for a static ground that
+    /// must not answer it (a drawer's hero, a pending row).
+    answers: bool,
 }
 
 impl<'a, Message: Clone + 'a> EasedCell<'a, Message> {
@@ -66,6 +72,9 @@ impl<'a, Message: Clone + 'a> EasedCell<'a, Message> {
             ease: Duration::ZERO,
             keep_fill: false,
             keep_rim: false,
+            width: Length::Shrink,
+            height: Length::Shrink,
+            answers: true,
         }
     }
 
@@ -76,6 +85,25 @@ impl<'a, Message: Clone + 'a> EasedCell<'a, Message> {
 
     pub fn padding(mut self, padding: impl Into<Padding>) -> Self {
         self.padding = padding.into();
+        self
+    }
+
+    /// The cell's width, as a container's: `Fill` for a row, a fixed box for a tile.
+    pub fn width(mut self, width: Length) -> Self {
+        self.width = width;
+        self
+    }
+
+    /// The cell's height, as a container's.
+    pub fn height(mut self, height: Length) -> Self {
+        self.height = height;
+        self
+    }
+
+    /// A static ground: the pointer does not light it, so it is the same
+    /// glass at rest, hovered or not. Pressing is still the caller's `on_press`.
+    pub fn inert(mut self) -> Self {
+        self.answers = false;
         self
     }
 
@@ -174,7 +202,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for EasedCell<'_, Me
     }
 
     fn size(&self) -> Size<Length> {
-        Size::new(Length::Shrink, Length::Shrink)
+        Size::new(self.width, self.height)
     }
 
     fn layout(
@@ -183,7 +211,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for EasedCell<'_, Me
         renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        layout::padded(limits, Length::Shrink, Length::Shrink, self.padding, |limits| {
+        layout::padded(limits, self.width, self.height, self.padding, |limits| {
             self.content
                 .as_widget_mut()
                 .layout(&mut tree.children[0], renderer, limits)
@@ -230,8 +258,9 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for EasedCell<'_, Me
         let st = tree.state.downcast_mut::<CellState>();
         let over = cursor.is_over(bounds);
         match event {
+            // A press a nested cell took (a dismiss cross in a row) is its own.
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left))
-                if over && self.on_press.is_some() =>
+                if over && self.on_press.is_some() && !shell.is_event_captured() =>
             {
                 st.pressed = true;
                 shell.capture_event();
@@ -250,7 +279,7 @@ impl<Message: Clone> Widget<Message, Theme, iced::Renderer> for EasedCell<'_, Me
             }
             _ => {}
         }
-        st.over = over;
+        st.over = over && self.answers;
         if !st.settled() {
             if st.last.is_none() {
                 st.last = Some(Instant::now());
