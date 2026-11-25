@@ -55,9 +55,12 @@ app's own business.
 A toast carrying a question never auto-expires. The timeout pauses while the pointer is
 over the toast.
 
-**Silence.** A per-card `Silence <source>` control opens an inline drawer: mute for 1 h,
-until tomorrow, or forever, and "banners only" (keep in history). It writes the existing
-rules file (ADR 0091). Silencing only tightens. An app cannot lift it or declare itself
+**Silence.** An icon-only bell button on each app card opens a small drawer anchored under
+it with three options: `1 hr`, `24 hrs` (rolling) and `Forever`. Choosing one writes the
+existing rules file (ADR 0091), adding a `mute-until` key (unix seconds), and dismisses
+that source's cards. System toasts have no Silence. The drawer eases open over 180 ms
+(instant under `animations.reduce-motion`) and is a joined glass pane (ADR 0130) where
+nothing lies under it, an opaque popover where it would cover a neighbouring card. Silencing only tightens. An app cannot lift it or declare itself
 critical to bypass it; only system sources may bypass, as today.
 
 **Fullscreen.** Toasts are suppressed over a fullscreen surface by default and stored as

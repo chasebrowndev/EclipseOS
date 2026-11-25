@@ -1616,7 +1616,12 @@ implemented via Smithay's helpers or our own renderer path.
   No snapshot is written yet; runtime vs state dir stays open, COMP-01 §12
   item 2)*.
 - On restart, clients are gone (Wayland limitation), but layout is restored
-  so re-launched apps land where they were.
+  so re-launched apps land where they were. *(amended ADR 0131, 2026-11-25:
+  after an unclean end the shell may offer to reopen the previous apps, from a
+  manifest in `$XDG_STATE_HOME/eclipse/session.json`, since the runtime dir
+  does not survive a reboot. The user consents each time; clients are
+  relaunched through the normal launcher and policy path with fresh grants,
+  never restored.)*
 - Panic handler: log, dump state, attempt to switch VT so the machine is not
   bricked.
 
