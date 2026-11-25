@@ -8,11 +8,11 @@
 //! third settings pane from inventing its own padding.
 
 use iced::widget::{button, column, container, row, rule, stack, svg, text, Column, Row, Space};
-use iced::{Alignment, Color, Element, Font, Length, Theme};
+use iced::{Alignment, Color, Element, Length, Theme};
 
 use crate::theme;
 use crate::tokens::{breakpoint, canvas, color, drawer, font, menu, motion, radius, size, space};
-use crate::widget::Fold;
+use crate::widget::{EasedCell, Fold};
 
 /// A glass panel. The one container every block on a pane sits in.
 ///
@@ -783,26 +783,35 @@ pub fn drawer_current<'a, Message: Clone + 'a>(
     .align_y(Alignment::Center);
     if let Some((label, msg)) = action {
         r = r.push(
-            button(
+            EasedCell::new(
                 text(label.to_string())
                     .font(font::UI_MEDIUM)
                     .size(size::BODY_SMALL)
                     .color(color::text_secondary()),
+                drawer_pill,
+                theme::CellTone::Plain,
+                radius::PILL,
             )
             .padding([space::ROW_Y / 2.0, drawer::ROW_X])
-            .style(drawer_pill)
             .on_press(msg),
         );
     }
     // The lozenge is the slot inset, so the hero's ground never touches the
     // rows above and below it.
     container(
-        container(r)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_y(Alignment::Center)
-            .padding([0.0, drawer::ROW_X])
-            .style(drawer_hero_ground),
+        EasedCell::new(
+            container(r)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_y(Alignment::Center)
+                .padding([0.0, drawer::ROW_X]),
+            drawer_hero_ground,
+            theme::CellTone::Focused,
+            drawer::RADIUS_HERO,
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .inert(),
     )
     .width(Length::Fill)
     .height(Length::Fixed(drawer::CURRENT_H))
@@ -845,14 +854,12 @@ pub fn drawer_choice<'a, Message: Clone + 'a>(
         .height(Length::Fill)
         .align_y(Alignment::Center)
         .padding([0.0, drawer::ROW_X]);
-    let b = button(face)
+    let b = EasedCell::new(face, drawer_lift, theme::CellTone::Plain, drawer::RADIUS_ROW)
         .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(0)
-        .style(drawer_lift);
+        .height(Length::Fill);
     slot(match on_press {
         Some(m) => b.on_press(m).into(),
-        None => b.into(),
+        None => b.inert().into(),
     })
 }
 
@@ -873,39 +880,46 @@ fn slot<'a, Message: 'a>(body: Element<'a, Message, Theme>) -> Element<'a, Messa
 /// is merely inert looks disabled; this one is lit a step clearer than the
 /// list (it is the one thing the human just asked for) and says why it does
 /// not answer the pointer. `phase` is the spinner's, in revolutions.
-pub fn drawer_pending<'a, Message: 'a>(
+pub fn drawer_pending<'a, Message: Clone + 'a>(
     mark: Element<'a, Message, Theme>,
     label: &str,
     note: &str,
     phase: f32,
 ) -> Element<'a, Message, Theme> {
     slot(
-        container(
-            row![
-                container(mark)
-                    .width(Length::Fixed(drawer::MARK))
-                    .height(Length::Fixed(drawer::MARK))
-                    .align_x(Alignment::Center)
-                    .align_y(Alignment::Center),
-                text(label.to_string())
-                    .font(font::UI)
-                    .size(size::BODY_SMALL)
-                    .color(color::text()),
-                Space::new().width(Length::Fill),
-                text(note.to_string())
-                    .font(font::DATA)
-                    .size(size::MICRO)
-                    .color(color::text_tertiary()),
-                spinner(phase, color::text()),
-            ]
-            .spacing(drawer::MARK_GAP)
-            .align_y(Alignment::Center),
+        EasedCell::new(
+            container(
+                row![
+                    container(mark)
+                        .width(Length::Fixed(drawer::MARK))
+                        .height(Length::Fixed(drawer::MARK))
+                        .align_x(Alignment::Center)
+                        .align_y(Alignment::Center),
+                    text(label.to_string())
+                        .font(font::UI)
+                        .size(size::BODY_SMALL)
+                        .color(color::text()),
+                    Space::new().width(Length::Fill),
+                    text(note.to_string())
+                        .font(font::DATA)
+                        .size(size::MICRO)
+                        .color(color::text_tertiary()),
+                    spinner(phase, color::text()),
+                ]
+                .spacing(drawer::MARK_GAP)
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::Center)
+            .padding([0.0, drawer::ROW_X]),
+            drawer_rest_ground,
+            theme::CellTone::Plain,
+            drawer::RADIUS_ROW,
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .align_y(Alignment::Center)
-        .padding([0.0, drawer::ROW_X])
-        .style(drawer_rest_ground)
+        .inert()
         .into(),
     )
 }
@@ -916,27 +930,26 @@ pub fn drawer_pending<'a, Message: 'a>(
 /// row they clicked, and the reason belongs there. One [`drawer::ROW_H`]
 /// slot, the reason elided by the caller. Plain glass with danger ink: the
 /// colour is the text's, never a fill, a rim or a glow.
-pub fn drawer_error<'a, Message: 'a>(reason: &str) -> Element<'a, Message, Theme> {
+pub fn drawer_error<'a, Message: Clone + 'a>(reason: &str) -> Element<'a, Message, Theme> {
     slot(
-        container(
-            text(reason.to_string())
-                .font(font::DATA)
-                .size(size::MICRO)
-                .color(color::danger()),
+        EasedCell::new(
+            container(
+                text(reason.to_string())
+                    .font(font::DATA)
+                    .size(size::MICRO)
+                    .color(color::danger()),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::Center)
+            .padding([0.0, drawer::ROW_X]),
+            drawer_rest_ground,
+            theme::CellTone::Plain,
+            drawer::RADIUS_ROW,
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .align_y(Alignment::Center)
-        .padding([0.0, drawer::ROW_X])
-        .style(|_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(color::cell())),
-            border: iced::Border {
-                color: color::cell_rim(),
-                width: space::HAIRLINE,
-                radius: drawer::RADIUS_ROW.into(),
-            },
-            ..container::Style::default()
-        })
+        .inert()
         .into(),
     )
 }
@@ -976,13 +989,20 @@ pub fn drawer_link_lit<'a, Message: Clone + 'a>(
     .align_y(Alignment::Center)
     .padding([0.0, drawer::ROW_X]);
     slot(
-        button(face)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(0)
-            .style(move |t, s| if lit { drawer_lit(t, s) } else { drawer_quiet(t, s) })
-            .on_press(on_press)
-            .into(),
+        EasedCell::new(
+            face,
+            move |t, s| if lit { drawer_lit(t, s) } else { drawer_quiet(t, s) },
+            if lit {
+                theme::CellTone::Focused
+            } else {
+                theme::CellTone::Latent
+            },
+            drawer::RADIUS_ROW,
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .on_press(on_press)
+        .into(),
     )
 }
 
@@ -1023,13 +1043,20 @@ pub fn drawer_fold<'a, Message: Clone + 'a>(
     .align_y(Alignment::Center)
     .padding([0.0, drawer::ROW_X]);
     slot(
-        button(face)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(0)
-            .style(move |t, s| if lit { drawer_lit(t, s) } else { drawer_quiet(t, s) })
-            .on_press(on_press)
-            .into(),
+        EasedCell::new(
+            face,
+            move |t, s| if lit { drawer_lit(t, s) } else { drawer_quiet(t, s) },
+            if lit {
+                theme::CellTone::Focused
+            } else {
+                theme::CellTone::Latent
+            },
+            drawer::RADIUS_ROW,
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .on_press(on_press)
+        .into(),
     )
 }
 
@@ -1064,13 +1091,20 @@ pub fn drawer_more<'a, Message: Clone + 'a>(
     .align_y(Alignment::Center)
     .padding([0.0, drawer::ROW_X]);
     slot(
-        button(face)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(0)
-            .style(move |t, s| if lit { drawer_lit(t, s) } else { drawer_quiet(t, s) })
-            .on_press(on_press)
-            .into(),
+        EasedCell::new(
+            face,
+            move |t, s| if lit { drawer_lit(t, s) } else { drawer_quiet(t, s) },
+            if lit {
+                theme::CellTone::Focused
+            } else {
+                theme::CellTone::Latent
+            },
+            drawer::RADIUS_ROW,
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .on_press(on_press)
+        .into(),
     )
 }
 
@@ -1122,11 +1156,9 @@ pub fn drawer_action<'a, Message: Clone + 'a>(
         .align_y(Alignment::Center)
         .padding([0.0, drawer::ROW_X]);
     let body: Element<'a, Message, Theme> = match on_press {
-        Some(m) => button(face)
+        Some(m) => EasedCell::new(face, drawer_lift, theme::CellTone::Plain, drawer::RADIUS_ROW)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(space::ZERO)
-            .style(drawer_lift)
             .on_press(m)
             .into(),
         None => face.into(),
@@ -1148,7 +1180,7 @@ pub fn drawer_confirm<'a, Message: Clone + 'a>(
     on_cancel: Message,
 ) -> Element<'a, Message, Theme> {
     let ink = if danger { color::danger() } else { color::text() };
-    let confirm = button(
+    let confirm = EasedCell::new(
         container(
             text(label.to_string())
                 .font(font::UI_MEDIUM)
@@ -1158,20 +1190,23 @@ pub fn drawer_confirm<'a, Message: Clone + 'a>(
         .height(Length::Fill)
         .align_y(Alignment::Center)
         .padding([0.0, drawer::ROW_X]),
+        drawer_lift,
+        theme::CellTone::Plain,
+        drawer::RADIUS_ROW,
     )
     .width(Length::Fill)
     .height(Length::Fill)
-    .padding(space::ZERO)
-    .style(drawer_lift)
     .on_press(on_confirm);
-    let cancel = button(
+    let cancel = EasedCell::new(
         text("Cancel")
             .font(font::UI_MEDIUM)
             .size(size::BODY_SMALL)
             .color(color::text_secondary()),
+        drawer_pill,
+        theme::CellTone::Plain,
+        radius::PILL,
     )
     .padding([space::ROW_Y / 2.0, drawer::ROW_X])
-    .style(drawer_pill)
     .on_press(on_cancel);
     slot(
         row![confirm, cancel]
@@ -1198,7 +1233,7 @@ pub fn drawer_confirm_stacked<'a, Message: Clone + 'a>(
     on_cancel: Message,
 ) -> Element<'a, Message, Theme> {
     let ink = if danger { color::danger() } else { color::text() };
-    let confirm = button(
+    let confirm = EasedCell::new(
         container(
             text(label.to_string())
                 .font(font::UI_MEDIUM)
@@ -1209,20 +1244,23 @@ pub fn drawer_confirm_stacked<'a, Message: Clone + 'a>(
         .height(Length::Fill)
         .align_y(Alignment::Center)
         .padding([0.0, drawer::ROW_X]),
+        drawer_lift,
+        theme::CellTone::Plain,
+        drawer::RADIUS_ROW,
     )
     .width(Length::Fill)
     .height(Length::Fill)
-    .padding(space::ZERO)
-    .style(drawer_lift)
     .on_press(on_confirm);
-    let cancel = button(
+    let cancel = EasedCell::new(
         text("Cancel")
             .font(font::UI_MEDIUM)
             .size(size::BODY_SMALL)
             .color(color::text_secondary()),
+        drawer_pill,
+        theme::CellTone::Plain,
+        radius::PILL,
     )
     .padding([space::ROW_Y / 2.0, drawer::ROW_X])
-    .style(drawer_pill)
     .on_press(on_cancel);
     column![
         slot(confirm.into()),
@@ -1302,40 +1340,50 @@ pub fn drawer_level<'a, Message: Clone + 'a>(
     };
     // The mark is a button with the lozenge hover of a pickable row, sized
     // to its own square plus the row's inset so it is a fair target.
-    let mute = button(
+    let mute = EasedCell::new(
         container(mark)
             .width(Length::Fixed(drawer::MARK))
             .height(Length::Fixed(drawer::MARK))
             .align_x(Alignment::Center)
             .align_y(Alignment::Center),
+        drawer_quiet,
+        theme::CellTone::Latent,
+        drawer::RADIUS_ROW,
     )
     .padding(space::ROW_Y / 2.0)
-    .style(drawer_quiet)
     .on_press(on_mute);
     slot(
-        container(
-            row![
-                mute,
-                track,
-                container(
-                    text(shown)
-                        .font(font::DATA)
-                        .size(size::MICRO)
-                        .color(reading)
-                        .wrapping(text::Wrapping::None),
-                )
-                .width(Length::Fixed(drawer::LEVEL_READOUT_W))
-                .align_x(Alignment::End),
-            ]
-            .spacing(drawer::MARK_GAP)
-            .align_y(Alignment::Center),
+        EasedCell::new(
+            container(
+                row![
+                    mute,
+                    track,
+                    container(
+                        text(shown)
+                            .font(font::DATA)
+                            .size(size::MICRO)
+                            .color(reading)
+                            .wrapping(text::Wrapping::None),
+                    )
+                    .width(Length::Fixed(drawer::LEVEL_READOUT_W))
+                    .align_x(Alignment::End),
+                ]
+                .spacing(drawer::MARK_GAP)
+                .align_y(Alignment::Center),
+            )
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_y(Alignment::Center)
+            // The button's own pad is part of the gridline, so the mark lands on
+            // the list's mark column.
+            .padding([0.0, drawer::ROW_X - space::ROW_Y / 2.0]),
+            drawer_rest_ground,
+            theme::CellTone::Plain,
+            drawer::RADIUS_ROW,
         )
         .width(Length::Fill)
         .height(Length::Fill)
-        .align_y(Alignment::Center)
-        // The button's own pad is part of the gridline, so the mark lands on
-        // the list's mark column.
-        .padding([0.0, drawer::ROW_X - space::ROW_Y / 2.0])
+        .inert()
         .into(),
     )
 }
@@ -1420,7 +1468,7 @@ pub fn drawer_entry<'a, Message: Clone + 'a>(e: EntryRow<'a, Message>) -> Elemen
         color::text()
     };
     let tail: Element<'a, Message, Theme> = if e.hot {
-        button(
+        EasedCell::new(
             container(
                 text("\u{d7}")
                     .font(font::DATA)
@@ -1428,11 +1476,12 @@ pub fn drawer_entry<'a, Message: Clone + 'a>(e: EntryRow<'a, Message>) -> Elemen
                     .color(color::text_secondary()),
             )
             .center(Length::Fill),
+            drawer_dismiss,
+            theme::CellTone::Latent,
+            drawer::RADIUS_ROW,
         )
         .width(Length::Fixed(drawer::DISMISS))
         .height(Length::Fixed(drawer::DISMISS))
-        .padding(0)
-        .style(drawer_dismiss)
         .on_press(e.on_dismiss)
         .into()
     } else {
@@ -1473,18 +1522,25 @@ pub fn drawer_entry<'a, Message: Clone + 'a>(e: EntryRow<'a, Message>) -> Elemen
         .align_y(Alignment::Center)
         .padding([0.0, drawer::ROW_X]);
     let lit = e.lit;
-    let b = button(face)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .padding(0)
-        .style(move |t: &Theme, status| {
+    let b = EasedCell::new(
+        face,
+        move |t: &Theme, status| {
             if lit {
                 drawer_lit(t, status)
             } else {
                 drawer_lift(t, status)
             }
-        })
-        .on_press(e.on_press);
+        },
+        if lit {
+            theme::CellTone::Focused
+        } else {
+            theme::CellTone::Plain
+        },
+        drawer::RADIUS_ROW,
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .on_press(e.on_press);
     slot(
         iced::widget::mouse_area(b)
             .on_enter(e.on_enter)
@@ -1541,14 +1597,16 @@ pub fn drawer_pills<'a, Message: Clone + 'a>(verbs: Vec<(String, Message)>) -> E
     let mut r = Row::new().spacing(drawer::MARK_GAP).align_y(Alignment::Center);
     for (label, msg) in verbs {
         r = r.push(
-            button(
+            EasedCell::new(
                 text(label)
                     .font(font::UI_MEDIUM)
                     .size(size::BODY_SMALL)
                     .color(color::text_secondary()),
+                drawer_pill,
+                theme::CellTone::Plain,
+                radius::PILL,
             )
             .padding([space::ROW_Y / 2.0, drawer::ROW_X])
-            .style(drawer_pill)
             .on_press(msg),
         );
     }
@@ -1573,7 +1631,7 @@ pub fn drawer_pills<'a, Message: Clone + 'a>(verbs: Vec<(String, Message)>) -> E
 /// otherwise. A widget rather than a [`drawer_current`] because the reading is
 /// a number, and a number at [`size::BIG_NUMBER`] is the whole point of the
 /// hero.
-pub fn drawer_magnitude<'a, Message: 'a>(
+pub fn drawer_magnitude<'a, Message: Clone + 'a>(
     number: &str,
     unit: &str,
     tint: Color,
@@ -1582,10 +1640,7 @@ pub fn drawer_magnitude<'a, Message: 'a>(
 ) -> Element<'a, Message, Theme> {
     let reading = row![
         text(number.to_string())
-            .font(Font {
-                weight: iced::font::Weight::Medium,
-                ..font::DATA
-            })
+            .font(font::DATA_MEDIUM)
             .size(size::BIG_NUMBER)
             .color(tint),
         text(unit.to_string())
@@ -1608,12 +1663,19 @@ pub fn drawer_magnitude<'a, Message: 'a>(
     ]
     .align_y(Alignment::Center);
     container(
-        container(column![reading, state_line].spacing(drawer::LINE_GAP))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_y(Alignment::Center)
-            .padding([0.0, drawer::ROW_X])
-            .style(drawer_hero_ground),
+        EasedCell::new(
+            container(column![reading, state_line].spacing(drawer::LINE_GAP))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_y(Alignment::Center)
+                .padding([0.0, drawer::ROW_X]),
+            drawer_hero_ground,
+            theme::CellTone::Focused,
+            drawer::RADIUS_HERO,
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .inert(),
     )
     .width(Length::Fill)
     .height(Length::Fixed(drawer::MAGNITUDE_H))
@@ -1658,31 +1720,37 @@ pub fn segment_control<'a, Message: Clone + 'a>(
         .height(Length::Fill)
         .align_x(Alignment::Center)
         .align_y(Alignment::Center);
-        let cell = button(face)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(0)
-            .style(move |_t: &Theme, status: button::Status| segment_style(selected, enabled, status));
+        let cell = EasedCell::new(
+            face,
+            move |_t: &Theme, status: button::Status| segment_style(selected, enabled, status),
+            if selected {
+                theme::CellTone::Focused
+            } else {
+                theme::CellTone::Latent
+            },
+            radius::PILL,
+        )
+        .width(Length::Fill)
+        .height(Length::Fill);
         let cell: Element<'a, Message, Theme> = match on_press {
             Some(m) => cell.on_press(m).into(),
-            None => cell.into(),
+            None => cell.inert().into(),
         };
         group = group.push(cell);
     }
-    container(group)
-        .width(Length::Fill)
-        .height(Length::Fixed(drawer::SEGMENT_H))
-        .padding(drawer::SEGMENT_GAP)
-        .style(|_t: &Theme| container::Style {
-            background: Some(iced::Background::Color(color::cell())),
-            border: iced::Border {
-                color: color::cell_rim(),
-                width: space::HAIRLINE,
-                radius: radius::PILL.into(),
-            },
-            ..container::Style::default()
-        })
-        .into()
+    EasedCell::new(
+        container(group)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(drawer::SEGMENT_GAP),
+        drawer_pill_ground,
+        theme::CellTone::Plain,
+        radius::PILL,
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(drawer::SEGMENT_H))
+    .inert()
+    .into()
 }
 
 /// A segment's ground: the one in force is the focused-chip glass; the others
@@ -1755,14 +1823,17 @@ pub fn drawer_tile<'a, Message: Clone + 'a>(
     .height(Length::Fill)
     .align_y(Alignment::Center)
     .padding([0.0, drawer::ROW_X]);
-    let b = button(face)
-        .width(Length::Fill)
-        .height(Length::Fixed(drawer::TILE_H))
-        .padding(0)
-        .style(move |_t: &Theme, status: button::Status| tile_style(enabled, status));
+    let b = EasedCell::new(
+        face,
+        move |_t: &Theme, status: button::Status| tile_style(enabled, status),
+        theme::CellTone::Plain,
+        drawer::RADIUS_ROW,
+    )
+    .width(Length::Fill)
+    .height(Length::Fixed(drawer::TILE_H));
     match on_press {
         Some(m) => b.on_press(m).into(),
-        None => b.into(),
+        None => b.inert().into(),
     }
 }
 
@@ -1807,33 +1878,24 @@ pub fn tile_grid<'a, Message: 'a>(tiles: Vec<Element<'a, Message, Theme>>) -> El
 
 /// A drawer row's ground at rest: the bar cell's own glass lozenge.
 ///
-/// The cell tokens and not [`color::lift()`]: they are STYLE.md's figures
-/// brought back to linear light, which is how iced blends, so a row reads as
-/// the same glass as the chips on the pill above it and not a grey slab.
-fn drawer_rest_ground(_t: &Theme) -> container::Style {
-    container::Style {
-        background: Some(iced::Background::Color(color::cell())),
-        border: iced::Border {
-            color: color::cell_rim(),
-            width: space::HAIRLINE,
-            radius: drawer::RADIUS_ROW.into(),
-        },
-        ..container::Style::default()
-    }
+/// A look for an [`EasedCell`] lens, not a container: with compositor glass on
+/// the pane draws this ground and the client paints nothing; without it this
+/// is the painted fallback. The cell tokens and not [`color::lift()`]: they are
+/// STYLE.md's figures brought back to linear light, which is how iced blends,
+/// so a row reads as the same glass as the chips on the pill above it.
+fn drawer_rest_ground(_t: &Theme, _s: button::Status) -> button::Style {
+    glass_button(color::cell(), color::cell_rim(), drawer::RADIUS_ROW)
 }
 
 /// The hero's ground: the focused-chip glass — a step clearer fill and a
 /// crisp white rim, neutral. No accent and no glow.
-fn drawer_hero_ground(_t: &Theme) -> container::Style {
-    container::Style {
-        background: Some(iced::Background::Color(color::cell_focus())),
-        border: iced::Border {
-            color: color::cell_focus_rim(),
-            width: space::HAIRLINE,
-            radius: drawer::RADIUS_HERO.into(),
-        },
-        ..container::Style::default()
-    }
+fn drawer_hero_ground(_t: &Theme, _s: button::Status) -> button::Style {
+    glass_button(color::cell_focus(), color::cell_focus_rim(), drawer::RADIUS_HERO)
+}
+
+/// The segment group's ground: the rest glass on a pill.
+fn drawer_pill_ground(_t: &Theme, _s: button::Status) -> button::Style {
+    glass_button(color::cell(), color::cell_rim(), radius::PILL)
 }
 
 /// A pickable row: a glass lozenge at rest that lifts a step and takes a
@@ -1923,8 +1985,8 @@ pub struct DayCell {
 /// compose — today's numeral is the drawer's one yellow whether or not it is
 /// also the selected cell. Inline in a view that logic would be copied into
 /// every grid. The cell is a fixed [`drawer::CAL_CELL_W`] by
-/// [`drawer::CAL_CELL_H`] slot with its lozenge inset by
-/// [`drawer::ROW_INSET`], so the sheet arithmetic can read the size. `dots`
+/// [`drawer::CAL_CELL_H`] slot, and its marker is a square centred in it
+/// (see `cal_mark`), so the sheet arithmetic can read the size. `dots`
 /// are event colours, data from the provider; the row of dots keeps its
 /// height when empty so a number never shifts when an event arrives.
 pub fn cal_day<'a, Message: Clone + 'a>(
@@ -1933,7 +1995,11 @@ pub fn cal_day<'a, Message: Clone + 'a>(
     dots: &[Color],
     on_press: Message,
 ) -> Element<'a, Message, Theme> {
-    let ink = if cell.today {
+    // A selected day is the glass, which is brighter than the wash behind it:
+    // the tan accent numeral loses its contrast there, so the numeral goes to
+    // primary ink and today is then carried by the ring alone.
+    let today_ink = cell.today && !cell.selected;
+    let ink = if today_ink {
         color::accent_text()
     } else if cell.in_month {
         color::text()
@@ -1954,43 +2020,101 @@ pub fn cal_day<'a, Message: Clone + 'a>(
             radius::PILL,
         ));
     }
-    let face = column![numeral, container(marks).height(Length::Fixed(drawer::CAL_DOT)),]
-        .spacing(drawer::CAL_DOT_GAP)
-        .align_x(Alignment::Center);
-    let face = container(face)
+    // The numeral is centred on its own in the marker. The dots are a second
+    // layer at its foot: stacking them under the numeral in one column centred
+    // the pair, which lifted every digit by half the dots' row.
+    let centred = container(numeral)
         .width(Length::Fill)
         .height(Length::Fill)
         .align_x(Alignment::Center)
         .align_y(Alignment::Center);
-    container(
-        button(face)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(0)
-            .style(cal_cell_style(cell.selected))
-            .on_press(on_press),
+    let feet = container(marks)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .padding(iced::Padding {
+            top: 0.0,
+            right: 0.0,
+            bottom: drawer::CAL_DOT_GAP,
+            left: 0.0,
+        })
+        .align_x(Alignment::Center)
+        .align_y(Alignment::End);
+    let face = stack![centred, feet];
+    let mark = cal_mark();
+    let lens = EasedCell::new(
+        face,
+        cal_cell_style(cell.selected),
+        if cell.selected {
+            theme::CellTone::Focused
+        } else {
+            theme::CellTone::Latent
+        },
+        cal_mark_radius(),
     )
-    .width(Length::Fixed(drawer::CAL_CELL_W))
-    .height(Length::Fixed(drawer::CAL_CELL_H))
-    .padding(drawer::ROW_INSET)
-    .into()
+    .width(Length::Fixed(mark))
+    .height(Length::Fixed(mark))
+    .on_press(on_press);
+    // Today is a gold hairline on the same square the selection uses, so the
+    // two never compete as two shapes. A ring is a border, not a fill.
+    let ringed = container(lens)
+        .width(Length::Fixed(mark))
+        .height(Length::Fixed(mark))
+        .style(move |_t: &Theme| container::Style {
+            border: iced::Border {
+                color: if cell.today {
+                    color::accent_border()
+                } else {
+                    Color::TRANSPARENT
+                },
+                width: space::HAIRLINE,
+                radius: cal_mark_radius().into(),
+            },
+            ..container::Style::default()
+        });
+    container(ringed)
+        .width(Length::Fixed(drawer::CAL_CELL_W))
+        .height(Length::Fixed(drawer::CAL_CELL_H))
+        .align_x(Alignment::Center)
+        .align_y(Alignment::Center)
+        .into()
 }
 
-/// A day cell's ground: bare at rest (forty-two lozenges would be a grid of
-/// boxes, not a month), the row lift under the pointer, and the hero glass
+/// The day marker's side: the cell's shorter side less its inset on both
+/// edges. A true square (width == height), so the marker is the same in both
+/// axes and every state (rest, hover, selected, today) is the same size and
+/// never shifts the numeral. Derived from the cell tokens; there is no second
+/// size.
+fn cal_mark() -> f32 {
+    drawer::CAL_CELL_W.min(drawer::CAL_CELL_H) - 2.0 * drawer::ROW_INSET
+}
+
+/// The marker's corner radius: the hero radius token, capped at half the side
+/// so it can never exceed a circle. Tokens only, no literal.
+fn cal_mark_radius() -> f32 {
+    drawer::RADIUS_HERO.min(cal_mark() / 2.0)
+}
+
+/// A day cell's ground: nothing at rest (forty-two marks would be a grid of
+/// boxes, not a month), the ink step under the pointer, and the hero glass
 /// for the selected day. Never the accent: a selection is not a live value.
+/// Every state is the marker's square, so hover does not change its shape.
 fn cal_cell_style(selected: bool) -> impl Fn(&Theme, button::Status) -> button::Style {
-    move |t, status| {
-        if selected {
-            let (fill, rim) = match status {
+    move |_t, status| {
+        let r = cal_mark_radius();
+        let (fill, rim) = if selected {
+            match status {
                 button::Status::Hovered => (color::cell_focus_hover(), color::cell_focus_rim_hover()),
                 button::Status::Pressed => (color::cell_focus_press(), color::cell_focus_rim_hover()),
                 _ => (color::cell_focus(), color::cell_focus_rim()),
-            };
-            glass_button(fill, rim, drawer::RADIUS_ROW)
+            }
         } else {
-            drawer_quiet(t, status)
-        }
+            match status {
+                button::Status::Hovered => (color::cell_hover(), color::cell_rim_hover()),
+                button::Status::Pressed => (color::cell_press(), color::cell_rim_hover()),
+                _ => (Color::TRANSPARENT, Color::TRANSPARENT),
+            }
+        };
+        glass_button(fill, rim, r)
     }
 }
 
@@ -2054,7 +2178,7 @@ pub fn cal_header<'a, Message: Clone + 'a>(
     next: Message,
 ) -> Element<'a, Message, Theme> {
     let nav = |glyph: &str, m: Message| {
-        button(
+        EasedCell::new(
             container(
                 text(glyph.to_string())
                     .font(font::UI_MEDIUM)
@@ -2065,11 +2189,12 @@ pub fn cal_header<'a, Message: Clone + 'a>(
             .height(Length::Fill)
             .align_x(Alignment::Center)
             .align_y(Alignment::Center),
+            drawer_quiet,
+            theme::CellTone::Latent,
+            drawer::RADIUS_ROW,
         )
         .width(Length::Fixed(drawer::CAL_NAV))
         .height(Length::Fixed(drawer::CAL_NAV))
-        .padding(0)
-        .style(drawer_quiet)
         .on_press(m)
     };
     let mut r = row![
@@ -2087,14 +2212,16 @@ pub fn cal_header<'a, Message: Clone + 'a>(
     .align_y(Alignment::Center);
     if let Some(m) = today {
         r = r.push(
-            button(
+            EasedCell::new(
                 text("Today")
                     .font(font::UI_MEDIUM)
                     .size(size::BODY_SMALL)
                     .color(color::text_secondary()),
+                cal_pill,
+                theme::CellTone::Plain,
+                radius::PILL,
             )
             .padding([space::ROW_Y / 2.0 - 1.0, drawer::ROW_X])
-            .style(cal_pill)
             .on_press(m),
         );
     }
@@ -2177,14 +2304,15 @@ pub fn cal_event_row<'a, Message: Clone + 'a>(
     ]
     .spacing(drawer::MARK_GAP - 3.0)
     .align_y(Alignment::Center);
-    button(
+    EasedCell::new(
         container(face)
             .width(Length::Fill)
             .padding([drawer::ROW_X - 2.0, drawer::ROW_X - 2.0]),
+        drawer_lift,
+        theme::CellTone::Plain,
+        drawer::RADIUS_ROW,
     )
     .width(Length::Fill)
-    .padding(0)
-    .style(drawer_lift)
     .on_press(on_press)
     .into()
 }
@@ -2211,16 +2339,19 @@ pub fn cal_event_chip<'a, Message: Clone + 'a>(
     ]
     .spacing(drawer::MARK_GAP - 3.0)
     .align_y(Alignment::Center);
-    button(container(face).padding([drawer::CAL_DOT, drawer::ROW_X - 2.0]))
-        .width(Length::Fill)
-        .padding(0)
-        .style(move |t: &Theme, s| {
+    EasedCell::new(
+        container(face).padding([drawer::CAL_DOT, drawer::ROW_X - 2.0]),
+        |t: &Theme, s| {
             let mut st = drawer_lift(t, s);
             st.border.radius = radius::CHIP.into();
             st
-        })
-        .on_press(on_press)
-        .into()
+        },
+        theme::CellTone::Plain,
+        radius::CHIP,
+    )
+    .width(Length::Fill)
+    .on_press(on_press)
+    .into()
 }
 
 /// A calendar's quiet statement in the space a list would fill — "Nothing
@@ -3532,10 +3663,7 @@ pub fn content_at<'a, Message: 'a>(
 pub fn big_value<'a, Message: 'a>(number: &str, unit: &str, accented: bool) -> Element<'a, Message, Theme> {
     row![
         text(number.to_string())
-            .font(Font {
-                weight: iced::font::Weight::Medium,
-                ..font::DATA
-            })
+            .font(font::DATA_MEDIUM)
             .size(size::BIG_NUMBER)
             .style(if accented {
                 theme::text_accent

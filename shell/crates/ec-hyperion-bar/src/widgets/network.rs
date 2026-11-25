@@ -90,7 +90,7 @@ pub(crate) fn sheet(app: &App) -> Sheet {
         parts::drawer_switch_head(
             "wi-fi",
             scanning.then_some(phase),
-            parts::Toggle::new(on, Message::WifiEnable),
+            parts::Toggle::new(on, Message::WifiEnable).lensed(),
         ),
         drawer::HEAD_SWITCH_H,
     );

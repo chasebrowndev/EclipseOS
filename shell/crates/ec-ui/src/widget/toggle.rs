@@ -26,6 +26,7 @@ const PAD: f32 = 3.0;
 pub struct Toggle<'a, Message> {
     is_on: bool,
     on_toggle: Option<Box<dyn Fn(bool) -> Message + 'a>>,
+    lensed: bool,
 }
 
 impl<'a, Message> Toggle<'a, Message> {
@@ -33,6 +34,7 @@ impl<'a, Message> Toggle<'a, Message> {
         Self {
             is_on,
             on_toggle: Some(Box::new(on_toggle)),
+            lensed: false,
         }
     }
 
@@ -42,7 +44,19 @@ impl<'a, Message> Toggle<'a, Message> {
         Self {
             is_on,
             on_toggle: None,
+            lensed: false,
         }
+    }
+
+    /// The track in a drawer's glass: the focus glass (brighter than the wash,
+    /// the same step the lens uses) with the crisp focus hairline, not the
+    /// inset's whisper of rim. On a light wash the inset track vanished into the
+    /// cream; this one holds its edge. Off by default, so every Settings card
+    /// keeps the inset track.
+    #[must_use]
+    pub fn lensed(mut self) -> Self {
+        self.lensed = true;
+        self
     }
 }
 
@@ -135,7 +149,11 @@ where
 
         // The track is the quiet inset, never filled gold: "on" is a gold
         // rim and a gold knob, "off" the neutral rim and a pale knob.
-        let (ground, rim) = theme::inset_colors();
+        let (ground, rim) = if self.lensed {
+            (color::cell_focus(), color::cell_focus_rim())
+        } else {
+            theme::inset_colors()
+        };
         let ground = if state.hovered && live {
             Color {
                 a: (ground.a * color::INSET_HOVER_FILL).min(1.0),

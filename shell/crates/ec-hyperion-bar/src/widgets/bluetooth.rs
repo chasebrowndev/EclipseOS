@@ -76,7 +76,7 @@ pub(crate) fn sheet(app: &App) -> Sheet {
         parts::drawer_switch_head(
             "bluetooth",
             (on && app.radios.scanning).then_some(phase),
-            parts::Toggle::new(on, Message::BtPower),
+            parts::Toggle::new(on, Message::BtPower).lensed(),
         ),
         drawer::HEAD_SWITCH_H,
     );

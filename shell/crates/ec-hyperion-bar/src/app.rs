@@ -2999,6 +2999,25 @@ fn fixture_or_preview(app: &App) -> bool {
     app.fixture.is_some() || app.preview.is_some()
 }
 
+/// `HYPERION_PREVIEW_CAL=YYYY-MM-DD` (debug builds only): the day the calendar
+/// opens on, and so the month it shows, instead of today. Lets a fixture show a
+/// month that starts on any weekday and a selection other than today.
+fn preview_calendar_day() -> Option<(i32, u32, u32)> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+    let day = std::env::var("HYPERION_PREVIEW_CAL").ok()?;
+    let fields: Vec<i64> = day.split('-').filter_map(|p| p.parse().ok()).collect();
+    match fields[..] {
+        [y, m, d] => Some((
+            i32::try_from(y).ok()?,
+            u32::try_from(m).ok()?,
+            u32::try_from(d).ok()?,
+        )),
+        _ => None,
+    }
+}
+
 /// The notification drawer is out on some bar.
 fn history_out(app: &App) -> bool {
     app.bars
@@ -3152,8 +3171,14 @@ fn toggle_drawer(app: &mut App, id: Id, drawer: Drawer, kind: crate::drawer::Dra
         crate::radio::actions::scan();
     }
     if kind == crate::drawer::DrawerKind::Calendar {
-        // Always opens on today's month with today selected.
+        // Opens on today's month with today selected, or on the day a debug
+        // fixture asked for (`HYPERION_PREVIEW_CAL`).
         app.calendar.reset();
+        if let Some((y, m, d)) = preview_calendar_day() {
+            app.calendar.view_y = y;
+            app.calendar.view_m = m;
+            app.calendar.selected = (y, m, d);
+        }
         cal_range(app);
     }
     if kind == crate::drawer::DrawerKind::Power {
