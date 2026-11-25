@@ -144,10 +144,25 @@ checked; `ECLIPSE_SOCKET_DIR` overrides the directory). The wire contract is
 
 ```
 ec-ctl progress start ID [--label L] [--total BYTES]
-ec-ctl progress set ID 0.4|40%|BYTES    a decimal or % is a fraction; a whole number is bytes and needs --total
-ec-ctl progress done ID
+ec-ctl progress set ID 0.4|40%|BYTES [--eta SECS]   a decimal or % is a fraction; a whole number is bytes and needs --total
+ec-ctl progress done ID     finished normally (recorded for history)
+ec-ctl progress abort ID    gone without finishing (never recorded)
 ec-ctl progress list
 ```
+
+Every job may carry an ETA, and every ETA carries its basis so the UI never
+presents an estimate as exact. Precedence is `Reported` (the tool sent
+`set ... --eta SECS`, trusted for 30 s), then `Rate` (a smoothed rate from the
+job's own fraction samples, dropped when progress stalls for 15 s), then
+`History` (median of the label's last 8 normal runs, approximate, limited to
+cargo and pacman scan jobs and to feed jobs). `list` replies carry `eta_ms` and
+`eta_basis`. History lives in `$XDG_STATE_HOME/eclipse/progress-history.json`
+(0600 in a 0700 dir, label and seconds only), written by the progress thread. It
+records only jobs that end with `done` after at least 3 s, or eligible scan jobs
+that disappear (the scan cannot see an exit status, so a cancelled run counts;
+the median absorbs it); `abort`, expiry and restarts never record. The eclipse-update
+job reports download progress (when pacman announces a total) then transaction
+progress, and sends `abort` if the upgrade fails.
 
 Ids are `[A-Za-z0-9._:-]`, up to 64 bytes. A feed job that is not updated for 60 s
 expires. Alongside the feed, the service scans `/proc` for `cargo`, `rustc`,
