@@ -221,7 +221,7 @@ The bar hosts `ec-services`' progress feed (ARCHITECTURE, "Progress feed") and
 shows it as a built-in widget, `progress`, default-ordered between the tray and
 the clock.
 
-**The cell.** Zero width, and drawn by nothing, while no job is in flight. With
+**The cell** *(superseded by the 2026-11-25 amendment)*. Zero width, and drawn by nothing, while no job is in flight. With
 jobs, the shell's own presence and width animation brings it in. It shows the
 oldest job: a ring (a determinate arc from the top, or a partial arc turning
 slowly when the amount of work is unknown), the label cut to a width token, `N%`
@@ -230,7 +230,7 @@ are the neutral ink, not the accent: the strip already carries the one live
 yellow (the focused chip's label and a full battery), and a second would
 compete with it.
 
-**The drawer.** Clicking the cell opens `Drawer::Progress`, a reveal drawer like
+**The drawer** *(superseded by the 2026-11-25 amendment)*. Clicking the cell opens `Drawer::Progress`, a reveal drawer like
 the others. Its head is followed by a magnitude hero for the job the cell shows
 (its percent, or its elapsed time when the amount is unknown), a rule, and then
 one block per job, oldest first, up to the drawer's row cap with a note for the
@@ -246,6 +246,31 @@ with no job, or only determinate jobs, wakes nothing for progress.
 rather than turning it off while the cell is hidden. The scanner already
 slow-polls at five seconds while nothing runs, and `ec-ctl progress` should find
 a live feed whether or not a job is in flight.
+
+## Amendment (2026-11-25): progress shows time remaining
+
+The widget's purpose is to say how long is left, not only that something is
+running. Every job may carry an ETA, and every ETA carries its basis so an
+estimate never reads as a measurement (ARCHITECTURE, "Progress feed").
+
+**The cell.** The gauge is a rounded-square ring, the Battery Glance's geometry
+(`ec-ui` `squircle_gauge`): a faint track, and a lit stroke that fills clockwise
+from the top centre for the fraction, round caps. When the amount is unknown, a
+short sweep (a leader and two fading steps) travels the same path; it is never
+read as a percent, and a job whose only estimate is from history stays
+indeterminate. The label and `+N` stay beside it; the cell carries no percent
+and no time. Ink is neutral and the unlit track is `text_tertiary` at
+`drawer::GAUGE_REST`, because a fraction of the primary ink glares on dark and
+vanishes on light. No accent: the strip already has its one yellow.
+
+**The drawer.** Job rows only, oldest first, up to the row cap with a note for
+the rest: no title, no hero. Each row is the label with the exact percent at the
+right (blank when unknown), the bar (a straight sweep track when unknown), and
+one quiet mono line with the ETA at the right: `45s`, `2m 10s`, `1h 05m`
+followed by `left`. An ETA from history is written `~2m 10s left`. The ETA line
+is always laid out so an ETA arriving does not move the list. Rows are not
+interactive and have no hover. The source (`feed` or `scan`) and the elapsed
+time are not shown.
 
 ## Amendment (2026-11-03): the power widget
 

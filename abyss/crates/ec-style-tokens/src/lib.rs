@@ -521,6 +521,11 @@ pub mod bar {
     /// not a character count.
     pub const PROGRESS_RING: f32 = 14.0;
     pub const PROGRESS_LABEL_W: f32 = 96.0;
+    /// The progress cell's gauge: the box and stroke of its rounded-square ring. It replaces
+    /// the ring as the cell's face; the ring stays the spinner of the power
+    /// widget and of the drawers that wait on a radio.
+    pub const PROGRESS_GAUGE: f32 = 22.0;
+    pub const PROGRESS_STROKE: f32 = 2.25;
 
     /// The visualizer: sixteen bands, each a hard 2px column with 2px of air,
     /// mirrored about the row's midline.
@@ -990,12 +995,25 @@ pub mod drawer {
     /// A quick-action tile's height, and the air between tile rows.
     pub const TILE_H: f32 = 46.0;
     pub const TILE_GAP: f32 = 4.0;
-    /// One job in the progress drawer: its ring and label, its bar, and its
-    /// data line, with [`JOB_PAD`] of air above and below. How many characters
+    /// One job in the progress drawer: its label and percent, its bar, and its
+    /// ETA line, with [`JOB_PAD`] of air above and below. How many characters
     /// of a job's label the drawer shows before it is cut.
-    pub const JOB_H: f32 = 46.0;
+    pub const JOB_H: f32 = 42.0;
     pub const JOB_PAD: f32 = 3.0;
-    pub const JOB_LABEL_CHARS: usize = 34;
+    pub const JOB_LABEL_CHARS: usize = 26;
+    /// The gauge ring's corner radius as a share of the ring's own side: the
+    /// battery glance's proportion, so the two read as one family.
+    pub const GAUGE_CORNER: f32 = 0.30;
+    /// How much of the palette's tertiary ink a gauge's unlit track keeps.
+    /// Tertiary ink is tuned per scheme; a fraction of the primary ink is not
+    /// (in linear light it glares on dark and vanishes on light).
+    pub const GAUGE_REST: f32 = 0.55;
+    /// The soft sweep of an unknown amount: this many steps, each this share
+    /// of the perimeter long, the last keeping [`SWEEP_TAIL`] of the ink and
+    /// the ones between stepping evenly down to it.
+    pub const SWEEP_STEPS: usize = 3;
+    pub const SWEEP_STEP: f32 = 0.07;
+    pub const SWEEP_TAIL: f32 = 0.5;
 
     /// The calendar drawer's width: a month grid and a day's detail side by
     /// side, so the one drawer wider than [`W`].

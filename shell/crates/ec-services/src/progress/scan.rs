@@ -335,6 +335,7 @@ pub fn scan(procs: &[Proc], now: Instant, started: &mut HashMap<(u32, String), I
                 source: Source::Scan,
                 fraction: copy_fraction(p),
                 started: at,
+                eta: None,
             }
         })
         .collect()

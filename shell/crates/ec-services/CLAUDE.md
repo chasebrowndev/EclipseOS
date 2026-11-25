@@ -43,6 +43,12 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   per-user unix socket, `$XDG_RUNTIME_DIR/eclipse/progress.sock`, not D-Bus.
   The socket is 0600 in a 0700 dir, peer uid checked; its wire contract is
   `ec_ipc::progress`. It reads `/proc` only for the session user's processes.
+  Jobs carry an ETA with its basis (reported, rate, history); the history store
+  (`history.rs`) holds labels and durations only and is written by the progress
+  thread, never the GUI. It stores each label as written, in plaintext, so
+  labels are display text and never carry a secret. `abort` removes a job
+  without recording it; a scanned cargo/pacman job is recorded when it vanishes
+  whether or not it succeeded.
 - `tests/live_bus.rs` is `#[ignore]`d: it spawns a private `dbus-daemon` and
   must never run against the human's session bus.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.

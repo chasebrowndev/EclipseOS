@@ -20,6 +20,7 @@
 //! The socket is served only while a [`Handle`] is alive. Dropping the handle
 //! stops the thread and removes the socket file.
 
+pub mod history;
 pub mod model;
 pub mod scan;
 
@@ -35,6 +36,7 @@ use std::time::{Duration, Instant};
 
 use ec_ipc::progress::{err, Request, MAX_LINE};
 
+use history::{FileStore, HistoryStore, NoStore};
 use model::Model;
 use scan::{ProcSource, RealProc};
 
@@ -71,7 +73,8 @@ impl Source {
 }
 
 /// One thing in progress. `fraction` is `None` when the amount of work is
-/// unknown; the widget then shows it as indeterminate.
+/// unknown; the widget then shows it as indeterminate. `eta` is `None` unless
+/// something trustworthy says how long is left.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Job {
     pub id: String,
@@ -79,6 +82,36 @@ pub struct Job {
     pub source: Source,
     pub fraction: Option<f32>,
     pub started: Instant,
+    pub eta: Option<Eta>,
+}
+
+/// Time left, and where the figure came from. An estimate must never be shown
+/// as exact, so no ETA travels without its basis. `remaining` is whole
+/// seconds, so a list only changes when the shown figure would.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Eta {
+    pub remaining: Duration,
+    pub basis: EtaBasis,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EtaBasis {
+    /// The tool said so (`ec-ctl progress set --eta`), and recently.
+    Reported,
+    /// Measured from this job's own fraction samples.
+    Rate,
+    /// Median of past runs of the same label. Approximate.
+    History,
+}
+
+impl EtaBasis {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Reported => "reported",
+            Self::Rate => "rate",
+            Self::History => "history",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +149,8 @@ pub struct Options {
     /// The feed socket, or `None` for scan only.
     pub socket: Option<PathBuf>,
     pub source: Box<dyn ProcSource>,
+    /// Where run-time history is kept. Tests inject an in-memory one.
+    pub history: Box<dyn HistoryStore>,
 }
 
 /// Start the service with the session's feed socket and the real `/proc`.
@@ -123,6 +158,10 @@ pub fn spawn() -> Handle {
     spawn_with(Options {
         socket: ec_ipc::progress::socket_path(),
         source: Box::new(RealProc::new()),
+        history: match FileStore::session() {
+            Some(f) => Box::new(f),
+            None => Box::new(NoStore),
+        },
     })
 }
 
@@ -138,7 +177,11 @@ pub fn spawn_with(opts: Options) -> Handle {
     if let Some(w) = &wake_w {
         let _ = w.set_nonblocking(true);
     }
-    let Options { socket, source } = opts;
+    let Options {
+        socket,
+        source,
+        history,
+    } = opts;
     // Bind here, not on the thread: once this returns, the feed is reachable.
     let (listener, bound) = match socket {
         Some(path) => match bind(&path) {
@@ -153,7 +196,7 @@ pub fn spawn_with(opts: Options) -> Handle {
     let _ = std::thread::Builder::new()
         .name("eclipse-progress".into())
         .spawn(move || {
-            let mut server = Server::new(updates, wake_r, listener, bound, source);
+            let mut server = Server::new(updates, wake_r, listener, bound, source, history);
             server.run();
         });
     Handle {
@@ -174,6 +217,7 @@ struct Server {
     bound: Option<PathBuf>,
     clients: Vec<Client>,
     source: Box<dyn ProcSource>,
+    history: Box<dyn HistoryStore>,
     scanning: bool,
     next_scan: Instant,
     model: Model,
@@ -195,9 +239,12 @@ impl Server {
         listener: Option<UnixListener>,
         bound: Option<PathBuf>,
         source: Box<dyn ProcSource>,
+        mut history: Box<dyn HistoryStore>,
     ) -> Self {
         // SAFETY: getuid(2) cannot fail and takes no pointers.
         let uid = unsafe { libc::getuid() };
+        let mut model = Model::default();
+        model.set_history(history.load());
         Self {
             updates,
             wake,
@@ -205,9 +252,10 @@ impl Server {
             bound,
             clients: Vec::new(),
             source,
+            history,
             scanning: true,
             next_scan: Instant::now(),
-            model: Model::default(),
+            model,
             started: HashMap::new(),
             last_sent: Vec::new(),
             uid,
@@ -221,7 +269,8 @@ impl Server {
             if self.scanning && now >= self.next_scan {
                 self.scan(now);
             }
-            if !self.publish() {
+            self.persist_history();
+            if !self.publish(now) {
                 return;
             }
             let timeout = self.timeout(now);
@@ -250,13 +299,21 @@ impl Server {
         let procs = self.source.procs();
         let jobs = scan::scan(&procs, now, &mut self.started);
         let idle = jobs.is_empty();
-        self.model.set_scan(jobs);
+        self.model.set_scan(jobs, now);
         self.next_scan = now + if idle { IDLE_INTERVAL } else { ACTIVE_INTERVAL };
     }
 
+    /// Write the history out when a job has just finished normally. This is
+    /// the progress thread's own, off the GUI's path.
+    fn persist_history(&mut self) {
+        if let Some(h) = self.model.take_history_if_dirty() {
+            self.history.save(&h);
+        }
+    }
+
     /// Send the list if it changed. `false` means the GUI has gone.
-    fn publish(&mut self) -> bool {
-        let snap = self.model.snapshot();
+    fn publish(&mut self, now: Instant) -> bool {
+        let snap = self.model.snapshot(now);
         if snap == self.last_sent {
             return true;
         }
@@ -368,7 +425,7 @@ impl Server {
                 self.next_scan = now;
             }
             if !on {
-                self.model.set_scan(Vec::new());
+                self.model.clear_scan();
                 self.started.clear();
             }
             self.scanning = on;

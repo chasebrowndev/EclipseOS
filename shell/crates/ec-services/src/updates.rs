@@ -419,6 +419,111 @@ pub fn upgrade_fraction(line: &str) -> Option<f32> {
     (total > 0 && (1..=total).contains(&done)).then(|| done as f32 / total as f32)
 }
 
+/// Share of the job's bar given to the download phase, when pacman has said
+/// how much it will download. The transaction fills the rest.
+const DOWNLOAD_WEIGHT: f32 = 0.5;
+
+/// Parses a byte size as pacman prints it: `214.35 MiB`, `120 KiB`, `80 B`.
+fn parse_size(num: &str, unit: &str) -> Option<u64> {
+    let n: f64 = num.parse().ok()?;
+    let mult = match unit {
+        "B" => 1.0,
+        "KiB" => 1024.0,
+        "MiB" => 1024.0 * 1024.0,
+        "GiB" => 1024.0 * 1024.0 * 1024.0,
+        "TiB" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
+        _ => return None,
+    };
+    (n.is_finite() && n >= 0.0).then_some((n * mult) as u64)
+}
+
+/// `Total Download Size:   214.35 MiB`, in bytes.
+pub fn parse_total_download(line: &str) -> Option<u64> {
+    let rest = line.trim().strip_prefix("Total Download Size:")?;
+    let mut it = rest.split_whitespace();
+    let (num, unit) = (it.next()?, it.next()?);
+    if it.next().is_some() {
+        return None;
+    }
+    parse_size(num, unit)
+}
+
+/// One finished or in-flight download line of pacman's progress display:
+/// ` glibc-2.40-1-x86_64   9.1 MiB  15.2 MiB/s 00:01 [#####------]  45%`.
+/// `size` is the file's size, `percent` how much of it has arrived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DownloadLine {
+    pub size: u64,
+    pub percent: u8,
+}
+
+/// Reads a download progress line. pacman redraws a bar with `\r`, so only
+/// the text after the last one is the current state.
+pub fn parse_download_line(line: &str) -> Option<DownloadLine> {
+    let line = line.rsplit('\r').next().unwrap_or(line);
+    // From the right: percent, bar, time, rate unit, rate, size unit, size, name.
+    let mut t = line.split_whitespace().rev();
+    let percent: u8 = t.next()?.strip_suffix('%')?.parse().ok().filter(|p| *p <= 100)?;
+    let bar = t.next()?;
+    if !(bar.starts_with('[') && bar.ends_with(']')) {
+        return None;
+    }
+    if !t.next()?.contains(':') {
+        return None;
+    }
+    if !t.next()?.ends_with("/s") {
+        return None;
+    }
+    t.next()?.parse::<f64>().ok()?;
+    let unit = t.next()?;
+    let num = t.next()?;
+    t.next()?; // the file name
+    Some(DownloadLine {
+        size: parse_size(num, unit)?,
+        percent,
+    })
+}
+
+/// Accumulates pacman's download lines into bytes done against the announced
+/// total. Without a `Total Download Size` line it has no fraction to give.
+#[derive(Debug, Default)]
+pub struct DownloadTracker {
+    total: Option<u64>,
+    completed: u64,
+    current: u64,
+}
+
+impl DownloadTracker {
+    /// Feeds one output line. `true` when it was a download line or the total.
+    pub fn feed(&mut self, line: &str) -> bool {
+        if let Some(total) = parse_total_download(line) {
+            self.total = Some(total).filter(|t| *t > 0);
+            return true;
+        }
+        let Some(d) = parse_download_line(line) else {
+            return false;
+        };
+        if d.percent == 100 {
+            self.completed = self.completed.saturating_add(d.size);
+            self.current = 0;
+        } else {
+            self.current = d.size / 100 * u64::from(d.percent);
+        }
+        true
+    }
+
+    pub fn has_total(&self) -> bool {
+        self.total.is_some()
+    }
+
+    /// Fraction of the announced download that has arrived.
+    pub fn fraction(&self) -> Option<f32> {
+        let total = self.total?;
+        let done = self.completed.saturating_add(self.current);
+        Some((done as f64 / total as f64).min(1.0) as f32)
+    }
+}
+
 /// Runs the discovery: `checkupdates`. A failure is `Unavailable`, not an
 /// empty list: a host that cannot say what is pending is not offered an update.
 pub fn discover(runner: &dyn Runner) -> Update {
@@ -466,19 +571,39 @@ pub fn run_apply(deps: &Deps, argv: &[String], then: After, out: &Sender<Update>
         total: None,
     });
     let mut last = None;
+    let mut download = DownloadTracker::default();
     let result = deps.runner.stream(argv, timeout, &mut |line| {
-        if let Some(fraction) = upgrade_fraction(line) {
+        // With a known download size the bar is download then transaction;
+        // without one it is the transaction alone, as before.
+        let fraction = if download.feed(line) {
+            download.fraction().map(|d| d * DOWNLOAD_WEIGHT)
+        } else {
+            upgrade_fraction(line).map(|t| {
+                if download.has_total() {
+                    DOWNLOAD_WEIGHT + (1.0 - DOWNLOAD_WEIGHT) * t
+                } else {
+                    t
+                }
+            })
+        };
+        if let Some(fraction) = fraction {
             if last != Some(fraction) {
                 last = Some(fraction);
                 deps.feed.send(FeedRequest::Fraction {
                     id: JOB_ID.to_owned(),
                     fraction,
+                    eta: None,
                 });
             }
         }
     });
-    deps.feed.send(FeedRequest::Done {
-        id: JOB_ID.to_owned(),
+    // Only a clean exit is a finished run; anything else must not teach the
+    // progress history what an upgrade "normally" takes.
+    let id = JOB_ID.to_owned();
+    deps.feed.send(if matches!(result, Ok(Some(0))) {
+        FeedRequest::Done { id }
+    } else {
+        FeedRequest::Abort { id }
     });
     match result {
         Ok(Some(0)) => {
@@ -920,6 +1045,102 @@ mod tests {
     }
 
     #[test]
+    fn total_download_size_line_parses() {
+        assert_eq!(
+            parse_total_download("Total Download Size:   214.35 MiB"),
+            Some((214.35 * 1024.0 * 1024.0) as u64)
+        );
+        assert_eq!(parse_total_download("Total Download Size:    0.00 MiB"), Some(0));
+        assert_eq!(parse_total_download("Total Download Size:  12 KiB"), Some(12288));
+        assert_eq!(parse_total_download("Total Installed Size:  900.00 MiB"), None);
+        assert_eq!(parse_total_download("Total Download Size:   12 parsecs"), None);
+        assert_eq!(parse_total_download("Total Download Size:   1 MiB extra"), None);
+    }
+
+    #[test]
+    fn download_lines_parse_from_real_pacman_output() {
+        let l =
+            " glibc-2.40+r16+gaa533d58b1-1-x86_64   9.1 MiB  15.2 MiB/s 00:01 [######################]  45%";
+        let d = parse_download_line(l).expect("parses");
+        assert_eq!(d.percent, 45);
+        assert_eq!(d.size, (9.1 * 1024.0 * 1024.0) as u64);
+        let l = " core.db                          120.5 KiB  1203 KiB/s 00:00 [######################] 100%";
+        assert_eq!(
+            parse_download_line(l),
+            Some(DownloadLine {
+                size: (120.5 * 1024.0) as u64,
+                percent: 100
+            })
+        );
+        // A redrawn bar arrives as one line of carriage-return updates.
+        let l = " foo-1-x86_64  2.0 MiB  1.0 MiB/s 00:02 [###---]  10%\r foo-1-x86_64  2.0 MiB  1.0 MiB/s 00:01 [######] 100%";
+        assert_eq!(parse_download_line(l).unwrap().percent, 100);
+    }
+
+    #[test]
+    fn non_download_lines_are_not_download_lines() {
+        for l in [
+            "",
+            ":: Retrieving packages...",
+            "(2/5) upgrading eclipseos-abyss",
+            "Total Download Size:   214.35 MiB",
+            " name 1 MiB 1 MiB/s 00:01 ###  50%",
+            " name 1 MiB 1 MiB/s 00:01 [##]  101%",
+            " name 1 MiB 1 MiB 00:01 [##]  50%",
+            " name 1 parsec 1 MiB/s 00:01 [##]  50%",
+            "[##]  50%",
+            "50%",
+        ] {
+            assert_eq!(parse_download_line(l), None, "{l:?}");
+        }
+    }
+
+    #[test]
+    fn download_tracker_sums_files_against_the_announced_total() {
+        let mut d = DownloadTracker::default();
+        assert!(!d.feed(":: Retrieving packages..."));
+        assert_eq!(d.fraction(), None, "no total, no fraction");
+        assert!(d.feed("Total Download Size:   10.00 MiB"));
+        assert_eq!(d.fraction(), Some(0.0));
+        assert!(d.feed(" a-1-x86_64   4.0 MiB  1.0 MiB/s 00:04 [######] 100%"));
+        assert_eq!(d.fraction(), Some(0.4));
+        assert!(d.feed(" b-1-x86_64   6.0 MiB  1.0 MiB/s 00:03 [###---]  50%"));
+        assert!((d.fraction().unwrap() - 0.7).abs() < 0.01);
+        assert!(d.feed(" b-1-x86_64   6.0 MiB  1.0 MiB/s 00:00 [######] 100%"));
+        assert_eq!(d.fraction(), Some(1.0));
+        assert!(d.has_total());
+    }
+
+    #[test]
+    fn upgrade_bar_is_download_then_transaction_when_a_total_is_known() {
+        let feed = Arc::new(RecordFeed::default());
+        let runner = FakeRunner::new(Box::new(|_| captured(Some(0), ""))).streaming(
+            &[
+                "Total Download Size:   10.00 MiB",
+                " a-1-x86_64   10.0 MiB  1.0 MiB/s 00:04 [######] 100%",
+                "(1/2) upgrading a",
+                "(2/2) upgrading b",
+            ],
+            Ok(Some(0)),
+        );
+        let power = Arc::new(FakePower::ok());
+        let (d, _) = deps(runner, feed.clone(), power);
+        let (tx, _rx) = mpsc::channel();
+        run_apply(&d, &argv(&["x"]), After::Reboot, &tx, Duration::from_secs(5));
+        let fractions: Vec<f32> = feed
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|r| match r {
+                FeedRequest::Fraction { fraction, .. } => Some(*fraction),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(fractions, vec![0.0, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
     fn flight_admits_one_upgrade_at_a_time() {
         let flight = Flight::default();
         let first = flight.try_begin().expect("first ticket");
@@ -1005,11 +1226,13 @@ mod tests {
                 },
                 FeedRequest::Fraction {
                     id: JOB_ID.into(),
-                    fraction: 0.5
+                    fraction: 0.5,
+                    eta: None
                 },
                 FeedRequest::Fraction {
                     id: JOB_ID.into(),
-                    fraction: 1.0
+                    fraction: 1.0,
+                    eta: None
                 },
                 FeedRequest::Done { id: JOB_ID.into() },
             ]
@@ -1096,7 +1319,7 @@ mod tests {
         );
         assert_eq!(
             feed.0.lock().unwrap().last(),
-            Some(&FeedRequest::Done { id: JOB_ID.into() }),
+            Some(&FeedRequest::Abort { id: JOB_ID.into() }),
             "the widget job ends with the upgrade"
         );
     }
