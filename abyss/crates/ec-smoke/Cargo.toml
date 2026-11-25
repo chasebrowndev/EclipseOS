@@ -1,0 +1,22 @@
+[package]
+name = "ec-smoke"
+description = "Test-only clients for the agent end-to-end smoke run (ci/agent-smoke.sh): a window, a commit-slot host, a seat lister and a scripted agent"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "ec-smoke"
+path = "src/main.rs"
+
+[dependencies]
+ec-protocols = { path = "../ec-protocols", features = ["client"] }
+ec-policy-eval = { path = "../ec-policy-eval" }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client"] }
+xkbcommon.workspace = true
+libc = "0.2"
+rustix = { workspace = true, features = ["net", "fs"] }
