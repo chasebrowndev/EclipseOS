@@ -514,7 +514,7 @@ impl Store {
         }
         n.expires_in = Notification::lifetime(timeout, n.urgency);
 
-        let verdict = if self.mode == Mode::Dnd || rule.as_ref().is_some_and(|r| r.mute) {
+        let verdict = if self.mode == Mode::Dnd || rule.as_ref().is_some_and(|r| r.muted(now)) {
             Verdict::Drop
         } else if self.mode == Mode::Quiet
             || rule.as_ref().is_some_and(|r| r.quiet)

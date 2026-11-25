@@ -1220,6 +1220,7 @@ dependencies = [
  "freedesktop-icons",
  "iced",
  "iced_layershell",
+ "serde_json",
 ]
 
 [[package]]
