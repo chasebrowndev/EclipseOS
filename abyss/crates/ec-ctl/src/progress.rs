@@ -18,8 +18,11 @@ pub const USAGE: &str = "\
 ec-ctl progress — show work in the progress widget
 
   progress start <id> [--label L] [--total BYTES]
-  progress set <id> <value>    0.4 or 40% is a fraction; 400 is bytes (needs --total)
+  progress set <id> <value> [--eta SECS]
+                               0.4 or 40% is a fraction; 400 is bytes (needs --total);
+                               --eta is your own estimate of the seconds left
   progress done <id>
+  progress abort <id>          the work failed or was cancelled; not kept as a typical run
   progress list
 ";
 
@@ -85,23 +88,40 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("set") => {
             let id = id(1)?;
             let raw = a(2).ok_or_else(|| format!("set needs a value\n{USAGE}"))?;
+            let mut eta = None;
+            let mut i = 3;
+            while i < args.len() {
+                match args[i].as_str() {
+                    "--eta" => {
+                        let v = a(i + 1).ok_or("--eta needs a value")?;
+                        eta = Some(
+                            v.parse::<u64>()
+                                .map_err(|_| format!("--eta expects whole seconds, got {v:?}"))?,
+                        );
+                        i += 2;
+                    }
+                    other => return Err(format!("unknown option {other:?}")),
+                }
+            }
             if let Some(pct) = raw.strip_suffix('%') {
                 let v: f32 = pct.parse().map_err(|_| format!("bad percentage {raw:?}"))?;
                 Ok(Request::Fraction {
                     id,
                     fraction: v / 100.0,
+                    eta,
                 })
             } else if raw.contains('.') {
                 let v: f32 = raw.parse().map_err(|_| format!("bad fraction {raw:?}"))?;
-                Ok(Request::Fraction { id, fraction: v })
+                Ok(Request::Fraction { id, fraction: v, eta })
             } else {
                 let bytes: u64 = raw
                     .parse()
                     .map_err(|_| format!("expected a fraction (0.4, 40%) or bytes (400), got {raw:?}"))?;
-                Ok(Request::Bytes { id, bytes })
+                Ok(Request::Bytes { id, bytes, eta })
             }
         }
         Some("done") => Ok(Request::Done { id: id(1)? }),
+        Some("abort") => Ok(Request::Abort { id: id(1)? }),
         Some("list") => Ok(Request::List),
         _ => Err(USAGE.to_owned()),
     }
@@ -156,9 +176,34 @@ fn list_text(v: &Value) -> String {
             Some(f) => format!("{:>3.0}%", f * 100.0),
             None => "  …".into(),
         };
-        out.push_str(&format!("{pct}  {id:<20} {label} ({source})\n"));
+        let eta = eta_text(j);
+        out.push_str(&format!("{pct}  {id:<20} {label} ({source}){eta}\n"));
     }
     out
+}
+
+/// The ETA column. An estimate is never shown as exact: a measured rate is
+/// `~`, a history estimate is `~` and says it is typical, and only a tool's
+/// own figure is shown plain, labelled as the tool's.
+fn eta_text(j: &Value) -> String {
+    let Some(ms) = j.get("eta_ms").and_then(Value::as_u64) else {
+        return String::new();
+    };
+    let t = fmt_duration(ms / 1000);
+    match j.get("eta_basis").and_then(Value::as_str) {
+        Some("reported") => format!("  eta {t} (reported)"),
+        Some("rate") => format!("  ~{t} left (est.)"),
+        Some("history") => format!("  ~{t} left (typical)"),
+        _ => String::new(),
+    }
+}
+
+fn fmt_duration(secs: u64) -> String {
+    match secs {
+        0..=59 => format!("{secs}s"),
+        60..=3599 => format!("{}m{:02}s", secs / 60, secs % 60),
+        _ => format!("{}h{:02}m", secs / 3600, secs % 3600 / 60),
+    }
 }
 
 #[cfg(test)]
@@ -188,7 +233,8 @@ mod tests {
             p(&["set", "b1", "0.4"]).unwrap(),
             Request::Fraction {
                 id: "b1".into(),
-                fraction: 0.4
+                fraction: 0.4,
+                eta: None
             }
         );
         match p(&["set", "b1", "40%"]).unwrap() {
@@ -199,10 +245,46 @@ mod tests {
             p(&["set", "b1", "400"]).unwrap(),
             Request::Bytes {
                 id: "b1".into(),
-                bytes: 400
+                bytes: 400,
+                eta: None
             }
         );
         assert!(p(&["set", "b1", "lots"]).is_err());
+    }
+
+    #[test]
+    fn set_takes_an_optional_eta() {
+        match p(&["set", "b1", "40%", "--eta", "90"]).unwrap() {
+            Request::Fraction { eta, .. } => assert_eq!(eta, Some(90)),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(
+            p(&["set", "b1", "400", "--eta", "5"]).unwrap(),
+            Request::Bytes {
+                id: "b1".into(),
+                bytes: 400,
+                eta: Some(5)
+            }
+        );
+        assert!(p(&["set", "b1", "0.5", "--eta"]).is_err());
+        assert!(p(&["set", "b1", "0.5", "--eta", "soon"]).is_err());
+        assert!(p(&["set", "b1", "0.5", "--eta", "-1"]).is_err());
+        assert!(p(&["set", "b1", "0.5", "--bogus", "1"]).is_err());
+    }
+
+    #[test]
+    fn list_text_marks_every_eta_by_its_basis() {
+        let v = serde_json::json!({"ok": true, "jobs": [
+            {"id": "a", "label": "x", "source": "feed", "fraction": 0.5, "eta_ms": 90000, "eta_basis": "reported"},
+            {"id": "b", "label": "y", "source": "feed", "fraction": 0.5, "eta_ms": 12000, "eta_basis": "rate"},
+            {"id": "c", "label": "z", "source": "scan", "fraction": null, "eta_ms": 3700000, "eta_basis": "history"},
+            {"id": "d", "label": "w", "source": "scan", "fraction": null, "eta_ms": null, "eta_basis": null}
+        ]});
+        let t = list_text(&v);
+        assert!(t.contains("eta 1m30s (reported)"), "{t}");
+        assert!(t.contains("~12s left (est.)"), "{t}");
+        assert!(t.contains("~1h01m left (typical)"), "{t}");
+        assert!(t.lines().last().unwrap().trim_end().ends_with("(scan)"));
     }
 
     #[test]
@@ -211,6 +293,8 @@ mod tests {
         assert!(p(&["start", "b1", "--total", "x"]).is_err());
         assert!(p(&["frobnicate"]).is_err());
         assert!(p(&["done"]).is_err());
+        assert!(p(&["abort"]).is_err());
+        assert_eq!(p(&["abort", "b1"]).unwrap(), Request::Abort { id: "b1".into() });
     }
 
     #[test]

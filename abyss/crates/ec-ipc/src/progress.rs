@@ -12,7 +12,9 @@
 //! ```text
 //! {"op":"start","id":"build","label":"cargo build","total":1000}
 //! {"op":"set","id":"build","fraction":0.4}     or  {"op":"set","id":"build","bytes":400}
+//! {"op":"set","id":"build","fraction":0.4,"eta":90}   (optional, whole seconds left)
 //! {"op":"done","id":"build"}
+//! {"op":"abort","id":"build"}      (gone without finishing: not recorded as a run)
 //! {"op":"list"}
 //! ```
 //!
@@ -29,6 +31,8 @@ use serde_json::{json, Value};
 pub const MAX_ID_LEN: usize = 64;
 /// Longest accepted label, in bytes.
 pub const MAX_LABEL_LEN: usize = 120;
+/// Largest accepted tool-reported ETA, in seconds (seven days).
+pub const MAX_ETA_SECS: u64 = 7 * 24 * 3600;
 /// Longest request line the server reads before dropping the peer.
 pub const MAX_LINE: usize = 4096;
 
@@ -53,17 +57,25 @@ pub enum Request {
         label: String,
         total: Option<u64>,
     },
-    /// Report a fraction in `0.0..=1.0`.
+    /// Report a fraction in `0.0..=1.0`. `eta` is the tool's own estimate of
+    /// the seconds left, when it has one.
     Fraction {
         id: String,
         fraction: f32,
+        eta: Option<u64>,
     },
-    /// Report bytes done. Needs a `total` at start.
+    /// Report bytes done. Needs a `total` at start. `eta` as for `Fraction`.
     Bytes {
         id: String,
         bytes: u64,
+        eta: Option<u64>,
     },
     Done {
+        id: String,
+    },
+    /// The job ended without finishing (failed, cancelled). It leaves the
+    /// list like `Done`, but its duration is not kept as a typical run.
+    Abort {
         id: String,
     },
     List,
@@ -77,15 +89,20 @@ impl Request {
                 check_id(id)?;
                 check_label(label)
             }
-            Self::Fraction { id, fraction } => {
+            Self::Fraction { id, fraction, eta } => {
                 check_id(id)?;
+                check_eta(*eta)?;
                 if fraction.is_finite() && (0.0..=1.0).contains(fraction) {
                     Ok(())
                 } else {
                     Err(format!("fraction must be between 0 and 1, got {fraction}"))
                 }
             }
-            Self::Bytes { id, .. } | Self::Done { id } => check_id(id),
+            Self::Bytes { id, eta, .. } => {
+                check_id(id)?;
+                check_eta(*eta)
+            }
+            Self::Done { id } | Self::Abort { id } => check_id(id),
             Self::List => Ok(()),
         }
     }
@@ -101,9 +118,22 @@ impl Request {
                 }
                 v
             }
-            Self::Fraction { id, fraction } => json!({"op": "set", "id": id, "fraction": fraction}),
-            Self::Bytes { id, bytes } => json!({"op": "set", "id": id, "bytes": bytes}),
+            Self::Fraction { id, fraction, eta } => {
+                let mut v = json!({"op": "set", "id": id, "fraction": fraction});
+                if let Some(e) = eta {
+                    v["eta"] = json!(e);
+                }
+                v
+            }
+            Self::Bytes { id, bytes, eta } => {
+                let mut v = json!({"op": "set", "id": id, "bytes": bytes});
+                if let Some(e) = eta {
+                    v["eta"] = json!(e);
+                }
+                v
+            }
             Self::Done { id } => json!({"op": "done", "id": id}),
+            Self::Abort { id } => json!({"op": "abort", "id": id}),
             Self::List => json!({"op": "list"}),
         };
         Ok(v.to_string())
@@ -133,21 +163,28 @@ impl Request {
                 },
             },
             "set" => {
+                let eta = match v.get("eta") {
+                    None | Some(Value::Null) => None,
+                    Some(e) => Some(e.as_u64().ok_or("eta must be a whole number of seconds")?),
+                };
                 if let Some(f) = v.get("fraction") {
                     Self::Fraction {
                         id: id()?,
                         fraction: f.as_f64().ok_or("fraction must be a number")? as f32,
+                        eta,
                     }
                 } else if let Some(b) = v.get("bytes") {
                     Self::Bytes {
                         id: id()?,
                         bytes: b.as_u64().ok_or("bytes must be a whole number")?,
+                        eta,
                     }
                 } else {
                     return Err("set needs fraction or bytes".into());
                 }
             }
             "done" => Self::Done { id: id()? },
+            "abort" => Self::Abort { id: id()? },
             "list" => Self::List,
             other => return Err(format!("unknown op {other:?}")),
         };
@@ -181,6 +218,13 @@ fn check_id(id: &str) -> Result<(), String> {
     }
 }
 
+fn check_eta(eta: Option<u64>) -> Result<(), String> {
+    match eta {
+        Some(e) if e > MAX_ETA_SECS => Err(format!("eta must be at most {MAX_ETA_SECS} seconds")),
+        _ => Ok(()),
+    }
+}
+
 fn check_label(label: &str) -> Result<(), String> {
     if label.is_empty() || label.len() > MAX_LABEL_LEN {
         return Err(format!("label must be 1-{MAX_LABEL_LEN} bytes"));
@@ -211,12 +255,25 @@ mod tests {
             Request::Fraction {
                 id: "x".into(),
                 fraction: 0.25,
+                eta: None,
+            },
+            Request::Fraction {
+                id: "x".into(),
+                fraction: 0.25,
+                eta: Some(90),
             },
             Request::Bytes {
                 id: "x".into(),
                 bytes: 7,
+                eta: None,
+            },
+            Request::Bytes {
+                id: "x".into(),
+                bytes: 7,
+                eta: Some(0),
             },
             Request::Done { id: "x".into() },
+            Request::Abort { id: "x".into() },
             Request::List,
         ];
         for r in cases {
@@ -244,7 +301,8 @@ mod tests {
         for f in [-0.1, 1.5, f32::NAN, f32::INFINITY] {
             assert!(Request::Fraction {
                 id: "a".into(),
-                fraction: f
+                fraction: f,
+                eta: None
             }
             .encode()
             .is_err());
@@ -262,8 +320,51 @@ mod tests {
             r#"{"op":"start","id":"a"}"#,
             r#"{"op":"start","id":"a","label":"l","total":-1}"#,
             r#"{"op":"set","id":"a","fraction":2.0}"#,
+            r#"{"op":"set","id":"a","fraction":0.5,"eta":-3}"#,
+            r#"{"op":"set","id":"a","fraction":0.5,"eta":1.5}"#,
+            r#"{"op":"set","id":"a","fraction":0.5,"eta":"soon"}"#,
+            r#"{"op":"set","id":"a","bytes":5,"eta":604801}"#,
         ] {
             assert!(Request::decode(line).is_err(), "{line}");
         }
+    }
+
+    #[test]
+    fn older_clients_without_eta_still_decode() {
+        assert_eq!(
+            Request::decode(r#"{"op":"set","id":"a","fraction":0.5}"#).unwrap(),
+            Request::Fraction {
+                id: "a".into(),
+                fraction: 0.5,
+                eta: None
+            }
+        );
+        assert_eq!(
+            Request::decode(r#"{"op":"set","id":"a","bytes":5,"eta":null}"#).unwrap(),
+            Request::Bytes {
+                id: "a".into(),
+                bytes: 5,
+                eta: None
+            }
+        );
+        let line = Request::Fraction {
+            id: "a".into(),
+            fraction: 0.5,
+            eta: None,
+        }
+        .encode()
+        .unwrap();
+        assert!(!line.contains("eta"), "{line}");
+    }
+
+    #[test]
+    fn eta_bounds() {
+        let at = |e| Request::Bytes {
+            id: "a".into(),
+            bytes: 1,
+            eta: Some(e),
+        };
+        assert!(at(MAX_ETA_SECS).encode().is_ok());
+        assert!(at(MAX_ETA_SECS + 1).encode().is_err());
     }
 }
