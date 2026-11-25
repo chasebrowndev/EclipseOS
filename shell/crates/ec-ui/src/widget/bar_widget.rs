@@ -688,6 +688,22 @@ struct Ground<'a, Message> {
     radius: f32,
     /// A static card: always drawn at rest, whatever the pointer does.
     rest: bool,
+    link: CardLink,
+}
+
+/// How a [`glass_card_linked`] takes part in a joined shape (ADR 0130) and how
+/// lit its pane is. The default is the plain card [`glass_card`] draws.
+#[derive(Clone, Default)]
+pub struct CardLink {
+    /// Where this card's pane index is published, for the card it joins to.
+    pub publish: Option<crate::glass::Joint>,
+    /// Join this card's pane to the pane the joint names this frame, with a
+    /// concave fillet of this many logical px. Drawn after the publisher.
+    pub join: Option<(crate::glass::Joint, f32)>,
+    /// The pane's opacity, `0..=255` (`None` is full). Below full its rim,
+    /// lift and shade fade with it while its blur and bend stay: a bar's pill
+    /// goes quiet under its cells this way, so one edge is drawn per object.
+    pub alpha: Option<u8>,
 }
 
 /// Wrap a static card (not pressable) so the compositor draws its ground at
@@ -698,11 +714,23 @@ pub fn glass_card<'a, Message: 'a>(
     tone: impl Into<crate::theme::CellTone>,
     radius: f32,
 ) -> Element<'a, Message, Theme> {
+    glass_card_linked(content, tone, radius, CardLink::default())
+}
+
+/// [`glass_card`] with a [`CardLink`]: a card that publishes its pane for a
+/// joined shape, joins to one, or is drawn at a lower opacity.
+pub fn glass_card_linked<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+    tone: impl Into<crate::theme::CellTone>,
+    radius: f32,
+    link: CardLink,
+) -> Element<'a, Message, Theme> {
     Element::new(Ground {
         content: content.into(),
         tone: tone.into(),
         radius,
         rest: true,
+        link,
     })
 }
 
@@ -717,6 +745,7 @@ pub fn glass_ground<'a, Message: 'a>(
         tone: tone.into(),
         radius,
         rest: false,
+        link: CardLink::default(),
     })
 }
 
@@ -847,11 +876,13 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Ground<'_, Message> {
         viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
+        let mut index = None;
         if crate::glass::available() && bounds.intersects(viewport) {
             let st = tree.state.downcast_ref::<CellState>();
             let r = self.radius.min(bounds.width / 2.0).min(bounds.height / 2.0);
-            let pane = crate::glass::Pane::new(bounds, r, self.tone);
-            crate::glass::push_in(
+            let pane =
+                crate::glass::Pane::new(bounds, r, self.tone).alpha(self.link.alpha.unwrap_or(u8::MAX));
+            index = crate::glass::push_in(
                 if self.rest {
                     pane
                 } else {
@@ -859,6 +890,16 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Ground<'_, Message> {
                 },
                 viewport,
             );
+        }
+        if let Some(joint) = &self.link.publish {
+            joint.publish(index);
+        }
+        // The joined card draws after the one it joins (the pane order a
+        // frame builds in), so that card's index is already this frame's.
+        if let (Some((joint, fillet)), Some(to)) = (&self.link.join, index) {
+            if let Some(from) = joint.this_frame() {
+                crate::glass::join(from, to, *fillet);
+            }
         }
         self.content.as_widget().draw(
             &tree.children[0],

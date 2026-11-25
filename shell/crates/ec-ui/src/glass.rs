@@ -31,9 +31,10 @@
 //! `bounds` are in surface-local logical pixels, which is what a widget's
 //! `layout.bounds()` is for a root-level cell (no scroll offset).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use ec_protocols::glass::client::eclipse_glass_manager_v1::{self, EclipseGlassManagerV1};
@@ -263,6 +264,42 @@ pub fn available() -> bool {
     AVAILABLE.load(Ordering::Relaxed)
 }
 
+/// The first protocol version with `set_joins` (ADR 0130).
+pub const JOINS_SINCE: u32 = 3;
+
+/// Whether the compositor bound for this process takes `set_joins`. A caller
+/// that needs a joined shape to look right (a drawer hung off its bar) draws
+/// the shape itself when this is false, since [`join`] is then a no-op and
+/// the panes draw apart.
+static JOINS_OK: AtomicBool = AtomicBool::new(false);
+
+/// [`available`] and a compositor that joins panes (protocol v3).
+pub fn joins_available() -> bool {
+    available() && JOINS_OK.load(Ordering::Relaxed)
+}
+
+/// The index of a pane, shared between the card that pushes it and the card
+/// that joins it to another ([`crate::widget::CardLink`]). It holds the index
+/// the most recent draw of the publishing card got, and only within that
+/// draw: a joint read in a later frame, or before its publisher is drawn,
+/// reads as `None`, so a stale index never joins the wrong pane.
+#[derive(Clone, Default)]
+pub struct Joint(Rc<Cell<Option<(u32, usize)>>>);
+
+impl Joint {
+    /// Record the index `push` returned for the pane being drawn (`None` if it
+    /// drew no pane this frame).
+    pub fn publish(&self, index: Option<usize>) {
+        self.0.set(index.map(|i| (FRAME_NO.with(|n| n.get()), i)));
+    }
+
+    /// The index published by this frame's draw, if there is one.
+    pub fn this_frame(&self) -> Option<usize> {
+        let now = FRAME_NO.with(|n| n.get());
+        self.0.get().filter(|(f, _)| *f == now).map(|(_, i)| i)
+    }
+}
+
 struct Dispatcher;
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for Dispatcher {
@@ -339,6 +376,8 @@ thread_local! {
     static FRAME_CLIP: std::cell::Cell<Option<[i32; 4]>> = const { std::cell::Cell::new(None) };
     // Visible bounds (surface-local) of the scroll region being drawn, if any.
     static CLIP: std::cell::Cell<Option<Rectangle>> = const { std::cell::Cell::new(None) };
+    // Counts the frames drawn on this thread, so a [`Joint`] knows its index is this frame's.
+    static FRAME_NO: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Where a pane drawn inside a scroll region lands on the surface.
@@ -409,9 +448,14 @@ pub fn bootstrap() -> Option<Connection> {
     let conn = Connection::connect_to_env().ok()?;
     let (globals, mut queue) = registry_queue_init::<Dispatcher>(&conn).ok()?;
     let qh = queue.handle();
-    let manager = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=2, ()).ok();
+    // Up to v3: a v2 bind has no `set_joins`, so joins would never be sent.
+    let manager = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=3, ()).ok();
     CLIP_OK.store(
         manager.as_ref().is_some_and(|m| m.version() >= 2),
+        Ordering::Relaxed,
+    );
+    JOINS_OK.store(
+        manager.as_ref().is_some_and(|m| m.version() >= JOINS_SINCE),
         Ordering::Relaxed,
     );
     if manager.is_some() {
@@ -555,6 +599,7 @@ pub fn with_fade<R>(alpha: f32, dy: f32, draw: impl FnOnce() -> R) -> R {
 fn begin() {
     FRAME.with(|f| f.borrow_mut().clear());
     FRAME_CLIP.with(|c| c.set(None));
+    FRAME_NO.with(|n| n.set(n.get().wrapping_add(1)));
 }
 
 /// Send the frame's panes for `id` if they changed. Runs in draw, ahead of
@@ -678,10 +723,11 @@ fn attach_raw(id: window::Id, w: &dyn window::Window) -> bool {
         return false;
     };
     let qh = queue.handle();
-    let Ok(manager) = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=2, ()) else {
+    let Ok(manager) = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=3, ()) else {
         return false;
     };
     CLIP_OK.store(manager.version() >= 2, Ordering::Relaxed);
+    JOINS_OK.store(manager.version() >= JOINS_SINCE, Ordering::Relaxed);
     let mut queue = queue;
     let _ = queue.roundtrip(&mut Dispatcher);
     let glass = manager.get_glass(&surface, &qh, ());
@@ -1254,5 +1300,27 @@ mod tests {
         p.clear();
         assert!(p.is_empty());
         assert_eq!(p.bytes.capacity(), cap);
+    }
+
+    /// A joint names the pane its publisher drew this frame and nothing else:
+    /// a frame later, the index is stale and must not join some other pane.
+    #[test]
+    fn a_joint_names_only_this_frames_pane() {
+        let joint = Joint::default();
+        assert_eq!(joint.this_frame(), None);
+        begin();
+        joint.publish(Some(3));
+        assert_eq!(joint.this_frame(), Some(3));
+        let clone = joint.clone();
+        assert_eq!(clone.this_frame(), Some(3), "a clone shares the slot");
+        joint.publish(None);
+        assert_eq!(joint.this_frame(), None);
+        joint.publish(Some(5));
+        begin();
+        assert_eq!(
+            joint.this_frame(),
+            None,
+            "an index from an earlier frame is stale"
+        );
     }
 }
