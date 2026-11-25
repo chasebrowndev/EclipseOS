@@ -74,6 +74,7 @@ fn feed_round_trip_over_the_socket() {
     let dir = temp_dir();
     let sock = dir.join("progress.sock");
     let h = spawn_with(Options {
+        history: Box::new(super::history::NoStore),
         socket: Some(sock.clone()),
         source: Box::new(Fixed(vec![])),
     });
@@ -125,6 +126,7 @@ fn refused_requests_are_answered_and_the_connection_survives() {
     let dir = temp_dir();
     let sock = dir.join("progress.sock");
     let _h = spawn_with(Options {
+        history: Box::new(super::history::NoStore),
         socket: Some(sock.clone()),
         source: Box::new(Fixed(vec![])),
     });
@@ -153,6 +155,7 @@ fn oversized_line_drops_the_client() {
     let dir = temp_dir();
     let sock = dir.join("progress.sock");
     let _h = spawn_with(Options {
+        history: Box::new(super::history::NoStore),
         socket: Some(sock.clone()),
         source: Box::new(Fixed(vec![])),
     });
@@ -170,6 +173,7 @@ fn serve_here() -> (super::Handle, PathBuf, PathBuf) {
     let dir = temp_dir();
     let sock = dir.join("progress.sock");
     let h = spawn_with(Options {
+        history: Box::new(super::history::NoStore),
         socket: Some(sock.clone()),
         source: Box::new(Fixed(vec![])),
     });
@@ -259,6 +263,7 @@ fn scan_jobs_appear_and_stop_when_scanning_is_off() {
         proc(43, "bash", &["bash"]),
     ];
     let h = spawn_with(Options {
+        history: Box::new(super::history::NoStore),
         socket: None,
         source: Box::new(Fixed(fake)),
     });
@@ -279,6 +284,7 @@ fn scan_and_feed_report_the_same_work_once() {
     let sock = dir.join("progress.sock");
     let fake = vec![proc(7, "cargo", &["cargo", "build"])];
     let h = spawn_with(Options {
+        history: Box::new(super::history::NoStore),
         socket: Some(sock.clone()),
         source: Box::new(Fixed(fake)),
     });
@@ -300,10 +306,64 @@ fn a_socket_that_cannot_bind_leaves_scan_working() {
     std::fs::create_dir_all(dir.parent().unwrap()).unwrap();
     std::fs::write(&dir, b"not a dir").unwrap();
     let h = spawn_with(Options {
+        history: Box::new(super::history::NoStore),
         socket: Some(dir.join("progress.sock")),
         source: Box::new(Fixed(vec![proc(1, "tar", &["tar", "-t"])])),
     });
     let jobs = await_list(&h, |j| !j.is_empty());
     assert_eq!(jobs[0].label, "tar");
     let _ = std::fs::remove_file(&dir);
+}
+
+#[test]
+fn eta_travels_the_socket_with_its_basis_and_bad_eta_is_refused() {
+    let dir = temp_dir();
+    let sock = dir.join("progress.sock");
+    let h = spawn_with(Options {
+        history: Box::new(super::history::NoStore),
+        socket: Some(sock.clone()),
+        source: Box::new(Fixed(vec![])),
+    });
+    ask(&sock, r#"{"op":"start","id":"t","label":"tool"}"#);
+    let r = ask(&sock, r#"{"op":"set","id":"t","fraction":0.5,"eta":90}"#);
+    assert_eq!(r["ok"], true);
+
+    let jobs = await_list(&h, |j| j.iter().any(|j| j.eta.is_some()));
+    let eta = jobs[0].eta.unwrap();
+    assert_eq!(eta.basis, super::EtaBasis::Reported);
+    assert!(eta.remaining <= Duration::from_secs(90) && eta.remaining >= Duration::from_secs(85));
+
+    let listed = ask(&sock, r#"{"op":"list"}"#);
+    assert_eq!(listed["jobs"][0]["eta_basis"], "reported");
+    assert!(listed["jobs"][0]["eta_ms"].as_u64().unwrap() <= 90_000);
+
+    for bad in [
+        r#"{"op":"set","id":"t","fraction":0.6,"eta":-1}"#,
+        r#"{"op":"set","id":"t","fraction":0.6,"eta":99999999}"#,
+    ] {
+        assert_eq!(ask(&sock, bad)["ok"], false);
+    }
+    assert_eq!(ask(&sock, r#"{"op":"abort","id":"t"}"#)["ok"], true);
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_quick_feed_job_is_never_saved_to_history() {
+    let dir = temp_dir();
+    let sock = dir.join("progress.sock");
+    let store = super::history::MemoryStore::default();
+    let saved = store.saved.clone();
+    let h = spawn_with(Options {
+        history: Box::new(store),
+        socket: Some(sock.clone()),
+        source: Box::new(Fixed(vec![])),
+    });
+    ask(&sock, r#"{"op":"start","id":"q","label":"quick"}"#);
+    ask(&sock, r#"{"op":"done","id":"q"}"#);
+    await_list(&h, |j| j.is_empty());
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(saved.lock().unwrap().is_empty());
+    drop(h);
+    let _ = std::fs::remove_dir_all(&dir);
 }
