@@ -445,6 +445,11 @@ fn silence_drawer<'a>(app: &'a App, g: &Geometry) -> Option<Element<'a, Message,
     // The panel fades in over the first third of its opening. It is a pane in
     // the card's tone, lit like the card the pointer is on, and joined to it.
     let panel = pane_linked(window, CellTone::Plain, r, (t * 3.0).min(1.0), link(id), true);
+    // The pointer on the drawer counts as being on its card, for the clock that
+    // closes an idle drawer.
+    let panel = mouse_area(panel)
+        .on_enter(Message::HoverDrawer(true))
+        .on_exit(Message::HoverDrawer(false));
     Some(
         container(panel)
             .width(Length::Fill)
@@ -844,8 +849,13 @@ fn foot<'a>(app: &App, n: &Notification, folded: usize, alpha: f32) -> Element<'
     );
     if !system {
         let open = app.drawer_card == Some(n.id);
+        let failed = app.open_failed.is_some_and(|(id, _)| id == n.id);
         line = line
-            .push(foot_button("Open", Message::Open(n.id), alpha))
+            .push(foot_button(
+                if failed { "Not installed" } else { "Open" },
+                Message::Open(n.id),
+                alpha,
+            ))
             .push(silence_button(n.id, open, alpha));
     }
     container(line)
@@ -1004,7 +1014,17 @@ fn action_button<'a>(
         .padding([0.0, space::CARD])
         .height(Length::Fixed(ACTION_BTN_H))
         .on_press(Message::Invoke(id, key.to_owned()))
-        .style(move |t: &Theme, s| ec_ui::theme::bare_if_glass(ec_ui::theme::bar_cell(tone)(t, s)));
+        .style(move |t: &Theme, s| {
+            let style = ec_ui::theme::bar_cell(tone)(t, s);
+            // The compositor's pane lifts on the pointer only a hair for a cell
+            // that already has a ground, so under the pointer the cell draws
+            // its own brighter fill and rim as well.
+            if matches!(s, button::Status::Hovered | button::Status::Pressed) {
+                style
+            } else {
+                ec_ui::theme::bare_if_glass(style)
+            }
+        });
     pane(cell, tone, radius::INSET, alpha)
 }
 

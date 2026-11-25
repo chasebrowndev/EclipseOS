@@ -15,6 +15,18 @@ use ec_ui::motion::{Curve, Motion, Tween};
 use crate::art::{self, Art};
 use ec_ui::markup::{self, Run};
 
+/// What a notification folds with: its app's group, qualified by class. An app
+/// names its own group (its desktop entry, which it can forge), so a system card
+/// is never in an app's group, and no app can fold a card of the shell's under
+/// its own or hide one behind it (ADR 0131).
+pub fn group_key(n: &Notification) -> String {
+    match (n.class, n.group.is_empty()) {
+        (_, true) => String::new(),
+        (Class::System, false) => format!("system:{}", n.group),
+        (Class::App, false) => format!("app:{}", n.group),
+    }
+}
+
 /// How long the silence drawer takes to open or close, ease-out.
 const DRAWER_MS: u64 = 180;
 
@@ -47,22 +59,34 @@ fn reason(e: &std::io::Error) -> &'static str {
     }
 }
 
-/// Start the app that sent a toast, by its desktop entry. The launch runs off
-/// the UI thread: scanning the entries is the slow part.
-fn open_source(desktop_entry: &str) {
+/// Start the app that sent a toast, by its desktop entry. `false`, with the
+/// reason logged (never the toast's text), when there is no such entry
+/// installed; the launch itself runs off the UI thread.
+fn open_source(desktop_entry: &str) -> bool {
     let want = desktop_entry.trim().trim_end_matches(".desktop").to_lowercase();
     if want.is_empty() {
-        return;
+        eprintln!("ec-toasts: open: the notification names no desktop entry");
+        return false;
     }
+    let entry = ec_services::apps::scan(None)
+        .into_iter()
+        .find(|e| e.id.trim_end_matches(".desktop").to_lowercase() == want);
+    let Some(entry) = entry else {
+        eprintln!("ec-toasts: open: that desktop entry is not installed");
+        return false;
+    };
     std::thread::spawn(move || {
-        let entry = ec_services::apps::scan(None)
-            .into_iter()
-            .find(|e| e.id.trim_end_matches(".desktop").to_lowercase() == want);
-        if let Some(entry) = entry {
-            let _ = ec_services::apps::launch(&entry, None);
-        }
+        let _ = ec_services::apps::launch(&entry, None);
     });
+    true
 }
+
+/// How long "Not installed" shows on a card's Open.
+const OPEN_FAILED_MS: u64 = 2500;
+/// How long the pointer may be off a card and its open drawer before the
+/// drawer closes itself. The toast layer takes no keyboard, so there is no
+/// Escape; leaving is how it is dismissed.
+const DRAWER_IDLE_MS: u64 = 2000;
 
 /// How often the stack wakes to drain the bus and retire whatever has run out
 /// of time. Shorter than the bar's tick: a toast that lingers a visible beat
@@ -338,8 +362,13 @@ pub struct Drag {
     /// Where the pointer was when it first moved after the press; `None`
     /// until it has.
     from: Option<f32>,
-    /// How far right the card is carried.
+    /// How far toward the nearest side edge the card is carried; never
+    /// negative, so a drag the other way shows no movement.
     pub dx: f32,
+    /// How far the pointer has gone from where it started, either way. A press
+    /// is a tap only if this stayed within the tap slop: dragging off the wrong
+    /// way is not a tap.
+    pub travel: f32,
 }
 
 /// One column slot of the stack: a single card, or all the cards of one app.
@@ -404,6 +433,8 @@ pub enum Message {
     Silence(u32, Silence),
     /// The pointer entered (`true`) or left a card. It holds the card's clock.
     HoverCard(u32, bool),
+    /// The pointer entered or left the open silence drawer.
+    HoverDrawer(bool),
     /// The pointer entered or left a group's whole column. It opens the group
     /// and holds every clock in it.
     HoverGroup(String, bool),
@@ -475,6 +506,14 @@ pub struct App {
     pub drawer_tween: Option<Tween>,
     /// `animations.reduce-motion`: the drawer opens and closes at once.
     pub reduce_motion: bool,
+    /// A card whose Open found nothing to open, and when: its Open reads
+    /// "Not installed" for a moment.
+    pub open_failed: Option<(u32, Instant)>,
+    /// Whether the pointer is on the open drawer.
+    pub drawer_hover: bool,
+    /// Since when the pointer has been off both the drawer's card and its
+    /// drawer, while the drawer is open.
+    pub drawer_outside: Option<Instant>,
 }
 
 /// The toast card radius. With compositor glass the card is a pane the
@@ -531,6 +570,9 @@ impl App {
             drawer_card: None,
             drawer_tween: None,
             reduce_motion: ec_ui::ipc::fetch_reduce_motion().unwrap_or(false),
+            open_failed: None,
+            drawer_hover: false,
+            drawer_outside: None,
         };
         #[cfg(debug_assertions)]
         crate::preview::apply(&mut app);
@@ -558,6 +600,10 @@ impl App {
     fn move_drawer(&mut self, open: Option<u32>, animate: bool) {
         let mut from = self.drawer_t();
         self.drawer = open;
+        if open.is_none() {
+            self.drawer_hover = false;
+        }
+        self.drawer_outside = None;
         let to = match open {
             Some(id) => {
                 if self.drawer_card != Some(id) {
@@ -587,6 +633,31 @@ impl App {
                 self.drawer_card = None;
             }
         }
+    }
+
+    /// The ids of the app cards a silence of card `of` takes with it: that card,
+    /// and any other app card `silenced` says the rules now cover.
+    pub fn silenced_ids(&self, of: u32, silenced: impl Fn(&str, &str) -> bool) -> Vec<u32> {
+        self.toasts
+            .iter()
+            .filter(|t| {
+                let n = &t.notification;
+                n.class == Class::App && (n.id == of || silenced(&n.desktop_entry, &n.app_name))
+            })
+            .map(|t| t.notification.id)
+            .collect()
+    }
+
+    /// Start or stop the clock that closes an idle drawer: it runs while the
+    /// drawer is open and the pointer is on neither its card nor the drawer.
+    fn refresh_drawer_idle(&mut self) {
+        let on = self
+            .drawer
+            .is_some_and(|id| self.hover == Some(id) || self.drawer_hover);
+        self.drawer_outside = match (self.drawer, on) {
+            (Some(_), false) => Some(self.drawer_outside.unwrap_or(self.now)),
+            _ => None,
+        };
     }
 
     /// Whether another frame is needed.
@@ -643,16 +714,16 @@ impl App {
     pub fn plan(&self) -> Plan {
         let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
         for (i, t) in self.toasts.iter().enumerate() {
-            let g = &t.notification.group;
+            let g = group_key(&t.notification);
             let found = if g.is_empty() {
                 None
             } else {
-                groups.iter_mut().find(|(k, _)| k == g)
+                groups.iter_mut().find(|(k, _)| *k == g)
             };
             match found {
                 Some((_, members)) => members.push(i),
                 None if g.is_empty() => groups.push((format!("#{}", t.notification.id), vec![i])),
-                None => groups.push((g.clone(), vec![i])),
+                None => groups.push((g, vec![i])),
             }
         }
         let mut plan = Plan::default();
@@ -702,7 +773,9 @@ impl App {
             // a human choosing how long to silence it is not done reading.
             let holding = hover == Some(n.id)
                 || drawer == Some(n.id)
-                || (!n.group.is_empty() && group.as_deref() == Some(n.group.as_str()));
+                || group
+                    .as_deref()
+                    .is_some_and(|g| !g.is_empty() && g == group_key(n));
             if holding && t.shown.is_some() {
                 t.held += dt;
             }
@@ -721,7 +794,7 @@ impl App {
                 t.fling = drag.dx;
             }
             self.remove(id, CloseReason::Dismissed);
-        } else if drag.dx <= ec_ui::tokens::motion::TAP_SLOP && click {
+        } else if drag.travel <= ec_ui::tokens::motion::TAP_SLOP && click {
             self.click(id);
         }
     }
@@ -812,6 +885,18 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
         }
         Message::Tick => {
             app.advance(Instant::now());
+            if app.open_failed.is_some_and(|(_, at)| {
+                app.now.saturating_duration_since(at) >= Duration::from_millis(OPEN_FAILED_MS)
+            }) {
+                app.open_failed = None;
+            }
+            app.refresh_drawer_idle();
+            if app.drawer_outside.is_some_and(|at| {
+                app.now.saturating_duration_since(at) >= Duration::from_millis(DRAWER_IDLE_MS)
+            }) {
+                app.move_drawer(None, true);
+                app.drawer_outside = None;
+            }
             // `Closed` for an id not on screen is a quiet arrival replacing
             // nothing, or a withdrawal that lost a race: `leave` finds no
             // card and there is nothing to do.
@@ -872,8 +957,13 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             if t.notification.actions.iter().any(|a| a.key == DEFAULT_ACTION) {
                 return update(app, Message::Invoke(id, DEFAULT_ACTION.to_owned()));
             }
-            open_source(&t.notification.desktop_entry);
-            app.remove(id, CloseReason::Dismissed);
+            // A failure keeps the card and says so on its Open; it is never a
+            // silent dismissal.
+            if open_source(&t.notification.desktop_entry) {
+                app.remove(id, CloseReason::Dismissed);
+            } else {
+                app.open_failed = Some((id, Instant::now()));
+            }
         }
         Message::Drawer(id) => {
             app.advance(Instant::now());
@@ -887,6 +977,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 // A card carried by a drag does not take a drawer with it.
                 app.drag = None;
                 app.move_drawer(Some(id), true);
+                app.refresh_drawer_idle();
             }
         }
         Message::Silence(id, how) => {
@@ -898,28 +989,19 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
             if t.notification.class != Class::App {
                 return Task::none();
             }
-            let (entry, name, group) = (
+            let (entry, name) = (
                 t.notification.desktop_entry.clone(),
                 t.notification.app_name.clone(),
-                t.notification.group.clone(),
             );
             match ec_services::notifications::silence(&entry, &name, how) {
                 Ok(()) => {
                     app.move_drawer(None, false);
                     app.drawer_error = None;
-                    // Every card of the source leaves with it: the human
-                    // asked not to see more of them.
-                    let ids: Vec<u32> = app
-                        .toasts
-                        .iter()
-                        .filter(|t| {
-                            t.notification.class == Class::App
-                                && (t.notification.id == id
-                                    || (!group.is_empty() && t.notification.group == group))
-                        })
-                        .map(|t| t.notification.id)
-                        .collect();
-                    for id in ids {
+                    // The cards the rule just written covers leave with it: the
+                    // human asked not to see more of them. Judged by the rules
+                    // themselves (their `find` and `muted`), never by the group
+                    // key, so an unrelated source is never dismissed.
+                    for id in app.silenced_ids(id, ec_services::notifications::is_silenced) {
                         app.remove(id, CloseReason::Dismissed);
                     }
                 }
@@ -960,6 +1042,12 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 // A drag that left the card ends where it was.
                 app.finish_drag(id, false);
             }
+            app.refresh_drawer_idle();
+        }
+        Message::HoverDrawer(over) => {
+            app.advance(Instant::now());
+            app.drawer_hover = over;
+            app.refresh_drawer_idle();
         }
         Message::HoverGroup(key, over) => {
             app.advance(Instant::now());
@@ -982,6 +1070,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 id,
                 from: None,
                 dx: 0.0,
+                travel: 0.0,
             });
         }
         Message::Pointer(id, x) => {
@@ -989,6 +1078,7 @@ pub fn update(app: &mut App, message: Message) -> Task<Message> {
                 let from = *d.from.get_or_insert(x);
                 // Toward the nearest side edge is the way a card is carried off.
                 d.dx = ((x - from) * app.corner.side()).max(0.0);
+                d.travel = d.travel.max((x - from).abs());
             }
         }
         Message::Release(id) => app.finish_drag(id, true),
@@ -1177,6 +1267,9 @@ mod tests {
             drawer_card: None,
             drawer_tween: None,
             reduce_motion: false,
+            open_failed: None,
+            drawer_hover: false,
+            drawer_outside: None,
         }
     }
 
@@ -1495,7 +1588,7 @@ mod tests {
         assert!(plan.units[0].folded());
         assert_eq!(plan.units[0].cards, vec![2]);
         assert_eq!(plan.units[0].all.len(), 3);
-        a.hover_group = Some("mail".into());
+        a.hover_group = Some("app:mail".into());
         let plan = a.plan();
         assert_eq!(plan.units[0].cards, vec![2, 1, 0]);
         assert!(!plan.units[0].folded());
@@ -1564,16 +1657,16 @@ mod tests {
         let _ = update(&mut a, Message::Press(2));
         let _ = update(&mut a, Message::Release(2));
         assert_eq!(a.toasts.len(), 2);
-        assert!(a.pinned.contains("mail"));
-        let _ = update(&mut a, Message::HoverGroup("mail".into(), true));
+        assert!(a.pinned.contains("app:mail"));
+        let _ = update(&mut a, Message::HoverGroup("app:mail".into(), true));
         // Opened by the pointer: the card under it is a member of an open group.
         let _ = update(&mut a, Message::Press(2));
         let _ = update(&mut a, Message::Release(2));
         assert_eq!(a.toasts.len(), 2, "a click on an open group's card keeps it");
-        let _ = update(&mut a, Message::HoverGroup("mail".into(), false));
+        let _ = update(&mut a, Message::HoverGroup("app:mail".into(), false));
         assert!(a.pinned.is_empty());
-        let _ = update(&mut a, Message::Pin("mail".into()));
-        assert!(a.pinned.contains("mail"), "the strips pin the group");
+        let _ = update(&mut a, Message::Pin("app:mail".into()));
+        assert!(a.pinned.contains("app:mail"), "the strips pin the group");
     }
 
     /// An open silence drawer holds its card's clock even when the pointer is
@@ -1666,5 +1759,114 @@ mod tests {
         assert!(!a.animating());
         let _ = update(&mut a, Message::Drawer(1));
         assert_eq!(a.drawer_card, None);
+    }
+
+    /// A drag away from the anchor edge springs back and never dismisses; only
+    /// a press that stayed within the tap slop is a tap.
+    #[test]
+    fn dragging_away_from_the_anchor_edge_never_dismisses() {
+        for (corner, away) in [(Corner::TopRight, -1.0), (Corner::TopLeft, 1.0)] {
+            let mut a = app();
+            a.corner = corner;
+            post(&mut a.toasts, grouped(1, ""));
+            let _ = update(&mut a, Message::Press(1));
+            let _ = update(&mut a, Message::Pointer(1, 200.0));
+            let _ = update(&mut a, Message::Pointer(1, 200.0 + away * 120.0));
+            assert_eq!(a.drag.map(|d| d.dx), Some(0.0), "no carry the wrong way");
+            let _ = update(&mut a, Message::Release(1));
+            assert_eq!(a.toasts.len(), 1, "{corner:?}: springs back");
+        }
+        // A real tap is still a tap.
+        let mut a = app();
+        post(&mut a.toasts, grouped(1, ""));
+        let _ = update(&mut a, Message::Press(1));
+        let _ = update(&mut a, Message::Release(1));
+        assert!(a.toasts.is_empty());
+    }
+
+    /// A silence takes with it only the cards the rules now cover.
+    #[test]
+    fn a_silence_dismisses_only_what_the_rules_cover() {
+        let mut a = app();
+        let mut mail = grouped(1, "mail");
+        mail.app_name = "Mail".into();
+        let mut chat = grouped(2, "mail");
+        chat.app_name = "Chat".into();
+        chat.desktop_entry = "mail".into();
+        post(&mut a.toasts, mail);
+        post(&mut a.toasts, chat);
+        // The rule written for card 2 is keyed on the desktop entry `mail`.
+        let ids = a.silenced_ids(2, |de, _| de == "mail");
+        assert_eq!(ids, vec![2], "the plain Mail card is not covered");
+        // A system card is never swept up, whatever the rules say.
+        post(&mut a.toasts, question(3));
+        assert_eq!(a.silenced_ids(2, |_, _| true), vec![1, 2]);
+    }
+
+    /// An app cannot fold a system card under its own, or hide one behind it,
+    /// by naming the same group.
+    #[test]
+    fn a_system_card_never_groups_with_an_app_card() {
+        let mut a = app();
+        let sys = Notification {
+            group: "eclipse".into(),
+            ..question(1)
+        };
+        post(&mut a.toasts, sys);
+        let forged = Notification {
+            group: "eclipse".into(),
+            class: Class::App,
+            ..notification(2, None)
+        };
+        post(&mut a.toasts, forged);
+        let plan = a.plan();
+        assert_eq!(plan.units.len(), 2, "two units, not one folded group");
+        assert!(plan.units.iter().all(|u| u.all.len() == 1));
+        assert_ne!(
+            group_key(&a.toasts[0].notification),
+            group_key(&a.toasts[1].notification)
+        );
+    }
+
+    /// Open on an entry that is not installed keeps the card and says so.
+    #[test]
+    fn open_on_a_missing_entry_fails_visibly() {
+        let mut a = app();
+        let n = Notification {
+            desktop_entry: "no-such-entry-for-ec-toasts-test".into(),
+            actions: vec![],
+            ..grouped(1, "x")
+        };
+        post(&mut a.toasts, n);
+        let _ = update(&mut a, Message::Open(1));
+        assert_eq!(a.toasts.len(), 1, "the card stays");
+        assert_eq!(a.open_failed.map(|f| f.0), Some(1));
+        a.open_failed = Some((1, Instant::now() - Duration::from_secs(5)));
+        let _ = update(&mut a, Message::Tick);
+        assert!(a.open_failed.is_none(), "and the label recovers");
+    }
+
+    /// An open drawer closes itself once the pointer has been off its card and
+    /// the drawer for a while, and not while it is on either.
+    #[test]
+    fn an_idle_drawer_closes_itself() {
+        let mut a = app();
+        post(&mut a.toasts, grouped(1, ""));
+        a.toasts[0].shown = Some(a.now);
+        let _ = update(&mut a, Message::Drawer(1));
+        assert!(
+            a.drawer.is_some() && a.drawer_outside.is_some(),
+            "pointer is off: clock runs"
+        );
+        let _ = update(&mut a, Message::HoverCard(1, true));
+        assert!(a.drawer_outside.is_none(), "on the card: no clock");
+        let _ = update(&mut a, Message::HoverCard(1, false));
+        let _ = update(&mut a, Message::HoverDrawer(true));
+        assert!(a.drawer_outside.is_none(), "on the drawer: no clock");
+        let _ = update(&mut a, Message::HoverDrawer(false));
+        assert!(a.drawer_outside.is_some());
+        a.drawer_outside = Some(Instant::now() - Duration::from_secs(3));
+        let _ = update(&mut a, Message::Tick);
+        assert_eq!(a.drawer, None);
     }
 }

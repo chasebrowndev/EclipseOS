@@ -112,6 +112,10 @@ impl Rules {
 
     #[cfg(test)]
     pub(crate) fn from_rules(rules: Vec<Rule>) -> Self {
+        Self::from_rules_any(rules)
+    }
+
+    pub(crate) fn from_rules_any(rules: Vec<Rule>) -> Self {
         Self {
             rules,
             ..Self::default()
@@ -293,6 +297,27 @@ pub fn silence(desktop_entry: &str, app_name: &str, how: Silence) -> std::io::Re
     std::fs::rename(&tmp, &path)
 }
 
+/// Whether the rules in `text` quiet or mute a notification of this source
+/// now: the same `find` (desktop entry, then app name) and `muted` the service
+/// applies on arrival, so a caller never treats as silenced what the rules
+/// would let through.
+pub(crate) fn silences_in(text: &str, desktop_entry: &str, app_name: &str, now: u64) -> bool {
+    Rules::from_rules_any(Rules::parse(text))
+        .find(desktop_entry, app_name)
+        .is_some_and(|r| r.muted(now) || r.quiet)
+}
+
+/// [`silences_in`] on the rules file as it is now.
+pub fn is_silenced(desktop_entry: &str, app_name: &str) -> bool {
+    let Some(path) = path() else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    std::fs::read_to_string(path).is_ok_and(|t| silences_in(&t, desktop_entry, app_name, now))
+}
+
 fn read(path: &Path) -> Vec<Rule> {
     std::fs::read_to_string(path)
         .map(|t| Rules::parse(&t))
@@ -417,6 +442,25 @@ mod tests {
         assert!(apply_silence("not json", "a", "b", Silence::Forever, 0).is_none());
         assert!(apply_silence("[]", "a", "b", Silence::Forever, 0).is_none());
         assert!(apply_silence("", "", "", Silence::Forever, 0).is_none());
+    }
+
+    /// A silence written for one source never reaches another: the rule keyed
+    /// on the desktop entry `mail` does not quiet a card that only says it is
+    /// called Mail, and the reverse.
+    #[test]
+    fn a_silence_reaches_only_what_its_rule_matches() {
+        let t = apply_silence("", "mail", "Chat", Silence::Hour, 100).unwrap();
+        assert!(silences_in(&t, "mail", "Chat", 101));
+        assert!(silences_in(&t, "mail", "Anything", 101), "the entry is the key");
+        assert!(
+            !silences_in(&t, "", "Mail", 101),
+            "no entry: the app name does not match it"
+        );
+        assert!(!silences_in(&t, "other", "Chat", 101));
+        assert!(!silences_in(&t, "mail", "Chat", 100 + 3_600), "and it runs out");
+        let t = apply_silence("", "", "Mail", Silence::Forever, 100).unwrap();
+        assert!(silences_in(&t, "", "mail", 1_000_000));
+        assert!(!silences_in(&t, "chat", "Chat", 101));
     }
 
     #[test]

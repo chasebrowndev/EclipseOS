@@ -40,7 +40,7 @@ use std::time::Duration;
 
 pub use hints::{Image, Sound};
 pub use history::{HistoryClient, HistoryEntry, Page, PageEntry, PageFilter, CAP as HISTORY_CAP};
-pub use rules::{silence, Silence};
+pub use rules::{is_silenced, silence, Silence};
 pub use server::spawn;
 pub use share::{Share, ToastMode};
 pub use system::{ANSWER_NO, ANSWER_YES, SYSTEM_ID_BASE};

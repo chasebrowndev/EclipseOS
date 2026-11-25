@@ -67,9 +67,12 @@ critical to bypass it; only system sources may bypass, as today.
 unread. A setting (`ui.toasts-over-fullscreen`, default `off`) turns this off. System
 toasts that pose a question are held and shown when fullscreen ends.
 
-**Placement.** Four corners. Stacks grow away from the anchor edge; the drawer expands
-toward screen centre; slide in from the nearest horizontal edge; button order is the same
-in every corner; offset by the bar; usable at any output or tile width.
+**Placement.** Four corners. Stacks grow away from the anchor edge; slide in from the
+nearest horizontal edge; button order is the same in every corner; offset by the bar;
+usable at any output or tile width. The silence drawer opens vertically, below the card in
+a top corner and above it in a bottom corner (toward the screen's centre in that sense),
+flush with the card's right edge in every corner, and the cards beyond it move out of its
+way. A card and its drawer are one joined piece of glass.
 
 ## Consequences
 - New: sentinel, manifest writer and restore flow in `ec-services`, and a system-toast
@@ -85,3 +88,14 @@ in every corner; offset by the bar; usable at any output or tile width.
 ## Revisit when
 ADR 0102 (containment on panic) is accepted, grants become durable across reboot, or a
 compositor crash can keep clients alive.
+
+## Known gaps
+- `Notify` with `replaces_id` is not checked against the sender, as the freedesktop spec
+  allows: one app can replace another's toast if it knows its id. It cannot change the
+  toast's class (the D-Bus path always builds an app toast).
+- Escape and click-away do not close the silence drawer, by design: the toast layer takes
+  no keyboard focus and grabs none. The drawer closes by the bell, by choosing an option,
+  or by itself after the pointer has been off the card and the drawer for about two
+  seconds.
+- Group keys are class-qualified, so an app cannot fold a system card under its own by
+  forging a desktop entry, and Silence dismisses only cards its written rule matches.
