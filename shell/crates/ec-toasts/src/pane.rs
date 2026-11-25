@@ -11,6 +11,12 @@
 //!
 //! With no glass it draws nothing: the content's own container style is the
 //! ground then.
+//!
+//! Panes can be joined into one piece of glass (ADR 0130): [`pane_linked`]
+//! takes a link key, and the second pane drawn under one key is joined to the
+//! first, so a card and the drawer attached to it, or a folded group's face and
+//! the strips beneath it, are one shape. [`frame`] clears the keys once a
+//! frame, so an index from the last frame is never joined to.
 
 use iced::advanced::layout::{self, Layout};
 use iced::advanced::overlay;
@@ -23,6 +29,19 @@ use iced::{mouse, window, Element, Event, Length, Point, Rectangle, Size, Theme,
 
 use ec_ui::theme::CellTone;
 
+thread_local! {
+    /// The index of the last pane drawn under each link key this frame.
+    static LINKS: std::cell::RefCell<std::collections::HashMap<u64, usize>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// A link key and the fillet the join is drawn with, in logical px.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Link {
+    pub key: u64,
+    pub fillet: f32,
+}
+
 /// Wrap `content` so its bounds are a glass pane of `tone` at `alpha`
 /// (`0.0..=1.0`) when glass is on. Pair the content's container style with
 /// `ec_ui::theme::bare_container_if_glass`.
@@ -32,30 +51,42 @@ pub fn pane<'a, Message: 'a>(
     radius: f32,
     alpha: f32,
 ) -> Element<'a, Message, Theme> {
-    Element::new(Pane {
-        content: content.into(),
-        tone,
-        radius,
-        alpha: alpha.clamp(0.0, 1.0),
-        lit: false,
-    })
+    pane_linked(content, tone, radius, alpha, None, false)
 }
 
-/// [`pane`] drawn in its hovered state whether or not the pointer is on it: a
-/// panel that belongs to a card the pointer is on (its drawer) takes the same
-/// glass as the card, instead of reading flatter beside it.
-pub fn pane_lit<'a, Message: 'a>(
+/// [`pane`] that joins the pane drawn before it under the same `link` key.
+///
+/// The panes must touch, and neither may be a cell (a pane inside another
+/// pane); the compositor draws a join of panes that do not as two shapes, so
+/// the caller keeps the pair adjacent. Without glass nothing is sent and the
+/// two content styles are the ground.
+pub fn pane_linked<'a, Message: 'a>(
     content: impl Into<Element<'a, Message, Theme>>,
     tone: CellTone,
     radius: f32,
     alpha: f32,
+    link: Option<Link>,
+    lit: bool,
 ) -> Element<'a, Message, Theme> {
     Element::new(Pane {
         content: content.into(),
         tone,
         radius,
         alpha: alpha.clamp(0.0, 1.0),
-        lit: true,
+        link,
+        lit,
+    })
+}
+
+/// The root of a frame's panes: clears the link keys before anything is drawn.
+pub fn frame<'a, Message: 'a>(
+    content: impl Into<Element<'a, Message, Theme>>,
+) -> Element<'a, Message, Theme> {
+    Element::new(Lane {
+        content: content.into(),
+        offset: Vector::ZERO,
+        reset: true,
+        sized: None,
     })
 }
 
@@ -70,6 +101,7 @@ pub fn shifted<'a, Message: 'a>(
     Element::new(Lane {
         content: content.into(),
         offset: Vector::new(dx, 0.0),
+        reset: false,
         sized: None,
     })
 }
@@ -86,6 +118,7 @@ pub fn reveal<'a, Message: 'a>(
     Element::new(Lane {
         content: content.into(),
         offset,
+        reset: false,
         sized: Some((outer, full)),
     })
 }
@@ -95,6 +128,9 @@ struct Pane<'a, Message> {
     tone: CellTone,
     radius: f32,
     alpha: f32,
+    link: Option<Link>,
+    /// Drawn hovered whether or not the pointer is on it: a panel that is part
+    /// of a card the pointer is on takes the card's glass.
     lit: bool,
 }
 
@@ -219,12 +255,18 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Pane<'_, Message> {
             } else {
                 button::Status::Active
             };
-            ec_ui::glass::push_in(
+            let index = ec_ui::glass::push_in(
                 ec_ui::glass::Pane::new(bounds, r, self.tone)
                     .status(status)
                     .alpha((self.alpha * 255.0).round() as u8),
                 viewport,
             );
+            if let (Some(link), Some(index)) = (self.link, index) {
+                let before = LINKS.with(|l| l.borrow_mut().insert(link.key, index));
+                if let Some(before) = before {
+                    ec_ui::glass::join(before, index, link.fillet);
+                }
+            }
         }
         self.content.as_widget().draw(
             &tree.children[0],
@@ -255,10 +297,11 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Pane<'_, Message> {
     }
 }
 
-/// See [`shifted`] and [`reveal`].
+/// See [`frame`] and [`shifted`].
 struct Lane<'a, Message> {
     content: Element<'a, Message, Theme>,
     offset: Vector,
+    reset: bool,
     /// `(outer, full)` for [`reveal`].
     sized: Option<(Size, Size)>,
 }
@@ -368,6 +411,9 @@ impl<Message> Widget<Message, Theme, iced::Renderer> for Lane<'_, Message> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        if self.reset {
+            LINKS.with(|l| l.borrow_mut().clear());
+        }
         let child = layout.children().next().expect("lane has one child");
         let draw = |renderer: &mut iced::Renderer| {
             self.content

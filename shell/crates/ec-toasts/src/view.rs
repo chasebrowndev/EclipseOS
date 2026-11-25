@@ -24,7 +24,7 @@ use ec_ui::widget::art::{Glyph, Hue};
 use crate::app::{App, Message, Plan, Style, Toast, Unit};
 use crate::art::Art;
 use crate::bell::bell_off;
-use crate::pane::{pane, pane_lit, reveal, shifted};
+use crate::pane::{frame, pane, pane_linked, reveal, shifted, Link};
 use crate::WIDTH;
 
 /// Space between cards. There is none around the stack: the first card's
@@ -60,14 +60,14 @@ const FOOT_H: f32 = 30.0;
 /// Open and Silence: quiet cells, shorter than a declared action.
 const FOOT_BTN_H: f32 = 22.0;
 /// The silence drawer: as wide as its three options need, each option a row,
-/// and the gap it floats at from the card.
+/// and the fillet where it joins the card.
 const DRAWER_W: f32 = 104.0;
 const OPT_H: f32 = 26.0;
 const ERR_H: f32 = 20.0;
 /// Air between the card and the drawer floating off it.
-const DRAWER_GAP: f32 = 6.0;
-/// Right edge of the silence button, in from the card's edge.
-const BUTTON_INSET: f32 = space::CARD;
+/// The fillet where the drawer's side meets the card's edge: the card's glass
+/// radius family, as the bar's drawer fillet is the bar's rounding.
+const JOIN_R: f32 = 12.0;
 /// Height of the action-button row, when there is one.
 const ACTIONS_H: f32 = 36.0;
 /// The button itself, set to the bottom of its row so there is air between the
@@ -189,10 +189,10 @@ fn foot_h(n: &Notification) -> f32 {
 /// The silence drawer's full height: three options and, after a failed save,
 /// a line saying so.
 pub fn drawer_room(error: bool) -> f32 {
-    drawer_height(error) + DRAWER_GAP
+    drawer_height(error)
 }
 
-/// The drawer's own height, without the gap above it.
+/// The drawer's own height, below (above, in a bottom corner) the card's edge.
 pub fn drawer_height(error: bool) -> f32 {
     2.0 * drawer::PAD + 3.0 * OPT_H + if error { ERR_H } else { 0.0 }
 }
@@ -325,40 +325,62 @@ pub fn view(app: &App, id: iced::window::Id) -> Element<'_, Message, Theme> {
             .into(),
         None => col.into(),
     };
-    ec_ui::glass::root(id, inner).into()
+    ec_ui::glass::root(id, frame(inner)).into()
 }
 
 /// The silence drawer: a small panel of three options that grows out of the
-/// silence button, floating a few px clear of its card. It is laid out at its
-/// full size and shown through a window that opens, so its rows are never
-/// squeezed on the way.
+/// card's edge under (over, in a bottom corner) its bell, flush with the card's
+/// right edge, as one piece of glass with it. It is laid out at its full size
+/// and shown through a window that opens, so its rows are never squeezed.
+///
+/// How it joins. The compositor unions two rounded boxes, and a pane has one
+/// radius, so flush panes meeting edge to edge leave a notch at the flush side
+/// where both corners curve away. So the drawer's pane reaches back into the
+/// card by the two radii: its rounded top corners sit inside the card, where
+/// the card's glass covers them, and its right edge runs straight from there
+/// down past where the card's own corner starts to curve. The one visible
+/// junction is the concave fillet on the drawer's inner side, as on the bar's.
+/// Without panes it is a drawn tab with square joined corners, inset from the
+/// card's rounded corner.
 fn silence_drawer<'a>(app: &'a App, g: &Geometry) -> Option<Element<'a, Message, Theme>> {
     let id = app.drawer_card?;
     let (top, card_h) = g.card?;
     app.toasts.iter().find(|t| t.notification.id == id)?;
     let t = app.drawer_t().clamp(0.0, 1.0);
     let error = app.drawer_error.is_some();
-    let full = Size::new(DRAWER_W, drawer_height(error));
-    let outer = Size::new((full.width * t).round(), (full.height * t).round());
-    if outer.width < 1.0 || outer.height < 1.0 {
+    let bottom = app.corner.bottom();
+    let (blur, r_card) = (app.blur, app.card_radius());
+    let r = radius::CARD;
+    let panes = ec_ui::glass::available();
+    // How far the pane reaches back into the card.
+    let over = if panes { r_card + r } else { 0.0 };
+    let (full_w, full_h) = (DRAWER_W, drawer_height(error));
+    let (vis_w, vis_h) = ((full_w * t).round(), (full_h * t).round());
+    if vis_w < 1.0 || vis_h < 1.0 {
         return None;
     }
-    let bottom = app.corner.bottom();
-    // The gap grows with the panel, so the two together are exactly the space
-    // the cards have made.
-    let gap = DRAWER_GAP * t;
-    let x = app.width as f32 - BUTTON_INSET - outer.width;
-    let y = if bottom {
-        // The card does not move in a bottom corner: the stack is pinned to the edge.
-        g.room + top - gap - outer.height
+    let (full, outer) = (Size::new(full_w, over + full_h), Size::new(vis_w, over + vis_h));
+    // The card's edge the drawer grows from, in surface coordinates. In a bottom
+    // corner the card does not move: the stack is pinned to the screen edge.
+    let (card_top, card_bottom) = if bottom {
+        (g.room + top, g.room + top + card_h)
     } else {
-        top + card_h + gap
+        (top, top + card_h)
     };
-    // The window opens from the button's side: the panel's right edge stays
-    // under the button, and its near edge stays on the card. The rows ride the
-    // window's far edges (left, top), so their padding holds as it opens.
-    let offset = Vector::ZERO;
-    let (blur, r) = (app.blur, app.card_radius());
+    // A px inside the card's edge, not on it: where two panes' edges coincide
+    // the compositor's smooth union drops the hairline for a stretch, and a px
+    // of difference keeps it (the junction is as straight either way).
+    let right = if panes {
+        app.width as f32 - 1.0
+    } else {
+        app.width as f32 - r_card
+    };
+    let x = right - outer.width;
+    let y = if bottom {
+        card_top + over - outer.height
+    } else {
+        card_bottom - over
+    };
     // The labels come in over the back half of the opening, once there is room.
     let ink = ((t - 0.4) / 0.6).clamp(0.0, 1.0);
     let mut options = Column::new()
@@ -378,16 +400,51 @@ fn silence_drawer<'a>(app: &'a App, g: &Geometry) -> Option<Element<'a, Message,
             .padding([0.0, space::HEADER_GAP]),
         );
     }
+    // The rows sit clear of the part inside the card: below it in a top corner,
+    // above it in a bottom one. They ride the window's near-left edge.
+    let pad = Padding {
+        top: drawer::PAD + if bottom { 0.0 } else { over },
+        bottom: drawer::PAD + if bottom { over } else { 0.0 },
+        left: drawer::PAD,
+        right: drawer::PAD,
+    };
+    // The rows are clipped to the part of the panel that is open, so none lands
+    // on the card while the panel is still growing out of it.
+    let rows_full = Size::new(full.width - pad.left - pad.right, full_h - 2.0 * drawer::PAD);
+    let rows_open = Size::new(
+        (vis_w - pad.left - pad.right).max(0.0),
+        (vis_h - 2.0 * drawer::PAD).clamp(0.0, rows_full.height),
+    );
+    let options = reveal(options, rows_full, rows_open, Vector::ZERO);
     let ground = container(options)
         .width(Length::Fixed(full.width))
         .height(Length::Fixed(full.height))
-        .padding(drawer::PAD)
-        .style(move |th: &Theme| ec_ui::theme::bare_container_if_glass(ec_ui::theme::surface(r, blur)(th)));
-    let window = reveal(ground, full, outer, offset);
-    // The panel fades in over the first third of its opening, so its first
-    // sliver is not a hard-edged shard of glass. It is a pane of its own in the
-    // card's tone and lit like the card the pointer is on, floating clear of it.
-    let panel = pane_lit(window, CellTone::Plain, r.min(radius::CARD), (t * 3.0).min(1.0));
+        .padding(pad)
+        .style(move |th: &Theme| {
+            let mut s = ec_ui::theme::surface(r, blur)(th);
+            // Drawn by hand, the tab's joined corners are square: they merge
+            // into the card's edge rather than curving away from it.
+            s.border.radius = if bottom {
+                iced::border::Radius {
+                    top_left: r,
+                    top_right: r,
+                    bottom_right: 0.0,
+                    bottom_left: 0.0,
+                }
+            } else {
+                iced::border::Radius {
+                    top_left: 0.0,
+                    top_right: 0.0,
+                    bottom_right: r,
+                    bottom_left: r,
+                }
+            };
+            ec_ui::theme::bare_container_if_glass(s)
+        });
+    let window = reveal(ground, full, outer, Vector::ZERO);
+    // The panel fades in over the first third of its opening. It is a pane in
+    // the card's tone, lit like the card the pointer is on, and joined to it.
+    let panel = pane_linked(window, CellTone::Plain, r, (t * 3.0).min(1.0), link(id), true);
     Some(
         container(panel)
             .width(Length::Fill)
@@ -399,6 +456,14 @@ fn silence_drawer<'a>(app: &'a App, g: &Geometry) -> Option<Element<'a, Message,
             })
             .into(),
     )
+}
+
+/// The key a card and its drawer are joined under.
+fn link(id: u32) -> Option<Link> {
+    Some(Link {
+        key: u64::from(id),
+        fillet: JOIN_R,
+    })
 }
 
 /// One option of the drawer: a quiet row that lifts under the pointer.
@@ -739,7 +804,16 @@ fn card<'a>(
     } else {
         CellTone::Plain
     };
-    pane(layers, tone, radius, alpha)
+    // A card with its drawer open is one shape with it.
+    let joined = app.drawer_card == Some(notification.id);
+    pane_linked(
+        layers,
+        tone,
+        radius,
+        alpha,
+        joined.then(|| link(notification.id)).flatten(),
+        false,
+    )
 }
 
 /// The card's last line. An app's names its source once and carries Open and
