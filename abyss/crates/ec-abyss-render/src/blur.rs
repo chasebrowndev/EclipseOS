@@ -995,6 +995,8 @@ struct SurfaceBlur {
     look: Arc<[Uniform<'static>]>,
     /// `eclipse_glass_v1` panes drawn from `result`, by index in the pane list.
     panes: Vec<PaneSlot>,
+    /// Joined shapes (ADR 0130) drawn from `result`, by index in the shape list.
+    shapes: Vec<PaneSlot>,
     /// Damage landed while the store was crowded and the recompute was
     /// deferred; flushed once `last` is [`CROWDED_INTERVAL`] frames old.
     pending: bool,
@@ -1184,7 +1186,69 @@ impl BlurStore {
     /// `i`'s output-local rect and uniforms, or `None` to skip it.
     /// Returns `None` when the backdrop could not be built (nothing pushed).
     #[allow(clippy::too_many_arguments)]
+    /// The pane elements of `count` panes over `union` (see [`Self::glass_units`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn pane_elements<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        fb: FbMap,
+        key: &BlurKey,
+        union: Rectangle<i32, Physical>,
+        behind: &[E],
+        blur: &Blur,
+        scale: Scale<f64>,
+        reach: i32,
+        program: &GlesTexProgram,
+        count: usize,
+        alpha: f32,
+        pane: impl FnMut(usize, &mut Vec<Uniform<'static>>) -> Option<Rectangle<i32, Physical>>,
+        out: &mut Vec<BlurElement>,
+        preset: GlassPreset,
+    ) -> Option<()>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        self.glass_units(
+            renderer, output, fb, key, union, behind, blur, scale, reach, program, count, alpha, pane, out,
+            preset, false,
+        )
+    }
+
+    /// The joined shape elements of `count` shapes over `union` (ADR 0130): the
+    /// same backdrop, drawn with `program` (the joined program).
+    #[allow(clippy::too_many_arguments)]
+    pub fn shape_elements<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        fb: FbMap,
+        key: &BlurKey,
+        union: Rectangle<i32, Physical>,
+        behind: &[E],
+        blur: &Blur,
+        scale: Scale<f64>,
+        reach: i32,
+        program: &GlesTexProgram,
+        count: usize,
+        alpha: f32,
+        pane: impl FnMut(usize, &mut Vec<Uniform<'static>>) -> Option<Rectangle<i32, Physical>>,
+        out: &mut Vec<BlurElement>,
+        preset: GlassPreset,
+    ) -> Option<()>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        self.glass_units(
+            renderer, output, fb, key, union, behind, blur, scale, reach, program, count, alpha, pane, out,
+            preset, true,
+        )
+    }
+
+    /// One glass element per unit of `lane`: a pane (`joined` false) or a joined
+    /// shape (`joined` true), each in its own slot list so ids stay put.
+    #[allow(clippy::too_many_arguments)]
+    fn glass_units<E>(
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
@@ -1201,6 +1265,7 @@ impl BlurStore {
         mut pane: impl FnMut(usize, &mut Vec<Uniform<'static>>) -> Option<Rectangle<i32, Physical>>,
         out: &mut Vec<BlurElement>,
         preset: GlassPreset,
+        joined: bool,
     ) -> Option<()>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -1210,19 +1275,29 @@ impl BlurStore {
         )?;
         let entry = self.surfaces.get_mut(key)?;
         let texture = entry.result.clone()?;
-        while entry.panes.len() < count {
-            entry.panes.push(PaneSlot {
+        let slots = if joined {
+            &mut entry.shapes
+        } else {
+            &mut entry.panes
+        };
+        while slots.len() < count {
+            slots.push(PaneSlot {
                 id: Id::new(),
                 look: no_uniforms(),
                 commit: CommitCounter::default(),
                 seen: entry.commit,
             });
         }
-        entry.panes.truncate(count);
+        slots.truncate(count);
         let backdrop = entry.commit;
         let mut uniforms = std::mem::take(&mut self.pane_uniforms);
         let entry = self.surfaces.get_mut(key)?;
-        for (i, slot) in entry.panes.iter_mut().enumerate() {
+        let slots = if joined {
+            &mut entry.shapes
+        } else {
+            &mut entry.panes
+        };
+        for (i, slot) in slots.iter_mut().enumerate() {
             uniforms.clear();
             let Some(rect) = pane(i, &mut uniforms) else {
                 continue;
@@ -1302,6 +1377,7 @@ impl BlurStore {
             id: Id::new(),
             look: no_uniforms(),
             panes: Vec::new(),
+            shapes: Vec::new(),
             pending: false,
             last: 0,
         });

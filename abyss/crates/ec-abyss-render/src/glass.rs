@@ -11,6 +11,7 @@
 //!
 //! No allocation: the list is a fixed `[Pane; 64]` plus a length.
 
+use ec_protocols::glass::{JoinRecord, JOIN_RECORD_BYTES};
 use smithay::{
     reexports::wayland_server::DisplayHandle,
     utils::{Logical, Physical, Rectangle},
@@ -62,6 +63,94 @@ pub enum ParseError {
     TooManyPanes,
 }
 
+/// Most joins one `set_joins` may carry (`too_many_joins`).
+pub const MAX_JOINS: usize = 64;
+/// Most panes one joined shape may hold; the rest draw alone (ADR 0130).
+pub const MAX_SHAPE_PANES: usize = 16;
+/// Largest fillet radius a join may ask for, logical px.
+pub const MAX_JOIN_RADIUS: u32 = 64;
+
+/// One join of `set_joins` (ADR 0130), checked against the pane list it was
+/// latched with: `a` and `b` are indices into it, `a != b`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Join {
+    pub a: u8,
+    pub b: u8,
+    /// Fillet radius where the two panes meet, logical px, at most
+    /// [`MAX_JOIN_RADIUS`].
+    pub radius: u32,
+}
+
+/// Why a `set_joins` array was refused (`bad_join`, `too_many_joins`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinError {
+    /// Not a multiple of 12 bytes, an index at or past the pane count, or a
+    /// pane joined to itself.
+    BadJoin,
+    TooManyJoins,
+}
+
+/// A fixed-capacity join list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JoinSet {
+    joins: [Join; MAX_JOINS],
+    len: usize,
+}
+
+impl Default for JoinSet {
+    fn default() -> Self {
+        Self {
+            joins: [Join::default(); MAX_JOINS],
+            len: 0,
+        }
+    }
+}
+
+impl JoinSet {
+    pub fn as_slice(&self) -> &[Join] {
+        &self.joins[..self.len]
+    }
+
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+}
+
+/// Parse a `set_joins` array against a pane list of `panes` entries. An empty
+/// array clears the joins. The radius is capped at [`MAX_JOIN_RADIUS`].
+pub fn parse_joins(bytes: &[u8], panes: usize) -> Result<JoinSet, JoinError> {
+    if bytes.len() % JOIN_RECORD_BYTES != 0 {
+        return Err(JoinError::BadJoin);
+    }
+    let count = bytes.len() / JOIN_RECORD_BYTES;
+    if count > MAX_JOINS {
+        return Err(JoinError::TooManyJoins);
+    }
+    let mut set = JoinSet::default();
+    for (slot, rec) in set.joins.iter_mut().zip(bytes.chunks_exact(JOIN_RECORD_BYTES)) {
+        let rec = JoinRecord::from_bytes(rec).ok_or(JoinError::BadJoin)?;
+        let index = |i: u32| usize::try_from(i).ok().filter(|&i| i < panes);
+        let (Some(a), Some(b)) = (index(rec.a), index(rec.b)) else {
+            return Err(JoinError::BadJoin);
+        };
+        if a == b {
+            return Err(JoinError::BadJoin);
+        }
+        // Below MAX_PANES, so both indices fit a byte.
+        *slot = Join {
+            a: a as u8,
+            b: b as u8,
+            radius: rec.radius.min(MAX_JOIN_RADIUS),
+        };
+    }
+    set.len = count;
+    Ok(set)
+}
+
 /// A fixed-capacity pane list.
 #[derive(Debug, Clone)]
 pub struct PaneSet {
@@ -70,6 +159,9 @@ pub struct PaneSet {
     /// `set_clip` (ADR 0127): the rectangle `CLIPPED` panes are cut to,
     /// surface-local logical. `None` clears it.
     pub clip: Option<Rectangle<i32, Logical>>,
+    /// `set_joins` (ADR 0130), latched with the panes. Empty after any
+    /// `set_panes`, since the indices refer to the list it replaces.
+    joins: JoinSet,
 }
 
 impl Default for PaneSet {
@@ -78,19 +170,31 @@ impl Default for PaneSet {
             panes: [Pane::default(); MAX_PANES],
             len: 0,
             clip: None,
+            joins: JoinSet::default(),
         }
     }
 }
 
 impl PartialEq for PaneSet {
     fn eq(&self, other: &Self) -> bool {
-        self.as_slice() == other.as_slice() && self.clip == other.clip
+        self.as_slice() == other.as_slice() && self.clip == other.clip && self.joins == other.joins
     }
 }
 
 impl PaneSet {
     pub fn as_slice(&self) -> &[Pane] {
         &self.panes[..self.len]
+    }
+
+    /// The latched joins (ADR 0130), in array order.
+    pub fn joins(&self) -> &[Join] {
+        self.joins.as_slice()
+    }
+
+    /// Replace the joins; the caller has checked them against this list
+    /// ([`parse_joins`]).
+    pub fn set_joins(&mut self, joins: JoinSet) {
+        self.joins = joins;
     }
 
     pub fn len(&self) -> usize {
@@ -580,6 +684,231 @@ pub fn shadow_params(radius: f32, light: bool) -> [f32; 3] {
     [range as f32, radius, drop as f32]
 }
 
+/// `of` entry for a pane that draws on its own.
+pub const ALONE: u8 = u8::MAX;
+
+/// A joined shape (ADR 0130): up to [`MAX_SHAPE_PANES`] panes drawn as one
+/// piece of glass. `members` are pane indices in attachment order: the lowest
+/// index first, then each pane reached over a join from one before it, so the
+/// shape is drawn at its lowest index. `fillet[k]` is the radius of the join
+/// member `k` was reached by (0 for the first).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JoinedShape {
+    pub members: [u8; MAX_SHAPE_PANES],
+    pub fillet: [u32; MAX_SHAPE_PANES],
+    pub len: usize,
+}
+
+impl JoinedShape {
+    /// The member indices, in attachment order.
+    pub fn members(&self) -> &[u8] {
+        &self.members[..self.len]
+    }
+}
+
+/// The joined shapes of a pane list (see [`find_shapes`]): the shapes in index
+/// order, and for each pane the shape it belongs to, or [`ALONE`]. Reused
+/// across frames: `find_shapes` clears, not reallocates, it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Shapes {
+    pub list: Vec<JoinedShape>,
+    pub of: [u8; MAX_PANES],
+}
+
+impl Default for Shapes {
+    fn default() -> Self {
+        Self {
+            list: Vec::new(),
+            of: [ALONE; MAX_PANES],
+        }
+    }
+}
+
+/// Whether pane `i` may take part in a joined shape. It must draw glass on its
+/// own: a box with some alpha and a look (a latent pane at rest draws nothing),
+/// and not a cell (a fill on its card, see [`cell_parent`]). A pane under a
+/// `set_clip` cut is not joined either: the cut is not a union's edge. The
+/// `drawn` filter of [`find_shapes`] adds what the renderer also needs.
+pub fn joinable(panes: &[Pane], i: usize, clipped: bool) -> bool {
+    let Some(p) = panes.get(i) else {
+        return false;
+    };
+    p.w > 0
+        && p.h > 0
+        && look(p, false).is_some()
+        && !(clipped && p.state & CLIPPED != 0)
+        && cell_parent(panes, i).is_none()
+}
+
+/// Two boxes touch when they overlap or share an edge (closed rectangles
+/// intersect). A join between boxes that do not touch has no fillet to span,
+/// so it draws as two panes (ADR 0130).
+fn touching(a: &Pane, b: &Pane) -> bool {
+    let (ax0, ay0) = (i64::from(a.x), i64::from(a.y));
+    let (ax1, ay1) = (ax0 + i64::from(a.w), ay0 + i64::from(a.h));
+    let (bx0, by0) = (i64::from(b.x), i64::from(b.y));
+    let (bx1, by1) = (bx0 + i64::from(b.w), by0 + i64::from(b.h));
+    ax0 <= bx1 && bx0 <= ax1 && ay0 <= by1 && by0 <= ay1
+}
+
+/// The panes reached from `root` over `edges` (valid joins whose ends are kept),
+/// in breadth-first order, each with the join radius it was reached by. Returns
+/// how many were reached; `order` holds them from index 0.
+fn reach(
+    root: usize,
+    edges: &[(u8, u8, u32)],
+    keep: &[bool; MAX_PANES],
+    order: &mut [(u8, u32); MAX_PANES],
+) -> usize {
+    let mut seen = [false; MAX_PANES];
+    order[0] = (root as u8, 0);
+    seen[root] = true;
+    let (mut len, mut head) = (1, 0);
+    while head < len {
+        let u = order[head].0 as usize;
+        head += 1;
+        for &(a, b, radius) in edges {
+            let (a, b) = (a as usize, b as usize);
+            let v = if a == u {
+                b
+            } else if b == u {
+                a
+            } else {
+                continue;
+            };
+            if keep[v] && !seen[v] {
+                seen[v] = true;
+                order[len] = (v as u8, radius);
+                len += 1;
+            }
+        }
+    }
+    len
+}
+
+/// Group the panes of a surface into joined shapes (ADR 0130), into `out`.
+///
+/// A join counts when both panes are [`joinable`] and drawn (`drawn`), are
+/// distinct, and touch. The panes joined through those form components; a
+/// component of two or more is one shape. A component larger than
+/// [`MAX_SHAPE_PANES`] keeps its lowest sixteen indices as the shape and the
+/// rest draw alone (a limit, not an error). Duplicate joins are harmless.
+pub fn find_shapes(
+    panes: &[Pane],
+    joins: &[Join],
+    clipped: bool,
+    drawn: impl Fn(usize) -> bool,
+    out: &mut Shapes,
+) {
+    out.list.clear();
+    out.of = [ALONE; MAX_PANES];
+    let n = panes.len().min(MAX_PANES);
+    let mut keep = [false; MAX_PANES];
+    for (i, k) in keep.iter_mut().enumerate().take(n) {
+        *k = drawn(i) && joinable(panes, i, clipped);
+    }
+    let mut edges = [(0u8, 0u8, 0u32); MAX_JOINS];
+    let mut m = 0;
+    for j in joins {
+        let (a, b) = (j.a as usize, j.b as usize);
+        if a < n && b < n && a != b && keep[a] && keep[b] && touching(&panes[a], &panes[b]) {
+            edges[m] = (j.a, j.b, j.radius);
+            m += 1;
+        }
+    }
+    let edges = &edges[..m];
+    if edges.is_empty() {
+        return;
+    }
+    let mut seen = [false; MAX_PANES];
+    let mut order = [(0u8, 0u32); MAX_PANES];
+    for root in 0..n {
+        if !keep[root] || seen[root] {
+            continue;
+        }
+        let mut len = reach(root, edges, &keep, &mut order);
+        if len > MAX_SHAPE_PANES {
+            // The lowest sixteen keep their joins; the others draw alone. The
+            // root is the component's lowest index, so it stays.
+            let mut idx = [0u8; MAX_PANES];
+            for (slot, &(p, _)) in idx.iter_mut().zip(&order[..len]) {
+                *slot = p;
+            }
+            idx[..len].sort_unstable();
+            for &p in &idx[MAX_SHAPE_PANES..len] {
+                keep[p as usize] = false;
+            }
+            len = reach(root, edges, &keep, &mut order);
+        }
+        for &(p, _) in &order[..len] {
+            seen[p as usize] = true;
+        }
+        if len < 2 {
+            continue;
+        }
+        let mut shape = JoinedShape {
+            members: [0; MAX_SHAPE_PANES],
+            fillet: [0; MAX_SHAPE_PANES],
+            len,
+        };
+        for (k, &(p, radius)) in order[..len].iter().enumerate() {
+            shape.members[k] = p;
+            shape.fillet[k] = radius;
+        }
+        let id = out.list.len() as u8;
+        for &(p, _) in &order[..len] {
+            out.of[p as usize] = id;
+        }
+        out.list.push(shape);
+    }
+}
+
+/// One member box for [`joined_distance`]: `[x, y, w, h]` (the shape box,
+/// gl px), its corner radius and the fillet it joins by.
+pub type MemberBox = ([f32; 4], f32, f32);
+
+/// `(distance, arc centre)` of one rounded box at `f`: the CPU mirror of the
+/// joined shader's per-member box (effects.rs `shape_sdg`).
+fn box_arc(b: [f32; 4], radius: f32, f: (f32, f32)) -> (f32, (f32, f32)) {
+    let (hx, hy) = (b[2] * 0.5, b[3] * 0.5);
+    let r = radius.min(hx.min(hy)).max(0.0);
+    let qx = (f.0 - (b[0] + hx)).abs() - hx + r;
+    let qy = (f.1 - (b[1] + hy)).abs() - hy + r;
+    let d = qx.max(0.0).hypot(qy.max(0.0)) + qx.max(qy).min(0.0) - r;
+    let arc = (
+        f.0.max(b[0] + r).min(b[0] + b[2] - r),
+        f.1.max(b[1] + r).min(b[1] + b[3] - r),
+    );
+    (d, arc)
+}
+
+/// `blur::join` at one member's own fillet and corner radius: the joined
+/// shader's `join_member`, distance only.
+fn smooth_join(a: (f32, (f32, f32)), b: (f32, (f32, f32)), fillet: f32, radius: f32) -> (f32, (f32, f32)) {
+    let m = if b.0 < a.0 { b } else { a };
+    if fillet <= 0.0 {
+        return m;
+    }
+    let h = (fillet - (a.0 - b.0).abs()).max(0.0) / fillet;
+    let gap = ((a.1 .0 - b.1 .0).hypot(a.1 .1 - b.1 .1) / radius.max(1.0)).min(1.0);
+    (m.0 - gap * h * h * fillet * 0.25, m.1)
+}
+
+/// The signed distance of a joined element at `f` (ADR 0130): the members
+/// folded in order, each smooth-min'd into the shape so far at its own fillet.
+/// Mirrors the joined shader; with every fillet 0 it is the plain union.
+pub fn joined_distance(members: &[MemberBox], f: (f32, f32)) -> f32 {
+    let mut acc: Option<(f32, (f32, f32))> = None;
+    for &(b, radius, fillet) in members {
+        let c = box_arc(b, radius, f);
+        acc = Some(match acc {
+            None => c,
+            Some(a) => smooth_join(a, c, fillet, radius),
+        });
+    }
+    acc.map_or(f32::INFINITY, |a| a.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -664,6 +993,72 @@ mod tests {
             .unwrap()
             .union((100, 100).into())
             .is_none());
+    }
+
+    fn join_rec(a: u32, b: u32, radius: u32) -> Vec<u8> {
+        JoinRecord { a, b, radius }.to_bytes().to_vec()
+    }
+
+    /// ADR 0130: valid joins parse in order; the radius is capped at 64; an
+    /// empty array is no joins.
+    #[test]
+    fn parses_joins_and_caps_the_radius() {
+        let set = parse_joins(&[join_rec(0, 1, 16), join_rec(2, 1, 900)].concat(), 3).unwrap();
+        assert_eq!(
+            set.as_slice(),
+            &[
+                Join {
+                    a: 0,
+                    b: 1,
+                    radius: 16
+                },
+                Join {
+                    a: 2,
+                    b: 1,
+                    radius: MAX_JOIN_RADIUS
+                },
+            ]
+        );
+        assert!(parse_joins(&[], 3).unwrap().is_empty());
+    }
+
+    /// `bad_join`: a length that is not whole records, an index at or past the
+    /// pane count, and a pane joined to itself. `too_many_joins` past 64.
+    #[test]
+    fn bad_joins_are_refused_and_the_cap_is_64() {
+        assert_eq!(parse_joins(&[0u8; 11], 4), Err(JoinError::BadJoin));
+        assert_eq!(parse_joins(&join_rec(0, 4, 8), 4), Err(JoinError::BadJoin));
+        assert_eq!(parse_joins(&join_rec(4, 0, 8), 4), Err(JoinError::BadJoin));
+        assert_eq!(parse_joins(&join_rec(1, 1, 8), 4), Err(JoinError::BadJoin));
+        assert_eq!(parse_joins(&join_rec(0, 1, 8), 0), Err(JoinError::BadJoin));
+        assert_eq!(
+            parse_joins(&join_rec(0, 0xffff_ffff, 8), 64),
+            Err(JoinError::BadJoin)
+        );
+        let ok: Vec<u8> = join_rec(0, 1, 8).into_iter().cycle().take(12 * 64).collect();
+        assert_eq!(parse_joins(&ok, 2).unwrap().len(), 64);
+        let over: Vec<u8> = join_rec(0, 1, 8).into_iter().cycle().take(12 * 65).collect();
+        assert_eq!(parse_joins(&over, 2), Err(JoinError::TooManyJoins));
+    }
+
+    /// Joins belong to the pane list they were sent with: they are part of
+    /// the set's identity, and a fresh set has none.
+    #[test]
+    fn a_pane_set_carries_its_joins() {
+        let mut set =
+            parse_panes(&[rec(0, 0, 10, 10, 0, 0, 255), rec(10, 0, 10, 10, 0, 0, 255)].concat()).unwrap();
+        assert!(set.joins().is_empty());
+        let plain = set.clone();
+        set.set_joins(parse_joins(&join_rec(0, 1, 12), set.len()).unwrap());
+        assert_eq!(
+            set.joins(),
+            &[Join {
+                a: 0,
+                b: 1,
+                radius: 12
+            }]
+        );
+        assert_ne!(set, plain, "joins are part of the set's identity");
     }
 
     fn pane(tone: Tone, state: u32, alpha: u8) -> Pane {
@@ -1076,6 +1471,211 @@ mod tests {
             let v = lens_scale(&sized(s, s));
             assert!(v <= last + 1e-6);
             last = v;
+        }
+    }
+
+    /// A plain, drawn box at (x, y) of size w x h.
+    fn boxed(x: i32, y: i32, w: i32, h: i32) -> Pane {
+        Pane {
+            x,
+            y,
+            w,
+            h,
+            ..pane(Tone::Plain, 0, 255)
+        }
+    }
+
+    fn join(a: u8, b: u8, radius: u32) -> Join {
+        Join { a, b, radius }
+    }
+
+    fn shapes_of(panes: &[Pane], joins: &[Join]) -> Shapes {
+        let mut out = Shapes::default();
+        find_shapes(panes, joins, false, |_| true, &mut out);
+        out
+    }
+
+    #[test]
+    fn a_chain_is_one_shape_in_attachment_order() {
+        // Three boxes in a row, each touching the next (shared edges).
+        let panes = [boxed(0, 0, 10, 10), boxed(10, 0, 10, 10), boxed(20, 0, 10, 10)];
+        let out = shapes_of(&panes, &[join(1, 2, 8), join(0, 1, 4)]);
+        assert_eq!(out.list.len(), 1);
+        let shape = out.list[0];
+        assert_eq!(shape.members(), &[0, 1, 2]);
+        // The fillet is the radius of the join each member was reached by.
+        assert_eq!(&shape.fillet[..3], &[0, 4, 8]);
+        assert_eq!(out.of[0], 0);
+        assert_eq!(out.of[2], 0);
+        assert_eq!(out.of[3], ALONE);
+    }
+
+    #[test]
+    fn a_cycle_is_one_shape_with_each_member_once() {
+        let panes = [boxed(0, 0, 10, 10), boxed(10, 0, 10, 10), boxed(0, 10, 10, 10)];
+        let out = shapes_of(&panes, &[join(0, 1, 8), join(1, 2, 8), join(2, 0, 8)]);
+        assert_eq!(out.list.len(), 1);
+        assert_eq!(out.list[0].len, 3);
+        let mut m = out.list[0].members().to_vec();
+        m.sort_unstable();
+        assert_eq!(m, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn panes_that_do_not_touch_are_not_joined() {
+        let panes = [boxed(0, 0, 10, 10), boxed(11, 0, 10, 10)];
+        let out = shapes_of(&panes, &[join(0, 1, 8)]);
+        assert!(out.list.is_empty());
+        assert_eq!(out.of[0], ALONE);
+        assert_eq!(out.of[1], ALONE);
+    }
+
+    #[test]
+    fn touching_at_a_corner_counts() {
+        let panes = [boxed(0, 0, 10, 10), boxed(10, 10, 10, 10)];
+        let out = shapes_of(&panes, &[join(0, 1, 8)]);
+        assert_eq!(out.list.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_self_and_out_of_range_joins_are_harmless() {
+        let panes = [boxed(0, 0, 10, 10), boxed(10, 0, 10, 10)];
+        let joins = [join(0, 1, 8), join(1, 0, 8), join(0, 0, 8), join(0, 9, 8)];
+        let out = shapes_of(&panes, &joins);
+        assert_eq!(out.list.len(), 1);
+        assert_eq!(out.list[0].members(), &[0, 1]);
+    }
+
+    #[test]
+    fn an_undrawn_pane_breaks_the_chain() {
+        let panes = [boxed(0, 0, 10, 10), boxed(10, 0, 10, 10), boxed(20, 0, 10, 10)];
+        let mut out = Shapes::default();
+        find_shapes(
+            &panes,
+            &[join(0, 1, 8), join(1, 2, 8)],
+            false,
+            |i| i != 1,
+            &mut out,
+        );
+        assert!(out.list.is_empty());
+    }
+
+    #[test]
+    fn a_clipped_pane_is_not_joined() {
+        let panes = [
+            boxed(0, 0, 10, 10),
+            Pane {
+                state: CLIPPED,
+                ..boxed(10, 0, 10, 10)
+            },
+        ];
+        let mut out = Shapes::default();
+        find_shapes(&panes, &[join(0, 1, 8)], true, |_| true, &mut out);
+        assert!(out.list.is_empty());
+        // Without a clip in force the same state is an ordinary pane.
+        find_shapes(&panes, &[join(0, 1, 8)], false, |_| true, &mut out);
+        assert_eq!(out.list.len(), 1);
+    }
+
+    #[test]
+    fn a_zero_area_pane_is_not_joined() {
+        let panes = [boxed(0, 0, 10, 10), boxed(10, 0, 0, 10)];
+        let out = shapes_of(&panes, &[join(0, 1, 8)]);
+        assert!(out.list.is_empty());
+    }
+
+    #[test]
+    fn seventeen_members_keep_the_lowest_sixteen() {
+        let panes: Vec<Pane> = (0..17).map(|i| boxed(i * 10, 0, 10, 10)).collect();
+        let joins: Vec<Join> = (0..16).map(|i| join(i, i + 1, 8)).collect();
+        let out = shapes_of(&panes, &joins);
+        assert_eq!(out.list.len(), 1);
+        assert_eq!(out.list[0].len, MAX_SHAPE_PANES);
+        let expect: Vec<u8> = (0..16).collect();
+        assert_eq!(out.list[0].members(), expect.as_slice());
+        assert_eq!(out.of[15], 0);
+        assert_eq!(out.of[16], ALONE);
+    }
+
+    #[test]
+    fn find_shapes_reuses_its_output() {
+        let panes = [boxed(0, 0, 10, 10), boxed(10, 0, 10, 10)];
+        let mut out = Shapes::default();
+        find_shapes(&panes, &[join(0, 1, 8)], false, |_| true, &mut out);
+        find_shapes(&panes, &[], false, |_| true, &mut out);
+        assert!(out.list.is_empty());
+        assert_eq!(out.of[0], ALONE);
+    }
+
+    /// The pill and drawer of the headless probe (gl px): the pill across the
+    /// top, the drawer hanging from its bottom-right, touching it.
+    fn pill_and_drawer(fillet: f32) -> [MemberBox; 2] {
+        [
+            ([40.0, 40.0, 300.0, 40.0], 12.0, 0.0),
+            ([290.0, 80.0, 50.0, 160.0], 12.0, fillet),
+        ]
+    }
+
+    #[test]
+    fn a_zero_fillet_is_the_plain_union() {
+        let [a, b] = pill_and_drawer(0.0);
+        for &p in &[(287.0, 83.0), (300.0, 100.0), (5.0, 5.0), (330.0, 230.0)] {
+            let plain = box_arc(a.0, a.1, p).0.min(box_arc(b.0, b.1, p).0);
+            assert_eq!(joined_distance(&[a, b], p), plain, "at {p:?}");
+        }
+    }
+
+    #[test]
+    fn far_from_the_join_the_union_is_the_plain_minimum() {
+        // Far from both boxes the two distances differ by more than the fillet,
+        // so the bite is zero and the joined distance is the plain minimum.
+        let [a, b] = pill_and_drawer(16.0);
+        for &p in &[(5.0, 5.0), (400.0, 20.0), (20.0, 300.0)] {
+            let da = box_arc(a.0, a.1, p).0;
+            let db = box_arc(b.0, b.1, p).0;
+            assert!((da - db).abs() >= 16.0, "probe {p:?} is near the join");
+            assert_eq!(joined_distance(&[a, b], p), da.min(db), "at {p:?}");
+        }
+    }
+
+    #[test]
+    fn the_inside_corner_fills_outside_both_boxes() {
+        // The fillet puts glass in the concave corner: somewhere outside both
+        // boxes the joined distance is negative (inside the shape), where the
+        // plain union is positive. Search the corner's neighbourhood.
+        let [a, b] = pill_and_drawer(16.0);
+        let mut found = 0;
+        let mut y = 80.0;
+        while y <= 92.0 {
+            let mut x = 284.0;
+            while x <= 296.0 {
+                let p = (x, y);
+                let ua = box_arc(a.0, a.1, p).0;
+                let ub = box_arc(b.0, b.1, p).0;
+                let j = joined_distance(&[a, b], p);
+                if ua > 0.0 && ub > 0.0 && j < 0.0 {
+                    found += 1;
+                }
+                // The bite only ever lowers the union.
+                assert!(j <= ua.min(ub) + 1e-4, "at {p:?}");
+                x += 0.5;
+            }
+            y += 0.5;
+        }
+        assert!(found > 0, "no concave-corner point is inside the joined shape");
+    }
+
+    #[test]
+    fn the_smooth_min_is_symmetric_at_one_fillet() {
+        // The fillet belongs to the member joined in, so the order matters only
+        // through it: with one fillet on both, swapping the members changes nothing.
+        let [a, _] = pill_and_drawer(16.0);
+        let b = ([290.0, 80.0, 50.0, 160.0], 12.0, 16.0);
+        let a = (a.0, a.1, 16.0);
+        for &p in &[(287.0, 83.0), (292.0, 86.0), (330.0, 200.0), (5.0, 60.0)] {
+            let ab = joined_distance(&[a, b], p);
+            let ba = joined_distance(&[b, a], p);
+            assert!((ab - ba).abs() < 1e-4, "at {p:?}: {ab} vs {ba}");
         }
     }
 }

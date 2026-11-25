@@ -664,6 +664,7 @@ name = "ec-abyss-render"
 version = "0.2.2"
 dependencies = [
  "ec-abyss-config",
+ "ec-protocols",
  "ec-theme",
  "serde_json",
  "smithay",
