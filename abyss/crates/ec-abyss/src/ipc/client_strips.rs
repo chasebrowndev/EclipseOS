@@ -120,6 +120,11 @@ fn parse(params: &Value) -> Result<Request, RpcError> {
                 .as_bool()
                 .ok_or_else(|| bad("key everywhere must be a boolean"))?,
         };
+        // ADR 0132: the matched pixels are drawn as a lens, not a flat tint.
+        keys.lens[i] = match k.get("lens") {
+            None => false,
+            Some(b) => b.as_bool().ok_or_else(|| bad("key lens must be a boolean"))?,
+        };
     }
     let list = obj
         .get("windows")
@@ -425,6 +430,23 @@ mod tests {
         .ok()
         .unwrap();
         assert!(ev.keys.everywhere[0] && ev.keys.any_everywhere());
+        // ADR 0132: `lens` is optional and defaults off, per key.
+        assert_eq!(ok.keys.lens, [false; 4]);
+        assert!(!ok.keys.any_lens());
+        let lens = parse(&json!({
+            "keys": [
+                {"color": "#112233", "opacity": 0.5, "lens": true},
+                {"color": "#445566", "opacity": 0.6, "everywhere": true, "lens": false},
+                {"color": "#778899", "opacity": 0.7}
+            ],
+            "windows": []
+        }))
+        .ok()
+        .unwrap();
+        assert_eq!(lens.keys.lens, [true, false, false, false]);
+        assert!(lens.keys.any_lens());
+        assert!(lens.keys.everywhere[1] && !lens.keys.everywhere[0]);
+        assert_eq!(lens.keys.rgb[1], [0x44, 0x55, 0x66]);
         assert_eq!(ok.entries.len(), 2);
         assert!(!ok.entries[0].body && ok.entries[1].body);
         let k = json!([{"color": "#112233", "opacity": 0.5}]);
@@ -450,6 +472,9 @@ mod tests {
             json!({"keys": k, "windows": [{"width": 1, "height": 2}]}),
             json!({"keys": k, "windows": [{"width": 1, "height": 2, "content": 1, "body": 1}]}),
             json!({"keys": [{"color": "#112233", "opacity": 0.5, "everywhere": 1}], "windows": w}),
+            json!({"keys": [{"color": "#112233", "opacity": 0.5, "lens": 1}], "windows": w}),
+            json!({"keys": [{"color": "#112233", "opacity": 0.5, "lens": "yes"}], "windows": w}),
+            json!({"keys": [{"color": "#112233", "opacity": 0.5, "lens": null}], "windows": w}),
             json!({"keys": k, "windows": w, "extra": 1}),
             json!(null),
         ] {

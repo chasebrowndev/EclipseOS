@@ -27,6 +27,7 @@ pub mod gpu_timer;
 pub mod groups;
 pub mod hud;
 pub mod hud_font;
+pub mod keyed_lens;
 pub mod menu;
 pub mod output_overscan;
 pub mod overscan;
@@ -172,6 +173,40 @@ fn layer_sees_no_window(
     mut windows: impl Iterator<Item = Rectangle<i32, Physical>>,
 ) -> bool {
     index <= base_start && !windows.any(|w| w.overlaps(region))
+}
+
+/// The keyed lens (ADR 0132) that goes just above `backdrop`, if its window
+/// asked for one and it can be built. `None` leaves the flat key as it was.
+#[allow(clippy::too_many_arguments)]
+fn lens_for(
+    renderer: &mut GlesRenderer,
+    store: &mut BorderStore,
+    output: &Output,
+    config: &Config,
+    scale: Scale<f64>,
+    lenses: &[keyed_lens::LensRequest],
+    key: &blur::BlurKey,
+    backdrop: &blur::BlurElement,
+    crop: Option<Rectangle<i32, Physical>>,
+) -> Option<AbyssRenderElement> {
+    let req = lenses.iter().find(|l| &l.key == key)?;
+    let (_, _, glass) = store.gpu.keyed_lens.get(renderer)?;
+    let mode = output.current_mode()?.size;
+    let upscale = scale.x.max(scale.y);
+    let blur = &config.decoration.blur;
+    let lens = keyed_lens::element(
+        renderer,
+        &glass,
+        req,
+        backdrop,
+        scale,
+        &blur.glass,
+        config.appearance.glass_light(),
+        blur.adaptive.effective(),
+        upscale,
+        (mode.w, mode.h),
+    )?;
+    wrap_blur(lens, crop, scale)
 }
 
 /// Wrap a backdrop element as the list holds it: cut to its tile if it has one.
@@ -733,6 +768,8 @@ pub struct BorderGpu {
     /// Tint-keyed texture program (ADR 0079), compiled on the first frame a
     /// keyed strip draws; `Err` once it failed, so it is not retried per frame.
     keyed: Option<Result<smithay::backend::renderer::gles::GlesTexProgram, ()>>,
+    /// The keyed lens's label, distance and glass programs (ADR 0132).
+    keyed_lens: keyed_lens::Programs,
     /// Frost and glass backdrop programs, compiled on the first frame that
     /// draws a backdrop in that mode.
     frost: Option<smithay::backend::renderer::gles::GlesTexProgram>,
@@ -1266,6 +1303,7 @@ pub fn collect_elements(
     ghost_elements(renderer, borders, output, space, config, &mut elements);
     let mut wins = std::mem::take(&mut borders.blur_wins);
     wins.clear();
+    let mut lenses: Vec<keyed_lens::LensRequest> = Vec::new();
     window_elements(
         renderer,
         space,
@@ -1276,6 +1314,7 @@ pub fn collect_elements(
         &mut elements,
         &mut blur_requests,
         &mut pane_requests,
+        &mut lenses,
         &mut wins,
     );
     // Everything from here down lies below every window.
@@ -1302,6 +1341,7 @@ pub fn collect_elements(
         config,
         blur_requests,
         pane_requests,
+        lenses,
         &mut elements,
         &wins,
         base_start,
@@ -1391,6 +1431,7 @@ pub fn lock_glass_elements(
         config,
         Vec::new(),
         vec![req],
+        Vec::new(),
         &mut elements,
         // No windows under the lock: nothing to cull.
         &[],
@@ -1472,6 +1513,7 @@ fn insert_blur(
     config: &Config,
     requests: Vec<BlurRequest>,
     panes: Vec<PaneRequest>,
+    lenses: Vec<keyed_lens::LensRequest>,
     elements: &mut Vec<AbyssRenderElement>,
     wins: &[WinRec],
     base_start: usize,
@@ -1759,6 +1801,9 @@ fn insert_blur(
     let mut glass = std::mem::take(&mut store.blur_glass);
     glass.clear();
     glass.resize_with(preps.len(), || None);
+    // Each prep's keyed lens (ADR 0132), spliced just above its backdrop.
+    let mut lens_out: Vec<Option<AbyssRenderElement>> = Vec::new();
+    lens_out.resize_with(preps.len(), || None);
     let mut refs = std::mem::take(&mut store.blur_refs);
     for d in 0..groups::MAX_TIERS as u8 {
         // The topmost member (last in back-to-front order) sets how much of
@@ -1830,6 +1875,19 @@ fn insert_blur(
                 preps[p].ring,
                 scale,
             );
+            lens_out[p] = element.as_ref().and_then(|e| {
+                lens_for(
+                    renderer,
+                    store,
+                    output,
+                    config,
+                    scale,
+                    &lenses,
+                    &preps[p].key,
+                    e,
+                    preps[p].crop,
+                )
+            });
             glass[p] = element.and_then(|e| wrap_blur(e, preps[p].crop, scale));
         }
     }
@@ -1846,30 +1904,41 @@ fn insert_blur(
         } else {
             let draw = preps[p].draw.take().map(|program| (program, &mut pool[p]));
             let behind = &elements[index..];
-            store
-                .gpu
-                .blur
-                .entry(output.clone())
-                .or_default()
-                .element(
+            let raw = store.gpu.blur.entry(output.clone()).or_default().element(
+                renderer,
+                output,
+                &preps[p].key,
+                preps[p].region,
+                behind,
+                cfg,
+                scale,
+                draw,
+                preps[p].reach,
+                preps[p].ring,
+                preps[p].shape.as_ref(),
+                1.0,
+                preps[p].preset,
+            );
+            lens_out[p] = raw.as_ref().and_then(|e| {
+                lens_for(
                     renderer,
+                    store,
                     output,
-                    &preps[p].key,
-                    preps[p].region,
-                    behind,
-                    cfg,
+                    config,
                     scale,
-                    draw,
-                    preps[p].reach,
-                    preps[p].ring,
-                    preps[p].shape.as_ref(),
-                    1.0,
-                    preps[p].preset,
+                    &lenses,
+                    &preps[p].key,
+                    e,
+                    preps[p].crop,
                 )
-                .and_then(|e| wrap_blur(e, preps[p].crop, scale))
+            });
+            raw.and_then(|e| wrap_blur(e, preps[p].crop, scale))
         };
         if let Some(element) = element {
             elements.insert(index, element);
+            if let Some(lens) = lens_out[p].take() {
+                elements.insert(index, lens);
+            }
         }
     }
     preps.clear();
@@ -2706,6 +2775,7 @@ fn window_elements(
     out: &mut Vec<AbyssRenderElement>,
     blurred: &mut Vec<BlurRequest>,
     pane_requests: &mut Vec<PaneRequest>,
+    lenses: &mut Vec<keyed_lens::LensRequest>,
     wins: &mut Vec<WinRec>,
 ) {
     let Some(output_geo) = space.output_geometry(output) else {
@@ -3264,6 +3334,8 @@ fn window_elements(
         let pushed_from = out.len();
         let pushed_expected = popups.len() + bands.iter().map(|(s, _)| s.len()).sum::<usize>();
         let surface_count: usize = bands.iter().map(|(s, _)| s.len()).sum();
+        // A keyed lens (ADR 0132) the backdrop pass below turns into glass.
+        let mut keyed_lens_req: Option<keyed_lens::LensRequest> = None;
         match (scaled, &rounding, geo) {
             // Tint-keyed strip (ADR 0079): the popups, then the whole surface
             // tree, each through the keyed program; only key-coloured pixels
@@ -3279,6 +3351,40 @@ fn window_elements(
                 let radius = deco.rounding as f64 * scale.x.max(scale.y);
                 let mask = rounding.as_ref().map(|_| (rect, radius as f32));
                 let region = key_region;
+                // ADR 0132: a lens key draws glass over its own pixels, when
+                // the lens can be built over the backdrop it covers. Its pixels
+                // are then holes, so the lens beneath shows through them.
+                let lens_rect = if keys.any_everywhere() { Some(rect) } else { region };
+                let backed = match (lens_rect, backdrop.as_ref()) {
+                    (Some(lr), Some((bregion, ..)))
+                        if keys.any_lens() && keyed_lens::within(lr, *bregion) =>
+                    {
+                        Some(lr)
+                    }
+                    _ => None,
+                };
+                let lens_mask = backed.and_then(|lr| {
+                    let programs = store.gpu.keyed_lens.get(renderer)?;
+                    let surfaces = bands.first().map(|(s, _)| s)?;
+                    keyed_lens::mask(renderer, &programs, surfaces, lr.loc, lr.size, scale, &keys)
+                        .map(|m| (lr, m))
+                });
+                let keys_draw = if lens_mask.is_some() {
+                    keys.lens_holes()
+                } else {
+                    keys
+                };
+                if let Some((lr, m)) = lens_mask {
+                    keyed_lens_req = Some(keyed_lens::LensRequest {
+                        key: blur::BlurKey::Window(window.clone()),
+                        region: lr,
+                        round: rect,
+                        radius: radius as f32,
+                        fb,
+                        keys,
+                        mask: m,
+                    });
+                }
                 let popup_crop = overhangs.then_some(out_rect);
                 let push_keyed = |out: &mut Vec<AbyssRenderElement>,
                                   els: Vec<WaylandSurfaceRenderElement<GlesRenderer>>,
@@ -3320,7 +3426,7 @@ fn window_elements(
                     push_keyed(
                         out,
                         surfaces,
-                        effects::keyed_uniforms(mask, region, fb, &keys),
+                        effects::keyed_uniforms(mask, region, fb, &keys_draw),
                         crop,
                     );
                 }
@@ -3585,6 +3691,9 @@ fn window_elements(
                     scaled,
                     alpha: t.alpha,
                 });
+            }
+            if let Some(lens) = keyed_lens_req.take() {
+                lenses.push(lens);
             }
             blurred.push((
                 blur::BlurKey::Window(window.clone()),
