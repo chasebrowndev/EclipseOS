@@ -349,6 +349,40 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
             ring: None,
         }
     }
+
+    /// The texture this element samples: the blurred result, packed or not.
+    pub(crate) fn texture(&self) -> &T {
+        &self.texture
+    }
+
+    /// The output-local physical rectangle the element covers.
+    pub(crate) fn region(&self) -> Rectangle<i32, Physical> {
+        self.region
+    }
+
+    /// The renderer context the element's texture belongs to.
+    pub(crate) fn context(&self) -> ContextId<T> {
+        self.context.clone()
+    }
+}
+
+/// A keyed lens (ADR 0132): a glass draw over `region` whose texture is packed,
+/// the blurred backdrop in its left half and the key mask in its right. The
+/// element addresses only the left half, through `program` with `uniforms`.
+pub(crate) fn keyed_lens(
+    context: ContextId<GlesTexture>,
+    packed: GlesTexture,
+    region: Rectangle<i32, Physical>,
+    scale: Scale<f64>,
+    program: GlesTexProgram,
+    uniforms: Vec<Uniform<'static>>,
+    commit: CommitCounter,
+) -> BlurElement {
+    let mut element = BlurElement::placed_in(Id::new(), context, packed, region, region, scale, 1.0, true);
+    element.program = Some(program);
+    element.uniforms = Some(uniforms.into());
+    element.commit = commit;
+    element
 }
 
 impl<T: Texture + Clone + 'static> Element for BlurElement<T> {

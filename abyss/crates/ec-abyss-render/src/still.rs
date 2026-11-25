@@ -88,6 +88,8 @@ pub struct Frame<'a> {
     bezel_ok: [Option<bool>; 2],
     requests: Vec<BlurRequest>,
     panes: Vec<PaneRequest>,
+    /// Keyed lenses the still's keyed windows asked for (ADR 0132).
+    lenses: Vec<crate::keyed_lens::LensRequest>,
     /// Where each window's elements sit in the list (depth tiers).
     wins: Vec<crate::WinRec>,
 }
@@ -139,6 +141,7 @@ impl Still {
             bezel_ok: [None; 2],
             requests: Vec::new(),
             panes: Vec::new(),
+            lenses: Vec::new(),
             wins: Vec::new(),
         }
     }
@@ -569,16 +572,58 @@ impl Frame<'_> {
             }
             _ => vec![(surfaces, None)],
         };
+        // A keyed lens (ADR 0132) the backdrop pass below turns into glass.
+        let mut keyed_lens_req: Option<crate::keyed_lens::LensRequest> = None;
         for (surfaces, crop) in bands {
             if let Some((program, fb, keys)) = &keyed {
                 let radius = deco.rounding as f64 * scale.x.max(scale.y);
                 let mask = self.rounding.as_ref().map(|_| (frame_rect, radius as f32));
                 let region = key_region;
+                // As `window_elements` does: the lens over the backdrop it covers.
+                let lens_rect = if keys.any_everywhere() {
+                    Some(frame_rect)
+                } else {
+                    region
+                };
+                let backed = match (lens_rect, backdrop.as_ref()) {
+                    (Some(lr), Some((bregion, ..)))
+                        if keys.any_lens() && crate::keyed_lens::within(lr, *bregion) =>
+                    {
+                        Some(lr)
+                    }
+                    _ => None,
+                };
+                let lens_mask = match backed {
+                    Some(lr) => match self.store.gpu.keyed_lens.get(renderer) {
+                        Some(programs) => crate::keyed_lens::mask(
+                            renderer, &programs, &surfaces, lr.loc, lr.size, scale, keys,
+                        )
+                        .map(|m| (lr, m)),
+                        None => None,
+                    },
+                    None => None,
+                };
+                let keys_draw = if lens_mask.is_some() {
+                    keys.lens_holes()
+                } else {
+                    *keys
+                };
+                if let Some((lr, m)) = lens_mask {
+                    keyed_lens_req = Some(crate::keyed_lens::LensRequest {
+                        key: blur::BlurKey::Window(window.clone()),
+                        region: lr,
+                        round: frame_rect,
+                        radius: radius as f32,
+                        fb: *fb,
+                        keys: *keys,
+                        mask: m,
+                    });
+                }
                 push_keyed(
                     out,
                     program,
                     surfaces,
-                    effects::keyed_uniforms(mask, region, *fb, keys),
+                    effects::keyed_uniforms(mask, region, *fb, &keys_draw),
                     crop,
                 );
                 continue;
@@ -676,6 +721,9 @@ impl Frame<'_> {
             });
         }
         if let Some((region, radius, bezel, shape)) = backdrop {
+            if let Some(lens) = keyed_lens_req.take() {
+                self.lenses.push(lens);
+            }
             self.requests.push((
                 blur::BlurKey::Window(window.clone()),
                 out.len(),
@@ -803,6 +851,7 @@ impl Frame<'_> {
             self.config,
             self.requests,
             self.panes,
+            self.lenses,
             out,
             &self.wins,
             // Everything after the last window lies below every window.

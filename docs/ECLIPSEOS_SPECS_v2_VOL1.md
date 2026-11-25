@@ -5503,7 +5503,7 @@ above gains:
 | `calibrate_output` | overscan calibration (COMP-03 §1.1) |
 | `annotation_create` / `annotation_update` / `annotation_destroy` / `annotation_clear` | untrusted overlay pass (COMP-18 §3); a Command, not Privileged |
 | `set_idle_inhibit` | idle inhibit on behalf of a D-Bus client, lapses with the connection (ADR 0051) |
-| `set_client_strips` | `{keys:[{color,opacity,everywhere?}] (1–4), windows:[{width,height,content,body?}]}`: keys the caller's parent process's toplevels whose surface size matches, and their popups (C-23); re-matched when such a window commits a new size, keeping its current stamp until a request matches the new size; replaces the connection's previous request and lapses with it. Command, owner uid, refused while hook `client-strips` is off; a user rule wins (ADR 0079, 0080) |
+| `set_client_strips` | `{keys:[{color,opacity,everywhere?,lens?}] (1–4), windows:[{width,height,content,body?}]}`: keys the caller's parent process's toplevels whose surface size matches, and their popups (C-23); re-matched when such a window commits a new size, keeping its current stamp until a request matches the new size; replaces the connection's previous request and lapses with it. `lens` (boolean, default `false`; a non-boolean is `invalid_params`) draws that key's matched pixels as glass with the `decoration.blur.glass.lens.*` optics instead of the flat tint (ADR 0132, proposed; amends 0080). Command, owner uid, refused while hook `client-strips` is off; a user rule wins (ADR 0079, 0080) |
 | `get_config` / `validate_config` / `set_config_value` | the §1.4 write API; which file a write may touch is decided by the file, not the method kind |
 | `unsubscribe` | ends a `subscribe` stream |
 

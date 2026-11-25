@@ -56,10 +56,16 @@ pub enum Span {
     Pack = 3,
     /// The glass draws into the output frame.
     Glass = 4,
+    /// A keyed lens's label pass (ADR 0132): the window's keyed pixels labelled.
+    LensLabel = 5,
+    /// A keyed lens's distance pass: the distance to the nearest other label.
+    LensDistance = 6,
+    /// A keyed lens's pack pass: the backdrop beside the mask, one texture.
+    LensPack = 7,
 }
 
 /// Number of [`Span`] kinds.
-pub const SPAN_KINDS: usize = 5;
+pub const SPAN_KINDS: usize = 8;
 
 /// Frames of queries in flight before the oldest is dropped unread.
 const FRAMES: usize = 6;

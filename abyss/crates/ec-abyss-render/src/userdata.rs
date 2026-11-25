@@ -33,12 +33,39 @@ pub struct Keys {
     pub opacity: [f32; 4],
     /// Per key: matched over the whole window and its popups, not just the strip.
     pub everywhere: [bool; 4],
+    /// Per key: the matched pixels are a lens (ADR 0132). The compositor draws
+    /// glass with the window's own optics over them instead of the flat key
+    /// tint; the key's `opacity` still applies. `false` is today's flat key.
+    pub lens: [bool; 4],
 }
 
 impl Keys {
     /// Whether any live key matches everywhere.
     pub fn any_everywhere(&self) -> bool {
         (0..self.n as usize).any(|i| self.everywhere[i])
+    }
+
+    /// Whether any live key is drawn as a lens (ADR 0132).
+    pub fn any_lens(&self) -> bool {
+        (0..self.n as usize).any(|i| self.lens[i])
+    }
+
+    /// The same keys with every lens flag cleared: what a window draws when no
+    /// lens is drawn for it, so its keyed pixels stay exactly as before.
+    pub fn without_lens(mut self) -> Self {
+        self.lens = [false; 4];
+        self
+    }
+
+    /// The keys as a window draws them when its lens is drawn: each lens key's
+    /// pixels are holes (opacity 0), so the lens beneath shows through them.
+    pub fn lens_holes(mut self) -> Self {
+        for i in 0..self.n as usize {
+            if self.lens[i] {
+                self.opacity[i] = 0.0;
+            }
+        }
+        self
     }
 
     /// One key; the constructor the rule path uses.
@@ -48,6 +75,7 @@ impl Keys {
             rgb: [[0; 3]; 4],
             opacity: [1.0; 4],
             everywhere: [false; 4],
+            lens: [false; 4],
         };
         keys.rgb[0] = rgb;
         keys.opacity[0] = opacity;
@@ -199,5 +227,32 @@ mod key_tests {
         assert!(k.any_everywhere());
         // A dead slot never matches.
         assert_eq!(k.match_pixel([0, 0, 0]), None);
+    }
+
+    #[test]
+    fn lens_is_off_by_default_and_clears_with_without_lens() {
+        let k = Keys::one([0x20, 0x30, 0x40], 0.3);
+        assert_eq!(k.lens, [false; 4]);
+        assert!(!k.any_lens());
+        let mut l = k;
+        l.lens[0] = true;
+        assert!(l.any_lens());
+        // Dropping the lens leaves the flat key exactly as it was.
+        let flat = l.without_lens();
+        assert_eq!(flat, k);
+        assert!(!flat.any_lens());
+        // A dead slot's lens flag does not count.
+        let mut dead = k;
+        dead.lens[1] = true;
+        assert!(!dead.any_lens());
+    }
+
+    #[test]
+    fn a_lens_key_keeps_its_matching_and_opacity() {
+        let mut k = Keys::one([0x10, 0x20, 0x30], 0.4);
+        k.lens[0] = true;
+        // The lens does not change which pixels match or at what alpha.
+        assert_eq!(k.match_pixel([0x10, 0x20, 0x30]), Some(0.4));
+        assert_eq!(k.match_pixel([0x12, 0x20, 0x30]), None);
     }
 }

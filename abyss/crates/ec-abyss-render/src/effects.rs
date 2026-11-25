@@ -155,10 +155,275 @@ pub fn compile_keyed(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, Gles
     )
 }
 
+/// Keyed lens (ADR 0132), pass 1: the key test of [`ROUNDED_TEX_SRC`]'s KEYED
+/// branch, run over the client's own pixels into a label map. The label is
+/// stored in the blue channel as `label / 4`: 0 for no lens, `i + 1` for a
+/// matching key `i` that is drawn as a lens. The first matching key decides,
+/// as it does for the flat tint. Mirrored by [`crate::keyed_lens::label_of`].
+const KEY_LABEL_SRC: &str = r#"#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform float alpha;
+varying vec2 v_coords;
+
+uniform vec4 key_rect;
+uniform float keys;
+uniform vec4 key0;
+uniform vec4 key1;
+uniform vec4 key2;
+uniform vec4 key3;
+uniform vec4 key_all;
+uniform vec4 key_lens;
+
+bool near_key(vec3 c, vec3 k, float tol) {
+    return all(lessThanEqual(abs(c - k) * 255.0, vec3(tol)));
+}
+
+void main() {
+    vec4 texel = texture2D(tex, v_coords);
+    vec3 rgb = texel.rgb;
+    float tol = 1.5;
+    // An X-format buffer's alpha byte is undefined, so smithay's NO_ALPHA
+    // variant must not read it (the keyed draw's own test does the same).
+#if !defined(NO_ALPHA)
+    if (texel.a < 0.2) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);
+        return;
+    }
+    if (texel.a < 0.99) {
+        rgb = texel.rgb / texel.a;
+        tol = 1.5 / texel.a;
+    }
+#endif
+    vec2 f = gl_FragCoord.xy;
+    bool inside = !(f.x < key_rect.x || f.y < key_rect.y || f.x >= key_rect.x + key_rect.z || f.y >= key_rect.y + key_rect.w);
+    float m = -1.0;
+    if (keys > 0.5 && (inside || key_all.x > 0.5) && near_key(rgb, key0.rgb, tol)) {
+        m = 0.0;
+    } else if (keys > 1.5 && (inside || key_all.y > 0.5) && near_key(rgb, key1.rgb, tol)) {
+        m = 1.0;
+    } else if (keys > 2.5 && (inside || key_all.z > 0.5) && near_key(rgb, key2.rgb, tol)) {
+        m = 2.0;
+    } else if (keys > 3.5 && (inside || key_all.w > 0.5) && near_key(rgb, key3.rgb, tol)) {
+        m = 3.0;
+    }
+    float lens = m < 0.5 ? key_lens.x : m < 1.5 ? key_lens.y : m < 2.5 ? key_lens.z : key_lens.w;
+    float label = (m >= 0.0 && lens > 0.5) ? m + 1.0 : 0.0;
+    gl_FragColor = vec4(0.0, 0.0, label / 4.0, 1.0);
+}
+"#;
+
+/// Keyed lens (ADR 0132), pass 2: the distance from each lens texel to the
+/// nearest texel of another label, by marching eight rays of integer steps out
+/// to `dist_max` px. Writes the distance (over `dist_max`) to red and the label
+/// (blue, as pass 1) with alpha 1, so the target needs no clearing. Nothing
+/// beyond `dist_max` is measured: a texel that far from an edge is the plateau.
+const KEY_DISTANCE_SRC: &str = r#"#version 100
+
+//_DEFINES_
+
+#if defined(EXTERNAL)
+#extension GL_OES_EGL_image_external : require
+#endif
+
+#ifdef GL_FRAGMENT_PRECISION_HIGH
+precision highp float;
+#else
+precision mediump float;
+#endif
+
+#if defined(EXTERNAL)
+uniform samplerExternalOES tex;
+#else
+uniform sampler2D tex;
+#endif
+
+uniform float alpha;
+varying vec2 v_coords;
+
+uniform vec2 texel;
+uniform float dist_max;
+
+float label_at(vec2 uv) {
+    if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) {
+        return 0.0;
+    }
+    return floor(texture2D(tex, uv).b * 4.0 + 0.5);
+}
+
+void main() {
+    float l0 = label_at(v_coords);
+    float best = dist_max;
+    if (l0 > 0.5) {
+        for (int k = 0; k < 8; k++) {
+            vec2 dir = k == 0 ? vec2(1.0, 0.0) : k == 1 ? vec2(1.0, 1.0)
+                : k == 2 ? vec2(0.0, 1.0) : k == 3 ? vec2(-1.0, 1.0)
+                : k == 4 ? vec2(-1.0, 0.0) : k == 5 ? vec2(-1.0, -1.0)
+                : k == 6 ? vec2(0.0, -1.0) : vec2(1.0, -1.0);
+            float step_len = (k == 1 || k == 3 || k == 5 || k == 7) ? 1.41421356 : 1.0;
+            for (int s = 1; s <= 32; s++) {
+                float fs = float(s) * step_len;
+                if (fs >= best) {
+                    break;
+                }
+                if (label_at(v_coords + dir * float(s) * texel) != l0) {
+                    best = fs;
+                    break;
+                }
+            }
+        }
+    }
+    // The boundary lies half a texel beyond the last texel of the same label.
+    float dist = max(best - 0.5, 0.0);
+    gl_FragColor = vec4(clamp(dist / dist_max, 0.0, 1.0), 0.0, l0 / 4.0, 1.0);
+}
+"#;
+
+/// The ray length of the keyed lens's distance field, physical px (ADR 0132).
+pub const KEYED_LENS_DIST_MAX: f32 = 32.0;
+
+/// Keyed lens (ADR 0132), pass 1's program. Cached by the caller.
+pub fn compile_key_label(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        KEY_LABEL_SRC,
+        &[
+            UniformName::new("key_rect", UniformType::_4f),
+            UniformName::new("keys", UniformType::_1f),
+            UniformName::new("key0", UniformType::_4f),
+            UniformName::new("key1", UniformType::_4f),
+            UniformName::new("key2", UniformType::_4f),
+            UniformName::new("key3", UniformType::_4f),
+            UniformName::new("key_all", UniformType::_4f),
+            UniformName::new("key_lens", UniformType::_4f),
+        ],
+    )
+}
+
+/// Keyed lens (ADR 0132), pass 2's program. Cached by the caller.
+pub fn compile_key_distance(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        KEY_DISTANCE_SRC,
+        &[
+            UniformName::new("texel", UniformType::_2f),
+            UniformName::new("dist_max", UniformType::_1f),
+        ],
+    )
+}
+
+/// Uniforms for [`compile_key_label`]: the key colours and flags exactly as
+/// [`keyed_uniforms`] sets them, plus which keys are lenses. `key_rect` is the
+/// strip in the label target's own `gl_FragCoord` space (`EVERYWHERE` for a
+/// popup, where the whole target is the key region).
+pub fn key_label_uniforms(key_rect: [f32; 4], keys: &crate::userdata::Keys) -> Vec<Uniform<'static>> {
+    let key = |i: usize| -> [f32; 4] {
+        if i < keys.n as usize {
+            let [r, g, b] = keys.rgb[i];
+            [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0]
+        } else {
+            [0.0; 4]
+        }
+    };
+    let flag = |i: usize| (i < keys.n as usize && keys.lens[i]) as u8 as f32;
+    let all = |i: usize| (i < keys.n as usize && keys.everywhere[i]) as u8 as f32;
+    vec![
+        Uniform::new("key_rect", key_rect),
+        Uniform::new("keys", keys.n as f32),
+        Uniform::new("key0", key(0)),
+        Uniform::new("key1", key(1)),
+        Uniform::new("key2", key(2)),
+        Uniform::new("key3", key(3)),
+        Uniform::new("key_all", [all(0), all(1), all(2), all(3)]),
+        Uniform::new("key_lens", [flag(0), flag(1), flag(2), flag(3)]),
+    ]
+}
+
+/// Uniforms for [`compile_key_distance`].
+pub fn key_distance_uniforms(texel: [f32; 2], dist_max: f32) -> Vec<Uniform<'static>> {
+    vec![Uniform::new("texel", texel), Uniform::new("dist_max", dist_max)]
+}
+
+/// The uniforms a keyed lens adds to a glass program's own (ADR 0132):
+/// `round` is the window's rounded rectangle in `gl_FragCoord` space with
+/// corner `radius` (its coverage cuts the lens at the window's corners), and
+/// `key_alpha[i]` is key `i`'s opacity, which the lens's label selects.
+pub fn keyed_lens_uniforms(
+    round: [f32; 4],
+    radius: f32,
+    keys: &crate::userdata::Keys,
+    dist_max: f32,
+) -> Vec<Uniform<'static>> {
+    let a = |i: usize| if i < keys.n as usize { keys.opacity[i] } else { 0.0 };
+    let c = |i: usize| {
+        if i < keys.n as usize {
+            let [r, g, b] = keys.rgb[i];
+            [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 0.0]
+        } else {
+            [0.0; 4]
+        }
+    };
+    vec![
+        Uniform::new("keyed_round", round),
+        Uniform::new("keyed_radius", radius),
+        Uniform::new("key_alpha", [a(0), a(1), a(2), a(3)]),
+        Uniform::new("dist_max", dist_max),
+        Uniform::new("lens_key0", c(0)),
+        Uniform::new("lens_key1", c(1)),
+        Uniform::new("lens_key2", c(2)),
+        Uniform::new("lens_key3", c(3)),
+    ]
+}
+
+/// The extra uniform names [`keyed_lens_uniforms`] sets, for the compile list.
+const KEYED_LENS_UNIFORMS: [(&str, UniformType); 8] = [
+    ("keyed_round", UniformType::_4f),
+    ("keyed_radius", UniformType::_1f),
+    ("key_alpha", UniformType::_4f),
+    ("dist_max", UniformType::_1f),
+    ("lens_key0", UniformType::_4f),
+    ("lens_key1", UniformType::_4f),
+    ("lens_key2", UniformType::_4f),
+    ("lens_key3", UniformType::_4f),
+];
+
+/// The glass program with a keyed lens (ADR 0132, `KEYED_LENS`): the glass body
+/// bent by the key mask's distance field instead of a rounded box, its colour
+/// at the key's alpha. Its texture is packed (see `blur::keyed_lens`), so
+/// `dual_tex` is set and the backdrop is the left half. Cached by the caller.
+pub fn compile_keyed_lens(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    let src = preset_source(&format!("{BACKDROP_HEAD}{GLASS_BODY}"), GlassPreset::Lens).replacen(
+        "//_DEFINES_",
+        "//_DEFINES_\n#define KEYED_LENS 1",
+        1,
+    );
+    let names: Vec<_> = GLASS_UNIFORMS
+        .iter()
+        .chain(KEYED_LENS_UNIFORMS.iter())
+        .map(|&(name, ty)| UniformName::new(name, ty))
+        .collect();
+    renderer.compile_custom_texture_shader(src, &names)
+}
+
 /// A rectangle covering any framebuffer: "no mask" / "everywhere".
 const EVERYWHERE: [f32; 4] = [-1.0e6, -1.0e6, 2.0e6, 2.0e6];
 
-fn fb_rect(rect: Rectangle<i32, Physical>, fb: FbMap) -> [f32; 4] {
+pub fn fb_rect(rect: Rectangle<i32, Physical>, fb: FbMap) -> [f32; 4] {
     let rect = fb.gl_rect(rect);
     [
         rect.loc.x as f32,
@@ -968,10 +1233,51 @@ vec4 blurred_at(vec2 uv) {
     return texture2D(tex, clamp_blur(uv));
 }
 
-// The lightly blurred twin of `blurred_at` (packed textures only).
+// The lightly blurred twin of `blurred_at` (packed textures only). A keyed lens
+// (ADR 0132) packs its key mask in the right half, so its twin is the blur too.
 vec4 sharp_at(vec2 uv) {
+#ifdef KEYED_LENS
+    return blurred_at(uv);
+#else
     return texture2D(tex, clamp_sharp(uv));
+#endif
 }
+
+#ifdef KEYED_LENS
+// Keyed lens (ADR 0132). The right half of the packed texture is the key mask:
+// red is the distance to the nearest other label over `dist_max` (1 on the
+// plateau), blue the label / 4 (0: not lens). `keyed_round` is the window's
+// rounded rectangle, which cuts the lens at its corners.
+uniform vec4 keyed_round;
+uniform float keyed_radius;
+uniform vec4 key_alpha;
+uniform float dist_max;
+// The keys' colours (rgb; w unused): the lens composites the key over the bent
+// backdrop exactly as the flat key does, so its hue survives (ADR 0132).
+uniform vec4 lens_key0;
+uniform vec4 lens_key1;
+uniform vec4 lens_key2;
+uniform vec4 lens_key3;
+
+vec2 mask_uv(vec2 uv) {
+    return clamp(uv + vec2(0.5, 0.0), vec2(0.5, 0.0) + px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
+}
+
+float mask_label(vec2 uv) {
+    return floor(texture2D(tex, mask_uv(uv)).b * 4.0 + 0.5);
+}
+
+float mask_dist(vec2 uv) {
+    return texture2D(tex, mask_uv(uv)).r * dist_max;
+}
+
+float rounded_sd(vec2 f) {
+    vec2 h = keyed_round.zw * 0.5;
+    float rr = max(min(keyed_radius, min(h.x, h.y)), 0.0);
+    vec2 qq = abs(f - (keyed_round.xy + h)) - h + rr;
+    return length(max(qq, vec2(0.0))) + min(max(qq.x, qq.y), 0.0) - rr;
+}
+#endif
 
 #if defined(SHAPED) || defined(JOINED)
 // Outward normal of the shape, y down, from the analytic gradient.
@@ -994,6 +1300,20 @@ void main() {
     float r = min(radius, min(half_size.x, half_size.y));
     vec2 q = abs(p) - half_size + r;
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+#endif
+
+#ifdef KEYED_LENS
+    // The keyed region's own edge (ADR 0132): inside a lens the distance to the
+    // nearest other label, outside none. Its outward normal is the negative
+    // gradient of that distance (which grows inward); the gradient is taken
+    // over one texel either side in the mask's right half.
+    float klab = mask_label(v_coords);
+    d = klab < 0.5 ? 1.0 : -mask_dist(v_coords);
+    vec2 kg = vec2(
+        mask_dist(v_coords + vec2(px_uv.x, 0.0)) - mask_dist(v_coords - vec2(px_uv.x, 0.0)),
+        mask_dist(v_coords + vec2(0.0, px_uv.y)) - mask_dist(v_coords - vec2(0.0, px_uv.y)));
+    float kl = length(kg);
+    vec2 kgrad = kl > 1e-4 ? -kg / kl : vec2(0.0, -1.0);
 #endif
 
 #if defined(GLASS_LENS) && !defined(SHAPED) && !defined(JOINED)
@@ -1070,6 +1390,8 @@ void main() {
 
 #if defined(SHAPED) || defined(JOINED)
     vec2 grad = shape_normal(sg);
+#elif defined(KEYED_LENS)
+    vec2 grad = kgrad;
 #else
     // Outward normal of the rounded box, y down.
     vec2 s = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
@@ -1271,9 +1593,30 @@ void main() {
     }
 
     c += (grain(floor(gl_FragCoord.xy)) - 0.5) / 255.0;
+#ifdef KEYED_LENS
+    // The flat key over the lensed backdrop (ADR 0079 composite, ADR 0132): the
+    // key's own colour at its alpha over the bent, dispersed backdrop `color`.
+    // None of the glass's tint, smoke, lift or body colour is applied, so the
+    // lens differs from the flat key by the bend, the dispersion and the rim
+    // alone. Inside the key only; the result is opaque there, so the window's
+    // hole shows exactly this. Cut at the window's rounded corners, as the flat
+    // key is.
+    float ka = klab < 1.5 ? key_alpha.x : klab < 2.5 ? key_alpha.y : klab < 3.5 ? key_alpha.z : key_alpha.w;
+    vec3 kcol = klab < 1.5 ? lens_key0.rgb : klab < 2.5 ? lens_key1.rgb : klab < 3.5 ? lens_key2.rgb : lens_key3.rgb;
+    vec3 kc = kcol * ka + clamp(color.rgb, 0.0, 1.0) * (1.0 - ka);
+    // The rim: the hairline and its lit lobe, the lens's one tint (ADR 0132).
+    float hair = 1.0 - smoothstep(0.0, 1.25, -d);
+    float tl = max(dot(kgrad, LIGHT), 0.0);
+    float br = max(dot(kgrad, -LIGHT), 0.0);
+    vec3 rtint = rim_color.rgb / max(rim_color.a, 0.0001);
+    kc = mix(kc, rtint, clamp(hair * (LINE_BASE + LINE_TL * tl + LINE_BR * br) * rim_color.a * rim * 2.0, 0.0, 1.0));
+    float kcov = (1.0 - smoothstep(-0.5, 0.5, d)) * (1.0 - smoothstep(-0.5, 0.5, rounded_sd(gl_FragCoord.xy)));
+    gl_FragColor = finish(vec4(clamp(kc, 0.0, 1.0) * kcov, kcov));
+#else
     color = finish(vec4(clamp(c, 0.0, 1.0), color.a));
 
     gl_FragColor = color * (1.0 - smoothstep(-0.5, 0.5, d));
+#endif
 }
 "#;
 
