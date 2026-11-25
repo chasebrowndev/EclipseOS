@@ -24,7 +24,7 @@ use ec_ui::widget::art::{Glyph, Hue};
 use crate::app::{App, Message, Plan, Style, Toast, Unit};
 use crate::art::Art;
 use crate::bell::bell_off;
-use crate::pane::{frame, pane, pane_linked, reveal, shifted, Link};
+use crate::pane::{pane, pane_lit, reveal, shifted};
 use crate::WIDTH;
 
 /// Space between cards. There is none around the stack: the first card's
@@ -38,6 +38,14 @@ const SUMMARY_H: f32 = 20.0;
 /// to grow the card: the surface height is computed, not measured, and a card
 /// that outgrew its slot would be drawn over its neighbour.
 const BODY_H: f32 = 32.0;
+/// Narrower than the real column by this much when measuring, so a line that
+/// only just fits is counted as two and never clipped: the engine's width and
+/// the drawn one differ by a few px.
+const MEASURE_SLACK: f32 = 12.0;
+/// One line of body text.
+const BODY_LINE_H: f32 = BODY_H / BODY_LINES as f32;
+/// Extra air around a system question's buttons.
+const SYSTEM_AIR: f32 = 8.0;
 /// Lines the body shows, and how many characters of body text a line holds at
 /// the card's width (a little under what fits, so the ellipsis lands inside the
 /// slot rather than past it).
@@ -52,11 +60,12 @@ const FOOT_H: f32 = 30.0;
 /// Open and Silence: quiet cells, shorter than a declared action.
 const FOOT_BTN_H: f32 = 22.0;
 /// The silence drawer: as wide as its three options need, each option a row,
-/// and the fillet where it joins the card.
+/// and the gap it floats at from the card.
 const DRAWER_W: f32 = 104.0;
 const OPT_H: f32 = 26.0;
 const ERR_H: f32 = 20.0;
-const JOIN_R: f32 = 8.0;
+/// Air between the card and the drawer floating off it.
+const DRAWER_GAP: f32 = 6.0;
 /// Right edge of the silence button, in from the card's edge.
 const BUTTON_INSET: f32 = space::CARD;
 /// Height of the action-button row, when there is one.
@@ -84,19 +93,87 @@ const LOW: f32 = 0.7;
 /// Text column width of a full-width card, which `BODY_CHARS` was set for.
 const TEXT_W_FULL: f32 = WIDTH as f32 - 2.0 * space::CARD - AVATAR - AVATAR_GAP;
 
-/// How tall one card is, including its own padding.
-fn card_height(notification: &Notification) -> f32 {
+/// How tall one card is, including its own padding, at card width `w`.
+fn card_height(toast: &Toast, w: u32) -> f32 {
+    let notification = &toast.notification;
     let mut h = space::CARD * 2.0 + SUMMARY_H;
-    if !notification.body.is_empty() {
-        h += BODY_H + BODY_GAP;
+    let lines = body_lines(toast, w);
+    if lines > 0 {
+        h += body_h(lines) + BODY_GAP;
     }
     if notification.progress.is_some() {
         h += PROGRESS_ROW_H;
     }
     if !notification.actions.is_empty() {
-        h += ACTIONS_H;
+        h += actions_h(notification);
     }
     h + foot_h(notification)
+}
+
+/// The columns of text a card of width `w` has under its title.
+fn text_width(w: u32) -> f32 {
+    w as f32 - 2.0 * space::CARD - AVATAR - AVATAR_GAP
+}
+
+/// How many lines the body wraps to at card width `w`, one or two: the text
+/// the card will actually show (cut to two lines as the card cuts it), laid out
+/// by iced's own text engine at the width it will be drawn at, once per width.
+fn body_lines(toast: &Toast, w: u32) -> usize {
+    if toast.notification.body.is_empty() {
+        return 0;
+    }
+    if let Some((cw, lines)) = toast.body_lines.get() {
+        if cw == w {
+            return lines;
+        }
+    }
+    let flat: String = ec_ui::markup::clamp(&toast.runs, BODY_LINES, body_chars(text_width(w)))
+        .iter()
+        .map(|r| r.text.as_str())
+        .collect();
+    let lines = measure_lines(&flat, text_width(w) - MEASURE_SLACK).clamp(1, BODY_LINES);
+    toast.body_lines.set(Some((w, lines)));
+    lines
+}
+
+/// The characters of body a line of `text_w` px holds, a little under what fits.
+fn body_chars(text_w: f32) -> usize {
+    ((BODY_CHARS as f32 * text_w / TEXT_W_FULL) as usize).max(12)
+}
+
+/// The lines `text` wraps to in `width` px at the body's size and face.
+fn measure_lines(text: &str, width: f32) -> usize {
+    use iced::advanced::text::{self, Paragraph as _};
+    type P = <iced::Renderer as text::Renderer>::Paragraph;
+    let line_height = text::LineHeight::default();
+    let para = P::with_text(text::Text {
+        content: text,
+        bounds: Size::new(width.max(1.0), f32::INFINITY),
+        size: size::BODY_SMALL.into(),
+        line_height,
+        font: font::UI,
+        align_x: text::Alignment::Default,
+        align_y: iced::alignment::Vertical::Top,
+        shaping: text::Shaping::Advanced,
+        wrapping: text::Wrapping::WordOrGlyph,
+    });
+    let line = line_height.to_absolute(size::BODY_SMALL.into()).0;
+    ((para.min_bounds().height / line).round() as usize).max(1)
+}
+
+/// The body's height for `lines` lines of it.
+fn body_h(lines: usize) -> f32 {
+    lines as f32 * BODY_LINE_H
+}
+
+/// The button row's height: a system question's sits with air on both sides,
+/// between its text above and its source line below.
+fn actions_h(n: &Notification) -> f32 {
+    if n.class == Class::System {
+        ACTIONS_H + SYSTEM_AIR
+    } else {
+        ACTIONS_H
+    }
 }
 
 /// The source line: an app's carries Open and Silence, a system card's is a
@@ -111,6 +188,11 @@ fn foot_h(n: &Notification) -> f32 {
 
 /// The silence drawer's full height: three options and, after a failed save,
 /// a line saying so.
+pub fn drawer_room(error: bool) -> f32 {
+    drawer_height(error) + DRAWER_GAP
+}
+
+/// The drawer's own height, without the gap above it.
 pub fn drawer_height(error: bool) -> f32 {
     2.0 * drawer::PAD + 3.0 * OPT_H + if error { ERR_H } else { 0.0 }
 }
@@ -123,24 +205,29 @@ fn peeks(unit: &Unit) -> usize {
     }
 }
 
-/// Where the stack's cards sit, and how much room the open silence drawer
-/// needs past the stack's own ends.
+/// Where the stack's cards sit, and the room the open silence drawer takes.
 ///
-/// The drawer is drawn over the stack, not in it, so opening it moves nothing.
-/// It hangs below its card in a top corner and stands above it in a bottom
-/// one, so the surface is given the room it needs: `lead` above the stack in a
-/// bottom corner, `tail` below it in a top one.
+/// The drawer is a panel of its own beside its card, and it pushes the cards
+/// on its far side out of its way: those below it in a top corner slide down,
+/// those above it in a bottom corner slide up, over the drawer's own opening,
+/// so nothing is ever covered. The surface is given the whole room as soon as
+/// the drawer starts to open and keeps it until it has shut, so only the
+/// cards move, never the surface under them.
 pub struct Geometry {
-    pub lead: f32,
-    pub tail: f32,
     pub stack: f32,
-    /// The drawer's card: its top within the stack, and its height.
+    /// The room the drawer takes while fully open, `0.0` with none.
+    pub room: f32,
+    /// The drawer's card: its top within the stack at rest, and its height.
     pub card: Option<(f32, f32)>,
-    /// Whether the drawer would sit over another card of the stack.
-    pub overlaps: bool,
 }
 
-pub fn geometry(toasts: &[Toast], plan: &Plan, bottom: bool, drawer: Option<(u32, bool)>) -> Geometry {
+pub fn geometry(
+    toasts: &[Toast],
+    plan: &Plan,
+    bottom: bool,
+    w: u32,
+    drawer: Option<(u32, bool)>,
+) -> Geometry {
     // Top-down: the height of each piece and the gap between it and the next.
     let (mut hs, mut ids, mut gs): (Vec<f32>, Vec<Option<u32>>, Vec<f32>) = (vec![], vec![], vec![]);
     for (ui, unit) in plan.units.iter().enumerate() {
@@ -151,7 +238,7 @@ pub fn geometry(toasts: &[Toast], plan: &Plan, bottom: bool, drawer: Option<(u32
             if ci > 0 {
                 gs.push(GAP);
             }
-            hs.push(card_height(&toasts[i].notification));
+            hs.push(card_height(&toasts[i], w));
             ids.push(Some(toasts[i].notification.id));
         }
         for _ in 0..peeks(unit) {
@@ -179,33 +266,23 @@ pub fn geometry(toasts: &[Toast], plan: &Plan, bottom: bool, drawer: Option<(u32
         }
         y += h + gs.get(k).copied().unwrap_or(0.0);
     }
-    let need = drawer.map_or(0.0, |d| drawer_height(d.1));
-    let (lead, tail) = match card {
-        Some((top, h)) if bottom => ((need - top).max(0.0), 0.0 * h),
-        Some((top, h)) => (0.0, (top + h + need - stack).max(0.0)),
-        None => (0.0, 0.0),
+    let room = match (card, drawer) {
+        (Some(_), Some(d)) => drawer_room(d.1),
+        _ => 0.0,
     };
-    // Over another card when anything of the stack lies on the drawer's side.
-    let overlaps = card.is_some_and(|(top, h)| if bottom { top > 0.5 } else { top + h < stack - 0.5 });
-    Geometry {
-        lead,
-        tail,
-        stack,
-        card,
-        overlaps,
-    }
+    Geometry { stack, room, card }
 }
 
 /// The surface height for a given stack, in whole pixels.
 ///
 /// An empty stack is zero, meaning no surface at all: a zero-sized layer
 /// surface is a protocol error, so `app::update` closes it instead.
-pub fn height(toasts: &[Toast], plan: &Plan, bottom: bool, drawer: Option<(u32, bool)>) -> u32 {
+pub fn height(toasts: &[Toast], plan: &Plan, bottom: bool, w: u32, drawer: Option<(u32, bool)>) -> u32 {
     if plan.units.is_empty() {
         return 0;
     }
-    let g = geometry(toasts, plan, bottom, drawer);
-    (g.lead + g.stack + g.tail).ceil() as u32
+    let g = geometry(toasts, plan, bottom, w, drawer);
+    (g.stack + g.room).ceil() as u32
 }
 
 pub fn view(app: &App, id: iced::window::Id) -> Element<'_, Message, Theme> {
@@ -219,26 +296,40 @@ pub fn view(app: &App, id: iced::window::Id) -> Element<'_, Message, Theme> {
     if app.corner.bottom() {
         parts.reverse();
     }
-    let g = geometry(&app.toasts, &plan, app.corner.bottom(), app.drawer_extent());
+    let g = geometry(
+        &app.toasts,
+        &plan,
+        app.corner.bottom(),
+        app.width,
+        app.drawer_extent(),
+    );
+    let t = app.drawer_t().clamp(0.0, 1.0);
     let w = app.width as f32;
+    // In a bottom corner the stack sits against the bottom edge: the unopened
+    // part of the room is air above it, and it is spent as the cards above the
+    // drawer's card slide up into it.
+    let lead = if app.corner.bottom() {
+        g.room * (1.0 - t)
+    } else {
+        0.0
+    };
     let col = container(Column::with_children(parts).spacing(GAP))
         .width(Length::Fixed(w))
         .padding(Padding {
-            top: g.lead,
+            top: lead,
             ..Padding::ZERO
         });
     let inner: Element<'_, Message, Theme> = match silence_drawer(app, &g) {
-        Some(drawer) => stack![col.height(Length::Fixed(g.lead + g.stack + g.tail)), drawer]
+        Some(drawer) => stack![col.height(Length::Fixed(g.stack + g.room)), drawer]
             .width(Length::Fixed(w))
             .into(),
         None => col.into(),
     };
-    ec_ui::glass::root(id, frame(inner)).into()
+    ec_ui::glass::root(id, inner).into()
 }
 
-/// The silence drawer, drawn over the stack beside its card: a small panel of
-/// three options that grows out of the silence button, joined to the card as
-/// one piece of glass when the compositor joins panes. It is laid out at its
+/// The silence drawer: a small panel of three options that grows out of the
+/// silence button, floating a few px clear of its card. It is laid out at its
 /// full size and shown through a window that opens, so its rows are never
 /// squeezed on the way.
 fn silence_drawer<'a>(app: &'a App, g: &Geometry) -> Option<Element<'a, Message, Theme>> {
@@ -253,25 +344,27 @@ fn silence_drawer<'a>(app: &'a App, g: &Geometry) -> Option<Element<'a, Message,
         return None;
     }
     let bottom = app.corner.bottom();
-    let card_top = g.lead + top;
+    // The gap grows with the panel, so the two together are exactly the space
+    // the cards have made.
+    let gap = DRAWER_GAP * t;
     let x = app.width as f32 - BUTTON_INSET - outer.width;
     let y = if bottom {
-        card_top - outer.height
+        // The card does not move in a bottom corner: the stack is pinned to the edge.
+        g.room + top - gap - outer.height
     } else {
-        card_top + card_h
+        top + card_h + gap
     };
     // The window opens from the button's side: the panel's right edge stays
-    // under the button, and its top (bottom corners: bottom) edge stays on the
-    // card.
-    let offset = Vector::new(
-        outer.width - full.width,
-        if bottom { outer.height - full.height } else { 0.0 },
-    );
+    // under the button, and its near edge stays on the card. The rows ride the
+    // window's far edges (left, top), so their padding holds as it opens.
+    let offset = Vector::ZERO;
     let (blur, r) = (app.blur, app.card_radius());
+    // The labels come in over the back half of the opening, once there is room.
+    let ink = ((t - 0.4) / 0.6).clamp(0.0, 1.0);
     let mut options = Column::new()
-        .push(option("1 hr", Message::Silence(id, Silence::Hour)))
-        .push(option("24 hrs", Message::Silence(id, Silence::Day)))
-        .push(option("Forever", Message::Silence(id, Silence::Forever)));
+        .push(option("1 hr", Message::Silence(id, Silence::Hour), ink))
+        .push(option("24 hrs", Message::Silence(id, Silence::Day), ink))
+        .push(option("Forever", Message::Silence(id, Silence::Forever), ink));
     if error {
         options = options.push(
             container(
@@ -285,35 +378,16 @@ fn silence_drawer<'a>(app: &'a App, g: &Geometry) -> Option<Element<'a, Message,
             .padding([0.0, space::HEADER_GAP]),
         );
     }
-    let overlaps = g.overlaps;
     let ground = container(options)
         .width(Length::Fixed(full.width))
         .height(Length::Fixed(full.height))
         .padding(drawer::PAD)
-        .style(move |th: &Theme| {
-            if overlaps {
-                // Over a neighbour the compositor's glass would sit under that
-                // card's text, so the panel is an opaque menu surface instead.
-                ec_ui::theme::menu_surface(radius::CARD)(th)
-            } else {
-                ec_ui::theme::bare_container_if_glass(ec_ui::theme::surface(r, blur)(th))
-            }
-        });
+        .style(move |th: &Theme| ec_ui::theme::bare_container_if_glass(ec_ui::theme::surface(r, blur)(th)));
     let window = reveal(ground, full, outer, offset);
     // The panel fades in over the first third of its opening, so its first
-    // sliver is not a hard-edged shard of glass. Over a neighbour it is a plain
-    // popover; clear of one it is a pane, joined to its card.
-    let panel: Element<'a, Message, Theme> = if overlaps {
-        window
-    } else {
-        pane_linked(
-            window,
-            CellTone::Plain,
-            r.min(radius::CARD),
-            (t * 3.0).min(1.0),
-            link(id),
-        )
-    };
+    // sliver is not a hard-edged shard of glass. It is a pane of its own in the
+    // card's tone and lit like the card the pointer is on, floating clear of it.
+    let panel = pane_lit(window, CellTone::Plain, r.min(radius::CARD), (t * 3.0).min(1.0));
     Some(
         container(panel)
             .width(Length::Fill)
@@ -328,12 +402,12 @@ fn silence_drawer<'a>(app: &'a App, g: &Geometry) -> Option<Element<'a, Message,
 }
 
 /// One option of the drawer: a quiet row that lifts under the pointer.
-fn option<'a>(label: &str, on_press: Message) -> Element<'a, Message, Theme> {
+fn option<'a>(label: &str, on_press: Message, alpha: f32) -> Element<'a, Message, Theme> {
     let face = container(
         text(label.to_owned())
             .size(size::BODY_SMALL)
             .font(font::UI_MEDIUM)
-            .color(color::text()),
+            .color(color::text().scale_alpha(alpha)),
     )
     .center_y(Length::Fill)
     .padding([0.0, drawer::ROW_X]);
@@ -344,14 +418,6 @@ fn option<'a>(label: &str, on_press: Message) -> Element<'a, Message, Theme> {
         .on_press(on_press)
         .style(|t: &Theme, s| ec_ui::theme::bar_cell(CellTone::Latent)(t, s))
         .into()
-}
-
-/// The ground and link of a joined piece of glass: `id` keys the chain.
-fn link(id: u32) -> Option<Link> {
-    Some(Link {
-        key: u64::from(id),
-        fillet: JOIN_R,
-    })
 }
 
 /// One unit: its cards, and for a group the pointer area that opens it.
@@ -432,12 +498,27 @@ fn more<'a>(app: &App, hidden: usize) -> Element<'a, Message, Theme> {
 }
 
 /// A card in a pointer area that holds its clock while the pointer is on it.
+/// The card the silence drawer is open on carries the room the drawer is
+/// making, on the side away from the screen's edge (below it in a top corner,
+/// above in a bottom one), growing with the drawer: that is what pushes its
+/// neighbours aside.
 fn block<'a>(app: &'a App, toast: &'a Toast, folded: usize) -> Element<'a, Message, Theme> {
     let id = toast.notification.id;
-    mouse_area(slot(app, toast, folded))
+    let face: Element<'a, Message, Theme> = mouse_area(slot(app, toast, folded))
         .on_enter(Message::HoverCard(id, true))
         .on_exit(Message::HoverCard(id, false))
-        .into()
+        .into();
+    if app.drawer_card != Some(id) {
+        return face;
+    }
+    let room = drawer_room(app.drawer_error.is_some()) * app.drawer_t().clamp(0.0, 1.0);
+    let spacer: Element<'a, Message, Theme> = Space::new().height(Length::Fixed(room)).into();
+    let parts = if app.corner.bottom() {
+        vec![spacer, face]
+    } else {
+        vec![face, spacer]
+    };
+    Column::with_children(parts).into()
 }
 
 /// A card in its fixed slot: the slot catches the pointer, so a card carried
@@ -463,7 +544,7 @@ fn slot<'a>(app: &'a App, toast: &'a Toast, folded: usize) -> Element<'a, Messag
     let moved = shifted(face, (away * app.corner.side()).round());
     let slot = container(moved)
         .width(Length::Fixed(w))
-        .height(Length::Fixed(card_height(n)))
+        .height(Length::Fixed(card_height(toast, app.width)))
         .clip(true);
     let mut area = mouse_area(slot)
         .on_press(Message::Press(n.id))
@@ -506,7 +587,7 @@ fn card<'a>(
     let low = notification.urgency == Urgency::Low;
     // A low card is the quiet one: its ink and its ground both recede.
     let alpha = if low { alpha * LOW } else { alpha };
-    let text_w = app.width as f32 - 2.0 * space::CARD - AVATAR - AVATAR_GAP;
+    let text_w = text_width(app.width);
 
     // Critical is the one thing allowed off the neutral palette here, for the
     // same reason a dying battery is: it is a state the human must act on.
@@ -544,7 +625,7 @@ fn card<'a>(
             color::text_secondary()
         }
         .scale_alpha(alpha);
-        let chars = ((BODY_CHARS as f32 * text_w / TEXT_W_FULL) as usize).max(12);
+        let chars = body_chars(text_w);
         let spans: Vec<_> = ec_ui::markup::clamp(&toast.runs, BODY_LINES, chars)
             .into_iter()
             .map(|r| {
@@ -557,7 +638,7 @@ fn card<'a>(
             .collect();
         text_col = text_col.push(
             container(rich_text(spans).size(size::BODY_SMALL).width(Length::Fill))
-                .height(Length::Fixed(BODY_H))
+                .height(Length::Fixed(body_h(body_lines(toast, app.width))))
                 // The card's height is computed, so anything longer than its
                 // slot is cut off rather than pushing the stack past its surface.
                 .clip(true),
@@ -598,8 +679,10 @@ fn card<'a>(
         }
         text_col = text_col.push(
             container(buttons)
-                .height(Length::Fixed(ACTIONS_H))
-                .align_y(Alignment::End),
+                .width(Length::Fill)
+                .height(Length::Fixed(actions_h(notification)))
+                .align_x(if system { Alignment::End } else { Alignment::Start })
+                .align_y(if system { Alignment::Center } else { Alignment::End }),
         );
     }
 
@@ -617,7 +700,7 @@ fn card<'a>(
     let blur = app.blur;
     let ground = container(main)
         .width(Length::Fixed(app.width as f32))
-        .height(Length::Fixed(card_height(notification)))
+        .height(Length::Fixed(card_height(toast, app.width)))
         .padding(space::CARD)
         .style(move |t: &Theme| {
             let mut s = faded(ec_ui::theme::surface(radius, blur)(t), alpha);
@@ -630,7 +713,7 @@ fn card<'a>(
         });
     let mut layers = stack![ground]
         .width(Length::Fixed(app.width as f32))
-        .height(Length::Fixed(card_height(notification)));
+        .height(Length::Fixed(card_height(toast, app.width)));
     if critical {
         // The spine: the one place a card spends its danger ink besides its
         // title, parting a critical card from a normal one at a glance.
@@ -656,15 +739,7 @@ fn card<'a>(
     } else {
         CellTone::Plain
     };
-    // A card with its drawer open is one shape with it; otherwise on its own.
-    let joined = app.drawer_card == Some(notification.id);
-    pane_linked(
-        layers,
-        tone,
-        radius,
-        alpha,
-        joined.then(|| link(notification.id)).flatten(),
-    )
+    pane(layers, tone, radius, alpha)
 }
 
 /// The card's last line. An app's names its source once and carries Open and
@@ -896,22 +971,25 @@ mod tests {
     /// An empty stack asks for no surface, not a pixel of one (BLUR-02).
     #[test]
     fn an_empty_stack_asks_for_no_surface() {
-        assert_eq!(height(&[], &Plan::default(), false, None), 0);
+        assert_eq!(height(&[], &Plan::default(), false, WIDTH, None), 0);
     }
 
     /// The card grows for what it actually holds — a notification with no body
     /// and no buttons must not leave two empty bands of glass on screen.
     #[test]
     fn a_bare_notification_is_shorter_than_a_full_one() {
-        assert!(card_height(&notification("", 0)) < card_height(&notification("Body", 2)));
+        assert!(
+            card_height(&Toast::new(notification("", 0)), WIDTH)
+                < card_height(&Toast::new(notification("Body", 2)), WIDTH)
+        );
     }
 
     #[test]
     fn a_progress_bar_adds_its_row() {
         let mut n = notification("", 0);
-        let plain = card_height(&n);
+        let plain = card_height(&Toast::new(n.clone()), WIDTH);
         n.progress = Some(40);
-        assert_eq!(card_height(&n), plain + PROGRESS_ROW_H);
+        assert_eq!(card_height(&Toast::new(n), WIDTH), plain + PROGRESS_ROW_H);
     }
 
     fn unit(all: Vec<usize>, cards: Vec<usize>, expanded: bool) -> Unit {
@@ -934,32 +1012,36 @@ mod tests {
                 Toast::new(n)
             })
             .collect();
-        let one = card_height(&toasts[0].notification);
+        let one = card_height(&toasts[0], WIDTH);
         let folded = Plan {
             units: vec![unit(vec![0, 1, 2], vec![2], false)],
             hidden: 0,
         };
-        assert_eq!(height(&toasts, &folded, false, None), (one + 2.0 * PEEK_H) as u32);
+        assert_eq!(
+            height(&toasts, &folded, false, WIDTH, None),
+            (one + 2.0 * PEEK_H) as u32
+        );
         let open = Plan {
             units: vec![unit(vec![0, 1, 2], vec![2, 1, 0], true)],
             hidden: 0,
         };
         assert_eq!(
-            height(&toasts, &open, false, None),
+            height(&toasts, &open, false, WIDTH, None),
             (3.0 * one + 2.0 * GAP) as u32
         );
         let waiting = Plan { hidden: 2, ..open };
         assert_eq!(
-            height(&toasts, &waiting, false, None),
+            height(&toasts, &waiting, false, WIDTH, None),
             (3.0 * one + 3.0 * GAP + MORE_H) as u32
         );
     }
 
-    /// The drawer is laid over the stack: opening it moves no card, and the
-    /// surface only grows where the drawer would hang past the stack's end.
+    /// Opening the drawer makes room for it: the surface grows once, by the
+    /// drawer and its gap, wherever the card is, and the stack itself is the
+    /// same height with or without it.
     #[test]
-    fn the_drawer_moves_nothing_and_reserves_room_past_the_ends() {
-        let toasts: Vec<Toast> = (0..2)
+    fn the_drawer_makes_room_for_itself() {
+        let toasts: Vec<Toast> = (0..3)
             .map(|i| {
                 let mut n = notification("", 0);
                 n.id = i;
@@ -968,29 +1050,42 @@ mod tests {
             })
             .collect();
         let plan = Plan {
-            units: vec![unit(vec![0], vec![0], false), unit(vec![1], vec![1], false)],
+            units: (0..3).map(|i| unit(vec![i], vec![i], false)).collect(),
             hidden: 0,
         };
-        let plain = geometry(&toasts, &plan, false, None);
-        let on_first = geometry(&toasts, &plan, false, Some((0, false)));
-        assert_eq!(plain.stack, on_first.stack);
-        assert_eq!(on_first.lead, 0.0);
-        assert!(
-            on_first.tail < drawer_height(false),
-            "the next card already gives it most of its room"
-        );
-        assert!(on_first.overlaps);
-        let on_last = geometry(&toasts, &plan, false, Some((1, false)));
-        assert_eq!(on_last.tail, drawer_height(false));
-        assert!(!on_last.overlaps, "nothing under it: it can join the card");
-        // Mirrored for a bottom corner: the newest card is the farthest from the
-        // edge, so it is the one with nothing above it.
-        let low = geometry(&toasts, &plan, true, Some((1, false)));
-        assert_eq!(low.lead, drawer_height(false));
-        assert!(!low.overlaps);
+        let plain = geometry(&toasts, &plan, false, WIDTH, None);
+        assert_eq!(plain.room, 0.0);
+        let one = card_height(&toasts[0], WIDTH);
+        let mid = geometry(&toasts, &plan, false, WIDTH, Some((1, false)));
+        assert_eq!(mid.stack, plain.stack);
+        assert_eq!(mid.room, drawer_room(false));
+        assert_eq!(mid.card, Some((one + GAP, one)), "the middle card sits second");
+        // Mirrored in a bottom corner: the list is turned over.
+        let low = geometry(&toasts, &plan, true, WIDTH, Some((0, false)));
+        assert_eq!(low.card, Some((2.0 * (one + GAP), one)));
         assert_eq!(
-            height(&toasts, &plan, false, Some((1, false))),
-            (plain.stack + drawer_height(false)).ceil() as u32
+            height(&toasts, &plan, false, WIDTH, Some((1, true))),
+            (plain.stack + drawer_room(true)).ceil() as u32
         );
+        assert_eq!(
+            height(&toasts, &plan, true, WIDTH, None),
+            plain.stack.ceil() as u32
+        );
+    }
+
+    /// A body is sized to the lines it really wraps to: a short one is one
+    /// line, a long one two, and the card is as tall as it needs.
+    #[test]
+    fn a_body_is_sized_to_its_wrapped_lines() {
+        let short = Toast::new(notification("Restart to finish", 0));
+        let long = Toast::new(notification(&"word ".repeat(30), 0));
+        assert_eq!(body_lines(&short, WIDTH), 1);
+        assert_eq!(body_lines(&long, WIDTH), BODY_LINES);
+        assert_eq!(
+            card_height(&long, WIDTH) - card_height(&short, WIDTH),
+            BODY_LINE_H
+        );
+        // The count is cached per width and follows a changed width.
+        assert_eq!(short.body_lines.get(), Some((WIDTH, 1)));
     }
 }

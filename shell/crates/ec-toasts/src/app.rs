@@ -18,6 +18,19 @@ use ec_ui::markup::{self, Run};
 /// How long the silence drawer takes to open or close, ease-out.
 const DRAWER_MS: u64 = 180;
 
+/// The drawer's duration in ms. Debug builds only: `EC_TOASTS_SLOW=10` slows it
+/// tenfold so a headless session can capture frames from the middle of it.
+fn drawer_ms() -> u64 {
+    #[cfg(debug_assertions)]
+    if let Some(k) = std::env::var("EC_TOASTS_SLOW")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+    {
+        return DRAWER_MS * k.max(1);
+    }
+    DRAWER_MS
+}
+
 /// The freedesktop action a click on the card itself means.
 const DEFAULT_ACTION: &str = "default";
 
@@ -219,6 +232,9 @@ pub struct Toast {
     pub art: Art,
     /// Its body, parsed on arrival.
     pub runs: Vec<Run>,
+    /// How many lines the body wraps to at a card width, measured once per
+    /// width by the view: `(card width, lines)`.
+    pub body_lines: std::cell::Cell<Option<(u32, usize)>>,
 }
 
 impl Toast {
@@ -226,6 +242,7 @@ impl Toast {
         Toast {
             art: art::resolve(&notification),
             runs: markup::parse(&notification.body),
+            body_lines: std::cell::Cell::new(None),
             notification,
             shown: None,
             leaving: None,
@@ -244,6 +261,7 @@ impl Toast {
         }
         if old.body != new.body {
             self.runs = markup::parse(&new.body);
+            self.body_lines.set(None);
         }
         self.notification = new;
     }
@@ -556,7 +574,7 @@ impl App {
                 self.drawer_card = None;
             }
         } else {
-            let d = Duration::from_millis(DRAWER_MS);
+            let d = Duration::from_millis(drawer_ms());
             self.drawer_tween = Some(Tween::new(from, to, Instant::now(), d, Curve::EaseOut));
         }
     }
@@ -999,7 +1017,13 @@ fn sync_surface(app: &mut App) -> Task<Message> {
     use iced_layershell::reexport::{
         Anchor, KeyboardInteractivity, Layer, NewLayerShellSettings, OutputOption,
     };
-    let wanted = crate::view::height(&app.toasts, &app.plan(), app.corner.bottom(), app.drawer_extent());
+    let wanted = crate::view::height(
+        &app.toasts,
+        &app.plan(),
+        app.corner.bottom(),
+        app.width,
+        app.drawer_extent(),
+    );
     match app.surface {
         Some(id) if wanted == 0 => {
             app.surface = None;
