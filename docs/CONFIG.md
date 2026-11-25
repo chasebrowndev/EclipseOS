@@ -352,6 +352,8 @@ Legacy forms still load, and `ec-ctl config migrate` rewrites them: `enabled #fa
 | --- | --- | --- | --- | --- |
 | `ui.show-key-hints` | bool | `#true` | live | Show the keyboard control hints in the launcher and the start menu. |
 | `ui.capture-toasts` | show \| redact \| hold \| history | `"redact"` | live | What notification toasts do while a screen is being shared or recorded (ADR 0106). `redact` covers the toast in the shared image with a "Private: Redacted" card and shows it to you normally; `hold` keeps toasts back until the share ends; `history` sends them straight to the notification history; `show` shares them like any other window. Only `show` can put a toast's text in a share. |
+| `ui.toasts-over-fullscreen` | bool | `#false` | live | Show notification toasts over a fullscreen window (ADR 0127). Off suppresses them while something is fullscreen and keeps them in the history as unread; a system question waits until fullscreen ends. |
+| `ui.restore-offer-in-quiet` | bool | `#true` | live | Show the session-restore offer ("Eclipse ended unexpectedly") once even in Quiet or Do Not Disturb (ADR 0131); the mode applies again afterwards. Off drops the offer in those modes. |
 | `ui.capture-indicator-color` | colour `#rrggbb[aa]` | `#ff2626ff` | live | Pupil colour of the capture indicator, the taskbar's eclipse eye the compositor draws while a client captures the screen. Alpha is ignored: the indicator is always opaque. |
 
 ### `settings`

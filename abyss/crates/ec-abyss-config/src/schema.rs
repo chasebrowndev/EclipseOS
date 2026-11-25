@@ -2065,6 +2065,26 @@ pub const TABLE: &[Key] = &[
        other window. Only `show` can put a toast's text in a share.",
     ),
     k(
+        "ui.toasts-over-fullscreen",
+        Ty::Bool,
+        Bool(false),
+        Abyss,
+        Live,
+        "Show notification toasts over a fullscreen window (ADR 0127). Off \
+       suppresses them while something is fullscreen and keeps them in the \
+       history as unread; a system question waits until fullscreen ends.",
+    ),
+    k(
+        "ui.restore-offer-in-quiet",
+        Ty::Bool,
+        Bool(true),
+        Abyss,
+        Live,
+        "Show the session-restore offer (\"Eclipse ended unexpectedly\") once \
+       even in Quiet or Do Not Disturb (ADR 0131); the mode applies again \
+       afterwards. Off drops the offer in those modes.",
+    ),
+    k(
         "ui.capture-indicator-color",
         Ty::Color,
         Color(crate::bar::CAPTURE_INDICATOR_COLOR),
@@ -3243,6 +3263,8 @@ pub fn get(c: &Config, path: &str) -> Option<Value> {
         "launcher.bind.run" => V::Str(c.launcher.bind.run.text.clone()),
         "ui.show-key-hints" => V::Bool(c.ui.show_key_hints),
         "ui.capture-toasts" => V::Str(c.ui.capture_toasts.name().into()),
+        "ui.toasts-over-fullscreen" => V::Bool(c.ui.toasts_over_fullscreen),
+        "ui.restore-offer-in-quiet" => V::Bool(c.ui.restore_offer_in_quiet),
         "ui.capture-indicator-color" => V::Color(c.ui.capture_indicator_color),
         "settings.search.frecency" => V::Bool(c.settings.search_frecency),
         "decoration.profile" => V::Str(c.gfx.setting.name().into()),

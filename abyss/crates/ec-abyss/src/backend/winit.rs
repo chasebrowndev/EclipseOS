@@ -204,6 +204,7 @@ pub fn run(config: Config, stats: bool, session: bool) -> Result<()> {
             crate::protocols::agent::flush(state);
         })
         .context("event loop")?;
+    crate::ipc::announce_end(&mut state);
     crate::ipc::cleanup(&state);
     crate::trusted_ui::socket::cleanup(&state);
     crate::protocols::agent::cleanup(&state);

@@ -30,4 +30,7 @@ pub const EVENTS: &[&str] = &[
     "feature-disabled",
     // ADR 0099: `{locked, pending, locker_alive}`, on every change.
     "lock",
+    // ADR 0131: the compositor is exiting cleanly; `{}`, once, last. Never sent
+    // on a crash.
+    "session-end",
 ];

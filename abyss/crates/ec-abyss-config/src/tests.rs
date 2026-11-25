@@ -2017,6 +2017,36 @@ fn an_unknown_capture_toasts_mode_is_rejected_and_keeps_redact() {
 }
 
 #[test]
+fn toasts_over_fullscreen_defaults_off_and_parses_a_bool() {
+    assert!(!Config::default().ui.toasts_over_fullscreen);
+    let doc: KdlDocument = "ui { toasts-over-fullscreen #true }".parse().unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert!(cfg.ui.toasts_over_fullscreen);
+    let doc: KdlDocument = r#"ui { toasts-over-fullscreen "yes" }"#.parse().unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+    assert!(!cfg.ui.toasts_over_fullscreen);
+}
+
+#[test]
+fn restore_offer_in_quiet_defaults_on_and_parses_a_bool() {
+    assert!(Config::default().ui.restore_offer_in_quiet);
+    let doc: KdlDocument = "ui { restore-offer-in-quiet #false }".parse().unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert!(cfg.errors.is_empty(), "{:?}", cfg.errors);
+    assert!(!cfg.ui.restore_offer_in_quiet);
+    let doc: KdlDocument = r#"ui { restore-offer-in-quiet 3 }"#.parse().unwrap();
+    let mut cfg = Config::default();
+    cfg.apply(&doc, &mut Vec::new());
+    assert_eq!(cfg.errors.len(), 1, "{:?}", cfg.errors);
+    assert!(cfg.ui.restore_offer_in_quiet);
+}
+
+#[test]
 fn parses_capture_hide_layer() {
     let doc: KdlDocument = r#"
             capture { hide-layer "hyperion:eclipse-eye" "foo:ns:with:colons" }
