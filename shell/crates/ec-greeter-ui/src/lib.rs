@@ -21,6 +21,6 @@ pub mod tokens;
 mod app;
 mod view;
 
-pub use app::{run, run_with, Options, SHIPPED_WALLPAPER};
+pub use app::{palette_for, run, run_with, Options, SHIPPED_WALLPAPER};
 pub use auth::{Auth, AuthState, FakeAuth, Power, Refusal};
 pub use secret::Secret;

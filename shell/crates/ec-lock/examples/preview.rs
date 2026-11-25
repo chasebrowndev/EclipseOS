@@ -91,6 +91,10 @@ fn clock_preset(name: &str) -> Format {
 }
 
 fn main() -> iced::Result {
+    // The lock wears the desktop's palette; a preview has no compositor to ask.
+    if std::env::var_os("PREVIEW_LIGHT").is_some() {
+        ec_ui::tokens::color::set_seeds(&ec_theme::LIGHT_SEEDS);
+    }
     let state = std::env::args().nth(1).unwrap_or_else(|| "ready".to_owned());
     let mut layout = face::builtin();
     let (mut glance, mut dims) = (Snapshot::default(), None);

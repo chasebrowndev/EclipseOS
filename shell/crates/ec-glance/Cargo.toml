@@ -11,3 +11,8 @@ publish = false
 [lib]
 name = "ec_glance"
 path = "src/lib.rs"
+
+[dependencies]
+# Constants only, no code and no dependencies of its own: the lock's plans use the
+# desktop's own type scale and spacing so the lock and the builder's preview read one table.
+ec-style-tokens = { path = "../../../abyss/crates/ec-style-tokens" }

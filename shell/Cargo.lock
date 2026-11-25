@@ -1020,6 +1020,9 @@ dependencies = [
 [[package]]
 name = "ec-glance"
 version = "0.2.2"
+dependencies = [
+ "ec-style-tokens",
+]
 
 [[package]]
 name = "ec-glass-host"

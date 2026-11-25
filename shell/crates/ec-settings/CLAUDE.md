@@ -35,3 +35,11 @@ Read the root `CLAUDE.md` first. Governing spec: COMP-17 §3 (DP-5).
   reports as switches. "Recently opened" is the search's own frecency, shown only while it is on and not empty.
 - **Art** is `ec_ui::widget::art` (tiles, vignettes) and `previews.rs` (live diagrams). No asset, no new dependency, nothing
   drawn while idle, nothing gold. See STYLE.md > Art.
+- **Login and Lock screen builders** (`login_screen/`) are one editor (`layout_view.rs`, `layout_edit::Screen::{Login, Lock}`).
+  Each tile is the real screen's plan scaled (`ec_glance::tile`, `ec_glance::cells`), with colours from the screen's derived
+  palette (`Skin.pal`); no tile may carry its own sizes or alphas (`lock_mock.rs` too; the drift tests enforce it). The only
+  allowed deviations are the 8 px text floor, the 2 px minimum rail and bar, non-glass frost and the fixed preview tile gap.
+  The Lock screen page (`lock.rs`) edits the user's own `$XDG_CONFIG_HOME/eclipse/lock-layout`: no polkit, no Apply bar, atomic
+  0600 write on each finished gesture, revert and one sentence on failure, Reset deletes the file, reads refuse symlinks and
+  files over 4 KiB. Preview examples: `examples/builder_preview.rs` (`LOCK=1`, `PREVIEW_*`, `PREVIEW_LIGHT`).
+  Sitemap: Desktop has Mode, Components, Wallpaper, Login screen and Lock screen (`desktop.lock-screen`).

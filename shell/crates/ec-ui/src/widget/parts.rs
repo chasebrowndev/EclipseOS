@@ -75,16 +75,21 @@ pub fn glass_inset<'a, Message: 'a>(
     super::bar_widget::glass_card(card, theme::CellTone::Plain, radius::INSET)
 }
 
-/// A small uppercase mono section label.
-pub fn micro_label<'a, Message: 'a>(label: &str) -> Element<'a, Message, Theme> {
-    // Tracking is not a `text` property in iced, so the spacing the spec asks
-    // for is put into the string itself. Ugly, honest, and it renders right.
-    let spaced: String = label
+/// A [`micro_label`]'s string: upper case, each letter followed by a thin
+/// space. Tracking is not a `text` property in iced, so the spacing the spec
+/// asks for is put into the string itself. Ugly, honest, and it renders right.
+/// Public so a preview that draws the label by hand sets the same string.
+pub fn tracked(label: &str) -> String {
+    label
         .to_uppercase()
         .chars()
         .flat_map(|c| [c, '\u{2009}'])
-        .collect();
-    text(spaced)
+        .collect()
+}
+
+/// A small uppercase mono section label.
+pub fn micro_label<'a, Message: 'a>(label: &str) -> Element<'a, Message, Theme> {
+    text(tracked(label))
         .font(font::DATA_MEDIUM)
         .size(size::MICRO)
         .style(theme::text_tertiary)

@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ec_glance::{batteries, bounded, wifi, Battery, Wifi};
-use ec_layout::{validate, Kind, Layout, Rect, Tile, MAX_LINES_BYTES};
+use ec_layout::{validate_with, Kind, Layout, LOCK_REQUIRED, MAX_LINES_BYTES};
 use iced::futures::channel::mpsc::Sender;
 use iced::Subscription;
 
@@ -50,20 +50,10 @@ pub fn read() -> Snapshot {
 /// The lock's own layout when nothing is configured: the clock, one line for
 /// the account, the field. No Users tile (the lock has one account) and no
 /// Power tile (a locked session is not the place to turn the machine off).
-/// It is not a valid *file* layout (those must name a Users tile), but it is
-/// built here, never parsed, and it always has the Password tile.
+/// It always has the Password tile. A lock file needs only that one (the
+/// settings editor writes no Users or Power tile, and the lock would not draw them).
 pub fn builtin() -> Layout {
-    let t = |kind, x, y, w, h| Tile {
-        kind,
-        rect: Rect::new(x, y, w, h),
-    };
-    Layout {
-        tiles: vec![
-            t(Kind::Clock, 6, 3, 12, 4),
-            t(Kind::Greeting, 8, 7, 8, 1),
-            t(Kind::Password, 8, 8, 8, 3),
-        ],
-    }
+    Layout::lock_default()
 }
 
 /// `$XDG_CONFIG_HOME/eclipse/lock-layout`, or `~/.config/eclipse/lock-layout`.
@@ -101,7 +91,12 @@ pub fn read_capped(path: &Path, cap: usize) -> Option<String> {
 /// tile that needs the session. Anything else is the built-in layout.
 pub fn layout_from_text(text: &str) -> Layout {
     match Layout::from_lines(text) {
-        Ok(l) if validate(&l).is_ok() && l.tiles.iter().all(|t| !t.kind.needs_session()) => l,
+        Ok(l)
+            if validate_with(&l, &LOCK_REQUIRED).is_ok()
+                && l.tiles.iter().all(|t| !t.kind.needs_session()) =>
+        {
+            l
+        }
         _ => builtin(),
     }
 }
@@ -257,6 +252,7 @@ fn poll() -> impl iced::futures::Stream<Item = Message> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ec_layout::Rect;
     use std::fs;
 
     #[test]
@@ -264,10 +260,18 @@ mod tests {
         let l = builtin();
         assert!(l.get(Kind::Password).is_some());
         assert!(l.tiles.iter().all(|t| t.rect.in_grid()));
-        // Everything but the missing Users tile is valid.
-        let mut with_users = l.clone();
-        with_users.set(Kind::Users, Rect::new(0, 11, 4, 3));
-        assert_eq!(validate(&with_users), Ok(()));
+        // A lock layout needs only the password: no Users tile.
+        assert_eq!(validate_with(&l, &LOCK_REQUIRED), Ok(()));
+    }
+
+    /// What Settings' lock editor writes (`Layout::to_lines`, no Users, no Power)
+    /// is exactly what the lock reads back.
+    #[test]
+    fn what_the_editor_writes_the_lock_reads_back() {
+        let mut l = builtin();
+        l.set(Kind::Battery, Rect::new(18, 1, 2, 2));
+        l.set(Kind::Wifi, Rect::new(18, 4, 2, 1));
+        assert_eq!(layout_from_text(&l.to_lines()), l);
     }
 
     #[test]

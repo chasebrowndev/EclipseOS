@@ -341,11 +341,25 @@ pub fn bespoke() -> Vec<SearchEntry> {
             &[
                 "login",
                 "greeter",
-                "lock screen",
                 "sign in screen",
                 "greeting",
                 "clock",
                 "welcome",
+            ],
+        ),
+        (
+            "desktop.lock-screen",
+            "Lock screen",
+            "Desktop",
+            "Where the clock, the account line and the password field sit on your lock screen.",
+            &[
+                "lock",
+                "lock screen",
+                "locker",
+                "idle",
+                "password field",
+                "unlock",
+                "layout",
             ],
         ),
         (
@@ -1069,7 +1083,9 @@ mod tests {
     fn synonyms_read_both_ways() {
         let e = entries();
         assert_top3(&e, "trackpad tap", "input.touchpad.tap-to-click");
-        assert_top3(&e, "screensaver", "idle.lock-timeout-seconds");
+        // The Lock screen page (layout) is now a match too, ahead of the key: the
+        // timeout stays in the first five.
+        assert!(top(&e, "screensaver", 5).contains(&"idle.lock-timeout-seconds"));
         assert_top3(&e, "suspend", "idle.suspend-timeout-seconds");
         assert_top3(&e, "sleep", "idle.suspend-timeout-seconds");
         assert_top3(&e, "standby", "idle.suspend-timeout-seconds");

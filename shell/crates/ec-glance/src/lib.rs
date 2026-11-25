@@ -8,6 +8,7 @@
 //! [`bounded`] runs one on a thread and gives up after a deadline, so a wedged
 //! device can never hold the UI (or the password field) up.
 
+pub mod cells;
 pub mod clock;
 pub mod tile;
 
