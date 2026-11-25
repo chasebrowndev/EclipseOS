@@ -8,7 +8,7 @@ use iced::window::Id;
 use iced::{Subscription, Task};
 use iced_layershell::to_layer_message;
 
-use ec_services::notifications::{CloseReason, Event, Notification, Notifications, Share};
+use ec_services::notifications::{Class, CloseReason, Event, Notification, Notifications, Share};
 use ec_ui::ipc::EventAnim;
 use ec_ui::motion::{Motion, Tween};
 
@@ -162,11 +162,20 @@ impl Toast {
             && now.saturating_duration_since(since) < anim.motion.duration
     }
 
+    /// A system yes/no question: it never times out, and its buttons answer
+    /// through `Message::Invoke` with the action id (`yes` / `no`). The view
+    /// decides how to draw it; this is the whole of the model.
+    pub fn is_question(&self) -> bool {
+        self.notification.question && self.notification.class == Class::System
+    }
+
     /// Whether its lifetime has run out. A notification with no lifetime — only
     /// a critical one can have that — never expires on its own. Time the
     /// pointer held it does not count.
     fn expired(&self, now: Instant) -> bool {
-        if self.leaving.is_some() {
+        // A question waits for its answer however its lifetime was set
+        // (ADR 0127); only a system toast can be one.
+        if self.leaving.is_some() || self.is_question() {
             return false;
         }
         match (self.shown, self.notification.expires_in) {
@@ -1052,6 +1061,60 @@ mod tests {
 
     /// The pointer holds a card's clock: time spent under it does not count
     /// against its lifetime, and the clock runs again when it leaves.
+    fn question(id: u32) -> Notification {
+        Notification {
+            class: Class::System,
+            question: true,
+            // Even a lifetime on the struct cannot make one expire.
+            expires_in: Some(Duration::from_secs(1)),
+            actions: vec![
+                ec_services::notifications::Action {
+                    key: "yes".into(),
+                    label: "Reopen".into(),
+                },
+                ec_services::notifications::Action {
+                    key: "no".into(),
+                    label: "Start fresh".into(),
+                },
+            ],
+            ..notification(id, None)
+        }
+    }
+
+    #[test]
+    fn a_question_never_expires_and_an_app_cannot_make_itself_one() {
+        let t0 = Instant::now();
+        let mut q = Toast::new(question(1));
+        q.shown = Some(t0);
+        assert!(q.is_question());
+        assert!(!q.expired(t0 + Duration::from_secs(3600)));
+        // The flag alone, from an app, is not enough: the class must be system.
+        let mut fake = Toast::new(Notification {
+            class: Class::App,
+            expires_in: Some(Duration::from_secs(1)),
+            ..question(2)
+        });
+        fake.shown = Some(t0);
+        assert!(!fake.is_question());
+        assert!(fake.expired(t0 + Duration::from_secs(2)));
+    }
+
+    #[test]
+    fn a_question_holds_its_clock_under_the_pointer_and_stays_until_answered() {
+        let mut a = app();
+        post(&mut a.toasts, question(1));
+        a.toasts[0].shown = Some(a.now);
+        a.hover = Some(1);
+        a.advance(a.now + Duration::from_secs(60));
+        assert_eq!(a.toasts[0].held, Duration::from_secs(60));
+        a.hover = None;
+        assert!(!a.toasts[0].expired(a.now + Duration::from_secs(600)));
+        // Answering goes through the same reply as any action: the id of the
+        // button, and the card leaves.
+        let _ = update(&mut a, Message::Invoke(1, "yes".into()));
+        assert!(a.toasts.is_empty());
+    }
+
     #[test]
     fn hovering_a_card_pauses_its_timeout() {
         let mut a = app();

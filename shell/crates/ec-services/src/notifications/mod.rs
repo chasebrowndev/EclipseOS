@@ -33,6 +33,7 @@ mod rules;
 mod server;
 mod share;
 mod sound;
+mod system;
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::time::Duration;
@@ -41,6 +42,7 @@ pub use hints::{Image, Sound};
 pub use history::{HistoryClient, HistoryEntry, Page, PageEntry, PageFilter, CAP as HISTORY_CAP};
 pub use server::spawn;
 pub use share::{Share, ToastMode};
+pub use system::{ANSWER_NO, ANSWER_YES, SYSTEM_ID_BASE};
 
 /// What the human wants done with arrivals. Persisted, shared by every
 /// process through `org.eclipse.NotificationHistory`.
@@ -161,6 +163,27 @@ pub struct Notification {
     /// Grouping key for the UI: the desktop entry if given, else the app name,
     /// lowercased.
     pub group: String,
+    /// Who originated it. Only this crate's own system path sets
+    /// [`Class::System`]; the D-Bus path always builds [`Class::App`] and no
+    /// hint can change that (ADR 0127).
+    pub class: Class,
+    /// A yes/no question the human has to answer (system class only). It
+    /// never expires on its own and its clock stops while the pointer is over
+    /// it; if it is dismissed unanswered it falls to history as a non-live
+    /// entry. Its actions are [`system::ANSWER_YES`] / [`system::ANSWER_NO`].
+    pub question: bool,
+}
+
+/// Where a notification came from (ADR 0127). Security prompts are neither:
+/// they are compositor-drawn trusted UI and are never toasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Class {
+    /// An application, over D-Bus. Untrusted; the view must not let it pass
+    /// for a system toast.
+    #[default]
+    App,
+    /// The shell or the compositor. May carry a question.
+    System,
 }
 
 /// The server's default lifetime when a client passes `-1`.

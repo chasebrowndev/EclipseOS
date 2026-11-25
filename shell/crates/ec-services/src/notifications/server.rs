@@ -15,7 +15,10 @@ use zbus::zvariant::OwnedValue;
 use super::history::{
     now_secs, wire_list, PageFilter, Shared, Store, Verdict, WireEntry, HISTORY_BUS_NAME, HISTORY_PATH,
 };
-use super::{hints, parse_actions, CloseReason, Command, Event, Mode, Notification, Notifications, Urgency};
+use super::{
+    hints, parse_actions, Class, CloseReason, Command, Event, Mode, Notification, Notifications, Urgency,
+    SYSTEM_ID_BASE,
+};
 
 const BUS_NAME: &str = "org.freedesktop.Notifications";
 const OBJECT_PATH: &str = "/org/freedesktop/Notifications";
@@ -342,12 +345,7 @@ impl Server {
             .and_then(|v| v.downcast_ref::<&str>().ok())
             .map_or(app_icon, str::to_owned);
 
-        let id = if replaces_id != 0 {
-            replaces_id
-        } else {
-            self.last_id = self.last_id.wrapping_add(1).max(1);
-            self.last_id
-        };
+        let id = next_id(&mut self.last_id, replaces_id);
 
         let desktop_entry = hints::desktop_entry(&hints);
         let mut notification = Notification {
@@ -367,6 +365,9 @@ impl Server {
             progress: hints::progress(&hints),
             image: hints::image(&hints),
             sound: hints::sound(&hints),
+            // Whatever the hints say: an app is an app, and asks no questions.
+            class: Class::App,
+            question: false,
         };
 
         // Mode and the user's rules decide whether this pops up, is only
@@ -374,6 +375,7 @@ impl Server {
         let verdict = {
             let mut store = self.store.lock();
             store.set_share_quiet(self.share.history());
+            store.set_fullscreen_quiet(self.share.fullscreen_suppressed());
             let v = store.admit(&mut notification, expire_timeout, now_secs());
             store.save();
             v
@@ -407,6 +409,10 @@ impl Server {
 
     /// The sending application withdrawing its own notification.
     async fn close_notification(&mut self, id: u32, #[zbus(connection)] conn: &zbus::Connection) {
+        // Not an app's to withdraw: system toasts and the compositor's notice.
+        if id >= SYSTEM_ID_BASE {
+            return;
+        }
         let _ = self.events.send(Event::Closed {
             id,
             reason: CloseReason::ByCall,
@@ -459,6 +465,20 @@ impl Server {
     ) -> zbus::Result<()>;
 }
 
+/// The id for an arrival. Ids from `SYSTEM_ID_BASE` up are the shell's
+/// (ADR 0127): an app cannot replace a system toast by naming its id, and the
+/// counter never climbs into the range.
+fn next_id(last: &mut u32, replaces_id: u32) -> u32 {
+    if replaces_id != 0 && replaces_id < SYSTEM_ID_BASE {
+        return replaces_id;
+    }
+    *last = last.wrapping_add(1).max(1);
+    if *last >= SYSTEM_ID_BASE {
+        *last = 1;
+    }
+    *last
+}
+
 /// Take the well-known name and serve until the returned handle is dropped.
 ///
 /// Fails if something else already owns `org.freedesktop.Notifications` — we
@@ -473,6 +493,7 @@ pub fn spawn() -> zbus::Result<Notifications> {
     let first_id = store.max_id();
     let history = Shared::new(store);
     let history_for_serve = history.clone();
+    let history_for_system = history.clone();
     let share_for_server = share.clone();
 
     // The connection is built on the service thread so that the whole D-Bus
@@ -542,7 +563,9 @@ pub fn spawn() -> zbus::Result<Notifications> {
         Ok(Ok(())) => {
             // Only the daemon that owns the name shows the compositor's config
             // problems (ADR 0064); a second instance would double them.
-            super::compositor::spawn(compositor_tx, share.clone());
+            super::compositor::spawn(compositor_tx.clone(), share.clone());
+            // Likewise the session-restore offer and manifest writer (ADR 0127).
+            super::system::spawn(compositor_tx, history_for_system, share.clone());
             Ok(Notifications::new(event_rx, command_tx, share))
         }
         Ok(Err(e)) => Err(e),
@@ -567,6 +590,37 @@ fn serve(connection: &zbus::blocking::Connection, commands: &mpsc::Receiver<Comm
         let id = match &command {
             Command::Close { id, .. } | Command::Invoke { id, .. } => *id,
         };
+        // A system toast is the shell's own: a press is answered in-process
+        // and never becomes an `ActionInvoked` or `NotificationClosed` on the
+        // bus; closed unanswered, it falls to history.
+        let system = {
+            let mut s = history.lock();
+            if !s.is_system(id) {
+                None
+            } else {
+                Some(match &command {
+                    Command::Invoke { key, .. } => {
+                        s.answer_system(id, key);
+                        false
+                    }
+                    Command::Close { .. } => {
+                        let kept = s.fall_to_history(id, now_secs());
+                        s.save();
+                        kept
+                    }
+                })
+            }
+        };
+        if let Some(changed) = system {
+            if changed {
+                zbus::block_on(async {
+                    if let Ok(e) = SignalEmitter::new(connection.inner(), HISTORY_PATH) {
+                        announce(&e, history).await;
+                    }
+                });
+            }
+            continue;
+        }
         let (history_changed_now, resident) = {
             let mut s = history.lock();
             let resident = s.is_resident(id);
@@ -597,7 +651,32 @@ fn serve(connection: &zbus::blocking::Connection, commands: &mpsc::Receiver<Comm
         }
         if result.is_err() {
             // The bus is gone. Nothing further will succeed either.
-            return;
+            break;
         }
+    }
+    // The toast stack is gone: nothing can answer a pending question now.
+    let mut s = history.lock();
+    if s.fall_all_to_history(now_secs()) {
+        s.save();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_app_cannot_replace_a_system_toast_by_id() {
+        let mut last = 5;
+        assert_eq!(next_id(&mut last, 3), 3);
+        assert_eq!(next_id(&mut last, 0), 6);
+        assert_eq!(next_id(&mut last, SYSTEM_ID_BASE + 1), 7);
+        assert_eq!(next_id(&mut last, u32::MAX), 8);
+    }
+
+    #[test]
+    fn the_counter_never_reaches_the_system_range() {
+        let mut last = SYSTEM_ID_BASE - 1;
+        assert_eq!(next_id(&mut last, 0), 1);
     }
 }

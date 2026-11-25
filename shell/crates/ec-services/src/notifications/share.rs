@@ -64,6 +64,14 @@ impl ToastMode {
 struct Inner {
     active: AtomicBool,
     mode: AtomicU8,
+    /// The focused output has a fullscreen window (the compositor's `output`
+    /// event, ADR 0127).
+    fullscreen: AtomicBool,
+    /// `ui.toasts-over-fullscreen`.
+    over_fullscreen: AtomicBool,
+    /// `ui.restore-offer-in-quiet` is off (stored inverted so the default,
+    /// on, is the zero value).
+    no_offer_in_quiet: AtomicBool,
 }
 
 /// The shared state. Cloning shares it.
@@ -105,6 +113,38 @@ impl Share {
         self.active() && self.mode() == ToastMode::History
     }
 
+    pub fn set_fullscreen(&self, on: bool) {
+        self.0.fullscreen.store(on, Ordering::Relaxed);
+    }
+
+    /// `ui.restore-offer-in-quiet` (default true).
+    pub fn set_restore_offer_in_quiet(&self, on: bool) {
+        self.0.no_offer_in_quiet.store(!on, Ordering::Relaxed);
+    }
+
+    pub fn restore_offer_in_quiet(&self) -> bool {
+        !self.0.no_offer_in_quiet.load(Ordering::Relaxed)
+    }
+
+    pub fn set_over_fullscreen(&self, on: bool) {
+        self.0.over_fullscreen.store(on, Ordering::Relaxed);
+    }
+
+    /// Toasts are kept off the screen: something is fullscreen and
+    /// `ui.toasts-over-fullscreen` is off (the default). App arrivals are
+    /// stored unread; a system question waits for this to clear (ADR 0127).
+    pub fn fullscreen_suppressed(&self) -> bool {
+        self.0.fullscreen.load(Ordering::Relaxed) && !self.0.over_fullscreen.load(Ordering::Relaxed)
+    }
+
+    /// Fold one compositor `output` event in: `{"fullscreen": bool, ..}`
+    /// describes the focused output. Anything else changes nothing.
+    pub fn on_output(&self, data: &Value) {
+        if let Some(on) = data.get("fullscreen").and_then(Value::as_bool) {
+            self.set_fullscreen(on);
+        }
+    }
+
     /// The control socket went away: whether a share is running is unknown.
     pub fn lost(&self) {
         self.set_active(true);
@@ -117,6 +157,12 @@ impl Share {
             self.set_active(active);
         }
     }
+}
+
+/// `ui.toasts-over-fullscreen` out of a `get_config` reply. `None` on anything
+/// else, which leaves the default (off) in place.
+pub fn over_fullscreen_of(reply: &Value) -> Option<bool> {
+    reply.get("keys")?.as_array()?.first()?.get("value")?.as_bool()
 }
 
 /// The mode out of a `get_config {"path": "ui.capture-toasts"}` reply. `None` on
@@ -177,6 +223,29 @@ mod tests {
         assert_eq!(mode_of(&reply), Some(ToastMode::Hold));
         assert_eq!(mode_of(&json!({"keys": []})), None);
         assert_eq!(mode_of(&json!({"keys": [{"value": "drop"}]})), None);
+    }
+
+    #[test]
+    fn fullscreen_suppresses_toasts_unless_the_setting_is_on() {
+        let s = Share::default();
+        assert!(!s.fullscreen_suppressed());
+        s.on_output(&json!({"focused": 1, "name": "DP-1", "fullscreen": true}));
+        assert!(s.fullscreen_suppressed());
+        s.set_over_fullscreen(true);
+        assert!(!s.fullscreen_suppressed());
+        s.set_over_fullscreen(false);
+        s.on_output(&json!({"fullscreen": "yes"}));
+        assert!(s.fullscreen_suppressed());
+        s.on_output(&json!({"fullscreen": false}));
+        assert!(!s.fullscreen_suppressed());
+    }
+
+    #[test]
+    fn the_over_fullscreen_setting_is_read_from_a_get_config_reply() {
+        let reply = json!({"keys": [{"path": "ui.toasts-over-fullscreen", "value": true}]});
+        assert_eq!(over_fullscreen_of(&reply), Some(true));
+        assert_eq!(over_fullscreen_of(&json!({"keys": [{"value": "x"}]})), None);
+        assert_eq!(over_fullscreen_of(&json!({})), None);
     }
 
     #[test]

@@ -49,6 +49,12 @@ ADR 0065 (taskbar widgets: `media`, `audio`, `usage`, `custom`).
   labels are display text and never carry a secret. `abort` removes a job
   without recording it; a scanned cargo/pacman job is recorded when it vanishes
   whether or not it succeeded.
+- `restore.rs` and `notifications/system.rs` are the session-restore flow and the system-toast
+  path (ADR 0131). The manifest holds only desktop-entry id, workspace, tile slot and output
+  name: never a title, argv, env, cwd, grant or handle. A relaunch runs an installed desktop
+  entry through `apps::launch` and nothing else; nothing is replayed. Only this crate's system
+  path may set `Notification::class = System` or `question`; the D-Bus builder must keep
+  forcing `App`/`false`.
 - `tests/live_bus.rs` is `#[ignore]`d: it spawns a private `dbus-daemon` and
   must never run against the human's session bus.
 - Every `.rs` starts with `// SPDX-License-Identifier: AGPL-3.0-only`.
