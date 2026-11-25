@@ -13,9 +13,12 @@
 
 pub mod app;
 pub mod art;
+pub mod bell;
 pub mod conn;
 pub mod pane;
+#[cfg(debug_assertions)]
+pub mod preview;
 pub mod view;
 
 /// Width of the stack's surface — the cards' own width, edge to edge.
-pub const WIDTH: u32 = 384;
+pub const WIDTH: u32 = 320;

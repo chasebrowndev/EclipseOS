@@ -39,7 +39,7 @@
 //! name on the session bus can use it, like a click by the same human;
 //! sandboxes are not given it.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
@@ -321,6 +321,12 @@ pub(crate) struct Store {
     /// A screen share is running and `ui.capture-toasts` is `history`
     /// (ADR 0106): arrivals are stored unread with no popup. Never persisted.
     share_quiet: bool,
+    /// Something is fullscreen and `ui.toasts-over-fullscreen` is off
+    /// (ADR 0127): arrivals are stored unread with no popup. Never persisted.
+    fullscreen_quiet: bool,
+    /// System questions on screen or queued, waiting for an answer. Never
+    /// persisted; one that is dismissed unanswered becomes a non-live entry.
+    system: HashMap<u32, super::system::Pending>,
 }
 
 /// Safety net: a viewing flag nobody cleared stops suppressing popups after this.
@@ -485,6 +491,12 @@ impl Store {
         self.share_quiet = quiet;
     }
 
+    /// Set by the server before each arrival from
+    /// [`Share::fullscreen_suppressed`](super::Share::fullscreen_suppressed).
+    pub(crate) fn set_fullscreen_quiet(&mut self, quiet: bool) {
+        self.fullscreen_quiet = quiet;
+    }
+
     /// Apply the user's rules and the mode to an arrival, then record it.
     /// `n.urgency` and `n.expires_in` are final afterwards. The verdict says
     /// whether to pop it up; after anything but `Drop` the history changed.
@@ -502,9 +514,13 @@ impl Store {
         }
         n.expires_in = Notification::lifetime(timeout, n.urgency);
 
-        let verdict = if self.mode == Mode::Dnd || rule.as_ref().is_some_and(|r| r.mute) {
+        let verdict = if self.mode == Mode::Dnd || rule.as_ref().is_some_and(|r| r.muted(now)) {
             Verdict::Drop
-        } else if self.mode == Mode::Quiet || rule.as_ref().is_some_and(|r| r.quiet) || self.share_quiet {
+        } else if self.mode == Mode::Quiet
+            || rule.as_ref().is_some_and(|r| r.quiet)
+            || self.share_quiet
+            || self.fullscreen_quiet
+        {
             Verdict::Quiet
         } else if self.viewing(now) && n.urgency != Urgency::Critical && n.id != super::compositor::CONFIG_ID
         {
@@ -543,6 +559,12 @@ impl Store {
         if n.transient {
             return had;
         }
+        self.push_entry(n, now, live);
+        true
+    }
+
+    /// Append `n` as a stored, unread entry.
+    fn push_entry(&mut self, n: &Notification, now: u64, live: bool) {
         if self.entries.len() == CAP {
             self.entries.pop_front();
         }
@@ -570,7 +592,60 @@ impl Store {
             resident: n.resident,
         });
         self.dirty = true;
+    }
+
+    /// A system question went on screen. It is not stored and not live: it is
+    /// answered through `reply`, never over D-Bus.
+    pub(crate) fn post_system(
+        &mut self,
+        n: Notification,
+        reply: std::sync::mpsc::Sender<super::system::Reply>,
+    ) {
+        self.system.insert(n.id, super::system::Pending { n, reply });
+    }
+
+    /// Whether `id` is a system question waiting for an answer.
+    pub(crate) fn is_system(&self, id: u32) -> bool {
+        self.system.contains_key(&id)
+    }
+
+    /// The human pressed `key` on system toast `id`. `true` means the press
+    /// belonged to the system path and must not go anywhere else. The key has
+    /// to be one the question offered; anything else leaves it pending.
+    pub(crate) fn answer_system(&mut self, id: u32, key: &str) -> bool {
+        let Some(p) = self.system.get(&id) else {
+            return false;
+        };
+        if !p.n.actions.iter().any(|a| a.key == key) {
+            return true;
+        }
+        if let Some(p) = self.system.remove(&id) {
+            let _ = p.reply.send(super::system::Reply::Answered(key.to_owned()));
+        }
         true
+    }
+
+    /// A system question left the screen unanswered: it falls to history as a
+    /// non-live, unread entry. True if the history changed.
+    pub(crate) fn fall_to_history(&mut self, id: u32, now: u64) -> bool {
+        let Some(p) = self.system.remove(&id) else {
+            return false;
+        };
+        let _ = p.reply.send(super::system::Reply::Unanswered);
+        let mut n = p.n;
+        // History carries the text, not the buttons: nothing here can be
+        // pressed any more.
+        n.actions.clear();
+        self.take(n.id);
+        self.push_entry(&n, now, false);
+        true
+    }
+
+    /// Every pending question falls to history (the toast stack is gone).
+    pub(crate) fn fall_all_to_history(&mut self, now: u64) -> bool {
+        let ids: Vec<u32> = self.system.keys().copied().collect();
+        ids.into_iter()
+            .fold(false, |c, id| self.fall_to_history(id, now) | c)
     }
 
     /// The notification was closed (sender, toast dismissal/expiry, or an
@@ -1118,6 +1193,46 @@ mod tests {
         assert_eq!(n.urgency, Urgency::Critical);
         assert_eq!(n.expires_in, Some(std::time::Duration::from_millis(1500)));
         assert_eq!(s.list().len(), 2);
+    }
+
+    #[test]
+    fn over_fullscreen_is_stored_unread_without_a_popup_and_critical_is_no_exception() {
+        let mut s = Store::default();
+        s.set_fullscreen_quiet(true);
+        assert_eq!(arrive(&mut s, note(1, false, &[])), Verdict::Quiet);
+        let mut n = note(2, false, &[]);
+        n.urgency = Urgency::Critical;
+        assert_eq!(arrive(&mut s, n), Verdict::Quiet);
+        assert_eq!(s.unread(), 2);
+        // Stored as unread; not on screen, but still invokable this session.
+        assert!(!s.is_shown(1));
+        s.set_fullscreen_quiet(false);
+        assert_eq!(arrive(&mut s, note(3, false, &[])), Verdict::Show);
+    }
+
+    /// ADR 0127: silencing only tightens. A rule can quieten or mute, and an
+    /// app that claims critical cannot get past it; a rule that raises urgency
+    /// still does not beat a mode, nor can the app lift a mute.
+    #[test]
+    fn silencing_only_tightens_and_an_app_cannot_bypass_it() {
+        let rules = Rules::from_rules(Rules::parse(
+            r#"{"rules":[{"app":"Muted","mute":true},{"app":"Banners","quiet":true}]}"#,
+        ));
+        let mut s = Store::default().with_rules(rules);
+        let mut n = note(1, false, &[]);
+        n.app_name = "Muted".into();
+        n.urgency = Urgency::Critical;
+        assert_eq!(arrive(&mut s, n), Verdict::Drop);
+        let mut n = note(2, false, &[]);
+        n.app_name = "Banners".into();
+        n.urgency = Urgency::Critical;
+        assert_eq!(arrive(&mut s, n), Verdict::Quiet);
+        // Banners-only keeps it in history.
+        assert_eq!(s.list().len(), 1);
+        // And nothing an app sends makes it a system toast or a question.
+        let n = note(3, false, &[]);
+        assert_eq!(n.class, crate::notifications::Class::App);
+        assert!(!n.question);
     }
 
     #[test]

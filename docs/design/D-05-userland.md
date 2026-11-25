@@ -75,7 +75,8 @@ holds a password.
 
 **ec-toasts** — the notification stack. Owns
 `org.freedesktop.Notifications` in-process via `ec_services::notifications`.
-Bodies are never logged; only `Critical` may pin itself on screen.
+Bodies are never logged; only `Critical` may pin itself on screen. System-class
+question cards (ADR 0131) also pin until answered; apps can never create them.
 
 **ec-launcher** — filters `.desktop` entries (`ec_services::apps`)
 and spawns one, detached. `Terminal=true` entries run as `$term -e <argv>`

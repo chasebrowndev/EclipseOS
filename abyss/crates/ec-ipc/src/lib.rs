@@ -73,6 +73,11 @@ pub enum EventKind {
     FeatureDisabled,
     /// The session lock changed: the [`LockState`] shape (ADR 0099).
     Lock,
+    /// The compositor is exiting on purpose (a clean shutdown): `{}`. Sent once,
+    /// just before the control socket closes. A crash or power loss never sends
+    /// it, which is how `ec-services` tells a clean end from an unclean one
+    /// (ADR 0131).
+    SessionEnd,
 }
 
 impl EventKind {
@@ -93,6 +98,7 @@ impl EventKind {
         EventKind::Capture,
         EventKind::FeatureDisabled,
         EventKind::Lock,
+        EventKind::SessionEnd,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -113,6 +119,7 @@ impl EventKind {
             EventKind::Capture => "capture",
             EventKind::FeatureDisabled => "feature-disabled",
             EventKind::Lock => "lock",
+            EventKind::SessionEnd => "session-end",
         }
     }
 

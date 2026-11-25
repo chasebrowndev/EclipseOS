@@ -313,6 +313,12 @@ pub struct Ui {
     /// What toasts do while a screen is shared (ADR 0106); the compositor
     /// reads it for capture redaction, ec-toasts for hold and history.
     pub capture_toasts: crate::CaptureToasts,
+    /// Show toasts over a fullscreen surface (ADR 0127). Off (default):
+    /// arrivals are stored unread and system questions wait for the
+    /// fullscreen surface to end. Read by ec-toasts / ec-services.
+    pub toasts_over_fullscreen: bool,
+    /// Show the session-restore offer once even in Quiet or DND (ADR 0131).
+    pub restore_offer_in_quiet: bool,
     /// The pupil of the capture indicator eye (COMP-10 §3.6). Alpha is
     /// always 1.0: a translucent indicator could be hidden behind a window's
     /// own glass, so [`Config::apply_ui`] forces it opaque.
@@ -327,6 +333,8 @@ impl Default for Ui {
         Self {
             show_key_hints: true,
             capture_toasts: crate::CaptureToasts::Redact,
+            toasts_over_fullscreen: false,
+            restore_offer_in_quiet: true,
             capture_indicator_color: CAPTURE_INDICATOR_COLOR,
         }
     }

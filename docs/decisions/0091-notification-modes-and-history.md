@@ -53,3 +53,9 @@ The contract is `docs/internal/notifications-contract.md`.
 - Sound playback has not been run against a real pipewire-pulse server at the time of
   writing.
 - Per-output toast placement and frost-mode background blur (BLUR-03) remain open.
+
+## Amendment (ADR 0131)
+System-class toasts and question cards exist, are drawn by the shell, and cannot be
+created through the D-Bus path. Toasts are suppressed over fullscreen by default
+(`ui.toasts-over-fullscreen`). Rules gain `mute-until`. The restore offer may show through
+Quiet and DND once (`ui.restore-offer-in-quiet`).

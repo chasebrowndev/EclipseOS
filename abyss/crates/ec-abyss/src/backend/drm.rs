@@ -2001,6 +2001,7 @@ pub fn run(config: Config, stats: bool, session_handoff: bool) -> Result<()> {
         let _ = state.display_handle.flush_clients();
         crate::protocols::agent::flush(state);
     })?;
+    crate::ipc::announce_end(&mut state);
     crate::ipc::cleanup(&state);
     crate::trusted_ui::socket::cleanup(&state);
     crate::protocols::agent::cleanup(&state);

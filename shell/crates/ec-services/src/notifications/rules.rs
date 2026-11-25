@@ -14,8 +14,13 @@
 //! `.desktop`) and/or `app` (the `app_name`, case-insensitive). The first rule
 //! whose `desktop-entry` matches wins; failing that, the first whose `app`
 //! matches. A rule naming both must match both. A rule naming neither never
-//! matches. Effects: `mute` (ignored like DND), `quiet` (stored, no popup),
-//! `urgency` (`low|normal|critical`) and `timeout-ms` (0 = server's maximum).
+//! matches. Effects: `mute` (ignored like DND), `mute-until` (the same, until a
+//! unix time in seconds), `quiet` (stored, no popup), `urgency`
+//! (`low|normal|critical`) and `timeout-ms` (0 = server's maximum).
+//!
+//! The toast's Silence drawer writes this file through [`silence`] (ADR 0131).
+//! It only ever tightens: a source already muted stays muted, a `mute-until`
+//! is never shortened and nothing here clears a flag.
 //!
 //! Missing, unreadable or malformed files mean no rules; a bad rule is
 //! skipped alone. Rules can lower urgency; they never bypass the mode.
@@ -32,9 +37,19 @@ pub(crate) struct Rule {
     pub desktop_entry: Option<String>,
     pub app: Option<String>,
     pub mute: bool,
+    /// Muted until this unix time (seconds); `None` for no timed mute.
+    pub mute_until: Option<u64>,
     pub quiet: bool,
     pub urgency: Option<Urgency>,
     pub timeout_ms: Option<i32>,
+}
+
+impl Rule {
+    /// Whether the source is muted at unix time `now`: for good, or until a
+    /// time that has not come yet.
+    pub(crate) fn muted(&self, now: u64) -> bool {
+        self.mute || self.mute_until.is_some_and(|t| t > now)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -70,6 +85,7 @@ fn parse_rule(v: &Value) -> Option<Rule> {
         desktop_entry: text("desktop-entry"),
         app: text("app"),
         mute: flag("mute"),
+        mute_until: obj.get("mute-until").and_then(Value::as_u64),
         quiet: flag("quiet"),
         urgency: obj
             .get("urgency")
@@ -96,6 +112,10 @@ impl Rules {
 
     #[cfg(test)]
     pub(crate) fn from_rules(rules: Vec<Rule>) -> Self {
+        Self::from_rules_any(rules)
+    }
+
+    pub(crate) fn from_rules_any(rules: Vec<Rule>) -> Self {
         Self {
             rules,
             ..Self::default()
@@ -141,6 +161,161 @@ impl Rules {
                     .find(|r| r.desktop_entry.is_none() && app_match(r))
             })
     }
+}
+
+/// How long, or how far, a source is silenced from the toast's drawer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Silence {
+    /// Muted for an hour.
+    Hour,
+    /// Muted for a rolling 24 hours from now.
+    Day,
+    /// Muted until the human edits the file.
+    Forever,
+    /// No popup or sound, still stored in the history.
+    BannersOnly,
+}
+
+/// Fold one silence into the rules text and return the new text. Pure, so the
+/// ratchet is testable: it only sets `mute`, raises `mute-until` or sets
+/// `quiet`, and keeps every other field and rule as it was. The rule edited is
+/// the one `find` would pick for these names, else a new one is appended,
+/// keyed on the desktop entry when there is one and on the app name if not.
+pub(crate) fn apply_silence(
+    text: &str,
+    desktop_entry: &str,
+    app_name: &str,
+    how: Silence,
+    now: u64,
+) -> Option<String> {
+    let de = norm(desktop_entry);
+    let app = norm(app_name);
+    if de.is_empty() && app.is_empty() {
+        return None;
+    }
+    let mut top = match serde_json::from_str::<Value>(text) {
+        Ok(Value::Object(o)) => o,
+        // A missing or empty file starts one; a file that is not our shape is
+        // left alone rather than overwritten.
+        _ if text.trim().is_empty() => serde_json::Map::new(),
+        _ => return None,
+    };
+    let list = top
+        .entry("rules")
+        .or_insert_with(|| Value::Array(Vec::new()))
+        .as_array_mut()?;
+    let name = |v: &Value, k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .map(norm)
+            .filter(|s| !s.is_empty())
+    };
+    let hit = |r: &Value| {
+        let (rde, rapp) = (name(r, "desktop-entry"), name(r, "app"));
+        if rde.is_some() {
+            !de.is_empty() && rde.as_deref() == Some(&de) && (rapp.is_none() || rapp.as_deref() == Some(&app))
+        } else {
+            rapp.is_some() && rapp.as_deref() == Some(&app)
+        }
+    };
+    // The same order `Rules::find` uses: the desktop entry first.
+    let at = list
+        .iter()
+        .position(|r| name(r, "desktop-entry").is_some() && hit(r))
+        .or_else(|| {
+            list.iter()
+                .position(|r| name(r, "desktop-entry").is_none() && hit(r))
+        });
+    let i = match at {
+        Some(i) => i,
+        None => {
+            let mut o = serde_json::Map::new();
+            if !de.is_empty() {
+                o.insert("desktop-entry".into(), de.into());
+            } else {
+                o.insert("app".into(), app.into());
+            }
+            list.push(Value::Object(o));
+            list.len() - 1
+        }
+    };
+    let rule = list[i].as_object_mut()?;
+    match how {
+        Silence::Forever => {
+            rule.insert("mute".into(), true.into());
+            rule.remove("mute-until");
+        }
+        Silence::Hour | Silence::Day => {
+            let until = match how {
+                Silence::Hour => now + 3_600,
+                _ => now + 86_400,
+            };
+            let forever = rule.get("mute").and_then(Value::as_bool).unwrap_or(false);
+            let held = rule.get("mute-until").and_then(Value::as_u64).unwrap_or(0);
+            if !forever {
+                rule.insert("mute-until".into(), until.max(held).into());
+            }
+        }
+        Silence::BannersOnly => {
+            rule.insert("quiet".into(), true.into());
+        }
+    }
+    serde_json::to_string_pretty(&Value::Object(top)).ok()
+}
+
+/// Silence a source (ADR 0131): read the rules file, tighten it, write it
+/// back atomically (a sibling temp file renamed over it, 0600). The service
+/// re-reads on the next arrival. `Err` carries the reason for the caller to
+/// show; nothing is changed on failure.
+pub fn silence(desktop_entry: &str, app_name: &str, how: Silence) -> std::io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = path().ok_or_else(|| std::io::Error::other("no config directory"))?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let out = apply_silence(&text, desktop_entry, app_name, how, now)
+        .ok_or_else(|| std::io::Error::other("notification rules are not in a shape this can edit"))?;
+    let dir = path
+        .parent()
+        .ok_or_else(|| std::io::Error::other("no config directory"))?;
+    std::fs::create_dir_all(dir)?;
+    let tmp = path.with_extension("json.tmp");
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    f.write_all(out.as_bytes())?;
+    f.sync_all()?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// Whether the rules in `text` quiet or mute a notification of this source
+/// now: the same `find` (desktop entry, then app name) and `muted` the service
+/// applies on arrival, so a caller never treats as silenced what the rules
+/// would let through.
+pub(crate) fn silences_in(text: &str, desktop_entry: &str, app_name: &str, now: u64) -> bool {
+    Rules::from_rules_any(Rules::parse(text))
+        .find(desktop_entry, app_name)
+        .is_some_and(|r| r.muted(now) || r.quiet)
+}
+
+/// [`silences_in`] on the rules file as it is now.
+pub fn is_silenced(desktop_entry: &str, app_name: &str) -> bool {
+    let Some(path) = path() else {
+        return false;
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    std::fs::read_to_string(path).is_ok_and(|t| silences_in(&t, desktop_entry, app_name, now))
 }
 
 fn read(path: &Path) -> Vec<Rule> {
@@ -195,6 +370,97 @@ mod tests {
         assert!(rules.find("a", "B").is_some());
         assert!(rules.find("a", "C").is_none());
         assert!(rules.find("", "B").is_none());
+    }
+
+    fn rules_of(text: &str) -> Vec<Rule> {
+        Rules::parse(text)
+    }
+
+    #[test]
+    fn silencing_creates_a_rule_keyed_on_the_desktop_entry() {
+        let t = apply_silence("", "Slack.desktop", "Slack", Silence::Forever, 100).unwrap();
+        let r = rules_of(&t);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].desktop_entry.as_deref(), Some("slack"));
+        assert!(r[0].mute && r[0].app.is_none());
+        let t = apply_silence("", "", "Updater", Silence::BannersOnly, 100).unwrap();
+        let r = rules_of(&t);
+        assert_eq!(r[0].app.as_deref(), Some("updater"));
+        assert!(r[0].quiet && !r[0].mute);
+    }
+
+    /// The ratchet: nothing a silence does loosens a rule, and what else the
+    /// rule carries is kept.
+    #[test]
+    fn silencing_only_tightens_and_keeps_the_rest() {
+        let base = r#"{"rules":[{"app":"Mail","urgency":"low","mute":true,"mute-until":50},{"app":"Other","quiet":true}]}"#;
+        let t = apply_silence(base, "", "mail", Silence::Hour, 100).unwrap();
+        let r = rules_of(&t);
+        assert_eq!(r.len(), 2);
+        assert!(r[0].mute, "a forever mute stays");
+        assert_eq!(r[0].mute_until, Some(50), "a muted source's timer is left alone");
+        assert_eq!(r[0].urgency, Some(Urgency::Low));
+        assert!(r[1].quiet);
+        // A timer is never shortened.
+        let t = apply_silence(
+            r#"{"rules":[{"app":"M","mute-until":9000}]}"#,
+            "",
+            "m",
+            Silence::Hour,
+            100,
+        )
+        .unwrap();
+        assert_eq!(rules_of(&t)[0].mute_until, Some(9000));
+        // Banners only sets quiet and leaves a mute alone.
+        let t = apply_silence(
+            r#"{"rules":[{"app":"M","mute":true}]}"#,
+            "",
+            "M",
+            Silence::BannersOnly,
+            1,
+        )
+        .unwrap();
+        let r = rules_of(&t);
+        assert!(r[0].mute && r[0].quiet);
+    }
+
+    #[test]
+    fn timed_mutes_expire_and_forever_clears_the_timer() {
+        let t = apply_silence("", "", "x", Silence::Hour, 1_000).unwrap();
+        let r = &rules_of(&t)[0];
+        assert!(r.muted(1_000) && r.muted(4_599) && !r.muted(4_600));
+        let t = apply_silence(&t, "", "x", Silence::Day, 1_000).unwrap();
+        let r = &rules_of(&t)[0];
+        assert_eq!(r.mute_until, Some(1_000 + 86_400), "a rolling 24 h from now");
+        let t = apply_silence(&t, "", "x", Silence::Forever, 1_000).unwrap();
+        let r = &rules_of(&t)[0];
+        assert!(r.mute && r.mute_until.is_none() && r.muted(u64::MAX));
+    }
+
+    #[test]
+    fn a_file_that_is_not_ours_is_not_overwritten() {
+        assert!(apply_silence("not json", "a", "b", Silence::Forever, 0).is_none());
+        assert!(apply_silence("[]", "a", "b", Silence::Forever, 0).is_none());
+        assert!(apply_silence("", "", "", Silence::Forever, 0).is_none());
+    }
+
+    /// A silence written for one source never reaches another: the rule keyed
+    /// on the desktop entry `mail` does not quiet a card that only says it is
+    /// called Mail, and the reverse.
+    #[test]
+    fn a_silence_reaches_only_what_its_rule_matches() {
+        let t = apply_silence("", "mail", "Chat", Silence::Hour, 100).unwrap();
+        assert!(silences_in(&t, "mail", "Chat", 101));
+        assert!(silences_in(&t, "mail", "Anything", 101), "the entry is the key");
+        assert!(
+            !silences_in(&t, "", "Mail", 101),
+            "no entry: the app name does not match it"
+        );
+        assert!(!silences_in(&t, "other", "Chat", 101));
+        assert!(!silences_in(&t, "mail", "Chat", 100 + 3_600), "and it runs out");
+        let t = apply_silence("", "", "Mail", Silence::Forever, 100).unwrap();
+        assert!(silences_in(&t, "", "mail", 1_000_000));
+        assert!(!silences_in(&t, "chat", "Chat", 101));
     }
 
     #[test]

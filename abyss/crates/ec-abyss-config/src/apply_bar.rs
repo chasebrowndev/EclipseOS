@@ -1033,6 +1033,16 @@ impl Config {
                         "ui capture-toasts must be \"show\", \"redact\", \"hold\" or \"history\"",
                     ),
                 },
+                "toasts-over-fullscreen" => match arg(n).map(KdlValue::as_bool) {
+                    None => self.ui.toasts_over_fullscreen = false,
+                    Some(Some(b)) => self.ui.toasts_over_fullscreen = b,
+                    Some(None) => self.reject(n, "ui toasts-over-fullscreen expects #true or #false"),
+                },
+                "restore-offer-in-quiet" => match arg(n).map(KdlValue::as_bool) {
+                    None => self.ui.restore_offer_in_quiet = true,
+                    Some(Some(b)) => self.ui.restore_offer_in_quiet = b,
+                    Some(None) => self.reject(n, "ui restore-offer-in-quiet expects #true or #false"),
+                },
                 "capture-indicator-color" => match arg(n).and_then(KdlValue::as_string).and_then(parse_color)
                 {
                     // Opaque always: a translucent indicator could be hidden.

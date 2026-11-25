@@ -313,6 +313,13 @@ pub fn start(state: &mut AbyssState, handle: &LoopHandle<'static, AbyssState>) {
     state.ipc.path = Some(path);
 }
 
+/// Tell subscribers the compositor is leaving on purpose (`session-end`,
+/// ADR 0131). Call it once, after the event loop has returned normally and
+/// before [`cleanup`]; a crash never reaches it, and that absence is the signal.
+pub fn announce_end(state: &mut AbyssState) {
+    emit(state, "session-end", json!({}));
+}
+
 /// Unlink the socket. Called on a clean shutdown so the next start does not
 /// have to reason about a stale file.
 pub fn cleanup(state: &AbyssState) {

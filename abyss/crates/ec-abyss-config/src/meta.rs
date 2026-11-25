@@ -1147,6 +1147,26 @@ pub const META: &[Meta] = &[
         "privacy",
         "capture",
     ),
+    Meta {
+        pane_label: None,
+        caption: Some("Off keeps them in the history until fullscreen ends"),
+        ..m(
+            "ui.toasts-over-fullscreen",
+            "Notifications over fullscreen",
+            "system/general",
+            "general",
+        )
+    },
+    Meta {
+        pane_label: None,
+        caption: Some("Show the restore offer once, even in Quiet or Do Not Disturb"),
+        ..m(
+            "ui.restore-offer-in-quiet",
+            "Restore offer in Quiet mode",
+            "system/general",
+            "general",
+        )
+    },
     m(
         "ui.capture-indicator-color",
         "Capture indicator colour",

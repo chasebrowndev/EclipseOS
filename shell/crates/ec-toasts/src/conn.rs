@@ -24,3 +24,38 @@ pub fn fetch_anim() -> Option<ec_ui::ipc::EventAnim> {
     let mut client = ec_ipc::Client::connect().ok()?;
     ec_ui::ipc::fetch_animation(&mut client, "toast")
 }
+
+/// Whether the taskbar sits on the bottom edge (`bar.position`), so the stack
+/// is offset from the bar on that edge. `None` when nothing answers.
+pub fn fetch_bar_bottom() -> Option<bool> {
+    let mut client = ec_ipc::Client::connect().ok()?;
+    let reply = client
+        .call("get_config", serde_json::json!({ "path": "bar.position" }))
+        .ok()?;
+    let v = reply.get("keys")?.as_array()?.first()?.get("value")?.as_str()?;
+    Some(v == "bottom")
+}
+
+/// The focused output's width in logical px, so cards fit a narrow screen.
+/// `None` when nothing answers or the output has no mode.
+pub fn fetch_output_width() -> Option<f32> {
+    let mut client = ec_ipc::Client::connect().ok()?;
+    let reply = client.call("get_outputs", serde_json::json!({})).ok()?;
+    parse_output_width(&reply)
+}
+
+/// The focused output's (else the first one's) mode width over its scale.
+pub fn parse_output_width(reply: &serde_json::Value) -> Option<f32> {
+    let rows = reply.as_array()?;
+    let row = rows
+        .iter()
+        .find(|r| r.get("focused").and_then(|f| f.as_bool()) == Some(true))
+        .or_else(|| rows.first())?;
+    let w = row.get("mode")?.get("width")?.as_f64()?;
+    let scale = row
+        .get("scale")
+        .and_then(|s| s.as_f64())
+        .filter(|s| *s > 0.0)
+        .unwrap_or(1.0);
+    Some((w / scale) as f32)
+}

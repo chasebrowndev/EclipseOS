@@ -25,3 +25,4 @@ ec-ui = { path = "../ec-ui" }
 ec-services = { path = "../ec-services" }
 freedesktop-icons = "0.4"
 ec-ipc = { path = "../../../abyss/crates/ec-ipc" }
+serde_json.workspace = true

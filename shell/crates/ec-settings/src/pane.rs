@@ -1018,6 +1018,10 @@ mod tests {
         assert_eq!(page_of("xwayland.scaling"), Some(Page::Xwayland));
         assert_eq!(page_of("setup.profile"), Some(Page::Setup));
         assert_eq!(page_of("ui.show-key-hints"), Some(Page::General));
+        // The two notification switches (ADR 0131) sit with the other
+        // desktop-wide switches, live-applied like any row.
+        assert_eq!(page_of("ui.toasts-over-fullscreen"), Some(Page::General));
+        assert_eq!(page_of("ui.restore-offer-in-quiet"), Some(Page::General));
     }
 
     #[test]

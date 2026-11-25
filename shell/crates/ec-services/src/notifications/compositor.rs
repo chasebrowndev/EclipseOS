@@ -40,13 +40,19 @@ fn run(events: &Sender<Event>, share: &Share) {
     loop {
         if let Ok(mut client) = ec_ipc::Client::connect() {
             if client
-                .subscribe(&[EventKind::ConfigError, EventKind::Config, EventKind::Capture])
+                .subscribe(&[
+                    EventKind::ConfigError,
+                    EventKind::Config,
+                    EventKind::Capture,
+                    EventKind::Output,
+                ])
                 .is_ok()
             {
                 // The compositor replays a running share on subscribe, so the
                 // flag is right from here. The mode is read once now and again
                 // whenever a reload lands.
                 share.set_active(false);
+                share.set_fullscreen(false);
                 refresh_mode(&mut client, share);
                 if !pump(&mut client, events, share) {
                     // The GUI dropped its end; nobody is left to show anything.
@@ -55,19 +61,52 @@ fn run(events: &Sender<Event>, share: &Share) {
             }
         }
         // Without the socket nothing says a share ended: assume one runs.
+        // Fullscreen is the other way: unknown means not held, so a question
+        // is never stuck behind a compositor that is gone.
         share.lost();
+        share.set_fullscreen(false);
         thread::sleep(RETRY);
     }
 }
 
 /// `ui.capture-toasts`; an older compositor without the key leaves the default.
 fn refresh_mode(client: &mut ec_ipc::Client, share: &Share) {
+    refresh_over_fullscreen(client, share);
+    refresh_restore_offer(client, share);
     if let Some(mode) = client
         .call("get_config", serde_json::json!({"path": "ui.capture-toasts"}))
         .ok()
         .and_then(|r| share::mode_of(&r))
     {
         share.set_mode(mode);
+    }
+}
+
+/// `ui.restore-offer-in-quiet`; an older compositor without the key leaves the default (on).
+fn refresh_restore_offer(client: &mut ec_ipc::Client, share: &Share) {
+    if let Some(on) = client
+        .call(
+            "get_config",
+            serde_json::json!({"path": "ui.restore-offer-in-quiet"}),
+        )
+        .ok()
+        .and_then(|r| share::over_fullscreen_of(&r))
+    {
+        share.set_restore_offer_in_quiet(on);
+    }
+}
+
+/// `ui.toasts-over-fullscreen`; an older compositor without the key leaves the default.
+fn refresh_over_fullscreen(client: &mut ec_ipc::Client, share: &Share) {
+    if let Some(on) = client
+        .call(
+            "get_config",
+            serde_json::json!({"path": "ui.toasts-over-fullscreen"}),
+        )
+        .ok()
+        .and_then(|r| share::over_fullscreen_of(&r))
+    {
+        share.set_over_fullscreen(on);
     }
 }
 
@@ -79,6 +118,7 @@ fn pump(client: &mut ec_ipc::Client, events: &Sender<Event>, share: &Share) -> b
         };
         match ev.kind {
             EventKind::Capture => share.on_capture(&ev.data),
+            EventKind::Output => share.on_output(&ev.data),
             EventKind::Config => refresh_mode(client, share),
             _ => {}
         }
@@ -115,6 +155,7 @@ fn to_event(kind: EventKind, data: &Value) -> Option<Event> {
                 expires_in: None,
                 transient: false,
                 group: "abyss".into(),
+                class: super::Class::System,
                 ..Notification::default()
             })))
         }

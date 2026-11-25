@@ -726,6 +726,14 @@ mod tests {
                 "Advanced. Off: the main GPU draws every screen and copies to the other GPU's. On: that GPU draws its own.",
             ),
             ("ui.show-key-hints", "Keyboard hints in the launcher and start menu"),
+            (
+                "ui.toasts-over-fullscreen",
+                "Off keeps them in the history until fullscreen ends",
+            ),
+            (
+                "ui.restore-offer-in-quiet",
+                "Show the restore offer once, even in Quiet or Do Not Disturb",
+            ),
             ("launcher.search.frecency", frecency),
             ("settings.search.frecency", frecency),
             ("launcher.search.terminal-apps", "Opened in the terminal command above."),
