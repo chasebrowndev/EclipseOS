@@ -56,30 +56,112 @@ pub(crate) fn preview_battery() -> Battery {
     }
 }
 
-/// `HYPERION_PREVIEW_PROGRESS=none|one|indeterminate|several` picks the
-/// progress fixture: no job, one determinate, one indeterminate, or three
-/// with the oldest determinate. Unset, it is `default`, which the preview
+/// `HYPERION_PREVIEW_PROGRESS=none|one|rate|reported|indeterminate|history|long|several|many`
+/// picks the progress fixture: no job, one determinate (without an ETA, with a
+/// measured one, with a reported one), one indeterminate (without an ETA, with
+/// an approximate one), a long label, three with the oldest determinate, or
+/// fifteen (past the drawer's row cap). Unset, it is `default`, which the preview
 /// passes (`several` for the progress drawer, `none` otherwise). Debug only.
 #[cfg(debug_assertions)]
 pub(crate) fn preview_progress(default: &str) -> Vec<ec_services::progress::Job> {
     use ec_services::progress::{Job, Source};
     let which = std::env::var("HYPERION_PREVIEW_PROGRESS").unwrap_or_else(|_| default.to_owned());
     let now = Instant::now();
-    let job = |id: &str, label: &str, fraction: Option<f32>, secs: u64, source: Source| Job {
-        id: id.to_owned(),
-        label: label.to_owned(),
-        source,
-        fraction,
-        started: now.checked_sub(Duration::from_secs(secs)).unwrap_or(now),
+    use ec_services::progress::{Eta, EtaBasis};
+    let eta = |secs: u64, basis: EtaBasis| {
+        Some(Eta {
+            remaining: Duration::from_secs(secs),
+            basis,
+        })
     };
+    let job =
+        |id: &str, label: &str, fraction: Option<f32>, secs: u64, source: Source, eta: Option<Eta>| Job {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            source,
+            fraction,
+            started: now.checked_sub(Duration::from_secs(secs)).unwrap_or(now),
+            eta,
+        };
     match which.as_str() {
-        "one" => vec![job("demo", "Demo copy", Some(0.4), 72, Source::Feed)],
-        "indeterminate" => vec![job("make", "cargo build", None, 14, Source::Scan)],
+        "one" => vec![job("demo", "Demo copy", Some(0.4), 72, Source::Feed, None)],
+        "rate" => vec![job(
+            "demo",
+            "Demo copy",
+            Some(0.4),
+            72,
+            Source::Feed,
+            eta(130, EtaBasis::Rate),
+        )],
+        "reported" => vec![job(
+            "dl",
+            "Downloading iso",
+            Some(0.62),
+            95,
+            Source::Feed,
+            eta(45, EtaBasis::Reported),
+        )],
+        "indeterminate" => vec![job("make", "cargo build", None, 14, Source::Scan, None)],
+        "history" => vec![job(
+            "make",
+            "cargo build",
+            None,
+            14,
+            Source::Scan,
+            eta(130, EtaBasis::History),
+        )],
+        "long" => vec![job(
+            "long",
+            "Copying the entire holiday photo archive to the backup volume",
+            Some(0.27),
+            600,
+            Source::Feed,
+            eta(3900, EtaBasis::Rate),
+        )],
         "several" => vec![
-            job("demo", "Demo copy", Some(0.4), 300, Source::Feed),
-            job("cargo", "cargo build", None, 120, Source::Scan),
-            job("sync", "rsync backup", Some(0.12), 40, Source::Feed),
+            job(
+                "demo",
+                "Demo copy",
+                Some(0.4),
+                300,
+                Source::Feed,
+                eta(130, EtaBasis::Rate),
+            ),
+            job(
+                "cargo",
+                "cargo build",
+                None,
+                120,
+                Source::Scan,
+                eta(75, EtaBasis::History),
+            ),
+            job(
+                "sync",
+                "rsync backup",
+                Some(0.12),
+                40,
+                Source::Feed,
+                eta(2400, EtaBasis::Reported),
+            ),
         ],
+        "many" => (0..15)
+            .map(|i| {
+                let f = (i % 4 != 3).then(|| 0.07 * (i + 1) as f32);
+                let e = match i % 3 {
+                    0 => eta(50 + 37 * i as u64, EtaBasis::Rate),
+                    1 => eta(120 + 61 * i as u64, EtaBasis::History),
+                    _ => None,
+                };
+                job(
+                    &format!("j{i}"),
+                    &format!("Job number {i}"),
+                    f,
+                    30 + 20 * i as u64,
+                    Source::Feed,
+                    e,
+                )
+            })
+            .collect(),
         _ => Vec::new(),
     }
 }
