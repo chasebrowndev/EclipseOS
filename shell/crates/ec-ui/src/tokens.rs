@@ -379,6 +379,20 @@ pub mod layout_edit {
     pub const MOCK_GREETING: &str = "Sign in to continue";
 }
 
+pub mod pane {
+    //! Glass pane geometry and opacity that are the client's to choose (ADR
+    //! 0130 joins, ADR 0081 pane rims). The compositor draws the material;
+    //! these say how the client lays its panes over it.
+
+    /// The concave fillet, logical px, where a drawer's side meets the bar's
+    /// free edge when the compositor draws the two panes as one shape.
+    pub const JOIN_FILLET: f32 = 12.0;
+    /// The bar pill's pane opacity while cells sit on it. 255 is a full pane;
+    /// at 1 the pill keeps its blur, bend and tint but its rim and lift all but
+    /// vanish, so each cell's own rim is the only lensed edge in the bar.
+    pub const PILL_PANE_ALPHA: u8 = 1;
+}
+
 pub mod art {
     //! Settings' drawn art: the icon tile every category carries, the header
     //! vignette, and the previews. Hues are data (restrained, mid-chroma),

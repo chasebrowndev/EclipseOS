@@ -22,5 +22,6 @@ smithay = { workspace = true, features = [
 ] }
 ec-abyss-config = { path = "../ec-abyss-config" }
 ec-theme = { path = "../ec-theme" }
+ec-protocols = { path = "../ec-protocols" }
 tracing.workspace = true
 serde_json.workspace = true

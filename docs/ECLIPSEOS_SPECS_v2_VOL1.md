@@ -2744,6 +2744,7 @@ default; a layer anchored to three edges or to an opposite pair stays square,
 unless it holds a positive exclusive zone (the bar), which uses
 `bar.rounding`. The COMP-14 §6 shedding order is unchanged.
 *(amended ADR 0127, 2026-11-19)* `eclipse_glass_v1` version 2 adds `set_clip`: a pane flagged `clipped` keeps its whole outline for shape, radius and rim but is drawn only inside the surface's clip rectangle, so a pane cut by a scroll viewport ends in a straight, unrounded cut.
+*(amended ADR 0130, 2026-11-25)* `eclipse_glass_v1` version 3 adds `set_joins`: records `{a, b, radius}` (pane indices, join radius in logical px, capped at 64) that ask the compositor to draw touching panes as one shape. A shape is drawn as a smooth union of its members' rounded boxes, so a concave fillet and a single outline follow from the distance field; each fragment takes bend, bezel, strength and rim from its nearest member. Joins chain, `set_panes` clears pending joins, and they are double-buffered with the panes. Limits: at most 64 joins per surface and 16 panes per shape (the 16 lowest indices keep the shape; the rest draw alone). A join between panes that do not touch, a clipped pane or a cell pane is ignored. An out-of-range or self join is `bad_join`; more than 64 is `too_many_joins`. Unjoined panes render exactly as before, and a compositor below version 3 draws joined panes apart.
 
 *(added C-13, 2026-09-27)* Blur has a **mode**, `decoration.blur.mode`:
 `off | blur | frost | glass`, default `blur`. All three drawing modes share

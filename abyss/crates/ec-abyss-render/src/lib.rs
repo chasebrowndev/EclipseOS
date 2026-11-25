@@ -744,6 +744,10 @@ pub struct BorderGpu {
     /// The glass program failed to compile; layers with panes keep the
     /// whole-surface glass instead (and it is not retried per frame).
     glass_failed: bool,
+    /// The joined glass program (ADR 0130) and whether its compile failed;
+    /// joined panes then draw apart (not retried per frame).
+    joined_glass: Option<smithay::backend::renderer::gles::GlesTexProgram>,
+    joined_failed: bool,
     /// Backdrop programs (by name) whose compile failed: warned once, not
     /// retried every frame.
     compile_failed: Vec<&'static str>,
@@ -796,6 +800,10 @@ pub struct BorderStore {
     gpu: context::PerContext<BorderGpu>,
     /// Glass pane elements built this frame, kept to reuse the allocation.
     pane_scratch: Vec<blur::BlurElement>,
+    /// Joined shapes of the pane set this frame (ADR 0130), and their elements,
+    /// kept to reuse the allocations.
+    pane_shapes: glass::Shapes,
+    pane_shape_scratch: Vec<blur::BlurElement>,
     /// Blur requests prepared this frame, kept to reuse the allocation (Phase 1a).
     blur_prep: Vec<BlurPrep>,
     blur_cull: Vec<bool>,
@@ -1952,6 +1960,24 @@ fn insert_panes(
     let reach = effects::preset_reach_for(effects::GlassPreset::Lens, &cfg.glass, upscale, short);
     let mut blurs = std::mem::take(&mut store.pane_scratch);
     blurs.clear();
+    // Joined shapes (ADR 0130): touching panes drawn as one piece of glass, each
+    // at its lowest member's place. Without the joined program they draw apart.
+    let drawn = |i: usize| {
+        glass::look_on(&panes[i], light > 0.0, req.stacked).is_some() && rect_of(&panes[i]).is_some()
+    };
+    let mut shapes = std::mem::take(&mut store.pane_shapes);
+    glass::find_shapes(panes, req.set.joins(), req.set.clip.is_some(), drawn, &mut shapes);
+    let joined = if shapes.list.is_empty() {
+        None
+    } else {
+        ensure_joined_glass(renderer, store)
+    };
+    if joined.is_none() {
+        shapes.list.clear();
+        shapes.of = [glass::ALONE; glass::MAX_PANES];
+    }
+    let mut shape_blurs = std::mem::take(&mut store.pane_shape_scratch);
+    shape_blurs.clear();
     // A bare window's panes skip its glass; stacked ones sample it and take a
     // lighter smoke (`PaneRequest::behind_start`).
     let behind = &elements[req.behind_start()..];
@@ -1969,6 +1995,10 @@ fn insert_panes(
         panes.len(),
         req.alpha,
         |i, uniforms| {
+            // A joined member draws as its shape (below), not alone.
+            if shapes.of[i] != glass::ALONE {
+                return None;
+            }
             let pane = &panes[i];
             let look = glass::look_on(pane, light > 0.0, req.stacked)?;
             let rect = rect_of(pane)?;
@@ -2053,6 +2083,75 @@ fn insert_panes(
         &mut blurs,
         effects::GlassPreset::Lens,
     );
+    if let Some(joined) = &joined {
+        let common = effects::JoinedCommon {
+            dispersion: lens.dispersion,
+            rim_color: rim.map_or([1.0; 4], |r| r.2),
+            scheme_light: light,
+            adapt: cfg.adaptive.effective(),
+            layers: 2.0,
+            shade_ref: (upscale * grown) as f32,
+        };
+        let count = shapes.list.len();
+        store.gpu.blur.entry(output.clone()).or_default().shape_elements(
+            renderer,
+            output,
+            fb,
+            &req.key,
+            union,
+            behind,
+            cfg,
+            scale,
+            reach,
+            joined,
+            count,
+            req.alpha,
+            |s, uniforms| {
+                let shape = shapes.list[s];
+                let mut members = Vec::with_capacity(shape.len);
+                let mut bbox_shape: Option<Rectangle<i32, Physical>> = None;
+                let mut bbox_drawn: Option<Rectangle<i32, Physical>> = None;
+                for (k, &m) in shape.members().iter().enumerate() {
+                    let pane = &panes[m as usize];
+                    let look = glass::look_on(pane, light > 0.0, req.stacked)?;
+                    let rect = rect_of(pane)?;
+                    let shape_box = shape_of(pane)?;
+                    bbox_shape = Some(bbox_shape.map_or(shape_box, |b| b.merge(shape_box)));
+                    bbox_drawn = Some(bbox_drawn.map_or(rect, |b| b.merge(rect)));
+                    // The same bend the single pane gets, from its own box.
+                    let bend_bevel = if pane.bezel == 0 {
+                        lens.bevel * grown as f32
+                    } else {
+                        glass::band(pane, shape_box, upscale * grown)
+                    };
+                    let (member_strength, member_bevel) = effects::effective_bend(
+                        effects::GlassPreset::Lens,
+                        shape_box,
+                        strength * glass::lens_scale(pane),
+                        bend_bevel,
+                        0.0,
+                        0.0,
+                        effects::LENS_STRENGTH_FRACTION_PANE,
+                    );
+                    members.push(effects::JoinedMember {
+                        rect: shape_box,
+                        radius: (pane.radius as f64 * upscale * grown) as f32,
+                        fillet: (shape.fillet[k] as f64 * upscale * grown) as f32,
+                        bevel: member_bevel,
+                        strength: member_strength,
+                        lift: glass::slab_lift(pane, light > 0.0, look.lift),
+                        shade: look.shade,
+                        smoke: look.smoke,
+                        rim: lens.rim * look.rim,
+                    });
+                }
+                effects::joined_uniforms_into(uniforms, fb, bbox_shape?, &members, &common, fb_size);
+                bbox_drawn
+            },
+            &mut shape_blurs,
+            effects::GlassPreset::Lens,
+        );
+    }
     // The contact shadows go in before the glass, at the same index, so they
     // lie under every pane's glass (STYLE.md Light; the shell cell's drop).
     // A pressed or resting cell casts none (`glass::casts_shadow`).
@@ -2118,12 +2217,22 @@ fn insert_panes(
     // Inserting each at the same index leaves the last pane in front. `blurs`
     // holds one element per drawn pane, in pane order.
     let mut glass_of = blurs.drain(..);
-    for pane in panes.iter() {
-        let drawn = glass::look_on(pane, light > 0.0, req.stacked).is_some() && rect_of(pane).is_some();
-        if !drawn {
+    let mut shape_glass = shape_blurs.drain(..);
+    for i in 0..panes.len() {
+        if !drawn(i) {
             continue;
         }
-        let Some(element) = glass_of.next() else { break };
+        let element = if shapes.of[i] == glass::ALONE {
+            glass_of.next()
+        } else {
+            let shape = &shapes.list[shapes.of[i] as usize];
+            // A shape sits at its lowest member; the rest draw nothing of their own.
+            if shape.members()[0] as usize != i {
+                continue;
+            }
+            shape_glass.next()
+        };
+        let Some(element) = element else { break };
         let element = match req.crop {
             Some(crop) => {
                 CropRenderElement::from_element(element, scale, crop).map(AbyssRenderElement::CroppedBlur)
@@ -2135,7 +2244,28 @@ fn insert_panes(
         }
     }
     drop(glass_of);
+    drop(shape_glass);
     store.pane_scratch = blurs;
+    store.pane_shape_scratch = shape_blurs;
+    store.pane_shapes = shapes;
+}
+
+/// The joined glass program (ADR 0130), compiled on first use and kept per
+/// renderer. `None` when it failed to compile: joined panes draw apart.
+fn ensure_joined_glass(
+    renderer: &mut GlesRenderer,
+    store: &mut BorderStore,
+) -> Option<smithay::backend::renderer::gles::GlesTexProgram> {
+    if store.gpu.joined_glass.is_none() && !store.gpu.joined_failed {
+        match effects::compile_glass_joined(renderer) {
+            Ok(program) => store.gpu.joined_glass = Some(program),
+            Err(err) => {
+                store.gpu.joined_failed = true;
+                tracing::warn!(?err, "compiling the joined glass shader; joined panes draw apart");
+            }
+        }
+    }
+    store.gpu.joined_glass.clone()
 }
 
 /// The drop-shadow program for pane contact shadows, compiled on first use and

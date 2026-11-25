@@ -128,6 +128,47 @@ pub fn crop_rects(
     Some((tex, fb.phys_rect(tex)))
 }
 
+/// `region` (render space, y down) as the rectangle of backdrop texels it
+/// covers (`gl_FragCoord` space, see [`FbMap`]), clipped to the output. Empty
+/// when none of it is on the output.
+pub fn region_in_tex(region: Rectangle<i32, Physical>, fb: FbMap) -> Rectangle<i32, Physical> {
+    match region.intersection(Rectangle::from_size(fb.render_size())) {
+        Some(on) => fb.gl_rect(on),
+        None => Rectangle::new(region.loc, (0, 0).into()),
+    }
+}
+
+/// The uv rectangle (`min.xy`, `max.xy`) every blur tap is clamped to: `region`
+/// (in texels, as [`region_in_tex`]) inside `within`, the part of the texture
+/// the pass's source spans, inset half a texel so a bilinear tap never reaches
+/// past it. An empty overlap collapses to a point rather than inverting.
+pub fn clamp_uv(region: Rectangle<i32, Physical>, within: Rectangle<i32, Physical>) -> [f32; 4] {
+    let (w, h) = (within.size.w.max(1) as f32, within.size.h.max(1) as f32);
+    let x0 = (region.loc.x - within.loc.x) as f32 + 0.5;
+    let y0 = (region.loc.y - within.loc.y) as f32 + 0.5;
+    let x1 = ((region.loc.x + region.size.w - within.loc.x) as f32 - 0.5).max(x0);
+    let y1 = ((region.loc.y + region.size.h - within.loc.y) as f32 - 0.5).max(y0);
+    [x0 / w, y0 / h, x1 / w, y1 / h]
+}
+
+/// The clamps of one chain: for the backdrop (level 0, the whole output) and
+/// for every later level (which spans `tex`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Clamps {
+    level0: [f32; 4],
+    levels: [f32; 4],
+}
+
+impl Clamps {
+    fn new(region: Rectangle<i32, Physical>, tex: Rectangle<i32, Physical>, fb: FbMap) -> Self {
+        let r = region_in_tex(region, fb);
+        Self {
+            level0: clamp_uv(r, Rectangle::from_size(fb.fb)),
+            levels: clamp_uv(r, tex),
+        }
+    }
+}
+
 /// The blur invalidation rule (COMP-02 §3).
 ///
 /// `region` is a blurred region in output-local physical pixels and `damage` is
@@ -755,6 +796,10 @@ struct GroupBlur {
     result: Option<GlesTexture>,
     /// The output rectangle `result` covers: the union of the member crops.
     crop: Option<Rectangle<i32, Physical>>,
+    /// The union of the members' regions (in backdrop texels) the blur taps
+    /// were clamped to; a different one rebuilds in full, since the clamp is
+    /// baked into every level.
+    clamp: Option<Rectangle<i32, Physical>>,
     /// `(size, passes, packed)` the result was built with. `packed`: the result
     /// texture is twice as wide, the lightly blurred level beside the blurred one
     /// (chromatic aberration, only while `glass.dispersion` is above 0).
@@ -984,6 +1029,10 @@ struct SurfaceBlur {
     /// The output rectangle `result` covers (see [`crop_rects`]). A region
     /// that needs a different one recomputes even if nothing behind it moved.
     crop: Option<Rectangle<i32, Physical>>,
+    /// The region (in backdrop texels, see [`region_in_tex`]) the blur taps
+    /// were clamped to. A region that moved or resized recomputes, as the
+    /// clamp is baked into `result`.
+    clamp: Option<Rectangle<i32, Physical>>,
     /// Bumped whenever `result` was recomputed; drives [`BlurElement`] damage.
     commit: CommitCounter,
     /// A stable id so the damage tracker can follow this element across frames.
@@ -995,6 +1044,8 @@ struct SurfaceBlur {
     look: Arc<[Uniform<'static>]>,
     /// `eclipse_glass_v1` panes drawn from `result`, by index in the pane list.
     panes: Vec<PaneSlot>,
+    /// Joined shapes (ADR 0130) drawn from `result`, by index in the shape list.
+    shapes: Vec<PaneSlot>,
     /// Damage landed while the store was crowded and the recompute was
     /// deferred; flushed once `last` is [`CROWDED_INTERVAL`] frames old.
     pending: bool,
@@ -1184,7 +1235,69 @@ impl BlurStore {
     /// `i`'s output-local rect and uniforms, or `None` to skip it.
     /// Returns `None` when the backdrop could not be built (nothing pushed).
     #[allow(clippy::too_many_arguments)]
+    /// The pane elements of `count` panes over `union` (see [`Self::glass_units`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn pane_elements<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        fb: FbMap,
+        key: &BlurKey,
+        union: Rectangle<i32, Physical>,
+        behind: &[E],
+        blur: &Blur,
+        scale: Scale<f64>,
+        reach: i32,
+        program: &GlesTexProgram,
+        count: usize,
+        alpha: f32,
+        pane: impl FnMut(usize, &mut Vec<Uniform<'static>>) -> Option<Rectangle<i32, Physical>>,
+        out: &mut Vec<BlurElement>,
+        preset: GlassPreset,
+    ) -> Option<()>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        self.glass_units(
+            renderer, output, fb, key, union, behind, blur, scale, reach, program, count, alpha, pane, out,
+            preset, false,
+        )
+    }
+
+    /// The joined shape elements of `count` shapes over `union` (ADR 0130): the
+    /// same backdrop, drawn with `program` (the joined program).
+    #[allow(clippy::too_many_arguments)]
+    pub fn shape_elements<E>(
+        &mut self,
+        renderer: &mut GlesRenderer,
+        output: &Output,
+        fb: FbMap,
+        key: &BlurKey,
+        union: Rectangle<i32, Physical>,
+        behind: &[E],
+        blur: &Blur,
+        scale: Scale<f64>,
+        reach: i32,
+        program: &GlesTexProgram,
+        count: usize,
+        alpha: f32,
+        pane: impl FnMut(usize, &mut Vec<Uniform<'static>>) -> Option<Rectangle<i32, Physical>>,
+        out: &mut Vec<BlurElement>,
+        preset: GlassPreset,
+    ) -> Option<()>
+    where
+        E: Element + RenderElement<GlesRenderer>,
+    {
+        self.glass_units(
+            renderer, output, fb, key, union, behind, blur, scale, reach, program, count, alpha, pane, out,
+            preset, true,
+        )
+    }
+
+    /// One glass element per unit of `lane`: a pane (`joined` false) or a joined
+    /// shape (`joined` true), each in its own slot list so ids stay put.
+    #[allow(clippy::too_many_arguments)]
+    fn glass_units<E>(
         &mut self,
         renderer: &mut GlesRenderer,
         output: &Output,
@@ -1201,6 +1314,7 @@ impl BlurStore {
         mut pane: impl FnMut(usize, &mut Vec<Uniform<'static>>) -> Option<Rectangle<i32, Physical>>,
         out: &mut Vec<BlurElement>,
         preset: GlassPreset,
+        joined: bool,
     ) -> Option<()>
     where
         E: Element + RenderElement<GlesRenderer>,
@@ -1210,19 +1324,29 @@ impl BlurStore {
         )?;
         let entry = self.surfaces.get_mut(key)?;
         let texture = entry.result.clone()?;
-        while entry.panes.len() < count {
-            entry.panes.push(PaneSlot {
+        let slots = if joined {
+            &mut entry.shapes
+        } else {
+            &mut entry.panes
+        };
+        while slots.len() < count {
+            slots.push(PaneSlot {
                 id: Id::new(),
                 look: no_uniforms(),
                 commit: CommitCounter::default(),
                 seen: entry.commit,
             });
         }
-        entry.panes.truncate(count);
+        slots.truncate(count);
         let backdrop = entry.commit;
         let mut uniforms = std::mem::take(&mut self.pane_uniforms);
         let entry = self.surfaces.get_mut(key)?;
-        for (i, slot) in entry.panes.iter_mut().enumerate() {
+        let slots = if joined {
+            &mut entry.shapes
+        } else {
+            &mut entry.panes
+        };
+        for (i, slot) in slots.iter_mut().enumerate() {
             uniforms.clear();
             let Some(rect) = pane(i, &mut uniforms) else {
                 continue;
@@ -1297,11 +1421,13 @@ impl BlurStore {
             damage: OutputDamageTracker::from_output(output),
             result: None,
             crop: None,
+            clamp: None,
             variant: (passes, sharp),
             commit: CommitCounter::default(),
             id: Id::new(),
             look: no_uniforms(),
             panes: Vec::new(),
+            shapes: Vec::new(),
             pending: false,
             last: 0,
         });
@@ -1328,7 +1454,11 @@ impl BlurStore {
         let frame = self.frame;
         let entry = self.surfaces.get_mut(key)?;
         let mut dirty = dirty || entry.pending;
-        let fresh = entry.result.is_none() || entry.crop != Some(crop) || entry.variant != (passes, sharp);
+        let clamp_tex = region_in_tex(region, fb);
+        let fresh = entry.result.is_none()
+            || entry.crop != Some(crop)
+            || entry.clamp != Some(clamp_tex)
+            || entry.variant != (passes, sharp);
         if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
             entry.pending = true;
             dirty = false;
@@ -1352,6 +1482,7 @@ impl BlurStore {
                 blur,
                 scale,
                 (tex, crop),
+                Clamps::new(region, tex, fb),
                 behind,
                 reuse,
                 sharp,
@@ -1360,6 +1491,7 @@ impl BlurStore {
             let entry = self.surfaces.get_mut(key)?;
             entry.result = Some(texture);
             entry.crop = Some(crop);
+            entry.clamp = Some(clamp_tex);
             entry.variant = (passes, sharp);
             entry.commit.increment();
         }
@@ -1406,12 +1538,21 @@ impl BlurStore {
                 .map(|(_, crop)| crop)
         };
         let needed = crops().reduce(|a, b| a.merge(b))?;
+        // The blur only ever mixes what lies under the members: its taps are
+        // clamped to their union's bounding box.
+        let union = members
+            .clone()
+            .map(|m| m.region)
+            .filter(|r| !r.is_empty())
+            .reduce(|a, b| a.merge(b))?;
+        let clamp_tex = region_in_tex(union, fb);
         let params = (blur.size, passes, sharp);
         let frame = self.frame;
         let entry = self.groups.entry(key.clone()).or_insert_with(|| GroupBlur {
             damage: OutputDamageTracker::from_output(output),
             result: None,
             crop: None,
+            clamp: None,
             params,
             members: Vec::new(),
             rebuilds: 0,
@@ -1464,7 +1605,7 @@ impl BlurStore {
             entry.params,
             params,
             same_members,
-        );
+        ) || entry.clamp != Some(clamp_tex);
         // Same throttle as a surface's, but the unit is the group's rebuild.
         if dirty && !fresh && crowded && frame.wrapping_sub(entry.last) < CROWDED_INTERVAL {
             entry.pending = true;
@@ -1493,6 +1634,7 @@ impl BlurStore {
                 blur,
                 scale,
                 (tex, crop),
+                Clamps::new(union, tex, fb),
                 behind,
                 fresh || self.profile.full_only(),
                 sharp,
@@ -1500,6 +1642,7 @@ impl BlurStore {
             let entry = self.groups.get_mut(key)?;
             if fresh {
                 entry.crop = Some(crop);
+                entry.clamp = Some(clamp_tex);
                 entry.params = params;
                 entry.members.clear();
                 entry.members.extend(members.map(|m| m.key.clone()));
@@ -1528,6 +1671,7 @@ impl BlurStore {
         blur: &Blur,
         scale: Scale<f64>,
         (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+        clamp: Clamps,
         behind: &[E],
         full: bool,
         sharp: bool,
@@ -1556,6 +1700,7 @@ impl BlurStore {
             (down.as_ref()?, up.as_ref()?),
             (*chain_size, orient),
             (tex, crop),
+            clamp,
             scale,
             behind,
             blur,
@@ -1650,6 +1795,7 @@ impl BlurStore {
         blur: &Blur,
         scale: Scale<f64>,
         (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+        clamp: Clamps,
         behind: &[E],
         reuse: Option<GlesTexture>,
         sharp: bool,
@@ -1699,6 +1845,7 @@ impl BlurStore {
             level0.as_mut()?,
             chain.get_mut(&(tex.size.w, tex.size.h, passes))?,
             (tex, crop),
+            clamp,
             scale,
             down.as_ref()?,
             up.as_ref()?,
@@ -1820,6 +1967,7 @@ fn render_chain<E>(
     level0: &mut GlesTexture,
     mid: &mut [GlesTexture],
     (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+    clamp: Clamps,
     scale: Scale<f64>,
     down: &GlesTexProgram,
     up: &GlesTexProgram,
@@ -1865,10 +2013,20 @@ where
         offset,
         Transform::Normal,
         Some(tex),
+        clamp.level0,
     )?;
     for level in 1..passes {
         let (src, dst) = split_pair(mid, level - 1, level);
-        blit_full(renderer, src, dst, Some(down), offset, Transform::Normal, None)?;
+        blit_full(
+            renderer,
+            src,
+            dst,
+            Some(down),
+            offset,
+            Transform::Normal,
+            None,
+            clamp.levels,
+        )?;
     }
 
     // 3. Upsample down to level 2. The last step writes level 1 (half size)
@@ -1878,7 +2036,16 @@ where
     //    is copied as is.
     for level in (2..passes).rev() {
         let (src, dst) = split_pair(mid, level, level - 1);
-        blit_full(renderer, src, dst, Some(up), offset, Transform::Normal, None)?;
+        blit_full(
+            renderer,
+            src,
+            dst,
+            Some(up),
+            offset,
+            Transform::Normal,
+            None,
+            clamp.levels,
+        )?;
     }
     // The result is upright: a quarter turn swaps the framebuffer's extent.
     let half = orient.transform_size(mid[0].size());
@@ -1904,6 +2071,7 @@ where
             None,
             left,
             &all,
+            clamp.levels,
         )?;
     } else {
         let src = mid[0].clone();
@@ -1917,6 +2085,7 @@ where
             None,
             left,
             &all,
+            clamp.levels,
         )?;
     }
     if sharp {
@@ -1931,6 +2100,7 @@ where
             None,
             right,
             &all,
+            clamp.levels,
         )?;
     }
     // Down passes, up passes (levels `passes..=2`), then the final write.
@@ -1970,6 +2140,7 @@ fn render_group<E>(
     (down, up): (&GlesTexProgram, &GlesTexProgram),
     (fb, orient): (Size<i32, Physical>, Transform),
     (tex, crop): (Rectangle<i32, Physical>, Rectangle<i32, Physical>),
+    clamp: Clamps,
     scale: Scale<f64>,
     behind: &[E],
     blur: &Blur,
@@ -2087,12 +2258,23 @@ where
                     Transform::Normal,
                     Some(from),
                     r,
+                    clamp.level0,
                 )?;
             } else {
                 let (src, dst) = split_pair(dn, level - 2, level - 1);
                 let all = whole(dst);
                 let r = if partial { &rects[level - 1][..] } else { &all[..] };
-                blit(renderer, src, dst, Some(down), offset, Transform::Normal, None, r)?;
+                blit(
+                    renderer,
+                    src,
+                    dst,
+                    Some(down),
+                    offset,
+                    Transform::Normal,
+                    None,
+                    r,
+                    clamp.levels,
+                )?;
             }
         }
         Ok(())
@@ -2130,14 +2312,36 @@ where
                     Transform::Normal,
                     None,
                     r,
+                    clamp.levels,
                 )?;
             } else {
                 let (src, dst) = split_pair(upv, level - 2, level - 3);
-                blit(renderer, src, dst, Some(up), offset, Transform::Normal, None, r)?;
+                blit(
+                    renderer,
+                    src,
+                    dst,
+                    Some(up),
+                    offset,
+                    Transform::Normal,
+                    None,
+                    r,
+                    clamp.levels,
+                )?;
             }
         }
         match passes {
-            1 => blit_to(renderer, &dn[0], &mut out, None, offset, orient, None, left, r),
+            1 => blit_to(
+                renderer,
+                &dn[0],
+                &mut out,
+                None,
+                offset,
+                orient,
+                None,
+                left,
+                r,
+                clamp.levels,
+            ),
             2 => blit_to(
                 renderer,
                 &dn[1],
@@ -2148,6 +2352,7 @@ where
                 None,
                 left,
                 r,
+                clamp.levels,
             ),
             _ => blit_to(
                 renderer,
@@ -2159,6 +2364,7 @@ where
                 None,
                 left,
                 r,
+                clamp.levels,
             ),
         }
     })?;
@@ -2167,7 +2373,18 @@ where
         // upright like the result.
         let right = Rectangle::new((half.w, 0).into(), left.size);
         timed(renderer, Span::Pack, |renderer| {
-            blit_to(renderer, &dn[0], &mut out, None, offset, orient, None, right, r)
+            blit_to(
+                renderer,
+                &dn[0],
+                &mut out,
+                None,
+                offset,
+                orient,
+                None,
+                right,
+                r,
+                clamp.levels,
+            )
         })?;
     }
     *result = Some(out);
@@ -2237,6 +2454,7 @@ fn split_pair(chain: &mut [GlesTexture], src: usize, dst: usize) -> (&GlesTextur
 }
 
 /// [`blit`] over the whole of `dst`.
+#[allow(clippy::too_many_arguments)]
 fn blit_full(
     renderer: &mut GlesRenderer,
     src: &GlesTexture,
@@ -2245,10 +2463,13 @@ fn blit_full(
     offset: f32,
     transform: Transform,
     from: Option<Rectangle<f64, BufferCoords>>,
+    clamp: [f32; 4],
 ) -> Result<(), GlesError> {
     let size = dst.size();
     let whole = [Rectangle::<i32, Physical>::from_size((size.w, size.h).into())];
-    blit(renderer, src, dst, program, offset, transform, from, &whole)
+    blit(
+        renderer, src, dst, program, offset, transform, from, &whole, clamp,
+    )
 }
 
 /// One Kawase pass: draw `src` (or just its `from` rectangle) over `dst`,
@@ -2267,10 +2488,13 @@ fn blit(
     transform: Transform,
     from: Option<Rectangle<f64, BufferCoords>>,
     damage: &[Rectangle<i32, Physical>],
+    clamp: [f32; 4],
 ) -> Result<(), GlesError> {
     let size = dst.size();
     let dest = Rectangle::<i32, Physical>::from_size((size.w, size.h).into());
-    blit_to(renderer, src, dst, program, offset, transform, from, dest, damage)
+    blit_to(
+        renderer, src, dst, program, offset, transform, from, dest, damage, clamp,
+    )
 }
 
 /// [`blit`] into the `dest` rectangle of `dst` (the left or right half of a
@@ -2286,12 +2510,14 @@ fn blit_to(
     from: Option<Rectangle<f64, BufferCoords>>,
     dest: Rectangle<i32, Physical>,
     damage: &[Rectangle<i32, Physical>],
+    clamp: [f32; 4],
 ) -> Result<(), GlesError> {
     let src_size = src.size();
     let dst_size = dst.size();
     let uniforms = [
         Uniform::new("halfpixel", [0.5 / src_size.w as f32, 0.5 / src_size.h as f32]),
         Uniform::new("blur_offset", offset),
+        Uniform::new("clamp_uv", clamp),
     ];
     let mut fb = Bind::bind(renderer, dst)?;
     let mut frame = renderer.render(&mut fb, (dst_size.w, dst_size.h).into(), Transform::Normal)?;
@@ -2316,6 +2542,7 @@ fn compile(renderer: &mut GlesRenderer, src: &str) -> Result<GlesTexProgram, Gle
         &[
             UniformName::new("halfpixel", UniformType::_2f),
             UniformName::new("blur_offset", UniformType::_1f),
+            UniformName::new("clamp_uv", UniformType::_4f),
         ],
     )
 }
@@ -2351,14 +2578,19 @@ uniform float tint;
 
 uniform vec2 halfpixel;
 uniform float blur_offset;
+uniform vec4 clamp_uv; // min.xy, max.xy of the glass region in this source's uv
+
+vec4 tap(vec2 uv) {
+    return texture2D(tex, clamp(uv, clamp_uv.xy, clamp_uv.zw));
+}
 
 void main() {
     vec2 o = halfpixel * blur_offset;
-    vec4 sum = texture2D(tex, v_coords) * 4.0;
-    sum += texture2D(tex, v_coords - o);
-    sum += texture2D(tex, v_coords + o);
-    sum += texture2D(tex, v_coords + vec2(o.x, -o.y));
-    sum += texture2D(tex, v_coords - vec2(o.x, -o.y));
+    vec4 sum = tap(v_coords) * 4.0;
+    sum += tap(v_coords - o);
+    sum += tap(v_coords + o);
+    sum += tap(v_coords + vec2(o.x, -o.y));
+    sum += tap(v_coords - vec2(o.x, -o.y));
     vec3 color = (sum / 8.0).rgb * alpha;
 
 #if defined(DEBUG_FLAGS)
@@ -2400,17 +2632,22 @@ uniform float tint;
 
 uniform vec2 halfpixel;
 uniform float blur_offset;
+uniform vec4 clamp_uv; // min.xy, max.xy of the glass region in this source's uv
+
+vec4 tap(vec2 uv) {
+    return texture2D(tex, clamp(uv, clamp_uv.xy, clamp_uv.zw));
+}
 
 void main() {
     vec2 o = halfpixel * blur_offset;
-    vec4 sum = texture2D(tex, v_coords + vec2(-o.x * 2.0, 0.0));
-    sum += texture2D(tex, v_coords + vec2(-o.x, o.y)) * 2.0;
-    sum += texture2D(tex, v_coords + vec2(0.0, o.y * 2.0));
-    sum += texture2D(tex, v_coords + vec2(o.x, o.y)) * 2.0;
-    sum += texture2D(tex, v_coords + vec2(o.x * 2.0, 0.0));
-    sum += texture2D(tex, v_coords + vec2(o.x, -o.y)) * 2.0;
-    sum += texture2D(tex, v_coords + vec2(0.0, -o.y * 2.0));
-    sum += texture2D(tex, v_coords + vec2(-o.x, -o.y)) * 2.0;
+    vec4 sum = tap(v_coords + vec2(-o.x * 2.0, 0.0));
+    sum += tap(v_coords + vec2(-o.x, o.y)) * 2.0;
+    sum += tap(v_coords + vec2(0.0, o.y * 2.0));
+    sum += tap(v_coords + vec2(o.x, o.y)) * 2.0;
+    sum += tap(v_coords + vec2(o.x * 2.0, 0.0));
+    sum += tap(v_coords + vec2(o.x, -o.y)) * 2.0;
+    sum += tap(v_coords + vec2(0.0, -o.y * 2.0));
+    sum += tap(v_coords + vec2(-o.x, -o.y)) * 2.0;
     vec3 color = (sum / 12.0).rgb * alpha;
 
 #if defined(DEBUG_FLAGS)
@@ -2684,6 +2921,59 @@ mod tests {
         assert_eq!(level_size(full, 1), (960, 540).into());
         assert_eq!(level_size(full, 2), (480, 270).into());
         assert_eq!(level_size(Size::from((3, 1)), 6), (1, 1).into());
+    }
+
+    #[test]
+    fn region_in_tex_flips_clips_and_turns_with_the_output() {
+        let fb = Size::<i32, Physical>::from((100, 50));
+        let at = |t, rect| region_in_tex(rect, FbMap { fb, transform: t });
+        assert_eq!(at(Transform::Normal, r(10, 5, 20, 10)), r(10, 5, 20, 10));
+        // Winit's y-mirrored framebuffer stores the bottom row first.
+        assert_eq!(at(Transform::Flipped180, r(10, 5, 20, 10)), r(10, 35, 20, 10));
+        // Hanging off the output: only the part on it.
+        assert_eq!(at(Transform::Normal, r(90, 0, 30, 10)), r(90, 0, 10, 10));
+        assert_eq!(at(Transform::Flipped180, r(-5, 40, 10, 30)), r(0, 0, 5, 10));
+        // Off the output altogether: empty.
+        assert!(at(Transform::Normal, r(200, 0, 10, 10)).is_empty());
+        // A quarter turn swaps the axes: the render space is 50x100.
+        let m = FbMap {
+            fb,
+            transform: Transform::_90,
+        };
+        let render = m.render_size();
+        assert_eq!((render.w, render.h), (50, 100));
+        let whole = region_in_tex(Rectangle::from_size(render), m);
+        assert_eq!(whole, Rectangle::from_size(fb));
+        let part = region_in_tex(r(10, 20, 5, 30), m);
+        assert_eq!((part.size.w, part.size.h), (30, 5));
+        assert!(Rectangle::from_size(fb).contains_rect(part));
+        assert_eq!(m.phys_rect(part), r(10, 20, 5, 30));
+    }
+
+    #[test]
+    fn clamp_uv_keeps_taps_inside_the_region() {
+        // A 20x10 region at (10, 20) of a 100x50 source: inset half a texel.
+        let c = clamp_uv(r(10, 20, 20, 10), r(0, 0, 100, 50));
+        assert_eq!(c, [10.5 / 100.0, 20.5 / 50.0, 29.5 / 100.0, 29.5 / 50.0]);
+        // Relative to a crop that starts at (8, 16): same texels, crop-sized uv.
+        let c = clamp_uv(r(10, 20, 20, 10), r(8, 16, 64, 32));
+        assert_eq!(c, [2.5 / 64.0, 4.5 / 32.0, 21.5 / 64.0, 13.5 / 32.0]);
+        // An empty region never inverts.
+        let c = clamp_uv(r(10, 20, 0, 0), r(0, 0, 100, 50));
+        assert!(c[0] <= c[2] && c[1] <= c[3]);
+        // A region on the output's edge keeps the old edge clamp (half a texel in).
+        let c = clamp_uv(r(0, 0, 100, 50), r(0, 0, 100, 50));
+        assert_eq!(c, [0.5 / 100.0, 0.5 / 50.0, 99.5 / 100.0, 49.5 / 50.0]);
+    }
+
+    #[test]
+    fn a_mirrored_clamp_follows_the_texture_rows() {
+        let fb = Size::<i32, Physical>::from((100, 50));
+        let m = map(fb, true);
+        // A bar along the top of a y-mirrored output is the texture's last rows.
+        let cl = Clamps::new(r(0, 0, 100, 10), r(0, 0, 100, 50), m);
+        assert_eq!(cl.level0, [0.5 / 100.0, 40.5 / 50.0, 99.5 / 100.0, 49.5 / 50.0]);
+        assert_eq!(cl.level0, cl.levels);
     }
 
     #[test]

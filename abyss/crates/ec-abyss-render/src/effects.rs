@@ -563,6 +563,14 @@ uniform float tint;
 
 uniform vec4 win_rect;
 uniform float radius;
+#ifdef JOINED
+// A joined element's adaptive read samples the member the fragment is nearest
+// to (ADR 0130), so `g_own_box` is set per fragment by `shape_sdg`.
+vec4 g_own_box;
+#define OWN_BOX g_own_box
+#else
+#define OWN_BOX win_rect
+#endif
 
 // Premultiply by `alpha` exactly as smithay's texture.frag does.
 vec4 finish(vec4 color) {
@@ -640,13 +648,13 @@ const vec3 SURFACE_L = vec3(0.992, 0.989, 0.980);  // paper white
 // continuously (see `w` below). Mirrors `adaptive_luma` below.
 float g_dev;  // centre minus local mean luma of the last backdrop_luma()
 float backdrop_luma() {
-    vec2 hs = abs(to_phys(win_rect.zw)) * 0.5;
+    vec2 hs = abs(to_phys(OWN_BOX.zw)) * 0.5;
     vec2 step = min(vec2(ADAPT_STEP), hs * ADAPT_SPAN);
     // Taps stay `ADAPT_INSET` inside the rect (at least half its size): the
     // blur chain is low-res and ragged at an output edge, and a worst-patch
     // read turns those blocks into pale rectangles.
     vec2 lim = max(hs - vec2(ADAPT_INSET), hs * 0.5);
-    vec2 p0 = to_phys(gl_FragCoord.xy - (win_rect.xy + win_rect.zw * 0.5));
+    vec2 p0 = to_phys(gl_FragCoord.xy - (OWN_BOX.xy + OWN_BOX.zw * 0.5));
     vec2 pc = clamp(p0, -lim, lim);
     float c = dot(texture2D(tex, clamp_blur(v_coords + (pc - p0) * px_uv)).rgb, LUMA);
     g_dev = 0.0;
@@ -709,6 +717,93 @@ vec3 adapt_tint(vec3 c) {
 
 /// Frost: the rounded mask, a tint mixed in by its own alpha, and a fine
 /// static grain hashed from the framebuffer position (COMP-02 §9).
+/// The joined variant of the glass body (ADR 0130): up to 16 member boxes of
+/// one element, each with its own corner radius, fillet to the member it was
+/// reached from, bevel, strength and look. Members are folded in attachment
+/// order with `join_member`, the smooth-min of `join_g` at each member's own
+/// fillet and radius; `glass::joined_distance` is the CPU mirror. The body reads
+/// the NEAREST member's look (least raw distance), so a member's rim, lift and
+/// bevel stay its own and the seam, where the nearest member changes, shows no
+/// step: the fold is continuous, and only the per-member values switch there.
+const JOINED_FNS: &str = r#"
+uniform vec4 jbox[16];  // x y w h, gl_FragCoord space
+uniform vec4 jdat[16];  // fillet to its parent, corner radius, bevel, strength (physical px)
+uniform vec4 jlook[16]; // lift, shade, smoke, rim
+uniform float jcount;
+
+float strength;   // the nearest member's, set by shape_sdg
+float bevel;
+float lift;
+float shade;
+float smoke;
+float rim;
+float g_s_eff;    // the nearest member's effective size, harmonic mean of its sides
+
+// `join_g` at one member's own fillet and corner radius.
+void join_member(inout vec3 a, inout vec2 ga, vec3 b, vec2 gb, float fillet_k, float radius_k) {
+    bool bm = b.x < a.x;
+    vec3 m = bm ? b : a;
+    vec2 gm = bm ? gb : ga;
+    if (fillet_k > 0.0) {
+        float h = max(fillet_k - abs(a.x - b.x), 0.0) / fillet_k;
+        float gap = min(length(a.yz - b.yz) / max(radius_k, 1.0), 1.0);
+        gm += (gap * h * 0.5) * ((bm ? ga : gb) - gm);
+        m.x -= gap * h * h * fillet_k * 0.25;
+    }
+    a = m;
+    ga = gm;
+}
+
+// The joined distance and its gradient at f; sets the nearest member's look,
+// size and bevel into the globals the body reads. Indices are loop indices
+// (fragment uniform arrays allow nothing else).
+float shape_sdg(vec2 f, out vec2 g) {
+    vec3 a = vec3(0.0);
+    vec2 ga = vec2(0.0);
+    float best = 1e9;
+    vec4 sel_box = vec4(0.0);
+    vec4 sel_dat = vec4(0.0);
+    vec4 sel_look = vec4(0.0);
+    for (int i = 0; i < 16; i++) {
+        if (float(i) >= jcount)
+            break;
+        vec4 b = jbox[i];
+        vec4 dat = jdat[i];
+        vec2 h = b.zw * 0.5;
+        float r = max(min(dat.y, min(h.x, h.y)), 0.0);
+        vec2 p = f - (b.xy + h);
+        vec2 q = abs(p) - h + r;
+        float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
+        vec2 arc = min(max(f, b.xy + r), b.xy + b.zw - r);
+        vec2 s = vec2(p.x < 0.0 ? -1.0 : 1.0, p.y < 0.0 ? -1.0 : 1.0);
+        vec2 gi = ((q.x > 0.0 && q.y > 0.0) ? normalize(q) : (q.x > q.y ? vec2(1.0, 0.0) : vec2(0.0, 1.0))) * s;
+        vec3 c = vec3(d, arc);
+        if (i == 0) {
+            a = c;
+            ga = gi;
+        } else {
+            join_member(a, ga, c, gi, dat.x, dat.y);
+        }
+        if (d < best) {
+            best = d;
+            sel_box = b;
+            sel_dat = dat;
+            sel_look = jlook[i];
+        }
+    }
+    strength = sel_dat.w;
+    bevel = sel_dat.z;
+    lift = sel_look.x;
+    shade = sel_look.y;
+    smoke = sel_look.z;
+    rim = sel_look.w;
+    g_s_eff = 2.0 * sel_box.z * sel_box.w / max(sel_box.z + sel_box.w, 1.0);
+    g_own_box = sel_box;
+    g = ga;
+    return a.x;
+}
+"#;
+
 const FROST_BODY: &str = r#"
 uniform vec4 frost_tint;
 uniform vec4 rim_color;   // premultiplied bezel hairline colour
@@ -786,18 +881,26 @@ void main() {
 /// opaque window nothing inside the ring is drawn at all. Off the bezel
 /// `rim_color` is opaque white.
 const GLASS_BODY: &str = r#"
+#ifndef JOINED
 uniform float strength;   // largest displacement, physical px, at the edge
 uniform float bevel;      // roll-off band width, physical px
+#endif
 uniform float dispersion; // chromatic fringe at the edge, physical px; 0 off (needs a packed `tex`)
+#ifndef JOINED
 uniform float rim;        // 0..1 hairline strength
+#endif
 uniform vec4 rim_color;   // premultiplied hairline colour; opaque white off the bezel
 uniform float inner;      // bezel width, physical px; 0 off the bezel
 uniform float opaque;     // 1 when the window inside the bezel is opaque
 uniform float bar;        // titlebar depth from the region's top, physical px; 0 none
+#ifndef JOINED
 uniform float lift;       // 0..1 mix toward white; 0 (unset) on windows
 uniform float shade;      // 0..1 mix toward ink (light only: a pane's depth step); 0 elsewhere
+#endif
 uniform float shade_ref;  // physical px of the reference control size (40 logical); 0 (unset) = 40
+#ifndef JOINED
 uniform float smoke;      // 0..1 weight of the smoke and adaptive tint; 1 normal, less on stacked glass
+#endif
 uniform vec4 body_tint;   // a trusted prompt's fixed palette tint (straight rgb, alpha = weight); 0 elsewhere
 uniform float sharp_damp; // 0..1 share of the bevel's lightly blurred half held back; 0 (unset) everywhere but a trusted prompt
 
@@ -870,7 +973,7 @@ vec4 sharp_at(vec2 uv) {
     return texture2D(tex, clamp_sharp(uv));
 }
 
-#ifdef SHAPED
+#if defined(SHAPED) || defined(JOINED)
 // Outward normal of the shape, y down, from the analytic gradient.
 vec2 shape_normal(vec2 g) {
     g = to_phys(g);
@@ -884,7 +987,7 @@ void main() {
     // Physical space from here on: the size is the rect's, swapped on a quarter turn.
     vec2 half_size = abs(to_phys(win_rect.zw)) * 0.5;
     vec2 p = to_phys(gl_FragCoord.xy - (win_rect.xy + win_rect.zw * 0.5));
-#ifdef SHAPED
+#if defined(SHAPED) || defined(JOINED)
     vec2 sg;
     float d = shape_sdg(gl_FragCoord.xy, sg);
 #else
@@ -893,7 +996,7 @@ void main() {
     float d = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - r;
 #endif
 
-#if defined(GLASS_LENS) && !defined(SHAPED)
+#if defined(GLASS_LENS) && !defined(SHAPED) && !defined(JOINED)
     // A CELL (a control nested in a card pane): a fill on what is already drawn,
     // no backdrop sample at all. `opaque` is 2 for a cell (never on a pane
     // otherwise), `lift` its fill alpha, `shade` its gradient strength, `rim`
@@ -965,7 +1068,7 @@ void main() {
         return;
     }
 
-#ifdef SHAPED
+#if defined(SHAPED) || defined(JOINED)
     vec2 grad = shape_normal(sg);
 #else
     // Outward normal of the rounded box, y down.
@@ -1096,6 +1199,10 @@ void main() {
         // sublinearly with size, its strength falls sublinearly, and neither has
         // a threshold. Small controls (about 40 px) keep the original look.
         float s_eff = 2.0 * win_rect.z * win_rect.w / max(win_rect.z + win_rect.w, 1.0);
+#ifdef JOINED
+        // A joined member reads by its own size: the nearest member's (`shape_sdg`).
+        s_eff = g_s_eff;
+#endif
 #ifdef SHAPED
         // A joined shape reads by its smallest box, not its bounding box: a
         // drawer opening under a bar must not change how wide the bar's own edge is.
@@ -1261,6 +1368,10 @@ pub fn compile_hud_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, 
     )
 }
 
+/// Uniforms the joined program takes per member instead of per element: the
+/// bevel and strength, the look's rim, lift, shade and smoke.
+const JOINED_PER_MEMBER: [&str; 6] = ["strength", "bevel", "rim", "lift", "shade", "smoke"];
+
 /// The glass program's uniforms, in the order [`glass_uniforms`] sets them.
 const GLASS_UNIFORMS: [(&str, UniformType); 22] = [
     ("win_rect", UniformType::_4f),
@@ -1286,6 +1397,133 @@ const GLASS_UNIFORMS: [(&str, UniformType); 22] = [
     ("body_tint", UniformType::_4f),
     ("sharp_damp", UniformType::_1f),
 ];
+
+/// The joined program's uniforms: the element's shared glass uniforms (the
+/// [`GLASS_UNIFORMS`] less [`JOINED_PER_MEMBER`]), then `jcount` and the 16
+/// member arrays element by element. Every name is set on every frame.
+fn joined_names() -> Vec<UniformName<'static>> {
+    let mut names: Vec<UniformName<'static>> = GLASS_UNIFORMS
+        .iter()
+        .filter(|(name, _)| !JOINED_PER_MEMBER.contains(name))
+        .map(|&(name, ty)| UniformName::new(name, ty))
+        .collect();
+    names.push(UniformName::new("jcount", UniformType::_1f));
+    for array in ["jbox", "jdat", "jlook"] {
+        for k in 0..crate::glass::MAX_SHAPE_PANES {
+            names.push(UniformName::new(format!("{array}[{k}]"), UniformType::_4f));
+        }
+    }
+    names
+}
+
+/// One member of a joined element, as the joined program reads it.
+#[derive(Clone, Copy, Debug)]
+pub struct JoinedMember {
+    /// The member's shape box, output-local physical.
+    pub rect: Rectangle<i32, Physical>,
+    /// Its corner radius, physical px.
+    pub radius: f32,
+    /// The smooth-min width joining it to the member it was reached from
+    /// (physical px; 0 for the first member).
+    pub fillet: f32,
+    /// Its bevel and strength, as [`glass_uniforms_capped_into`] would set them
+    /// for it alone.
+    pub bevel: f32,
+    pub strength: f32,
+    /// Its look, as the single-pane path sets them.
+    pub lift: f32,
+    pub shade: f32,
+    pub smoke: f32,
+    pub rim: f32,
+}
+
+/// The values a joined element shares between its members.
+#[derive(Clone, Copy, Debug)]
+pub struct JoinedCommon {
+    pub dispersion: f32,
+    pub rim_color: [f32; 4],
+    pub scheme_light: f32,
+    pub adapt: f32,
+    pub layers: f32,
+    pub shade_ref: f32,
+}
+
+/// Set the joined program's uniforms, in [`joined_names`] order (the order is
+/// not required; smithay binds by name). `bbox` is the elements' bounding box
+/// of member shape boxes (`win_rect`); members past the 16th are not sent (the
+/// caller keeps shapes to the cap).
+pub fn joined_uniforms_into(
+    out: &mut Vec<Uniform<'static>>,
+    fb: FbMap,
+    bbox: Rectangle<i32, Physical>,
+    members: &[JoinedMember],
+    common: &JoinedCommon,
+    tex_size: (i32, i32),
+) {
+    let n = members.len().min(crate::glass::MAX_SHAPE_PANES);
+    let radius = members.first().map_or(0.0, |m| m.radius);
+    rounding_uniforms_into(out, bbox, fb, radius);
+    out.extend([
+        Uniform::new("px_uv", px_uv_for(tex_size)),
+        Uniform::new("dual_tex", 0.0f32),
+        Uniform::new("phys_map", fb.phys_map()),
+        Uniform::new("dispersion", common.dispersion),
+        Uniform::new("rim_color", common.rim_color),
+        Uniform::new("inner", 0.0f32),
+        Uniform::new("opaque", 0.0f32),
+        Uniform::new("bar", 0.0f32),
+        Uniform::new("scheme_light", common.scheme_light),
+        Uniform::new("adapt", common.adapt),
+        Uniform::new("adapt_layers", common.layers),
+        Uniform::new("shade_ref", common.shade_ref),
+        Uniform::new("body_tint", [0.0f32; 4]),
+        Uniform::new("sharp_damp", 0.0f32),
+        Uniform::new("jcount", n as f32),
+    ]);
+    let mut boxes = [[0.0f32; 4]; crate::glass::MAX_SHAPE_PANES];
+    let mut dat = [[0.0f32; 4]; crate::glass::MAX_SHAPE_PANES];
+    let mut look = [[0.0f32; 4]; crate::glass::MAX_SHAPE_PANES];
+    for (k, m) in members.iter().take(n).enumerate() {
+        let r = fb.gl_rect(m.rect);
+        boxes[k] = [r.loc.x as f32, r.loc.y as f32, r.size.w as f32, r.size.h as f32];
+        dat[k] = [m.fillet, m.radius, m.bevel, m.strength];
+        look[k] = [m.lift, m.shade, m.smoke, m.rim];
+    }
+    out.extend(
+        boxes
+            .iter()
+            .enumerate()
+            .map(|(k, v)| Uniform::new(format!("jbox[{k}]"), *v)),
+    );
+    out.extend(
+        dat.iter()
+            .enumerate()
+            .map(|(k, v)| Uniform::new(format!("jdat[{k}]"), *v)),
+    );
+    out.extend(
+        look.iter()
+            .enumerate()
+            .map(|(k, v)| Uniform::new(format!("jlook[{k}]"), *v)),
+    );
+}
+
+/// The joined source: the lens body with `JOINED` defined right after the
+/// version line, so the body takes its per-member branches.
+fn joined_source(src: &str) -> String {
+    src.replacen("#version 100\n", "#version 100\n#define JOINED 1\n", 1)
+}
+
+/// The joined glass program (ADR 0130), lens preset: a joined element is a pane
+/// group, and panes are lenses. Cached by the caller.
+pub fn compile_glass_joined(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
+    renderer.compile_custom_texture_shader(
+        joined_source(&preset_source(
+            &format!("{BACKDROP_HEAD}{JOINED_FNS}{GLASS_BODY}"),
+            GlassPreset::Lens,
+        )),
+        &joined_names(),
+    )
+}
 
 /// Compile the glass backdrop program (COMP-02 §9). Cached by the caller.
 pub fn compile_glass(renderer: &mut GlesRenderer) -> Result<GlesTexProgram, GlesError> {
@@ -1564,6 +1802,38 @@ pub fn glass_uniforms_lifted_into(
     );
 }
 
+/// The effective `(strength, bevel)` of a glass element of `rect` (its shape box):
+/// the configured values are ceilings, bounded by the element's size and its
+/// bezel (ADR 0092 bevel rules). Shared by [`glass_uniforms_capped_into`] and the
+/// joined builder, so a joined member bends exactly as it would alone.
+pub fn effective_bend(
+    preset: GlassPreset,
+    rect: Rectangle<i32, Physical>,
+    strength: f32,
+    bevel: f32,
+    inner: f32,
+    opaque: f32,
+    strength_fraction: f32,
+) -> (f32, f32) {
+    if inner > 0.0 && opaque < 0.5 && bevel > 0.0 && preset != GlassPreset::Frost {
+        // A translucent window's bevel runs into its body, bounded by its size.
+        let short = rect.size.w.min(rect.size.h).max(1) as f32;
+        (strength, lens_bevel(bevel, short))
+    } else if inner > 0.0 || bevel <= 0.0 {
+        (strength, bevel)
+    } else if preset != GlassPreset::Frost {
+        // The band is capped at LENS_BEVEL_FRACTION of the shorter side and
+        // the bend at LENS_STRENGTH_FRACTION of it, so a small widget bends
+        // gently and shows what is directly behind it, not its neighbours.
+        let short = rect.size.w.min(rect.size.h).max(1) as f32;
+        (strength.min(short * strength_fraction), lens_bevel(bevel, short))
+    } else {
+        let short = rect.size.w.min(rect.size.h).max(1) as f32;
+        let capped = bevel.min(short * GLASS_BEVEL_FRACTION);
+        (strength * capped / bevel, capped)
+    }
+}
+
 /// [`glass_uniforms_lifted_into`] with the lens bend cap as a share of the
 /// shape's shorter side. The pane path passes [`LENS_STRENGTH_FRACTION_PANE`]:
 /// the bar is one thin pill whose rim must bend as visibly as the launcher's.
@@ -1599,23 +1869,7 @@ pub fn glass_uniforms_capped_into(
     // The configured bevel/strength are ceilings: a thin shape (a bar) gets a
     // bevel of at most GLASS_BEVEL_FRACTION of its shorter side, and the bend
     // shrinks with it, so it keeps a clear centre and the same slope.
-    let (strength, bevel) = if inner > 0.0 && opaque < 0.5 && bevel > 0.0 && preset != GlassPreset::Frost {
-        // A translucent window's bevel runs into its body, bounded by its size.
-        let short = rect.size.w.min(rect.size.h).max(1) as f32;
-        (strength, lens_bevel(bevel, short))
-    } else if inner > 0.0 || bevel <= 0.0 {
-        (strength, bevel)
-    } else if preset != GlassPreset::Frost {
-        // The band is capped at LENS_BEVEL_FRACTION of the shorter side and
-        // the bend at LENS_STRENGTH_FRACTION of it, so a small widget bends
-        // gently and shows what is directly behind it, not its neighbours.
-        let short = rect.size.w.min(rect.size.h).max(1) as f32;
-        (strength.min(short * strength_fraction), lens_bevel(bevel, short))
-    } else {
-        let short = rect.size.w.min(rect.size.h).max(1) as f32;
-        let capped = bevel.min(short * GLASS_BEVEL_FRACTION);
-        (strength * capped / bevel, capped)
-    };
+    let (strength, bevel) = effective_bend(preset, rect, strength, bevel, inner, opaque, strength_fraction);
     rounding_uniforms_into(out, rect, fb, radius);
     out.extend([
         Uniform::new("px_uv", px_uv_for(tex_size)),
@@ -2524,6 +2778,79 @@ mod tests {
             // Defined before any body uses it.
             assert!(shaped.find("#define SHAPED").unwrap() < shaped.find("#ifdef SHAPED").unwrap());
         }
+    }
+
+    #[test]
+    fn joined_glass_sets_exactly_the_uniforms_it_compiles() {
+        // The joined program's compile list and its packed uniforms must match
+        // name for name (smithay: an unknown name errors, an unset one is zero).
+        let members = [
+            JoinedMember {
+                rect: Rectangle::new((40, 40).into(), (300, 40).into()),
+                radius: 12.0,
+                fillet: 0.0,
+                bevel: 20.0,
+                strength: 9.0,
+                lift: 0.0,
+                shade: 0.0,
+                smoke: 1.0,
+                rim: 0.5,
+            },
+            JoinedMember {
+                rect: Rectangle::new((290, 80).into(), (50, 160).into()),
+                radius: 12.0,
+                fillet: 16.0,
+                bevel: 14.0,
+                strength: 7.0,
+                lift: 0.1,
+                shade: 0.2,
+                smoke: 0.9,
+                rim: 0.4,
+            },
+        ];
+        let common = JoinedCommon {
+            dispersion: 1.0,
+            rim_color: [1.0; 4],
+            scheme_light: 0.0,
+            adapt: 0.5,
+            layers: 2.0,
+            shade_ref: 40.0,
+        };
+        let mut out = Vec::new();
+        joined_uniforms_into(
+            &mut out,
+            fb_norm(),
+            Rectangle::new((40, 40).into(), (300, 120).into()),
+            &members,
+            &common,
+            (1920, 1080),
+        );
+        let mut set: Vec<String> = out.iter().map(|u| u.name.to_string()).collect();
+        let mut compiled: Vec<String> = joined_names().iter().map(|u| u.name.to_string()).collect();
+        set.sort();
+        compiled.sort();
+        assert_eq!(set, compiled);
+        assert_eq!(compiled.len(), 16 + 1 + 3 * crate::glass::MAX_SHAPE_PANES);
+        // The per-member names are the joined program's, not the element's.
+        for name in JOINED_PER_MEMBER {
+            assert!(!compiled.iter().any(|n| n == name), "{name} is per member");
+        }
+    }
+
+    #[test]
+    fn only_the_joined_source_defines_joined() {
+        let body = format!("{BACKDROP_HEAD}{JOINED_FNS}{GLASS_BODY}");
+        let joined = joined_source(&preset_source(&body, GlassPreset::Lens));
+        assert!(joined.starts_with("#version 100\n#define JOINED 1\n"));
+        assert_eq!(joined.matches("float shape_sdg(").count(), 1);
+        assert_eq!(joined.matches("#define OWN_BOX g_own_box").count(), 1);
+        let plain = preset_source(&format!("{BACKDROP_HEAD}{GLASS_BODY}"), GlassPreset::Lens);
+        assert!(!plain.contains("#define JOINED"));
+        assert!(plain.contains("#define OWN_BOX win_rect"));
+        // The unjoined body still declares the per-member uniforms.
+        // ... inside an `#ifndef JOINED`, and the joined one declares plain globals.
+        assert!(plain.contains("#ifndef JOINED\nuniform float strength;"));
+        assert!(joined.contains("\nfloat strength;"));
     }
 
     #[test]

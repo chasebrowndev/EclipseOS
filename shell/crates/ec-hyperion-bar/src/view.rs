@@ -96,8 +96,8 @@ use iced::widget::{
 use iced::{Alignment, Color, Element, Length, Theme};
 
 use ec_ui::theme::{self, CellTone};
-use ec_ui::tokens::{bar, color, drawer, font, menu, radius, size, space};
-use ec_ui::widget::{self as parts, ClipEdge, SheetEdge, SheetShape};
+use ec_ui::tokens::{bar, color, drawer, font, menu, pane, radius, size, space};
+use ec_ui::widget::{self as parts, CardLink, ClipEdge, SheetEdge, SheetShape};
 
 use crate::app::Message;
 use crate::icons::Icon;
@@ -298,14 +298,25 @@ fn bar_row<'a>(app: &'a crate::app::App, bar: &'a crate::app::Bar) -> Element<'a
         // compositor's panes replace the layer's whole-surface blur, so a
         // bar with no pane of its own is unblurred wherever no chip sits
         // (the empty task strip between the pinned apps and the widgets).
-        ec_ui::widget::glass_card(
+        ec_ui::widget::glass_card_linked(
             container(bar_row)
                 .width(Length::Fill)
                 .style(theme::bar_ground(app.bar_radius, app.blur)),
             CellTone::Plain,
             app.bar_radius,
+            pill_link(),
         ),
     )
+}
+
+/// The bar pill's pane link (pill-quiet): drawn at [`pane::PILL_PANE_ALPHA`]
+/// so the cells' own rims are the only lensed edges, not a second, wider one
+/// a few px outside each cell (the doubled border). Blur, bend and tint stay.
+fn pill_link() -> CardLink {
+    CardLink {
+        alpha: Some(pane::PILL_PANE_ALPHA),
+        ..CardLink::default()
+    }
 }
 
 /// The bar's sheet with its light source: none of its own over the
@@ -1819,12 +1830,17 @@ fn drawer_sheet<'a>(
     let anchor = on.drawer.anchor_x();
     let Sheet { head, rows, height } = sheet(app, which);
     let extent = on.drawer.extent(height.ceil() as u32) as f32;
+    // A compositor that joins panes (ADR 0130) draws the pill and the panel as
+    // one glass shape, so the client paints no sheet of its own over it, only
+    // the tint on the same outline. Without joins the panes would draw apart,
+    // so the old client-painted sheet, with its own fillet, stays.
+    let joined = ec_ui::glass::joins_available();
     let shape = SheetShape {
         pill_h: bar::PILL_H,
         panel_x: anchor,
         panel_w: on.drawer.width(),
         radius: app.bar_radius,
-        fillet: app.bar_radius,
+        fillet: if joined { pane::JOIN_FILLET } else { app.bar_radius },
         edge: if top { SheetEdge::Top } else { SheetEdge::Bottom },
     };
     let pill = container(pill_row)
@@ -1854,10 +1870,83 @@ fn drawer_sheet<'a>(
         .height(Length::Fill)
         .align_y(if top { Alignment::Start } else { Alignment::End });
     let ground = ground(app, shape, extent);
+    if joined {
+        let (pill_layer, panel_layer) = drawer_glass(app, anchor, on.drawer.width(), extent, top);
+        return stack![ground, pill_layer, panel_layer, col]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    }
     stack![ground, col]
         .width(Length::Fill)
         .height(Length::Fill)
         .into()
+}
+
+/// The glass of a drawer hung off the bar, as two panes the compositor joins
+/// into one shape (ADR 0130): the bar's pill, published by its pane index, and
+/// the panel, which joins to it with a concave fillet.
+///
+/// The panel's pane begins `tuck` px above the pill's free edge (below it on a
+/// bottom bar), so the two boxes overlap by `tuck`, the panel's corner radius:
+/// its own rounded top corners sit inside the pill and never show a notch
+/// under it. The layers are stacked in the order they are drawn, the pill
+/// first, because the join reads the pill's index from the frame.
+fn drawer_glass<'a>(
+    app: &crate::app::App,
+    panel_x: f32,
+    panel_w: f32,
+    extent: f32,
+    top: bool,
+) -> (Element<'a, Message, Theme>, Element<'a, Message, Theme>) {
+    let joint = ec_ui::glass::Joint::default();
+    let pill = ec_ui::widget::glass_card_linked(
+        Space::new()
+            .width(Length::Fill)
+            .height(Length::Fixed(bar::PILL_H)),
+        CellTone::Plain,
+        app.bar_radius,
+        CardLink {
+            publish: Some(joint.clone()),
+            ..pill_link()
+        },
+    );
+    let tuck = app.bar_radius.min(bar::PILL_H);
+    let panel = ec_ui::widget::glass_card_linked(
+        Space::new()
+            .width(Length::Fixed(panel_w))
+            .height(Length::Fixed(tuck + extent)),
+        CellTone::Plain,
+        app.bar_radius,
+        CardLink {
+            join: Some((joint, pane::JOIN_FILLET)),
+            ..CardLink::default()
+        },
+    );
+    let beside = Row::new()
+        .push(Space::new().width(Length::Fixed(panel_x)))
+        .push(panel);
+    let rest = Space::new().height(Length::Fixed(bar::PILL_H - tuck));
+    let (pill_at, panel_at) = if top {
+        (
+            container(pill).width(Length::Fill).height(Length::Fill),
+            container(Column::new().push(rest).push(beside))
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+    } else {
+        (
+            container(pill)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_y(Alignment::End),
+            container(Column::new().push(beside).push(rest))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .align_y(Alignment::End),
+        )
+    };
+    (pill_at.into(), panel_at.into())
 }
 
 /// A tray drawer.

@@ -18,7 +18,7 @@
     client never receives them. Panes restrict nothing and grant nothing.
   </description>
 
-  <interface name="eclipse_glass_manager_v1" version="2">
+  <interface name="eclipse_glass_manager_v1" version="3">
     <description summary="glass pane factory">
       The global. It sends `capability` on bind and again whenever the
       compositor starts or stops drawing glass panes (for example a change
@@ -30,6 +30,8 @@
       <entry name="glass_exists" value="0" summary="the wl_surface already has a glass object"/>
       <entry name="bad_pane" value="1" summary="a malformed panes array, an unknown tone, or a negative size"/>
       <entry name="too_many_panes" value="2" summary="more than 64 panes in one set_panes"/>
+      <entry name="bad_join" value="3" since="3" summary="a malformed joins array, a pane index out of range, or a pane joined to itself"/>
+      <entry name="too_many_joins" value="4" since="3" summary="more than 64 joins in one set_joins"/>
     </enum>
 
     <event name="capability">
@@ -55,7 +57,7 @@
     </request>
   </interface>
 
-  <interface name="eclipse_glass_surface_v1" version="2">
+  <interface name="eclipse_glass_surface_v1" version="3">
     <description summary="the glass panes of one wl_surface">
       The pane list is double-buffered surface state: `set_panes` writes the
       pending list and the next wl_surface.commit makes it current, together
@@ -101,6 +103,42 @@
         are drawn in array order; an empty array removes every pane.
       </description>
       <arg name="panes" type="array"/>
+    </request>
+
+    <request name="set_joins" since="3">
+      <description summary="draw pairs of panes as one shape">
+        Double-buffered with set_panes and applied at the same commit. Each
+        record joins two panes of the pane list latched with it, so the
+        compositor draws them as one piece of glass instead of two boxes
+        side by side: the boxes' union, with a concave fillet of the given
+        radius where their edges meet, and one outline, bend and rim around
+        the whole. A pane keeps its own tone, state and alpha for its ground;
+        the shape's edge follows the union.
+
+        `joins` is a packed array of records, each three native-endian 32-bit
+        fields:
+
+          uint a       index of a pane in the pane list, from 0
+          uint b       index of another pane in the same list
+          uint radius  fillet radius where the two meet, logical pixels;
+                       capped at 64 and at what the boxes leave room for
+
+        Joins chain: a pane joined to two others forms one shape of all
+        three. A shape of more than 16 panes is drawn as separate panes
+        beyond the sixteenth in array order; this is a limit, not an error.
+        Two joined panes that do not touch or overlap are drawn as two
+        panes, the fillet having nothing to span. Without this request, or
+        with an empty array, every pane stands alone as before.
+
+        set_panes clears the pending joins, since their indices refer to the
+        list it replaces: a client sends set_panes, then set_joins, then
+        commits. At most 64 joins (too_many_joins). A length that is not a
+        multiple of 12 bytes, an index at or past the pane count, or a == b
+        is bad_join. The compositor ignores joins while it draws no panes,
+        and a compositor that binds the global at a lower version never
+        sees this request.
+      </description>
+      <arg name="joins" type="array"/>
     </request>
 
     <request name="set_clip" since="2">

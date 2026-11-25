@@ -31,9 +31,10 @@
 //! `bounds` are in surface-local logical pixels, which is what a widget's
 //! `layout.bounds()` is for a root-level cell (no scroll offset).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use ec_protocols::glass::client::eclipse_glass_manager_v1::{self, EclipseGlassManagerV1};
@@ -55,6 +56,12 @@ use crate::theme::CellTone;
 pub const RECORD_BYTES: usize = 36;
 /// Most panes one `set_panes` may carry.
 pub const MAX_PANES: usize = 64;
+/// Bytes in one join record: three native-endian 32-bit fields (protocol v3).
+pub const JOIN_BYTES: usize = 12;
+/// Most joins one `set_joins` may carry.
+pub const MAX_JOINS: usize = 64;
+/// Largest fillet radius the compositor honours, logical px.
+pub const MAX_JOIN_RADIUS: f32 = 64.0;
 
 /// State bit: the pointer is over the pane.
 pub const HOVERED: u32 = 1;
@@ -141,6 +148,8 @@ fn tone_code(tone: CellTone) -> u32 {
 #[derive(Debug, Default)]
 pub struct GlassPanes {
     bytes: Vec<u8>,
+    /// Packed `set_joins` records for this frame (protocol v3).
+    joins: Vec<u8>,
     /// Panes refused for want of room this frame.
     dropped: usize,
 }
@@ -148,6 +157,7 @@ pub struct GlassPanes {
 impl GlassPanes {
     pub fn clear(&mut self) {
         self.bytes.clear();
+        self.joins.clear();
         self.dropped = 0;
     }
 
@@ -169,12 +179,39 @@ impl GlassPanes {
         &self.bytes
     }
 
-    /// Append `pane`. An empty or non-finite box, or the 65th pane, is
-    /// dropped; the compositor would reject it as a protocol error.
-    pub fn push(&mut self, pane: &Pane) {
+    /// The packed join records, for `set_joins`.
+    pub fn joins_bytes(&self) -> &[u8] {
+        &self.joins
+    }
+
+    /// Joins this frame carries.
+    pub fn join_count(&self) -> usize {
+        self.joins.len() / JOIN_BYTES
+    }
+
+    /// Ask the compositor to draw panes `a` and `b` (indices [`push`] returned)
+    /// as one shape, with a concave fillet of `radius` logical px where they
+    /// meet. Joins chain. Ignored, never an error: an index that is not a pane
+    /// of this frame, a pane joined to itself, a non-finite radius, or the 65th
+    /// join (the compositor would raise `bad_join` or `too_many_joins`).
+    pub fn join(&mut self, a: usize, b: usize, radius: f32) {
+        let n = self.len();
+        if a == b || a >= n || b >= n || !radius.is_finite() || self.join_count() >= MAX_JOINS {
+            return;
+        }
+        let r = (radius.max(0.0) * ui_scale()).round().min(MAX_JOIN_RADIUS) as u32;
+        for f in [a as u32, b as u32, r] {
+            self.joins.extend_from_slice(&f.to_ne_bytes());
+        }
+    }
+
+    /// Append `pane`, returning its index in this frame for [`GlassPanes::join`].
+    /// An empty or non-finite box, or the 65th pane, is dropped (`None`); the
+    /// compositor would reject it as a protocol error.
+    pub fn push(&mut self, pane: &Pane) -> Option<usize> {
         if self.len() >= MAX_PANES {
             self.dropped += 1;
-            return;
+            return None;
         }
         let k = ui_scale();
         let r = Rectangle {
@@ -192,12 +229,13 @@ impl GlassPanes {
             .iter()
             .all(|v| v.is_finite())
         {
-            return;
+            return None;
         }
         let (w, h) = (r.width.round() as i32, r.height.round() as i32);
         if w <= 0 || h <= 0 {
-            return;
+            return None;
         }
+        let index = self.len();
         let fields: [[u8; 4]; 9] = [
             (r.x.round() as i32).to_ne_bytes(),
             (r.y.round() as i32).to_ne_bytes(),
@@ -212,6 +250,7 @@ impl GlassPanes {
         for f in fields {
             self.bytes.extend_from_slice(&f);
         }
+        Some(index)
     }
 }
 
@@ -223,6 +262,42 @@ static AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// this to decide whether to paint its own ground.
 pub fn available() -> bool {
     AVAILABLE.load(Ordering::Relaxed)
+}
+
+/// The first protocol version with `set_joins` (ADR 0130).
+pub const JOINS_SINCE: u32 = 3;
+
+/// Whether the compositor bound for this process takes `set_joins`. A caller
+/// that needs a joined shape to look right (a drawer hung off its bar) draws
+/// the shape itself when this is false, since [`join`] is then a no-op and
+/// the panes draw apart.
+static JOINS_OK: AtomicBool = AtomicBool::new(false);
+
+/// [`available`] and a compositor that joins panes (protocol v3).
+pub fn joins_available() -> bool {
+    available() && JOINS_OK.load(Ordering::Relaxed)
+}
+
+/// The index of a pane, shared between the card that pushes it and the card
+/// that joins it to another ([`crate::widget::CardLink`]). It holds the index
+/// the most recent draw of the publishing card got, and only within that
+/// draw: a joint read in a later frame, or before its publisher is drawn,
+/// reads as `None`, so a stale index never joins the wrong pane.
+#[derive(Clone, Default)]
+pub struct Joint(Rc<Cell<Option<(u32, usize)>>>);
+
+impl Joint {
+    /// Record the index `push` returned for the pane being drawn (`None` if it
+    /// drew no pane this frame).
+    pub fn publish(&self, index: Option<usize>) {
+        self.0.set(index.map(|i| (FRAME_NO.with(|n| n.get()), i)));
+    }
+
+    /// The index published by this frame's draw, if there is one.
+    pub fn this_frame(&self) -> Option<usize> {
+        let now = FRAME_NO.with(|n| n.get());
+        self.0.get().filter(|(f, _)| *f == now).map(|(_, i)| i)
+    }
 }
 
 struct Dispatcher;
@@ -270,6 +345,8 @@ struct Entry {
     glass: EclipseGlassSurfaceV1,
     /// What was last sent, so an unchanged frame sends nothing.
     last: Vec<u8>,
+    /// The joins last sent with `last`.
+    last_joins: Vec<u8>,
     /// The clip last sent (`set_clip`, v2).
     last_clip: Option<[i32; 4]>,
 }
@@ -299,6 +376,8 @@ thread_local! {
     static FRAME_CLIP: std::cell::Cell<Option<[i32; 4]>> = const { std::cell::Cell::new(None) };
     // Visible bounds (surface-local) of the scroll region being drawn, if any.
     static CLIP: std::cell::Cell<Option<Rectangle>> = const { std::cell::Cell::new(None) };
+    // Counts the frames drawn on this thread, so a [`Joint`] knows its index is this frame's.
+    static FRAME_NO: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
 
 /// Where a pane drawn inside a scroll region lands on the surface.
@@ -341,27 +420,22 @@ static CLIP_OK: AtomicBool = AtomicBool::new(false);
 
 /// [`push`] for a pane whose `rect` is in the coordinates its widget was laid
 /// out in, drawn with `viewport`. Outside a [`scroll_region`] that is
-/// surface-local already and the pane is pushed as is.
-pub fn push_in(mut pane: Pane, viewport: &Rectangle) {
+/// surface-local already and the pane is pushed as is. Returns the pane's index
+/// for [`join`], `None` when it was cut away or dropped.
+pub fn push_in(mut pane: Pane, viewport: &Rectangle) -> Option<usize> {
     if let Some(clip) = CLIP.with(|c| c.get()) {
         if CLIP_OK.load(Ordering::Relaxed) {
             // v2: the whole box plus the clip; the compositor cuts it straight.
-            let Some(ints) = clip_ints(&clip) else { return };
-            match scrolled_full(pane.rect, viewport, &clip) {
-                Some(r) => pane.rect = r,
-                None => return,
-            }
+            let ints = clip_ints(&clip)?;
+            pane.rect = scrolled_full(pane.rect, viewport, &clip)?;
             pane.state |= CLIPPED;
             let (_, dy) = FADE.with(|f| f.get());
             FRAME_CLIP.with(|c| c.set(Some([ints[0], ints[1] + dy.round() as i32, ints[2], ints[3]])));
         } else {
-            match scrolled(pane.rect, viewport, &clip) {
-                Some(r) => pane.rect = r,
-                None => return,
-            }
+            pane.rect = scrolled(pane.rect, viewport, &clip)?;
         }
     }
-    push(pane);
+    push(pane)
 }
 
 /// Connect to the compositor, bind `eclipse_glass_manager_v1` if it is
@@ -374,9 +448,14 @@ pub fn bootstrap() -> Option<Connection> {
     let conn = Connection::connect_to_env().ok()?;
     let (globals, mut queue) = registry_queue_init::<Dispatcher>(&conn).ok()?;
     let qh = queue.handle();
-    let manager = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=2, ()).ok();
+    // Up to v3: a v2 bind has no `set_joins`, so joins would never be sent.
+    let manager = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=3, ()).ok();
     CLIP_OK.store(
         manager.as_ref().is_some_and(|m| m.version() >= 2),
+        Ordering::Relaxed,
+    );
+    JOINS_OK.store(
+        manager.as_ref().is_some_and(|m| m.version() >= JOINS_SINCE),
         Ordering::Relaxed,
     );
     if manager.is_some() {
@@ -418,6 +497,7 @@ pub fn surface_created(id: window::Id, surface: &WlSurface) {
             Entry {
                 glass,
                 last: Vec::new(),
+                last_joins: Vec::new(),
                 last_clip: None,
             },
         );
@@ -465,6 +545,7 @@ pub fn attach_surface(id: window::Id, surface: &WlSurface) -> bool {
             Entry {
                 glass,
                 last: Vec::new(),
+                last_joins: Vec::new(),
                 last_clip: None,
             },
         );
@@ -476,17 +557,32 @@ pub fn attach_surface(id: window::Id, surface: &WlSurface) -> bool {
 }
 
 /// Add a pane to the frame being drawn. A no-op while glass is unavailable.
-pub fn push(mut pane: Pane) {
+/// Returns the pane's index in this frame, for [`join`]; `None` when nothing
+/// was added (glass unavailable, fully faded out, or the pane was dropped).
+pub fn push(mut pane: Pane) -> Option<usize> {
     if !available() {
-        return;
+        return None;
     }
     let (alpha, dy) = FADE.with(|f| f.get());
     if alpha <= 0.0 {
-        return;
+        return None;
     }
     pane.alpha = (f32::from(pane.alpha) * alpha.min(1.0)).round() as u8;
     pane.rect.y += dy;
-    FRAME.with(|f| f.borrow_mut().push(&pane));
+    FRAME.with(|f| f.borrow_mut().push(&pane))
+}
+
+/// Draw panes `a` and `b` of the frame being drawn (indices [`push`] returned)
+/// as one shape with a concave fillet of `radius` logical px where they meet
+/// (ADR 0130). Joins chain. A no-op while glass is unavailable. Against a
+/// compositor older than protocol v3 the joins are not sent and the panes draw
+/// apart as before, so a caller needs no fallback of its own; the two panes
+/// should still look right side by side.
+pub fn join(a: usize, b: usize, radius: f32) {
+    if !available() {
+        return;
+    }
+    FRAME.with(|f| f.borrow_mut().join(a, b, radius));
 }
 
 /// Run `draw` with every pane it pushes faded to `alpha` (`0.0..=1.0`) and
@@ -503,6 +599,7 @@ pub fn with_fade<R>(alpha: f32, dy: f32, draw: impl FnOnce() -> R) -> R {
 fn begin() {
     FRAME.with(|f| f.borrow_mut().clear());
     FRAME_CLIP.with(|c| c.set(None));
+    FRAME_NO.with(|n| n.set(n.get().wrapping_add(1)));
 }
 
 /// Send the frame's panes for `id` if they changed. Runs in draw, ahead of
@@ -534,7 +631,13 @@ fn finish(id: Option<window::Id>) {
         }
         FRAME.with(|f| {
             let f = f.borrow();
-            if entry.last == f.as_bytes() {
+            // Joins only go to a v3 compositor; a lower one never sees them.
+            let joins: &[u8] = if entry.glass.version() >= 3 {
+                f.joins_bytes()
+            } else {
+                &[]
+            };
+            if entry.last == f.as_bytes() && entry.last_joins == joins {
                 return;
             }
             if f.dropped() > 0 {
@@ -546,6 +649,12 @@ fn finish(id: Option<window::Id>) {
             entry.last.clear();
             entry.last.extend_from_slice(f.as_bytes());
             entry.glass.set_panes(f.as_bytes().to_vec());
+            // `set_panes` clears the pending joins, so they follow it every time.
+            entry.last_joins.clear();
+            entry.last_joins.extend_from_slice(joins);
+            if !joins.is_empty() {
+                entry.glass.set_joins(joins.to_vec());
+            }
         });
         // A foreign (xdg) display is flushed by winit at present; the
         // layer-shell runtime flushes its own. This is belt and braces.
@@ -614,10 +723,11 @@ fn attach_raw(id: window::Id, w: &dyn window::Window) -> bool {
         return false;
     };
     let qh = queue.handle();
-    let Ok(manager) = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=2, ()) else {
+    let Ok(manager) = globals.bind::<EclipseGlassManagerV1, _, _>(&qh, 1..=3, ()) else {
         return false;
     };
     CLIP_OK.store(manager.version() >= 2, Ordering::Relaxed);
+    JOINS_OK.store(manager.version() >= JOINS_SINCE, Ordering::Relaxed);
     let mut queue = queue;
     let _ = queue.roundtrip(&mut Dispatcher);
     let glass = manager.get_glass(&surface, &qh, ());
@@ -627,6 +737,7 @@ fn attach_raw(id: window::Id, w: &dyn window::Window) -> bool {
         Entry {
             glass,
             last: Vec::new(),
+            last_joins: Vec::new(),
             last_clip: None,
         },
     );
@@ -957,6 +1068,71 @@ mod tests {
     }
 
     #[test]
+    fn push_returns_each_panes_index_and_none_for_a_dropped_one() {
+        let mut p = GlassPanes::default();
+        let ok = |x: f32| {
+            Pane::new(
+                Rectangle::new(iced::Point::new(x, 0.0), Size::new(10.0, 10.0)),
+                2.0,
+                CellTone::Plain,
+            )
+        };
+        assert_eq!(p.push(&ok(0.0)), Some(0));
+        let empty = Pane::new(
+            Rectangle::new(iced::Point::ORIGIN, Size::new(0.0, 10.0)),
+            2.0,
+            CellTone::Plain,
+        );
+        assert_eq!(p.push(&empty), None);
+        assert_eq!(p.push(&ok(20.0)), Some(1), "a dropped pane takes no index");
+    }
+
+    #[test]
+    fn a_join_is_three_fields_and_chains() {
+        let mut p = GlassPanes::default();
+        for x in [0.0, 10.0, 20.0] {
+            p.push(&Pane::new(
+                Rectangle::new(iced::Point::new(x, 0.0), Size::new(10.0, 10.0)),
+                2.0,
+                CellTone::Plain,
+            ));
+        }
+        p.join(0, 1, 16.0);
+        p.join(1, 2, 200.0);
+        let b = p.joins_bytes();
+        assert_eq!(b.len(), 2 * JOIN_BYTES);
+        assert_eq!([u32_at(b, 0), u32_at(b, 1), u32_at(b, 2)], [0, 1, 16]);
+        assert_eq!(
+            [u32_at(b, 3), u32_at(b, 4), u32_at(b, 5)],
+            [1, 2, 64],
+            "the radius is capped at 64"
+        );
+        p.clear();
+        assert!(p.joins_bytes().is_empty(), "a new frame starts with no joins");
+    }
+
+    #[test]
+    fn a_join_the_compositor_would_reject_is_dropped_here() {
+        let mut p = GlassPanes::default();
+        for x in [0.0, 10.0] {
+            p.push(&Pane::new(
+                Rectangle::new(iced::Point::new(x, 0.0), Size::new(10.0, 10.0)),
+                2.0,
+                CellTone::Plain,
+            ));
+        }
+        p.join(0, 0, 8.0);
+        p.join(0, 2, 8.0);
+        p.join(5, 1, 8.0);
+        p.join(0, 1, f32::NAN);
+        assert_eq!(p.join_count(), 0);
+        for _ in 0..(MAX_JOINS + 3) {
+            p.join(0, 1, 8.0);
+        }
+        assert_eq!(p.join_count(), MAX_JOINS);
+    }
+
+    #[test]
     fn tones_follow_the_protocol_enum() {
         assert_eq!(
             [
@@ -1124,5 +1300,27 @@ mod tests {
         p.clear();
         assert!(p.is_empty());
         assert_eq!(p.bytes.capacity(), cap);
+    }
+
+    /// A joint names the pane its publisher drew this frame and nothing else:
+    /// a frame later, the index is stale and must not join some other pane.
+    #[test]
+    fn a_joint_names_only_this_frames_pane() {
+        let joint = Joint::default();
+        assert_eq!(joint.this_frame(), None);
+        begin();
+        joint.publish(Some(3));
+        assert_eq!(joint.this_frame(), Some(3));
+        let clone = joint.clone();
+        assert_eq!(clone.this_frame(), Some(3), "a clone shares the slot");
+        joint.publish(None);
+        assert_eq!(joint.this_frame(), None);
+        joint.publish(Some(5));
+        begin();
+        assert_eq!(
+            joint.this_frame(),
+            None,
+            "an index from an earlier frame is stale"
+        );
     }
 }

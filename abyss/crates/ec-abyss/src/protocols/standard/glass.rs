@@ -17,7 +17,9 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use ec_abyss_render::glass::{parse_clip, parse_panes, GlassState, PaneSet, ParseError};
+use ec_abyss_render::glass::{
+    parse_clip, parse_joins, parse_panes, GlassState, JoinError, PaneSet, ParseError,
+};
 use ec_protocols::glass::server::{
     eclipse_glass_manager_v1::{EclipseGlassManagerV1, Error as ManagerError, Request as ManagerRequest},
     eclipse_glass_surface_v1::{EclipseGlassSurfaceV1, Request as SurfaceRequest},
@@ -37,7 +39,10 @@ use crate::{
     state::AbyssState,
 };
 
-const VERSION: u32 = 2;
+/// Version 3 adds `set_joins` (ADR 0130).
+const VERSION: u32 = 3;
+/// The first version with `set_joins`.
+const JOINS_SINCE: u32 = 3;
 
 /// The shell binaries that may bind the global. The glass is drawn under the
 /// client's surface, so `ec-secret-prompt` gains no access to what is typed.
@@ -205,7 +210,7 @@ impl Dispatch<EclipseGlassManagerV1, ()> for AbyssState {
 
 impl Dispatch<EclipseGlassSurfaceV1, GlassData> for AbyssState {
     fn request(
-        _state: &mut Self,
+        state: &mut Self,
         _client: &Client,
         object: &EclipseGlassSurfaceV1,
         request: SurfaceRequest,
@@ -236,6 +241,51 @@ impl Dispatch<EclipseGlassSurfaceV1, GlassData> for AbyssState {
                     }
                     Err(ParseError::TooManyPanes) => {
                         object.post_error(ManagerError::TooManyPanes, "more than 64 panes");
+                    }
+                }
+            }
+            SurfaceRequest::SetJoins { joins } => {
+                if !data.owner {
+                    return;
+                }
+                let Ok(surface) = data.surface.upgrade() else {
+                    return;
+                };
+                // A v2 object has no `set_joins`: the request is not understood
+                // and changes nothing (fail closed).
+                if object.version() < JOINS_SINCE {
+                    return;
+                }
+                // The joins index the pending pane list, which is the one they
+                // latch with (`set_panes` clears them, so they follow it).
+                let pending = with_states(&surface, |states| {
+                    let mut cached = states.cached_state.get::<GlassState>();
+                    cached.pending().panes.as_ref().map_or(0, |p| p.len())
+                });
+                match parse_joins(&joins, pending) {
+                    Ok(set) => {
+                        // Ignored while the compositor draws no panes: checked
+                        // after validation, so a bad array still errors.
+                        if !glass_capable(state) {
+                            return;
+                        }
+                        with_states(&surface, |states| {
+                            let mut cached = states.cached_state.get::<GlassState>();
+                            cached
+                                .pending()
+                                .panes
+                                .get_or_insert_with(PaneSet::default)
+                                .set_joins(set);
+                        });
+                    }
+                    Err(JoinError::BadJoin) => {
+                        object.post_error(
+                            ManagerError::BadJoin,
+                            "a malformed joins array, a pane index out of range, or a pane joined to itself",
+                        );
+                    }
+                    Err(JoinError::TooManyJoins) => {
+                        object.post_error(ManagerError::TooManyJoins, "more than 64 joins");
                     }
                 }
             }
@@ -281,9 +331,12 @@ impl Dispatch<EclipseGlassSurfaceV1, GlassData> for AbyssState {
 mod tests {
     use super::*;
     use crate::shell::focus::state_tests::{harness, Harness};
-    use ec_protocols::glass::client::{
-        eclipse_glass_manager_v1::{self, EclipseGlassManagerV1 as CManager},
-        eclipse_glass_surface_v1::EclipseGlassSurfaceV1 as CSurface,
+    use ec_protocols::glass::{
+        client::{
+            eclipse_glass_manager_v1::{self, EclipseGlassManagerV1 as CManager},
+            eclipse_glass_surface_v1::EclipseGlassSurfaceV1 as CSurface,
+        },
+        JoinRecord,
     };
     use std::os::unix::net::UnixStream;
     use wayland_client::{
@@ -364,9 +417,15 @@ mod tests {
             }
         }
 
-        /// Connect, bind what the registry shows. The in-process client is
-        /// this test binary, so `allowed` puts its name on (or off) the list.
+        /// Connect at the current version (3).
         fn connect(h: &mut Harness, allowed: bool) -> Self {
+            Self::connect_at(h, allowed, VERSION)
+        }
+
+        /// Connect, bind what the registry shows at `version`. The in-process
+        /// client is this test binary, so `allowed` puts its name on (or off)
+        /// the list.
+        fn connect_at(h: &mut Harness, allowed: bool, version: u32) -> Self {
             let me = std::env::current_exe().unwrap();
             let me = me.file_name().unwrap().to_string_lossy().into_owned();
             h.state
@@ -405,7 +464,7 @@ mod tests {
             let (n, v) = find(&c, "wl_subcompositor").unwrap();
             c.subcompositor = Some(registry.bind(n, v.min(1), &qh, ()));
             if let Some((n, _)) = find(&c, "eclipse_glass_manager_v1") {
-                c.manager = Some(registry.bind(n, 2, &qh, ()));
+                c.manager = Some(registry.bind(n, version, &qh, ()));
             }
             c.pump(h);
             c
@@ -565,6 +624,175 @@ mod tests {
             c.pump(&mut h);
             assert_eq!(c.error(), Some(code as u32));
         }
+    }
+
+    fn current_joins(surface: &WlSurface) -> Option<usize> {
+        with_states(surface, |states| {
+            let mut cached = states.cached_state.get::<GlassState>();
+            cached.current().panes.as_ref().map(|p| p.joins().len())
+        })
+    }
+
+    fn join_rec(a: u32, b: u32, radius: u32) -> Vec<u8> {
+        JoinRecord { a, b, radius }.to_bytes().to_vec()
+    }
+
+    /// A glass-mode harness with a surface that has two panes latched, and
+    /// the client's surface and object.
+    fn glass_pair(h: &mut Harness, version: u32) -> (Client, CSurface, CWlSurface) {
+        h.state.config.decoration.blur.mode = BlurMode::Glass;
+        update_capabilities(&mut h.state);
+        let mut c = Client::connect_at(h, true, version);
+        let qh = c.queue.handle();
+        let surface = c.compositor.as_ref().unwrap().create_surface(&qh, ());
+        let glass = c.manager.clone().unwrap().get_glass(&surface, &qh, ());
+        c.pump(h);
+        glass.set_panes([rec(0, 0), rec(30, 1)].concat());
+        surface.commit();
+        c.pump(h);
+        (c, glass, surface)
+    }
+
+    /// ADR 0130: joins are double-buffered with the panes and latch on commit.
+    #[test]
+    fn joins_latch_on_commit_and_set_panes_clears_them() {
+        let mut h = harness();
+        let (mut c, glass, surface) = glass_pair(&mut h, VERSION);
+        let server = c.server_surface(&h, &surface);
+        assert_eq!(current_joins(&server), Some(0));
+        glass.set_joins(join_rec(0, 1, 16));
+        c.pump(&mut h);
+        assert_eq!(current_joins(&server), Some(0), "pending until the commit");
+        surface.commit();
+        c.pump(&mut h);
+        assert_eq!(current_joins(&server), Some(1));
+        assert_eq!(c.error(), None);
+
+        // The next pane list clears the joins, whatever they joined.
+        glass.set_panes([rec(0, 0), rec(30, 1)].concat());
+        surface.commit();
+        c.pump(&mut h);
+        assert_eq!(current(&server), Some(2));
+        assert_eq!(current_joins(&server), Some(0), "set_panes clears the joins");
+
+        // An empty array clears them too.
+        glass.set_joins(join_rec(0, 1, 8));
+        surface.commit();
+        c.pump(&mut h);
+        assert_eq!(current_joins(&server), Some(1));
+        glass.set_joins(Vec::new());
+        surface.commit();
+        c.pump(&mut h);
+        assert_eq!(current_joins(&server), Some(0));
+        assert_eq!(c.error(), None);
+    }
+
+    /// `bad_join` for a short record, an index past the pane list, and a pane
+    /// joined to itself; `too_many_joins` past 64. Errors, not panics.
+    #[test]
+    fn bad_joins_are_protocol_errors() {
+        let cases: [(Vec<u8>, ManagerError); 5] = [
+            (vec![0u8; 11], ManagerError::BadJoin),
+            (join_rec(0, 2, 8), ManagerError::BadJoin),
+            (join_rec(1, 1, 8), ManagerError::BadJoin),
+            (vec![0u8; 12 * 65], ManagerError::TooManyJoins),
+            (join_rec(0, 0xffff_ffff, 8), ManagerError::BadJoin),
+        ];
+        for (bytes, code) in cases {
+            let mut h = harness();
+            let (mut c, glass, _) = glass_pair(&mut h, VERSION);
+            glass.set_joins(bytes);
+            c.pump(&mut h);
+            assert_eq!(c.error(), Some(code as u32));
+        }
+    }
+
+    /// A join that is valid against the pending list latches; one that names
+    /// an index past the pending list is refused even if a longer list is
+    /// current (the joins index what they are latched with).
+    #[test]
+    fn joins_are_checked_against_the_pending_list() {
+        let mut h = harness();
+        let (mut c, glass, _) = glass_pair(&mut h, VERSION);
+        glass.set_panes(rec(0, 0));
+        glass.set_joins(join_rec(0, 1, 8));
+        c.pump(&mut h);
+        assert_eq!(c.error(), Some(ManagerError::BadJoin as u32));
+    }
+
+    /// A v2 object has no `set_joins` (`since` 3): wayland-backend refuses the
+    /// request at the wire with `wl_display.invalid_method` (code 1) before the
+    /// handler runs, so a v2 client never gets joins latched. The handler's own
+    /// version check is the second line of the same rule.
+    #[test]
+    fn a_v2_object_never_latches_joins() {
+        let mut h = harness();
+        h.state.config.decoration.blur.mode = BlurMode::Glass;
+        update_capabilities(&mut h.state);
+        let mut c = Client::connect_at(&mut h, true, 2);
+        let qh = c.queue.handle();
+        let surface = c.compositor.as_ref().unwrap().create_surface(&qh, ());
+        let glass = c.manager.clone().unwrap().get_glass(&surface, &qh, ());
+        c.pump(&mut h);
+        glass.set_panes([rec(0, 0), rec(30, 1)].concat());
+        surface.commit();
+        c.pump(&mut h);
+        assert_eq!(c.error(), None, "set_panes is version 1");
+        glass.set_joins(join_rec(0, 1, 16));
+        c.pump(&mut h);
+        c.pump(&mut h);
+        // The client is dropped for the request, so either its surface is
+        // gone or it holds no joins: nothing is latched.
+        let server = alive_surface(&c, &h, &surface);
+        if let Some(server) = server {
+            assert_eq!(current_joins(&server), Some(0));
+        }
+    }
+
+    /// The server-side surface of `surface` if its client is still connected.
+    fn alive_surface(c: &Client, h: &Harness, surface: &CWlSurface) -> Option<WlSurface> {
+        c.server
+            .object_from_protocol_id::<WlSurface>(&h.state.display_handle, surface.id().protocol_id())
+            .ok()
+    }
+
+    /// The global advertises version 3 to a bind at 3.
+    #[test]
+    fn the_global_is_version_3() {
+        let mut h = harness();
+        let c = Client::connect(&mut h, true);
+        let v = c
+            .seen
+            .globals
+            .iter()
+            .find(|(_, i, _)| i == "eclipse_glass_manager_v1")
+            .map(|(_, _, v)| *v);
+        assert_eq!(v, Some(3));
+    }
+
+    /// Joins are ignored while the compositor draws no panes: a valid array
+    /// latches nothing, a bad one still errors.
+    #[test]
+    fn joins_are_ignored_while_capability_is_0() {
+        let mut h = harness();
+        h.state.config.decoration.blur.mode = BlurMode::Off;
+        update_capabilities(&mut h.state);
+        let mut c = Client::connect(&mut h, true);
+        let qh = c.queue.handle();
+        let surface = c.compositor.as_ref().unwrap().create_surface(&qh, ());
+        let glass = c.manager.clone().unwrap().get_glass(&surface, &qh, ());
+        c.pump(&mut h);
+        glass.set_panes([rec(0, 0), rec(30, 1)].concat());
+        glass.set_joins(join_rec(0, 1, 16));
+        surface.commit();
+        c.pump(&mut h);
+        let server = c.server_surface(&h, &surface);
+        assert_eq!(current(&server), Some(2));
+        assert_eq!(current_joins(&server), Some(0));
+        assert_eq!(c.error(), None);
+        glass.set_joins(join_rec(0, 9, 16));
+        c.pump(&mut h);
+        assert_eq!(c.error(), Some(ManagerError::BadJoin as u32));
     }
 
     fn current_clip(surface: &WlSurface) -> Option<(i32, i32, i32, i32)> {
