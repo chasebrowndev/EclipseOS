@@ -39,6 +39,7 @@ function buildStatic() {
     b.addEventListener("click", () => change((s) => (s.mode = b.dataset.v)));
   }
   $("tint").addEventListener("input", (e) => change((s) => (s.tint = e.target.value)));
+  $("lens").addEventListener("click", () => change((s) => (s.lens = !s.lens)));
   $("strength").addEventListener("input", (e) =>
     change((s) => (s.strength = Number(e.target.value)))
   );
@@ -100,6 +101,7 @@ function paint() {
   }
   if (document.activeElement !== $("tint")) $("tint").value = s.tint;
   setRange($("strength"), $("strength-v"), s.strength);
+  setToggle($("lens"), s.lens);
   for (const b of $("accents").children) {
     b.setAttribute("aria-checked", String(b.dataset.v === s.accent));
   }

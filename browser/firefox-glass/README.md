@@ -9,6 +9,10 @@ There is no new-tab override: Firefox's own Home page (recent pages, shortcuts, 
 
 Four keys, derived from the tint in `shared/glass.js` (`keyColors`): base glass (frame, tab strip, toolbar, Home ground), URL field and selected tab, popups and menus, sidebar and Home cards. Each key is the intended colour moved by exactly one unit in one channel, so it is invisible to the eye but not a colour a page would paint. Keys are pushed at least 2 units apart so abyss's +-1 rounding tolerance cannot confuse them. The popup key is flagged `everywhere` so abyss also keys it over the whole window on websites (the URL-bar results dropdown is drawn inside the window); the focused URL field and that dropdown are painted in it. Each key has its own opacity: Strength scaled by the matching region's slider. The default Strength gives about 35% on the base glass.
 
+## Lens
+
+With the Lens setting on (default), every key except the sidebar and cards key is sent with `lens: true` and abyss bends the blurred backdrop across a bevel inside the edge of every pixel region painted in that key, with the rim and dispersion of its own glass settings (ADR 0132). The add-on carries no lens geometry or strength: a WebExtension cannot see chrome rectangles, so abyss derives the shape from the key-coloured pixels. An abyss that predates `lens` ignores the field and draws flat keyed glass.
+
 ## What leaves the browser
 
 Over native messaging (`os.eclipse.glass`, one long-lived port; reconnects with backoff): the key colours and opacities, and per window the size, the active tab's page-area height, and a `body` boolean that is true while the active tab is about:home, about:newtab, about:blank or about:privatebrowsing (abyss then keys the whole window). The `tabs` permission is needed only to read the URL for that test; the URL is never sent, only the boolean. No titles. Updates are sent on window, tab, URL and zoom events and a 1 s poll for resizes, and only when the payload changed. The options page shows whether the helper is connected.
