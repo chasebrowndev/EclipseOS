@@ -886,11 +886,19 @@ const float ADAPT_WORST = 0.75;    // weight of the worst tap over the mean
 #define ADAPT_ARMS 4               // taps around the centre: the cross (the diagonals were 4 more)
 uniform vec2 px_uv;         // 1 physical px in the sampled texture's UV (1 / crop size; half that in x when packed)
 uniform float dual_tex;       // 1 when `tex` is [blurred | sharp] side by side (chromatic aberration), else 0
+#ifdef KEYED_LENS
+// A keyed lens's texture is three wide (ADR 0132): the blurred backdrop, the
+// lightly blurred one, then the key mask, a third of the texture each.
+vec2 blur_hi() { return vec2(1.0 / 3.0, 1.0); }
+vec2 clamp_blur(vec2 uv) { return clamp(uv, px_uv * 0.5, blur_hi() - px_uv * 0.5); }
+vec2 clamp_sharp(vec2 uv) { return clamp(uv + vec2(1.0 / 3.0, 0.0), vec2(1.0 / 3.0, 0.0) + px_uv * 0.5, vec2(2.0 / 3.0, 1.0) - px_uv * 0.5); }
+#else
 // The part of the texture the blurred backdrop lives in: all of it, or its left half when packed.
 vec2 blur_hi() { return vec2(dual_tex > 0.5 ? 0.5 : 1.0, 1.0); }
 vec2 clamp_blur(vec2 uv) { return clamp(uv, px_uv * 0.5, blur_hi() - px_uv * 0.5); }
 // The same uv in the lightly blurred half (packed only): shifted right by half the texture.
 vec2 clamp_sharp(vec2 uv) { return clamp(uv + vec2(0.5, 0.0), vec2(0.5, 0.0) + px_uv * 0.5, vec2(1.0) - px_uv * 0.5); }
+#endif
 uniform vec4 phys_map;  // mat2, column-major: gl_FragCoord offset -> render-space offset
 // A gl_FragCoord offset (or gradient) in the render-space frame the glass is laid out in.
 vec2 to_phys(vec2 g) { return mat2(phys_map.xy, phys_map.zw) * g; }
@@ -1233,18 +1241,13 @@ vec4 blurred_at(vec2 uv) {
     return texture2D(tex, clamp_blur(uv));
 }
 
-// The lightly blurred twin of `blurred_at` (packed textures only). A keyed lens
-// (ADR 0132) packs its key mask in the right half, so its twin is the blur too.
+// The lightly blurred twin of `blurred_at` (packed textures only).
 vec4 sharp_at(vec2 uv) {
-#ifdef KEYED_LENS
-    return blurred_at(uv);
-#else
     return texture2D(tex, clamp_sharp(uv));
-#endif
 }
 
 #ifdef KEYED_LENS
-// Keyed lens (ADR 0132). The right half of the packed texture is the key mask:
+// Keyed lens (ADR 0132). The last third of the packed texture is the key mask:
 // red is the distance to the nearest other label over `dist_max` (1 on the
 // plateau), blue the label / 4 (0: not lens). `keyed_round` is the window's
 // rounded rectangle, which cuts the lens at its corners.
@@ -1260,7 +1263,7 @@ uniform vec4 lens_key2;
 uniform vec4 lens_key3;
 
 vec2 mask_uv(vec2 uv) {
-    return clamp(uv + vec2(0.5, 0.0), vec2(0.5, 0.0) + px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
+    return clamp(uv + vec2(2.0 / 3.0, 0.0), vec2(2.0 / 3.0, 0.0) + px_uv * 0.5, vec2(1.0) - px_uv * 0.5);
 }
 
 float mask_label(vec2 uv) {
@@ -1306,7 +1309,7 @@ void main() {
     // The keyed region's own edge (ADR 0132): inside a lens the distance to the
     // nearest other label, outside none. Its outward normal is the negative
     // gradient of that distance (which grows inward); the gradient is taken
-    // over one texel either side in the mask's right half.
+    // over one texel either side in the mask's third of the texture.
     float klab = mask_label(v_coords);
     d = klab < 0.5 ? 1.0 : -mask_dist(v_coords);
     vec2 kg = vec2(
@@ -1521,6 +1524,11 @@ void main() {
         // sublinearly with size, its strength falls sublinearly, and neither has
         // a threshold. Small controls (about 40 px) keep the original look.
         float s_eff = 2.0 * win_rect.z * win_rect.w / max(win_rect.z + win_rect.w, 1.0);
+#ifdef KEYED_LENS
+        // The lens region is a whole strip or window, not the keyed surface:
+        // a surface is a small control, so its edge keeps the small-control look.
+        s_eff = shade_ref > 0.0 ? shade_ref : SHADE_REF;
+#endif
 #ifdef JOINED
         // A joined member reads by its own size: the nearest member's (`shape_sdg`).
         s_eff = g_s_eff;

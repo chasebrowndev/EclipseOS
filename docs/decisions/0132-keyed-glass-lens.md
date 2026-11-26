@@ -46,7 +46,8 @@ A key with `lens` true is drawn in three steps, for the window it matches:
    distance to the nearest texel of another label, over `KEYED_LENS_DIST_MAX`
    (32 px), clamped to 1 on the plateau.
 3. **Glass.** The Lens preset's glass body draws with a `KEYED_LENS` variant:
-   the backdrop is the blurred texture, the lens edge and its normal come from
+   the backdrop is the blurred texture (the rim reads the lightly blurred
+   level, as native lens glass does), the lens edge and its normal come from
    the distance field, and the output is the glass at the key's alpha
    (premultiplied), cut at the window's rounded corners. The key's own colour
    is composited at its alpha over the bent backdrop, so the hue survives. The strength, bevel
@@ -55,9 +56,11 @@ A key with `lens` true is drawn in three steps, for the window it matches:
    field's reach. The window-glass keys (`refraction`, `bevel`, `dispersion`,
    `rim`) are not read.
 
-The packed texture (`[blurred backdrop | distance map]`) is built per keyed
-window per commit. A custom shader samples one texture, so the backdrop and
-the mask are copied into their halves in separate passes.
+The packed texture (`[blurred backdrop | lightly blurred backdrop | key mask]`,
+three wide) is built per keyed window. A custom shader samples one texture, so
+the three are copied into their thirds in separate passes. A key stays flat if
+the window's backdrop is not packed (glass mode only). The rim and edge shading
+treat a keyed surface as a small control, not as the size of the lens region.
 
 Only texels the label pass matched to a lens key are touched: every other
 texel of the client's content is drawn unchanged (C-21 still holds: content is
@@ -89,6 +92,16 @@ client painting a key colour, over a checker and stripe wallpaper:
 - a second `everywhere` key (a field in the body) lenses too;
 - with `lens` off the same keys draw as flat tints, and non-key pixels are
   identical in both.
+
+Second verification round, with real Firefox 160 and the add-on in the nested
+session (the helper reaching the nested socket through `ECLIPSE_SOCKET_DIR`),
+on the owner's wallpaper and `decoration` config: a first build packed only the
+blurred backdrop beside the mask, so the rim had no crisp content to bend and
+the shading faded with the size of a whole-window region; the lens then read as
+a brightening only. Packing the lightly blurred level too, and the small-control
+size rule, made the bevel, rim and wallpaper bend visible at the window edge.
+The add-on keeps the sidebar and cards key flat, because a lens shows the
+backdrop through them and they stopped reading as cards.
 
 Two defects found while verifying, both in the pass plumbing and now fixed:
 the label shader read the alpha byte of an X-format buffer (undefined), and the
