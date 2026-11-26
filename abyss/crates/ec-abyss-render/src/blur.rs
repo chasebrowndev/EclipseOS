@@ -243,6 +243,8 @@ pub struct BlurElement<T: Texture = GlesTexture> {
     texture: T,
     context: ContextId<T>,
     alpha: f32,
+    /// Whether `texture` holds the lightly blurred level beside the blurred one.
+    packed: bool,
     /// An opaque window's bezel strips (see [`ring_strips`]), element-local.
     ring: Option<[Rectangle<i32, Physical>; 4]>,
 }
@@ -300,12 +302,38 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
         alpha: f32,
         packed: bool,
     ) -> Self {
+        let mut element = Self::placed_wide(
+            id,
+            context,
+            texture,
+            crop,
+            region,
+            scale,
+            alpha,
+            if packed { 2.0 } else { 1.0 },
+        );
+        element.packed = packed;
+        element
+    }
+
+    /// [`BlurElement::placed_in`] for a texture `wide` times as wide as `crop`:
+    /// the element addresses only its first `1 / wide`.
+    #[allow(clippy::too_many_arguments)]
+    fn placed_wide(
+        id: Id,
+        context: ContextId<T>,
+        texture: T,
+        crop: Rectangle<i32, Physical>,
+        region: Rectangle<i32, Physical>,
+        scale: Scale<f64>,
+        alpha: f32,
+        wide: f64,
+    ) -> Self {
         // The result texture is built with a literal `texture_scale` of 1, so
         // `Element::src()` hands this rectangle straight to the GPU with no
         // further scaling. It must therefore already be in the texture's own
         // buffer space, i.e. `region` relative to `crop`, times the texture's
         // texels per output pixel (below 1 for a reduced-resolution result).
-        let wide = if packed { 2.0 } else { 1.0 };
         let sx = texture.width() as f64 / (crop.size.w.max(1) as f64 * wide);
         let sy = texture.height() as f64 / crop.size.h.max(1) as f64;
         let src = Rectangle::<f64, smithay::utils::Logical>::new(
@@ -346,6 +374,7 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
             texture,
             context,
             alpha,
+            packed: false,
             ring: None,
         }
     }
@@ -364,11 +393,16 @@ impl<T: Texture + Clone + 'static> BlurElement<T> {
     pub(crate) fn context(&self) -> ContextId<T> {
         self.context.clone()
     }
+
+    /// Whether the texture holds the lightly blurred level beside the blurred one.
+    pub(crate) fn packed(&self) -> bool {
+        self.packed
+    }
 }
 
-/// A keyed lens (ADR 0132): a glass draw over `region` whose texture is packed,
-/// the blurred backdrop in its left half and the key mask in its right. The
-/// element addresses only the left half, through `program` with `uniforms`.
+/// A keyed lens (ADR 0132): a glass draw over `region` whose texture is three
+/// wide: the blurred backdrop, the lightly blurred one and the key mask. The
+/// element addresses only the first third, through `program` with `uniforms`.
 pub(crate) fn keyed_lens(
     context: ContextId<GlesTexture>,
     packed: GlesTexture,
@@ -378,7 +412,7 @@ pub(crate) fn keyed_lens(
     uniforms: Vec<Uniform<'static>>,
     commit: CommitCounter,
 ) -> BlurElement {
-    let mut element = BlurElement::placed_in(Id::new(), context, packed, region, region, scale, 1.0, true);
+    let mut element = BlurElement::placed_wide(Id::new(), context, packed, region, region, scale, 1.0, 3.0);
     element.program = Some(program);
     element.uniforms = Some(uniforms.into());
     element.commit = commit;

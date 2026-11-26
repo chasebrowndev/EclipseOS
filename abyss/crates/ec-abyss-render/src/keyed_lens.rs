@@ -22,7 +22,7 @@ use smithay::{
             element::{surface::WaylandSurfaceRenderElement, Element, RenderElement},
             gles::{GlesRenderer, GlesTexProgram, GlesTexture, Uniform},
             utils::CommitCounter,
-            Bind, Color32F, Frame, Offscreen, Renderer,
+            Bind, Color32F, Frame, Offscreen, Renderer, Texture,
         },
     },
     utils::{Buffer, Physical, Point, Rectangle, Scale, Size, Transform},
@@ -172,50 +172,54 @@ fn timed<R>(renderer: &mut GlesRenderer, kind: Span, f: impl FnOnce(&mut GlesRen
     out
 }
 
-/// `backdrop` (its `src` part, region-sized) on the left and `mask` on the
-/// right of a `2w` x `h` texture: the packed layout a keyed lens samples.
+/// The blurred backdrop, its lightly blurred twin and `mask` side by side in a
+/// `3w` x `h` texture: the packed layout a keyed lens samples. `blurred` and
+/// `light` are the same region of the backdrop's two halves, in its own texels.
 fn pack(
     renderer: &mut GlesRenderer,
     backdrop: &GlesTexture,
-    backdrop_src: Rectangle<f64, Buffer>,
+    (blurred, light): (Rectangle<f64, Buffer>, Rectangle<f64, Buffer>),
     mask: &GlesTexture,
     size: Size<i32, Physical>,
 ) -> Option<GlesTexture> {
     timed(renderer, Span::LensPack, |renderer| {
-        pack_passes(renderer, backdrop, backdrop_src, mask, size)
+        pack_passes(renderer, backdrop, (blurred, light), mask, size)
     })
 }
 
 fn pack_passes(
     renderer: &mut GlesRenderer,
     backdrop: &GlesTexture,
-    backdrop_src: Rectangle<f64, Buffer>,
+    (blurred, light): (Rectangle<f64, Buffer>, Rectangle<f64, Buffer>),
     mask: &GlesTexture,
     size: Size<i32, Physical>,
 ) -> Option<GlesTexture> {
     let (w, h) = (size.w, size.h);
-    let wide = Size::<i32, Physical>::from((2 * w, h));
+    let wide = Size::<i32, Physical>::from((3 * w, h));
     let mut packed =
-        Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Xbgr8888, (2 * w, h).into()).ok()?;
+        Offscreen::<GlesTexture>::create_buffer(renderer, Fourcc::Xbgr8888, (3 * w, h).into()).ok()?;
     {
         let mut target = Bind::bind(renderer, &mut packed).ok()?;
         let mut frame = renderer.render(&mut target, wide, Transform::Normal).ok()?;
         let left = Rectangle::new((0, 0).into(), size);
-        let right = Rectangle::new((w, 0).into(), size);
+        let middle = Rectangle::new((w, 0).into(), size);
+        let right = Rectangle::new((2 * w, 0).into(), size);
         let whole = Rectangle::from_size((w as f64, h as f64).into());
-        frame
-            .render_texture_from_to(
-                backdrop,
-                backdrop_src,
-                left,
-                &[Rectangle::from_size(size)],
-                &[],
-                Transform::Normal,
-                1.0,
-                None,
-                &[],
-            )
-            .ok()?;
+        for (src, dst) in [(blurred, left), (light, middle)] {
+            frame
+                .render_texture_from_to(
+                    backdrop,
+                    src,
+                    dst,
+                    &[Rectangle::from_size(size)],
+                    &[],
+                    Transform::Normal,
+                    1.0,
+                    None,
+                    &[],
+                )
+                .ok()?;
+        }
         frame
             .render_texture_from_to(
                 mask,
@@ -251,7 +255,9 @@ pub fn element(
     fb_size: (i32, i32),
 ) -> Option<BlurElement> {
     let outer = backdrop.region();
-    if !within(req.region, outer) {
+    // The rim reads the lightly blurred level, which only a packed backdrop
+    // (glass mode) has; otherwise the key stays flat.
+    if !backdrop.packed() || !within(req.region, outer) {
         return None;
     }
     // The lens covers a part of the backdrop (a strip of its window): take the
@@ -270,7 +276,10 @@ pub fn element(
             .into(),
         (src.size.w * uv[0] as f64, src.size.h * uv[1] as f64).into(),
     );
-    let packed = pack(renderer, backdrop.texture(), part, &req.mask, r.size)?;
+    // The lightly blurred level is the same rectangle one half-texture to the right.
+    let half = Texture::width(backdrop.texture()) as f64 / 2.0;
+    let twin = Rectangle::new((part.loc.x + half, part.loc.y).into(), part.size);
+    let packed = pack(renderer, backdrop.texture(), (part, twin), &req.mask, r.size)?;
     let mut uniforms = Vec::new();
     lens_uniforms(&mut uniforms, req, cfg, light, adaptive, upscale, fb_size);
     tracing::debug!(region = ?r, "keyed lens built over its backdrop");
@@ -323,7 +332,7 @@ fn lens_uniforms(
     );
     effects::set_shade_ref(out, upscale);
     effects::set_packed(out, true);
-    effects::set_px_uv(out, (req.region.size.w * 2, req.region.size.h));
+    effects::set_px_uv(out, (req.region.size.w * 3, req.region.size.h));
     out.extend(effects::keyed_lens_uniforms(
         effects::fb_rect(req.round, req.fb),
         req.radius,
