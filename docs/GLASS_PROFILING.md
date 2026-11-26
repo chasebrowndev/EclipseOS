@@ -850,3 +850,49 @@ machine is simulated. Simulate one with `ECLIPSE_GFX_FAKE_RENDERER="llvmpipe"`
 A surface whose panes carry joins draws each joined shape as one element with a second glass program (`JOINED` variant of `GLASS_BODY`; 65 uniforms against 22). Per fragment it folds up to 16 member boxes into a smooth minimum, then reads the nearest member's look. Cost scales with members per shape, only inside the shape's bounding box. Unjoined panes use the original program and are unchanged. The joined program compiles lazily on the first joined shape; if compilation fails the panes draw apart.
 
 Owed: a GPU-timer capture of a bar with an open drawer (2 members) and a 16-member shape against the same panes unjoined, on the reference hardware. No number is claimed here until that run exists.
+
+## Stage timers and cache counters under `--stats`
+
+`--stats` (or `EC_GLASS_PROFILE`) turns the GPU timers on and adds glass fields
+to the `frame stats` journal line (COMP-14 §2). Without either, every hook is a
+thread-local `Cell` read and the line carries no glass field.
+
+GPU stage spans, mean microseconds per timed frame: `gpu_backdrop_us`,
+`gpu_down_us`, `gpu_up_us`, `gpu_pack_us`, and the final draw split by mode as
+`gpu_blur_us`, `gpu_frost_us` and `gpu_glass_us`; `gpu_sum_us` is every span
+(keyed-lens passes included) with `gpu_sum_p50_us` and `gpu_sum_p99_us` over a
+fixed ring. Nested spans split the enclosing GL query, so a lower-tier glass
+draw inside the backdrop render is counted once. `gpu_frames`, `gpu_disjoint`,
+`gpu_lost` and `gpu_skipped` (spans dropped for lack of query slots; expect 0)
+say how far to trust them.
+
+Backdrop cache outcome per frame (per frame, not per window): `blur_hit` served
+from cache, `blur_held` throttled and served stale, `blur_idle` dirty but nothing
+changed, `blur_miss` rebuilt. Each miss has one reason, first match in this
+order: `_first`, `_mode` (tunable or params changed), `_geom` (crop or clamp
+moved), `_margin` (damage inside the padded crop of a tier unit), `_kernel`
+(damage under the blur kernel's reach), `_refr` (damage under the refraction
+reach), `_defer` (a throttled flush with nothing new). `blur_surfaces` is the
+blur-backed surfaces drawn, `blur_px` the backdrop pixels blurred and
+`blur_pass_px` the pixels written by the down, up and final passes.
+
+`EC_HEADLESS_AGE=1` makes the headless backend render into one persistent target
+and report buffer age 1 after the first frame, as a presented buffer does, so
+the damage tracker draws only what changed. The default stays age 0, which
+repaints every damaged region in full and overstates cost for static windows
+(an idle tile drops from about 1.7 ms to nothing). Measure with it set.
+
+### What the numbers said (2026-11-26, Radeon 860M, headless 2560x1600, age 1)
+
+Tiled windows, GPU ms per frame, medians of five 20 s runs (spread 1 to 3 %):
+one scrolling tile and three static 0.47; all four scrolling 1.87; launcher over
+a scrolling window 2.34 (backdrop rebuild 0.37 of it); a nearly idle tile with
+one counter 0.46; nothing changing 0. Four floating, overlapping windows all
+scrolling cost 7.3, mostly overdraw (1.7x) and margin rebuilds, and are not a
+typical desktop. The final draw is 90 to 96 % of tiled scenes and has no single
+hot feature; it is fill and blend over the damaged glass area. Replacing the
+shader with a plain texture draw over the same area was no cheaper (484 against
+426 us), so caching the shaded glass does not help. Apotheosis cannot report
+tight damage: Mesa's Vulkan Wayland WSI sends whole-surface `damage_buffer` on
+every present and wgpu 30.0.2 has no present-region API, so a tiny update
+damages the whole window and the glass behind it is drawn in full.
