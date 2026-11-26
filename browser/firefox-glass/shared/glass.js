@@ -35,6 +35,7 @@ var Glass = (function () {
     mode: "auto", // auto | dark | light
     tint: "#12100b", // SURFACE_0
     strength: 35, // 0..100, glass opacity; 35 gives about 35% on the base glass
+    lens: true, // ask abyss to bend the backdrop across each glass surface's bevel
     accent: "#f2c33c",
     regions: {
       tabstrip: { lift: 20, accent: true },

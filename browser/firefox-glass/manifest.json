@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Glass for Firefox",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Makes Firefox match the EclipseOS desktop: warm dark, gold accent, liquid glass. The compositor supplies the translucency.",
   "browser_specific_settings": {
     "gecko": {

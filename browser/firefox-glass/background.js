@@ -113,6 +113,10 @@ async function report() {
   // (the URL-bar results dropdown is drawn inside the window, over the page).
   const keys = Glass.keyColors(settings, Glass.resolveDark(settings)).map((k) => {
     const o = { color: k.color, opacity: k.opacity };
+    // The lens itself (bevel, rim, dispersion) is abyss's glass setting; we only opt in.
+    // Cards and the sidebar stay flat: a lens shows the backdrop through them and
+    // they would stop reading as cards.
+    if (settings.lens && k.id !== "panel") o.lens = true;
     if (k.id === "popup") o.everywhere = true;
     return o;
   });
