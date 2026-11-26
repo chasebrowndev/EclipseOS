@@ -108,6 +108,7 @@ impl GlassProfile {
 
     /// One chain rebuild finished.
     pub fn rebuilt(&mut self, r: Rebuild) {
+        crate::stats::note_rebuild(r.crop_texels, r.pass_texels);
         self.rebuilds += 1;
         self.this_frame += 1;
         self.level0_clears += 1;
@@ -173,12 +174,17 @@ impl GlassProfile {
                 gpu_down_us = avg(1),
                 gpu_up_us = avg(2),
                 gpu_pack_us = avg(3),
-                gpu_glass_us = avg(4),
+                // The three final draws together (blur, frost, glass).
+                gpu_glass_us = g.sum_ns[4..7]
+                    .iter()
+                    .sum::<u64>()
+                    .checked_div(u64::from(g.frames) * 1000)
+                    .unwrap_or(0),
                 gpu_total_max_us = g.max_total_ns / 1000,
-                gpu_glass_max_us = g.max_ns[4] / 1000,
-                gpu_lens_label_us = avg(5),
-                gpu_lens_distance_us = avg(6),
-                gpu_lens_pack_us = avg(7),
+                gpu_glass_max_us = g.max_ns[4..7].iter().max().copied().unwrap_or(0) / 1000,
+                gpu_lens_label_us = avg(7),
+                gpu_lens_distance_us = avg(8),
+                gpu_lens_pack_us = avg(9),
                 gpu_lost = g.lost,
                 gpu_disjoint = g.disjoint,
                 gpu_skipped = g.skipped,

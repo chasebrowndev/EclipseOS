@@ -14,10 +14,13 @@
 //!   `EC_GLASS_PROFILE` is set ([`set_wanted`], called from
 //!   [`crate::glass_profile::GlassProfile`]) *and* the driver advertises the
 //!   extension; otherwise every entry point is one `Cell<bool>` read.
-//! * **Spans, not nesting.** `GL_TIME_ELAPSED` queries cannot nest, so a span is
-//!   one query bracketing a run of consecutive GL work of one [`Span`] kind; a
-//!   `begin` while another is open is ignored (and counted), so a missed `end`
-//!   can never leave a query active across a frame.
+//! * **Spans split, not nested.** `GL_TIME_ELAPSED` queries cannot nest, so a
+//!   span is one or more queries, each bracketing a run of consecutive GL work of
+//!   one [`Span`] kind. A span that begins inside another (a lower tier's glass
+//!   drawn by the backdrop copy) ends the outer query, runs its own, and the
+//!   outer resumes after it, so each kind keeps the time it really took. Room for
+//!   those resumes is checked first (counted as skipped otherwise), and a frame
+//!   that ends with spans open closes the query, so none leaks across frames.
 //! * **Ring, no stall.** A fixed ring of [`FRAMES`] frame slots, each with
 //!   [`SPANS_PER_FRAME`] pre-generated query objects (generated once, at
 //!   init: nothing is allocated per frame). Results are read back at the start
@@ -43,10 +46,12 @@ use std::ffi::{c_char, c_void, CStr};
 use smithay::backend::egl::get_proc_address;
 use smithay::backend::renderer::gles::{ffi, GlesFrame, GlesRenderer};
 
+use crate::stats::GpuLoss;
+
 /// What a timed span is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Span {
-    /// The backdrop composite into level 0.
+    /// The backdrop composite into level 0 (the copy of what lies behind).
     Backdrop = 0,
     /// The downsample passes.
     Down = 1,
@@ -54,18 +59,22 @@ pub enum Span {
     Up = 2,
     /// Copying level 1 beside the result (chromatic aberration).
     Pack = 3,
-    /// The glass draws into the output frame.
-    Glass = 4,
+    /// The final draw of a `blur` backdrop into the output frame.
+    FinalBlur = 4,
+    /// The final draw of a `frost` backdrop.
+    FinalFrost = 5,
+    /// The final draw of a `glass` backdrop, any preset.
+    FinalGlass = 6,
     /// A keyed lens's label pass (ADR 0132): the window's keyed pixels labelled.
-    LensLabel = 5,
+    LensLabel = 7,
     /// A keyed lens's distance pass: the distance to the nearest other label.
-    LensDistance = 6,
+    LensDistance = 8,
     /// A keyed lens's pack pass: the backdrop beside the mask, one texture.
-    LensPack = 7,
+    LensPack = 9,
 }
 
 /// Number of [`Span`] kinds.
-pub const SPAN_KINDS: usize = 8;
+pub const SPAN_KINDS: usize = 10;
 
 /// Frames of queries in flight before the oldest is dropped unread.
 const FRAMES: usize = 6;
@@ -107,7 +116,7 @@ pub struct GpuStats {
     pub lost: u32,
     /// Batches discarded for `GPU_DISJOINT`.
     pub disjoint: u32,
-    /// Spans not timed (ring full, or one already open).
+    /// Spans not timed (ring full, or no room to split an enclosing span).
     pub skipped: u32,
 }
 
@@ -133,12 +142,19 @@ enum Init {
     On,
 }
 
+/// Deepest nesting of spans kept (a backdrop copy holding a few glass draws).
+const NEST: usize = 8;
+
 struct Timer {
     init: Init,
     fns: Option<Fns>,
     slots: [Slot; FRAMES],
     cur: usize,
-    open: bool,
+    /// The open spans, outermost first (`Span as u8`), `depth` of them.
+    stack: [u8; NEST],
+    depth: usize,
+    /// A `TIME_ELAPSED` query is running: the innermost open span's segment.
+    running: bool,
     stats: GpuStats,
 }
 
@@ -152,7 +168,9 @@ thread_local! {
         fns: None,
         slots: [EMPTY_SLOT; FRAMES],
         cur: 0,
-        open: false,
+        stack: [0; NEST],
+        depth: 0,
+        running: false,
         stats: GpuStats { frames: 0, sum_ns: [0; SPAN_KINDS], max_ns: [0; SPAN_KINDS], max_total_ns: 0, lost: 0, disjoint: 0, skipped: 0 },
     }) };
 }
@@ -170,10 +188,28 @@ pub fn active() -> bool {
     ACTIVE.with(Cell::get)
 }
 
+/// Timing is wanted by `EC_GLASS_PROFILE` or by `--stats` (the frame stats line
+/// reports the stage times too).
+fn wanted() -> bool {
+    WANTED.with(Cell::get) || crate::stats::glass_on()
+}
+
 /// The profile's view of the timer: whether it was asked for but the driver
 /// has no extension (so the log can say so instead of printing zeros).
 pub fn unavailable() -> bool {
-    WANTED.with(Cell::get) && TIMER.with_borrow(|t| t.init == Init::Off)
+    wanted() && TIMER.with_borrow(|t| t.init == Init::Off)
+}
+
+/// How the timer stands, for the log: `timer`, `no-extension`, or `off`
+/// when nothing asked for it.
+pub fn mode_name() -> &'static str {
+    if !wanted() {
+        "off"
+    } else if active() {
+        "timer"
+    } else {
+        "no-extension"
+    }
 }
 
 impl Timer {
@@ -240,15 +276,26 @@ impl Timer {
     /// Move to the next frame slot and read back what is ready.
     fn next_frame(&mut self, renderer: &mut GlesRenderer) {
         let Some(fns) = self.fns else { return };
+        if self.running {
+            // A frame that ended with a span open: close its query now, so none
+            // runs across the frame boundary.
+            let _ = renderer.with_context(|_| {
+                // SAFETY: the context is current (`with_context`), and `running`
+                // says a `TIME_ELAPSED` query is active.
+                unsafe { (fns.end)(TIME_ELAPSED_EXT) };
+            });
+            self.running = false;
+        }
+        self.depth = 0;
         self.slots[self.cur].pending = self.slots[self.cur].used > 0;
         self.cur = (self.cur + 1) % FRAMES;
         let slot = &mut self.slots[self.cur];
         if slot.pending {
             self.stats.lost += 1;
+            crate::stats::note_gpu_loss(GpuLoss::Lost);
         }
         slot.pending = false;
         slot.used = 0;
-        self.open = false;
         // Oldest first: the slot after `cur` is the oldest.
         let Ok(()) = renderer.with_context(|gl| {
             for age in 1..FRAMES {
@@ -275,6 +322,7 @@ impl Timer {
                 self.slots[i].pending = false;
                 if disjoint != 0 {
                     self.stats.disjoint += 1;
+                    crate::stats::note_gpu_loss(GpuLoss::Disjoint);
                     continue;
                 }
                 let mut per_kind = [0u64; SPAN_KINDS];
@@ -285,6 +333,7 @@ impl Timer {
                     unsafe { (fns.get_u64)(slot.ids[j], QUERY_RESULT_EXT, &mut ns) };
                     per_kind[(slot.kinds[j] as usize).min(SPAN_KINDS - 1)] += ns;
                 }
+                crate::stats::note_gpu_frame(&per_kind);
                 let s = &mut self.stats;
                 s.frames += 1;
                 let mut total = 0;
@@ -303,36 +352,69 @@ impl Timer {
     fn begin(&mut self, span: Span) {
         let Some(fns) = self.fns else { return };
         let slot = &mut self.slots[self.cur];
-        if self.open || slot.used >= SPANS_PER_FRAME {
+        // A nested begin needs its own segment, plus one resume segment per open
+        // span (each `end` restarts the one it encloses): checked up front, so
+        // a span is never left half split.
+        let need = if self.depth == 0 { 1 } else { 2 * self.depth + 2 };
+        if self.depth >= NEST || slot.used + need > SPANS_PER_FRAME {
             self.stats.skipped += 1;
+            crate::stats::note_gpu_loss(GpuLoss::Skipped);
             return;
+        }
+        if self.running {
+            // SAFETY: a `TIME_ELAPSED` query is active (`running`), and the
+            // context is current: the enclosing span's segment ends here.
+            unsafe { (fns.end)(TIME_ELAPSED_EXT) };
         }
         let id = slot.ids[slot.used];
         slot.kinds[slot.used] = span as u8;
         slot.used += 1;
-        self.open = true;
+        self.stack[self.depth] = span as u8;
+        self.depth += 1;
+        self.running = true;
         // SAFETY: called with the context current (the caller holds the
         // renderer or the frame); `id` is a live query from `glGenQueriesEXT`
-        // and no `TIME_ELAPSED` query is active (`open` was false).
+        // and no `TIME_ELAPSED` query is active (`running` was just cleared or
+        // was false).
         unsafe { (fns.begin)(TIME_ELAPSED_EXT, id) };
     }
 
     fn end(&mut self) {
         let Some(fns) = self.fns else { return };
-        if !self.open {
+        if self.depth == 0 {
             return;
         }
-        self.open = false;
-        // SAFETY: a `TIME_ELAPSED` query was begun by `begin` (`open`) and the
-        // context is still current.
-        unsafe { (fns.end)(TIME_ELAPSED_EXT) };
+        if self.running {
+            // SAFETY: a `TIME_ELAPSED` query was begun by `begin` (`running`) and
+            // the context is still current.
+            unsafe { (fns.end)(TIME_ELAPSED_EXT) };
+            self.running = false;
+        }
+        self.depth -= 1;
+        if self.depth == 0 {
+            return;
+        }
+        // The enclosing span carries on from here, in a segment of its own.
+        // `begin` reserved the room for it.
+        let slot = &mut self.slots[self.cur];
+        if slot.used >= SPANS_PER_FRAME {
+            self.stats.skipped += 1;
+            crate::stats::note_gpu_loss(GpuLoss::Skipped);
+            return;
+        }
+        let id = slot.ids[slot.used];
+        slot.kinds[slot.used] = self.stack[self.depth - 1];
+        slot.used += 1;
+        self.running = true;
+        // SAFETY: as in `begin`: `id` is live and no query is active.
+        unsafe { (fns.begin)(TIME_ELAPSED_EXT, id) };
     }
 }
 
 /// Start a frame: look for the extension on first use, move the ring on and read
 /// back finished frames. Call once per output frame, before its first span.
 pub fn begin_frame(renderer: &mut GlesRenderer) {
-    if !WANTED.with(Cell::get) {
+    if !wanted() {
         return;
     }
     TIMER.with_borrow_mut(|t| {
@@ -399,7 +481,7 @@ mod tests {
     }
 
     #[test]
-    fn a_span_cannot_nest_and_a_full_ring_skips() {
+    fn a_nested_span_splits_its_enclosing_span_and_a_full_ring_skips() {
         // Drive the bookkeeping with stub entry points (no GL context).
         unsafe extern "system" fn gen(n: i32, ids: *mut u32) {
             for i in 0..n {
@@ -429,24 +511,38 @@ mod tests {
             fns: Some(fns),
             slots: [EMPTY_SLOT; FRAMES],
             cur: 0,
-            open: false,
+            stack: [0; NEST],
+            depth: 0,
+            running: false,
             stats: GpuStats::default(),
         };
         for s in &mut t.slots {
             // SAFETY: stub, buffer of SPANS_PER_FRAME ids.
             unsafe { gen(SPANS_PER_FRAME as i32, s.ids.as_mut_ptr()) };
         }
-        t.begin(Span::Down);
-        t.begin(Span::Up); // nested: ignored
-        assert_eq!((t.slots[0].used, t.stats.skipped), (1, 1));
+        t.begin(Span::Backdrop);
+        assert_eq!((t.slots[0].used, t.depth, t.running), (1, 1, true));
+        // Nested: the backdrop's segment ends, the glass one runs, and the
+        // backdrop resumes in a segment of its own once the glass ends.
+        t.begin(Span::FinalGlass);
+        assert_eq!((t.slots[0].used, t.depth, t.running), (2, 2, true));
         t.end();
-        t.end(); // a second end is inert
+        assert_eq!((t.slots[0].used, t.depth, t.running), (3, 1, true));
+        assert_eq!(
+            &t.slots[0].kinds[..3],
+            &[Span::Backdrop as u8, Span::FinalGlass as u8, Span::Backdrop as u8][..]
+        );
+        t.end();
+        assert_eq!((t.depth, t.running, t.stats.skipped), (0, false, 0));
+        t.end(); // a stray end is inert
+        assert_eq!((t.slots[0].used, t.depth), (3, 0));
+        // A full ring skips: 61 spans fill it from 3 used, the other 6 are skipped.
         for _ in 0..SPANS_PER_FRAME + 3 {
-            t.begin(Span::Glass);
+            t.begin(Span::FinalGlass);
             t.end();
         }
         assert_eq!(t.slots[0].used, SPANS_PER_FRAME);
-        assert_eq!(t.stats.skipped, 1 + 4);
-        assert!(!t.open);
+        assert_eq!(t.stats.skipped, 6);
+        assert!(!t.running);
     }
 }
